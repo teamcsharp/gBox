@@ -805,6 +805,7 @@ BOSS_FIRE_MARGIN = 0.95      # fire within this fraction of the EQUIPPED gun's r
                              # handgun 144.5, mechgun 72.25) - a shot from beyond the gun's reach falls short and never connects.
                              # Using the live weapon envelope auto-gives the mobile Dragon its full ~170u firing range (not a tight 60).
 BOSS_FIRE_RANGE_FALLBACK = 70.0  # fire range when the weapon envelope is UNVERIFIED (mechgun-safe; close enough to connect for any gun)
+BOSS_HOLD_TOL = 40.0         # "positioned" when within this of the stand point (orbit centre for a circling boss like the Dragon)
 BOSS_NOPROG_S = 75.0         # DAMAGE-PROGRESS escape: boss HP/parts not dropping for this long -> can't kill it yet,
                              # warp off and loop back (don't burn the full BOSS_SAFETY_S on an un-damageable boss)
 PLAN_PUBLISH_S = 0.5         # throttle for the live-map room-graph PLAN publish (telemetry, map agent consumes it)
@@ -2535,39 +2536,47 @@ class Controller:
           - Damageable + within the forced gun's reach: FIRE at the weak point and HOLD the
             line through the boss's movement (never-miss + crit land it). Don't strafe off.
           - Not in reach: coordinate-drive toward the weak point to get within range.
-          - Not damageable, or very far/relocating (Dragon airborne/teleport): hold a spot,
-            dodge the telegraphed attack (boss_special is a DODGE cue only), ready to fire."""
-        bx, bz = boss_row["x"], boss_row["z"]
-        bdist = math.hypot(bx - player["x"], bz - player["z"])
+          - Not damageable, or very far/relocating: hold the stand point, dodge the
+            telegraphed attack (boss_special is a DODGE cue only), ready to fire.
+        MOVE target and AIM target are SEPARATE: a circling boss (the Dragon orbits the
+        arena centre at r~100-160) must be fired at from the ORBIT CENTRE, not chased to
+        the perimeter (chasing a point going round a ring leaves the bot 220+ off on the
+        far arc). adv['boss_hold_pos'] = the recommended stand point (orbit centre for the
+        Dragon; the weak point for stationary bosses); we STAND there and FIRE outward at
+        weakpoint_pos. Falls back to the weak point when boss_hold_pos is absent."""
+        bx, bz = boss_row["x"], boss_row["z"]          # AIM target (the boss / weak point)
+        adv = self._boss_adv if isinstance(self._boss_adv, dict) else {}
+        hold = adv.get("boss_hold_pos")
+        has_hold = isinstance(hold, dict) and type(hold.get("x")) in (int, float) and type(hold.get("z")) in (int, float)
+        hx, hz = (float(hold["x"]), float(hold["z"])) if has_hold else (bx, bz)   # MOVE/stand target
+        aim_dist = math.hypot(bx - player["x"], bz - player["z"])
+        hold_dist = math.hypot(hx - player["x"], hz - player["z"])
         env_h = envelope.get("horizontal", 10.) if isinstance(envelope, dict) else 10.
-        # Fire within the gun's REAL cone (rifle 10deg is narrow -> needs tight aim on a
-        # moving boss; the build layer forces the wide-cone Shot for the mobile Dragon).
+        # Fire within the gun's REAL cone (the Shot's 45deg is forgiving on a moving boss;
+        # the narrow rifle needs tight aim - the build layer forces the Shot on boss floors).
         half = envelope.get("horizontal_half_angle", 8.) if isinstance(envelope, dict) else 8.
         _, angle, _vok = attack_geometry(player, boss_row, envelope)
-        adv = self._boss_adv if isinstance(self._boss_adv, dict) else {}
         vuln = adv.get("boss_vulnerable")
         can_fire = vuln is True or vuln is None        # fire unless the game says invulnerable
         boss_special = bool(adv.get("boss_special_state") or str(adv.get("phase") or "").endswith("_attacking"))
-        # Fire only within the gun's REAL reach (the verified PMT envelope horizontal) - firing
-        # from beyond it falls short and never-miss can't rescue it (the ~220u void-fire bug).
-        # Unverified envelope -> close in to BOSS_FIRE_RANGE_FALLBACK so the shot connects.
+        # Fire range = the EQUIPPED gun's real reach x margin (live from WeaponRanges), NOT a
+        # fixed cap - firing beyond the gun's reach falls short and never connects.
         env_verified = isinstance(envelope, dict) and bool(envelope.get("verified"))
-        # Fire range = the EQUIPPED gun's real reach (envelope horizontal) with a small
-        # margin - NOT a fixed cap. Auto-gives the rifle ~170u / shot ~105u so the mobile
-        # Dragon is fired on whenever it's in real reach, not only when crowded close.
         fire_range = (env_h * BOSS_FIRE_MARGIN) if (env_verified and env_h > 1.0) else BOSS_FIRE_RANGE_FALLBACK
-        in_fire = bdist <= fire_range
+        in_fire = aim_dist <= fire_range
         speed = max(self.inputs.speed(), 1e-6)
         st = getattr(self.inputs, "stats", None)
         if slot == 1 and isinstance(st, dict):
-            st["boss_approach_dist"] = round(bdist, 1)
+            st["boss_approach_dist"] = round(aim_dist, 1)
+            st["boss_hold_dist"] = round(hold_dist, 1)
             st["boss_fire_range"] = round(fire_range, 1)
             st["boss_in_range"] = int(in_fire)
             st["boss_vulnerable"] = int(bool(can_fire))
             st["boss_strike_window"] = int(boss_special)
 
-        # FIRE whenever the boss is damageable and within the gun's reach - HOLD the line
-        # (face then press A; a tiny facing nudge between shots), never strafe off it.
+        # FIRE whenever the boss is damageable and its weak point is within the gun's reach -
+        # opportunistic even en route to the stand point; HOLD the line (face then press A,
+        # a tiny facing nudge between shots), never strafe off it.
         if can_fire and in_fire:
             if abs(angle) > half:
                 commands.append((slot, ["lleft" if angle > 0 else "lright"], max(.02, min(.12, abs(angle) / 450))))
@@ -2582,17 +2591,21 @@ class Controller:
             if isinstance(st, dict):
                 st["boss_firing_line"] = 1
             return True
-        # Out of reach (but not uncatchably far) -> drive toward the weak point to get in range.
-        if bdist <= fire_range + BOSS_CHASE_CAP:
-            keys, escaping = self._unwedge(slot, player, (bx, bz), now)
+        # POSITION at the stand point (orbit centre for the Dragon; the weak point otherwise)
+        # - NOT the circling boss's perimeter position. An explicit hold point is always
+        # driven to (it's a reachable arena spot); the weak-point fallback keeps the old
+        # chase bound so a far stationary boss still gets approached, not chased forever.
+        if hold_dist > BOSS_HOLD_TOL and (has_hold or aim_dist <= fire_range + BOSS_CHASE_CAP):
+            keys, escaping = self._unwedge(slot, player, (hx, hz), now)
             commands.append((slot, keys, .18))
-            moves[slot] = (player, (bx, bz), self.maps.get(state, player), False)
-            steering[slot] = (player, (bx, bz), "boss_approach_unwedge" if escaping else "boss_approach")
+            moves[slot] = (player, (hx, hz), self.maps.get(state, player), False)
+            steering[slot] = (player, (hx, hz), "boss_approach_unwedge" if escaping else "boss_approach")
             if isinstance(st, dict):
                 st["boss_approaching"] = 1
             return True
-        # Invulnerable or very far/relocating -> hold a spot; dodge the telegraphed attack if
-        # it is close; otherwise face the weak point, ready to fire when it is damageable/near.
+        # At the stand point but the weak point is out of reach (boss on the far arc /
+        # submerged / invulnerable) -> dodge a telegraphed attack if close, else face the
+        # boss and wait for it to circle back into range.
         if enemies and boss_special:
             dodge = self.combat_dodge(state, slot, player, enemies, envelope, boss_row, now)
             if dodge is not None and dodge["act"]:

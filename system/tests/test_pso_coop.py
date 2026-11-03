@@ -1379,6 +1379,24 @@ def test_boss_combat_fires_in_range_and_holds_without_chasing_when_far(tmp_path)
     assert not any(c[1] == ["a"] for c in cmds2) and steer2[1][2] == "boss_hold_far"
 
 
+def test_boss_combat_holds_the_orbit_center_for_a_circling_boss(tmp_path):
+    """DRAGON fix: a circling boss must be fired at from its ORBIT CENTRE (boss_hold_pos),
+    not chased to the perimeter. When the weak point is on the far arc (out of reach), the
+    bot MOVES to the stand point (centre), not toward the perimeter boss, and doesn't fire."""
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    player = {"x": -140., "z": 0., "y": 0., "heading_deg": 0., "ptr": "P1", "hp": 40}
+    env = dict(C.FALLBACK, horizontal=100., horizontal_half_angle=45., verified=True)   # reach ~95
+    boss = {"class": "TBossDragon", "kind": "enemy", "hp": 2500, "hp_max": 2500,
+            "x": 150., "z": 0., "y": 0.1, "ptr": "B1"}                                   # far arc, 290u off
+    ctrl._boss_adv = {"active": True, "boss": "Dragon", "boss_vulnerable": True,
+                      "weakpoint": boss, "boss_hold_pos": {"x": 0., "z": 0.}}            # orbit centre
+    cmds, mv, steer, arows = [], {}, {}, {}
+    ctrl.boss_combat(state(floor=11), 1, player, env, boss, 100.0, cmds, mv, steer, [boss], arows)
+    assert steer[1][2] in ("boss_approach", "boss_approach_unwedge")
+    assert steer[1][1] == (0., 0.)                 # stand target is the ORBIT CENTRE, not the perimeter boss
+    assert not any(c[1] == ["a"] for c in cmds)    # weak point 290u out of ~95u reach -> no void-fire
+
+
 def test_combat_dodge_is_none_when_boss_is_out_of_range(tmp_path):
     """Dodge must NOT fire (and block the approach) when the boss is far - it only kicks
     in once the bot has closed to within the boss dodge radius."""
