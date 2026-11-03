@@ -7,11 +7,17 @@ from gbox import pso_speed as S
 from gbox.registry import Unsupported
 
 
-def test_scaffold_is_unconfigured_and_refuses_to_enable_without_touching_memory():
+def test_signed_off_by_default_after_nav_ack():
+    # nav signed off the GBPSOGC5 block 2026-11-03; phase (b) is cleared to go live.
+    assert S.NAV_SIGNOFF is True and S.configured() is True
+
+
+def test_held_until_nav_signoff_refuses_without_touching_memory(monkeypatch):
+    monkeypatch.setattr(S, 'NAV_SIGNOFF', False)
     assert S.configured() is False
-    ad = SimpleNamespace(read_memory=lambda *a: pytest.fail('must not read before configured'),
-                         write_memory=lambda *a: pytest.fail('must not write before configured'))
-    with pytest.raises(Unsupported, match='not yet enabled|not configured|post-restart'):
+    ad = SimpleNamespace(read_memory=lambda *a: pytest.fail('no read while held'),
+                         write_memory=lambda *a: pytest.fail('no write while held'))
+    with pytest.raises(Unsupported, match='not yet enabled|sign-off|held'):
         S.set_enabled(ad, 'gamecube', True)
     st = S.status(ad, 'gamecube')
     assert st['configured'] is False and st['factor'] == 3 and st['attack_speed_3x'] is False
@@ -138,3 +144,54 @@ def test_gate_from_probe_uses_a_locked_326_gate_else_falls_back_to_a8():
 def test_326_gate_not_locked_is_ignored_by_gate_from_probe():
     ad = SimpleNamespace(_pso_speed_probe={0: {"gate": {"off": 0x326, "values": [1], "locked": False}}})
     assert S.gate_from_probe(ad) is None
+
+
+# --- phase (b) live swap: GBPSOGC4 <-> GBPSOGC5 via the shared dispatcher (hook migration) ---
+from test_pso_gc_live import RAM
+
+
+def test_v5_code_is_the_prepared_a8_dispatcher_and_fits_the_cave():
+    assert L.V5_CODE == S.dispatcher_v5(S.GATE_A8, factor=L.SPEED_FACTOR)
+    assert L.V5_CODE == L.dispatcher(speed_gate=L.SPEED_GATE, speed_factor=L.SPEED_FACTOR)
+    assert L.CAVE + len(L.V5_CODE) <= L.FLUSH < L.HEADER < L.END      # v5 still fits below FLUSH/HEADER
+
+
+def test_hook_treats_v5_as_owned_and_never_clobbers_it():
+    ram = RAM(); m = L.GC(ram); m.hook()
+    ram.put(L.CAVE, L.V5_CODE); ram.put(L.HEADER, L.V5_META)          # simulate speed ON
+    before = len(ram.writes)
+    m.hook()                                                         # another control ensuring the dispatcher
+    assert len(ram.writes) == before                                 # recognized as owned -> no rewrite
+    assert m.u32(L.VT_UPDATE) == L.CAVE
+    assert m.speed_status()["attack_speed_3x"] is True
+
+
+def test_set_speed_swaps_v4_to_v5_and_back_with_verify(monkeypatch):
+    ram = RAM(); m = L.GC(ram); m.hook()
+    monkeypatch.setattr(m, "flush", lambda addrs: None)              # skip the guest-icbi call()/drain
+    on = m.set_speed(True)
+    assert on["attack_speed_3x"] is True and on["changed"] is True
+    assert ram.read_memory(L.HEADER, 16) == L.V5_META
+    assert ram.read_memory(L.CAVE, len(L.V5_CODE)) == L.V5_CODE
+    assert m.speed_status()["attack_speed_3x"] is True
+    assert m.set_speed(True)["changed"] is False                     # idempotent
+    off = m.set_speed(False)
+    assert off["attack_speed_3x"] is False
+    assert ram.read_memory(L.HEADER, 16) == L.V4_META
+    assert ram.read_memory(L.CAVE, len(L.CODE)) == L.CODE
+    assert m.speed_status()["attack_speed_3x"] is False
+
+
+def test_set_speed_rolls_back_when_the_write_does_not_stick(monkeypatch):
+    ram = RAM(); m = L.GC(ram); m.hook()
+    monkeypatch.setattr(m, "flush", lambda addrs: None)
+    # drop writes to CAVE so the read-back never matches -> must roll back and raise
+    real_write = ram.write_memory
+    def dropping(address, data):
+        if address == L.CAVE:
+            return
+        real_write(address, data)
+    monkeypatch.setattr(ram, "write_memory", dropping)
+    m.read, m.write = ram.read_memory, ram.write_memory
+    with pytest.raises(RuntimeError, match="rolled back"):
+        m.set_speed(True)

@@ -121,6 +121,16 @@ def dispatcher(survival=True,header=None,survival_address=None,speed_gate=None,s
 
 
 CODE=dispatcher()
+# GBPSOGC5 = the SAME dispatcher plus the inert extra-update block gated on *(player+0xA8)>0 (3x
+# attack speed; nav a22d56d84e2197ff6 signed off the block 2026-11-03). Speed on/off swaps CAVE
+# between CODE (v4) and V5_CODE (v5) in place; hook() recognizes BOTH as owned so every other
+# control keeps working whichever variant is live.
+SPEED_GATE={'kind':'a8'}
+SPEED_FACTOR=3
+V5_CODE=dispatcher(speed_gate=SPEED_GATE,speed_factor=SPEED_FACTOR)
+def _meta(tag):return tag+struct.pack('>II',ORIGINAL_UPDATE,VT_UPDATE)
+V4_META=_meta(b'GBPSOGC4')
+V5_META=_meta(b'GBPSOGC5')
 FLUSH_CODE=bytes.fromhex('7c00186c7c0004ac7c001fac4c00012c4e800020')
 
 _dispatcher_locks_guard=threading.Lock()
@@ -192,8 +202,10 @@ class GC:
     def hook(self):
         self.check()
         head=self.read(HEADER,16)
-        metadata=b'GBPSOGC4'+struct.pack('>II',ORIGINAL_UPDATE,VT_UPDATE)
-        owned=head==metadata and self.read(CAVE,len(CODE))==CODE
+        metadata=V4_META                                  # fresh installs are speed-off (v4)
+        owned4=head==V4_META and self.read(CAVE,len(CODE))==CODE
+        owned5=head==V5_META and self.read(CAVE,len(V5_CODE))==V5_CODE
+        owned=owned4 or owned5                             # either gBox variant is ours; never clobber it
         # An unhooked V3 may still have earlier V1/V2 metadata in OLD_CAVE.
         # That does not authorize replacing its warmed current-CAVE entry.
         if head[:8] == b'GBPSOGC3':
@@ -287,6 +299,52 @@ class GC:
             if any(self.u32(QUEUE+i*QSZ) for i in range(QMAX)):
                 raise RuntimeError('A PSO command is still pending; cannot remove its dispatcher')
             self.write(VT_UPDATE,struct.pack('>I',ORIGINAL_UPDATE))
+
+    def flush(self,addresses):
+        """Guest icbi over each touched 32-byte line so Dolphin recompiles patched code."""
+        lines=sorted({a & ~31 for a in addresses})
+        for off in range(0,len(lines),QMAX):
+            batch=lines[off:off+QMAX]
+            if batch:self.call([(FLUSH,a) for a in batch])
+
+    def speed_status(self):
+        """Which dispatcher variant is live: v5 (3x attack speed on) or v4 (off)."""
+        self.check(player=False)
+        head=self.read(HEADER,16)
+        on=head==V5_META and self.read(CAVE,len(V5_CODE))==V5_CODE
+        off=head==V4_META and self.read(CAVE,len(CODE))==CODE
+        if not (on or off):
+            if self.u32(VT_UPDATE)!=CAVE:return {'attack_speed_3x':False,'installed':False}
+            raise Unsupported('PSO dispatcher is not a recognized gBox build')
+        return {'attack_speed_3x':bool(on),'installed':True,'factor':SPEED_FACTOR}
+
+    @queue_serialized
+    def set_speed(self,on):
+        """Swap the live dispatcher between v4 (speed off) and v5 (3x attack speed) IN PLACE and
+        flush, with a read-back verify + rollback on mismatch. VT_UPDATE already points at CAVE, so
+        no pointer flip; the flush runs the queue path, which is byte-identical in both variants, so
+        it executes correctly on the still-warm previous JIT before Dolphin recompiles CAVE."""
+        self.check(player=False)
+        self.hook()                                        # ensure a gBox dispatcher (v4 or v5) is installed
+        if self.u32(VT_UPDATE)!=CAVE:
+            raise Unsupported('PSO dispatcher is not installed')
+        if any(self.u32(QUEUE+i*QSZ) for i in range(QMAX)):
+            raise RuntimeError('A PSO command is still pending; do not swap the dispatcher now')
+        head=self.read(HEADER,16)
+        want_code,want_meta=(V5_CODE,V5_META) if on else (CODE,V4_META)
+        other_code,other_meta=(CODE,V4_META) if on else (V5_CODE,V5_META)
+        if head==want_meta and self.read(CAVE,len(want_code))==want_code:
+            return {'attack_speed_3x':bool(on),'verified':True,'changed':False,'factor':SPEED_FACTOR}
+        if not (head==other_meta and self.read(CAVE,len(other_code))==other_code):
+            raise Unsupported('PSO dispatcher is not a known gBox build; refusing the speed swap')
+        self.write(CAVE,want_code)
+        self.write(HEADER,want_meta)
+        self.flush(range(CAVE,CAVE+len(want_code),32))
+        if self.read(CAVE,len(want_code))!=want_code or self.read(HEADER,16)!=want_meta:
+            self.write(CAVE,other_code);self.write(HEADER,other_meta)
+            self.flush(range(CAVE,CAVE+len(other_code),32))
+            raise RuntimeError('PSO dispatcher speed swap read-back failed; rolled back to the prior variant')
+        return {'attack_speed_3x':bool(on),'verified':True,'changed':True,'code_cache_flushed':True,'factor':SPEED_FACTOR}
 
     def equip_any(self,on):
         self.check();self.hook()

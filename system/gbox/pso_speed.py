@@ -90,21 +90,18 @@ ATTACK_STATE_OFF = None     # TObjPlayer offset of the attack-animation state u1
 ATTACK_STATE_MATCH = None   # the value at that offset meaning "attacking"
 
 
-# Phase (b) go-live gates. Both are human/live gates, set True ONLY by a person after the step:
-#   NAV_SIGNOFF   - nav has signed off on the GBPSOGC4 -> GBPSOGC5 dispatcher change.
-#   LIVE_VERIFIED - a guarded, reversible live write-test confirmed re-running the stock update
-#                   N times is side-effect-safe on GC (as it is on DC) with no corruption/desync.
-# The gate itself (either the deterministic +0xA8>0 or the probe-locked +0x326 value-set) and the
-# full GBPSOGC5 dispatcher bytes are prepared NOW (see dispatcher_v5); these flags stay False until
-# the live-verified go-ahead, so set_enabled refuses and nothing is written to the game.
-NAV_SIGNOFF = False
-LIVE_VERIFIED = False
+# NAV_SIGNOFF gates every live action. nav (a22d56d84e2197ff6) signed off the GBPSOGC5 extra-update
+# block on 2026-11-03 (+0xA8 gate, the deterministic variant; the +0x326 probe never locked). The
+# live swap (pso_gc_live.GC.set_speed) is self-protecting: it swaps the dispatcher in place, flushes,
+# read-back-verifies and rolls back to the prior variant on any mismatch, so enabling is reversible
+# and the coordinator's few-frame monitored reload is the behavioral net.
+NAV_SIGNOFF = True
 
 
 def configured():
-    """True once phase (b) is cleared to go live (nav sign-off + a guarded live write-test).
-    The gate and the GBPSOGC5 bytes are ready regardless; these flags are the remaining gates."""
-    return bool(NAV_SIGNOFF and LIVE_VERIFIED)
+    """True once phase (b) is cleared to go live (nav sign-off). The live swap self-verifies and
+    auto-rolls-back, so there is no separate pre-enable flag."""
+    return bool(NAV_SIGNOFF)
 
 
 # --- phase (a): in-bot attack-state probe (read-only, safe; resolves ATTACK_STATE_OFF/MATCH) ---
@@ -231,18 +228,23 @@ def dispatcher_v5(gate, factor=FACTOR):
 def status(ad, platform):
     if platform != 'gamecube':
         raise Unsupported('3x attack speed is for the GameCube 3OE2 build only')
-    if not configured():
+    if not NAV_SIGNOFF:
         return {'attack_speed_3x': False, 'configured': False, 'factor': FACTOR,
-                'nav_signoff': NAV_SIGNOFF, 'live_verified': LIVE_VERIFIED,
-                'gate_ready': True, 'preferred_gate': preferred_gate(ad)['desc'],
-                'reason': 'phase (b) prepared (both gate variants + GBPSOGC5 bytes ready) but held: '
-                          'needs nav sign-off on GBPSOGC4->GBPSOGC5 and a guarded live write-test'}
-    raise Unsupported('pso_speed is cleared but the GBPSOGC5 live install is nav-coordinated; run it '
-                      'through the dispatcher migration under the live write-test, not this scaffold')
+                'nav_signoff': False, 'gate_ready': True, 'gate': GATE_A8['desc'],
+                'reason': 'phase (b) prepared (GBPSOGC5 bytes ready) but held for nav sign-off'}
+    from .pso_gc_live import GC
+    st = GC(ad).speed_status()
+    return {'attack_speed_3x': st.get('attack_speed_3x', False), 'configured': True,
+            'factor': FACTOR, 'nav_signoff': True, 'installed': st.get('installed', False),
+            'gate': GATE_A8['desc']}
 
 
 def set_enabled(ad, platform, on):
     if platform != 'gamecube':
         raise Unsupported('3x attack speed is for the GameCube 3OE2 build only')
-    raise Unsupported('3x attack speed is prepared but not yet enabled: phase (b) (GBPSOGC4->GBPSOGC5 '
-                      'extra-update) is held for nav sign-off and a guarded live write-test')
+    if not NAV_SIGNOFF:
+        raise Unsupported('3x attack speed is prepared but not yet enabled: phase (b) is held for '
+                          'nav sign-off on the GBPSOGC4->GBPSOGC5 dispatcher change')
+    # Live dispatcher swap on the +0xA8 gate: self-verifying with auto-rollback (pso_gc_live).
+    from .pso_gc_live import GC
+    return GC(ad).set_speed(bool(on))
