@@ -3768,6 +3768,48 @@ def bot_reload(inp: BotReloadIn, ctx: Ctx):
     return {"result": hot_reload.reload_bots(_RELOAD_HOST, modules=inp.modules, settle_s=inp.settle_s)}
 
 
+class RepoUpdateIn(BaseModel):
+    ref: str = Field(default="origin/main", max_length=120)
+
+
+class RepoUpdateOut(BaseModel):
+    result: dict
+
+
+@tool("repo_update", "1.0", RepoUpdateIn, RepoUpdateOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=150)
+def repo_update(inp: RepoUpdateIn, ctx: Ctx):
+    """Fast-forward THIS worker's own gBox git checkout to `ref` (default origin/main): `git fetch` then
+    `git merge --ff-only` -- never a reset, force, checkout or new commit. Returns before/after HEAD so the
+    control plane can confirm the worker's bot code advanced before a bot-reload. The route that invokes this
+    is operator/deploy-gated; this makes a Windows worker self-service for deploys instead of needing an
+    agent resident on that machine to git-pull it."""
+    ref = (inp.ref or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._/\-]{1,120}", ref):
+        return {"result": {"ok": False, "reason": "invalid ref", "updated": False}}
+    repo = Path(__file__).resolve().parent.parent          # .../system/gbox/tools.py -> system
+    if (repo.parent / ".git").exists():                    # the checkout root holds .git; system/ is a subdir
+        repo = repo.parent
+    if not (repo / ".git").exists():
+        return {"result": {"ok": False, "reason": f"{repo} is not a git checkout", "repo": str(repo), "updated": False}}
+
+    def git(*a, timeout=120):
+        return subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, timeout=timeout)
+    before = git("rev-parse", "HEAD").stdout.strip()
+    branch = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    dirty = bool(git("status", "--porcelain").stdout.strip())
+    fetch = git("fetch", "origin")
+    if fetch.returncode != 0:
+        return {"result": {"ok": False, "reason": "fetch failed: " + (fetch.stderr or "").strip()[:200],
+                           "repo": str(repo), "branch": branch, "before": before[:12], "after": before[:12],
+                           "updated": False, "dirty": dirty}}
+    merge = git("merge", "--ff-only", ref)
+    after = git("rev-parse", "HEAD").stdout.strip()
+    ok = merge.returncode == 0
+    return {"result": {"ok": ok, "repo": str(repo), "branch": branch, "dirty": dirty, "ref": ref,
+                       "before": before[:12], "after": after[:12], "updated": before != after,
+                       "detail": "fast-forwarded" if ok else (merge.stderr or merge.stdout or "").strip()[:250]}}
+
+
 def _recorded_play(ctx, game_id) -> list[dict]:
     r = httpx.get(f"{ctx.server}/api/gameplay-memory", params={"game_id": game_id}, headers=_ap_headers(ctx), timeout=60)
     r.raise_for_status()

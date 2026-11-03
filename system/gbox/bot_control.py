@@ -65,6 +65,10 @@ class ReloadIn(BaseModel):
     wait_s: float = 0.0          # > 0: answer once the worker has finished (deploy_main.sh waits), else the queued job
 
 
+class RepoUpdateBody(BaseModel):
+    ref: str = 'origin/main'     # fast-forward target; the worker only accepts a safe git ref
+
+
 def liveness(telemetry: dict) -> str:
     """driving | stuck | stopped | unknown, from the newest autoplay report (screensaver.telemetry_last)."""
     if not telemetry:
@@ -500,6 +504,28 @@ class BotControl:
                                                                  'reason': str(result.get('reason') or '')[:300]})
         return {'job_id': jid, 'state': 'succeeded', 'worker': info, 'result': result, 'recovered': recovered}
 
+    # --- self-service worker repo fast-forward (gbox/tools.py repo_update) ---
+    def update_repo(self, name: str, ref: str, actor: str, origin: dict | None = None) -> dict:
+        """Make the TARGET worker fast-forward its own gBox checkout (git fetch + merge --ff-only) to `ref`,
+        so its bot code advances without an agent resident on that machine. A following bot-reload then
+        picks up the new modules. Operator/deploy only (the route gates automation)."""
+        cands = [w for w in self.workers() if w.get('name') == name or w.get('id') == self.wid(name)]
+        w = next((x for x in cands if x.get('online')), cands[0] if cands else None)
+        if w is None:
+            raise HTTPException(404, f"no gBox worker '{name}'")
+        if not w.get('online'):
+            raise HTTPException(409, f"{w['name']} is offline: its repo can't be updated now.")
+        if 'repo_update' not in (w.get('tools') or []):
+            raise HTTPException(409, f"{w['name']} has no repo_update tool yet: it must first get this build (via one "
+                                     'agent/operator ff + a gbox.service restart) to register the tool; self-service after that.')
+        jid, out = self.job('repo_update', {'ref': ref}, actor, worker=w['id'], wait=150, queue_wait=QUEUE_WAIT_S,
+                            origin={**(origin or {}), 'via': 'update-repo'})
+        result = out.get('result') or {}
+        self.store.audit(actor, 'worker.update_repo', w['id'],
+                         {'job': jid, 'before': result.get('before'), 'after': result.get('after'),
+                          'updated': result.get('updated'), 'ok': result.get('ok')})
+        return {'job_id': jid, 'worker': {'id': w['id'], 'name': w['name']}, 'result': result}
+
 
 def install(app, store, auth, *, submit, workers, wid, automated, origin_dep, server_jobs, saver=None, prefs=None):
     ctl = BotControl(store, submit=submit, workers=workers, wid=wid, saver=saver, prefs=prefs, server_jobs=server_jobs)
@@ -524,5 +550,14 @@ def install(app, store, auth, *, submit, workers, wid, automated, origin_dep, se
         if automated(actor, origin):
             raise HTTPException(403, 'Only the operator or the deploy script reloads the bots.')
         return ctl.bot_reload(name, body or ReloadIn(), actor, origin)
+
+    @app.post('/api/workers/{name}/update-repo')
+    def worker_update_repo(name: str, body: RepoUpdateBody | None = None, actor=Depends(auth), origin=Depends(origin_dep)):
+        """Fast-forward that worker's own gBox checkout to origin/main (git fetch + merge --ff-only ON the
+        worker), so its bot code advances without an agent resident on that machine; follow with bot-reload.
+        The operator's or the deploy script's request (x-gbox-actor: deploy); automation is refused."""
+        if automated(actor, origin):
+            raise HTTPException(403, 'Only the operator or the deploy script updates a worker repo.')
+        return ctl.update_repo(name, (body or RepoUpdateBody()).ref, actor, origin)
 
     return ctl
