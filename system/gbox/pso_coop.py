@@ -1099,30 +1099,32 @@ class Controller:
             # just entered. Drop entry-adjacent DOORS when a forward option remains
             # (never drop a switch/panel, and never strand a single-exit room).
             if slot == 1 and len(rows) > 1:
-                # Prefer doors that do NOT lead back to a visited room, and are not
-                # the door we just entered through. Switches always kept.
-                forward = [r for r in rows if r[0] == 0 or (r[2] not in self._backtrack and
-                           (not entry or math.hypot(r[3]['x'] - entry[0], r[3]['z'] - entry[1]) > BACKTRACK_RADIUS))]
-                if forward:
-                    rows = forward
-                # Crystal-guided choice: a room OWNS its outbound doors via the
-                # learned adjacency graph. Order doors by (1) the recalled critical
-                # path's next room, (2) a door to an UNVISITED room (frontier),
-                # (3) an unknown door (never crossed = frontier), last the backtracks.
-                nxt = self._path_next(room)
+                # Crystal-guided choice (a room OWNS its outbound doors via the learned
+                # adjacency graph, so a connector tagged to one room id doesn't hide the
+                # NEW room's forward door). One rank over ALL candidates - never drop a
+                # row first, which previously let a recalled DEAD-END door (one whose
+                # crystal destination is a visited room) survive a live-door_links filter
+                # and get chosen over the real frontier. Order: switches/panels first
+                # (press them to open new paths), then a FRONTIER door (never traversed,
+                # or recalled to an UNVISITED room), then recalled BACKTRACKS to visited
+                # rooms, and worst of all the door P1 just entered through (anti-rebounce).
                 graph = self._area_graph.get(room, {})
 
                 def _rank(r):
-                    if r[0] == 0:
+                    is_switch, _dist, gkey, ent, _kind = r
+                    if is_switch == 0:
                         return 0                       # switches/panels first, always
-                    dest = graph.get(str(r[2]))
-                    if dest is not None and dest == nxt:
-                        return 1                       # follow the recorded critical path
-                    if dest is None:
-                        return 2                       # unknown door: a frontier to explore
-                    if dest not in self.p1_visited:
-                        return 2                       # known door to an unvisited room
-                    return 5                           # known backtrack to a visited room
+                    reentered = bool(entry and math.hypot(ent['x'] - entry[0],
+                                                          ent['z'] - entry[1]) <= BACKTRACK_RADIUS)
+                    dest = graph.get(str(gkey))        # recalled destination room, or None
+                    # A known backtrack: the crystal recalls its destination as a
+                    # VISITED room, or this run's door_links already learned both its
+                    # sides are visited (self._backtrack). Either way, deprioritize it.
+                    if (dest is not None and dest in self.p1_visited) or gkey in self._backtrack:
+                        return 5 if reentered else 4
+                    if dest is not None:               # recalled door to an UNVISITED room
+                        return 1
+                    return 4 if reentered else 1       # never traversed = a frontier to explore
                 rows = sorted(rows, key=lambda r: (_rank(r), r[1]))
             if not rows:
                 book['slots'].pop(slot, None)
