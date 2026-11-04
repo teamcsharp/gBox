@@ -51,17 +51,39 @@ def test_sessions_list_is_running_plus_the_newest_ended_rows(cfg):
 
 
 def test_running_session_on_an_offline_pc_is_flagged(cfg):
-    """#2870: connecting to a 'running' session whose PC is gone showed nothing; the row says so, the view skips it."""
+    """#2870: connecting to a 'running' session whose PC is gone showed nothing; the row says so, the view skips it.
+    Within the reap grace (a blip / Spark restart) the session stays running and is merely flagged offline."""
     app = create_app(cfg)
     store = app.state.store
     now = time.time()
     store.put("session", "ghostpc-s1", {"session_id": "ghostpc-s1", "game_id": "g", "title": "G", "state": "running",
                                         "started": now - 50, "worker_id": "ghostpc"})
-    store.put("worker", "ghostpc", {"id": "ghostpc", "name": "Ghost", "os": "windows", "last_seen": now - 100000})
+    store.put("worker", "ghostpc", {"id": "ghostpc", "name": "Ghost", "os": "windows", "last_seen": now - 60})
     client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
     rows = {r["session_id"]: r for r in client.get("/api/sessions").json()}
+    assert rows["ghostpc-s1"].get("state") == "running"           # offline only briefly: not reaped yet
     assert rows["ghostpc-s1"].get("worker_online") is False
     # the desktop shell's live list (PiP, docking, saved-view restore) and the view's banner carry it too (2026-10-26)
     live = {r["session_id"]: r for r in client.get("/api/sessions", params={"include_ended": "false"}).json()}
     assert live["ghostpc-s1"].get("worker_online") is False
     assert client.get("/api/sessions/ghostpc-s1/stream/health").json().get("worker_online") is False
+
+
+def test_dead_session_on_a_long_offline_pc_is_reaped(cfg):
+    """A running session whose worker has been gone past the grace is a dead instance: GET /api/sessions ends it so it
+    never reaches the Sessions view or the desktop Streams menu. A session on an online worker is never touched."""
+    app = create_app(cfg)
+    store = app.state.store
+    now = time.time()
+    store.put("session", "deadpc-s1", {"session_id": "deadpc-s1", "game_id": "g", "title": "G", "state": "running",
+                                       "started": now - 100000, "worker_id": "deadpc"})
+    store.put("worker", "deadpc", {"id": "deadpc", "name": "Dead", "os": "windows", "last_seen": now - 100000})
+    store.put("session", "livepc-s1", {"session_id": "livepc-s1", "game_id": "g", "title": "G", "state": "running",
+                                       "started": now - 100, "worker_id": "livepc"})
+    store.put("worker", "livepc", {"id": "livepc", "name": "Live", "os": "windows", "last_seen": now})
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    rows = {r["session_id"]: r for r in client.get("/api/sessions").json()}
+    assert rows["deadpc-s1"]["state"] == "ended"
+    assert rows["deadpc-s1"]["exit"]["via"] == "reap"
+    assert rows["livepc-s1"]["state"] == "running"                # the live game keeps running
+    assert store.get("session", "deadpc-s1")["state"] == "ended"  # persisted, so it stops piling up

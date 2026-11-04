@@ -36,7 +36,10 @@
     return 'ready';
   }
   function candidates(rows = [], hosts = []) {
-    return rows.filter(row => !['ended', 'warm'].includes(status(row, hosts)))
+    // Only live instances on online workers. 'offline' is dropped too (operator 2026-11-04: the Streams menu must
+    // never list dead "PC offline" games). Such sessions are auto-reaped server-side; until a reap lands this keeps
+    // them out of the menu immediately. 'starting'/'switching' stay: those are live games on an online worker.
+    return rows.filter(row => !['ended', 'warm', 'offline'].includes(status(row, hosts)))
       .map(row => ({ row, status: status(row, hosts) }))
       .sort((a, b) => name(a.row).localeCompare(name(b.row)) || String(a.row.session_id).localeCompare(String(b.row.session_id)));
   }

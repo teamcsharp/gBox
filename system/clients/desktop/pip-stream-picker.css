@@ -1,5 +1,7 @@
 #pipmenu:has([data-pip-stream-picker]) { max-width:calc(100vw - 16px); box-sizing:border-box; }
-#pipmenu [data-pip-stream-picker] { width: min(540px, calc(100vw - 34px)); max-width: 100%; box-sizing:border-box; padding: 8px 4px 4px; border-bottom: 1px solid var(--line, #41414a); }
+/* Operator 2026-11-04: cap the Streams carousel at ~2 instances visible (about half the old 540px); the rest scroll.
+   366px = 8px padding + two 27px arrows + two 142px cards + gaps, so exactly two cards show and a third peeks/scrolls. */
+#pipmenu [data-pip-stream-picker] { width: min(366px, calc(100vw - 34px)); max-width: 100%; box-sizing:border-box; padding: 8px 4px 4px; border-bottom: 1px solid var(--line, #41414a); }
 .pip-stream-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:0 4px 7px; font-size:12px; }
 .pip-stream-heading > span { color:#aaaab8; font-size:11px; }
 .pip-stream-carousel { display:flex; align-items:stretch; gap:5px; }
