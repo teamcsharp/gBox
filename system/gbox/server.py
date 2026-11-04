@@ -36,6 +36,10 @@ from .store import Store, canon, sha256
 from .worker_results import result_digest
 
 WORKER_TTL = 30.0
+# A running session whose worker has been gone this long is a dead "PC offline" instance: its emulator died with the
+# worker and can never be reconnected to. We end it (auto-clean, #streams-menu). The grace is far past WORKER_TTL so a
+# Spark restart or Wi-Fi blip (reads already ride out ~30 s) never reaps a session that is merely briefly unreachable.
+OFFLINE_SESSION_REAP_S = 180.0
 WORKERS_CACHE_S = 1.0             # workers(): registrations are decoded and admission-checked at most this often
 HEARTBEAT_PERSIST_S = 5.0         # a claim poll's heartbeat reaches the store this often unless a decision input changed
 STORE_CHECKPOINT_S = 15.0         # the WAL is folded back into gbox.sqlite3 this often, off the writer's commit path
@@ -4210,11 +4214,40 @@ def create_app(config: Config) -> FastAPI:
             return live.setdefault(sid, {"frame": None, "seq": 0, "ts": 0, "input": collections.deque(maxlen=500),
                                          "cond": threading.Condition()})
 
+    def _reap_offline_sessions() -> list[str]:
+        """End running sessions whose worker is long gone (OFFLINE_SESSION_REAP_S) or no longer registered. The
+        emulator died with the worker, so a 'running' row for it is a dead instance: a blank "PC offline" view and a
+        stale Streams-menu entry. register() already reaps a worker that comes back under a new id; this covers one
+        that simply stays offline, and the dozens of stale ids that piled up and were never cleaned. A session on an
+        ONLINE worker (or one offline only briefly) is never touched, so the operator's live games keep running."""
+        now = time.time()
+        ws = {w["id"]: w for w in workers()}
+        reaped = []
+        with store.lock:
+            for s_ in store.running_sessions():
+                sid = s_["session_id"]
+                wid = _wid(s_.get("worker_id") or sid.split("-")[0])
+                w = ws.get(wid)
+                # Reap only a session whose worker is REGISTERED and has been offline past the grace. An unknown worker
+                # id (no row) is left alone: a session can predate its worker's registration, and register() handles a
+                # worker that returns under a new id. Online, or offline only briefly (a blip), is also left alone.
+                if w is None or w.get("online") or now - (w.get("last_seen") or 0) < OFFLINE_SESSION_REAP_S:
+                    continue
+                cur = store.get("session", sid)
+                if cur and cur.get("state") == "running":
+                    store.put("session", sid, cur | {"state": "ended", "ended": now,
+                                                      "exit": {"reason": "worker offline", "via": "reap"}})
+                    reaped.append(sid)
+        for sid in reaped:
+            store.audit("gbox-auto", "session.reaped", sid, {"reason": "worker offline past TTL"})
+        return reaped
+
     @app.get("/api/sessions")
     def sessions(actor=Depends(auth), include_ended: bool = True, limit: int = 60):
         """Every running session, plus the newest `limit` ended ones (0 = the whole archive). The archive holds every
         session ever played, and a row costs three store reads: building all of them took 45-120 s on the loaded
         Spark (2026-10-21), which stalled the Sessions view, autoplay ops and every agent that lists sessions."""
+        _reap_offline_sessions()        # dead "PC offline" instances never reach the Sessions view or the Streams menu
         out = []
         now = time.time()
         from . import built_mods
