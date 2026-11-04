@@ -190,20 +190,55 @@ def decode_keys(button, *, wiggle=WIGGLE, rotate=ROTATE) -> list:
 # --- vision ---------------------------------------------------------------------------------------------------------
 @dataclass
 class VisionProfile:
-    """How a title draws its QTE button overlay, for the vision fallback. `screen_prompt_profile` reuses a
-    gbox.screen_prompt PROFILES entry (live-calibrated) when one exists; otherwise this profile is scaffolded and
-    CALIBRATED stays False, so detect_vision returns None (vision never presses a false button on stream)."""
+    """How a title draws its QTE button overlay, for the vision fallback. Two ways to detect it:
+      - screen_prompt_profile: reuse a gbox.screen_prompt PROFILES entry (a coloured button disc, live-calibrated), or
+      - glyph_box: the game draws its action-button prompt as a bright, near-white letter disc + arrow + label text
+        (RE5/RE6 Switch: "(A) Resuscitate", "(L) Break free") in a fixed centre-bottom box - measured live and counted
+        here (a torn-read grab is answered by a vigorous struggle, not by reading which letter it is).
+    CALIBRATED stays False for a scaffolded title, so the detector returns nothing (vision never fires on stream until
+    the title's overlay is measured from live frames)."""
     map_id: str
     screen_prompt_profile: str | None = None   # a key in gbox.screen_prompt.PROFILES to delegate to
+    glyph_box: tuple | None = None             # (x0, y0, x1, y1) as frame fractions: where the prompt glyph/label sits
+    glyph_min_px: int = 400                    # near-white neutral pixels in the box that count as a prompt present
+    glyph_white: int = 180                     # a pixel's channels all above this (a light glyph on a dark HUD)
+    glyph_neutral: int = 40                    # and its channel spread below this (white, not the orange timer / HELP)
     calibrated: bool = False
-    mash_default: bool = False                 # a detected grab overlay is a mash (hammer it), not a single press
+    mash_default: bool = False                 # a detected overlay is a mash (hammer it), not a single press
     note: str = ""
 
 
+def _glyph_px(frame_rgb, profile: VisionProfile) -> int:
+    """Near-white neutral pixels in the profile's glyph box (the prompt overlay's letter/label), or 0. Never raises."""
+    try:
+        import numpy as np
+        a = np.asarray(frame_rgb)
+        if a.ndim != 3 or a.shape[2] < 3:
+            return 0
+        h, w = a.shape[:2]
+        x0, y0, x1, y1 = profile.glyph_box
+        reg = a[int(y0 * h):int(y1 * h), int(x0 * w):int(x1 * w), :3].astype("int16")
+        r, g, b = reg[..., 0], reg[..., 1], reg[..., 2]
+        spread = np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)
+        white = (r > profile.glyph_white) & (g > profile.glyph_white) & (b > profile.glyph_white) \
+            & (spread < profile.glyph_neutral)
+        return int(white.sum())
+    except Exception:                                  # noqa: BLE001 - a torn frame
+        return 0
+
+
 def detect_vision(frame_rgb, profile: VisionProfile, picture=None) -> Qte | None:
-    """The QTE button visible in the capture frame (H x W x 3 RGB array), via gbox.screen_prompt. None when there is
-    no prompt, no calibrated profile, or the detector is unsure. Never raises (a torn frame -> None)."""
-    if frame_rgb is None or profile is None or not profile.calibrated or not profile.screen_prompt_profile:
+    """The QTE visible in the capture frame (H x W x 3 RGB array). None when there is no prompt, no calibrated
+    profile, or the detector is unsure. Never raises (a torn frame -> None). A glyph_box profile cannot read which
+    button it is, so it reports a generic struggle (a torn-read grab -> mash the stick); a screen_prompt profile
+    names the button."""
+    if frame_rgb is None or profile is None or not profile.calibrated:
+        return None
+    if profile.glyph_box is not None:
+        if _glyph_px(frame_rgb, profile) < profile.glyph_min_px:
+            return None
+        return from_token("mash:wiggle", source="vision", raw={"glyph": True})
+    if not profile.screen_prompt_profile:
         return None
     try:
         from .. import screen_prompt
@@ -342,15 +377,23 @@ def _ram_re5_ps3(ctx: QteContext) -> Qte | None:
 
 REGISTRY: dict[str, TitleQte] = {
     # RE5 Switch (title 010018100CD46000, game_id 52d15709be0fda1a): the sActionButton reader is live-verified
-    # (re5_switch_prompt); Break free is mode 6 -> mash:wiggle, Resuscitate is mash:a.
+    # (re5_switch_prompt); Break free is mode 6 -> mash:wiggle, Resuscitate is mash:a. The glyph box is CALIBRATED
+    # from the live lilspark stream 2026-11-04 (full-display 1280x720, the picture filling the frame): the game draws
+    # its action-button prompt as a bright near-white letter disc + down-arrow + label text in the centre-bottom -
+    # "(L) Break free" measured 1300 near-white-neutral px there, "(A) Resuscitate" 1780, ordinary play 0-70, a
+    # "You Are Dead" screen 350. 500 fires on a real prompt and clears everything else.
     "010018100CD46000": TitleQte("010018100CD46000", ram=_ram_re5_switch,
-                                 vision=VisionProfile("010018100CD46000", calibrated=False, mash_default=True,
-                                                      note="Switch glyph profile pending calibration from live frames"),
+                                 vision=VisionProfile("010018100CD46000", calibrated=True, mash_default=True,
+                                                      glyph_box=(0.33, 0.52, 0.67, 0.80), glyph_min_px=500,
+                                                      note="Switch prompt glyph box, live-calibrated 2026-11-04"),
                                  note="RAM: re5_switch_prompt.selected_prompt (verified)"),
     # RE6 Switch (title 01002A000CD48000, game_id 115f9cdbba115432): the sActionButton reader lists shown prompts.
+    # The glyph box is pre-filled (RE6 draws prompts the same bright way) but stays uncalibrated until measured on a
+    # live RE6 grab frame, so vision never fires on RE6 on guesswork.
     "01002A000CD48000": TitleQte("01002A000CD48000", ram=_ram_re6_switch,
                                  vision=VisionProfile("01002A000CD48000", calibrated=False, mash_default=True,
-                                                      note="Switch glyph profile pending calibration from live frames"),
+                                                      glyph_box=(0.33, 0.52, 0.67, 0.80), glyph_min_px=500,
+                                                      note="Switch glyph box pending calibration from a live RE6 frame"),
                                  note="RAM: re6_switch.prompts (verified)"),
     # RE5 PS3 (BLUS30491): the PS3 QTE_INPUT_TABLE reader.
     "re5_ps3": TitleQte("re5_ps3", ram=_ram_re5_ps3, note="RAM: re5_ps3.selected_prompt"),
@@ -405,3 +448,92 @@ def snapshot_qte(map_id: str, ctx: QteContext, *, unknown=()) -> dict | None:
     return {"token": q.token, "kind": q.kind, "keys": q.keys, "button": q.button, "source": q.source,
             "label": q.label, "owner": q.owner, "target": q.target, "progress": q.progress,
             "target_count": q.target_count, "is_mash": q.is_mash, "is_stick": q.is_stick}
+
+
+# --- the in-tick grab fallback (the single hook a Switch driver's snapshot calls) -----------------------------------
+# The player's grabbed / held motion states (read from the player struct, independent of the sActionButton prompt
+# manager): the gate that keeps the vision fallback off during ordinary play. RE5 Switch: re5_switch.MOTION_HELD.
+GRAB_MOTIONS: dict[str, frozenset] = {
+    "010018100CD46000": frozenset({100, 106, 107, 113, 114}),   # RE5 Switch grabbed / held
+}
+# The synthesized prompt a missed grab gets, in the title's own snapshot["prompt"] shape so the existing tick response
+# (re5_switch._prompt: mode 6 -> WIGGLE, the stick shaken) mashes it out. A stick struggle is always safe while held
+# and fills the Break-free meter; it never needs to read which letter the glyph was.
+_GRAB_PROMPT = {"token": "mash:wiggle", "keys": (), "mode": 6, "kind": 0, "label": "qte_vision",
+                "button": "qte_vision", "owner": None, "target": None, "progress": 0.0, "target_count": 0.0,
+                "source": "vision", "qte_vision": True}
+
+
+class _GrabWatcher:
+    """A background thread that only grabs frames while recently poked (a held tick), so it costs nothing during
+    ordinary play and bursts only during a grab. visible() is what the tick reads - never blocking on a frame grab."""
+
+    def __init__(self, grab, profile: VisionProfile, hz: float = 8.0, clock=time.time):
+        self._grab, self._profile, self._clock = grab, profile, clock
+        self._period = 1.0 / max(1.0, hz)
+        self._poked = 0.0
+        self._seen_at = 0.0
+        self._stop = False
+        import threading
+        self._t = threading.Thread(target=self._run, daemon=True, name="qte-grab-vision")
+        self._t.start()
+
+    def _run(self):
+        import io
+        while not self._stop:
+            if self._clock() - self._poked > 1.0:        # not held recently: idle, no frame grab
+                time.sleep(0.2)
+                continue
+            try:
+                raw = self._grab()
+                if raw:
+                    if isinstance(raw, (bytes, bytearray)):
+                        from PIL import Image
+                        import numpy as np
+                        img = np.asarray(Image.open(io.BytesIO(raw)).convert("RGB"))
+                    else:
+                        img = raw
+                    if _glyph_px(img, self._profile) >= self._profile.glyph_min_px:
+                        self._seen_at = self._clock()
+            except Exception:                            # noqa: BLE001 - a torn frame / a stopped session
+                pass
+            time.sleep(self._period)
+
+    def poke(self):
+        self._poked = self._clock()
+
+    def visible(self, max_age: float = 0.6) -> bool:
+        return self._seen_at > 0 and (self._clock() - self._seen_at) <= max_age
+
+    def stop(self):
+        self._stop = True
+
+
+_GRAB_WATCHERS: dict[str, _GrabWatcher] = {}
+RELOAD_KEEP = ("_GRAB_WATCHERS",)          # the grab-vision threads survive a bot hot-reload (gbox.hot_reload)
+
+
+def grab_fallback(map_id: str, m, snap: dict, *, clock=time.time) -> dict | None:
+    """THE single hook a Switch driver's snapshot calls when its own RAM prompt read came back empty:
+        snap["prompt"] = <ram prompt> or qte.grab_fallback(MAP_ID, m, snap)
+    Returns a synthesized prompt (the title's shape, a stick struggle) ONLY when the player is actually in a grabbed /
+    held motion AND the prompt overlay is visible on the capture frame - i.e. a grab the RAM reader missed (a torn
+    read). None otherwise. Costs nothing during ordinary play: the gate short-circuits before any frame is grabbed,
+    and in normal operation the RAM read is truthy so this is never even called. Never raises."""
+    try:
+        entry = entry_for(map_id)
+        if entry is None or entry.vision is None or not entry.vision.calibrated:
+            return None
+        player = snap.get("player") or {}
+        if player.get("motion") not in GRAB_MOTIONS.get(map_id, frozenset()):
+            return None                                  # not grabbed: never synthesize, never grab a frame
+        grab = getattr(getattr(m, "adapter", None), "get_frame", None)
+        if not callable(grab):
+            return None
+        w = _GRAB_WATCHERS.get(map_id)
+        if w is None:
+            w = _GRAB_WATCHERS[map_id] = _GrabWatcher(grab, entry.vision, clock=clock)
+        w.poke()
+        return dict(_GRAB_PROMPT) if w.visible() else None
+    except Exception:                                    # noqa: BLE001 - a fallback must never break the snapshot
+        return None
