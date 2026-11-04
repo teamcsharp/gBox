@@ -29,6 +29,7 @@ ghidra_home = "/home/ehm_eckx/reverse/ghidra_12.1.4_PUBLIC"   # the operator's o
 # gbox.local-lilspark.toml, because [emulators.switch].executable is the Windows nodes' portable Yuzu:
 # switch_appimage = "/home/ehm_eckx/gBox_alt/switch/Eden-Linux-v0.2.1-aarch64-gcc-standard.AppImage"   # extracted once
 # switch_keys = "/mnt/gbox/quickswap2/Emulation/_switch/prod.keys"   # default: a prod.keys at the Switch library's root
+switch_linux_emulator = "eden"    # force Eden for all Switch titles on Linux nodes: Citron NEO aborts at renderer init on the GB10 (VK_ERROR_UNKNOWN in the Vulkan WSI path); Eden renders (RE5/RE6 verified 2026-11-03). Revert to "auto" only once Citron NEO is fixed on this GPU.
 
 # PS4 setup belongs in each node's gbox.local-<hostname>.toml; point at the standalone shadPS4 core.
 # [emulators.ps4]
