@@ -89,12 +89,19 @@ RECORDS: dict[str, dict] = {
         "safe": "block re-written to fresh-but-fully-unlocked Reunion (all 8 stages/characters open); the "
                 "checksummed region 0x10..0x4BBF is never touched",
     },
-    # RE4 Switch -- PRIORITY, pending measurement. Fill records_off (save) or ram_fields once measured.
+    # RE4 Switch -- PRIORITY, pending OFFSET verification. Save located 2026-11-04; score offset not yet proven.
     "270a15eb98dab4d7": {
         "title": "Resident Evil 4 (Switch) The Mercenaries", "kind": "pending", "confirmed": False,
-        "where": "classic RE4 'system data' save (Merc score+rank per character per stage), beside the unlock bits; "
-                 "Switch save path + offset not yet measured. Coordinate with the RE4 driver agent.",
-        "ram_fields": [],                                 # [(addr, size)] once the live ranking read is located
+        # Found on lilspark (read-only), Citron nand user-save for the title. Account dir varies, so glob it:
+        "save_glob": "nand/user/save/*/*/010099A00BC1E000/SAVEDATA000/savegame00.sav",
+        "fresh_bak": "savegame00.sav.fresh-bak sits beside it (a near-blank save: useful as a diff baseline)",
+        "where": "classic RE4 save container savegame00.sav (1,047,200 bytes). The populated save differs from the "
+                 "fresh baseline across ~10.4 KB starting at 0x1E43. Candidate Mercenaries-score fields: a run of "
+                 "little-endian u32s at 0x1EBA / 0x1EC2 / 0x1ECA (seen 30202 / 11399 / 10026) 8 bytes apart. NOT YET "
+                 "PROVEN to be the Merc high scores (could be other stats), and regions past ~0x1FA0 are high-entropy "
+                 "(packed flags or possibly compressed) -- do NOT blanket-zero. Verify one value against the in-game "
+                 "ranking (or the GC-relative offset via Ghidra) before flipping confirmed=True.",
+        "ram_fields": [],                                 # [(addr, size)] if a live ranking read is located instead
     },
     # RE6 Switch -- pending (SAVEDATA 0x7050, checksum at 0x30; records block = X360 0x235C analogue, not located).
     "115f9cdbba115432": {
