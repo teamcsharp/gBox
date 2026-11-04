@@ -48,6 +48,17 @@ def pad_ini(base: str, windows=False) -> str:
         f"{field} = `{keys[key].upper()}`\n" for field, key in fields.items())
 
 
+def xinput_pad(gcpad1_template: str, player: int, slot: int) -> str:
+    """A GCPad<player> section as a focus-independent XInput virtual pad on `slot` (gbox/vpad_win.py), derived from
+    the GCPad1 XInput template. Keyboard alternatives are stripped so the extra pads never share P1's keyboard keys;
+    Always Connected keeps the port up while the virtual pad rests at neutral between presses."""
+    body = gcpad1_template.replace("[GCPad1]", f"[GCPad{player}]", 1)
+    body = body.replace("Device = XInput/0/Gamepad", f"Device = XInput/{slot}/Gamepad", 1)
+    body = re.sub(r" \| `DInput/0/Keyboard Mouse:[^`]*`", "", body)       # XInput only, no shared keyboard keys
+    body = body.replace(f"[GCPad{player}]\n", f"[GCPad{player}]\nOptions/Always Connected = True\n", 1)
+    return body.strip()
+
+
 def input_rows(events, player, *, windows=False):
     if player not in (1, 2):
         raise ValueError("PSO buddy controls support players 1 and 2")

@@ -537,10 +537,21 @@ class Inputs:
     def send(self, events, player, *, check=True):
         if player == 1 and self.send_primary is not None:
             result = self.send_primary(events)
-        elif self.has_polite:
-            result = self.ad.send_input_player(events, player=player, polite=self.polite)
         else:
-            result = self.ad.send_input_player(events, player=player)
+            try:
+                if self.has_polite:
+                    result = self.ad.send_input_player(events, player=player, polite=self.polite)
+                else:
+                    result = self.ad.send_input_player(events, player=player)
+            except RuntimeError as _exc:
+                # STOPGAP (vpad-P2): the keyboard pad (player 2 on this adapter) needs the game window
+                # focused; a docked/background Dolphin raises. Never let that kill play() (which rolls
+                # back the hot-reload). Player 1 keeps driving on its virtual pad; player 2 is a no-op
+                # until it gets its own virtual pad.
+                self.stats['second_pad_input_error'] = str(_exc)[:200]
+                self.stats.update(last_input_player=player,
+                                  last_input_keys=','.join(e['key'] for e in events))
+                return {"sent": 0, "held": "second pad needs window focus"}
         self.stats.update(last_input_player=player, last_input_keys=','.join(e['key'] for e in events),
                           last_input_requested=len(events),
                           last_input_sent=result.get('sent', 0) if isinstance(result, dict) else 0,
