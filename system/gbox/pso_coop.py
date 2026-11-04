@@ -3979,28 +3979,24 @@ def pregame_skip(ad, state, inputs, stopped, stats, keys=PREGAME_SKIP_KEYS, why=
 
 
 PREGAME_BLACK_MEAN = 10          # a cinematic/transition frame reads ~1-3 mean luma; the menus read ~38 (measured live)
+MENU_DEBOUNCE_S = 2.0            # after recognising a boot menu, tolerate recognition dropouts this long (ring animation)
 
 
 def pregame_unreadable(state, menu, menu_paused, frame=None):
-    """A pre-gameplay frame that is a CINEMATIC or black transition: native phase != 14, no real floor, not paused,
-    nothing recognised (no menu/HUD), AND the frame is near-black. The darkness gate is what keeps this off a bright
-    but merely-not-yet-recognised MENU (the live main menu / character select read ~38 mean luma and must NOT get a
-    blind A - they need their own recognition/strict handling); a true intro cinematic / black transition reads ~1-3."""
+    """A pre-gameplay CINEMATIC or ATTRACT movie / black transition: native phase != 14, no real floor, not paused,
+    nothing recognised (no menu/HUD), AND the PSO wordmark absent. Hands-off, PSO's idle ATTRACT (opening movie ->
+    gameplay demo) triggers when the campaign doesn't confirm a menu fast enough, and loops back; those frames are
+    bright, so the old near-black gate could never skip them. The wordmark guard (pso_menu_observer sets
+    result['wordmark'] when the 'PHANTASY STAR ONLINE' wordmark is present - the title or the main menu) replaces that
+    gate: it keeps the skip OFF the title / main menu even on an animation frame where menu_visible momentarily dips
+    (so a blind A can never enter ONLINE), while finally letting it fire on the bright attract/cinematic to break the
+    loop. (frame is unused now; kept for signature compatibility. Needs the observer's wordmark flag, so both ride the
+    same restart.)"""
     if (state or {}).get('phase') == 14 or (state or {}).get('floor') or menu_paused:
         return False
     obs = getattr(menu, 'observation', None) or {}
-    if obs.get('recognized') or obs.get('menu_visible') or obs.get('gameplay_visible'):
-        return False
-    if not frame:
-        return False
-    try:
-        from PIL import Image
-        import io
-        small = Image.open(io.BytesIO(frame)).convert('L').resize((32, 18))
-        data = list(small.getdata())
-        return (sum(data) / len(data)) <= PREGAME_BLACK_MEAN
-    except Exception:                                    # noqa: BLE001 - never let a frame-read error drive input
-        return False
+    return not (obs.get('recognized') or obs.get('menu_visible') or
+                obs.get('gameplay_visible') or obs.get('wordmark'))
 
 
 def _flatten_master_build(stats, summary):
@@ -4296,6 +4292,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 if menu_paused and proposed is not None and not recovery.waiting:
                     # These exact observed menus need no model guess or network
                     # round trip. The existing guard remains the sole authority.
+                    ad._pso_menu_seen_at = time.monotonic()   # recognised a boot menu now: arm the recognition debounce
                     selected, reason = menu.review({'screen': 'menu'}, [proposed], state_identity(state),
                         frame=menu_frame, fresh_frame=ad.get_frame(),
                         native_gameplay=bool(state.get('verified') and state.get('phase') == 14),
@@ -4329,6 +4326,21 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     # Let selection/transition animation settle, with Stop and
                     # takeover interruptible. Reobserve before every next input.
                     solo.wait(.6 if selected else .2, stopped)
+                    continue
+                # RECOGNITION DEBOUNCE (2026-11-04): hands-off, the (recognised) main menu could not CONFIRM OFFLINE
+                # before PSO's idle attract triggered - because the live menu recognition is intermittent across its
+                # ring animation, so on a dropout frame (proposed is None) the loop fell through to the slow vision
+                # planner (~8 s/step). When the PSO wordmark is still present (still the title/main menu, NOT a cold
+                # attract/black - that path is the wordmark-absent attract-skip above) and we recognised a boot menu
+                # moments ago, skip the slow planner and fast-reobserve instead, so the strict step fires on the next
+                # recognised frame. We only reobserve here (never press on a dropout), so the cursor can't overshoot;
+                # the strict path still presses only on correctly-read frames.
+                if (proposed is None and (menu.observation or {}).get('wordmark')
+                        and time.monotonic() - getattr(ad, '_pso_menu_seen_at', 0.0) < MENU_DEBOUNCE_S):
+                    stats['menu_debounce_waits'] = stats.get('menu_debounce_waits', 0) + 1
+                    stats['action'] = 'menu_recognition_debounce'
+                    invalidate_plan()
+                    solo.wait(.05, stopped)
                     continue
                 # CONTENTION KILL (2026-11-04, verified live): during the pre-gameplay boot screens the mapping
                 # restore/probe path fired its player-two 19-key sweep while player one tried to drive the title and
