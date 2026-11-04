@@ -4706,9 +4706,14 @@ CITRON_TITLE_SETTINGS = {
     "010099A00BC1E000": _MT_FRAMEWORK_CITRON,                 # Resident Evil 4
 }
 CITRON_LOG = ("log", "citron_log.txt")
-# Titles a Linux node starts in Citron when it is configured (switch_linux_emulator = auto): multi-core there, where
-# Eden v0.2.1 loses a thread that moves itself between cores (EDEN_TITLE_SETTINGS) and runs them single-core.
-SWITCH_CITRON_TITLES = frozenset({"010018100CD46000", "01002A000CD48000", "010099A00BC1E000"})
+# Titles a Linux node starts in Citron when it is configured (switch_linux_emulator = auto); Eden for the rest.
+# RE4 Switch (010099A00BC1E000) is Citron-only: it does NOT run on Eden at all (single-core hangs its guest, multi-core
+# hits Eden v0.2.1's thread-migration crash 0xE401), but it BOOTS, EXECUTES and RENDERS on Citron nightly d3df71e55
+# (verified live 2026-11-04 on lilspark: reached the RE4 title + main menu, guest executing, no 0xE401 / no VK_ERROR).
+# RE5 / RE6 are NOT listed here: they are verified on Eden single-core (the old Citron 56dad8119 broke their render on
+# the GB10), so with switch_linux_emulator=auto they stay on Eden while RE4 uses Citron. Requires, per host:
+# switch_linux_emulator="auto" and switch_citron_appimage pointing at a writable copy of the d3df71e55 AppImage.
+SWITCH_CITRON_TITLES = frozenset({"010099A00BC1E000"})        # RE4 Switch: Citron-only (does not run on Eden)
 # A boot that never draws (live 2026-10-26: 1 of 7 Eden single-core boots of RE5 stayed black at 0 FPS after
 # "SetPollingMode") is started again once: these titles animate from the first second (logos, intro, title fog).
 BOOT_WATCH_TITLES = frozenset({"010018100CD46000", "01002A000CD48000", "010099A00BC1E000"})
