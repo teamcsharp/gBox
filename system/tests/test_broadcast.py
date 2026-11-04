@@ -841,6 +841,25 @@ def test_feeds_list_every_live_session_with_stable_urls(app):
     assert d["formats"]["mjpeg"] == "multipart/x-mixed-replace; boundary=gboxframe"
 
 
+def test_feeds_pc_list_is_one_entry_per_pc_name_never_a_dead_epoch_per_registration(app):
+    """Dead worker epochs pile up (2026-11-04: 100 registrations, 75 of them long-gone i9-NUC ids) and each used to
+    list its own dead 'PC offline' broadcast. One entry per PC name: the newest registration, carrying that PC's
+    current game even when the session row still points at an older epoch id."""
+    c = TestClient(app)
+    store = c.app.state.store
+    now = time.time()
+    store.put("worker", "i9epoch1", {"id": "i9epoch1", "name": "i9-NUC", "os": "windows", "last_seen": now - 90000})
+    store.put("worker", "i9epoch2", {"id": "i9epoch2", "name": "i9-NUC", "os": "windows", "last_seen": now - 80000})
+    store.put("worker", "i9live00", {"id": "i9live00", "name": "i9-NUC", "os": "windows", "last_seen": now + 3600})
+    store.put("session", "i9live00-s1", {"session_id": "i9live00-s1", "game_id": "pso", "title": "PSO",
+                                         "state": "running", "started": now, "worker_id": "i9live00"})
+    d = c.get("/api/broadcast/feeds", headers=main(app)).json()
+    i9 = [p for p in d["pcs"] if p["pc"] == "i9-NUC"]
+    assert len(i9) == 1 and i9[0]["pc_id"] == "i9live00" and i9[0]["online"] is True
+    assert i9[0]["session_id"] == "i9live00-s1" and i9[0]["title"] == "PSO"
+    assert [p["pc"] for p in d["pcs"]] == ["i9-NUC", "lilspark"]   # every PC once, no dead epoch rows
+
+
 def test_tokens_auth_rules(app):
     c = TestClient(app)
     assert c.get("/api/broadcast/feeds").status_code == 401

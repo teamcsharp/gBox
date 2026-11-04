@@ -161,6 +161,19 @@ def test_positive_end_cannot_be_resurrected_and_blocks_inputs(cfg):
     assert c.post('/api/federation/'+AUTH+'/snapshot',json=snapshot()).status_code==409
 
 
+def test_central_offline_reap_is_a_guess_the_authority_overrides(cfg):
+    """A running row the central dead-instance reaper ended (exit.via == 'reap', gbox/server.py) is not a positive
+    end: the i9 may have kept playing through a transport outage. The authority's next snapshot resurrects the
+    session - clean, without the reap's ended/exit leftovers - instead of 409-bricking the whole snapshot."""
+    app,c=plane(cfg);enroll(c)
+    store=app.state.store
+    row=store.get('session',SID)
+    store.put('session',SID,row|{'state':'ended','ended':time.time(),'exit':{'reason':'worker offline','via':'reap'}})
+    assert c.post('/api/federation/'+AUTH+'/snapshot',json=snapshot()).status_code==200
+    revived=store.get('session',SID)
+    assert revived['state']=='running' and 'exit' not in revived and 'ended' not in revived
+
+
 def test_lost_command_response_reoffers_same_job_and_recovers_claim_gap(cfg):
     app,c=plane(cfg);enroll(c,sessions=False);jid=queued(app)
     path='/api/federation/'+AUTH+'/commands'
