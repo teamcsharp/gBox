@@ -53,6 +53,13 @@ BOT_MODULES = frozenset({
     # transport, sealed pad proof, native queue and access journal stay live.
     "gbox.pso_coop", "gbox.pso_coop_geometry", "gbox.pso_coop_nav",
     "gbox.pso_coop_frontier", "gbox.pso_coop_town",
+    # The menu-setup proposer and its two independent, stateless frame recognisers
+    # (license + boot/menu). Pure functions (plus MenuProgress, whose state is held
+    # on the loop and migrates on reload), so they reload in place with the loop -
+    # a recogniser fix (e.g. accepting lilspark's 16:9 capture) deploys by bot-reload,
+    # no gbox.service restart. pso_coop_menu does `from` imports of both recognisers,
+    # so all three must reload together (dependency order) to rebind those names.
+    "gbox.pso_coop_menu", "gbox.pso_menu_observer", "gbox.pso_license_menu",
     # Per-run, read-only helpers the co-op loop imports (door/gate model, the RTS
     # map surfaces/directives, the durable room-knowledge store). So their changes
     # reload in place with the loop instead of needing a service restart.
