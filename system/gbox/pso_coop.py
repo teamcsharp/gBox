@@ -3979,6 +3979,7 @@ def pregame_skip(ad, state, inputs, stopped, stats, keys=PREGAME_SKIP_KEYS, why=
 
 
 PREGAME_BLACK_MEAN = 10          # a cinematic/transition frame reads ~1-3 mean luma; the menus read ~38 (measured live)
+MENU_DEBOUNCE_S = 2.0            # after recognising a boot menu, tolerate recognition dropouts this long (ring animation)
 
 
 def pregame_unreadable(state, menu, menu_paused, frame=None):
@@ -4291,6 +4292,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 if menu_paused and proposed is not None and not recovery.waiting:
                     # These exact observed menus need no model guess or network
                     # round trip. The existing guard remains the sole authority.
+                    ad._pso_menu_seen_at = time.monotonic()   # recognised a boot menu now: arm the recognition debounce
                     selected, reason = menu.review({'screen': 'menu'}, [proposed], state_identity(state),
                         frame=menu_frame, fresh_frame=ad.get_frame(),
                         native_gameplay=bool(state.get('verified') and state.get('phase') == 14),
@@ -4324,6 +4326,21 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     # Let selection/transition animation settle, with Stop and
                     # takeover interruptible. Reobserve before every next input.
                     solo.wait(.6 if selected else .2, stopped)
+                    continue
+                # RECOGNITION DEBOUNCE (2026-11-04): hands-off, the (recognised) main menu could not CONFIRM OFFLINE
+                # before PSO's idle attract triggered - because the live menu recognition is intermittent across its
+                # ring animation, so on a dropout frame (proposed is None) the loop fell through to the slow vision
+                # planner (~8 s/step). When the PSO wordmark is still present (still the title/main menu, NOT a cold
+                # attract/black - that path is the wordmark-absent attract-skip above) and we recognised a boot menu
+                # moments ago, skip the slow planner and fast-reobserve instead, so the strict step fires on the next
+                # recognised frame. We only reobserve here (never press on a dropout), so the cursor can't overshoot;
+                # the strict path still presses only on correctly-read frames.
+                if (proposed is None and (menu.observation or {}).get('wordmark')
+                        and time.monotonic() - getattr(ad, '_pso_menu_seen_at', 0.0) < MENU_DEBOUNCE_S):
+                    stats['menu_debounce_waits'] = stats.get('menu_debounce_waits', 0) + 1
+                    stats['action'] = 'menu_recognition_debounce'
+                    invalidate_plan()
+                    solo.wait(.05, stopped)
                     continue
                 # CONTENTION KILL (2026-11-04, verified live): during the pre-gameplay boot screens the mapping
                 # restore/probe path fired its player-two 19-key sweep while player one tried to drive the title and
