@@ -214,3 +214,38 @@ The temporary multi-core override was reverted on lilspark and in this branch (i
 
 Until one of these makes RE4 reach a running state, the RAM map / driver cannot be measured and RE4 cannot join the
 rotation. The driver scaffold, menus, fire-gates and the memory_search playbook are all ready for the moment it boots.
+
+## BREAKTHROUGH 2026-11-04 (late): RE4 RUNS on Citron, NOT Eden. Mercenaries is LOCKED on a fresh save.
+
+### Emulator: Citron, not Eden
+RE4 Switch does NOT run on Eden v0.2.1 (single-core hangs the guest; multi-core crashes at ~3 s with 0xE401 — the
+Eden thread-migration bug). It **boots, executes AND renders on Citron nightly `d3df71e55`** (the operator's
+`citron_nightly-d3df71e55-linux-aarch64-use-nopgo.AppImage`): verified live on lilspark - reached the RE4 TITLE screen
+then the MAIN MENU, fully rendered (no 0xE401, no VK_ERROR), guest executing (job_memory_search: 1077 then 1061 u32
+changing vs 0/813M on Eden). The older Citron 56dad8119 broke render on the GB10 (VK_ERROR_UNKNOWN); d3df71e55 fixes
+it. So RE4 is a RENDERING rotation member on Citron, not execution-only.
+
+Config (committed: SWITCH_CITRON_TITLES scoped to RE4; per-host gbox.local-lilspark.toml, a LOCAL untracked file):
+  switch_linux_emulator = "auto"
+  switch_citron_appimage = "<writable copy of the d3df71e55 AppImage>"   # NOT the read-only NAS path - gBox chmods it
+  (adapters.py SWITCH_CITRON_TITLES = {"010099A00BC1E000"}  -> RE4=Citron, RE5/6=Eden via auto)
+Citron uses direct/NCE like Eden (guest addr = host addr); CITRON_TITLE_SETTINGS already multi-core for RE4.
+
+### Mercenaries is LOCKED on a fresh save (re_switch.py's "available from a fresh save" is WRONG)
+The fresh-save main menu is: NEW GAME / LOAD / LEADERBOARDS / HELP & OPTIONS / ACHIEVEMENTS - NO "The Mercenaries".
+Like RE4 GameCube (where Mercenaries unlocks via a system-data bit pSys+4 & 0x40000000, set by gBox's re4
+mercenaries_unlock), RE4 Switch needs Mercenaries UNLOCKED (normally by beating the main game). To map the Mercenaries
+round, EITHER (1) load an RE4 Switch save with Mercenaries unlocked (operator-provided - fastest), OR (2) find the
+Switch unlock flag (the equivalent of GC's pSys+4 bit) and set it in RAM at the title (like re6_switch's prologue bit).
+
+### RESUME (turnkey for the next window)
+1. Ensure PSO/other work isn't on lilspark (RE4-Citron and PSO-Dolphin do NOT co-exist here - the node runs one
+   session; launching PSO ENDED the RE4 Citron session). Sequence, don't share.
+2. launch_game(270a15eb98dab4d7, node=lilspark) -> boots RE4 on Citron (renders).
+3. Drive title -> "create saved data? Yes" (A) -> main menu. If a Mercenaries-unlocked SAVE is loaded, THE MERCENARIES
+   is on the menu -> GAME START -> Select Player (Leon) -> Select Stage (Village) -> a Mercenaries round.
+4. In the round, run the memory_search playbook above (clock=decreased, kills/combo/score=increased, player
+   pos=changed/unchanged, enemy table). The player/enemy/combat structs are SHARED with story mode, so they can be
+   pre-mapped via NEW GAME/Village if Mercenaries access is delayed.
+5. Pad tokens for send_input on Citron (same as Eden): a b x y l r zl zr plus minus dup ddown dleft dright ...
+   License screen on first launch: up/down scroll the text, then A to Agree.
