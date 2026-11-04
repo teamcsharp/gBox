@@ -166,8 +166,8 @@ def test_the_profile_plays_the_rampage_loadout():
     assert {"infinite_ammo", "fire_rate", "rampage_loadout"} <= set(ops)
 
 def test_mandatory_fire_within_2m_even_when_aim_wide_off():
-    """Within CROWD_FIRE_CLOSE_R (2 m) the shotgun's spread guarantees a hit:
-    the trigger stays down no matter the aim error — even 90 deg off."""
+    """Within CROWD_FIRE_CLOSE_R (5 m = full RAMPAGE_R) the shotgun's spread covers the whole
+    engagement: the trigger stays down no matter the aim error — even 90 deg off."""
     b, clock = bot()
     foe = at(180, 90)                    # 2 m away, 90 deg off his facing
     inv = [M92F, dict(SHOTGUN, hand=True)]  # shotgun already in hand
@@ -178,23 +178,20 @@ def test_mandatory_fire_within_2m_even_when_aim_wide_off():
     assert b.stats.get("rampage_shots", 0) > 0
 
 
-def test_mandatory_fire_not_active_beyond_2_5m():
-    """At 3 m (beyond CROWD_FIRE_CLOSE_R=2.5 m) with a wide aim error,
-    the bot does NOT get the mandatory fire — it uses the normal aim/fire
-    logic which requires a narrower cone."""
+def test_mandatory_fire_active_at_3m_wide_aim():
+    """At 3 m (within the full 5 m CROWD_FIRE_CLOSE_R) with a wide aim error,
+    the bot now fires — the shotgun's spread covers the whole engagement."""
     b, clock = bot()
     foe = at(300, 90)                    # 3 m away, 90 deg off
     inv = [M92F, dict(SHOTGUN, hand=True)]
     act = b.tick(snap([foe], inv=inv))
-    # At 3 m with 90 deg off, the bot is turning/aiming, not firing
-    assert b.doing in ("turn", "aim", "fire"), f"doing={b.doing}"
-    if b.doing == "fire":
-        assert "close enough" not in b.why, f"why={b.why}"
+    assert {"zl", "zr"} <= set(act["hold"]), f"act={act['hold']} doing={b.doing}"
+    assert b.doing == "fire", f"doing={b.doing}"
 
 
 def test_mandatory_fire_at_2_3m_with_80deg_aim_off():
-    """The incident scenario: enemy at 2.3 m, 80 deg off facing — previously
-    did NOT fire (beyond the old 200 cm threshold); now it does."""
+    """The incident scenario: enemy at 2.3 m, 80 deg off facing — fires
+    (within the full 5 m CROWD_FIRE_CLOSE_R)."""
     b, clock = bot()
     foe = at(230, 80)                    # 2.3 m, 80 deg off
     inv = [M92F, dict(SHOTGUN, hand=True)]
@@ -203,14 +200,14 @@ def test_mandatory_fire_at_2_3m_with_80deg_aim_off():
     assert b.doing == "fire"
 
 
-def test_mandatory_fire_at_2_5m_exact_with_80deg_aim_off():
-    """At CROWD_FIRE_CLOSE_R (2.5 m) with 80 deg off — fires (within the
-    90 deg quick-turn band, so the body turns first but the trigger stays down)."""
+def test_mandatory_fire_at_4m_with_85deg_aim_off():
+    """At 4 m (well within the full 5 m CROWD_FIRE_CLOSE_R) with 85 deg off —
+    fires: the shotgun's spread covers the whole engagement at this range."""
     b, clock = bot()
-    foe = at(250, 80)
+    foe = at(400, 85)
     inv = [M92F, dict(SHOTGUN, hand=True)]
     act = b.tick(snap([foe], inv=inv))
-    # At 2.5 m with 80 deg off, the bot fires (crowd close range)
+    # At 4 m with 85 deg off, the bot fires (crowd close range)
     assert b.doing == "fire", f"doing={b.doing} act={act['hold']}"
 
 
@@ -288,3 +285,24 @@ def test_held_motion_ne_far_still_fires():
     fx3["snapshot"]["enemies"][0]["pos"] = [10.0, 0.0, 0.0]  # 10 cm, within HELD_R
     result = IR.replay(fx3, ticks=5, dt=0.1)
     assert result["ticks"][0]["doing"] == "held", "held state did not trigger at close range"
+
+
+def test_foe_at_4m_wide_aim_now_fires_not_idles():
+    """The #5181 cluster: enemy at 4 m, 75 deg off facing.
+
+    Before the fix (CROWD_FIRE_CLOSE_R=250 cm) this was beyond the mandatory-fire
+    radius and outside CLOSE_FIRE_CONE (60 deg): the bot idled (idle_in_5m_s grew).
+    Now, with CROWD_FIRE_CLOSE_R=500 cm (the full RAMPAGE_R), the trigger is down
+    from the first tick and idle_in_5m_s stays at zero."""
+    b, clock = bot()
+    foe = at(400, 75)                    # 4 m, 75 deg off facing
+    inv = [M92F, dict(SHOTGUN, hand=True)]
+    act = b.tick(snap([foe], inv=inv))
+    assert {"zl", "zr"} <= set(act["hold"]), f"act={act['hold']} doing={b.doing}"
+    assert b.doing == "fire", f"doing={b.doing}"
+    clock[0] = 0.5
+    act2 = b.tick(snap([foe], inv=inv, dot=(400.0, 150.0, 200.0), motion=26))
+    assert {"zl", "zr"} <= set(act2["hold"]), f"t=0.5: act={act2['hold']} doing={b.doing}"
+    assert b.stats.get("idle_in_5m_s", 0) == 0, f"idle_in_5m_s={b.stats.get('idle_in_5m_s')}"
+    assert b.stats.get("rampage_shots", 0) >= 1
+

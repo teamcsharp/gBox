@@ -440,10 +440,11 @@ NEAR_FOCUS, NEAR_FOCUS_R = True, 600.0
 # only (never in the shot motion: fire_rate's time scale) and its pitch held on a chest (P_AIM_PITCH,
 # SWEEP_PITCH_BAND); no quick turn (QUICK_TURN off), the heading governor over all. Counters: crowd_fire_s,
 # shotgun_swaps (the shotgun / magnum put up), rampage_kills, unaims_in_5m (target 0).
-CROWD_FIRE, CROWD_FIRE_N, CROWD_FIRE_CLOSE_R = True, 3, 250.0
+CROWD_FIRE, CROWD_FIRE_N, CROWD_FIRE_CLOSE_R = True, 3, 500.0
 CROWD_FRONT, CROWD_CONE = math.radians(60), math.radians(10)
-# Close-range crowd fire: within RAMPAGE_R the shotgun's spread covers a wide cone, so the trigger stays down even
-# when the aim is off by up to this much (the idle_in_5m_s fault: Majini within 5 m left alive while the aim turns).
+# Close-range crowd fire: within RAMPAGE_R (5 m) the shotgun's spread covers the whole engagement, so the trigger
+# stays down no matter the aim angle (the idle_in_5m_s fault: Majini within 5 m left alive while the aim turns).
+# CROWD_FIRE_CLOSE_R is now the full RAMPAGE_R: any Majini inside the circle fires regardless of body_err.
 CLOSE_FIRE_CONE = math.radians(60)
 OFFSCREEN_ERR, WHIP_DEG, WHIP_BACK_DEG, WHIP_S, SWAP_GAP_S = math.radians(60), 90.0, 45.0, 1.0, 1.0
 RAMPAGE_COUNTERS = ("rampage_s", "rampage_shots", "rampage_kills", "idle_in_5m_s", "unaims_in_5m", "behind_turns",
