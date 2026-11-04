@@ -173,12 +173,16 @@ def _observe_wide(image, result):
     """Only the actually captured 960x540 English layout and saved buddies."""
     found = []
 
-    def matches(*names, threshold=.8):
-        return all(_text(image, 'w_' + name) >= threshold for name in names)
-
     def region(name):
-        live = 'w_' + name + '_live'
-        return max(_text(image, 'w_' + name), _text(image, live) if live in _TEXT else 0.)
+        # base mask, or whichever separately-captured *_live / *_live_other variant scores highest. For a name with
+        # no live variant this is exactly the base score, so widening matches() to use it is backward-compatible; it
+        # only teaches the live lilspark render where a *_live mask has been registered (the title_license pattern).
+        return max(_text(image, 'w_' + name),
+                   *(_text(image, 'w_' + name + suffix) for suffix in ('_live', '_live_other')
+                     if 'w_' + name + suffix in _TEXT), 0.)
+
+    def matches(*names, threshold=.8):
+        return all(region(name) >= threshold for name in names)
 
     def record(menu, selected, index, player=1, **details):
         found.append(dict(menu=menu, selected=selected, option_index=index, player=player, **details))
@@ -607,3 +611,14 @@ _TEXT.update({'w_expanded_forest2': {'box': (420, 346, 540, 369), 'shape': (23, 
 # "Licensed by NINTENDO" line whose original mask scores only .80 on this render. Registered as a *_live variant
 # (see region() in _observe_wide); the base mask and every other proof region are unchanged.
 _TEXT.update({'w_title_license_live': {'box': (252, 480, 453, 503), 'shape': (23, 201), 'data': 'c-qBKKTE?v9Q|GHNNzZj>msKVo9Gv~QiqC#BnX}S0FD;|P7Zc+yw(yCvbZ_=5%e2e66sX@453{eI(85>g9R5sC*Sno{ekxY{t-xj5ep&!CYDyXe3Qu<*Jk4YAHZfwfycTnGc435t2qG9WUaMvMSN|`jS$f$R*9=9Qcmv2NPvxu>^u0uX<F~{L*JLykazVQdBy5AWYr2kPT+L5D|x3lpu(J^EXY$~rvl|E?5FIWdiCv;sUFPWJ;<G-DU>Z}J!KcfhGA*T9i74luc~zk@s_4%)t-eRNHArls})rvoj@=#WRTn-r1@w}h@vOrxl2o~MPY1LR?QIFFPb6b*j<QukJWBeBd4uQbV=HYe(5YcT)@D?wPPfVU0?ZONkYB-{ZjtZ*W%B@FYyUEWmz='}})
+
+
+# Live lilspark 1280x720 main-menu render (downscaled to canonical 960x540), captured 2026-11-04: the
+# main menu static labels whose base masks score under the .76/.80 gates on this render. Registered as
+# *_live / *_live_other variants; region() in _observe_wide accepts them. Base masks unchanged.
+_TEXT.update({
+    'w_main_title_live': {'box': (339, 293, 670, 324), 'shape': [31, 331], 'data': 'c-n20L5t)>6vtnvr5ho39rh9-lX5S5lb+p!kqIfm58zjrrVrkv$2~X;&7_uw$z_=KIO1Y|1&`}Rs|j=zmYu5y!Nd&Pmqn^+&|0=8&zD|Aneow7hhM$qz53_<1MqKnj+SG%9nno7Dgdl*CwlrOX(<u^=aKPEzzs;Ww-fu_A`xeZ9#-PI0<;{dc!sDz(DQ-eu9xmoAX>yWYdN-*(I9Pg4Enni+Ukx&myCWFz#KH%*Fwpz&yFe35i<|~P*UH2Bgg|PR81=r@>zujJVR^<QGbb=>1qmc`B>2ja?Gb$)rzOMoE4ZOcf4c3YHJdhrc?&sH>A=AT{drd(MmToXtNs4#-KZd=}9osd|p&sxvtZJ#OFs?+oKZ8P-5;R@<`w_VDp}g;m97dd7g9%m3!B#B$R$^r)#ckmZPbPy=x8ox@@3#Fo4VBb(a{74{Yh>qnzWfh34EK4uY|?(2E1=puDF)oS!w&SB$UIzzkmws|=q`z_bGEf*93eV&Q_T;oF;y*ftJErYVHmI~_pwX9STb(1pYl1Qj)2gr{Dbezu<0%7+lf*#B;6z!i!WHpAkK7_g9gCK!LEKe#-zufB;r#VDD*2xP^6nZR+z(H;>47|%{6_rD0<`np+sd;d!qwi8czw&<gl1K_--;}8SzCr!Pr&p&y5KW?_GPjyfJk?vy~jA)dM_G*%Hxf0J)@Xq5la{E6`-urm!9{p^gye?lzocRyXr6I&5r9CdLFDuwz$$GK+$iHK8G2f3!%2!WHRHM^a=7rix$%FChCnRNgem5!asfFBbS4WzK+4jPKKWvnBu~(3kMd4>#1!YiI^~Kfjo$}7fBMe}4X&*-5orXyy3vIFjjTz1D1cGLeBnNxB_q|@6%LWqJipGF>J;OYaPTI_-#6sX=gR^yGjEwJY${!AS?wFO33M1-fNxt9}pA%DTi8RzU6|7u+{_ggfN9sDS>cPnnY)Xcq`L9*ygF|jSO;a|RxMDeYsD{9PR0;eZp*~@*PmU0lSOUI>x)lndfw-{StEx}-lc)s#MqVWkchNEMI+u2_M0#OlPg)wR7;X?XyxHn9Dsn#E@E4*HE={NHf4@N*7zs)7@*m=v-G4VHH-qge+@!nwzX3at9wY'},
+    'w_options_live': {'box': (428, 420, 535, 442), 'shape': [22, 107], 'data': 'c-oDQF$%&k7=^zyg+?f`V+X124IDF8Ts%fyoHKSzMX1N|2!ULrN5~OOog5tc;K9#(@cs|W2xQ4};g1{$w;mNOR#BZS^wMYOhDPeOGV}yL`LlQI3$4P-js_zUaiPBH{Y=5Y{eURD@Lq^HWpH%4N!c+iL`&YzMQ|%blSZG_60Ng7eGk5RH0ZiiD8?b<(u**qhMoE%Uak27)@+en?bxahILRjj'},
+    'w_website_live': {'box': (429, 454, 534, 477), 'shape': [23, 105], 'data': 'c-nQ2y$!-J5QRV6QR0Fhmk326Fa<@52wH~72$U(1utLiKjKK)bCLSRpa1l)q@S4+i_wMPzr|cA#<S0z!jBO_Sq>Ol(Gxnh68Z}ueW=dK?)QuDzm0(l%7@VcxLTloE<?R?<P^sZyYstxc#+p_oC3qc-pZlE7L9H4SbX?e@yp-yBjeVCT+hh|Q4+g~Q^w{VmO&S&6?RTsMBVW?|)-Z*Z|9SzbuprO'},
+    'w_offline_live_other': {'box': (409, 382, 560, 406), 'shape': [24, 151], 'data': 'c-o~;D;B~q5S+Aq5YY#b6+B*!5D=Im`nd=^E>MX;1Wd2MadMO%0a?|@Zc<7OiipYX>||yG{65!Nz1;{W+`30Z&4HQaT)Id+`g#?pl%epv4YkQ8eF?5(+Zei{1Ooa21xb&)f(1tkIw#QBr<4qu;l@%)kYt&#EZRM}qY<Pru{XZ3q0|KGRD^x%jvylsXcsm?YvIz|Y7FI_LNU++$lE>!g$HlSf~r#!!OcIaBc(@0Gg5vYGbLWoQ=|N_f~>xeKSMin6c+!UH>27iQ2'},
+})
