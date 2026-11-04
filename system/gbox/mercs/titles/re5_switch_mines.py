@@ -179,7 +179,7 @@ class Mines:
             return None
         return "due"
 
-    def _clear(self, p: dict, live: list) -> dict | None:
+    def _clear(self, p: dict, snap: dict, live: list) -> dict | None:
         """The guard: the bot standing in an old bomb's blast while a Majini is at it, or simply in the blast.
 
         Out through the widest gap. The first case is the old guard (Majini closing, the bomb triggers on contact).
@@ -193,14 +193,31 @@ class Mines:
         baseline 0.833) show held=['zl'] - the bot was mid-place (bomb in hand) when the blast hit him. The idle-only
         _clear never fires during a cycle, so he stands in an old bomb's blast while placing a new one. This guard
         aborts the cycle and runs him out before the detonation.
+
+        Uses ground_mines from the snapshot (all mines on the ground) rather than self.bombs: self.bombs only tracks
+        confirmed placements from the current round, but the residual incidents (2026-11-02, rate 0.655 vs target
+        0.524) show bombs 153-363 cm from the bot that were never confirmed (unconfirmed placements or from a prior
+        round) and so are not in self.bombs. The guard must see every mine in the blast, not just the confirmed ones.
         """
         pos = p["pos"]
         in_blast, reason = False, None
-        for ptr, b in self.bombs.items():
+        ptr, b = None, None
+        ground = snap.get("ground_mines") or ()
+        seen = set()
+        for g in ground:
+            b = tuple(g["pos"])
             if self.last_pos is not None and b == self.last_pos:
                 continue                                     # the one he just placed: the retreat handles it
+            if self.site is not None and flat(self.site, b) < CONFIRM_CM:
+                continue                                     # the bomb he just placed (site not yet confirmed)
+            if g["ptr"] in self.ground0 and g["ptr"] not in self.bombs:
+                continue                                     # a mine from before this round, not his
             if flat(pos, b) >= BLAST_CM:
                 continue
+            if g["ptr"] in seen:
+                continue
+            seen.add(g["ptr"])
+            ptr = g["ptr"]
             if any(flat(e["pos"], b) <= TRIGGER_CM for e in live):
                 reason = "a Majini at his bomb: out of its blast"
             else:
@@ -272,7 +289,7 @@ class Mines:
         mine = self.stack(inv)
         self._track(p, snap, now)
         if self.state == "idle":
-            act = self._clear(p, live)
+            act = self._clear(p, snap, live)
             if act is not None or busy or self.due(p, snap, live, now) is None:
                 return act
             gun = next((s for s in inv if s.get("hand") and s.get("type") == 1 and s.get("item") not in THROWN), None)

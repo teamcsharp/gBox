@@ -29,6 +29,7 @@ from . import pso_coop_mapping as mapping_continuity
 from .pso_coop_combat import WeaponRanges, Engagements, EquipmentRecovery, FALLBACK, geometry as attack_geometry
 from .pso_gc_live import PLAYER, VT_UPDATE
 from .registry import Unsupported
+from .debug import Unavailable as StubUnavailable      # a transient GDB-stub read refusal ("stub refused read")
 
 CAMPAIGN = "pso-coop-episodes-1-2"
 # Controller tokens are constrained at generation and independently checked before input.
@@ -534,19 +535,35 @@ class Inputs:
         except (TypeError, ValueError):
             self.has_polite = False
 
-    def send(self, events, player, *, check=True):
+    def send(self, events, player, *, check=True, held_ok=False):
         if player == 1 and self.send_primary is not None:
             result = self.send_primary(events)
-        elif self.has_polite:
-            result = self.ad.send_input_player(events, player=player, polite=self.polite)
         else:
-            result = self.ad.send_input_player(events, player=player)
+            try:
+                if self.has_polite:
+                    result = self.ad.send_input_player(events, player=player, polite=self.polite)
+                else:
+                    result = self.ad.send_input_player(events, player=player)
+            except RuntimeError as _exc:
+                # STOPGAP (vpad-P2): the keyboard pad (player 2 on this adapter) needs the game window
+                # focused; a docked/background Dolphin raises. Never let that kill play() (which rolls
+                # back the hot-reload). Player 1 keeps driving on its virtual pad; player 2 is a no-op
+                # until it gets its own virtual pad.
+                self.stats['second_pad_input_error'] = str(_exc)[:200]
+                self.stats.update(last_input_player=player,
+                                  last_input_keys=','.join(e['key'] for e in events))
+                return {"sent": 0, "held": "second pad needs window focus"}
         self.stats.update(last_input_player=player, last_input_keys=','.join(e['key'] for e in events),
                           last_input_requested=len(events),
                           last_input_sent=result.get('sent', 0) if isinstance(result, dict) else 0,
                           last_input_held=str(result.get('held') or result.get('stopped') or '')[:200] if isinstance(result, dict) else '')
+        # held_ok: a HOLD's own down-press intentionally leaves its keys held - the focus-independent virtual pad
+        # (gbox/vpad_linux.py, vpad_win.py) truthfully reports those keys in "held", which is NOT a delivery failure.
+        # Without this, hold()'s down raised InputDeferred on the vpad before its release ran, collapsing every menu
+        # hold into a sub-frame tap the game never polled - PSO sat on the recognised PRESS START title forever
+        # (2026-11-04, watched live). Partial delivery (sent != len) and an explicit "stopped" still fail.
         if check and (not isinstance(result, dict) or result.get("sent") != len(events)
-                      or result.get("held") or result.get("stopped")):
+                      or (result.get("held") and not held_ok) or result.get("stopped")):
             reason = (result.get("held") or result.get("stopped")) if isinstance(result, dict) else None
             raise InputDeferred(reason or "PSO controller did not acknowledge every input event")
         if check:
@@ -610,7 +627,7 @@ class Inputs:
                 check_timing()
                 sent.append((player, keys, secs))
                 delivery_started = time.monotonic()
-                self.send([{"key": k, "down": True} for k in keys], player)
+                self.send([{"key": k, "down": True} for k in keys], player, held_ok=True)
                 acknowledged = time.monotonic()
                 deadlines[player] = acknowledged + secs
                 timing[player] = dict(requested_wall_ms=round(secs*1000,3),
@@ -3691,6 +3708,53 @@ def mid_field_reload(state):
                 and not state.get("travelling") and set(state.get("players", {})) == {1, 2})
 
 
+def entry_mapping_decision(ad, driver, session_id):
+    """How play() handles a controller precondition (MappingPending / Unsupported)
+    raised in the LOBBY/ENTRY path - it must NEVER terminate play(). This is the
+    Pioneer-2 unblock: the bot was stranded at CONTROLLER VERIFICATION because the
+    fresh-launch two-pad town probe raised probe_failed and killed the loop even
+    though the controllers were already verified. Returns one of:
+      'trust' - the pads were already PROVEN on this adapter (the marker survives a
+                bot-reload: play() re-runs but `ad` persists). TRUST that and ENTER
+                the game without re-running the run-start town probe - the probe is
+                a run-START gate, not a per-entry gate. Mirrors mid_field_reload's
+                trust and the crash-resilient tick: a failed lobby step proceeds.
+      'retry' - continuous play that was NEVER yet verified: the spawn/town may not
+                be ready, so wait + retry; the precondition still never propagates.
+      'raise' - a one-shot cold start that was never verified: surface it, so a
+                genuine first-run controller misconfiguration is not hidden.
+    Only a full worker relaunch (a fresh adapter) clears the marker and re-requires
+    one real probe; a probe_failed never blocks entry once the mapping is verified."""
+    if getattr(ad, '_pso_controller_ever_verified', False):
+        return 'trust'
+    if continuous_requested(driver, session_id):
+        return 'retry'
+    return 'raise'
+
+
+# DIRECTIVE #3 - how many failed town-probe attempts a continuous campaign tolerates
+# before it TRUSTS a structurally-verified mapping and enters anyway. Each attempt is a
+# full probe plus backoff (~1-5s), so this bounds the "stuck in Pioneer 2" retry window
+# to roughly 15-30s instead of forever, while still giving a genuine spawn time to settle.
+MAPPING_PROBE_FALLBACK_ATTEMPTS = 4
+
+
+def structural_mapping_ok(reader):
+    """True when the LIVE native state structurally confirms the two-player co-op
+    mapping WITHOUT sending input: a verified cooperative phase-14 session with two
+    distinct, correctly-indexed players (slot1 -> controller 1 / entity 0, slot2 ->
+    controller 2 / entity 1, distinct pointers). This is mapping_continuity._players'
+    exact invariant - strong corroboration that pad1 owns player 1 and pad2 owns
+    player 2 - used only as the last-resort gate for entering when the movement
+    receipt probe cannot complete. It never fabricates a mapping: a session that is
+    not structurally a valid 2P co-op keeps the campaign waiting."""
+    try:
+        mapping_continuity._players(reader.snapshot())
+        return True
+    except Exception:
+        return False
+
+
 def observe_menu_controls(menu, frame, state, controller, inputs, stats):
     """A visible menu can coexist with phase 14; stop movement before either pad path."""
     paused = menu.observe_frame(frame, native_gameplay=bool(state.get("verified") and state.get("phase") == 14),
@@ -3754,6 +3818,185 @@ def menu_unstick(ad, stats):
         stats['menu_stuck_warp_floor'] = res.get('floor') if isinstance(res, dict) else None
         stats['action'] = 'menu_unstick_warp'
     return True
+
+
+# --- PSO software-license auto-dismissal (2026-11-04) ---------------------------------------------------------------
+# Verified live on lilspark that the uinput pad delivers every input to Dolphin, yet PSO never left the title: its
+# software-license panel is SCROLL-GATED - "Agree" is ignored until the long licence is C-stick-scrolled near the end -
+# and the campaign cannot scroll it. The planner's PLAN_SCHEMA has no C-stick key at all (only a/b/x/y/l/r/start/dpad/
+# stick), and the menu guard (pso_coop_menu.review) only ever presses one UP then A, so it pressed A on Agree forever
+# with nothing scrolled and looped to the attempt limit (operator saw it "frozen on the TOS"). These constants + helper
+# encode the exact by-hand sequence that dismissed it: C-stick-scroll to the bottom, select Agree (D-pad up), press A.
+# It is gated to the independently-recognised licence panel only (a benign fixed screen where Agree is the sole sensible
+# choice); every other screen keeps the existing fail-closed guard. Clean check=False taps avoid the held-ack path, and
+# it is fully exception-/stop-soft so a delivery hiccup or a bad frame can never kill the loop.
+LICENSE_SCROLL_TAPS = 190       # one C-stick-down tap per licence line; ~175 reached the bottom by hand, + margin (idempotent)
+LICENSE_DISMISS_LIMIT = 4       # bounded re-attempts if recognition flaps; never an infinite loop
+LICENSE_DISMISS_GAP_S = 12.0    # don't re-run the whole scroll pass more often than this
+
+
+def _menu_tap(inputs, stopped, player, key, hold_s=0.035, gap_s=0.008):
+    """One clean controller tap through the PSO input path, bypassing the held-acknowledgement check (a bare down is
+    reported 'held' by the virtual pad); fail-/stop-soft. hold_s is kept >= one emulated frame so the game's menu
+    poll never misses the press; gap_s is the brief idle before the next tap. Both are tuned small for a fast burst."""
+    try:
+        inputs.send([{"key": key, "down": True}], player, check=False)
+        solo.wait(hold_s, stopped)
+        inputs.send([{"key": key, "down": False}], player, check=False)
+        if gap_s:
+            solo.wait(gap_s, stopped)
+    except InterruptedError:
+        raise
+    except Exception:                                     # noqa: BLE001 - a delivery hiccup must never kill the loop
+        pass
+
+
+def dismiss_license(ad, menu, inputs, stopped, stats):
+    """Drive PSO's independently-recognised software-license panel off the screen: C-stick-scroll to the bottom,
+    select Agree, confirm A. Returns True when a dismissal pass ran (caller should reobserve and continue), False when
+    no licence panel is present. Bypasses the one-input menu guard for this one benign fixed screen only."""
+    obs = getattr(menu, 'observation', None) or {}
+    # pso_license_menu.observe returns a bare {recognized, selected in Agree/Disagree} with NO 'menu' key; the boot
+    # recogniser always carries a 'menu'. That distinguishes the licence panel from every other recognised menu.
+    if not (obs.get('recognized') and obs.get('selected') in ('Agree', 'Disagree') and 'menu' not in obs):
+        return False
+    now = time.monotonic()
+    if now - getattr(ad, '_pso_license_dismiss_at', 0.0) < LICENSE_DISMISS_GAP_S:
+        return False
+    if getattr(ad, '_pso_license_dismiss_attempts', 0) >= LICENSE_DISMISS_LIMIT:
+        return False
+    ad._pso_license_dismiss_at = now
+    ad._pso_license_dismiss_attempts = getattr(ad, '_pso_license_dismiss_attempts', 0) + 1
+    if isinstance(stats, dict):
+        stats.update(action='dismissing_license', license_dismiss_attempt=ad._pso_license_dismiss_attempts,
+                     license_dismiss_reason='C-stick scroll to bottom, select Agree, confirm A (scroll-gated panel)')
+    # HYPERSPEED (operator: the slow meander is maddening). Burst the scroll - one tight ~frame-long tap per line with
+    # a minimal gap (~3-4 s for the whole licence, not a slow drip) - then one quick Agree + A. No dwell between taps.
+    for _ in range(LICENSE_SCROLL_TAPS):                  # scroll the long licence to the bottom (one line per tap)
+        if stopped():
+            return True
+        _menu_tap(inputs, stopped, 1, 'cdown', hold_s=0.016, gap_s=0.004)
+    for _ in range(2):                                    # ensure Agree (the top option) is selected - D-pad moves it
+        if stopped():
+            return True
+        _menu_tap(inputs, stopped, 1, 'dup', hold_s=0.28, gap_s=0.05)   # selections need a clear held deflection
+    for _ in range(2):                                    # confirm; a second A rides out a one-frame drop
+        if stopped():
+            return True
+        _menu_tap(inputs, stopped, 1, 'a', hold_s=0.28, gap_s=0.05)
+    return True
+
+
+# --- Pre-gameplay boot nudge (2026-11-04) ---------------------------------------------------------------------------
+# Verified live: when the independent recogniser misses a boot screen, the withhold gate froze the campaign on the
+# title/menus even though the vision planner had already read the screen correctly and proposed the right key. On the
+# pre-gameplay boot screens (native phase != 14) nothing destructive is reachable - the worst a wrong press does is
+# bounce back to the title, which the chain recovers from - so a BOUNDED pass-through lets the planner's own proposed
+# player-one key go to the pad as one clear HELD press (the main menu ignores brief taps; ~0.3 s registers). Known
+# screens that the recogniser does match (saved_p1/saved_p2/verify_saved/game_options...) keep the strict fail-closed
+# path, so the saved-buddy selection is always driven by the existing verified logic, never by a blind confirm.
+BOOT_NUDGE_HOLD_S = 0.3         # one clear held deflection per nudge (brief taps don't register on the main menu)
+BOOT_NUDGE_GAP_S = 2.5          # paced: at most one nudge per gap, so the screen can react and be reobserved
+BOOT_NUDGE_LIMIT = 40           # bounded per run; never an endless blind walk
+BOOT_NUDGE_KEYS = {'a', 'b', 'start', 'dup', 'ddown', 'dleft', 'dright',
+                   'lup', 'ldown', 'lleft', 'lright', 'up', 'down', 'left', 'right'}
+
+
+def boot_nudge_allowed(ad, state, reason):
+    """A nudge is only considered on a pre-gameplay boot screen whose input was withheld/unreadable, paced and capped."""
+    if state.get('phase') == 14:
+        return False
+    text = str(reason)
+    if 'withheld' not in text and 'unreadable' not in text:
+        return False
+    if time.monotonic() - getattr(ad, '_pso_boot_nudge_at', 0.0) < BOOT_NUDGE_GAP_S:
+        return False
+    return getattr(ad, '_pso_boot_nudges', 0) < BOOT_NUDGE_LIMIT
+
+
+_NUDGE_DIRECTIONS = {'dup', 'ddown', 'dleft', 'dright', 'up', 'down', 'left', 'right',
+                     'lup', 'ldown', 'lleft', 'lright'}
+
+
+def boot_nudge(ad, inputs, stopped, stats, proposed, state=None, plan=None):
+    """Pass the planner's first proposed player-one key through as one held press; True when a nudge was sent."""
+    if not proposed:
+        return False
+    player, keys, _secs = proposed[0]
+    keys = [str(k) for k in (keys or []) if str(k) in BOOT_NUDGE_KEYS][:1]
+    if player != 1 or not keys:
+        return False
+    key = keys[0]
+    # Title-as-license misread, belt + suspenders (2026-11-04, watched live): at the RAM title/attract (phase 10) the
+    # vision planner repeatedly read the PRESS START title as "the software license" and proposed a direction, which
+    # can never leave the title. When RAM says phase 10, the planner's own labels talk about the licence/Agree, and
+    # the independent licence recogniser does NOT actually see a licence panel, the title is the overwhelmingly likely
+    # screen - press START (the one key the title takes) instead of the misread direction.
+    if (state or {}).get('phase') == 10 and key in _NUDGE_DIRECTIONS:
+        labels = ' '.join(str((plan or {}).get(k) or '') for k in
+                          ('menu_title', 'selected_option', 'intended_option', 'thought')).lower()
+        if 'licen' in labels or 'agree' in labels:
+            key = 'start'
+    ad._pso_boot_nudge_at = time.monotonic()
+    ad._pso_boot_nudges = getattr(ad, '_pso_boot_nudges', 0) + 1
+    if isinstance(stats, dict):
+        stats.update(action='boot_nudge', boot_nudges=ad._pso_boot_nudges, boot_nudge_key=key,
+                     boot_nudge_reason='pre-gameplay boot screen: planner key passed through the withhold gate as a held press')
+    _menu_tap(inputs, stopped, 1, key, hold_s=BOOT_NUDGE_HOLD_S, gap_s=0.05)
+    return True
+
+
+# --- Pre-gameplay stall skip (2026-11-04) ---------------------------------------------------------------------------
+# The boot nudge only fires on a "withheld/unreadable" review, but the OFFLINE intro CINEMATIC produces a different
+# stall ("Six unchanged menu attempts") while the vision planner only sees black transition frames and proposes
+# nothing - so nothing pressed A/Start to skip the cinematic and the chain froze at phase 3 (watched live). On ANY
+# pre-gameplay stall (native phase != 14, no real floor) press a bounded, paced, alternating Start/A held press: Start
+# skips cinematics and leaves the title, A advances/confirms a dialog or selects on character select. Recognised
+# screens (saved_p1/saved_p2/...) never reach a stall (review returns their action), so this only drives the
+# unrecognised cinematics/dialogs, never a blind confirm on an independently-recognised menu.
+PREGAME_SKIP_KEYS = ((1, 'start'), (1, 'a'))        # (player, key) pairs
+PREGAME_SKIP_LIMIT = 48
+PREGAME_SKIP_GAP_S = 1.1
+
+
+def pregame_skip(ad, state, inputs, stopped, stats, keys=PREGAME_SKIP_KEYS, why='stall'):
+    """A bounded, paced, pre-gameplay-only Start/A (or A-only) skip; True when it fired."""
+    if (state or {}).get('phase') == 14 or (state or {}).get('floor'):
+        return False
+    if time.monotonic() - getattr(ad, '_pso_pregame_skip_at', 0.0) < PREGAME_SKIP_GAP_S:
+        return False
+    n = getattr(ad, '_pso_pregame_skips', 0)
+    if n >= PREGAME_SKIP_LIMIT:
+        return False
+    ad._pso_pregame_skip_at = time.monotonic()
+    ad._pso_pregame_skips = n + 1
+    player, key = keys[n % len(keys)]
+    if isinstance(stats, dict):
+        stats.update(action='pregame_skip', pregame_skips=n + 1, pregame_skip_key='p%d:%s' % (player, key),
+                     pregame_skip_reason='pre-gameplay %s (cinematic/unrecognised screen): bounded safe-key skip' % why)
+    _menu_tap(inputs, stopped, player, key, hold_s=0.3, gap_s=0.05)
+    return True
+
+
+PREGAME_BLACK_MEAN = 10          # a cinematic/transition frame reads ~1-3 mean luma; the menus read ~38 (measured live)
+MENU_DEBOUNCE_S = 2.0            # after recognising a boot menu, tolerate recognition dropouts this long (ring animation)
+
+
+def pregame_unreadable(state, menu, menu_paused, frame=None):
+    """A pre-gameplay CINEMATIC or ATTRACT movie / black transition: native phase != 14, no real floor, not paused,
+    nothing recognised (no menu/HUD), AND the PSO wordmark absent. Hands-off, PSO's idle ATTRACT (opening movie ->
+    gameplay demo) triggers when the campaign doesn't confirm a menu fast enough, and loops back; those frames are
+    bright, so the old near-black gate could never skip them. The wordmark guard (pso_menu_observer sets
+    result['wordmark'] when the 'PHANTASY STAR ONLINE' wordmark is present - the title or the main menu) replaces that
+    gate: it keeps the skip OFF the title / main menu even on an animation frame where menu_visible momentarily dips
+    (so a blind A can never enter ONLINE), while finally letting it fire on the bright attract/cinematic to break the
+    loop. (frame is unused now; kept for signature compatibility. Needs the observer's wordmark flag, so both ride the
+    same restart.)"""
+    if (state or {}).get('phase') == 14 or (state or {}).get('floor') or menu_paused:
+        return False
+    obs = getattr(menu, 'observation', None) or {}
+    return not (obs.get('recognized') or obs.get('menu_visible') or
+                obs.get('gameplay_visible') or obs.get('wordmark'))
 
 
 def _flatten_master_build(stats, summary):
@@ -4008,6 +4251,27 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     continue
                 menu_frame = ad.get_frame()
                 menu_paused = observe_menu_controls(menu, menu_frame, state, controller, inputs, stats)
+                # LICENSE AUTO-DISMISS (2026-11-04): PSO's software-license panel is scroll-gated and the planner has
+                # no C-stick key, so the guard/planner path loops on it forever. Drive it off imperatively (scroll to
+                # the bottom, select Agree, press A) before anything else; dismiss_license no-ops on every other screen.
+                if dismiss_license(ad, menu, inputs, stopped, stats):
+                    invalidate_plan()
+                    solo.wait(.15, stopped)              # hyperspeed: minimal dwell, reobserve fast
+                    continue
+                # EAGER CINEMATIC SKIP (2026-11-04): the OFFLINE intro cinematic loop is briefer than the 6-attempt
+                # review stall, so the stall-gated pregame_skip never caught it and the chain cycled title<->attract
+                # <->intro. On a pre-gameplay frame the system can't identify at all (cinematic / black transition),
+                # press A straight away - A advances cinematics/dialogs and, on the two-player character select (which
+                # the observer does NOT yet recognise live, so the strict saved_p1/saved_p2 path can't engage there),
+                # selects the pre-saved buddy. Alternate player 1 then player 2 A so both save slots get confirmed; A
+                # is a no-op on the other player's select phase, benign on a cinematic. Bounded/paced/pre-gameplay-
+                # gated and A-only, so it never leaves the title with a wrong key, never touches a recognised menu
+                # (title/licence/HUD are recognised and excluded), and can't reach gameplay.
+                if pregame_unreadable(state, menu, menu_paused, menu_frame) and \
+                        pregame_skip(ad, state, inputs, stopped, stats, keys=((1, 'a'), (2, 'a')), why='black cinematic'):
+                    invalidate_plan()
+                    solo.wait(.2, stopped)
+                    continue
                 # Backstop to the never-stop invariant: if a menu/dialogue is up
                 # continuously for MENU_STUCK_S (in case menu.stalled never trips -
                 # e.g. a boss-end dialogue the campaign keeps retrying), warp to the
@@ -4028,6 +4292,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 if menu_paused and proposed is not None and not recovery.waiting:
                     # These exact observed menus need no model guess or network
                     # round trip. The existing guard remains the sole authority.
+                    ad._pso_menu_seen_at = time.monotonic()   # recognised a boot menu now: arm the recognition debounce
                     selected, reason = menu.review({'screen': 'menu'}, [proposed], state_identity(state),
                         frame=menu_frame, fresh_frame=ad.get_frame(),
                         native_gameplay=bool(state.get('verified') and state.get('phase') == 14),
@@ -4040,6 +4305,12 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                         planned_input_keys=','.join(selected[0][1]) if selected else '',
                         action='observed_menu_step' if selected else 'waiting_for_observed_menu')
                     if menu.stalled:
+                        # Pre-gameplay stall (cinematic / unrecognised dialog): a bounded Start/A skip instead of a
+                        # warp (native warps can't run before gameplay anyway).
+                        if pregame_skip(ad, state, inputs, stopped, stats):
+                            invalidate_plan()
+                            solo.wait(.3, stopped)
+                            continue
                         # INVARIANT: never terminally stop at a stuck menu. The campaign
                         # gives up after N unchanged attempts - instead of halting to the
                         # operator, warp to the next route floor (a RAM load bypasses ANY
@@ -4056,7 +4327,30 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     # takeover interruptible. Reobserve before every next input.
                     solo.wait(.6 if selected else .2, stopped)
                     continue
-                if state.get("verified") and not mapped and not menu_paused and not recovery.waiting:
+                # RECOGNITION DEBOUNCE (2026-11-04): hands-off, the (recognised) main menu could not CONFIRM OFFLINE
+                # before PSO's idle attract triggered - because the live menu recognition is intermittent across its
+                # ring animation, so on a dropout frame (proposed is None) the loop fell through to the slow vision
+                # planner (~8 s/step). When the PSO wordmark is still present (still the title/main menu, NOT a cold
+                # attract/black - that path is the wordmark-absent attract-skip above) and we recognised a boot menu
+                # moments ago, skip the slow planner and fast-reobserve instead, so the strict step fires on the next
+                # recognised frame. We only reobserve here (never press on a dropout), so the cursor can't overshoot;
+                # the strict path still presses only on correctly-read frames.
+                if (proposed is None and (menu.observation or {}).get('wordmark')
+                        and time.monotonic() - getattr(ad, '_pso_menu_seen_at', 0.0) < MENU_DEBOUNCE_S):
+                    stats['menu_debounce_waits'] = stats.get('menu_debounce_waits', 0) + 1
+                    stats['action'] = 'menu_recognition_debounce'
+                    invalidate_plan()
+                    solo.wait(.05, stopped)
+                    continue
+                # CONTENTION KILL (2026-11-04, verified live): during the pre-gameplay boot screens the mapping
+                # restore/probe path fired its player-two 19-key sweep while player one tried to drive the title and
+                # menus - the campaign was fighting its own forward presses, and the probe can never verify there
+                # anyway ("GameCube native actions require an active offline free-play session"). One driver at a
+                # time: defer ALL mapping restore/probe work until real gameplay (native phase 14); the boot chain
+                # (title Start -> menu -> OFFLINE -> character select -> Start Game) belongs to player one alone.
+                # (The 19-key "sweep" telemetry still shows at run start: that is inputs.release() - every key sent
+                # UP, alphabetical - a benign safety release, not a probe. This is the only prove()/restore() site.)
+                if state.get("verified") and state.get("phase") == 14 and not mapped and not menu_paused and not recovery.waiting:
                     retained = mapping_continuity.restore(ad, reader, session_id, game or {}, stopped)
                     stats.update(mapping_continuity.diagnostics(ad))
                     # HOT-RELOAD INTO A RUNNING MID-FIELD SESSION (operator: the reload kept
@@ -4082,32 +4376,75 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                         try:
                             stats["controller_mapping"] = mapping_continuity.prove(
                                 ad, reader, inputs, state, session_id, game or {}, stopped, mapping_probe)
+                            stats['controller_mapping_source'] = 'two_pad_movement_probe'
                         except (MappingPending, Unsupported) as exc:
-                            # Never let a mapping precondition KILL play() during continuous
-                            # play (that rolls back a hot-reload). Mid-run we cannot run the
-                            # town probe, so wait + retry instead of propagating; only a true
-                            # non-continuous start still raises.
-                            if not continuous_requested(driver, session_id):
+                            # A controller precondition must NEVER terminate play() in the
+                            # lobby/entry path (that is how the bot got stranded in Pioneer 2
+                            # at CONTROLLER VERIFICATION: the fresh-launch town probe raised
+                            # probe_failed and killed the loop even though the mapping was
+                            # already verified). Three guarded outcomes, none of them "stop":
+                            #   1. VERIFIED-BEFORE on this adapter -> TRUST it and ENTER the
+                            #      game without re-passing the town probe. The two-pad probe
+                            #      is a run-START gate, not a per-entry gate; the controllers
+                            #      were proven here already (prior verification survives a
+                            #      bot-reload on the same adapter). Mirrors mid_field_reload's
+                            #      trust and the crash-resilient tick: one failed lobby step
+                            #      proceeds, it never dies.
+                            #   2. continuous play, NEVER yet verified -> wait + retry (the
+                            #      spawn/town may not be ready); still never propagates.
+                            #   3. a true one-shot cold start that was never verified -> raise,
+                            #      so a genuine first-run misconfiguration still surfaces.
+                            decision = entry_mapping_decision(ad, driver, session_id)
+                            if decision == 'trust':
+                                stats['controller_mapping_source'] = 'entry_trusted_prior_verification'
+                                stats['controller_mapping_entry_trusted'] = stats.get('controller_mapping_entry_trusted', 0) + 1
+                                stats['controller_receipt_entry_trusted'] = True
+                                stats['controller_entry_probe_skipped_reason'] = str(exc)[:160]
+                            elif decision == 'raise':
                                 raise
-                            invalidate_plan()
-                            inputs.release()
-                            ad._pso_verified_player_slots = set()
-                            mapping_attempts += 1
-                            delay = min(5, 2 ** min(mapping_attempts - 1, 3))
-                            stats.update(controller_mapping_verified=False, mapping_attempts=mapping_attempts,
-                                mapping_retry_backoff_s=delay, mapping_last_error=str(exc),
-                                action="waiting_for_spawn_ready")
-                            solo.wait(delay, lambda: stopped() or not continuous_requested(driver, session_id))
-                            if stopped() or not continuous_requested(driver, session_id):
-                                break
-                            continue
+                            elif (mapping_attempts + 1 >= MAPPING_PROBE_FALLBACK_ATTEMPTS
+                                  and structural_mapping_ok(reader)):
+                                # DIRECTIVE #3 - the town movement receipt CAN'T COMPLETE here
+                                # (e.g. a probe pulse flips the party off a pristine floor-0
+                                # lobby onto a teleporter/field, or input movement can't be
+                                # measured in Pioneer 2), so the two-pad probe retries forever
+                                # and the bot never ENTERS a game. After enough failed attempts,
+                                # if the LIVE NATIVE STATE structurally confirms two distinct,
+                                # correctly-indexed co-op players (pad1->slot0, pad2->slot1),
+                                # TRUST that verified mapping and ENTER - a continuous campaign
+                                # must play even when the movement receipt is unavailable
+                                # (operator: always playing). Still never fabricates a mapping:
+                                # a session that is not structurally two-player keeps retrying.
+                                mapping_attempts += 1
+                                stats['controller_mapping_source'] = 'entry_trusted_structural_after_probe_unavailable'
+                                stats['controller_mapping_entry_trusted'] = stats.get('controller_mapping_entry_trusted', 0) + 1
+                                stats['controller_receipt_entry_trusted'] = True
+                                stats['controller_entry_probe_skipped_reason'] = (
+                                    'town probe unavailable x%d: %s' % (mapping_attempts, exc))[:160]
+                            else:
+                                invalidate_plan()
+                                inputs.release()
+                                ad._pso_verified_player_slots = set()
+                                mapping_attempts += 1
+                                delay = min(5, 2 ** min(mapping_attempts - 1, 3))
+                                stats.update(controller_mapping_verified=False, mapping_attempts=mapping_attempts,
+                                    mapping_retry_backoff_s=delay, mapping_last_error=str(exc),
+                                    action="waiting_for_spawn_ready")
+                                solo.wait(delay, lambda: stopped() or not continuous_requested(driver, session_id))
+                                if stopped() or not continuous_requested(driver, session_id):
+                                    break
+                                continue
                         finally:
                             stats.update(mapping_continuity.diagnostics(ad))
-                        stats['controller_mapping_source'] = 'two_pad_movement_probe'
                     if stopped():
                         raise InterruptedError('PSO stopped before activating controller mapping')
                     mapped = True
                     ad._pso_verified_player_slots = {0, 1}
+                    # Durable across bot-reloads on the same adapter (play() re-runs but `ad`
+                    # persists): once the controllers are proven, a later entry in Pioneer 2
+                    # TRUSTS this instead of re-running the run-start town probe. Only a full
+                    # worker relaunch (fresh adapter) clears it and re-requires one real probe.
+                    ad._pso_controller_ever_verified = True
                     mapping_attempts = 0
                     stats.update(controller_mapping_verified=True, mapping_retry_backoff_s=0, mapping_last_error="")
                     apply_default_speed(ad, stats)
@@ -4229,6 +4566,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                 if (not menu_paused and state.get("floor", 0) > 0 and
                                         state.get("geometry_verified") and plan.get("screen") == "gameplay"):
                                     selected = []
+                                planner_proposed = selected[:1]          # the planner's own read, kept for the boot nudge
                                 selected, reason = menu.review(plan, selected, state_identity(state),
                                     frame=planned_frame, fresh_frame=ad.get_frame(),
                                     native_gameplay=bool(state.get('verified') and state.get('phase') == 14),
@@ -4241,6 +4579,11 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                              planned_input_player=selected[0][0] if selected else 0,
                                              planned_input_keys=','.join(selected[0][1]) if selected else '')
                                 if menu.stalled:
+                                    # Pre-gameplay stall (cinematic / unrecognised dialog): bounded Start/A skip first.
+                                    if pregame_skip(ad, state, inputs, stopped, stats):
+                                        invalidate_plan()
+                                        solo.wait(.3, stopped)
+                                        continue
                                     # INVARIANT: never terminally stop at a stuck menu.
                                     # Warp to the next route floor (RAM load bypasses
                                     # any menu/dialogue) and keep playing forever.
@@ -4248,6 +4591,15 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                     menu_unstick(ad, stats)
                                     invalidate_plan()
                                     solo.wait(.3, stopped)
+                                    continue
+                                # BOOT NUDGE (2026-11-04): a withheld/unreadable PRE-GAMEPLAY screen must not freeze
+                                # the chain - pass the planner's own proposed player-one key through as one bounded
+                                # held press, then reobserve. Gameplay and recognised screens keep the strict path.
+                                if not selected and planner_proposed and boot_nudge_allowed(ad, state, reason) and \
+                                        boot_nudge(ad, inputs, stopped, stats, planner_proposed,
+                                                   state=state, plan=plan):
+                                    invalidate_plan()
+                                    solo.wait(.25, stopped)
                                     continue
                                 # Menus are observed after every individual input.
                                 # A confirm must never cascade into an unseen dialog.
@@ -4336,6 +4688,20 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 errors = 0
                 stats["input_wait_active"] = False
                 solo.wait(.05, stopped)
+            except StubUnavailable as exc:
+                # A transient GDB-stub read/write refusal ("stub refused read at 0x...: E00") under debugger
+                # contention - e.g. a hard-running RE5 on the same box momentarily starving the stub - must NOT kill
+                # the campaign loop (the known "autobot silently crashes on a bad frame" pattern). It is a bad frame:
+                # release inputs, back off briefly, and retry the next frame. StubUnavailable subclasses RuntimeError,
+                # so this clause must stay ABOVE the RuntimeError handler below.
+                speed_sampler.invalidate()
+                try:
+                    inputs.release()
+                except Exception:                            # noqa: BLE001 - best effort
+                    pass
+                stats["stub_read_waits"] = stats.get("stub_read_waits", 0) + 1
+                stats.update(action="waiting_for_stub_read", last_stub_error=str(exc)[:160])
+                solo.wait(0.2, stopped)
             except RuntimeError as exc:
                 # The host could not deliver input because the game window is not
                 # in the foreground (adapters.py: "must be active to send emulator

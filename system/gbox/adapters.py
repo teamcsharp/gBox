@@ -607,14 +607,19 @@ def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False, polite:
             if pid not in _POLITE_TRUST:                         # does this PC report the game's focus? (checked once)
                 _POLITE_TRUST[pid] = _focus_pid(u) == pid
     else:
-        for _ in range(100):                                     # wait (up to 10 s) for the operator to bring gBox back
+        # Dedicated autoplay box: give the game the keyboard up front. AttachThreadInput+SetFocus works from the
+        # worker's session even when the game window is not the top window, so the non-polite path (bots on a PC the
+        # operator is NOT using) is not stuck behind a never-foreground Dolphin. The front-check below still confirms
+        # it took, and raises if focus could not be taken. (Polite demo/screensaver runs are unaffected: they take the
+        # polite branch above and still wait for the operator.)
+        if h and not hidden_ok:                                 # global Dolphin hotkeys need no native-window focus
+            give_focus()
+        for _ in range(100):                                     # confirm (up to 10 s) the game/gBox now has input focus
             if _win_input_in_front(u, root, hidden_ok):
                 break
             time.sleep(0.1)
         else:
             raise RuntimeError("gBox or the emulator must be active to send emulator input safely")
-        if h and not hidden_ok:                                 # global Dolphin hotkeys need no native-window focus
-            give_focus()
 
     class KI(ctypes.Structure):
         _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
@@ -2400,6 +2405,12 @@ class StandaloneAdapter(Adapter):
         if self.dbg:
             self.dbg.close()
         _kill_tree(self.proc)                   # flatpak run --die-with-parent takes the sandbox down with it
+        for _pad in getattr(self, "_linux_vpads", {}).values():   # tear down any /dev/uinput virtual pad(s) (PSO)
+            try:
+                _pad.close()
+            except Exception:                   # noqa: BLE001 - best effort; a dead fd needs nothing
+                pass
+        self._linux_vpads = {}
         if self.display:
             self.display.close()
         return {"returncode": self.proc.poll() if self.proc else None}
@@ -2692,8 +2703,15 @@ D-Pad/Right = `H`
         user = Path(getattr(self, 'gameplay_demo_user', self.config.runtime / "dolphin-user"))
         (user / "Config").mkdir(parents=True, exist_ok=True)
         from . import pso_coop_setup
-        (user / "Config" / "GCPadNew.ini").write_text(
-            pso_coop_setup.pad_ini(self.PAD_INI) if self.coop_players == 2 else self.PAD_INI)
+        if not getattr(self, "gecko_id", None):              # _want_linux_vpad's PSO gate (GPO*) needs the disc id;
+            try:                                             # _gecko_setup (below) also sets it - compute it up front
+                self.gecko_id = self._disc_id(rom)           # so the gate sees it
+            except Exception:                                # noqa: BLE001 - let _gecko_setup report a bad disc
+                pass
+        vpad_ini = self._setup_linux_vpad(self.PAD_INI)      # full GCPadNew.ini on focus-independent uinput pad(s), or None
+        if vpad_ini is None:                                 # no virtual pad (not PSO, or /dev/uinput unavailable): keyboard INI
+            vpad_ini = pso_coop_setup.pad_ini(self.PAD_INI) if self.coop_players == 2 else self.PAD_INI
+        (user / "Config" / "GCPadNew.ini").write_text(vpad_ini)
         (user / "Config" / "Hotkeys.ini").write_text('[Hotkeys]\nDevice = XInput2/0/Virtual core pointer\n'
             'Emulation Speed/Disable Emulation Speed Limit = `Tab`\n'
             'Save State/Save State Slot 8 = `Shift_L` & `F8`\n'
@@ -2739,7 +2757,70 @@ D-Pad/Right = `H`
 
     ff_on = False
 
+    _linux_vpads: dict = {}
+
+    def _want_linux_vpad(self) -> bool:
+        """Drive this Linux Dolphin session through a focus-independent /dev/uinput evdev pad (gbox/vpad_linux.py)
+        instead of synthetic X keys. On for PSO (gecko id GPO*, whose campaign drives menus with key presses that a
+        WM-less Xvfb session display never delivers) or any Dolphin game when GBOX_DOLPHIN_VPAD is truthy; off for
+        'off'/'0'/'false' and for agent-owned capture sessions. Never reached on Windows (the i9's ViGEm path) or by
+        the Eden/RetroArch adapters (RE5/6): this gates the uinput pad to Dolphin-on-the-Spark only, so it changes
+        neither the RE rotation nor the i9."""
+        if HOST_OS != "linux" or getattr(self, "capture_backend", None):
+            return False
+        flag = os.environ.get("GBOX_DOLPHIN_VPAD", "").strip().lower()
+        if flag in ("0", "off", "false", "no"):
+            return False
+        if not (str(getattr(self, "gecko_id", "") or "").startswith("GPO")
+                or flag in ("1", "on", "true", "yes", "all")):
+            return False
+        from . import vpad_linux
+        return vpad_linux.available()
+
+    def _setup_linux_vpad(self, pad_base: str):
+        """Put Player 1 - and, in co-op, Player 2 - on focus-independent /dev/uinput evdev pads and return the COMPLETE
+        GCPadNew.ini bound to them, or None so the caller falls back to the keyboard INI. Each pad is a distinct,
+        uniquely-named evdev device Dolphin reads as evdev/0/<name>, with deterministic Button/Axis bindings."""
+        self._linux_vpads = {}
+        if not self._want_linux_vpad():
+            return None
+        from . import vpad_linux, pso_coop_setup
+        host = re.sub(r"[^A-Za-z0-9 _-]", "", __import__("platform").node())[:20] or "gBox"
+        players = self.coop_players if isinstance(self.coop_players, int) and self.coop_players >= 1 else 1
+        sections = []
+        try:
+            for player in range(1, min(players, 2) + 1):
+                pad = vpad_linux.VGamepad(name=f"gBox GC Pad {host} P{player}")
+                self._linux_vpads[player] = pad
+                sections.append(pso_coop_setup.evdev_pad(player, pad.name))
+        except OSError as e:                                 # /dev/uinput vanished mid-setup: release and use keys
+            self._release_linux_vpads()
+            self._p(50, f"virtual pad unavailable, keyboard input used: {e}")
+            return None
+        return "\n".join(sections) + "\n"
+
+    def _release_linux_vpads(self) -> None:
+        for pad in getattr(self, "_linux_vpads", {}).values():
+            try:
+                pad.close()
+            except Exception:                                # noqa: BLE001 - best effort
+                pass
+        self._linux_vpads = {}
+
+    def send_input(self, events: list[dict]) -> dict:
+        pads = getattr(self, "_linux_vpads", None)
+        if pads and 1 in pads:                               # Player 1 on the uinput pad: raw gBox pad names, no xdotool
+            return pads[1].apply([e for e in events if int(e.get("player", 1)) == 1])
+        return super().send_input(events)
+
     def send_input_player(self, events, player=1):
+        pads = getattr(self, "_linux_vpads", None)
+        if pads:                                             # PSO on the uinput pad(s): focus-independent, raw pad names
+            if player == 2 and self.coop_players != 2:
+                raise ValueError('Player 2 was not connected at launch')
+            pad = pads.get(player)
+            if pad is not None:
+                return pad.apply(list(events))
         from .pso_coop_setup import input_rows
         if player == 2 and self.coop_players != 2:
             raise ValueError('Player 2 was not connected at launch')
@@ -2991,8 +3072,12 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
             (exe.parent / "portable.txt").touch()
         (user / "Config").mkdir(parents=True, exist_ok=True)
         from . import pso_coop_setup
-        (user / "Config" / "GCPadNew.ini").write_text(
-            pso_coop_setup.pad_ini(self.PAD_INI_WIN, windows=True) if self.coop_players == 2 else self.PAD_INI_WIN)
+        if not getattr(self, "gecko_id", None):              # _want_vpad's PSO gate (GPO*) needs the disc id; _gecko_setup
+            self.gecko_id = self._disc_id(rom)               # (below) also sets it - compute it up front so the gate sees it
+        vpad_ini = self._setup_vpad(self.PAD_INI_WIN)        # full GCPadNew.ini with P1 (+ co-op P2/P3) on virtual pads, or None
+        if vpad_ini is None:                                 # no virtual pad (not PSO/i9, or unavailable): keyboard INI
+            vpad_ini = pso_coop_setup.pad_ini(self.PAD_INI_WIN, windows=True) if self.coop_players == 2 else self.PAD_INI_WIN
+        (user / "Config" / "GCPadNew.ini").write_text(vpad_ini)
         self.lane = self._claim_lane()
         (user / "Config" / "Hotkeys.ini").write_text(self.hotkeys_ini(self.lane))   # read once, when this Dolphin starts
         self._gecko_setup(user, rom)
@@ -3107,6 +3192,14 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
     def stop_game(self) -> dict:
         if self.paused_tids:
             self.resume()
+        for _attr in ("vpad", "vpad2", "vpad3"):           # drop every virtual controller before the game goes
+            _vp = getattr(self, _attr, None)
+            if _vp is not None:
+                try:
+                    _vp.close()
+                except Exception:
+                    pass
+                setattr(self, _attr, None)
         if self.ff_on:                                     # never leave the lane key held down after the game is gone
             try:
                 win_send_keys(self.proc.pid, [{"key": self.lane, "down": False}])
@@ -3154,7 +3247,72 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         return {"running": bool(self.proc and self.proc.poll() is None), "emulator": self.name,
                 "state": "PAUSED" if self.paused_tids else "PLAYING"}
 
+    vpad = None                                              # Player 1's focus-independent virtual pad (gbox/vpad_win.py), when set
+    vpad2 = None                                             # Player 2's virtual pad (co-op), when set
+    vpad3 = None                                             # Player 3's virtual pad (co-op), when set
+
+    def _want_vpad(self) -> bool:
+        """Drive Player 1 through a ViGEm virtual XInput pad instead of the keyboard? Windows only, opt-in: on for PSO
+        (gecko id GPO*, which loses the attract loop on the i9 because keyboard input needs focus), or any Dolphin
+        game when GBOX_DOLPHIN_VPAD is truthy; off for 'off'/'0'/'false'. A capture session keeps the keyboard path.
+        Never reached on Linux/Eden (the Spark's RE sessions) - this is the Windows Dolphin adapter only."""
+        if os.name != "nt" or getattr(self, "capture_backend", None):
+            return False
+        flag = os.environ.get("GBOX_DOLPHIN_VPAD", "").strip().lower()
+        if flag in ("0", "off", "false", "no"):
+            return False
+        if not (str(getattr(self, "gecko_id", "") or "").startswith("GPO")
+                or flag in ("1", "on", "true", "yes", "all")):
+            return False
+        from . import vpad_win
+        return vpad_win.available()
+
+    def _setup_vpad(self, pad_base: str):
+        """Put Player 1 - and, in co-op, Players 2/3 - on focus-independent virtual XInput pads (gbox/vpad_win.py) and
+        return the COMPLETE GCPadNew.ini bound to them. Returns None when no virtual pad is wanted/possible, so the
+        caller falls back to the keyboard INI. Each pad takes a distinct XInput slot; GCPad1 reads the first, GCPad2
+        the second, GCPad3 the third. A co-op player with no distinct pad stays on the keyboard (graceful fallback)."""
+        self.vpad = self.vpad2 = self.vpad3 = None
+        if not self._want_vpad():
+            return None
+        from . import vpad_win, pso_coop_setup
+        used: set[int] = set()
+
+        def make():
+            try:
+                vp = vpad_win.VGamepad()
+            except Exception as e:                           # noqa: BLE001 - no driver/pad: keyboard path
+                self._p(50, f"virtual pad unavailable, keyboard input used: {e}")
+                return None
+            if vp.slot is None or vp.slot in used:
+                vp.close()
+                return None
+            used.add(vp.slot)
+            return vp
+
+        vp1 = make()
+        if vp1 is None:
+            return None
+        self.vpad = vp1
+        # GCPad1 reads the virtual pad at its XInput slot (slot 0 is often already taken by the PC's own persistent
+        # virtual pad); Always Connected keeps the port up when the pad rests at neutral; keyboard fallbacks stay.
+        ini = (pad_base.replace("[GCPad1]\n", "[GCPad1]\nOptions/Always Connected = True\n", 1)
+                       .replace("Device = XInput/0/Gamepad", f"Device = XInput/{vp1.slot}/Gamepad", 1))
+        players = self.coop_players if isinstance(self.coop_players, int) and self.coop_players else 1
+        for player in range(2, min(players, 3) + 1):         # Players 2 and 3 (up-to-3-player co-op)
+            vp = make()
+            if vp is None:                                   # no distinct pad for this player: keyboard co-op pad(s)
+                self._p(50, f"no distinct virtual pad for player {player}; co-op players stay on keyboard")
+                return pso_coop_setup.pad_ini(ini, windows=True)
+            setattr(self, f"vpad{player}", vp)
+            ini = ini.rstrip() + "\n\n" + pso_coop_setup.xinput_pad(pad_base, player, vp.slot)
+        return ini
+
     def send_input(self, events: list[dict], polite: bool = False) -> dict:
+        # Player 1 on the virtual pad: focus-independent, so no polite/focus gating (the operator's own keyboard is
+        # never touched - the bot presses a controller, not keys).
+        if self.vpad is not None:
+            return self.vpad.apply(events)
         # win_send_keys already maps standard pad names to keyboard keys. Translating
         # them here as well makes A -> x -> s (Dolphin X), so menus ignore A.
         # polite: autoplay's own input on a PC the operator may be using (bot demos): never takes their keyboard
@@ -3167,6 +3325,10 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         return win_send_keys(self.proc.pid, rows, polite=True) if polite else win_send_keys(self.proc.pid, rows)
 
     def send_input_player(self, events, player=1, polite=False):
+        # Player 2/3 on their own virtual pad (co-op): focus-independent, raw gBox pad names straight to the pad.
+        vp = getattr(self, f"vpad{player}", None) if player in (2, 3) else None
+        if vp is not None:
+            return vp.apply(events)
         from .pso_coop_setup import input_rows
         if player == 2 and self.coop_players != 2:
             raise ValueError('Player 2 was not connected at launch')

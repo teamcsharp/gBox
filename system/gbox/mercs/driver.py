@@ -38,6 +38,13 @@ class Driver:
         """() -> the button the game asks for (RAM), raising reactions.Unknown when RAM can't tell; None: none."""
         return None
 
+    def prompt_vision(self, m, stats: dict):
+        """() -> the button the game asks for, seen on the capture frame (gbox.mercs.qte vision), or None - the engine's
+        reactions.PromptPresser uses it only when prompt_source can't tell (QTEs on a title with no RAM map yet, or a
+        frame where a RAM read tore). None (the default): this driver has no vision fallback wired. A driver that reads
+        prompts in its own tick (re5_switch, re6_switch) returns None here so the engine never double-presses."""
+        return None
+
     def prompt_keys(self, button) -> list:
         """A prompt's button -> the chords to press ("a+b" -> [("a", "b")])."""
         return [tuple(str(button).split("+"))]

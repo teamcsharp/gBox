@@ -63,10 +63,14 @@ def observe(frame):
         with Image.open(io.BytesIO(frame)) as source:
             if not (320 <= source.width <= 2048 and 240 <= source.height <= 2048):
                 return result
-            if source.size in ((960, 540), (1031, 580)):
-                # Both exact sizes were captured from this same render viewport:
-                # adapter PNG 1031x580 and its API preview 960x540. Normalize only
-                # these observed sizes; retain pillarbox and all label proofs.
+            if source.size in ((960, 540), (1031, 580)) or abs(source.width / source.height - 16 / 9) <= .02:
+                # These captures share one render viewport + pillarbox: the i9 adapter PNG
+                # 1031x580 and its 960x540 API preview, and lilspark's full Xvfb display
+                # 1280x720. Every 16:9 PSO frame carries the same 4:3 game content centred
+                # with equal side bars, so a uniform downscale to 960x540 reproduces the exact
+                # canonical layout these masks were built for (1280x720 -> 960x540 is a flat
+                # 0.75x). The pillarbox black-bar gate below still rejects a non-pillarboxed
+                # frame, so broadening the accepted size adds no false-positive surface.
                 image = source.convert('RGB').resize((960, 540), Image.Resampling.LANCZOS)
                 # Separately observed capture layout. Do not stretch a crop or
                 # a different render viewport into the old menu coordinates.
@@ -74,7 +78,9 @@ def observe(frame):
                 if any(float((pixels[20:520, left:right].max(2) <= 12).mean()) < .995
                        for left, right in ((20, 140), (820, 940))):
                     return result
-                result['layout'] = '960x540_pillarboxed' if source.size == (960, 540) else '1031x580_pillarboxed'
+                result['layout'] = {(960, 540): '960x540_pillarboxed',
+                                    (1031, 580): '1031x580_pillarboxed'}.get(
+                                        source.size, f'{source.width}x{source.height}_16x9_pillarboxed')
                 return _observe_wide(image, result)
             # Capture coordinates are normalized only for the demonstrated full
             # Dolphin framing. Crops, unrelated aspect ratios and window chrome
@@ -167,16 +173,28 @@ def _observe_wide(image, result):
     """Only the actually captured 960x540 English layout and saved buddies."""
     found = []
 
+    def region(name):
+        # base mask, or whichever separately-captured *_live / *_live_other variant scores highest. For a name with
+        # no live variant this is exactly the base score, so widening matches() to use it is backward-compatible; it
+        # only teaches the live lilspark render where a *_live mask has been registered (the title_license pattern).
+        return max(_text(image, 'w_' + name),
+                   *(_text(image, 'w_' + name + suffix) for suffix in ('_live', '_live_other')
+                     if 'w_' + name + suffix in _TEXT), 0.)
+
     def matches(*names, threshold=.8):
-        return all(_text(image, 'w_' + name) >= threshold for name in names)
+        return all(region(name) >= threshold for name in names)
 
     def record(menu, selected, index, player=1, **details):
         found.append(dict(menu=menu, selected=selected, option_index=index, player=player, **details))
 
     # This observed title also occurs while PRESS START is faded out. Require
     # all five static title/licensing regions and exclude the main menu.
-    title_start = matches(
-        'title_wordmark', 'title_online', 'title_episode', 'title_license', 'title_copyright', threshold=.84)
+    # The live lilspark 1280x720 render scores the registered title_license mask at .80, just under this gate, which
+    # left the PRESS START title unrecognised live (2026-11-04) - so each static region also accepts its separately
+    # captured *_live variant (the established online/offline _live pattern). The five-region conjunction and the
+    # main-menu exclusion below are unchanged: this teaches the live render, it does not relax the proof.
+    title_start = all(region(name) >= .84 for name in
+        ('title_wordmark', 'title_online', 'title_episode', 'title_license', 'title_copyright'))
     main_options_visible = any(_text(image, 'w_' + name) >= .6
         for name in ('online', 'offline', 'options', 'website'))
     if title_start and not main_options_visible:
@@ -209,6 +227,12 @@ def _observe_wide(image, result):
                              ((334, 323, 338, 487), .9), ((623, 323, 626, 487), .75)))
     result['menu_visible'] = bool(title_start or title_main or title_mode or title_character or title_ready or
                                   title_options or forest_label or expanded_labels or quit_title or after_title or sum(score >= .72 for score in start_scores) >= 4 or sum(score >= .8 for score in p2_start) >= 5)
+    # The PSO wordmark ("PHANTASY STAR ONLINE") is present on the title and the main menu, and absent on every
+    # cinematic / attract / in-game screen. A low (.5) presence threshold is a robust "this is the title or the main
+    # menu" signal even on an animation frame where the full menu_visible gate momentarily dips - the campaign's
+    # pre-gameplay cinematic/attract skip uses `not wordmark` so a blind A can never land on the title or main menu
+    # (which would enter ONLINE) while still firing on a bright attract movie / intro cinematic.
+    result['wordmark'] = bool(region('main_title') >= .5 or region('title_wordmark') >= .5)
     if (forest_label and forest_panel and hud_visible and
             _selected(image, [(340, 328, 620, 342)], minimum=.45) == 0):
         record('transporter_forest', 'FOREST 1', 0, player=2, observed_episode=1, destination_floor=1)
@@ -217,12 +241,13 @@ def _observe_wide(image, result):
                       minimum=.45, maximum_other=.07) == 0):
         record('transporter_forest', 'FOREST 1', 0, player=2, observed_episode=1, destination_floor=1)
 
-    # Preserve the old sampled text and the independently captured current
-    # Online/Offline glyph variants. Each label still needs its own high score.
-    main_labels = (max(_text(image, 'w_' + name), _text(image, 'w_' + name + '_live'),
-                       _text(image, 'w_' + name + '_live_other')) >= .76
-                   for name in ('online', 'offline'))
-    if title_main and all(main_labels) and matches('options', 'website', threshold=.76):
+    # The SELECTED option carries an orange highlight bar, so its white-text label mask fails - requiring all four
+    # labels left the main menu unrecognised on exactly the OFFLINE-highlighted state the nav needs (0/8 live frames,
+    # 2026-11-04). Require the wordmark + a MAJORITY (>= 3 of 4) of the white labels, so the one highlighted option
+    # may fail, and confirm via the orange selection bar (_selected, which also pins which row is chosen). This still
+    # needs the title_main wordmark + three independent labels + a real highlight, so it does not relax the proof.
+    main_scores = [region(name) for name in ('online', 'offline', 'options', 'website')]
+    if title_main and sum(score >= .76 for score in main_scores) >= 3:
         index = _selected(image, [(354, y, 605, y + 10) for y in (352, 387, 424, 460)], minimum=.08, maximum_other=.04)
         if index is not None:
             record('main', ('Online Game', 'Offline Game', 'Options', 'Website')[index], index)
@@ -588,3 +613,19 @@ _TEXT.update({'w_p2_start_item': {'box': (188, 325, 269, 344), 'shape': (19, 81)
 
 # Static labels from the exact expanded P2 destination fixture; no full frame.
 _TEXT.update({'w_expanded_forest2': {'box': (420, 346, 540, 369), 'shape': (23, 120), 'data': 'c$}5cI|{=v3<lueaY>evX4DXHj}XY>tyeMR0v$W`K_OEQ)sVG^FysOrJD5<}F>TjqkoXXiK)|}##JmTHi=5RkE9Vam=RoMGAo0k6F0$z)$(%VdGaOr4{n0Q5SKNQRGK)BC+MZyUWuP~$SN6oLQ@1A6Or5wTgw0J_RaPR<B<9QAg-w_EjMS4P(SNB%=8I_~i<{WFH}kUcQ6JSkBAW'}, 'w_expanded_cave1': {'box': (420, 369, 540, 392), 'shape': (23, 120), 'data': 'c${NkAPw+02yn2}H!vQ6aAglzNbn>uFhjWp2^Ks&4sfmlgv$WsCMeYKNFcZl3^{E0xX0KG>Kl-_OsHID10=<a|CtkzEHXsnHZwjza19a}k+~L+85<8Iz`62=85<5DEMg-zV9)^o$51G}'}, 'w_expanded_cave2': {'box': (420, 392, 540, 414), 'shape': (22, 120), 'data': 'c$|&TF%AMD5Czar*q{Z8mUOr`z>bomkl0%60Zew(i;-wN2Pd$$QxI56{l#Qn^=E(|;dy96EY!iOVJ7}6w9!iG!BwI0i4LOD?@n@^C<`5qgK~gcC^Bv1U2HutH9mxy34S3rX%CH0ZX6g@j&JT=xi$ChuPk<&@k>!@59}N|^^H-Ou&Uf#7*T)l|9k*K!6O#'}, 'w_expanded_cave3': {'box': (420, 414, 540, 436), 'shape': (22, 120), 'data': 'c${NkAPw+02yn2}H!yyHaAglzNbn>uFhjWp2^Ks&4h+l^5N-m5%Ld~r)bL0+Ffc*64h%VLKrRCs*8;{p#%568!0-XiWk%;B>1F)SoPgja7#?SS0JN6}#%*Rq;u<6~gSk+}7LOSl4<x|dEPt4>;XwTXn2(r<4jBMN1S4h'}, 'w_expanded_mine1': {'box': (420, 436, 540, 459), 'shape': (23, 120), 'data': 'c${NkAQ7<1F);jNV1n`_*z7F?|1q$`xcod8f(;D(P_7I=kBuM$gFGsi8Nszf;>yYMm?3ked5nQZp>Y4fxx&Ug#uFQmxrP%FdWApp7<@!<1s`K@3z4{oQMdw!<qQmuAh?I@83YjiB_03(+`bnh'}, 'w_expanded_mine2': {'box': (420, 459, 540, 482), 'shape': (23, 120), 'data': 'c${NkAPq>c*$W8%V_-i3<+96J2sSYAKY()ic`O7O7-SM4Tp4~I8z5Jr0F?`sm6PYO19BN)TxlM25cdI`YYeoA5o(dRF__ET0O1N7^B7KKU|@&3O87I6;YS7rHYiu{Gmim~%LC&+26JVQxP?Gxz_^Ej+y*#T;E=t6;XelX2P6gzIsgFl$sG{'}})
+
+# Live lilspark 1280x720 Xvfb title render (downscaled to the canonical 960x540), captured 2026-11-04: the same
+# "Licensed by NINTENDO" line whose original mask scores only .80 on this render. Registered as a *_live variant
+# (see region() in _observe_wide); the base mask and every other proof region are unchanged.
+_TEXT.update({'w_title_license_live': {'box': (252, 480, 453, 503), 'shape': (23, 201), 'data': 'c-qBKKTE?v9Q|GHNNzZj>msKVo9Gv~QiqC#BnX}S0FD;|P7Zc+yw(yCvbZ_=5%e2e66sX@453{eI(85>g9R5sC*Sno{ekxY{t-xj5ep&!CYDyXe3Qu<*Jk4YAHZfwfycTnGc435t2qG9WUaMvMSN|`jS$f$R*9=9Qcmv2NPvxu>^u0uX<F~{L*JLykazVQdBy5AWYr2kPT+L5D|x3lpu(J^EXY$~rvl|E?5FIWdiCv;sUFPWJ;<G-DU>Z}J!KcfhGA*T9i74luc~zk@s_4%)t-eRNHArls})rvoj@=#WRTn-r1@w}h@vOrxl2o~MPY1LR?QIFFPb6b*j<QukJWBeBd4uQbV=HYe(5YcT)@D?wPPfVU0?ZONkYB-{ZjtZ*W%B@FYyUEWmz='}})
+
+
+# Live lilspark 1280x720 main-menu render (downscaled to canonical 960x540), captured 2026-11-04: the
+# main menu static labels whose base masks score under the .76/.80 gates on this render. Registered as
+# *_live / *_live_other variants; region() in _observe_wide accepts them. Base masks unchanged.
+_TEXT.update({
+    'w_main_title_live': {'box': (339, 293, 670, 324), 'shape': [31, 331], 'data': 'c-n20L5t)>6vtnvr5ho39rh9-lX5S5lb+p!kqIfm58zjrrVrkv$2~X;&7_uw$z_=KIO1Y|1&`}Rs|j=zmYu5y!Nd&Pmqn^+&|0=8&zD|Aneow7hhM$qz53_<1MqKnj+SG%9nno7Dgdl*CwlrOX(<u^=aKPEzzs;Ww-fu_A`xeZ9#-PI0<;{dc!sDz(DQ-eu9xmoAX>yWYdN-*(I9Pg4Enni+Ukx&myCWFz#KH%*Fwpz&yFe35i<|~P*UH2Bgg|PR81=r@>zujJVR^<QGbb=>1qmc`B>2ja?Gb$)rzOMoE4ZOcf4c3YHJdhrc?&sH>A=AT{drd(MmToXtNs4#-KZd=}9osd|p&sxvtZJ#OFs?+oKZ8P-5;R@<`w_VDp}g;m97dd7g9%m3!B#B$R$^r)#ckmZPbPy=x8ox@@3#Fo4VBb(a{74{Yh>qnzWfh34EK4uY|?(2E1=puDF)oS!w&SB$UIzzkmws|=q`z_bGEf*93eV&Q_T;oF;y*ftJErYVHmI~_pwX9STb(1pYl1Qj)2gr{Dbezu<0%7+lf*#B;6z!i!WHpAkK7_g9gCK!LEKe#-zufB;r#VDD*2xP^6nZR+z(H;>47|%{6_rD0<`np+sd;d!qwi8czw&<gl1K_--;}8SzCr!Pr&p&y5KW?_GPjyfJk?vy~jA)dM_G*%Hxf0J)@Xq5la{E6`-urm!9{p^gye?lzocRyXr6I&5r9CdLFDuwz$$GK+$iHK8G2f3!%2!WHRHM^a=7rix$%FChCnRNgem5!asfFBbS4WzK+4jPKKWvnBu~(3kMd4>#1!YiI^~Kfjo$}7fBMe}4X&*-5orXyy3vIFjjTz1D1cGLeBnNxB_q|@6%LWqJipGF>J;OYaPTI_-#6sX=gR^yGjEwJY${!AS?wFO33M1-fNxt9}pA%DTi8RzU6|7u+{_ggfN9sDS>cPnnY)Xcq`L9*ygF|jSO;a|RxMDeYsD{9PR0;eZp*~@*PmU0lSOUI>x)lndfw-{StEx}-lc)s#MqVWkchNEMI+u2_M0#OlPg)wR7;X?XyxHn9Dsn#E@E4*HE={NHf4@N*7zs)7@*m=v-G4VHH-qge+@!nwzX3at9wY'},
+    'w_options_live': {'box': (428, 420, 535, 442), 'shape': [22, 107], 'data': 'c-oDQF$%&k7=^zyg+?f`V+X124IDF8Ts%fyoHKSzMX1N|2!ULrN5~OOog5tc;K9#(@cs|W2xQ4};g1{$w;mNOR#BZS^wMYOhDPeOGV}yL`LlQI3$4P-js_zUaiPBH{Y=5Y{eURD@Lq^HWpH%4N!c+iL`&YzMQ|%blSZG_60Ng7eGk5RH0ZiiD8?b<(u**qhMoE%Uak27)@+en?bxahILRjj'},
+    'w_website_live': {'box': (429, 454, 534, 477), 'shape': [23, 105], 'data': 'c-nQ2y$!-J5QRV6QR0Fhmk326Fa<@52wH~72$U(1utLiKjKK)bCLSRpa1l)q@S4+i_wMPzr|cA#<S0z!jBO_Sq>Ol(Gxnh68Z}ueW=dK?)QuDzm0(l%7@VcxLTloE<?R?<P^sZyYstxc#+p_oC3qc-pZlE7L9H4SbX?e@yp-yBjeVCT+hh|Q4+g~Q^w{VmO&S&6?RTsMBVW?|)-Z*Z|9SzbuprO'},
+    'w_offline_live_other': {'box': (409, 382, 560, 406), 'shape': [24, 151], 'data': 'c-o~;D;B~q5S+Aq5YY#b6+B*!5D=Im`nd=^E>MX;1Wd2MadMO%0a?|@Zc<7OiipYX>||yG{65!Nz1;{W+`30Z&4HQaT)Id+`g#?pl%epv4YkQ8eF?5(+Zei{1Ooa21xb&)f(1tkIw#QBr<4qu;l@%)kYt&#EZRM}qY<Pru{XZ3q0|KGRD^x%jvylsXcsm?YvIz|Y7FI_LNU++$lE>!g$HlSf~r#!!OcIaBc(@0Gg5vYGbLWoQ=|N_f~>xeKSMin6c+!UH>27iQ2'},
+})

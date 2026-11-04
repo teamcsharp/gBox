@@ -2288,6 +2288,7 @@ class Bot:
         self.hazards: list = []                              # [(x, z, until)]
         self.hazard = None                                   # the mark he stands in (x, z), or None
         self._hz_hp, self._big_hp = None, {}
+        self._hz_break_at = None                             # #5056: when the last ranged hit landed (for _hazard_break_due)
         self.sweep_n: dict = {}                              # aimed shots at each target this sweep
         self.sweep_seen: set = set()                         # the targets shot at (targets_per_min)
         self.sweep_t0, self._edist = None, {}                # the first aimed shot; each one's last distance (closing)
@@ -3317,6 +3318,31 @@ class Bot:
         hot = any(flat(e) <= FIRE_ZONE_R and abs(e["pos"][1] - py) <= AIM_DY and not self.is_blocked(e, now) for e in live)
         if hot:
             self.stats["fire_zone_s"] = round(self.stats.get("fire_zone_s", 0.0) + TICK_S, 2)
+        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R — the damage came from a ranged enemy
+        # (or a hazard), not a melee attacker. Break out of the current decision mode (cc_kick, quick_turn,
+        # bonus_run, etc.) and turn to fight the ranged enemy or move to safety, rather than continuing the
+        # current action that left the bot exposed.
+        if not hot and self._hazard_break_due(p, live, flat, now):
+            self.stats["ranged_breaks"] = self.stats.get("ranged_breaks", 0) + 1
+            cam = snap.get("camera")
+            yaw = cam["yaw"] if cam else p["rot"]
+            bearing = lambda e: wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - yaw)
+            vis = [e for e in live if not self.is_blocked(e, now)]
+            # turn to the nearest visible ranged enemy and fire
+            if vis:
+                tgt = min(vis, key=flat)
+                err = bearing(tgt)
+                self._gun_down()
+                return self._go("turn", "ranged_break", {"hold": self._turn(err)},
+                                f"just took ranged damage: turning to the one at {flat(tgt):.0f} cm")
+            # no visible enemy: move toward open space away from the nearest enemy
+            near_e = min(live, key=flat, default=None)
+            if near_e is not None:
+                np = near_e["pos"]
+                return self._go("walk", "ranged_break",
+                                {"hold": self._stick(self._open_heading(p, live, np), yaw)},
+                                "just took ranged damage: moving to open space")
+            return self._go("no_foes", "ranged_break", {"hold": ()}, "just took ranged damage: no foes to turn to")
         ran = None if hot else self._bonus_run(p, live, flat, snap, now)   # phase 1: the bonuses first
         if ran is not None:
             return ran
@@ -3324,7 +3350,7 @@ class Bot:
         if saved is not None:
             return saved
         high = self._off_floor(p, snap, now) if not live else []   # nobody on his floor: one above or below him
-        if self.hazard is not None and not live:                 # nobody to fight and in smoke: out of it
+        if self.hazard is not None and not live and not self._hazard_break_due(p, live, flat, now):  # nobody to fight and in smoke: out of it
             cam = snap.get("camera")
             return self._go("walk", "hazard_out", {"hold": self._stick(self._open_heading(p, live, self.hazard),
                                                                        cam["yaw"] if cam else p["rot"])},
@@ -4039,12 +4065,21 @@ class Bot:
             if not any(math.hypot(px - x, pz - z) <= HAZARD_R * 0.5 for x, z, _u in self.hazards):
                 self.stats["hazard_marks"] += 1
             self.hazards.append((px, pz, now + HAZARD_S))
+            # #5056: record the moment of the ranged hit so _hazard_break_due can fire for HAZARD_BREAK_S seconds
+            self._hz_break_at = now
         self._hz_hp = hp if isinstance(hp, int) else self._hz_hp
         self.hazards = [h for h in self.hazards if h[2] > now][-12:]
         inside = [(x, z) for x, z, _u in self.hazards if math.hypot(px - x, pz - z) <= HAZARD_R]
         self.hazard = min(inside, key=lambda h: math.hypot(px - h[0], pz - h[1])) if inside else None
         if self.hazard is not None:
             self.stats["hazard_s"] = round(self.stats["hazard_s"] + TICK_S, 2)
+
+    HAZARD_BREAK_S = 2.5   # #5056: after a ranged hit, break out for this long
+    def _hazard_break_due(self, p, live, flat, now) -> bool:
+        # #5056: True for HAZARD_BREAK_S seconds after a ranged hit (HP drop with no enemy within HAZARD_CONTACT_R).
+        # The bot should break out of its current decision mode (cc_kick, quick_turn, bonus_run, etc.) and fight
+        # the ranged enemy or move to safety, rather than continuing the action that left it exposed.
+        return self._hz_break_at is not None and (now - self._hz_break_at) < self.HAZARD_BREAK_S
 
     # --- taunts -----------------------------------------------------------------------------------------------------
     def _windup_tick(self, p, snap, now) -> None:
@@ -5058,6 +5093,9 @@ class Bot:
             return None
         self.stats["bonus_time_s"] = round(self.stats["bonus_time_s"] + TICK_S, 2)
         if any(flat(e) <= BONUS_BLOCK_R for e in live):          # one in the way: fought first
+            self.run_hit_since = None
+            return None
+        if self._hazard_break_due(p, live, flat, now):          # #5056: just took HP loss with nobody near: bail, fight
             self.run_hit_since = None
             return None
         reach = lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz)

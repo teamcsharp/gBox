@@ -37,8 +37,10 @@ test('a refused broadcast reports the error and preserves the selected stream',a
   await assert.rejects(x.ctl.broadcast(b.session_id),/session ended/);assert.equal(x.ctl.preference.sid,a.session_id);
 });
 
-test('broadcast actions are separate buttons, disabled offline, and escape titles',()=>{
-  const html=P.html(P.candidates([a,{...b,worker_online:false,title:'<b>PSO</b>'}]),a.session_id,undefined,true);
+test('broadcast actions are separate buttons, disabled until ready, and escape titles',()=>{
+  // A live-but-not-yet-ready (starting) card is still listed and disabled; dead offline cards are filtered out entirely.
+  const hosts=[{name:'i9',online:true,current_run:{session_id:b.session_id,phase:'starting'}}];
+  const html=P.html(P.candidates([a,{...b,title:'<b>PSO</b>'}],hosts),a.session_id,undefined,true);
   assert.match(html,/data-stream-broadcast="auto"/);
   assert.match(html,/data-stream-broadcast="i9-one" disabled/);
   assert.match(html,/aria-label="Broadcast &lt;b&gt;PSO&lt;\/b&gt; on i9"/);
@@ -157,11 +159,12 @@ test('automatic native presentation waits while an explicit saved PiP is restori
   vm.runInContext(prefix+'throw Error("Automatic full-app presentation stole saved PiP"); } finally { EMB.busy=false; }}',ctx);
   await ctx.embedTick();
 });
-test('warm predecessors and handovers never become selectable; offline and starting cards explain their state',()=>{
+test('warm predecessors and handovers never become selectable; dead offline sessions are hidden, starting cards shown',()=>{
   const warm={...a,session_id:'parked',warm:true}, predecessor={...a,session_id:'previous'};
   const data=[warm,predecessor,c,{...b,worker_online:false}];
   let hosts=[{name:'Spark',online:true,current_run:{session_id:c.session_id,phase:'starting',mercmode_predecessor:{session_id:'previous'}}}];
-  assert.deepEqual(P.candidates(data,hosts).map(e=>[e.row.session_id,e.status]),[[b.session_id,'offline'],[c.session_id,'starting']]);
+  // The offline i9 card is dropped entirely (operator: never list dead instances); only the live starting card remains.
+  assert.deepEqual(P.candidates(data,hosts).map(e=>[e.row.session_id,e.status]),[[c.session_id,'starting']]);
   assert.equal(P.resolve({sid:'previous',worker:'Spark'},data,hosts),null);
   hosts[0].current_run.phase='playing';hosts[0].current_run.handover={};
   assert.equal(P.status(c,hosts),'switching');assert.equal(P.resolve({sid:'previous',worker:'Spark'},data,hosts),null);
@@ -214,9 +217,9 @@ test('closing previews aborts the current request and prevents any remaining fra
     setTimeout:(fn,ms)=>{timers.set(++counter,{fn,ms});return counter;},clearTimeout:id=>timers.delete(id)});
   p.stop();await p.ready;assert.equal(aborted,true);assert.deepEqual(loaded,[1]);assert.equal(timers.size,0);
 });
-test('cards escape captions, identify sessions and expose selected/offline states',()=>{
-  const html=P.html(P.candidates([a,{...b,worker_online:false,title:'<img onerror=attack>'}]),a.session_id);
-  assert.match(html,/aria-pressed="true"/);assert.match(html,/title="Spark · Resident Evil 5 · spark-one"/);assert.match(html,/PC offline/);
+test('cards escape captions, identify sessions and expose the selected state',()=>{
+  const html=P.html(P.candidates([a,{...c,title:'<img onerror=attack>'}]),a.session_id);
+  assert.match(html,/aria-pressed="true"/);assert.match(html,/title="Spark · Resident Evil 5 · spark-one"/);
   assert.doesNotMatch(html,/<img onerror=/);assert.match(html,/&lt;img onerror=attack&gt;/);
 });
 test('a timed-out URL lookup cannot clear a newer preview or its load handlers',async()=>{

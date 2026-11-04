@@ -1814,6 +1814,11 @@ class Bot:
             self.metrics.reset()
             for k in ("aim_guard", "laserless_visibility", "last_shot"):   # never last round's in this round's telemetry
                 self.stats.pop(k, None)
+            try:                                            # tier-a learned survival constants for this stage, and the
+                from .. import tuning                       # tuning_version stamp the loop reads back (gbox/mercs/tuner.py)
+                tuning.apply(re5_combat.MAP_ID, tuning.stage_name(STAGE_NAMES, snap.get("stage_index")), self.stats)
+            except Exception:                               # noqa: BLE001 - tuning never stops a round
+                pass
             # round_gap_s: since the last round ended (results / death), and the way it came (Pace: dead/retry,
             # results/same, results/character ...)
             round_map.gap_start(self.stats, now,

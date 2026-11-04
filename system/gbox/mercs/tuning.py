@@ -39,6 +39,10 @@ PARAMS = {
         're6_switch.KEEP_R': (200.0, 280.0, 20.0),         # one this near: the same
         're6_switch.TABLET_HP': (0.6, 0.8, 0.05),          # a tablet at this much health or less while free
         're6_switch.BOMB_MARGIN_CM': (200.0, 400.0, 50.0),  # the learned blast radius + this: never set off inside
+        're6_switch.QT_BEHIND_R': (300.0, 450.0, 50.0),    # a threat this far behind triggers the quick turn (grabbed from behind)
+    },
+    'BLUS30491': {
+        're5_ps3.HEAL_CRITICAL': (0.25, 0.4, 0.05),        # heal with a Majini near once health is under this (deferral floor)
     },
 }
 PACKAGE = 'gbox.mercs.titles.'

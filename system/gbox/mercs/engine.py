@@ -130,7 +130,10 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     role_signature = session_runtime.signature() if session_runtime is not None else None
     bot = brain or (HumanObserver(stats) if observe_only else drv.brain(m, stats, clock, learn_dir=learn_dir))
     pp = PromptPresser(None if observe_only else drv.prompt_source(m, stats), keys=drv.prompt_keys, stats=stats,
-                       unknown=getattr(drv, "prompt_unknown", (LookupError,)))
+                       unknown=getattr(drv, "prompt_unknown", (LookupError,)),
+                       # QTE vision fallback (gbox.mercs.qte): RAM first, vision only when RAM can't tell, so a title
+                       # with no RAM map - or a frame where a RAM read tore - still answers its prompts (grab escapes).
+                       vision=None if observe_only else (getattr(drv, "prompt_vision", lambda *_: None)(m, stats)))
     held: set = set()
     gone_since = lost_since = None
     hits_seen = stats.get("hits_taken", 0)

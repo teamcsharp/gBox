@@ -1743,6 +1743,66 @@ def test_mid_field_reload_trusts_prior_verification_only_mid_run():
     assert C.mid_field_reload(solo) is False                           # needs both players
 
 
+def test_entry_mapping_decision_never_terminates_the_lobby_entry(monkeypatch):
+    """PIONEER-2 UNBLOCK: a controller precondition (probe_failed -> Unsupported)
+    raised at the lobby/entry path must NEVER stop play(). The bot was stranded at
+    CONTROLLER VERIFICATION because the fresh-launch two-pad town probe killed the
+    loop even though the mapping was already verified. entry_mapping_decision() is
+    the guard: pads proven once on this adapter (the marker survives a bot-reload -
+    play() re-runs, `ad` persists) are TRUSTED on a later entry, so a probe_failed
+    can never re-block entry once the mapping is verified. The only non-entering
+    outcomes still never terminate during play - they retry."""
+    driver = SimpleNamespace()
+    # 1. Verified-before on this adapter -> TRUST and ENTER, continuous or not.
+    verified = SimpleNamespace(_pso_controller_ever_verified=True)
+    monkeypatch.setattr(C, "continuous_requested", lambda d, s: False)
+    assert C.entry_mapping_decision(verified, driver, "s") == "trust"
+    monkeypatch.setattr(C, "continuous_requested", lambda d, s: True)
+    assert C.entry_mapping_decision(verified, driver, "s") == "trust"
+    # 2. Never verified, continuous play -> wait + retry (spawn not ready), never die.
+    cold = SimpleNamespace()
+    assert C.entry_mapping_decision(cold, driver, "s") == "retry"
+    assert C.entry_mapping_decision(SimpleNamespace(_pso_controller_ever_verified=False),
+                                    driver, "s") == "retry"
+    # 3. Never verified, one-shot cold start -> raise, so a genuine first-run
+    #    controller misconfiguration still surfaces (not the reported failure).
+    monkeypatch.setattr(C, "continuous_requested", lambda d, s: False)
+    assert C.entry_mapping_decision(cold, driver, "s") == "raise"
+
+
+def test_structural_mapping_ok_is_the_last_resort_entry_gate():
+    """DIRECTIVE #3: when the town movement receipt can't complete, a continuous
+    campaign enters anyway - but ONLY if the live native state structurally confirms
+    a valid two-player co-op (pad1->slot0, pad2->slot1, distinct players). It never
+    fabricates a mapping and never crashes on a not-yet-ready reader."""
+    def coop(**over):
+        players = {1: {"ptr": "80D01000", "class": "TObjPlayer", "entity_id": 0, "controller": 1,
+                       "x": 0., "z": 0., "room": 0, "hp": 40},
+                   2: {"ptr": "80D02000", "class": "TObjPlayer", "entity_id": 1, "controller": 2,
+                       "x": 3., "z": 0., "room": 0, "hp": 40}}
+        s = {"verified": True, "cooperative": True, "phase": 14, "floor": 0,
+             "players": players, "entities": list(players.values())}
+        s.update(over)
+        return s
+    assert C.structural_mapping_ok(SimpleNamespace(snapshot=coop)) is True
+    # Not a cooperative session -> keep waiting, never trust.
+    assert C.structural_mapping_ok(SimpleNamespace(snapshot=lambda: coop(cooperative=False))) is False
+    # Both pads resolve to the SAME native player -> never trust a bad mapping.
+    def same_player():
+        s = coop(); s["players"][2]["ptr"] = "80D01000"; return s
+    assert C.structural_mapping_ok(SimpleNamespace(snapshot=same_player)) is False
+    # A controller/player index disagreement -> never trust.
+    def swapped():
+        s = coop(); s["players"][2]["controller"] = 1; return s
+    assert C.structural_mapping_ok(SimpleNamespace(snapshot=swapped)) is False
+    # A not-yet-ready reader is swallowed as "not ok" (wait), never raised.
+    def boom():
+        raise RuntimeError("reader not ready")
+    assert C.structural_mapping_ok(SimpleNamespace(snapshot=boom)) is False
+    # The bound is small so the retry window is ~15-30s, not forever.
+    assert 2 <= C.MAPPING_PROBE_FALLBACK_ATTEMPTS <= 6
+
+
 def test_survival_tick_keeps_both_players_unkillable_and_mirrors_flat_keys(tmp_path, monkeypatch):
     """NEVER-DIE: pso_coop drives pso_survival.apply_survival directly (because
     pso_master_build can't hot-reload) for BOTH players every tick, fail-soft, and

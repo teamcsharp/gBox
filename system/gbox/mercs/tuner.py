@@ -47,8 +47,12 @@ RULES = {
     '01002A000CD48000': (
         ('crowd', 're6_switch.CROWD_R', ('crowd_4_in_2m', 'crowd_gun_down'), 1.0),
         ('keep', 're6_switch.KEEP_R', ('grabbed_front', 'faced_melee'), 1.5),
+        ('behind', 're6_switch.QT_BEHIND_R', ('grabbed_from_behind',), 1.0),
         ('tablet', 're6_switch.TABLET_HP', ('low_hp_heal_unused',), 0.1),
         ('bomb', 're6_switch.BOMB_MARGIN_CM', ('own_bomb',), 0.3),
+    ),
+    'BLUS30491': (
+        ('heal', 're5_ps3.HEAL_CRITICAL', ('low_hp_heal_unused', 'low_hp_no_heal'), 0.15),
     ),
 }
 AVOID = 'avoid'
@@ -80,7 +84,7 @@ class Tuner:
     def tune(self, labelled, deaths):
         """One look at every title's stages. -> the log lines written this pass."""
         from . import damage_clusters as C
-        from .learning import assign, fault_rate
+        from .learning import assign
         state, lines = self.state(), []
         for title, rules in RULES.items():
             gid = next((g for g, t in C.GAMES.items() if t == title), None)
@@ -92,63 +96,91 @@ class Tuner:
             dj, _u2 = assign([(i, s, True) for i, s, _e in deaths if i.get('game_id') == gid], rounds)
             dead = {rid: [s for _i, s, _n in items] for rid, items in dj.items()}
             ts = state['titles'].setdefault(title, {'overrides': {}, 'avoid': {}, 'stages': {}})
+            # The stage-agnostic survival constants are trialed once, pooled under '*', over EVERY round of the title:
+            # tuning.apply applies '*' params to every stage and each round carries the file's version, so the whole
+            # day's rounds (~36) count toward the EVAL_ROUNDS confirmation instead of a single stage's handful (~4.5),
+            # which is what left most trials to expire unconfirmed. Dead-end avoid spots stay per-stage (positional).
+            lines += self.numeric_trial(title, rounds, ts, rules, joined, dead)
             groups = {}
             for r in rounds:
                 groups.setdefault(r['stage'] or '*', []).append(r)
             spots = self.spots(title)
             for stage, group in sorted(groups.items()):
-                st = ts['stages'].setdefault(stage, {'trial': None, 'blocked': {}})
-                trial = st['trial']
-                if trial:
-                    lines += self.judge(title, stage, ts, st, group, joined, dead)
-                    continue
-                recent = group[-TRIGGER_ROUNDS:]
-                if len(recent) < TRIGGER_ROUNDS:
-                    continue
-                pick = None
-                for rule, name, sigs, floor in rules:
-                    if (st['blocked'].get(name) or 0) > self.now():
-                        continue
-                    m = metric(recent, joined, dead, sigs)
-                    if m is None or m < floor:
-                        continue
-                    current = ts['overrides'].get(stage, {}).get(name)
-                    base = current if current is not None else (ts['overrides'].get('*', {}).get(name)
-                                                                if stage != '*' else None)
-                    base = base if base is not None else self.defaults(name)
-                    new = T.clamp(title, name, base + T.PARAMS[title][name][2])
-                    if new is None or new == base:
-                        continue                         # at its bound
-                    if pick is None or m / floor > pick[0]:
-                        pick = (m / floor, rule, name, sigs, current, new, m)
-                fresh = [s for s in spots.get(stage, []) if s not in (ts['avoid'].get(stage) or [])]
-                if pick is None and fresh and (st['blocked'].get(AVOID) or 0) <= self.now():
-                    base = fault_rate(recent, title, 'reloc_dead_end') or 0.0
-                    pick = (0, 'dead_end', AVOID, ('round:reloc_dead_end',), list(ts['avoid'].get(stage) or []),
-                            (list(ts['avoid'].get(stage) or []) + fresh)[-T.AVOID_MAX:], base)
-                if pick is None:
-                    continue
-                _ratio, rule, name, sigs, old, new, base = pick
-                self.set(ts, stage, name, new)
-                version = self.write(title, ts)
-                st['trial'] = {'rule': rule, 'param': name, 'causes': list(sigs), 'old': old, 'new': new,
-                               'baseline': base, 'at': self.now(), 'version': version,
-                               'rounds_before': len(recent)}
-                lines.append(self.log(title, stage, 'trial', st['trial'],
-                                      f"{rule}: metric {base} per round over the last {len(recent)} rounds"))
+                if stage == '*':
+                    continue                             # the '*' slot is the pooled numeric trial above
+                lines += self.avoid_trial(title, stage, group, ts, spots, joined, dead)
         self.store.put(STATE, 'state', state)
         return lines
+
+    def numeric_trial(self, title, rounds, ts, rules, joined, dead):
+        """The pooled survival-constant trial under '*': judge the one in flight, or start one over all rounds."""
+        st = ts['stages'].setdefault('*', {'trial': None, 'blocked': {}})
+        trial = st['trial']
+        if trial and trial['param'] != AVOID:
+            return self.judge(title, '*', ts, st, rounds, joined, dead)
+        if trial:                                        # an avoid trial never lives under '*'; leave it to clear
+            return []
+        recent = rounds[-TRIGGER_ROUNDS:]
+        if len(recent) < TRIGGER_ROUNDS:
+            return []
+        pick = None
+        for rule, name, sigs, floor in rules:
+            if (st['blocked'].get(name) or 0) > self.now():
+                continue
+            m = metric(recent, joined, dead, sigs)
+            if m is None or m < floor:
+                continue
+            current = ts['overrides'].get('*', {}).get(name)
+            base = current if current is not None else self.defaults(name)
+            new = T.clamp(title, name, base + T.PARAMS[title][name][2])
+            if new is None or new == base:
+                continue                                 # at its bound
+            if pick is None or m / floor > pick[0]:
+                pick = (m / floor, rule, name, sigs, current, new, m)
+        if pick is None:
+            return []
+        _ratio, rule, name, sigs, old, new, base = pick
+        self.set(ts, '*', name, new)
+        version = self.write(title, ts)
+        st['trial'] = {'rule': rule, 'param': name, 'causes': list(sigs), 'old': old, 'new': new,
+                       'baseline': base, 'at': self.now(), 'version': version, 'rounds_before': len(recent)}
+        return [self.log(title, '*', 'trial', st['trial'],
+                         f"{rule}: metric {base} per round over the last {len(recent)} rounds")]
+
+    def avoid_trial(self, title, stage, group, ts, spots, joined, dead):
+        """Per-stage dead-end avoid spots; also drains any legacy per-stage numeric trial left in flight."""
+        from .learning import fault_rate
+        st = ts['stages'].setdefault(stage, {'trial': None, 'blocked': {}})
+        if st['trial']:
+            return self.judge(title, stage, ts, st, group, joined, dead)
+        recent = group[-TRIGGER_ROUNDS:]
+        if len(recent) < TRIGGER_ROUNDS:
+            return []
+        fresh = [s for s in spots.get(stage, []) if s not in (ts['avoid'].get(stage) or [])]
+        if not fresh or (st['blocked'].get(AVOID) or 0) > self.now():
+            return []
+        base = fault_rate(recent, title, 'reloc_dead_end') or 0.0
+        old = list(ts['avoid'].get(stage) or [])
+        new = (old + fresh)[-T.AVOID_MAX:]
+        self.set(ts, stage, AVOID, new)
+        version = self.write(title, ts)
+        st['trial'] = {'rule': 'dead_end', 'param': AVOID, 'causes': ['round:reloc_dead_end'], 'old': old,
+                       'new': new, 'baseline': base, 'at': self.now(), 'version': version,
+                       'rounds_before': len(recent)}
+        return [self.log(title, stage, 'trial', st['trial'],
+                         f"dead_end: {len(fresh)} new avoid spots over the last {len(recent)} rounds")]
 
     def judge(self, title, stage, ts, st, group, joined, dead):
         from .learning import fault_rate
         trial = st['trial']
         confirm = [r for r in group if r['ts'] >= trial['at'] and r.get('tuning_version') == trial['version']]
         if len(confirm) < EVAL_ROUNDS:
-            if not confirm and self.now() - trial['at'] >= EXPIRE_S:
+            if self.now() - trial['at'] >= EXPIRE_S:
                 self.set(ts, stage, trial['param'], trial['old'])
                 self.write(title, ts)
                 st['trial'] = None
-                return [self.log(title, stage, 'expired', trial, 'no round played with it: put back')]
+                return [self.log(title, stage, 'expired', trial,
+                                 f'{len(confirm)} of {EVAL_ROUNDS} rounds confirmed it in time: put back')]
             return []
         rounds = confirm[:EVAL_ROUNDS]
         if trial['param'] == AVOID:

@@ -1,0 +1,1208 @@
+{
+ "schema": "gbox.mercs.incident-replay/1",
+ "title": "01002A000CD48000",
+ "event_id": "1704bfdeaf9840429c4f39c3df9ce4a6",
+ "observed_at": 1793437301.2919304,
+ "hp_before": 900,
+ "hp_after": 600,
+ "hp_max": 900,
+ "loss": 300,
+ "held": [],
+ "snapshot": {
+  "player": {
+   "ptr": 400986509552,
+   "pos": [
+    -7470.375,
+    1800.107421875,
+    5498.6708984375
+   ],
+   "rot": 1.676293541060165,
+   "hp": 600,
+   "hp_max": 900,
+   "ammo": 7,
+   "state": 1,
+   "motion": 3844,
+   "tablets": 6,
+   "weapon_id": 7,
+   "equipped": 0,
+   "bomb": {
+    "count": 5,
+    "out": false
+   },
+   "nades": {
+    "275": [
+     9,
+     5
+    ],
+    "276": [
+     10,
+     5
+    ],
+    "277": [
+     11,
+     5
+    ]
+   },
+   "guns": {
+    "263": 0,
+    "274": 1,
+    "270": 2,
+    "264": 3,
+    "260": 4,
+    "261": 5,
+    "262": 6
+   },
+   "action": "cEm3200ActDashPress_PL"
+  },
+  "enemies": [
+   {
+    "slot": 0,
+    "ptr": 401028869488,
+    "pos": [
+     -8370.52734375,
+     1800.10986328125,
+     5355.1513671875
+    ],
+    "hp": 350,
+    "hp_max": 350,
+    "class": "uEm1200",
+    "action": "cEm1000ActWalkGunL"
+   },
+   {
+    "slot": 1,
+    "ptr": 400971210624,
+    "pos": [
+     -7657.078125,
+     1800.1097412109375,
+     4857.740234375
+    ],
+    "hp": 448,
+    "hp_max": 450,
+    "class": "uEm1200",
+    "action": "cEm1000ActBack"
+   },
+   {
+    "slot": 2,
+    "ptr": 401029951552,
+    "pos": [
+     -6500.2919921875,
+     1800.1099853515625,
+     5262.7060546875
+    ],
+    "hp": 324,
+    "hp_max": 450,
+    "class": "uEm1200",
+    "action": "cEm1000ActIkakuMachine"
+   },
+   {
+    "slot": 3,
+    "ptr": 400964337600,
+    "pos": [
+     -6469.939453125,
+     1800.1099853515625,
+     5462.296875
+    ],
+    "hp": 350,
+    "hp_max": 350,
+    "class": "uEm1200",
+    "action": "cEm1000ActWalkGunB"
+   },
+   {
+    "slot": 4,
+    "ptr": 400965177920,
+    "pos": [
+     -4306.0888671875,
+     1800.4739990234375,
+     5296.171875
+    ],
+    "hp": 350,
+    "hp_max": 350,
+    "class": "uEm1200"
+   },
+   {
+    "slot": 5,
+    "ptr": 401013716352,
+    "pos": [
+     -4423.22607421875,
+     2232.426513671875,
+     4618.06005859375
+    ],
+    "hp": 200,
+    "hp_max": 200,
+    "class": "uEm1200"
+   },
+   {
+    "slot": 6,
+    "ptr": 401031177184,
+    "pos": [
+     -8429.2109375,
+     1800.1097412109375,
+     4960.4033203125
+    ],
+    "hp": 450,
+    "hp_max": 450,
+    "class": "uEm1200",
+    "action": "cEm1000ActIkakuMachine"
+   },
+   {
+    "slot": 7,
+    "ptr": 400964419744,
+    "pos": [
+     -6464.1357421875,
+     1800.1099853515625,
+     5358.20703125
+    ],
+    "hp": 151,
+    "hp_max": 450,
+    "class": "uEm1200",
+    "action": "cEm1000ActWalkGunR"
+   },
+   {
+    "slot": 8,
+    "ptr": 401076322464,
+    "pos": [
+     -6406.337890625,
+     1800.1099853515625,
+     5275.7294921875
+    ],
+    "hp": 350,
+    "hp_max": 350,
+    "class": "uEm1200",
+    "action": "cEm1000ActDashRun"
+   },
+   {
+    "slot": 9,
+    "ptr": 401025438272,
+    "pos": [
+     -8092.7021484375,
+     1799.9998779296875,
+     5131.2705078125
+    ],
+    "hp": 0,
+    "hp_max": 450,
+    "class": "uEm1200"
+   },
+   {
+    "slot": 10,
+    "ptr": 400964269440,
+    "pos": [
+     -7818.2890625,
+     1800.1097412109375,
+     4825.8271484375
+    ],
+    "hp": 0,
+    "hp_max": 450,
+    "class": "uEm1200"
+   },
+   {
+    "slot": 11,
+    "ptr": 401016263232,
+    "pos": [
+     -7335.115234375,
+     1800.1099853515625,
+     5384.736328125
+    ],
+    "hp": 0,
+    "hp_max": 450,
+    "class": "uEm1200"
+   },
+   {
+    "slot": 12,
+    "ptr": 401069417440,
+    "pos": [
+     -4651.7294921875,
+     1800.1099853515625,
+     5463.6123046875
+    ],
+    "hp": 350,
+    "hp_max": 350,
+    "class": "uEm1200"
+   },
+   {
+    "slot": 13,
+    "ptr": 401031010976,
+    "pos": [
+     -7983.27197265625,
+     1799.9996337890625,
+     4600.45263671875
+    ],
+    "hp": 0,
+    "hp_max": 350,
+    "class": "uEm1200"
+   },
+   {
+    "slot": 14,
+    "ptr": 401014204272,
+    "pos": [
+     -6335.77734375,
+     1800.1099853515625,
+     5439.9443359375
+    ],
+    "hp": 350,
+    "hp_max": 350,
+    "class": "uEm1200",
+    "action": "cEm1000ActIkakuMachine"
+   },
+   {
+    "slot": 15,
+    "ptr": 401015111840,
+    "pos": [
+     -8037.2626953125,
+     1800.1097412109375,
+     4746.9111328125
+    ],
+    "hp": 350,
+    "hp_max": 350,
+    "class": "uEm1200",
+    "action": "cEm1000ActIkakuMachine"
+   },
+   {
+    "slot": 16,
+    "ptr": 401032697904,
+    "pos": [
+     -7982.685546875,
+     1800.109619140625,
+     4643.6416015625
+    ],
+    "hp": 349,
+    "hp_max": 350,
+    "class": "uEm1200",
+    "action": "cEm1000ActIkakuMachine"
+   },
+   {
+    "slot": 17,
+    "ptr": 401031210128,
+    "pos": [
+     -6982.86962890625,
+     1800.1099853515625,
+     5528.7412109375
+    ],
+    "hp": 0,
+    "hp_max": 450,
+    "class": "uEm1200"
+   },
+   {
+    "slot": 18,
+    "ptr": 401032909376,
+    "pos": [
+     -7104.7255859375,
+     1800.1099853515625,
+     4916.4169921875
+    ],
+    "hp": 0,
+    "hp_max": 450,
+    "class": "uEm1200"
+   },
+   {
+    "slot": 19,
+    "ptr": 401014725280,
+    "pos": [
+     -9561.7197265625,
+     1799.998291015625,
+     5143.55126953125
+    ],
+    "hp": 0,
+    "hp_max": 450,
+    "class": "uEm1200"
+   },
+   {
+    "slot": 20,
+    "ptr": 401027764800,
+    "pos": [
+     -6883.36328125,
+     1800.1099853515625,
+     5300.88671875
+    ],
+    "hp": 0,
+    "hp_max": 450,
+    "class": "uEm1200"
+   },
+   {
+    "slot": 21,
+    "ptr": 400964459168,
+    "pos": [
+     -6598.638671875,
+     1800.1099853515625,
+     5200.3642578125
+    ],
+    "hp": 350,
+    "hp_max": 350,
+    "class": "uEm1200",
+    "action": "cEm1000ActIkakuMachine"
+   },
+   {
+    "slot": 22,
+    "ptr": 401027993472,
+    "pos": [
+     -6698.7431640625,
+     1300.019775390625,
+     4369.8115234375
+    ],
+    "hp": 360,
+    "hp_max": 360,
+    "class": "uEm1200",
+    "action": "cEm1000ActWalk"
+   },
+   {
+    "slot": 23,
+    "ptr": 401018163600,
+    "pos": [
+     -6710.8232421875,
+     1300.1099853515625,
+     4543.1953125
+    ],
+    "hp": 360,
+    "hp_max": 360,
+    "class": "uEm1200",
+    "action": "cEm1000ActWalk"
+   },
+   {
+    "slot": 24,
+    "ptr": 401015055328,
+    "pos": [
+     -6296.93603515625,
+     1300.1099853515625,
+     4561.69677734375
+    ],
+    "hp": 357,
+    "hp_max": 360,
+    "class": "uEm1200",
+    "action": "cEm1000ActLegJumpSideJump5m"
+   },
+   {
+    "slot": 25,
+    "ptr": 401075863712,
+    "pos": [
+     -13450.134765625,
+     939.2765502929688,
+     5145.73828125
+    ],
+    "hp": 200,
+    "hp_max": 200,
+    "class": "uEm1200"
+   },
+   {
+    "slot": 26,
+    "ptr": 401015439520,
+    "pos": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "hp": 1000,
+    "hp_max": 1000,
+    "class": "uEm2220"
+   },
+   {
+    "slot": 27,
+    "ptr": 401073382688,
+    "pos": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "hp": 1000,
+    "hp_max": 1000,
+    "class": "uEm2220"
+   },
+   {
+    "slot": 28,
+    "ptr": 401069788032,
+    "pos": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "hp": 1000,
+    "hp_max": 1000,
+    "class": "uEm2220"
+   },
+   {
+    "slot": 29,
+    "ptr": 400964199392,
+    "pos": [
+     -6871.6591796875,
+     1800.1099853515625,
+     5496.23046875
+    ],
+    "hp": 0,
+    "hp_max": 1000,
+    "class": "uEm3200"
+   },
+   {
+    "slot": 30,
+    "ptr": 401073799360,
+    "pos": [
+     0.24797147512435913,
+     0.0,
+     -8.956363677978516
+    ],
+    "hp": 832,
+    "hp_max": 1000,
+    "class": "uEm3200"
+   }
+  ],
+  "timer": 1130.96,
+  "score": 633950,
+  "kills": 287,
+  "combo": 14,
+  "combo_timer": 14.85,
+  "max_combo": 82,
+  "mercenaries_phase": 1,
+  "mercenaries_mode": "no_mercy",
+  "module_base": 260512432128,
+  "camera": {
+   "pos": [
+    -7354.8125,
+    2035.614990234375,
+    5480.07421875
+   ],
+   "target": [
+    -7425.583984375,
+    1873.6348876953125,
+    5515.154296875
+   ],
+   "yaw": -1.110609906436301,
+   "pitch": -1.1170819100158034,
+   "unit": 400986607856
+  },
+  "laser": {
+   "at": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "from": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "up": false,
+   "alpha": 0.643
+  },
+  "aim_cam": {
+   "addr": 400986614352,
+   "pitch": -0.13282495737075806,
+   "yaw": 2.313847064971924
+  },
+  "prompts": [],
+  "enemy_scan": {
+   "complete": true,
+   "count": 31,
+   "limit": 512
+  },
+  "bonus_s": 5,
+  "combo_bonus": 10340,
+  "base_points": 135900,
+  "bonuses": [
+   {
+    "ptr": 401050449584,
+    "pos": [
+     -4109.07080078125,
+     930.0,
+     5713.037109375
+    ],
+    "kind": "time"
+   },
+   {
+    "ptr": 401084825840,
+    "pos": [
+     -13388.880859375,
+     1070.0,
+     5020.283203125
+    ],
+    "kind": "time"
+   },
+   {
+    "ptr": 400952180976,
+    "pos": [
+     -2420.25341796875,
+     1940.0,
+     5539.11572265625
+    ],
+    "kind": "time"
+   },
+   {
+    "ptr": 400951820528,
+    "pos": [
+     -6156.05517578125,
+     140.0,
+     4486.2421875
+    ],
+    "kind": "time"
+   },
+   {
+    "ptr": 400993042672,
+    "pos": [
+     -4671.2998046875,
+     1430.0,
+     5056.880859375
+    ],
+    "kind": "time"
+   },
+   {
+    "ptr": 400992813296,
+    "pos": [
+     -7925.81103515625,
+     1430.0,
+     5739.0986328125
+    ],
+    "kind": "time"
+   },
+   {
+    "ptr": 400992551232,
+    "pos": [
+     -1268.3975830078125,
+     1560.0,
+     6907.541015625
+    ],
+    "kind": "combo"
+   },
+   {
+    "ptr": 400992420160,
+    "pos": [
+     -7953.8251953125,
+     270.0,
+     5331.8525390625
+    ],
+    "kind": "combo"
+   },
+   {
+    "ptr": 400991797488,
+    "pos": [
+     -15670.20703125,
+     1940.0,
+     4924.68212890625
+    ],
+    "kind": "combo"
+   }
+  ],
+  "auto_qte": true
+ },
+ "counters": {
+  "stalemate_cut_s": 5,
+  "menu_presses": 0,
+  "ram_progress": 2736,
+  "rounds": 1,
+  "player_damage_events": 2,
+  "shots": 55,
+  "hits": 42,
+  "quick_shots": 92,
+  "melee": 206,
+  "turns": 3,
+  "quick_turns": 53,
+  "wiggles": 0,
+  "holds": 8,
+  "reloads": 0,
+  "reraise": 30,
+  "restale": 0,
+  "deaths": 0,
+  "tablets": 3,
+  "tablet_presses": 10,
+  "tablet_misses": 4,
+  "backoffs": 21,
+  "pulls_hit": 38,
+  "pulls_miss": 15,
+  "first_pull_n": 20,
+  "bombs_placed": 0,
+  "bombs_detonated": 0,
+  "bomb_kills": 0,
+  "bomb_misses": 0,
+  "holds_freed_no_press": 0,
+  "holds_shaken": 0,
+  "cc_quick_shots": 92,
+  "cc_kicks": 205,
+  "los_blocks": 5,
+  "nohit_blocks": 1,
+  "cc_blocks": 2,
+  "camera_far_holds": 28,
+  "detours": 0,
+  "bomb_walks": 0,
+  "bomb_self_hits": 0,
+  "bomb_aborts": 0,
+  "bomb_escapes": 0,
+  "bomb_det_holds": 0,
+  "bomb_kicks": 0,
+  "bomb_hits_taken": 0,
+  "flashes": 0,
+  "frags": 0,
+  "fires": 0,
+  "nade_aborts": 45,
+  "nade_back_fails": 0,
+  "fever_kicks": 0,
+  "grenade_kills": 0,
+  "combo_breaks": 1,
+  "combo_best": 82,
+  "combo_pushes": 3,
+  "unsafe_trigger_blocks": 0,
+  "held_item_throws": 0,
+  "item_gun_backs": 0,
+  "dyings": 0,
+  "tablet_dying_presses": 0,
+  "tablet_dying_taken": 0,
+  "cc_backouts": 704,
+  "bonuses_taken": 0,
+  "time_bonuses_taken": 0,
+  "combo_bonuses_taken": 0,
+  "bonuses_missed": 0,
+  "bonus_skips": 1,
+  "bonus_shots": 0,
+  "bomb_drops": 0,
+  "surround_events": 10,
+  "max_within_4m": 43,
+  "confirmed_shots": 55,
+  "moving_shots": 50,
+  "long_shot_kills": 0,
+  "quick_attacks": 41,
+  "quick_attack_kills": 45,
+  "fever_quick_shots": 0,
+  "pursuits": 0,
+  "pursuit_kills": 0,
+  "pursuit_lapses": 0,
+  "pursuit_stuck": 2,
+  "census_alive": 23,
+  "census_floor": 15,
+  "taunts": 0,
+  "taunts_seen": 0,
+  "taunt_multi": 0,
+  "taunt_blast": 0,
+  "taunt_boss": 0,
+  "bonus_melee": 0,
+  "yellows_taken": 0,
+  "greens_taken": 0,
+  "combo_saves": 0,
+  "bonus_unseen": 7,
+  "aim_locks": 125,
+  "lock_write_ok": 924,
+  "lock_write_fail": 7,
+  "lock_overwritten": 95,
+  "lock_fallbacks": 26,
+  "lock_ray_misses": 12,
+  "aimed_shots": 43,
+  "aimed_hits": 34,
+  "boss_damage": 439,
+  "down_shots": 0,
+  "down_kills": 0,
+  "down_recoveries": 1,
+  "dying_deaths": 0,
+  "hazard_marks": 0,
+  "sweeps": 0,
+  "targets_shot": 36,
+  "trigger_s": 5.0,
+  "first_pull_s": 15.34,
+  "bomb_face_s": 0.0,
+  "kite_s": 50.7,
+  "bonus_time_s": 7.75,
+  "down_s": 1.6,
+  "hazard_s": 0.0,
+  "cc_vs_aimed": 2.14,
+  "offscreen_skips": 89,
+  "wall_aim_s": 0.55,
+  "windup_seen": 179,
+  "windup_interrupts": 48,
+  "hits_after_windup": 0,
+  "grenade_throws": 0,
+  "spam_bursts": 0,
+  "flash_qtes": 0,
+  "bomb_choices": 0,
+  "nade_choices": 140,
+  "pushthroughs": 0,
+  "push_nav_clear": 0,
+  "flash_drops": 0,
+  "idle_s": 21.5,
+  "backtrack_m": 5.84,
+  "offlevel_skips": 0,
+  "whips": 40,
+  "up_aim_s": 0.65,
+  "survival_s": 0.0,
+  "spin_deg_s": 2192.9,
+  "weapon_switches": 0,
+  "weapon_swaps": 0,
+  "grab_det_presses": 0,
+  "grab_detonations": 0,
+  "prompts_seen": 97,
+  "prompts_taken": 5,
+  "climbs": 1,
+  "pickups": 0,
+  "nav_paths": 26,
+  "nav_fails": 0,
+  "fever_kills": 0,
+  "fever_breaks": 0,
+  "prompt_presses": 5,
+  "mod_writes": 1521,
+  "recoil_x": 3.0,
+  "throw_x": 20.0,
+  "throw_fast": 0,
+  "magnum_fast": 3211,
+  "timer": 1126.8,
+  "combo": 13,
+  "score": 633650,
+  "kills": 286,
+  "max_combo": 82,
+  "mercenaries_phase": 1,
+  "costume": 0,
+  "round_semantic_recalled": 0,
+  "round_memory_recalled": 5,
+  "tuning_avoid": 0,
+  "bomb_radius_cm": 900,
+  "bomb_safe_cm": 1150,
+  "census_list": 31,
+  "fire_zone_s": 97.65,
+  "target_dist": 89,
+  "look_idle_among_foes_s": 0.0,
+  "t_nade": 2.36,
+  "operator_idle_s": 3.0,
+  "operator_takeovers": 0,
+  "operator_control_s": 0.0,
+  "t_crowd": 67.35,
+  "boost_releases": 988,
+  "over_s": 33.9,
+  "lock_limited": 519,
+  "t_raise": 36.49,
+  "t_unaim": 0.08,
+  "t_quick_turn": 31.07,
+  "t_aim": 42.63,
+  "t_quick_shot": 10.7,
+  "accuracy": 0.764,
+  "t_fire": 5.0,
+  "t_held": 9.81,
+  "k_shots": 53,
+  "fire_tol_deg": 6.0,
+  "quick_turns_behind": 49,
+  "k_misses": 15,
+  "mesh_steers": 14,
+  "prompt_latency_ms": 0.0,
+  "t_prompt": 2.25,
+  "player_damage_pending": 0,
+  "player_damage_last_loss": 500,
+  "hit_responses": 2,
+  "hit_quick_shots": 6,
+  "t_tablet": 2.93,
+  "heal_gain": 155,
+  "tablets_chained": 3,
+  "targets_per_min": 11.8,
+  "t_bonus": 10.97,
+  "t_turn": 0.24,
+  "t_turn_foe_front": 0.12
+ },
+ "decision": {
+  "act": "cc_kick",
+  "phase": "bonus_run",
+  "aim": "d 359 yaw -1.6 pitch +0.7 on body via laser LOCK keys ldown,zl,zr"
+ },
+ "preceding_history": [
+  {
+   "at": 1793437295.8149574,
+   "pos": [
+    -7398.208984375,
+    1800.10986328125,
+    5510.798828125
+   ],
+   "rot": 1.9980738761532688,
+   "hp": 900,
+   "action": "cPlAction_pl_act_weapon_fire",
+   "held": [
+    "zl"
+   ],
+   "plan": {
+    "target": {
+     "kind": "enemy",
+     "id": 401031210128
+    }
+   },
+   "score": 631250,
+   "combo": 9,
+   "kills": 282,
+   "navigation": {
+    "phase": "bonus_run"
+   },
+   "mine_events": []
+  },
+  {
+   "at": 1793437296.0999694,
+   "pos": [
+    -7398.208984375,
+    1800.10986328125,
+    5510.798828125
+   ],
+   "rot": 1.862994834795594,
+   "hp": 900,
+   "action": "cPlAction_pl_act_weapon_fire",
+   "held": [
+    "zl"
+   ],
+   "plan": {
+    "target": {
+     "kind": "enemy",
+     "id": 401031210128
+    }
+   },
+   "score": 631250,
+   "combo": 9,
+   "kills": 282,
+   "navigation": {
+    "phase": "bonus_run"
+   },
+   "mine_events": []
+  },
+  {
+   "at": 1793437296.3939667,
+   "pos": [
+    -7398.208984375,
+    1800.10986328125,
+    5510.798828125
+   ],
+   "rot": 1.8607196389090879,
+   "hp": 900,
+   "action": "cPlAction_pl_act_weapon_fire",
+   "held": [
+    "zl"
+   ],
+   "plan": {
+    "target": {
+     "kind": "enemy",
+     "id": 401016263232
+    }
+   },
+   "score": 633050,
+   "combo": 11,
+   "kills": 284,
+   "navigation": {
+    "phase": "bonus_run"
+   },
+   "mine_events": []
+  },
+  {
+   "at": 1793437296.6061783,
+   "pos": [
+    -7398.208984375,
+    1800.10986328125,
+    5510.798828125
+   ],
+   "rot": 1.8607196389090879,
+   "hp": 900,
+   "action": "cPlAction_pl_act_weapon_fire",
+   "held": [
+    "zl"
+   ],
+   "plan": {
+    "target": {
+     "kind": "enemy",
+     "id": 401016263232
+    }
+   },
+   "score": 633050,
+   "combo": 11,
+   "kills": 284,
+   "navigation": {
+    "phase": "bonus_run"
+   },
+   "mine_events": []
+  },
+  {
+   "at": 1793437296.913359,
+   "pos": [
+    -7398.208984375,
+    1800.10986328125,
+    5510.798828125
+   ],
+   "rot": 2.6056148850512573,
+   "hp": 900,
+   "action": "cPlAction_pl_act_weapon_fire",
+   "held": [
+    "zl"
+   ],
+   "plan": {
+    "target": {
+     "kind": "enemy",
+     "id": 401025438272
+    }
+   },
+   "score": 633050,
+   "combo": 11,
+   "kills": 284,
+   "navigation": {
+    "phase": "bonus_run"
+   },
+   "mine_events": []
+  },
+  {
+   "at": 1793437297.1351492,
+   "pos": [
+    -7398.208984375,
+    1800.10986328125,
+    5510.798828125
+   ],
+   "rot": -2.968206410259958,
+   "hp": 900,
+   "action": "cPlAction_pl_act_weapon_fire",
+   "held": [
+    "zl"
+   ],
+   "plan": {
+    "target": {
+     "kind": "enemy",
+     "id": 401025438272
+    }
+   },
+   "score": 633050,
+   "combo": 11,
+   "kills": 284,
+   "navigation": {
+    "phase": "bonus_run"
+   },
+   "mine_events": []
+  },
+  {
+   "at": 1793437297.3952568,
+   "pos": [
+    -7406.1845703125,
+    1800.10986328125,
+    5510.32666015625
+   ],
+   "rot": -2.2832237873032435,
+   "hp": 900,
+   "action": "cPlAction_pl_act_weapon_ready_loop",
+   "held": [
+    "lleft",
+    "lup",
+    "zl"
+   ],
+   "plan": {
+    "target": {
+     "kind": "enemy",
+     "id": 401025438272
+    }
+   },
+   "score": 633050,
+   "combo": 11,
+   "kills": 284,
+   "navigation": {
+    "phase": "bonus_run"
+   },
+   "mine_events": []
+  },
+  {
+   "at": 1793437297.6587472,
+   "pos": [
+    -7426.19287109375,
+    1800.10986328125,
+    5512.39599609375
+   ],
+   "rot": -2.245363009023059,
+   "hp": 900,
+   "action": "cPlAction_pl_act_weapon_fire",
+   "held": [
+    "lleft",
+    "lup",
+    "zl",
+    "zr"
+   ],
+   "plan": {
+    "target": {
+     "kind": "enemy",
+     "id": 401025438272
+    }
+   },
+   "score": 633350,
+   "combo": 12,
+   "kills": 285,
+   "navigation": {
+    "phase": "bonus_run"
+   },
+   "mine_events": []
+  },
+  {
+   "at": 1793437298.0421488,
+   "pos": [
+    -7428.521484375,
+    1800.10986328125,
+    5511.5
+   ],
+   "rot": -2.7198262638334683,
+   "hp": 900,
+   "action": "cPlAction_pl_act_weapon_fire",
+   "held": [
+    "zl"
+   ],
+   "plan": {
+    "target": {
+     "kind": "enemy",
+     "id": 401016263232
+    }
+   },
+   "score": 633350,
+   "combo": 12,
+   "kills": 285,
+   "navigation": {
+    "phase": "bonus_run"
+   },
+   "mine_events": []
+  },
+  {
+   "at": 1793437298.2650063,
+   "pos": [
+    -7428.521484375,
+    1800.10986328125,
+    5511.5
+   ],
+   "rot": 2.823338292404249,
+   "hp": 900,
+   "action": "cPlAction_pl_act_weapon_fire",
+   "held": [
+    "zl"
+   ],
+   "plan": {
+    "target": {
+     "kind": "enemy",
+     "id": 401027764800
+    }
+   },
+   "score": 633350,
+   "combo": 12,
+   "kills": 285,
+   "navigation": {
+    "phase": "bonus_run"
+   },
+   "mine_events": []
+  },
+  {
+   "at": 1793437298.4953625,
+   "pos": [
+    -7424.6474609375,
+    1800.10986328125,
+    5508.6552734375
+   ],
+   "rot": 2.2520594068028004,
+   "hp": 900,
+   "action": "cPlAction_pl_act_weapon_ready_loop",
+   "held": [
+    "lup",
+    "zl"
+   ],
+   "plan": {
+    "target": {
+     "kind": "enemy",
+     "id": 401027764800
+    }
+   },
+   "score": 633350,
+   "combo": 12,
+   "kills": 285,
+   "navigation": {
+    "phase": "bonus_run"
+   },
+   "mine_events": []
+  },
+  {
+   "at": 1793437298.7094321,
+   "pos": [
+    -7429.4794921875,
+    1800.10986328125,
+    5512.2578125
+   ],
+   "rot": 2.1809291251154352,
+   "hp": 900,
+   "action": "cPlAction_pl_act_weapon_fire",
+   "held": [
+    "ldown",
+    "zl",
+    "zr"
+   ],
+   "plan": {
+    "target": {
+     "kind": "enemy",
+     "id": 401027764800
+    }
+   },
+   "score": 633650,
+   "combo": 13,
+   "kills": 286,
+   "navigation": {
+    "phase": "bonus_run"
+   },
+   "mine_events": []
+  },
+  {
+   "at": 1793437299.610166,
+   "pos": [
+    -7435.7666015625,
+    1800.1099853515625,
+    5517.666015625
+   ],
+   "rot": 2.1741225317747563,
+   "hp": 900,
+   "action": "cPlAction_pl_act_walk_to_wait",
+   "held": [],
+   "plan": {
+    "target": {
+     "kind": "enemy",
+     "id": 401016263232
+    }
+   },
+   "score": 633650,
+   "combo": 13,
+   "kills": 286,
+   "navigation": {
+    "phase": "bonus_run"
+   },
+   "mine_events": []
+  },
+  {
+   "at": 1793437300.4520228,
+   "pos": [
+    -7419.115234375,
+    1800.1099853515625,
+    5497.86328125
+   ],
+   "rot": 2.3523954326844576,
+   "hp": 900,
+   "action": "cPlAction_pl_act_attack_ex",
+   "held": [],
+   "plan": {
+    "target": {
+     "kind": "enemy",
+     "id": 401016263232
+    }
+   },
+   "score": 633650,
+   "combo": 13,
+   "kills": 286,
+   "navigation": {
+    "phase": "bonus_run"
+   },
+   "mine_events": []
+  },
+  {
+   "at": 1793437301.2919304,
+   "pos": [
+    -7470.375,
+    1800.107421875,
+    5498.6708984375
+   ],
+   "rot": 1.676293541060165,
+   "hp": 600,
+   "action": "cEm3200ActDashPress_PL",
+   "held": [],
+   "plan": {
+    "target": {
+     "kind": "enemy",
+     "id": 401016263232
+    }
+   },
+   "score": 633950,
+   "combo": 14,
+   "kills": 287,
+   "navigation": {
+    "phase": "bonus_run"
+   },
+   "mine_events": []
+  }
+ ],
+ "cluster": {
+  "id": "b614938d1883d382",
+  "game_id": "115f9cdbba115432",
+  "signature": "ranged",
+  "label": "ranged enemy or hazard (nobody within 2.5 m)"
+ }
+}

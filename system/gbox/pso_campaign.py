@@ -20,7 +20,11 @@ import httpx
 from .autoplay import Driver
 from .pso_gc_live import GC, PHASE, FLOOR, PLAYER
 from .registry import Unsupported
-from .pso_coop_menu import MenuProgress
+from . import pso_coop_menu            # referenced as pso_coop_menu.MenuProgress, NOT `from ... import MenuProgress`:
+                                       # a top-level name-binding would make this module a non-bot-module binder of
+                                       # pso_coop_menu and block the bot-reload of the menu recognisers (which ARE in
+                                       # hot_reload.BOT_MODULES). The module reference rebinds on reload, so recogniser
+                                       # / MenuProgress fixes now hot-reload with no gbox.service restart.
 
 CAMPAIGN = "pso-episodes-1-2"
 COOP_CAMPAIGN = "pso-coop-episodes-1-2"
@@ -373,17 +377,17 @@ class Planner:
             endpoint = str(self.api.base_url).rstrip('/')
             self.native_url = endpoint[:-3] if endpoint.endswith('/v1') else endpoint
             try:
-                response = self.api.get(self.native_url + '/api/version', timeout=self.timeout(deadline, 4))
+                response = self.api.get(self.native_url + '/api/version', timeout=self.timeout(deadline, 15))
                 data = response.json()
-                self.ollama = response.status_code == 200 and isinstance(data, dict) and isinstance(data.get('version'), str)
+                self.ollama = True if (response.status_code == 200 and isinstance(data, dict) and isinstance(data.get('version'), str)) else None
             except (httpx.HTTPError, ValueError, AttributeError):
-                self.ollama = False
-        return self.ollama
+                self.ollama = None
+        return bool(self.ollama)
 
     def native_settings(self, deadline):
         # Metadata only: no alternate model, inferred context or forced reload.
         response = self.api.post(self.native_url + '/api/show', json={'model': self.model},
-                                 timeout=self.timeout(deadline, 4))
+                                 timeout=self.timeout(deadline, 15))
         if response.status_code == 404:
             raise Unsupported(f'PSO route planner model {self.model!r} is not available')
         response.raise_for_status()
@@ -397,7 +401,7 @@ class Planner:
         if isinstance(values, list) and any(value is False for value in values):
             settings['think'] = False
         try:
-            response = self.api.get(self.native_url + '/api/ps', timeout=self.timeout(deadline, 4))
+            response = self.api.get(self.native_url + '/api/ps', timeout=self.timeout(deadline, 15))
             response.raise_for_status()
             data = response.json()
             models = data.get('models') if isinstance(data, dict) else None
@@ -497,7 +501,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     evidence.mkdir(parents=True, exist_ok=True)
     errors, last_plan, last_plan_at, last_progress, last_signature = 0, [], 0.0, time.monotonic(), None
     gate_attempts = {}
-    menu = MenuProgress()
+    menu = pso_coop_menu.MenuProgress()
     stats.update(ledger.status(), note="Experimental campaign attempt; no full completion is claimed without receipts.")
     try:
         while not stopped():

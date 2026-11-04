@@ -1563,9 +1563,19 @@ def register(app, store, config, *, live: dict, desktop_frames: dict, desktop_wa
         program = hub.program_status() | {"paths": feed_paths("program")} | {
             n: absolute(feed_paths("program"), base, v["token"]) for n, base in b.items()}
         pcs = []
+        # One entry per PC name, its newest registration. Dead worker epochs pile up (2026-11-04: 100 registrations,
+        # 75 of them long-gone i9-NUC ids) and each used to list its own dead "PC offline" broadcast. The control
+        # plane prunes dead epochs from the store too (gbox/server.py _prune_dead_workers); deduping here keeps the
+        # list clean even before a prune lands. The pc feed is keyed by name, so nothing else changes.
+        regs: dict[str, dict] = {}
         for w in hub.workers().values():
+            key = slug(w.get("name") or w.get("id"))
+            cur = regs.get(key)
+            if cur is None or (w.get("last_seen") or 0) > (cur.get("last_seen") or 0):
+                regs[key] = w
+        for w in regs.values():
             name = str(w.get("name") or w.get("id"))
-            best = _pc_session([r for r in rows if r["pc_id"] == w["id"]])
+            best = _pc_session([r for r in rows if slug(r.get("pc")) == slug(name) or r["pc_id"] == w["id"]])
             key = "pc:" + slug(name)
             pcs.append({"pc": name, "id": "pc/" + slug(name), "pc_id": w["id"], "os": w.get("os"),
                         "online": hub.wall() - (w.get("last_seen") or 0) < WORKER_TTL_S,

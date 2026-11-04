@@ -123,7 +123,10 @@ def control_inventory(title, view, status):
             row.update({k: knob[k] for k in ("min", "max", "step")})
             row["integer"] = knob["kind"] == "int"
         controls.append(row)
-    return controls
+    # The universal behavior axes (gbox.mercs.core.control_axes) in front of the per-knob rows: one named dial set on
+    # every title, each derived from and expanded onto the rows above, so a radial front end reads them from status.
+    from gbox.mercs.core import control_axes
+    return control_axes.inventory(title, controls) + controls
 
 
 def change_input(control, value):
@@ -137,6 +140,8 @@ def change_input(control, value):
           or control.get("integer") and not float(value).is_integer()):
         raise ValueError("control value is outside its allowed range")
     kind, key = control["id"].split(".", 1)
+    if kind == "axis":
+        raise ValueError("an axis expands through its title map (control_axes.expand), never as one knob")
     if kind == "behavior":
         return {"op": "bot_logic", "values": {key: value}}
     return {"op": key, **({"on": value} if control["kind"] == "boolean"
@@ -216,16 +221,19 @@ class Controls:
         controls = control_inventory(ctx["controls_title"], view, status)
         action = own.get("action")
         if action:
-            changed = next((c for c in controls if c["id"] == action["control"]), None)
-            wanted = action["value"]
-            actual = changed.get("value") if changed else None
-            if type(wanted) is bool:
-                verified = actual is wanted
-            else:
-                verified = type(actual) in (int, float) and abs(actual - wanted) < 0.0001
-            if not verified:
-                self.cache.pop(sid, None)
-                raise ValueError("The worker did not confirm the selected control value. Refresh current settings.")
+            # An axis set carries its expanded targets (control_axes.expand); each is verified like the single knob,
+            # against the knob rows themselves - an axis row's shown value is derived and only settles after the plan.
+            for want in (action.get("targets") or [{"control": action["control"], "value": action["value"]}]):
+                changed = next((c for c in controls if c["id"] == want["control"]), None)
+                wanted = want["value"]
+                actual = changed.get("value") if changed else None
+                if type(wanted) is bool:
+                    verified = actual is wanted
+                else:
+                    verified = type(actual) in (int, float) and abs(actual - wanted) < 0.0001
+                if not verified:
+                    self.cache.pop(sid, None)
+                    raise ValueError("The worker did not confirm the selected control value. Refresh current settings.")
         self.cache[sid] = {"view": view, "status": status, "at": self.clock()}
         return None
 
@@ -284,6 +292,33 @@ class Controls:
             control = next((c for c in result["controls"] if c["id"] == args["control"]), None)
             if not control:
                 raise ValueError("Unknown live control for this game.")
+            if control["id"].startswith("axis."):
+                # A universal behavior axis (gbox.mercs.core.control_axes): expanded onto this title's own knobs and
+                # sent as the jobs the per-knob path already sends - native ops first, one bot_logic job last. A job
+                # the worker holds past the brief wait stops the plan there (its poll verifies its own targets);
+                # setting the axis again finishes the rest. Nothing new reaches the worker.
+                from gbox.mercs.core import control_axes
+                if not control.get("available"):
+                    raise ValueError(control.get("reason") or "control is unavailable")
+                plan, skipped = control_axes.expand(ctx["controls_title"], control["id"], args["value"],
+                                                    result["controls"])
+                await self.check_run(ctx)
+                pending, done = None, []
+                for inp, targets in plan:
+                    job = await self.job(ctx, inp, {"control": control["id"], "value": args["value"],
+                                                    "targets": targets})
+                    done.append(job["id"])
+                    pending = self.consume(ctx, job)
+                    if pending:
+                        break
+                result["action"] = {"state": "pending" if pending else "confirmed", "job_id": done[-1], "jobs": done,
+                                    **({"skipped": skipped} if skipped else {})}
+                if pending:
+                    result["pending_job"] = pending
+                old = self.cache.get(sid, {})
+                result["controls"] = control_inventory(ctx["controls_title"], old.get("view", {}), old.get("status", {}))
+                await self.check_run(ctx)
+                return result
             inp = change_input(control, args["value"])
             await self.check_run(ctx)
             action = {"control": control["id"], "value": args["value"]}

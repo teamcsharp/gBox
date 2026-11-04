@@ -51,7 +51,7 @@ BOT_MODULES = frozenset({
     "gbox.re4_navmap", "gbox.re4_collision",
     # Co-op loop and its per-run read-only navigation state. The campaign
     # transport, sealed pad proof, native queue and access journal stay live.
-    "gbox.pso_coop", "gbox.pso_coop_geometry", "gbox.pso_coop_nav",
+    "gbox.pso_campaign", "gbox.pso_coop", "gbox.pso_coop_geometry", "gbox.pso_coop_nav",
     "gbox.pso_coop_frontier", "gbox.pso_coop_town",
     # Per-run, read-only helpers the co-op loop imports (door/gate model, the RTS
     # map surfaces/directives, the durable room-knowledge store). So their changes
