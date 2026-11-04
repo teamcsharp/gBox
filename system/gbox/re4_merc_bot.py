@@ -4031,6 +4031,9 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
                     bot.stats.update(hung=True, wandered=f"instant round: {why}")
                     break
         if not in_mercenaries(s) or not 0 < s["timer"] <= CLOCK_MAX_S or not room_on:   # results (clock at 0, or a
+            try:
+                open('/tmp/re4_bot.log','a').write("OUT where=%s rerun_none=%s out_since=%s left_at=%s was_in=%s opctrl=%s\n" % ((re4_menus.screen(m,merc=s).get('where') if re4_menus else '?'), rerun is None, out_since, left_at, was_in, bot.stats.get('operator_control')))
+            except Exception: pass
             hold(set())                                # word no clock reads: the Result screen), the title, menus, a load
             out_since = out_since or now
             # Leon grabbed / a pickup animation: still the Mercenaries room with time on the clock - not the round's
@@ -4040,6 +4043,8 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
                 sleep(0.25)
                 continue
             if rerun is not None and now - out_since > MENU_AFTER:
+                try: open('/tmp/re4_bot.log','a').write("RERUN called\n")
+                except Exception: pass
                 # the menu save state (Select Player, taken before the hooks): load it, hooks back in, character,
                 # stage, go - blind A presses walked from the Result screen to the main title and started a story
                 # game with the Mercenaries hooks in, which crashed the game (2026-10-20)
@@ -4059,6 +4064,8 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
                     roundmap.gap_end(bot.stats, now)
                 next_via = "menus"                     # the next round comes through the menus and a stage load
             if rerun is None and (left_at is None or now - left_at > MENU_AFTER):
+                try: open('/tmp/re4_bot.log','a').write("MENUS_TICK where=%s\n" % (re4_menus.screen(m,merc=s).get('where') if re4_menus else '?'))
+                except Exception: pass
                 # the screen from RAM and the one press towards the next round (gbox.re4_menus), never a blind one:
                 # up + A had walked from the Result screen to the main title's START, a story game with the hooks in
                 # that crashed Dolphin (2026-10-20)

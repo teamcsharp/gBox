@@ -282,14 +282,16 @@ def step(scr: dict) -> str | None:
     if where == "select_player":
         target = LEON if target is None else target
         if type(cur) is not int or type(target) is not int or not 0 <= cur < 5 or not 0 <= target < 5:
-            return None
+            return "a"                                       # cursor unreadable: confirm the highlighted character
+                                                             # (any is a valid Mercenaries pick) instead of parking here
         if cur == target:
             return "a"
         return DPAD['right'] if (target-cur)%5<=2 else DPAD['left']
     if where == "select_stage":
         target = VILLAGE if target is None else target
         if type(cur) is not int or type(target) is not int or not 0 <= cur < 4 or not 0 <= target < 4:
-            return None
+            return "a"                                       # cursor unreadable: confirm the highlighted stage
+                                                             # (any stage starts a round) instead of parking here
         if cur == target:
             return "a"
         return DPAD['down' if target&2 else 'up'] if (cur^target)&2 \
