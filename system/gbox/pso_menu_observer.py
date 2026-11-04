@@ -227,6 +227,12 @@ def _observe_wide(image, result):
                              ((334, 323, 338, 487), .9), ((623, 323, 626, 487), .75)))
     result['menu_visible'] = bool(title_start or title_main or title_mode or title_character or title_ready or
                                   title_options or forest_label or expanded_labels or quit_title or after_title or sum(score >= .72 for score in start_scores) >= 4 or sum(score >= .8 for score in p2_start) >= 5)
+    # The PSO wordmark ("PHANTASY STAR ONLINE") is present on the title and the main menu, and absent on every
+    # cinematic / attract / in-game screen. A low (.5) presence threshold is a robust "this is the title or the main
+    # menu" signal even on an animation frame where the full menu_visible gate momentarily dips - the campaign's
+    # pre-gameplay cinematic/attract skip uses `not wordmark` so a blind A can never land on the title or main menu
+    # (which would enter ONLINE) while still firing on a bright attract movie / intro cinematic.
+    result['wordmark'] = bool(region('main_title') >= .5 or region('title_wordmark') >= .5)
     if (forest_label and forest_panel and hud_visible and
             _selected(image, [(340, 328, 620, 342)], minimum=.45) == 0):
         record('transporter_forest', 'FOREST 1', 0, player=2, observed_episode=1, destination_floor=1)
