@@ -3815,6 +3815,69 @@ def menu_unstick(ad, stats):
     return True
 
 
+# --- PSO software-license auto-dismissal (2026-11-04) ---------------------------------------------------------------
+# Verified live on lilspark that the uinput pad delivers every input to Dolphin, yet PSO never left the title: its
+# software-license panel is SCROLL-GATED - "Agree" is ignored until the long licence is C-stick-scrolled near the end -
+# and the campaign cannot scroll it. The planner's PLAN_SCHEMA has no C-stick key at all (only a/b/x/y/l/r/start/dpad/
+# stick), and the menu guard (pso_coop_menu.review) only ever presses one UP then A, so it pressed A on Agree forever
+# with nothing scrolled and looped to the attempt limit (operator saw it "frozen on the TOS"). These constants + helper
+# encode the exact by-hand sequence that dismissed it: C-stick-scroll to the bottom, select Agree (D-pad up), press A.
+# It is gated to the independently-recognised licence panel only (a benign fixed screen where Agree is the sole sensible
+# choice); every other screen keeps the existing fail-closed guard. Clean check=False taps avoid the held-ack path, and
+# it is fully exception-/stop-soft so a delivery hiccup or a bad frame can never kill the loop.
+LICENSE_SCROLL_TAPS = 190       # one C-stick-down tap per licence line; ~175 reached the bottom by hand, + margin (idempotent)
+LICENSE_DISMISS_LIMIT = 4       # bounded re-attempts if recognition flaps; never an infinite loop
+LICENSE_DISMISS_GAP_S = 12.0    # don't re-run the whole scroll pass more often than this
+
+
+def _menu_tap(inputs, stopped, player, key, hold_s=0.035):
+    """One clean controller tap through the PSO input path, bypassing the held-acknowledgement check (a bare down is
+    reported 'held' by the virtual pad); fail-/stop-soft."""
+    try:
+        inputs.send([{"key": key, "down": True}], player, check=False)
+        solo.wait(hold_s, stopped)
+        inputs.send([{"key": key, "down": False}], player, check=False)
+        solo.wait(0.012, stopped)
+    except InterruptedError:
+        raise
+    except Exception:                                     # noqa: BLE001 - a delivery hiccup must never kill the loop
+        pass
+
+
+def dismiss_license(ad, menu, inputs, stopped, stats):
+    """Drive PSO's independently-recognised software-license panel off the screen: C-stick-scroll to the bottom,
+    select Agree, confirm A. Returns True when a dismissal pass ran (caller should reobserve and continue), False when
+    no licence panel is present. Bypasses the one-input menu guard for this one benign fixed screen only."""
+    obs = getattr(menu, 'observation', None) or {}
+    # pso_license_menu.observe returns a bare {recognized, selected in Agree/Disagree} with NO 'menu' key; the boot
+    # recogniser always carries a 'menu'. That distinguishes the licence panel from every other recognised menu.
+    if not (obs.get('recognized') and obs.get('selected') in ('Agree', 'Disagree') and 'menu' not in obs):
+        return False
+    now = time.monotonic()
+    if now - getattr(ad, '_pso_license_dismiss_at', 0.0) < LICENSE_DISMISS_GAP_S:
+        return False
+    if getattr(ad, '_pso_license_dismiss_attempts', 0) >= LICENSE_DISMISS_LIMIT:
+        return False
+    ad._pso_license_dismiss_at = now
+    ad._pso_license_dismiss_attempts = getattr(ad, '_pso_license_dismiss_attempts', 0) + 1
+    if isinstance(stats, dict):
+        stats.update(action='dismissing_license', license_dismiss_attempt=ad._pso_license_dismiss_attempts,
+                     license_dismiss_reason='C-stick scroll to bottom, select Agree, confirm A (scroll-gated panel)')
+    for _ in range(LICENSE_SCROLL_TAPS):                  # scroll the long licence to the bottom (one line per tap)
+        if stopped():
+            return True
+        _menu_tap(inputs, stopped, 1, 'cdown', hold_s=0.02)
+    for _ in range(2):                                    # ensure Agree (the top option) is selected - D-pad moves it
+        if stopped():
+            return True
+        _menu_tap(inputs, stopped, 1, 'dup', hold_s=0.06)
+    for _ in range(2):                                    # confirm; a second A rides out a one-frame drop
+        if stopped():
+            return True
+        _menu_tap(inputs, stopped, 1, 'a', hold_s=0.08)
+    return True
+
+
 def _flatten_master_build(stats, summary):
     """Flat scalar mirrors of the nested master_build summary so the telemetry
     endpoint (which keeps only flat/scalar keys) surfaces the applied build: p1 =
@@ -4067,6 +4130,13 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     continue
                 menu_frame = ad.get_frame()
                 menu_paused = observe_menu_controls(menu, menu_frame, state, controller, inputs, stats)
+                # LICENSE AUTO-DISMISS (2026-11-04): PSO's software-license panel is scroll-gated and the planner has
+                # no C-stick key, so the guard/planner path loops on it forever. Drive it off imperatively (scroll to
+                # the bottom, select Agree, press A) before anything else; dismiss_license no-ops on every other screen.
+                if dismiss_license(ad, menu, inputs, stopped, stats):
+                    invalidate_plan()
+                    solo.wait(.4, stopped)
+                    continue
                 # Backstop to the never-stop invariant: if a menu/dialogue is up
                 # continuously for MENU_STUCK_S (in case menu.stalled never trips -
                 # e.g. a boss-end dialogue the campaign keeps retrying), warp to the
