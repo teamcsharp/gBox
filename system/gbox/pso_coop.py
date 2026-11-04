@@ -29,6 +29,7 @@ from . import pso_coop_mapping as mapping_continuity
 from .pso_coop_combat import WeaponRanges, Engagements, EquipmentRecovery, FALLBACK, geometry as attack_geometry
 from .pso_gc_live import PLAYER, VT_UPDATE
 from .registry import Unsupported
+from .debug import Unavailable as StubUnavailable      # a transient GDB-stub read refusal ("stub refused read")
 
 CAMPAIGN = "pso-coop-episodes-1-2"
 # Controller tokens are constrained at generation and independently checked before input.
@@ -3814,6 +3815,132 @@ def menu_unstick(ad, stats):
     return True
 
 
+# --- PSO software-license auto-dismissal (2026-11-04) ---------------------------------------------------------------
+# Verified live on lilspark that the uinput pad delivers every input to Dolphin, yet PSO never left the title: its
+# software-license panel is SCROLL-GATED - "Agree" is ignored until the long licence is C-stick-scrolled near the end -
+# and the campaign cannot scroll it. The planner's PLAN_SCHEMA has no C-stick key at all (only a/b/x/y/l/r/start/dpad/
+# stick), and the menu guard (pso_coop_menu.review) only ever presses one UP then A, so it pressed A on Agree forever
+# with nothing scrolled and looped to the attempt limit (operator saw it "frozen on the TOS"). These constants + helper
+# encode the exact by-hand sequence that dismissed it: C-stick-scroll to the bottom, select Agree (D-pad up), press A.
+# It is gated to the independently-recognised licence panel only (a benign fixed screen where Agree is the sole sensible
+# choice); every other screen keeps the existing fail-closed guard. Clean check=False taps avoid the held-ack path, and
+# it is fully exception-/stop-soft so a delivery hiccup or a bad frame can never kill the loop.
+LICENSE_SCROLL_TAPS = 190       # one C-stick-down tap per licence line; ~175 reached the bottom by hand, + margin (idempotent)
+LICENSE_DISMISS_LIMIT = 4       # bounded re-attempts if recognition flaps; never an infinite loop
+LICENSE_DISMISS_GAP_S = 12.0    # don't re-run the whole scroll pass more often than this
+
+
+def _menu_tap(inputs, stopped, player, key, hold_s=0.035, gap_s=0.008):
+    """One clean controller tap through the PSO input path, bypassing the held-acknowledgement check (a bare down is
+    reported 'held' by the virtual pad); fail-/stop-soft. hold_s is kept >= one emulated frame so the game's menu
+    poll never misses the press; gap_s is the brief idle before the next tap. Both are tuned small for a fast burst."""
+    try:
+        inputs.send([{"key": key, "down": True}], player, check=False)
+        solo.wait(hold_s, stopped)
+        inputs.send([{"key": key, "down": False}], player, check=False)
+        if gap_s:
+            solo.wait(gap_s, stopped)
+    except InterruptedError:
+        raise
+    except Exception:                                     # noqa: BLE001 - a delivery hiccup must never kill the loop
+        pass
+
+
+def dismiss_license(ad, menu, inputs, stopped, stats):
+    """Drive PSO's independently-recognised software-license panel off the screen: C-stick-scroll to the bottom,
+    select Agree, confirm A. Returns True when a dismissal pass ran (caller should reobserve and continue), False when
+    no licence panel is present. Bypasses the one-input menu guard for this one benign fixed screen only."""
+    obs = getattr(menu, 'observation', None) or {}
+    # pso_license_menu.observe returns a bare {recognized, selected in Agree/Disagree} with NO 'menu' key; the boot
+    # recogniser always carries a 'menu'. That distinguishes the licence panel from every other recognised menu.
+    if not (obs.get('recognized') and obs.get('selected') in ('Agree', 'Disagree') and 'menu' not in obs):
+        return False
+    now = time.monotonic()
+    if now - getattr(ad, '_pso_license_dismiss_at', 0.0) < LICENSE_DISMISS_GAP_S:
+        return False
+    if getattr(ad, '_pso_license_dismiss_attempts', 0) >= LICENSE_DISMISS_LIMIT:
+        return False
+    ad._pso_license_dismiss_at = now
+    ad._pso_license_dismiss_attempts = getattr(ad, '_pso_license_dismiss_attempts', 0) + 1
+    if isinstance(stats, dict):
+        stats.update(action='dismissing_license', license_dismiss_attempt=ad._pso_license_dismiss_attempts,
+                     license_dismiss_reason='C-stick scroll to bottom, select Agree, confirm A (scroll-gated panel)')
+    # HYPERSPEED (operator: the slow meander is maddening). Burst the scroll - one tight ~frame-long tap per line with
+    # a minimal gap (~3-4 s for the whole licence, not a slow drip) - then one quick Agree + A. No dwell between taps.
+    for _ in range(LICENSE_SCROLL_TAPS):                  # scroll the long licence to the bottom (one line per tap)
+        if stopped():
+            return True
+        _menu_tap(inputs, stopped, 1, 'cdown', hold_s=0.016, gap_s=0.004)
+    for _ in range(2):                                    # ensure Agree (the top option) is selected - D-pad moves it
+        if stopped():
+            return True
+        _menu_tap(inputs, stopped, 1, 'dup', hold_s=0.28, gap_s=0.05)   # selections need a clear held deflection
+    for _ in range(2):                                    # confirm; a second A rides out a one-frame drop
+        if stopped():
+            return True
+        _menu_tap(inputs, stopped, 1, 'a', hold_s=0.28, gap_s=0.05)
+    return True
+
+
+# --- Pre-gameplay boot nudge (2026-11-04) ---------------------------------------------------------------------------
+# Verified live: when the independent recogniser misses a boot screen, the withhold gate froze the campaign on the
+# title/menus even though the vision planner had already read the screen correctly and proposed the right key. On the
+# pre-gameplay boot screens (native phase != 14) nothing destructive is reachable - the worst a wrong press does is
+# bounce back to the title, which the chain recovers from - so a BOUNDED pass-through lets the planner's own proposed
+# player-one key go to the pad as one clear HELD press (the main menu ignores brief taps; ~0.3 s registers). Known
+# screens that the recogniser does match (saved_p1/saved_p2/verify_saved/game_options...) keep the strict fail-closed
+# path, so the saved-buddy selection is always driven by the existing verified logic, never by a blind confirm.
+BOOT_NUDGE_HOLD_S = 0.3         # one clear held deflection per nudge (brief taps don't register on the main menu)
+BOOT_NUDGE_GAP_S = 2.5          # paced: at most one nudge per gap, so the screen can react and be reobserved
+BOOT_NUDGE_LIMIT = 40           # bounded per run; never an endless blind walk
+BOOT_NUDGE_KEYS = {'a', 'b', 'start', 'dup', 'ddown', 'dleft', 'dright',
+                   'lup', 'ldown', 'lleft', 'lright', 'up', 'down', 'left', 'right'}
+
+
+def boot_nudge_allowed(ad, state, reason):
+    """A nudge is only considered on a pre-gameplay boot screen whose input was withheld/unreadable, paced and capped."""
+    if state.get('phase') == 14:
+        return False
+    text = str(reason)
+    if 'withheld' not in text and 'unreadable' not in text:
+        return False
+    if time.monotonic() - getattr(ad, '_pso_boot_nudge_at', 0.0) < BOOT_NUDGE_GAP_S:
+        return False
+    return getattr(ad, '_pso_boot_nudges', 0) < BOOT_NUDGE_LIMIT
+
+
+_NUDGE_DIRECTIONS = {'dup', 'ddown', 'dleft', 'dright', 'up', 'down', 'left', 'right',
+                     'lup', 'ldown', 'lleft', 'lright'}
+
+
+def boot_nudge(ad, inputs, stopped, stats, proposed, state=None, plan=None):
+    """Pass the planner's first proposed player-one key through as one held press; True when a nudge was sent."""
+    if not proposed:
+        return False
+    player, keys, _secs = proposed[0]
+    keys = [str(k) for k in (keys or []) if str(k) in BOOT_NUDGE_KEYS][:1]
+    if player != 1 or not keys:
+        return False
+    key = keys[0]
+    # Title-as-license misread, belt + suspenders (2026-11-04, watched live): at the RAM title/attract (phase 10) the
+    # vision planner repeatedly read the PRESS START title as "the software license" and proposed a direction, which
+    # can never leave the title. When RAM says phase 10, the planner's own labels talk about the licence/Agree, and
+    # the independent licence recogniser does NOT actually see a licence panel, the title is the overwhelmingly likely
+    # screen - press START (the one key the title takes) instead of the misread direction.
+    if (state or {}).get('phase') == 10 and key in _NUDGE_DIRECTIONS:
+        labels = ' '.join(str((plan or {}).get(k) or '') for k in
+                          ('menu_title', 'selected_option', 'intended_option', 'thought')).lower()
+        if 'licen' in labels or 'agree' in labels:
+            key = 'start'
+    ad._pso_boot_nudge_at = time.monotonic()
+    ad._pso_boot_nudges = getattr(ad, '_pso_boot_nudges', 0) + 1
+    if isinstance(stats, dict):
+        stats.update(action='boot_nudge', boot_nudges=ad._pso_boot_nudges, boot_nudge_key=key,
+                     boot_nudge_reason='pre-gameplay boot screen: planner key passed through the withhold gate as a held press')
+    _menu_tap(inputs, stopped, 1, key, hold_s=BOOT_NUDGE_HOLD_S, gap_s=0.05)
+    return True
+
+
 def _flatten_master_build(stats, summary):
     """Flat scalar mirrors of the nested master_build summary so the telemetry
     endpoint (which keeps only flat/scalar keys) surfaces the applied build: p1 =
@@ -4066,6 +4193,13 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     continue
                 menu_frame = ad.get_frame()
                 menu_paused = observe_menu_controls(menu, menu_frame, state, controller, inputs, stats)
+                # LICENSE AUTO-DISMISS (2026-11-04): PSO's software-license panel is scroll-gated and the planner has
+                # no C-stick key, so the guard/planner path loops on it forever. Drive it off imperatively (scroll to
+                # the bottom, select Agree, press A) before anything else; dismiss_license no-ops on every other screen.
+                if dismiss_license(ad, menu, inputs, stopped, stats):
+                    invalidate_plan()
+                    solo.wait(.15, stopped)              # hyperspeed: minimal dwell, reobserve fast
+                    continue
                 # Backstop to the never-stop invariant: if a menu/dialogue is up
                 # continuously for MENU_STUCK_S (in case menu.stalled never trips -
                 # e.g. a boss-end dialogue the campaign keeps retrying), warp to the
@@ -4114,7 +4248,15 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     # takeover interruptible. Reobserve before every next input.
                     solo.wait(.6 if selected else .2, stopped)
                     continue
-                if state.get("verified") and not mapped and not menu_paused and not recovery.waiting:
+                # CONTENTION KILL (2026-11-04, verified live): during the pre-gameplay boot screens the mapping
+                # restore/probe path fired its player-two 19-key sweep while player one tried to drive the title and
+                # menus - the campaign was fighting its own forward presses, and the probe can never verify there
+                # anyway ("GameCube native actions require an active offline free-play session"). One driver at a
+                # time: defer ALL mapping restore/probe work until real gameplay (native phase 14); the boot chain
+                # (title Start -> menu -> OFFLINE -> character select -> Start Game) belongs to player one alone.
+                # (The 19-key "sweep" telemetry still shows at run start: that is inputs.release() - every key sent
+                # UP, alphabetical - a benign safety release, not a probe. This is the only prove()/restore() site.)
+                if state.get("verified") and state.get("phase") == 14 and not mapped and not menu_paused and not recovery.waiting:
                     retained = mapping_continuity.restore(ad, reader, session_id, game or {}, stopped)
                     stats.update(mapping_continuity.diagnostics(ad))
                     # HOT-RELOAD INTO A RUNNING MID-FIELD SESSION (operator: the reload kept
@@ -4330,6 +4472,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                 if (not menu_paused and state.get("floor", 0) > 0 and
                                         state.get("geometry_verified") and plan.get("screen") == "gameplay"):
                                     selected = []
+                                planner_proposed = selected[:1]          # the planner's own read, kept for the boot nudge
                                 selected, reason = menu.review(plan, selected, state_identity(state),
                                     frame=planned_frame, fresh_frame=ad.get_frame(),
                                     native_gameplay=bool(state.get('verified') and state.get('phase') == 14),
@@ -4349,6 +4492,15 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                     menu_unstick(ad, stats)
                                     invalidate_plan()
                                     solo.wait(.3, stopped)
+                                    continue
+                                # BOOT NUDGE (2026-11-04): a withheld/unreadable PRE-GAMEPLAY screen must not freeze
+                                # the chain - pass the planner's own proposed player-one key through as one bounded
+                                # held press, then reobserve. Gameplay and recognised screens keep the strict path.
+                                if not selected and planner_proposed and boot_nudge_allowed(ad, state, reason) and \
+                                        boot_nudge(ad, inputs, stopped, stats, planner_proposed,
+                                                   state=state, plan=plan):
+                                    invalidate_plan()
+                                    solo.wait(.25, stopped)
                                     continue
                                 # Menus are observed after every individual input.
                                 # A confirm must never cascade into an unseen dialog.
@@ -4437,6 +4589,20 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 errors = 0
                 stats["input_wait_active"] = False
                 solo.wait(.05, stopped)
+            except StubUnavailable as exc:
+                # A transient GDB-stub read/write refusal ("stub refused read at 0x...: E00") under debugger
+                # contention - e.g. a hard-running RE5 on the same box momentarily starving the stub - must NOT kill
+                # the campaign loop (the known "autobot silently crashes on a bad frame" pattern). It is a bad frame:
+                # release inputs, back off briefly, and retry the next frame. StubUnavailable subclasses RuntimeError,
+                # so this clause must stay ABOVE the RuntimeError handler below.
+                speed_sampler.invalidate()
+                try:
+                    inputs.release()
+                except Exception:                            # noqa: BLE001 - best effort
+                    pass
+                stats["stub_read_waits"] = stats.get("stub_read_waits", 0) + 1
+                stats.update(action="waiting_for_stub_read", last_stub_error=str(exc)[:160])
+                solo.wait(0.2, stopped)
             except RuntimeError as exc:
                 # The host could not deliver input because the game window is not
                 # in the foreground (adapters.py: "must be active to send emulator

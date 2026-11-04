@@ -59,6 +59,15 @@ def xinput_pad(gcpad1_template: str, player: int, slot: int) -> str:
     return body.strip()
 
 
+def evdev_pad(player: int, device_name: str) -> str:
+    """A GCPad<player> section bound to a focus-independent /dev/uinput evdev pad (gbox/vpad_linux.py) - the Linux
+    analog of xinput_pad, for Dolphin on the Spark's WM-less Xvfb session displays where synthetic X keyboard events
+    (XInput2/0/Virtual core pointer) never reach the game. The Button/Axis names are intrinsic to the pad's device
+    layout, so the device and this section can never disagree."""
+    from . import vpad_linux
+    return vpad_linux.gcpad_section(player, device_name).strip()
+
+
 def input_rows(events, player, *, windows=False):
     if player not in (1, 2):
         raise ValueError("PSO buddy controls support players 1 and 2")
