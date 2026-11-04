@@ -860,6 +860,13 @@ DOOR_RETRAVERSE_COOLDOWN_S = 30.0  # hold a just-crossed door shut so P1 explore
 # playing. The loop pauses this long, tries to raise the game window, then retries.
 FOCUS_WAIT_BACKOFF_S = 0.5
 FOCUS_WAIT_MARK = "must be active to send emulator input"
+# A docked Dolphin window briefly vanishing during window churn (the app hides/re-docks
+# it, or the operator's compositor drops it for a frame) makes win_grab/get_frame and
+# win_send_keys raise RuntimeError("the game window isn't open") (adapters.py). That was
+# re-raised past the focus-wait handler and KILLED play() (the dead autobot the operator
+# sees as "standing still"). Treat it exactly like the focus-wait: a transient PAUSE that
+# releases inputs, tries to raise/restore the window, backs off, and keeps the run alive.
+WINDOW_GONE_MARK = "window isn't open"
 
 
 class DeathMemory:
@@ -3727,6 +3734,18 @@ def apply_default_speed(ad, stats):
 MASTER_BUILD_TICK_S = 3.0   # throttle for the periodic master-build re-check on the co-op loop
 MENU_WARP_GAP_S = 6.0       # throttle for the never-stop menu-unstick warp (don't hammer the loader)
 MENU_STUCK_S = 18.0         # a menu/dialogue up continuously this long -> warp (backstop if menu.stalled never trips)
+# ATTRACT / TITLE BREAKER: the recognised-menu + planner paths only act on an INDEPENDENTLY
+# RECOGNISED menu frame. At the title/attract/demo loop nothing is recognised, so none of
+# them press Start and the never-stop fallback (a native floor warp) is a no-op from the
+# title - the bot sat in the attract loop forever (phase cycling, floor 0, zero presses).
+# Press Start on a throttle while the native phase is still CYCLING (attract/demo cycles its
+# phase value; a static navigable menu holds one phase, where a blind confirm could pick the
+# wrong option), and raise/restore the game window (a mis-docked/hidden window is the usual
+# reason the frame can't be recognised) so the normal vision menu path can take back over.
+TITLE_START_GAP_S = 2.5        # min time between Start presses while escaping attract
+TITLE_RAISE_GAP_S = 5.0        # min time between game-window raise/restore attempts
+TITLE_PHASE_STABLE_S = 6.0     # native phase unchanged this long => a static menu, not the cycling attract: stop pressing
+TITLE_START_MAX = 12           # hard cap on Start presses per out-of-game stretch (reset once phase 14 is seen)
 
 
 def menu_unstick(ad, stats):
@@ -4056,6 +4075,51 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     # takeover interruptible. Reobserve before every next input.
                     solo.wait(.6 if selected else .2, stopped)
                     continue
+                # ATTRACT / TITLE BREAKER (vision-independent). Outside gameplay (phase != 14,
+                # not travelling) with NO independently recognised menu, neither the recognised-
+                # menu path above nor the planner can press anything - that is the attract/title/
+                # demo loop, which a native warp cannot leave. Raise/restore the game window (so a
+                # mis-docked/hidden window, the usual cause of an unrecognised frame, can be read
+                # again and the normal vision menu nav resumes) and press Start WHILE the phase is
+                # still cycling (attract) so the game advances to the main menu. A static phase is
+                # a navigable menu - stop pressing there so a blind Start can't confirm the wrong
+                # option (e.g. Online). Bounded per out-of-game stretch; reset once phase 14 is seen.
+                if (state.get("phase") != 14 and not state.get("travelling") and not recovery.waiting
+                        and proposed is None and not (menu.observation or {}).get("recognized")):
+                    now = time.monotonic()
+                    if state.get("phase") != getattr(ad, "_pso_title_phase", "__unset__"):
+                        ad._pso_title_phase = state.get("phase")
+                        ad._pso_title_phase_at = now
+                    phase_cycling = (now - getattr(ad, "_pso_title_phase_at", now)) < TITLE_PHASE_STABLE_S
+                    if now - getattr(ad, "_pso_title_raise_at", 0.0) >= TITLE_RAISE_GAP_S:
+                        ad._pso_title_raise_at = now
+                        try:
+                            from .adapters import win_bring_to_front
+                            proc = getattr(ad, "proc", None)
+                            if proc is not None and getattr(proc, "pid", None):
+                                stats["title_window_raised"] = bool(win_bring_to_front(proc.pid))
+                        except Exception as raise_exc:          # noqa: BLE001 - best effort; never block play
+                            stats["title_window_raise_error"] = str(raise_exc)[:120]
+                    started = getattr(ad, "_pso_title_start_count", 0)
+                    if phase_cycling and started < TITLE_START_MAX and now - getattr(ad, "_pso_title_start_at", 0.0) >= TITLE_START_GAP_S:
+                        ad._pso_title_start_at = now
+                        ad._pso_title_start_count = started + 1
+                        try:
+                            inputs.hold([(1, ["start"], .35)])
+                            stats["title_start_presses"] = stats.get("title_start_presses", 0) + 1
+                            stats["action"] = "press_start_attract"
+                        except InterruptedError:
+                            if stopped():
+                                raise
+                        except (InputDeferred, SpeedChanging, EmulationPaused, SpeedUnknown) as press_exc:
+                            stats["title_start_deferred"] = str(press_exc)[:160]
+                    else:
+                        stats["action"] = ("attract_static_menu_awaiting_capture" if not phase_cycling
+                                           else "press_start_attract_capped" if started >= TITLE_START_MAX
+                                           else stats.get("action"))
+                    invalidate_plan()
+                    solo.wait(.4, stopped)
+                    continue
                 if state.get("verified") and not mapped and not menu_paused and not recovery.waiting:
                     retained = mapping_continuity.restore(ad, reader, session_id, game or {}, stopped)
                     stats.update(mapping_continuity.diagnostics(ad))
@@ -4121,7 +4185,9 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     mapped = False
                     mapping_continuity.invalidate(ad, 'native_phase_' + str(state.get('phase')))
                     stats.update(mapping_continuity.diagnostics(ad))
-                elif mapped:
+                else:
+                    ad._pso_title_start_count = 0        # reached gameplay: re-arm the attract breaker for a future title
+                if state.get("phase") == 14 and mapped:
                     mapping_continuity.observe(ad, state, session_id, game or {}, stopped)
                 if (recovery.waiting and mapped and not menu_paused and
                         continuous_requested(driver, session_id)):
@@ -4337,13 +4403,16 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 stats["input_wait_active"] = False
                 solo.wait(.05, stopped)
             except RuntimeError as exc:
-                # The host could not deliver input because the game window is not
-                # in the foreground (adapters.py: "must be active to send emulator
-                # input"). On a headless/hostile desktop (phantom input, wallpaper
-                # engines stealing focus) this must be a transient PAUSE, never the
-                # end of the run: release inputs, try to raise the game window, back
-                # off, and continue so the buddies resume the instant focus returns.
-                if FOCUS_WAIT_MARK not in str(exc):
+                # The host could not deliver input or read a frame: either the game
+                # window is not in the foreground (adapters.py: "must be active to send
+                # emulator input") or it momentarily could not be found at all during
+                # window churn ("the game window isn't open", from win_grab/get_frame or
+                # win_send_keys). On a headless/hostile desktop (phantom input, wallpaper
+                # engines stealing focus, a docked window re-docking) this must be a
+                # transient PAUSE, never the end of the run: release inputs, try to raise/
+                # restore the game window, back off, and continue so the buddies resume
+                # the instant the window returns.
+                if FOCUS_WAIT_MARK not in str(exc) and WINDOW_GONE_MARK not in str(exc):
                     raise
                 speed_sampler.invalidate()
                 inputs.release()
