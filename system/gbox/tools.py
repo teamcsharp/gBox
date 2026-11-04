@@ -6210,6 +6210,7 @@ def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "au
                               "re6_tool",   # re6_tool: Resident Evil 6 (X360 in Xenia): Mercenaries loadouts, items, swaps
                               "re5_tool",   # re5_tool: Resident Evil 5 Gold (PS3 in RPCS3): unlock all (save edit)
                               "re5_mods_tool",   # re5_mods: RE5 Gold (PS3) live mods: turn speed, fire rate, infinite ammo, damage
+                              "merc_record_reset",  # reset_records: wipe saved Mercenaries/autoplay high scores (RE6 X360, RE5 Gold; RE4/RE5/RE6 Switch pending)
                               "mercs_team_tool", # exact-session player assignment, human demonstrations and training intent
                               "mercmode_tool",  # host-scoped sequential native-round Mercenaries screensaver
                               "oot_live",   # oot_live: OoT actors at a picture point, statues kept in rooms (gbox.oot_swap)
