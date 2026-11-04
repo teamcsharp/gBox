@@ -2484,6 +2484,12 @@ class Bot:
             close_foes = []
         if self.combat is not None:                    # a Majini behind a wall of the mesh is no immediate threat
             close_foes = [e for e in close_foes if self._open(p, e, snap.get("nav"), now)]
+        if close_foes and not any(abs(heading(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+                                      - p["rot"]) <= FIGHT_CONE for e in close_foes):
+            # no close foe inside the gun's sector: the gun-down swing (combat, _pick) turns to the side/behind one,
+            # but clear_nearby would keep him out of sight (the aim-away / behind-threat hits: cluster aimed_away_or_
+            # behind) while a closer one still fights him - only the gun stays down; no immediate threat here
+            close_foes = []
         if snap.get("recovery_active") and not snap.get("prompt"):
             self.aiming_since = None
             return {"hold": set()}                     # wait through hidden recovery frames; no unseen circle presses
