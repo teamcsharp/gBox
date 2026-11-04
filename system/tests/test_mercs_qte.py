@@ -3,6 +3,7 @@ every title hooks. Tokens, the response vocabulary, the engine bridge, the RE5 S
 vision fallback (a torn RAM read still answers a grab)."""
 import io
 import struct
+import time
 
 import numpy as np
 import pytest
@@ -173,12 +174,35 @@ def test_vision_falls_back_when_the_ram_read_tears():
     assert q is not None and q.source == "vision" and q.button == "a"
 
 
+RE4_SWITCH, RE6_SWITCH = "010099A00BC1E000", "01002A000CD48000"
+
+
 def test_uncalibrated_switch_vision_never_false_presses():
-    # The Switch glyph profiles are scaffolded (calibrated=False) until measured from live frames: vision returns
-    # nothing rather than guessing a button on stream.
-    ctx = qte.QteContext(frame=_re4_frame())
-    assert qte.detect_vision(_re4_frame(), qte.entry_for(RE5_SWITCH).vision) is None
-    assert qte.detect(qte.entry_for(RE5_SWITCH), ctx) is None        # no RAM (no m), no calibrated vision
+    # RE4 Switch / RE6 Switch glyph profiles are scaffolded (calibrated=False) until measured from live frames:
+    # vision returns nothing rather than guessing on stream.
+    assert qte.detect_vision(_glyph_frame(1200), qte.entry_for(RE4_SWITCH).vision) is None
+    assert qte.detect_vision(_glyph_frame(1200), qte.entry_for(RE6_SWITCH).vision) is None
+
+
+# --- the live-calibrated RE5 Switch glyph detector -----------------------------------------------------------------
+def _glyph_frame(white_px=1200, size=(720, 1280)):
+    """A dark 16:9 frame with `white_px` near-white neutral pixels inside the RE5 prompt glyph box (centre-bottom),
+    standing in for the '(L) Break free' / '(A) Resuscitate' overlay the game draws."""
+    img = np.zeros(size + (3,), np.uint8)
+    img[:, :] = (30, 24, 22)
+    h, w = size
+    side = max(1, int(round(white_px ** 0.5)))
+    cx, cy = int(w * 0.50), int(h * 0.66)
+    img[cy:cy + side, cx:cx + side] = (236, 233, 232)
+    return img
+
+
+def test_re5_switch_glyph_detector_fires_on_a_prompt_frame_only():
+    prof = qte.entry_for(RE5_SWITCH).vision
+    assert prof.calibrated and prof.glyph_box is not None
+    q = qte.detect_vision(_glyph_frame(1200), prof)          # a prompt overlay present
+    assert q is not None and q.kind == qte.STICK_WIGGLE and q.source == "vision"
+    assert qte.detect_vision(_glyph_frame(0), prof) is None  # ordinary play: no near-white glyph in the box
 
 
 # --- the non-blocking watcher the tick reads -----------------------------------------------------------------------
@@ -200,3 +224,57 @@ def test_snapshot_qte_shape():
     ctx = qte.QteContext(m=g, base=BASE, player_ptr=PLAYER)
     row = qte.snapshot_qte(RE5_SWITCH, ctx)
     assert row["kind"] == qte.STICK_WIGGLE and row["is_mash"] is True and row["source"] == "ram"
+
+
+# --- the in-tick grab fallback (the single hook re5_switch.snapshot calls) -----------------------------------------
+class _FrameAdapter:
+    def __init__(self, img):
+        buf = io.BytesIO()
+        Image.fromarray(img).save(buf, "JPEG", quality=95)
+        self._jpg = buf.getvalue()
+
+    def get_frame(self):
+        return self._jpg
+
+
+def _poll_until(fn, timeout=2.0):
+    t = time.time()
+    while time.time() - t < timeout:
+        v = fn()
+        if v:
+            return v
+        time.sleep(0.05)
+    return fn()
+
+
+def test_grab_fallback_fires_only_while_held_and_a_glyph_is_visible():
+    qte._GRAB_WATCHERS.clear()
+    m = type("M", (), {"adapter": _FrameAdapter(_glyph_frame(1200))})()   # a grab prompt on the frame
+    held = {"player": {"motion": 107}}                                    # 107 = grabbed (MOTION_HELD)
+    # the watcher grabs asynchronously after the first poke; poll until it has seen the glyph
+    row = _poll_until(lambda: qte.grab_fallback(RE5_SWITCH, m, held))
+    assert row is not None and row["token"] == "mash:wiggle" and row["source"] == "vision" and row["mode"] == 6
+
+
+def test_grab_fallback_silent_when_not_held():
+    qte._GRAB_WATCHERS.clear()
+    m = type("M", (), {"adapter": _FrameAdapter(_glyph_frame(1200))})()
+    assert qte.grab_fallback(RE5_SWITCH, m, {"player": {"motion": 4}}) is None   # walking: never synthesize
+    assert qte.grab_fallback(RE5_SWITCH, m, {"player": None}) is None
+
+
+def test_grab_fallback_silent_without_a_frame_source():
+    qte._GRAB_WATCHERS.clear()
+    m = type("M", (), {"adapter": None})()
+    assert qte.grab_fallback(RE5_SWITCH, m, {"player": {"motion": 107}}) is None
+
+
+def test_grab_fallback_no_glyph_no_prompt():
+    qte._GRAB_WATCHERS.clear()
+    m = type("M", (), {"adapter": _FrameAdapter(_glyph_frame(0))})()      # held, but no prompt overlay on the frame
+    held = {"player": {"motion": 107}}
+    # give the watcher a moment; it must never report a prompt that is not there
+    for _ in range(8):
+        qte.grab_fallback(RE5_SWITCH, m, held)
+        time.sleep(0.05)
+    assert qte.grab_fallback(RE5_SWITCH, m, held) is None
