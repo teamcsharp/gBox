@@ -139,15 +139,47 @@ slot (the heavy writing is offline):
 
 1. **Static (preferred for offsets + signature):** obtain `main.nso` and disassemble it (capstone/Ghidra) to find the
    manager singletons (pG / EmMgr / the Mercenaries game struct / the title task) and struct field offsets, and pick a
-   stable 64-byte `.rodata` run for `SIG_OFF`/`SIGNATURE`. Get `main.nso` by either: (a) a one-off Eden launch with
-   `Debugging.dump_nso=true` - it dumps the decrypted NSOs within seconds of load, so it does NOT need to reach the
-   title (quick, but occupies the Eden briefly); or (b) hactool/hactoolnet extraction from the NSP + `_switch/prod.keys`
-   on lilspark or the i9 (NOT the Wi-Fi PC, per `gbox-no-heavy-transfers-via-jaybuilt`; main.nso is only a few MB).
+   stable 64-byte `.rodata` run for `SIG_OFF`/`SIGNATURE`. Get `main.nso` via Eden's own `Debugging.dump_nso=true` -
+   a one-off RE4 launch dumps the decrypted NSOs within seconds of load (no need to reach the title). External
+   extraction (hactool / NSP decryption) is OUT in this environment - dump_nso only.
 2. **Live cheat-search (for the in-round values):** on a warm-cache RE4 boot, drive to a Mercenaries round and use
-   `job_memory_search` - the Mercenaries clock counts down continuously (filter `decreased` a few times to isolate it),
-   kills/combo/score filter `increased` after a kill, player position filters `changed`/`unchanged` as Leon
-   moves/stops. Convert found absolute addresses to `module_base + offset` once the signature pins `module_base`.
+   `job_memory_search` (playbook below). Convert found absolute addresses to `module_base + offset` once the
+   signature pins `module_base`.
+
+Decision (2026-11-04): both halves are folded into ONE focused warm-cache live window (no separate stream blip);
+everything above is prepared so that window is short.
 
 The driver (`gbox/mercs/titles/re4_switch.py`) is structured so these results drop straight into the pending
 constants; `mercs.ready` flips to true only after a verified round, then `re4` joins the rotation
 (`titles=["re5","re6","re4"]`).
+
+## Turnkey memory_search playbook (for the one combined live window)
+
+Preconditions: RE4 session_id known, worker lilspark (280b43b136f54c19), RE4 driven to a Mercenaries round by pad
+input (`job_session_op op=send_input args={"events":[{"key":"<k>","down":true/false}]}`; Eden keys: a b x y l r zl
+zr plus minus start select dup ddown dleft dright ...). Each `job_memory_search` call: `session_id`, `op`
+(start|next), `cmp` (changed|unchanged|increased|decreased|eq|ne), `type` (u32|s16|f32), optional `value`.
+
+- **A. Eden dump_nso (boot-stable anchors):** one RE4 launch with dump_nso on; read the dumped `main` NSO; pick
+  `SIG_OFF`+`SIGNATURE` from a stable `.rodata` run; disassemble to confirm the manager-singleton module offsets
+  (pG / EmMgr / the Mercenaries game struct / the title task). `module_base` is then found live by that signature.
+- **B. Mercenaries clock (strongest anchor - decrements every frame):** `op=start type=u32` snapshot; wait ~2-3 s;
+  `op=next cmp=decreased`; repeat 3-4x. The clock is the candidate decreasing at ~30/s (GC stores frames at 30/s;
+  confirm cadence - Switch may be 30 or 60) and matching the on-screen time. Also try `type=f32` in case the port
+  stores seconds. Read +-0x40 around the hit for kills/combo/score neighbours (GC: combo at merc+0x28).
+- **C. kills / combo / score (increase on a kill):** `op=start type=u32` with no recent kill; fire and kill a
+  Ganado; `op=next cmp=increased`; repeat over 2-3 kills. Cross-check against the results screen after the round
+  (kills / max combo / score), exactly as the RE5 scan did.
+- **D. player position + health:** position - `op=start type=f32`, move Leon, `op=next cmp=changed`; stand still,
+  `cmp=unchanged`; repeat 2-3 cycles -> the 3 contiguous position floats (GC player+0x94). Health - `op=start
+  type=s16`, take a hit, `op=next cmp=decreased` (GC: pG+0x4FB0 s16; may be in pG, not the player object).
+- **E. enemy table (EmMgr):** isolate via the live enemy count changing as Ganados spawn/die, or pointer-scan from a
+  found enemy pos. GC shape: EmMgr {+0 base, +4 count, +8 stride}; per-enemy pos+0x94, hp+0x320/+0x322.
+- **F. menu cursors (TW):** at each menu (main_menu / THE MERCENARIES / Select Player / Select Stage) press up/down
+  and `op=next cmp=changed` to isolate the cursor byte. Anchor TW to a static pointer via the dumped NSO so it is
+  boot-stable (GC codes: TW_ROUTINE 5/6/7, TW_SUB 0x08 player / 0x0C stage, cursors +0x28/+0x54/+0x55/+0x56).
+- **G. convert to offsets:** with `module_base` pinned by the signature, each static anchor offset =
+  found_absolute - module_base; heap-object fields are read through the manager pointer chains, not fixed offsets.
+
+Value ranges to recognize candidates (from GC): Mercenaries clock <= 1200 s; combo a small int; Ganado HP ~100s-1000s,
+bosses up to ~6500 (Dr. Salvador, Village); score grows by hundreds per kill; player pos floats in cm.

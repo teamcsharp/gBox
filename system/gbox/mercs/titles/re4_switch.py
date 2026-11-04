@@ -81,6 +81,11 @@ TW_MENU_CURSOR = None                   # pending (GC TW+0x28 main-menu cursor)
 TW_MERC_CURSOR = None                   # pending (GC TW+0x54 The Mercenaries: 0 GAME START / 1 EXIT)
 TW_PLAYER_CURSOR = None                 # pending (GC TW+0x55 Select Player: 0..4)
 TW_STAGE_CURSOR = None                  # pending (GC TW+0x56 Select Stage: 0..3, a 2x2 grid)
+# The main-menu cursor index of THE MERCENARIES (with the extra games unlocked). GC: the entries are START,
+# ASSIGNMENT ADA, THE MERCENARIES, LOAD, OPTIONS (gbox.re4_menus), so THE MERCENARIES is index 2 there; the Switch HD
+# menu layout is measured live. None = unknown, and the walk then WAITS on the main menu rather than pressing A blind
+# (a blind confirm there can start a story game - gbox.re4_menus / re4_merc_bot warn the bot never presses blind).
+MERC_MENU_TARGET = None                 # pending (GC: 2); the Select Stage grid layout: index = row*2 + col
 
 CLOCK_MAX_S = 1200.0                    # the Mercenaries clock never reads more than this (sanity bound, from re4_merc_bot)
 
@@ -354,7 +359,7 @@ def screen(m, merc=None) -> dict:
             if TW_MERC_CURSOR is not None:
                 return out | {"where": "mercs_title", "cursor": m.rd(tw + TW_MERC_CURSOR, 1)[0], "target": 0}
         if routine == 5 and TW_MENU_CURSOR is not None:     # main menu (walk to THE MERCENARIES)
-            return out | {"where": "main_menu", "cursor": m.rd(tw + TW_MENU_CURSOR, 1)[0], "target": None}
+            return out | {"where": "main_menu", "cursor": m.rd(tw + TW_MENU_CURSOR, 1)[0], "target": MERC_MENU_TARGET}
     except (ValueError, OSError, struct.error):
         return out | {"where": "unknown"}
     return out
@@ -381,12 +386,18 @@ def step(scr: dict) -> str | None:
         if (cur ^ tgt) & 2:                                 # different row: up / down
             return DPAD["down"] if tgt & 2 else DPAD["up"]
         return DPAD["right"] if tgt & 1 else DPAD["left"]   # same row, different column
-    if where in ("main_menu", "mercs_title"):
+    if where == "mercs_title":                              # THE MERCENARIES: GAME START is entry 0 (EXIT is 1)
         cur, tgt = scr.get("cursor"), scr.get("target")
         if not isinstance(cur, int):
             return None
-        if not isinstance(tgt, int):
-            return "a"                                      # mercs_title GAME START is entry 0: confirm
+        tgt = 0 if not isinstance(tgt, int) else tgt
+        if cur == tgt:
+            return "a"
+        return DPAD["down"] if cur < tgt else DPAD["up"]
+    if where == "main_menu":                                # walk to THE MERCENARIES; NEVER a blind A here (a wrong
+        cur, tgt = scr.get("cursor"), scr.get("target")     # confirm starts a story game - gbox.re4_menus / re4_merc_bot)
+        if not isinstance(cur, int) or not isinstance(tgt, int):
+            return None                                     # target unknown: wait, do not press
         if cur == tgt:
             return "a"
         return DPAD["down"] if cur < tgt else DPAD["up"]
