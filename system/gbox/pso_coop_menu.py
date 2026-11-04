@@ -1,6 +1,7 @@
 """Bounded menu attempts with independent evidence for the PSO license screen.
 
-Model labels remain advisory. Unknown menu confirmations fail closed; native
+Menu presses are ~0.3 s HELD deflections (2026-11-04, verified live on lilspark: the main menu ignores brief
+taps; a clear held press registers). Model labels remain advisory. Unknown menu confirmations fail closed; native
 in-game actions retain their existing path. Each allowed menu input is singular.
 """
 from __future__ import annotations
@@ -20,14 +21,14 @@ def known_menu_command(observation, players=2, *, finish_save=False):
         return None
     menu = observation.get('menu')
     if menu == 'ingame_p2_cancel' and not finish_save:
-        return 2, ['b'], .08
+        return 2, ['b'], .3
     if menu in ('press_start', 'main', 'mode', 'ingame_start', 'quit_confirm', 'after_save'):
         key = next_key(observation, players, finish_save=finish_save is True)
-        return (1, [key], .4 if menu == 'press_start' else .08) if key else None
+        return (1, [key], .4 if menu == 'press_start' else .3) if key else None
     if menu in ('saved_p1', 'saved_p2', 'verify_saved', 'game_options', 'transporter_forest'):
         player = observation.get('player')
         if type(player) is int and player in (1, 2):
-            return player, ['a'], .08
+            return player, ['a'], .3
     return None
 
 
@@ -150,7 +151,7 @@ class MenuProgress:
                 elif self._license_up is not None and self._license_up[0] == identity:
                     reason = 'One license UP was already attempted; require a new frame proving Agree'
                 else:
-                    chosen = [(1, ['up'], .08)]
+                    chosen = [(1, ['up'], .3)]
                     self._license_up = (identity, current['frame_sha256'])
             elif chosen[0][1] != ['a']:
                 reason = 'License Agree is independently selected; only a separate A confirmation is permitted'
@@ -159,7 +160,7 @@ class MenuProgress:
                     observed['frame_sha256'] == self._license_up[1]):
                 reason = 'Require a fresh changed selection frame after the license UP'
             else:
-                chosen = [(1, ['a'], .08)]
+                chosen = [(1, ['a'], .3)]
         elif boot_known:
             signature = lambda value: (value.get('menu'), value.get('selected'), value.get('option_index'),
                                        value.get('player'), value.get('observed_episode'), value.get('observed_difficulty'))
@@ -188,7 +189,7 @@ class MenuProgress:
                         current.get('observed_difficulty') == target_difficulty):
                     reason = 'Observed episode and difficulty must match the trusted requested campaign settings'
                 else:
-                    chosen = [(owner, ['a'], .08)]
+                    chosen = [(owner, ['a'], .3)]
                     if current['menu'] == 'saved_p1':
                         self._saved_selected = {1}
                     elif current['menu'] == 'saved_p2':
@@ -201,14 +202,14 @@ class MenuProgress:
                 elif chosen and (chosen[0][0] != 2 or chosen[0][1] != ['a']):
                     reason = 'Observed Forest destination requires a separate player-two A confirmation'
                 else:
-                    chosen = [(2, ['a'], .08)]
+                    chosen = [(2, ['a'], .3)]
             elif current.get('menu') == 'ingame_p2_cancel':
                 if self.players != 2 or not native_gameplay or finish_save is True:
                     reason = 'Observed player-two field panel only permits normal cancellation'
                 elif chosen and (chosen[0][0] != 2 or chosen[0][1] != ['b']):
                     reason = 'Observed lower-view panel requires one separate player-two B'
                 else:
-                    chosen = [(2, ['b'], .08)]
+                    chosen = [(2, ['b'], .3)]
                     self._cancel_frame = current.get('frame_sha256')
                     self._exit_samples = 0
                     self._exit_frame = None
@@ -219,7 +220,7 @@ class MenuProgress:
                 elif safe is None:
                     reason = 'After-save navigation requires the native campaign completion state'
                 else:
-                    chosen = [(1, [safe], .08)]
+                    chosen = [(1, [safe], .3)]
                     if current['menu'] == 'after_save':
                         self._saved_selected.clear()
                     if safe == 'b':
@@ -236,7 +237,7 @@ class MenuProgress:
                 if safe is None or (proposed != safe and proposed not in ('a', 'start')):
                     reason = 'Proposed menu action does not match the independently observed offline setup step'
                 else:
-                    chosen = [(1, [safe], .08)]
+                    chosen = [(1, [safe], .3)]
                     if current.get('menu') in ('main', 'mode'):
                         self._saved_selected.clear()
                     self._license_up = None  # Independently proven departure from the license dialog.

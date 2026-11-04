@@ -3874,11 +3874,55 @@ def dismiss_license(ad, menu, inputs, stopped, stats):
     for _ in range(2):                                    # ensure Agree (the top option) is selected - D-pad moves it
         if stopped():
             return True
-        _menu_tap(inputs, stopped, 1, 'dup', hold_s=0.05, gap_s=0.02)
+        _menu_tap(inputs, stopped, 1, 'dup', hold_s=0.28, gap_s=0.05)   # selections need a clear held deflection
     for _ in range(2):                                    # confirm; a second A rides out a one-frame drop
         if stopped():
             return True
-        _menu_tap(inputs, stopped, 1, 'a', hold_s=0.07, gap_s=0.03)
+        _menu_tap(inputs, stopped, 1, 'a', hold_s=0.28, gap_s=0.05)
+    return True
+
+
+# --- Pre-gameplay boot nudge (2026-11-04) ---------------------------------------------------------------------------
+# Verified live: when the independent recogniser misses a boot screen, the withhold gate froze the campaign on the
+# title/menus even though the vision planner had already read the screen correctly and proposed the right key. On the
+# pre-gameplay boot screens (native phase != 14) nothing destructive is reachable - the worst a wrong press does is
+# bounce back to the title, which the chain recovers from - so a BOUNDED pass-through lets the planner's own proposed
+# player-one key go to the pad as one clear HELD press (the main menu ignores brief taps; ~0.3 s registers). Known
+# screens that the recogniser does match (saved_p1/saved_p2/verify_saved/game_options...) keep the strict fail-closed
+# path, so the saved-buddy selection is always driven by the existing verified logic, never by a blind confirm.
+BOOT_NUDGE_HOLD_S = 0.3         # one clear held deflection per nudge (brief taps don't register on the main menu)
+BOOT_NUDGE_GAP_S = 2.5          # paced: at most one nudge per gap, so the screen can react and be reobserved
+BOOT_NUDGE_LIMIT = 40           # bounded per run; never an endless blind walk
+BOOT_NUDGE_KEYS = {'a', 'b', 'start', 'dup', 'ddown', 'dleft', 'dright',
+                   'lup', 'ldown', 'lleft', 'lright', 'up', 'down', 'left', 'right'}
+
+
+def boot_nudge_allowed(ad, state, reason):
+    """A nudge is only considered on a pre-gameplay boot screen whose input was withheld/unreadable, paced and capped."""
+    if state.get('phase') == 14:
+        return False
+    text = str(reason)
+    if 'withheld' not in text and 'unreadable' not in text:
+        return False
+    if time.monotonic() - getattr(ad, '_pso_boot_nudge_at', 0.0) < BOOT_NUDGE_GAP_S:
+        return False
+    return getattr(ad, '_pso_boot_nudges', 0) < BOOT_NUDGE_LIMIT
+
+
+def boot_nudge(ad, inputs, stopped, stats, proposed):
+    """Pass the planner's first proposed player-one key through as one held press; True when a nudge was sent."""
+    if not proposed:
+        return False
+    player, keys, _secs = proposed[0]
+    keys = [str(k) for k in (keys or []) if str(k) in BOOT_NUDGE_KEYS][:1]
+    if player != 1 or not keys:
+        return False
+    ad._pso_boot_nudge_at = time.monotonic()
+    ad._pso_boot_nudges = getattr(ad, '_pso_boot_nudges', 0) + 1
+    if isinstance(stats, dict):
+        stats.update(action='boot_nudge', boot_nudges=ad._pso_boot_nudges, boot_nudge_key=keys[0],
+                     boot_nudge_reason='pre-gameplay boot screen: planner key passed through the withhold gate as a held press')
+    _menu_tap(inputs, stopped, 1, keys[0], hold_s=BOOT_NUDGE_HOLD_S, gap_s=0.05)
     return True
 
 
@@ -4189,7 +4233,13 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     # takeover interruptible. Reobserve before every next input.
                     solo.wait(.6 if selected else .2, stopped)
                     continue
-                if state.get("verified") and not mapped and not menu_paused and not recovery.waiting:
+                # CONTENTION KILL (2026-11-04, verified live): during the pre-gameplay boot screens the mapping
+                # restore/probe path fired its player-two 19-key sweep while player one tried to drive the title and
+                # menus - the campaign was fighting its own forward presses, and the probe can never verify there
+                # anyway ("GameCube native actions require an active offline free-play session"). One driver at a
+                # time: defer ALL mapping restore/probe work until real gameplay (native phase 14); the boot chain
+                # (title Start -> menu -> OFFLINE -> character select -> Start Game) belongs to player one alone.
+                if state.get("verified") and state.get("phase") == 14 and not mapped and not menu_paused and not recovery.waiting:
                     retained = mapping_continuity.restore(ad, reader, session_id, game or {}, stopped)
                     stats.update(mapping_continuity.diagnostics(ad))
                     # HOT-RELOAD INTO A RUNNING MID-FIELD SESSION (operator: the reload kept
@@ -4405,6 +4455,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                 if (not menu_paused and state.get("floor", 0) > 0 and
                                         state.get("geometry_verified") and plan.get("screen") == "gameplay"):
                                     selected = []
+                                planner_proposed = selected[:1]          # the planner's own read, kept for the boot nudge
                                 selected, reason = menu.review(plan, selected, state_identity(state),
                                     frame=planned_frame, fresh_frame=ad.get_frame(),
                                     native_gameplay=bool(state.get('verified') and state.get('phase') == 14),
@@ -4424,6 +4475,14 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                     menu_unstick(ad, stats)
                                     invalidate_plan()
                                     solo.wait(.3, stopped)
+                                    continue
+                                # BOOT NUDGE (2026-11-04): a withheld/unreadable PRE-GAMEPLAY screen must not freeze
+                                # the chain - pass the planner's own proposed player-one key through as one bounded
+                                # held press, then reobserve. Gameplay and recognised screens keep the strict path.
+                                if not selected and planner_proposed and boot_nudge_allowed(ad, state, reason) and \
+                                        boot_nudge(ad, inputs, stopped, stats, planner_proposed):
+                                    invalidate_plan()
+                                    solo.wait(.25, stopped)
                                     continue
                                 # Menus are observed after every individual input.
                                 # A confirm must never cascade into an unseen dialog.
