@@ -3978,14 +3978,29 @@ def pregame_skip(ad, state, inputs, stopped, stats, keys=PREGAME_SKIP_KEYS, why=
     return True
 
 
-def pregame_unreadable(state, menu, menu_paused):
-    """A pre-gameplay frame the system cannot identify at all: no recognised menu, no menu/HUD visible, not paused -
-    i.e. an OFFLINE intro cinematic or a black transition. (Native phase != 14 and no real floor.) Character select,
-    the licence, the title and every HUD are recognised, so they are excluded and keep their own strict handling."""
+PREGAME_BLACK_MEAN = 10          # a cinematic/transition frame reads ~1-3 mean luma; the menus read ~38 (measured live)
+
+
+def pregame_unreadable(state, menu, menu_paused, frame=None):
+    """A pre-gameplay frame that is a CINEMATIC or black transition: native phase != 14, no real floor, not paused,
+    nothing recognised (no menu/HUD), AND the frame is near-black. The darkness gate is what keeps this off a bright
+    but merely-not-yet-recognised MENU (the live main menu / character select read ~38 mean luma and must NOT get a
+    blind A - they need their own recognition/strict handling); a true intro cinematic / black transition reads ~1-3."""
     if (state or {}).get('phase') == 14 or (state or {}).get('floor') or menu_paused:
         return False
     obs = getattr(menu, 'observation', None) or {}
-    return not (obs.get('recognized') or obs.get('menu_visible') or obs.get('gameplay_visible'))
+    if obs.get('recognized') or obs.get('menu_visible') or obs.get('gameplay_visible'):
+        return False
+    if not frame:
+        return False
+    try:
+        from PIL import Image
+        import io
+        small = Image.open(io.BytesIO(frame)).convert('L').resize((32, 18))
+        data = list(small.getdata())
+        return (sum(data) / len(data)) <= PREGAME_BLACK_MEAN
+    except Exception:                                    # noqa: BLE001 - never let a frame-read error drive input
+        return False
 
 
 def _flatten_master_build(stats, summary):
@@ -4256,8 +4271,8 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 # is a no-op on the other player's select phase, benign on a cinematic. Bounded/paced/pre-gameplay-
                 # gated and A-only, so it never leaves the title with a wrong key, never touches a recognised menu
                 # (title/licence/HUD are recognised and excluded), and can't reach gameplay.
-                if pregame_unreadable(state, menu, menu_paused) and \
-                        pregame_skip(ad, state, inputs, stopped, stats, keys=((1, 'a'), (2, 'a')), why='unreadable frame'):
+                if pregame_unreadable(state, menu, menu_paused, menu_frame) and \
+                        pregame_skip(ad, state, inputs, stopped, stats, keys=((1, 'a'), (2, 'a')), why='black cinematic'):
                     invalidate_plan()
                     solo.wait(.2, stopped)
                     continue
