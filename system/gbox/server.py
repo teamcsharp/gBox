@@ -37,9 +37,17 @@ from .worker_results import result_digest
 
 WORKER_TTL = 30.0
 # A running session whose worker has been gone this long is a dead "PC offline" instance: its emulator died with the
-# worker and can never be reconnected to. We end it (auto-clean, #streams-menu). The grace is far past WORKER_TTL so a
+# worker and can never be reconnected to. We end it (auto-clean, #streams-menu). The grace is well past WORKER_TTL so a
 # Spark restart or Wi-Fi blip (reads already ride out ~30 s) never reaps a session that is merely briefly unreachable.
-OFFLINE_SESSION_REAP_S = 180.0
+# A FEDERATED row (the i9's local authority) reaped during a longer transport outage is not lost: its authority's next
+# snapshot re-asserts it (gbox/federation.py lets a via="reap" end be resurrected - central's guess yields to the
+# authority's own positive report). Operator 2026-11-04: dead broadcasts must never linger, so the grace is short.
+OFFLINE_SESSION_REAP_S = 120.0
+REAP_LOOP_S = 30.0                # the dead-instance reaper's own pass: feeds clean up even when nothing polls the API
+# A registration that has been offline this long AND was replaced (federation superseded_by, or a newer registration
+# carries the same PC name) AND owns no running session is a dead worker epoch: it is deleted (a worker_alias keeps
+# cached ids resolving). 2026-11-04: 100 piled-up registrations (75 dead i9-NUC epochs) each listed a dead "PC" feed.
+WORKER_PRUNE_S = 3600.0
 WORKERS_CACHE_S = 1.0             # workers(): registrations are decoded and admission-checked at most this often
 HEARTBEAT_PERSIST_S = 5.0         # a claim poll's heartbeat reaches the store this often unless a decision input changed
 STORE_CHECKPOINT_S = 15.0         # the WAL is folded back into gbox.sqlite3 this often, off the writer's commit path
@@ -4241,6 +4249,65 @@ def create_app(config: Config) -> FastAPI:
         for sid in reaped:
             store.audit("gbox-auto", "session.reaped", sid, {"reason": "worker offline past TTL"})
         return reaped
+
+    def _prune_dead_workers() -> list[str]:
+        """Delete dead worker epochs: a registration offline past WORKER_PRUNE_S that was replaced (federation
+        superseded_by, or a newer registration carries the same PC name) and owns no running session. Old epochs were
+        kept forever (the i9's federation transport replacement marks superseded_by, never deletes), so /api/workers
+        and the broadcast feeds PC list grew a dead "PC offline" entry per worker restart (100 rows by 2026-11-04).
+        The newest registration of a name is never pruned, so a retired PC still lists once; a worker_alias to the
+        live id keeps ids cached by clients resolving (_wid). A pruned epoch's sessions were already ended by
+        _reap_offline_sessions - one that still owns a running row is left for a later pass, so the reap (which needs
+        the registration to judge the worker offline) always comes first."""
+        now = time.time()
+        ws = workers()
+        newest: dict = {}
+        for w in ws:
+            cur = newest.get(w.get("name"))
+            if cur is None or (w.get("last_seen") or 0) > (cur.get("last_seen") or 0):
+                newest[w.get("name")] = w
+        pruned = []
+        with store.lock:
+            running_wids = {s["session_id"].split("-", 1)[0] for s in store.running_sessions()}
+            for w in ws:
+                heir = newest.get(w.get("name"))
+                heir_id = heir["id"] if heir is not None and heir["id"] != w["id"] else \
+                    (w.get("federation") or {}).get("superseded_by")
+                if not heir_id or w.get("online") or now - (w.get("last_seen") or 0) < WORKER_PRUNE_S:
+                    continue
+                if w["id"] in running_wids:
+                    continue
+                store.delete("worker", w["id"])
+                store.put("worker_alias", w["id"], {"to": heir_id, "name": w.get("name")})
+                pruned.append(w["id"])
+        for wid in pruned:
+            store.audit("gbox-auto", "worker.pruned", wid, {"reason": "dead epoch: offline, replaced, no sessions"})
+        return pruned
+
+    def _reap_dead_instances() -> dict:
+        """One full reaper pass: dead sessions first (the prune needs their registrations still present to judge the
+        worker offline), then dead worker epochs. The startup loop below runs it every REAP_LOOP_S."""
+        return {"sessions": _reap_offline_sessions(), "workers": _prune_dead_workers()}
+
+    app.state.reap_dead_instances = _reap_dead_instances
+
+    @app.on_event("startup")
+    async def _dead_instance_reaper():
+        """The reaper's own service-side pass. Broadcast feeds and Pine Box read running sessions straight from the
+        store (gbox/broadcast.py Hub.refresh), so dead "PC offline" instances must go away even when nothing calls
+        GET /api/sessions - no manual cleanup, ever (operator 2026-11-04)."""
+        if os.environ.get("GBOX_SESSION_REAP", "1") == "0":
+            return
+
+        def loop():
+            time.sleep(60)                            # a restarted control plane: workers re-register / heartbeat first
+            while True:
+                try:
+                    _reap_dead_instances()
+                except Exception as exc:              # noqa: BLE001 - housekeeping must go on
+                    print(f"gBox: dead-instance reaper: {type(exc).__name__}: {exc}", flush=True)
+                time.sleep(REAP_LOOP_S)
+        threading.Thread(target=loop, daemon=True, name="dead-instance-reaper").start()
 
     @app.get("/api/sessions")
     def sessions(actor=Depends(auth), include_ended: bool = True, limit: int = 60):

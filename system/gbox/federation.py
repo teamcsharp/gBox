@@ -200,7 +200,14 @@ class Federation:
                 if previous and any(previous.get(k)!=item.get(k) for k in ('game_id','adapter')):
                     raise HTTPException(409,'Native session identity changed')
                 if previous and previous.get('state')=='ended' and item['state']!='ended':
-                    raise HTTPException(409,'An ended native session cannot be resurrected')
+                    # Only a POSITIVE ended report closes a native session for good. A central offline-reap
+                    # (exit.via == "reap", gbox/server.py OFFLINE_SESSION_REAP_S) is a guess made while the transport
+                    # was down: the authority's live row overrides it, so a reap during a Wi-Fi outage never
+                    # 409-bricks the snapshot of a game that kept playing locally.
+                    exit_=previous.get('exit') if isinstance(previous.get('exit'),dict) else {}
+                    if exit_.get('via')!='reap':
+                        raise HTTPException(409,'An ended native session cannot be resurrected')
+                    previous={k:v for k,v in previous.items() if k not in ('ended','exit')}
                 validated.append((sid,item,previous))
             now=self.clock()
             if replacing:

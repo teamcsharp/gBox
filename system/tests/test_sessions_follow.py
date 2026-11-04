@@ -87,3 +87,31 @@ def test_dead_session_on_a_long_offline_pc_is_reaped(cfg):
     assert rows["deadpc-s1"]["exit"]["via"] == "reap"
     assert rows["livepc-s1"]["state"] == "running"                # the live game keeps running
     assert store.get("session", "deadpc-s1")["state"] == "ended"  # persisted, so it stops piling up
+
+
+def test_dead_worker_epochs_are_pruned_and_the_newest_registration_of_a_name_stays(cfg):
+    """One reaper pass (app.state.reap_dead_instances, the startup loop's body): a long-offline registration that was
+    replaced - federation superseded_by, or a newer registration with the same PC name - is deleted once its sessions
+    are reaped, with a worker_alias to the live id. The newest registration of a name is never pruned, and a live
+    worker is never touched. 2026-11-04: 100 piled-up epochs each listed a dead 'PC offline' broadcast."""
+    app = create_app(cfg)
+    store = app.state.store
+    now = time.time()
+    store.put("worker", "i9epoch1", {"id": "i9epoch1", "name": "i9-NUC", "os": "windows", "last_seen": now - 90000})
+    store.put("worker", "i9epoch2", {"id": "i9epoch2", "name": "i9-NUC", "os": "windows", "last_seen": now - 80000,
+                                     "federation": {"authority": "a" * 64, "superseded_by": "i9live00"}})
+    store.put("worker", "i9live00", {"id": "i9live00", "name": "i9-NUC", "os": "windows", "last_seen": now})
+    # a dead epoch that still owns a "running" row: the row is reaped first, then the epoch is pruned
+    store.put("worker", "i9epoch3", {"id": "i9epoch3", "name": "i9-NUC", "os": "windows", "last_seen": now - 70000})
+    store.put("session", "i9epoch3-s1", {"session_id": "i9epoch3-s1", "game_id": "pso", "title": "PSO",
+                                         "state": "running", "started": now - 70000, "worker_id": "i9epoch3"})
+    store.put("session", "i9live00-s1", {"session_id": "i9live00-s1", "game_id": "pso", "title": "PSO",
+                                         "state": "running", "started": now - 100, "worker_id": "i9live00"})
+    out = app.state.reap_dead_instances()
+    assert out["sessions"] == ["i9epoch3-s1"]                     # the dead epoch's stale row, nothing else
+    assert set(out["workers"]) == {"i9epoch1", "i9epoch2", "i9epoch3"}
+    assert store.get("worker", "i9live00") and not store.get("worker", "i9epoch1")
+    assert store.get("worker_alias", "i9epoch1")["to"] == "i9live00"   # flat alias: cached ids resolve in one hop
+    assert store.get("worker_alias", "i9epoch2")["to"] == "i9live00"
+    assert store.get("session", "i9live00-s1")["state"] == "running"   # the live i9 game keeps running
+    assert app.state.reap_dead_instances() == {"sessions": [], "workers": []}  # a second pass finds nothing
