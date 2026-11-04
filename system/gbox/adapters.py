@@ -2996,6 +2996,8 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
             (exe.parent / "portable.txt").touch()
         (user / "Config").mkdir(parents=True, exist_ok=True)
         from . import pso_coop_setup
+        if not getattr(self, "gecko_id", None):              # _want_vpad's PSO gate (GPO*) needs the disc id; _gecko_setup
+            self.gecko_id = self._disc_id(rom)               # (below) also sets it - compute it up front so the gate sees it
         pad_base = self._setup_vpad(self.PAD_INI_WIN)        # Player 1 on a focus-independent virtual pad (PSO/i9)
         (user / "Config" / "GCPadNew.ini").write_text(
             pso_coop_setup.pad_ini(pad_base, windows=True) if self.coop_players == 2 else pad_base)
