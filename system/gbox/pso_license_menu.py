@@ -42,6 +42,13 @@ def observe(frame):
             if not (192 <= source.width <= 2048 and 144 <= source.height <= 2048):
                 return result
             image = source.convert('RGB')
+            # A 16:9 capture wider than the validated 960x540 layout (e.g. lilspark's full
+            # 1280x720 Xvfb display) is downscaled to 960x540 so the fixed-geometry license
+            # template runs at the scale it was registered at. The orange-bar scale search
+            # below still adapts to any residual difference, and the label/density gates are
+            # unchanged, so this only normalises the resolution, never relaxes a proof.
+            if image.width > 960 and abs(image.width / image.height - 16 / 9) <= .02:
+                image = image.resize((960, 540), Image.Resampling.LANCZOS)
     except (OSError, ValueError, UnidentifiedImageError, Image.DecompressionBombError):
         return result
     a = np.asarray(image).astype(np.int16)

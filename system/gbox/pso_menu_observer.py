@@ -63,10 +63,14 @@ def observe(frame):
         with Image.open(io.BytesIO(frame)) as source:
             if not (320 <= source.width <= 2048 and 240 <= source.height <= 2048):
                 return result
-            if source.size in ((960, 540), (1031, 580)):
-                # Both exact sizes were captured from this same render viewport:
-                # adapter PNG 1031x580 and its API preview 960x540. Normalize only
-                # these observed sizes; retain pillarbox and all label proofs.
+            if source.size in ((960, 540), (1031, 580)) or abs(source.width / source.height - 16 / 9) <= .02:
+                # These captures share one render viewport + pillarbox: the i9 adapter PNG
+                # 1031x580 and its 960x540 API preview, and lilspark's full Xvfb display
+                # 1280x720. Every 16:9 PSO frame carries the same 4:3 game content centred
+                # with equal side bars, so a uniform downscale to 960x540 reproduces the exact
+                # canonical layout these masks were built for (1280x720 -> 960x540 is a flat
+                # 0.75x). The pillarbox black-bar gate below still rejects a non-pillarboxed
+                # frame, so broadening the accepted size adds no false-positive surface.
                 image = source.convert('RGB').resize((960, 540), Image.Resampling.LANCZOS)
                 # Separately observed capture layout. Do not stretch a crop or
                 # a different render viewport into the old menu coordinates.
@@ -74,7 +78,9 @@ def observe(frame):
                 if any(float((pixels[20:520, left:right].max(2) <= 12).mean()) < .995
                        for left, right in ((20, 140), (820, 940))):
                     return result
-                result['layout'] = '960x540_pillarboxed' if source.size == (960, 540) else '1031x580_pillarboxed'
+                result['layout'] = {(960, 540): '960x540_pillarboxed',
+                                    (1031, 580): '1031x580_pillarboxed'}.get(
+                                        source.size, f'{source.width}x{source.height}_16x9_pillarboxed')
                 return _observe_wide(image, result)
             # Capture coordinates are normalized only for the demonstrated full
             # Dolphin framing. Crops, unrelated aspect ratios and window chrome
