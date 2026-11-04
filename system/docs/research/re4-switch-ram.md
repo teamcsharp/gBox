@@ -249,3 +249,54 @@ Switch unlock flag (the equivalent of GC's pSys+4 bit) and set it in RAM at the 
    pre-mapped via NEW GAME/Village if Mercenaries access is delayed.
 5. Pad tokens for send_input on Citron (same as Eden): a b x y l r zl zr plus minus dup ddown dleft dright ...
    License screen on first launch: up/down scroll the text, then A to Agree.
+
+---
+
+## LIVE SESSION 2026-11-04 — reached active Mercenaries gameplay; partial combat map; death-loop blocker
+
+Session b1a31f8736fa4f79-a660089c6bd642a6 on lilspark (Citron). Mercenaries-unlocked EdiZon save loaded; drove
+title -> EXTRAS -> THE MERCENARIES -> GAME START -> Leon -> Village to a LIVE round. CONFIRMED end-to-end:
+
+### Controllability (all verified with frames)
+- send_input op on session_op works: `job_session_op(op="send_input", args={"events":[{"key","down"}]})`.
+  Keys (Citron == Eden SWITCH_KEYS): move = lup/ldown/lleft/lright (L-stick), turn = rleft/rright/rup/rdown (R-stick),
+  AIM = zl, FIRE = zr (hold zl then tap zr), A = a (menus/continue), plus = Start.
+- MOVEMENT works (Leon walked across the Village). AIM works (red laser sight renders in aim mode).
+- Frame fetch for vision: GET http://10.89.1.246:8765/api/sessions/{sid}/frame.jpg (Bearer api_token, x-gbox-actor: deploy).
+
+### Round intro + fast restart (LEARNED PATH)
+- Round-start shows cycling tip banners ("Eliminate as many Ganados...", "Successive kills...") ~10-15 s; player
+  MOVEMENT IS LOCKED during it. It AUTO-advances. **Do NOT SIGSTOP/SIGCONT** — that freezes the intro timer and
+  wedges Citron (this was the earlier "stuck intro"). A presses help clear tips. Gameplay HUD then appears:
+  clock MM'SS"CC top-left, score below it, ammo + "Leon" bottom-right.
+- DEATH is frequent: "You Are Dead / Continue  Yes / No", Yes pre-highlighted -> press A = instant round RESTART
+  (no menu walk). This is the fast re-entry path. Spawn alternates: ROOFTOP (safe ~15 s, enemies must climb) and
+  GROUND street (enemies adjacent, dies in seconds).
+
+### Partial RAM map (direct /proc/mem reads; arena [0x3c27c00000, 0x7c27e00000], direct/NCE addressing)
+- **CAMERA transform @ 0x3ca8d35760** (graphics arena, stable slot reused each life). Layout:
+  +0x10 f32[3] = camera position (XYZ, world units ~thousands), +0x2C = const 50.0,
+  +0x38 u64 = POINTER to the player object (0x5d4e8311a0, STABLE across deaths),
+  +0x40 f32[3] = camera FACING unit vector (|v|==1.0 verified) = the aim/laser look direction.
+  Both position and facing change on a pure right-stick turn -> this is the CAMERA, not the player body.
+  (Useful: the +0x40 facing vector IS where the aim/laser points.)
+- **Player object @ 0x5d4e8311a0** (logic heap, stable across lives): ASCII tag "B404" + array of 0x18-byte entries,
+  each {u32 type(3/4), u64 ptr -> 0x5d4e8314xx, u64 ptr -> 0x5d4e8319xx}. A COMPONENT CONTAINER — the body
+  position / health live in a nested sub-component (unresolved; needs pointer-chase or static analysis).
+
+### BLOCKER: death-loop corrupts position scans
+job_memory_search (changed/unchanged) WITHOUT pausing admits fine and narrowed player-tracking values to ~9
+candidates, but Leon dies every ~10-15 s (enemies, or FALLING off the sloped roof when turned). Death freezes his
+state -> "unchanged"/"changed" scans read a dead body -> false results. Could NOT isolate the authoritative player
+body position/heading or the enemy table under these conditions.
+
+### Recommended next step (to finish the combat map)
+Need Leon STABILIZED (no death) to map cleanly. Options:
+1. INVINCIBILITY: find Leon's health (int/f32 in a 0x5d4e8311a0 sub-component) and freeze it high via write_memory,
+   then map position/heading/enemy table calmly. Health-find needs a controlled hit (risky) or the death-transition
+   decreased-scan.
+2. STORY-MODE mapping: NEW GAME opening walk is a stable, enemy-free environment; the player struct is SHARED with
+   Mercenaries (map body position/heading/health there, apply to Mercenaries).
+3. STATIC analysis: debug launch (Eden GDB stub / ghidra on the NSO) to find pGlobal -> sPlayer -> player and the
+   field offsets, the robust way that survives respawns/relaunches (re5_switch-style S_PGLOBAL anchor).
+The on-worker autobot needs: player body pos (X,Z), player heading, nearest-enemy pos. Fire action is DONE (zl+zr).
