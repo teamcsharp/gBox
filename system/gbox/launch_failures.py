@@ -436,6 +436,10 @@ class Ledger:
         from .refract import NOT_A_FAILURE_RX
         if NOT_A_FAILURE_RX.search(err):
             return "a Quest game's ownership is not confirmed yet, or its Refract setup is still running on that PC"
+        from .operator_guard import WATCHING_RX
+        if WATCHING_RX.search(err):
+            return ("refused by the operator-watch guard (a stream or PiP view was open on that PC): the game was "
+                    "protected on purpose, not a failed launch")
         if job.get("agent_use"):
             return "agent test launch (evidence capture / investigation): reported by its own task"
         if job.get("parent_request_id"):

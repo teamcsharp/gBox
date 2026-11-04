@@ -12,6 +12,7 @@ stream. These helpers decide:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Callable, Iterable
@@ -22,6 +23,8 @@ AGENT_ACTORS = ("agent", "mcp", "gbox-agent", "hermes")
 SANDBOX_MARKERS = ("/.hermes/cache/scratch", "/.hermes/sandbox")   # bwrap roots of Hermes agent tasks
 SANDBOX_NICE = 19
 WATCH_TTL_S = 180
+WATCHING_RX = re.compile(r"in a connected stream or PiP\. Close that view", re.I)
+"""The watch-guard refusal text (watching_reason): a deliberate protection, never a launch failure to report."""
 
 
 def report_watch(store, viewer: str, sid: str | None, *, now=None, host: str = ""):
