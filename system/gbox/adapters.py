@@ -607,14 +607,19 @@ def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False, polite:
             if pid not in _POLITE_TRUST:                         # does this PC report the game's focus? (checked once)
                 _POLITE_TRUST[pid] = _focus_pid(u) == pid
     else:
-        for _ in range(100):                                     # wait (up to 10 s) for the operator to bring gBox back
+        # Dedicated autoplay box: give the game the keyboard up front. AttachThreadInput+SetFocus works from the
+        # worker's session even when the game window is not the top window, so the non-polite path (bots on a PC the
+        # operator is NOT using) is not stuck behind a never-foreground Dolphin. The front-check below still confirms
+        # it took, and raises if focus could not be taken. (Polite demo/screensaver runs are unaffected: they take the
+        # polite branch above and still wait for the operator.)
+        if h and not hidden_ok:                                 # global Dolphin hotkeys need no native-window focus
+            give_focus()
+        for _ in range(100):                                     # confirm (up to 10 s) the game/gBox now has input focus
             if _win_input_in_front(u, root, hidden_ok):
                 break
             time.sleep(0.1)
         else:
             raise RuntimeError("gBox or the emulator must be active to send emulator input safely")
-        if h and not hidden_ok:                                 # global Dolphin hotkeys need no native-window focus
-            give_focus()
 
     class KI(ctypes.Structure):
         _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
@@ -2991,8 +2996,11 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
             (exe.parent / "portable.txt").touch()
         (user / "Config").mkdir(parents=True, exist_ok=True)
         from . import pso_coop_setup
+        if not getattr(self, "gecko_id", None):              # _want_vpad's PSO gate (GPO*) needs the disc id; _gecko_setup
+            self.gecko_id = self._disc_id(rom)               # (below) also sets it - compute it up front so the gate sees it
+        pad_base = self._setup_vpad(self.PAD_INI_WIN)        # Player 1 on a focus-independent virtual pad (PSO/i9)
         (user / "Config" / "GCPadNew.ini").write_text(
-            pso_coop_setup.pad_ini(self.PAD_INI_WIN, windows=True) if self.coop_players == 2 else self.PAD_INI_WIN)
+            pso_coop_setup.pad_ini(pad_base, windows=True) if self.coop_players == 2 else pad_base)
         self.lane = self._claim_lane()
         (user / "Config" / "Hotkeys.ini").write_text(self.hotkeys_ini(self.lane))   # read once, when this Dolphin starts
         self._gecko_setup(user, rom)
@@ -3107,6 +3115,12 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
     def stop_game(self) -> dict:
         if self.paused_tids:
             self.resume()
+        if self.vpad is not None:                          # drop the virtual controller before the game goes
+            try:
+                self.vpad.close()
+            except Exception:
+                pass
+            self.vpad = None
         if self.ff_on:                                     # never leave the lane key held down after the game is gone
             try:
                 win_send_keys(self.proc.pid, [{"key": self.lane, "down": False}])
@@ -3154,7 +3168,50 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         return {"running": bool(self.proc and self.proc.poll() is None), "emulator": self.name,
                 "state": "PAUSED" if self.paused_tids else "PLAYING"}
 
+    vpad = None                                              # Player 1's focus-independent virtual pad (gbox/vpad_win.py), when set
+
+    def _want_vpad(self) -> bool:
+        """Drive Player 1 through a ViGEm virtual XInput pad instead of the keyboard? Windows only, opt-in: on for PSO
+        (gecko id GPO*, which loses the attract loop on the i9 because keyboard input needs focus), or any Dolphin
+        game when GBOX_DOLPHIN_VPAD is truthy; off for 'off'/'0'/'false'. A capture session keeps the keyboard path.
+        Never reached on Linux/Eden (the Spark's RE sessions) - this is the Windows Dolphin adapter only."""
+        if os.name != "nt" or getattr(self, "capture_backend", None):
+            return False
+        flag = os.environ.get("GBOX_DOLPHIN_VPAD", "").strip().lower()
+        if flag in ("0", "off", "false", "no"):
+            return False
+        if not (str(getattr(self, "gecko_id", "") or "").startswith("GPO")
+                or flag in ("1", "on", "true", "yes", "all")):
+            return False
+        from . import vpad_win
+        return vpad_win.available()
+
+    def _setup_vpad(self, pad_base: str) -> str:
+        """Create Player 1's virtual pad when wanted and bind GCPad1 to the slot it took; otherwise leave the INI
+        (XInput/0/Gamepad + keyboard fallbacks) as is. Returns the GCPad1 INI base for pso_coop_setup.pad_ini."""
+        self.vpad = None
+        if not self._want_vpad():
+            return pad_base
+        from . import vpad_win
+        try:
+            vp = vpad_win.VGamepad()
+        except Exception as e:                               # noqa: BLE001 - no driver/pad: keep the keyboard path
+            self._p(50, f"virtual pad unavailable, Player 1 stays on keyboard input: {e}")
+            return pad_base
+        if vp.slot is None:
+            vp.close()
+            self._p(50, "virtual pad created but its XInput slot could not be read; Player 1 stays on keyboard input")
+            return pad_base
+        self.vpad = vp
+        # Dolphin reads the virtual pad at XInput/<slot>/Gamepad (slot 0 is often already taken by the PC's own
+        # persistent virtual pad). The keyboard fallbacks in PAD_INI_WIN stay as an alternative.
+        return pad_base.replace("Device = XInput/0/Gamepad", f"Device = XInput/{vp.slot}/Gamepad")
+
     def send_input(self, events: list[dict], polite: bool = False) -> dict:
+        # Player 1 on the virtual pad: focus-independent, so no polite/focus gating (the operator's own keyboard is
+        # never touched - the bot presses a controller, not keys).
+        if self.vpad is not None:
+            return self.vpad.apply(events)
         # win_send_keys already maps standard pad names to keyboard keys. Translating
         # them here as well makes A -> x -> s (Dolphin X), so menus ignore A.
         # polite: autoplay's own input on a PC the operator may be using (bot demos): never takes their keyboard

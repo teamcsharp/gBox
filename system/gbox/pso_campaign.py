@@ -373,17 +373,17 @@ class Planner:
             endpoint = str(self.api.base_url).rstrip('/')
             self.native_url = endpoint[:-3] if endpoint.endswith('/v1') else endpoint
             try:
-                response = self.api.get(self.native_url + '/api/version', timeout=self.timeout(deadline, 4))
+                response = self.api.get(self.native_url + '/api/version', timeout=self.timeout(deadline, 15))
                 data = response.json()
-                self.ollama = response.status_code == 200 and isinstance(data, dict) and isinstance(data.get('version'), str)
+                self.ollama = True if (response.status_code == 200 and isinstance(data, dict) and isinstance(data.get('version'), str)) else None
             except (httpx.HTTPError, ValueError, AttributeError):
-                self.ollama = False
-        return self.ollama
+                self.ollama = None
+        return bool(self.ollama)
 
     def native_settings(self, deadline):
         # Metadata only: no alternate model, inferred context or forced reload.
         response = self.api.post(self.native_url + '/api/show', json={'model': self.model},
-                                 timeout=self.timeout(deadline, 4))
+                                 timeout=self.timeout(deadline, 15))
         if response.status_code == 404:
             raise Unsupported(f'PSO route planner model {self.model!r} is not available')
         response.raise_for_status()
@@ -397,7 +397,7 @@ class Planner:
         if isinstance(values, list) and any(value is False for value in values):
             settings['think'] = False
         try:
-            response = self.api.get(self.native_url + '/api/ps', timeout=self.timeout(deadline, 4))
+            response = self.api.get(self.native_url + '/api/ps', timeout=self.timeout(deadline, 15))
             response.raise_for_status()
             data = response.json()
             models = data.get('models') if isinstance(data, dict) else None
