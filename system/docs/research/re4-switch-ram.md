@@ -105,3 +105,49 @@ Measure only what gets RE4 to a driveable Mercenaries round first; refine later.
 - Is Leon's health in the player object or in pG? (Set `P_HP` vs `PG_HP` accordingly.)
 - Does `TW` relocate per boot (heap), and is the GC task/stack walk portable, or is there a static TW pointer?
 - World units: GC is cm (`units_per_m = 100`); confirm on the Switch port.
+
+## Live session 2026-11-04 (lilspark Eden) - VERIFIED findings
+
+A live window on lilspark Eden confirmed the groundwork; the deep struct map was NOT reached this window (a ~20 min
+first-run shader-cache build consumed it before the title screen). What is verified:
+
+- **Cataloged.** RE4 Switch is in the catalog as game_id **`270a15eb98dab4d7`** (path-hash of
+  `quickswap-switch:Resident Evil 4/Resident Evil 4 [UPDATE 1.0.2] [010099a00bc1e000].nsp`). It was missing because a
+  whole-library scan aborted on an unrelated corrupt zip; a scoped `scan_library(libraries=["quickswap-switch"])`
+  indexed it. A scanner hardening (catch `BadZipFile`/`TarError` in `catalog.scan`) is committed so this can't recur.
+- **Boots and renders on Eden/NCE with the current prod.keys.** The master-key/boot risk (memory
+  `gbox-switch-prodkeys-block`) is CLEARED for this title: Eden loaded `010099A00BC1E000 | resident evil 4 (64-bit) |
+  1.0.2`, mapped guest memory (`address_mode` direct), and drew frames. No key error.
+- **Module build ids** (Eden boot log, for NSO identification / signature anchoring):
+  - `main` = **82C2A04A21D3E0B850F273D4149C9003**  (this is `BUILD_ID` in the driver)
+  - `rtld` = E701850BDB94823AFB3C0F133137832BF0E8D666
+  - `subsdk0` = 2E8D3A967B3539EB77F50D1647380378CD481ACF
+  - `sdk` = F7C7B7A90ECDC2D41C97508CC7236B8AF973B76C
+- **Memory layout:** `Core.memory_layout_mode = Memory_4Gb`; single-core (`use_multi_core=false`); NCE direct, so a
+  guest address IS the host address inside the Eden arena (per-boot arena base e.g. `0xf9f599fc0000`). Reads/writes via
+  `job_read_memory`/`job_write_memory`; cheat-search via `job_memory_search`.
+- **Input:** Eden pad tokens (gbox.yuzu_runtime.SWITCH_KEYS) for `send_input` events `[{"key","down"}]`:
+  `a b x y l r zl zr plus minus start select dup ddown dleft dright up down left right lup/ldown/lleft/lright ...`.
+- **Caveat - first boot is slow:** RE4 Switch sat ~20 min on Eden's "Launching..." loader building its shader/pipeline
+  cache from empty (the cache persists on disk, so subsequent boots are fast). RE5/RE6 Switch boot fine on the same
+  Eden. Any future live window should reuse the warm cache (boots to title in seconds).
+
+## Follow-up: how to finish off-stream (no live stream needed for most of it)
+
+The remaining work is the struct map + autonomous menu-walk + combat. Two routes, both need only a SHORT non-stream
+slot (the heavy writing is offline):
+
+1. **Static (preferred for offsets + signature):** obtain `main.nso` and disassemble it (capstone/Ghidra) to find the
+   manager singletons (pG / EmMgr / the Mercenaries game struct / the title task) and struct field offsets, and pick a
+   stable 64-byte `.rodata` run for `SIG_OFF`/`SIGNATURE`. Get `main.nso` by either: (a) a one-off Eden launch with
+   `Debugging.dump_nso=true` - it dumps the decrypted NSOs within seconds of load, so it does NOT need to reach the
+   title (quick, but occupies the Eden briefly); or (b) hactool/hactoolnet extraction from the NSP + `_switch/prod.keys`
+   on lilspark or the i9 (NOT the Wi-Fi PC, per `gbox-no-heavy-transfers-via-jaybuilt`; main.nso is only a few MB).
+2. **Live cheat-search (for the in-round values):** on a warm-cache RE4 boot, drive to a Mercenaries round and use
+   `job_memory_search` - the Mercenaries clock counts down continuously (filter `decreased` a few times to isolate it),
+   kills/combo/score filter `increased` after a kill, player position filters `changed`/`unchanged` as Leon
+   moves/stops. Convert found absolute addresses to `module_base + offset` once the signature pins `module_base`.
+
+The driver (`gbox/mercs/titles/re4_switch.py`) is structured so these results drop straight into the pending
+constants; `mercs.ready` flips to true only after a verified round, then `re4` joins the rotation
+(`titles=["re5","re6","re4"]`).
