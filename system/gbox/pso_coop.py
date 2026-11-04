@@ -3830,14 +3830,16 @@ LICENSE_DISMISS_LIMIT = 4       # bounded re-attempts if recognition flaps; neve
 LICENSE_DISMISS_GAP_S = 12.0    # don't re-run the whole scroll pass more often than this
 
 
-def _menu_tap(inputs, stopped, player, key, hold_s=0.035):
+def _menu_tap(inputs, stopped, player, key, hold_s=0.035, gap_s=0.008):
     """One clean controller tap through the PSO input path, bypassing the held-acknowledgement check (a bare down is
-    reported 'held' by the virtual pad); fail-/stop-soft."""
+    reported 'held' by the virtual pad); fail-/stop-soft. hold_s is kept >= one emulated frame so the game's menu
+    poll never misses the press; gap_s is the brief idle before the next tap. Both are tuned small for a fast burst."""
     try:
         inputs.send([{"key": key, "down": True}], player, check=False)
         solo.wait(hold_s, stopped)
         inputs.send([{"key": key, "down": False}], player, check=False)
-        solo.wait(0.012, stopped)
+        if gap_s:
+            solo.wait(gap_s, stopped)
     except InterruptedError:
         raise
     except Exception:                                     # noqa: BLE001 - a delivery hiccup must never kill the loop
@@ -3863,18 +3865,20 @@ def dismiss_license(ad, menu, inputs, stopped, stats):
     if isinstance(stats, dict):
         stats.update(action='dismissing_license', license_dismiss_attempt=ad._pso_license_dismiss_attempts,
                      license_dismiss_reason='C-stick scroll to bottom, select Agree, confirm A (scroll-gated panel)')
+    # HYPERSPEED (operator: the slow meander is maddening). Burst the scroll - one tight ~frame-long tap per line with
+    # a minimal gap (~3-4 s for the whole licence, not a slow drip) - then one quick Agree + A. No dwell between taps.
     for _ in range(LICENSE_SCROLL_TAPS):                  # scroll the long licence to the bottom (one line per tap)
         if stopped():
             return True
-        _menu_tap(inputs, stopped, 1, 'cdown', hold_s=0.02)
+        _menu_tap(inputs, stopped, 1, 'cdown', hold_s=0.016, gap_s=0.004)
     for _ in range(2):                                    # ensure Agree (the top option) is selected - D-pad moves it
         if stopped():
             return True
-        _menu_tap(inputs, stopped, 1, 'dup', hold_s=0.06)
+        _menu_tap(inputs, stopped, 1, 'dup', hold_s=0.05, gap_s=0.02)
     for _ in range(2):                                    # confirm; a second A rides out a one-frame drop
         if stopped():
             return True
-        _menu_tap(inputs, stopped, 1, 'a', hold_s=0.08)
+        _menu_tap(inputs, stopped, 1, 'a', hold_s=0.07, gap_s=0.03)
     return True
 
 
@@ -4135,7 +4139,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 # the bottom, select Agree, press A) before anything else; dismiss_license no-ops on every other screen.
                 if dismiss_license(ad, menu, inputs, stopped, stats):
                     invalidate_plan()
-                    solo.wait(.4, stopped)
+                    solo.wait(.15, stopped)              # hyperspeed: minimal dwell, reobserve fast
                     continue
                 # Backstop to the never-stop invariant: if a menu/dialogue is up
                 # continuously for MENU_STUCK_S (in case menu.stalled never trips -
