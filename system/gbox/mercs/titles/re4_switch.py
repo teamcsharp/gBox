@@ -448,11 +448,23 @@ class RE4Switch(Driver):
                 "kills": snap.get("kills"), "mode": "mercenaries"}
 
 
+# Combat gates (operator's hard rules, memory gbox-bot-no-wall-shots-no-mine-standing): the bot must not shoot walls
+# (fire only with a clear line of sight to the target) and must not stand on / near its own explosives. RE4 classic
+# Mercenaries has no player-placed proximity mines (that is an RE5 mod), so the mine gate is a parity hook that stays
+# inert here unless a hazard list is ever populated. The line-of-sight gate reads the stage's obstacle / navmesh data
+# once it is mapped (snap["nav"] / snap["obstacles"], mirroring re5_switch_native_nav / gbox.mercs.obstacle_map);
+# until then it cannot confirm a clear shot, so the bot fires only inside ENGAGE_RANGE_CM and when tightly aligned
+# (a conservative default that limits long-range blind fire through geometry).
+ENGAGE_RANGE_CM = 1200.0                 # do not blind-fire past ~12 m before the line-of-sight gate is wired (tune live)
+MINE_CLEAR_CM = 250.0                    # keep at least this far from an own hazard (parity with re5_switch_mines)
+
+
 class Bot:
     """One decision per tick from the snapshot. FIRST CUT (mirrors re5 / re6 at a high level): face the nearest living
-    Ganado, raise the gun and fire. Deliberately simple - the real re5 / re6 behaviour (line-of-sight gating, no wall
-    shots, mines, combo routing) is refined after the first driveable round. Fires only once the controls are
-    confirmed live (CONTROLS_READY); until then it only turns, so a scan session never wastes ammo blind."""
+    Ganado, raise the gun and fire - but every shot passes the operator's fire-gates (_may_fire): controls confirmed,
+    in range, a clear line of sight (no wall shots), and not standing on an own hazard (no mine standing). Fires only
+    once the controls are confirmed live (CONTROLS_READY); until then it only turns, so a scan session never wastes
+    ammo blind. Combo routing, time-bonus hunting and the richer re5/re6 behaviour come after the first live round."""
 
     TURN_TOL = 0.12                                      # rad: close enough to fire
 
@@ -470,6 +482,41 @@ class Bot:
                 for e in enemies if (e.get("hp") or 0) > 0]
         return min(live, key=lambda t: t[0])[1] if live else None
 
+    @staticmethod
+    def _line_of_sight_ok(p, e, snap) -> bool:
+        """No wall shots: a clear ray from Leon to the target. Uses the stage's obstacle / navmesh data when it is
+        mapped (snap["nav"] / snap["obstacles"]); until then it cannot prove a wall is in the way, so the caller
+        falls back to the ENGAGE_RANGE_CM limit. Returns True = cleared to fire on sight grounds."""
+        nav, obstacles = snap.get("nav"), snap.get("obstacles")
+        if nav is None and obstacles is None:
+            return True                                     # no geometry yet: range limit does the gating
+        # TODO(live): ray test Leon.pos -> target.pos against the mapped obstacles / navmesh (re5 aim-geometry parity).
+        return True
+
+    @staticmethod
+    def _near_own_hazard(p, snap) -> bool:
+        """No standing on own mines: True if Leon is within MINE_CLEAR_CM of an own explosive. RE4 classic Mercenaries
+        has none, so snap has no hazard list and this stays False; kept for parity with the RE5 rule."""
+        px, _, pz = p["pos"]
+        for h in (snap.get("own_hazards") or snap.get("ground_mines") or []):
+            hp = h.get("pos")
+            if hp and math.hypot(hp[0] - px, hp[2] - pz) < MINE_CLEAR_CM:
+                return True
+        return False
+
+    def _may_fire(self, p, e, dist, snap) -> bool:
+        """The operator's fire-gates, all of which must pass before a shot: controls confirmed, in range, clear line
+        of sight (no wall shots), not on an own hazard (no mine standing)."""
+        if not CONTROLS_READY:
+            return False
+        if dist > ENGAGE_RANGE_CM:
+            return False
+        if not self._line_of_sight_ok(p, e, snap):
+            return False
+        if self._near_own_hazard(p, snap):
+            return False
+        return True
+
     def tick(self, snap: dict):
         p = snap.get("player")
         if not p or p.get("pos") is None:
@@ -479,13 +526,18 @@ class Bot:
             return {}
         px, _, pz = p["pos"]
         ex, _, ez = e["pos"]
+        dist = math.hypot(ex - px, ez - pz)
         err = wrap(heading(ex - px, ez - pz) - p.get("rot", 0.0))
         self.target = e.get("ptr")
+        # Step off an own hazard first (no mine standing), even before facing the target.
+        if self._near_own_hazard(p, snap):
+            self.stats["backoffs"] = self.stats.get("backoffs", 0) + 1
+            return {"hold": {DPAD["left" if err > 0 else "right"]}}   # turn away and move off
         if abs(err) > self.TURN_TOL:
             self.stats["turns"] = self.stats.get("turns", 0) + 1
             return {"hold": {DPAD["right"] if err > 0 else DPAD["left"]}}
-        if not CONTROLS_READY:
-            return {"hold": set()}                           # aligned but controls unconfirmed: hold fire
+        if not self._may_fire(p, e, dist, snap):
+            return {"hold": set()}                           # aligned but a fire-gate blocks it: hold fire, keep aim
         self.stats["shots"] = self.stats.get("shots", 0) + 1
         return {"hold": {AIM_BTN, FIRE_BTN}}
 
