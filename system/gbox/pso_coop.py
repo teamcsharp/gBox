@@ -29,6 +29,7 @@ from . import pso_coop_mapping as mapping_continuity
 from .pso_coop_combat import WeaponRanges, Engagements, EquipmentRecovery, FALLBACK, geometry as attack_geometry
 from .pso_gc_live import PLAYER, VT_UPDATE
 from .registry import Unsupported
+from .debug import Unavailable as StubUnavailable      # a transient GDB-stub read refusal ("stub refused read")
 
 CAMPAIGN = "pso-coop-episodes-1-2"
 # Controller tokens are constrained at generation and independently checked before input.
@@ -4437,6 +4438,20 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 errors = 0
                 stats["input_wait_active"] = False
                 solo.wait(.05, stopped)
+            except StubUnavailable as exc:
+                # A transient GDB-stub read/write refusal ("stub refused read at 0x...: E00") under debugger
+                # contention - e.g. a hard-running RE5 on the same box momentarily starving the stub - must NOT kill
+                # the campaign loop (the known "autobot silently crashes on a bad frame" pattern). It is a bad frame:
+                # release inputs, back off briefly, and retry the next frame. StubUnavailable subclasses RuntimeError,
+                # so this clause must stay ABOVE the RuntimeError handler below.
+                speed_sampler.invalidate()
+                try:
+                    inputs.release()
+                except Exception:                            # noqa: BLE001 - best effort
+                    pass
+                stats["stub_read_waits"] = stats.get("stub_read_waits", 0) + 1
+                stats.update(action="waiting_for_stub_read", last_stub_error=str(exc)[:160])
+                solo.wait(0.2, stopped)
             except RuntimeError as exc:
                 # The host could not deliver input because the game window is not
                 # in the foreground (adapters.py: "must be active to send emulator
