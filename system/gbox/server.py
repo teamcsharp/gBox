@@ -3594,8 +3594,8 @@ def create_app(config: Config) -> FastAPI:
         retire_orphaned_server_jobs(store, _server_job_threads)
         now = time.time()
         with store.lock:
-            available = {key for w in (workers() if worker_snapshot is None else worker_snapshot)
-                         if w["online"] for key in (w["id"], w["name"])}
+            online = [w for w in (workers() if worker_snapshot is None else worker_snapshot) if w["online"]]
+            available = {key for w in online for key in (w["id"], w["name"])}
             session_snapshot, worker_ids = {}, {}
             for job in store.queued_jobs():
                 sid = (job.get("input") or {}).get("session_id")
@@ -3610,6 +3610,17 @@ def create_app(config: Config) -> FastAPI:
                 reason = ("game session ended before the job could run" if sid and (not session or session.get("state") != "running") and not cleanup
                           else "assigned worker is no longer available" if worker_id and now - (job.get("created") or now) > 3600
                           and worker_id not in available else None)
+                if reason == "assigned worker is no longer available":
+                    # The pinned worker restarted with a new id (worker ids are per-registration). If the same
+                    # machine is back online under its stable name, hand the job to it instead of failing it:
+                    # a launch queued during a reboot used to die at exactly created+3600s (#7968).
+                    wdoc = store.get("worker", assigned) or store.get("worker_alias", assigned)
+                    same_machine = next((w for w in online if w.get("name") == (wdoc or {}).get("name")), None)
+                    if same_machine:
+                        store.put("job", job["id"], job | {"require_worker": same_machine["id"]})
+                        store.audit("scheduler", "job.reassigned", job["id"],
+                                    {"from": assigned, "to": same_machine["id"], "name": same_machine["name"]})
+                        continue
                 if not reason:
                     continue
                 job.update(state=JobState.FAILED, finished=now, error=reason)
