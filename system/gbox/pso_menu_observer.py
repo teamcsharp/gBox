@@ -241,12 +241,13 @@ def _observe_wide(image, result):
                       minimum=.45, maximum_other=.07) == 0):
         record('transporter_forest', 'FOREST 1', 0, player=2, observed_episode=1, destination_floor=1)
 
-    # Preserve the old sampled text and the independently captured current
-    # Online/Offline glyph variants. Each label still needs its own high score.
-    main_labels = (max(_text(image, 'w_' + name), _text(image, 'w_' + name + '_live'),
-                       _text(image, 'w_' + name + '_live_other')) >= .76
-                   for name in ('online', 'offline'))
-    if title_main and all(main_labels) and matches('options', 'website', threshold=.76):
+    # The SELECTED option carries an orange highlight bar, so its white-text label mask fails - requiring all four
+    # labels left the main menu unrecognised on exactly the OFFLINE-highlighted state the nav needs (0/8 live frames,
+    # 2026-11-04). Require the wordmark + a MAJORITY (>= 3 of 4) of the white labels, so the one highlighted option
+    # may fail, and confirm via the orange selection bar (_selected, which also pins which row is chosen). This still
+    # needs the title_main wordmark + three independent labels + a real highlight, so it does not relax the proof.
+    main_scores = [region(name) for name in ('online', 'offline', 'options', 'website')]
+    if title_main and sum(score >= .76 for score in main_scores) >= 3:
         index = _selected(image, [(354, y, 605, y + 10) for y in (352, 387, 424, 460)], minimum=.08, maximum_other=.04)
         if index is not None:
             record('main', ('Online Game', 'Offline Game', 'Options', 'Website')[index], index)
