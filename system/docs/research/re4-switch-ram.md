@@ -300,3 +300,52 @@ Need Leon STABILIZED (no death) to map cleanly. Options:
 3. STATIC analysis: debug launch (Eden GDB stub / ghidra on the NSO) to find pGlobal -> sPlayer -> player and the
    field offsets, the robust way that survives respawns/relaunches (re5_switch-style S_PGLOBAL anchor).
 The on-worker autobot needs: player body pos (X,Z), player heading, nearest-enemy pos. Fire action is DONE (zl+zr).
+
+---
+
+## PLAN 2026-11-04 (b): public bio4 correlation + frozen-health live mapping (NO binary dump)
+
+Operator dumped RomFS (010099A00BC1E000\romfs\bio4) only, NOT ExeFS - confirms the engine is **bio4**, the same
+engine as classic RE4 (GC/PS2/PC-UHD). Public modding/speedrun knowledge of bio4 + our live seeds + a health freeze
+(write_memory invincibility) can crack the three autobot anchors WITHOUT any executable extraction.
+
+### Public reference pinned (RE4 Steam/UHD autosplitter, yuushiGit/RE4OG_AutoSplitter RE4Splitter.asl)
+Module is literally "bio4". A GLOBAL game-state struct holds (module-base-relative, UHD 1.1.0 offsets; Switch build
+differs but the cluster/structure is the engine's):
+  igt(uint)=+0x85F704, money(uint)=+0x85F708, health(short)=+0x85F714, da/dyn-difficulty(short)=+0x85F6F4,
+  chapter(byte)=+0x85F6FA, character(byte)=+0x85F728, chapterKills(short)=+0x862BC4, difficulty=+0x862BDC,
+  room(short)=+0x85A788, screenState(byte)=+0x85A780, menuType=+0x87AD04.
+Relative spacing within the igt cluster (money=igt+4, health=igt+0x10, character=igt+0x24, da=igt-0x10,
+chapter=igt-0xA) is a CORRELATION SHORTCUT: find any one on Switch by its HUD value, the rest sit at the same deltas
+(x86->ARM64 only shifts pointer-bearing fields, not this packed int/short data). NB the .asl has NO player X/Y/Z and
+NO enemy table - those are ENTITY objects, not globals (matches our camera+0x38 -> player-object seed).
+
+### The three anchors - how each is obtained live (no binary)
+1. AIM STATE = ALREADY MAPPED: camera transform @0x3ca8d35760, unit facing vector @+0x40 (|v|=1.0) is the laser/aim
+   direction. The bot aims by turning the camera until this vector points at the target. Re-verify the slot live.
+2. PLAYER POSITION = live cheat-search, now UNBLOCKED by invincibility. Seed: camera+0x38 -> player entity
+   0x5d4e8311a0. Walk->changed / turn->unchanged discriminator (separates body pos from camera) got to 9 candidates
+   before; the ONLY confound was the death-loop. Freeze health first -> clean convergence.
+3. NEAREST-GANADO POSITION = live, with invincibility: Leon stands safe, enemies walk (their entity pos changes).
+   bio4 enemies share the player entity's struct layout, so enemy pos sits at the SAME offset found in (2); locate the
+   em instances via the manager or by scanning moving-entity position floats.
+
+### Health freeze bootstrap (kills the death-loop; the linchpin)
+Find health via the death/respawn method that USES the death-loop (robust to dying): snapshot at full -> die
+(decreased) -> Continue->Yes respawn full (increased) -> repeat; health is the value that cycles down-on-death,
+up-on-respawn (filters the monotonic clock). Candidates double as the global health short (module+offset) AND/OR the
+entity HP. Freeze high via write_memory -> invincible -> map (2) and (3) calmly. (Global health short is the
+authoritative player HP in bio4; verify the freeze actually stops death on first use.)
+
+### Does the ExeFS main dump remain needed? NO for the anchors or the autobot.
+- All three anchors + the freeze are pure live-RAM + public bio4 structure. No executable needed.
+- The dump would only add: (a) a STATIC module+offset table robust across relaunches - but re-derivable each session
+  via the driver's module-base guard + HUD-value scans; (b) the save-serialization routine for the reset agent - but
+  invincibility lets Leon SURVIVE to the timer-end ranking screen, so the reset agent gets its proof by DIFFING
+  savegame00.sav before/after a completed round (the score write lands at its 0x1EBC/0x1EC4/0x1ECC candidates). So the
+  operator's manual ExeFS dump can be taken OFF their plate.
+
+### Live run order (bounded lilspark window, after PSO):
+relaunch RE4 (config+save persist) -> clear intro -> find+FREEZE health (invincible) -> re-verify camera aim vector ->
+map player pos -> map enemy pos (same offset) -> optionally survive to a ranking screen for the reset agent's save
+diff -> restore rotation, stage nothing heavy via JAYBUILT. All read/write via existing read_memory/write_memory.
