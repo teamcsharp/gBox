@@ -3154,6 +3154,16 @@ class Bot:
             want = None                                          # an empty preference cannot pull us off a loaded gun
         if empty_fallback and want not in loaded:
             want = min(loaded, key=lambda index: (-counts[index], index))
+        # --- weapon_swap hook (arsenal mode): instant RAM magnum<->grenade-launcher, no item wheel ---
+        # Single integration point for gbox.mercs.weapon_swap. With the operator's arsenal profile
+        # on it returns the loaded wheel index to hold -- the grenade launcher while a crowd is on
+        # him, the magnum otherwise -- which the equip path below runs through the SAME native-equip
+        # controller, so the item wheel never appears. None (arsenal off / nothing better loaded /
+        # an empty-gun fallback already chose) defers to the stock weapon logic below.
+        if want is None and not empty_fallback:
+            from .. import weapon_swap
+            want = weapon_swap.re6_desired_index(self, p, held, now)
+        # --- end weapon_swap hook ---
         if want is None and not AUTO_SWITCH:
             return None
         if want is None:

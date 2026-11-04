@@ -1279,6 +1279,12 @@ def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Swi
             res.update(rotten_egg_only(g, bool(on), multiplier))
         elif op == "mercs_select":
             res.update(mercs_select(g, extra.get("mode"), extra.get("character"), extra.get("stage")))
+        elif op in ("arsenal", "weapon_swap", "instant_swap"):
+            from .. import weapon_swap
+            res.update(verified=True, arsenal=weapon_swap.set_enabled("re5", bool(on)),
+                       note="instant RAM weapon-swap family order (magnum-first) through the native-equip path, no item "
+                            "wheel; RE5's grenade-launcher FIRING is unverified on this build, so the crowd weapon stays "
+                            "the shotgun/magnum plus the native-flash grenade bursts and mines")
         elif op == "revert_all":
             res.update(revert_all(g))
         else:

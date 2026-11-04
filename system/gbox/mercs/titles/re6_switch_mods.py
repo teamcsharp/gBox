@@ -182,7 +182,8 @@ MAGNUM_TYPES = frozenset({0x107, 0x108})
 # The spread (operator 18:00: "change what weapon is being used by the bot actively ... instantly use that weapon"): a
 # gun's model loads only for the round's loadout, so the empty weapon slots of every loadout get these at round set-up
 # (merc_loadout spread=): the magnums and the shotguns, ready for the live switch and the grab swap.
-SPREAD = ((0x108, 5), (0x107, 7), (0x104, 8), (0x105, 7), (0x106, 3))
+SPREAD = ((0x108, 5), (0x107, 7), (0x112, 6), (0x104, 8), (0x105, 7), (0x106, 3))   # magnums, the grenade launcher, shotguns
+# (0x112 the grenade launcher, item 18: spread into every loadout so the arsenal swap always has it loaded to equip)
 ASKED: set = set()                                       # the (type, magazine) pairs live_weapon put in the loadouts
 # No pistols (operator 2026-10-27 ~20:00: "for the characters in no mercy, replace the pistol with any random shotgun or
 # magnum"; "i want the characters using random weapons from the game and campaign in mercenaries"): with the spread,
@@ -348,8 +349,9 @@ class RE6Switch:
               "next_weapon": hex(self.state["next_weapon"]) if self.state.get("next_weapon") else None,
               "live_weapon_sets": self.state.get("live_weapon_sets", 0)}
         from . import re6_switch as B
+        from .. import weapon_swap
         st["bot"] = {"nades": B.NADES, "flash": B.FLASH, "aim_lock": B.AIM_LOCK, "bomb_drop": B.BOMB_DROP,
-                     "want_weapon": B.WANT_WEAPON}
+                     "want_weapon": B.WANT_WEAPON, "arsenal": weapon_swap.PROFILES["re6"].enabled}
         snap = R.snapshot(self.m)
         p = snap.get("player")
         if p:
@@ -1027,12 +1029,16 @@ def _keep_quick(ad, g: RE6Switch, player: int, st: dict, weapon=None) -> int:
     return 1
 
 
-def bot_options(g: RE6Switch, nades=None, bomb_drop=None, aim_lock=None, flash=None) -> dict:
+def bot_options(g: RE6Switch, nades=None, bomb_drop=None, aim_lock=None, flash=None, arsenal=None) -> dict:
     """The bot's switches a profile turns on (playing_ops): nades - the flash at 3+ within 4 m with the melee fever after
     it, the hand / incendiary grenade into a cluster; bomb_drop - the remote bomb dropped while backing out of a crowd;
-    aim_lock - the RAM aim lock (the player camera's yaw / pitch written onto the target; off: the camera keys). None
-    leaves a switch as it is. Nothing is written to the game here."""
+    aim_lock - the RAM aim lock (the player camera's yaw / pitch written onto the target; off: the camera keys);
+    arsenal - the instant RAM weapon swap (gbox.mercs.weapon_swap): default magnum, swap to the grenade launcher while a
+    crowd is on him and back when it thins, all through the native-equip path (no item wheel). None leaves a switch as it
+    is. Nothing is written to the game here. (Pair arsenal with merc_loadout magnum=True spread=True so the magnum and
+    grenade launcher are loaded, and with nades / bomb_drop / flash so the thrown arsenal fires in the crowd.)"""
     from . import re6_switch as B
+    from .. import weapon_swap
     if nades is not None:
         B.NADES = bool(nades)
     if bomb_drop is not None:
@@ -1041,7 +1047,10 @@ def bot_options(g: RE6Switch, nades=None, bomb_drop=None, aim_lock=None, flash=N
         B.AIM_LOCK = bool(aim_lock)
     if flash is not None:
         B.FLASH = bool(flash)
-    return {"verified": True, "nades": B.NADES, "bomb_drop": B.BOMB_DROP, "aim_lock": B.AIM_LOCK, "flash": B.FLASH}
+    if arsenal is not None:
+        weapon_swap.set_enabled("re6", bool(arsenal))
+    return {"verified": True, "nades": B.NADES, "bomb_drop": B.BOMB_DROP, "aim_lock": B.AIM_LOCK, "flash": B.FLASH,
+            "arsenal": weapon_swap.PROFILES["re6"].enabled}
 
 
 def down_fire(g: RE6Switch, mult) -> dict:
@@ -1289,7 +1298,10 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
             return quick_attack(g, 1.0 if on is False else (multiplier if multiplier is not None else 10.0))
         if op == "bot_options":
             return bot_options(g, nades=_extra.get("nades"), bomb_drop=_extra.get("bomb_drop"),
-                               aim_lock=_extra.get("aim_lock"), flash=_extra.get("flash"))
+                               aim_lock=_extra.get("aim_lock"), flash=_extra.get("flash"),
+                               arsenal=_extra.get("arsenal"))
+        if op in ("arsenal", "weapon_swap", "instant_swap"):
+            return bot_options(g, arsenal=on)
         if op in ("live_weapon", "weapon", "set_weapon"):
             return live_weapon(g, _extra.get("weapon", multiplier))
         if op in ("weapons", "weapon_list"):

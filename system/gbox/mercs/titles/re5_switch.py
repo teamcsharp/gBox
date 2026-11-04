@@ -1958,7 +1958,12 @@ class Bot:
     def _rampage_gun(self, inv):
         """Prefer the gun already in hand within each family; avoid swapping equivalent shotguns."""
         from . import re5_weapons
-        for fam in RAMPAGE_FAMILIES:                     # (the magnum first: the flashbang's rush wants it too)
+        # --- weapon_swap hook (arsenal mode): family preference for the no-wheel D-pad/native swap ---
+        # Single integration point for gbox.mercs.weapon_swap; None keeps the stock RAMPAGE_FAMILIES.
+        # The chosen family is equipped by its D-pad quick slot, which re5_switch._native_equipment
+        # attaches through re5_switch_equip's native action -- so no item wheel appears either.
+        from .. import weapon_swap
+        for fam in (weapon_swap.re5_rampage_families(self) or RAMPAGE_FAMILIES):   # (magnum first: the flashbang's rush wants it too)
             candidates = []
             for s_ in inv or ():
                 spec = re5_weapons.WEAPONS.get(s_.get("item"))
