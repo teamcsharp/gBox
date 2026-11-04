@@ -102,8 +102,8 @@ HG_CENTRE, HG_KIND = 0x250, 0x194      # bounding sphere; retained render word, 
 HG_COLLECTED, HG_SECONDS = 0x13EC, 0x14A4  # native FUN_00723e34 adds signed seconds, then sets collected=1
 BONUS_RANGE = 12000.0                  # go for a time bonus whose route is this long at most (cm)
 FIGHT_R, FIGHT_CONE = 350.0, math.radians(40)   # a Majini this near and this far off the heading blocks the way:
-CLOSE_THREAT_R, REAR_WIDE_CONE = 250.0, math.radians(130)  # within CLOSE_THREAT_R use the wide cone (ranged cluster:
-                                                           # close rear/side hits at 40-80 deg off, 1.5-2 m)
+RANGED_THREAT_R = 4000.0                         # a ranged shooter this far and facing him is a threat (ranged cluster
+                                                # fca1f514287750be: hits at 5-20 m while walking/pursuing, within_2m=0)
 ON_TOP_R = 160.0                       # fought from where the player stands, as is one this close from any side;
                                        # the rest chase him and are ignored (grabs are wiggled off): the tour goes on
 GRAB_FRONT_R, GRAB_FRONT_CONE = 250.0, math.radians(90)  # a Majini at arm's length in front (grabbed_front cluster,
@@ -3326,22 +3326,26 @@ class Bot:
         arm's length in front (grabbed_front cluster, batch b95d37e4f6baa130): he is close enough to grab him while he
         walks (gather_time / clear_nearby), so the bot stops walking and fights instead.
 
-        Close threats (within CLOSE_THREAT_R) use a wider cone: the ranged cluster (fca1f514287750be) examples show
-        hits from 40-80 deg off his heading at 1.5-2 m with nobody within 2.5 m — the bot was still gathering a bonus
-        or walking, not turning to face them. Extending the cone to REAR_WIDE_CONE at that range lets the bot dispatch
-        them before they strike, preventing the most incidents in this cluster."""
+        A ranged shooter (ranged cluster fca1f514287750be): the examples are hits at 5-20 m while the bot was
+        walking, pursuing or clearing a closer target, with nobody within 2.5 m (within_2m=0) - the bot was not
+        turning to face the one shooting at it. A ranged enemy on his level within RANGED_THREAT_R, facing him
+        (inside FIGHT_CONE), is now a threat: the bot stops walking and turns to face and fire it, preventing the
+        most incidents in this cluster. Farther than RANGED_THREAT_R, behind him, or off-level it is not (the tour
+        goes on; the pursuit logic handles the closing melee)."""
         px, py, pz = p["pos"]
         if abs(e["pos"][1] - py) >= LEVEL_DY:               # on another level: not in the way
             return False
         d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         if d < ON_TOP_R:
             return True
-        cone = REAR_WIDE_CONE if d < CLOSE_THREAT_R else FIGHT_CONE
         off = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
-        if d < FIGHT_R and off < cone:
+        if d < FIGHT_R and off < FIGHT_CONE:
             return True
         # grab-front: at arm's length in front, close enough to reach out and grab (batch b95d37e4f6baa130)
         if d < GRAB_FRONT_R and off <= GRAB_FRONT_CONE:
+            return True
+        # ranged: a shooter within shot range, facing him - stop walking, turn and fire before he hits again
+        if d <= RANGED_THREAT_R and off < FIGHT_CONE:
             return True
         return False
 
