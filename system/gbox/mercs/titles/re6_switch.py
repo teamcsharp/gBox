@@ -4009,9 +4009,23 @@ class Bot:
         if self.down_dying:
             self._gun_down()
             return self._go("down", "down_dying_stay", {"hold": ()}, "down at 1 health: staying down, no fight")
+        # request #5077 (crowd_gun_down): down at or under SURVIVAL_HP with 4+ within 2 m, the gun-down fight
+        # (the kick, the aimed fire) engages the cluster at arm's length - the 22 hits that sit at low health
+        # with the gun down. Retreat to open space instead: the gun stays down, the stick walks the open
+        # heading; healing happens above, the fight resumes once the crowd thins below the threshold.
+        hp_max = p.get("hp_max")
+        if hp_max and (p.get("hp") or 0) <= SURVIVAL_HP * hp_max:
+            n_2m = sum(1 for e in (snap.get("enemies") or ()) if (e.get("hp") or 0) > 0
+                       and math.hypot(e["pos"][0] - me[0], e["pos"][2] - me[2]) <= CC_CROWD_R)
+            if n_2m >= CC_BACK_N + 1:
+                step = self._stick(self._open_heading(self._p, [e for e in (snap.get("enemies") or ())
+                                                               if (e.get("hp") or 0) > 0]), self._cam_yaw) \
+                    if self._p else ("ldown",)
+                self._gun_down()
+                return self._go("down", "down_crowd_retreat", {"hold": step},
+                                f"down at low health: {n_2m} within 2 m, retreating to open space")
         # The felling: down at low health with one winding up a melee strike - the single full-HP-cliff hit
         # (900->1, 862->1) that the getting-up deaths are made of (#5052). Stay down until it swings through.
-        hp_max = p.get("hp_max")
         if hp_max and (p.get("hp") or 0) <= SURVIVAL_HP * hp_max and any(
                 windup(e, me) == "melee" for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0):
             self._gun_down()
