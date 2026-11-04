@@ -3146,6 +3146,9 @@ class Bot:
     def _pursue(self, p, e, mesh, stage_prompt, now) -> dict:
         """Walk to a Majini out of sight along the navmesh (the gun down, running), the way time bonuses are walked
         to: around walls, up ladders and down drops; he is fought once in sight."""
+        if self._threat(p, e):
+            self.stats["phase"] = "pursue_guarded"
+            return {"hold": set()}
         self.stats["phase"] = "pursue"
         self.aiming_since = None
         self.target = e.get("slot")
