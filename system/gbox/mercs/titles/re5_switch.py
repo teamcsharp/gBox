@@ -478,6 +478,8 @@ NEAR_FOCUS, NEAR_FOCUS_R = True, 600.0
 CROWD_FIRE, CROWD_FIRE_N, CROWD_FIRE_CLOSE_R = True, 3, 200.0
 UNLOAD, UNLOAD_CONE, UNLOAD_BURST_S, UNLOAD_TURN_S = False, math.radians(8), 0.4, 0.2
 CROWD_FRONT, CROWD_CONE = math.radians(60), math.radians(10)
+CROWD_HELD_FIGHT = True                                  # held in a crowd: crowd fire, never the gun-down wiggle
+CROWD_HELD_N, CROWD_HELD_R = 4, 200.0                     # the batch's condition: 4+ on his level within 2 m
 OFFSCREEN_ERR, WHIP_DEG, WHIP_BACK_DEG, WHIP_S, SWAP_GAP_S = math.radians(60), 90.0, 45.0, 1.0, 1.0
 RAMPAGE_COUNTERS = ("rampage_s", "rampage_shots", "rampage_kills", "idle_in_5m_s", "unaims_in_5m", "behind_turns",
                     "offscreen_aim_s", "whips", "rampage_swaps", "crowd_fire_s", "shotgun_swaps")
@@ -3768,22 +3770,25 @@ class Bot:
         # Treating an empty corridor as a grab interrupts every recovery step.
         stuck = self.held(p, now) and motion is None
         if held or now < self.break_until or (motion is None and self.grabbed(p, near, now)) or stuck:
-            if held:                                         # held, or dying: break free / recover (RAM says so)
-                if not self.in_hold:
-                    kind = "dying" if p.get("hp") == DYING_HP else "holds"
-                    self.stats[kind] = self.stats.get(kind, 0) + 1
-                self.in_hold = True
-            elif now >= self.break_until:
-                self.stats["holds" if self.still and now - self.still[0] > STUCK_S else "wiggles"] += 1
-                self.break_until = now + BREAK_S
-            self._gun_down()
-            self.still = None
-            self.wiggle += 1
-            dying = p.get("hp") == DYING_HP and motion not in MOTION_HELD
-            self.doing, self.why = "held", ("dying" if dying else f"motion {motion}" if held else "stuck, breaking free")
-            pattern = MASH if dying else WIGGLE
-            return {"hold": pattern[self.wiggle % len(pattern)]}
-        self.in_hold = False
+            crowd_held = CROWD_HELD_FIGHT and p.get("hp") != DYING_HP \
+                and len([e for e in live if flat(e) <= CROWD_HELD_R]) >= CROWD_HELD_N
+            if not crowd_held:                              # 4+ on his level within 2 m: fight back, never the gun-down wiggle
+                if held:                                     # held, or dying: break free / recover (RAM says so)
+                    if not self.in_hold:
+                        kind = "dying" if p.get("hp") == DYING_HP else "holds"
+                        self.stats[kind] = self.stats.get(kind, 0) + 1
+                    self.in_hold = True
+                elif now >= self.break_until:
+                    self.stats["holds" if self.still and now - self.still[0] > STUCK_S else "wiggles"] += 1
+                    self.break_until = now + BREAK_S
+                self._gun_down()
+                self.still = None
+                self.wiggle += 1
+                dying = p.get("hp") == DYING_HP and motion not in MOTION_HELD
+                self.doing, self.why = "held", ("dying" if dying else f"motion {motion}" if held else "stuck, breaking free")
+                pattern = MASH if dying else WIGGLE
+                return {"hold": pattern[self.wiggle % len(pattern)]}
+            self.in_hold = False                            # crowded: the gun stays up; the circle fights back
         if motion == MOTION_RELOAD and self.aim_since is not None:
             self.doing, self.why = "reload", "the gun reloads"
             self.aim_since = now                             # reloading: the gun comes back up by itself
@@ -3956,10 +3961,13 @@ class Bot:
             return {"hold": ()}
         reach = RUSH_R if self.mode == "rush" else HUNT_R
         if self.mode in ("hunt", "rush") and near > reach and self.aim_since is None:   # hunt / rush: close in on the nearest
-            err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - p["rot"])
-            self.doing, self.why = "walk", f"{self.mode}: the nearest {near / 100:.1f} m"
-            self._gun_down()
-            return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
+            # #5078 walk-in-crowd: 4+ on his level within 2 m — the gun stays up; the crowd fire keeps blasting
+            crowd_n = sum(1 for e in live if flat(e) <= CROWD_HELD_R and abs(e["pos"][1] - py) <= LEVEL_DY)
+            if not (CROWD_HELD_FIGHT and crowd_n >= CROWD_HELD_N):
+                err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - p["rot"])
+                self.doing, self.why = "walk", f"{self.mode}: the nearest {near / 100:.1f} m"
+                self._gun_down()
+                return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
         self._track_approach(p, live, now)
         self._threat_now = self._threat_near(p, live)
         crowded = NEAR_FOCUS and any(flat(e) <= RAMPAGE_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in live)
@@ -4009,9 +4017,12 @@ class Bot:
         body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
         self.stats["target_dist"] = round(dist)
         if dist > ENGAGE_R:                                  # nobody in range: walk to him
-            self.doing, self.why = "walk", f"nearest target {dist / 100:.1f} m"
-            self._gun_down()
-            return {"hold": ("lup",) + self._turn(body_err, TURN_TOL)}
+            # #5078 walk-in-crowd: 4+ on his level within 2 m — the gun stays up; the crowd fire keeps blasting
+            crowd_n = sum(1 for e in live if flat(e) <= CROWD_HELD_R and abs(e["pos"][1] - py) <= LEVEL_DY)
+            if not (CROWD_HELD_FIGHT and crowd_n >= CROWD_HELD_N):
+                self.doing, self.why = "walk", f"nearest target {dist / 100:.1f} m"
+                self._gun_down()
+                return {"hold": ("lup",) + self._turn(body_err, TURN_TOL)}
         motion = p.get("motion")
         if self.aim_since is None:
             if now < self.backoff_until:                     # a back-off under way (a crowd's burst ended it): finish it
