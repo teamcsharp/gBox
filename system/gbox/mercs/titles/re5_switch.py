@@ -43,6 +43,7 @@ from pathlib import Path
 from ..bot_look import BotLook, make_target
 from ..driver import Driver
 from . import re5_switch_aim, re5_switch_prompt
+from .. import qte                         # universal QTE handling: the vision grab-fallback when the RAM read tears
 
 TITLE_ID = "010018100CD46000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/010018100CD46000-ram.json
@@ -1153,7 +1154,8 @@ def snapshot(m) -> dict:
             snap["inventory"] = inventory(m, p)
             snap["aim_cam"] = re5_switch_aim.aim_state(m, base, p)
             if PROMPTS and prompt_table_ok(m, base):     # the game's own prompt (re5_switch_prompt): None when none
-                snap["prompt"] = re5_switch_prompt.selected_prompt(m, base, p, index or 0)
+                # RAM first; a grab the reader missed (a torn read) is caught by vision while he is held (qte.grab_fallback)
+                snap["prompt"] = re5_switch_prompt.selected_prompt(m, base, p, index or 0) or qte.grab_fallback(MAP_ID, m, snap)
                 snap["prompt_read"] = True
             if any(s["id"] == MINE_ITEM for s in snap["inventory"]):   # the bombs on the ground (re5_switch_mines)
                 snap["ground_mines"] = ground_mines(m, base)
