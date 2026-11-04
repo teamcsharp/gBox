@@ -4684,17 +4684,10 @@ EDEN_SETTINGS = {
 # accuracy Low looked like it added a colour-inverted frame, so it stays at Eden's default.
 _MT_FRAMEWORK_EDEN = {"Core": {"use_multi_core": "false"},
                       "Renderer": {"use_asynchronous_shaders": "true", "async_presentation": "true"}}
-# RE4 Switch is the classic RE4 engine (biohazard 4 HD port), NOT MT Framework: it has no npad watcher thread that
-# moves itself between cores via SetThreadCoreMask, so the single-core override that RE5 / RE6 need does not apply - and
-# single-core HUNG RE4's boot (verified live 2026-11-04 on lilspark Eden: the guest executed no code at all - 0 of
-# 813,773,824 u32 values changed across 15 s, two passes - while Eden's loader animated host-side; RE5 / RE6 boot fine
-# single-core on the same Eden). So RE4 runs multi-core (Eden's global default) + async shaders / presentation.
-_RE4_EDEN = {"Core": {"use_multi_core": "true"},
-             "Renderer": {"use_asynchronous_shaders": "true", "async_presentation": "true"}}
 EDEN_TITLE_SETTINGS = {
-    "010018100CD46000": _MT_FRAMEWORK_EDEN,                   # Resident Evil 5 (MT Framework: single-core)
-    "01002A000CD48000": _MT_FRAMEWORK_EDEN,                   # Resident Evil 6 (MT Framework: single-core)
-    "010099A00BC1E000": _RE4_EDEN,                            # Resident Evil 4 (classic engine: multi-core; #boot-hang fix)
+    "010018100CD46000": _MT_FRAMEWORK_EDEN,                   # Resident Evil 5
+    "01002A000CD48000": _MT_FRAMEWORK_EDEN,                   # Resident Evil 6
+    "010099A00BC1E000": _MT_FRAMEWORK_EDEN,                   # Resident Evil 4
 }
 EDEN_CONTENT_DIRS = "Paths\\external_content_dirs"       # [UI] array Eden scans for update/DLC NSPs at boot
 EDEN_LOG = ("log", "eden_log.txt")                       # under Eden's data folder (src/common/fs/fs_paths.h LOG_FILE)

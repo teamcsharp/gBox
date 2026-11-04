@@ -183,3 +183,34 @@ zr plus minus start select dup ddown dleft dright ...). Each `job_memory_search`
 
 Value ranges to recognize candidates (from GC): Mercenaries clock <= 1200 s; combo a small int; Ganado HP ~100s-1000s,
 bosses up to ~6500 (Dr. Salvador, Village); score grows by hundreds per kill; player pos floats in cm.
+
+## BLOCKER (2026-11-04): RE4 Switch does not boot on lilspark Eden v0.2.1 (GB10) in EITHER core mode
+
+Before any RAM mapping can happen, RE4 must reach a running state. It does not, on the current Eden:
+
+- **Single-core** (the shipped config, `_MT_FRAMEWORK_EDEN`): the guest HANGS. It executes no code at all -
+  `job_memory_search` start->next cmp=changed showed 0 of ~813,773,824 u32 values changing over 15 s (two passes),
+  while Eden's "Launching..." loader animated host-side. RE5/RE6 boot fine single-core on the same Eden, so this is
+  RE4-specific. (Why RE4 specifically stalls single-core is not yet known - a service/thread it waits on.)
+- **Multi-core** (tried live via a temporary `_RE4_EDEN` override, use_multi_core=true): the guest now EXECUTES to
+  ~3 s, then CRASHES - Eden log: `Unmapped Write32 @ 0x...F42400 / 0x...E400`, then
+  `Break: ... Unknown break reason 0XE401, info1=0x...43A21558` and `Emulated program broke execution! reason=0xE401`
+  with an ARM backtrace into nnSdk at PC. This is the SAME Eden v0.2.1 multi-core thread-migration bug documented for
+  RE5/RE6 (a thread moves itself between cores via SetThreadCoreMask, Eden loses it -> InvalidHandle 0xE401, threads
+  jump to PC~0, SIGSEGV/break 3-4 s in) - which is exactly why RE5/RE6 are forced single-core. So RE4 is caught: the
+  single-core mode that fixes RE5/RE6 hangs RE4, and the multi-core mode RE4 might want hits the 0xE401 thread bug.
+
+The temporary multi-core override was reverted on lilspark and in this branch (it is not a working fix on this Eden).
+
+### Fallbacks to get RE4 booting (need infra / deeper debugging, not a RAM-map task)
+1. **Newer Eden / yuzu-successor build** (most promising): the 0xE401 crash is an Eden v0.2.1 thread-handling bug; a
+   build that handles the cross-core thread migration should let RE4 boot MULTI-core. Then re-apply `_RE4_EDEN`.
+2. **Citron** (multi-core; a different fork): may or may not hit the same 0xE401. Rendering is broken on the GB10
+   (memory gbox-switch-render-fix-2026-11-03), but if the GUEST executes under Citron the RAM map could still be done
+   there (rendering is a separate concern from a memory scan).
+3. **Debug the single-core hang**: attach the gdbstub on a single-core RE4 boot and find where the guest stalls (the
+   service/thread it blocks on). If a targeted stub/fix frees it, single-core (no 0xE401) would be the cleanest path.
+4. Firmware/service-stub differences for RE4 1.0.2 (less likely - its NSOs load and decrypt fine).
+
+Until one of these makes RE4 reach a running state, the RAM map / driver cannot be measured and RE4 cannot join the
+rotation. The driver scaffold, menus, fire-gates and the memory_search playbook are all ready for the moment it boots.
