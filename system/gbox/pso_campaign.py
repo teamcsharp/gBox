@@ -20,7 +20,11 @@ import httpx
 from .autoplay import Driver
 from .pso_gc_live import GC, PHASE, FLOOR, PLAYER
 from .registry import Unsupported
-from .pso_coop_menu import MenuProgress
+from . import pso_coop_menu            # referenced as pso_coop_menu.MenuProgress, NOT `from ... import MenuProgress`:
+                                       # a top-level name-binding would make this module a non-bot-module binder of
+                                       # pso_coop_menu and block the bot-reload of the menu recognisers (which ARE in
+                                       # hot_reload.BOT_MODULES). The module reference rebinds on reload, so recogniser
+                                       # / MenuProgress fixes now hot-reload with no gbox.service restart.
 
 CAMPAIGN = "pso-episodes-1-2"
 COOP_CAMPAIGN = "pso-coop-episodes-1-2"
@@ -497,7 +501,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     evidence.mkdir(parents=True, exist_ok=True)
     errors, last_plan, last_plan_at, last_progress, last_signature = 0, [], 0.0, time.monotonic(), None
     gate_attempts = {}
-    menu = MenuProgress()
+    menu = pso_coop_menu.MenuProgress()
     stats.update(ledger.status(), note="Experimental campaign attempt; no full completion is claimed without receipts.")
     try:
         while not stopped():
