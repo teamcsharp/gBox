@@ -3954,13 +3954,13 @@ def boot_nudge(ad, inputs, stopped, stats, proposed, state=None, plan=None):
 # skips cinematics and leaves the title, A advances/confirms a dialog or selects on character select. Recognised
 # screens (saved_p1/saved_p2/...) never reach a stall (review returns their action), so this only drives the
 # unrecognised cinematics/dialogs, never a blind confirm on an independently-recognised menu.
-PREGAME_SKIP_KEYS = ('start', 'a')
-PREGAME_SKIP_LIMIT = 40
+PREGAME_SKIP_KEYS = ((1, 'start'), (1, 'a'))        # (player, key) pairs
+PREGAME_SKIP_LIMIT = 48
 PREGAME_SKIP_GAP_S = 1.1
 
 
-def pregame_skip(ad, state, inputs, stopped, stats):
-    """A bounded Start/A skip for a pre-gameplay cinematic or unrecognised dialog that stalled; True when it fired."""
+def pregame_skip(ad, state, inputs, stopped, stats, keys=PREGAME_SKIP_KEYS, why='stall'):
+    """A bounded, paced, pre-gameplay-only Start/A (or A-only) skip; True when it fired."""
     if (state or {}).get('phase') == 14 or (state or {}).get('floor'):
         return False
     if time.monotonic() - getattr(ad, '_pso_pregame_skip_at', 0.0) < PREGAME_SKIP_GAP_S:
@@ -3970,12 +3970,22 @@ def pregame_skip(ad, state, inputs, stopped, stats):
         return False
     ad._pso_pregame_skip_at = time.monotonic()
     ad._pso_pregame_skips = n + 1
-    key = PREGAME_SKIP_KEYS[n % len(PREGAME_SKIP_KEYS)]
+    player, key = keys[n % len(keys)]
     if isinstance(stats, dict):
-        stats.update(action='pregame_skip', pregame_skips=n + 1, pregame_skip_key=key,
-                     pregame_skip_reason='pre-gameplay stall (cinematic/unrecognised screen): bounded alternating Start/A skip')
-    _menu_tap(inputs, stopped, 1, key, hold_s=0.3, gap_s=0.05)
+        stats.update(action='pregame_skip', pregame_skips=n + 1, pregame_skip_key='p%d:%s' % (player, key),
+                     pregame_skip_reason='pre-gameplay %s (cinematic/unrecognised screen): bounded safe-key skip' % why)
+    _menu_tap(inputs, stopped, player, key, hold_s=0.3, gap_s=0.05)
     return True
+
+
+def pregame_unreadable(state, menu, menu_paused):
+    """A pre-gameplay frame the system cannot identify at all: no recognised menu, no menu/HUD visible, not paused -
+    i.e. an OFFLINE intro cinematic or a black transition. (Native phase != 14 and no real floor.) Character select,
+    the licence, the title and every HUD are recognised, so they are excluded and keep their own strict handling."""
+    if (state or {}).get('phase') == 14 or (state or {}).get('floor') or menu_paused:
+        return False
+    obs = getattr(menu, 'observation', None) or {}
+    return not (obs.get('recognized') or obs.get('menu_visible') or obs.get('gameplay_visible'))
 
 
 def _flatten_master_build(stats, summary):
@@ -4236,6 +4246,20 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 if dismiss_license(ad, menu, inputs, stopped, stats):
                     invalidate_plan()
                     solo.wait(.15, stopped)              # hyperspeed: minimal dwell, reobserve fast
+                    continue
+                # EAGER CINEMATIC SKIP (2026-11-04): the OFFLINE intro cinematic loop is briefer than the 6-attempt
+                # review stall, so the stall-gated pregame_skip never caught it and the chain cycled title<->attract
+                # <->intro. On a pre-gameplay frame the system can't identify at all (cinematic / black transition),
+                # press A straight away - A advances cinematics/dialogs and, on the two-player character select (which
+                # the observer does NOT yet recognise live, so the strict saved_p1/saved_p2 path can't engage there),
+                # selects the pre-saved buddy. Alternate player 1 then player 2 A so both save slots get confirmed; A
+                # is a no-op on the other player's select phase, benign on a cinematic. Bounded/paced/pre-gameplay-
+                # gated and A-only, so it never leaves the title with a wrong key, never touches a recognised menu
+                # (title/licence/HUD are recognised and excluded), and can't reach gameplay.
+                if pregame_unreadable(state, menu, menu_paused) and \
+                        pregame_skip(ad, state, inputs, stopped, stats, keys=((1, 'a'), (2, 'a')), why='unreadable frame'):
+                    invalidate_plan()
+                    solo.wait(.2, stopped)
                     continue
                 # Backstop to the never-stop invariant: if a menu/dialogue is up
                 # continuously for MENU_STUCK_S (in case menu.stalled never trips -
