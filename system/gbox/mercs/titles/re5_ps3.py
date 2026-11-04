@@ -102,6 +102,8 @@ HG_CENTRE, HG_KIND = 0x250, 0x194      # bounding sphere; retained render word, 
 HG_COLLECTED, HG_SECONDS = 0x13EC, 0x14A4  # native FUN_00723e34 adds signed seconds, then sets collected=1
 BONUS_RANGE = 12000.0                  # go for a time bonus whose route is this long at most (cm)
 FIGHT_R, FIGHT_CONE = 350.0, math.radians(40)   # a Majini this near and this far off the heading blocks the way:
+CLOSE_THREAT_R, REAR_WIDE_CONE = 250.0, math.radians(130)  # within CLOSE_THREAT_R use the wide cone (ranged cluster:
+                                                           # close rear/side hits at 40-80 deg off, 1.5-2 m)
 ON_TOP_R = 160.0                       # fought from where the player stands, as is one this close from any side;
                                        # the rest chase him and are ignored (grabs are wiggled off): the tour goes on
 GRAB_FRONT_R, GRAB_FRONT_CONE = 250.0, math.radians(90)  # a Majini at arm's length in front (grabbed_front cluster,
@@ -3319,19 +3321,24 @@ class Bot:
             return ENGAGE
         return max(ENGAGE, re5_weapons.longshot_reach(eq.get("item")))
 
-    @staticmethod
-    def _threat(p, e) -> bool:
+    def _threat(self, p, e) -> bool:
         """A Majini worth stopping for: within FIGHT_R and in front (he blocks the way), right on top of him, or at
         arm's length in front (grabbed_front cluster, batch b95d37e4f6baa130): he is close enough to grab him while he
-        walks (gather_time / clear_nearby), so the bot stops walking and fights instead."""
+        walks (gather_time / clear_nearby), so the bot stops walking and fights instead.
+
+        Close threats (within CLOSE_THREAT_R) use a wider cone: the ranged cluster (fca1f514287750be) examples show
+        hits from 40-80 deg off his heading at 1.5-2 m with nobody within 2.5 m — the bot was still gathering a bonus
+        or walking, not turning to face them. Extending the cone to REAR_WIDE_CONE at that range lets the bot dispatch
+        them before they strike, preventing the most incidents in this cluster."""
         px, py, pz = p["pos"]
         if abs(e["pos"][1] - py) >= LEVEL_DY:               # on another level: not in the way
             return False
         d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         if d < ON_TOP_R:
             return True
+        cone = REAR_WIDE_CONE if d < CLOSE_THREAT_R else FIGHT_CONE
         off = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
-        if d < FIGHT_R and off < FIGHT_CONE:
+        if d < FIGHT_R and off < cone:
             return True
         # grab-front: at arm's length in front, close enough to reach out and grab (batch b95d37e4f6baa130)
         if d < GRAB_FRONT_R and off <= GRAB_FRONT_CONE:
