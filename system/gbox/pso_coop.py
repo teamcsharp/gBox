@@ -535,7 +535,7 @@ class Inputs:
         except (TypeError, ValueError):
             self.has_polite = False
 
-    def send(self, events, player, *, check=True):
+    def send(self, events, player, *, check=True, held_ok=False):
         if player == 1 and self.send_primary is not None:
             result = self.send_primary(events)
         else:
@@ -557,8 +557,13 @@ class Inputs:
                           last_input_requested=len(events),
                           last_input_sent=result.get('sent', 0) if isinstance(result, dict) else 0,
                           last_input_held=str(result.get('held') or result.get('stopped') or '')[:200] if isinstance(result, dict) else '')
+        # held_ok: a HOLD's own down-press intentionally leaves its keys held - the focus-independent virtual pad
+        # (gbox/vpad_linux.py, vpad_win.py) truthfully reports those keys in "held", which is NOT a delivery failure.
+        # Without this, hold()'s down raised InputDeferred on the vpad before its release ran, collapsing every menu
+        # hold into a sub-frame tap the game never polled - PSO sat on the recognised PRESS START title forever
+        # (2026-11-04, watched live). Partial delivery (sent != len) and an explicit "stopped" still fail.
         if check and (not isinstance(result, dict) or result.get("sent") != len(events)
-                      or result.get("held") or result.get("stopped")):
+                      or (result.get("held") and not held_ok) or result.get("stopped")):
             reason = (result.get("held") or result.get("stopped")) if isinstance(result, dict) else None
             raise InputDeferred(reason or "PSO controller did not acknowledge every input event")
         if check:
@@ -622,7 +627,7 @@ class Inputs:
                 check_timing()
                 sent.append((player, keys, secs))
                 delivery_started = time.monotonic()
-                self.send([{"key": k, "down": True} for k in keys], player)
+                self.send([{"key": k, "down": True} for k in keys], player, held_ok=True)
                 acknowledged = time.monotonic()
                 deadlines[player] = acknowledged + secs
                 timing[player] = dict(requested_wall_ms=round(secs*1000,3),
@@ -3941,6 +3946,38 @@ def boot_nudge(ad, inputs, stopped, stats, proposed, state=None, plan=None):
     return True
 
 
+# --- Pre-gameplay stall skip (2026-11-04) ---------------------------------------------------------------------------
+# The boot nudge only fires on a "withheld/unreadable" review, but the OFFLINE intro CINEMATIC produces a different
+# stall ("Six unchanged menu attempts") while the vision planner only sees black transition frames and proposes
+# nothing - so nothing pressed A/Start to skip the cinematic and the chain froze at phase 3 (watched live). On ANY
+# pre-gameplay stall (native phase != 14, no real floor) press a bounded, paced, alternating Start/A held press: Start
+# skips cinematics and leaves the title, A advances/confirms a dialog or selects on character select. Recognised
+# screens (saved_p1/saved_p2/...) never reach a stall (review returns their action), so this only drives the
+# unrecognised cinematics/dialogs, never a blind confirm on an independently-recognised menu.
+PREGAME_SKIP_KEYS = ('start', 'a')
+PREGAME_SKIP_LIMIT = 40
+PREGAME_SKIP_GAP_S = 1.1
+
+
+def pregame_skip(ad, state, inputs, stopped, stats):
+    """A bounded Start/A skip for a pre-gameplay cinematic or unrecognised dialog that stalled; True when it fired."""
+    if (state or {}).get('phase') == 14 or (state or {}).get('floor'):
+        return False
+    if time.monotonic() - getattr(ad, '_pso_pregame_skip_at', 0.0) < PREGAME_SKIP_GAP_S:
+        return False
+    n = getattr(ad, '_pso_pregame_skips', 0)
+    if n >= PREGAME_SKIP_LIMIT:
+        return False
+    ad._pso_pregame_skip_at = time.monotonic()
+    ad._pso_pregame_skips = n + 1
+    key = PREGAME_SKIP_KEYS[n % len(PREGAME_SKIP_KEYS)]
+    if isinstance(stats, dict):
+        stats.update(action='pregame_skip', pregame_skips=n + 1, pregame_skip_key=key,
+                     pregame_skip_reason='pre-gameplay stall (cinematic/unrecognised screen): bounded alternating Start/A skip')
+    _menu_tap(inputs, stopped, 1, key, hold_s=0.3, gap_s=0.05)
+    return True
+
+
 def _flatten_master_build(stats, summary):
     """Flat scalar mirrors of the nested master_build summary so the telemetry
     endpoint (which keeps only flat/scalar keys) surfaces the applied build: p1 =
@@ -4232,6 +4269,12 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                         planned_input_keys=','.join(selected[0][1]) if selected else '',
                         action='observed_menu_step' if selected else 'waiting_for_observed_menu')
                     if menu.stalled:
+                        # Pre-gameplay stall (cinematic / unrecognised dialog): a bounded Start/A skip instead of a
+                        # warp (native warps can't run before gameplay anyway).
+                        if pregame_skip(ad, state, inputs, stopped, stats):
+                            invalidate_plan()
+                            solo.wait(.3, stopped)
+                            continue
                         # INVARIANT: never terminally stop at a stuck menu. The campaign
                         # gives up after N unchanged attempts - instead of halting to the
                         # operator, warp to the next route floor (a RAM load bypasses ANY
@@ -4485,6 +4528,11 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                              planned_input_player=selected[0][0] if selected else 0,
                                              planned_input_keys=','.join(selected[0][1]) if selected else '')
                                 if menu.stalled:
+                                    # Pre-gameplay stall (cinematic / unrecognised dialog): bounded Start/A skip first.
+                                    if pregame_skip(ad, state, inputs, stopped, stats):
+                                        invalidate_plan()
+                                        solo.wait(.3, stopped)
+                                        continue
                                     # INVARIANT: never terminally stop at a stuck menu.
                                     # Warp to the next route floor (RAM load bypasses
                                     # any menu/dialogue) and keep playing forever.
