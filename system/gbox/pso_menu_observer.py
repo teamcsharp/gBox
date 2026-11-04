@@ -63,10 +63,14 @@ def observe(frame):
         with Image.open(io.BytesIO(frame)) as source:
             if not (320 <= source.width <= 2048 and 240 <= source.height <= 2048):
                 return result
-            if source.size in ((960, 540), (1031, 580)):
-                # Both exact sizes were captured from this same render viewport:
-                # adapter PNG 1031x580 and its API preview 960x540. Normalize only
-                # these observed sizes; retain pillarbox and all label proofs.
+            if source.size in ((960, 540), (1031, 580)) or abs(source.width / source.height - 16 / 9) <= .02:
+                # These captures share one render viewport + pillarbox: the i9 adapter PNG
+                # 1031x580 and its 960x540 API preview, and lilspark's full Xvfb display
+                # 1280x720. Every 16:9 PSO frame carries the same 4:3 game content centred
+                # with equal side bars, so a uniform downscale to 960x540 reproduces the exact
+                # canonical layout these masks were built for (1280x720 -> 960x540 is a flat
+                # 0.75x). The pillarbox black-bar gate below still rejects a non-pillarboxed
+                # frame, so broadening the accepted size adds no false-positive surface.
                 image = source.convert('RGB').resize((960, 540), Image.Resampling.LANCZOS)
                 # Separately observed capture layout. Do not stretch a crop or
                 # a different render viewport into the old menu coordinates.
@@ -74,7 +78,9 @@ def observe(frame):
                 if any(float((pixels[20:520, left:right].max(2) <= 12).mean()) < .995
                        for left, right in ((20, 140), (820, 940))):
                     return result
-                result['layout'] = '960x540_pillarboxed' if source.size == (960, 540) else '1031x580_pillarboxed'
+                result['layout'] = {(960, 540): '960x540_pillarboxed',
+                                    (1031, 580): '1031x580_pillarboxed'}.get(
+                                        source.size, f'{source.width}x{source.height}_16x9_pillarboxed')
                 return _observe_wide(image, result)
             # Capture coordinates are normalized only for the demonstrated full
             # Dolphin framing. Crops, unrelated aspect ratios and window chrome
@@ -170,13 +176,21 @@ def _observe_wide(image, result):
     def matches(*names, threshold=.8):
         return all(_text(image, 'w_' + name) >= threshold for name in names)
 
+    def region(name):
+        live = 'w_' + name + '_live'
+        return max(_text(image, 'w_' + name), _text(image, live) if live in _TEXT else 0.)
+
     def record(menu, selected, index, player=1, **details):
         found.append(dict(menu=menu, selected=selected, option_index=index, player=player, **details))
 
     # This observed title also occurs while PRESS START is faded out. Require
     # all five static title/licensing regions and exclude the main menu.
-    title_start = matches(
-        'title_wordmark', 'title_online', 'title_episode', 'title_license', 'title_copyright', threshold=.84)
+    # The live lilspark 1280x720 render scores the registered title_license mask at .80, just under this gate, which
+    # left the PRESS START title unrecognised live (2026-11-04) - so each static region also accepts its separately
+    # captured *_live variant (the established online/offline _live pattern). The five-region conjunction and the
+    # main-menu exclusion below are unchanged: this teaches the live render, it does not relax the proof.
+    title_start = all(region(name) >= .84 for name in
+        ('title_wordmark', 'title_online', 'title_episode', 'title_license', 'title_copyright'))
     main_options_visible = any(_text(image, 'w_' + name) >= .6
         for name in ('online', 'offline', 'options', 'website'))
     if title_start and not main_options_visible:
@@ -588,3 +602,8 @@ _TEXT.update({'w_p2_start_item': {'box': (188, 325, 269, 344), 'shape': (19, 81)
 
 # Static labels from the exact expanded P2 destination fixture; no full frame.
 _TEXT.update({'w_expanded_forest2': {'box': (420, 346, 540, 369), 'shape': (23, 120), 'data': 'c$}5cI|{=v3<lueaY>evX4DXHj}XY>tyeMR0v$W`K_OEQ)sVG^FysOrJD5<}F>TjqkoXXiK)|}##JmTHi=5RkE9Vam=RoMGAo0k6F0$z)$(%VdGaOr4{n0Q5SKNQRGK)BC+MZyUWuP~$SN6oLQ@1A6Or5wTgw0J_RaPR<B<9QAg-w_EjMS4P(SNB%=8I_~i<{WFH}kUcQ6JSkBAW'}, 'w_expanded_cave1': {'box': (420, 369, 540, 392), 'shape': (23, 120), 'data': 'c${NkAPw+02yn2}H!vQ6aAglzNbn>uFhjWp2^Ks&4sfmlgv$WsCMeYKNFcZl3^{E0xX0KG>Kl-_OsHID10=<a|CtkzEHXsnHZwjza19a}k+~L+85<8Iz`62=85<5DEMg-zV9)^o$51G}'}, 'w_expanded_cave2': {'box': (420, 392, 540, 414), 'shape': (22, 120), 'data': 'c$|&TF%AMD5Czar*q{Z8mUOr`z>bomkl0%60Zew(i;-wN2Pd$$QxI56{l#Qn^=E(|;dy96EY!iOVJ7}6w9!iG!BwI0i4LOD?@n@^C<`5qgK~gcC^Bv1U2HutH9mxy34S3rX%CH0ZX6g@j&JT=xi$ChuPk<&@k>!@59}N|^^H-Ou&Uf#7*T)l|9k*K!6O#'}, 'w_expanded_cave3': {'box': (420, 414, 540, 436), 'shape': (22, 120), 'data': 'c${NkAPw+02yn2}H!yyHaAglzNbn>uFhjWp2^Ks&4h+l^5N-m5%Ld~r)bL0+Ffc*64h%VLKrRCs*8;{p#%568!0-XiWk%;B>1F)SoPgja7#?SS0JN6}#%*Rq;u<6~gSk+}7LOSl4<x|dEPt4>;XwTXn2(r<4jBMN1S4h'}, 'w_expanded_mine1': {'box': (420, 436, 540, 459), 'shape': (23, 120), 'data': 'c${NkAQ7<1F);jNV1n`_*z7F?|1q$`xcod8f(;D(P_7I=kBuM$gFGsi8Nszf;>yYMm?3ked5nQZp>Y4fxx&Ug#uFQmxrP%FdWApp7<@!<1s`K@3z4{oQMdw!<qQmuAh?I@83YjiB_03(+`bnh'}, 'w_expanded_mine2': {'box': (420, 459, 540, 482), 'shape': (23, 120), 'data': 'c${NkAPq>c*$W8%V_-i3<+96J2sSYAKY()ic`O7O7-SM4Tp4~I8z5Jr0F?`sm6PYO19BN)TxlM25cdI`YYeoA5o(dRF__ET0O1N7^B7KKU|@&3O87I6;YS7rHYiu{Gmim~%LC&+26JVQxP?Gxz_^Ej+y*#T;E=t6;XelX2P6gzIsgFl$sG{'}})
+
+# Live lilspark 1280x720 Xvfb title render (downscaled to the canonical 960x540), captured 2026-11-04: the same
+# "Licensed by NINTENDO" line whose original mask scores only .80 on this render. Registered as a *_live variant
+# (see region() in _observe_wide); the base mask and every other proof region are unchanged.
+_TEXT.update({'w_title_license_live': {'box': (252, 480, 453, 503), 'shape': (23, 201), 'data': 'c-qBKKTE?v9Q|GHNNzZj>msKVo9Gv~QiqC#BnX}S0FD;|P7Zc+yw(yCvbZ_=5%e2e66sX@453{eI(85>g9R5sC*Sno{ekxY{t-xj5ep&!CYDyXe3Qu<*Jk4YAHZfwfycTnGc435t2qG9WUaMvMSN|`jS$f$R*9=9Qcmv2NPvxu>^u0uX<F~{L*JLykazVQdBy5AWYr2kPT+L5D|x3lpu(J^EXY$~rvl|E?5FIWdiCv;sUFPWJ;<G-DU>Z}J!KcfhGA*T9i74luc~zk@s_4%)t-eRNHArls})rvoj@=#WRTn-r1@w}h@vOrxl2o~MPY1LR?QIFFPb6b*j<QukJWBeBd4uQbV=HYe(5YcT)@D?wPPfVU0?ZONkYB-{ZjtZ*W%B@FYyUEWmz='}})

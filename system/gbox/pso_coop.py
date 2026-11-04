@@ -3909,7 +3909,11 @@ def boot_nudge_allowed(ad, state, reason):
     return getattr(ad, '_pso_boot_nudges', 0) < BOOT_NUDGE_LIMIT
 
 
-def boot_nudge(ad, inputs, stopped, stats, proposed):
+_NUDGE_DIRECTIONS = {'dup', 'ddown', 'dleft', 'dright', 'up', 'down', 'left', 'right',
+                     'lup', 'ldown', 'lleft', 'lright'}
+
+
+def boot_nudge(ad, inputs, stopped, stats, proposed, state=None, plan=None):
     """Pass the planner's first proposed player-one key through as one held press; True when a nudge was sent."""
     if not proposed:
         return False
@@ -3917,12 +3921,23 @@ def boot_nudge(ad, inputs, stopped, stats, proposed):
     keys = [str(k) for k in (keys or []) if str(k) in BOOT_NUDGE_KEYS][:1]
     if player != 1 or not keys:
         return False
+    key = keys[0]
+    # Title-as-license misread, belt + suspenders (2026-11-04, watched live): at the RAM title/attract (phase 10) the
+    # vision planner repeatedly read the PRESS START title as "the software license" and proposed a direction, which
+    # can never leave the title. When RAM says phase 10, the planner's own labels talk about the licence/Agree, and
+    # the independent licence recogniser does NOT actually see a licence panel, the title is the overwhelmingly likely
+    # screen - press START (the one key the title takes) instead of the misread direction.
+    if (state or {}).get('phase') == 10 and key in _NUDGE_DIRECTIONS:
+        labels = ' '.join(str((plan or {}).get(k) or '') for k in
+                          ('menu_title', 'selected_option', 'intended_option', 'thought')).lower()
+        if 'licen' in labels or 'agree' in labels:
+            key = 'start'
     ad._pso_boot_nudge_at = time.monotonic()
     ad._pso_boot_nudges = getattr(ad, '_pso_boot_nudges', 0) + 1
     if isinstance(stats, dict):
-        stats.update(action='boot_nudge', boot_nudges=ad._pso_boot_nudges, boot_nudge_key=keys[0],
+        stats.update(action='boot_nudge', boot_nudges=ad._pso_boot_nudges, boot_nudge_key=key,
                      boot_nudge_reason='pre-gameplay boot screen: planner key passed through the withhold gate as a held press')
-    _menu_tap(inputs, stopped, 1, keys[0], hold_s=BOOT_NUDGE_HOLD_S, gap_s=0.05)
+    _menu_tap(inputs, stopped, 1, key, hold_s=BOOT_NUDGE_HOLD_S, gap_s=0.05)
     return True
 
 
@@ -4239,6 +4254,8 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 # anyway ("GameCube native actions require an active offline free-play session"). One driver at a
                 # time: defer ALL mapping restore/probe work until real gameplay (native phase 14); the boot chain
                 # (title Start -> menu -> OFFLINE -> character select -> Start Game) belongs to player one alone.
+                # (The 19-key "sweep" telemetry still shows at run start: that is inputs.release() - every key sent
+                # UP, alphabetical - a benign safety release, not a probe. This is the only prove()/restore() site.)
                 if state.get("verified") and state.get("phase") == 14 and not mapped and not menu_paused and not recovery.waiting:
                     retained = mapping_continuity.restore(ad, reader, session_id, game or {}, stopped)
                     stats.update(mapping_continuity.diagnostics(ad))
@@ -4480,7 +4497,8 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                 # the chain - pass the planner's own proposed player-one key through as one bounded
                                 # held press, then reobserve. Gameplay and recognised screens keep the strict path.
                                 if not selected and planner_proposed and boot_nudge_allowed(ad, state, reason) and \
-                                        boot_nudge(ad, inputs, stopped, stats, planner_proposed):
+                                        boot_nudge(ad, inputs, stopped, stats, planner_proposed,
+                                                   state=state, plan=plan):
                                     invalidate_plan()
                                     solo.wait(.25, stopped)
                                     continue
