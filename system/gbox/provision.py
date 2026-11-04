@@ -836,6 +836,60 @@ def switch_install_keys(src: Path, keys_dir: Path) -> list[str]:
     return copied
 
 
+SWITCH_FIRMWARE_VERSION = "17.0.0"                       # pinned: the system version the operator's prod.keys decrypt
+SWITCH_FIRMWARE_ZIP = f"Firmware-{SWITCH_FIRMWARE_VERSION}.zip"   # (master_key_10); 17.0.1 / 23.0.1 are never auto-picked
+SWITCH_FIRMWARE_NCA_COUNT = 229                          # 17.0.0: 229 NCAs (116 .cnmt.nca + 113 .nca), flat at the zip root
+
+
+def switch_firmware_source(cfg: Config) -> Path | None:
+    """The console firmware ZIP restored into the emulator's nand: [switch_firmware], else Firmware-17.0.0.zip at the
+    root of a Switch library (the share's _switch/, beside prod.keys). Pinned to 17.0.0 to match the installed keys;
+    the share's 17.0.1 / 23.0.1 firmware is never auto-selected."""
+    if cfg.switch_firmware:
+        p = Path(cfg.switch_firmware).expanduser()
+        return p if p.is_file() else None
+    for lib in cfg.libraries:
+        root = lib.root() if lib.platform == "switch" else None
+        if root and (root / SWITCH_FIRMWARE_ZIP).is_file():
+            return root / SWITCH_FIRMWARE_ZIP
+    return None
+
+
+def switch_install_firmware(src: Path | None, registered_dir: Path) -> list[str]:
+    """Restore the firmware NCAs into the emulator's nand/system/Contents/registered from the firmware ZIP when they are
+    missing or incomplete (e.g. after a git clean -x of gbox-data). Marker-gated: a launch with the full set already
+    present and the .firmware.from marker matching the source ZIP does no work and never opens the archive. The share
+    stays untouched (read-only CIFS). Returns the NCAs written (empty when nothing changed)."""
+    if src is None:
+        return []
+    import zipfile
+    marker = registered_dir / ".firmware.from"
+    stamp = f"{src.name} {src.stat().st_size} {int(src.stat().st_mtime)} {SWITCH_FIRMWARE_NCA_COUNT}"
+    present = len(list(registered_dir.glob("*.nca"))) if registered_dir.is_dir() else 0
+    try:
+        if present >= SWITCH_FIRMWARE_NCA_COUNT and marker.is_file() and marker.read_text() == stamp:
+            return []
+    except OSError:
+        pass
+    registered_dir.mkdir(parents=True, exist_ok=True)
+    written: list[str] = []
+    with zipfile.ZipFile(src) as z:
+        for info in z.infolist():
+            name = Path(info.filename).name
+            if info.is_dir() or not name.lower().endswith(".nca"):
+                continue
+            dst = registered_dir / name
+            try:
+                if dst.is_file() and dst.stat().st_size == info.file_size:
+                    continue
+            except OSError:
+                pass
+            dst.write_bytes(z.read(info))
+            written.append(name)
+    marker.write_text(stamp)
+    return written
+
+
 def ensure_switch_linux(cfg: Config, progress=None) -> dict:
     """Switch on a Linux node: Eden from the configured AppImage (extracted once, no FUSE at launch) or binary, plus the
     console keys copied into gBox's own Eden folder. Nothing is downloaded: see EDEN_RELEASE / EDEN_ASSET for the
@@ -864,8 +918,13 @@ def ensure_switch_linux(cfg: Config, progress=None) -> dict:
         raise ToolUnavailable("no prod.keys for the Switch emulator: set switch_keys in gbox.local-<hostname>.toml or "
                               "keep prod.keys at the Switch library's root (the share's _switch/prod.keys)")
     copied = switch_install_keys(keys, switch_linux_dir(cfg) / "keys")
+    fw = switch_firmware_source(cfg)
+    fw_written = switch_install_firmware(fw, switch_linux_dir(cfg) / "nand" / "system" / "Contents" / "registered")
     switch_linux_url_stub(cfg)
-    return _receipt("eden", "ok", f"{exe}; keys from {keys}" + (f" ({', '.join(copied)} copied)" if copied else ""))
+    fw_note = (f"; firmware {SWITCH_FIRMWARE_VERSION} restored ({len(fw_written)} NCAs)" if fw_written
+               else f"; firmware {SWITCH_FIRMWARE_VERSION} present" if fw else "; firmware source missing")
+    return _receipt("eden", "ok", f"{exe}; keys from {keys}"
+                    + (f" ({', '.join(copied)} copied)" if copied else "") + fw_note)
 
 
 # --- Citron NEO: the canonical Switch emulator for RE5 / RE6 (operator 2026-10-26) ---------------------------------------
@@ -953,7 +1012,12 @@ def citron_linux_env(cfg: Config) -> dict:
             "XDG_DATA_HOME": str(home / "data"), "QT_QPA_PLATFORM": "xcb", **linux_audio_env(),
             "PATH": os.pathsep.join([str(stub), os.environ.get("PATH", os.defpath)]),
             "BROWSER": str(stub / "xdg-open"), "DEFAULT_BROWSER": str(stub / "xdg-open"), "DISABLE_AUTO_UPDATES": "1",
-            "SHARUN_ALLOW_LD_PRELOAD": "1", "LD_PRELOAD": preload}
+            "SHARUN_ALLOW_LD_PRELOAD": "1", "LD_PRELOAD": preload,
+            # Force the NVIDIA Vulkan ICD: the Spark's /usr/share/vulkan/icd.d holds a freedreno/Turnip (Adreno) ICD
+            # that the loader otherwise tries on this NVIDIA GPU -> it opens /dev/dri/card0 (permission denied, the
+            # worker user is render-ACL only) and throws VK_ERROR_INCOMPATIBLE_DRIVER, killing Citron at boot.
+            "VK_ICD_FILENAMES": "/usr/share/vulkan/icd.d/nvidia_icd.json",
+            "VK_DRIVER_FILES": "/usr/share/vulkan/icd.d/nvidia_icd.json"}
 
 
 def ensure_citron_linux(cfg: Config, progress=None) -> dict:
@@ -981,10 +1045,14 @@ def ensure_citron_linux(cfg: Config, progress=None) -> dict:
         raise ToolUnavailable("no prod.keys for the Switch emulator: set switch_keys in gbox.local-<hostname>.toml or "
                               "keep prod.keys at the Switch library's root (the share's _switch/prod.keys)")
     copied = switch_install_keys(keys, citron_linux_dir(cfg) / "keys")
+    fw = switch_firmware_source(cfg)
+    fw_written = switch_install_firmware(fw, citron_linux_dir(cfg) / "nand" / "system" / "Contents" / "registered")
     switch_linux_url_stub(cfg, citron_linux_home(cfg) / "bin")
     shim = switch_usb_shim(cfg)
+    fw_note = (f"; firmware {SWITCH_FIRMWARE_VERSION} restored ({len(fw_written)} NCAs)" if fw_written
+               else f"; firmware {SWITCH_FIRMWARE_VERSION} present" if fw else "; firmware source missing")
     return _receipt("citron", "ok", f"{exe}; keys from {keys}; usb shim {shim}"
-                    + (f" ({', '.join(copied)} copied)" if copied else ""))
+                    + (f" ({', '.join(copied)} copied)" if copied else "") + fw_note)
 
 
 def ensure_ghidra(cfg: Config) -> dict:

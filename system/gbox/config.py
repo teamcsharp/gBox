@@ -313,6 +313,9 @@ class Config(BaseModel):
                                           # too when it exists on this host (docs/research/switch-emulator-spark.md)
     switch_keys: str | None = None        # prod.keys for it (unset: a prod.keys at a Switch library's root, e.g. the
                                           # share's _switch/prod.keys); copied into gBox's own Eden keys folder
+    switch_firmware: str | None = None    # console firmware ZIP restored into the emulator nand when gbox-data is wiped
+                                          # by git clean -x (unset: Firmware-17.0.0.zip at a Switch library's root, the
+                                          # share's _switch/); pinned to 17.0.0 to match the keys (master_key_10)
     switch_citron_appimage: str | None = None   # linux Switch sessions in Citron NEO (gbox.adapters.CitronLinuxAdapter):
                                           # its AppImage (extracted once), extracted AppRun or citron binary
     switch_linux_emulator: str = "auto"   # eden | citron | auto: auto = Citron for SWITCH_CITRON_TITLES when configured
