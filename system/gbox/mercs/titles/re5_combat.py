@@ -175,6 +175,10 @@ READY_FIRE_FACING = math.radians(25)  # ... faced within this (2026-10-26: shots
                                       # "shot at his feet")
 REPOSITION_S = 0.7                   # a blocked line: one sidestep this long, the next one the other way (was 0.25 s
                                      # each way: standing among foes jittering left / right)
+GRAB_FRONT_R = 250.0                 # #5135: a Majini this near in front is a grab threat - the bot sidesteps instead
+                                    # of turning into the grab (grabbed_front cluster, 67 episodes)
+GRAB_FRONT_CONE = math.radians(90)   # #5135: the grab cone - the arm's reach regardless of angle, widened for the
+                                    # seek_target sidestep (the combat layer fights the threat after the sidestep)
 WINDOW_GATES = frozenset({"on him", "on another Majini", "point blank", "threat: blasting", "line to him"})
                                      # the gates that fire inside the target's window (behavior_metrics: on target)
 
@@ -937,6 +941,15 @@ class Combat:
             self._decided(act, (enemies or [None])[0], p)
             return act
         target = min(enemies, key=lambda e: math.dist(p["pos"], e["pos"]))
+        # #5135: a Majini at arm's length in front is a grab threat - the bot sidesteps instead of turning into
+        # the grab (the grabbed_front cluster, 67 episodes). The sidestep breaks the grab line; the combat
+        # layer fights the threat on the next tick.
+        near = math.dist(p["pos"], target["pos"])
+        if near <= GRAB_FRONT_R and abs(E.bearing(p, target["pos"])) <= GRAB_FRONT_CONE:
+            act = self._reposition(now, "sidestep: grab-front threat")
+            self.stats["grab_front_sidesteps"] = self.stats.get("grab_front_sidesteps", 0) + 1
+            self._decided(act, target, p)
+            return act
         self.stats["combat"] = "turning toward a front candidate"
         keys = self._face(p, target["pos"])
         if abs(E.bearing(p, target["pos"])) <= E.FRONT_CONE:
