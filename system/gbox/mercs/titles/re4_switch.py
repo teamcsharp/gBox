@@ -42,7 +42,8 @@ MAP_ID = TITLE_ID                       # profiles/gamedata/010099A00BC1E000-ram
 # Live-measured constants - ALL PENDING the Eden RAM scan (docs/research/re4-switch-ram.md).
 # Fill these, flip the map's mercs.ready to true, and the driver plays. Until then the guards below keep it inert.
 # ---------------------------------------------------------------------------
-BUILD_ID = None                         # pending: main build id (Eden log / NSO), for the map's title string
+BUILD_ID = "82C2A04A21D3E0B850F273D4149C9003"   # main NSO build id (verified live on Eden 2026-11-04 boot log:
+                                        # "build_id=82C2A04A21D3E0B850F273D4149C9003, name=main"; game 1.0.2, 64-bit)
 SIG_OFF = None                          # pending: offset into main of 64 read-only bytes unique in the module
 SIGNATURE = None                        # pending: those 64 bytes (bytes.fromhex(...)); module_base pins the boot by them
 

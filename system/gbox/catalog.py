@@ -7,8 +7,10 @@ import os
 import re
 import shutil
 import sys
+import tarfile
 import threading
 import time
+import zipfile
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -405,8 +407,11 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
                 if not zplat:
                     problems.append(f"archive needs a console mapping: {f}")
                     continue
-            except (OSError, ValueError, RuntimeError) as exc:
-                problems.append(f"{f}: {exc}")
+            except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, tarfile.TarError) as exc:
+                # A file with an archive extension that will not parse (a corrupt .zip, a mislabelled .nsp) is a
+                # problem for that one file, never a reason to abort the whole-library scan (2026-11-04: a bad zip in
+                # one library aborted a scan that also indexes the Switch RE4 nsp).
+                problems.append(f"{f}: {type(exc).__name__}: {exc}")
                 continue
         if f.resolve() in tracks or (ext not in EXT_PLATFORM and ext not in SNIFF_EXT and not archive):
             continue
