@@ -70,6 +70,18 @@
         <button id="stage-go">Stage replacement</button>
         <span id="stage-status" class="muted"></span>
       </div>
+      <div class="stage-box">
+        <strong>Swap inside an archive</strong>
+        <p class="muted">Replace one entry of an MT Framework .arc with another archive's entry (a mine, grenade, clothing or
+          character texture). The slot keeps its name, so the game still asks for the file it expects.</p>
+        <input id="swap-arc" placeholder="arc to patch: nativeNXx64/ImgNX/Archive/uWp06.arc" autocomplete="off">
+        <input id="swap-entry" placeholder="entry in it: pawn\wp\wp06\model\wep06_00_BM" autocomplete="off">
+        <input id="swap-donor-arc" placeholder="donor arc: nativeNXx64/ImgNX/Archive/uWp0a.arc" autocomplete="off">
+        <input id="swap-donor-entry" placeholder="donor entry: pawn\wp\wp0a\model\om4e00_BM" autocomplete="off">
+        <input id="swap-build" placeholder="overlay name (gbox-lab)" autocomplete="off">
+        <button id="swap-go">Swap entry</button>
+        <span id="swap-status" class="muted"></span>
+      </div>
     </section>
 
     <section class="panel" id="hex-panel">

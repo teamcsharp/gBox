@@ -303,6 +303,29 @@
     }
   }
 
+  async function swapEntry() {
+    const t = currentTitle();
+    const arc = $('swap-arc').value.trim();
+    const entry = $('swap-entry').value.trim();
+    const donorArc = $('swap-donor-arc').value.trim();
+    const donorEntry = $('swap-donor-entry').value.trim();
+    const build = ($('swap-build').value.trim() || 'gbox-lab');
+    if (!t || !arc || !entry || !donorArc || !donorEntry) {
+      $('swap-status').textContent = 'give the archive, its entry, and the donor archive and entry';
+      return;
+    }
+    $('swap-status').textContent = `swapping ${entry}…`;
+    try {
+      const r = await api.api('/api/decrypt-lab/arc-swap',
+        { title: t.id, arc_path: arc, entry, donor_arc: donorArc, donor_entry: donorEntry, build }, 'POST');
+      $('swap-status').textContent =
+        `swapped ${r.entry_bytes} bytes into ${r.target} (applies at next boot)`;
+      await loadState();
+    } catch (err) {
+      $('swap-status').textContent = String(err.message || err).slice(0, 160);
+    }
+  }
+
   function renderHex(scan) {    const el = $('hex');
     el.textContent = '';
     $('scan-meta').textContent = scan ? `${scan.length} bytes @ 0x${scan.addr.toString(16)} · ${JSON.stringify(scan.counts)}` : '';
@@ -384,6 +407,7 @@
   $('asset-q').addEventListener('input', loadAssets);
   $('asset-kind').addEventListener('change', loadAssets);
   $('stage-go').addEventListener('click', stageReplacement);
+  $('swap-go').addEventListener('click', swapEntry);
   $('top').addEventListener('change', () => api.alwaysOnTop($('top').checked));
 
   api.info().then((info) => {
