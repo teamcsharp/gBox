@@ -27,9 +27,44 @@ from ..driver import Driver
 
 TITLE_ID = "010099A00BC1E000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/010099A00BC1E000-ram.json
-BUILD_ID = None                         # pending: read from the operator's game once added
-SIG_OFF = None                          # pending: 64 read-only bytes of main, unique in the module
-SIGNATURE = None                        # pending
+# Static identity of the Switch build, from Citron's dump_nso (2026-11-05, docs/research/re4-switch-ram.md):
+# the file is the 0x100-byte NSO header plus the image at vaddr 0, so a pattern at vaddr V is at base + V
+# in the guest (NCE: guest address == host address). Verified live twice on the same boot: the signature was
+# found once, at base 0x3ca7c04000, which is also where Citron maps RE6's main.
+BUILD_ID = "82C2A04A21D3E0B850F273D4149C9003"     # the dumped main-*.nso name
+MAIN_NSO_SHA256 = "98ca897f07b2c864a0cabfb9dd8ca46a54b88c565ba629da3b7a4b6a57a57441"
+SIG_OFF = 0x100000                      # deep in the image, away from the load stubs at vaddr 0
+SIGNATURE = bytes.fromhex(
+    "fd7b07a9fdc30191355100b0b5c646f9a90240f928514439f30300aa88080035"
+    "285544391f0d007121080054285100b008bd46f9080140f98a018a5208696a38")
+
+
+def module_base(m) -> int | None:
+    """main's load address this boot (SIG_OFF/SIGNATURE), cached on m and re-checked with one 64-byte read."""
+    base = getattr(m, "module_base", None)
+    if isinstance(base, int):
+        try:
+            if bytes(m.rd(base + SIG_OFF, len(SIGNATURE))) == SIGNATURE:
+                return base
+        except (ValueError, OSError):
+            pass
+    rows = getattr(m, "rows", None)
+    rows = list(rows() if callable(rows) else rows or [])
+    for s, e, p in rows:
+        if not str(p).startswith("r") or "w" in str(p):
+            continue
+        step = 1 << 24
+        for off in range(s, e, step):
+            n = min(step + len(SIGNATURE), e - off)
+            try:
+                chunk = bytes(m.rd(off, n))
+            except (ValueError, OSError):
+                break
+            at = chunk.find(SIGNATURE)
+            if at >= 0:
+                m.module_base = off + at - SIG_OFF
+                return m.module_base
+    return None
 
 # RAM map: pending live measurement on the Spark. The RE4 Switch binary is a port of the
 # GameCube / PS2 build (not MT Framework like RE5 / RE6), so the layout will differ from
