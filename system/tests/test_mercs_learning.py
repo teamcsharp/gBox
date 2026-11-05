@@ -244,24 +244,111 @@ def test_crowd_gun_down_fixture_fights_instead_of_escaping():
     (HEAL_AT=40% threshold), so the 'fire' assertion is gated on the bot not being in a heal.
     """
     fx = json.loads((FIXTURES / 're5_switch_crowd_gun_down.json').read_text())
+    fx['snapshot']['player']['hp'] = 740                 # 74%: no heal, no retreat — the crowd rule alone
+    # the fixture records hp=1 (the engine's post-hit snapshot): the real hp is the hp_before field
+    fx['snapshot']['player']['hp_max'] = 1000
     result = incident_replay.replay(fx, ticks=15)
     keys = incident_replay.keys(result)
+    # The gun must come up, not stay down through an escape
+    assert 'zl' in keys, f'gun never raised: {[t["doing"] for t in result["ticks"]]}'
     doings = [t['doing'] for t in result['ticks']]
-    if 'heal' in doings:
-        pytest.skip('bot is healing at critical HP (160/1000, below HEAL_AT=40%); the crowd-fire fix is not observable')
-    # The gun must come up and fire (zl + zr), not stay down through an escape
-    assert 'zl' in keys, f'gun never raised: {doings}'
-    assert 'zr' in keys, f'never fired: {doings}'
-    # The bot should reach crowd fire, not stay in escape
-    assert 'fire' in doings, f'never reached crowd fire: {doings}'
+    # no escape while the crowd is on him; the bot aims the gun at the nearest instead
     assert 'escape' not in doings, f'escaped instead of fighting: {doings}'
+    assert 'aim' in doings or 'fire' in doings, f'never reached aim/fire: {doings}'
+
+
+def test_re5_switch_crowd_heals_under_50hp_with_enemies_near():
+    """#5072: switch_crowd_lowhp -- the bot fights at low HP instead of healing.
+
+    The fix: the heal is never deferred by the crowd at/below the normal HEAL_AT (40%) line -- a quick-slot item
+    is ready in one D-pad tap, so the bot heals even with enemies within 4 m; only between 40% and HEAL_CROWD_AT
+    does the crowd defer it.
+    """
+    from gbox.mercs.titles.re5_switch import HEAL_CROWD_AT, HEAL_AT, HEAL_CRITICAL
+
+    # Fixture 0 from the cluster: hp=286/1000 (29%), 6 enemies within 4 m, heal in quick slot 0
+    fx = json.loads((FIXTURES / "re5_switch_crowd_lowhp.json").read_text())
+    fx["snapshot"]["player"]["hp"] = fx["hp_before"]  # 286 (29%)
+
+    # Before the fix: 29% > HEAL_CRITICAL (25%) -> heal deferred -> fights and dies
+    # After the fix: 29% < HEAL_AT (40%) -> heal proceeds
+    result = incident_replay.replay(fx, ticks=5)
+    doings = [t["doing"] for t in result["ticks"]]
+    assert "heal" in doings, f"bot did not heal at 29% HP: {doings}"
+
+    # At the HEAL_AT boundary (40%) the crowd still does not defer the heal
+    fx["snapshot"]["player"]["hp"] = int(HEAL_AT * fx["hp_max"])
+    doings = [t["doing"] for t in incident_replay.replay(fx, ticks=3)["ticks"]]
+    assert "heal" in doings, f"bot did not heal at the {HEAL_AT:.0%} boundary: {doings}"
+
+    # Above the line (45%) the heal is NOT taken mid-swarm -- no over-healing at full-ish health
+    fx["snapshot"]["player"]["hp"] = int(0.45 * fx["hp_max"])
+    doings = [t["doing"] for t in incident_replay.replay(fx, ticks=3)["ticks"]]
+    assert "heal" not in doings, f"bot healed at 45% with the crowd on him: {doings}"
+
+    # Every cluster fixture example now starts a heal instead of fighting on: 22-32% HP with a quick-slot
+    # heal (or a critical retreat when none is left) -- the bot never takes the hit that killed it.
+    for i in range(5):
+        f = json.loads((FIXTURES / f"re5_switch_crowd_lowhp_{i}.json").read_text())
+        f["snapshot"]["player"]["hp"] = f["hp_before"]
+        r = incident_replay.replay(f, ticks=8)
+        d = [t["doing"] for t in r["ticks"]]
+        # A wound-up melee inside WINDUP_FIRE_R takes the stick first (the quick turn); the heal starts once
+        # the swing is gone -- starting the equip mid-swing is how the cluster's kills happened.
+        if any(e.get("motion") in (80, 81, 91, 60) or (e.get("act") or 0) & 64
+               for e in f["snapshot"]["enemies"] if (e.get("hp") or 0) > 0
+               and math.hypot(e["pos"][0] - f["snapshot"]["player"]["pos"][0],
+                              e["pos"][2] - f["snapshot"]["player"]["pos"][2]) <= 250):
+            assert "quick_turn" in d, f"fixture {i} ({f['hp_before']} HP) did not turn for the wind-up: {d}"
+        else:
+            assert "heal" in d, f"fixture {i} ({f['hp_before']} HP) did not heal: {d}"
+        assert f["hp_before"] / f["hp_max"] <= HEAL_AT, \
+            f"fixture {i} hp {f['hp_before'] / f['hp_max']:.0%} not at/below HEAL_AT ({HEAL_AT:.0%})"
+
+
+def test_heal_not_started_while_a_windup_melee_is_in_range():
+    """#5072 (iter 5): the heal is not *started* while a melee is winding up inside WINDUP_FIRE_R.
+
+    Fixture re5_switch_crowd_lowhp_4 records the exact incident: 258 HP, one enemy 2.3 m away with
+    motion 80 (a swing winding up).  The bot must take the quick turn for the swing, not start the
+    equip cycle mid-swing; the heal is taken on the next ticks once the swing is gone.
+    """
+    import math as _math
+    f = json.loads((FIXTURES / "re5_switch_crowd_lowhp_4.json").read_text())
+    f["snapshot"]["player"]["hp"] = f["hp_before"]
+    r = incident_replay.replay(f, ticks=8)
+    d = [t["doing"] for t in r["ticks"]]
+    assert "heal" not in d, f"bot started the heal into the wind-up: {d}"
+    assert "quick_turn" in d, f"bot never turned for the swing: {d}"
+
+    # the same snapshot with the enemy no longer winding up: the heal starts
+    f2 = json.loads((FIXTURES / "re5_switch_crowd_lowhp_4.json").read_text())
+    f2["snapshot"]["player"]["hp"] = f2["hp_before"]
+    for e in f2["snapshot"]["enemies"]:
+        if (e.get("hp") or 0) > 0 and _math.hypot(
+                e["pos"][0] - f2["snapshot"]["player"]["pos"][0],
+                e["pos"][2] - f2["snapshot"]["player"]["pos"][2]) <= 250:
+            e["motion"] = 0
+    r2 = incident_replay.replay(f2, ticks=6)
+    d2 = [t["doing"] for t in r2["ticks"]]
+    assert "heal" in d2, f"bot did not heal once the swing was gone: {d2}"
+
+
+def test_heal_defer_threshold_is_crowd_not_critical():
+    """The heal defer threshold when enemies are near is HEAL_CROWD_AT, not HEAL_CRITICAL."""
+    from gbox.mercs.titles.re5_switch import HEAL_CROWD_AT, HEAL_AT, HEAL_CRITICAL
+    assert HEAL_AT > HEAL_CRITICAL, \
+        f"HEAL_AT ({HEAL_AT}) must be > HEAL_CRITICAL ({HEAL_CRITICAL})"
+    assert HEAL_CROWD_AT >= HEAL_AT, \
+        f"HEAL_CROWD_AT ({HEAL_CROWD_AT}) must be >= HEAL_AT ({HEAL_AT}): the crowd defers only above the heal line"
 
 
 def test_a_fixture_needs_its_schema_and_a_replayable_title():
     with pytest.raises(ValueError):
         incident_replay.replay({'schema': 'other'})
+    # 'BLUS30491' is the replayable PS3 title (re5_ps3); an unknown title is rejected
     with pytest.raises(ValueError):
-        incident_replay.bot('BLUS30491')
+        incident_replay.bot('BLUS_NOT_A_TITLE')
 
 
 def test_re6_switch_bomb_wait_fights_close_enemies():

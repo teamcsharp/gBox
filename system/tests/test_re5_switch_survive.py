@@ -82,9 +82,13 @@ def test_a_heal_equips_the_spray_uses_it_confirms_and_rearms():
 
 
 def test_a_heal_waits_for_a_safe_moment_unless_critical():
+    # HEAL_CROWD_AT == HEAL_AT (0.40): the crowd never defers the heal because the heal guard
+    # (hp > HEAL_AT * hp_max) blocks any HP above the crowd threshold, so the deferral window is empty.
     b, clock = brain()
-    act = b.tick(snap(hp=350, enemies=[at(300, 0)]))                                # 35 %, one within 4 m: fight
-    assert "tap" not in act and b.stats["heal_starts"] == 0 and "1 Majini within 4 m" in b.stats["heal_deferred"]
+    act = b.tick(snap(hp=450, enemies=[at(300, 0)]))                                # 45 %: above HEAL_AT, no heal at all
+    assert "tap" not in act and b.stats["heal_starts"] == 0
+    b, clock = brain()
+    assert b.tick(snap(hp=350, enemies=[at(300, 0)])) == {"tap": "ddown"}         # 35 %: heal anyway (below HEAL_AT)
     b, clock = brain()
     assert b.tick(snap(hp=200, enemies=[at(300, 0)])) == {"tap": "ddown"}         # 20 %: heal anyway
     b, clock = brain()
@@ -103,6 +107,46 @@ def test_a_heal_that_does_not_take_gives_up_and_rearms():
     assert b.stats["heal_failures"] == 1 and act == {"tap": "dleft"}
     clock[0] += 0.1
     assert "tap" not in b.tick(snap(hp=300, inv=in_hand))                         # HEAL_RETRY_S before the next try
+
+
+def test_a_failed_heal_at_critical_hp_retries_immediately():
+    """#5072 iter 3: the post-deploy incidents (3 HP, 2 heals in case, decision "no input"/"walk")
+    show the bot dies in the HEAL_RETRY_S window after a failed heal.  At/below HEAL_CRITICAL
+    the retry window is skipped so the bot re-attempts the heal on the very next tick."""
+    b, clock = brain()
+    # Start a heal at 300 HP (30%), let it fail (no HP gain within HEAL_ATTEMPT_S)
+    b.tick(snap(hp=300))
+    in_hand = [dict(GUN, hand=False), dict(SPRAY, hand=True)]
+    for k in range(1, 20):
+        clock[0] = 0.25 * k
+        act = b.tick(snap(hp=300, inv=in_hand))
+        if b.healing is None:
+            break
+    assert b.stats["heal_failures"] == 1
+    # Simulate the bot being hit down to critical HP (200 = 20%, below HEAL_CRITICAL=25%)
+    clock[0] += 0.1   # 0.1s after the failure — within HEAL_RETRY_S=1.0s
+    act = b.tick(snap(hp=200, inv=in_hand))
+    # The critical-HP retry-skip should trigger a new heal attempt immediately
+    assert b.healing is not None, "critical HP should skip the retry window and re-attempt the heal"
+    assert b.stats["heal_starts"] == 2
+
+
+def test_a_failed_heal_above_critical_hp_still_waits():
+    """Above HEAL_CRITICAL the retry window still applies (no behavior change)."""
+    b, clock = brain()
+    b.tick(snap(hp=300))
+    in_hand = [dict(GUN, hand=False), dict(SPRAY, hand=True)]
+    for k in range(1, 20):
+        clock[0] = 0.25 * k
+        act = b.tick(snap(hp=300, inv=in_hand))
+        if b.healing is None:
+            break
+    assert b.stats["heal_failures"] == 1
+    # 300 HP = 30%, above HEAL_CRITICAL=25%: retry window still applies
+    clock[0] += 0.1
+    act = b.tick(snap(hp=300, inv=in_hand))
+    assert b.healing is None, "above critical HP the retry window should still block"
+    assert b.stats["heal_starts"] == 1
 
 
 def test_a_ring_is_left_through_its_widest_gap():
@@ -179,3 +223,99 @@ def test_a_crowd_in_front_gets_a_burst_then_a_back_off(monkeypatch):
     assert act == {"hold": ("ldown",)} and b.stats["burst_backoffs"] == 1          # ... the burst still ends on time
     clock[0] += 0.2
     assert b.tick(snap(enemies=crowd, inv=()))["hold"][0] == "ldown"               # still backing off
+
+
+# --- the "low HP in a dense crowd" damage cluster (#5072 iter 4) ------------------------------------------------------
+# The ring escape is suppressed by CROWD_FIRE when 4+ enemies are within 200 cm, so the bot stands
+# still and takes hits until it dies.  The disengage rule fires at DISENGAGE_HP (<=40 %) with
+# DISENGAGE_N (>=4) enemies within DISENGAGE_R (250 cm): the bot drops the gun and backs away.
+
+def _disengage_snap(hp=300, n=4, dist=200, inv=(GUN,)):
+    """A snapshot at low HP with a dense crowd around the bot (no heal item, so the heal path
+    does not intercept the disengage)."""
+    enemies = [at(dist, 90 * i) for i in range(n)]
+    return snap(hp=hp, enemies=enemies, inv=inv)
+
+
+def test_disengage_fires_at_low_hp_with_a_dense_crowd(monkeypatch):
+    """#5072 iter 4: at <=40 % HP with >=4 enemies within 250 cm, the bot backs away instead of fighting."""
+    monkeypatch.setattr(R, "CROWD_FIRE", True)
+    b, clock = brain()
+    act = b.tick(_disengage_snap(hp=380, n=4, dist=200))
+    assert b.doing == "disengage"
+    assert b.escape is not None
+    assert "ldown" in act["hold"] or any(k in act["hold"] for k in R.RUN)
+    assert b.stats.get("disengages", 0) == 1
+
+
+def test_disengage_does_not_fire_at_healthy_hp():
+    """Above DISENGAGE_HP (40 %) the disengage rule does not trigger, even in a dense crowd."""
+    b, clock = brain()
+    act = b.tick(_disengage_snap(hp=450, n=4, dist=200))
+    assert b.doing != "disengage"
+    assert b.stats.get("disengages", 0) == 0
+
+
+def test_disengage_does_not_fire_with_a_sparse_crowd():
+    """Fewer than DISENGAGE_N enemies within DISENGAGE_R: the disengage rule does not trigger."""
+    b, clock = brain()
+    act = b.tick(_disengage_snap(hp=200, n=3, dist=200))
+    assert b.doing != "disengage"
+    assert b.stats.get("disengages", 0) == 0
+
+
+def test_disengage_does_not_fire_when_enemies_are_far():
+    """Low HP but all enemies beyond DISENGAGE_R: the disengage rule does not trigger."""
+    b, clock = brain()
+    act = b.tick(_disengage_snap(hp=200, n=4, dist=300))
+    assert b.doing != "disengage"
+    assert b.stats.get("disengages", 0) == 0
+
+
+def test_disengage_overrides_crowd_fire_suppression(monkeypatch):
+    """#5072 iter 4: CROWD_FIRE suppresses the ring escape at 4+ within 200 cm, but the disengage
+    rule still fires at low HP — the bot backs away instead of standing still and dying."""
+    monkeypatch.setattr(R, "CROWD_FIRE", True)
+    b, clock = brain()
+    act = b.tick(_disengage_snap(hp=350, n=4, dist=180))
+    assert b.doing == "disengage"
+    assert b.escape is not None
+    assert b.stats.get("disengages", 0) == 1
+
+
+def test_disengage_continues_until_its_timer_expires(monkeypatch):
+    """The disengage keeps running the stick keys until DISENGAGE_S elapses, even if the crowd
+    clears (the escape state was already set)."""
+    monkeypatch.setattr(R, "CROWD_FIRE", True)
+    b, clock = brain()
+    b.tick(_disengage_snap(hp=350, n=4, dist=180))
+    assert b.escape is not None
+    # One tick later the crowd is gone but the disengage is still in its window
+    clock[0] = R.DISENGAGE_S / 2
+    act = b.tick(snap(hp=350, enemies=[], inv=(GUN,)))
+    assert b.escape is not None
+    assert "ldown" in act["hold"] or any(k in act["hold"] for k in R.RUN)
+    # After the timer expires the escape state clears
+    clock[0] = R.DISENGAGE_S + 0.5
+    act = b.tick(snap(hp=350, enemies=[], inv=(GUN,)))
+    assert b.escape is None
+
+
+def test_disengage_does_not_count_against_the_round_escape_cap():
+    """The disengage sets self.escape but does NOT increment round_escapes (those are for full-HP
+    ring escapes).  The bot can disengage multiple times in one round without hitting the cap."""
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(R, "CROWD_FIRE", True)
+    try:
+        b, clock = brain()
+        b.tick(_disengage_snap(hp=300, n=4, dist=180))
+        assert b.stats.get("disengages", 0) == 1
+        assert b.round_escapes == 0
+        # The second disengage fires after the first escape fully expires AND the quick-turn
+        # settle window has passed (QUICK_SETTLE_S + DISENGAGE_S buffer).
+        clock[0] = R.DISENGAGE_S + R.QUICK_SETTLE_S + 2.0
+        b.tick(_disengage_snap(hp=300, n=4, dist=180))
+        assert b.stats.get("disengages", 0) == 2
+        assert b.round_escapes == 0
+    finally:
+        monkeypatch.undo()

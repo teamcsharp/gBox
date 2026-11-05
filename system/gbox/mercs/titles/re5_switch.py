@@ -730,6 +730,16 @@ HEAL_USE_KEY = "y"                       # the game's own Type D screen leaves Y
                                          # action, B = Cross run: docs/evidence/switch-citron/re5-switch-controls-type-d.jpg)
 HEAL_ENABLED = True                      # on (2026-10-27): watch heal_failures against heals in the live telemetry
 HEAL_USE_EVERY_S, HEAL_ATTEMPT_S, HEAL_RETRY_S, EQUIP_ACK_S = 0.35, 4.0, 1.0, 1.0
+HEAL_CROWD_AT = 0.40                  # #5072: heal even with enemies around when at/below this fraction of max HP
+                                       # (the cluster's examples: 22-32% HP; 0.25 deferred them and they died).
+                                       # At/below the normal HEAL_AT line the crowd never defers the heal: a quick-slot
+                                       # item is ready in one D-pad tap, and dying fighting is worse than healing mid-swarm.
+# #5072 (iter 4): the post-deploy incidents kept hitting at 25-40% HP with 4-8 enemies at 0.5-2.3 m. The heal fires
+# at <=40%, but the bot still takes the hits between heal ticks (the crowd swarms faster than the item lands). At
+# that HP with a dense crowd the fight is unwinnable: back away through the crowd (the left stick, the same keys as
+# the ring escape) until the pressure clears. The CROWD_FIRE suppression in _escape keeps the gun up and the bot
+# standing still; this rule takes precedence when the HP says the fight is already lost.
+DISENGAGE_HP, DISENGAGE_N, DISENGAGE_R, DISENGAGE_S = 0.40, 4, 250.0, 1.5
 QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}   # the inventory grid's D-pad positions (the PS3's)
 KNIVES = frozenset({0x01, 0x0E, 0x14, 0x23, 0x24})        # WP01 / WP0E / WP14 / WP23 / WP24 KNIFE_*: never the gun
 # Thrown or placed, never the gun: WP06 GRENADE_NORMAL, WP07 GRENADE_FIRE, WP08 GRENADE_FLASH, WP0A MINE_B (the
@@ -3358,13 +3368,32 @@ class Bot:
                 st["equip_at"], st["equips"] = now, st["equips"] + 1
                 return {"tap": QUICK[item["grid"]]}
             return {"hold": ()}
-        if hp_max <= 0 or hp <= 1 or hp > HEAL_AT * hp_max or now - self.heal_at < HEAL_RETRY_S:
+        # #5072 (iter 3): the post-deploy incidents (3 HP, 2 heals in case, decision "no input" / "walk")
+        # show the bot dies in the HEAL_RETRY_S window after a failed heal: the retry is blocked for 1 s
+        # but the Majini kill him in that time.  At/below HEAL_CRITICAL the retry window is skipped so the
+        # bot re-attempts the heal on the very next tick instead of fighting on with a dead item.
+        critical = hp <= HEAL_CRITICAL * hp_max
+        if hp_max <= 0 or hp <= 1 or hp > HEAL_AT * hp_max:
             return None
-        near = sum(1 for e in live if flat(e) < HEAL_SAFE_R)
-        if near and hp > HEAL_CRITICAL * hp_max:
-            self.stats["heal_deferred"] = f"{near} Majini within {HEAL_SAFE_R / 100:.0f} m at {hp / hp_max:.0%}"
+        if not critical and now - self.heal_at < HEAL_RETRY_S:
+            return None
+        # #5072 (iter 5): a wound-up melee inside WINDUP_FIRE_R is a swing already on him -- the wind-up
+        # reflex (quick turn) gets the stick first.  Starting the equip cycle now would hold the gun down
+        # into the swing's range, which is how the cluster's kills happened; the heal is re-taken on the
+        # next tick once the turn is done (the equip is cheap and the crowd never defers it at this line).
+        py = p["pos"][1]
+        if any(math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) <= WINDUP_FIRE_R
+               and abs(e["pos"][1] - py) <= LEVEL_DY and self._winding(e) for e in live):
             return None
         item = next((s for s in inv if s["id"] in HEAL_IDS and s["rounds"] > 0 and s["grid"] in QUICK), None)
+        # #5072: the heal is a quick slot, so the item is known before the crowd check; with no heal in the
+        # quick slots there is nothing this rule can use (the critical retreat below still applies).
+        near = sum(1 for e in live if flat(e) < HEAL_SAFE_R)
+        # #5072: at/below the normal HEAL_AT line the crowd never defers the heal (a quick-slot item is ready in one
+        # D-pad tap; dying fighting is worse than healing mid-swarm); between HEAL_AT and HEAL_CROWD_AT it still does.
+        if item is not None and near and hp > HEAL_CROWD_AT * hp_max:
+            self.stats["heal_deferred"] = f"{near} Majini within {HEAL_SAFE_R / 100:.0f} m at {hp / hp_max:.0%}"
+            return None
         if item is None:
             # Critical HP with no heals left: retreat away from the nearest threat instead of fighting on
             # (the "low health with no tablet or heal" damage cluster: the bot aimed or fired at <=30% HP
@@ -3477,11 +3506,33 @@ class Bot:
             return None
         return {"tap": QUICK[gun["grid"]]}
 
-    def _escape(self, p, live, flat, now) -> dict | None:
-        """A ring (RING_*): run out through the widest gap between their bearings; None when not ringed."""
-        # 4+ within 2 m: the crowd fire keeps the gun up; escaping lowers it into the cluster (#5078)
-        if CROWD_FIRE and sum(1 for e in live if flat(e) <= 200.0) >= 4:
+    def _disengage(self, p, live, flat, now) -> dict | None:
+        """#5072 (iter 4): at low HP with a dense crowd, back away instead of fighting.
+
+        The ring escape is suppressed by CROWD_FIRE when 4+ enemies are within 200 cm, so the bot stands still
+        and takes hits until it dies. This rule fires when the HP says the fight is already lost: at or below
+        DISENGAGE_HP with DISENGAGE_N or more enemies within DISENGAGE_R, the bot drops the gun and backs away
+        through the crowd for DISENGAGE_S (the same keys as the ring escape, via _escape_keys). It does NOT
+        count against the round's escape cap (those are for full-HP rings; this is a survival reflex).
+        """
+        if self.escape is not None and now < self.escape[1]:
+            return None  # a ring escape is still running
+        hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
+        if not hp or not hp_max or hp > DISENGAGE_HP * hp_max:
             return None
+        crowd = [e for e in live if flat(e) <= DISENGAGE_R]
+        if len(crowd) < DISENGAGE_N:
+            return None
+        self._gun_down()
+        self.escape, self.escape_at = (0.0, now + DISENGAGE_S), now
+        # mark as a disengage, not a ring escape: _escape will pick it up and run the stick keys
+        self.stats["disengages"] = self.stats.get("disengages", 0) + 1
+        return {"hold": self._escape_keys(p, crowd)}
+
+    def _escape(self, p, live, flat, now) -> dict | None:
+        """A ring (RING_*): run out through the widest gap between their bearings; None when not ringed.
+        Also continues an active disengage (set by _disengage): the stick keys keep running until the
+        disengage timer expires, even though CROWD_FIRE would suppress a fresh ring escape."""
         if self.escape is not None:
             out, until = self.escape
             if now < until:
@@ -3490,6 +3541,15 @@ class Bot:
                     return {"hold": ("ldown",) + self._turn(err)}
                 return {"hold": RUN + self._turn(err, TURN_TOL)}
             self.escape = None
+            if now - self.escape_at < ESCAPE_GAP_S:
+                # the disengage timer expired; let _disengage re-fire immediately instead of
+                # being held by the ring escape cooldown (ESCAPE_GAP_S).  A disengage is a
+                # survival reflex, not a ring escape.
+                self.escape_at = now - ESCAPE_GAP_S
+        # 4+ within 2 m: the crowd fire keeps the gun up; escaping lowers it into the cluster (#5078)
+        # (but only for fresh ring escapes; an active disengage already passed this check)
+        if CROWD_FIRE and sum(1 for e in live if flat(e) <= 200.0) >= 4:
+            return None
         if now - self.escape_at < ESCAPE_GAP_S or self.round_escapes >= ESCAPES_MAX:
             return None
         px, _, pz = p["pos"]
@@ -3815,8 +3875,10 @@ class Bot:
                 self._gun_down()
                 self.doing, self.why = "mine", str(self.stats.get("mine_status") or "")
             else:
-                act = self._escape(p, live, flat, now)
+                act = self._disengage(p, live, flat, now)
                 if act is not None:
+                    self.doing, self.why = "disengage", f"{self.stats.get('disengages', 0)} this round"
+                elif (act := self._escape(p, live, flat, now)) is not None:
                     self.doing, self.why = "escape", f"{self.round_escapes} this round"
                 elif (act := self._gun_back(snap, now)) is not None:
                     self._gun_down()
