@@ -54,3 +54,16 @@ Verified: `uWp06.arc` entry `pawn\wp\wp06\model\wep06_00_BM` replaced with `uWp0
 entries, the slot keeping its name and holding the donor payload (zlib `78 9c` head); every untouched entry stayed
 byte-identical. The same call with a character donor is the skin swap; with an enemy donor it is the zombie swap.
 
+## `_BM` / `_MM` / `_NM` are textures, which makes these swaps safe
+
+The entry payload is a zlib stream; decompressed, the donor begins `54 45 58 00` — **`TEX\0`**, the texture format
+(each entry inflates cleanly: 21,022 -> 24,116 bytes). So `wep06_00_BM` is the base map, `_MM` the mask map and
+`_NM` the normal map of that slot, and the mesh lives in a separate entry.
+
+That is good news for the operator's asks: swapping a `_BM` entry is a **reskin/retexture** of an object, and every
+TEX payload has the same container, so there is no skeleton- or vertex-count compatibility problem — a mine can
+wear another object's texture, a character's clothing can be retextured, and a character's base map can be
+replaced with another character's. A *mesh* swap (entry without the map suffix) is the riskier one and needs
+compatible skeletons.
+
+
