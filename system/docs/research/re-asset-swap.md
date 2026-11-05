@@ -54,6 +54,22 @@ Verified: `uWp06.arc` entry `pawn\wp\wp06\model\wep06_00_BM` replaced with `uWp0
 entries, the slot keeping its name and holding the donor payload (zlib `78 9c` head); every untouched entry stayed
 byte-identical. The same call with a character donor is the skin swap; with an enemy donor it is the zombie swap.
 
+### Boot validation (2026-11-05)
+
+Eden was started directly with the rebuilt archive as an active LayeredFS overlay
+(`data/eden/load/010018100CD46000/reskin-mine/romfs/...`, 563,617 B in place) on RE5 from the local cache copy:
+the title booted, played its intro (NVDEC/VIC streams), and ran the full 150 s timeout with **no error, rejection
+or crash**; `eden_log.txt` shows normal emulation and only the timeout's own ForceStop.
+
+What that does and does not prove: the engine accepts a RomFS overlay containing a rebuilt `.arc` and boots
+normally. It does **not** yet prove the swapped weapon texture is what renders, because `uWp06.arc` is only opened
+when that weapon loads in gameplay — the check needs a Mercenaries round with weapon 06 in hand.
+
+A gBox-driven launch could not be used for this: `lilspark`'s MercMode rotation was live (`phase: playing`, RE6,
+5 rounds/title), and the launch path refuses to switch away from a game whose adapter cannot checkpoint
+(eden reports `save_state: unsupported`). The direct run above avoids competing with the rotation.
+
+
 ## `_BM` / `_MM` / `_NM` are textures, which makes these swaps safe
 
 The entry payload is a zlib stream; decompressed, the donor begins `54 45 58 00` — **`TEX\0`**, the texture format
