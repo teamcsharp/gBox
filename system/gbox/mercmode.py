@@ -162,11 +162,18 @@ def catalog():
 
 def queue_entry(entry):
     """One queued round (operator 2026-10-24: "be the DJ ... what mode is being played next, who's being played next
-    ... and see the queue ahead"): {title, mode, character, stage}; mode / character / stage None = random."""
-    if not isinstance(entry, dict) or set(entry) - {'title', 'mode', 'character', 'stage'} or entry.get('title') not in TITLES:
-        raise ValueError('A queued round needs a known title and only mode, character and stage')
+    ... and see the queue ahead"): {title, mode, character, stage}; mode / character / stage None = random.
+    An optional `mod` names a build (a LayeredFS overlay of the title) that this round plays with."""
+    if not isinstance(entry, dict) or set(entry) - {'title', 'mode', 'character', 'stage', 'mod'} or entry.get('title') not in TITLES:
+        raise ValueError('A queued round needs a known title and only mode, character, stage and mod')
     title = entry['title']
     out = {'title': title, 'mode': entry.get('mode'), 'character': entry.get('character'), 'stage': entry.get('stage')}
+    mod = entry.get('mod')
+    if mod is not None:
+        # one cache-folder component, and it must name something: '.', '..' or '---' are refused
+        if not isinstance(mod, str) or not re.fullmatch(r'(?=.*[A-Za-z0-9])[A-Za-z0-9_.-]{1,64}', mod):
+            raise ValueError('A queued round\'s mod must be one build folder name')
+        out['mod'] = mod
     known = catalog().get(title)
     if known is None:
         if out['mode'] or out['character'] or out['stage'] is not None:
@@ -192,8 +199,11 @@ def resolve_selection(entry, rng):
         or rng.choice(sorted(known['modes']))
     character = entry.get('character') or rng.choice(known['modes'][mode])
     stage = entry['stage'] if entry.get('stage') is not None else rng.randrange(len(known['stages']))
-    return {'title': entry['title'], 'mode': mode, 'character': character, 'stage': stage,
-            'stage_name': known['stages'][stage]}
+    out = {'title': entry['title'], 'mode': mode, 'character': character, 'stage': stage,
+           'stage_name': known['stages'][stage]}
+    if entry.get('mod'):
+        out['mod'] = entry['mod']            # the DJ's build for this round (a LayeredFS overlay of the title)
+    return out
 
 
 def warm_pool(store, host, running=None):

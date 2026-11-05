@@ -527,6 +527,10 @@ class Screensaver:
             # operator downloaded here, else the stock game; it never copies one over (gbox/storage_policy.py)
             build = roulette.demo_build([b for b in self.builds(g["game_id"]) if storage_policy.sendable(
                 self.store, self.config, w, g["game_id"], str(b.get("name") or ""))], self.rng)
+        elif merc_pick and (merc_pick.get('selection') or {}).get('mod'):
+            # the DJ's queued round names a build: play it from this PC's own copy (local_build_ok), exactly the
+            # roulette's build launch, so a mod swap from the lab reaches a real MercMode round
+            build = {'name': merc_pick['selection']['mod']}
         # jump: the demo starts in gameplay where this PC has a jump state for the game and build (gbox.jumpstate)
         # memory_cards: the operator's own cards go in, so their saved characters load (#2817: "get my memory card ...
         # you need to use it with screensaver for playing the game"); their own launch elsewhere takes a card back
