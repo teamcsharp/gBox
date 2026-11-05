@@ -279,6 +279,31 @@ mount = "//10.89.1.125/QuickSwap2"
 mount_root = "/mnt/gbox/quickswap2"
 paths = { linux = "/mnt/gbox/quickswap2/Emulation/Occulus", windows = "//10.89.1.125/QuickSwap2/Emulation/Occulus" }
 
+[hermes.local]
+# Named inference endpoints the dispatcher spreads Hermes work across (gbox/hermes_pool.py, docs/hermes-local-fallback.md).
+# The prime route stays this box's own model; these are the dedicated vLLM machines.
+enabled = true
+
+[hermes.local.nodes.lilspark2]
+enabled = true
+upstream = "http://10.89.1.20:8101/v1"
+model = "nvidia/Qwen3.8-27B-NVFP4"
+api_format = "openai"
+max_parallel_jobs = 12
+context_tokens = 65536
+shared_with_games = false          # a dedicated inference machine, not the one rendering games
+allow_large_tasks = true           # takes bounded milestones on inbox work
+
+[hermes.local.nodes.sparkDeux]
+enabled = true
+upstream = "http://10.89.1.225:8101/v1"
+model = "nvidia/Qwen3.8-27B-NVFP4"
+api_format = "openai"
+max_parallel_jobs = 12
+context_tokens = 65536
+shared_with_games = false
+allow_large_tasks = true
+
 [rewind]
 checkpoints = false   # 2026-10-13: off until the checkpoint ring is proven not to stall Flycast/Dolphin (operator saw 2 fps, #1489)
 
