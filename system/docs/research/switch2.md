@@ -54,7 +54,31 @@ booting Switch 2 on the Spark directly is not currently possible — gBox would 
 **Windows x64 worker** (the operator's Windows PCs are already gBox workers), exactly like the existing
 `preferred_launch_workers` / remote-launch path.
 
-## Plan
+## Progress log (2026-11-05)
+
+* **Native aarch64 build exists.** Orchid v0.7.5 ships `orchid-v0.7.5-linux-aarch64-pgo.{AppImage,tar.gz}`.
+  Extracted to `~/gBox_alt/switch2/`; both `orchid` (Qt6 GUI, needs `libQt6Charts`) and `eden-cli` (the CLI
+  gBox will drive) are native aarch64 ELF. `eden-cli` exposes `-g <game>`, `-d <port>` (GDB stub) and
+  `--pack-nup` — the same Eden CLI gBox already knows for Switch 1.
+* **The Switch 2 keys are the "Ocean" set** (`key_area_key_ocean_00..06`, `key_area_key_application_00..12`)
+  and live at `switch2/prodkeys-main/prod.keys` on the share (233 keys). Placed into
+  `~/.local/share/eden/keys/prod.keys`. Switch 1 `prod.keys` (even with master_key_03..09) is NOT sufficient.
+* **Mario Kart World boots and renders on the Spark.** `eden-cli -g` on a fresh Xvfb (`:92`, `+extension GLX`)
+  ran the full 120 s and rendered real frames: 1280x720, >200k distinct colours, full 0-255 range, stddev ~53
+  at 20-40 s. The game executes Maxwell 3D GPU commands (constant buffer binds, texture cache at ~3 GiB) with
+  Switch 2 (`nx2_stub_device`) GPU ioctls partially stubbed. The title key is derived from the ticket with the
+  Ocean keys (no separate title.keys needed for MK World).
+
+## Plan (revised)
+
+1. **Boot (mostly done).** A stable dedicated Xvfb, the Ocean keys, and `eden-cli` boot MK World on the Spark.
+   Remaining: verify the Zelda `.nup` also boots, and make the display stable across boots.
+2. **gBox integration.** Register `eden-cli` as a `switch2` emulator (like `switch_linux_emulator`, with the
+   `-d` GDB stub for the memory hooks), so launches go through gBox's launch/stage/stream plumbing.
+3. **Autoplay.** RAM-map a booted Switch 2 game (player/enemies/timer) through the GDB stub, then port the
+   MercMode driver pattern.
+
+## Plan (original)
 
 1. **Decrypt/map (offline, on the Spark, tractable now)**
    - `switch_nup.py`: parse the NUP header (magic/version/TOC/title id), enumerate NCZ blocks, and inventory the
