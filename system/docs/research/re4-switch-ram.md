@@ -619,6 +619,27 @@ currently returns them and must **not** be treated as enemies; it needs retarget
 Also unresolved: in this run the `w` press moved nothing *anywhere*, so input delivery itself needs a
 screenshot-verified check before the next motion test is trusted.
 
+## SAVEDATA (for the "Unlock on load" ticket)
+
+The title's save is reachable and editable, which is what the inbox ticket *"Unlock on load: Resident Evil 4"*
+needs:
+
+```
+…/nand/user/save/0000000000000000/<account>/010099A00BC1E000/SAVEDATA000/savegame00.sav   1,047,200 bytes (0xFFAA0)
+…/SAVEDATA000/ExtraData0, ExtraData1                                                       512 bytes each
+…/SAVEDATA000/savegame00.sav.fresh-bak                                                     an untouched backup
+```
+
+* the file is **zeros until `0x1e40`**; the progress data begins at **`0x1e43`**
+* diffing the current save against `fresh-bak` gives **32,448 differing bytes in 274 runs** (largest runs at
+  `0x1e43`, `0x1ebc`, `0x1fa8`, `0x2218`, `0x239c`) — this is the region a game writes as it progresses
+* **no simple checksum**: none of `u32@0x30/0x20/0x10/0x00` equals a word sum from `0x34/0x40/0x20/0x10/0x04`,
+  so RE4 does not follow RE6's `SAVE_CHECKSUM=0x30 / SAVE_SUM_FROM=0x34` convention. A checksum (or a
+  signature/MAC) must be located before any edit, or the game will reject the save.
+
+`gbox/switch_saves.py` is the reusable part: it finds a title's save files, snapshots the largest with a hash,
+and reports exactly which byte runs differ between two saves — verified above (RE4 4 files, RE5 8, RE6 13).
+
 ## Still missing before MercMode can play it
 
 `gbox.re_switch.preferred_spec` returns the Switch spec with **`playable: False`**, so MercMode will not
