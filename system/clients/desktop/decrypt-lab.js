@@ -256,8 +256,30 @@
       tr.className = 'click';
       tr.innerHTML = `<td title="${escapeHtml(e.path)}">${escapeHtml(e.path)}</td>`
         + `<td class="muted">${kindLabel(e.path)}</td><td>${fmtBytes(e.size)}</td>`;
-      tr.addEventListener('click', () => { $('stage-path').value = e.path; });
+      tr.addEventListener('click', () => {
+        $('stage-path').value = e.path;
+        showPreview(e.path);
+      });
       body.appendChild(tr);
+    }
+  }
+
+  async function showPreview(path) {
+    const t = currentTitle();
+    const img = $('preview-img');
+    const note = $('preview-note');
+    img.classList.remove('shown');
+    img.removeAttribute('src');
+    if (!t) return;
+    note.textContent = `previewing ${path}…`;
+    try {
+      const r = await api.preview(t.id, path);
+      img.src = r.dataUrl;
+      img.classList.add('shown');
+      note.textContent = `${path} · ${(r.bytes / 1024).toFixed(0)} KiB`;
+    } catch (err) {
+      const msg = String(err.message || err);
+      note.textContent = msg.replace(/^Error invoking remote method '[^']+':\s*/, '').slice(0, 140);
     }
   }
 

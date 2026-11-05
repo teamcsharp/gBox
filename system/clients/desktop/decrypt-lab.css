@@ -66,6 +66,10 @@ tr.click:hover td{background:#131f2b}
 #bot dl{margin:0;display:grid;grid-template-columns:120px 1fr;gap:2px 10px;font-size:12px}
 #bot dt{color:var(--muted)}
 #bot dd{margin:0}
+#preview-box{display:flex;align-items:center;gap:10px;margin:6px 0;min-height:40px}
+#preview-img{max-width:220px;max-height:130px;border:1px solid var(--line);border-radius:6px;display:none}
+#preview-img.shown{display:block}
+#preview-note{font-size:11px}
 .filters{display:flex;gap:8px;margin-bottom:8px}
 .filters input,.filters select,.stage-box input{background:#0d141c;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:inherit;font-size:12px}
 .filters input{flex:1}

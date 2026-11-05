@@ -44,7 +44,17 @@ function request(value) {
   const p = u.pathname;
   if (method === 'GET' && value.body === undefined
       && (p === '/api/decrypt-lab/state' || p === '/api/decrypt-lab/events' || p === '/api/decrypt-lab/assets'
-          || /^\/api\/decrypt-lab\/scan\/[0-9a-f]{16}$/.test(p))) return { path: u.pathname + u.search, method };
+          || p === '/api/decrypt-lab/asset' || p === '/api/decrypt-lab/preview'
+          || /^\/api\/decrypt-lab\/scan\/[0-9a-f]{16}$/.test(p))) {
+    // the asset routes take a RomFS path in the query: it must stay relative, with no traversal
+    if (p === '/api/decrypt-lab/asset' || p === '/api/decrypt-lab/preview') {
+      const inner = u.searchParams.get('path') || '';
+      if (!inner || inner.length > 400 || inner.startsWith('/') || inner.split('/').includes('..')) {
+        throw Error('Unsupported asset path.');
+      }
+    }
+    return { path: u.pathname + u.search, method };
+  }
   if (method === 'POST' && p === '/api/decrypt-lab/stage') {
     const b = value.body;
     if (!b || typeof b !== 'object') throw Error('Invalid stage request.');
@@ -161,6 +171,33 @@ module.exports = function ({ BrowserWindow, ipcMain, getOpeningScope, getToken, 
   ipcMain.handle('decrypt-lab:open', (event, value) => open(getOpeningScope(event, value)));
   ipcMain.handle('decrypt-lab:info', (event) => { const r = rowOf(event); return { ...r.scope, top: r.win.isAlwaysOnTop() }; });
   ipcMain.handle('decrypt-lab:api', (event, value) => api(rowOf(event), value));
+  // A preview is an image, not JSON: the renderer cannot fetch a URL itself (connect-src 'none'), so the main
+  // process fetches it with the credential and hands back a data URL the page can put in an <img>.
+  ipcMain.handle('decrypt-lab:preview', async (event, value) => {
+    const row = rowOf(event);
+    const title = String(value?.title || ''), path = String(value?.path || '');
+    if (!TITLE_RE.test(title) || !path || path.length > 400 || path.startsWith('/') || path.split('/').includes('..')) {
+      throw Error('Invalid preview request.');
+    }
+    const q = request({ path: `/api/decrypt-lab/preview?title=${encodeURIComponent(title)}&path=${encodeURIComponent(path)}`,
+                        method: 'GET' });
+    const server = row.scope.origin, credential = await getToken(server);
+    if (!credential) throw Error('This server is reconnecting. Nothing was read.');
+    const r = await fetcher(server + q.path, {
+      method: 'GET', redirect: 'error',
+      headers: { authorization: 'Bearer ' + credential },
+      signal: AbortSignal.timeout(60000),
+    });
+    if (!r.ok) {
+      let detail = '';
+      try { const v = await r.json(); if (typeof v.detail === 'string') detail = ': ' + v.detail.slice(0, 200); } catch { /* not JSON */ }
+      throw Error('Preview unavailable (' + r.status + ')' + detail);
+    }
+    const type = (r.headers.get('content-type') || 'image/png').split(';')[0];
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length > 4 * 1024 * 1024) throw Error('Preview is larger than 4 MiB');
+    return { dataUrl: `data:${type};base64,${buf.toString('base64')}`, bytes: buf.length, type };
+  });
   ipcMain.handle('decrypt-lab:top', (event, top) => { const r = rowOf(event); r.win.setAlwaysOnTop(top === true); persist(r); return r.win.isAlwaysOnTop(); });
 
   return {
