@@ -34,9 +34,10 @@ RE6_UNLOCK_REASON = ('A fresh RE6 Switch save forces the Prologue and never open
 RE4_TITLE_ID = '010099A00BC1E000'
 RE4_GAME_ID = hashlib.sha1(b'quickswap-switch:Resident Evil 4/Resident Evil 4 [010099A00BC1E000].nsp').hexdigest()[:16]
 RE4_DRIVER = 'gbox.mercs.titles.re4_switch'
-RE4_REASON = ('Switch RE4 Mercenaries runs on Citron NEO with the re4_switch driver: RAM map pending live measurement '
-              '(player, enemies, timer, kills, menus); the driver skeleton is in place, awaiting the operator\'s '
-              'game addition for boot verification and RAM mapping.')
+RE4_REASON = ('Switch RE4 Mercenaries runs on Citron NEO with the re4_switch driver. Boot and round entry are '
+              'verified (three A presses after the stage draws); the health offset (unit+0x3c2) and the score/'
+              'damage routines come from the decompiled module. Still missing for autoplay: the player unit '
+              'pointer and the Mercenaries unit list, so the driver cannot snapshot player or enemies yet.')
 RE4_UNLOCK_REASON = 'RE4 Switch Mercenaries is available from a fresh save (no unlock needed).'
 
 EDITIONS = {'re5': {'platform': 'switch', 'mode': 'no_mercy', 'title_id': RE5_TITLE_ID},

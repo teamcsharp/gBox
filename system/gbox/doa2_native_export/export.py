@@ -1,4 +1,4 @@
-﻿"""Owned-source integration test/export; no game archive is a shipped fixture."""
+"""Owned-source integration test/export; no game archive is a shipped fixture."""
 import argparse,base64,hashlib,json,sys
 from pathlib import Path
 import numpy as np

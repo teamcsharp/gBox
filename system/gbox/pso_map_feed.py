@@ -32,6 +32,8 @@ import time
 import uuid
 from pathlib import Path
 
+from pydantic import BaseModel
+
 # Verified 3OE2 stage-flag array (source of truth: gbox/pso_coop_gates.py). 18 groups x 32 bytes,
 # group == floor, MSB-first bit array. Used to read a gate/switch's open|pressed state live.
 STAGE_FLAG_BASE = 0x80515CC8
@@ -422,6 +424,19 @@ def write_directive(root: Path, raw: dict) -> None:
 
 
 # ----------------------------------------------------------------------------- routes
+class PsoDirectiveIn(BaseModel):
+    """A PSO directive. Module level on purpose: this module uses postponed annotations, so a model defined
+    inside install() is only a local name and FastAPI cannot resolve it when building the schema."""
+    op: str
+    x: float | None = None
+    z: float | None = None
+    flag: int | None = None
+    ptr: str | None = None
+    room: int | None = None
+    episode: int | None = None
+    floor: int | None = None
+
+
 def install(app, store, config, auth, *, peek=None):
     from fastapi import Depends, HTTPException
     from pydantic import BaseModel
@@ -436,16 +451,6 @@ def install(app, store, config, auth, *, peek=None):
         surface = load_surface(root, fingerprint) if (root and fingerprint) else None
         rooms = load_crystal_rooms(root) if root else {}
         return build_model(sid, tel, surface, rooms, peek=peek, actor=str(actor))
-
-    class PsoDirectiveIn(BaseModel):
-        op: str
-        x: float | None = None
-        z: float | None = None
-        flag: int | None = None
-        ptr: str | None = None
-        room: int | None = None
-        episode: int | None = None
-        floor: int | None = None
 
     @app.get("/api/sessions/{sid}/pso-directive")
     def pso_directive_get(sid: str, actor=Depends(auth)):

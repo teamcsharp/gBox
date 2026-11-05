@@ -1,4 +1,4 @@
-﻿"""Durable operator feedback: reports and image references outlive deleted ROM payloads."""
+"""Durable operator feedback: reports and image references outlive deleted ROM payloads."""
 import time
 import re
 from fastapi import HTTPException, Depends

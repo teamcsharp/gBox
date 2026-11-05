@@ -22,6 +22,8 @@ import os
 import threading
 from pathlib import Path
 
+from pydantic import BaseModel
+
 # (name, label, what it does)
 STRATEGIES: dict[str, list[tuple[str, str, str]]] = {
     "re5": [
@@ -175,6 +177,16 @@ def apply_saved(title, path: Path = PATH) -> dict:
             for i, e in enumerate(st["strategies"])}
 
 
+class StrategyIn(BaseModel):
+    """The strategy stack patch body. Module level on purpose: this module uses `from __future__ import
+    annotations`, so a model defined inside install() is only a local name and FastAPI's schema generation
+    cannot resolve it (that made /openapi.json fail with a PydanticUserError)."""
+    title: str
+    values: dict | None = None
+    reorder: list[str] | None = None
+    reset: bool | list[str] | None = None
+
+
 def install(app, store, config, auth):
     """GET/POST /api/mercs/strategy — the PiP panel's strategy stack endpoints."""
     from fastapi import Depends, HTTPException
@@ -185,17 +197,6 @@ def install(app, store, config, auth):
             return status(title)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-
-    class StrategyPatch:
-        pass
-
-    from pydantic import BaseModel
-
-    class StrategyIn(BaseModel):
-        title: str
-        values: dict | None = None
-        reorder: list[str] | None = None
-        reset: bool | list[str] | None = None
 
     @app.post("/api/mercs/strategy")
     def post_strategy(body: StrategyIn, actor=Depends(auth)):

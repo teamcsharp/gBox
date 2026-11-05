@@ -1,4 +1,4 @@
-"""Native asset probes for Armored Core 4 (xbox360), read from the owned XDVDFS image.
+r"""Native asset probes for Armored Core 4 (xbox360), read from the owned XDVDFS image.
 
 Verified against the owned build (roms/Armored Core 4.iso, 6330384384 bytes,
 XDVDFS container, 2048-byte sectors, little-endian directory entries):

@@ -1,4 +1,4 @@
-﻿"""Exact-session team/training intent; runtime evidence never authorizes P1 fallback.
+"""Exact-session team/training intent; runtime evidence never authorizes P1 fallback.
 
 Saving choices changes no gameplay modifiers or controller input. Runtime consumers
 must check effective_role/control_player on each transition and revalidate routes.

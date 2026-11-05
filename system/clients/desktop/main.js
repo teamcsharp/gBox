@@ -24,7 +24,9 @@ const clientHandoff = require('./client-handoff.cjs');
 const clientViews = require('./client-view-store.cjs');
 const streamPoster = require('./stream-poster.cjs');
 const createMercsWindows = require('./mercs-window.cjs');
+const createDecryptLabWindow = require('./decrypt-lab.cjs');
 let mercsWindows=null;
+let decryptLabWindow=null;
 const createTaskWindow = require('./task-window.cjs');     // PiP → "Spark2 tasks": the Hermes task dashboard popup
 let taskWindows=null;
 const recordingExport = require('./recording-export.cjs');
@@ -1418,6 +1420,7 @@ function appMenu() {                                  // the menu bar is hidden 
     { label: "File", submenu: [
       { label: "Mercenaries run reviewer", accelerator: "CmdOrCtrl+Shift+M", click: () => mercsWindows?.open({origin:settings().apiUrl,mode:'reviewer'}).catch(error=>logPush('mercs-window',error.message)) },
       { label: "Spark2 tasks", accelerator: "CmdOrCtrl+Shift+T", click: () => taskWindows?.open({origin:settings().apiUrl}).catch(error=>logPush('task-window',error.message)) },
+      { label: "Decryption lab", accelerator: "CmdOrCtrl+Shift+L", click: () => decryptLabWindow?.open({origin:settings().apiUrl}).catch(error=>logPush('decrypt-lab',error.message)) },
       { label: "Decant…", accelerator: "CmdOrCtrl+Shift+D", click: () => send("menu", "decant") },
       { type: "separator" }, { role: "quit" } ] },
     { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" },
@@ -1466,6 +1469,17 @@ app.whenReady().then(() => {
       const expected=small?miniSession?.origin:clientViews.origin(settings().apiUrl);
       if(options.origin&&clientViews.origin(options.origin)!==expected)throw Error('The selected stream belongs to a different server.');
       return {origin:expected,sid:options.sid||null,mode:options.mode};
+    }});
+  decryptLabWindow=createDecryptLabWindow({BrowserWindow,ipcMain,userData:app.getPath('userData'),screen,
+    getToken:server=>connection?connection.token(server):token(),
+    getOpeningScope:(event,options={})=>{
+      const main=win&&!win.isDestroyed()&&event.sender===win.webContents;
+      const small=mini&&!mini.isDestroyed()&&event.sender===mini.webContents;
+      const owner=main?win:small?mini:null;
+      if(!owner||(event.senderFrame&&event.senderFrame!==owner.webContents.mainFrame))throw Error('Only the gBox app can open its decryption lab.');
+      const expected=small?miniSession?.origin:clientViews.origin(settings().apiUrl);
+      if(options.origin&&clientViews.origin(options.origin)!==expected)throw Error('The decryption lab belongs to a different server.');
+      return {origin:expected};
     }});
   taskWindows=createTaskWindow({BrowserWindow,ipcMain,userData:app.getPath('userData'),screen,
     getToken:server=>connection?connection.token(server):token(),

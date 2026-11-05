@@ -97,6 +97,15 @@ def round_entry_events() -> list[dict]:
 
 PHASE_PLAYING, PHASE_OVER = 1, 3
 
+# ---------------------------------------------------------------- units, by class identity
+# FUN_0018f470 (the per-unit update that reads health +0x3c2 and a target pointer +0x82c) is reached only
+# through a DATA slot at module 0xae7078, so it is a virtual method. The pointer run around that slot is the
+# class vtable at module 0xae7050 (43 slots, slot 5 = that method). An instance's first word is the vtable, so
+# scanning the guest arena for `base + 0xae7050` enumerates units directly - no table indexing, no globals.
+VTABLE_OFF = 0xAE7050
+UNIT_HP, UNIT_TYPE, UNIT_STATE, UNIT_TARGET = 0x3C2, 0x3CE, 0x116, 0x82C
+UNIT_SCAN_STEP = 1 << 24          # 16 MiB chunks: one pread each, cheap enough for a rescan
+
 
 class RE4Switch(Driver):
     map_id = MAP_ID
@@ -107,13 +116,78 @@ class RE4Switch(Driver):
         self.clock = clock
         self._timer = (None, 0.0)
         self.stats: dict | None = None
+        self._units: list[int] = []
+
+    @staticmethod
+    def _u64(m, addr):
+        raw = m.read_memory(addr, 8)
+        return struct.unpack("<Q", raw)[0] if len(raw) == 8 else None
+
+    def units(self, m, rescan=False) -> list[int]:
+        """Every live unit: objects whose vptr is this class's vtable. Cached, because a full scan is O(arena)."""
+        base = module_base(m)
+        if base is None:
+            return []
+        vtable = base + VTABLE_OFF
+        if self._units and not rescan:
+            alive = [a for a in self._units if self._u64(m, a) == vtable]
+            if alive:
+                return alive
+        found: list[int] = []
+        seen: set[bytes] = set()
+        try:
+            regions = m.regions()
+        except Exception:
+            return []
+        pattern = struct.pack("<Q", vtable)
+        for start, end in regions:
+            for off in range(start, end, UNIT_SCAN_STEP):
+                n = min(UNIT_SCAN_STEP, end - off)
+                try:
+                    chunk = bytes(m.read_memory(off, n))
+                except (ValueError, OSError):
+                    break
+                pos = chunk.find(pattern)
+                while pos >= 0:
+                    if pos % 8 == 0:
+                        addr = off + pos
+                        # the same object is visible through two shared mappings: dedupe by its content
+                        try:
+                            raw_obj = bytes(m.read_memory(addr, 0x600))
+                        except (ValueError, OSError):
+                            raw_obj = b""
+                        # A unit is identified by its own id at +0x110 (seen distinct per unit: 32,34,36,...),
+                        # plus the fields that describe it. The guest arena holds more than one view of the same
+                        # units (separate copies, not one physical page), so content alone is not an identity.
+                        uid = raw_obj[0x110:0x114]
+                        fingerprint = uid + raw_obj[UNIT_HP:UNIT_HP + 2] + raw_obj[UNIT_TYPE:UNIT_TYPE + 1]
+                        if uid == b"\0\0\0\0":
+                            words = [raw_obj[i:i + 8] for i in range(0, len(raw_obj) - 7, 8)]
+                            fingerprint = b"".join(b"\0" * 8 if int.from_bytes(w, "little") > 0x100000000 else w
+                                                   for w in words) + b"\0\0\0\0"
+                        if fingerprint and fingerprint not in seen:
+                            seen.add(fingerprint)
+                            found.append(addr)
+                    pos = chunk.find(pattern, pos + 1)
+        self._units = found[:64]
+        return self._units
 
     def snapshot(self, m) -> dict:
-        """The round from RAM: pending live measurement. Returns the minimal shape the engine needs."""
+        """The round from RAM: the unit list is real; player identity and the timer are still being measured."""
         snap: dict = {"player": None, "enemies": [], "timer": None, "timer_start": None, "score": None,
                       "kills": None, "combo": None, "combo_timer": None, "max_combo": None,
-                      "mercenaries_phase": None}
-        # TODO: measure live on the Spark once the operator adds the game
+                      "mercenaries_phase": None, "units": []}
+        try:
+            for addr in self.units(m):
+                hp = m.read_memory(addr + UNIT_HP, 2)
+                ty = m.read_memory(addr + UNIT_TYPE, 1)
+                st = m.read_memory(addr + UNIT_STATE, 1)
+                if len(hp) < 2:
+                    continue
+                snap["units"].append({"addr": addr, "hp": struct.unpack("<H", hp)[0],
+                                      "type": ty[0] if ty else None, "state": st[0] if st else None})
+        except (ValueError, OSError):
+            pass
         return snap
 
     def screen(self, m, snap: dict | None) -> str:

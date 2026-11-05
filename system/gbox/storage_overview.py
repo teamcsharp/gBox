@@ -32,6 +32,8 @@ import threading
 import time
 from pathlib import Path
 
+from pydantic import BaseModel, Field
+
 # ------------------------------------------------------------------------------------------------ mounts & categories
 
 USAGE_TTL = 30 * 60          # a du snapshot is good for this long before the next poll kicks a refresh
@@ -235,6 +237,16 @@ def autobuild_generation(store) -> dict:
 
 # ------------------------------------------------------------------------------------------------ routes
 
+class PurgeBody(BaseModel):
+    """The purge request body. Module level on purpose: this module uses postponed annotations, so a model
+    defined inside routes() is only a local name and FastAPI cannot resolve it when building the schema."""
+    worker: str = "lilspark"
+    unplayed_days: int = Field(14, ge=1, le=3650)
+    include: list[str] = ["games", "builds"]
+    paths: list[str] = []
+    confirm: bool = False                            # false => dry run (list only); true + paths => delete those
+
+
 def routes(app, store, config, auth, *, submit, workers, wid, origin_dep, job_request, rejected_state):
     from fastapi import Depends, HTTPException
     from pydantic import BaseModel, Field
@@ -256,13 +268,6 @@ def routes(app, store, config, auth, *, submit, workers, wid, origin_dep, job_re
         return {"computing": computing, "stale": stale, "age_s": round(now - at, 1) if at else None,
                 "ttl_s": USAGE_TTL, "error": error, "autobuild_generation": autobuild_generation(store),
                 **(snap or {"mounts": [], "categories": [], "computed_at": None})}
-
-    class PurgeBody(BaseModel):
-        worker: str = "lilspark"
-        unplayed_days: int = Field(14, ge=1, le=3650)
-        include: list[str] = ["games", "builds"]
-        paths: list[str] = []
-        confirm: bool = False                            # false => dry run (list only); true + paths => delete those
 
     def _worker(name: str) -> dict:
         w = next((x for x in workers() if x["name"] == name or x["id"] == wid(name)), None)

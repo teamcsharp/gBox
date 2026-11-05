@@ -1398,6 +1398,13 @@ def re_mods(inp: REModsIn, ctx):
     release's address table with sources and live_checked)."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
+    if g.get("platform") == "switch" and str(g.get("title_id") or "").upper() == "010099A00BC1E000":
+        raise Unsupported(
+            "re_mods: the Switch RE4 edition has no live mod writer yet. The GameCube/Wii build (Dolphin) has the "
+            "full set; on Switch the health field (unit+0x3c2), the score/damage routines and the game-state global "
+            "are known from the decompiled module, but the player unit pointer and the Mercenaries unit list are "
+            "not resolved, so a write cannot be targeted or read back. Asset replacement works today through the "
+            "switch_assets tool (LayeredFS overlay), which needs no RAM map.")
     if g.get("platform") not in ("gamecube", "wii"):
         hint = " Resident Evil 5: tool re5; Resident Evil 6: tool re6." if g.get("platform") in ("ps3", "xbox360") else ""
         raise Unsupported(f"re_mods: Resident Evil 4 on GameCube / Wii (Dolphin) so far; {g.get('title')} "

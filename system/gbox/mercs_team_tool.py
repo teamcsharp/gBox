@@ -1,4 +1,4 @@
-﻿"""Operator intent for session-scoped Mercenaries teammate and training roles."""
+"""Operator intent for session-scoped Mercenaries teammate and training roles."""
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, StrictBool

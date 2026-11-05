@@ -5085,6 +5085,8 @@ def create_app(config: Config) -> FastAPI:
     from . import tactical_map                   # the Mercenaries tactical map: each round's frames and stages, live
     tactical_map.install(app, auth, frame_of=lambda sid: _live(sid)["frame"],   # enemy portraits from the picture
                          portraits_root=config.data_dir / "mercs" / "portraits")
+    from . import decrypt_lab                    # one reusable decryption pipeline per title, and its live page
+    decrypt_lab.install(app, store, config, auth)
     from . import tas_api
     tas_api.install(app, store, config, auth, submit, workers)
 

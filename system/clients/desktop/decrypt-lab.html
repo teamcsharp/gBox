@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; font-src 'self'">
+<title>gBox · Decryption lab</title>
+<link rel="stylesheet" href="decrypt-lab.css">
+</head><body>
+<header>
+  <div class="ident"><strong>Decryption lab</strong><small id="subtitle">one pipeline, every title</small></div>
+  <div class="controls">
+    <label class="pick">Title <select id="title"></select></label>
+    <button id="refresh">Refresh</button>
+    <button id="scan" title="Read guest memory at the selected offset">Scan</button>
+    <label class="pin"><input type="checkbox" id="top">Always on top</label>
+    <span id="status" role="status"></span>
+  </div>
+</header>
+
+<main>
+  <section id="stage" aria-label="Memory map">
+    <canvas id="scene"></canvas>
+    <div id="scene-hint">drag to orbit · wheel to zoom · click a block to scan that page</div>
+    <ul id="legend">
+      <li><i data-kind="code"></i>code</li>
+      <li><i data-kind="data"></i>data</li>
+      <li><i data-kind="heap"></i>heap</li>
+      <li><i data-kind="confirmed"></i>confirmed field</li>
+      <li><i data-kind="candidate"></i>candidate</li>
+      <li><i data-kind="rejected"></i>rejected</li>
+    </ul>
+  </section>
+
+  <aside>
+    <section class="panel" id="pipeline-panel">
+      <h2>Pipeline</h2>
+      <table id="pipeline"><thead><tr><th>title</th><th>stage</th><th>state</th></tr></thead><tbody></tbody></table>
+    </section>
+
+    <section class="panel" id="fields-panel">
+      <h2>Field triage <span id="field-count" class="muted"></span></h2>
+      <table id="fields"><thead><tr><th>field</th><th>offset</th><th>kind</th><th>status</th></tr></thead><tbody></tbody></table>
+      <p id="evidence" class="evidence">Select a field to read its evidence.</p>
+    </section>
+
+    <section class="panel" id="bot-panel">
+      <h2>What autoplay sees</h2>
+      <div id="bot"><p class="muted">No live tactical frame right now.</p></div>
+    </section>
+
+    <section class="panel" id="extract-panel">
+      <h2>Extraction <span id="extract-meta" class="muted"></span></h2>
+      <div class="filters">
+        <input id="asset-q" placeholder="filter path…" autocomplete="off">
+        <select id="asset-kind">
+          <option value="">all kinds</option>
+          <option value="model">models</option>
+          <option value="texture">textures</option>
+          <option value="audio">audio</option>
+          <option value="archive">archives</option>
+          <option value="data">data</option>
+          <option value="other">other</option>
+        </select>
+      </div>
+      <div id="assets-wrap"><table id="assets"><thead><tr><th>path</th><th>kind</th><th>size</th></tr></thead><tbody></tbody></table></div>
+      <div class="stage-box">
+        <strong>Replace an asset</strong>
+        <p class="muted">Pick a file and the RomFS path it replaces; it is written into a LayeredFS overlay and applies when the title next boots.</p>
+        <input type="file" id="stage-file">
+        <input id="stage-path" placeholder="e.g. arc/…/mine.mod" autocomplete="off">
+        <button id="stage-go">Stage replacement</button>
+        <span id="stage-status" class="muted"></span>
+      </div>
+    </section>
+
+    <section class="panel" id="hex-panel">
+      <h2>RAM bytes <span id="scan-meta" class="muted"></span></h2>
+      <div id="hex" class="hex"><p class="muted">Press Scan to read guest memory.</p></div>
+    </section>
+
+    <section class="panel" id="events-panel">
+      <h2>Event feed</h2>
+      <ol id="events"></ol>
+    </section>
+  </aside>
+</main>
+<script src="vendor/three.min.js"></script>
+<script src="decrypt-lab.js"></script>
+</body></html>
