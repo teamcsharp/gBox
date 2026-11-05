@@ -41,6 +41,9 @@ FOCUS = {
                         'round_tablet_misses) and deaths (round_deaths)'}
 ROUND = re.compile(r'[a-f0-9]{32}\Z')
 MAX_REPORT = 24*1024
+# How many open analysis requests one Mercenaries title may hold. One ticket per round grew the inbox without
+# limit; the newest rounds are the ones worth analysing.
+ANALYSIS_QUEUE_CAP = 3
 METRICS = {
     'route': ('stuck', 'routes_blocked', 'routes_given_up', 'route_replans', 'nav_recoveries',
               'nav_oscillations', 'navigation_distance_m', 'motion_idle_spin_s',
@@ -373,6 +376,26 @@ class Reports:
                     if previous and (json.loads(previous[0]).get('context') or {}).get('mercs_round_report_id') != doc['id']:
                         raise ValueError('Deterministic request identity collision; existing request retained')
                     if not previous:
+                        # A round opens an analysis ticket, but the queue per title is bounded: one ticket per
+                        # round grew it without limit (3,068 open), so older tickets are closed as superseded and
+                        # the newest few rounds stay eligible for analysis.
+                        old = self.store.db.execute(
+                            "SELECT id, body FROM docs WHERE kind='request' "
+                            "AND json_extract(body,'$.source')='mercs_round_analysis' "
+                            "AND json_extract(body,'$.status')='open' AND json_extract(body,'$.title') LIKE ? "
+                            "ORDER BY COALESCE(json_extract(body,'$.created'),0) ASC",
+                            (f"Mercenaries {report['title']} %",)).fetchall()
+                        for stale_id, raw in old[-(len(old) - ANALYSIS_QUEUE_CAP + 1):] if len(old) >= ANALYSIS_QUEUE_CAP else []:
+                            stale = json.loads(raw)
+                            stale['status'] = 'done'
+                            stale['completed'] = now
+                            stale.setdefault('messages', []).append({
+                                'author': 'agent', 'ts': now, 'attachments': [],
+                                'text': ('Superseded by a later round: at most %d analysis tickets stay open per '
+                                         'title, so the queue follows the newest evidence instead of growing without '
+                                         'bound.' % ANALYSIS_QUEUE_CAP)})
+                            self.store.db.execute('UPDATE docs SET body=? WHERE kind=? AND id=?',
+                                                  (encoded(stale), 'request', stale_id))
                         self.store.db.execute('INSERT INTO docs VALUES(?,?,?)', ('request', request['id'], encoded(request)))
                     current.update(request_id=request['id'], state='queued_for_hermes',
                         target=TARGET, analysis_status='analysis_only', evaluation_status='evaluation_pending')
