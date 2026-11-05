@@ -477,7 +477,11 @@ def extract_tree(nsp_path: str | Path, out_dir: str | Path) -> Path:
     nca = _game_nca_path(nsp_path)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    cmd = [str(tool), "-k", str(prod), f"--titlekey={_ticket_key(nsp_path)}", "-t", "nca",
+    try:
+        key_arg = [f"--titlekey={_ticket_key(nsp_path)}"]
+    except RuntimeError:
+        key_arg = []          # no ticket and no title key: the NCA may not need one
+    cmd = [str(tool), "-k", str(prod), *key_arg, "-t", "nca",
            f"--romfsdir={out}", str(nca)]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=6 * 3600)
     if proc.returncode != 0:

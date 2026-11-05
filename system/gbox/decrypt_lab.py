@@ -521,6 +521,47 @@ def install(app, store, config, auth, tactical_store=None):
             base.mkdir(parents=True, exist_ok=True)
             return base
 
+    def _romfs_root(title_id: str) -> Path | None:
+        """An extracted RomFS tree for this title, if one has been produced (hactool --romfsdir)."""
+        homes = [Path.home()]
+        try:
+            import pwd
+            homes.append(Path(pwd.getpwuid(os.getuid()).pw_dir))
+        except (ImportError, KeyError):
+            pass
+        for home in homes:
+            root = home / "gBox_alt" / "switch" / "romfs" / title_id
+            if root.is_dir():
+                return root
+        return None
+
+    @app.get("/api/decrypt-lab/asset", dependencies=[Depends(auth)])
+    def decrypt_lab_asset(title: str, path: str):
+        """One asset's bytes from the extracted tree. The path must be in the title's inventory."""
+        from fastapi.responses import FileResponse
+        tid = _title_id(title)
+        inv = _inventory(tid)
+        if inv is None:
+            raise HTTPException(409, "no inventory for this title yet")
+        inner = path.strip().lstrip("/")
+        if not inner or ".." in inner.split("/"):
+            raise HTTPException(400, "path must be a relative RomFS path")
+        if inner not in {e["path"] for e in inv.get("entries") or []}:
+            raise HTTPException(404, "not in this title's inventory")
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
+        target = (root / inner).resolve()
+        if not str(target).startswith(str(root.resolve())) or not target.is_file():
+            raise HTTPException(404, "the extracted tree does not hold this file")
+        media = "application/octet-stream"
+        for ext, kind in ((".png", "image/png"), (".jpg", "image/jpeg"), (".gif", "image/gif"),
+                          (".mp4", "video/mp4"), (".txt", "text/plain"), (".ini", "text/plain")):
+            if inner.lower().endswith(ext):
+                media = kind
+                break
+        return FileResponse(target, media_type=media, filename=target.name)
+
     @app.get("/api/decrypt-lab/assets", dependencies=[Depends(auth)])
     def decrypt_lab_assets(title: str, kind: str = "", q: str = "", limit: int = 300):
         tid = _title_id(title)
@@ -543,8 +584,10 @@ def install(app, store, config, auth, tactical_store=None):
         for e in inv.get("entries") or []:
             k = kind_of(e["path"])
             counts[k] = counts.get(k, 0) + 1
+        root = _romfs_root(tid)
         return {"v": FORMAT, "title": title, "title_id": tid, "inventory": {"at": inv.get("at"),
                 "source": inv.get("source"), "romfs_section": inv.get("romfs_section")},
+                "extracted": bool(root), "extracted_root": str(root) if root else None,
                 "total": len(inv.get("entries") or []), "counts": counts,
                 "entries": entries[:max(1, min(2000, limit))]}
 
