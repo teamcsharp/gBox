@@ -974,9 +974,12 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
                     diag["coop_players"] = 2
         lap("mod_s")
         emu = ctx.config.emulators.get(g.platform)
-        # big disc images (CHD/ISO/GCZ...) stream poorly over SMB: stage them onto this node's fast local cache
+        # big disc images (CHD/ISO/GCZ/NSP/XCI...) stream poorly over SMB: stage them onto this node's fast local
+        # cache. Switch containers are large and the MercMode rotation replays them constantly, so they stage like
+        # any other disc image (the local NVMe is far faster than the read-only CIFS share). PS3/PS4 folder games
+        # need sibling assets and are excluded.
         big = src.is_file() and src.stat().st_size > ctx.config.stage_min_mb * 1024 * 1024
-        if g.platform not in ("ps3", "ps4", "switch") and not (g.launch.get("archive_member") and not inp.mod) and ((emu and emu.stage_local) or (big and g.library and _stageable(src))):   # Folder games need sibling assets; Switch containers stream from the share.
+        if g.platform not in ("ps3", "ps4") and not (g.launch.get("archive_member") and not inp.mod) and ((emu and emu.stage_local) or (big and g.library and _stageable(src))):
             mb = src.stat().st_size / 2**20
             ctx.progress(30, f"Staging {src.name} ({mb:,.0f} MB) to the fast local cache")
             from .storage_policy import SystemDriveRefused
