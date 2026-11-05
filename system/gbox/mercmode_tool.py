@@ -37,7 +37,12 @@ def mercmode(inp: MercModeIn,ctx):
     if not ctx.server:
         raise Unsupported('MercMode needs its connected control plane and an exact registered host')
     with httpx.Client(base_url=ctx.server,headers=ctx.headers,timeout=10) as client:
-        if inp.op=='prepare':
+        # A settings-only call means apply them: without this, op defaulting to 'status' silently ignored a queue or
+        # any other setting the caller passed (2026-11-05: a queued round never reached the rotation).
+        settings_given = {k for k, v in inp.model_dump().items()
+                          if v is not None and k not in ('op', 'host', 'dispatch_id')}
+        op = 'configure' if inp.op == 'status' and settings_given else inp.op
+        if op=='prepare':
             result=M.inspect_preparation(ctx.config.runtime)
             result['games']={}
             from . import re_switch as RS
@@ -49,7 +54,7 @@ def mercmode(inp: MercModeIn,ctx):
                 catalog.raise_for_status()
                 result['games'][gid]=M.inspect_rom_access(ctx.config,catalog.json())
             response=client.post('/api/mercmode/preparation',json={'worker_id':ctx.worker,'result':result})
-        elif inp.op=='configure':
+        elif op=='configure':
             if not inp.host:raise ValueError('Choose an exact registered host name')
             response=client.post('/api/mercmode',json=inp.model_dump(exclude_none=True,exclude={'op'}))
         else:
