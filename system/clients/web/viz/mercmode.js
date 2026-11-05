@@ -307,16 +307,23 @@
       const donorKey=root.querySelector('[data-mm-swap-donor]')?.value||'jill';
       const slot=SWAP.slots[slotKey], donor=SWAP.slots[donorKey];
       if(!slot||!donor)throw Error('Choose a slot and a donor.');
+      if(kind==='plain')
+        // clothes removed for real: the character's body skin maps are painted over its clothing groups
+        return api('/api/decrypt-lab/strip-clothes',{title,arc_path:slot,build:'mercmode-swap'});
       let arc=slot, from=donor;
-      if(kind==='plain'){arc=slot;from=SWAP.plain[slotKey]||donor;}
-      else if(kind==='to-zombie'){arc=slot;from=SWAP.slots.zombie;}
+      if(kind==='to-zombie'){arc=slot;from=SWAP.slots.zombie;}
       else if(kind==='from-cast'){arc=SWAP.slots.zombie;from=slot;}
       if(!from)throw Error('That swap has no donor archive.');
       return api('/api/decrypt-lab/model-swap',{title,arc_path:arc,donor_arc:from,build:'mercmode-swap'});
     };
     root.querySelectorAll('[data-mm-swap]').forEach(b=>b.addEventListener('click',async e=>{
       e.stopPropagation();
-      try{const r=await run(b.dataset.mmSwap);done(`${b.textContent}: ${r.slot} ← ${r.donor} (applies at the next boot)`);}
+      try{
+        const r=await run(b.dataset.mmSwap);
+        done(b.dataset.mmSwap==='plain'
+          ? `Clothes removed: ${r.replaced?.length||0} clothing map(s) repainted with ${r.body_group}'s skin (applies at the next boot)`
+          : `${b.textContent}: ${r.slot} ← ${r.donor} (applies at the next boot)`);
+      }
       catch(error){fail(error);}
     }));
   }

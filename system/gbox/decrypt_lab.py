@@ -416,6 +416,18 @@ class ModelSwapIn(BaseModel):
     build: str = "gbox-lab"
 
 
+class StripClothesIn(BaseModel):
+    """Repaint a character's clothing groups with its own body skin maps (the 'remove clothes' action).
+
+    A character archive holds a body group and separate clothing groups, each with a base/mask/normal map. Copying
+    the body's maps over the clothing groups' maps of the same tag (same dimensions and format) leaves the
+    character's skin everywhere the clothing was; a mismatched tag is skipped instead of corrupting the slot.
+    """
+    title: str
+    arc_path: str
+    build: str = "gbox-lab"
+
+
 
 def install(app, store, config, auth, tactical_store=None):
     global _CONFIG
@@ -771,6 +783,89 @@ def install(app, store, config, auth, tactical_store=None):
         lab_state.event(body.title, "swap", f"swapped {inner_from} <- {inner_to} ({size} bytes) into {body.build}",
                         {"build": body.build, "size": size, "from": inner_from, "to": inner_to})
         return {"v": FORMAT, "ok": True, "target": str(target), "source": str(source), "size": size,
+                "note": "the overlay applies when the title next boots (LayeredFS)"}
+
+    @app.post("/api/decrypt-lab/strip-clothes", dependencies=[Depends(auth)])
+    def decrypt_lab_strip_clothes(body: StripClothesIn):
+        """Repaint a character's clothing groups with its body skin maps: the MercMode panel's 'remove clothes'.
+
+        The body group is the model group whose base map is largest (the body carries the most skin pixels); every
+        other group's base/mask/normal map is replaced by the body's map of the SAME tag (same dimensions and
+        format), so only format-compatible slots are touched and a mismatch is reported instead of corrupting the
+        character's materials.
+        """
+        from . import mt_arc
+        tid = _title_id(body.title)
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
+        inner = (body.arc_path or "").strip().lstrip("/")
+        if not inner or len(inner) > 400 or inner.startswith("/") or ".." in inner.split("/"):
+            raise HTTPException(400, "path must be a relative RomFS path")
+        arc_file = (root / inner).resolve()
+        if not str(arc_file).startswith(str(root.resolve())) or not arc_file.is_file():
+            raise HTTPException(404, "the extracted tree does not hold that archive")
+        try:
+            arc = mt_arc.parse(arc_file.read_bytes())
+        except mt_arc.ArcError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        def group_of(name: str):
+            """(directory, group, map) for a '...\\model\\<group>_<map>' entry, else None."""
+            base = name.rsplit("\\", 1)[-1]
+            if "\\model\\" not in name:
+                return None
+            for suffix in ("_BM", "_MM", "_NM"):
+                if base.endswith(suffix):
+                    directory = name.rsplit("\\", 2)[0]          # ...\model
+                    return directory, base[:-len(suffix)], suffix[1:]
+            return None
+
+        groups: dict = {}
+        for entry in arc.entries:
+            parsed = group_of(entry.name)
+            if parsed:
+                groups.setdefault((parsed[0], parsed[1]), {})[parsed[2]] = entry
+        # The body is a character model group ('pawn\pl\...') whose own '_01' base map is the largest: the body group
+        # carries the skin; clothing is every other group in that SAME directory (effect\tex\... is never touched).
+        characters = {k: v for k, v in groups.items()
+                      if k[0].lower().startswith("pawn\\pl\\") and v.get("BM")}
+        if not characters:
+            raise HTTPException(404, "this archive holds no character model (pawn\\pl\\...\\model)")
+        # The body is the character's own skin group: the 'evfXXXX_01' base set both characters use, else a group
+        # named Body/Skin, else a '_01' group, else the largest. Clothing/armour is everything else in the directory.
+        base = {k: v for k, v in characters.items() if k[1].lower().startswith("evf") and "_01" in k[1]}
+        named = {k: v for k, v in characters.items() if any(w in k[1].lower() for w in ("body", "skin"))}
+        prime = base or named or {k: v for k, v in characters.items() if "_01" in k[1]} or characters
+        body_group, body_maps = max(prime.items(), key=lambda kv: kv[1]["BM"].size)
+        body_dir = body_group[0]
+        replaced, skipped, patched_entries = [], [], []
+        for (directory, group), maps in characters.items():
+            if directory != body_dir or group == body_group[1]:
+                continue
+            for kind in ("BM", "MM", "NM"):
+                dst, src = maps.get(kind), body_maps.get(kind)
+                if dst is None or src is None:
+                    continue
+                if dst.tag != src.tag:                     # different dimensions/format: leave the slot alone
+                    skipped.append(dst.name)
+                    continue
+                patched_entries.append((dst.name, src.data))
+                replaced.append(dst.name)
+        if not replaced:
+            raise HTTPException(409, "no clothing map shares the body's format: nothing could be repainted safely")
+        data = arc_file.read_bytes()
+        for name, payload in patched_entries:
+            data = mt_arc.replace(data, name, payload)
+        folder = _mod_build(body.title, body.build)
+        target = folder / "romfs" / inner
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        lab_state.event(body.title, "strip-clothes",
+                        f"{len(replaced)} clothing map(s) repainted with {body_group[1]}'s skin in {inner}",
+                        {"build": body.build, "replaced": len(replaced), "skipped": len(skipped)})
+        return {"v": FORMAT, "ok": True, "target": str(target), "size": len(data), "body_group": body_group[1],
+                "replaced": replaced[:64], "skipped": skipped[:64],
                 "note": "the overlay applies when the title next boots (LayeredFS)"}
 
     @app.post("/api/decrypt-lab/arc-swap", dependencies=[Depends(auth)])
