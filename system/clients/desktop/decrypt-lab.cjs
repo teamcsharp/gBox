@@ -65,6 +65,17 @@ function request(value) {
     }
     return { path: p, method, body: { title: b.title, path: b.path, data_b64: b.data_b64, build: b.build || 'gbox-lab' } };
   }
+  if (method === 'POST' && p === '/api/decrypt-lab/arc-swap') {
+    const b = value.body;
+    const rel = (s) => typeof s === 'string' && s && s.length <= 400 && !s.startsWith('/') && !s.split('/').includes('..');
+    const entry = (s) => typeof s === 'string' && s && s.length <= 200;
+    if (!b || typeof b !== 'object' || !TITLE_RE.test(b.title || '') || !rel(b.arc_path) || !rel(b.donor_arc)
+        || !entry(b.entry) || !entry(b.donor_entry) || !/^[A-Za-z0-9_.-]{1,64}$/.test(b.build || 'gbox-lab')) {
+      throw Error('Invalid arc-swap request.');
+    }
+    return { path: p, method, body: { title: b.title, arc_path: b.arc_path, entry: b.entry,
+                                      donor_arc: b.donor_arc, donor_entry: b.donor_entry, build: b.build || 'gbox-lab' } };
+  }
   if (method === 'POST' && p === '/api/decrypt-lab/swap') {
     const b = value.body;
     const rel = (s) => typeof s === 'string' && s && s.length <= 400 && !s.startsWith('/') && !s.split('/').includes('..');

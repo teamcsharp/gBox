@@ -394,6 +394,16 @@ class SwapIn(BaseModel):
     build: str = "gbox-lab"   # LayeredFS overlay name
 
 
+class ArcSwapIn(BaseModel):
+    """Replace one model entry inside an MT Framework .arc, keeping the slot's own entry table."""
+    title: str
+    arc_path: str             # the .arc to patch (e.g. nativeNXx64/ImgNX/Archive/uWp06.arc)
+    entry: str                # the entry inside it (e.g. pawn\wp\wp06\model\wep06_00_BM)
+    donor_arc: str            # the .arc that supplies the replacement model
+    donor_entry: str          # the entry inside the donor arc
+    build: str = "gbox-lab"
+
+
 
 def install(app, store, config, auth, tactical_store=None):
     global _CONFIG
@@ -727,4 +737,50 @@ def install(app, store, config, auth, tactical_store=None):
         lab_state.event(body.title, "swap", f"swapped {inner_from} <- {inner_to} ({size} bytes) into {body.build}",
                         {"build": body.build, "size": size, "from": inner_from, "to": inner_to})
         return {"v": FORMAT, "ok": True, "target": str(target), "source": str(source), "size": size,
+                "note": "the overlay applies when the title next boots (LayeredFS)"}
+
+    @app.post("/api/decrypt-lab/arc-swap", dependencies=[Depends(auth)])
+    def decrypt_lab_arc_swap(body: ArcSwapIn):
+        """Swap one model entry inside an .arc: the slot keeps its name, the donor's bytes replace the payload.
+
+        This is the in-slot model swap (a character wearing another character's model, a mine rendering another
+        object). The destination archive's entry table is preserved, so the game still finds the names it asks for.
+        """
+        from . import mt_arc
+        tid = _title_id(body.title)
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
+
+        def resolve(inner: str) -> Path:
+            inner = (inner or "").strip().lstrip("/")
+            if not inner or len(inner) > 400 or inner.startswith("/") or ".." in inner.split("/"):
+                raise HTTPException(400, "paths must be relative RomFS paths")
+            target = (root / inner).resolve()
+            if not str(target).startswith(str(root.resolve())) or not target.is_file():
+                raise HTTPException(404, f"the extracted tree does not hold {inner}")
+            return target
+
+        arc_file = resolve(body.arc_path)
+        donor_file = resolve(body.donor_arc)
+        try:
+            donor = mt_arc.parse(donor_file.read_bytes())
+        except mt_arc.ArcError as exc:
+            raise HTTPException(400, f"donor archive: {exc}") from exc
+        donor_entry = donor.find(body.donor_entry)
+        if donor_entry is None:
+            raise HTTPException(404, "the donor archive has no such entry")
+        try:
+            patched = mt_arc.replace(arc_file.read_bytes(), body.entry, donor_entry.data)
+        except mt_arc.ArcError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        folder = _mod_build(body.title, body.build)
+        target = folder / "romfs" / body.arc_path.strip().lstrip("/")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(patched)
+        lab_state.event(body.title, "arc-swap",
+                        f"{body.entry} <- {body.donor_entry} ({len(donor_entry.data)} B) in {body.arc_path}",
+                        {"build": body.build, "size": len(donor_entry.data), "arc": body.arc_path})
+        return {"v": FORMAT, "ok": True, "target": str(target), "size": len(patched),
+                "entry_bytes": len(donor_entry.data),
                 "note": "the overlay applies when the title next boots (LayeredFS)"}

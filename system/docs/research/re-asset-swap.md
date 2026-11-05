@@ -31,7 +31,26 @@ A whole-`.arc` swap does **not** work for models: the game looks up `pawn\pl\pl0
 loads for slot pl00, so a file containing `pl02` entries fails the lookup. Closing this needs either
 
 1. **arc repacking** - keep the destination slot's entry table/names and rewrite the model entries' data with the
-   source character's data (an MT Framework `.arc` writer: `ARC\0` magic, version, entry table, payloads), or
+   source character's data, or
 2. **RAM-level model id reassignment** at runtime, which is what a live skin swap ultimately wants.
 
-(1) is bounded and reusable for mines, grenades and skins; (2) belongs with the MercMode RAM map.
+## Arc repacking (built, verified)
+
+`gbox/mt_arc.py` reads and rebuilds the format. Measured layout (version 7, four archives, entry data at 0x8000,
+entries contiguous, last entry's end == file size):
+
+```
+0x00 "ARC\0"   0x04 u16 version   0x06 u16 entry count
+0x08 count * 0x50 records: +0x00 name (64 B, NUL-terminated)  +0x40 u32 hash (constant 0x241f5deb)
+                           +0x44 u32 size  +0x48 u32 tag  +0x4C u32 offset
+data area at the next 0x8000 boundary; payloads are zlib streams
+```
+
+`POST /api/decrypt-lab/arc-swap {title, arc_path, entry, donor_arc, donor_entry, build}` patches one entry inside
+the destination arc and stages the rebuilt archive through LayeredFS.
+
+Verified: `uWp06.arc` entry `pawn\wp\wp06\model\wep06_00_BM` replaced with `uWp0a.arc`'s
+`pawn\wp\wp0a\model\om4e00_BM` (21,022 B) -> HTTP 200, rebuilt file 563,617 B, re-parsed as version 7 with all 25
+entries, the slot keeping its name and holding the donor payload (zlib `78 9c` head); every untouched entry stayed
+byte-identical. The same call with a character donor is the skin swap; with an enemy donor it is the zombie swap.
+
