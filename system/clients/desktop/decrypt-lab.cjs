@@ -65,6 +65,15 @@ function request(value) {
     }
     return { path: p, method, body: { title: b.title, path: b.path, data_b64: b.data_b64, build: b.build || 'gbox-lab' } };
   }
+  if (method === 'POST' && p === '/api/decrypt-lab/swap') {
+    const b = value.body;
+    const rel = (s) => typeof s === 'string' && s && s.length <= 400 && !s.startsWith('/') && !s.split('/').includes('..');
+    if (!b || typeof b !== 'object' || !TITLE_RE.test(b.title || '') || !rel(b.from_path) || !rel(b.to_path)
+        || !/^[A-Za-z0-9_.-]{1,64}$/.test(b.build || 'gbox-lab')) {
+      throw Error('Invalid swap request.');
+    }
+    return { path: p, method, body: { title: b.title, from_path: b.from_path, to_path: b.to_path, build: b.build || 'gbox-lab' } };
+  }
   if (method === 'POST' && p === '/api/decrypt-lab/scan') {
     const b = value.body;
     if (!b || typeof b !== 'object' || JSON.stringify(b).length > 512) throw Error('Invalid scan request.');

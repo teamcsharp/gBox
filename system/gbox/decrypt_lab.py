@@ -386,6 +386,14 @@ class StageIn(BaseModel):
     build: str = "gbox-lab"   # LayeredFS overlay name
 
 
+class SwapIn(BaseModel):
+    """Replace one game asset with another game asset from the same title's RomFS."""
+    title: str
+    from_path: str            # the asset to replace (stays at this RomFS path)
+    to_path: str              # the asset whose bytes are used instead
+    build: str = "gbox-lab"   # LayeredFS overlay name
+
+
 
 def install(app, store, config, auth, tactical_store=None):
     global _CONFIG
@@ -687,4 +695,36 @@ def install(app, store, config, auth, tactical_store=None):
         lab_state.event(body.title, "stage", f"staged {inner} ({len(data)} bytes) into {body.build}",
                         {"build": body.build, "size": len(data)})
         return {"v": FORMAT, "ok": True, "target": str(target), "size": len(data),
+                "note": "the overlay applies when the title next boots (LayeredFS)"}
+
+    @app.post("/api/decrypt-lab/swap", dependencies=[Depends(auth)])
+    def decrypt_lab_swap(body: SwapIn):
+        """Swap one game asset for another: B's bytes are written over A's RomFS path in the overlay.
+
+        This is the mine / grenade / skin primitive: keep the slot the game asks for and supply another asset's
+        bytes there, so a placed mine can render an item model or a character can wear another character's skin.
+        Both paths must already exist in the title's extracted RomFS tree.
+        """
+        tid = _title_id(body.title)
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
+        inner_from = body.from_path.strip().lstrip("/")
+        inner_to = body.to_path.strip().lstrip("/")
+        for inner in (inner_from, inner_to):
+            if not inner or len(inner) > 400 or inner.startswith("/") or ".." in inner.split("/"):
+                raise HTTPException(400, "paths must be relative RomFS paths")
+        source = (root / inner_to).resolve()
+        if not str(source).startswith(str(root.resolve())) or not source.is_file():
+            raise HTTPException(404, "the extracted tree does not hold the replacement asset")
+        size = source.stat().st_size
+        if size > 64 * 1024 * 1024:
+            raise HTTPException(413, "replacement asset larger than 64 MiB")
+        folder = _mod_build(body.title, body.build)
+        target = folder / "romfs" / inner_from
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+        lab_state.event(body.title, "swap", f"swapped {inner_from} <- {inner_to} ({size} bytes) into {body.build}",
+                        {"build": body.build, "size": size, "from": inner_from, "to": inner_to})
+        return {"v": FORMAT, "ok": True, "target": str(target), "source": str(source), "size": size,
                 "note": "the overlay applies when the title next boots (LayeredFS)"}
