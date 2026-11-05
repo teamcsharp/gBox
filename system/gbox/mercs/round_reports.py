@@ -74,6 +74,25 @@ METRICS = {
                         'enemy_db_classes', 'enemy_db_samples', 'enemy_db_learned'),
 }
 ENEMY_SUMMARY_MAX = 600
+# The operator's report policy: an RE round is investigated only when the player was killed, hurt, or fired a
+# bullet that did not land. A clean round is recorded but does not open an analysis ticket.
+INCIDENT_METRICS = {'damage': ('player_damage_events', 'hits_taken'),
+                    'aim': ('misses',),
+                    'survival': ('round_deaths', 'round_dying')}
+
+
+def has_incident(report) -> bool:
+    """True when the round contains a death, a health loss, or a missed shot (the only report triggers)."""
+    if report.get('outcome') == 'died':
+        return True
+    metrics = report.get('metrics') or {}
+    for group, keys in INCIDENT_METRICS.items():
+        bucket = metrics.get(group) or {}
+        for key in keys:
+            value = bucket.get(key)
+            if type(value) in (int, float) and value > 0:
+                return True
+    return False
 
 
 def encoded(value):
@@ -369,7 +388,7 @@ class Reports:
                 if current.get('request_id'):
                     self.store.db.rollback(); return current
                 current.update(report=report, updated=now)
-                if report['eligibility']['needs_analysis']:
+                if report['eligibility']['needs_analysis'] and has_incident(report):
                     number = self.store.db.execute("SELECT COALESCE(MAX(CAST(json_extract(body,'$.number') AS INT)),0)+1 FROM docs WHERE kind='request'").fetchone()[0]
                     request = request_document(report, number, now)
                     previous = self.store.db.execute("SELECT body FROM docs WHERE kind='request' AND id=?", (request['id'],)).fetchone()
@@ -402,8 +421,11 @@ class Reports:
                     append_audit(self.store.db, 'gbox-mercs-rounds', 'mercs.round_analysis.queued', doc['id'],
                                  {'request_id': request['id'], 'round_id': doc['round_id'], 'target': TARGET}, ts=now)
                 else:
-                    current.update(state='recorded_no_dispatch', analysis_status='not_requested',
-                                   reason=report['eligibility']['reason'])
+                    # A clean round is kept as evidence but opens no ticket: reports are for deaths, health lost
+                    # and missed shots only.
+                    reason = report['eligibility']['reason'] if not report['eligibility']['needs_analysis'] else \
+                        'no incident: the player was not killed or hurt and no shot missed'
+                    current.update(state='recorded_no_dispatch', analysis_status='not_requested', reason=reason)
                 self.store.db.execute('UPDATE docs SET body=? WHERE kind=? AND id=?', (encoded(current), KIND, doc['id']))
                 self.store.db.commit()
                 return current
