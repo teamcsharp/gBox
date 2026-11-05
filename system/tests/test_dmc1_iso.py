@@ -87,3 +87,69 @@ def test_parse_child_table_rejects_bad():
     from gbox.dmc1_iso import parse_child_table
     with pytest.raises(ValueError):
         parse_child_table(struct.pack("<I", 99) + b"\0" * 8)
+
+
+def _child6_blob(count, offsets):
+    import struct
+    return bytearray(struct.pack("<I", count) + struct.pack("<%dI" % count, *offsets)
+        + b"\0" * (0x1000 - 4 - 4 * count))
+
+
+def test_parse_child6_table_synthetic():
+    import struct
+    from gbox.dmc1_iso import parse_child6_table
+    # 3 offsets: table(0x0 data), palette(0x100, FRAME=0x3e reg desc), data(0x200)
+    blob = _child6_blob(3, [0, 0x100, 0x200])
+    # write GIF tags at 0x100 (palette) and 0x200 (geometry XYZ2+RGBAQ)
+    struct.pack_into("<Q", blob, 0x100, 0x3E)          # regs[0]==0x3e -> palette
+    struct.pack_into("<Q", blob, 0x100 + 8, 0x1FFF8001)
+    struct.pack_into("<Q", blob, 0x200, 0x3E << 0)     # lo; geometry via regs
+    struct.pack_into("<Q", blob, 0x200 + 8, (0x80 << 8) | 0x40)  # XYZ2+RGBAQ
+    recs = parse_child6_table(blob)
+    assert [r["kind"] for r in recs] == ["data", "palette", "data"]
+    assert [r["off"] for r in recs] == [0, 0x100, 0x200]
+    assert recs[2]["regs"][0] == 0x40 and recs[2]["regs"][1] == 0x80
+
+
+def test_parse_child6_table_rejects_bad_sort():
+    import pytest
+    from gbox.dmc1_iso import parse_child6_table
+    # even offsets 0, 0x200, 0x100 -> not strictly increasing
+    blob = _child6_blob(5, [0, 0x100, 0x200, 0x200, 0x100])
+    with pytest.raises(ValueError):
+        parse_child6_table(blob)
+
+
+@pytest.mark.skipif(not RAW.exists(), reason="raw image not extracted")
+def test_parse_child6_table_real():
+    import struct, hashlib
+    from gbox.dmc1_iso import parse_child6_table
+    with open(RAW, "rb") as f:
+        n, ch = parse_pld_children(f, 1043291, 1547616)
+        assert ch[6][1] == 1042640
+        f.seek((1043291 * 2048) + ch[6][0])
+        blob = f.read(ch[6][1])
+    recs = parse_child6_table(blob)
+    assert len(recs) == 215
+    # palette entries dominate the odd stream (GIF PRIM=0x604), data on evens
+    n_pal = sum(1 for r in recs if r["kind"] == "palette")
+    assert 100 <= n_pal <= 130, n_pal
+    assert recs[1]["kind"] == "palette"          # first palette at 0x6c0
+    assert recs[0]["off"] == 0 and recs[0]["kind"] == "data"
+
+
+@pytest.mark.skipif(not RAW.exists(), reason="raw image not extracted")
+def test_decode_child6_sections_real():
+    from gbox.dmc1_iso import decode_child6_sections
+    with open(RAW, "rb") as f:
+        n, ch = parse_pld_children(f, 1043291, 1547616)
+        f.seek((1043291 * 2048) + ch[6][0])
+        blob = f.read(ch[6][1])
+    s = decode_child6_sections(blob)
+    assert s["count"] == 215
+    assert s["data"] == 110 and s["palette"] == 105, (s["data"], s["palette"])
+    assert 40 <= s["unique_palettes"] <= 60, s["unique_palettes"]
+    # geometry section 0x2888 must carry XYZ2(0x40)+RGBAQ(0x80) in its descriptor
+    geom = next(r for r in s["sections"] if r["off"] == 0x2888)
+    assert geom["kind"] == "data"
+    assert 0x40 in geom["regs"] and 0x80 in geom["regs"], geom["regs"]

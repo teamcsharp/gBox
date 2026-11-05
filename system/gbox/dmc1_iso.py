@@ -29,12 +29,21 @@ Player container format (.PLD):
     then 215 u32 section offsets relative to child6 start (table ends at 864).
     Verified on the real image: all offsets < child6 size; the even-indexed
     entries are strictly increasing, the odd-indexed ones are not (two
-    interleaved offset streams -- NOT yet decoded).  parse_child_table()
-    exposes this; its meaning (textures vs. other data) is UNVERIFIED.
+    interleaved offset streams).  parse_child6_table() classifies each via its
+    GS GIF-tag register descriptor: even entries are PACKED geometry streams
+    (registers XYZ2 0x40 + RGBAQ 0x80, e.g. `c0 00 00 00 00 01 00 00 ...`),
+    odd entries are texture/CLUT uploads (descriptor leads FRAME 0x3e /
+    SCISSOR 0x1f / 0x80 -- the CSM1 palettes).  110 data / 105 palette streams,
+    50 unique palettes (heavily shared).  Section boundary: table ends 0x360,
+    first palette header at 0x6c0 (`3e 00 1f ff 80 01 02 03 ...`).
 
     Child0 (228,144 B) begins 13 20 03 01 e0 78 03 00 01 00 be 00 40 01 00 00;
-    the leading 16-byte records are UNDECODED (earlier 'mesh -> child6 pointer'
-    claim was not supported by the bytes and is withdrawn).
+    header is {u32 span/flags 0x1032013, u32 size 0x378e0 (227552 = body size)}
+    then a body whose tail closes with float vertices (e.g. `1d f6 55 c1 ..`).
+    The body mixes packed vertex/index data and per-entry tables; a clean
+    (flags, offset) record decode is NOT yet established (near-uniform byte
+    entropy in the first u32 field, monotonic offsets in the second).  Earlier
+    'mesh -> child6 pointer' claim was unsupported and is withdrawn.
 
 fingerprint suggestion gbox.dmc3_mod does NOT apply to this build:
     gbox.dmc3_mod uses PAC/AFS layout which is incompatible with DMC1 .PLD format.
@@ -148,6 +157,105 @@ def parse_child_table(blob: bytes) -> list[int]:
     if max(offs) > len(blob):
         raise ValueError("child table offset beyond blob")
     return offs
+
+
+def _gif_tag(blob: bytes, off: int) -> dict:
+    """Decode a 128-bit PS2 GS GIF tag at ``off`` (little-endian).
+
+    The tag is two little-endian u64s: ``lo`` holds NLOOP(0:15)/EOP(15)/
+    PRE(46)/PRIM(47)/FLG(58:60)/NREG(60:64); ``hi`` holds the register
+    descriptor bytes.  We expose nloop, eop, prim (raw PRIM bit), flg and a
+    ``regs`` byte tuple so callers can dispatch palette (TEX/CLUT upload) vs
+    geometry (XYZ2+RGBAQ) streams.  Verified against PL00 child6 bytes:
+    section 0x2888 carries registers XYZ2(0x40)+RGBAQ(0x80) in a packed
+    vertex stream; odd-indexed sections carry FRAME(0x3e)/SCISSOR(0x1f) +
+    0x80 texture-upload descriptors (CSM1 palettes).
+    """
+    lo, hi = struct.unpack_from("<QQ", blob, off)
+    nloop = lo & 0x7FFF
+    eop = (lo >> 15) & 1
+    pre = (lo >> 46) & 1
+    prim = (lo >> 47) & 1
+    flg = (lo >> 58) & 3
+    nreg = (lo >> 60) & 0xF
+    regs = tuple((hi >> (8 * i)) & 0xFF for i in range(8))
+    return {
+        "nloop": nloop,
+        "eop": eop,
+        "pre": pre,
+        "prim": prim,
+        "flg": flg,
+        "nreg": nreg,
+        "regs": regs,
+    }
+
+
+# GS register 0x40 == XYZ2 (untextured vertex), 0x80 == RGBAQ (colour/ST).
+# A geometry stream packs XYZ2+RGBAQ; a palette upload carries FRAME(0x3e)/
+# SCISSOR(0x1f) + texture/CLUT descriptors.
+_GEOM_REGS = {0x40: "XYZ2", 0x80: "RGBAQ", 0x01: "PRIM", 0x14: "TEX0"}
+
+
+# 0x3e == GS FRAME register, 0x1f == SCISSOR: the two high descriptor bytes of a
+# palette/upload GIF tag in child6 (e.g. 3e 00 1f ff 80 01 02 03 ...).
+# A geometry stream instead carries XYZ2(0x40)+RGBAQ(0x80) in its descriptor.
+_PALETTE_FRAME = 0x3E
+
+
+def parse_child6_table(blob) -> list[dict]:
+    """Decode child6 (GS command stream) into interleaved section records.
+
+    child6 layout (verified on PL00/PL05, 1,042,640 B):
+        u32 count (0xd7 = 215), then 215 u32 offsets into the blob.
+    The offsets interleave two streams (entry 0 points at the table itself):
+        even index -> geometry/data GIF tag (offsets strictly increasing)
+        odd  index -> palette GIF tag   (offset repeats == shared palettes)
+
+    Each record is {"off", "kind", "regs", "nloop"}, where "kind" is "palette"
+    when the GIF tag descriptor leads with FRAME(0x3e) (a texture/CLUT upload),
+    else "data".  Returns records in table order; raises ValueError on
+    malformed input.
+    """
+    n = struct.unpack_from("<I", blob, 0)[0]
+    if n == 0 or 4 + 4 * n > len(blob):
+        raise ValueError("bad child6 table count %d" % n)
+    offs = list(struct.unpack_from("<%dI" % n, blob, 4))
+    if len(offs) != n:
+        raise ValueError("short child6 table")
+    if any(o >= len(blob) for o in offs):
+        raise ValueError("child6 offset beyond blob")
+    evens = offs[0::2]
+    # Geometry stream is spatially packed: strictly increasing offsets.
+    if evens != sorted(evens):
+        raise ValueError("child6 data offsets not strictly increasing")
+    out = []
+    for i, o in enumerate(offs):
+        tag = _gif_tag(blob, o)
+        kind = "palette" if tag["regs"][0] == _PALETTE_FRAME else "data"
+        out.append({"off": o, "kind": kind, "regs": tag["regs"],
+                    "nloop": tag["nloop"]})
+    return out
+
+
+def decode_child6_sections(blob) -> dict:
+    """Summarise child6 GS command streams by kind.
+
+    Returns {"count", "data", "palette", "unique_palettes", "sections"} where
+    "sections" is the raw list from parse_child6_table and the counts are the
+    breakdown of data (geometry) vs palette (texture/CLUT upload) streams.
+    "unique_palettes" is the number of distinct palette offsets (palettes are
+    heavily shared across data streams).
+    """
+    recs = parse_child6_table(blob)
+    data = [r for r in recs if r["kind"] == "data"]
+    pal = [r for r in recs if r["kind"] == "palette"]
+    return {
+        "count": len(recs),
+        "data": len(data),
+        "palette": len(pal),
+        "unique_palettes": len({r["off"] for r in pal}),
+        "sections": recs,
+    }
 
 
 def stream_sha256(f, lba: int, size: int) -> str:
