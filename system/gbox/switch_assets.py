@@ -19,7 +19,9 @@ Keys come from the operator's switch keys (prod.keys + title.keys); nothing here
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
 import struct
 import time
 from dataclasses import dataclass, field
@@ -32,13 +34,15 @@ KEY_SEARCH = (
 )
 TITLE_RE = re.compile(r"\[([0-9A-Fa-f]{16})\]")
 KIND_BY_EXT = {
-    "model": {".mod", ".mesh", ".smd", ".dae"},
-    "texture": {".tex", ".png", ".jpg", ".dds", ".tga", ".bmp"},
-    "audio": {".sngw", ".ogg", ".wav", ".at9", ".adx", ".sfx", ".mca"},
-    "video": {".mp4", ".bk2", ".usm", ".webm"},
+    # measured on Resident Evil 5 (Switch): .adpcm x10676, .opus x3916, .arc x1452, .srqr x486,
+    # .sbkr x477, .mse x249, .stqr x94, .tex x68, .ase x37
+    "model": {".mod", ".mesh", ".smd", ".dae", ".mse", ".ase", ".gr2", ".skl"},
+    "texture": {".tex", ".png", ".jpg", ".jpeg", ".dds", ".tga", ".bmp", ".gif"},
+    "audio": {".adpcm", ".opus", ".sngw", ".ogg", ".wav", ".at9", ".adx", ".sfx", ".mca", ".wem"},
+    "video": {".mp4", ".bk2", ".usm", ".webm", ".srt"},
     "font": {".otf", ".ttf", ".fnt"},
-    "data": {".json", ".xml", ".txt", ".csv", ".ini"},
-    "archive": {".arc", ".pkg", ".pak", ".bnk", ".sbnk", ".grp", ".dat"},
+    "data": {".json", ".xml", ".txt", ".csv", ".ini", ".db", ".eng"},
+    "archive": {".arc", ".pkg", ".pak", ".bnk", ".sbnk", ".grp", ".dat", ".srqr", ".sbkr", ".stqr", ".cpk"},
 }
 
 
@@ -305,27 +309,148 @@ def _romfs_for(nsp_path: str | Path):
 
 
 def inventory(nsp_path: str | Path, cache_dir: Path | None = None) -> Inventory:
-    """List every file in the title's RomFS (metadata only; no file data is read)."""
-    src, romfs = _romfs_for(nsp_path)
-    entries = romfs.entries()
-    inv = Inventory(title_id=src["title_id"], source=str(nsp_path), entries=entries,
-                    romfs_section=src["section"], at=time.time())
+    """List every file in the title's RomFS (metadata only; no file data is read).
+
+    Prefers hactool, which decrypts and decompresses the sections this module could not (block-compressed
+    NCAs, rights-id titles with the ticket's title key). Falls back to the built-in IVFC/CTR reader.
+    """
+    try:
+        inv = inventory_hactool(nsp_path)
+    except Exception:
+        src, romfs = _romfs_for(nsp_path)
+        inv = Inventory(title_id=src["title_id"], source=str(nsp_path), entries=romfs.entries(),
+                        romfs_section=src["section"], at=time.time())
     if cache_dir is not None:
         cache_dir = Path(cache_dir)
         cache_dir.mkdir(parents=True, exist_ok=True)
-        (cache_dir / f"{src['title_id']}.json").write_text(json.dumps(inv.to_json()), encoding="utf-8")
+        (cache_dir / f"{inv.title_id}.json").write_text(json.dumps(inv.to_json()), encoding="utf-8")
     return inv
 
 
+# ---------------------------------------------------------------- hactool backend
+HACTOOL_CANDIDATES = (
+    "~/gBox_alt/hactool/hactool",
+    "/usr/local/bin/hactool",
+    "/opt/hactool/hactool",
+    "~/hactool/hactool",
+)
+
+
+def hactool_path() -> Path | None:
+    """The hactool binary, if this box has one (GBOX_HACTOOL overrides)."""
+    override = os.environ.get("GBOX_HACTOOL")
+    if override and Path(override).is_file():
+        return Path(override)
+    for cand in HACTOOL_CANDIDATES:
+        p = Path(cand).expanduser()
+        if p.is_file() and os.access(p, os.X_OK):
+            return p
+    return None
+
+
+def _ticket_key(nsp_path: str | Path) -> str:
+    """The ticket's decrypted title key as hex, for hactool's --titlekey."""
+    nsp, _tid = open_nsp(nsp_path)
+    ticket = next((f for f in nsp.files if type(f).__name__ == "Ticket"), None)
+    if ticket is None:
+        raise RuntimeError("this NSP carries no ticket")
+    tk = ticket.getTitleKey()
+    return tk if isinstance(tk, str) else bytes(tk).hex()
+
+
+def _game_nca_path(nsp_path: str | Path) -> Path:
+    """Extract just the biggest NCA next to the NSP (once), because hactool wants an NCA file."""
+    src = Path(nsp_path)
+    work = Path(os.environ.get("GBOX_SWITCH_WORK", Path.home() / "gBox_alt" / "switch" / "work"))
+    work.mkdir(parents=True, exist_ok=True)
+    cached = sorted(work.glob("game-*.nca"))
+    if cached:
+        return cached[0]
+    nsp, _tid = open_nsp(nsp_path)
+    ncas = [f for f in nsp.files if type(f).__name__ == "Nca"]
+    if not ncas:
+        raise RuntimeError("the NSP holds no NCA")
+    nca = max(ncas, key=lambda n: getattr(n, "size", 0))
+    out = work / f"game-{getattr(nca, 'size', 0)}.nca"
+    with open(src, "rb") as fh, open(out, "wb") as dst:
+        fh.seek(int(getattr(nca, "offset", 0)))
+        remaining = int(getattr(nca, "size", 0))
+        while remaining > 0:
+            chunk = fh.read(min(8 << 20, remaining))
+            if not chunk:
+                break
+            dst.write(chunk)
+            remaining -= len(chunk)
+    return out
+
+
+def inventory_hactool(nsp_path: str | Path) -> Inventory:
+    """List the RomFS through hactool: it handles the block-compressed sections and rights-id crypto."""
+    tool = hactool_path()
+    if tool is None:
+        raise RuntimeError("hactool is not installed on this box")
+    prod, _title = keys_paths()
+    if not prod:
+        raise RuntimeError("no prod.keys on this box")
+    nca = _game_nca_path(nsp_path)
+    cmd = [str(tool), "-k", str(prod), f"--titlekey={_ticket_key(nsp_path)}", "-t", "nca",
+           "--listromfs", str(nca)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    if proc.returncode != 0:
+        raise RuntimeError(f"hactool failed ({proc.returncode}): {proc.stderr[-300:]}")
+    entries = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("rom:/"):
+            continue
+        path = line[len("rom:/"):]
+        if path and not path.endswith("/"):
+            entries.append(Entry(path, 0, 0))
+    if not entries:
+        raise RuntimeError("hactool listed no RomFS entries")
+    tid = TITLE_RE.search(Path(nsp_path).name)
+    return Inventory(title_id=(tid.group(1).upper() if tid else ""), source=str(nsp_path),
+                     entries=entries, romfs_section=1, at=time.time())
+
+
 def extract(nsp_path: str | Path, inner_path: str, out_path: str | Path) -> Path:
-    """Read one RomFS file out to disk (targeted read, no full extraction)."""
-    _src, romfs = _romfs_for(nsp_path)
+    """Read one RomFS file out to disk.
+
+    hactool extracts whole directories, so a single file is taken from its full extraction when that exists,
+    otherwise the built-in reader is used.
+    """
     want = inner_path.lstrip("/")
+    out = Path(out_path)
+    tool = hactool_path()
+    if tool is not None:
+        cache = Path(os.environ.get("GBOX_SWITCH_ROMFS", Path.home() / "gBox_alt" / "switch" / "romfs"))
+        candidate = cache / want
+        if candidate.is_file():
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(candidate.read_bytes())
+            return out
+    _src, romfs = _romfs_for(nsp_path)
     entry = next((e for e in romfs.entries() if e.path == want), None)
     if entry is None:
-        raise FileNotFoundError(f"{inner_path!r} is not in this RomFS")
+        raise FileNotFoundError(f"{inner_path!r} is not in this RomFS (and no extracted tree is cached)")
     data = romfs.read(entry)
-    out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(data)
+    return out
+
+
+def extract_tree(nsp_path: str | Path, out_dir: str | Path) -> Path:
+    """Extract the whole RomFS through hactool (a big, one-time operation: RE5's tree is ~19 GB)."""
+    tool = hactool_path()
+    if tool is None:
+        raise RuntimeError("hactool is not installed on this box")
+    prod, _title = keys_paths()
+    nca = _game_nca_path(nsp_path)
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    cmd = [str(tool), "-k", str(prod), f"--titlekey={_ticket_key(nsp_path)}", "-t", "nca",
+           f"--romfsdir={out}", str(nca)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=6 * 3600)
+    if proc.returncode != 0:
+        raise RuntimeError(f"hactool extraction failed ({proc.returncode}): {proc.stderr[-300:]}")
     return out

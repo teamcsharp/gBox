@@ -31,6 +31,7 @@ Routes (all under /api/decrypt-lab):
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import re
 import struct
@@ -469,8 +470,25 @@ def install(app, store, config, auth, tactical_store=None):
 
     # ------------------------------------------------------------------ assets / extraction
     def _inventory_path(title_id: str) -> Path | None:
-        root = Path(getattr(_CONFIG, "data_dir", None) or Path.home() / "gBox" / "system" / "gBox-data")
-        for cand in (root / "switch-assets" / f"{title_id}.json", Path.home() / "gBox_alt/switch/assets" / f"{title_id}.json"):
+        """Where a title's RomFS inventory may live: the data dir, the operator's home, and the lab work dir.
+
+        The service's HOME is not necessarily the operator's home (systemd units often have none), so the home
+        directory is resolved from the passwd entry as well.
+        """
+        homes = [Path.home()]
+        try:
+            import pwd
+            homes.append(Path(pwd.getpwuid(os.getuid()).pw_dir))
+        except (ImportError, KeyError):
+            pass
+        roots = []
+        base = getattr(_CONFIG, "data_dir", None)
+        if base:
+            roots.append(Path(base) / "switch-assets")
+        roots.append(Path.home() / "gBox" / "system" / "gBox-data" / "switch-assets")
+        roots += [home / "gBox_alt" / "switch" / "assets" for home in homes]
+        for root in roots:
+            cand = root / f"{title_id}.json"
             if cand.is_file():
                 return cand
         return None

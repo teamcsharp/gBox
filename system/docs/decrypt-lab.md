@@ -69,14 +69,34 @@ The **Extraction** panel is the asset half of the lab. Two routes back it:
 | `GET /api/decrypt-lab/assets?title=&kind=&q=` | the title's RomFS inventory (cached JSON), filtered by kind and path; `inventory: null` with a `note` when the title has no inventory yet |
 | `POST /api/decrypt-lab/stage` | write a replacement file into a **LayeredFS overlay** for a RomFS path |
 
+### The RomFS decode is solved — through hactool
+
+`gbox/switch_assets.py` originally carried its own NCA → IVFC → RomFS reader. That reader works for plaintext
+sections but **not** for this title's game NCA: the 19.9 GB section is neither plaintext nor AES-CTR with the
+ticket key at any plausible base, and `nsz` cannot list it either (it lists the ExeFS and the control NCA's
+RomFS, then stops).
+
+What works is **hactool** (`~/gBox_alt/hactool/hactool`, built from source; `bktr.c` + `lz4.c` handle the
+block-compressed sections). Two details matter:
+
+* pass the ticket's key explicitly — `--titlekey=<hex>`; hactool reads no ticket in NCA mode and otherwise
+  fails with *"Unable to match rights id to titlekey"*;
+* feed it an **NCA file**, not the NSP: `switch_assets._game_nca_path()` extracts the game NCA once (cached
+  under `~/gBox_alt/switch/work`).
+
+```bash
+hactool -k prod.keys --titlekey=<title key hex> -t nca --listromfs game-<size>.nca      # inventory
+hactool -k prod.keys --titlekey=<title key hex> -t nca --romfsdir=<dir> game-<size>.nca # full tree
+```
+
+Measured on Resident Evil 5 (Switch): **17,483 files** in 0.3 s — 14,592 audio (`.adpcm`/`.opus`), 2,509
+archives, 286 models, 68 textures. `GBOX_HACTOOL` overrides the binary path; `GBOX_SWITCH_WORK` and
+`GBOX_SWITCH_ROMFS` override the work and extracted-tree directories.
+
 Staging is the real Switch mechanism, not a copy trick: the overlay is gBox's mod collection
 (`<cache>/mods/<title>/<build>/romfs/<path>`), which the emulator layers over the game's own RomFS when the
 title boots (see `switch_mods.py`). The route rejects absolute paths, `..` segments, oversized payloads and
 invalid base64, and the window's allowlist checks the same shape before the request leaves the renderer.
-
-Inventory is produced by `gbox/switch_assets.py` (NSP → NCA → IVFC → RomFS FST). That decode is complete
-except for the final section encoding, so `assets` currently answers with an honest empty state for titles
-whose RomFS has not been read out yet.
 
 ## The window
 
