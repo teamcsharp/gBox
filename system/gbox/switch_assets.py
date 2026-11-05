@@ -313,7 +313,27 @@ def _romfs_for(nsp_path: str | Path):
     return src, RomFS(stream)
 
 
-def inventory(nsp_path: str | Path, cache_dir: Path | None = None) -> Inventory:
+def fill_sizes(entries, root: Path | None) -> int:
+    """Fill entry sizes from an extracted tree. hactool's --listromfs prints paths only, so sizes are 0 until a
+    tree exists; a walk is cheap and makes the tab's size column (and sorting) meaningful.
+    """
+    if root is None or not Path(root).is_dir():
+        return 0
+    filled = 0
+    for entry in entries:
+        target = Path(root) / entry.path
+        try:
+            if target.is_file():
+                size = target.stat().st_size
+                if size != entry.size:
+                    entry.size = size
+                    filled += 1
+        except OSError:
+            continue
+    return filled
+
+
+def inventory(nsp_path: str | Path, cache_dir: Path | None = None, romfs_root: Path | None = None) -> Inventory:
     """List every file in the title's RomFS (metadata only; no file data is read).
 
     Prefers hactool, which decrypts and decompresses the sections this module could not (block-compressed
@@ -325,6 +345,10 @@ def inventory(nsp_path: str | Path, cache_dir: Path | None = None) -> Inventory:
         src, romfs = _romfs_for(nsp_path)
         inv = Inventory(title_id=src["title_id"], source=str(nsp_path), entries=romfs.entries(),
                         romfs_section=src["section"], at=time.time())
+    if romfs_root is None and inv.title_id:
+        candidate = Path.home() / "gBox_alt" / "switch" / "romfs" / inv.title_id
+        romfs_root = candidate if candidate.is_dir() else None
+    fill_sizes(inv.entries, romfs_root)
     if cache_dir is not None:
         cache_dir = Path(cache_dir)
         cache_dir.mkdir(parents=True, exist_ok=True)
