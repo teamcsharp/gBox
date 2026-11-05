@@ -2,6 +2,11 @@
 - The Mercenaries mode, on Citron NEO (canonical, multi-core) or Eden (single-core): gbox.adapters'
   SwitchLinuxAdapter / CitronLinuxAdapter, NCE, where a guest address is the host address.
 
+Measured live 2026-11-04 on the Spark (Citron NEO d3df71e55): the round loads and then waits - timer,
+spawns and locomotion all gated - until the round intro is paged with A (INTRO_PRESSES below). That is
+input, not a setting: every renderer/CPU-backend/async combination behaves identically
+(docs/research/re4-switch-round-gate.md).
+
 This is a skeleton driver prepared for when the operator adds RE4 Switch to the catalog
 (operator 2026-10-27: "I am about to add RE4 for switch so our efforts will move there when it is ready").
 The RAM map (player, enemies, timer, kills, menus) must be measured live on the Spark before this
@@ -37,6 +42,23 @@ S_MAIN = None                           # pending
 S_PLAYER = None                         # pending
 S_ENEMY = None                          # pending
 S_UNIT = None                           # pending
+
+# Round entry (measured live 2026-11-04 on the Spark: Citron NEO nightly d3df71e55, GB10, NCE, Vulkan;
+# docs/research/re4-switch-round-gate.md). THE MERCENARIES loads its stage with the round-intro tips on
+# screen and holds the whole round behind them: banner up indefinitely, no HUD timer, no spawns, no
+# locomotion, no aim. A is the only button that pages them; one press is not enough and three start the
+# clock (timer counting down, Ganados walking in, movement and aim live, verified on screen). No emulator
+# setting changes this (multi-core true/false, NCE/Dynarmic, async shaders and presentation on/off were
+# all identical), so a round is entered by pressing, the way the GameCube bot walks its menus
+# (gbox.re4_menus) - never by waiting for the clock.
+INTRO_PRESSES, INTRO_GAP_S = 3, 0.9
+
+
+def round_entry_events() -> list[dict]:
+    """One A press in the shape SwitchLinuxAdapter.send_input takes. Send it INTRO_PRESSES times,
+    INTRO_GAP_S apart, once the stage has drawn: the Mercenaries clock starts on the last one."""
+    return [{"key": "a", "down": True}, {"key": "a", "down": False}]
+
 
 PHASE_PLAYING, PHASE_OVER = 1, 3
 
