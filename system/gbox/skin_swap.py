@@ -1,0 +1,124 @@
+"""Random character-skin swaps for MercMode rounds.
+
+A round can play with another character's model group in the slot being played: the chosen character's archive is
+rebuilt so its model entry carries a random other character's model group (gbox.mt_arc), and that rebuilt archive
+is written into a LayeredFS build (gbox.switch_mods) the launch then plays. The slot keeps its own entry names, so
+the game still finds the file it asks for.
+
+Only titles whose character archives are mapped are swapped (RE5 Switch today: uPl00Chris*, uPl01Sheba*,
+uPl02Jill*); everything else returns None and the round plays normally.
+"""
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+from . import mt_arc
+
+# title id -> the character archives MercMode may swap, by the name the operator sees
+CHARACTER_ARCS = {
+    "010018100CD46000": {
+        "chris": "nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc",
+        "sheva": "nativeNXx64/ImgNX/Archive/uPl01ShebaNormal.arc",
+        "jill": "nativeNXx64/ImgNX/Archive/uPl02JillCos1.arc",
+    },
+}
+
+
+def romfs_root(title_id: str) -> Path | None:
+    """The extracted RomFS tree a swap is built from, when it exists."""
+    candidate = Path.home() / "gBox_alt" / "switch" / "romfs" / title_id.upper()
+    return candidate if candidate.is_dir() else None
+
+
+def model_entry(arc):
+    return next((e for e in arc.entries if "\\model\\" in e.name), None)
+
+
+def material_groups(arc) -> dict:
+    """{group: {kind: entry}} for a character's model material sets (base/mask/normal maps)."""
+    groups: dict = {}
+    for entry in arc.entries:
+        name = entry.name
+        if "\\model\\" not in name or "\\" not in name:
+            continue
+        base = name.rsplit("\\", 1)[-1]
+        for suffix in ("_BM", "_MM", "_NM"):
+            if base.endswith(suffix):
+                groups.setdefault(base[:-len(suffix)], {})[suffix[1:]] = entry
+                break
+    return groups
+
+
+def body_group(groups: dict) -> str | None:
+    """The character's own skin set: the evfXXXX_01 base group, else a Body/Skin group, else the largest base map."""
+    bases = {g: m for g, m in groups.items() if g.lower().startswith("evf") and "_01" in g and m.get("BM")}
+    named = {g: m for g, m in groups.items() if any(w in g.lower() for w in ("body", "skin")) and m.get("BM")}
+    pool = bases or named or {g: m for g, m in groups.items() if m.get("BM")}
+    if not pool:
+        return None
+    return max(pool, key=lambda g: pool[g]["BM"].size)
+
+
+def swap_arc(data: bytes, donor_data: bytes) -> tuple[bytes, str, str]:
+    """The slot archive wearing the donor character's skin: its body group's base/mask/normal maps are replaced.
+
+    Returns (bytes, slot group, donor group). Material entries keep their own names and tags, so only the skin
+    pixels change; a map the donor lacks is left alone.
+    """
+    slot_arc, donor_arc = mt_arc.parse(data), mt_arc.parse(donor_data)
+    slot_groups, donor_groups = material_groups(slot_arc), material_groups(donor_arc)
+    slot_name, donor_name = body_group(slot_groups), body_group(donor_groups)
+    if slot_name is None or donor_name is None:
+        raise mt_arc.ArcError("a character has no body skin group to swap")
+    patched = data
+    moved = 0
+    for kind in ("BM", "MM", "NM"):
+        dst, src = slot_groups[slot_name].get(kind), donor_groups[donor_name].get(kind)
+        if dst is None or src is None:
+            continue
+        patched = mt_arc.replace(patched, dst.name, src.data)
+        moved += 1
+    if not moved:
+        raise mt_arc.ArcError("the donor carries no skin map the slot can take")
+    return patched, slot_name, donor_name
+
+
+def random_swap_build(config, game_id: str, title_id: str, rng, *, name: str | None = None,
+                      title: str = "", log=None) -> dict | None:
+    """Build a LayeredFS overlay that plays `title_id`'s character with another character's model group.
+
+    Returns {'build', 'slot', 'donor'} or None when the title has no mapped characters (the round plays normally).
+    """
+    arcs = CHARACTER_ARCS.get(str(title_id).upper())
+    root = romfs_root(title_id)
+    if not arcs or root is None:
+        return None
+    names = sorted(arcs)
+    target, donor = rng.sample(names, 2)
+    target_arc, donor_arc = root / arcs[target], root / arcs[donor]
+    if not target_arc.is_file() or not donor_arc.is_file():
+        return None
+    try:
+        patched, slot, donor_entry = swap_arc(target_arc.read_bytes(), donor_arc.read_bytes())
+    except mt_arc.ArcError as exc:
+        if log:
+            log("skin_swap_failed", error=str(exc)[:200])
+        return None
+    build = name or f"skin-{target}-as-{donor}"
+    try:
+        from . import switch_mods
+        folder = Path(switch_mods.create_build(config, game_id, build, title_id.upper(),
+                                               game_title=title or game_id, kind="file"))
+    except Exception as exc:                                 # noqa: BLE001 - a launch must never fail on a swap
+        if log:
+            log("skin_swap_build_failed", error=str(exc)[:200])
+        return None
+    target_path = folder / "romfs" / arcs[target]
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_bytes(patched)
+    if log:
+        log("skin_swap_built", build=build, slot=slot, donor=donor_entry, bytes=len(patched))
+    return {"build": build, "slot": slot, "donor": donor_entry, "target": target, "source": donor,
+            "at": time.time()}

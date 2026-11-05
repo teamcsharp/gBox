@@ -28,7 +28,12 @@ DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title'
            # RE5 / RE6 Switch turn draws co-op or solo by this ratio (co-op : solo turns). RE6's co-op is No Mercy >
            # SPLIT; RE5's is Mercenaries United's split screen (RE5's No Mercy is single-player only). Off until the
            # operator turns it on; the other editions always play solo
+           # operator 2026-11-05 ("have Merc mode playing where the skins are being randomly swapped between
+           # characters"): each round draws a random other-character model swap for the title being played
+           # (gbox.skin_swap); 'off' plays the title as it is
+           'skin_swap': 'off',
            'coop_ratio': 'off'}
+SKIN_SWAPS = ('off', 'random')
 STALEMATE_KEYS = ('stalemate_cut', 'stalemate_cut_s')
 STALEMATE_FEATURE = 'mercmode_stalemate_cut'     # worker feature: its mercmode tool accepts the stalemate settings
 COOP_FEATURE = 'mercmode_coop_ratio'             # worker feature: split-screen launches (gbox.switch_coop) and its tool
@@ -139,6 +144,8 @@ def normalize(patch, current=None):
     from .mercs.stalemate import CUT_MIN_S, CUT_MAX_S
     if out['coop_ratio'] not in COOP_RATIOS:
         raise ValueError('MercMode coop_ratio is co-op : solo turns, one of ' + ', '.join(COOP_RATIOS))
+    if out.get('skin_swap') not in SKIN_SWAPS:
+        raise ValueError('MercMode skin_swap is off or random')
     if type(out['stalemate_cut']) is not bool or type(out['stalemate_cut_s']) is not int \
             or not CUT_MIN_S <= out['stalemate_cut_s'] <= CUT_MAX_S:
         raise ValueError(f'MercMode stalemate: stalemate_cut true/false and {CUT_MIN_S}..{CUT_MAX_S} seconds on the clock')

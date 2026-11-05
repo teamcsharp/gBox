@@ -531,6 +531,15 @@ class Screensaver:
             # the DJ's queued round names a build: play it from this PC's own copy (local_build_ok), exactly the
             # roulette's build launch, so a mod swap from the lab reaches a real MercMode round
             build = {'name': merc_pick['selection']['mod']}
+        elif merc_pick and merc_cfg.get('skin_swap') == 'random':
+            # the operator's random skin swap: this round's character plays with another character's model group
+            from . import skin_swap
+            made = skin_swap.random_swap_build(self.config, g['game_id'], merc_pick.get('map_id'), self.rng,
+                                               title=merc_pick.get('title'), log=self.log)
+            if made:
+                build = {'name': made['build']}
+                self.store.audit(ACTOR, 'mercmode.skin_swap', w['name'],
+                                 {'build': made['build'], 'slot': made['slot'], 'donor': made['donor']})
         # jump: the demo starts in gameplay where this PC has a jump state for the game and build (gbox.jumpstate)
         # memory_cards: the operator's own cards go in, so their saved characters load (#2817: "get my memory card ...
         # you need to use it with screensaver for playing the game"); their own launch elsewhere takes a card back
@@ -1621,6 +1630,7 @@ class MercModeSettings(BaseModel):
     stalemate_cut: bool | None = None           # the bots cut the clock when no enemy shows for 15 s (gbox.mercs.stalemate)
     stalemate_cut_s: int | None = None          # ... to this many seconds (1..60; default 5)
     coop_ratio: str | None = None               # co-op : solo turns on RE5 / RE6 Switch (off, 1:1 ... 6:1 ..., only)
+    skin_swap: str | None = None                # off | random: each round plays a character with another's skin
     # gbox.re_switch: e.g. {"re5": {"platform": "switch", "mode": "no_mercy", "title_id": "010018100CD46000"}}; {} = the
     # native editions. Missing here, the field was dropped silently (the mercmode tool and MCP posted it) - 2026-10-26.
     preferred_editions: dict | None = None

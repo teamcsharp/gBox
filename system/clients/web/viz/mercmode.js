@@ -337,6 +337,7 @@
       `<span class="pip-mm-rounds-quick">${[5,10,20].map(n=>`<button type="button" data-mm-rounds-pick="${n}"${Number(host.settings?.rounds_per_title)===n?' aria-pressed="true"':''}>${n}</button>`).join('')}</span>`+
       `<label class="pip-mm-stalemate"><input type="checkbox" data-mm-stalemate ${host.settings?.stalemate_cut===false?'':'checked'}> Stalemate: no enemy for 15 s, cut the clock to <input type="number" data-mm-stalemate-s min="${STALEMATE.min}" max="${STALEMATE.max}" value="${stalemateSeconds(host.settings)}"> s</label>`+
       `<label class="pip-mm-coop">Bot+bot split screen (Switch RE5 / RE6) ${coopSelect('data-mm-coop',host.settings?.coop_ratio)}</label>`+
+      `<label class="pip-mm-skin"><input type="checkbox" data-mm-skin-swap ${host.settings?.skin_swap==='random'?'checked':''}> 🎭 Random skin swap: each round plays one character with another's model (Switch RE5)</label>`+
       (SWITCH_GAMES[session?.game_id]?`<button type="button" data-mm-play-bot title="You play Player 1, the bot plays Player 2 in split screen. The title restarts in this session with Player 2 connected.">🎮 Play with bot (${SWITCH_GAMES[session.game_id]} split screen)</button>`:'')+
       `${host.current_run?.mercmode?`<small>${escape(host.current_run.phase)}: ${escape(host.current_run.title)} · ${Number(host.current_run.mercmode_rounds)||0} verified rounds</small>`:''}${queueHTML(host,catalog)}${swapHTML()}</div></div>`;
   }
@@ -367,8 +368,13 @@
       await api('/api/mercmode',{host:host.name,enabled});
       return enabled?'MercMode on: the next native round end switches titles.':'MercMode rotation off. Autobot continues in this game.';
     }
-    if(action==='title'){
-      const chosen=new Set(host.settings?.titles||[]);
+    if(action==='skin-swap'){
+      const on=!!value?.checked;
+      await api('/api/mercmode',{host:host.name,skin_swap:on?'random':'off'});
+      return on?"Random skin swaps on: every round plays one character with another character's model."
+               :'Skin swaps off: rounds play the title as it is.';
+    }
+    if(action==='title'){      const chosen=new Set(host.settings?.titles||[]);
       if(value.checked)chosen.add(value.title);else chosen.delete(value.title);
       if(!chosen.size)throw Error('Keep at least one title in the rotation.');
       await api('/api/mercmode',{host:host.name,titles:[...chosen]});
