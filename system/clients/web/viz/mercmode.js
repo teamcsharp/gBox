@@ -271,6 +271,55 @@
     root.querySelectorAll('[data-mm-unqueue]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();run('remove',b.dataset.mmUnqueue);}));
     const m=root.querySelector('[data-mm-q-mode]');if(m)m.dataset.title=root.querySelector('[data-mm-q-title]')?.value||'';
   }
+  // Character / zombie slot swaps (RE5 Switch): the archives the panel's buttons move a model group between. The
+  // model group is the archive's first `\model\` entry (gbox.mt_arc), so only the archives are named here.
+  const SWAP = {
+    slots: {chris: 'nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc',
+            sheva: 'nativeNXx64/ImgNX/Archive/uPl01ShebaNormal.arc',
+            jill: 'nativeNXx64/ImgNX/Archive/uPl02JillCos1.arc',
+            zombie: 'nativeNXx64/ImgNX/Archive/uEm26.arc',
+            zombie2: 'nativeNXx64/ImgNX/Archive/uEm52.arc'},
+    plain: {chris: 'nativeNXx64/ImgNX/Archive/uPl00ChrisPlain.arc',
+            sheva: 'nativeNXx64/ImgNX/Archive/uPl01ShebaPlain.arc',
+            jill: 'nativeNXx64/ImgNX/Archive/uPl02JillCos1.arc'},
+  };
+  // A game id to the decrypt lab's title key (the swap API addresses a title by that key).
+  const LAB_TITLES = {'52d15709be0fda1a': 're5_switch', '115f9cdbba115432': 're6_switch',
+                      '270a15eb98dab4d7': 're4_switch'};
+  function labTitleFor(gameId){ return LAB_TITLES[String(gameId||'')] || null; }
+  function swapOptions(map, selected){
+    return Object.keys(map).map(k=>`<option value="${escape(k)}"${k===selected?' selected':''}>${escape(k)}</option>`).join('');
+  }
+  function swapHTML(){
+    return `<div class="pip-mm-swaps"><small>Characters &amp; zombies · applies at the next boot</small>`+
+      `<label>Slot <select data-mm-swap-slot>${swapOptions(SWAP.slots,'chris')}</select></label>`+
+      `<label>Donor <select data-mm-swap-donor>${swapOptions(SWAP.slots,'jill')}</select></label>`+
+      `<span class="pip-mm-swap-buttons">`+
+      `<button type="button" data-mm-swap="clothes">Swap clothes</button>`+
+      `<button type="button" data-mm-swap="plain">Plain (remove clothes)</button>`+
+      `<button type="button" data-mm-swap="to-zombie">Character → zombie</button>`+
+      `<button type="button" data-mm-swap="from-cast">Zombies → cast</button>`+
+      `</span></div>`;
+  }
+  function wireSwaps(root,{api,title,done,fail}){
+    const run=async(kind)=>{
+      const slotKey=root.querySelector('[data-mm-swap-slot]')?.value||'chris';
+      const donorKey=root.querySelector('[data-mm-swap-donor]')?.value||'jill';
+      const slot=SWAP.slots[slotKey], donor=SWAP.slots[donorKey];
+      if(!slot||!donor)throw Error('Choose a slot and a donor.');
+      let arc=slot, from=donor;
+      if(kind==='plain'){arc=slot;from=SWAP.plain[slotKey]||donor;}
+      else if(kind==='to-zombie'){arc=slot;from=SWAP.slots.zombie;}
+      else if(kind==='from-cast'){arc=SWAP.slots.zombie;from=slot;}
+      if(!from)throw Error('That swap has no donor archive.');
+      return api('/api/decrypt-lab/model-swap',{title,arc_path:arc,donor_arc:from,build:'mercmode-swap'});
+    };
+    root.querySelectorAll('[data-mm-swap]').forEach(b=>b.addEventListener('click',async e=>{
+      e.stopPropagation();
+      try{const r=await run(b.dataset.mmSwap);done(`${b.textContent}: ${r.slot} ← ${r.donor} (applies at the next boot)`);}
+      catch(error){fail(error);}
+    }));
+  }
   function menuHTML(host,open=false,catalog=null,session=null){
     if(!host)return `<div class="pip-mercmode"><small>MercMode: no gBox PC owns this game.</small></div>`;
     const on=!!host.settings?.enabled,chosen=host.settings?.titles||[];
@@ -282,7 +331,7 @@
       `<label class="pip-mm-stalemate"><input type="checkbox" data-mm-stalemate ${host.settings?.stalemate_cut===false?'':'checked'}> Stalemate: no enemy for 15 s, cut the clock to <input type="number" data-mm-stalemate-s min="${STALEMATE.min}" max="${STALEMATE.max}" value="${stalemateSeconds(host.settings)}"> s</label>`+
       `<label class="pip-mm-coop">Bot+bot split screen (Switch RE5 / RE6) ${coopSelect('data-mm-coop',host.settings?.coop_ratio)}</label>`+
       (SWITCH_GAMES[session?.game_id]?`<button type="button" data-mm-play-bot title="You play Player 1, the bot plays Player 2 in split screen. The title restarts in this session with Player 2 connected.">🎮 Play with bot (${SWITCH_GAMES[session.game_id]} split screen)</button>`:'')+
-      `${host.current_run?.mercmode?`<small>${escape(host.current_run.phase)}: ${escape(host.current_run.title)} · ${Number(host.current_run.mercmode_rounds)||0} verified rounds</small>`:''}${queueHTML(host,catalog)}</div></div>`;
+      `${host.current_run?.mercmode?`<small>${escape(host.current_run.phase)}: ${escape(host.current_run.title)} · ${Number(host.current_run.mercmode_rounds)||0} verified rounds</small>`:''}${queueHTML(host,catalog)}${swapHTML()}</div></div>`;
   }
   // "Play with bot" (operator 2026-10-27): the operator as Player 1, the bot as Player 2 in this exact Switch session -
   // the team role, Player 2 connected by an in-place title restart, then the autobot; each step a job confirmed in turn
@@ -405,6 +454,6 @@
     if(ours||!here)return {action:'follow',from:shown,sid,id:d?.id,remember:!here&&!ours};
     return {action:'none'};
   }
-  return {render,mount,stay,hostFor,menuHTML,menuAction,transition,queueHTML,queueAction,formOptions,readForm,wireQueue,describe,
+  return {render,mount,stay,hostFor,menuHTML,menuAction,transition,queueHTML,queueAction,formOptions,readForm,wireQueue,wireSwaps,labTitleFor,describe,
     STALEMATE,stalemateSeconds,titleChoices,runOn,defaultHost,dispatchHTML,readDispatch,dispatchAction,runHTML,pipOwnRun};
 });
