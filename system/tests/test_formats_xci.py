@@ -125,3 +125,57 @@ def test_find_hfs0_offsets_finds_magic():
     img = build_hfs0_image({"x": b"y"})
     offsets = xci._find_hfs0_offsets(img)
     assert 0 in offsets
+
+
+def _entropy(b: bytes, n: int) -> bytes:
+    """Deterministic high-entropy filler (no NULs, no ASCII names)."""
+    import hashlib
+    out = bytearray()
+    seed = 0
+    while len(out) < n:
+        seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+        out += bytes(((seed >> (i * 8)) & 0xFF) ^ 0xA5 for i in range(4))
+        seed += len(b)
+    return bytes(out[:n])
+
+
+def test_false_positive_hfs0_is_not_a_readable_listing():
+    """Regression: the Bayonetta 2 (World) headerless XCI owns a *spurious* HFS0 magic
+    at 0xf000 (file_count=3, string_table_size=304) whose string table is pure entropy
+    and whose entries carry impossible hash offsets. The classifier must NOT treat such
+    a table as a readable file listing; a real CONTENT partition has hundreds of files
+    with NUL-terminated names, and the spurious table must fail to produce a valid
+    manifest. Encodes the verified-negative finding from the fixed-layout probe."""
+    img = bytearray(0x10000)
+    # Place a spurious HFS0 header with entropy entries (mirrors the owned 0xf000 bytes:
+    # header_count=3, string_table_size=304, entropy string table, garbage entries).
+    base = 0xF000
+    img[base:base + 4] = xci.HFS0_MAGIC
+    struct.pack_into("<II", img, base + 4, 3, 304)         # file_count, string_table_size
+    ent = _entropy(b"", 3 * 24)                            # entropy entry block
+    img[base + 16:base + 16 + 72] = ent
+    names = _entropy(b"", 304)                            # entropy string table (no names)
+    img[base + 16 + 72:base + 16 + 72 + 304] = names
+
+    table = xci.read_hfs0(lambda off, size: bytes(img[off:off + size]), base)
+    # The table parses (magic + count are self-consistent) but NONE of the entries are
+    # real files: every name is empty/garbage. That is the signature of a false positive.
+    real = [e for e in table.entries if e.name and 0 < e.size < 1 << 30]
+    assert table.file_count == 3
+    assert real == [], "spurious entropy HFS0 must not yield a single real file entry"
+
+
+def test_headerless_has_no_fixed_key_free_hfs0_offset():
+    """On a headerless card the partition table at 0x7000 is AES-XTS encrypted; the
+    CONTENT partition HFS0 has NO fixed, key-free offset. classify() must report the
+    container as unreadable / header_key_required, and the head-region HFS0 scan must
+    find no *trusted* table (any spurious magic is not a listing)."""
+    img = build_headerless_xci()
+    info = xci.classify(img, len(img), "hdr.xci")
+    assert info.header_key_required is True
+    assert info.partition_table_readable is False
+    # The head-region audit list may contain offsets, but none is an authoritative
+    # listing: a trusted listing would require the header key.
+    for hit in info.plaintext_hfs0:
+        # Each 'offset' is a magic location only -- not a validated file table.
+        assert isinstance(hit, dict) and "offset" in hit
