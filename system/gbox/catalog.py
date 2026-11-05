@@ -22,7 +22,7 @@ EXT_PLATFORM = {
     ".n64": "n64", ".z64": "n64", ".v64": "n64", ".md": "genesis", ".gen": "genesis", ".smd": "genesis", ".sms": "sms",
     ".gg": "gamegear", ".pce": "pce", ".gdi": "dreamcast", ".cdi": "dreamcast", ".gcm": "gamecube", ".gcz": "gamecube",
     ".rvz": "gamecube_wii", ".wbfs": "wii", ".wua": "wiiu", ".pbp": "psp", ".cso": "psp", ".nds": "nds",
-    ".3ds": "3ds", ".xci": "switch", ".nsp": "switch", ".lst": "naomi", ".xbe": "xbox",
+    ".3ds": "3ds", ".xci": "switch", ".nsp": "switch", ".nup": "switch", ".lst": "naomi", ".xbe": "xbox",
 }
 SNIFF_EXT = {".iso", ".bin", ".img", ".cue", ".chd"}   # container formats: platform needs header sniffing
 REGION_TAGS = {"USA": "US", "Europe": "EU", "Japan": "JP", "World": "World", "Korea": "KR", "Australia": "AU"}
@@ -461,6 +461,11 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
             if ext == ".nsp":                             # the title id from the ticket's name, no keys needed
                 from . import switch_nsp
                 serial_, nsp_launch = switch_nsp.catalog_fields(f)
+                if serial_:
+                    meta = {**meta, "serial": serial_}
+            elif ext == ".nup":                           # Switch 2 package: title id from the filename/header
+                from . import switch_nup
+                serial_, nsp_launch = switch_nup.catalog_fields(f)
                 if serial_:
                     meta = {**meta, "serial": serial_}
             by_hash[gid] = CatalogEntry(

@@ -262,6 +262,16 @@ mount_root = "/mnt/gbox/quickswap2"
 paths = { linux = "/mnt/gbox/quickswap2/Emulation/_switch", windows = "//10.89.1.125/QuickSwap2/Emulation/_switch" }
 
 [[libraries]]
+id = "quickswap-switch2"
+kind = "files"
+platform = "switch"
+exclude_dirs = ["*bios*", "*BIOS*", "backup"]
+exclude_files = ["*Lichi*", "*lichi*"]
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/switch2", windows = "//10.89.1.125/QuickSwap2/Emulation/switch2" }
+
+[[libraries]]
 id = "quest"
 kind = "quest"                    # Meta Quest packages (APK + main/patch OBBs), one zip or folder per game; played in
                                   # Refract Native on the [quest] workers below (gbox/refract.py)
