@@ -34,15 +34,20 @@ KEY_SEARCH = (
 )
 TITLE_RE = re.compile(r"\[([0-9A-Fa-f]{16})\]")
 KIND_BY_EXT = {
-    # measured on Resident Evil 5 (Switch): .adpcm x10676, .opus x3916, .arc x1452, .srqr x486,
-    # .sbkr x477, .mse x249, .stqr x94, .tex x68, .ase x37
-    "model": {".mod", ".mesh", ".smd", ".dae", ".mse", ".ase", ".gr2", ".skl"},
-    "texture": {".tex", ".png", ".jpg", ".jpeg", ".dds", ".tga", ".bmp", ".gif"},
-    "audio": {".adpcm", ".opus", ".sngw", ".ogg", ".wav", ".at9", ".adx", ".sfx", ".mca", ".wem"},
+    # measured on the real inventories:
+    #   RE5 (17,483): .adpcm 10676, .opus 3916, .arc 1452, .srqr 486, .sbkr 477, .mse 249, .tex 68, .ase 37
+    #   RE6 (60,645): .adpcm 29600, .opus 19937, .arc 3213, .srqr 1492, .sbkr 1380, .stqr 1199, .bssq 1186,
+    #                 .zon 641, .mser 481, .sst 329
+    #   RE4 ( 5,275): .fen 2117, .tpl 870, .dat 445, .acb 433, .awb 433, .udas 331, .bin 242, .rel 146, .fnt 65
+    "model": {".mod", ".mesh", ".smd", ".dae", ".mse", ".ase", ".mser", ".gr2", ".skl", ".mod"},
+    "texture": {".tex", ".png", ".jpg", ".jpeg", ".dds", ".tga", ".bmp", ".gif", ".tpl"},
+    "audio": {".adpcm", ".opus", ".sngw", ".ogg", ".wav", ".at9", ".adx", ".sfx", ".mca", ".wem",
+              ".acb", ".awb", ".bssq"},
     "video": {".mp4", ".bk2", ".usm", ".webm", ".srt"},
     "font": {".otf", ".ttf", ".fnt"},
-    "data": {".json", ".xml", ".txt", ".csv", ".ini", ".db", ".eng"},
-    "archive": {".arc", ".pkg", ".pak", ".bnk", ".sbnk", ".grp", ".dat", ".srqr", ".sbkr", ".stqr", ".cpk"},
+    "data": {".json", ".xml", ".txt", ".csv", ".ini", ".db", ".eng", ".zon", ".sst", ".rel", ".fix"},
+    "archive": {".arc", ".pkg", ".pak", ".bnk", ".sbnk", ".grp", ".dat", ".srqr", ".sbkr", ".stqr", ".cpk",
+                ".udas"},
 }
 
 
@@ -349,32 +354,53 @@ def hactool_path() -> Path | None:
 
 
 def _ticket_key(nsp_path: str | Path) -> str:
-    """The ticket's decrypted title key as hex, for hactool's --titlekey."""
+    """The title key as hex, for hactool's --titlekey.
+
+    A base NSP carries a ticket holding it; an *update* NSP does not (updates are encrypted to the base
+    title's key), so the operator's title.keys is consulted by title id in that case.
+    """
     nsp, _tid = open_nsp(nsp_path)
     ticket = next((f for f in nsp.files if type(f).__name__ == "Ticket"), None)
-    if ticket is None:
-        raise RuntimeError("this NSP carries no ticket")
-    tk = ticket.getTitleKey()
-    return tk if isinstance(tk, str) else bytes(tk).hex()
+    if ticket is not None:
+        tk = ticket.getTitleKey()
+        return tk if isinstance(tk, str) else bytes(tk).hex()
+    tid = (TITLE_RE.search(Path(nsp_path).name).group(1) if TITLE_RE.search(Path(nsp_path).name) else "").lower()
+    for root in KEY_SEARCH:
+        cand = Path(root).expanduser() / "title.keys"
+        if not cand.is_file() or not tid:
+            continue
+        for line in cand.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "=" not in line:
+                continue
+            key_id, _, value = line.partition("=")
+            if key_id.strip().lower() == tid and value.strip():
+                return value.strip().lower()
+    raise RuntimeError(f"no ticket in this NSP and no title key for {tid or 'unknown title'} in title.keys")
 
 
 def _game_nca_path(nsp_path: str | Path) -> Path:
-    """Extract just the biggest NCA next to the NSP (once), because hactool wants an NCA file."""
+    """Extract just the biggest NCA next to the NSP (once), because hactool wants an NCA file.
+
+    The cache name carries the title id: several titles have NCAs of the same size, and keying by size alone
+    handed RE6's request RE5's NCA.
+    """
     src = Path(nsp_path)
     work = Path(os.environ.get("GBOX_SWITCH_WORK", Path.home() / "gBox_alt" / "switch" / "work"))
     work.mkdir(parents=True, exist_ok=True)
-    cached = sorted(work.glob("game-*.nca"))
-    if cached:
-        return cached[0]
+    match = TITLE_RE.search(src.name)
+    tid = match.group(1).upper() if match else "unknown"
     nsp, _tid = open_nsp(nsp_path)
     ncas = [f for f in nsp.files if type(f).__name__ == "Nca"]
     if not ncas:
         raise RuntimeError("the NSP holds no NCA")
     nca = max(ncas, key=lambda n: getattr(n, "size", 0))
-    out = work / f"game-{getattr(nca, 'size', 0)}.nca"
+    size = int(getattr(nca, "size", 0))
+    out = work / f"game-{tid}-{size}.nca"
+    if out.is_file() and out.stat().st_size == size:
+        return out
     with open(src, "rb") as fh, open(out, "wb") as dst:
         fh.seek(int(getattr(nca, "offset", 0)))
-        remaining = int(getattr(nca, "size", 0))
+        remaining = size
         while remaining > 0:
             chunk = fh.read(min(8 << 20, remaining))
             if not chunk:
@@ -393,8 +419,11 @@ def inventory_hactool(nsp_path: str | Path) -> Inventory:
     if not prod:
         raise RuntimeError("no prod.keys on this box")
     nca = _game_nca_path(nsp_path)
-    cmd = [str(tool), "-k", str(prod), f"--titlekey={_ticket_key(nsp_path)}", "-t", "nca",
-           "--listromfs", str(nca)]
+    try:
+        key_arg = [f"--titlekey={_ticket_key(nsp_path)}"]
+    except RuntimeError:
+        key_arg = []          # no ticket and no title key: the NCA may not need one
+    cmd = [str(tool), "-k", str(prod), *key_arg, "-t", "nca", "--listromfs", str(nca)]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
     if proc.returncode != 0:
         raise RuntimeError(f"hactool failed ({proc.returncode}): {proc.stderr[-300:]}")
