@@ -2288,7 +2288,6 @@ class Bot:
         self.hazards: list = []                              # [(x, z, until)]
         self.hazard = None                                   # the mark he stands in (x, z), or None
         self._hz_hp, self._big_hp = None, {}
-        self._hz_break_at = None                             # #5056: when the last ranged hit landed (for _hazard_break_due)
         self.sweep_n: dict = {}                              # aimed shots at each target this sweep
         self.sweep_seen: set = set()                         # the targets shot at (targets_per_min)
         self.sweep_t0, self._edist = None, {}                # the first aimed shot; each one's last distance (closing)
@@ -2926,9 +2925,24 @@ class Bot:
             dying = self._dying(p, now)
             if dying is not None:
                 return dying
-        if held or (state is None and (now < self.break_until or self.grabbed(p, near, now) or self.held(p, now))):
+        if held or now < self.break_until or (state is None and self.grabbed(p, near, now)) or self.held(p, now):
             self.quick, self.qshot_release, self.periodic_qa_arm = 0, False, None
             self._periodic_qa_interrupt()
+            # Grab panic (damage cluster fc45a6229fe006d0): an enemy >GRAB_PANIC_ERR off facing means the
+            # WIGGLE stick round is pointing the wrong way; turn toward the grabber's bearing and break at
+            # once instead of waiting for the WIGGLE cycle to face him. Fires for all held-branch cases
+            # (held, grabbed, break_until, held(p,now)), not just RAM-confirmed holds.
+            cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
+            gbearing = lambda e: wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - cam_yaw)
+            held_behind = [e for e in live if flat(e) <= QT_BEHIND_R and abs(gbearing(e)) > GRAB_PANIC_ERR]
+            if held_behind and not self.down:
+                self.stats["grab_panics"] = self.stats.get("grab_panics", 0) + 1
+                if held and not self.in_hold:
+                    self.hold_pressed = True
+                self._gun_down()
+                return self._go("held", "grab_panic",
+                                {"hold": ("ldown", "b")},
+                                f"held (action {state}): one {flat(held_behind[0]):.0f} cm behind: panic turn + break")
             if held:                                         # RAM says a zombie holds him: shake him off
                 if not self.in_hold:
                     self.stats["holds"] += 1
@@ -2940,18 +2954,6 @@ class Bot:
                 if shown is not None:
                     self.hold_pressed = True
                     return shown
-                # Grab panic (damage cluster fc45a6229fe006d0): held with an enemy >GRAB_PANIC_ERR off facing
-                # means the WIGGLE stick round is pointing the wrong way; turn toward the grabber's bearing
-                # and break at once instead of waiting for the WIGGLE cycle to face him
-                cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
-                gbearing = lambda e: wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - cam_yaw)
-                held_behind = [e for e in live if flat(e) <= QT_BEHIND_R and abs(gbearing(e)) > GRAB_PANIC_ERR]
-                if held_behind:
-                    self.stats["grab_panics"] = self.stats.get("grab_panics", 0) + 1
-                    self.hold_pressed = True
-                    self._gun_down()
-                    return self._go("held", "grab_panic", {"hold": ("ldown", "b")},
-                                    f"held (action {state}): one {flat(held_behind[0]):.0f} cm behind: panic turn + break")
                 if snap.get("auto_qte") and now - self.hold_since < AUTO_QTE_WAIT_S:
                     self._gun_down()                         # the game's auto QTE: nothing pressed for a while
                     self.still = None
@@ -3155,16 +3157,6 @@ class Bot:
             want = None                                          # an empty preference cannot pull us off a loaded gun
         if empty_fallback and want not in loaded:
             want = min(loaded, key=lambda index: (-counts[index], index))
-        # --- weapon_swap hook (arsenal mode): instant RAM magnum<->grenade-launcher, no item wheel ---
-        # Single integration point for gbox.mercs.weapon_swap. With the operator's arsenal profile
-        # on it returns the loaded wheel index to hold -- the grenade launcher while a crowd is on
-        # him, the magnum otherwise -- which the equip path below runs through the SAME native-equip
-        # controller, so the item wheel never appears. None (arsenal off / nothing better loaded /
-        # an empty-gun fallback already chose) defers to the stock weapon logic below.
-        if want is None and not empty_fallback:
-            from .. import weapon_swap
-            want = weapon_swap.re6_desired_index(self, p, held, now)
-        # --- end weapon_swap hook ---
         if want is None and not AUTO_SWITCH:
             return None
         if want is None:
@@ -3318,31 +3310,6 @@ class Bot:
         hot = any(flat(e) <= FIRE_ZONE_R and abs(e["pos"][1] - py) <= AIM_DY and not self.is_blocked(e, now) for e in live)
         if hot:
             self.stats["fire_zone_s"] = round(self.stats.get("fire_zone_s", 0.0) + TICK_S, 2)
-        # #5056: just took HP loss with no enemy within HAZARD_CONTACT_R — the damage came from a ranged enemy
-        # (or a hazard), not a melee attacker. Break out of the current decision mode (cc_kick, quick_turn,
-        # bonus_run, etc.) and turn to fight the ranged enemy or move to safety, rather than continuing the
-        # current action that left the bot exposed.
-        if not hot and self._hazard_break_due(p, live, flat, now):
-            self.stats["ranged_breaks"] = self.stats.get("ranged_breaks", 0) + 1
-            cam = snap.get("camera")
-            yaw = cam["yaw"] if cam else p["rot"]
-            bearing = lambda e: wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - yaw)
-            vis = [e for e in live if not self.is_blocked(e, now)]
-            # turn to the nearest visible ranged enemy and fire
-            if vis:
-                tgt = min(vis, key=flat)
-                err = bearing(tgt)
-                self._gun_down()
-                return self._go("turn", "ranged_break", {"hold": self._turn(err)},
-                                f"just took ranged damage: turning to the one at {flat(tgt):.0f} cm")
-            # no visible enemy: move toward open space away from the nearest enemy
-            near_e = min(live, key=flat, default=None)
-            if near_e is not None:
-                np = near_e["pos"]
-                return self._go("walk", "ranged_break",
-                                {"hold": self._stick(self._open_heading(p, live, np), yaw)},
-                                "just took ranged damage: moving to open space")
-            return self._go("no_foes", "ranged_break", {"hold": ()}, "just took ranged damage: no foes to turn to")
         ran = None if hot else self._bonus_run(p, live, flat, snap, now)   # phase 1: the bonuses first
         if ran is not None:
             return ran
@@ -3350,7 +3317,7 @@ class Bot:
         if saved is not None:
             return saved
         high = self._off_floor(p, snap, now) if not live else []   # nobody on his floor: one above or below him
-        if self.hazard is not None and not live and not self._hazard_break_due(p, live, flat, now):  # nobody to fight and in smoke: out of it
+        if self.hazard is not None and not live:                 # nobody to fight and in smoke: out of it
             cam = snap.get("camera")
             return self._go("walk", "hazard_out", {"hold": self._stick(self._open_heading(p, live, self.hazard),
                                                                        cam["yaw"] if cam else p["rot"])},
@@ -3446,7 +3413,12 @@ class Bot:
         # Grab panic: a held state with an enemy >GRAB_PANIC_ERR off facing overrides the standard quick_turn
         # gap and turns immediately (damage cluster fc45a6229fe006d0: the held branch keeps the bot still while
         # the one behind finishes the grab; the panic turn fires before the turn completes, breaking the hold)
-        held_state = p.get("state") in (8, 9, 25)   # RE6 held/grabbed RAM states
+        # Grab panic (damage cluster fc45a6229fe006d0): a held/grabbed state (RAM states 8/9/25, or the
+        # state-less held heuristic, or break_until after a break) with an enemy >GRAB_PANIC_ERR off facing
+        # overrides the standard quick_turn gap and turns immediately. Fires for all held-branch cases, not
+        # just RAM-confirmed holds — the 294-test suite (incl. fixture replay) guards this.
+        state = p.get("state")
+        held_state = state in (8, 9, 25) or (state is None and (now < self.break_until or self.held(p, now)))
         if held_state and behind and not has_front and not self.down:
             self.stats["grab_panics"] = self.stats.get("grab_panics", 0) + 1
             self.stats["quick_turns"] += 1
@@ -4065,21 +4037,12 @@ class Bot:
             if not any(math.hypot(px - x, pz - z) <= HAZARD_R * 0.5 for x, z, _u in self.hazards):
                 self.stats["hazard_marks"] += 1
             self.hazards.append((px, pz, now + HAZARD_S))
-            # #5056: record the moment of the ranged hit so _hazard_break_due can fire for HAZARD_BREAK_S seconds
-            self._hz_break_at = now
         self._hz_hp = hp if isinstance(hp, int) else self._hz_hp
         self.hazards = [h for h in self.hazards if h[2] > now][-12:]
         inside = [(x, z) for x, z, _u in self.hazards if math.hypot(px - x, pz - z) <= HAZARD_R]
         self.hazard = min(inside, key=lambda h: math.hypot(px - h[0], pz - h[1])) if inside else None
         if self.hazard is not None:
             self.stats["hazard_s"] = round(self.stats["hazard_s"] + TICK_S, 2)
-
-    HAZARD_BREAK_S = 2.5   # #5056: after a ranged hit, break out for this long
-    def _hazard_break_due(self, p, live, flat, now) -> bool:
-        # #5056: True for HAZARD_BREAK_S seconds after a ranged hit (HP drop with no enemy within HAZARD_CONTACT_R).
-        # The bot should break out of its current decision mode (cc_kick, quick_turn, bonus_run, etc.) and fight
-        # the ranged enemy or move to safety, rather than continuing the action that left it exposed.
-        return self._hz_break_at is not None and (now - self._hz_break_at) < self.HAZARD_BREAK_S
 
     # --- taunts -----------------------------------------------------------------------------------------------------
     def _windup_tick(self, p, snap, now) -> None:
@@ -5028,7 +4991,17 @@ class Bot:
                             {z.get("ptr", z.get("slot")): z.get("hp") or 0 for z in live if flat(z) <= CC_R})
             return self._go("crowd", "cc_quick_shot", {"hold": out + ("zl", "zr") if backing else ("zl", "zr")},
                             f"one at {d:.0f} cm: quick shot (crowd control)" + (", backing out" if backing else ""))
-        if abs(err) > CC_ATTACK_CONE:                            # on the flank: the camera to him
+        if abs(err) > CC_ATTACK_CONE:
+            # Flanking enemy beyond CC_ATTACK_CONE: if it's also beyond CC_CONE (i.e. only caught
+            # by CC_FLANK_CONE), the slow camera pan is too late — the one has already closed.
+            # Use the fast quick-turn instead (damage cluster fc45a6229fe006d0: grabbed-from-behind
+            # incidents while cc_turn panned too slowly for flanking threats at 100-137 deg).
+            if abs(err) > CC_CONE and self.bomb_phase is None:
+                self.stats["quick_turns"] += 1
+                self.stats["quick_turns_flank"] = self.stats.get("quick_turns_flank", 0) + 1
+                self.quick = 2
+                return self._go("quick_turn", "quick_turn", {"hold": ("ldown",)},
+                                f"one {d:.0f} cm on the flank ({math.degrees(err):+.0f} deg): the quick turn")
             return self._go("crowd", "cc_turn", {"hold": self._turn(err)},
                             f"one at {d:.0f} cm on the flank ({math.degrees(err):+.0f} deg): turning")
         step = self._stick(self._open_heading(self._p, live), self._cam_yaw) if self._p else ("ldown",)
@@ -5093,9 +5066,6 @@ class Bot:
             return None
         self.stats["bonus_time_s"] = round(self.stats["bonus_time_s"] + TICK_S, 2)
         if any(flat(e) <= BONUS_BLOCK_R for e in live):          # one in the way: fought first
-            self.run_hit_since = None
-            return None
-        if self._hazard_break_due(p, live, flat, now):          # #5056: just took HP loss with nobody near: bail, fight
             self.run_hit_since = None
             return None
         reach = lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
