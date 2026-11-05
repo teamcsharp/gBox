@@ -562,6 +562,82 @@ def install(app, store, config, auth, tactical_store=None):
                 break
         return FileResponse(target, media_type=media, filename=target.name)
 
+    @app.get("/api/decrypt-lab/preview", dependencies=[Depends(auth)])
+    def decrypt_lab_preview(title: str, path: str):
+        """A thumbnail for one asset. Images pass through; videos (USM/MP4) are decoded with ffmpeg."""
+        try:
+            return _preview(title, path)
+        except HTTPException:
+            raise
+        except Exception as exc:                      # surface the cause instead of an opaque 500
+            raise HTTPException(500, f"preview failed: {type(exc).__name__}: {exc}") from exc
+
+    def _preview(title: str, path: str):
+        from fastapi.responses import FileResponse
+        import shutil
+        import subprocess
+        tid = _title_id(title)
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, "the RomFS tree has not been extracted yet")
+        inner = path.strip().lstrip("/")
+        if not inner or ".." in inner.split("/"):
+            raise HTTPException(400, "path must be a relative RomFS path")
+        target = (root / inner).resolve()
+        if not str(target).startswith(str(root.resolve())) or not target.is_file():
+            raise HTTPException(404, "the extracted tree does not hold this file")
+        lower = inner.lower()
+        if lower.endswith((".png", ".jpg", ".jpeg", ".gif")):
+            return FileResponse(target)
+        if not lower.endswith((".usm", ".mp4", ".webm")):
+            raise HTTPException(415, "no previewer for this asset type yet")
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise HTTPException(409, "ffmpeg is not installed on this server")
+        cache = Path(getattr(_CONFIG, "cache", Path.home() / "gBox" / "gbox-cache")) / "previews"
+        cache.mkdir(parents=True, exist_ok=True)
+        thumb = cache / (uuid.uuid5(uuid.NAMESPACE_URL, f"{tid}/{inner}").hex + ".png")
+        if not thumb.is_file() or thumb.stat().st_mtime < target.stat().st_mtime:
+            # Some USM containers refuse a seek, and many clips open on a fade. Try a representative frame and a
+            # few timestamps, then keep the brightest — a black first frame makes a useless preview.
+            attempts = (
+                [ffmpeg, "-v", "error", "-y", "-i", str(target), "-vf", "thumbnail,scale=480:-1",
+                 "-frames:v", "1"],
+                [ffmpeg, "-v", "error", "-y", "-ss", "5", "-i", str(target), "-frames:v", "1",
+                 "-vf", "scale=480:-1"],
+                [ffmpeg, "-v", "error", "-y", "-ss", "20", "-i", str(target), "-frames:v", "1",
+                 "-vf", "scale=480:-1"],
+                [ffmpeg, "-v", "error", "-y", "-ss", "45", "-i", str(target), "-frames:v", "1",
+                 "-vf", "scale=480:-1"],
+            )
+            best, best_score, errors = None, -1.0, []
+            for attempt_index, cmd in enumerate(attempts):
+                # one unique temp per attempt: reusing a name made a better-scoring frame overwrite (and then
+                # delete) the previous best, so the final move failed
+                tmp = thumb.with_suffix(f".{attempt_index}.tmp.png")
+                proc = subprocess.run([*cmd, str(tmp)], capture_output=True, text=True, timeout=180)
+                if proc.returncode != 0 or not tmp.is_file() or tmp.stat().st_size == 0:
+                    errors.append((proc.stderr or "").strip()[-120:])
+                    tmp.unlink(missing_ok=True)
+                    continue
+                score = 0.0
+                try:
+                    from PIL import Image, ImageStat
+                    with Image.open(tmp) as im:
+                        score = sum(ImageStat.Stat(im.convert("RGB")).mean) / 3
+                except Exception:
+                    score = 1.0 if tmp.stat().st_size > 4000 else 0.0
+                if score > best_score:
+                    if best is not None:
+                        best.unlink(missing_ok=True)
+                    best, best_score = tmp, score
+                else:
+                    tmp.unlink(missing_ok=True)
+            if best is None:
+                raise HTTPException(415, "ffmpeg could not decode this file: " + " | ".join(e for e in errors if e))
+            best.replace(thumb)
+        return FileResponse(thumb, media_type="image/png")
+
     @app.get("/api/decrypt-lab/assets", dependencies=[Depends(auth)])
     def decrypt_lab_assets(title: str, kind: str = "", q: str = "", limit: int = 300):
         tid = _title_id(title)
