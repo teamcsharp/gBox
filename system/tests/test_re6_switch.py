@@ -2062,7 +2062,7 @@ def test_the_spread_fills_the_empty_weapon_slots_and_an_asked_weapon_goes_first(
     import random
     w, _x = mods.loadout_plan(4, True, 5, random.Random(1), spread=True)     # Chris: rifle, Lightning Hawk, knife
     assert w[:3] == [(0x10F, 30), (0x107, 7), (0x119, 0xFFFF)]
-    assert w[3:] == [(0x108, 5), (0x104, 8), (0x105, 7), (0x106, 3)]          # the magnum and the shotguns loaded
+    assert w[3:] == [(0x108, 5), (0x112, 6), (0x104, 8), (0x105, 7)]  # the magnum, grenade launcher and the shotguns (0x106 already in w[:3] as 0x107)
     w2, _x = mods.loadout_plan(4, True, 5, random.Random(1), spread=True, want=0x109)
     assert w2[3] == (0x109, 6) and (0x108, 5) in w2                           # the sniper rifle asked for: in first
     picks = set()
@@ -2193,7 +2193,7 @@ def test_bot_options_turn_the_grenades_and_the_bomb_drop_on(mods, monkeypatch):
     monkeypatch.setattr(R, "AIM_LOCK", True)
     monkeypatch.setattr(R, "FLASH", True)
     out = mods.run(Adapter(round_guest()), "bot_options", nades=True, bomb_drop=True)
-    assert out == {"verified": True, "nades": True, "bomb_drop": True, "aim_lock": True, "flash": True} and R.NADES
+    assert out == {"verified": True, "nades": True, "bomb_drop": True, "aim_lock": True, "flash": True, "arsenal": False} and R.NADES
     assert mods.run(Adapter(round_guest()), "bot_options", flash=False)["flash"] is False and not R.FLASH
     assert mods.run(Adapter(round_guest()), "bot_options", aim_lock=False)["aim_lock"] is False and not R.AIM_LOCK
     assert mods.run(Adapter(round_guest()), "bot_options", nades=False)["nades"] is False and R.BOMB_DROP
