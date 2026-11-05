@@ -70,6 +70,30 @@ test('both desktop PiP entry points use compact mode rather than the old streame
   const surface=fs.readFileSync(require.resolve('../clients/desktop/game-surface.js'),'utf8');
   assert.match(surface,/VIEW\.mode === "compact"/);
 });
+// operator 2026-11-05: watching MercMode on the Spark, the PiP button refused with "The selected session is
+// unavailable. Your game was not changed." — it had passed the remembered This-PC session (long ended) as the target
+// instead of the stream on screen. Only a ready row is pinned; otherwise the controller resolves the watched session.
+test('the PiP button follows the stream on screen instead of a remembered session that has ended', async () => {
+  const run = async ({target, preference}) => {
+    const asks = [];
+    const ctx = vm.createContext({
+      pipSelection: { revision: 7, target: async () => target, preference },
+      compactController: { enter: async requested => { asks.push(requested); return { on: true }; } },
+      console
+    });
+    const start = html.indexOf('const compactEnter = async () => {');
+    assert.ok(start > 0, 'compactEnter sits in index.html');
+    const end = html.indexOf('const compactRestore =', start);
+    await vm.runInContext(html.slice(start, end) + '\ncompactEnter();', ctx);
+    return asks;
+  };
+  const stale = await run({ target: null, preference: { sid: 'ended-on-this-pc', worker: 'i9-NUC', pinned: true } });
+  assert.equal(stale.length, 1);
+  assert.equal('sid' in stale[0], false, 'no session id: the controller resolves the stream being watched');
+  assert.equal(typeof stale[0].current, 'function');
+  const ready = await run({ target: { session_id: 'spark-stream' }, preference: null });
+  assert.equal(ready[0].sid, 'spark-stream', 'a ready row is still pinned');
+});
 test('double click and Escape restore the app; native hover reaches the same controls', () => {
   const start=html.indexOf("gbox.onCompactView?.");
   const end=html.indexOf("setInterval(() => {",start);

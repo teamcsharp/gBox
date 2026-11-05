@@ -4137,9 +4137,13 @@ setInterval(() => { compactContinuity.poll(); pipFollowSelected(); }, 2000); // 
 addEventListener('pagehide', () => compactContinuity.cancel(), {once:true});
 const compactEnter = async () => {
   const revision = pipSelection.revision, current = () => revision === pipSelection.revision;
-  const row = await pipSelection.target(), saved = pipSelection.preference;
+  const row = await pipSelection.target();
   if (!current()) return false;
-  return compactController.enter({current, ...(row || saved ? {sid:row?.session_id || saved.sid} : {})});
+  // The PiP opens on the stream you are watching. A remembered preference is not a target: while a Spark stream was
+  // playing, the remembered This-PC session (long ended) was passed through instead, and the PiP refused it with "The
+  // selected session is unavailable. Your game was not changed." (operator 2026-11-05: "allow me to take the app into
+  // pip mode once i connect to my stream"). With no ready row the controller resolves the session being watched.
+  return compactController.enter({current, ...(row ? {sid: row.session_id} : {})});
 };
 const compactRestore = () => compactController.restore();
 // This PiP shows a running game, wherever it plays: opened if it is closed, moved in place if it shows another game - this
