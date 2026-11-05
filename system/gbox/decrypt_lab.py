@@ -527,15 +527,37 @@ def install(app, store, config, auth, tactical_store=None):
             raise HTTPException(404, f"{title} declares no TITLE_ID")
         return str(tid).upper()
 
+    def _game_id_for(title: str) -> str:
+        """The catalog game id a mod build must be keyed by (the lab's shorthand is not it).
+
+        gBox resolves a launch's mod through the catalog game id, so a build filed under 're5_switch' is invisible
+        to the launcher. Match the title id against the catalog's serial and use that entry's game id.
+        """
+        tid = _title_id(title)
+        try:
+            rows = store.db.execute(
+                "SELECT game_id, body FROM catalog WHERE json_extract(body,'$.platform')='switch'").fetchall()
+            for game_id, body in rows:
+                try:
+                    entry = json.loads(body)
+                except (TypeError, ValueError):
+                    continue
+                if str(entry.get("serial") or "").upper() == tid:
+                    return str(game_id)
+        except Exception:
+            pass
+        return title
+
     def _mod_build(title: str, name: str) -> Path:
         """The LayeredFS overlay folder for this title, created through switch_mods when available."""
         tid = _title_id(title)
+        game_id = _game_id_for(title)
         try:
             from . import switch_mods
-            folder = switch_mods.create_build(_CONFIG, title, name, tid, game_title=title, kind="file")
+            folder = switch_mods.create_build(_CONFIG, game_id, name, tid, game_title=title, kind="file")
             return Path(folder)
         except Exception:
-            base = Path(getattr(_CONFIG, "cache", None) or Path.home() / "gBox" / "gBox-cache") / "mods" / title / name
+            base = Path(getattr(_CONFIG, "cache", None) or Path.home() / "gBox" / "gBox-cache") / "mods" / game_id / name
             base.mkdir(parents=True, exist_ok=True)
             return base
 
