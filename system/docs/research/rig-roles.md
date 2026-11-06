@@ -56,3 +56,32 @@ swap_body -> gltf_to_bin             FAILS: gltf_to_bin reads binary GLB, the wr
 `swap_body` needs a `.glb`; `re4gc_enemies.write_rigged_gltf` deliberately writes a self-contained `.gltf`. The repo has many
 `to_glb` helpers (per title); the missing piece is a JSON-glTF -> GLB step, either reused from one of them or written once as
 a shared utility. That is the whole remaining gap for zombies-as-Sonic - the retarget, the roles and the pack surgery all work.
+## A real bug: a mod built from enemy packs contained no files
+
+`char_swap.build_mod` globbed only `pl*.drs`, so an enemy swap produced a mod whose `files` list was **empty** - it launched,
+said `mod: re4gsonic1512`, and changed nothing. Fixed to carry `em*.drs` as well:
+
+```python
+packed = sorted(list(Path(drs_dir).glob("pl*.drs")) + list(Path(drs_dir).glob("em*.drs")))
+```
+
+Verified: the rebuilt mod reports `files: ["em/em10.drs"]`.
+
+## The ganado pack fits only with its spare bodies collapsed
+
+Sonic retargeted onto the ganado skeleton is bigger than the slot it replaces:
+
+```
+em/em10.drs   swapped 10,654,208  vs 10,628,000 on disc   grows at every texture size (max_tex 8 still grows)
+              with the pack's other 13 body slots collapsed: 10,340,608   FITS
+em/em11.drs   6,271,136 vs 6,260,192 even collapsed        still grows by 10,944
+```
+
+So em10 (the base ganado) can carry Sonic today; em11 needs decimation or a smaller texture set. The texture size is not what
+grows the pack - geometry is - which is worth knowing for every enemy swap after this.
+
+## Open
+
+`autoplay op=prepare` returned **500 Internal Server Error** on this mod (it succeeded on the player mod earlier), so the menus
+were never walked and the capture only reached RE4's main menu. That is the next thing to look at, and it may be the new RE4
+selection branch - it is my code, and it is the one path that differs between the run that worked and this one.

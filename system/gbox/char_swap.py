@@ -124,7 +124,11 @@ def build_mod(cache: Path, iso: Path, drs_dir: Path, name: str, image_name: str,
     if stale.exists():                                         # size and would be reused by launch_game
         stale.unlink()
     try:
-        changes = {f"em/{p.name}": {"from": str(p)} for p in sorted(Path(drs_dir).glob("pl*.drs"))}
+        # pl*: the player bodies; em*: the ENEMY bodies (ganados). Both live in the same em/ folder on the disc and both
+        # are rebuilt by swap_packs, so a mod has to carry whichever ones the caller produced - globbing only pl*.drs made an
+        # enemy swap silently produce a mod with no files in it.
+        packed = sorted(list(Path(drs_dir).glob("pl*.drs")) + list(Path(drs_dir).glob("em*.drs")))
+        changes = {f"em/{p.name}": {"from": str(p)} for p in packed}
         return filemods.build_image(types.SimpleNamespace(cache=Path(cache)), game_id, link, name, changes)
     finally:
         link.unlink()
