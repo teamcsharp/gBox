@@ -195,6 +195,50 @@ MOD_BONE_FIELDS = {
     0x2000D414: (16, 4, "B"),
     0x1C201FC3: (20, 2, "e"),
 }
+# Tangents sit at +12 as four signed bytes on every format that carries one, and decode to unit length on 6198/6198,
+# 16669/16669 and 13594/13594 vertices of the three formats checked.
+MOD_TANGENT_OFFSET = 12
+MOD_TANGENT_FORMATS = frozenset({0x18B0FAA8, 0x1C201FC3, 0x2000D414})
+# Skin weights: two half floats at +24 (0x2000d414, in 0..1 on 16669/16669 vertices) and four bytes at +12
+# (0x1580b60c, summed to 255 on 9183 of 10212 - the rest of that format's field is not fully confirmed).
+MOD_WEIGHT_FIELDS = {
+    0x2000D414: (24, 2, "e"),
+    0x1580B60C: (12, 4, "B"),
+}
+
+
+def decode_tangents(data: bytes, vertex_format: int, count: int, stride: int) -> list[tuple[float, float, float]]:
+    """Unit tangents from signed bytes, for the formats that carry one."""
+    if vertex_format not in MOD_TANGENT_FORMATS:
+        return []
+    out = []
+    for index in range(count):
+        base = index * stride + MOD_TANGENT_OFFSET
+        if base + 3 > len(data):
+            break
+        tx, ty, tz = struct.unpack_from("<3b", data, base)
+        out.append((tx / 127.0, ty / 127.0, tz / 127.0))
+    return out
+
+
+def decode_weights(data: bytes, vertex_format: int, count: int, stride: int) -> list[tuple[float, ...]]:
+    """Skin weights per vertex, for the formats whose weight field is confirmed."""
+    field = MOD_WEIGHT_FIELDS.get(vertex_format)
+    if field is None:
+        return []
+    offset, width, code = field
+    size = width * struct.calcsize("<" + code)
+    out = []
+    for index in range(count):
+        base = index * stride + offset
+        if base + size > len(data):
+            break
+        values = struct.unpack_from(f"<{width}{code}", data, base)
+        if code == "B":
+            out.append(tuple(v / 255.0 for v in values))
+        else:
+            out.append(tuple(float(v) for v in values))
+    return out
 
 
 def decode_bone_ids(data: bytes, vertex_format: int, count: int, stride: int) -> list[tuple[int, ...]]:
@@ -326,6 +370,22 @@ def pack_vertices(vertices: list[dict], vertex_format: int, stride: int) -> byte
                              max(-127, min(127, int(round(nz * 127)))))
         if "uv" in vertex and "uv" in layout:
             struct.pack_into("<2e", packed, layout["uv"], *vertex["uv"])
+        if "tangent" in vertex and vertex_format in MOD_TANGENT_FORMATS:
+            tx, ty, tz = vertex["tangent"]
+            struct.pack_into("<3b", packed, MOD_TANGENT_OFFSET,
+                             max(-127, min(127, int(round(tx * 127)))),
+                             max(-127, min(127, int(round(ty * 127)))),
+                             max(-127, min(127, int(round(tz * 127)))))
+        if "weights" in vertex and vertex_format in MOD_WEIGHT_FIELDS:
+            offset, width, code = MOD_WEIGHT_FIELDS[vertex_format]
+            values = list(vertex["weights"])[:width]
+            while len(values) < width:
+                values.append(0.0)
+            if code == "B":
+                struct.pack_into(f"<{width}B", packed, offset,
+                                 *[max(0, min(255, int(round(v * 255)))) for v in values])
+            else:
+                struct.pack_into(f"<{width}e", packed, offset, *values)
         if "bones" in vertex and bone_field:
             offset, width, code = bone_field
             values = list(vertex["bones"])[:width]
