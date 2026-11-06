@@ -136,7 +136,7 @@ def test_strategy_per_emulator(tmp_path):
     assert J.strategy(SimpleNamespace(save_state=1, load_state=1, config=1, jump_save=1, jump_boot=1)) is None
     assert J.strategy(adapters.DolphinAdapter(cfg, "gamecube")) == "boot"
     assert J.strategy(adapters.DolphinWinAdapter(cfg, "gamecube")) == "boot"
-    assert J.strategy(adapters.RetroArchAdapter(adapters.EmulatorConfig(core="x"), config=cfg, platform="snes")) == "slot"
+    assert J.strategy(adapters.RetroArchAdapter(adapters.EmulatorConfig(core="x"), config=cfg, platform="snes")) == "entryslot"
     assert J.strategy(adapters.MgbaAdapter(cfg, "gba")) is None             # everything else: no jump states
 
 
@@ -471,3 +471,95 @@ def test_a_demo_dolphin_never_stops_on_a_dialog_and_shows_no_messages(tmp_path, 
     argv = ad._argv(rom)
     assert "Dolphin.Interface.UsePanicHandlers=False" in argv            # a game crash doesn't freeze it on a dialog
     assert "Dolphin.Interface.OnScreenDisplayMessages=False" in argv     # no "Saved State to ..s08" on screen
+
+
+# ---- RetroArch entry-slot jump (gbox/jumpstate.strategy() == "entryslot") ----
+
+def real_ra(tmp_path: Path):
+    """A real RetroArchAdapter whose launch paths are never taken: only the entry-slot path helpers are exercised."""
+    cfg = SimpleNamespace(executable="retroarch", core="core.so", args=[])
+    ad = adapters.RetroArchAdapter(cfg, config=SimpleNamespace(runtime=tmp_path))
+    ad.states_override = tmp_path / "states"
+    return ad
+
+
+class FakeEntryAdapter:
+    """The RetroArch entry-slot contract: a _jump_entryslot marker, jump_boot (records jump_from) and a real
+    RetroArchAdapter's _entry_path/_jump_args (borrowed here by delegation, not by launch)."""
+
+    config = None
+
+    def __init__(self, tmp: Path):
+        self.config = SimpleNamespace(runtime=tmp)
+        self.states = tmp / "states"
+
+    def _jump_entryslot(self, src):
+        self.entry = src
+
+    def jump_boot(self, src):
+        self.jump_from = src
+
+    def jump_save(self, dest):
+        return 0
+
+
+class BootAdapter:
+    """An adapter whose type offers jump_boot/jump_save but no _jump_entryslot marker (Dolphin's 'boot' strategy)."""
+
+    config = SimpleNamespace(runtime=Path())
+
+    def jump_boot(self, src):
+        pass
+
+    def jump_save(self, dest):
+        return 0
+
+
+def test_retroarch_uses_the_entryslot_strategy_not_a_boot_or_slot(tmp_path):
+    ad = real_ra(tmp_path)
+    assert J.strategy(ad) == "entryslot"
+    # an adapter whose type has jump_boot/jump_save but no _jump_entryslot marker is still "boot" (Dolphin)
+    assert J.strategy(BootAdapter()) == "boot"
+
+
+def test_retroarch_entry_path_is_content_dot_state1_dot_entry(tmp_path):
+    ad = real_ra(tmp_path)
+    assert ad._content_base("/games/sc2/star.iso") == "star"
+    # the resolved ROM (archive-extracted content) is the basename without its last extension; entry adds ".entry"
+    assert ad._entry_path("/games/sc2/star.iso") == (tmp_path / "states" / "star.state1.entry")
+
+
+def test_jump_args_stages_the_entry_state_and_requests_entryslot_1(tmp_path):
+    ad = real_ra(tmp_path)
+    src = tmp_path / "jumpstates" / "sc2.state"
+    src.parent.mkdir(); src.write_bytes(b"SAVESTATE")
+    rom = "/games/sc2.iso"
+    assert ad._jump_args(rom) == []                                     # no jump asked for: plain Play stays plain
+    assert not ad._entry_path(rom).exists()
+    ad.jump_boot(src)                                                   # a jump-requested launch (autoplay, never a Play)
+    assert ad._jump_args(rom) == ["-e", "1"]                            # RetroArch boots into the entry slot
+    dst = ad._entry_path(rom)
+    assert dst.read_bytes() == b"SAVESTATE"                             # the jump state landed at <content>.state1.entry
+    assert dst.name == "sc2.state1.entry"
+    # the operator's plain slot file for this content is untouched: the .entry is a distinct path
+    assert not (tmp_path / "states" / "sc2.state1").exists()
+
+
+def test_jump_state_is_saved_through_the_reserved_slot_and_never_switches(tmp_path):
+    ad = real_ra(tmp_path)
+    captured = {}
+
+    def save_state(slot=None):
+        captured["slot"] = slot
+        f = tmp_path / "states" / f"sc2.state{slot}"
+        f.parent.mkdir(exist_ok=True)
+        f.write_bytes(b"PLAYFIELD")
+        return {"path": str(f), "slot": slot}
+
+    ad.save_state = save_state
+    dest = tmp_path / "jumpstates" / "sc2.state"
+    assert ad.jump_save(dest) == 9                                      # 9 bytes: PLAYFIELD
+    assert dest.read_bytes() == b"PLAYFIELD"
+    assert captured == {"slot": 9}                                      # reserved demo slot, the operator's slot untouched
+
+
