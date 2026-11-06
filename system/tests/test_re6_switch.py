@@ -3870,3 +3870,34 @@ def test_ranged_break_in_decide_turns_to_fight_ranged_enemy():
         f"expected doing='turn' (ranged_break), got {bot.doing}: out={out}"
     assert bot.why.startswith("just took ranged damage"), \
         f"expected ranged_break reason, got: {bot.why}"
+
+
+
+
+def test_hazard_break_due_bails_bonus_run_on_ranged_hit():
+    """#5056 (11-03/11-04 incidents): the bot is in bonus_run when a ranged enemy at 7 m
+    (beyond HAZARD_CONTACT_R 250 cm and FIRE_ZONE_R 400 cm) fires. HP drops with nobody
+    within 2.5 m, so _hazard_break_due fires and _decide bails the bonus_run to turn to
+    fight the ranged enemy, instead of staying frozen in the bonus_run while the ranged
+    enemy keeps shooting."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((0.0, 0.0, 700.0, 700),),
+        cam_yaw=0.0))
+    t0 = clock[0]
+    p = snap["player"]
+    flat = lambda e: math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+    bot.doing = "bonus_run"
+    bot.hazards = []
+    bot._hz_hp = 700
+    p["hp"] = 700
+    bot._hazard_tick(p, snap["enemies"], flat, t0)
+    t1 = t0 + 0.1
+    p["hp"] = 680
+    bot._hazard_tick(p, snap["enemies"], flat, t1)
+    assert bot._hazard_break_due(p, snap["enemies"], flat, t1) is True
+    assert len(bot.hazards) == 1, "hazard mark should be set at the hit location"
+    out = bot._decide(p, snap["enemies"], flat, None, math.inf, snap, t1)
+    assert out is not None
+    assert bot.why.startswith("just took ranged damage"), \
+        f"expected ranged_break reason, got: {bot.why}"
+    assert bot.doing == "turn", f"expected doing='turn', got: {bot.doing}"
