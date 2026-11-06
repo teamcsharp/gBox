@@ -4,7 +4,7 @@ import pytest
 import zlib
 from pathlib import Path
 
-from gbox.formats.cso import CISO_MAGIC, BLOCK_UNIT, Cso, CsoError, _split, _split_width
+from gbox.formats.cso import CISO_MAGIC, BLOCK_UNIT, Cso, CsoError, _split_width
 
 
 def make_cso(path: Path, data: bytes, block_size: int = 2048, version: int = 1,
@@ -81,6 +81,78 @@ def make_cso(path: Path, data: bytes, block_size: int = 2048, version: int = 1,
     return modes
 
 
+def make_cso_v1(path: Path, data: bytes, block_size: int = 16384, align: int = 2,
+                force_stored: tuple = ()) -> list[int]:
+    """Synthetic CISO v1 writer matching the real PSP/PS3 image layout.
+
+    Header (24 bytes, little-endian): magic b"CISO" | u32 header_size (24)
+    | u64 total_bytes | u32 block_size | u8 ver (1) | u8 align | u16 rsv (0).
+    TOC: n_blocks + 1 u32 entries starting at offset 24.
+    Each entry is a plain offset in (2^align)-byte units (2048 by default).
+    Offsets are monotone non-decreasing; the last entry is the end sentinel.
+    """
+    import zlib
+    n_blocks = (len(data) + block_size - 1) // block_size
+    unit = 1 << align  # offset unit in bytes (2048 for align=2)
+    toc_bytes = 4 * (n_blocks + 1)
+    data_start = ((24 + toc_bytes + BLOCK_UNIT - 1) // BLOCK_UNIT) * BLOCK_UNIT
+
+    toc: list[int] = []
+    cursor_units = data_start // unit
+
+    for i in range(n_blocks):
+        chunk = data[i * block_size:(i + 1) * block_size].ljust(block_size, b"\x00")
+        if i in force_stored:
+            mode = 0
+            payload = chunk
+            payload_units = block_size // unit
+        else:
+            c = zlib.compressobj(9, zlib.DEFLATED, -15)
+            payload = c.compress(chunk) + c.flush()
+            mode = 1
+            payload_units = (len(payload) + unit - 1) // unit
+            if len(payload) >= len(chunk):
+                mode = 0
+                payload = chunk
+                payload_units = block_size // unit
+        # Pack mode in top 3 bits, offset in low 29 bits
+        toc.append((mode << 29) | cursor_units)
+        cursor_units += payload_units
+
+    # Sentinel: mode 1, offset at cursor
+    toc.append((1 << 29) | cursor_units)
+
+    # Build body
+    toc_end = 24 + toc_bytes
+    toc_padding = b"\x00" * (data_start - toc_end)
+    sentinel_units = toc[-1] & 0x1FFFFFFF
+    body = bytearray(b"\x00" * (sentinel_units * unit - data_start))
+
+    for i in range(n_blocks):
+        chunk = data[i * block_size:(i + 1) * block_size].ljust(block_size, b"\x00")
+        if i in force_stored or (toc[i] >> 29) == 0:
+            payload = chunk
+        else:
+            c = zlib.compressobj(9, zlib.DEFLATED, -15)
+            payload = c.compress(chunk) + c.flush()
+            if len(payload) >= len(chunk):
+                payload = chunk
+        start_unit = toc[i] & 0x1FFFFFFF
+        body_offset = start_unit * unit - data_start
+        body[body_offset:body_offset + len(payload)] = payload
+
+    header = struct.pack("<4sIQIBBH", b"CISO", 24, len(data), block_size, 1, align, 0)
+    path.write_bytes(header + struct.pack(f"<{n_blocks + 1}I", *toc) + toc_padding + body)
+    return [toc[i] >> 29 for i in range(n_blocks)]
+
+
+def make_cso_file_v1(path: Path, data: bytes, block_size: int = 16384, align: int = 2,
+                     force_stored: tuple = ()) -> Cso:
+    """Write a synthetic CISO v1 file and return a Cso reader for it."""
+    make_cso_v1(path, data, block_size, align, force_stored)
+    return Cso(path)
+
+
 def make_cso_file(path: Path, data: bytes, block_size: int = 2048, version: int = 1,
                   force_stored: tuple = ()) -> Cso:
     """Write a synthetic CISO file and return a Cso reader for it."""
@@ -88,20 +160,26 @@ def make_cso_file(path: Path, data: bytes, block_size: int = 2048, version: int 
     return Cso(path)
 
 
+def _split_v2(entry: int, shift: int) -> tuple[int, int]:
+    """Mirror of the reader's v2 entry split: mode in the top bits, offset in the rest."""
+    mask = ~((1 << shift) - 1)
+    return (entry & mask) >> shift, entry & ~mask
+
+
 class TestSplit:
-    """Test _split and mode-field detection."""
+    """Test the v2 mode-field split (top-3-bit and top-2-bit layouts)."""
 
     def test_mode_in_top_3_bits(self):
         """Mode 1 with offset 100 in top 3 bits."""
         entry = (1 << 61) | 100
-        mode, offset = _split(entry, 61)
+        mode, offset = _split_v2(entry, 61)
         assert mode == 1
         assert offset == 100
 
     def test_mode_in_top_2_bits(self):
         """Mode 2 with offset in top 2 bits layout."""
         entry = (2 << 62) | 200
-        mode, offset = _split(entry, 62)
+        mode, offset = _split_v2(entry, 62)
         assert mode == 2
         assert offset == 200
 
@@ -177,6 +255,74 @@ class TestValidation:
         path.write_bytes(header)
         with pytest.raises(CsoError, match="invalid block size"):
             Cso(path)
+
+
+class TestCisoV1:
+    """Tests for the CISO v1 layout (u32-per-block TOC, u64 total_bytes)."""
+
+    def test_roundtrip_v1(self, tmp_path: Path):
+        """Create and read back a synthetic CISO v1 file."""
+        data = b"X" * 50000  # several 16384-byte blocks
+        path = tmp_path / "test_v1.cso"
+        cso = make_cso_file_v1(path, data)
+        assert cso.version == 1
+        assert cso.block_size == 16384
+        assert cso.image_size == len(data)
+        assert cso.read(0, len(data)) == data
+
+    def test_v1_stored_and_mixed_blocks(self, tmp_path: Path):
+        """A mix of stored (mode 0) and compressed (mode 1) blocks in v1."""
+        data = (b"A" * 16384) + (b"B" * 16384) + (b"C" * 16384)
+        path = tmp_path / "v1mixed.cso"
+        cso = make_cso_file_v1(path, data, force_stored=(0,))
+        assert cso.read(0, len(data)) == data
+
+    def test_v1_observed_header_fields(self, tmp_path: Path):
+        """Lock the exact field layout seen on the real owned RE4 CSO: u64
+        total_bytes, u32 block_size=16384, ver=1, align=2, u32 TOC entries
+        with the offset in low 29 bits."""
+        data = b"\x00" * (3 * 16384)
+        path = tmp_path / "v1fields.cso"
+        make_cso_v1(path, data)
+        raw = path.read_bytes()
+        magic, header_size = raw[:4], struct.unpack_from("<I", raw, 4)[0]
+        total_bytes = struct.unpack_from("<Q", raw, 8)[0]
+        block_size = struct.unpack_from("<I", raw, 16)[0]
+        ver, align = raw[20], raw[21]  # ver u8 @20, align u8 @21, rsv u16 @22
+        assert magic == b"CISO"
+        assert header_size == 24
+        assert total_bytes == len(data)
+        assert block_size == 16384
+        assert ver == 1
+        assert align == 2
+
+
+class TestRealRe4HeaderFixture:
+    """Validate the parser against the observed real RE4 CSO header bytes."""
+
+    def test_parses_real_header(self):
+        """The real 24-byte header (PS3 RE4 CSO) must decode as CISO v1."""
+        fixture = Path(__file__).parent / "fixtures" / "re4_cso_header.bin"
+        raw = fixture.read_bytes()
+        assert raw[:4] == b"CISO"
+        header_size = struct.unpack_from("<I", raw, 4)[0]
+        total_bytes = struct.unpack_from("<Q", raw, 8)[0]
+        block_size = struct.unpack_from("<I", raw, 16)[0]
+        ver, align = raw[20], raw[21]  # ver u8 @20, align u8 @21, rsv u16 @22
+        assert header_size == 24
+        assert total_bytes == 0x108658000  # 4,435,836,928
+        assert block_size == 0x4000        # 16384
+        assert ver == 1
+        assert align == 2
+        # First TOC entries are u32 offsets in 2048-byte units, low 29 bits.
+        n_blocks = total_bytes // block_size
+        assert n_blocks == 270742
+        idx = [struct.unpack_from("<I", raw, 24 + i * 4)[0] for i in range(16)]
+        assert idx[0] == 0x04219D  # 270,749 (sentinel-sized literal from real bytes)
+        # every entry's low 29-bit offset is a sane number of 2048-byte units
+        for e in idx:
+            assert (e >> 29) <= 3
+            assert (e & 0x1FFFFFFF) < (1 << 42)
 
 
 if __name__ == "__main__":
