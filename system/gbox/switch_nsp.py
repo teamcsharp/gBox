@@ -263,13 +263,18 @@ def classify_nca_header(header: bytes) -> str:
 def build_manifest(
     nsp_path: str | Path,
     container_sha256: str | None = None,
-    hash_limit: int = 256 << 20,
+    hash_limit: int | None = None,
 ) -> dict:
     """Build the authoritative owned-build manifest for an NSP container.
 
     The manifest records the container identity, the member table with byte
     offsets, the CNMT metadata read out of the container, and a per-member
     hash cross-check against the hashes the title publishes about itself.
+
+    ``hash_limit`` is opt-in only: member hashing streams in 1MiB blocks, so
+    a cap adds no memory safety. It exists solely for callers that want to
+    bound wall-clock time on very large containers; ``None`` (default) hashes
+    every member, including multi-gigabyte program NCAs.
     """
     path = Path(nsp_path)
     total_size = path.stat().st_size
@@ -292,7 +297,7 @@ def build_manifest(
             if entry.name.endswith(".nca"):
                 fh.seek(image.data_offset + entry.offset)
                 record["payload_kind"] = classify_nca_header(fh.read(0x40))
-            if entry.size <= hash_limit:
+            if hash_limit is None or entry.size <= hash_limit:
                 actual = sha256_region(fh, image.data_offset + entry.offset, entry.size)
                 expected = None
                 if meta is not None and not entry.name.endswith(".cnmt.xml"):

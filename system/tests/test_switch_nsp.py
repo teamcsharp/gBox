@@ -177,6 +177,39 @@ def test_build_manifest_cross_checks_published_hashes():
         os.unlink(path)
 
 
+def test_build_manifest_hashes_large_members_by_default():
+    """Regression: the old 256MB hash cap skipped the 6.86GB Paper Mario
+    program NCA, leaving it unverified. Streaming hash has no memory cost,
+    so the default must hash every member; an explicit cap still skips."""
+    program_payload = b"\xbb" * 16
+    digest = hashlib.sha256(program_payload).hexdigest()
+    xml = CNMT_XML.replace(
+        "4e9a28e91be8344f0c109a4f663fe19bd187d09634c6a9a8f78f0ae5995e6da6", digest
+    ).encode("utf-8")
+    members = [
+        ("4e9a28e91be8344f0c109a4f663fe19b.nca", program_payload),
+        ("44193b1a45a7cd27eccb60e1cbdd9a7a.cnmt.xml", xml),
+    ]
+    blob = _build_pfs0(members, stride=0x18)
+    with tempfile.NamedTemporaryFile(delete=False) as fh:
+        fh.write(blob)
+        path = fh.name
+    try:
+        default = switch_nsp.build_manifest(path, container_sha256="0" * 64)
+        capped = switch_nsp.build_manifest(path, container_sha256="0" * 64, hash_limit=10)
+    finally:
+        os.unlink(path)
+    by_default = {m["name"]: m for m in default["members"]}
+    program = by_default["4e9a28e91be8344f0c109a4f663fe19b.nca"]
+    assert program["sha256"] == digest
+    assert program["sha256_verified"] is True
+    assert "hash_skipped" not in program
+    by_capped = {m["name"]: m for m in capped["members"]}
+    skipped = by_capped["4e9a28e91be8344f0c109a4f663fe19b.nca"]
+    assert skipped["hash_skipped"] == "member larger than hash limit"
+    assert skipped["sha256_verified"] is None
+
+
 def _main() -> int:
     failures = 0
     for name, func in sorted(globals().items()):
