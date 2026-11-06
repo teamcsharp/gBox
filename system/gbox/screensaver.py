@@ -535,7 +535,7 @@ class Screensaver:
             # the operator's random skin swap: this round's character plays with another character's model group
             from . import skin_swap
             made = skin_swap.random_swap_build(self.config, g['game_id'], merc_pick.get('map_id'), self.rng,
-                                               title=merc_pick.get('title'), log=self.log)
+                                               title=merc_pick.get('title'))
             if made:
                 build = {'name': made['build']}
                 self.store.audit(ACTOR, 'mercmode.skin_swap', w['name'],
