@@ -394,6 +394,51 @@ class SwapIn(BaseModel):
     build: str = "gbox-lab"   # LayeredFS overlay name
 
 
+# The inbox's classes, most specific first. A ticket's title decides: (<needle>, <label>, <how>) where how is "prefix"
+# or "contains". This was a closure inside the triage route, which meant it could not be tested and could not be
+# measured, and the catch-all "operator request" grew into the largest bucket simply because nothing named the rest.
+INBOX_CLASSES = (
+    ("improve ", "improve a title", "prefix"),
+    ("rank_not_verified", "rank not verified", "contains"),
+    ("<agent-message", "agent message", "contains"),
+    ("<pasted", "pasted content", "contains"),
+    ("<ide_opened_file", "editor context", "contains"),
+    ("<cross-session-message", "agent message", "contains"),
+    ("build report", "build report", "contains"),
+    ("custom build", "custom build", "contains"),
+    ("extraction engineering", "extraction", "contains"),
+    ("session observation", "session observation", "contains"),
+    ("gap:", "gap: missing content", "prefix"),
+    ("not playing", "playability issue", "contains"),
+    ("freezes", "playability issue", "contains"),
+    ("launch failed", "launch failure", "contains"),
+    ("crash", "crash report", "contains"),
+    ("mercenaries", "mercenaries", "contains"),
+    ("ram hook", "RAM hook", "contains"),
+    ("damage batch", "damage evidence", "contains"),
+    ("autoplay coaching", "autoplay coaching", "contains"),
+    ("session models", "session models", "contains"),
+    ("gidra", "gidra systems", "contains"),
+    ("hermes", "hermes fleet", "contains"),
+    ("unlock", "unlocked content", "prefix"),
+    ("character replacement", "character replacement", "contains"),
+)
+INBOX_CATCH_ALL = "operator request"
+
+
+def classify_request(title: str) -> str:
+    """The inbox class for one ticket, from its title.
+
+    Order matters: generated classes come first, then the standing per-game work, then subject matter. Anything that
+    matches nothing is an operator request - the catch-all, which should stay small enough that reading it is possible.
+    """
+    text = (title or "").casefold()
+    for needle, label, how in INBOX_CLASSES:
+        if (text.startswith(needle) if how == "prefix" else needle in text):
+            return label
+    return INBOX_CATCH_ALL
+
+
 class UePakIn(BaseModel):
     """List the Unreal Engine .pak archives in a directory (any UE4 title, e.g. an extracted Android OBB).
 
@@ -1023,26 +1068,8 @@ def install(app, store, config, auth, tactical_store=None):
         from . import hermes_pool
 
         def klass(title: str) -> str:
-            """The inbox by what a ticket IS: generated classes first, then the standing per-game work, then the
-            operator's own words (the largest bucket was "other" only because nothing named it - it is operator
-            requests and the named lanes like "RAM hook: RE5")."""
-            t = (title or "").casefold()
-            for key, label in (("rank_not_verified", "rank not verified"),
-                               ("<agent-message", "agent message"),
-                               ("launch failed", "launch failure"),
-                               ("mercenaries", "mercenaries"),
-                               ("ram hook", "RAM hook"),
-                               ("damage batch", "damage evidence"),
-                               ("autoplay coaching", "autoplay coaching"),
-                               ("session models", "session models"),
-                               ("improve ", "improve a title")):
-                if t.startswith(key) if key in ("improve ",) else key in t:
-                    return label
-            if t.startswith("unlock"):
-                return "unlocked content"
-            if "character replacement" in t:
-                return "character replacement"
-            return "operator request"
+            """The inbox by what a ticket IS (gbox.decrypt_lab.classify_request, tested on its own)."""
+            return classify_request(title)
 
         buckets: dict = {}
         total = open_total = 0
