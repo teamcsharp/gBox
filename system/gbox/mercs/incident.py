@@ -59,9 +59,52 @@ def unpack_context(event):
         raise ValueError('invalid damage packed context: ' + str(exc)[:200]) from exc
 
 
+def _switch_witness(memory, title, snap):
+    """A bounded RAM witness for a Switch title: the player's actor and the nearest enemies, hashed and zlib+base64.
+
+    The PS3 path is identity-checked against sPlayer; a Switch driver's snapshot already carries each unit's own
+    pointer, so the same bytes (and the same encoding) can be taken here and an incident on RE4/RE5/RE6 ends up with
+    real RAM instead of "unsupported" - the thing that stood in for a save state on a platform that has none.
+    """
+    player = (snap.get('player') or {}).get('ptr')
+    if not isinstance(player, int) or player <= 0:
+        return {'state': 'no_player', 'title': title}
+    out = {'state': 'done', 'atomic': False, 'started_at': time.time(), 'spans': [],
+           'native_save_state': 'not captured: this platform has no save state (eden/citron provide none)',
+           'format': 'zlib+base64; SHA256 covers uncompressed bytes',
+           'scope': 'at most 48 KiB of the current player actor and the nearest four enemies; not full RAM'}
+    spans = [('player', player, 0x3000)]
+    position = (snap.get('player') or {}).get('pos')
+    enemies = [e for e in (snap.get('enemies') or ()) if isinstance(e.get('ptr'), int) and e['ptr'] > 0]
+    if isinstance(position, (list, tuple)) and len(position) >= 3:
+        try:
+            enemies.sort(key=lambda e: math.dist(e.get('pos') or (0, 0, 0), position))
+        except (TypeError, ValueError):
+            pass
+    spans += [('enemy', e['ptr'], 0x1500) for e in enemies[:4]]
+    used = 0
+    try:
+        for kind, address, size in spans:
+            if used + size > 48 * 1024:
+                out['truncated_to_budget'] = True
+                out.setdefault('omitted_spans', []).append({'kind': kind, 'address': hex(address), 'size': size})
+                continue
+            data = memory.rd(address, size)
+            if len(data) != size:
+                raise ValueError(f'short {kind} read')
+            used += size
+            out['spans'].append({'kind': kind, 'address': hex(address), 'size': size, 'at': time.time(),
+                                 'sha256': hashlib.sha256(data).hexdigest(),
+                                 'data_b64': base64.b64encode(zlib.compress(data, 1)).decode('ascii')})
+    except Exception as exc:                                  # noqa: BLE001 - a witness never costs the incident
+        out.update(state='partial' if out['spans'] else 'failed', error=str(exc)[:240])
+    out['finished_at'] = time.time()
+    return out
+
+
 def ram_witness(memory, title, snap):
     if title != 'BLUS30491':
-        return {'state': 'unsupported', 'title': title}
+        return _switch_witness(memory, title, snap)
     from .titles import re5_ps3 as R
     from .titles import re5_combat as C
     started = time.time()
