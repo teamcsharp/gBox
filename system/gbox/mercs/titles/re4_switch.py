@@ -8,15 +8,14 @@ cEm / EmMgr enemy table, the title.cpp task with its TW work area), closer to gb
 read-only signature) plus a fixed offset, and reads go through the gbox.adapters SwitchLinuxAdapter (Eden,
 single-core, NCE: a guest address is the host address) / CitronLinuxAdapter.
 
-Renders on Eden only on the GB10 (switch_linux_emulator="eden"; Citron is broken there - memory
-gbox-switch-render-fix-2026-11-03). The guest RAM layout is the GAME's, so addresses measured on ANY Eden host
-apply to the lilspark MercMode rotation.
+Runs on Citron NEO d3df71e55 only (SWITCH_CITRON_TITLES). Eden cannot run it: single-core hangs the guest and
+multi-core crashes with 0xE401. The guest RAM layout is the GAME's, so an offset measured in one session holds for all.
 
-STATUS 2026-11-04: SCAFFOLD. Every live-measured constant below is None. The plumbing (signature guard, snapshot
-shape, menu walk, screen classifier, first-cut combat brain) mirrors re5_switch / re6_switch and re4_gc so that the
-live RAM scan only has to fill the constants. Until the signature and the struct anchors are measured, snapshot()
-returns the empty round shape, screen() returns "loading"/"unknown", and step() returns None, so the menu loop is
-inert and the map's mercs.ready stays false (RE4 is kept out of the rotation).
+STATUS 2026-11-06:
+- MEASURED: module_base (signature), round entry, the keymap, and the walk from the title to a live round, which reads
+  the capture frame (gbox.mercs.titles.re4_switch_screens) and was proven 5 boots out of 5.
+- PENDING: the player, enemy and clock anchors below. Until they are measured snapshot() returns the empty round shape
+  and the map's mercs.ready stays false, so MercMode keeps RE4 out of the rotation.
 
 Known from RE4 itself (gbox.re4_menus / gbox.re4_merc_bot, GameCube), shared with the Switch port:
 - 5 characters: Leon, Ada, Krauser, HUNK, Wesker (Select Player, portraits left to right)
@@ -24,8 +23,8 @@ Known from RE4 itself (gbox.re4_menus / gbox.re4_merc_bot, GameCube), shared wit
 - The Mercenaries is a separate mode (title main menu -> THE MERCENARIES -> GAME START -> player -> stage -> round)
 - The round is a countdown clock with a combo / score; a character starts with a fixed loadout
 
-LIVE RAM-SCAN PLAN: docs/research/re4-switch-ram.md. The map file (filled by the scan):
-profiles/gamedata/010099A00BC1E000-ram.json.
+Measurements: docs/research/re4-switch-ram.md, docs/research/re4-switch-round-gate.md, docs/research/re4-switch-menu-walk.md.
+The map file: profiles/gamedata/010099A00BC1E000-ram.json.
 """
 from __future__ import annotations
 
@@ -34,19 +33,24 @@ import struct
 import time
 
 from ..driver import Driver
+from . import re4_switch_screens as screens
 
 TITLE_ID = "010099A00BC1E000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/010099A00BC1E000-ram.json
 
-# ---------------------------------------------------------------------------
-# Live-measured constants - ALL PENDING the Eden RAM scan (docs/research/re4-switch-ram.md).
-# Fill these, flip the map's mercs.ready to true, and the driver plays. Until then the guards below keep it inert.
-# ---------------------------------------------------------------------------
-BUILD_ID = "82C2A04A21D3E0B850F273D4149C9003"   # main NSO build id (verified live on Eden 2026-11-04 boot log:
-                                        # "build_id=82C2A04A21D3E0B850F273D4149C9003, name=main"; game 1.0.2, 64-bit)
-SIG_OFF = None                          # pending: offset into main of 64 read-only bytes unique in the module
-SIGNATURE = None                        # pending: those 64 bytes (bytes.fromhex(...)); module_base pins the boot by them
+# Static identity of the Switch build, from Citron's dump_nso (2026-11-05, docs/research/re4-switch-ram.md): the file is
+# the 0x100-byte NSO header plus the image at vaddr 0, so a pattern at vaddr V is at base + V in the guest (NCE: guest
+# address == host address). Verified live: the signature is found once, at base 0x3ca7c04000.
+BUILD_ID = "82C2A04A21D3E0B850F273D4149C9003"     # the dumped main-*.nso name
+MAIN_NSO_SHA256 = "98ca897f07b2c864a0cabfb9dd8ca46a54b88c565ba629da3b7a4b6a57a57441"
+SIG_OFF = 0x100000                      # deep in the image, away from the load stubs at vaddr 0
+SIGNATURE = bytes.fromhex(
+    "fd7b07a9fdc30191355100b0b5c646f9a90240f928514439f30300aa88080035"
+    "285544391f0d007121080054285100b008bd46f9080140f98a018a5208696a38")
 
+# ---------------------------------------------------------------------------
+# Live-measured constants still PENDING (docs/research/re4-switch-ram.md).
+# ---------------------------------------------------------------------------
 # Static manager anchors (offsets from module_base). On the RE4 engine these are the global work area (pG), the
 # player pointer, the enemy manager (EmMgr: base / count / stride) and the Mercenaries game struct (clock / combo /
 # score / kills). The GameCube build's absolute addresses (gbox.re4_merc_bot: P_GLOBAL, P_PLAYER, EMMGR, MERC) and
@@ -73,19 +77,10 @@ MERC_KILLS = None                       # pending
 MERC_SCORE = None                       # pending
 MERC_PHASE = None                       # pending (0 intro / 1 playing / 3 over, if the port keeps RE5's scheme; else derive)
 
-# Menu work-area (TW) offsets, from gbox.re4_menus (GameCube). The Switch port is expected to keep the title.cpp
-# routine state machine; the live scan confirms the offsets and the routine / cursor codes.
-TW_ROUTINE = None                       # pending (GC TW+0x00: 5 main menu, 6 extra games, 7 game starting)
-TW_SUB = None                           # pending (GC TW+0x01 step: 8 Select Player, 0xC Select Stage)
-TW_MENU_CURSOR = None                   # pending (GC TW+0x28 main-menu cursor)
-TW_MERC_CURSOR = None                   # pending (GC TW+0x54 The Mercenaries: 0 GAME START / 1 EXIT)
-TW_PLAYER_CURSOR = None                 # pending (GC TW+0x55 Select Player: 0..4)
-TW_STAGE_CURSOR = None                  # pending (GC TW+0x56 Select Stage: 0..3, a 2x2 grid)
-# The main-menu cursor index of THE MERCENARIES (with the extra games unlocked). GC: the entries are START,
-# ASSIGNMENT ADA, THE MERCENARIES, LOAD, OPTIONS (gbox.re4_menus), so THE MERCENARIES is index 2 there; the Switch HD
-# menu layout is measured live. None = unknown, and the walk then WAITS on the main menu rather than pressing A blind
-# (a blind confirm there can start a story game - gbox.re4_menus / re4_merc_bot warn the bot never presses blind).
-MERC_MENU_TARGET = None                 # pending (GC: 2); the Select Stage grid layout: index = row*2 + col
+# Rows the walk steers to (re4_switch_screens reads them from the frame). The cursor opens on LOAD, and a confirm there
+# loads a story save, so the walk only ever confirms on the row it has read as its target.
+EXTRAS_ROW = 5                          # main menu: NEW GAME, LOAD, LEADERBOARDS, HELP & OPTIONS, ACHIEVEMENTS, EXTRAS, CREDITS
+MERCENARIES_ROW = 2                     # EXTRAS: SEPARATE WAYS, ASSIGNMENT ADA, THE MERCENARIES, MOVIE BROWSER, ADA'S REPORT
 
 CLOCK_MAX_S = 1200.0                    # the Mercenaries clock never reads more than this (sanity bound, from re4_merc_bot)
 
@@ -105,10 +100,20 @@ PLAYER_TARGET, STAGE_TARGET = 0, 0                              # Leon, Village:
 
 # Default controls hypothesis for the first cut (RE4 remaster, Switch pad). The scan confirms them live before the
 # brain fires; until then the brain only turns (CONTROLS_READY False), so a scan session never wastes ammo blind.
-CONTROLS_READY = False
-AIM_BTN, FIRE_BTN, RELOAD_BTN = "zr", "a", "r"   # pending live confirmation (RE4 UHD default: aim held, fire, reload)
+CONTROLS_READY = True                            # live-confirmed 2026-11-04 on lilspark/Citron (in-round send_input)
+AIM_BTN, FIRE_BTN, RELOAD_BTN = "zl", "zr", "r"  # zl = aim (held, pops the red laser), zr = fire, a = menu confirm
+TURN = {"left": "lleft", "right": "lright"}      # RE4 is tank-controlled: the left stick turns. The d-pad is item select
 
 DPAD = {"up": "dup", "down": "ddown", "left": "dleft", "right": "dright"}
+
+# Round entry (measured live 2026-11-04, docs/research/re4-switch-round-gate.md): the stage loads with intro banners up and
+# holds the whole round behind them. A pages them; one press is not enough, three start the clock, more are harmless.
+INTRO_PRESSES, INTRO_GAP_S = 3, 0.9
+
+
+def round_entry_events() -> list[dict]:
+    """One A press in the shape SwitchLinuxAdapter.send_input takes."""
+    return [{"key": "a", "down": True}, {"key": "a", "down": False}]
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +201,7 @@ _EMPTY = {"player": None, "enemies": [], "timer": None, "timer_start": None, "sc
 
 
 def snapshot(m) -> dict:
-    """The round from RAM. SCAFFOLD: returns the empty shape until the anchors below are measured (every read guarded).
+    """The round from RAM: the empty shape until the anchors below are measured (every read guarded).
 
     When the constants are filled this reads, like re5_switch.snapshot:
       player  : {ptr, pos (x,y,z cm), rot (facing rad), hp, hp_max}
@@ -291,7 +296,7 @@ def snapshot(m) -> dict:
 
 def own_screen(snap: dict) -> str:
     """playing / dead / results / story / loading from the round's own fields (mirrors re4_gc.own_screen, with the
-    merc phase when the port exposes one). Conservative: unknown stays "loading" so the walk waits, never blind."""
+    merc phase when the port exposes one). Conservative: unknown stays "loading", so the walk reads the frame instead."""
     p = snap.get("player")
     room, phase = snap.get("room"), snap.get("mercenaries_phase")
     if phase == PHASE_OVER:
@@ -312,96 +317,69 @@ def own_screen(snap: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Menu walk (title -> main menu -> THE MERCENARIES -> GAME START -> Select Player -> Select Stage -> round).
-# SCAFFOLD: title_work() reads the TW cursors once S_TITLE_TASK and the TW_* offsets are measured; until then screen()
-# falls back to the round's own fields and step() returns None (the walk is inert).
+# Menu walk: title -> main menu -> EXTRAS -> THE MERCENARIES -> GAME START -> Select Player -> Select Stage -> round.
+# Reads the capture frame, because the title task's menu state has no RAM anchor yet. A press goes in only on a screen a
+# frame has named, and a confirm only on the row the walk wants. No BOOT_KEY: mercs_bot.Boot presses it on "unknown",
+# and an unnamed screen is exactly where a blind A does harm (11-06: A presses went LOAD -> a story save -> the merchant).
 # ---------------------------------------------------------------------------
-BOOT_KEY = "a"                          # at the title / PRESS START, before any menu is readable, nudge forward
-STEPS = {"title": "a", "results": "a", "story_starting": None}
+# A confirm takes a moment to show, and the menus accept input while they fade. A second A in that moment lands on the
+# next screen's default row: LOAD from the title, SEPARATE WAYS from the main menu. So each screen takes one confirm
+# per gap, however long the picture takes to change.
+CONFIRM_GAP_S = {"title": 5.0, "main_menu": 3.0, "extras_menu": 3.0, "mercs_title": 3.0, "select_player": 3.0,
+                 "select_stage": 5.0, "round_intro": INTRO_GAP_S}
+_confirmed: dict[str, float] = {}
 
 
-def title_work(m, base) -> int | None:
-    """-> the title.cpp task's TW work area (its menu cursors). Pending: the scheduler/stack scan (gbox.re4_menus.tw
-    does it on the GameCube build by finding the routine table beside TW on the task's saved stack). Returns None
-    until S_TITLE_TASK and the scan are ported to the Switch task layout."""
-    if S_TITLE_TASK is None or base is None:
-        return None
-    # TODO(live scan): port gbox.re4_menus.tw's task/stack walk to the Switch task layout, or anchor TW directly if
-    # the scan finds a static pointer to it. Leave None until then: the walk stays inert, never pressing blind.
-    return None
+def begin_run(**_turn) -> None:
+    """A new walk (mercs_bot.play): no confirm is outstanding."""
+    _confirmed.clear()
+
+
+def _reader(m) -> screens.Reader:
+    reader = getattr(m, "re4_screens", None)
+    if reader is None:
+        reader = screens.Reader()
+        m.re4_screens = reader
+    return reader
 
 
 def screen(m, merc=None) -> dict:
-    """Where RE4 is, for the menus loop (gbox.mercs_bot). The round's own fields first (playing/dead/results/story),
-    then the TW menu cursors (main_menu / mercs_title / select_player / select_stage) once they are measured."""
+    """Where RE4 is, for the menus loop (gbox.mercs_bot). The round's own RAM fields win once they are measured; until
+    then, and on every menu, the capture frame. A frame that cannot be taken names nothing, so nothing is pressed."""
     snap = merc if isinstance(merc, dict) else snapshot(m)
     where = own_screen(snap)
-    out = {"where": where, "cursor": None, "target": None}
     if where in ("playing", "dead", "results", "story"):
-        return out
-    base = snap.get("module_base")
-    tw = title_work(m, base)
-    if tw is None:
-        return out  # inert until the TW scan lands; "loading" keeps the walk waiting, never pressing blind
-    # --- the measured path (reached once title_work and the TW_* offsets are filled) ---
+        return {"where": where, "cursor": None, "target": None}
+    ad = getattr(m, "adapter", None)
     try:
-        routine = m.rd(tw + TW_ROUTINE, 1)[0] if TW_ROUTINE is not None else None
-        sub = m.rd(tw + TW_SUB, 1)[0] if TW_SUB is not None else None
-        if routine == 7:                                    # a game is starting
-            return out | {"where": "loading"}
-        if routine == 6:                                    # extra games: The Mercenaries menu / player / stage selects
-            if sub == 0x0C and TW_STAGE_CURSOR is not None:
-                return out | {"where": "select_stage", "cursor": m.rd(tw + TW_STAGE_CURSOR, 1)[0],
-                              "target": STAGE_TARGET}
-            if sub == 0x08 and TW_PLAYER_CURSOR is not None:
-                return out | {"where": "select_player", "cursor": m.rd(tw + TW_PLAYER_CURSOR, 1)[0],
-                              "target": PLAYER_TARGET}
-            if TW_MERC_CURSOR is not None:
-                return out | {"where": "mercs_title", "cursor": m.rd(tw + TW_MERC_CURSOR, 1)[0], "target": 0}
-        if routine == 5 and TW_MENU_CURSOR is not None:     # main menu (walk to THE MERCENARIES)
-            return out | {"where": "main_menu", "cursor": m.rd(tw + TW_MENU_CURSOR, 1)[0], "target": MERC_MENU_TARGET}
-    except (ValueError, OSError, struct.error):
-        return out | {"where": "unknown"}
-    return out
+        scr = _reader(m).read(ad.get_frame())
+    except Exception as exc:                                # noqa: BLE001 - no frame yet (booting), or a torn one
+        return {"where": "unknown", "cursor": None, "target": None, "frame_error": type(exc).__name__}
+    if scr["where"] == "main_menu":
+        scr["target"] = EXTRAS_ROW
+    elif scr["where"] == "extras_menu":
+        scr["target"] = MERCENARIES_ROW
+    return {"cursor": None, "target": None, "reader": _reader(m), **scr}
+
+
+def _confirm(where: str, now: float | None = None) -> str | None:
+    now = time.monotonic() if now is None else now
+    return "a" if now - _confirmed.get(where, float("-inf")) >= CONFIRM_GAP_S[where] else None
 
 
 def step(scr: dict) -> str | None:
-    """One pad press toward the next round: a cursor walks to its target (D-pad), then A confirms. Never blind."""
+    """One press toward the next round, or None to wait. Never a press on a screen no frame has named."""
     where = scr.get("where")
-    if where == "select_player":
+    if where in ("main_menu", "extras_menu"):
         cur, tgt = scr.get("cursor"), scr.get("target")
-        if not isinstance(cur, int):
-            return None
-        tgt = PLAYER_TARGET if not isinstance(tgt, int) else tgt
-        if cur == tgt:
-            return "a"
-        return DPAD["right"] if (tgt - cur) % len(CHARACTERS) <= len(CHARACTERS) // 2 else DPAD["left"]
-    if where == "select_stage":
-        cur, tgt = scr.get("cursor"), scr.get("target")
-        if not isinstance(cur, int):
-            return None
-        tgt = STAGE_TARGET if not isinstance(tgt, int) else tgt
-        if cur == tgt:
-            return "a"
-        if (cur ^ tgt) & 2:                                 # different row: up / down
-            return DPAD["down"] if tgt & 2 else DPAD["up"]
-        return DPAD["right"] if tgt & 1 else DPAD["left"]   # same row, different column
-    if where == "mercs_title":                              # THE MERCENARIES: GAME START is entry 0 (EXIT is 1)
-        cur, tgt = scr.get("cursor"), scr.get("target")
-        if not isinstance(cur, int):
-            return None
-        tgt = 0 if not isinstance(tgt, int) else tgt
-        if cur == tgt:
-            return "a"
-        return DPAD["down"] if cur < tgt else DPAD["up"]
-    if where == "main_menu":                                # walk to THE MERCENARIES; NEVER a blind A here (a wrong
-        cur, tgt = scr.get("cursor"), scr.get("target")     # confirm starts a story game - gbox.re4_menus / re4_merc_bot)
         if not isinstance(cur, int) or not isinstance(tgt, int):
-            return None                                     # target unknown: wait, do not press
+            return None
         if cur == tgt:
-            return "a"
+            return _confirm(where)
         return DPAD["down"] if cur < tgt else DPAD["up"]
-    return STEPS.get(where)
+    if where in ("title", "mercs_title", "select_player", "select_stage", "round_intro"):
+        return _confirm(where)                              # these match the reference, so the default entry is up
+    return None
 
 
 def wandered(scr: dict) -> str | None:
@@ -409,21 +387,23 @@ def wandered(scr: dict) -> str | None:
     return "story game" if scr.get("where") == "story" else None
 
 
-def pressed(scr: dict, key: str) -> None:
-    """A menu press went in (hook for the per-round randomizer, like re5_switch.pressed). SCAFFOLD: no-op; the live
-    cycle is wired once the selects' cursors read."""
-    return None
+def pressed(scr: dict, key: str, now: float | None = None) -> None:
+    """A menu press went in: starts that screen's confirm gap, and counts an intro page."""
+    if key == "a" and scr.get("where") in CONFIRM_GAP_S:
+        _confirmed[scr["where"]] = time.monotonic() if now is None else now
+    reader = scr.get("reader")
+    if reader is not None:
+        reader.press_went_in(scr.get("where"), key)
 
 
 def warm_probe(m) -> dict:
-    """gbox.mercs.warm_boot boot observer: a stable screen where the warm pool may pause the boot, read-only. SCAFFOLD:
-    not ready until the signature pins the build and the menus read."""
+    """gbox.mercs.warm_boot boot observer: a stable screen where the warm pool may pause the boot, read-only."""
     out = {"ready": False, "screen": "unknown", "title": MAP_ID}
     base = module_base(m)
     if base is None:
         return out
     where = screen(m).get("where", "unknown")
-    if where in ("title", "main_menu", "select_player", "select_stage", "mercs_title"):
+    if where in ("title", "main_menu", "extras_menu", "select_player", "select_stage", "mercs_title"):
         return out | {"ready": True, "screen": where, "token": ("re4sw", base, where)}
     return out | {"screen": where}
 
@@ -543,10 +523,10 @@ class Bot:
         # Step off an own hazard first (no mine standing), even before facing the target.
         if self._near_own_hazard(p, snap):
             self.stats["backoffs"] = self.stats.get("backoffs", 0) + 1
-            return {"hold": {DPAD["left" if err > 0 else "right"]}}   # turn away and move off
+            return {"hold": {TURN["left" if err > 0 else "right"]}}   # turn away and move off
         if abs(err) > self.TURN_TOL:
             self.stats["turns"] = self.stats.get("turns", 0) + 1
-            return {"hold": {DPAD["right"] if err > 0 else DPAD["left"]}}
+            return {"hold": {TURN["right"] if err > 0 else TURN["left"]}}
         if not self._may_fire(p, e, dist, snap):
             return {"hold": set()}                           # aligned but a fire-gate blocks it: hold fire, keep aim
         self.stats["shots"] = self.stats.get("shots", 0) + 1

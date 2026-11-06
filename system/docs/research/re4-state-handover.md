@@ -1,5 +1,10 @@
 # RE4: state of the work (handover)
 
+> **Corrected 2026-11-06.** Four claims below are wrong. Input reaches Citron: this session's own frames show the title, a save loading,
+> the BUY screen and the case while the tests ran, and the walk is now proven 5 of 5 (`re4-switch-menu-walk.md`). `playable=True` from
+> `prepare` was the GameCube disc. `module+0xc25d78` is a Ghidra address: the real offset is `0xb25d78`. The operator decided RE4 means
+> Switch, so section 3's GameCube recommendation does not apply.
+
 > **SUPERSEDED 2026-11-06 by `RE4 Switch in MercMode what's needed to finish.md`. Four claims below are wrong, and the
 > replacement document is authoritative:**
 >

@@ -503,7 +503,8 @@ class Screensaver:
             if resumed:
                 return resumed
         g = ({'game_id': merc_pick['game_id'], 'title': merc_pick['name']} if merc_pick else None) \
-            if merc_cfg['enabled'] else choose(self.games(cfg), self._recent(), now, self.rng, cfg["games"])
+            if merc_cfg['enabled'] else choose([x for x in self.games(cfg) if x["game_id"] not in mercmode.replaced_editions(merc_cfg)],
+                                               self._recent(), now, self.rng, cfg["games"])
         game = g and self.store.catalog_get(g["game_id"])
         if not game:
             if merc_cfg['enabled']:

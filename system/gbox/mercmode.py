@@ -296,6 +296,21 @@ def settings(store, host):
     return normalize(store.get(SETTING, host) or {})
 
 
+def replaced_editions(cfg) -> set:
+    """Catalog ids of the editions this host's preferred_editions replaced (RE5 PS3 where RE5 means Switch). The idle demo
+    must not play them: 2026-11-06 it filled every MercMode pause on lilspark with RE5 PS3, which read as PS3 in the rotation."""
+    out = set()
+    for title in (cfg.get('preferred_editions') or {}):
+        spec = TITLES.get(title) or {}
+        out.update(spec.get('game_ids') or ())
+        for name, backend in (spec.get('backends') or {}).items():
+            if name != 'switch':
+                out.update(backend.get('game_ids') or ())
+                out.add(backend.get('game_id'))
+    out.discard(None)
+    return out
+
+
 def title_spec(title, cfg):
     """The spec of the edition this host plays for a MercMode title (preferred_editions, e.g. RE5 Switch No Mercy; the
     native one otherwise), {} for an unknown title. Every per-run check keys on it, not on TITLES alone."""

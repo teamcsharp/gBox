@@ -153,3 +153,18 @@ def test_re6_switch_operator_opt_out_is_authoritative(monkeypatch):
     assert game_unlocks.pre_launch(re6_game(), ctx)['state'] == 'disabled'
     assert game_unlocks.session_start('w-6', re6_game(), eden, ctx,
                                       start_watch=lambda *a, **k: pytest.fail('must not start'))['state'] == 'disabled'
+
+
+def test_the_idle_demo_never_plays_an_edition_the_host_replaced():
+    """MercMode off falls to the demo picker, which took RE5 PS3 from the operator's played games on a Switch host."""
+    from gbox import mercmode, screensaver
+    pins = {t: dict(S.EDITIONS[t]) for t in ('re4', 're5', 're6')}
+    gone = mercmode.replaced_editions({'preferred_editions': pins})
+    assert {'e7ca89bbeb67360d', '78ab9efa2e310db4', 'e42c9b780c07c437', '0871eee3b68cdea3', '6fc93ff62e4eb868'} <= gone
+    assert not gone & {S.RE4_GAME_ID, S.RE5_GAME_ID, S.RE6_GAME_ID, '115f9cdbba115432'}
+    assert mercmode.replaced_editions({'preferred_editions': {}}) == set()
+    assert mercmode.replaced_editions({}) == set()
+    played = [{'game_id': 'e7ca89bbeb67360d', 'pads': 500.0}, {'game_id': 'other', 'pads': 1.0}]
+    picked = screensaver.choose([g for g in played if g['game_id'] not in gone], {}, 0.0)
+    assert picked['game_id'] == 'other'
+
