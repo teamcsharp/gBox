@@ -531,6 +531,18 @@ class Screensaver:
             # the DJ's queued round names a build: play it from this PC's own copy (local_build_ok), exactly the
             # roulette's build launch, so a mod swap from the lab reaches a real MercMode round
             build = {'name': merc_pick['selection']['mod']}
+        elif merc_pick and merc_cfg.get('cast_swap') in ('on', 'random', True):
+            # the operator's inverted cast (2026-11-06: "I really want to only see the characters replaced as zombies
+            # too ... and the characters wearing majini clothes"): the zombies wear cast characters' whole models and
+            # the player wears the majini's texture maps, while the rest of the cast swap skins between themselves
+            from . import skin_swap
+            made = skin_swap.cast_swap_build(self.config, g['game_id'], merc_pick.get('map_id'), self.rng,
+                                             title=merc_pick.get('title'), log=self.log)
+            if made:
+                build = {'name': made['build']}
+                self.store.audit(ACTOR, 'mercmode.cast_swap', w['name'],
+                                 {'build': made['build'], 'zombies': made.get('zombies'), 'player': made.get('player'),
+                                  'skins': sorted((made.get('skins') or {}).keys())})
         elif merc_pick and merc_cfg.get('skin_swap') == 'random':
             # the operator's random skin swap: this round's character plays with another character's model group
             from . import skin_swap
@@ -1652,6 +1664,7 @@ class MercModeSettings(BaseModel):
     stalemate_cut_s: int | None = None          # ... to this many seconds (1..60; default 5)
     coop_ratio: str | None = None               # co-op : solo turns on RE5 / RE6 Switch (off, 1:1 ... 6:1 ..., only)
     skin_swap: str | None = None                # off | random: each round plays a character with another's skin
+    cast_swap: str | None = None                # off | on: the zombies wear cast models and the player wears majini clothes
     # gbox.re_switch: e.g. {"re5": {"platform": "switch", "mode": "no_mercy", "title_id": "010018100CD46000"}}; {} = the
     # native editions. Missing here, the field was dropped silently (the mercmode tool and MCP posted it) - 2026-10-26.
     preferred_editions: dict | None = None

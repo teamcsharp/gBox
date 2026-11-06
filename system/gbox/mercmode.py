@@ -32,8 +32,14 @@ DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title'
            # characters"): each round draws a random other-character model swap for the title being played
            # (gbox.skin_swap); 'off' plays the title as it is
            'skin_swap': 'off',
+           # operator 2026-11-06 ("I really want to only see the characters replaced as zombies too in these builds. I
+           # also would like to see the characters wearing majini clothes"): the zombies wear cast characters' whole
+           # models while the player wears the majini's textures, and the rest of the cast swap skins between
+           # themselves (gbox.skin_swap.cast_swap_build). 'off' plays the title with its own enemies.
+           'cast_swap': 'off',
            'coop_ratio': 'off'}
 SKIN_SWAPS = ('off', 'random')
+CAST_SWAPS = ('off', 'on')
 # How long one round may play before a random skin swap draws the next pair (seconds). The rotation normally fires on
 # the bot's native round boundary; this is the fallback for a title whose boundary never arrives (lilspark posted none
 # in two hours on 2026-11-05), so a skin swap cannot stay stuck on its first draw.
@@ -150,6 +156,8 @@ def normalize(patch, current=None):
         raise ValueError('MercMode coop_ratio is co-op : solo turns, one of ' + ', '.join(COOP_RATIOS))
     if out.get('skin_swap') not in SKIN_SWAPS:
         raise ValueError('MercMode skin_swap is off or random')
+    if out.get('cast_swap') not in CAST_SWAPS:
+        raise ValueError('MercMode cast_swap is off or on')
     if type(out['stalemate_cut']) is not bool or type(out['stalemate_cut_s']) is not int \
             or not CUT_MIN_S <= out['stalemate_cut_s'] <= CUT_MAX_S:
         raise ValueError(f'MercMode stalemate: stalemate_cut true/false and {CUT_MIN_S}..{CUT_MAX_S} seconds on the clock')

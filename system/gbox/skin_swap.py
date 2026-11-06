@@ -148,6 +148,99 @@ def swap_arc(data: bytes, donor_data: bytes, *, follow_tag: bool = False,
     return patched, slot_name, donor_name
 
 
+ZOMBIE_ARCS = {
+    # the enemy archives that stand in for the zombies / majini in RE5's Mercenaries
+    "010018100CD46000": ("nativeNXx64/ImgNX/Archive/uEm6c.arc", "nativeNXx64/ImgNX/Archive/uEm71.arc"),
+}
+PLAYER_AS_MAJINI = {
+    # the enemy whose clothes (texture maps) the player character wears: "characters in majini clothes"
+    "010018100CD46000": "nativeNXx64/ImgNX/Archive/uEm6c.arc",
+}
+
+
+def cast_swap_build(config, game_id: str, title_id: str, rng, *, name: str | None = None,
+                    title: str = "", log=None) -> dict | None:
+    """Build the inverted-cast overlay: the zombies wear cast characters' whole models, the player wears majini clothes.
+
+    Measured 2026-11-06, which is why the two directions differ: an ENEMY taking a character's model boots and plays a
+    round (uEm6c <- uPl00ChrisNormal with 21 textures), but a PLAYER taking an enemy model builds and never produces a
+    session. So the zombies get models and the player only gets the enemy's texture maps.
+    """
+    from . import model_swap
+    arcs = CHARACTER_ARCS.get(str(title_id).upper())
+    root = romfs_root(title_id)
+    zombies = ZOMBIE_ARCS.get(str(title_id).upper(), ())
+    if not arcs or root is None or not zombies:
+        return None
+    zombies = tuple(z for z in zombies if (root / z).is_file())
+    if not zombies:
+        return None
+    names = sorted(arcs)
+    cast = [n for n in names if (root / arcs[n]).is_file()]
+    if len(cast) < 2:
+        return None
+    rng.shuffle(cast)
+    # the zombies become different cast characters, never all the same one, so the round shows the system working
+    worn = {z: cast[i % len(cast)] for i, z in enumerate(zombies)}
+    majini = PLAYER_AS_MAJINI.get(str(title_id).upper())
+    player = cast[-1]
+    patched: dict[str, bytes] = {}
+    report: dict = {"zombies": {}, "player": player, "skins": {}}
+    for zombie_arc, donor_name in worn.items():
+        try:
+            out = model_swap.swap_models((root / zombie_arc).read_bytes(), (root / arcs[donor_name]).read_bytes())
+        except (mt_arc.ArcError, model_swap.SwapError) as exc:
+            if log:
+                log("cast_swap_failed", zombie=zombie_arc, error=str(exc)[:160])
+            continue
+        patched[zombie_arc] = out["data"]
+        report["zombies"][zombie_arc] = {"as": donor_name, "meshes": out["meshes"],
+                                         "textures": len(out["textures"])}
+    if majini and (root / majini).is_file() and (root / arcs[player]).is_file():
+        try:
+            # follow_tag: the majini's maps are a different size from the player's, so the tag travels with the donor
+            # data. The tag guard refuses this pair outright, and the retagged form is the one measured to boot and
+            # play (character <- zombie at 3/3 maps, rounds 1 -> 2, 2026-11-05).
+            data, slot_group, donor_group = swap_arc((root / arcs[player]).read_bytes(), (root / majini).read_bytes(),
+                                                     follow_tag=True)
+            patched[arcs[player]] = data
+            report["skins"][player] = {"wearing": "majini", "groups": [slot_group, donor_group], "retagged": True}
+        except mt_arc.ArcError as exc:
+            if log:
+                log("cast_swap_player_failed", error=str(exc)[:160])
+    # the rest of the cast still plays with each other's skins, so a round shows both systems at once: the player in
+    # majini clothes and the surviving characters wearing one another
+    spare = [n for n in cast if n != player and n not in worn.values() and arcs[n] not in patched]
+    for i in range(0, len(spare) - 1, 2):
+        target, donor = spare[i], spare[i + 1]
+        try:
+            data, slot_group, donor_group = swap_arc((root / arcs[target]).read_bytes(),
+                                                     (root / arcs[donor]).read_bytes())
+        except mt_arc.ArcError:
+            continue
+        patched[arcs[target]] = data
+        report["skins"][target] = {"wearing": donor, "groups": [slot_group, donor_group]}
+    if not patched:
+        return None
+    build = name or "cast-inverted"
+    try:
+        from . import switch_mods
+        folder = Path(switch_mods.create_build(config, game_id, build, title_id.upper(),
+                                               game_title=title or game_id, kind="file"))
+    except Exception as exc:                                 # noqa: BLE001 - a launch must never fail on a swap
+        if log:
+            log("cast_swap_build_failed", error=str(exc)[:200])
+        return None
+    for rel, data in patched.items():
+        path = folder / "romfs" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    if log:
+        log("cast_swap_built", build=build, zombies=len(report["zombies"]), player=player,
+            skins=len(report["skins"]))
+    return {"build": build, "at": time.time(), **report}
+
+
 def random_swap_build(config, game_id: str, title_id: str, rng, *, name: str | None = None,
                       title: str = "", log=None) -> dict | None:
     """Build a LayeredFS overlay that plays `title_id`'s character with another character's model group.
