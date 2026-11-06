@@ -4870,7 +4870,7 @@ CITRON_TITLE_SETTINGS = {
 CITRON_LOG = ("log", "citron_log.txt")
 # Titles a Linux node starts in Citron when it is configured (switch_linux_emulator = auto): multi-core there, where
 # Eden v0.2.1 loses a thread that moves itself between cores (EDEN_TITLE_SETTINGS) and runs them single-core.
-SWITCH_CITRON_TITLES = frozenset({"010018100CD46000", "01002A000CD48000", "010099A00BC1E000"})
+SWITCH_CITRON_TITLES = frozenset({"010099A00BC1E000"})  # RE4 only: RE5/RE6 run on Eden (verified 2026-11-03); RE4 needs Citron because it does not run on Eden
 # A boot that never draws (live 2026-10-26: 1 of 7 Eden single-core boots of RE5 stayed black at 0 FPS after
 # "SetPollingMode") is started again once: these titles animate from the first second (logos, intro, title fog).
 BOOT_WATCH_TITLES = frozenset({"010018100CD46000", "01002A000CD48000", "010099A00BC1E000"})
