@@ -1078,6 +1078,10 @@ def accept_boundary(store, run, body, *, parent_job, now=None):
 def publish_boundary(sink, body, stats):
     """Runs between rounds with released inputs; ordinary telemetry cannot rotate."""
     if sink is None or not hasattr(sink, 'client') or not getattr(sink, 'sid', None):
+        # Silent before: a round could end with no boundary and nothing saying why. The reason is now in the bot's own
+        # stats, so "no boundary posts" can be told apart from "no sink to post with" (2026-11-05).
+        stats['mercmode_boundary_error'] = ('no tactical sink: this round had no publisher to post the boundary'
+                                            if sink is None else 'the tactical sink has no client/session id')
         return False
     try:
         response = sink.client.post('/api/autoplay-screensaver/round-boundary',
