@@ -53,10 +53,24 @@ def candidates(title_id: str) -> dict:
             key = (prefix.group(0)[:6] if prefix else "?") + " @ " + directory.name
             groups[key] = groups.get(key, 0) + 1
     characters = sorted({p.stem for d in dirs for p in d.glob("uPl*.arc")})
+    # what a swap could actually target inside one character archive, so the caller can name a group when the default
+    # heuristic would pick the wrong one (an RE6 head arc's largest group is its hair)
+    sample = {}
+    for stem in characters[:6]:
+        path = next((d / (stem + ".arc") for d in dirs if (d / (stem + ".arc")).is_file()), None)
+        if path is None:
+            continue
+        try:
+            maps_by_group = material_groups(mt_arc.parse(path.read_bytes()))
+        except mt_arc.ArcError:
+            continue
+        sample[stem] = {"default_group": body_group(maps_by_group),
+                        "groups": {name: sorted(maps) for name, maps in list(maps_by_group.items())[:12]}}
     return {"title_id": str(title_id).upper(), "extracted": True,
             "arc_dirs": [str(d.relative_to(root)) for d in dirs],
             "groups": dict(sorted(groups.items(), key=lambda kv: -kv[1])[:20]),
-            "character_arcs": characters[:40], "character_arc_count": len(characters)}
+            "character_arcs": characters[:40], "character_arc_count": len(characters),
+            "material_groups": sample}
 
 
 def model_entry(arc):
@@ -88,17 +102,23 @@ def body_group(groups: dict) -> str | None:
     return max(pool, key=lambda g: pool[g]["BM"].size)
 
 
-def swap_arc(data: bytes, donor_data: bytes, *, follow_tag: bool = False) -> tuple[bytes, str, str]:
+def swap_arc(data: bytes, donor_data: bytes, *, follow_tag: bool = False,
+             group: str | None = None, donor_group_name: str | None = None) -> tuple[bytes, str, str]:
     """The slot archive wearing the donor character's skin: its body group's base/mask/normal maps are replaced.
 
     Returns (bytes, slot group, donor group). Material entries keep their own names; a map the donor lacks is left
     alone. By default a map moves only when its tag matches (same dimensions and format), because a texture of
     another size under this tag is not a valid swap. With follow_tag the slot's tag moves with the donor's data, so
     the pair stays self-consistent and a differently sized skin can be tried.
+
+    `group` names the slot's group explicitly. The heuristic below suits RE5 (a whole character per archive, skin in
+    evfXXXX_01) but not every title: an RE6 head arc's largest group is the hair, and its hand arcs carry no material
+    groups at all, so the caller can say which group it means instead of accepting a guess.
     """
     slot_arc, donor_arc = mt_arc.parse(data), mt_arc.parse(donor_data)
     slot_groups, donor_groups = material_groups(slot_arc), material_groups(donor_arc)
-    slot_name, donor_name = body_group(slot_groups), body_group(donor_groups)
+    slot_name = group if group in slot_groups else body_group(slot_groups)
+    donor_name = donor_group_name if donor_group_name in donor_groups else body_group(donor_groups)
     if slot_name is None or donor_name is None:
         raise mt_arc.ArcError("a character has no body skin group to swap")
     # entry indices in the slot archive, so a repeated name cannot send a replacement to the wrong entry

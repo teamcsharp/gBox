@@ -420,6 +420,8 @@ class ModelSwapIn(BaseModel):
     # parts/materials the slot archive does not carry. Kept for experiments; the panel never sets it.
     with_mesh: bool = False
     tag_follow: bool = False  # a map of another size moves too, its tag travelling with it (an experiment)
+    group: str | None = None  # the slot's material group, when the title's layout defeats the default heuristic
+    donor_group: str | None = None  # the donor's material group (defaults to its body group)
 
 
 class StripClothesIn(BaseModel):
@@ -1058,7 +1060,8 @@ def install(app, store, config, auth, tactical_store=None):
         donor_file = resolve(body.donor_arc)
         try:
             data, slot_group, donor_group = skin_swap.swap_arc(arc_file.read_bytes(), donor_file.read_bytes(),
-                                                              follow_tag=bool(body.tag_follow))
+                                                              follow_tag=bool(body.tag_follow),
+                                                              group=body.group, donor_group_name=body.donor_group)
         except mt_arc.ArcError as exc:
             raise HTTPException(400, str(exc)) from exc
         meshes = []
