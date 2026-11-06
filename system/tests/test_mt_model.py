@@ -21,13 +21,16 @@ def make_mrl(paths=("pawn\\pl\\pl00\\model\\a_BM",), count1=7):
     return bytes(out)
 
 
-def make_mod(meshes=((100, 24),), groups=1, bones=2, materials=1):
-    """A synthetic version-211 MOD: header, then groups, materials, mesh records, vertex and index buffers.
+def make_mod(meshes=((100, 24),), groups=1, bones=2, materials=1,
+             bounds=((0.0, 50.0, 0.0, 25.0), (-10.0, 0.0, -10.0, 0.0), (10.0, 100.0, 10.0, 0.0))):
+    """A synthetic version-211 MOD: header, the bounding tail, then groups, materials, mesh records and buffers.
 
     `meshes` is a sequence of (vertex_count, vertex_stride); the header's vertex_count is their sum, so a well-formed
     fixture validates through ModFile.split_valid().
     """
     header_size = 0x28 + 8 * mt_model.MOD_BLOCKS
+    tail = struct.pack("<4f", *bounds[0]) + struct.pack("<4f", *bounds[1]) + struct.pack("<4f", *bounds[2])
+    tail += b"\x00" * (68 - len(tail))
     bone_block = b"\x00" * (bones * 40)
     group_block = b"\x00" * (groups * 32)
     material_block = b"\x00" * (materials * 32)
@@ -47,7 +50,7 @@ def make_mod(meshes=((100, 24),), groups=1, bones=2, materials=1):
     faces = 30
     vertex_block = b"\x11" * vertex_total
     index_block = b"\x22" * (2 * faces)
-    offsets = [header_size]
+    offsets = [header_size + len(tail)]
     for block in (bone_block, group_block, material_block, bytes(mesh_block), vertex_block, index_block):
         offsets.append(offsets[-1] + len(block))
     out = bytearray(mt_model.MOD_MAGIC)
@@ -59,6 +62,7 @@ def make_mod(meshes=((100, 24),), groups=1, bones=2, materials=1):
     out += struct.pack("<I", 0)                       # the word at 0x24
     for off in offsets[:7]:
         out += struct.pack("<Q", off)
+    out += tail
     out += bone_block + group_block + material_block + bytes(mesh_block) + vertex_block + index_block
     return bytes(out)
 
@@ -194,3 +198,12 @@ def test_a_mesh_record_carries_its_place_in_the_vertex_buffer():
     for mesh in meshes:
         assert mesh["vertex_offset"] + mesh["vertex_count"] * mesh["vertex_stride"] <= header["vertex_buffer_size"]
     assert header["vertex_buffer_size"] == sum(m["vertex_count"] * m["vertex_stride"] for m in meshes)
+def test_the_model_bounding_box_decodes():
+    """Measured on real models: a 186 cm character's box is y 0..187, a grenade's is +-21.5 in x and z."""
+    bounds = ((0.0, 50.0, 0.0, 25.0), (-10.0, 0.0, -10.0, 0.0), (10.0, 100.0, 10.0, 0.0))
+    model = mt_model.parse_mod(make_mod(bounds=bounds))
+    got = model.bounds()
+    assert got is not None
+    assert got["sphere"] == {"x": 0.0, "y": 50.0, "z": 0.0, "r": 25.0}
+    assert got["min"] == {"x": -10.0, "y": 0.0, "z": -10.0}
+    assert got["max"] == {"x": 10.0, "y": 100.0, "z": 10.0}

@@ -214,6 +214,25 @@ class ModFile:
                 "vertex_buffer_size": vertex_buffer, "vertex_buffer_2_size": vertex_buffer_2,
                 "group_count": groups, "offsets": offsets}
 
+    def bounds(self) -> dict | None:
+        """The model's bounding sphere and box, from the documented 48 bytes after the header's offset table.
+
+        Measured sensible on real models: a standing character's box is y 154.2-184.2 with x/z within +-10, and a weapon
+        sits at the origin with +-21.5. The 3D view needs this; the vertex decoder will need it too, since the short
+        position formats are quantised and the box is the obvious scale - though the samples so far do not map linearly
+        onto it, so that decode is still open.
+        """
+        start = MOD_BLOCK_OFFSETS + 8 * MOD_BLOCKS
+        end = self.header()["offsets"]["bones"]
+        if end - start < 48:
+            return None
+        sphere = struct.unpack_from("<4f", self.raw, start)
+        low = struct.unpack_from("<4f", self.raw, start + 16)
+        high = struct.unpack_from("<4f", self.raw, start + 32)
+        return {"sphere": {"x": sphere[0], "y": sphere[1], "z": sphere[2], "r": sphere[3]},
+                "min": {"x": low[0], "y": low[1], "z": low[2]},
+                "max": {"x": high[0], "y": high[1], "z": high[2]}}
+
     def meshes(self) -> list[dict]:
         """The mesh records: one per part, each carrying its own vertex count and stride.
 
