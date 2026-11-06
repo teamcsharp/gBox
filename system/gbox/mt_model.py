@@ -172,6 +172,10 @@ def fvf_stride(value: int) -> int | None:
 # Formats whose position is three signed shorts. Everything else in the record is per-format; positions are what the
 # 3D view needs first, and they are the component that can be validated against the model's own box.
 MOD_SHORT_POSITION = frozenset({0x133098B0, 0x18B0FAA8, 0x1580B60C, 0x1C201FC3, 0x2000D414, 0x14A07DDB, 0x16C020A3})
+# Formats whose first component is three FLOAT32 positions (from the documented layouts).
+MOD_FLOAT_POSITION = frozenset({0x36D0D7A7, 0x3AA06FC6, 0x287029D8, 0x3870A4D1, 0x37607D20, 0x29F0B449,
+                                0x2C207F5E, 0x3C004EA1, 0x2D30A6AF, 0x2ED06F92, 0x2AE06DB8, 0x33C09993,
+                                0x341068B6, 0x2FC0B663})
 # Component offsets for the formats whose normals and UVs are confirmed: the normals decode to unit length on 100% of
 # the vertices sampled (123, 40 and 85 respectively) and the UVs fall inside 0..1. The stride-12 format 0x133098B0 is
 # NOT in this table: its normals are unit length on only 39% of vertices at the documented offset and no other offset
@@ -221,6 +225,15 @@ def decode_positions(data: bytes, vertex_format: int, count: int, stride: int, b
     model's own bounding box, which is what identifies the quantisation. The earlier claim that the shorts "do not map
     linearly" was a bad test - it compared raw values against the box instead of normalising them.
     """
+    if vertex_format in MOD_FLOAT_POSITION:
+        out = []
+        for index in range(count if not limit else min(count, limit)):
+            base = index * stride
+            if base + 12 > len(data):
+                break
+            x, y, z = struct.unpack_from("<3f", data, base)
+            out.append((x, y, z))
+        return out
     if vertex_format not in MOD_SHORT_POSITION:
         return []
     low = (bounds["min"]["x"], bounds["min"]["y"], bounds["min"]["z"])
@@ -267,6 +280,58 @@ class ModFile:
     @property
     def header_size(self) -> int:
         return MOD_BLOCK_OFFSETS + 8 * MOD_BLOCKS
+
+    def all_positions(self) -> list[tuple[float, float, float]]:
+        """Every mesh's positions concatenated, in the order the index buffer addresses them.
+
+        A mesh whose positions cannot be decoded contributes its vertices as the origin rather than nothing: the index
+        buffer addresses the whole model's vertex space, so dropping a mesh would shift every later index and draw a
+        garbled surface (measured: 3647 out-of-range indices before this was fixed).
+        """
+        out = []
+        for index, record in enumerate(self.meshes()):
+            points = self.positions(index)
+            if len(points) != record["vertex_count"]:
+                points = [(0.0, 0.0, 0.0)] * record["vertex_count"]
+            out.extend(points)
+        return out
+
+    def triangle_strips(self) -> list[list[int]]:
+        """The index buffer as strips: `0xFFFF` separates them.
+
+        Measured on real models: the index buffer holds `face_count` ushorts (not three per face), `0xFFFF` appears as a
+        separator, and every referenced vertex is inside the model's vertex range (496/496, 2075/2075, 1614/1614 on the
+        three models checked). The strips are stitched with degenerate triangles - one strip reads
+        [0, 1, 2, 3, 4, 3, 5, 6, 7, 8] - which is the classic tristrip trick, so this is a strip stream rather than a
+        triangle list.
+        """
+        header = self.header()
+        start = header["offsets"]["index_buffer"]
+        data = self.raw[start:start + 2 * header["face_count"]]
+        strips, current = [], []
+        for value in struct.unpack_from(f"<{len(data) // 2}H", data, 0):
+            if value == 0xFFFF:
+                if len(current) >= 3:
+                    strips.append(current)
+                current = []
+            else:
+                current.append(value)
+        if len(current) >= 3:
+            strips.append(current)
+        return strips
+
+    def triangles(self) -> list[tuple[int, int, int]]:
+        """Triangles from the strips, with alternating winding as a strip requires."""
+        out = []
+        for strip in self.triangle_strips():
+            for i in range(len(strip) - 2):
+                a, b, c = strip[i], strip[i + 1], strip[i + 2]
+                if i % 2:
+                    a, b = b, a
+                if a == b or b == c or a == c:
+                    continue
+                out.append((a, b, c))
+        return out
 
     def mesh_bytes(self, mesh_index: int) -> tuple[bytes, dict]:
         """One mesh's vertex data and its record, so a caller can decode whichever components it needs."""

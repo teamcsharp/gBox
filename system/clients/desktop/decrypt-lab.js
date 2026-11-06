@@ -59,6 +59,32 @@
     const cy = (bounds.min.y + bounds.max.y) / 2;
     const cz = (bounds.min.z + bounds.max.z) / 2;
     const size = Math.max(bounds.max.x - bounds.min.x, bounds.max.y - bounds.min.y, bounds.max.z - bounds.min.z, 1);
+    const flat = geometry.positions || [];
+    const tris = geometry.triangles || [];
+    if (flat.length >= 9 && tris.length >= 3) {
+      // the whole model as one indexed surface: the strips are decoded server-side, so this draws real triangles
+      const n = flat.length / 3;
+      const positions = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        positions[i * 3] = (flat[i * 3] - cx) / size;
+        positions[i * 3 + 1] = (flat[i * 3 + 1] - cy) / size;
+        positions[i * 3 + 2] = (flat[i * 3 + 2] - cz) / size;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geo.setIndex(tris);
+      geo.computeVertexNormals();
+      const mat = new THREE.MeshStandardMaterial({ color: 0x8fb4d8, roughness: 0.65, metalness: 0.15,
+                                                  side: THREE.DoubleSide, flatShading: false });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.userData = { kind: 'model-surface' };
+      group.add(mesh);
+      group.add(new THREE.LineSegments(new THREE.WireframeGeometry(geo),
+                                       new THREE.LineBasicMaterial({ color: 0x2b4257, transparent: true,
+                                                                     opacity: 0.35 })));
+      blocks.push(mesh);
+      return { vertices: n, triangles: tris.length / 3, mode: 'triangles' };
+    }
     geometry.meshes.forEach((mesh, index) => {
       const n = mesh.positions.length / 3;
       if (!n) return;
@@ -92,7 +118,9 @@
       if (entry) body.entry = entry;
       const d = await api.api('/api/decrypt-lab/model-geometry', body);
       const drawn = showModelGeometry(d);
-      meta.textContent = `${d.entry.split('\\').pop()} · ${d.meshes.length} meshes · ${drawn} vertices`;
+      meta.textContent = drawn.mode === 'triangles'
+        ? `${d.entry.split('\\').pop()} · ${drawn.triangles} triangles · ${drawn.vertices} vertices`
+        : `${d.entry.split('\\').pop()} · ${d.meshes.length} meshes · ${drawn.vertices} vertices`;
     } catch (err) {
       meta.textContent = 'could not decode that model';
       $('model-out').innerHTML = `<p class="muted">${String(err.message || err).slice(0, 160)}</p>`;

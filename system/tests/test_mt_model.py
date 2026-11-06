@@ -221,13 +221,15 @@ def test_positions_are_dequantised_by_the_model_box():
     assert all(abs(a - b) < 0.01 for a, b in zip(points[1], (10.0, 100.0, 10.0)))
 
 
-def test_a_float_position_format_is_not_guessed_at():
-    bounds = ((0.0, 50.0, 0.0, 25.0), (-10.0, 0.0, -10.0, 0.0), (10.0, 100.0, 10.0, 0.0))
-    data = bytearray(make_mod(meshes=((4, 24),), bounds=bounds))
-    model = mt_model.parse_mod(bytes(data))
-    record = model.meshes()[0]
-    assert record["vertex_format"] in mt_model.MOD_SHORT_POSITION            # the fixture uses a short format
-    assert mt_model.decode_positions(b"\x00" * 96, 0x287029D8, 4, 24, model.bounds()) == []
+def test_float_positions_decode_and_an_unknown_format_does_not():
+    """The documented float-position formats are decoded directly; anything else is not guessed at."""
+    bounds = {"sphere": {"x": 0.0, "y": 50.0, "z": 0.0, "r": 25.0},
+              "min": {"x": -10.0, "y": 0.0, "z": -10.0},
+              "max": {"x": 10.0, "y": 100.0, "z": 10.0}}
+    data = struct.pack("<3f", 1.5, 2.5, 3.5) + b"\x00" * 12
+    points = mt_model.decode_positions(data, 0x287029D8, 1, 24, bounds)
+    assert points and all(abs(a - b) < 0.001 for a, b in zip(points[0], (1.5, 2.5, 3.5)))
+    assert mt_model.decode_positions(data, 0xDEADBEEF, 1, 24, bounds) == []
 def test_normals_and_uvs_decode_for_a_confirmed_format():
     """Measured: on formats 0x18b0faa8 / 0x1c201fc3 / 0x2000d414 the normals are unit length on 100% of vertices."""
     vertex = bytearray(20)
@@ -244,3 +246,31 @@ def test_an_unconfirmed_format_returns_no_normals_rather_than_a_guess():
     """0x133098b0's normals decode to unit length on only 39% of vertices, so nothing is claimed for it."""
     assert mt_model.decode_normals(b"\x00" * 96, 0x133098B0, 8, 12) == []
     assert mt_model.decode_uvs(b"\x00" * 96, 0x133098B0, 8, 12) == []
+def test_the_index_buffer_is_a_strip_stream_and_triangles_respect_winding():
+    """Measured: the buffer holds face_count ushorts, 0xFFFF separates strips, and strips are stitched with degenerates."""
+    data = make_mod(meshes=((4, 24),))
+    model = mt_model.parse_mod(data)
+    header = model.header()
+    start = header["offsets"]["index_buffer"]
+    raw = bytearray(model.raw)
+    # one strip of 4 vertices then a restart then a strip of 3, with a degenerate in the first
+    values = [0, 1, 2, 3, 0xFFFF, 2, 1, 0]
+    values += [0xFFFF] * (header["face_count"] - len(values))       # padding is restart marks, not vertices
+    for i, value in enumerate(values):
+        struct.pack_into("<H", raw, start + 2 * i, value)
+    model = mt_model.parse_mod(bytes(raw))
+    strips = model.triangle_strips()
+    assert strips[0] == [0, 1, 2, 3] and strips[1] == [2, 1, 0]
+    tris = model.triangles()
+    # a strip of four yields two triangles; the odd one swaps its first two vertices, which is what a strip requires
+    assert tris[0] == (0, 1, 2) and tris[1] == (2, 1, 3)
+    assert tris[2] == (2, 1, 0)                     # the second strip
+    assert len(tris) == 3                            # degenerate triangles are dropped
+
+
+def test_a_mesh_that_cannot_be_decoded_keeps_its_place_in_the_vertex_space():
+    """Dropping it would shift every later index; the measured symptom was 3647 out-of-range indices."""
+    data = make_mod(meshes=((4, 24), (6, 20)))
+    model = mt_model.parse_mod(data)
+    points = model.all_positions()
+    assert len(points) == sum(m["vertex_count"] for m in model.meshes())

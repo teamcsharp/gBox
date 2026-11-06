@@ -1223,6 +1223,8 @@ def install(app, store, config, auth, tactical_store=None):
             if budget <= 0:
                 break
         return {"v": FORMAT, "entry": entry.name, "bounds": bounds, "meshes": out,
+                "positions": [round(v, 2) for point in model.all_positions()[:60000] for v in point],
+                "triangles": [i for tri in model.triangles()[:60000] for i in tri],
                 "note": "positions only for formats whose normal/uv layout is not confirmed"}
     @app.post("/api/decrypt-lab/model-info", dependencies=[Depends(auth)])
     def decrypt_lab_model_info(body: ModelInfoIn):
