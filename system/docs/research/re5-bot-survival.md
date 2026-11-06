@@ -78,3 +78,30 @@ the autoplay job for the running round was not in the job list when I asked - so
 finished round's counters are kept and read two or three rounds' worth before changing anything.
 
 Also worth recording: deaths_per_round 0.968 is consistent - 58 deaths over 60 rounds.
+## Root cause of the missed bonuses: the knife needs 90 cm and the bot never gets there
+
+Per-round counters, straight from `mercs/curriculum/010018100CD46000/rounds.sqlite`:
+
+```
+seen  taken  time_gained  bonus_runs  knife_swings  detours  prompts_seen_bonus
+   8      0            0          12             0       27                   0
+  11      0            0           3             0        8                   0
+   8      1         59.6           6             0        8                   1     <- the one that worked
+  10      0            0           2             0        6                   0
+```
+
+Three things fall out of it:
+
+1. **`knife_swings` is zero in every round.** The swing is a 0.35 s toggle inside `if d <= KNIFE_R` - and `KNIFE_R = 90.0` cm. The bot runs to statues (`bonus_runs` 2-12) and detours around them (`detours` 6-27) but never enters that radius, so the swing code never executes once.
+2. **The only take came from a prompt** (`prompts_seen_bonus: 1`, `time_gained: 59.6`), not from the knife. The prompt path works when it happens - it just happens once in four rounds.
+3. `bonus_detours` rising with `bonus_runs` is the bot circling a statue it cannot get closer to, presumably because the statue is a solid actor and the walk presses into its collision at about a metre.
+
+So the bonus phase is not idle or disabled - it is **arriving and stopping one step outside its own reach threshold**, then detouring until the block timer gives up.
+
+## What to change, in order of confidence
+
+1. **Raise the reach threshold** (`KNIFE_R`) to about 150-180 cm so the swing fires from where the bot actually stands. It is one number, the swing happens on a toggle, and a miss costs nothing but a swing; the current 90 cm is inside the statue's own footprint.
+2. **Let the approach walk in for the prompt regardless of `prompt_read`** - today the "into it for its prompt" branch is gated on `snap.get("prompt_read")`, and with the prompt unread the bot never presses into the statue to make the prompt appear (the one success is exactly that prompt).
+3. Only then look at level differences (the roof/ledge jump path) and the dead-statue block timer.
+
+(1) is the smallest change that matches all four rounds' numbers, and it is measurable the same way: `knife_swings` should become non-zero and `bonuses_taken` should rise from 0.
