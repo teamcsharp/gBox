@@ -27,15 +27,25 @@ class SwapError(ValueError):
     """The archive pair cannot be swapped without breaking the slot."""
 
 
-def model_indices(arc: mt_arc.Arc) -> list[int]:
-    """The indexes of the entries that are MRL models (decompressed payload starts with `MRL\\0`)."""
+MAGICS = (b"MRL\x00", b"MOD\x00")
+
+
+def model_indices(arc: mt_arc.Arc, magic: bytes | None = None) -> list[int]:
+    """The indexes of the entries that are model payloads (MRL models and MOD meshes), optionally of one magic.
+
+    These are the two halves of a model and both must travel for a shape swap: `MRL\\0` is the model resource (its material
+    block and the texture paths it names) and `MOD\\0` is the geometry (measured 2026-11-06: `MOD` carries a header of
+    offsets into vertex data followed by floats, while `MRL` carries the path table). Replacing only the MRL changes the
+    materials and leaves the shape, which is what the first "shape" swap actually did.
+    """
+    wanted = (magic,) if magic else MAGICS
     found = []
     for index, entry in enumerate(arc.entries):
         try:
             raw = zlib.decompress(entry.data)
         except zlib.error:
             continue
-        if raw[:4] == mt_model.MAGIC:
+        if raw[:4] in wanted:
             found.append(index)
     return found
 
@@ -59,20 +69,33 @@ def model_paths(data: bytes) -> list[str]:
     return paths
 
 
-def swap_models(slot: bytes, donor: bytes, *, textures: bool = True) -> dict:
+def swap_models(slot: bytes, donor: bytes, *, textures: bool = True, geometry: bool = False) -> dict:
     """The slot archive wearing the donor's model(s), with the textures those models name.
+
+    `geometry` brings the donor's `MOD` mesh as well. It is OFF by default because a MOD does not travel safely between
+    slots that were not built for it: mine <- grenade with the MRL **and** the MOD both swapped boots to a white screen
+    (measured 2026-11-06, frame brightness a constant 238.6, `screen=unknown`), while the MRL alone plays a full round.
+    A MOD carries its own offsets into vertex data and its own bone/material counts, so only a slot with a matching
+    skeleton can take one - that is the constraint a Sonic/Mario import has to satisfy.
 
     Returns {"data": the new .arc bytes, "meshes": [entry names replaced], "textures": [paths added]}.
     """
     slot_arc, donor_arc = mt_arc.parse(slot), mt_arc.parse(donor)
-    slot_models, donor_models = model_indices(slot_arc), model_indices(donor_arc)
-    if not slot_models or not donor_models:
-        raise SwapError("this swap needs an MRL model in both archives")
     data = slot
     meshes: list[str] = []
-    for slot_i, donor_i in zip(slot_models, donor_models):
-        data = mt_arc.replace_at(data, slot_i, donor_arc.entries[donor_i].data)
-        meshes.append(slot_arc.entries[slot_i].name)
+    swapped = 0
+    # pair by magic, not by order: a slot and a donor can list their MRL and MOD entries in different orders, and an MRL
+    # written over a MOD slot is exactly the kind of mismatch that hangs the load
+    for magic in (MAGICS if geometry else MAGICS[:1]):
+        slot_models, donor_models = model_indices(slot_arc, magic), model_indices(donor_arc, magic)
+        if not slot_models or not donor_models:
+            continue
+        for slot_i, donor_i in zip(slot_models, donor_models):
+            data = mt_arc.replace_at(data, slot_i, donor_arc.entries[donor_i].data)
+            meshes.append(slot_arc.entries[slot_i].name)
+            swapped += 1
+    if not swapped:
+        raise SwapError("this swap needs a model payload in both archives")
     added: list[str] = []
     if textures:
         slot_arc = mt_arc.parse(data)
