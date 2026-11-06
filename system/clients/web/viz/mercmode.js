@@ -285,6 +285,11 @@
     plain: {chris: 'nativeNXx64/ImgNX/Archive/uPl00ChrisPlain.arc',
             sheva: 'nativeNXx64/ImgNX/Archive/uPl01ShebaPlain.arc',
             jill: 'nativeNXx64/ImgNX/Archive/uPl02JillCos1.arc'},
+    // the objects that appear while a round plays: the mine placed, the mine2/grenade thrown (their texture groups are
+    // wp0600, wp0700 and om4e00), swapped with the same rule as a character's skin
+    objects: {mine: 'nativeNXx64/ImgNX/Archive/uWp06.arc',
+              mine2: 'nativeNXx64/ImgNX/Archive/uWp07.arc',
+              grenade: 'nativeNXx64/ImgNX/Archive/uWp0a.arc'},
   };
   // A game id to the decrypt lab's title key (the swap API addresses a title by that key).
   const LAB_TITLES = {'52d15709be0fda1a': 're5_switch', '115f9cdbba115432': 're6_switch',
@@ -348,6 +353,28 @@
       }
       catch(error){fail(error);}
     }));
+    root.querySelector('[data-mm-obj-swap]')?.addEventListener('click',async e=>{
+      e.stopPropagation();
+      try{
+        const slot=SWAP.objects[root.querySelector('[data-mm-obj-slot]')?.value||'mine'];
+        const donor=SWAP.objects[root.querySelector('[data-mm-obj-donor]')?.value||'grenade'];
+        if(!slot||!donor||slot===donor)throw Error('Choose two different objects.');
+        const r=await api('/api/decrypt-lab/model-swap',{title,arc_path:slot,donor_arc:donor,build:APPLY});
+        let live='';
+        if(sessionId){
+          try{await applyNow(sessionId);live=' · applied now: the title restarted in this session';}
+          catch(err){live=` · built, but the live restart failed: ${err.message}`;}
+        }
+        done(`${r.slot} now looks like ${r.donor}${live||' (applies at the next boot)'}`);
+      }
+      catch(error){fail(error);}
+    });
+  }
+  function objectsHTML(){
+    return `<div class="pip-mm-objects"><small>Mines &amp; grenades · what appears when one is placed or thrown</small>`+
+      `<label>Object <select data-mm-obj-slot>${swapOptions(SWAP.objects,'mine')}</select></label>`+
+      `<label>Looks like <select data-mm-obj-donor>${swapOptions(SWAP.objects,'grenade')}</select></label>`+
+      `<span class="pip-mm-swap-buttons"><button type="button" data-mm-obj-swap="swap">Swap the object</button></span></div>`;
   }
   function menuHTML(host,open=false,catalog=null,session=null){
     if(!host)return `<div class="pip-mercmode"><small>MercMode: no gBox PC owns this game.</small></div>`;
@@ -361,7 +388,7 @@
       `<label class="pip-mm-coop">Bot+bot split screen (Switch RE5 / RE6) ${coopSelect('data-mm-coop',host.settings?.coop_ratio)}</label>`+
       `<label class="pip-mm-skin"><input type="checkbox" data-mm-skin-swap ${host.settings?.skin_swap==='random'?'checked':''}> 🎭 Random skin swap: each round plays one character with another's model (Switch RE5)</label>`+
       (SWITCH_GAMES[session?.game_id]?`<button type="button" data-mm-play-bot title="You play Player 1, the bot plays Player 2 in split screen. The title restarts in this session with Player 2 connected.">🎮 Play with bot (${SWITCH_GAMES[session.game_id]} split screen)</button>`:'')+
-      `${host.current_run?.mercmode?`<small>${escape(host.current_run.phase)}: ${escape(host.current_run.title)} · ${Number(host.current_run.mercmode_rounds)||0} verified rounds</small>`:''}${queueHTML(host,catalog)}${swapHTML()}</div></div>`;
+      `${host.current_run?.mercmode?`<small>${escape(host.current_run.phase)}: ${escape(host.current_run.title)} · ${Number(host.current_run.mercmode_rounds)||0} verified rounds</small>`:''}${queueHTML(host,catalog)}${swapHTML()}${objectsHTML()}</div></div>`;
   }
   // "Play with bot" (operator 2026-10-27): the operator as Player 1, the bot as Player 2 in this exact Switch session -
   // the team role, Player 2 connected by an in-place title restart, then the autobot; each step a job confirmed in turn
