@@ -141,6 +141,7 @@ CHARACTERS = ("Chris (BSAA)", "Chris (Safari)", "Chris (STARS)", "Sheva (BSAA)",
 # cycle file - and every entry then takes part in the rotation. Until it is known, the whole plausible range is used.
 CHARACTER_SLOTS = 0                 # learned entry count of the select screen (0 = not learned yet)
 CHARACTER_SLOTS_MAX = 64            # a hard ceiling for the walk (far above any real page count)
+FORWARD_KEYS = ("dright",)          # the button that moves the select cursor right (CURSORED's forward)
 RELOAD_KEEP = ("SELECTION", "_CYCLE", "CHARACTER_SLOTS")
 
 
@@ -167,6 +168,7 @@ class StageCycle:
         self.confirmed = {}                                 # what the selects confirmed this visit: stage / character
         self.presses, self.where = 0, None
         self.max_cursor = -1                                # the largest select cursor seen (the roster walk)
+        self.pending = None                                 # (cursor, key) of the last press, to tell a stall from a move
         if path is not None:
             try:
                 import json
@@ -184,19 +186,27 @@ class StageCycle:
     def observe_cursor(self, cursor: int, where: str) -> None:
         """Learn the character select's entry count from the game's own cursor.
 
-        The screen is two pages and its cursor is one integer over every entry; the driver steps it with dleft/dright.
-        When the cursor drops back to 0 after having been at its highest value, that highest value is the last entry:
-        one past it is the roster size, which is remembered with the cycle counts so the rotation covers every entry
-        on both pages instead of the handful of names in CHARACTERS.
+        The screen is two pages and its cursor is one integer over every entry. A wrap back to 0 is NOT the signal: the
+        select reopens on entry 0 on every visit, so "cursor is 0 after a higher value" happens all the time and taught
+        a count of 2 in testing. The reliable signal is a STALL at the right-hand end - a forward press that leaves the
+        cursor where it was - which is the last entry, so one past it is the roster size. It is remembered with the
+        cycle counts, so the rotation covers every entry on both pages instead of the handful of names in CHARACTERS.
         """
         global CHARACTER_SLOTS
         if where != "select_player" or not isinstance(cursor, int) or not 0 <= cursor < CHARACTER_SLOTS_MAX:
             return
-        if cursor == 0 and self.max_cursor > 0 and CHARACTER_SLOTS <= 1:
-            CHARACTER_SLOTS = self.max_cursor + 1
+        pending = self.pending
+        if (pending is not None and pending[1] in (FORWARD_KEYS)
+                and cursor == pending[0] and cursor + 1 > len(CHARACTERS) and CHARACTER_SLOTS <= 1):
+            CHARACTER_SLOTS = cursor + 1                        # right at the end and the cursor did not move
             self.save()
         if cursor > self.max_cursor:
             self.max_cursor = cursor
+        self.pending = None
+
+    def note_press(self, cursor: int, key: str) -> None:
+        """Remember the cursor and key of a press, so observe_cursor can tell a stall from a move."""
+        self.pending = (cursor, key)
 
     def save(self) -> None:
         if self.path is None:
@@ -1465,6 +1475,7 @@ def pressed(scr: dict, key: str) -> None:
     c = cycle()
     if c.where != where:
         c.where, c.presses = where, 0
+    c.note_press(scr["cursor"], key)
     c.presses += 1
     if key == "a":
         c.confirmed["stage" if where == "select_stage" else "character"] = scr["cursor"]
