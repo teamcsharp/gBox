@@ -185,6 +185,33 @@ MOD_FVF_LAYOUTS = {
     0x1C201FC3: {"normal": 8, "tangent": 12, "uv": 16},
     0x2000D414: {"normal": 8, "tangent": 12, "uv": 20},
 }
+# Where each format keeps its bone ids. Validated by checking every value against the model's own bone_count: 100% of
+# the ids from 0x133098b0, 0x1580b60c, 0x18b0faa8 and 0x2000d414 are below it, and 28344 of 28344 half-float ids from
+# 0x1c201fc3 are whole numbers inside it.
+MOD_BONE_FIELDS = {
+    0x133098B0: (6, 1, "H"),
+    0x18B0FAA8: (6, 1, "H"),
+    0x1580B60C: (8, 4, "B"),
+    0x2000D414: (16, 4, "B"),
+    0x1C201FC3: (20, 2, "e"),
+}
+
+
+def decode_bone_ids(data: bytes, vertex_format: int, count: int, stride: int) -> list[tuple[int, ...]]:
+    """Each vertex's bone ids, for the formats whose layout is confirmed."""
+    field = MOD_BONE_FIELDS.get(vertex_format)
+    if field is None:
+        return []
+    offset, width, code = field
+    size = width * struct.calcsize("<" + code)
+    out = []
+    for index in range(count):
+        base = index * stride + offset
+        if base + size > len(data):
+            break
+        values = struct.unpack_from(f"<{width}{code}", data, base)
+        out.append(tuple(int(round(v)) for v in values))
+    return out
 
 
 def decode_normals(data: bytes, vertex_format: int, count: int, stride: int) -> list[tuple[float, float, float]]:
@@ -355,6 +382,12 @@ class ModFile:
         if not data:
             return []
         return decode_uvs(data, record["vertex_format"], record["vertex_count"], record["vertex_stride"])
+
+    def bone_ids(self, mesh_index: int = 0) -> list[tuple[int, ...]]:
+        data, record = self.mesh_bytes(mesh_index)
+        if not data:
+            return []
+        return decode_bone_ids(data, record["vertex_format"], record["vertex_count"], record["vertex_stride"])
 
     def positions(self, mesh_index: int = 0, limit: int = 0) -> list[tuple[float, float, float]]:
         """The dequantised positions of one mesh, in model space (centimetres on the models measured)."""

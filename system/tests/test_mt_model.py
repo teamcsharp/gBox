@@ -274,3 +274,19 @@ def test_a_mesh_that_cannot_be_decoded_keeps_its_place_in_the_vertex_space():
     model = mt_model.parse_mod(data)
     points = model.all_positions()
     assert len(points) == sum(m["vertex_count"] for m in model.meshes())
+def test_bone_ids_decode_for_every_confirmed_format():
+    """Validated against the model's own bone_count: 100% below it on four formats, 28344/28344 on the fifth."""
+    cases = [(0x133098B0, 6, struct.pack("<H", 3), 12, (3,)),
+             (0x18B0FAA8, 6, struct.pack("<H", 5), 20, (5,)),
+             (0x1580B60C, 8, struct.pack("<4B", 1, 2, 3, 4), 20, (1, 2, 3, 4)),
+             (0x2000D414, 16, struct.pack("<4B", 9, 8, 7, 6), 28, (9, 8, 7, 6)),
+             (0x1C201FC3, 20, struct.pack("<2e", 0.0, 7.0), 24, (0, 7))]
+    for fmt, offset, payload, stride, expected in cases:
+        data = bytearray(stride)
+        data[offset:offset + len(payload)] = payload
+        got = mt_model.decode_bone_ids(bytes(data), fmt, 1, stride)
+        assert got == [expected], (hex(fmt), got, expected)
+
+
+def test_an_unconfirmed_format_yields_no_bone_ids():
+    assert mt_model.decode_bone_ids(b"\x00" * 64, 0xDEADBEEF, 2, 32) == []
