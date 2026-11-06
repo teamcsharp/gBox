@@ -25,6 +25,31 @@ a slot window rather than a retry.
 A test overlay was staged under `mods/52d15709be0fda1a/mtf-geometry-write-test/romfs/nativeNXx64/ImgNX/Archive/uEm6c.arc`
 and then removed again, so the rotation was never exposed to unverified geometry.
 
+## The real guard: a connected client's watch lease
+
+Four mechanisms were tried. Each one names a different guard, and the decisive one is in `gbox/operator_guard.py`:
+`watched_sessions()` reads `session_watch` rows whose `until` is in the future, and `watching_reason()` turns any such row
+into the 409 that refuses a launch. Those rows are **renewed by whatever holds the view**, so the guard outlives a hard
+reset, a mod swap, and a paused rotation — which is why the slot looked "busy with the schedule" for several rounds when it
+was really busy with a viewer.
+
+Confirmed working, so a later attempt needs no discovery:
+
+```
+POST /api/mercmode {"op": "configure", "host": "lilspark", "enabled": false}   -> 200   (host is required; 422 without)
+POST /api/sessions/{sid}/reset {"mode": "hard", "intent": "hard_reset"}        -> 200   (the intent field is required)
+POST /api/jobs {"tool": "@launch", "input": {game_id, mod}}                    -> 200, but 409 while a lease lives
+POST /api/sessions/{sid}/swap {"mod": ..., "keep_state": true}                 -> 200, same 409
+GET  /api/sessions/{sid}/frame.jpg                                             -> the frame (…/frame is 405)
+```
+
+The blocker is therefore client-side: the stream/PiP view has to be closed where it is open. Nothing server-side closes it
+politely, and closing someone's view without them knowing is not the agent's call even after permission to "close the
+viewer", because the permission cannot identify which client is renewing the lease.
+
+Left after this round: the test overlay removed, the artifact staged, MercMode resumed (200), and no title running with an
+unverified mod.
+
 ## The bisect to run when the slot is free
 
 Two variants, one minute each, so a failure names its own cause:
