@@ -130,6 +130,21 @@ def test_re4_switch_is_in_citron_titles():
     assert _switch_title_id({'platform': 'switch', 'title': 'Biohazard 4'}) == '010099A00BC1E000'
 
 
+def test_re4_game_id_is_the_librarys_real_update_file():
+    """The RE4 Switch id must be the catalog's own entry, computed from the path the library actually holds.
+
+    It used to hash `Resident Evil 4 [010099A00BC1E000].nsp`, a filename that does not exist in the library, which gave
+    c89d2c2e... - a game id no catalog entry has. ROM access was then "verified" against a file the library never had
+    and MercMode resolved RE4 to the GameCube disc instead of the Switch edition.
+    """
+    import hashlib
+    from gbox import re_switch as S
+    assert S.RE4_GAME_ID == '270a15eb98dab4d7'
+    assert S.RE4_GAME_ID == hashlib.sha1(
+        b'quickswap-switch:Resident Evil 4/Resident Evil 4 [UPDATE 1.0.2] [010099a00bc1e000].nsp').hexdigest()[:16]
+    assert S.EDITIONS['re4'] == {'platform': 'switch', 'mode': 'mercenaries', 'title_id': '010099A00BC1E000'}
+
+
 def test_re6_switch_operator_opt_out_is_authoritative(monkeypatch):
     from gbox import re6_tool
     monkeypatch.setattr(re6_tool, 'settings', lambda server, headers: {'everything_unlocked': False})

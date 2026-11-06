@@ -32,7 +32,11 @@ RE6_UNLOCK_REASON = ('A fresh RE6 Switch save forces the Prologue and never open
 
 
 RE4_TITLE_ID = '010099A00BC1E000'
-RE4_GAME_ID = hashlib.sha1(b'quickswap-switch:Resident Evil 4/Resident Evil 4 [010099A00BC1E000].nsp').hexdigest()[:16]
+# The library's real file, and the path must be exactly the one the catalog holds: hashing a name that does not exist
+# produced c89d2c2e..., a game id no catalog entry has, so `prepare` verified a file the library never had and MercMode
+# read the wrong title (the GameCube disc). This string hashes to 270a15eb98dab4d7, the Switch [UPDATE 1.0.2] entry.
+RE4_GAME_ID = hashlib.sha1(
+    b'quickswap-switch:Resident Evil 4/Resident Evil 4 [UPDATE 1.0.2] [010099a00bc1e000].nsp').hexdigest()[:16]
 RE4_DRIVER = 'gbox.mercs.titles.re4_switch'
 RE4_REASON = ('Switch RE4 Mercenaries runs on Citron NEO with the re4_switch driver. Boot and round entry are '
               'verified (three A presses after the stage draws); the health offset (unit+0x3c2) and the score/'

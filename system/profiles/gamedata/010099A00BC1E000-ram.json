@@ -1,0 +1,54 @@
+{
+  "format": "gbox-ram-map/1",
+  "id": "010099A00BC1E000",
+  "title": "Resident Evil 4 (Nintendo Switch, update 1.0.2) - The Mercenaries [RAM map PENDING live measurement]",
+  "platform": "switch",
+  "endian": "little",
+  "pointer_size": 8,
+  "match": {
+    "title_id": "010099A00BC1E000",
+    "game_ids": []
+  },
+  "regions": [],
+  "notes": [
+    "SCAFFOLD 2026-11-04. The RAM map is NOT measured yet. RE4 Switch is a port of the 2007 HD / PS2 / PC build (biohazard 4), NOT MT Framework, so it does NOT share re5_switch / re6_switch's sMain / sPlayer / cGameSys layout. Its layout is the RE4 engine's (pG global work area, the cEm / EmMgr enemy table, the title.cpp task with its TW menu work area), closest to the GameCube build in gbox.re4_merc_bot / gbox.re4_menus (G4BE08-ram.json). ARM64, little-endian, ASLR: every address is main's load base plus a fixed offset; the driver (gbox.mercs.titles.re4_switch) reads them, so this map holds no absolute fields.",
+    "Renders on Eden only on the GB10 (switch_linux_emulator=eden; Citron broken there - memory gbox-switch-render-fix-2026-11-03). NCE: a guest address is the host address, so /proc/<pid>/mem reads it directly. The guest RAM layout is the GAME's, so addresses measured on any Eden host apply to the lilspark MercMode rotation.",
+    "LIVE SCAN PLAN: docs/research/re4-switch-ram.md. Measure, in this order: (1) main's 64-byte read-only signature + its offset (module_base) to pin the build id; (2) the pG global work area (room u16, Leon's health s16) - GameCube pG+0x4FA8 room / +0x4FB0 hp are the starting hypotheses; (3) Leon's object pointer and his pos (3*f32) / facing (f32) - GC player+0x94 / +0xA4; (4) the EmMgr enemy table (base / count / stride) and per-enemy pos / health (GC enemy+0x94 / +0x320); (5) the Mercenaries game struct: countdown clock (frames), combo, kills, score, phase; (6) the title.cpp task's TW work area and the menu cursors (routine 5 main menu, 6 extra games -> The Mercenaries -> Select Player 0..4 -> Select Stage 0..3 -> routine 7 starting) - GC TW+0x28 / +0x54 / +0x55 / +0x56. Verify every write by reading it back live.",
+    "Characters (Select Player, left to right): Leon, Ada, Krauser, HUNK, Wesker. Stages (Select Stage, 2x2 grid): Village, Castle, Base, Waterworld. The Mercenaries is a separate mode from the story; a room 0x04RR is a Mercenaries stage, any other room is the story (the bot never plays it).",
+    "mercs.ready stays false until the scan fills gbox.mercs.titles.re4_switch's constants and a Mercenaries round is reached under autoplay (gameplay frame + RAM read). While false, MercMode keeps RE4 out of the rotation (gbox.mercs_bot.title_engine)."
+  ],
+  "mercs": {
+    "driver": "gbox.mercs.titles.re4_switch",
+    "menus": "gbox.mercs.titles.re4_switch",
+    "ready": false,
+    "jump_at": "select_player",
+    "package": [],
+    "round_ops": [],
+    "playing_ops": [],
+    "vocab": {
+      "screen": "driver",
+      "merc.stage": null,
+      "merc.timer": "driver",
+      "merc.combo": "driver",
+      "merc.score": "driver",
+      "merc.kills": "driver",
+      "player.pos": "driver",
+      "player.facing": "driver",
+      "player.hp": "driver",
+      "enemies": "driver",
+      "enemies.pos": "driver",
+      "enemies.hp": "driver"
+    },
+    "units_per_m": 100,
+    "heading": {
+      "zero": "+z",
+      "positive": "toward +x"
+    },
+    "rules": {
+      "mode": "mercenaries",
+      "round_time_s": 120
+    }
+  },
+  "groups": {},
+  "fields": {}
+}
