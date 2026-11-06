@@ -410,6 +410,7 @@
   $('stage-go').addEventListener('click', stageReplacement);
   $('swap-go').addEventListener('click', swapEntry);
   $('model-go')?.addEventListener('click', inspectModel);
+  $('reports-go')?.addEventListener('click', loadReports);
   $('top').addEventListener('change', () => api.alwaysOnTop($('top').checked));
 
   // The inbox by class next to the fleet that works it off: a queue that is draining (or one that is not) is a fact
@@ -440,6 +441,40 @@
       out.innerHTML = `<table><tbody>${rows}</tbody></table><details><summary>resource paths</summary><ul>${paths}</ul></details>`;
     } catch (err) {
       meta.textContent = 'could not read that model';
+      out.innerHTML = `<p class="muted">${String(err.message || err).slice(0, 160)}</p>`;
+    }
+  }
+
+  // The incident reports as numbers: how rounds ended per title, the behaviour rates per minute, and why rounds did
+  // or did not open a report. Rates rather than counts, because a 4-minute death and a 1-minute completion do not
+  // compare by totals (a died round averaged 233 s against 46 s).
+  async function loadReports() {
+    const out = $('reports-out'), meta = $('reports-meta');
+    meta.textContent = 'reading the reports…';
+    try {
+      const d = await api.api('/api/decrypt-lab/report-digest');
+      const outcomes = Object.entries(d.outcomes || {}).map(([k, v]) => `${k} ${v}`).join(' · ');
+      const titles = Object.entries(d.titles || {}).map(([title, counts]) => {
+        const parts = Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(', ');
+        return `<tr><td>${String(title).replace(/[<>&]/g, '')}</td><td>${parts}</td></tr>`;
+      }).join('');
+      const rates = Object.entries(d.per_minute || {}).map(([outcome, fields]) => {
+        const cells = Object.values(fields || {}).map((v) => (v === null ? '—' : v));
+        return `<tr><td>${outcome}</td><td>${cells.join(' · ')}</td></tr>`;
+      }).join('');
+      const labels = Object.keys(((d.per_minute || {}).died) || {}).join(' · ');
+      const why = Object.entries(d.why_no_report || {})
+        .map(([reason, n]) => `<li>${n} × ${String(reason).replace(/[<>&]/g, '')}</li>`).join('');
+      meta.textContent = `${d.analysed} analysed of ${d.reports} reports`;
+      out.innerHTML = `
+        <p><b>${d.analysed}</b> analysed of <b>${d.reports}</b> reports · ${outcomes}</p>
+        <p class="muted">minutes analysed: ${Object.entries(d.minutes_analysed || {}).map(([k, v]) => `${k} ${v}`).join(' · ')}</p>
+        <table><thead><tr><th>title</th><th>outcomes</th></tr></thead><tbody>${titles}</tbody></table>
+        <p class="muted">per minute — ${labels}</p>
+        <table><thead><tr><th>outcome</th><th>rates</th></tr></thead><tbody>${rates}</tbody></table>
+        ${why ? `<details><summary>why a round opened no report</summary><ul>${why}</ul></details>` : ''}`;
+    } catch (err) {
+      meta.textContent = 'could not read the digest';
       out.innerHTML = `<p class="muted">${String(err.message || err).slice(0, 160)}</p>`;
     }
   }
