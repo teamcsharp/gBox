@@ -149,12 +149,18 @@ def swap_arc(data: bytes, donor_data: bytes, *, follow_tag: bool = False,
 
 
 ZOMBIE_ARCS = {
-    # the enemy archives that stand in for the zombies / majini in RE5's Mercenaries
-    "010018100CD46000": ("nativeNXx64/ImgNX/Archive/uEm6c.arc", "nativeNXx64/ImgNX/Archive/uEm71.arc"),
+    # The enemy archives that stand in for the zombies / majini in RE5's Mercenaries. uEm10 and uEm11 are the ones the
+    # round actually fills with: the driver reads its enemies out of sEnemy as "uEm10 / uEm11 Majini, uEm21, uEm62"
+    # (mercs/titles/re5_switch.py), so swapping only uEm6c/uEm71 left every visible enemy a Majini (live 2026-11-06:
+    # a round captured with cast_swap on showed three ordinary Majini). uEm21/uEm62 are the dynamite carriers.
+    "010018100CD46000": ("nativeNXx64/ImgNX/Archive/uEm10.arc", "nativeNXx64/ImgNX/Archive/uEm11.arc",
+                         "nativeNXx64/ImgNX/Archive/uEm21.arc", "nativeNXx64/ImgNX/Archive/uEm62.arc",
+                         "nativeNXx64/ImgNX/Archive/uEm6c.arc", "nativeNXx64/ImgNX/Archive/uEm71.arc"),
 }
 PLAYER_AS_MAJINI = {
-    # the enemy whose clothes (texture maps) the player character wears: "characters in majini clothes"
-    "010018100CD46000": "nativeNXx64/ImgNX/Archive/uEm6c.arc",
+    # the enemy whose clothes (texture maps) the player character wears: "characters in majini clothes" (uEm10 is the
+    # majini the round spawns, so its clothes are the ones the player would otherwise be wearing in the fight)
+    "010018100CD46000": "nativeNXx64/ImgNX/Archive/uEm10.arc",
 }
 
 
