@@ -341,3 +341,34 @@ def test_titles_with_an_atlas_still_wait_for_it(evidence):
     with pytest.raises(RuntimeError, match='Atlas evidence is not ready'):
         e.runner.materialize(e.runner.ingest(TITLE, row))
     assert e.store.all('request') == []
+
+def _round(team_role="solo_p1", scoring_scope=None):
+    observed = {"source_session_id": "w1-1", "source_autoplay_job_id": "abcdef0123456789",
+                "team_role": team_role, "scoring_scope": scoring_scope}
+    return {"id": "ab12" * 8, "ts": 1.0, "stage": "Public Assembly", "mode": "mercenaries",
+            "character": "Chris (BSAA)", "outcome": "died", "observed": observed}
+
+
+def test_an_ineligible_round_names_the_condition_that_failed():
+    """The old reason covered five failures at once, so 740 skipped reports could not be diagnosed or fixed."""
+    session = {"session_id": "w1-1", "game_id": "e7ca89bbeb67360d"}
+    provenance = {"verified": True, "reason": "matched exact worker/session start"}
+    report = R.report_for("BLUS30491", _round(team_role="solo_p2"), {}, session, provenance)
+    eligibility = report["eligibility"]
+    assert eligibility["eligible"] is False
+    assert "the round played solo player one" in eligibility["reason"]
+    assert "solo_p2" in eligibility["reason"]
+    failed = [entry for entry in eligibility["why"] if not entry["met"]]
+    assert [entry["condition"] for entry in failed] == ["the round played solo player one"]
+    assert failed[0]["detail"] == "team_role was 'solo_p2'"
+
+
+def test_an_eligible_round_has_no_failed_condition_and_a_team_round_is_refused():
+    session = {"session_id": "w1-1", "game_id": "e7ca89bbeb67360d"}
+    provenance = {"verified": True, "reason": "matched exact worker/session start"}
+    good = R.report_for("BLUS30491", _round(), {}, session, provenance)
+    assert good["eligibility"]["eligible"] is True
+    assert all(entry["met"] for entry in good["eligibility"]["why"])
+    team = R.report_for("BLUS30491", _round(scoring_scope="team"), {}, session, provenance)
+    assert team["eligibility"]["eligible"] is False
+    assert "did not score as a team" in team["eligibility"]["reason"]
