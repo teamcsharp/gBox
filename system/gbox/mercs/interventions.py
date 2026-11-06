@@ -313,8 +313,12 @@ def native_controller(ad):
                     ctl = module.Controller(ad)
                     setattr(ad, attribute, ctl)
                 return ctl
-        except (OSError, ValueError, RuntimeError, AttributeError) as exc:
-            reasons.append(str(exc))
+        except Exception as exc:                          # noqa: BLE001 - a module for another platform must be skipped
+            # A module whose Controller rejects this adapter (re4_gc_native on an eden session raised a wrapped
+            # ValueError from eden_memory: "Switch address 0x80000000 is outside the guest arena") must fall through to
+            # the next module. The narrower tuple let that escape and killed the whole witness worker thread, which is
+            # why no native round boundary was ever posted for RE5 Switch (2026-11-05).
+            reasons.append(f"{module.__name__.rsplit('.', 1)[-1]}: {exc}")
     raise re6_switch_native.Unavailable("; ".join(dict.fromkeys(reasons)))
 
 
