@@ -1,0 +1,37 @@
+
+## What actually kills the RE5 Switch bot (measured), and where the fix goes
+
+`GET /api/mercs/learning` ? `what_kills_him`, over 62 rounds in 24 h at 0.968 deaths per round:
+
+```
+14 deaths  swarmed (4+ within 2 m) with the gun lowered      195 episodes  33,520 HP
+11 deaths  aimed away or threat behind while hit              210 episodes  43,408 HP
+10 deaths  swarmed (4+ within 2 m) with the gun up             99 episodes  15,382 HP
+10 deaths  low health with no tablet or heal                   55 episodes   3,962 HP
+ 4 deaths  low health with a heal in hand, not used            25 episodes   3,447 HP
+ 3 deaths  grabbed from the front / behind                     28 episodes   2,900 HP
+```
+
+The dominant pattern is clear and it is not the character select: **he is surrounded at close range and dies there** - 34 of the
+deaths involve being within 2 m of several enemies - and the "gun down" variant of it is twice the "gun up" one, which says he is
+often not even aimed when it happens.
+
+The code already has a handler for *one* close enemy and not for a crowd:
+
+```
+BACKOFF_S, BACKOFF_GAP_S = 0.5, 1.5   # one too close in front with the gun down: back off this long, then fight
+BACKOFF_CONE = radians(60)            # ... only from one in front (backing up walks into one behind)
+```
+
+Under a `reload` motion the bot deliberately does not aim (`self.aim_since = None`, "the gun comes back up by itself"), so the
+reload state is one of the ways the gun is down while a crowd closes in.
+
+**The change to make next**, in this order:
+
+1. a **crowd rule**: 3+ live enemies within 2 m triggers a backoff with its own, longer duration, not the single-enemy 0.5 s, and
+   it should not require the enemy to be inside the front cone (the cone existed because backing up walks into one behind - with a
+   crowd that reasoning no longer holds, so the direction has to be chosen away from the crowd's centroid);
+2. a **reload guard**: do not start a reload while 2+ enemies are within ~5 m - finish the crowd first, reload when it clears;
+3. only then re-tune the `low health` clusters (HEAL_CRITICAL is already tuned at 0.3 per stage).
+
+Each of these is measurable by the same gate, and the gate needs ~8 rounds (~3 h) per verdict.
