@@ -414,7 +414,11 @@ class ModelSwapIn(BaseModel):
     arc_path: str
     donor_arc: str
     build: str = "gbox-lab"
-    with_mesh: bool = False   # objects also take the donor's mesh entries (its shape), not only its material maps
+    # objects also take the donor's mesh entries (its shape), not only its material maps. MEASURED BROKEN (2026-11-05,
+    # twice): the title reaches select_player and then sits at screen=loading with a dark frame. The second attempt used
+    # tag_follow so the donor's materials were internally consistent, and it still stalled - a donor mesh refers to
+    # parts/materials the slot archive does not carry. Kept for experiments; the panel never sets it.
+    with_mesh: bool = False
     tag_follow: bool = False  # a map of another size moves too, its tag travelling with it (an experiment)
 
 
