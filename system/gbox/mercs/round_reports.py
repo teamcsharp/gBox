@@ -214,11 +214,30 @@ def report_for(title, row, atlas, session, provenance=None):
     rank_verified = data.get('result_rank_verified') is True and native_rank in ('D', 'C', 'B', 'A', 'S', 'SS', 'S+', 'S++')
     s_rank = rank_verified and row['outcome'] == 'completed' and native_rank in ('S', 'SS', 'S+', 'S++')
     assistance = data.get('assistance') if isinstance(data.get('assistance'), dict) else {}
-    eligible = row['outcome'] in ('completed', 'died') and session is not None \
-        and session.get('game_id') in TITLES[title] \
-        and data.get('source_session_id') == session.get('session_id') \
-        and data.get('team_role') == 'solo_p1' and data.get('scoring_scope') != 'team' \
-        and (provenance or {}).get('verified') is True
+    # Why a round is or is not eligible, condition by condition. The old single string ("native terminal outcome or
+    # exact solo session provenance is unavailable") covered five different failures at once, so 740 reports that had a
+    # matched session and verified provenance could not be told apart from ones with neither - the reason could not guide
+    # a fix. The first condition that fails is now named.
+    checks = (
+        ('outcome is completed or died', row['outcome'] in ('completed', 'died'), f"outcome was {row['outcome']!r}"),
+        ('the session was found', session is not None, 'no session row'),
+        ('the session game id belongs to this title',
+         session is not None and session.get('game_id') in TITLES[title],
+         f"session game id was {(session or {}).get('game_id')!r}"),
+        ('the round names that exact session', session is not None
+         and data.get('source_session_id') == session.get('session_id'),
+         f"round named {data.get('source_session_id')!r}"),
+        ('the round played solo player one', data.get('team_role') == 'solo_p1',
+         f"team_role was {data.get('team_role')!r}"),
+        ('the round did not score as a team', data.get('scoring_scope') != 'team',
+         f"scoring_scope was {data.get('scoring_scope')!r}"),
+        ('its start was verified', (provenance or {}).get('verified') is True,
+         (provenance or {}).get('reason') or 'provenance not verified'),
+    )
+    eligible = all(ok for _, ok, _ in checks)
+    failed = next(((label, detail) for label, ok, detail in checks if not ok), None)
+    ineligible_reason = (f'not eligible: {failed[0]} ({failed[1]})' if failed
+                         else 'native terminal outcome or exact solo session provenance is unavailable')
     category = ('native_s_rank_observed' if s_rank else 'failed_s_rank' if rank_verified
                 else 'rank_not_verified')
     clean_s = s_rank and assistance.get('classification') == 'unmodified' and assistance.get('verified') is True
@@ -243,8 +262,8 @@ def report_for(title, row, atlas, session, provenance=None):
             if k in ('floor','pos','goal','reason','source','collision_class','at')}
             if isinstance(data.get('nav_obstruction_context'),dict) else None,
         'atlas': atlas, 'eligibility': {'eligible': eligible, 'needs_analysis': eligible and not clean_s,
-            'reason': 'terminal solo round; rank uncertainty is investigated' if eligible
-                      else 'native terminal outcome or exact solo session provenance is unavailable'},
+            'reason': 'terminal solo round; rank uncertainty is investigated' if eligible else ineligible_reason,
+            'why': [{'condition': label, 'met': ok, 'detail': None if ok else detail} for label, ok, detail in checks]},
         'limits': ['No guessed result rank, physical wall labels, attacker attribution or mine kill credit.',
                    'Atlas measured reviews are per recorded fragment; other counter scopes follow the title recorder.',
                    'Bow firing observations are not projectile counts; HP correlations do not prove arrow accuracy.',

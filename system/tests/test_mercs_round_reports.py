@@ -308,8 +308,12 @@ def test_switch_solo_round_without_an_atlas_queues_its_lilspark2_analysis(tmp_pa
     assert runner.scan() == 1                                     # the scanner reads mercs/curriculum/<title>
     doc = runner.materialize(store.get(R.KIND, R.identity(title, RID)))
     report = doc['report']
-    assert doc['state'] == 'queued_for_hermes' and report['eligibility'] == {
+    eligibility = report['eligibility']
+    assert doc['state'] == 'queued_for_hermes'
+    assert {k: eligibility[k] for k in ('eligible', 'needs_analysis', 'reason')} == {
         'eligible': True, 'needs_analysis': True, 'reason': 'terminal solo round; rank uncertainty is investigated'}
+    # every condition is reported with whether it was met, so an ineligible round names what actually failed
+    assert eligibility['why'] and all(entry['met'] and entry['detail'] is None for entry in eligibility['why'])
     assert report['atlas']['state'] == 'unavailable' and report['atlas']['rounds'] == []
     assert report['source']['provenance'] == {'verified': True, 'source': 'owning_local_autoplay_job',
                                               'reason': 'matched exact worker/session start'}
