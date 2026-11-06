@@ -274,9 +274,16 @@
   // Character / zombie slot swaps (RE5 Switch): the archives the panel's buttons move a model group between. The
   // model group is the archive's first `\model\` entry (gbox.mt_arc), so only the archives are named here.
   const SWAP = {
+    // the whole RE5 cast, as its character select offers it across both pages: a round played on any of them can be
+    // swapped, and any of them can donate a skin
     slots: {chris: 'nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc',
             sheva: 'nativeNXx64/ImgNX/Archive/uPl01ShebaNormal.arc',
             jill: 'nativeNXx64/ImgNX/Archive/uPl02JillCos1.arc',
+            wesker: 'nativeNXx64/ImgNX/Archive/uPl03WeskerCos1.arc',
+            josh: 'nativeNXx64/ImgNX/Archive/uPl04Josh.arc',
+            excella: 'nativeNXx64/ImgNX/Archive/uPl05ExcellaNormal.arc',
+            barry: 'nativeNXx64/ImgNX/Archive/uPl06BarryNormal.arc',
+            rebecca: 'nativeNXx64/ImgNX/Archive/uPl07RebeccaNormal.arc',
             // Enemies are not interchangeable with characters: a body map must share the slot's tag (dimensions and
             // format) or gbox.skin_swap refuses it. uEm20's em2000_01body does not match Chris, so it is refused; uEm6c
             // and uEm71 (body em6c00_00) carry a base map and mask of Chris's exact format, so those swap cleanly.

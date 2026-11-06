@@ -17,12 +17,20 @@ from pathlib import Path
 
 from . import mt_arc
 
-# title id -> the character archives MercMode may swap, by the name the operator sees
+# title id -> the character archives MercMode may swap, by the name the operator sees. RE5's select spans the whole
+# cast (Chris, Sheva, Jill, Wesker, Josh, Excella, Barry, Rebecca); leaving a character out here meant a round played on
+# them could never be swapped (operator 2026-11-06: "I want to see all characters being used and being capable of
+# swapping"). The variant named is the one each character is picked as by default; the others differ only by costume.
 CHARACTER_ARCS = {
     "010018100CD46000": {
         "chris": "nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc",
         "sheva": "nativeNXx64/ImgNX/Archive/uPl01ShebaNormal.arc",
         "jill": "nativeNXx64/ImgNX/Archive/uPl02JillCos1.arc",
+        "wesker": "nativeNXx64/ImgNX/Archive/uPl03WeskerCos1.arc",
+        "josh": "nativeNXx64/ImgNX/Archive/uPl04Josh.arc",
+        "excella": "nativeNXx64/ImgNX/Archive/uPl05ExcellaNormal.arc",
+        "barry": "nativeNXx64/ImgNX/Archive/uPl06BarryNormal.arc",
+        "rebecca": "nativeNXx64/ImgNX/Archive/uPl07RebeccaNormal.arc",
     },
 }
 
