@@ -224,7 +224,18 @@ None of these name RE4 Switch today, except where noted. RE5 and RE6 Switch are 
 
 ## 7. Working rules
 
-**Pausing the rotation. Ask the operator first, every time.**
+**Standing permission from the operator, 2026-11-06: "it can do whatever is needed for these goals."** This replaces every "ask the
+operator first" above, including the line about pausing MercMode in my earlier answer. Don't wait for an OK to:
+- pause the rotation on lilspark, for as long as a step needs;
+- restart gbox.service when a change needs it. Each restart kills every emulator, so batch them;
+- commit to main, deploy, and change lilspark's MercMode settings for these goals.
+
+Still off limits, because none of them are needed: test sessions on JAYBUILTFINALE, deleting the operator's games, saves, keys or
+firmware, and writing test data into the rotation's live build.
+
+Say in your reply when you paused and when you restored, so the operator can follow what happened.
+
+**Pausing the rotation:**
 1. `job_mercmode configure enabled=false`.
 2. Stop the rotation's session, and launch your test at once with `node: lilspark`. The demo can start in any gap.
 3. Test.
