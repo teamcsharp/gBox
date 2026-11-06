@@ -98,6 +98,41 @@ Still undecoded: the geometry stream's own table (attribute masks, strides, inde
 parents), the skin weights, and how a material resolves its texture names. The writer cannot author geometry until
 those are known; it can parse and re-emit every model exactly (21/21).
 
+## 2c. `MOD\0` is the geometry - and it does not travel between slots
+
+Probing `uWp06.arc`'s second `wp0600` entry (35,496 B uncompressed):
+
+```
+0000: 4d 4f 44 00   "MOD\0"
+0004: d3 00 03 00   (0x000300d3)
+0008: 0f 00 09 00   (0x0009000f)
+000c: 1f 06 00 00   1567
+0010: 0d 09 00 00   2317
+0014: 87 05 00 00   1415
+0018: a4 64 00 00   25764
+0020: 02 00 00 00   2
+0028: a4 00 00 00   164      \
+0030: 6c 03 00 00   876       |  seven offsets, rising, the last (35492) one file-length short of the payload:
+0038: ac 03 00 00   940       | they look like block starts
+0040: 2c 08 00 00   2092      |
+0048: e4 13 00 00   5092      |
+0050: 88 78 00 00   30856     |
+0058: a4 8a 00 00   35492    /
+0060: 28 e8 9d be   -0.308    \  floats, three at a time: these read as vertex positions
+0064: 22 c8 d9 3f   1.7018     |
+0068: 94 22 c9 be   -0.3939   |
+006c: 57 53 0e 41   8.9017    /
+```
+
+So: **`MRL\0` is the model resource** (material block + the texture path table) and **`MOD\0` is the geometry**
+(header of block offsets, then vertex data). The earlier note that a "shape swap" worked was wrong: that swap moved the
+MRL, so it changed materials and left the mesh.
+
+**Measured consequence:** mine <- grenade with the MRL *and* the MOD swapped boots to a **white screen** (frame
+brightness a constant 238.6, `screen=unknown`), while the MRL alone plays a full round. A MOD carries its own offsets,
+vertex counts and bone/material counts, so it only fits a slot built for the same skeleton. `model_swap.swap_models`
+therefore takes `geometry=False` by default, and a real Sonic/Mario import must emit a MOD matched to the target's bones.
+
 ## 3. The build order (each step has a test that fails loudly)
 
 1. **Parse**: read the header, the offset table and the geometry block of a real model into a structure, and assert
