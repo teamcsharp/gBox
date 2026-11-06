@@ -31,7 +31,7 @@ def make_mod(meshes=((100, 24),), groups=1, bones=2, materials=1,
     header_size = 0x28 + 8 * mt_model.MOD_BLOCKS
     tail = struct.pack("<4f", *bounds[0]) + struct.pack("<4f", *bounds[1]) + struct.pack("<4f", *bounds[2])
     tail += b"\x00" * (68 - len(tail))
-    bone_block = b"\x00" * (bones * 40)
+    bone_block = bytes(256) + b"\x00" * (bones * mt_model.MOD_BONE_RECORD)
     group_block = b"\x00" * (groups * 32)
     material_block = b"\x00" * (materials * 32)
     mesh_block = bytearray()
@@ -352,3 +352,19 @@ def test_replacing_a_part_that_does_not_exist_is_refused():
     model = mt_model.parse_mod(make_mod(meshes=((4, 24),)))
     with pytest.raises(mt_model.ModelError):
         mt_model.replace_part(model.raw, 5, b"", 0, 0x18B0FAA8, 20)
+def test_the_skeleton_block_is_a_map_plus_one_record_per_bone():
+    """Measured on 12 models: groups_offset - bones_offset == 256 + bone_count * 152, exactly."""
+    model = mt_model.parse_mod(make_mod(meshes=((4, 24),), bones=3))
+    table = model.bone_table()
+    assert table["bone_count"] == 3
+    assert table["consistent"] is True
+    assert len(table["map"]) == 256
+    assert len(table["records"]) == 3 and all(len(r) == mt_model.MOD_BONE_RECORD for r in table["records"])
+
+
+def test_a_bone_block_of_the_wrong_size_is_reported_rather_than_padded():
+    data = make_mod(meshes=((4, 24),), bones=2)
+    raw = bytearray(data)
+    struct.pack_into("<H", raw, 0x06, 9)                # claim nine bones where the block holds two
+    table = mt_model.parse_mod(bytes(raw)).bone_table()
+    assert table["consistent"] is False and table["records"] == []

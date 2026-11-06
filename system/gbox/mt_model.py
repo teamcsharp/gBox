@@ -197,6 +197,7 @@ MOD_BONE_FIELDS = {
 }
 # Tangents sit at +12 as four signed bytes on every format that carries one, and decode to unit length on 6198/6198,
 # 16669/16669 and 13594/13594 vertices of the three formats checked.
+MOD_BONE_RECORD = 152             # bytes per bone record on the Switch version (256-byte map + count * 152 = the block)
 MOD_TANGENT_OFFSET = 12
 MOD_TANGENT_FORMATS = frozenset({0x18B0FAA8, 0x1C201FC3, 0x2000D414})
 # Skin weights: two half floats at +24 (0x2000d414, in 0..1 on 16669/16669 vertices) and four bytes at +12
@@ -511,6 +512,28 @@ class ModFile:
                     continue
                 out.append((a, b, c))
         return out
+
+    def bone_table(self) -> dict:
+        """The skeleton block: the bone map and one raw record per bone.
+
+        Measured on four models: `groups_offset - bones_offset == 256 + bone_count * 152` exactly (wp0600 712 with 3
+        bones, wp0a00 560 with 2, em6c00 4512 with 28, evf0000 13328 with 86). So the block is a 256-byte bone map
+        followed by 152-byte bone records. The *contents* of a record are not decoded: the documented version-156 layout
+        is 16 bytes per bone plus two 64-byte matrices and does not describe a 152-byte record, and reading the
+        documented parent field out of these gives values past the bone count. The records are therefore returned raw
+        rather than mislabelled.
+        """
+        header = self.header()
+        start, end = header["offsets"]["bones"], header["offsets"]["groups"]
+        count = header["bone_count"]
+        region = self.raw[start:end]
+        if not count or len(region) < 256 + count * MOD_BONE_RECORD:
+            return {"bone_count": count, "region": len(region), "records": [], "map": b"", "consistent": False}
+        return {"bone_count": count, "region": len(region),
+                "map": region[:256],
+                "records": [region[256 + i * MOD_BONE_RECORD:256 + (i + 1) * MOD_BONE_RECORD]
+                            for i in range(count)],
+                "consistent": len(region) == 256 + count * MOD_BONE_RECORD}
 
     def mesh_bytes(self, mesh_index: int) -> tuple[bytes, dict]:
         """One mesh's vertex data and its record, so a caller can decode whichever components it needs."""
