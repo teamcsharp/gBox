@@ -432,3 +432,22 @@ def test_geometry_beyond_the_old_box_needs_the_box_rewritten():
     assert width_before > 0
     assert abs(width_after / width_before - 2.0) < 0.05      # doubled, not clamped
     assert again.bounds()["max"]["y"] > new["max"]["y"] - 0.01
+def test_packing_over_the_original_bytes_keeps_fields_with_no_known_layout():
+    """0x133098b0's normals are not decoded; writing zeroes there erases the model's lighting (measured: unlit blobs)."""
+    model = mt_model.parse_mod(make_mod(meshes=((4, 12),)))
+    record = model.meshes()[0]
+    assert record["vertex_format"] == 0x133098B0
+    data, _ = model.mesh_bytes(0)
+    points = model.positions(0)
+    vertices = [{"position": p, "bounds": model.bounds()} for p in points]
+    naive = mt_model.pack_vertices(vertices, record["vertex_format"], record["vertex_stride"])
+    safe = model.pack_part(0, vertices)
+    # the naive pack zeroes the 4 bytes at +8 that hold the normal; the safe one keeps them
+    naive_tail = naive[8:12]
+    safe_tail = safe[8:12]
+    assert naive_tail == b"\x00\x00\x00\x00"
+    assert safe_tail == data[8:12]
+    # positions still land where they should
+    got = mt_model.decode_positions(safe, record["vertex_format"], len(points), record["vertex_stride"],
+                                    model.bounds())
+    assert all(abs(a - b) < 0.5 for p, q in zip(points, got) for a, b in zip(p, q))

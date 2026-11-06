@@ -332,12 +332,16 @@ def encode_uvs(uvs: list[tuple[float, float]], vertex_format: int) -> bytes:
     return b"".join(struct.pack("<2e", u, v) for u, v in uvs)
 
 
-def pack_vertices(vertices: list[dict], vertex_format: int, stride: int) -> bytes:
+def pack_vertices(vertices: list[dict], vertex_format: int, stride: int, base: bytes | None = None) -> bytes:
     """Build a vertex buffer: each component written at its documented offset inside the stride.
 
     This is what a writer hands to the container. A vertex is a dict with any of "position" (model-space x, y, z),
-    "normal" (unit vector), "uv" (u, v) and "bones" (ids). Anything the format does not carry, or the caller does not
-    supply, is left as whatever `fill` the caller seeded; components are never invented.
+    "normal" (unit vector), "tangent" (unit vector), "uv" (u, v), "bones" (ids) and "weights" (0..1). Anything the format
+    does not carry, or the caller does not supply, is left as whatever `base` holds - pass the vertex data the model
+    already had and every undecoded field survives untouched.
+
+    Passing `base` matters: without it, a format whose layout is not confirmed (0x133098b0's normals, for one) gets zeros,
+    which is silent data loss. Measured: rewriting a mine's model with zeroed normals rendered as unlit blobs.
     """
     layout = MOD_FVF_LAYOUTS.get(vertex_format, {})
     short_position = vertex_format in MOD_SHORT_POSITION
@@ -346,8 +350,11 @@ def pack_vertices(vertices: list[dict], vertex_format: int, stride: int) -> byte
         raise ModelError(f"format {vertex_format:08x} has no known position layout")
     bone_field = MOD_BONE_FIELDS.get(vertex_format)
     out = bytearray()
-    for vertex in vertices:
-        packed = bytearray(stride)
+    for index, vertex in enumerate(vertices):
+        if base is not None and (index + 1) * stride <= len(base):
+            packed = bytearray(base[index * stride:(index + 1) * stride])
+        else:
+            packed = bytearray(stride)
         bounds = vertex.get("bounds")
         if "position" in vertex:
             x, y, z = vertex["position"]
@@ -611,6 +618,17 @@ class ModFile:
                 "parents": [h[1] for h in headers],
                 "anim_map": [h[0] for h in headers],
                 "consistent": len(region) >= need + 256}
+
+    def pack_part(self, mesh_index: int, vertices: list[dict]) -> bytes:
+        """Pack one part's vertices over the bytes it already has, so undecoded fields (normals in 0x133098b0) survive.
+
+        This is the safe way to write geometry: `pack_vertices` alone seeds every byte with zero, which erases any
+        component whose layout is not confirmed. The mine's normals are exactly that case.
+        """
+        data, record = self.mesh_bytes(mesh_index)
+        if not data:
+            raise ModelError(f"part {mesh_index} has no vertex data")
+        return pack_vertices(vertices, record["vertex_format"], record["vertex_stride"], base=data)
 
     def mesh_bytes(self, mesh_index: int) -> tuple[bytes, dict]:
         """One mesh's vertex data and its record, so a caller can decode whichever components it needs."""
