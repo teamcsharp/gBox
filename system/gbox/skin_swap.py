@@ -74,14 +74,20 @@ def swap_arc(data: bytes, donor_data: bytes) -> tuple[bytes, str, str]:
         raise mt_arc.ArcError("a character has no body skin group to swap")
     patched = data
     moved = 0
+    skipped = []
     for kind in ("BM", "MM", "NM"):
         dst, src = slot_groups[slot_name].get(kind), donor_groups[donor_name].get(kind)
         if dst is None or src is None:
             continue
+        # the tag carries the map's dimensions and format: a donor map of a different size is not a valid swap and
+        # renders black (or worse), so only same-tag maps move
+        if dst.tag != src.tag:
+            skipped.append(dst.name)
+            continue
         patched = mt_arc.replace(patched, dst.name, src.data)
         moved += 1
     if not moved:
-        raise mt_arc.ArcError("the donor carries no skin map the slot can take")
+        raise mt_arc.ArcError("the donor's skin maps do not match the slot's format (nothing safe to swap)")
     return patched, slot_name, donor_name
 
 
