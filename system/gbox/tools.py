@@ -481,8 +481,15 @@ def _save_previous_game(ad, game: dict, sid: str, ctx) -> dict:
     save = getattr(ad, "save_state", None)
     if save is None:
         raise Unsupported(f"{kind} does not support save_state")
-    with rewind.guard(sid, "save_state"):
-        saved = save()                                # raises Unsupported("<name> does not support save_state")
+    try:
+        with rewind.guard(sid, "save_state"):
+            saved = save()                                # raises Unsupported("<name> does not support save_state")
+    except KeyError as exc:
+        # the adapter advertises checkpoint_state but its own save_state has no such primitive (eden/citron look up a
+        # 'save_state' key): a capability gap, not a failed save. Returning the unsupported marker lets the caller
+        # switch games without a checkpoint instead of refusing every launch after a Switch title.
+        return {"artifact": None, "save_state": "unsupported",
+                "reason": f"{kind or 'this emulator'} has no save_state primitive ({exc})"}
     if not isinstance(saved, dict):
         saved = {"value": str(saved)[:200]}
     artifact = None
