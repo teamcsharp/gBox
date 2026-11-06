@@ -4009,9 +4009,23 @@ class Bot:
         if self.down_dying:
             self._gun_down()
             return self._go("down", "down_dying_stay", {"hold": ()}, "down at 1 health: staying down, no fight")
+        # request #5077 (crowd_gun_down): down at or under SURVIVAL_HP with 4+ within 2 m, the gun-down fight
+        # (the kick, the aimed fire) engages the cluster at arm's length - the 22 hits that sit at low health
+        # with the gun down. Retreat to open space instead: the gun stays down, the stick walks the open
+        # heading; healing happens above, the fight resumes once the crowd thins below the threshold.
+        hp_max = p.get("hp_max")
+        if hp_max and (p.get("hp") or 0) <= SURVIVAL_HP * hp_max:
+            n_2m = sum(1 for e in (snap.get("enemies") or ()) if (e.get("hp") or 0) > 0
+                       and math.hypot(e["pos"][0] - me[0], e["pos"][2] - me[2]) <= CC_CROWD_R)
+            if n_2m >= CC_BACK_N + 1:
+                step = self._stick(self._open_heading(self._p, [e for e in (snap.get("enemies") or ())
+                                                               if (e.get("hp") or 0) > 0]), self._cam_yaw) \
+                    if self._p else ("ldown",)
+                self._gun_down()
+                return self._go("down", "down_crowd_retreat", {"hold": step},
+                                f"down at low health: {n_2m} within 2 m, retreating to open space")
         # The felling: down at low health with one winding up a melee strike - the single full-HP-cliff hit
         # (900->1, 862->1) that the getting-up deaths are made of (#5052). Stay down until it swings through.
-        hp_max = p.get("hp_max")
         if hp_max and (p.get("hp") or 0) <= SURVIVAL_HP * hp_max and any(
                 windup(e, me) == "melee" for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0):
             self._gun_down()
@@ -4260,11 +4274,27 @@ class Bot:
             if (key is None or (key in PROMPT_SKIP_KEYS and not heal)
                     or (key != 'stick' and now - live["at"] < PROMPT_REPEAT_S)):
                 continue
-            # crowd guard: 4+ live enemies on his level within CC_CROWD_R → defer the press (gun stays up)
+            # crowd guard: 3+ live enemies on his level within CC_CROWD_R → defer the press (gun stays up).
+            # The threshold is 4 without a cone hit (the original guard), but drops to 3 when at least one
+            # enemy is in the CC cone (CC_CONE) — the exact flanking signature of the prompt-path incidents
+            # (cluster b294c62b554c77fd: prompt_stick 159 hits, 3-enemy flankers at 90-120 cm).
+            cam = snap.get("camera")
+            cam_yaw = cam["yaw"] if cam else p.get("rot")
+            def _cone_hit(ex, ez):
+                b = math.atan2(ex - px, ez - pz)
+                err = wrap(b - cam_yaw)
+                return abs(err) <= CC_CONE
             n = sum(1 for e in (snap.get("enemies") or ()) if (e.get("hp") or 0) > 0
                     and abs(e["pos"][1] - p["pos"][1]) <= MAX_DY
                     and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CC_CROWD_R)
-            if n >= CC_BACK_N and not heal:
+            cone_hit = any(
+                _cone_hit(e["pos"][0], e["pos"][2])
+                for e in (snap.get("enemies") or ())
+                if (e.get("hp") or 0) > 0
+                and abs(e["pos"][1] - p["pos"][1]) <= MAX_DY
+                and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CC_CROWD_R
+            )
+            if (n >= (CC_BACK_N - 1 if cone_hit else CC_BACK_N)) and not heal:
                 continue
             if heal:
                 self.stats["tablet_prompt_presses"] = self.stats.get("tablet_prompt_presses", 0) + 1
