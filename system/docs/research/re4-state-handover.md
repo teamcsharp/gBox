@@ -1,5 +1,17 @@
 # RE4: state of the work (handover)
 
+> **SUPERSEDED 2026-11-06 by `RE4 Switch in MercMode what's needed to finish.md`. Four claims below are wrong, and the
+> replacement document is authoritative:**
+>
+> | this document says | what actually happened |
+> |---|---|
+> | §2.1 "input never reaches citron" | **Wrong.** Input works. On 2026-11-06 a session was walked from the title through the main menu, EXTRAS, THE MERCENARIES and into a live round (Leon, village, "Eliminate as many Ganados…"), each step confirmed by looking at the frame. The failed tests had compared frames of a nearly static attaché-case screen. There is no input wall, no window manager needed and no emulator-flag work to do. |
+> | §1 "prepare makes re4 playable=True" | That row was the **GameCube** disc: lilspark's `preferred_editions` names only re5. |
+> | §2.2 / §5 "sample `module+0xc25d78`" | Wrong by 0x100000: Ghidra addresses are module+0x100000, so the real offset is **0xb25d78**, and the module ends at 0xb2e738 — the zeros came from reading past its end. The health range `0x1..0x64` is also wrong (a measured value was 1336). |
+> | §3 "GameCube is the closer path" | **Wrong.** The operator decided on 2026-11-04 that RE4 always means Switch. Stay on Switch. |
+>
+> The rest of this document is kept only as a record of what was measured; do not act on §2, §3 or §5.
+
 Written 2026-11-06 for the agent that owns the next request guide. Everything here is measured on the Spark
 (`lilspark`, 10.89.1.246, aarch64 Linux) during this session; nothing is inferred from documentation. Where something
 was ruled out, the measurement that ruled it out is included so it is not tried again.
