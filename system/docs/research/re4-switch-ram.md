@@ -732,3 +732,21 @@ several boots, and diff *between* boots as well — the family's address is not 
 
 
 
+
+## Round 99 (2026-11-05): RE4 boots under Citron, and the game-state global is only live in-game
+
+**RE4 is launchable and renders on the Spark.** After `mercmode op=prepare` (the ROM-access receipt expires after
+30 minutes - `valid_preparation` allows `0 <= now-checked <= 1800`), the inventory reports `re4 playable=True`. A
+launch with catalog id `270a15eb98dab4d7` came up under **citron** and the captured frame held steady at brightness
+58.5-58.7 for two minutes. So the decryption, the launch path and the video capture are all fine for this title; what
+is missing is the bot's ability to drive its menus, not the emulator.
+
+**The pointer-to-pointer lead is real but empty at the title screen.** Reading 32 bytes at module+`0xc25d78` through
+`POST /api/decrypt-lab/scan {mode:"module"}` returned eight zero cells (module base this boot `0x3ca7c04000`). That is
+the expected result *outside* a round: the global is populated once the game state exists, which is exactly what the
+driver needs it for.
+
+**The ordering problem:** no anchor means `Bot.tick()` cannot drive, and no driving means no round, so no anchor.
+Breaking it does not need the anchor - it needs pad presses through the menu chain (title -> main menu -> Mercenaries
+-> character -> stage -> start), which gBox can send without a RAM map. Boot control can then take over from the
+round's own start, and the global gets sampled while it is live.
