@@ -131,3 +131,36 @@ def test_a_multi_part_model_reports_fractional_or_exact_stride_from_its_records(
 def test_the_two_header_variants_are_both_accepted():
     model = mt_model.parse_mod(make_mod())
     assert model.variant in ("model", "effect")
+
+def test_the_writer_reassembles_the_container_from_its_parts():
+    """Not a copy: the header is built from decoded fields and every offset is recomputed from the block sizes."""
+    data = make_mod(meshes=((100, 24), (60, 20)))
+    model = mt_model.parse_mod(data)
+    assert mt_model.rebuild_mod(model) == data
+
+
+def test_the_writer_can_replace_the_vertex_buffer_and_the_offsets_follow():
+    data = make_mod(meshes=((100, 24),))
+    model = mt_model.parse_mod(data)
+    bigger = b"\x33" * (100 * 24 + 48)
+    out = mt_model.rebuild_mod(model, vertex_buffer=bigger)
+    rebuilt = mt_model.parse_mod(out)
+    header = rebuilt.header()
+    assert header["vertex_buffer_size"] == len(bigger)
+    assert rebuilt.block(4) == bigger
+    assert header["offsets"]["index_buffer"] > model.header()["offsets"]["index_buffer"]
+
+
+def test_the_writer_can_replace_a_mesh_record():
+    data = make_mod(meshes=((100, 24),))
+    model = mt_model.parse_mod(data)
+    out = mt_model.rebuild_mod(model, mesh_records=[{"vertex_count": 90, "vertex_stride": 28}])
+    record = mt_model.parse_mod(out).meshes()[0]
+    assert (record["vertex_count"], record["vertex_stride"]) == (90, 28)
+
+
+def test_the_writer_refuses_an_undecoded_variant():
+    data = bytearray(make_mod())
+    struct.pack_into("<Q", data, mt_model.MOD_BLOCK_OFFSETS, 0)     # the effect variant's table starts at 0
+    with pytest.raises(mt_model.ModelError):
+        mt_model.rebuild_mod(mt_model.parse_mod(bytes(data)))

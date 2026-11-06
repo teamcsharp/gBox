@@ -286,6 +286,78 @@ def parse_mod(data: bytes, *, strict: bool = True) -> ModFile:
                    * MOD_BLOCKS else "model")
 
 
+def rebuild_mod(model: ModFile, *, vertex_buffer: bytes | None = None, index_buffer: bytes | None = None,
+                mesh_records: list[dict] | None = None) -> bytes:
+    """Serialise a `MOD` from its parts, recomputing every offset from the block sizes.
+
+    This is the writer, not a copy: the header is assembled from the decoded fields, the blocks are written in
+    documented order, and each offset is derived from the running total. With nothing replaced the result must be
+    byte-identical to the input - the test that proves the layout is understood rather than merely parseable - and
+    replacing the vertex buffer, the index buffer or the mesh records is how new geometry is meant to be written.
+
+    The meshes region is carried whole: it is `mesh_count * 56` bytes of records followed by an unknown remainder (the
+    document's `meshes_unk_buffer`), and replacing records keeps that remainder in place rather than pretending to know
+    what it holds.
+    """
+    header = model.header()
+    if header["version"] != MOD_VERSION_SWITCH:
+        raise ModelError(f"writing version {header['version']} is not supported")
+    if model.variant != "model":
+        # the effect containers (effect\mod\...) start their offset table at 0 and lay their blocks out differently;
+        # they cannot be written until that variant is decoded, and pretending otherwise is how a load gets broken
+        raise ModelError("writing the effect MOD variant is not supported yet")
+    offsets = header["offsets"]
+    regions = {"bones": model.raw[offsets["bones"]:offsets["groups"]],
+               "groups": model.raw[offsets["groups"]:offsets["materials"]],
+               "materials": model.raw[offsets["materials"]:offsets["meshes"]],
+               "meshes": model.raw[offsets["meshes"]:offsets["vertex_buffer"]],
+               "vertex_buffer": model.raw[offsets["vertex_buffer"]:offsets["index_buffer"]],
+               "index_buffer": model.raw[offsets["index_buffer"]:offsets["end"]]}
+    if mesh_records is not None:
+        if len(mesh_records) != header["mesh_count"]:
+            raise ModelError("the mesh record count cannot change without the header's mesh_count")
+        head = bytearray(regions["meshes"][:MOD_MESH_RECORD_V211 * len(mesh_records)])
+        for index, record in enumerate(mesh_records):
+            base = index * MOD_MESH_RECORD_V211
+            for name, offset, code in MOD_MESH_FIELDS:
+                if name in record:
+                    struct.pack_into("<" + code, head, base + offset, record[name])
+        regions["meshes"] = bytes(head) + regions["meshes"][len(head):]
+    if vertex_buffer is not None:
+        regions["vertex_buffer"] = vertex_buffer
+    if index_buffer is not None:
+        regions["index_buffer"] = index_buffer
+    fields = {"vertex_count": header["vertex_count"], "face_count": header["face_count"],
+              "edge_count": header["edge_count"], "vertex_buffer_size": len(regions["vertex_buffer"]),
+              "group_count": header["group_count"], "bone_count": header["bone_count"],
+              "mesh_count": header["mesh_count"], "material_count": header["material_count"]}
+    out = bytearray(MOD_MAGIC)
+    out += bytes((header["version"], header["revision"]))
+    out += struct.pack("<3H", fields["bone_count"], fields["mesh_count"], fields["material_count"])
+    out += struct.pack("<3I", fields["vertex_count"], fields["face_count"], fields["edge_count"])
+    out += struct.pack("<2I", fields["vertex_buffer_size"], header["vertex_buffer_2_size"])
+    out += struct.pack("<I", fields["group_count"])
+    out += struct.pack("<I", 0)                                  # the word at 0x24
+    # the documented header continues after the offset table: a bounding sphere and box (48 bytes) plus five unknowns
+    # (20 bytes) = the 68-byte gap every model has before its first block. Carried verbatim, because nothing here
+    # needs to change it and inventing values for it would be exactly the guess that breaks a load.
+    header_end = MOD_BLOCK_OFFSETS + 8 * MOD_BLOCKS
+    tail = model.raw[header_end:offsets["bones"]] if offsets["bones"] >= header_end else b""
+    running = header_end + len(tail)
+    new_offsets = []
+    for name in ("bones", "groups", "materials", "meshes", "vertex_buffer", "index_buffer"):
+        new_offsets.append(running)
+        running += len(regions[name])
+    new_offsets.append(running)                                  # `end`
+    for off in new_offsets:
+        out += struct.pack("<Q", off)
+    out += tail
+    for name in ("bones", "groups", "materials", "meshes", "vertex_buffer", "index_buffer"):
+        out += regions[name]
+    out += model.raw[offsets["end"]:]                            # the four-byte trailer every model carries
+    return bytes(out)
+
+
 def build_mod(model: ModFile) -> bytes:
     """Re-emit the container. Unchanged, this is byte-identical to what was parsed."""
     if len(model.offsets) != MOD_BLOCKS:
