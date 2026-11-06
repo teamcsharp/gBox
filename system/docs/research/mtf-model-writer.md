@@ -159,15 +159,42 @@ What is still missing for authoring geometry: `geometry block / vertex count` is
 (16, 20, 24, 28) and fractional for others (23.487, 19.599), so the block is not a pure vertex stream — the counts at
 0x0c/0x10/0x14 and the submesh count at 0x20 do not yet describe how vertices and indices are split.
 
-### Decoded since: the index buffer
+### Block 2 is a name table - and it says what a "submesh" really is
 
-Over **31 containers in five archives**:
+Block 2 is a table of **128-byte name records**, one per mesh part **per LOD**, padded with zeros:
+
+```
+wp0600 (9 records): reba_000_LOD2.polymsh.cls.otherPolygons.XfB_N__E
+                    hontai_000_LOD2.polymsh.cls…
+                    ping_001_LOD2.polymsh.cls…
+                    reba_000_LOD1 … hontai_000_LOD1 … ping_001_LOD1 …
+                    ping_001_LOD0 … reba_000_LOD0 … hontai_000_LOD0 …
+evf0000 (12):       chris_face_skin.chris_toothes_geo.polymsh.cls.Ha_Out_Up_09.XfB_N__E16
+                    chris_face_skin.chris_eyelash_Low_geo.polymsh.cls.otherPolygons.XfBAN_
+                    ...
+```
+
+Two consequences:
+
+1. the names are **Maya export artifacts** (`polymsh`, `cls`), i.e. the source part names survive in the shipping file;
+2. **the header's "submesh count" is really a part x LOD count** - wp0600 reports 2 while its table holds 9 records
+   (3 parts x 3 LODs), so the vertex buffer holds every LOD, which is exactly why `vertex_count * stride` never equals
+   the block for most models.
+
+### The per-part split is still not found
+
+Block 3 is *not* a fixed-stride table of counts: every stride from 16 to 400 bytes and every field offset in it was
+searched, and no field sums to the model's vertex or index count for either wp0600 or evf0000. The remaining leads are
+block 0 (712 bytes for a 9-record model), block 1 (64 bytes), and the possibility that block 3 is variable-length
+records. Until that is cracked a writer cannot emit geometry, only carry it.
+
+Definitely decoded, over **31 containers in five archives**:
 
 * **block 5 is the 16-bit index buffer** and header word **0x10 is the index count**: `len(block5) == 2 * index_count`
   on **31 of 31** (occasionally one or two indices of padding). This is the first fully closed part of the geometry.
-* **block 4 is the vertex buffer**; its stride is exact only for single-submesh models (16/20/24/28 seen, 11 of 31).
-* **block 2 holds 128-byte records and block 3 holds 200-byte records** (wp0600: 9 and 15 of them; pl0000: 123 of the
-  128-byte ones). Their per-submesh meaning is the remaining decode.
+* **block 4 is the vertex buffer**; its stride is exact only for single-LOD models (16/20/24/28 seen, 11 of 31).
+* **block 2 is a name table** of 128-byte records, one per mesh part per LOD (see above).
+* **block 3 is not a fixed-stride count table** — searched exhaustively, see above.
 
 `ModFile.layout()` exposes all of it in one call (counts, stride and whether it is exact, block sizes, record counts,
 header variant), and `tests/test_mt_model.py` pins the parser with synthetic payloads — including that a texture payload
