@@ -120,3 +120,23 @@ test it does not matter: a round is a round, and ganados are what it needs.
 After `prepare` the game sits **paused at the round start** and takes no input from `session_op send_input` (ten bursts of
 walking changed no pixel). `prepare` is designed to stop the walk there for a seamless swap, so the next step is
 `autoplay op=start` (the bot plays the round) rather than taps - that is also what would put a ganado in frame.
+## The bot plays an RE4 round - and the enemy in frame is still a normal ganado
+
+`autoplay op=start` (not `play`: the tool rejects that - `ValueError: unknown op play`) drove the modded game into a live
+Mercenaries round and played it:
+
+![a live round under the enemy mod](evidence/re4gc-enemy-mod-round.jpg)
+
+Timer running, HUD reading HUNK, ammo 3, and a **vanilla ganado** in the foreground - pale skin, red markings, exactly the
+stock enemy. The session's mod was `re4gp1541` whose files include `em/em10.drs`, so em10 is not the pack this stage spawns.
+The castle stage's enemies come from other packs in `GANADO_FILES` (em12/em13/em21...).
+
+So "zombies as Sonic" needs **all** the ganado packs swapped, not just em10 - and each has to fit its disc size, which
+currently only em10 does (em11 grows by 10,944 bytes even with its spare bodies collapsed; the rest are untested).
+
+## Two smaller findings
+
+* the autoplay op is `start`, not `play` - the latter fails `ValueError: unknown op play` and looks exactly like "the bot
+  never took over" (the screen stayed on the main menu for a minute).
+* the queued character is still not honoured reliably: asked for Leon, the round came up as HUNK. The RE4 branch sets
+  `re4_menus.request`, but the bot's RandomSelections can still land elsewhere, so that needs the same treatment re5/re6 got.
