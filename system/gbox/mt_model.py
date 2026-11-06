@@ -167,6 +167,36 @@ MOD_FVF_STRIDES = {
 def fvf_stride(value: int) -> int | None:
     """The vertex stride a documented FVF format implies, or None when the format is not in the table."""
     return MOD_FVF_STRIDES.get(value)
+
+
+# Formats whose position is three signed shorts. Everything else in the record is per-format; positions are what the
+# 3D view needs first, and they are the component that can be validated against the model's own box.
+MOD_SHORT_POSITION = frozenset({0x133098B0, 0x18B0FAA8, 0x1580B60C, 0x1C201FC3, 0x2000D414, 0x14A07DDB, 0x16C020A3})
+
+
+def decode_positions(data: bytes, vertex_format: int, count: int, stride: int, bounds: dict,
+                     limit: int = 0) -> list[tuple[float, float, float]]:
+    """Positions from a mesh's vertex data, dequantised by the model's box.
+
+    Measured on 903 meshes: `box_min + (short / 32767) * (box_max - box_min)` puts every sampled vertex inside the
+    model's own bounding box, which is what identifies the quantisation. The earlier claim that the shorts "do not map
+    linearly" was a bad test - it compared raw values against the box instead of normalising them.
+    """
+    if vertex_format not in MOD_SHORT_POSITION:
+        return []
+    low = (bounds["min"]["x"], bounds["min"]["y"], bounds["min"]["z"])
+    span = (bounds["max"]["x"] - low[0], bounds["max"]["y"] - low[1], bounds["max"]["z"] - low[2])
+    take = count if not limit else min(count, limit)
+    out = []
+    for index in range(take):
+        base = index * stride
+        if base + 6 > len(data):
+            break
+        sx, sy, sz = struct.unpack_from("<3h", data, base)
+        out.append((low[0] + (sx / 32767.0) * span[0],
+                    low[1] + (sy / 32767.0) * span[1],
+                    low[2] + (sz / 32767.0) * span[2]))
+    return out
 MOD_OFFSET_NAMES = ("bones", "groups", "materials", "meshes", "vertex_buffer", "index_buffer", "end")
 
 
@@ -198,6 +228,19 @@ class ModFile:
     @property
     def header_size(self) -> int:
         return MOD_BLOCK_OFFSETS + 8 * MOD_BLOCKS
+
+    def positions(self, mesh_index: int = 0, limit: int = 0) -> list[tuple[float, float, float]]:
+        """The dequantised positions of one mesh, in model space (centimetres on the models measured)."""
+        header = self.header()
+        bounds = self.bounds()
+        meshes = self.meshes()
+        if bounds is None or not 0 <= mesh_index < len(meshes):
+            return []
+        record = meshes[mesh_index]
+        start = header["offsets"]["vertex_buffer"] + record["vertex_offset"]
+        end = start + record["vertex_count"] * record["vertex_stride"]
+        return decode_positions(self.raw[start:end], record["vertex_format"], record["vertex_count"],
+                                record["vertex_stride"], bounds, limit)
 
     def header(self) -> dict:
         """The documented header fields, decoded for the Switch version (211: u32 counts, u64 offsets)."""

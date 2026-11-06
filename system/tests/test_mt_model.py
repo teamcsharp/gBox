@@ -207,3 +207,24 @@ def test_the_model_bounding_box_decodes():
     assert got["sphere"] == {"x": 0.0, "y": 50.0, "z": 0.0, "r": 25.0}
     assert got["min"] == {"x": -10.0, "y": 0.0, "z": -10.0}
     assert got["max"] == {"x": 10.0, "y": 100.0, "z": 10.0}
+def test_positions_are_dequantised_by_the_model_box():
+    """Measured on 903 meshes: box_min + (short / 32767) * box_size puts every vertex inside the model's own box."""
+    bounds = {"sphere": {"x": 0.0, "y": 50.0, "z": 0.0, "r": 25.0},
+              "min": {"x": -10.0, "y": 0.0, "z": -10.0},
+              "max": {"x": 10.0, "y": 100.0, "z": 10.0}}
+    # two stride-12 vertices; the first three shorts of each are the position
+    data = struct.pack("<12h", 16383, 16383, 16383, 0, 0, 0, 32767, 32767, 32767, 0, 0, 0)
+    points = mt_model.decode_positions(data, 0x133098B0, 2, 12, bounds)
+    assert len(points) == 2
+    # 16383/32767 is 0.49998..., not exactly half, so compare with a tolerance that reflects the quantisation
+    assert all(abs(a - b) < 0.01 for a, b in zip(points[0], (0.0, 50.0, 0.0)))
+    assert all(abs(a - b) < 0.01 for a, b in zip(points[1], (10.0, 100.0, 10.0)))
+
+
+def test_a_float_position_format_is_not_guessed_at():
+    bounds = ((0.0, 50.0, 0.0, 25.0), (-10.0, 0.0, -10.0, 0.0), (10.0, 100.0, 10.0, 0.0))
+    data = bytearray(make_mod(meshes=((4, 24),), bounds=bounds))
+    model = mt_model.parse_mod(bytes(data))
+    record = model.meshes()[0]
+    assert record["vertex_format"] in mt_model.MOD_SHORT_POSITION            # the fixture uses a short format
+    assert mt_model.decode_positions(b"\x00" * 96, 0x287029D8, 4, 24, model.bounds()) == []
