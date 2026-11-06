@@ -359,7 +359,7 @@ def test_the_skeleton_block_is_a_map_plus_one_record_per_bone():
     assert table["bone_count"] == 3
     assert table["consistent"] is True
     assert len(table["map"]) == 256
-    assert len(table["records"]) == 3 and all(len(r) == mt_model.MOD_BONE_RECORD for r in table["records"])
+    assert len(table["headers"]) == 3 and all(len(h) == 24 for h in table["headers"])
 
 
 def test_a_bone_block_of_the_wrong_size_is_reported_rather_than_padded():
@@ -367,4 +367,23 @@ def test_a_bone_block_of_the_wrong_size_is_reported_rather_than_padded():
     raw = bytearray(data)
     struct.pack_into("<H", raw, 0x06, 9)                # claim nine bones where the block holds two
     table = mt_model.parse_mod(bytes(raw)).bone_table()
-    assert table["consistent"] is False and table["records"] == []
+    assert table["consistent"] is False and table["headers"] == []
+def test_the_skeleton_is_structure_of_arrays_and_has_one_root():
+    """Measured on 22 models: parents in range and exactly one root each, with the matrices at the PS3-documented offsets."""
+    model = mt_model.parse_mod(make_mod(meshes=((4, 24),), bones=3))
+    table = model.bone_table()
+    assert table["bone_count"] == 3
+    assert table["consistent"] is True
+    assert len(table["headers"]) == 3 and all(len(h) == 24 for h in table["headers"])
+    assert len(table["local"]) == 3 and all(len(m) == 64 for m in table["local"])
+    assert len(table["inverse_bind"]) == 3 and all(len(m) == 64 for m in table["inverse_bind"])
+    assert len(table["parents"]) == 3 and len(table["anim_map"]) == 3
+    assert len(table["map"]) == 256
+
+
+def test_the_bone_block_is_152_bytes_per_bone_and_the_map_follows():
+    """24-byte headers + 64-byte local + 64-byte bind = 152 per bone, then the 256-byte map."""
+    model = mt_model.parse_mod(make_mod(meshes=((4, 24),), bones=4))
+    table = model.bone_table()
+    assert table["region"] == 4 * 152 + 256
+    assert mt_model.MOD_BONE_RECORD == 152

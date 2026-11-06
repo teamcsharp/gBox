@@ -530,27 +530,38 @@ class ModFile:
         return list(table["map"][:count])
 
     def bone_table(self) -> dict:
-        """The skeleton block: one raw record per bone, then the bone map.
+        """The skeleton: per-bone headers, then the local and inverse-bind matrices, then the map and palettes.
 
-        Measured on 12 models: `groups_offset - bones_offset == bone_count * 152 + 256` exactly. The 256-byte bone map
-        comes LAST, not first - proving the order matters: with the map first (the earlier guess) the root record read as
-        garbage, while with records first it begins `index 0, parent 255`, and 0xFF is the documented root marker.
+        The block is **structure-of-arrays**, not one 152-byte record per bone - which is why three rounds of slicing it
+        into 152-byte records found no parents and no matrices:
 
-        The contents of a record are still not decoded: the documented version-156 layout (16 bytes + two 64-byte
-        matrices = 144) cannot describe a 152-byte record, the documented parent byte at +1 gives out-of-range values on
-        other models, and a 4x4 matrix at +16/+24/+32/+40/+48 is orthonormal on only ~5% of 867 bones. Records are
-        returned raw rather than mislabelled.
+            bone_count x 24   header per bone (anim map index at +0, parent at +1, ...)
+            bone_count x 64   local (bind) matrices, 4x4 floats
+            bone_count x 64   inverse bind matrices
+            256               the bone map (animation lookup)
+            palettes x 68     bone palettes
+
+        `24 + 64 + 64 = 152` per bone, which is exactly the arithmetic that located the block, and the layout matches
+        gBox's existing PS3 reader (`re5ps3_models`, lines 173-176), which reads parents at `+i*24+1`, the local matrices
+        at `nb*24` and the inverse bind at `nb*88`.
         """
         header = self.header()
         start, end = header["offsets"]["bones"], header["offsets"]["groups"]
         count = header["bone_count"]
         region = self.raw[start:end]
-        if not count or len(region) < 256 + count * MOD_BONE_RECORD:
-            return {"bone_count": count, "region": len(region), "records": [], "map": b"", "consistent": False}
-        return {"bone_count": count, "region": len(region),
-                "records": [region[i * MOD_BONE_RECORD:(i + 1) * MOD_BONE_RECORD] for i in range(count)],
+        need = count * MOD_BONE_RECORD
+        if not count or len(region) < need + 256:
+            return {"bone_count": count, "region": len(region), "headers": [], "local": [],
+                    "inverse_bind": [], "map": b"", "consistent": False}
+        headers = [region[i * 24:(i + 1) * 24] for i in range(count)]
+        local = [region[count * 24 + i * 64:count * 24 + (i + 1) * 64] for i in range(count)]
+        inverse = [region[count * 88 + i * 64:count * 88 + (i + 1) * 64] for i in range(count)]
+        return {"bone_count": count, "region": len(region), "headers": headers, "local": local,
+                "inverse_bind": inverse,
                 "map": region[count * MOD_BONE_RECORD:count * MOD_BONE_RECORD + 256],
-                "consistent": len(region) == 256 + count * MOD_BONE_RECORD}
+                "parents": [h[1] for h in headers],
+                "anim_map": [h[0] for h in headers],
+                "consistent": len(region) >= need + 256}
 
     def mesh_bytes(self, mesh_index: int) -> tuple[bytes, dict]:
         """One mesh's vertex data and its record, so a caller can decode whichever components it needs."""
