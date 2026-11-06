@@ -519,6 +519,20 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                                          if took else 'already played')
         except ValueError as exc:
             stats['queued_selection_error'] = str(exc)[:160]
+    if isinstance(pick, dict) and pick.get('title') == 're4' and prof['map_id'] == 'G4BE08':
+        # RE4 GameCube: the Mercenaries selects take the queued character and stage. The stage is a menu index, so a name
+        # from the DJ's pick is mapped through STAGES; an unknown one is left random rather than raising. Without this
+        # branch an RE4 selection was silently ignored and the bot picked a character at random (seen live: Ada instead of
+        # the requested Leon).
+        try:
+            from . import re4_menus
+            stage = pick.get('stage_name', pick.get('stage'))
+            if isinstance(stage, str):
+                stage = re4_menus.STAGES.index(stage) if stage in re4_menus.STAGES else None
+            took = re4_menus.request(id(ad), pick.get('character'), stage)
+            stats['queued_selection'] = f"{took['character']} / {took['stage']}"
+        except (ValueError, OSError) as exc:
+            stats['queued_selection_error'] = str(exc)[:160]
     runtime, base_driver = None, None
     if session_id and ad is not None and prof['map_id'] in ('BLUS30491', 'BH6'):
         from .mercs.session_runtime import SessionRuntime

@@ -123,3 +123,37 @@ it is a real deliverable rather than a workaround - the same module a GC autopla
 
 So: the mod is proven (it boots, plays rounds, and swaps the player packs), and Sonic sits in pl00, the Mercenaries Leon slot.
 Reaching it needs the GC menus module, or one person's hands for ten seconds at the console.
+## RE4 in the bot: a queued selection now reaches the Mercenaries menus
+
+`mercs_bot.py` handled a MercMode queued selection only for `re5` (BLUS30491) and `re6` (RE6 Switch). **An RE4 pick was
+silently ignored** - which is why asking for Leon gave a round as Ada instead. That branch now exists:
+
+```python
+if isinstance(pick, dict) and pick.get('title') == 're4' and prof['map_id'] == 'G4BE08':
+    from . import re4_menus
+    stage = pick.get('stage_name', pick.get('stage'))
+    if isinstance(stage, str):
+        stage = re4_menus.STAGES.index(stage) if stage in re4_menus.STAGES else None
+    took = re4_menus.request(id(ad), pick.get('character'), stage)
+```
+
+Verified live through `autoplay op=prepare` with `{title: re4, mode: mercenaries, character: Leon, stage: Village}`: the
+menu walk (gBox's own `re4_menus`, not taps) took the game into a **Leon, Village Mercenaries round**:
+
+![Leon's Village round under the Sonic mod](evidence/re4gc-leon-round.jpg)
+
+That is the asked-for round, reached by the machine. It is also the first time an RE4 selection has been honoured at all.
+
+## The remaining unknown, narrowed to one thing
+
+The character is Leon, not Sonic, and the chain up to the render is verified:
+
+```
+the mod's image holds the swapped pack   em/pl00.drs sha 827e6f2d... == the swapped file, != the disc's
+Dolphin boots that image                 cmdline ends -e .../mods/78ab9efa2e310db4/re4sonic21409/re4-d1.iso
+the round renders as Leon                so the pack is present and not what the Mercenaries body shows
+```
+
+So `swap_body` writes Sonic into a slot the Mercenaries body does not draw - most likely because the `hide` list passed for
+pl00 (nodes 2, 4-10, 14-21, with `shrink_hidden=True`) covers the node the swap put Sonic's mesh in. The next test is a
+build with an empty hide list, so nothing is shrunk and Sonic is additive rather than replacing a slot that is hidden.
