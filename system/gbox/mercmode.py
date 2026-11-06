@@ -378,7 +378,11 @@ def adopt_current(store, worker, session, telemetry, *, now=None):
             or job.get('worker_id')!=wid or job.get('require_worker')!=wid \
             or (job.get('input') or {}).get('session_id')!=sid or (job.get('input') or {}).get('op')!='start':
         raise ValueError('The active bot does not match its accepted native worker job')
-    title=next((t for t,r in TITLES.items() if session.get('game_id') in r['game_ids'] and r['playable']),None)
+    # the title of the running game: the Switch editions resolve through re_switch (TITLES' game_ids hold the
+    # native disc ids only, so a Switch session resolved to None and could never be adopted)
+    from . import re_switch
+    title = re_switch.title_for(session.get('game_id')) \
+        or next((t for t, r in TITLES.items() if session.get('game_id') in r['game_ids'] and r['playable']), None)
     if title not in cfg['titles']:
         raise ValueError('This verified title is not selected for MercMode')
     launch_id=sid.split('-',1)[1]
