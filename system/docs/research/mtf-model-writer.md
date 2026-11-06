@@ -157,8 +157,22 @@ carried so both are re-emitted exactly.
 
 What is still missing for authoring geometry: `geometry block / vertex count` is an exact integer stride for some models
 (16, 20, 24, 28) and fractional for others (23.487, 19.599), so the block is not a pure vertex stream — the counts at
-0x0c/0x10/0x14 and the submesh count at 0x20 do not yet describe how vertices and indices are split. That split is the
-remaining decode.
+0x0c/0x10/0x14 and the submesh count at 0x20 do not yet describe how vertices and indices are split.
+
+### Decoded since: the index buffer
+
+Over **31 containers in five archives**:
+
+* **block 5 is the 16-bit index buffer** and header word **0x10 is the index count**: `len(block5) == 2 * index_count`
+  on **31 of 31** (occasionally one or two indices of padding). This is the first fully closed part of the geometry.
+* **block 4 is the vertex buffer**; its stride is exact only for single-submesh models (16/20/24/28 seen, 11 of 31).
+* **block 2 holds 128-byte records and block 3 holds 200-byte records** (wp0600: 9 and 15 of them; pl0000: 123 of the
+  128-byte ones). Their per-submesh meaning is the remaining decode.
+
+`ModFile.layout()` exposes all of it in one call (counts, stride and whether it is exact, block sizes, record counts,
+header variant), and `tests/test_mt_model.py` pins the parser with synthetic payloads — including that a texture payload
+is refused, that a header lying about its table is refused, and that a multi-submesh stride is reported as inexact
+rather than guessed.
 
 ## 3. The build order (each step has a test that fails loudly)
 
