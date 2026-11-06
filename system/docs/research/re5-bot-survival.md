@@ -35,3 +35,24 @@ reload state is one of the ways the gun is down while a crowd closes in.
 3. only then re-tune the `low health` clusters (HEAL_CRITICAL is already tuned at 0.3 per stage).
 
 Each of these is measurable by the same gate, and the gate needs ~8 rounds (~3 h) per verdict.
+## First survival change, shipped as a measured experiment
+
+Implemented in `re5_switch`:
+
+```python
+CROWD_HOLD_N, CROWD_HOLD_R = 4, 200.0
+...
+swarmed = len(crowd) >= CROWD_HOLD_N and crowd and min(flat(e) for e in crowd) <= CROWD_HOLD_R
+if CROWD_MOVES and ... and not swarmed:      # the crowd move-out, which drops the gun, is skipped for this crowd
+```
+
+The reasoning is in the constant's comment and it is the death data, not taste: the crowd move is what puts the gun down, and
+"swarmed with the gun down" was the largest single death cluster (14 deaths, 33,520 HP) with "swarmed with the gun up" second
+(10 deaths) - so walking out of a four-strong crowd at 2 m unarmed costs more than standing in it firing. With four on him inside
+2 m the bot now keeps the gun up and fires instead of walking out.
+
+Reversible two ways: `CROWD_HOLD_N` above any real crowd turns the rule off, and the learning gate judges the change on the next
+8 rounds like any other. `tests/test_re5_switch_cycle.py`, `test_re_switch.py` and `test_re5_switch_brain.py`: 31 passed.
+
+This is the honest status of it: **shipped, not yet proven**. The gate's verdict is ~3 h away, and if the deaths-per-round figure
+does not fall, the next lever from the same table is the reload guard (do not start a reload with two enemies inside 5 m).

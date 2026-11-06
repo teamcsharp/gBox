@@ -868,6 +868,12 @@ GRAB_THREAT_R = 120.0                    # one this near, not in front, is turne
 WINDUP_FIRE, WINDUP_FIRE_R = True, 250.0 # #5053 faced_melee: an attack already winding up this close on his level - the gun
                                          # must be on him before the swing lands: a quick turn instead of the slow aim turn
 CLOSE_BACKOFF, BURST_BACKOFF, HEALTHY_ESCAPES = False, False, False   # no back-offs, no bursts cut short; escapes hurt only
+# Swarmed with the gun down was the top death cause over 62 rounds (14 deaths, then 10 more with the gun up): the crowd move
+# deliberately drops the gun to walk out (he cannot move while aiming), and at 2 m with four on him that walk is where he takes
+# the damage. This keeps the gun UP for a crowd that close instead: fire into it (the rampage trigger) rather than walk out of
+# it unarmed. It is a measured experiment - the learning gate judges it on the next 8 rounds, and setting CROWD_HOLD_N above any
+# real crowd turns it off again.
+CROWD_HOLD_N, CROWD_HOLD_R = 4, 200.0
 # Long shots with care (operator 2026-10-27: "raining fire ... with the aimbot improving allowing them to fire with great
 # distance and precision if the opportunity allows"). Live 04:00-04:13 (rain fire): 27 pulls at Majini 8-22 m hit 16; the
 # misses' yaw was under 1.3 deg, most of them pulls that ended within 0.1-0.4 s, the dot swept across him; and aiming
@@ -4369,8 +4375,9 @@ class Bot:
         if on and where is None and not point_blank and not confirmed and not self.fire_down:
             self.stats["through_shots"] += 1
         crowd = [e for e in live if flat(e) <= CROWD_R]
+        swarmed = len(crowd) >= CROWD_HOLD_N and crowd and min(flat(e) for e in crowd) <= CROWD_HOLD_R
         if CROWD_MOVES and len(crowd) >= CROWD_N and now - self.aim_since >= CROWD_BURST_S and now >= self._crowd_ready \
-                and not (confirmed and dist > LONG_R) and not (CROWD_FIRE and near <= RAMPAGE_R):
+                and not (confirmed and dist > LONG_R) and not (CROWD_FIRE and near <= RAMPAGE_R) and not swarmed:
             self._crowd_keys = self._escape_keys(p, crowd)
             self._crowd_until, self._crowd_ready = now + CROWD_MOVE_S, now + CROWD_MOVE_S + CROWD_GAP_S
             self.stats["crowd_moves"] += 1
