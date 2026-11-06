@@ -86,6 +86,34 @@ def thin_prims(prims, keep: float):
     return out
 
 
+def body_candidates(pack, enemies=None) -> list[int]:
+    """The BIN items that can serve as a body, in preference order.
+
+    `re4gc_enemies.body_slots` knows the layout of the ganado packs. Other enemy files hold the same kind of skinned BIN but at
+    different indices - em21's body is item 0 (32 bones), em2b carries fourteen skinned BINs (64-74 bones) - so when the known
+    slots are absent the candidates are found by asking each BIN whether it parses with a skeleton, biggest skeleton first. That
+    is what turns "no body slot" from a dead end into another pack the same writer can rebuild.
+    """
+    if enemies is None:
+        enemies = re4gc_enemies
+    slots = enemies.body_slots(pack)
+    if slots:
+        return list(slots)
+    scored = []
+    for index, (kind, payload) in enumerate(pack.items):
+        if kind != "BIN":
+            continue
+        try:
+            parsed = re4gc_models.bin_read(payload)
+        except Exception:
+            continue
+        bones = getattr(parsed, "bones", None)
+        if bones:
+            scored.append((len(bones), index))
+    scored.sort(reverse=True)
+    return [index for _bones, index in scored]
+
+
 def attempts(primitive_counts):
     """The fitting strategies, in the order they are tried: (label, how many primitives to keep, texture limit).
 
@@ -176,7 +204,7 @@ def swap_ganados(iso, model, out_dir, packs=None, *, rig=None, log=print, swap=N
             continue
         try:
             pack = R.ModelPack(original)
-            slots = enemies.body_slots(pack)
+            slots = body_candidates(pack, enemies)
             if not slots:
                 report[stem] = {"fitted": False, "reason": "no body slot"}
                 log(f"{stem}: no body slot")

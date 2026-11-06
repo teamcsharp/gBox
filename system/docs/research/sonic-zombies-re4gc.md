@@ -132,3 +132,28 @@ every primitive -> biggest one -> small textures -> thin 60/35/20%.
 
 Honest note: it did not get used on those four packs, because they fail earlier (no body slot). It remains the right last resort
 for the ganado packs that are merely too big.
+## 31 -> 48 of 60 enemy packs, and what the last twelve need
+
+`body_candidates(pack)` now falls back from the known ganado layout to "the skinned BIN with the biggest skeleton", which is how
+em21 (body at item 0, 32 bones) and em2b (fourteen skinned BINs) became swappable at all:
+
+```
+em21: fits with keep=1 tex=64 (490,336 <= 501,664)
+em2b: fits with keep=4 tex=64 (6,008,928 <= 6,361,248)
+```
+
+Through the app: `characters op=use slot=enemies rebuild=true` now reports **48 packs fitted**, 12 not.
+
+The twelve (em23, em24, em27, em28, em29, em2a, em2e, em31, em3a, em3b, em3d, em3e) fail for a different reason than size:
+
+```
+em23 -> KeyError: 24      em24 -> KeyError: 17      em2e -> KeyError: 17
+em31 -> ValueError: cannot convert float NaN to integer
+```
+
+`KeyError: 17` is GANADO_ROLES' pelvis (`"pelvis": 17`) and `KeyError: 24` another of its entries - those packs' skeletons do not
+carry the ganado bone numbering at all, so the target-side role map has to be derived per skeleton (`gbox.rig_roles` derives from
+geometry already; it is used for the SOURCE rig today, not the target). `em31`'s bone table is degenerate - the retarget divides
+by a zero height and produces NaN - which needs a guard before the swap, not a retry.
+
+That is the remaining work for "every enemy is this character": a target-side role map and a degenerate-skeleton guard.
