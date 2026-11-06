@@ -34,6 +34,10 @@ DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title'
            'skin_swap': 'off',
            'coop_ratio': 'off'}
 SKIN_SWAPS = ('off', 'random')
+# How long one round may play before a random skin swap draws the next pair (seconds). The rotation normally fires on
+# the bot's native round boundary; this is the fallback for a title whose boundary never arrives (lilspark posted none
+# in two hours on 2026-11-05), so a skin swap cannot stay stuck on its first draw.
+SKIN_ROTATE_S = 420.0
 STALEMATE_KEYS = ('stalemate_cut', 'stalemate_cut_s')
 STALEMATE_FEATURE = 'mercmode_stalemate_cut'     # worker feature: its mercmode tool accepts the stalemate settings
 COOP_FEATURE = 'mercmode_coop_ratio'             # worker feature: split-screen launches (gbox.switch_coop) and its tool

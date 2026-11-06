@@ -681,15 +681,27 @@ class Screensaver:
             return self._stop(w, run, now, run.get("yield") or "screensaver turned off")
         if run.get('mercmode'):
             if phase == 'playing' and not run.get('mercmode_rotate_requested'):
-                stalled = self._no_progress(w, run, now)
-                if stalled:                                    # the turn ends the way a finished one does
-                    run = run | {'mercmode_rotate_requested': True, 'mercmode_no_progress': stalled}
+                merc = mercmode.settings(self.store, w['name'])
+                # A random skin swap has to become visible even when the bot never reports a round end: on lilspark no
+                # native terminal boundary was posted in two hours, so the round never rotated and every session wore
+                # the first skin drawn. After SKIN_ROTATE_S of play the turn ends the way a finished one does.
+                if merc.get('skin_swap') == 'random' and \
+                        now - (run.get('playing_since') or run.get('started') or now) >= mercmode.SKIN_ROTATE_S:
+                    run = run | {'mercmode_rotate_requested': True, 'mercmode_skin_rotate': True}
                     self.store.put(STATE, w['name'], run)
+                else:
+                    stalled = self._no_progress(w, run, now)
+                    if stalled:                                    # the turn ends the way a finished one does
+                        run = run | {'mercmode_rotate_requested': True, 'mercmode_no_progress': stalled}
+                        self.store.put(STATE, w['name'], run)
             if run.get('mercmode_rotate_requested'):
                 if operator_has_pad(sid, now):                 # never switched away under the operator's pad
                     return f"{phase} {run['title']}: the operator has the pad, the switch waits"
                 # kept warm (paused) where the pool may hold it, else closed as before (_park falls back to _stop)
-                why = NO_PROGRESS.format(minutes=NO_PROGRESS_S / 60) if run.get('mercmode_no_progress') else ROTATION
+                why = (ROTATION if not run.get('mercmode_skin_rotate')
+                       else f'a fresh skin swap after {int(mercmode.SKIN_ROTATE_S / 60)} min') \
+                    if not run.get('mercmode_no_progress') \
+                    else NO_PROGRESS.format(minutes=NO_PROGRESS_S / 60)
                 return self._park(w, run, now, why)
             if phase in ('starting', 'playing') and sid:
                 # the next title boots (and prepares its round) as soon as this one is up: after a service restart the
