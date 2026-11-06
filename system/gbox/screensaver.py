@@ -698,10 +698,9 @@ class Screensaver:
                 if operator_has_pad(sid, now):                 # never switched away under the operator's pad
                     return f"{phase} {run['title']}: the operator has the pad, the switch waits"
                 # kept warm (paused) where the pool may hold it, else closed as before (_park falls back to _stop)
-                why = (ROTATION if not run.get('mercmode_skin_rotate')
-                       else f'a fresh skin swap after {int(mercmode.SKIN_ROTATE_S / 60)} min') \
-                    if not run.get('mercmode_no_progress') \
-                    else NO_PROGRESS.format(minutes=NO_PROGRESS_S / 60)
+                # ROTATION is the exact reason the tick below restarts the next title in this same tick: a skin
+                # rotation must carry it too, or the stop ends the run and nothing launches again
+                why = NO_PROGRESS.format(minutes=NO_PROGRESS_S / 60) if run.get('mercmode_no_progress') else ROTATION
                 if run.get('mercmode_skin_rotate'):
                     # a skin swap is read from the layered overlay at boot: a warm (parked, paused) game resumes with
                     # the skin it already loaded, so this rotation closes the game and the next one boots cold
