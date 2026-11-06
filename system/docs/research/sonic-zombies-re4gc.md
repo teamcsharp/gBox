@@ -59,3 +59,20 @@ em11: fits with keep=1 tex=64 ( 6248608 <=  6260192)
 Six tests cover the ladder order, the padding rule (a shorter rebuild is padded, and the original's tail cannot survive), the
 "cannot fit" report, that spare bodies are always collapsed, and that a partial rig is refused. One numpy truth-value bug fell
 out of the refactor (`p.get("pos") or []` on an array) and is fixed.
+## In the app now: `characters op=use slot=enemies`
+
+The swap is wired into the tool the sidebar and the lab already use, replacing the "enemy swaps need
+`re4gc_enemies.Builder` run by hand" gap that the code itself used to report:
+
+```
+POST /api/jobs {"tool": "characters", "input": {"op": "use", "character": "sonic",
+                                                "game_id": "78ab9efa2e310db4", "slot": "enemies"}}
+-> mod re4_sonic_enemies, status built
+   31/31 packs fitted, none rejected
+   em10 keep=4 tex=64, em11 keep=1 tex=64, em14 keep=1 tex=64, em19 keep=1 tex=64, em1a keep=1 tex=64, ...
+```
+
+The path (`characters.build_re4_enemies`): resolve the vanilla disc, resolve the collection model and its body roles (or derive
+them by geometry when the entry has none), `re4gc_zombies.swap_ganados` over every ganado pack, then `filemods.build_image`
+with an image named for the character and a marker carrying `slot: enemies`. It returns what fitted, what did not, and how each
+pack was made to fit, so a partial result is visible rather than silent.

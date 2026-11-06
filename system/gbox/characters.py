@@ -969,6 +969,63 @@ def build_re4(ctx, meta: dict, game: dict, progress) -> dict:
     return out
 
 
+def build_re4_enemies(ctx, meta: dict, game: dict, progress) -> dict:
+    """RE4 (GameCube): the ENEMIES become this character - every ganado pack, each fitted to its own disc slot.
+
+    The player path (build_re4) rewrites the four pl packs from a Leon-rigged model. Enemies are the other half: 31 ganado
+    packs, each with its own skeleton, each sitting in a fixed-size hole on the disc. gbox.re4gc_zombies does the per-pack
+    retarget, the fitting search and the pad-to-disc-size rule; this function resolves the disc and files the mod.
+    """
+    from . import filemods, re4gc_zombies
+    from .models import CatalogEntry
+    from .tools import rom_path
+    gid, cfg = game["game_id"], ctx.config
+    work = Path(cfg.cache) / "characters_build" / (meta["slug"] + "_enemies")
+    work.mkdir(parents=True, exist_ok=True)
+    rom = rom_path(CatalogEntry.model_validate(game), cfg)
+    base = filemods.base_dir(cfg, gid) / (rom.stem + ".iso")
+    if not base.exists():                                  # one vanilla ISO per node (a staged copy may be a mod image)
+        base.parent.mkdir(parents=True, exist_ok=True)
+        progress(5, f"Vanilla disc image from {rom.name}")
+        if rom.suffix.lower() == ".gcz":
+            filemods.gcz_to_iso(rom, base.with_suffix(".part"), lambda p, m: progress(5 + p * 0.3, m))
+        else:
+            shutil.copy2(rom, base.with_suffix(".part"))
+        base.with_suffix(".part").replace(base)
+    src = _local_or_fetch(ctx, meta, meta["model"])
+    roles = (meta.get("rig") or {}).get("roles")
+    if roles:
+        rig = rig_from_gltf(src, roles)
+        how = "library body roles"
+    else:
+        progress(20, f"Finding {meta['name']}'s joint roles from the rest pose")
+        rig, roles_found = re4gc_zombies.derive_rig(src)
+        how = f"roles by geometry ({len(roles_found)} found)"
+    drs = work / "drs"
+    progress(35, f"Retargeting {meta['name']} onto every ganado skeleton")
+    report = re4gc_zombies.swap_ganados(base, src, drs, rig=rig, log=lambda line: progress(50, line))
+    fitted = {pack: row for pack, row in report.items() if row.get("fitted")}
+    if not fitted:
+        raise ValueError(f"{meta['name']} did not fit any ganado pack: " +
+                         "; ".join(f"{p}: {r.get('reason')}" for p, r in sorted(report.items())[:4]))
+    name = f"re4_{meta['slug']}_enemies"
+    image = f"RE4 {meta['name']} enemies (Disc 1).iso"
+    progress(75, f"Building the disc image {image} over {len(fitted)} packs")
+    changes = {f"em/{p.name}": {"from": str(p)} for p in sorted(drs.glob("em*.drs"))}
+    res = filemods.build_image(cfg, gid, base, name, changes)
+    d = filemods.mod_dir(cfg, gid, name)
+    Path(res["image"]).replace(d / image)
+    marker = json.loads((d / ".gbox-mod.json").read_text())
+    (d / ".gbox-mod.json").write_text(json.dumps(marker | {"image": image, "character": meta["slug"],
+                                                          "slot": "enemies"}))
+    stale = Path(cfg.cache) / gid / image
+    if stale.exists():
+        stale.unlink()
+    return {"mod": name, "image": image, "how": how, "packs": len(fitted),
+            "not_fitted": [p for p in report if p not in fitted],
+            "sizes": {p: row.get("how") for p, row in fitted.items()}}
+
+
 # ---------------------------------------------------------------- op=extract: any running game -> the collection
 #
 # Routes, in order: (a) already in the collection (same game) -> return it; (b) the game has a dedicated extractor
@@ -2927,9 +2984,20 @@ def characters_tool(inp: CharIn, ctx):
         l = _launch(ctx, gid, b["mod"], HOST_OS) if inp.launch else None
         return {"result": out | {"status": "built+launched" if l else "built", "mod": b["mod"], "build": b, "launch": l,
                                  "notes": "untested build: check the model in game (Mercenaries: re_mods mercenaries_unlock)"}}
+    if gid in RE4GC and inp.slot == "enemies":
+        b = build_re4_enemies(ctx, meta, game, ctx.progress)
+        _api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
+             json={"game_id": gid, "slot": "enemies", "mod": b["mod"], "nodes": [HOST_OS],
+                   "notes": f"every ganado file carries this character ({b['packs']} packs fitted)"})
+        l = _launch(ctx, gid, b["mod"], HOST_OS) if inp.launch else None
+        return {"result": out | {"status": "built+launched" if l else "built", "mod": b["mod"], "build": b, "launch": l,
+                                 "notes": "enemies carry this character: Mercenaries ganados are the test "
+                                          f"({b['packs']} packs fitted" +
+                                          (f", {len(b['not_fitted'])} did not fit: {', '.join(b['not_fitted'])}"
+                                           if b["not_fitted"] else "") + ")"}}
     if gid in RE4GC:
-        need = {"target": f"RE4 {inp.slot}", "have": "player swaps are built automatically; enemy swaps need "
-                "gbox/re4gc_enemies.Builder (Melee rigs) run by hand", "steps": ["re4gc_enemies.combine for the Ganado files"]}
+        need = {"target": f"RE4 {inp.slot}", "have": "player and enemies swaps are built automatically; "
+                "other slots have no writer", "steps": []}
     else:
         need = needs_for(game)
     from . import char_coverage                               # no writer: overlay now (if the game runs) + a gap report
