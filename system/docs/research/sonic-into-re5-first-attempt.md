@@ -50,3 +50,33 @@ engine's assumptions about the enemy model are not met. So the next attempts, in
 
 The rotation is back on RE5 with `cast_swap: on` and `skin_swap: random` — a modded round every match — and the Sonic build
 is kept as `sonic-test` for the next attempt.
+
+## Second attempt: the bisect, and what it ruled out
+
+The first attempt's suspects were the 341 -> 1 restructure. This attempt removed that variable entirely: a Majini with
+**every part kept** (records, groups, materials and the index buffer untouched) and only vertex positions scaled 1.2x, with
+the bounding box transformed from the model's own box so nothing clamps (1008 parts changed across the three body LODs).
+
+It booted as its own build (`bisect-scaled`), drew its menus, and then the frame **froze**: the same 4560-byte frame, mean
+1.5, std 3.3, for six minutes, with autoplay running and making no difference.
+
+So the engine does not merely dislike a restructured part table - it hangs on a model whose structure is untouched and only
+vertex positions were rewritten. **The fault is in the rewrite, not the restructure.** The next bisect is inside the writer:
+
+1. write the model back with **no edits at all** (same vertex bytes, same bounds) and boot it. If that hangs, the container
+   assembly is at fault (offsets, trailer, compression) and vertex data is not yet in question;
+2. if (1) boots, write decoded-then-repacked positions with the original bytes preserved and the bounds untouched, which
+   isolates the quantisation round trip from the container.
+
+### Two bugs found and fixed while doing this
+
+* New mesh records must start from the existing bytes. Zeroing them erased a record field the vertex decoder needs, and part
+  0 came back with no positions (the existing test caught it immediately).
+* Bounds computed from only the decodable parts **shrank** the box (y 125.2 instead of 185.6), which would clamp every part
+  that did not decode - the same clamp trap as before, in a new place. The box is now the original box transformed by the
+  same scale.
+
+### Launching a test build
+
+`switch_mods create_build` alone does **not** register a build: a launch refuses it with "no built mod ... for this game".
+`op: new_build` registers it, and that is the one that launches.
