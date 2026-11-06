@@ -792,3 +792,21 @@ So citron on this host accepts no keyboard input from outside: not synthetic X e
 next thing to inspect is the emulator's own video/input backend for this launch (`SDL_VIDEODRIVER` in its environment,
 and whether Qt/SDL sets its "active" state without a window manager on the Xvfb display) rather than gBox's key path,
 which is proven on eden.
+
+## Round 103 (2026-11-06): RE4 input parked - no window manager, and citron ignores keys anyway
+
+citron's environment on the session display: `DISPLAY=:100`, `QT_QPA_PLATFORM=xcb`. The display has **no window
+manager** (`xprop -root _NET_SUPPORTING_WM_CHECK` -> "not found", and no openbox/matchbox/fluxbox/twm/i3/xfwm4
+installed), so nothing ever gives the Qt window its "active" state.
+
+That was the last evidence-backed suspect, and it does not explain everything either: sending keys after an explicit
+`xdotool windowfocus --sync` on the 1280x720 window (confirmed by `getwindowfocus` returning that same id) left the
+frame unchanged (`diff 0.19`), and so did the earlier window-targeted XTEST and the real uinput keyboard.
+
+**Decision: RE4's input investigation is parked here.** Four independent paths have been tried and documented; further
+progress needs a change to the emulator's own input/video backend (or a window manager on the games' displays), which
+is the operator's call rather than something to keep guessing at. The session was ended and citron killed so the
+Spark is free.
+
+Everything upstream of input is proven for RE4: decryption, inventory (`playable=True` after prepare), launch under
+citron, rendering and capture. What remains is the menus and the round, and those need input.
