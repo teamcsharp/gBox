@@ -176,10 +176,44 @@ class ModFile:
         return self.raw[start:end]
 
     def stride(self) -> float | None:
-        """Bytes per vertex: exact only for a single-submesh model (see the note above)."""
+        """Bytes per vertex: exact for single-submesh models, where geometry_bytes == vertex_count * stride."""
         if not self.vertex_count:
             return None
         return self.geometry_bytes / self.vertex_count
+
+    def layout(self) -> dict:
+        """What the container's parts are, as far as they are decoded.
+
+        Measured 2026-11-06 over 16 models in four archives:
+
+        * **block 5 is the index buffer**: two bytes per index, and header word 0x10 is the index count
+          (`len(block5) == 2 * index_count`, exact on 16/16, sometimes one or two indices of padding);
+        * **block 4 is the vertex buffer**: for a single-submesh model `vertex_count * stride` equals its length with a
+          stride of 16, 20, 24, 28 or 32 (an occasional 4-24 byte tail of padding makes the division inexact);
+        * **block 3 is a table of 200-byte records** (a per-mesh/submesh descriptor: 200 x N records, N = 2, 11, 9, 20 ...
+          which is the submesh count in most models), and **block 2 is a table of 128-byte records** beside it;
+        * blocks 0 and 1 are small tables that scale with the model.
+
+        The per-submesh vertex counts and strides are NOT in the header; they are what the records above must carry, and
+        decoding them is what writing new geometry still needs.
+        """
+        block = [self.block(i) for i in range(6)]
+        vertex, index = self.vertex_count, self.words[3]
+        stride = self.stride()
+        return {
+            "vertex_count": vertex,
+            "index_count": index,
+            "submeshes": self.submeshes,
+            "stride": stride,
+            "stride_exact": bool(stride and abs(stride - round(stride)) < 1e-9),
+            "vertex_block": len(block[4]),
+            "index_block": len(block[5]),
+            "index_block_matches": len(block[5]) in (2 * index, 2 * (index + 1), 2 * (index + 2)),
+            "blocks": [len(b) for b in block],
+            "records_200": len(block[3]) / 200,
+            "records_128": len(block[2]) / 128,
+            "variant": self.variant,
+        }
 
 
 def parse_mod(data: bytes, *, strict: bool = True) -> ModFile:
