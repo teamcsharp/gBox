@@ -359,7 +359,10 @@
         const slot=SWAP.objects[root.querySelector('[data-mm-obj-slot]')?.value||'mine'];
         const donor=SWAP.objects[root.querySelector('[data-mm-obj-donor]')?.value||'grenade'];
         if(!slot||!donor||slot===donor)throw Error('Choose two different objects.');
-        const r=await api('/api/decrypt-lab/model-swap',{title,arc_path:slot,donor_arc:donor,build:APPLY,with_mesh:true});
+        // texture-only: a donor MESH breaks the title's load (measured 2026-11-05: the object build sat at
+        // screen=loading for 5+ minutes while a skin build reached playing and advanced rounds), so the panel never
+        // asks for with_mesh. The API still offers it for experiments.
+        const r=await api('/api/decrypt-lab/model-swap',{title,arc_path:slot,donor_arc:donor,build:APPLY});
         let live='';
         if(sessionId){
           try{await applyNow(sessionId);live=' · applied now: the title restarted in this session';}
