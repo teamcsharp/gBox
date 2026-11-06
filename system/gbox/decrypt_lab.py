@@ -925,20 +925,26 @@ def install(app, store, config, auth, tactical_store=None):
         from . import hermes_pool
 
         def klass(title: str) -> str:
+            """The inbox by what a ticket IS: generated classes first, then the standing per-game work, then the
+            operator's own words (the largest bucket was "other" only because nothing named it - it is operator
+            requests and the named lanes like "RAM hook: RE5")."""
             t = (title or "").casefold()
-            if "rank_not_verified" in t:
-                return "rank not verified"
+            for key, label in (("rank_not_verified", "rank not verified"),
+                               ("<agent-message", "agent message"),
+                               ("launch failed", "launch failure"),
+                               ("mercenaries", "mercenaries"),
+                               ("ram hook", "RAM hook"),
+                               ("damage batch", "damage evidence"),
+                               ("autoplay coaching", "autoplay coaching"),
+                               ("session models", "session models"),
+                               ("improve ", "improve a title")):
+                if t.startswith(key) if key in ("improve ",) else key in t:
+                    return label
             if t.startswith("unlock"):
                 return "unlocked content"
             if "character replacement" in t:
                 return "character replacement"
-            if t.startswith("<agent-message"):
-                return "agent message"
-            if t.startswith("launch failed"):
-                return "launch failure"
-            if t.startswith("mercenaries"):
-                return "mercenaries"
-            return "other"
+            return "operator request"
 
         buckets: dict = {}
         total = open_total = 0
