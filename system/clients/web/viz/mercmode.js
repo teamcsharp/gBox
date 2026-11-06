@@ -359,7 +359,7 @@
         const slot=SWAP.objects[root.querySelector('[data-mm-obj-slot]')?.value||'mine'];
         const donor=SWAP.objects[root.querySelector('[data-mm-obj-donor]')?.value||'grenade'];
         if(!slot||!donor||slot===donor)throw Error('Choose two different objects.');
-        const r=await api('/api/decrypt-lab/model-swap',{title,arc_path:slot,donor_arc:donor,build:APPLY});
+        const r=await api('/api/decrypt-lab/model-swap',{title,arc_path:slot,donor_arc:donor,build:APPLY,with_mesh:true});
         let live='';
         if(sessionId){
           try{await applyNow(sessionId);live=' · applied now: the title restarted in this session';}

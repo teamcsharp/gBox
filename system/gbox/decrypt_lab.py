@@ -414,6 +414,7 @@ class ModelSwapIn(BaseModel):
     arc_path: str
     donor_arc: str
     build: str = "gbox-lab"
+    with_mesh: bool = False   # objects also take the donor's mesh entries (its shape), not only its material maps
 
 
 class StripClothesIn(BaseModel):
@@ -943,6 +944,27 @@ def install(app, store, config, auth, tactical_store=None):
             data, slot_group, donor_group = skin_swap.swap_arc(arc_file.read_bytes(), donor_file.read_bytes())
         except mt_arc.ArcError as exc:
             raise HTTPException(400, str(exc)) from exc
+        meshes = []
+        if body.with_mesh:
+            # an object's shape lives in the entries named after its group (uWp06.arc carries two `wp0600`: the placed
+            # mine's mesh), so those travel with the material maps when the operator asks for the whole object
+            slot_arc, donor_arc = mt_arc.parse(arc_file.read_bytes()), mt_arc.parse(donor_file.read_bytes())
+
+            def mesh_indices(arc, group):
+                named = [i for i, e in enumerate(arc.entries)
+                         if "\\model\\" in e.name and e.name.rsplit("\\", 1)[-1] == group]
+                if named:
+                    return named
+                # a donor whose mesh is not named after its material group (uWp0a's grenade mesh is wep0a_00, its
+                # materials om4e00): the largest model entry that is not a base/mask/normal map is that mesh
+                maps = {i for i, e in enumerate(arc.entries)
+                        if e.name.rsplit("\\", 1)[-1].endswith(("_BM", "_MM", "_NM"))}
+                candidates = [i for i, e in enumerate(arc.entries) if "\\model\\" in e.name and i not in maps]
+                return [max(candidates, key=lambda i: arc.entries[i].size)] if candidates else []
+
+            for slot_i, donor_i in zip(mesh_indices(slot_arc, slot_group), mesh_indices(donor_arc, donor_group)):
+                data = mt_arc.replace_at(data, slot_i, donor_arc.entries[donor_i].data)
+                meshes.append(slot_arc.entries[slot_i].name)
         folder = _mod_build(body.title, body.build)
         target = folder / "romfs" / body.arc_path.strip().lstrip("/")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -951,5 +973,5 @@ def install(app, store, config, auth, tactical_store=None):
                         f"{slot_group} <- {donor_group} skin ({len(data)} B) in {body.arc_path}",
                         {"build": body.build, "size": len(data)})
         return {"v": FORMAT, "ok": True, "target": str(target), "size": len(data),
-                "slot": slot_group, "donor": donor_group,
+                "slot": slot_group, "donor": donor_group, "mesh": meshes,
                 "note": "the overlay applies when the title next boots (LayeredFS)"}
