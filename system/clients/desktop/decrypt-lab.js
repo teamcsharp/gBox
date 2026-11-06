@@ -409,10 +409,41 @@
   $('asset-kind').addEventListener('change', loadAssets);
   $('stage-go').addEventListener('click', stageReplacement);
   $('swap-go').addEventListener('click', swapEntry);
+  $('model-go')?.addEventListener('click', inspectModel);
   $('top').addEventListener('change', () => api.alwaysOnTop($('top').checked));
 
   // The inbox by class next to the fleet that works it off: a queue that is draining (or one that is not) is a fact
   // the operator can read at a glance, instead of a raw list of thousands of tickets.
+  // An MTF model entry, decoded as far as it is understood: the header, the resource paths, the geometry size, and
+  // whether mt_model reproduces the entry byte-for-byte - a parser that fails that is not trustworthy about the rest.
+  async function inspectModel() {
+    const out = $('model-out'), meta = $('model-meta');
+    const arc = ($('model-arc').value || '').trim();
+    if (!arc) { meta.textContent = 'name an archive first'; return; }
+    const title = currentTitle();
+    if (!title) { meta.textContent = 'choose a title first'; return; }
+    meta.textContent = 'reading the model…';
+    try {
+      const body = { title, arc_path: arc };
+      const entry = ($('model-entry').value || '').trim();
+      if (entry) body.entry = entry;
+      const d = await api.api('/api/decrypt-lab/model-info', body);
+      const rows = [
+        ['entry', d.entry], ['version', d.version], ['count1', d.count1],
+        ['resource paths', d.path_count], ['geometry bytes', d.geometry_bytes],
+        ['tag size matches', d.tag_size_matches ? 'yes' : 'no'],
+        ['round-trip identical', d.roundtrip_identical ? 'yes' : 'NO'],
+        ['models in archive', (d.models_in_archive || []).length],
+      ].map(([k, v]) => `<tr><td>${k}</td><td>${String(v)}</td></tr>`).join('');
+      const paths = (d.paths || []).map((p) => `<li>${String(p).replace(/[<>&]/g, '')}</li>`).join('');
+      meta.textContent = `${d.entry} · version ${d.version}`;
+      out.innerHTML = `<table><tbody>${rows}</tbody></table><details><summary>resource paths</summary><ul>${paths}</ul></details>`;
+    } catch (err) {
+      meta.textContent = 'could not read that model';
+      out.innerHTML = `<p class="muted">${String(err.message || err).slice(0, 160)}</p>`;
+    }
+  }
+
   function triageAge(seconds) {
     if (typeof seconds !== 'number' || !isFinite(seconds) || seconds <= 0) return '—';
     const h = seconds / 3600;

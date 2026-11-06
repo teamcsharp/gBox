@@ -394,6 +394,17 @@ class SwapIn(BaseModel):
     build: str = "gbox-lab"   # LayeredFS overlay name
 
 
+class ModelInfoIn(BaseModel):
+    """Inspect one MTF model entry inside an .arc: its header, its resource paths and its geometry size.
+
+    The response also reports whether gbox.mt_model reproduces the entry byte-for-byte, so the page shows a parser
+    that is faithful to the file rather than one that merely reads plausible fields.
+    """
+    title: str
+    arc_path: str
+    entry: str | None = None      # empty: the first model entry in the archive
+
+
 class ArcSwapIn(BaseModel):
     """Replace one model entry inside an MT Framework .arc, keeping the slot's own entry table."""
     title: str
@@ -1032,6 +1043,57 @@ def install(app, store, config, auth, tactical_store=None):
                 "classes": sorted(buckets.values(), key=lambda b: -b["open"]),
                 "fleet": {"nodes": nodes, "lanes": sum(n["lanes"] or 0 for n in nodes if n["enabled"])},
                 "at": time.time()}
+
+    @app.post("/api/decrypt-lab/model-info", dependencies=[Depends(auth)])
+    def decrypt_lab_model_info(body: ModelInfoIn):
+        """Parse one MTF model entry and report what is decoded so far, with a byte-identical self-check."""
+        import zlib as _zlib
+        from . import mt_arc, mt_model
+        tid = _title_id(body.title)
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
+        inner = (body.arc_path or "").strip().lstrip("/")
+        if not inner or len(inner) > 400 or inner.startswith("/") or ".." in inner.split("/"):
+            raise HTTPException(400, "path must be a relative RomFS path")
+        arc_file = (root / inner).resolve()
+        if not str(arc_file).startswith(str(root.resolve())) or not arc_file.is_file():
+            raise HTTPException(404, "the extracted tree does not hold that archive")
+        try:
+            arc = mt_arc.parse(arc_file.read_bytes())
+        except mt_arc.ArcError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        models = []
+        for entry in arc.entries:
+            if "\\model\\" not in entry.name:
+                continue
+            try:
+                raw = _zlib.decompress(entry.data)
+            except _zlib.error:
+                continue
+            if raw[:4] != mt_model.MAGIC:
+                continue
+            models.append((entry, raw))
+        if not models:
+            raise HTTPException(404, "this archive holds no MRL model")
+        if body.entry:
+            picked = next((pair for pair in models if pair[0].name == body.entry), None)
+            if picked is None:
+                raise HTTPException(404, f"no model entry named {body.entry}")
+        else:
+            picked = models[0]
+        entry, raw = picked
+        try:
+            model = mt_model.parse(raw)
+            rebuilt = mt_model.build(model)
+        except mt_model.ModelError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"v": FORMAT, "entry": entry.name, "compressed": entry.size, "uncompressed": len(raw),
+                "tag": f"{entry.tag:08x}", "tag_size_matches": (entry.tag & 0x00FFFFFF) == len(raw),
+                "version": model.version, "count1": model.count1, "paths": model.paths,
+                "path_count": len(model.paths),
+                "geometry_bytes": len(model.tail), "roundtrip_identical": rebuilt == raw,
+                "models_in_archive": [pair[0].name for pair in models]}
 
     @app.post("/api/decrypt-lab/model-swap", dependencies=[Depends(auth)])
     def decrypt_lab_model_swap(body: ModelSwapIn):

@@ -56,6 +56,14 @@ function request(value) {
     }
     return { path: u.pathname + u.search, method };
   }
+  if (method === 'POST' && p === '/api/decrypt-lab/model-info') {
+    const b = body || {};
+    if (typeof b.title !== 'string' || typeof b.arc_path !== 'string' || b.title.length > 64 || b.arc_path.length > 400
+        || (b.entry !== undefined && typeof b.entry !== 'string')) {
+      throw Error('Invalid model-info request.');
+    }
+    return request({ path: p, body: { title: b.title, arc_path: b.arc_path, entry: b.entry } });
+  }
   if (method === 'POST' && p === '/api/decrypt-lab/stage') {
     const b = value.body;
     if (!b || typeof b !== 'object') throw Error('Invalid stage request.');
