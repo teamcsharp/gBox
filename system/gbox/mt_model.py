@@ -513,6 +513,22 @@ class ModFile:
                 out.append((a, b, c))
         return out
 
+    def bone_map(self) -> list[int]:
+        """The 256-byte bone map's first `bone_count` bytes: the documented animation lookup, NOT the hierarchy.
+
+        It is tempting to read this as per-bone parents - a two-bone weapon gives [1, 255] and a three-bone one
+        [1, 2, 255], which look exactly like a chain with a root. But it does not hold: a 28-bone enemy gives
+        [0, 15, 16, 17, ...] with no 255 at all and its first bone parented to itself, and an 86-bone one is
+        [0, 1, 2, 3, 4, 84, 255, 255, ...] - five entries then padding. Neither is a tree. The document calls this a
+        "bone lookup table used for animation", which fits what is actually there, so it is returned as such and the
+        hierarchy is left undecoded rather than guessed from two small samples.
+        """
+        table = self.bone_table()
+        count = table["bone_count"]
+        if not count or len(table["map"]) < count:
+            return []
+        return list(table["map"][:count])
+
     def bone_table(self) -> dict:
         """The skeleton block: one raw record per bone, then the bone map.
 
