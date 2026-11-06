@@ -530,6 +530,11 @@ AIM_LOCK, AIM_LOCK_YAW_DEG_S, AIM_LOCK_PITCH_DEG_S, AIM_LOCK_SNAP_DEG = False, 1
 AIM_LOCK_HELD = 0.03                     # rad: the next frame's state this near the write: it held (else, 6 times and
                                          # more often than held, the lock stands down for the round: aim_lock_unheld)
 AIM_LOCK_COUNTERS = ("aim_lock_ticks", "aim_lock_fails", "aim_lock_prepitch", "aim_lock_unheld")
+# RAM equip (re5_switch_equip): a weapon parked on a non-QUICK grid (2/4/6/8/0) is reached by writing INV_HAND, not a
+# D-pad tap. Off until a live round shows the hand write holds (the same UNVERIFIED contract as AIM_LOCK - no private
+# slot for the write). Counters: ram_equips, ram_equip_fails.
+RAM_EQUIP = False
+RAM_EQUIP_COUNTERS = ("ram_equips", "ram_equip_fails")
 GOV_COUNTERS = ("gov_drops",)
 # The game's own prompts (operator 17:39: "seeing them miss QTE events"; 17:36: the ledge's "Jump down" by Y; the
 # hourglass: re5_switch_prompt's live finding, label 112 press:y on the statue - up 23 samples in six minutes, never
@@ -650,7 +655,7 @@ WALL_COUNTERS = ("wall_hits", "wall_recoveries", "wall_push_s", "wall_preempts")
 AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "wall_aim_s", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
                      "confirmed_shots", "long_shot_kills", "through_shots") + CLOSE_COUNTERS + RAMPAGE_COUNTERS \
     + BONUS_COUNTERS + WALL_COUNTERS + CALM_COUNTERS + SWEEP_COUNTERS + RELOC_COUNTERS + CAM_COUNTERS + GOV_COUNTERS + PROMPT_COUNTERS \
-    + AIM_LOCK_COUNTERS + WINDUP_COUNTERS
+    + AIM_LOCK_COUNTERS + RAM_EQUIP_COUNTERS + WINDUP_COUNTERS
 # Combo pursuit (operator 15:25: "the Ghidra hook make him aware of the locations of any and all enemies in the level ...
 # so that in the event that he's unable to locate enemies to defeat, in order to maintain the combo, he knows where
 # enemies are and is able to go and pursue them"). The census is sEnemy's whole array (snap enemies: every Majini in
@@ -1455,6 +1460,7 @@ class Bot:
         self._ap_now = None                              # this tick's P_AIM_PITCH (the pitch-up details)
         self._crowded = False                            # a Majini on his level within RAMPAGE_R this tick (NEAR_FOCUS)
         self._m, self._ram, self._lock_t = m, None, None  # the session (the aim lock's writer, made when first used)
+        self._equip = None                               # the RAM equip writer (re5_switch_equip), made when first used
         self._learn_dir = learn_dir
         self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False   # did the writes hold (next frame)
         self._wu, self._windup_e, self._grab_at, self._was_held = {}, None, -1e9, False   # the wind-ups (WINDUP)
@@ -1881,7 +1887,7 @@ class Bot:
             for s_ in inv or ():
                 spec = re5_weapons.WEAPONS.get(s_.get("item"))
                 if s_.get("type") == 1 and spec is not None and spec.family == fam \
-                        and (s_.get("hand") or s_.get("grid") in QUICK):
+                        and (s_.get("hand") or s_.get("grid") in QUICK or (RAM_EQUIP and s_.get("grid"))):
                     if s_.get("hand"):
                         return s_, fam
                     candidates.append(s_)
@@ -1978,9 +1984,21 @@ class Bot:
                 self._swap_at = now                      # the shotgun / magnum first (one press, the gun down)
                 self.stats["rampage_swaps"] += 1
                 self.stats["shotgun_swaps"] += 1
+                grid = gun.get("grid")
+                eq = self._equip_writer() if (RAM_EQUIP and grid not in QUICK) else None
                 self.doing, self.why = "raise", f"rampage: the {fam} up first"
                 self.stats["idle_in_5m_s"] = round(self.stats["idle_in_5m_s"] + dt, 2)
-                return {"hold": (QUICK[gun["grid"]],)}
+                if eq is not None:                       # a non-QUICK slot (RAM_EQUIP): write INV_HAND, fall back to D-pad
+                    res = eq(self._m, p["ptr"], gun.get("item"))
+                    if res and res.get("verified"):
+                        self.stats["ram_equips"] = self.stats.get("ram_equips", 0) + 1
+                        self.aim_since = self._raise_t = now
+                        self.ray_seen = self.last_ray = None
+                        self._lower_pitch, self._first_ray = self._ray_pitch, True
+                        self._first_check, self._raise_is_reroll, self._reroll_next = False, True, False
+                        return {"hold": ()}
+                    self.stats["ram_equip_fails"] = self.stats.get("ram_equip_fails", 0) + 1
+                return {"hold": (QUICK[grid],)}           # QUICK or the RAM write fell through: the D-pad tap
             self.aim_since = self._raise_t = now         # up at once, no body turn first
             self.stats["raises"] += 1
             self.ray_seen = self.last_ray = None
@@ -2728,6 +2746,12 @@ class Bot:
         if self._ram is None and self._m is not None:
             self._ram = re5_switch_aim.aim_writer(self._m) or False
         return self._ram or None
+
+    def _equip_writer(self):
+        from . import re5_switch_equip
+        if self._equip is None and self._m is not None:
+            self._equip = re5_switch_equip.instant_equip if re5_switch_equip.applies(self._m) else False
+        return self._equip if callable(self._equip) else None
 
     def _lock_aim(self, snap, keys, yaw_err, pitch_err, now):
         """AIM_LOCK: the aim moved by RAM - the heading by yaw_err, the camera pitch by pitch_err (radians: + = a larger
