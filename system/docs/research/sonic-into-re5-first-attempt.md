@@ -100,3 +100,26 @@ box lives in (sphere x/y/z/r + min + max). The likely offenders, cheapest first:
 
 Until that is settled, **scaling down with the untouched box is the known-good way to write geometry**: it needs no box
 rewrite and it runs.
+## Writing Sonic THROUGH the parts: it loads and plays
+
+Since a restructured part table is never drawn, Sonic's geometry has to be written through the model's own parts. Built that
+way - every part keeps its vertex count, format, bone ids and weights, and only positions move - it works at the engine level:
+
+```
+sonic vertices  4107, fitted into the Majini's own box (scale 17.34), box untouched
+per LOD         em1000 57,377 vertices moved, _low 55,667, _mid 53,742
+                valid, only position bytes differ (268,077 bytes in em1000)
+build           sonic-slots-* , launched on lilspark
+result          character select, then a round loading screen ("History of RESIDENT EVIL" / NOW LOADING),
+                frames changing throughout - NO black screen, NO freeze
+```
+
+That is the first build carrying Sonic's geometry that runs. The earlier attempts went pure black because they restructured
+the part table; this one does not touch it.
+
+**What is not yet shown:** an enemy in frame with the new geometry, so whether the silhouette reads as Sonic is unproven. The
+capture window covered character select and a load; the round had not spawned enemies in view yet.
+
+**What the method costs:** each of the model's 57k vertices is moved to the nearest point of Sonic's surface, so the result
+follows Sonic's shape but keeps the Majini's topology and bones. It will look like a Sonic-shaped body on a Majini rig, not a
+clean import. A clean import needs the engine to accept a restructured part table, and it does not.
