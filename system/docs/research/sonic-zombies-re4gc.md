@@ -76,3 +76,34 @@ The path (`characters.build_re4_enemies`): resolve the vanilla disc, resolve the
 them by geometry when the entry has none), `re4gc_zombies.swap_ganados` over every ganado pack, then `filemods.build_image`
 with an image named for the character and a marker carrying `slot: enemies`. It returns what fitted, what did not, and how each
 pack was made to fit, so a partial result is visible rather than silent.
+## The app-built mod: right image, right packs, and the enemies in that round were still villagers
+
+The tool-built mod (`re4_sonic_enemies`) launches and the game boots **its own image**:
+
+```
+dolphin -e .../mods/78ab9efa2e310db4/re4_sonic_enemies/RE4 Sonic enemies (Disc 1).iso
+em/em11.drs in that image: 6,260,192 bytes - the padded swapped size, not the disc's 6,260,192 original layout
+em/em12.drs 5,671,328   em/em15.drs 5,977,376   (all the padded sizes the fitting search produced)
+```
+
+So the mod carries the swapped packs. Four sampled frames of that round still showed stock villagers - not the Sonics the
+hand-built mod showed in the same Village stage.
+
+## Both rig paths are sane, so the source is not degenerate
+
+Measured on the same ganado skeleton (em11) with the collection's own `sonic` entry:
+
+```
+library meta roles (15)  4107 verts  bbox x -1055..1070  y -286..2377  z -1048..648
+roles by geometry (16)   4107 verts  bbox x  -465.. 517  y -669..2377  z -1048..362
+```
+
+Both produce a full mesh; the difference is arm spread (the meta roles put the arms wide, geometry reads them closer in), so
+neither is an empty or collapsed model.
+
+## What that leaves
+
+The round's enemies were villagers, and the hand-built mod put Sonics in the same stage - so the open question is **which enemy
+family that round actually spawned**. `GANADO_FILES` covers em10..em70's ganado set; a Mercenaries Village also fields villager
+variants, and if any of them come from a family outside that list they are untouched by this swap. Listing which em* files that
+round loads (or swapping the rest of the em range) answers it; guessing does not.
