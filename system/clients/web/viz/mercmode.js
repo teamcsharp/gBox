@@ -310,7 +310,8 @@
       `<button type="button" data-mm-swap="plain">Plain (remove clothes)</button>`+
       `<button type="button" data-mm-swap="to-zombie">Character → zombie</button>`+
       `<button type="button" data-mm-swap="from-cast">Zombies → cast</button>`+
-      `</span></div>`;
+      `</span><label class="pip-mm-retag"><input type="checkbox" data-mm-retag> Allow a skin of another size `+
+      `(retags the slot's texture; off by default)</label></div>`;
   }
   function wireSwaps(root,{api,title,sessionId,done,fail}){
     const APPLY = 'mercmode-swap';            // every panel swap writes this build; apply_live boots it in place
@@ -351,13 +352,18 @@
       if(job?.state!=='succeeded')throw Error(job?.error?.message||job?.error||job?.state||'the restart did not finish');
       return job;
     };
+    // A retagged swap moves a skin whose dimensions differ from the slot's, letting the tag travel with the donor's
+    // data (gbox.skin_swap follow_tag). Measured 2026-11-05: such a build boots, renders and plays rounds, so a
+    // complete character <-> enemy reskin is reachable without a texture encoder; it is off by default because the
+    // engine was written for the slot's own size, and it is the operator's call.
+    const retag = () => !!root.querySelector('[data-mm-retag]')?.checked;
     const run=async(kind)=>{
       const slotKey=root.querySelector('[data-mm-swap-slot]')?.value||'chris';
       const donorKey=root.querySelector('[data-mm-swap-donor]')?.value||'jill';
       const slot=SWAP.slots[slotKey], donor=SWAP.slots[donorKey];
       if(!slot||!donor)throw Error('Choose a slot and a donor.');
-      if(kind!=='plain' && refused(slotKey,donorKey))
-        throw Error(`${slotKey} and ${donorKey} do not share a texture format: pick another donor.`);
+      if(kind!=='plain' && !retag() && refused(slotKey,donorKey))
+        throw Error(`${slotKey} and ${donorKey} do not share a texture format: pick another donor, or allow a skin of another size.`);
       if(kind==='plain')
         // clothes removed for real: the character's body skin maps are painted over its clothing groups
         return api('/api/decrypt-lab/strip-clothes',{title,arc_path:slot,build:APPLY});
@@ -365,7 +371,8 @@
       if(kind==='to-zombie'){arc=slot;from=SWAP.slots.zombie;}
       else if(kind==='from-cast'){arc=SWAP.slots.zombie;from=slot;}
       if(!from)throw Error('That swap has no donor archive.');
-      return api('/api/decrypt-lab/model-swap',{title,arc_path:arc,donor_arc:from,build:APPLY});
+      return api('/api/decrypt-lab/model-swap',{title,arc_path:arc,donor_arc:from,build:APPLY,
+        ...(retag()?{tag_follow:true}:{})});
     };
     root.querySelectorAll('[data-mm-swap]').forEach(b=>b.addEventListener('click',async e=>{
       e.stopPropagation();
@@ -409,8 +416,10 @@
         // both directions in one build: the player arc takes the enemy's skin, the enemy arc takes the cast's
         const player=SWAP.slots[root.querySelector('[data-mm-swap-slot]')?.value||'chris'];
         const enemy=SWAP.slots.zombie;
-        const a=await api('/api/decrypt-lab/model-swap',{title,arc_path:player,donor_arc:enemy,build:APPLY});
-        const b=await api('/api/decrypt-lab/model-swap',{title,arc_path:enemy,donor_arc:player,build:APPLY});
+        const a=await api('/api/decrypt-lab/model-swap',{title,arc_path:player,donor_arc:enemy,build:APPLY,
+          ...(retag()?{tag_follow:true}:{})});
+        const b=await api('/api/decrypt-lab/model-swap',{title,arc_path:enemy,donor_arc:player,build:APPLY,
+          ...(retag()?{tag_follow:true}:{})});
         let live='';
         if(sessionId){
           try{await applyNow(sessionId);live=' · applied now: the title restarted in this session';}
