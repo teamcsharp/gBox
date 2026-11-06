@@ -34,6 +34,8 @@ WRITERS = [
     ("mgs_vr_swap", ["player"], "VR Missions Snake: currently only the HUcast donor KMD is routed; arbitrary donor replacement is unsupported"),
     ("mgs1_swap", ["player"], "MGS disc Snake: HUcast donor KMD only; visible replacement remains experimental/unverified"),
     ("crazy_taxi", ["player"], "Crazy Taxi GC: Axel the driver (15 rigid .shp parts + hand/head variants and sl_ LODs)"),
+    ("illbleed_chars", ["player", "C00-C04 (5 playables: kev/chr/ran/mic/jorg-yor)"],
+     "Illbleed (USA) DC: CMCK/PVRT VQ texture slots + NJ geometry via gbox.illbleed_chars"),
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
     ("re4gc", "build_re4(", ["player"], "Leon (story + Mercenaries, every costume pack)"),

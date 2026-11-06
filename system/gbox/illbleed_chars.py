@@ -23,6 +23,7 @@ from . import ninja
 from .gdrom import GDRom
 
 GAME_ID = "81a90290abc15a37"
+GAME_IDS = {GAME_ID}  # char_coverage.writer_for match (request 1411)
 PLAYABLE = ("C00", "C01A", "C02A", "C03", "C04")
 CMCK_SLOTS = 5
 
