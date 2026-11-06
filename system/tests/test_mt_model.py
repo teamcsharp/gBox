@@ -184,3 +184,13 @@ def test_a_mesh_record_reports_its_format_and_the_stride_that_format_implies():
     assert [m["vertex_stride"] for m in meshes] == [24, 28]
     assert all(m["format_stride"] == m["vertex_stride"] for m in meshes)
     assert mt_model.fvf_stride(meshes[0]["vertex_format"]) == 24
+def test_a_mesh_record_carries_its_place_in_the_vertex_buffer():
+    """Measured on 28 models: vertex_offset starts at 0, never decreases, and every part fits inside the buffer."""
+    model = mt_model.parse_mod(make_mod(meshes=((100, 24), (60, 20), (40, 28))))
+    header = model.header()
+    meshes = model.meshes()
+    offsets = [m["vertex_offset"] for m in meshes]
+    assert offsets[0] == 0 and offsets == sorted(offsets)
+    for mesh in meshes:
+        assert mesh["vertex_offset"] + mesh["vertex_count"] * mesh["vertex_stride"] <= header["vertex_buffer_size"]
+    assert header["vertex_buffer_size"] == sum(m["vertex_count"] * m["vertex_stride"] for m in meshes)

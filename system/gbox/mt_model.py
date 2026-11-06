@@ -148,6 +148,7 @@ MOD_MESH_FIELDS = (
     ("material_index", 0x05, "B"),
     ("level_of_detail", 0x06, "B"),
     ("vertex_stride", 0x0A, "B"),
+    ("vertex_offset", 0x10, "I"),
 )
 MOD_MESH_FORMAT_OFFSET = 0x14        # a u32 written big-endian, one of the documented FVF values
 # The documented FVF values and the vertex stride each one implies (MT Framework MOD research). Measured on 1895 mesh
