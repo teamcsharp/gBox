@@ -1334,6 +1334,20 @@ class Screensaver:
         self.nudge(f'dispatch: {command}')
         return out
 
+    def log(self, event: str, **fields) -> None:
+        """A helper's log sink (skin_swap / cast_swap and friends take `log=`).
+
+        This exists because passing `log=self.log` without it killed EVERY scheduler tick twice (2026-11-05 and again
+        2026-11-06): the AttributeError happened inside the tick, so no round launched at all and the only symptom was a
+        stalled MercMode. Recording into the audit trail means the events are visible instead of silently dropped.
+        """
+        try:
+            import socket
+            self.store.audit(ACTOR, f'screensaver.{event}', socket.gethostname(),
+                             {k: str(v)[:200] for k, v in fields.items()})
+        except Exception:                                    # noqa: BLE001 - a log sink must never break a tick
+            pass
+
     def _owned_launch(self, w, run) -> bool:
         """This run's game is one this scheduler launched itself on exactly this PC (never an adopted or operator game)."""
         job = self.store.get('job', run.get('job')) or {}

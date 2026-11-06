@@ -176,7 +176,18 @@ def cast_swap_build(config, game_id: str, title_id: str, rng, *, name: str | Non
     if not zombies:
         return None
     names = sorted(arcs)
-    cast = [n for n in names if (root / arcs[n]).is_file()]
+    # a donor must actually carry an MRL model: some costume arcs hold only material maps (uPl00ChrisEp1 among them),
+    # and picking one made a zombie swap fail with "this swap needs an MRL model in both archives"
+    cast = []
+    for n in names:
+        path = root / arcs[n]
+        if not path.is_file():
+            continue
+        try:
+            if model_swap.model_indices(mt_arc.parse(path.read_bytes())):
+                cast.append(n)
+        except mt_arc.ArcError:
+            continue
     if len(cast) < 2:
         return None
     rng.shuffle(cast)
