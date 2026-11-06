@@ -38,6 +38,7 @@ import struct
 import threading
 import time
 import uuid
+import zlib
 from collections import OrderedDict, deque
 from pathlib import Path
 
@@ -1164,6 +1165,65 @@ def install(app, store, config, auth, tactical_store=None):
         out["file_count"] = len(out["files"])
         return out
 
+    @app.post("/api/decrypt-lab/model-geometry", dependencies=[Depends(auth)])
+    def decrypt_lab_model_geometry(body: ModelInfoIn):
+        """A model's decoded vertices, for the page's 3D view: positions, normals and UVs per mesh.
+
+        Everything here is decoded, not guessed: positions come from the short-quantised stream dequantised by the
+        model's own bounding box (903 of 903 meshes land inside it), normals from signed bytes (unit length on 100% of
+        the vertices for the three formats whose layout is confirmed) and UVs as half floats. A mesh whose format is not
+        confirmed contributes positions only. Indices are not served yet - the index buffer's per-mesh split is still
+        being decoded - so the view draws the vertex clouds.
+        """
+        from . import mt_arc, mt_model
+        tid = _title_id(body.title)
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
+        inner = (body.arc_path or "").strip().lstrip("/")
+        if not inner or len(inner) > 400 or ".." in inner.split("/"):
+            raise HTTPException(400, "path must be a relative RomFS path")
+        arc_file = (root / inner).resolve()
+        if not str(arc_file).startswith(str(root.resolve())) or not arc_file.is_file():
+            raise HTTPException(404, "the extracted tree does not hold that archive")
+        arc = mt_arc.parse(arc_file.read_bytes())
+        models = []
+        for entry in arc.entries:
+            if "\\model\\" not in entry.name:
+                continue
+            try:
+                raw = zlib.decompress(entry.data)
+            except zlib.error:
+                continue
+            if raw[:4] == mt_model.MOD_MAGIC:
+                models.append((entry, raw))
+        if not models:
+            raise HTTPException(404, "this archive holds no MOD geometry")
+        picked = (next((pair for pair in models if pair[0].name == body.entry), None) if body.entry else models[0])
+        if picked is None:
+            raise HTTPException(404, f"no model entry named {body.entry}")
+        entry, raw = picked
+        model = mt_model.parse_mod(raw)
+        bounds = model.bounds()
+        budget = 60000
+        out = []
+        for index, record in enumerate(model.meshes()):
+            positions = model.positions(index, limit=budget)
+            if not positions:
+                continue
+            budget -= len(positions)
+            normals = model.normals(index)[:len(positions)]
+            uvs = model.uvs(index)[:len(positions)]
+            out.append({"mesh": index, "format": f"{record['vertex_format']:08x}", "stride": record["vertex_stride"],
+                        "count": record["vertex_count"], "lod": record["level_of_detail"],
+                        "positions": [round(v, 2) for point in positions for v in point],
+                        "normals": [round(v, 2) for normal in normals for v in normal],
+                        "uvs": [round(v, 3) for uv in uvs for v in uv],
+                        "drawn": len(positions)})
+            if budget <= 0:
+                break
+        return {"v": FORMAT, "entry": entry.name, "bounds": bounds, "meshes": out,
+                "note": "positions only for formats whose normal/uv layout is not confirmed"}
     @app.post("/api/decrypt-lab/model-info", dependencies=[Depends(auth)])
     def decrypt_lab_model_info(body: ModelInfoIn):
         """Parse one MTF model entry and report what is decoded so far, with a byte-identical self-check."""

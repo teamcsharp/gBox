@@ -48,6 +48,57 @@
   const key = new THREE.DirectionalLight(0xbfe3ff, 1.15); key.position.set(18, 26, 14); scene.add(key);
   const rim = new THREE.DirectionalLight(0x4cc4a5, 0.5); rim.position.set(-16, -8, -18); scene.add(rim);
 
+  // A decoded game model in place of the placeholder blocks: every mesh becomes one point cloud, sized and coloured by
+  // its own bounds. The data is real geometry from gbox.mt_model (positions dequantised by the model's box, normals and
+  // uvs where the format's layout is confirmed), so this is the model as the game stores it, not a reconstruction.
+  function showModelGeometry(geometry) {
+    group.clear();
+    blocks.length = 0;
+    const bounds = geometry.bounds || { min: { x: -50, y: 0, z: -50 }, max: { x: 50, y: 180, z: 50 } };
+    const cx = (bounds.min.x + bounds.max.x) / 2;
+    const cy = (bounds.min.y + bounds.max.y) / 2;
+    const cz = (bounds.min.z + bounds.max.z) / 2;
+    const size = Math.max(bounds.max.x - bounds.min.x, bounds.max.y - bounds.min.y, bounds.max.z - bounds.min.z, 1);
+    geometry.meshes.forEach((mesh, index) => {
+      const n = mesh.positions.length / 3;
+      if (!n) return;
+      const positions = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        positions[i * 3] = (mesh.positions[i * 3] - cx) / size;
+        positions[i * 3 + 1] = (mesh.positions[i * 3 + 1] - cy) / size;
+        positions[i * 3 + 2] = (mesh.positions[i * 3 + 2] - cz) / size;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const hue = (index * 0.17) % 1;
+      const mat = new THREE.PointsMaterial({ color: new THREE.Color().setHSL(hue, 0.7, 0.6), size: 0.012 });
+      const points = new THREE.Points(geo, mat);
+      points.userData = { index, kind: 'model' };
+      group.add(points);
+      blocks.push(points);
+    });
+    return geometry.meshes.reduce((sum, m) => sum + (m.positions.length / 3), 0);
+  }
+
+  async function showGeometry() {
+    const arc = ($('model-arc').value || '').trim();
+    const meta = $('model-meta');
+    const title = currentTitle();
+    if (!arc || !title) { meta.textContent = 'name an archive and choose a title first'; return; }
+    meta.textContent = 'decoding the model…';
+    try {
+      const body = { title, arc_path: arc };
+      const entry = ($('model-entry').value || '').trim();
+      if (entry) body.entry = entry;
+      const d = await api.api('/api/decrypt-lab/model-geometry', body);
+      const drawn = showModelGeometry(d);
+      meta.textContent = `${d.entry.split('\\').pop()} · ${d.meshes.length} meshes · ${drawn} vertices`;
+    } catch (err) {
+      meta.textContent = 'could not decode that model';
+      $('model-out').innerHTML = `<p class="muted">${String(err.message || err).slice(0, 160)}</p>`;
+    }
+  }
+
   let yaw = -0.6, pitch = 0.72, dist = 46;
   function place() {
     pitch = Math.max(0.18, Math.min(1.45, pitch));
@@ -410,6 +461,7 @@
   $('stage-go').addEventListener('click', stageReplacement);
   $('swap-go').addEventListener('click', swapEntry);
   $('model-go')?.addEventListener('click', inspectModel);
+  $('model-3d')?.addEventListener('click', showGeometry);
   $('reports-go')?.addEventListener('click', loadReports);
   $('top').addEventListener('change', () => api.alwaysOnTop($('top').checked));
 

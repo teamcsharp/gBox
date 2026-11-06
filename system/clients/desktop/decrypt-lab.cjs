@@ -57,7 +57,7 @@ function request(value) {
     }
     return { path: u.pathname + u.search, method };
   }
-  if (method === 'POST' && p === '/api/decrypt-lab/model-info') {
+  if (method === 'POST' && (p === '/api/decrypt-lab/model-info' || p === '/api/decrypt-lab/model-geometry')) {
     const b = body || {};
     if (typeof b.title !== 'string' || typeof b.arc_path !== 'string' || b.title.length > 64 || b.arc_path.length > 400
         || (b.entry !== undefined && typeof b.entry !== 'string')) {
