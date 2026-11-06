@@ -823,6 +823,27 @@ def replace_part(data: bytes, part_index: int, vertices: bytes, vertex_count: in
         else:
             start = vb + record["vertex_offset"]
             blocks.append(model.raw[start:start + record["vertex_count"] * record["vertex_stride"]])
+    # A same-size rewrite must not move anything: models do NOT necessarily store their parts in record order, so
+    # re-laying the buffer out contiguously points every other part at the wrong bytes. Measured on RE5's uEm10 (341
+    # parts): a rewrite in which all 340 comparable parts' data came back byte-identical still moved 301,633 bytes of the
+    # buffer, and the game hung. So when the new data is the same length as the part's, patch it in place and leave every
+    # record and every other byte untouched.
+    target_start = vb + meshes[part_index]["vertex_offset"]
+    target_length = meshes[part_index]["vertex_count"] * meshes[part_index]["vertex_stride"]
+    if len(vertices) == target_length and target_length:
+        patched = bytearray(data)
+        patched[target_start:target_start + target_length] = vertices
+        if bounds is not None:
+            header_end = MOD_BLOCK_OFFSETS + 8 * MOD_BLOCKS
+            tail_start = header_end
+            if header["offsets"]["bones"] >= header_end + 48:
+                struct.pack_into("<4f", patched, tail_start, bounds["sphere"]["x"], bounds["sphere"]["y"],
+                                 bounds["sphere"]["z"], bounds["sphere"]["r"])
+                struct.pack_into("<3f", patched, tail_start + 16,
+                                 bounds["min"]["x"], bounds["min"]["y"], bounds["min"]["z"])
+                struct.pack_into("<3f", patched, tail_start + 32,
+                                 bounds["max"]["x"], bounds["max"]["y"], bounds["max"]["z"])
+        return bytes(patched)
     records = []
     running = 0
     for index, record in enumerate(meshes):
