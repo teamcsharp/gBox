@@ -1,5 +1,16 @@
 # The writer bisect: run, and what each variant showed
 
+> **Correction, same day.** The "variant 2" frames below (boot, character select) were captured while the overlay held **no
+> modified file at all**: the build's history shows the re-encode edit (-007) and a revert (-008) applied in the same
+> millisecond, so the net effect was nothing, and the later pole edit was never recorded. Those frames are the unmodified
+> game and prove nothing about the writer. The only frames ever captured with rewritten geometry actually loaded are the
+> variant 1 (3x) ones - which had every normal zeroed by `pack_vertices` (see the `pack_part` fix). The claim that "the
+> writer does not corrupt a model it rewrites" is therefore **not supported by evidence** and is withdrawn.
+>
+> What the episode did establish, by accident, is the first rule of this kind of test: verify the file is in the overlay
+> (compare its hash with the archive that was staged) **before** reading any frame. A capture whose build was never
+> installed is not a weak result, it is no result.
+
 2026-11-06. The staged bisect finally ran, using the mechanism that does not cost the round: `switch_mods` `op: "write"`
 stages an edit into the running round's own build, and it lands when the title next starts on its own. Two variants, each
 captured from a live round of RE5 No Mercy on Eden.
