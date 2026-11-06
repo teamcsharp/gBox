@@ -116,6 +116,99 @@ def build(model: ModelFile) -> bytes:
     return bytes(out)
 
 
+# --- the geometry container (`MOD\0`) ---------------------------------------------------------------------------------
+#
+# Measured on nine models across five archives (2026-11-06):
+#
+#     0x00  "MOD\0"
+#     0x04  u32            (0x0300d3 / 0x0200d3 / 0xd3 seen)
+#     0x08  u32            (0x09000f / 0x020004 / 0x0b000b ...)
+#     0x0c  u32 vertex_count        of the first submesh
+#     0x10  u32            (2317, 530, 2335 ... no meaning yet)
+#     0x14  u32            (1415, 390, 1143 ...)
+#     0x18  u32 geometry_bytes      the size of block 4 (25764, 6592, 27336 ... - checked against the offsets)
+#     0x1c  u32 0
+#     0x20  u32 submesh_count       (2, 1, 1, 11, 9, 20 ...)
+#     0x28  7 x u64 block offsets, rising, the last one 4 bytes short of the payload
+#     then 6 blocks
+#
+# For a single-submesh model geometry_bytes / vertex_count is an EXACT integer stride: 16, 20, 24 and 28 were all seen
+# (4 of 7 single-submesh models; the other three are the ones whose counts do not divide, so a per-submesh table must
+# hold the split). A multi-submesh model (pl0000: 6 submeshes, 28091 vertices, 758592 bytes = 27.005 bytes/vertex) only
+# makes sense as a sum over submeshes, which is the part still to decode.
+MOD_MAGIC = b"MOD\x00"
+MOD_BLOCK_OFFSETS = 0x28
+MOD_BLOCKS = 7                       # seven offsets, so six blocks
+
+
+@dataclass
+class ModFile:
+    """A parsed `MOD` geometry container.
+
+    `raw` is kept whole: the header is 0x60 bytes, then a gap of unknown meaning up to the first block offset (164 in
+    the object models), then the blocks. Re-emitting an unchanged model is therefore exact; describing what lies in the
+    gap (most likely the per-submesh table) is what writing new geometry still needs.
+    """
+    words: list[int]                    # the eight u32 at 0x04..0x23
+    offsets: list[int]                  # the seven block offsets at 0x28
+    raw: bytes
+    variant: str = "model"              # "model" (header 0x60, first block at 164) or "effect" (table starts at 0)
+
+    @property
+    def vertex_count(self) -> int:
+        return self.words[2]
+
+    @property
+    def geometry_bytes(self) -> int:
+        return self.words[5]
+
+    @property
+    def submeshes(self) -> int:
+        return self.words[7]
+
+    @property
+    def header_size(self) -> int:
+        return MOD_BLOCK_OFFSETS + 8 * MOD_BLOCKS
+
+    def block(self, index: int) -> bytes:
+        """Block `index` (0..5) of the geometry."""
+        start, end = self.offsets[index], self.offsets[index + 1]
+        return self.raw[start:end]
+
+    def stride(self) -> float | None:
+        """Bytes per vertex: exact only for a single-submesh model (see the note above)."""
+        if not self.vertex_count:
+            return None
+        return self.geometry_bytes / self.vertex_count
+
+
+def parse_mod(data: bytes, *, strict: bool = True) -> ModFile:
+    """Read a `MOD` geometry container's header and block table. The blocks are carried, not interpreted."""
+    data = bytes(data)
+    if len(data) < MOD_BLOCK_OFFSETS + 8 * MOD_BLOCKS or data[:4] != MOD_MAGIC:
+        raise ModelError(f"not a MOD container (magic {data[:4]!r})")
+    words = list(struct.unpack_from("<8I", data, 0x04))
+    offsets = [struct.unpack_from("<I", data, MOD_BLOCK_OFFSETS + 8 * i)[0] for i in range(MOD_BLOCKS)]
+    if strict:
+        if any(b < a for a, b in zip(offsets, offsets[1:])):
+            raise ModelError(f"block offsets are not rising: {offsets}")
+        if offsets[-1] > len(data):
+            raise ModelError(f"the last block offset runs past the payload: {offsets}")
+    return ModFile(words=words, offsets=offsets, raw=data, variant="effect" if offsets[0] < MOD_BLOCK_OFFSETS + 8
+                   * MOD_BLOCKS else "model")
+
+
+def build_mod(model: ModFile) -> bytes:
+    """Re-emit the container. Unchanged, this is byte-identical to what was parsed."""
+    if len(model.offsets) != MOD_BLOCKS:
+        raise ModelError(f"a MOD has {MOD_BLOCKS} block offsets")
+    return model.raw
+
+
+def roundtrip_mod(data: bytes) -> bytes:
+    return build_mod(parse_mod(data))
+
+
 def roundtrip(data: bytes) -> bytes:
     """parse then build: the bytes a writer produces for an unchanged model."""
     return build(parse(data))
