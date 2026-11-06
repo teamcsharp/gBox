@@ -105,3 +105,25 @@ So the bonus phase is not idle or disabled - it is **arriving and stopping one s
 3. Only then look at level differences (the roof/ledge jump path) and the dead-statue block timer.
 
 (1) is the smallest change that matches all four rounds' numbers, and it is measurable the same way: `knife_swings` should become non-zero and `bonuses_taken` should rise from 0.
+## The rotation has completed no round in seven hours
+
+While trying to verify the knife-reach change I read the Notebook directly instead of trusting the learning summary:
+
+```
+rounds in the last 1h : 0
+rounds in the last 6h : 0
+rounds in the last 24h: 99        <- so it did run earlier
+newest round age      : 412 min   (~6.9 h)
+live session          : started 3.9 min ago, eden, cast-inverted
+frame                 : "NOW LOADING..." (a round is loading, mean 4.0)
+```
+
+So the MercMode rotation **is** launching games - a session is up right now and a round is loading - but no round has reached a terminal
+state that the Notebook saves since about 10:40. Everything the learning gate reports (0.968 deaths/round, 62 rounds/24h, the bonus
+faults) is therefore **seven hours stale**, and any change of mine - the crowd hold, the knife reach - has had no completed round to
+affect. That also explains why the gate could never judge the 03:31 fix: there was nothing new to judge.
+
+This is the first thing to establish before more bot work, and it is measurable: the scheduler's own logs, and the job state of the
+autoplay that runs in each session, will say whether a round is being abandoned (relaunch before the clock ends), whether the bot
+is stuck on a menu/prompt, or whether the Notebook writer stopped saving. The frame above at least rules out "the game is not
+running".

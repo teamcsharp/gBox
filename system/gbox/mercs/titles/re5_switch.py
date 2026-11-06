@@ -730,7 +730,11 @@ CAM_COUNTERS = ("cam_up_ticks", "cam_up_fixes", "cam_pitch_inverted", "cam_down_
 # of BONUS_JUMP_S or more), bonus_runs, knife_swings, bonus_detours.
 BONUS, BONUS_VT, BONUS_SCAN_S, BONUS_FIGHT_R, BONUS_WALK_R, BONUS_BLOCK_S, BONUS_JUMP_S = \
     True, 0x1BD6D58, 1.0, 300.0, 250.0, 12.0, 20.0       # (a Majini within 3 m: the fight takes over the run - 21:0x)
-KNIFE_R, KNIFE_FACE, KNIFE_SWING_S, KNIFE_TRY_S, KNIFE_RETRIES = 90.0, math.radians(12), 0.35, 3.0, 2
+# KNIFE_R was 90 cm: inside a statue's own footprint, so the bot walked up, circled (bonus_detours 6-27 a round) and never
+# entered the reach that starts the swing. Four consecutive rounds measured knife_swings 0 with bonuses_taken 0 (the only take
+# came from a context prompt), while bonuses_seen was 8-11 a round. 160 cm is where the bot actually stands when it arrives, and
+# a swing that misses costs nothing but a swing.
+KNIFE_R, KNIFE_FACE, KNIFE_SWING_S, KNIFE_TRY_S, KNIFE_RETRIES = 160.0, math.radians(12), 0.35, 3.0, 2
 # A statue in reach that still will not break after a full knife (no snap prompt on the live Switch, off his level, or
 # behind a wall) is given up and the next open one targeted (the damage cluster's 138-missed-per-round fault: the run
 # was locked on one unbreakable statue, the rest of the round's bonuses never reached). ~2 s of knife in reach -
