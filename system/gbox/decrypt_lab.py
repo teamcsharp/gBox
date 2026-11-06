@@ -916,13 +916,13 @@ def install(app, store, config, auth, tactical_store=None):
 
     @app.post("/api/decrypt-lab/model-swap", dependencies=[Depends(auth)])
     def decrypt_lab_model_swap(body: ModelSwapIn):
-        """Swap a character/enemy slot's model group with a donor archive's (first `\\model\\` entry of each).
+        """Swap a slot's character skin with a donor archive's (the panel's clothes / cast / zombie actions).
 
-        This is what the Mercenaries panel's actions call: the operator names the two archives (a character, another
-        character, an enemy), and the model group travels between them while the slot keeps the names the game asks
-        for. The entry swapped is reported, so the operator can see exactly what moved.
+        Both archives' body skin groups are resolved (evfXXXX_01, else Body/Skin, else the largest base map) and the
+        slot's base/mask/normal maps are replaced: the FIRST `\\model\\` entry is a stub on real characters, so it is
+        never used as the model. The entry swapped is reported, so the operator can see exactly what moved.
         """
-        from . import mt_arc
+        from . import mt_arc, skin_swap
         tid = _title_id(body.title)
         root = _romfs_root(tid)
         if root is None:
@@ -940,31 +940,16 @@ def install(app, store, config, auth, tactical_store=None):
         arc_file = resolve(body.arc_path)
         donor_file = resolve(body.donor_arc)
         try:
-            donor = mt_arc.parse(donor_file.read_bytes())
-            mine = mt_arc.parse(arc_file.read_bytes())
-        except mt_arc.ArcError as exc:
-            raise HTTPException(400, str(exc)) from exc
-
-        def model_entry(arc):
-            return next((e for e in arc.entries if "\\model\\" in e.name), None)
-
-        donor_entry = model_entry(donor)
-        slot = model_entry(mine)
-        if donor_entry is None:
-            raise HTTPException(404, "the donor archive has no model entry")
-        if slot is None:
-            raise HTTPException(404, "the slot archive has no model entry")
-        try:
-            patched = mt_arc.replace(arc_file.read_bytes(), slot.name, donor_entry.data)
+            data, slot_group, donor_group = skin_swap.swap_arc(arc_file.read_bytes(), donor_file.read_bytes())
         except mt_arc.ArcError as exc:
             raise HTTPException(400, str(exc)) from exc
         folder = _mod_build(body.title, body.build)
         target = folder / "romfs" / body.arc_path.strip().lstrip("/")
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(patched)
+        target.write_bytes(data)
         lab_state.event(body.title, "model-swap",
-                        f"{slot.name} <- {donor_entry.name} ({len(donor_entry.data)} B) in {body.arc_path}",
-                        {"build": body.build, "size": len(donor_entry.data)})
-        return {"v": FORMAT, "ok": True, "target": str(target), "size": len(patched),
-                "slot": slot.name, "donor": donor_entry.name, "entry_bytes": len(donor_entry.data),
+                        f"{slot_group} <- {donor_group} skin ({len(data)} B) in {body.arc_path}",
+                        {"build": body.build, "size": len(data)})
+        return {"v": FORMAT, "ok": True, "target": str(target), "size": len(data),
+                "slot": slot_group, "donor": donor_group,
                 "note": "the overlay applies when the title next boots (LayeredFS)"}
