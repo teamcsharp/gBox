@@ -83,7 +83,33 @@
                                        new THREE.LineBasicMaterial({ color: 0x2b4257, transparent: true,
                                                                      opacity: 0.35 })));
       blocks.push(mesh);
-      return { vertices: n, triangles: tris.length / 3, mode: 'triangles' };
+      // the skeleton over the surface: bones as points, parent links as lines, both in the same frame
+      const skel = geometry.skeleton || {};
+      const bones = skel.bones || [];
+      if (bones.length) {
+        const point = new Float32Array(bones.length * 3);
+        bones.forEach((bone, i) => {
+          point[i * 3] = (bone[0] - cx) / size;
+          point[i * 3 + 1] = (bone[1] - cy) / size;
+          point[i * 3 + 2] = (bone[2] - cz) / size;
+        });
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(point, 3));
+        group.add(new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xffd166, size: 0.02 })));
+        const links = [];
+        (skel.parents || []).forEach((parent, i) => {
+          if (parent === 255 || parent === undefined || !bones[parent] || !bones[i]) return;
+          links.push(point[parent * 3], point[parent * 3 + 1], point[parent * 3 + 2],
+                     point[i * 3], point[i * 3 + 1], point[i * 3 + 2]);
+        });
+        if (links.length) {
+          const lgeo = new THREE.BufferGeometry();
+          lgeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(links), 3));
+          group.add(new THREE.LineSegments(lgeo, new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true,
+                                                                              opacity: 0.6 })));
+        }
+      }
+      return { vertices: n, triangles: tris.length / 3, mode: 'triangles', bones: bones.length };
     }
     geometry.meshes.forEach((mesh, index) => {
       const n = mesh.positions.length / 3;
@@ -119,7 +145,7 @@
       const d = await api.api('/api/decrypt-lab/model-geometry', body);
       const drawn = showModelGeometry(d);
       meta.textContent = drawn.mode === 'triangles'
-        ? `${d.entry.split('\\').pop()} · ${drawn.triangles} triangles · ${drawn.vertices} vertices`
+        ? `${d.entry.split('\\').pop()} · ${drawn.triangles} triangles · ${drawn.vertices} vertices · ${drawn.bones || 0} bones`
         : `${d.entry.split('\\').pop()} · ${d.meshes.length} meshes · ${drawn.vertices} vertices`;
     } catch (err) {
       meta.textContent = 'could not decode that model';

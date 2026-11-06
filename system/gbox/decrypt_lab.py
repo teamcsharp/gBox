@@ -1222,9 +1222,27 @@ def install(app, store, config, auth, tactical_store=None):
                         "drawn": len(positions)})
             if budget <= 0:
                 break
+        # the skeleton, composed along the hierarchy: bone world positions from the local bind matrices
+        table = model.bone_table()
+        skeleton = {"bones": [], "parents": table.get("parents") or []}
+        if table.get("consistent") and table.get("local"):
+            parents = table["parents"]
+            local = [struct.unpack_from("<16f", block, 0) for block in table["local"]]
+            world = [None] * len(parents)
+            for bone in range(len(parents)):
+                parent = parents[bone]
+                if parent == 255 or parent >= len(parents) or world[parent] is None:
+                    world[bone] = list(local[bone])
+                else:
+                    a, b2 = world[parent], local[bone]
+                    world[bone] = [sum(a[r * 4 + k] * b2[k * 4 + c] for k in range(4))
+                                   for r in range(4) for c in range(4)]
+            skeleton["bones"] = [[round(world[i][12], 2), round(world[i][13], 2), round(world[i][14], 2)]
+                                 for i in range(len(parents)) if world[i] is not None]
         return {"v": FORMAT, "entry": entry.name, "bounds": bounds, "meshes": out,
                 "positions": [round(v, 2) for point in model.all_positions()[:60000] for v in point],
                 "triangles": [i for tri in model.triangles()[:60000] for i in tri],
+                "skeleton": skeleton,
                 "note": "positions only for formats whose normal/uv layout is not confirmed"}
     @app.post("/api/decrypt-lab/model-info", dependencies=[Depends(auth)])
     def decrypt_lab_model_info(body: ModelInfoIn):
