@@ -56,3 +56,25 @@ Reversible two ways: `CROWD_HOLD_N` above any real crowd turns the rule off, and
 
 This is the honest status of it: **shipped, not yet proven**. The gate's verdict is ~3 h away, and if the deaths-per-round figure
 does not fall, the next lever from the same table is the reload guard (do not start a reload with two enemies inside 5 m).
+## The biggest score lever is not survival - it is 8.6 missed time bonuses a round
+
+The learning payload's `round_faults` for RE5 Switch:
+
+```
+round:bonus_missed   "time bonus seen, not taken"
+rounds 62   marked rounds 60   share_of_rounds 0.968   rate_per_round 8.581
+```
+
+In Mercenaries the clock is the score: every time bonus extends the round, so 8.6 missed statues a round dwarfs any survival
+tuning. The bot HAS a first phase for exactly this (`BONUS = True`, statues scanned every second, knife swings, a jump-down
+context action, a wall governor, and counters `bonuses_seen / bonuses_taken / time_gained / knife_swings / bonus_jumps`), and
+the code carries earlier live diagnoses of the same failure - "8 statues seen, none taken: he spawned on the roof and walked at
+one 1.6 m below for a minute", and "the damage cluster's 138-missed-per-round fault: locked on one unbreakable statue".
+
+So this fault has been worked before and is still at 96.8% of rounds. What the next attempt needs that the previous ones did not
+have is the live counters per round: `bonuses_seen` against `bonuses_taken` says whether the scan sees them and the walking
+fails, or whether the phase never runs at all. I could not read those counters this round - the session row carries no stats and
+the autoplay job for the running round was not in the job list when I asked - so the first thing to do next is find where a
+finished round's counters are kept and read two or three rounds' worth before changing anything.
+
+Also worth recording: deaths_per_round 0.968 is consistent - 58 deaths over 60 rounds.
