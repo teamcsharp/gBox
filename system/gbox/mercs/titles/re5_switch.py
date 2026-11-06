@@ -132,8 +132,21 @@ SELECTION: dict = {}
 STAGE_NAMES = ("Public Assembly", "The Mines", "Village", "Ancient Ruins", "Experimental Facility", "Missile Area",
                "Ship Deck", "Prison")
 CHARACTERS = ("Chris (BSAA)", "Chris (Safari)", "Chris (STARS)", "Sheva (BSAA)", "Sheva (Clubbin)", "Sheva (Tribal)",
-              "Jill (BSAA)", "Jill (Battle Suit)", "Wesker (Midnight)", "Wesker (STARS)")
-RELOAD_KEEP = ("SELECTION", "_CYCLE")
+              "Jill (BSAA)", "Jill (Battle Suit)", "Wesker (Midnight)", "Wesker (STARS)",
+              "Josh (BSAA)", "Excella", "Barry (STARS)", "Rebecca (STARS)")
+# The Mercenaries character select has MORE entries than the names above: it is two pages, and the costumes above are
+# only part of it (operator 2026-11-06: "there are 2 pages of characters ... I want to see all characters being
+# used"). The names are labels for the stats; what the bot must NOT do is stop at index 9. The screen's own cursor is
+# an integer over every entry, so the roster size is learned from the game - walked to its wrap, persisted in the
+# cycle file - and every entry then takes part in the rotation. Until it is known, the whole plausible range is used.
+CHARACTER_SLOTS = 0                 # learned entry count of the select screen (0 = not learned yet)
+CHARACTER_SLOTS_MAX = 64            # a hard ceiling for the walk (far above any real page count)
+RELOAD_KEEP = ("SELECTION", "_CYCLE", "CHARACTER_SLOTS")
+
+
+def character_count() -> int:
+    """How many entries the character select has: the learned count, else every name, else the walk's ceiling."""
+    return CHARACTER_SLOTS if CHARACTER_SLOTS > 1 else max(len(CHARACTERS), 10)
 
 
 # The stage cycle (operator 18:03: "i am not seeing the bots cycle through random levels and characters ... I want a
@@ -153,6 +166,7 @@ class StageCycle:
         self.stages, self.chars, self.last, self.held = {}, {}, None, None
         self.confirmed = {}                                 # what the selects confirmed this visit: stage / character
         self.presses, self.where = 0, None
+        self.max_cursor = -1                                # the largest select cursor seen (the roster walk)
         if path is not None:
             try:
                 import json
@@ -160,34 +174,70 @@ class StageCycle:
                 self.stages = {int(k): int(v) for k, v in (d.get("stages") or {}).items()}
                 self.chars = {int(k): int(v) for k, v in (d.get("characters") or {}).items()}
                 self.last = tuple(d["last"]) if isinstance(d.get("last"), list) and len(d["last"]) == 2 else None
+                global CHARACTER_SLOTS
+                learned = d.get("character_slots")
+                if isinstance(learned, int) and 1 < learned <= CHARACTER_SLOTS_MAX:
+                    CHARACTER_SLOTS = learned
             except (OSError, ValueError, TypeError, KeyError):
                 pass
 
+    def observe_cursor(self, cursor: int, where: str) -> None:
+        """Learn the character select's entry count from the game's own cursor.
+
+        The screen is two pages and its cursor is one integer over every entry; the driver steps it with dleft/dright.
+        When the cursor drops back to 0 after having been at its highest value, that highest value is the last entry:
+        one past it is the roster size, which is remembered with the cycle counts so the rotation covers every entry
+        on both pages instead of the handful of names in CHARACTERS.
+        """
+        global CHARACTER_SLOTS
+        if where != "select_player" or not isinstance(cursor, int) or not 0 <= cursor < CHARACTER_SLOTS_MAX:
+            return
+        if cursor == 0 and self.max_cursor > 0 and CHARACTER_SLOTS <= 1:
+            CHARACTER_SLOTS = self.max_cursor + 1
+            self.save()
+        if cursor > self.max_cursor:
+            self.max_cursor = cursor
+
+    def save(self) -> None:
+        if self.path is None:
+            return
+        import json
+        import os
+        try:
+            tmp = str(self.path) + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"stages": self.stages, "characters": self.chars, "last": self.last,
+                           "character_slots": CHARACTER_SLOTS}, f)
+            os.replace(tmp, self.path)
+        except OSError:
+            pass
+
     def pick(self) -> tuple:
-        """(stage, character) for the coming round, held until a round starts on it."""
+        """(stage, character) for the coming round, held until a round starts on it.
+
+        Until the select screen's entry count is learned the character target walks one entry further right on every
+        visit: that uses every entry on both pages (operator 2026-11-06: "the character select has 2 pages ... I want to
+        see all characters being used") and reaches the right-hand end, where the cursor wraps and the count is learned
+        for good. After that the choice is the least-played entry, so the whole roster keeps rotating.
+        """
         if self.held is None:
             last_s, last_c = self.last if self.last else (None, None)
             stages = [i for i in range(len(STAGE_NAMES)) if i != last_s] or list(range(len(STAGE_NAMES)))
             low = min(self.stages.get(i, 0) for i in stages)
             stage = self.rng.choice([i for i in stages if self.stages.get(i, 0) == low])
-            chars = [i for i in range(len(CHARACTERS)) if i != last_c] or list(range(len(CHARACTERS)))
-            self.held = (stage, self.rng.choice(chars))
+            if CHARACTER_SLOTS <= 1:                         # calibrating: walk right, one new entry per visit
+                char = min(self.max_cursor + 1, CHARACTER_SLOTS_MAX - 1)
+            else:
+                chars = [i for i in range(character_count()) if i != last_c] or list(range(character_count()))
+                char = self.rng.choice(chars)
+            self.held = (stage, char)
         return self.held
 
     def started(self, stage: int, char: int) -> None:
         self.stages[stage] = self.stages.get(stage, 0) + 1
         self.chars[char] = self.chars.get(char, 0) + 1
         self.last, self.held, self.confirmed = (stage, char), None, {}
-        if self.path is not None:
-            try:
-                import json
-                import os
-                tmp = str(self.path) + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump({"stages": self.stages, "characters": self.chars, "last": list(self.last)}, f)
-                os.replace(tmp, self.path)
-            except OSError:
-                pass
+        self.save()
 
     def coverage_text(self) -> str:
         return ", ".join(f"{STAGE_NAMES[i]} {self.stages.get(i, 0)}" for i in range(len(STAGE_NAMES)))
@@ -268,7 +318,7 @@ def player_target(m=None) -> int:
     from ..round_controls import for_memory
     control = for_memory(m)
     if control is not None and control.managed:
-        return control.choose_character(range(len(CHARACTERS)))
+        return control.choose_character(range(character_count()))
     if "character" in SELECTION or not CYCLE:
         return int(SELECTION.get("character", PLAYER_TARGET))
     return cycle().pick()[1]
@@ -1324,6 +1374,11 @@ def screen(m, merc=None) -> dict:
             where = "loading"                               # between the results and the selects
     except (ValueError, OSError):
         where = "unknown"
+    try:                                     # learn the select screen's entry count from the game's own cursor
+        if isinstance(cursor, int):
+            cycle().observe_cursor(cursor, where)
+    except Exception:                        # noqa: BLE001 - a roster count never costs a tick
+        pass
     return out | {"where": where, "cursor": cursor, "target": target,
                   "confirmation_boundary": where in ("select_player", "mercs_mode", "extra_content")}
 
@@ -4809,11 +4864,14 @@ class RE5Switch(Driver):
         c = _CYCLE["c"]
         stage, char = c.confirmed.get("stage"), c.confirmed.get("character")
         if not (isinstance(stage, int) and isinstance(char, int)
-                and 0 <= stage < len(STAGE_NAMES) and 0 <= char < len(CHARACTERS)):
+                and 0 <= stage < len(STAGE_NAMES) and 0 <= char < max(len(CHARACTERS), character_count())):
             return
         c.started(stage, char)
         if self.stats is not None:
-            self.stats.update(stage=STAGE_NAMES[stage], character=CHARACTERS[char], stage_coverage=c.coverage_text())
+            # an entry past the known names (a later page of the select) is still a character the bot played: name it
+            # by its select index rather than dropping the round's stats
+            name = CHARACTERS[char] if 0 <= char < len(CHARACTERS) else f"character {char + 1}"
+            self.stats.update(stage=STAGE_NAMES[stage], character=name, stage_coverage=c.coverage_text())
 
     def _mods(self, m, snap, playing: bool, stats: dict | None = None) -> None:
         """The session's live mods (re5_switch_mods: fire_rate's time scale during shots, the no-ammo flags'
