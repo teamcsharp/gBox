@@ -430,6 +430,12 @@ class ModelSwapIn(BaseModel):
     # tag_follow so the donor's materials were internally consistent, and it still stalled - a donor mesh refers to
     # parts/materials the slot archive does not carry. Kept for experiments; the panel never sets it.
     with_mesh: bool = False
+    # ... and the textures that model names, copied into the slot archive when it does not already hold them: an MRL
+    # model carries its own material/path table, so a swapped mesh without its textures is what hung the title's load.
+    # MEASURED 2026-11-06: on mine <- grenade it added 0 textures and the title still stalled at screen=loading, so this
+    # path is not yet doing what it claims - the copy never engaged (the archive it scanned held no model naming a
+    # texture the slot lacked). Kept for the next attempt; the panel never sets it.
+    with_textures: bool = False
     tag_follow: bool = False  # a map of another size moves too, its tag travelling with it (an experiment)
     group: str | None = None  # the slot's material group, when the title's layout defeats the default heuristic
     donor_group: str | None = None  # the donor's material group (defaults to its body group)
@@ -1164,6 +1170,39 @@ def install(app, store, config, auth, tactical_store=None):
             for slot_i, donor_i in zip(mesh_indices(slot_arc, slot_group), mesh_indices(donor_arc, donor_group)):
                 data = mt_arc.replace_at(data, slot_i, donor_arc.entries[donor_i].data)
                 meshes.append(slot_arc.entries[slot_i].name)
+        added_textures = []
+        if body.with_textures:
+            # An MRL model carries a path table naming the textures it draws with. The slot archive may not hold those
+            # entries at all (the grenade's model names om4e00_*; the mine's archive has never heard of them), and a
+            # mesh whose textures cannot be resolved is what hung the title's load in the earlier attempts. Copy the
+            # missing ones in, by the path the model names, so the swap is self-contained.
+            from . import mt_model
+            slot_arc = mt_arc.parse(data)
+            donor_arc = mt_arc.parse(donor_file.read_bytes())
+            present = {e.name for e in slot_arc.entries}
+            by_base = {e.name.rsplit("\\", 1)[-1]: e for e in donor_arc.entries}
+            wanted = []
+            for index in range(len(slot_arc.entries)):
+                try:
+                    raw = __import__("zlib").decompress(slot_arc.entries[index].data)
+                except Exception:                                  # noqa: BLE001 - not every entry is compressed text
+                    continue
+                if raw[:4] != mt_model.MAGIC:
+                    continue
+                try:
+                    wanted.extend(mt_model.parse(raw).paths)
+                except mt_model.ModelError:
+                    continue
+            for path in wanted:
+                if path in present or path.rsplit("\\", 1)[-1] not in by_base:
+                    continue
+                donor_entry = by_base[path.rsplit("\\", 1)[-1]]
+                slot_arc.entries.append(mt_arc.Entry(name=path, hash=donor_entry.hash, tag=donor_entry.tag,
+                                                     size=donor_entry.size, offset=0, data=donor_entry.data))
+                present.add(path)
+                added_textures.append(path)
+            if added_textures:
+                data = mt_arc.build(slot_arc)
         folder = _mod_build(body.title, body.build)
         target = folder / "romfs" / body.arc_path.strip().lstrip("/")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1173,4 +1212,5 @@ def install(app, store, config, auth, tactical_store=None):
                         {"build": body.build, "size": len(data)})
         return {"v": FORMAT, "ok": True, "target": str(target), "size": len(data),
                 "slot": slot_group, "donor": donor_group, "mesh": meshes, "maps": moved_maps,
+                "textures_added": added_textures,
                 "note": "the overlay applies when the title next boots (LayeredFS)"}
