@@ -1408,6 +1408,12 @@ class Screensaver:
             ahead = self.store.get(mercmode.NEXT, run['worker']) if cfg['enabled'] and not run.get('mercmode_pinned') else None
             playable = lambda title: worker is not None and any(
                 r['playable'] and r['title'] == title for r in mercmode.inventory(self.store, worker, cfg))
+            # A random skin swap is a new round even when only one title is selected: the swap is drawn at launch
+            # (gbox/skin_swap), so the round must relaunch. Without this, skin_swap only ever applied to the first
+            # round, because `alternatives` (the other selected titles) is empty with a single title.
+            skin_rotate = bool(cfg.get('skin_swap') == 'random' and not alternatives
+                               and not run.get('mercmode_pinned') and playable(run['mercmode']['title']))
+            rotate = rotate or skin_rotate
             if head and head['title'] == run['mercmode']['title']:
                 # the DJ queued this same game next: no relaunch, the running bot takes the selection at its menus
                 rotate = False
@@ -1434,7 +1440,7 @@ class Screensaver:
                 run = {k: v for k, v in run.items() if k not in ('mercmode_stay', 'mercmode_stay_round',
                                                                   'mercmode_warm_attempts', 'mercmode_prelaunch')}
             cold_next = bool((ahead or {}).get('cold'))     # a Switch->Switch cold switch: no warm preload to wait on
-            if rotate and worker and self._warm_capable(worker, cfg) and not cold_next:
+            if rotate and not skin_rotate and worker and self._warm_capable(worker, cfg) and not cold_next:
                 # the switch waits until the next title is ready - booted, paused on the first frame of its round (a
                 # worker without op=prepare: paused at its menu) - and this title plays another round meanwhile, never a
                 # loading screen or a menu walk (operator 2026-10-24: "they could play a 2nd round of mercenaries and
