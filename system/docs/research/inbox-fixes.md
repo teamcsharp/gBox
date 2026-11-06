@@ -52,3 +52,35 @@ closed with the reasoning attached, and `test_re5_switch_cycle` passes 7, includ
 the locked-entry budget.
 
 The gate will re-measure on the live rotation; that is the verification, not a claim.
+## Following up on the regression: what the gate can and cannot tell us yet
+
+`GET /api/mercs/learning` today:
+
+```
+RE5 Switch (010018100CD46000)  62 rounds/24h, 0.968 deaths/round
+  gate: flagged    p 0.016  score 47,961 -> 13,078 per round        <- the report being fixed
+  gate: confounded p 1.0    "the next change went live before 8 rounds"
+RE6 Switch                      gate: better   score 41,198 -> 142,448; kills/min 18.1 -> 25.6
+RE5 PS3                         gate: kept     no clear change in score, kills/min or deaths
+```
+
+The "confounded" verdict is **correct, not a bug**: my own fix is the next change, so it supersedes the pending judgement of
+the one before it. The gate judges a change on the title's first eight rounds after it goes live, and this title runs ~2.6
+rounds an hour, so the verdict on the fix is about three hours away. There is nothing to tune here - it is the system working
+as designed, and I would rather say "waiting" than claim a recovery.
+
+Verified in the meantime:
+
+```
+deployed file  gbox/mercs/titles/re5_switch.py:164  CALIBRATE_PRESSES = 40
+               same file:1476  budget = CALIBRATE_PRESSES if calibrating else CYCLE_MAX_PRESSES
+service        restarted 17:14:55 CST, after the deploy
+```
+
+The older flag (from the 10-27 window, deaths 0.20 -> 0.90) is closed as superseded: later RE5 Switch changes went live and were
+judged since, and the live flag was the 11-06 one.
+
+## Worth noting for the next batch of bot work
+
+RE5 Switch sits at **0.968 deaths per round** - the bot dies roughly once every round - and RE5 PS3 at 1.0. That is the number
+that would move the score more than any single select fix; it is a combat-survival problem, not a menu problem.
