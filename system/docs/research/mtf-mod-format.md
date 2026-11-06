@@ -105,10 +105,25 @@ What is **not** decoded is a record's contents. Ruled out by measurement, so the
 * the documented version-156 `Bone` (16 bytes plus two 64-byte matrices = 144) cannot describe a 152-byte record;
 * reading the documented parent byte at +1 gives values past the bone count on wp0600 (255, 0, 9 for 3 bones);
 * a 4x4 matrix at +16, +24, +32, +40 or +48 is orthonormal on only about 5% of the 867 bones sampled - all five offsets
-  are wrong, even though one model's dump happens to show identity diagonals at +48 and +112.
+  are wrong, even though one model's dump happens to show identity diagonals at +48 and +112;
+* **a 3x3 rotation (nine floats) at any offset from +0 to +0x74 is orthonormal on 0% of 864 bones** - so there is no
+  plain rotation matrix inside a 152-byte record under any alignment;
+* the 256-byte map is the documented **animation lookup, not the hierarchy**: it looks like a parent chain on small
+  models (two-bone [1, 255], three-bone [1, 2, 255]) but the 28-bone enemy gives [0, 15, 16, 17, ...] with no 255 and its
+  first bone parented to itself, and the 86-bone one is five entries then 79 bytes of 255 padding. Neither is a tree, so
+  `bone_map()` exposes it as a lookup and nothing claims a hierarchy.
 
-The one positive clue: the first bone's first byte is 0xFF for the root on some models, which the document calls the root
-marker - so the family is right and the detail is not. The records stay raw rather than mislabelled.
+## What the skeleton decode needs now
+
+Everything cheap has been tried: offsets, widths, matrix shapes, the map, and both block orders. Three rounds of
+hypotheses have all failed against the corpus, which usually means the *structuring assumption* is wrong rather than the
+offsets - most likely the records are not 152 bytes each with a 256-byte tail (the total fits, the split may not), or the
+block interleaves two arrays.
+
+Rather than keep guessing, the next step should be **reference data**: a PC or PS3 build of the same asset, whose format is
+documented and tool-supported (Noesis has read RE5 models since 2008). A byte-level comparison of the same model between
+versions would show what the Switch version changed instead of us inferring it. The PS3 edition of RE5 is already in the
+library (`BLUS30491`), so that comparison is reachable if its container can be read.
 
 ## Why this matters for the objective
 
