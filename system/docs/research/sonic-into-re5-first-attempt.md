@@ -1,125 +1,28 @@
-# Sonic into an RE5 enemy slot: built, loaded, and not drawn
+# Sonic through the parts: the engine draws it, and the shape is the problem
 
-2026-11-06. First genuine attempt at the operator's "zombies as Sonic" ask. The mesh is written into the game's Majini model
-and the game loads it — but it **renders nothing**, and this records exactly how far it got and what that implies.
+Installed with `switch_mods op=write` (`{"from": path}`, 82 MB arc), launched with the build, session reported
+`mod: ssv1322` / `ssw*`, autoplay ran, 60 frames captured - **no freeze, no black screen**, every frame varying.
 
-## What was built (and works structurally)
+The frame with an enemy in it shows stretched surfaces crossing the whole view:
 
-`gbox/mtf_import.py` writes an arbitrary mesh into an MTF model: one part, its own vertex buffer in format `0x18b0faa8`
-(position, bone id, normal, tangent, uv) and its own strip index buffer (one triangle per strip, `0xFFFF` between them). The
-target's bones, groups, materials and header tail are kept, and the bounds are rewritten to cover the new mesh — the box
-matters because the short positions are quantised against it.
+![sonic slots in a round](evidence/sonic-slots-round.png)
 
-`rebuild_mod` gained `mesh_count` / `face_count`, so a model can be restructured to a different number of parts. That change
-also caught a real regression in my own code: new records must start from the existing bytes, because the record fields the
-writer does not name (one of which the vertex decoder needs) were being zeroed.
+That is the same signature as the 3x mine test, and it is **my geometry being drawn**: the model's 57,377 vertices were each
+moved to the nearest point of Sonic's surface, so the Majini's triangles now stretch between points of a much smaller, offset
+shape. The engine renders it; the topology makes it meaningless.
 
-Measured, SA2 Sonic -> RE5 `uEm10` (the Majini a No Mercy round spawns):
+## What this settles
 
-```
-source     4107 vertices, 1369 triangles, POSITION/NORMAL/TEXCOORD_0/JOINTS_0/WEIGHTS_0, 62 joints
-mapping    62 joints -> 18 of the target's 92 bones; Sonic's head joint -> bone 90 (the target's head)
-target     pawn\em\em10\model\em1000 and its _low/_mid LODs (the arc holds 341 parts per entry)
-result     each LOD rebuilt as 1 part, valid, bounds y -1.7 .. 185.6 cm, 80,840,652-byte arc
-```
+* written vertex data is rendered - proven twice now (0.8x Majini running normally, this build drawing its own vertices)
+* a topology-preserving write cannot produce a clean character: the triangles are the game's, the positions are the donor's
+* a restructured part table (the only way to bring the donor's own triangles) is never drawn - four builds say so
 
-Loaded into the game as its own LayeredFS build (`sonic-test`), RE5 launched on Eden with `mod: sonic-test`,
-`boot_failures: []`, `boot_attempts: 1`.
+So on this engine, "a foreign mesh as a character" needs the part-table rules, which is a reverse-engineering project of its
+own, not another round of vertex writing.
 
-## What happened on screen
+## The route that can actually show Sonic
 
-**Six minutes of pure black frames** (mean 0.0, std 0.0) while the session reported running. The process is alive and the
-archive is accepted, but the engine never draws. That is the same shape as the earlier white-screen failures: no crash, no
-error, no picture.
-
-## What that implies
-
-The model went from **341 parts to 1**. Everything the engine knows about that mesh is per part — part records point at
-material indices, the groups block describes how parts group, and the index buffer addresses the whole model. A single part
-with a fresh index buffer is internally consistent (it re-parses, `split_valid()` passes, every index is in range) but the
-engine's assumptions about the enemy model are not met. So the next attempts, in the order I would try them:
-
-1. **Keep the part count.** Write Sonic's vertices into the existing 341 records (each part gets a share of the 4107
-   vertices) and keep the part table, groups and material indices exactly as they are. Only positions, normals, uvs and bone
-   ids change. This is the least the engine can object to.
-2. **Replace only the body parts** that carry the visible skin, leaving effect/animation parts alone.
-3. Then textures, which are a separate problem: an RE5 body arc carries its own TEX entries (Chris 84), and none of Sonic's
-   are in the archive yet, so even a drawn Sonic would wear the Majini's material.
-
-## The state left behind
-
-The rotation is back on RE5 with `cast_swap: on` and `skin_swap: random` — a modded round every match — and the Sonic build
-is kept as `sonic-test` for the next attempt.
-
-## Second attempt: the bisect, and what it ruled out
-
-The first attempt's suspects were the 341 -> 1 restructure. This attempt removed that variable entirely: a Majini with
-**every part kept** (records, groups, materials and the index buffer untouched) and only vertex positions scaled 1.2x, with
-the bounding box transformed from the model's own box so nothing clamps (1008 parts changed across the three body LODs).
-
-It booted as its own build (`bisect-scaled`), drew its menus, and then the frame **froze**: the same 4560-byte frame, mean
-1.5, std 3.3, for six minutes, with autoplay running and making no difference.
-
-So the engine does not merely dislike a restructured part table - it hangs on a model whose structure is untouched and only
-vertex positions were rewritten. **The fault is in the rewrite, not the restructure.** The next bisect is inside the writer:
-
-1. write the model back with **no edits at all** (same vertex bytes, same bounds) and boot it. If that hangs, the container
-   assembly is at fault (offsets, trailer, compression) and vertex data is not yet in question;
-2. if (1) boots, write decoded-then-repacked positions with the original bytes preserved and the bounds untouched, which
-   isolates the quantisation round trip from the container.
-
-### Two bugs found and fixed while doing this
-
-* New mesh records must start from the existing bytes. Zeroing them erased a record field the vertex decoder needs, and part
-  0 came back with no positions (the existing test caught it immediately).
-* Bounds computed from only the decodable parts **shrank** the box (y 125.2 instead of 185.6), which would clamp every part
-  that did not decode - the same clamp trap as before, in a new place. The box is now the original box transformed by the
-  same scale.
-
-### Launching a test build
-
-`switch_mods create_build` alone does **not** register a build: a launch refuses it with "no built mod ... for this game".
-`op: new_build` registers it, and that is the one that launches.
-## The freeze is the header box, not the vertex data
-
-Two builds differ in exactly one thing: whether the header's bounding sphere/box was rewritten.
-
-* **scale 0.8, box untouched** (positions stay inside the model's own box): the title boots and runs - menus, intro cutscene,
-  frames changing throughout a 36-frame window. No freeze.
-* **scale 1.2, box rewritten** (positions need a bigger box): menus, then a frozen frame - identical 4560-byte frames,
-  mean 1.5, std 3.3, for six minutes.
-
-So written vertex data is accepted by the engine; **the bounding box I write is not**. That narrows it to the 48 bytes the
-box lives in (sphere x/y/z/r + min + max). The likely offenders, cheapest first:
-
-1. the sphere radius: I wrote `max(extent) * scale / 2`, which is not necessarily a radius the engine accepts (it may expect
-   the radius to enclose the box from its centre, or to be in another unit);
-2. the min/max extent itself: doubling it is fine in principle, but if the engine compares the box against per-part data it
-   may reject a disagreement;
-3. whether the box must be rewritten at all when geometry only shrinks - the 0.8 run shows it need not.
-
-Until that is settled, **scaling down with the untouched box is the known-good way to write geometry**: it needs no box
-rewrite and it runs.
-## Writing Sonic THROUGH the parts: it loads and plays
-
-Since a restructured part table is never drawn, Sonic's geometry has to be written through the model's own parts. Built that
-way - every part keeps its vertex count, format, bone ids and weights, and only positions move - it works at the engine level:
-
-```
-sonic vertices  4107, fitted into the Majini's own box (scale 17.34), box untouched
-per LOD         em1000 57,377 vertices moved, _low 55,667, _mid 53,742
-                valid, only position bytes differ (268,077 bytes in em1000)
-build           sonic-slots-* , launched on lilspark
-result          character select, then a round loading screen ("History of RESIDENT EVIL" / NOW LOADING),
-                frames changing throughout - NO black screen, NO freeze
-```
-
-That is the first build carrying Sonic's geometry that runs. The earlier attempts went pure black because they restructured
-the part table; this one does not touch it.
-
-**What is not yet shown:** an enemy in frame with the new geometry, so whether the silhouette reads as Sonic is unproven. The
-capture window covered character select and a load; the round had not spawned enemies in view yet.
-
-**What the method costs:** each of the model's 57k vertices is moved to the nearest point of Sonic's surface, so the result
-follows Sonic's shape but keeps the Majini's topology and bones. It will look like a Sonic-shaped body on a Majini rig, not a
-clean import. A clean import needs the engine to accept a restructured part table, and it does not.
+RE4 GameCube, not RE5 Switch. gBox already has the whole pipeline there - `re4gc_models.gltf_to_bin` writes a rigged glTF
+into the game's format, `re4gc_enemies.retarget` fits a source rig onto GANADO_ROLES, and a **Sonic-on-Leon GLB already
+exists** (`~/agent-work/re4chars/sonic_on_leon.glb`, 119 joints named `b000`, `b001`, ... i.e. already rigged to the game).
+RE4 GC Mercenaries is a mode gBox knows about; its ROM access on this PC is what is unverified, not the tooling.
