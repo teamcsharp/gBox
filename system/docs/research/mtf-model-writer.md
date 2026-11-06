@@ -29,28 +29,47 @@ A character archive carries each model group twice: a small entry (1–6 KB) and
 (e.g. `evf0000` at 19,920 and 393,332 uncompressed). The small one is the header/description and the large one the
 geometry stream.
 
-## 2. The `MRL` header, as far as it is decoded
+## 2. The `MRL` header and path table, decoded
 
 `evf0000` (19,920 B) begins:
 
 ```
 0000: 4d 52 4c 00   "MRL\0"
 0004: 22 00 00 00   version = 34
-0008: 0c 00 00 00   12
-000c: 13 00 00 00   19
-0010: 1f e5 e0 7b   a hash
-0018: 28 00 00 00   40  -> offset of the resource path string
-0020: b0 06 00 00   1712 (0x6b0) -> where the geometry data begins
-0028: eb 5d 1f 24   0x241f5deb - the same hash constant .arc entry records carry
-0040: "pawn\pl\pl00\model\evf0000_01_NM"   the path string at offset 40
+0008: 0c 00 00 00   count1  (unknown meaning; 6, 9, 12, 60, 65, 123, 131 seen)
+000c: 13 00 00 00   path_count = 19   <- equal to the number of path records, 9 of 9 models matched
+0010: 1f e5 e0 7b   hash
+0018: 28 00 00 00   40  -> where the 0x241f5deb constant block begins (0x28)
+0020: b0 06 00 00   1712 (0x6b0) -> a second offset, meaning not yet decoded
+0028: eb 5d 1f 24   0x241f5deb
+0040: path table
 ```
 
+Each path record is **88 bytes**: `char path[64]` (NUL-terminated, `0xcd` filled) + `u32 0x241f5deb` + 20 zero bytes.
+The table starts at `header[0x18] + 0x18` (i.e. 0x40), and the geometry stream follows it.
+
+### Stage 1 and 2 are done and tested
+
+`gbox/mt_model.py` parses the header and the path table and re-emits them from the parsed fields, carrying the geometry
+opaque. Round-trip test over the tree:
+
+```
+uPl00ChrisNormal.arc   9/9   byte-identical
+uPl01ShebaNormal.arc  10/10  byte-identical
+uWp06.arc              1/1   byte-identical
+uEm6c.arc              1/1   byte-identical
+                      21/21
+```
+
+and a texture payload is refused (`not an MRL model (magic b'TEX\x00')`), so the parser is not accepting anything that
+merely looks plausible.
+
 Answers still needed, in this order:
-1. what 12 and 19 count (blocks? LODs? materials?);
-2. the offset table layout between 0x40 and 0x6b0;
-3. the bone/skeleton block (bind pose, parents) and the skin weights;
-4. the vertex stream layout at 0x6b0 (attribute masks, strides, index width);
-5. the material list and how a material names its textures (the path string at 0x40 suggests names, not indices).
+1. what `count1` counts;
+2. the second header offset (0x20) and what it points at;
+3. the geometry stream's layout after the table: attribute masks, strides, index width, submesh table;
+4. the bone/skeleton block (bind pose, parents) and the skin weights;
+5. how a material references its textures (the path table suggests by name, not index).
 
 ## 3. The build order (each step has a test that fails loudly)
 
