@@ -540,8 +540,9 @@ def pvr_vq(rgba, gbix: int | None = None, iters: int = 12, pix: int = 1, small: 
     if h != w or w & (w - 1) or not 8 <= w <= 1024:
         raise ValueError(f"VQ needs a square power-of-two texture, got {w}x{h}")
     bw = w // 2
-    # block k: (x, y), (x, y + 1), (x + 1, y), (x + 1, y + 1) = pvr_decode's order
-    blocks = np.stack([img[0::2, 0::2], img[1::2, 0::2], img[0::2, 1::2], img[1::2, 1::2]], 2).reshape(-1, 4 * channels)
+    # block texel order must match pvr_decode: (x, y), (x, y + 1), (x + 1, y), (x + 1, y + 1)
+    # i.e. top-left, top-right, bottom-left, bottom-right (row-major within the 2x2 block).
+    blocks = np.stack([img[0::2, 0::2], img[0::2, 1::2], img[1::2, 0::2], img[1::2, 1::2]], 2).reshape(-1, 4 * channels)
     mip_blocks = []
     if mips:
         # Include reduced-level patterns in the shared codebook. Full-resolution-only
@@ -550,10 +551,12 @@ def pvr_vq(rgba, gbix: int | None = None, iters: int = 12, pix: int = 1, small: 
         side = 2
         while side < w:
             reduced = img.reshape(side, h // side, side, w // side, channels).mean((1, 3))
-            values = np.stack([reduced[0::2, 0::2], reduced[1::2, 0::2],
-                               reduced[0::2, 1::2], reduced[1::2, 1::2]], 2).reshape(-1, 4 * channels)
+            values = np.stack([reduced[0::2, 0::2], reduced[0::2, 1::2],
+                               reduced[1::2, 0::2], reduced[1::2, 1::2]], 2).reshape(-1, 4 * channels)
             mip_blocks.append((side, values))
             side *= 2
+    # train the codebook over the blocks in their stored (decode) order; the mip-level
+    # patterns are appended so the shared codebook can represent reduced levels too.
     training = np.concatenate([blocks] + [values for _, values in mip_blocks]) if mips else blocks
     rng = np.random.default_rng(0)
     nbook = (16 if w <= 16 else 32 if w <= 32 else 128 if w <= 64 else 256) if small else 256
