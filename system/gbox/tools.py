@@ -469,7 +469,15 @@ def _save_previous_game(ad, game: dict, sid: str, ctx) -> dict:
     """
     kind = getattr(ad, "name", "")
     if getattr(ad, "checkpoint_state", None) in ("path", "dir") or not kind or kind in ("retroarch", "dolphin"):
-        return state_transfer(StateXIn(session_id=sid, op="snapshot"), ctx)["result"]
+        try:
+            return state_transfer(StateXIn(session_id=sid, op="snapshot"), ctx)["result"]
+        except KeyError as exc:
+            # A KeyError here is a missing save_state primitive, not a failed save: eden/citron advertise a checkpoint
+            # path but have no snapshot to take. The caller treats this as a capability gap and switches games without
+            # a checkpoint - refusing every launch after a Switch title was the "previous game could not be saved"
+            # ticket class (2026-11-05, blocked RE5 -> RE6/RE5 switches repeatedly).
+            reason = f"{kind or 'this emulator'} has no save_state primitive ({exc})"
+            return {"artifact": None, "save_state": "unsupported", "reason": reason}
     save = getattr(ad, "save_state", None)
     if save is None:
         raise Unsupported(f"{kind} does not support save_state")
