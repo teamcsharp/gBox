@@ -772,3 +772,23 @@ difference is inside the emulator's input plumbing on this host, not in gBox's k
 (uinput), whose header says xdotool/XTEST "has no focused window to land on" for emulators that read a real device.
 That is also the honest reason the RE4 anchor (`module+0xc25d78`) still reads as zeros: no input, no round, and the
 global only exists once gameplay does.
+
+## Round 102 (2026-11-06): three input paths tried, none reaches citron
+
+| path | result |
+|---|---|
+| XTEST to the focused window (`xdotool key`, window activated first) | frame unchanged (`diff 0.04-0.25`) |
+| XTEST targeted at the window (`xdotool key --window <id>`) | unchanged (`0.38`) |
+| a real **uinput keyboard** (evdev device, so SDL cannot dismiss it as synthetic) | unchanged (`0.26`) |
+
+The uinput device itself was created successfully - the first attempts failed with EINVAL because `uinput_user_dev`
+must be its full size (80 + 8 + 4 + 4*(64*4) bytes with the abs arrays); after fixing that the kernel accepted it.
+
+Window survey on citron's display `:100`: the Qt shell is `1280x720` ("citron Nightly | ... | resident evil 4"), the
+render surface is also `1280x720`, and the several `citron-neo: The switch fell off` children are `1x1`/`853x1`/`853x24`
+- none of them receive key events, and neither does the 1280x720 pair.
+
+So citron on this host accepts no keyboard input from outside: not synthetic X events, not a real evdev device. The
+next thing to inspect is the emulator's own video/input backend for this launch (`SDL_VIDEODRIVER` in its environment,
+and whether Qt/SDL sets its "active" state without a window manager on the Xvfb display) rather than gBox's key path,
+which is proven on eden.
