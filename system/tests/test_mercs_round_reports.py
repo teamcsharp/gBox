@@ -58,7 +58,7 @@ def test_exact_round_deduplicates_report_and_request_atomically(evidence):
     assert e.runner.materialize(doc)['request_id']==first['request_id']
     requests=e.store.all('request')
     assert len(requests)==1
-    assert requests[0]['context']['required_inference_node']=='sparkDeux'
+    assert requests[0]['context']['required_inference_node']=='lilspark2'
     assert requests[0]['context']['read_only'] is True
     assert first['report']['atlas']['rounds'][0]['reviewer'].endswith('id='+RID)
     assert first['report']['metrics']['damage']['player_damage_events']==1
@@ -207,7 +207,7 @@ def test_real_execution_ack_and_exact_response_close_analysis_only(evidence):
                    '1970-01-01T00:16:40+00:00','1970-01-01T00:16:41+00:00',None))
     response=json.dumps({'schema':'gbox.mercs.analysis/1','report_id':doc['id'],'round_id':RID,
         'summary':'The run had two measured stalls.','findings':['Three time bonuses remained.'],'proposals':[]})
-    item={'job_id':job,'dispatch_state':'finished','inference_node':'sparkDeux','last_dispatched':1000.,
+    item={'job_id':job,'dispatch_state':'finished','inference_node':'lilspark2','last_dispatched':1000.,
           'report_run':execution,'final_report':response,'route':{'provider':'gbox-sparkDeux','model':'configured'}}
     queue={'items':{'inbox:'+doc['request_id']:item}}
     updated=e.runner.reconcile(doc,queue)
@@ -221,7 +221,7 @@ def test_real_execution_ack_and_exact_response_close_analysis_only(evidence):
 
 def test_analysis_response_from_previous_execution_cannot_complete_new_attempt(evidence):
     e=evidence;doc=e.runner.materialize(e.runner.ingest(TITLE,e.record()))
-    item={'job_id':'f'*12,'dispatch_state':'queued','inference_node':'sparkDeux','last_dispatched':2000.,
+    item={'job_id':'f'*12,'dispatch_state':'queued','inference_node':'lilspark2','last_dispatched':2000.,
           'report_run':'old','final_report':'Earlier response'}
     updated=e.runner.reconcile(doc,{'items':{'inbox:'+doc['request_id']:item}})
     assert not updated.get('analysis_validated') and e.store.get('request',doc['request_id'])['status']=='open'
@@ -255,7 +255,7 @@ def test_report_routes_are_authenticated_and_send_no_job(evidence):
     before=e.store.all('job')
     assert client.get('/api/mercs/round-reports').status_code==401
     result=client.get('/api/mercs/round-reports',headers={'authorization':'Bearer fixture'}).json()
-    assert result['target']=='sparkDeux' and len(result['reports'])==1
+    assert result['target']=='lilspark2' and len(result['reports'])==1
     assert e.store.all('job')==before
 
 
@@ -302,7 +302,7 @@ def switch_round(tmp_path, title, extra=None, outcome='completed'):
 
 
 @pytest.mark.parametrize('title', sorted(SWITCH_GAMES))
-def test_switch_solo_round_without_an_atlas_queues_its_sparkdeux_analysis(tmp_path, monkeypatch, title):
+def test_switch_solo_round_without_an_atlas_queues_its_lilspark2_analysis(tmp_path, monkeypatch, title):
     monkeypatch.setenv('GBOX_HERMES_HOME', str(tmp_path/'hermes'))
     store, runner = switch_round(tmp_path, title)
     assert runner.scan() == 1                                     # the scanner reads mercs/curriculum/<title>
@@ -319,7 +319,7 @@ def test_switch_solo_round_without_an_atlas_queues_its_sparkdeux_analysis(tmp_pa
     assert report['metrics']['survival']['round_heals'] == 1 and report['metrics']['damage']['player_damage_events'] == 28
     assert len(R.encoded(report).encode()) <= R.MAX_REPORT
     request = store.get('request', doc['request_id'])
-    assert request['context']['required_inference_node'] == 'sparkDeux' and request['context']['game_id'] == SWITCH_GAMES[title]
+    assert request['context']['required_inference_node'] == 'lilspark2' and request['context']['game_id'] == SWITCH_GAMES[title]
     assert 'round_holds' in request['body'] and 'no navigation atlas' in request['body']
     assert 'mine-retreat' not in request['body']
 

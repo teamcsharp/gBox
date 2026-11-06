@@ -13,6 +13,7 @@ import math
 from pathlib import Path
 import re
 import sqlite3
+import time
 import threading
 import time
 from urllib.parse import urlencode
@@ -80,6 +81,52 @@ ENEMY_SUMMARY_MAX = 600
 INCIDENT_METRICS = {'damage': ('player_damage_events', 'hits_taken'),
                     'aim': ('misses',),
                     'survival': ('round_deaths', 'round_dying')}
+
+
+def reconcile_states(store, now: float | None = None) -> dict:
+    """Mark reports whose analysis ticket has finished, so a report's state tells the truth.
+
+    Measured 2026-11-06: 1,848 reports still read `queued_for_hermes` while their ticket was already `done` (only 2 were
+    genuinely open). The report's state was written when the ticket was opened and never updated when the analysis
+    ended, so any count of "queued" reports overstated the backlog by ~1,850 and a report could not be told apart from
+    one still awaiting analysis. This walks the reports that claim to be queued and settles them against their ticket:
+    `analysed` when the ticket is done, `analysing` when it is in progress, left alone when it is still open.
+    """
+    now = time.time() if now is None else now
+    db = store.db
+    tickets: dict[str, dict] = {}
+    for (body,) in db.execute("SELECT body FROM docs WHERE kind='request'").fetchall():
+        try:
+            document = json.loads(body)
+        except (TypeError, ValueError):
+            continue
+        if document.get('source') != 'mercs_round_analysis':
+            continue
+        linked = (document.get('context') or {}).get('mercs_round_report_id')
+        if linked:
+            tickets[linked] = document
+    counts = {'analysed': 0, 'analysing': 0, 'unchanged': 0}
+    rows = db.execute("SELECT id, body FROM docs WHERE kind=?", (KIND,)).fetchall()
+    for report_id, body in rows:
+        try:
+            report = json.loads(body)
+        except (TypeError, ValueError):
+            continue
+        if report.get('state') != 'queued_for_hermes':
+            continue
+        ticket = tickets.get(report_id) or {}
+        status = str(ticket.get('status') or '')
+        if status == 'done':
+            report.update(state='analysed', analysis_status='analysis_ended', analysed=now)
+        elif status == 'in_progress':
+            report.update(state='analysing')
+        else:
+            counts['unchanged'] += 1
+            continue
+        db.execute('UPDATE docs SET body=? WHERE kind=? AND id=?', (encoded(report), KIND, report_id))
+        counts['analysed' if status == 'done' else 'analysing'] += 1
+    db.commit()
+    return counts
 
 
 def has_incident(report) -> bool:
@@ -429,6 +476,13 @@ class Reports:
                     current.update(state='recorded_no_dispatch', analysis_status='not_requested', reason=reason)
                 self.store.db.execute('UPDATE docs SET body=? WHERE kind=? AND id=?', (encoded(current), KIND, doc['id']))
                 self.store.db.commit()
+                # Settle reports whose analysis has finished since they were queued: without this the state stayed
+                # `queued_for_hermes` forever (1,848 did), so a report could not be told apart from one still waiting.
+                # Cheap enough per round: it only reads the analysis tickets and rewrites the queued reports.
+                try:
+                    reconcile_states(self.store, now)
+                except Exception:                                            # noqa: BLE001 - never fail a report
+                    pass
                 return current
             except BaseException:
                 self.store.db.rollback(); raise
