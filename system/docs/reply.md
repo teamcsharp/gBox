@@ -274,3 +274,61 @@ Do these in order:
 3. Start step 4 in section 5, and carry on through step 10. The operator's goals are in section 4.
 
 Write your progress below this line in this file, so the operator can read it when they are back.
+
+---
+
+## Agent progress, 2026-11-06 10:05
+
+### 1. The rotation reached `playing` - confirmed
+
+```
+adapter eden | game 52d15709be0fda1a (RE5 Switch No Mercy) | mod cast-inverted
+phase "playing" | boot_failures []
+```
+on session `d4890e46daa040ae-9d64a8f6b4eb435f`, before I took the Spark for step 4.
+
+### 2. Section 2 cleared
+
+**A. Config.** Committed `714a340d`: `gbox.toml` now says `switch_linux_emulator = "auto"` with an accurate comment, and
+`mercmode-switch-only.md` no longer claims the config forces Eden. Your `switch_linux_kind` correction is in it.
+**Verified live rather than assumed:** I booted RE4 and it came up on **citron** (`270a15eb98dab4d7`, session
+`d4890e46daa040ae-b68e508dca014d2e`), which is the deployed behaviour you measured. So RE4 is playable on lilspark and my
+earlier "RE4 cannot run here" claim is withdrawn.
+
+**B. `cast-inverted` record.** Reconciled through `switch_mods` `revert` for every edit of mine (-004, -006, -007, -012), not
+by hand. Now: `files` and `file_changes` list no `uWp06.arc`, the disk has no `uWp06.arc`, and `op=audit` mentions it nowhere.
+No round was restarted for it.
+
+**C. mercmode-switch-only.md rewritten** with the real cause: the **idle demo**, jobs `f896f09e`/`b88b8469`/`ccf18a2a`/
+`8b8e8fa5`/`d0f3085d`, actor `autoplay-screensaver`, `launch.mercmode: null`. It also carries the pause order
+(enabled=true **before** stopping the test session) and the reconcile-through-the-tool rule.
+
+### 3. The bot's input contract, as asked
+
+Turning already used `TURN = {"left": "lleft", "right": "lright"}` and never the d-pad. **The fire was wrong** and is fixed
+(`d98c7fbf`): `tick` held AIM and FIRE together, so the trigger never released. It now returns
+`{"hold": {AIM_BTN}, "tap": FIRE_BTN}` - the engine sends a tap as down+up before applying the hold, which also gives the
+rapid fire the operator wants to watch. `tests/test_re4_switch_brain.py` (3 passed) pins: shoulder buttons turn, never a
+d-pad key; fire taps FIRE and holds AIM; nothing fires at 40 m.
+
+### 4. Step 4 begun - the player pointer
+
+Took the Spark (MercMode off, RE5 stopped, RE4 launched on lilspark; `sid.txt` written for the walker). First measurements,
+all through the `read_memory` tool against a real session:
+
+```
+module base 0x3ca7c04000        signature match  (the base the driver recorded)
+base+0xb25d88                  -> 0x3ca8d3f398   a valid guest pointer
+that object +0x3c2 (health)    -> 0                  expected: this is the MENU, no round yet
+that object +0x60 (3 floats)   -> 0, 0, 0           ditto
+```
+
+So the slot your doc named resolves on the Switch build. **What is unproven:** health and heading in a live round, whether
+those field offsets are right, and the 20 Hz read across two boots. That needs the walker to reach a round, which is the
+next thing I do.
+
+### State I am leaving
+
+- MercMode **off** (paused for step 4, under the standing permission), RE4 Switch session running on citron, no gap for the
+  demo. I will restore with enabled=true **before** stopping it.
+- No test geometry in `cast-inverted`; my test builds are `mtf-mine-test` and `mtf-player-test`.
