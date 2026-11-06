@@ -58,6 +58,42 @@ the writer needs. For version 211 the record size is larger than the documented 
 more than 15 x 48 bytes), so the next step is to measure the record size from `meshes_offset` to the next offset and
 decode the fields against the document rather than by guessing.
 
+## Where the decode actually got to
+
+**Header: decoded and validated.** For version 211 the counts are u32 and the offsets u64, and the seven offsets are
+`bones, groups, materials, meshes, vertex_buffer, index_buffer, end`. Checked against three models, every region matches
+its documented content exactly:
+
+| model | groups | materials | meshes | vertex buffer | index buffer |
+|---|---|---|---|---|---|
+| wp0600 | 64 B = 2 × 32 (doc `Group` is 32 B) | 1152 B = 9 × 128 | 3000 B = 15 × 200 | 25764 B = `vertex_buffer_size` | 4636 B ≈ 2 × 2318 |
+| wp0a00 | 32 B = 1 × 32 | 256 B | 800 B = 4 × 200 | 6592 B = `vertex_buffer_size` | 1060 B = 2 × 530 |
+| md0024 | - | - | 200 B = 1 × 200 | 224 B | 20 B = 2 × 10 |
+
+**A mesh record's first fields: confirmed.** On `md0024` (one mesh, 8 vertices, 224 B of vertex data = 8 x 28) the record
+reads exactly:
+
+```
++0x00 u16  0xffff
++0x02 u16  vertex_count   8
++0x05 u8   material_index
++0x06 u8   level_of_detail
++0x0a u8   vertex_stride  28          <- 224 / 8, exact
++0x18 u32  vertex_format  0x49b4f029  <- the documented 0x29F0B449 (stride 28), byte-swapped on Switch
++0x20 u32  face_count
++0x5c ...  bounding sphere and box as floats
+```
+
+and `md001f_01` (one mesh, 1139 vertices, stride 24) validates the same way, its single record summing to the header's
+`vertex_count` exactly.
+
+**Still open: the record's size for models with several meshes.** With a fixed 200-byte stride the first record parses
+and every later one is garbage (wp0600: 310,669 vertices summed against a header of 1,567; per-LOD totals are nonsense).
+No shift (0..38 bytes) and no other record size makes the sums agree, so for multi-mesh models the records are **not
+fixed-stride** - most likely each record carries a variable-length sub-table (the document's `meshes_unk_buffer` is
+`sum(vertex_group_count) + 4`, which implies per-record variable data). That is the one remaining structure between
+this and a writer.
+
 ## Why this matters for the objective
 
 The writer's plan changes from "reverse engineer the geometry" to "implement a documented layout":
