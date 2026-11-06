@@ -94,6 +94,22 @@ fixed-stride** - most likely each record carries a variable-length sub-table (th
 `sum(vertex_group_count) + 4`, which implies per-record variable data). That is the one remaining structure between
 this and a writer.
 
+## The skeleton block: located, measured, internals not decoded
+
+`groups_offset - bones_offset == 256 + bone_count * 152` exactly on 12 of 12 models (wp0600 712 with 3 bones, wp0a00 560
+with 2, em6c00 4512 with 28, evf0000 13328 with 86). So the block is a 256-byte bone map followed by 152-byte bone
+records, and `ModFile.bone_table()` returns them raw with a `consistent` flag.
+
+What is **not** decoded is a record's contents. Ruled out by measurement, so they are not worth retrying:
+
+* the documented version-156 `Bone` (16 bytes plus two 64-byte matrices = 144) cannot describe a 152-byte record;
+* reading the documented parent byte at +1 gives values past the bone count on wp0600 (255, 0, 9 for 3 bones);
+* a 4x4 matrix at +16, +24, +32, +40 or +48 is orthonormal on only about 5% of the 867 bones sampled - all five offsets
+  are wrong, even though one model's dump happens to show identity diagonals at +48 and +112.
+
+The one positive clue: the first bone's first byte is 0xFF for the root on some models, which the document calls the root
+marker - so the family is right and the detail is not. The records stay raw rather than mislabelled.
+
 ## Why this matters for the objective
 
 The writer's plan changes from "reverse engineer the geometry" to "implement a documented layout":
