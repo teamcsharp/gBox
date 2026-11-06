@@ -30,6 +30,15 @@ class _FakeEnemies:
         return path
 
 
+class _Template:
+    """Just enough of a model BIN for the guard and the retarget: a skeleton with a humanoid shape."""
+    bones = [(0, 0xFF), (1, 0), (2, 1), (3, 2), (4, 3)]
+
+    @staticmethod
+    def bone_world():
+        return {0: (0.0, 0.0, 0.0), 1: (0.0, 1.0, 0.0), 2: (0.0, 2.0, 0.0), 3: (0.0, 3.0, 0.0), 4: (0.0, 4.0, 0.0)}
+
+
 class _FakeModels:
     class ModelPack:
         def __init__(self, data):
@@ -37,7 +46,7 @@ class _FakeModels:
 
     @staticmethod
     def bin_read(data):
-        return data
+        return _Template()
 
 
 class _FakeAttachments:

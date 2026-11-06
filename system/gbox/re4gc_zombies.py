@@ -18,10 +18,11 @@ Everything is reported per pack, so a pack that cannot be fitted says so with it
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 # module level, so a test can patch these three names on this module
-from . import attachments, re4gc_enemies, re4gc_models
+from . import attachments, re4gc_enemies, re4gc_models, rig_roles
 
 PACKS = ("em10", "em11", "em12", "em13", "em14", "em15", "em16", "em17", "em19", "em1a", "em1b", "em1c",
          "em1d", "em1e", "em1f", "em20", "em46", "em4c", "em4d", "em4f", "em50", "em56",
@@ -112,6 +113,61 @@ def body_candidates(pack, enemies=None) -> list[int]:
             scored.append((len(bones), index))
     scored.sort(reverse=True)
     return [index for _bones, index in scored]
+
+
+def target_roles(template) -> dict:
+    """A `roles` map for THIS skeleton, keyed by its own bone ids.
+
+    `re4gc_enemies.GANADO_ROLES` is written against the ganado bone numbering ("pelvis": 17, ...). Some enemy files carry a
+    different numbering or fewer bones, and the retarget then raises KeyError on the first role that does not exist. The roles
+    can be read off the skeleton itself the same way `gbox.rig_roles` reads a source rig: limb pairs first, then the spine.
+    Returns {} when the skeleton has no recognisable humanoid shape, so the caller can report that instead of crashing.
+    """
+    bones = getattr(template, "bones", None) or []
+    if not bones:
+        return {}
+    try:
+        world = template.bone_world()
+    except Exception:
+        return {}
+    joints, ids, parent = [], [], []
+    index_by_id = {}
+    for index, bone in enumerate(bones):
+        bone_id = bone[0]
+        ids.append(bone_id)
+        index_by_id[bone_id] = index
+        joints.append(tuple(float(v) for v in world[bone_id]))
+    for bone in bones:
+        par = bone[1]
+        parent.append(index_by_id.get(par, -1) if par != 0xFF else -1)
+    derived = rig_roles.derive(joints, parent)
+    mapping = {role: ids[index] for role, index in derived.items() if 0 <= index < len(ids)}
+    # the retargeter's own map names the root BOTH "pelvis" and "hip"; rig_roles calls it "hip", so alias it
+    if "hip" in mapping and "pelvis" not in mapping:
+        mapping["pelvis"] = mapping["hip"]
+    return mapping
+
+
+def degenerate(template) -> str:
+    """Why this skeleton cannot be retargeted onto, or '' when it is usable."""
+    bones = getattr(template, "bones", None) or []
+    if len(bones) < 4:
+        return f"skeleton has {len(bones)} bones"
+    try:
+        world = template.bone_world()
+    except Exception as exc:
+        return f"bone world failed: {type(exc).__name__}"
+    heights = [float(world[bone[0]][1]) for bone in bones]
+    span = max(heights) - min(heights)
+    if not (span > 1e-3):
+        return "skeleton has no height (all bones at one level)"
+    # a bone at NaN/inf poisons the retarget's own scale (it divides by the model's height), and the failure surfaces much
+    # later as "cannot convert float NaN to integer" during vertex packing, so it is caught here instead
+    for bone in bones:
+        x, y, z = (float(v) for v in world[bone[0]])
+        if not all(map(math.isfinite, (x, y, z))):
+            return f"bone {bone[0]} has a non-finite position"
+    return ""
 
 
 def attempts(primitive_counts):
@@ -211,7 +267,21 @@ def swap_ganados(iso, model, out_dir, packs=None, *, rig=None, log=print, swap=N
                 continue
             body = slots[0]
             template = R.bin_read(pack.items[body][1])
-            prims = enemies.retarget(rig, template)
+            why = degenerate(template)
+            if why:
+                report[stem] = {"fitted": False, "reason": f"unusable skeleton: {why}"}
+                log(f"{stem}: unusable skeleton ({why})")
+                continue
+            try:
+                prims = enemies.retarget(rig, template)
+            except (KeyError, ValueError, IndexError):
+                # this skeleton does not carry the ganado bone numbering: derive the roles from the skeleton itself
+                roles = target_roles(template)
+                if len(roles) < 10:
+                    report[stem] = {"fitted": False, "reason": f"skeleton roles: only {len(roles)} found"}
+                    log(f"{stem}: only {len(roles)} roles on its own skeleton")
+                    continue
+                prims = enemies.retarget(rig, template, roles=roles)
         except Exception as exc:
             report[stem] = {"fitted": False, "reason": f"{type(exc).__name__}: {str(exc)[:120]}"}
             log(f"{stem}: {type(exc).__name__}")

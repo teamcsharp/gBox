@@ -157,3 +157,37 @@ geometry already; it is used for the SOURCE rig today, not the target). `em31`'s
 by a zero height and produces NaN - which needs a guard before the swap, not a retry.
 
 That is the remaining work for "every enemy is this character": a target-side role map and a degenerate-skeleton guard.
+## Target-side roles and an unusable-skeleton guard: the last twelve, named
+
+`target_roles(template)` derives the role map from the pack's OWN skeleton (limb pairs first, then the spine) and aliases the
+root to `pelvis`, because the retargeter's map names the root both `pelvis` and `hip`. `degenerate(template)` refuses a skeleton
+with no height, fewer than four bones, or a non-finite bone position - the case that used to surface much later as "cannot
+convert float NaN to integer" during vertex packing.
+
+The twelve that did not fit now each say why:
+
+```
+em23  grows: best 416,000 vs 410,240     em28  grows: best 229,536 vs 228,416     <- near misses
+em29  KeyError: 'r_foot'                 em3d  KeyError: 'r_foot'                <- a derived map can lack a foot
+em24/em2e/em2a  skeleton roles: 3 found  em27 7   em3a 8   em3b 9                  <- not humanoid by geometry
+em2a  unusable skeleton: 3 bones         em3e  unusable skeleton: 2 bones         <- correctly refused now
+em31  swap ValueError: NaN to integer                                             <- normals, not bones
+```
+
+Four groups, each with a different fix: (1) two near misses that need a smaller build than the current thinnest rung; (2) two
+that need a missing role aliased rather than required; (3) five whose skeletons are not humanoid, so a rigid per-limb retarget is
+the wrong tool for them; (4) one whose NaN comes from zero-length vertex normals, which is a guard in the packing step rather
+than in the skeleton check.
+
+Seventeen tests pass across the four modules touched. The service was not restarted this round, so the running control plane
+still has the previous revision.
+
+## Coverage now
+
+```
+48 of 60 enemy packs fitted and verified through the app
+ 2 near misses (em23, em28) with a named cause
+ 2 missing-role cases (em29, em3d)
+ 5 non-humanoid skeletons (em24, em27, em2a, em2e, em3a, em3b, em3e)
+ 1 NaN in vertex normals (em31)
+```
