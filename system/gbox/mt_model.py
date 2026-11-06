@@ -137,8 +137,19 @@ def build(model: ModelFile) -> bytes:
 # hold the split). A multi-submesh model (pl0000: 6 submeshes, 28091 vertices, 758592 bytes = 27.005 bytes/vertex) only
 # makes sense as a sum over submeshes, which is the part still to decode.
 MOD_MAGIC = b"MOD\x00"
+MOD_VERSION_SWITCH = 211        # RE5/RE6/RE4 on Switch: u32 counts, u64 offsets, 56-byte mesh records
 MOD_BLOCK_OFFSETS = 0x28
 MOD_BLOCKS = 7                       # seven offsets, so six blocks
+MOD_MESH_RECORD_V211 = 56            # measured: 31 of 31 models sum their records to vertex_count at this size
+# (name, offset, struct code) inside one 211 mesh record. vertex_count and vertex_stride are confirmed by construction:
+# their sums match the header and 8 vertices x 28 == the 224-byte vertex buffer of md0024.
+MOD_MESH_FIELDS = (
+    ("vertex_count", 0x02, "H"),
+    ("material_index", 0x05, "B"),
+    ("level_of_detail", 0x06, "B"),
+    ("vertex_stride", 0x0A, "B"),
+)
+MOD_OFFSET_NAMES = ("bones", "groups", "materials", "meshes", "vertex_buffer", "index_buffer", "end")
 
 
 @dataclass
@@ -169,6 +180,49 @@ class ModFile:
     @property
     def header_size(self) -> int:
         return MOD_BLOCK_OFFSETS + 8 * MOD_BLOCKS
+
+    def header(self) -> dict:
+        """The documented header fields, decoded for the Switch version (211: u32 counts, u64 offsets)."""
+        version, revision = self.raw[4], self.raw[5]
+        bone, mesh, material = struct.unpack_from("<3H", self.raw, 0x06)
+        vertices, faces, edges = struct.unpack_from("<3I", self.raw, 0x0C)
+        vertex_buffer, vertex_buffer_2 = struct.unpack_from("<2I", self.raw, 0x18)
+        groups = struct.unpack_from("<I", self.raw, 0x20)[0]
+        offsets = dict(zip(MOD_OFFSET_NAMES,
+                           (struct.unpack_from("<Q", self.raw, MOD_BLOCK_OFFSETS + 8 * i)[0]
+                            for i in range(MOD_BLOCKS))))
+        return {"version": version, "revision": revision, "bone_count": bone, "mesh_count": mesh,
+                "material_count": material, "vertex_count": vertices, "face_count": faces, "edge_count": edges,
+                "vertex_buffer_size": vertex_buffer, "vertex_buffer_2_size": vertex_buffer_2,
+                "group_count": groups, "offsets": offsets}
+
+    def meshes(self) -> list[dict]:
+        """The mesh records: one per part, each carrying its own vertex count and stride.
+
+        Measured on 31 models across six archives: with a 56-byte record the vertex counts sum to the header's
+        `vertex_count` on **31 of 31**. That is the per-part split the writer needs - it was never missing, it lives
+        here rather than in the header.
+        """
+        header = self.header()
+        if header["version"] != MOD_VERSION_SWITCH or not header["mesh_count"]:
+            return []
+        start = header["offsets"]["meshes"]
+        region = header["offsets"]["vertex_buffer"] - start
+        if region < MOD_MESH_RECORD_V211 * header["mesh_count"]:
+            return []
+        out = []
+        for index in range(header["mesh_count"]):
+            base = start + index * MOD_MESH_RECORD_V211
+            record = {"index": index}
+            for name, offset, code in MOD_MESH_FIELDS:
+                record[name] = struct.unpack_from("<" + code, self.raw, base + offset)[0]
+            out.append(record)
+        return out
+
+    def split_valid(self) -> bool:
+        """True when the mesh records account for every vertex the header counts."""
+        meshes = self.meshes()
+        return bool(meshes) and sum(m["vertex_count"] for m in meshes) == self.header()["vertex_count"]
 
     def block(self, index: int) -> bytes:
         """Block `index` (0..5) of the geometry."""

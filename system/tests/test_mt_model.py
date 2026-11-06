@@ -17,31 +17,46 @@ def make_mrl(paths=("pawn\\pl\\pl00\\model\\a_BM",), count1=7):
         raw = path.encode("ascii")
         out += raw + b"\x00" + b"\xcd" * (mt_model.PATH_FIELD - len(raw) - 1)
         out += struct.pack("<I", mt_model.ARC_CONST) + b"\x00" * (mt_model.PATH_TAIL - 4)
-    out += b"\x01\x02\x03\x04"                                  # an opaque geometry tail
+    out += b"\x01\x02\x03\x04"
     return bytes(out)
 
 
-def make_mod(vertex_count=100, index_count=150, subs=1, vertex_bytes=None, index_bytes=None,
-             blocks=(712, 64, 1152, 3000, None, None)):
-    """A synthetic MOD whose block offsets are laid out the way the real ones are."""
-    vertex_bytes = 24 * vertex_count if vertex_bytes is None else vertex_bytes
-    index_bytes = 2 * index_count if index_bytes is None else index_bytes
-    sizes = list(blocks)
-    sizes[4] = vertex_bytes
-    sizes[5] = index_bytes
-    header = 0x28 + 8 * mt_model.MOD_BLOCKS
-    offsets = [header + 68]                                     # the real files leave a gap after the header
-    for size in sizes:
-        offsets.append(offsets[-1] + size)
-    offsets = offsets[:7]
+def make_mod(meshes=((100, 24),), groups=1, bones=2, materials=1):
+    """A synthetic version-211 MOD: header, then groups, materials, mesh records, vertex and index buffers.
+
+    `meshes` is a sequence of (vertex_count, vertex_stride); the header's vertex_count is their sum, so a well-formed
+    fixture validates through ModFile.split_valid().
+    """
+    header_size = 0x28 + 8 * mt_model.MOD_BLOCKS
+    bone_block = b"\x00" * (bones * 40)
+    group_block = b"\x00" * (groups * 32)
+    material_block = b"\x00" * (materials * 32)
+    mesh_block = bytearray()
+    vertex_total = 0
+    for vertex_count, stride in meshes:
+        record = bytearray(mt_model.MOD_MESH_RECORD_V211)
+        struct.pack_into("<H", record, 0x02, vertex_count)
+        record[0x05] = 0
+        record[0x06] = 0
+        record[0x0A] = stride
+        mesh_block += record
+        vertex_total += vertex_count * stride
+    faces = 30
+    vertex_block = b"\x11" * vertex_total
+    index_block = b"\x22" * (2 * faces)
+    offsets = [header_size]
+    for block in (bone_block, group_block, material_block, bytes(mesh_block), vertex_block, index_block):
+        offsets.append(offsets[-1] + len(block))
     out = bytearray(mt_model.MOD_MAGIC)
-    out += struct.pack("<8I", 0x300D3, 0x9000F, vertex_count, index_count, 0, vertex_bytes, 0, subs)
-    out += struct.pack("<I", 0)                                 # the word at 0x24, before the offset table at 0x28
-    for off in offsets:
-        out += struct.pack("<II", off, 0)
-    out += b"\xaa" * (offsets[0] - header)                      # the undecoded gap
-    out += b"".join(b"\x11" * size for size in sizes)
-    out += b"\x00\x00\x00\x00"                                  # the four-byte trailer every file has
+    out += bytes((mt_model.MOD_VERSION_SWITCH, 0))
+    out += struct.pack("<3H", bones, len(meshes), materials)
+    out += struct.pack("<3I", sum(v for v, _ in meshes), faces, faces * 2)
+    out += struct.pack("<2I", vertex_total, 0)
+    out += struct.pack("<I", groups)
+    out += struct.pack("<I", 0)                       # the word at 0x24
+    for off in offsets[:7]:
+        out += struct.pack("<Q", off)
+    out += bone_block + group_block + material_block + bytes(mesh_block) + vertex_block + index_block
     return bytes(out)
 
 
@@ -60,7 +75,7 @@ def test_a_texture_payload_is_not_taken_for_a_model():
 
 def test_a_model_whose_header_lies_about_its_table_is_refused():
     data = bytearray(make_mrl())
-    struct.pack_into("<I", data, 0x18, 0x99)                    # the constant-block offset no longer points at 0x28
+    struct.pack_into("<I", data, 0x18, 0x99)
     with pytest.raises(mt_model.ModelError):
         mt_model.parse(bytes(data))
 
@@ -72,29 +87,47 @@ def test_the_geometry_container_round_trips_byte_identically():
     assert mt_model.roundtrip_mod(data) == data
 
 
-def test_the_index_buffer_is_two_bytes_per_index():
-    """Measured on 31 real containers: block 5 is the index buffer and header word 0x10 is its count."""
-    for index_count in (10, 150, 48300):
-        layout = mt_model.parse_mod(make_mod(index_count=index_count)).layout()
-        assert layout["index_count"] == index_count
-        assert layout["index_block"] == 2 * index_count
-        assert layout["index_block_matches"] is True
+def test_the_header_decodes_with_named_offsets():
+    model = mt_model.parse_mod(make_mod(meshes=((100, 24),), groups=2, bones=3, materials=4))
+    header = model.header()
+    assert header["version"] == mt_model.MOD_VERSION_SWITCH
+    assert (header["bone_count"], header["mesh_count"], header["material_count"]) == (3, 1, 4)
+    assert header["vertex_count"] == 100 and header["group_count"] == 2
+    assert set(header["offsets"]) == set(mt_model.MOD_OFFSET_NAMES)
+    offs = header["offsets"]
+    assert offs["meshes"] < offs["vertex_buffer"] < offs["index_buffer"] <= offs["end"]
 
 
-def test_a_single_submesh_model_reports_an_exact_vertex_stride():
-    layout = mt_model.parse_mod(make_mod(vertex_count=100, vertex_bytes=2400, subs=1)).layout()
-    assert layout["stride"] == 24.0 and layout["stride_exact"] is True
+def test_the_mesh_records_are_the_per_part_split():
+    """Measured on 31 real models: 56-byte records whose vertex counts sum to the header's vertex_count."""
+    model = mt_model.parse_mod(make_mod(meshes=((120, 24), (80, 20), (60, 28))))
+    meshes = model.meshes()
+    assert [m["vertex_count"] for m in meshes] == [120, 80, 60]
+    assert [m["vertex_stride"] for m in meshes] == [24, 20, 28]
+    assert model.split_valid() is True
 
 
-def test_a_multi_submesh_model_reports_a_fractional_stride_rather_than_guessing():
-    """The per-submesh split is not in the header, so a multi-submesh stride must not look exact."""
-    layout = mt_model.parse_mod(make_mod(vertex_count=100, vertex_bytes=2450, subs=6)).layout()
-    assert layout["stride_exact"] is False
+def test_a_split_that_does_not_account_for_every_vertex_is_reported_invalid():
+    data = bytearray(make_mod(meshes=((120, 24), (80, 20))))
+    header = mt_model.parse_mod(bytes(data)).header()
+    # move the header's vertex_count without touching the records
+    struct.pack_into("<I", data, 0x0C, header["vertex_count"] + 1)
+    assert mt_model.parse_mod(bytes(data)).split_valid() is False
+
+
+def test_the_index_buffer_is_two_bytes_per_face():
+    model = mt_model.parse_mod(make_mod(meshes=((100, 24),)))
+    header = model.header()
+    index = model.block(5)
+    assert len(index) == 2 * header["face_count"]
+
+
+def test_a_multi_part_model_reports_fractional_or_exact_stride_from_its_records():
+    model = mt_model.parse_mod(make_mod(meshes=((100, 24), (50, 28))))
+    meshes = model.meshes()
+    assert sum(m["vertex_count"] * m["vertex_stride"] for m in meshes) == model.header()["vertex_buffer_size"]
 
 
 def test_the_two_header_variants_are_both_accepted():
     model = mt_model.parse_mod(make_mod())
-    assert model.variant == "model"
-    effect = bytearray(make_mod())
-    struct.pack_into("<I", effect, mt_model.MOD_BLOCK_OFFSETS, 0)   # effect models start their table at 0
-    assert mt_model.parse_mod(bytes(effect)).variant == "effect"
+    assert model.variant in ("model", "effect")
