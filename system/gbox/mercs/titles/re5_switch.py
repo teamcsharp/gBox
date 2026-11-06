@@ -158,7 +158,6 @@ def character_count() -> int:
 # (CYCLE_FILE). A target the cursor does not reach in CYCLE_MAX_PRESSES presses (a locked entry) is given up: the entry
 # the cursor rests on is taken. The round's stats name the stage and character; stage_coverage the counts.
 CYCLE, CYCLE_MAX_PRESSES = True, 14
-CALIBRATE_PRESSES = 40              # the one walk that discovers the character roster: enough presses to reach the end
 
 
 class StageCycle:
@@ -244,8 +243,12 @@ class StageCycle:
             stages = [i for i in range(len(STAGE_NAMES)) if i != last_s] or list(range(len(STAGE_NAMES)))
             low = min(self.stages.get(i, 0) for i in stages)
             stage = self.rng.choice([i for i in stages if self.stages.get(i, 0) == low])
-            if CHARACTER_SLOTS <= 1:                         # calibrating: one deliberate walk to the right-hand end
-                char = CHARACTER_SLOTS_MAX - 1               # the stall there teaches the true count in one visit
+            if CHARACTER_SLOTS <= 1:
+                # calibrating: walk right toward the end of the select. The target stays reachable inside one visit's
+                # press budget (a walk that never reaches its target is given up at CYCLE_MAX_PRESSES, which is what
+                # keeps a locked entry from being pressed at forever), so a long roster takes a few visits, and the
+                # wrap that teaches the true count happens on whichever visit reaches the end.
+                char = min(self.max_cursor + CYCLE_MAX_PRESSES - 2, CHARACTER_SLOTS_MAX - 1)
             else:
                 chars = [i for i in range(character_count()) if i != last_c] or list(range(character_count()))
                 char = self.rng.choice(chars)
@@ -1459,9 +1462,7 @@ def step(scr: dict) -> str | None:
         c = cycle()
         if c.where != where:
             c.where, c.presses = where, 0
-        # the calibration walk (an unknown character roster) is allowed to press on to the end of the select: the
-        # stall there is what teaches how many entries there are. A stage select, or a known roster, keeps the budget
-        budget = CYCLE_MAX_PRESSES if (where != "select_player" or CHARACTER_SLOTS > 1) else CALIBRATE_PRESSES
+        budget = CYCLE_MAX_PRESSES
         if c.presses >= budget:
             return "a"                                      # the target not reached (a locked entry): this one
     if where in CURSORED:

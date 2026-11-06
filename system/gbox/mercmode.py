@@ -47,6 +47,8 @@ SKIN_ROTATE_S = 420.0
 STALEMATE_KEYS = ('stalemate_cut', 'stalemate_cut_s')
 STALEMATE_FEATURE = 'mercmode_stalemate_cut'     # worker feature: its mercmode tool accepts the stalemate settings
 COOP_FEATURE = 'mercmode_coop_ratio'             # worker feature: split-screen launches (gbox.switch_coop) and its tool
+CAST_FEATURE = 'mercmode_cast_swap'              # worker feature: its mercmode tool takes cast_swap (inverted cast)
+SKIN_FEATURE = 'mercmode_skin_swap'              # worker feature: its mercmode tool takes skin_swap
 COOP_RATIOS = ('off', '1:1', '2:1', '3:1', '4:1', '5:1', '6:1', '8:1', '10:1', 'only')   # co-op : solo turns
 COOP_MAPS = frozenset({'010018100CD46000', '01002A000CD48000'})   # RE5 / RE6 Switch: split screen (switch_team)
 # Warm pool (operator 2026-10-24: "now that there is more ram on the spark, get the swapping of mercenary modes more

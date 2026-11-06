@@ -1888,6 +1888,8 @@ def install(app, store, config, auth, submit, workers, archive):
                        if (k!='keep_warm' or mercmode.WARM_FEATURE in features)
                        and (k not in mercmode.STALEMATE_KEYS or mercmode.STALEMATE_FEATURE in features)
                        and (k != 'coop_ratio' or mercmode.COOP_FEATURE in features)
+                       and (k != 'cast_swap' or mercmode.CAST_FEATURE in features)     # older tools forbid it
+                       and (k != 'skin_swap' or mercmode.SKIN_FEATURE in features)     # ... and these two
                        and not (k=='preferred_editions' and not v)}      # unset: never sent to a worker that lacks it
                 if dispatched:
                     relay|={'command':command,'dispatch_id':dispatched['id'],
