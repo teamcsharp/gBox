@@ -702,6 +702,10 @@ class Screensaver:
                        else f'a fresh skin swap after {int(mercmode.SKIN_ROTATE_S / 60)} min') \
                     if not run.get('mercmode_no_progress') \
                     else NO_PROGRESS.format(minutes=NO_PROGRESS_S / 60)
+                if run.get('mercmode_skin_rotate'):
+                    # a skin swap is read from the layered overlay at boot: a warm (parked, paused) game resumes with
+                    # the skin it already loaded, so this rotation closes the game and the next one boots cold
+                    return self._stop(w, run, now, why)
                 return self._park(w, run, now, why)
             if phase in ('starting', 'playing') and sid:
                 # the next title boots (and prepares its round) as soon as this one is up: after a service restart the
