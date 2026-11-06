@@ -374,12 +374,17 @@
       if(kind==='plain')
         // clothes removed for real: the character's body skin maps are painted over its clothing groups
         return api('/api/decrypt-lab/strip-clothes',{title,arc_path:slot,build:APPLY});
-      let arc=slot, from=donor;
+      let arc=slot, from=donor, extra={};
       if(kind==='to-zombie'){arc=slot;from=SWAP.slots.zombie;}
-      else if(kind==='from-cast'){arc=SWAP.slots.zombie;from=slot;}
+      else if(kind==='from-cast'){
+        // an ENEMY really can take a character's whole model: measured 2026-11-06, uEm6c.arc <- uPl00ChrisNormal.arc
+        // with the mesh and its 21 textures reached screen=playing and played a round. The reverse (the PLAYER arc
+        // taking an enemy model) built but never produced a session, so that direction stays texture-only.
+        arc=SWAP.slots.zombie;from=slot;extra={with_mesh:true,with_textures:true};
+      }
       if(!from)throw Error('That swap has no donor archive.');
       return api('/api/decrypt-lab/model-swap',{title,arc_path:arc,donor_arc:from,build:APPLY,
-        ...(retag()?{tag_follow:true}:{})});
+        ...(retag()?{tag_follow:true}:{}),...extra});
     };
     root.querySelectorAll('[data-mm-swap]').forEach(b=>b.addEventListener('click',async e=>{
       e.stopPropagation();
