@@ -953,6 +953,13 @@ def install(app, store, config, auth, tactical_store=None):
                 "entry_bytes": len(donor_entry.data),
                 "note": "the overlay applies when the title next boots (LayeredFS)"}
 
+    @app.get("/api/decrypt-lab/report-digest", dependencies=[Depends(auth)])
+    def decrypt_lab_report_digest():
+        """What the Mercenaries incident reports say, computed: outcomes per title, behaviour rates per minute, why
+        rounds did or did not open a report, and the enemies the reports have learned about."""
+        from .mercs import report_digest
+        return {"v": FORMAT, **report_digest.digest(store)}
+
     @app.get("/api/decrypt-lab/arc-layout", dependencies=[Depends(auth)])
     def decrypt_lab_arc_layout(title: str):
         """A title's arc layout: the directories its archives live in, the name groups, and its character arcs.
