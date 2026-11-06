@@ -920,6 +920,17 @@ def install(app, store, config, auth, tactical_store=None):
                 "entry_bytes": len(donor_entry.data),
                 "note": "the overlay applies when the title next boots (LayeredFS)"}
 
+    @app.get("/api/decrypt-lab/arc-layout", dependencies=[Depends(auth)])
+    def decrypt_lab_arc_layout(title: str):
+        """A title's arc layout: the directories its archives live in, the name groups, and its character arcs.
+
+        This is the step that makes the pipeline reusable per title instead of per hunt: RE5 keeps 41 whole-character
+        arcs under nativeNXx64/ImgNX/Archive, RE6 keeps 268 uPl part arcs under nativeNXx64/arc/NX, and RE4's tree has
+        no .arc files at all - each answer comes back in one call.
+        """
+        from . import skin_swap
+        return {"v": FORMAT, **skin_swap.candidates(_title_id(title))}
+
     @app.get("/api/decrypt-lab/swap-matrix", dependencies=[Depends(auth)])
     def decrypt_lab_swap_matrix(title: str):
         """Which swaps of this title's slots are actually possible: a donor moves only the maps whose tag matches.

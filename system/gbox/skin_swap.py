@@ -11,6 +11,7 @@ uPl02Jill*); everything else returns None and the round plays normally.
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -30,6 +31,32 @@ def romfs_root(title_id: str) -> Path | None:
     """The extracted RomFS tree a swap is built from, when it exists."""
     candidate = Path.home() / "gBox_alt" / "switch" / "romfs" / title_id.upper()
     return candidate if candidate.is_dir() else None
+
+
+def candidates(title_id: str) -> dict:
+    """What a title's arcs look like, so mapping a NEW title is mechanical instead of a hunt.
+
+    Every title lays its characters out differently: RE5 keeps a whole character per `uPlXX<Name><Variant>.arc`
+    (41 character-ish archives), while RE6 keeps 3,209 archives under arc/NX with only per-part arcs for heads and
+    hands (`uPl00AcHeadLeonUsa`, `uPl00HandLeftLeonUsa`) and nothing named after the body at all. This scans the
+    extracted tree and groups the names - the step that has to happen before CHARACTER_ARCS can gain a title.
+    """
+    root = romfs_root(title_id)
+    if root is None:
+        return {"title_id": str(title_id).upper(), "extracted": False, "groups": {}, "arc_dirs": [],
+                "character_arcs": [], "character_arc_count": 0}
+    dirs = sorted({p.parent for p in root.rglob("*.arc")})
+    groups: dict = {}
+    for directory in dirs:
+        for path in directory.glob("*.arc"):
+            prefix = re.match(r"[A-Za-z]+", path.stem)
+            key = (prefix.group(0)[:6] if prefix else "?") + " @ " + directory.name
+            groups[key] = groups.get(key, 0) + 1
+    characters = sorted({p.stem for d in dirs for p in d.glob("uPl*.arc")})
+    return {"title_id": str(title_id).upper(), "extracted": True,
+            "arc_dirs": [str(d.relative_to(root)) for d in dirs],
+            "groups": dict(sorted(groups.items(), key=lambda kv: -kv[1])[:20]),
+            "character_arcs": characters[:40], "character_arc_count": len(characters)}
 
 
 def model_entry(arc):
