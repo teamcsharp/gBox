@@ -408,9 +408,12 @@ def adopt_current(store, worker, session, telemetry, *, now=None):
     label=store.get('slabel',sid) or {}
     store.put('slabel',sid,label|{'session_id':sid,'owner':'agent','ts':now,
                                  'task':'MercMode: explicitly adopted solo autoplay'})
+    # the build the adopted round is already playing (a skin swap, a queued mod): carried so the panel and the API
+    # report what is on screen instead of mod: null
+    adopted_mod = ((launch.get('input') or {}).get('mod') or None)
     run={'worker':worker['name'],'worker_id':wid,'session_id':sid,'game_id':session['game_id'],
          'title':session.get('title') or TITLES[title]['name'],'phase':'playing','started':now,
-         'playing_since':now,'autoplay_job':jid,'adopted_existing_solo':True,
+         'playing_since':now,'autoplay_job':jid,'adopted_existing_solo':True,'mod':adopted_mod,
          'job':launch_id,'warm_adoption':proof['id'],
          'mercmode':{'title':title,'map_id':TITLES[title]['map_id'],'rounds_per_title':cfg['rounds_per_title']}}
     store.put(STATE,worker['name'],run)
