@@ -85,3 +85,38 @@ grows the pack - geometry is - which is worth knowing for every enemy swap after
 `autoplay op=prepare` returned **500 Internal Server Error** on this mod (it succeeded on the player mod earlier), so the menus
 were never walked and the capture only reached RE4's main menu. That is the next thing to look at, and it may be the new RE4
 selection branch - it is my code, and it is the one path that differs between the run that worked and this one.
+## The 500s were the store, not the mod: `database is locked`
+
+`autoplay op=prepare` returned 500 and then even `GET /api/sessions` did - and the rotation could not be restored until the
+service was restarted. The journal names the cause:
+
+```
+File ".../gbox/store.py", line 457, in put
+    self.db.execute("INSERT OR REPLACE INTO docs VALUES(?,?,?)", ...)
+sqlite3.OperationalError: database is locked
+```
+
+Several services share one store file (control plane, session observers, live controls, media gateway) and each keeps its own
+writer connection. SQLite's default busy timeout is 5 s, which a checkpoint or another service's burst can exceed, and the
+write then fails and surfaces as a 500 on whatever request did it.
+
+Fixed in `store.py`: `PRAGMA busy_timeout=30000` on the writer and a 30 s timeout on the read connections (they were 5 s).
+Every writer here is short, so waiting is always better than failing. Verified: the same `prepare` that had returned 500
+returned **200** on the next run, and the walk reached a Mercenaries round.
+
+## The enemy mod now loads and the menus walk with it
+
+```
+mod re4gz1532   files: ["em/em10.drs"]      (before the build_mod fix: files: [])
+launch          succeeded, session mod re4gz1532
+prepare         200, walked to a Mercenaries round (castle stage)
+```
+
+The round that came up was Ada's rather than Leon's - the queued selection is not honoured every time - but for the enemy
+test it does not matter: a round is a round, and ganados are what it needs.
+
+## What still blocks the screenshot
+
+After `prepare` the game sits **paused at the round start** and takes no input from `session_op send_input` (ten bursts of
+walking changed no pixel). `prepare` is designed to stop the walk there for a seamless swap, so the next step is
+`autoplay op=start` (the bot plays the round) rather than taps - that is also what would put a ganado in frame.

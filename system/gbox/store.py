@@ -87,8 +87,14 @@ class Store:
         self.closed = False
         # synchronous=NORMAL: in WAL mode a commit no longer fsyncs (the checkpoint does); a power cut can lose the last
         # commits, a process crash cannot. The writer's own checkpoint is a fallback: checkpoint() runs them off-lock.
+        # busy_timeout: several services share this file (control plane, observers, live controls, media gateway), and each
+        # has its own writer connection. SQLite's default is 5 s, which a slow checkpoint or a burst of writes from another
+        # service can exceed - the write then fails with "database is locked" and surfaces as a 500 on whatever request did
+        # it (seen live: POST /api/jobs autoplay prepare and even GET /api/sessions). Waiting longer is always better than a
+        # spurious failure here, because every writer is short.
         self.db.executescript(f"""
             PRAGMA journal_mode=WAL;
+            PRAGMA busy_timeout=30000;
             PRAGMA synchronous=NORMAL;
             PRAGMA wal_autocheckpoint={WAL_AUTOCHECKPOINT_PAGES};
             PRAGMA journal_size_limit={WAL_SIZE_LIMIT};
@@ -158,7 +164,7 @@ class Store:
         with self._readers_lock:
             if self._readers:
                 return self._readers.pop()
-        db = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, check_same_thread=False, timeout=5.0)
+        db = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, check_same_thread=False, timeout=30.0)
         db.execute("PRAGMA query_only=ON")
         return db
 
