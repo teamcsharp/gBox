@@ -2,15 +2,20 @@
 
 Many of the collection's models come out of an extractor with names like `b000` or `node_17`, so nothing can be looked up by
 name. The retargeter (`gbox.re4gc_enemies.retarget`) does not care about names - it wants to know which joint plays hip,
-chest, neck, head, each upper arm / forearm / hand and each thigh / shin / foot. Those can be read off the rest pose:
+chest, neck, head, each upper arm / forearm / hand and each thigh / shin / foot.
 
-* the highest joint is the **head**; its parent chain gives **neck**, **chest** and the joint below (the **hip**)
-* from the chest, the two children that are not the neck lead to the arms - the one with the larger X is the character's left
-* from the hip, the two children lead to the legs, by the same rule
-* a three-joint chain from chest or hip is upper / middle / end (forearm, hand / shin, foot)
+The roles are read from the rest pose, and the **limb pairs are found first**, because they are the least ambiguous thing a
+humanoid rig has: two joints that are siblings and mirror each other across the centre line. Arms are the pair with the
+widest sideways span, legs the other mirrored pair; where they hang then tells us the spine:
 
-Facing and up are taken as the caller states them (+Y up, left = +X by default, matching the retargeter's own convention), so
-a rig that faces -Z only needs `left_sign=-1`.
+```
+chest = parent of the arm pair        hip = parent of the leg pair
+head  = the highest joint that still has children (ears and hats are leaves above it)
+neck  = parent of the head
+```
+
+Doing it this way survives rigs whose spine runs head-first, where the head's parent chain descends through the chest to the
+root - a shape that defeats a rule that starts from the highest joint and walks down.
 """
 from __future__ import annotations
 
@@ -26,10 +31,10 @@ def _dist(a, b) -> float:
 
 
 def derive(joints, parent, *, left_sign: float = 1.0) -> dict[str, int]:
-    """`{role: joint index}` for a humanoid rest pose.
+    """`{role: joint index}` for a humanoid rest pose, by geometry.
 
-    joints: [(x, y, z)] in any unit, +Y up. parent: [int], -1 for a root. Missing roles are simply absent from the result, so
-    a rig without fingers or toes still returns the joints it has.
+    joints: [(x, y, z)] in any unit, +Y up. parent: [int], -1 for a root. left_sign: the sign of X that points to the
+    character's left. Roles the rig does not have are simply absent.
     """
     if not joints:
         return {}
@@ -46,37 +51,68 @@ def derive(joints, parent, *, left_sign: float = 1.0) -> dict[str, int]:
     def x(i):
         return float(joints[i][0])
 
-    head = max(range(count), key=up)
-    chain = [head]
-    seen = {head}
-    while parent[chain[-1]] >= 0 and parent[chain[-1]] not in seen:
-        chain.append(parent[chain[-1]])
-        seen.add(chain[-1])
-    roles: dict[str, int] = {"head": head}
-    if len(chain) > 1:
-        roles["neck"] = chain[1]
-    if len(chain) > 2:
-        roles["chest"] = chain[2]
-    # the hip is the ROOT of the spine chain, not the joint just above it: rigs differ in how many spine joints they carry
-    # (the test skeleton has one between chest and hip), and the root is always the pelvis.
-    roles["hip"] = chain[-1] if len(chain) > 1 else head
-    spine = set(chain)                     # every joint on the head-to-hip chain: never a limb root, never a limb step
-
-    def two_children(node, purpose):
-        """The left and right limb roots under `node`: its children that are not on the spine chain."""
-        kids = [k for k in children[node] if k not in spine]
+    # ---- mirrored sibling pairs: the two best ones are the arms and the legs
+    pairs = []
+    for node in range(count):
+        kids = children[node]
         if len(kids) < 2:
-            return None
-        if purpose == "arms":
-            # arms leave the chest sideways: the pair with the widest X span
-            score = lambda k: (abs(x(k)), -abs(up(k) - up(node)))          # noqa: E731
+            continue
+        for first in range(len(kids)):
+            for second in range(first + 1, len(kids)):
+                a, b = kids[first], kids[second]
+                if x(a) * x(b) >= 0:                       # both on the same side: not a mirrored pair
+                    if abs(x(a)) < 1e-9 or abs(x(b)) < 1e-9:
+                        continue
+                    continue
+                span = abs(x(a) - x(b))
+                pairs.append((span, node, a, b))
+    pairs.sort(key=lambda row: (-row[0], -up(row[2])))
+    roles: dict[str, int] = {}
+    arms = pairs[0] if pairs else None
+    legs = next((p for p in pairs[1:] if p[1] != arms[1]), None) if arms else None
+    # arms are the higher pair when both have a similar span; the span decides first, the height breaks ties
+    if arms and legs and up(arms[2]) < up(legs[2]) and abs(arms[0] - legs[0]) < 0.35 * max(arms[0], 1e-9):
+        arms, legs = legs, arms
+
+    if arms:
+        _, chest, a, b = arms
+        roles["chest"] = chest
+    if legs:
+        _, hip, a, b = legs
+        roles["hip"] = hip
+
+    # ---- head and neck. A single highest joint IS the head; several joints at the same height are ears, horns or
+    # antennae above it, and then the head is their deepest common ancestor.
+    if joints:
+        highest = max(up(i) for i in range(count))
+        near = [i for i in range(count) if up(i) >= highest - max(abs(highest) * 0.02, 1e-9)]
+        if len(near) == 1:
+            head = near[0]
         else:
-            # legs leave the hip downwards: the pair that drops furthest
-            score = lambda k: (abs(up(node) - up(k)), abs(x(k)))           # noqa: E731
-        ranked = sorted(kids, key=score, reverse=True)[:2]
-        if len(ranked) < 2:
-            return None
-        a, b = ranked
+            def ancestor_of(candidate, joint):
+                walker = joint
+                for _ in range(count + 1):
+                    if walker == candidate:
+                        return True
+                    if parent[walker] < 0:
+                        return False
+                    walker = parent[walker]
+                return False
+
+            head = parent[near[0]]
+            while head >= 0 and not all(ancestor_of(head, joint) for joint in near):
+                head = parent[head]
+            if head < 0:
+                head = near[0]
+        roles["head"] = head
+        if parent[head] >= 0:
+            roles["neck"] = parent[head]
+    if "hip" not in roles:                              # a rig with no legs: the spine root is the hip
+        root = next((i for i, par in enumerate(parent) if par < 0), 0)
+        roles["hip"] = root
+
+    def lateral(pair):
+        _, node, a, b = pair
         left, right = (a, b) if x(a) * left_sign >= x(b) * left_sign else (b, a)
         return left, right
 
@@ -85,20 +121,18 @@ def derive(joints, parent, *, left_sign: float = 1.0) -> dict[str, int]:
         out = []
         for _ in range(3):
             out.append(node)
-            kids = [k for k in children[node] if k not in spine]
+            kids = children[node]
             if not kids:
                 break
-            node = max(kids, key=lambda k: _dist(joints[k], joints[node]))       # follow the longest step
+            node = max(kids, key=lambda k: _dist(joints[k], joints[node]))
         for role, joint in zip(names, out):
             roles[f"{prefix}{role}"] = joint
 
-    pair = two_children(roles.get("chest", head), "arms") if "chest" in roles else None
-    if pair:
-        for prefix, start in (("l_", pair[0]), ("r_", pair[1])):
+    if arms:
+        for prefix, start in zip(("l_", "r_"), lateral(arms)):
             chain_three(start, prefix, ("upper", "fore", "hand"))
-    pair = two_children(roles.get("hip", head), "legs") if "hip" in roles else None
-    if pair:
-        for prefix, start in (("l_", pair[0]), ("r_", pair[1])):
+    if legs:
+        for prefix, start in zip(("l_", "r_"), lateral(legs)):
             chain_three(start, prefix, ("thigh", "shin", "foot"))
     return roles
 
