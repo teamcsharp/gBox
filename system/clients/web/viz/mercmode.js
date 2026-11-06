@@ -277,8 +277,11 @@
     slots: {chris: 'nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc',
             sheva: 'nativeNXx64/ImgNX/Archive/uPl01ShebaNormal.arc',
             jill: 'nativeNXx64/ImgNX/Archive/uPl02JillCos1.arc',
-            zombie: 'nativeNXx64/ImgNX/Archive/uEm20.arc',      // enemy with an explicit body group (em2000_01body)
-            zombie2: 'nativeNXx64/ImgNX/Archive/uEm14.arc'},    // enemy with an armour body group
+            // Enemies are not interchangeable with characters: a body map must share the slot's tag (dimensions and
+            // format) or gbox.skin_swap refuses it. uEm20's em2000_01body does not match Chris, so it is refused; uEm6c
+            // and uEm71 (body em6c00_00) carry a base map and mask of Chris's exact format, so those swap cleanly.
+            zombie: 'nativeNXx64/ImgNX/Archive/uEm6c.arc',
+            zombie2: 'nativeNXx64/ImgNX/Archive/uEm71.arc'},
     plain: {chris: 'nativeNXx64/ImgNX/Archive/uPl00ChrisPlain.arc',
             sheva: 'nativeNXx64/ImgNX/Archive/uPl01ShebaPlain.arc',
             jill: 'nativeNXx64/ImgNX/Archive/uPl02JillCos1.arc'},
@@ -372,12 +375,35 @@
       }
       catch(error){fail(error);}
     });
+    root.querySelector('[data-mm-zombie]')?.addEventListener('click',async e=>{
+      e.stopPropagation();
+      try{
+        // both directions in one build: the player arc takes the enemy's skin, the enemy arc takes the cast's
+        const player=SWAP.slots[root.querySelector('[data-mm-swap-slot]')?.value||'chris'];
+        const enemy=SWAP.slots.zombie;
+        const a=await api('/api/decrypt-lab/model-swap',{title,arc_path:player,donor_arc:enemy,build:APPLY});
+        const b=await api('/api/decrypt-lab/model-swap',{title,arc_path:enemy,donor_arc:player,build:APPLY});
+        let live='';
+        if(sessionId){
+          try{await applyNow(sessionId);live=' · applied now: the title restarted in this session';}
+          catch(err){live=` · built, but the live restart failed: ${err.message}`;}
+        }
+        done(`Zombie round: you as ${a.donor} (${a.slot}) and the enemies as ${b.donor} (${b.slot})`+
+             `${live||' (applies at the next boot)'}`);
+      }
+      catch(error){fail(error);}
+    });
   }
   function objectsHTML(){
     return `<div class="pip-mm-objects"><small>Mines &amp; grenades · what appears when one is placed or thrown</small>`+
       `<label>Object <select data-mm-obj-slot>${swapOptions(SWAP.objects,'mine')}</select></label>`+
       `<label>Looks like <select data-mm-obj-donor>${swapOptions(SWAP.objects,'grenade')}</select></label>`+
-      `<span class="pip-mm-swap-buttons"><button type="button" data-mm-obj-swap="swap">Swap the object</button></span></div>`;
+      `<span class="pip-mm-swap-buttons"><button type="button" data-mm-obj-swap="swap">Swap the object</button></span></div>`+
+      // The requested zombie scenario, as far as the asset layer honestly reaches: the player wears a zombie's skin
+      // and the enemies wear the cast's. A zombie MESH for the player would move the skeleton (and a donor mesh stops
+      // the title loading - measured), so this is both skin swaps at once, not a new game mode.
+      `<div class="pip-mm-zombie"><small>Zombie round · the player as a zombie against the cast</small>`+
+      `<span class="pip-mm-swap-buttons"><button type="button" data-mm-zombie="1">Player &#8594; zombie, enemies &#8594; cast</button></span></div>`;
   }
   function menuHTML(host,open=false,catalog=null,session=null){
     if(!host)return `<div class="pip-mercmode"><small>MercMode: no gBox PC owns this game.</small></div>`;
