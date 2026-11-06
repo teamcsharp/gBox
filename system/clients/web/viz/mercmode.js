@@ -277,8 +277,11 @@
     slots: {chris: 'nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc',
             sheva: 'nativeNXx64/ImgNX/Archive/uPl01ShebaNormal.arc',
             jill: 'nativeNXx64/ImgNX/Archive/uPl02JillCos1.arc',
-            zombie: 'nativeNXx64/ImgNX/Archive/uEm26.arc',
-            zombie2: 'nativeNXx64/ImgNX/Archive/uEm52.arc'},
+            zombie: 'nativeNXx64/ImgNX/Archive/uEm20.arc',      // enemy with an explicit body group (em2000_01body)
+            zombie2: 'nativeNXx64/ImgNX/Archive/uEm14.arc'},    // enemy with an armour body group
+    plain: {chris: 'nativeNXx64/ImgNX/Archive/uPl00ChrisPlain.arc',
+            sheva: 'nativeNXx64/ImgNX/Archive/uPl01ShebaPlain.arc',
+            jill: 'nativeNXx64/ImgNX/Archive/uPl02JillCos1.arc'},
     plain: {chris: 'nativeNXx64/ImgNX/Archive/uPl00ChrisPlain.arc',
             sheva: 'nativeNXx64/ImgNX/Archive/uPl01ShebaPlain.arc',
             jill: 'nativeNXx64/ImgNX/Archive/uPl02JillCos1.arc'},
