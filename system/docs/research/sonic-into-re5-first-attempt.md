@@ -80,3 +80,23 @@ vertex positions were rewritten. **The fault is in the rewrite, not the restruct
 
 `switch_mods create_build` alone does **not** register a build: a launch refuses it with "no built mod ... for this game".
 `op: new_build` registers it, and that is the one that launches.
+## The freeze is the header box, not the vertex data
+
+Two builds differ in exactly one thing: whether the header's bounding sphere/box was rewritten.
+
+* **scale 0.8, box untouched** (positions stay inside the model's own box): the title boots and runs - menus, intro cutscene,
+  frames changing throughout a 36-frame window. No freeze.
+* **scale 1.2, box rewritten** (positions need a bigger box): menus, then a frozen frame - identical 4560-byte frames,
+  mean 1.5, std 3.3, for six minutes.
+
+So written vertex data is accepted by the engine; **the bounding box I write is not**. That narrows it to the 48 bytes the
+box lives in (sphere x/y/z/r + min + max). The likely offenders, cheapest first:
+
+1. the sphere radius: I wrote `max(extent) * scale / 2`, which is not necessarily a radius the engine accepts (it may expect
+   the radius to enclose the box from its centre, or to be in another unit);
+2. the min/max extent itself: doubling it is fine in principle, but if the engine compares the box against per-part data it
+   may reject a disagreement;
+3. whether the box must be rewritten at all when geometry only shrinks - the 0.8 run shows it need not.
+
+Until that is settled, **scaling down with the untouched box is the known-good way to write geometry**: it needs no box
+rewrite and it runs.
