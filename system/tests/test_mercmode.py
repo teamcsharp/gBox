@@ -1751,3 +1751,30 @@ def test_a_bot_may_not_relaunch_a_copy_mercmode_already_closed():
     assert not S.mercmode_closed(store,'w1-run',w['name'])                   # still the run: the bot may reset it
     assert not S.mercmode_closed(store,'w1-mine',w['name'])                  # the operator's game is never MercMode's
     assert not S.mercmode_closed(store,'w1-run','another-host')              # a host without MercMode
+
+def test_the_saver_has_the_log_sink_its_swap_helpers_are_given():
+    """`log=self.log` killed EVERY scheduler tick twice (2026-11-05 and again 2026-11-06).
+
+    A helper like skin_swap.cast_swap_build takes `log=`; passing an attribute the Screensaver does not have raised inside
+    tick(), so no round launched, the note froze at "ended: the game ended" and a dispatch looked like it worked while
+    doing nothing. Both times the only symptom was a stalled MercMode. This checks the attribute exists AND that every
+    `log=self.<name>` in the class body resolves to something the class actually has.
+    """
+    import inspect
+    import re
+    from gbox import screensaver as S
+    assert callable(getattr(S.Screensaver, 'log', None)), 'the swap helpers are handed log=self.log'
+    source = inspect.getsource(S.Screensaver)
+    sinks = set(re.findall(r'log=self\.(\w+)', source))
+    missing = sorted(name for name in sinks if not hasattr(S.Screensaver, name))
+    assert not missing, f'tick would raise AttributeError on self.{missing[0]}'
+
+
+def test_the_savers_log_sink_never_raises_even_without_a_store():
+    from gbox import screensaver as S
+    class NoStore:
+        def audit(self, *a, **k):
+            raise RuntimeError('the store is sick')
+    saver = object.__new__(S.Screensaver)
+    saver.store = NoStore()
+    saver.log('cast_swap_built', build='x')          # a log sink must never break a tick
