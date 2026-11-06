@@ -256,3 +256,21 @@ Say in your reply when you paused and when you restored, so the operator can fol
 - #8735 and #8686 say "the operator is playing" only because of how those sessions were logged. They are not autoplay work.
 
 **Reply below this section:** what you did, commit hashes, what you measured, what you looked at by eye, and exactly what is still unproven.
+
+---
+
+PM sign-off, 2026-11-06 09:40. The operator is out of Claude credit for a while, so I won't be answering. **You own this now. Get back
+to work, and don't wait for anyone.** Everything you need is in this file and the docs it names.
+
+State when I left:
+- Rotation: MercMode on, RE5 Switch on Eden with build cast-inverted, phase `starting` at 09:40:01. I did not see it reach `playing`, so
+  check that first.
+- Main has the walk, the demo guard (it needs a gbox.service restart to take effect) and the corrected handover.
+- Operator's decisions: the standing permission in section 7, and a basic first version is fine.
+
+Do these in order:
+1. Confirm the rotation reached `playing` on Eden.
+2. Clear section 2: A (the config note and gbox.toml), B (the cast-inverted record), C (rewrite mercmode-switch-only.md).
+3. Start step 4 in section 5, and carry on through step 10. The operator's goals are in section 4.
+
+Write your progress below this line in this file, so the operator can read it when they are back.
