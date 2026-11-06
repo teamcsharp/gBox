@@ -304,7 +304,21 @@
       `<button type="button" data-mm-swap="from-cast">Zombies → cast</button>`+
       `</span></div>`;
   }
-  function wireSwaps(root,{api,title,done,fail}){
+  function wireSwaps(root,{api,title,sessionId,done,fail}){
+    const APPLY = 'mercmode-swap';            // every panel swap writes this build; apply_live boots it in place
+    const applyNow = async(session)=>{
+      // Eden layers mods only at boot, so a live swap is the title restarting in this same session (gbox.switch_mods
+      // apply_live): the operator sees the new skin without ending the round's session
+      const worker=String(session).split('-')[0];
+      let job=await api('/api/jobs',{tool:'switch_mods',require_worker:worker,
+        input:{op:'apply_live',session_id:session,build:APPLY}});
+      for(let i=0;i<200&&['queued','running','assigned'].includes(job?.state);i++){
+        await new Promise(r=>setTimeout(r,1500));
+        job=await api('/api/jobs/'+encodeURIComponent(job.id),undefined,'GET');
+      }
+      if(job?.state!=='succeeded')throw Error(job?.error?.message||job?.error||job?.state||'the restart did not finish');
+      return job;
+    };
     const run=async(kind)=>{
       const slotKey=root.querySelector('[data-mm-swap-slot]')?.value||'chris';
       const donorKey=root.querySelector('[data-mm-swap-donor]')?.value||'jill';
@@ -312,20 +326,25 @@
       if(!slot||!donor)throw Error('Choose a slot and a donor.');
       if(kind==='plain')
         // clothes removed for real: the character's body skin maps are painted over its clothing groups
-        return api('/api/decrypt-lab/strip-clothes',{title,arc_path:slot,build:'mercmode-swap'});
+        return api('/api/decrypt-lab/strip-clothes',{title,arc_path:slot,build:APPLY});
       let arc=slot, from=donor;
       if(kind==='to-zombie'){arc=slot;from=SWAP.slots.zombie;}
       else if(kind==='from-cast'){arc=SWAP.slots.zombie;from=slot;}
       if(!from)throw Error('That swap has no donor archive.');
-      return api('/api/decrypt-lab/model-swap',{title,arc_path:arc,donor_arc:from,build:'mercmode-swap'});
+      return api('/api/decrypt-lab/model-swap',{title,arc_path:arc,donor_arc:from,build:APPLY});
     };
     root.querySelectorAll('[data-mm-swap]').forEach(b=>b.addEventListener('click',async e=>{
       e.stopPropagation();
       try{
         const r=await run(b.dataset.mmSwap);
+        let live='';
+        if(sessionId){
+          try{await applyNow(sessionId);live=' · applied now: the title restarted in this session';}
+          catch(err){live=` · built, but the live restart failed: ${err.message}`;}
+        }
         done(b.dataset.mmSwap==='plain'
-          ? `Clothes removed: ${r.replaced?.length||0} clothing map(s) repainted with ${r.body_group}'s skin (applies at the next boot)`
-          : `${b.textContent}: ${r.slot} ← ${r.donor} (applies at the next boot)`);
+          ? `Clothes removed: ${r.replaced?.length||0} clothing map(s) repainted with ${r.body_group}'s skin${live||' (applies at the next boot)'}`
+          : `${b.textContent}: ${r.slot} ← ${r.donor}${live||' (applies at the next boot)'}`);
       }
       catch(error){fail(error);}
     }));

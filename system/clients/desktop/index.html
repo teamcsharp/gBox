@@ -4628,6 +4628,7 @@ async function pipMercMode(m, opening, open = false) {
     // character / zombie model swaps (clothes, cast, zombies): a model group moves between two archives at the next boot
     const swaps = slot.querySelector('.pip-mm-swaps');
     if (swaps) GBoxMercMode.wireSwaps(swaps, { api, title: GBoxMercMode.labTitleFor(compactSession?.game_id || host?.current_run?.game_id),
+      sessionId: compactSession?.session_id || host?.current_run?.session_id,
       done: message => toast(message), fail: error => toast(error.message) });
     slot.addEventListener('change', e => e.stopPropagation()); slot.addEventListener('click', e => { if (e.target.closest('select')) e.stopPropagation(); });
     const act = async (action, value) => {
