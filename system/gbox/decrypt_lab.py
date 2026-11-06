@@ -394,6 +394,20 @@ class SwapIn(BaseModel):
     build: str = "gbox-lab"   # LayeredFS overlay name
 
 
+class UePakIn(BaseModel):
+    """List the Unreal Engine .pak archives in a directory (any UE4 title, e.g. an extracted Android OBB).
+
+    RE4 VR ships as 18 chunked paks inside its OBB; gbox.ue_pak opens them directly, so the same view/extract path the
+    extraction tab offers for MT Framework archives works for a UE4 title without external tooling. `dir` is validated to
+    exist and to be a directory under the operator's home or the configured cache.
+    """
+    dir: str
+    patterns: list[str] = []          # in-pak path substrings/globs (empty: everything)
+    max_files: int = 200
+    extract: str | None = None        # one exact entry name to write out
+    out_dir: str | None = None
+
+
 class ModelInfoIn(BaseModel):
     """Inspect one MTF model entry inside an .arc: its header, its resource paths and its geometry size.
 
@@ -1049,6 +1063,72 @@ def install(app, store, config, auth, tactical_store=None):
                 "classes": sorted(buckets.values(), key=lambda b: -b["open"]),
                 "fleet": {"nodes": nodes, "lanes": sum(n["lanes"] or 0 for n in nodes if n["enabled"])},
                 "at": time.time()}
+
+    @app.post("/api/decrypt-lab/ue-pak", dependencies=[Depends(auth)])
+    def decrypt_lab_ue_pak(body: UePakIn):
+        """List (and optionally extract one entry from) the UE4 .pak files in a directory."""
+        from . import ue_pak
+        root = Path(body.dir).expanduser()
+        if not root.is_dir():
+            raise HTTPException(404, "not a directory")
+        allowed = (Path.home(), Path(os.getcwd()))
+        if not any(str(root.resolve()).startswith(str(a.resolve())) for a in allowed):
+            raise HTTPException(400, "that directory is outside the operator's home and the working tree")
+        paks = sorted(root.rglob("*.pak"), key=lambda p: p.name)[:32]
+        if not paks:
+            raise HTTPException(404, "no .pak files in that directory")
+        pats = [p for p in (body.patterns or []) if p][:12]
+        out = {"v": FORMAT, "dir": str(root), "paks": [], "files": []}
+        for path in paks:
+            try:
+                pak, info = ue_pak.open_pak(path, root)
+            except (ue_pak.PakError, OSError) as exc:
+                out["paks"].append({"name": path.name, "size": path.stat().st_size, "error": str(exc)[:120]})
+                continue
+            if pak is None:
+                out["paks"].append({"name": path.name, "size": path.stat().st_size,
+                                    "error": str(info)[:120]})
+                continue
+            entries = list(getattr(pak, "entries", []) or [])
+            out["paks"].append({"name": path.name, "size": path.stat().st_size, "entries": len(entries)})
+            for entry in entries:
+                name = str(getattr(entry, "name", entry))
+                if pats and not any(p.lower() in name.lower() or ue_pak.match(name, [p]) for p in pats):
+                    continue
+                if len(out["files"]) < max(1, min(body.max_files, 5000)):
+                    out["files"].append({"pak": path.name, "name": name,
+                                         "size": getattr(entry, "size", None)})
+        if body.extract:
+            want = body.extract
+            target_dir = Path(body.out_dir).expanduser() if body.out_dir else (root / "extracted")
+            for path in paks:
+                try:
+                    pak, _ = ue_pak.open_pak(path, root)
+                except (ue_pak.PakError, OSError):
+                    continue
+                if pak is None:
+                    continue
+                entry = getattr(pak, "entries", None)
+                match = None
+                if isinstance(entry, dict):
+                    match = entry.get(want)
+                else:
+                    match = next((e for e in (entry or []) if str(getattr(e, "name", e)) == want), None)
+                if match is None:
+                    continue
+                try:
+                    data = pak.read(match)
+                except ue_pak.PakError as exc:
+                    raise HTTPException(409, str(exc)[:200]) from exc
+                safe = ue_pak.safe_out_path(target_dir.resolve(), want)
+                safe.parent.mkdir(parents=True, exist_ok=True)
+                safe.write_bytes(data)
+                out["extracted"] = {"entry": want, "bytes": len(data), "to": str(safe)}
+                break
+            else:
+                raise HTTPException(404, f"no pak holds {want}")
+        out["file_count"] = len(out["files"])
+        return out
 
     @app.post("/api/decrypt-lab/model-info", dependencies=[Depends(auth)])
     def decrypt_lab_model_info(body: ModelInfoIn):
