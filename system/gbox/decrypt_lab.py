@@ -1151,23 +1151,29 @@ def install(app, store, config, auth, tactical_store=None):
         except mt_arc.ArcError:
             pass
         if body.with_mesh:
-            # an object's shape lives in the entries named after its group (uWp06.arc carries two `wp0600`: the placed
-            # mine's mesh), so those travel with the material maps when the operator asks for the whole object
+            # An object's model is the entry whose decompressed payload is MRL\0 - NOT the largest model-path entry.
+            # uWp06.arc carries two `wp0600` entries: the MRL model (1,047 B) and a MOD container (13,617 B). Choosing by
+            # size wrote the MOD into the MRL slot, the engine could not parse it, and the title hung at loading; that
+            # was the real cause of the object shape swap failures, not missing textures.
+            import zlib as _z
+            from . import mt_model
             slot_arc, donor_arc = mt_arc.parse(arc_file.read_bytes()), mt_arc.parse(donor_file.read_bytes())
 
-            def mesh_indices(arc, group):
-                named = [i for i, e in enumerate(arc.entries)
-                         if "\\model\\" in e.name and e.name.rsplit("\\", 1)[-1] == group]
-                if named:
-                    return named
-                # a donor whose mesh is not named after its material group (uWp0a's grenade mesh is wep0a_00, its
-                # materials om4e00): the largest model entry that is not a base/mask/normal map is that mesh
-                maps = {i for i, e in enumerate(arc.entries)
-                        if e.name.rsplit("\\", 1)[-1].endswith(("_BM", "_MM", "_NM"))}
-                candidates = [i for i, e in enumerate(arc.entries) if "\\model\\" in e.name and i not in maps]
-                return [max(candidates, key=lambda i: arc.entries[i].size)] if candidates else []
+            def model_indices(arc):
+                found = []
+                for i, entry in enumerate(arc.entries):
+                    try:
+                        raw = _z.decompress(entry.data)
+                    except _z.error:
+                        continue
+                    if raw[:4] == mt_model.MAGIC:
+                        found.append(i)
+                return found
 
-            for slot_i, donor_i in zip(mesh_indices(slot_arc, slot_group), mesh_indices(donor_arc, donor_group)):
+            slot_models, donor_models = model_indices(slot_arc), model_indices(donor_arc)
+            if not slot_models or not donor_models:
+                raise HTTPException(409, "this swap needs an MRL model in both archives")
+            for slot_i, donor_i in zip(slot_models, donor_models):
                 data = mt_arc.replace_at(data, slot_i, donor_arc.entries[donor_i].data)
                 meshes.append(slot_arc.entries[slot_i].name)
         added_textures = []
