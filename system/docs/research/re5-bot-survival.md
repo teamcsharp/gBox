@@ -127,3 +127,30 @@ This is the first thing to establish before more bot work, and it is measurable:
 autoplay that runs in each session, will say whether a round is being abandoned (relaunch before the clock ends), whether the bot
 is stuck on a menu/prompt, or whether the Notebook writer stopped saving. The frame above at least rules out "the game is not
 running".
+## The rotation's rounds are not reaching the Notebook - and the same bot does record elsewhere
+
+Every title's round database, with its last write:
+
+```
+010018100CD46000  RE5 Switch   rows 1480   last written 413.8 min ago   <- the rotation's title
+01002A000CD48000  RE6 Switch   rows 1275   last written 1492.6 min ago
+BLUS30491         RE5 PS3      rows  640   last written 474.8 min ago
+G4BE08            RE4 GameCube rows  461   last written  43.2 min ago   <- recorded from a manual autoplay run today
+```
+
+So the Notebook writer works - RE4 GC wrote a round 43 minutes ago from my own `autoplay op=start` session - while the RE5 Switch
+**MercMode rotation** has not written one since about 10:40 this morning, even though the scheduler is demonstrably cycling:
+
+```
+last 3 h by tool: launch_game 24, graphics 23, autoplay 22, session_op 21, re5_mods 15, bot_reload 8
+a cycle every 5-8 min:  launch -> graphics -> autoplay -> re5_mods -> (session_op) -> launch
+live run now: phase "playing", playing_since 2 min ago, mod cast-inverted, session 79aa9ea51f7c4ff5
+```
+
+That is the shape of the problem: the rotation relaunches every five to eight minutes, a Mercenaries round needs longer than that to
+load and finish, and a round that is stopped mid-play is never a terminal round - so nothing is recorded. The stalemate cut (clock to
+5 s after 15 s with no enemies) ends rounds rather than killing sessions, so it is not the suspect; the cycle time is.
+
+The clean test, which is what I would do next: run **RE5 Switch with a plain `autoplay op=start`** (exactly what recorded the RE4 GC
+round) and see whether rounds appear. If they do, the fault is in the MercMode cycle - its per-round time budget or its stop/relaunch
+path - and not in the bot, the readers or the Notebook.
