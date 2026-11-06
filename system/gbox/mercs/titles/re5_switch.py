@@ -158,6 +158,7 @@ def character_count() -> int:
 # (CYCLE_FILE). A target the cursor does not reach in CYCLE_MAX_PRESSES presses (a locked entry) is given up: the entry
 # the cursor rests on is taken. The round's stats name the stage and character; stage_coverage the counts.
 CYCLE, CYCLE_MAX_PRESSES = True, 14
+CALIBRATE_PRESSES = 40              # the one walk that discovers the character roster: enough presses to reach the end
 
 
 class StageCycle:
@@ -169,6 +170,7 @@ class StageCycle:
         self.presses, self.where = 0, None
         self.max_cursor = -1                                # the largest select cursor seen (the roster walk)
         self.pending = None                                 # (cursor, key) of the last press, to tell a stall from a move
+        self.prev_cursor = None                             # the cursor seen last, to catch the wrap mid-walk
         if path is not None:
             try:
                 import json
@@ -200,8 +202,15 @@ class StageCycle:
                 and cursor == pending[0] and cursor + 1 > len(CHARACTERS) and CHARACTER_SLOTS <= 1):
             CHARACTER_SLOTS = cursor + 1                        # right at the end and the cursor did not move
             self.save()
+        # a WRAP during the calibration walk: pressing right only ever increases the cursor, so the first time it falls
+        # back from its highest value the walk has gone past the last entry and the count is one past that maximum
+        if (CHARACTER_SLOTS <= 1 and self.prev_cursor is not None and cursor < self.prev_cursor
+                and self.prev_cursor == self.max_cursor and self.max_cursor + 1 > len(CHARACTERS)):
+            CHARACTER_SLOTS = self.max_cursor + 1
+            self.save()
         if cursor > self.max_cursor:
             self.max_cursor = cursor
+        self.prev_cursor = cursor
         self.pending = None
 
     def note_press(self, cursor: int, key: str) -> None:
@@ -235,8 +244,8 @@ class StageCycle:
             stages = [i for i in range(len(STAGE_NAMES)) if i != last_s] or list(range(len(STAGE_NAMES)))
             low = min(self.stages.get(i, 0) for i in stages)
             stage = self.rng.choice([i for i in stages if self.stages.get(i, 0) == low])
-            if CHARACTER_SLOTS <= 1:                         # calibrating: walk right, one new entry per visit
-                char = min(self.max_cursor + 1, CHARACTER_SLOTS_MAX - 1)
+            if CHARACTER_SLOTS <= 1:                         # calibrating: one deliberate walk to the right-hand end
+                char = CHARACTER_SLOTS_MAX - 1               # the stall there teaches the true count in one visit
             else:
                 chars = [i for i in range(character_count()) if i != last_c] or list(range(character_count()))
                 char = self.rng.choice(chars)
@@ -1450,7 +1459,10 @@ def step(scr: dict) -> str | None:
         c = cycle()
         if c.where != where:
             c.where, c.presses = where, 0
-        if c.presses >= CYCLE_MAX_PRESSES:
+        # the calibration walk (an unknown character roster) is allowed to press on to the end of the select: the
+        # stall there is what teaches how many entries there are. A stage select, or a known roster, keeps the budget
+        budget = CYCLE_MAX_PRESSES if (where != "select_player" or CHARACTER_SLOTS > 1) else CALIBRATE_PRESSES
+        if c.presses >= budget:
             return "a"                                      # the target not reached (a locked entry): this one
     if where in CURSORED:
         cursor, target = scr.get("cursor"), scr.get("target")
