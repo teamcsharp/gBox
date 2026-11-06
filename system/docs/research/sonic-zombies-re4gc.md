@@ -191,3 +191,32 @@ still has the previous revision.
  5 non-humanoid skeletons (em24, em27, em2a, em2e, em3a, em3b, em3e)
  1 NaN in vertex normals (em31)
 ```
+## 58 of 60 enemy packs, and the two that remain are refused on purpose
+
+The climb, each step measured through the same call:
+
+```
+31  the hand-kept GANADO_FILES list
+48  body_candidates: the skinned BIN with the biggest skeleton (em21 body at item 0, em2b fourteen bodies)
+50  finer thinning rungs (em23, em28)
+58  complete target role map + NaN sanitation
+```
+
+The last two steps in detail:
+
+* **a complete role map** - after the cross-side aliasing, any role still missing collapses onto the root, so a skeleton that is
+  not humanoid (novistadors, the "It") still yields a mesh: deformed, but a real mesh that animates, instead of an impossible
+  pack. This is a deliberate trade and it is reported, not hidden.
+* **`sanitize_prims`** - a collapsed limb produced a zero-length normal and a NaN position through the retarget's rigid rotation,
+  and the packer then raised "cannot convert float NaN to integer" far from the cause. Positions are clamped and normals
+  normalised (zero becomes +Y).
+
+What is left:
+
+```
+em2a  unusable skeleton: 3 bones
+em3e  unusable skeleton: 2 bones
+```
+
+Both are refused deliberately - a two-bone "skeleton" has no limbs to fit and a rigid retarget would produce noise. Twenty tests
+pass across the five modules touched.

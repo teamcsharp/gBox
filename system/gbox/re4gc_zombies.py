@@ -28,6 +28,11 @@ PACKS = ("em10", "em11", "em12", "em13", "em14", "em15", "em16", "em17", "em19",
          "em1d", "em1e", "em1f", "em20", "em46", "em4c", "em4d", "em4f", "em50", "em56",
          "em5c", "em5d", "em5f", "em60", "em66", "em6c", "em6d", "em6f", "em70")
 
+# what `re4gc_enemies.retarget` requires; a derived target map has to supply all of them
+REQUIRED_ROLES = ("pelvis", "hip", "chest", "neck", "head",
+                  "l_upper", "l_fore", "l_hand", "r_upper", "r_fore", "r_hand",
+                  "l_thigh", "l_shin", "l_foot", "r_thigh", "r_shin", "r_foot")
+
 
 def enemy_packs(iso) -> list[str]:
     """Every ENEMY pack on the disc, read from its file system rather than a hand-kept list.
@@ -145,6 +150,33 @@ def target_roles(template) -> dict:
     # the retargeter's own map names the root BOTH "pelvis" and "hip"; rig_roles calls it "hip", so alias it
     if "hip" in mapping and "pelvis" not in mapping:
         mapping["pelvis"] = mapping["hip"]
+    # a derived map can be missing a limb END (a two-bone leg reads as thigh+shin, no foot). The retargeter requires the whole
+    # set, so a missing end takes the nearest existing joint rather than raising: the other side's end first, then the same
+    # side's preceding joint. That is what makes em29/em3d ("KeyError: 'r_foot'") retargetable at all.
+    fallbacks = {
+        "l_foot": ("r_foot", "l_shin"), "r_foot": ("l_foot", "r_shin"),
+        "l_hand": ("r_hand", "l_fore"), "r_hand": ("l_hand", "r_fore"),
+        "l_shin": ("r_shin", "l_thigh"), "r_shin": ("l_shin", "r_thigh"),
+        "l_fore": ("r_fore", "l_upper"), "r_fore": ("l_fore", "r_upper"),
+        "l_thigh": ("r_thigh", "hip"), "r_thigh": ("l_thigh", "hip"),
+        "l_upper": ("r_upper", "chest"), "r_upper": ("l_upper", "chest"),
+        "neck": ("head", "chest"), "chest": ("neck", "hip"),
+    }
+    for role, candidates in fallbacks.items():
+        if role in mapping:
+            continue
+        for candidate in candidates:
+            if candidate in mapping:
+                mapping[role] = mapping[candidate]
+                break
+    # last resort: a role still missing after aliasing collapses onto the root. The skeleton is then not humanoid enough for a
+    # per-limb fit (novistadors, the "It"), and the retarget puts that limb's vertices at the pelvis - deformable and alive,
+    # which is better than the pack being impossible to replace at all. Reported as "collapsed" so the caller can say so.
+    root = mapping.get("hip")
+    if root is not None:
+        for role in REQUIRED_ROLES:
+            if role not in mapping:
+                mapping[role] = root
     return mapping
 
 
@@ -170,6 +202,35 @@ def degenerate(template) -> str:
     return ""
 
 
+def sanitize_prims(prims):
+    """Make every primitive finite before it is written.
+
+    A limb that collapsed onto the root can produce a zero-length normal and a NaN position through the retarget's rigid
+    rotation; the packer then raises "cannot convert float NaN to integer" far from the cause. Positions are clamped to 0 and
+    normals normalised (a zero normal becomes +Y), so the enemy draws as a deformed figure instead of the pack failing.
+    """
+    import numpy as np
+    out = []
+    for prim in prims:
+        fixed = dict(prim)
+        for field in ("pos", "nrm", "uv"):
+            value = prim.get(field)
+            if value is None:
+                continue
+            array = np.nan_to_num(np.asarray(value, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+            fixed[field] = array
+        nrm = fixed.get("nrm")
+        if nrm is not None and len(nrm):
+            lengths = np.linalg.norm(nrm, axis=1)
+            bad = lengths < 1e-9
+            if bad.any():
+                nrm = nrm.copy()
+                nrm[bad] = (0.0, 1.0, 0.0)
+                fixed["nrm"] = nrm
+        out.append(fixed)
+    return out
+
+
 def attempts(primitive_counts):
     """The fitting strategies, in the order they are tried: (label, how many primitives to keep, texture limit).
 
@@ -184,8 +245,10 @@ def attempts(primitive_counts):
     plan = [(f"keep={count} tex=64", count, 64, 1.0) for count in counts]
     plan += [(f"keep={counts[0]} tex=16", counts[0], 16, 1.0)]
     # last resort: thin the triangles (no Blender needed) at the biggest primitive count that leaves a mesh
-    for fraction in (0.6, 0.35, 0.2):
+    for fraction in (0.6, 0.35, 0.2, 0.1):
         plan.append((f"keep={counts[0]} tex=64 thin={fraction:.0%}", counts[0], 64, fraction))
+    for fraction in (0.35, 0.1):
+        plan.append((f"keep={counts[0]} tex=16 thin={fraction:.0%}", counts[0], 16, fraction))
     return plan
 
 
@@ -277,11 +340,20 @@ def swap_ganados(iso, model, out_dir, packs=None, *, rig=None, log=print, swap=N
             except (KeyError, ValueError, IndexError):
                 # this skeleton does not carry the ganado bone numbering: derive the roles from the skeleton itself
                 roles = target_roles(template)
-                if len(roles) < 10:
-                    report[stem] = {"fitted": False, "reason": f"skeleton roles: only {len(roles)} found"}
-                    log(f"{stem}: only {len(roles)} roles on its own skeleton")
+                missing = [role for role in REQUIRED_ROLES if role not in roles]
+                if missing:
+                    report[stem] = {"fitted": False,
+                                    "reason": f"skeleton roles incomplete: no {', '.join(missing)} "
+                                              f"({len(roles)} of {len(REQUIRED_ROLES)} found)"}
+                    log(f"{stem}: skeleton roles incomplete (missing {', '.join(missing)})")
                     continue
-                prims = enemies.retarget(rig, template, roles=roles)
+                try:
+                    prims = enemies.retarget(rig, template, roles=roles)
+                except Exception as exc:
+                    report[stem] = {"fitted": False, "reason": f"retarget with derived roles: {type(exc).__name__}: "
+                                                              f"{str(exc)[:80]}"}
+                    log(f"{stem}: retarget failed with derived roles ({type(exc).__name__})")
+                    continue
         except Exception as exc:
             report[stem] = {"fitted": False, "reason": f"{type(exc).__name__}: {str(exc)[:120]}"}
             log(f"{stem}: {type(exc).__name__}")
@@ -294,6 +366,7 @@ def swap_ganados(iso, model, out_dir, packs=None, *, rig=None, log=print, swap=N
             key = (keep, round(fraction, 3))
             if key not in glb_paths:
                 subset = thin_prims(prims[:keep], 1.0) if fraction >= 1 else thin_prims(prims[:keep], fraction)
+                subset = sanitize_prims(subset)
                 gltf = enemies.write_rigged_gltf(subset, template, out_dir / f"{stem}_{keep}_{key[1]}.gltf")
                 doc, blob = attachments.pack(gltf)
                 glb = out_dir / f"{stem}_{keep}_{key[1]}.glb"
