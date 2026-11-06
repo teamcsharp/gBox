@@ -915,6 +915,48 @@ def install(app, store, config, auth, tactical_store=None):
                 "entry_bytes": len(donor_entry.data),
                 "note": "the overlay applies when the title next boots (LayeredFS)"}
 
+    @app.get("/api/decrypt-lab/swap-matrix", dependencies=[Depends(auth)])
+    def decrypt_lab_swap_matrix(title: str):
+        """Which swaps of this title's slots are actually possible: a donor moves only the maps whose tag matches.
+
+        The panel asks before it offers a pair, so an action can never be clicked into a refusal: gbox.skin_swap
+        refuses a donor whose maps are a different size or format, and most enemy/character pairs are.
+        """
+        from . import mt_arc, skin_swap
+        tid = _title_id(title)
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
+        arcs = dict(skin_swap.CHARACTER_ARCS.get(str(tid).upper()) or {})
+        arcs.update({"uEm6c": "nativeNXx64/ImgNX/Archive/uEm6c.arc",
+                     "uEm71": "nativeNXx64/ImgNX/Archive/uEm71.arc",
+                     "mine": "nativeNXx64/ImgNX/Archive/uWp06.arc",
+                     "mine2": "nativeNXx64/ImgNX/Archive/uWp07.arc",
+                     "grenade": "nativeNXx64/ImgNX/Archive/uWp0a.arc"})
+        tags: dict = {}
+        for name, inner in arcs.items():
+            path = root / inner
+            if not path.is_file():
+                continue
+            try:
+                parsed = mt_arc.parse(path.read_bytes())
+            except mt_arc.ArcError:
+                continue
+            groups = skin_swap.material_groups(parsed)
+            body = skin_swap.body_group(groups)
+            if body is None:
+                continue
+            tags[name] = {k: v.tag for k, v in groups[body].items()}
+        pairs = {}
+        for slot, slot_maps in tags.items():
+            for donor, donor_maps in tags.items():
+                if slot == donor:
+                    continue
+                moved = [k for k in ("BM", "MM", "NM") if slot_maps.get(k) is not None
+                         and slot_maps.get(k) == donor_maps.get(k)]
+                pairs[f"{slot}|{donor}"] = {"maps": moved, "ok": bool(moved)}
+        return {"v": FORMAT, "arcs": arcs, "tags": tags, "pairs": pairs}
+
     @app.get("/api/decrypt-lab/triage", dependencies=[Depends(auth)])
     def decrypt_lab_triage():
         """The inbox by class, next to the inference fleet that has to work it off.

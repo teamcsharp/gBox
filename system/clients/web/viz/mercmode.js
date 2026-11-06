@@ -314,6 +314,30 @@
   }
   function wireSwaps(root,{api,title,sessionId,done,fail}){
     const APPLY = 'mercmode-swap';            // every panel swap writes this build; apply_live boots it in place
+    // which pairs a donor actually moves (gbox.skin_swap refuses maps of a different size or format), so the panel
+    // can strike out a donor instead of letting a click end in a refusal
+    let matrix = null;
+    if (title) api('/api/decrypt-lab/swap-matrix?title=' + encodeURIComponent(title)).then((m) => {
+      matrix = m || null;
+      markDonors();
+    }).catch(() => {});
+    const refused = (slotKey, donorKey) => {
+      if (!matrix) return false;
+      const row = (matrix.pairs || {})[slotKey + '|' + donorKey];
+      return row ? !row.ok : false;
+    };
+    function markDonors(){
+      const slot = root.querySelector('[data-mm-swap-slot]')?.value;
+      const donor = root.querySelector('[data-mm-swap-donor]');
+      if (!matrix || !slot || !donor) return;
+      [...donor.options].forEach((o) => {
+        const row = (matrix.pairs || {})[slot + '|' + o.value];
+        const ok = !row || row.ok;
+        o.disabled = !ok;
+        o.textContent = o.value + (ok ? '' : ' (format mismatch)');
+      });
+    }
+    root.querySelector('[data-mm-swap-slot]')?.addEventListener('change', markDonors);
     const applyNow = async(session)=>{
       // Eden layers mods only at boot, so a live swap is the title restarting in this same session (gbox.switch_mods
       // apply_live): the operator sees the new skin without ending the round's session
@@ -332,6 +356,8 @@
       const donorKey=root.querySelector('[data-mm-swap-donor]')?.value||'jill';
       const slot=SWAP.slots[slotKey], donor=SWAP.slots[donorKey];
       if(!slot||!donor)throw Error('Choose a slot and a donor.');
+      if(kind!=='plain' && refused(slotKey,donorKey))
+        throw Error(`${slotKey} and ${donorKey} do not share a texture format: pick another donor.`);
       if(kind==='plain')
         // clothes removed for real: the character's body skin maps are painted over its clothing groups
         return api('/api/decrypt-lab/strip-clothes',{title,arc_path:slot,build:APPLY});

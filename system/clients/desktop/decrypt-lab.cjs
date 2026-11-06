@@ -45,6 +45,7 @@ function request(value) {
   if (method === 'GET' && value.body === undefined
       && (p === '/api/decrypt-lab/state' || p === '/api/decrypt-lab/events' || p === '/api/decrypt-lab/assets'
           || p === '/api/decrypt-lab/asset' || p === '/api/decrypt-lab/preview' || p === '/api/decrypt-lab/triage'
+          || p.startsWith('/api/decrypt-lab/swap-matrix')
           || /^\/api\/decrypt-lab\/scan\/[0-9a-f]{16}$/.test(p))) {
     // the asset routes take a RomFS path in the query: it must stay relative, with no traversal
     if (p === '/api/decrypt-lab/asset' || p === '/api/decrypt-lab/preview') {
