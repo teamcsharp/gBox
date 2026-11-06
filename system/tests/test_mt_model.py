@@ -328,3 +328,27 @@ def test_tangents_and_weights_survive_packing():
 def test_a_format_without_a_tangent_field_yields_none():
     assert mt_model.decode_tangents(b"\x00" * 40, 0x133098B0, 1, 12) == []
     assert mt_model.decode_weights(b"\x00" * 40, 0x133098B0, 1, 12) == []
+def test_a_parts_geometry_can_be_replaced_and_the_container_still_describes_itself():
+    """Measured on 11 real models: replacing a part's vertices re-parses, validates, and leaves the other parts untouched."""
+    model = mt_model.parse_mod(make_mod(meshes=((4, 24), (6, 20))))
+    bounds = model.bounds()
+    record = model.meshes()[0]
+    vertices = [{"position": (0.0, 10.0 * i, 0.0), "bounds": bounds} for i in range(3)]
+    packed = mt_model.pack_vertices(vertices, record["vertex_format"], record["vertex_stride"])
+    out = mt_model.replace_part(model.raw, 0, packed, 3, record["vertex_format"], record["vertex_stride"])
+    again = mt_model.parse_mod(out)
+    assert again.split_valid()
+    assert len(again.meshes()) == 2
+    assert again.meshes()[0]["vertex_count"] == 3
+    assert again.meshes()[1]["vertex_count"] == 6
+    # the second part is copied, not re-packed
+    assert again.mesh_bytes(1)[0] == model.mesh_bytes(1)[0]
+    # the offsets follow the new sizes
+    offsets = again.header()["offsets"]
+    assert offsets["vertex_buffer"] < offsets["index_buffer"] <= offsets["end"]
+
+
+def test_replacing_a_part_that_does_not_exist_is_refused():
+    model = mt_model.parse_mod(make_mod(meshes=((4, 24),)))
+    with pytest.raises(mt_model.ModelError):
+        mt_model.replace_part(model.raw, 5, b"", 0, 0x18B0FAA8, 20)

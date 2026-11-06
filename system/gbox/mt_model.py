@@ -681,8 +681,46 @@ def parse_mod(data: bytes, *, strict: bool = True) -> ModFile:
                    * MOD_BLOCKS else "model")
 
 
+def replace_part(data: bytes, part_index: int, vertices: bytes, vertex_count: int, vertex_format: int,
+                 stride: int) -> bytes:
+    """Rebuild a MOD with one part's geometry replaced, keeping every other part's bytes exactly as they are.
+
+    This is the first writing step that changes the container's shape: the new part may have a different vertex count and
+    stride, so every later part's `vertex_offset` moves and the header's `vertex_count` and `vertex_buffer_size` change
+    with it. Untouched parts are copied byte for byte rather than re-packed, so components that are not decoded (a
+    format's unknown fields) survive in them instead of being zeroed.
+    """
+    model = parse_mod(data)
+    header = model.header()
+    meshes = model.meshes()
+    if not 0 <= part_index < len(meshes):
+        raise ModelError(f"no part {part_index} (the model has {len(meshes)})")
+    if len(vertices) != vertex_count * stride:
+        raise ModelError("the vertex data does not match the count and stride")
+    vb = header["offsets"]["vertex_buffer"]
+    blocks = []
+    for index, record in enumerate(meshes):
+        if index == part_index:
+            blocks.append(vertices)
+        else:
+            start = vb + record["vertex_offset"]
+            blocks.append(model.raw[start:start + record["vertex_count"] * record["vertex_stride"]])
+    records = []
+    running = 0
+    for index, record in enumerate(meshes):
+        if index == part_index:
+            record = dict(record, vertex_count=vertex_count, vertex_stride=stride, vertex_format=vertex_format)
+        record = dict(record, vertex_offset=running)
+        running += record["vertex_count"] * record["vertex_stride"]
+        records.append(record)
+    total_vertices = sum(record["vertex_count"] for record in records)
+    rebuilt = rebuild_mod(model, vertex_buffer=b"".join(blocks), mesh_records=records,
+                          vertex_count=total_vertices)
+    return rebuilt
+
+
 def rebuild_mod(model: ModFile, *, vertex_buffer: bytes | None = None, index_buffer: bytes | None = None,
-                mesh_records: list[dict] | None = None) -> bytes:
+                mesh_records: list[dict] | None = None, vertex_count: int | None = None) -> bytes:
     """Serialise a `MOD` from its parts, recomputing every offset from the block sizes.
 
     This is the writer, not a copy: the header is assembled from the decoded fields, the blocks are written in
@@ -722,7 +760,8 @@ def rebuild_mod(model: ModFile, *, vertex_buffer: bytes | None = None, index_buf
         regions["vertex_buffer"] = vertex_buffer
     if index_buffer is not None:
         regions["index_buffer"] = index_buffer
-    fields = {"vertex_count": header["vertex_count"], "face_count": header["face_count"],
+    fields = {"vertex_count": header["vertex_count"] if vertex_count is None else vertex_count,
+              "face_count": header["face_count"],
               "edge_count": header["edge_count"], "vertex_buffer_size": len(regions["vertex_buffer"]),
               "group_count": header["group_count"], "bone_count": header["bone_count"],
               "mesh_count": header["mesh_count"], "material_count": header["material_count"]}
