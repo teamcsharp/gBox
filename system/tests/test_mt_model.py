@@ -31,7 +31,7 @@ def make_mod(meshes=((100, 24),), groups=1, bones=2, materials=1,
     header_size = 0x28 + 8 * mt_model.MOD_BLOCKS
     tail = struct.pack("<4f", *bounds[0]) + struct.pack("<4f", *bounds[1]) + struct.pack("<4f", *bounds[2])
     tail += b"\x00" * (68 - len(tail))
-    bone_block = bytes(256) + b"\x00" * (bones * mt_model.MOD_BONE_RECORD)
+    bone_block = b"\x00" * (bones * mt_model.MOD_BONE_RECORD) + bytes(256)
     group_block = b"\x00" * (groups * 32)
     material_block = b"\x00" * (materials * 32)
     mesh_block = bytearray()

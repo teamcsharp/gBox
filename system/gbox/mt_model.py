@@ -514,14 +514,16 @@ class ModFile:
         return out
 
     def bone_table(self) -> dict:
-        """The skeleton block: the bone map and one raw record per bone.
+        """The skeleton block: one raw record per bone, then the bone map.
 
-        Measured on four models: `groups_offset - bones_offset == 256 + bone_count * 152` exactly (wp0600 712 with 3
-        bones, wp0a00 560 with 2, em6c00 4512 with 28, evf0000 13328 with 86). So the block is a 256-byte bone map
-        followed by 152-byte bone records. The *contents* of a record are not decoded: the documented version-156 layout
-        is 16 bytes per bone plus two 64-byte matrices and does not describe a 152-byte record, and reading the
-        documented parent field out of these gives values past the bone count. The records are therefore returned raw
-        rather than mislabelled.
+        Measured on 12 models: `groups_offset - bones_offset == bone_count * 152 + 256` exactly. The 256-byte bone map
+        comes LAST, not first - proving the order matters: with the map first (the earlier guess) the root record read as
+        garbage, while with records first it begins `index 0, parent 255`, and 0xFF is the documented root marker.
+
+        The contents of a record are still not decoded: the documented version-156 layout (16 bytes + two 64-byte
+        matrices = 144) cannot describe a 152-byte record, the documented parent byte at +1 gives out-of-range values on
+        other models, and a 4x4 matrix at +16/+24/+32/+40/+48 is orthonormal on only ~5% of 867 bones. Records are
+        returned raw rather than mislabelled.
         """
         header = self.header()
         start, end = header["offsets"]["bones"], header["offsets"]["groups"]
@@ -530,9 +532,8 @@ class ModFile:
         if not count or len(region) < 256 + count * MOD_BONE_RECORD:
             return {"bone_count": count, "region": len(region), "records": [], "map": b"", "consistent": False}
         return {"bone_count": count, "region": len(region),
-                "map": region[:256],
-                "records": [region[256 + i * MOD_BONE_RECORD:256 + (i + 1) * MOD_BONE_RECORD]
-                            for i in range(count)],
+                "records": [region[i * MOD_BONE_RECORD:(i + 1) * MOD_BONE_RECORD] for i in range(count)],
+                "map": region[count * MOD_BONE_RECORD:count * MOD_BONE_RECORD + 256],
                 "consistent": len(region) == 256 + count * MOD_BONE_RECORD}
 
     def mesh_bytes(self, mesh_index: int) -> tuple[bytes, dict]:
