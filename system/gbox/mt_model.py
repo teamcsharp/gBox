@@ -529,6 +529,55 @@ class ModFile:
             return []
         return list(table["map"][:count])
 
+    def bone_world(self) -> list[tuple[int, float, float, float]]:
+        """(index, x, y, z) per bone, composed along the hierarchy from the local bind matrices."""
+        table = self.bone_table()
+        if not table.get("consistent") or not table.get("local"):
+            return []
+        parents = table["parents"]
+        local = [struct.unpack_from("<16f", block, 0) for block in table["local"]]
+        world: list[list[float] | None] = [None] * len(parents)
+        for index in range(len(parents)):
+            parent = parents[index]
+            if parent == 255 or parent >= len(parents) or world[parent] is None:
+                world[index] = list(local[index])
+            else:
+                a, b = world[parent], local[index]
+                world[index] = [sum(a[r * 4 + k] * b[k * 4 + c] for k in range(4))
+                                for r in range(4) for c in range(4)]
+        return [(i, w[12], w[13], w[14]) for i, w in enumerate(world) if w is not None]
+
+    def bone_roles(self) -> dict:
+        """Bone roles inferred from where the bones actually are - the table a retarget needs.
+
+        Measured on Chris's body: the highest bone sits at y 185.1 cm in a 187 cm model (the head), the extremes at
+        x +-88.1 sit at y 152.4 (outstretched fingertips), the lowest is a foot at y 4.4, and the root is the hips. So
+        `head = highest`, `hands = extreme x at arm height`, `feet = lowest on each side`, `root = the bone with no
+        parent`. That is derived per model rather than hand-authored per character, which is what makes it reusable.
+        """
+        points = self.bone_world()
+        if not points:
+            return {}
+        parents = self.bone_table()["parents"]
+        highest = max(points, key=lambda p: p[2])
+        lowest = min(points, key=lambda p: p[2])
+        left = min(points, key=lambda p: p[1])
+        right = max(points, key=lambda p: p[1])
+        roots = [i for i, parent in enumerate(parents) if parent == 255]
+        # feet: the lowest bone on each side of the centre line
+        feet = [min((p for p in points if p[1] <= 0), key=lambda p: p[2], default=None),
+                min((p for p in points if p[1] > 0), key=lambda p: p[2], default=None)]
+        return {"root": roots[0] if roots else None,
+                "hips": roots[0] if roots else None,
+                "head": highest[0],
+                "left_hand": left[0],
+                "right_hand": right[0],
+                "left_foot": feet[0][0] if feet[0] else None,
+                "right_foot": feet[1][0] if feet[1] else None,
+                "lowest": lowest[0],
+                "height": round(highest[2] - lowest[2], 2),
+                "span": round(right[1] - left[1], 2)}
+
     def bone_table(self) -> dict:
         """The skeleton: per-bone headers, then the local and inverse-bind matrices, then the map and palettes.
 

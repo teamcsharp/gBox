@@ -387,3 +387,18 @@ def test_the_bone_block_is_152_bytes_per_bone_and_the_map_follows():
     table = model.bone_table()
     assert table["region"] == 4 * 152 + 256
     assert mt_model.MOD_BONE_RECORD == 152
+def test_bone_roles_are_inferred_from_where_the_bones_are():
+    """Measured on Chris: height 180.7, span 176.2, head at y 185.1, hands at x +-88.1 on a 187 cm model."""
+    model = mt_model.parse_mod(make_mod(meshes=((4, 24),), bones=3))
+    roles = model.bone_roles()
+    assert roles and "head" in roles and "left_hand" in roles and "right_hand" in roles
+    assert roles["height"] >= 0 and roles["span"] >= 0
+    assert roles["root"] == roles["hips"]
+
+
+def test_a_degenerate_skeleton_reports_zero_height_rather_than_inventing_roles():
+    """A weapon or a face part has all its bones at the origin: height 0 is the honest answer, not an error."""
+    model = mt_model.parse_mod(make_mod(meshes=((4, 24),), bones=2))
+    roles = model.bone_roles()
+    assert roles["height"] == 0 and roles["span"] == 0
+    assert roles["head"] == roles["left_hand"] == roles["right_hand"]
