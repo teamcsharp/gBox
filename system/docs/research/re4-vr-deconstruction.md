@@ -34,7 +34,8 @@ pakchunk1optional-Android_ETC2.pak     145,272,968
 
 ## It opens with gBox's own reader
 
-`gbox.ue_pak.open_pak` reads them as they are (no tooling to install):
+`gbox.ue_pak.open_pak` reads them as they are (no tooling to install). The lab route `POST /api/decrypt-lab/ue-pak`
+exposes that: point it at a directory of paks and it lists them, filters entries by path, and extracts one.
 
 ```
 pakchunk1: 475 entries — 211 .uexp, 121 .umap, 90 .uasset, 53 .ubulk
@@ -52,6 +53,23 @@ pakchunk0optional (2.4 GB): 8,883 entries — all .uptnl (UE4 optional segments)
 
 The original RE4 level and character names survive (`BIO4/1st/r100` is the village; `em21_Dog`, `em23_Crow`,
 `em18_Merchant` are the retail enemy names), so the asset tree is navigable by the same names the other editions use.
+
+## The one thing that stops extraction: Oodle
+
+Listing works for every pak; reading an entry does not. `pak.read` returns
+
+```
+Oodle-compressed entry: the game ships no oo2core_*_win64.dll to decompress it
+```
+
+This build links Oodle **statically into `libUE4.so`** (the APK carries `libUE4.so`, `libOVRPlugin.so`, the Bink
+libraries, `libc++_shared.so` and `libovraudio64.so` — no `oo2core`), so there is no library to call. The route answers
+with that 409 instead of writing a corrupt file. Consequences:
+
+* **enumeration and triage are possible now** — names, sizes, paths, pak membership;
+* **byte extraction needs an Oodle decoder**, which is a separate project (either a portable Oodle implementation or
+  pulling the symbols out of the shipped `libUE4.so`), and should be decided on before promising asset rips from this
+  title.
 
 ## How far "made to work in the system" can go
 
