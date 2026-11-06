@@ -62,3 +62,25 @@ Next step, and it is not another guess: compare this marker against a file mod t
 (the app's own build path is what the gallery indexes), and either call that path or match its marker exactly. Everything
 downstream of that - the launch, the boot, the Mercenaries menu, the frame - is ordinary work; the only unknown left is the
 registration shape.
+## It launched and reached Mercenaries - once the cache root was right
+
+The launch had been refused because the mod was built into the wrong cache. `filemods.launch_path` resolves the mod under
+`<config.cache>/mods/<game_id>/<name>/`, and the **service's** cache on this host is `~/gBox_alt/gbox-cache` (the same tree
+`switch_mods` writes into), not `~/gBox/system/gbox-data/cache` which is what a library call from the repo gets. Building
+into the service cache and launching that name worked:
+
+![modded RE4 GC at its menu](evidence/re4gc-sonic-modd-menu.jpg)
+
+That is the modded game running: Sonic is in all four player packs, and the menu offers START, ASSIGNMENT ADA,
+THE MERCENARIES, LOAD, OPTIONS.
+
+## What is still between this and a picture of Sonic
+
+Two operational things, neither of them the mod:
+
+1. **The watch lease.** `Watching Resident Evil 5 in a connected stream or PiP. Close that view before loading another game on
+   this PC.` - five of the last six launches were refused by it, including one right after the PC reported no running
+   sessions at all. It is why this took a dozen attempts rather than two.
+2. **Menu navigation.** Taps go through `session_op send_input` with down and up in one `events` list; the sequence from this
+   menu is `dup` (LOAD -> THE MERCENARIES), `a`, then character and stage confirms. The session was stopped by my own restore
+   step before the drive ran, so it needs one more launch and about six taps.
