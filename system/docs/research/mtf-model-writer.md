@@ -133,6 +133,33 @@ brightness a constant 238.6, `screen=unknown`), while the MRL alone plays a full
 vertex counts and bone/material counts, so it only fits a slot built for the same skeleton. `model_swap.swap_models`
 therefore takes `geometry=False` by default, and a real Sonic/Mario import must emit a MOD matched to the target's bones.
 
+## 2d. The MOD header, and the two stages that are now done
+
+`gbox.mt_model` parses the geometry container too, and re-emits it byte-identically:
+
+```
+0x00  "MOD\0"
+0x04  u32            0x0300d3 / 0x0200d3 / 0xd3 seen
+0x08  u32            0x09000f / 0x020004 / 0x0b000b ...
+0x0c  u32  vertex count of the first submesh
+0x10  u32
+0x14  u32
+0x18  u32  geometry block size      (equals block 4's length on every model checked)
+0x1c  u32  0
+0x20  u32  submesh count
+0x28  7 x u64 block offsets, rising; the last is 4 bytes short of the payload
+      then six blocks
+```
+
+**Round-trip: 31 of 31 MOD containers across five archives are byte-identical**, and there are two header variants: the
+character/weapon models start their offsets at 164, the effect models under `effect\mod\...` start at 0. The variant is
+carried so both are re-emitted exactly.
+
+What is still missing for authoring geometry: `geometry block / vertex count` is an exact integer stride for some models
+(16, 20, 24, 28) and fractional for others (23.487, 19.599), so the block is not a pure vertex stream — the counts at
+0x0c/0x10/0x14 and the submesh count at 0x20 do not yet describe how vertices and indices are split. That split is the
+remaining decode.
+
 ## 3. The build order (each step has a test that fails loudly)
 
 1. **Parse**: read the header, the offset table and the geometry block of a real model into a structure, and assert
