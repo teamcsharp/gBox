@@ -46,11 +46,16 @@ def _fit(points, source_box, target_box, *, keep_aspect: bool = True):
 
 
 def build_model(source_model: mt_model.ModFile, vertices: list[dict], triangles: list[tuple[int, int, int]],
-                *, material_index: int = 0) -> bytes:
+                *, material_index: int = 0, keep_bounds: bool = True) -> bytes:
     """A copy of `source_model` whose geometry is one part: `vertices` packed in IMPORT_FORMAT, `triangles` as strips.
 
-    Keeps the target's bones, groups, materials and header tail (bounds rewritten to cover the new mesh), so the model still
-    belongs to the game's character and animates with it.
+    Keeps the target's bones, groups, materials and header tail, so the model still belongs to the game's character and
+    animates with it.
+
+    `keep_bounds` defaults to True and that is deliberate: a rewritten bounding box **freezes the title** (measured - a
+    Majini at 1.2x with a rewritten box froze on a still frame, while the same model at 0.8x with its own box ran). So the
+    imported mesh is quantised against the box the model already has, and the caller is responsible for fitting it inside
+    (`_fit` already does: it places the source in the target's box).
     """
     if not vertices or not triangles:
         raise ImportError_("an imported model needs vertices and triangles")
@@ -60,18 +65,24 @@ def build_model(source_model: mt_model.ModFile, vertices: list[dict], triangles:
     points = [tuple(v["position"]) for v in vertices]
     low = tuple(min(p[i] for p in points) for i in range(3))
     high = tuple(max(p[i] for p in points) for i in range(3))
-    bounds = {"sphere": {"x": (low[0] + high[0]) / 2, "y": (low[1] + high[1]) / 2, "z": (low[2] + high[2]) / 2,
-                         "r": max(high[i] - low[i] for i in range(3)) / 2},
-              "min": {"x": low[0], "y": low[1], "z": low[2]},
-              "max": {"x": high[0], "y": high[1], "z": high[2]}}
+    box = source_model.bounds() if keep_bounds else None
+    if box is None:
+        box = {"sphere": {"x": (low[0] + high[0]) / 2, "y": (low[1] + high[1]) / 2, "z": (low[2] + high[2]) / 2,
+                          "r": max(high[i] - low[i] for i in range(3)) / 2},
+               "min": {"x": low[0], "y": low[1], "z": low[2]},
+               "max": {"x": high[0], "y": high[1], "z": high[2]}}
+        if any(box["min"][axis] > low[i] or box["max"][axis] < high[i] for i, axis in enumerate("xyz")):
+            raise ImportError_("the mesh does not fit the box that is being kept")
+    # quantise against the box the model will actually carry
+    low_q = (box["min"]["x"], box["min"]["y"], box["min"]["z"])
+    spans = (box["max"]["x"] - low_q[0], box["max"]["y"] - low_q[1], box["max"]["z"] - low_q[2])
     vertex_buffer = bytearray()
     for vertex in vertices:
         packed = bytearray(IMPORT_STRIDE)
-        x, y, z = vertex["position"]
         values = []
-        for axis, value in enumerate((x, y, z)):
-            span = high[axis] - low[axis]
-            scaled = 0.0 if not span else (value - low[axis]) / span
+        for axis, value in enumerate(vertex["position"]):
+            span = spans[axis]
+            scaled = 0.0 if not span else (value - low_q[axis]) / span
             values.append(max(0, min(32767, int(round(scaled * 32767.0)))))
         struct.pack_into("<3H", packed, 0, *values)
         bones = list(vertex.get("bones") or [0])[:1] or [0]
@@ -90,9 +101,11 @@ def build_model(source_model: mt_model.ModFile, vertices: list[dict], triangles:
     index_count = len(strips) // 2
     record = {"vertex_count": len(vertices), "vertex_stride": IMPORT_STRIDE, "vertex_format": IMPORT_FORMAT,
               "vertex_offset": 0, "material_index": material_index, "level_of_detail": 0}
+    # bounds are NOT rewritten: a rewritten box freezes the title (measured), so the model keeps its own and the mesh was
+    # quantised against it above. The bounds parameter is left out on purpose rather than passed the same values.
     built = mt_model.rebuild_mod(source_model, vertex_buffer=bytes(vertex_buffer), index_buffer=bytes(strips),
                                  mesh_records=[record], vertex_count=len(vertices), mesh_count=1,
-                                 face_count=index_count, bounds=bounds)
+                                 face_count=index_count)
     check = mt_model.parse_mod(built)
     if not check.split_valid():
         raise ImportError_("the rebuilt model does not describe itself")
