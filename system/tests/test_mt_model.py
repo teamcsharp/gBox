@@ -39,6 +39,9 @@ def make_mod(meshes=((100, 24),), groups=1, bones=2, materials=1):
         record[0x05] = 0
         record[0x06] = 0
         record[0x0A] = stride
+        # the format is a documented FVF written big-endian, and its stride must agree with the record's
+        fvf = next(value for value, size in mt_model.MOD_FVF_STRIDES.items() if size == stride)
+        record[mt_model.MOD_MESH_FORMAT_OFFSET:mt_model.MOD_MESH_FORMAT_OFFSET + 4] = fvf.to_bytes(4, "big")
         mesh_block += record
         vertex_total += vertex_count * stride
     faces = 30
@@ -164,3 +167,20 @@ def test_the_writer_refuses_an_undecoded_variant():
     struct.pack_into("<Q", data, mt_model.MOD_BLOCK_OFFSETS, 0)     # the effect variant's table starts at 0
     with pytest.raises(mt_model.ModelError):
         mt_model.rebuild_mod(mt_model.parse_mod(bytes(data)))
+@pytest.mark.parametrize("value,stride", [
+    (0x133098B0, 12), (0x14A07DDB, 16), (0x1580B60C, 20), (0x1C201FC3, 24),
+    (0x2000D414, 28), (0x29F0B449, 28), (0x2ED06F92, 32), (0x244042BB, 36),
+    (0x23305964, 40), (0x2770CFCB, 48), (0x3DC0552F, 64),
+])
+def test_a_documented_fvf_names_its_vertex_stride(value, stride):
+    assert mt_model.fvf_stride(value) == stride
+    assert mt_model.fvf_stride(0xDEADBEEF) is None
+
+
+def test_a_mesh_record_reports_its_format_and_the_stride_that_format_implies():
+    """Measured on 1895 real records: the format sits at +0x14 big-endian and its stride agrees with the record's."""
+    model = mt_model.parse_mod(make_mod(meshes=((100, 24), (60, 28))))
+    meshes = model.meshes()
+    assert [m["vertex_stride"] for m in meshes] == [24, 28]
+    assert all(m["format_stride"] == m["vertex_stride"] for m in meshes)
+    assert mt_model.fvf_stride(meshes[0]["vertex_format"]) == 24

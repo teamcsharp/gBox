@@ -149,6 +149,23 @@ MOD_MESH_FIELDS = (
     ("level_of_detail", 0x06, "B"),
     ("vertex_stride", 0x0A, "B"),
 )
+MOD_MESH_FORMAT_OFFSET = 0x14        # a u32 written big-endian, one of the documented FVF values
+# The documented FVF values and the vertex stride each one implies (MT Framework MOD research). Measured on 1895 mesh
+# records: the value at +0x14 is one of these on 1895 of 1895, and its stride agrees with the record's own vertex_stride
+# on 1895 of 1895 - an independent confirmation of both fields.
+MOD_FVF_STRIDES = {
+    0x133098B0: 12, 0x14A07DDB: 16, 0x36D0D7A7: 20, 0x1580B60C: 20, 0x18B0FAA8: 20,
+    0x1C201FC3: 24, 0x3AA06FC6: 24, 0x1AC0F6CB: 24, 0x287029D8: 24, 0x3870A4D1: 24, 0x37607D20: 24,
+    0x2000D414: 28, 0x29F0B449: 28, 0x16C020A3: 28, 0x2C207F5E: 28, 0x3C004EA1: 28, 0x2D30A6AF: 28,
+    0x2ED06F92: 32, 0x2AE06DB8: 32, 0x33C09993: 32, 0x21A055DA: 32, 0x1B8077D8: 32,
+    0x244042BB: 36, 0x1F1092B3: 36, 0x341068B6: 36, 0x2FC0B663: 36,
+    0x23305964: 40, 0x2770CFCB: 48, 0x3DC0552F: 64,
+}
+
+
+def fvf_stride(value: int) -> int | None:
+    """The vertex stride a documented FVF format implies, or None when the format is not in the table."""
+    return MOD_FVF_STRIDES.get(value)
 MOD_OFFSET_NAMES = ("bones", "groups", "materials", "meshes", "vertex_buffer", "index_buffer", "end")
 
 
@@ -216,6 +233,9 @@ class ModFile:
             record = {"index": index}
             for name, offset, code in MOD_MESH_FIELDS:
                 record[name] = struct.unpack_from("<" + code, self.raw, base + offset)[0]
+            record["vertex_format"] = int.from_bytes(self.raw[base + MOD_MESH_FORMAT_OFFSET:
+                                                              base + MOD_MESH_FORMAT_OFFSET + 4], "big")
+            record["format_stride"] = fvf_stride(record["vertex_format"])
             out.append(record)
         return out
 
