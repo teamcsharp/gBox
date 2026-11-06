@@ -530,7 +530,9 @@ class Bot:
         if not self._may_fire(p, e, dist, snap):
             return {"hold": set()}                           # aligned but a fire-gate blocks it: hold fire, keep aim
         self.stats["shots"] = self.stats.get("shots", 0) + 1
-        return {"hold": {AIM_BTN, FIRE_BTN}}
+        # aim held, trigger TAPPED: the engine sends a tap as down+up before the hold, so the shot fires and the aim
+        # key stays down. Holding both (the first cut) never released the trigger, so a round fired once and stuck.
+        return {"hold": {AIM_BTN}, "tap": FIRE_BTN}
 
     def prompt_ok(self, button, snap, now):
         return False
