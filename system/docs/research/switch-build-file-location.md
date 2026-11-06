@@ -1,17 +1,20 @@
 # Where a Switch build file actually lives
 
-Trying to relaunch the Sonic-slots build exposed an operational gap that cost a round.
+Two roots exist and I had been inspecting the wrong one:
 
-Scanning every build folder under both `gBox/system/gbox-data/cache/mods/<game_id>/` and
-`gBox_alt/gbox-cache/mods/<game_id>/` finds **no uEm10.arc in any of them** - even in builds that demonstrably ran with that
-arc (cast-inverted swaps uEm10 today, and the Sonic-slots run reached character select with the slots archive installed).
+```
+~/gBox_alt/gbox-cache/mods/<game_id>/<build>/     <- switch_mods WRITES here (the tool says so in its own output)
+~/gBox/system/gbox-data/cache/mods/<game_id>/<build>/   <- where I kept looking, and where my hand copies went
+```
 
-So the file the emulator reads is not in the build folder the tool reports. `new_build` returns `succeeded` and a build gets
-its marker, but the folder `switch_mods.build_dir(...)` then points at holds no marker and no romfs, and the copies made with
-`shutil.copyfile` went somewhere nothing reads. The LayeredFS mechanism is `link_build`, which links the build into the
-emulator's own load folder (`load/<title_id>/<build>`).
+That is why scanning the second root found no `uEm10.arc` in any build while `cast-inverted` demonstrably swaps it every
+round, and why hand copies were invisible to the emulator.
 
-**Rule: populate a build through `switch_mods`, never by copying files into a build directory.** `op: "write"` or
-`op: "apply_live"` with `changes` both register the build and record the edit (which is what makes `revert` work), and they
-are what the MercMode panel itself uses. A hand copy leaves the manifest, the link and the launch registry disagreeing - which
-looks exactly like "the game ignored my mod".
+**Rule: populate a build through `switch_mods` (`op: write` / `op: apply_live` with `changes`), never by copying files into a
+build directory**, and when checking what a build holds, use the `dir` the tool reports rather than a path you assumed.
+
+Verified this round: `op: write` with `{"from": "<path on the worker>"}` installed an 82 MB `uEm10.arc` as edit
+`e1793992938982-001`, the launch then reported `succeeded`, and the session came up with `mod: "ssv1322"` - so a build
+installed this way is registered and loaded. (The `{"from": path}` source also avoids base64-ing an 82 MB payload through
+JSON.) What is still unshown for that build is a frame with an enemy in it: the capture window returned no frames over 8 KB,
+and the round had already been replaced by the rotation when it was checked.
