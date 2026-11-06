@@ -378,10 +378,11 @@ def adopt_current(store, worker, session, telemetry, *, now=None):
             or job.get('worker_id')!=wid or job.get('require_worker')!=wid \
             or (job.get('input') or {}).get('session_id')!=sid or (job.get('input') or {}).get('op')!='start':
         raise ValueError('The active bot does not match its accepted native worker job')
-    # the title of the running game: the Switch editions resolve through re_switch (TITLES' game_ids hold the
-    # native disc ids only, so a Switch session resolved to None and could never be adopted)
+    # the title of the running game: the Switch editions resolve through re_switch's edition table (TITLES' game_ids
+    # hold the native disc ids only, so a Switch session resolved to None and could never be adopted)
     from . import re_switch
-    title = re_switch.title_for(session.get('game_id')) \
+    game = store.catalog_get(session.get('game_id')) or {}
+    title = re_switch._edition(game) \
         or next((t for t, r in TITLES.items() if session.get('game_id') in r['game_ids'] and r['playable']), None)
     if title not in cfg['titles']:
         raise ValueError('This verified title is not selected for MercMode')
@@ -389,11 +390,11 @@ def adopt_current(store, worker, session, telemetry, *, now=None):
     launch=store.get('job',launch_id) or {}
     pid=(session.get('detail') or {}).get('pid'); started=session.get('started')
     if launch.get('tool')!='launch_game' or launch.get('state')!='succeeded' \
-            or launch.get('worker_id')!=wid or launch.get('require_worker')!=wid \
+            or not wid or (launch.get('worker_id') or launch.get('require_worker'))!=wid \
             or ((launch.get('input') or {}).get('game') or {}).get('game_id')!=session['game_id'] \
             or _launch_session(store,launch_id,[session],worker_id=wid,game_id=session['game_id']) is None \
             or type(pid) is not int or pid<=0 or type(started) not in (int,float) or not math.isfinite(started) \
-            or session.get('adapter') not in ('rpcs3','dolphin'):
+            or session.get('adapter') not in ('rpcs3','dolphin','eden','citron'):
         raise ValueError('The adopted emulator needs its exact accepted launch and process identity')
     old=store.get(STATE,worker['name'])
     if old:
