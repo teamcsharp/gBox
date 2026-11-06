@@ -244,6 +244,98 @@ def decode_uvs(data: bytes, vertex_format: int, count: int, stride: int) -> list
     return out
 
 
+def encode_positions(points: list[tuple[float, float, float]], bounds: dict, vertex_format: int) -> bytes:
+    """Pack model-space positions the way the format stores them: the inverse of decode_positions.
+
+    This is the writer's primitive. The quantisation is the one measured on decode - `(value - min) / size * 32767` for
+    the short formats - so a value that survives decode and re-encode comes back within one quantisation step, which is
+    what the round-trip test checks.
+    """
+    low = (bounds["min"]["x"], bounds["min"]["y"], bounds["min"]["z"])
+    span = (bounds["max"]["x"] - low[0], bounds["max"]["y"] - low[1], bounds["max"]["z"] - low[2])
+    out = bytearray()
+    for x, y, z in points:
+        if vertex_format in MOD_FLOAT_POSITION:
+            out += struct.pack("<3f", x, y, z)
+            continue
+        if vertex_format not in MOD_SHORT_POSITION:
+            raise ModelError(f"format {vertex_format:08x} has no known position layout")
+        packed = []
+        for axis, value in enumerate((x, y, z)):
+            scaled = 0.0 if not span[axis] else (value - low[axis]) / span[axis]
+            packed.append(max(0, min(32767, int(round(scaled * 32767.0)))))
+        out += struct.pack("<3H", *packed)
+    return bytes(out)
+
+
+def encode_normals(normals: list[tuple[float, float, float]], vertex_format: int) -> bytes:
+    """Pack normals as the three signed bytes the confirmed formats use."""
+    if vertex_format not in MOD_FVF_LAYOUTS:
+        raise ModelError(f"format {vertex_format:08x} has no known normal layout")
+    out = bytearray()
+    for x, y, z in normals:
+        out += struct.pack("<3b", max(-127, min(127, int(round(x * 127.0)))),
+                           max(-127, min(127, int(round(y * 127.0)))),
+                           max(-127, min(127, int(round(z * 127.0)))))
+    return bytes(out)
+
+
+def encode_uvs(uvs: list[tuple[float, float]], vertex_format: int) -> bytes:
+    """Pack texture coordinates as half floats."""
+    if vertex_format not in MOD_FVF_LAYOUTS:
+        raise ModelError(f"format {vertex_format:08x} has no known uv layout")
+    return b"".join(struct.pack("<2e", u, v) for u, v in uvs)
+
+
+def pack_vertices(vertices: list[dict], vertex_format: int, stride: int) -> bytes:
+    """Build a vertex buffer: each component written at its documented offset inside the stride.
+
+    This is what a writer hands to the container. A vertex is a dict with any of "position" (model-space x, y, z),
+    "normal" (unit vector), "uv" (u, v) and "bones" (ids). Anything the format does not carry, or the caller does not
+    supply, is left as whatever `fill` the caller seeded; components are never invented.
+    """
+    layout = MOD_FVF_LAYOUTS.get(vertex_format, {})
+    short_position = vertex_format in MOD_SHORT_POSITION
+    float_position = vertex_format in MOD_FLOAT_POSITION
+    if not (short_position or float_position):
+        raise ModelError(f"format {vertex_format:08x} has no known position layout")
+    bone_field = MOD_BONE_FIELDS.get(vertex_format)
+    out = bytearray()
+    for vertex in vertices:
+        packed = bytearray(stride)
+        bounds = vertex.get("bounds")
+        if "position" in vertex:
+            x, y, z = vertex["position"]
+            if short_position:
+                if not bounds:
+                    raise ModelError("a short-position vertex needs the model bounds to quantise against")
+                low = (bounds["min"]["x"], bounds["min"]["y"], bounds["min"]["z"])
+                span = (bounds["max"]["x"] - low[0], bounds["max"]["y"] - low[1], bounds["max"]["z"] - low[2])
+                values = []
+                for axis, value in enumerate((x, y, z)):
+                    scaled = 0.0 if not span[axis] else (value - low[axis]) / span[axis]
+                    values.append(max(0, min(32767, int(round(scaled * 32767.0)))))
+                struct.pack_into("<3H", packed, 0, *values)
+            else:
+                struct.pack_into("<3f", packed, 0, x, y, z)
+        if "normal" in vertex and "normal" in layout:
+            nx, ny, nz = vertex["normal"]
+            struct.pack_into("<3b", packed, layout["normal"],
+                             max(-127, min(127, int(round(nx * 127)))),
+                             max(-127, min(127, int(round(ny * 127)))),
+                             max(-127, min(127, int(round(nz * 127)))))
+        if "uv" in vertex and "uv" in layout:
+            struct.pack_into("<2e", packed, layout["uv"], *vertex["uv"])
+        if "bones" in vertex and bone_field:
+            offset, width, code = bone_field
+            values = list(vertex["bones"])[:width]
+            while len(values) < width:
+                values.append(0)
+            struct.pack_into(f"<{width}{code}", packed, offset, *values)
+        out += packed
+    return bytes(out)
+
+
 def decode_positions(data: bytes, vertex_format: int, count: int, stride: int, bounds: dict,
                      limit: int = 0) -> list[tuple[float, float, float]]:
     """Positions from a mesh's vertex data, dequantised by the model's box.

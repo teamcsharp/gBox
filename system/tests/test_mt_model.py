@@ -290,3 +290,23 @@ def test_bone_ids_decode_for_every_confirmed_format():
 
 def test_an_unconfirmed_format_yields_no_bone_ids():
     assert mt_model.decode_bone_ids(b"\x00" * 64, 0xDEADBEEF, 2, 32) == []
+def test_a_vertex_survives_packing_and_decoding():
+    """The writer's path: encode a vertex the way a format stores it, then read every component back."""
+    bounds = {"sphere": {"x": 0.0, "y": 50.0, "z": 0.0, "r": 25.0},
+              "min": {"x": -10.0, "y": 0.0, "z": -10.0},
+              "max": {"x": 10.0, "y": 100.0, "z": 10.0}}
+    vertex = {"position": (0.0, 50.0, -10.0), "normal": (0.0, 1.0, 0.0), "uv": (0.25, 0.75), "bones": (3,), "bounds": bounds}
+    packed = mt_model.pack_vertices([vertex], 0x18B0FAA8, 20)
+    assert len(packed) == 20
+    position = mt_model.decode_positions(packed, 0x18B0FAA8, 1, 20, bounds)[0]
+    assert all(abs(a - b) < 0.01 for a, b in zip(position, vertex["position"]))
+    normal = mt_model.decode_normals(packed, 0x18B0FAA8, 1, 20)[0]
+    assert abs(normal[1] - 1.0) < 0.01 and abs(normal[0]) < 0.01
+    uv = mt_model.decode_uvs(packed, 0x18B0FAA8, 1, 20)[0]
+    assert abs(uv[0] - 0.25) < 0.001 and abs(uv[1] - 0.75) < 0.001
+    assert mt_model.decode_bone_ids(packed, 0x18B0FAA8, 1, 20) == [(3,)]
+
+
+def test_packing_refuses_a_short_position_without_bounds():
+    with pytest.raises(mt_model.ModelError):
+        mt_model.pack_vertices([{"position": (1.0, 2.0, 3.0)}], 0x18B0FAA8, 20)
