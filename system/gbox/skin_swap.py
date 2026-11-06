@@ -32,6 +32,19 @@ CHARACTER_ARCS = {
         "barry": "nativeNXx64/ImgNX/Archive/uPl06BarryNormal.arc",
         "rebecca": "nativeNXx64/ImgNX/Archive/uPl07RebeccaNormal.arc",
     },
+    # RE6 No Mercy's playable cast, one body arc each (its head/hand/accessory arcs are separate files and are not
+    # swapped here). RE6 keeps its arcs under arc/NX and they are the same MTF containers as RE5's.
+    "01002A000CD48000": {
+        "leon": "nativeNXx64/arc/NX/uPl00LeonUsa.arc",
+        "helena": "nativeNXx64/arc/NX/uPl01HelenaUsa.arc",
+        "chris": "nativeNXx64/arc/NX/uPl02ChrisAsia.arc",
+        "piers": "nativeNXx64/arc/NX/uPl03PiersAsia.arc",
+        "jake": "nativeNXx64/arc/NX/uPl04JakeAsia.arc",
+        "sherry": "nativeNXx64/arc/NX/uPl05SherryAsia.arc",
+        "ada": "nativeNXx64/arc/NX/uPl06AdaA.arc",
+        "carla": "nativeNXx64/arc/NX/uPl06AdaCarla.arc",
+        "helper": "nativeNXx64/arc/NX/uPl07HelperNormal.arc",
+    },
 }
 
 
@@ -156,11 +169,17 @@ ZOMBIE_ARCS = {
     "010018100CD46000": ("nativeNXx64/ImgNX/Archive/uEm10.arc", "nativeNXx64/ImgNX/Archive/uEm11.arc",
                          "nativeNXx64/ImgNX/Archive/uEm21.arc", "nativeNXx64/ImgNX/Archive/uEm62.arc",
                          "nativeNXx64/ImgNX/Archive/uEm6c.arc", "nativeNXx64/ImgNX/Archive/uEm71.arc"),
+    # RE6 No Mercy fills its enemy table with uEm5200/uEm5210 zombies, uEm1000 J'avo and the big ones (uEm2100 / 2210 /
+    # 2300) - the classes its driver names out of sEnemy (mercs/titles/re6_switch.py). RE6 keeps its arcs under arc/NX.
+    "01002A000CD48000": ("nativeNXx64/arc/NX/uEm5200.arc", "nativeNXx64/arc/NX/uEm5210.arc",
+                         "nativeNXx64/arc/NX/uEm1000.arc", "nativeNXx64/arc/NX/uEm2100.arc",
+                         "nativeNXx64/arc/NX/uEm2210.arc", "nativeNXx64/arc/NX/uEm2300.arc"),
 }
 PLAYER_AS_MAJINI = {
     # the enemy whose clothes (texture maps) the player character wears: "characters in majini clothes" (uEm10 is the
     # majini the round spawns, so its clothes are the ones the player would otherwise be wearing in the fight)
     "010018100CD46000": "nativeNXx64/ImgNX/Archive/uEm10.arc",
+    "01002A000CD48000": "nativeNXx64/arc/NX/uEm5200.arc",
 }
 
 
