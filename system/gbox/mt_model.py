@@ -904,6 +904,10 @@ def rebuild_mod(model: ModFile, *, vertex_buffer: bytes | None = None, index_buf
             for name, offset, code in MOD_MESH_FIELDS:
                 if name in record:
                     struct.pack_into("<" + code, head, base + offset, record[name])
+            # the vertex format is written BIG-endian at +0x14 and is not in MOD_MESH_FIELDS, so a record built from
+            # scratch needs it packed here: without it the format reads as 0 and no position decodes (measured).
+            if "vertex_format" in record:
+                struct.pack_into(">I", head, base + MOD_MESH_FORMAT_OFFSET, int(record["vertex_format"]))
         regions["meshes"] = bytes(head) + trailer
     if vertex_buffer is not None:
         regions["vertex_buffer"] = vertex_buffer
