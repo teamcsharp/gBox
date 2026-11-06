@@ -61,30 +61,32 @@ def body_group(groups: dict) -> str | None:
     return max(pool, key=lambda g: pool[g]["BM"].size)
 
 
-def swap_arc(data: bytes, donor_data: bytes) -> tuple[bytes, str, str]:
+def swap_arc(data: bytes, donor_data: bytes, *, follow_tag: bool = False) -> tuple[bytes, str, str]:
     """The slot archive wearing the donor character's skin: its body group's base/mask/normal maps are replaced.
 
-    Returns (bytes, slot group, donor group). Material entries keep their own names and tags, so only the skin
-    pixels change; a map the donor lacks is left alone.
+    Returns (bytes, slot group, donor group). Material entries keep their own names; a map the donor lacks is left
+    alone. By default a map moves only when its tag matches (same dimensions and format), because a texture of
+    another size under this tag is not a valid swap. With follow_tag the slot's tag moves with the donor's data, so
+    the pair stays self-consistent and a differently sized skin can be tried.
     """
     slot_arc, donor_arc = mt_arc.parse(data), mt_arc.parse(donor_data)
     slot_groups, donor_groups = material_groups(slot_arc), material_groups(donor_arc)
     slot_name, donor_name = body_group(slot_groups), body_group(donor_groups)
     if slot_name is None or donor_name is None:
         raise mt_arc.ArcError("a character has no body skin group to swap")
+    # entry indices in the slot archive, so a repeated name cannot send a replacement to the wrong entry
+    index = {e.name: i for i, e in enumerate(slot_arc.entries)}
     patched = data
-    moved = 0
-    skipped = []
+    moved, skipped = 0, []
     for kind in ("BM", "MM", "NM"):
         dst, src = slot_groups[slot_name].get(kind), donor_groups[donor_name].get(kind)
         if dst is None or src is None:
             continue
-        # the tag carries the map's dimensions and format: a donor map of a different size is not a valid swap and
-        # renders black (or worse), so only same-tag maps move
-        if dst.tag != src.tag:
+        if dst.tag != src.tag and not follow_tag:
             skipped.append(dst.name)
             continue
-        patched = mt_arc.replace(patched, dst.name, src.data)
+        patched = mt_arc.replace_at(patched, index[dst.name], src.data,
+                                    tag=(src.tag if follow_tag and dst.tag != src.tag else None))
         moved += 1
     if not moved:
         raise mt_arc.ArcError("the donor's skin maps do not match the slot's format (nothing safe to swap)")

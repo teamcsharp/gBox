@@ -117,12 +117,15 @@ def replace(data: bytes, name: str, new_data: bytes) -> bytes:
     return build(arc)
 
 
-def replace_at(data: bytes, index: int, new_data: bytes) -> bytes:
-    """Return the archive with entry `index`'s payload replaced (its name, order and tag are kept).
+def replace_at(data: bytes, index: int, new_data: bytes, tag: int | None = None) -> bytes:
+    """Return the archive with entry `index`'s payload replaced (its name and order are kept).
 
     Archives may hold the same name more than once - uWp06.arc carries two `wp0600` entries (the placed mine's mesh,
     about 1 KB and 13.6 KB) - so a name lookup cannot address the second one. Order is preserved by build(), so an
     index stays valid across successive calls on the same archive.
+
+    `tag` lets the entry's tag follow the payload. It encodes the texture's dimensions and format, so replacing a
+    texture with one of another size keeps them consistent only if the tag moves with it.
     """
     arc = parse(data)
     if not 0 <= index < len(arc.entries):
@@ -130,4 +133,6 @@ def replace_at(data: bytes, index: int, new_data: bytes) -> bytes:
     entry = arc.entries[index]
     entry.data = bytes(new_data)
     entry.size = len(entry.data)
+    if tag is not None:
+        entry.tag = int(tag)
     return build(arc)

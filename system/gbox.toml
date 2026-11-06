@@ -294,15 +294,10 @@ context_tokens = 65536
 shared_with_games = false          # a dedicated inference machine, not the one rendering games
 allow_large_tasks = true           # takes bounded milestones on inbox work
 
-[hermes.local.nodes.sparkDeux]
-enabled = true
-upstream = "http://10.89.1.225:8101/v1"
-model = "nvidia/Qwen3.8-27B-NVFP4"
-api_format = "openai"
-max_parallel_jobs = 12
-context_tokens = 65536
-shared_with_games = false
-allow_large_tasks = true
+# sparkDeux removed 2026-11-05: it is the same vLLM server as lilspark2 (byte-identical /metrics and process start
+# time), so the pool counted one machine twice. lilspark2 (spark2) is the one task-processing server; lilspark only
+# dispatches. The mercs round analyses that named sparkDeux still run: round_reports.LEGACY_TARGETS keeps that label
+# valid for lilspark2.
 
 [rewind]
 checkpoints = false   # 2026-10-13: off until the checkpoint ring is proven not to stall Flycast/Dolphin (operator saw 2 fps, #1489)

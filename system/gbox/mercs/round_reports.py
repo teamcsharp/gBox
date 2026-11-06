@@ -21,7 +21,8 @@ from ..store import append_audit
 
 KIND = 'mercs_round_report'
 STATE = 'mercs_round_report_state'
-TARGET = 'sparkDeux'  # configured Spark2 inference host; never an emulator worker ID
+TARGET = 'lilspark2'  # the one task-processing server (spark2); lilspark dispatches, it does not infer
+LEGACY_TARGETS = ('sparkDeux',)   # the old name for the same machine: requests minted before the collapse still run
 TITLES = {'BLUS30491': ('e7ca89bbeb67360d',),
           'G4BE08': ('78ab9efa2e310db4', 'e42c9b780c07c437'),
           'BH6': ('0871eee3b68cdea3',),

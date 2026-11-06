@@ -154,6 +154,21 @@ def requested_player_damage(request) -> bool:
         return False                               # missing/unreachable durable owner is not authorization
 
 
+def _targets() -> tuple:
+    """The node labels a Mercenaries round analysis may name: the configured target, plus the name that machine had
+    before the phantom node was collapsed (sparkDeux and lilspark2 are one server; lilspark only dispatches)."""
+    from .mercs import round_reports
+    return (round_reports.TARGET, *round_reports.LEGACY_TARGETS)
+
+
+def _targets_for(name: str) -> tuple:
+    """Which required-node labels the machine `name` satisfies: its own, or the legacy label of the same machine."""
+    from .mercs import round_reports
+    if name == round_reports.TARGET:
+        return (round_reports.TARGET, *round_reports.LEGACY_TARGETS)
+    return (name,)
+
+
 def requested_round_analysis(request) -> bool:
     """Only the server's exact durable solo-round/request pair may share game ownership. A done or blocked request is
     never dispatched, so it is not verified (2026-10-27: each tick fetched all ~740 saved reports, 148 of them done)."""
@@ -162,7 +177,7 @@ def requested_round_analysis(request) -> bool:
             or request.get('status') not in ('open', 'in_progress') \
             or request.get('author') != 'agent' or request.get('kind') != 'report' \
             or context.get('operator_requested') is not True or context.get('read_only') is not True \
-            or context.get('required_inference_node') != 'sparkDeux' \
+            or context.get('required_inference_node') not in _targets() \
             or not ID.fullmatch(str(request.get('id',''))) \
             or not HASH.fullmatch(str(context.get('mercs_round_report_id',''))) \
             or not re.fullmatch('[a-f0-9]{32}', str(context.get('mercs_round_id',''))):
@@ -1035,7 +1050,7 @@ def tick(*, now=None):
             # Required nodes are admission constraints, including while the
             # controller uses an unpooled/cloud route. Unknown targets wait.
             node_options = [v for v in options if v[1].get('required_inference_node') is None
-                            or node is not None and v[1]['required_inference_node'] == node['name']]
+                            or node is not None and v[1]['required_inference_node'] in _targets_for(node['name'])]
             # Give both backlogs capacity; spare slots go to whichever has work.
             counts = {lane: sum(j.get('name', '').startswith(PREFIX + lane + ' ') and
                                j['id'] in reserved for j in jobs) +

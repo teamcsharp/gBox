@@ -415,6 +415,7 @@ class ModelSwapIn(BaseModel):
     donor_arc: str
     build: str = "gbox-lab"
     with_mesh: bool = False   # objects also take the donor's mesh entries (its shape), not only its material maps
+    tag_follow: bool = False  # a map of another size moves too, its tag travelling with it (an experiment)
 
 
 class StripClothesIn(BaseModel):
@@ -1041,7 +1042,8 @@ def install(app, store, config, auth, tactical_store=None):
         arc_file = resolve(body.arc_path)
         donor_file = resolve(body.donor_arc)
         try:
-            data, slot_group, donor_group = skin_swap.swap_arc(arc_file.read_bytes(), donor_file.read_bytes())
+            data, slot_group, donor_group = skin_swap.swap_arc(arc_file.read_bytes(), donor_file.read_bytes(),
+                                                              follow_tag=bool(body.tag_follow))
         except mt_arc.ArcError as exc:
             raise HTTPException(400, str(exc)) from exc
         meshes = []
@@ -1052,10 +1054,14 @@ def install(app, store, config, auth, tactical_store=None):
             donor_maps = skin_swap.material_groups(donor_arc).get(donor_group) or {}
             moved_maps = [k for k in ("BM", "MM", "NM")
                           if slot_maps.get(k) is not None and donor_maps.get(k) is not None
-                          and slot_maps[k].tag == donor_maps[k].tag]
+                          and (body.tag_follow or slot_maps[k].tag == donor_maps[k].tag)]
             kept = [k for k in ("BM", "MM", "NM") if k not in moved_maps and slot_maps.get(k) is not None]
             if kept:
                 moved_maps.append(f"kept:{','.join(kept)}")
+            retagged = [k for k in moved_maps if k in ("BM", "MM", "NM")
+                        and slot_maps[k].tag != donor_maps[k].tag]
+            if retagged:
+                moved_maps.append(f"retagged:{','.join(retagged)}")
         except mt_arc.ArcError:
             pass
         if body.with_mesh:
