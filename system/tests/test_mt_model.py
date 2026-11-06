@@ -228,3 +228,19 @@ def test_a_float_position_format_is_not_guessed_at():
     record = model.meshes()[0]
     assert record["vertex_format"] in mt_model.MOD_SHORT_POSITION            # the fixture uses a short format
     assert mt_model.decode_positions(b"\x00" * 96, 0x287029D8, 4, 24, model.bounds()) == []
+def test_normals_and_uvs_decode_for_a_confirmed_format():
+    """Measured: on formats 0x18b0faa8 / 0x1c201fc3 / 0x2000d414 the normals are unit length on 100% of vertices."""
+    vertex = bytearray(20)
+    struct.pack_into("<3b", vertex, 8, 0, 127, 0)          # a normal pointing up
+    struct.pack_into("<2e", vertex, 16, 0.5, 0.25)         # a uv
+    data = bytes(vertex) + b"\x00" * 4                     # one stream; count comes from the caller
+    normals = mt_model.decode_normals(data, 0x18B0FAA8, 1, 20)
+    uvs = mt_model.decode_uvs(data, 0x18B0FAA8, 1, 20)
+    assert normals and abs(normals[0][1] - 1.0) < 0.001 and abs(normals[0][0]) < 0.001
+    assert uvs and abs(uvs[0][0] - 0.5) < 0.001 and abs(uvs[0][1] - 0.25) < 0.001
+
+
+def test_an_unconfirmed_format_returns_no_normals_rather_than_a_guess():
+    """0x133098b0's normals decode to unit length on only 39% of vertices, so nothing is claimed for it."""
+    assert mt_model.decode_normals(b"\x00" * 96, 0x133098B0, 8, 12) == []
+    assert mt_model.decode_uvs(b"\x00" * 96, 0x133098B0, 8, 12) == []

@@ -172,6 +172,45 @@ def fvf_stride(value: int) -> int | None:
 # Formats whose position is three signed shorts. Everything else in the record is per-format; positions are what the
 # 3D view needs first, and they are the component that can be validated against the model's own box.
 MOD_SHORT_POSITION = frozenset({0x133098B0, 0x18B0FAA8, 0x1580B60C, 0x1C201FC3, 0x2000D414, 0x14A07DDB, 0x16C020A3})
+# Component offsets for the formats whose normals and UVs are confirmed: the normals decode to unit length on 100% of
+# the vertices sampled (123, 40 and 85 respectively) and the UVs fall inside 0..1. The stride-12 format 0x133098B0 is
+# NOT in this table: its normals are unit length on only 39% of vertices at the documented offset and no other offset
+# or width examined does better, so that format's layout is still open and it returns nothing rather than a guess.
+MOD_FVF_LAYOUTS = {
+    0x18B0FAA8: {"normal": 8, "tangent": 12, "uv": 16},
+    0x1C201FC3: {"normal": 8, "tangent": 12, "uv": 16},
+    0x2000D414: {"normal": 8, "tangent": 12, "uv": 20},
+}
+
+
+def decode_normals(data: bytes, vertex_format: int, count: int, stride: int) -> list[tuple[float, float, float]]:
+    """Unit normals from signed bytes, for the formats whose layout is confirmed."""
+    layout = MOD_FVF_LAYOUTS.get(vertex_format)
+    if layout is None:
+        return []
+    out = []
+    for index in range(count):
+        base = index * stride + layout["normal"]
+        if base + 3 > len(data):
+            break
+        nx, ny, nz = struct.unpack_from("<3b", data, base)
+        out.append((nx / 127.0, ny / 127.0, nz / 127.0))
+    return out
+
+
+def decode_uvs(data: bytes, vertex_format: int, count: int, stride: int) -> list[tuple[float, float]]:
+    """Texture coordinates as half floats, for the formats whose layout is confirmed."""
+    layout = MOD_FVF_LAYOUTS.get(vertex_format)
+    if layout is None:
+        return []
+    out = []
+    for index in range(count):
+        base = index * stride + layout["uv"]
+        if base + 4 > len(data):
+            break
+        u, v = struct.unpack_from("<2e", data, base)
+        out.append((u, v))
+    return out
 
 
 def decode_positions(data: bytes, vertex_format: int, count: int, stride: int, bounds: dict,
@@ -228,6 +267,29 @@ class ModFile:
     @property
     def header_size(self) -> int:
         return MOD_BLOCK_OFFSETS + 8 * MOD_BLOCKS
+
+    def mesh_bytes(self, mesh_index: int) -> tuple[bytes, dict]:
+        """One mesh's vertex data and its record, so a caller can decode whichever components it needs."""
+        header = self.header()
+        meshes = self.meshes()
+        if not 0 <= mesh_index < len(meshes):
+            return b"", {}
+        record = meshes[mesh_index]
+        start = header["offsets"]["vertex_buffer"] + record["vertex_offset"]
+        end = start + record["vertex_count"] * record["vertex_stride"]
+        return self.raw[start:end], record
+
+    def normals(self, mesh_index: int = 0) -> list[tuple[float, float, float]]:
+        data, record = self.mesh_bytes(mesh_index)
+        if not data:
+            return []
+        return decode_normals(data, record["vertex_format"], record["vertex_count"], record["vertex_stride"])
+
+    def uvs(self, mesh_index: int = 0) -> list[tuple[float, float]]:
+        data, record = self.mesh_bytes(mesh_index)
+        if not data:
+            return []
+        return decode_uvs(data, record["vertex_format"], record["vertex_count"], record["vertex_stride"])
 
     def positions(self, mesh_index: int = 0, limit: int = 0) -> list[tuple[float, float, float]]:
         """The dequantised positions of one mesh, in model space (centimetres on the models measured)."""
