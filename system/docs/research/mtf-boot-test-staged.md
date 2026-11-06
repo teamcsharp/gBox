@@ -73,6 +73,24 @@ A second attempt did not test anything: `@launch` picked the **yuzu** adapter (n
 `mod: ""`, the session came up with no build at all and showed a bright frame (`mean 252.5`) of the unmodified game. Two
 lessons: pin the emulator as well as the edition, and never pass `mod: ""` when the point is to load one.
 
+## The session ends when the build changes under a running round
+
+Two more attempts, both structurally correct and both lost to the same mechanics:
+
+* a 2x **player** archive (`uPl00ChrisNormal.arc`, 43 MB): `apply_live` accepted it, but the capture ran while the session
+  still reported `mod: cast-inverted` - the in-place restart had not landed - so the frame was the unmodified game. The
+  builder had also selected the archive's *face* model (`evf0000`) rather than the body, because it took the first MOD
+  entry it found.
+* a 3x **mine** archive (`uWp06.arc`, 561 KB): built correctly - 15 of 15 parts, valid, part 0 width 4.6 -> 13.9 cm, box
+  recomputed - but the session **ended** before the build became active (`step 1: session ended`).
+
+The lesson from that second one is the useful part: the MercMode round is tied to the build it started with
+(`cast-inverted`). Changing the session's build mid-round takes the round out of the state its driver expects, and the run
+ends. So a geometry test should be applied **into the round's own build** (`build: null` in `apply_live`, which writes into
+the active build and records a revertible edit) rather than beside it as a new build name - then the round continues, the
+mod name never changes, and the frame keeps coming. `switch_mods` records every edit and `revert` restores it, which is
+exactly the workflow those edits exist for.
+
 ## The bisect to run when the slot is free
 
 Two variants, one minute each, so a failure names its own cause:
