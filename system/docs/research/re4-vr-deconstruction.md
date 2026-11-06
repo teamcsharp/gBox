@@ -42,10 +42,16 @@ pakchunk1: 475 entries — 211 .uexp, 121 .umap, 90 .uasset, 53 .ubulk
   VR4/Content/Levels/BIO4/1st/r100/r100_Cabin.umap
   VR4/Content/Levels/BIO4/1st/r100/r100_Exterior.umap
   ...
+
+pakchunk0optional (2.4 GB): 8,883 entries — all .uptnl (UE4 optional segments)
+  VR4/Content/Characters/BIO4/ANIMAL/em21_Dog/Textures/dog01.uptnl
+  VR4/Content/Characters/BIO4/ANIMAL/em23_Crow/crow.uptnl
+  VR4/Content/Characters/BIO4/EM/em18_Merchant/Textures/body.uptnl
+  ... 500 character paths, 80 of them under EM/ (the enemy set the Mercenaries mode uses)
 ```
 
-The original RE4 level names survive (`BIO4/1st/r100` is the village), so the asset tree is navigable by the same names
-the other editions use.
+The original RE4 level and character names survive (`BIO4/1st/r100` is the village; `em21_Dog`, `em23_Crow`,
+`em18_Merchant` are the retail enemy names), so the asset tree is navigable by the same names the other editions use.
 
 ## How far "made to work in the system" can go
 
