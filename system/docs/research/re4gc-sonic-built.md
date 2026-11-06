@@ -106,3 +106,20 @@ packs that carry Sonic are the player bodies (pl00, pl08, pl09, pl10), not the p
 
 Next: exit this round to the main menu and go ONE row down from ASSIGNMENT ADA to THE MERCENARIES, pick the first character
 (pl00 - Sonic), and start. That is three presses from where the game now sits.
+## Hand-driving the menus is the wrong tool
+
+With the mod loaded, driving menus by tap-and-look reached **Assignment Ada gameplay** - an actual round, HUD reading "Ada",
+ammo 20:
+
+![a live round under the mod](evidence/re4gc-mod-round-gameplay.jpg)
+
+But getting from there to The Mercenaries by taps did not converge: `b` opens an Exit? dialog, the pause screen is an OPTIONS
+page whose row order differs per mode, and after exiting a mode the cursor remembers the last row. Each guess costs a minute
+and half of them move the character instead of a cursor.
+
+The project already answers this properly for the Switch title: a menus module with `screen`/`step` that reads the screen and
+steps to a target (`re4_switch_screens` plus the driver's `screen`). RE4 GC has no such module; that is the missing piece, and
+it is a real deliverable rather than a workaround - the same module a GC autoplay would need.
+
+So: the mod is proven (it boots, plays rounds, and swaps the player packs), and Sonic sits in pl00, the Mercenaries Leon slot.
+Reaching it needs the GC menus module, or one person's hands for ten seconds at the console.
