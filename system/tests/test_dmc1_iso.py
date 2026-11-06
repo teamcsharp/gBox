@@ -98,16 +98,22 @@ def _child6_blob(count, offsets):
 def test_parse_child6_table_synthetic():
     import struct
     from gbox.dmc1_iso import parse_child6_table
-    # 3 offsets: table(0x0 data), palette(0x100, FRAME=0x3e reg desc), data(0x200)
-    blob = _child6_blob(3, [0, 0x100, 0x200])
-    # write GIF tags at 0x100 (palette) and 0x200 (geometry XYZ2+RGBAQ)
-    struct.pack_into("<Q", blob, 0x100, 0x3E)          # regs[0]==0x3e -> palette
-    struct.pack_into("<Q", blob, 0x100 + 8, 0x1FFF8001)
-    struct.pack_into("<Q", blob, 0x200, 0x3E << 0)     # lo; geometry via regs
-    struct.pack_into("<Q", blob, 0x200 + 8, (0x80 << 8) | 0x40)  # XYZ2+RGBAQ
+    # 3 offsets: table(0x0 data), palette(0x100), data(0x200)
+    blob = bytearray(struct.pack("<I", 3) + struct.pack("<3I", 0, 0x100, 0x200)
+        + b"\x00" * (0x1000 - 4 - 4 * 3))
+    # Palette tag at 0x100: lo with NREG=8, FLG=1, PRIM=2, NLOOP=3
+    lo_pal = (8 << 60) | (1 << 58) | (2 << 47) | 3
+    struct.pack_into("<Q", blob, 0x100, lo_pal)
+    blob[0x100+8:0x100+16] = bytes([0x3e,0,0x1f,0xff,0x80,1,2,3,4,5,6,7,8,9,0x0a,0x0b])
+    # Data tag at 0x200: lo with NREG=2, NLOOP=0x2222
+    lo_dat = (2 << 60) | 0x2222
+    struct.pack_into("<Q", blob, 0x200, lo_dat)
+    blob[0x200+8:0x200+16] = bytes([0x40,0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
     recs = parse_child6_table(blob)
     assert [r["kind"] for r in recs] == ["data", "palette", "data"]
     assert [r["off"] for r in recs] == [0, 0x100, 0x200]
+    assert recs[1]["nreg"] == 8 and recs[1]["prim"] == 2 and recs[1]["flg"] == 1
+    assert recs[2]["nreg"] == 2 and recs[2]["nloop"] == 0x2222
     assert recs[2]["regs"][0] == 0x40 and recs[2]["regs"][1] == 0x80
 
 
@@ -131,10 +137,12 @@ def test_parse_child6_table_real():
         blob = f.read(ch[6][1])
     recs = parse_child6_table(blob)
     assert len(recs) == 215
-    # palette entries dominate the odd stream (GIF PRIM=0x604), data on evens
-    n_pal = sum(1 for r in recs if r["kind"] == "palette")
-    assert 100 <= n_pal <= 130, n_pal
-    assert recs[1]["kind"] == "palette"          # first palette at 0x6c0
+    # all odd entries are palette uploads (LIST+TEXCLD, NREG=8); evens are data
+    assert all(r["kind"] == "palette" for i, r in enumerate(recs) if i % 2 == 1)
+    assert all(r["kind"] == "data" for i, r in enumerate(recs) if i % 2 == 0)
+    assert all(r["nreg"] == 8 for i, r in enumerate(recs) if i % 2 == 1)
+    assert all(r["prim"] == 2 and r["flg"] == 1 for i, r in enumerate(recs) if i % 2 == 1)
+    assert recs[1]["off"] == 0x6C0          # first palette
     assert recs[0]["off"] == 0 and recs[0]["kind"] == "data"
 
 
@@ -147,9 +155,10 @@ def test_decode_child6_sections_real():
         blob = f.read(ch[6][1])
     s = decode_child6_sections(blob)
     assert s["count"] == 215
-    assert s["data"] == 110 and s["palette"] == 105, (s["data"], s["palette"])
-    assert 40 <= s["unique_palettes"] <= 60, s["unique_palettes"]
+    assert s["data"] == 108 and s["palette"] == 107, (s["data"], s["palette"])
+    assert s["unique_palettes"] == 51, s["unique_palettes"]
     # geometry section 0x2888 must carry XYZ2(0x40)+RGBAQ(0x80) in its descriptor
     geom = next(r for r in s["sections"] if r["off"] == 0x2888)
     assert geom["kind"] == "data"
+    assert geom["nreg"] == 2 and geom["nloop"] == 0x2222, (geom["nreg"], geom["nloop"])
     assert 0x40 in geom["regs"] and 0x80 in geom["regs"], geom["regs"]

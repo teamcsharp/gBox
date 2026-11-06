@@ -162,23 +162,26 @@ def parse_child_table(blob: bytes) -> list[int]:
 def _gif_tag(blob: bytes, off: int) -> dict:
     """Decode a 128-bit PS2 GS GIF tag at ``off`` (little-endian).
 
-    The tag is two little-endian u64s: ``lo`` holds NLOOP(0:15)/EOP(15)/
-    PRE(46)/PRIM(47)/FLG(58:60)/NREG(60:64); ``hi`` holds the register
-    descriptor bytes.  We expose nloop, eop, prim (raw PRIM bit), flg and a
-    ``regs`` byte tuple so callers can dispatch palette (TEX/CLUT upload) vs
-    geometry (XYZ2+RGBAQ) streams.  Verified against PL00 child6 bytes:
-    section 0x2888 carries registers XYZ2(0x40)+RGBAQ(0x80) in a packed
-    vertex stream; odd-indexed sections carry FRAME(0x3e)/SCISSOR(0x1f) +
-    0x80 texture-upload descriptors (CSM1 palettes).
+    The on-disk layout is one little-endian u64 ``lo`` followed by a 12-byte
+    register descriptor (regs[0] is the lowest descriptor byte).  Bit layout
+    of ``lo`` (GS2 spec): NLOOP(0:15), EOP(15), PRE(46), PRIM(47:50),
+    FLG(58:60), NREG(60:64).  Verified against PL00 child6 bytes: the first
+    palette stream (0x6c0) decodes to NREG=8, NLOOP=3, FLG=1, PRIM=2 (LIST,
+    TEXCLD) with descriptor 3e001fff800102030405060708090a0b; a geometry
+    stream (0x2888) decodes to NREG=2 (XYZ2 0x40 + RGBAQ 0x80) with
+    NLOOP=0x2222.
     """
-    lo, hi = struct.unpack_from("<QQ", blob, off)
-    nloop = lo & 0x7FFF
+    (lo,) = struct.unpack_from("<Q", blob, off)
+    if off + 16 > len(blob):
+        raise ValueError("gif tag truncated at %x" % off)
+    desc = blob[off + 8 : off + 16]
+    nloop = lo & 0xFFFF
     eop = (lo >> 15) & 1
     pre = (lo >> 46) & 1
-    prim = (lo >> 47) & 1
+    prim = (lo >> 47) & 7
     flg = (lo >> 58) & 3
     nreg = (lo >> 60) & 0xF
-    regs = tuple((hi >> (8 * i)) & 0xFF for i in range(8))
+    regs = tuple(desc[i] for i in range(8))
     return {
         "nloop": nloop,
         "eop": eop,
@@ -196,12 +199,6 @@ def _gif_tag(blob: bytes, off: int) -> dict:
 _GEOM_REGS = {0x40: "XYZ2", 0x80: "RGBAQ", 0x01: "PRIM", 0x14: "TEX0"}
 
 
-# 0x3e == GS FRAME register, 0x1f == SCISSOR: the two high descriptor bytes of a
-# palette/upload GIF tag in child6 (e.g. 3e 00 1f ff 80 01 02 03 ...).
-# A geometry stream instead carries XYZ2(0x40)+RGBAQ(0x80) in its descriptor.
-_PALETTE_FRAME = 0x3E
-
-
 def parse_child6_table(blob) -> list[dict]:
     """Decode child6 (GS command stream) into interleaved section records.
 
@@ -211,10 +208,10 @@ def parse_child6_table(blob) -> list[dict]:
         even index -> geometry/data GIF tag (offsets strictly increasing)
         odd  index -> palette GIF tag   (offset repeats == shared palettes)
 
-    Each record is {"off", "kind", "regs", "nloop"}, where "kind" is "palette"
-    when the GIF tag descriptor leads with FRAME(0x3e) (a texture/CLUT upload),
-    else "data".  Returns records in table order; raises ValueError on
-    malformed input.
+    Each record is the _gif_tag fields plus {"off", "kind"}; "kind" is
+    "palette" for a LIST+TEXCLD upload (PRIM=2, FLG=1, NREG=8), "data" for
+    geometry/data streams, "unknown" otherwise.  Returns records in table
+    order; raises ValueError on malformed input.
     """
     n = struct.unpack_from("<I", blob, 0)[0]
     if n == 0 or 4 + 4 * n > len(blob):
@@ -222,7 +219,7 @@ def parse_child6_table(blob) -> list[dict]:
     offs = list(struct.unpack_from("<%dI" % n, blob, 4))
     if len(offs) != n:
         raise ValueError("short child6 table")
-    if any(o >= len(blob) for o in offs):
+    if any(o + 16 > len(blob) for o in offs):
         raise ValueError("child6 offset beyond blob")
     evens = offs[0::2]
     # Geometry stream is spatially packed: strictly increasing offsets.
@@ -231,9 +228,13 @@ def parse_child6_table(blob) -> list[dict]:
     out = []
     for i, o in enumerate(offs):
         tag = _gif_tag(blob, o)
-        kind = "palette" if tag["regs"][0] == _PALETTE_FRAME else "data"
-        out.append({"off": o, "kind": kind, "regs": tag["regs"],
-                    "nloop": tag["nloop"]})
+        if tag["prim"] == 2 and tag["flg"] == 1 and tag["nreg"] == 8:
+            kind = "palette"
+        elif tag["nreg"] in (0, 1, 2):
+            kind = "data"
+        else:
+            kind = "unknown"
+        out.append({**tag, "off": o, "kind": kind})
     return out
 
 
