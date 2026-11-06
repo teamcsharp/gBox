@@ -31,3 +31,24 @@ library_entries: N    -> "isn't in the collection yet: run characters op=extract
 
 Left named, not fixed: the game shows as its **id** rather than its title, because the store lookup for the catalog entry
 returns nothing for that id - the id is actionable and the title is cosmetic, so this is a follow-up rather than a blocker.
+## The inbox's real signal: a measured RE5 Switch regression, fixed and closed
+
+Triage of 8,862 requests (1,114 open, 1,691 in progress, 6,047 done) found no mass duplicate - the backlog is mostly stale
+conversation, in groups of two to four. What mattered was one report from the learning gate:
+
+```
+Bot change made RE5 Switch worse: a human decides
+score 47,961 -> 13,078 per round (median 26,705 -> 11,705, p 0.016) over 8 rounds after the restart at 11-06 03:31
+```
+
+The change live at 03:31 was `1caf9a35`, which cut the roster-calibration walk's press budget from `CALIBRATE_PRESSES = 40` to
+`CYCLE_MAX_PRESSES = 14`. That walk exists to reach the **right-hand end** of the character select, because the stall there is
+what teaches the true roster size; with a 14-press budget it gave up mid-roster and confirmed whatever character it had reached,
+so rounds began as the wrong character.
+
+Reverted that part only - calibration keeps its own budget as a hard ceiling, a known roster still gives up a locked entry at 14 -
+and kept the other two fixes from that commit (`MercModeIn.cast_swap`, the cast_swap/skin_swap feature gates). The ticket is
+closed with the reasoning attached, and `test_re5_switch_cycle` passes 7, including a new test that the calibration walk may pass
+the locked-entry budget.
+
+The gate will re-measure on the live rotation; that is the verification, not a claim.

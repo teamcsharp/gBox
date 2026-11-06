@@ -61,13 +61,28 @@ def test_the_selects_walk_to_the_pick_and_a_confirmed_round_is_counted_and_named
     assert cyc.stages[3] == 1                                                 # once a round
 
 
-def test_a_target_the_cursor_never_reaches_is_given_up(cyc):
+def test_a_target_the_cursor_never_reaches_is_given_up(cyc, monkeypatch):
+    monkeypatch.setattr(R, "CHARACTER_SLOTS", 5)                 # a known roster: the locked-entry budget applies
     cyc.held = (0, 9)
     for _ in range(R.CYCLE_MAX_PRESSES):
-        scr = {"where": "select_player", "cursor": 4, "target": R.player_target()}
+        scr = {"where": "select_player", "cursor": 4, "target": 9}
         assert R.step(scr) == "dright"
         R.pressed(scr, "dright")
     assert R.step({"where": "select_player", "cursor": 4, "target": 9}) == "a"
+
+
+def test_the_calibration_walk_may_pass_the_locked_entry_budget(cyc, monkeypatch):
+    """The roster walk has to reach the right-hand end: the stall there is what teaches the count. Cutting it to the
+    locked-entry budget made it confirm a mid-roster character, and the learning gate measured the score halving."""
+    monkeypatch.setattr(R, "CHARACTER_SLOTS", 1)                 # calibrating: the roster count is unknown
+    cyc.held = (0, 9)
+    scr = {"where": "select_player", "cursor": 4, "target": 9}
+    for _ in range(R.CYCLE_MAX_PRESSES + 5):                     # well past the locked-entry budget
+        assert R.step(scr) == "dright"
+        R.pressed(scr, "dright")
+    for _ in range(R.CALIBRATE_PRESSES):                         # but the hard ceiling still ends the walk
+        R.pressed(scr, "dright")
+    assert R.step(scr) == "a"
 
 
 def test_the_operators_choice_wins(cyc, monkeypatch):

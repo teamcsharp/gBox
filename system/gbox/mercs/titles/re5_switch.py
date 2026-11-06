@@ -158,6 +158,10 @@ def character_count() -> int:
 # (CYCLE_FILE). A target the cursor does not reach in CYCLE_MAX_PRESSES presses (a locked entry) is given up: the entry
 # the cursor rests on is taken. The round's stats name the stage and character; stage_coverage the counts.
 CYCLE, CYCLE_MAX_PRESSES = True, 14
+# The one walk that discovers the character roster must not use CYCLE_MAX_PRESSES: it has to reach the right-hand end of the
+# select, and the stall there is what teaches the true count. 40 is a hard ceiling, not a target - a select with fewer entries
+# stalls long before it, and a cursor that is never read cannot loop forever.
+CALIBRATE_PRESSES = 40
 
 
 class StageCycle:
@@ -1462,7 +1466,14 @@ def step(scr: dict) -> str | None:
         c = cycle()
         if c.where != where:
             c.where, c.presses = where, 0
-        budget = CYCLE_MAX_PRESSES
+        # The roster calibration walk (select_player with an unknown count) is the ONE case that must not give up on a press
+        # budget: it has to reach the right-hand end, because the stall there is what teaches CHARACTER_SLOTS. Cutting it to
+        # CYCLE_MAX_PRESSES made it give up mid-roster and confirm whatever character it had reached, and the learning gate
+        # measured the result: score 47,961 -> 13,078 per round (median 26,705 -> 11,705, p 0.016) after that change went
+        # live. It keeps a hard ceiling so a cursor that is never read cannot loop forever; every other walk keeps the budget
+        # that stops a locked entry being pressed at endlessly.
+        calibrating = where == "select_player" and CHARACTER_SLOTS <= 1
+        budget = CALIBRATE_PRESSES if calibrating else CYCLE_MAX_PRESSES
         if c.presses >= budget:
             return "a"                                      # the target not reached (a locked entry): this one
     if where in CURSORED:
