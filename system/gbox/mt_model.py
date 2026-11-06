@@ -839,7 +839,7 @@ def replace_part(data: bytes, part_index: int, vertices: bytes, vertex_count: in
 
 def rebuild_mod(model: ModFile, *, vertex_buffer: bytes | None = None, index_buffer: bytes | None = None,
                 mesh_records: list[dict] | None = None, vertex_count: int | None = None,
-                bounds: dict | None = None) -> bytes:
+                bounds: dict | None = None, mesh_count: int | None = None, face_count: int | None = None) -> bytes:
     """Serialise a `MOD` from its parts, recomputing every offset from the block sizes.
 
     This is the writer, not a copy: the header is assembled from the decoded fields, the blocks are written in
@@ -866,24 +866,34 @@ def rebuild_mod(model: ModFile, *, vertex_buffer: bytes | None = None, index_buf
                "vertex_buffer": model.raw[offsets["vertex_buffer"]:offsets["index_buffer"]],
                "index_buffer": model.raw[offsets["index_buffer"]:offsets["end"]]}
     if mesh_records is not None:
-        if len(mesh_records) != header["mesh_count"]:
+        if len(mesh_records) != (header["mesh_count"] if mesh_count is None else mesh_count):
             raise ModelError("the mesh record count cannot change without the header's mesh_count")
-        head = bytearray(regions["meshes"][:MOD_MESH_RECORD_V211 * len(mesh_records)])
+        old = regions["meshes"]
+        if mesh_count is None:
+            # same part count: start from the existing records so the fields this writer does not name survive (zeroing
+            # them erased a record field the decoder needs, and part 0 came back with no positions)
+            head = bytearray(old[:MOD_MESH_RECORD_V211 * len(mesh_records)])
+            trailer = old[len(head):]
+        else:
+            # a restructured model: new records, and the old record block is dropped while the undecoded remainder stays
+            head = bytearray(MOD_MESH_RECORD_V211 * len(mesh_records))
+            trailer = old[MOD_MESH_RECORD_V211 * header["mesh_count"]:]
         for index, record in enumerate(mesh_records):
             base = index * MOD_MESH_RECORD_V211
             for name, offset, code in MOD_MESH_FIELDS:
                 if name in record:
                     struct.pack_into("<" + code, head, base + offset, record[name])
-        regions["meshes"] = bytes(head) + regions["meshes"][len(head):]
+        regions["meshes"] = bytes(head) + trailer
     if vertex_buffer is not None:
         regions["vertex_buffer"] = vertex_buffer
     if index_buffer is not None:
         regions["index_buffer"] = index_buffer
     fields = {"vertex_count": header["vertex_count"] if vertex_count is None else vertex_count,
-              "face_count": header["face_count"],
+              "face_count": header["face_count"] if face_count is None else face_count,
               "edge_count": header["edge_count"], "vertex_buffer_size": len(regions["vertex_buffer"]),
               "group_count": header["group_count"], "bone_count": header["bone_count"],
-              "mesh_count": header["mesh_count"], "material_count": header["material_count"]}
+              "mesh_count": header["mesh_count"] if mesh_count is None else mesh_count,
+              "material_count": header["material_count"]}
     out = bytearray(MOD_MAGIC)
     out += bytes((header["version"], header["revision"]))
     out += struct.pack("<3H", fields["bone_count"], fields["mesh_count"], fields["material_count"])
