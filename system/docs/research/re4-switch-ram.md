@@ -750,3 +750,25 @@ driver needs it for.
 Breaking it does not need the anchor - it needs pad presses through the menu chain (title -> main menu -> Mercenaries
 -> character -> stage -> start), which gBox can send without a RAM map. Boot control can then take over from the
 round's own start, and the global gets sampled while it is live.
+
+## Round 101 (2026-11-06): RE4's blocker is input at the emulator, not the RAM map
+
+RE4 boots and renders under **citron**, and `mercmode prepare` makes it `playable=True`. What fails is *input*:
+
+- `session_op {op:"send_input"}` reports `{"sent": 6}` and `succeeded` - no keys skipped - while the captured frame is
+  byte-identical (`diff 0.00`) before and after.
+- citron's window **is** focused (`xdotool getwindowfocus` returns the same window id on display `:100` before and
+  after activation), so this is not the RPCS3 "no focused window" failure.
+- its keyboard bindings are the same as eden's, field order aside:
+  `player_0_button_a="toggle:0,code:67,engine:keyboard"` vs eden's `"engine:keyboard,code:67,toggle:0"` - identical
+  codes (a=67, b=88, plus=77) and engine.
+- even a **window hotkey** never arrives: `xdotool key f11` on citron's own display changes nothing (`diff 0.25`, the
+  idle animation), and neither does a pad press afterwards.
+
+So no XTEST key reaches citron at all, while the same paths drive eden (the RE5/RE6 bots play through them). The
+difference is inside the emulator's input plumbing on this host, not in gBox's key table, focus handling or bindings.
+
+**Next step:** bypass X focus entirely with the virtual pad gBox already has for exactly this case - `gbox/vpad_linux.py`
+(uinput), whose header says xdotool/XTEST "has no focused window to land on" for emulators that read a real device.
+That is also the honest reason the RE4 anchor (`module+0xc25d78`) still reads as zeros: no input, no round, and the
+global only exists once gameplay does.
