@@ -1,6 +1,21 @@
 import os, pytest
 from gbox.nb2003_dff import read_dff, strip_triangles
-FIX = "/home/ehm_eckx/gBox_alt/gbox-cache/research/nb2003_reader_fixtures_2360/nb2003_ape.dff"
+def _find_fixture():
+    # Portable fixture discovery (request #2360): the ape.dff bytes are held on
+    # different cache roots per host; search them so the reader test un-skips
+    # wherever the fixture lives instead of requiring a single hardcoded path.
+    cands = [
+        os.environ.get("NB2003_APE_DFF", ""),
+        "/home/ehm_eckx/gbox-cache/research/nb2003_reader_fixtures_2360/nb2003_ape.dff",
+        "/home/ehm_eckx/gBox_alt/gbox-cache/research/nb2003_reader_fixtures_2360/nb2003_ape.dff",
+        os.path.join(os.path.expanduser("~"), ".hermes", "cache", "scratch", "nb2003_ape.dff"),
+    ]
+    for c in cands:
+        if c and os.path.exists(c):
+            return c
+    return cands[1]  # original default: skipif keeps skipping when absent
+
+FIX = _find_fixture()
 
 @pytest.mark.skipif(not os.path.exists(FIX), reason="owned fixture absent")
 def test_ape_strip_index_space():
