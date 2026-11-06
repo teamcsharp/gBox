@@ -44,3 +44,21 @@ replaces the player body in all four player packs (pl00, pl08, pl09, pl10), so a
 Two operational notes worth keeping: `build_mod` needs a staging dir on the **same filesystem** as the image (its hard link is
 cross-device otherwise), and its `cache` argument is the parent - passing `.../cache/mods` produces `mods/mods/...` and a launch
 that says the mod was never built.
+## Second attempt: the packs are placed, the launch still refuses the mod
+
+Placed the four swapped packs inside the mod folder (`em/pl00.drs`, `pl08`, `pl09`, `pl10`), refreshed the gallery, and the
+launch still says:
+
+```
+no built mod 're4gcs1358' for this game: it is neither on this PC nor in the central collection
+```
+
+while `POST /api/mods/built/refresh` reports `{"ok": true, "indexing": true}` and the gallery still does not list it. The mod
+folder holds the marker (`.gbox-mod.json`, keys `built file_changes files game_id image kind name`), the image and the packs -
+so this is a **registry/marker-shape** problem, not a missing build. Other writers' markers carry `title`, `writer` and
+`platform`; `char_swap.build_mod` -> `filemods.build_image` produced one without them.
+
+Next step, and it is not another guess: compare this marker against a file mod the **app itself** built for a GameCube title
+(the app's own build path is what the gallery indexes), and either call that path or match its marker exactly. Everything
+downstream of that - the launch, the boot, the Mercenaries menu, the frame - is ordinary work; the only unknown left is the
+registration shape.
