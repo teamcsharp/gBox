@@ -402,3 +402,33 @@ def test_a_degenerate_skeleton_reports_zero_height_rather_than_inventing_roles()
     roles = model.bone_roles()
     assert roles["height"] == 0 and roles["span"] == 0
     assert roles["head"] == roles["left_hand"] == roles["right_hand"]
+def test_geometry_beyond_the_old_box_needs_the_box_rewritten():
+    """Measured: scaling every part 2x against the old box clamped each part to zero width at its corners."""
+    model = mt_model.parse_mod(make_mod(meshes=((8, 24),)))
+    raw = bytearray(model.raw)
+    start = model.header()["offsets"]["vertex_buffer"]
+    for i in range(8):                                   # spread the vertices so the part has a real width
+        struct.pack_into("<3H", raw, start + i * 24, 2000 + i * 3000, 16000, 16000)
+    model = mt_model.parse_mod(bytes(raw))
+    old = model.bounds()
+    record = model.meshes()[0]
+    points = model.positions(0)
+    # double the geometry about the box centre, with the box recomputed to cover it
+    cx = (old["min"]["x"] + old["max"]["x"]) / 2
+    cy = (old["min"]["y"] + old["max"]["y"]) / 2
+    cz = (old["min"]["z"] + old["max"]["z"]) / 2
+    moved = [(cx + (x - cx) * 2, cy + (y - cy) * 2, cz + (z - cz) * 2) for x, y, z in points]
+    new = {"sphere": {"x": cx, "y": cy, "z": cz, "r": 60.0},
+           "min": {"x": min(p[0] for p in moved), "y": min(p[1] for p in moved), "z": min(p[2] for p in moved)},
+           "max": {"x": max(p[0] for p in moved), "y": max(p[1] for p in moved), "z": max(p[2] for p in moved)}}
+    vertices = [{"position": p, "bounds": new} for p in moved]
+    packed = mt_model.pack_vertices(vertices, record["vertex_format"], record["vertex_stride"])
+    out = mt_model.replace_part(model.raw, 0, packed, len(moved), record["vertex_format"],
+                                record["vertex_stride"], bounds=new)
+    again = mt_model.parse_mod(out)
+    got = again.positions(0)
+    width_before = max(p[0] for p in points) - min(p[0] for p in points)
+    width_after = max(p[0] for p in got) - min(p[0] for p in got)
+    assert width_before > 0
+    assert abs(width_after / width_before - 2.0) < 0.05      # doubled, not clamped
+    assert again.bounds()["max"]["y"] > new["max"]["y"] - 0.01

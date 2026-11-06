@@ -782,7 +782,7 @@ def parse_mod(data: bytes, *, strict: bool = True) -> ModFile:
 
 
 def replace_part(data: bytes, part_index: int, vertices: bytes, vertex_count: int, vertex_format: int,
-                 stride: int) -> bytes:
+                 stride: int, *, bounds: dict | None = None) -> bytes:
     """Rebuild a MOD with one part's geometry replaced, keeping every other part's bytes exactly as they are.
 
     This is the first writing step that changes the container's shape: the new part may have a different vertex count and
@@ -815,12 +815,13 @@ def replace_part(data: bytes, part_index: int, vertices: bytes, vertex_count: in
         records.append(record)
     total_vertices = sum(record["vertex_count"] for record in records)
     rebuilt = rebuild_mod(model, vertex_buffer=b"".join(blocks), mesh_records=records,
-                          vertex_count=total_vertices)
+                          vertex_count=total_vertices, bounds=bounds)
     return rebuilt
 
 
 def rebuild_mod(model: ModFile, *, vertex_buffer: bytes | None = None, index_buffer: bytes | None = None,
-                mesh_records: list[dict] | None = None, vertex_count: int | None = None) -> bytes:
+                mesh_records: list[dict] | None = None, vertex_count: int | None = None,
+                bounds: dict | None = None) -> bytes:
     """Serialise a `MOD` from its parts, recomputing every offset from the block sizes.
 
     This is the writer, not a copy: the header is assembled from the decoded fields, the blocks are written in
@@ -876,7 +877,18 @@ def rebuild_mod(model: ModFile, *, vertex_buffer: bytes | None = None, index_buf
     # (20 bytes) = the 68-byte gap every model has before its first block. Carried verbatim, because nothing here
     # needs to change it and inventing values for it would be exactly the guess that breaks a load.
     header_end = MOD_BLOCK_OFFSETS + 8 * MOD_BLOCKS
-    tail = model.raw[header_end:offsets["bones"]] if offsets["bones"] >= header_end else b""
+    tail = bytearray(model.raw[header_end:offsets["bones"]] if offsets["bones"] >= header_end else b"")
+    if bounds is not None:
+        # the short position formats are quantised against THIS box, so geometry that leaves it is clamped to the box
+        # edges. Measured: scaling every part 2x with the old box collapsed each part to zero width at its corners,
+        # with no structural error anywhere - the trap this parameter exists to close.
+        if len(tail) < 48:
+            raise ModelError("the model has no bounding box to rewrite")
+        struct.pack_into("<4f", tail, 0, bounds["sphere"]["x"], bounds["sphere"]["y"], bounds["sphere"]["z"],
+                         bounds["sphere"]["r"])
+        struct.pack_into("<3f", tail, 16, bounds["min"]["x"], bounds["min"]["y"], bounds["min"]["z"])
+        struct.pack_into("<3f", tail, 32, bounds["max"]["x"], bounds["max"]["y"], bounds["max"]["z"])
+    tail = bytes(tail)
     running = header_end + len(tail)
     new_offsets = []
     for name in ("bones", "groups", "materials", "meshes", "vertex_buffer", "index_buffer"):
