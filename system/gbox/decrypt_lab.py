@@ -915,6 +915,58 @@ def install(app, store, config, auth, tactical_store=None):
                 "entry_bytes": len(donor_entry.data),
                 "note": "the overlay applies when the title next boots (LayeredFS)"}
 
+    @app.get("/api/decrypt-lab/triage", dependencies=[Depends(auth)])
+    def decrypt_lab_triage():
+        """The inbox by class, next to the inference fleet that has to work it off.
+
+        What is waiting, how old the oldest is, and how many lanes can take it: the page can show a queue that is
+        actually draining (or one that is not) instead of a raw list of thousands.
+        """
+        from . import hermes_pool
+
+        def klass(title: str) -> str:
+            t = (title or "").casefold()
+            if "rank_not_verified" in t:
+                return "rank not verified"
+            if t.startswith("unlock"):
+                return "unlocked content"
+            if "character replacement" in t:
+                return "character replacement"
+            if t.startswith("<agent-message"):
+                return "agent message"
+            if t.startswith("launch failed"):
+                return "launch failure"
+            if t.startswith("mercenaries"):
+                return "mercenaries"
+            return "other"
+
+        buckets: dict = {}
+        total = open_total = 0
+        rows = store.all("request")
+        total = len(rows)
+        for row in rows:
+            if str(row.get("status") or "").casefold() not in ("open", "new", "in_progress", "pending"):
+                continue
+            open_total += 1
+            name = klass(str(row.get("title") or ""))
+            bucket = buckets.setdefault(name, {"class": name, "open": 0, "oldest": None})
+            bucket["open"] += 1
+            created = row.get("created")
+            if isinstance(created, (int, float)) and (bucket["oldest"] is None or created < bucket["oldest"]):
+                bucket["oldest"] = created
+        nodes = []
+        try:
+            for name, node in hermes_pool.node_settings().items():
+                nodes.append({"name": name, "enabled": bool(getattr(node, "enabled", False)),
+                              "lanes": getattr(node, "max_parallel_jobs", None),
+                              "upstream": getattr(node, "upstream", None)})
+        except Exception:                                        # noqa: BLE001 - the page shows what it can
+            pass
+        return {"v": FORMAT, "total": total, "open": open_total,
+                "classes": sorted(buckets.values(), key=lambda b: -b["open"]),
+                "fleet": {"nodes": nodes, "lanes": sum(n["lanes"] or 0 for n in nodes if n["enabled"])},
+                "at": time.time()}
+
     @app.post("/api/decrypt-lab/model-swap", dependencies=[Depends(auth)])
     def decrypt_lab_model_swap(body: ModelSwapIn):
         """Swap a slot's character skin with a donor archive's (the panel's clothes / cast / zombie actions).

@@ -15,6 +15,7 @@
   let selected = null;      // {title, name}
   let lastScan = null;
   let pollTimer = null;
+  let triageTick = 0;
 
   // ---------------------------------------------------------------- 3D scene
   const scene = new THREE.Scene();
@@ -410,6 +411,35 @@
   $('swap-go').addEventListener('click', swapEntry);
   $('top').addEventListener('change', () => api.alwaysOnTop($('top').checked));
 
+  // The inbox by class next to the fleet that works it off: a queue that is draining (or one that is not) is a fact
+  // the operator can read at a glance, instead of a raw list of thousands of tickets.
+  function triageAge(seconds) {
+    if (typeof seconds !== 'number' || !isFinite(seconds) || seconds <= 0) return '—';
+    const h = seconds / 3600;
+    return h >= 48 ? `${Math.round(h / 24)} d` : h >= 1 ? `${Math.round(h)} h` : `${Math.max(1, Math.round(seconds / 60))} m`;
+  }
+  async function loadTriage() {
+    const box = $('triage'), meta = $('triage-meta');
+    if (!box) return;
+    try {
+      const t = await api.api('/api/decrypt-lab/triage');
+      const now = t.at || Date.now() / 1000;
+      const rows = (t.classes || []).map((c) =>
+        `<tr><td>${String(c.class || '').replace(/[<>&]/g, '')}</td><td>${c.open}</td>` +
+        `<td>${triageAge(now - (c.oldest || 0))}</td></tr>`).join('');
+      const fleet = t.fleet || { nodes: [], lanes: 0 };
+      const nodes = (fleet.nodes || []).map((n) =>
+        `${String(n.name).replace(/[<>&]/g, '')}${n.enabled ? '' : ' (off)'} · ${n.lanes ?? '?'} lanes`).join(' · ');
+      meta.textContent = `${t.open} open of ${t.total} · ${fleet.lanes} inference lanes`;
+      box.innerHTML = `<p class="muted">${nodes || 'no inference machines configured'}</p>` +
+        `<table><thead><tr><th>class</th><th>open</th><th>oldest</th></tr></thead><tbody>${rows}` +
+        `<tr><th>all</th><th>${t.open}</th><th></th></tr></tbody></table>`;
+    } catch (err) {
+      meta.textContent = 'triage unavailable';
+      box.innerHTML = `<p class="muted">${String(err.message || err).slice(0, 120)}</p>`;
+    }
+  }
+
   api.info().then((info) => {
     $('top').checked = info.top === true;
     $('subtitle').textContent = `one pipeline, every title · ${info.origin || ''}`;
@@ -418,6 +448,11 @@
 
   resize();
   loadState();
-  pollTimer = setInterval(() => { if (!document.hidden) loadState(); }, POLL_MS);
+  loadTriage();
+  pollTimer = setInterval(() => {
+    if (document.hidden) return;
+    loadState();
+    if ((triageTick = (triageTick + 1) % 10) === 0) loadTriage();   // the inbox moves far slower than the stream
+  }, POLL_MS);
   window.addEventListener('beforeunload', () => clearInterval(pollTimer));
 })();
