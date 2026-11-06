@@ -2775,7 +2775,16 @@ def characters_tool(inp: CharIn, ctx):
         return {"result": r}
     meta = (best_match(chars, inp.character) or find(chars, inp.character)) if inp.character else None
     if inp.op in ("use", "live_use", "place") and inp.character and not best_match(chars, inp.character):
+        # an EMPTY library is not the same as a missing character: after a control-plane restart the index is still being
+        # read, and reporting "isn't in the collection yet, have: " (seen in the inbox as an auto report) sends the operator
+        # off to extract a character that is already there. Say which one it is.
+        if not chars:
+            return {"result": {"status": "not_in_collection", "character": inp.character, "library_entries": 0,
+                               "message": "the character library returned no entries - the index is probably still loading "
+                                          "(a restart clears it while it is re-read). Try again in a minute; if it stays "
+                                          "empty the library root is wrong or unreadable."}}
         return {"result": {"status": "not_in_collection", "character": inp.character,
+                           "library_entries": len(chars),
                            "message": f"{inp.character!r} isn't in the collection yet: run characters op=extract first "
                                       f"(have: {', '.join(m['name'] for m in chars)})"}}
     if not meta:

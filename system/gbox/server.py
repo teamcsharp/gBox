@@ -6106,8 +6106,18 @@ def create_app(config: Config) -> FastAPI:
                 store.audit(actor, "request.auto_mod_failure.launch", rid, {"job": f.job_id})
                 return _clean(store.get("request", rid))
         s_ = store.get("session", f.session_id) or {} if f.session_id else {}
-        game = f.game or s_.get("title") or s_.get("game_title") or "unknown game"
-        details = (f"Action: {f.action}\nGame: {game} (game_id: {s_.get('game_id') or '?'})\n"
+        # a build has no session to read the game from, so the job that failed is asked as well; without this the report said
+        # "Game: unknown game (game_id: ?)" for a failure that had been given a game_id (seen in the inbox as auto report from
+        # a characters op=use slot=enemies build)
+        failed_job = store.get("job", f.job_id) if f.job_id else None
+        job_game_id = ((failed_job or {}).get("input") or {}).get("game_id") or ""
+        game_id = s_.get("game_id") or job_game_id or ""
+        game = f.game or s_.get("title") or s_.get("game_title") or ""
+        if not game and game_id:
+            entry = store.get("game", game_id) or {}
+            game = entry.get("title") or entry.get("name") or game_id
+        game = game or "unknown game"
+        details = (f"Action: {f.action}\nGame: {game} (game_id: {game_id or '?'})\n"
                    f"Model: {f.model or 'not identified'}\nTarget: {f.target or 'not identified'}\n"
                    f"Moment: {f.moment or 'current game frame'}\nSession: {f.session_id or 'none'}\n"
                    f"Failed job: {f.job_id or 'direct action'}\nFailure: {f.detail or 'action did not complete'}")
@@ -6120,6 +6130,15 @@ def create_app(config: Config) -> FastAPI:
                     value = getattr(f, key)
                     if value is not None and value != "":
                         context[key] = value
+                # a report filed while its game could not be resolved keeps saying "unknown game" forever unless the later
+                # filings correct it - which is exactly what happened to the two auto reports in the inbox
+                if game_id and not context.get("game_id"):
+                    context["game_id"] = game_id
+                if game != "unknown game" and (not context.get("game") or context.get("game") == "unknown game"):
+                    context["game"] = game
+                    existing["body"] = re.sub(r"(?m)^Game: .*$", f"Game: {game} (game_id: {game_id or '?'})",
+                                              str(existing.get("body") or ""))
+                    existing["title"] = re.sub(r" in unknown game$", f" in {game}", str(existing.get("title") or ""))
                 if f.needs_rebuild:
                     context["needs_rebuild"] = True
                 if f.image_b64 and not existing.get("image"):
@@ -6131,7 +6150,7 @@ def create_app(config: Config) -> FastAPI:
                      f"Auto report: {f.action} failed in {game}")
             report = req_create(RequestIn(title=title[:140], body=details,
                 source="automation", kind="screenshot" if f.image_b64 else "text", image_b64=f.image_b64,
-                author="system", automated=True, context={"session_id": f.session_id, "session": f.session_id, "game_id": s_.get("game_id"),
+                author="system", automated=True, context={"session_id": f.session_id, "session": f.session_id, "game_id": game_id or None,
                                                             "game": game, "model": f.model, "moment": f.moment,
                                                             "character": f.character, "target": f.target,
                                                             "target_kind": f.target_kind, "x": f.x, "y": f.y,
