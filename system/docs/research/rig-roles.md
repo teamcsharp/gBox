@@ -140,3 +140,29 @@ currently only em10 does (em11 grows by 10,944 bytes even with its spare bodies 
   never took over" (the screen stayed on the main menu for a minute).
 * the queued character is still not honoured reliably: asked for Leon, the round came up as HUNK. The RE4 branch sets
   `re4_menus.request`, but the bot's RandomSelections can still land elsewhere, so that needs the same treatment re5/re6 got.
+## Twelve ganado packs swapped and fitted - and the Village still shows stock villagers
+
+All twelve core ganado packs now carry Sonic and each fits where its original sat:
+
+```
+em10 collapse 10,340,608 <= 10,628,000      em16 collapse 5,900,384 <= 5,928,256
+em11 keep 1 prim, tex 64  6,248,608 <= 6,260,192   em17 collapse 5,494,528 <= 5,524,896
+em12 collapse 5,639,488 <= 5,671,328       em19 keep 1 prim, tex 64 6,353,984 <= 6,365,568
+em13 collapse 5,990,176 <= 6,033,280       em1a keep 1 prim, tex 64 6,370,496 <= 6,382,080
+em14 collapse+tex16 6,601,088 <= 6,606,464  em1b collapse 6,749,056 <= 6,770,624
+em15 collapse 5,948,032 <= 5,977,376       em1c collapse 6,977,312 <= 7,060,640
+```
+
+Mod `re4za1605` carries all twelve (`files:` lists them), launches, and the bot played a full round under it:
+
+![a round under all twelve ganado packs](evidence/re4gc-villagers-vanilla.jpg)
+
+The enemies in frame are **stock female villagers** (aprons, headscarves) - so the Village stage draws from another pack
+again, one of the nineteen left in `GANADO_FILES` (em1d..em70). The per-pack fit search is now a script, so covering them is
+repetition: for each pack try `collapse`, then `keep only the biggest primitive`, then smaller textures.
+
+## Also confirmed
+
+The queued character is still not honoured: asked for Leon, the round came up as Krauser (earlier HUNK, then Ada). The RE4
+branch sets `re4_menus.request(...)`, but the bot's RandomSelections can still land on another portrait - it needs the
+"already played / took the request" accounting that re5 and re6 use.
