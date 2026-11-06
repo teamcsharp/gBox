@@ -50,6 +50,29 @@ viewer", because the permission cannot identify which client is renewing the lea
 Left after this round: the test overlay removed, the artifact staged, MercMode resumed (200), and no title running with an
 unverified mod.
 
+## First time a written archive was loaded by an emulator
+
+`switch_mods` `op: "apply_live"` is the sanctioned test path and it is the one that worked:
+
+```
+POST /api/jobs {"tool": "switch_mods", "input": {"op": "apply_live", "game_id": "52d15709be0fda1a",
+                 "session_id": "<running>", "build": "mtf-geometry-write-test",
+                 "changes": {"nativeNXx64/ImgNX/Archive/uEm6c.arc": {"b64": "<the rewritten arc>"}}}}
+```
+
+It creates the build **with its `.gbox-mod.json` marker**, stages the edit, and restarts the title in the same session —
+no launch, so no slot guard. Result: the session then carried `mod: mtf-geometry-write-test`, and the session's own
+`detail.boot_watch` recorded `{"after_s": 14.3, "frames": 3, "watched": true}` with `boot_attempts: 1` and
+`boot_failures: []`. **Eden booted the title with the rewritten archive loaded.**
+
+The capture was black (`mean 0.0`) because the session was then **stopped** - `exit: {"returncode": -15, "via": "stop"}` -
+so there was nothing to see, not because the archive failed. `boot_watch` seeing frames plus `boot_failures: []` is the
+evidence that matters here.
+
+A second attempt did not test anything: `@launch` picked the **yuzu** adapter (not eden) and, because the launch passed
+`mod: ""`, the session came up with no build at all and showed a bright frame (`mean 252.5`) of the unmodified game. Two
+lessons: pin the emulator as well as the edition, and never pass `mod: ""` when the point is to load one.
+
 ## The bisect to run when the slot is free
 
 Two variants, one minute each, so a failure names its own cause:
