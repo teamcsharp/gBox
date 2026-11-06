@@ -28,6 +28,64 @@ PACKS = ("em10", "em11", "em12", "em13", "em14", "em15", "em16", "em17", "em19",
          "em5c", "em5d", "em5f", "em60", "em66", "em6c", "em6d", "em6f", "em70")
 
 
+def enemy_packs(iso) -> list[str]:
+    """Every ENEMY pack on the disc, read from its file system rather than a hand-kept list.
+
+    The disc keeps 128 files under em/: the 31 ganados in PACKS, ~30 more enemy files (em18, em21..em3e - soldiers, novistadors,
+    the "It", villagers of other kinds), and the pl*/wep* families that live in the same folder. A list written by hand missed
+    the middle group, which is why a stage could still spawn stock enemies after "all" the ganados were swapped. Anything that
+    starts with em/em is an enemy model.
+    """
+    try:
+        from .gcdisc import GCDisc
+        disc = GCDisc(iso)
+    except Exception:
+        return []
+    try:
+        return sorted(Path(name).stem for name in disc.files
+                      if name.startswith("em/em") and name.endswith(".drs"))
+    finally:
+        disc.f.close()
+
+
+def thin_prims(prims, keep: float):
+    """Drop triangles from every primitive until `keep` of them remain, and keep only the vertices still referenced.
+
+    The fitting ladder can run out of room when a pack has little slack - the soldier and novistador packs are like that - and
+    the alternative to thinning is Blender, which may not be on the node. A stride over each primitive's triangle list costs
+    no dependencies and keeps the model recognisable; vertices no triangle uses are dropped so the buffer actually shrinks.
+    """
+    import numpy as np
+    out = []
+    for prim in prims:
+        if prim.get("tris") is None or keep >= 1:
+            out.append(prim)
+            continue
+        tris = np.asarray(prim["tris"])
+        if len(tris) < 2:
+            out.append(prim)
+            continue
+        stride = max(1, int(round(1 / max(keep, 1e-6))))
+        thinned = tris[::stride]
+        used = np.unique(thinned.reshape(-1))
+        if len(used) < 3:
+            out.append(prim)
+            continue
+        remap = {int(old): new for new, old in enumerate(used)}
+        new_prim = dict(prim)
+        for field in ("pos", "nrm", "uv", "owner"):
+            value = prim.get(field)
+            if value is not None:
+                new_prim[field] = np.asarray(value)[used]
+        if prim.get("J") is not None:
+            new_prim["J"] = np.asarray(prim["J"])[used]
+        if prim.get("W") is not None:
+            new_prim["W"] = np.asarray(prim["W"])[used]
+        new_prim["tris"] = np.array([[remap[int(a)], remap[int(b)], remap[int(c)]] for a, b, c in thinned])
+        out.append(new_prim)
+    return out
+
+
 def attempts(primitive_counts):
     """The fitting strategies, in the order they are tried: (label, how many primitives to keep, texture limit).
 
@@ -39,8 +97,11 @@ def attempts(primitive_counts):
     for count in primitive_counts:
         if count not in counts:
             counts.append(count)
-    plan = [(f"keep={count} tex=64", count, 64) for count in counts]
-    plan += [(f"keep={counts[0]} tex=16", counts[0], 16)]
+    plan = [(f"keep={count} tex=64", count, 64, 1.0) for count in counts]
+    plan += [(f"keep={counts[0]} tex=16", counts[0], 16, 1.0)]
+    # last resort: thin the triangles (no Blender needed) at the biggest primitive count that leaves a mesh
+    for fraction in (0.6, 0.35, 0.2):
+        plan.append((f"keep={counts[0]} tex=64 thin={fraction:.0%}", counts[0], 64, fraction))
     return plan
 
 
@@ -104,7 +165,8 @@ def swap_ganados(iso, model, out_dir, packs=None, *, rig=None, log=print, swap=N
             return pack.to_bytes()
 
     report = {}
-    for stem in (packs or PACKS):
+    chosen = list(packs) if packs else (enemy_packs(iso) or list(PACKS))
+    for stem in chosen:
         name = f"em/{stem}.drs"
         try:
             original = read(name)
@@ -130,15 +192,17 @@ def swap_ganados(iso, model, out_dir, packs=None, *, rig=None, log=print, swap=N
         prims = sorted(prims, key=lambda p: -len(p["pos"]) if p.get("pos") is not None else 0)
         glb_paths = {}
         best = None
-        for label, keep, max_tex in attempts([len(prims), 1]):
-            if keep not in glb_paths:
-                gltf = enemies.write_rigged_gltf(prims[:keep], template, out_dir / f"{stem}_{keep}.gltf")
+        for label, keep, max_tex, fraction in attempts([len(prims), 1]):
+            key = (keep, round(fraction, 3))
+            if key not in glb_paths:
+                subset = thin_prims(prims[:keep], 1.0) if fraction >= 1 else thin_prims(prims[:keep], fraction)
+                gltf = enemies.write_rigged_gltf(subset, template, out_dir / f"{stem}_{keep}_{key[1]}.gltf")
                 doc, blob = attachments.pack(gltf)
-                glb = out_dir / f"{stem}_{keep}.glb"
+                glb = out_dir / f"{stem}_{keep}_{key[1]}.glb"
                 glb.write_bytes(attachments.glb_bytes(doc, blob))
-                glb_paths[keep] = glb
+                glb_paths[key] = glb
             try:
-                rebuilt = swap(original, glb_paths[keep], body, tuple(slots[1:]), max_tex)
+                rebuilt = swap(original, glb_paths[key], body, tuple(slots[1:]), max_tex)
             except Exception as exc:
                 report[stem] = {"fitted": False, "reason": f"swap {type(exc).__name__}: {str(exc)[:100]}"}
                 break

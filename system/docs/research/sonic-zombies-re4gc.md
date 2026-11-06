@@ -107,3 +107,28 @@ The round's enemies were villagers, and the hand-built mod put Sonics in the sam
 family that round actually spawned**. `GANADO_FILES` covers em10..em70's ganado set; a Mercenaries Village also fields villager
 variants, and if any of them come from a family outside that list they are untouched by this swap. Listing which em* files that
 round loads (or swapping the rest of the em range) answers it; guessing does not.
+## The disc has 60 enemy files, but only 31 are the same container
+
+Enumerating the disc's file system instead of trusting a hand-kept list:
+
+```
+em/*.drs on disc: 128   = 31 ganados (PACKS) + ~30 more enemy files (em18, em21..em3e) + pl* + wep*
+enemy packs by that rule (em/em*): 60
+```
+
+`gbox.re4gc_zombies.enemy_packs(iso)` now reads that list from the file system, so a swap cannot miss a file because someone's
+list was short. But the extra 29 are **not the same container**: `re4gc_enemies.body_slots()` returns nothing for em21, em2b,
+em32 or em39, so they have no BODY_SLOTS layout to replace - they are a different kind of model file (or a different packing),
+and they need their own handling rather than another rung on the fitting ladder.
+
+That also explains the round that still showed villagers while "all" ganados were swapped: the ganados were swapped, and the
+stage was fielding one of the families in that other 29.
+
+## Added: a thinning rung (no Blender needed)
+
+The ladder grew a last resort - `thin_prims(prims, keep)` drops triangles on a stride and re-indexes only the vertices still
+used, so the buffer really shrinks. It is pure numpy, so it works on a node without Blender. Tests updated: the ladder now runs
+every primitive -> biggest one -> small textures -> thin 60/35/20%.
+
+Honest note: it did not get used on those four packs, because they fail earlier (no body slot). It remains the right last resort
+for the ganado packs that are merely too big.

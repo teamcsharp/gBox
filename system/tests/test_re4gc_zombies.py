@@ -59,11 +59,12 @@ def fake(monkeypatch):
     monkeypatch.setattr(re4gc_zombies, "attachments", _FakeAttachments)
 
 
-def test_the_ladder_ends_with_small_textures():
+def test_the_ladder_runs_from_full_detail_to_thinning():
     plan = re4gc_zombies.attempts([4, 1])
-    assert plan[0] == ("keep=4 tex=64", 4, 64)
-    assert plan[1] == ("keep=1 tex=64", 1, 64)
-    assert plan[-1][2] == 16                      # the last resort is textures, not primitives
+    assert plan[0] == ("keep=4 tex=64", 4, 64, 1.0)
+    assert plan[1] == ("keep=1 tex=64", 1, 64, 1.0)
+    assert any(rung[2] == 16 for rung in plan)               # small textures before cutting geometry
+    assert plan[-1][3] < 0.5 and "thin" in plan[-1][0]       # thinning is the last resort
 
 
 def test_a_fitting_swap_is_padded_to_the_original_size(fake, tmp_path):
