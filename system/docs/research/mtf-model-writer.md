@@ -71,6 +71,33 @@ Answers still needed, in this order:
 4. the bone/skeleton block (bind pose, parents) and the skin weights;
 5. how a material references its textures (the path table suggests by name, not index).
 
+## 2b. The geometry stream: what the difference map shows
+
+`pl0000` and `pl0500` in `uPl00ChrisNormal.arc` are both 198,288 B uncompressed. Comparing them byte by byte:
+
+```
+identical bytes   193,334 of 198,288   (97.5%)
+runs              3,213  (identical and differing alternate)
+longest identical 113,863 B at 0x03127, then 4,172 B at 0x0141c, 3,165 B at 0x02fa33
+longest differing 24 B at 0x253a4, 0x25994, 0x25f84, 0x26574 ...  (0x5F0 = 1520 apart)
+```
+
+Two conclusions that constrain the writer:
+
+1. **The path table is confirmed again.** The differing runs early in the file are 4–10 byte islands with 78-byte
+   identical gaps - 78 + 10 = the 88-byte record, so neighbouring records differ only in the name text and share all
+   their padding and the trailing constant.
+2. **`pl0000` and `pl0500` share their mesh.** Nearly the whole body is identical, so these two entries are the same
+   topology with different material/texture references (and a handful of small fields). That means the geometry stream
+   is not opaque per-model data: it can be compared across models to separate topology from names.
+3. **A 1520-byte (0x5F0) stride appears in the differing fields.** The same value showed up as an offset in `wp0600`'s
+   geometry (0x5f0). A repeating 24-byte differing field every 1520 bytes suggests per-record structures of that size
+   - the next thing to map (candidate: per-mesh or per-material records).
+
+Still undecoded: the geometry stream's own table (attribute masks, strides, index width), the skeleton (bind pose and
+parents), the skin weights, and how a material resolves its texture names. The writer cannot author geometry until
+those are known; it can parse and re-emit every model exactly (21/21).
+
 ## 3. The build order (each step has a test that fails loudly)
 
 1. **Parse**: read the header, the offset table and the geometry block of a real model into a structure, and assert
