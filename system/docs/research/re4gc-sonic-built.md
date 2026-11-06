@@ -84,3 +84,25 @@ Two operational things, neither of them the mod:
 2. **Menu navigation.** Taps go through `session_op send_input` with down and up in one `events` list; the sequence from this
    menu is `dup` (LOAD -> THE MERCENARIES), `a`, then character and stage confirms. The session was stopped by my own restore
    step before the drive ran, so it needs one more launch and about six taps.
+## The mod plays - a round is running
+
+Driving the menus by hand (each press captured and looked at) reached a live round:
+
+![a live round with the mod loaded](evidence/re4gc-modded-round.jpg)
+
+"Mission Objective: Collect 5 Plaga Samples and head towards the rendezvous point!" - that is **Assignment Ada**, not The
+Mercenaries: from OPTIONS the cursor landed one row short. The route that worked, each step verified from a frame:
+
+```
+OPTIONS: ddown x3 -> EXIT, a      -> main menu
+main menu: dup x2                 -> THE MERCENARIES (one row short: this ran ASSIGNMENT ADA)
+a                                 -> the mode's character/confirm screens
+a x3                              -> a black load, then a live round
+```
+
+Two things this proves: the Sonic mod's image boots and runs a full mode, and a round under the mod renders - the swapped
+player packs do not break the game. What it does not yet show is Sonic himself, because the mode played is Ada's and the
+packs that carry Sonic are the player bodies (pl00, pl08, pl09, pl10), not the path Assignment Ada takes.
+
+Next: exit this round to the main menu and go ONE row down from ASSIGNMENT ADA to THE MERCENARIES, pick the first character
+(pl00 - Sonic), and start. That is three presses from where the game now sits.
