@@ -376,9 +376,11 @@
           try{await applyNow(sessionId);live=' · applied now: the title restarted in this session';}
           catch(err){live=` · built, but the live restart failed: ${err.message}`;}
         }
+        const kept = (r.maps || []).find((m) => String(m).startsWith('kept:'));
+        const extent = kept ? ` (partial: ${String(kept).slice(5)} kept)` : '';
         done(b.dataset.mmSwap==='plain'
           ? `Clothes removed: ${r.replaced?.length||0} clothing map(s) repainted with ${r.body_group}'s skin${live||' (applies at the next boot)'}`
-          : `${b.textContent}: ${r.slot} ← ${r.donor}${live||' (applies at the next boot)'}`);
+          : `${b.textContent}: ${r.slot} ← ${r.donor}${extent}${live||' (applies at the next boot)'}`);
       }
       catch(error){fail(error);}
     }));

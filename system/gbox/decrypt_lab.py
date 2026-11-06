@@ -1045,6 +1045,19 @@ def install(app, store, config, auth, tactical_store=None):
         except mt_arc.ArcError as exc:
             raise HTTPException(400, str(exc)) from exc
         meshes = []
+        moved_maps = []
+        try:                                   # which maps actually moved: a 2/3 swap keeps one map of the slot's own
+            slot_arc, donor_arc = mt_arc.parse(arc_file.read_bytes()), mt_arc.parse(donor_file.read_bytes())
+            slot_maps = skin_swap.material_groups(slot_arc).get(slot_group) or {}
+            donor_maps = skin_swap.material_groups(donor_arc).get(donor_group) or {}
+            moved_maps = [k for k in ("BM", "MM", "NM")
+                          if slot_maps.get(k) is not None and donor_maps.get(k) is not None
+                          and slot_maps[k].tag == donor_maps[k].tag]
+            kept = [k for k in ("BM", "MM", "NM") if k not in moved_maps and slot_maps.get(k) is not None]
+            if kept:
+                moved_maps.append(f"kept:{','.join(kept)}")
+        except mt_arc.ArcError:
+            pass
         if body.with_mesh:
             # an object's shape lives in the entries named after its group (uWp06.arc carries two `wp0600`: the placed
             # mine's mesh), so those travel with the material maps when the operator asks for the whole object
@@ -1073,5 +1086,5 @@ def install(app, store, config, auth, tactical_store=None):
                         f"{slot_group} <- {donor_group} skin ({len(data)} B) in {body.arc_path}",
                         {"build": body.build, "size": len(data)})
         return {"v": FORMAT, "ok": True, "target": str(target), "size": len(data),
-                "slot": slot_group, "donor": donor_group, "mesh": meshes,
+                "slot": slot_group, "donor": donor_group, "mesh": meshes, "maps": moved_maps,
                 "note": "the overlay applies when the title next boots (LayeredFS)"}
