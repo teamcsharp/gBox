@@ -98,3 +98,30 @@ with a code answer, and the tooling for it now works:
 
 The next attempt should be `list_procedures` / `search_strings` on `"bio4"` or on the mount path, then `xrefs` from the
 open call - not another scan of `.rodata` for an extension.
+## Twenty-first run: the texture loader exists, and its name was in the wrong case (2026-11-07)
+
+Round 33 concluded "there is no `imagepackhd` string anywhere in the executable" from a byte scan. **That was a case
+bug.** The string is there, spelled in camel case:
+
+```
+search_strings "imagepack"   -> 3 strings
+  0x6c80f7  "ImagePack"
+  0x6c8101  "ImagePackHD"
+  0x6c8586  "__GXLoadImagePack ERROR : Create Memory Failed...[%d]byte"
+xrefs 0x6c8101  ->  0x24c430, 0x24dbe0          two code addresses
+```
+
+So the loader is identified by address: **`0x24c430`** and **`0x24dbe0`** reference `ImagePackHD`. Every scan that looked
+for lowercase `imagepackhd` was searching for a string that never existed in that form.
+
+The same run shows the shape of the path convention - `BIO4\\text\\` at `0x6c0432` (0 xrefs: it is a data table entry),
+`bgm/bio4str.hed`, `bgm/bio4bgm.sbb` (2 xrefs each) - so the title builds paths from parts and a table, and the
+`ImagePackHD` part is the one that matters for textures.
+
+Also worth recording because it cost a wrong conclusion: REA's answers put the find in `normalized_result`, and the first
+pass parsed `result`. A search that returns three strings and is then read as zero is indistinguishable from "the string
+is not there" - which is exactly the mistake that had been carried for four rounds.
+
+**The decompile of `0x24c430` / `0x24dbe0` is running** (`/tmp/rea_imageloader.json`); a Ghidra import of this 11 MB ELF
+takes 15-25 minutes on this host and competes with the emulator, so it is left to finish rather than killed. That
+function is where a texture id becomes an archive - the last unknown before RE4 Switch skins.
