@@ -84,3 +84,39 @@ judged since, and the live flag was the 11-06 one.
 
 RE5 Switch sits at **0.968 deaths per round** - the bot dies roughly once every round - and RE5 PS3 at 1.0. That is the number
 that would move the score more than any single select fix; it is a combat-survival problem, not a menu problem.
+## A library that was still loading filed a ticket that sent the operator the wrong way (2026-11-07)
+
+Two open tickets said `Auto report: characters use failed ... Failure: 'sonic' isn't in the collection yet: run
+characters op=extract first (have: )`. Both were filed for jobs whose stored record reads:
+
+```
+state   succeeded
+result  {"character": "sonic", "status": "not_in_collection",
+         "message": "'sonic' isn't in the collection yet: run characters op=extract first (have: )"}
+```
+
+That is not a failed job and not a missing character: `(have: )` lists **no** library entries, i.e. the index was
+still being re-read after a control-plane restart. The library holds 1446 entries today (58 Sonic-family), so the
+ticket's advice - "extract first" - would have extracted a character that was already there.
+
+The app files a ticket for any characters job it sees fail, and a `not_in_collection` answer arrives as a normal
+(successful) result, so nothing downstream could tell a loading index from a real gap. `characters.py` had already
+been fixed to answer the empty case with its own status and a "the index is probably still loading" message, but that
+only improved the words in the ticket.
+
+`gbox/server.py` now refuses to mint the ticket at all. `_library_not_ready()` reads the failed job's stored result:
+
+| result | verdict |
+|---|---|
+| `status` is not `not_in_collection` | real failure, file it |
+| `not_in_collection` with no `library_entries` key (an older answer, or the index was loading) | transient, no ticket |
+| `not_in_collection` with `library_entries` 0 | transient, no ticket |
+| `not_in_collection` with a populated library | **real gap**, file it - the character genuinely is absent |
+
+The route answers `{"ok": true, "transient": true, "reason": ...}` without a ticket number, and the app already
+renders that as a plain message (`report?.data?.number` is absent, so no "#N" is shown).
+
+Both stale tickets are closed as `done` with that explanation attached. Committed as `81db2c9b`, deployed to the
+Spark and the service restarted; covered by
+`tests/test_auto_mod_failure.py::test_a_library_that_was_still_loading_files_no_ticket` (3 cases: the old answer with
+no count, an explicit zero, and a populated library that really is missing the character).
