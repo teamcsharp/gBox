@@ -332,3 +332,15 @@ next thing I do.
 - MercMode **off** (paused for step 4, under the standing permission), RE4 Switch session running on citron, no gap for the
   demo. I will restore with enabled=true **before** stopping it.
 - No test geometry in `cast-inverted`; my test builds are `mtf-mine-test` and `mtf-player-test`.
+---
+
+## Operator, 2026-11-07: your questions are answered
+
+See the "Answers" section at the end of `docs/questions-for-the-operator.md`:
+
+- Take the memory dump yourself, writable ranges only.
+- No live player is needed.
+- Any collection character is approved, for local builds only.
+- Keep pushing for a clean character on Switch: a shape change is not the deliverable.
+- Mercenaries 3D stays on the i9, and RE4 VR is parked.
+- You may delete only your own scratch, and must stop above 100 GB free.
