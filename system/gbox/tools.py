@@ -1979,6 +1979,15 @@ def session_op(inp: SessionIn, ctx: Ctx):
         from . import padstate
         padstate.report(ctx, inp.session_id, inp.args.get("events"), "agent")
     ad, _ = SESSIONS[inp.session_id]
+    # The global OPS list is not a promise. An emulator that declares an op unsupported must not receive it: Eden has no
+    # save states at all (checkpoint_reason says so), and calling load_state anyway pressed an F-key and raised
+    # KeyError: 'load_state' from an adapter whose hotkey table has no entry - the failure the operator saw as
+    # "KeyError: 'load_state'" while the game sat there.
+    supported = getattr(ad, "supported", None)
+    if supported is not None and inp.op not in supported and inp.op != "stop_game":
+        reason = getattr(ad, "checkpoint_reason", "") if inp.op in ("save_state", "load_state") else ""
+        raise Unsupported(f"{inp.op} is not available on this emulator ({getattr(ad, 'name', '?')})"
+                          + (f": {reason}" if reason else ""))
     if inp.op in ('pause', 'resume', 'load_state', 'send_input'):
         from .mercs import warm_boot
         warm_boot.cancel(ad)
