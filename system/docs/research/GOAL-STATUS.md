@@ -85,3 +85,20 @@ The RE4 Switch pipeline now decrypts, inventories, views (**3D meshes and textur
 engine accepts: same-topology vertex edits and uniform transforms, with byte-identical round-trips proving the writer
 understands the format. A clean character swap on these titles is still blocked by the engine's refusal to draw a
 rebuilt mesh — measured, not assumed — and the work that would change that (part-table rules) has not been attempted.
+
+## The inbox measured (2026-11-07)
+
+8,894 requests: **6,081 done, 1,694 in_progress, 1,109 open, 10 blocked**.
+
+The class I expected to be bloated is not: `rank_not_verified` is **2,877 done / 49 in_progress / 11 open** - the
+per-title cap (`round_reports.ANALYSIS_QUEUE_CAP = 3`, which supersedes older analyses when a new one is minted) holds
+the open count at 11 across four titles. Applying the cap retroactively would close **nothing**; a dry run confirmed
+it.
+
+So the inbox's real problem is the opposite: **1,694 tickets are `in_progress`** - claimed by an agent and never
+finished. The cap keeps *new* analysis tickets bounded, but nothing ages out a ticket a worker picked up and abandoned,
+so the queue reads as busy while draining slowly. The fix worth making (not attempted here) is an age-out: a ticket
+`in_progress` for longer than N hours returns to `open` with a note, the way the analysis cap supersedes.
+
+Two tickets were closed this session with evidence (`58287b5954714e98`, `4f710eb3d6ab4066` - the "(have: )" auto
+reports), and the route that filed them no longer mints a ticket for a library that is still loading.
