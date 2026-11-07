@@ -692,3 +692,42 @@ def test_a_simplified_donor_rebuilds_into_a_slot_it_could_not_enter_before():
     assert after is not None
     if before is not None:
         assert len(after) < len(before)
+
+# ---------------------------------------------------------------- the swap as one call
+
+def test_plan_swap_fits_a_rich_donor_by_simplifying_and_reports_each_slot():
+    small = M.bin_read(make_bin(n=60, bones=((0, 0xFF),), prims=((5, 60),)))
+    pack = pack_with(M.bin_from(small, pos=small.pos, tris=small.tris))
+    pos, tris = grid_mesh(9)                        # 128 triangles: too many for that slot as given
+    donor = M.Bin(header=b"", info={})
+    donor.pos, donor.tris, donor.uv, donor.colors = pos, tris, None, None
+    out = M.plan_swap(pack, donor, slots=[0])
+    assert out["changed"] and out["swapped"] == 1
+    row = out["report"][0]
+    assert row["status"] == "swapped" and row["simplified"] is True
+    assert row["bytes"] <= row["slot_bytes"] and row["tris"] < len(tris)
+    # the pack keeps its slot sizes (a patch is in place, never a resize)
+    from gbox.re4gc_inventory import bin_slots
+    assert bin_slots(out["pack"], "<")[0]["size"] == bin_slots(pack, "<")[0]["size"]
+
+
+def test_plan_swap_leaves_a_donor_that_already_fits_unsimplified():
+    big = M.bin_read(make_bin(n=60, bones=((0, 0xFF),), prims=((5, 60),)))
+    pack = pack_with(M.bin_from(big, pos=big.pos, tris=big.tris))
+    donor = M.Bin(header=b"", info={})
+    donor.pos, donor.tris, donor.uv, donor.colors = grid_mesh(3)[0], grid_mesh(3)[1], None, None
+    out = M.plan_swap(pack, donor, slots=[0])
+    assert out["report"][0]["status"] == "swapped"
+    assert out["report"][0]["simplified"] is False      # nothing is thrown away behind the caller's back
+
+
+def test_plan_swap_reports_a_slot_it_cannot_enter_and_a_slot_that_does_not_exist():
+    small = M.bin_read(make_bin(n=60, bones=((0, 0xFF),), prims=((5, 60),)))
+    pack = pack_with(M.bin_from(small, pos=small.pos, tris=small.tris))
+    donor = M.Bin(header=b"", info={})
+    donor.pos, donor.tris, donor.uv, donor.colors = grid_mesh(9)[0], grid_mesh(9)[1], None, None
+    out = M.plan_swap(pack, donor, slots=[0], simplify_to_fit=False, budgets=())
+    assert out["swapped"] == 0 and not out["changed"]
+    assert out["report"][0]["status"] == "too_big"
+    with pytest.raises(M.BINError, match="no such slot"):
+        M.plan_swap(pack, donor, slots=[99])

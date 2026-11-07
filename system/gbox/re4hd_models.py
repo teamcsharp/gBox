@@ -1302,7 +1302,8 @@ def simplify(pos, tris, target_tris: int, *, steps: int = 14) -> tuple:
         if len(kept) <= target_tris:
             # keep the FINEST grid that still fits: the largest triangle count inside the budget is the best quality
             if fit is None or len(kept) > len(fit[1]):
-                fit = (pos[first], kept, {"cell": cell, "verts": len(first), "tris": len(kept)})
+                fit = (pos[first], kept, {"cell": cell, "verts": len(first), "tris": len(kept),
+                                          "picked": first})
             high = cell
         else:
             low = cell
@@ -1312,7 +1313,8 @@ def simplify(pos, tris, target_tris: int, *, steps: int = 14) -> tuple:
         _, first, inverse = np.unique(grid, axis=0, return_index=True, return_inverse=True)
         mapped = inverse[tri]
         keep = (mapped[:, 0] != mapped[:, 1]) & (mapped[:, 1] != mapped[:, 2]) & (mapped[:, 0] != mapped[:, 2])
-        fit = (pos[first], mapped[keep], {"cell": cell, "verts": len(first), "tris": int(keep.sum())})
+        fit = (pos[first], mapped[keep], {"cell": cell, "verts": len(first), "tris": int(keep.sum()),
+                                          "picked": first})
     new_pos, new_tri, info = fit
     while len(new_tri) > target_tris:
         info["cell"] *= 1.35
@@ -1324,3 +1326,71 @@ def simplify(pos, tris, target_tris: int, *, steps: int = 14) -> tuple:
         info.update(verts=len(new_pos), tris=len(new_tri))
     info["ratio"] = round(len(new_tri) / max(1, len(tri)), 3)
     return new_pos, new_tri, info
+
+# ------------------------------------------------------------------ the swap as one call
+
+def plan_swap(pack: bytes, donor, *, slots=None, encoding: str = "strip", endian: str = "<",
+              simplify_to_fit: bool = True, budgets=(1600, 1400, 1200, 1000, 800, 600, 400, 250, 150, 80, 40)) -> dict:
+    """One call that turns a donor into a patched pack: choose slots, fit the donor, patch, report per slot.
+
+    This is the reusable "replace" step the pipeline was missing - rounds 8 to 18 each re-derived it by hand (rebuild,
+    check the size, simplify, pad, patch) and each experiment paid a boot to discover what the arithmetic already knew.
+
+    `slots` is a list of BIN indexes (None = every slot the donor fits as it is). With `simplify_to_fit`, a slot too
+    small for the donor as given gets a simplified copy sized to that slot's budget, so a rich donor reaches parts it
+    could never fill whole.
+
+    Returns the patched pack bytes plus a per-slot report: what went in, how many triangles, the size written and the
+    fill - and, for a slot that could not take the donor at any budget, why.
+    """
+    from .re4gc_inventory import bin_slots, pack_patch
+    src = donor if isinstance(donor, Bin) else bin_read(donor)
+    if src.pos is None or src.tris is None:
+        raise BINError("plan_swap needs a donor with geometry")
+    everything = list(bin_slots(pack, endian))
+    wanted = everything if slots is None else [s for s in everything if s["bin"] in set(slots)]
+    if not wanted:
+        raise BINError("no such slot in this pack")
+    out, report = pack, []
+    for slot in wanted:
+        blob = pack[slot["offset"]:slot["offset"] + slot["size"]]
+        try:
+            template = bin_read(blob)
+        except BINError as exc:
+            report.append({"bin": slot["bin"], "status": "undecodable", "reason": str(exc)[:100]})
+            continue
+        attempt = None
+        # as given first: a donor that already fits is not simplified behind the caller's back
+        try:
+            straight = bin_from(template, pos=src.pos, uv=src.uv, colors=src.colors, tris=src.tris, encoding=encoding)
+            if len(straight) <= slot["size"]:
+                attempt = (straight, src.tris, None)
+        except BINError:
+            pass
+        if attempt is None and simplify_to_fit:
+            for budget in budgets:
+                pos, tri, info = simplify(src.pos, src.tris, budget)
+                # a merged vertex stands for the first original vertex in its cell: gather that vertex's arrays, or
+                # the rebuild is handed a donor-length UV list and refuses every budget (measured 2026-11-07)
+                picked = info.get("picked")
+                uv = src.uv[picked] if (src.uv is not None and picked is not None) else None
+                colors = src.colors[picked] if (src.colors is not None and picked is not None) else None
+                try:
+                    rebuilt = bin_from(template, pos=pos, uv=uv, colors=colors, tris=tri, encoding=encoding)
+                except BINError:
+                    continue
+                if len(rebuilt) <= slot["size"]:
+                    attempt = (rebuilt, tri, info)
+                    break
+        if attempt is None:
+            report.append({"bin": slot["bin"], "slot_bytes": slot["size"], "status": "too_big",
+                           "donor_tris": src.n_tris})
+            continue
+        rebuilt, tri, info = attempt
+        out = pack_patch(out, slot["bin"], pad_to(rebuilt, slot["size"]), endian)
+        report.append({"bin": slot["bin"], "slot_bytes": slot["size"], "status": "swapped",
+                       "bytes": len(rebuilt), "tris": int(len(tri)),
+                       "simplified": info is not None, "cell": (info or {}).get("cell"),
+                       "fill": round(len(rebuilt) / slot["size"], 3)})
+    swapped = sum(1 for r in report if r["status"] == "swapped")
+    return {"pack": out, "changed": out != pack, "swapped": swapped, "slots": len(report), "report": report}

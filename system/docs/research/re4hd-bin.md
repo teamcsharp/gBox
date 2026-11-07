@@ -406,3 +406,43 @@ Two things follow, and they are the practical answer for "Sonic as the ganado":
 
 That makes the next rung concrete: either target slots 541/543, or add a decimation step so a rich donor fits more of
 the pack.
+## The swap is one call now: `plan_swap` (2026-11-07)
+
+Rounds 8 to 18 each re-derived the same five steps by hand - rebuild, check the size, simplify, pad, patch - and each
+experiment paid an emulator boot to discover something the arithmetic already knew. `re4hd_models.plan_swap` is that
+sequence as one call:
+
+```python
+out = plan_swap(pack_bytes, donor_bin, slots=[32, 24, 2, 3])   # or slots=None for every slot it can reach
+out["pack"], out["swapped"], out["report"]                     # patched bytes + a per-slot verdict
+```
+
+Verified on the real `em11` pack with the dog as donor:
+
+```
+one call -> swapped 4 of 4
+   bin  2: 792 tris, 59,136 B, fill 88%, simplified
+   bin  3: 981 tris, 63,584 B, fill 95%, simplified
+   bin 24: 1198 tris, 80,064 B, fill 99%, simplified
+   bin 32: 1599 tris, 97,632 B, fill 99%, simplified
+whole pack: 33 slots -> 26 swapped, 3 too_big, 4 undecodable
+```
+
+A donor that already fits is **not** simplified behind the caller's back; a donor that does not is simplified to a
+budget that fits, and the surviving vertices carry the donor's UVs and colours (`simplify` reports which original
+vertex each merged vertex stands for - without that the rebuild was handed a donor-length UV list and refused every
+budget, which is how this bug was found).
+
+That last number is the useful one for planning: **a character-sized donor can now enter 26 of em11's 33 slots** in one
+call, where round 17 measured zero.
+
+## Sound: identified, not decoded (2026-11-07)
+
+The goal names sound effects and this title keeps them in CRI containers: `bio4/snd` has **112 `.acb` + 112 `.awb`**
+(+ one `.acf`), the `.acb` beginning `@UTF` and the `.awb` beginning `AFS2`.
+
+Read from the headers: version `0x0401`, offset size 2, id size 0, an entry count (65 / 78 / 17 for `core`, `bio4bgm`,
+`bio4midi`), alignment 32, subkey 0, and a u16 table whose values run 1..count. Attempts to treat those as offsets, and
+to find the payloads by `HCA ` / `@UTF` magic, both failed - `core.awb` has neither magic anywhere - so the entry map
+and the payload codec are **not** established. `gBox` has no CRI reader to reuse. This is a real gap, recorded rather
+than guessed at; the next step is a proper `@UTF`/`AFS2` reference rather than more guessing from hex.
