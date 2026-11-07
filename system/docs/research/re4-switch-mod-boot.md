@@ -174,3 +174,37 @@ compatibility, not the swap.
 *that* one's biggest slot (the ranking says which slots can host: for `em10` only bins 75/76 of 120). The cheapest
 route is to swap a visually unmistakable donor into the biggest slot of each candidate pack in turn, or into several at
 once, and look at a round.
+## Sixth run: the labelling answer, by elimination (2026-11-07)
+
+Two builds, same walk, one variable.
+
+| build | packs | swaps | what the round did |
+|---|---|---|---|
+| `re4-dog-full` | 34 | 61 whole-body slots -> the dog | **loaded and played** |
+| `re4-dog-test` | 73 | those 61 + 47 sparse-output markers into body-part slots | **hung at stage load** (black, mean 0.2, held 4 min) |
+
+So the hang is **not** the number of packs - 34 packs and 61 swaps is fine - it is the **sparse marker**: a
+dog with every sixth triangle kept, pushed into a body-part slot. That is a mesh the engine will not finish loading,
+and it is the first time this session that a swap has broken the stage load.
+
+And the round from the 34-pack build shows the answer to the labelling question:
+
+![the village round with 34 packs swapped - the Ganados are unchanged](evidence/re4switch-34pack-round-unchanged-ganados.jpg)
+
+**The Ganados are normal villagers.** Thirty-four packs, every whole-body slot the dog could reach, and not one
+Ganado changed. Those 34 packs are exactly the ones with a slot big enough for a whole body; **`em11`-`em17` - the
+classic Ganado packs - are not among them**, because every slot in those packs is smaller than a whole-body donor
+(that is why they needed the sparse fallback in the first place, and the sparse fallback is what hangs).
+
+**The conclusion, and it changes the plan:** the visible Ganado body lives in `em11`-`em17`, whose meshes are **body
+parts** (head, torso, limbs) rather than whole bodies. A character swap into this title therefore cannot be "one donor
+into one slot" for the enemies the player actually fights. It has to be **slot-sized per part** - either a donor split
+across the parts, or a donor decimated to each part's budget - and a patchwork mesh (the sparse marker) is not
+accepted by the loader.
+
+That is a sharper target than "find the right pack": the packs are now identified, and the constraint on entering them
+is per-part mesh compatibility, not pack selection.
+
+Cost: two rotation turns (MercMode paused for both, restored after; `phase: playing` within 60 s). Also learned: a
+`switch_mods` write must be pinned with `require_worker` - without it the job is dispatched to a PC whose catalog has
+no entry for the game and the worker's own catalog lookup 404s.
