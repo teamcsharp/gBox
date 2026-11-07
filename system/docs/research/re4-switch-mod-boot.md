@@ -51,3 +51,33 @@ scp .work/re4-probe/re4_swap_boot.py spark:/tmp/ && ssh spark 'sed -i "s/\r$//" 
 ```
 
 (`restore_mercmode.py` in the same folder puts the rotation back.)
+
+## Second run: attempting to load a save with the modded pack (2026-11-07)
+
+The load screen is reachable, so the next step was to load a save and put an enemy on screen.
+
+**What the save list showed:** the title has `Cleared Game` saves (slot 01 "008 04:18:02 · 01 · PRO", slot 02
+"005 02:47:06 · 01 · ADA"), so a cleared game - and therefore Mercenaries access - is on this copy.
+
+**Modded pack, confirmed a load:** title ? LOAD list ? "Load data? Yes / No" ? answered Yes ? **black screen**
+(7,056 B frame, mean 0.8, std 9.6) held for **210 s**. The emulator stayed up; nothing rendered.
+
+**Stock control, same intent:** the load list was reached, "Load data?" was answered the same way, and the title
+**returned to the save list** (mean 40.2-40.3 for 180 s) instead of going black.
+
+**What that does and does not establish.** The two runs are not the same experiment: the prompt appears at a
+different tap depending on where the cursor sits beforehand (the modded run reached it after six taps, the stock run
+needed a seventh), so "stock refused the load" and "stock never attempted it" cannot be told apart from frames alone.
+The black screen is therefore **consistent with** the swapped pack breaking the level load, and equally consistent with
+a load this copy refuses at a different point. **The swap is not implicated yet.**
+
+**What would settle it,** and what this run says about the driver:
+
+1. Read the menu state instead of tapping blind. The correct signal is the LOAD screen being *stable* and its cursor
+   position - neither is currently sensed, which is exactly why `gbox.mercs.titles.re4_switch` stalls here (identical
+   frames for 260 s in the round-9 bot run).
+2. With that, run the pair properly: stock load ? expect gameplay; modded load ? either gameplay (swap is fine, look
+   for the enemy) or black (swap implicated). Same save, same cursor, one variable.
+3. Only then does "the mesh renders" become a claim worth making.
+
+Cost of the two runs: MercMode was paused for both and restored after (`phase: playing` within 60 s).
