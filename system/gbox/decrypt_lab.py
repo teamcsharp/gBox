@@ -664,11 +664,18 @@ def hd_model_geometry(root, pack_inner: str, slot: int | None = None, budget: in
     inner = (pack_inner or "").strip().lstrip("/")
     if not inner:
         return None
+    root_resolved = root.resolve()
     pack = (root / inner).resolve()
-    if not str(pack).startswith(str(root.resolve())):
+    if not str(pack).startswith(str(root_resolved)):
         raise ValueError("the path leaves the extracted tree")
     if not pack.is_file():
-        raise FileNotFoundError(f"the extracted tree does not hold {inner}")
+        # the pack list (re4gc_inventory.switch_inventory) names packs relative to bio4/ ("em/em10.udas"), while this
+        # route takes paths relative to the RomFS root - accept either so a row from the extraction tab is clickable
+        alternative = (root / "bio4" / inner).resolve()
+        if str(alternative).startswith(str(root_resolved)) and alternative.is_file():
+            pack, inner = alternative, f"bio4/{inner}"
+        else:
+            raise FileNotFoundError(f"the extracted tree does not hold {inner}")
     data = pack.read_bytes()
     try:
         dat = next(e for e in re4gc_inventory.udas_entries(data, "<") if e["type"] == 0)

@@ -67,6 +67,14 @@ def test_an_hd_tree_returns_the_same_shape_the_mtf_path_returns(hd_tree):
     assert len(out["skeleton"]["bones"]) == 1
 
 
+def test_a_pack_named_the_way_the_extraction_tab_lists_it_is_accepted(hd_tree):
+    # switch_inventory names packs relative to bio4/ ("em/em21.udas"); the route takes root-relative paths. Both work.
+    relative = L.hd_model_geometry(hd_tree, "em/em21.udas", 0)
+    rooted = L.hd_model_geometry(hd_tree, "bio4/em/em21.udas", 0)
+    assert relative is not None and relative["positions"] == rooted["positions"]
+    assert relative["pack"] == "bio4/em/em21.udas" and relative["entry"].startswith("bio4/em/em21.udas#BIN0")
+
+
 def test_a_tree_without_bio4_is_not_an_hd_tree(tmp_path):
     assert L.hd_model_geometry(tmp_path, "bio4/em/em21.udas", 0) is None
 
