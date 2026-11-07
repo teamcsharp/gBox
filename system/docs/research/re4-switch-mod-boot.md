@@ -247,3 +247,26 @@ bin 32, so the body slot is still unidentified.
 **Cost:** four emulator boots this round; MercMode paused for each and restored (`phase: playing`). Each boot also
 re-taught a script lesson: the walk must not stop on an unreadable frame until a stage has actually been picked, or a
 menu transition is mistaken for the round intro.
+## Ninth/tenth runs: it is not slot count - it is which pack (2026-11-07)
+
+Round 18 concluded "breadth of modification" from three data points (1 slot plays, 48 slots hang). This round measured
+the axis directly, and the conclusion was wrong.
+
+| build | pack | slots swapped | result |
+|---|---|---|---|
+| `re4-n2` | em11 | 2 | **played** |
+| `re4-n4` | em11 | 4 | **played** |
+| `re4-n8` | em11 | 8 | **played** |
+| `re4-n26` | em11 | **26 of its 33** | **played** |
+
+All four played, with the same walk and the same donor, so **slot count inside one pack is not the limit** - em11 with
+26 of its 33 meshes replaced still loads and plays. That also means a whole enemy pack can be re-skinned in one build,
+which is the useful case.
+
+The 48-slot build that hung touched `em11` **through `em17`**. em11 is now shown innocent with 26 slots, so the hang
+lives in **`em12`-`em17`** - one of those packs, or a slot inside it, does not survive being replaced. A sweep of those
+six packs is running (6 slots each, one build per pack, same walk, load-vs-hang as the signal).
+
+What this changes: the question is no longer "how much can be modified" but "which packs accept a replacement at all".
+That is a per-pack property to measure once, and then the picker can simply refuse a pack that will not load rather
+than hanging a stage.
