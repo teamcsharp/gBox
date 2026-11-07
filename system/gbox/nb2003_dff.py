@@ -20,7 +20,9 @@ class Mesh:
     offset: int
     pool_count_hdr: int      # first word of 0x200f1/0x10035 blob
     pool_words: int          # float words after the 2-word blob header
-    npool: int               # strip index-space size
+    pool_off: int = 0        # byte offset of the float pool (after count+flag words)
+    pool_end: int = 0        # byte offset where the pool ends (parent (0x401ffff,1) end)
+    npool: int = 0           # strip index-space size
     indices: list = field(default_factory=list)
     kind: str = "pos"        # pos (0x200f1) or uv (0x10035)
 
@@ -47,7 +49,17 @@ def read_dff(data: bytes) -> list[Mesh]:
             blob = cs + 12
             _, bs, _ = struct.unpack_from("<3I", data, blob)
             cnt = struct.unpack_from("<I", data, blob + 12)[0]
-            m = Mesh(mo, cnt, (csz - 12 - 8) // 4, 0,
+            # Explicit pool bounds: the blob leaf size is NOT the payload bound;
+            # the float pool is [count][flag][floats] running to the parent
+            # (0x401ffff,1) container end.  Validate the region before trusting it.
+            pool_off = blob + 12 + 8          # skip the [count, flag] header words
+            pool_end = cs + 12 + csz          # parent container end
+            nwords = (pool_end - pool_off) // 4
+            assert 0 <= pool_off <= pool_end <= len(data), \
+                f"pool bounds out of range @ {mo:#x}: off={pool_off:#x} end={pool_end:#x}"
+            assert nwords > 0, f"empty float pool @ {mo:#x}"
+            assert cnt < 0x10000, f"implausible pool count {cnt} @ {mo:#x}"
+            m = Mesh(mo, cnt, nwords, pool_off=pool_off, pool_end=pool_end,
                      kind="pos" if bs == 0x200F1 else "uv")
             for so, st, ss, ssz in chunks(data, mo + 12, end):
                 for xo, xt, xs, xsz in ([(so, st, ss, ssz)] +

@@ -29,3 +29,19 @@ def test_ape_strip_index_space():
 
 def test_strip_restart():
     assert strip_triangles([0, 1, 2, 2, 3, 4]) == [(0, 1, 2), (2, 3, 4)] or True
+
+
+@pytest.mark.skipif(not os.path.exists(FIX), reason="owned fixture absent")
+def test_ape_pool_bounds():
+    d = open(FIX, "rb").read()
+    ms = read_dff(d)
+    for m in ms:
+        # explicit bounds must lie inside the file and match pool_words
+        assert 0 <= m.pool_off < m.pool_end <= len(d), hex(m.offset)
+        assert m.pool_words == (m.pool_end - m.pool_off) // 4
+        assert m.pool_words > 0
+    # mesh0 (pos) known-good bounds from the owned fixture
+    assert ms[0].pool_off == 0xa38
+    assert ms[0].pool_end == 0x4770
+    assert ms[0].pool_words == 3918
+    assert ms[0].pool_count_hdr == 225
