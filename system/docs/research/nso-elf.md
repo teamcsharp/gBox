@@ -60,3 +60,41 @@ here** (`os/linux_arm_64/decompile`) and JDK 21 - it simply pins the 12.1 line. 
 REA advertises `GHIDRA_GAMECUBE_DOL_LANGUAGE` among its settings - it can drive an analysis of a GameCube DOL through
 Ghidra, which is the format the RE4 GameCube title's executable is in. That is worth trying for the GC side, where
 `re4gc_zombies` already writes models.
+
+## Twentieth run: the `.udas` lead was debug text (2026-11-07)
+
+With REA driving Ghidra 12.1.4 over the ELF, the question that two rounds of scripts were circling got a clean answer:
+
+```
+xrefs to 0x6d07ca   provider: ghidra 12.1.4   evidence: ev_9197d12c8c6719804968afe65a8bd22cd1d7f4c2bb5c75a1ce7ddc40d6636ac0
+normalized_result: []        <- nothing references it
+```
+
+And reading what is actually at those addresses in the corrected image explains why:
+
+| vaddr | string |
+|---|---|
+| `0x6d06ca` | `.DeleteOtData() : invalid no[%d] MAX=%d.` |
+| `0x6d07ca` | `.udas.[systemQuitCheck] Waiting to file ` |
+| `0x6d07bf` | `Contents:/..udas.[systemQuitCheck] Waiti` |
+
+**`.udas` is not a path extension in this binary.** It is three characters inside a debug string, sitting between the tail
+of one message and the head of `[systemQuitCheck]`. Nothing references it by address because nothing builds a `.udas`
+path by name; the string exists only as text.
+
+That retires the whole "the loader names files by extension, find the loader" line - which had already cost round 33's
+instruction scan (whose `add #0x7ca` computed `0x6d06ca`, the *debug* string, not the extension) and this round's xref.
+The honest summary is that the string approach had no purchase on this title, and the fix is to stop looking at strings.
+
+**Where the texture join has to go instead.** The executable contains no `imagepackhd`, no `pack.fen`, and no resource-path
+format string; the archives are named in hex with structured prefixes. So the mapping is numeric, produced by the resource
+manager from ids, and the way in is the **file-open path**: find the code that calls the ROM/filesystem open (the
+`nn::fs`-style import or the mounted romfs entry point) and walk back to what builds the name. That is a code question
+with a code answer, and the tooling for it now works:
+
+* `nso_elf.py` gives a correct ELF (no 0x100 skew);
+* REA + Ghidra 12.1.4 with an arm64 decompiler answers `xrefs`, `list_strings`, `search_strings`,
+  `procedure_pseudo_code` and friends against it, with an evidence digest recorded for every answer.
+
+The next attempt should be `list_procedures` / `search_strings` on `"bio4"` or on the mount path, then `xrefs` from the
+open call - not another scan of `.rodata` for an extension.
