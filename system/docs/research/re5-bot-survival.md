@@ -265,3 +265,21 @@ Three things worth reading off it:
    death clusters, which is exactly the kind of thing that makes a cause look bigger than it is.
 
 Deployed and hash-verified; 25 tests pass across `test_re5_switch_cycle` and `test_re_switch`.
+## Approach fix deployed; one round later the score is the best of the day but the knife is still idle
+
+```
+before (stock baseline)  score 19,450  seen 11  taken 1  knife 0  detours 11  prompts 1
+before (stock baseline)  score 44,010  seen  8  taken 0  knife 0  detours 27  prompts 0
+after  (press-in)        score 52,890  seen  8  taken 1  knife 0  detours  9  prompts 1
+```
+
+What the change does: when a statue is within `BONUS_WALK_R` and no prompt is read, the bot now faces it and presses in for up to
+`BONUS_PRESS_IN_S` (4 s) instead of waiting for a prompt that only proximity produces. One round later: detours down (9 from 11-27),
+prompts seen 1, bonus taken 1, and the highest score of the three rounds today.
+
+What it does NOT show: a knife swing. `knife_swings` is 0 again, so the knife branch still never runs - the bonus is being taken by the
+context prompt, which is the mechanism the one earlier success used too. That is fine for taking bonuses (the prompt works), but it
+means the knife code remains dead in practice and the `KNIFE_*` constants are not what is carrying this.
+
+One round is not evidence of improvement - the score varies 19k-53k across three rounds of the same build. The gate needs its eight,
+and the metric to watch is `bonuses_taken` against `bonuses_seen`, not the score.

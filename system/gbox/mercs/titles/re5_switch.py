@@ -730,6 +730,11 @@ CAM_COUNTERS = ("cam_up_ticks", "cam_up_fixes", "cam_pitch_inverted", "cam_down_
 # of BONUS_JUMP_S or more), bonus_runs, knife_swings, bonus_detours.
 BONUS, BONUS_VT, BONUS_SCAN_S, BONUS_FIGHT_R, BONUS_WALK_R, BONUS_BLOCK_S, BONUS_JUMP_S = \
     True, 0x1BD6D58, 1.0, 300.0, 250.0, 12.0, 20.0       # (a Majini within 3 m: the fight takes over the run - 21:0x)
+# Pressing INTO a statue is what makes its prompt appear, and the prompt is what takes the bonus (the one round that took one did it
+# that way). The code waited for `prompt_read` before walking in, which is circular: proximity was waiting on the prompt that only
+# proximity produces. Rounds measured bonuses_seen 8-11 with bonuses_taken 0-1, knife_swings 0 and detours 11-27 - the bot circled.
+# Bounded so a statue it genuinely cannot reach still falls through to the detour/give-up path.
+BONUS_PRESS_IN_S = 4.0
 # KNIFE_R was 90 cm: inside a statue's own footprint, so the bot walked up, circled (bonus_detours 6-27 a round) and never
 # entered the reach that starts the swing. Four consecutive rounds measured knife_swings 0 with bonuses_taken 0 (the only take
 # came from a context prompt), while bonuses_seen was 8-11 a round. 160 cm is where the bot actually stands when it arrives, and
@@ -1968,6 +1973,18 @@ class Bot:
                 return {"hold": ("lup",)}
             self.doing, self.why = "walk", f"time bonus {b.get('secs')} s at {d / 100:.1f} m: into it for its prompt"
             return {"hold": ("lup",) + self._turn(err, KNIFE_FACE)}
+        if d <= BONUS_WALK_R and not snap.get("prompt_read"):
+            # walk INTO it: the prompt only shows up close, so waiting for prompt_read before pressing in never resolves (that
+            # circularity is what the rounds measured as 11-27 detours and 0 swings a round). Bounded to BONUS_PRESS_IN_S so a
+            # statue that cannot be reached still reaches the detour/give-up path below.
+            run["press_since"] = run.get("press_since") or now
+            if now - run["press_since"] <= BONUS_PRESS_IN_S:
+                self.doing, self.why = "walk", (f"time bonus {b.get('secs')} s at {d / 100:.1f} m: "
+                                                f"pressing in for its prompt")
+                return {"hold": ("lup",) + self._turn(err, KNIFE_FACE)}
+            run["press_since"] = None          # the window is over: the normal approach (detour, or give it up) takes over
+        else:
+            run["press_since"] = None
         if d <= KNIFE_R:                                 # at it: face it, then the knife until it breaks
             if abs(err) > KNIFE_FACE:
                 self.doing, self.why = "turn", f"time bonus {b.get('secs')} s at {d / 100:.1f} m: facing it"
