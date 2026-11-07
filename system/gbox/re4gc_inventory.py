@@ -63,32 +63,48 @@ def disc_header(head: bytes, bi2: bytes) -> dict:
             "region": REGIONS.get(region, f"unknown({region})")}
 
 
-def udas_entries(data: bytes) -> list[dict]:
-    """Bounded UDAS directory: [{type, size, offset}] (refuses tables that leave the 0x400 header or the file)."""
+def udas_entries(data: bytes, endian: str = ">") -> list[dict]:
+    """Bounded UDAS directory: [{type, size, offset}] (refuses tables that leave the 0x400 header or the file).
+
+    `endian` is the field order. RE4 on GameCube/Wii writes the entries big-endian; the HD port (RE4 Switch, and the
+    PC/PS4/XB1 UHD releases) writes the SAME container little-endian - identical 0xCAB6BE20 fill, identical 32-byte
+    entries, identical 0xFFFFFFFF terminator inside the first 0x400 bytes (measured 2026-11-07 on
+    bio4/em/em10.udas: entry 0 type 0, size 8,863,840 at 0x420, then a type-4 sound entry). One reader serves both.
+    """
+    if endian not in (">", "<"):
+        raise ValueError(f"endian must be '>' or '<', not {endian!r}")
     out, o = [], 0x20
+    word = endian + "I"
+    fields = endian + "IIII"
     while True:
         if o + 4 > min(0x400, len(data)):
             raise ValueError("UDAS table has no 0xFFFFFFFF terminator inside 0x400 bytes")
-        if struct.unpack_from(">I", data, o)[0] == 0xFFFFFFFF:
+        if struct.unpack_from(word, data, o)[0] == 0xFFFFFFFF:
             return out
         if o + 16 > len(data):
             raise ValueError(f"UDAS entry {len(out)} truncated")
-        t, size, _zero, off = struct.unpack_from(">IIII", data, o)
+        t, size, _zero, off = struct.unpack_from(fields, data, o)
         if off < 0x400 or off + size > len(data):
             raise ValueError(f"UDAS entry {len(out)} ({off:#x}+{size:#x}) is outside the file")
         out.append({"type": t, "size": size, "offset": off})
         o += 32
 
 
-def dat_entries(data: bytes) -> list[tuple[str, int, int]]:
-    """[(ext, offset, size)] for a DAT model pack; empty slots keep ext '' and size 0."""
+def dat_entries(data: bytes, endian: str = ">") -> list[tuple[str, int, int]]:
+    """[(ext, offset, size)] for a DAT model pack; empty slots keep ext '' and size 0.
+
+    Same little-endian variant as `udas_entries`: the HD port's DAT has the identical count/tail/offset-table/
+    4-char-extension layout, with the fields byte-swapped.
+    """
+    if endian not in (">", "<"):
+        raise ValueError(f"endian must be '>' or '<', not {endian!r}")
     if len(data) < 16:
         raise ValueError("DAT too short")
-    n, tail = struct.unpack_from(">II", data, 0)
+    n, tail = struct.unpack_from(endian + "II", data, 0)
     end = tail or len(data)
     if n == 0 or 16 + 8 * n > len(data) or end > len(data):
         raise ValueError(f"not a DAT pack (count {n}, tail {tail:#x}, size {len(data)})")
-    offs = list(struct.unpack_from(f">{n}I", data, 16))
+    offs = list(struct.unpack_from(f"{endian}{n}I", data, 16))
     exts = [data[16 + 4 * n + 4 * i:20 + 4 * n + 4 * i].rstrip(b"\0").decode("latin-1") for i in range(n)]
     out = []
     for i in range(n):
@@ -140,22 +156,34 @@ def tpl_images(b: bytes) -> list[dict]:
     return out
 
 
-def pack_summary(drs: bytes, decode: bool = False) -> dict:
+def pack_summary(drs: bytes, decode: bool = False, endian: str = ">") -> dict:
     """Inventory one UDAS character pack: DAT slot types, BIN meshes, TPL textures and motion entries.
-    decode=True also runs re4gc_models.bin_read on every BIN (triangle counts; a decoder oracle)."""
+    decode=True also runs re4gc_models.bin_read on every BIN (triangle counts; a decoder oracle).
+
+    `endian` selects the edition: '>' is the GameCube/Wii pack this module was written for, '<' the HD port
+    (RE4 Switch). The container layer is the same either way, so slots, sizes and motion bytes are inventoried for
+    both; the PAYLOAD decoders are not. An HD BIN starts with a 0x98 header size (the GC writer knows 0x40/0x60) and
+    an HD "TPL" starts with 0x12345678 (the GX TPL magic is 0x0020AF30), so those slots are reported by size with the
+    reason they were not decoded instead of being parsed as if they were the GC layout.
+    """
     from . import re4gc_models as R                      # noqa: F401  (numpy; only used when decode=True)
-    ents = udas_entries(drs)
+    ents = udas_entries(drs, endian)
     out = {"udas": [{"type": e["type"], "size": e["size"]} for e in ents], "meshes": [], "textures": [],
-           "slots": Counter(), "motion_bytes": 0, "errors": []}
+           "slots": Counter(), "motion_bytes": 0, "errors": [],
+           "edition": "gamecube" if endian == ">" else "hd"}
     for e in ents:
         if e["type"] != 0:
             continue
         dat = drs[e["offset"]:e["offset"] + e["size"]]
-        for i, (ext, off, size) in enumerate(dat_entries(dat)):
+        for i, (ext, off, size) in enumerate(dat_entries(dat, endian)):
             blob = dat[off:off + size]
             out["slots"][ext or "empty"] += 1
             try:
                 if ext == "BIN":
+                    if endian != ">":                    # HD BIN: header layout differs, so report it, never guess
+                        out["meshes"].append({"slot": i, "size": size, "decoded": False,
+                                              "header": hex(struct.unpack_from("<I", blob, 0)[0]) if len(blob) >= 4 else None})
+                        continue
                     row = {"slot": i, "size": size, **bin_header(blob)}
                     if decode:
                         m = R.bin_read(blob)
@@ -165,6 +193,10 @@ def pack_summary(drs: bytes, decode: bool = False) -> dict:
                             raise ValueError("bin_read disagrees with the header counts")
                     out["meshes"].append(row)
                 elif ext == "TPL":
+                    if endian != ">":
+                        out["textures"].append({"slot": i, "size": size, "decoded": False,
+                                                "magic": hex(struct.unpack_from("<I", blob, 0)[0]) if len(blob) >= 4 else None})
+                        continue
                     out["textures"].append({"slot": i, "size": size, "images": tpl_images(blob)})
                 elif ext in ("FCV", "SEQ"):
                     out["motion_bytes"] += size
@@ -247,14 +279,64 @@ def inventory(iso: Path, source: Path | None = None, source_sha256: str | None =
     }
 
 
+SWITCH_TITLE = "010099A00BC1E000"                 # RE4 Switch (Mercenaries edition, gbox.re_switch)
+
+
+def switch_inventory(root: Path, *, limit: int = 0) -> dict:
+    """Inventory an extracted RE4-Switch RomFS tree (bio4/em/*.udas) with the same readers the GC disc uses.
+
+    The HD port keeps the GameCube era tree (`bio4/em`, `bio4/st1..st4`, `bio4/ss`) and the same UDAS/DAT containers,
+    only little-endian, so the pack/entry layer is shared and the only thing that has to be per-edition is the payload
+    decoder. This is the listing half of the pipeline for this title: what each pack holds, by slot, before any
+    writer exists - the same first step the GC work started from.
+    """
+    root = Path(root)
+    em = root / "bio4" / "em"
+    if not em.is_dir():
+        raise ValueError(f"not an RE4 Switch RomFS tree (no bio4/em under {root})")
+    packs = sorted(p for p in em.glob("*.udas") if p.is_file())
+    if limit:
+        packs = packs[:limit]
+    rows, totals, fmts = [], Counter(), Counter()
+    for path in packs:
+        raw = path.read_bytes()
+        name = f"em/{path.name}"
+        s = pack_summary(raw, decode=False, endian="<")
+        row = {"file": name, "kind": pack_kind(name), "size": len(raw), "sha256": _sha(raw),
+               "slots": s["slots"], "meshes": len(s["meshes"]), "textures": len(s["textures"]),
+               "motion_bytes": s["motion_bytes"],
+               "sound_entries": sum(1 for u in s["udas"] if u["type"] == 4),
+               "payload_decoded": False, "errors": s["errors"]}
+        rows.append(row)
+        totals["packs"] += 1
+        totals["bytes"] += len(raw)
+        totals["errors"] += len(s["errors"])
+        for m in s["meshes"]:
+            fmts[m.get("header") or "unknown"] += 1
+    return {"title_id": SWITCH_TITLE, "root": str(root), "edition": "hd",
+            "container": "UDAS little-endian (same 32-byte entries as the GC disc, byte-swapped)",
+            "packs": rows, "pack_count": len(rows), "totals": dict(totals),
+            "bin_header_sizes": dict(fmts),
+            "payload_note": "slots are listed and sized; the HD BIN header (0x98) and HD TPL magic (0x12345678) are "
+                            "not the GC payload layouts, so no mesh or texture is decoded yet",
+            "next": "decode the HD BIN (0x98 header) to reuse rig_roles/re4gc_zombies for this title"}
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="RE4 GC (G4BE08) owned-disc inventory manifest")
-    ap.add_argument("iso", type=Path)
+    ap.add_argument("iso", type=Path, nargs="?")
     ap.add_argument("--source", type=Path)
     ap.add_argument("--source-sha256")
+    ap.add_argument("--switch-romfs", type=Path, help="an extracted RE4 Switch RomFS tree (bio4/em/*.udas)")
+    ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", type=Path)
     a = ap.parse_args(argv)
-    m = inventory(a.iso, a.source, a.source_sha256)
+    if a.switch_romfs:
+        m = switch_inventory(a.switch_romfs, limit=a.limit)
+    elif a.iso:
+        m = inventory(a.iso, a.source, a.source_sha256)
+    else:
+        ap.error("give an iso, or --switch-romfs for the HD port")
     text = json.dumps(m, indent=1)
     if a.out:
         a.out.write_text(text)
