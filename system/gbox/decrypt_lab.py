@@ -1312,6 +1312,45 @@ def install(app, store, config, auth, tactical_store=None):
         from .mercs import report_digest
         return {"v": FORMAT, **report_digest.digest(store)}
 
+    @app.get("/api/decrypt-lab/hactool", dependencies=[Depends(auth)])
+    def decrypt_lab_hactool():
+        """Whether this host can open Switch containers at all: the tool, the keys, and what is missing."""
+        from . import hactool
+        return {"v": FORMAT, **hactool.available()}
+
+    @app.get("/api/decrypt-lab/exefs", dependencies=[Depends(auth)])
+    def decrypt_lab_exefs(title: str, unpack: bool = True):
+        """Extract a Switch title's executable into its cache folder, and decompress `main` for a code tool.
+
+        The RomFS trees this system already had never included the executable, so no question that needs code - how a
+        texture id reaches an `imagepackhd` archive, for instance - could be asked. This runs `hactool` over the title's
+        package (an `nsp` is unpacked to a temporary folder and its program NCA used) and writes `main`, `main.npdm`,
+        `rtld`, `sdk`, `subsdk0` under the cache, with `main.bin` (the LZ4 sections decompressed) beside them.
+        """
+        from . import hactool
+        tid = _title_id(title)
+        game_id = _game_id_for(title)
+        package = Path(getattr(_CONFIG, "cache", None) or Path.home() / "gBox" / "gBox-cache") / game_id
+        sources = sorted(package.glob("*.nsp")) or sorted(package.glob("*.nca"))
+        if not sources:
+            raise HTTPException(404, f"no nsp/nca for {tid} in the cache")
+        out = Path(getattr(_CONFIG, "cache", None) or Path.home() / "gBox" / "gBox-cache") / "exefs" / tid
+        try:
+            result = hactool.extract_exefs(sources[0], out)
+        except hactool.HactoolError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        decompressed = None
+        if unpack and result["main"]:
+            try:
+                decompressed = hactool.decompress_nso(out / result["main"], out / "main.bin")
+            except hactool.HactoolError as exc:
+                decompressed = {"error": str(exc)[:200]}
+        lab_state.event(title, "exefs", f"{result['main']} extracted from {Path(result['nca']).name}",
+                        {"out_dir": str(out)})
+        return {"v": FORMAT, "title": tid, "out_dir": str(out), "source": str(sources[0]),
+                **{k: v for k, v in result.items() if k != "out_dir"}, "decompressed": decompressed,
+                "note": "the exefs is what a code tool (ghidra) reads; main.bin is main with its NSO sections expanded"}
+
     @app.get("/api/decrypt-lab/texture-descriptors", dependencies=[Depends(auth)])
     def decrypt_lab_texture_descriptors(title: str, pack: str):
         """What one HD pack asks for, texture by texture: dimensions, format and id, or a reference record.
