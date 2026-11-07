@@ -5360,10 +5360,37 @@ class SwitchLinuxAdapter(StandaloneAdapter):
     def _maps(self, pid: int) -> list[str]:
         return open(self.MAPS.format(pid=pid)).read().splitlines()
 
+    # Boot watchdog for intermittent GPU init stalls (2026-11-06: RE5 cast-inverted bisect proved the hang is
+    # nondeterministic and emulator-side, not content-driven. Eden's log stops mid-line at ~2.65s at nvhost_gpu
+    # ChannelSetTimeout on a shared GPU node; every stall was followed by a load of identical bytes in 10-30s.
+    # A single relaunch fixes the operator-visible symptom without knowing the root cause.)
+    BOOT_STALL_CHECK_S = 90.0                             # if no frame by this time, check Eden log for stall signature
+    BOOT_STALL_LOG_MARKER = "Nvdec"                       # Eden log must reach this by BOOT_STALL_CHECK_S or it is a stall
+    BOOT_STALL_MAX_RELAUNCHES = 1                         # one retry; if that also stalls, report it
+
+    def _eden_boot_stalled(self) -> bool:
+        """True when Eden's log shows the GPU init stall signature: stopped before Nvdec with the process alive."""
+        try:
+            tail = self.log_tail(8000)
+        except OSError:
+            return False
+        if self.BOOT_STALL_LOG_MARKER in tail:
+            return False                                  # reached Nvdec, not stalled
+        # The stall signature: log mentions nvhost_gpu but never reaches Nvdec, and the process is still alive
+        if "nvhost_gpu" in tail and self.proc and self.proc.poll() is None:
+            return True
+        return False
+
     def _wait_guest_ready(self) -> dict:
         """A window or an error dialog is not a booted game (#3688, #3769 on Windows): require this process's
-        HostMemory arena, which Eden creates when the game boots."""
+        HostMemory arena, which Eden creates when the game boots.
+
+        Also watches for the intermittent GPU init stall (2026-11-06): if Eden's log hasn't reached Nvdec by
+        BOOT_STALL_CHECK_S and the process is alive, relaunch once. Every observed stall was followed by a load
+        of identical bytes in 10-30s, so a single retry fixes the symptom."""
         deadline = time.monotonic() + float(getattr(self, "boot_timeout_s", None) or self.BOOT_S)
+        stall_check_at = time.monotonic() + self.BOOT_STALL_CHECK_S
+        stall_relaunched = False
         self._p(85, "Waiting for Eden to map the Switch guest memory")
         error = None
         while time.monotonic() < deadline:
@@ -5373,8 +5400,31 @@ class SwitchLinuxAdapter(StandaloneAdapter):
                 return self._guest()[1]
             except (RuntimeError, OSError) as exc:
                 error = exc
+            # Boot stall watchdog: if we are past the check time and Eden is stuck in GPU init, relaunch once
+            if not stall_relaunched and time.monotonic() >= stall_check_at and self._eden_boot_stalled():
+                self._p(70, f"Eden boot stall detected (no {self.BOOT_STALL_LOG_MARKER} after {self.BOOT_STALL_CHECK_S:.0f}s); "
+                            "relaunching once")
+                self._signal("SIGTERM")
+                time.sleep(self.RESTART_GRACE_S)
+                if self.proc and self.proc.poll() is None:
+                    self._signal("SIGKILL")
+                    time.sleep(1)
+                self._mem = None
+                # Relaunch with the same overlay and settings
+                try:
+                    self.restart_title(wait=False)
+                    stall_relaunched = True
+                    stall_check_at = time.monotonic() + self.BOOT_STALL_CHECK_S  # reset the check for the new launch
+                    self._p(85, "Relaunched after boot stall; waiting for guest memory again")
+                    continue
+                except Exception as relaunch_exc:         # noqa: BLE001 - relaunch failure is not the original error
+                    self._p(60, f"Boot stall relaunch failed: {relaunch_exc}")
+                    # Fall through to the normal timeout path
             time.sleep(0.25)
-        raise RuntimeError(f"Eden did not map guest memory before the boot deadline ({error}); its window or a dialog "
+        stall_note = ""
+        if self._eden_boot_stalled():
+            stall_note = " (Eden log shows GPU init stall signature: nvhost_gpu without Nvdec)"
+        raise RuntimeError(f"Eden did not map guest memory before the boot deadline ({error}){stall_note}; its window or a dialog "
                            f"alone does not confirm a booted game. Log tail: {self.log_tail(1500)}")
 
     def _park_pointer(self):

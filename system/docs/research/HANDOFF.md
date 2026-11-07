@@ -1,6 +1,6 @@
 # Handoff - where this work stands (RE asset pipeline, RE4 Sonic, RE5 bot)
 
-Written at round 223 for a session reload. Everything below is committed; the repo is the source of truth.
+Written at round 223 for a session reload; updated 2026-11-06 ~19:57 after both subagent jobs completed. Everything below is committed; the repo is the source of truth.
 
 ## What is done and verified
 
@@ -36,26 +36,54 @@ The 2 packs that do not fit are degenerate skeletons (2 and 3 bones) and are ref
 * rotation is currently on the **stock baseline** (`cast_swap: off`, `skin_swap: off`), and rounds are recording again
   (first in eight hours: score 19,450; then 44,010; then 52,890).
 
+**RE5 cast-inverted hang: RESOLVED — not an archive problem (2026-11-06)**
+
+The bisect proved the premise wrong. Byte-identical 14-archive content produces both HANGS and LOADS (~1-in-3 stall rate).
+The 1-archive `em10only1857` build also stalls identically. Eden's log shows the stall happens mid-GPU init
+(`nvhost_gpu ChannelSetTimeout`) on a shared node. See `docs/research/re5-cast-bisect.md` for full evidence.
+
+Consequences:
+* `skin_swap.cast_swap_build` is NOT at fault — no count/size gates needed.
+* A single HANGS verdict is unreliable at ~1-in-3 rate. Require 3 fresh-launch reproductions before blaming a build.
+* Add a boot watchdog: relaunch once when no frame appears by ~90 s or Eden's log hasn't reached "Nvdec: Created nvdec".
+* Record Eden log tail per run so a stall is machine-distinguishable from a slow load.
+
+**RE4 VR Oodle extraction: UNBLOCKED (2026-11-06)**
+
+`ue_pak.open_pak(path, oodle_dll=r"D:\...\oo2core_9_win64.dll")` accepts an explicitly named external decoder.
+The GUI route (`POST /api/decrypt-lab/ue-pak`) passes `oodle_dll` through. 4 entries proven byte-correct against pak
+headers, streamed off the NAS zip without local copies. See `docs/research/re4-vr-extraction.md`.
+
+Still out of reach: pakchunk0 base assets (in patch OBB only), cooking-level conversion, ETC2 texture decode, Android/OpenXR runtime.
+
+**MercMode sidebar panel: all four swap actions wired and measured (2026-11-06)**
+
+* remove clothes → `strip-clothes`: repaints clothing groups with body skin maps
+* swap clothes → `model-swap`: tag-matched pairs only (panel strikes out mismatches)
+* character → zombie → `model-swap`: skin only (player arc + enemy mesh never produced a session)
+* zombies → cast → NEW `zombie-cast`: walks ALL enemy archives, one cast member each (was only swapping uEm6c before)
+
+See `docs/research/mercmode-panel-swaps.md` for measured results and honest limits.
+
 ## Open, in priority order
 
-1. **The cast-swap build hang.** A one-file bisect build exists (`em10only1857`, uEm10 alone). Test whether it loads: if it hangs,
-   the 97 MB uEm10 overlay is the problem and the generator must rebuild it differently; if it loads, the problem is the
-   combination or the total overlay size. This is delegated-ready work for Qwen.
+1. **Boot watchdog for Eden stalls.** The cast-inverted hang is an intermittent emulator GPU init stall, not a build problem.
+   Implement a watchdog that relaunches once when no frame appears by ~90 s or Eden's log hasn't reached "Nvdec: Created nvdec".
+   Record Eden log tail per run. This fixes the operator-visible symptom without knowing the root cause.
 2. **The knife path in the RE5 bonus phase is dead code in practice.** `knife_swings` is 0 in every round; bonuses are taken by the
    context prompt, which the new press-in behaviour (`BONUS_PRESS_IN_S`) now reaches. Watch `bonuses_taken / bonuses_seen`
    across eight rounds before touching it again.
-3. **RE4 VR (Oculus) archive** has not been started: `\\10.89.1.125\QuickSwap2\Emulation\Occulus Resident Evil 4 VR (occulus).zip`.
-4. RE4 Switch in MercMode (player pointer measured, bot senses not done), Mercenaries 3D (untouched), and the four MercMode sidebar
-   actions (remove clothes / swap clothes / player-as-zombie / replace zombies) beyond what `cast_swap`/`skin_swap` already do.
+3. RE4 Switch in MercMode (player pointer measured, bot senses not done), Mercenaries 3D (untouched).
+4. RE4 VR: asset modding via .pak overrides is reachable now that extraction works; runtime (Android + OpenXR on Spark) is its own project.
 
 ## On reload
 
 * Qwen: the provider is registered and the key is in `~/.dsh/.credentials.yaml` (`QWEN_TOKEN_PLAN_API_KEY`). A new session should be
-  allowed to use it; check with `list_subagent_models` before delegating. Two jobs suit it immediately: the cast-swap bisect above and
-  the RE4 VR archive deconstruction.
-* Rotation: MercMode is enabled on lilspark with `titles: ["re5"]`, `cast_swap: off`, `skin_swap: off`. Verify with
-  `GET /api/mercmode` and that `/api/sessions` shows a running eden session.
+  allowed to use it; check with `list_subagent_models` before delegating.
+* Rotation: MercMode on lilspark reads `titles: ["re5"]`, `cast_swap: on`, `skin_swap: random`, `enabled: false`. Verify with
+  `GET /api/mercmode` and that `/api/sessions` shows a running eden session when enabled.
 * Deploys: `scp` has silently failed more than once this session - **always compare `md5sum` on the Spark with the local file**, and
   `sudo -n systemctl restart gbox.service` to activate (that kills the running session; the scheduler relaunches it).
 * Round data: `~/gBox/system/gbox-data/mercs/curriculum/<title>/rounds.sqlite`, newest rows first; the bonus/kill counters are in
   `data.stats`.
+* Eden logs: `<runtime>/eden-linux/data/eden/log/eden_log.txt` is the real log; per-session `logs/eden-<pid>.log` files are always empty.
