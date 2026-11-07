@@ -286,3 +286,27 @@ that is a parser question, not a modding one.
 * there is exactly **one** copy of a font's data on the disc (scanned all 1.4 GB for its header, 1 hit);
 * no Riivolution/`Load` overlay shadows the disc (`Load/Riivolution` is empty);
 * and now: the names the DOL uses are `Font/*.fnt` and `em/*.das`.
+## Round 60: the break test, not yet concluded - and a better way to run it
+
+`re4gc-stagebreak` was built: the first **4096 bytes of `St1/r100.das`** overwritten with `0xFF`. What happened:
+
+| step | observation |
+|---|---|
+| boot | fine - title screen, menus, Select Player all normal |
+| bot (`mode=playbook`) | **stalled on Select Player**, identical frames (`mean 62.4`) |
+| four manual A presses | landed in the **LOAD GAME** save list, then "Load data? Yes / No" - the village was never asked for |
+| after that | every frame identical (`mean 40.3`) for 96 s, then the session **ended by itself** with `error: None` |
+
+So the test did not conclude: the game was never made to load the broken room, and the session's end is unexplained rather
+than a recorded crash. The service journal has no Dolphin exit line for it.
+
+**Two things to fix, both worth more than another guess:**
+
+1. **The Select Player stall is reproducible** - it happened on the `re4_aya` run too, at exactly the same screen and the
+   same `mean 62.4`. A bot that stalls on the Mercenaries character select is broken for every GC title, not just this test.
+2. **There is a `warp` op that loads a room directly** (`re_mods`: `warp target=r102 [items=[x,y,z]]`, "r1xx village … r4xx
+   Mercenaries"). That bypasses the menus entirely: warp into `r100` on the broken build and the village either loads or it
+   does not. That is the correct instrument for this test, and it should have been the first one used.
+
+**The next round's first action** is a warp into `r100` on `re4gc-stagebreak`, with the same warp on the unmodified disc as a
+control. Two launches, one bit of information: does the game read the file at the FST offset. No modelling, no bot.
