@@ -390,3 +390,24 @@ never has that.
 - **Done when:** the hot tier stays under 100 GB for a day with MercMode running, and no round is interrupted.
 
 Rule 6 from the answers still holds: stop and ask before free space drops below 100 GB.
+
+**Update, same day: job 1 is done. Don't redo it.**
+
+The operator set the rule: keep only builds for MercMode games, PSO and games being modded.
+
+- **Kept in full:** MercMode (RE4, RE5 and RE6 Switch; RE4 GameCube), every PSO set, RE6 Xbox 360 and Metal Gear.
+- **One build kept each:**
+  - DOA2: `doa2_sonic_vs_mario_hd_random`.
+  - DOA3: `doa3_cast_sonic_vs_mario`.
+  - GTA LCS: `lcs_sonic`. No build had both Sonic and Mario.
+  - GTA III: the newest build. None had Sonic or Mario.
+  - Each small game: its newest real build.
+- **Deleted:** Soul Calibur, Crazy Taxi, the Bond games, and the rest above, 153 paths in all, at idle I/O priority.
+
+Free space went from 178 GB to **391 GB**. The plan is at `~/gBox_alt/scratch/agent/cache-cleanup-plan.json`.
+
+Left alone: 30 orphan `modbase/` folders (about 60 GB) whose games could not be identified. Identify them and list them here
+before removing any.
+
+From now on, keep one working build per non-MercMode game, and delete your own superseded test builds. Job 2, demotion while
+MercMode runs, still stands.
