@@ -154,3 +154,21 @@ load and finish, and a round that is stopped mid-play is never a terminal round 
 The clean test, which is what I would do next: run **RE5 Switch with a plain `autoplay op=start`** (exactly what recorded the RE4 GC
 round) and see whether rounds appear. If they do, the fault is in the MercMode cycle - its per-round time budget or its stop/relaunch
 path - and not in the bot, the readers or the Notebook.
+## The stock game boots in under a minute; the modded rotation hangs at a loading screen
+
+Same title, same node, two runs:
+
+```
+mod cast-inverted : "History of RESIDENT EVIL ... NOW LOADING" still there at 9.6 minutes; the frames change (the history text
+                    cycles), so the game is alive and stuck in its loader, not frozen
+stock (no mod)    : "PRESS ANY BUTTON" within 60 seconds      (evidence/stock-re5-boots.jpg)
+```
+
+So the seven dead hours are not the bot, the readers, the Notebook or the scheduler: **a modded launch is not finishing its load**.
+The rotation has been relaunching cast-inverted every five to eight minutes, each launch stuck in the loader, so no round could start
+- which is exactly the cycle the job history shows.
+
+What is NOT yet established is whether the mod is now bad or the emulator's cached state is: cast-inverted played rounds earlier today
+(the modded matches in this session's own evidence), and what changed between then and 10:40 is a long series of launches and abrupt
+stops on this PC - mine included. The next test is the same mod after clearing the emulator's shader/pipeline cache, and if it still
+hangs, a second known-good mod on the same title.
