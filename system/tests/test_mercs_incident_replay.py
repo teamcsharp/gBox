@@ -85,3 +85,72 @@ def test_fixture_snapshot_majini_is_threat():
     p = fx["snapshot"]["player"]
     enemy = fx["snapshot"]["enemies"][0]  # the near one at 100 cm
     assert R.Bot._threat(p, enemy), "Fixture Majini 100 cm in front should be a grab-front threat"
+
+
+# --- #5135: seek_target grab-front sidestep (the actual fix in re5_combat.py) ---
+
+from gbox.mercs.titles import re5_combat as C
+
+
+def _make_combat():
+    """A fresh re5_combat Combat with minimal state for seek_target testing."""
+    c = C.Combat(m=None, stats={}, clock=lambda: 1000.0, learn_dir=None, io=None, map_id="test")
+    c.step_until = 0.0
+    c.step_side = "lleft"
+    c.blocked_until = {}
+    return c
+
+
+def test_seek_target_sidesep_for_grab_front_threat():
+    """#5135: seek_target sidesteps (repositions) when the nearest enemy is within GRAB_FRONT_R
+    and inside GRAB_FRONT_CONE, instead of turning into the grab."""
+    c = _make_combat()
+    p = {"pos": [1000.0, 550.0, 1000.0], "rot": 0.0}
+    # Enemy 100 cm directly in front (rot=0 faces +z in the fixture convention)
+    e = {"pos": [1000.0, 550.0, 1100.0], "ptr": 1, "slot": 1, "hp": 800, "hp_max": 800}
+    snap = {"enemies": [e]}
+    act = c.seek_target(snap, p, [e], now=1000.0)
+    # Should be a reposition (sidestep), not a face/turn
+    assert c.stats.get("grab_front_sidesteps", 0) == 1, "seek_target should count the grab-front sidestep"
+    assert c.stats["combat"] == "sidestep: grab-front threat"
+    # The hold should be a sidestep key (lleft or lright), not a face key
+    hold = act.get("hold", set())
+    assert "lleft" in hold or "lright" in hold, f"sidestep key expected, got {hold}"
+
+
+def test_seek_target_no_sidesep_for_distant_enemy():
+    """#5135: seek_target does NOT sidestep when the nearest enemy is beyond GRAB_FRONT_R (250 cm).
+    It turns toward the enemy as before."""
+    c = _make_combat()
+    p = {"pos": [1000.0, 550.0, 1000.0], "rot": 0.0}
+    # Enemy 400 cm directly in front - beyond GRAB_FRONT_R=250
+    e = {"pos": [1000.0, 550.0, 1400.0], "ptr": 2, "slot": 2, "hp": 800, "hp_max": 800}
+    snap = {"enemies": [e]}
+    act = c.seek_target(snap, p, [e], now=1000.0)
+    assert c.stats.get("grab_front_sidesteps", 0) == 0, "No sidestep for a distant enemy"
+    assert c.stats["combat"] == "turning toward a front candidate"
+
+
+def test_seek_target_no_sidesep_for_behind_enemy():
+    """#5135: seek_target does NOT sidestep when the nearest enemy is behind (beyond GRAB_FRONT_CONE=90 deg)."""
+    c = _make_combat()
+    p = {"pos": [1000.0, 550.0, 1000.0], "rot": 0.0}  # facing +z
+    import math
+    # Enemy 100 cm directly BEHIND (rot=0 faces +z, so behind is -z)
+    e = {"pos": [1000.0, 550.0, 900.0], "ptr": 3, "slot": 3, "hp": 800, "hp_max": 800}
+    snap = {"enemies": [e]}
+    act = c.seek_target(snap, p, [e], now=1000.0)
+    assert c.stats.get("grab_front_sidesteps", 0) == 0, "No sidestep for a behind enemy"
+
+
+def test_fixture_snapshot_seek_target_sidesep():
+    """#5135: Using the actual fixture snapshot, seek_target sidesteps for the grab-front threat.
+    The fixture has a Majini 100 cm in front of the player."""
+    c = _make_combat()
+    fx = json.loads(FIX.read_text())
+    p = fx["snapshot"]["player"]
+    enemies = fx["snapshot"]["enemies"]
+    snap = fx["snapshot"]
+    act = c.seek_target(snap, p, enemies, now=1000.0)
+    assert c.stats.get("grab_front_sidesteps", 0) == 1, \
+        "Fixture: seek_target should sidestep for the grab-front threat (100 cm, in front)"
