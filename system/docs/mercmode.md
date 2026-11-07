@@ -1,5 +1,7 @@
 # MercMode
 
+To add RE4 Switch or another game, or build a custom rotation, see [mercmode-adding-titles.md](mercmode-adding-titles.md).
+
 The picture-in-picture menu (right-click the PiP) carries one MercMode toggle for the PC
 that owns the displayed game: **rotating titles · click to stay in this game** or **play
 across titles · click to turn on**; its arrow opens the titles that rotate (uncheck one to
