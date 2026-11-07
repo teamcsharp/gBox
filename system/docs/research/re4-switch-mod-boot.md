@@ -301,3 +301,39 @@ Ganado body is not identified.
 The 77-pack / 1,723-swap build is the one result that must not be read as a fact: it never reached a stage on its
 first attempt, and this project has already learned (round 6) that a single load verdict at a ~1-in-3 stall rate is a
 coin flip. It needs repeats before it means anything.
+## Eleventh run: the enemies ARE in em11-em17, and only same-topology edits are drawn (2026-11-07)
+
+The identity question is closed, and it was the wrong question.
+
+**The probe.** Instead of replacing a slot's mesh with a dog, every decodable slot of `em11`-`em17` had **its own
+positions scaled x2.5** - same vertex count, same primitive table, same bones, same materials, only the positions moved.
+240 slots across 7 packs, one build.
+
+It loaded and played, and this is what the enemies look like:
+
+![Ganados scaled x2.5 - drawn, and enormous](evidence/re4switch-scaled-ganados-drawn.jpg)
+
+**What that settles.**
+
+* **The Ganados do come from `em11`-`em17`.** Their geometry is edited and drawn: the enemies tower over the village,
+  so the packs, the slots and the patch are all live. Identity was never the problem.
+* **A same-topology edit is drawn; a rebuilt mesh is not.** This is the difference between the two experiments that has
+  been hiding in the results for three rounds:
+
+| edit | vertex count | drawn? |
+|---|---|---|
+| positions scaled x2.5 (240 slots) | unchanged | **yes** - giants on screen |
+| the dog rebuilt in 26 slots of em11 | rebuilt (different count/primitive table) | **no** - enemies looked stock |
+| the dog across all seven Ganado packs (62 slots) | rebuilt | **no** |
+
+  The engine draws a slot's geometry from its own primitive layout; a rebuilt mesh with a different vertex count is
+  accepted by every check I can make offline - it decodes, its counts partition exactly, the pack re-inventories - and
+  is simply **not what the game draws**. That is why 62 swaps changed nothing while a scale edit changes everything.
+
+**So the route to "Sonic as the Ganado" on this title is a vertex-level morph, not a mesh replacement** - the same
+conclusion the RE5 Switch work reached from the other direction, and what `gbox/re4gc_zombies.py` does on the GameCube
+title. It also means the writer's `bin_from` rebuild is the right tool for a *part* swap but not for a whole-body
+character swap here.
+
+**A capability falls out of this too:** 240 slots of every Ganado pack can be scaled in one build and the round still
+plays, so "giant enemies" (or any uniform geometric transform) is a working mod today.
