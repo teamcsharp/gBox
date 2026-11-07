@@ -83,7 +83,15 @@ See `docs/research/mercmode-panel-swaps.md` for measured results and honest limi
 * Rotation: MercMode on lilspark reads `titles: ["re5"]`, `cast_swap: on`, `skin_swap: random`, `enabled: false`. Verify with
   `GET /api/mercmode` and that `/api/sessions` shows a running eden session when enabled.
 * Deploys: `scp` has silently failed more than once this session - **always compare `md5sum` on the Spark with the local file**, and
-  `sudo -n systemctl restart gbox.service` to activate (that kills the running session; the scheduler relaunches it).
+  `sudo -n systemctl restart gbox.service` to activate.
+* **A restart kills the running round and MercMode does NOT always come back on its own.** Observed 2026-11-07: after one restart
+  it relaunched within ~75 s; after another it sat at `ended: the game ended` with `phase: null` indefinitely. One POST fixes it:
+
+  ```
+  POST /api/mercmode {"host":"lilspark","command":"start","title":"re5","enabled":true,"titles":["re5"]}
+  ```
+
+  then watch `GET /api/mercmode` for `phase: playing` (~60 s) and confirm a frame. Budget one round per deploy.
 * Round data: `~/gBox/system/gbox-data/mercs/curriculum/<title>/rounds.sqlite`, newest rows first; the bonus/kill counters are in
   `data.stats`.
 * Eden logs: `<runtime>/eden-linux/data/eden/log/eden_log.txt` is the real log; per-session `logs/eden-<pid>.log` files are always empty.
