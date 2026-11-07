@@ -1,13 +1,14 @@
 """Devil May Cry (USA) SLUS_202.16 (PS2) ISO-9660 inventory (#1856).
 
-Read-only.  Owned source is a CHD v5 (gBox native reader is v4-only), so the
-authoritative raw image is produced with ``chdman extractcd`` from:
+Read-only.  The authoritative owned source is the ISO-9660 image
 
-    /mnt/gbox/hyperspin/Arcade/collections/Sony Playstation 2/roms/USA/Devil May Cry (USA).chd
-    sha256 = 1e6d865218bfb4abf1f6e35cbcc244fbd4fcc68aef558ae2403e3d4944693a60
-
-Extracted raw image (4,698,767,360 B, 2,294,320 MODE1/2048 sectors):
-    dmc1_usa.bin sha256 = 9e4d87fa0bae06e7282c085bb58693f83cf857bede9803f4bd235e3dfcfe0726
+    /home/ehm_eckx/gBox_alt/gbox-cache/modbase/d460ea70167416a2/Devil May Cry (USA).iso
+    sha256 = 9e4d87fa0bae06e7282c085bb58693f83cf857bede9803f4bd235e3dfcfe0726
+    (stream-hashed on lilspark2 2026-11-06; 4,698,767,360 B = 2,294,320
+    MODE1/2048 sectors, byte-identical to the earlier chdman-extracted raw
+    dmc1_usa.bin).  The prior checkpoint's CHD reference
+    (1e6d865218bfb4abf1f6e35cbcc244fbd4fcc68aef558ae2403e3d4944693a60) is stale:
+    that CHD is absent on this host; the owned ISO is the canonical source.
 
 Disc layout (verified against the raw bytes):
     SYSTEM.CNF        -> BOOT2 = cdrom0:\\SLUS_202.16;1 / VER = 1.10 / VMODE = NTSC
@@ -26,16 +27,18 @@ Player container format (.PLD):
     at offset 32 as (offset, size) u32 pairs.
     
     Child6 (1,042,640 B, identical size in PL00/PL05): u32 count (0xd7 = 215)
-    then 215 u32 section offsets relative to child6 start (table ends at 864).
-    Verified on the real image: all offsets < child6 size; the even-indexed
-    entries are strictly increasing, the odd-indexed ones are not (two
-    interleaved offset streams).  parse_child6_table() classifies each via its
-    GS GIF-tag register descriptor: even entries are PACKED geometry streams
-    (registers XYZ2 0x40 + RGBAQ 0x80, e.g. `c0 00 00 00 00 01 00 00 ...`),
-    odd entries are texture/CLUT uploads (descriptor leads FRAME 0x3e /
-    SCISSOR 0x1f / 0x80 -- the CSM1 palettes).  110 data / 105 palette streams,
-    50 unique palettes (heavily shared).  Section boundary: table ends 0x360,
-    first palette header at 0x6c0 (`3e 00 1f ff 80 01 02 03 ...`).
+    then 215 u32 offsets relative to child6 start (table ends at 0x360; entry 0
+    points at the table itself).  Verified on the real image: all 215 offsets
+    < child6 size; even-indexed entries (108) strictly increasing; odd-indexed
+    entries (107) repeat (shared sections).  Every entry begins with byte pair
+    `3e 00`; the first odd entry (0x6c0) continues `1f ff` then an ascending
+    byte run (`80 01 02 03 04 05 06 07 08 09 0a 0b ...`), and the first even
+    section (0x2888) continues `22 22 00 00 00 00` then u32s 0x40/0x80/0xc0.
+    The header is NOT a PS2 GS GIF tag: brute-force over all bit-field
+    placements of NLOOP/EOP/PRE/PRIM/FLG/NREG finds no assignment decoding the
+    palette entries to (PRIM=2, FLG=1, NREG=8) and the 0x2888 geometry to
+    (NREG=2, NLOOP=0x2222), so the earlier 'GS GIF tag + CSM1 palette'
+    classification is withdrawn pending a pinned header layout.
 
     Child0 (228,144 B) begins 13 20 03 01 e0 78 03 00 01 00 be 00 40 01 00 00;
     header is {u32 span/flags 0x1032013, u32 size 0x378e0 (227552 = body size)}
@@ -73,6 +76,9 @@ GROUP_LBAS = {
     "MODULES": (272, 818), "ADS": (273, 214), "PLD": (274, 1082),
     "STATUS": (275, 3192), "STATUS_U": (277, 840),
 }
+SOURCE_ISO_PATH = "/home/ehm_eckx/gBox_alt/gbox-cache/modbase/d460ea70167416a2/Devil May Cry (USA).iso"
+SOURCE_ISO_SHA256 = "9e4d87fa0bae06e7282c085bb58693f83cf857bede9803f4bd235e3dfcfe0726"
+# Stale CHD reference from an earlier host (absent on lilspark2; kept for traceability)
 SOURCE_CHD_SHA256 = "1e6d865218bfb4abf1f6e35cbcc244fbd4fcc68aef558ae2403e3d4944693a60"
 RAW_BIN_SHA256 = "9e4d87fa0bae06e7282c085bb58693f83cf857bede9803f4bd235e3dfcfe0726"
 ELF_SHA256 = "ac1a1e72845f04e6683d8ecd9e223f5297200bf2133709d5391925ad98e7be68"

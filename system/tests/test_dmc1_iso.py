@@ -92,29 +92,20 @@ def test_parse_child_table_rejects_bad():
 def _child6_blob(count, offsets):
     import struct
     return bytearray(struct.pack("<I", count) + struct.pack("<%dI" % count, *offsets)
-        + b"\0" * (0x1000 - 4 - 4 * count))
+        + b"\x00" * (0x1000 - 4 - 4 * count))
 
 
 def test_parse_child6_table_synthetic():
+    """Structural path only; tag bytes left zero since the bit-field
+    classification is not yet pinned (no GIF-tag layout verified)."""
     import struct
     from gbox.dmc1_iso import parse_child6_table
-    # 3 offsets: table(0x0 data), palette(0x100), data(0x200)
     blob = bytearray(struct.pack("<I", 3) + struct.pack("<3I", 0, 0x100, 0x200)
         + b"\x00" * (0x1000 - 4 - 4 * 3))
-    # Palette tag at 0x100: lo with NREG=8, FLG=1, PRIM=2, NLOOP=3
-    lo_pal = (8 << 60) | (1 << 58) | (2 << 47) | 3
-    struct.pack_into("<Q", blob, 0x100, lo_pal)
-    blob[0x100+8:0x100+16] = bytes([0x3e,0,0x1f,0xff,0x80,1,2,3,4,5,6,7,8,9,0x0a,0x0b])
-    # Data tag at 0x200: lo with NREG=2, NLOOP=0x2222
-    lo_dat = (2 << 60) | 0x2222
-    struct.pack_into("<Q", blob, 0x200, lo_dat)
-    blob[0x200+8:0x200+16] = bytes([0x40,0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
     recs = parse_child6_table(blob)
-    assert [r["kind"] for r in recs] == ["data", "palette", "data"]
+    assert len(recs) == 3
     assert [r["off"] for r in recs] == [0, 0x100, 0x200]
-    assert recs[1]["nreg"] == 8 and recs[1]["prim"] == 2 and recs[1]["flg"] == 1
-    assert recs[2]["nreg"] == 2 and recs[2]["nloop"] == 0x2222
-    assert recs[2]["regs"][0] == 0x40 and recs[2]["regs"][1] == 0x80
+    assert all(r["kind"] == "data" for r in recs)  # zero tag -> nreg 0
 
 
 def test_parse_child6_table_rejects_bad_sort():
@@ -128,26 +119,38 @@ def test_parse_child6_table_rejects_bad_sort():
 
 @pytest.mark.skipif(not RAW.exists(), reason="raw image not extracted")
 def test_parse_child6_table_real():
-    import struct, hashlib
+    """Verified table invariants on the real owned image only.
+
+    The kind/GIF-tag classification is NOT yet pinned (bit-field brute force
+    on 2026-11-06 found no GS GIF-tag layout decoding the pinned headers),
+    so these assertions stop at table structure + pinned header bytes.
+    """
+    import struct
     from gbox.dmc1_iso import parse_child6_table
     with open(RAW, "rb") as f:
         n, ch = parse_pld_children(f, 1043291, 1547616)
         assert ch[6][1] == 1042640
         f.seek((1043291 * 2048) + ch[6][0])
         blob = f.read(ch[6][1])
+    assert struct.unpack_from("<I", blob, 0)[0] == 215
+    offs = list(struct.unpack_from("<215I", blob, 4))
     recs = parse_child6_table(blob)
     assert len(recs) == 215
-    # all odd entries are palette uploads (LIST+TEXCLD, NREG=8); evens are data
-    assert all(r["kind"] == "palette" for i, r in enumerate(recs) if i % 2 == 1)
-    assert all(r["kind"] == "data" for i, r in enumerate(recs) if i % 2 == 0)
-    assert all(r["nreg"] == 8 for i, r in enumerate(recs) if i % 2 == 1)
-    assert all(r["prim"] == 2 and r["flg"] == 1 for i, r in enumerate(recs) if i % 2 == 1)
-    assert recs[1]["off"] == 0x6C0          # first palette
-    assert recs[0]["off"] == 0 and recs[0]["kind"] == "data"
+    assert [r["off"] for r in recs] == offs
+    assert all(o < len(blob) for o in offs)
+    evens, odds = offs[0::2], offs[1::2]
+    assert len(evens) == 108 and evens == sorted(evens) and len(set(evens)) == 108
+    assert len(odds) == 107 and len(set(odds)) == 51  # shared odd sections
+    assert recs[0]["off"] == 0                        # entry 0 = table itself
+    # Pinned header evidence (hex verified 2026-11-06):
+    assert blob[0x6C0:0x6D4] == bytes.fromhex("3e001fff80" + "0102030405060708090a0b0c0d0e0f")
+    assert blob[0x2888:0x28A0] == bytes.fromhex(
+        "3e002222000000004000000080000000c000000000010000")
 
 
 @pytest.mark.skipif(not RAW.exists(), reason="raw image not extracted")
 def test_decode_child6_sections_real():
+    """Structure-only summary on the real image; kind split is provisional."""
     from gbox.dmc1_iso import decode_child6_sections
     with open(RAW, "rb") as f:
         n, ch = parse_pld_children(f, 1043291, 1547616)
@@ -155,10 +158,7 @@ def test_decode_child6_sections_real():
         blob = f.read(ch[6][1])
     s = decode_child6_sections(blob)
     assert s["count"] == 215
-    assert s["data"] == 108 and s["palette"] == 107, (s["data"], s["palette"])
-    assert s["unique_palettes"] == 51, s["unique_palettes"]
-    # geometry section 0x2888 must carry XYZ2(0x40)+RGBAQ(0x80) in its descriptor
-    geom = next(r for r in s["sections"] if r["off"] == 0x2888)
-    assert geom["kind"] == "data"
-    assert geom["nreg"] == 2 and geom["nloop"] == 0x2222, (geom["nreg"], geom["nloop"])
-    assert 0x40 in geom["regs"] and 0x80 in geom["regs"], geom["regs"]
+    off_set = {r["off"] for r in s["sections"]}
+    assert 0x6C0 in off_set and 0x2888 in off_set
+    assert s["unique_palettes"] <= 51  # every odd offset maps to <= 51 sections
+    assert all(r["off"] < len(blob) for r in s["sections"])
