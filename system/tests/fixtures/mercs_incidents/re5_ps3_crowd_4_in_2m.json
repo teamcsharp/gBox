@@ -1,0 +1,98 @@
+{
+ "cluster": {
+  "game_id": "e7ca89bbeb67360d",
+  "id": "848a24e2e35b5ac2",
+  "label": "swarmed (4+ within 2 m) with the gun up",
+  "signature": "crowd_4_in_2m"
+ },
+ "counters": {
+  "combo": 0,
+  "kills": 0,
+  "score": 0,
+  "timer": 0.0
+ },
+ "decision": {
+  "phase": "clear_nearby",
+  "aim": true
+ },
+ "event_id": "c533c700bb294aa1b2ac6f69c5f467dc",
+ "held": [
+  "l1",
+  "rdown",
+  "rleft"
+ ],
+ "hp_after": 804,
+ "hp_before": 1000,
+ "hp_max": 1000,
+ "loss": 196,
+ "observed_at": 1792886463.0902925,
+ "preceding_history": [
+  {
+   "at": 1792886460.0,
+   "held": ["l1", "rdown", "rleft"],
+   "hp": 1000,
+   "pos": [1770.0, 230.0, 4640.0],
+   "rot": -2.57695532226563,
+   "phase": "clear_nearby"
+  },
+  {
+   "at": 1792886461.0,
+   "held": ["l1", "rdown", "rleft"],
+   "hp": 1000,
+   "pos": [1772.0, 230.0, 4636.0],
+   "rot": -2.57695532226563,
+   "phase": "clear_nearby"
+  },
+  {
+   "at": 1792886462.0,
+   "held": ["l1", "rdown", "rleft"],
+   "hp": 1000,
+   "pos": [1773.5, 230.0, 4634.5],
+   "rot": -2.57695532226563,
+   "phase": "clear_nearby"
+  }
+ ],
+ "schema": "gbox.mercs.incident-replay/1",
+ "snapshot": {
+  "enemies": [
+   {
+    "hp": 538,
+    "hp_max": 538,
+    "pos": [1788.3203125, 230.0, 4488.9091796875],
+    "ptr": 400560996976,
+    "slot": 234
+   },
+   {
+    "hp": 520,
+    "hp_max": 538,
+    "pos": [1650.5377197265625, 230.0, 4492.48828125],
+    "ptr": 400651627968,
+    "slot": 233
+   },
+   {
+    "hp": 520,
+    "hp_max": 538,
+    "pos": [1776.2138671875, 230.0, 4474.9365234375],
+    "ptr": 400554819744,
+    "slot": 231
+   },
+   {
+    "hp": 530,
+    "hp_max": 538,
+    "pos": [1787.213623046875, 230.0, 4479.7548828125],
+    "ptr": 400653320352,
+    "slot": 235
+   }
+  ],
+  "player": {
+   "hp": 1000,
+   "hp_max": 1000,
+   "pos": [1774.62255859375, 230.0, 4633.74072265625],
+   "ptr": 400636848720,
+   "rot": -2.57695532226563
+  },
+  "timer": 0.0,
+  "timer_start": 300.0
+ },
+ "title": "BLUS30491"
+}
