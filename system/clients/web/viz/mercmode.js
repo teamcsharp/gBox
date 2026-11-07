@@ -292,9 +292,6 @@
     plain: {chris: 'nativeNXx64/ImgNX/Archive/uPl00ChrisPlain.arc',
             sheva: 'nativeNXx64/ImgNX/Archive/uPl01ShebaPlain.arc',
             jill: 'nativeNXx64/ImgNX/Archive/uPl02JillCos1.arc'},
-    plain: {chris: 'nativeNXx64/ImgNX/Archive/uPl00ChrisPlain.arc',
-            sheva: 'nativeNXx64/ImgNX/Archive/uPl01ShebaPlain.arc',
-            jill: 'nativeNXx64/ImgNX/Archive/uPl02JillCos1.arc'},
     // the objects that appear while a round plays: the mine placed, the mine2/grenade thrown (their texture groups are
     // wp0600, wp0700 and om4e00), swapped with the same rule as a character's skin
     objects: {mine: 'nativeNXx64/ImgNX/Archive/uWp06.arc',
@@ -318,7 +315,9 @@
       `<button type="button" data-mm-swap="to-zombie">Character → zombie</button>`+
       `<button type="button" data-mm-swap="from-cast">Zombies → cast</button>`+
       `</span><label class="pip-mm-retag"><input type="checkbox" data-mm-retag> Allow a skin of another size `+
-      `(retags the slot's texture; off by default)</label></div>`;
+      `(retags the slot's texture; off by default)</label>`+
+      `<label class="pip-mm-retag"><input type="checkbox" data-mm-shape> Move the mesh too (a shape change; `+
+      `unmeasured on this engine)</label></div>`;
   }
   function wireSwaps(root,{api,title,sessionId,done,fail}){
     const APPLY = 'mercmode-swap';            // every panel swap writes this build; apply_live boots it in place
@@ -364,6 +363,12 @@
     // complete character <-> enemy reskin is reachable without a texture encoder; it is off by default because the
     // engine was written for the slot's own size, and it is the operator's call.
     const retag = () => !!root.querySelector('[data-mm-retag]')?.checked;
+    // the donor's MOD mesh too (an unmeasured shape change on this engine: a foreign mesh needs the part-table rules)
+    const shape = () => !!root.querySelector('[data-mm-shape]')?.checked;
+    // The enemy set: a round spawns several enemy archives (RE5: uEm10/uEm11 plus uEm21/uEm62), so "zombies -> cast"
+    // is one call that walks them all (api/decrypt-lab/zombie-cast) instead of one arc that may never appear. It uses
+    // the title's whole cast, one member per enemy, so the round shows several characters at once.
+    const zombieCast = async()=> api('/api/decrypt-lab/zombie-cast',{title,build:APPLY,geometry:shape()});
     const run=async(kind)=>{
       const slotKey=root.querySelector('[data-mm-swap-slot]')?.value||'chris';
       const donorKey=root.querySelector('[data-mm-swap-donor]')?.value||'jill';
@@ -374,14 +379,11 @@
       if(kind==='plain')
         // clothes removed for real: the character's body skin maps are painted over its clothing groups
         return api('/api/decrypt-lab/strip-clothes',{title,arc_path:slot,build:APPLY});
+      if(kind==='from-cast')
+        // every enemy archive the title spawns, each wearing a different cast member, in one build
+        return zombieCast();
       let arc=slot, from=donor, extra={};
       if(kind==='to-zombie'){arc=slot;from=SWAP.slots.zombie;}
-      else if(kind==='from-cast'){
-        // an ENEMY really can take a character's whole model: measured 2026-11-06, uEm6c.arc <- uPl00ChrisNormal.arc
-        // with the mesh and its 21 textures reached screen=playing and played a round. The reverse (the PLAYER arc
-        // taking an enemy model) built but never produced a session, so that direction stays texture-only.
-        arc=SWAP.slots.zombie;from=slot;extra={with_mesh:true,with_textures:true};
-      }
       if(!from)throw Error('That swap has no donor archive.');
       return api('/api/decrypt-lab/model-swap',{title,arc_path:arc,donor_arc:from,build:APPLY,
         ...(retag()?{tag_follow:true}:{}),...extra});
@@ -394,6 +396,17 @@
         if(sessionId){
           try{await applyNow(sessionId);live=' · applied now: the title restarted in this session';}
           catch(err){live=` · built, but the live restart failed: ${err.message}`;}
+        }
+        if(b.dataset.mmSwap==='from-cast'){
+          const arcs=r.arcs||[];
+          const done=arcs.filter(a=>a.status==='swapped');
+          const rest=arcs.filter(a=>a.status!=='swapped');
+          const detail=done.map(a=>`${a.arc.split('/').pop()}=${a.donor}`).join(', ');
+          const missed=rest.length?`; not swapped: ${rest.map(a=>`${a.arc.split('/').pop()} (${a.status}${a.reason?': '+a.reason:''})`).join(', ')}`:'';
+          done(b.dataset.mmSwap==='from-cast'
+            ? `Zombies now wear the cast: ${done.length}/${r.spawned} spawned enemy archive(s) — ${detail}${missed}${live||' (applies at the next boot)'}`
+            : '');
+          return;
         }
         const kept = (r.maps || []).find((m) => String(m).startsWith('kept:'));
         const extent = kept ? ` (partial: ${String(kept).slice(5)} kept)` : '';

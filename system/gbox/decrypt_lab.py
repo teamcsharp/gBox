@@ -530,6 +530,11 @@ class ZombieCastIn(BaseModel):
     # a donor this many times bigger than the slot's file is refused: the overlay is copied for every enemy, and a
     # character model in an enemy slot is a size jump the engine may not survive (the handoff's own measured limit).
     max_growth: float = 3.0
+    # the donor's MOD mesh travels too. OFF by default because that is what has been measured: an MRL-only enemy
+    # swap boots and plays a round, a MOD in a slot built for another skeleton is not drawn (docs/research/
+    # sonic-into-re5-first-attempt.md) and for objects it boots to a white screen. Exposed so the shape question is
+    # one call away instead of a code change.
+    geometry: bool = False
 
 
 def zombie_donors(cast: list[str], arcs: list[str], *, start: int = 0) -> dict[str, str]:
@@ -570,12 +575,9 @@ def _swap_arc_bytes(root: Path, arc_inner: str, donor_inner: str, *, tag_follow:
     """
     from . import mt_arc, skin_swap
     arc_file, donor_file = root / arc_inner, root / donor_inner
-    try:
-        data, slot_group, donor_group_name = skin_swap.swap_arc(arc_file.read_bytes(), donor_file.read_bytes(),
-                                                                follow_tag=bool(tag_follow), group=group,
-                                                                donor_group_name=donor_group)
-    except mt_arc.ArcError as exc:
-        raise ValueError(str(exc)) from exc
+    data, slot_group, donor_group_name = skin_swap.swap_arc(arc_file.read_bytes(), donor_file.read_bytes(),
+                                                            follow_tag=bool(tag_follow), group=group,
+                                                            donor_group_name=donor_group)
     info: dict = {"slot": slot_group, "donor": donor_group_name, "mesh": [], "maps": [], "textures_added": []}
     try:                                   # which maps actually moved: a 2/3 swap keeps one map of the slot's own
         slot_arc, donor_arc = mt_arc.parse(arc_file.read_bytes()), mt_arc.parse(donor_file.read_bytes())
@@ -598,10 +600,11 @@ def _swap_arc_bytes(root: Path, arc_inner: str, donor_inner: str, *, tag_follow:
         # An object's model is the entry whose decompressed payload is MRL\0 - NOT the largest model-path entry.
         # uWp06.arc carries two `wp0600` entries: the MRL model and a MOD container. Choosing by size wrote the MOD
         # into the MRL slot, the engine could not parse it, and the title hung at loading.
-        from . import mt_model
+        from . import model_swap, mt_model
         slot_arc, donor_arc = mt_arc.parse(arc_file.read_bytes()), mt_arc.parse(donor_file.read_bytes())
-        slot_models = skin_swap.model_indices(slot_arc)
-        donor_models = skin_swap.model_indices(donor_arc)
+        # MRL only, exactly as this route has always moved: a shape change is `model_swap.swap_models`, not this.
+        slot_models = model_swap.model_indices(slot_arc, magic=mt_model.MAGIC)
+        donor_models = model_swap.model_indices(donor_arc, magic=mt_model.MAGIC)
         if not slot_models or not donor_models:
             raise ValueError("this swap needs an MRL model in both archives")
         for slot_i, donor_i in zip(slot_models, donor_models):
@@ -1446,90 +1449,19 @@ def install(app, store, config, auth, tactical_store=None):
             return target
 
         arc_file = resolve(body.arc_path)
-        donor_file = resolve(body.donor_arc)
+        resolve(body.donor_arc)                        # a donor outside the tree is refused with its own message
         try:
-            data, slot_group, donor_group = skin_swap.swap_arc(arc_file.read_bytes(), donor_file.read_bytes(),
-                                                              follow_tag=bool(body.tag_follow),
-                                                              group=body.group, donor_group_name=body.donor_group)
+            data, info = _swap_arc_bytes(root, body.arc_path.strip().lstrip("/"),
+                                         body.donor_arc.strip().lstrip("/"),
+                                         tag_follow=bool(body.tag_follow), with_mesh=bool(body.with_mesh),
+                                         with_textures=bool(body.with_textures), group=body.group,
+                                         donor_group=body.donor_group)
         except mt_arc.ArcError as exc:
             raise HTTPException(400, str(exc)) from exc
-        meshes = []
-        moved_maps = []
-        try:                                   # which maps actually moved: a 2/3 swap keeps one map of the slot's own
-            slot_arc, donor_arc = mt_arc.parse(arc_file.read_bytes()), mt_arc.parse(donor_file.read_bytes())
-            slot_maps = skin_swap.material_groups(slot_arc).get(slot_group) or {}
-            donor_maps = skin_swap.material_groups(donor_arc).get(donor_group) or {}
-            moved_maps = [k for k in ("BM", "MM", "NM")
-                          if slot_maps.get(k) is not None and donor_maps.get(k) is not None
-                          and (body.tag_follow or slot_maps[k].tag == donor_maps[k].tag)]
-            kept = [k for k in ("BM", "MM", "NM") if k not in moved_maps and slot_maps.get(k) is not None]
-            if kept:
-                moved_maps.append(f"kept:{','.join(kept)}")
-            retagged = [k for k in moved_maps if k in ("BM", "MM", "NM")
-                        and slot_maps[k].tag != donor_maps[k].tag]
-            if retagged:
-                moved_maps.append(f"retagged:{','.join(retagged)}")
-        except mt_arc.ArcError:
-            pass
-        if body.with_mesh:
-            # An object's model is the entry whose decompressed payload is MRL\0 - NOT the largest model-path entry.
-            # uWp06.arc carries two `wp0600` entries: the MRL model (1,047 B) and a MOD container (13,617 B). Choosing by
-            # size wrote the MOD into the MRL slot, the engine could not parse it, and the title hung at loading; that
-            # was the real cause of the object shape swap failures, not missing textures.
-            import zlib as _z
-            from . import mt_model
-            slot_arc, donor_arc = mt_arc.parse(arc_file.read_bytes()), mt_arc.parse(donor_file.read_bytes())
-
-            def model_indices(arc):
-                found = []
-                for i, entry in enumerate(arc.entries):
-                    try:
-                        raw = _z.decompress(entry.data)
-                    except _z.error:
-                        continue
-                    if raw[:4] == mt_model.MAGIC:
-                        found.append(i)
-                return found
-
-            slot_models, donor_models = model_indices(slot_arc), model_indices(donor_arc)
-            if not slot_models or not donor_models:
-                raise HTTPException(409, "this swap needs an MRL model in both archives")
-            for slot_i, donor_i in zip(slot_models, donor_models):
-                data = mt_arc.replace_at(data, slot_i, donor_arc.entries[donor_i].data)
-                meshes.append(slot_arc.entries[slot_i].name)
-        added_textures = []
-        if body.with_textures:
-            # An MRL model carries a path table naming the textures it draws with. The slot archive may not hold those
-            # entries at all (the grenade's model names om4e00_*; the mine's archive has never heard of them), and a
-            # mesh whose textures cannot be resolved is what hung the title's load in the earlier attempts. Copy the
-            # missing ones in, by the path the model names, so the swap is self-contained.
-            from . import mt_model
-            slot_arc = mt_arc.parse(data)
-            donor_arc = mt_arc.parse(donor_file.read_bytes())
-            present = {e.name for e in slot_arc.entries}
-            by_base = {e.name.rsplit("\\", 1)[-1]: e for e in donor_arc.entries}
-            wanted = []
-            for index in range(len(slot_arc.entries)):
-                try:
-                    raw = __import__("zlib").decompress(slot_arc.entries[index].data)
-                except Exception:                                  # noqa: BLE001 - not every entry is compressed text
-                    continue
-                if raw[:4] != mt_model.MAGIC:
-                    continue
-                try:
-                    wanted.extend(mt_model.parse(raw).paths)
-                except mt_model.ModelError:
-                    continue
-            for path in wanted:
-                if path in present or path.rsplit("\\", 1)[-1] not in by_base:
-                    continue
-                donor_entry = by_base[path.rsplit("\\", 1)[-1]]
-                slot_arc.entries.append(mt_arc.Entry(name=path, hash=donor_entry.hash, tag=donor_entry.tag,
-                                                     size=donor_entry.size, offset=0, data=donor_entry.data))
-                present.add(path)
-                added_textures.append(path)
-            if added_textures:
-                data = mt_arc.build(slot_arc)
+        except ValueError as exc:                      # both archives parsed, but one has no model to move
+            raise HTTPException(409, str(exc)) from exc
+        slot_group, donor_group = info["slot"], info["donor"]
+        meshes, moved_maps, added_textures = info["mesh"], info["maps"], info["textures_added"]
         folder = _mod_build(body.title, body.build)
         target = folder / "romfs" / body.arc_path.strip().lstrip("/")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1541,3 +1473,63 @@ def install(app, store, config, auth, tactical_store=None):
                 "slot": slot_group, "donor": donor_group, "mesh": meshes, "maps": moved_maps,
                 "textures_added": added_textures,
                 "note": "the overlay applies when the title next boots (LayeredFS)"}
+
+    @app.post("/api/decrypt-lab/zombie-cast", dependencies=[Depends(auth)])
+    def decrypt_lab_zombie_cast(body: ZombieCastIn):
+        """Every enemy archive a round spawns, wearing the game's cast - one build, one call.
+
+        The single-arc route (model-swap) can only change the enemy an operator names, and a RE5 round spawns Majini
+        out of uEm10/uEm11 plus uEm21/uEm62, so a one-arc click leaves the round looking stock. This walks the
+        title's whole ZOMBIE_ARCS set, gives each enemy a different cast member (zombie_donors), moves the character's
+        whole model with its textures (model_swap.swap_models, the path measured to boot) and reports every arc by
+        name, including the ones the extracted tree does not hold and the ones whose donor does not fit.
+        """
+        from . import model_swap, skin_swap
+        tid = _title_id(body.title)
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
+        cast_arcs = dict(skin_swap.CHARACTER_ARCS.get(str(tid).upper()) or {})
+        if not cast_arcs:
+            raise HTTPException(409, "this title has no mapped cast to wear (skin_swap.CHARACTER_ARCS)")
+        wanted = [d.strip() for d in (body.donors or []) if d.strip()]
+        cast: list[str] = []
+        for name in (wanted or sorted(cast_arcs)):
+            if name in cast_arcs and (root / cast_arcs[name]).is_file():
+                cast.append(name)
+        if not cast:
+            raise HTTPException(404, "none of the named donors is a mapped character of this title")
+        on_disk = [arc for arc in (skin_swap.ZOMBIE_ARCS.get(str(tid).upper()) or ()) if (root / arc).is_file()]
+        plan = zombie_cast_plan(tid, on_disk, cast)
+        rows: list[dict] = []
+        for row in plan:
+            arc = row["arc"]
+            if row["status"] == "absent":
+                rows.append(row)                      # the tree does not hold this enemy: nothing to swap
+                continue
+            slot_bytes = (root / arc).read_bytes()
+            donor_bytes = (root / cast_arcs[row["donor"]]).read_bytes()
+            if body.max_growth and len(donor_bytes) > len(slot_bytes) * body.max_growth:
+                rows.append({**row, "status": "too_big", "slot_bytes": len(slot_bytes),
+                             "donor_bytes": len(donor_bytes)})
+                continue
+            try:
+                out = model_swap.swap_models(slot_bytes, donor_bytes, geometry=bool(body.geometry))
+            except (model_swap.SwapError, ValueError, OSError) as exc:
+                rows.append({**row, "status": "failed", "reason": str(exc)[:160]})
+                continue
+            folder = _mod_build(body.title, body.build)
+            target = folder / "romfs" / arc
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(out["data"])
+            rows.append({**row, "status": "swapped", "bytes": len(out["data"]),
+                         "meshes": out["meshes"], "textures": len(out["textures"]),
+                         "shape": bool(body.geometry)})
+        done = [r for r in rows if r["status"] == "swapped"]
+        lab_state.event(body.title, "zombie-cast",
+                        f"{len(done)}/{len(on_disk)} enemy archive(s) wear the cast in {body.build}",
+                        {"build": body.build, "arcs": len(on_disk), "swapped": len(done)})
+        return {"v": FORMAT, "ok": bool(done), "build": body.build, "cast": cast,
+                "arcs": rows, "swapped": len(done), "spawned": len(on_disk),
+                "note": ("the overlay applies when the title next boots (LayeredFS)" if done
+                         else "no enemy archive could take a cast model")}
