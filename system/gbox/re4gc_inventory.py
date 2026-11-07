@@ -118,6 +118,52 @@ def dat_entries(data: bytes, endian: str = ">") -> list[tuple[str, int, int]]:
     return out
 
 
+def bin_slots(data: bytes, endian: str = "<") -> list[dict]:
+    """The BIN slots of a pack, in DAT order: [{bin, slot, offset, size}] with `offset` inside the pack file.
+
+    `bin` is the position among the BIN slots (what the decrypt lab's `entry` names) and `slot` is the DAT index
+    (what the slot tables use) - the two differ because a pack interleaves BIN with EFF/TPL/FCV.
+    """
+    ents = udas_entries(data, endian)
+    dat = next((e for e in ents if e["type"] == 0), None)
+    if dat is None:
+        raise ValueError("this pack has no DAT entry")
+    blob = data[dat["offset"]:dat["offset"] + dat["size"]]
+    out = []
+    for slot, (ext, off, size) in enumerate(dat_entries(blob, endian)):
+        if ext == "BIN":
+            out.append({"bin": len(out), "slot": slot, "offset": dat["offset"] + off, "size": size})
+    return out
+
+
+def pack_patch(data: bytes, bin_index: int, replacement: bytes, endian: str = "<") -> bytes:
+    """One BIN slot replaced in place, everything else byte-for-byte as it was.
+
+    This is the safe writer for these packs, and it is the same rule the GameCube work paid for: a replacement must be
+    **exactly the slot's size** (a shorter file leaves the original tail readable and the game draws the ORIGINAL out of
+    it, a longer one overwrites the next slot). Pad the replacement first - `re4hd_models.pad_to` does that - and the
+    patch only touches the bytes the slot owns.
+
+    Rewriting the DAT/UDAS tables is deliberately NOT done here: real packs leave 960 B before the first entry, up to
+    18 KB between entries and trailing bytes after the last, so a table rebuild has to reproduce all of that to stay
+    faithful. A same-size patch needs none of it.
+    """
+    if endian not in (">", "<"):
+        raise ValueError(f"endian must be '>' or '<', not {endian!r}")
+    slots = bin_slots(data, endian)
+    if not slots:
+        raise ValueError("this pack holds no BIN slot")
+    if not 0 <= bin_index < len(slots):
+        raise ValueError(f"this pack holds {len(slots)} BIN slot(s); #{bin_index} is out of range")
+    slot = slots[bin_index]
+    if len(replacement) != slot["size"]:
+        raise ValueError(f"slot #{bin_index} is {slot['size']} bytes and the replacement is {len(replacement)}: "
+                         f"a patch must be the slot's own size (pad it first)")
+    out = bytearray(data)
+    out[slot["offset"]:slot["offset"] + slot["size"]] = replacement
+    return bytes(out)
+
+
 def bin_header(b: bytes) -> dict:
     """Counts from a big-endian RE4 GC BIN header; refuses headers whose tables point outside the BIN."""
     if len(b) < 0x40:

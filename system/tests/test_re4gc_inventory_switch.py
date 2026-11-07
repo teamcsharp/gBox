@@ -97,3 +97,52 @@ def test_a_switch_tree_is_walked_and_a_plain_directory_is_refused(tmp_path):
     assert inv["totals"]["packs"] == 2 and inv["totals"]["errors"] == 0
     with pytest.raises(ValueError, match="not an RE4 Switch RomFS tree"):
         I.switch_inventory(tmp_path / "elsewhere")
+
+
+# ---------------------------------------------------------------- writing a slot back (the mod path)
+
+def two_bin_pack(first: bytes, second: bytes):
+    """A pack with two BIN slots, so a patch can be shown to leave the other slot alone."""
+    n = 2
+    base = 16 + 4 * n + 4 * n
+    dat = bytearray(struct.pack("<II", n, 0) + b"\0" * 8)
+    dat += struct.pack("<2I", base, base + len(first))
+    dat += b"BIN\0BIN\0"
+    dat += first + second
+    hdr = bytearray(b"\xca\xb6\xbe\x20" * 8)
+    hdr += struct.pack("<IIII", 0, len(dat), 0, 0x400) + b"\0" * 16
+    hdr += struct.pack("<I", 0xFFFFFFFF)
+    hdr += b"\0" * (0x400 - len(hdr))
+    return bytes(hdr) + bytes(dat)
+
+
+def test_the_bin_slots_are_listed_with_their_pack_offsets():
+    pack = two_bin_pack(b"\x98" + b"\0" * 11, b"\x99" + b"\0" * 7)
+    slots = I.bin_slots(pack, "<")
+    assert [s["bin"] for s in slots] == [0, 1] and [s["slot"] for s in slots] == [0, 1]
+    assert [s["size"] for s in slots] == [12, 8]
+    assert pack[slots[1]["offset"]:slots[1]["offset"] + 8] == b"\x99" + b"\0" * 7
+
+
+def test_a_same_size_patch_touches_only_that_slot():
+    pack = two_bin_pack(b"\x98" + b"\0" * 11, b"\x99" + b"\0" * 7)
+    assert I.pack_patch(pack, 1, b"\x99" + b"\0" * 7, "<") == pack          # identical bytes: no change at all
+    patched = I.pack_patch(pack, 1, b"\xAA" * 8, "<")
+    differing = [i for i in range(len(pack)) if pack[i] != patched[i]]
+    slot = I.bin_slots(pack, "<")[1]
+    assert differing and differing[0] == slot["offset"]
+    assert differing[-1] == slot["offset"] + slot["size"] - 1
+    assert len(differing) == slot["size"]
+    assert len(patched) == len(pack)
+    assert I.bin_slots(patched, "<") == I.bin_slots(pack, "<")
+
+
+def test_a_patch_that_is_not_the_slots_size_is_refused():
+    pack = two_bin_pack(b"\x98" + b"\0" * 11, b"\x99" + b"\0" * 7)
+    # the GameCube lesson: a shorter replacement leaves the original tail readable and the game draws the ORIGINAL
+    with pytest.raises(ValueError, match="must be the slot's own size"):
+        I.pack_patch(pack, 1, b"\xAA" * 3, "<")
+    with pytest.raises(ValueError, match="must be the slot's own size"):
+        I.pack_patch(pack, 1, b"\xAA" * 20, "<")
+    with pytest.raises(ValueError, match="#9 is out of range"):
+        I.pack_patch(pack, 9, b"\xAA" * 8, "<")

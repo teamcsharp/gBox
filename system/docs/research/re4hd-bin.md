@@ -314,3 +314,36 @@ smaller source/decimation pass.
   `pad_to`. The Switch title has not been asked to draw it.
 * **The 539 refused slots** still cannot be written because they cannot be decoded; the writer's 100 % mark is
   100 % of the 2,188 accepted slots, not of the tree.
+
+## 11. Writing the pack back: the mod step (measured 2026-11-07)
+
+`re4gc_inventory.pack_patch(data, bin_index, replacement, endian="<")` writes one BIN slot back in place.
+`bin_slots(data, endian)` lists the slots with their pack offsets (`bin` = position among BIN slots, `slot` = DAT
+index, which differ because a pack interleaves BIN with EFF/TPL/FCV).
+
+A patch must be **exactly the slot's size** — the same rule the GameCube work paid for. Rewriting the DAT/UDAS tables
+is deliberately not done: real packs leave 960 B before the first entry, up to 18 KB between entries, and trailing
+bytes after the last (em10: 19,744 B), so a table rebuild would have to reproduce all of it to stay faithful. A
+same-size patch needs none of it.
+
+Verified on the real tree:
+
+| check | result |
+|---|---|
+| every pack patched with its own slot bytes | **162 / 162 byte-identical**, 0 changed |
+| in-pack swap: dst slot #75 (241,216 B, 5,892 verts, 38 bones) <- donor #119 (2,400 verts, 1,664 tris) | rebuilt 202,656 B, padded to 241,216 B |
+| other slots after the swap | **119 / 120 byte-identical** (only the target changed) |
+| the swapped slot re-decoded | 4,992 verts, 1,664 tris, 38 bones, bbox follows the donor |
+| the pack re-inventoried | no errors |
+
+**The size constraint this exposes.** A rebuilt mesh holds one vertex per triangle corner, so its size scales with
+the donor's triangle count, not the destination's. Swapping a heavy donor into a light slot produces a file that cannot
+fit (measured: a 66,080 B slot asked for 485,600 B). A real swap therefore needs either a donor with few enough
+triangles or the fitting ladder (dedupe / strip encoding) before `pad_to`. That is the next piece of work, and it is
+the reason a "Sonic as the ganado" build has to pick its target slot with the triangle budget in mind.
+
+Written artifact: `~/gBox_alt/re4-lab/em10-swapped.udas` (sha256 `562b1ba4…`), a real pack with one mesh replaced,
+ready to drop into a LayeredFS build's `romfs/bio4/em/`.
+
+**Not done:** no in-game boot of a swapped model yet. The remaining step is one RE4 Switch launch with that pack in a
+mod folder, which takes the only emulator slot and so has to be its own experiment.
