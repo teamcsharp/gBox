@@ -103,3 +103,22 @@ What is still open is the **join**: a pack descriptor names an id in 0..191 (108
 nothing yet says which `(archive, entry)` that id is. The likely route is the descriptor's own `width x height` and
 format against the DDS headers - a small search space once the descriptor's id is understood - and it is the next
 piece of this line.
+## The extraction tab can now show them (2026-11-07)
+
+Two routes make the DDS half of the inventory visible without needing the descriptor join at all:
+
+```
+GET /api/decrypt-lab/textures?title=re4_switch&archives=40
+    -> {archive_count, count, formats, textures: [{archive, index, width, height, format, mipmaps}]}
+GET /api/decrypt-lab/texture.png?title=re4_switch&archive=00000009.pack.fen&index=1
+    -> image/png
+```
+
+Measured live: `archives=6` returns **491 textures** (DXT3 323, DXT5 168, 0 failures) and the PNG route returns
+65,896 bytes for `00000009.pack.fen` index 1 - byte-identical in size to the file produced offline from the same entry.
+`archives` bounds the walk because every archive is zlib (the tree holds 1,813 of them and 6 GB of bodies), and the
+catalogue is cached for 10 minutes so a page listing does not re-inflate on every poll.
+
+So the extraction tab now has, for the HD RE4 port: **packs listed** (models), and **textures listed and previewed**.
+What it still cannot do is say "this pack's texture 46 is *that* surface" - the join - and that is the remaining work
+on this line.

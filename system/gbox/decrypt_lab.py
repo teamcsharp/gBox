@@ -720,6 +720,75 @@ def hd_model_geometry(root, pack_inner: str, slot: int | None = None, budget: in
                     "unproven, so it is not served as normals)"}
 
 
+_TEXTURE_CACHE: dict = {}
+
+
+def hd_textures(root, archives: int = 40, ttl: float = 600.0) -> dict:
+    """The DDS textures of an HD RE4 tree, from `bio4/imagepackhd/*.pack.fen`.
+
+    Each archive is zlib, so this decompresses what it lists: `archives` caps the walk (the tree holds 1,813 archives
+    and 6 GB of bodies) and the answer is cached, because a page listing is not worth re-inflating on every poll.
+    Rows are headers only - the DDS body is not kept - and `index` plus `archive` is what `hd_texture_png` needs.
+    """
+    from . import re4hd_tex
+    root = Path(root)
+    packs = root / "bio4" / "imagepackhd"
+    if not packs.is_dir():
+        return {"edition": "hd", "archives": [], "archive_count": 0, "count": 0, "textures": [],
+                "formats": {}, "failures": [], "note": "this tree has no bio4/imagepackhd"}
+    names = sorted(p.name for p in packs.glob("*.pack.fen"))[:max(1, int(archives))]
+    key = (str(root), tuple(names))
+    hit = _TEXTURE_CACHE.get(key)
+    now = time.time()
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    rows: list[dict] = []
+    formats: dict = {}
+    failures: list[dict] = []
+    for name in names:
+        try:
+            data = (packs / name).read_bytes()
+            listed = re4hd_tex.fen_textures(data)
+        except (OSError, re4hd_tex.TexError) as exc:
+            failures.append({"archive": name, "error": str(exc)[:120]})
+            continue
+        for row in listed:
+            if "error" in row:
+                failures.append({"archive": name, **row})
+                continue
+            row["archive"] = name
+            formats[row["format"]] = formats.get(row["format"], 0) + 1
+            rows.append(row)
+    out = {"edition": "hd", "archives": names, "archive_count": len(names),
+           "count": len(rows), "formats": formats, "textures": rows, "failures": failures,
+           "note": "headers only; the pixels are DVX-compressed DDS (gbox.re4hd_tex.fen_texture) and this title's "
+                   "pack descriptors do not yet join to them by id"}
+    _TEXTURE_CACHE[key] = (now, out)
+    return out
+
+
+def hd_texture_png(root, archive: str, index: int) -> bytes:
+    """One texture rendered to PNG, straight from the archive's DDS (PIL decodes DXT3/DXT5)."""
+    import io
+
+    from . import re4hd_tex
+    root = Path(root)
+    packs = (root / "bio4" / "imagepackhd").resolve()
+    target = (packs / archive).resolve()
+    if not str(target).startswith(str(packs)) or not target.is_file():
+        raise FileNotFoundError(f"no such texture archive: {archive}")
+    texture = re4hd_tex.fen_texture(target.read_bytes(), int(index))
+    from PIL import Image
+    try:
+        image = Image.open(io.BytesIO(texture["dds"]))
+        image.load()
+    except Exception as exc:                                  # noqa: BLE001 - a DDS PIL cannot open is reported
+        raise ValueError(f"the DDS did not decode: {exc}") from exc
+    buffer = io.BytesIO()
+    image.convert("RGB").save(buffer, "PNG")
+    return buffer.getvalue()
+
+
 def install(app, store, config, auth, tactical_store=None):
     global _CONFIG
     _CONFIG = config
@@ -1228,6 +1297,39 @@ def install(app, store, config, auth, tactical_store=None):
         rounds did or did not open a report, and the enemies the reports have learned about."""
         from .mercs import report_digest
         return {"v": FORMAT, **report_digest.digest(store)}
+
+    @app.get("/api/decrypt-lab/textures", dependencies=[Depends(auth)])
+    def decrypt_lab_textures(title: str, archives: int = 40):
+        """An HD title's texture catalogue: every DDS surface in the archives walked, with its size and format.
+
+        The extraction tab has listed MTF archives, UE4 paks and (since 2026-11-07) HD model packs; this is the texture
+        half of the same inventory for the HD RE4 port, whose packs name textures by id and keep the pixels in
+        imagepackhd. `archives` bounds the walk because each archive is zlib.
+        """
+        tid = _title_id(title)
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
+        out = hd_textures(root, archives=max(1, min(int(archives or 40), 400)))
+        if not out.get("archive_count"):
+            raise HTTPException(404, "this tree has no imagepackhd archives")
+        return {"v": FORMAT, "title": tid, **out}
+
+    @app.get("/api/decrypt-lab/texture.png", dependencies=[Depends(auth)])
+    def decrypt_lab_texture_png(title: str, archive: str, index: int = 0):
+        """One texture as a PNG, decoded from the archive's DDS - the picture a replacement would be judged against."""
+        from fastapi.responses import Response
+        tid = _title_id(title)
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
+        try:
+            png = hd_texture_png(root, archive, index)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(409, f"that texture did not render: {str(exc)[:160]}") from exc
+        return Response(png, media_type="image/png")
 
     @app.get("/api/decrypt-lab/arc-layout", dependencies=[Depends(auth)])
     def decrypt_lab_arc_layout(title: str):
