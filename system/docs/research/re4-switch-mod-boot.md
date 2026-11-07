@@ -133,3 +133,44 @@ list - that is still unmeasured in game.
 confirm on the main menu's default row (LOAD), e.g. a second confirm landing after a slow title-to-menu transition. The
 next in-game run should log `screen()`/`step()` per tick, because the replay can only answer what the frames contain -
 and these frames all start after the mistake.
+## Fifth run: the instrumented walk reached a round (2026-11-07)
+
+The run round 11 asked for - `screen()`/`step()` logged per tick instead of blind taps - with the improved classifier.
+Log, verbatim:
+
+```
+00 unknown                              -> nothing (a boot frame)
+01 title             key='a'
+02 main_menu cursor=1 target=5 key='ddown'
+03 main_menu cursor=2 ...  04 cursor=3   05 cursor=4   06 cursor=5 key='a'
+07 extras_menu cursor=0 target=2 key='ddown'
+08 extras_menu cursor=1 ...  09 cursor=2 key='a'
+10 mercs_title       key='a'
+11 select_player     key='a'
+12 select_stage      key='a'
+13.. unknown         (the round intro: no key)
+presses by screen: {title 1, main_menu 5, extras_menu 3, mercs_title 1, select_player 1, select_stage 1}
+```
+
+**It reached THE MERCENARIES and started a round.** The screen after Select Stage is the village with the round
+banner ("Eliminate as many Ganados as you can before your evac chopper arrives"), and paging it with A puts the player
+in the round: timer 01'20"48, three Ganados visible, one carrying a lit torch.
+
+![a Mercenaries round with the rebuilt pack loaded](evidence/re4switch-modded-round-ganados.jpg)
+
+**What this establishes.**
+
+* The walk **title -> main menu -> EXTRAS -> THE MERCENARIES -> Select Player -> Select Stage -> round** works, driven
+  only by reads (the driver's own path, now executed with logging). This is the first time in this session a RE4 Switch
+  round was entered deliberately rather than by luck.
+* **A round plays normally with a rebuilt mesh slot in the pack.** No crash, no corruption, no missing geometry: the
+  modded build is gameplay-compatible, which is what the writer's byte-identity work was for.
+
+**What it does not establish.** The Ganados on screen are **not** from the swapped slot. The swap lives in `em10` bin
+#75; the village's Ganados come from other packs. So "the rebuilt mesh renders" is still unproven - the round proves
+compatibility, not the swap.
+
+**The next step is now a labelling question, not a format one:** find which pack the village spawns and swap into
+*that* one's biggest slot (the ranking says which slots can host: for `em10` only bins 75/76 of 120). The cheapest
+route is to swap a visually unmistakable donor into the biggest slot of each candidate pack in turn, or into several at
+once, and look at a round.
