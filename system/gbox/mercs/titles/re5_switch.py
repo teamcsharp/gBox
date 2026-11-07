@@ -745,6 +745,14 @@ KNIFE_R, KNIFE_FACE, KNIFE_SWING_S, KNIFE_TRY_S, KNIFE_RETRIES = 160.0, math.rad
 # was locked on one unbreakable statue, the rest of the round's bonuses never reached). ~2 s of knife in reach -
 # several full swings - is enough to break a real one; longer is the dead one (give up, take the next open one).
 KNIFE_CAP_S = 2.0
+# The approach phase (the run is walking toward the statue, not in knife range) has no time cap - if the statue is
+# off his level, behind a wall, or otherwise unreachable, the detour branch (now - best_at > 1.5) never fires because
+# best_at keeps getting refreshed as the bot walks in circles, so the run wanders forever. A bound: after APPROACH_CAP_S
+# in the approach phase with no progress (best_at not advancing), give up and block the statue. Measured from the run's
+# 'since' (the time it started targeting this statue). ~8 s is plenty to reach any on-level statue; longer means it is
+# off-level or unreachable - take the next one. ~30 s is long enough for any legitimate approach to a distant
+# statue; longer means the bot is stuck in a loop and should give up.
+APPROACH_CAP_S = 30.0
 # Live 16:59-17:04: 8 statues seen, none taken - he spawned on the roof (y 550) and walked at one 1.6 m below for a
 # minute: stuck BONUS_JUMP_TRY_S with the statue off his level, the context action (Y, the "Jump down" prompt) first.
 BONUS_JUMP_TRY_S = 0.8
@@ -2014,6 +2022,16 @@ class Bot:
             return {"hold": ("l", "zr") if swing else ("l",)}
         if d < run["best"] - 50.0:                       # on the way: run (walk the last metres), a detour when stuck
             run["best"], run["best_at"] = d, now
+        elif now - run["since"] > APPROACH_CAP_S:
+            # The approach phase has run past its cap: the statue is off his level, behind a wall, or otherwise
+            # unreachable - the bot has been walking at it for APPROACH_CAP_S without ever getting into knife
+            # range. (The detour gate below needs the bot to actually be stuck; when the bot keeps circling or
+            # walking in a narrow loop, best_at keeps refreshing and the detour branch never fires, so the run
+            # wanders forever. This cap fires regardless.)
+            self._bonus_block[b["ptr"]] = now + BONUS_BLOCK_S
+            self._bonus = None
+            self.doing, self.why = "walk", "time bonus: unreachable - the next one"
+            return {"hold": ("lup",)}
         elif now - run["best_at"] > BONUS_JUMP_TRY_S and not run.get("jumped") and abs(by - py) > LEVEL_DY                 and not snap.get("prompt_read"):         # (with the prompt read, Y waits for the ledge's own prompt)
             run["jumped"] = True                         # stuck at a ledge above (or below) it: the context action
             run["best_at"] = now                         # (Y: "Jump down" - the 16:24 frame on the roof - or a ladder)
@@ -2754,12 +2772,21 @@ class Bot:
         return any(abs(e["pos"][1] - py) <= LEVEL_DY and flat(e) <= HOLD_R for e in live)
 
     def _choose(self, p, live, now):
-        """The Majini to fight. One he can shoot without turning (inside raise_tol, in reach) comes first: the current
-        one if he is in front, else the nearest in front, unless one not in front is about to grab him (GRAB_THREAT_R).
-        Nobody in front: the cost (near and in front; K's learned range preferred), a new one kept COMMIT_S, one within
-        THREAT_R first."""
+        """The Majini to fight. A target this close is not flipped to one behind him (the rear target's flip): one this
+        near behind is the quick turn's / the turn's, not the aim's. One he can shoot without turning (inside raise_tol,
+        in reach) comes first: the current one if he is in front, else the nearest in front, unless one not in front is
+        about to grab him (GRAB_THREAT_R). Nobody in front: the cost (near and in front; K's learned range preferred),
+        a new one kept COMMIT_S, one within THREAT_R first."""
         px, py, pz = p["pos"]
         flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        bear = lambda e: wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])
+        cur = next((e for e in live if e.get("ptr", e.get("slot")) == self.target), None)
+        if cur is not None and flat(cur) <= TOO_CLOSE and abs(bear(cur)) > QUICK_ERR:
+            back = [e for e in live if e is not cur and flat(e) <= THREAT_R
+                    and abs(e["pos"][1] - py) <= LEVEL_DY and abs(bear(e)) > QUICK_ERR]
+            if not back:
+                self._set_target(cur.get("ptr", cur.get("slot")), now)
+                return cur                                 # the rear target: the turn (and the quick turn) is his
         if piece(SMOOTH_LEVEL):                              # no pitching up at a roof while ground Majini come
             ground_near = any(flat(e) <= PITCH_GUARD_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in live)
             calm = [e for e in live
@@ -4135,6 +4162,25 @@ class Bot:
         dist = flat(tgt)
         body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
         self.stats["target_dist"] = round(dist)
+        if self.mode != "score" and dist <= TOO_CLOSE and abs(body_err) > QUICK_ERR \
+                and self.aim_since is None:                   # not yet aiming at the front target
+            fix = None                                        # the nearest one behind him, on his level
+            for e in live:
+                if e is tgt:
+                    continue
+                de = flat(e)
+                if de <= dist and abs(e["pos"][1] - py) <= LEVEL_DY \
+                        and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) > QUICK_ERR:
+                    fix = e
+                    break
+            if fix is not None:
+                self.stats["rear_target_fixes"] = self.stats.get("rear_target_fixes", 0) + 1
+                self._set_target(fix.get("ptr", fix.get("slot")), now)
+                self.target_at = now
+                tgt = fix
+                foot = fix["pos"]
+                dist = flat(fix)
+                body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
         if dist > ENGAGE_R:                                  # nobody in range: walk to him
             self.doing, self.why = "walk", f"nearest target {dist / 100:.1f} m"
             self._gun_down()
