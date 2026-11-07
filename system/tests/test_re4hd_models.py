@@ -513,3 +513,68 @@ def test_bin_from_refuses_an_input_that_is_not_an_hd_bin():
     with pytest.raises(M.BINError):
         M.bin_from(struct.pack(">I", 0x40) + bytes(0x200))
 
+
+
+# ---------------------------------------------------------------- strip encoding (the fitting ladder's first rung)
+
+def grid_mesh(n=4):
+    """An (n x n) vertex grid and its triangles: real adjacency, so strips can actually form."""
+    import numpy as np
+    pos = np.array([[float(x), float(y), 0.0] for y in range(n) for x in range(n)], float)
+    tris = []
+    for y in range(n - 1):
+        for x in range(n - 1):
+            a = y * n + x
+            b, c, d = a + 1, a + n, a + n + 1
+            tris.append((a, b, d))
+            tris.append((a, d, c))
+    return pos, np.array(tris, np.int64)
+
+
+def test_strip_encoding_cuts_the_vertex_count_and_keeps_every_triangle():
+    import numpy as np
+    tmpl = M.bin_read(make_bin(n=6, bones=((0, 0xFF),), prims=((5, 6),)))
+    pos, tris = grid_mesh(4)
+    as_list = M.bin_read(M.bin_from(tmpl, pos=pos, tris=tris, encoding="list"))
+    as_strip = M.bin_read(M.bin_from(tmpl, pos=pos, tris=tris, encoding="strip"))
+    assert as_list.n_verts == 3 * len(tris)            # a list stores one vertex per corner
+    assert as_strip.n_verts < as_list.n_verts          # a strip reuses the shared edge
+    assert as_strip.n_tris == as_list.n_tris == len(tris)
+
+    def geometry(mesh):
+        p = np.asarray(mesh.pos)
+        return sorted(tuple(sorted((round(float(p[v][0]), 3), round(float(p[v][1]), 3), round(float(p[v][2]), 3))
+                                   for v in tri)) for tri in mesh.triangles())
+
+    assert geometry(as_strip) == geometry(as_list)
+
+
+def test_strip_winding_matches_the_source_so_faces_are_not_flipped():
+    """A naive stripifier flips every other face, which renders half a character inside-out."""
+    import numpy as np
+    tmpl = M.bin_read(make_bin(n=6, bones=((0, 0xFF),), prims=((5, 6),)))
+    pos, tris = grid_mesh(4)
+    src = np.asarray(pos)
+
+    def facing(mesh):
+        p = np.asarray(mesh.pos)
+        out = []
+        for tri in mesh.triangles():
+            a, b, c = (p[v] for v in tri)
+            n = np.cross(b - a, c - a)
+            out.append(tuple(round(float(v), 6) for v in n))
+        return sorted(out)
+
+    strip = M.bin_read(M.bin_from(tmpl, pos=pos, tris=tris, encoding="strip"))
+    source = []
+    for tri in tris:
+        a, b, c = (src[v] for v in tri)
+        source.append(tuple(round(float(v), 6) for v in np.cross(b - a, c - a)))
+    assert facing(strip) == sorted(source)
+
+
+def test_an_unknown_encoding_is_refused():
+    tmpl = M.bin_read(make_bin(n=6, bones=((0, 0xFF),), prims=((5, 6),)))
+    pos, tris = grid_mesh(3)
+    with pytest.raises(M.BINError, match="encoding must be"):
+        M.bin_from(tmpl, pos=pos, tris=tris, encoding="fan")

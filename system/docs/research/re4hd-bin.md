@@ -348,3 +348,30 @@ ready to drop into a LayeredFS build's `romfs/bio4/em/`.
 **In-game (2026-11-07):** that pack was put in a LayeredFS overlay and the title booted with it - title screen and
 save-select screen, every other slot byte-identical. The swapped geometry has NOT been seen rendering yet; see
 `re4-switch-mod-boot.md` for what was seen and the load-save route that should reach an enemy next.
+## The fitting ladder's first rung: strip encoding (2026-11-07)
+
+A rebuilt mesh has no index buffer, so a list stores one vertex per triangle corner and its size grows with the
+donor's triangle count. That is the constraint that made a 66,080 B slot ask for 485,600 B. A **type-6 triangle strip**
+reuses the two vertices of the shared edge, and it is the only compression this format offers.
+
+`bin_from(..., encoding="strip")` emits strips per material record. The decay rule matters: the decoder emits
+`(s[i], s[i+1], s[i+2])` for even `i` and `(s[i+1], s[i], s[i+2])` for odd, so a triangle may only join at a parity
+whose orientation it already has. Requiring that keeps every face's winding - a naive stripifier flips every other
+face, which renders half a character inside-out - and the result is checked against the source's triangle set before
+it is returned (a strip that would change the mesh raises instead of shipping).
+
+Measured on real `em10` slots:
+
+| template slot | donor (verts / tris) | list | strip | saving |
+|---|---|---|---|---|
+| #0, 2,848 B | 2,400 / 1,664 | 200,064 B (4,992 verts) | **101,856 B (2,494 verts)** | **49 %** |
+| #116, 2,016 B | 5,892 / 4,038 | 485,056 B (12,114 verts) | **251,520 B (6,170 verts)** | **48 %** |
+
+So strips roughly halve a rebuilt mesh - and **still do not fit those specific slots**, because the donor is far too
+rich for them. The next rung is therefore not another encoding: it is choosing the pair by budget (a triangle-light
+donor, or a target slot with room), which is now a measurable decision rather than a guess:
+
+```
+rebuilt_vertices(source_tris)  ~=  tris + 2 * strips     # measured 1.5 verts/triangle on these donors
+rebuilt_bytes                  ~=  rebuilt_vertices * ~41 B
+```

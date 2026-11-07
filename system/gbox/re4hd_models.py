@@ -804,6 +804,86 @@ def _norm_bones(bones) -> list[dict]:
     return out
 
 
+
+def _tris_from_mats(mats) -> "np.ndarray":
+    """The oriented triangles a list of `Mat` records decodes to (the same rule `_triangles` applies to dicts)."""
+    out = []
+    base = 0
+    for m in mats:
+        for t, c in m.pairs:
+            if t == 5:
+                for i in range(0, c - 2, 3):
+                    out.append((base + i, base + i + 1, base + i + 2))
+            elif t == 6:
+                for i in range(c - 2):
+                    tri = (base + i, base + i + 1, base + i + 2)
+                    out.append(tri if i % 2 == 0 else (tri[1], tri[0], tri[2]))
+            else:
+                for i in range(0, c - 3, 4):
+                    q = (base + i, base + i + 1, base + i + 2, base + i + 3)
+                    out.append((q[0], q[1], q[2]))
+                    out.append((q[0], q[2], q[3]))
+            base += c
+    return np.array(out, np.int64).reshape(-1, 3)
+
+
+def _stripify(tris) -> list[list[int]]:
+    """Greedy triangle strips over an oriented triangle list; every triangle lands in exactly one strip.
+
+    The HD format has no index buffer: a type-5 list stores one vertex per triangle corner, so a rebuilt mesh grows
+    with the donor's triangle count and a rich donor cannot fit a small slot (measured: a 66,080 B slot asked for
+    485,600 B). A type-6 strip reuses the two vertices of the shared edge, which is the only compression this format
+    offers.
+
+    The decoder emits, for strip position i, `(s[i], s[i+1], s[i+2])` when i is even and `(s[i+1], s[i], s[i+2])` when
+    i is odd - so a triangle may only join at the parity whose orientation it already has. Requiring that keeps every
+    face's winding, which a naive stripifier silently flips (and half a character renders inside-out). Strips are only
+    extended forward, which is enough to remove most duplicated corners and keeps the rule easy to check.
+    """
+    from collections import defaultdict
+    oriented = [tuple(int(v) for v in t) for t in tris]
+    used = [False] * len(oriented)
+    edge_to = defaultdict(list)
+    for index, t in enumerate(oriented):
+        for a, b in ((t[0], t[1]), (t[1], t[2]), (t[2], t[0])):
+            edge_to[(a, b)].append(index)                 # directed: the orientation the triangle already has
+    strips: list[list[int]] = []
+    for start in range(len(oriented)):
+        if used[start]:
+            continue
+        used[start] = True
+        t = oriented[start]
+        strip = [t[0], t[1], t[2]]
+        while True:
+            position = len(strip) - 2                      # the triangle this new vertex would complete
+            a, b = strip[-2], strip[-1]
+            wanted = (a, b) if position % 2 == 0 else (b, a)
+            nxt = None
+            for index in edge_to.get(wanted, ()):          # shares the edge with the orientation parity needs
+                if used[index]:
+                    continue
+                cand = oriented[index]
+                third = next(v for v in cand if v != a and v != b)
+                nxt = (index, third)
+                break
+            if nxt is None:
+                break
+            used[nxt[0]] = True
+            strip.append(nxt[1])
+        strips.append(strip)
+    return strips
+
+
+def _triangles_of(strips) -> tuple:
+    """The oriented triangles a strip list decodes to, so a rebuild can be checked against its source."""
+    out = []
+    for strip in strips:
+        for i in range(len(strip) - 2):
+            tri = (strip[i], strip[i + 1], strip[i + 2])
+            out.append(tri if i % 2 == 0 else (tri[1], tri[0], tri[2]))
+    return out
+
+
 def _material_shares(mats: list, n_tri: int) -> tuple[list[int], list]:
     """Split `n_tri` source triangles over the slot's material records, each material keeping >= 1 triangle.
 
@@ -828,7 +908,8 @@ def _material_shares(mats: list, n_tri: int) -> tuple[list[int], list]:
     return counts, keep
 
 
-def _rebuild_geometry(tmpl: "Bin", pos, uv, colors, tris, weights, weight_idx, aux) -> dict:
+def _rebuild_geometry(tmpl: "Bin", pos, uv, colors, tris, weights, weight_idx, aux,
+                      encoding: str = "list") -> dict:
     """Turn source vertices + triangles into the sequential primitive/vertex order the HD decoder requires."""
     src_pos = np.asarray(pos, dtype=np.float64)
     if src_pos.ndim != 2 or src_pos.shape[1] != 3 or len(src_pos) == 0:
@@ -842,14 +923,27 @@ def _rebuild_geometry(tmpl: "Bin", pos, uv, colors, tris, weights, weight_idx, a
         raise BINError("degenerate triangle (repeated index) in the source")
     n_src = len(src_pos)
 
+    if encoding not in ("list", "strip"):
+        raise BINError(f"encoding must be 'list' or 'strip', not {encoding!r}")
     counts, src_mats = _material_shares(tmpl.mats, len(tri))
     parts, mats = [], []
     cursor = 0
     for count, old in zip(counts, src_mats):
         sl = tri[cursor:cursor + count]
         cursor += count
-        parts.append(sl)
-        np_ = 1
+        strips = _stripify(sl) if encoding == "strip" else None
+        if strips is not None:
+            wanted = sorted(tuple(sorted(int(v) for v in t)) for t in sl)
+            got = sorted(tuple(sorted(t)) for t in _triangles_of(strips))
+            if got != wanted:                                  # never emit a mesh that is not the source's triangles
+                raise BINError("stripification would change the triangle set")
+            pairs = [(6, len(strip)) for strip in strips]
+            flat_part = np.array([v for strip in strips for v in strip], np.int64)
+        else:
+            pairs = [(5, 3 * count)]
+            flat_part = sl.reshape(-1)
+        parts.append(flat_part)
+        np_ = len(pairs)
         hdr = bytearray(bytes(old.header or b"")[:MAT_HDR])
         if len(hdr) < MAT_HDR:
             hdr.extend(bytes(MAT_HDR - len(hdr)))
@@ -860,7 +954,7 @@ def _rebuild_geometry(tmpl: "Bin", pos, uv, colors, tris, weights, weight_idx, a
         dl = (MAT_HDR + 4 * np_) // 32 * 32
         struct.pack_into("<III", hdr, 0x18, dl, count, np_)
         mats.append(Mat(len(mats), 0, int(old.uv_set), int(old.material_id), dl, count,
-                        [(5, 3 * count)], count, bytes(hdr)))
+                        pairs, count, bytes(hdr)))
     flat = np.concatenate(parts, 0).reshape(-1)
     n_out = len(flat)
 
@@ -893,13 +987,16 @@ def _rebuild_geometry(tmpl: "Bin", pos, uv, colors, tris, weights, weight_idx, a
     else:
         aux_out = bytes(12 * n_out)
     return {"pos": np.asarray(src_pos[flat], np.float64), "uv": np.asarray(uv_out, np.float64),
-            "colors": np.asarray(col_out, np.uint8), "tris": np.arange(n_out, dtype=np.int64).reshape(-1, 3),
+            "colors": np.asarray(col_out, np.uint8),
+            # the triangles are whatever the emitted primitive table decodes to: a strip does not lay one
+            # vertex per corner, so the old arange().reshape(-1, 3) was only right for a list
+            "tris": _tris_from_mats(mats),
             "weights": w, "weight_idx": wi_out,
             "aux": Stream(raw=aux_out, offset=0, encoding="unknown"), "mats": mats}
 
 
 def bin_from(bin_, *, pos=None, uv=None, colors=None, tris=None, bones=None,
-             weights=None, weight_idx=None, aux=None) -> bytes:
+             weights=None, weight_idx=None, aux=None, encoding: str = "list") -> bytes:
     """Build a BIN whose geometry comes from another source, keeping the slot's header/bones/material headers.
 
     `bin_` is a decoded `Bin` (or BIN bytes).  `pos`/`uv`/`colors` are per-vertex source arrays and `tris` are
@@ -909,6 +1006,10 @@ def bin_from(bin_, *, pos=None, uv=None, colors=None, tris=None, bones=None,
     triangle counts, emitted as type-5 lists in sequential vertex order, and the per-vertex arrays are gathered into
     that same order (corners are duplicated, as the HD format already does).  That keeps the count partition exact
     and the result decodes, at the cost of a vertex per triangle corner; a later pass can strip/dedupe it.
+
+    `encoding="strip"` emits type-6 triangle strips instead of a type-5 list, which is the only compression this
+    format offers (a list stores one vertex per corner). It is refused when a strip's decoded winding would differ from
+    the source, rather than silently flipping faces.
 
     `bones=None` keeps the slot's own bone table.  `weights`/`weight_idx` (source-length, optional) are gathered with
     the vertices; without them a single-bone 100 % set is used so every index stays inside the slot's bone table.
@@ -956,7 +1057,7 @@ def bin_from(bin_, *, pos=None, uv=None, colors=None, tris=None, bones=None,
         return bin_write(out, verify=True)
 
     geo = _rebuild_geometry(tmpl, src_pos, uv, colors, tmpl.tris if tris is None else tris,
-                            weights, weight_idx, aux)
+                            weights, weight_idx, aux, encoding=encoding)
     out = Bin(header=bytes(tmpl.header), info={"vertex_count": len(geo["pos"])})
     out.pos, out.uv, out.colors, out.tris = geo["pos"], geo["uv"], geo["colors"], geo["tris"]
     out.bones, out.weights, out.weight_idx = src_bones, geo["weights"], geo["weight_idx"]
