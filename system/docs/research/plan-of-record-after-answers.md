@@ -349,3 +349,43 @@ every change.
 **The bar for the fix:** `probe_gc_fst_offsets.py` reports 0 mispairings, and only then is any archive patch re-run. Until
 then every model-swap build in this repository - mine and earlier ones - is unverified, because it cannot have been applied
 to the file the game reads.
+## Round 62: correction - the FST parser is fine, and the game does use the FST
+
+**Round 61's headline was wrong and is retracted here.** It claimed `parse_fst` mispaired 117 of 128 `.drs` entries because
+they did not begin `ca b6 be 20`. The first bytes of files whose magic is *known* show why that reasoning failed:
+
+```
+opening.bnr        off  27780768  head 424e5231...                     "BNR1" - correct
+font/common_p.fnt  off  42044316  head 00000020000180a0... 0020af30     a real .fnt with its TPL at +32 - correct
+em/pl00.drs        off 240678972  head cab6be20 x8, then 00000000001017a0...
+St1/r100.das       off 279349120  head cab6be20 x8, then 00000000002aeece...
+em/em10.drs        off 832593344  head 836e834a835a82cc8341837a815b815b...
+```
+
+And across all 218 archives there are exactly **two** header families:
+
+```
+836e834a: 117 files
+cab6be20: 101 files
+```
+
+So `ca b6 be 20` was never a universal magic - it is one container format, and the 117 files use another. Every offset the
+parser reported is a real file. My claim that 117 archives were mispaired, and that this explained the negative results, was
+false; the negative results are unexplained again, which is the honest position.
+
+**What this round did establish is worth more than the retraction: the game reads the FST.** Corrupting the FST root entry
+and the first entries with 0xFF (`re4gc-fstbreak`) leaves the emulator running and the picture **black for six samples over
+72 seconds**:
+
+```
+MARK fstbreak_00 mean 0.0 ... MARK fstbreak_05 mean 0.0
+```
+
+The emulator is up (the session exists, frames are served) and the game never draws - so it looked its files up in the FST
+and failed. A game with a private file table would not have noticed.
+
+**That makes the remaining puzzle sharper, not vaguer:** the FST is consulted, the parsed offsets point at real files, the
+patches are on the disc at those offsets, the emulator opens that disc - and a filled font atlas changes nothing on screen.
+The next question is therefore not "where is the file" but "what does the game do with the bytes it read", and the cheapest
+place to answer it is the one file the DOL names by an exact string: `Font/common_p.fnt` (capital F against the disc's
+`font/`), which if case matters would explain a silent fallback to a different source.
