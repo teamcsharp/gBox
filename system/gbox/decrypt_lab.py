@@ -131,6 +131,18 @@ ADAPTERS = [
 ]
 
 
+_REA: dict = {}
+
+
+def _rea_client():
+    """The process-wide REA client. REA holds target state across calls, so one server serves every route and task."""
+    from . import rea as rea_client
+    client = _REA.get("client")
+    if client is None:
+        client = _REA["client"] = rea_client.Rea()
+    return client
+
+
 def _title_module(adapter):
     try:
         return importlib.import_module(adapter["module"])
@@ -514,6 +526,38 @@ class StripClothesIn(BaseModel):
     title: str
     arc_path: str
     build: str = "gbox-lab"
+
+
+class IntegrationIn(BaseModel):
+    """Register an MCP server as a gBox tool: a name and the command that starts it."""
+    name: str
+    command: str
+    kind: str = "mcp"
+    source: str = ""
+    note: str = ""
+    env: dict = {}
+    enabled: bool = True
+
+
+class RepoIn(BaseModel):
+    """Integrate a pasted repository URL through a known recipe; `apply` writes the registry entry."""
+    url: str
+    apply: bool = False
+
+
+class IntegrationCallIn(BaseModel):
+    """Call one tool on one integration."""
+    tool: str
+    arguments: dict = {}
+    timeout: float = 0
+
+
+class ReaCallIn(BaseModel):
+    """Call one REA tool through gBox (MCP over stdio, one server process shared by the whole system)."""
+    tool: str
+    arguments: dict = {}
+    timeout: float = 0            # 0 uses the client's default; REA analyses can legitimately take minutes
+    actor_title: str = ""         # for the lab's activity log, not for REA
 
 
 class PackSwapIn(BaseModel):
@@ -1311,6 +1355,109 @@ def install(app, store, config, auth, tactical_store=None):
         rounds did or did not open a report, and the enemies the reports have learned about."""
         from .mercs import report_digest
         return {"v": FORMAT, **report_digest.digest(store)}
+
+    @app.get("/api/integrations", dependencies=[Depends(auth)])
+    def integrations_list(probe: bool = False):
+        """The integrations box: every MCP server this system can use as a tool, and whether it starts.
+
+        `probe` starts each one and counts its tools - honest but slow, so it is opt-in.
+        """
+        from . import integrations
+        return {"v": FORMAT, "registry": str(integrations.path()), "rows": integrations.catalogue(probe=probe),
+                "known_recipes": sorted(integrations.RECIPES)}
+
+    @app.post("/api/integrations", dependencies=[Depends(auth)])
+    def integrations_add(body: IntegrationIn):
+        """Register a local MCP server as a tool (name + the command that starts it)."""
+        from . import integrations
+        try:
+            entry = integrations.add(body.name, body.command, kind=body.kind, source=body.source,
+                                     note=body.note, env=body.env, enabled=body.enabled)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        lab_state.event("integrations", "integration", f"{body.name} registered", {"command": body.command})
+        return {"v": FORMAT, "registered": entry}
+
+    @app.post("/api/integrations/from-repo", dependencies=[Depends(auth)])
+    def integrations_from_repo(body: RepoIn):
+        """Integrate a pasted repository URL through a known recipe (dry run unless `apply` is set)."""
+        from . import integrations
+        out = integrations.install_from_repo(body.url, dry_run=not body.apply)
+        if not out.get("ok"):
+            raise HTTPException(404, str(out.get("reason"))[:200])
+        return {"v": FORMAT, **out}
+
+    @app.get("/api/integrations/{name}/tools", dependencies=[Depends(auth)])
+    def integrations_tools(name: str, search: str = "", refresh: bool = False):
+        """What one integration can do, with the argument fields each tool takes (they validate strictly)."""
+        from . import integrations
+        from .mcp_stdio import McpError
+        try:
+            client = integrations.client(name)
+            tools = client.list_tools(refresh=refresh)
+        except McpError as exc:
+            raise HTTPException(409, str(exc)[:300]) from exc
+        chosen = client.find(search) if search else tools
+        return {"v": FORMAT, "name": name, "server": client.server, "tools": len(tools),
+                "matches": [{"name": tool.get("name"),
+                             "description": str(tool.get("description") or "")[:200],
+                             "fields": sorted(((tool.get("inputSchema") or {}).get("properties") or {}).keys()),
+                             "required": list((tool.get("inputSchema") or {}).get("required") or [])}
+                            for tool in chosen[:200]]}
+
+    @app.post("/api/integrations/{name}/call", dependencies=[Depends(auth)])
+    def integrations_call(name: str, body: IntegrationCallIn):
+        """Call one tool on one integration. This is how any gBox task, bot or operator uses an integration."""
+        from . import integrations
+        from .mcp_stdio import McpError
+        try:
+            result = integrations.client(name).call(body.tool, body.arguments, timeout=body.timeout or None)
+        except McpError as exc:
+            raise HTTPException(409, str(exc)[:400]) from exc
+        lab_state.event("integrations", "integration", f"{name}.{body.tool}", {"tool": body.tool})
+        return {"v": FORMAT, "integration": name, "tool": body.tool, "result": result}
+
+    @app.get("/api/decrypt-lab/rea", dependencies=[Depends(auth)])
+    def decrypt_lab_rea(search: str = "", refresh: bool = False):
+        """REA's catalogue as gBox sees it: whether it starts, and what it can do.
+
+        `search` filters by name or description so a caller can find a capability without reading 229 tool names.
+        """
+        from . import rea as rea_client
+        state = rea_client.available()
+        if not state["installed"]:
+            return {"v": FORMAT, **state, "tools": 0, "matches": []}
+        client = _rea_client()
+        try:
+            tools = client.list_tools(refresh=refresh)
+        except rea_client.ReaError as exc:
+            return {"v": FORMAT, **state, "tools": 0, "matches": [], "error": str(exc)[:300]}
+        def brief(tool):
+            schema = tool.get("inputSchema") or {}
+            return {"name": tool.get("name"), "description": str(tool.get("description") or "")[:200],
+                    "fields": sorted((schema.get("properties") or {}).keys()),
+                    "required": list(schema.get("required") or [])}
+        # the fields matter: REA validates arguments strictly, so a caller that cannot see the schema guesses and is
+        # refused (measured: binary_session takes no `path`, which is exactly what a guess would supply)
+        matches = [brief(tool) for tool in (client.find(search) if search else tools)]
+        return {"v": FORMAT, **state, "server": client.server, "tools": len(tools),
+                "matches": matches[:200], "matched": len(matches)}
+
+    @app.post("/api/decrypt-lab/rea", dependencies=[Depends(auth)])
+    def decrypt_lab_rea_call(body: ReaCallIn):
+        """Call one REA tool. This is how any gBox task or operator uses REA: name a tool and give its arguments.
+
+        REA keeps an opened target across calls, so the client is process-wide rather than per request - closing it
+        between calls would throw away an analysis in progress. `timeout` is passed through because REA's own
+        long-running analyses outlive the default.
+        """
+        from . import rea as rea_client
+        try:
+            result = _rea_client().call(body.tool, body.arguments, timeout=body.timeout or None)
+        except rea_client.ReaError as exc:
+            raise HTTPException(409, str(exc)[:400]) from exc
+        lab_state.event(body.actor_title or "rea", "rea", f"{body.tool} called", {"tool": body.tool})
+        return {"v": FORMAT, "tool": body.tool, "result": result}
 
     @app.get("/api/decrypt-lab/hactool", dependencies=[Depends(auth)])
     def decrypt_lab_hactool():
