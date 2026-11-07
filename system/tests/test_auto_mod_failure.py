@@ -15,6 +15,48 @@ def isolated_hermes_home(monkeypatch, tmp_path):
     monkeypatch.setenv('GBOX_HERMES_HOME', str(tmp_path / 'hermes'))
 
 
+def test_a_library_that_was_still_loading_files_no_ticket(cfg, monkeypatch):
+    """Two inbox tickets said "characters use failed ... (have: )" for a library that was merely being re-read.
+
+    The job had SUCCEEDED - it answered status=not_in_collection - and the app filed it as a failure, which sent the
+    operator to extract a character that was already in the collection. The route now answers transient and files
+    nothing; a library that really is missing the character still files.
+    """
+    from gbox import hermes_task_mode
+    monkeypatch.setattr(hermes_task_mode, '_job', lambda: {'no_agent': False, 'enabled': False})
+    monkeypatch.setattr(ChatHub, 'post', lambda *a, **k: None)
+    app = create_app(cfg)
+    store = app.state.store
+    client = TestClient(app, headers={'Authorization': f'Bearer {cfg.token()}'})
+    # the exact shape of the two real failures: succeeded job, no library_entries key
+    store.put('job', 'old-answer', {'id': 'old-answer', 'tool': 'characters', 'state': 'succeeded',
+                                    'input': {'op': 'use', 'game_id': 'gta3'},
+                                    'output': {'result': {'character': 'sonic', 'status': 'not_in_collection',
+                                                          'message': "'sonic' isn't in the collection yet"}}})
+    response = client.post('/api/requests/auto-mod-failure',
+                           json={'action': 'characters use', 'model': 'sonic', 'job_id': 'old-answer'})
+    assert response.status_code == 200
+    body = response.json()
+    assert body.get('transient') is True and body.get('ok') is True
+    assert not body.get('number'), 'no ticket number may be issued for a transient library answer'
+    assert not [r for r in store.all('request') if (r.get('context') or {}).get('job_id') == 'old-answer']
+    # an empty library reported explicitly is the same condition
+    store.put('job', 'empty-now', {'id': 'empty-now', 'tool': 'characters', 'state': 'succeeded',
+                                   'input': {'op': 'use', 'game_id': 'gta3'},
+                                   'output': {'result': {'status': 'not_in_collection', 'library_entries': 0}}})
+    assert client.post('/api/requests/auto-mod-failure',
+                       json={'action': 'characters use', 'job_id': 'empty-now'}).json().get('transient') is True
+    # but a populated library that lacks the character is a real gap and still files a ticket
+    store.put('job', 'real-gap', {'id': 'real-gap', 'tool': 'characters', 'state': 'succeeded',
+                                  'input': {'op': 'use', 'game_id': 'gta3'},
+                                  'output': {'result': {'status': 'not_in_collection', 'library_entries': 1446}}})
+    real = client.post('/api/requests/auto-mod-failure',
+                       json={'action': 'characters use', 'model': 'sonic', 'job_id': 'real-gap'}).json()
+    assert real.get('number'), 'a real gap must still open a ticket'
+    assert real.get('status') in ('open', 'in_progress')      # it dispatches its resolution straight away
+    assert not real.get('transient')
+
+
 def test_native_target_is_durable_and_managed_queue_has_one_owner(cfg, monkeypatch):
     from gbox import hermes_task_mode
     monkeypatch.setattr(hermes_task_mode, '_job', lambda: {'no_agent': True, 'enabled': False})

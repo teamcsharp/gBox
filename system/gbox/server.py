@@ -6085,6 +6085,26 @@ def create_app(config: Config) -> FastAPI:
         needs_rebuild: bool = False
         replacement_requested: bool = False
 
+    def _library_not_ready(job) -> str:
+        """Why a characters job's answer is a condition that clears itself, not a ticket ('' when it is a real failure).
+
+        `characters op=use` answers `status=not_in_collection` with `library_entries` when the character it was given is
+        not in the library. Two very different situations share that answer: the library is genuinely missing the
+        character (a real gap worth a ticket) and the library index was still being read after a control-plane restart
+        (clears itself in a minute). Result records written before `library_entries` existed cannot tell them apart, and
+        filing on those is what produced the "(have: )" auto reports, so a missing count is treated as transient.
+        """
+        result = ((job or {}).get("output") or {}).get("result")
+        if not isinstance(result, dict) or str(result.get("status") or "") != "not_in_collection":
+            return ""
+        entries = result.get("library_entries")
+        if entries is None:
+            return ("the character library returned no entry count (an older answer, or the index was still loading); "
+                    "this clears itself and needs no report")
+        if type(entries) is int and entries <= 0:
+            return "the character library returned no entries (the index was still loading); this clears itself"
+        return ""
+
     @app.post("/api/requests/auto-mod-failure")
     def req_auto_mod_failure(f: AutoFailureIn, actor=Depends(auth)):
         """File visual evidence, preserve the current moment, and dispatch an agent to resolve a failed swap."""
@@ -6110,6 +6130,17 @@ def create_app(config: Config) -> FastAPI:
         # "Game: unknown game (game_id: ?)" for a failure that had been given a game_id (seen in the inbox as auto report from
         # a characters op=use slot=enemies build)
         failed_job = store.get("job", f.job_id) if f.job_id else None
+        # A selection that matched nothing is not a failure to investigate: `characters op=use` answers
+        # status=not_in_collection when the library is still being re-read (a control-plane restart clears the index), and
+        # filing a ticket for it told the operator to extract a character that was already in the collection - that is
+        # exactly what the two "Auto report: characters use failed ... (have: )" tickets are (2026-11-06). Suppress the
+        # ticket when the library came back empty or the answer never said how many entries it had, and let the caller
+        # show the message instead.
+        not_ready = _library_not_ready(failed_job)
+        if not_ready:
+            store.audit(actor, "request.auto_mod_failure.transient", f.job_id or "", {"reason": not_ready})
+            return {"ok": True, "transient": True, "reason": not_ready, "job_id": f.job_id,
+                    "note": "no ticket: this condition clears itself"}
         job_game_id = ((failed_job or {}).get("input") or {}).get("game_id") or ""
         game_id = s_.get("game_id") or job_game_id or ""
         game = f.game or s_.get("title") or s_.get("game_title") or ""
