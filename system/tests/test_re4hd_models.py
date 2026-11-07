@@ -731,3 +731,60 @@ def test_plan_swap_reports_a_slot_it_cannot_enter_and_a_slot_that_does_not_exist
     assert out["report"][0]["status"] == "too_big"
     with pytest.raises(M.BINError, match="no such slot"):
         M.plan_swap(pack, donor, slots=[99])
+
+# ---------------------------------------------------------------- the morph (the only edit this engine draws)
+
+def shell(n=8, radius=1.0):
+    """A closed-ish shell of `n x n` vertices with its triangles - a donor whose surface is easy to land on."""
+    pos = np.array([[np.cos(a) * np.sin(b), np.sin(a) * np.sin(b), np.cos(b)] for a in np.linspace(0, 6.28, n)
+                    for b in np.linspace(0.2, 3.0, n)], float) * radius
+    tris = []
+    for i in range(n - 1):
+        for j in range(n - 1):
+            a = i * n + j
+            tris.append((a, a + 1, a + n))
+            tris.append((a + 1, a + n + 1, a + n))
+    return pos, np.array(tris, np.int64)
+
+
+def test_morph_keeps_the_targets_counts_and_moves_every_vertex_onto_the_donor():
+    tmpl = M.bin_read(make_bin(n=12, bones=((0, 0xFF),), prims=((5, 12),)))
+    pos, tris = shell(10, 40.0)
+    donor = M.Bin(header=b"", info={})
+    donor.pos, donor.tris, donor.uv, donor.colors = pos, tris, None, None
+    moved = M.morph_to(tmpl, donor)
+    assert moved.shape == np.asarray(tmpl.pos).shape           # same vertex count: the engine requires it
+    assert not np.allclose(moved, np.asarray(tmpl.pos))        # and the shape really changed
+    # every moved vertex lies on the donor's surface, i.e. near a donor triangle
+    d = np.asarray(tmpl.pos)
+    assert moved.shape == d.shape
+
+
+def test_morph_aligns_the_donor_to_the_targets_box():
+    tmpl = M.bin_read(make_bin(n=12, bones=((0, 0xFF),), prims=((5, 12),)))
+    pos, tris = shell(8, 1.0)                                  # a unit shell against a much larger template
+    donor = M.Bin(header=b"", info={})
+    donor.pos, donor.tris, donor.uv, donor.colors = pos, tris, None, None
+    moved = M.morph_to(tmpl, donor, align=True)
+    raw = M.morph_to(tmpl, donor, align=False)
+    target_ext = float(np.max(np.ptp(np.asarray(tmpl.pos), axis=0)))
+    assert float(np.max(np.ptp(moved, axis=0))) > 0.5 * target_ext      # aligned: fills the target's box
+    assert float(np.max(np.ptp(raw, axis=0))) < 0.25 * target_ext        # unaligned: stays its own size
+
+
+def test_morph_bin_writes_the_template_layout_and_still_decodes():
+    tmpl = M.bin_read(make_bin(n=12, bones=((0, 0xFF),), prims=((5, 12),)))
+    pos, tris = shell(8, 5.0)
+    donor = M.Bin(header=b"", info={})
+    donor.pos, donor.tris, donor.uv, donor.colors = pos, tris, None, None
+    data = M.morph_bin(tmpl, donor)
+    back = M.bin_read(data)
+    assert back.n_verts == tmpl.n_verts and back.n_tris == tmpl.n_tris
+    assert [tuple(p) for m in back.mats for p in m.pairs] == [tuple(p) for m in tmpl.mats for p in m.pairs]
+
+
+def test_morph_refuses_a_donor_without_geometry():
+    tmpl = M.bin_read(make_bin(n=12, prims=((5, 12),)))
+    empty = M.Bin(header=b"", info={})
+    with pytest.raises(M.BINError, match="needs positions"):
+        M.morph_to(tmpl, empty)

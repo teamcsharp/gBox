@@ -1394,3 +1394,99 @@ def plan_swap(pack: bytes, donor, *, slots=None, encoding: str = "strip", endian
                        "fill": round(len(rebuilt) / slot["size"], 3)})
     swapped = sum(1 for r in report if r["status"] == "swapped")
     return {"pack": out, "changed": out != pack, "swapped": swapped, "slots": len(report), "report": report}
+
+# ------------------------------------------------------------------ the morph: what this engine draws
+
+def _closest_on_triangles(points, tri_a, tri_b, tri_c, chunk: int = 256):
+    """For each point, the closest point on a triangle set. Returns (n, 3) positions and the triangle index.
+
+    Vectorised over the triangles, chunked over the points: a 1,600-vertex Ganado against a 1,800-triangle donor is
+    2.9 million closest-point tests, which is a second of numpy rather than a minute of Python.
+    """
+    ab = tri_b - tri_a
+    ac = tri_c - tri_a
+    out = np.empty((len(points), 3), np.float64)
+    which = np.empty(len(points), np.int64)
+    for start in range(0, len(points), chunk):
+        block = points[start:start + chunk]
+        ap = block[:, None, :] - tri_a[None, :, :]                  # (p, t, 3)
+        d1 = np.einsum("ptk,tk->pt", ap, ab)
+        d2 = np.einsum("ptk,tk->pt", ap, ac)
+        d00 = np.einsum("tk,tk->t", ab, ab)
+        d01 = np.einsum("tk,tk->t", ab, ac)
+        d11 = np.einsum("tk,tk->t", ac, ac)
+        denom = d00 * d11 - d01 * d01
+        denom = np.where(np.abs(denom) < 1e-20, 1e-20, denom)
+        v = (d11[None, :] * d1 - d01[None, :] * d2) / denom[None, :]
+        w = (d00[None, :] * d2 - d01[None, :] * d1) / denom[None, :]
+        u = 1.0 - v - w
+        # clamp to the triangle by region (Ericson, Real-Time Collision Detection): u/v/w barycentrics
+        closest = (u[..., None] * tri_a[None, :, :] + v[..., None] * tri_b[None, :, :]
+                   + w[..., None] * tri_c[None, :, :])
+        inside = (u >= 0) & (v >= 0) & (w >= 0)
+        # outside: project onto each edge and take the nearest of the three
+        edge_candidates = []
+        for (p0, p1, t) in ((tri_a, tri_b, w), (tri_b, tri_c, u), (tri_c, tri_a, v)):
+            e = p1 - p0
+            ee = np.einsum("tk,tk->t", e, e)
+            ee = np.where(np.abs(ee) < 1e-20, 1e-20, ee)
+            tt = np.einsum("ptk,tk->pt", block[:, None, :] - p0[None, :, :], e) / ee[None, :]
+            tt = np.clip(tt, 0.0, 1.0)
+            edge_candidates.append((p0[None, :, :] + tt[..., None] * e[None, :, :], t))
+        # pick the edge projection with the smallest barycentric "negative" weight, which is the nearest edge
+        worst = np.minimum(np.minimum(u, v), w)
+        best_edge = None
+        best_val = None
+        for cand, t in edge_candidates:
+            val = t
+            if best_edge is None:
+                best_edge, best_val = cand, val
+            else:
+                take = val > best_val
+                best_edge = np.where(take[..., None], cand, best_edge)
+                best_val = np.where(take, val, best_val)
+        closest = np.where(inside[..., None], closest, best_edge)
+        dist = np.linalg.norm(closest - block[:, None, :], axis=2)
+        idx = np.argmin(dist, axis=1)
+        out[start:start + chunk] = closest[np.arange(len(block)), idx]
+        which[start:start + chunk] = idx
+    return out, which
+
+
+def morph_to(template, donor, *, align: bool = True) -> np.ndarray:
+    """The template's vertices moved onto the donor's surface: same count, same topology, a different shape.
+
+    Measured 2026-11-07 on RE4 Switch: a slot's own positions scaled x2.5 are drawn (giant Ganados on screen), while a
+    rebuilt mesh with a different vertex count is *ignored by the engine* even though every offline check passes. So a
+    character swap on this title has to keep the target's vertex count and primitive table and move the vertices - this
+    function - rather than replace the mesh (`bin_from`).
+
+    `align` centres and scales the donor onto the template's bounding box first, so the donor's shape lands where the
+    target is and at its size; without it a small donor would occupy a corner of the slot.
+    """
+    tmpl = template if isinstance(template, Bin) else bin_read(template)
+    src = donor if isinstance(donor, Bin) else bin_read(donor)
+    if tmpl.pos is None or src.pos is None or src.tris is None:
+        raise BINError("morph_to needs positions on both sides and triangles on the donor")
+    target = np.asarray(tmpl.pos, np.float64).copy()
+    donor_pos = np.asarray(src.pos, np.float64).copy()
+    if align:
+        d_lo, d_hi = donor_pos.min(0), donor_pos.max(0)
+        t_lo, t_hi = target.min(0), target.max(0)
+        d_ext = np.where((d_hi - d_lo) < 1e-9, 1.0, d_hi - d_lo)
+        t_ext = np.where((t_hi - t_lo) < 1e-9, 1.0, t_hi - t_lo)
+        scale = float(np.mean(t_ext / d_ext))
+        donor_pos = (donor_pos - (d_lo + d_hi) / 2.0) * scale + (t_lo + t_hi) / 2.0
+    tri = np.asarray(src.tris, np.int64)
+    moved, _ = _closest_on_triangles(target, donor_pos[tri[:, 0]], donor_pos[tri[:, 1]], donor_pos[tri[:, 2]])
+    return moved
+
+
+def morph_bin(template, donor, *, align: bool = True) -> bytes:
+    """`morph_to` written back as a BIN with the template's own layout (counts, primitive table, bones untouched)."""
+    tmpl = template if isinstance(template, Bin) else bin_read(template)
+    moved = morph_to(tmpl, donor, align=align)
+    import copy
+    out = copy.copy(tmpl)
+    out.pos = moved
+    return bin_write(out, verify=True)

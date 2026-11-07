@@ -337,3 +337,37 @@ character swap here.
 
 **A capability falls out of this too:** 240 slots of every Ganado pack can be scaled in one build and the round still
 plays, so "giant enemies" (or any uniform geometric transform) is a working mod today.
+## Twelfth run: the morph is drawn - the enemies stop looking like villagers (2026-11-07)
+
+The mechanism round 22 identified is now exercised in game. Every decodable slot of `em11`-`em17` (240 slots) had its
+own vertices **morphed onto the dog's surface** - same vertex count, same primitive table, same bones, only positions
+moved, which is the edit the engine actually draws.
+
+**It works.** The enemies in the round are no longer villagers:
+
+![morphed Ganados - bulbous, stretched shapes where villagers were](evidence/re4switch-morphed-ganados-a.jpg)
+
+![the same round, torch-bearer among them](evidence/re4switch-morphed-ganados-b.jpg)
+
+The shapes are blobs with stretched texture, not dogs - and that is exactly what a vertex morph can give: the game's
+triangles connect points of the donor's surface, so the surface is the donor's *shape* sampled through a topology that
+was built for something else. This is the same wall the RE5 Switch work hit from the other side, and it is now measured
+on this title rather than assumed:
+
+| edit | drawn on screen | result |
+|---|---|---|
+| positions scaled x2.5 | yes | giant Ganados |
+| vertices morphed onto the dog | **yes** | **distorted, non-villager shapes** |
+| dog mesh rebuilt into the slot | no | enemies looked stock |
+
+**So the honest statement of what RE4 Switch can do today:**
+
+* **Change the enemies' shape** - yes, by morphing their vertices onto any donor's surface (`re4hd_models.morph_bin`),
+  keeping the target's topology. The result is the donor's silhouette through the target's triangles.
+* **Put a clean character there** - no. The donor's own triangles are never drawn; a rebuilt mesh is ignored outright.
+  A clean Sonic/Ganado needs the part-table rules the RE5 work named, or a title whose engine honours a rebuilt mesh
+  (RE4 GameCube, which is why `re4gc_zombies` works there).
+* **Scale, mirror or otherwise transform the enemies uniformly** - yes, and it is the cheapest visible mod so far.
+
+The writer's `bin_from` remains the right tool for a *part*-level swap where the counts happen to fit; `morph_bin` is the
+tool for a whole-body shape change. Both are in `re4hd_models`, both tested.
