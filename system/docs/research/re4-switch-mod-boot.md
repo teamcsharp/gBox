@@ -107,3 +107,29 @@ Two changes went in and were tested in game:
   the logging should confirm or kill.
 
 Cost: one more rotation turn (MercMode paused and restored, `phase: playing` within 60 s).
+## Fourth step: the frames the failing run left behind, replayed offline (2026-11-07)
+
+The round-11 run ended with a named hypothesis and no way to test it without the emulator. It did leave 18 frames, and
+the walk is a pure function of what each frame reads - so they were replayed through `re4_switch_screens` itself.
+
+**Before:** `walk_00` read `story` and the other **17 read `unknown`**.
+
+**Why:** the screen the bot sat on is **18.0** from `story_load_list` against a **12.0** threshold, and >= 28.7 from
+every other reference (title 44.1, mercs_title 35.0, select_player 35.6, select_stage 29.4, story_buy 29.3,
+story_case 28.7, logo 37.7). That is the same screen in a state the reference set never had - a different slot page -
+not a different screen. A whole-frame thumbnail reference is brittle to a page of the list that changes the digits and
+the header row.
+
+**Fix, as data:** that thumbnail is now `story_load_list_2`, and it is in `STORY`. Replaying the same 18 frames gives
+**18/18 `story`**. The separation is pinned by a test (the new reference must be > `STORY_MAX` from every other
+reference and > `LOGO_MAX` from the logo), so a future reference cannot quietly eat a menu.
+
+**What this does and does not do.** It makes the walk *know* where it is, which every later decision depends on: a
+`story` screen is now cancelled (round 11) instead of pressing blind. It does **not** yet prove the cancel leaves the
+list - that is still unmeasured in game.
+
+**The remaining unknown is unchanged and is upstream:** how the walk reaches LOAD at all. `re4_switch` declares no
+`BOOT_KEY` and the menus loop only confirms when the cursor reads its target row, so the leading candidate is still a
+confirm on the main menu's default row (LOAD), e.g. a second confirm landing after a slow title-to-menu transition. The
+next in-game run should log `screen()`/`step()` per tick, because the replay can only answer what the frames contain -
+and these frames all start after the mistake.
