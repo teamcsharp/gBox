@@ -46,9 +46,14 @@ def test_fixed_screens_are_named_by_their_reference(name, monkeypatch):
 
 
 @pytest.mark.parametrize("name", ["story_load_list", "story_buy", "story_case"])
-def test_story_screens_end_the_run(name):
+def test_the_story_screens_are_recognised_and_cancelled_out_of_first(name):
+    """These used to end the run outright. Measured 2026-11-07: the walk strayed onto LOAD and the bot sat there for
+    260 s with the walk still able to reach THE MERCENARIES - so a story SCREEN now cancels out, and only an
+    un-cancellable one ends the run (see test_the_cancel_budget_is_spent_then_the_run_ends)."""
     scr = S.classify(png_of(from_thumb(S.refs()["refs"][name])))
-    assert scr["where"] == "story" and D.wandered(scr) == "story game"
+    assert scr["where"] == "story"
+    assert D.wandered(scr) is None
+    assert D.step(scr) == D.STORY_RECOVER_KEY
 
 
 @pytest.mark.parametrize("menu,rows", [("main_menu", S.MAIN_ROWS), ("extras_menu", S.EXTRAS_ROWS)])
@@ -153,3 +158,43 @@ def test_the_brain_turns_with_the_stick_not_the_item_dpad():
     snap = {"player": {"pos": (0.0, 0.0, 0.0), "rot": 0.0},
             "enemies": [{"pos": (500.0, 0.0, 0.0), "hp": 100, "ptr": 1}]}
     assert bot.tick(snap)["hold"] == {"lright"}
+
+
+# ---------------------------------------------------------------- straying into the story save list
+
+def test_a_story_screen_is_cancelled_out_of_instead_of_ending_the_run():
+    """2026-11-07: a stray confirm landed the walk on LOAD and the bot sat there (identical frames for 260 s).
+
+    The story save list is not a story game: cancel out of it and keep walking. Ending the run there wasted the whole
+    boot when the walk was still perfectly able to reach THE MERCENARIES.
+    """
+    scr = {"where": "story"}
+    assert D.wandered(scr) is None, "a story SCREEN must not end the run while the recovery budget lasts"
+    assert D.step(scr) == D.STORY_RECOVER_KEY
+    D.pressed(scr, D.STORY_RECOVER_KEY)
+    # the gap keeps the cancels from being spammed at the emulator
+    assert D.step(scr) is None
+    assert D.step(scr, ) is None
+
+
+def test_the_cancel_budget_is_spent_then_the_run_ends():
+    scr = {"where": "story"}
+    now = 0.0
+    for _ in range(D.STORY_RECOVER_MAX):
+        assert D.step(scr, now) == D.STORY_RECOVER_KEY
+        D.pressed(scr, D.STORY_RECOVER_KEY, now)
+        now += D.STORY_GAP_S + 0.1
+    assert D.step(scr, now) is None, "no more cancels once the budget is spent"
+    assert D.wandered(scr) == "story game", "a title that will not leave the list ends the run"
+
+
+def test_a_new_walk_resets_the_cancel_budget():
+    scr = {"where": "story"}
+    now = 0.0
+    for _ in range(D.STORY_RECOVER_MAX):
+        D.step(scr, now)
+        D.pressed(scr, D.STORY_RECOVER_KEY, now)
+        now += D.STORY_GAP_S + 0.1
+    assert D.wandered(scr) == "story game"
+    D.begin_run()
+    assert D.wandered(scr) is None and D.step(scr, now) == D.STORY_RECOVER_KEY

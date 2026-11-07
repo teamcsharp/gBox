@@ -329,10 +329,33 @@ CONFIRM_GAP_S = {"title": 5.0, "main_menu": 3.0, "extras_menu": 3.0, "mercs_titl
                  "select_stage": 5.0, "round_intro": INTRO_GAP_S}
 _confirmed: dict[str, float] = {}
 
+# A stray confirm can still land on LOAD (a boot press on an unnamed screen, an operator tap) and the story save list
+# then holds the walk for as long as nothing acts on it: measured 2026-11-07, the bot reached that list and produced
+# identical frames for 260 s. The run used to end there ("story game"); it now cancels back out first, because the walk
+# is still perfectly able to reach THE MERCENARIES once the menu is back. The budget keeps a title that genuinely
+# refuses to leave the list from being cancelled at forever.
+STORY_RECOVER_KEY = "b"
+STORY_RECOVER_MAX = 4
+STORY_GAP_S = 2.0
+_story_presses = 0
+_story_last = float("-inf")          # a fresh walk may cancel straight away
+
 
 def begin_run(**_turn) -> None:
-    """A new walk (mercs_bot.play): no confirm is outstanding."""
+    """A new walk (mercs_bot.play): no confirm is outstanding, and the story-list recovery starts fresh."""
+    global _story_presses, _story_last
     _confirmed.clear()
+    _story_presses, _story_last = 0, float("-inf")
+
+
+def _recover_story(now: float | None = None) -> str | None:
+    """A cancel out of the story save list, or None while the gap or the budget says wait."""
+    global _story_last
+    now = time.monotonic() if now is None else now
+    if _story_presses >= STORY_RECOVER_MAX or now - _story_last < STORY_GAP_S:
+        return None
+    _story_last = now
+    return STORY_RECOVER_KEY
 
 
 def _reader(m) -> screens.Reader:
@@ -367,9 +390,11 @@ def _confirm(where: str, now: float | None = None) -> str | None:
     return "a" if now - _confirmed.get(where, float("-inf")) >= CONFIRM_GAP_S[where] else None
 
 
-def step(scr: dict) -> str | None:
+def step(scr: dict, now: float | None = None) -> str | None:
     """One press toward the next round, or None to wait. Never a press on a screen no frame has named."""
     where = scr.get("where")
+    if where == "story":                                    # the story save list: cancel back to the menu, then walk on
+        return _recover_story(now)
     if where in ("main_menu", "extras_menu"):
         cur, tgt = scr.get("cursor"), scr.get("target")
         if not isinstance(cur, int) or not isinstance(tgt, int):
@@ -383,14 +408,23 @@ def step(scr: dict) -> str | None:
 
 
 def wandered(scr: dict) -> str | None:
-    """The run must end: a story game (the bot never plays RE4's story)."""
-    return "story game" if scr.get("where") == "story" else None
+    """The run must end: a story game (the bot never plays RE4's story).
+
+    A story *screen* is not a story game: the walk cancels out of it (`step`) and keeps going. Only when the recovery
+    budget is spent does the run end, because then the list is where this title is stuck.
+    """
+    if scr.get("where") == "story":
+        return "story game" if _story_presses >= STORY_RECOVER_MAX else None
+    return None
 
 
 def pressed(scr: dict, key: str, now: float | None = None) -> None:
-    """A menu press went in: starts that screen's confirm gap, and counts an intro page."""
+    """A menu press went in: starts that screen's confirm gap, and counts an intro page or a story-list cancel."""
+    global _story_presses
     if key == "a" and scr.get("where") in CONFIRM_GAP_S:
         _confirmed[scr["where"]] = time.monotonic() if now is None else now
+    if key == STORY_RECOVER_KEY and scr.get("where") == "story":
+        _story_presses += 1
     reader = scr.get("reader")
     if reader is not None:
         reader.press_went_in(scr.get("where"), key)
