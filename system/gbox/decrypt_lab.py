@@ -1356,6 +1356,34 @@ def install(app, store, config, auth, tactical_store=None):
         from .mercs import report_digest
         return {"v": FORMAT, **report_digest.digest(store)}
 
+    @app.get("/api/reference", dependencies=[Depends(auth)])
+    def reference_state():
+        """Whether the RE4 GameCube decompilation is available as a reference corpus, and what it is."""
+        from . import reference
+        return {"v": FORMAT, **reference.available()}
+
+    @app.get("/api/reference/search", dependencies=[Depends(auth)])
+    def reference_search(q: str, limit: int = 40, regex: bool = False):
+        """Search the decompilation: symbols, file names, offset comments - whatever a task needs to know."""
+        from . import reference
+        return {"v": FORMAT, "query": q, "rows": reference.search(q, limit=max(1, min(200, limit)), regex=regex)}
+
+    @app.get("/api/reference/struct", dependencies=[Depends(auth)])
+    def reference_struct(name: str):
+        """One structure's annotated field offsets - the half of a memory anchor that a stripped binary cannot give."""
+        from . import reference
+        table = reference.offsets(name)
+        if not table["found"]:
+            raise HTTPException(404, f"no structure named {name} in the corpus")
+        return {"v": FORMAT, **table}
+
+    @app.get("/api/reference/structs", dependencies=[Depends(auth)])
+    def reference_structs():
+        """Every structure the headers define."""
+        from . import reference
+        names = reference.structures()
+        return {"v": FORMAT, "count": len(names), "names": names[:2000]}
+
     @app.get("/api/integrations", dependencies=[Depends(auth)])
     def integrations_list(probe: bool = False):
         """The integrations box: every MCP server this system can use as a tool, and whether it starts.
