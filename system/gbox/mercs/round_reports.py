@@ -28,10 +28,12 @@ TITLES = {'BLUS30491': ('e7ca89bbeb67360d',),
           'G4BE08': ('78ab9efa2e310db4', 'e42c9b780c07c437'),
           'BH6': ('0871eee3b68cdea3',),
           '010018100CD46000': ('52d15709be0fda1a',),     # RE5 No Mercy on Switch (Citron NEO)
-          '01002A000CD48000': ('115f9cdbba115432',)}     # RE6 No Mercy on Switch (Citron NEO)
+          '01002A000CD48000': ('115f9cdbba115432',),    # RE6 No Mercy on Switch (Citron NEO)
+          '010099A00BC1E000': ('270a15eb98dab4d7',)}    # RE4 Mercenaries on Switch (Citron NEO)
 # Drivers that record no navigation atlas (no route recorder): their reports go out with the atlas 'unavailable'
 # rather than waiting for it. Every other title still needs its matching closed atlas round.
-NO_ATLAS = frozenset({'010018100CD46000', '01002A000CD48000'})
+NO_ATLAS = frozenset({'010018100CD46000', '01002A000CD48000',
+                      '010099A00BC1E000'})        # RE4: the screen-only playbook records no route
 # What the analysis explains for a title, when it is not the route recorders' default.
 FOCUS = {
     '010018100CD46000': 'the measured aim (round_shots, round_hits, round_trigger_s), damage taken '
@@ -40,7 +42,9 @@ FOCUS = {
                         'dying or death',
     '01002A000CD48000': 'the measured aim (round_shots, round_hits, round_quick_shots, round_melee, round_reloads), '
                         'damage taken (player_damage_events), grabs (round_holds), tablets (round_tablets, '
-                        'round_tablet_misses) and deaths (round_deaths)'}
+                        'round_tablet_misses) and deaths (round_deaths)',
+    '010099A00BC1E000': 'what the screen-only playbook could observe: the screens it passed, the rounds it entered, the '
+                        'presses it made, and - once the RAM anchors exist - the measured aim, damage, grabs and deaths'}
 ROUND = re.compile(r'[a-f0-9]{32}\Z')
 MAX_REPORT = 24*1024
 # How many open analysis requests one Mercenaries title may hold. One ticket per round grew the inbox without

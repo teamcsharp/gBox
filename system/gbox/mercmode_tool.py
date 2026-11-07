@@ -50,7 +50,7 @@ def mercmode(inp: MercModeIn,ctx):
             result['games']={}
             from . import re_switch as RS
             # the native discs and the Switch No Mercy editions a host may prefer (preferred_editions)
-            for gid in (*M.TITLES['re4']['game_ids'],*M.TITLES['re5']['game_ids'],RS.RE5_GAME_ID,RS.RE6_GAME_ID,
+            for gid in (*M.TITLES['re4']['game_ids'],*M.TITLES['re5']['game_ids'],RS.RE4_GAME_ID,RS.RE5_GAME_ID,RS.RE6_GAME_ID,
                         *M.TITLES['merc3d']['game_ids']):
                 catalog=client.get('/api/catalog/'+gid)
                 if catalog.status_code==404:continue

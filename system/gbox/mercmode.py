@@ -104,7 +104,9 @@ TITLES = {
                 'gamecube': {'game_ids': ('78ab9efa2e310db4', 'e42c9b780c07c437'), 'adapter': 'dolphin',
                              'verified': True},
                 # the Switch Mercenaries edition, chosen per host through preferred_editions (gbox.re_switch.preferred_spec)
-                'switch': {'game_id': None, 'title_id': '010099A00BC1E000', 'adapter': 'citron',
+                # the Switch edition's catalog id (gbox.re_switch.RE4_GAME_ID): a prepare receipt naming it is only
+                # accepted once this row holds it (docs/mercmode-adding-titles.md gate 4)
+                'switch': {'game_id': '270a15eb98dab4d7', 'title_id': '010099A00BC1E000', 'adapter': 'citron',
                            'verified': False, 'mode': 'mercenaries',
                            'driver': 'gbox.mercs.titles.re4_switch', 'selected_by': 'preferred_editions'},
             }},
@@ -1085,7 +1087,10 @@ def accept_boundary(store, run, body, *, parent_job, now=None):
             or witness.get('playing_observed') is not True or witness.get('player_verified') is not True:
         raise ValueError('A solo native terminal-round witness is required')
     terminal = witness.get('screen')
-    if spec['map_id']=='G4BE08' and (witness.get('game_routine') not in (3,4)
+    # gate 6 (docs/mercmode-adding-titles.md): TITLES['re4'] names the GameCube map, so keying this on spec['map_id']
+    # refused every Switch boundary - the round reported correctly and still never counted. expected_map is the run's own
+    # edition, recorded at its start.
+    if expected_map == 'G4BE08' and (witness.get('game_routine') not in (3,4)
             or type(witness.get('room')) is not int or witness['room']>>8!=4):
         raise ValueError('RE4 must be in its native Mercenaries room routine')
     if terminal == 'results':

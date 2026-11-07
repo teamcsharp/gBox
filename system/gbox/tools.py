@@ -3546,6 +3546,8 @@ def _prepare_title(g: dict) -> str:
         return re_switch.RE5_TITLE_ID
     if gid == re_switch.RE6_GAME_ID:                     # RE6 Switch No Mercy
         return re_switch.RE6_TITLE_ID
+    if gid == re_switch.RE4_GAME_ID:                     # RE4 Switch Mercenaries (docs/mercmode-adding-titles.md gate 7)
+        return re_switch.RE4_TITLE_ID
     return next((t["map_id"] for t in TITLES.values() if gid in t.get("game_ids", ())), (g or {}).get("title") or "")
 
 

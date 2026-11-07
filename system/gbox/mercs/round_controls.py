@@ -19,7 +19,8 @@ from pathlib import Path
 PATH = Path(__file__).resolve().parents[2] / 'gbox-data' / 'mercs' / 'stage-rotation.json'
 _files = threading.RLock()
 _attach = threading.RLock()
-MAPS = {'G4BE08': 're4', '010018100CD46000': 're5', '01002A000CD48000': 're6'}
+# gate 9 (docs/mercmode-adding-titles.md): the GameCube id is not the only RE4 map
+MAPS = {'G4BE08': 're4', '010099A00BC1E000': 're4', '010018100CD46000': 're5', '01002A000CD48000': 're6'}
 NAMES = {'re4': 'Resident Evil 4', 're5': 'Resident Evil 5', 're6': 'Resident Evil 6'}
 
 

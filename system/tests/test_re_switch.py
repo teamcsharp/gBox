@@ -94,15 +94,19 @@ def test_re6_switch_session_start_watches_only_with_memory_access_and_permission
     assert len(started) == 1
 
 
-def test_re4_switch_is_recognized_but_not_yet_playable():
-    """RE4 Switch (010099A00BC1E000) is recognized by the edition framework but stays not playable
-    until the operator adds the game and the RAM map is measured live (request #4486)."""
+def test_re4_switch_is_recognized_and_playable_from_the_screen():
+    """RE4 Switch (010099A00BC1E000) is playable from the screen: gbox.re4switch_bot walks its menus and enters rounds.
+    What is still missing is perception - the player and enemy anchors - and the capability says exactly that."""
     game = {'game_id': S.RE4_GAME_ID, 'platform': 'switch', 'serial': '0x010099A00BC1E000',
             'title': 'Resident Evil 4'}
     info = S.capabilities(game)
     assert info['edition'] == 're4' and info['platform'] == 'switch'
-    assert info['autoplay']['available'] is False           # no driver RAM map yet
     assert info['autoplay']['driver'] == 'gbox.mercs.titles.re4_switch'
+    # 2026-11-07: playable from the screen through gbox.re4switch_bot; perception (player/enemy anchors) is still the
+    # open work, and the capability says so rather than implying a snapshot-capable bot
+    assert info['autoplay']['available'] is True
+    assert info['autoplay']['playbook'] == 're4switch_bot'
+    assert info['autoplay']['perception'] == 'screen-only'
     assert info['unlock_on_load']['available'] is False and info['unlock_on_load']['needed'] is False
     assert info['evidence']['title_id'] == S.RE4_TITLE_ID
     assert S._edition(game) == 're4'
@@ -115,7 +119,7 @@ def test_re4_switch_preference_selects_the_switch_edition():
     assert S.preferred_spec('re4', native, {}) is native
     preferred = {'re4': {'platform': 'switch', 'mode': 'mercenaries', 'title_id': S.RE4_TITLE_ID}}
     spec = S.preferred_spec('re4', native, {'preferred_editions': preferred})
-    assert spec['platform'] == 'switch' and spec['playable'] is False   # not playable until measured
+    assert spec['platform'] == 'switch' and spec['playable'] is True   # playable from the screen (re4switch_bot)
     assert spec['modes'] == ['mercenaries'] and spec['map_id'] == S.RE4_TITLE_ID != 'G4BE08'
     assert spec['driver'] == 'gbox.mercs.titles.re4_switch'
     assert S.normalize_preferences(preferred) == preferred

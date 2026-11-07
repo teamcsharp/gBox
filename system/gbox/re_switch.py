@@ -67,6 +67,9 @@ def preferred_spec(title, native_spec, settings):
     """The selected edition stays visible and never falls back silently to the native (GameCube / PS3 / Xbox 360) one."""
     selected = (settings.get('preferred_editions') or {}).get(title)
     if not selected:
+        # Documented behaviour (docs/mercmode-adding-titles.md): without the pin you get the native edition - the
+        # GameCube disc for RE4, the PS3 build for RE5. That is why the rotation sets `preferred_editions` explicitly;
+        # "why is the ps3 version even coming up in rotation?" was a missing pin, not a wrong default.
         return native_spec
     normalize_preferences({title: selected})
     if title == 're6':
@@ -143,11 +146,17 @@ def capabilities(game):
                 'backends': {'windows': 'yuzu', 'linux': 'citron', 'linux_fallback': 'eden'},
                 'requested_mode': 'mercenaries', 'modes_in_release': ['mercenaries'],
                 'no_mercy_in_release': False, 'full_playback_verified': False,
-                'autoplay': {'available': False, 'driver': RE4_DRIVER, 'backend': 'linux', 'reason': RE4_REASON},
+                # available through gbox.re4switch_bot, which plays from the screen: menus, the verified round
+                # entry, then movement and fire. It is not the engine path (no snapshot), so 'perception' says so.
+                'autoplay': {'available': True, 'driver': RE4_DRIVER, 'backend': 'linux',
+                             'playbook': 're4switch_bot', 'perception': 'screen-only', 'reason': RE4_REASON},
                 'unlock_on_load': {'available': False, 'needed': False, 'reason': RE4_UNLOCK_REASON},
                 'evidence': {'title_id': RE4_TITLE_ID,
                              'ram_map': 'profiles/gamedata/010099A00BC1E000-ram.json',
-                             'runtime_verified_in_gbox': False, 'checked_date': '2026-10-27'}}
+                             'runtime_verified_in_gbox': False, 'checked_date': '2026-10-27',
+                             # 2026-11-07: boot, menu walk and round entry verified live several times; the playbook
+                             # drives it. Perception (player/enemy anchors) is what remains unverified.
+                             'playbook_round_verified_in_gbox': True, 'playbook_verified_date': '2026-11-07'}}
     return {'edition': 're5', 'platform': 'switch', 'backend': 'yuzu', 'serial': serial or None,
             'backends': {'windows': 'yuzu', 'linux': 'citron', 'linux_fallback': 'eden'},   # gbox.adapters.YuzuAdapter /
             # CitronLinuxAdapter (multi-core, canonical since 2026-10-26) / SwitchLinuxAdapter (Eden, single-core)
