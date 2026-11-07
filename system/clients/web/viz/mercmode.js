@@ -374,7 +374,8 @@
       const donorKey=root.querySelector('[data-mm-swap-donor]')?.value||'jill';
       const slot=SWAP.slots[slotKey], donor=SWAP.slots[donorKey];
       if(!slot||!donor)throw Error('Choose a slot and a donor.');
-      if(kind!=='plain' && !retag() && refused(slotKey,donorKey))
+      // 'from-cast' uses the whole cast, not the donor dropdown, so a mismatched donor must not block it
+      if(kind!=='plain' && kind!=='from-cast' && !retag() && refused(slotKey,donorKey))
         throw Error(`${slotKey} and ${donorKey} do not share a texture format: pick another donor, or allow a skin of another size.`);
       if(kind==='plain')
         // clothes removed for real: the character's body skin maps are painted over its clothing groups
