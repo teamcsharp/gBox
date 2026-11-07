@@ -86,7 +86,7 @@ def test_the_budget_caps_what_the_view_receives(hd_tree):
 
 
 def test_a_missing_slot_or_pack_is_reported_not_guessed(hd_tree):
-    with pytest.raises(ValueError, match="no BIN at slot 7"):
+    with pytest.raises(ValueError, match=r"#7 is out of range"):
         L.hd_model_geometry(hd_tree, "bio4/em/em21.udas", 7)
     with pytest.raises(FileNotFoundError):
         L.hd_model_geometry(hd_tree, "bio4/em/nope.udas", 0)

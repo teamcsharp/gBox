@@ -689,11 +689,12 @@ def hd_model_geometry(root, pack_inner: str, slot: int | None = None, budget: in
         raise ValueError(f"not an HD DAT pack: {exc}") from exc
     if not slots:
         raise ValueError("this pack holds no BIN mesh")
-    index = 0 if slot is None else int(slot)
-    picked = next((s for s in slots if s[0] == index), None)
-    if picked is None:
-        raise ValueError(f"this pack has no BIN at slot {index} (it holds {len(slots)})")
-    i, off, size = picked
+    # `entry` names the Nth BIN (0-based), not the DAT slot number: a pack interleaves BIN with EFF/TPL/FCV slots
+    # (em10's DAT slot 0 is an effect), so "the first mesh" has to mean the first BIN or the panel cannot offer one.
+    bin_index = 0 if slot is None else int(slot)
+    if not 0 <= bin_index < len(slots):
+        raise ValueError(f"this pack has {len(slots)} BIN mesh(es); #{bin_index} is out of range")
+    i, off, size = slots[bin_index]
     model = re4hd_models.bin_read(blob[off:off + size])
     if model.pos is None:
         raise ValueError(f"slot {i} decoded no positions")
@@ -702,7 +703,7 @@ def hd_model_geometry(root, pack_inner: str, slot: int | None = None, budget: in
     normals = model.normals()[:keep]
     uvs = model.uv if model.uv is not None else []
     world = model.bone_world()
-    return {"v": FORMAT, "entry": f"{inner}#BIN{index}", "edition": "hd",
+    return {"v": FORMAT, "entry": f"{inner}#BIN{bin_index}", "edition": "hd",
             "bounds": [[round(float(v), 2) for v in bound[0]], [round(float(v), 2) for v in bound[1]]],
             "meshes": [{"mesh": 0, "format": "hd-bin-0x98", "stride": 12, "count": model.n_verts, "lod": 0,
                         "positions": [round(float(v), 2) for p in model.pos[:keep] for v in p],
@@ -713,7 +714,8 @@ def hd_model_geometry(root, pack_inner: str, slot: int | None = None, budget: in
             "triangles": [int(v) for tri in model.triangles()[:budget] for v in tri],
             "skeleton": {"bones": [[round(float(v), 2) for v in world[bid]] for bid in sorted(world)],
                          "parents": [b["parent"] for b in model.bones]},
-            "bone_count": model.n_bones, "triangle_count": model.n_tris, "slot": index, "pack": inner,
+            "bone_count": model.n_bones, "triangle_count": model.n_tris, "slot": i, "bin_index": bin_index,
+            "bin_count": len(slots), "pack": inner,
             "note": "normals are DERIVED from the decoded triangles (the 0x50 stream's magnitude convention is "
                     "unproven, so it is not served as normals)"}
 
