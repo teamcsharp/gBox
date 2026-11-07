@@ -51,3 +51,32 @@ Pinned by `tests/test_session_op_capabilities.py` (the guard must run before the
 * RE4 Switch still has no playbook, so `autoplay` on it falls to vision, which needs a vision model that answers.
 * Its round entry (three A presses) works and is verified; that is what a playbook would use.
 * The merc-mode edition rule keeps the GameCube build out of the rotation, so this edition is the one to finish.
+
+## The playbook: the round starts because a route says so, not because a model guessed (2026-11-07)
+
+`gbox/re4switch_bot.py` is the RE4 **Switch** playbook, and it is registered ahead of `doa2_bot` in `PLAYBOOKS`
+(`re4switch_bot`). `matches` claims only `platform == switch` plus the RE4 game id or title, so the GameCube bot and this
+one cannot both answer.
+
+What it does, in the order the driver does it:
+
+1. reads the frame and classifies it with `re4_switch_screens.Reader` (the same classifier the driver uses);
+2. on a named screen, presses the one key `re4_switch.step` names, honouring **`CONFIRM_GAP_S` per screen** - a second A
+   while a fade runs lands on the next screen's default row (LOAD from the title, SEPARATE WAYS from the menu);
+3. once `select_stage` has been seen, `unknown` is a **live round**: three A presses start the clock;
+4. then it advances, sweeps the aim and fires on a cadence.
+
+The limit is stated in the module and repeated here: it reads **frames only**. It cannot see enemies, aim at them or count
+kills, so `stats` carries only what it did - screen, presses, rounds entered. Calling that "autoplay" without the caveat
+would be the same overclaim the vision fallback made.
+
+Verified live on the Spark, launched with `re4-em16morph`:
+
+![RE4 playing under the playbook, mod on](evidence/re4-playbook-round-in-play.jpg)
+
+`01'32"53` on the clock, effects firing, a modded enemy mass in frame - a round entered by the playbook, not by hand.
+
+Tests (`tests/test_re4switch_bot.py`, 5) pin the parts that break silently: the title match (Switch only, and not RE5),
+`setup` installing nothing, **exactly one** round entry (three A presses, not three per tick), no presses at all before a
+stage screen has been seen, and the duration cap. The gap lookup was wrong on the first run - `CONFIRM_GAP_S` is a dict
+per screen, not a number - which the tests caught immediately.

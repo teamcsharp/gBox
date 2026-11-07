@@ -3392,7 +3392,8 @@ def _autoplay_hacks(sid: str, g: dict) -> list[str]:
 # title whose RAM map has a "mercs" block) comes first and matches once the engine is installed (gbox.mercs.engine);
 # until then RE4 plays through re4_merc_bot. doa2_bot / doa3_bot: the fighting engine (gbox/fightbot). sc2_bot: Soul
 # Calibur II (GameCube), P1's perfect defence
-PLAYBOOKS = ("mercs_bot", "re4_merc_bot", "doa2_bot", "doa3_bot", "ge007_bots", "sc2_bot")
+# RE4 Switch comes after the GameCube bot: both answer to "Resident Evil 4", and `matches` decides by platform.
+PLAYBOOKS = ("mercs_bot", "re4_merc_bot", "re4switch_bot", "doa2_bot", "doa3_bot", "ge007_bots", "sc2_bot")
 # playbook -> the module that reads its game's button prompts from RAM (for_adapter(ad, stats) -> a prompt source):
 # play(..., ram_prompt=) asks it before the screen watcher
 RAM_PROMPTS = {"re4_merc_bot": "re4_ram_prompts"}
