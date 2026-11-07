@@ -8,8 +8,10 @@ What it does:
   v8 (4.23-4.24), v10 and v11, 222 bytes for v9) and checks the index SHA-1.
 - Reads the legacy index (v1-v9) and the v10/v11 primary index with its encoded entries, the non-encoded entry list and
   the full directory index (file names). Without a full directory index the entries are listed by number only.
-- Extracts entries: stored, zlib and gzip in pure Python; Oodle only through an oo2core_*_win64.dll the game itself
-  ships (loaded with ctypes from the game folder only, never from elsewhere); LZ4 only if the lz4 package is present.
+- Extracts entries: stored, zlib and gzip in pure Python; Oodle only through an oo2core_*_win64.dll, either the one the
+  game itself ships (loaded with ctypes from the game folder only) or one an operator names outright with
+  `oodle_dll=` / `Oodle(dll, allow_external=True)` (an Android title links Oodle statically, so it ships none). Nothing
+  is ever discovered or scanned for outside the game folder; LZ4 only if the lz4 package is present.
 - Stops with PakEncrypted when the index (or an entry) is AES-encrypted: gBox does not hold or guess keys.
 - IoStore (.utoc/.ucas, UE 4.26+/UE5): reads the container header (entry count, flags, compression) and reports it;
   reading container chunks is the next stage.
@@ -38,6 +40,7 @@ VERSION_NAMES = {1: "Initial", 2: "NoTimestamps", 3: "CompressionEncryption", 4:
                  5: "RelativeChunkOffsets", 6: "DeleteRecords", 7: "EncryptionKeyGuid",
                  8: "FNameBasedCompressionMethod", 9: "FrozenIndex", 10: "PathHashIndex", 11: "Fnv64BugFix"}
 FLAG_ENCRYPTED, FLAG_DELETED = 0x01, 0x02
+IS_WINDOWS = sys.platform == "win32"
 
 
 class PakError(Exception):
@@ -199,21 +202,40 @@ def read_footer(f, file_size: int) -> PakInfo:
 
 
 class Oodle:
-    """OodleLZ_Decompress from the oo2core DLL that the game itself ships. Never loaded from outside the game folder."""
+    """OodleLZ_Decompress from an oo2core DLL.
+
+    Two sources, both explicit:
+    - the game's own DLL: `Oodle(dll, game_dir)` — the path must lie inside the game folder (the anti-supply-chain
+      rule: a game is never asked to run a decoder that did not ship with it);
+    - a decoder the caller supplies by name: `Oodle(dll, allow_external=True)` — for archives whose game is not
+      installed here at all (a Quest/Android title links Oodle into libUE4.so and ships no DLL).
+    Nothing is discovered or scanned for outside the game folder: without `game_dir` or `allow_external` this refuses.
+    """
 
     PATTERN = re.compile(r"(?i)^oo2core_\d+_win64\.dll$")
 
-    def __init__(self, dll: Path, game_dir: Path):
-        if sys.platform != "win32":
+    def __init__(self, dll: Path, game_dir: Path | None = None, allow_external: bool = False):
+        if not IS_WINDOWS:
             raise PakUnsupported("Oodle decompression needs the game's Windows DLL and runs on the Windows PC only")
-        dll, game_dir = Path(dll).resolve(), Path(game_dir).resolve()
-        if not dll.is_relative_to(game_dir) or not self.PATTERN.match(dll.name) or not dll.is_file():
+        dll = Path(dll).resolve()
+        self.external = game_dir is None
+        if self.external and not allow_external:
+            raise PakUnsupported(f"refusing to load {dll}: a decoder outside the game folder is used only when the "
+                                 "caller names it explicitly (Oodle(dll, allow_external=True) or open_pak(oodle_dll=...))")
+        if not self.external and not dll.is_relative_to(Path(game_dir).resolve()):
             raise PakUnsupported(f"refusing to load {dll}: only an oo2core_*_win64.dll inside the game folder is used")
+        if not self.PATTERN.match(dll.name):
+            raise PakUnsupported(f"refusing to load {dll}: an Oodle decoder is named oo2core_<version>_win64.dll")
+        if not dll.is_file():
+            raise PakUnsupported(f"refusing to load {dll}: no such file")
         import ctypes
         self._ct = ctypes
         self.path = dll
         lib = ctypes.WinDLL(str(dll))
-        fn = lib.OodleLZ_Decompress
+        try:
+            fn = lib.OodleLZ_Decompress
+        except AttributeError:
+            raise PakUnsupported(f"{dll.name} exports no OodleLZ_Decompress: not an Oodle decoder") from None
         fn.restype = ctypes.c_ssize_t
         fn.argtypes = [ctypes.c_void_p, ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_ssize_t, ctypes.c_int, ctypes.c_int,
                        ctypes.c_int, ctypes.c_void_p, ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_void_p,
@@ -251,7 +273,8 @@ def decompress_block(method: str, data: bytes, raw_len: int, oodle: Oodle | None
     elif m == "oodle":
         if oodle is None:
             raise PakUnsupported("Oodle-compressed entry: the game ships no oo2core_*_win64.dll to decompress it "
-                                 "(UE 4.27+/UE5 link Oodle statically; that path is not supported)")
+                                 "(UE 4.27+/UE5 and Android builds link Oodle statically); name a decoder explicitly "
+                                 "with open_pak(..., oodle_dll=<oo2core_*_win64.dll>) to read it")
         out = oodle.decompress(data, raw_len)
     elif m == "lz4":
         try:
@@ -481,11 +504,18 @@ class PakFile:
                 "compression_methods": methods}
 
 
-def open_pak(path: Path, game_dir: Path | None = None) -> tuple[PakFile | None, dict]:
+def open_pak(path: Path, game_dir: Path | None = None, oodle_dll: Path | str | None = None):
     """Open a pak and return (PakFile, summary) or (None, {path, error, status}) without raising.
 
-    `status` is one of ok | encrypted | unsupported | not_unreal | error."""
-    oodle = None
+    `status` is one of ok | encrypted | unsupported | not_unreal | error.
+
+    Which Oodle decoder is used, and when:
+    - `oodle_dll` names one outright (any oo2core_*_win64.dll the caller supplies). It is used as an external library,
+      is recorded as `oodle_external: True`, and is never inferred from anything else. A named decoder that cannot be
+      used raises PakUnsupported (a bad argument, not an unreadable archive).
+    - otherwise the game's own DLL is looked for in `game_dir` and nowhere else; without it Oodle entries stay
+      unreadable and the summary says why.
+    """
     try:
         pf = PakFile(path)
     except PakEncrypted as e:
@@ -498,15 +528,26 @@ def open_pak(path: Path, game_dir: Path | None = None) -> tuple[PakFile | None, 
     except OSError as e:
         return None, {"path": Path(path).name, "status": "error", "error": str(e)}
     s = pf.summary()
-    if "Oodle" in s["compression_methods"] and game_dir is not None:
-        dll = Oodle.find(game_dir)
+    if "Oodle" in s["compression_methods"] or oodle_dll is not None:
+        if oodle_dll is not None:
+            dll = Path(oodle_dll)
+        else:
+            dll = Oodle.find(game_dir) if game_dir is not None else None
         s["oodle_dll"] = dll.name if dll else None
-        if dll:
+        if dll is not None:
             try:
-                oodle = Oodle(dll, game_dir)
-                pf.oodle = oodle
+                oodle = Oodle(dll, allow_external=oodle_dll is not None)
             except (PakUnsupported, OSError, AttributeError) as e:
-                s["oodle_error"] = str(e)
+                if oodle_dll is not None:
+                    pf.close()                     # the caller named this decoder: say so, do not leak the pak
+                    raise
+                s["oodle_error"] = str(e)          # a broken DLL in the game folder must not stop listing
+            else:
+                pf.oodle = oodle
+                s["oodle_external"] = oodle.external
+        elif game_dir is None:
+            s["oodle_error"] = ("Oodle entries present but no decoder was supplied: pass oodle_dll=<oo2core_*_win64.dll> "
+                                "to name one")
         else:
             s["oodle_error"] = "Oodle entries present but the game ships no oo2core DLL: those entries cannot be read"
     s["status"] = "ok"

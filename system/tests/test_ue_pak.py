@@ -1,4 +1,5 @@
 """ue_pak / ue_asset: synthetic .pak archives (v1-v11 layouts) and cooked package headers built in the tests."""
+import ctypes
 import struct
 import sys
 from pathlib import Path
@@ -251,3 +252,117 @@ def test_oodle_refuses_non_dll_name_on_windows(tmp_path):
     f.write_bytes(b"not a dll")
     with pytest.raises(OSError):
         ue_pak.Oodle(f, gd)
+
+
+# ---------------------------------------------------------------- explicit external Oodle decoder
+#
+# An Android/console title links Oodle into its main binary and ships no oo2core DLL, so there is nothing inside a game
+# folder to load. The reader accepts a decoder only when the caller names one; these tests stand in for a real DLL with
+# a ctypes object of the same shape, and for the real codec with a 4-byte-tagged "compression" the stub reverses.
+
+class _StubFn:
+    """OodleLZ_Decompress stand-in: the synthetic compressed form is b"STUB" + the raw bytes."""
+
+    restype = None
+    argtypes = None
+
+    def __init__(self, lib):
+        self.lib = lib
+
+    def __call__(self, src, src_len, dst, raw_len, *rest):
+        lib = self.lib
+        lib.calls.append((src_len, raw_len))
+        blob = ctypes.string_at(src, src_len)
+        if not blob.startswith(b"STUB"):
+            return -1
+        body = blob[4:]
+        if lib.lie:
+            return len(body) + 7
+        if len(body) != raw_len:
+            return len(body)
+        ctypes.memmove(dst, body, raw_len)
+        return raw_len
+
+
+class _StubLib:
+    """Stand-in for ctypes.WinDLL: no real DLL, no Windows, the same call shape and export name."""
+
+    def __init__(self):
+        self.calls, self.lie, self.fn = [], False, _StubFn(self)
+
+    @property
+    def OodleLZ_Decompress(self):
+        return self.fn
+
+
+@pytest.fixture
+def stub_oodle(tmp_path, monkeypatch):
+    """(dll path, stub lib): a decoder named explicitly, with the tag codec wired as the pak's Oodle."""
+    monkeypatch.setattr(ue_pak, "IS_WINDOWS", True)
+    lib = _StubLib()
+    monkeypatch.setattr(ctypes, "WinDLL", lambda path: lib, raising=False)
+    monkeypatch.setattr(S, "_compress", lambda method, data: b"STUB" + data)
+    dll = tmp_path / "oo2core_9_win64.dll"
+    dll.write_bytes(b"MZ")
+    return dll, lib
+
+
+def test_oodle_reads_through_an_explicitly_named_external_decoder(tmp_path, stub_oodle):
+    dll, lib = stub_oodle
+    p = _write(tmp_path, S.build_pak(FILES, 11, "Oodle", block_size=0x100))
+    pf, s = ue_pak.open_pak(p, oodle_dll=dll)
+    assert s["status"] == "ok" and s["oodle_dll"] == "oo2core_9_win64.dll"
+    assert s["oodle_external"] is True and "oodle_error" not in s
+    assert pf.entries["Game/Content/A.uasset"].method == "Oodle"
+    for name, data in FILES.items():
+        assert pf.read(name) == data
+    assert lib.calls                                           # the decoder really was called, block by block
+    assert all(src > raw for src, raw in lib.calls)            # ... on the stored (tagged) bytes
+    pf.close()
+
+
+def test_external_oodle_dll_still_needs_both_a_path_and_the_right_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(ue_pak, "IS_WINDOWS", True)
+    gd = tmp_path / "game"
+    gd.mkdir()
+    dll = tmp_path / "oo2core_9_win64.dll"
+    dll.write_bytes(b"MZ")
+    with pytest.raises(ue_pak.PakUnsupported, match="explicitly"):
+        ue_pak.Oodle(dll)                                      # no game folder, no opt-in: refused as before
+    with pytest.raises(ue_pak.PakUnsupported, match="game folder"):
+        ue_pak.Oodle(dll, gd)                                  # a game folder it is not in is still refused
+    with pytest.raises(ue_pak.PakUnsupported, match="oo2core_"):
+        ue_pak.Oodle(tmp_path / "evil.dll", allow_external=True)
+    with pytest.raises(ue_pak.PakUnsupported, match="no such file"):
+        ue_pak.Oodle(tmp_path / "oo2core_7_win64.dll", allow_external=True)
+
+
+def test_oodle_is_never_discovered_next_to_the_archive(tmp_path, monkeypatch):
+    monkeypatch.setattr(ue_pak, "IS_WINDOWS", True)
+    lib = _StubLib()
+    monkeypatch.setattr(ctypes, "WinDLL", lambda path: lib, raising=False)
+    p = _write(tmp_path, S.build_pak({"Game/A.uasset": b"x" * 64}, 5, "Oodle"))
+    (tmp_path / "oo2core_9_win64.dll").write_bytes(b"MZ")      # next to the pak, and still not scanned for
+    pf, s = ue_pak.open_pak(p)
+    assert s["oodle_dll"] is None and "oodle_dll" in s["oodle_error"]
+    with pytest.raises(ue_pak.PakUnsupported, match="Oodle"):
+        pf.read("Game/A.uasset")
+    assert lib.calls == []
+    pf.close()
+
+
+def test_oodle_byte_count_mismatch_is_refused(tmp_path, stub_oodle):
+    dll, lib = stub_oodle
+    lib.lie = True
+    p = _write(tmp_path, S.build_pak({"Game/A.uasset": b"x" * 64}, 11, "Oodle"))
+    pf, _s = ue_pak.open_pak(p, oodle_dll=dll)
+    with pytest.raises(ue_pak.PakError, match="Oodle returned"):
+        pf.read("Game/A.uasset")
+    pf.close()
+
+
+def test_open_pak_refuses_an_unusable_explicit_decoder(tmp_path, monkeypatch):
+    monkeypatch.setattr(ue_pak, "IS_WINDOWS", True)
+    p = _write(tmp_path, S.build_pak({"Game/A.uasset": b"x"}, 11, "Oodle"))
+    with pytest.raises(ue_pak.PakUnsupported, match="oo2core_"):
+        ue_pak.open_pak(p, oodle_dll=tmp_path / "evil.dll")

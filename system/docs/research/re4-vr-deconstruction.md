@@ -54,22 +54,28 @@ pakchunk0optional (2.4 GB): 8,883 entries — all .uptnl (UE4 optional segments)
 The original RE4 level and character names survive (`BIO4/1st/r100` is the village; `em21_Dog`, `em23_Crow`,
 `em18_Merchant` are the retail enemy names), so the asset tree is navigable by the same names the other editions use.
 
-## The one thing that stops extraction: Oodle
+## The one thing that stops extraction: Oodle — **RESOLVED 2026-11-06**
 
-Listing works for every pak; reading an entry does not. `pak.read` returns
+~~Listing works for every pak; reading an entry does not. `pak.read` returns~~
 
 ```
 Oodle-compressed entry: the game ships no oo2core_*_win64.dll to decompress it
 ```
 
-This build links Oodle **statically into `libUE4.so`** (the APK carries `libUE4.so`, `libOVRPlugin.so`, the Bink
+~~This build links Oodle **statically into `libUE4.so`** (the APK carries `libUE4.so`, `libOVRPlugin.so`, the Bink
 libraries, `libc++_shared.so` and `libovraudio64.so` — no `oo2core`), so there is no library to call. The route answers
-with that 409 instead of writing a corrupt file. Consequences:
+with that 409 instead of writing a corrupt file. Consequences:~~
 
-* **enumeration and triage are possible now** — names, sizes, paths, pak membership;
-* **byte extraction needs an Oodle decoder**, which is a separate project (either a portable Oodle implementation or
+* ~~**enumeration and triage are possible now** — names, sizes, paths, pak membership;~~
+* ~~**byte extraction needs an Oodle decoder**, which is a separate project (either a portable Oodle implementation or
   pulling the symbols out of the shipped `libUE4.so`), and should be decided on before promising asset rips from this
-  title.
+  title.~~
+
+**UPDATE:** Byte extraction is now unblocked. `ue_pak.open_pak(path, oodle_dll=r"D:\...\oo2core_9_win64.dll")` accepts
+an explicitly named external decoder (the `_9_` DLL from ELDEN RING NIGHTREIGN exports `OodleLZ_Decompress` and works).
+The GUI route (`POST /api/decrypt-lab/ue-pak`) now passes `oodle_dll` through. See [re4-vr-extraction.md](re4-vr-extraction.md)
+for the full measured extraction (4 entries proven byte-correct against pak headers, streamed off the NAS zip without
+local copies). The inventory/triage path is unchanged; the extraction wall is removed.
 
 ## How far "made to work in the system" can go
 

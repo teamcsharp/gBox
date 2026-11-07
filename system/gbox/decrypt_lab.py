@@ -452,6 +452,7 @@ class UePakIn(BaseModel):
     max_files: int = 200
     extract: str | None = None        # one exact entry name to write out
     out_dir: str | None = None
+    oodle_dll: str | None = None      # explicit Oodle decoder path (for titles that link Oodle statically, e.g. RE4 VR)
 
 
 class ModelInfoIn(BaseModel):
@@ -1246,7 +1247,7 @@ def install(app, store, config, auth, tactical_store=None):
         out = {"v": FORMAT, "dir": str(root), "paks": [], "files": []}
         for path in paks:
             try:
-                pak, info = ue_pak.open_pak(path, root)
+                pak, info = ue_pak.open_pak(path, root, oodle_dll=body.oodle_dll)
             except (ue_pak.PakError, OSError) as exc:
                 out["paks"].append({"name": path.name, "size": path.stat().st_size, "error": str(exc)[:120]})
                 continue
@@ -1268,7 +1269,7 @@ def install(app, store, config, auth, tactical_store=None):
             target_dir = Path(body.out_dir).expanduser() if body.out_dir else (root / "extracted")
             for path in paks:
                 try:
-                    pak, _ = ue_pak.open_pak(path, root)
+                    pak, _ = ue_pak.open_pak(path, root, oodle_dll=body.oodle_dll)
                 except (ue_pak.PakError, OSError):
                     continue
                 if pak is None:
