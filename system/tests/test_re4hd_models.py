@@ -788,3 +788,58 @@ def test_morph_refuses_a_donor_without_geometry():
     empty = M.Bin(header=b"", info={})
     with pytest.raises(M.BINError, match="needs positions"):
         M.morph_to(tmpl, empty)
+
+# ---------------------------------------------------------------- bone-aware morph (limb-to-limb, not nearest surface)
+
+def rigged_template():
+    """Two bones (a hip and an arm) with three vertices on each, so a limb-to-limb mapping can be checked."""
+    data = bytearray(make_bin(n=6, bones=((0, 0xFF), (1, 0)), prims=((5, 6),),
+                              weights=((0, 0, 0, 1, 100, 0, 0, 0), (1, 0, 0, 1, 100, 0, 0, 0))))
+    # make_bin writes one weight index per vertex; point the last three at the second record so the limbs differ
+    index_at = M.bin_info(bytes(data))["offsets"]["weight_idx"]
+    struct.pack_into("<6H", data, index_at, 0, 0, 0, 1, 1, 1)
+    return M.bin_read(bytes(data))
+
+
+def stretched_donor(arm_y=400.0):
+    """The same two bones but the arm far above the hip: a bone-aware morph must move the arm's vertices up there."""
+    donor = M.Bin(header=b"", info={})
+    donor.bones = [{"id": 0, "parent": 0xFF, "x": 0.0, "y": 0.0, "z": 0.0},
+                   {"id": 1, "parent": 0, "x": 0.0, "y": arm_y, "z": 0.0}]
+    donor.pos = np.array([[0, 0, 0], [10, 10, 0], [0, 20, 0],
+                          [0, arm_y, 0], [10, arm_y + 10, 0], [0, arm_y + 20, 0]], float)
+    donor.tris = np.array([[0, 1, 2], [3, 4, 5]], np.int64)
+    donor.uv = donor.colors = None
+    return donor
+
+
+def test_the_dominant_bone_is_read_from_each_vertex_weight_set():
+    tmpl = rigged_template()
+    assert list(M._dominant_bone(tmpl)) == [0, 0, 0, 1, 1, 1]
+
+
+def test_a_bone_aware_morph_carries_each_limb_to_its_own_bone():
+    """The arm's vertices must follow the donor's arm, not the nearest surface point of the donor."""
+    tmpl = rigged_template()
+    donor = stretched_donor(400.0)
+    moved = M.morph_bones_to(tmpl, donor)
+    hip = moved[:3]
+    arm = moved[3:]
+    assert hip[:, 1].max() < 200.0, "the hip vertices must stay near the donor's hip"
+    assert arm[:, 1].min() > 200.0, "the arm vertices must follow the donor's arm far above it"
+
+
+def test_a_bone_aware_morph_keeps_the_counts_and_still_decodes():
+    tmpl = rigged_template()
+    data = M.morph_bones_bin(tmpl, stretched_donor())
+    back = M.bin_read(data)
+    assert back.n_verts == tmpl.n_verts and back.n_tris == tmpl.n_tris
+    assert [tuple(p) for mat in back.mats for p in mat.pairs] == [tuple(p) for mat in tmpl.mats for p in mat.pairs]
+
+
+def test_a_bone_aware_morph_refuses_a_side_without_a_rig():
+    tmpl = rigged_template()
+    donor = stretched_donor()
+    donor.bones = []
+    with pytest.raises(M.BINError, match="bone table"):
+        M.morph_bones_to(tmpl, donor)

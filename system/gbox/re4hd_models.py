@@ -1490,3 +1490,80 @@ def morph_bin(template, donor, *, align: bool = True) -> bytes:
     out = copy.copy(tmpl)
     out.pos = moved
     return bin_write(out, verify=True)
+
+def _dominant_bone(m: "Bin"):
+    """Each vertex's dominant bone id, from its weight set (the first bone of the record, else None)."""
+    if m.weights is None or m.weight_idx is None or len(m.weight_idx) != (0 if m.pos is None else len(m.pos)):
+        return None
+    out = np.zeros(len(m.weight_idx), np.int64)
+    for v, idx in enumerate(np.asarray(m.weight_idx).reshape(-1)):
+        record = m.weights[int(idx)] if 0 <= int(idx) < len(m.weights) else None
+        out[v] = int(record[0]) if record else 0
+    return out
+
+
+def morph_bones_to(template, donor) -> np.ndarray:
+    """Move the template's vertices so its SKELETON takes the donor's shape, then carry each vertex along with its bone.
+
+    The surface-projection morph (`morph_to`) pulls every vertex to the nearest point of the donor's skin, which produces
+    the blobby result measured on RE4 Switch in round 23: neighbouring vertices can land on opposite sides of the donor.
+    This keeps each vertex with the bone that drives it - the arm's vertices follow the arm's bone - so the donor's
+    proportions come through instead of its nearest surface. No rotations are transferred (the formats carry parent-
+    relative translations, not full bind matrices), so this is a proportion and placement transfer, and its result is
+    a shape in the donor's pose, not a re-pose.
+    """
+    tmpl = template if isinstance(template, Bin) else bin_read(template)
+    src = donor if isinstance(donor, Bin) else bin_read(donor)
+    if tmpl.pos is None or src.bones is None or tmpl.bones is None:
+        raise BINError("morph_bones_to needs positions and a bone table on both sides")
+    tw, dw = tmpl.bone_world(), src.bone_world()
+    if not tw or not dw:
+        raise BINError("both sides need a bone table with a root")
+    dom = _dominant_bone(tmpl)
+    if dom is None:
+        raise BINError("the template has no per-vertex bone assignment to follow")
+    t_pos = np.asarray(tmpl.pos, np.float64)
+    d_pos = np.asarray(src.pos, np.float64)
+    t_lo, t_hi = t_pos.min(0), t_pos.max(0)
+    d_lo, d_hi = d_pos.min(0), d_pos.max(0)
+    t_ext = np.where((t_hi - t_lo) < 1e-9, 1.0, t_hi - t_lo)
+    d_ext = np.where((d_hi - d_lo) < 1e-9, 1.0, d_hi - d_lo)
+    scale = float(np.mean(d_ext / t_ext))
+
+    def normalise(point, lo, ext):
+        return (point - lo) / ext
+
+    t_ids = sorted(tw)
+    d_ids = sorted(dw)
+    # match bones in SKELETON space, not mesh space: a template whose bind pose sits inside a small box against a donor
+    # whose mesh sprawls would otherwise map every bone to the donor's root (measured while writing this: the arm went
+    # nowhere). The mesh boxes are still what the vertex offsets are scaled by, below.
+    t_bone_pos = np.array([tw[i] for i in t_ids], np.float64)
+    d_bone_pos = np.array([dw[i] for i in d_ids], np.float64)
+    t_bone_lo, t_bone_hi = t_bone_pos.min(0), t_bone_pos.max(0)
+    d_bone_lo, d_bone_hi = d_bone_pos.min(0), d_bone_pos.max(0)
+    t_bone_ext = np.where((t_bone_hi - t_bone_lo) < 1e-9, 1.0, t_bone_hi - t_bone_lo)
+    d_bone_ext = np.where((d_bone_hi - d_bone_lo) < 1e-9, 1.0, d_bone_hi - d_bone_lo)
+    t_norm = {i: normalise(tw[i], t_bone_lo, t_bone_ext) for i in t_ids}
+    d_norm = {i: normalise(dw[i], d_bone_lo, d_bone_ext) for i in d_ids}
+    mapping = {}
+    for i in t_ids:                                        # each target bone takes the nearest donor bone
+        here = t_norm[i]
+        mapping[i] = min(d_ids, key=lambda j: float(np.linalg.norm(d_norm[j] - here)))
+    out = np.empty_like(t_pos)
+    for v, bone in enumerate(dom):
+        bone = int(bone)
+        if bone not in tw:
+            bone = t_ids[0]
+        target_bone, donor_bone = tw[bone], dw[mapping[bone]]
+        out[v] = donor_bone + (t_pos[v] - target_bone) * scale
+    return out
+
+
+def morph_bones_bin(template, donor) -> bytes:
+    """`morph_bones_to` written back with the template's own layout."""
+    tmpl = template if isinstance(template, Bin) else bin_read(template)
+    import copy
+    out = copy.copy(tmpl)
+    out.pos = morph_bones_to(tmpl, donor)
+    return bin_write(out, verify=True)

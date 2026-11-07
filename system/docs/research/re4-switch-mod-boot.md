@@ -400,3 +400,28 @@ something that is not the body. With 26 of em11's 33 slots swappable and em16 no
 
 Cost: four boots this round (slot map, pack map, em12-only, em14/em16). MercMode was paused for each and restored;
 every script ends with the start call.
+## Sixteenth run: bone-aware morph, aimed at the pack that is drawn (2026-11-07)
+
+Round 23's morph pulled every vertex to the **nearest point of the donor's skin**, which is why the enemies came out as
+blobs: neighbouring vertices can land on opposite sides of the donor. `morph_bones_to` keeps each vertex with the bone
+that drives it instead: the target's skeleton is matched to the donor's **in skeleton space** (normalised by the bone
+table, not the mesh box - matching in mesh space maps every bone to the donor's root, which it did on the first attempt),
+and each vertex is placed relative to its own bone's counterpart.
+
+Applied to **`em16`, the pack round 26 showed is the one drawn**, all 33 slots:
+
+![bone-aware morph on em16: a coherent, limb-preserving deformation](evidence/re4switch-em16-bone-morph.jpg)
+
+The enemy is strange - a long snouted head, a heavy arm, a mass beside Leon - but it is a **coherent body**: limbs stay
+where limbs belong and the surface does not tear into spikes. That is the difference the mapping makes:
+
+| morph | result on screen |
+|---|---|
+| nearest-surface projection (`morph_bin`) | blobs, texture dragged over unrelated shapes |
+| bone-aware (`morph_bones_bin`) | one connected body with the donor's proportions |
+
+**Where this leaves the goal.** The ceiling on RE4 Switch is unchanged and now well understood: the engine draws a slot's
+own topology, so a bone-aware vertex morph is the best available shape change, and it can bend an enemy toward a donor's
+proportions but cannot give it the donor's surface. A recognisable Sonic/Ganado still needs the part-table rules (RE5
+work) or a title that honours a rebuilt mesh (RE4 GameCube). What is new is that the strongest available lever is now
+implemented, tested (70 decoder tests) and aimed at the right pack.
