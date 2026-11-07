@@ -424,3 +424,30 @@ not a single mesh per enemy.
 * **Clothes removal / clean characters on Switch**: the container is now decoded correctly (little-endian UDAS, 698 DAT
   slots) and the engine demonstrably draws same-topology edits, so a part-hide (collapse a slot's vertices to a point) is the
   next experiment that can succeed rather than the next guess.
+## Round 64: "remove clothes" as a real operation, measured against a real pack
+
+`gbox/re4hd_hide.py` hides a material by collapsing its vertices onto that material's own centroid. Topology is untouched -
+every index, triangle and count stays exactly as it was - which is the only kind of edit the Switch engine draws.
+
+**The first version was wrong, and the real pack said so.** It assumed `Mat.start` was a vertex index; on `pl00.udas`
+material 13 "spanned" vertices 142,168..142,398 of a 3,425-vertex mesh. `Mat.start` is a display-list offset.
+
+The property that is true is measurable: the material records' `triangle_count`s sum **exactly** to the mesh's triangle
+count on the real pack -
+
+```
+sum(triangle_count) = 2,519   len(tris) = 2,519
+```
+
+- so triangles are stored in material order, material *i* owns `triangle_count[i]` consecutive triangles from the running
+  total, and its vertices are the indices those triangles use. That is the rule the module now implements, and the test
+  asserts the property itself before using it, so a pack that breaks it fails loudly instead of hiding the wrong part.
+
+`hide_materials` returns a report - which materials, how many triangles and vertices each, the centroid, and
+`triangles_unchanged` - so a build can say what it did rather than assume it.
+
+Tests: 7 on the Spark (the last one on the real `pl00.udas`, including a `bin_write`/`bin_read` round-trip that keeps every
+triangle), 6 plus the skipped real-pack case on a machine without the RomFS.
+
+**Still owed: a frame.** The operation is built and measured; the next step is the one that counts - write the modified pack
+into a LayeredFS build, launch with it, and look at the player. That is the first part-hide test that has a reason to draw.
