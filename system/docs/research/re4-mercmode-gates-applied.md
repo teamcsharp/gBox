@@ -48,3 +48,37 @@ Three things I had been getting wrong, written down here so they are not re-lear
 Steps 1 and 2 of "Plugging the autobot into RE4" - measure `S_PLAYER`/`S_EMMGR`, and make `Driver.screen()` report the
 round - plus the shot fix in step 4. Until those exist this title plays **blind**: it enters rounds and moves, and its
 reports say so.
+
+## The two documented pointer leads, tested (2026-11-07)
+
+`docs/mercmode-adding-titles.md` says the player-pointer leads disagree between notes and to test both:
+`module+0xb25d78` and `module+0xb25d88`. On a live round, with the module base confirmed by the signature
+(`0x3CA7C04000`, `fd7b07a9…` at `+0x100000`), both were read and followed:
+
+| lead | slot | value | what it points at |
+|---|---|---|---|
+| a | `module+0xb25d78` (`0x3CA8729D78`) | `0x3CA871EE08` | a heap object whose head is **eight pointers into `0x3CA8E7xxxx`** - a vtable-and-table shape, like a manager |
+| b | `module+0xb25d88` (`0x3CA8729D88`) | `0x3CA8D3F398` | a heap object whose first word is `0x5D55A5C680` (not a guest pointer) beside module-adjacent pointers |
+
+**Neither is the player unit.** Reading 2 KB at each object found no `u16` equal to 100 or 1000 anywhere (the two values
+the notes report for player and enemy health), and no run of three floats in a plausible world range - so neither object
+carries a position or a health field in its first 2 KB. Lead a is the more structured of the two: a pointer table, not a
+character.
+
+That is a negative result, and worth recording as one: the next attempt should not re-read these two slots expecting a
+player. What it does confirm is that `base + offset` addressing and the heap band (`0x3CA8…`) are exactly where the notes
+said they would be.
+
+## The restore order in the document, verified
+
+The same document says: *"To restore: set `enabled=true` first, then stop the test session. Stopping first leaves a gap,
+and the idle demo fills it."* Followed literally, after a test session on RE4 Switch:
+
+```
+configure enabled=true titles=['re4','re5']  -> done
+stop the test session                        -> stopped
+90 s later: phase playing | Resident Evil 5 (Switch, No Mercy)
+```
+
+No gap and no demo: the scheduler took the host straight back. This is the "games overriding me" problem solved by
+ordering, and it is now the only order used here.
