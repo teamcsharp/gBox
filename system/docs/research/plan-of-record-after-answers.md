@@ -144,3 +144,31 @@ opens** is. Two possibilities remain and one command decides it:
 The deciding check is the Dolphin process's own command line during a run (`pgrep -af dolphin` for the `-e`/`--exec` and
 the game argument): if it names the library `.gcz`, the build is never used and every injection test so far has been
 measuring the wrong file. That check is the first thing next round, before any further build.
+## Dolphin opens the patched ISO - so the injection is not being ignored (2026-11-07)
+
+The command line settles hypothesis 1 from the last round. Launching `re4gsonic_enemies` and reading the emulator's own
+process list:
+
+```
+dolphin-emu -b -u .../dolphin-user -C Dolphin.Core.GFXBackend=Vulkan ... <the game argument>
+MARK opened: the patched ISO
+```
+
+The mod build's `re4-d1.iso` is the file the emulator was given. So the patched ISO **is** opened, and the game still draws
+stock models - which means the remaining explanation is on the game's side, not the launcher's:
+
+* either the disc's `em/*.drs` files are not what the game reads for models (an index or a second copy elsewhere), or
+* a rebuilt DRS is not acceptable and the model in memory is the disc's own.
+
+**The next experiment is chosen to separate those without more modelling work:** patch something whose loading path is
+simple and whose effect is unmistakable - a **stage texture**. If a colour-changed stage texture draws, the injection
+mechanism is sound end to end and the model archives specifically are not read from those paths; if it does not draw, the
+write path itself is wrong and every archive test so far has been measuring that.
+
+Two operational notes from this round, both mine:
+
+* a launch failed with `dolphin exited 134: qt.qpa.xcb: could not connect to display :102` because it raced a display that
+  was still being torn down - the probe must wait for the host to be idle, not just for `enabled=false`;
+* that race left the host "busy with jobs" while MercMode wanted to start RE5. The launch job reported `failed`; the
+  scheduler recovered on its own, but the sequence cost two minutes and is exactly the kind of thing the document's
+  restore order exists to avoid.
