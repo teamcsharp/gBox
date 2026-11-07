@@ -24,7 +24,10 @@ REFS_PATH = Path(__file__).with_name("re4_switch_screens.json")
 
 # Select Player's highlighted portrait pulses, reaching 8.9 from its reference, and every other screen stays 35 away.
 FIXED = {"title": 3.0, "mercs_title": 3.0, "select_player": 12.0, "select_stage": 3.0}
-STORY = ("story_load_list", "story_buy", "story_case")
+# story_load_list_2 is the same list in another state (a different slot page): the walk sat on it for 255 s while
+# it read as unknown, 18.0 from the only reference against a 12.0 threshold, and >= 28.7 from every other screen
+# (measured 2026-11-07 from walk_10 of that run).
+STORY = ("story_load_list", "story_load_list_2", "story_buy", "story_case")
 STORY_MAX, LOGO_MAX = 12.0, 11.5
 BLACK_MEAN = 8.0
 

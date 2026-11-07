@@ -215,3 +215,18 @@ def test_the_story_confirm_dialog_is_never_confirmed(monkeypatch):
     r.read(b"")
     monkeypatch.setattr(S, "classify", lambda _png: {"where": "unknown"})
     assert r.read(b"")["where"] == "unknown"
+
+def test_the_second_appearance_of_the_save_list_is_named_as_the_story_list():
+    """2026-11-07: the walk sat on the save list for 255 s because that appearance read as `unknown` - 18.0 from the
+    only reference against a 12.0 threshold, and >= 28.7 from every other screen. It is now a reference of its own, and
+    this test pins both halves: it reads as the story list, and it is not close enough to any other screen to be
+    confused with it."""
+    assert "story_load_list_2" in S.STORY and "story_load_list_2" in S.refs()["refs"]
+    r = S.refs()
+    thumb = r["refs"]["story_load_list_2"]
+    for name, ref in r["refs"].items():
+        if name == "story_load_list_2":
+            continue
+        assert S.rmse(thumb, ref) > S.STORY_MAX, f"too close to {name}"
+    assert S.rmse(thumb, r["logo_ref"], r["logo_mask"]) > S.LOGO_MAX
+    assert S.classify(png_of(from_thumb(thumb)))["where"] == "story"
