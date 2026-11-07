@@ -81,3 +81,29 @@ a load this copy refuses at a different point. **The swap is not implicated yet.
 3. Only then does "the mesh renders" become a claim worth making.
 
 Cost of the two runs: MercMode was paused for both and restored after (`phase: playing` within 60 s).
+## Third run: the walk with the story-list recovery (2026-11-07, same day)
+
+Two changes went in and were tested in game:
+
+1. `step()` cancels out of a story screen instead of the run ending there (`wandered()` only ends it once a 4-press
+   budget is spent).
+2. `Reader` treats an **unnamed frame after a story screen** as that list's "Load data? Yes / No" dialog
+   (`story_prompt`), and the driver cancels it. This is the hole that let the previous run load a story save — the
+   overlay is drawn over the list, matches no reference, and read as `unknown`, so a press meant for an unnamed screen
+   answered Yes. That run ended in the **merchant's TUNE UP screen** (1,751,510 PTAS on it).
+
+**In game, neither reached the Mercenaries.** The third run sat on the story LOAD list (slots 03-07, mean 48.2 / std
+26.3) for 255 s with identical frames.
+
+**So the cancel does not work, and the next step is instrumentation, not another guess:**
+
+* `B` is evidently not this title's cancel on that screen. Trying keys blind is exactly the mistake this project has
+  already paid for twice, so the next move is to read what the walk believes: log `screen()`/`step()` each tick while
+  the game is on the list, and see whether the recovery is even being asked for (`story` vs `unknown`, and whether the
+  menus loop's "press once, then wait for the screen to change" guard is holding the cancel back).
+* It is also still unexplained **how the walk reaches LOAD at all**: `re4_switch` declares no `BOOT_KEY` (precisely so
+  `mercs_bot.Boot` never blind-presses), and the menus loop only confirms when the cursor reads its target row. If a
+  cursor read lags one frame behind a D-pad press, `cur == tgt` can be true on the wrong row - that is the hypothesis
+  the logging should confirm or kill.
+
+Cost: one more rotation turn (MercMode paused and restored, `phase: playing` within 60 s).
