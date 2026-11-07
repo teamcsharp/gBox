@@ -172,3 +172,27 @@ What is NOT yet established is whether the mod is now bad or the emulator's cach
 (the modded matches in this session's own evidence), and what changed between then and 10:40 is a long series of launches and abrupt
 stops on this PC - mine included. The next test is the same mod after clearing the emulator's shader/pipeline cache, and if it still
 hangs, a second known-good mod on the same title.
+## It is the build, not the emulator: cast-inverted hangs, majini-shrunk loads
+
+The two modded launches, same title, same node, minutes apart:
+
+```
+cast-inverted   dark loader for 4.5 minutes; frames identical from +210 s to +270 s   (stuck)
+majini-shrunk   "PRESS ANY BUTTON" by +30 s (mean 23.8 / std 48.9, the same signature as the stock capture), through +120 s
+```
+
+And the timing lines up exactly with the dead hours:
+
+```
+cast-inverted marker "built": 10:27      rounds stopped: ~10:40      no round since
+overlay: 14 files, 322,769,736 bytes - uEm10.arc alone 97,227,287 (the stock arc is ~80 MB, my Sonic build 82 MB)
+compare: cast-inverted-check (02:49) 4 files, 61,724,334 bytes
+```
+
+So `cast-inverted` was rebuilt at 10:27 into a much larger overlay (fourteen archives, uEm10 at 97 MB) and the game has not finished
+loading it since. The emulator is fine - it ran the stock game and another mod in the same minutes.
+
+What I did NOT do: switch the rotation to another build on my own. `cast-inverted-check` is the obvious candidate (smaller, older, built
+02:49) but I have not watched it load, and switching the operator's rotation onto an untested build at the end of a round is how a
+seven-hour gap turns into a longer one. The next round should launch `cast-inverted-check` once and watch it, then point the rotation at
+whichever build loads.
