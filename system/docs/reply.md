@@ -344,3 +344,49 @@ See the "Answers" section at the end of `docs/questions-for-the-operator.md`:
 - Keep pushing for a clean character on Switch: a shape change is not the deliverable.
 - Mercenaries 3D stays on the i9, and RE4 VR is parked.
 - You may delete only your own scratch, and must stop above 100 GB free.
+
+---
+
+## Operator, 2026-11-07: free the Spark's disk (two jobs)
+
+**Measured 2026-11-07:**
+- The root NVMe is 3.7 TB with 178 GB free (95% used).
+- gBox's hot cache, `~/gBox_alt/gbox-cache`, holds **648 GB** against `hot_cache_limit_gb = 100`: `mods/` 399 GB, `modbase/`
+  81 GB, and the per-game folders the rest.
+- 149 units are already on the cold tier, `~/samples/gbox-cache` on the HDD, which has 4 TB free. The tier journal was last
+  active 2026-11-06 16:27.
+- The largest mod sets:
+
+  | Game id | Size |
+  |---|---|
+  | `0871eee3b68cdea3` (RE6 Xbox 360, not playable) | 83 GB |
+  | `002b9dca58a18ea1` | 49 GB |
+  | `b8edf7040116f3aa` | 44 GB |
+  | `78ab9efa2e310db4` (RE4 GameCube) | 44 GB |
+  | `1de2e7634f3161ff` | 38 GB |
+
+- An old `~/gbox-cache` (20 GB) sits outside the configured cache path.
+
+**1. A cleanup list, then wait for approval.**
+1. Run `job_storage_purge dry_run=true` on lilspark. The worker was busy when I tried.
+2. That tool lists only games and builds that were *sent* to the PC, so builds made on the Spark may be missing from it. Also
+   list each `mods/<gid>/<build>` with:
+   - its unique size (hard links into `modbase` don't count);
+   - when it was last used;
+   - whether it is `cast-inverted`, starred or a favorite, or used by a queued round.
+3. Post the list here. **Delete nothing until the operator approves it.**
+
+**2. Make the cache tiers demote while MercMode runs.**
+
+`cache_tiers` demotes only after `cache_tier_idle_minutes` (30) with no session or job on the node, and lilspark almost
+never has that.
+
+- **Change:** while the hot tier is over its limit, demote units at idle I/O priority even when the node is busy, as long as
+  no running session, warm-pool entry, queued job or open file uses them.
+- **Keep:** never demote the playing title's game or build, the warm pool, `cast-inverted` or the pinned folders. Keep the
+  verify-before-switch step as it is.
+- **Also:** explain the tracebacks at `cache_tiers.py:1655` in the `gbox.service` journal from 2026-11-04.
+- `gbox/` needs a service restart to take effect, so batch it with other restart work. Add tests.
+- **Done when:** the hot tier stays under 100 GB for a day with MercMode running, and no round is interrupted.
+
+Rule 6 from the answers still holds: stop and ask before free space drops below 100 GB.
