@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import struct
 import zlib
+from pathlib import Path
 
 TPL_MAGIC = 0x12345678
 FEN_ZLIB_AT = 4                     # the u32 before the zlib stream is the uncompressed size
@@ -277,3 +278,25 @@ def pack_images(data: bytes, endian: str = "<") -> list[dict]:
         for image in tpl_images(blob[off:off + size]):
             rows.append({"slot": slot, **image})
     return rows
+
+# The naming rule, read out of the executable rather than guessed:
+#   "%s\%s\%08x.pack.fen"   (string at vaddr 0x6c8459) with args (base path, "ImagePackHD", texture id)
+# The loader picks "ImagePack" or "ImagePackHD" on a global HD flag (FUN_0024c310: csel x4,x23,x22,eq with
+# x23="ImagePack" @0x6c80f7 and x22="ImagePackHD" @0x6c8101), then formats the id as EIGHT HEX DIGITS. That is why the
+# archives are named 00000006, 4400011c, 4b000005 - hex, not decimal - and why a lowercase "imagepackhd" byte scan found
+# nothing for four rounds: the string is camel case and the ids are hex.
+ARCHIVE_FORMAT = "%08x.pack.fen"
+
+
+def archive_name(texture_id: int) -> str:
+    """The `imagepackhd` archive a texture id names, per the format string in the loader."""
+    return ARCHIVE_FORMAT % int(texture_id)
+
+
+def archive_for(root, texture_id: int) -> dict:
+    """Where a texture id points, and whether that archive is present in this tree."""
+    folder = Path(root) / "bio4" / "imagepackhd"
+    name = archive_name(texture_id)
+    path = folder / name
+    return {"id": int(texture_id), "archive": name, "present": path.is_file(),
+            "bytes": path.stat().st_size if path.is_file() else 0}

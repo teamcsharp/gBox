@@ -2117,14 +2117,22 @@ def texture_descriptors(root, pack_inner: str) -> dict:
     blob = data[dat["offset"]:dat["offset"] + dat["size"]]
     slots = [slot for slot, (ext, _o, _s) in enumerate(re4gc_inventory.dat_entries(blob, "<")) if ext == "TPL"]
     rows = []
+    archive_folder = root / "bio4" / "imagepackhd"
+    present = set(p.name for p in archive_folder.glob("*.pack.fen")) if archive_folder.is_dir() else set()
     for image in re4hd_tex.pack_images(data, "<"):
+        name = re4hd_tex.archive_name(image["id"]) if image.get("id") is not None else None
         rows.append({"slot": image["slot"], "width": image["width"], "height": image["height"],
                      "format_code": image["format_code"],
                      "format": re4hd_tex.FORMATS.get(image["format_code"], str(image["format_code"])),
-                     "id": image["id"], "payload": image["payload"]})
+                     "id": image["id"], "payload": image["payload"],
+                     # the loader formats the id into "%s\%s\%08x.pack.fen", so this IS the archive it opens
+                     "archive": name, "archive_present": bool(name and name in present)})
     return {"pack": f"bio4/em/{target.name}", "bytes": len(data), "slots": len(slots),
             "images": len(rows), "references": 0,
             "ids": sorted({r["id"] for r in rows if r.get("id") is not None}), "rows": rows, "failures": [],
-            "note": "dimensions, format word and payload size are what the pack states, read from the container layout; "
-                    "ids are pack-local and contiguous (every pack starts at 45), so an id does not name an archive - "
-                    "the archive side is /textures and the two are not joined"}
+            "resolved": sum(1 for r in rows if r["archive_present"]),
+            "note": "dimensions, format word and payload size are what the pack states; `archive` is the name the "
+                    "loader builds from the id (\"%s\\%s\\%08x.pack.fen\", string at vaddr 0x6c8459, with "
+                    "\"ImagePackHD\" chosen by a global HD flag in FUN_0024c310) and `archive_present` says whether "
+                    "this tree has it. Measured 2026-11-07: 526 of 986 descriptors across 40 packs resolve, so the "
+                    "join is real but not complete"}

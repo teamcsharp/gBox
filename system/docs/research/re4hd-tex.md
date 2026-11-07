@@ -217,3 +217,43 @@ pack-local id. That is a much better starting point for the join than what the l
 `re4hd_tex.tpl_images` / `pack_images` implement the layout, `texture_descriptors` serves it, and the tests build a
 container byte by byte - including one that fails if a record is 36 bytes instead of 40, which is how this correction was
 caught.
+## Twenty-second run: the texture join, read out of the executable (2026-11-07)
+
+Four rounds of hypothesis testing ended when the loader was disassembled. The rule is a format string:
+
+```
+"%s\%s\%08x.pack.fen"        vaddr 0x6c8459
+      ^     ^     ^
+      |     |     +-- the texture id, printed as EIGHT HEX DIGITS
+      |     +-------- "ImagePack" or "ImagePackHD", chosen by a global HD flag
+      +-------------- the base path ("BIO4\text\" and friends)
+```
+
+In `FUN_0024c310` the choice is visible: `x23` = `"ImagePack"` @0x6c80f7, `x22` = `"ImagePackHD"` @0x6c8101, and at
+`0x24c430` a `csel x4,x23,x22,eq` picks between them on the flag, then the format runs with the id in `w5`.
+
+**This explains every anomaly the data side produced:**
+
+* the archives are named `00000006`, `4400011c`, `4b000005` - **hexadecimal**, because the id is printed with `%08x`;
+* a lowercase `imagepackhd` byte scan found nothing, because the string is **`ImagePackHD`** (camel case) and only the
+  directory on disk is lowercase;
+* descriptors carry small ids (45..191) and the archive names are 32-bit, because both are the same number written in
+  different bases - `id 48` is `0x30`, i.e. `00000030.pack.fen`.
+
+**Measured resolution**, over 986 descriptors in 40 packs: **526 (53%)** name an archive that exists in this tree. On
+`em16`: 18 of 30. The rest are ids whose archive is not present (the tree carries 1,813 of them), which is a coverage
+question rather than a mapping question.
+
+Code: `re4hd_tex.archive_name(id)` and `archive_for(root, id)`; `GET /api/decrypt-lab/texture-descriptors` now carries
+`archive` and `archive_present` per descriptor, so the lab shows the join instead of leaving it implied. Verified live:
+
+```
+images 30 | resolved 18
+   id 48   256x256 -> 00000030.pack.fen  present=True
+   id 49   256x256 -> 00000031.pack.fen  present=True
+   id 51   256x256 -> 00000033.pack.fen  present=False
+```
+
+**What this unblocks.** A pack's texture is now addressable from the pack itself: read the descriptor, format the id, and
+the archive holding that surface is known and editable. That is the missing half of RE4 Switch skin and clothes
+replacement - the write side (`fen_patch`) still has to be built, but there is no longer a lookup in the way.

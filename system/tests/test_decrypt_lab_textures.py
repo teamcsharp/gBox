@@ -160,7 +160,7 @@ def test_texture_descriptors_reads_the_container_layout(tmp_path):
     first, second = out["rows"]
     assert (first["width"], first["height"], first["format_code"], first["id"], first["payload"]) == (256, 256, 14, 48, 184)
     assert (second["width"], second["height"], second["id"]) == (128, 128, 49)
-    assert "pack-local" in out["note"]
+    assert "archive" in out["note"] and "join" in out["note"]
     with pytest.raises(FileNotFoundError):
         L.texture_descriptors(tmp_path, "nope.udas")
 

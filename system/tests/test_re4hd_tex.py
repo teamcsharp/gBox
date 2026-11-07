@@ -206,3 +206,19 @@ def test_a_listing_reports_every_texture_and_drops_the_bodies():
     rows = T.fen_textures(blob)
     assert [r["format"] for r in rows] == ["DXT5", "DXT3"]
     assert "dds" not in rows[0] and "wrapper" not in rows[0]
+
+def test_the_archive_name_is_eight_hex_digits_from_the_id():
+    """Read out of the loader: "%s\\%s\\%08x.pack.fen" with the texture id formatted as eight hex digits."""
+    assert T.archive_name(6) == "00000006.pack.fen"
+    assert T.archive_name(48) == "00000030.pack.fen"
+    assert T.archive_name(0x4400011C) == "4400011c.pack.fen"
+
+
+def test_archive_for_reports_presence(tmp_path):
+    folder = tmp_path / "bio4" / "imagepackhd"
+    folder.mkdir(parents=True)
+    (folder / "00000030.pack.fen").write_bytes(b"x" * 5)
+    found = T.archive_for(tmp_path, 48)
+    assert found["archive"] == "00000030.pack.fen" and found["present"] is True and found["bytes"] == 5
+    missing = T.archive_for(tmp_path, 51)
+    assert missing["archive"] == "00000033.pack.fen" and missing["present"] is False
