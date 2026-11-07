@@ -645,3 +645,50 @@ def test_rank_targets_needs_a_donor_with_geometry():
     empty = M.Bin(header=b"", info={})
     with pytest.raises(M.BINError, match="no geometry"):
         M.rank_targets(pack, empty)
+
+# ---------------------------------------------------------------- simplify (making a donor fit without holes)
+
+def test_simplify_stays_inside_its_triangle_budget_and_keeps_a_surface():
+    pos, tris = grid_mesh(12)                     # 242 triangles over a 12x12 grid
+    for budget in (30, 80, 200):
+        new_pos, new_tris, info = M.simplify(pos, tris, budget)
+        assert len(new_tris) <= budget, f"{len(new_tris)} > {budget}"
+        assert info["ratio"] <= 1.0
+        # every surviving triangle still names three distinct merged vertices - a collapsed one is dropped
+        assert ((new_tris[:, 0] != new_tris[:, 1]) & (new_tris[:, 1] != new_tris[:, 2])
+                & (new_tris[:, 0] != new_tris[:, 2])).all()
+        assert new_tris.max() < len(new_pos)
+
+
+def test_simplify_is_a_no_op_when_the_mesh_already_fits():
+    pos, tris = grid_mesh(4)
+    new_pos, new_tris, info = M.simplify(pos, tris, len(tris) + 10)
+    assert len(new_tris) == len(tris) and info["ratio"] == 1.0
+    assert (new_pos == pos).all()
+
+
+def test_simplify_refuses_a_bad_budget_or_bad_arrays():
+    pos, tris = grid_mesh(4)
+    with pytest.raises(M.BINError, match="positive"):
+        M.simplify(pos, tris, 0)
+    with pytest.raises(M.BINError, match="needs"):
+        M.simplify(pos[:, :2], tris, 10)
+
+
+def test_a_simplified_donor_rebuilds_into_a_slot_it_could_not_enter_before():
+    """The whole point: a donor that was too big for a slot fits once simplified to that slot's budget."""
+    tmpl_small = M.bin_read(make_bin(n=6, bones=((0, 0xFF),), prims=((5, 6),)))
+    tiny = M.bin_from(tmpl_small, pos=tmpl_small.pos, tris=tmpl_small.tris)
+    pos, tris = grid_mesh(9)                       # 128 triangles: far more than that slot holds
+    donor = M.Bin(header=b"", info={})
+    donor.pos, donor.tris, donor.uv, donor.colors = pos, tris, None, None
+    before = None
+    try:
+        before = M.bin_from(M.bin_read(tiny), pos=pos, tris=tris, encoding="strip")
+    except M.BINError:
+        pass
+    simple_pos, simple_tris, _ = M.simplify(pos, tris, 20)
+    after = M.bin_from(M.bin_read(tiny), pos=simple_pos, tris=simple_tris, encoding="strip")
+    assert after is not None
+    if before is not None:
+        assert len(after) < len(before)

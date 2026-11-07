@@ -208,3 +208,42 @@ is per-part mesh compatibility, not pack selection.
 Cost: two rotation turns (MercMode paused for both, restored after; `phase: playing` within 60 s). Also learned: a
 `switch_mods` write must be pinned with `require_worker` - without it the job is dispatched to a PC whose catalog has
 no entry for the game and the worker's own catalog lookup 404s.
+## Seventh/eighth runs: a simplified donor enters em11, and breadth is what breaks the load (2026-11-07)
+
+Round 17 left "a patchwork hangs it, a whole body does not" as the working theory. It is wrong, and this round says so.
+
+**A continuous simplifier.** `re4hd_models.simplify(pos, tris, budget)` clusters vertices on a grid and keeps the
+finest grid whose triangle count still fits the budget, dropping only triangles that collapse to a line or a point.
+The surface stays continuous - unlike the every-sixth-triangle marker - and it takes a budget, so a donor can be aimed
+at any slot:
+
+```
+dog 2,725 v / 1,843 t  ->  1,599 t (97,632 B)  fits em11 bin 32's 98,624 B
+                        ->  1,198 t (80,064 B)  fits em11 bin 24's  80,704 B
+                        ->    981 t (63,584 B)  fits em11 bin 3's   66,784 B
+```
+
+**One slot in em11 plays.** `em11` bin 32 (98,624 B, 2,400 v) replaced with the dog simplified to 1,599 triangles:
+the round loaded and played - timer, three Ganados, torch-bearer, nothing corrupted.
+
+![a round with em11 bin 32 swapped to a simplified dog - the Ganados look unchanged](evidence/re4switch-em11-one-slot-round.jpg)
+
+**But 48 such swaps across em11-em17 hang the stage load**, exactly like the 73-pack sparse build did. Both of those
+hang; one slot does not. So the deciding variable is **how much of the Ganado packs is modified**, not the quality of
+the mesh that goes in - the patchwork was a red herring.
+
+| build | packs touched | slots | result |
+|---|---|---|---|
+| `re4-dog-full` | 34 (none of em11-em17) | 61 whole bodies | plays |
+| `re4-one` | em11 | **1** | plays |
+| `re4-parts` | em11-em17 | 48 simplified | **hangs at stage load** |
+| `re4-dog-test` | 73 | 100 (61 + 39 sparse) | **hangs at stage load** |
+
+**What this establishes:** a Ganado pack *can* be modified and the round still plays; the load survives one swapped
+slot in the pack the stage streams. It does not survive 48. The next experiment is therefore a small bisection on the
+**number and identity of slots inside one pack** (2, 4, 8 ...) - and, separately, the visible Ganado is not `em11`
+bin 32, so the body slot is still unidentified.
+
+**Cost:** four emulator boots this round; MercMode paused for each and restored (`phase: playing`). Each boot also
+re-taught a script lesson: the walk must not stop on an unreadable frame until a stage has actually been picked, or a
+menu transition is mistaken for the round intro.

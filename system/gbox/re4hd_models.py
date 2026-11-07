@@ -1263,3 +1263,64 @@ def rank_targets(pack: bytes, donor, *, encoding: str = "strip", endian: str = "
             "slots": len(rows), "fits": len(fits),
             "best": max(fits, key=lambda r: r["fill"]) if fits else None,
             "rows": rows}
+
+# ------------------------------------------------------------------ making a donor fit: simplify
+
+def simplify(pos, tris, target_tris: int, *, steps: int = 14) -> tuple:
+    """Vertex-clustering simplification: merge vertices inside a grid cell, drop the triangles that collapse.
+
+    The point is to make a donor fit a slot **without holes**. Keeping every sixth triangle (which the first labelling
+    attempt did) leaves a patchwork, and the loader never finished a stage with one - measured 2026-11-07: a 73-pack
+    build with 47 such swaps hung at stage load while 61 whole-body swaps in 34 packs played. Clustering keeps the
+    surface continuous: nearby vertices become one, adjacent triangles stay adjacent, and only the triangles that
+    collapse to a line or a point disappear.
+
+    The grid is grown until the triangle count is at or below `target_tris`, so the caller asks for a budget and gets a
+    mesh inside it rather than a mesh of unknown size.
+    """
+    pos = np.asarray(pos, np.float64)
+    tri = np.asarray(tris, np.int64)
+    if pos.ndim != 2 or pos.shape[1] != 3 or tri.ndim != 2 or tri.shape[1] != 3:
+        raise BINError("simplify needs (n, 3) positions and (t, 3) triangles")
+    if target_tris <= 0:
+        raise BINError("target_tris must be positive")
+    if len(tri) <= target_tris:
+        return pos.copy(), tri.copy(), {"cells": 0, "ratio": 1.0}
+    lo, hi = pos.min(0), pos.max(0)
+    extent = float(np.max(hi - lo)) or 1.0
+    low, high = 0.0, extent * 0.5
+    fit = None
+    for _ in range(steps):
+        cell = (low + high) / 2.0
+        if cell <= 0:
+            break
+        grid = np.floor((pos - lo) / cell).astype(np.int64)
+        _, first, inverse = np.unique(grid, axis=0, return_index=True, return_inverse=True)
+        mapped = inverse[tri]
+        keep = (mapped[:, 0] != mapped[:, 1]) & (mapped[:, 1] != mapped[:, 2]) & (mapped[:, 0] != mapped[:, 2])
+        kept = mapped[keep]
+        if len(kept) <= target_tris:
+            # keep the FINEST grid that still fits: the largest triangle count inside the budget is the best quality
+            if fit is None or len(kept) > len(fit[1]):
+                fit = (pos[first], kept, {"cell": cell, "verts": len(first), "tris": len(kept)})
+            high = cell
+        else:
+            low = cell
+    if fit is None:                                       # nothing fit: start from the coarsest grid and grow
+        cell = high = max(extent * 0.5, 1e-6)
+        grid = np.floor((pos - lo) / cell).astype(np.int64)
+        _, first, inverse = np.unique(grid, axis=0, return_index=True, return_inverse=True)
+        mapped = inverse[tri]
+        keep = (mapped[:, 0] != mapped[:, 1]) & (mapped[:, 1] != mapped[:, 2]) & (mapped[:, 0] != mapped[:, 2])
+        fit = (pos[first], mapped[keep], {"cell": cell, "verts": len(first), "tris": int(keep.sum())})
+    new_pos, new_tri, info = fit
+    while len(new_tri) > target_tris:
+        info["cell"] *= 1.35
+        grid = np.floor((pos - lo) / info["cell"]).astype(np.int64)
+        _, first, inverse = np.unique(grid, axis=0, return_index=True, return_inverse=True)
+        mapped = inverse[tri]
+        keep = (mapped[:, 0] != mapped[:, 1]) & (mapped[:, 1] != mapped[:, 2]) & (mapped[:, 0] != mapped[:, 2])
+        new_pos, new_tri = pos[first], mapped[keep]
+        info.update(verts=len(new_pos), tris=len(new_tri))
+    info["ratio"] = round(len(new_tri) / max(1, len(tri)), 3)
+    return new_pos, new_tri, info
