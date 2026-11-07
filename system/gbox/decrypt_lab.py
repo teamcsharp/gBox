@@ -464,6 +464,8 @@ class ModelInfoIn(BaseModel):
     title: str
     arc_path: str
     entry: str | None = None      # empty: the first model entry in the archive
+    # the 3D view's vertex budget for model-geometry (a 120-mesh pack would otherwise send millions of floats)
+    max_points: int = 60000
 
 
 class ArcSwapIn(BaseModel):
@@ -643,6 +645,70 @@ def _swap_arc_bytes(root: Path, arc_inner: str, donor_inner: str, *, tag_follow:
         if info["textures_added"]:
             data = mt_arc.build(slot_arc)
     return data, info
+
+
+def hd_model_geometry(root, pack_inner: str, slot: int | None = None, budget: int = 60000) -> dict | None:
+    """An RE4-Switch BIN slot decoded for the 3D view, in the same shape the MTF meshes come back in.
+
+    The HD port has no MTF `MOD` geometry, so `model-geometry` could never draw it. `gbox.re4hd_models` decodes the
+    0x98 BIN (positions, UVs, bones, triangles) and refuses what it cannot prove, so a refusal is a ValueError here
+    rather than a partial mesh in the view. Normals are DERIVED from the triangles, never read from the file: the 0x50
+    stream is decoded but its magnitude convention is unproven (docs/research/re4hd-bin.md).
+
+    Returns None when this is not an HD tree at all (the caller then runs the MTF path unchanged).
+    """
+    from . import re4gc_inventory, re4hd_models
+    root = Path(root)
+    if not (root / "bio4" / "em").is_dir():
+        return None
+    inner = (pack_inner or "").strip().lstrip("/")
+    if not inner:
+        return None
+    pack = (root / inner).resolve()
+    if not str(pack).startswith(str(root.resolve())):
+        raise ValueError("the path leaves the extracted tree")
+    if not pack.is_file():
+        raise FileNotFoundError(f"the extracted tree does not hold {inner}")
+    data = pack.read_bytes()
+    try:
+        dat = next(e for e in re4gc_inventory.udas_entries(data, "<") if e["type"] == 0)
+    except (ValueError, StopIteration) as exc:
+        raise ValueError(f"not an HD model pack: {exc}") from exc
+    blob = data[dat["offset"]:dat["offset"] + dat["size"]]
+    try:
+        slots = [(i, off, size) for i, (ext, off, size) in enumerate(re4gc_inventory.dat_entries(blob, "<"))
+                 if ext == "BIN"]
+    except ValueError as exc:
+        raise ValueError(f"not an HD DAT pack: {exc}") from exc
+    if not slots:
+        raise ValueError("this pack holds no BIN mesh")
+    index = 0 if slot is None else int(slot)
+    picked = next((s for s in slots if s[0] == index), None)
+    if picked is None:
+        raise ValueError(f"this pack has no BIN at slot {index} (it holds {len(slots)})")
+    i, off, size = picked
+    model = re4hd_models.bin_read(blob[off:off + size])
+    if model.pos is None:
+        raise ValueError(f"slot {i} decoded no positions")
+    bound = model.bbox()
+    keep = min(len(model.pos), max(1, int(budget)))
+    normals = model.normals()[:keep]
+    uvs = model.uv if model.uv is not None else []
+    world = model.bone_world()
+    return {"v": FORMAT, "entry": f"{inner}#BIN{index}", "edition": "hd",
+            "bounds": [[round(float(v), 2) for v in bound[0]], [round(float(v), 2) for v in bound[1]]],
+            "meshes": [{"mesh": 0, "format": "hd-bin-0x98", "stride": 12, "count": model.n_verts, "lod": 0,
+                        "positions": [round(float(v), 2) for p in model.pos[:keep] for v in p],
+                        "normals": [round(float(v), 2) for n in normals for v in n],
+                        "uvs": [round(float(v), 3) for uv in uvs[:keep] for v in uv],
+                        "drawn": keep}],
+            "positions": [round(float(v), 2) for p in model.pos[:budget] for v in p],
+            "triangles": [int(v) for tri in model.triangles()[:budget] for v in tri],
+            "skeleton": {"bones": [[round(float(v), 2) for v in world[bid]] for bid in sorted(world)],
+                         "parents": [b["parent"] for b in model.bones]},
+            "bone_count": model.n_bones, "triangle_count": model.n_tris, "slot": index, "pack": inner,
+            "note": "normals are DERIVED from the decoded triangles (the 0x50 stream's magnitude convention is "
+                    "unproven, so it is not served as normals)"}
 
 
 def install(app, store, config, auth, tactical_store=None):
@@ -1322,6 +1388,15 @@ def install(app, store, config, auth, tactical_store=None):
         out["file_count"] = len(out["files"])
         return out
 
+    def _hd_model_geometry(root: Path, pack_inner: str, slot: int | None, budget: int = 60000) -> dict | None:
+        """`hd_model_geometry` with the lab's HTTP errors: None means "not an HD tree, use the MTF path"."""
+        try:
+            return hd_model_geometry(root, pack_inner, slot, budget)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @app.post("/api/decrypt-lab/model-geometry", dependencies=[Depends(auth)])
     def decrypt_lab_model_geometry(body: ModelInfoIn):
         """A model's decoded vertices, for the page's 3D view: positions, normals and UVs per mesh.
@@ -1331,12 +1406,25 @@ def install(app, store, config, auth, tactical_store=None):
         the vertices for the three formats whose layout is confirmed) and UVs as half floats. A mesh whose format is not
         confirmed contributes positions only. Indices are not served yet - the index buffer's per-mesh split is still
         being decoded - so the view draws the vertex clouds.
+
+        A tree with no MTF `.arc` files at all is the HD RE4 port; that is routed to `re4hd_models` instead, so the same
+        3D view draws this title's meshes (`entry` = the pack path, the slot in `body.entry` as `#BIN<n>` or a number).
         """
-        from . import mt_arc, mt_model
         tid = _title_id(body.title)
         root = _romfs_root(tid)
         if root is None:
             raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
+        slot = None
+        if body.entry and body.entry.isdigit():
+            slot = int(body.entry)
+        elif body.entry and "#BIN" in body.entry:
+            tail = body.entry.rsplit("#BIN", 1)[-1]
+            slot = int(tail) if tail.isdigit() else None
+        hd = _hd_model_geometry(root, body.arc_path, slot,
+                                budget=max(1000, min(60000, int(body.max_points or 60000))))
+        if hd is not None:
+            return hd
+        from . import mt_arc, mt_model
         inner = (body.arc_path or "").strip().lstrip("/")
         if not inner or len(inner) > 400 or ".." in inner.split("/"):
             raise HTTPException(400, "path must be a relative RomFS path")
