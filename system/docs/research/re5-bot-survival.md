@@ -295,3 +295,32 @@ is registered and launchable now, so the harness exists.
 
 Note: `files 14 | with problems 0` - every one of the fourteen parsed with the same entry count as its stock file, so this is not a
 corrupt archive; it is a load-time interaction.
+## CORRECTION: the build was never bad - the launches were starving each other
+
+Re-tested the full fourteen-file `cast-inverted` build (322,769,736 bytes, the one I called broken):
+
+```
+cast-inverted    title screen at +30 s, +60 s, +90 s; a bright frame at +150 s (mean 146, the intro movie); black at +270 s
+```
+
+And the bisect, which is now complete:
+
+```
+uEm10 alone (97 MB)        LOADS
+thirteen others (295 MB)   LOADS at 30 s
+all fourteen (322 MB)      LOADS
+```
+
+So no single archive and no combination is at fault, and the "bad build at 10:27" conclusion was **wrong**. What the evidence actually
+fits is resource contention: the rotation was launching a new eden instance every five to eight minutes (24 launch_game jobs in three
+hours), a load takes one to two minutes, and if a stopped session leaves its process behind the next load is starved and never
+finishes - which is exactly how a loader sits at "NOW LOADING" for nine minutes while the scheduler relaunches on top of it. Every
+build tested *after* the stuck sessions were cleared loaded on the first try.
+
+Implication for the eight dead hours: not a corrupt overlay but an accumulation of launches. The durable fix is launch hygiene, not the
+generator - (1) the scheduler should refuse to launch while any session for that title is still `running` or its emulator process is
+alive, and (2) a session stuck in a loading screen past a deadline should be killed rather than left to the next launch. That is worth
+more than any tuning change, because it silently destroyed the measurement pipeline for eight hours and looked from every angle like a
+bad mod.
+
+`cast_swap` and `skin_swap` can go back on: the build loads.

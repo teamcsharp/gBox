@@ -513,6 +513,133 @@ class StripClothesIn(BaseModel):
     build: str = "gbox-lab"
 
 
+class ZombieCastIn(BaseModel):
+    """Replace the enemies a round spawns with the game's own cast, as one build (the 'Zombies -> cast' action).
+
+    A Mercenaries round spawns SEVERAL enemy archives, and which ones is the title's business: RE5's round reads its
+    enemies out of sEnemy as "uEm10 / uEm11 Majini, uEm21, uEm62" while its driver also names uEm6c / uEm71, so
+    swapping one of them leaves every visible enemy a Majini (measured 2026-11-06: a round with cast_swap on showed
+    three ordinary Majini). This asks for all of them at once, with a different cast member on each, which is what the
+    operator means by "the zombies are the cast".
+
+    `donors` narrows the cast (collection slugs or a title's character keys); empty means the title's whole cast.
+    """
+    title: str
+    build: str = "gbox-lab"
+    donors: list[str] = []
+    # a donor this many times bigger than the slot's file is refused: the overlay is copied for every enemy, and a
+    # character model in an enemy slot is a size jump the engine may not survive (the handoff's own measured limit).
+    max_growth: float = 3.0
+
+
+def zombie_donors(cast: list[str], arcs: list[str], *, start: int = 0) -> dict[str, str]:
+    """Which cast member each enemy arc wears: round-robin over the cast, so no two enemies are the same character.
+
+    Kept pure and separate from the route because it is the part that decides what the round looks like, and it is
+    the part that has to keep working when a title gains or loses enemy archives.
+    """
+    if not cast or not arcs:
+        return {}
+    picked = cast[start % len(cast):] + cast[:start % len(cast)]
+    return {arc: picked[i % len(picked)] for i, arc in enumerate(arcs)}
+
+
+def zombie_cast_plan(title_id: str, available: list[str], cast: list[str], *, start: int = 0) -> list[dict]:
+    """The enemy arcs this title spawns that the extracted tree actually holds, paired with their donor.
+
+    `available` is what is on disk, so a title whose tree lacks an archive reports it as skipped instead of failing
+    the whole build; the caller sees one row per arc either way.
+    """
+    from . import skin_swap
+    wanted = list(skin_swap.ZOMBIE_ARCS.get(str(title_id).upper()) or ())
+    present = set(available)
+    rows = [{"arc": arc, "status": "absent"} for arc in wanted if arc not in present]
+    live = [arc for arc in wanted if arc in present]
+    worn = zombie_donors(cast, live, start=start)
+    rows.extend({"arc": arc, "donor": worn[arc], "status": "planned"} for arc in live)
+    return rows
+
+
+def _swap_arc_bytes(root: Path, arc_inner: str, donor_inner: str, *, tag_follow: bool = False,
+                    with_mesh: bool = False, with_textures: bool = False, group: str | None = None,
+                    donor_group: str | None = None) -> tuple[bytes, dict]:
+    """The slot archive's bytes with the donor's skin (and optionally its mesh and the donor's textures) in it.
+
+    One implementation for every route that swaps an archive's contents, so a fix lands on all of them: the
+    model-swap action, the zombie-set action and the cast-swap build all move the same maps the same way.
+    """
+    from . import mt_arc, skin_swap
+    arc_file, donor_file = root / arc_inner, root / donor_inner
+    try:
+        data, slot_group, donor_group_name = skin_swap.swap_arc(arc_file.read_bytes(), donor_file.read_bytes(),
+                                                                follow_tag=bool(tag_follow), group=group,
+                                                                donor_group_name=donor_group)
+    except mt_arc.ArcError as exc:
+        raise ValueError(str(exc)) from exc
+    info: dict = {"slot": slot_group, "donor": donor_group_name, "mesh": [], "maps": [], "textures_added": []}
+    try:                                   # which maps actually moved: a 2/3 swap keeps one map of the slot's own
+        slot_arc, donor_arc = mt_arc.parse(arc_file.read_bytes()), mt_arc.parse(donor_file.read_bytes())
+        slot_maps = skin_swap.material_groups(slot_arc).get(slot_group) or {}
+        donor_maps = skin_swap.material_groups(donor_arc).get(donor_group_name) or {}
+        moved_maps = [k for k in ("BM", "MM", "NM")
+                      if slot_maps.get(k) is not None and donor_maps.get(k) is not None
+                      and (tag_follow or slot_maps[k].tag == donor_maps[k].tag)]
+        kept = [k for k in ("BM", "MM", "NM") if k not in moved_maps and slot_maps.get(k) is not None]
+        if kept:
+            moved_maps.append(f"kept:{','.join(kept)}")
+        retagged = [k for k in moved_maps if k in ("BM", "MM", "NM")
+                    and slot_maps[k].tag != donor_maps[k].tag]
+        if retagged:
+            moved_maps.append(f"retagged:{','.join(retagged)}")
+        info["maps"] = moved_maps
+    except mt_arc.ArcError:
+        pass
+    if with_mesh:
+        # An object's model is the entry whose decompressed payload is MRL\0 - NOT the largest model-path entry.
+        # uWp06.arc carries two `wp0600` entries: the MRL model and a MOD container. Choosing by size wrote the MOD
+        # into the MRL slot, the engine could not parse it, and the title hung at loading.
+        from . import mt_model
+        slot_arc, donor_arc = mt_arc.parse(arc_file.read_bytes()), mt_arc.parse(donor_file.read_bytes())
+        slot_models = skin_swap.model_indices(slot_arc)
+        donor_models = skin_swap.model_indices(donor_arc)
+        if not slot_models or not donor_models:
+            raise ValueError("this swap needs an MRL model in both archives")
+        for slot_i, donor_i in zip(slot_models, donor_models):
+            data = mt_arc.replace_at(data, slot_i, donor_arc.entries[donor_i].data)
+            info["mesh"].append(slot_arc.entries[slot_i].name)
+    if with_textures:
+        # An MRL model carries a path table naming the textures it draws with. The slot archive may not hold those
+        # entries at all, and a mesh whose textures cannot be resolved is what hung the title's load. Copy the
+        # missing ones in, by the path the model names, so the swap is self-contained.
+        from . import mt_model
+        slot_arc = mt_arc.parse(data)
+        donor_arc = mt_arc.parse(donor_file.read_bytes())
+        present = {e.name for e in slot_arc.entries}
+        by_base = {e.name.rsplit("\\", 1)[-1]: e for e in donor_arc.entries}
+        wanted: list[str] = []
+        for entry in slot_arc.entries:
+            try:
+                raw = zlib.decompress(entry.data)
+            except zlib.error:
+                continue
+            if raw[:4] != mt_model.MAGIC:
+                continue
+            try:
+                wanted.extend(mt_model.parse(raw).paths)
+            except mt_model.ModelError:
+                continue
+        for path in wanted:
+            if path in present or path.rsplit("\\", 1)[-1] not in by_base:
+                continue
+            donor_entry = by_base[path.rsplit("\\", 1)[-1]]
+            slot_arc.entries.append(mt_arc.Entry(name=path, hash=donor_entry.hash, tag=donor_entry.tag,
+                                                 size=donor_entry.size, offset=0, data=donor_entry.data))
+            present.add(path)
+            info["textures_added"].append(path)
+        if info["textures_added"]:
+            data = mt_arc.build(slot_arc)
+    return data, info
+
 
 def install(app, store, config, auth, tactical_store=None):
     global _CONFIG
