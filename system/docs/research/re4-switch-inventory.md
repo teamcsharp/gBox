@@ -84,3 +84,11 @@ python3 -m gbox.re4gc_inventory --switch-romfs ~/gBox_alt/switch/romfs/010099A00
 
 Tests: `system/tests/test_re4gc_inventory_switch.py` (6 cases: LE parse, endianness actually matters, GC path
 unchanged, HD payload not guessed, motion slots counted, tree walked / plain directory refused).
+
+## Reached from the app
+
+`GET /api/decrypt-lab/arc-layout?title=re4_switch` now falls through to this inventory: `skin_swap.candidates`
+answers "not extracted" for a tree with no `.arc` files, which is wrong for RE4 Switch, so the route also calls
+`switch_inventory` and returns `edition`, `container`, `packs`, `pack_count`, `totals`, `bin_header_sizes` and
+`payload_note`. The extraction tab therefore lists the 162 packs of an HD title through the same call it uses for the
+MTF titles. The `.arc` branch is untouched - the UDAS fall-through only fires when `bio4/em` exists.
