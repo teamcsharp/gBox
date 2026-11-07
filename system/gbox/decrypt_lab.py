@@ -815,6 +815,23 @@ def install(app, store, config, auth, tactical_store=None):
                 return root
         return None
 
+    def _uds_packs(title_id: str, limit: int = 0) -> dict | None:
+        """The UDAS packs of a RomFS tree that keeps the classic RE4 layout (bio4/em/*.udas), else None.
+
+        RE4 Switch is the case this exists for: its tree has no .arc files at all, so `skin_swap.candidates` (written
+        for the MTF titles) answers "not extracted" for a title that is fully extracted. `re4gc_inventory.
+        switch_inventory` reads those packs with the same readers the GameCube disc uses - the container is the same
+        UDAS/DAT, little-endian - so the extraction tab can list an HD title's assets from the same call.
+        """
+        root = _romfs_root(title_id)
+        if root is None or not (root / "bio4" / "em").is_dir():
+            return None
+        from . import re4gc_inventory
+        try:
+            return re4gc_inventory.switch_inventory(root, limit=limit)
+        except (OSError, ValueError):
+            return None
+
     @app.get("/api/decrypt-lab/asset", dependencies=[Depends(auth)])
     def decrypt_lab_asset(title: str, path: str):
         """One asset's bytes from the extracted tree. The path must be in the title's inventory."""
@@ -1146,7 +1163,16 @@ def install(app, store, config, auth, tactical_store=None):
         no .arc files at all - each answer comes back in one call.
         """
         from . import skin_swap
-        return {"v": FORMAT, **skin_swap.candidates(_title_id(title))}
+        tid = _title_id(title)
+        out = {"v": FORMAT, **skin_swap.candidates(tid)}
+        # an HD RE4 tree keeps no .arc files, so the MTF answer above is "not extracted" for a title that is fully
+        # extracted - the UDAS packs are the real inventory there (gbox.re4gc_inventory.switch_inventory)
+        packs = _uds_packs(tid, limit=200)
+        if packs is not None:
+            out.update({"extracted": True, "edition": packs["edition"], "container": packs["container"],
+                        "packs": packs["packs"], "pack_count": packs["pack_count"], "totals": packs["totals"],
+                        "bin_header_sizes": packs["bin_header_sizes"], "payload_note": packs["payload_note"]})
+        return out
 
     @app.get("/api/decrypt-lab/swap-matrix", dependencies=[Depends(auth)])
     def decrypt_lab_swap_matrix(title: str):
