@@ -169,7 +169,7 @@ def test_a_fen_entry_is_a_wrapped_dds_and_its_header_reads():
     assert (t["width"], t["height"]) == (512, 256)
     assert t["format"] == "DXT3" and t["mipmaps"] == 7
     assert t["wrapper_bytes"] == 16 and t["dds_bytes_match"] is True
-    assert t["archive_number"] == 7
+    assert t["archive_number"] == 7 and t["name_hash"] == 7      # same field, honest name
     assert t["dds"][:4] == T.DDS_MAGIC
 
 

@@ -157,7 +157,7 @@ def fen_entry(data: bytes, index: int) -> bytes:
 #
 # Measured 2026-11-07: every entry of an `imagepackhd` archive is a 16-byte wrapper followed by a plain **DDS** file -
 # `44 44 53 20` ("DDS "), dwSize 0x7C, dwFlags 0xA1007, height/width, mip count, then the standard pixel-format block.
-# The wrapper is `u32 dds_bytes, u32 -1, u32 archive_number, u32 0`, and dds_bytes equals the entry size minus 16 on
+# The wrapper is `u32 dds_bytes, u32 -1, u32 name_hash, u32 0`, and dds_bytes equals the entry size minus 16 on
 # every entry checked. So the surface is not a private codec at all: it is BC (DXT) in a DDS container, which is what
 # every texture tool understands.
 DDS_MAGIC = b"DDS "
@@ -201,6 +201,10 @@ def fen_texture(data: bytes, index: int) -> dict:
     info = dds_info(entry[at:])
     declared = struct.unpack_from("<I", entry, 0)[0]
     return {"index": index, "entry_bytes": len(entry), "dds_bytes": declared, "wrapper_bytes": at,
+            # NOT an archive number: measured 2026-11-07, this reads 0xe75b707d for 00000006.pack.fen and
+            # 0xe7935c0f for 4400011c.pack.fen - both 0xe7..., i.e. a hash of the archive's resource name. The old name
+            # is kept so existing callers do not break, and `name_hash` is the honest one.
+            "name_hash": struct.unpack_from("<I", entry, 8)[0] if at >= 12 else None,
             "archive_number": struct.unpack_from("<I", entry, 8)[0] if at >= 12 else None,
             "wrapper": entry[:at],
             # informational: a variant whose wrapper is longer than 16 explains its own size this way
