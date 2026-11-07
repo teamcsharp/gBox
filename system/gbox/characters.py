@@ -641,18 +641,21 @@ def needs_for(game: dict) -> dict:
                 "writer (below) to big-endian + Xenon tiling", "Xenia folder mod like gbox/re6_tool.py"],
                 "have": "the GC/Wii writer (gbox/re4gc_models.py + gbox/re4wii.py); see docs/mercenaries.md"}
     if "resident evil 4" in t and plat in ("windows_native", "ps_modern", "switch"):
-        # The HD port's mesh BIN is now decoded (2026-11-07): gbox/re4hd_models.py reads positions, UVs, colours,
-        # weight sets/indices, bones and triangles from the 0x98 layout, cross-checked against the GameCube disc for the
-        # same slots (identical triangle/material/bone counts and identical unique position sets). What is missing is
-        # the WRITER, and the HD texture container (magic 0x12345678, not GX 0x0020AF30).
+        # The HD port's mesh BIN is decoded AND written (2026-11-07): gbox/re4hd_models.py round-trips 2,188 of 2,727
+        # slots byte-identically and its bin_from() rebuilds a slot from another pack's geometry, cross-checked against
+        # the GameCube disc (identical triangle/material/bone counts, identical unique position sets). Textures are the
+        # open half: the pack's descriptor names a texture id and carries no pixels, and the pixels live in the zlib
+        # imagepackhd archives (gbox/re4hd_tex.py opens them; the surface codec is not decoded).
         return {"target": "Leon (pl00 .udas)", "format": "RE4 HD BIN/TPL in pl*.udas (little-endian UDAS/DAT)",
                 "steps": ["read the HD BIN (done: gbox/re4hd_models.py)",
-                          "decode the HD TPL (magic 0x12345678) before a skin can be replaced",
-                          "write the HD BIN back, padding to the original slot size",
+                          "rebuild the slot from another pack's geometry (done: bin_from + pad_to)",
+                          "decode the surface codec and join a descriptor's texture id to an imagepackhd entry "
+                          "(gbox/re4hd_tex.py opens the archive; the codec and the join are open)",
+                          "retarget the donor's skin weights onto the slot's bone table",
                           "repack the little-endian UDAS/DAT (gbox/re4gc_inventory) into a LayeredFS mod folder"],
-                "have": "the HD reader (gbox/re4hd_models.py: 2,188 of 2,727 slots decode, the rest refuse with a named "
-                        "reason) and the container reader/writer path; the GameCube writer (gbox/re4gc_models.py) is "
-                        "the shape the HD writer has to follow"}
+                "have": "the HD reader and writer (gbox/re4hd_models.py: 2,188 of 2,727 slots round-trip byte-identically, "
+                        "the rest refuse with a named reason), the descriptor and archive readers (gbox/re4hd_tex.py), and "
+                        "the container reader/writer path; no in-game proof of a swap yet"}
     if "resident evil 4" in t and plat == "ps2":
         return {"target": "Leon (pl00 in the PS2 .das packs)", "format": "RE4 PS2 model packs (PS2 BIN variant, TIM2-like "
                 "textures)", "steps": ["read the PS2 DVD (ISO9660) packs", "a PS2 BIN reader/writer (the GC BIN layout differs: "

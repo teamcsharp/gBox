@@ -1,8 +1,9 @@
 # RE4 Switch (HD port) BIN meshes — decoded
 
-Status: **the HD BIN decodes**. `gbox/re4hd_models.py` reads one BIN slot into bones, positions, UVs, colours,
-weight sets, per-vertex weight indices and typed primitive runs, with a structural self-check that raises
-`BINError` instead of returning a plausible-looking mesh.
+Status: **the HD BIN decodes and re-encodes.** `gbox/re4hd_models.py` reads one BIN slot into bones, positions, UVs,
+colours, weight sets, per-vertex weight indices and typed primitive runs, with a structural self-check that raises
+`BINError` instead of returning a plausible-looking mesh.  The writer (`bin_write`/`bin_from`/`pad_to`, §10) is
+byte-identical on every slot the reader accepts.
 
 Measured 2026-11-07 against the extracted RomFS
 `/home/ehm_eckx/gBox_alt/switch/romfs/010099A00BC1E000` (title `010099A00BC1E000`, 162 `.udas` packs,
@@ -182,3 +183,134 @@ m.info["checks"]                        # the self-check that ran
 len(m.bones), m.n_verts, m.n_tris, m.bbox()
 m.pos, m.uv, m.colors, m.weight_idx, m.weights, m.mats
 ```
+
+## 10. Writer (2026-11-07)
+
+The write half now lives beside the decoder in `gbox/re4hd_models.py`:
+
+* `bin_write(m, verify=False)` — re-encode a decoded `Bin`.
+* `bin_from(bin_, *, pos=..., uv=..., colors=..., tris=..., bones=..., weights=..., weight_idx=..., aux=...)`
+  — build a BIN whose geometry comes from another source, returning bytes the decoder accepts.
+* `pad_to(data, size)` — pad a replacement to the original slot size, or refuse if it is bigger.
+
+### 10.1 How `bin_write` stays byte-exact
+
+`bin_read` now keeps every section verbatim in `Bin.raw["sections"]` (plus the bone table in `Bin.raw["bones"]`,
+the original order/starts, and signatures of the decoded bones and materials). `bin_write` writes those bytes back
+and rebuilds only a section whose live values differ from what was decoded:
+
+| live value | section rebuilt |
+|---|---|
+| `Bin.pos`, `Bin.uv`, `Bin.colors`, `Bin.weight_idx` | the fixed-stride arrays (the decoded tail after `n` vertices is kept) |
+| `Bin.weights` | the 8-byte weight-set records |
+| `Bin.aux` | the 0x50 stream (its own `Stream.raw` is the source of truth) |
+| `Bin.bones` | the 16-byte bone records |
+| `Bin.mats` | the material/primitive records, per-material headers preserved |
+
+Nothing else is re-derived. The packed header words (`0x28`, `0x38`, `0x3C`, `0x40`, `0x5C`), the `0x60`/`0x68`
+tables, the `0x80`/`0x84` pointers and the bytes after the last material record are copied. A header field whose
+target did not move is not even rewritten, so its exact byte stays. (One measured quirk the writer handles: the
+synthetic BINs alias `0x70`/`0x78` at one offset, while every real BIN measured keeps two separate copies; the
+layout writes an aliased table once and keeps both fields pointing at it.)
+
+### 10.2 Round-trip result over the real tree
+
+Run read-only on the Spark (`~/gBox_alt/switch/romfs/010099A00BC1E000/bio4/em/*.udas`), decoding each BIN with
+`bin_read`, re-encoding with `bin_write`, comparing bytes:
+
+| packs | BIN slots | decode | **byte-identical** | mismatch | refused |
+|---:|---:|---:|---:|---:|---:|
+| 162 | 2,727 | 2,188 | **2,188 (100 % of decoded)** | **0** | 539 |
+
+That is 78,011,456 original bytes re-emitted exactly in 1.2 s. The refusal classes are unchanged from §7 (66 no
+material record, ~250 primitive-count, ~200 shared-palette weight, plus bone-order refusals), i.e. the writer did
+not change which files the decoder accepts.
+
+Structure measured while checking the writer, useful for anyone reading a slot by hand:
+
+* every decoded file is a multiple of 32 bytes; sections are contiguous from 0x98 to EOF (no gaps, no tail);
+* every table start is `0x98 + 32k` (so `offset % 32 == 24`), and the first table is always `0x20` (weights);
+* 432 slots use `0x5C = 0x20010801` with neither `0x60` nor `0x68`; the 1,756 `0x20030818` slots all have `0x68`
+  (`extra_b`), and 958 of those also have `0x60` (`extra_a`).
+
+**What mismatched and how it was resolved.** The real tree produced no mismatch on the final writer. The first
+pass did fail on the synthetic fixture: `make_bin` points `0x70` and `0x78` at the same array, and a layout that
+wrote each header field independently duplicated that table (+32 bytes, shifting every later section). Fixed by
+treating equal decoded starts as one table. Separately, the synthetic multi-material fixture was not padding its
+records to their 32-byte stride; that was a bug in the fixture, not the writer. No mismatch was papered over by
+normalising both sides: the acceptance is raw bytes out == raw bytes in.
+
+### 10.3 The two GameCube rules, carried over
+
+1. **Pad every replacement to the original slot size.** `pad_to(data, size)` appends zero bytes (the GameCube
+   `swap_ganados` path appends `b"\0"`) and raises `BINError` when the replacement is larger instead of truncating
+   it. The reason is the same on Switch: the title reads the model in place, so a shorter file leaves the
+   original's tail readable and the game draws the ORIGINAL mesh out of it even though the new header is valid.
+   The measured slot sizes are 32-byte multiples, and trailing zeros do not disturb the decoder (the primitive walk
+   stops at the first non-record), so padding is inert data.
+2. **Never rewrite the model's bounding box.** The writer emits the positions the caller supplies; it never scales,
+   recentres or clamps them to a box. The packed words that carry bounds/flags (`0x28`, `0x38`, `0x3C`, `0x40`) are
+   preserved verbatim, so whatever box the surrounding slot carries is untouched. A rewritten box freezes the title
+   (measured on the GameCube work). The HD 0x98 BIN has no explicit bbox field to rewrite, which makes the rule
+   easy to honour and easy to violate by "helpfully" normalising positions — don't.
+
+### 10.4 Source swap: measured result
+
+The swap shape is:
+
+```python
+from gbox import re4hd_models as H
+dst = H.bin_read(dst_slot_bytes)          # the slot whose header/bones/material headers are kept
+src = H.bin_read(src_slot_bytes)          # the geometry donor
+out = H.bin_from(dst, pos=src.pos, uv=src.uv, colors=src.colors, tris=src.tris)
+assert len(out) <= len(dst_slot_bytes)
+slot = H.pad_to(out, len(dst_slot_bytes))
+```
+
+When the source has the slot's vertex count and topology (`tris=None` or equal to `dst.tris`), the primitive
+records are kept byte-for-byte and only the arrays are replaced. Otherwise `bin_from` spreads the source triangles
+over the slot's material headers in proportion to their decoded triangle counts, emits type-5 lists in sequential
+vertex order, and gathers the per-vertex arrays into that same order. Corners are duplicated (one vertex per
+triangle corner), which is how the HD format already stores split vertices.
+
+Read-only experiment on two real slots:
+
+| | dst `pl00.udas` slot at 1,088 | src `em10.udas` slot at 2,481,504 |
+|---|---:|---:|
+| bytes | 142,336 | 22,080 |
+| vertices / triangles | 3,425 / 2,519 | 531 / 379 |
+| materials / bones | 14 / 119 | 4 / 2 |
+| rebuilt result | **48,960 B**, 1,137 verts, 379 tris, 14 mats, primitive total 1,137 | |
+| checks | bbox equals the source bbox, bones equal the destination's, `pad_to` = 142,336 B and re-decodes | |
+
+The material triangle split for that run was
+`[67, 64, 64, 8, 4, 7, 6, 83, 3, 31, 7, 7, 4, 24]` (sum 379), so every slot material header survived with at
+least one primitive. A same-count run on the same character slot (translate its own positions, keep topology)
+returned exactly 142,336 B with the material/primitive records and the packed header words byte-identical, and the
+decoded bbox followed the translated positions — the writer did not touch a stored box.
+
+The failure mode is honest: on a tiny 2,848-byte slot the 379-triangle source rebuilt to 46,016 B and `pad_to`
+refused it (`replacement is 46016 B but the slot holds 2848 B`). A swap needs a destination slot with room, or a
+smaller source/decimation pass.
+
+### 10.5 What a character swap still needs
+
+* **Textures are a separate problem.** The HD TPL magic is `0x12345678`, not the GX `0x0020AF30`, and it is **not
+  decoded**. `bin_from` keeps the destination's material headers (material id, uv_set, markers) so the slot's
+  texture bindings are at least not invented, but there is no TPL reader/writer and no material→texture mapping
+  yet. A full skin swap needs both.
+* **Skinning/retarget is not done.** `bin_from` keeps the slot's bone table, but the rebuilt vertices get a
+  single-bone 100 % weight set by default. Source weights can be passed (`weights=`, `weight_idx=`) only if they
+  already index the destination bone table; the GC retarget (`re4gc_enemies.retarget` / `rig_roles`) has not been
+  wired to the HD rig.
+* **Fitting.** The fresh rebuild duplicates a vertex per triangle corner, so a source with as many triangles as the
+  destination can overflow the slot. Deduplication, strip encoding, a fitting ladder (collapse spare parts,
+  thin primitives, smaller textures, as `re4gc_zombies.swap_ganados` does) and a size check before `pad_to` are
+  still needed for a general swap.
+* **The 0x50 stream** written for new geometry is zeros; its semantics are still unproven (§8). If the title uses
+  it for normals/lighting, rebuilt meshes may shade wrong until that stream is understood.
+* **In-game proof.** Nothing was deployed or restarted this round. The gate reached is: the rebuilt BIN decodes
+  with every structural check, reports the new vertex/triangle/material numbers, and fits the original slot after
+  `pad_to`. The Switch title has not been asked to draw it.
+* **The 539 refused slots** still cannot be written because they cannot be decoded; the writer's 100 % mark is
+  100 % of the 2,188 accepted slots, not of the tree.
