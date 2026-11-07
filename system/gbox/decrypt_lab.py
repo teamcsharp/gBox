@@ -1312,6 +1312,27 @@ def install(app, store, config, auth, tactical_store=None):
         from .mercs import report_digest
         return {"v": FORMAT, **report_digest.digest(store)}
 
+    @app.get("/api/decrypt-lab/texture-descriptors", dependencies=[Depends(auth)])
+    def decrypt_lab_texture_descriptors(title: str, pack: str):
+        """What one HD pack asks for, texture by texture: dimensions, format and id, or a reference record.
+
+        The counterpart of `/textures`, which lists what the archives hold. They are deliberately kept apart: nothing
+        yet joins a descriptor to a surface, and a page that showed them side by side as if they were pairs would be
+        inventing a join.
+        """
+        tid = _title_id(title)
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
+        if not (root / "bio4" / "em").is_dir():
+            raise HTTPException(404, "this title keeps no bio4/em packs (it is not the HD RE4 port)")
+        try:
+            return {"v": FORMAT, "title": tid, **texture_descriptors(root, pack)}
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)[:200]) from exc
+
     @app.get("/api/decrypt-lab/pack-slots", dependencies=[Depends(auth)])
     def decrypt_lab_pack_slots(title: str, pack: str):
         """The BIN slots of one HD model pack: what a swap can target, with the ones the decoder refuses named.
@@ -1888,3 +1909,42 @@ def swap_pack(root, pack_inner: str, donor_pack: str, donor_bin: int = 0, *, slo
             "donor_verts": donor.n_verts, "donor_tris": donor.n_tris,
             "changed": result["changed"], "swapped": result["swapped"], "slots": result["slots"],
             "report": result["report"], "data": result["pack"]}
+
+def texture_descriptors(root, pack_inner: str) -> dict:
+    """What one HD model pack *asks for*: every `TPL` slot as an image descriptor or a reference record.
+
+    This is the other half of the texture inventory. The archive side (`hd_textures`) lists what exists; this lists what
+    a pack names - dimensions, format word and texture id - so the page can show the two sides of the join that is still
+    missing, instead of pretending the textures are matched to their pack.
+    """
+    from . import re4gc_inventory, re4hd_tex
+    root = Path(root)
+    packs = (root / "bio4" / "em").resolve()
+    target = (packs / (pack_inner or "").strip().replace("bio4/em/", "")).resolve()
+    if not str(target).startswith(str(packs)) or not target.is_file():
+        raise FileNotFoundError(f"no such model pack: {pack_inner}")
+    data = target.read_bytes()
+    try:
+        dat = next(e for e in re4gc_inventory.udas_entries(data, "<") if e["type"] == 0)
+    except (ValueError, StopIteration) as exc:
+        raise ValueError(f"not an HD model pack: {exc}") from exc
+    blob = data[dat["offset"]:dat["offset"] + dat["size"]]
+    rows, failures = [], []
+    for slot, (ext, off, size) in enumerate(re4gc_inventory.dat_entries(blob, "<")):
+        if ext != "TPL":
+            continue
+        try:
+            info = re4hd_tex.tex_info(blob[off:off + size])
+        except re4hd_tex.TexError as exc:
+            failures.append({"slot": slot, "error": str(exc)[:120]})
+            continue
+        rows.append({"slot": slot, "bytes": size, **{k: info.get(k) for k in
+                     ("kind", "width", "height", "format", "format_code", "id", "payload_type")}})
+    images = [r for r in rows if r["kind"] == "image"]
+    return {"pack": f"bio4/em/{target.name}", "bytes": len(data),
+            "slots": len(rows), "images": len(images), "references": len(rows) - len(images),
+            "ids": sorted({r["id"] for r in images if r.get("id") is not None}),
+            "rows": rows, "failures": failures,
+            "note": "dimensions here are the region a pack asks for; the archives hold whole surfaces, and the two have "
+                    "not been joined - a descriptor's (width, height) is routinely smaller than any matching surface, "
+                    "so these are sub-rects, not surfaces"}

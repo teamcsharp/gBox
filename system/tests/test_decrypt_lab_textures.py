@@ -108,3 +108,48 @@ def test_a_dds_pil_cannot_open_is_reported_as_a_value_error(hd_tree):
     (packs / "00000003.pack.fen").write_bytes(fen([wrapped(dds(64, 64, body=b"\xff" * 3))]))
     with pytest.raises(ValueError, match="did not decode"):
         L.hd_texture_png(hd_tree, "00000003.pack.fen", 0)
+
+
+def pack_with(*items):
+    """An HD pack whose DAT holds these slots (BIN-named, so the DAT layout is the one the readers expect)."""
+    n = len(items)
+    base = 16 + 4 * n + 4 * n
+    offsets, cursor = [], base
+    for item in items:
+        offsets.append(cursor)
+        cursor += len(item)
+    dat = bytearray(struct.pack("<II", n, 0) + b"\0" * 8)
+    dat += struct.pack(f"<{n}I", *offsets)
+    dat += b"TPL\0" * n
+    for item in items:
+        dat += item
+    hdr = bytearray(b"\xca\xb6\xbe\x20" * 8)
+    hdr += struct.pack("<IIII", 0, len(dat), 0, 0x400) + b"\0" * 16
+    hdr += struct.pack("<I", 0xFFFFFFFF)
+    hdr += b"\0" * (0x400 - len(hdr))
+    return bytes(hdr) + bytes(dat)
+
+
+def test_texture_descriptors_lists_what_a_pack_asks_for(tmp_path):
+    """The pack side of the texture inventory: image descriptors and reference records, kept apart from the archives."""
+    packs = tmp_path / "bio4" / "em"
+    packs.mkdir(parents=True)
+    image = bytearray(96)
+    struct.pack_into("<I", image, 0x00, 0x12345678)
+    struct.pack_into("<HH", image, 0x20, 64, 128)
+    struct.pack_into("<I", image, 0x24, 14)
+    struct.pack_into("<I", image, 0x28, 0x48)
+    struct.pack_into("<II", image, 0x48, 0x10, 46)
+    reference = bytearray(96)
+    struct.pack_into("<I", reference, 0x00, 0x12345678)
+    struct.pack_into("<I", reference, 0x20, 104)
+    (packs / "em11.udas").write_bytes(pack_with(bytes(image), bytes(reference)))
+    out = L.texture_descriptors(tmp_path, "em11.udas")
+    assert out["pack"] == "bio4/em/em11.udas"
+    assert out["images"] == 1 and out["references"] == 1
+    assert out["ids"] == [46]
+    row = out["rows"][0]
+    assert (row["width"], row["height"], row["format"], row["id"]) == (64, 128, "CMPR", 46)
+    assert "sub-rects" in out["note"]
+    with pytest.raises(FileNotFoundError):
+        L.texture_descriptors(tmp_path, "nope.udas")

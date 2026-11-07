@@ -122,3 +122,29 @@ catalogue is cached for 10 minutes so a page listing does not re-inflate on ever
 So the extraction tab now has, for the HD RE4 port: **packs listed** (models), and **textures listed and previewed**.
 What it still cannot do is say "this pack's texture 46 is *that* surface" - the join - and that is the remaining work
 on this line.
+## The texture join: three hypotheses tested, all falsified (2026-11-07)
+
+The one gap left before RE4 Switch skins. The pack side and the archive side are now both readable, so the question is
+purely how a descriptor's texture id (0..191, 108 distinct) reaches an `imagepackhd` entry. Everything tried:
+
+1. **`id` names an archive.** Falsified: `id 45` asks for 32x128 CMPR, archive `00000045.pack.fen` holds 192x192 DXT5
+   surfaces (0 exact matches), and archives 47/48 do not exist at all while descriptors ask for them.
+2. **Descriptors are whole surfaces, matched by shape.** Falsified on counts: across every `em` pack there are 180
+   descriptors of 64x128 against 96 surfaces of that shape in 120 archives, and 66 of 32x128 against 3. A 1:1 shape
+   match is not there.
+3. **Format.** The descriptors say `CMPR` (the GX number, 14) while the archives store **DXT3/DXT5** - so the format word
+   in a descriptor is not the container's format either.
+
+What the numbers do say: a descriptor's dimensions are **systematically smaller** than the surfaces in the archives
+(32x128 and 64x128 regions; 128x128, 256x256, 512x512 and 1024x1024 surfaces), so descriptors are **sub-rects inside an
+atlas**, which is why shape matching cannot work. Finding them needs the atlas and the rect's origin, and neither is in
+the descriptor: the rect's position is almost certainly in the model's UVs, not the texture record.
+
+**Therefore the join is not a lookup that was missed - it is a coordinate question.** The next attempt should start from
+a model's UV range for a material and look for the atlas whose resolution makes those UVs land on the descriptor's
+region size, rather than from the descriptor's id.
+
+To make that work visible, the extraction tab now has both sides side by side under different routes:
+`GET /api/decrypt-lab/texture-descriptors?title=re4_switch&pack=em10.udas` reports what the pack asks for
+(75 slots: 33 image descriptors, 42 reference records, ids 45,46,47,48,66,...), against `/textures` which reports what
+the archives hold (680 DDS surfaces in 8 archives). They are deliberately not presented as pairs.
