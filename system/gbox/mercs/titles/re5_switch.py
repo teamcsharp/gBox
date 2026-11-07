@@ -1821,7 +1821,10 @@ class Bot:
         px, py, pz = p["pos"]
         if self.fire_down or self.quick or self.mode in ("rush", "hunt"):
             return
-        if now < self.break_until or p.get("motion") in MOTION_HELD or now < self.backoff_until:
+        if now < self.break_until or p.get("motion") in MOTION_HELD or now < self.backoff_until \
+                or now < self._rear_backoff_until:
+            # the rear clock is checked too: without it the arm re-armed every tick while the condition held, and the
+            # counter then read 77-274 "rear_backoffs" a round instead of the handful of separate retreats there were
             return
         e = min(behind, key=flat)
         d = flat(e)

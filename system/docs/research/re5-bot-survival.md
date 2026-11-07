@@ -243,3 +243,25 @@ Two things follow.
 and press in (`lup` toward it) instead of detouring - the press is what makes the prompt appear, and the one round that took a bonus did
 it through a prompt. That is a small, testable edit at the end of the bonus-approach block, and this time there are fresh rounds to
 measure it against.
+## The fresh counters, and a metric that was lying
+
+First recorded rounds in eight hours (stock baseline, no overlay):
+
+```
+died  score 19,450  seen 11  taken 1  runs 10  knife_swings 0  detours 11  prompts 1  crowd_fire 95.6s  rear_backoffs 77
+lost  score 44,010  seen  8  taken 0  runs 12  knife_swings 0  detours 27  prompts 0  crowd_fire 83.1s  rear_backoffs 274
+```
+
+Three things worth reading off it:
+
+1. **The knife still never swings** (`knife_swings 0` twice, 19 statues seen between them) while the bot circles (`detours` 11 and 27).
+   The reach radius was not the gate, as the first round showed.
+2. **The crowd-hold change is doing what it was meant to**: `crowd_moves 0` with `crowd_fire_s` of 83-96 s in a round - the gun stays up
+   in a crowd instead of walking out of it. Whether that is better is for the gate, but the behaviour is live and the deaths are fewer than
+   the old cluster rate suggests (not yet enough rounds to say).
+3. **`rear_backoffs` was a bad metric.** 274 "rear back-offs" in a ~180 s round is not 137 s of retreating; the arm guard checked
+   `self.backoff_until` (the FRONT clock) but not `self._rear_backoff_until`, so it re-armed on every tick while the condition held and
+   counted each re-arm. It now checks its own clock as well, so the counter will report separate retreats. That number was feeding the
+   death clusters, which is exactly the kind of thing that makes a cause look bigger than it is.
+
+Deployed and hash-verified; 25 tests pass across `test_re5_switch_cycle` and `test_re_switch`.
