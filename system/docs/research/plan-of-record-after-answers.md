@@ -248,3 +248,41 @@ Twice now the experiment was "patch a file, look at a screen, conclude". A file 
 conclusion unsupportable in both directions. The rule from here: **the file must be identified from the game's own
 reference to it first** - the same way the Switch texture join was solved (`"%s\%s\%08x.pack.fen"` out of the ELF), not by
 guessing from a directory listing.
+## Round 59: the game's own path strings (2026-11-07)
+
+The font test's negative result prompted the question the earlier rounds should have asked first: **what names does the game
+actually open?** The DOL answers it directly.
+
+```
+$ strings on the DOL (2,168,544 bytes)
+Font/common_j.fnt   Font/system_j.fnt   Font/common_p.fnt   Font/stage%1d_j.fnt   Font/event%1d_j.fnt
+em/em1f.das         em/pl00.das         em/wep01.das        em/wep02.das        em/em20.das ...
+```
+
+Two things in that output matter, and both were invisible from a directory listing:
+
+1. **The font path is capitalised `Font/`, and the disc's FST says `font/`.** If the loader's lookup is case-sensitive, a
+   request for `Font/common_p.fnt` does not find `font/common_p.fnt` - and that alone explains why filling every glyph atlas
+   changed nothing. The `.fnt` files may be perfectly patchable and simply never opened under the name the game uses.
+2. **The model archives the DOL names are `em/*.das`; the disc's are `em/*.drs`.** The disc does carry `.das` files - 90 of
+   them, all stage rooms (`St1/r100.das` …) - so `.das` is a real extension on this disc, and `em/*.das` appears in the DOL
+   while only `em/*.drs` exists in the FST. Either the loader swaps the extension, or `em/*.das` is a name that never
+   resolves and the model comes from elsewhere.
+
+Neither is a guess: both are strings in the executable, which is the same evidence that solved the Switch texture join
+(`"%s\%s\%08x.pack.fen"` out of the ELF). It also explains the shape of every negative result so far: the files were
+patched correctly, at correct offsets, on a disc the emulator definitely opened - and the game may never have asked for them
+by those names.
+
+**The next measurement is therefore not another patch.** It is: take `St1/r100.das` (the village room the bot walks into),
+write a few KB of `0xFF` over its head, and launch. A stage the game loads cannot survive that intact - it will fail to load
+or crash. If the village still loads normally, then the FST offsets in `gbox.gcdisc` are not the ones the game reads, and
+that is a parser question, not a modding one.
+
+## What is settled
+
+* the emulator opens the patched ISO and nothing else (`MARK disc tokens:` one path, round 58);
+* patched bytes are present at the FST offsets (verified by reading the mod ISO back);
+* there is exactly **one** copy of a font's data on the disc (scanned all 1.4 GB for its header, 1 hit);
+* no Riivolution/`Load` overlay shadows the disc (`Load/Riivolution` is empty);
+* and now: the names the DOL uses are `Font/*.fnt` and `em/*.das`.
