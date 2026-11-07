@@ -451,3 +451,31 @@ triangle), 6 plus the skipped real-pack case on a machine without the RomFS.
 
 **Still owed: a frame.** The operation is built and measured; the next step is the one that counts - write the modified pack
 into a LayeredFS build, launch with it, and look at the player. That is the first part-hide test that has a reason to draw.
+## Round 65: the part-hide runs in the game, and the first result is ambiguous
+
+Two builds were made and played, both in the Switch LayeredFS layout the tool expects
+(`mods/270a15eb98dab4d7/<build>/romfs/bio4/em/pl00.udas` plus a `layeredfs` marker - the first attempt wrote to
+`mods/010099A00BC1E000/…` and the launcher refused it with *"no built mod … for this game"*, because the folder is keyed by
+the **game id**, not the title id).
+
+| build | change | result |
+|---|---|---|
+| `re4sw-clothesless` | material 1 of `pl00` slot 0 collapsed: 564 vertices, 430 triangles, centroid `[-425.9, 1524.6, -38.0]` | **Leon renders normally** |
+| `re4sw-nomodel` | all 14 materials collapsed: 3,425 vertices, topology unchanged | **black frames for ten samples, session ended** |
+
+![Leon with material 1 collapsed](evidence/re4sw-clothesless-material1-normal.jpg)
+
+The round was a live Mercenaries round (`01'03"76`) and Leon is complete - so either material 1 is a part that is not visible
+from that camera (an inner surface, a LOD, teeth), or the pack was not loaded. **The all-collapsed control is consistent with
+the pack being loaded** - a model whose every material sits on one point can break a renderer - but "black screen and the
+session ended" is not proof of that either; a failed boot looks the same from a frame.
+
+**The next experiment is designed so it cannot be ambiguous:** shrink a material to **10% about its own centroid** rather than
+collapsing it. That cannot crash a renderer, and any visible part must shrink. If the player looks identical, the build is not
+being loaded and that is the answer; if it shrinks, the pipeline works and the material list can be bisected for the clothing
+one by mapping `material_id` to its texture.
+
+## The reusable piece this leaves behind
+
+`gbox/re4hd_hide.py` with 7 passing tests (the last on the real pack), and a build recipe that produces a valid LayeredFS
+mod in the layout the launcher accepts - the two things "remove clothes / swap clothes" need before any UI is worth wiring.
