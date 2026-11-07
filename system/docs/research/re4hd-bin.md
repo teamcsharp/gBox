@@ -375,3 +375,34 @@ donor, or a target slot with room), which is now a measurable decision rather th
 rebuilt_vertices(source_tris)  ~=  tris + 2 * strips     # measured 1.5 verts/triangle on these donors
 rebuilt_bytes                  ~=  rebuilt_vertices * ~41 B
 ```
+### Choosing the pair by budget: `rank_targets` (measured 2026-11-07)
+
+`re4hd_models.rank_targets(pack, donor, encoding="strip")` rebuilds one donor against **every** BIN slot of a pack and
+reports which can hold it, so a swap is aimed instead of guessed.
+
+A real donor - `em21` slot 0, **2,725 verts / 1,843 tris**, a character-sized mesh - ranked against all 120 BIN slots
+of `em10.udas` in **0.8 s**:
+
+| result | count |
+|---|---|
+| fits | **2** |
+| too_big | 94 |
+| undecodable (the decoder's own refusal classes) | 24 |
+
+```
+slot 543 (bin  76):  119,584 B into 228,768 B = 52%   (2,873 verts, 1,843 tris)
+slot 541 (bin  75):  119,776 B into 241,216 B = 50%   (2,875 verts, 1,843 tris)
+largest refusing:    115,200 B needed vs  98,624 B  = 117%
+```
+
+Two things follow, and they are the practical answer for "Sonic as the ganado":
+
+1. **Only the pack's two biggest meshes can host a character-sized donor.** The cliff is sharp - the next slot down
+   needs 117 % of its own size - so a character swap into `em10` has exactly two candidate targets, and both are
+   ~50 % full at strip encoding. There is real headroom in those two.
+2. **A lighter donor widens the set.** The 94 refusals are a budget statement, not a bug: a donor with fewer triangles
+   (or a decimated one) fits more slots, and the cost model says how many
+   (`rebuilt_vertices ˜ tris + 2·strips`, `bytes ˜ verts × 41`).
+
+That makes the next rung concrete: either target slots 541/543, or add a decimation step so a rich donor fits more of
+the pack.

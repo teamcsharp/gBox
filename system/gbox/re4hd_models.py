@@ -1218,3 +1218,48 @@ def load_slot(data: bytes, index: int = 0) -> Bin:
     _ext, off, size = bins[index]
     return bin_read(data[off:off + size])
 
+
+
+# ------------------------------------------------------------------ which slot can host a donor
+
+def rank_targets(pack: bytes, donor, *, encoding: str = "strip", endian: str = "<", limit: int = 0) -> dict:
+    """Try one donor against every BIN slot of a pack and say which slots it fits.
+
+    The size constraint is arithmetic, not guesswork: a rebuilt mesh has no index buffer, so its footprint follows the
+    donor's triangle count (measured 1.5 vertices per triangle once strips are used, ~41 B per vertex). Rather than
+    hand-picking a pair and discovering it does not fit - which is what round 8 did - this rebuilds the donor against
+    each decodable slot and reports the answer, so a character swap can be aimed at a slot that can hold it.
+
+    `donor` is a decoded `Bin` or BIN bytes. Slots that the decoder refuses, or a pair the writer refuses, are reported
+    with their reason instead of being skipped: a candidate list that hides its failures is what makes a swap look
+    random.
+    """
+    from .re4gc_inventory import bin_slots
+    src = donor if isinstance(donor, Bin) else bin_read(donor)
+    if src.pos is None or src.tris is None:
+        raise BINError("the donor has no geometry")
+    rows = []
+    for slot in bin_slots(pack, endian):
+        blob = pack[slot["offset"]:slot["offset"] + slot["size"]]
+        row = {"bin": slot["bin"], "slot": slot["slot"], "slot_bytes": slot["size"]}
+        try:
+            template = bin_read(blob)
+        except BINError as exc:
+            rows.append({**row, "status": "undecodable", "reason": str(exc)[:100]})
+            continue
+        try:
+            out = bin_from(template, pos=src.pos, uv=src.uv, colors=src.colors, tris=src.tris, encoding=encoding)
+        except BINError as exc:
+            rows.append({**row, "status": "refused", "reason": str(exc)[:100]})
+            continue
+        rebuilt = bin_read(out)
+        rows.append({**row, "status": "fits" if len(out) <= slot["size"] else "too_big",
+                     "bytes": len(out), "verts": rebuilt.n_verts, "tris": rebuilt.n_tris,
+                     "fill": round(len(out) / slot["size"], 3)})
+        if limit and sum(1 for r in rows if r["status"] == "fits") >= limit:
+            break
+    fits = [r for r in rows if r["status"] == "fits"]
+    return {"donor": {"verts": src.n_verts, "tris": src.n_tris}, "encoding": encoding,
+            "slots": len(rows), "fits": len(fits),
+            "best": max(fits, key=lambda r: r["fill"]) if fits else None,
+            "rows": rows}

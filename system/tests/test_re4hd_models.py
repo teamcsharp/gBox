@@ -578,3 +578,70 @@ def test_an_unknown_encoding_is_refused():
     pos, tris = grid_mesh(3)
     with pytest.raises(M.BINError, match="encoding must be"):
         M.bin_from(tmpl, pos=pos, tris=tris, encoding="fan")
+
+# ---------------------------------------------------------------- which slot can host a donor
+
+def pack_with(*bins):
+    """An HD pack holding these BIN slots, in order (little-endian UDAS/DAT)."""
+    n = len(bins)
+    base = 16 + 4 * n + 4 * n
+    offsets, cursor = [], base
+    for b in bins:
+        offsets.append(cursor)
+        cursor += len(b)
+    dat = bytearray(struct.pack("<II", n, 0) + b"\0" * 8)
+    dat += struct.pack(f"<{n}I", *offsets)
+    dat += b"BIN\0" * n
+    for b in bins:
+        dat += b
+    hdr = bytearray(b"\xca\xb6\xbe\x20" * 8)
+    hdr += struct.pack("<IIII", 0, len(dat), 0, 0x400) + b"\0" * 16
+    hdr += struct.pack("<I", 0xFFFFFFFF)
+    hdr += b"\0" * (0x400 - len(hdr))
+    return bytes(hdr) + bytes(dat)
+
+
+def test_rank_targets_says_which_slots_can_hold_a_donor_and_which_cannot():
+    """The size constraint is arithmetic: measured 1.5 verts/triangle with strips, ~41 B per vertex."""
+    small = M.bin_read(make_bin(n=6, bones=((0, 0xFF),), prims=((5, 6),)))
+    big = M.bin_read(make_bin(n=12, bones=((0, 0xFF),), prims=((5, 12),)))
+    pack = pack_with(M.bin_from(small, pos=small.pos, tris=small.tris),
+                     M.bin_from(big, pos=big.pos, tris=big.tris))
+    donor_pos, donor_tris = grid_mesh(5)                 # 25 verts, 32 triangles
+    donor = M.Bin(header=b"", info={})
+    donor.pos, donor.tris = donor_pos, donor_tris
+    donor.uv = None
+    donor.colors = None
+    out = M.rank_targets(pack, donor, encoding="strip")
+    assert out["donor"]["tris"] == 32
+    statuses = {row["bin"]: row["status"] for row in out["rows"]}
+    assert out["slots"] == 2 and len(statuses) == 2
+    # the answer is a decision, not a shrug: every slot is named, and the fits are a subset
+    assert all(s in ("fits", "too_big", "refused", "undecodable") for s in statuses.values())
+    assert out["fits"] == sum(1 for s in statuses.values() if s == "fits")
+    assert (out["best"] is None) == (out["fits"] == 0)
+    for row in out["rows"]:
+        if row["status"] == "fits":
+            assert row["bytes"] <= row["slot_bytes"] and row["fill"] <= 1.0
+
+
+def test_a_donor_that_fits_nowhere_reports_no_best_slot():
+    tiny = M.bin_read(make_bin(n=6, bones=((0, 0xFF),), prims=((5, 6),)))
+    pack = pack_with(M.bin_from(tiny, pos=tiny.pos, tris=tiny.tris))
+    donor_pos, donor_tris = grid_mesh(6)                 # far more triangles than that slot can hold
+    donor = M.Bin(header=b"", info={})
+    donor.pos, donor.tris = donor_pos, donor_tris
+    donor.uv = donor.colors = None
+    out = M.rank_targets(pack, donor, encoding="strip")
+    assert out["fits"] == 0 and out["best"] is None
+    assert [r["status"] for r in out["rows"]] == ["too_big"]
+    assert out["rows"][0]["bytes"] > out["rows"][0]["slot_bytes"]
+
+
+def test_rank_targets_needs_a_donor_with_geometry():
+    pack = pack_with(M.bin_from(M.bin_read(make_bin(n=6, prims=((5, 6),))),
+                                pos=M.bin_read(make_bin(n=6, prims=((5, 6),))).pos,
+                                tris=M.bin_read(make_bin(n=6, prims=((5, 6),))).tris))
+    empty = M.Bin(header=b"", info={})
+    with pytest.raises(M.BINError, match="no geometry"):
+        M.rank_targets(pack, empty)
