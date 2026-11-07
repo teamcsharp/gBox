@@ -172,3 +172,33 @@ Two operational notes from this round, both mine:
 * that race left the host "busy with jobs" while MercMode wanted to start RE5. The launch job reported `failed`; the
   scheduler recovered on its own, but the sequence cost two minutes and is exactly the kind of thing the document's
   restore order exists to avoid.
+## Round 57: the control runs, and the discriminator has not landed yet
+
+**What exists from before me, which changes the question.** Three builds sit in the cache from 2026-10-06 and 2026-11-06:
+
+| build | marker | patched files |
+|---|---|---|
+| `re4_aya` | `image: "RE4 Aya (Disc 1).iso"` | `em/pl00, pl08, pl09, pl10` |
+| `re4_enemies_peach` | `image: "re4_enemies_peach.iso"` | `em/em16, em46, em56, em66` |
+| `re4gsonic1512` | `image:` absent, `files: []` | none |
+
+`re4_aya` patches **the same four player archives** my Sonic build patches, and `re4_enemies_peach` patches four enemy
+archives - so this pipeline has produced builds before, and `re4gsonic1512`'s empty `files: []` is the same truth found in
+round 55: it was a copy.
+
+**The texture discriminator was inconclusive, for a reason worth writing down.** `ss/Cmn/f01.tpl` (511,456 bytes) had its
+pixel data filled and was injected - and the Select Player screen came up untouched:
+
+![Select Player, unchanged](evidence/re4gc-texprobe-select-player.jpg)
+
+That proves nothing either way, because nothing establishes that `f01.tpl` is on that screen. Choosing a texture by name is
+the same mistake as choosing a pointer by note: the experiment needs a file whose use is certain. **The next one uses the
+font** (`font/*.fnt`), because text is on every screen, so a change is unmistakable and a non-change is decisive.
+
+**The Aya control is unread.** It launched and reached Select Player, then every frame was identical (`mean 62.4` for seven
+samples) - a stall, not a change. The portraits on that screen are textures, not the player model, so the run could not
+have answered the question even if it had progressed.
+
+**What is established, and it is worth stating plainly:** the emulator opens the patched ISO (round 56), the archives on it
+are byte-verified different from the disc, and prior builds patched the same archives. What is **not** established is that
+any rebuilt archive has ever been drawn - including the ones built before I got here. That is the gap the font test closes.
