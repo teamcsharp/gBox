@@ -446,3 +446,36 @@ Read from the headers: version `0x0401`, offset size 2, id size 0, an entry coun
 to find the payloads by `HCA ` / `@UTF` magic, both failed - `core.awb` has neither magic anywhere - so the entry map
 and the payload codec are **not** established. `gBox` has no CRI reader to reuse. This is a real gap, recorded rather
 than guessed at; the next step is a proper `@UTF`/`AFS2` reference rather than more guessing from hex.
+## The replace step as a route: `pack-slots` and `pack-swap` (2026-11-07)
+
+The extraction tab can now offer "inventory -> pick a slot -> replace" for the HD port without any of the scripts the
+last ten rounds used.
+
+```
+GET  /api/decrypt-lab/pack-slots?title=re4_switch&pack=em11.udas
+POST /api/decrypt-lab/pack-swap   {title, pack, donor_pack, donor_bin, slots, build}
+```
+
+Measured live on the Spark:
+
+```
+em11.udas | 3,960,288 B | 33 slots | 29 decodable
+   bin 0 ok   59 v   41 t   1 bone    2,848 B
+   bin 1 ok 1482 v  822 t  10 bones  62,208 B
+   bin 2 ok 1613 v 1177 t  37 bones  66,976 B
+   ...
+
+swap: em11 <- em21#BIN0 (1,843 tris)
+   bin 32 swapped: 1,599 tris, 97,632 B, 99% fill, simplified
+   target: mods/270a15eb98dab4d7/lab-swap-test/romfs/bio4/em/em11.udas
+```
+
+Two properties that matter for a picker:
+
+* **the slot list names its unusable entries** (4 of em11's 33 are `undecodable`, with the decoder's reason). A target
+  list that hides them invites a click that cannot work;
+* **a slot that cannot take the donor at any budget says `too_big`** rather than failing the whole call - the caller
+  sees one verdict per slot, and `changed: false` with no write when nothing took.
+
+The route writes the patched pack into the named LayeredFS build at its **own size** (the GameCube rule); it never
+resizes the pack.

@@ -516,6 +516,20 @@ class StripClothesIn(BaseModel):
     build: str = "gbox-lab"
 
 
+class PackSwapIn(BaseModel):
+    """Replace slots of an HD model pack with a donor pack's mesh (the RE4 Switch replace step).
+
+    `slots` is a list of BIN indexes; empty means every slot the donor can reach. The donor is named by pack and BIN
+    index, so a page can offer "this enemy, as that mesh" without the caller having to extract anything first.
+    """
+    title: str
+    pack: str
+    donor_pack: str
+    donor_bin: int = 0
+    slots: list[int] = []
+    build: str = "gbox-lab"
+
+
 class ZombieCastIn(BaseModel):
     """Replace the enemies a round spawns with the game's own cast, as one build (the 'Zombies -> cast' action).
 
@@ -1298,6 +1312,56 @@ def install(app, store, config, auth, tactical_store=None):
         from .mercs import report_digest
         return {"v": FORMAT, **report_digest.digest(store)}
 
+    @app.get("/api/decrypt-lab/pack-slots", dependencies=[Depends(auth)])
+    def decrypt_lab_pack_slots(title: str, pack: str):
+        """The BIN slots of one HD model pack: what a swap can target, with the ones the decoder refuses named.
+
+        The picker's target list. `bin` is the index the swap takes (the Nth BIN), `slot` is the DAT index.
+        """
+        tid = _title_id(title)
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
+        if not (root / "bio4" / "em").is_dir():
+            raise HTTPException(404, "this title keeps no bio4/em packs (it is not the HD RE4 port)")
+        try:
+            return {"v": FORMAT, "title": tid, **pack_slots(root, pack)}
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.post("/api/decrypt-lab/pack-swap", dependencies=[Depends(auth)])
+    def decrypt_lab_pack_swap(body: PackSwapIn):
+        """Replace slots of one HD model pack with a donor pack's mesh and write the result into a build.
+
+        The replace step of the pipeline, as a route: it reads both packs from the extracted tree, lets `plan_swap`
+        fit the donor to each slot it is given (simplifying only where it must), patches the pack **in place at the
+        slot's own size** - the rule the GameCube work paid for - and writes it into the named LayeredFS build. The
+        response carries the per-slot verdict so the page can show what went in and what did not.
+        """
+        tid = _title_id(title := body.title)
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
+        try:
+            result = swap_pack(root, body.pack, body.donor_pack, body.donor_bin, slots=body.slots)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(400, str(exc)[:200]) from exc
+        if not result["changed"]:
+            return {"v": FORMAT, **{k: v for k, v in result.items() if k != "data"},
+                    "note": "no slot took the donor; nothing was written"}
+        folder = _mod_build(body.title, body.build)
+        target = folder / "romfs" / "bio4" / "em" / Path(result["pack"]).name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(result["data"])
+        lab_state.event(body.title, "pack-swap",
+                        f"{result['swapped']} slot(s) of {result['pack']} took {result['donor']}",
+                        {"build": body.build, "swapped": result["swapped"]})
+        return {"v": FORMAT, "ok": True, "target": str(target), "bytes": len(result["data"]),
+                **{k: v for k, v in result.items() if k != "data"},
+                "note": "the overlay applies when the title next boots (LayeredFS)"}
+
     @app.get("/api/decrypt-lab/textures", dependencies=[Depends(auth)])
     def decrypt_lab_textures(title: str, archives: int = 40):
         """An HD title's texture catalogue: every DDS surface in the archives walked, with its size and format.
@@ -1759,3 +1823,68 @@ def install(app, store, config, auth, tactical_store=None):
                 "arcs": rows, "swapped": len(done), "spawned": len(on_disk),
                 "note": ("the overlay applies when the title next boots (LayeredFS)" if done
                          else "no enemy archive could take a cast model")}
+
+
+def pack_slots(root, pack_inner: str, endian: str = "<") -> dict:
+    """The BIN slots of one HD pack, with what a swap target needs: size, vertex/triangle count, bones.
+
+    This is the list a picker offers before anything is replaced - the swap side of "inventory, view, replace". A slot
+    the decoder refuses is listed with its reason, because a target list that hides its unusable entries invites a click
+    that cannot work.
+    """
+    from . import re4gc_inventory, re4hd_models
+    root = Path(root)
+    packs = (root / "bio4" / "em").resolve()
+    target = (packs / (pack_inner or "").strip().replace("bio4/em/", "")).resolve()
+    if not str(target).startswith(str(packs)) or not target.is_file():
+        raise FileNotFoundError(f"no such model pack: {pack_inner}")
+    data = target.read_bytes()
+    rows = []
+    for slot in re4gc_inventory.bin_slots(data, endian):
+        blob = data[slot["offset"]:slot["offset"] + slot["size"]]
+        row = {"bin": slot["bin"], "slot": slot["slot"], "bytes": slot["size"]}
+        try:
+            model = re4hd_models.bin_read(blob)
+        except re4hd_models.BINError as exc:
+            rows.append({**row, "status": "undecodable", "reason": str(exc)[:100]})
+            continue
+        bound = model.bbox()
+        rows.append({**row, "status": "ok", "verts": model.n_verts, "tris": model.n_tris,
+                     "bones": model.n_bones, "materials": len(model.mats),
+                     "height": round(float(bound[1][1] - bound[0][1]), 1)})
+    return {"pack": f"bio4/em/{target.name}", "bytes": len(data), "slots": len(rows), "rows": rows,
+            "decodable": sum(1 for r in rows if r["status"] == "ok")}
+
+
+def swap_pack(root, pack_inner: str, donor_pack: str, donor_bin: int = 0, *, slots=None,
+              endian: str = "<") -> dict:
+    """Replace the given slots of one HD pack with a donor pack's mesh, in one call.
+
+    This is the replace half of the pipeline as an operation rather than a script: it reads both packs out of the
+    operator's extracted tree, lets `plan_swap` choose the fitting/simplification per slot, and returns the patched pack
+    with a per-slot report. The caller decides where the bytes go (a LayeredFS build), so nothing here writes.
+    """
+    from . import re4gc_inventory, re4hd_models
+    root = Path(root)
+    em = (root / "bio4" / "em").resolve()
+
+    def locate(name: str) -> Path:
+        clean = (name or "").strip().replace("bio4/em/", "")
+        target = (em / clean).resolve()
+        if not str(target).startswith(str(em)) or not target.is_file():
+            raise FileNotFoundError(f"no such pack: {name}")
+        return target
+
+    target_pack = locate(pack_inner)
+    donor_source = locate(donor_pack)
+    donor_data = donor_source.read_bytes()
+    picks = re4gc_inventory.bin_slots(donor_data, endian)
+    if not 0 <= int(donor_bin) < len(picks):
+        raise ValueError(f"the donor pack holds {len(picks)} BIN slot(s); #{donor_bin} is out of range")
+    pick = picks[int(donor_bin)]
+    donor = re4hd_models.bin_read(donor_data[pick["offset"]:pick["offset"] + pick["size"]])
+    result = re4hd_models.plan_swap(target_pack.read_bytes(), donor, slots=slots, encoding="strip", endian=endian)
+    return {"pack": f"bio4/em/{target_pack.name}", "donor": f"bio4/em/{donor_source.name}#BIN{donor_bin}",
+            "donor_verts": donor.n_verts, "donor_tris": donor.n_tris,
+            "changed": result["changed"], "swapped": result["swapped"], "slots": result["slots"],
+            "report": result["report"], "data": result["pack"]}
