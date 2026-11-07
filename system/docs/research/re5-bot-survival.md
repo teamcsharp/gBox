@@ -283,3 +283,15 @@ means the knife code remains dead in practice and the `KNIFE_*` constants are no
 
 One round is not evidence of improvement - the score varies 19k-53k across three rounds of the same build. The gate needs its eight,
 and the metric to watch is `bonuses_taken` against `bonuses_seen`, not the score.
+## Bisect result (round 223, before the reload)
+
+A one-file build with **uEm10 alone** (`em10only1857`, the 96,073,163-byte overlay file) **loads**: "PRESS ANY BUTTON" at +30 s
+(mean 23.8 / std 48.9, the same signature as the stock capture), then its attract screen goes dark at +180 s - exactly the stock
+behaviour. So the 97 MB archive on its own is fine, and the hang in the fourteen-file `cast-inverted` build is the **combination**:
+either a specific other archive among the thirteen, or the total overlay size / the number of overlaid files.
+
+Bisecting the rest is mechanical: build with the other thirteen one at a time (or halve the set) and test the same way. `em10only1857`
+is registered and launchable now, so the harness exists.
+
+Note: `files 14 | with problems 0` - every one of the fourteen parsed with the same entry count as its stock file, so this is not a
+corrupt archive; it is a load-time interaction.
