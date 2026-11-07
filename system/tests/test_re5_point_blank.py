@@ -11,6 +11,10 @@ import pytest
 
 from gbox.mercs.titles import re5_switch as R
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from test_re5_switch_rain import MUZZLE, at, bot, chest, snap
 
 
