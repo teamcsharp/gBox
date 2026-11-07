@@ -90,3 +90,29 @@ is elsewhere in a 5 MB executable - which is a *search* problem now, not a block
 **Shape containment was tried and is not an answer.** Using the full census (1,813 archives, 54,276 surfaces), `em16`
 (30 images: 13x 256x256, 5x 128x64, 3x 32x32, 3x 64x128) is fully contained by **15** archives, and `em11` (40 images)
 by **none**. Shapes do not identify an archive either way.
+## Nineteenth run: the decompiler works, and the `.udas` literal is indexed not referenced (2026-11-07)
+
+**The decompiler is real.** A probe over the smallest functions returns actual C - `FUN_00000170` (252 bytes of code)
+decompiles to 1,417 characters, `FUN_00000320` to 583 - so the arm64 build is sound and the empty results earlier were
+those particular functions, not the tool.
+
+**How the game names resources.** A literal scan plus an operand scan around it says something specific:
+
+* `.udas` sits at `0x6d08ca` and `.acb` at `0x6c8e38` in `main.bin`;
+* **nothing references them** - `getReferencesTo` returns zero, and a byte scan for an 8-byte pointer to either address
+  finds **no pointer** anywhere in the image;
+* an operand scan over `0x6d0700-0x6d0b00` finds `FUN_004f5e50` issuing `add x2,x2,#0x7ca -> 0x6d07ca` and
+  `0x6d07bf`, i.e. it works in that **extension-string neighbourhood** by address, while `.udas` itself at `0x6d08ca` is
+  reached by nothing at all.
+
+So an extension is taken from a table by **index**, not by name: the loader addresses a base and adds an offset, and the
+strings that no instruction names are entries in that table. That is consistent with everything the data side showed
+(no `imagepackhd` or `pack.fen` string exists anywhere in the executable) and it is the shape a texture-id table would
+have too.
+
+**What the next analysis needs** rather than more scanning: decompile `FUN_004f5e50` and its neighbours properly. They
+return empty C at a 180 s budget - enormous functions - so the next attempt needs either a longer budget, or the
+`Decompiler` parameter set trimmed (skip the "normalize"/"paramid" passes) so a 10 KB function gives output at all.
+
+The scripts now in `system/adapters/ghidra/scripts/` (`MemSearch`, `AddrScan`, `StrXrefs`, `Decomp`, `DecompProbe`,
+`TableRefs`, `TableDisasm`) each answer one question about this binary and are reusable for the other titles.
