@@ -60,3 +60,36 @@ than an empty layout that could be mistaken for one.
 limits, offset parsing in order, a field without an annotation staying out of the table, and a missing corpus reported
 instead of raised. One platform bug was caught: relative paths came back with `\` separators on Windows, so the module
 now normalises to `/`.
+
+## The rank was in RAM all along (2026-11-07)
+
+The same source documents both Mercenaries structures, offsets included:
+
+```
+MercResultInfo (MercSysWk + 0x00)          MercSysWork (0xCC bytes)
+  score      0x00   final score              score 0x24   combo 0x28   comboTimer 0x2C
+  time       0x04   1/100 s remaining        killCnt 0x34  kill 0x38   bonusKill 0x3C
+  maxCombo   0x08                            maxCombo 0x40  bonusScore 0x44  addTime 0x4C
+  kill       0x0C                            bonusTimer 0x50  mode 0x58  stage 0x5C
+  mode       0x10                            flags 0x60      ClearScore 0x78
+  rank       0x14   0..5 = N, D, C, B, A, S
+  hiScore    0x18   hiMode 0x1C   newRecord 0x20
+```
+
+`rank` is the field this system has been inferring from screenshots - the `rank_not_verified` ticket class, sixty open
+analyses. It is a small integer the game keeps itself, so a round can now carry `rank`/`rank_name` (and `hiScore`,
+`newRecord`, `stage`, `character`) as **RAM evidence** instead of a reading of the results screen.
+
+`gbox/re4_merc_ram.py` reads it: `result_info`, `work_state`, `rank_name`, `plausible`, `find_base`. Two details matter:
+
+* the **base is a parameter**, because the static symbol addresses and this system's live GameCube anchors disagree
+  (`EmMgr` is `.bss:0x802DE700` in the symbol map but `0x8027DF20` in `re4_editions.py`, verified live). Reading through a
+  caller-supplied base keeps the layout useful without importing an address that may belong to another build;
+* `find_base` **checks candidates** instead of trusting one: a rank outside 0..5, a mode outside the five characters, a
+  stage outside the four stages, or a combo in the thousands make an address implausible and the next candidate is tried.
+  The test that found this was written the other way round first (`rank is not None`, which accepted 9) - a number is not
+  a rank, and the code now says so.
+
+Symbols worth knowing from the map (`config/G4BE08/symbols.txt`, 7,395 functions and 5,402 objects with addresses):
+`MercSysWk .bss:0x80271AEC (0xCC)`, `EmMgr .bss:0x802DE700 (0x38)`, `Global .bss:0x802E0478 (0x8680)`,
+`SystemSave .bss:0x802E8AF8 (0x38)`, `pG .sdata:0x80314BC8`, `pSys .sdata:0x80314BCC`.
