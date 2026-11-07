@@ -393,7 +393,7 @@ def _confirm(where: str, now: float | None = None) -> str | None:
 def step(scr: dict, now: float | None = None) -> str | None:
     """One press toward the next round, or None to wait. Never a press on a screen no frame has named."""
     where = scr.get("where")
-    if where == "story":                                    # the story save list: cancel back to the menu, then walk on
+    if where in ("story", "story_prompt"):                  # the story save list and its confirm: cancel, never confirm
         return _recover_story(now)
     if where in ("main_menu", "extras_menu"):
         cur, tgt = scr.get("cursor"), scr.get("target")
@@ -413,7 +413,7 @@ def wandered(scr: dict) -> str | None:
     A story *screen* is not a story game: the walk cancels out of it (`step`) and keeps going. Only when the recovery
     budget is spent does the run end, because then the list is where this title is stuck.
     """
-    if scr.get("where") == "story":
+    if scr.get("where") in ("story", "story_prompt"):
         return "story game" if _story_presses >= STORY_RECOVER_MAX else None
     return None
 
@@ -423,7 +423,7 @@ def pressed(scr: dict, key: str, now: float | None = None) -> None:
     global _story_presses
     if key == "a" and scr.get("where") in CONFIRM_GAP_S:
         _confirmed[scr["where"]] = time.monotonic() if now is None else now
-    if key == STORY_RECOVER_KEY and scr.get("where") == "story":
+    if key == STORY_RECOVER_KEY and scr.get("where") in ("story", "story_prompt"):
         _story_presses += 1
     reader = scr.get("reader")
     if reader is not None:

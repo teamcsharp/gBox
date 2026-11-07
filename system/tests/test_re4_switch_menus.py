@@ -198,3 +198,20 @@ def test_a_new_walk_resets_the_cancel_budget():
     assert D.wandered(scr) == "story game"
     D.begin_run()
     assert D.wandered(scr) is None and D.step(scr, now) == D.STORY_RECOVER_KEY
+
+def test_the_story_confirm_dialog_is_never_confirmed(monkeypatch):
+    """2026-11-07: the "Load data? Yes / No" overlay matches no reference, so it read as unknown and a press meant for an
+    unnamed screen loaded a story save (the merchant's TUNE UP came up). After a story screen an unnamed frame is that
+    dialog, and it is cancelled."""
+    r = S.Reader()
+    monkeypatch.setattr(S, "classify", lambda _png: {"where": "story", "story": "story_load_list"})
+    assert r.read(b"")["where"] == "story"
+    monkeypatch.setattr(S, "classify", lambda _png: {"where": "unknown"})
+    scr = r.read(b"")
+    assert scr["where"] == "story_prompt"
+    assert D.step(scr) == D.STORY_RECOVER_KEY             # cancel, never confirm
+    # a named screen clears the arming, so an unrelated unknown is not mistaken for the dialog
+    monkeypatch.setattr(S, "classify", lambda _png: {"where": "mercs_title"})
+    r.read(b"")
+    monkeypatch.setattr(S, "classify", lambda _png: {"where": "unknown"})
+    assert r.read(b"")["where"] == "unknown"

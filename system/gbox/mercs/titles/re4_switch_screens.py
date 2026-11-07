@@ -138,13 +138,20 @@ def classify(png: bytes) -> dict:
 class Reader:
     """classify() plus what one frame can't know: that a stage is loading because THIS walk picked it, so the dark scene
     after that black is the round's intro. Its banners type out letter by letter over a moving camera, so no picture
-    names them, and A is what pages them. Harmless past the last page (3, 6 and 10 presses all measured the same)."""
+    names them, and A is what pages them. Harmless past the last page (3, 6 and 10 presses all measured the same).
+
+    The same trick covers the story save list's confirm dialog. Measured 2026-11-07: the walk strayed onto LOAD, the
+    "Load data? Yes / No" overlay matched no reference (it is drawn over the list), so it read as `unknown` and a press
+    meant for an unnamed screen loaded a story save (the merchant's TUNE UP came up). After a story screen, an unnamed
+    frame is that dialog, and it is cancelled - never confirmed.
+    """
     INTRO_MAX_PRESSES = 12
 
     def __init__(self):
         self.stage_picked = self.armed = False
         self.intro_presses = 0
         self.last_menu: tuple[str, int] | None = None
+        self.story_armed = False
 
     def press_went_in(self, where: str, key: str) -> None:
         if where == "round_intro" and key == "a":
@@ -166,6 +173,13 @@ class Reader:
             scr = {"where": self.last_menu[0], "cursor": self.last_menu[1], "held": True}
         elif where == "unknown" and self.armed and self.intro_presses < self.INTRO_MAX_PRESSES:
             scr = {"where": "round_intro"}
+        # the story save list, and the unnamed confirm drawn over it: both are cancelled, never confirmed
+        if where == "story":
+            self.story_armed = True
+        elif where in ("story_prompt",) or (where == "unknown" and self.story_armed):
+            scr = {"where": "story_prompt"}
+        elif where not in ("unknown", "menu"):
+            self.story_armed = False
         if scr["where"] == "menu":                           # no row read yet this run: nothing to act on
             scr = {"where": "unknown"}
         return scr
