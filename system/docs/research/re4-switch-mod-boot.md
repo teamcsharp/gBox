@@ -270,3 +270,34 @@ six packs is running (6 slots each, one build per pack, same walk, load-vs-hang 
 What this changes: the question is no longer "how much can be modified" but "which packs accept a replacement at all".
 That is a per-pack property to measure once, and then the picker can simply refuse a pack that will not load rather
 than hanging a stage.
+## The sweep, and what it actually settles (2026-11-07)
+
+Nine automated builds, one walk each, load-vs-hang as the signal. Same donor (the dog), same route, same reading of the
+screen:
+
+| build | packs | slots swapped | result |
+|---|---|---|---|
+| `re4-n2` / `-n4` / `-n8` / `-n26` | em11 only | 2 / 4 / 8 / **26** | all **played** |
+| `re4-em12` … `re4-em17` | one each | 6 each | all **played** |
+| `re4-allganado` | em11-em17 | **62** | **played** |
+| `re4-allem` | 77 | **1,723** | walk never reached a stage on the first attempt - **unattributed** |
+
+**Settled: round 18's "breadth of modification" conclusion was wrong.** One pack takes 26 of its 33 meshes; all seven
+Ganado packs take 62 swaps together and the round still loads and plays. The thing that hangs is the *patchwork*
+mesh - the every-sixth-triangle marker - not how much is replaced. The earlier 73-pack build hung because 47 of its
+swaps were patchworks.
+
+**Not settled, and it is now the central question:** with 62 swaps across every Ganado pack, the enemies in the round
+were **unchanged**.
+
+![the village with all seven Ganado packs swapped - the Ganados are untouched](evidence/re4switch-62swap-ganados-unchanged.jpg)
+
+Those Ganados did not come out of any slot that was replaced. Either the drawn enemy mesh is one of the slots that
+refused the donor (em11 alone leaves 7 of 33 untouched, several of them undecodable), or the Mercenaries enemies are
+read from a container this title keeps elsewhere. The `st1`/`st2` packs are room data (`r100`-`r108` and their `.dat`
+partners), not enemies, so "the enemies live in em/" is still the reasonable reading - but *which* slots draw the
+Ganado body is not identified.
+
+The 77-pack / 1,723-swap build is the one result that must not be read as a fact: it never reached a stage on its
+first attempt, and this project has already learned (round 6) that a single load verdict at a ~1-in-3 stall rate is a
+coin flip. It needs repeats before it means anything.
