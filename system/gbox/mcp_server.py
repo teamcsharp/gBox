@@ -286,6 +286,16 @@ CONVENIENCE = {
     "kb_search": ("Search gBox's knowledge base (wiki pages, learned facts, memory maps), optionally scoped to a game title.",
                   obj({"query": S, "game": S, "k": I}, ["query"])),
     "list_recipes": ("Learned tool recipes: verified step sequences gBox's agent saved and can replay.", obj({})),
+    "integrations": ("Every MCP integration this system can use as a tool (REA, the Ghidra bridge, ...), with whether it "
+                     "starts and how many tools it has. `probe` starts each one.",
+                     obj({"probe": {"type": "boolean"}})),
+    "integration_tools": ("What one integration can do, with the argument fields each tool takes. REA validates "
+                          "arguments strictly, so read `fields`/`required` before calling.",
+                          obj({"name": S, "search": S, "refresh": {"type": "boolean"}}, ["name"])),
+    "integration_call": ("Call one tool on one integration - how an agent uses an integration as a tool. Returns the "
+                         "integration's own result.",
+                         obj({"name": S, "tool": S, "arguments": {"type": "object"},
+                              "timeout": {"type": "number"}}, ["name", "tool"])),
 }
 RESOURCES = {"gbox://sessions": ("sessions", "Live game sessions"), "gbox://games": ("games", "Game library (first 500 + total)")}
 
@@ -696,6 +706,15 @@ def build(base_url: str, token: str) -> Server:
             return await get("/api/kb/search", q=a["query"], game=a.get("game", ""), k=a.get("k", 6))
         if name == "list_recipes":
             return await get("/api/recipes")
+        if name == "integrations":
+            return await get("/api/integrations", probe=bool(a.get("probe")))
+        if name == "integration_tools":
+            return await get(f"/api/integrations/{a['name']}/tools",
+                             search=a.get("search", ""), refresh=bool(a.get("refresh")))
+        if name == "integration_call":
+            return await post(f"/api/integrations/{a['name']}/call",
+                              {"tool": a["tool"], "arguments": a.get("arguments") or {},
+                               "timeout": a.get("timeout") or 0})
 
     async def list_tools(ctx, params):
         registry.clear()

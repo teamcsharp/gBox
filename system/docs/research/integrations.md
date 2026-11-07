@@ -80,3 +80,32 @@ round-trips, the catalogue probe, a broken command reported instead of raised, s
 refusals, recipe matching and the dry-run default. Two real bugs were caught this way - `shlex.split` eating Windows
 backslashes in a command line (`WinError 2` for a binary that exists) and the box claiming a package was missing because
 it looked only at `PATH`.
+
+## Employable by agents, not just by routes (2026-11-07)
+
+A registry and a call route only help something that can speak HTTP. gBox's own MCP server is what agents actually see,
+so the integrations are exposed there too, as three tools:
+
+| MCP tool | what an agent does with it |
+|---|---|
+| `integrations` | list what this system can use, `probe` to start each and count tools |
+| `integration_tools` | read one integration's tools **and the fields each requires** |
+| `integration_call` | call one tool |
+
+Verified by speaking to gBox's MCP server exactly as an agent would (stdio handshake, `tools/list`, `tools/call`):
+
+```
+server: {'name': 'gbox', 'version': '0.1.0'}
+tools: 180
+  integrations       present
+  integration_tools  present
+  integration_call   present
+integrations call  -> {"v": 1, ... ghidra: 27 tools, rea: 229 tools ...}
+```
+
+Before this, the server offered 177 tools and none of them could reach an integration. Now an agent calls
+`integration_call {name: "rea", tool: "procedure_pseudo_code", arguments: {...}}` and gets REA's own result back.
+
+One deployment trap worth recording: a `scp` inside a shell line that PowerShell failed to parse **never ran**, so the
+first probe reported the tools missing and the deployed file still had the old hash. The check that caught it was
+comparing `md5sum` on the host with the local hash - the same verification every deploy in this project uses.
