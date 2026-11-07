@@ -310,3 +310,42 @@ than a recorded crash. The service journal has no Dolphin exit line for it.
 
 **The next round's first action** is a warp into `r100` on `re4gc-stagebreak`, with the same warp on the unmodified disc as a
 control. Two launches, one bit of information: does the game read the file at the FST offset. No modelling, no bot.
+## Round 61: the reason nothing ever drew - our own FST parser pairs names with the wrong offsets (2026-11-07)
+
+The warp test itself was inconclusive (both runs landed on the same Ada scene), but checking *why* produced the answer to
+five rounds of negative results. Every GC archive carries a magic: `.drs` files begin `ca b6 be 20`. So a parsed offset for
+a `.drs` path that does not begin with that magic is a **wrongly paired file**, not a modelling problem:
+
+```
+.drs entries: 128 | magic at parsed offset:  11 | not the magic: 117
+.das entries:  90 | magic at parsed offset:  90
+```
+
+Examples, all `em/*`:
+
+```
+em/em10.drs  offset  832593344  head 836e834a   <- not a DRS
+em/em11.drs  offset  843221344  head 836e834a
+em/em16.drs  offset  873769984  head 836e834a
+em/pl00.drs  offset  240678972  head cab6be20   <- correct
+```
+
+**This is the explanation for every "patched, verified, and not drawn" result in this session** - the 58 enemy packs, the
+four player archives, and the prior session's `re4_aya` and `re4_enemies_peach` builds: they were written at offsets the
+parser produced, and for 117 of 128 archives those offsets are not where the archive is. The write succeeded, the size
+matched, the emulator opened the ISO - and the game read the real archive, untouched, a few kilobytes elsewhere.
+
+It also explains the pattern in the failures: `em/pl00.drs` parses correctly (one of the 11), which is why a rebuild of it
+could look plausible, and every `.das` stage archive parses correctly, which is why the stage file could be read properly
+while the model archives could not.
+
+**What is not yet known: the correct rule.** `parse_fst` reads 12-byte entries `{u8 is_dir, u24 name offset, u32 file
+offset|parent, u32 size|next}` and takes name offsets relative to the name table (`fst[n*12:]`). One alternative - name
+offsets relative to the FST start - was tried and is not it (the walk raised on an out-of-range name). The next step is the
+one that should have come first: **walk the FST by hand against the raw bytes**, with the magic check as the scoreboard, until
+128 of 128 land on their magic. `system/tools/probes/probe_gc_fst_offsets.py` does the scoring and is the test to run after
+every change.
+
+**The bar for the fix:** `probe_gc_fst_offsets.py` reports 0 mispairings, and only then is any archive patch re-run. Until
+then every model-swap build in this repository - mine and earlier ones - is unverified, because it cannot have been applied
+to the file the game reads.
