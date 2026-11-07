@@ -112,3 +112,35 @@ rewrite, the padding-and-write path is sound.
 **What this costs and what it doesn't.** The model work is not the blocker here - the archives exist and the injection is
 byte-verified. The blocker is identifying which archive the drawn character comes from, which is a lookup in the game's
 own loader, not a modelling problem.
+## Enemies as Sonic: 58 packs rebuilt, injected, and still stock (2026-11-07)
+
+`gbox.re4gc_zombies` (the collection path the answers approved) rebuilt **58 `em/*.drs` packs** from
+`~/agent-work/re4chars/sonic_src.glb` with the service's own interpreter:
+
+```
+~/gBox/system/.venv-linux-aarch64/bin/python -m gbox.re4gc_zombies --iso <disc> --model sonic_src.glb --out ...
+fitted: true  how: keep=4 tex=64  bytes: 5122720  disc: 5376864   (em10)
+```
+
+The system `python3` cannot run it at all (`pydantic 1.10.26`, no `model_validator`) - the service venv is
+`pydantic 2.13.5`, which is why the venv interpreter is the one in use from here.
+
+All 58 packs are the **same size as their disc entries** (the builder keeps a budget), so all 58 were written in place at
+their FST offsets into a fresh build (`re4gsonic_enemies`), with `"image": "re4-d1.iso"` set so `filemods.launch_path`
+returns the ISO.
+
+**The result is stock.** In a live round the player is Leon and the Ganado in view is an ordinary villager:
+
+![stock Ganado in the rebuilt-enemy build](evidence/re4gc-sonic-enemies-stock-ganado.jpg)
+
+That is now **two** builds - player archives (`pl00/pl08/pl09/pl10`) and enemy archives (58 `em/*`) - each verified at the
+byte level to differ from the disc, and neither drawn. The model work is not the variable any more; the **file Dolphin
+opens** is. Two possibilities remain and one command decides it:
+
+1. the adapter launches the library `.gcz` regardless of the mod path (the `FileNotFoundError` proves `launch_path` is
+   consulted, not that its result is used); or
+2. Dolphin opens the ISO and the game loads models from somewhere else entirely.
+
+The deciding check is the Dolphin process's own command line during a run (`pgrep -af dolphin` for the `-e`/`--exec` and
+the game argument): if it names the library `.gcz`, the build is never used and every injection test so far has been
+measuring the wrong file. That check is the first thing next round, before any further build.
