@@ -148,3 +148,36 @@ To make that work visible, the extraction tab now has both sides side by side un
 `GET /api/decrypt-lab/texture-descriptors?title=re4_switch&pack=em10.udas` reports what the pack asks for
 (75 slots: 33 image descriptors, 42 reference records, ids 45,46,47,48,66,...), against `/textures` which reports what
 the archives hold (680 DDS surfaces in 8 archives). They are deliberately not presented as pairs.
+## The UV-span test, and why the join needs either a census or the executable (2026-11-07)
+
+The idea worth testing: a descriptor names a region `w x h`, a material's vertices carry UVs in [0,1], so
+`w / span_u` and `h / span_v` should both give the atlas resolution and both agree on a power of two. That is a join with
+no id involved at all.
+
+**Result: it only ever matches when the span is ~1.0.** Measured over three packs:
+
+```
+em10: 6 of 200 materials, every match a span of 0.996-1.000 onto a 64x64 descriptor
+em16: 4 of  77 materials, the same shape of match
+em11: 2 of 109 materials
+```
+
+So the method is not wrong, it is **uninformative**: the great majority of materials use the full 0..1 UV range, which is
+consistent with "the descriptor IS the surface" for those and impossible to distinguish from "the descriptor is a region
+of an atlas that the material happens to fill". Two readings fit the same measurement, so the measurement cannot decide.
+
+**What would decide it - and why it is now a background job.** Counting can: 174 descriptors of 64x64 exist across the
+`em` packs, and the 120 archives sampled so far hold 107 surfaces of that shape. If the full tree holds *thousands* of
+64x64 surfaces, shapes are shared and counting says nothing; if it holds a comparable number, a descriptor is one
+surface. That is a census of 1,813 archives of zlib - **0.2 archives/s, about 2.5 hours** - so it is written as a
+resumable job (`~/gBox_alt/re4-lab/surface-census.progress.json`, output `surface-census.json`) and left running in the
+background rather than blocking a round:
+
+```
+     50 archives, 2,999 surfaces ({'128x128': 887, '256x256': 413, '1024x1024': 293, '192x192': 289})
+```
+
+**The other route is the executable.** How a texture id resolves to a surface is a code path, and this objective names
+"the gidra systems" for exactly this kind of question: `docs/ghidra-service.md` describes the service, and the answer
+(an index table or a hash lookup in the title's own loader) is worth more than any amount of shape guessing. That is the
+step to take when the census comes back ambiguous.
