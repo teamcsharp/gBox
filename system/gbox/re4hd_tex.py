@@ -300,3 +300,92 @@ def archive_for(root, texture_id: int) -> dict:
     path = folder / name
     return {"id": int(texture_id), "archive": name, "present": path.is_file(),
             "bytes": path.stat().st_size if path.is_file() else 0}
+
+# ------------------------------------------------------------------ writing a texture back
+
+def _entry_slices(body: bytes, offsets: list[int], count_b: int) -> list[tuple[int, int]]:
+    ends = list(offsets[1:]) + [len(body)]
+    return [(offsets[i], ends[i]) for i in range(count_b)]
+
+
+def fen_patch(data: bytes, index: int, replacement: bytes, *, allow_resize: bool = True) -> bytes:
+    """Replace one entry of a FEN archive and re-deflate it.
+
+    The entry table is a list of 64-bit offsets into the decompressed body, so a replacement that changes length is
+    still a coherent archive: every later offset shifts by the same delta and the declared size is the new body size.
+    `allow_resize=False` demands a byte-exact fit instead, which is the rule the GameCube writer uses (a patched pack
+    keeps its slot sizes) and the safer choice when something outside the archive has cached a size.
+
+    `count_a` is left untouched: it is not the entry count and is not understood, so this carries it through rather than
+    inventing a value.
+    """
+    opened = fen_open(data)
+    if "offsets" not in opened:
+        raise TexError(f"this FEN's entry map is not usable: {opened.get('note')}")
+    offsets, count_b = opened["offsets"], opened["count_b"]
+    if not 0 <= int(index) < count_b:
+        raise TexError(f"entry {index} is out of range (this archive has {count_b})")
+    body = bytearray(opened["body"])
+    start, end = _entry_slices(bytes(body), offsets, count_b)[int(index)]
+    existing = end - start
+    if not allow_resize and len(replacement) != existing:
+        raise TexError(f"entry {index} is {existing} bytes and the replacement is {len(replacement)}; "
+                       f"pass allow_resize=True to change the archive's layout")
+    delta = len(replacement) - existing
+    new_body = bytes(body[:start]) + bytes(replacement) + bytes(body[end:])
+    new_offsets = [o if o <= start else o + delta for o in offsets]
+    header = bytearray(new_body[:8 + 8 * count_b])
+    struct.pack_into(f"<{count_b}Q", header, 8, *new_offsets)
+    rebuilt = bytes(header) + new_body[8 + 8 * count_b:]
+    packed = zlib.compress(rebuilt, 9)
+    return struct.pack("<I", len(rebuilt)) + packed
+
+
+def fen_replace_texture(data: bytes, index: int, dds: bytes, *, allow_resize: bool = True) -> bytes:
+    """Put a whole DDS surface into one entry, keeping whatever wrapper the entry already had.
+
+    Archives store an optional header before the `DDS ` magic (16 bytes usually, 64 in one measured case) whose first
+    word is the DDS byte count. That wrapper is carried over and its count updated, so the result keeps the shape the
+    reader expects.
+    """
+    if not dds.startswith(DDS_MAGIC):
+        raise TexError(f"the replacement does not start with {DDS_MAGIC!r} (it is a DDS surface file, not a PNG)")
+    opened = fen_open(data)
+    if "offsets" not in opened:
+        raise TexError(f"this FEN's entry map is not usable: {opened.get('note')}")
+    start, end = _entry_slices(opened["body"], opened["offsets"], opened["count_b"])[int(index)]
+    entry = opened["body"][start:end]
+    at = entry.find(DDS_MAGIC)
+    wrapper = bytearray(entry[:at]) if at > 0 else bytearray()
+    if wrapper and len(wrapper) >= 4:
+        struct.pack_into("<I", wrapper, 0, len(dds))
+    return fen_patch(data, index, bytes(wrapper) + bytes(dds), allow_resize=allow_resize)
+
+def solid_dds(width: int, height: int, rgb: tuple[int, int, int], *, fourcc: str = "DXT5") -> bytes:
+    """A DDS surface of one flat colour, built block by block - no compressor needed, and valid for the GPU.
+
+    Used to prove that a replaced texture is actually drawn: a magenta character is not ambiguous. DXT1 packs colour into
+    one 8-byte block, DXT3/DXT5 put an 8-byte alpha block in front of it.
+    """
+    if width <= 0 or height <= 0 or width % 4 or height % 4:
+        raise TexError(f"block formats need dimensions in fours, got {width}x{height}")
+    r, g, b = (max(0, min(255, int(c))) for c in rgb)
+    color = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+    colour_block = struct.pack("<HHI", color, color, 0)
+    if fourcc == "DXT1":
+        block = colour_block
+    elif fourcc == "DXT3":
+        block = b"\xff" * 8 + colour_block                 # every pixel fully opaque
+    elif fourcc == "DXT5":
+        block = bytes([0xFF, 0xFF]) + b"\0" * 6 + colour_block
+    else:
+        raise TexError(f"solid_dds cannot build {fourcc}")
+    blocks = (width // 4) * (height // 4)
+    payload = block * blocks
+    head = bytearray(DDS_HEADER)
+    head[0:4] = DDS_MAGIC
+    struct.pack_into("<7I", head, 4, 0x7C, 0x00081007, height, width, max(1, width // 2), 0, 1)
+    struct.pack_into("<II", head, 0x4C, 32, 0x4)
+    head[0x54:0x58] = fourcc.encode("latin-1")
+    struct.pack_into("<I", head, 0x6C, 0x1000)             # caps: texture
+    return bytes(head) + payload
