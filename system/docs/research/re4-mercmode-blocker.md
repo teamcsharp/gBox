@@ -74,3 +74,32 @@ The GameCube build already has every anchor (`re4_editions.py`, verified live) a
 about **the Switch and Occulus titles**, whose assets are the ones this session has been decrypting, inventorying and
 writing - `em16`'s meshes, `ImagePackHD`'s archives, the FEN texture writer. Autoplay on that edition is what makes those
 mods observable in a moving game instead of a single screenshot.
+
+## Round 48: RE4 is in the MercMode rotation (2026-11-07)
+
+Two gates had to move, and one of them was a misreading of this system's own notes.
+
+**The Switch edition's `playable` flag.** `re_switch.preferred_spec` returned `'playable': False` for
+`RE4 (Switch, Mercenaries)` with `RE4_REASON` as the note. That reason names what is missing for the *snapshot* - the
+player unit pointer and the Mercenaries unit list - and those are still missing. But "cannot snapshot" is not "cannot
+play": with `gbox/re4switch_bot.py` (round 47) the title walks its menus and enters rounds from the screen. The flag now
+reads `playable: True` with `playbook: re4switch_bot` and a new key, `perception: "screen-only"`, so a caller can tell the
+difference without reading prose. `RE4_REASON` says the same thing in words: it cannot aim, count kills or read a rank, and
+a report from this title says so instead of inventing one.
+
+**The edition that actually launched.** With `preferred_editions` cleared, `preferred_spec` falls back to the **native**
+edition - the GameCube disc - and that is what MercMode started:
+
+```
+phase playing | title Resident Evil 4          session 78ab9efa2e310db4 (GC disc 1)
+frame: 00'44"80 | score 1200 | 4 in a row | HUNK
+```
+
+![RE4 playing in the MercMode rotation](evidence/re4-mercmode-rotation-playing.jpg)
+
+That is the mature GameCube bot (full RAM anchors) playing a real round through the rotation, which is the thing that
+had not been demonstrated. The Switch edition remains the one to finish for the Switch/VR goals, and it is now selectable
+rather than refused.
+
+**Note on ordering:** the two editions answer to the same title. `preferred_editions.re4 = switch` selects the port;
+clearing it selects the disc. Both are now `playable`, so the choice is explicit rather than a fallback.

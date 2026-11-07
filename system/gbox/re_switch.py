@@ -38,10 +38,11 @@ RE4_TITLE_ID = '010099A00BC1E000'
 RE4_GAME_ID = hashlib.sha1(
     b'quickswap-switch:Resident Evil 4/Resident Evil 4 [UPDATE 1.0.2] [010099a00bc1e000].nsp').hexdigest()[:16]
 RE4_DRIVER = 'gbox.mercs.titles.re4_switch'
-RE4_REASON = ('Switch RE4 Mercenaries runs on Citron NEO with the re4_switch driver. Boot and round entry are '
-              'verified (three A presses after the stage draws); the health offset (unit+0x3c2) and the score/'
-              'damage routines come from the decompiled module. Still missing for autoplay: the player unit '
-              'pointer and the Mercenaries unit list, so the driver cannot snapshot player or enemies yet.')
+RE4_REASON = ('Switch RE4 Mercenaries runs on Citron NEO with the re4_switch driver and plays from the screen '
+              'with the re4switch_bot playbook: it walks the menus, presses the verified round entry (three A presses '
+              'after the stage draws) and keeps the round going. Boot and round entry are verified; the missing pieces '
+              'are the player unit pointer and the Mercenaries unit list, so it cannot aim at enemies, count kills or '
+              'read a rank - a report from this title says so instead of inventing one.')
 RE4_UNLOCK_REASON = 'RE4 Switch Mercenaries is available from a fresh save (no unlock needed).'
 
 EDITIONS = {'re5': {'platform': 'switch', 'mode': 'no_mercy', 'title_id': RE5_TITLE_ID},
@@ -74,10 +75,15 @@ def preferred_spec(title, native_spec, settings):
                 'modes': ['no_mercy'], 'preferred_mode': 'no_mercy', 'stages': 10, 'characters': 4,
                 'driver': RE6_DRIVER, 'notes': RE6_REASON}
     if title == 're4':
+        # Playable since 2026-11-07: the missing pieces in RE4_REASON are the *snapshot* anchors (player unit pointer,
+        # Mercenaries unit list), and `gbox.re4switch_bot` plays this title from the screen instead - it walks the menus,
+        # presses the verified round entry and keeps a round going. It cannot aim or count kills, so `perception` says
+        # so and a round report carries no rank; MercMode refusing the title outright hid that capability.
         return {'name': 'Resident Evil 4 (Switch, Mercenaries)', 'platform': 'switch',
-                'map_id': RE4_TITLE_ID, 'game_ids': (RE4_GAME_ID,), 'playable': False,
+                'map_id': RE4_TITLE_ID, 'game_ids': (RE4_GAME_ID,), 'playable': True,
                 'modes': ['mercenaries'], 'preferred_mode': 'mercenaries', 'stages': 4, 'characters': 5,
-                'driver': RE4_DRIVER, 'notes': RE4_REASON}
+                'driver': RE4_DRIVER, 'playbook': 're4switch_bot', 'perception': 'screen-only',
+                'notes': RE4_REASON}
     return {'name': 'Resident Evil 5 (Switch, No Mercy)', 'platform': 'switch',
             'map_id': RE5_TITLE_ID, 'game_ids': (RE5_GAME_ID,), 'playable': True,
             'modes': ['no_mercy'], 'preferred_mode': 'no_mercy', 'stages': 8, 'characters': 10,
