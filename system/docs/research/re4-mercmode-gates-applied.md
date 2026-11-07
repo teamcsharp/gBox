@@ -82,3 +82,34 @@ stop the test session                        -> stopped
 
 No gap and no demo: the scheduler took the host straight back. This is the "games overriding me" problem solved by
 ordering, and it is now the only order used here.
+## Round 51: the enemy lead is class metadata, and one boot that never reached a round
+
+**`module+0xaed3b0` is not a stable address.** Read as a module offset on a live round it holds three words:
+
+```
+0x3CA86F13B0:  a7c0f2b0   3c    a7dadfd0
+```
+
+None is a guest pointer (the heap band is `0x3CA8…`), and `0x3c` reads like a count. So `0xaed3b0` names a *class* - which
+is what the document called it - and the address it was seen at belongs to one boot, not to the module. Chasing it as an
+offset wastes a boot; it is not one.
+
+What survives a boot is the **shape** the note describes: about 26 equal-sized objects carrying 1000. The reusable scan is
+therefore "find `u16 == 1000` across the mapped window, then look for the stride that repeats" - `ram/search` with
+`equals 1000`, then a gap histogram over the candidate addresses. That script is in `system/tools/probes/enemy_stride.py`
+and it did not get an answer this round, because the boot never reached a round:
+
+```
+MARK reached False
+```
+
+The walk reads frames and stops on `unknown` only after `select_stage` has been seen (the driver's own rule). On this boot
+that never happened, so it pressed nothing and exited - which is the correct behaviour, and also why the rotation had to be
+restored by hand afterwards: the script's restore block sits after the walk, so a failed walk skips it. That is a defect in
+the probe, not in gBox: **every probe that pauses the rotation must restore in a `finally`**, whichever way it exits.
+
+## The rule this round reinforced
+
+Three of the last four boots ended somewhere other than a round (a story load, an unclassified screen, a stalled load).
+The document's step 5 exists for exactly that: pause, launch, **prove the round is live before measuring anything**, and
+restore `enabled=true` first. A probe that measures first and discovers later costs a boot and leaves the host unsupervised.
