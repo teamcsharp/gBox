@@ -65,6 +65,25 @@ Still out of reach: pakchunk0 base assets (in patch OBB only), cooking-level con
 
 See `docs/research/mercmode-panel-swaps.md` for measured results and honest limits.
 
+**RE4 Switch (HD port): decrypt → inventory → view → write, with textures half-open (2026-11-07)**
+
+The Switch edition keeps the GC-era tree (`bio4/em/*.udas`) and the **same UDAS/DAT containers, little-endian**. That
+one fact made the whole pipeline available through the GameCube readers rather than a rewrite.
+
+| stage | state | where |
+|---|---|---|
+| decrypt / inventory | 162 packs, 2,727 BIN slots, 1,702 TPL slots, 0 errors | `re4gc_inventory.switch_inventory`, `/api/decrypt-lab/arc-layout` |
+| view | meshes decode: 2,188 slots (1,873,779 verts, 1,313,085 tris) | `re4hd_models.bin_read`, `/api/decrypt-lab/model-geometry` |
+| write | **2,188 of 2,188 decodable slots re-encode byte-identically**; cross-pack swap + pad_to work | `re4hd_models.bin_write` / `bin_from` / `pad_to` |
+| textures | descriptor + archive read; **no pixel codec** | `re4hd_tex.tex_info` / `fen_open` / `fen_entry` |
+
+Cross-check against the GC disc for the same slots: identical triangle/material/bone counts, identical bboxes, and
+identical **unique position sets** — the HD file splits vertices per corner and reorders them, with the same geometry.
+
+Still open, in order: the surface codec (format 14 assumed CMPR, unproven), the texture-id → `imagepackhd` entry join,
+skin-weight retargeting onto the slot's bone table, and **any in-game proof of a swap** (nothing has been deployed and
+booted with a swapped model yet). 539 slots refuse by design with a named reason and remain unwritable.
+
 ## Open, in priority order
 
 1. **Boot watchdog for Eden stalls.** The cast-inverted hang is an intermittent emulator GPU init stall, not a build problem.
