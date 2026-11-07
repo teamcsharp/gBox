@@ -202,3 +202,49 @@ have answered the question even if it had progressed.
 **What is established, and it is worth stating plainly:** the emulator opens the patched ISO (round 56), the archives on it
 are byte-verified different from the disc, and prior builds patched the same archives. What is **not** established is that
 any rebuilt archive has ever been drawn - including the ones built before I got here. That is the gap the font test closes.
+## The font test: every glyph filled, every label still crisp (2026-11-07)
+
+A font is on every screen, so filling the glyph bitmaps was chosen as the unambiguous read test. Two builds:
+
+| build | patched | result |
+|---|---|---|
+| `re4gc-fontprobe` | `font/common_p.fnt` - 98,796 bytes of glyph bitmap filled | title text normal |
+| `re4gc-fontall` | **every** `font/*.fnt` on the disc - 13 files, 33 KB to 525 KB of glyphs each | title text normal |
+
+![Title screen with every font filled](evidence/re4gc-fontall-title-text-normal.jpg)
+
+And the patch is on the disc that was opened - verified by reading the mod ISO back at the FST offset:
+
+```
+font/common_p.fnt  source bytes 52..80: 00100000000000020000002000000000100020003000400050007000
+                   mod    bytes 52..80: ffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+                   differing bytes: 97,575 | tail all 0xff: True
+```
+
+The emulator's complete argument list was also read, not substring-matched, and it carries exactly one disc:
+
+```
+MARK disc tokens: ['/home/ehm_eckx/gBox_alt/gbox-cache/mods/78ab9efa2e310db4/re4gc-fontall/re4-d1.iso']
+```
+
+`Load/Riivolution` was checked for an overlay that would shadow the disc: the directory exists and holds no files, so nothing
+is shadowing.
+
+**What this proves and what it does not.** It proves the ISO is the only disc, that the patched bytes are on it, and that a
+fully filled font atlas does not change a single label. It does **not** yet prove that the game ignores patched files: it is
+equally consistent with the menu labels being **pre-rendered textures** rather than the `.fnt` atlases (the `.fnt` files may
+serve subtitles or the Japanese text). Two experiments in a row have now been inconclusive for the same reason - the asset
+was chosen by name, not by evidence that the screen draws it.
+
+**The next test is chosen the other way round: find which file the screen draws from, then patch it.** For this title that
+means the stage archive, because the Ganados that appear in a village round may come from the stage package rather than
+`em/*.drs` - which would also explain why a complete, byte-verified rebuild of all 58 `em/*` archives changed nothing.
+That is the most valuable thing learned in this round: **the negative results are consistent with the wrong archive family,
+not with a broken write path.**
+
+## A method note, because it cost two rounds
+
+Twice now the experiment was "patch a file, look at a screen, conclude". A file whose use is not established makes that
+conclusion unsupportable in both directions. The rule from here: **the file must be identified from the game's own
+reference to it first** - the same way the Switch texture join was solved (`"%s\%s\%08x.pack.fen"` out of the ELF), not by
+guessing from a directory listing.
