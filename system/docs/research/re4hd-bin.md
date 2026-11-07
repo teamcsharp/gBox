@@ -1,8 +1,8 @@
-# RE4 Switch (HD port) BIN meshes — decoded
+# RE4 Switch (HD port) BIN meshes â€” decoded
 
 Status: **the HD BIN decodes and re-encodes.** `gbox/re4hd_models.py` reads one BIN slot into bones, positions, UVs,
 colours, weight sets, per-vertex weight indices and typed primitive runs, with a structural self-check that raises
-`BINError` instead of returning a plausible-looking mesh.  The writer (`bin_write`/`bin_from`/`pad_to`, §10) is
+`BINError` instead of returning a plausible-looking mesh.  The writer (`bin_write`/`bin_from`/`pad_to`, Â§10) is
 byte-identical on every slot the reader accepts.
 
 Measured 2026-11-07 against the extracted RomFS
@@ -23,30 +23,30 @@ All offsets are in the BIN slot. "u64\*" = a 64-bit little-endian file offset wh
 |---|---|---|---|
 | 0x00 | u32 | header size = **0x98** = bone-table offset | every slot in 2,727 starts with 0x98; the GC 0x40/0x60 is refused by name |
 | 0x0C | u32 | 0x50 (100 slots) or 0 | **unknown** (constant) |
-| 0x10 | u64\* | vertex colours, **RGBA8, 4 B/vertex** | span = exactly 4·n (+<32 B pad to the next table) in every decoded slot; content is constant 0xFFFFFFFF or 0x01010101 |
-| 0x18 | u64\* | UVs, **2 × f32, 8 B/vertex** | span = exactly 8·n; all values in [0,1] on a 1/256 grid |
-| 0x20 | u64\* | weight sets, **8 B/record, GC record layout** | see §3 |
-| 0x28 | u32 | packed (0x00020101, 0x000320BC, 0x00210A0A …) | **unknown** |
-| 0x30 | u64\* | **material + primitive table**, last section of the file | see §4 |
+| 0x10 | u64\* | vertex colours, **RGBA8, 4 B/vertex** | span = exactly 4Â·n (+<32 B pad to the next table) in every decoded slot; content is constant 0xFFFFFFFF or 0x01010101 |
+| 0x18 | u64\* | UVs, **2 Ã— f32, 8 B/vertex** | span = exactly 8Â·n; all values in [0,1] on a 1/256 grid |
+| 0x20 | u64\* | weight sets, **8 B/record, GC record layout** | see Â§3 |
+| 0x28 | u32 | packed (0x00020101, 0x000320BC, 0x00210A0A â€¦) | **unknown** |
+| 0x30 | u64\* | **material + primitive table**, last section of the file | see Â§4 |
 | 0x38 | u32 | 0x80000000 / 0xA0000N00 (GX-attribute shaped) | **unknown** |
 | 0x3C | u16 | small count 1..8 | **unknown** |
-| 0x40 | u16 ×2 | (4\|5\|6, small count) | **unknown** |
-| 0x48 | u64\* | positions, **3 × f32, 12 B/vertex** | see §2 |
-| 0x50 | u64\* | second per-vertex stream, 12 B/vertex — **not** claimed as normals, see §6 | span = exactly 12·n in every decoded slot; two encodings |
-| 0x58 | u16 | **vertex count** (the high u16 repeats it) | see §2 |
-| 0x5C | u32 | 0x20030818 (most) / 0x20010801 (em06 class) — the variant selector that goes with the 0x50 encoding | correlation only, **not proved** |
+| 0x40 | u16 Ã—2 | (4\|5\|6, small count) | **unknown** |
+| 0x48 | u64\* | positions, **3 Ã— f32, 12 B/vertex** | see Â§2 |
+| 0x50 | u64\* | second per-vertex stream, 12 B/vertex â€” **not** claimed as normals, see Â§6 | span = exactly 12Â·n in every decoded slot; two encodings |
+| 0x58 | u16 | **vertex count** (the high u16 repeats it) | see Â§2 |
+| 0x5C | u32 | 0x20030818 (most) / 0x20010801 (em06 class) â€” the variant selector that goes with the 0x50 encoding | correlation only, **not proved** |
 | 0x60, 0x68 | u64\* | present in 65 / 100 of 122 probed BINs, 32..96 B | **unknown** |
 | 0x70 | u64\* | **weight index, u16 per vertex** | `max(0x70) < 0x20 record count` in every decoded slot; all zero for single-bone props |
 | 0x78 | u64\* | byte-identical to the 0x70 array | duplicate reference (measured identical) |
 | 0x80, 0x84 | u32 | a pair of pointers, always exactly `0x70-56` / `0x78-56` | they point **inside** the 0x48/0x50 arrays, so they are not table starts; **meaning unknown** |
-| 0x98 | — | **bone table**, 16 B/record: `u8 id, u8 parent, 2 pad, 3 × f32 translation` | see §5 |
+| 0x98 | â€” | **bone table**, 16 B/record: `u8 id, u8 parent, 2 pad, 3 Ã— f32 translation` | see Â§5 |
 
 Sections are 32-byte aligned in the file; a table's span is "up to the next table start", and the span is checked
-against `count × stride` (a mismatch of one vertex is refused).
+against `count Ã— stride` (a mismatch of one vertex is refused).
 
 ## 2. Vertex count and positions (`0x58`, `0x48`)
 
-`n = u16 at 0x58`. Positions are `n` consecutive `f32 xyz` triples from `0x48` and then stop dead — the walk
+`n = u16 at 0x58`. Positions are `n` consecutive `f32 xyz` triples from `0x48` and then stop dead â€” the walk
 stops on the first triple that is not a vertex. Measured: the number of consecutive triples equals `0x58`
 exactly on every slot tried (em06 5630, em21 2725, em10 slots 158/256/351/392/394 = 59/531/1482/1618/305).
 
@@ -59,15 +59,15 @@ Cross-check against the GameCube disc (same slot, GC reader):
 | em10.udas 256 | 531 | 232 | 232 / 232 |
 | em10.udas 158 | 59 | 25 | 25 / 25 |
 
-So the HD file holds *the same geometry*, split per corner (more vertices) and reordered — the unique HD
+So the HD file holds *the same geometry*, split per corner (more vertices) and reordered â€” the unique HD
 position set equals the GC position set. The bounding boxes are therefore identical, e.g. em10.158
-x −30.91..44.75, y −27.64..27.64, z −376.17..121.52 on both editions.
+x âˆ’30.91..44.75, y âˆ’27.64..27.64, z âˆ’376.17..121.52 on both editions.
 
 ## 3. Weight sets (`0x20`) and weight indices (`0x70`)
 
-The weight record is the **GC record, byte for byte**: `b0, b1, b2, cnt, w0, w1, w2, pad` (8 × u8). em06 record 0
+The weight record is the **GC record, byte for byte**: `b0, b1, b2, cnt, w0, w1, w2, pad` (8 Ã— u8). em06 record 0
 is `19 00 00 01 64 00 00 00` = one bone (25) at 100 %; record 1 is `18 19 00 02 50 13 00 00` = bones 24 and 25 at
-80 % / 19 % — the classic RE4 pair weight (which sums to 99, so the reader accepts any 1..100 sum).
+80 % / 19 % â€” the classic RE4 pair weight (which sums to 99, so the reader accepts any 1..100 sum).
 
 `0x70` holds one u16 index into that table per vertex. em06: 5,630 indices, max 96, table has 100 records.
 em21: 2,725 indices, max 187, table has 188 records. em10.351: max 9, 12 records.
@@ -84,7 +84,7 @@ The table is the last section of the file. Per material:
 0x18  u32 display-list size       = floor((0x24 + 4*nprim) / 32) * 32
 0x1C  u32 triangle count
 0x20  u32 primitive count
-0x24  nprim × (u16 type, u16 nverts)
+0x24  nprim Ã— (u16 type, u16 nverts)
 ```
 
 Records are 32-byte aligned **relative to the table start**; the record stride is `round_up(0x24 + 4*nprim, 32)`.
@@ -97,16 +97,16 @@ triangle count):
 | type | kind | triangles |
 |---|---|---|
 | 5 | triangle list | n / 3 |
-| 6 | triangle strip | n − 2 (alternating winding) |
+| 6 | triangle strip | n âˆ’ 2 (alternating winding) |
 | 8 | quads | n / 2 |
 
 ## 5. Bones (`0x98`)
 
 16-byte records up to the weight table at `0x20`, trailing all-zero records trimmed:
-`u8 id, u8 parent, 2 pad, 3 × f32 translation` (parent-relative, bind pose — same convention as the GC BIN).
+`u8 id, u8 parent, 2 pad, 3 Ã— f32 translation` (parent-relative, bind pose â€” same convention as the GC BIN).
 
 Invariants checked: ids are non-decreasing and step by at most 1 (a second root may repeat an id, e.g. em10.394
-slot 10 = `(9, 0xFF, …)`), every parent is `< id` or 0xFF, and the table has a root. Bone counts match the GC disc
+slot 10 = `(9, 0xFF, â€¦)`), every parent is `< id` or 0xFF, and the table has a root. Bone counts match the GC disc
 exactly where the same pack exists: em21 = 32, em10.351 = 10, em10.394 = 39, em10.256 = 2, em10.158 = 1.
 
 A BIN whose bone table starts above id 0 is a **part of a shared skeleton** (its weight records index the shared
@@ -114,7 +114,7 @@ palette, not the local table); the reader recognises that and skips the table-lo
 
 **Sanity check against `gbox/rig_roles.py`**: feeding the decoded bind-pose joints and parents in gives all 16
 humanoid roles for em21 (32 bones) and 14 for em06 (34 bones, no hands), i.e. the mirrored arm/leg pairs and the
-spine come out right — a wrong parent chain or a wrong translation layout would not produce that.
+spine come out right â€” a wrong parent chain or a wrong translation layout would not produce that.
 
 ## 6. What is decoded with numbers (real packs, read-only)
 
@@ -122,20 +122,20 @@ Full self-check passed; "height" is the y extent of the bind pose in the file's 
 
 | pack / slot | bytes | vertices | triangles | bones | materials | bbox (min .. max) | height |
 |---|---|---|---|---|---|---|---|
-| em06.udas 0 | 228,768 | 5,630 | 4,202 | 34 | 3 | (−1316.7, −9.2, −145.1) .. (1316.9, 1635.1, 476.3) | 1644.3 |
-| em21.udas 0 | 112,384 | 2,725 | 1,843 | 32 | 3 | (−167.4, −49.8, −713.7) .. (168.7, 1024.0, 992.9) | 1073.8 |
-| em10.udas 158 | 2,848 | 59 | 41 | 1 | 2 | (−30.9, −27.6, −376.2) .. (44.8, 27.6, 121.5) | 55.3 |
-| em10.udas 256 | 22,080 | 531 | 379 | 2 | 4 | (−90.1, −75.7, −296.6) .. (175.9, 205.1, 619.2) | 280.8 |
-| em10.udas 351 | 62,208 | 1,482 | 822 | 10 | 33 | (−392.3, −37.5, −705.3) .. (392.3, 354.8, 739.6) | 392.3 |
-| em10.udas 392 | 66,080 | 1,618 | 1,068 | 3 | 10 | (−899.3, −161.6, −71.1) .. (486.0, 89.5, 71.4) | 251.1 |
-| em10.udas 394 | 13,472 | 305 | 217 | 39 | 1 | (−838.4, 1456.6, −62.6) .. (−707.3, 1568.6, 33.4) | 112.0 |
+| em06.udas 0 | 228,768 | 5,630 | 4,202 | 34 | 3 | (âˆ’1316.7, âˆ’9.2, âˆ’145.1) .. (1316.9, 1635.1, 476.3) | 1644.3 |
+| em21.udas 0 | 112,384 | 2,725 | 1,843 | 32 | 3 | (âˆ’167.4, âˆ’49.8, âˆ’713.7) .. (168.7, 1024.0, 992.9) | 1073.8 |
+| em10.udas 158 | 2,848 | 59 | 41 | 1 | 2 | (âˆ’30.9, âˆ’27.6, âˆ’376.2) .. (44.8, 27.6, 121.5) | 55.3 |
+| em10.udas 256 | 22,080 | 531 | 379 | 2 | 4 | (âˆ’90.1, âˆ’75.7, âˆ’296.6) .. (175.9, 205.1, 619.2) | 280.8 |
+| em10.udas 351 | 62,208 | 1,482 | 822 | 10 | 33 | (âˆ’392.3, âˆ’37.5, âˆ’705.3) .. (392.3, 354.8, 739.6) | 392.3 |
+| em10.udas 392 | 66,080 | 1,618 | 1,068 | 3 | 10 | (âˆ’899.3, âˆ’161.6, âˆ’71.1) .. (486.0, 89.5, 71.4) | 251.1 |
+| em10.udas 394 | 13,472 | 305 | 217 | 39 | 1 | (âˆ’838.4, 1456.6, âˆ’62.6) .. (âˆ’707.3, 1568.6, 33.4) | 112.0 |
 
 Triangle counts and material counts equal the GameCube disc's for the same slot (em21 1,843 / 3; em10.158 41 / 2;
 em10.256 379 / 4; em10.351 822 / 33; em10.392 1,068 / 10; em10.394 217 / 1). The HD port re-split the vertices;
 the topology is the same.
 
 Note the units are the file's: em21 is 10.7 m tall and em06 16.4 m, so those two are *not* humanoid enemies at
-1 unit = 1 cm — em10's props (55 cm, 112 cm, 251 cm, 392 cm) are the ones that read as centimetres. Do not assume
+1 unit = 1 cm â€” em10's props (55 cm, 112 cm, 251 cm, 392 cm) are the ones that read as centimetres. Do not assume
 a scale without checking a known character.
 
 ## 7. Coverage over the whole tree
@@ -145,10 +145,10 @@ a scale without checking a known character.
 * **2,188 slots decode** with every self-check passing (1,873,779 vertices, 1,313,085 triangles, largest rig 225
   bones).
 * **539 slots are refused** with a named reason. They are not silently mis-decoded. Classes:
-  * ~66 `no HD material record` — the 0x30 table does not start with the record marker (a second table variant);
-  * ~150 `weight record … references bone …` — the weight records index a palette that is not the local table and
+  * ~66 `no HD material record` â€” the 0x30 table does not start with the record marker (a second table variant);
+  * ~150 `weight record â€¦ references bone â€¦` â€” the weight records index a palette that is not the local table and
     the table starts at id 0, so the shared-skeleton heuristic does not fire;
-  * ~250 `primitive vertex counts sum to X, the BIN declares Y` — the material walk stops short (an unrecorded gap
+  * ~250 `primitive vertex counts sum to X, the BIN declares Y` â€” the material walk stops short (an unrecorded gap
     between records, or a second primitive-table layout).
 
 ## 8. Unknown / not decoded
@@ -167,9 +167,9 @@ a scale without checking a known character.
   (56-byte records that straddle the end of the 0x48/0x50 arrays).
 * Textures: the HD "TPL" starts with `0x12345678`, not the GX `0x0020AF30`, so `gbox/re4gc_models.tpl_read` does
   not apply. Not attempted here.
-* The 539 refused slots above (see §7 for the classes).
+* The 539 refused slots above (see Â§7 for the classes).
 * `gbox/rig_roles.py` / `gbox/re4gc_zombies.py` are **not** wired to this reader; the roles do derive from the
-  decoded rig (see §5), which is the gate the GC pipeline needed, but the swap itself is out of scope here.
+  decoded rig (see Â§5), which is the gate the GC pipeline needed, but the swap itself is out of scope here.
 
 ## 9. Reading one slot
 
@@ -188,10 +188,10 @@ m.pos, m.uv, m.colors, m.weight_idx, m.weights, m.mats
 
 The write half now lives beside the decoder in `gbox/re4hd_models.py`:
 
-* `bin_write(m, verify=False)` — re-encode a decoded `Bin`.
+* `bin_write(m, verify=False)` â€” re-encode a decoded `Bin`.
 * `bin_from(bin_, *, pos=..., uv=..., colors=..., tris=..., bones=..., weights=..., weight_idx=..., aux=...)`
-  — build a BIN whose geometry comes from another source, returning bytes the decoder accepts.
-* `pad_to(data, size)` — pad a replacement to the original slot size, or refuse if it is bigger.
+  â€” build a BIN whose geometry comes from another source, returning bytes the decoder accepts.
+* `pad_to(data, size)` â€” pad a replacement to the original slot size, or refuse if it is bigger.
 
 ### 10.1 How `bin_write` stays byte-exact
 
@@ -222,7 +222,7 @@ Run read-only on the Spark (`~/gBox_alt/switch/romfs/010099A00BC1E000/bio4/em/*.
 |---:|---:|---:|---:|---:|---:|
 | 162 | 2,727 | 2,188 | **2,188 (100 % of decoded)** | **0** | 539 |
 
-That is 78,011,456 original bytes re-emitted exactly in 1.2 s. The refusal classes are unchanged from §7 (66 no
+That is 78,011,456 original bytes re-emitted exactly in 1.2 s. The refusal classes are unchanged from Â§7 (66 no
 material record, ~250 primitive-count, ~200 shared-palette weight, plus bone-order refusals), i.e. the writer did
 not change which files the decoder accepts.
 
@@ -252,7 +252,7 @@ normalising both sides: the acceptance is raw bytes out == raw bytes in.
    recentres or clamps them to a box. The packed words that carry bounds/flags (`0x28`, `0x38`, `0x3C`, `0x40`) are
    preserved verbatim, so whatever box the surrounding slot carries is untouched. A rewritten box freezes the title
    (measured on the GameCube work). The HD 0x98 BIN has no explicit bbox field to rewrite, which makes the rule
-   easy to honour and easy to violate by "helpfully" normalising positions — don't.
+   easy to honour and easy to violate by "helpfully" normalising positions â€” don't.
 
 ### 10.4 Source swap: measured result
 
@@ -287,7 +287,7 @@ The material triangle split for that run was
 `[67, 64, 64, 8, 4, 7, 6, 83, 3, 31, 7, 7, 4, 24]` (sum 379), so every slot material header survived with at
 least one primitive. A same-count run on the same character slot (translate its own positions, keep topology)
 returned exactly 142,336 B with the material/primitive records and the packed header words byte-identical, and the
-decoded bbox followed the translated positions — the writer did not touch a stored box.
+decoded bbox followed the translated positions â€” the writer did not touch a stored box.
 
 The failure mode is honest: on a tiny 2,848-byte slot the 379-triangle source rebuilt to 46,016 B and `pad_to`
 refused it (`replacement is 46016 B but the slot holds 2848 B`). A swap needs a destination slot with room, or a
@@ -297,7 +297,7 @@ smaller source/decimation pass.
 
 * **Textures are a separate problem.** The HD TPL magic is `0x12345678`, not the GX `0x0020AF30`, and it is **not
   decoded**. `bin_from` keeps the destination's material headers (material id, uv_set, markers) so the slot's
-  texture bindings are at least not invented, but there is no TPL reader/writer and no material→texture mapping
+  texture bindings are at least not invented, but there is no TPL reader/writer and no materialâ†’texture mapping
   yet. A full skin swap needs both.
 * **Skinning/retarget is not done.** `bin_from` keeps the slot's bone table, but the rebuilt vertices get a
   single-bone 100 % weight set by default. Source weights can be passed (`weights=`, `weight_idx=`) only if they
@@ -307,7 +307,7 @@ smaller source/decimation pass.
   destination can overflow the slot. Deduplication, strip encoding, a fitting ladder (collapse spare parts,
   thin primitives, smaller textures, as `re4gc_zombies.swap_ganados` does) and a size check before `pad_to` are
   still needed for a general swap.
-* **The 0x50 stream** written for new geometry is zeros; its semantics are still unproven (§8). If the title uses
+* **The 0x50 stream** written for new geometry is zeros; its semantics are still unproven (Â§8). If the title uses
   it for normals/lighting, rebuilt meshes may shade wrong until that stream is understood.
 * **In-game proof.** Nothing was deployed or restarted this round. The gate reached is: the rebuilt BIN decodes
   with every structural check, reports the new vertex/triangle/material numbers, and fits the original slot after
@@ -321,7 +321,7 @@ smaller source/decimation pass.
 `bin_slots(data, endian)` lists the slots with their pack offsets (`bin` = position among BIN slots, `slot` = DAT
 index, which differ because a pack interleaves BIN with EFF/TPL/FCV).
 
-A patch must be **exactly the slot's size** � the same rule the GameCube work paid for. Rewriting the DAT/UDAS tables
+A patch must be **exactly the slot's size** — the same rule the GameCube work paid for. Rewriting the DAT/UDAS tables
 is deliberately not done: real packs leave 960 B before the first entry, up to 18 KB between entries, and trailing
 bytes after the last (em10: 19,744 B), so a table rebuild would have to reproduce all of it to stay faithful. A
 same-size patch needs none of it.
@@ -342,8 +342,9 @@ fit (measured: a 66,080 B slot asked for 485,600 B). A real swap therefore needs
 triangles or the fitting ladder (dedupe / strip encoding) before `pad_to`. That is the next piece of work, and it is
 the reason a "Sonic as the ganado" build has to pick its target slot with the triangle budget in mind.
 
-Written artifact: `~/gBox_alt/re4-lab/em10-swapped.udas` (sha256 `562b1ba4�`), a real pack with one mesh replaced,
+Written artifact: `~/gBox_alt/re4-lab/em10-swapped.udas` (sha256 `562b1ba4…`), a real pack with one mesh replaced,
 ready to drop into a LayeredFS build's `romfs/bio4/em/`.
 
-**Not done:** no in-game boot of a swapped model yet. The remaining step is one RE4 Switch launch with that pack in a
-mod folder, which takes the only emulator slot and so has to be its own experiment.
+**In-game (2026-11-07):** that pack was put in a LayeredFS overlay and the title booted with it - title screen and
+save-select screen, every other slot byte-identical. The swapped geometry has NOT been seen rendering yet; see
+`re4-switch-mod-boot.md` for what was seen and the load-save route that should reach an enemy next.
