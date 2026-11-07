@@ -220,3 +220,26 @@ That is a session/preset provider allowlist, not a missing key or a bad model id
 already running, and the allowlist is fixed for the session's life. To use it, either restart the session (a new one will see the
 provider) or add `qwen-token-plan` to the agent preset's allowed providers. Once it is allowed I will put the parallel work on it -
 the cast-swap build diagnosis and the RE4 VR archive being the two obvious candidates.
+## Rounds are recording again - and the first one corrects me
+
+Stopping the hung (bad-build) session let the scheduler relaunch on the stock baseline (`mod: None`), and the first round in about eight
+hours arrived within five minutes:
+
+```
+outcome died | score 19,450 | bonuses_seen 11 | bonuses_taken 1 | knife_swings 0 | time_gained 59.8
+```
+
+Two things follow.
+
+1. **The measurement pipeline is alive again.** Rounds write to the Notebook, so the learning gate, the death clusters and the bonus
+   counters will start reflecting reality within a few rounds instead of describing 10:40.
+2. **My knife-reach fix was incomplete.** `KNIFE_R` is 160 cm and `knife_swings` is still 0 with 11 statues seen: the bot is not
+   entering the reach branch at all, so the radius was not the (only) gate. The reach branch is only reached when `d <= KNIFE_R`, and
+   the one code path that walks *closer* to a statue ("into it for its prompt") is gated on `snap.get("prompt_read")` - a circular
+   dependency: the prompt needs proximity, and proximity waits for the prompt. The detour path (every 1.5 s) resets `best_at`, so the
+   approach never converges.
+
+**The change to make next** is in the walk path, not the radius: when a statue is within `BONUS_WALK_R` and no prompt is read, face it
+and press in (`lup` toward it) instead of detouring - the press is what makes the prompt appear, and the one round that took a bonus did
+it through a prompt. That is a small, testable edit at the end of the bonus-approach block, and this time there are fresh rounds to
+measure it against.
