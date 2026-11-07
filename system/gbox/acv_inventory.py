@@ -37,6 +37,15 @@ u32 BHD size, u32 bucketCount (2833), u32 bucketsOffset (0x18); then bucketCount
 reference tile 0x58a0..0x52ad0 (19,747 records); record hash % bucketCount == bucket index
 for every record.  Names are not stored (hash only).
 
+DCX payloads (magic 0x44435800 "DCX\\0" LE, 14,979 of the 19,747 records) are
+NOT a compression codec: even the 137-byte DCX payloads contain readable nested
+little-endian blocks -- "DCS\\0" section markers followed by two u32s, and
+"DCP\\0" key/value records whose key is a 4-char name (e.g. "DFLT") plus a u32.
+Smallest-file header fields at +8..+28 form the pattern 0x18,0x24,0x24,0x2c,
+0x24,0x2c, pointing at offsets inside the payload, i.e. a section table.
+Decoding the DCS/DCP section table on the 137-byte sample (and checking whether
+the large DCX payloads are compressed at all) is the next bounded milestone.
+
 This module is read-only: it never writes to the disc or the binder.
 """
 
