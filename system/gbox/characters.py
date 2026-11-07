@@ -640,9 +640,19 @@ def needs_for(game: dict) -> dict:
                 "Xenon-tiled textures", "steps": ["read the X360 disc (XDVD, gbox/re6.py has the reader)", "port the UHD BIN "
                 "writer (below) to big-endian + Xenon tiling", "Xenia folder mod like gbox/re6_tool.py"],
                 "have": "the GC/Wii writer (gbox/re4gc_models.py + gbox/re4wii.py); see docs/mercenaries.md"}
-    if "resident evil 4" in t and plat in ("windows_native", "ps_modern"):
-        return {"target": "Leon (pl00 .udas)", "format": "RE4 UHD BIN/TPL in pl*.udas", "steps": ["port gbox/re4gc_models.py "
-                "(GC BIN) to the UHD BIN layout", "write pl00.udas into a mod folder"], "have": "the GameCube writer only"}
+    if "resident evil 4" in t and plat in ("windows_native", "ps_modern", "switch"):
+        # The HD port's mesh BIN is now decoded (2026-11-07): gbox/re4hd_models.py reads positions, UVs, colours,
+        # weight sets/indices, bones and triangles from the 0x98 layout, cross-checked against the GameCube disc for the
+        # same slots (identical triangle/material/bone counts and identical unique position sets). What is missing is
+        # the WRITER, and the HD texture container (magic 0x12345678, not GX 0x0020AF30).
+        return {"target": "Leon (pl00 .udas)", "format": "RE4 HD BIN/TPL in pl*.udas (little-endian UDAS/DAT)",
+                "steps": ["read the HD BIN (done: gbox/re4hd_models.py)",
+                          "decode the HD TPL (magic 0x12345678) before a skin can be replaced",
+                          "write the HD BIN back, padding to the original slot size",
+                          "repack the little-endian UDAS/DAT (gbox/re4gc_inventory) into a LayeredFS mod folder"],
+                "have": "the HD reader (gbox/re4hd_models.py: 2,188 of 2,727 slots decode, the rest refuse with a named "
+                        "reason) and the container reader/writer path; the GameCube writer (gbox/re4gc_models.py) is "
+                        "the shape the HD writer has to follow"}
     if "resident evil 4" in t and plat == "ps2":
         return {"target": "Leon (pl00 in the PS2 .das packs)", "format": "RE4 PS2 model packs (PS2 BIN variant, TIM2-like "
                 "textures)", "steps": ["read the PS2 DVD (ISO9660) packs", "a PS2 BIN reader/writer (the GC BIN layout differs: "
