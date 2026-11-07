@@ -1911,11 +1911,11 @@ def swap_pack(root, pack_inner: str, donor_pack: str, donor_bin: int = 0, *, slo
             "report": result["report"], "data": result["pack"]}
 
 def texture_descriptors(root, pack_inner: str) -> dict:
-    """What one HD model pack *asks for*: every `TPL` slot as an image descriptor or a reference record.
+    """Every image one HD model pack names, with the dimensions, format and id the pack itself states.
 
-    This is the other half of the texture inventory. The archive side (`hd_textures`) lists what exists; this lists what
-    a pack names - dimensions, format word and texture id - so the page can show the two sides of the join that is still
-    missing, instead of pretending the textures are matched to their pack.
+    The counterpart of `hd_textures`, which lists what the archives hold. Each `TPL` slot is a container of records
+    (`re4hd_tex.tpl_images`); the ids are pack-local and contiguous - every pack starts at 45 - so an id does not name an
+    archive, and the two listings are deliberately not presented as pairs.
     """
     from . import re4gc_inventory, re4hd_tex
     root = Path(root)
@@ -1929,22 +1929,16 @@ def texture_descriptors(root, pack_inner: str) -> dict:
     except (ValueError, StopIteration) as exc:
         raise ValueError(f"not an HD model pack: {exc}") from exc
     blob = data[dat["offset"]:dat["offset"] + dat["size"]]
-    rows, failures = [], []
-    for slot, (ext, off, size) in enumerate(re4gc_inventory.dat_entries(blob, "<")):
-        if ext != "TPL":
-            continue
-        try:
-            info = re4hd_tex.tex_info(blob[off:off + size])
-        except re4hd_tex.TexError as exc:
-            failures.append({"slot": slot, "error": str(exc)[:120]})
-            continue
-        rows.append({"slot": slot, "bytes": size, **{k: info.get(k) for k in
-                     ("kind", "width", "height", "format", "format_code", "id", "payload_type")}})
-    images = [r for r in rows if r["kind"] == "image"]
-    return {"pack": f"bio4/em/{target.name}", "bytes": len(data),
-            "slots": len(rows), "images": len(images), "references": len(rows) - len(images),
-            "ids": sorted({r["id"] for r in images if r.get("id") is not None}),
-            "rows": rows, "failures": failures,
-            "note": "dimensions here are the region a pack asks for; the archives hold whole surfaces, and the two have "
-                    "not been joined - a descriptor's (width, height) is routinely smaller than any matching surface, "
-                    "so these are sub-rects, not surfaces"}
+    slots = [slot for slot, (ext, _o, _s) in enumerate(re4gc_inventory.dat_entries(blob, "<")) if ext == "TPL"]
+    rows = []
+    for image in re4hd_tex.pack_images(data, "<"):
+        rows.append({"slot": image["slot"], "width": image["width"], "height": image["height"],
+                     "format_code": image["format_code"],
+                     "format": re4hd_tex.FORMATS.get(image["format_code"], str(image["format_code"])),
+                     "id": image["id"], "payload": image["payload"]})
+    return {"pack": f"bio4/em/{target.name}", "bytes": len(data), "slots": len(slots),
+            "images": len(rows), "references": 0,
+            "ids": sorted({r["id"] for r in rows if r.get("id") is not None}), "rows": rows, "failures": [],
+            "note": "dimensions, format word and payload size are what the pack states, read from the container layout; "
+                    "ids are pack-local and contiguous (every pack starts at 45), so an id does not name an archive - "
+                    "the archive side is /textures and the two are not joined"}

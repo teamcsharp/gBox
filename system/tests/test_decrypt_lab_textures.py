@@ -9,6 +9,7 @@ import zlib
 import pytest
 
 from gbox import decrypt_lab as L
+from gbox import re4hd_tex as T
 
 
 def dds(width=64, height=64, *, fourcc=b"DXT3", mips=5, body=None):
@@ -130,26 +131,41 @@ def pack_with(*items):
     return bytes(hdr) + bytes(dat)
 
 
-def test_texture_descriptors_lists_what_a_pack_asks_for(tmp_path):
-    """The pack side of the texture inventory: image descriptors and reference records, kept apart from the archives."""
+def container(*records):
+    """A TPL container: header, one sixteen-byte table entry per record, the records, then (type, id) pairs."""
+    count = len(records)
+    offsets, cursor = [], 0x10 + 0x10 * count
+    for width, height, fmt, payload, _tid in records:
+        offsets.append(cursor)
+        cursor += 0x28
+    body = bytearray(struct.pack("<IIII", 0x12345678, count, 0x10, 0))
+    for offset in offsets:
+        body += struct.pack("<QQ", offset, 0)
+    for width, height, fmt, payload, _tid in records:
+        body += struct.pack("<HHII", width, height, fmt, payload) + b"\0" * 0x1C      # a record is 0x28 bytes
+    for _w, _h, _f, _p, tid in records:
+        body += struct.pack("<II", 0x16, tid)
+    return bytes(body)
+
+
+def test_texture_descriptors_reads_the_container_layout(tmp_path):
+    """The dimensions must come from a record, not from a fixed offset - the mistake that poisoned a round of joins."""
     packs = tmp_path / "bio4" / "em"
     packs.mkdir(parents=True)
-    image = bytearray(96)
-    struct.pack_into("<I", image, 0x00, 0x12345678)
-    struct.pack_into("<HH", image, 0x20, 64, 128)
-    struct.pack_into("<I", image, 0x24, 14)
-    struct.pack_into("<I", image, 0x28, 0x48)
-    struct.pack_into("<II", image, 0x48, 0x10, 46)
-    reference = bytearray(96)
-    struct.pack_into("<I", reference, 0x00, 0x12345678)
-    struct.pack_into("<I", reference, 0x20, 104)
-    (packs / "em11.udas").write_bytes(pack_with(bytes(image), bytes(reference)))
+    slot = container((256, 256, 14, 184, 48), (128, 128, 14, 192, 49))
+    (packs / "em11.udas").write_bytes(pack_with(slot))
     out = L.texture_descriptors(tmp_path, "em11.udas")
-    assert out["pack"] == "bio4/em/em11.udas"
-    assert out["images"] == 1 and out["references"] == 1
-    assert out["ids"] == [46]
-    row = out["rows"][0]
-    assert (row["width"], row["height"], row["format"], row["id"]) == (64, 128, "CMPR", 46)
-    assert "sub-rects" in out["note"]
+    assert out["images"] == 2 and out["slots"] == 1
+    assert out["ids"] == [48, 49]
+    first, second = out["rows"]
+    assert (first["width"], first["height"], first["format_code"], first["id"], first["payload"]) == (256, 256, 14, 48, 184)
+    assert (second["width"], second["height"], second["id"]) == (128, 128, 49)
+    assert "pack-local" in out["note"]
     with pytest.raises(FileNotFoundError):
         L.texture_descriptors(tmp_path, "nope.udas")
+
+
+def test_tpl_images_refuses_a_record_that_is_not_a_plausible_size():
+    bad = bytearray(container((256, 256, 14, 184, 48)))
+    struct.pack_into("<HH", bad, 0x30, 0, 0)             # a zero-sized record means this is not a container
+    assert T.tpl_images(bytes(bad)) == []

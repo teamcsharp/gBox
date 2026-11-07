@@ -222,3 +222,54 @@ def fen_textures(data: bytes, limit: int = 0) -> list[dict]:
         texture.pop("wrapper", None)
         rows.append(texture)
     return rows
+
+
+def tpl_images(data: bytes) -> list[dict]:
+    """Every image a pack's `TPL` slot names, read from the container layout (not from one guessed field).
+
+    The slot is a container: `magic 0x12345678`, a count, a header size, then `count` sixteen-byte table entries each
+    holding a 64-bit offset, and at the end of the entry block `count` pairs of `(type, id)`. Each offset points at a
+    40-byte record: `u16 width, u16 height, u32 format, u32 payload size`, then flags.
+
+    Reading `width` from a fixed 0x20 instead - which this module did until 2026-11-07 - lands on a table offset and
+    reports nonsense dimensions (32x128 for a 256x256 texture), which is how a whole round of join hypotheses came to be
+    tested against the wrong numbers.
+    """
+    out = []
+    if len(data) < 0x20 or struct.unpack_from("<I", data, 0)[0] != 0x12345678:
+        return out
+    count = struct.unpack_from("<I", data, 4)[0]
+    if not 2 <= count <= 64 or 0x10 + 0x10 * count > len(data):
+        return out
+    offsets = [struct.unpack_from("<Q", data, 0x10 + 0x10 * i)[0] for i in range(count)]
+    if any(o + 0x28 > len(data) for o in offsets):
+        return out
+    tail = offsets[-1] + 0x28
+    pairs = []
+    if tail + 8 * count <= len(data):
+        pairs = [struct.unpack_from("<II", data, tail + 8 * i) for i in range(count)]
+    for i, offset in enumerate(offsets):
+        width, height, fmt, payload = struct.unpack_from("<HHII", data, offset)
+        if not (0 < width <= 4096 and 0 < height <= 4096):
+            return []
+        out.append({"width": width, "height": height, "format_code": fmt, "payload": payload,
+                    "id": pairs[i][1] if i < len(pairs) else None,
+                    "type": pairs[i][0] if i < len(pairs) else None})
+    return out
+
+
+def pack_images(data: bytes, endian: str = "<") -> list[dict]:
+    """Every image descriptor in a whole HD pack: the union over its `TPL` slots, with the slot it came from."""
+    from .re4gc_inventory import udas_entries, dat_entries
+    rows = []
+    try:
+        dat = next(e for e in udas_entries(data, endian) if e["type"] == 0)
+    except (ValueError, StopIteration):
+        return rows
+    blob = data[dat["offset"]:dat["offset"] + dat["size"]]
+    for slot, (ext, off, size) in enumerate(dat_entries(blob, endian)):
+        if ext != "TPL":
+            continue
+        for image in tpl_images(blob[off:off + size]):
+            rows.append({"slot": slot, **image})
+    return rows

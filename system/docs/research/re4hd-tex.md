@@ -181,3 +181,39 @@ background rather than blocking a round:
 "the gidra systems" for exactly this kind of question: `docs/ghidra-service.md` describes the service, and the answer
 (an index table or a hash lookup in the title's own loader) is worth more than any amount of shape guessing. That is the
 step to take when the census comes back ambiguous.
+## CORRECTION (2026-11-07, round 30): the descriptor dims were a misparse - the "sub-rect" conclusion is withdrawn
+
+Everything in the two sections above was measured against **wrong numbers**. A `TPL` slot is a *container*:
+
+```
+0x00 magic 0x12345678
+0x04 count
+0x08 header size (0x10)
+0x10 count x 16-byte table entries, each holding a 64-bit offset
+     (the entry block is 16 bytes wide, not 8 - reading it at 8 puts a zero wherever a second field is)
++0x00 of each record: u16 width, u16 height, u32 format, u32 payload size, then 0x1C more bytes
+after the records: count x (u32 type, u32 id) - the ids are contiguous, 48, 49, 50, ...
+```
+
+The old reader took `width`/`height` from a fixed offset 0x20, which is a *table offset*, and so reported 32x128 for a
+256x256 texture. The corrected reading of `em16`:
+
+```
+em16.udas | 26 TPL slots | 30 images | ids 48..91
+   slot 454  256x256 CMPR id 48 payload 184 B
+   slot 454  256x256 CMPR id 49 payload 192 B
+   slot 458  256x256 CMPR id 52 payload 304 B
+```
+
+**What survives:** `id` still does not name an archive (id 45's row in the old table was wrong, but ids are pack-local and
+every pack starts in the 40s, so no global id-to-archive map is possible). **What does not survive:** the claim that a
+descriptor's dimensions are "systematically smaller, so these are sub-rects". The dimensions were never read correctly,
+so that reasoning is withdrawn, and the shape-comparison against the archives in the previous section is void.
+
+**What is now true and usable:** a pack states real dimensions, a format word and a payload size per image, plus a
+pack-local id. That is a much better starting point for the join than what the last two rounds had: a 166-image
+`em10` and a 30-image `em16` with sane sizes, against a surface census in progress.
+
+`re4hd_tex.tpl_images` / `pack_images` implement the layout, `texture_descriptors` serves it, and the tests build a
+container byte by byte - including one that fails if a record is 36 bytes instead of 40, which is how this correction was
+caught.
