@@ -371,3 +371,32 @@ on this title rather than assumed:
 
 The writer's `bin_from` remains the right tool for a *part*-level swap where the counts happen to fit; `morph_bin` is the
 tool for a whole-body shape change. Both are in `re4hd_models`, both tested.
+## Thirteenth-fifteenth runs: which pack draws the Ganado — differential scaling (2026-11-07)
+
+Identity by bulk swap was hopeless (all seven packs swapped, nothing changed, because a rebuilt mesh is not drawn).
+Identity by *differential* transform is cheap: give different packs different scales in one build, and the round itself
+says which one is on screen.
+
+| build | what was scaled | what the round showed |
+|---|---|---|
+| `re4-slotmap` | five slots of em11 (x4, x0.25, x2, x0.5, x3) | **no change** - em11's biggest slots are not the visible body |
+| `re4-packscale` | em12 x4, em13 x0.25, em14 x2, em15 x0.5, em16 x3, em17 x1 | **giants fill the frame** - at least one grown pack is drawn |
+| `re4-em12only` | **em12 x4 only** | **no change** - em12 is not drawn |
+| `re4-em1416` | **em14 x2, em16 x0.5** | **the enemies vanish to tiny specks; the torch keeps floating where its bearer was** |
+
+![the pack-scale build: giants](evidence/re4switch-packscale-giants.jpg)
+
+![em12 x4 alone: no change](evidence/re4switch-em12-scaled-no-change.jpg)
+
+![em14 x2 and em16 x0.5: the enemies shrink away](evidence/re4switch-em16-shrunk-enemies-vanish.jpg)
+
+**So the drawn Ganado is `em16`** - the pack whose 0.5 scale makes the enemies shrink to specks while the torch effect
+(the bearer's weapon, in its own pack) stays at full size and floats. `em12` is ruled out by direct test; `em14`'s x2
+would have produced giants and produced none, so it is ruled out by absence.
+
+That is the map this session needed since round 17: **`em16` for the village Ganados**, and em11's big slots for
+something that is not the body. With 26 of em11's 33 slots swappable and em16 now named, the next build should aim at
+**em16's** slots rather than the whole cast, which is both smaller and aimed at what the player sees.
+
+Cost: four boots this round (slot map, pack map, em12-only, em14/em16). MercMode was paused for each and restored;
+every script ends with the start call.
