@@ -73,3 +73,42 @@ model work.
 2. The three dumps, then offline search for the clock, the enemy array and the player - the accelerant the answers made
    possible.
 3. The Switch part-table rules, with the clean-character bar.
+
+## The Sonic GameCube build: it launches now, and Sonic is not drawn (2026-11-07)
+
+**Why the first attempt never ran.** `filemods.launch_path` resolves a mod build to `meta["image"]` when that key is set,
+and otherwise to `mod_dir / <the library's own file name>`. This game's library file is
+`Resident Evil 4 (USA) (Disc 1).gcz`, so an ISO dropped into the build folder was never the file Dolphin opened:
+
+```
+FileNotFoundError: .../mods/78ab9efa2e310db4/re4gsonic_real/Resident Evil 4 (USA) (Disc 1).gcz
+```
+
+Setting `"image": "re4-d1.iso"` in `.gbox-mod.json` fixed it: the launch returned 200, a session appeared, and the
+GameCube bot played a Mercenaries round from it.
+
+**What is on screen.** Stock HUNK, `01'57"33`, the dock stage - a real round, no Sonic:
+
+![stock HUNK in the patched build](evidence/re4gc-sonic-build-stock-hunk.jpg)
+
+**What is verified about the patch.** The four archives in `re4-lab/re4gc-sonic/` are genuinely different from the disc's
+originals - 185,027 to 189,909 bytes differ in the first 200 KB alone, and every one is shorter than its disc entry (which
+is why they were zero-padded to the entry size). The writes landed at the FST offsets:
+
+```
+em/pl00.drs 240678972 | em/pl08.drs 253162716 | em/pl09.drs 255386332 | em/pl10.drs 269492540
+```
+
+**So the failure is one of two things, and they are distinguishable:**
+
+1. the Mercenaries slot that draws HUNK is **not** one of `pl00/pl08/pl09/pl10`, so nothing patched was ever asked for; or
+2. a rebuilt DRS is **not accepted**, and the game falls back to the model it already has in memory.
+
+The next experiment separates them without a rebuild: patch **one** slot with a change that must be visible if it is read
+(a same-size vertex scale on the player model), and if that does not draw either, the writer is the problem rather than the
+slot map. A round-trip write of the *original* bytes is the control: if the game still plays after a byte-identical
+rewrite, the padding-and-write path is sound.
+
+**What this costs and what it doesn't.** The model work is not the blocker here - the archives exist and the injection is
+byte-verified. The blocker is identifying which archive the drawn character comes from, which is a lookup in the game's
+own loader, not a modelling problem.
