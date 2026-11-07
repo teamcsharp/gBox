@@ -389,3 +389,38 @@ patches are on the disc at those offsets, the emulator opens that disc - and a f
 The next question is therefore not "where is the file" but "what does the game do with the bytes it read", and the cheapest
 place to answer it is the one file the DOL names by an exact string: `Font/common_p.fnt` (capital F against the disc's
 `font/`), which if case matters would explain a silent fallback to a different source.
+## Round 63: the case test is negative, and the font was the wrong instrument all along
+
+`re4gc-fontcase` renamed the FST's `font` directory to `Font` (a single byte in the name table, same length, so nothing
+moves) **and** filled `common_p.fnt`'s glyphs. The title screen came up untouched again:
+
+![Title screen, font dir renamed and glyphs filled](evidence/re4gc-fontcase-title-unchanged.jpg)
+
+So case is not it. More importantly this closes the font line of enquiry: the labels `START`, `ASSIGNMENT ADA`,
+`THE MERCENARIES`, the Capcom line and the `resident evil` logo are **pre-rendered art**, not glyphs from any `.fnt`. Three
+patches (one font, all fonts, all fonts plus a rename) measured the same nothing, and the honest reading is that the
+instrument was wrong, not the disc.
+
+**What the same round found on the Switch side.** The HD port's UDAS container is **little-endian**, which is why
+`udas_entries(data)` on `em16.udas` produced an entry at `0x20040000 + 0x20af3c00` - a big-endian read of a little-endian
+table. Read correctly:
+
+```
+em16.udas: 4,016,416 bytes
+  udas entries: 2
+    {type: 0, size: 3,976,992, offset: 1056}
+    {type: 4, size: 0,       offset: 3,996,704}
+  entry type 0: 698 DAT slots
+```
+
+698 slots in one Ganado pack. That is the surface a "remove clothes" operation has to address: a DAT slot per model/part,
+not a single mesh per enemy.
+
+## What this means for the two goals
+
+* **Sonic on GameCube**: still no drawn change, and the font path is exhausted. The next instrument must be a file whose
+  use is proven by the *game's code*, not by a guess from the directory - which for this title means tracing the loader that
+  the DOL's `em/*.das` strings belong to.
+* **Clothes removal / clean characters on Switch**: the container is now decoded correctly (little-endian UDAS, 698 DAT
+  slots) and the engine demonstrably draws same-topology edits, so a part-hide (collapse a slot's vertices to a point) is the
+  next experiment that can succeed rather than the next guess.
