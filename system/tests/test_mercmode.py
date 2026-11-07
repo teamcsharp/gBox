@@ -1243,6 +1243,26 @@ def test_preload_gets_presentation_priority_like_the_launch_it_replaces():
     assert not M.presentation_launch(store,w,stored|{'actor':'operator'})
 
 
+def test_an_unplayable_preferred_edition_explains_itself_instead_of_showing_a_blank():
+    """2026-11-07: RE4 on lilspark listed playable=false with reason "", so the panel offered nothing to act on.
+
+    A Switch edition keeps its explanation in `notes` (gbox.re_switch.preferred_spec: RE4 is `'playable': False` with
+    RE4_REASON in notes), while the inventory only read `reason`. Every unplayable row must say why.
+    """
+    from gbox import re_switch
+    store,w,*_=rig()
+    switch_pref={'re4':{'platform':'switch','mode':'mercenaries','title_id':re_switch.RE4_TITLE_ID}}
+    M.configure(store,w['name'],{'enabled':True,'preferred_editions':switch_pref})
+    row=next(r for r in M.inventory(store,w) if r['title']=='re4')
+    assert row['platform']=='switch' and not row['playable']
+    assert row['reason'].strip(), 'an unplayable title must carry a reason'
+    assert row['reason']==re_switch.RE4_REASON
+    # every title in the row set explains itself when it cannot be played
+    for r in M.inventory(store,w):
+        if not r['playable']:
+            assert str(r['reason']).strip(), f"{r['title']} is unplayable with no reason"
+
+
 def test_the_preferred_edition_gets_presentation_priority_for_its_preload_and_launch():
     # 2026-10-26 21:55: RE5 Switch No Mercy selected, its preload sat queued behind the 70% background budget (CPU 77-92%)
     # because only the PS3 game ids counted as MercMode foreground work; the cold launch would have waited the same way

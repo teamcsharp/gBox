@@ -927,6 +927,11 @@ def inventory(store, worker, cfg=None, sessions=None, aliases=None):
                  and g.get('platform') == spec['platform']]
         tools = worker.get('tools')
         reason = spec.get('reason', '')
+        # A Switch edition keeps its explanation in `notes` (gbox.re_switch.preferred_spec: RE4's is
+        # `'playable': False` with RE4_REASON in `notes`). Reading only `reason` left the panel listing an unplayable
+        # title with no words at all - observed 2026-11-07: RE4 on lilspark read playable=false with reason "".
+        if not reason and not spec.get('playable') and spec.get('notes'):
+            reason = str(spec['notes'])
         if not reason and not games:
             reason = 'The verified game revision is absent from the catalog'
         if not reason and worker.get('os') not in ('windows', 'linux'):
