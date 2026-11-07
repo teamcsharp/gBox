@@ -102,3 +102,35 @@ so the queue reads as busy while draining slowly. The fix worth making (not atte
 
 Two tickets were closed this session with evidence (`58287b5954714e98`, `4f710eb3d6ab4066` - the "(have: )" auto
 reports), and the route that filed them no longer mints a ticket for a library that is still loading.
+## Age-out: 1,558 abandoned tickets handed back (2026-11-07)
+
+The cap bounds how many analyses a title leaves *open*; nothing released a ticket a worker **claimed and abandoned**.
+`inbox.stale_in_progress` / `inbox.hand_back` and the route `POST /api/requests/age-out` do:
+
+```
+{"after_hours": 72, "limit": 500, "dry_run": true}   # the default is a dry run
+```
+
+Only `in_progress` is touched, and only when nothing has happened on the ticket (creation, claim, a message, or a task
+step) for the threshold. Nothing is deleted and nothing is closed: the messages and attachments stay and the request says
+it is waiting again, with the quiet time and the limit in the note.
+
+Applied to the live inbox at a deliberately conservative **72 h**:
+
+| status | before | after |
+|---|---|---|
+| open | 1,109 | **2,667** |
+| in_progress | 1,694 | **136** |
+| done | 6,081 | 6,082 |
+| blocked | 10 | 10 |
+
+1,558 requests released, the oldest quiet for **448 h (18.6 days)** - `Character replacement readiness: Halo`,
+`Legend of Zelda`, `Jet Grind Radio full cast`, `unlock all secret / hidden content` among them.
+
+**One honest caveat found while measuring.** Not every `in_progress` ticket is abandoned: `test_hermes_task_mode`
+fails today with *"Hermes is on the local model while the paid routes are out of credit; the investigation stays queued
+for a paid route"*, so some tickets are waiting on a route with no credit rather than on a worker that died. That is why
+the route defaults to `dry_run`, why the threshold is a parameter rather than a constant in the call, and why the note
+tells the reader exactly how long the ticket sat - a legitimate wait and an abandoned one look identical in the status
+field. The 72 h figure was chosen to release work that is plainly stale (a day-plus is longer than any single agent run)
+while leaving the recent queue alone.

@@ -281,3 +281,55 @@ def lite(request):
         if len(body) > keep:
             out.update(body=body[:keep], body_chars=len(body))
     return out
+
+
+# --------------------------------------------------------------------------- stale work
+
+# A request that an agent claimed and never finished holds the queue the way a duplicate would, except that nothing
+# supersedes it: `round_reports.ANALYSIS_QUEUE_CAP` bounds how many analyses a title may leave open, but a ticket a
+# worker picked up and abandoned stays `in_progress` for ever. Measured 2026-11-07: 1,694 of 8,894 requests were
+# `in_progress`, against 1,109 open. This decides which of those have gone quiet long enough to be handed back.
+STALE_AFTER_S = 6 * 3600
+
+
+def activity(request) -> float:
+    """The last moment anything happened on a request: its creation, its claim, or its newest message (or step)."""
+    times = [request.get("created") or 0, request.get("started") or 0, request.get("completed") or 0]
+    for message in request.get("messages") or ():
+        if isinstance(message, dict):
+            times.append(message.get("ts") or 0)
+            step = message.get("task_step")
+            if isinstance(step, dict):
+                times.append(step.get("at") or 0)
+    return max(times) if times else 0.0
+
+
+def stale_in_progress(requests, *, now: float, after_s: float = STALE_AFTER_S, limit: int = 0) -> list[dict]:
+    """Requests in `in_progress` with no activity for `after_s`, newest-quiet first.
+
+    Only `in_progress` is touched. `open` work is waiting on purpose, `done`/`blocked` are settled, and a request with
+    no timestamp at all is left alone rather than aged out on a guess.
+    """
+    rows = [r for r in requests
+            if isinstance(r, dict) and r.get("status") == "in_progress" and activity(r) > 0
+            and now - activity(r) >= after_s]
+    rows.sort(key=activity)
+    return rows[:limit] if limit else rows
+
+
+def hand_back(request, *, now: float, after_s: float = STALE_AFTER_S) -> dict:
+    """The request returned to `open` with a note saying why, so the queue shows work that is actually waiting."""
+    quiet = (now - activity(request)) / 3600.0
+    out = dict(request)
+    # a shallow copy would hand the caller's own messages list back to them and the note would land in it too
+    out["messages"] = list(request.get("messages") or ())
+    out["status"] = "open"
+    out["started"] = None
+    out["handed_back_at"] = now
+    out["messages"].append({
+        "author": "system", "ts": now, "attachments": [],
+        "text": (f"Returned to the queue: this was claimed and had no activity for {quiet:.1f} h (the limit is "
+                 f"{after_s / 3600:.0f} h). Nothing was lost - the messages and attachments above are the work done "
+                 f"so far."),
+    })
+    return out

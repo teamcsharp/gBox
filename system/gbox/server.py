@@ -106,6 +106,13 @@ class JobResult(BaseModel):
     artifacts: list[ArtifactUpload] = []
 
 
+class AgeOutIn(BaseModel):
+    """Hand `in_progress` requests back to `open` when they have gone quiet (the queue's own housekeeping)."""
+    after_hours: float = 0            # 0 uses inbox.STALE_AFTER_S (6 h)
+    limit: int = 500                  # how many to touch in one call; 0 means every one
+    dry_run: bool = True              # the safe default: say what would change, change nothing
+
+
 class JobRequest(BaseModel):
     tool: str
     input: dict = {}
@@ -6887,6 +6894,34 @@ def create_app(config: Config) -> FastAPI:
             transition["audit_seq"] = store.audit(actor, f"request.{s.status}", rid,
                                                   {"note": s.note[:200], **transition})
             return _clean(r | {"status_transition": transition})
+
+    @app.post("/api/requests/age-out")
+    def req_age_out(body: AgeOutIn, actor=Depends(auth)):
+        """Hand abandoned work back to the queue: `in_progress` requests quiet for longer than the limit return to `open`.
+
+        Measured 2026-11-07: 1,694 of 8,894 requests were `in_progress` against 1,109 `open` - a queue that reads busy
+        while draining slowly, because nothing ever releases work a worker claimed and abandoned. Nothing is deleted and
+        nothing is closed: the messages and attachments stay, and the request simply says it is waiting again.
+
+        `dry_run` reports what would change without writing, so the operation is inspected before it is applied.
+        """
+        from . import inbox
+        now = time.time()
+        after_s = max(1.0, float(body.after_hours) * 3600.0) if body.after_hours else inbox.STALE_AFTER_S
+        rows = [r for r in store.all("request") if isinstance(r, dict)]
+        limit = body.limit if body.limit and body.limit > 0 else 0
+        stale = inbox.stale_in_progress(rows, now=now, after_s=after_s, limit=limit)
+        if not body.dry_run:
+            with store.lock:
+                for row in stale:
+                    store.put("request", row["id"], inbox.hand_back(row, now=now, after_s=after_s))
+            store.audit(actor, "request.age_out", "", {"handed_back": len(stale), "after_hours": after_s / 3600})
+        return {"v": 1, "dry_run": bool(body.dry_run), "after_hours": round(after_s / 3600, 1),
+                "scanned": sum(1 for r in rows if r.get("status") == "in_progress"),
+                "handed_back": 0 if body.dry_run else len(stale),
+                "would_hand_back": len(stale),
+                "requests": [{"id": r["id"], "number": r.get("number"), "title": str(r.get("title"))[:90],
+                              "quiet_hours": round((now - inbox.activity(r)) / 3600.0, 1)} for r in stale[:100]]}
 
     @app.post("/api/requests/{rid}/metrics")
     def req_metrics(rid: str, m: MetricsIn, actor=Depends(auth)):
