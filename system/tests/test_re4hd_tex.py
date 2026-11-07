@@ -122,3 +122,87 @@ def test_a_stream_that_is_not_zlib_is_refused():
         T.fen_open(struct.pack("<I", 100) + b"NOTZLIB" + b"\0" * 64)
     with pytest.raises(T.TexError, match="FEN too short"):
         T.fen_open(b"\x01")
+
+
+# ---------------------------------------------------------------- the pixels are DDS
+
+def dds(width=256, height=256, *, fourcc=b"DXT3", mips=9, body=b"\0" * 1024):
+    """A minimal DDS the parser should accept."""
+    head = bytearray(0x80)
+    head[0:4] = T.DDS_MAGIC
+    struct.pack_into("<I", head, 4, 0x7C)          # dwSize
+    struct.pack_into("<I", head, 8, 0xA1007)       # dwFlags
+    struct.pack_into("<I", head, 0x0C, height)
+    struct.pack_into("<I", head, 0x10, width)
+    struct.pack_into("<I", head, 0x1C, mips)
+    struct.pack_into("<II", head, 0x4C, 32, 0x4)   # ddspf: size, DDPF_FOURCC
+    head[0x54:0x58] = fourcc
+    return bytes(head) + body
+
+
+def wrapped(dds_bytes, *, wrapper_extra=0, declared=None):
+    """A FEN entry: [declared size, -1, archive number, 0] + padding + the DDS."""
+    pad = b"\0" * wrapper_extra
+    declared = len(dds_bytes) + len(pad) if declared is None else declared
+    return struct.pack("<4I", declared, 0xFFFFFFFF, 7, 0) + pad + dds_bytes
+
+
+def fen_with(*entries):
+    """A FEN whose offset table covers these entries: two counts, then count_b u64 offsets, then the entries."""
+    n = len(entries)
+    start = 8 + 8 * n
+    offs, cursor = [], start
+    for entry in entries:
+        offs.append(cursor)
+        cursor += len(entry)
+    body = bytearray(struct.pack("<II", n, n))
+    for offset in offs:
+        body += struct.pack("<Q", offset)
+    for entry in entries:
+        body += entry
+    return struct.pack("<I", len(body)) + zlib.compress(bytes(body), 9)
+
+
+def test_a_fen_entry_is_a_wrapped_dds_and_its_header_reads():
+    blob = fen_with(wrapped(dds(512, 256, mips=7)))
+    t = T.fen_texture(blob, 0)
+    assert (t["width"], t["height"]) == (512, 256)
+    assert t["format"] == "DXT3" and t["mipmaps"] == 7
+    assert t["wrapper_bytes"] == 16 and t["dds_bytes_match"] is True
+    assert t["archive_number"] == 7
+    assert t["dds"][:4] == T.DDS_MAGIC
+
+
+def test_a_longer_wrapper_is_located_not_assumed():
+    """Measured: 00000010.pack.fen declares 49,328 DDS bytes and holds 49,392 - a 64-byte wrapper."""
+    blob = fen_with(wrapped(dds(), wrapper_extra=64, declared=len(dds())))
+    t = T.fen_texture(blob, 0)
+    assert t["wrapper_bytes"] == 80 and t["dds_bytes_match"] is True
+    assert t["width"] == 256
+
+
+def test_a_declared_size_that_disagrees_is_reported_not_raised():
+    blob = fen_with(wrapped(dds(), declared=12345))
+    t = T.fen_texture(blob, 0)
+    assert t["dds_bytes"] == 12345 and t["dds_bytes_match"] is False
+    assert t["width"] == 256, "the surface still decodes; only the declared size disagrees"
+
+
+def test_an_entry_with_no_dds_and_a_bad_header_are_refused():
+    blob = fen_with(struct.pack("<4I", 0, 0, 0, 0) + b"NOT A DDS" + b"\0" * 200)
+    with pytest.raises(T.TexError, match="holds no DDS"):
+        T.fen_texture(blob, 0)
+    broken = bytearray(dds())
+    struct.pack_into("<I", broken, 4, 0x40)          # wrong dwSize
+    with pytest.raises(T.TexError, match="header size"):
+        T.dds_info(bytes(broken))
+    with pytest.raises(T.TexError, match="too short"):
+        T.dds_info(b"DDS ")
+
+
+def test_a_listing_reports_every_texture_and_drops_the_bodies():
+    blob = fen_with(wrapped(dds(64, 64, fourcc=b"DXT5")), wrapped(dds(32, 32)))
+    assert len(T.fen_open(blob)["entries"]) == 2
+    rows = T.fen_textures(blob)
+    assert [r["format"] for r in rows] == ["DXT5", "DXT3"]
+    assert "dds" not in rows[0] and "wrapper" not in rows[0]

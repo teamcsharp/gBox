@@ -72,3 +72,34 @@ names — the check that keeps a 96-byte descriptor from being mistaken for a pi
 
 Tests: `system/tests/test_re4hd_tex.py` (9 cases: image descriptor, reference slot, a GC TPL named as such, unknown
 magic, a short slot, an offset outside the slot, the FEN size check, the entry map, a non-zlib stream).
+
+## The pixels are plain DDS (2026-11-07)
+
+The surface codec this note listed as missing is **not a private codec at all**. Every entry of an `imagepackhd`
+archive is a 16-byte wrapper followed by a **DDS** file:
+
+```
+entry: u32 dds_bytes, u32 -1, u32 archive_number, u32 0     (16 B; a 64-byte variant exists)
+       then "DDS " + the standard 0x7C header: height, width, mip count, pixel format
+```
+
+Verified over the first 8 archives: **680 textures, 0 refused**, formats **DXT3 (428)** and **DXT5 (252)**, dimensions
+32x32 through 1024x1024, mip chains 9-11. 240 of the 680 carry the longer wrapper (the DDS is located by its magic
+rather than assumed at 16, which is why they parse at all).
+
+**And they decode to real images.** PIL opens the extracted DDS directly - two 256x256 DXT3 surfaces from
+`00000009.pack.fen` render as stone and bark/wall detail maps:
+
+![a decoded RE4 Switch texture](evidence/re4switch-texture-256.png)
+
+That changes what a skin replacement needs. It is no longer "write a codec":
+
+1. **Read** a texture: `re4hd_tex.fen_texture(archive, index)` -> header + the DDS bytes.
+2. **Edit or substitute** it: any DDS tool, or `PIL` -> `save(..., "DDS")`.
+3. **Write it back**: re-wrap, re-deflate the FEN, and patch the archive in place - the same rule as the model packs,
+   the entry must be the entry's own size (or the whole archive re-deflated and the file-size field updated).
+
+What is still open is the **join**: a pack descriptor names an id in 0..191 (108 distinct for the 162 em packs) and
+nothing yet says which `(archive, entry)` that id is. The likely route is the descriptor's own `width x height` and
+format against the DDS headers - a small search space once the descriptor's id is understood - and it is the next
+piece of this line.

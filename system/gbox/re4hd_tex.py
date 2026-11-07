@@ -151,3 +151,74 @@ def fen_entry(data: bytes, index: int) -> bytes:
         raise TexError(f"this FEN holds {len(entries)} entries; #{index} is out of range")
     entry = entries[index]
     return out["body"][entry["offset"]:entry["offset"] + entry["size"]]
+
+
+# ------------------------------------------------------------------ the pixels are DDS
+#
+# Measured 2026-11-07: every entry of an `imagepackhd` archive is a 16-byte wrapper followed by a plain **DDS** file -
+# `44 44 53 20` ("DDS "), dwSize 0x7C, dwFlags 0xA1007, height/width, mip count, then the standard pixel-format block.
+# The wrapper is `u32 dds_bytes, u32 -1, u32 archive_number, u32 0`, and dds_bytes equals the entry size minus 16 on
+# every entry checked. So the surface is not a private codec at all: it is BC (DXT) in a DDS container, which is what
+# every texture tool understands.
+DDS_MAGIC = b"DDS "
+DDS_HEADER = 0x80                       # magic + 0x7C header
+WRAPPER = 16
+
+
+def dds_info(data: bytes) -> dict:
+    """Height, width, mip count and pixel format of a DDS surface, refusing anything that is not one."""
+    if len(data) < DDS_HEADER:
+        raise TexError(f"DDS too short ({len(data)} bytes)")
+    if data[:4] != DDS_MAGIC:
+        raise TexError(f"not a DDS (starts {data[:4].hex()}, want {DDS_MAGIC.hex()})")
+    size, flags, height, width, pitch, depth, mips = struct.unpack_from("<7I", data, 4)
+    if size != 0x7C:
+        raise TexError(f"DDS header size {size:#x}, want 0x7c")
+    pf_size, pf_flags = struct.unpack_from("<II", data, 0x4C)
+    fourcc = data[0x54:0x58].decode("latin-1", "replace") if pf_flags & 0x4 else ""
+    return {"header_size": size, "flags": flags, "height": height, "width": width,
+            "pitch_or_linear_size": pitch, "depth": depth, "mipmaps": mips,
+            "pixel_format_size": pf_size, "pixel_format_flags": pf_flags,
+            "fourcc": fourcc or None, "format": fourcc or f"uncompressed({pf_flags:#x})",
+            "surface_bytes": len(data) - DDS_HEADER}
+
+
+def fen_texture(data: bytes, index: int) -> dict:
+    """One texture out of an `imagepackhd` archive: the wrapper's fields and the DDS it holds.
+
+    The DDS is located rather than assumed: most entries put it at 16, but a variant with a 64-byte wrapper exists
+    (measured: `00000010.pack.fen` declares 49,328 DDS bytes and holds 49,392, which is 64 more). The wrapper is
+    returned as bytes so nothing about a variant has to be guessed in advance.
+
+    Returns the decoded header, not decoded pixels - the DDS body is left as bytes, which is what a replace needs.
+    """
+    entry = fen_entry(data, index)
+    if len(entry) < WRAPPER + DDS_HEADER:
+        raise TexError(f"entry {index} is too short to hold a wrapped DDS ({len(entry)} bytes)")
+    at = entry[:0x100].find(DDS_MAGIC)
+    if at < 0:
+        raise TexError(f"entry {index} holds no DDS")
+    info = dds_info(entry[at:])
+    declared = struct.unpack_from("<I", entry, 0)[0]
+    return {"index": index, "entry_bytes": len(entry), "dds_bytes": declared, "wrapper_bytes": at,
+            "archive_number": struct.unpack_from("<I", entry, 8)[0] if at >= 12 else None,
+            "wrapper": entry[:at],
+            # informational: a variant whose wrapper is longer than 16 explains its own size this way
+            "dds_bytes_match": declared == len(entry) - at,
+            **info, "dds": entry[at:]}
+
+
+def fen_textures(data: bytes, limit: int = 0) -> list[dict]:
+    """Every texture in an archive, headers only (the DDS bodies are dropped so a listing stays small)."""
+    out = fen_open(data)
+    rows = []
+    for entry in (out.get("entries") or [])[:limit or None]:
+        try:
+            texture = fen_texture(data, entry["index"])
+        except TexError as exc:
+            rows.append({"index": entry["index"], "error": str(exc)[:120]})
+            continue
+        texture.pop("dds", None)
+        texture.pop("wrapper", None)
+        rows.append(texture)
+    return rows
