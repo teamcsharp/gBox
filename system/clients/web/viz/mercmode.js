@@ -305,7 +305,26 @@
   function swapOptions(map, selected){
     return Object.keys(map).map(k=>`<option value="${escape(k)}"${k===selected?' selected':''}>${escape(k)}</option>`).join('');
   }
-  function swapHTML(){
+  // RE4 (Switch) swaps are pack-based, not archive-based: the drawn player mesh is pl08 (measured rounds 112-113), the village enemy is
+  // em16, and /api/decrypt-lab/replace transfers proportions from a collection model or another pack. Offering RE5's .arc slots here
+  // would only fail, so the section changes with the title.
+  const RE4_PACKS = {player: 'pl08.udas', ganado: 'em16.udas', ganado2: 'em10.udas'};
+  function re4SwapHTML(){
+    return `<div class="pip-mm-swaps"><small>Characters · RE4 (Switch) · applies at the next boot</small>`+
+      `<label>Pack <select data-mm-r4-pack>`+
+      `<option value="player" selected>player body (pl08)</option>`+
+      `<option value="ganado">village enemy (em16)</option>`+
+      `<option value="ganado2">village enemy (em10)</option>`+
+      `</select></label>`+
+      `<span class="pip-mm-swap-buttons">`+
+      `<button type="button" data-mm-r4="sonic">Sonic proportions</button>`+
+      `<button type="button" data-mm-r4="ganado">Ganado proportions</button>`+
+      `<button type="button" data-mm-r4="plain">Remove clothes (materials)</button>`+
+      `</span><label class="pip-mm-retag"><input type="checkbox" data-mm-r4-blend>Full strength (off = auto from the pack's bands)</label>`+
+      `<small>Proportions come from the collection's model; the mesh keeps its own topology (this engine draws nothing else).</small></div>`;
+  }
+  function swapHTML(title){
+    if (title === 're4_switch') return re4SwapHTML();
     return `<div class="pip-mm-swaps"><small>Characters &amp; zombies · applies at the next boot</small>`+
       `<label>Slot <select data-mm-swap-slot>${swapOptions(SWAP.slots,'chris')}</select></label>`+
       `<label>Donor <select data-mm-swap-donor>${swapOptions(SWAP.slots,'jill')}</select></label>`+
@@ -319,8 +338,36 @@
       `<label class="pip-mm-retag"><input type="checkbox" data-mm-shape> Move the mesh too (a shape change; `+
       `unmeasured on this engine)</label></div>`;
   }
+
+  // RE4's four operations, each one call to /api/decrypt-lab/replace. The donor is the collection's Sonic model for the two "proportions"
+  // buttons and the other pack for the third; "remove clothes" is the material-hide path, which on this title leaves the surface itself
+  // untouched (measured round 113) and is offered with that meaning rather than as a promise.
+  const RE4_DONOR_GLB = '/home/ehm_eckx/agent-work/re4chars/sonic_src.glb';
+  function wireRe4Swaps(root,{api,title,done,fail}){
+    const packKey = () => root.querySelector('[data-mm-r4-pack]')?.value || 'player';
+    const pack = () => RE4_PACKS[packKey()] || RE4_PACKS.player;
+    const blend = () => (root.querySelector('[data-mm-r4-blend]')?.checked ? 1.0 : null);
+    const run = async(button) => {
+      button.disabled = true;
+      try {
+        const kind = button.dataset.mmR4;
+        let body = {title, pack: pack(), build: 'mercmode-swap', write: true};
+        if (kind === 'sonic') body = {...body, donor_glb: RE4_DONOR_GLB, blend: blend()};
+        else if (kind === 'ganado') body = {...body, donor_pack: RE4_PACKS.ganado, donor_slot: 0, blend: blend()};
+        else body = {...body, hide: Array.from({length: 24}, (_, i) => i + 1), hide_mode: 'vanish'};
+        const r = await api('/api/decrypt-lab/replace', body);
+        const report = r?.report || {};
+        done(kind === 'plain'
+          ? `Materials hidden in ${report.pack || body.pack} (${report.skipped?.length || 0} step(s)); the surface itself is unchanged on this title.`
+          : `${report.pack || body.pack}: ${report.touched || 0} slot(s), blend ${report.blend ?? 'auto'}, ${report.vertices_changed || 0} vertices — applies at the next boot.`);
+      } catch (error) { fail(error); }
+      finally { button.disabled = false; }
+    };
+    root.querySelectorAll('[data-mm-r4]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); run(b); }));
+  }
   function wireSwaps(root,{api,title,sessionId,done,fail}){
     const APPLY = 'mercmode-swap';            // every panel swap writes this build; apply_live boots it in place
+    if (title === 're4_switch') { wireRe4Swaps(root, {api, title, done, fail}); return; }
     // which pairs a donor actually moves (gbox.skin_swap refuses maps of a different size or format), so the panel
     // can strike out a donor instead of letting a click end in a refusal
     let matrix = null;
@@ -480,7 +527,7 @@
       `<label class="pip-mm-coop">Bot+bot split screen (Switch RE5 / RE6) ${coopSelect('data-mm-coop',host.settings?.coop_ratio)}</label>`+
       `<label class="pip-mm-skin"><input type="checkbox" data-mm-skin-swap ${host.settings?.skin_swap==='random'?'checked':''}> 🎭 Random skin swap: each round plays one character with another's model (Switch RE5)</label>`+
       (SWITCH_GAMES[session?.game_id]?`<button type="button" data-mm-play-bot title="You play Player 1, the bot plays Player 2 in split screen. The title restarts in this session with Player 2 connected.">🎮 Play with bot (${SWITCH_GAMES[session.game_id]} split screen)</button>`:'')+
-      `${host.current_run?.mercmode?`<small>${escape(host.current_run.phase)}: ${escape(host.current_run.title)} · ${Number(host.current_run.mercmode_rounds)||0} verified rounds</small>`:''}${queueHTML(host,catalog)}${swapHTML()}${objectsHTML()}</div></div>`;
+      `${host.current_run?.mercmode?`<small>${escape(host.current_run.phase)}: ${escape(host.current_run.title)} · ${Number(host.current_run.mercmode_rounds)||0} verified rounds</small>`:''}${queueHTML(host,catalog)}${swapHTML(labTitleFor(compactSession?.game_id || host?.current_run?.game_id) || '')}${objectsHTML()}</div></div>`;
   }
   // "Play with bot" (operator 2026-10-27): the operator as Player 1, the bot as Player 2 in this exact Switch session -
   // the team role, Player 2 connected by an in-place title restart, then the autobot; each step a job confirmed in turn

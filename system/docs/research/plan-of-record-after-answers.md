@@ -2033,3 +2033,41 @@ than a guess.
 **The honest summary of this sub-goal:** the model path is complete and drawn; the texture path has its containers mapped, its writers
 written and tested, and **the one missing number is an address that RAM can supply**. Everything else about it - the id mapping, the archive
 format, the surface replacement, the mod plumbing - is done and reusable.
+## Round 121: the panel already has the four items - for RE5 - and RE4 now has its own
+
+**An important correction to my own framing.** The MercMode sidebar's four operations the operator asked for **already exist**:
+
+```
+Swap clothes            data-mm-swap="clothes"     -> /api/decrypt-lab/model-swap
+Plain (remove clothes)  data-mm-swap="plain"       -> /api/decrypt-lab/strip-clothes
+Character -> zombie     data-mm-swap="to-zombie"   -> /api/decrypt-lab/model-swap
+Zombies -> cast         data-mm-swap="from-cast"   -> /api/decrypt-lab/zombie-cast
+```
+
+All four routes are registered (`strip-clothes` 1267, `swap-matrix` 1775, `model-swap` 2075, `zombie-cast` 2124), and there is more beside
+them: an object swap (mine / grenade), a "zombie round" button (player onto a zombie skin, enemies onto the cast), and a random-skin-swap
+toggle. **That work was already done**, and my rounds of pack identification were building the RE4 equivalent from the other end without
+noticing the panel existed.
+
+**But the panel was RE5-only in a way that could only fail on RE4.** `labTitleFor` maps RE4's game id to `re4_switch` correctly, while the
+`SWAP` map holds RE5 archives (`nativeNXx64/ImgNX/Archive/uEm6c.arc`, ...). So on an RE4 session the section offered four buttons that
+address paths that do not exist in that title.
+
+**Fixed:** `swapHTML(title)` is title-aware. On `re4_switch` it renders an RE4 section - a pack selector (`pl08` player body, `em16` /
+`em10` village enemy) and three buttons wired to `/api/decrypt-lab/replace`:
+
+| button | call |
+|---|---|
+| Sonic proportions | `{pack, donor_glb: <collection Sonic>, blend: auto or 1.0}` |
+| Ganado proportions | `{pack, donor_pack: em16, donor_slot: 0}` |
+| Remove clothes (materials) | `{pack, hide: [1..24], hide_mode: vanish}` |
+
+The section says what it does rather than overselling it: proportions from the collection's model, **the mesh keeps its own topology**
+(this engine draws nothing else), and the clothes button is labelled as a material hide - which on this title leaves the surface itself
+untouched (measured round 113).
+
+`node --check` passes and the file is deployed; a page refresh of the gBox UI picks it up (Electron needs a restart).
+
+**The honest scoreboard for the operator's four items:** RE5 - implemented and wired; RE6 - the same routes, subject to its archive layout;
+**RE4 - now has a section that does what is actually proven on that title** (proportions and material-hides), with the texture-based clothes
+removal still waiting on the surface address that RAM can supply.
