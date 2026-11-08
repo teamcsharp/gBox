@@ -700,3 +700,24 @@ left" - which in practice means checking that the picture changes when a key is 
 
 `scale_materials` now permits factors up to 4.0, because a bisection needs distinguishable outcomes and refusing to grow a
 model silently dropped a whole group (13 packs written instead of 20). Eight hide tests and eight playbook tests pass.
+## Round 73: a real bug fixed, and the half-bisection blocked by input that does not land
+
+**Fixed: `rea_tool` was silently missing from the node.** The service log repeated *"tool module rea_tool not loaded on this
+machine: AttributeError: module 'gbox.rea' has no attribute 'VERSION'"*. The registry skips a tool module that raises, so the
+REA tools were absent from every job while the integration itself worked. `gbox.rea` now exports **`VERSION`** and
+**`unavailable()`** - the latter answering one string or nothing, and never raising, because a tool's `check` must not be able to
+take the module down. Four tests pin the contract (`tests/test_rea_tool_contract.py`), they pass on both machines, and after the
+restart the error is gone from the log.
+
+**Fixed in the runner:** it now kills a stray emulator before launching and accepts a picture only when two samples **differ**.
+Round 72's follow-up run had attached to a leftover emulator already sitting on "Cancel loading? Yes/No", which looked like a boot.
+
+**Not fixed, and it is the blocker: the playbook's presses stopped landing.** The half-bisection run (`re4sw-plhalf`:
+`pl01`..`pl03` x3.0 against `pl04`..`pl06` x0.1) started cleanly - "picture up and alive: mean 49.1" - and then sat at
+`mean 19.4` for over two minutes while the escape pressed back every 12 s. Either the thread that sends input had ended, or the
+input reached a process that was no longer the one being read. Until that is understood, **every** run that lands on a menu is a
+coin flip, and the bisection cannot be finished by repeating the attempt.
+
+**What the next round must do first:** send a single key and verify the screen changes - a two-frame input assertion - and only
+then walk. If a key does not move the picture, the session is reading a frame from a process it does not drive, and the fix is in
+`_launch` rather than in the playbook.

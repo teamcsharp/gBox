@@ -7,6 +7,7 @@ drawn at all it is drawn as a point.
 import json
 import os
 import statistics
+import subprocess
 import sys
 import time
 import urllib.error
@@ -49,6 +50,13 @@ def jobs_running():
     return [r for r in rows(api("GET", "/api/jobs?limit=8")[1], "jobs") if r.get("state") == "running"]
 
 
+def stray_emulators():
+    """Emulator processes still alive: a launch that inherits one inherits its screen too, menu and all."""
+    out = subprocess.run(["bash", "-lc", "pgrep -af 'citron|eden' | grep -v grep | grep -v gbox.service"],
+                         capture_output=True, text=True, timeout=30).stdout
+    return [line for line in out.splitlines() if line.strip()]
+
+
 def pause_and_wait():
     api("POST", "/api/mercmode", {"op": "configure", "host": "lilspark", "enabled": False})
     for row in running():
@@ -57,8 +65,17 @@ def pause_and_wait():
     for _ in range(30):
         time.sleep(4)
         if not running() and not jobs_running():
+            break
+    # a session that ended is not the same as an emulator that exited: the last run left one on a menu, and the next
+    # launch attached to it, so the "new" session started on somebody else's screen
+    for _ in range(3):
+        leftovers = stray_emulators()
+        if not leftovers:
             return True
-    return False
+        subprocess.run(["bash", "-lc", "pkill -f 'citron-linux' ; pkill -f 'eden-linux'"], timeout=30)
+        time.sleep(5)
+    print("MARK emulator still alive:", stray_emulators()[:2], flush=True)
+    return not stray_emulators()
 
 
 def restore():
@@ -94,7 +111,28 @@ try:
     print("MARK session", session, flush=True)
     if not session:
         raise SystemExit("no session")
-    time.sleep(50)
+    # wait for a real picture, not a fixed delay: a modified pack can make the first boot slower (shader cache), and
+    # starting the bot on a black frame is indistinguishable from a crash in the captures
+    from io import BytesIO as _BytesIO
+
+    from PIL import Image as _Image
+    # "up" means alive, not merely bright: two samples that differ, so a frozen leftover screen cannot pass for a boot
+    deadline = time.time() + 240
+    mean, previous = None, None
+    alive = 0
+    while time.time() < deadline:
+        raw = frame(session)
+        if raw:
+            mean = statistics.fmean(list(_Image.open(_BytesIO(raw)).convert("L").getdata()))
+            if mean > 15.0 and previous is not None and raw != previous:
+                alive += 1
+                if alive >= 2:
+                    print(f"MARK picture up and alive: mean {mean:.1f}", flush=True)
+                    break
+            previous = raw
+        time.sleep(8)
+    else:
+        print(f"MARK picture never came up (last mean {mean})", flush=True)
     status, started = api("POST", "/api/jobs", {"tool": "autoplay", "require_worker": session.split("-")[0],
                                                 "input": {"session_id": session, "op": "start", "mode": "playbook"}})
     print("MARK autoplay", status, json.dumps(started)[:160], flush=True)
