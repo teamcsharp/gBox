@@ -2664,3 +2664,27 @@ mesh the archive holds - and nothing about the container blocks it either; the f
 
 **For the record, the two failure modes that cost time here:** a swap aimed at a slot the round does not play does nothing silently (Chris
 swapped, Rebecca played), and a donor whose maps differ in tag is refused unless `follow_tag` is used.
+## TEX decoded: 576-byte header, then BC1 with a full mip chain
+
+Rebecca's body base map decompresses to 1,400,384 bytes whose header carries an ascending size table:
+
+```
+raw=1,400,384  tag=0x40155e40
+offsets from +0x18: 0x100000 0x140000 0x150000 0x154000 0x155000 0x155400 0x155600 0x155800 0x155a00 0x155c00
+base surface = 1,048,576 bytes  ->  2048 x 1024 BC1 (DXT1)
+mip chain ends at 1,399,808  ->  header = 576 bytes
+```
+
+So an RE5 skin map is:
+
+```
+TEX\0 | 576-byte header (a size/mip table at +0x18, the surface's dimensions and format implied by it)
+      | BC1/DXT1 2048x1024, full mip chain
+```
+
+**That is the whole format question answered for the body maps**: the encoder has to produce DXT1 at 2048x1024 with a mip chain, prepend the
+original 576-byte header (rewriting only the size fields if the payload length differs), and zlib it - then `mt_arc.replace_at` puts it
+back. No swizzle, no exotic format, and BC1 encoding is a known quantity.
+
+**What is left, precisely:** a DXT1 encoder plus the header rewrite. That is the piece that turns any image from the collection into an RE5
+skin, and the same container work a Sonic *body* would need for its maps.
