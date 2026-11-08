@@ -1961,3 +1961,28 @@ with - its first surface is a 1024x1024 sheet, the shape of an environment atlas
 **What is left is a search, not a mechanism:** `pl08` names global ids 1, 2, 5 and 9; only 9 is present, so **Leon's body atlas is one of
 the ids missing from `imagepackhd`** - the same three numbers (0, 2, 3 locally) whose archives the directory does not hold. That is now the
 single question: where does the loader get a texture whose archive is absent, because the game plainly draws him with one.
+## Round 118: the low texture ids are expected in a directory this RomFS does not have
+
+Three measurements, and together they explain the missing textures without another guess:
+
+1. **The HD store has no low ids at all.** `imagepackhd` holds **1,813 archives spanning ids 6 .. 0x4b000005** - the lowest is 6. The player's
+   body materials name local ids 0, 2, 3, which map through the TPL to global ids 1, 2, 5 - **every one of them below the first archive that
+   exists**.
+2. **The loader chooses the directory by a flag.** The format string read out of the executable is
+   `"%s\%s\%08x.pack.fen"` with the second argument being `"ImagePack"` **or** `"ImagePackHD"`, selected by a global HD flag. So the low
+   ids are expected in **`imagepack/`** - the standard-definition store - and this RomFS extraction contains only `imagepackhd`.
+3. **The emulator's file access does not name game files.** A 282,458-line `openat` trace over a running session contains **zero** `romfs`
+   paths, because Citron serves the game through its own VFS over the container. The extracted tree is therefore only ever *the overlay
+   source*, which is exactly how every model change in these rounds reached the game.
+
+**The conclusion is a concrete next experiment, not a theory:** provide `romfs/bio4/imagepack/<id>.pack.fen` **from the overlay**, built the
+same way the working texture swap was built (`fen_replace_texture` on a synthesised archive). If the loader looks for the SD archive when
+the HD one is absent, the overlay satisfies it and the player's texture becomes replaceable - which makes "swap clothes" and "swap skins"
+plain file swaps, the same mechanism that already works for archives that do exist.
+
+**If it does not, the fallback order is the other way round** (HD absent ? the surface is embedded), and then the remaining place to look is
+the pack's own BIN slots for a raw surface, which the "no DDS magic" scan has already ruled out for `pl08`.
+
+**Everything else about textures is now known and reusable:** the id mapping (material -> TPL descriptor -> global id -> archive), the
+archive format (four surfaces, DXT3, 1024x1024 and 256x256), the writer that replaces a surface at its own size, and the fact that a RomFS
+file swap reaches the game.
