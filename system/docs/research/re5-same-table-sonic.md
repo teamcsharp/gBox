@@ -57,6 +57,20 @@ input, plus a brightness/score check. A round that cannot move is not a round.
 The probe writes `/tmp/<archive>.sonic`; `harness-sonic-em10` and the control builds are in the mods cache under
 `52d15709be0fda1a`.
 
+## The in-place alternative: the round does play
+
+A second probe (`re5-em10-sonicfit.py`, not committed) kept every table and index byte and changed only vertex positions:
+each Majini vertex was moved to the nearest point of the region-matched Sonic surface (head/torso/arms/legs). The
+`harness-sonicfit-em10` build (one uEm10 archive) reached Public Assembly and the round was live: the timer and score
+moved, the bot fought, and frames showed enemies. No Sonic silhouette was recognisable in the captured frames; the
+visible enemies looked stock, which means either the visible classes were not uEm10 or the fit was too weak at that
+distance. Doing the same fit on uEm0b + uEm10 + uEm11 + uEm12 in one build stuck on `NOW LOADING` for six minutes, so
+the multi-archive combination needs the same one-at-a-time bisect.
+
+This is the useful result: **in-place vertex writing still plays**, while both table/index rewrites (one-mesh and
+same-table topology) freeze. The remaining question is not whether the engine can take new coordinates, but whether it
+can take new connectivity; for now it cannot.
+
 ## What is still missing
 
 * No captured frame yet shows a Sonic silhouette in a round; the single-model result only proves the table stays
