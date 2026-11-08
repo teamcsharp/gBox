@@ -1344,3 +1344,23 @@ notes. A usable save must be:
 
 Both conditions are about the file, and `gbox/re4_switch_save.py --save <file> --replace` installs it with a backup and a verified
 copy. Nothing else on the Switch track is blocked once it exists.
+## Round 96: the save resumes a live Mercenaries round
+
+The prompt asks **"Cancel loading?"** - so **No** is the answer that lets the load continue, and that is the opposite of every attempt so
+far. Launched stock, the title booted **straight into a Mercenaries round**:
+
+![the save resuming a live Mercenaries round](evidence/re4sw-save-resumes-round.jpg)
+
+`00'56"85` on the clock, Leon with the Mercenaries HUD, Ganados closing in. No walk, no menus, no prompt - the save is a round in
+progress and the game resumed it.
+
+**That changes the shape of every in-round test.** A model build no longer needs a menu walk at all: launch, wait for the round, capture.
+Thirty rounds of walking were solving a problem that did not exist when the save is allowed to resume.
+
+**With the mod build, the same launch landed on the prompt** (`19.4`) and the `No` press left it there. Two readings, and they are
+testable: the mod launch changes the boot timing so the resume is attempted before the overlay is ready, or the prompt in that run is a
+*different* prompt (a load the game cannot complete for another reason). The next run should capture the prompt's frame - not just its
+mean - and compare it with the "Cancel loading?" seen before; a different dialog would explain why no key clears it.
+
+**What is certain now:** the save is not "unusable" as round 91 concluded. It holds a live round, and the title resumes it. The
+requirement is to launch in a way that lets that resume finish - which stock does.
