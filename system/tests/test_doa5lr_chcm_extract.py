@@ -15,8 +15,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODULE_PATH = os.path.join(ROOT, "gbox", "doa5lr_chcm_extract.py")
 USRDIR = os.environ.get(
     "DOA5LR_USRDIR",
-    "/home/ehm_eckx/.hermes/cache/scratch/doa5lr_extracted/"
-    "Dead or Alive 5 - Last Round (Japan)/PS3_GAME/USRDIR",
+    "/home/ehm_eckx/gbox-cache/research/doa5lr_samples_2450/"
+    "extract/Dead or Alive 5 - Last Round (Japan)/PS3_GAME/USRDIR",
 )
 LINK = os.path.join(USRDIR, "chara_common.lnk")
 INDEX = os.path.join(USRDIR, "chara_common.bin")
