@@ -2317,3 +2317,26 @@ available, loader and ICDs present, driver loaded, repository clean at `50394e88
 
 **Config left as found:** `backend=0`, with the backup I made still beside it (`qt-config.ini.bak-1794148901`) and gBox's own copies
 (`.gboxlab-backup`, `.gboxlab-dumpbak`) untouched.
+## Round 132 (after the second reboot): the environment is working again, and the test is the only thing failing
+
+The second reboot cleared it, and the checks say so plainly:
+
+* **the share** was unmounted again at boot; `mnt-gbox-quickswap2.mount` restarted and `Resident Evil 4` is readable on it;
+* **the service** is active and a display exists (`/tmp/.X11-unix/X0`);
+* **Vulkan is healthy** - and this is the first time it has been measured directly rather than inferred from Citron's failure. The new probe
+  (`tools/probes/vulkan_device_check.py`, ctypes against `libvulkan.so.1`) reports:
+
+```
+vkCreateInstance -> 0 (0 = success)
+vkEnumeratePhysicalDevices -> 0 devices: 2
+```
+
+* **Citron boots the game** - its log runs to 47 s with `PatchRomFS` lookups and NS service calls, and **no Vulkan error at all**.
+
+**So the earlier `VK_ERROR_INITIALIZATION_FAILED` was a driver that had not finished coming up in the first minute of a boot**, not a
+permanent fault: the same launch that failed at `up 0 min` succeeds a few minutes later. That is worth knowing for every future round - after
+a reboot, wait for the driver before judging the emulator.
+
+**What is still failing is the experiment, not the host.** `re4sw-tint2` walked 18 steps and ended on `loading`; the capture then correctly
+discarded every frame (`no round timer on screen`). That is the same intermittently-hanging build seen before the outage - a 17-material
+header write that sometimes reaches a round and sometimes stops the stage loading.
