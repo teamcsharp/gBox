@@ -1910,3 +1910,28 @@ Spark, 2 passed and 4 skipped here.
 **The next step is a small, specific question: where do the 20 surfaces live?** They are in the pack (the file is 1.4 MB and the BIN slots
 account for a fraction), so a scan for `DDS ` across the whole pack, with the descriptor offsets as a map, is the way to find the store -
 and then the same writer applies to it unchanged.
+## Round 116: the texture descriptors point at a store that exists - and does not hold the player
+
+Following the descriptor's pointer instead of assuming a payload:
+
+```
+image 0: 128x64  fmt 0xe  field 0x208  entry@slot+0x208 = u32 0x01000008, u32 0
+image 1: 128x256 fmt 0xe  field 0x210  entry@slot+0x210 = u32 0x01000008, u32 1
+...
+```
+
+The 40-byte record ends with an offset to an **8-byte entry** whose content is a constant `0x01000008` and a **global image id** (0, 1, 2, ...
+up to 29 in this pack). So the TPL is a pure index: **the pack names textures, it does not contain them.** Confirmed twice over: the pack has
+**0 `DDS ` magics** in 1.5 MB, and its slot table holds BIN meshes and TPL descriptors only - no payload slot at all.
+
+**And the store exists.** `romfs/<title>/bio4/imagepackhd/` holds **1,813 archives, 5.8 GB**, named exactly as the loader's format string
+says (`%08x.pack.fen`). So the texture path is a file swap, which `switch_mods` already does.
+
+**Except for the player.** `00000000.pack.fen`, `00000002.pack.fen` and `00000003.pack.fen` - the three ids `pl08`'s body materials
+reference - **are not in the directory**, while its neighbours (6, 9, 10, 11, 12...) are. So either the low ids live somewhere else, or the
+material's `material_id` is not the global texture id and the mapping is one step away.
+
+**That is the sharpest question this line has produced, and it is a lookup:** the 8-byte entry already carries the global id the loader
+uses; what is unproven is that `Mat.material_id` *is* that id. One test settles it - take an enemy or player material whose id **is**
+present in `imagepackhd` (6, 9, 10...), swap that archive with `fen_replace_texture`, and see whether the mesh changes. If it does, the
+id is the id, the store is the store, and "swap clothes / swap skins" is a **file replacement** rather than a pack edit.
