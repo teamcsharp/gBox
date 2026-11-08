@@ -91,3 +91,11 @@ def test_a_real_pack_survives_the_coherent_morph_and_keeps_its_topology():
     assert np.isfinite(moved).all()
     assert np.allclose(moved, np.asarray(mesh.pos, np.float64), atol=1.0), \
         "morphing a mesh onto itself must leave it essentially where it was"
+
+
+def test_bands_span_the_ranks_that_are_present_not_the_bone_table():
+    """A converted .glb buckets 62 joints into a handful of weight records; using the table length would collapse every band."""
+    import numpy as np
+    ranks = np.array([0, 1, 2, 3, 0, 3], np.int64)
+    bands = C._region_of(ranks, 62, 4)          # 62 bones in the table, 4 ranks actually used
+    assert sorted(set(bands.tolist())) == [0, 1, 2, 3], f"the four ranks must map to four bands, got {bands}"

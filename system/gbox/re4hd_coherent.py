@@ -34,9 +34,13 @@ def _region_of(ranks: np.ndarray, count: int, bands: int) -> np.ndarray:
     """
     out = np.full(len(ranks), 0, np.int64)
     valid = ranks >= 0
-    if count <= 0:
+    if count <= 0 or not valid.any():
         return out
-    out[valid] = np.minimum((ranks[valid] * bands) // max(count, 1), bands - 1)
+    # The span is the ranks actually present, not the bone-table length: a donor whose joints were bucketed into a few weight
+    # records (a converted .glb, say) has ranks 0..3 over a 62-bone table, and using the table length would put every vertex in
+    # band 0 and make the transfer a no-op.
+    span = int(ranks[valid].max()) + 1
+    out[valid] = np.minimum((ranks[valid] * bands) // max(span, 1), bands - 1)
     return out
 
 

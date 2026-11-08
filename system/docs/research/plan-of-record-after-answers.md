@@ -1531,3 +1531,24 @@ surface in each band and read at a lower blend.
 That is the concrete next step for "Sonic as a character on this title": **convert the donor with its skinning intact rather than as a
 soup** - `glb_to_donor_bin` currently flattens, and preserving the joint indices would let the transfer band by bone, which is what the
 Ganado donor does and what reads at 0.5.
+## Round 103: the donor keeps its skeleton, and the player visibly changes
+
+**Three fixes, and the result is the first Sonic-driven change on screen.**
+
+1. **`gbox/glb_donor.py`** converts a `.glb` into a donor `Bin` **with its skeleton**: Sonic becomes `4,107 vertices, 1,369
+   triangles, 62 bones, 4 weight records`. The weight records are the template's limit, so the 62 joints are bucketed into them in
+   hierarchy order - a rig, not a soup, which is what round 102 said was missing.
+2. **A banding bug that would have made the transfer a no-op:** `_region_of` divided by the **bone-table length**, so a donor with 4
+   used ranks over a 62-bone table put every vertex in band 0. It now uses the **span of the ranks actually present**, with a test that
+   pins the 4-ranks-over-62-bones case.
+3. **The engine draws it.** `re4sw-psonic_skin` (26 packs, 98 slots, 227,800 vertices, blend 0.5, Sonic donor) reached a round and the
+   player is visibly **not** the stock model - the head is small and pointed and the shoulders are compressed:
+
+![the player after a bone-banded transfer from Sonic's rig](evidence/re4sw-skinned-sonic-donor.jpg)
+
+`01'43"06` on the clock, HUD and world normal. This is coherent (no shards, the stage loads) and shape-changing (the proportions are the
+donor's), which is the combination the last six rounds were hunting for.
+
+**What it is not yet:** a recognisable Sonic. The donor is banded into four weight buckets, so the transfer matches *regions* rather than
+joints; a template whose weight table is larger would carry the 62 bones individually and let the head, hands and feet land where Sonic's
+are. That is a data-selection question (which pack to use as the container), not a new mechanism.
