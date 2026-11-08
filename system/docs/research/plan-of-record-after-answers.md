@@ -1364,3 +1364,26 @@ mean - and compare it with the "Cancel loading?" seen before; a different dialog
 
 **What is certain now:** the save is not "unusable" as round 91 concluded. It holds a live round, and the title resumes it. The
 requirement is to launch in a way that lets that resume finish - which stock does.
+## Round 97: the harness was walking past the round, and a mod breaks the save resume
+
+**Two findings, one of which explains a dozen "reached False" runs.**
+
+1. **A LayeredFS build breaks the save resume.** Launched stock, the title resumed straight into its Mercenaries round (round 96).
+   Launched with a build, the same save produced "Cancel loading? Yes/No" - reproducibly, twice, with a captured frame. So the
+   overlay and the resume are mutually exclusive on this title, and a mod test still has to come in through the menus.
+
+2. **The walk was reaching the round and then walking past it.** Both retry attempts logged `last screen playing` with
+   `reached False`: the classifier *named* the round, but the harness only counted `unknown` as reached, so it kept pressing - through
+   the round, into the pause menu, and finally into **"Do you really want to quit? All unsaved progress will be lost."** The fix is one
+   branch: `playing` is the round, capture and stop. It is in `system/tools/probes/walk_and_capture.py` (line 167) and was **not** the
+   copy that ran this round - the base64 deployment sent a stale file, which is why attempt 8 still reported `reached False`.
+
+**So the next run is the one that should finally show the slab-morphed Ganados**: the walk now stops at `playing`, and the retry loop
+covers the prompt flake. Nothing else about the build is in question - `re4sw-ganadoslab` is written, applied through the writer, and
+the coherent morph behind it is tested.
+
+## A deployment note that cost this round
+
+`sed -i 's/\r$//'` through PowerShell into SSH becomes `sed -i 's/r$//'` - it strips every letter `r` from the file, which turned
+`for` into `fo`, `grep` into `gep` and `reached True` into `eached Tue`. The reliable route is base64: encode on this side, decode on
+the Spark (`echo <b64> | base64 -d > file`). That is now the only way scripts are shipped.

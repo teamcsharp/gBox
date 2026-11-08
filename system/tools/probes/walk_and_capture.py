@@ -113,7 +113,9 @@ def restore():
 session = None
 try:
     print("MARK cleaned:", pause_and_clean(), "| strays:", len(strays()), flush=True)
-    status, body = api("POST", f"/api/games/{SWITCH}/launch?node=lilspark&mod={BUILD}", {})
+    url = f"/api/games/{SWITCH}/launch?node=lilspark" if BUILD == "stock" else \
+        f"/api/games/{SWITCH}/launch?node=lilspark&mod={BUILD}"
+    status, body = api("POST", url, {})
     print("MARK launch", status, flush=True)
     for _ in range(40):
         time.sleep(5)
@@ -134,13 +136,19 @@ try:
 
     D.begin_run()
     reader = S.Reader()
+    previous_raw = None
+    settled_count = 0
     last, last_where, seen_stage, reached, steps = 0.0, None, False, False, 0
     prompt_steps, prompt_where = 0, None
+    prompt_seen, resume_attempts = 0, 0
     for _ in range(45):
         raw = frame(session)
         if raw is None:
             time.sleep(4)
             continue
+        settled = raw == previous_raw          # the prompt accepts input only once it has stopped animating
+        previous_raw = raw
+        settled_count = settled_count + 1 if settled else 0
         screen = reader.read(raw)
         where = screen.get("where")
         if where != last_where:
@@ -156,6 +164,11 @@ try:
             D.pressed(screen, key)
             last = time.monotonic()
             steps += 1
+        elif where == "playing":
+            # "playing" IS the round: the classifier names it, and waiting for "unknown" instead made the harness keep
+            # pressing through a reached round until it opened the quit dialog (measured 2026-11-08, two attempts)
+            reached = True
+            break
         elif where == "unknown" and seen_stage:
             for _ in range(3):
                 press(session, "a")
@@ -164,15 +177,34 @@ try:
             reached = True
             break
         elif where == "story_prompt":
-            # use the driver's own recovery policy rather than inventing one: it owns the key and the budget, and a hand-made
-            # key cycle walked straight into the achievements menu (measured this round)
-            key = D._recover_story()
-            if key is None:
-                print("MARK the driver's story recovery is spent; stopping the walk", flush=True)
-                break
-            press(session, key)
-            steps += 1
-            last = time.monotonic()
+            # The save was written mid-load, so the game boots asking "Cancel loading? Yes/No" with No selected. Declining
+            # only returns to the list; the way to a title screen is YES. The press must wait for the prompt to be steady -
+            # pressing during the fade does nothing and looks exactly like a wrong key (round 83) - and it is retried,
+            # because the first attempt can land while the dialog is still animating.
+            prompt_seen += 1
+            if settled_count < 2:              # two identical frames: the dialog has stopped moving, not just paused
+                time.sleep(1.2)
+                continue
+            if resume_attempts < 3:
+                resume_attempts += 1
+                prompt_seen = 0
+                settled_count = 0
+                time.sleep(0.8)
+                press(session, "up")
+                time.sleep(0.6)
+                press(session, "a")
+                steps += 2
+                last = time.monotonic()
+                print(f"MARK resume prompt: Yes attempt {resume_attempts}", flush=True)
+                time.sleep(1.5)
+            else:
+                key = D._recover_story()
+                if key is None:
+                    print("MARK prompt will not clear; stopping the walk", flush=True)
+                    break
+                press(session, key)
+                steps += 1
+                last = time.monotonic()
         elif time.monotonic() - last > 14:
             # a menu nothing names: back out once, the way the playbook's escape does
             press(session, "b")
@@ -181,7 +213,16 @@ try:
         time.sleep(3)
     print(f"MARK walk steps {steps} | reached {reached} | last screen {last_where}", flush=True)
     for step in range(FRAMES):
-        time.sleep(4)          # the first seconds matter: a round can end before a slow capture sees the player
+        # keep the camera moving: standing still puts the mob against the lens, where no shape can be judged
+        turn = "lleft" if step % 4 < 2 else "lright"
+        api("POST", "/api/jobs", {"tool": "session_op", "require_worker": session.split("-")[0],
+                                  "input": {"session_id": session, "op": "send_input",
+                                            "args": {"events": [{"key": "w", "down": True}, {"key": turn, "down": True}]}}})
+        time.sleep(1.2)
+        api("POST", "/api/jobs", {"tool": "session_op", "require_worker": session.split("-")[0],
+                                  "input": {"session_id": session, "op": "send_input",
+                                            "args": {"events": [{"key": "w", "down": False}, {"key": turn, "down": False}]}}})
+        time.sleep(2.0)
         raw = frame(session)
         if not raw:
             continue
