@@ -1509,3 +1509,25 @@ clean boot will show whether Sonic's proportions come through.
 | a strength dial | **yes** - blend 0.5 humanoid is modest, 1.0 slab is drastic (this round) |
 | donors from the collection | **yes** - any `.glb` converts to a donor and bands by height (this round) |
 | a recognisable character | **not yet** - needs a clean boot with the Sonic donor and a blend that reads as a body |
+## Round 102: the Sonic transfer has a working window between "invisible" and "will not load"
+
+Two data points, both from live rounds or their failure:
+
+| build | donor | blend | outcome |
+|---|---|---|---|
+| `re4sw-playersonic` | Sonic (`sonic_src.glb` -> donor BIN, banded by height) | 0.8 | the walk never reached a round - **the load hung** on `loading` |
+| `re4sw-psonic3` | same | 0.3 | **loads and plays** (`01'35"61`), and the change is essentially invisible |
+| `re4sw-playergando` | Ganado (bone bands) | 0.5 | loads and plays, **visible** shoulder deformation (round 101) |
+
+So the transfer has **both** a lower bound (below ~0.4 nothing reads) and an upper bound (above ~0.7 the deformation is severe enough
+that the stage stops loading - the same failure the fully-collapsed materials produced in round 65). The working window is roughly
+**0.4-0.6**, and the Ganado result shows that a body-like donor reads inside it.
+
+**Why the Sonic donor sits high in that window:** its geometry arrives as a triangle soup (4,107 vertices, 1,369 triangles, no weights),
+so it bands by height and each band holds a thin slice of surface. At blend 0.8 the extrapolated extents are large; at 0.3 they are
+swamped by the template's own shape. A denser donor (the collection's rigged models before they are flattened to a soup) would put more
+surface in each band and read at a lower blend.
+
+That is the concrete next step for "Sonic as a character on this title": **convert the donor with its skinning intact rather than as a
+soup** - `glb_to_donor_bin` currently flattens, and preserving the joint indices would let the transfer band by bone, which is what the
+Ganado donor does and what reads at 0.5.
