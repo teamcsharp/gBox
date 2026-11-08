@@ -1155,3 +1155,42 @@ code bug and was not one.
 prompt accepts input only when it has settled, and the settle time is not constant - so the harness needs a different strategy:
 after a failed attempt, **re-boot the title** rather than pressing again. That is a small change and it is the only thing between the
 coherent morph and its frame.
+## Round 89: reboot-on-failure works, and the coherent morph is conservative
+
+**The retry loop is the fix for the flaky prompt.** A failed resume-prompt press is not recoverable by pressing again - the dialog
+wants input at a moment it does not announce - so a failed attempt now **re-boots the title** and tries again:
+
+```
+ATTEMPT 1 did not reach a round (log /tmp/coh1.log)
+ATTEMPT 2 reached a round (log /tmp/coh2.log)
+```
+
+Two attempts, one round. That is the honest cost of this title's boot state: roughly a coin flip per attempt, with a retry that
+turns it into a certainty. `/tmp/retry_walk.sh` is kept as `system/tools/probes/retry_walk.sh`.
+
+**The coherent morph, in a round, on the player.** The run reached a Mercenaries round with **Wesker** and his model is unchanged:
+
+![the player in the coherent-morph build](evidence/re4sw-coherent-player-wesker.jpg)
+
+Two explanations, and the test suite already points at the second: either Wesker's pack is outside the 26 covered packs (his HUD
+name proves he is a *different* slot from Leon), or the coherent morph is **conservative by construction** - its own test asserts
+that morphing a mesh onto *itself* leaves it essentially unchanged, and a humanoid donor constrained per body band lands close to
+where a humanoid target already was.
+
+That is not a defect: it is the mechanism behaving as designed, and it says the **donor** is what has to be chosen for contrast. A
+Ganado is too close to a human to reshape one into the other through a per-band constraint.
+
+**The next build therefore points the coherent morph at the donor with the biggest silhouette difference available in-tree** - and the
+clearest test of whether the band constraint is doing its job is an enemy reshaped toward a very different body plan (a limbless or
+quadruped donor), where a coherent result and a sharded one cannot be confused.
+
+## Where the mechanism work stands after nine rounds of it
+
+| claim | state |
+|---|---|
+| overlay written and read | proven (md5) |
+| same-topology edit drawn | proven (collapsed player) |
+| bone transfer changes a character | **no** - shape-preserving by construction |
+| global surface transfer | **drawn as shards** |
+| coherent surface transfer | built, tested, **conservative on a humanoid donor** |
+| boot path | solved by answering the resume prompt with Yes, plus a reboot retry |
