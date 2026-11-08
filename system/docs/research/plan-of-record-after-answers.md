@@ -1780,3 +1780,25 @@ awaits a clean boot; its three attempts ended on the save-list screen because th
 **Why this was worth the rounds:** every panel operation - remove clothes, swap clothes, swap character, replace zombies - is a per-pack
 edit, and **a per-pack edit pointed at a pack the game is not drawing does nothing, silently**. The pack name is the first argument the
 panel needs to get right, and it is now two boots away.
+## Round 111: the camera's player pack is one of seven
+
+Two halvings, both decisive, both read from frames the HUD guard guarantees are gameplay:
+
+| set scaled to a tenth | the player |
+|---|---|
+| `pl00` alone (three separate builds) | unchanged |
+| `pl00`..`pl0d` | **shrunk to a fragment** |
+| `pl01`..`pl06` | **unchanged** |
+
+![pl01..pl06 scaled: the player is stock](evidence/re4sw-bisect-pl01-06-normal.jpg)
+
+`01'26"76`, timer up, Ganados normal, Leon untouched. So the mesh the camera draws is in **`pl07`..`pl0d`** - seven packs, two more
+halvings (`pl07..pl0a`, then two).
+
+**This also explains an old anomaly.** Round 88 recorded that collapsing `pl07`..`pl0d` made the stage **hang**, and that was filed as
+"the collapse is too destructive". It was the right answer for the wrong reason: those packs *are* the player, and removing the player
+model is what the stage cannot survive. A build that breaks the load is often a build that hit the thing the game draws.
+
+**The boot state has a working fix, and it is now a script.** `system/tools/probes/fix_boot_state.py` answers "Cancel loading?" with Yes,
+waits for the title screen, and stops the session there - the procedure round 98 identified, in Python after the bash version kept
+failing on quoting. It measured `19.4 -> 49.1` and then a clean boot, which is what made the halving possible at all.
