@@ -543,3 +543,42 @@ and (2) cannot be separated, and no further model work is worth doing.
 `re4switch_bot` now presses the driver's save-list cancel **and** confirms the `Cancel loading? Yes/No` prompt (`CANCEL_CONFIRM
 = ("up", "a")`, with a test asserting both), and the runner waits for a real picture before starting the bot. Those two fixes
 are why three separate runs this round reached live Mercenaries rounds at all.
+## Round 68: the stall has a name, and the overlays are not exclusive
+
+**The stall.** The screen that held three runs at `mean 19.4` is the game's **"Cancel loading? Yes / No"** prompt with **No**
+selected:
+
+![Cancel loading? Yes/No](evidence/re4sw-cancel-loading-prompt.jpg)
+
+The playbook's recovery skipped it for a precise reason: the prompt darkens its background, so the classifier calls it
+`unknown`, and the recovery only ran on *named* screens. It is now a fixed escape sequence, one press per still picture -
+`STALL_ESCAPE = ("b", "up", "a")` - that resets the moment the picture changes, so a wrong guess costs one press instead of
+the run. Two tests pin it: the sequence runs in order on a still picture, and no escape press happens on a moving one
+(a picture that moves is not a stall). Seven playbook tests, all green, deployed.
+
+**The overlays are not exclusive.** This is the finding that matters for every model experiment:
+
+```
+citron load/010099A00BC1E000: 31 links
+  lab-swap-test, re4-allem, re4-allganado, re4-dog-full, ... re4-em16morph, ... re4sw-clothesless,
+  re4sw-nomodel, re4sw-shrink1, re4sw-shrinkall, re4sw-shrinkall2, ...
+[DisabledAddOns] for the RE4 title: disabled\size=0
+```
+
+**Five of my builds contain a different `bio4/em/pl00.udas`** and all 31 are active, so the model drawn is whichever overlay
+the emulator applies last - not necessarily the one just launched. That explains the "shrink everything and nothing happened"
+result without any need for `pl00` to be the wrong pack: a *different* build's `pl00` (for instance `re4sw-clothesless`, which
+only hides material 1) can win. `prepare_launch` does call `set_title_disabled(emu, tid, mods, build)`, and that call reports
+success - but the config the emulator reads still has nothing disabled, so gBox is writing a config file the emulator does not
+use.
+
+**Next, in order:**
+
+1. Find which config the emulator actually reads (its `-u` argument in the launch line, versus the path `set_title_disabled`
+   writes), make them the same, and verify by reading `[DisabledAddOns]` **after** a launch with a build.
+2. Remove the stale links and re-run the all-material shrink. If the player shrinks, overlays work and the whole model
+   pipeline is unblocked; if not, `pl00.udas` is not the file Mercenaries loads and the pack has to be found from the game's
+   own reference.
+
+Nothing else on the model track is worth doing until the overlay question is answered - every result so far was measured
+through a mechanism that may have been loading someone else's file.

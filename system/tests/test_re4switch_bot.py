@@ -77,17 +77,11 @@ def test_it_never_presses_into_an_unclassified_screen_before_a_stage(monkeypatch
     assert stats["rounds"] == 0
 
 
-def test_a_still_menu_asks_the_driver_for_its_save_list_cancel(monkeypatch):
-    """A stray confirm lands in LOAD and the list holds the walk: the playbook must press the driver's own cancel."""
-    monkeypatch.setattr(B.screens, "Reader", lambda: Reader(["main_menu"] * 40))
-    asked = {"n": 0}
-
-    def recover(now=None):
-        asked["n"] += 1
-        return "b" if asked["n"] <= 2 else None
-
-    monkeypatch.setattr(B.driver, "_recover_story", recover)
-    adapter = Adapter([b"same-frame"] * 60)          # byte-identical frames: the picture never changes
+def test_a_still_menu_walks_the_escape_sequence(monkeypatch):
+    """A trapped menu: the playbook presses the escape one step per still picture - back out, lift the cursor off "No",
+    confirm - which is what clears the "Cancel loading? Yes/No" prompt that held a run for minutes."""
+    monkeypatch.setattr(B.screens, "Reader", lambda: Reader(["main_menu"] * 60))
+    adapter = Adapter([b"same-frame"] * 80)          # byte-identical frames: the picture never changes
     ticks = {"n": 0}
 
     def clock():
@@ -95,13 +89,30 @@ def test_a_still_menu_asks_the_driver_for_its_save_list_cancel(monkeypatch):
         return float(ticks["n"]) * 10.0              # ten seconds per read: past still_s quickly
 
     stats = {}
-    B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: len(adapter.sent) >= 2 or ticks["n"] > 30,
+    B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: ticks["n"] > 30,
            sleep=lambda s: None, stats=stats, clock=clock, still_s=12.0)
     keys = [row[0]["key"] for row in adapter.sent if row and row[0].get("down")]
-    assert "b" in keys, f"the cancel must be pressed, got {keys}"
-    assert stats["story_recoveries"] >= 1
-    # the cancel asks "Cancel loading? Yes/No" with No selected: up selects Yes and a confirms it
-    assert "up" in keys and keys.count("a") >= 1, f"the prompt must be confirmed, got {keys}"
+    assert keys[:3] == list(B.STALL_ESCAPE), f"the escape must run in order, got {keys}"
+    assert stats["stall_steps"] >= len(B.STALL_ESCAPE)
+
+
+def test_a_moving_picture_restarts_the_escape(monkeypatch):
+    """Every change of picture resets the sequence, so a wrong guess costs one press rather than the run."""
+    monkeypatch.setattr(B.screens, "Reader", lambda: Reader(["main_menu"] * 60))
+    frames = [bytes([i % 250]) * 4 for i in range(40)]      # every frame differs from the last
+    adapter = Adapter(frames)
+    ticks = {"n": 0}
+
+    def clock():
+        ticks["n"] += 1
+        return float(ticks["n"]) * 10.0
+
+    stats = {}
+    B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: ticks["n"] > 20,
+           sleep=lambda s: None, stats=stats, clock=clock, still_s=12.0)
+    assert stats["stall_steps"] == 0, "a picture that moves is not a stall"
+    keys = [row[0]["key"] for row in adapter.sent if row and row[0].get("down")]
+    assert "b" not in keys, f"no escape press belongs on a moving picture, got {keys}"
 
 
 def test_a_maximum_duration_ends_the_run(monkeypatch):

@@ -20,7 +20,9 @@ from .mercs.titles import re4_switch_screens as screens
 
 GAME_IDS = ("270a15eb98dab4d7",)          # Resident Evil 4 (Switch) [UPDATE 1.0.2], the catalog entry MercMode uses
 ROUND_ENTRY_PRESSES = 3
-CANCEL_CONFIRM = ("up", "a")        # the save-list cancel prompt starts on "No": up selects Yes, a confirms                    # measured: three A presses after the stage draws start the clock
+# The trapped-menu escape, one press per still picture: back out of the save list, then move the prompt's cursor off
+# "No" and confirm it. A picture that changes resets the sequence, so a wrong guess costs one press, not the run.
+STALL_ESCAPE = ("b", "up", "a")                    # measured: three A presses after the stage draws start the clock
 IDLE_TICKS_BEFORE_ACTION = 2
 
 
@@ -60,7 +62,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
     """
     stats = stats if stats is not None else {}
     stats.update({"screen": None, "presses": 0, "rounds": 0, "started": clock(), "stage_seen": False,
-                  "story_recoveries": 0})
+                  "story_recoveries": 0, "stall_steps": 0})
     last_frame, last_change = None, clock()
     reader = screens.Reader()
     driver.begin_run()
@@ -80,24 +82,24 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             continue
         if frame != last_frame:
             last_frame, last_change = frame, clock()
+            stats["stall_steps"] = 0                             # the picture moved: the escape starts over
         screen = reader.read(frame)
         where = screen.get("where")
         stats["screen"] = where
-        # a still picture on a menu is the save-list trap: ask the driver for its cancel rather than sit on it
-        if where != "unknown" and not stats["stage_seen"] and clock() - last_change > still_s:
-            key = driver._recover_story()                      # the driver's own policy and its own budget
-            if key:
-                _press(send, key)
-                stats["presses"] += 1
+        # a still picture before a stage is a trapped menu, whatever the classifier calls it: the save list itself is
+        # "unknown" once it darkens its background, and skipping those left the bot on "Cancel loading? Yes/No" with No
+        # selected for minutes at mean 19.4 (2026-11-07). The escape is a fixed sequence, one press per failure to
+        # change the picture, and it restarts as soon as the picture moves.
+        if not stats["stage_seen"] and clock() - last_change > still_s:
+            step = min(stats["stall_steps"], len(STALL_ESCAPE) - 1)
+            _press(send, STALL_ESCAPE[step])
+            stats["presses"] += 1
+            stats["stall_steps"] += 1
+            if step == 0:
                 stats["story_recoveries"] += 1
-                # the cancel asks "Cancel loading? Yes/No" with No selected: a bare back press lands there and the
-                # prompt then holds the walk exactly like the list did (seen 2026-11-07 at mean 19.4 for 100 s)
-                for follow in CANCEL_CONFIRM:
-                    _press(send, follow)
-                    stats["presses"] += 1
-                last_change = clock()
-                sleep(0.6)
-                continue
+            last_change = clock()
+            sleep(0.6)
+            continue
         stats["stage_seen"] = stats["stage_seen"] or where == "select_stage"
 
         # --- menus: the same route the driver walks, one press at a time
