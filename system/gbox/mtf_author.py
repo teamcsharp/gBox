@@ -177,9 +177,9 @@ def build_one_mesh(model: mt_model.ModFile, vertices: list[dict], triangles: lis
         # Keep the slot's original mesh count (and therefore its MRL shape) but make every extra record empty. This is a
         # probe: the first record draws the new geometry; the others account for the MRL's part count without vertices.
         empty = dict(record)
-        empty.update({"vertex_count": 0, "face_count": 0, "vertex_group_count": 0, "vertex_index": 0,
-                      "vertex_offset": 0, "face_index": 0, "face_offset": 0, "min_index": 0, "max_index": 0,
-                      "level_of_detail": 0, "mesh_class": 0})
+        empty.update({"vertex_count": 0, "face_count": 0, "vertex_group_count": 0, "vertex_index": len(vertices),
+                      "vertex_offset": len(vertex_buffer), "face_index": index_count, "face_offset": 0,
+                      "min_index": 0, "max_index": 0, "level_of_detail": 0, "mesh_class": 0})
         records_out += [empty] * (count - 1)
     return mt_model.rebuild_mod(model, vertex_buffer=vertex_buffer, index_buffer=bytes(index_buffer),
                                 mesh_records=records_out, mesh_count=count, vertex_count=len(vertices),
