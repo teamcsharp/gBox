@@ -54,6 +54,13 @@ def test_a_session_transition_is_one_line_not_a_poll_storm(tmp_path):
     assert [line for line in second["lines"] if line["source"] == "runtime"] == [], "an unchanged state is not repeated"
 
 
+def test_an_autoplay_failure_is_named_in_the_console(tmp_path):
+    service, sid, _, row = make(tmp_path)
+    service.store.rows[("job", "job-1")] = {"id": "job-1", "state": "failed", "error": "xdotool keydown c"}
+    first = service.tail(sid, 0)
+    assert any("autoplay job job-1: failed" in line["text"] and "xdotool" in line["text"] for line in first["lines"])
+
+
 def test_a_freeze_report_is_written_beside_the_console_and_keeps_the_witness(tmp_path):
     service, sid, _, _ = make(tmp_path, "boot\n")
     service.collect(sid)

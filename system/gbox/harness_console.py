@@ -95,6 +95,16 @@ class HarnessConsole:
         for key, value in view.items():
             if value and value != old.get(key):
                 self.add("runtime", f"{key}: {value}", sid)
+        autoplay = str(view.get("autoplay_job") or "")
+        if autoplay:
+            job = self.store.get("job", autoplay) or {}
+            state = str(job.get("state") or "")
+            if state and state != old.get("autoplay_state"):
+                text = f"autoplay job {autoplay}: {state}"
+                if job.get("error"):
+                    text += f" · {job['error']}"
+                self.add("autoplay", text, sid)
+                view["autoplay_state"] = state
         self.last[sid] = view
 
     def _ghidra_once(self) -> None:
