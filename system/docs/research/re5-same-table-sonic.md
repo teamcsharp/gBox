@@ -58,6 +58,18 @@ the RE5 main menu without the `NOW LOADING` hang and drew normal menu frames. It
 Mercenaries round; `apply_live` restarts to the menu and the scheduler stopped the session before a round was prepared.
 The next test is launch-with-build + `autoplay op=prepare`, then capture the round.
 
+### First live round with the corrected offsets
+
+`harness-sonic-fixed` (seven parts, high `em1000`, corrected `vertex_index`/`face_index`) was launched with the build
+and prepared into Public Assembly. It reached a live round: timer `1:07`, score `0`, several Majini grappling the
+player. **Every visible Majini was stock.** The build was applied (`session.mod = harness-sonic-fixed`) and the round
+was real, so this is evidence that the high-LOD `em1000` entry is not the model drawn for these enemies at this
+distance (or its entry is not the one the class loads), not merely a failed launch.
+
+![Fixed-offset build in a live Public Assembly round; visible Majini are still stock](evidence/re5-fixed-build-stock-majini.jpg)
+
+The next variant test is `em1000_low`, then `em1000_mid`, then `em1001*`, one entry at a time.
+
 ## Controlled write tests (one change at a time)
 
 | write | em1000 part | live result |
