@@ -1125,3 +1125,33 @@ piece of work. Everything around it is already in place: the operation, the repo
 | does a same-topology edit draw? | yes | collapsed player, untouched enemies (round 70) |
 | does bone-proportion transfer change a character? | **no** | 22 packs morphed, player unchanged (round 86) |
 | does a surface transfer draw? | **yes, as shards** | this round |
+## Round 88: the coherent morph - the bone says where, the surface says what
+
+`gbox/re4hd_coherent.py` is the synthesis the last two rounds pointed at:
+
+* bone transfer is **coherent** (a vertex stays with its bone) but shape-preserving;
+* surface transfer **changes shape** but its global nearest-surface search lets a left-arm vertex land on the right leg, which is
+  what drew as shards;
+* `coherent_surface(template, donor)` **restricts each vertex to the part of the donor's surface that belongs to its own body band**.
+
+The band is the bone's rank in hierarchy order, collapsed into a few bands (`bands=6` by default), because bone ids do not
+correspond between two rigs but position in the hierarchy does. A band with no faces of its own falls back to the whole donor, and a
+mesh without weights falls back to the global search, so a probe never crashes on an unusual slot.
+
+**Tests: 5 pass on the Spark, 4 + 1 skipped locally.** Two of them pin the contrast that motivates the module:
+
+* a vertex whose bone is the low block lands on the low block, and one whose bone is the high block lands on the high block;
+* the *global* morph, run on the same two-mesh scene, puts both vertices on the same block - which is exactly the failure that
+  produced the shards.
+
+**Two bugs the tests caught in the module and the fixture**, both worth naming because they are the two ways this could have shipped
+broken: the guard `faces.size < 4` sent every small band to the global fallback (so the "coherent" version behaved like the shard
+version on any ribbon of fewer than four triangles), and my first fixture weighted both donor blocks to the root bone, which read as a
+code bug and was not one.
+
+## The run
+
+`re4sw-playercoherent` is built (26 packs, 98 slots, 227,800 vertices) and its run was gated by the resume prompt three times. The
+prompt accepts input only when it has settled, and the settle time is not constant - so the harness needs a different strategy:
+after a failed attempt, **re-boot the title** rather than pressing again. That is a small change and it is the only thing between the
+coherent morph and its frame.

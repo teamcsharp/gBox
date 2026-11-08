@@ -15,6 +15,7 @@ import sys
 sys.path.insert(0, os.path.expanduser("~/gBox/system"))
 from gbox import config as gconfig
 from gbox import re4gc_inventory as INV
+from gbox import re4hd_coherent as C
 from gbox import re4hd_models as R
 from gbox import switch_mods
 
@@ -23,7 +24,7 @@ GAME = "270a15eb98dab4d7"
 ROMFS = os.path.join(os.path.expanduser("~/gBox_alt/switch/romfs"), TITLE, "bio4", "em")
 DONOR_PACK = sys.argv[1] if len(sys.argv) > 1 else "em16.udas"
 DONOR_SLOT = int(sys.argv[2]) if len(sys.argv) > 2 else 0
-BUILD = sys.argv[3] if len(sys.argv) > 3 else "re4sw-playerganado"
+BUILD = sys.argv[3] if len(sys.argv) > 3 else "re4sw-playercoherent"
 PACKS = sys.argv[4].split(",") if len(sys.argv) > 4 else None
 
 
@@ -59,7 +60,9 @@ def main() -> int:
                 # only the main (largest) mesh of each pack: the head/accessory slots are small and would distort faces
                 if len(mesh.pos) < 800:
                     continue
-                replacement = R.pad_to(R.morph_bin(mesh, donor), slot["size"])
+                # coherent: the bone decides where a vertex may land, the surface decides the shape (round 87's shards came
+                # from letting a global nearest-surface search pick the region)
+                replacement = R.pad_to(C.coherent_surface_bin(mesh, donor, bands=6), slot["size"])
                 patched = INV.pack_patch(patched, index, replacement, endian="<")
                 touched += 1
                 moved += len(mesh.pos)
