@@ -1935,3 +1935,29 @@ material's `material_id` is not the global texture id and the mapping is one ste
 uses; what is unproven is that `Mat.material_id` *is* that id. One test settles it - take an enemy or player material whose id **is**
 present in `imagepackhd` (6, 9, 10...), swap that archive with `fen_replace_texture`, and see whether the mesh changes. If it does, the
 id is the id, the store is the store, and "swap clothes / swap skins" is a **file replacement** rather than a pack edit.
+## Round 117: the id mapping is two steps, and the store is writable
+
+**`Mat.material_id` is a local index, not the loader's texture id.** Measured across all 143 `em` packs: every pack's materials use local ids
+0, 2 or 3, while the archives in `imagepackhd` start at 6, 9, 16, 17... **not one pack** references a present archive by that number.
+
+**The global id is one step further in, and the mapping works.** Each TPL descriptor's 8-byte entry carries it (round 116), and re-scanning
+with that mapping finds packs whose textures *are* present:
+
+| pack | local ids | global ids | present |
+|---|---|---|---|
+| `pl0b` | 0 | 1, 2, 3, 4, 6, 9 | **2** |
+| `em2d` | 3 | 4, 6, 8, 9 | **2** |
+| `em32` | 3 | 1, 19 | **1** |
+| `pl08` | 0, 2, 3 | 1, 2, 5, 9 | **1** |
+
+**And the store takes a replacement.** `00000009.pack.fen` holds four surfaces (1024x1024, 256x256 DXT3, ...); `fen_replace_texture` put a
+solid skin tone into surface 0 and the build wrote it as a plain RomFS file swap. The player ran a round unchanged:
+
+![the player with texture 9's first surface replaced](evidence/re4sw-texswap9-no-change.jpg)
+
+**So the mechanism is confirmed and the binding is not.** Texture 9 exists, is replaceable, and is not the surface Leon's body is drawn
+with - its first surface is a 1024x1024 sheet, the shape of an environment atlas rather than a character's.
+
+**What is left is a search, not a mechanism:** `pl08` names global ids 1, 2, 5 and 9; only 9 is present, so **Leon's body atlas is one of
+the ids missing from `imagepackhd`** - the same three numbers (0, 2, 3 locally) whose archives the directory does not hold. That is now the
+single question: where does the loader get a texture whose archive is absent, because the game plainly draws him with one.
