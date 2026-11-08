@@ -2103,3 +2103,35 @@ generalised onto those tickets without its own measurement.
 
 **The right next step on the inbox** is not to work the 2,632 one at a time - it is to answer the repeated clusters once each with the
 measurement behind them, and let the ticket system point at the answer. The unlock cluster is the first, and it now has one.
+## Round 123: the rotation is left playing, and the state is written down
+
+Checked rather than assumed, because it is the one thing that must be true between rounds:
+
+```
+phase: playing | title: Resident Evil 4 (Switch, Mercenaries)
+session: 600960e514124f7b-78bc29fb35c84e8b
+scheduler: playing Resident Evil 4 (Switch, Mercenaries)
+```
+
+`system/tools/probes/mm_state.py` reads a captured `/api/mercmode` response and prints that row, so the check is one command and does not
+need the API from a quoted one-liner (which has cost several rounds to token mangling).
+
+## Where the objective stands, without inflation
+
+**Reusable machinery - done and proven.** `glb_donor` -> `re4hd_affine` -> `re4hd_edit` -> `switch_mods` -> a drawn change in a live round;
+one route (`/api/decrypt-lab/replace`) behind all four panel operations; `auto_blend` picks a loadable strength per slot; the status page
+(`re4-switch-status.md`) carries every measured fact with its round.
+
+**The panel - done for RE5, and now honest for RE4.** The four items the operator asked for already existed for RE5 (with an object swap, a
+zombie-round button and a random-skin toggle); RE4 now gets a section that does what is actually proven there (proportions and
+material-hides) instead of four buttons addressing RE5 archives.
+
+**RE4 in MercMode - playing.** The rotation is running RE4 Switch Mercenaries right now, and the boot procedure that makes a run cost one
+boot is written down and tooled (`fix_boot_state.py`, the round-timer guard in `walk_and_capture.py`).
+
+**Not done, and named:** the player's texture surfaces (three routes measured dead, RAM is the remaining one); RE4/RE6 texture-based clothes
+removal, which depends on that; live in-round replacement, which the emulator does not support (no save states); Mercenaries 3D and the VR
+title's runtime work (the VR zip is deconstructed and the operator parked its runtime work).
+
+**The inbox** is 2,632 open with a handful of repeated clusters; the unlock cluster now has a measured answer and a tool, and the rest need
+the same treatment one cluster at a time rather than one ticket at a time.
