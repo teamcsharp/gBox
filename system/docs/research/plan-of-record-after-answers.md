@@ -2239,3 +2239,33 @@ produced nothing, so the material-colour question is still open and still a cand
 
 **State:** repository clean at `d2313ad1`; rotation paused deliberately so it does not compete with the boot; the two host-side fixes
 (mount unit restart, queue drain) are the prerequisites for anything else.
+## Round 129 (post-reboot): the launch path is understood end to end, and the last link is Vulkan
+
+Three separate failures were stacked on top of each other, and they are now separated:
+
+1. **The share was not mounted.** Restarting `mnt-gbox-quickswap2.mount` fixed it, and the game is on the share (my previous round claimed
+   otherwise from a truncated `ls | head -6` - wrong, and corrected in the record).
+2. **No X display existed.** `/tmp/.X11-unix` held `X1` and `X90` only; `:100`, `:99` and `:110` - the displays the service and its streamer
+   use - all failed `xdpyinfo`. Starting `Xvfb :100` succeeded, so the display can exist.
+3. **Vulkan will not initialise.** With a display up, Citron still refuses to draw, and its own log says why:
+
+```
+Render.Vulkan <Error> RendererVulkan: Vulkan initialization failed with error: VK_ERR
+HW.GPU <Error> CreateGPU: Failed to initialize GPU: Vulkan initialization error VK_ERROR_INITIALIZATION_FAILED
+Core <Critical> Load: Failed to initialize system (Error 5)!
+```
+
+**`BootHung: citron drew no changing frame in 45 s` is a symptom of (3), not of the boot being slow**, and it happens with **stock as well as
+with the tinted build** - so it is not the mod.
+
+**What is not the problem, checked:** the GPU is present (`NVIDIA GB10`, driver 580.178.04, `/dev/nvidia0` and the rest, six modules loaded),
+`nvidia-smi` answers, and `/usr/share/vulkan/icd.d/` has both `nvidia_icd.json` and `lvp_icd.json` with the loader at
+`libvulkan.so.1.4.328`. `vulkaninfo` is not installed, so the ICD cannot be exercised directly from here.
+
+**This is a host/driver state, not a repository state.** The service was restarted once already (display setup re-initialised, Vulkan still
+fails). The likely causes are a driver that did not fully come up in this boot, or the GPU being held by the other heavy services that start
+with it. The next thing to try is a second reboot with those services stopped first, or a `vulkaninfo` from the driver package to prove the
+ICD works before blaming Citron.
+
+**Nothing in the repository was changed by any of this**, and the tint verdict from before the outage is still the same open question: zero
+frames, never seen on screen.
