@@ -2483,3 +2483,30 @@ has never been tried.
 
 **The proportion path is not wasted:** it is the mechanism that made "Sonic's proportions on the player" and "a reshaped Ganado" real, and it
 is what a texture path would build on once surfaces are addressable.
+## Round 139: the mine/grenade swap builds - verified at the route, not yet on screen
+
+The objective names this one explicitly ("swapping a game asset for a 3D object supplied for temporary use, e.g. RE5's mine object") and the
+panel already offers it. Calling the route the panel calls:
+
+```
+POST /api/decrypt-lab/model-swap  {"title":"re5_switch",
+  "arc_path":"nativeNXx64/ImgNX/Archive/uWp06.arc",
+  "donor_arc":"nativeNXx64/ImgNX/Archive/uWp0a.arc","build":"mercmode-objtest"}
+
+http 200
+{"ok":true,"target":".../mods/52d15709be0fda1a/mercmode-objtest/romfs/nativeNXx64/ImgNX/Archive/uWp06.arc",
+ "size":550553,"slot":"wp0600","donor":"om4e00","maps":["NM","kept:BM,MM"],
+ "note":"the overlay applies when the title next boots (LayeredFS)"}
+```
+
+So the mine's archive is replaced by the grenade's, the **normal map is swapped and the base/roughness maps are kept**, and the build is filed
+under RE5's catalog id (`52d15709be0fda1a`) where the launcher will find it.
+
+**What this establishes and what it does not:** the *mechanism* the operator asked for works end to end at the route - a real object, a real
+donor, a valid overlay with the donor's maps. What it does not yet have is a frame of a thrown mine looking like a grenade, which needs an RE5
+session and a lucky throw. **I am calling this "builds" and not "works" until there is a picture**, which is the distinction this project has
+been burned by before.
+
+**Why it is worth recording anyway:** it is the one part of the operator's list that is *implemented and wired* rather than blocked - object
+replacement needs no texture store, no pack swap and no engine hook, because RE5's objects are standalone archives that the loader reads by
+path.
