@@ -1584,3 +1584,24 @@ any extracted .glb  ->  glb_donor (keeps skeleton, picks a container with room f
 ```
 
 Every step is tested, every step reports what it did, and the walk/capture procedure is one boot.
+## Round 105: the same transfer that works on the player hangs on the enemy at the same strength
+
+`re4sw-ganadosonic` applies the identical pipeline to `em16.udas` (the village Ganado): Sonic's full-skeleton donor, bone bands, `blend
+0.5`, 7 slots, 12,633 vertices. Both attempts failed, and the first one **ended on `loading`** - the stage never came up.
+
+| build | template | donor | blend | outcome |
+|---|---|---|---|---|
+| `re4sw-sonicfull` | player packs | Sonic (62 joints) | 0.5 | **round reached, player visibly reshaped** |
+| `re4sw-ganadosonic` | `em16` | Sonic (62 joints) | 0.5 | **load hangs** |
+
+**Same function, same donor, same blend - different template.** So the difference is in the *target's* band structure, not the transfer:
+the Ganado's `em16` slots are far smaller than a player body (531-3,425 vertices across 7 slots), so the same per-band scaling produces
+extreme factors on the small slots - and an extreme factor is exactly what stops a stage loading (the collapse experiments in round 65
+showed the same failure).
+
+**The next run is the same build at a lower blend** (0.25-0.35, where the *player* at 0.3 loaded and the 0.8 hung): the strength that is
+safe scales with how small the target's bands are, so an enemy pack needs a gentler setting than a player pack to stay loadable.
+
+**What this does not change:** the transfer itself is proven on two donors and two targets, and the mechanism's rules are settled. What is
+left is a per-target strength, which is a number in one call - and the same number will be needed for every pack family, so it belongs in
+the pipeline rather than in each experiment: **a `blend` chosen from the target's band sizes**, not a constant.
