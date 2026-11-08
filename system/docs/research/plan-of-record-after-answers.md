@@ -803,3 +803,23 @@ bisection if it carries no pack reference. The collapse probe stands ready eithe
 
 One boot, no new frame. It bought the right probe for the remaining quarters, and it found the game's own character files -
 which is the difference between searching 14 packs one boot at a time and reading the table the game uses.
+## Round 77: the save-list prompt ignores the back key
+
+Forty-five back presses left the prompt exactly as it was:
+
+```
+MARK walk steps 45 | reached False | last screen story_prompt
+MARK plhide3_00 mean 19.4 ... plhide3_01 mean 19.4
+```
+
+So on **`story_prompt`** the back key is not an answer at all. It is a Yes/No dialog with **No** selected, and the only key that
+does anything is the confirm key - `a` chooses No and returns to the list, after which the list itself can be left. That is why
+every escape sequence built on `b` (the playbook's `("b", "b", "b", "b")` and this harness's fallback alike) could press for
+minutes without moving: right screen, wrong key, and the measurement only looked like a stuck bot.
+
+Both now answer `story_prompt` with `a` first.
+
+**Also ruled out this round, quickly:** the `.esl` files carry no names (`emleon00.esl` is 8,160 bytes of compiled script with
+no printable strings, so a character->pack table is not sitting there as text), and the executable's 25 `em/plXX.das` strings
+carry no character words either. So the mapping is not a string lookup in either place; the collapse bisection stays the way
+to finish it, and it now has a harness that can leave the menu it kept getting stuck on.
