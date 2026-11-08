@@ -1638,3 +1638,44 @@ transfer keeps it coherent, `auto_blend` keeps it loadable, and the enemy is vis
 4. **The container pack decides how much of the donor's skeleton survives.** `pl04` (256 weight records) carries 62 joints; `em16` (4)
    buckets them, and the result is coarser.
 5. **The boot state is a procedure:** stop a session from a menu, answer the resume prompt with **No**, and `playing` means the round.
+## Round 107: the replacement is one call, and the panel can make it
+
+The proven chain was a handful of probe scripts. It is now `gbox/switch_replace.py` with one entry point, and a route the sidebar can
+call:
+
+```
+POST /api/decrypt-lab/replace
+{"title":"re4_switch","pack":"em16.udas","donor_glb":".../sonic_src.glb","write":false}
+```
+
+which answers, live:
+
+```
+{"v":1,"report":{"pack":"em16.udas","donor":"sonic_src.glb","build":"gbox-replace-em16","blend":1.0,
+  "slots":[{"slot":12,"vertices":1920,"blend":0.4,"bands":[
+      {"band":0,"vertices":520,"donor_vertices":620,"extent_ratio":[0.901,2.051,2.274]},
+      {"band":1,"vertices":265,"donor_vertices":608,"extent_ratio":[0.696,6.0,4.394]}, ...]}, ...]}}
+```
+
+**Every number in it is a measurement, not an assertion**: the blend each slot chose for itself (0.4 where a band's ratio reached 6x,
+1.0 where the bands were already close), the vertices per band, and the donor's own geometry per band.
+
+**The four panel operations are now one call each:**
+
+| operation | arguments |
+|---|---|
+| remove clothes | `hide: [material indices]` (the collapse path, proven drawn) |
+| swap clothes | `pack` = the garment slot's pack, `donor_pack`/`donor_slot` = another character's |
+| swap character with zombie | `pack` = `pl*`, `donor_pack` = `em*` |
+| replace zombies with cast | `pack` = `em*`, `donor_glb` = a model from the collection |
+
+`write=false` previews without touching a build, which is what a picker should do while somebody is choosing.
+
+**Tests:** 6 for the module (refusals, the report shape) and 2 for the route's registration, green on both machines; the live call above
+is the integration check.
+
+## The one thing the report exposes that a person would not guess
+
+Look at slot 13: **one band, 1,465 vertices, ratio [0.462, 0.808, 0.653] - and blend 1.0.** Its geometry is simple enough that the
+donor's proportions are within the limits at full strength. Slot 12, the same pack, needs 0.4 because one of its bands is 6x off. **The
+strength is per slot, not per pack**, and a constant would have been wrong for one of them.

@@ -560,6 +560,24 @@ class ReaCallIn(BaseModel):
     actor_title: str = ""         # for the lab's activity log, not for REA
 
 
+class ReplaceIn(BaseModel):
+    """One replacement: a pack, a donor from the collection or from another pack, and how strong it should be.
+
+    `blend` omitted means "choose it from the target's bands" (`switch_replace`/`auto_blend`), which is what keeps a small slot
+    loadable. `write=false` computes and reports without writing a build, for a preview.
+    """
+    title: str
+    pack: str
+    donor_glb: str = ""
+    donor_pack: str = ""
+    donor_slot: int = 0
+    blend: float | None = None
+    bands: int = 6
+    build: str = ""
+    hide: list[int] = []
+    write: bool = True
+
+
 class PackMaterialsIn(BaseModel):
     """One pack and slot, for the material list a picker shows."""
     title: str
@@ -1604,6 +1622,25 @@ def install(app, store, config, auth, tactical_store=None):
             return {"v": FORMAT, "pack": pack, "slot": slot, "materials": EDIT.material_census(path.read_bytes(), slot)}
         except EDIT.EditError as exc:
             raise HTTPException(400, str(exc)[:200]) from exc
+
+    @app.post("/api/decrypt-lab/replace", dependencies=[Depends(auth)])
+    def decrypt_lab_replace(body: ReplaceIn):
+        """Replace a pack's mesh with a donor's proportions (or a collection model's) and report what changed.
+
+        This is the single call behind the panel's four operations: remove clothes (`hide` alone), swap clothes, swap the player with a
+        Zombie (`pack=pl..`, `donor_pack=em..`), replace the Zombies with cast (`pack=em..`, `donor_glb=<collection model>`).
+        """
+        from . import switch_replace
+        try:
+            report = switch_replace.replace_pack(
+                _CONFIG, _title_id(body.title), body.pack,
+                donor_glb=body.donor_glb or None, donor_pack=body.donor_pack or None,
+                donor_slot=body.donor_slot, blend=body.blend, bands=body.bands,
+                build=body.build, hide=body.hide or None, write=body.write)
+        except switch_replace.ReplaceError as exc:
+            raise HTTPException(400, str(exc)[:300]) from exc
+        lab_state.event(body.title, "replace", f"{body.pack} <- {report.donor}", report.as_dict())
+        return {"v": FORMAT, "report": report.as_dict()}
 
     @app.post("/api/decrypt-lab/pack-edit", dependencies=[Depends(auth)])
     def decrypt_lab_pack_edit(body: PackEditIn):
