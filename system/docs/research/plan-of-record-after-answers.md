@@ -823,3 +823,29 @@ Both now answer `story_prompt` with `a` first.
 no printable strings, so a character->pack table is not sitting there as text), and the executable's 25 `em/plXX.das` strings
 carry no character words either. So the mapping is not a string lookup in either place; the collapse bisection stays the way
 to finish it, and it now has a harness that can leave the menu it kept getting stuck on.
+## Round 78: collapse is the wrong probe for this, and the player search has a cheap finish left
+
+**Collapsing a whole pack can hang the stage.** `re4sw-plhide` (`pl07`..`pl0d` collapsed to points) never produced a picture:
+ten frames of `mean 6.3` on a `loading` screen, then the run ended. A pack in that range is loaded by the stage, so replacing it
+with geometry that has zero extent stops the load. That makes **collapse a disqualifying probe** for finding a character - it can
+only tell "needed" from "not needed", not "player" from "not player".
+
+**Two places the mapping is not, both checked this round:** the `.esl` files hold no names (8,160 bytes of compiled script,
+zero printable strings), and the executable's 25 `em/plXX.das` strings hold no character words. The mapping is not a string
+lookup in either.
+
+**The finish that costs one boot each, and cannot hang the stage:** scale a group by **0.9** instead of 0 or 0.1. A 10% smaller
+model loads exactly as the original does, and the player is the only thing whose size the observer can compare against the
+environment and his own weapon. `scale_materials` already accepts that factor.
+
+**And the deliverable does not actually need the identity first.** The enemy packs are known and the engine draws
+same-topology edits - `re4-em16morph` is proof - so a Sonic-shaped Ganado is a property-transfer problem, not a lookup:
+
+* `morph_bones_to(template, donor)` moves a template so its **skeleton** takes the donor's shape and carries each vertex with
+  its own bone - "the donor's proportions come through instead of its nearest surface";
+* the donor must be a `Bin` with a bone table, so a Sonic rig becomes a donor by writing its joint positions into a copy of
+  the template's bone table (parent-relative translations are all these formats carry);
+* the result keeps the Ganado's vertex count, primitive table and weights, which is exactly the class of edit the engine draws.
+
+That is the next build: **`em16` with Sonic's proportions**, one overlay, one round, and a frame that either shows a
+big-headed, small-bodied villager or shows nothing changed.
