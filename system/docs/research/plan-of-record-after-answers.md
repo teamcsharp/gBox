@@ -2388,3 +2388,23 @@ than a mass. That is one argument, not a new mechanism.
 **What this round also re-establishss:** the whole pipeline works end to end after the reboots - donor BIN regenerated (62 bones, 64 weight
 records), 7 slots / 12,633 vertices patched, build written under the catalog id, round reached, 14 frames captured inside it. The machinery is
 sound; only the strength needs a smaller number.
+## Round 135: the enemy transfer has a strength curve, and 0.15 is the first usable point
+
+Same call, one argument changed:
+
+| build | blend | what the villager looks like |
+|---|---|---|
+| `re4sw-ganadosonic2` | auto (~0.4) | a towering stretched mass - recognisably not a person |
+| `re4sw-gsonic15` | **0.15** | **reshaped but still a figure**: large head, hunched, small body |
+
+![Ganados at blend 0.15](evidence/re4sw-ganado-sonic-015.jpg)
+
+`01'31"82`, timer up, Leon normal, 10 frames captured inside the round on both builds. **So the enemy path has a usable strength**, and it is
+much lower than the player's: the player read at 0.5 toward Sonic, the enemy needs 0.15 to stay a creature rather than a mass. That matches
+the band-size rule from the model rounds - a Ganado's bands are a fraction of a player's, so the same number distorts far more.
+
+**Honest reading of the frame:** this is a reshaped villager with the donor's proportions, not a Sonic. The mechanism is proven and tunable on
+both sides now; making it *look like* a specific character still needs the right donor proportions and probably a per-slot strength, because
+`auto` optimises for loadability and a single constant is wrong for at least one slot of any pack.
+
+**Cost of the round:** two builds, two boots, both captured in-round - the pipeline is behaving
