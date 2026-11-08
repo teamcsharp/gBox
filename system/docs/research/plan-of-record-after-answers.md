@@ -889,3 +889,36 @@ sized to the pack.
 | a donor rig can reshape a pack | `re4sw-sonicganado`: 33 slots, 19,023 vertices, topology kept (this round) |
 
 What is missing is a bot that reliably leaves one menu, and then a frame.
+## Round 80: the menu that ate every run was the save state, and it is not the mods
+
+Every failure from round 66 onward started with the picture at **`mean 19.4`** - the "Cancel loading? Yes/No" prompt - and I
+kept treating it as a walk that had gone wrong. It was there **before** the game could be walked:
+
+**a stock launch, no mod at all, boots to the same prompt** (`stock 1/2/3 mean 19.4`). So the screen comes from the game's own
+saved state, not from anything gBox or the mods do.
+
+**Moving the save aside gives a clean boot:**
+
+```
+0000000000000000/7027FDA9BE915B24FD085FC348A9C0BF   moved to ...bak-1794109093
+stock launch, fresh: fresh 1 mean 61.1, fresh 2 61.2, fresh 3 61.2
+```
+
+and the frame is the **"PRESS A" title screen**. That is the first clean boot of this title in a dozen rounds. The operator's save
+was restored immediately afterwards (`restored`, directory back in place) - moving it is a diagnostic, not a change to their data.
+
+**What that means for the mode**: with the old save, the game comes up mid-load every time; every walk then starts inside a menu
+nobody asked for, and no amount of key-pressing fixes it. With a fresh save the title screen is reachable, so the walk has a
+starting point. A production runner should decide this explicitly - boot with the save it wants, rather than inherit whatever the
+last session left - and the probe now has the evidence to say why.
+
+**Two harness fixes this round, both real:**
+
+* the walk presses with the driver's **per-screen confirm gaps** (`CONFIRM_GAP_S`) instead of a flat 3.5 s - a second confirm
+  during a fade is what lands on LOAD in the first place;
+* the `story_prompt` branch now uses the driver's own `_recover_story()` rather than a hand-made key cycle, which walked
+  straight into the achievements menu when tried.
+
+**Still owed:** the Sonic Ganado's frame. Its run on a fresh save ended on a `loading` screen (`mean 4.7`), which is either the
+reshaped `em16` failing to load or the fresh save sending the walk into a story load - the next run has to tell those apart by
+walking with a **stock** build on a fresh save first.

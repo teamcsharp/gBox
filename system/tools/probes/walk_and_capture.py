@@ -23,6 +23,7 @@ BUILD = sys.argv[1] if len(sys.argv) > 1 else "re4sw-plhalf"
 TAG = sys.argv[2] if len(sys.argv) > 2 else "walk"
 FRAMES = int(sys.argv[3]) if len(sys.argv) > 3 else 10
 LAB = f"{HOME}/gBox_alt/re4-lab"
+PROMPT_KEYS = ("a", "b", "down", "a", "up", "b")   # what a trapped Yes/No can want, tried in turn rather than repeated
 PINS = {"re4": {"platform": "switch", "mode": "mercenaries", "title_id": "010099A00BC1E000"},
         "re5": {"platform": "switch", "mode": "no_mercy", "title_id": "010018100CD46000"}}
 sys.path.insert(0, f"{HOME}/gBox/system")
@@ -134,6 +135,7 @@ try:
     D.begin_run()
     reader = S.Reader()
     last, last_where, seen_stage, reached, steps = 0.0, None, False, False, 0
+    prompt_steps, prompt_where = 0, None
     for _ in range(45):
         raw = frame(session)
         if raw is None:
@@ -145,7 +147,10 @@ try:
             last_where = where
         seen_stage = seen_stage or where == "select_stage"
         target = D.EXTRAS_ROW if where == "main_menu" else (D.MERCENARIES_ROW if where == "extras_menu" else None)
-        key = D.step({**screen, "target": target}) if time.monotonic() - last > 3.5 else None
+        # the driver's own per-screen gap: a flat 3.5 s presses a second confirm while the fade is still running, and that
+        # second confirm lands on LOAD - which is exactly the menu the walk then cannot leave (measured this round)
+        gap = D.CONFIRM_GAP_S.get(where, 3.0)
+        key = D.step({**screen, "target": target}) if time.monotonic() - last > gap else None
         if key:
             press(session, key)
             D.pressed(screen, key)
@@ -158,6 +163,16 @@ try:
                 time.sleep(1.5)
             reached = True
             break
+        elif where == "story_prompt":
+            # use the driver's own recovery policy rather than inventing one: it owns the key and the budget, and a hand-made
+            # key cycle walked straight into the achievements menu (measured this round)
+            key = D._recover_story()
+            if key is None:
+                print("MARK the driver's story recovery is spent; stopping the walk", flush=True)
+                break
+            press(session, key)
+            steps += 1
+            last = time.monotonic()
         elif time.monotonic() - last > 14:
             # a menu nothing names: back out once, the way the playbook's escape does
             press(session, "b")
