@@ -1552,3 +1552,35 @@ donor's), which is the combination the last six rounds were hunting for.
 **What it is not yet:** a recognisable Sonic. The donor is banded into four weight buckets, so the transfer matches *regions* rather than
 joints; a template whose weight table is larger would carry the 62 bones individually and let the head, hands and feet land where Sonic's
 are. That is a data-selection question (which pack to use as the container), not a new mechanism.
+## Round 104: the player takes Sonic's proportions - big head, small body
+
+The container was the missing piece. `pl04.udas` slot 0 carries **112 bones and 256 weight records** (against the Ganado's slot, which
+offers four), so the converted donor now keeps **all 62 of Sonic's joints individually** instead of bucketing them:
+
+```
+sonic_src.glb -> 167,264 bytes, 4,107 verts, 1,369 tris, bones 62, weight records 64
+```
+
+`re4sw-sonicfull` (26 packs, 98 slots, 227,800 vertices, blend 0.5) then reached a round on the first attempt and the player is
+unmistakably reshaped:
+
+![the player with Sonic's proportions](evidence/re4sw-sonic-proportions.jpg)
+
+`01'34"74` and `01'41"11` on the clock, the Ganados behind him untouched and normal. **The head is large and round, the body small and
+thin** - Sonic's proportions, coherently, with no shards and no load failure.
+
+**What it is:** a proportion transfer that reads as a big-headed character. **What it is not yet:** a recognisable Sonic - the mesh is
+still the player's, carrying the player's textures, reshaped to the donor's proportions. That is the ceiling of a same-topology edit on
+this engine, and it is now reached *reliably*: the container choice is the only variable left, and `best_template_pack.py` measures it.
+
+## The pipeline this completes
+
+```
+any extracted .glb  ->  glb_donor (keeps skeleton, picks a container with room for it)
+                    ->  band_affine (per-bone proportions, blend 0.0-1.0)
+                    ->  pack_patch (in place, slot size kept)
+                    ->  switch_mods.write_files (LayeredFS build)
+                    ->  a drawn, coherent change in a live round
+```
+
+Every step is tested, every step reports what it did, and the walk/capture procedure is one boot.
