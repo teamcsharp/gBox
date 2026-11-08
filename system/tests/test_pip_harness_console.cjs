@@ -41,3 +41,30 @@ test('the feed is bounded and de-duplicates repeated poll tails', () => {
   assert.match(SRC, /state\.seen/);
   assert.match(SRC, /splice\(0, state\.lines\.length - KEEP\)/);
 });
+
+test('it also drains the game-hooked session console, not only jobs', () => {
+  assert.match(SRC, /\/api\/sessions\/\$\{encodeURIComponent\(sid\)\}\/harness\/console\?after=/);
+  assert.match(SRC, /state\.lastHarnessSeq/);
+  assert.match(SRC, /\[game\]/);
+});
+
+test('a frozen frame becomes a persisted freeze witness', () => {
+  assert.match(SRC, /frameCheck/);
+  assert.match(SRC, /state\.unchanged >= 7/);
+  assert.match(SRC, /\/harness\/freeze/);
+  assert.match(SRC, /unchanged_s/);
+});
+
+test('the probe button asks the server for a diagnostic snapshot', () => {
+  assert.match(SRC, /data-phc-probe/);
+  assert.match(SRC, /\/harness\/probe/);
+  assert.match(SRC, /emulator_log_tail/);
+  assert.match(SRC, /ghidra/);
+});
+
+test('the G button hooks the title main into the Ghidra Bridge and follows the job', () => {
+  assert.match(SRC, /data-phc-ghidra/);
+  assert.match(SRC, /\/harness\/ghidra/);
+  assert.match(SRC, /op: 'open'/);
+  assert.match(SRC, /\[ghidra\]/);
+});

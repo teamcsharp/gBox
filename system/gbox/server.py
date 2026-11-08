@@ -188,6 +188,13 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(401, "bad token")
         return request.headers.get("x-gbox-actor", "operator")
 
+    from .harness_console import install as _install_harness_console
+    harness_console = _install_harness_console(
+        app, store, config, auth,
+        submit_job=lambda tool, inp, worker: submit(JobRequest(tool=tool, input=inp, require_worker=worker),
+                                                    "gbox-auto").model_dump(mode="json"))
+    app.state.harness_console = harness_console
+
     def request_origin(request: Request) -> dict:
         """Where an HTTP request came from (stored on jobs): the web UI / desktop app / curl / a Python client."""
         h = request.headers

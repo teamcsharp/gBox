@@ -10,13 +10,14 @@
   'use strict';
   if (!root || !root.document) return;
   const doc = root.document;
-  const WATCH = /^(switch_mods|re5_mods|re6_mods|session_op|launch_game|characters|mod|file_mod|ghidra|re_inventory|autoplay|mercmode|build|disc|rom|iso|patch)$/i;
+  const WATCH = /^(switch_mods|re5_mods|re6_mods|session_op|launch_game|characters|mod|file_mod|ghidra(?:_bridge)?|re_inventory|autoplay|mercmode|build|disc|rom|iso|patch)$/i;
   const KEEP = 220;
   const POLL_MS = 1400;
   const SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
   const state = {
     lines: [], seqByJob: {}, seen: new Set(), timer: null, busy: false, tick: 0,
     collapsed: false, hidden: false, lastPhase: '', lastScreen: '', lastBuild: '', started: 0,
+    session: '', lastHarnessSeq: 0, frameHash: '', unchanged: 0, freezeReported: false, screen: '',
   };
   let host = null, panel = null, body = null, statusEl = null, titleEl = null, pill = null, spinEl = null, barEl = null;
 
@@ -27,6 +28,9 @@
     const text = String(line);
     if (/^\[(rom|overlay|switch_mods|write)\]/i.test(text) || /^== /.test(text)) return 'head';
     if (/^\[(ghidra|hook|decomp|analysis)\]/i.test(text)) return 'hook';
+    if (/^\[(freeze|hang|stall)\]/i.test(text)) return 'freeze';
+    if (/^\[game\]/i.test(text)) return 'game';
+    if (/^\[(probe|snapshot)\]/i.test(text)) return 'head';
     if (/^\[(runtime|launch|session)\]/i.test(text)) return 'run';
     if (/^\[(error|fail|failed)\]|error:|traceback/i.test(text)) return 'bad';
     if (/^\[(ok|done|verified)\]/i.test(text) || /✓/.test(text)) return 'ok';
@@ -120,6 +124,8 @@
       for (const job of active.slice(0, 8)) await pullJob(job);
       if (!active.length && !state.lines.length) push('[harness] waiting for a build, a hook or a launch…', 'idle');
       await mercLine();
+      await sessionConsole();
+      await frameCheck();
       updateStatus(active);
     } catch (e) {
       if (statusEl) statusEl.textContent = 'control plane unreachable';
@@ -146,6 +152,7 @@
       push(`[runtime] ${hostRow.name}: ${phase}${run.title ? ' · ' + run.title : ''}`, 'run');
     }
     const screen = String(play.screen || '');
+    state.screen = screen || state.screen;
     if (screen && screen !== state.lastScreen) {
       state.lastScreen = screen;
       const detail = [play.character, play.stage, play.timer != null ? `t=${play.timer}` : ''].filter(Boolean).join(' · ');
@@ -157,6 +164,98 @@
       push(`[harness] queued round build: ${sel.mod}`, 'model');
     }
   }
+  async function currentSession() {
+    try {
+      const rows = await api('/api/sessions', undefined, 'GET');
+      const list = Array.isArray(rows) ? rows : (rows && (rows.sessions || rows.items)) || [];
+      const row = list.find(r => r && r.state === 'running') || list.find(r => r && r.session_id && !/ended|stopped|failed/.test(r.state || ''));
+      if (row) {
+        if (state.session && state.session !== row.session_id) {
+          state.frameHash = ''; state.unchanged = 0; state.freezeReported = false; state.lastHarnessSeq = 0;
+          push(`[runtime] session ${row.session_id}`, 'run');
+        }
+        state.session = row.session_id;
+        return row.session_id;
+      }
+    } catch { /* the control plane may be restarting */ }
+    return state.session || '';
+  }
+  async function sessionConsole() {
+    const sid = await currentSession();
+    if (!sid) return;
+    let answer;
+    try { answer = await api(`/api/sessions/${encodeURIComponent(sid)}/harness/console?after=${state.lastHarnessSeq}`, undefined, 'GET'); }
+    catch { return; }
+    if (!answer) return;
+    state.lastHarnessSeq = Math.max(state.lastHarnessSeq, Number(answer.seq) || 0);
+    for (const line of answer.lines || []) {
+      const key = sid + '|h|' + line.seq;
+      if (state.seen.has(key)) continue;
+      state.seen.add(key);
+      const tag = `[${line.source || 'game'}]`;
+      push(`${tag} ${line.text}`, cls(`${tag} ${line.text}`));
+    }
+    const g = answer.ghidra || {};
+    if (g.checked && g.status && !state.seen.has('ghidra|' + g.status)) {
+      state.seen.add('ghidra|' + g.status);
+      push(`[ghidra] ${g.status}${g.reason ? ': ' + g.reason : ''}`, g.status === 'available' ? 'hook' : 'bad');
+    }
+  }
+  async function frameCheck() {
+    const sid = await currentSession();
+    if (!sid) return;
+    let response;
+    try {
+      const headers = typeof tok !== 'undefined' && tok ? { authorization: 'Bearer ' + tok } : {};
+      response = await fetch(`/api/sessions/${encodeURIComponent(sid)}/frame.jpg`, { headers, cache: 'no-store' });
+    } catch { return; }
+    if (!response || !response.ok) return;
+    let buf;
+    try { buf = await response.arrayBuffer(); } catch { return; }
+    const bytes = new Uint8Array(buf);
+    const hash = `${buf.byteLength}:${bytes[0] || 0}:${bytes[bytes.length >> 1] || 0}:${bytes[bytes.length - 1] || 0}`;
+    if (!state.frameHash) { state.frameHash = hash; state.unchanged = 0; return; }
+    if (hash === state.frameHash) {
+      state.unchanged += 1;
+      if (state.unchanged >= 7 && !state.freezeReported && /^(playing|loading|unknown|select_player)$/.test(state.screen || '') ) {
+        state.freezeReported = true;
+        const witness = { frame_sha: hash, unchanged_s: state.unchanged * 1.4, screen: state.screen || '',
+                          session: sid, at: new Date().toISOString() };
+        push(`[freeze] frame unchanged ${Math.round(witness.unchanged_s)} s on ${sid}`, 'freeze');
+        try { await api(`/api/sessions/${encodeURIComponent(sid)}/harness/freeze`, witness); push('[freeze] report written beside the console', 'freeze'); }
+        catch (e) { push(`[freeze] report failed: ${e.message || e}`, 'bad'); }
+      }
+    } else {
+      state.frameHash = hash; state.unchanged = 0; state.freezeReported = false;
+    }
+  }
+  async function probe() {
+    const sid = await currentSession();
+    if (!sid) { push('[probe] no running session to inspect', 'bad'); return; }
+    push('[probe] capturing session, overlay, emulator log tail and Ghidra readiness…', 'head');
+    let answer;
+    try { answer = await api(`/api/sessions/${encodeURIComponent(sid)}/harness/probe`, {}, 'POST'); }
+    catch (e) { push(`[probe] failed: ${e.message || e}`, 'bad'); return; }
+    const g = (answer && answer.ghidra) || {};
+    push(`[probe] ${sid} · ${(answer && answer.session && answer.session.mod) || 'stock'} · ${g.status || 'ghidra unknown'}${g.reason ? ' (' + g.reason + ')' : ''}`, 'head');
+    const tail = String((answer && answer.emulator_log_tail) || '').split('\n').filter(Boolean).slice(-6);
+    for (const line of tail) push(`[game] ${line}`, 'game');
+  }
+
+  async function ghidra() {
+    const sid = await currentSession();
+    if (!sid) { push('[ghidra] no running session to hook', 'bad'); return; }
+    push('[ghidra] resolving the title main and asking the bridge to open it…', 'hook');
+    let answer;
+    try { answer = await api(`/api/sessions/${encodeURIComponent(sid)}/harness/ghidra`, { op: 'open' }, 'POST'); }
+    catch (e) { push(`[ghidra] hook failed: ${e.message || e}`, 'bad'); return; }
+    if (answer && answer.job) {
+      push(`[ghidra] ${answer.binary_path} · job ${answer.job.id} on ${answer.worker}; follow it here`, 'hook');
+    } else {
+      push(`[ghidra] ${answer.status || 'not submitted'}${answer.reason ? ': ' + answer.reason : ''}`, answer.status === 'available' ? 'hook' : 'bad');
+    }
+  }
+
   function updateStatus(active) {
     if (!statusEl) return;
     const running = active.filter(j => j.state === 'running');
@@ -196,6 +295,7 @@
       .phc-line i{color:#4f8d77;font-style:normal;margin-right:6px}
       .phc-line.head{color:#7fe8ff}.phc-line.hook{color:#d7a5ff;text-shadow:0 0 8px #c07dff44}
       .phc-line.run{color:#9fb9ff}.phc-line.model{color:#ffd98a}.phc-line.ok{color:#7dff9e}
+      .phc-line.game{color:#b7c7bd}.phc-line.game i{color:#4f6d60}.phc-line.freeze{color:#ff6b78;font-weight:700}
       .phc-line.bad{color:#ff8d96}.phc-line.idle{color:#5e7d72}
       .phc-cursor{display:inline-block;color:#7dffd0;animation:phc-blink 1s steps(2,start) infinite;margin-left:2px}
       .phc-bar{height:2px;background:#39e2a218;flex:0 0 auto;overflow:hidden}
@@ -221,6 +321,8 @@
       '<div class="phc-head" title="Click to collapse or expand the harness console">' +
         '<b>⌁ harness console</b><span class="phc-spin">⠋</span>' +
         '<span class="phc-status idle">idle</span>' +
+        '<button type="button" class="phc-btn" data-phc-ghidra title="Hook this title’s analyzed main into the Ghidra Bridge (open/decompile)">G</button>' +
+        '<button type="button" class="phc-btn" data-phc-probe title="Capture a game/RAM/log diagnostic snapshot">⌖</button>' +
         '<button type="button" class="phc-btn" data-phc-toggle title="Collapse or expand">–</button>' +
         '<button type="button" class="phc-btn" data-phc-hide title="Hide (a pill brings it back)">✕</button>' +
       '</div>' +
@@ -234,6 +336,8 @@
     barEl = panel.querySelector('.phc-bar i');
     panel.querySelector('[data-phc-toggle]').addEventListener('click', ev => { ev.stopPropagation(); toggle(); });
     panel.querySelector('[data-phc-hide]').addEventListener('click', ev => { ev.stopPropagation(); hide(); });
+    panel.querySelector('[data-phc-probe]').addEventListener('click', ev => { ev.stopPropagation(); probe(); });
+    panel.querySelector('[data-phc-ghidra]').addEventListener('click', ev => { ev.stopPropagation(); ghidra(); });
     panel.querySelector('.phc-head').addEventListener('click', ev => { if (!ev.target.closest('button')) toggle(); });
     pill = doc.createElement('button');
     pill.type = 'button';
