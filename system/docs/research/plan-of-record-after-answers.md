@@ -1066,3 +1066,31 @@ attempts. The prompt accepts input only once it has settled, and the settle time
 **condition**: press only when two consecutive frames are identical *and* the classifier says `story_prompt`, and treat a third
 failure as "boot again" rather than pressing on. That is the next change to the harness, and it is smaller than the modelling work
 it unblocks.
+## Round 86: bone-proportion transfer is too faithful to be a character change
+
+`re4sw-sonicplayers` applies the donor morph to **22 player packs, 173 slots, 112,287 vertices** - every player model in the game
+gets Sonic's skeleton written into its own bone table, scaled to its own height, vertices carried by their bones. The player in the
+round is **unchanged**:
+
+![the player with every pack morphed toward the donor rig](evidence/re4sw-sonicplayers-unchanged.jpg)
+
+That is not a failure of the overlay (verified by md5 in round 69) nor of the walk (it reached the round in 16 steps). It is the
+mechanism doing exactly what it promises: **a humanoid rig scaled to a humanoid height has humanoid proportions**, so moving each
+vertex with its own bone leaves the silhouette essentially where it was. The same explanation covers the Sonic Ganado runs that
+showed nothing surprising - its bone transfer is just as faithful.
+
+**So the honest conclusion about the mechanism:** bone-proportion transfer preserves shape, and shape is what a character
+replacement needs. The surface morph (`morph_to`) is the one that changes shape - it is what produced the visibly deformed enemies in
+the working `em16morph` build - and it pays for it with a blobby result, because neighbouring vertices can land on opposite sides of
+the donor.
+
+**The next build, therefore, is the surface morph on the enemy packs** (`em16` first): same topology, same vertex count, same
+triangle table, but vertices pulled to the donor's surface. That is the edit class this engine draws, and it is the one that has
+actually changed a silhouette on screen.
+
+## What this closes and what it leaves
+
+* closed: "is the model edit being read at all" - yes, md5 and config both say so (rounds 69, 82);
+* closed: "does a same-topology edit draw" - yes, the collapsed player with untouched enemies (round 70);
+* closed: "does bone-proportion transfer change a character" - **no**, measured this round across every player pack;
+* open: a *shape* transfer that is both drawn and recognisable - the surface morph is the only one with evidence behind it.
