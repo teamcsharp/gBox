@@ -139,6 +139,26 @@ tail that may describe the mesh/material binding the MOD must match.
 This is now an MRL/loader problem, not an authoring-table problem. The next experiment is an MRL edit (or a donor
 MOD+MRL pair), not another MOD variation.
 
+### The recompressed stream itself is what the low loader rejects
+
+The control that settles it: take the **original uncompressed `em1000_low` MOD bytes**, recompress them with Python
+zlib, pad to the **exact original compressed size**, and keep the original tag. The uncompressed model is byte-for-byte
+identical. The round still stops at `NOW LOADING`.
+
+So the low loader is not comparing mesh data, vertex counts, face ranges, part counts, entry sizes, offsets or tags. It
+is rejecting the **new compressed byte stream**. Possibilities:
+
+* the game's inflate is a custom implementation that hangs on a stream Python's zlib emits but the original compressor
+  did not (different block choices), or
+* a compressed-stream identity/checksum exists outside the archive fields examined (not the ARC tag, not a CRC32 found
+  in the MRL or main module).
+
+Either way, archive-level Sonic edits cannot be validated by more MOD authoring. The practical next routes are:
+
+1. a **runtime memory injection** of the decompressed MOD (no archive recompression), or
+2. a deflate stream that preserves the original block structure, or
+3. the Ghidra loader path to identify the actual check.
+
 `mtf_author.combine` also needed a fix: the index stream is global to the shared vertex buffer, so `combine` now
 subtracts each part's `vertex_index` before adding its own base. Without it, the low self one-mesh produced triangle
 56072 with only 55667 vertices.
