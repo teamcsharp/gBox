@@ -70,6 +70,19 @@ distance (or its entry is not the one the class loads), not merely a failed laun
 
 The next variant test is `em1000_low`, then `em1000_mid`, then `em1001*`, one entry at a time.
 
+### `em1000_low` is the loaded variant
+
+`harness-sonic-low-partial` patches **one part of `em1000_low`** with corrected offsets and leaves the rest of the low
+model stock. The build boots to the title screen normally, then the Mercenaries transition stops at `NOW LOADING`. That
+is a direct contrast with the high `em1000` build, which reached a live round with stock enemies. The low entry is the
+one the round loads; the high entry is not drawn for these enemies.
+
+![One-part patch of em1000_low: the Mercenaries transition stops at NOW LOADING](evidence/re5-low-partial-now-loading.jpg)
+
+The low model shares a vertex buffer across parts 123–127 (`vertex_offset = 0x76c68`, `vertex_index` 0/612/1469/1955/2245).
+The next low-model attempt must patch **the entire shared group consistently** (or zero the whole group, not one part)
+so a sibling does not draw corrupted vertices; that is the current hypothesis for the low `NOW LOADING`.
+
 ## Controlled write tests (one change at a time)
 
 | write | em1000 part | live result |
