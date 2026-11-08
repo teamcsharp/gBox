@@ -80,8 +80,12 @@ one the round loads; the high entry is not drawn for these enemies.
 ![One-part patch of em1000_low: the Mercenaries transition stops at NOW LOADING](evidence/re5-low-partial-now-loading.jpg)
 
 The low model shares a vertex buffer across parts 123–127 (`vertex_offset = 0x76c68`, `vertex_index` 0/612/1469/1955/2245).
-The next low-model attempt must patch **the entire shared group consistently** (or zero the whole group, not one part)
-so a sibling does not draw corrupted vertices; that is the current hypothesis for the low `NOW LOADING`.
+A second attempt patched a **whole shared group** consistently (the low model's largest group, parts 123+122 at the
+same `vertex_offset`) and left every other group stock. It still booted to the title and then produced a black frame
+with the session running, never a round. So the low variant is definitely the one the round loads, and it is stricter
+than the high model: a consistent group patch is still not accepted. The next low path is a **whole-entry replacement**
+(author a separate low MOD and replace the entry, rather than rewriting its part table in place) or the Ghidra
+loader/GPU path, not another in-place variation.
 
 ## Controlled write tests (one change at a time)
 
