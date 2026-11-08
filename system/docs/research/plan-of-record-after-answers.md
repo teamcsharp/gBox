@@ -1853,3 +1853,33 @@ operation chosen for the job.
 **What this cost and what it bought:** six builds and six boots to name a pack that the panel must get right for every operation. That name
 is now known, and it invalidates a plausible-looking plan (hide a material) in favour of the correct one (edit the texture), which is worth
 more than the boots.
+## Round 114: where the player's textures actually live, and the writer that does not exist
+
+`remove clothes` is a texture edit (round 113), so the first question is *which texture*, and the second is *in what container*. Both are
+now answered from the data:
+
+```
+pl08.udas slot 0: 25 materials
+  tex   0 -> 00000000.pack.fen   archive present: False, bytes: 0
+  tex   3 -> 00000003.pack.fen   archive present: False, bytes: 0
+  tex   2 -> 00000002.pack.fen   archive present: False, bytes: 0
+images inside the pack: 20   (128x64, 128x256, 64x128, ...)
+```
+
+**The material's texture ids name external archives that are not there.** The RomFS has no `ImagePackHD/*.pack.fen` for this title's
+extracted tree, so the game is drawing the **TPL images carried inside `pl08.udas`** - 20 of them, ids 0..19, and the body's materials
+use 0, 2 and 3.
+
+That has a hard consequence: **the texture writer that exists edits `.fen` archives, and there is no TPL writer.** `re4hd_tex` can read
+`tpl_images` and patch/resize `.fen` archives (`fen_patch`, `fen_replace_texture`, `solid_dds`); it cannot replace an image inside a pack.
+So "remove clothes" needs one of two new pieces:
+
+* a **TPL image writer** - swap the DDS payload of image `n` inside the pack, keeping the entry's size (the same in-place rule the meshes
+  obey), or
+* a **synthesised archive** - write `romfs/bio4/ImagePackHD/00000000.pack.fen` as a new file in the overlay and see whether the loader
+  prefers it over the TPL. LayerFS can add files, and `archive_name(0)` gives the exact name; the open question is the wrapper header
+  (`fen_open` shows a 16-byte prefix whose first word is the DDS byte count).
+
+**The first is honest and bounded; the second is a hypothesis worth one boot.** Both are texture work on a pack whose name is now known,
+which is a different situation from where this line started: the target is identified, the container is identified, and the missing piece
+is a writer rather than an unknown.
