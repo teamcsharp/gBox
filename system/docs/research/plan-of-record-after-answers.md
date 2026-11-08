@@ -1827,3 +1827,29 @@ frames would have been kept and read as "the player is normal", which is exactly
 
 **Cost of the whole identification: five builds, five boots.** The bisection is 5 for 27 packs, and it needed the boot-state fix
 (`fix_boot_state.py`) to hold across them - without it, three attempts in a row died on the save-list screen.
+## Round 113: the player pack is `pl08`, and its visible surface is one material
+
+**`pl08.udas` is what the camera draws.** Scaling that one pack to a tenth distorted the player beyond doubt:
+
+![pl08 scaled: the player is not the stock mesh](evidence/re4sw-pl08-is-the-player.jpg)
+
+`01'21"31`, timer up, Ganados normal. Combined with every earlier halving, the player mesh is `pl08` - the pack with 25 materials and a
+6,591-vertex body, and the reason `pl00`-only builds never did anything.
+
+**And that immediately produced a second, more useful fact.** Vanishing materials **1..24** of `pl08`'s body slot - 23 materials, hundreds
+of triangles, all reported by the operation - leaves the player looking **stock**:
+
+![pl08 with 23 materials vanished: unchanged](evidence/re4sw-pl08-materials-vanished-stock.jpg)
+
+So the visible surface of this character is essentially **material 0**'s. The other 24 are small pieces (42, 238, 156, 20, 72, 244
+triangles...), not the clothing as a whole. **"Remove clothes" therefore cannot be a material-hide on this title** - hiding the garment
+means editing *which texture region* the body's UVs point at, not removing a material.
+
+**That is the next mechanism, and it is a different one from the last six rounds:** the clothes are painted onto the same surface as the
+skin, so removing them is a texture operation - either repaint the garment's UV region with skin, or swap `pl08`'s texture for a variant
+that has no clothes. The mod pipeline already supports textures (`re4hd_tex_writer`, 7 tests), so the pieces exist; what was wrong was the
+operation chosen for the job.
+
+**What this cost and what it bought:** six builds and six boots to name a pack that the panel must get right for every operation. That name
+is now known, and it invalidates a plausible-looking plan (hide a material) in favour of the correct one (edit the texture), which is worth
+more than the boots.
