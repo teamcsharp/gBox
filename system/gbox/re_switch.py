@@ -43,7 +43,10 @@ RE4_REASON = ('Switch RE4 Mercenaries runs on Citron NEO with the re4_switch dri
               'after the stage draws) and keeps the round going. Boot and round entry are verified; the missing pieces '
               'are the player unit pointer and the Mercenaries unit list, so it cannot aim at enemies, count kills or '
               'read a rank - a report from this title says so instead of inventing one.')
-RE4_UNLOCK_REASON = 'RE4 Switch Mercenaries is available from a fresh save (no unlock needed).'
+# Measured 2026-11-08: a fresh save's main menu is NEW GAME / LOAD / LEADERBOARDS / HELP & OPTIONS / ACHIEVEMENTS - there
+# is no EXTRAS row, so THE MERCENARIES is not reachable from a fresh save. The unlock lives in the save file, which is why a
+# run needs one that is past the village; the previous note said the opposite and was wrong.
+RE4_UNLOCK_REASON = ('RE4 Switch Mercenaries needs an unlock carried by the save file: a fresh save shows no EXTRAS row (measured 2026-11-08), so a run needs a save that is past the village and loads from a menu.')
 
 EDITIONS = {'re5': {'platform': 'switch', 'mode': 'no_mercy', 'title_id': RE5_TITLE_ID},
             're6': {'platform': 'switch', 'mode': 'no_mercy', 'title_id': RE6_TITLE_ID},

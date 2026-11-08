@@ -1318,3 +1318,29 @@ put back.
 launch with the save aside, press `a` once, capture, and read the row list. Round 83's frame of a fresh main menu showed no EXTRAS;
 gBox's session detail asserts no unlock is needed. One of them is wrong, and the answer decides whether the operator's save is required
 at all.
+## Round 95: settled - a fresh save has no EXTRAS, so Mercenaries does need the unlock
+
+One press revealed the menu, and it is unambiguous:
+
+![a fresh save's main menu](evidence/re4sw-fresh-menu-no-extras.jpg)
+
+**NEW GAME / LOAD / LEADERBOARDS / HELP & OPTIONS / ACHIEVEMENTS** - there is **no EXTRAS row**, so THE MERCENARIES is not reachable
+from a fresh save. Round 83 was right and **gBox's own note was wrong**:
+
+```
+- RE4_UNLOCK_REASON = 'RE4 Switch Mercenaries is available from a fresh save (no unlock needed).'
++ RE4_UNLOCK_REASON = ('RE4 Switch Mercenaries needs an unlock carried by the save file: a fresh save shows no EXTRAS row
++                      (measured 2026-11-08), so a run needs a save that is past the village and loads from a menu.')
+```
+
+That string fed the panel's "unlocks" block, so it was telling an operator the opposite of the truth. Corrected in place, with the
+measurement and its date in the comment.
+
+**What this fixes in the plan:** the requirement for the operator's save is now settled by evidence rather than by two conflicting
+notes. A usable save must be:
+
+1. **past the village**, so EXTRAS / THE MERCENARIES exists;
+2. **saved from a menu**, so the title does not auto-load into "Cancel loading?" and boot-loop (round 91).
+
+Both conditions are about the file, and `gbox/re4_switch_save.py --save <file> --replace` installs it with a backup and a verified
+copy. Nothing else on the Switch track is blocked once it exists.
