@@ -233,6 +233,17 @@ try:
             last = time.monotonic()
         time.sleep(3)
     print(f"MARK walk steps {steps} | reached {reached} | last screen {last_where}", flush=True)
+    # Wait for the round itself before capturing. Reaching the round is not the same as the round being on screen: a briefing or a
+    # loading hand-off follows, and every frame captured during it is discarded by the HUD test (measured three times - the frames
+    # simply do not exist when the capture starts too early).
+    waited = 0.0
+    while waited < 90.0:
+        raw = frame(session)
+        if raw and hud_present(raw):
+            break
+        time.sleep(3.0)
+        waited += 3.0
+    print("MARK waited %.0fs for the round timer" % waited, flush=True)
     for step in range(FRAMES):
         # STAND STILL and let the Ganados come: they path to the player, and running away kept the frame empty of them for a
         # dozen rounds. A tap on the aim button raises the camera without moving the feet.

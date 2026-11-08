@@ -2193,3 +2193,24 @@ red.
 **What the tint is for, if it draws:** the panel's clothes and skin offers have been blocked on the missing texture store for six rounds. A
 per-material colour is a second, independent mechanism - recolour a character, or give it another character's colour - and it works on data
 this pipeline already writes.
+## Round 127: the capture now waits for the round, and the tinted build is flaky rather than broken
+
+**Harness fix, and it is the one that keeps costing frames:** the walk can *reach* a round and still photograph a briefing or a loading
+hand-off, because reaching and the round being on screen are different moments. `walk_and_capture` now polls for the round timer for up to 90
+seconds before it captures anything:
+
+```
+MARK waited 90s for the round timer      <- and it correctly captured nothing when the timer never came
+```
+
+**The tinted build's load is flaky.** The same build (`re4sw-tint2`, 17 materials of slot 0) reached a round two rounds ago and ended on
+`loading` twice this round. So the earlier reading - "bulk tint breaks the load, minimal tint does not" - is **too strong**: the minimal
+tint is *sometimes* fine and sometimes not, which is a different and still-useful fact (a header write can destabilise a load
+intermittently, not deterministically).
+
+**What is still owed:** one frame of a tinted player. Three attempts have reached rounds and none has produced a frame inside one - twice
+because of a briefing, now once because the stage did not load. The instrument is in place (the wait, the HUD guard, `TARGET_SLOT` /
+`ONLY_COLOURED`); it needs one boot where both the load and the timing go right, and that is luck rather than method at this point.
+
+**Honest assessment of this line:** the material tint is a *candidate* mechanism, not a working one. It has never been seen on screen. The
+records say so explicitly so that no later reader mistakes "the tool exists" for "the recolour works".
