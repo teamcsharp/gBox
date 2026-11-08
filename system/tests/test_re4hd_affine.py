@@ -102,3 +102,18 @@ def test_a_ceiling_keeps_an_auto_blend_gentle_regardless_of_the_limits():
     assert capped <= free + 1e-9
     moved, report = A.band_affine(tmpl, donor, bands=2, align=True, blend=None, blend_cap=0.2)
     assert report and np.isfinite(moved).all()
+
+
+def test_a_target_factor_is_reached_by_the_most_extreme_band():
+    """The recognition rule: whatever the pack, the strongest band lands on the target and no band goes past it."""
+    tmpl = two_band_mesh(1.0)
+    donor = two_band_mesh(0.05)
+    blend = A.auto_blend(tmpl, donor, bands=2, align=True, target_factor=1.4)
+    assert 0.0 < blend <= 1.0
+    moved, report = A.band_affine(tmpl, donor, bands=2, align=True, blend=blend)
+    factors = []
+    for row in report:
+        for ratio in row["extent_ratio"]:
+            factors.append(abs(1.0 + (ratio - 1.0) * blend - 1.0))
+    assert factors, "the report must carry the bands"
+    assert max(factors) <= 0.5 + 1e-6, f"no band should exceed the target's reach, got {max(factors)}"

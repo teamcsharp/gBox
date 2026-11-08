@@ -2434,3 +2434,25 @@ results on the same frame composition. What it does not yet have is a strength c
 **Next, concretely:** compute each pack's strength from its own bands so that the *largest* band's factor lands in a chosen range (say 1.3-1.6x)
 instead of taking the auto value that keeps the load safe; the function already knows every band's extent ratio, so this is a second rule over
 data it has, not a new mechanic.
+## Round 137: whole-pack swapping - the player pack breaks the enemy load, so try within the family
+
+Every mesh-level route has a ceiling, so this round tested the one mechanism that would be a true *replacement*: write a different character's
+**whole pack file** under an enemy pack's name, since the engine reads `bio4/em/<name>.udas` by name and an overlay can substitute any bytes
+for it.
+
+**First attempt: a player pack in the villagers' place** - `em10, em11, em15, em16 <- pl00.udas` (1,448,576 bytes each). Result: **the stage
+never finished loading** (18 walk steps, last screen `loading`, 0 frames). That is the same failure shape as every build that puts a character
+where the game does not expect one: the enemy logic binds its own skeleton and animations, and a player pack's structure does not satisfy it.
+
+**Which leaves the test that matters:** swap **within a family** - an enemy pack for another enemy pack (`em10 <- em16`), or a player pack for
+another player pack (`pl00 <- pl08`). Size and layout match, so the loader's expectations are met, and the only thing that changes is *which
+character* the game draws for that name. That is the cheapest possible route to "zombies are the cast" if the engine honours it, and it needs
+one build and one boot to answer.
+
+**What is now known about the three routes to a real character replacement:**
+
+| route | state |
+|---|---|
+| edit the mesh in place | draws, but only for same-topology changes - a proportion transfer, never a different character |
+| swap the texture | blocked: the player's surfaces are not in `imagepackhd` and the pack's TPL holds descriptors only |
+| **swap the whole pack** | player-into-enemy **hangs the load**; within-family untested |
