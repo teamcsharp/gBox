@@ -612,3 +612,33 @@ the frame is owed next round, with the escape fixed first.
 press repaints a little, so the sequence restarts at "b" and never reaches the confirm. The fix is to advance on
 "still static after this press" rather than on "picture identical", and to treat a **named screen change** as the reset signal.
 Until that is right the bot will keep stranding runs on this menu, and it is the same menu in three of the last four rounds.
+## Round 70: the first character change actually drawn (2026-11-07)
+
+`re4sw-allplayers` rewrites **26 of the 27 player packs** - 227 BIN slots, **259,937 vertices** scaled to 10% about their own
+material centroids - through `switch_mods.write_files`. In a live Mercenaries round the **player is visibly destroyed** while
+the Ganados are untouched:
+
+![Leon collapsed to fragments, the enemies normal](evidence/re4sw-allplayers-leon-collapsed.jpg)
+
+`01'26"52` on the clock, the HUD still says Leon, the pistol is in his hand and the rest of him is a shrunken fragment. The
+Ganados - who live in `em*` packs, which this build does not touch - are completely normal, so the change is specific and
+attributable.
+
+**This is the first time a character replacement has been drawn on the Switch title**, and it settles every question the last
+five rounds were circling:
+
+* the LayeredFS overlay works, and the file the emulator reads is the build's own (md5 verified in round 69);
+* a **topology-preserving vertex edit is drawn** - exactly the constraint the engine imposes;
+* **Mercenaries' Leon is in `pl01`..`pl21`, not `pl00`** (the `pl00`-only build changed nothing, this one changed the player);
+* the same round also produced a **death** the incident pipeline can key on (`You Are Dead`, `Continue Yes/No`):
+
+![You Are Dead](evidence/re4sw-allplayers-you-are-dead.jpg)
+
+**The next step is a bisection**, and it is cheap: shrink `pl00`..`pl0f` only, then the half that changes the player. Two or
+three boots, and then "remove clothes" has a target pack and a material list instead of a guess.
+
+## The escape fix that made the run possible
+
+The playbook's escape advanced on pixel change, and a cursor repainting a stuck menu is a pixel change - so it restarted at its
+first press forever. It now advances on **time since the last action** and restarts only when the **named screen** changes.
+Eight tests, including one that pins exactly this: a stuck screen that keeps repainting still escalates.

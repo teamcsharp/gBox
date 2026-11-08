@@ -63,7 +63,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
     stats = stats if stats is not None else {}
     stats.update({"screen": None, "presses": 0, "rounds": 0, "started": clock(), "stage_seen": False,
                   "story_recoveries": 0, "stall_steps": 0})
-    last_frame, last_change = None, clock()
+    last_action, last_where = clock(), None
     reader = screens.Reader()
     driver.begin_run()
     started = clock()
@@ -80,24 +80,27 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
         except Exception:                                    # noqa: BLE001 - a missing frame is not a screen
             sleep(0.5)
             continue
-        if frame != last_frame:
-            last_frame, last_change = frame, clock()
-            stats["stall_steps"] = 0                             # the picture moved: the escape starts over
         screen = reader.read(frame)
         where = screen.get("where")
         stats["screen"] = where
+        if where is not None and where != last_where:
+            # a change of *named screen* is progress, and the only thing that restarts the escape: a cursor moving on a
+            # still-stuck menu repaints the picture without going anywhere, so pixels cannot be the reset signal
+            last_where = where
+            stats["stall_steps"] = 0
+            last_action = clock()
         # a still picture before a stage is a trapped menu, whatever the classifier calls it: the save list itself is
         # "unknown" once it darkens its background, and skipping those left the bot on "Cancel loading? Yes/No" with No
         # selected for minutes at mean 19.4 (2026-11-07). The escape is a fixed sequence, one press per failure to
         # change the picture, and it restarts as soon as the picture moves.
-        if not stats["stage_seen"] and clock() - last_change > still_s:
+        if not stats["stage_seen"] and clock() - last_action > still_s:
             step = min(stats["stall_steps"], len(STALL_ESCAPE) - 1)
             _press(send, STALL_ESCAPE[step])
             stats["presses"] += 1
             stats["stall_steps"] += 1
             if step == 0:
                 stats["story_recoveries"] += 1
-            last_change = clock()
+            last_action = clock()
             sleep(0.6)
             continue
         stats["stage_seen"] = stats["stage_seen"] or where == "select_stage"

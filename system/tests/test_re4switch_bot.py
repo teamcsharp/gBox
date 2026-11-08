@@ -96,11 +96,30 @@ def test_a_still_menu_walks_the_escape_sequence(monkeypatch):
     assert stats["stall_steps"] >= len(B.STALL_ESCAPE)
 
 
-def test_a_moving_picture_restarts_the_escape(monkeypatch):
-    """Every change of picture resets the sequence, so a wrong guess costs one press rather than the run."""
+def test_the_escape_advances_even_while_the_picture_repaints(monkeypatch):
+    """The reason the escape used to fail: a cursor moving on a stuck menu repaints the picture without going anywhere, so
+    pixels cannot be the reset signal. The same *named screen* means the same stall, however much it repaints."""
     monkeypatch.setattr(B.screens, "Reader", lambda: Reader(["main_menu"] * 60))
-    frames = [bytes([i % 250]) * 4 for i in range(40)]      # every frame differs from the last
+    frames = [bytes([i % 250]) * 4 for i in range(60)]      # every frame differs from the last
     adapter = Adapter(frames)
+    ticks = {"n": 0}
+
+    def clock():
+        ticks["n"] += 1
+        return float(ticks["n"]) * 10.0
+
+    stats = {}
+    B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: ticks["n"] > 26,
+           sleep=lambda s: None, stats=stats, clock=clock, still_s=12.0)
+    keys = [row[0]["key"] for row in adapter.sent if row and row[0].get("down")]
+    assert keys[:3] == list(B.STALL_ESCAPE), f"a repainting stuck screen still escalates, got {keys}"
+
+
+def test_a_change_of_named_screen_restarts_the_escape(monkeypatch):
+    """Progress is a different named screen: that is what puts the escape back to its first press."""
+    script = ["main_menu"] * 6 + ["extras_menu"] * 30
+    monkeypatch.setattr(B.screens, "Reader", lambda: Reader(script))
+    adapter = Adapter([b"frame"] * 60)
     ticks = {"n": 0}
 
     def clock():
@@ -110,9 +129,7 @@ def test_a_moving_picture_restarts_the_escape(monkeypatch):
     stats = {}
     B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: ticks["n"] > 20,
            sleep=lambda s: None, stats=stats, clock=clock, still_s=12.0)
-    assert stats["stall_steps"] == 0, "a picture that moves is not a stall"
-    keys = [row[0]["key"] for row in adapter.sent if row and row[0].get("down")]
-    assert "b" not in keys, f"no escape press belongs on a moving picture, got {keys}"
+    assert stats["stall_steps"] <= len(B.STALL_ESCAPE), "a new screen resets the sequence"
 
 
 def test_a_maximum_duration_ends_the_run(monkeypatch):
