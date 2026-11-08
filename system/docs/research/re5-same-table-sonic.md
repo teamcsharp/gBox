@@ -127,9 +127,17 @@ Sonic triangle written over its first three vertices and its original `face_coun
 and then stops at `NOW LOADING`, exactly like the larger low patches.
 
 That rules out face-count/table/part-count explanations for the low round failure. The low model instance rejects a
-three-vertex geometry change while the high model accepts much larger ones. The remaining explanations are the
-animation/skin bind (the low model is instantiated with a different clip set) or a cached/precomputed low mesh that is
-not re-read from the MOD. This is now a Ghidra/loader-instrumentation problem, not an authoring-table problem.
+three-vertex geometry change while the high model accepts much larger ones.
+
+A smaller control made it sharper: moving those same three vertices by **one unit** (same part, same face count, same
+entry size after padding the compressed stream, original tag preserved) also stops at `NOW LOADING`. A repack with the
+**same uncompressed model bytes** but a changed compressed stream/tag also stopped. So the low loader is not validating
+the mesh table, the part count, the face range or the entry offset. It is reacting to a change in the **content** of the
+low entry, or to a MOD/MRL consistency check: the 119,280-byte MRL entry (`em1000_low`) carries a 112,528-byte opaque
+tail that may describe the mesh/material binding the MOD must match.
+
+This is now an MRL/loader problem, not an authoring-table problem. The next experiment is an MRL edit (or a donor
+MOD+MRL pair), not another MOD variation.
 
 `mtf_author.combine` also needed a fix: the index stream is global to the shared vertex buffer, so `combine` now
 subtracts each part's `vertex_index` before adding its own base. Without it, the low self one-mesh produced triangle
