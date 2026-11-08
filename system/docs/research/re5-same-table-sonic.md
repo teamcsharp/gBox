@@ -42,13 +42,17 @@ load.
 
 | build | models changed | live result |
 |---|---|---|
-| `harness-sonic-em10` | uEm10 `em1000` only | reached Public Assembly and played; the visible Majini were still stock, so either the game used another `em1000_*` variant or the changed triangles were not in view |
+| `harness-sonic-em10` | uEm10 `em1000` only | reached Public Assembly, but the captured round was a static frame with input ignored (a frozen round, not gameplay) |
 | `harness-sonic-em-all` | every uEm10 model incl. effects + uEm11 | stuck on `NOW LOADING` for six minutes, never reached a round |
 | `harness-sonic-em-body` | uEm10 `em1000*`/`em1001*` + uEm11 `em1100`/`em1101` | stuck on `NOW LOADING` for six minutes, never reached a round |
+| `harness-sonic-em1000` | uEm10 `em1000`/`_low`/`_mid` | `NOW LOADING` for about 5.5 minutes, then a static round-start frame; walking input changed no pixels |
 
-So **one** injected body model is loadable, while the set of body models hangs. The next measurement is a bisect: one
-archive and one model family at a time (`em1000`, `em1000_mid`, `em1001`, `em1100`, `em1101`), each with a round and a
-frame. Only the models the spawn table actually names need to be converted; the others can stay stock.
+The last row matters: the `NOW LOADING` wait is not proof that a round was reached. A static frame with the timer at
+1:59 and no response to `w` is a frozen title. So the same-table topology injection is **not loadable** as written
+either; the previous one-model result was the same failure with a shorter wait, not a rendering result.
+
+The next measurement must use a frozen-frame detector, not a screen name: two frames several seconds apart with any
+input, plus a brightness/score check. A round that cannot move is not a round.
 
 The probe writes `/tmp/<archive>.sonic`; `harness-sonic-em10` and the control builds are in the mods cache under
 `52d15709be0fda1a`.
