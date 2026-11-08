@@ -73,18 +73,21 @@ def inject(raw):
     out=bytearray(raw); face_at=0
     for pi in parts:
         rec=recs[pi]; n=rec['vertex_count']; stride=rec['vertex_stride']; fmt=rec['vertex_format']
-        base_off=h['offsets']['vertex_buffer']+rec['vertex_offset']; base=raw[base_off:base_off+n*stride]
+        # vertex_offset is the shared buffer base; vertex_index is this part's first slot in it
+        base_off=h['offsets']['vertex_buffer']+rec['vertex_offset']+rec['vertex_index']*stride
+        base=raw[base_off:base_off+n*stride]
         verts=[]
         for k in range(n):
             sv=local[pi][k] if k<len(local[pi]) else (local[pi][-1] if local[pi] else None)
             if sv is None: verts.append({'position':(cx,ground,cz),'normal':(0,1,0),'uv':(0,0),'bones':[0],'weights':[1.,0.],'bounds':bounds}); continue
             verts.append({'position':tuple(pos[sv]),'normal':tuple(N[sv]/max(np.linalg.norm(N[sv]),1e-9)),'uv':tuple(UV[sv]),'bones':[int(dom[sv])],'weights':[1.,0.],'bounds':bounds})
         packed=mt_model.pack_vertices(verts,fmt,stride,base=base); out[base_off:base_off+len(packed)]=packed
-        ib=bytearray()
-        for (a,b,c) in tri_parts[pi]: ib+=struct.pack('<4H',a,b,c,0xFFFF)
+        # indices are global inside the shared vertex buffer; face_index is the original global index slot
+        vb=rec['vertex_index']; fi=rec['face_index']; ib=bytearray()
+        for (a,b,c) in tri_parts[pi]: ib+=struct.pack('<4H',a+vb,b+vb,c+vb,0xFFFF)
         rec_off=h['offsets']['meshes']+pi*56
-        struct.pack_into('<I',out,rec_off+0x18,face_at); struct.pack_into('<I',out,rec_off+0x1c,max(0,len(ib)//2-1))
-        out[h['offsets']['index_buffer']+2*face_at:h['offsets']['index_buffer']+2*face_at+len(ib)]=ib
+        struct.pack_into('<I',out,rec_off+0x1c,max(0,len(ib)//2-1))
+        out[h['offsets']['index_buffer']+2*fi:h['offsets']['index_buffer']+2*fi+len(ib)]=ib
         face_at+=len(ib)//2
     used=set(parts)
     for pi in range(len(recs)):

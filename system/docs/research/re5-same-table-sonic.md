@@ -38,6 +38,26 @@ The container still parses, `split_valid()` is true, the mesh count and every pa
 index buffer is never resized. That is the shape the engine already accepts, unlike the one-mesh rebuild that hung the
 load.
 
+## The shared vertex-buffer bug (2026-11-08, corrected)
+
+The earlier topology builds wrote each part at
+`vertex_buffer + vertex_offset` and emitted **local** index numbers. That is wrong for this model. A mesh record's
+`vertex_offset` is the base of a **shared** vertex buffer, `vertex_index` is the part's first slot inside it, and
+`face_index` is the **global** slot in the index buffer. Parts 123/124/125, for example, all have
+`vertex_offset = 0x76c68` with `vertex_index = 0/612/1469`.
+
+So the old build overwrote part 123's vertices while claiming to patch part 124, and part 124's index range pointed at
+part 123's slots. The corrected writer:
+
+* writes vertices at `vertex_buffer + vertex_offset + vertex_index * stride`;
+* emits indices as `local + vertex_index`;
+* writes the new indices at the part's **original** `face_index` (in place), not at a sequential `face_at`.
+
+`system/tools/probes/re5_sonic_inject.py` now does this. A corrected seven-part build (`harness-sonic-fixed`) booted to
+the RE5 main menu without the `NOW LOADING` hang and drew normal menu frames. It has **not** yet been captured in a
+Mercenaries round; `apply_live` restarts to the menu and the scheduler stopped the session before a round was prepared.
+The next test is launch-with-build + `autoplay op=prepare`, then capture the round.
+
 ## Controlled write tests (one change at a time)
 
 | write | em1000 part | live result |
