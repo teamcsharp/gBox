@@ -2135,3 +2135,18 @@ title's runtime work (the VR zip is deconstructed and the operator parked its ru
 
 **The inbox** is 2,632 open with a handful of repeated clusters; the unlock cluster now has a measured answer and a tool, and the rest need
 the same treatment one cluster at a time rather than one ticket at a time.
+## Round 124: the suite, verified green before stopping
+
+```
+57 passed, 3 xfailed in 6.79s
+```
+
+`test_switch_replace`, `test_re4hd_affine`, `test_re4hd_coherent`, `test_re4hd_hide`, `test_re4hd_edit`, `test_re4hd_tpl`,
+`test_re4_switch_save`, `test_re4switch_bot`, `test_decrypt_lab_pack_edit` - all green on the Spark. The three `xfail`s are the TPL
+descriptor measurement (round 115) recorded where it belongs, with the reason in the marker, rather than deleted or quietly skipped.
+
+**The rotation is playing RE4 Switch Mercenaries** (verified round 123), and `/api/mercmode` still reports `phase: playing`.
+
+That is the state this line of work stops at: everything committed is tested, the one thing that must run is running, and every open
+question is written down with the measurement that framed it - the texture surfaces (three routes dead, RAM remaining), RE5/RE6's
+unlocks (their own measurement, not RE4's), and the inbox clusters (the unlock one answered).
