@@ -1754,3 +1754,29 @@ and until that exists, a "reached True" run can photo the briefing and look like
 **What is now confirmed about pack identity:** `pl00` alone changes nothing visible in three separate builds (scale in round 70, vanish in
 round 108, and material-7 collapse inside them), while all 26 packs at once visibly collapse the player. So the visible pack is one of
 `pl01`..`pl21`, and the bisection needs a capture that is *inside* the round to make progress on which.
+## Round 110: the timer separates gameplay from everything else, and the first halving is decisive
+
+**The HUD test is measured, not guessed.** The top-left 30% x 14% box, counting pixels above 200:
+
+| frame | bright pixels |
+|---|---|
+| round (`van1_05`, `sf_06`, `ga_07`) | **1020, 947, 963** |
+| Mercenaries briefing (`bisS1_03`, `bisS1_06`) | 0, 0 |
+| main menu | 0 |
+| "Cancel loading?" prompt | 0 |
+
+A threshold of 300 sits in empty space between the two groups. `walk_and_capture` now requires it twice: `reached` is only true when the
+timer is on screen, and the capture loop **skips any frame without it** - so a run can no longer "reach a round" and photograph an
+announcement.
+
+**With that in place the first halving answered its question.** Scaling `pl00..pl0d` to a tenth, the player is a shrunken fragment:
+
+![the player with the first half of the packs scaled down](evidence/re4sw-bisect-half-a-shrunk.jpg)
+
+`01'24"57`, timer up, Ganados normal. **The mesh the camera draws is in `pl00`..`pl0d`.** Since `pl00` alone changed nothing in three
+separate builds, it is in **`pl01`..`pl0d`** - four packs left after one more halving (`pl01..pl06`, which is built as `re4sw-bis2` and
+awaits a clean boot; its three attempts ended on the save-list screen because the boot state had drifted again).
+
+**Why this was worth the rounds:** every panel operation - remove clothes, swap clothes, swap character, replace zombies - is a per-pack
+edit, and **a per-pack edit pointed at a pack the game is not drawing does nothing, silently**. The pack name is the first argument the
+panel needs to get right, and it is now two boots away.

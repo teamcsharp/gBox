@@ -94,6 +94,27 @@ def press(session, key):
                                                                    {"key": key, "down": False}]}}})[0]
 
 
+def hud_present(raw) -> bool:
+    """Is the round timer on screen? The one signal that separates gameplay from a briefing, a menu or a prompt.
+
+    Measured on known frames (round 110): the top-left 30% x 14% box holds 947-1020 near-white pixels during a round and **0** on the
+    Mercenaries briefing, the main menu and the "Cancel loading?" prompt. A threshold of 300 sits in empty space between the two, which
+    is what the classifier needed - brightness alone called the briefing `playing` and the capture then photographed the announcement.
+    """
+    if not raw:
+        return False
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+        image = Image.open(BytesIO(raw)).convert("L")
+        width, height = image.size
+        box = image.crop((0, 0, int(width * 0.30), int(height * 0.14)))
+        return sum(1 for value in box.getdata() if value > 200) > 300
+    except Exception:                                            # noqa: BLE001 - a bad frame is simply "not a round"
+        return False
+
+
 def mean_of(raw):
     from io import BytesIO
 
@@ -164,9 +185,9 @@ try:
             D.pressed(screen, key)
             last = time.monotonic()
             steps += 1
-        elif where == "playing":
-            # "playing" IS the round: the classifier names it, and waiting for "unknown" instead made the harness keep
-            # pressing through a reached round until it opened the quit dialog (measured 2026-11-08, two attempts)
+        elif where == "playing" and hud_present(raw):
+            # "playing" IS the round - but only when the timer is on screen. The classifier's own answer called the Mercenaries
+            # briefing "playing", which made a capture photograph the announcement; the HUD test is what makes it a round.
             reached = True
             break
         elif where == "unknown" and seen_stage:
@@ -226,6 +247,11 @@ try:
         time.sleep(5.0)
         raw = frame(session)
         if not raw:
+            continue
+        if not hud_present(raw):
+            # no timer = not gameplay (a briefing, a menu, a prompt). Keeping such a frame is how a run "reached a round" and
+            # photographed an announcement.
+            print("MARK %s_%02d skipped: no round timer on screen" % (TAG, step), flush=True)
             continue
         path = f"{LAB}/{TAG}_{step:02d}.jpg"
         with open(path, "wb") as handle:
