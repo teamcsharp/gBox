@@ -38,6 +38,21 @@ The container still parses, `split_valid()` is true, the mesh count and every pa
 index buffer is never resized. That is the shape the engine already accepts, unlike the one-mesh rebuild that hung the
 load.
 
+## Controlled write tests (one change at a time)
+
+| write | em1000 part | live result |
+|---|---|---|
+| swap two indices in part 0, no table change | part 0 | reached Public Assembly and played |
+| decrement part 0's `face_count` by one, no data change | part 0 | reached Public Assembly and played |
+| 195 Sonic triangles in one part, original vertex skin bytes | part 124 | reached Public Assembly and played; no Sonic patch was visible in the captured frames |
+| full Sonic table + mapped bone ids/weights | 7 parts | stuck on `NOW LOADING` / frozen |
+| full Sonic table, original skin bytes | 7 parts | not yet accepted (worker restarts interrupted the run) |
+
+The first three say the engine accepts new indices, new face ranges and donor triangles in a part as long as the
+**skin bytes stay the part's own**. The full mapped-bone build is the one that freezes, which points at the bone ids /
+weights as the invalid field, not at connectivity. The next build to test is the full base-skin variant (same table,
+same triangle coverage, original `boneid`/weight bytes in every slot).
+
 ## Measured results
 
 | build | models changed | live result |
