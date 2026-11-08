@@ -120,6 +120,17 @@ The failure moved from boot (whole-table rebuilds) to round instantiation (one-p
 model instance/animation binding, not just the table. The next low-model work is the Ghidra loader/instance path or a
 donor **MOD+MRL pair**, not more table shaping.
 
+### One moved triangle is enough to stop the round
+
+The smallest possible in-place change was tested: part 244 of `em1000_low` (8 vertices, 9 face words), with **one**
+Sonic triangle written over its first three vertices and its original `face_count` left untouched. It boots to the title
+and then stops at `NOW LOADING`, exactly like the larger low patches.
+
+That rules out face-count/table/part-count explanations for the low round failure. The low model instance rejects a
+three-vertex geometry change while the high model accepts much larger ones. The remaining explanations are the
+animation/skin bind (the low model is instantiated with a different clip set) or a cached/precomputed low mesh that is
+not re-read from the MOD. This is now a Ghidra/loader-instrumentation problem, not an authoring-table problem.
+
 `mtf_author.combine` also needed a fix: the index stream is global to the shared vertex buffer, so `combine` now
 subtracts each part's `vertex_index` before adding its own base. Without it, the low self one-mesh produced triangle
 56072 with only 55667 vertices.
