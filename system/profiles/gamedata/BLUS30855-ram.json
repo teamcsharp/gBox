@@ -1,0 +1,181 @@
+{
+ "format": "gbox-ram-map/1",
+ "id": "BLUS30855",
+ "title": "Resident Evil 6",
+ "platform": "ps3",
+ "endian": "big",
+ "pointer_size": 4,
+ "pointer_range": [
+  "0x00010000",
+  "0x40000000"
+ ],
+ "match": {
+  "disc_id": "BLUS30855",
+  "game_ids": [
+   "6fc93ff62e4eb868"
+  ],
+  "memory": {
+   "address": "0x01413668",
+   "equals": "sPlayer"
+  },
+  "eboot_sha256": "ddd022477e679cb1125dc327b0e43c5aeb4d8fa84352a7c8ae98ec74271d41ed",
+  "app_ver": "01.00"
+ },
+ "regions": [
+  {
+   "name": "elf",
+   "base": "0x00010000",
+   "size": "0x1BB0000"
+  },
+  {
+   "name": "heap",
+   "base": "0x30000000",
+   "size": "0xAC00000"
+  }
+ ],
+ "notes": "Revision-scoped MercMode RAM map for RE6 PS3 (RPCS3), request 3114. Static pins from request 3370: sPlayer DTI node 0x1834D04, name VA 0x1413668, instance size 0x40D0, decrypted EBOOT sha256 3720224a5eb8b8a2e69871439aa8d8b11c8a4cbc426f4144d0531d6e5648cecb. Every reader addr is null and status pending_measurement until a live RPCS3 session (i9-NUC or Spark, idle, authorized) measures it. mercs.ready stays false; driver gbox.mercs.titles.re6_ps3 must never claim a screen it cannot name.",
+ "mercs": {
+  "driver": "gbox.mercs.titles.re6_ps3",
+  "menus": "gbox.mercs.titles.re6_ps3",
+  "ready": false,
+  "jump_at": null,
+  "package": [],
+  "playing_ops": [],
+  "round_ops": [],
+  "vocab": {
+   "screen": "driver",
+   "merc.stage": null,
+   "merc.timer": "merc.timer",
+   "merc.combo": "merc.combo",
+   "merc.combo_timer": "merc.combo_timer",
+   "merc.score": "merc.score",
+   "merc.kills": "merc.kills",
+   "player.pos": "player.pos",
+   "player.facing": "driver",
+   "player.hp": "player.hp",
+   "player.hp_max": "player.hp_max",
+   "player.state": "player.action",
+   "player.aim_pitch": "player.aim_pitch",
+   "player.weapon": null,
+   "player.ammo": null,
+   "enemies": "driver",
+   "enemies.pos": "driver",
+   "enemies.hp": "driver",
+   "enemies.hp_max": "driver",
+   "enemies.type": "driver",
+   "enemies.state": "driver",
+   "enemies.act": null,
+   "projectiles": null,
+   "prompt.kind": "driver",
+   "prompt.button": "driver",
+   "bonuses": null,
+   "drops": null,
+   "partner.pos": null
+  },
+  "units_per_m": 100,
+  "heading": {
+   "zero": "+z",
+   "positive": "toward +x"
+  },
+  "aim": null,
+  "rules": {
+   "bonus_time_s": 30
+  }
+ },
+ "groups": {
+  "sys": "Singletons (static instance pointers)",
+  "merc": "The Mercenaries Reunion round (cGameSys)",
+  "player": "The player (sPlayer +0x28)",
+  "enemy": "The enemy manager (sEnemy)"
+ },
+ "fields": {
+  "menu_state": {
+   "address": "0x0191CEE4",
+   "type": "ptr",
+   "description": "sBioMain instance",
+   "source": "scan",
+   "evidence": "the only static pointer to sBioMain (getDTI name); live 2026-10-20",
+   "addr": null,
+   "status": "pending_measurement",
+   "purpose": "title / stage page / character list state machine",
+   "owed_by": "handoff step 2"
+  },
+  "menu_cursor": {
+   "address": "0x0191CEE4",
+   "type": "ptr",
+   "description": "sBioMain instance",
+   "source": "scan",
+   "evidence": "the only static pointer to sBioMain (getDTI name); live 2026-10-20",
+   "addr": null,
+   "status": "pending_measurement",
+   "purpose": "D-pad cursor on character/stage lists",
+   "owed_by": "handoff step 2"
+  },
+  "timer": {
+   "address": "0x0191CEE4",
+   "type": "ptr",
+   "description": "sBioMain instance",
+   "source": "scan",
+   "evidence": "the only static pointer to sBioMain (getDTI name); live 2026-10-20",
+   "addr": null,
+   "status": "pending_measurement",
+   "purpose": "Mercenaries round timer",
+   "owed_by": "handoff step 2"
+  },
+  "score": {
+   "address": "0x0191CEE4",
+   "type": "ptr",
+   "description": "sBioMain instance",
+   "source": "scan",
+   "evidence": "the only static pointer to sBioMain (getDTI name); live 2026-10-20",
+   "addr": null,
+   "status": "pending_measurement",
+   "purpose": "round score",
+   "owed_by": "handoff step 2"
+  },
+  "combo": {
+   "address": "0x0191CEE4",
+   "type": "ptr",
+   "description": "sBioMain instance",
+   "source": "scan",
+   "evidence": "the only static pointer to sBioMain (getDTI name); live 2026-10-20",
+   "addr": null,
+   "status": "pending_measurement",
+   "purpose": "combo counter + combo timer",
+   "owed_by": "handoff step 2"
+  },
+  "terminal_result": {
+   "address": "0x0191CEE4",
+   "type": "ptr",
+   "description": "sBioMain instance",
+   "source": "scan",
+   "evidence": "the only static pointer to sBioMain (getDTI name); live 2026-10-20",
+   "addr": null,
+   "status": "pending_measurement",
+   "purpose": "terminal round result (win/lose, time, score)",
+   "owed_by": "handoff step 4"
+  },
+  "enemy_list": {
+   "address": "0x0191CEE4",
+   "type": "ptr",
+   "description": "sBioMain instance",
+   "source": "scan",
+   "evidence": "the only static pointer to sBioMain (getDTI name); live 2026-10-20",
+   "addr": null,
+   "status": "pending_measurement",
+   "purpose": "enemy list + collision/nav chain",
+   "owed_by": "handoff step 5"
+  },
+  "health": {
+   "address": "0x0191CEE4",
+   "type": "ptr",
+   "description": "sBioMain instance",
+   "source": "scan",
+   "evidence": "the only static pointer to sBioMain (getDTI name); live 2026-10-20",
+   "addr": null,
+   "status": "partial",
+   "purpose": "Life/LifeMax s16 via sPlayer DTI node 0x1834D04 -> instance -> +0x28 uPlayer (re6ps3_player offsets; instance slot unmeasured)",
+   "owed_by": "handoff step 2"
+  }
+ }
+}
