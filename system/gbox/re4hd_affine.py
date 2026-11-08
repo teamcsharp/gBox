@@ -38,7 +38,7 @@ def _extent(points: np.ndarray) -> np.ndarray:
 
 
 def auto_blend(template, donor, *, bands: int = 6, align: bool = True,
-               limits: tuple[float, float] = (1.0 / 3.0, 3.0)) -> float:
+               limits: tuple[float, float] = (1.0 / 3.0, 3.0), ceiling: float | None = None) -> float:
     """The largest blend whose every band's effective scale stays inside `limits`.
 
     Measured across rounds 100-105: one blend loads on one target and hangs the stage on another, because a band's factor depends on
@@ -74,10 +74,16 @@ def auto_blend(template, donor, *, bands: int = 6, align: bool = True,
                 best = min(best, (high_limit - 1.0) / (value - 1.0))
             elif value <= 1.0 - 1e-9:
                 best = min(best, (low_limit - 1.0) / (value - 1.0))
-    return float(np.clip(best, 0.0, 1.0))
+    best = float(np.clip(best, 0.0, 1.0))
+    # A ceiling is the difference between "loadable" and "recognisable": the automatic value respects the limits that keep a stage
+    # loading, and on a target whose bands are small that still allows a monster. An enemy pack wants the gentler of the two.
+    if ceiling is not None:
+        best = min(best, float(np.clip(ceiling, 0.0, 1.0)))
+    return best
 
 
-def band_affine(template, donor, *, bands: int = 6, align: bool = True, blend: float = 1.0) -> np.ndarray:
+def band_affine(template, donor, *, bands: int = 6, align: bool = True, blend: float | None = 1.0,
+                blend_cap: float | None = None) -> np.ndarray:
     """Each template band scaled about its centroid to the donor band's proportions. Returns (positions, report).
 
     `blend` mixes between the template (0) and the donor's proportions (1), so a caller can ask for a gentler result without a new
@@ -109,7 +115,7 @@ def band_affine(template, donor, *, bands: int = 6, align: bool = True, blend: f
         d_band = _height_band(donor_pos, bands)
 
     if blend is None:                      # choose a strength the target's own bands can take (see auto_blend)
-        blend = auto_blend(tmpl, src, bands=bands, align=False)
+        blend = auto_blend(tmpl, src, bands=bands, align=False, ceiling=blend_cap)
     out = target.copy()
     moved = []
     for band in range(bands):
@@ -133,11 +139,12 @@ def band_affine(template, donor, *, bands: int = 6, align: bool = True, blend: f
     return out, moved
 
 
-def band_affine_bin(template, donor, *, bands: int = 6, align: bool = True, blend: float = 1.0) -> tuple[bytes, list]:
+def band_affine_bin(template, donor, *, bands: int = 6, align: bool = True, blend: float | None = 1.0,
+                    blend_cap: float | None = None) -> tuple[bytes, list]:
     """`band_affine` written back with the template's own layout, plus the per-band report."""
     import copy
     tmpl = template if isinstance(template, Bin) else bin_read(template)
-    moved, report = band_affine(tmpl, donor, bands=bands, align=align, blend=blend)
+    moved, report = band_affine(tmpl, donor, bands=bands, align=align, blend=blend, blend_cap=blend_cap)
     out = copy.copy(tmpl)
     out.pos = moved
     return bin_write(out, verify=True), report

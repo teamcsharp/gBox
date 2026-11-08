@@ -90,3 +90,15 @@ def test_an_auto_blend_keeps_every_band_inside_the_limits():
             effective = 1.0 + (ratio - 1.0) * A.auto_blend(tmpl, donor, bands=2, align=True)
             assert effective <= 3.0 + 1e-6 and effective >= 1.0 / 3.0 - 1e-6, f"band {row['band']} factor {effective}"
     assert np.isfinite(moved).all()
+
+
+def test_a_ceiling_keeps_an_auto_blend_gentle_regardless_of_the_limits():
+    """The automatic strength keeps a slot loadable; a ceiling is what makes it recognisable. An enemy pack needs the ceiling."""
+    tmpl = two_band_mesh(1.0)
+    donor = two_band_mesh(0.05)
+    free = A.auto_blend(tmpl, donor, bands=2, align=True)
+    capped = A.auto_blend(tmpl, donor, bands=2, align=True, ceiling=0.2)
+    assert capped <= 0.2 + 1e-9, f"the ceiling was ignored: {capped}"
+    assert capped <= free + 1e-9
+    moved, report = A.band_affine(tmpl, donor, bands=2, align=True, blend=None, blend_cap=0.2)
+    assert report and np.isfinite(moved).all()

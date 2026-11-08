@@ -2408,3 +2408,29 @@ both sides now; making it *look like* a specific character still needs the right
 `auto` optimises for loadability and a single constant is wrong for at least one slot of any pack.
 
 **Cost of the round:** two builds, two boots, both captured in-round - the pipeline is behaving
+## Round 136: strength is per pack, and the frames prove it three ways
+
+Four builds, four boots, all captured inside a round. The matrix:
+
+| build | packs | blend | what the frame shows |
+|---|---|---|---|
+| `re4sw-ganadosonic2` | `em16` | auto (~0.4) | **monstrous masses** |
+| `re4sw-gsonic15` | `em16` | 0.15 | **a reshaped figure** (large head, hunched) |
+| `re4sw-gsonic_cap` | `em16` | auto capped 0.2 | stock - no visible change |
+| `re4sw-allvillage` | `em10, em11, em15, em16` | 0.15 | **villagers look stock** |
+
+**The only consistent reading: `em16` responds, the other village packs do not at 0.15.** That is what makes rows 3 and 4 look contradictory until
+they are read together - the frames show whichever pack the round happened to spawn, and patching one pack leaves the others untouched. The
+all-village build removed that ambiguity and showed stock villagers, i.e. the visible ones in that frame were **em10/em11**, whose bands need a
+stronger transfer than `em16`'s.
+
+**So a single number cannot serve a family of packs**, exactly as a single number cannot serve the slots inside one pack (round 107). The
+transfer's strength is a property of the *target*: its band sizes decide how much a given factor distorts, and the packs differ by more than
+2x in vertex count.
+
+**What the round establishes beyond doubt:** the enemy side of the pipeline draws - three separate `em16` builds produced visibly different
+results on the same frame composition. What it does not yet have is a strength chooser that works per pack rather than per call.
+
+**Next, concretely:** compute each pack's strength from its own bands so that the *largest* band's factor lands in a chosen range (say 1.3-1.6x)
+instead of taking the auto value that keeps the load safe; the function already knows every band's extent ratio, so this is a second rule over
+data it has, not a new mechanic.
