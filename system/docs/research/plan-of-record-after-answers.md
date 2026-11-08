@@ -2214,3 +2214,28 @@ because of a briefing, now once because the stage did not load. The instrument i
 
 **Honest assessment of this line:** the material tint is a *candidate* mechanism, not a working one. It has never been seen on screen. The
 records say so explicitly so that no later reader mistakes "the tool exists" for "the recolour works".
+## Round 128 (after the operator's reboot): the host came back, the launch path did not
+
+The machine answers again, and the fix for the first problem was mine to find: the reboot left **`/mnt/gbox/quickswap2` unmounted**, so
+every launch failed with `FileNotFoundError: ROM not reachable from this node`. Restarting the unit
+(`sudo systemctl restart mnt-gbox-quickswap2.mount`) brought the share back and the failure went away.
+
+**A correction to my own previous round:** I reported that the share's `_switch` folder no longer held the game. It does - `Resident Evil 4`
+is right there. My `ls | head -6` truncated the alphabetical list before reaching it, and I read that as absence. That was a bad inference
+from a truncated listing, and it cost a detour through the local cache copy.
+
+**The new blocker is a hung boot:**
+
+```
+launch_game failed: BootHung: citron drew no changing frame in 45 s after mapping the game (a hung boot)
+```
+
+Nine stacked `launch_game` jobs sit in the queue from my repeated attempts, and `DELETE /api/jobs/{id}` answers **405**, so they cannot be
+cancelled - they drain by failing, about a minute each. The queue is the next thing to clear before another attempt means anything, and
+the next single attempt should be one launch with patience rather than a retry loop that piles more on.
+
+**What is still owed from before the outage, unchanged:** the tint verdict. `~/gBox_alt/re4-lab/tintD*_*.jpg` was **0 frames** - that run
+produced nothing, so the material-colour question is still open and still a candidate, never seen on screen.
+
+**State:** repository clean at `d2313ad1`; rotation paused deliberately so it does not compete with the boot; the two host-side fixes
+(mount unit restart, queue drain) are the prerequisites for anything else.
