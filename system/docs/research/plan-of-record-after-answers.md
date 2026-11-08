@@ -1605,3 +1605,36 @@ safe scales with how small the target's bands are, so an enemy pack needs a gent
 **What this does not change:** the transfer itself is proven on two donors and two targets, and the mechanism's rules are settled. What is
 left is a per-target strength, which is a number in one call - and the same number will be needed for every pack family, so it belongs in
 the pipeline rather than in each experiment: **a `blend` chosen from the target's band sizes**, not a constant.
+## Round 106: the strength comes from the data, and a morphed Ganado is on screen
+
+**`auto_blend` makes the strength a property of the target, not a constant.** For every band it compares the donor's per-axis extent to
+the template's, and returns the largest blend whose effective factor stays inside [1/3, 3] - the range outside which a stage stops
+loading (measured three times: the collapse in round 65, the 0.8 Sonic build in round 102, and the enemy pack at 0.5 last round).
+
+```
+player packs, Sonic donor, auto  -> round reached; the player takes Sonic's proportions (round 104)
+em16,           Sonic donor, 0.5 -> load hangs
+em16,           Sonic donor, auto-> round reached  (this round)
+```
+
+Same function, same donor, two targets: the one that needed gentler treatment got it without anyone choosing a number.
+
+**And the capture finally holds an enemy.** The harness used to walk *away* every frame; Ganados path to the player, so the frame stayed
+empty. Standing still and raising the camera brings them in:
+
+![a morphed Ganado at close range](evidence/re4sw-ganado-sonic-auto.jpg)
+
+`01'14"29`, a Ganado at the player's shoulder, reshaped and enlarged; the further one behind is a different pack, untouched.
+
+**That is the "zombies as cast" path working end to end on this title**: the collection's model drives the proportions, the per-band
+transfer keeps it coherent, `auto_blend` keeps it loadable, and the enemy is visibly not the stock villager.
+
+## The rules this line of work settled, in one place
+
+1. **The engine draws a slot's own topology only.** A rebuilt mesh is ignored however correct it is.
+2. **An edit is drawn when it moves parts relative to each other without letting a vertex leave its own region.** Bone-only transfer is
+   invisible; global projection shards; per-band scaling draws.
+3. **Strength must follow the target's band sizes.** A blend that is right for a 8,000-vertex body is too strong for a 500-vertex limb.
+4. **The container pack decides how much of the donor's skeleton survives.** `pl04` (256 weight records) carries 62 joints; `em16` (4)
+   buckets them, and the result is coarser.
+5. **The boot state is a procedure:** stop a session from a menu, answer the resume prompt with **No**, and `playing` means the round.

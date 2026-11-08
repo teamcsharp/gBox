@@ -69,3 +69,24 @@ def test_missing_positions_are_refused():
     empty = Bin(header=b"", info={}, pos=None)
     with pytest.raises(BINError):
         A.band_affine(two_band_mesh(), empty)
+
+
+def test_auto_blend_is_gentle_for_an_extreme_donor_and_full_for_a_self_donor():
+    """The strength must follow the target's band sizes: a slab donor forces a small blend, a self donor needs no limit."""
+    tmpl = two_band_mesh(1.0)
+    assert A.auto_blend(tmpl, tmpl, bands=2, align=False) == pytest.approx(1.0, abs=1e-6)
+    extreme = A.auto_blend(tmpl, two_band_mesh(0.05), bands=2, align=True)
+    # alignment normalises overall size, so the ratio that matters is the *shape* difference: a 20x flatter band still allows a
+    # sizeable blend under [1/3, 3] limits, and the point of the test is that it is bounded, not that it is tiny
+    assert 0.0 < extreme < 0.9, f"a 20x extent ratio must bound the blend, got {extreme}"
+
+
+def test_an_auto_blend_keeps_every_band_inside_the_limits():
+    tmpl = two_band_mesh(1.0)
+    donor = two_band_mesh(0.05)
+    moved, report = A.band_affine(tmpl, donor, bands=2, align=True, blend=None)
+    for row in report:
+        for ratio in row["extent_ratio"]:
+            effective = 1.0 + (ratio - 1.0) * A.auto_blend(tmpl, donor, bands=2, align=True)
+            assert effective <= 3.0 + 1e-6 and effective >= 1.0 / 3.0 - 1e-6, f"band {row['band']} factor {effective}"
+    assert np.isfinite(moved).all()

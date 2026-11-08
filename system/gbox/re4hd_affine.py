@@ -37,6 +37,46 @@ def _extent(points: np.ndarray) -> np.ndarray:
     return np.maximum(high - low, 1e-6)
 
 
+def auto_blend(template, donor, *, bands: int = 6, align: bool = True,
+               limits: tuple[float, float] = (1.0 / 3.0, 3.0)) -> float:
+    """The largest blend whose every band's effective scale stays inside `limits`.
+
+    Measured across rounds 100-105: one blend loads on one target and hangs the stage on another, because a band's factor depends on
+    how small that band is. Choosing the strength from the data removes a variable from every experiment, and a factor outside
+    [1/3, 3] is the class of edit that stops a stage loading.
+    """
+    low_limit, high_limit = limits
+    tmpl = template if isinstance(template, Bin) else bin_read(template)
+    src = donor if isinstance(donor, Bin) else bin_read(donor)
+    if tmpl.pos is None or src.pos is None:
+        raise BINError("auto_blend needs positions on both sides")
+    target = np.asarray(tmpl.pos, np.float64)
+    donor_pos = np.asarray(src.pos, np.float64).copy()
+    if align:
+        d_lo, d_hi = donor_pos.min(0), donor_pos.max(0)
+        t_lo, t_hi = target.min(0), target.max(0)
+        d_ext = np.where((d_hi - d_lo) < 1e-9, 1.0, d_hi - d_lo)
+        t_ext = np.where((t_hi - t_lo) < 1e-9, 1.0, t_hi - t_lo)
+        scale = float(np.mean(t_ext / d_ext))
+        donor_pos = (donor_pos - (d_lo + d_hi) / 2.0) * scale + (t_lo + t_hi) / 2.0
+    t_ranks, d_ranks = _bone_by_rank(tmpl), _bone_by_rank(src)
+    t_band = _region_of(t_ranks, len(tmpl.bones or []), bands) if t_ranks is not None else _height_band(target, bands)
+    d_band = _region_of(d_ranks, len(src.bones or []), bands) if d_ranks is not None else _height_band(donor_pos, bands)
+    best = 1.0
+    for band in range(bands):
+        mine = np.where(t_band == band)[0]
+        theirs = np.where(d_band == band)[0]
+        if mine.size < 4 or theirs.size < 4:
+            continue
+        ratio = np.clip(_extent(donor_pos[theirs]) / _extent(target[mine]), MIN_SCALE, MAX_SCALE)
+        for value in ratio:
+            if value >= 1.0 + 1e-9:
+                best = min(best, (high_limit - 1.0) / (value - 1.0))
+            elif value <= 1.0 - 1e-9:
+                best = min(best, (low_limit - 1.0) / (value - 1.0))
+    return float(np.clip(best, 0.0, 1.0))
+
+
 def band_affine(template, donor, *, bands: int = 6, align: bool = True, blend: float = 1.0) -> np.ndarray:
     """Each template band scaled about its centroid to the donor band's proportions. Returns (positions, report).
 
@@ -68,6 +108,8 @@ def band_affine(template, donor, *, bands: int = 6, align: bool = True, blend: f
         t_band = _height_band(target, bands)
         d_band = _height_band(donor_pos, bands)
 
+    if blend is None:                      # choose a strength the target's own bands can take (see auto_blend)
+        blend = auto_blend(tmpl, src, bands=bands, align=False)
     out = target.copy()
     moved = []
     for band in range(bands):

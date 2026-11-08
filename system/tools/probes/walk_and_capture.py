@@ -213,16 +213,17 @@ try:
         time.sleep(3)
     print(f"MARK walk steps {steps} | reached {reached} | last screen {last_where}", flush=True)
     for step in range(FRAMES):
-        # keep the camera moving: standing still puts the mob against the lens, where no shape can be judged
-        turn = "lleft" if step % 4 < 2 else "lright"
-        api("POST", "/api/jobs", {"tool": "session_op", "require_worker": session.split("-")[0],
-                                  "input": {"session_id": session, "op": "send_input",
-                                            "args": {"events": [{"key": "w", "down": True}, {"key": turn, "down": True}]}}})
-        time.sleep(1.2)
-        api("POST", "/api/jobs", {"tool": "session_op", "require_worker": session.split("-")[0],
-                                  "input": {"session_id": session, "op": "send_input",
-                                            "args": {"events": [{"key": "w", "down": False}, {"key": turn, "down": False}]}}})
-        time.sleep(2.0)
+        # STAND STILL and let the Ganados come: they path to the player, and running away kept the frame empty of them for a
+        # dozen rounds. A tap on the aim button raises the camera without moving the feet.
+        if step % 3 == 0:
+            api("POST", "/api/jobs", {"tool": "session_op", "require_worker": session.split("-")[0],
+                                      "input": {"session_id": session, "op": "send_input",
+                                                "args": {"events": [{"key": "zl", "down": True}]}}})
+            time.sleep(0.4)
+            api("POST", "/api/jobs", {"tool": "session_op", "require_worker": session.split("-")[0],
+                                      "input": {"session_id": session, "op": "send_input",
+                                                "args": {"events": [{"key": "zl", "down": False}]}}})
+        time.sleep(5.0)
         raw = frame(session)
         if not raw:
             continue
