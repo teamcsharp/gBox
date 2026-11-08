@@ -721,3 +721,29 @@ coin flip, and the bisection cannot be finished by repeating the attempt.
 **What the next round must do first:** send a single key and verify the screen changes - a two-frame input assertion - and only
 then walk. If a key does not move the picture, the session is reading a frame from a process it does not drive, and the fix is in
 `_launch` rather than in the playbook.
+## Round 74: the keys land - and the autoplay thread was the unreliable part
+
+**Input works, measured.** One key through `session_op send_input` changes the picture, twice in a row:
+
+```
+press a -> 200 | 'a' changed the picture: True | means 61.2 -> 23.9
+press b -> 200 | 'b' changed the picture: True | means 74.5 -> 54.1
+```
+
+That was worth checking before anything else, because round 73 ended with a playbook pressing back every twelve seconds on a
+menu that never moved.
+
+**So the presses that did not land were the *autoplay* ones.** Driving the same route the driver describes - frame, classify,
+one key - directly through `session_op` reached a live round in **18 steps** (`last screen playing`), twice:
+
+![the directed walk's round: Leon grabbed at 01'05"53](evidence/re4sw-directed-walk-grabbed.jpg)
+
+The round is real and Leon is grabbed at `01'05"53`. The harness only watches, so he dies - which is why the first capture
+cadence caught "You Are Dead" instead of the player. That cadence is now four seconds, not twelve.
+
+**What this means for the autoplay work:** the playbook's own input path (`_autoplay_send` behind the pad-takeover gate) is the
+suspect, not the keys and not the menus. A bot that presses into a menu and then cannot press out of it is worse than no bot,
+and the next step is to instrument that path rather than to keep re-running it.
+
+**The half-bisection is still owed its frame.** `re4sw-plhalf` (`pl01`..`pl03` x3.0 against `pl04`..`pl06` x0.1) walks fine
+under the directed harness; what it needs is a capture in the first seconds of the round, which the tightened cadence now does.
