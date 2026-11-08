@@ -1700,6 +1700,7 @@ class Bot:
         self.ray_seen, self.last_ray = None, None # the last live laser ray and when (FLICKER_S)
         self.stats.setdefault("flicker_s", 0)
         self.fighter = None                       # the PS3 combat core (PS3_BRAIN): its accounting and its fight
+        self.pending_mine = False                 # a mine tactic waiting for a loadout that carries the bomb
         self.commands = None                      # the operator's instant commands (gbox.mercs.directives.Reader)
         self.blocked: dict = {}                   # target -> until: "repetitive" drops the one he kept at
         self.mode = None                          # a standing directive: "fight" / "hunt" / "score"
@@ -3409,6 +3410,13 @@ class Bot:
             self._round_started = now
             self.look.new_round()
             self._new_round(now)
+        if self.pending_mine and self.mines is not None and self.mines.enabled:
+            # the loadout the round was built from is the one that decides it: fire the tactic the moment a bomb is in hand
+            inv = snap.get("inventory")
+            if inv is None or self.mines.stack(inv) is not None:
+                self.pending_mine = False
+                self.stats["directive_status"] = self._mine_now(
+                    "the mine tactic held from the operator now fires: a bomb is in hand", snap)
 
     def _new_round(self, now) -> None:
         """A round's own state and gauges, at the first round's start and at each replay's (dead/retry: the engine's
@@ -4000,10 +4008,10 @@ class Bot:
             self.stats["directive_status"] = "acting: " + cmd
         if cmd == "mine" and fresh:
             self.stats["directive_status"] = self._mine_now("mine due now: placed at the next safe moment, then out of "
-                                                            "its blast")
+                                                            "its blast", snap)
         elif cmd == "mine_trail":
             busy = self.mines is not None and self.mines.state != "idle"
-            self.stats["directive_status"] = "mine trail: placing or leaving the last bomb" if busy else                 self._mine_now("mine trail: due now, placed at the next safe spot, then moving on")
+            self.stats["directive_status"] = "mine trail: placing or leaving the last bomb" if busy else                 self._mine_now("mine trail: due now, placed at the next safe spot, then moving on", snap)
         elif cmd == "repetitive" and fresh:
             if self.target is not None:
                 self.blocked[self.target] = now + 15.0
@@ -4024,7 +4032,7 @@ class Bot:
         elif cmd == "rush" and fresh:
             self.stats["rushes"] = self.stats.get("rushes", 0) + 1
             self.stats["directive_status"] = "flash and rush: in among them, every prompt, the magnum; " + \
-                self._mine_now("a mine at the next safe moment")
+                self._mine_now("a mine at the next safe moment", snap)
         elif cmd == "flashbang" and fresh:
             self._emergency_flashbang_arm(p, snap, now)
         elif cmd == "missing" and fresh:
@@ -4032,10 +4040,18 @@ class Bot:
                                               "aim offset to reset")
         return cmd if cmd in ("fight", "hunt", "score", "rush") else None
 
-    def _mine_now(self, ok: str) -> str:
+    def _mine_now(self, ok: str, snap: dict | None = None) -> str:
         m = self.mines
         if m is None or not m.enabled:
             return "mine placement is switched off (the mines setting)"
+        # A mine tactic needs the proximity bomb to exist in this round's loadout: without it the controller can never be
+        # due, so arming it only leaves the bot standing (operator 2026-11-08: "give them a mine to equip so they can
+        # execute the command"). Report the missing piece and keep fighting; the tactic is remembered for the next round.
+        inv = (snap or {}).get("inventory")
+        if inv is not None and m.stack(inv) is None:
+            self.pending_mine = True
+            return ("no proximity bomb in this round's loadout - fighting on; the mines setting puts one in every loadout "
+                    "from the next round, and this tactic fires as soon as it is in hand")
         if m.state == "idle":
             m.last_at = self._now - m.every_s - 1.0 if self._now is not None else None   # due now: its checks still apply
         return ok
@@ -4993,6 +5009,19 @@ class RE5Switch(Driver):
             return
         from . import re5_switch_mods
         res = re5_switch_mods.maintain(ad, snap, enabled=playing)
+        if getattr(self, "pending_mine", False):
+            # The operator asked for a mine and this round's loadout had grenades: give them one to equip. RE5 builds the
+            # inventory from a loadout template at round start, so this arms the next round - the tactic itself is fired by
+            # _round_start the moment the bomb is in hand. Once per round: the op rewrites a template, not a key.
+            if getattr(self, "_mine_armed_round", None) != getattr(self, "_round_started", None):
+                try:
+                    arm = re5_switch_mods.mines(ad, on=True)
+                    self._mine_armed_round = getattr(self, "_round_started", None)
+                    self.stats["mine_arm"] = {"verified": bool(arm.get("verified")),
+                                              "effective": str(arm.get("effective") or arm.get("note") or "")[:120]}
+                except Exception as exc:                      # noqa: BLE001 - a refused arm must not stop the bot
+                    self._mine_armed_round = getattr(self, "_round_started", None)
+                    self.stats["mine_arm"] = {"error": f"{type(exc).__name__}: {exc}"[:140]}
         if snap is not None:
             snap['infinite_ammo'] = res.get('infinite_ammo') if res.get('verified') else None
             snap["mine_settings"] = re5_switch_mods.mine_settings(ad)   # the `mines` op's cadence for the bot

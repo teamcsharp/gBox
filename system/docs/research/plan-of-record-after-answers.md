@@ -2579,3 +2579,28 @@ the engine draw it" to "can a Sonic model be assembled into an archive of that s
 
 **What remains unproven:** animations and skeleton. The round played and the body moved, but the donor archive carries its own rig, so a walk
 cycle that looks right in one frame may be wrong elsewhere. That is the next thing to look at, and it is cheap: watch a minute of movement.
+## Operator report (2026-11-08): a mine tactic the bot cannot execute, and a bot that stands idle
+
+Two symptoms, one cause, and the code says so plainly.
+
+**The cause:** `re5_switch_mines.Mines.due()` returns `None` while `stack(inventory)` is `None` - and the stack is the **proximity
+bomb** (`MINE_ID 0x10A`). A round whose loadout carries hand grenades instead therefore has **no mine to plant**, while
+`_mine_now()` armed the controller anyway (`last_at` pulled back). The tactic could never fire, and the bot was left standing
+with a pistol - exactly what the operator photographed.
+
+**Fixed in three places, all in `gbox/mercs/titles/re5_switch.py`:**
+
+1. `_mine_now(ok, snap)` now checks the inventory first. With a bomb it arms the controller exactly as before; without one it
+   records `pending_mine`, puts the reason in `directive_status` ("no proximity bomb in this round's loadout - fighting on"),
+   and **leaves the fight running** instead of stalling.
+2. `_mods()` - the one place holding both the title's adapter and the bot - **arms the loadout when a tactic is waiting**:
+   `re5_switch_mods.mines(ad, on=True)` rewrites the template the game builds each round's inventory from, once per round, with
+   the result recorded in `stats["mine_arm"]` (`verified`, `effective`). That is the "give them a mine to equip" half: RE5 has no
+   way to inject an item mid-round, so the loadout for the next round is the honest lever, and the panel can now show that it
+   was armed.
+3. `_round_start()` fires the remembered tactic the moment a bomb is actually in hand.
+
+**Tests:** `tests/test_mercs_directives.py` 42 passed, and the module imports cleanly on the Spark.
+
+**What this does not do:** it cannot put a mine in the current round's hands if that round was built with grenades. The fix makes
+that visible and arms the next round, rather than pretending the command worked - which is what the operator saw before.
