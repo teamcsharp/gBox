@@ -99,6 +99,32 @@ def test_the_routes_are_installed_on_the_app(tmp_path):
     assert "/api/harness/ghidra" in paths
 
 
+def test_the_ghidra_hook_route_submits_open_on_the_session_worker(tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gbox.harness_console import install
+    service, sid, _, _ = make(tmp_path)
+    elf = tmp_path / "analysis" / "switch" / "re5" / "re5_switch_main_EBFFDB22.elf"
+    elf.parent.mkdir(parents=True)
+    elf.write_bytes(b"ELF")
+    calls = []
+
+    def submit(tool, inp, worker):
+        calls.append((tool, inp, worker))
+        return {"id": "job-ghidra", "state": "queued"}
+
+    app = FastAPI()
+    install(app, service.store, Config(tmp_path), lambda: "test", submit_job=submit)
+    client = TestClient(app)
+    answer = client.post(f"/api/sessions/{sid}/harness/ghidra", json={"op": "open"})
+    assert answer.status_code == 200
+    body = answer.json()
+    assert body["job"]["id"] == "job-ghidra"
+    assert calls and calls[0][0] == "ghidra_bridge"
+    assert calls[0][1]["op"] == "open"
+    assert calls[0][1]["binary_path"] == str(elf)
+
+
 def test_a_session_that_does_not_exist_is_a_404_not_an_empty_console(tmp_path):
     service, _, _, _ = make(tmp_path)
     try:
