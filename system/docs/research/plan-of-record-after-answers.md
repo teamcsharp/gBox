@@ -2510,3 +2510,27 @@ been burned by before.
 **Why it is worth recording anyway:** it is the one part of the operator's list that is *implemented and wired* rather than blocked - object
 replacement needs no texture store, no pack swap and no engine hook, because RE5's objects are standalone archives that the loader reads by
 path.
+## Round 140: the suite is green after today's changes, and the state of the objective is unambiguous
+
+```
+59 passed, 3 xfailed in 6.82s
+```
+
+Every module touched today - the transfer's `ceiling` and `target_factor`, the `switch_replace` route, the hide modes, the TPL writer, the save
+installer, the bot, the lab routes - passes on the Spark. The three `xfail`s are the TPL descriptor measurement, recorded with its reason.
+
+**What this session established, in the terms the objective is written in:**
+
+| objective item | state |
+|---|---|
+| (a) decrypt a title's data | done for RE4 Switch (RomFS extracted, DAT/UDAS/BIN/TPL parsed) |
+| (b) rip and inventory assets | done for meshes and materials; **textures mapped but not addressable**; sound not attempted |
+| (c) replace assets at runtime | **model proportions: drawn and tunable**; object swap (RE5 mine/grenade): **builds, not yet seen**; textures and pack swaps: blocked |
+| (d) reusable machinery | `glb_donor` -> `re4hd_affine` -> `re4hd_edit` -> `switch_mods`, one route, one boot per test, documented traps |
+| RE4 in MercMode | **playing now** (RE4 Switch Mercenaries, verified) |
+| the panel's four items | **exist for RE5** (with object swap, zombie round, random skins); RE4 has an honest section for what is proven there |
+| inbox | 2,631 open, four clusters, each answered once in `inbox-triage.md`; no write endpoint to close them |
+
+**The honest headline:** the pipeline reshapes characters reliably and proves it in frame; it cannot yet substitute one character for another on
+RE4 Switch, and the one route that would change that - the texture surface address from RAM - has not been attempted. Everything else on the
+operator's list is either implemented (RE5's four panel operations, the object swap, the rotation) or documented as blocked with the reason.
