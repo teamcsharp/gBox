@@ -2008,3 +2008,28 @@ measured in, what is blocked and the single thing each block needs, the one-boot
 
 **That page is the answer to "less effort each time"** for this title: the next person or round starts from what is proven instead of
 re-deriving it, and the two open items are stated as questions with a method, not as mysteries.
+## Round 120: the update-NCA lead is empty - there is only one container
+
+The cache holds a file named `Resident Evil 4 [UPDATE 1.0.2] [010099a00bc1e000].nsp`, which looked like the missing piece. It is
+**12,974,974,680 bytes** - the same container the RomFS was extracted from (`staged_on: lilspark, size 12974974680`), not a second partition.
+There is no `010099A00BC1E800` anywhere on the machine, no `imagepack/` directory in any extracted tree, and no `hactool` on hand to look
+inside a container we have not already unpacked.
+
+**So the update route is closed**, and it was worth closing cheaply: two commands, no boot.
+
+**Where that leaves the texture question.** Three routes tried, all measured:
+
+| route | result |
+|---|---|
+| `imagepackhd/<id>` swap for an id `pl08` names (9) | archive replaced, player unchanged - id 9 is not his surface |
+| supply `imagepack/<id>` from the overlay (1) | file written, player unchanged - no SD fallback for that id |
+| the update partition | it does not exist |
+
+**The remaining route is RAM**, and it is a different kind of work: read the texture address the frame's display list samples. The emulator
+already exposes `read_memory`, the lab page already has a hex scanner, and MercMode records round RAM - so the pieces exist. What it needs
+is a GPU command-stream read (find the tile/texture bind in the frame's draw stream and take the address), which is a piece of work rather
+than a guess.
+
+**The honest summary of this sub-goal:** the model path is complete and drawn; the texture path has its containers mapped, its writers
+written and tested, and **the one missing number is an address that RAM can supply**. Everything else about it - the id mapping, the archive
+format, the surface replacement, the mod plumbing - is done and reusable.
