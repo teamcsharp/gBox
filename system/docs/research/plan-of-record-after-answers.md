@@ -2552,3 +2552,30 @@ configuration that answers the operator's "why is the ps3 version in rotation?" 
 
 **A lesson worth writing down:** pausing the rotation for an experiment is fine, but the restore has to be verified, not assumed. This round
 found it still paused; a later round would have found it silent and had to work out why.
+## RE5: whole-character archive swapping works - the player renders as the donor character
+
+Test 1 for RE5, run through the panel's own live path:
+
+```
+uPl00ChrisNormal.arc  <-  uPl02JillCos1.arc        (14,990,525 bytes written over Chris's archive)
+build: mercmode-swap                                (the build every MercMode swap writes)
+rotation: RE5 only, No Mercy, Switch                -> phase: playing
+```
+
+Frame, inside a live No Mercy round (`01'39"09`, combo `001550`):
+
+![Chris's slot rendering Jill's character](evidence/re5-chris-archetype-swapped-to-jill.jpg)
+
+**The HUD still says "Chris"** - the slot is Chris's - **and the body on screen is Jill's**: long light hair, female build, seen from behind while the
+majini close in. That is a **character replacement**, not a paint job: the mesh, not the texture, came from the donor archive.
+
+**So RE5 tolerates substitution at the archive level, which RE4 does not.** On RE4 a player pack written over an enemy pack hung the load and a
+within-family pack swap destabilised the title; here a 15 MB character archive was replaced wholesale and the game booted, entered Merc Mode and
+played a round with it.
+
+**Why this matters for "Sonic characters in RE5/RE6":** the hard part on RE4 was that the engine would not draw a different mesh. RE5 clearly
+will, provided the replacement arrives as a *character archive* whose internal structure the loader accepts. That moves the question from "will
+the engine draw it" to "can a Sonic model be assembled into an archive of that shape" - a format problem, not an engine one.
+
+**What remains unproven:** animations and skeleton. The round played and the body moved, but the donor archive carries its own rig, so a walk
+cycle that looks right in one frame may be wrong elsewhere. That is the next thing to look at, and it is cheap: watch a minute of movement.
