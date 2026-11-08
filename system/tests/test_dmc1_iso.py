@@ -11,7 +11,7 @@ import pytest
 
 from gbox.dmc1_iso import parse_pld_children, walk_dir, SECTOR
 
-RAW = Path("/home/ehm_eckx/.hermes/cache/scratch/dmc1/dmc1_usa.bin")
+RAW = Path("/home/ehm_eckx/gBox_alt/gbox-cache/modbase/d460ea70167416a2/Devil May Cry (USA).iso")
 RAW_SHA = "9e4d87fa0bae06e7282c085bb58693f83cf857bede9803f4bd235e3dfcfe0726"
 
 
