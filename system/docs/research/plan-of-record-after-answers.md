@@ -1986,3 +1986,25 @@ the pack's own BIN slots for a raw surface, which the "no DDS magic" scan has al
 **Everything else about textures is now known and reusable:** the id mapping (material -> TPL descriptor -> global id -> archive), the
 archive format (four surfaces, DXT3, 1024x1024 and 256x256), the writer that replaces a surface at its own size, and the fact that a RomFS
 file swap reaches the game.
+## Round 119: the fallback is not the answer, and the state is now one page
+
+**The `imagepack/` fallback experiment ran and changed nothing.** A real archive (the wrapper and surface layout of `00000009.pack.fen`, its
+first surface a solid skin tone) was supplied from the overlay at `romfs/bio4/imagepack/00000001.pack.fen` - an id `pl08` names. The stage
+loaded and Leon is stock:
+
+![the player with an SD archive supplied from the overlay](evidence/re4sw-imagepack-fallback-no-change.jpg)
+
+So the loader does not fall back to the SD store for this id, or id 1 is not his surface. Two candidates remain, and both are named work
+rather than guesses:
+
+* the **update NCA** - the emulator log shows the loader asking for a patch RomFS (`PatchRomFS update lookup ... found_best=false`), and an
+  update partition is exactly where lower-resolution assets live;
+* **RAM** - read the address the frame's display list samples. That names the surface directly and cannot be wrong.
+
+**Five rounds of texture archaeology earned a stopping point, so the state is now a page:**
+`system/docs/research/re4-switch-status.md`. It carries the working pipeline with its entry points, every measured fact with the round it was
+measured in, what is blocked and the single thing each block needs, the one-boot procedure, and the traps that have cost the most time
+(`sed` eating the letter `r`, a build filed under the title id, an edit aimed at a pack the game does not draw).
+
+**That page is the answer to "less effort each time"** for this title: the next person or round starts from what is proven instead of
+re-deriving it, and the two open items are stated as questions with a method, not as mysteries.
