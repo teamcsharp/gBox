@@ -2368,3 +2368,23 @@ way that rejects a changed value - so "recolour the character through the materi
 **What that leaves for clothes and skins on this title:** the texture path, and specifically the **surface address RAM can supply** - the same
 conclusion round 128 reached from the container side, now confirmed from the operation side. The model-proportion path (Sonic's proportions on
 the player) remains the only proven way to change how a character looks, and it is unaffected by any of this.
+## Round 134: the enemy-side transfer is drawn - and far too strong
+
+With the environment working again, the Ganado build ran properly and this is the first **verified** enemy-side result:
+
+![Ganados with the Sonic donor at the automatic strength](evidence/re4sw-ganado-sonic-auto-drawn.jpg)
+
+`01'18"55`, the timer up, Leon normal - and the two villagers **are not humanoid any more**: they are grotesquely stretched, towering masses
+with the donor's proportions applied at a strength the mesh could not carry. The **edit draws**, which is what the last several rounds could
+not establish for the enemy pack; the *shape* is wrong.
+
+**So "replace the zombies" has a working mechanism and one wrong number.** The automatic strength is chosen to keep a slot *loadable*, not to
+keep it *recognisable* - it allows factors up to 3x, and on a Ganado's small bands that is a monster. The tuning that made the player look
+right (blend 0.5 toward Sonic) is too strong for the enemy: the same clamp that protects the load lets the shape run away.
+
+**The next build is the same call at a gentler blend** (`BLEND=0.15`), where the proportion transfer should read as a reshaped villager rather
+than a mass. That is one argument, not a new mechanism.
+
+**What this round also re-establishss:** the whole pipeline works end to end after the reboots - donor BIN regenerated (62 bones, 64 weight
+records), 7 slots / 12,633 vertices patched, build written under the catalog id, round reached, 14 frames captured inside it. The machinery is
+sound; only the strength needs a smaller number.
