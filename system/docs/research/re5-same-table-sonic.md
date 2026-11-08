@@ -107,8 +107,18 @@ Sonic MOD to get past boot; the plain one-mesh version was black immediately.
 The Mercenaries transition still stops at `NOW LOADING`. Moving each empty record's `vertex_offset` past the vertex
 buffer and its `face_index` past the index buffer did **not** change that; the loader is not satisfied by the count
 alone. It is reading more of each record (or binding it to the MRL/material table) than `vertex_count=0` and
-`face_count=0` suppress. The next low-model route is the Ghidra loader path or a donor **MOD+MRL pair**, not more
-variations of the empty-record table.
+`face_count=0` suppress.
+
+Two more variants failed:
+
+* `build_partitioned` split the Sonic triangles across all **341 real records** with consistent vertex/face/envelope
+  accounting. That blacked at **boot**, so the low loader rejects a one-bone format on every part.
+* Patching **all 89 `level_of_detail=0` parts** in place (formats preserved, LOD1–4 stock) also blacked at **boot**.
+  The one-part low patch remains the only low variant that reaches the title; it then stops at `NOW LOADING`.
+
+The failure moved from boot (whole-table rebuilds) to round instantiation (one-part in-place). That points at the round's
+model instance/animation binding, not just the table. The next low-model work is the Ghidra loader/instance path or a
+donor **MOD+MRL pair**, not more table shaping.
 
 `mtf_author.combine` also needed a fix: the index stream is global to the shared vertex buffer, so `combine` now
 subtracts each part's `vertex_index` before adding its own base. Without it, the low self one-mesh produced triangle
