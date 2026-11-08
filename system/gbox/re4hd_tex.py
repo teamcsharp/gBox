@@ -389,3 +389,74 @@ def solid_dds(width: int, height: int, rgb: tuple[int, int, int], *, fourcc: str
     head[0x54:0x58] = fourcc.encode("latin-1")
     struct.pack_into("<I", head, 0x6C, 0x1000)             # caps: texture
     return bytes(head) + payload
+
+def _tpl_spans(data: bytes) -> list[tuple[int, int, int]]:
+    """[(record offset, payload start, payload end)] for every image, found by the payload's own magic.
+
+    The 40-byte record's last u32 is *not* a byte count - measured on `pl08`, which claims 520 bytes for a 128x256 surface that cannot
+    fit in the slot. So the payload is located the only way that does not guess: the record's offset, then the next `DDS ` magic at or
+    after `record + 0x28`, ending where the next image's payload begins (or at the end of the container).
+    """
+    if len(data) < 0x20 or struct.unpack_from("<I", data, 0)[0] != 0x12345678:
+        raise TexError("not a TPL container (magic 0x12345678 is absent)")
+    count = struct.unpack_from("<I", data, 4)[0]
+    if not 2 <= count <= 64 or 0x10 + 0x10 * count > len(data):
+        raise TexError(f"implausible TPL image count {count}")
+    records = [struct.unpack_from("<Q", data, 0x10 + 0x10 * i)[0] for i in range(count)]
+    starts = []
+    for record in records:
+        found = data.find(DDS_MAGIC, record + 0x28)
+        starts.append(found if found >= 0 else record + 0x28)
+    spans = []
+    ordered = sorted(starts)
+    for record, begin in zip(records, starts):
+        following = [value for value in ordered if value > begin]
+        end = min(following) if following else len(data)
+        spans.append((record, begin, end))
+    return spans
+
+
+def tpl_image_dds(data: bytes, index: int) -> bytes:
+    """One TPL image's DDS payload, located by its magic and bounded by the next image."""
+    spans = _tpl_spans(data)
+    if not 0 <= index < len(spans):
+        raise TexError(f"this TPL holds {len(spans)} image(s), so index {index} does not exist")
+    _record, begin, end = spans[index]
+    return data[begin:end]
+
+
+def tpl_replace_image(data: bytes, index: int, dds: bytes) -> bytes:
+    """Replace one TPL image's DDS payload **in place**, refusing any change of size.
+
+    The container's layout is fixed once written and the surrounding DAT slot has its own size, so a different length would corrupt
+    both. The same rule the meshes obey applies here: the engine draws what is in the slot's own space.
+    """
+    if not dds.startswith(DDS_MAGIC):
+        raise TexError(f"the replacement is not a DDS surface (it must start with {DDS_MAGIC!r})")
+    spans = _tpl_spans(data)
+    if not 0 <= index < len(spans):
+        raise TexError(f"this TPL holds {len(spans)} image(s), so index {index} does not exist")
+    _record, begin, end = spans[index]
+    if len(dds) != end - begin:
+        raise TexError(f"image {index} holds {end - begin} payload bytes and the replacement is {len(dds)}: "
+                       f"a TPL image can only be replaced at its own size")
+    out = bytearray(data)
+    out[begin:end] = dds
+    return bytes(out)
+
+
+def tpl_image_for(pack_bytes: bytes, texture_id: int, endian: str = "<") -> tuple[int, int, bytes]:
+    """(slot, image index, dds) of the TPL image whose id is `texture_id` inside a whole pack."""
+    from .re4gc_inventory import udas_entries, dat_entries
+    dat = next((e for e in udas_entries(pack_bytes, endian) if e["type"] == 0), None)
+    if dat is None:
+        raise TexError("this pack has no DAT slot, so it carries no TPL images")
+    blob = pack_bytes[dat["offset"]:dat["offset"] + dat["size"]]
+    for slot, (ext, off, size) in enumerate(dat_entries(blob, endian)):
+        if ext != "TPL":
+            continue
+        images = tpl_images(blob[off:off + size])
+        for index, image in enumerate(images):
+            if image.get("id") == texture_id:
+                return slot, index, tpl_image_dds(blob[off:off + size], index)
+    raise TexError(f"no TPL image has id {texture_id} in this pack")

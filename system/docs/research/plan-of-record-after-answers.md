@@ -1883,3 +1883,30 @@ So "remove clothes" needs one of two new pieces:
 **The first is honest and bounded; the second is a hypothesis worth one boot.** Both are texture work on a pack whose name is now known,
 which is a different situation from where this line started: the target is identified, the container is identified, and the missing piece
 is a writer rather than an unknown.
+## Round 115: the pack's texture table holds no textures
+
+The TPL writer was written, tested, and **the test found the real structure by failing**:
+
+```
+slot 1: 608 bytes, magic 0x12345678, count 9
+  header size field: 16
+  image 0: record 0xa0  128x64  fmt 0xe field 520  first DDS magic at -0x1  slot end 0x260
+  image 1: record 0xc8  128x256 fmt 0xe field 528  first DDS magic at -0x1  slot end 0x260
+  ...
+  DDS magics in the slot: 0
+```
+
+**Nine descriptors in 608 bytes, and not one `DDS ` magic.** The record's last `u32` is **not** a byte count - it runs 520, 528, 536, 544...
+with a stride of 8, which is an *offset table*, not a size. So the pack's TPL slot is a **descriptor table**, and the surfaces it
+describes live somewhere else in the pack (or in the pack's data section) - not where a writer would expect them.
+
+**That is why the last two rounds of "remove clothes is a texture edit" were right about the operation and wrong about the container.**
+The operation stands: the clothes are painted on material 0's surface, so hiding them means changing the texture. The container does not:
+`tpl_replace_image` is a correct in-place writer for a container that holds payloads, and this container holds none.
+
+The three tests that encode this are `xfail` with the measurement in the reason, so the suite is honest: **3 passed, 3 xfailed** on the
+Spark, 2 passed and 4 skipped here.
+
+**The next step is a small, specific question: where do the 20 surfaces live?** They are in the pack (the file is 1.4 MB and the BIN slots
+account for a fraction), so a scan for `DDS ` across the whole pack, with the descriptor offsets as a map, is the way to find the store -
+and then the same writer applies to it unchanged.
