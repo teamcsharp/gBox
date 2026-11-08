@@ -1,69 +1,71 @@
 # RE4 (Switch): what works, what does not, and what each thing needs
 
-Written after the rounds that identified the player pack, proved the shape-transfer mechanism, and mapped the texture containers. The point
-of this page is that the next attempt costs one boot instead of six: every claim here is either measured (with the round it was measured in)
-or marked as unproven.
+Updated after the rounds that took the model path to a drawn result on both sides, closed the three routes to a *character replacement*, and
+mapped the texture containers. Every claim is either measured (with the round) or marked unproven.
 
 ## The pipeline that works today
 
 ```
 any extracted .glb  ->  gbox.glb_donor      (keeps the skeleton; picks a container with room for it)
-                    ->  gbox.re4hd_affine   (per-band proportions, blend 0.0-1.0 or "auto")
+                    ->  gbox.re4hd_affine   (per-band proportions; blend, ceiling, or target_factor)
                     ->  gbox.re4hd_edit     (in place, slot size kept)
                     ->  gbox.switch_mods    (LayeredFS build under the catalog game id)
-                    ->  a drawn, coherent change in a live round
+                    ->  a drawn change in a live round
 ```
 
 Entry points:
 
-* `POST /api/decrypt-lab/replace` — one call for all four panel operations (preview with `write=false`).
+* `POST /api/decrypt-lab/replace` — one call behind the panel's operations; `write=false` previews.
 * `python -m gbox.glb_donor <model.glb> <out.bin>` — any collection model becomes a donor.
-* `system/tools/probes/fix_boot_state.py` — puts the title's save back to a menu so the next boot is clean.
+* `system/tools/probes/fix_boot_state.py` — puts the save back to a menu so the next boot is clean.
+* `system/tools/probes/walk_and_capture.py` — walks the menus, waits for the round timer, captures in-round.
+* `system/tools/probes/vulkan_device_check.py` — proves the GPU/Vulkan stack works before blaming the emulator.
 
 ## Measured facts
 
 | claim | round | evidence |
 |---|---|---|
 | The camera's player mesh is **`pl08.udas`** | 112-113 | scaling that one pack distorts the player; every other halving left him stock |
-| `pl08`'s visible surface is essentially **material 0** | 113 | vanishing materials 1..24 (23 of them) leaves the player unchanged |
-| A **per-band affine** transfer is drawn | 100-104 | slab donor: the camera ends up inside the ballooned mesh; Sonic donor: big head, small body |
-| Bone-only and global-surface transfers are **not** drawn usefully | 86-99 | invisible, and shards respectively |
-| Strength must follow the target's band sizes | 100-106 | the same blend loads a player pack and hangs an enemy pack; `auto_blend` fixes it |
-| A donor's skeleton survives only as far as the **container's weight table** allows | 103-104 | `em16` has 4 weight records, `pl04` has 256; Sonic kept 62 joints only with `pl04` |
-| The pack's TPL is a **descriptor table only** | 116 | 9 descriptors in 608 bytes, zero `DDS ` magics, no payload slot |
-| Texture id mapping is **local -> global -> archive** | 117 | materials use 0/2/3; the TPL's 8-byte entry carries the global id; `imagepackhd` is keyed by that |
+| `pl08`'s visible surface is essentially **material 0** | 113 | vanishing materials 1..24 leaves the player unchanged |
+| A **per-band affine** transfer is drawn, on the player and on enemies | 100-136 | Sonic proportions on the player; a reshaped Ganado in frame |
+| Strength is a property of the **target** - per slot and per pack | 106-136 | `em16` reads at 0.15, `em10` does not; `auto` turns `em16` into a mass |
+| The pack's TPL is a **descriptor table only** | 116 | 9 descriptors in 608 bytes, zero `DDS ` magics |
+| Texture ids map **local -> global -> imagepackhd** | 117 | materials use 0/2/3; the TPL entry carries the global id |
 | `imagepackhd` has **nothing below id 6** | 118 | 1,813 archives, ids 6 .. 0x4b000005 |
-| A RomFS **file swap reaches the game** | 117 | surface replaced in `00000009.pack.fen`, stage ran |
+| The material header's colour field is **not writable** | 133 | three tint builds (1, 17, all materials) all stop the stage loading; stock does not |
+| A player pack in an enemy slot **hangs the load** | 137 | `em10..em16 <- pl00` never reaches a round |
+| Within-family pack swapping **destabilises** | 138 | `pl08 <- pl07`: one run "playing" with no frames, one hung at `loading` |
+| After a reboot the **driver needs a minute** before Vulkan works | 132 | the same launch fails at `up 0 min` and succeeds minutes later |
 
-## What does not work yet, and the one thing each needs
+## The three routes to a character replacement, all measured
 
-**The player's textures are unreachable by the routes tried.** Global ids 1, 2, 5 (his body) have no HD archive; supplying
-`bio4/imagepack/<id>.pack.fen` from the overlay changed nothing (round 119). What is left:
+| route | result |
+|---|---|
+| edit the mesh in place | **draws**, but only same-topology edits: a proportion transfer, never a different character |
+| swap the texture | **blocked**: player surfaces absent from `imagepackhd`, TPL holds descriptors only, header tint stops the load |
+| swap the whole pack | **blocked**: player-into-enemy hangs; within-family destabilises |
 
-* the **update NCA** — the loader asks for a patch RomFS (`PatchRomFS update lookup ... found_best=false` in the emulator log), and an update
-  partition commonly carries the lower-resolution assets. Extract it and re-check whether `imagepack/` exists there;
-* or **RAM**: read the texture address the frame's display list samples, which names the surface directly and cannot be wrong.
+**So this pipeline can reshape a character but cannot substitute one for another on this title.** A true replacement needs an engine-level hook
+or the surface swap below.
 
-**"Remove clothes" as a material hide is dead** (material 0 is the whole visible surface). It is a texture edit, and it is blocked on the
-line above - not on a mechanism.
+## The one open route
 
-**Live replacement during a round** (swap a model without restarting) is not supported by the emulator: Citron has no save states and
-`fast_forward`/`rewind` are unsupported. The working cycle is build -> launch -> one boot -> capture.
+**The surface address RAM can supply.** The emulator exposes `read_memory`, the lab page has a hex scanner, and MercMode records round RAM, so
+the pieces exist; what is needed is a GPU command-stream read - find the texture bind in the frame's draw stream and take the address. That
+names the surface directly and cannot be wrong, and every texture question above collapses once it is known.
 
 ## The procedure that makes a run cost one boot
 
-1. `probes/fix_boot_state.py` — answer "Cancel loading?" with Yes, wait for the title screen, stop the session there. A session stopped
-   mid-load writes the prompt back and the next three boots fail.
+1. `fix_boot_state.py` — answer "Cancel loading?" with Yes, wait for the title screen, stop the session there.
 2. Launch with `?mod=<build>`; the build must be filed under the **catalog game id** (`270a15eb98dab4d7`), not the title id.
-3. `probes/walk_and_capture.py` — walks the menus with the driver's per-screen gaps and stops at `playing` **only when the round timer is
-   on screen** (top-left 30%x14% box, >300 near-white pixels; measured: rounds 947-1020, briefing/menu/prompt 0).
-4. It stands still while capturing: enemies path to the player, and walking away kept the frame empty for a dozen rounds.
+3. `walk_and_capture.py` — stops at `playing` only when the round timer is on screen, **waits up to 90 s for it**, then captures standing still.
+4. After a reboot: wait for the driver (see the fact above), and restart `mnt-gbox-quickswap2.mount` if the share is missing.
 
 ## Known traps
 
-* `sed -i 's/\r$//'` through PowerShell into SSH becomes `s/r$//` and strips every letter `r` from a file. Ship scripts as **base64** or
-  write them LF-only on this side.
-* `authorization: Bearer <token>` gets mangled in long quoted one-liners; `?token=` on the URL works, and bodies belong in a file
-  (`-d @body.json`).
-* A build filed under the title id is invisible to `launch?mod=` and silently does nothing.
-* A per-pack edit pointed at a pack the game is not drawing also silently does nothing - that is what cost five rounds of `pl00` builds.
+* `sed -i 's/\r$//'` through PowerShell into SSH becomes `s/r$//` and strips every letter `r`. Ship scripts LF-only, written on this side.
+* `authorization: Bearer <token>` gets mangled in long quoted one-liners; use `?token=` and put bodies in a file (`-d @body.json`).
+* Any command with a pipe or `grep "two words"` inside a quoted `ssh '...'` is unreliable - put it in a script file.
+* A build filed under the title id is invisible to `launch?mod=`.
+* A per-pack edit aimed at a pack the game is not drawing does nothing, silently - that is what cost five rounds of `pl00` builds.
+* Run the **stock control** before concluding a build broke something; it is one boot and it separates the build from the harness.
