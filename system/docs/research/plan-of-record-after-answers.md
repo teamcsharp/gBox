@@ -776,3 +776,30 @@ The autoplay thread remains the unreliable path, and that is a real defect in th
 A frame is evidence only when what it shows cannot be explained another way. "A giant head" had two explanations - a scaled
 model or a camera inside a normal head - and I treated it as one. The all-pack build was believed because the *whole body*
 changed while the enemies did not; that is a difference no camera position produces.
+## Round 76: a camera-independent probe, and the game's own per-character files
+
+**The probe changed shape.** A 10% shrink can be hidden by the camera sitting inside a body - that is exactly what made the
+`pl07`..`pl0d` quarter inconclusive. `re4sw-plhide` **collapses** whole packs instead (every material onto its centroid, 89
+slots, 100,191 vertices across `pl07`..`pl0d`), because a *missing* player is readable from any camera angle and no camera
+position produces it by accident. Its run did not reach a round (the walk ended on a `loading` screen), so the quarter is still
+open - but the instrument is now the right one.
+
+**A deterministic route exists and is worth more than the search:** the game ships its own per-character data.
+
+```
+bio4/etc/emleon00.esl .. emleon07.esl, omake00.esl .. (20 files)
+```
+
+Twenty `.esl` files, one family named for Leon, in the tree the game itself loads (`bio4/etc`, beside `core.udas`,
+`memcard.udas`, the movie packs). If those reference the model packs by id, the mapping is a decode rather than a bisection -
+and a decode is reusable for every character and every stage, which a bisection is not. The head is binary
+(`0012 0000 2400 0020 f401 0002 c6e1 5600 ...`), so it needs the same treatment as the other containers: read the table, then
+the strings.
+
+**Order for the next round:** decode `emleon*.esl` first (one offline pass, no boot), and only fall back to the collapse
+bisection if it carries no pack reference. The collapse probe stands ready either way.
+
+## What the round cost and what it bought
+
+One boot, no new frame. It bought the right probe for the remaining quarters, and it found the game's own character files -
+which is the difference between searching 14 packs one boot at a time and reading the table the game uses.
