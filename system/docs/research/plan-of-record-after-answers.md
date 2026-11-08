@@ -509,3 +509,37 @@ programme.
 Two smaller things worth keeping: the runner now waits for `mean > 15` before starting the bot (a black frame during a slow
 boot was being read as a crash), and `re4hd_hide.scale_materials` exists with its own tests because a shrink is a safer probe
 than a collapse.
+## Round 67: every material shrunk, the player unchanged - and the control that would explain it stalled
+
+`re4sw-shrinkall2` was built through **`switch_mods.write_files`** (the writer the working morph builds used), not by hand:
+the edit was staged and reported `"applied": [...001]`, the overlay summary says `{"files": 1, "bytes": 1448576, "edits": 1}`,
+and the build holds exactly `romfs/bio4/em/pl00.udas`. It collapses nothing and crashes nothing: **all 14 materials of
+`pl00` slot 0 are scaled to 10% about their own centroids**, 3,425 vertices, topology untouched. In the round the player is
+complete:
+
+![every material of pl00 shrunk to 10%, the player unchanged](evidence/re4sw-shrinkall-not-drawn.jpg)
+
+So one of two things is true, and they are very different:
+
+1. **`bio4/em/pl00.udas` is not the model Mercenaries draws for Leon.** The pack tree has 25 BIN slots per pack and many packs;
+   story Leon and Mercenaries Leon are not necessarily the same file, and nothing so far has established that this one is
+   used by the mode being played.
+2. **The overlay is not reaching the emulator** for this file.
+
+**The control for (2) stalled**, so the question is open: `re4-em16morph` - the build that visibly deformed enemies in earlier
+rounds - was launched again and sat on one screen at `mean 19.4` for two minutes. That is the save-list prompt family again
+(`Cancel loading?`), which the playbook now cancels, but this time the cancel did not clear it. Until that control runs, (1)
+and (2) cannot be separated, and no further model work is worth doing.
+
+**The next two steps, in order:**
+
+1. **Fix the stall** on the 19.4 screen - capture it, name it, handle it - because a bot that cannot always get out of a menu
+   makes every model experiment unreliable, and it is the same defect that cost rounds 60 and 66.
+2. **Re-run `re4-em16morph`.** If the enemies deform, overlays work and the target pack is wrong (follow the pack the
+   Mercenaries roster actually loads); if they do not, the overlay path is broken and that is the finding.
+
+## What round 67 did deliver
+
+`re4switch_bot` now presses the driver's save-list cancel **and** confirms the `Cancel loading? Yes/No` prompt (`CANCEL_CONFIRM
+= ("up", "a")`, with a test asserting both), and the runner waits for a real picture before starting the bot. Those two fixes
+are why three separate runs this round reached live Mercenaries rounds at all.

@@ -100,6 +100,8 @@ def test_a_still_menu_asks_the_driver_for_its_save_list_cancel(monkeypatch):
     keys = [row[0]["key"] for row in adapter.sent if row and row[0].get("down")]
     assert "b" in keys, f"the cancel must be pressed, got {keys}"
     assert stats["story_recoveries"] >= 1
+    # the cancel asks "Cancel loading? Yes/No" with No selected: up selects Yes and a confirms it
+    assert "up" in keys and keys.count("a") >= 1, f"the prompt must be confirmed, got {keys}"
 
 
 def test_a_maximum_duration_ends_the_run(monkeypatch):

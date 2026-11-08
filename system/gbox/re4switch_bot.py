@@ -19,7 +19,8 @@ from .mercs.titles import re4_switch as driver
 from .mercs.titles import re4_switch_screens as screens
 
 GAME_IDS = ("270a15eb98dab4d7",)          # Resident Evil 4 (Switch) [UPDATE 1.0.2], the catalog entry MercMode uses
-ROUND_ENTRY_PRESSES = 3                    # measured: three A presses after the stage draws start the clock
+ROUND_ENTRY_PRESSES = 3
+CANCEL_CONFIRM = ("up", "a")        # the save-list cancel prompt starts on "No": up selects Yes, a confirms                    # measured: three A presses after the stage draws start the clock
 IDLE_TICKS_BEFORE_ACTION = 2
 
 
@@ -89,6 +90,11 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                 _press(send, key)
                 stats["presses"] += 1
                 stats["story_recoveries"] += 1
+                # the cancel asks "Cancel loading? Yes/No" with No selected: a bare back press lands there and the
+                # prompt then holds the walk exactly like the list did (seen 2026-11-07 at mean 19.4 for 100 s)
+                for follow in CANCEL_CONFIRM:
+                    _press(send, follow)
+                    stats["presses"] += 1
                 last_change = clock()
                 sleep(0.6)
                 continue
