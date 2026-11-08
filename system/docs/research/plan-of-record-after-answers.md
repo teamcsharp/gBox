@@ -1004,3 +1004,34 @@ and save from there (or let a clean exit from a menu write it). That single file
 **Until then the working combination is the live save plus the Yes answer**, which reached a round in 13 steps last round. It failed
 once this round because the `up`/`a` went in before the prompt had settled - a timing defect in the harness, not in the idea: the
 press must be conditioned on the prompt being *steady*, and retried if the screen has not changed afterwards.
+## Round 84: the walk is reliable, and the enemy path draws (control confirmed)
+
+Two results, both needed before any character claim can be made.
+
+**The walk now gets to a Mercenaries round reliably.** With the resume prompt answered only once it is *steady* and retried up to
+three times, the Sonic Ganado build reached a round in **8 steps** (`reached True`), and the control build in 16. That is the
+harness defect from round 83 fixed properly - pressing during the dialog's fade did nothing, which looked exactly like a wrong key.
+
+**The enemy path draws, under the new walk.** `re4-em16morph` - the build that deforms Ganados - shows a body loomed over Leon on a
+rooftop with the round clock at `01'20"42`:
+
+![a morphed Ganado at the rooftop](evidence/re4sw-giant-ganado-control.jpg)
+
+So the chain for **enemy** replacement is proven end to end on this title with the current tooling: a pack written through
+`switch_mods`, read by the emulator, its vertices reshaped by bone, and the result on screen in a live round.
+
+**The Sonic Ganado itself is still one clean frame away.** Its runs reach rounds, and the frames land on explosions, empty roads, or
+a mob pressed against the lens - the enemies are there (`01'16"72` in an earlier run), just never framed at a distance. That is a
+capture-timing matter: the harness moves the camera on a fixed pattern, so the odds of catching an enemy at range depend on where
+the round starts. The next run should turn toward the nearest enemy for two seconds before each capture rather than alternating
+left/right blindly.
+
+**What is settled for the Switch mod track:**
+
+| link | state |
+|---|---|
+| overlay written and read | verified by md5 (round 69) |
+| same-topology edit drawn | collapsed player with untouched enemies (round 70) |
+| enemy packs are the drawn ones | the giant above, in a live round (this round) |
+| a donor rig can reshape a pack | 33 slots, 19,023 vertices, topology kept (round 79) |
+| the walk reaches rounds | 8 and 16 steps, two builds (this round) |
