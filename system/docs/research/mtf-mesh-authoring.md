@@ -84,5 +84,8 @@ sampled onto the target's existing vertex positions); its live acceptance is the
 ## RE6 Switch
 
 The same `MOD` family is present under `arc/NX`, but RE6's characters are split across body, head and hand archives
-(`uPl00LeonUsa.arc`, `uPl00HeadLeonUsa.arc`, ...), not one archive per character. Its MercMode selection and archive
-mapping have not been measured yet. Nothing in this note is an RE6 result.
+(`uPl00LeonUsa.arc`, `uPl00HeadLeonUsa.arc`, ...), not one archive per character. The body archives are ordinary MTF
+containers: `uPl00LeonUsa.arc` holds one 25,784-vertex MOD at `data\\chara\\pl\\pl0000\\model\\pl0000`, so whole-body
+archive substitution is mechanically available. `gbox.re6_char_swap` packages that operation (catalogue, plan, build,
+dry-run) and five tests cover it; a live RE6 body swap has not yet been accepted. Nothing in this note is an RE6
+gameplay result.
