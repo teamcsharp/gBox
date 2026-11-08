@@ -2150,3 +2150,25 @@ descriptor measurement (round 115) recorded where it belongs, with the reason in
 That is the state this line of work stops at: everything committed is tested, the one thing that must run is running, and every open
 question is written down with the measurement that framed it - the texture surfaces (three routes dead, RAM remaining), RE5/RE6's
 unlocks (their own measurement, not RE4's), and the inbox clusters (the unlock one answered).
+## Round 125: a material carries a colour, and that may be the skin swap this title needs
+
+Three texture routes are dead, so the useful move was to stop looking for the texture and look at what else the material says. The 36-byte
+material header of `pl08`'s body slot:
+
+```
+material 0  tris 1344  00 00 00 00 00 00 00 00 00 00 00 00 05 ff ff ff 00 00 00 00 00 00 00 ff ...
+material 3  tris  156  00 00 00 00 00 00 00 00 00 00 00 03 01 02 ff 01 3f 3f 3f 00 00 32 00 ff ...
+material 5  tris   72  00 00 00 00 00 00 00 00 00 00 00 03 01 02 ff 00 66 66 66 00 00 32 00 ff ...
+```
+
+**Offset +16 holds an RGB triple**, and it is non-zero exactly in the materials that use a colour (`3f 3f 3f`, `66 66 66`) while the big
+textured ones hold `00 00 00`. A per-material tint is a way to change how a character *looks* without touching any texture - which is the
+thing the texture search was blocking.
+
+`system/tools/probes/tint_player.py` writes a chosen colour into every material header of every body slot and builds the mod (measured: 25
+materials in slot 0 plus 8 other slots, written as one pack). **The run did not produce a frame** - three attempts ended on the save-list
+screen or `loading`, which is the boot state again; the tool and the finding are committed and one clean boot answers it.
+
+**If the tint is drawn**, the panel's clothes and skin offers gain a mechanism that works today, independent of the missing surface: recolour
+a character, or give it another character's palette. **If it is not**, the header's +16 is metadata the renderer ignores, and that is
+recorded just as plainly.
