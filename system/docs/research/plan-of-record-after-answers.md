@@ -982,3 +982,25 @@ Every "bot stuck on a menu" from round 66 onward was this: a save written mid-lo
 worth stating because it generalises - **when a title is reached through a saved state, the first thing to verify is that the
 state itself is at a menu**, and the *answer* to a resume prompt is a decision, not a nuisance: cancelling the resume is what a
 runner wants, and declining it is a trap that looks identical from a frame.
+## Round 83: two saves, and neither is the one a runner needs
+
+The save directory holds three states, and testing them explains everything:
+
+| file | menu | Mercenaries |
+|---|---|---|
+| `savegame00.sav` (the live one) | boots **mid-load**: "Cancel loading? Yes/No" | **unlocked** - EXTRAS is there once the prompt is answered |
+| `savegame00.sav.fresh-bak` | clean main menu | **not unlocked**: NEW GAME, LOAD, LEADERBOARDS, HELP & OPTIONS, ACHIEVEMENTS - **no EXTRAS row at all** |
+| `savegame00.sav.pre-experiment` | a copy of the live one | unlocked, same mid-load state |
+
+![the fresh-bak save has no EXTRAS row](evidence/re4sw-fresh-bak-has-no-extras.jpg)
+
+So the two properties a runner needs - **at a menu** and **Mercenaries unlocked** - are in **different files**. The live save has the unlock
+but was written mid-load; the fresh backup boots clean but has never seen the village. The live save has been restored (verified,
+1,047,200 bytes).
+
+**A save with both is a one-minute thing for the operator**: load the unlocked save, let the game reach the title screen or a menu,
+and save from there (or let a clean exit from a menu write it). That single file removes both failure modes at once.
+
+**Until then the working combination is the live save plus the Yes answer**, which reached a round in 13 steps last round. It failed
+once this round because the `up`/`a` went in before the prompt had settled - a timing defect in the harness, not in the idea: the
+press must be conditioned on the prompt being *steady*, and retried if the screen has not changed afterwards.
