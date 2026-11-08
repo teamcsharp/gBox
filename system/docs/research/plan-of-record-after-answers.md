@@ -849,3 +849,43 @@ same-topology edits - `re4-em16morph` is proof - so a Sonic-shaped Ganado is a p
 
 That is the next build: **`em16` with Sonic's proportions**, one overlay, one round, and a frame that either shows a
 big-headed, small-bodied villager or shows nothing changed.
+## Round 79: a Sonic-proportioned Ganado is built - the frame is owed
+
+`re4sw-sonicganado` reshapes `em16.udas` (the Ganado pack that the working morph mod used) so its **skeleton takes the donor
+rig's proportions**:
+
+```
+slot 27: 382 vertices reshaped | bones 34
+slot 28: 125 vertices reshaped | bones 10
+...
+slots reshaped: 33 | vertices: 19,023
+```
+
+The mechanism is `morph_bones_to`: each vertex follows its own bone, so the donor's proportions come through instead of its
+nearest surface, and the vertex count, primitive table, weights and materials are untouched - the class of edit this engine
+draws and the only class it draws.
+
+**The donor is a `Bin` with a bone table**, so Sonic becomes one by writing its joint offsets into a copy of the template's
+bone table: joints ordered by hierarchy depth, scaled to the template's own height, and every offset computed from the donor's
+absolute positions so a parent's replacement never contaminates a child's. That sentence is the reusable part - any collection
+rig can be a donor for any pack this way.
+
+**Its run did not reach a round.** The walk ended on `story_prompt` after 14 steps, and the frames show the prompt at
+`mean 19.4` again. The harness now answers that prompt with the confirm key, so the remaining possibility is that `a` returns to
+the same list rather than leaving it, and the walk then loops on the same named screen - which is a harness loop, not a game
+state.
+
+**The next run needs one thing: a demonstrated exit from the save list** (press `a`, then `b`, then confirm the list is gone
+before walking on). Nothing about the model is in question - it is built, applied through the writer the working builds use, and
+sized to the pack.
+
+## What is proven, in one place
+
+| claim | evidence |
+|---|---|
+| the overlay is read | emulator's `pl00.udas` md5 equals the build's (round 69) |
+| a same-topology edit is drawn | the collapsed player with untouched enemies (round 70) |
+| enemy packs are the ones drawn | `re4-em16morph` deformed Ganados on screen |
+| a donor rig can reshape a pack | `re4sw-sonicganado`: 33 slots, 19,023 vertices, topology kept (this round) |
+
+What is missing is a bot that reliably leaves one menu, and then a frame.
