@@ -1802,3 +1802,28 @@ model is what the stage cannot survive. A build that breaks the load is often a 
 **The boot state has a working fix, and it is now a script.** `system/tools/probes/fix_boot_state.py` answers "Cancel loading?" with Yes,
 waits for the title screen, and stops the session there - the procedure round 98 identified, in Python after the bash version kept
 failing on quoting. It measured `19.4 -> 49.1` and then a clean boot, which is what made the halving possible at all.
+## Round 112: two packs left - `pl07` or `pl08`
+
+Four halvings, each read from a frame the HUD guard certifies is gameplay:
+
+| scaled set | the player |
+|---|---|
+| `pl00` (three builds) | unchanged |
+| `pl00`..`pl0d` | **shrunk** |
+| `pl01`..`pl06` | unchanged |
+| `pl07`..`pl0a` | **shrunk** - `01'30"58`, a floating fragment |
+| `pl07`..`pl08` | **shrunk** - `01'29"05`, the same fragment seen from a rooftop |
+
+![pl07..pl0a scaled](evidence/re4sw-bisect-pl07-0a-shrunk.jpg)
+![pl07..pl08 scaled](evidence/re4sw-bisect-pl07-08-shrunk.jpg)
+
+So the mesh the camera draws is **`pl07` or `pl08`**, and nothing else. `pl07` holds three large slots (4,371 + 4,383 + 6,363 vertices) which
+is the shape of a character with variants; `pl08` holds one of 6,591. The next run separates them by scaling `pl08` alone: if the player is
+untouched, it is `pl07`.
+
+**The run that would have separated them produced no frames, and that is the guard working.** `re4sw-bis5` (pl07 alone) reached a round
+and every captured frame was discarded with `no round timer on screen` - the capture had landed in the briefing. Before round 110 those
+frames would have been kept and read as "the player is normal", which is exactly the false negative the timer test exists to prevent.
+
+**Cost of the whole identification: five builds, five boots.** The bisection is 5 for 27 packs, and it needed the boot-state fix
+(`fix_boot_state.py`) to hold across them - without it, three attempts in a row died on the save-list screen.
