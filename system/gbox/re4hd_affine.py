@@ -19,6 +19,16 @@ from .re4hd_models import BINError, Bin, bin_read, bin_write
 MIN_SCALE, MAX_SCALE = 0.15, 6.0      # a band may not collapse to a point or explode; beyond this the donor is not a body
 
 
+def _height_band(points: np.ndarray, bands: int) -> np.ndarray:
+    """Band by the up axis (z): the lowest quarter of the model is band 0, the top the last band."""
+    if len(points) == 0:
+        return np.zeros(0, np.int64)
+    z = points[:, 2]
+    low, high = np.percentile(z, [1, 99])
+    span = max(float(high - low), 1e-6)
+    return np.clip(((z - low) / span * bands).astype(np.int64), 0, bands - 1)
+
+
 def _extent(points: np.ndarray) -> np.ndarray:
     """Robust per-axis extent: the 5th..95th percentile, so one stray vertex cannot set a band's scale."""
     if len(points) < 2:
@@ -48,10 +58,15 @@ def band_affine(template, donor, *, bands: int = 6, align: bool = True, blend: f
         donor_pos = (donor_pos - (d_lo + d_hi) / 2.0) * scale + (t_lo + t_hi) / 2.0
 
     t_ranks, d_ranks = _bone_by_rank(tmpl), _bone_by_rank(src)
-    if t_ranks is None or d_ranks is None:
-        raise BINError("band_affine needs bone weights on both sides")
-    t_band = _region_of(t_ranks, len(tmpl.bones or []), bands)
-    d_band = _region_of(d_ranks, len(src.bones or []), bands)
+    if t_ranks is not None and d_ranks is not None:
+        t_band = _region_of(t_ranks, len(tmpl.bones or []), bands)
+        d_band = _region_of(d_ranks, len(src.bones or []), bands)
+    else:
+        # A donor that is only a mesh - a triangle soup from a .glb, say - has no weights to band by. Band both sides by
+        # HEIGHT instead: feet at band 0, head at the last band. It is coarse, but it makes any extracted model a usable
+        # donor, which is the whole point of the collection.
+        t_band = _height_band(target, bands)
+        d_band = _height_band(donor_pos, bands)
 
     out = target.copy()
     moved = []

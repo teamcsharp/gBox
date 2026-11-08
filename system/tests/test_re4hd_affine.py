@@ -46,12 +46,16 @@ def test_a_self_donor_changes_essentially_nothing():
     assert np.allclose(moved, np.asarray(tmpl.pos, np.float64), atol=0.5)
 
 
-def test_a_band_without_donor_geometry_is_left_alone():
+def test_a_donor_without_weights_bands_by_height_instead_of_failing():
+    """A .glb is a triangle soup with no weights; banding it by height is what lets any extracted model be a donor."""
     tmpl = two_band_mesh(1.0)
     donor = two_band_mesh(1.0)
-    donor.weights = None                  # no bone assignment: the donor cannot be banded
-    with pytest.raises(BINError):
-        A.band_affine(tmpl, donor, bands=2)
+    donor.weights = None
+    moved, report = A.band_affine(tmpl, donor, bands=2, align=False)
+    assert np.isfinite(moved).all()
+    assert report, "the height bands still produced a transfer"
+    bands = A._height_band(np.asarray(donor.pos, np.float64), 2)
+    assert set(bands.tolist()) == {0, 1}, "the low and high vertices land in different bands"
 
 
 def test_blend_zero_is_the_identity():

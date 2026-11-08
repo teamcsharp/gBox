@@ -1476,3 +1476,36 @@ player becomes enormous. The tuning is a separate question from the mechanism, a
 Ganado, whose proportions are body-like) with `blend` around 0.5 - the same function, two arguments.
 
 Tests: 5 pass locally and on the Spark, including *a flat donor flattens the band* and *a self-donor changes essentially nothing*.
+## Round 101: the transfer is tunable, and the collection is now a donor source
+
+**Tuning works.** The same `band_affine` with a **humanoid** donor (a Ganado) at `blend=0.5` draws a modest, visible deformation -
+Leon's shoulders and back bulge, and nothing else about him changes:
+
+![the player with a humanoid donor at half blend](evidence/re4sw-playergando-half-blend.jpg)
+
+Compare that with the slab donor at `blend=1.0` (round 100), where the geometry ballooned until the camera was inside it. Same function,
+two arguments: **the transfer has a usable strength dial**, which is what a character replacement needs to look like a character rather
+than an explosion.
+
+**Any extracted model can be a donor.** Two pieces landed:
+
+* `band_affine` **falls back to banding by height** when the donor has no bone weights, so a triangle soup from a `.glb` is a valid
+  donor (test: the low and high vertices land in different bands);
+* `system/tools/probes/glb_to_donor_bin.py` turns a `.glb` into a donor `Bin` against a real pack's slot -
+  `sonic_src.glb -> 164,768 bytes, 4,107 vertices, 1,369 triangles, 2 material records`.
+
+That closes the loop the objective needed: **the collection's models are now transferable into any title's pack**, because the only
+thing the transfer requires of a donor is geometry.
+
+**`re4sw-playersonic` is built** (25 packs, 79 slots, 212,456 vertices, blend 0.8 toward Sonic) and its run lost both attempts to the
+boot prompt. That is the boot state again, not the build: the procedure from round 98 (stop a session from a menu) puts it right, and one
+clean boot will show whether Sonic's proportions come through.
+
+## The state of the character goal, honestly
+
+| piece | state |
+|---|---|
+| a drawn, coherent, shape-changing edit | **yes** - per-band affine, seen in game (round 100) |
+| a strength dial | **yes** - blend 0.5 humanoid is modest, 1.0 slab is drastic (this round) |
+| donors from the collection | **yes** - any `.glb` converts to a donor and bands by height (this round) |
+| a recognisable character | **not yet** - needs a clean boot with the Sonic donor and a blend that reads as a body |
