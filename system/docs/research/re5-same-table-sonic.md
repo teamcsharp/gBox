@@ -47,6 +47,13 @@ load.
 | 195 Sonic triangles in one part, original vertex skin bytes | part 124 | reached Public Assembly and played; no Sonic patch was visible in the captured frames |
 | full Sonic table + mapped bone ids/weights | 7 parts | stuck on `NOW LOADING` / frozen |
 | full Sonic table, original skin bytes (`harness-sonic-baseskin`) | 7 parts | stuck on `NOW LOADING`; never reached a round |
+| full Sonic table, original skin bytes, unused face ranges kept (`harness-sonic-nozero`) | 7 parts | session booted for 324 s; captured frames were black and the stale `now_playing` still named the previous round, so this is **not** accepted as a playable round |
+
+The queue's `mod` path is also not reliable in the current scheduler: a stock round can be warm/rotated in after the
+queue item is consumed, leaving `current_run.mod: null`. `switch_mods op=apply_live` on the running session is the
+deterministic build path; it restarts the same session and sets `session.mod`. The next freeze test should capture frames
+through the PiP console's frame-hash watchdog (or the server's freeze route) rather than trusting `now_playing`, which
+can be stale after a session ends.
 
 The first three say the engine accepts new indices, new face ranges and donor triangles in a part as long as the
 **skin bytes stay the part's own**. The full base-skin build then showed that keeping the original skin bytes is not
