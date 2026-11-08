@@ -1253,3 +1253,32 @@ the problem.
 Everything else on the Switch track stands as recorded: overlay read, same-topology edit drawn, bone transfer shape-preserving,
 surface transfer sharded, coherent transfer built and tested. The one thing that would turn those into a demonstrable character swap is
 a save the game can load.
+## Round 92: handing over a save is now one command, and here is exactly what is needed
+
+The blocker is data, so the useful work is to make the hand-over trivial and the check automatic.
+
+`gbox/re4_switch_save.py` inspects and installs this title's save:
+
+```
+python -m gbox.re4_switch_save --user <emulator user folder>              # inventory: every save file, size, date, sha256
+python -m gbox.re4_switch_save --user <...> --save <file> --replace      # install, keeping the old one as .bak-<timestamp>
+```
+
+It refuses to overwrite without `--replace`, keeps the previous file, and **verifies the copy by sha256** before reporting success.
+Six tests: the inventory, the refusal, the backup, the verification, a missing file and a missing title folder.
+
+Run against the Spark it reports the current state, which also settles round 90's other hypothesis - **the save is not being
+rewritten by the harness**: its sha256 has not changed since it was restored (`13908f63...` for both the live file and its `bak-r83`
+copy). So the boot loop is simply a save the game cannot load, not a file being churned.
+
+## What to hand over
+
+**A RE4 Switch save that the game loads without prompting, written from a menu, with Mercenaries unlocked.** Concretely: on the
+Spark, play the existing save until THE MERCENARIES is available in EXTRAS, return to the title screen, let the game save (or exit from
+there), then give me that `savegame00.sav`.
+
+With it: `re4sw-ganadoslab` (coherent morph toward the slab donor) and the Sonic builds get their frames on the first attempt, and the
+MercMode rotation can boot this title without the retry dance.
+
+Without it: the title boot-loops on a save it cannot read, and every experiment pays a coin flip per boot. That is not a code problem
+and no further work on my side can fix it.
