@@ -1035,3 +1035,34 @@ left/right blindly.
 | enemy packs are the drawn ones | the giant above, in a live round (this round) |
 | a donor rig can reshape a pack | 33 slots, 19,023 vertices, topology kept (round 79) |
 | the walk reaches rounds | 8 and 16 steps, two builds (this round) |
+## Round 85: "remove clothes" as a reusable operation with a report
+
+The four sidebar asks - remove clothes, swap clothes, character<->zombie, zombies->cast - all reduce to the same primitive: **edit
+one model slot in place, topology untouched**. That primitive is now `gbox/re4hd_edit.py`, independent of HTTP and of any emulator,
+so a route, a job or an agent can all use it:
+
+| call | what it does |
+|---|---|
+| `material_census(pack, slot)` | every material with the triangle span it owns - the list a picker shows |
+| `edit_pack(pack, slot, hide=[i])` | collapse those materials onto their own centroids |
+| `edit_pack(pack, slot, scale=([i], f))` | move them by a factor about their centroid |
+| `edit_pack(pack, slot, donor=<bin>)` | morph the slot toward a donor rig's proportions (`morph_bones_to`) |
+
+Every call returns an `EditReport` with the operation, materials touched, vertex count, triangle count, and the **sha256 before
+and after** - so a build states what it did instead of asking anyone to trust it. The pack's size is always the slot's own, which
+is the one rule this engine enforces.
+
+**Two defects the tests caught in the module itself**, both before it shipped: `bin_slots`' `ValueError` escaped as a raw error
+instead of an `EditError` (so a caller could not distinguish "not a pack" from a bug), and the "no operation given" check ran
+*after* the pack had been read, so a bad request cost a full decode first. Both fixed.
+
+Tests: **6 pass on the Spark against the real Ganado pack** (material census sums to the mesh's triangle count, hide and scale
+both keep the container size and the triangle table), 3 pass plus 3 skipped on a machine without the RomFS.
+
+## And the capture keeps losing to the resume prompt
+
+The exaggerated build (`re4sw-sonicx`, donor proportions x1.9) never reached a round: the resume prompt did not clear in three
+attempts. The prompt accepts input only once it has settled, and the settle time varies - so the fix is not another key but a
+**condition**: press only when two consecutive frames are identical *and* the classifier says `story_prompt`, and treat a third
+failure as "boot again" rather than pressing on. That is the next change to the harness, and it is smaller than the modelling work
+it unblocks.
