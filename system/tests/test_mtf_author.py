@@ -112,6 +112,21 @@ def test_a_padded_mesh_count_keeps_the_slot_shape_with_empty_records():
     assert records[1]["vertex_group_count"] == 0
 
 
+def test_a_partitioned_model_keeps_the_part_count_with_real_geometry_in_every_record():
+    model = mt_model.parse_mod(make_target(2))
+    combined = mtf_author.combine(model)
+    built = mtf_author.build_partitioned(model, combined["vertices"], combined["triangles"], part_count=2)
+    written = mt_model.parse_mod(built)
+    assert written.header()["mesh_count"] == 2
+    assert written.header()["vertex_count"] == 6
+    assert written.split_valid() is True
+    records = written.meshes()
+    assert all(r["vertex_count"] > 0 for r in records)
+    assert sum(r["face_count"] for r in records) + 2 == written.header()["face_count"]
+    assert sum(r["vertex_group_count"] for r in records) * 144 == (
+        written.header()["offsets"]["vertex_buffer"] - written.header()["offsets"]["meshes"] - 56 * 2)
+
+
 def test_a_one_mesh_model_keeps_the_target_skeleton_and_material_table():
     model = mt_model.parse_mod(make_target(2))
     combined = mtf_author.combine(model)

@@ -186,6 +186,70 @@ def build_one_mesh(model: mt_model.ModFile, vertices: list[dict], triangles: lis
                                 face_count=index_count + count - 1, edge_count=0, bounds=bounds, mesh_trailer=trailer)
 
 
+def build_partitioned(model: mt_model.ModFile, vertices: list[dict], triangles: list[tuple[int, int, int]],
+                      *, part_count: int, material_index: int = 0, template_index: int = 0) -> bytes:
+    """The same geometry split across `part_count` real records.
+
+    The low Majini slot's MRL describes 341 parts; an empty padded table boots but the round load rejects it. This
+    variant gives every record actual vertices/triangles (round-robin), so the part count, the header's vertex/face
+    counts and the envelope table are all consistent without a zero-vertex record.
+    """
+    if not vertices or not triangles:
+        raise AuthorError("a partitioned model needs vertices and triangles")
+    count = max(1, int(part_count))
+    records_in = model.meshes()
+    if not 0 <= template_index < len(records_in):
+        raise AuthorError(f"no template mesh {template_index}")
+    bounds = model.bounds()
+    if not bounds:
+        raise AuthorError("the target model carries no bounding box")
+    groups: list[list[tuple[int, int, int]]] = [[] for _ in range(count)]
+    for i, tri in enumerate(triangles):
+        groups[i % count].append(tri)
+    vertex_buffer = bytearray()
+    index_buffer = bytearray()
+    trailer = bytearray()
+    records: list[dict] = []
+    face_index = 0
+    vertex_index = 0
+    for group in groups:
+        ids = sorted({int(v) for tri in group for v in tri})
+        local = {old: new for new, old in enumerate(ids)}
+        if not ids:
+            # Every part must be real for this probe; repeat vertex 0 and skip its triangles rather than emit an empty
+            # record (the empty form is what the low loader rejected).
+            ids = [0]
+            local = {0: 0}
+            group = []
+        part_vertices = [vertices[i] for i in ids]
+        packed = mt_model.pack_vertices(part_vertices, ONE_BONE_FORMAT, ONE_BONE_STRIDE)
+        part_indices = bytearray()
+        for tri in group:
+            a, b, c = (local[int(v)] for v in tri)
+            part_indices += struct.pack("<4H", a, b, c, 0xFFFF)
+        bone = int(part_vertices[0].get("bone", 0))
+        points = [tuple(v["position"]) for v in part_vertices]
+        trailer += pack_weight_bound(bone, points)
+        record = dict(records_in[template_index])
+        record.update({"mesh_type": 0xFFFF, "vertex_count": len(part_vertices),
+                       "material_index": int(material_index), "level_of_detail": 0,
+                       "group_index": record.get("group_index", 0), "mesh_class": 0,
+                       "vertex_stride": ONE_BONE_STRIDE, "render_mode": 4, "vertex_index": vertex_index,
+                       "vertex_offset": len(vertex_buffer), "vertex_format": ONE_BONE_FORMAT,
+                       "face_index": face_index, "face_count": max(0, len(part_indices) // 2 - 1),
+                       "face_offset": 0, "bone_map_index": 0, "vertex_group_count": 1,
+                       "min_index": 0, "max_index": len(part_vertices) - 1})
+        records.append(record)
+        vertex_buffer += packed
+        index_buffer += part_indices
+        vertex_index += len(part_vertices)
+        face_index += len(part_indices) // 2
+    return mt_model.rebuild_mod(model, vertex_buffer=bytes(vertex_buffer), index_buffer=bytes(index_buffer),
+                                mesh_records=records, mesh_count=count, vertex_count=vertex_index,
+                                face_count=len(index_buffer) // 2, edge_count=0, bounds=bounds,
+                                mesh_trailer=trailer)
+
+
 def replace_archive_model(archive: bytes, entry_index: int, model: bytes) -> bytes:
     """Put `model` into one entry of an MTF `.arc`, updating the tag's uncompressed length."""
     arc = mt_arc.parse(archive)
