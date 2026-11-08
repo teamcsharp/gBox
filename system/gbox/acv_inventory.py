@@ -46,6 +46,19 @@ Smallest-file header fields at +8..+28 form the pattern 0x18,0x24,0x24,0x2c,
 Decoding the DCS/DCP section table on the 137-byte sample (and checking whether
 the large DCX payloads are compressed at all) is the next bounded milestone.
 
+Re-verification against the owned ISO (full census of all 19,747 records read
+at their BDT offsets): NO payload starts with the "DCX\\0" magic.  The
+top-level first-four-byte census is dominated by numeric/parameter data:
+00000000 x1193, ff000000 x314, ffff0000 x311, 01000000 x230, 00ffff00 x89,
+0000ffff x89, 000000ff x86, 00000001 x71.  The earlier "DCX 14,979 / TPF 933 /
+BND3 398" tally was therefore NOT taken at record offset 0 -- the DCX/DCS/DCP
+containers (and the TPF/BND3 payloads) must sit at a different base, most
+plausibly inside BND3 members whose member offsets are BND3-relative, or
+elsewhere in the stream.  Next bounded step: stream-scan the BDT for
+"DCX\\0"/"BND3"/"TPF" magics with position recording, join hits to the owning
+BHD5 record (or BND3 member) to establish the container base offset, then
+decode the DCS/DCP section table on the smallest DCX sample with that base.
+
 This module is read-only: it never writes to the disc or the binder.
 """
 
