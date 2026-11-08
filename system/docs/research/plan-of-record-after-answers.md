@@ -2604,3 +2604,22 @@ with a pistol - exactly what the operator photographed.
 
 **What this does not do:** it cannot put a mine in the current round's hands if that round was built with grenades. The fix makes
 that visible and arms the next round, rather than pretending the command worked - which is what the operator saw before.
+## RE5 character swapping: made an operation, and the enemy-into-character direction boots
+
+**`gbox/re5_char_swap.py`** turns the measured route into a first-class call (6 tests, green on both machines):
+
+```
+python -m gbox.re5_char_swap --romfs <RE5 romfs> --pairs 'uPl02JillCos1.arc=uPl00ChrisNormal.arc'
+python -m gbox.re5_char_swap --romfs <RE5 romfs> --catalogue          # the slots: characters and enemies
+```
+
+`plan()` refuses a pair whose side is missing and says which file; `build()` writes one overlay file per target and files it under
+RE5's catalog id, defaulting to `mercmode-swap` - the build MercMode applies at the title's next boot - so a swap made here lands
+exactly like the panel's own.
+
+**The enemy direction boots.** `uEm6c.arc` (4,334,405 bytes) written over `uPl00ChrisNormal.arc` (43,337,492): the title comes up to
+**Character Select** and renders it normally (Rebecca selected in the frame captured). So an enemy archive in a player slot does not
+hang the load, which RE4's equivalent does.
+
+**What is not yet proven:** a frame of the player **in a round** wearing that enemy's body. The capture caught the select screen, and
+the run needed the bot to choose a character and start a round. That is the next thing to look at, and it is one boot.
