@@ -100,7 +100,10 @@ def combine(model: mt_model.ModFile, *, material_index: int | None = None) -> di
             used_bones.add(bone_id)
             vertices.append({"position": point, "normal": normal, "uv": uv, "bones": [bone_id],
                              "bounds": bounds, "bone": bone_id})
-        triangles.extend((a + base, b + base, c + base) for a, b, c in tris)
+        # The index stream is global to the shared vertex buffer: a part's first vertex is record["vertex_index"], not
+        # zero. Normalise before adding this part's base or a shared-buffer model gets indices past the vertex list.
+        shift = int(record.get("vertex_index") or 0)
+        triangles.extend((a - shift + base, b - shift + base, c - shift + base) for a, b, c in tris)
     if not vertices or not triangles:
         raise AuthorError("no mesh of this model could be decoded")
     return {"vertices": vertices, "triangles": triangles, "material": int(material),
