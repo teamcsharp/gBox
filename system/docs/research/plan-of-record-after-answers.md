@@ -922,3 +922,34 @@ last session left - and the probe now has the evidence to say why.
 **Still owed:** the Sonic Ganado's frame. Its run on a fresh save ended on a `loading` screen (`mean 4.7`), which is either the
 reshaped `em16` failing to load or the fresh save sending the walk into a story load - the next run has to tell those apart by
 walking with a **stock** build on a fresh save first.
+## Round 81: the save carries the Mercenaries unlock, so "fresh" is the wrong direction
+
+The control answered it, and not the way I expected. A **stock** build on a fresh save walks into **NEW GAME** - Leon in his
+story jacket on the village road:
+
+![the fresh-save walk went into the story](evidence/re4sw-fresh-save-goes-new-game.jpg)
+
+So the save is doing two jobs at once:
+
+1. it holds the **Mercenaries unlock** - without it the mode is not where the walk expects, and the same key sequence lands on
+   NEW GAME instead;
+2. it was written with the game **mid-load**, which is why every boot with it comes up on "Cancel loading? Yes/No" at
+   `mean 19.4`.
+
+Neither state is the one a runner wants, and removing the save fixes the second problem while creating the first. The save has
+been **restored** both times (the directory is back in place, verified), because it is the operator's data and this was a
+diagnostic.
+
+**What a runner actually needs is a save that is (a) past the village, so Mercenaries is unlocked, and (b) at a menu, not
+mid-load.** That is a thing the operator can produce in one minute, and it is the one input this whole line of work has been
+missing: `bio4` save slot at the title screen with THE MERCENARIES present in EXTRAS.
+
+**The other half of the answer matters for the walk:** a fresh save's main menu has no CONTINUE row, so the driver's
+`EXTRAS_ROW` index is off by one and the walk presses into NEW GAME. Row indices are a property of the save's state, not of the
+game, so the walk should *read* which row is highlighted rather than count from a constant - or at least tolerate a menu whose
+first row is not what it expects.
+
+## Where this leaves the Sonic Ganado
+
+Built, applied, 33 slots and 19,023 vertices reshaped, and its frame is still owed - now for a reason that is finally concrete:
+the walk cannot reach Mercenaries with the save as it is, and cannot reach Mercenaries without it either.
