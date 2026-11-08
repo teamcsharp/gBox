@@ -479,3 +479,33 @@ one by mapping `material_id` to its texture.
 
 `gbox/re4hd_hide.py` with 7 passing tests (the last on the real pack), and a build recipe that produces a valid LayeredFS
 mod in the layout the launcher accepts - the two things "remove clothes / swap clothes" need before any UI is worth wiring.
+## Round 66: the Switch playbook recovers from the save list - and the shrink probe reached a round
+
+**The bot fix is the round's real result.** `re4switch_bot` now asks the driver for its own save-list recovery
+(`driver._recover_story`) when the picture stays byte-identical for `still_s` (12 s) before any stage has been seen. The
+driver has carried that policy since it was measured - *"identical frames for 260 s"* - but the playbook never called it, so
+a stray confirm into LOAD looked exactly like a hang. With the fix, and a runner that waits for a real picture instead of a
+fixed delay (a modified pack makes the first boot slower):
+
+```
+MARK picture up: mean 78.0
+MARK shrink2_00 76.7 ... shrink2_04 56.7 ... shrink2_08 57.5
+```
+
+the walk reached a live Mercenaries round - `01'21"38`, Ganados closing in - with the modified pack loaded:
+
+![the shrink build in a live round](evidence/re4sw-shrink1-round-normal.jpg)
+
+**The model change still isn't visible.** `re4sw-shrink1` shrinks material 1 of `pl00` slot 0 to 10% about its centroid -
+564 vertices, 430 triangles, topology untouched - and Leon is complete: shirt, straps, holster, all of it. So material 1 is
+not a garment the camera sees (an inner surface, a LOD, teeth), **or** the pack is not read. Those two possibilities are
+still not separated, and the previous round's collapse test could not separate them either.
+
+**The control that separates them cannot crash and cannot be missed:** shrink **all 14 materials** to 10%. If the player
+becomes a small blob, the build is read and the material list can be bisected for the garment by mapping `material_id` to its
+texture. If the player is unchanged, the pack is not being read and that is the answer - and it is one boot, not a research
+programme.
+
+Two smaller things worth keeping: the runner now waits for `mean > 15` before starting the bot (a black frame during a slow
+boot was being read as a crash), and `re4hd_hide.scale_materials` exists with its own tests because a shrink is a safer probe
+than a collapse.

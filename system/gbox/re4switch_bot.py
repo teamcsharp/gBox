@@ -47,13 +47,20 @@ def _press(send, key: str, hold_s: float = 0.08) -> None:
 
 
 def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, clock=time.time,
-         max_seconds: float | None = None, **_) -> dict:
+         max_seconds: float | None = None, still_s: float = 12.0, **_) -> dict:
     """Walk the menus to a round, start it, and keep moving until `stopped()`.
 
     Returns a dict of what it did. `stats` (when given) is filled live for the watch panel.
+
+    `still_s` is how long the picture may stay byte-identical before the driver's own story-save-list recovery is asked for
+    its cancel key. A stray confirm lands in LOAD and the save list then holds the walk for as long as nothing acts on it
+    (measured on 2026-11-07: identical frames for 260 s); the driver owns that recovery and this loop has to call it, or the
+    bot sits there looking exactly like a hang.
     """
     stats = stats if stats is not None else {}
-    stats.update({"screen": None, "presses": 0, "rounds": 0, "started": clock(), "stage_seen": False})
+    stats.update({"screen": None, "presses": 0, "rounds": 0, "started": clock(), "stage_seen": False,
+                  "story_recoveries": 0})
+    last_frame, last_change = None, clock()
     reader = screens.Reader()
     driver.begin_run()
     started = clock()
@@ -70,9 +77,21 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
         except Exception:                                    # noqa: BLE001 - a missing frame is not a screen
             sleep(0.5)
             continue
+        if frame != last_frame:
+            last_frame, last_change = frame, clock()
         screen = reader.read(frame)
         where = screen.get("where")
         stats["screen"] = where
+        # a still picture on a menu is the save-list trap: ask the driver for its cancel rather than sit on it
+        if where != "unknown" and not stats["stage_seen"] and clock() - last_change > still_s:
+            key = driver._recover_story()                      # the driver's own policy and its own budget
+            if key:
+                _press(send, key)
+                stats["presses"] += 1
+                stats["story_recoveries"] += 1
+                last_change = clock()
+                sleep(0.6)
+                continue
         stats["stage_seen"] = stats["stage_seen"] or where == "select_stage"
 
         # --- menus: the same route the driver walks, one press at a time

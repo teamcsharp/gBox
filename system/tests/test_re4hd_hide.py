@@ -76,6 +76,25 @@ def test_a_mesh_without_triangles_is_refused():
         H.hide_materials(mesh, [0])
 
 
+def test_scaling_shrinks_a_material_about_its_centroid():
+    mesh = mesh_with_two_materials()
+    original = mesh.pos.copy()
+    report = H.scale_materials(mesh, [1], factor=0.1)
+    assert report["vertices_changed"] == 3 and report["factor"] == 0.1
+    assert np.array_equal(mesh.pos[:3], original[:3]), "material 0 must not move"
+    centroid = original[3:].mean(axis=0)
+    assert np.allclose(mesh.pos[3:], centroid + (original[3:] - centroid) * 0.1)
+    assert report["triangles_unchanged"] is True
+
+
+def test_a_scale_factor_outside_the_unit_interval_is_refused():
+    mesh = mesh_with_two_materials()
+    with pytest.raises(BINError):
+        H.scale_materials(mesh, [0], factor=0.0)
+    with pytest.raises(BINError):
+        H.scale_materials(mesh, [0], factor=2.0)
+
+
 @pytest.mark.skipif(not os.path.isfile(PACK), reason="the RE4 Switch RomFS is not extracted on this machine")
 def test_a_real_pack_material_collapses_and_its_triangles_survive():
     from gbox import re4gc_inventory as INV

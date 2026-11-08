@@ -69,3 +69,29 @@ def hide_materials(mesh, indices) -> dict:
     return {"hidden": hidden, "vertices_changed": moved,
             "triangles_unchanged": bool(np.array_equal(before_tris, mesh.tris)),
             "n_verts": len(mesh.pos), "n_tris": len(mesh.tris)}
+
+def scale_materials(mesh, indices, factor: float = 0.1) -> dict:
+    """Shrink each named material about its own centroid, keeping topology.
+
+    A gentler sibling of `hide_materials` for verifying that a build is read at all: collapsing a part can crash a renderer and
+    a crash looks exactly like a failed boot from a frame, while a 10% shrink cannot crash and must be visible on screen. If a
+    player built this way looks identical, the pack was not loaded.
+    """
+    mesh_check(mesh)
+    if not 0.0 < float(factor) <= 1.0:
+        raise BINError(f"factor must be in (0, 1], not {factor}")
+    before_tris = np.array(mesh.tris, copy=True)
+    scaled, moved = [], 0
+    for index in indices:
+        start, end = material_triangle_span(mesh, index)
+        verts = np.unique(np.asarray(mesh.tris[start:end]).reshape(-1))
+        if verts.size == 0:
+            raise BINError(f"material {index} references no vertices")
+        centroid = mesh.pos[verts].mean(axis=0)
+        mesh.pos[verts] = centroid + (mesh.pos[verts] - centroid) * float(factor)
+        scaled.append({"material": int(index), "vertices": int(verts.size), "factor": float(factor),
+                       "centroid": [round(float(v), 4) for v in centroid]})
+        moved += int(verts.size)
+    return {"scaled": scaled, "vertices_changed": moved, "factor": float(factor),
+            "triangles_unchanged": bool(np.array_equal(before_tris, mesh.tris)),
+            "n_verts": len(mesh.pos), "n_tris": len(mesh.tris)}

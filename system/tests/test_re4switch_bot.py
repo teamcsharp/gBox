@@ -77,6 +77,31 @@ def test_it_never_presses_into_an_unclassified_screen_before_a_stage(monkeypatch
     assert stats["rounds"] == 0
 
 
+def test_a_still_menu_asks_the_driver_for_its_save_list_cancel(monkeypatch):
+    """A stray confirm lands in LOAD and the list holds the walk: the playbook must press the driver's own cancel."""
+    monkeypatch.setattr(B.screens, "Reader", lambda: Reader(["main_menu"] * 40))
+    asked = {"n": 0}
+
+    def recover(now=None):
+        asked["n"] += 1
+        return "b" if asked["n"] <= 2 else None
+
+    monkeypatch.setattr(B.driver, "_recover_story", recover)
+    adapter = Adapter([b"same-frame"] * 60)          # byte-identical frames: the picture never changes
+    ticks = {"n": 0}
+
+    def clock():
+        ticks["n"] += 1
+        return float(ticks["n"]) * 10.0              # ten seconds per read: past still_s quickly
+
+    stats = {}
+    B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: len(adapter.sent) >= 2 or ticks["n"] > 30,
+           sleep=lambda s: None, stats=stats, clock=clock, still_s=12.0)
+    keys = [row[0]["key"] for row in adapter.sent if row and row[0].get("down")]
+    assert "b" in keys, f"the cancel must be pressed, got {keys}"
+    assert stats["story_recoveries"] >= 1
+
+
 def test_a_maximum_duration_ends_the_run(monkeypatch):
     monkeypatch.setattr(B.screens, "Reader", lambda: Reader(["select_stage"] + ["unknown"] * 40))
     adapter = Adapter([b"frame"] * 60)
