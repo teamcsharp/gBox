@@ -17,7 +17,7 @@
   const state = {
     lines: [], seqByJob: {}, seen: new Set(), timer: null, busy: false, tick: 0,
     collapsed: false, hidden: false, lastPhase: '', lastScreen: '', lastBuild: '', started: 0,
-    session: '', lastHarnessSeq: 0, frameHash: '', unchanged: 0, freezeReported: false, screen: '',
+    session: '', lastHarnessSeq: 0, frameHash: '', unchanged: 0, freezeReported: false, screen: '', play: {},
   };
   let host = null, panel = null, body = null, statusEl = null, titleEl = null, pill = null, spinEl = null, barEl = null;
 
@@ -153,6 +153,8 @@
     }
     const screen = String(play.screen || '');
     state.screen = screen || state.screen;
+    state.play = { screen: screen || state.screen, character: play.character || '', stage: play.stage || '',
+                   timer: play.timer, score: play.score, build: build || state.lastBuild, phase: phase || state.lastPhase };
     if (screen && screen !== state.lastScreen) {
       state.lastScreen = screen;
       const detail = [play.character, play.stage, play.timer != null ? `t=${play.timer}` : ''].filter(Boolean).join(' · ');
@@ -220,7 +222,8 @@
       if (state.unchanged >= 7 && !state.freezeReported && /^(playing|loading|unknown|select_player)$/.test(state.screen || '') ) {
         state.freezeReported = true;
         const witness = { frame_sha: hash, unchanged_s: state.unchanged * 1.4, screen: state.screen || '',
-                          session: sid, at: new Date().toISOString() };
+                          session: sid, at: new Date().toISOString(), ...state.play,
+                          recent_console: state.lines.slice(-24).map(line => `${line.time} ${line.text}`) };
         push(`[freeze] frame unchanged ${Math.round(witness.unchanged_s)} s on ${sid}`, 'freeze');
         try { await api(`/api/sessions/${encodeURIComponent(sid)}/harness/freeze`, witness); push('[freeze] report written beside the console', 'freeze'); }
         catch (e) { push(`[freeze] report failed: ${e.message || e}`, 'bad'); }
