@@ -1305,3 +1305,16 @@ gBox's own session detail reports, for this title, *"RE4 Switch Mercenaries is a
 83 measured a fresh save showing a main menu with **no EXTRAS row**. Both cannot be right, and the difference matters: if Mercenaries
 really needs no unlock, then a fresh save is usable and the boot-loop problem is the only obstacle; if it does need one, the operator's
 save is required. The next run should settle it by walking a fresh save and looking at the menu rather than trusting either note.
+## Round 94: the fresh-save question is still open, and the probe overshot
+
+The probe to settle it pressed START three times, which went past the main menu into gameplay - so the frames show a close-up of the
+world, not the menu. That is a probe defect, not a finding: **one** press is what reveals the menu, and nothing after it.
+
+What the run did establish: with the save moved aside the title boots to a picture (`mean` reaching 42.6) and accepts input - so a
+fresh save is a usable boot path, which is half the question. **The save was restored** in the probe's `finally`, and the rotation was
+put back.
+
+**The question itself - is THE MERCENARIES present on a fresh save? - stays open**, and it is worth the one press it costs next time:
+launch with the save aside, press `a` once, capture, and read the row list. Round 83's frame of a fresh main menu showed no EXTRAS;
+gBox's session detail asserts no unlock is needed. One of them is wrong, and the answer decides whether the operator's save is required
+at all.
