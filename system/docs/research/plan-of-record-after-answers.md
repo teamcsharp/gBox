@@ -1218,3 +1218,38 @@ becomes unnecessary.
 
 **What is owed, precisely:** one frame of `re4sw-ganadoslab` (coherent morph, slab donor). Everything else about it is built and
 recorded; the run is competing with a boot state that the harness itself keeps creating.
+## Round 91: the game auto-loads its save at boot, and the prompt comes back
+
+The save-cycle probe measured the boot sequence instead of guessing at it:
+
+```
+MARK boot before:   [40.2, 19.4, 19.4]
+MARK answered Yes
+MARK after Yes:     [49.2, 19.4, 19.4]      <- the prompt returns
+MARK stopped from the menu
+MARK boot after:    [49.2, 19.4, 19.4, 19.4]
+```
+
+Three things follow, and they close the question:
+
+1. the game boots to a menu (`40.2`), then **auto-loads its save** and lands on "Cancel loading?" (`19.4`);
+2. answering **Yes** raises it to `49.2` - and then it **comes back to `19.4`**, because the game retries the load;
+3. stopping *from a menu* does not help, because the state being saved is the retried load, not the menu.
+
+So round 90's hypothesis was half right: the harness does keep recreating the state, but not by where it stops - by the game's own
+auto-load of a save that cannot finish loading. **A mid-load save on this title is not a nuisance to be keyed past; it is a boot
+loop.**
+
+**What that means, precisely:**
+
+* the save on this machine is unusable for a run - it is stuck mid-load, and no key sequence fixes a save the game cannot read;
+* a **fresh** save boots clean but has no Mercenaries unlock (`EXTRAS` absent, measured in round 83);
+* therefore the missing input is a **valid save with the unlock**: one the game loads without prompting, from a menu, past the village.
+
+That is the same request as round 83, now with the reason measured rather than inferred: **not "the save is inconvenient" but "the save
+cannot be loaded at all, so the title boot-loops"**. There is no key sequence and no build that fixes it from this side - the data is
+the problem.
+
+Everything else on the Switch track stands as recorded: overlay read, same-topology edit drawn, bone transfer shape-preserving,
+surface transfer sharded, coherent transfer built and tested. The one thing that would turn those into a demonstrable character swap is
+a save the game can load.
