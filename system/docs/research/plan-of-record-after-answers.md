@@ -2623,3 +2623,19 @@ hang the load, which RE4's equivalent does.
 
 **What is not yet proven:** a frame of the player **in a round** wearing that enemy's body. The capture caught the select screen, and
 the run needed the bot to choose a character and start a round. That is the next thing to look at, and it is one boot.
+## RE5: an enemy archive in a character slot renders the enemy, in a live round
+
+`uEm6c.arc` (an enemy archive) written over **`uPl07RebeccaNormal.arc`** - the slot the bot actually played - then a No Mercy round:
+
+![Rebecca's slot rendering a majini](evidence/re5-rebecca-slot-renders-majini.jpg)
+
+`02'49"53`, combo `002`, HUD says **Rebecca**, and the body filling the frame is a bare-chested **majini with a machete**, a second one behind him.
+**So "swap characters with zombies" works on RE5**, by the same whole-archive route that put Jill in Chris's slot.
+
+**The lesson that cost the earlier attempt:** the first build targeted `uPl00ChrisNormal.arc` and the round played as **Rebecca** - the bot chooses
+the character, so a swap aimed at the wrong slot silently does nothing. Any swap built for a round has to name the slot that round will use, or
+force the character with `mercs_select`.
+
+**What this establishes, precisely:** RE5 draws whatever mesh the character archive contains - human or enemy - as long as the archive is
+substituted whole. That is the property RE4 lacks, and it is the reason a Sonic or Mario *body* is a format problem here rather than an
+engine one.
