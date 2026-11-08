@@ -46,12 +46,14 @@ load.
 | decrement part 0's `face_count` by one, no data change | part 0 | reached Public Assembly and played |
 | 195 Sonic triangles in one part, original vertex skin bytes | part 124 | reached Public Assembly and played; no Sonic patch was visible in the captured frames |
 | full Sonic table + mapped bone ids/weights | 7 parts | stuck on `NOW LOADING` / frozen |
-| full Sonic table, original skin bytes | 7 parts | not yet accepted (worker restarts interrupted the run) |
+| full Sonic table, original skin bytes (`harness-sonic-baseskin`) | 7 parts | stuck on `NOW LOADING`; never reached a round |
 
 The first three say the engine accepts new indices, new face ranges and donor triangles in a part as long as the
-**skin bytes stay the part's own**. The full mapped-bone build is the one that freezes, which points at the bone ids /
-weights as the invalid field, not at connectivity. The next build to test is the full base-skin variant (same table,
-same triangle coverage, original `boneid`/weight bytes in every slot).
+**skin bytes stay the part's own**. The full base-skin build then showed that keeping the original skin bytes is not
+sufficient: spreading the same triangles over **seven** parts (and zeroing the face range of every other part) still
+stuck on `NOW LOADING`. So the freeze is in the multi-part/zeroed-part shape, not only in mapped skinning. The next
+bisect is: add one part at a time to the working part-124 build, and separately try the seven parts **without** zeroing
+the unused parts' face ranges.
 
 ## Measured results
 
