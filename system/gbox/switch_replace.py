@@ -16,6 +16,7 @@ and why.
 """
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -99,7 +100,7 @@ def donor_mesh(donor_glb: str | None, donor_pack: Path | None, donor_slot: int =
 def replace_pack(config, title_id: str, pack: str, *, donor_glb: str | None = None, donor_pack: str | None = None,
                  donor_slot: int = 0, blend: float | None = None, bands: int = 6, build: str = "",
                  min_vertices: int = MIN_SLOT_VERTICES, hide: list[int] | None = None,
-                 write: bool = True) -> ReplaceReport:
+                 write: bool = True, game_id: str = "") -> ReplaceReport:
     """Morph `pack`'s body slots toward the donor's proportions and write the result into a LayeredFS build.
 
     `hide` takes material indices to collapse instead of (or before) the transfer, which is the "remove clothes" case. With `write=False`
@@ -113,13 +114,14 @@ def replace_pack(config, title_id: str, pack: str, *, donor_glb: str | None = No
     slots = _pack_slots(data)
     name = build or f"gbox-replace-{Path(pack).stem}"
     source = donor_glb or (str(donor_pack) if donor_pack else "")
-    if not source:
-        raise ReplaceError("a donor is required: pass donor_glb or donor_pack")
-    donor = donor_mesh(donor_glb, Path(donor_pack) if donor_pack else None, donor_slot)
+    if not source and not hide:
+        raise ReplaceError("a donor is required: pass donor_glb or donor_pack (or hide= for a hide-only edit)")
+    # "remove clothes" is a hide with no donor at all: the transfer loop is skipped and only the materials are collapsed.
+    donor = donor_mesh(donor_glb, Path(donor_pack) if donor_pack else None, donor_slot) if source else None
 
-    report = ReplaceReport(pack=pack, donor=os.path.basename(source), build=name)
+    report = ReplaceReport(pack=pack, donor=os.path.basename(source) if source else "hide-only", build=name)
     patched = data
-    for index, entry in enumerate(slots):
+    for index, entry in enumerate(slots if donor is not None else []):
         body = patched[entry["offset"]:entry["offset"] + entry["size"]]
         try:
             mesh = MODELS.bin_read(body)
@@ -144,7 +146,7 @@ def replace_pack(config, title_id: str, pack: str, *, donor_glb: str | None = No
                              "bands": bands_report})
         report.vertices_changed += len(mesh.pos)
 
-    if not report.slots:
+    if donor is not None and not report.slots:
         raise ReplaceError(f"no slot of {pack} was big enough to transfer (min {min_vertices} vertices); "
                            f"skipped: {report.skipped[:3]}")
 
@@ -157,7 +159,8 @@ def replace_pack(config, title_id: str, pack: str, *, donor_glb: str | None = No
 
     if write:
         from . import switch_mods
-        game_id = _game_id(config, title_id)
+        # the catalog key the launcher resolves a build through; the route passes it because only it holds the catalog
+        game_id = game_id or _game_id(config, title_id)
         result = switch_mods.write_files(config, game_id, name, {f"romfs/bio4/em/{pack}": {"bytes": patched}},
                                          create={"title_id": title_id, "kind": "file", "game_title": title_id},
                                          note=f"replace {pack} with {report.donor}")
@@ -167,14 +170,24 @@ def replace_pack(config, title_id: str, pack: str, *, donor_glb: str | None = No
 
 
 def _game_id(config, title_id: str) -> str:
-    """The cache key the mod writer uses for a title; the RomFS folder name when nothing better is known."""
-    from . import switch_mods
-    resolver = getattr(switch_mods, "game_id_for", None)
-    if callable(resolver):
+    """The catalog game id a mod build must be filed under, because the launcher resolves a launch's mod by that key.
+
+    Filing a build under the bare title id makes it invisible to `launch?mod=`, which is how a build silently does nothing. The
+    catalog is the authority: match the Switch entries' serial against the title id.
+    """
+    store = getattr(config, "_catalog_store", None) or getattr(config, "store", None)
+    database = getattr(store, "db", None)
+    if database is not None:
         try:
-            value = resolver(config, title_id)
-            if value:
-                return str(value)
-        except Exception:                                     # noqa: BLE001
+            rows = database.execute(
+                "SELECT game_id, body FROM catalog WHERE json_extract(body,'$.platform')='switch'").fetchall()
+            for game_id, body in rows:
+                try:
+                    entry = json.loads(body)
+                except (TypeError, ValueError):
+                    continue
+                if str(entry.get("serial") or "").upper() == title_id.upper():
+                    return str(game_id)
+        except Exception:                                     # noqa: BLE001 - the catalog may be absent or mid-migration
             pass
-    return title_id
+    return title_id.upper()

@@ -1679,3 +1679,30 @@ is the integration check.
 Look at slot 13: **one band, 1,465 vertices, ratio [0.462, 0.808, 0.653] - and blend 1.0.** Its geometry is simple enough that the
 donor's proportions are within the limits at full strength. Slot 12, the same pack, needs 0.4 because one of its bands is 6x off. **The
 strength is per slot, not per pack**, and a constant would have been wrong for one of them.
+## Round 107: "remove clothes" goes through the panel, and the material needs a name
+
+**The hide-only path now exists, and the route files builds where the launcher looks.**
+
+* `switch_replace.replace_pack` accepts `hide=[...]` with **no donor at all** - which is what "remove clothes" is. The refusal is about
+  having *something to do*, not about a donor being present. Tested (7 tests).
+* The build used to be filed under the **title id** (`mods/010099A00BC1E000/...`), which the launcher never looks at, so a replacement
+  built that way would silently do nothing. It is now filed under the **catalog game id** (`mods/270a15eb98dab4d7/...`) because the
+  route resolves the serial against the catalog. Verified live:
+
+```
+"written": ".../gbox-cache/mods/270a15eb98dab4d7/re4sw-noclothes"
+"materials hidden: [{'material': 7, 'start': 1450, 'triangles': 566, 'vertices': 720, 'centroid': [9.28, 598.26, -6.16]}]"
+```
+
+**But material 7 is not the jacket.** The build reached a round and Leon is unchanged:
+
+![the player with material 7 collapsed](evidence/re4sw-hide-material-7-no-visible-change.jpg)
+
+So the *operation* works (a material with 720 vertices was collapsed and the stage still loaded) and the *choice of material* does not.
+The census gives indices and triangle counts, and it cannot tell a shirt from a belt - 14 materials, sizes from 14 to 566 triangles, no
+names.
+
+**The missing piece is a material-to-texture map**, and it is already in the data: each material record carries a texture id, and the DAT
+holds the texture table. Naming them ("jacket", "trousers", "gloves") is what turns the panel's "remove clothes" from a slider over
+indices into a list a person can use. That is the next step for all four operations, because the same map names what "swap clothes"
+swaps.

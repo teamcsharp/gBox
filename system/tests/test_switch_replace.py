@@ -54,3 +54,14 @@ def test_the_report_says_what_it_did():
     for key in ("pack", "donor", "build", "blend", "slots", "skipped", "touched", "vertices_changed", "written"):
         assert key in payload, f"{key} is not in the report"
     assert payload["touched"] == 1
+
+
+def test_a_hide_only_edit_does_not_need_a_donor():
+    """"Remove clothes" is a hide with no donor: the refusal must be about *something to do*, not about a donor."""
+    with pytest.raises(S.ReplaceError) as raised:
+        S.donor_mesh(None, None)
+    assert "donor" in str(raised.value)
+    # and the guard that matters: no donor and no hide is refused before any file is touched
+    with pytest.raises(S.ReplaceError) as refused:
+        S.replace_pack(Config(), "0000000000000000", "pl00.udas")
+    assert "a donor is required" in str(refused.value) or "RomFS" in str(refused.value)

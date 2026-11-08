@@ -1636,7 +1636,8 @@ def install(app, store, config, auth, tactical_store=None):
                 _CONFIG, _title_id(body.title), body.pack,
                 donor_glb=body.donor_glb or None, donor_pack=body.donor_pack or None,
                 donor_slot=body.donor_slot, blend=body.blend, bands=body.bands,
-                build=body.build, hide=body.hide or None, write=body.write)
+                build=body.build, hide=body.hide or None, write=body.write,
+                game_id=_game_id_for(body.title))
         except switch_replace.ReplaceError as exc:
             raise HTTPException(400, str(exc)[:300]) from exc
         lab_state.event(body.title, "replace", f"{body.pack} <- {report.donor}", report.as_dict())
