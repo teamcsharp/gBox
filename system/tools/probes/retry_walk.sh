@@ -1,13 +1,12 @@
 #!/bin/bash
 # A failed resume-prompt press is not recoverable by pressing again: the dialog wants input at a moment it does not
-# announce. So a failed attempt re-boots the title instead, up to three times, and the first one that reaches a round
-# keeps its frames.
+# announce. So a failed attempt re-boots the title, and the first attempt that reaches a round keeps its frames.
 BUILD="$1"
 TAG="${2:-coh}"
 FRAMES="${3:-12}"
 PY=/home/ehm_eckx/gBox/system/.venv-linux-aarch64/bin/python
 cd /home/ehm_eckx/gBox/system || exit 1
-for i in 1 2 3; do
+for i in 1 2 3 4 5; do
   log="/tmp/${TAG}${i}.log"
   "$PY" -u /tmp/walk_cap.py "$BUILD" "${TAG}${i}" "$FRAMES" > "$log" 2>&1
   if grep -q "reached True" "$log"; then

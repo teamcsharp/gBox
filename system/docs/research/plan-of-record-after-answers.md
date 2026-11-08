@@ -1387,3 +1387,30 @@ the coherent morph behind it is tested.
 `sed -i 's/\r$//'` through PowerShell into SSH becomes `sed -i 's/r$//'` - it strips every letter `r` from the file, which turned
 `for` into `fo`, `grep` into `gep` and `reached True` into `eached Tue`. The reliable route is base64: encode on this side, decode on
 the Spark (`echo <b64> | base64 -d > file`). That is now the only way scripts are shipped.
+## Round 98: the boot saga is over - clean title screen, round reached on the first attempt
+
+Three things came together, and each was measured rather than hoped for:
+
+1. **Stopping the session at a menu writes a menu-state save.** The previous probe ended its session while the game sat on the title
+   screen; the next launch came up at `mean 61.2` - the **PRESS A** title screen - with a mod build loaded and **no resume prompt at
+   all**. That is the round-90 hypothesis confirmed, and it is the fix for the flip-flopping boot state: a session should be stopped
+   from a menu, not from mid-load.
+2. **The harness stops at `playing`.** With the one-branch fix deployed (verified by grep on the Spark), the walk reported
+   `walk steps 16 | reached True | last screen playing` - **on attempt 1**, with no retry needed.
+3. **The slab build runs in a live round.** `re4sw-ganadoslab` played a Mercenaries round (`01'41"17`, `01'28"22`) without incident:
+
+![the slab build in a live round](evidence/re4sw-slab-build-live-round.jpg)
+
+**What this round does not have is the shape verdict.** The frames caught Leon and the village, never a Ganado at distance - the capture
+is still a lottery for enemies even though it is now reliable for the round. The build is fine; the photograph is not yet the right one.
+
+## What the effort bought
+
+The last four rounds were almost entirely boot plumbing, and it is now settled as a *procedure* rather than a collection of workarounds:
+
+* stop a session from a menu (or answer the resume prompt with No and let it finish) so the save stays a menu;
+* launch with a build, wait for a picture;
+* walk: the driver's per-screen gaps, the driver's recovery for `story_prompt`, and **`playing` is the round**;
+* capture immediately, moving the camera, and accept that an enemy in frame is luck.
+
+That procedure is what every remaining Switch experiment needs, and it is written down here so the next one costs one boot, not six.
