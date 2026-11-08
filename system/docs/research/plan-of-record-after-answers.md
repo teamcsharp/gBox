@@ -672,3 +672,31 @@ identification is still owed - one boot with a longer window, and then "remove c
 The mechanism chain is proven end to end: overlay enabled and read (round 69, md5), a topology-preserving vertex edit drawn
 (round 70, the collapsed player with untouched enemies), and a bot that reaches live rounds through the menus (round 70,
 with this round's escape fix making it repeatable). What remains is *which pack* - a search, not a discovery.
+## Round 72: Leon is in `pl01`..`pl06` - a giant head proves it
+
+The four-group bisection worked exactly as designed. `re4sw-plquad2` (20 packs, 176 slots, 211,098 vertices) scaled
+`pl00`..`pl06` x3.0, `pl07`..`pl0d` x0.1 and `pl0e`..`pl15` x0.5. In the round the player is a **giant head**:
+
+![a giant head where Leon should be](evidence/re4sw-giant-head-pl01-06.jpg)
+
+`00'12"76` on the clock, the HUD says Leon, and the model is enormous - the x3.0 group, seen from a camera that is now inside
+it. Since a `pl00`-only shrink changed nothing (round 66) and this group did, **Mercenaries' Leon is in `pl01`..`pl06`**.
+
+The narrowing build is already made: `re4sw-plhalf` - `pl01`..`pl03` at x3.0 (giant) against `pl04`..`pl06` at x0.1 (fragment),
+31 slots, 53,526 vertices. One boot identifies the half; one more identifies the pack.
+
+## The trap that wasted the follow-up run: a leftover emulator
+
+The narrowed run started with the picture at `mean 18.7` - which is the **"Cancel loading? Yes/No"** prompt - *before* the bot
+had pressed anything, so the game was already sitting there when the launch was made. That is not a boot path: the emulator
+process from the previous run was still alive, and the "new" session attached to it. `pause_and_wait` stops gBox sessions and
+waits for jobs, but it does not kill a stray emulator, so the next launch can inherit a menu somebody else left on screen.
+
+**The probe must kill the emulator, not just the session.** `pkill -f citron` for the title before a launch (or an adapter check
+that the process is gone), and the runner's `picture up` condition must be "a picture the *menus* can be, not one the last run
+left" - which in practice means checking that the picture changes when a key is pressed, not just that it is bright.
+
+## What this round changed in the library
+
+`scale_materials` now permits factors up to 4.0, because a bisection needs distinguishable outcomes and refusing to grow a
+model silently dropped a whole group (13 packs written instead of 20). Eight hide tests and eight playbook tests pass.
