@@ -2534,3 +2534,21 @@ installer, the bot, the lab routes - passes on the Spark. The three `xfail`s are
 **The honest headline:** the pipeline reshapes characters reliably and proves it in frame; it cannot yet substitute one character for another on
 RE4 Switch, and the one route that would change that - the texture surface address from RAM - has not been attempted. Everything else on the
 operator's list is either implemented (RE5's four panel operations, the object swap, the rotation) or documented as blocked with the reason.
+## Round 141: the rotation is left as the operator wants it
+
+Before the experiments I paused the MercMode rotation (so a test would not compete with it), and it was still paused with the scheduler reporting
+`busy with jobs` from my launches. Restored through the API the panel uses:
+
+```
+{"op":"configure","host":"lilspark","enabled":true,"titles":["re4","re5"],"rounds_per_title":1,
+ "preferred_editions":{"re4":{"platform":"switch","mode":"mercenaries","title_id":"010099A00BC1E000"},
+                       "re5":{"platform":"switch","mode":"no_mercy","title_id":"010018100CD46000"}}}
+-> http 200
+-> phase: launching | title: Resident Evil 4 (Switch, Mercenaries)
+```
+
+**That is the one thing that must be true between rounds**, and it is now true again with both titles pinned to their Switch editions - the same
+configuration that answers the operator's "why is the ps3 version in rotation?" ticket.
+
+**A lesson worth writing down:** pausing the rotation for an experiment is fine, but the restore has to be verified, not assumed. This round
+found it still paused; a later round would have found it silent and had to work out why.
