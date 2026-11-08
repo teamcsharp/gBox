@@ -1414,3 +1414,37 @@ The last four rounds were almost entirely boot plumbing, and it is now settled a
 * capture immediately, moving the camera, and accept that an enemy in frame is luck.
 
 That procedure is what every remaining Switch experiment needs, and it is written down here so the next one costs one boot, not six.
+## Round 99: a coherent morph toward a flat slab still leaves the player intact
+
+`re4sw-playerslab` applies the **coherent** transfer to the player, with the most extreme in-tree donor - `em3e` slot 6, a slab of
+aspect 14.6:1 - across 26 packs, 98 slots, 227,800 vertices. The run reached a round on the first attempt and the player is
+unchanged:
+
+![the player after a coherent morph toward a flat slab](evidence/re4sw-player-coherent-slab-normal.jpg)
+
+**That is three results for the same mechanism, and together they say something precise:**
+
+| transfer | donor | drawn? |
+|---|---|---|
+| bone proportions | Sonic rig | no |
+| bone proportions | slab (x1.9 boost) | no |
+| **global** surface (nearest point anywhere) | Ganado | **yes - as shards** |
+| **coherent** surface (nearest point in the vertex's own band) | Ganado | no |
+| **coherent** surface (nearest point in the vertex's own band) | slab | no |
+| material scale / hide | - | **yes** |
+
+The pattern is now a rule: **any edit that stays self-consistent is not drawn as a change, and only edits that break the mesh's internal
+consistency show up.** Scaling shows because it moves a part *away* from the rest; shards show because vertices land on the opposite
+side; a coherent projection preserves the shape well enough to be invisible - for a slab donor, because the projection lands each vertex
+on the slab's nearest face, which for a thin box is close to where it already was along the surface normal.
+
+**Which means the missing piece is not the constraint but the *displacement*.** A shape transfer that is drawn has to move a vertex by
+the donor's corresponding vertex's **offset**, not to the nearest point on its surface:
+
+```
+displacement = donor_vertex - donor_bone_position        (in the donor's own frame)
+target_vertex = template_vertex + band_matched(displacement)
+```
+
+That is a per-bone affine transfer rather than a projection, and it is the fourth variant to try. The infrastructure is unchanged: the
+operation, the report, the build, the walk, the capture are all in place and each round now costs one boot.
