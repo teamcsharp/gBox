@@ -953,3 +953,32 @@ first row is not what it expects.
 
 Built, applied, 33 slots and 19,023 vertices reshaped, and its frame is still owed - now for a reason that is finally concrete:
 the walk cannot reach Mercenaries with the save as it is, and cannot reach Mercenaries without it either.
+## Round 82: the boot prompt is answered with Yes, and the walk reaches rounds in 13 steps
+
+The save's mid-load state was the whole problem, and its solution was one key: the prompt is **"Cancel loading? Yes/No"** with
+**No** selected, and declining it only returns to the save list. Saying **Yes** - `up`, then `a` - abandons the half-finished load
+and the game goes on to its title screen. With that one answer in the harness, the same walk that had been stalling for a dozen
+rounds reported:
+
+```
+MARK walk steps 13 | reached True | last screen unknown
+```
+
+and the frames are a live Mercenaries round: the briefing text (`01'48"34`, "Eliminate as many Ganados as you can before your
+evac chopper arrives"), then the round itself with a mob of Ganados against the camera at `01'16"72`.
+
+![the round the walk reached](evidence/re4sw-round-reached-after-resume-cancel.jpg)
+
+**This is the first time the RE4 Switch walk has been reliable end to end**, and it was never a bot bug: it was a saved state
+that had been written mid-load, plus a prompt whose default answer is the wrong one.
+
+**The Sonic Ganado's frame is close but not yet readable.** The enemies are there (`01'16"72`), but at that range they are a mass
+of bodies against the lens - a shape verdict needs them at distance, which is a capture-timing change rather than a build change.
+The build itself is done: 33 slots, 19,023 vertices reshaped by bone, topology untouched.
+
+## What the dozen rounds of stalling actually cost
+
+Every "bot stuck on a menu" from round 66 onward was this: a save written mid-load, answered with the wrong key. The lesson is
+worth stating because it generalises - **when a title is reached through a saved state, the first thing to verify is that the
+state itself is at a menu**, and the *answer* to a resume prompt is a decision, not a nuisance: cancelling the resume is what a
+runner wants, and declining it is a trap that looks identical from a frame.
