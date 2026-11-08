@@ -18,6 +18,10 @@ import time
 TOOL_ENV = "GBOX_REA"
 DEFAULT_TIMEOUT = 300.0
 PROTOCOL = "2025-11-25"
+# The package version this module is written against. `rea_tool` stamps every result with `rea.VERSION`, and its absence
+# made the whole tool module fail to load on the node ("module 'gbox.rea' has no attribute 'VERSION'") - the MCP tools were
+# simply missing there while the integration itself worked.
+VERSION = "6.8.0"
 
 
 class ReaError(RuntimeError):
@@ -50,6 +54,22 @@ def available() -> dict:
     argv = command()
     return {"installed": argv is not None, "command": argv, "dir": str(install_dir()),
             "note": "install with `npm install rea-agents` in that directory; the MCP server starts as `rea --mcp`"}
+
+
+def unavailable() -> str | None:
+    """The reason this tool cannot run here, or None when it can - the `check` the tool registry calls.
+
+    `available()` answers a page with a dict; a tool needs one string or nothing, and it must not raise: a machine without
+    REA should show the tool as unavailable, not fail to load the module.
+    """
+    try:
+        status = available()
+    except Exception as exc:                                  # noqa: BLE001
+        return f"REA could not be checked: {type(exc).__name__}: {exc}"[:200]
+    if not status.get("installed"):
+        return (f"REA is not installed in {status.get('dir')}: run `npm install rea-agents` there "
+                f"(the MCP server starts as `rea --mcp`)")
+    return None
 
 
 class Rea:
