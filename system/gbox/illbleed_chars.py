@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 
 from . import ninja
-from .gdrom import GDRom
+from .gdrom import GDRom, patch_gdi
 
 GAME_ID = "81a90290abc15a37"
 GAME_IDS = {GAME_ID}  # char_coverage.writer_for match (request 1411)
@@ -36,6 +36,58 @@ CHARACTERS = {
     "C03": ("Michel", ["Michel", "Illbleed Michel"]),
     "C04": ("Jorg", ["Jorg", "Yor", "Illbleed Jorg", "Illbleed Yor"]),
 }
+
+
+def _resize_nearest(img: np.ndarray, h: int, w: int) -> np.ndarray:
+    ys = np.arange(h) * img.shape[0] // h
+    xs = np.arange(w) * img.shape[1] // w
+    return img[np.ix_(ys, xs)]
+
+
+def swap_vq_body(data: bytes, slot: int, donor_rgba: np.ndarray) -> bytes:
+    """Re-encode CMCK slot ``slot`` from the ``donor_rgba`` image, keeping the slot's
+    allocated extent and every other byte unchanged.
+
+    The donor is resized (nearest) to the PVRT w/h declared in the slot and encoded
+    as big VQ (dfmt 3) in the slot's own pix format. The VQ body is always
+    ``256 * 8 + w * h // 4`` bytes, so it reproduces the original body length
+    exactly; the GBIX/PVRT headers, the offset table and the NJCM model stay
+    intact. Use :func:`replace_slot` on the original slot bytes for a
+    byte-identical no-op roundtrip; this is the changed-donor writer.
+    """
+    slots = cmck_slots(data)
+    s = slots[slot]
+    p = s.find(b"PVRT")
+    pix, dfmt = s[p + 8], s[p + 9]
+    if dfmt != 3:
+        raise ValueError(f"slot {slot} is not big VQ (dfmt {dfmt:#x})")
+    w, h = struct.unpack_from("<HH", s, p + 12)
+    img = np.asarray(donor_rgba)
+    if img.ndim != 3 or img.shape[2] not in (3, 4):
+        raise ValueError("donor must be an RGB or RGBA array")
+    if img.shape[:2] != (h, w):
+        img = _resize_nearest(img, h, w)
+    pvrt = ninja.pvr_vq(img, gbix=None, pix=pix, small=False)
+    body_start = p + 16
+    if len(pvrt) - 16 != len(s) - body_start:
+        raise ValueError(f"slot {slot}: replacement body {len(pvrt) - 16} != allocated "
+                         f"{len(s) - body_start} bytes")
+    return replace_slot(data, slot, s[:body_start] + pvrt[16:])
+
+
+def build_mod(gdi: str | Path, char: str, slot: int, donor_rgba: np.ndarray,
+              out_dir: str | Path) -> Path:
+    """An isolated mod GDI: the owned disc copied by gdrom.patch_gdi with the single
+    ``AMAZON/<char>.NJ`` file rewritten to carry the swapped slot body. All other
+    files are hard-linked from the original, which is preserved untouched."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if char not in CHARACTERS:
+        raise ValueError(f"unknown character {char!r}")
+    data, _ = load_character(gdi, char)
+    swapped = swap_vq_body(data, slot, donor_rgba)
+    name = f"illbleed_{char.lower()}_slot{slot}_mod.gdi"
+    return patch_gdi(gdi, out_dir, name, {f"AMAZON/{char}.NJ": swapped})
 
 
 def roster() -> list[dict]:
