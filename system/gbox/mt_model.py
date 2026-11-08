@@ -142,14 +142,32 @@ MOD_BLOCK_OFFSETS = 0x28
 MOD_BLOCKS = 7                       # seven offsets, so six blocks
 MOD_MESH_RECORD_V211 = 56            # measured: 31 of 31 models sum their records to vertex_count at this size
 # (name, offset, struct code) inside one 211 mesh record. vertex_count and vertex_stride are confirmed by construction:
-# their sums match the header and 8 vertices x 28 == the 224-byte vertex buffer of md0024.
+# their sums match the header and 8 vertices x 28 == the 224-byte vertex buffer of md0024. The remaining fields follow
+# the published Mesh156/210 layout shifted to 211's 56-byte record: the record's own vertex/index ranges are what make a
+# one-mesh rebuild possible, and `vertex_group_count` is what sizes the 144-byte weight-bound records after the table
+# (measured 2026-11-08: `sum(vertex_group_count) * 144 == vertex_buffer_offset - meshes_offset - 56 * mesh_count` on
+# 1,421 of 1,421 model-variant containers in RE5's archive tree).
 MOD_MESH_FIELDS = (
+    ("mesh_type", 0x00, "H"),
     ("vertex_count", 0x02, "H"),
     ("material_index", 0x05, "B"),
     ("level_of_detail", 0x06, "B"),
+    ("group_index", 0x08, "B"),
+    ("mesh_class", 0x09, "B"),
     ("vertex_stride", 0x0A, "B"),
+    ("render_mode", 0x0B, "B"),
+    ("vertex_index", 0x0C, "I"),
     ("vertex_offset", 0x10, "I"),
+    ("face_index", 0x18, "I"),
+    ("face_count", 0x1C, "I"),
+    ("face_offset", 0x20, "I"),
+    ("bone_map_index", 0x24, "B"),
+    ("vertex_group_count", 0x25, "B"),
+    ("min_index", 0x28, "H"),
+    ("max_index", 0x2A, "H"),
 )
+MOD_WEIGHT_BOUND = 144          # one record: bone u32, 12 pad, sphere, min, max, 4x4 matrix, extents
+
 MOD_MESH_FORMAT_OFFSET = 0x14        # a u32 written big-endian, one of the documented FVF values
 # The documented FVF values and the vertex stride each one implies (MT Framework MOD research). Measured on 1895 mesh
 # records: the value at +0x14 is one of these on 1895 of 1895, and its stride agrees with the record's own vertex_stride
@@ -737,6 +755,35 @@ class ModFile:
         meshes = self.meshes()
         return bool(meshes) and sum(m["vertex_count"] for m in meshes) == self.header()["vertex_count"]
 
+    def weight_bounds(self) -> list[dict]:
+        """The per-bone envelope records that follow the 56-byte mesh table.
+
+        Layout, measured on real assets (the published `WEIGHT_BOUNDING`): a u32 bone index, 12 padding bytes, a sphere
+        (4 floats), min and max boxes (4 floats each), a 4x4 matrix whose translation is the sphere centre, and the
+        box's half extents (4 floats). The table's length is `sum(mesh.vertex_group_count) * 144`; that equality holds
+        on 1,421 of 1,421 model-variant containers in RE5's archive tree, which is what makes the records writable.
+        """
+        header = self.header()
+        meshes = self.meshes()
+        count = sum(m.get("vertex_group_count", 0) for m in meshes)
+        start = header["offsets"]["meshes"] + MOD_MESH_RECORD_V211 * len(meshes)
+        end = header["offsets"]["vertex_buffer"]
+        if not count or end - start < count * MOD_WEIGHT_BOUND:
+            return []
+        out = []
+        for index in range(count):
+            base = start + index * MOD_WEIGHT_BOUND
+            out.append({
+                "bone": struct.unpack_from("<I", self.raw, base)[0],
+                "pad": self.raw[base + 4:base + 16],
+                "sphere": struct.unpack_from("<4f", self.raw, base + 16),
+                "min": struct.unpack_from("<3f", self.raw, base + 32),
+                "max": struct.unpack_from("<3f", self.raw, base + 48),
+                "matrix": struct.unpack_from("<16f", self.raw, base + 64),
+                "extent": struct.unpack_from("<3f", self.raw, base + 128),
+            })
+        return out
+
     def block(self, index: int) -> bytes:
         """Block `index` (0..5) of the geometry."""
         start, end = self.offsets[index], self.offsets[index + 1]
@@ -860,7 +907,8 @@ def replace_part(data: bytes, part_index: int, vertices: bytes, vertex_count: in
 
 def rebuild_mod(model: ModFile, *, vertex_buffer: bytes | None = None, index_buffer: bytes | None = None,
                 mesh_records: list[dict] | None = None, vertex_count: int | None = None,
-                bounds: dict | None = None, mesh_count: int | None = None, face_count: int | None = None) -> bytes:
+                bounds: dict | None = None, mesh_count: int | None = None, face_count: int | None = None,
+                edge_count: int | None = None, mesh_trailer: bytes | None = None) -> bytes:
     """Serialise a `MOD` from its parts, recomputing every offset from the block sizes.
 
     This is the writer, not a copy: the header is assembled from the decoded fields, the blocks are written in
@@ -908,14 +956,22 @@ def rebuild_mod(model: ModFile, *, vertex_buffer: bytes | None = None, index_buf
             # scratch needs it packed here: without it the format reads as 0 and no position decodes (measured).
             if "vertex_format" in record:
                 struct.pack_into(">I", head, base + MOD_MESH_FORMAT_OFFSET, int(record["vertex_format"]))
-        regions["meshes"] = bytes(head) + trailer
+        if mesh_trailer is not None:
+            regions["meshes"] = bytes(head) + bytes(mesh_trailer)
+        else:
+            regions["meshes"] = bytes(head) + trailer
+    elif mesh_trailer is not None:
+        # keep the existing 56-byte records but replace the per-bone envelope table after them
+        keep = MOD_MESH_RECORD_V211 * header["mesh_count"]
+        regions["meshes"] = regions["meshes"][:keep] + bytes(mesh_trailer)
     if vertex_buffer is not None:
         regions["vertex_buffer"] = vertex_buffer
     if index_buffer is not None:
         regions["index_buffer"] = index_buffer
     fields = {"vertex_count": header["vertex_count"] if vertex_count is None else vertex_count,
               "face_count": header["face_count"] if face_count is None else face_count,
-              "edge_count": header["edge_count"], "vertex_buffer_size": len(regions["vertex_buffer"]),
+              "edge_count": header["edge_count"] if edge_count is None else edge_count,
+              "vertex_buffer_size": len(regions["vertex_buffer"]),
               "group_count": header["group_count"], "bone_count": header["bone_count"],
               "mesh_count": header["mesh_count"] if mesh_count is None else mesh_count,
               "material_count": header["material_count"]}
