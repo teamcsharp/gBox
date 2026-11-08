@@ -1448,3 +1448,31 @@ target_vertex = template_vertex + band_matched(displacement)
 
 That is a per-bone affine transfer rather than a projection, and it is the fourth variant to try. The infrastructure is unchanged: the
 operation, the report, the build, the walk, the capture are all in place and each round now costs one boot.
+## Round 100: the per-band affine transfer is drawn - the first variant that is both coherent and visible
+
+`re4sw-playeraffine` applies `band_affine` to every player pack: each bone's region scaled about its own centroid to the donor band's
+per-axis extent. With the slab donor (`em3e` slot 6, aspect 14.6:1) the player is **no longer Leon** - the geometry has ballooned so far
+that the third-person camera, which is anchored to the character, ends up **inside the mesh**:
+
+![the camera inside the ballooned player mesh](evidence/re4sw-playeraffine-drawn.jpg)
+
+`01'36"78` and `01'30"38` on the clock, HUD normal, world normal, and the character filling the lens with flat black surfaces.
+
+**That is the fourth variant and the first that satisfies both conditions the engine imposes:**
+
+| variant | coherent? | changes shape? | drawn? |
+|---|---|---|---|
+| bone proportions | yes | no | no |
+| material scale / hide | n/a | yes | **yes** |
+| global surface | no | yes | **yes (shards)** |
+| coherent surface | yes | no (in practice) | no |
+| **per-band affine** | **yes** | **yes** | **yes** |
+
+The rule from round 99 is confirmed and now has a working instrument: **an edit is drawn when it moves parts relative to each other
+without letting a vertex leave its own region.**
+
+**It is over-scaled, not mis-shaped.** A slab donor's per-axis extents are nothing like a body's, and the ratio is clamped at 6x, so the
+player becomes enormous. The tuning is a separate question from the mechanism, and the next run should use a **humanoid donor** (a
+Ganado, whose proportions are body-like) with `blend` around 0.5 - the same function, two arguments.
+
+Tests: 5 pass locally and on the Spark, including *a flat donor flattens the band* and *a self-donor changes essentially nothing*.

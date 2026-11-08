@@ -15,7 +15,7 @@ import sys
 sys.path.insert(0, os.path.expanduser("~/gBox/system"))
 from gbox import config as gconfig
 from gbox import re4gc_inventory as INV
-from gbox import re4hd_coherent as C
+from gbox import re4hd_affine as A
 from gbox import re4hd_models as R
 from gbox import switch_mods
 
@@ -25,6 +25,7 @@ ROMFS = os.path.join(os.path.expanduser("~/gBox_alt/switch/romfs"), TITLE, "bio4
 DONOR_PACK = sys.argv[1] if len(sys.argv) > 1 else "em16.udas"
 DONOR_SLOT = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 BUILD = sys.argv[3] if len(sys.argv) > 3 else "re4sw-playercoherent"
+TEMPLATE_PREFIX = os.environ.get("TEMPLATE_PREFIX", "pl")     # pl = the player, em = the enemies
 PACKS = sys.argv[4].split(",") if len(sys.argv) > 4 else None
 
 
@@ -42,7 +43,8 @@ def main() -> int:
     cfg = gconfig.load(os.path.expanduser("~/gBox/system/gbox.toml"))
     donor = donor_mesh()
     print(f"donor: {DONOR_PACK} slot {DONOR_SLOT} | {len(donor.pos)} vertices, {len(donor.tris)} triangles")
-    names = PACKS or sorted(n for n in os.listdir(ROMFS) if n.lower().startswith("pl") and n.lower().endswith(".udas"))
+    names = PACKS or sorted(n for n in os.listdir(ROMFS)
+                            if n.lower().startswith(TEMPLATE_PREFIX) and n.lower().endswith(".udas"))
     changes, totals = {}, {"packs": 0, "slots": 0, "vertices": 0}
     for name in names:
         data = open(os.path.join(ROMFS, name), "rb").read()
@@ -62,7 +64,8 @@ def main() -> int:
                     continue
                 # coherent: the bone decides where a vertex may land, the surface decides the shape (round 87's shards came
                 # from letting a global nearest-surface search pick the region)
-                replacement = R.pad_to(C.coherent_surface_bin(mesh, donor, bands=6), slot["size"])
+                # per-band affine: coherent AND shape-changing, the combination the last three variants each lacked
+                replacement = R.pad_to(A.band_affine_bin(mesh, donor, bands=6)[0], slot["size"])
                 patched = INV.pack_patch(patched, index, replacement, endian="<")
                 touched += 1
                 moved += len(mesh.pos)
