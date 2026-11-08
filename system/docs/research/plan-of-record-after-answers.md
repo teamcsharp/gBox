@@ -2340,3 +2340,31 @@ a reboot, wait for the driver before judging the emulator.
 **What is still failing is the experiment, not the host.** `re4sw-tint2` walked 18 steps and ended on `loading`; the capture then correctly
 discarded every frame (`no round timer on screen`). That is the same intermittently-hanging build seen before the outage - a 17-material
 header write that sometimes reaches a round and sometimes stops the stage loading.
+## Round 133: the control that settles it - stock reaches a round, every tint hangs
+
+After the reboot I finally ran the control that had been missing all along: **a stock run, no mod at all.**
+
+```
+MARK walk steps 6 | reached True | last screen playing
+frames: 6
+```
+
+![a stock round reached after the reboot](evidence/re4sw-stock-control-round.jpg)
+
+`01'44"09`, the timer up, Leon normal. **So the environment, the walk, the capture and the HUD guard all work after the reboot** - which
+makes the tint result unambiguous:
+
+| build | change | outcome |
+|---|---|---|
+| `re4sw-tint` | every material of every slot (25 + 8) | hung (`loading`) |
+| `re4sw-tint2` | 17 materials of slot 0 | reached a round **once** (pre-reboot), hung twice |
+| `re4sw-tint3` | **1 material** of slot 0 | hung (`loading`, 0 frames) |
+| stock | nothing | **reached a round, 6 frames** |
+
+**The material header's colour field is not writable.** Three variants, from one material to all of them, and the stage stops loading in every
+one; the single-material case was the smallest possible change and it still hung. Whatever lives at header `+16` is consumed by the loader in a
+way that rejects a changed value - so "recolour the character through the material" is **closed**, not merely hard.
+
+**What that leaves for clothes and skins on this title:** the texture path, and specifically the **surface address RAM can supply** - the same
+conclusion round 128 reached from the container side, now confirmed from the operation side. The model-proportion path (Sonic's proportions on
+the player) remains the only proven way to change how a character looks, and it is unaffected by any of this.

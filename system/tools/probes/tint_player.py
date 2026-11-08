@@ -19,6 +19,9 @@ TITLE_ID = "010099A00BC1E000"
 TINT_OFFSET = 16
 TARGET_SLOT = int(os.environ.get("TARGET_SLOT", "0"))
 ONLY_COLOURED = os.environ.get("ONLY_COLOURED", "1") == "1"
+# A single material is the smallest change that can still be seen: 17 materials of one slot reached a round once and hung twice, and the
+# point of this build is to move the load risk to zero so the colour question can be answered at all.
+MATERIALS = [int(v) for v in (os.environ.get("MATERIALS", "") or "").split(",") if v.strip()]
 COLOUR = (0xFF, 0x20, 0x20)          # red, unmistakable against the game's palette
 
 
@@ -46,7 +49,9 @@ def main() -> int:
             continue
         changed = 0
         for mat in mesh.mats:
-            if ONLY_COLOURED and not any((mat.header or b"")[TINT_OFFSET:TINT_OFFSET + 3]):
+            if MATERIALS and mat.index not in MATERIALS:
+                continue
+            if not MATERIALS and ONLY_COLOURED and not any((mat.header or b"")[TINT_OFFSET:TINT_OFFSET + 3]):
                 continue
             header = bytearray(mat.header or b"")
             if len(header) < TINT_OFFSET + 4:
