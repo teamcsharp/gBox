@@ -582,3 +582,33 @@ use.
 
 Nothing else on the model track is worth doing until the overlay question is answered - every result so far was measured
 through a mechanism that may have been loading someone else's file.
+## Round 69: the overlay works, so `pl00` is not Mercenaries' Leon
+
+Measured **during a modded session**, not inferred afterwards:
+
+```
+[DisabledAddOns] entry 5 (0x010099A00BC1E000): disabled count 0 | build disabled: False
+load/<title>/re4sw-shrinkall2 -> gbox-cache/mods/270a15eb98dab4d7/re4sw-shrinkall2   (a link)
+emulator_reads  f47120f6bab1682ef6279cd83c59eb59
+build_copy      f47120f6bab1682ef6279cd83c59eb59   same: true
+```
+
+My earlier reading of the config was wrong: entry 5 is the RE4 title and the 31 builds **were** listed as disabled, so
+`set_title_disabled` is doing its job - the launched build is the only enabled one, and the file the emulator reads is byte-for-byte
+the build's own `pl00.udas`. The overlay mechanism is sound.
+
+**Which settles the ambiguity the other way: `bio4/em/pl00.udas` is not the model Mercenaries draws for Leon.** A file whose
+every material was scaled to 10% was demonstrably the file being read, and the player was unchanged - so the mode's characters
+come from somewhere else.
+
+**The next probe is already built:** `re4sw-allplayers` rewrites **26 of the 27 player packs** (`pl00`..`pl21`), 227 BIN slots,
+**259,937 vertices** scaled to 10% about their own centroids, written through `switch_mods.write_files`. Whatever the mode draws
+a character from, its vertices move. Its run this round did not reach a round - the bot was left on the save-list prompt - so
+the frame is owed next round, with the escape fixed first.
+
+## The escape needs to be a state machine that does not reset on a repaint
+
+`STALL_ESCAPE = ("b", "up", "a")` resets whenever the picture changes, and a cursor moving *is* a change: on the save list each
+press repaints a little, so the sequence restarts at "b" and never reaches the confirm. The fix is to advance on
+"still static after this press" rather than on "picture identical", and to treat a **named screen change** as the reset signal.
+Until that is right the bot will keep stranding runs on this menu, and it is the same menu in three of the last four rounds.
