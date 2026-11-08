@@ -1094,3 +1094,34 @@ actually changed a silhouette on screen.
 * closed: "does a same-topology edit draw" - yes, the collapsed player with untouched enemies (round 70);
 * closed: "does bone-proportion transfer change a character" - **no**, measured this round across every player pack;
 * open: a *shape* transfer that is both drawn and recognisable - the surface morph is the only one with evidence behind it.
+## Round 87: the surface morph draws, and the result is shards - which names the real problem
+
+`re4sw-playerganado` pulls every player mesh onto a Ganado's surface: 26 packs, 98 slots, **227,800 vertices**, vertex counts and
+primitive tables untouched. In the round the player is visibly *not* Leon any more - the frame shows untextured geometry jutting out
+and a head that has collapsed into a dome with a spike:
+
+![the player after the surface morph](evidence/re4sw-player-surface-morph-shards.jpg)
+
+**So the surface morph draws.** That is the third mechanism question answered: bone transfer preserves the silhouette (round 86),
+surface transfer changes it and is drawn (this round), and the result is a blob because neighbouring vertices land on opposite sides
+of the donor. That matches the note the library already carries from round 23 - *"the blobby result measured on RE4 Switch"* - so this
+is a reproduction of a known limitation, not a new surprise.
+
+**Which names the real problem precisely.** A character replacement on this title needs a shape transfer that is *coherent per body
+region*:
+
+* bone transfer is coherent but shape-preserving - it keeps each vertex with its own bone;
+* surface transfer changes shape but is incoherent - it ignores which bone a vertex belongs to;
+* what is needed is **both**: restrict each vertex's snap to the donor's surface *near its own bone*, so the arm lands on the arm.
+
+That is a small, well-defined change to `morph_to` - a per-bone nearest-surface search instead of a global one - and it is the next
+piece of work. Everything around it is already in place: the operation, the report, the build, the walk, the capture.
+
+## What the four mechanism questions now stand at
+
+| question | answer | evidence |
+|---|---|---|
+| is the edited pack read at all? | yes | md5 of the emulator's file equals the build's |
+| does a same-topology edit draw? | yes | collapsed player, untouched enemies (round 70) |
+| does bone-proportion transfer change a character? | **no** | 22 packs morphed, player unchanged (round 86) |
+| does a surface transfer draw? | **yes, as shards** | this round |
