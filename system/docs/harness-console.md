@@ -10,6 +10,8 @@ and a persisted freeze witness when the frame stops changing.
 
 * **⌁ harness console** header: click to collapse; `✕` hides it and leaves a `⌁ console` pill that reopens it.
 * **⌖** captures a diagnostic snapshot from the server.
+* **G** hooks the title's analyzed main into the Ghidra Bridge (`open`); the job's `ghidra` lines stream here. A later
+  call can decompile a target once the program is open.
 * the feed combines:
   * `[game]` lines tailed from the session's Eden log;
   * `[runtime]` session/build/validation and MercMode phase/screen transitions;
@@ -30,6 +32,7 @@ Added by `gbox/harness_console.py` (`install(app, store, config, auth)` in `serv
 | `POST /api/sessions/{sid}/harness/probe` | session/overlay/validation, emulator log tail and Ghidra readiness |
 | `POST /api/sessions/{sid}/harness/freeze` | writes `gbox-data/harness/freeze-<sid>-<stamp>.json` with the frame witness and the console tail |
 | `GET /api/sessions/{sid}/harness/freeze` | the session's freeze reports |
+| `POST /api/sessions/{sid}/harness/ghidra` | `{op:"open"}` (or `decompile` with `target`) submits `ghidra_bridge` for the title's analyzed main on the session's worker and returns the job |
 | `GET /api/harness/ghidra` | whether the Ghidra Bridge can attach, and why not when it cannot |
 
 The emulator log reader keeps a byte offset per `(session, log path)` and starts at the last 64 KiB, so attaching the
