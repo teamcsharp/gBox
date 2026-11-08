@@ -78,8 +78,10 @@ def scale_materials(mesh, indices, factor: float = 0.1) -> dict:
     player built this way looks identical, the pack was not loaded.
     """
     mesh_check(mesh)
-    if not 0.0 < float(factor) <= 1.0:
-        raise BINError(f"factor must be in (0, 1], not {factor}")
+    # shrinking is the "hide" use; growing is a legitimate *probe* signature (a bisection needs distinguishable results),
+    # so the ceiling is a sanity bound rather than 1.0
+    if not 0.0 < float(factor) <= 4.0:
+        raise BINError(f"factor must be in (0, 4], not {factor}")
     before_tris = np.array(mesh.tris, copy=True)
     scaled, moved = [], 0
     for index in indices:

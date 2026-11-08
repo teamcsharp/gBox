@@ -22,7 +22,10 @@ GAME_IDS = ("270a15eb98dab4d7",)          # Resident Evil 4 (Switch) [UPDATE 1.0
 ROUND_ENTRY_PRESSES = 3
 # The trapped-menu escape, one press per still picture: back out of the save list, then move the prompt's cursor off
 # "No" and confirm it. A picture that changes resets the sequence, so a wrong guess costs one press, not the run.
-STALL_ESCAPE = ("b", "up", "a")                    # measured: three A presses after the stage draws start the clock
+# A trapped menu is left by pressing back, and only back: "a" on the save list *loads a save*, which returns to the same
+# prompt one screen later. Four backs clear the "Cancel loading?" prompt, the list and the LOAD menu, and the walk then
+# starts again from whatever named screen it lands on.
+STALL_ESCAPE = ("b", "b", "b", "b")                    # measured: three A presses after the stage draws start the clock
 IDLE_TICKS_BEFORE_ACTION = 2
 
 

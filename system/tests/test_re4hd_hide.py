@@ -87,12 +87,12 @@ def test_scaling_shrinks_a_material_about_its_centroid():
     assert report["triangles_unchanged"] is True
 
 
-def test_a_scale_factor_outside_the_unit_interval_is_refused():
+def test_a_scale_factor_outside_the_sanity_bound_is_refused():
     mesh = mesh_with_two_materials()
     with pytest.raises(BINError):
         H.scale_materials(mesh, [0], factor=0.0)
     with pytest.raises(BINError):
-        H.scale_materials(mesh, [0], factor=2.0)
+        H.scale_materials(mesh, [0], factor=4.5)
 
 
 @pytest.mark.skipif(not os.path.isfile(PACK), reason="the RE4 Switch RomFS is not extracted on this machine")

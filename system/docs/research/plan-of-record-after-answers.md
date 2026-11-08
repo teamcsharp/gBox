@@ -642,3 +642,33 @@ three boots, and then "remove clothes" has a target pack and a material list ins
 The playbook's escape advanced on pixel change, and a cursor repainting a stuck menu is a pixel change - so it restarted at its
 first press forever. It now advances on **time since the last action** and restarts only when the **named screen** changes.
 Eight tests, including one that pins exactly this: a stuck screen that keeps repainting still escalates.
+## Round 71: the bisection is built and the escape is back-out only
+
+Two changes, both earned this round:
+
+**The escape must not confirm anything.** `STALL_ESCAPE` was `("b", "up", "a")`, and "a" on the save list *loads a save* -
+which returns to the same prompt one screen later. It is now `("b", "b", "b", "b")`: back out of the prompt, the list and the
+LOAD menu, and let the walk start again from whatever named screen it lands on. Eight playbook tests, all green, deployed.
+
+**A probe may grow a model.** `scale_materials` refused any factor above 1.0, which silently dropped the whole first group of
+the bisection (x3.0) and left a build with 13 packs instead of 20. The ceiling is now a sanity bound at 4.0, with the reason
+written where the check is: shrinking is the *hide* use, growing is a legitimate *probe signature*.
+
+**The bisection itself** (`re4sw-plquad2`): 20 player packs, 176 BIN slots, **211,098 vertices**, four groups with
+distinguishable outcomes -
+
+| packs | factor | a round would show |
+|---|---|---|
+| `pl00`..`pl06` | x3.0 | a giant |
+| `pl07`..`pl0d` | x0.1 | a fragment |
+| `pl0e`..`pl11`, `pl14`, `pl15` | x0.5 | noticeably smaller |
+| `pl16`..`pl21` | untouched | unchanged |
+
+Its run reached the main menu (`EXTRAS` visible in the frame) but the capture window closed before the round, so the
+identification is still owed - one boot with a longer window, and then "remove clothes" has a target pack instead of a guess.
+
+## What is now settled, and what it cost
+
+The mechanism chain is proven end to end: overlay enabled and read (round 69, md5), a topology-preserving vertex edit drawn
+(round 70, the collapsed player with untouched enemies), and a bot that reaches live rounds through the menus (round 70,
+with this round's escape fix making it repeatable). What remains is *which pack* - a search, not a discovery.

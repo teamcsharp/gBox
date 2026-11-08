@@ -92,7 +92,7 @@ def test_a_still_menu_walks_the_escape_sequence(monkeypatch):
     B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: ticks["n"] > 30,
            sleep=lambda s: None, stats=stats, clock=clock, still_s=12.0)
     keys = [row[0]["key"] for row in adapter.sent if row and row[0].get("down")]
-    assert keys[:3] == list(B.STALL_ESCAPE), f"the escape must run in order, got {keys}"
+    assert keys[:len(B.STALL_ESCAPE)] == list(B.STALL_ESCAPE), f"the escape must run in order, got {keys}"
     assert stats["stall_steps"] >= len(B.STALL_ESCAPE)
 
 
@@ -112,7 +112,7 @@ def test_the_escape_advances_even_while_the_picture_repaints(monkeypatch):
     B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: ticks["n"] > 26,
            sleep=lambda s: None, stats=stats, clock=clock, still_s=12.0)
     keys = [row[0]["key"] for row in adapter.sent if row and row[0].get("down")]
-    assert keys[:3] == list(B.STALL_ESCAPE), f"a repainting stuck screen still escalates, got {keys}"
+    assert keys[:len(B.STALL_ESCAPE)] == list(B.STALL_ESCAPE), f"a repainting stuck screen still escalates, got {keys}"
 
 
 def test_a_change_of_named_screen_restarts_the_escape(monkeypatch):
