@@ -575,6 +575,7 @@ class ReplaceIn(BaseModel):
     bands: int = 6
     build: str = ""
     hide: list[int] = []
+    hide_mode: str = "vanish"          # "vanish" removes a garment from view; "collapse" tucks it inside the body
     write: bool = True
 
 
@@ -1637,7 +1638,7 @@ def install(app, store, config, auth, tactical_store=None):
                 donor_glb=body.donor_glb or None, donor_pack=body.donor_pack or None,
                 donor_slot=body.donor_slot, blend=body.blend, bands=body.bands,
                 build=body.build, hide=body.hide or None, write=body.write,
-                game_id=_game_id_for(body.title))
+                game_id=_game_id_for(body.title), hide_mode=body.hide_mode)
         except switch_replace.ReplaceError as exc:
             raise HTTPException(400, str(exc)[:300]) from exc
         lab_state.event(body.title, "replace", f"{body.pack} <- {report.donor}", report.as_dict())

@@ -75,7 +75,7 @@ def _slot_mesh(pack_bytes: bytes, slot: int):
 
 def edit_pack(pack_bytes: bytes, slot: int, *, hide: list[int] | None = None,
               scale: tuple[list[int], float] | None = None, donor: bytes | None = None,
-              pack_name: str = "") -> tuple[bytes, EditReport]:
+              pack_name: str = "", hide_mode: str = "collapse") -> tuple[bytes, EditReport]:
     """One in-place edit of one slot: hide materials, scale materials, or morph the mesh toward a donor rig.
 
     Exactly one operation per call, so the report is unambiguous and a build can name what it did. The slot's own size is
@@ -89,7 +89,7 @@ def edit_pack(pack_bytes: bytes, slot: int, *, hide: list[int] | None = None,
         raise EditError(f"slot {slot} carries no material records, so there is nothing to name")
     chosen = 0
     if hide:
-        report = HIDE.hide_materials(mesh, list(hide))
+        report = HIDE.hide_materials(mesh, list(hide), mode=hide_mode)
         chosen, operation, detail = report["vertices_changed"], "hide", report
     elif scale:
         indices, factor = scale

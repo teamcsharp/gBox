@@ -115,3 +115,21 @@ def test_a_real_pack_material_collapses_and_its_triangles_survive():
     assert np.array_equal(before, mesh.tris)
     again = R.bin_read(R.bin_write(mesh))
     assert np.array_equal(np.array(again.tris), before), "a write round-trip keeps every triangle"
+
+
+def test_vanish_moves_a_material_far_off_instead_of_into_the_body():
+    """The measured difference: collapse hides a garment *inside* the body (invisible), vanish removes it from view."""
+    mesh = mesh_with_two_materials()
+    original = np.array(mesh.pos, copy=True)
+    hidden = H.hide_materials(mesh, [1], mode="vanish")
+    moved = np.asarray(mesh.pos)
+    changed = np.where(np.abs(moved - original).max(axis=1) > 1.0)[0]
+    assert changed.size, "the material's vertices must move"
+    assert moved[changed][:, 2].max() < original[:, 2].min() - 1000.0, "they must leave the model entirely"
+    assert hidden["hidden"][0]["mode"] == "vanish"
+
+
+def test_an_unknown_hide_mode_is_refused():
+    mesh = mesh_with_two_materials()
+    with pytest.raises(H.BINError):
+        H.hide_materials(mesh, [1], mode="delete")

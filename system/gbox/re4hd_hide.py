@@ -47,8 +47,13 @@ def mesh_check(mesh) -> None:
         raise BINError("this BIN has no positions to collapse")
 
 
-def hide_materials(mesh, indices) -> dict:
-    """Collapse each named material's vertices onto that material's centroid; topology is untouched.
+def hide_materials(mesh, indices, *, mode: str = "collapse", offset: float = 100000.0) -> dict:
+    """Hide each named material's vertices; topology is untouched either way.
+
+    Two modes, and the difference was measured: `collapse` pulls the material's vertices onto its own centroid, which leaves a small
+    blob *inside* the body - invisible if the material was an outer layer, because the layer underneath still covers it (a 566-triangle
+    garment collapsed in round 107 and the player looked stock). `vanish` translates them far off the map instead, so the material is
+    gone from view and whatever lies beneath it is what a person sees, which is the operation "remove clothes" means.
 
     Returns a report {hidden: [{material, start, triangles, vertices, centroid}], vertices_changed,
     triangles_unchanged, n_verts, n_tris} so a caller can show what a build actually did.
@@ -62,8 +67,14 @@ def hide_materials(mesh, indices) -> dict:
         if verts.size == 0:
             raise BINError(f"material {index} references no vertices")
         centroid = mesh.pos[verts].mean(axis=0)
-        mesh.pos[verts] = centroid
-        hidden.append({"material": int(index), "start": start, "triangles": end - start,
+        if mode == "vanish":
+            # far below the playfield: drawn, but nowhere near the character, so the layer underneath shows
+            mesh.pos[verts] = centroid - np.array([0.0, 0.0, float(offset)])
+        elif mode == "collapse":
+            mesh.pos[verts] = centroid
+        else:
+            raise BINError(f"unknown hide mode {mode!r}: use 'collapse' or 'vanish'")
+        hidden.append({"mode": mode, "material": int(index), "start": start, "triangles": end - start,
                        "vertices": int(verts.size), "centroid": [round(float(v), 4) for v in centroid]})
         moved += int(verts.size)
     return {"hidden": hidden, "vertices_changed": moved,

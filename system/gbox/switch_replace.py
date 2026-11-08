@@ -100,7 +100,7 @@ def donor_mesh(donor_glb: str | None, donor_pack: Path | None, donor_slot: int =
 def replace_pack(config, title_id: str, pack: str, *, donor_glb: str | None = None, donor_pack: str | None = None,
                  donor_slot: int = 0, blend: float | None = None, bands: int = 6, build: str = "",
                  min_vertices: int = MIN_SLOT_VERTICES, hide: list[int] | None = None,
-                 write: bool = True, game_id: str = "") -> ReplaceReport:
+                 write: bool = True, game_id: str = "", hide_mode: str = "vanish") -> ReplaceReport:
     """Morph `pack`'s body slots toward the donor's proportions and write the result into a LayeredFS build.
 
     `hide` takes material indices to collapse instead of (or before) the transfer, which is the "remove clothes" case. With `write=False`
@@ -152,7 +152,7 @@ def replace_pack(config, title_id: str, pack: str, *, donor_glb: str | None = No
 
     if hide:
         try:
-            patched, edit_report = EDIT.edit_pack(patched, 0, hide=hide, pack_name=pack)
+            patched, edit_report = EDIT.edit_pack(patched, 0, hide=hide, pack_name=pack, hide_mode=hide_mode)
             report.skipped.append({"slot": 0, "reason": f"materials hidden: {edit_report.detail.get('hidden')}"})
         except EDIT.EditError as exc:
             raise ReplaceError(f"the hide step was refused: {exc}") from exc

@@ -1706,3 +1706,31 @@ names.
 holds the texture table. Naming them ("jacket", "trousers", "gloves") is what turns the panel's "remove clothes" from a slider over
 indices into a list a person can use. That is the next step for all four operations, because the same map names what "swap clothes"
 swaps.
+## Round 108: "vanish" is the right operation, and `pl00` is the wrong pack
+
+**Collapse was hiding garments inside the body.** `hide_materials` gained a second mode:
+
+| mode | what it does | when it is right |
+|---|---|---|
+| `collapse` | pulls the material onto its own centroid | removing something *internal*, or breaking a part on purpose |
+| `vanish` | translates it far below the playfield | **"remove clothes"** - the layer underneath is what a person should see |
+
+Tested (10 in the hide suite, including that vanished vertices leave the model entirely and that an unknown mode is refused), and
+threaded through `edit_pack` -> `switch_replace` -> the route (`hide_mode` on the body).
+
+**But vanishing three of `pl00`'s biggest materials - 1,856 vertices across the two 430-triangle shoulder pieces and the 566-triangle one
+- left Leon stock:**
+
+![pl00 with three materials vanished](evidence/re4sw-vanish-pl00-still-stock.jpg)
+
+**That is a pack-identification result, not a mechanism result.** Round 70 already showed that `pl00`-only builds change nothing while
+`re4sw-allplayers` (all 26 player packs) visibly collapsed the player. `pl00` is not the mesh the camera sees; the visible Leon is one of
+`pl01`..`pl21`.
+
+**So the next step is a bisection, and it is bounded:** vanish the same materials across *half* the player packs, boot, and see whether the
+player changes - 5 boots for 26 packs, each one halving the set. That names the pack the panel should default to, and every later
+operation ("swap clothes", "swap character") needs that name.
+
+**Why this matters beyond clothes:** every per-pack operation in the panel - all four - silently does nothing if pointed at a pack the
+game is not drawing. A pack that is *not* drawn is the most likely explanation for a build that "had no effect", and it should be the
+first thing checked, not the last.
