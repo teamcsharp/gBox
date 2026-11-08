@@ -98,6 +98,17 @@ The next whole-entry path must either:
 * rewrite the paired MRL with the MOD (one mesh, one material), or
 * swap a donor **MOD+MRL pair** from another enemy archive, to prove the low pair can be replaced before trying Sonic.
 
+### Padding the mesh count reaches the title
+
+Keeping the low slot's original `mesh_count` (341) while writing **one real Sonic record and 340 empty records** changes
+the result: the build boots to the RE5 title screen and draws normal animated title frames. That is the first whole-entry
+Sonic MOD to get past boot; the plain one-mesh version was black immediately.
+
+The Mercenaries transition still stops at `NOW LOADING`. The empty records currently have `vertex_offset = 0` and
+`face_index = 0`, so they overlap the Sonic record's buffers. The next variant puts each empty record's
+`vertex_offset` past the vertex buffer and `face_index` past the index buffer, and gives them `min_index/max_index = 0`;
+if the loader only needs the count, that should stop the empty parts from being read as geometry.
+
 `mtf_author.combine` also needed a fix: the index stream is global to the shared vertex buffer, so `combine` now
 subtracts each part's `vertex_index` before adding its own base. Without it, the low self one-mesh produced triangle
 56072 with only 55667 vertices.

@@ -97,6 +97,21 @@ def test_one_mesh_build_writes_the_table_and_an_envelope_per_bone():
     assert written.header()["offsets"]["vertex_buffer"] - written.header()["offsets"]["meshes"] == 56 + 2 * 144
 
 
+def test_a_padded_mesh_count_keeps_the_slot_shape_with_empty_records():
+    model = mt_model.parse_mod(make_target(2))
+    combined = mtf_author.combine(model)
+    built = mtf_author.build_one_mesh(model, combined["vertices"], combined["triangles"], material_index=0, mesh_count=2)
+    written = mt_model.parse_mod(built)
+    assert written.header()["mesh_count"] == 2
+    assert written.header()["vertex_count"] == 6
+    assert written.header()["face_count"] == 9          # real 8 + one empty separator per extra record
+    assert written.split_valid() is True
+    records = written.meshes()
+    assert records[0]["vertex_count"] == 6 and records[0]["face_count"] == 7
+    assert records[1]["vertex_count"] == 0 and records[1]["face_count"] == 0
+    assert records[1]["vertex_group_count"] == 0
+
+
 def test_a_one_mesh_model_keeps_the_target_skeleton_and_material_table():
     model = mt_model.parse_mod(make_target(2))
     combined = mtf_author.combine(model)

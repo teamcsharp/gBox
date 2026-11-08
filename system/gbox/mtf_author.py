@@ -136,7 +136,7 @@ def pack_weight_bound(bone: int, points: list[tuple[float, float, float]]) -> by
 
 
 def build_one_mesh(model: mt_model.ModFile, vertices: list[dict], triangles: list[tuple[int, int, int]],
-                   *, material_index: int = 0, template_index: int = 0) -> bytes:
+                   *, material_index: int = 0, template_index: int = 0, mesh_count: int | None = None) -> bytes:
     """A one-mesh copy of `model`: its skeleton, groups, materials and bounds, with new geometry.
 
     The mesh record is based on the target's `template_index` record so fields this writer does not name keep the
@@ -171,9 +171,19 @@ def build_one_mesh(model: mt_model.ModFile, vertices: list[dict], triangles: lis
                    "vertex_format": ONE_BONE_FORMAT, "face_index": 0, "face_count": index_count - 1,
                    "face_offset": 0, "bone_map_index": 0, "vertex_group_count": len(by_bone),
                    "min_index": 0, "max_index": len(vertices) - 1})
+    count = max(1, int(mesh_count or 1))
+    records_out = [record]
+    if count > 1:
+        # Keep the slot's original mesh count (and therefore its MRL shape) but make every extra record empty. This is a
+        # probe: the first record draws the new geometry; the others account for the MRL's part count without vertices.
+        empty = dict(record)
+        empty.update({"vertex_count": 0, "face_count": 0, "vertex_group_count": 0, "vertex_index": 0,
+                      "vertex_offset": 0, "face_index": 0, "face_offset": 0, "min_index": 0, "max_index": 0,
+                      "level_of_detail": 0, "mesh_class": 0})
+        records_out += [empty] * (count - 1)
     return mt_model.rebuild_mod(model, vertex_buffer=vertex_buffer, index_buffer=bytes(index_buffer),
-                                mesh_records=[record], mesh_count=1, vertex_count=len(vertices),
-                                face_count=index_count, edge_count=0, bounds=bounds, mesh_trailer=trailer)
+                                mesh_records=records_out, mesh_count=count, vertex_count=len(vertices),
+                                face_count=index_count + count - 1, edge_count=0, bounds=bounds, mesh_trailer=trailer)
 
 
 def replace_archive_model(archive: bytes, entry_index: int, model: bytes) -> bytes:
