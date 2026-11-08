@@ -2299,3 +2299,21 @@ already in this state; the emulator and ComfyUI competing for a GB10's unified m
 
 **Everything I changed was restored:** ComfyUI resumed (`SIGCONT`), the `Xvfb :100` I started was stopped, and the repository is untouched
 apart from this note and the probes.
+## Round 131: the renderer is gBox's to choose, and Vulkan is still the reason nothing boots
+
+Two things tried and both instructive:
+
+* **ComfyUI suspended** (two instances held `/dev/nvidia0`): **no change** to Vulkan init. So the GPU contention theory is not the cause - the
+  device itself is in a bad state, which the kernel already said (`NV_ERR_GPU_IN_FULLCHIP_RESET`).
+* **Citron's renderer switched to OpenGL** by editing `[Renderer] backend=0 -> 1` in `qt-config.ini` (with a `.bak-<epoch>` beside it): the
+  next launch came back with `backend=0` **rewritten by gBox**, and Citron logged `Render.Vulkan` again.
+
+**That is a useful fact about the system, not a failed experiment:** gBox owns the per-title renderer setting and applies it at launch, so the
+ini is not where a renderer change can be made. Making Citron use OpenGL would mean going through gBox's own title settings - and it is not
+obvious that OpenGL would help, because the GL driver sits on the same GPU that is asserting a full-chip reset.
+
+**The blocker remains exactly one thing:** the GPU must be reset. Everything else was checked this round and is fine - share mounted, display
+available, loader and ICDs present, driver loaded, repository clean at `50394e88`.
+
+**Config left as found:** `backend=0`, with the backup I made still beside it (`qt-config.ini.bak-1794148901`) and gBox's own copies
+(`.gboxlab-backup`, `.gboxlab-dumpbak`) untouched.
