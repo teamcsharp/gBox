@@ -2071,3 +2071,35 @@ untouched (measured round 113).
 **The honest scoreboard for the operator's four items:** RE5 - implemented and wired; RE6 - the same routes, subject to its archive layout;
 **RE4 - now has a section that does what is actually proven on that title** (proportions and material-hides), with the texture-based clothes
 removal still waiting on the surface address that RAM can supply.
+## Round 122: the inbox, and the one cluster this work can actually answer
+
+**2,632 requests are open** (8,934 fetched: 6,134 done, 158 in progress, 10 blocked). The oldest open cluster is repeated across titles:
+
+```
+Unlock everything in custom builds: 010099A00BC1E000
+Unlock everything in custom builds: Resident Evil 4
+Unlock everything in custom builds: Resident Evil 6
+Unlock everything in custom builds: Resident Evil 5
+Unlock everything in custom builds: re5_switch
+```
+
+plus a long tail of `Mercenaries ... rank_not_verified`, *"why is the ps3 version even coming up in rotation?"*, *"Character replacement
+readiness: Resident Evil 5 - Gold Edition"* and *"Session models: Resident Evil 5"*.
+
+**The unlock cluster is answerable now, with evidence, and the answer is not what the tickets assume.** For RE4 (Switch) the unlock is **not a
+patch**: measured in round 95, a fresh save's main menu is `NEW GAME / LOAD / LEADERBOARDS / HELP & OPTIONS / ACHIEVEMENTS` - **no EXTRAS
+row**, so THE MERCENARIES does not exist until the save says it does. No RAM patch, no key sequence and no build changes that; twenty rounds
+of boot failures came from a save the game could not load, not from a missing unlock mechanism.
+
+So the honest resolution for that ticket is a **procedure plus a tool**, both of which exist:
+
+* `gbox/re4_switch_save.py` - `--save <file> --replace` installs a save with a backup and a verified copy (6 tests);
+* a usable save must be **past the village** (so EXTRAS exists) **and written from a menu** (so the title does not auto-load into "Cancel
+  loading?" and boot-loop).
+
+**What I am not claiming:** that the same is true for RE5 and RE6. Their unlock paths were built earlier in this project and live in
+`gbox/re_mods`/`re_switch` for the GC and Switch cases respectively; the RE4 finding above is specific to RE4 Switch and should not be
+generalised onto those tickets without its own measurement.
+
+**The right next step on the inbox** is not to work the 2,632 one at a time - it is to answer the repeated clusters once each with the
+measurement behind them, and let the ticket system point at the answer. The unlock cluster is the first, and it now has one.
