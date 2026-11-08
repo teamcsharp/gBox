@@ -747,3 +747,32 @@ and the next step is to instrument that path rather than to keep re-running it.
 
 **The half-bisection is still owed its frame.** `re4sw-plhalf` (`pl01`..`pl03` x3.0 against `pl04`..`pl06` x0.1) walks fine
 under the directed harness; what it needs is a capture in the first seconds of the round, which the tightened cadence now does.
+## Round 75: the search narrows honestly, and round 72's "giant head" was probably the camera
+
+Four builds were tested through `switch_mods.write_files`, each with a round reached (or nearly) and each read from the frame:
+
+| packs | change | what the frame showed |
+|---|---|---|
+| all 26 (`pl00`..`pl21`) | x0.1 | **the player collapsed to fragments** (round 70 - unambiguous) |
+| `pl00` alone | x0.1 | **normal Leon** (round reached, `reached True`) |
+| `pl01`..`pl06` | x3.0 / x0.1 | **normal Leon** |
+| `pl07`..`pl0d` | x0.1 | **inconclusive** - the camera sits inside a body and the frames are dark |
+
+**Round 72's "giant head" is retracted as evidence.** The build that produced it scaled `pl00`..`pl06` by x3.0, and the
+`pl01`..`pl06` build does not change the player - so the head at `00'12"76` was almost certainly the camera clipping into a
+normally-sized Leon during the round intro, not a scaled model. The unambiguous result stays the all-pack one, where the whole
+body became fragments.
+
+So the search space is now **`pl07`..`pl21`**, and the quarter `pl07`..`pl0d` is the one in question - it needs a capture that
+starts *before* the camera enters a body (the intro), not one that starts with the first grab.
+
+## What the round also proved
+
+The directed walk is reliable: five runs, each reached the Mercenaries menu route in 14-18 steps, and two reached a live round.
+The autoplay thread remains the unreliable path, and that is a real defect in the playbook for every title, not a probe detail.
+
+## The lesson that cost the most rounds here
+
+A frame is evidence only when what it shows cannot be explained another way. "A giant head" had two explanations - a scaled
+model or a camera inside a normal head - and I treated it as one. The all-pack build was believed because the *whole body*
+changed while the enemies did not; that is a difference no camera position produces.
