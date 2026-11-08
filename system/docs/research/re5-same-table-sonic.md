@@ -83,9 +83,24 @@ The low model shares a vertex buffer across parts 123–127 (`vertex_offset = 0x
 A second attempt patched a **whole shared group** consistently (the low model's largest group, parts 123+122 at the
 same `vertex_offset`) and left every other group stock. It still booted to the title and then produced a black frame
 with the session running, never a round. So the low variant is definitely the one the round loads, and it is stricter
-than the high model: a consistent group patch is still not accepted. The next low path is a **whole-entry replacement**
-(author a separate low MOD and replace the entry, rather than rewriting its part table in place) or the Ghidra
-loader/GPU path, not another in-place variation.
+than the high model: a consistent group patch is still not accepted.
+
+### Whole-entry one-mesh replacement is also rejected
+
+Authoring a one-mesh Sonic MOD into `em1000_low` (and, separately, a one-mesh copy of `em1000_low` itself) both black at
+boot with the session running; the in-place topology build at least reaches the title. The self one-mesh proves this is
+not a Sonic/skinning failure. The difference is structural: the one-mesh model has `mesh_count = 1` while the paired
+`em1000_low` **MRL** entry still describes the original 341-part model. A one-mesh MOD is therefore inconsistent with its
+MRL, and the low loader stops before drawing.
+
+The next whole-entry path must either:
+
+* rewrite the paired MRL with the MOD (one mesh, one material), or
+* swap a donor **MOD+MRL pair** from another enemy archive, to prove the low pair can be replaced before trying Sonic.
+
+`mtf_author.combine` also needed a fix: the index stream is global to the shared vertex buffer, so `combine` now
+subtracts each part's `vertex_index` before adding its own base. Without it, the low self one-mesh produced triangle
+56072 with only 55667 vertices.
 
 ## Controlled write tests (one change at a time)
 
