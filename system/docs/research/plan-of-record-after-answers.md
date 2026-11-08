@@ -1282,3 +1282,26 @@ MercMode rotation can boot this title without the retry dance.
 
 Without it: the title boot-loops on a save it cannot read, and every experiment pays a coin flip per boot. That is not a code problem
 and no further work on my side can fix it.
+## Round 93: the extraction tab routes exist, and a caution about the API token from a shell
+
+**The routes are in and registered.** `gbox.decrypt_lab` gained two, beside the existing pack routes:
+
+| route | what it does |
+|---|---|
+| `GET /api/decrypt-lab/pack-materials?title=&pack=&slot=` | the material list with each material's triangle span - what a picker shows |
+| `POST /api/decrypt-lab/pack-edit` | one in-place edit (hide, scale or donor morph) written into a LayeredFS build, returning the `EditReport` |
+
+Registration is tested by installing the routes on a throwaway FastAPI app and enumerating them (4 pack routes present), and the edit
+behaviour by `test_re4hd_edit.py` against the real Ganado pack. **9 tests green on the Spark.**
+
+**Live verification was defeated by shell quoting, not by the code.** From an SSH one-liner, `authorization: Bearer <token>` was
+mangled (401 "bad token") while `?token=<token>` worked for a GET - and the POST body arrived as a form-encoded string
+(`input: "title:010099A00BC1E000"`). That is a property of quoting a 43-character token through PowerShell into SSH, and it cost this
+round its end-to-end check. The lesson is concrete and worth keeping: **use `?token=` for GETs and write request bodies to a file
+(`-d @body.json`) for POSTs** rather than embedding JSON in a quoted one-liner.
+
+**One thing the session dump showed that contradicts an earlier conclusion, and is worth flagging rather than deciding:**
+gBox's own session detail reports, for this title, *"RE4 Switch Mercenaries is available from a fresh save (no unlock needed)"*. Round
+83 measured a fresh save showing a main menu with **no EXTRAS row**. Both cannot be right, and the difference matters: if Mercenaries
+really needs no unlock, then a fresh save is usable and the boot-loop problem is the only obstacle; if it does need one, the operator's
+save is required. The next run should settle it by walking a fresh save and looking at the menu rather than trusting either note.
