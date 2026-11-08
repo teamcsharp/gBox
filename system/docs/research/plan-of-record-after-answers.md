@@ -1194,3 +1194,27 @@ quadruped donor), where a coherent result and a sharded one cannot be confused.
 | global surface transfer | **drawn as shards** |
 | coherent surface transfer | built, tested, **conservative on a humanoid donor** |
 | boot path | solved by answering the resume prompt with Yes, plus a reboot retry |
+## Round 90: a high-contrast donor, and a self-perpetuating boot state
+
+**The donor.** Listing every enemy pack's body proportions found what the coherent morph needed - a donor whose silhouette cannot be
+confused with a human's:
+
+```
+em3e.udas  slot 6   244 verts   140 tris   extent [1234, 2265, 155]   aspect 14.6
+em16.udas  slot 0  3425 verts  ...          extent [...]              aspect  3.4 (humanoid)
+```
+
+`em3e` slot 6 is a flat slab. `re4sw-ganadoslab` morphs the Ganado toward it with the **coherent** transfer (7 slots, 12,633
+vertices), so the result must be either a flattened Ganado or shards - two outcomes that cannot be mistaken for each other.
+
+**The boot state may be recreating itself.** Two of three attempts died on the resume prompt, and the third walked without reaching a
+round. The pattern across rounds 82-90 is that the prompt is present *more often than not*, and the explanation is uncomfortable but
+simple: **the game writes its save when the session is stopped, and the session is stopped while the game is mid-load** - so every
+run recreates the state that makes the next run start on the prompt. The save is not merely stale; the harness keeps re-creating it.
+
+That suggests the one-time fix: boot, answer the prompt with **Yes** to reach a title screen, and let the session stop *from there* - so
+the save that is written is a menu, not a half-finished load. After that the prompt should not appear again, and the whole retry loop
+becomes unnecessary.
+
+**What is owed, precisely:** one frame of `re4sw-ganadoslab` (coherent morph, slab donor). Everything else about it is built and
+recorded; the run is competing with a boot state that the harness itself keeps creating.
