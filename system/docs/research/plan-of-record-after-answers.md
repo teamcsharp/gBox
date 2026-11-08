@@ -1734,3 +1734,23 @@ operation ("swap clothes", "swap character") needs that name.
 **Why this matters beyond clothes:** every per-pack operation in the panel - all four - silently does nothing if pointed at a pack the
 game is not drawing. A pack that is *not* drawn is the most likely explanation for a build that "had no effect", and it should be the
 first thing checked, not the last.
+## Round 109: the bisection tool works; the capture still mistakes a briefing for a round
+
+`probe_bisect_pack.py` vanishes (or scales) a chosen range of player packs into one build, so "which pack does the camera draw?" is a
+bisection instead of a guess: `pl00..pl0d` = 14 of 27 packs, 54-60 slots, one build, one boot.
+
+**Two runs, neither decisive, and the second for an instructive reason:**
+
+* `re4sw-bisectA` (vanish materials 1..n, keep material 0) reached a round and the player looked *almost* stock - a flatter shoulder, a
+  less defined strap, nothing that cannot be explained by the camera angle. **Inconclusive, and I will not call it a change.**
+* `re4sw-bisS` (scale x0.1 - the signal proven visible in round 70) reached a round and the frames are the **briefing screen**: the
+  grainy "LIVE FEED" panel with a crosshair. The classifier called that `playing`.
+
+**That second one is a real defect in the harness, not in the build:** `playing` is matched on brightness and motion, and the Mercenaries
+briefing looks like gameplay to it. The capture then happens while the round is still being announced. The fix is a *content* signal
+rather than a brightness one - the round's timer in the top-left corner is present in every gameplay frame and absent from the briefing -
+and until that exists, a "reached True" run can photo the briefing and look like a negative result.
+
+**What is now confirmed about pack identity:** `pl00` alone changes nothing visible in three separate builds (scale in round 70, vanish in
+round 108, and material-7 collapse inside them), while all 26 packs at once visibly collapse the player. So the visible pack is one of
+`pl01`..`pl21`, and the bisection needs a capture that is *inside* the round to make progress on which.
