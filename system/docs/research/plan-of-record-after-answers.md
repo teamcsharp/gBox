@@ -2456,3 +2456,30 @@ one build and one boot to answer.
 | edit the mesh in place | draws, but only for same-topology changes - a proportion transfer, never a different character |
 | swap the texture | blocked: the player's surfaces are not in `imagepackhd` and the pack's TPL holds descriptors only |
 | **swap the whole pack** | player-into-enemy **hangs the load**; within-family untested |
+## Round 138: within-family pack swapping is not viable either
+
+`pl08.udas <- pl07.udas` (958,112 bytes written over the player's pack, same family, same kind of file). Two runs, two failures that disagree:
+
+```
+run 1: MARK walk steps 3  | reached True  | last screen playing | waited 0s  | frames 0
+run 2: MARK walk steps 13 | reached False | last screen loading | waited 90s | frames 0
+```
+
+The first claimed a round (the timer was on screen at the first check) and then produced **no usable frames**; the second never got past
+`loading`. So the substitution does not render a different character - it **destabilises the title**, differently each boot.
+
+**That closes the third route.** All three ways to a real character replacement on this title are now measured:
+
+| route | result |
+|---|---|
+| edit the mesh in place | draws, but only for same-topology changes: a proportion transfer, never a different character |
+| swap the texture | blocked: the player's surfaces are absent from `imagepackhd`, the pack's TPL is descriptors only, and every header-tint attempt stops the stage loading |
+| swap the whole pack | player-into-enemy hangs; enemy-into-enemy/player-into-player destabilises and yields no frames |
+
+**What this means for the objective, said plainly:** the machinery in this pipeline can reshape a character (proven repeatedly and in frame) but
+**cannot substitute one character for another** on RE4 (Switch) with the mechanisms available. A true replacement needs either an engine-level
+hook (out of scope for asset work) or the surface swap that the RAM address would unlock - which is the one open route left and the one that
+has never been tried.
+
+**The proportion path is not wasted:** it is the mechanism that made "Sonic's proportions on the player" and "a reshaped Ganado" real, and it
+is what a texture path would build on once surfaces are addressable.
