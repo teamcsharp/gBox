@@ -2269,3 +2269,33 @@ ICD works before blaming Citron.
 
 **Nothing in the repository was changed by any of this**, and the tint verdict from before the outage is still the same open question: zero
 frames, never seen on screen.
+## Round 130 (post-reboot): the GPU is in a full-chip reset - nothing can render
+
+The launch path is fully diagnosed now, and the last link is hardware state, not configuration:
+
+```
+NVRM: gpuHandleSanityCheckRegReadError_GH100: Possible bad register read: addr: 0x612078, regvalue: 0xbadf5600
+NVRM: nvAssertFailedNoLog: Assertion failed: (status == NV_OK) || (status == NV_ERR_GPU_IN_FULLCHIP_RESET)
+```
+
+**`NV_ERR_GPU_IN_FULLCHIP_RESET`** - the GPU has fallen into a full-chip reset. That is why Vulkan cannot create a device
+(`VK_ERROR_INITIALIZATION_FAILED`), why Citron never draws a frame (`BootHung` after 45 s), and why it happens with **stock and modded builds
+alike**. It is not the tint, not the game, not the overlay, and not the display.
+
+**Everything above it was checked and cleared:**
+
+| layer | state |
+|---|---|
+| SMB share | was unmounted after the reboot; `mnt-gbox-quickswap2.mount` restarted, the game is present |
+| X display | none existed (`:99`, `:100`, `:110` all failed); `Xvfb :100` starts and answers |
+| Vulkan loader / ICDs | present: `libvulkan.so.1.4.328`, `nvidia_icd.json`, `lvp_icd.json` |
+| NVIDIA driver | 580.178.04 loaded, `/dev/nvidia0` and the rest present, `nvidia-smi` answers |
+| GPU compute holders | two ComfyUI instances plus hermes hold `/dev/nvidia0`; **suspending them changed nothing** |
+| GPU health | **full-chip reset assertion - the fault** |
+
+**What is needed from the operator, precisely:** a **reboot with the GPU-heavy services stopped first** (ComfyUI most of all), because the
+fault is in the driver/hardware state and no amount of configuration fixes it. The machine came back from the previous reboot with the GPU
+already in this state; the emulator and ComfyUI competing for a GB10's unified memory is the most likely way in.
+
+**Everything I changed was restored:** ComfyUI resumed (`SIGCONT`), the `Xvfb :100` I started was stopped, and the repository is untouched
+apart from this note and the probes.
