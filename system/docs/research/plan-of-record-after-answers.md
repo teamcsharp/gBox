@@ -2172,3 +2172,24 @@ screen or `loading`, which is the boot state again; the tool and the finding are
 **If the tint is drawn**, the panel's clothes and skin offers gain a mechanism that works today, independent of the missing surface: recolour
 a character, or give it another character's palette. **If it is not**, the header's +16 is metadata the renderer ignores, and that is
 recorded just as plainly.
+## Round 126: the full tint broke the load; the minimal one does not
+
+Two builds, and the difference between them is the finding:
+
+| build | what it changed | outcome |
+|---|---|---|
+| `re4sw-tint` | every material of **every** slot of `pl08` (25 in slot 0 plus 8 other slots) | two attempts ended on `loading` / the save list - **the stage never came up** |
+| `re4sw-tint2` | only slot 0, only materials that already carry a colour (**17 of them**) | reached a round |
+
+So the material header write is **valid in small doses and destructive in bulk** - the earlier failures were the build, not only the boot
+state. That is worth knowing on its own: it is the first edit in this whole line that made a stage stop loading by *editing a header field*
+rather than by changing geometry.
+
+The minimal build reached a round but every captured frame was discarded (`no round timer on screen`) - the capture landed in the
+briefing/loading hand-off, so there is still **no frame of a tinted player**. The tool takes `TARGET_SLOT` and `ONLY_COLOURED` so the next
+attempt is one command, and the honest next step is: boot the minimal build, stand still, capture 8 frames at 5 s, and read whether Leon is
+red.
+
+**What the tint is for, if it draws:** the panel's clothes and skin offers have been blocked on the missing texture store for six rounds. A
+per-material colour is a second, independent mechanism - recolour a character, or give it another character's colour - and it works on data
+this pipeline already writes.

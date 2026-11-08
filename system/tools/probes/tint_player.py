@@ -17,6 +17,8 @@ ROMFS = os.path.join(HOME, "gBox_alt/switch/romfs/010099A00BC1E000", "bio4", "em
 GAME_ID = "270a15eb98dab4d7"
 TITLE_ID = "010099A00BC1E000"
 TINT_OFFSET = 16
+TARGET_SLOT = int(os.environ.get("TARGET_SLOT", "0"))
+ONLY_COLOURED = os.environ.get("ONLY_COLOURED", "1") == "1"
 COLOUR = (0xFF, 0x20, 0x20)          # red, unmistakable against the game's palette
 
 
@@ -38,8 +40,14 @@ def main() -> int:
             continue
         if mesh.pos is None or len(mesh.pos) < 800 or not mesh.mats:
             continue
+        # ONLY the materials that already carry a colour, and only in slot 0: tinting every material of every slot is a bigger edit
+        # than the renderer's own data allows (two boots ended on `loading`), so the minimal change is the one that answers the question.
+        if index != TARGET_SLOT:
+            continue
         changed = 0
         for mat in mesh.mats:
+            if ONLY_COLOURED and not any((mat.header or b"")[TINT_OFFSET:TINT_OFFSET + 3]):
+                continue
             header = bytearray(mat.header or b"")
             if len(header) < TINT_OFFSET + 4:
                 continue

@@ -74,18 +74,20 @@ def main() -> int:
         return 1
     session = sessions[0].get("session_id") or sessions[0].get("id")
     print("session", session)
-    answered = False
+    answered = 0
     for step in range(14):
         time.sleep(9)
         raw = frame(session)
         mean = mean_of(raw)
         print(f"  {step:02d} mean {mean:.1f}")
-        if not answered and 12 <= mean <= 24:
+        if 12 <= mean <= 24 and answered < 3:
+            # the prompt wants input at a moment it does not announce, so a single press can miss it; retry up to three times and
+            # only count it answered once the picture has actually moved on
             press(session, "up")
             time.sleep(0.8)
             press(session, "a")
-            answered = True
-            print("  answered Yes (cancel the load)")
+            answered += 1
+            print(f"  answered Yes (cancel the load), attempt {answered}")
             continue
         if answered and mean > 40:
             break
