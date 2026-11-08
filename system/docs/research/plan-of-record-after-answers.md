@@ -2639,3 +2639,28 @@ force the character with `mercs_select`.
 **What this establishes, precisely:** RE5 draws whatever mesh the character archive contains - human or enemy - as long as the archive is
 substituted whole. That is the property RE4 lacks, and it is the reason a Sonic or Mario *body* is a format problem here rather than an
 engine one.
+## What a Sonic or Mario body would take on RE5: the archive layer, mapped
+
+Two swaps are now proven in rounds (Jill in Chris's slot, a majini in Rebecca's). Sonic and Mario are a different question, and this round
+found exactly where the work is:
+
+```
+uPl07RebeccaNormal.arc: body group 'pl1d_03Body'
+  BM compressed=1,021,180  raw=1,400,384  tag=0x40155e40  head=54455800a18000200b00012001300100
+  MM compressed=  140,491  raw=  177,212  tag=0x4002b43c  head=54455800a18000200a80001001190100
+  NM compressed=  915,043  raw=1,400,384  tag=0x40155e40  head=54455800a18000200b000120011f0100
+```
+
+**The skin maps are zlib-compressed** (`78 9c` on the archive entry) and decompress to a **`TEX\0` container** -
+`54 45 58 00` is the magic - whose header carries the surface's dimensions and format. `mt_arc` has **no texture encoder**: it can only
+replace an entry with bytes already in that form.
+
+**So the gap between "a majini in Rebecca's slot" and "Sonic in Rebecca's slot" is one writer:** decode TEX (dimensions, format, swizzle),
+encode a source image into that format, zlib it, and hand it to `mt_arc.replace_at`. Nothing about the engine blocks it - RE5 draws whatever
+mesh the archive holds - and nothing about the container blocks it either; the format inside is simply not written yet.
+
+**A cheaper step that needs no TEX writer at all:** a character-to-character skin swap already works through `skin_swap` (same tag rule), so
+"this character wears that character's colours" is available today. It is paint, not a body, and it should be described that way.
+
+**For the record, the two failure modes that cost time here:** a swap aimed at a slot the round does not play does nothing silently (Chris
+swapped, Rebecca played), and a donor whose maps differ in tag is refused unless `follow_tag` is used.
