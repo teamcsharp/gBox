@@ -159,6 +159,13 @@ to match — most likely the per-part vertex/index layout, not just material bin
 A donor MRL can therefore only wear the donor’s own MOD (or a MOD that reproduces that per-mesh layout). Importing Sonic
 requires the MRL tail to be decoded and rewritten, or a runtime path that bypasses the loader.
 
+The MRL tail is not opaque noise. Its first words are a header
+(`0x108cf1c4`, `0x20601028`, `0x8c800000`, four `1.0` floats), then a **count** that differs per variant:
+`0x2e` (46) for `em1000_low` and `0x32` (50) for `em1001_low`, alongside `count1` 70/79 and 76/83 texture paths. That
+is a material/resource table, not the 343-part mesh table. The Sonic 349-record MOD kept the donor’s mesh count but
+forced the one-bone vertex format on every part; the donor MRL almost certainly expects the donor’s **per-part formats
+and strides**, which is the next MOD shape to test against the donor MRL.
+
 ### The compression level was the confound: zlib 6 works
 
 Recompressing the original low MOD at zlib **level 9** (identical uncompressed bytes, same entry size, same tag) hung at
