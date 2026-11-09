@@ -1,22 +1,34 @@
-"""RE6 (Switch) TEX surfaces: measured format table, header parsing, decode and albedo encode.
+"""RE6 (Switch) TEX surfaces: measured format table, storage layout, decode, and writers for the player textures.
 
-The player textures live in `uPlTex####_*.arc` as MTF `TEX` containers. Measured on the extracted No Mercy RomFS
-(2026-11-09), the container is `TEX v0xA1` with revision byte `0x20` (RE5's is `0x80`) and the usual 20-byte header
-plus a `u32` offset per mip; the mip sizes validate for 16-byte blocks on the BC formats. Format codes seen in
-`uPlTex0000_*`:
+The player textures live in `uPlTex####_*.arc` (and, for the extra costumes, inside the body arc) as MTF `TEX`
+containers: `TEX\\0`, the bytes `a1 20 00 20`, packed mips/width/height at +8, `00 01 <format> 01` at +12, the payload
+size at +16, one `u32` offset per mip at +20 and the payload. Every mip is stored in the Tegra block-linear layout
+(64-byte x 8-row GOBs, the row count padded to `8 * block_height`, padding bytes zero). Measured 2026-11-09 on 119
+native surfaces of Leon's sets and body arcs: the layout below reproduces every one of them byte for byte.
 
-* ``0x19`` BC4 / ATI1 - the ``_MM`` mask maps (8-byte blocks)
-* ``0x1F`` BC5 / ATI2 - the ``_NM`` normal maps (16-byte blocks)
-* ``0x2B`` the ``_BM`` albedo maps. Each 16-byte block is **two channels**: bytes 0-7 decode as BC4 and resolve to the
-  albedo's greyscale detail (Leon's head map is his face with the mouth/teeth atlas); bytes 8-15 decode as BC1 and hold
-  a low-resolution per-4x4-tile colour that is nearly uniform inside a tile. The community format table calls ``0x2B``
-  BC3_UNORM_SRGB, which does not decode this layout; the two-half model is what the pixels prove. The detail layer is
-  what :meth:`Surface.decode` returns; :meth:`Surface._albedo_layers` exposes both halves and
-  :func:`replace_albedo` writes a new mip chain in the same two-half layout.
-* ``0x09`` / ``0x0E`` - uncoded-looking MVTF/VTF maps.
+Formats (the storage unit is a 4x4 block for the BC formats and one texel for the others):
 
-The decoder and writer de-swizzle/re-swizzle with the same Tegra GOB addressing `gbox.mtf_tex` uses (verified: a
-512x512 BC5 normal map and a 256x256 BC5 normal map both decode to recognisable fabric/buckle normal maps).
+* ``0x19`` BC4 - the ``_MM`` mask maps (8-byte blocks).
+* ``0x1F`` BC5 - the ``_NM`` / ``_DM`` normal maps (16-byte blocks).
+* ``0x2B`` **BC3 holding Y'CbCr + alpha** - the ``_BM`` albedo maps. The alpha block (bytes 0-7) is the luma ``Y'``;
+  the colour block (bytes 8-15) carries ``Cr`` in red, ``Cb`` in blue (both offset so that neutral is the 5-bit code
+  15) and the surface's opacity in green. A grey, opaque tile is therefore the constant block ``c0 = c1 = 0x7FEF``,
+  indices ``0xAAAAAAAA`` - the block an earlier reading took for "no colour in the second half". Decoded with the
+  BT.601 full-range matrix, Leon's head map is a natural face (skin, pink lips, cream teeth), his eye is blue-grey
+  and the effect sheets are orange fire; the same matrix turns the bytes of the earlier textured build (which wrote
+  plain RGB there) into the teal quills and pink gloves the live frame showed. The engine's own shader package
+  carries exactly these constants (1.402, 0.34414, 0.71414, 1.772 with a 0.5 bias) in its Y'CbCr functions.
+* ``0x09`` RGBA8, four bytes a texel - the ``_MVTF`` maps and ``earLight``.
+* ``0x0E`` one little-endian ``float32`` a texel - ``pl_VTF`` (128x4: rows 0 and 3 are smooth three-crest waves that
+  start and end at zero, rows 1 and 2 are zero; the values are n/255).
+
+``_VTF`` / ``_MVTF`` are **not** colour inputs. The texture-set material binds ``pl_VTF`` to ``tVtxDisplacement``
+and the ``_MVTF`` to ``tVtxDispMask`` under ``FVertexDisplacementCurveUV``: they are the cloth's vertex-displacement
+curve and its mask ("VTF" = vertex texture fetch). The albedo's own colour is the whole colour path; the material
+adds ``CBMaterial.fDiffuseColor`` (1, 1, 1 on every player material measured) and, for ``FColorMaskAlbedoMapModulate``
+materials, the blood tint ``CBColorMask.fColorMaskColor`` gated by thresholds that are zero at rest.
+
+Nothing here is live-verified: the model is derived from the native data and from frames of earlier builds.
 """
 from __future__ import annotations
 
@@ -28,12 +40,157 @@ import numpy as np
 TEX_VERSION = 0xA1
 TITLE_ID = "01002A000CD48000"                # RE6 Switch (No Mercy)
 REVISIONS = (0x20, 0x80)                     # RE6 Switch / RE5 Switch
-BLOCK_BYTES = {0x19: 8, 0x1F: 16, 0x2B: 16}
+BLOCK_BYTES = {0x19: 8, 0x1F: 16, 0x2B: 16}  # 4x4 BC blocks
+TEXEL_BYTES = {0x09: 4, 0x0E: 4}             # one storage unit per texel: RGBA8 / float32
 DECODABLE = {0x1F: ("bc5", 16), 0x19: ("bc4", 8), 0x30: ("bc7", 16), 0x31: ("bc7", 16)}
+HEADER_TAIL = b"\x00\x20"                    # bytes 6-7 of every RE6 Switch TEX measured
+#: The 5-bit chroma code of a neutral (grey) tile in native `0x2B` data: `0x7FEF` is R = B = 15, G = 63.
+YCC_NEUTRAL = 15.0 / 31.0
+NEUTRAL_COLOUR_BLOCK = bytes.fromhex("ef7fef7faaaaaaaa")
 
 
 class TexError(ValueError):
     """The container is not a measured RE6 Switch TEX, or the format cannot be decoded yet."""
+
+
+# --- storage layout --------------------------------------------------------------
+
+def unit_of(fmt: int) -> tuple[int, int]:
+    """(bytes per storage unit, texels per unit side): 4x4 blocks for the BC formats, single texels otherwise."""
+    if fmt in BLOCK_BYTES:
+        return BLOCK_BYTES[fmt], 4
+    if fmt in TEXEL_BYTES:
+        return TEXEL_BYTES[fmt], 1
+    raise TexError(f"format 0x{fmt:02x} has no measured storage unit")
+
+
+def mip_grid(width: int, height: int, fmt: int, mip: int = 0) -> tuple[int, int, int]:
+    """(columns, rows, unit bytes) of one mip in storage units."""
+    unit, cell = unit_of(fmt)
+    w, h = max(1, width >> mip), max(1, height >> mip)
+    return (w + cell - 1) // cell, (h + cell - 1) // cell, unit
+
+
+def _block_height(rows: int) -> int:
+    """GOBs per block for a surface of `rows` unit rows (16 from 128 rows up, halving below, never under 1)."""
+    return max(1, min(16, (1 << (rows - 1).bit_length()) // 8))
+
+
+def storage_size(columns: int, rows: int, unit: int) -> int:
+    """Stored bytes of one mip: a 64-byte aligned pitch times the rows padded to whole blocks of GOBs."""
+    bh = _block_height(rows)
+    pitch = ((columns * unit + 63) // 64) * 64
+    return pitch * ((rows + 8 * bh - 1) // (8 * bh)) * 8 * bh
+
+
+def _addresses(columns: int, rows: int, unit: int) -> np.ndarray:
+    """Byte addresses of every storage unit, ordered by row then column (shape: units x unit bytes)."""
+    bh = _block_height(rows)
+    y, x = np.indices((rows, columns), dtype=np.int64)
+    x *= unit
+    gob_columns = (columns * unit + 63) // 64
+    gob = (y // (8 * bh)) * 512 * bh * gob_columns + (x // 64) * 512 * bh + ((y // 8) % bh) * 512
+    address = gob + ((x % 64) // 32) * 256 + ((y % 8) // 2) * 64 + ((x % 32) // 16) * 32 + (y % 2) * 16 + x % 16
+    return address.reshape(-1, 1) + np.arange(unit)
+
+
+def pack_tex(fmt: int, width: int, height: int, levels: list[bytes], *, revision: int = 0x20) -> bytes:
+    """A TEX container from each mip's units in row-major order (the inverse of `Surface.linear_blocks`).
+
+    The header is written from scratch and the payload in the measured block-linear layout with zero padding;
+    repacking the units of a native surface gives the native file back byte for byte.
+    """
+    if not levels:
+        raise TexError("a TEX needs at least one mip")
+    payload = bytearray()
+    offsets = []
+    for mip, level in enumerate(levels):
+        columns, rows, unit = mip_grid(width, height, fmt, mip)
+        if len(level) != columns * rows * unit:
+            raise TexError(f"mip {mip}: {len(level)} bytes do not fill {columns}x{rows} units of {unit}")
+        storage = np.zeros(storage_size(columns, rows, unit), np.uint8)
+        storage[_addresses(columns, rows, unit)] = np.frombuffer(bytes(level), np.uint8).reshape(-1, unit)
+        offsets.append(len(payload))
+        payload += storage.tobytes()
+    if not (0 < width < 0x2000 and 0 < height < 0x2000 and len(levels) < 64):
+        raise TexError("TEX dimensions or mip count outside the packed header field")
+    header = (b"TEX\0" + bytes((TEX_VERSION, revision)) + HEADER_TAIL
+              + struct.pack("<3I", len(levels) | (width << 6) | (height << 19), 0x00010001 | (fmt << 8), len(payload))
+              + struct.pack(f"<{len(offsets)}I", *offsets))
+    return header + bytes(payload)
+
+
+# --- block decoders (numpy only) --------------------------------------------------
+
+def _alpha_tiles(blocks: np.ndarray) -> np.ndarray:
+    """BC4 / BC3-alpha blocks (n, 8) -> (n, 4, 4) uint8."""
+    b = np.asarray(blocks, np.uint8).reshape(-1, 8)
+    a0, a1 = b[:, 0].astype(np.int32), b[:, 1].astype(np.int32)
+    bits = np.zeros(len(b), np.uint64)
+    for k in range(6):
+        bits |= b[:, 2 + k].astype(np.uint64) << np.uint64(8 * k)
+    index = np.stack([((bits >> np.uint64(3 * p)) & np.uint64(7)).astype(np.int64) for p in range(16)], 1)
+    palette = np.zeros((len(b), 8), np.int32)
+    palette[:, 0], palette[:, 1] = a0, a1
+    eight = a0 > a1
+    for i in range(1, 7):
+        palette[:, i + 1] = np.where(eight, ((7 - i) * a0 + i * a1) // 7,
+                                     ((5 - i) * a0 + i * a1) // 5 if i < 5 else (0 if i == 5 else 255))
+    return np.take_along_axis(palette, index, 1).astype(np.uint8).reshape(-1, 4, 4)
+
+
+def _expand565(colour: np.ndarray) -> np.ndarray:
+    r, g, b = (colour >> 11) & 31, (colour >> 5) & 63, colour & 31
+    return np.stack([(r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2)], -1)
+
+
+def _colour_tiles(blocks: np.ndarray) -> np.ndarray:
+    """BC3 colour blocks (n, 8) -> (n, 4, 4, 3) uint8. Inside BC3 the block is always in its four-colour mode."""
+    b = np.asarray(blocks, np.uint8).reshape(-1, 8)
+    c0 = b[:, 0].astype(np.int32) | (b[:, 1].astype(np.int32) << 8)
+    c1 = b[:, 2].astype(np.int32) | (b[:, 3].astype(np.int32) << 8)
+    e0, e1 = _expand565(c0), _expand565(c1)
+    palette = np.stack([e0, e1, (2 * e0 + e1) // 3, (e0 + 2 * e1) // 3], 1)
+    bits = (b[:, 4].astype(np.uint32) | (b[:, 5].astype(np.uint32) << 8) | (b[:, 6].astype(np.uint32) << 16)
+            | (b[:, 7].astype(np.uint32) << 24))
+    index = np.stack([((bits >> np.uint32(2 * p)) & np.uint32(3)).astype(np.int64) for p in range(16)], 1)
+    return np.take_along_axis(palette, index[:, :, None].repeat(3, 2), 1).astype(np.uint8).reshape(-1, 4, 4, 3)
+
+
+def _tiles_image(tiles: np.ndarray, width: int, height: int) -> np.ndarray:
+    """Row-major 4x4 tiles -> an image cropped to (height, width)."""
+    bx, by = (width + 3) // 4, (height + 3) // 4
+    tiles = np.asarray(tiles)
+    if tiles.ndim == 3:
+        image = tiles.reshape(by, bx, 4, 4).transpose(0, 2, 1, 3).reshape(by * 4, bx * 4)
+    else:
+        channels = tiles.shape[-1]
+        image = tiles.reshape(by, bx, 4, 4, channels).transpose(0, 2, 1, 3, 4).reshape(by * 4, bx * 4, channels)
+    return image[:height, :width]
+
+
+def _image_tiles(image: np.ndarray) -> np.ndarray:
+    """An image whose sides are multiples of four -> row-major tiles (n, 16[, channels])."""
+    height, width = image.shape[:2]
+    if image.ndim == 2:
+        return image.reshape(height // 4, 4, width // 4, 4).transpose(0, 2, 1, 3).reshape(-1, 16)
+    channels = image.shape[2]
+    return image.reshape(height // 4, 4, width // 4, 4, channels).transpose(0, 2, 1, 3, 4).reshape(-1, 16, channels)
+
+
+# --- Y'CbCr (BT.601, full range) ---------------------------------------------------
+
+def rgb_to_ycbcr(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(Y', Cb, Cr) of gamma-space RGB in 0..1: Y' in 0..1, the chroma pair in -0.5..0.5."""
+    rgb = np.asarray(rgb, np.float64)
+    y = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+    return y, (rgb[..., 2] - y) / 1.772, (rgb[..., 0] - y) / 1.402
+
+
+def ycbcr_to_rgb(y: np.ndarray, cb: np.ndarray, cr: np.ndarray) -> np.ndarray:
+    """Gamma-space RGB (clipped to 0..1) from Y' and the chroma pair; the engine's own constants."""
+    y, cb, cr = (np.asarray(v, np.float64) for v in (y, cb, cr))
+    return np.clip(np.stack([y + 1.402 * cr, y - 0.34414 * cb - 0.71414 * cr, y + 1.772 * cb], -1), 0.0, 1.0)
 
 
 class Surface:
@@ -69,71 +226,80 @@ class Surface:
         self.mips = offsets
         self.data = data
 
-    def linear_blocks(self, mip: int = 0) -> bytes:
-        """The mip's compressed blocks in linear order, removing the Tegra GOB padding."""
-        from . import mtf_tex
+    def mip_size(self, mip: int = 0) -> tuple[int, int]:
+        return max(1, self.width >> mip), max(1, self.height >> mip)
 
+    def linear_blocks(self, mip: int = 0) -> bytes:
+        """The mip's storage units (BC blocks, or texels) in row-major order, without the GOB padding."""
         if not 0 <= mip < self.mip_count:
             raise TexError("mip index outside the TEX")
-        block = BLOCK_BYTES.get(self.format)
-        if block is None:
-            raise TexError(f"format 0x{self.format:02x} has no measured block size")
-        width, height = max(1, self.width >> mip), max(1, self.height >> mip)
-        bx, by = (width + 3) // 4, (height + 3) // 4
-        bh = max(1, min(16, (1 << (by - 1).bit_length()) // 8))
+        columns, rows, unit = mip_grid(self.width, self.height, self.format, mip)
         begin, end = self.mips[mip], self.mips[mip + 1]
-        level = mtf_tex.Mip(width, height, self.start + begin, end - begin, bh)
+        if end - begin != storage_size(columns, rows, unit):
+            raise TexError(f"mip {mip} storage is not the measured block-linear layout")
         source = np.frombuffer(self.data, dtype=np.uint8, count=end - begin, offset=self.start + begin)
-        return source[mtf_tex._addresses(level, block)].tobytes()
+        return source[_addresses(columns, rows, unit)].tobytes()
+
+    def texels(self, mip: int = 0) -> np.ndarray:
+        """An uncompressed mip: (h, w, 4) uint8 for `0x09`, (h, w) float32 for `0x0E`."""
+        width, height = self.mip_size(mip)
+        if self.format == 0x09:
+            return np.frombuffer(self.linear_blocks(mip), np.uint8).reshape(height, width, 4).copy()
+        if self.format == 0x0E:
+            return np.frombuffer(self.linear_blocks(mip), "<f4").reshape(height, width).copy()
+        raise TexError(f"format 0x{self.format:02x} is not an uncompressed surface")
 
     def _albedo_layers(self, mip: int = 0):
-        """(detail, tint) for an `0x2B` block: BC4 greyscale (bytes 0-7) and the BC1 half (bytes 8-15)."""
-        import texture2ddecoder
-
-        width, height = max(1, self.width >> mip), max(1, self.height >> mip)
+        """(luma, raw colour block) of an `0x2B` mip: the BC3 alpha block and its untransformed 565 colours."""
+        width, height = self.mip_size(mip)
         blocks = np.frombuffer(self.linear_blocks(mip), np.uint8).reshape(-1, 16)
-        cols = width // 4
-        detail = np.zeros((height, width), np.uint8)
-        tint = np.zeros((height, width, 3), np.uint8)
-        for index, block in enumerate(blocks):
-            y, x = divmod(index, cols)
-            detail[y * 4:(y + 1) * 4, x * 4:(x + 1) * 4] = np.frombuffer(
-                texture2ddecoder.decode_bc4(block[:8].tobytes(), 4, 4), np.uint8).reshape(4, 4, 4)[:, :, 2]
-            tint[y * 4:(y + 1) * 4, x * 4:(x + 1) * 4] = np.frombuffer(
-                texture2ddecoder.decode_bc1(block[8:].tobytes(), 4, 4), np.uint8).reshape(4, 4, 4)[:, :, [2, 1, 0]]
-        return detail, tint
+        detail = _tiles_image(_alpha_tiles(blocks[:, :8]), width, height)
+        tint = _tiles_image(_colour_tiles(blocks[:, 8:]), width, height)
+        return np.ascontiguousarray(detail), np.ascontiguousarray(tint)
+
+    def albedo(self, mip: int = 0, *, bias: float = YCC_NEUTRAL) -> tuple[np.ndarray, np.ndarray]:
+        """(RGB, opacity) of an `0x2B` mip as uint8 arrays: Y' from the alpha block, Cr/Cb from red/blue, alpha
+        from green.
+
+        ``bias`` is the stored value of zero chroma. Native neutral tiles hold the 5-bit code 15 (15/31), which is
+        the default, so a grey native surface decodes to exact grey; the engine's own Y'CbCr functions use 0.5, under
+        which the same tiles read about (-6, +4, -7)/255 off grey. The difference is below what the frames at hand
+        can separate.
+        """
+        if self.format != 0x2B:
+            raise TexError(f"format 0x{self.format:02x} is not an 0x2B albedo")
+        luma, colour = self._albedo_layers(mip)
+        colour = colour.astype(np.float64) / 255.0
+        rgb = ycbcr_to_rgb(luma.astype(np.float64) / 255.0, colour[..., 2] - bias, colour[..., 0] - bias)
+        return (rgb * 255.0 + 0.5).astype(np.uint8), (colour[..., 1] * 255.0 + 0.5).astype(np.uint8)
 
     def decode(self, mip: int = 0):
-        """Decode a mip: BC4/BC5/BC7 directly; an `0x2B` albedo yields its **greyscale detail** layer.
-
-        `0x2B` blocks are two channels in 16 bytes: bytes 0-7 decode as BC4 and resolve to the albedo's greyscale
-        detail (the head map is a face with a mouth/teeth atlas), bytes 8-15 decode as BC1 and are a low-resolution
-        per-4x4-tile colour that is nearly uniform inside a tile. :meth:`_albedo_layers` returns both; the combined
-        `tint * detail` is a plausible colourisation but the tint half is not yet proven to be the shader's colour
-        (it decodes to a pale yellow-green over the whole face), so `decode` returns the layer that is certain.
-        """
+        """Decode a mip to an RGBA image: `0x2B` in colour (see :meth:`albedo`), BC4 as grey, BC5 as a normal map
+        with its blue rebuilt, `0x09` as stored. `0x0E` holds floats: read it with :meth:`texels`."""
         from PIL import Image
 
+        width, height = self.mip_size(mip)
         if self.format == 0x2B:
-            detail, _tint = self._albedo_layers(mip)
-            rgba = np.dstack([np.repeat(detail[..., None], 3, axis=2),
-                              np.full(detail.shape, 255, np.uint8)])
-            return Image.fromarray(rgba, "RGBA")
-        width, height = max(1, self.width >> mip), max(1, self.height >> mip)
+            rgb, alpha = self.albedo(mip)
+            return Image.fromarray(np.dstack([rgb, alpha]), "RGBA")
+        if self.format == 0x09:
+            return Image.fromarray(self.texels(mip), "RGBA")
         if self.format not in DECODABLE:
             raise TexError(f"format 0x{self.format:02x} is not decoded yet")
-        import texture2ddecoder
-
         name, _block = DECODABLE[self.format]
-        blocks = self.linear_blocks(mip)
-        if name == "bc5":
-            raw = texture2ddecoder.decode_bc5(blocks, width, height)
-        elif name == "bc4":
-            raw = texture2ddecoder.decode_bc4(blocks, width, height)
-        else:
-            raw = texture2ddecoder.decode_bc7(blocks, width, height)
-        rgba = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 4)[:, :, [2, 1, 0, 3]]
-        return Image.fromarray(rgba, "RGBA")
+        if name == "bc7":
+            raise TexError("BC7 is not used by the RE6 player sets and is not decoded here")
+        full = np.full((height, width), 255, np.uint8)
+        blocks = np.frombuffer(self.linear_blocks(mip), np.uint8)
+        if name == "bc4":
+            grey = _tiles_image(_alpha_tiles(blocks.reshape(-1, 8)), width, height)
+            return Image.fromarray(np.dstack([grey, grey, grey, full]), "RGBA")
+        blocks = blocks.reshape(-1, 16)
+        x = _tiles_image(_alpha_tiles(blocks[:, :8]), width, height)
+        y = _tiles_image(_alpha_tiles(blocks[:, 8:]), width, height)
+        nx, ny = x.astype(np.float64) / 127.5 - 1.0, y.astype(np.float64) / 127.5 - 1.0
+        z = np.sqrt(np.clip(1.0 - nx * nx - ny * ny, 0.0, 1.0))
+        return Image.fromarray(np.dstack([x, y, (z * 127.5 + 127.5).astype(np.uint8), full]), "RGBA")
 
 
 def parse(data: bytes) -> Surface:
@@ -141,13 +307,16 @@ def parse(data: bytes) -> Surface:
     return Surface(data)
 
 
+def _entry_bytes(entry) -> bytes:
+    try:
+        return zlib.decompress(entry.data)
+    except zlib.error:
+        return entry.data
+
+
 def from_arc_entry(entry) -> Surface:
     """Parse an `mt_arc` entry (zlib-wrapped or raw) as a TEX surface."""
-    try:
-        raw = zlib.decompress(entry.data)
-    except zlib.error:
-        raw = entry.data
-    return Surface(raw)
+    return Surface(_entry_bytes(entry))
 
 
 def export_textures(romfs, character: str, out_dir, *, formats=(0x2B, 0x1F, 0x19)) -> list[dict]:
@@ -159,9 +328,7 @@ def export_textures(romfs, character: str, out_dir, *, formats=(0x2B, 0x1F, 0x19
     """
     from pathlib import Path
 
-    from PIL import Image
-
-    from . import characters as C, mt_arc, skin_swap
+    from . import mt_arc, skin_swap
 
     romfs = Path(romfs)
     out_dir = Path(out_dir)
@@ -192,7 +359,70 @@ def export_textures(romfs, character: str, out_dir, *, formats=(0x2B, 0x1F, 0x19
     return written
 
 
-BODY_MATERIAL_NAMES = ("pl_cloth", "pl_cloth1", "pl_base1", "pl_base2", "pl_skin")
+# --- texture-set materials ---------------------------------------------------------
+
+BODY_MATERIAL_NAMES = ("pl_cloth", "pl_cloth1", "pl_base1", "pl_base2", "pl_skin", "pl_skin1", "pl_skin2",
+                       "pl_skin3")
+#: Shader objects a player material binds (names from the title's `AppShaderPackage.mfx`). An MRL names an object by
+#: `(crc32(name) ^ 0xFFFFFFFF) & 0xFFFFF` in its upper 20 bits and the object's package index in the lower 12.
+TEXTURE_SLOTS = ("tAlbedoMap", "tNormalMap", "tSpecularMap", "tDetailNormalMap", "tDetailNormalMap2",
+                 "tAlbedoBlendMap", "tAlbedoBlend2Map", "tNormalBlendMap", "tVtxDisplacement", "tVtxDispMask",
+                 "tHairShiftMap", "tTransparencyMap", "tEnvMap", "tEmissionMap", "tSphereMap")
+FUNCTION_NAMES = ("FAlbedo", "FAlbedoMap", "FAlbedoMap2", "FAlbedoMapModulate", "FAlbedo2MapModulate",
+                  "FBlendAlbedoMap", "FColorMaskAlbedoMapModulate", "FVertexDisplacement",
+                  "FVertexDisplacementCurveU", "FVertexDisplacementCurveV", "FVertexDisplacementCurveUV",
+                  "FVertexDisplacementDirU", "FTransparency", "FTransparencyAlpha", "FTransparencyMap",
+                  "FTransparencyVolume", "FDiffuse", "FDiffuseVertexColorOcclusion", "FBump",
+                  "FBumpDetailNormalMap", "FSpecular", "FSpecular2Map")
+#: Constant buffers and their fields as (name, first float, float count), from the package's own definitions.
+CONSTANT_BUFFERS = {
+    "CBMaterial": (32, (("fDiffuseColor", 0, 3), ("fTransparency", 3, 1), ("fReflectiveColor", 4, 3),
+                        ("fTransparencyVolume", 7, 1), ("fUVTransform", 8, 8), ("fUVTransform2", 16, 8),
+                        ("fUVTransform3", 24, 8))),
+    "CBColorMask": (24, (("fColorMaskThreshold", 0, 4), ("fColorMaskOffset", 4, 4), ("fClipThreshold", 8, 4),
+                         ("fColorMaskColor", 12, 4), ("fColorMask2Threshold", 16, 4),
+                         ("fColorMask2Color", 20, 4))),
+    "CBVertexDisplacement": (8, (("fVtxDispStart", 0, 1), ("fVtxDispScale", 1, 1), ("fVtxDispInvArea", 2, 1),
+                                 ("fVtxDispRCN", 3, 1), ("fVtxDispTiltU", 4, 1), ("fVtxDispTiltV", 5, 3))),
+}
+STATE_NAMES = ("BSSolid", "BSBlendAlpha", "DSZTestWrite", "DSZTest", "RSMesh")   # the render states measured
+COMMAND_BYTES = 24                           # u32 info (kind in the low 4 bits), u32 pad, u64 value, u32 object, u32 pad
+KIND_FUNCTION, KIND_CONSTANTS, KIND_SAMPLER, KIND_TEXTURE = 0, 1, 2, 3
+
+
+def object_hash(name: str) -> int:
+    """The 20-bit name hash in the upper bits of an MRL shader-object id."""
+    return (zlib.crc32(name.encode()) ^ 0xFFFFFFFF) & 0xFFFFF
+
+
+_KNOWN_OBJECTS = {object_hash(name): name
+                  for name in TEXTURE_SLOTS + FUNCTION_NAMES + STATE_NAMES + tuple(CONSTANT_BUFFERS)}
+
+
+def shader_objects(package: bytes) -> dict[int, str]:
+    """{MRL object id: name} for every object of an `AppShaderPackage.mfx` (the full table; optional).
+
+    Measured layout: `MFX\\0`, an id word at +8 (the value an MRL repeats in its header), the object count at +12,
+    the string table offset at +16 and `u64` object offsets from +24 (entry 0 is null). An object starts with its
+    name's string offset; its id is the 20-bit name hash shifted over its index.
+    """
+    package = bytes(package)
+    if package[:4] != b"MFX\0":
+        raise TexError("not a shader package")
+    count, strings = struct.unpack_from("<II", package, 12)
+    out = {}
+    for index in range(1, count):
+        offset = struct.unpack_from("<Q", package, 24 + index * 8)[0]
+        name_at = strings + struct.unpack_from("<Q", package, offset)[0]
+        name = package[name_at:package.index(b"\0", name_at)].decode("latin1")
+        out[(object_hash(name) << 12) | index] = name
+    return out
+
+
+def _object_name(value: int, objects: dict[int, str] | None) -> str | None:
+    if objects is not None and value in objects:
+        return objects[value]
+    return _KNOWN_OBJECTS.get(value >> 12)
 
 
 def body_albedo_paths(archive) -> dict[str, list[str]]:
@@ -215,22 +445,26 @@ def body_albedo_paths(archive) -> dict[str, list[str]]:
     return out
 
 
-def texture_set_materials(archive) -> list[dict]:
-    """Every texture-set MRL in an archive with each material's referenced texture indices.
+def texture_set_materials(archive, *, objects: dict[int, str] | None = None) -> list[dict]:
+    """Every texture-set MRL in an archive with each material's bindings.
 
-    The material record (72 bytes) carries its name hash at +8, the size of its command region at +12 and the region
-    offset at +56. Scanning that region for 32-bit values in ``1..texture_count`` yields the material's texture list in
-    table order (indices are 1-based; e.g. ``pl_skin`` -> 4,5,6,7 = hand_NM, hand_BM, pl_Blood_BM, hand_MM and
-    ``pl_cloth1`` -> 17..22 = the shirt set). A texture shared by two materials (the blood map) appears in both lists.
+    The material record (72 bytes) carries its name hash at +8, the size of its command buffer at +12, the command
+    count in the low 12 bits of the word at +28 and the buffer offset at +56. The buffer starts with 24-byte commands
+    (kind, value, shader object) and is followed by the constant buffers the commands point into. A texture command's
+    value is the **1-based** index into the MRL's texture table (0 = unbound), so each material gets:
+
+    * ``textures`` / ``paths`` - every texture it references, in buffer order (e.g. ``pl_skin`` -> hand NM, hand BM,
+      the shared blood map, hand MM);
+    * ``slots`` - {shader slot: path or None}: ``tAlbedoMap`` is the albedo the surface is drawn with,
+      ``tVtxDisplacement`` / ``tVtxDispMask`` the cloth displacement curve and mask (`pl_VTF`, `_MVTF`);
+    * ``functions`` - {selector: chosen function}, e.g. ``FAlbedo`` -> ``FColorMaskAlbedoMapModulate``;
+    * ``constants`` - the decoded ``CBMaterial`` / ``CBColorMask`` / ``CBVertexDisplacement`` values.
+
+    Names come from ``objects`` (:func:`shader_objects`) when given, else from the names measured for this title.
     """
-    import zlib as _zlib
-
     out = []
     for entry in archive.entries:
-        try:
-            raw = _zlib.decompress(entry.data)
-        except _zlib.error:
-            raw = entry.data
+        raw = _entry_bytes(entry)
         if raw[:4] != b"MRL\0":
             continue
         magic, version, count, texture_count, shader, texture_offset, material_offset = struct.unpack_from(
@@ -239,24 +473,59 @@ def texture_set_materials(archive) -> list[dict]:
         for index in range(texture_count):
             offset = texture_offset + index * 88 + 24
             paths.append(raw[offset:offset + 64].split(b"\0", 1)[0].decode("ascii", "replace"))
+        known = {zlib.crc32(name.encode()) ^ 0xFFFFFFFF: name for name in BODY_MATERIAL_NAMES}
         materials = []
         for index in range(count):
             offset = material_offset + index * 72
-            if offset + 60 > len(raw):
+            if offset + 72 > len(raw):
                 break
-            name_hash = struct.unpack_from("<I", raw, offset + 8)[0]
-            size = struct.unpack_from("<I", raw, offset + 12)[0]
-            region = struct.unpack_from("<I", raw, offset + 56)[0]
+            name_hash, size, blend, depth, raster = struct.unpack_from("<5I", raw, offset + 8)
+            commands = struct.unpack_from("<I", raw, offset + 28)[0] & 0xFFF
+            region = struct.unpack_from("<Q", raw, offset + 56)[0]
             refs = []
             for position in range(region, min(region + size, len(raw)) - 3, 4):
                 value = struct.unpack_from("<I", raw, position)[0]
                 if 1 <= value <= texture_count:
                     refs.append(value - 1)
-            materials.append({"name_hash": name_hash, "region_size": size,
-                              "textures": refs, "paths": [paths[i] for i in refs]})
-        out.append({"entry": entry.name.rsplit("\\", 1)[-1], "version": version, "texture_count": texture_count,
-                    "paths": paths, "materials": materials})
+            slots: dict[str, str | None] = {}
+            functions: dict[str, str] = {}
+            constants: dict[str, dict] = {}
+            for command in range(commands):
+                at = region + command * COMMAND_BYTES
+                if at + COMMAND_BYTES > len(raw):
+                    break
+                info, _pad, value, target, _pad2 = struct.unpack_from("<IIQII", raw, at)
+                kind, name = info & 0xF, _object_name(target, objects)
+                if name is None:
+                    continue
+                if kind == KIND_TEXTURE:
+                    slots[name] = paths[value - 1] if 1 <= value <= texture_count else None
+                elif kind == KIND_FUNCTION:
+                    functions[name] = _object_name(value & 0xFFFFFFFF, objects) or f"0x{value & 0xFFFFFFFF:08x}"
+                elif kind == KIND_CONSTANTS and name in CONSTANT_BUFFERS:
+                    floats, fields = CONSTANT_BUFFERS[name]
+                    if region + value + floats * 4 <= len(raw):
+                        values = struct.unpack_from(f"<{floats}f", raw, region + value)
+                        constants[name] = {field: list(values[first:first + length])
+                                           for field, first, length in fields}
+            materials.append({"name_hash": name_hash, "name": known.get(name_hash), "region_size": size,
+                              "blend": _object_name(blend, objects), "depth": _object_name(depth, objects),
+                              "raster": _object_name(raster, objects),
+                              "textures": refs, "paths": [paths[i] for i in refs],
+                              "slots": slots, "functions": functions, "constants": constants})
+        out.append({"entry": entry.name.rsplit("\\", 1)[-1], "version": version, "shader": shader,
+                    "texture_count": texture_count, "paths": paths, "materials": materials})
     return out
+
+
+def material_bindings(archive, material: str, *, objects: dict[int, str] | None = None) -> dict | None:
+    """The first texture-set material named ``material`` in the archive (its slots, functions, constants)."""
+    wanted = zlib.crc32(material.encode()) ^ 0xFFFFFFFF
+    for texture_set in texture_set_materials(archive, objects=objects):
+        for row in texture_set["materials"]:
+            if row["name_hash"] == wanted and row["slots"]:
+                return row | {"name": material, "mrl": texture_set["entry"]}
+    return None
 
 
 def texture_set_mrl(archive) -> dict:
@@ -264,16 +533,11 @@ def texture_set_mrl(archive) -> dict:
 
     Measured header: `MRL v36`, 10 materials, 17 textures, texture table at 40 (88-byte records, path at +24) and the
     material table at 1536. The texture paths are full resource paths (`data\\chara\\pl\\pl0000\\model\\pl0000_00head_NM`),
-    which is exactly the material→texture binding the body MRL lacks; the material command records still need their
-    field layout decoded, so this returns the container facts and the paths only.
+    which is exactly the material→texture binding the body MRL lacks; :func:`texture_set_materials` decodes the
+    material side.
     """
-    import zlib as _zlib
-
     entry = archive.entries[-1]
-    try:
-        raw = _zlib.decompress(entry.data)
-    except _zlib.error:
-        raw = entry.data
+    raw = _entry_bytes(entry)
     if raw[:4] != b"MRL\0":
         raise TexError("the archive does not end with the texture-set MRL")
     magic, version, count, texture_count, shader, texture_offset, material_offset = struct.unpack_from(
@@ -300,119 +564,186 @@ def describe_arc(archive) -> list[dict]:
         rows.append({"name": entry.name.rsplit("\\", 1)[-1], "format": surface.format,
                      "width": surface.width, "height": surface.height, "mips": surface.mip_count,
                      "block_bytes": BLOCK_BYTES.get(surface.format),
-                     "decodable": surface.format in DECODABLE or surface.format == 0x2B})
+                     "texel_bytes": TEXEL_BYTES.get(surface.format),
+                     "decodable": surface.format in (0x19, 0x1F, 0x2B, 0x09)})
     return rows
 
 
-# --- writing the two-half albedo -------------------------------------------------
+# --- writing the albedo (BC3: luma in alpha, Cr / opacity / Cb in the colour block) ----------------
 
-def _quant565(rgb) -> int:
-    r, g, b = (int(round(v)) for v in rgb)
-    return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
-
-
-def _expand565(value: int) -> tuple[int, int, int]:
-    r = (value >> 11) & 0x1F
-    g = (value >> 5) & 0x3F
-    b = value & 0x1F
-    return (r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2)
-
-
-def _bc1_block(tile: np.ndarray) -> bytes:
-    """One 8-byte BC1 block (two 565 endpoints, 16 two-bit indices) for a 4x4 RGB tile."""
-    flat = tile.reshape(-1, 3).astype(np.int32)
-    lo, hi = flat.min(0), flat.max(0)
-    c0, c1 = _quant565(hi), _quant565(lo)
-    if c0 < c1:
-        c0, c1 = c1, c0
-    if c0 == c1:
-        c0 = min(0xFFFF, c0 + 1)
-    a, b = _expand565(c0), _expand565(c1)
-    palette = [a, b, tuple((2 * a[i] + b[i]) // 3 for i in range(3)),
-               tuple((a[i] + 2 * b[i]) // 3 for i in range(3))]
-    diff = np.abs(flat[:, None, :] - np.asarray(palette, np.int32)[None, :, :]).sum(2)
-    indices = diff.argmin(1)
-    bits = 0
-    for pixel, index in enumerate(indices):
-        bits |= int(index) << (2 * pixel)
-    return struct.pack("<HHI", c0, c1, bits)
+def _encode_alpha_tiles(tiles: np.ndarray) -> np.ndarray:
+    """(n, 16) uint8 -> (n, 8) BC4 blocks in the eight-value mode; a flat tile is `v v 00 00 00 00 00 00` as in
+    native data."""
+    values = np.asarray(tiles, np.uint8).reshape(-1, 16).astype(np.int32)
+    a0, a1 = values.max(1), values.min(1)
+    palette = np.empty((len(values), 8), np.int32)
+    palette[:, 0], palette[:, 1] = a0, a1
+    for i in range(1, 7):
+        palette[:, i + 1] = ((7 - i) * a0 + i * a1) // 7
+    index = np.abs(values[:, :, None] - palette[:, None, :]).argmin(2)
+    index[a0 == a1] = 0
+    bits = np.zeros(len(values), np.uint64)
+    for pixel in range(16):
+        bits |= index[:, pixel].astype(np.uint64) << np.uint64(3 * pixel)
+    out = np.empty((len(values), 8), np.uint8)
+    out[:, 0], out[:, 1] = a0, a1
+    for k in range(6):
+        out[:, 2 + k] = ((bits >> np.uint64(8 * k)) & np.uint64(0xFF)).astype(np.uint8)
+    return out
 
 
-def _bc4_block(values: np.ndarray) -> bytes:
-    """One 8-byte BC4 block (8-value mode) for a 4x4 uint8 tile."""
-    flat = values.reshape(-1).astype(np.int32)
-    a0, a1 = int(flat.max()), int(flat.min())
-    if a0 == a1:
-        a0 = min(255, a1 + 1)
-    palette = [a0, a1] + [((5 - i) * a0 + (i + 1) * a1) // 7 for i in range(6)]
-    diff = np.abs(flat[:, None] - np.asarray(palette, np.int32)[None, :])
-    indices = diff.argmin(1)
-    bits = 0
-    for pixel, index in enumerate(indices):
-        bits |= int(index) << (3 * pixel)
-    return bytes((a0, a1)) + bits.to_bytes(6, "little")
+def _encode_colour_tiles(tiles: np.ndarray) -> np.ndarray:
+    """(n, 16, 3) floats in 0..1 -> (n, 8) four-colour BC1 blocks with `c0 >= c1`.
+
+    The endpoints are the extremes along each tile's principal axis, quantised to 5:6:5; a tile whose endpoints
+    quantise to one colour is written flat with the index word `0xAAAAAAAA`, which is the native flat block.
+    """
+    tiles = np.clip(np.asarray(tiles, np.float64).reshape(-1, 16, 3), 0.0, 1.0)
+    mean = tiles.mean(1)
+    centred = tiles - mean[:, None, :]
+    covariance = np.einsum("npi,npj->nij", centred, centred)
+    _values, vectors = np.linalg.eigh(covariance)
+    axis = vectors[:, :, 2]
+    along = np.einsum("npi,ni->np", centred, axis)
+    ends = np.stack([mean + axis * along.max(1)[:, None], mean + axis * along.min(1)[:, None]], 1)
+    ends = np.clip(ends, 0.0, 1.0)
+    scale = np.array([31.0, 63.0, 31.0])
+    codes = np.floor(ends * scale + 0.5 + 1e-9).astype(np.int64)
+    packed = (codes[..., 0] << 11) | (codes[..., 1] << 5) | codes[..., 2]
+    c0, c1 = packed.max(1), packed.min(1)
+    e0, e1 = _expand565(c0).astype(np.float64), _expand565(c1).astype(np.float64)
+    palette = np.stack([e0, e1, (2 * e0 + e1) // 3, (e0 + 2 * e1) // 3], 1) / 255.0
+    distance = ((tiles[:, :, None, :] - palette[:, None, :, :]) ** 2).sum(-1)
+    index = distance.argmin(2)
+    index[c0 == c1] = 2
+    bits = np.zeros(len(tiles), np.uint32)
+    for pixel in range(16):
+        bits |= index[:, pixel].astype(np.uint32) << np.uint32(2 * pixel)
+    out = np.empty((len(tiles), 8), np.uint8)
+    out[:, 0], out[:, 1] = c0 & 0xFF, c0 >> 8
+    out[:, 2], out[:, 3] = c1 & 0xFF, c1 >> 8
+    for k in range(4):
+        out[:, 4 + k] = ((bits >> np.uint32(8 * k)) & np.uint32(0xFF)).astype(np.uint8)
+    return out
 
 
-def encode_albedo(image) -> bytes:
-    """Encode an RGB image as `0x2B` blocks: BC4 greyscale detail (bytes 0-7) + BC1 tile tint (bytes 8-15)."""
+def _padded_rgba(image) -> np.ndarray:
+    """An image as (h, w, 4) uint8 with both sides padded to multiples of four by repeating the edge texels."""
     from PIL import Image
 
-    rgb = np.asarray(Image.fromarray(np.asarray(image, np.uint8)).convert("RGB"), np.uint8)
-    height, width = rgb.shape[:2]
-    # BC blocks cover 4x4 pixels; edge-repeat the last row/column for dimensions that are not multiples of four
+    source = image if isinstance(image, Image.Image) else Image.fromarray(np.asarray(image, np.uint8))
+    rgba = np.asarray(source.convert("RGBA"), np.uint8)
+    height, width = rgba.shape[:2]
     padded_h, padded_w = (height + 3) // 4 * 4, (width + 3) // 4 * 4
     if (padded_h, padded_w) != (height, width):
-        rgb = np.pad(rgb, ((0, padded_h - height), (0, padded_w - width), (0, 0)), mode="edge")
-    height, width = rgb.shape[:2]
-    luminance = ((rgb[..., 0].astype(np.int32) * 299 + rgb[..., 1].astype(np.int32) * 587
-                  + rgb[..., 2].astype(np.int32) * 114) // 1000).astype(np.uint8)
-    blocks = bytearray()
-    for y in range(0, height, 4):
-        for x in range(0, width, 4):
-            tile = rgb[y:y + 4, x:x + 4]
-            average = tile.reshape(-1, 3).mean(0)
-            tint = _quant565(average)
-            # a flat tile: both endpoints equal, every index 0
-            blocks += _bc4_block(luminance[y:y + 4, x:x + 4]) + struct.pack("<HHI", tint, tint, 0)
-    return bytes(blocks)
+        rgba = np.pad(rgba, ((0, padded_h - height), (0, padded_w - width), (0, 0)), mode="edge")
+    return rgba
 
 
-def replace_albedo(template: bytes, image) -> bytes:
-    """A TEX with the same header/dimensions/mips as `template` and a new `0x2B` mip chain from `image`.
+def encode_albedo(image, *, chroma: bool = True, opacity: bool = False, bias: float = YCC_NEUTRAL) -> bytes:
+    """Encode an image as `0x2B` blocks: BC3 with Y' in the alpha block and (Cr, opacity, Cb) in the colour block.
 
-    The template must be an `0x2B` surface; header fields other than the size and mip offsets are preserved, every mip
-    is regenerated (the image is scaled down with Lanczos) and stored in the same Tegra layout the reader expects.
+    ``chroma=False`` writes the image's luma only, with the neutral colour block: every tile's second half is then
+    exactly the native constant block (`c0 = c1 = 0x7FEF`, indices `0xAAAAAAAA`) and the surface reads as greyscale.
+    ``opacity=True`` takes the green channel from the image's alpha; by default the surface is opaque (63), as every
+    native body albedo is. Colours are gamma-space values, as stored by the native maps.
     """
-    from . import mtf_tex
+    rgba = _padded_rgba(image)
+    rgb = rgba[..., :3].astype(np.float64) / 255.0
+    luma, cb, cr = rgb_to_ycbcr(rgb)
+    luma8 = np.clip(np.floor(luma * 255.0 + 0.5), 0, 255).astype(np.uint8)
+    if not chroma:
+        cb = np.zeros_like(cb)
+        cr = np.zeros_like(cr)
+    green = rgba[..., 3].astype(np.float64) / 255.0 if opacity else np.ones_like(luma)
+    colour = np.stack([cr + bias, green, cb + bias], -1)
+    blocks = np.concatenate([_encode_alpha_tiles(_image_tiles(luma8)),
+                             _encode_colour_tiles(_image_tiles(colour))], 1)
+    return blocks.tobytes()
+
+
+def replace_albedo(template: bytes, image, *, chroma: bool = True, opacity: bool = False) -> bytes:
+    """A TEX with the same dimensions and mip count as `template` and a new `0x2B` mip chain from `image`.
+
+    The template must be an `0x2B` surface; every mip is regenerated (the image is scaled down with Lanczos) and
+    stored in the measured layout. See :func:`encode_albedo` for ``chroma`` / ``opacity``.
+    """
     from PIL import Image
 
     surface = Surface(template)
     if surface.format != 0x2B:
         raise TexError(f"replace_albedo needs a 0x2B template, not 0x{surface.format:02x}")
-    base = Image.fromarray(np.asarray(image, np.uint8)).convert("RGB")
+    source = image if isinstance(image, Image.Image) else Image.fromarray(np.asarray(image, np.uint8))
+    base = source.convert("RGBA" if opacity else "RGB")
     if base.size != (surface.width, surface.height):
         base = base.resize((surface.width, surface.height), Image.LANCZOS)
-    payload = bytearray()
-    offsets = []
+    levels = []
     for mip in range(surface.mip_count):
-        width, height = max(1, surface.width >> mip), max(1, surface.height >> mip)
-        blocks = encode_albedo(base.resize((width, height), Image.LANCZOS) if mip else base)
-        by = (height + 3) // 4
-        bh = max(1, min(16, (1 << (by - 1).bit_length()) // 8))
-        bx = (width + 3) // 4
-        pitch = ((bx * 16 + 63) // 64) * 64
-        size = pitch * ((by + 8 * bh - 1) // (8 * bh)) * 8 * bh
-        level = mtf_tex.Mip(width, height, 0, size, bh)
-        addresses = mtf_tex._addresses(level, 16)
-        storage = np.zeros(size, np.uint8)
-        data = np.frombuffer(blocks, np.uint8).reshape(-1, 16)
-        if len(data) != addresses.shape[0]:
-            raise TexError(f"mip {mip}: {len(data)} blocks do not fill {addresses.shape[0]}")
-        storage[addresses] = data
-        offsets.append(len(payload))
-        payload += storage.tobytes()
-    header = bytearray(template[:surface.start])
-    struct.pack_into("<I", header, 16, len(payload))
-    for index, offset in enumerate(offsets):
-        struct.pack_into("<I", header, 20 + index * 4, offset)
-    return bytes(header + payload)
+        width, height = surface.mip_size(mip)
+        levels.append(encode_albedo(base.resize((width, height), Image.LANCZOS) if mip else base,
+                                    chroma=chroma, opacity=opacity))
+    return pack_tex(0x2B, surface.width, surface.height, levels, revision=surface.revision)
+
+
+def solid_albedo(template: bytes, rgb) -> bytes:
+    """`template` (an `0x2B` TEX) refilled with one opaque colour, encoded through the Y'CbCr path."""
+    surface = Surface(template)
+    colour = np.empty((surface.height, surface.width, 3), np.uint8)
+    colour[...] = np.asarray(rgb, np.uint8)
+    return replace_albedo(template, colour)
+
+
+# --- writing the uncompressed formats (`0x09` RGBA8, `0x0E` float32) -------------------------------
+
+def _box_chain(pixels: np.ndarray, levels: int) -> list[np.ndarray]:
+    """`levels` mips of a float image, each the 2x2 box filter of the one above (as the native chains are)."""
+    height, width = pixels.shape[:2]
+    if width & (width - 1) or height & (height - 1):
+        raise TexError("only power-of-two surfaces are written")
+    if not 1 <= levels <= max(width, height).bit_length():
+        raise TexError("invalid mip count for the surface")
+    chain = [pixels]
+    for _ in range(1, levels):
+        top = chain[-1]
+        if top.shape[0] > 1:
+            top = (top[0::2] + top[1::2]) / 2.0
+        if top.shape[1] > 1:
+            top = (top[:, 0::2] + top[:, 1::2]) / 2.0
+        chain.append(top)
+    return chain
+
+
+def rgba8_tex(pixels, *, mips: int | None = None, revision: int = 0x20) -> bytes:
+    """An `0x09` (RGBA8) TEX from an (h, w, 4) array; the mip chain is box-filtered down to 1x1 unless `mips` is
+    given. Native `_MVTF` masks are grey in RGB with alpha 255."""
+    array = np.asarray(pixels)
+    if array.ndim != 3 or array.shape[2] != 4:
+        raise TexError("rgba8_tex needs an (h, w, 4) array")
+    height, width = array.shape[:2]
+    count = max(width, height).bit_length() if mips is None else int(mips)
+    chain = _box_chain(array.astype(np.float64), count)
+    levels = [np.clip(np.floor(level + 0.5), 0, 255).astype(np.uint8).tobytes() for level in chain]
+    return pack_tex(0x09, width, height, levels, revision=revision)
+
+
+def float_tex(values, *, mips: int = 1, revision: int = 0x20) -> bytes:
+    """An `0x0E` TEX (one little-endian float32 a texel) from an (h, w) array; one mip, as `pl_VTF` has."""
+    array = np.asarray(values, np.float64)
+    if array.ndim != 2:
+        raise TexError("float_tex needs an (h, w) array")
+    height, width = array.shape
+    levels = [level.astype("<f4").tobytes() for level in _box_chain(array, int(mips))]
+    return pack_tex(0x0E, width, height, levels, revision=revision)
+
+
+def replace_texels(template: bytes, values) -> bytes:
+    """A TEX with `template`'s format, size and mip count holding `values` (`0x09`: (h, w, 4); `0x0E`: (h, w))."""
+    surface = Surface(template)
+    array = np.asarray(values)
+    if array.shape[:2] != (surface.height, surface.width):
+        raise TexError(f"values are {array.shape[:2]}, the TEX is {(surface.height, surface.width)}")
+    if surface.format == 0x09:
+        return rgba8_tex(array, mips=surface.mip_count, revision=surface.revision)
+    if surface.format == 0x0E:
+        return float_tex(array, mips=surface.mip_count, revision=surface.revision)
+    raise TexError(f"format 0x{surface.format:02x} is not an uncompressed surface")

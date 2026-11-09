@@ -6,6 +6,135 @@ pick up without re-deriving anything.
 
 ---
 
+## 0. Update, same day, offline work (branch `wt-re6-switch-20261109`)
+
+Done on a PC without the assets: the files were copied read-only from the game host (Leon's sets, all 51 body arcs,
+the default costumes' parts and first texture set, 34 donors, the shader package; 0.35 GB). **Nothing below has been
+loaded by the game.** It replaces §2.3, the "known defect" of §3.4, §4.5, §4.14 and §5.3; those are amended in place.
+
+### 0.1 The colour path: the albedo is Y'CbCr, the VTF is not colour
+
+- **`0x2B` is BC3 holding Y'CbCr + alpha.** The alpha block (bytes 0-7) is luma `Y'`; the colour block (bytes 8-15)
+  holds `Cr` in red, `Cb` in blue (neutral = 5-bit code 15) and the opacity in green. Formula, gamma space, values 0..1:
+
+  ```
+  Y = alpha block     Cr = red - b     Cb = blue - b     opacity = green        (b = 15/31; the engine may use 0.5)
+  R = Y + 1.402 Cr    G = Y - 0.34414 Cb - 0.71414 Cr    B = Y + 1.772 Cb
+  material: albedo = RGB x CBMaterial.fDiffuseColor (1,1,1 on every player material measured)
+            FColorMaskAlbedoMapModulate adds the blood tint CBColorMask.fColorMaskColor (0.45, 0.05, 0.09 on the
+            jacket) where the blood mask passes thresholds that are 0 at rest
+  ```
+
+- The "constant second half" (`c0 = c1 = 0x7FEF`, indices `0xAAAAAAAA`) is a **neutral, opaque tile** (Cr = Cb = 15,
+  opacity 63), not a missing colour. Measured over Leon's set: it fills 100 % of the black eye cover, 40 % of the
+  shirt, 15 % of the head, 2 % of the jacket and **0 %** of the hand map; the hand's red code averages 17.8 and its
+  blue 13.3 (Cr above neutral, Cb below: skin), and green runs 0..63 on hair and eyelashes (the cut-out).
+- **Evidence for.** (1) Decoded this way the native maps are in their own colours: Leon's face (skin, pink lips,
+  cream teeth), blue-grey iris, dirty-blond hair, orange fire on the effect sheets. (2) The same formula applied to
+  the bytes of the installed `re6sw_sonic_leon_keep` (which wrote plain RGB into the colour block) gives teal quills
+  (0, 0.48, 0.53) and pink gloves (1, 0.47, 1); the live frame measures hue 164 and 325. A swapped Cr/Cb gives orange
+  quills, YCoCg gives yellow gloves, the old "RGB tint x luma" gives the intended blue. (3) The solid-red probe stays
+  red (1, 0.11, 0), which is why it could not tell. (4) The title's `AppShaderPackage.mfx` holds exactly these
+  constants (1.402, 0.34414, 0.71414, 1.772 with 0.5) in its Y'CbCr functions.
+- **Not settled offline.** BT.601 against 709 and the bias (15/31 against 0.5) are second-order and the frames at
+  hand do not separate them; where in the engine the `0x2B` decode runs was not located (the constants were found in
+  `FSystemCacheDecodeCopy` / `FFilterComposite`, not in `FAlbedoMap`).
+- **`pl_VTF` / `_MVTF` are the cloth's vertex displacement**, not colour: the jacket material binds `pl_VTF` to
+  `tVtxDisplacement` and `pl0000_50_jacket_MVTF` to `tVtxDispMask` under `FVertexDisplacementCurveUV`
+  (`CBVertexDisplacement.fVtxDispScale` 0 at rest). `pl_VTF` is 128x4 `float32`: rows 0 and 3 are smooth three-crest
+  waves (values n/255, 0 at both ends, max 0.84 / 0.86), rows 1-2 zero. `_MVTF` is RGBA8, grey with alpha 255. "VTF"
+  is vertex texture fetch. The hypothesis of §2.3 is refuted by the game's own bindings.
+- The material binding is fully decoded (`re6_switch_tex.texture_set_materials`): 24-byte commands (kind, value,
+  shader object), object id = 20-bit name hash over the package index, names from the `.mfx`. A one-mesh donor is
+  drawn with **one** material and samples only that material's maps: on `uPl00LeonUsa` material 0 is `pl_cloth`
+  (jacket), on `uPl00LeonAsia` it is `pl_skin1` (vest). The dirt variants `_0.._3` of a set bind **differently named**
+  albedos (`pl0000_00jacket_BM` in `_0`, `pl0000_70jacket_d1_BM` in `_1`/`_2`), so a texture is resolved through each
+  archive's own MRL (`re6_switch_models.material_texture_changes`).
+
+### 0.2 Code
+
+`re6_switch_tex`: numpy decoders (no `texture2ddecoder`), `Surface.albedo` / `.texels`, `encode_albedo` (Y'CbCr; a
+grey tile is byte-for-byte the native constant block; `chroma=False` forces it), `pack_tex` (header + block-linear
+layout from scratch), `rgba8_tex` (`0x09`), `float_tex` (`0x0E`), `replace_texels`, `shader_objects`. The storage
+layout is the same GOB layout for every format, the unit being a 4x4 block or one texel, with zero padding: **351
+native surfaces of five formats repack byte-identically**. `re6_switch_models`: `model_entries`, `slot_report`,
+`body_materials`, `donor_material`, `texture_set_arcs`, `replace_textures`, `material_texture_changes`.
+`re6_switch_cast`: `donor_check`, `pool_report`, `franchise`, `author_slot`, `plan(mix=)`, tiers.
+
+### 0.3 Roster integrity (§4.14 settled, three other defects found)
+
+- **Bone counts 36..89 are each costume's own skeleton**, not a wrong MOD. All 51 body arcs hold exactly one skinned
+  MOD (`data\chara\pl\plNN00\model\plNNNN`, always with the 18 role ids) and two skeleton-less effect MODs
+  (`md000c_02`, `md008c`); the seven `DebugId` arcs are one identical file (`pl9920`, 36 bones); Piers' cannon arm is
+  89 bones with five roots. `_find_model` picked the right MOD by luck of entry order; it now picks by skeleton.
+- **`blank_arc` blanked only the first MOD.** 23 accessory-head arcs hold two or three (`cs_plNN00/01/02`); the
+  installed builds left 1510 + 3537 vertices drawn in Leon's. Fixed.
+- **Material 0 was assumed for the donor.** On `uPl01HelenaUsa` and `uPl02ChrisAsia` it is `pl_nuki`, an alpha-tested
+  patch material (`FTransparencyAlpha`): the donor would be cut out by a patch texture's alpha. `donor_material`
+  picks the first opaque material without cloth displacement from the costume's texture set. The 51-slot
+  `re6sw_smash_cast` on the build machine was built with material 0 throughout: rebuild it before testing.
+- **The textured builds repainted `pl_Blood_BM`**, the shared blood mask, with the donor atlas. `texture_changes` now
+  leaves `data\chara\textures\*` alone.
+- **Which body is Mercenaries costume 1 is not measured.** The solid-colour probe held a donor on `uPl00LeonUsa.arc`
+  and red albedos in both of Leon's sets; its frame shows a red *human* in the Asia outfit. So for Leon costume 1 is
+  most likely `uPl00LeonAsia` (`pl0010`, set `uPlTex0010_n`), and `skin_swap.CHARACTER_ARCS` (Leon/Helena = Usa) may
+  name a body Mercenaries never draws. The overlays below cover both of Leon's (and Helena's) campaign bodies.
+
+### 0.4 Any franchise in the cast
+
+The host library (`~/gBox_alt/gbox-cache/characters`, 1484 folders, 1447 with a `meta.json`) holds no Smash Ultimate
+or Brawl donor (those are on the build machine). `re6_switch_cast` therefore casts **any** entry with the roles:
+
+| tier | rule | usable entries | distinct characters | source games |
+|---|---|---|---|---|
+| `full` | all 18 roles on distinct joints | 519 | 385 | 20 |
+| `core` | neck and clavicles may be absent (keep-bind only) | 984 | 803 | 37 |
+
+`full` by game: Def Jam Vendetta 115, 007 Agent Under Fire 91, MGS Twin Snakes 52, Soul Calibur II 48, Stranglehold
+39, MGS2 38, PSO Ep I&II 24 (+12 Return to Ragol), Smash Melee 23, SoulCalibur 19, GTA LCS 17, Crazy Taxi 2 8,
+Render96 Mario 7, FF7 5, SM64 5, RE4 5, Parasite Eve 4, Nightfire 3, RE5 2, RE6 2. The rest: 325 rigs resolve 15/18
+(no neck, no clavicles: WCW 137, Dead or Alive ++ 88, DOA2 15, Jet Set/Grind Radio 32, Sonic Adventure 1/2 21, FF7
+11, PSO v2 9), 171 resolve 16/18 (no clavicles: WWF No Mercy 64, SmackDown 2 66, RE2 23), 179 are unskinned (Marvel
+vs. Capcom 2), 117 resolve no role (PSO parts), 104 are sprite sheets (Tetris DS, Clay Fighter, 2D Sonic/Mario), 37
+folders have no `meta.json`, 5 share a joint between two roles. `core` brings the 15/18 and 16/18 rigs in: keeping the
+native bind needs no neck anchor (those vertices follow the next named ancestor); `reposition` still refuses them.
+
+`plan(..., seed, mix=True)` is a seeded draw with no character twice in an overlay (the same character under two
+slugs or two dumps of a game counts once) and no source game twice while unused games remain. `re6 op=switch_cast`
+takes `mix=` and `tier=`.
+
+**`keep` only fits a donor that rests in the native bind pose.** `bind_mode="keep"` leaves the donor surface in its
+own rest pose and binds it to native bones that rest in a T-pose (arms along X, legs along -Y, identical on every
+body measured). The native animations rotate those bones away from *their* rest, so a donor that rests with its arms
+down carries that 90 degrees on both arms all round. The live-proven build was a T-posed donor. Measured gap of the
+worst limb segment (`re6_switch_models.pose_deviation`): Melee fighters 2-19 degrees, RE5 Chris and Yunsung 0, 007
+Agent Under Fire 5, Toni Cipriani 10 - but Solid Snake, Liquid Snake, Rock and the PSO hunters 90, Mario (Render96
+and SM64) 77, Lei Fang 99, the Undertaker 96, Aerith 118, Aya Brea 135. `bind_mode="pose"` therefore turns the eight
+limb segments of such a donor into the native bind directions first (`mtf_retarget.repose`, the RE5 writer's
+routine; donor segment lengths kept, the native skeleton still byte-identical), and `author_slot(bind_mode="auto")`
+uses `keep` up to 20 degrees and `pose` above. `pose` has never been loaded by the game; hands, feet and a twisted
+torso (Lei Fang's stance) are not corrected.
+
+### 0.5 What was built (offline, under `C:\_tools\gBox\.scratch-merc-recovery\assets\re6\`, each with `receipt.json`)
+
+| overlay | files | what a live frame must show |
+|---|---|---|
+| `re6sw_probe_albedo_solid` | 7 | native Leon with one flat-coloured garment: blue jacket (USA body) or orange vest (Asia body) |
+| `re6sw_probe_sonic_luma` | 17 | Sonic in greyscale (colour block neutral everywhere) |
+| `re6sw_probe_sonic_vtf_white` | 17 | the same greyscale Sonic: `pl_VTF` = 1, `_MVTF` = white change no colour |
+| `re6sw_sonic_leon_ycc` | 17 | Sonic in his own colours |
+| `re6sw_roster_mix_s15` | 45 | Mario (Render96) on Leon, Liquid Snake, Aya Brea, Toni Cipriani, RE5 Chris, a 007 hostage, Aerith |
+| `re6sw_roster_mix_s27` | 45 | Solid Snake (MGS2) on Leon, Yunsung, Liquid Snake (coat), HUmar, Nigel Bloch, Rock, a Nightfire grunt |
+| `re6sw_roster_mix_core_s1` | 45 | Lei Fang (DOA++) on Leon, Liquid Snake, Yuffie, FOmarl, Goji (JGR), Mario (SM64), the Undertaker |
+
+The Sonic probes reuse the installed build's bodies and parts byte for byte and change textures only; the rosters
+are geometry-only with the native skeleton untouched (`keep` for the donors that rest in the bind pose, `pose` for
+the others - each receipt says which), one donor per character on the seven bodies believed to be costume 1 plus
+Leon's and Helena's USA bodies. Order to run them: `albedo_solid` first (it also says which body costume 1 is), then
+`sonic_leon_ycc`; the two grey probes only if `ycc` is wrong.
+
+---
+
 ## 1. The goal (as given)
 
 > Expand the RE5 progress so RE6 becomes capable of model replacement. Extract Sonic from Smash Bros Ultimate and insert
@@ -52,6 +181,10 @@ be ported to Switch.
   but **not** live-verified because the colour path is wrong (see §4.3).
 
 ### 2.3 Textures: path works, colour is wrong
+
+> **Superseded by §0.1.** The second half is chroma (Cr, opacity, Cb), constant only on neutral tiles; `pl_VTF` /
+> `_MVTF` are the cloth displacement inputs, not colour. The live observations below stand; the two explanations
+> offered for them do not.
 
 - The `0x2B` albedo replacement itself is live-proven: a **solid-red probe** rendered the character exactly red
   (`docs/evidence/re6-scale/switch-live-solid-colour-probe.jpg`), and a textured Sonic build runs in gameplay
@@ -161,8 +294,9 @@ whose metadata is cloned.
 - `body_albedo_paths`, `export_textures`, `encode_albedo(image)` (`0x2B`: BC4 luminance + BC1 per-tile average),
   `replace_albedo(template, image)` (keeps dims/mips, regenerates every mip in the Tegra layout, rewrites size/offsets),
   `describe_arc`.
-- **Known defect:** `encode_albedo`'s second half (per-tile colour) does not match the engine (native second half is a
-  constant). Do not trust textured colours until this is fixed (§4.3).
+- **Defect, fixed offline (§0.1, §0.2):** `encode_albedo` wrote a per-tile RGB colour into the second half, which the
+  engine reads as (Cr, opacity, Cb). It now writes Y'CbCr. Textured builds made before `ec6445db` carry the old
+  bytes and must be rebuilt; the corrected encoder is not live-verified yet.
 
 ### 3.5 `system/gbox/re6_tool.py` — the Switch ops
 
@@ -229,8 +363,8 @@ and 22 across the fast-menu/cadence/mercs-bot suites.
 4. **"Textured build crashes the game."** Wrong conclusion: a **vanilla** launch later crashed identically. The real
    cause was emulator/save state on the Spark (see 6–8). The solid-red probe and the textured gameplay frame prove the
    texture path itself runs.
-5. **`0x2B` colour mismatch.** Open. Native second half is a constant block; `pl_VTF` is a float colour ramp and is the
-   prime suspect. Needs the VTF/MVTF probe (§5.3).
+5. **`0x2B` colour mismatch.** Explained offline, fix built, not live-verified (§0.1): the format is BC3 Y'CbCr and
+   the encoder wrote RGB where chroma belongs. `pl_VTF` is the cloth displacement curve, not a colour ramp.
 6. **The Spark ran MercMode in parallel** with manual launches (it had its own RE6 queue and was launching/stopping its
    own game), which made sessions end in black frames. Resolved by disabling MercMode on lilspark (`POST /api/mercmode
    {"host":"lilspark","enabled":false,...}`); note the control-plane build rejects `default_mods`/`repeat_queue`.
@@ -252,10 +386,11 @@ and 22 across the fast-menu/cadence/mercs-bot suites.
 13. **Deploy gate.** The Spark runs gBox from a share, not a git checkout: `repo_update` reports "not a git checkout".
     Code reaches it only via the operator's `~/bin/deploy_main.sh --deploy` (main branch). `rebuild_node` restarts the
     service (and runs pip); it does not fetch code. At hand-off the Spark runs `6f15828c` while main is `1672c0ad`.
-14. **Roster skeleton/integrity caveat.** `re6sw_smash_cast` has 51 body-slot arcs with 51 distinct donor geometries,
-    but the per-slot MODs report bone counts from 36 to 89 (each arc's own skeleton record). Before shipping the roster,
-    confirm that the body MOD used per slot is the 54-bone player skeleton the animation expects (or that the slot's own
-    skeleton is correct for that costume), and spot-test a few slots in-game.
+14. **Roster skeleton/integrity caveat.** Settled offline (§0.3): the 36..89 bone counts are each costume's own
+    skeleton (one skinned MOD per body arc, all with the 18 role ids; 54 bones is Leon's USA body only). The roster
+    had three other defects instead - one blanked MOD of three in the accessory heads, material 0 assumed for the
+    donor (an alpha-tested patch material on Helena USA and Chris Asia), and an unmeasured costume-1 body - so
+    `re6sw_smash_cast` must be rebuilt with the current code before it is spot-tested in-game.
 
 ---
 
@@ -292,6 +427,10 @@ seconds from the main menu. Tune `menu_speed` thresholds (`MIN/MAX_*`, `FAST`, `
 
 ### 5.3 Textures: find and neutralise the colour source
 
+> **Replaced by the four probes of §0.5.** Run `re6sw_probe_albedo_solid`, then `re6sw_sonic_leon_ycc`; each
+> `receipt.json` says what the frame must show and what every other outcome means. A white `_MVTF` is not neutral:
+> it is a displacement mask of 1 everywhere. The original plan is kept below for the record.
+
 1. First probe (cheap): replace only `pl0000_00jacket_BM` with a solid known colour and see whether that material shows
    it exactly (it should, like the red probe) — confirms per-material targeting.
 2. Then neutralise the colour multiplier: `_VTF` is `0x0E` 128×4 (float ramp), `_MVTF` is `0x09` 128×128 (RGBA8). Write a
@@ -304,8 +443,13 @@ seconds from the main menu. Tune `menu_speed` thresholds (`MIN/MAX_*`, `FAST`, `
 
 ### 5.4 Roster: verify and ship
 
-1. Resolve the bone-count caveat (§4.14); spot-check 3–5 slots by installing `re6sw_smash_cast` (255 files, ~346 MB —
-   upload in batches) and playing rounds with different drawn characters/costumes.
+0. First boot: one of the three small mixed-franchise overlays of §0.5 (45 files, 25-26 MB each), every character
+   with COSTUME 1. A native human on a covered character settles which body costume 1 is (§0.3). 17 of their 27
+   bodies are reposed donors (`pose`, never live) and 10 are kept ones; `re6sw_roster_mix_s15` has both kinds side by
+   side (Toni Cipriani, RE5 Chris and the 007 hostage are kept; Mario, Liquid Snake, Aya and Aerith are reposed).
+1. The bone-count caveat is resolved (§4.14). Rebuild `re6sw_smash_cast` with the current code (vetted material, all
+   accessory-head MODs blanked), then spot-check 3–5 slots (255 files, ~346 MB — upload in batches) by playing rounds
+   with different drawn characters/costumes.
 2. For "randomising on rounds", either use the roster build as the per-title mod (each round's native character/costume
    picks its assigned Smash fighter), or queue rounds with different `mod` entries in MercMode's queue. Note the
    control-plane build rejects `default_mods`, so queue entries with `mod` are the working route there.
