@@ -161,7 +161,8 @@ Displacement magnitude is therefore **not** the low-model limit, and the Sonic t
 “vertices moved too far”.
 
 A one-mesh Sonic low MOD compressed at level 6 now **boots to the title** (the level-9 one-mesh was black at boot) but
-still stops at `NOW LOADING`, so the one-mesh/MRL mismatch remains after the compression fix.
+still stops at `NOW LOADING`, so the one-mesh/MRL mismatch remains after the compression fix. Changing its material
+index from 128 to **0** did not change that.
 
 Packing the same Sonic triangle against **expanded bounds before** the short-position encode (and updating the global
 bounds plus the patched part's 144-byte envelope) still stops at `NOW LOADING`. The envelope coordinates are documented
@@ -169,9 +170,10 @@ as a different space from the model-space points the vertex decoder reports, so 
 right writer for that table. But since a +50 translation plays a round, bounds/displacement are not the low limit; the
 remaining difference for the Sonic triangle is its **shape/skinning fields**, not how far it moved.
 
-A field bisect is still unfinished: writing the Sonic **positions only** (keeping the base normals/UV/skin bytes) blacked
-at boot, while writing positions+normals+UV reached the title and then stopped at `NOW LOADING`. That means the
-normal/UV fields are load-bearing at boot and cannot be dropped, but it does not identify the round-time field yet.
+A field bisect is still unfinished: writing the Sonic **positions only** (keeping the base normals/UV/skin bytes) also
+reaches the **title** when the boot is given a clean wait, then stops at `NOW LOADING`. So normal/UV writes are not the
+round-time trigger either; the remaining difference is the **per-vertex position set and its skin binding** inside the
+part.
 
 `mtf_author.combine` also needed a fix: the index stream is global to the shared vertex buffer, so `combine` now
 subtracts each part's `vertex_index` before adding its own base. Without it, the low self one-mesh produced triangle
