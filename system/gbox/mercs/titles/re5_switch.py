@@ -1202,7 +1202,7 @@ def laser(m, base: int) -> dict | None:
 
 
 def inventory(m, player: int) -> list:
-    """The player's inventory slots holding something: [{slot, addr, id, type, item, rounds, cap, grid, hand}]."""
+    """Occupied inventory slots, including their native item object identity."""
     try:
         raw = m.rd(player + P_INV, INV_SLOT * INV_SLOTS)
     except (ValueError, OSError):
@@ -1216,7 +1216,8 @@ def inventory(m, player: int) -> list:
         rounds, cap = struct.unpack_from("<ii", raw, o + INV_ROUNDS)
         grid, hand = struct.unpack_from("<ii", raw, o + INV_GRID)
         out.append({"slot": k, "addr": player + P_INV + o, "id": idw, "type": (idw >> 8) & 0xF, "item": idw & 0xFF,
-                    "rounds": rounds, "cap": cap, "grid": grid, "hand": hand == 1})
+                    "rounds": rounds, "cap": cap, "grid": grid, "hand": hand == 1,
+                    "object": struct.unpack_from("<Q", raw, o + INV_OBJ)[0]})
     return out
 
 
@@ -1257,7 +1258,11 @@ def snapshot(m) -> dict:
                 snap["prompt"] = re5_switch_prompt.selected_prompt(m, base, p, index or 0) or qte.grab_fallback(MAP_ID, m, snap)
                 snap["prompt_read"] = True
             if any(s["id"] == MINE_ITEM for s in snap["inventory"]):   # the bombs on the ground (re5_switch_mines)
-                snap["ground_mines"] = ground_mines(m, base)
+                # uWp0a also represents the inventory's own mine stack. Its
+                # dormant position can be near a fight; it is not a planted
+                # explosive. Exclude by exact native object identity only.
+                owned = {s["object"] for s in snap["inventory"] if s.get("object")}
+                snap["ground_mines"] = [g for g in ground_mines(m, base) if g["ptr"] not in owned]
             if snap["player"]["hp"] <= 0:                   # dead: "Continue?" and its cursor, once it is up
                 over = ui_units(m, base).get("uIdGameover00")
                 try:
@@ -5027,6 +5032,10 @@ class RE5Switch(Driver):
         if self.stats is not None:
             if res.get("mine_supply") is not None:
                 self.stats["mine_supply"] = res["mine_supply"]
+                supply = res["mine_supply"]
+                self.stats["mine_supply_status"] = str(supply.get("status") or "unknown")
+                self.stats["mine_supply_verified"] = bool(supply.get("verified"))
+                self.stats["mine_template_blocks"] = int(supply.get("template_blocks") or 0)
             self.stats["rapid_fire_active"] = bool(res.get("active"))
             self.stats["mod_writes"] = self.stats.get("mod_writes", 0) + res.get("writes", 0)
             if not res.get("verified", True):

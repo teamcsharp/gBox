@@ -35,9 +35,22 @@ def test_driver_prepares_mines_before_play_and_reports_supply(monkeypatch):
     driver._mods(memory, None, False)
     assert calls == [{"enabled": False, "prepare_mines": True}]
     assert driver.stats["mine_supply"] == supply
+    assert driver.stats["mine_supply_verified"] is True
     memory.mercs_no_modifications = True
     driver._mods(memory, None, False)
     assert len(calls) == 1
+
+
+def test_snapshot_excludes_inventory_mine_object_but_keeps_unknown_ground_actor(monkeypatch):
+    from tests.test_re5_switch_mods import weapon_guest, put_slot, player
+    guest = weapon_guest()
+    own, ground = 0x5D4DDE4740, 0x5D4DDE5740
+    put_slot(guest, 1, SM.MINE_ID, 5, 1, obj=own)
+    monkeypatch.setattr(R, "ground_mines", lambda *a: [
+        {"ptr": own, "pos": (0., 0., 0.)}, {"ptr": ground, "pos": (0., 0., 0.)}])
+    state = R.snapshot(guest)
+    assert next(row for row in state["inventory"] if row["id"] == SM.MINE_ID)["object"] == own
+    assert state["ground_mines"] == [{"ptr": ground, "pos": (0., 0., 0.)}]
 
 
 def test_due_mine_can_begin_during_flight_when_site_is_clear(monkeypatch):

@@ -282,7 +282,7 @@ def test_a_close_majini_outranks_the_blast_run_he_lets_go_and_the_fight_unloads_
     m.last_pos = (0.0, 0.0, -2000.0)                                # the old bomb, not the one he just placed
     live = [{"ptr": 10, "pos": (200.0, 0.0, 100.0), "hp": 800}]     # 2.2 m from him: within CLOSE_MAJINI_CM, in the blast
     act = m.tick(p(), snap(ground=[bomb]), live, 1.0)
-    assert act == {"hold": ()}                                       # the pad given up, not a run
+    assert act is None                                              # combat really owns the next action
     assert m.stats["mine_status"] == "in the blast and a close Majini first: the gun up"
     assert m.state == "idle"                                         # no mine cycle started
     # The same bomb, a close Majini only beyond FOE_CLEAR_CM: the old guard still runs him out of the blast.
@@ -495,15 +495,18 @@ def test_inventory_disappearance_or_count_drop_never_counts_as_a_native_bomb_act
     for offset, inventory in ((.3, []), (.5, [dict(BOMB, rounds=4)]), (.6, [dict(BOMB, rounds=0)])):
         m.tick(p(motion=29), {"inventory": inventory, "ground_mines": STACK}, [], now + offset)
         assert m.stats["mines_placed"] == 0 and "mine_last_confirmation" not in m.stats
+        assert m.stats["mine_last_actor"] == 0 and m.stats["mine_last_placed_at"] == 0.0
     actor = {"ptr": 0x123456, "pos": (0., 3., 57.)}
     m.tick(p(motion=29), held(ground=[actor]), [], now + .7)
     assert m.stats["mines_placed"] == 1
     assert m.stats["mine_last_confirmation"] == {"source": "native_uWp0a_actor", "ptr": actor["ptr"],
         "pos": list(actor["pos"]), "at": now + .7}
+    assert m.stats["mine_last_actor"] == actor["ptr"] and m.stats["mine_last_placed_at"] == now + .7
     m.tick(p(motion=29), held(ground=[actor]), [], now + .8)
     assert m.stats["mines_placed"] == 1
     m.new_round(now + 5.)
     assert "mine_last_confirmation" not in m.stats
+    assert m.stats["mine_last_actor"] == 0 and m.stats["mine_last_placed_at"] == 0.0
 
 
 def test_an_existing_actor_or_new_actor_on_another_floor_is_not_placement_proof():
@@ -531,3 +534,18 @@ def test_mid_cycle_escape_keeps_actual_bomb_site_and_current_clock_on_later_tick
     assert m.state == "retreat" and m.stats["mine_retreats_completed"] == 0
     assert m.tick(p(pos=(-600., 0., 0.)), state, [], 100.5) == {"hold": ()}
     assert m.state == "rearm" and m.stats["mine_retreats_completed"] == 1
+
+
+def test_close_blast_guard_yields_to_actual_gun_rearm_even_when_mine_is_overdue(switch_bot):
+    R, bot, clock = switch_bot
+    state = bot_snap([dict(GUN), dict(BOMB)], enemies=((200., 0., 100.),))
+    bot.tick(state)
+    bomb = {"ptr": 0x77, "pos": (0., 0., 300.)}
+    bot.mines.bombs = {bomb["ptr"]: bomb["pos"]}
+    bot.mines.last_pos = (0., 0., -2000.)
+    state["ground_mines"] = list(STACK) + [bomb]
+    state["inventory"] = [dict(GUN, hand=False), dict(BOMB, hand=True)]
+    clock[0] = R.MINE_EVERY_S + 1
+    assert bot.tick(state) == {"tap": "dleft"}
+    assert bot.doing == "rearm" and bot.mines.state == "idle"
+    assert bot.stats["mine_attempts"] == bot.stats["mines_placed"] == 0

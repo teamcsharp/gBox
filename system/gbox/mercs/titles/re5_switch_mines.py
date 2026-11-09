@@ -111,6 +111,8 @@ class Mines:
         self.saw_spent = False
         for k in COUNTERS:
             self.stats.setdefault(k, 0)
+        self.stats.setdefault("mine_last_actor", 0)
+        self.stats.setdefault("mine_last_placed_at", 0.0)
 
     def configure(self, settings: dict) -> None:
         """The operator's `mines` op (re5_switch_mods.mines, through the driver's snapshot): on / off and the cadence."""
@@ -133,7 +135,8 @@ class Mines:
         self._blocked, self._avoid_site = None, None
         self._ground_observed = False
         self.saw_place = self.saw_spent = False
-        self.stats.update(mine_overdue_s=0.0, mine_blocked_reason=None, mine_relocating=False)
+        self.stats.update(mine_overdue_s=0.0, mine_blocked_reason=None, mine_relocating=False,
+                          mine_last_actor=0, mine_last_placed_at=0.0)
         self.stats.pop("mine_last_confirmation", None)
 
     @staticmethod
@@ -286,7 +289,10 @@ class Mines:
                 # and the blast finishes it (live: 5 within 2 m, 11 within 4 m, and the death). The bomb's timer is
                 # already running, so the run is given up and the gun comes up: the fight unloads on the threat.
                 self.stats["mine_status"] = "in the blast and a close Majini first: the gun up"
-                return {"hold": ()}
+                # A neutral action still owns this tick and would suppress the
+                # gun/combat on every subsequent tick. Yield actual control;
+                # due() and relocation retain the stricter placement clearance.
+                return None
         if in_blast:
             if self.clear_from != ptr:
                 self.clear_from = ptr
@@ -415,6 +421,8 @@ class Mines:
                 self.bombs[new[0]["ptr"]] = self.site
                 self.stats["mine_last_confirmation"] = {"source": "native_uWp0a_actor", "ptr": new[0]["ptr"],
                     "pos": list(self.site), "at": now}
+                self.stats["mine_last_actor"] = new[0]["ptr"]
+                self.stats["mine_last_placed_at"] = now
                 self.stats["mine_overdue_s"] = 0.0
                 self.last_at, self.last_pos = now, self.site
                 self.state, self.t = "settle", now
