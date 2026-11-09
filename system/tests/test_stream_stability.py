@@ -55,6 +55,8 @@ class Clock:
 
 def make_stream(clock, procs, killed):
     def popen(argv):
+        if argv[0] == "taskset":                      # CPU pinning prefix (adapters.MjpegStream): unwrap to ffmpeg
+            argv = argv[argv.index("ffmpeg"):]
         assert argv[0] == "ffmpeg" and "image2pipe" in argv
         procs.append(FakeProc())
         return procs[-1]
@@ -378,15 +380,43 @@ def test_agent_test_sessions_do_not_block_automated_launches(swap_app):
     assert r["state"] == "queued" and r["require_worker"] == "spark"
 
 
+OTHER = {"game_id": "h", "title": "Virtua Fighter 4", "platform": "dreamcast", "source_paths": [], "format": "gdi",
+         "profile_id": "h"}
+
+
 @pytest.mark.parametrize("actor", [None, "gbox-agent", "mcp"])
-def test_watched_bot_session_blocks_launches_for_every_actor(swap_app, actor):
+def test_watched_bot_session_blocks_other_games_for_every_actor(swap_app, actor):
     app, store, _, _ = swap_app
+    store.upsert_catalog([OTHER])
     store.put("slabel", "spark-op", {"owner": "agent"})
     operator_guard.report_watch(store, "pip-viewer", "spark-op")
     with client(app, actor) as c:
-        result = c.post("/api/jobs", json={"tool": "launch_game", "input": {"game": GAME},
+        result = c.post("/api/jobs", json={"tool": "launch_game", "input": {"game": OTHER},
                                          "require_worker": "spark"}).json()
     assert result["state"] == "rejected" and "PiP" in result["error"]
+
+
+def test_watched_bot_session_allows_relaunch_of_the_same_game_7949(swap_app):
+    # #7949: RE4 MercMode autoplay on lilspark was refused forever because viewers watched the bot's own session
+    # ("Close that view before loading another game"). The bot restarting its own streamed title is what keeps the
+    # broadcast playing, so that relaunch must be admitted; a different title under the same view still blocks.
+    app, store, _, _ = swap_app
+    store.put("slabel", "spark-op", {"owner": "agent"})
+    operator_guard.report_watch(store, "pip-viewer", "spark-op")
+    assert not operator_guard.watched_sessions(store, "spark", relaunch_of="g")
+    assert operator_guard.watched_sessions(store, "spark", relaunch_of="h")
+    assert operator_guard.watched_sessions(store, "spark")            # no relaunch context: unchanged
+    with client(app, "mcp") as c:
+        result = c.post("/api/jobs", json={"tool": "launch_game", "input": {"game": GAME},
+                                         "require_worker": "spark"}).json()
+    assert result["state"] == "queued" and result["error"] is None
+
+
+def test_watched_operator_session_blocks_even_the_same_game(swap_app):
+    app, store, _, _ = swap_app
+    store.put("slabel", "spark-op", {"owner": "you"})
+    operator_guard.report_watch(store, "pip-viewer", "spark-op")
+    assert operator_guard.watched_sessions(store, "spark", relaunch_of="g")
 
 
 def test_watch_lease_is_per_viewer_and_expires(swap_app):

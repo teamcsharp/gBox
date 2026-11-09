@@ -64,19 +64,43 @@ def kept_by(job: dict | None) -> set:
     return ({inp.get("keep_session") or ""} | set(inp.get("keep_sessions") or [])) - {""}
 
 
-def watched_sessions(store, wid: str, *, now=None, keep=()) -> list[dict]:
+def launched_game_id(inp: dict | None) -> str:
+    """The game a launch_job input targets: a catalog dict's game_id, a bare hex id string, or input.game_id."""
+    inp = inp or {}
+    g = inp.get("game")
+    if isinstance(g, dict):
+        return g.get("game_id") or ""
+    if isinstance(g, str):
+        return g
+    return inp.get("game_id") or ""
+
+
+def watched_sessions(store, wid: str, *, now=None, keep=(), relaunch_of: str = "") -> list[dict]:
     """Watched running sessions on this worker that a launch would close; `keep` (kept_by) are left out: a launch
     that keeps them up does not take the operator's view away (2026-10-24: every MercMode preload was rejected
-    while the operator watched the playing title)."""
+    while the operator watched the playing title). `relaunch_of` (launched_game_id) exempts agent-owned sessions
+    of that same game (#7949): the bot restarting its own streamed title is what keeps the broadcast alive — the
+    operator's endless-autoplay direction — so it must not be refused just because viewers are connected. A
+    different game under the same view, or any operator-owned (owner=you) session, still blocks."""
     import time
     now = time.time() if now is None else now
     ids = {r.get("session_id") for r in store.all("session_watch") if r.get("until", 0) > now} - set(keep)
-    return [s for sid in ids if sid and worker_of(sid) == wid
-            and (s := store.get("session", sid)) and s.get("state") == "running"]
+    watched = []
+    for sid in ids:
+        if not sid or worker_of(sid) != wid:
+            continue
+        s = store.get("session", sid)
+        if not s or s.get("state") != "running":
+            continue
+        if relaunch_of and s.get("game_id") == relaunch_of \
+                and agent_owned(store.get("slabel", sid), store.get("job", sid.split("-", 1)[-1])):
+            continue
+        watched.append(s)
+    return watched
 
 
-def watching_reason(store, wid: str, keep=()) -> str | None:
-    watched = watched_sessions(store, wid, keep=keep)
+def watching_reason(store, wid: str, keep=(), relaunch_of: str = "") -> str | None:
+    watched = watched_sessions(store, wid, keep=keep, relaunch_of=relaunch_of)
     if watched:
         titles = ", ".join(s.get("title") or s["session_id"] for s in watched)
         return f"Watching {titles} in a connected stream or PiP. Close that view before loading another game on this PC."
