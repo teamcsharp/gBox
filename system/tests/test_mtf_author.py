@@ -156,4 +156,5 @@ def test_replace_archive_model_updates_the_entry_tag_to_the_new_uncompressed_siz
 
 def zlib_compress(data):
     import zlib
-    return zlib.compress(data, 9)[2:-4]
+    return zlib.compress(data, 6)[2:-4]
+
