@@ -132,3 +132,22 @@ def test_empty_records_with_duplicate_default_grid_never_overlap_a_live_item():
     assert SM._quick_mine(after)
     for k in (0,3,9,11):
         assert after[k*SM.TEMPLATE_REC:(k+1)*SM.TEMPLATE_REC]==before[k*SM.TEMPLATE_REC:(k+1)*SM.TEMPLATE_REC]
+
+
+def test_mine_probe_is_one_read_only_sample_of_the_bomb_from_the_games_memory():
+    guest=parity_guest();ad=Adapter(guest)
+    SM.mines(SM.RE5Switch(ad),30,True)
+    put_slot(guest,2,SM.MINE_ID,5,1,obj=0x123456)
+    ad.writes.clear()
+    res=SM.tool_run(ad,'mine_probe')
+    assert res['op']=='mine_probe' and res['verified'] and 'status' not in res   # small: no status block rides along
+    assert res['mine']=={'id':SM.MINE_ID,'rounds':5,'cap':5,'grid':1,'hand':False,'slot':2}
+    assert res['mine_loadout'] and res['mine_settings']=={'enabled':True,'interval_s':30.0,'only':False}
+    assert res['player']['pos'] and res['ground_mines']==[] and res['foes']['alive']>=0
+    assert not ad.writes                                                        # a probe never writes
+
+
+def test_mine_probe_without_a_player_says_so_instead_of_failing():
+    guest=parity_guest(player=False);ad=Adapter(guest)
+    res=SM.tool_run(ad,'mine_probe')
+    assert res['verified'] and res['player'] is None and res['mine'] is None and res['ground_mines']==[]
