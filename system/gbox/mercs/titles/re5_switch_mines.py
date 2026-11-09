@@ -220,11 +220,7 @@ class Mines:
         return None
 
     def _relocate(self, p: dict, live: list, now: float) -> dict | None:
-        """Seek clearance for a due mine without lowering the placement or close-crowd safety margins."""
-        if any(flat(p["pos"], e["pos"]) < CLOSE_MAJINI_CM for e in live):
-            self._relocate_until = None
-            self.stats["mine_relocating"] = False
-            return None                                      # the close threat still belongs to combat
+        """Seek clearance even in a close crowd; only planting requires the safety margin."""
         if self._relocate_until is not None and now >= self._relocate_until:
             self._relocate_until = None
             self._relocate_retry_at = now + RELOCATE_PAUSE_S
@@ -354,6 +350,7 @@ class Mines:
             if act is not None or busy:
                 if busy:
                     self.stats["mine_blocked_reason"] = "emergency action"
+                    self.stats["mine_relocating"] = False
                 return act
             if self.due(p, snap, live, now) is None:
                 if self._blocked in ("last bomb too close", "enemy too close"):

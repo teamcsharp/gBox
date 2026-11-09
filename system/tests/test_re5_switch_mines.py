@@ -461,15 +461,16 @@ def test_overdue_crowd_relocation_is_bounded_and_starts_placement_once_clear():
     assert m.state == "neutral" and not m.stats["mine_relocating"]
 
 
-def test_overdue_relocation_preserves_close_threat_and_explicit_emergency_priority():
+def test_overdue_close_crowd_seeks_space_without_planting_and_yields_to_explicit_emergency():
     m = MN.Mines({})
     m.new_round(0.)
     now = MN.EVERY_S + 1
-    assert m.tick(p(), snap(), foes((200, 0)), now) is None
+    assert m.tick(p(), snap(), foes((200, 0)), now)["hold"][:2] == MN.RUN
     assert m.state == "idle" and m.stats["mine_attempts"] == 0
     assert m.tick(p(), snap(), [], now + 1, busy=True) is None
-    assert m.stats["mine_blocked_reason"] == "emergency action"
-    assert m.tick(p(), snap(), [], now + 2) == {"hold": ()}
+    assert m.stats["mine_blocked_reason"] == "emergency action" and not m.stats["mine_relocating"]
+    assert m.tick(p(pos=(0., 0., -400.)), snap(), foes((200, 0)), now + 2) == {"hold": ()}
+    assert m.state == "neutral" and m.stats["mine_attempts"] == 0
 
 
 def test_enemy_closing_during_equip_prevents_press_and_missing_ground_scan_cannot_start():
@@ -536,7 +537,7 @@ def test_mid_cycle_escape_keeps_actual_bomb_site_and_current_clock_on_later_tick
     assert m.state == "rearm" and m.stats["mine_retreats_completed"] == 1
 
 
-def test_close_blast_guard_yields_to_actual_gun_rearm_even_when_mine_is_overdue(switch_bot):
+def test_close_blast_guard_yields_to_gun_before_due_then_due_mine_seeks_clearance(switch_bot):
     R, bot, clock = switch_bot
     state = bot_snap([dict(GUN), dict(BOMB)], enemies=((200., 0., 100.),))
     bot.tick(state)
@@ -545,7 +546,13 @@ def test_close_blast_guard_yields_to_actual_gun_rearm_even_when_mine_is_overdue(
     bot.mines.last_pos = (0., 0., -2000.)
     state["ground_mines"] = list(STACK) + [bomb]
     state["inventory"] = [dict(GUN, hand=False), dict(BOMB, hand=True)]
-    clock[0] = R.MINE_EVERY_S + 1
+    assert bot.mines._clear(state["player"], state, state["enemies"]) is None
+    clock[0] = 1.
     assert bot.tick(state) == {"tap": "dleft"}
     assert bot.doing == "rearm" and bot.mines.state == "idle"
+    assert bot.stats["mine_attempts"] == bot.stats["mines_placed"] == 0
+    clock[0] = R.MINE_EVERY_S + 1
+    action = bot.tick(state)
+    assert action["hold"][:2] == MN.RUN and "zl" not in action["hold"]
+    assert bot.doing == "mine" and bot.mines.state == "idle"
     assert bot.stats["mine_attempts"] == bot.stats["mines_placed"] == 0
