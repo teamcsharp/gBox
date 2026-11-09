@@ -1,7 +1,7 @@
 # RE4 (Switch) Mercenaries: how a player model is replaced
 
 2026-11-09. Title `010099A00BC1E000`, RomFS extracted at `~/gBox_alt/switch/romfs/010099A00BC1E000/bio4/` on the
-game host (read only; 196 MB of it copied to a scratch folder for this work).
+game host (read only; 194 MB of it copied to a scratch folder for this work).
 
 **Nothing here has been booted.** Every file below was built and checked offline. A file that parses and rebuilds
 is not a working mod; the four overlays carry `live_verified: false` and each says what a round must show.
