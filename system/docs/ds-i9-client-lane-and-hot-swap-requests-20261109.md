@@ -258,3 +258,36 @@ The unlock runs on the i9 now — and it refuses for a precise reason, which is 
    overlay's character arc, swapped in place at the round boundary.
 5. Housekeeping: the i9 session was stopped, no game is left running, the worker stays online; the combined build
    `recovery-re6-update-roster-v1-20261109` (51 files, 53.5 MB) and the update-only build are both on the i9.
+
+## Requirements added by the operator (2026-11-09, ~17:00 CST)
+
+The operator added three requirements on top of the live-swap work. Recorded here with what already exists, so the
+PM/operator can correct the plan before more is built.
+
+1. **Every enemy in these games replaced with fun reskins, driven live by MercMode sidebar parameters.**
+   - Exists: `gbox/re5_enemy_writer.py` (RE5: reviewed enemy-model families, donor-on-enemy swaps with option groups
+     and montage carriers — the asset-level template), `re4gc_enemies.py` (RE4 GameCube enemy swaps), and
+     `re_mods_tool.spawn_multiplier` (RE4 Switch: clones the game's own spawns; not a model swap).
+   - Missing: an RE6 enemy reskin path (no writer, no identified enemy archives), and a **live parameter binding** —
+     today a reskin is a build-time overlay; "dynamically affected by connected parameters" needs the sidebar's
+     values to reach either the asset choice or a RAM-level tint/scale hook.
+   - RE6 note: the enemy model arcs live in the update's RomFS, which is the BKTR section still to extract (the same
+     section a round needs), so that extraction is the prerequisite for both.
+2. **Finish the grenade ring: a ring of grenades out from the player, on demand during gameplay.**
+   - Exists: `merc_live_controls.grenade_ring` (RE5 Switch only) with `kind` = flash / hand / incendiary — the sidebar's
+     three buttons; RE4 has `flashbang` / `grenade target=player|aim` and `flashbang_loop` (detonation, not a ring).
+   - Missing: the RE6 implementation (the sidebar shows the three kinds as "unavailable" there), and the RE4 ring shape.
+     RE5's op is the reference: spawn N entities in a ring around the player and let them detonate.
+3. **MCP interaction with the bot: guide it and cause events in the game.**
+   - Exists: `gbox/mcp_server.py` (`gbox mcp`) with `bot_sessions`, `bot_directive` (fight / explore / mine / ... and
+     free text), `bot_strategy` (retained mods and MercMode settings), `game_mod` / `game_mod_ops`, `read_memory`,
+     `ask_gbox`, and per-tool `job_*` wrappers. What is still false: `spawn_enemies` (no verified spawn write in RE4
+     or RE5) and any **event injection** beyond the mods' own ops — "cause events to happen" maps to new ops, not to
+     the MCP transport.
+   - Plan: the three requirements become ops on the live-controls/`game_mod` surface (so MCP and the sidebar share one
+     path): `enemy_skin` (per family, with the sidebar parameters), `grenade_ring` per game, and the existing
+     `bot_directive` for guidance.
+4. **Observed this round, for the queue:** in the RE6 setup screen (SYSTEM SETTINGS / NETWORK SELECTION ... START GAME)
+   the A press on START GAME does nothing while ONLINE COMMUNICATION = ALLOW (the game appears to wait on a network
+   session); the setting must be forced to DON'T ALLOW in the launch config or the menu walk, and the lobby screen
+   needs the same RAM read (`screen()` named it `mercs_wrong_mode` earlier).
