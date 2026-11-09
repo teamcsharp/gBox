@@ -458,3 +458,28 @@ This is the "full decrypting tasks on client computers" arm of the operator's ob
 now read this library's containers, which the shipped `hactool` cannot (it reports `Invalid NCA header` on both nodes).
 The RE6 update *payload* (round 12-13: region 8's data does not decrypt as CTR/plaintext/XTS and is not zlib/gzip/bz2/
 lzma) is unchanged and remains the gate for a live Mercenaries round.
+
+## Round 15 status (2026-11-09, ~19:10 CST): decryption is now a dispatchable gBox job
+
+`switch_decrypt` is registered in the tool registry: it runs on any worker (the i9 included) and returns structured
+results, so the operator can submit container work through the normal job/MCP path instead of a shell:
+
+    {"tool": "switch_decrypt", "input": {"op": "romfs-list", "container": "<nsp>", "nca": "<nca>",
+                                         "keys": "<prod.keys>", "limit": 20}}
+
+* `info` — the container's members (no keys needed);
+* `exefs` — the NCA's five ExeFS files to `out=`;
+* `romfs-list` — the file count, the RomFS header and a sample of `{path, offset, size}`;
+* `romfs-get` — one RomFS file to `out=` (bytes written reported);
+* `bktr` — the relocation/subsection table offsets and entry counts.
+
+Verified on the 18.8 GB RE6 base container through the tool: `title 01002A000CD48000`, `files 60645`, data offset
+`0x200`, sample `nativeNXx64/Thumbs.db` / `serial.srt`, and a `romfs-get` of `nativeNXx64/serial.srt` writing 22 bytes.
+Five tool tests pass (key-free `info`, missing container, unknown op, missing keys, `out=` required).
+
+Also tried this round: driving Yuzu's GUI installer through posted window messages (Alt-context system keys and posted
+clicks) — the File menu highlights but does not drop, so the GUI install path stays closed without real keyboard/mouse
+input on the operator's desktop.
+
+The RE6 update payload (rounds 12-13: region 8's data does not decrypt as CTR/plaintext/XTS and is not zlib/gzip/bz2/
+lzma) is unchanged and still the gate for a live Mercenaries round.
