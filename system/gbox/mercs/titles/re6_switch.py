@@ -1055,6 +1055,19 @@ def screen(m, merc=None, now: float | None = None) -> dict:
 
 
 def _screen(m, merc=None, now: float | None = None) -> dict:
+    """The RAM screen, with a read that loses its page reported as "unknown" instead of ending the run.
+
+    A live title unmaps pages between two reads (a screen change, a load); the boot retry in gbox.mercs_bot only
+    covers reads before the first screen, so one EIO in the middle used to end the playbook (live 2026-11-09: the
+    autoplay run ended with [Errno 5] Input/output error before it pressed anything).
+    """
+    try:
+        return _screen_impl(m, merc=merc, now=now)
+    except (ValueError, OSError, struct.error):
+        return {"where": "unknown", "cursor": None, "target": None}
+
+
+def _screen_impl(m, merc=None, now: float | None = None) -> dict:
     """The deployment's menus interface (gbox/mercs_bot.py): where RE6 is, from RAM. A dialog first (its id names the
     button), then the round (playing / dead / results from the player, the HUD and the result units), then the menus
     with their cursors and targets: title / main_menu / play_game / extra_content / mercs_mode / select_stage /
