@@ -22,6 +22,20 @@ w1/w2 at 24) — the one part of the Switch MOD writer that only a live frame ca
 now takes `reverse_bones=True` (store b3,b2,b1,b0) and `C:\_tools\gBox\.tmp\build_rev_variant.py` builds the
 `re6sw_sonic_leon_rev` probe for it.
 
+**Material → texture path binding (texture-set MRL v36, measured 2026-11-09).** `re6_switch_tex.texture_set_materials`
+now gives each material's full paths, not just indices. For Leon's `pl0000_0` set:
+
+| material | paths |
+|---|---|
+| `pl_cloth1`-like (jacket) | `pl0000_00jacket_NM`, `pl0000_00jacket_BM`, `pl0000_00jacket_MM`, `pl_VTF`, `pl0000_50_jacket_MVTF`, `pl_Blood_BM` |
+| shirt/shats | `pl0000_00shats_NM`, `pl0000_00shats_BM`, `pl0000_00shats_MM`, `pl_VTF`, `pl0000_51_shats_MVTF`, `pl_Blood_BM`, `pl0000_00Detail_DM` |
+| pants | `pl0000_00pants_NM`, `pl0000_00pants_BM`, `pl0000_00pants_MM`, `pl0000_00Detail_DM` |
+| hands (`pl_skin`) | `pl0000_10Hand_NM`, `pl0000_10Hand_BM`, `pl0000_10Hand_MM`, `pl_Blood_BM` |
+
+`_BM` is the base-map/albedo (`0x2B`), `_NM` the normal (`0x1F`), `_MM` the mask (`0x19`), `_VTF`/`_MVTF` material
+vector textures. This is the binding needed to replace **one material's** albedo (jacket vs pants vs hands) instead of
+every `0x2B` in the set, which is what the current textured build does.
+
 **0x2B albedo: the second half is not per-tile colour (measured 2026-11-09).** Splitting a native Leon albedo
 (`uPlTex0000_0`, 512x512, 10 mips) into its two 8-byte halves shows the first half is a real BC4 greyscale detail map
 (the jacket/pants/boots are recognisable in `evidence/re6-scale/switch-native-albedo-detail-layer.png`), while the second
