@@ -206,7 +206,7 @@ def _continues(a: dict, b: dict) -> bool:
     if a["outcome"] in TERMINAL or not a["session"] or a["session"] != b["session"]:
         return False
     if a.get("round_key") and b.get("round_key"):
-        return a["round_key"] == b["round_key"]
+        return a["round_key"] == b["round_key"] and (b["t0_kills"] is None or b["t0_kills"] >= a["kills"] - CONT_KILL_SLACK)
     if a["sig"] and b["sig"] and a["sig"] != b["sig"]:
         return False
     if b["t0_kills"] is not None:                         # the bot's clock saw the fragment's first tick
@@ -603,7 +603,7 @@ class RoundClock:
     def __init__(self, key, now: float, wall: float, kills, timer):
         self.key, self.first_at, self.wall0 = key, now, wall
         self.t, self.timer, self.play_s = now, timer, 0.0
-        self.kills0, self.timer0 = kills, timer
+        self.kills0, self.timer0, self.kills_last = kills, timer, kills
         self.kill400_s = None
         self.fragments, self.fragment_play0, self.evidence = 0, 0.0, None
 
@@ -618,6 +618,8 @@ class RoundClock:
             else:
                 self.play_s += min(dt, CLOCK_GAP_MAX_S)
         self.t, self.timer = now, timer if isinstance(timer, (int, float)) else self.timer
+        if isinstance(kills, int):
+            self.kills_last = kills
         if self.kill400_s is None and isinstance(kills, int) and kills >= GOAL_KILLS:
             self.kill400_s = self.play_s
 
@@ -640,9 +642,15 @@ def clock_tick(stats: dict | None, snap: dict, where: str, now: float, wall: flo
         kills, timer = snap.get("kills"), snap.get("timer")
         wall = time.time() if wall is None else wall
         if where == "playing" and isinstance(p, dict) and p.get("ptr") and base:
+            gen = p.get("generation")
             key = f"{base:x}:{p['ptr']:x}" if isinstance(base, int) and isinstance(p["ptr"], int) \
                 else f"{base}:{p['ptr']}"
+            if isinstance(gen, int):
+                key += f":{gen:x}"                               # the object's generation: a reused address is not a round
             clock = _CLOCKS.get(key)
+            if clock is not None and isinstance(kills, int) and isinstance(clock.kills_last, int) \
+                    and kills < clock.kills_last - CONT_KILL_SLACK:
+                clock = None                                     # the kills started again: another round, same object
             if clock is None:
                 if len(_CLOCKS) > 8:
                     _CLOCKS.clear()

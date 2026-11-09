@@ -237,3 +237,19 @@ def test_map_summaries_give_the_first_kills_and_both_clocks(tmp_path):
     assert (s["t0_kills"], s["t0_timer"], s["t1_timer"]) == (393, 988.85, 878.21)
     assert s["play_s"] == pytest.approx(0.2 + L.MAP_GAP_CAP_S + 0.2)               # the 9.8 s hole counts 2.5 s
     assert L.load_maps(tmp_path, ids=["a" * 32]) == {}
+
+
+def test_a_reused_player_address_with_its_kills_started_again_is_another_round():
+    L._CLOCKS.clear()
+    first = {"round_evidence_id": "e1"}
+    L.clock_tick(first, snap(kills=300, timer=500.0), "playing", 0.0)
+    L.clock_tick(first, snap(kills=301, timer=499.5), "playing", 0.5)
+    second = {"round_evidence_id": "e2"}
+    L.clock_tick(second, snap(kills=0, timer=120.0), "playing", 100.0)       # the same object's address, kills 0
+    assert second["ss_round_play_s"] == 0.0 and second["ss_t0_kills"] == 0
+    rows = [row("a" * 32, 1000.0, "interrupted", kills=301, ss_round_key=first["ss_round_key"], ss_t0_kills=300),
+            row("b" * 32, 1100.0, "died", kills=40, ss_round_key=second["ss_round_key"], ss_t0_kills=0)]
+    assert first["ss_round_key"] == second["ss_round_key"] and len(L.ledger(rows)) == 2
+    gen = {"round_evidence_id": "e3"}
+    L.clock_tick(gen, dict(snap(kills=0), player={"ptr": 0x5000, "hp": 1000, "generation": 7}), "playing", 200.0)
+    assert gen["ss_round_key"].endswith(":7")
