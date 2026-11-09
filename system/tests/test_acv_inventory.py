@@ -6,7 +6,8 @@ Locks the facts measured against the owned game image
     root size at +0x18),
   - the identity (sha256) of bind/dvdbnd5.bhd,
   - the location and count of the BHD5 16-byte file-table records, and
-    that every record's byte range lies inside bind/dvdbnd.bdt.
+    that every record's byte range lies inside bind/dvdbnd.bdt,
+  - the bounded BDT magic stream-scan evidence artifact.
 """
 import hashlib
 import os
@@ -119,3 +120,25 @@ def test_owned_image_bhd5_bucket_table():
     recs = acv.parse_bhd5_buckets(bhd, bdt_size)
     assert len(recs) == EXPECTED_RECORD_COUNT
     assert all(r["hash"] % 2833 == r["bucket"] for r in recs)
+
+
+def test_stream_scan_evidence_bounded_consistency():
+    """Bounded check: the committed BDT stream-scan artifact is in-range.
+
+    evidence/acv_bdt_magic_scan.json came from a full scan of the owned
+    dvdbnd.bdt; this test re-checks its internal consistency without the ISO.
+    """
+    from gbox.acv_bdt_magic_scan import SCAN
+    ev = SCAN
+    assert ev["records"] == EXPECTED_RECORD_COUNT
+    assert ev["bdt_size"] == 3298094700
+    assert ev["bdt_lba"] == 12314
+    hits = ev["hits"]
+    assert set(hits) == {"DCX", "DCS", "DCP", "BND3", "TPF"}
+    assert ev["dcx_in_region"] == hits["DCX"]["count"] == 14981
+    assert ev["dcx_out_region"] == 0
+    assert ev["dcx_delta_min"] == 0 and ev["dcx_delta_median"] == 0
+    for h in hits.values():
+        assert h["count"] > 0
+        assert len(h["first16"]) == 16
+        assert all(0 <= p < ev["bdt_size"] for p in h["first16"])

@@ -37,27 +37,24 @@ u32 BHD size, u32 bucketCount (2833), u32 bucketsOffset (0x18); then bucketCount
 reference tile 0x58a0..0x52ad0 (19,747 records); record hash % bucketCount == bucket index
 for every record.  Names are not stored (hash only).
 
-DCX payloads (magic 0x44435800 "DCX\\0" LE, 14,979 of the 19,747 records) are
-NOT a compression codec: even the 137-byte DCX payloads contain readable nested
-little-endian blocks -- "DCS\\0" section markers followed by two u32s, and
-"DCP\\0" key/value records whose key is a 4-char name (e.g. "DFLT") plus a u32.
-Smallest-file header fields at +8..+28 form the pattern 0x18,0x24,0x24,0x2c,
-0x24,0x2c, pointing at offsets inside the payload, i.e. a section table.
-Decoding the DCS/DCP section table on the 137-byte sample (and checking whether
-the large DCX payloads are compressed at all) is the next bounded milestone.
+DCX payloads (magic 0x44435800 "DCX\0" LE, 14,981 of the 19,747 records per the
+bounded stream-scan below) are NOT a compression codec: even the 137-byte DCX
+payloads contain readable nested little-endian blocks -- "DCS\0" section
+markers followed by two u32s, and "DCP\0" key/value records whose key is a
+4-char name (e.g. "DFLT") plus a u32.  Smallest-file header fields at
++8..+28 form the pattern 0x18,0x24,0x24,0x2c,0x24,0x2c, pointing at offsets
+inside the payload, i.e. a section table.
 
-Re-verification against the owned ISO (full census of all 19,747 records read
-at their BDT offsets): NO payload starts with the "DCX\\0" magic.  The
-top-level first-four-byte census is dominated by numeric/parameter data:
-00000000 x1193, ff000000 x314, ffff0000 x311, 01000000 x230, 00ffff00 x89,
-0000ffff x89, 000000ff x86, 00000001 x71.  The earlier "DCX 14,979 / TPF 933 /
-BND3 398" tally was therefore NOT taken at record offset 0 -- the DCX/DCS/DCP
-containers (and the TPF/BND3 payloads) must sit at a different base, most
-plausibly inside BND3 members whose member offsets are BND3-relative, or
-elsewhere in the stream.  Next bounded step: stream-scan the BDT for
-"DCX\\0"/"BND3"/"TPF" magics with position recording, join hits to the owning
-BHD5 record (or BND3 member) to establish the container base offset, then
-decode the DCS/DCP section table on the smallest DCX sample with that base.
+Bounded BDT magic stream-scan (committed in gbox.acv_bdt_magic_scan; raw
++artifact system/evidence/acv_bdt_magic_scan.json): 14,981
+"DCX\0" hits, ALL at record offset 0 (delta_min = delta_median = 0, 0
+out-of-record hits), 15,998 "DCS\0" (first DCS at DCX+24), 14,982 "DCP\0"
+(first DCP at DCX+36), 746 "BND3", 934 "TPF".  The container base is the BHD5
+record offset itself.  The earlier full-census note ("no payload starts with
+DCX") is therefore wrong: its ad-hoc record reader (not in this repo) had a
+base-offset bug.  Next bounded milestone: decode the DCS/DCP section table on
+the smallest DCX sample (137 B) at record offset 0, then map BDF3 manifest
+paths to BHD5 records to identify the character model container.
 
 This module is read-only: it never writes to the disc or the binder.
 """
