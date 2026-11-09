@@ -283,7 +283,15 @@ def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], he
         raise SwitchModelError(f"the fitted model leaves the native quantisation box by {outside:.3f} units")
     anchors = {target: tuple((np.asarray(joints[source_joint], float) - origin) * scale + translate)
                for source_joint, target in roles_map.values() if target != 0}
-    model, bind = mtf_retarget.reposition_bind_pose(model, anchors)
+    fallback = None
+    try:
+        model, bind = mtf_retarget.reposition_bind_pose(model, anchors)
+    except ValueError as exc:
+        # A native skeleton with more than one root (or anchor branches that cannot hold the donor's proportions)
+        # cannot have its joints moved by the measured rule. Keep the native skeleton as it is: the donor surface
+        # still rests at its own proportions and binds rigidly to the nearest native bone, so the slot is filled
+        # instead of skipped; only animation deformation is approximate.
+        bind, fallback = {"skipped": str(exc)}, str(exc)
     # Every source influence must walk to a named role; unmapped root/finger influences fall back to the hip role.
     source_anchors = {source_joint for source_joint, _target in roles_map.values()}
 
@@ -312,7 +320,8 @@ def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], he
                              {"r": float(np.linalg.norm(fitted_high - fitted_low) / 2)}}
     authored = mt_model.rebuild_mod(mt_model.parse_mod(authored), bounds=bounds_new)
     payload = mtf_author.replace_archive_model(bytes(archive), model_index, authored)
-    receipt = {"pose_mode": "source_proportions", "source_height": source_height,
+    receipt = {"pose_mode": "native_skeleton" if fallback else "source_proportions",
+               "skeleton_fallback": fallback, "source_height": source_height,
                "fitted_height": float(fitted_high[1] - fitted_low[1]), "uniform_scale": scale,
                "height_clamped": bool(abs(scale * source_height - height) > 1e-4),
                "box_usage": float(np.max(fitted_high - fitted_low) / scale_axis),

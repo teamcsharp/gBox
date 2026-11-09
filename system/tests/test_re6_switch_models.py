@@ -68,6 +68,23 @@ def test_blank_arc_keeps_the_skeleton_and_one_triangle():
     assert mt_arc.parse(blanked).entries[0].name == mt_arc.parse(path.read_bytes()).entries[0].name
 
 
+@pytest.mark.skipif(not (LIB / "shulk_ssbu").is_dir(), reason="shulk_ssbu is not in the library")
+@needs_romfs
+def test_a_multiple_root_skeleton_falls_back_to_native():
+    """Piers' Canon arc has more than one root: the measured joint move cannot run, the native skeleton is kept."""
+    from gbox import characters
+
+    meta = characters.get(LIB, "shulk_ssbu")
+    body = S.body_arcs(ROMFS)[("piers", "Canon")]
+    payload, receipt = S.build_body(body.read_bytes(), LIB / "shulk_ssbu" / meta["model"],
+                                    source_roles=meta["rig"]["roles"])
+    assert receipt["pose_mode"] == "native_skeleton"
+    assert "single native root" in receipt["skeleton_fallback"]
+    model = _model(payload)
+    assert model.header()["bone_count"] == _model(body.read_bytes()).header()["bone_count"]
+    assert receipt["vertex_count"] > 1000
+
+
 @pytest.mark.skipif(not (LIB / "sonic_ssbu").is_dir(), reason="sonic_ssbu is not in the library")
 @needs_romfs
 def test_a_donor_body_is_authored_on_the_native_skeleton():

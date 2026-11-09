@@ -34,17 +34,19 @@ the 18 roles. The roster planner (`gbox.re6_switch_cast.plan`) puts a distinct l
 rotates the cast — `re6 op=switch_cast_plan` previews it, `re6 op=switch_cast` builds it, `re6 op=switch_cast_status`
 reads it.
 
-Measured roster (`re6sw_smash_cast`, seed 7, 2026-11-09): **46 of 51 slots, 46 distinct donors** (SSBU and Brawl
-mixed), 230 overlay files, **317 MB**, built in **341 s**. Five slots are skipped and recorded with their reason:
-`piers/Canon` (native skeleton has more than one root) and four Sherry costumes whose native anchor branches cannot hold
-the chosen donor's proportions; the builder skips such a slot instead of failing the roster. Rigid donor props (Robin's
-sword and tome) are placed with their node transform, not left at the origin. Every authored body reads back on its
-native skeleton; heights are 180 cm unless the native quantisation box forces a smaller uniform fit (Sherry's Snow
-costume clamps to 97.5 cm, Incineroar on Piers to 163.2 cm).
+Measured roster (`re6sw_smash_cast`, seed 7, 2026-11-09): **all 51 native body slots, 51 distinct donors** (SSBU and
+Brawl mixed), **255 overlay files**, built in **47 s** once the per-slot body cache is warm (341 s cold). The five slots
+whose native skeletons cannot take the measured joint moves (Piers' `Canon` has more than one root; four Sherry costumes
+have anchor branches that cannot hold the donor's proportions) fall back to **`pose_mode=native_skeleton`**: the native
+skeleton is kept, the donor surface rests at its own proportions and binds rigidly to the nearest native bone, so the
+slot is filled and only animation deformation is approximate. The builder still skips (and reports) a donor that cannot
+be authored at all. Rigid donor props (Robin's sword and tome, Dark Pit's bow) are placed with their node transform.
+Every authored body reads back on its native skeleton; heights are 180 cm unless the native quantisation box forces a
+smaller uniform fit (Sherry's Snow costume clamps to 97.5 cm, Incineroar on Piers to 163.2 cm).
 
-| Robin on Leon (USA) | Peach on Ada (A) | Greninja on Chris (Europe) |
-|---|---|---|
-| ![Robin](evidence/re6-scale/switch-robin-as-leon.png) | ![Peach](evidence/re6-scale/switch-peach-as-ada.png) | ![Greninja](evidence/re6-scale/switch-greninja-as-chris.png) |
+| Robin on Leon (USA) | Peach on Ada (A) | Greninja on Chris (Europe) | Dark Pit on Sherry (Europe, skeleton fallback) |
+|---|---|---|---|
+| ![Robin](evidence/re6-scale/switch-robin-as-leon.png) | ![Peach](evidence/re6-scale/switch-peach-as-ada.png) | ![Greninja](evidence/re6-scale/switch-greninja-as-chris.png) | ![Dark Pit](evidence/re6-scale/switch-darkpit-as-sherry.png) |
 
 The round hook: `re6 op=switch_cast host=<PC> mercmode_default=true` sets `default_mods.re6` on that PC's MercMode, so
 every RE6 round it plays boots the roster build; `session_id=<id>` also launches the title there with it. The build is a
