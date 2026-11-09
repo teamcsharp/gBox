@@ -2864,7 +2864,7 @@ class Bot:
         return next((guns[k] for k in (0x107, 0x108, 0x105, 0x104, 0x106) if k in guns),
                     next((v for k, v in guns.items() if k != 0x11B), None))
 
-    def _equip_keys(self, p, index, legacy='dright'):
+    def _equip_keys(self, p, index, legacy='right'):
         self._equip_result = None
         if self.native_equip is None:
             return {'hold': ()} if getattr(self, '_operator_primary', None) else {'tap': legacy}
@@ -3290,7 +3290,7 @@ class Bot:
                     self._empty_cycle_at = now
                     self._gun_down()
                     self.stats['empty_weapon_cycles'] = self.stats.get('empty_weapon_cycles', 0) + 1
-                    return self._go('reload', 'weapon_cycle', {'tap': 'dright'},
+                    return self._go('reload', 'weapon_cycle', {'tap': 'right'},
                                     'no loaded-weapon readback: one ordinary weapon-cycle press')
         want = (held.get(0x100 + primary['item']) if primary else
                 WANT_WEAPON if WANT_WEAPON is not None and WANT_WEAPON_AT >= self.grab_weapon_at else None)

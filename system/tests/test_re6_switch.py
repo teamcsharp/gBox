@@ -258,7 +258,7 @@ def test_dead_and_results_units_name_their_screens(monkeypatch):
     scr = R.screen(g)
     assert scr["cursor"] == 0 and scr["target"] == R.CONTINUE_YES and R.step(scr) == "a"   # the pace: YES at once
     monkeypatch.setattr(R, "REPLAY_ON_DEATH", False)                                 # switched off: NO
-    assert R.step(R.screen(g)) == "dright"
+    assert R.step(R.screen(g)) == "right"
     g.i32(over + R.CONTINUE_CURSOR, R.CONTINUE_NO)
     scr = R.screen(g)
     assert scr["cursor"] == 1 and scr["target"] == 1 and R.step(scr) == "a"
@@ -292,11 +292,11 @@ def menu_guest(name, offset=None, value=0, extra=None, mode=R.MODE_NO_MERCY):
 
 
 @pytest.mark.parametrize("name,offset,value,where,target,key", [
-    ("uIdStartUp00", R.MENU_CURSOR, 3, "main_menu", 0, "dup"),
-    ("uIdStartUp01", R.MENU_CURSOR, 0, "play_game", 3, "ddown"),
+    ("uIdStartUp00", R.MENU_CURSOR, 3, "main_menu", 0, "up"),
+    ("uIdStartUp01", R.MENU_CURSOR, 0, "play_game", 3, "down"),
     ("uIdStartUp30", R.MENU_CURSOR, 0, "mercs_mode", 0, "a"),
-    ("uIdStartUp31", R.MENU_CURSOR, 2, "select_stage", 0, "dup"),
-    ("uIdStartUp32", R.PLAYER_CURSOR, 0, "select_player", 1, "ddown"),     # Chris: the automatic rifle
+    ("uIdStartUp31", R.MENU_CURSOR, 2, "select_stage", 0, "up"),
+    ("uIdStartUp32", R.PLAYER_CURSOR, 0, "select_player", 1, "down"),     # Chris: the automatic rifle
     ("uIdStartUp32", R.PLAYER_CURSOR, 1, "select_player", 1, "a")])
 def test_menus_walk_to_no_mercy(name, offset, value, where, target, key):
     scr = R.screen(menu_guest(name, offset, value))
@@ -326,7 +326,7 @@ def test_the_stage_select_draws_a_random_unlocked_stage_once_a_visit(monkeypatch
     assert first["where"] == "select_stage" and first["target"] in (1, 4, 7)
     assert first["stage"] == R.STAGES[first["target"]]
     assert all(R.screen(g)["target"] == first["target"] for _ in range(5))         # one draw a visit
-    assert R.step(R.screen(g)) == "ddown"
+    assert R.step(R.screen(g)) == "down"
     R.request(stage=4)
     assert R.screen(g)["target"] == 4
     R.request(stage=5)                                                             # locked: a random one that starts
@@ -364,12 +364,12 @@ def test_the_character_select_puts_a_random_costume_on_the_character_then_confir
         key = R.step(scr)
         if key == "a":
             break
-        assert key == ("dright" if scr["costume_cursor"] < want else "dleft")
-        g.i32(u + R.COSTUME_CURSOR + 4 * 2, scr["costume_cursor"] + (1 if key == "dright" else -1))
+        assert key == ("right" if scr["costume_cursor"] < want else "left")
+        g.i32(u + R.COSTUME_CURSOR + 4 * 2, scr["costume_cursor"] + (1 if key == "right" else -1))
     assert key == "a" and R.screen(g)["costume_cursor"] == want
     R.request(character="Leon")                                                    # a queued round names Leon
     scr = R.screen(g)
-    assert scr["target"] == 0 and R.step(scr) == "dup"
+    assert scr["target"] == 0 and R.step(scr) == "up"
     with pytest.raises(ValueError):
         R.request(character="Wesker")
     assert R.costume_code(9) == ("Chris", 1) and R.costume_code(28) == ("Carla", 0)
@@ -379,7 +379,7 @@ def test_the_character_select_puts_a_random_costume_on_the_character_then_confir
 def test_extra_content_targets_no_mercy_by_its_mode_id():
     modes = {R.EXTRA_COUNT: 7, **{R.EXTRA_MODES + 4 * i: m for i, m in enumerate((0, 1, 2, 3, 4, 5, 6))}}
     scr = R.screen(menu_guest("uIdStartUp02", R.MENU_CURSOR, 0, modes))
-    assert scr["where"] == "extra_content" and scr["target"] == 2 and R.step(scr) == "ddown"
+    assert scr["where"] == "extra_content" and scr["target"] == 2 and R.step(scr) == "down"
     shuffled = {R.EXTRA_COUNT: 3, R.EXTRA_MODES: 1, R.EXTRA_MODES + 4: 2, R.EXTRA_MODES + 8: 0}
     scr = R.screen(menu_guest("uIdStartUp02", R.MENU_CURSOR, 1, shuffled))
     assert scr["target"] == 1 and R.step(scr) == "a"
@@ -459,7 +459,7 @@ def test_at_a_stand_it_throws_a_remote_bomb_and_sets_it_off_when_they_are_on_it(
     bot, clock, snap = brain(round_guest(enemies=crowd))
     snap["player"].update(equipped=0, bomb={"count": 5, "out": False})
     first = run(bot, snap, clock, 1)[0]
-    assert first == {"tap": "dup"} and bot.doing == "bomb"                    # the wheel's up: one press to the bomb
+    assert first == {"tap": "up"} and bot.doing == "bomb"                    # the wheel's up: one press to the bomb
     snap["player"]["equipped"] = R.BOMB_INDEX
     acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
     assert {"hold": ("zl",)} in acts and {"hold": ("zl", "zr")} in acts       # ZL held, then ZR with it: the throw
@@ -788,12 +788,12 @@ def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypat
     bot.melee_at = bot.qshot_at = clock[0] + 100                              # (no crowd-control press in the way)
     snap["player"].update(equipped=0, nades={0x113: (9, 5), 0x114: (10, 5), 0x115: (11, 5)})
     acts = run(bot, snap, clock, 3)
-    assert {"tap": "dup"} in acts and bot.nade["kind"] == "flash"            # the wheel's up to the flash grenade
+    assert {"tap": "up"} in acts and bot.nade["kind"] == "flash"            # the wheel's up to the flash grenade
     snap["player"]["equipped"] = 11
     acts = run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
     assert {"hold": ("zl",)} in acts and {"hold": ("zl", "zr")} in acts and bot.stats["flashes"] == 1
     acts = run(bot, snap, clock, int((R.NADE_STEP_S + R.NADE_THROW_S) / 0.05) + 3)
-    assert {"tap": "dright"} in acts                                          # the gun back
+    assert {"tap": "right"} in acts                                          # the gun back
     snap["player"]["equipped"] = 0
     bot.melee_at = -1e9
     acts = run(bot, snap, clock, 4)
@@ -825,7 +825,7 @@ def test_the_throw_is_held_and_flashes_come_in_a_flurry_while_they_crowd_him(mon
     assert sum(1 for a in acts if a.get("hold") == ("zl", "zr")) >= int(R.NADE_THROW_S / 0.05)   # held, not tapped
     acts = run(bot, snap, clock, 30)
     assert bot.stats["flashes"] >= 2 and bot.stats.get("flash_burst_throws", 0) >= 1
-    assert {"tap": "dright"} not in acts or bot.stats["flashes"] >= 2             # no gun back mid-flurry
+    assert {"tap": "right"} not in acts or bot.stats["flashes"] >= 2             # no gun back mid-flurry
     assert bot.stats["bomb_drops"] == 0
 
 
@@ -923,8 +923,8 @@ def test_a_cluster_off_at_seven_metres_gets_a_grenade_and_its_kills_are_counted(
 
 
 def test_the_wheel_key_steps_toward_the_grenade():
-    assert R.Bot._wheel_key(0, 11) == "dup" and R.Bot._wheel_key(0, 9) == "ddown"   # from the gun
-    assert R.Bot._wheel_key(12, 11) == "dup" and R.Bot._wheel_key(9, 10) == "ddown"  # on an item: toward it
+    assert R.Bot._wheel_key(0, 11) == "up" and R.Bot._wheel_key(0, 9) == "down"   # from the gun
+    assert R.Bot._wheel_key(12, 11) == "up" and R.Bot._wheel_key(9, 10) == "down"  # on an item: toward it
 
 
 def test_after_a_throw_the_game_picks_the_knife_and_the_gun_back_is_his_magnum(monkeypatch):
@@ -939,7 +939,7 @@ def test_after_a_throw_the_game_picks_the_knife_and_the_gun_back_is_his_magnum(m
     assert bot.stats["frags"] == 1
     snap["player"]["equipped"] = 2                                            # the game's pick after the throw: the knife
     acts = run(bot, snap, clock, int((R.NADE_STEP_S + R.NADE_THROW_S) / 0.05) + 3)
-    assert {"tap": "dright"} in acts and bot.nade is not None                 # not his gun yet: on to it
+    assert {"tap": "right"} in acts and bot.nade is not None                 # not his gun yet: on to it
     snap["player"]["equipped"] = 1                                            # another gun of his: good enough, at once
     run(bot, snap, clock, 1)
     assert bot.nade is None and bot.stats["nade_wheel"][-1]["to"] == 9
@@ -979,7 +979,7 @@ def test_a_grenade_lifted_outside_a_throw_is_thrown_at_the_best_cluster_four_met
     assert bot.stats["held_item_throws"] == 1 and bot.stats["fires"] == 1
     assert {"hold": ("zl", "zr")} in acts and bot.stats["unsafe_trigger_blocks"] == 0
     assert bot.stats["throws_by_kind"] == {"fire": 1}
-    assert all(a.get("tap") != "dright" for a in acts[:acts.index({"hold": ("zl", "zr")})])   # never put away first
+    assert all(a.get("tap") != "right" for a in acts[:acts.index({"hold": ("zl", "zr")})])   # never put away first
 
 
 def test_a_frag_starts_with_one_near_him_when_the_cluster_is_clear_of_its_blast(monkeypatch):
@@ -1022,7 +1022,7 @@ def test_no_zl_and_zr_with_an_item_in_hand_unless_it_is_a_throw():
     snap["player"]["equipped"] = 12                                           # the remote bomb in hand
     acts = run(bot, snap, clock, 6)
     assert all(not ({"zl", "zr"} <= set(a.get("hold", ()))) for a in acts)
-    assert acts[0] == {"tap": "dright"} and bot.stats["item_gun_backs"] >= 1   # put away before ZL ever lifts it
+    assert acts[0] == {"tap": "right"} and bot.stats["item_gun_backs"] >= 1   # put away before ZL ever lifts it
 
 
 def test_dying_at_one_health_he_presses_for_a_tablet_and_counts_whether_it_took(monkeypatch):
@@ -2032,9 +2032,12 @@ def test_the_spread_fills_the_empty_weapon_slots_and_an_asked_weapon_goes_first(
     import random
     w, _x = mods.loadout_plan(4, True, 5, random.Random(1), spread=True)     # Chris: rifle, Lightning Hawk, knife
     assert w[:3] == [(0x10F, 30), (0x107, 7), (0x119, 0xFFFF)]
-    assert w[3:] == [(0x108, 5), (0x104, 8), (0x105, 7), (0x106, 3)]          # the magnum and the shotguns loaded
+    # the magnum, the grenade launcher (SPREAD since the arsenal swap, dfee5214) and the shotguns while slots last:
+    # seven slots, so the Hydra (0x106, last in SPREAD) finds none
+    assert w[3:] == [(0x108, 5), (0x112, 6), (0x104, 8), (0x105, 7)]
+    assert all(pair in mods.SPREAD for pair in w[3:]) and len(w) == mods.N_WEAPONS
     w2, _x = mods.loadout_plan(4, True, 5, random.Random(1), spread=True, want=0x109)
-    assert w2[3] == (0x109, 6) and (0x108, 5) in w2                           # the sniper rifle asked for: in first
+    assert w2[3] == (0x109, 6) and (0x108, 5) in w2 and (0x112, 6) in w2      # the sniper rifle asked for: in first
     picks = set()
     for seed in range(40):                                                    # Leon: Wing Shooter and Shotgun
         w3, _x = mods.loadout_plan(0, True, 5, random.Random(seed), spread=True)
@@ -2078,7 +2081,7 @@ def test_the_bot_switches_to_the_wanted_weapon_and_a_crowd_gets_the_shotgun(monk
     bot.held = lambda p, now: False
     snap["player"].update(equipped=0, guns={0x10F: 0, 0x107: 1, 0x104: 3})
     acts = run(bot, snap, clock, 2)
-    assert {"tap": "dright"} in acts and bot.stats["weapon_switches"] >= 1
+    assert {"tap": "right"} in acts and bot.stats["weapon_switches"] >= 1
     snap["player"]["equipped"] = 3
     run(bot, snap, clock, 2)
     assert bot.stats["weapon_in_hand"] == 3
@@ -2088,7 +2091,7 @@ def test_the_bot_switches_to_the_wanted_weapon_and_a_crowd_gets_the_shotgun(monk
     bot.held = lambda p, now: False
     snap["player"].update(equipped=0, guns={0x10F: 0, 0x107: 1, 0x105: 4})
     acts = run(bot, snap, clock, 2)
-    assert {"tap": "dright"} in acts and bot.stats["crowd_shotgun_s"] > 0
+    assert {"tap": "right"} in acts and bot.stats["crowd_shotgun_s"] > 0
 
 
 def test_a_grab_picks_a_shotgun_or_magnum_and_sets_the_bomb_off_only_from_clear_of_it(monkeypatch):
@@ -2154,7 +2157,7 @@ def test_no_bomb_without_one_a_crowd_or_room():
         bot.bomb_from = (0.0, 0.0)                                            # where the last one went: no new section
         snap["player"].update(equipped=0, bomb=kw)
         acts = run(bot, snap, clock, 3)
-        assert bot.doing != "bomb" and {"tap": "dup"} not in acts and bot.bomb_phase is None
+        assert bot.doing != "bomb" and {"tap": "up"} not in acts and bot.bomb_phase is None
 
 
 def test_bot_options_turn_the_grenades_and_the_bomb_drop_on(mods, monkeypatch):
@@ -2162,8 +2165,13 @@ def test_bot_options_turn_the_grenades_and_the_bomb_drop_on(mods, monkeypatch):
     monkeypatch.setattr(R, "BOMB_DROP", False)
     monkeypatch.setattr(R, "AIM_LOCK", True)
     monkeypatch.setattr(R, "FLASH", True)
+    from gbox.mercs import weapon_swap
+    monkeypatch.setattr(weapon_swap.PROFILES["re6"], "enabled", False)
     out = mods.run(Adapter(round_guest()), "bot_options", nades=True, bomb_drop=True)
-    assert out == {"verified": True, "nades": True, "bomb_drop": True, "aim_lock": True, "flash": True} and R.NADES
+    assert out == {"verified": True, "nades": True, "bomb_drop": True, "aim_lock": True, "flash": True,
+                   "arsenal": False} and R.NADES                             # (arsenal: the switch since dfee5214)
+    assert mods.run(Adapter(round_guest()), "bot_options", arsenal=True)["arsenal"] is True
+    assert weapon_swap.PROFILES["re6"].enabled
     assert mods.run(Adapter(round_guest()), "bot_options", flash=False)["flash"] is False and not R.FLASH
     assert mods.run(Adapter(round_guest()), "bot_options", aim_lock=False)["aim_lock"] is False and not R.AIM_LOCK
     assert mods.run(Adapter(round_guest()), "bot_options", nades=False)["nades"] is False and R.BOMB_DROP
@@ -2176,7 +2184,7 @@ def test_backing_out_of_a_crowd_he_drops_a_bomb_at_his_feet_and_walks_out_of_its
     bot.held = lambda p, now: False
     snap["player"].update(equipped=0, bomb={"count": 5, "out": False}, nades={})
     first = run(bot, snap, clock, 1)[0]
-    assert first == {"tap": "dup"} and bot.bomb_drop and bot.stats["bomb_drops"] == 1   # not called off: a drop
+    assert first == {"tap": "up"} and bot.bomb_drop and bot.stats["bomb_drops"] == 1   # not called off: a drop
     snap["player"]["equipped"] = R.BOMB_INDEX
     acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
     assert {"hold": ("zl", "zr")} in acts and not any(set(a.get("hold", ())) & {"rleft", "rright"} for a in acts)
@@ -2508,7 +2516,7 @@ def test_dead_it_answers_continue_yes_by_the_cursor_and_counts_the_replay(monkey
     g.q(over + R.CONTINUE_MENU, g.alloc(0x100))
     g.i32(over + R.CONTINUE_CURSOR, R.CONTINUE_NO)
     snap = R.snapshot(g)
-    assert snap["continue_cursor"] == 1 and run(bot, snap, clock, 1)[0] == {"tap": "dleft"}   # to YES first
+    assert snap["continue_cursor"] == 1 and run(bot, snap, clock, 1)[0] == {"tap": "left"}   # to YES first
     g.i32(over + R.CONTINUE_CURSOR, R.CONTINUE_YES)
     assert run(bot, R.snapshot(g), clock, 1)[0] == {"tap": "a"} and bot.continued == "yes"
     alive = R.snapshot(round_guest(timer=119.4))                 # the replay's first tick alive: a full clock
@@ -3492,7 +3500,7 @@ def test_overwhelmed_right_after_a_flash_the_remote_bomb_goes_down_at_his_feet(m
     snap["player"].update(equipped=0, bomb={"count": 5, "out": False}, nades={0x115: (11, 5)})
     bot.flash_last = bot.nade_last = clock[0]                                 # the flash just went
     act = run(bot, snap, clock, 1)[0]
-    assert act == {"tap": "dup"} and bot.doing == "bomb" and bot.bomb_drop
+    assert act == {"tap": "up"} and bot.doing == "bomb" and bot.bomb_drop
     assert bot.stats["bomb_drops"] == 1 and bot.stats["flash_drops"] == 1
     bot2, clock2, snap2 = brain(round_guest(enemies=on_him, cam_yaw=0.0))    # no flash yet: the flash comes first
     bot2.held = lambda p, now: False
