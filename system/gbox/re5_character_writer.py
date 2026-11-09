@@ -15,10 +15,19 @@ from .re_switch import RE5_TITLE_ID
 # Whole-player ARC filename substitution booted an invisible, nonfunctional
 # Chris slot in the 2026-11-09 live test. Only individually proven composed
 # player pairs may be exposed through characters use/live_use.
-VERIFIED_NATIVE_PAIRS: frozenset[tuple[str, str]] = frozenset()
-UNVERIFIED_REASON = ("Native RE5 player replacement is temporarily unavailable: the whole-archive Sheva-to-Chris "
-                     "trial booted with an invisible player. Slot resource composition and gameplay acceptance "
-                     "must pass before this pair is enabled; no files were written.")
+VERIFIED_NATIVE_PAIRS: frozenset[tuple[str, str]] = frozenset({("sheva", "chris")})
+UNVERIFIED_REASON = ("This native RE5 player pair has not passed slot composition and gameplay acceptance. "
+                     "Only original Sheva normal into Chris normal is supported. Whole-player archive filename "
+                     "substitution can leave the player invisible; no files were written.")
+NATIVE_ACCEPTANCE = {
+    "recipe": "native_player_resource_composition_v1", "donor": "sheva", "target": "chris",
+    "written_sha256": "ee04244c4d3012904b4858cef1ce10352f20361963fcc52787543f4ecf9a9800",
+    "observed_at_unix": 1794204816, "selected_character": "Chris (BSAA)", "stage": "Public Assembly",
+    "score_from": 300, "score_to": 2400, "kills_from": 1, "kills_to": 8,
+    "visible_native_donor": True, "gameplay_verified": True,
+    "coverage": "Native Sheva body/materials and advancing combat in the Chris BSAA slot; other costumes, "
+                "cutscenes, physics fidelity and feet contact are not verified",
+}
 
 
 def _native_donor(meta: dict | None) -> str:
@@ -87,9 +96,37 @@ def _romfs(config) -> Path:
     raise ValueError("The owned RE5 Switch RomFS with nativeNXx64/ImgNX/Archive must already be extracted on this worker")
 
 
+def plan_player_pair(root: Path, donor: str, target: str) -> tuple[dict, dict]:
+    """Shared panel/library gate and immutable-source composition; no writes or launch."""
+    from . import re5_char_swap, re5_player_archive, skin_swap
+    if (donor, target) not in VERIFIED_NATIVE_PAIRS:
+        raise ValueError(UNVERIFIED_REASON)
+    arcs = skin_swap.CHARACTER_ARCS[RE5_TITLE_ID]
+    archive_root = re5_char_swap.archive_root(root).resolve()
+    for name in (donor, target):
+        path = root / arcs[name]
+        if not path.resolve().is_relative_to(archive_root) or not path.is_file():
+            raise ValueError(f"The owned Switch archive for {name} is absent or outside its archive directory")
+    payload, composition = re5_player_archive.compose((root / arcs[target]).read_bytes(),
+                                                     (root / arcs[donor]).read_bytes(), target=target, donor=donor)
+    if composition['written_sha256'] != NATIVE_ACCEPTANCE['written_sha256']:
+        raise ValueError("Composed player archive differs from the exact gameplay-tested artifact; a new acceptance is required")
+    acceptance = NATIVE_ACCEPTANCE
+    scope = {"route": "native_archive_counterpart", "complete": False, "gameplay_verified": bool(acceptance['gameplay_verified']),
+             "written_platform": "switch", "donor_archive": arcs[donor], "target_archive": arcs[target],
+             "written_sha256": hashlib.sha256(payload).hexdigest(), "composition": composition,
+             "gameplay_acceptance": dict(acceptance),
+             "notes": ["The destination's model/material lookup names and motion/control resources are retained; "
+                       "the donor's model, materials and exact referenced textures are composed into that slot",
+                       "Only the reported native pair and gameplay coverage are verified; other costumes, "
+                       "cutscenes, movies, physics fidelity and feet contact are unverified",
+                       "The title restarts to load the archive; the current round is not preserved"]}
+    return {"romfs/" + arcs[target]: {"bytes": payload}}, scope
+
+
 def plan(ctx, game: dict, inp, meta: dict | None) -> dict:
-    """Return one complete native-archive edit and its scope; never write or launch."""
-    from . import mt_arc, re5_char_swap, skin_swap, switch_mods
+    """Return one composed native player archive and its scope; never write or launch."""
+    from . import re5_char_swap, skin_swap, switch_mods
     try:
         tid = switch_mods.title_id_for(None, game.get("serial") or (game.get("launch") or {}).get("title_id"))
         if game.get("platform") != "switch" or tid != RE5_TITLE_ID:
@@ -106,31 +143,11 @@ def plan(ctx, game: dict, inp, meta: dict | None) -> dict:
         if (donor, target) not in VERIFIED_NATIVE_PAIRS:
             return {"reason": UNVERIFIED_REASON}
         root = _romfs(ctx.config)
-        archive_root = re5_char_swap.archive_root(root).resolve()
-        for name in (donor, target):
-            path = root / arcs[name]
-            if not path.resolve().is_relative_to(archive_root) or not path.is_file():
-                raise ValueError(f"The owned Switch archive for {name} is absent or outside its archive directory")
-        report, changes = re5_char_swap.plan_changes(root, [(Path(arcs[donor]).name, Path(arcs[target]).name)])
-        if not changes or report.skipped:
-            raise ValueError(f"The native archive pair is incomplete: {report.skipped}")
-        payload = next(iter(changes.values()))["bytes"]
-        for name, data in ((donor, payload), (target, (root / arcs[target]).read_bytes())):
-            archive = mt_arc.parse(data)
-            player_id = Path(arcs[name]).name[3:5].lower()
-            prefix = f"pawn\\pl\\pl{player_id}\\"
-            if archive.version != 7 or not any(e.name.casefold().startswith(prefix) and "\\model\\" in e.name.casefold()
-                                               for e in archive.entries):
-                raise ValueError(f"{name}'s source is not the expected Switch player archive")
-        scope = {"route": "native_archive_counterpart", "complete": False, "gameplay_verified": False,
-                 "source_platform": "ps3", "written_platform": "switch", "collection_model_used": False,
-                 "requested_character": {"slug": meta["slug"], "name": meta["name"]},
-                 "donor_archive": arcs[donor], "target_archive": arcs[target],
-                 "written_sha256": hashlib.sha256(payload).hexdigest(),
-                 "notes": ["The original PS3 collection identity selects the same character's owned Switch archive; "
-                           "the collection GLB and PS3 bytes are not imported",
-                           "This named pair needs visual verification; other costumes, cutscenes and movies are unverified",
-                           "The title restarts to load the archive; the current round is not preserved"]}
+        changes, scope = plan_player_pair(root, donor, target)
+        scope.update(source_platform="ps3", collection_model_used=False,
+                     requested_character={"slug": meta["slug"], "name": meta["name"]})
+        scope['notes'].insert(0, "The original PS3 collection identity selects the same character's owned Switch archive; "
+                                "the collection GLB and PS3 bytes are not imported")
         return {"changes": changes, "kind": "character", "replacement_scope": scope,
                 "slots": [{"slot": target, "donor": meta["slug"], "archive": arcs[target],
                            "native_counterpart": arcs[donor]}],

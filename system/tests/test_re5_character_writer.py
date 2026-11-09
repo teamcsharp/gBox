@@ -6,10 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from gbox import characters as C, mt_arc, re5_character_writer as W, re5ps3_collection as PS3, skin_swap, switch_mods as S
+from gbox import characters as C, mt_arc, re5_character_writer as W, re5_player_archive as P, re5ps3_collection as PS3, skin_swap, switch_mods as S
 from gbox.config import Config
 from gbox.re5ps3_roles import CHRIS_MODEL, SHEVA_MODEL
 from gbox.re_switch import RE5_TITLE_ID as TID
+from tests.test_re5_player_archive import archive as native_archive
 
 GAME = {"game_id": "52d15709be0fda1a", "title": "Resident Evil 5", "platform": "switch", "serial": TID}
 
@@ -29,6 +30,8 @@ def native_meta(character="sheva"):
 
 
 def archive(character):
+    if character in ('chris', 'sheva'):
+        return native_archive(character)
     player_id = Path(skin_swap.CHARACTER_ARCS[TID][character]).name[3:5]
     data = ("owned Switch " + character).encode()
     return mt_arc.build(mt_arc.Arc(7, [mt_arc.Entry(f"pawn\\pl\\pl{player_id}\\model\\pl{player_id}00", 0, 0, len(data), 0, data)]))
@@ -46,7 +49,11 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(S, "running_users", lambda *a: [])
     monkeypatch.setattr(S, "WRITERS", {})
     # Structural/provenance exercises below are not runtime acceptance.
-    monkeypatch.setattr(W, "VERIFIED_NATIVE_PAIRS", frozenset({("chris", "sheva"), ("sheva", "chris")}))
+    monkeypatch.setattr(W, "VERIFIED_NATIVE_PAIRS", frozenset({("sheva", "chris")}))
+    monkeypatch.setattr(P, "REQUIRED_ANIMATION_IDS", frozenset({0}))
+    monkeypatch.setattr(P, "NATIVE_SHA256", {name: hashlib.sha256(archive(name)).hexdigest() for name in ('chris', 'sheva')})
+    synthetic = P.compose(archive('chris'), archive('sheva'))[1]['written_sha256']
+    monkeypatch.setattr(W, 'NATIVE_ACCEPTANCE', W.NATIVE_ACCEPTANCE | {'written_sha256': synthetic, 'gameplay_verified': False})
     return SimpleNamespace(config=cfg, job_id="native-test"), root
 
 
@@ -59,16 +66,18 @@ def test_failed_native_trial_is_gated_before_asset_reads_or_writes(setup, monkey
     assert not ctx.config.cache.exists()
 
 
-@pytest.mark.parametrize("donor,target", [("chris", "sheva"), ("sheva", "chris")])
-def test_exact_original_identity_writes_its_switch_counterpart(setup, donor, target):
+def test_exact_original_identity_composes_its_switch_counterpart(setup):
     ctx, root = setup
+    donor, target = 'sheva', 'chris'
     plan = W.plan(ctx, GAME, C.CharIn(op="use", character=donor, slot=target, launch=False), native_meta(donor))
     relative = skin_swap.CHARACTER_ARCS[TID][target]
-    assert plan["changes"] == {"romfs/" + relative: {"bytes": archive(donor)}}
+    payload = P.compose(archive(target), archive(donor))[0]
+    assert plan["changes"] == {"romfs/" + relative: {"bytes": payload}}
     scope = plan["replacement_scope"]
     assert scope["source_platform"] == "ps3" and scope["written_platform"] == "switch"
     assert scope["collection_model_used"] is False and scope["gameplay_verified"] is False
-    assert scope["written_sha256"] == hashlib.sha256(archive(donor)).hexdigest()
+    assert scope["written_sha256"] == hashlib.sha256(payload).hexdigest()
+    assert scope['composition']['target_motion_and_control_resources_preserved'] is True
     assert (root / relative).read_bytes() == archive(target)
     assert not ctx.config.cache.exists()
 
@@ -111,7 +120,7 @@ def test_live_use_stages_exact_active_build_and_restarts_only_its_session(setup,
     assert (folder / path).read_bytes() == b"prior edit"
     assert len(S.pending_edits(folder)) == 1
     S.apply_pending(folder)
-    assert (folder / path).read_bytes() == archive("sheva")
+    assert (folder / path).read_bytes() == P.compose(archive('chris'), archive('sheva'))[0]
     assert (root / skin_swap.CHARACTER_ARCS[TID]["chris"]).read_bytes() == archive("chris")
     assert [(m, p) for m, p, _ in calls] == [("GET", "/api/sessions"), ("POST", "/api/sessions/live/swap")]
 
@@ -164,7 +173,21 @@ def test_wrong_title_same_donor_cast_and_bad_archive_never_produce_changes(setup
     assert "changes" not in W.plan(ctx, GAME, C.CharIn(op="cast_swap", source="re5"), None)
     (root / skin_swap.CHARACTER_ARCS[TID]["sheva"]).write_bytes(archive("chris"))
     result = W.plan(ctx, GAME, inp, native_meta())
-    assert "expected Switch player archive" in result["reason"] and "changes" not in result
+    assert "SHA256" in result["reason"] and "changes" not in result
+
+
+def test_reverse_pair_remains_unaccepted(setup):
+    ctx, _ = setup
+    result = W.plan(ctx, GAME, C.CharIn(op='live_use', character='chris', slot='sheva'), native_meta('chris'))
+    assert result == {'reason': W.UNVERIFIED_REASON}
+
+
+def test_changed_composer_output_cannot_reuse_prior_gameplay_acceptance(setup, monkeypatch):
+    ctx, _ = setup
+    monkeypatch.setattr(W, 'NATIVE_ACCEPTANCE', W.NATIVE_ACCEPTANCE | {'written_sha256': '0' * 64})
+    result = W.plan(ctx, GAME, C.CharIn(op='use', character='sheva', slot='chris'), native_meta())
+    assert 'exact gameplay-tested artifact' in result['reason'] and 'changes' not in result
+    assert not ctx.config.cache.exists()
 
 
 def test_unrelated_title_does_not_register_re5_and_explicit_writer_wins(setup):

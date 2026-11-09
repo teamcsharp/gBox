@@ -1,14 +1,16 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const M=require('../clients/web/viz/mercmode.js');
+const scope={route:'native_archive_counterpart',donor_archive:'native/uPl01ShebaNormal.arc',target_archive:'native/uPl00ChrisNormal.arc',
+  gameplay_verified:true,gameplay_acceptance:{coverage:'Native Sheva in Chris BSAA with advancing combat; other costumes remain unverified.'}};
 
-function panel(kind,{title='re5_switch',slot='chris',donor='jill',sessionId=null,respond=()=>({ok:true}),matrix={pairs:{}},
+function panel(kind,{title='re5_switch',slot='chris',donor='sheva',sessionId=null,respond=()=>({ok:true,replacement_scope:scope}),matrix={pairs:{}},
   restart={id:'j1',state:'succeeded',output:{result:{same_session:true}}}}={}){
   const events={},calls=[],messages=[],errors=[];
   const button={dataset:{mmSwap:kind},textContent:kind,addEventListener:(event,fn)=>events[event]=fn};
   const fields={
-    '[data-mm-swap-slot]':{value:slot,addEventListener(){}},
-    '[data-mm-swap-donor]':{value:donor,options:[{value:donor,disabled:false}]},
+    '[data-mm-swap-slot]':{value:slot,addEventListener:(_,fn)=>events.slot=fn},
+    '[data-mm-swap-donor]':{value:donor,options:[{value:donor,disabled:false}],addEventListener:(_,fn)=>events.donor=fn},
     '[data-mm-retag]':{checked:false,addEventListener(){}}
   };
   const root={querySelector:s=>fields[s]||null,querySelectorAll:s=>s==='[data-mm-swap]'?[button]:[]};
@@ -19,7 +21,7 @@ function panel(kind,{title='re5_switch',slot='chris',donor='jill',sessionId=null
     return respond(path,body);
   };
   M.wireSwaps(root,{api,title,sessionId,done:text=>messages.push(text),fail:error=>errors.push(error.message)});
-  return {calls,messages,errors,button,fields,click:()=>events.click({stopPropagation(){}})};
+  return {calls,messages,errors,button,fields,events,click:()=>events.click({stopPropagation(){}})};
 }
 
 test('cast response calls the completion callback and reports partial failures',async()=>{
@@ -53,14 +55,33 @@ test('RE6 uses its own native archive paths for both selected and zombie donors'
   }
 });
 
-test('native replacement sends the complete archive action and states verification is pending',async()=>{
+test('native replacement sends only the verified composed pair and reports its actual coverage',async()=>{
   const p=panel('character');await p.click();
   assert.deepEqual(p.errors,[]);
   assert.equal(p.calls.at(-1)[0],'/api/decrypt-lab/character-swap');
-  assert.match(p.messages[0],/still needs visual verification/);
+  assert.match(p.messages[0],/Previously verified in gameplay: Native Sheva in Chris BSAA/);
+  assert.doesNotMatch(p.messages[0],/verification is pending/);
   const unsupported=panel('character',{donor:'zombie'});await unsupported.click();
-  assert.match(unsupported.errors[0],/verified class binding/);
+  assert.match(unsupported.errors[0],/only Sheva into Chris/);
+  assert.equal(unsupported.button.disabled,true);
   assert.equal(unsupported.calls.length,1);
+  const reverse=panel('character',{donor:'chris',slot:'sheva'});await reverse.click();
+  assert.match(reverse.errors[0],/only Sheva into Chris/);
+  assert.equal(reverse.calls.length,1);
+});
+
+test('changing the shared texture donor updates native availability and missing receipts cannot restart',async()=>{
+  const p=panel('character');
+  assert.equal(p.button.disabled,false);
+  p.fields['[data-mm-swap-donor]'].value='jill';p.events.donor();
+  assert.equal(p.button.disabled,true);
+  assert.match(p.button.title,/Other selections remain available for texture operations/);
+  p.fields['[data-mm-swap-donor]'].value='sheva';p.events.donor();
+  assert.equal(p.button.disabled,false);
+  const missing=panel('character',{sessionId:'worker-session',respond:()=>({ok:true})});
+  await missing.click();
+  assert.match(missing.errors[0],/receipt/);
+  assert.equal(missing.calls.filter(([path])=>path==='/api/jobs').length,0);
 });
 
 test('title menus show only their own swap controls and RE5 object archives',()=>{
@@ -78,7 +99,7 @@ test('a relaunch waits for its child swap job and reports its actual outcome',as
   for(const state of ['succeeded','failed']){
     const p=panel('character',{sessionId:'worker-session',restart:{id:'outer',state:'succeeded',
       output:{result:{same_session:false,swap_job:'child'}}},respond:path=>path==='/api/jobs/child'
-        ?{id:'child',state,error:state==='failed'?'boot failed':null,output:{session_id:'worker-new'}}:{ok:true}});
+        ?{id:'child',state,error:state==='failed'?'boot failed':null,output:{session_id:'worker-new'}}:{ok:true,replacement_scope:scope}});
     await p.click();
     assert.ok(p.calls.some(([path])=>path==='/api/jobs/child'));
     assert.match(p.messages[0],state==='succeeded'?/relaunched in session worker-new/:/restart failed: boot failed/);
@@ -93,7 +114,7 @@ test('desktop passes the menu containing sibling object and zombie controls to t
 });
 
 test('texture compatibility uses the actual donor and never disables native archive selection',async()=>{
-  const matrix={pairs:{'chris|jill':{ok:false},'chris|zombie':{ok:true}}};
+  const matrix={pairs:{'chris|sheva':{ok:false},'chris|zombie':{ok:true}}};
   const native=panel('character',{matrix});await Promise.resolve();
   assert.equal(native.fields['[data-mm-swap-donor]'].options[0].disabled,false);
   await native.click();assert.deepEqual(native.errors,[]);

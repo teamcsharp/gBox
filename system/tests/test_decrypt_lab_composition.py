@@ -43,17 +43,24 @@ def panel(tmp_path, monkeypatch):
     store = SimpleNamespace(db=SimpleNamespace(execute=lambda *a: SimpleNamespace(fetchall=lambda: rows)))
     app = FastAPI()
     L.install(app, store, cfg, lambda: None)
+    # These tests isolate overlay/pending composition. Native recipe and provenance
+    # validation are exercised by test_re5_player_archive and the writer tests.
+    from gbox import re5_character_writer
+    def native_plan(root, donor, target):
+        assert (donor, target) == ('sheva', 'chris')
+        return {'romfs/' + CHRIS: {'bytes': archive('sheva')}}, {'complete': False, 'gameplay_verified': False}
+    monkeypatch.setattr(re5_character_writer, 'plan_player_pair', native_plan)
     return cfg, root, {r.path: r.endpoint for r in app.routes}
 
 
 def native(routes, build='composition-test'):
     return routes['/api/decrypt-lab/character-swap'](L.CharacterSwapIn(
-        title='re5_switch', build=build, arc_path=CHRIS, donor_arc=JILL))
+        title='re5_switch', build=build, arc_path=CHRIS, donor_arc=SHEVA))
 
 
 def skin(routes, build='composition-test'):
     return routes['/api/decrypt-lab/model-swap'](L.ModelSwapIn(
-        title='re5_switch', build=build, arc_path=CHRIS, donor_arc=SHEVA))
+        title='re5_switch', build=build, arc_path=CHRIS, donor_arc=JILL))
 
 
 @pytest.mark.parametrize('running', [False, True])
@@ -61,7 +68,7 @@ def test_native_skin_and_clothes_edits_preserve_replacement_geometry(panel, monk
     cfg, root, routes = panel
     folder = S.build_dir(cfg, GID, 'composition-test')
     # A modified donor in the same build must not make the donor dropdown depend on previous edits.
-    S.write_files(cfg, GID, 'composition-test', {SHEVA: {'bytes': archive('edited-donor')}}, create={'title_id': TID})
+    S.write_files(cfg, GID, 'composition-test', {JILL: {'bytes': archive('edited-donor')}}, create={'title_id': TID})
     monkeypatch.setattr(S, 'running_users', lambda *a: ['live-session'] if running else [])
     assert native(routes)['pending'] is running
     assert skin(routes)['pending'] is running
@@ -73,10 +80,10 @@ def test_native_skin_and_clothes_edits_preserve_replacement_geometry(panel, monk
         assert not target.exists() and len(S.pending_edits(folder)) == 3
         S.apply_pending(folder)
     result = contents(target.read_bytes())
-    assert result == {'body_MOD': b'jill_mesh', 'evf0000_01_BM': b'sheva_skin', 'evf0000_02_BM': b'sheva_skin'}
+    assert result == {'body_MOD': b'sheva_mesh', 'evf0000_01_BM': b'jill_skin', 'evf0000_02_BM': b'jill_skin'}
     S.revert(cfg, GID, 'composition-test', stripped['edit'])
-    assert contents(target.read_bytes())['evf0000_02_BM'] == b'jill_coat'
-    assert contents(target.read_bytes())['body_MOD'] == b'jill_mesh'
+    assert contents(target.read_bytes())['evf0000_02_BM'] == b'sheva_coat'
+    assert contents(target.read_bytes())['body_MOD'] == b'sheva_mesh'
     assert contents((root / CHRIS).read_bytes())['body_MOD'] == b'chris_mesh'
 
 
@@ -86,7 +93,7 @@ def test_composition_uses_only_the_named_build(panel):
     skin(routes, 'fresh-build')
     target = S.build_dir(cfg, GID, 'fresh-build') / 'romfs' / CHRIS
     assert contents(target.read_bytes())['body_MOD'] == b'chris_mesh'
-    assert contents(target.read_bytes())['evf0000_01_BM'] == b'sheva_skin'
+    assert contents(target.read_bytes())['evf0000_01_BM'] == b'jill_skin'
 
 
 def test_pending_removal_restores_base_before_the_next_edit(panel, monkeypatch):

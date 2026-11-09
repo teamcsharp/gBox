@@ -3003,11 +3003,12 @@ async function charsInit() {
       <span class="mut">${esc(c.source?.game_title || "")}</span>
       ${c.variant_of ? `<span class="mut" style="font-size:11px" title="${esc((c.props || []).map(p => p.node + " on " + p.bone).join(", "))}">↳ variant of ${esc(c.variant?.base_name || c.variant_of)}${c.props?.length ? ` · ${c.props.length} prop${c.props.length > 1 ? "s" : ""}` : ""}${stale(c) ? ' · <b class="warn">needs rebuild</b>' : ""}</span>` : ""}
       ${GBoxNativeCharacterUse.supports(gid,c.slug)?GBoxNativeCharacterUse.fields({donor:false}):''}
-      <button class="act" data-use>${GBoxNativeCharacterUse.supports(gid,c.slug)?'Use native Switch counterpart':'Use in this game'}</button>
-      <button class="act" data-rt ${GBoxNativeCharacterUse.supports(gid,c.slug)?"disabled":""} title="Retarget editor: adjust how ${esc(c.name)} is scaled and proportioned into this game (saved per slot; the next build uses it)">✎ Retarget…</button>
+      ${GBoxNativeCharacterUse.blockedReason(gid,c.slug)?`<small>${esc(GBoxNativeCharacterUse.blockedReason(gid,c.slug))}</small>`:''}
+      <button class="act" data-use>${GBoxNativeCharacterUse.supports(gid,c.slug)?'Use native Switch counterpart':GBoxNativeCharacterUse.blockedReason(gid,c.slug)?'Replacement unavailable':'Use in this game'}</button>
+      <button class="act" data-rt ${GBoxNativeCharacterUse.supports(gid,c.slug)||GBoxNativeCharacterUse.blockedReason(gid,c.slug)?"disabled":""} title="Retarget editor: adjust how ${esc(c.name)} is scaled and proportioned into this game (saved per slot; the next build uses it)">✎ Retarget…</button>
       <button class="act" data-bl title="Copy to Blender's clipboard: Ctrl+V in a Blender 3D viewport pastes it, textured">⧉ Blender</button>
       <label class="mut" style="font-size:11px;display:flex;align-items:center;gap:3px" title="Head size: builds '${esc(c.name)} – big head' as a variant and uses it in this game (SM64, RE4 GC)">Head
-        <input type="range" data-head ${GBoxNativeCharacterUse.supports(gid,c.slug)?"disabled":""} min="0.5" max="3" step="0.1" value="1" style="flex:1;min-width:0"><output>1.0×</output></label>
+        <input type="range" data-head ${GBoxNativeCharacterUse.supports(gid,c.slug)||GBoxNativeCharacterUse.blockedReason(gid,c.slug)?"disabled":""} min="0.5" max="3" step="0.1" value="1" style="flex:1;min-width:0"><output>1.0×</output></label>
       <button class="act" data-headgo hidden>Build head ×1.0</button>
       <i class="mut" style="font-size:11px;white-space:pre-wrap"></i></div>`;
   const sortBar = `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;font-size:11px">${[["recent", "Recently used"], ["name", "Name"], ["console", "Console"], ["size", "File size"]]
@@ -3049,6 +3050,7 @@ async function charsInit() {
     const box = b.closest(".chc"), c = cs[+box.dataset.i], st = box.querySelector("i");
     b.disabled = true; st.textContent = "working…";
     try {
+      const blocked=GBoxNativeCharacterUse.blockedReason(gid,c.slug);if(blocked)throw Error(blocked);
       if(GBoxNativeCharacterUse.supports(gid,c.slug)){
         const native=await GBoxNativeCharacterUse.apply(api,{gameId:gid,character:c.slug,sessionId:sid,
           slot:box.querySelector('[data-native-slot]')?.value},

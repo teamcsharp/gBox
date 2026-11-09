@@ -339,9 +339,9 @@
     const re5=title==='re5_switch';
     return `<div class="pip-mm-swaps"><small>Characters &amp; zombies · applies at the next boot</small>`+
       `<label>Slot <select data-mm-swap-slot>${swapOptions(swaps.slots,re5?'chris':'leon')}</select></label>`+
-      `<label>Donor <select data-mm-swap-donor>${swapOptions(swaps.slots,re5?'jill':'helena')}</select></label>`+
+      `<label>Donor <select data-mm-swap-donor>${swapOptions(swaps.slots,re5?'sheva':'helena')}</select></label>`+
       `<span class="pip-mm-swap-buttons">`+
-      (re5?`<button type="button" data-mm-swap="character">Replace native character</button>`:'')+
+      (re5?`<button type="button" data-mm-swap="character">Replace Chris (BSAA) with Sheva</button>`:'')+
       `<button type="button" data-mm-swap="clothes">Swap clothes</button>`+
       (re5?`<button type="button" data-mm-swap="plain">Plain (remove clothes)</button>`:'')+
       `<button type="button" data-mm-swap="to-zombie">Wear zombie textures</button>`+
@@ -401,19 +401,24 @@
       return row ? !row.ok : false;
     };
     function markDonors(){
+      markNativePair();
       const slot = root.querySelector('[data-mm-swap-slot]')?.value;
       const donor = root.querySelector('[data-mm-swap-donor]');
       if (!matrix || !slot || !donor) return;
       [...donor.options].forEach((o) => {
         const row = (matrix.pairs || {})[slot + '|' + o.value];
         const ok = !row || row.ok;
-        // Texture compatibility must not disable a donor for the whole-archive replacement action.
+        // Texture compatibility is separate from the verified native player pair.
         o.disabled = false;
         o.textContent = o.value + (ok ? '' : ' (texture format mismatch)');
       });
     }
     root.querySelector('[data-mm-swap-slot]')?.addEventListener('change', markDonors);
+    root.querySelector('[data-mm-swap-donor]')?.addEventListener?.('change',markNativePair);
     root.querySelector('[data-mm-retag]')?.addEventListener('change', markDonors);
+    function nativePair(){return title==='re5_switch'&&root.querySelector('[data-mm-swap-slot]')?.value==='chris'&&root.querySelector('[data-mm-swap-donor]')?.value==='sheva';}
+    function markNativePair(){root.querySelectorAll('[data-mm-swap]').forEach(button=>{if(button.dataset.mmSwap==='character'){button.disabled=busy||!nativePair();button.title=nativePair()?'Verified native Sheva model and materials in Chris (BSAA); restarts the title.':'Native replacement supports only Sheva into Chris (BSAA). Other selections remain available for texture operations.';}});}
+    markNativePair();
     const applyNow = async(session)=>{
       // Eden layers mods only at boot, so a live swap is the title restarting in this same session (gbox.switch_mods
       // apply_live): the operator sees the new skin without ending the round's session
@@ -455,8 +460,7 @@
       const slot=swaps.slots[slotKey], donor=swaps.slots[donorKey];
       if(!slot||!donor)throw Error('Choose a slot and a donor.');
       if(kind==='character'){
-        if(slotKey.startsWith('zombie')||donorKey.startsWith('zombie'))
-          throw Error('Native player/enemy archive substitution needs a verified class binding. Choose two playable characters.');
+        if(!nativePair())throw Error('Native replacement supports only Sheva into Chris (BSAA). Choose that donor and target; other pairs have not passed gameplay verification.');
         return api('/api/decrypt-lab/character-swap',{title,arc_path:slot,donor_arc:donor,build:APPLY});
       }
       // 'from-cast' uses the whole cast, not the donor dropdown, so a mismatched donor must not block it
@@ -482,6 +486,7 @@
         current();
         const r=await run(b.dataset.mmSwap);
         if(r?.ok===false)throw Error(r.note||'No replacement files were built.');
+        const nativeScope=b.dataset.mmSwap==='character'?nativeLibrary().scopeText(r.replacement_scope):null;
         let live='';
         if(sessionId){
           try{live=await applyNow(sessionId);}
@@ -499,7 +504,7 @@
           return;
         }
         if(b.dataset.mmSwap==='character'){
-          done(`Native character archive built; this pair still needs visual verification${live||' (applies at the next boot)'}`);
+          done(`${nativeScope}${live||' (applies at the next boot)'}`);
           return;
         }
         const kept = (r.maps || []).find((m) => String(m).startsWith('kept:'));
@@ -509,7 +514,7 @@
           : `${b.textContent}: ${r.slot} ← ${r.donor}${extent}${live||' (applies at the next boot)'}`);
       }
       catch(error){fail(error);}
-      finally{busy=false;b.disabled=false;}
+      finally{busy=false;b.disabled=false;markNativePair();}
     }));
     const libraryButton=root.querySelector('[data-native-use]');
     libraryButton?.addEventListener('click',async e=>{
@@ -525,7 +530,7 @@
           {currentSessionId,progress:text=>{libraryButton.textContent=text;}});
         done(result.message);
       }catch(error){fail(error);}
-      finally{busy=false;libraryButton.disabled=false;libraryButton.textContent=label;}
+      finally{busy=false;libraryButton.disabled=false;libraryButton.textContent=label;markNativePair();}
     });
     const objectButton=root.querySelector('[data-mm-obj-swap]');
     objectButton?.addEventListener('click',async e=>{
@@ -550,7 +555,7 @@
         done(`${r.slot} now looks like ${r.donor}${live||' (applies at the next boot)'}`);
       }
       catch(error){fail(error);}
-      finally{busy=false;objectButton.disabled=false;}
+      finally{busy=false;objectButton.disabled=false;markNativePair();}
     });
     const zombieButton=root.querySelector('[data-mm-zombie]');
     zombieButton?.addEventListener('click',async e=>{
@@ -577,7 +582,7 @@
              `${live||' (applies at the next boot)'}`);
       }
       catch(error){fail(error);}
-      finally{busy=false;zombieButton.disabled=false;}
+      finally{busy=false;zombieButton.disabled=false;markNativePair();}
     });
   }
   function objectsHTML(title){

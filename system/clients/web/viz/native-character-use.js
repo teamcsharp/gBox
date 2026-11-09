@@ -2,21 +2,23 @@
 (function(root){
   'use strict';
   const GAME='52d15709be0fda1a';
-  const SLOTS=['chris','sheva','jill','wesker','josh','excella','barry','rebecca'];
-  const SLOT_LABELS={chris:'Chris (BSAA)',sheva:'Sheva (BSAA)',jill:'Jill (mapped costume)',wesker:'Wesker (mapped costume)'};
-  const DONORS={re5ps3_chris_normal:'Chris (original PS3 collection)',re5ps3_sheva_normal:'Sheva (original PS3 collection)'};
+  const SLOTS=['chris'];
+  const SLOT_LABELS={chris:'Chris (BSAA)'};
+  const DONORS={re5ps3_sheva_normal:'Sheva (original PS3 collection)'};
   const escape=s=>String(s??'').replace(/[&<>"']/g,c=>`&#${c.charCodeAt(0)};`);
   const supports=(game,character)=>game===GAME&&Object.hasOwn(DONORS,character);
+  const blockedReason=(game,character)=>game===GAME&&character==='re5ps3_chris_normal'
+    ?'Chris as a replacement donor has not passed gameplay verification. Choose original Sheva and target Chris (BSAA).':'';
   function fields({donor=true}={}){
     return `<label>Target player <select data-native-slot><option value="">Choose the native player slot</option>`+
       SLOTS.map(s=>`<option value="${s}">${SLOT_LABELS[s]||s[0].toUpperCase()+s.slice(1)}</option>`).join('')+`</select></label>`+
       (donor?`<label>Collection character <select data-native-donor><option value="">Choose a library character</option>`+
         Object.entries(DONORS).map(([id,name])=>`<option value="${id}">${escape(name)}</option>`).join('')+`</select></label>`:'')+
-      `<small>Uses the character's original Switch archive. The PS3 collection model is not imported. Restarts the title; visual verification is pending.</small>`;
+      `<small>Uses the original Switch Sheva model and materials in Chris (BSAA). The PS3 collection model is not imported. This pair passed a visible body and combat check in Public Assembly. Restarts the title.</small>`;
   }
   function input({gameId=GAME,character,slot,sessionId=''}){
-    if(!supports(gameId,character))throw Error('Choose an original RE5 Chris or Sheva collection entry for its native Switch counterpart.');
-    if(!SLOTS.includes(slot))throw Error('Choose the named target player slot; the current random character is not guessed.');
+    if(!supports(gameId,character))throw Error(blockedReason(gameId,character)||'Choose original RE5 Sheva for the verified native Switch replacement into Chris (BSAA).');
+    if(!SLOTS.includes(slot))throw Error('Choose the named target Chris (BSAA); other native player pairs have not passed gameplay verification.');
     return {op:sessionId?'live_use':'use',game_id:gameId,character,slot,session_id:sessionId,launch:false};
   }
   async function waitJob(api,job,{sleep=ms=>new Promise(r=>setTimeout(r,ms)),progress=()=>{}}={}){
@@ -31,8 +33,12 @@
   function scopeText(scope){
     if(scope?.route!=='native_archive_counterpart')throw Error('The writer did not report a native counterpart receipt.');
     const base=s=>String(s||'').split(/[\\/]/).pop();
-    return `${scope.requested_character?.name||'Collection character'}: ${base(scope.donor_archive)} replaces ${base(scope.target_archive)}. `+
-      'Uses the owned Switch counterpart; the collection GLB is not imported. Visual verification is pending.';
+    const coverage=scope.gameplay_acceptance?.coverage||scope.coverage;
+    const verified=scope.gameplay_verified===true
+      ?'Previously verified in gameplay: '+(coverage||'this exact native pair; see the receipt for tested coverage.')
+      :'Gameplay verification is pending.';
+    return `${scope.requested_character?.name||'Native character'}: ${base(scope.donor_archive)} replaces ${base(scope.target_archive)}. `+
+      'Uses the owned Switch model and materials; the collection GLB is not imported. '+verified;
   }
   async function apply(api,options,hooks={}){
     const body=input(options),sid=body.session_id;
@@ -63,6 +69,6 @@
     if(sid&&result.status==='restarting')throw Error(`Build ${result.mod} was written, but no restart job was reported.`);
     return {result,session_id:null,message:`${scope} ${result.status==='pending_restart'?'Saved pending restart.':'Build written for the next boot.'}`};
   }
-  const api={GAME,SLOTS,DONORS,supports,fields,input,waitJob,scopeText,apply};
+  const api={GAME,SLOTS,DONORS,supports,blockedReason,fields,input,waitJob,scopeText,apply};
   if(typeof module==='object'&&module.exports)module.exports=api;else root.GBoxNativeCharacterUse=api;
 })(typeof window!=='undefined'?window:globalThis);

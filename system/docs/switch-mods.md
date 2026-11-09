@@ -138,24 +138,33 @@ through the swap above. RE5 lazily registers the bounded native counterpart writ
 writer: its requests file the usual repair request (`char_coverage.no_writer`) and return where the files would go
 (`switch_overlay`). Explicit file swaps also work through `switch_mods op=write` / `apply_live`.
 
-RE5's `re5_character_writer` accepts the two original library entries `re5ps3_chris_normal` and
-`re5ps3_sheva_normal` only when their extraction provenance and original source hashes match the exact PS3 collection
-reader. Those identities select the same character's **owned Switch archive**; the PS3 archive and collection GLB
-are not imported. Variants, edited models, custom donors and automatic cast assignment are refused. Name the target
-player explicitly with `slot=chris|sheva|jill|wesker|josh|excella|barry|rebecca` (or `target=<name>`);
-generic `player` does not guess who is currently selected. For example, `characters op=live_use
+RE5's `re5_character_writer` currently enables only original library **Sheva normal into Chris normal**:
+`re5ps3_sheva_normal` must have the exact PS3 collection extraction provenance and hashes, and both owned Switch
+archives must match the measured SHA256 values. The PS3 archive and collection GLB are not imported. The reverse
+pair, other native player pairs, variants, edited models, custom donors and automatic cast assignment are refused.
+Name the target explicitly with `slot=chris` (or `target=chris`); generic `player` does not guess who is selected.
+For example, `characters op=live_use
 character=re5ps3_sheva_normal slot=chris session_id=<current RE5 session> plan_only=true` reports the exact donor,
-target and checksum without writing. Omitting `plan_only` stages the complete archive in the active build and requests
-that session's restart. The receipt's `replacement_scope.route=native_archive_counterpart` makes the source selection
-explicit and leaves that pair's gameplay, other costumes, cutscenes and movies unverified. This route does not establish
-custom mesh-import support.
+target and checksum without writing. `re5_player_archive` retains Chris's internal MOD/MRL lookup names, replaces
+those two payloads with Sheva's matched model/material pair, appends the 34 exact MRL texture dependencies, and keeps
+all 325 other Chris archive entries, including motion and control resources. Whole-archive filename substitution
+was rejected after a live invisible-player failure. Omitting `plan_only` stages the composed archive in the active
+build and requests that exact session's restart. The selected native roster player must still be Chris (BSAA).
+
+The receipt's `replacement_scope.route=native_archive_counterpart` includes the composition and its narrow gameplay
+acceptance. The exact composed SHA256 `ee04244c4d3012904b4858cef1ce10352f20361963fcc52787543f4ecf9a9800`
+rendered native Sheva in the Chris BSAA slot on Public Assembly while verified score/kills advanced from 300/1 to
+2400/8. A different composed output requires new acceptance. Other costumes, cutscenes, movies, physics fidelity and
+feet contact remain unverified. This does not establish custom mesh-import support. The live trial ran the reviewed
+writer in an isolated process and used the existing session-swap API; it did not claim the pending backend restart
+or new characters API had been activated.
 
 The MercMode panel also exposes RE5 **Replace native character**, through
-`POST /api/decrypt-lab/character-swap {title, arc_path, donor_arc, build, plan_only}`. This copies a native donor's
-whole archive, including its model and textures, through `re5_char_swap.plan_changes`. The measured
-`uEm10.arc` -> `uEm11.arc` pair includes its required class-rebind IPS patch; the panel limits its generic picker to
-playable characters. `plan_only=true` writes nothing. The response explicitly leaves gameplay and full replacement
-coverage unverified for the chosen pair. It is separate from custom collection-model fitting, which still has no
+`POST /api/decrypt-lab/character-swap {title, arc_path, donor_arc, build, plan_only}`. Player requests use the same
+accepted composition and reject other player pairs, including mixed player/enemy substitutions. Non-player archive
+requests retain `re5_char_swap.plan_changes`; the measured `uEm10.arc` -> `uEm11.arc` pair includes its required
+class-rebind IPS patch. `plan_only=true` writes nothing. The response states the actual verified scope. It is
+separate from custom collection-model fitting, which still has no
 registered Switch writer, and from **Swap clothes** / **Cast textures on enemies**, which change material maps.
 
 Panel skin, clothing and enemy-cast edits now use `switch_mods.write_files`: manifest, history and backups agree with

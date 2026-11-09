@@ -67,17 +67,42 @@ def test_live_overlay_edit_waits_for_restart_and_preserves_backup(panel, monkeyp
     assert (folder / rel).read_bytes() == b"prior"
 
 
-def test_native_character_plan_writes_nothing_and_build_keeps_donor_bytes(panel):
+def test_native_character_plan_writes_nothing_and_build_uses_composition(panel, monkeypatch):
+    from gbox import re5_character_writer as W, re5_player_archive as P
+    from tests.test_re5_player_archive import archive
+    import hashlib
     cfg, romfs, routes = panel
+    for character, name in [('chris', 'uPl00ChrisNormal.arc'), ('sheva', 'uPl01ShebaNormal.arc')]:
+        (romfs / PREFIX / name).write_bytes(archive(character))
+    monkeypatch.setattr(P, 'NATIVE_SHA256', {name: hashlib.sha256(archive(name)).hexdigest() for name in ('chris', 'sheva')})
+    monkeypatch.setattr(P, 'REQUIRED_ANIMATION_IDS', frozenset({0}))
+    payload, report = P.compose(archive('chris'), archive('sheva'))
+    monkeypatch.setattr(W, 'NATIVE_ACCEPTANCE', W.NATIVE_ACCEPTANCE | {'written_sha256': report['written_sha256'], 'gameplay_verified': False})
     endpoint = routes["/api/decrypt-lab/character-swap"]
-    inp = L.CharacterSwapIn(**skin_input().model_dump(), plan_only=True)
+    inp = L.CharacterSwapIn(**(skin_input().model_dump() | {'donor_arc': PREFIX + 'uPl01ShebaNormal.arc'}), plan_only=True)
     plan = endpoint(inp)
     assert plan["plan_only"] and not cfg.cache.exists()
     result = endpoint(inp.model_copy(update={"plan_only": False}))
     assert result["ok"] and not result["replacement_scope"]["complete"]
     assert not result["replacement_scope"]["gameplay_verified"]
     target = S.build_dir(cfg, GID, "panel-test") / "romfs" / inp.arc_path
-    assert target.read_bytes() == (romfs / inp.donor_arc).read_bytes()
+    assert target.read_bytes() == payload and target.read_bytes() != (romfs / inp.donor_arc).read_bytes()
+    assert result['replacement_scope']['composition']['target_motion_and_control_resources_preserved']
+
+
+@pytest.mark.parametrize('donor,target', [
+    ('uPl02JillCos1.arc', 'uPl00ChrisNormal.arc'), ('uPl00ChrisNormal.arc', 'uPl01ShebaNormal.arc'),
+    ('uEm10.arc', 'uPl00ChrisNormal.arc'), ('uPl00ChrisNormal.arc', 'uEm10.arc'),
+    ('uPl99Unknown.arc', 'uPl00ChrisNormal.arc'),
+])
+def test_unaccepted_player_pairs_cannot_fall_back_to_whole_archive_copy(panel, monkeypatch, donor, target):
+    from gbox import re5_char_swap
+    cfg, _, routes = panel
+    monkeypatch.setattr(re5_char_swap, 'plan_changes', lambda *a, **k: pytest.fail('player reached whole ARC route'))
+    with pytest.raises(HTTPException, match='Only original Sheva'):
+        routes['/api/decrypt-lab/character-swap'](L.CharacterSwapIn(
+            title='re5_switch', arc_path=PREFIX + target, donor_arc=PREFIX + donor, plan_only=True))
+    assert not cfg.cache.exists()
 
 
 def test_native_archive_paths_cannot_escape_the_romfs(panel):

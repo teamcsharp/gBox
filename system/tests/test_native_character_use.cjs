@@ -2,10 +2,11 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const N=require('../clients/web/viz/native-character-use.js');
 const M=require('../clients/web/viz/mercmode.js');
-const pick={gameId:N.GAME,character:'re5ps3_chris_normal',slot:'jill',sessionId:'worker-live'};
-const scope={route:'native_archive_counterpart',requested_character:{name:'Chris'},
-  donor_archive:'native/uPl00ChrisNormal.arc',target_archive:'native/uPl02JillNormal.arc',
-  collection_model_used:false,gameplay_verified:false};
+const pick={gameId:N.GAME,character:'re5ps3_sheva_normal',slot:'chris',sessionId:'worker-live'};
+const scope={route:'native_archive_counterpart',requested_character:{name:'Sheva'},
+  donor_archive:'native/uPl01ShebaNormal.arc',target_archive:'native/uPl00ChrisNormal.arc',
+  collection_model_used:false,gameplay_verified:true,
+  gameplay_acceptance:{coverage:'Visible Sheva and advancing combat in Chris (BSAA); other costumes remain unverified.'}};
 function rig({state='restarting',swapState='succeeded',session='worker-live',result={}}={}){
   const calls=[],progress=[];let polls=0;
   const api=async(path,body)=>{
@@ -22,15 +23,19 @@ function rig({state='restarting',swapState='succeeded',session='worker-live',res
   return {api,calls,hooks,progress};
 }
 
-test('native counterpart target is explicit and the two supported donors are transparent',()=>{
+test('native counterpart offers only the verified Sheva to explicit Chris BSAA pair',()=>{
   assert.throws(()=>N.input({...pick,slot:''}),/named target/);
   assert.throws(()=>N.input({...pick,slot:'player'}),/named target/);
   assert.throws(()=>N.input({...pick,character:'sonic'}),/original RE5/);
+  assert.throws(()=>N.input({...pick,character:'re5ps3_chris_normal'}),/Choose original Sheva and target Chris/);
+  assert.throws(()=>N.input({...pick,slot:'jill'}),/other native player pairs/);
   const html=N.fields();
   assert.match(html,/<option value="">Choose the native player slot/);
   assert.doesNotMatch(html,/selected/);
   assert.match(html,/PS3 collection model is not imported/);
-  assert.deepEqual(N.input(pick),{op:'live_use',game_id:N.GAME,character:pick.character,slot:'jill',session_id:pick.sessionId,launch:false});
+  assert.doesNotMatch(html,/value="(?:sheva|jill|wesker|re5ps3_chris_normal)"/);
+  assert.match(html,/value="chris">Chris \(BSAA\)/);
+  assert.deepEqual(N.input(pick),{op:'live_use',game_id:N.GAME,character:pick.character,slot:'chris',session_id:pick.sessionId,launch:false});
 });
 
 test('live use waits for assigned build and child restart before reporting success',async()=>{
@@ -39,7 +44,9 @@ test('live use waits for assigned build and child restart before reporting succe
   assert.equal(r.calls.filter(([p])=>p==='/api/jobs/child').length,2);
   assert.equal(out.session_id,'worker-new');
   assert.match(out.message,/collection GLB is not imported/);
-  assert.match(out.message,/Visual verification is pending/);
+  assert.match(out.message,/Previously verified in gameplay: Visible Sheva and advancing combat/);
+  assert.match(out.message,/other costumes remain unverified/);
+  assert.doesNotMatch(out.message,/verification is pending/);
   assert.match(out.message,/Restart completed in session worker-new/);
   assert.ok(r.progress.includes('Build written. Waiting for the title restart...'));
 });
@@ -73,8 +80,8 @@ test('unavailable writer and pending build do not imply a completed restart',asy
 test('MercMode library action uses its explicit target and exact current SID',async()=>{
   const events={},calls=[],messages=[],errors=[];
   const button={textContent:'Apply library counterpart and restart',addEventListener:(name,fn)=>events[name]=fn};
-  const fields={'[data-native-use]':button,'[data-native-slot]':{value:'jill'},
-    '[data-native-donor]':{value:'re5ps3_chris_normal'}};
+  const fields={'[data-native-use]':button,'[data-native-slot]':{value:'chris'},
+    '[data-native-donor]':{value:'re5ps3_sheva_normal'}};
   const root={querySelector:s=>fields[s]||null,querySelectorAll:()=>[]};
   const api=async(path,body)=>{
     calls.push([path,body]);
@@ -94,4 +101,27 @@ test('MercMode library action uses its explicit target and exact current SID',as
   await events.click({stopPropagation(){}});
   assert.match(errors[0],/named target/);
   assert.equal(calls.filter(([p])=>p==='/api/jobs').length,1);
+});
+
+test('receipt verification text follows the actual flag and coverage',()=>{
+  const pending=N.scopeText({...scope,gameplay_verified:false});
+  assert.match(pending,/Gameplay verification is pending/);
+  assert.doesNotMatch(pending,/Previously verified/);
+  assert.throws(()=>N.scopeText({route:'other'}),/receipt/);
+});
+
+test('original Chris library card explains the blocked reverse pair without submitting a job',async()=>{
+  const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+  const source=fs.readFileSync(path.join(__dirname,'../clients/web/index.html'),'utf8');
+  const script=source.slice(source.indexOf('async function charsInit()'),source.indexOf('\nasync function charExtractPanel()'));
+  const calls=[],status={textContent:''},box={dataset:{i:'0',slug:'re5ps3_chris_normal'},querySelector:()=>status};
+  const button={closest:()=>box},el={dataset:{gid:N.GAME,sid:'worker-live'},querySelectorAll:()=>[]};
+  const context=vm.createContext({GBoxNativeCharacterUse:N,$:()=>el,esc:String,tq:()=>'',charOvlWatch(){},
+    localStorage:{getItem:()=>null,setItem(){}},api:async path=>{calls.push(path);return [{slug:'re5ps3_chris_normal',name:'Chris',preview_url:'/preview'}];}});
+  vm.runInContext(script,context);await context.charsInit();
+  assert.match(el.innerHTML,/Replacement unavailable/);
+  assert.match(el.innerHTML,/Choose original Sheva and target Chris/);
+  await el.onclick({target:{closest:selector=>selector==='button[data-use]'?button:null}});
+  assert.match(status.textContent,/Choose original Sheva and target Chris/);
+  assert.equal(calls.length,1);
 });

@@ -2286,8 +2286,8 @@ def install(app, store, config, auth, tactical_store=None):
 
     @app.post("/api/decrypt-lab/character-swap", dependencies=[Depends(auth)])
     def decrypt_lab_character_swap(body: CharacterSwapIn):
-        """RE5 native archives: a complete donor archive, separate from the skin-map operation."""
-        from . import re5_char_swap
+        """Proven player composition, or the existing non-player native archive workflow."""
+        from . import re5_char_swap, re5_character_writer, skin_swap
         tid = _title_id(body.title)
         if tid != "010018100CD46000":
             raise HTTPException(409, "native character archive replacement is currently measured on RE5 Switch only")
@@ -2300,16 +2300,28 @@ def install(app, store, config, auth, tactical_store=None):
             return value[len(prefix):] if value.startswith(prefix) else value
         try:
             pair = (archive_name(body.donor_arc), archive_name(body.arc_path))
-            main = re5_char_swap.rebind_main(config) if pair == ("uEm10.arc", "uEm11.arc") else None
-            report, changes = re5_char_swap.plan_changes(root, [pair], main=main)
+            players = {Path(path).name: name for name, path in skin_swap.CHARACTER_ARCS[tid].items()}
+            # A player filename must never reach the generic full-ARC copy route:
+            # the engine resolves its original internal MOD/MRL names as well.
+            player_pair = any(Path(name).name.casefold().startswith("upl") for name in pair)
+            if player_pair:
+                donor, target = (players.get(name) for name in pair)
+                if not donor or not target:
+                    raise ValueError(re5_character_writer.UNVERIFIED_REASON)
+                changes, scope = re5_character_writer.plan_player_pair(root, donor, target)
+                pairs = [{"donor": pair[0], "target": pair[1]}]
+            else:
+                main = re5_char_swap.rebind_main(config) if pair == ("uEm10.arc", "uEm11.arc") else None
+                report, changes = re5_char_swap.plan_changes(root, [pair], main=main)
+                if not changes:
+                    raise ValueError(f"nothing to replace: {report.skipped}")
+                pairs = report.pairs
+                scope = {"complete": False, "gameplay_verified": False,
+                         "notes": ["native archive replacement; this pair needs visual verification",
+                                   "costumes, in-engine cutscenes and prerecorded movies are not verified"]}
         except (re5_char_swap.SwapError, ValueError, OSError) as exc:
             raise HTTPException(409, str(exc)[:300]) from exc
-        if not changes:
-            raise HTTPException(409, f"nothing to replace: {report.skipped}")
-        scope = {"complete": False, "gameplay_verified": False,
-                 "notes": ["native archive replacement; this pair needs visual verification",
-                           "costumes, in-engine cutscenes and prerecorded movies are not verified"]}
-        result = {"v": FORMAT, "ok": True, "build": body.build, "pairs": report.pairs,
+        result = {"v": FORMAT, "ok": True, "build": body.build, "pairs": pairs,
                   "files": list(changes), "replacement_scope": scope, "plan_only": body.plan_only}
         if body.plan_only:
             return result

@@ -539,3 +539,14 @@ only the main MOD/MRL payloads, and imports Sheva's exact texture dependencies. 
 visibly fighting in the Chris slot, advancing from 300 score / 1 kill to 2,400 / 8. Public route integration is being
 completed separately; the service has still not restarted. The same owned session is being reused for the Sonic v14
 trial to avoid an unnecessary stock relaunch. Restore MercMode enabled before the final trial stop.
+
+Both native public routes now use the same resource composer and require the exact accepted source and output
+hashes. Only original Sheva normal into Chris (BSAA) is enabled; other player pairs are rejected before writing.
+The UI offers that pair and reports the actual gameplay coverage. Validation: 60 focused Python tests and 39
+JavaScript tests passed. The service activation remains pending; these route changes have not been accepted through
+the running backend. The isolated writer and existing swap route established the artifact's visible gameplay result.
+
+The v14 comparison window is open with synchronized playback and an isolated hand view at shared scale. The first
+v14 live boot drew the title, then stalled during menu preparation with an unchanging faded frame and a Vic video
+decoder error. Explicit resume and manual input did not advance it; one same-artifact restart is being checked.
+Sonic's live weapon grip, arm direction during combat and feet contact remain unaccepted.
