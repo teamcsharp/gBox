@@ -14,11 +14,11 @@ Honesty rules as in the task guide: a boot is not acceptance, an offline render 
 
 | | |
 |---|---|
-| Writer | `system/gbox/re5_stage_greybox.py` - unchanged entry points plus `scene_folders`, `Surface.mirror_share`, `placed_objects`, `measure_objects`, `build_prop_textures`, `prop_label`, `build_all`, `preview_set`; CLI `survey`, `build`, `props`, `all`, `preview`, `prop`, `verify` |
-| Tests | `system/tests/test_re5_stage_greybox.py` (23, synthetic fixtures), `test_mercmode_blueprint_look.py` (9), `test_switch_mods_blueprint.py` (4), `tests/test_blueprint_look.cjs` (4), the two panel suites |
+| Writer | `system/gbox/re5_stage_greybox.py` - unchanged entry points plus `scene_folders`, `Surface.mirror_share` / `upside_share`, `glyph_flags`, `placed_objects`, `measure_objects`, `build_prop_textures`, `prop_label`, `build_all`, `preview_set`; CLI `survey`, `build`, `props`, `all`, `preview`, `prop`, `verify` |
+| Tests | `system/tests/test_re5_stage_greybox.py` (21, synthetic fixtures), `test_mercmode_blueprint_look.py` (10), `test_switch_mods_blueprint.py` (4), `tests/test_blueprint_look.cjs` (4), 2 new in `test_bot_logic_sidebar.cjs`, 2 new in `test_re5_modifiers.cjs` |
 | Toggle | `gbox/mercmode.py` `DEFAULT['blueprint_look']`, `BLUEPRINT_FEATURE`, `effective_mod`, `same_build`; `gbox/screensaver.py` `_start` / `round_boundary` / `MercModeSettings`; `gbox/mercmode_tool.py`; `gbox/worker.py` feature `mercmode_blueprint_look`; `gbox/switch_mods.py` `op=blueprint` (`blueprint_build`) |
 | Panel | `clients/web/viz/blueprint-look.js` (shared), the switch in `re5-modifiers.js` ("MercMode look") and `bot-logic-sidebar.js` (under "Live mods"); loaded by `web/index.html`, `desktop/index.html`, `desktop/mini.html`, `web/mercs-live.html` |
-| Inputs (not in Git) | `C:\_tools\gBox\.scratch-merc-recovery\stage\inputs\s400.arc .. s407.arc` and `inputs\uom\uOm*.arc` (71), copied read-only from `spark:~/gBox_alt/switch/romfs/010018100CD46000/nativeNXx64/ImgNX/Archive/`; every copy's SHA-256 matched the host's (`sha256sum` both sides) |
+| Inputs (not in Git) | `C:\_tools\gBox\.scratch-merc-recovery\stage\inputs\s400.arc .. s407.arc` (536,924,607 bytes) and `inputs\uom\uOm*.arc` (71: the first note's 32 plus 39 more, 51,882,701 bytes), copied read-only from `spark:~/gBox_alt/switch/romfs/010018100CD46000/nativeNXx64/ImgNX/Archive/` one file at a time; every copy's SHA-256 matched the host's (`sha256sum` both sides, 79 files) |
 | Output (not in Git) | `C:\_tools\gBox\.scratch-merc-recovery\assets\stage-greybox-all-v1\` - `romfs\nativeNXx64\ImgNX\Archive\*.arc`, `receipt.json`, `sNNN-textures.png`, `sNNN-view.png`, `objects-textures.png` |
 
 ## 1. What the first boot showed, and the handedness fix
@@ -54,9 +54,28 @@ shows a label backwards on a texture of share > 0.75 or < 0.25, the constant is 
 both readings, `y-s114-itibaCa_BM` 0.204 and `y-s114-roujokabeAdd_BM` 0.0 stay upright (if one of those two was the
 backwards one, the frame would have been of its back face).
 
-The CPU renderer (`render_stage`) shares the convention (row 0 of the decoded image at v = 0, as `replace_image`
-writes it and as the live Sonic and Mario atlases confirmed), so a head-on CPU view of a flipped wall is the same
-check the game would give, minus the one assumption the live atlases already proved.
+The CPU renderer (`_rasterise`) shares the convention (row 0 of the decoded image at v = 0, as `replace_image`
+writes it and as the live Sonic and Mario atlases confirmed), so a head-on CPU view of a wall is the same check the
+game would give, minus that one assumption. Run on s400 (scratch `headon.py`: the largest mesh drawing one texture,
+viewed from outside along `−N`, screen right × down = into the screen, screen down = world down):
+
+| texture | mirror_share | v1 (`f26d2836…`, the archive that played live) | this set |
+|---|---:|---|---|
+| `y-s114-suramubackA_BM` | 0.964 | "m 80 x m 02" - **backwards**: the live flaw, reproduced offline | "20 m x 08 m" (glyphs flipped) |
+| `y-s114-kabe71_BM` | 0.153 | "16 m x 05 m" | "16 m x 05 m" (glyphs plain) |
+
+(`s400-headon-v1-*.png` and `s400-headon-*.png` in the overlay folder, §3. A first version of the script built
+right = up × forward, which turns the whole view half a turn; it made both read upside down and was corrected before
+these pictures were taken.)
+
+A second rule from the same Jacobian covers walls whose v grows upwards (the image's top row at their foot): on
+side-facing triangles the image's up is `−B`, which points down in the world where `B.y > 0`. `Surface.upside_share`
+is that area share, and `glyph_flags` turns the glyphs half a turn (`turn`) when it is over 0.75 on a texture with at
+least a quarter of its area on walls. Near one half (posts, double-sided pieces) any choice is wrong for half the
+surface, so nothing is turned; floors are never turned (no up for every viewer). Mirror + turn is a vertical flip;
+the four cases (u right / left × v down / up) all come out upright on a planar wall (unit test). On s400 the big
+walls measure `upside_share` 0.0-0.01 (v grows down, as artists map walls), and four small pieces are turned
+(`y_siroki_BM` 0.786, `y-s114-em1a00_BM` 0.784, `y_keikouA_BM` 0.97, `y_syokukaidanA_BM` 1.0).
 
 ## 2. The eight stages: survey
 
@@ -64,16 +83,23 @@ Repeated per archive as the first note required. `survey_stages.py` (scratch) ra
 formats, an fvf survey (float3 position at +0, s8 normal at +12 of unit length, half2 UV at +20, checked on every
 vertex), `measure`, and the layouts. Every archive rebuilds byte-identically (`mt_arc.build(parse(x)) == x`).
 
-| stage | bytes | entries | scenery folders | albedos (BC7) | floor / wall / other / sky | meshes measured | skipped (format) | unbound materials | notes |
-|---|---:|---:|---|---:|---|---:|---:|---:|---|
-| s400 Public Assembly | 75,672,496 | 590 | `scr00` (hit / effect, MRLs unparsed), `scr01` | 159 | 25 / 101 / 31 / 2 | 1,312 | 3 (`37607D20`) | 0 | the first note's numbers |
-| s401 The Mines | 51,892,738 | 356 | `scr00` (35 bindings), `scr01` | 47 (+35 bindings into scr00 albedos) | 4 / 27 / 16 / 0 | 303 | 2 → 0 (`2C207F5E` measured) | 37 → 0 | one unbound `s103_denkyu01_BM` (light bulb: kept) |
-| s402 Village | 42,742,279 | 458 | **`scr00` only** (44 pieces, 152 TEX) | 0 under scr01 → found under scr00 | see receipt | 838 bindings | 0 | 0 | the scope cannot be `scr01` |
-| s403 Ancient Ruins | 76,272,279 | 450 | `scr00`, `scr01` | 80 | 24 / 47 / 9 / 0 | 587 | 0 | 8 (one `_NUKI` texture `mtf_tex` does not parse: left native, `albedo_unparsed`) | |
-| s404 Experimental Facility | 46,531,283 | 322 | `scr00`, `scr01` | 40 | 11 / 11 / 17 / 1 | 535 | 0 | 0 | `g-s404-dummysmoke_BM`, `g-s404-shadowcast_BM` unbound (sprite / shadow: kept); 2 shadow MRLs unparsed |
-| s405 Missile Area | 99,443,101 | 663 | `scr00`-`scr07` and **`stage\s314\scr\scr01`** (a borrowed chapter piece) | 33 named `_BM` + ~300 bindings into `_BM-NN` names | see receipt | 179 → all | 2 → 0 (`2D30A6AF`, `33C09993` measured; `36D0D7A7` stride 20 skipped) | 299 → 0 | the albedo names carry `-NN` suffixes; 3 shadow MRLs unparsed |
-| s406 Ship Deck | 75,165,100 | 646 | `scr00`, `scr01` (108 pieces) | 79 | 10 / 48 / 21 / 0 | 597 | 0 | 0 | the biggest geometry: 396,336 triangles |
-| s407 Prison | 69,205,331 | 506 | `scr00`, `scr01` | 81 | 14 / 41 / 23 / 3 | 1,363 | 33 → 1 (`2C207F5E` ×32 measured) | 0 | `y_407_daidokoroA/B_BM`, `y_s407_ugari_BM` unbound (kitchen pieces whose MRL `tyuubo` is unparsed): drawn as the checker with `?? m`; 3 MRLs unparsed |
+The first column block is the survey with the s400 method as it was (scope `scr01`, `_BM` names, six formats); the
+second is the final writer on the same archive (all scenery folders, `_BM-NN` names, nine formats). Numbers from the
+receipts, not estimated.
+
+| stage | bytes | entries | survey (s400 method): albedos / meshes / skipped / unbound | scenery folders (final) | albedos written | floor / wall / other / sky | models / meshes / triangles | skipped (format) | unbound meshes | notes |
+|---|---:|---:|---|---|---:|---|---|---|---:|---|
+| s400 Public Assembly | 75,672,496 | 590 | 159 / 1,312 / 3 / 0 | `scr00`, `scr01` | 159 | 25 / 101 / 31 / 2 | 44 / 1,312 / 213,712 | 3 (`37607D20`, in `tuikaita`, `yataikabe`) | 0 | the first note's numbers |
+| s401 The Mines | 51,892,738 | 356 | 47 / 303 / 2 / 37 | `scr00`, `scr01` | 48 | 5 / 28 / 15 / 0 | 22 / 343 / 98,855 | 0 | 0 | 35 bindings into `scr00` albedos, 3 into `_BM-62`; `s103_denkyu01_BM` (light bulb, unbound) kept native |
+| s402 Village | 42,742,279 | 458 | **0** / 0 / 0 / 0 | **`scr00` only** | 80 | 18 / 38 / 23 / 1 | 42 / 838 / 182,369 | 0 | 0 | the s400 scope finds nothing here |
+| s403 Ancient Ruins | 76,272,279 | 450 | 80 / 587 / 0 / 8 | `scr00`, `scr01` | 80 | 24 / 48 / 8 / 0 | 13 / 588 / 282,288 | 0 | 8 | the 8 meshes bind three `_NUKI` textures (`s-nuki00`, `s-s302enkei`, `s-wara`) in a format `mtf_tex` does not parse: left native, `albedo_unparsed` |
+| s404 Experimental Facility | 46,531,283 | 322 | 40 / 535 / 0 / 0 | `scr00`, `scr01` | 38 | 11 / 11 / 15 / 1 | 5 / 535 / 165,681 | 0 | 0 | `g-s404-dummysmoke_BM`, `g-s404-shadowcast_BM` (unbound, sprite / shadow) kept native |
+| s405 Missile Area | 99,443,101 | 663 | 33 / 179 / 2 / 299 | `scr00`-`scr07` and **`stage\s314\scr\scr01`** | 158 | 14 / 56 / 88 / 0 | 53 / 772 / 346,951 | 0 (`2D30A6AF`, `33C09993` measured; the `36D0D7A7` mesh sits in `s307_01_Shadow`, whose MRL does not parse) | 0 | albedo names `_BM-00` .. `_BM-97`; 58 of the 88 "other" are per-area copies (`box_01`, `machine`, `silver_pipe`, `roofparts`, `o-s307_BM-NN` in each `scrNN`) that no parsed material binds - drawn as the checker, harmless if unused |
+| s406 Ship Deck | 75,165,100 | 646 | 79 / 597 / 0 / 0 | `scr00`, `scr01` | 79 | 10 / 48 / 21 / 0 | 108 / 597 / 396,336 | 0 | 0 | the biggest geometry |
+| s407 Prison | 69,205,331 | 506 | 81 / 1,363 / 33 / 0 | `scr00`, `scr01` | 81 | 14 / 41 / 23 / 3 | 40 / 1,396 / 254,920 | 0 (`2C207F5E` ×32, `2D30A6AF` ×1 measured) | 0 | `y_407_daidokoroA/B_BM`, `y_s407_ugari_BM` unbound (kitchen pieces; MRL `tyuubo` does not parse): the checker with `?? m` |
+
+Every stage's own `s4NNh_scr` / `s4NNh_eff` (hit and effect geometry) and the shadow pieces have MRLs `mtf_mrl` refuses
+(texture commands outside their one-entry table, as on s400): no drawn albedo, nothing to write.
 
 What changed in the writer because of the survey:
 
@@ -84,8 +110,9 @@ What changed in the writer because of the survey:
   folders and every TEX a scenery material binds in the albedo slot (`0xCD06F`), wherever it lives under `stage\`.
 - **Vertex formats.** Three more follow the measured layout and were added to `STAGE_LAYOUT` with the evidence:
   `0x2C207F5E` (28 B; +24 half2 second UV), `0x2D30A6AF` (28 B; +24 half2), `0x33C09993` (32 B; +24 half2, +28
-  RGBA8 with alpha 255) - normal of unit length on 100 % of their vertices, UVs finite and under 64. `0x37607D20`
-  (s400, 3 meshes) and `0x36D0D7A7` (s405, one 73-vertex mesh, stride 20) fail the check and stay skipped.
+  RGBA8 with alpha 255) - normal of unit length on 100 % of their vertices (99.3 % on s407's `0x29F0B449`, the
+  measured format), UVs finite and under 64. `0x37607D20` (s400, 3 meshes: normal unit length on 24.6 %, UVs not sane)
+  and `0x36D0D7A7` (s405, one 73-vertex mesh, stride 20, normal 0 %) fail the check and stay skipped.
 - **Unbound textures.** An albedo no measured material binds is drawn only when its name says sky / roof / floor /
   wall, or as the checker with the `?? m` label otherwise; a name that says sprite, light or shadow
   (`EFFECT_WORDS`) keeps it native and lists it under `kept_native_textures`.
@@ -116,17 +143,32 @@ placed object archive through `build_prop_textures` (albedos only: the orange pr
 measured tile span, the object's reading as the label - `prop_label`: `kibako` → CRATE, `taru` → BARREL, `reddrum`
 → DRUM, `takarabako` → CHEST, `sunadokei` → HOURGLASS, unknown romaji upper-cased), geometry untouched except the
 crate, which goes through `build_prop_box` first (the in-place box the first note proved offline and that did not
-stop the live load) and then the texture pass. The archives whose models bind no BC7 albedo (`uOmf200`, `uOmf201`:
-ladder behaviour, no model) are listed as skipped. Every unchanged entry is byte-identical (checked per archive);
-`verify` is re-run on every stage; a second, independent run into another folder gave the same SHA-256 for every
-file (the rebuild-identical check).
+stop the live load) and then the texture pass. Of the 73 archives placed, 71 are on the host and 68 are written;
+skipped: `uOmf200` / `uOmf201` (ladder behaviour, no model), `uOm070d` (its models bind no BC7 albedo), `uOm08b8` /
+`uOm0912` (only variant archives on the host). Every unchanged entry is byte-identical (checked per archive by the
+writers); `verify` runs on every stage; a second, independent run into another folder in another process gave the
+same SHA-256 for every file (the rebuild-identical check).
 
-HASHES-TABLE
+| file | SHA-256 (written) | bytes | source SHA-256 | changed entries | textures | glyphs upright / mirrored / both (turned) |
+|---|---|---:|---|---:|---:|---|
+| `s400.arc` | `8c7ec9d96bd4cda09ff3798b55f3fce1d06ab3cbc2e9cf659d895449f69521b1` | 31,076,592 | `246e3dd40beffcac…` | 159 of 590 | 159 (other 31, wall 101, floor 25, sky 2) | 34 / 10 / 115 (4) |
+| `s401.arc` | `5228b0a02f5ab22c10b1500b76adf426499fe1791d92f86fb3ceb6fd60f8297d` | 33,036,817 | `213fcc38b25072be…` | 48 of 356 | 48 (floor 5, wall 28, other 15) | 14 / 4 / 30 (3) |
+| `s402.arc` | `9235dbef6c98d163b00cccb5aede698320827d4e69ffba834494a1af4e613a7a` | 25,327,672 | `4b2d5c557a363d62…` | 80 of 458 | 80 (wall 38, other 23, floor 18, sky 1) | 40 / 7 / 33 (5) |
+| `s403.arc` | `40896df833c570a080fff7f4ef9d0c61f7f7858c0d7d4813219a4d79cd3173b0` | 31,885,079 | `069a12c2ff79dddd…` | 80 of 450 | 80 (floor 24, wall 48, other 8) | 19 / 4 / 57 (1) |
+| `s404.arc` | `c2c5d67597e252b5f48fd315ce0eb03dc8c8d6ce7a02d5d43253c500f473203b` | 21,565,850 | `cb2c8d8184c89bb0…` | 38 of 322 | 38 (wall 11, other 15, floor 11, sky 1) | 12 / 5 / 21 (0) |
+| `s405.arc` | `5571093c534e0dc43a3059ab55179aff17f102beae626295ca2fcea7355b3cec` | 34,759,634 | `2466a7a73a792c7e…` | 158 of 663 | 158 (wall 56, floor 14, other 88) | 88 / 4 / 66 (6) |
+| `s406.arc` | `f6c966fa7b3ff548d702b239fd01ff4f6bb1b4f20738b6930c6d35c5d0a6d7e6` | 34,694,313 | `b821641cc4246b88…` | 79 of 646 | 79 (other 21, wall 48, floor 10) | 24 / 1 / 54 (0) |
+| `s407.arc` | `e97c289f0355b6f5aea137842b9fe0755ec9ede7c86ac2abba5530159210cecc` | 29,438,591 | `59b6535037a238de…` | 81 of 506 | 81 (other 23, wall 41, floor 14, sky 3) | 34 / 5 / 42 (3) |
+| 68 object archives (`uOm*.arc`) | see receipt.json `files` | 92,261,430 | | 105 | 104 albedos | |
+
+Object archives skipped: `uOm070d.arc` (no object model of the archive binds a BC7 albedo); `uOm08b8.arc` (archive not present locally); `uOm0912.arc` (archive not present locally); `uOmf200.arc` (no object model of the archive binds a BC7 albedo); `uOmf201.arc` (no object model of the archive binds a BC7 albedo).
+
+Rebuild check: a second independent run (C:\_tools\gBox\.scratch-merc-recovery\stage\rebuild-check) gave the same SHA-256 for every file.
 
 Pictures: `sNNN-textures.png` (every written albedo of the stage, mip 0), `sNNN-view.png` (the stage from above,
 orthographic, the written albedos on the native LOD-0 geometry, flat shade, 120,000 triangles at most - not the
-game's lighting), `objects-textures.png` (every written object albedo). The 2048×1024 sky tints and the two-way
-labels are visible on the sheets.
+game's lighting), `objects-textures.png` (every written object albedo), and `s400-headon-<texture>.png` (four s400 walls seen
+head-on from outside, the check of §1). The 2048×1024 sky tints and the two-way labels are visible on the sheets.
 
 What a live frame must show: every stage in blue / grey grid tiles with metre labels under native light; labels
 reading forwards on walls that read backwards in the s400-v1 frame (two-way labels on double-sided walls); every
