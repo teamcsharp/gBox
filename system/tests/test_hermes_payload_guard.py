@@ -104,9 +104,13 @@ def test_run_output_outside_the_work_folders_is_refused_on_push():
     assert all('outside' in o for o in out)
 
 
-def test_project_metadata_admits_only_the_exact_two_files():
+def test_project_metadata_admits_only_exact_reviewed_files():
     payloads = {'system/gbox.toml': b'[emulators.ps4]\nadapter = "shadps4"\n',
-                'system/LICENSES-THIRD-PARTY.md': b'# Third-party licenses\n'}
+                'system/LICENSES-THIRD-PARTY.md': b'# Third-party licenses\n',
+                'system/pyproject.toml': b'[project]\nname = "gbox"\n',
+                'system/tools/probes/mtf_tex_roundtrip.py': b'print("roundtrip")\n',
+                'system/tools/probes/re5_em10_high_sonic.py': b'print("probe")\n',
+                'system/tools/probes/re5_ips_class_rebind.py': b'print("probe")\n'}
     assert G.refusals(payloads, files(**payloads), G.HOMES) == []
     lookalikes = {
         'system/gbox.toml.bak': b'text',
@@ -120,9 +124,14 @@ def test_project_metadata_admits_only_the_exact_two_files():
     refused = G.refusals(lookalikes, files(**lookalikes), G.HOMES)
     assert {line.split(':', 1)[0] for line in refused} == set(lookalikes)
     assert all('outside' in line for line in refused)
+    for path in payloads:
+        for lookalike in (path + '.bak', path + '/output.py', path + '.exe'):
+            assert 'outside' in G.refusals([lookalike], files(**{lookalike: b'text'}), G.HOMES)[0]
+    assert 'outside' in G.refusals(['system/tools/probes/result.json'],
+        files(**{'system/tools/probes/result.json': b'{}'}), G.HOMES)[0]
 
 
-@pytest.mark.parametrize('path', ['system/gbox.toml', 'system/LICENSES-THIRD-PARTY.md'])
+@pytest.mark.parametrize('path', sorted(G.PROJECT_FILES))
 @pytest.mark.parametrize('data,reason', [(b'MZ' + bytes(32), 'a Windows executable'),
                                         (b'\x7fELF' + bytes(32), 'an ELF executable'),
                                         (b'PK\x03\x04' + bytes(32), 'a zip archive'),

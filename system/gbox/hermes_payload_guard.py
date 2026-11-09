@@ -46,7 +46,14 @@ HOMES = ('system/gbox/', 'system/tests/', 'system/clients/', 'system/docs/', 'sy
          'system/scripts/', 'system/adapters/')
 # Tracked project metadata outside those directories. Exact membership only:
 # these are files, never filename prefixes or additional writable directories.
-PROJECT_FILES = frozenset({'system/gbox.toml', 'system/LICENSES-THIRD-PARTY.md'})
+PROJECT_FILES = frozenset({
+    'system/gbox.toml', 'system/LICENSES-THIRD-PARTY.md', 'system/pyproject.toml',
+    # Reviewed source tools live outside the normal package directories. Admit
+    # their exact names; generated probe output and every payload check stay gated.
+    'system/tools/probes/mtf_tex_roundtrip.py',
+    'system/tools/probes/re5_em10_high_sonic.py',
+    'system/tools/probes/re5_ips_class_rebind.py',
+})
 
 
 def refusals(files: Iterable[str], inspect: Inspect | None = None, homes: tuple[str, ...] | None = None) -> list[str]:
