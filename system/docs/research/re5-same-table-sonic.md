@@ -228,6 +228,17 @@ The real IPS patch — `add w4,w20,#0x400` → `#0x300`, i.e. `uEm11`’s class 
 This is the first **code-level rebind** of the visible enemy class. The next build puts a **uEm10 archive with the high
 `em1000` Sonic patch** under the `uEm11` class, so the enemy the camera sees loads the Sonic geometry.
 
+The reusable pieces are now in the repo:
+
+* `gbox/re5_ips.py` — builds the IPS32 patch (`OFFSET 0x4f824`, `add w4,w20,#0x400` → `#0x300`) and can apply the same
+  4-byte change to an NSO/ELF. Tests: `tests/test_re5_ips_class_rebind.py`.
+* `tools/probes/re5_em10_high_sonic.py` — writes Sonic geometry into every LOD0 part of the high `em1000` model with
+  zlib level 6, producing `/tmp/em10_high_sonic.arc` for the `uEm11` slot.
+
+The next live run is: put `/tmp/em10_high_sonic.arc` at `romfs/.../uEm11.arc`, add `exefs/main.ips` from
+`gbox.re5_ips.make_ips()`, launch and prepare Public Assembly. This is the first configuration where the camera-visible
+enemy should load a Sonic-patched model.
+
 ![Donor-pair round with the one-part Sonic patch; enemies remain the donor variant](evidence/re5-donor-sonic-patch-enemies.jpg)
 
 The MRL tail is not opaque noise. Its first words are a header
