@@ -103,11 +103,13 @@ def test_zl_is_tapped_the_new_bomb_confirms_the_placing_motion_plays_out_he_runs
     # the gap: the crowd at 170-180 deg and the bomb ahead (0 deg): he turns out to a side, not over the bomb
     assert "rleft" in act["hold"] or "rright" in act["hold"]
     assert m.tick(p(pos=(-500.0, 0.0, 0.0)), held(ground=[bomb]), live, t0 + 2.0)["hold"][:2] == MN.RUN   # 5 m: on
-    assert m.tick(p(pos=(-850.0, 0.0, 0.0)), held(ground=[bomb]), live, t0 + 2.6) == {"hold": ()}   # 8 m off
+    assert m.tick(p(pos=(-800.0, 0.0, 0.0)), held(ground=[bomb]), live, t0 + 2.3)["hold"][:2] == MN.RUN   # 8 m: on
+    off = -(MN.RETREAT_CM + 50.0)                                                # the operator's 15 m standoff
+    assert m.tick(p(pos=(off, 0.0, 0.0)), held(ground=[bomb]), live, t0 + 2.6) == {"hold": ()}
     assert m.stats["mine_retreats_completed"] == 1 and m.state == "rearm"
     assert m.tick(p(), held(ground=[bomb]), live, t0 + 3.0) == {"tap": "dleft"}  # the M92F back
     assert m.tick(p(), snap(ground=[bomb]), live, t0 + 3.2) is None and m.state == "idle"
-    assert m.tick(p(pos=(-900.0, 0.0, 0.0)), snap(ground=[bomb]), live, t0 + 4.0) is None   # the next waits EVERY_S
+    assert m.tick(p(pos=(off - 50.0, 0.0, 0.0)), snap(ground=[bomb]), live, t0 + 4.0) is None   # the next waits EVERY_S
 
 
 def tick_until(m, live, start, end, *, held_inv=None, step=0.5):
@@ -182,7 +184,8 @@ def test_the_guard_runs_him_out_of_a_bombs_blast_when_a_majini_reaches_it_and_co
     assert m.stats["mine_status"] == "a Majini at his bomb: out of its blast"
     m.tick(p(pos=(0.0, 0.0, -200.0)), snap(ground=[bomb]), live, 1.2)
     assert m.stats["mine_clear_runs"] == 1                                       # the same run
-    assert m.tick(p(pos=(0.0, 0.0, -600.0)), snap(ground=[bomb]), live, 1.6) is None   # out of BLAST_CM: done
+    assert m.tick(p(pos=(0.0, 0.0, -600.0)), snap(ground=[bomb]), live, 1.4)["hold"][:2] == MN.RUN   # 9 m: not yet
+    assert m.tick(p(pos=(0.0, 0.0, 250.0 - MN.BLAST_CM)), snap(ground=[bomb]), live, 1.6) is None   # out of BLAST_CM
     far = [{"ptr": 10, "pos": (0.0, 0.0, 1500.0), "hp": 800}]
     act = m.tick(p(), snap(ground=[bomb]), far, 2.0)                            # nobody at it: still in the blast -> run
     assert act is not None and act["hold"][:2] == MN.RUN
@@ -321,7 +324,7 @@ def test_the_2026_10_30_cluster_in_own_blast_runs_out_even_with_no_majini_at_the
     bomb = {"ptr": 0x77, "pos": (0.0, 0.0, 300.0)}
     m.bombs = {0x77: bomb["pos"]}
     m.last_pos = (0.0, 0.0, -2000.0)                        # the bomb he just placed is far off; this one is old
-    # The Majini is 1200 cm from the old bomb - well past TRIGGER_CM (350) and past the blast (BLAST_CM=800) - so it
+    # The Majini is 1200 cm from the old bomb - well past TRIGGER_CM (350) - so it
     # neither triggers the mine nor is it the old guard's case. He is 300 cm from the old bomb: inside the blast.
     live = [{"ptr": 10, "pos": (0.0, 0.0, 1500.0), "hp": 800}]
     act = m.tick(p(), snap(ground=[bomb]), live, 1.0)
@@ -330,13 +333,13 @@ def test_the_2026_10_30_cluster_in_own_blast_runs_out_even_with_no_majini_at_the
     # He runs until he is out of the blast (RETREAT_CM from the site), then the guard stands down.
     m.tick(p(pos=(0.0, 0.0, -200.0)), snap(ground=[bomb]), live, 1.2)
     assert m.stats["mine_clear_runs"] == 1                                       # the same run, still in the blast
-    assert m.tick(p(pos=(0.0, 0.0, -900.0)), snap(ground=[bomb]), live, 1.6) is None   # 12 m from the bomb: out
+    assert m.tick(p(pos=(0.0, 0.0, 250.0 - MN.BLAST_CM)), snap(ground=[bomb]), live, 1.6) is None   # past BLAST_CM: out
     # Outside the blast the guard does not fire: no run, and a bomb with nobody near is left alone.
     m2 = MN.Mines({})
     m2.new_round(0.0)
     m2.bombs = {0x77: bomb["pos"]}
     m2.last_pos = (0.0, 0.0, -2000.0)
-    assert m2.tick(p(pos=(0.0, 0.0, -1100.0)), snap(ground=[bomb]), live, 2.0) is None   # 14 m: not in the blast
+    assert m2.tick(p(pos=(0.0, 0.0, 250.0 - MN.BLAST_CM)), snap(ground=[bomb]), live, 2.0) is None   # past BLAST_CM
     # No enemies at all (the cluster's held=() / nearest-enemy-3m-on-far-side case): the guard still fires when he
     # is in an old bomb's blast, because the mine detonates on its own timer - no Majini trigger needed.
     m3 = MN.Mines({})
@@ -441,7 +444,7 @@ def test_mid_cycle_guard_fires_outside_blast_radius():
     # No guard when outside BLAST_CM.
     m = MN.Mines({})
     m.new_round(0.0)
-    far = {"ptr": 0x77, "pos": (900.0, 0.0, 0.0)}  # 900 cm: outside BLAST_CM=800
+    far = {"ptr": 0x77, "pos": (MN.BLAST_CM + 100.0, 0.0, 0.0)}  # outside BLAST_CM
     snap = {"ground_mines": [far]}
     act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, [], 100.)
     assert act is None
@@ -598,7 +601,8 @@ def test_mid_cycle_escape_keeps_actual_bomb_site_and_current_clock_on_later_tick
     # site but only 3 m from the real hazard. Neither may end the escape early.
     assert m.tick(p(), state, [], 100.1) == m._run(p(), [], bomb["pos"])
     assert m.state == "retreat" and m.stats["mine_retreats_completed"] == 0
-    assert m.tick(p(pos=(-600., 0., 0.)), state, [], 100.5) == {"hold": ()}
+    assert m.tick(p(pos=(-600., 0., 0.)), state, [], 100.3)["hold"][:2] == MN.RUN   # 9 m from it: on
+    assert m.tick(p(pos=(250. - MN.RETREAT_CM, 0., 0.)), state, [], 100.5) == {"hold": ()}
     assert m.state == "rearm" and m.stats["mine_retreats_completed"] == 1
 
 
@@ -656,3 +660,12 @@ def test_an_empty_in_hand_stack_is_not_equipment():
     assert m.equipped([dict(BOMB, rounds=0, hand=True)]) is None
     assert m.equipped([dict(BOMB, rounds=5, hand=False)]) is None
     assert m.equipped([dict(BOMB, rounds=5, hand=True)]) is not None
+
+
+def test_he_leaves_his_own_bomb_by_the_operators_fifteen_metres():
+    """Operator 2026-11-09: "the bot should place themself at least 15 meters from the mine to avoid hurting
+    themselves" - the universal doctrine's MINE_STANDOFF_M is both the run out and the stay-clear radius."""
+    from gbox.mercs.core import doctrine
+    assert doctrine.MINE_STANDOFF_M == 15.0
+    assert MN.RETREAT_CM == MN.BLAST_CM == 1500.0
+    assert MN.RETREAT_S * 400.0 >= MN.RETREAT_CM            # the cap leaves room for 15 m at a 4 m/s run

@@ -64,6 +64,8 @@ COMMAND = {r[0]: r[1] for r in RULES}
 WEIGHTS = {"engage": 1.0, "combo": 0.9, "explore": 0.7, "explosives": 0.6, "interrupt": 1.0, "boss": 1.0}
 
 IMPEDE_M = 3.5                    # an enemy this near is in his way
+LEVEL_M = 2.5                     # ... on his own floor: one this far above or below is neither in his way nor in sight
+                                  # (a command sent for a Majini on a roof walked RE5's bot at the wall under it)
 SIGHT_M = 18.0                    # ... this near is "on sight"
 CROWD_N, CROWD_M = 4, 6.0         # a mob: this many within this far
 COMBO_MIN_S, COMBO_MAX_S = 2.0, 5.0   # the operator's window: a kill every 2-5 seconds
@@ -77,6 +79,10 @@ HOLD_S = 4.0
 ISSUE_MIN = 0.45                  # weight x urgency under this: no command, the bot's own judgement
 EXPLOSIVE_GAP_S = 10.0            # between explosives commands (each title's own cooldowns apply on top)
 BOSS_HP_MIN = 3000                # gbox.mercs.weapon_choice.BOSS_HP_MIN: this much health is a boss
+# The operator, 2026-11-09: "the bot should place themself at least 15 meters from the mine to avoid hurting
+# themselves". Every title's mine / remote-bomb logic leaves its own explosive by this much and stays this far from
+# any of his still down (RE5 Switch: re5_switch_mines RETREAT_CM / BLAST_CM; live the same day one blast cost 350 hp).
+MINE_STANDOFF_M = 15.0
 TICK_MAX_S = 0.5                  # a longer gap between ticks (a loading screen, a held frame) counts as this much
 ATTACK_KEYS = frozenset({"zr", "zl", "r1", "l1", "r2", "l2", "rt", "lt", "r", "square", "x"})   # the gun up, or fired
 MOVE_KEYS = frozenset({"lup", "ldown", "lleft", "lright", "up", "down", "left", "right"})
@@ -132,6 +138,8 @@ def view(snap: dict, drv=None, module=None) -> dict | None:
             continue
         d = math.hypot(q[0] / scale - px, q[2] / scale - pz)
         if not math.isfinite(d):
+            continue
+        if abs(q[1] - pos[1]) / scale > LEVEL_M:        # another floor: alive, but not this moment's business
             continue
         foes.append({"d": d, "boss": bool(e.get("boss")) or (e.get("hp_max") or 0) >= BOSS_HP_MIN,
                      "windup": bool(e.get("windup")) or e.get("motion") in winding

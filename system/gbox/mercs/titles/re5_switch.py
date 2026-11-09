@@ -934,6 +934,12 @@ MINES, MINE_EVERY_S = True, 30.0
 # The universal doctrine's goal weights on this title (gbox.mercs.core.doctrine: the operator's standing goals for
 # every title, 2026-11-09; the behavior wheel's goal dots and the bot-logic sidebar set these, 0..1)
 GOAL_ENGAGE, GOAL_COMBO, GOAL_EXPLORE, GOAL_EXPLOSIVES, GOAL_INTERRUPT, GOAL_BOSS = 1.0, 0.9, 0.7, 0.6, 1.0, 1.0
+# Every walk to a Majini goes by the stage's learned map (re5_switch_nav: where he has walked is open, where he hit a
+# wall is blocked, A* between; kept per stage under gbox-data/mercs/learned). Until 2026-11-09 only the time-bonus
+# runs used it and every other walk was the straight line (operator: "the bot is walking up against a wall. I need
+# the bot mapping the levels and understanding how to navigate them"). The goal is planned to a NAV_GOAL_CELL square
+# (a moving Majini is not a new plan every tick) at most every NAV_REPLAN_MIN_S; within NAV_DIRECT_R the line is his.
+NAV_APPROACH, NAV_GOAL_CELL, NAV_REPLAN_MIN_S, NAV_DIRECT_R = True, 200.0, 0.75, 300.0
 MINE_FOE_CLEAR_CM, MINE_SPACING_CM = 400.0, 450.0
 MINE_COUNTERS = ("mines_placed", "mine_attempts", "mine_unconfirmed", "mine_retreats_completed", "mine_equip_failures",
                  "mines_gone", "mine_clear_runs", "mine_blasts", "mine_kills", "mine_blast_hp_loss", "gun_backs")
@@ -4015,6 +4021,32 @@ class Bot:
             self.move_at = now
         return act
 
+    def _approach(self, p, goal, now, tol=None) -> tuple:
+        """The turn keys toward `goal` (a position): along the learned map's route when it has one (NAV_APPROACH
+        above), else the straight line. stats nav_approach_ticks (walked by the map), nav_direct_ticks (by the line)."""
+        px, _py, pz = p["pos"]
+        gx, gz = goal[0], goal[2] if len(goal) > 2 else goal[1]
+        tx, tz = gx, gz
+        nav = getattr(self, "_nav", None)
+        if NAV_APPROACH and nav is not None and math.hypot(gx - px, gz - pz) > NAV_DIRECT_R:
+            try:
+                cell = (round(gx / NAV_GOAL_CELL) * NAV_GOAL_CELL, round(gz / NAV_GOAL_CELL) * NAV_GOAL_CELL)
+                if nav.goal != cell or nav.route is None:
+                    if now - getattr(self, "_approach_at", -1e9) >= NAV_REPLAN_MIN_S:
+                        self._approach_at = now
+                        nav.plan((px, pz), cell, now, force=True)
+                else:
+                    nav.plan((px, pz), cell, now)        # its own refresh (Navigator.REPLAN_S)
+                wp = nav.next_waypoint((px, pz))
+                if wp is not None and nav.route and len(nav.route) > 1:   # a corner to turn: the map's next point
+                    tx, tz = wp
+                    self.stats["nav_approach_ticks"] = self.stats.get("nav_approach_ticks", 0) + 1
+            except Exception as exc:                     # noqa: BLE001 - the map never costs a tick: the line instead
+                self.stats["nav_error"] = f"{type(exc).__name__}: {exc}"[:120]
+        if (tx, tz) == (gx, gz):
+            self.stats["nav_direct_ticks"] = self.stats.get("nav_direct_ticks", 0) + 1
+        return self._turn(wrap(heading(tx - px, tz - pz) - p["rot"]), TURN_TOL if tol is None else tol)
+
     def _operator_command(self, p, snap, live, now) -> str | None:
         """The operator's instant commands (gbox.mercs.directives, the PS3 bot's set): one-shots act on the tick they
         arrive, the standing modes (fight / hunt / score) are returned for the fight to apply. A command never presses
@@ -4142,19 +4174,17 @@ class Bot:
             others = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0]
             if self.mode in ("fight", "hunt", "rush") and others:   # nobody on his level: the nearest one anywhere
                 tgt = min(others, key=lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz))
-                err = wrap(heading(tgt["pos"][0] - px, tgt["pos"][2] - pz) - p["rot"])
                 self.doing, self.why = "walk", f"{self.mode}: the nearest Majini off his level"
                 self._gun_down()
-                return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
+                return {"hold": ("lup",) + self._approach(p, tgt["pos"], now)}
             self.doing, self.why = "no_foes", "no Majini alive on his level"
             self._gun_down()
             return {"hold": ()}
         reach = RUSH_R if self.mode == "rush" else HUNT_R
         if self.mode in ("hunt", "rush") and near > reach and self.aim_since is None:   # hunt / rush: close in on the nearest
-            err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - p["rot"])
             self.doing, self.why = "walk", f"{self.mode}: the nearest {near / 100:.1f} m"
             self._gun_down()
-            return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
+            return {"hold": ("lup",) + self._approach(p, near_e["pos"], now)}
         self._track_approach(p, live, now)
         self._threat_now = self._threat_near(p, live)
         crowded = NEAR_FOCUS and any(flat(e) <= RAMPAGE_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in live)
@@ -4188,10 +4218,9 @@ class Bot:
             self.stats["combo_pushes"] += 1
             reach = [e for e in live if flat(e) <= COMBO_REACH]
             if not reach and self.aim_since is None:         # nobody in reach: run to the nearest, the gun down
-                err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - p["rot"])
                 self.doing, self.why = "walk", f"combo {snap.get('combo')}: the nearest {near / 100:.1f} m"
                 self._gun_down()
-                return {"hold": ("lup", "b") + self._turn(err, TURN_TOL)}
+                return {"hold": ("lup", "b") + self._approach(p, near_e["pos"], now)}
         if urgent and reach and not self._threat_now:        # (a threat near: the threat pick is the quickest kill)
             tgt = min(reach, key=lambda e: self._cost(p, e))
             self._set_target(tgt.get("ptr", tgt.get("slot")), now)
@@ -4225,7 +4254,7 @@ class Bot:
         if dist > ENGAGE_R:                                  # nobody in range: walk to him
             self.doing, self.why = "walk", f"nearest target {dist / 100:.1f} m"
             self._gun_down()
-            return {"hold": ("lup",) + self._turn(body_err, TURN_TOL)}
+            return {"hold": ("lup",) + self._approach(p, foot, now)}
         motion = p.get("motion")
         if self.aim_since is None:
             if now < self.backoff_until:                     # a back-off under way (a crowd's burst ended it): finish it

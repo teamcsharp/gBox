@@ -23,9 +23,9 @@ Mines (the bot's) places one every EVERY_S seconds of the round:
   * the gun comes down and the pad rests NEUTRAL_S (the D-pad equip needs a neutral pad: the PS3's verified second),
     the bomb's D-pad slot, then ZL tapped PRESS_S; confirmed by a new native bomb actor on the ground near him,
     within PLACE_S;
-  * the placing motion plays out (he cannot move in it), then he runs RETREAT_S out through the widest gap among the
-    Majini, the bomb counted among them (never back over it), at least RETREAT_CM from it, and the gun comes back by
-    its own D-pad slot;
+  * the placing motion plays out (he cannot move in it), then he runs out through the widest gap among the Majini,
+    the bomb counted among them (never back over it), until he is RETREAT_CM from it (15 m, the operator's standoff;
+    RETREAT_S caps the run), and the gun comes back by its own D-pad slot;
   * the guard, all round: a Majini within TRIGGER_CM of a bomb of his while he is within BLAST_CM of it: he runs out of
     its blast the same way.
 A placement counts (mines_placed) only when a new nearby uWp0a actor is observed. A count drop or placing motion alone
@@ -43,6 +43,8 @@ from __future__ import annotations
 import collections
 import math
 
+from ..core import doctrine as _doctrine
+
 MINE_ID = 0x10A
 EVERY_S = 30.0                           # requested cadence; clearance/emergency actions can delay a placement
 SPACING_CM = 600.0                       # never within this of the last site or of a bomb still down (a double blast)
@@ -53,8 +55,13 @@ PRESS_S, PLACE_S = 0.25, 1.5             # ZL tapped (held, a second bomb at 1.2
 MOTION_PLACE = 29                        # the placing motion (the same byte as a shot)
 SETTLE_S = 1.6                           # the placing motion plays at most this long (live: 1.27-1.41 s from the press)
 CONFIRM_CM = 200.0                       # a new bomb this near where he stood is his (it lands ~57 cm ahead)
-RETREAT_CM, RETREAT_S, RETREAT_GAP_R = 800.0, 3.0, 800.0
-BLAST_CM, TRIGGER_CM, CLOSE_MAJINI_CM = 800.0, 350.0, 300.0
+# The operator, 2026-11-09: "the bot should place themself at least 15 meters from the mine to avoid hurting
+# themselves" (the universal doctrine's MINE_STANDOFF_M). It was 8 m: live that day a Majini reached a bomb while he was
+# 2-5 m off and the blast took 350 of his 1000. The run out lasts until he is that far (RETREAT_S is only its cap: 15 m
+# is ~3.5 s of running plus the turn), and the guard keeps him that far from every bomb of his still down.
+STANDOFF_CM = 100.0 * float(getattr(_doctrine, "MINE_STANDOFF_M", 15.0))
+RETREAT_CM, RETREAT_S, RETREAT_GAP_R = STANDOFF_CM, 6.0, 800.0
+BLAST_CM, TRIGGER_CM, CLOSE_MAJINI_CM = STANDOFF_CM, 350.0, 300.0
 # the guard: a Majini this near a bomb of his, him within BLAST_CM of it: out. CLOSE_MAJINI_CM: a Majini this close
 # to him while he is in the blast - he cannot run the gap through a close crowd (the cluster's remaining incidents),
 # so the run is given up and the fight unloads on the threat instead. FOE_CLEAR_CM (5 m) is the placement's rule
