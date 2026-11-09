@@ -58,12 +58,32 @@ function request(value) {
     return { path: u.pathname + u.search, method };
   }
   if (method === 'POST' && (p === '/api/decrypt-lab/model-info' || p === '/api/decrypt-lab/model-geometry')) {
-    const b = body || {};
-    if (typeof b.title !== 'string' || typeof b.arc_path !== 'string' || b.title.length > 64 || b.arc_path.length > 400
-        || (b.entry !== undefined && typeof b.entry !== 'string')) {
+    const b = value.body || {};
+    if (!TITLE_RE.test(b.title || '') || typeof b.arc_path !== 'string' || !b.arc_path || b.arc_path.length > 400
+        || /^[\\/]|:/.test(b.arc_path) || b.arc_path.replace(/\\/g, '/').split('/').includes('..')
+        || (b.entry !== undefined && (typeof b.entry !== 'string' || b.entry.length > 200))
+        || (b.max_points !== undefined && (!Number.isSafeInteger(b.max_points) || b.max_points < 1000 || b.max_points > 60000))) {
       throw Error('Invalid model-info request.');
     }
-    return request({ path: p, body: { title: b.title, arc_path: b.arc_path, entry: b.entry } });
+    return { path: p, method, body: { title: b.title, arc_path: b.arc_path,
+      ...(b.entry !== undefined ? {entry:b.entry} : {}), ...(b.max_points !== undefined ? {max_points:b.max_points} : {}) } };
+  }
+  if (method === 'POST' && p === '/api/decrypt-lab/model-compare') {
+    const b = value.body || {};
+    if (!TITLE_RE.test(b.title || '') || !['list', 'sample'].includes(b.op || 'sample')
+        || typeof b.arc_path !== 'string' || !b.arc_path || b.arc_path.length > 400
+        || /^[\\/]|:/.test(b.arc_path) || b.arc_path.replace(/\\/g, '/').split('/').includes('..')
+        || (b.build && !TITLE_RE.test(b.build))
+        || (b.model_name !== undefined && !TITLE_RE.test(b.model_name))
+        || (b.raw_fk !== undefined && typeof b.raw_fk !== 'boolean')) throw Error('Invalid comparison request.');
+    const out = {title:b.title, arc_path:b.arc_path, op:b.op || 'sample', build:b.build || '', model_name:b.model_name || 'pl0000', ...(b.raw_fk !== undefined ? {raw_fk:b.raw_fk} : {})};
+    for (const [key, max] of [['animation_entry',65535],['animation_index',100000],['start_frame',100000],['frame_count',60],['frame_step',30]]) {
+      if (b[key] === undefined || b[key] === null) continue;
+      if (!Number.isSafeInteger(b[key]) || b[key] < (key === 'frame_count' || key === 'frame_step' ? 1 : 0) || b[key] > max)
+        throw Error('Invalid comparison frame or clip index.');
+      out[key] = b[key];
+    }
+    return {path:p, method, body:out};
   }
   if (method === 'POST' && p === '/api/decrypt-lab/stage') {
     const b = value.body;
@@ -83,8 +103,14 @@ function request(value) {
         || !entry(b.entry) || !entry(b.donor_entry) || !/^[A-Za-z0-9_.-]{1,64}$/.test(b.build || 'gbox-lab')) {
       throw Error('Invalid arc-swap request.');
     }
+    const indices = {};
+    for (const key of ['entry_index', 'donor_index']) {
+      if (b[key] === undefined || b[key] === null) continue;
+      if (!Number.isSafeInteger(b[key]) || b[key] < 0 || b[key] > 65535) throw Error('Invalid archive entry index.');
+      indices[key] = b[key];
+    }
     return { path: p, method, body: { title: b.title, arc_path: b.arc_path, entry: b.entry,
-                                      donor_arc: b.donor_arc, donor_entry: b.donor_entry, build: b.build || 'gbox-lab' } };
+                                      donor_arc: b.donor_arc, donor_entry: b.donor_entry, build: b.build || 'gbox-lab', ...indices } };
   }
   if (method === 'POST' && p === '/api/decrypt-lab/swap') {
     const b = value.body;
@@ -188,7 +214,7 @@ module.exports = function ({ BrowserWindow, ipcMain, getOpeningScope, getToken, 
       method: q.method, redirect: 'error',
       headers: { authorization: 'Bearer ' + credential, 'content-type': 'application/json' },
       ...(q.body !== undefined ? { body: JSON.stringify(q.body) } : {}),
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.timeout(q.path === '/api/decrypt-lab/model-compare' ? 60000 : 20000),
     });
     if (!r.ok) {
       let detail = '';

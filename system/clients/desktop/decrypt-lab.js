@@ -16,6 +16,8 @@
   let lastScan = null;
   let pollTimer = null;
   let triageTick = 0;
+  let modelShown = false;
+  let comparison = null;
 
   // ---------------------------------------------------------------- 3D scene
   const scene = new THREE.Scene();
@@ -52,6 +54,7 @@
   // its own bounds. The data is real geometry from gbox.mt_model (positions dequantised by the model's box, normals and
   // uvs where the format's layout is confirmed), so this is the model as the game stores it, not a reconstruction.
   function showModelGeometry(geometry) {
+    modelShown = true;
     group.clear();
     blocks.length = 0;
     const bounds = geometry.bounds || { min: { x: -50, y: 0, z: -50 }, max: { x: 50, y: 180, z: 50 } };
@@ -139,7 +142,7 @@
     if (!arc || !title) { meta.textContent = 'name an archive and choose a title first'; return; }
     meta.textContent = 'decoding the model…';
     try {
-      const body = { title, arc_path: arc };
+      const body = { title:title.id, arc_path: arc };
       const entry = ($('model-entry').value || '').trim();
       if (entry) body.entry = entry;
       const d = await api.api('/api/decrypt-lab/model-geometry', body);
@@ -194,6 +197,7 @@
   new ResizeObserver(resize).observe($('stage'));
 
   function paint(kindAt) {
+    if (modelShown) return;
     for (const b of blocks) {
       const kind = kindAt(b.userData.index);
       b.userData.kind = kind;
@@ -513,6 +517,14 @@
   $('swap-go').addEventListener('click', swapEntry);
   $('model-go')?.addEventListener('click', inspectModel);
   $('model-3d')?.addEventListener('click', showGeometry);
+  $('model-compare')?.addEventListener('click', () => {
+    comparison?.close();
+    const title=currentTitle();
+    if(!title){$('model-meta').textContent='Choose a title first.';return;}
+    comparison=window.GBoxModelCompare.mount({api:api.api,title:title.id,
+      arcPath:($('model-arc').value||'nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc').trim(),
+      build:($('swap-build').value||'').trim()});
+  });
   $('reports-go')?.addEventListener('click', loadReports);
   $('top').addEventListener('change', () => api.alwaysOnTop($('top').checked));
 
@@ -528,7 +540,7 @@
     if (!title) { meta.textContent = 'choose a title first'; return; }
     meta.textContent = 'reading the model…';
     try {
-      const body = { title, arc_path: arc };
+      const body = { title:title.id, arc_path: arc };
       const entry = ($('model-entry').value || '').trim();
       if (entry) body.entry = entry;
       const d = await api.api('/api/decrypt-lab/model-info', body);

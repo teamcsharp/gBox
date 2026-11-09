@@ -2,8 +2,9 @@
 
 2026-11-08. This note records the first experiment that puts **Sonic's own triangles** into a Majini's existing part
 table, and the harness problems that had to be solved before the result means anything. Later controls now show
-recognizable Sonic geometry and textures in the Chris player slot, with articulated gloves in live combat. Full
-front-view deformation and the final material treatment remain under review; the custom library writer is not registered.
+recognizable Sonic geometry and textures in the Chris player slot. The user rejected the source-proportion animation:
+arms and hands point behind the body. The custom library writer remains unregistered while bind-pose correction and
+a synchronized native-animation comparison are developed.
 
 ## Current build path and structural checks (2026-11-08)
 
@@ -105,13 +106,55 @@ UV and degenerate-UV tests cover the replacement, and in-place writes still pres
 supplied. Source smooth normals are preserved for uniform fits. The source-proportion v6 control changes only tangent,
 handedness and occlusion bytes relative to v3; geometry, skeleton, UVs, materials and source atlas remain identical.
 
-The final v9 candidate is built by the unregistered `re5_sonic_writer.build()` recipe: centered source proportions,
+The rejected v9 candidate was built by version1 of the unregistered `re5_sonic_writer.build()` recipe: centered source proportions,
 180-unit height, 1,369 triangles, 1,422 vertices after preserving smooth source normals and splitting mirrored-UV
 handedness seams, 15 bone envelopes, source RGBA atlas, UV tangents, occlusion1, and neutral Gear NM/MM controls. It
 changes exactly archive entries 34, 35, 36 and 97. Its output SHA256 is
 `e76bc042501aabcc6c9273ac0dcff76dca97f7b6ddc5b61d594b49fe7e92752f`. The recipe accepts only the measured original
 `sonic/sa2_sonic_0.glb` hash and Chris-normal archive hash, and its library plan requires the explicit Chris slot.
-134 core tests pass. The recipe remains unregistered while this final artifact undergoes live visual review.
+The candidate boots and fights, but the user explicitly rejected its backwards arms and hands. Its large 180-unit head
+also obscures the gameplay camera. These are acceptance failures despite the 134 passing structural tests. The recipe
+remains unregistered; this historical output must not be promoted as a finished replacement.
+
+The concrete pose error is that changing joint positions retained Sonic's lowered A-pose surface around native Chris's
+T-pose axes. Native absolute rotation tracks therefore applied the T-pose-to-action rotation to already lowered arms.
+`mtf_retarget.repose()` and the experimental `source_reposed` import mode now rotate source geometry and normals into
+native segment directions using **source segment lengths**, then rebuild the native-ID bind translations. Explicit
+direction/transverse frames fix hand roll: source +localX points along the fingers and -localY points toward the thumb;
+the measured native finger and thumb-base vectors provide corresponding target directions. Both left and right frames
+are proper rotations with determinant +1, so no reflection or guessed symmetry changes chirality. Source finger detail
+is retained geometrically, but the source does not have five corresponding animated finger chains; gloves remain
+hand-bound.
+
+The offline v11 diagnostic retains all 1,369 triangles, 1,422 vertices and 15 envelopes, smooth normals, source atlas,
+tangents and neutral secondary textures, using a 140-unit height. Its archive SHA256 is
+`b5662118fed11c67ffec9754242a6b33d2af41933e8e01289ec8d8f0df02f2bf`. Three native wp00 reference poses show connected
+arms beside the torso. Against native Chris, normalized upper-arm and forearm direction errors are at most
+0.0000013 degrees and hand world rotation errors are below 1.2e-16. These are reference-field checks, not proof of
+buffered animation, procedural IK or runtime appearance. The actual native-key sampler and paired viewer are required
+before live acceptance. New regressions cover preserved segment lengths, joint continuity, normal rotation, explicit
+hand chirality and an unchanged native root.
+
+The next v12 diagnostic also corrects the elevated root pivot. At height140 the reposed source hip is Y69.282043,
+while native root0 was still Y114. Root0 and its inverse bind now use the source hip, with the compression transform
+unchanged and the entire vertex buffer byte-identical to v11. The matching native animation-ID0 **local translation
+Y** channels are scaled by 0.6077372233 across 51 LMT resources (3,127 unique physical tracks). A constant downward
+offset was rejected because some prone/death clips place the native pivot near Y7.58; subtracting the standing height
+difference would move it below ground. Positive proportional height scaling leaves near-ground values positive, but
+explicitly changes vertical gait and velocity. X/Z, rotations, key bytes, timing and virtual world root255 are untouched.
+The bounded writer supports only measured quantized vector codecs4/5 and reference-only codec1 and rejects aliases into
+other tracks, metadata or key data. Source and edited motion hashes accompany the comparison.
+
+The v12 archive hash is `ee21fc928c8ad8f90904fc2763b8cf15bcb50765c554dd61ac567336074683ff`. This remains an experimental
+artifact awaiting engine verification. The native FK sampler uncovered foot-goal IK tracks that cannot be treated as
+ordinary toe-local translations; those clips require an explicit incomplete-FK diagnostic view. Regular-FK wp00 clip25
+provides a raised-arm comparison, while in-game testing must establish procedural leg behavior, weapon attachment and
+contact around Sonic's larger head. Version2 of the unregistered library recipe now reproduces v12, including the paired
+root-motion edits, and explicitly reports `gameplay_verified: false`. It replaces the known-rejected v9 output without
+enabling library dispatch or claiming completed acceptance.
+The first v12 engine round reached 16,340 points and more than 31 kills, establishing load and sustained combat only.
+Its normal camera captures show back quills while cropping the much lower source shoulders and hands. Those captures
+do not establish hand orientation, weapon attachment or correct leg contacts; a deliberate front/side view is pending.
 
 ```sh
 python3 tools/probes/re5_em10_high_sonic.py \

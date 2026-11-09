@@ -482,3 +482,23 @@ The operator requested this Git checkpoint so DeepSeek can progress on **RE6** i
 MercMode recovery, shared replacement infrastructure, and RE5 Sonic arm/hand correction plus a model/animation comparison window.
 Coordinate any shared-file changes; no RE6-specific implementation was changed in this checkpoint. Runtime deployment and final
 MercMode restoration still follow acceptance. The active lilspark research session uses only `recovery-*` builds.
+
+### Arm correction and synchronized comparison checkpoint
+
+The backward arms came from applying Chris's T-pose animation axes to Sonic's lowered A-pose geometry. The new
+`source_reposed` path rotates the geometry, normals and palm frames into the native directions while preserving
+Sonic's segment lengths. The v12 diagnostic also pairs its lower root bind with scaled native root-Y translation
+tracks; the candidate's own motion must be used when comparing it. Its first live run reached score 16,340 and
+more than 31 kills, but shoulder-camera captures still hide the hands behind quills/below the viewport. This is
+**not final hand, weapon or foot-IK acceptance**. A repeated boot stalled actively (not paused) at a black frame;
+the exact cause remains unresolved and the owned trial is being replaced with a clean session.
+
+Decrypt Lab now has **Models → Compare poses and animations**: synchronized cameras and frame controls, both
+complete model surfaces, selected limb/joint axes, and differences in cm. It samples real LMT buffers and the
+candidate's own LMT resources. The normal preview refuses engine-IK clips; an explicit diagnostic checkbox enables
+raw animation without the game's IK. `wp00`, clips25–30, provide supported FK comparisons. A standalone comparison
+entry point avoids restarting the desktop or starting another worker. No game assets or diagnostic images are in Git.
+
+Validation before the final recipe update: **892 Python tests, 67 JavaScript tests, and 2 browser tests passed**.
+The custom Sonic recipe remains unregistered and experimental until visible hand/weapon/leg checks pass. This work
+does not alter RE6-specific code; DeepSeek can continue from the pushed shared infrastructure checkpoint.

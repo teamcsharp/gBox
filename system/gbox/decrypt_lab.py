@@ -480,6 +480,21 @@ class ModelInfoIn(BaseModel):
     max_points: int = 60000
 
 
+class ModelCompareIn(BaseModel):
+    """Read native Chris and one existing overlay through the same sampled animation."""
+    title: str
+    arc_path: str = 'nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc'
+    model_name: str = 'pl0000'
+    op: str = 'sample'
+    build: str = ''
+    animation_entry: int | None = None
+    animation_index: int | None = None
+    start_frame: int = 0
+    frame_count: int = 60
+    frame_step: int = 1
+    raw_fk: bool = False
+
+
 class ArcSwapIn(BaseModel):
     """Replace one model entry inside an MT Framework .arc, keeping the slot's own entry table."""
     title: str
@@ -2039,6 +2054,103 @@ def install(app, store, config, auth, tactical_store=None):
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
 
+    @app.post("/api/decrypt-lab/model-compare", dependencies=[Depends(auth)])
+    def decrypt_lab_model_compare(body: ModelCompareIn):
+        """A read-only original/overlay comparison; no builds, pending edits or sessions are changed."""
+        from . import mt_arc, mtf_motion, switch_mods
+        import hashlib
+
+        tid = _title_id(body.title)
+        expected = 'nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc'
+        if tid != '010018100CD46000' or body.arc_path != expected or body.model_name != 'pl0000':
+            raise HTTPException(409, 'Pose comparison currently supports the RE5 Chris (BSAA) player archive only')
+        if (body.op not in ('list', 'sample') or not 0 <= body.start_frame <= 100000
+                or not 1 <= body.frame_count <= 60 or not 1 <= body.frame_step <= 30
+                or body.animation_index is not None and not 0 <= body.animation_index <= 100000):
+            raise HTTPException(400, 'Choose a bounded animation frame range')
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, 'The original RE5 RomFS must be extracted before comparing models')
+        root = root.resolve()
+        original = (root / expected).resolve()
+        if not original.is_relative_to(root) or not original.is_file():
+            raise HTTPException(404, 'The original Chris archive is absent from the extracted RomFS')
+        try:
+            native = original.read_bytes()
+            archive = mt_arc.parse(native)
+            motions = []
+            for index, entry in enumerate(archive.entries):
+                # Native motion resources are named under motion; models and TEX surfaces need not inflate here.
+                if '\\motion\\' not in entry.name:
+                    continue
+                try:
+                    payload = zlib.decompress(entry.data)
+                except zlib.error:
+                    continue
+                if payload[:4] == b'LMT\0':
+                    motions.append((index, entry.name, payload))
+            choices = switch_mods.builds_for(_CONFIG, _game_id_for(body.title), tid)
+            picked = next((row for row in motions if row[0] == body.animation_entry), None) if body.animation_entry is not None else next((row for row in motions if row[1].endswith('pl00wp00')), motions[0] if motions else None)
+            if body.animation_entry is not None and picked is None:
+                raise HTTPException(404, 'That native motion entry does not exist')
+            if body.op == 'list':
+                listed = []
+                for index, name, payload in motions:
+                    try:
+                        clips = mtf_motion.list_clips(payload) if picked and index == picked[0] else []
+                        listed.append({'entry_index': index, 'name': name.rsplit('\\', 1)[-1], 'clips': clips})
+                    except ValueError as exc:
+                        listed.append({'entry_index': index, 'name': name.rsplit('\\', 1)[-1], 'clips': [], 'reason': str(exc)})
+                return {'builds': [{'name': name, 'label': meta.get('name') or name} for name, _, meta in choices],
+                        'motions': listed, 'native_sha256': hashlib.sha256(native).hexdigest(),
+                        'selected_animation_entry': picked[0] if picked else None,
+                        'scope': 'RE5 Chris (BSAA) slot; original versus existing overlay'}
+            if not body.build or body.build not in {name for name, _, _ in choices}:
+                raise HTTPException(404, 'Choose an existing RE5 overlay build; comparison never creates a build')
+            candidate = _target_arc_bytes(body.title, body.build, root, expected)
+            if body.animation_index is None:
+                frames = [0]
+            else:
+                if picked is None:
+                    raise HTTPException(404, 'The original Chris archive has no native motion resource')
+                clip = next((row for row in mtf_motion.list_clips(picked[2]) if row['index'] == body.animation_index), None)
+                if clip is None:
+                    raise HTTPException(404, 'That native animation does not exist')
+                if clip.get('supported') is False and not (body.raw_fk and clip.get('raw_fk_supported') is True):
+                    raise HTTPException(409, clip.get('reason') or 'This native animation contains unsupported tracks')
+                if body.start_frame >= clip['frame_count']:
+                    raise HTTPException(400, 'Start frame is outside this animation')
+                end = min(clip['frame_count'], body.start_frame + body.frame_count * body.frame_step)
+                frames = list(range(body.start_frame, end, body.frame_step))
+            candidate_motion = None
+            if body.animation_index is not None:
+                candidate_archive = mt_arc.parse(candidate)
+                if picked[0] >= len(candidate_archive.entries) or candidate_archive.entries[picked[0]].name != picked[1]:
+                    raise HTTPException(409, 'The candidate does not contain the matching native motion entry')
+                entry = candidate_archive.entries[picked[0]]
+                for framing in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+                    try:
+                        candidate_motion = zlib.decompress(entry.data, framing)
+                        break
+                    except zlib.error:
+                        continue
+                if not candidate_motion or candidate_motion[:4] != b'LMT\0':
+                    raise HTTPException(409, 'The matching candidate motion entry is not a supported LMT resource')
+            result = mtf_motion.sample_compare(native, candidate, picked[2] if picked else None,
+                animation_index=body.animation_index, frames=frames, model_name=body.model_name,
+                raw_fk=body.raw_fk, candidate_lmt_bytes=candidate_motion)
+            result['frame_indices'] = frames
+            result['source'] = {'title': body.title, 'arc_path': expected, 'build': body.build,
+                                'animation_entry': picked[0] if picked else None,
+                                'native_sha256': hashlib.sha256(native).hexdigest(),
+                                'candidate_sha256': hashlib.sha256(candidate).hexdigest(),
+                                'candidate_state': 'newest pending or applied overlay; no files changed'}
+            return result
+        except HTTPException:
+            raise
+        except (ValueError, OSError) as exc:
+            raise HTTPException(409, str(exc)[:500]) from exc
+
     @app.post("/api/decrypt-lab/model-geometry", dependencies=[Depends(auth)])
     def decrypt_lab_model_geometry(body: ModelInfoIn):
         """A model's decoded vertices, for the page's 3D view: positions, normals and UVs per mesh.
@@ -2109,23 +2221,13 @@ def install(app, store, config, auth, tactical_store=None):
                         "drawn": len(positions)})
             if budget <= 0:
                 break
-        # the skeleton, composed along the hierarchy: bone world positions from the local bind matrices
+        # Use the same native row-vector hierarchy as the author and animation sampler.
         table = model.bone_table()
         skeleton = {"bones": [], "parents": table.get("parents") or []}
         if table.get("consistent") and table.get("local"):
-            parents = table["parents"]
-            local = [struct.unpack_from("<16f", block, 0) for block in table["local"]]
-            world = [None] * len(parents)
-            for bone in range(len(parents)):
-                parent = parents[bone]
-                if parent == 255 or parent >= len(parents) or world[parent] is None:
-                    world[bone] = list(local[bone])
-                else:
-                    a, b2 = world[parent], local[bone]
-                    world[bone] = [sum(a[r * 4 + k] * b2[k * 4 + c] for k in range(4))
-                                   for r in range(4) for c in range(4)]
+            world = model.bone_world_matrices()
             skeleton["bones"] = [[round(world[i][12], 2), round(world[i][13], 2), round(world[i][14], 2)]
-                                 for i in range(len(parents)) if world[i] is not None]
+                                 for i in range(len(world))]
         return {"v": FORMAT, "entry": entry.name, "bounds": bounds, "meshes": out,
                 "positions": [round(v, 2) for point in model.all_positions()[:60000] for v in point],
                 "triangles": [i for tri in model.triangles()[:60000] for i in tri],

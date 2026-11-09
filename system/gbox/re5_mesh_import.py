@@ -17,7 +17,8 @@ from . import characters, mt_arc, mt_model, mtf_author, mtf_materials, mtf_mrl, 
 def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles: dict[str, str],
                   target_roles: dict[str, int], segments: dict[str, str], scale: float,
                   material_index: int = 0, template_index: int = 0, continuous: bool = False,
-                  pose_mode: str = 'native_segments', height: float = 180., centre_hip: bool = False):
+                  pose_mode: str = 'native_segments', height: float = 180., centre_hip: bool = False,
+                  repose_frames: dict | None = None, retarget_root_translation: bool = False):
     """Return (archive, MOD, atlas, receipt), using caller-reviewed roles and native material.
 
     Source roles name GLB nodes; target roles name native bone indices. Every source
@@ -26,8 +27,12 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
     ``source_proportions`` preserves the donor surface at explicit height and edits
     existing child bind translations. It retains root0 and every native animation.
     """
-    if pose_mode not in ('native_segments','source_proportions'):
+    if pose_mode not in ('native_segments','source_proportions','source_reposed'):
         raise ValueError('choose an explicit measured experimental pose mode')
+    if repose_frames and pose_mode != 'source_reposed':
+        raise ValueError('explicit repose frames require the source_reposed mode')
+    if retarget_root_translation and pose_mode != 'source_reposed':
+        raise ValueError('root translation retargeting requires the source_reposed mode')
     parsed = mt_arc.parse(archive)
     matches = {}
     for index, entry in enumerate(parsed.entries):
@@ -73,7 +78,7 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
     source_points = {i: tuple(map(float, matrix[:3, 3])) for i, matrix in enumerate(world)}
     target_points = {i: (x, y, z) for i, x, y, z in model.bone_world()}
     bind = None
-    if pose_mode == 'source_proportions':
+    if pose_mode in ('source_proportions','source_reposed'):
         if continuous or not math.isfinite(height) or height <= 0:
             raise ValueError('source proportions require a finite positive height without a spatial warp')
         if not 0 <= template_index < len(model.meshes()) or model.meshes()[template_index]['group_index'] != 0:
@@ -93,16 +98,41 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
             translation = (target_points[0][0], translation[1], target_points[0][2])
         def fit(point):
             return tuple((point[i]-origin[i])*scale+translation[i] for i in range(3))
-        fitted = [vertex | {'position':fit(vertex['position'])} for vertex in vertices]
-        anchors = {target:fit(source_points[source_joint]) for source_joint,target in roles.values() if target != 0}
-        model, bind = mtf_retarget.reposition_bind_pose(model, anchors)
-        fitted, skin = mtf_retarget.map_weights(fitted, parents, roles)
+        if pose_mode == 'source_reposed':
+            if not centre_hip:
+                raise ValueError('source repose requires the explicit centred hip convention')
+            fitted, anchors, skin = mtf_retarget.repose(vertices,source_points,parents,target_points,roles,segments,
+                scale=scale,root_role='hip',root_position=fit(source_points[roles['hip'][0]]),frames=repose_frames)
+            # Reposing feet can change the floor and overall height slightly. One
+            # final uniform scale retains proportions and all segment directions.
+            floor = min(v['position'][1] for v in fitted)
+            ceiling = max(v['position'][1] for v in fitted)
+            if not math.isfinite(ceiling-floor) or ceiling-floor < 1e-8:
+                raise ValueError('reposed source must retain a finite nonzero height')
+            correction = height/(ceiling-floor)
+            pivot = anchors[0]
+            def final_fit(point):
+                return ((point[0]-pivot[0])*correction+pivot[0],
+                        (point[1]-floor)*correction+translation[1],
+                        (point[2]-pivot[2])*correction+pivot[2])
+            fitted = [v | {'position':final_fit(v['position'])} for v in fitted]
+            anchors = {index:final_fit(point) for index,point in anchors.items()}
+            skin['final_geometry_anchors'] = {str(index):point for index,point in anchors.items()}
+            if not retarget_root_translation:
+                anchors.pop(0)
+            skin.update(final_uniform_scale=correction, total_uniform_scale=scale*correction)
+        else:
+            fitted = [vertex | {'position':fit(vertex['position'])} for vertex in vertices]
+            anchors = {target:fit(source_points[source_joint]) for source_joint,target in roles.values() if target != 0}
+            fitted, skin = mtf_retarget.map_weights(fitted, parents, roles)
+        model, bind = mtf_retarget.reposition_bind_pose(model, anchors,
+            retarget_root_translation=retarget_root_translation)
         skin.update(scale=scale, height=height, centre_hip=centre_hip)
     else:
         fitted, skin = mtf_retarget.transfer(vertices, source_points, parents, target_points, roles, segments,
                                            scale=scale, continuous=continuous)
     import numpy as np
-    if pose_mode != 'source_proportions':
+    if pose_mode == 'native_segments':
         normals = np.zeros((len(fitted), 3))
         for face in triangles:
             points = np.asarray([fitted[i]['position'] for i in face])
@@ -127,7 +157,7 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
     authored = mtf_author.build_one_mesh(model, fitted, triangles, material_index=material_index,
                                         template_index=template_index, four_weights=True)
     authored = mt_model.rebuild_mod(mt_model.parse_mod(authored), bounds=bounds)
-    if pose_mode == 'source_proportions':
+    if pose_mode in ('source_proportions','source_reposed'):
         # Group0 is the root-attached player body in the measured archive. Other groups remain untouched.
         points = mtf_author.bone_local_points(model, 0, [v['position'] for v in fitted])
         centre = [(min(p[i] for p in points)+max(p[i] for p in points))/2 for i in range(3)]

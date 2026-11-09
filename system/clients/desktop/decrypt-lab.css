@@ -83,3 +83,27 @@ tr.click:hover td{background:#131f2b}
 #events li{padding:3px 0;border-bottom:1px solid #141c26;color:#b9c7d6}
 #events .t{color:#5f7e9c;margin-right:8px}
 #events .k{color:var(--accent);margin-right:6px;text-transform:uppercase;font-size:10px}
+
+.model-compare{width:96vw;max-width:1800px;height:94vh;max-height:1200px;padding:0;border:1px solid #38516a;border-radius:9px;background:#101822;color:var(--ink);overflow:auto}
+.model-compare[open]{display:flex;flex-direction:column}
+.model-compare::backdrop{background:#000a}
+.model-compare header{flex:none}
+.model-compare header small{display:block;color:var(--muted)}
+.model-compare button,.model-compare select{background:#1b2a3b;color:var(--ink);border:1px solid #3a4e65;border-radius:5px;padding:5px 9px;font:inherit}
+.model-compare button{cursor:pointer}.model-compare button:disabled{opacity:.4;cursor:default}
+.compare-controls,.compare-playback{display:flex;flex-wrap:wrap;align-items:center;gap:9px;padding:8px 12px;flex:none}
+.compare-controls label,.compare-playback label{display:flex;gap:5px;align-items:center}
+.compare-controls select[data-build]{max-width:350px}
+.compare-controls input[data-start]{width:75px;background:#1b2a3b;color:var(--ink);border:1px solid #3a4e65;border-radius:5px;padding:5px;font:inherit}
+.model-compare p{margin:3px 12px 8px;font-size:12px;color:#b8c8da;flex:none}
+.compare-stage{position:relative;flex:1;min-height:300px;background:#111923;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.compare-stage::after{content:'';position:absolute;left:50%;top:0;height:100%;border-left:1px solid #4a5c70;pointer-events:none}
+.compare-stage canvas{width:100%;height:100%;display:block;touch-action:none}
+.compare-label{position:absolute;top:9px;background:#101823d9;padding:5px 10px;border-radius:5px;font-weight:600;pointer-events:none}
+.compare-label.left{left:10px}.compare-label.right{left:calc(50% + 10px)}
+.compare-joints{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.compare-joints span{position:absolute;transform:translateY(-50%);font:10px "Segoe UI",sans-serif;color:#ffe1a1;text-shadow:0 1px 3px #000,0 0 3px #000;white-space:nowrap}
+.compare-joints i{position:absolute;height:1px;background:#ffe1a170;transform-origin:left center}
+.compare-joints span.selected{background:#352707d9;padding:2px 4px;border:1px solid #ffd166;border-radius:3px;font-weight:bold}
+.compare-playback [data-frame]{flex:1;min-width:130px}.compare-playback output{min-width:145px;font-variant-numeric:tabular-nums}
+.model-compare details{margin:0 12px 10px;color:var(--muted);font-size:11px}.model-compare pre{max-height:150px;overflow:auto;white-space:pre-wrap}

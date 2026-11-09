@@ -75,3 +75,17 @@ def test_centred_hip_keeps_floor_and_preserves_source_normals(tmp_path,monkeypat
     assert model.bone_world()[1][1:]==pytest.approx((0.,50.,0.))
     assert model.normals(0)[0]==pytest.approx((0.,.6,.8),abs=.008)
     assert receipt['skin']['centre_hip']
+
+
+def test_reposed_pipeline_rotates_surface_and_normals_but_retains_native_root(tmp_path,monkeypatch):
+    arc,source=inputs(tmp_path,monkeypatch)
+    _,raw,_,receipt=importer.build_archive(arc,source,model_name='body',source_roles={'hip':'hip','head':'head'},
+        target_roles={'hip':0,'head':1},segments={'hip':'head'},scale=1.,pose_mode='source_reposed',height=50.,
+        centre_hip=True,repose_frames={'hip':((0.,1.,0.),(0.,0.,1.),(0.,1.,0.),(-1.,0.,0.))})
+    model=mt_model.parse_mod(raw)
+    assert model.positions(0)[1]==pytest.approx((0.,0.,50.),abs=.004)
+    assert model.normals(0)[0]==pytest.approx((-1.,0.,0.),abs=.008)
+    assert model.bone_world()[0][1:]==pytest.approx((0.,20.,0.))
+    assert model.bone_world()[1][1:]==pytest.approx((0.,50.,0.))
+    assert receipt['skin']['rotation_determinants']==pytest.approx({'hip':1.,'head':1.})
+    assert receipt['skin']['height']==50. and receipt['triangles']==1

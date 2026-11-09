@@ -63,3 +63,45 @@ def test_builder_refuses_unmeasured_source_or_native_archive(tmp_path,monkeypatc
     monkeypatch.setattr(writer,'SOURCE_SHA256',hashlib.sha256(source.read_bytes()).hexdigest())
     with pytest.raises(ValueError,match='original Chris-normal'):
         writer.build(b'archive',source)
+
+
+def test_experimental_recipe_pairs_reposed_root_with_own_motion_and_retains_acceptance_gate(tmp_path,monkeypatch):
+    import hashlib
+    import zlib
+    from gbox import mt_arc,mtf_author
+    source=tmp_path/'source.glb';source.write_bytes(b'measured source')
+    entries=[mt_arc.Entry(f'unused{i}',1,1,0,0,zlib.compress(b'untouched')) for i in range(105)]
+    for index,path,payload in ((35,r'pawn\pl\pl00\model\pl00Gear_MM',b'TEX mm'),
+                               (36,r'pawn\pl\pl00\model\pl00Gear_NM',b'TEX nm'),
+                               (97,'pl0000',b'MOD original'),(104,'pl00motion',b'LMT\0original')):
+        entries[index]=mt_arc.Entry(path,1,len(payload),0,0,zlib.compress(payload))
+    archive=mt_arc.build(mt_arc.Arc(7,entries))
+    monkeypatch.setattr(writer,'SOURCE_SHA256',hashlib.sha256(source.read_bytes()).hexdigest())
+    monkeypatch.setattr(writer,'ARCHIVE_SHA256',hashlib.sha256(archive).hexdigest())
+    class Model:
+        def __init__(self,height):self.height=height
+        def bone_table(self):return {'anim_map':list(writer.TARGET_ANIMATION_IDS.values())}
+        def bone_world(self):return [(0,0.,self.height,0.)]
+    monkeypatch.setattr(writer.mt_model,'parse_mod',lambda raw:Model(60. if raw==b'MOD authored' else 120.))
+    frames={'measured_frames':'finger+thumb proper rotations'}
+    monkeypatch.setattr(writer,'_repose_frames',lambda source,model:frames)
+    calls=[]
+    def import_model(data,path,**kwargs):
+        calls.append(kwargs)
+        return mtf_author.replace_archive_model(data,97,b'MOD authored'),b'MOD authored',None,{'live_verified':False}
+    monkeypatch.setattr(writer.re5_mesh_import,'build_archive',import_model)
+    monkeypatch.setattr(writer.mtf_secondary,'constant_channels',lambda raw,channels:raw+b'neutral')
+    def motion(raw,scale):
+        assert raw==b'LMT\0original' and scale==.5
+        return b'LMT\0scaled',{'tracks':1,'key_data_unchanged':True}
+    monkeypatch.setattr(writer.mtf_motion_edit,'scale_root_y',motion)
+    output,receipt=writer.build(archive,source)
+    assert calls[0]['pose_mode']=='source_reposed' and calls[0]['height']==140.
+    assert calls[0]['segments']==writer.SEGMENTS and calls[0]['repose_frames'] is frames
+    assert calls[0]['retarget_root_translation'] and calls[0]['centre_hip']
+    assert receipt['recipe_version']==2 and receipt['root_motion']['scale_y']==.5
+    assert receipt['bind_skeleton']['animation_channels_changed']
+    assert receipt['bind_skeleton']['root_translation_retarget_completed']
+    assert receipt['changed_entry_indices']==[35,36,97,104]
+    assert not receipt['gameplay_verified'] and not receipt['writer_registered']
+    assert zlib.decompress(mt_arc.parse(output).entries[104].data)==b'LMT\0scaled'

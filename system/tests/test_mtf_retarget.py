@@ -89,3 +89,46 @@ def test_bind_proportions_preserve_root_compression_and_recompute_inverse_matric
     assert receipt['root_unchanged'] and not receipt['animation_channels_changed']
     with pytest.raises(ValueError,match='root requires'):
         mtf_retarget.reposition_bind_pose(original,{0:(0.,0.,0.)})
+    retargeted, report = mtf_retarget.reposition_bind_pose(original,{0:(10.,10.,0.),1:(13.,28.,4.)},
+                                                        retarget_root_translation=True)
+    assert retargeted.position_transform() == pytest.approx(original.position_transform(),abs=1e-5)
+    assert retargeted.bone_world()[0][1:] == pytest.approx((10.,10.,0.))
+    assert retargeted.bone_world()[1][1:] == pytest.approx((13.,28.,4.))
+    assert report['requires_root_translation_retarget'] and not report['root_unchanged']
+
+
+def test_repose_preserves_lengths_and_shared_joint_with_native_direction():
+    import numpy as np
+    source = {0:(0.,0.,0.),1:(0.,-2.,0.),2:(0.,-5.,0.)}
+    target = {0:(10.,10.,0.),1:(30.,10.,0.),2:(60.,10.,0.)}
+    vertices = [{'position':source[1],'normal':(0.,0.,1.),'source_joints':[0,1],'source_weights':[.5,.5]},
+                {'position':source[2],'normal':(0.,0.,1.),'source_joints':[2],'source_weights':[1.]}]
+    roles = {'upper':(0,0),'fore':(1,1),'hand':(2,2)}
+    fitted, anchors, receipt = mtf_retarget.repose(vertices,source,{1:0,2:1},target,roles,
+        {'upper':'fore','fore':'hand'},scale=2.,root_role='upper',root_position=(1.,2.,3.))
+    assert anchors == {0:(1.,2.,3.),1:(5.,2.,3.),2:(11.,2.,3.)}
+    assert fitted[0]['position'] == pytest.approx(anchors[1])
+    assert fitted[1]['position'] == pytest.approx(anchors[2])
+    assert fitted[0]['normal'] == pytest.approx((0.,0.,1.))
+    assert receipt['discarded_influences'] == 0
+    for matrix in receipt['rotations'].values():
+        rotation = np.asarray(matrix)
+        assert rotation @ rotation.T == pytest.approx(np.eye(3))
+        assert np.linalg.det(rotation) == pytest.approx(1.)
+    with pytest.raises(ValueError,match='target role anchors must be distinct'):
+        mtf_retarget.repose(vertices,source,{1:0,2:1},target,roles|{'hand':(2,1)},
+            {'upper':'fore','fore':'hand'},scale=2.,root_role='upper',root_position=(1.,2.,3.))
+
+
+@pytest.mark.parametrize('side',[1.,-1.])
+def test_hand_frame_maps_fingers_and_thumb_without_reflecting_either_side(side):
+    import numpy as np
+    # Both source hands use +X along fingers and -Y toward the thumb. Their
+    # geometry carries chirality; proper rotations must never mirror it.
+    rotation = mtf_retarget.direction_frame((side,0.,0.),(0.,0.,1.)) @ \
+               mtf_retarget.direction_frame((1.,0.,0.),(0.,-1.,0.)).T
+    assert rotation @ (1.,0.,0.) == pytest.approx((side,0.,0.))
+    assert rotation @ (0.,-1.,0.) == pytest.approx((0.,0.,1.))
+    assert np.linalg.det(rotation) == pytest.approx(1.)
+    with pytest.raises(ValueError,match='parallel'):
+        mtf_retarget.direction_frame((1.,0.,0.),(2.,0.,0.))

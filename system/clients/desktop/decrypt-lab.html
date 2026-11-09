@@ -103,7 +103,8 @@
       <div class="row"><label>Archive <input id="model-arc" size="52" placeholder="nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc"></label>
         <label>Entry <input id="model-entry" size="34" placeholder="(first model in the archive)"></label>
         <button id="model-go">Inspect model</button>
-        <button id="model-3d">Decode into the 3D view</button></div>
+        <button id="model-3d">Decode into the 3D view</button>
+        <button id="model-compare">Compare poses and animations</button></div>
       <div id="model-out"><p class="muted">Inspect an archive to see its model header, resource paths and geometry size.</p></div>
     </section>
     <section class="panel" id="triage-panel">
@@ -118,5 +119,6 @@
 </main>
 <script src="vendor/three.min.js"></script>
 <script src="decrypt-lab-swap.js"></script>
+<script src="decrypt-lab-compare.js"></script>
 <script src="decrypt-lab.js"></script>
 </body></html>
