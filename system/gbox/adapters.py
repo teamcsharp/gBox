@@ -3675,6 +3675,19 @@ class YuzuAdapter(Adapter):
     def remove_breakpoint(self, *args, **kwargs):
         return self.debugger().remove_breakpoint(*args, **kwargs)
 
+    def _guest(self):
+        """The rows a bot's memory scan reads (gbox.mercs.titles.*._rows, gbox.re6_switch_unlock.AdapterMemory).
+
+        Yuzu answers guest reads over its GDB stub but publishes no memory map, so this is the measured app span
+        (gbox.yuzu_runtime.guest_rows). Both keys: the title drivers prefer `readable`, the unlock watcher reads
+        `mapped`. Debug launches only: without the stub there is no guest memory here."""
+        if self.dbg is None or self.proc is None:
+            from .debug import Unavailable
+            raise Unavailable('Yuzu guest memory needs a debug launch (debug=true)')
+        from . import yuzu_runtime
+        rows = yuzu_runtime.guest_rows()
+        return self.proc.pid, {'readable': rows, 'mapped': rows, 'base': 0}
+
     def send_input(self, events):
         if not self.keyboard_control:
             raise Unsupported('Yuzu keyboard control is not configured for this session')

@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -77,3 +77,54 @@ def test_arm64_disassembly_for_switch():
     from gbox.debug import CPUS, disassemble
     assert CPUS['switch'] == 'arm64'
     assert disassemble('arm64', bytes.fromhex('c0035fd6'), 0x7100000000)[0]['mnemonic'] == 'ret'
+
+def test_guest_rows_are_the_measured_switch_app_span():
+    rows = Y.guest_rows()
+    assert rows == [(0x80000000, 0x84000000, "r-x")]
+    start, end, flags = rows[0]
+    assert start < end and "w" not in flags                 # scans read non-writable rows only
+    assert start + 0x2151000 + 64 <= end                    # RE6 main's signature (SIG_OFF) falls inside the span
+
+
+def test_yuzu_guest_needs_the_debug_stub_and_describes_both_keys(tmp_path):
+    cfg = Config(emulators={"switch": EmulatorConfig(adapter="yuzu", executable="x")})
+    ad = adapters.YuzuAdapter(cfg)
+    from gbox.debug import Unavailable
+
+    with pytest.raises(Unavailable, match="debug launch"):
+        ad._guest()
+    ad.dbg, ad.proc = object(), SimpleNamespace(pid=4242)
+    pid, arena = ad._guest()
+    assert pid == 4242
+    assert arena["readable"] == arena["mapped"] == Y.guest_rows()
+    assert arena["base"] == 0
+
+
+def test_re6_module_scan_finds_the_signature_through_the_guest_rows():
+    from gbox.mercs.titles import re6_switch as R
+    base = 0x80000AF8                                      # the measured RE6 1.0.0 load address on Yuzu 1734
+
+    class Adapter:
+        address_mode = "direct"
+
+        def _guest(self):
+            return 1, {"readable": Y.guest_rows(), "mapped": Y.guest_rows(), "base": 0}
+
+        def read_memory(self, address, length):
+            if not (Y.SWITCH_APP_BASE <= address and address + length <= Y.SWITCH_APP_END):
+                raise OSError("unmapped")
+            buf = bytearray(length)
+            off = base + R.SIG_OFF - address
+            if 0 <= off and off + len(R.SIGNATURE) <= length:
+                buf[off:off + len(R.SIGNATURE)] = R.SIGNATURE
+            return bytes(buf)
+
+    class M:
+        adapter = Adapter()
+        rd = lambda self, a, n: self.adapter.read_memory(a, n)
+        wr = lambda self, a, data: None
+
+    m = M()
+    assert R._rows(m) == Y.guest_rows()                    # the driver takes the adapter's rows, shift-free
+    assert R.module_base(m) == base
+    assert R.module_base(m) == base                        # cached, re-checked with one signature read
