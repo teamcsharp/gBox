@@ -22,6 +22,17 @@ w1/w2 at 24) — the one part of the Switch MOD writer that only a live frame ca
 now takes `reverse_bones=True` (store b3,b2,b1,b0) and `C:\_tools\gBox\.tmp\build_rev_variant.py` builds the
 `re6sw_sonic_leon_rev` probe for it.
 
+**0x2B albedo: the second half is not per-tile colour (measured 2026-11-09).** Splitting a native Leon albedo
+(`uPlTex0000_0`, 512x512, 10 mips) into its two 8-byte halves shows the first half is a real BC4 greyscale detail map
+(the jacket/pants/boots are recognisable in `evidence/re6-scale/switch-native-albedo-detail-layer.png`), while the second
+half is the *same constant block in every tile*: `c0 = c1 = 0x7FEF`, indices `0xAAAAAAAA` (a flat pale-yellow BC1
+block). So the engine does not take per-tile colours from that half; our `encode_albedo` writing per-tile averages there
+is why the textured Sonic rendered teal quills and pink gloves while a solid-colour probe rendered exactly its colour.
+The colour source is still to be found: either the material's own colour in the body MRL (whose RE6 revision is not
+decoded yet) or a separate texture the material samples, with this half only a tint/mask. The quadrant probe that would
+separate UV from colour was attempted three times and every session died black on the Spark (see the launch instability
+below), so it is still the next experiment once the box is stable.
+
 **The textured build crashes the title (measured 2026-11-09, live).** Both `re6sw_sonic_leon_tex` and the keep-bind
 `re6sw_sonic_leon_keep` boot and load the save, then the session ends within a couple of minutes, while the
 geometry-only `re6sw_sonic_leon_keep_plain` runs the same round indefinitely (score 2700, 9 kills in the verification
