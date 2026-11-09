@@ -47,15 +47,25 @@ def donor_pool(library: Path) -> list[dict]:
     return out
 
 
-def plan(romfs: Path, pool: list[dict], *, seed: int = 7, slots: list[tuple[str, str]] | None = None
-         ) -> dict[tuple[str, str], dict]:
-    """{(character, costume): donor meta} with a distinct donor per slot when the pool allows it."""
+def plan(romfs: Path, pool: list[dict], *, seed: int = 7, slots: list[tuple[str, str]] | None = None,
+         per_character: bool = False) -> dict[tuple[str, str], dict]:
+    """{(character, costume): donor meta} with a distinct donor per slot when the pool allows it.
+
+    ``per_character`` gives each native character one donor for all of its costumes; that is what a textured build
+    needs, because a character's albedo set is shared by its costumes.
+    """
     available = slots or sorted(M.buildable_slots(romfs))
     if not available:
         raise CastError("no body slots")
     rng = random.Random(seed)
     donors = list(pool)
     rng.shuffle(donors)
+    if per_character:
+        characters = sorted({character for character, _costume in available})
+        if len(donors) < len(characters):
+            raise CastError(f"{len(donors)} donors cannot fill {len(characters)} characters")
+        chosen = {character: donors[index] for index, character in enumerate(characters)}
+        return {slot: chosen[slot[0]] for slot in available}
     if len(donors) < len(available):
         raise CastError(f"{len(donors)} donors cannot fill {len(available)} slots distinctly; pass fewer slots or a "
                         f"larger pool")
@@ -63,16 +73,20 @@ def plan(romfs: Path, pool: list[dict], *, seed: int = 7, slots: list[tuple[str,
 
 
 def build(config, romfs: Path, library: Path, assignment: dict[tuple[str, str], dict], *, name: str = DEFAULT_NAME,
-          height: float = 180.0, progress=None) -> dict:
-    """Author every assigned body slot and write the overlay build; returns a receipt (never touches the RomFS)."""
+          height: float = 180.0, textures: bool = False, progress=None) -> dict:
+    """Author every assigned body slot and write the overlay build; returns a receipt (never touches the RomFS).
+
+    ``textures`` authors the body with the donor's atlas UVs and writes that atlas into every `0x2B` albedo of each
+    character's texture set (`gbox.re6_switch_models.texture_changes`); it therefore expects a per-character plan.
+    """
     romfs = Path(romfs)
     library = Path(library)
     root = M.archive_root(romfs)
     bodies = M.body_arcs(romfs)
-    cache = Path(config.cache) / "re6sw_cast_cache" / name
+    cache = Path(config.cache) / "re6sw_cast_cache" / (name + ("_tex" if textures else ""))
     cache.mkdir(parents=True, exist_ok=True)
     changes: dict[str, dict] = {}
-    receipts, skipped = [], []
+    receipts, skipped, atlases = [], [], {}
     for index, ((character, costume), meta) in enumerate(sorted(assignment.items()), 1):
         body = bodies.get((character, costume))
         if body is None:
@@ -89,7 +103,7 @@ def build(config, romfs: Path, library: Path, assignment: dict[tuple[str, str], 
                 receipt = json.loads(cached_receipt.read_text())
             else:
                 payload, receipt = M.build_body(body.read_bytes(), source, source_roles=meta["rig"]["roles"],
-                                                height=height)
+                                                height=height, textures=textures)
                 cached_arc.write_bytes(payload)
                 cached_receipt.write_text(json.dumps(receipt))
         except (M.SwitchModelError, ValueError) as exc:
@@ -115,11 +129,20 @@ def build(config, romfs: Path, library: Path, assignment: dict[tuple[str, str], 
                     changes[f"romfs/{M.ARCHIVE_DIR.as_posix()}/{part.name}"] = {"bytes": data}
                 receipt.setdefault("blanked_parts", []).append(part.name)
         receipts.append(receipt)
+    if textures:
+        for character in sorted({row["character"] for row in receipts}):
+            meta = next(meta for (slot_character, _costume), meta in assignment.items()
+                        if slot_character == character)
+            atlas = atlases.get(character)
+            if atlas is None:
+                atlas = M.donor_atlas(library / meta["slug"] / meta["model"])
+                atlases[character] = atlas
+            changes.update(M.texture_changes(romfs, character, atlas))
     note = "RE6 Switch cast roster: " + ", ".join(f"{r['character']}/{r['costume']}<-{r['donor']}" for r in receipts)
     written = switch_mods.write_files(config, M.GAME_ID, name, changes,
                                       create={"title_id": M.TITLE_ID, "kind": "file", "game_title": "re6"},
                                       note=note[:9000])
-    out = {"mod": name, "game_id": M.GAME_ID, "title_id": M.TITLE_ID,
+    out = {"mod": name, "game_id": M.GAME_ID, "title_id": M.TITLE_ID, "textured": textures,
            "files": len(changes), "slots": len(receipts), "skipped": skipped,
            "donors": sorted({r["donor"] for r in receipts}),
            "receipts": receipts, "written": written.get("files") or sorted(changes)}

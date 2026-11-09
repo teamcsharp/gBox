@@ -327,7 +327,8 @@ def switch_cast_op(ctx, inp) -> dict:
             raise ValueError(f"slot {text!r} is not character/costume")
         character, costume = text.split("/", 1)
         slots.append((character.strip().lower(), costume.strip()))
-    assignment = R.plan(romfs, pool, seed=int(inp.seed or 7), slots=slots or None)
+    assignment = R.plan(romfs, pool, seed=int(inp.seed or 7), slots=slots or None,
+                        per_character=bool(inp.textures))
     rows = [{"slot": f"{character}/{costume}", "donor": meta["slug"], "name": meta["name"]}
             for (character, costume), meta in sorted(assignment.items())]
     if inp.op == "switch_cast_plan":
@@ -337,7 +338,7 @@ def switch_cast_op(ctx, inp) -> dict:
                                     "or re6 op=switch_cast host=<name> mercmode_default=true"},
                 "message": "the round's native character/costume selects the donor (one LayeredFS build)"}
     built = R.build(ctx.config, romfs, library, assignment, name=name, height=float(inp.height or 180.0),
-                    progress=ctx.progress)
+                    textures=bool(inp.textures), progress=ctx.progress)
     if getattr(inp, "mercmode_default", False) or getattr(inp, "host", ""):
         try:
             host = getattr(inp, "host", "") or next(
@@ -1394,6 +1395,7 @@ class Re6In(BaseModel):
     romfs: str = ""             # switch_cast: the extracted RE6 Switch RomFS (nativeNXx64/arc/NX)
     library: str = ""           # switch_cast: the character library root (default: this node's library)
     slots: list = []            # switch_cast: only these slots, "character/costume" (default: every native body slot)
+    textures: bool = False      # switch_cast: also write the donor atlas into the character's 0x2B albedo entries
 
 
 class Re6Out(BaseModel):

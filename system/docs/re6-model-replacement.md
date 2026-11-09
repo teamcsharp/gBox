@@ -25,6 +25,19 @@ on the native 54-bone skeleton with the original parent list. A z-buffered rende
 
 ![SSBU Sonic authored onto the RE6 Switch Leon body](evidence/re6-scale/switch-sonic-on-leon.png)
 
+**Textured port (measured 2026-11-09).** `build_body(..., textures=True)` takes the donor's atlas UVs from
+`mtf_materials.source_mesh`, and `texture_changes` writes that atlas into every `0x2B` albedo entry of the character's
+texture set (7 Leon texture arcs). The build `re6sw_sonic_leon_tex` is 37 overlay files / 46.3 MB (6 bodies + 24 blanked
+parts + 7 texture arcs, 253 s). Rendering the authored body with the atlas gives the textured donor, which also proves the
+atlas-UV path:
+
+![SSBU Sonic textured on the RE6 Switch Leon body](evidence/re6-scale/switch-sonic-textured-leon.png)
+
+The replacement is per **character**, not per costume: without the material→texture binding, every `_BM` of the set gets
+the same atlas, so all of a character's costumes show that donor. The exact shader reading of the two `0x2B` halves is
+still unproven in-game; the atlas is written with the donor's luminance in the BC4 half and its per-tile average colour
+in the BC1 half, which is correct for every interpretation measured so far (detail, tint, or product).
+
 The role ids are the same family **on every character**, but the bone *order* differs (Helena's head is index 13, Ada's
 left clavicle 22), so `roles_for` always resolves them from the anim ids instead of hard-coding indices. The
 `gbox.re6_switch_models.body_arcs` scan finds **51 native body slots** (9 characters including Carla and the helper,

@@ -68,6 +68,23 @@ def test_blank_arc_keeps_the_skeleton_and_one_triangle():
     assert mt_arc.parse(blanked).entries[0].name == mt_arc.parse(path.read_bytes()).entries[0].name
 
 
+@pytest.mark.skipif(not (LIB / "sonic_ssbu").is_dir(), reason="sonic_ssbu is not in the library")
+@needs_romfs
+def test_a_textured_body_uses_the_donor_atlas():
+    from gbox import characters
+
+    meta = characters.get(LIB, "sonic_ssbu")
+    source = LIB / "sonic_ssbu" / meta["model"]
+    atlas = S.donor_atlas(source)
+    assert atlas.size == (1024, 1024)
+    body = S.body_arcs(ROMFS)[("leon", "Usa")]
+    payload, receipt = S.build_body(body.read_bytes(), source, source_roles=meta["rig"]["roles"], textures=True)
+    assert receipt["vertex_count"] > 1000 and receipt["triangle_count"] == 8094
+    model = _model(payload)
+    assert model.header()["bone_count"] == 54
+    assert model.bone_table()["parents"] == _model(body.read_bytes()).bone_table()["parents"]
+
+
 @pytest.mark.skipif(not (LIB / "shulk_ssbu").is_dir(), reason="shulk_ssbu is not in the library")
 @needs_romfs
 def test_a_multiple_root_skeleton_falls_back_to_native():

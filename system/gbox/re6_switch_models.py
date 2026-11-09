@@ -214,7 +214,7 @@ def _source_geometry(source: Path):
 
 def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], height: float = 180.0,
                material_index: int = 0, template_index: int = 0, margin: float = 0.01,
-               atlas_size=(512, 512)) -> tuple[bytes, dict]:
+               atlas_size=(1024, 1024), textures: bool = False) -> tuple[bytes, dict]:
     """Return (new archive, receipt) with the donor's surface authored onto the native body skeleton.
 
     ``source_roles`` maps a collection role ('hip', 'chest', ...) to the donor's joint name; ``material_index`` picks
@@ -231,7 +231,12 @@ def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], he
         raise SwitchModelError(f"the donor needs a '{ROOT_ROLE}' joint (the native root bone is the hip)")
     from . import characters
 
-    vertices, triangles = _source_geometry(Path(source))
+    if textures:
+        # atlas UVs: the same packing the texture step writes into the character's albedo entries
+        vertices, triangles, _atlas_image, _appearance = mtf_materials.source_mesh(Path(source),
+                                                                                  atlas_size=atlas_size)
+    else:
+        vertices, triangles = _source_geometry(Path(source))
     gltf, names, parents, joints = _source_rig(Path(source), source_roles)
     roles_map = {role: (names[name], roles[role]) for role, name in source_roles.items() if role in roles}
     missing = [role for role in REQUIRED if role not in roles_map]
@@ -382,6 +387,56 @@ def blank_arc(archive: bytes) -> bytes:
     return mtf_author.replace_archive_model(bytes(archive), model_index, authored)
 
 
+def donor_atlas(source: Path, *, atlas_size=(1024, 1024)):
+    """The donor's albedo packed into one atlas image (`mtf_materials.source_mesh` builds it and remaps UVs)."""
+    from . import mtf_materials
+
+    _vertices, _triangles, atlas, _appearance = mtf_materials.source_mesh(Path(source), atlas_size=atlas_size)
+    return atlas
+
+
+def texture_changes(romfs: Path, character: str, atlas, *, formats=(0x2B,)) -> dict[str, dict]:
+    """LayeredFS changes replacing every `0x2B` albedo of a character's texture set with `atlas`.
+
+    The body MRL does not name its textures and the material command records are still undecoded, so the whole
+    character texture set is replaced with the same atlas: the donor mesh carries the atlas UVs, so whichever
+    material samples whichever `_BM`, it reads the donor texel. One atlas therefore serves a character (all its
+    costumes) - per-costume donors need the binding first.
+    """
+    from PIL import Image
+
+    from . import mt_arc, mtf_author, skin_swap
+    from .re6_switch_tex import TexError, from_arc_entry, replace_albedo
+
+    romfs = Path(romfs)
+    known = skin_swap.CHARACTER_ARCS[TITLE_ID]
+    if character not in known:
+        raise SwitchModelError(f"{character!r} is not one of {sorted(known)}")
+    prefix = Path(known[character]).name[3:5]
+    changes: dict[str, dict] = {}
+    for path in sorted((romfs / "nativeNXx64" / "arc" / "NX").glob(f"uPlTex{prefix}*.arc")):
+        data = path.read_bytes()
+        arc = mt_arc.parse(data)
+        replaced = 0
+        for index, entry in enumerate(arc.entries):
+            try:
+                surface = from_arc_entry(entry)
+            except TexError:
+                continue
+            if surface.format not in formats:
+                continue
+            image = atlas if atlas.size == (surface.width, surface.height) else atlas.resize(
+                (surface.width, surface.height), Image.LANCZOS)
+            data = mtf_author.replace_archive_model(data, index, replace_albedo(surface.data, image))
+            replaced += 1
+        if replaced:
+            key = f"romfs/{ARCHIVE_DIR.as_posix()}/{path.name}"
+            changes[key] = {"bytes": data}
+    if not changes:
+        raise SwitchModelError(f"no {formats} albedo found in {character}'s texture set")
+    return changes
+
+
 def character_changes(root: Path, character: str, source: Path, *, source_roles: dict[str, str],
                       costumes: list[str] | None = None, height: float = 180.0, blank: bool = True,
                       progress=None) -> tuple[dict, list[dict]]:
@@ -417,7 +472,8 @@ def character_changes(root: Path, character: str, source: Path, *, source_roles:
     return changes, receipts
 
 
-def export_preview(archive: bytes, gltf_path: Path, png_path: Path | None = None, *, size: int = 384) -> dict:
+def export_preview(archive: bytes, gltf_path: Path, png_path: Path | None = None, *, size: int = 384,
+                   texture=None) -> dict:
     """Write the authored body's geometry as a skinned glTF (and a z-buffered PNG) for evidence.
 
     The authored vertices are model-space (the writer packs them with the native quantisation transform), so the
@@ -447,6 +503,8 @@ def export_preview(archive: bytes, gltf_path: Path, png_path: Path | None = None
             "uv": np.asarray(uvs or [(0, 0)] * count, np.float32), "tris": np.asarray(triangles, np.int64),
             "J": np.zeros((count, 4), np.int64), "W": np.zeros((count, 4), np.float32), "color": (200, 200, 200, 255)}
     prim["W"][:, 0] = 1.0
+    if texture is not None:
+        prim["tex"] = np.asarray(texture, np.uint8)
     melee_models.write_gltf(Path(gltf_path), joints, [prim], 1.0, "re6_switch", [f"j{i:03d}" for i in range(len(joints))])
     out = {"gltf": str(gltf_path), "vertices": count, "triangles": len(triangles), "joints": len(joints)}
     if png_path is not None:
