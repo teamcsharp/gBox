@@ -98,8 +98,8 @@ def decrypt_header(raw: bytes, keys: dict) -> dict:
         sections.append({"index": index, "offset": start * SECTOR, "size": (end - start) * SECTOR,
                          "partition_type": header[base + 2], "fs_type": header[base + 3],
                          "crypt_type": header[base + 4], "section_ctr": header[base + 0x140:base + 0x148],
-                         "pfs0_offset": struct.unpack_from("<Q", header, base + 0x38)[0],
-                         "pfs0_size": struct.unpack_from("<Q", header, base + 0x40)[0]})
+                         "pfs0_offset": struct.unpack_from("<Q", header, base + 0x40)[0],
+                         "pfs0_size": struct.unpack_from("<Q", header, base + 0x48)[0]})
     return {"magic": header[0x200:0x204], "distribution": header[0x204], "content_type": header[0x205],
             "keyblob": keyblob, "kaek_index": header[0x207], "size": struct.unpack_from("<Q", header, 0x208)[0],
             "title_id": f"{struct.unpack_from('<Q', header, 0x210)[0]:016X}",
