@@ -15,6 +15,9 @@ robust gameplay avoiding posturing in the same place and meandering without bein
     explosives  "spam grenades / grenade launcher / mines / remote mines to mobs"
     interrupt   "enemies transitioning into attack animations need to be shot, dispatched, meleed or interrupted"
     boss        "dispatch bosses on sight"
+    locate      "make sure that the bot has intimate knowledge on where enemies are on the map and how to locate and
+                pursue them ... the only way to complete some of these mercenary rounds is to defeat all of the
+                enemies that's on a map, so he has to go and locate them"
 
 RULES holds those words. A new piece of universal advice is a row there, an urgency in Director._urgencies, and a
 weight (WEIGHTS; a dot on the behavior wheel, gbox.mercs.core.control_axes): nothing title-specific.
@@ -56,12 +59,15 @@ RULES = (
     ("explosives", "mine", "spam grenades / grenade launcher / mines / remote mines to mobs"),
     ("interrupt", None, "enemies transitioning into attack animations are shot, dispatched, meleed or interrupted"),
     ("boss", "fight", "dispatch bosses on sight"),
+    ("locate", "hunt", "he knows where every enemy on the map is; with none in sight he goes and finds them (some "
+                       "rounds only end when every one is dead)"),
 )
 GOALS = tuple(r[0] for r in RULES)
 COMMAND = {r[0]: r[1] for r in RULES}
 # The weights (0..1; the behavior wheel's goal dots). A title's module may carry its own under GOAL_<NAME> (what the
 # operator's bot-logic sidebar sets, gbox.mercs.bot_logic); these are what a title without them plays by.
-WEIGHTS = {"engage": 1.0, "combo": 0.9, "explore": 0.7, "explosives": 0.6, "interrupt": 1.0, "boss": 1.0}
+WEIGHTS = {"engage": 1.0, "combo": 0.9, "explore": 0.7, "explosives": 0.6, "interrupt": 1.0, "boss": 1.0,
+           "locate": 1.0}
 
 IMPEDE_M = 3.5                    # an enemy this near is in his way
 LEVEL_M = 2.5                     # ... on his own floor: one this far above or below is neither in his way nor in sight
@@ -115,7 +121,8 @@ def weights(module=None) -> dict:
 
 def view(snap: dict, drv=None, module=None) -> dict | None:
     """The round in the doctrine's terms, or None when no player is up (a menu, a loading screen):
-    {"pos": (x, z) m, "foes": [{"d": m, "boss": bool, "windup": bool}], "kills", "combo"}."""
+    {"pos": (x, z) m, "foes": [{"d": m, "boss": bool, "windup": bool}] (the ones on his floor), "alive": every
+    living enemy on the map whatever its floor, "kills", "combo"}."""
     custom = getattr(drv, "doctrine_view", None)
     if callable(custom):
         got = custom(snap)
@@ -134,10 +141,11 @@ def view(snap: dict, drv=None, module=None) -> dict | None:
     module = module if module is not None else title_module(drv)
     winding = getattr(module, "WINDUP_MOTIONS", ()) or ()
     flag = getattr(module, "E_ATTACKING", 0) or 0
-    foes = []
+    foes, alive = [], 0
     for e in snap.get("enemies") or ():
         if not isinstance(e, dict) or (e.get("hp") or 0) <= 0:
             continue
+        alive += 1
         q = e.get("pos") or e.get("r")
         if not q or len(q) < 3:
             continue
@@ -149,7 +157,7 @@ def view(snap: dict, drv=None, module=None) -> dict | None:
         foes.append({"d": d, "boss": bool(e.get("boss")) or (e.get("hp_max") or 0) >= BOSS_HP_MIN,
                      "windup": bool(e.get("windup")) or e.get("motion") in winding
                      or bool(flag and (e.get("act") or 0) & flag)})
-    return {"pos": (px, pz), "foes": foes, "kills": snap.get("kills"), "combo": snap.get("combo")}
+    return {"pos": (px, pz), "foes": foes, "alive": alive, "kills": snap.get("kills"), "combo": snap.get("combo")}
 
 
 def _commands():
@@ -237,6 +245,9 @@ class Director:
         impeding = sum(1 for f in foes if f["d"] <= IMPEDE_M)
         in_sight = sum(1 for f in foes if f["d"] <= SIGHT_M)
         crowd = sum(1 for f in foes if f["d"] <= CROWD_M)
+        alive = v.get("alive")
+        alive = len(foes) if not isinstance(alive, int) else alive
+        st["doctrine_alive"], st["doctrine_in_sight"] = alive, in_sight
         # moving: the ground covered over the last MOVE_WINDOW_S (a stick held into a wall is not moving)
         self.trail.append((now, x, z))
         while len(self.trail) > 2 and now - self.trail[1][0] >= MOVE_WINDOW_S:
@@ -288,6 +299,8 @@ class Director:
             self.decided_at = now
             w = self.weights_of()
             u = self._urgencies(foes, impeding, in_sight, crowd, since_kill, anchor_s, now)
+            # they are out there and none is in sight: go and find them (never a wait for the anchor to ripen)
+            u["locate"] = 1.0 if alive and not in_sight else 0.0
             if floor:
                 u["engage"] = max(u["engage"], 1.0)
             scored = sorted(((w.get(g, 0.0) * u.get(g, 0.0), g) for g in GOALS if COMMAND[g]), reverse=True)

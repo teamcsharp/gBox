@@ -59,6 +59,7 @@ AXES = {
     "goal_explore":     ("Goal: explore", 0.0, 1.0, 0.05, 0.7, "always moving: no posturing, the whole level"),
     "goal_explosives":  ("Goal: explosives", 0.0, 1.0, 0.05, 0.6, "mines / grenades / launcher into mobs"),
     "goal_boss":        ("Goal: bosses", 0.0, 1.0, 0.05, 1.0, "bosses dispatched on sight"),
+    "goal_locate":      ("Goal: locate", 0.0, 1.0, 0.05, 1.0, "none in sight: go to where the enemy map says they are"),
 }
 # title -> axis -> its targets, primary first: the primary's row decides the axis's availability and shown value.
 # A knob belongs to at most one axis (two dots fighting over one knob would make the last drag win silently).
@@ -79,6 +80,7 @@ MAPS = {
         "goal_explore":     (("behavior.GOAL_EXPLORE", "pass"),),
         "goal_explosives":  (("behavior.GOAL_EXPLOSIVES", "pass"),),
         "goal_boss":        (("behavior.GOAL_BOSS", "pass"),),
+        "goal_locate":      (("behavior.GOAL_LOCATE", "pass"),),
     },
     "re6": {
         "aggression":       (("behavior.FIRE_ZONE_R", "lin", 300.0, 2000.0),
@@ -101,6 +103,7 @@ MAPS = {
         "goal_explore":     (("behavior.GOAL_EXPLORE", "pass"),),
         "goal_explosives":  (("behavior.GOAL_EXPLOSIVES", "pass"),),
         "goal_boss":        (("behavior.GOAL_BOSS", "pass"),),
+        "goal_locate":      (("behavior.GOAL_LOCATE", "pass"),),
     },
 }
 # An axis a title cannot express yet: the grey dot's reason.

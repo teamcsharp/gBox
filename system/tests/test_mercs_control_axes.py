@@ -43,7 +43,8 @@ def test_every_axis_is_mapped_or_named_grey_and_each_knob_serves_one_axis():
     assert set(AX.AXES) == {"aggression", "aim_speed", "fire_rate", "magnum", "weapon_switching", "grenade_use",
                             "mine_place", "melee", "knife",
                             # the universal doctrine's goal weights (gbox.mercs.core.doctrine)
-                            "goal_engage", "goal_combo", "goal_explore", "goal_explosives", "goal_boss"}
+                            "goal_engage", "goal_combo", "goal_explore", "goal_explosives", "goal_boss",
+                            "goal_locate"}
     for title, axes in AX.MAPS.items():
         knobs = {k[0]: k for k in bot_logic.KNOBS[title]}
         mods = {op: bounds for op, _l, _f, bounds in LC.MODS[title]}

@@ -1915,6 +1915,7 @@ BOMB_HOLD_S = 8.0                       # out this long: off once he is clear
 # The universal doctrine's goal weights on this title (gbox.mercs.core.doctrine: the operator's standing goals for
 # every title, 2026-11-09; the behavior wheel's goal dots and the bot-logic sidebar set these, 0..1)
 GOAL_ENGAGE, GOAL_COMBO, GOAL_EXPLORE, GOAL_EXPLOSIVES, GOAL_INTERRUPT, GOAL_BOSS = 1.0, 0.9, 0.7, 0.6, 1.0, 1.0
+GOAL_LOCATE = 1.0
 NADES = False                            # (on per profile, re6_switch_mods bot_options nades=); the wheel measured live 14:17 (_wheel_key; the D-pad's right from an item lands
                                         # on wheel index 0, between the guns it steps 0 -> 1 -> 2 -> 0; a throw leaves the
                                         # game's own pick of a gun in hand - the knife, index 2 - so the gun back is to his)

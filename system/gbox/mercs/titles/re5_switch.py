@@ -934,6 +934,13 @@ MINES, MINE_EVERY_S = True, 30.0
 # The universal doctrine's goal weights on this title (gbox.mercs.core.doctrine: the operator's standing goals for
 # every title, 2026-11-09; the behavior wheel's goal dots and the bot-logic sidebar set these, 0..1)
 GOAL_ENGAGE, GOAL_COMBO, GOAL_EXPLORE, GOAL_EXPLOSIVES, GOAL_INTERRUPT, GOAL_BOSS = 1.0, 0.9, 0.7, 0.6, 1.0, 1.0
+GOAL_LOCATE = 1.0
+# Nobody on his floor: the census (every living enemy in the stage, whatever its floor, straight from the game's enemy
+# table) says where they are, and he goes - by the learned map, and for one on another floor by the ladder / ledge /
+# door he has seen on this stage (the remembered spots) that lies best between him and it. Operator 2026-11-09: "the
+# only way to complete some of these mercenary rounds is to defeat all of the enemies that's on a map, so he has to go
+# and locate them". It used to stand ("no Majini alive on his level") unless a typed command sent him.
+LOCATE = True
 # Every walk to a Majini goes by the stage's learned map (re5_switch_nav: where he has walked is open, where he hit a
 # wall is blocked, A* between; kept per stage under gbox-data/mercs/learned). Until 2026-11-09 only the time-bonus
 # runs used it and every other walk was the straight line (operator: "the bot is walking up against a wall. I need
@@ -4047,6 +4054,34 @@ class Bot:
             self.stats["nav_direct_ticks"] = self.stats.get("nav_direct_ticks", 0) + 1
         return self._turn(wrap(heading(tx - px, tz - pz) - p["rot"]), TURN_TOL if tol is None else tol)
 
+    def _locate(self, p, snap, now) -> dict | None:
+        """The run to the census's best enemy when none is on his floor (LOCATE above). stats locates (targets taken),
+        locate_m / locate_dy_cm (how far and how much higher or lower the current one is)."""
+        px, py, pz = p["pos"]
+        census = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")]
+        if not (LOCATE and census):
+            return None
+        flat = lambda q: math.hypot(q[0] - px, q[2] - pz)
+        tgt = min(census, key=lambda e: flat(e["pos"]) + PURSUE_DY_W * abs(e["pos"][1] - py))
+        key, tx, ty, tz = tgt.get("ptr", tgt.get("slot")), *tgt["pos"]
+        if getattr(self, "_locate_key", None) != key:
+            self._locate_key = key
+            self.stats["locates"] = self.stats.get("locates", 0) + 1
+        d, dy = flat(tgt["pos"]), ty - py
+        self.stats["locate_m"], self.stats["locate_dy_cm"] = round(d / 100.0, 1), round(dy)
+        goal, how = tgt["pos"], "by the map"
+        if abs(dy) > LEVEL_DY:                             # another floor: a way up or down he has seen here
+            spots = [s_ for s_ in self._door_spots() if abs(s_[1] - py) < 150.0 and flat(s_) > DOOR_REACH_R]
+            if spots:
+                best = min(spots, key=lambda q: flat(q) + math.hypot(q[0] - tx, q[2] - tz))
+                goal, how = (best[0], best[1], best[2]), f"by the {best[3] or 'way'} he knows here"
+        self._goal_dy = dy
+        self.doing = "walk"
+        self.why = (f"locating: the nearest Majini {d / 100:.0f} m off"
+                    + (f", {dy:+.0f} cm off his floor" if abs(dy) > LEVEL_DY else "") + f" - {how}")
+        self._gun_down()
+        return {"hold": ("lup", "b") + self._approach(p, goal, now)}
+
     def _operator_command(self, p, snap, live, now) -> str | None:
         """The operator's instant commands (gbox.mercs.directives, the PS3 bot's set): one-shots act on the tick they
         arrive, the standing modes (fight / hunt / score) are returned for the fight to apply. A command never presses
@@ -4169,6 +4204,9 @@ class Bot:
             if act is not None:
                 return act
             act = self._pursue(p, live, flat, snap, now)
+            if act is not None:
+                return act
+            act = self._locate(p, snap, now)                # nobody on his floor: where the census says they are
             if act is not None:
                 return act
             others = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0]

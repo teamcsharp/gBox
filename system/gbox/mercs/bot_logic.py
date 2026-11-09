@@ -50,6 +50,8 @@ KNOBS: dict[str, list[tuple]] = {
          "no posturing in one place: on through the whole level"),
         ("GOAL_EXPLOSIVES", "Explosives into mobs", "Goals", "float", 0, 1, 0.05, "mines / grenades / launcher"),
         ("GOAL_BOSS", "Bosses on sight", "Goals", "float", 0, 1, 0.05, ""),
+        ("GOAL_LOCATE", "Locate: go and find them", "Goals", "float", 0, 1, 0.05,
+         "none in sight: to where the enemy map says they are, on any floor"),
     ],
     "re6": [
         ("NADES", "Grenades", "Crowd control", "bool", 0, 1, 1, "frags and incendiaries into clusters"),
@@ -99,6 +101,8 @@ KNOBS: dict[str, list[tuple]] = {
          "no posturing in one place: on through the whole level"),
         ("GOAL_EXPLOSIVES", "Explosives into mobs", "Goals", "float", 0, 1, 0.05, "mines / grenades / launcher"),
         ("GOAL_BOSS", "Bosses on sight", "Goals", "float", 0, 1, 0.05, ""),
+        ("GOAL_LOCATE", "Locate: go and find them", "Goals", "float", 0, 1, 0.05,
+         "none in sight: to where the enemy map says they are, on any floor"),
     ],
 }
 MODULES = {"re5": "gbox.mercs.titles.re5_switch", "re6": "gbox.mercs.titles.re6_switch"}

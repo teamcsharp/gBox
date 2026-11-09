@@ -117,7 +117,8 @@ def test_the_weights_decide_between_goals_and_a_title_module_can_carry_its_own()
     assert w["explore"] == 0.1 and w["combo"] == 1.0 and w["engage"] == D.WEIGHTS["engage"]
     assert D.weights(None) == D.WEIGHTS
     stats = {}
-    d = D.Director(stats, weights_of=lambda: {"engage": 0.0, "combo": 0.0, "explore": 0.0, "explosives": 0.0, "boss": 0.0})
+    d = D.Director(stats, weights_of=lambda: {"engage": 0.0, "combo": 0.0, "explore": 0.0, "explosives": 0.0, "boss": 0.0,
+                                              "locate": 0.0})
     d.reset(1000.0)
     run(d, [(snap([foe(9.0)]), {"hold": ("zl", "zr", "lup")})] * 200)   # every weight at zero: no command at all
     assert stats["doctrine_goal"] is None and "doctrine_directive" not in stats
@@ -156,7 +157,8 @@ def test_every_bot_reads_a_doctrine_command_like_a_typed_one():
 
 
 def test_every_rule_has_a_weight_and_only_known_commands_are_issued():
-    assert set(D.WEIGHTS) == set(D.GOALS) == {"engage", "combo", "explore", "explosives", "interrupt", "boss"}
+    assert set(D.WEIGHTS) == set(D.GOALS) == {"engage", "combo", "explore", "explosives", "interrupt", "boss",
+                                              "locate"}
     assert all(cmd is None or cmd in directives.COMMANDS for cmd in D.COMMAND.values())
     for title in ("re5", "re6"):                                          # both Switch titles carry the wheel's dots
         from gbox.mercs import bot_logic
@@ -164,7 +166,7 @@ def test_every_rule_has_a_weight_and_only_known_commands_are_issued():
         import importlib
         mod = importlib.import_module(bot_logic.MODULES[title])
         knobs = {k[0] for k in bot_logic.KNOBS[title]}
-        for goal in ("engage", "combo", "explore", "explosives", "boss"):
+        for goal in ("engage", "combo", "explore", "explosives", "boss", "locate"):
             assert hasattr(mod, "GOAL_" + goal.upper()) and "GOAL_" + goal.upper() in knobs
             assert AX.MAPS[title]["goal_" + goal] == (("behavior.GOAL_" + goal.upper(), "pass"),)
         assert D.weights(mod) == D.WEIGHTS                                # shipped at the operator's stated priorities
@@ -212,3 +214,21 @@ def test_the_doctrines_own_reader_works_over_a_directives_reader_from_before_the
         assert r.current(stats, 20.0) == ("explore", False), base.__name__            # still theirs
         assert r.current(stats, 31.0) == ("score", True), base.__name__               # theirs lapsed: the doctrine's
         assert r.current(stats, 32.0) == ("score", False), base.__name__
+
+
+def test_none_in_sight_but_alive_on_the_map_sends_him_to_find_them_at_once():
+    """Operator 2026-11-09: "the only way to complete some of these mercenary rounds is to defeat all of the enemies
+    that's on a map, so he has to go and locate them" - the enemy table knows every one of them, on any floor."""
+    stats = {}
+    d = D.Director(stats)
+    d.reset(1000.0)
+    upstairs = {"pos": (300.0, 600.0, 0.0), "hp": 800, "hp_max": 800}        # 3 m away in plan, 6 m above him
+    far = foe(60.0)                                                            # another, across the map
+    v = D.view(snap([upstairs, far]))
+    assert v["alive"] == 2 and [round(f["d"]) for f in v["foes"]] == [60]      # the one upstairs is not on his floor
+    now = run(d, [(snap([upstairs, far]), {"hold": ("lup", "b")})] * 10)      # 0.3 s: decided at the first tick
+    assert stats["doctrine_goal"] == "locate" and stats["doctrine_directive"] == "hunt"
+    assert stats["doctrine_alive"] == 2 and stats["doctrine_in_sight"] == 0
+    assert stats["doctrine_idle_s"] == 0.0                                    # nobody in sight: not an idle lapse
+    run(d, [(snap([foe(6.0)]), {"hold": ("zl", "zr")})] * 30, start=now)       # found one: the fight is his again
+    assert stats["doctrine_goal"] != "locate"

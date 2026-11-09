@@ -69,13 +69,15 @@ def test_hunt_walks_to_the_nearest_far_majini_and_fight_finds_one_off_his_level(
     command(b, "hunt", 20)
     act = b.tick(snap([(0.0, 0.0, 1600.0)]))
     assert b.doing == "walk" and "lup" in act["hold"] and b.why.startswith("hunt")
-    b, clock = bot()
-    command(b, "fight", 15)
-    act = b.tick(snap([(0.0, 600.0, 900.0)]))                       # on the roof above: not on his level
-    assert b.doing == "walk" and "lup" in act["hold"] and b.why.startswith("fight")
-    b, clock = bot()
-    b.tick(snap([(0.0, 600.0, 900.0)]))
-    assert b.doing == "no_foes"                                      # without the command: he waits
+    # Nobody on his floor, one on the roof above: he goes and finds it, command or no command (operator 2026-11-09:
+    # "he has to go and locate them" - it used to wait, "no Majini alive on his level", unless a command sent him)
+    for cmd in ("fight", None):
+        b, clock = bot()
+        if cmd:
+            command(b, cmd, 15)
+        act = b.tick(snap([(0.0, 600.0, 900.0)]))
+        assert b.doing == "walk" and {"lup", "b"} <= set(act["hold"]) and b.why.startswith("locating"), (cmd, b.why)
+        assert b.stats["locates"] == 1 and b.stats["locate_dy_cm"] == 600 and b.stats["locate_m"] == 9.0
 
 
 def test_score_shoots_the_nearest_and_next_area_is_the_operators_wall():
