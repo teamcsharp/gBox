@@ -38,6 +38,15 @@ def test_a_normal_map_decodes_to_a_normal_map():
 
 
 @needs_arc
+def test_export_textures_writes_pngs(tmp_path):
+    rows = X.export_textures(ROMFS, "leon", tmp_path, formats=(0x2B,))
+    done = [row for row in rows if row.get("png")]
+    assert done and all(row["format"] == 0x2B for row in done)
+    assert all(Path(row["png"]).is_file() for row in done)
+    assert len(done) >= 5
+
+
+@needs_arc
 def test_the_albedo_encoder_round_trips_through_a_real_tex():
     import numpy as np
     from PIL import Image

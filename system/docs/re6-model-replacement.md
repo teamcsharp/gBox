@@ -48,6 +48,10 @@ smaller uniform fit (Sherry's Snow costume clamps to 97.5 cm, Incineroar on Pier
 |---|---|---|---|
 | ![Robin](evidence/re6-scale/switch-robin-as-leon.png) | ![Peach](evidence/re6-scale/switch-peach-as-ada.png) | ![Greninja](evidence/re6-scale/switch-greninja-as-chris.png) | ![Dark Pit](evidence/re6-scale/switch-darkpit-as-sherry.png) |
 
+All 51 slots, rendered from the built overlay (label = slot ← donor):
+
+![RE6 Switch roster contact sheet](evidence/re6-scale/switch-roster-contact-sheet.png)
+
 The round hook: `re6 op=switch_cast host=<PC> mercmode_default=true` sets `default_mods.re6` on that PC's MercMode, so
 every RE6 round it plays boots the roster build; `session_id=<id>` also launches the title there with it. The build is a
 LayeredFS overlay, so the worker running the emulator must hold `cache/mods/115f9cdbba115432/<build>` (copy it with the
@@ -63,9 +67,14 @@ mouth/teeth atlas), bytes 8-15 are BC1 and decode to a low-resolution per-4x4-ti
 a tile. Decoding the detail layer is proven; whether the shader combines it with that colour half (and how) is not, so
 `Surface.decode` returns the detail layer and `_albedo_layers` exposes both. The MRL v36 material records carry only a
 name hash (five 72-byte records, identical except `0x6390b116`, `0x61c18195`, `0xa56925da`, `0xf8c8d02f`, `0x68b3d093`),
-so the material→texture binding is still unnamed. The encoder side now exists: `re6_switch_tex.replace_albedo` writes a
-new mip chain in that same two-half layout (BC4 detail plus a flat per-tile BC1 colour) and round-trips through a real
-TEX at **49.4 dB** detail PSNR, so the texture step is down to the material→texture binding.
+so the material→texture binding is still unnamed. New measurement (round 8): the body MOD carries the material **names**
+themselves at offset `0x24D4` (`pl_cloth`, `pl_base2`, `pl_cloth1`, `pl_base1`, `pl_skin`, 128 bytes each), and the MRL
+v36 hash is exactly `crc32(name) ^ 0xFFFFFFFF` — all five match (`0x6390b116`, `0x61c18195`, `0xa56925da`, `0xf8c8d02f`,
+`0x68b3d093`). The MOD contains **no texture references** (every texture-name hash was searched in the file), so the
+material→texture link is a runtime convention, not a stored table. The encoder side now exists:
+`re6_switch_tex.replace_albedo` writes a new mip chain in that same two-half layout (BC4 detail plus a flat per-tile BC1
+colour) and round-trips through a real TEX at **49.4 dB** detail PSNR, and `re6_switch_tex.export_textures` writes a
+character's whole texture set (Leon: 272 surfaces, 241 PNGs) so the reader is exercised on every measured format.
 
 The rest of this document describes the earlier **Xbox 360** analysis. It is kept because the scale/bind lessons are
 platform-neutral and the 360 measurements are what the Switch fit reuses, but its writer and mods are **not** the

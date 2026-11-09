@@ -26,6 +26,7 @@ import zlib
 import numpy as np
 
 TEX_VERSION = 0xA1
+TITLE_ID = "01002A000CD48000"                # RE6 Switch (No Mercy)
 REVISIONS = (0x20, 0x80)                     # RE6 Switch / RE5 Switch
 BLOCK_BYTES = {0x19: 8, 0x1F: 16, 0x2B: 16}
 DECODABLE = {0x1F: ("bc5", 16), 0x19: ("bc4", 8), 0x30: ("bc7", 16), 0x31: ("bc7", 16)}
@@ -147,6 +148,48 @@ def from_arc_entry(entry) -> Surface:
     except zlib.error:
         raw = entry.data
     return Surface(raw)
+
+
+def export_textures(romfs, character: str, out_dir, *, formats=(0x2B, 0x1F, 0x19)) -> list[dict]:
+    """Write a character's player textures from its `uPlTex####_*.arc` files as PNGs; returns what was written.
+
+    The texture archives are named after the character's two-digit body prefix (`uPl00LeonUsa.arc` -> `uPlTex00*`), so
+    a character's whole texture set is every `uPlTex` archive whose digits start with that prefix. Only the measured
+    formats are decoded; the rest are listed and skipped.
+    """
+    from pathlib import Path
+
+    from PIL import Image
+
+    from . import characters as C, mt_arc, skin_swap
+
+    romfs = Path(romfs)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    known = skin_swap.CHARACTER_ARCS[TITLE_ID]
+    if character not in known:
+        raise TexError(f"{character!r} is not one of {sorted(known)}")
+    prefix = Path(known[character]).name[3:5]
+    written = []
+    for path in sorted((romfs / "nativeNXx64" / "arc" / "NX").glob(f"uPlTex{prefix}*.arc")):
+        arc = mt_arc.parse(path.read_bytes())
+        for entry in arc.entries:
+            try:
+                surface = from_arc_entry(entry)
+            except TexError:
+                continue
+            row = {"character": character, "archive": path.name, "name": entry.name.rsplit("\\", 1)[-1],
+                   "format": surface.format, "width": surface.width, "height": surface.height}
+            if surface.format not in formats:
+                row["skipped"] = "format not decoded"
+                written.append(row)
+                continue
+            image = surface.decode()
+            png = out_dir / f"{path.stem}__{row['name']}.png"
+            image.convert("RGB").save(png)
+            row["png"] = str(png)
+            written.append(row)
+    return written
 
 
 def describe_arc(archive) -> list[dict]:
