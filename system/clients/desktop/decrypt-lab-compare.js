@@ -5,6 +5,14 @@
     11:'Left upper arm',12:'Left forearm',14:'Left hand',16:'Right thigh',17:'Right shin',18:'Right foot',
     20:'Left thigh',21:'Left shin',22:'Left foot'};
   const WINDOW_FRAMES=60;
+  const CHRIS_ARC='nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc';
+  const CHRIS_SHA='8ab0dc181d1f6ec155e193c5820d1756d877acf711424863b16f7850b592f6c8';
+  function buildLabel(info,name){return info?.builds?.find(build=>build.name===name)?.label||name;}
+  function measuredHandGrip(info,title,arcPath,entry){
+    if(!['re5_switch','010018100CD46000'].includes(title)||arcPath!==CHRIS_ARC||info?.native_sha256!==CHRIS_SHA||Number(entry)!==115)return false;
+    const motion=info.motions?.find(row=>row.entry_index===115),clip=motion?.clips?.find(row=>row.index===110);
+    return motion?.name==='pl00wp00'&&clip?.frame_count===2&&clip.track_count===34&&clip.buffered_tracks===0&&clip.supported===true&&clip.engine_ik===false;
+  }
   const CHAINS=[[0,2,4],[2,6,7,9],[2,11,12,14],[0,16,17,18],[0,20,21,22]];
   function jointLabels(selected){return CHAINS.find(chain=>chain.slice(1).includes(Number(selected)))||CHAINS[0];}
   const esc=value=>String(value??'').replace(/[&<>"']/g,c=>`&#${c.charCodeAt(0)};`);
@@ -87,7 +95,7 @@
       <button data-refresh>Refresh builds</button><label>Motion <select data-motion></select></label>
       <label>Pose / animation <select data-clip><option value="">Bind pose</option></select></label>
       <label><input type="checkbox" data-raw-fk> Animation preview without game IK</label>
-      <label>Start frame <input data-start type="number" min="0" step="1" value="0" size="6"></label><button data-load>Load comparison</button></div>
+      <label>Start frame <input data-start type="number" min="0" step="1" value="0" size="6"></label><button data-load>Load comparison</button><button data-hand-grip hidden title="Inspect the measured two-frame finger-grip pose; game layers and IK are not simulated">Hand grip (2 frames)</button></div>
       <p data-status role="status">Choose the candidate build to compare with the original Chris.</p>
       <p data-limitations hidden></p>
       <div class="compare-stage"><canvas data-canvas></canvas><div class="compare-label left">Original Chris (BSAA)</div><div data-candidate-label class="compare-label right">Candidate</div><div data-joints class="compare-joints"></div></div>
@@ -158,10 +166,10 @@
       for(const name of ['frame','play','prev','next'])q(`[data-${name}]`).disabled=data.native.frames.length<2;
       const numbers=frameNumbers(data);q('[data-earlier]').disabled=data.clip?.animation_index==null||numbers[0]===0;
       q('[data-later]').disabled=data.clip?.animation_index==null||numbers.at(-1)+1>=(data.clip?.frame_count||numbers.at(-1)+1);
-      q('[data-details]').textContent=JSON.stringify({source:data.source,clip:data.clip,diagnostics:data.diagnostics,native:data.native.model_sha256||data.native.sha256,candidate:data.candidate.model_sha256||data.candidate.sha256},null,2);
+      q('[data-details]').textContent=JSON.stringify({build:data.source?.build||q('[data-build]').value,source:data.source,clip:data.clip,diagnostics:data.diagnostics,native:data.native.model_sha256||data.native.sha256,candidate:data.candidate.model_sha256||data.candidate.sha256},null,2);
       const limits=q('[data-limitations]');limits.hidden=data.clip?.animation_index==null;limits.textContent=data.evaluation_mode==='raw_fk_without_game_ik'?'Diagnostic animation preview: game IK is omitted. Feet and other constrained joints can differ from the game. Physics and layered motion are also omitted.':'Animation preview uses the native animation tracks. Game IK, physics and layered motion are not shown.';
       q('[data-status]').textContent=data.clip?.animation_index==null?'Bind pose. Drag either view to rotate both models.':`Frames ${numbers[0]}–${numbers.at(-1)} of ${data.clip?.frame_count??'the animation'}. Play or step together; use Earlier / Later frames to inspect the rest.`;
-      if(data.source?.build)q('[data-candidate-label]').textContent='Candidate · '+data.source.build;
+      q('[data-candidate-label]').textContent='Candidate · '+buildLabel(dialog._compareCatalog,data.source?.build||q('[data-build]').value);
       showFrame(0);
     }
     async function call(body){return api('/api/decrypt-lab/model-compare',{title,arc_path:arcPath,...body},'POST');}
@@ -169,21 +177,23 @@
       const token=++sequence;playing=false;q('[data-status]').textContent='Reading models and animations…';
       try{const info=await call({op:'list',...(Number.isSafeInteger(animationEntry)?{animation_entry:animationEntry}:{})});if(dead||token!==sequence)return;
         const chosen=q('[data-build]').value||build;q('[data-build]').innerHTML='<option value="">Choose a build</option>'+info.builds.map(b=>`<option value="${esc(b.name)}">${esc(b.label||b.name)}</option>`).join('');q('[data-build]').value=chosen;
-        q('[data-motion]').innerHTML=(info.motions||[]).map(m=>`<option value="${m.entry_index}">${esc(m.name)}</option>`).join('');if(info.selected_animation_entry!=null)q('[data-motion]').value=String(info.selected_animation_entry);dialog._compareCatalog=info;selectMotion();q('[data-status]').textContent='Choose a build and pose or animation. Loading only reads the models.';return info;
+        q('[data-motion]').innerHTML=(info.motions||[]).map(m=>`<option value="${m.entry_index}">${esc(m.name)}</option>`).join('');if(info.selected_animation_entry!=null)q('[data-motion]').value=String(info.selected_animation_entry);dialog._compareCatalog=info;selectMotion();handGripAvailable();q('[data-status]').textContent='Choose a build and pose or animation. Loading only reads the models.';return info;
       }catch(error){if(!dead&&token===sequence)q('[data-status]').textContent=error.message;}
       finally{if(!dead&&token===sequence)q('[data-load]').disabled=false;}
     }
     function selectMotion(){const info=dialog._compareCatalog,motion=info?.motions?.find(m=>String(m.entry_index)===q('[data-motion]').value),raw=q('[data-raw-fk]').checked;q('[data-clip]').innerHTML='<option value="">Bind pose</option>'+(motion?.clips||[]).map(c=>{const available=c.supported!==false||(raw&&c.raw_fk_supported===true);return `<option value="${c.index}" ${available?'':'disabled'} title="${esc(c.reason||'')}">${esc(c.name||'Animation '+c.index)} · ${c.frame_count} frames${available?'':c.raw_fk_supported?' · needs preview without IK':' · unavailable'}</option>`;}).join('');}
-    async function load(){
+    async function load(options={}){
       const chosen=q('[data-build]').value;if(!chosen){q('[data-status]').textContent='Choose the candidate build first.';return;}
-      const token=++sequence;playing=false;q('[data-load]').disabled=true;q('[data-status]').textContent='Loading the same native frames for both models…';
+      const token=++sequence;playing=false;q('[data-load]').disabled=true;q('[data-hand-grip]').disabled=true;q('[data-status]').textContent='Loading the same native frames for both models…';
       try{const clip=q('[data-clip]').value,motion=q('[data-motion]').value;
         const start=Number(q('[data-start]').value);if(!Number.isSafeInteger(start)||start<0)throw Error('Start frame must be a nonnegative whole number.');
         const value=await call({op:'sample',build:chosen,...(motion!==''?{animation_entry:Number(motion),...(clip!==''?{animation_index:Number(clip),start_frame:start}:{})}:{}),frame_count:WINDOW_FRAMES,raw_fk:q('[data-raw-fk]').checked});
-        if(dead||token!==sequence)return;setData(value);q('[data-candidate-label]').textContent='Candidate · '+chosen;
-        const numbers=frameNumbers(value);q('[data-status]').textContent=clip===''?'Bind pose. Drag either view to rotate both models.':`Frames ${numbers[0]}–${numbers.at(-1)} of ${value.clip?.frame_count??'the animation'}. Play or step together; use Earlier / Later frames to inspect the rest.`;
+        if(dead||token!==sequence)return;
+        if(options.expectedNativeHash&&value.source?.native_sha256!==options.expectedNativeHash)throw Error('The original archive changed. Refresh animations before using the hand-grip shortcut.');
+        setData(value);q('[data-candidate-label]').textContent='Candidate · '+buildLabel(dialog._compareCatalog,chosen);
+        const numbers=frameNumbers(value);q('[data-status]').textContent=clip===''?'Bind pose. Drag either view to rotate both models.':`Frames ${numbers[0]}–${numbers.at(-1)} of ${value.clip?.frame_count??'the animation'}. Play or step together; use Earlier / Later frames to inspect the rest.`;return value;
       }catch(error){if(!dead&&token===sequence)q('[data-status]').textContent=error.message;}
-      finally{if(!dead&&token===sequence)q('[data-load]').disabled=false;}
+      finally{if(!dead&&token===sequence){q('[data-load]').disabled=false;handGripAvailable();}}
     }
     function labels(width,height){
       const host=q('[data-joints]');host.textContent='';if(!data||!q('[data-labels]').checked)return;
@@ -219,9 +229,16 @@
     function fitFocus(){const radius=limbRadius(data,Number(q('[data-joint]').value)),stage=q('.compare-stage'),aspect=stage.clientWidth/2/Math.max(1,stage.clientHeight),angle=Math.atan(Math.tan(camera.fov*Math.PI/360)*Math.min(1,aspect));center.set(0,0,0);size=radius*2;distance=radius/Math.sin(angle)*1.1;}
     function focusView(value){if(!data)return;focused=value;if(focused)fitFocus();else{q('[data-isolate]').checked=false;center.copy(fullCenter);size=fullSize;distance=fullDistance;}place();showFrame(frame);}
     on('[data-focus]','click',()=>focusView(true));on('[data-full]','click',()=>focusView(false));
+    function handGripAvailable(){const allowed=measuredHandGrip(dialog._compareCatalog,title,arcPath,q('[data-motion]').value);q('[data-hand-grip]').hidden=!allowed;q('[data-hand-grip]').disabled=!allowed||!q('[data-build]').value;}
+    on('[data-hand-grip]','click',async()=>{
+      if(!measuredHandGrip(dialog._compareCatalog,title,arcPath,q('[data-motion]').value))return;
+      q('[data-raw-fk]').checked=false;selectMotion();q('[data-clip]').value='110';q('[data-start]').value='0';
+      if(!['9','14'].includes(q('[data-joint]').value))q('[data-joint]').value='14';
+      if(await load({expectedNativeHash:CHRIS_SHA})){if(!q('[data-isolate]').disabled)q('[data-isolate]').checked=true;focusView(true);}
+    });
     on('[data-isolate]','change',()=>{if(q('[data-isolate]').checked)focusView(true);else showFrame(frame);});
     dialog.querySelectorAll('[data-view]').forEach(button=>button.addEventListener('click',()=>{yaw={z:Math.PI/2,'-z':-Math.PI/2,x:0,'-x':Math.PI}[button.dataset.view];pitch=0;place();}));
-    function changed(){sequence++;playing=false;q('[data-play]').textContent='Play';q('[data-load]').disabled=false;for(const name of ['frame','play','prev','next','earlier','later'])q(`[data-${name}]`).disabled=true;q('[data-status]').textContent='Selection changed. Load comparison to show the selected models and frames.';}
+    function changed(){sequence++;playing=false;q('[data-play]').textContent='Play';q('[data-load]').disabled=false;handGripAvailable();for(const name of ['frame','play','prev','next','earlier','later'])q(`[data-${name}]`).disabled=true;q('[data-status]').textContent='Selection changed. Load comparison to show the selected models and frames.';}
     on('[data-refresh]','click',()=>{changed();catalog(q('[data-motion]').value===''?undefined:Number(q('[data-motion]').value));});on('[data-motion]','change',()=>{const selected=Number(q('[data-motion]').value);q('[data-start]').value=0;changed();catalog(selected);});on('[data-load]','click',load);
     on('[data-raw-fk]','change',()=>{selectMotion();changed();});
     for(const name of ['build','clip','start'])on(`[data-${name}]`,'change',()=>{if(name==='clip')q('[data-start]').value=0;changed();});
@@ -229,6 +246,6 @@
     on('[data-close]','click',close);dialog.addEventListener('cancel',e=>{e.preventDefault();close();});
     place();raf=root.requestAnimationFrame(draw);const ready=catalog(animationEntry);return {close,setData,load,dialog,ready};
   }
-  const exported={mount,validate,frameNumbers,frameAtTime,jointDifference,focusOffsets,limbSelection,limbRadius,jointLabels,ROLES,WINDOW_FRAMES};
+  const exported={mount,validate,frameNumbers,frameAtTime,jointDifference,focusOffsets,limbSelection,limbRadius,buildLabel,measuredHandGrip,jointLabels,ROLES,WINDOW_FRAMES};
   if(typeof module==='object'&&module.exports)module.exports=exported;else root.GBoxModelCompare=exported;
 })(typeof window!=='undefined'?window:globalThis);

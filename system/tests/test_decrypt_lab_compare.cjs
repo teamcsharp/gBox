@@ -39,6 +39,30 @@ test('joint labels follow the selected limb instead of hiding the model under al
   assert.equal(C.WINDOW_FRAMES,60);
 });
 
+test('candidate display label uses the matching catalog entry with the build identity as fallback',()=>{
+  const info={builds:[{name:'local-sonic-player-cuff-v14',label:'Sonic: fingers and wrists (v14)'}]};
+  assert.equal(C.buildLabel(info,'local-sonic-player-cuff-v14'),'Sonic: fingers and wrists (v14)');
+  assert.equal(C.buildLabel(info,'other-build'),'other-build');
+  assert.equal(C.buildLabel(null,'other-build'),'other-build');
+});
+
+test('hand-grip shortcut is bound to the exact measured native archive and supported clip',()=>{
+  const path='nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc';
+  const info={native_sha256:'8ab0dc181d1f6ec155e193c5820d1756d877acf711424863b16f7850b592f6c8',
+    motions:[{entry_index:115,name:'pl00wp00',clips:[{index:110,frame_count:2,track_count:34,buffered_tracks:0,supported:true,engine_ik:false}]}]};
+  assert.equal(C.measuredHandGrip(info,'re5_switch',path,115),true);
+  assert.equal(C.measuredHandGrip(info,'re6_switch',path,115),false);
+  assert.equal(C.measuredHandGrip(info,'re5_switch',path+'other',115),false);
+  assert.equal(C.measuredHandGrip(info,'re5_switch',path,114),false);
+  assert.equal(C.measuredHandGrip({...info,native_sha256:'different'},'re5_switch',path,115),false);
+  for(const [key,value] of [['index',109],['frame_count',3],['track_count',35],['buffered_tracks',1],['supported',false],['engine_ik',true]]){
+    const changed=structuredClone(info);changed.motions[0].clips[0][key]=value;
+    assert.equal(C.measuredHandGrip(changed,'re5_switch',path,115),false,key);
+  }
+  const changed=structuredClone(info);changed.motions[0].name='other';
+  assert.equal(C.measuredHandGrip(changed,'re5_switch',path,115),false);
+});
+
 test('joint focus centers corresponding joints independently and preserves absolute differences',()=>{
   const data=fixture(),before=C.jointDifference(data,1,14);
   assert.deepEqual(C.focusOffsets(data,1,14),{native:[-2,-1,-0],candidate:[-3,-1,-0],radius:25});

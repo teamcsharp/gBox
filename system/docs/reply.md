@@ -550,3 +550,25 @@ The v14 comparison window is open with synchronized playback and an isolated han
 v14 live boot drew the title, then stalled during menu preparation with an unchanging faded frame and a Vic video
 decoder error. Explicit resume and manual input did not advance it; one same-artifact restart is being checked.
 Sonic's live weapon grip, arm direction during combat and feet contact remain unaccepted.
+
+### Hand inspection and parallel-work checkpoint, 2026-11-09
+
+The exact v14 retry reached visible combat, advancing from 0 to 5,400 score / 18 kills. An inspection-only
+headless variant and a separate +65 cm root-translation variant exposed the arms without changing their local
+geometry, bind or finger rotations. These frames show the arm reaching forward with the held weapon; the
+original backwards-arm failure is no longer apparent. The oversized glove still fits the weapon poorly:
+its wrist-to-knuckle span is about 2.4 times the native hand's. Grip contact and foot IK remain unaccepted.
+Neither inspection artifact is a playable release or registered recipe. A temporary weapon-template override
+was reverted with verified readback, and the native controller setting was restored to Type D.
+
+The local comparison now offers a hash-bound Hand grip shortcut for the measured two-frame native finger
+animation, plus catalog labels. Both models share the frame and scale, and hands can be isolated from the
+occluding head/body. This is raw animation comparison, not the engine's layered animation or IK. The updated
+preview is open; its refresh resets to the recorded starting pose. Eight focused unit tests and two browser
+tests passed in the final rerun (the sandbox could not start the browser supervisor).
+
+Activation scope was corrected: Hermes agents run in separate service/worker cgroups, so their mere existence
+does not require waiting for whole agent runs to finish. The actual restart concern is active inference requests
+proxied through gBox, plus in-process jobs. Those requests were still active at the latest audit; the running
+backend has not restarted, and the new public replacement routes still await activation and route acceptance.
+No external Hermes execution, queued remote job or gateway drain marker was altered.
