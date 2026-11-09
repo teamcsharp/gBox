@@ -168,9 +168,12 @@ def test_fit_scales_keep_the_first_fit_uniform_and_bring_a_donor_to_the_native_h
     assert scales['hip'] == scales['chest'] == pytest.approx(34. / 4.)             # shoulders land on the native ones
     assert scales['l_hand'] == scales['r_hand'] == pytest.approx(8.5)              # never above the torso scale
     # head: standing on the joint it could be 21 / 3 = 7; sunk to the shoulder line (150) it is 36 / 3 = 12 over the
-    # whole head, capped at the body scale 10 - so it ends below the native top and is moved down to start at 150
+    # whole head, capped at the body scale 10 - so it is moved down until its top is the native top
     assert report['head'] == pytest.approx(10.) and 'head' not in scales and 'kept at the body scale' in report['head_rule']
     assert offsets['head'] == pytest.approx((0., 186. - (165. + 10. * 3.), 0.))
+    small = W.Fit('x', limbs=2., torso=3., head='native_top')                     # a cap that leaves room above it
+    _, scales, offsets, report = W.fit_scales(small, vertices, owners, joints, NATIVE, 186.)
+    assert report['head'] == pytest.approx(3.) and offsets == {}                  # it is never lifted off its joint
     tall = vertices + [{'position': (0., 21., 0.)}]                                # a hat: 10 above the joint
     limbs, scales, offsets, report = W.fit_scales(W.NATIVE_HEIGHT, tall, owners + [{'head'}], joints, NATIVE, 186.)
     assert scales['head'] == pytest.approx(36. / 10.) and 'spanning down' in report['head_rule']
@@ -193,6 +196,37 @@ def test_fit_scales_keep_the_first_fit_uniform_and_bring_a_donor_to_the_native_h
         W.fit_scales(W.NATIVE_HEIGHT, vertices[:-1], owners[:-1], joints | {'head': (0., 30., 0.)}, NATIVE, 186.)
 
 
+def test_the_fitted_shape_is_recorded_and_a_hole_between_two_heights_is_found():
+    joints, vertices, owners = body()
+    _, _, _, report = W.fit_scales(W.NATIVE_HEIGHT, vertices, owners, joints, NATIVE, 186.)
+    assert report['shape']['torso_top'] == pytest.approx(132.) and report['shape']['head_middle'] > 150.
+    tall = vertices + [{'position': (0., 12., 0.)}]                               # a collar far above the chest joint
+    _, _, _, report = W.fit_scales(W.NATIVE_HEIGHT, tall, owners + [{'chest'}], joints, NATIVE, 186.)
+    assert report['shape']['torso_top'] == pytest.approx(132. + 8.5 * 5.)
+    assert set(W.REFERENCE_BIND) == set(W.ROLES) and W.REFERENCE_TOP > W.REFERENCE_BIND['head'][1]
+    # holes: heights no triangle spans, between two given heights
+    points = [(0., 0., 0.), (1., 20., 0.), (0., 20., 1.), (0., 50., 0.), (1., 90., 0.), (0., 60., 1.), (0., 88., 0.),
+              (1., 100., 0.), (0., 99., 1.)]
+    faces = [(0, 1, 2), (3, 4, 5), (6, 7, 8)]
+    assert W.vertical_holes(points, faces, 0., 100.) == [(20., 50.)]
+    assert W.vertical_holes(points, faces, 10., 160.) == [(20., 50.), (100., 160.)]
+    assert W.vertical_holes(points, faces, 30., 45.) == [(30., 45.)] and W.vertical_holes(points, faces, 55., 95.) == []
+    assert W.vertical_holes(points, faces, 0., 100., least=40.) == []
+
+
+def test_fitted_points_place_a_donor_as_a_build_would(donor):
+    vertices, triangles, _, _ = W.mtf_materials.source_mesh(donor, atlas_size=(32, 32))
+    gltf, _, _, world = W.characters._load(donor)
+    nodes, joints = W._donor_joints(gltf, world, dict(W.SOURCE_ROLES), 'toon')
+    owners = W._role_owners(vertices, gltf, nodes)
+    limbs, scales, offsets, _ = W.fit_scales(W.NATIVE_HEIGHT, vertices, owners, joints, W.REFERENCE_BIND, W.REFERENCE_TOP)
+    placed = W.fitted_points(vertices, gltf, world, nodes, W.REFERENCE_BIND, limbs, scales, offsets)
+    assert len(placed) == len(vertices) and min(p[1] for p in placed) == pytest.approx(0., abs=1e-6)   # soles down
+    assert max(p[1] for p in placed) <= W.REFERENCE_TOP + 1e-6
+    holes = W.vertical_holes(placed, triangles, W.REFERENCE_BIND['l_foot'][1], W.REFERENCE_BIND['head'][1])
+    assert holes                                                                  # loose triangles: far from whole
+
+
 def test_author_fits_a_donor_to_the_native_height_and_reports_the_scale(donor):
     archive, target = enemy_arc()
     plain, first = W.author(archive, donor, target)
@@ -202,6 +236,7 @@ def test_author_fits_a_donor_to_the_native_height_and_reports_the_scale(donor):
     assert fit['scales']['limbs'] == pytest.approx(10. / 1.4) == first['fit']['cross_section_scale']
     assert fit['scales']['torso'] == pytest.approx(36. / 4.) and fit['role_scales']['hip'] == fit['role_scales']['chest']
     assert fit['scales']['hands'] == pytest.approx(10. / 1.4)                       # the torso is wider: no cap
+    assert set(fit['shape']) == {'torso_top', 'head_middle'}
     assert set(fit['rules']) >= {'torso_rule', 'hands_rule', 'head_rule', 'native_top'}
     model = mt_model.parse_mod(zlib.decompress(mt_arc.parse(output).entries[7].data))
     carried = next(r for r in model.meshes() if r['level_of_detail'] == 0xFF)

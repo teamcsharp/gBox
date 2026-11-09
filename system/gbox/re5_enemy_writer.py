@@ -322,6 +322,14 @@ PROPORTIONAL = Fit('proportional')
 NATIVE_HEIGHT = Fit('native_height', torso='shoulders', head='native_top', hands='torso_cap')
 FITS = {'proportional': PROPORTIONAL, 'native_height': NATIVE_HEIGHT}
 TORSO_ROLES, HEAD_ROLES, HAND_ROLES = ('hip', 'chest'), ('head',), ('l_hand', 'r_hand')
+#: The role joints and the top of `em1000` as measured (cm). Only used to judge a donor's fit without an archive at
+#: hand (the hole test of a library survey); every build measures its own model.
+REFERENCE_BIND = {'hip': (0., 114., 0.), 'chest': (0., 132., -1.34), 'head': (0., 165., -2.34),
+                  'l_upper': (17.2, 150.78, -3.44), 'l_fore': (43.6, 150.78, -3.44), 'l_hand': (70.4, 150.78, -3.44),
+                  'r_upper': (-17.2, 150.78, -3.44), 'r_fore': (-43.6, 150.78, -3.44), 'r_hand': (-70.4, 150.78, -3.44),
+                  'l_thigh': (9.2, 101., 0.), 'l_shin': (9.2, 57.45, 0.), 'l_foot': (9.2, 13.5, 0.),
+                  'r_thigh': (-9.2, 101., 0.), 'r_shin': (-9.2, 57.45, 0.), 'r_foot': (-9.2, 13.5, 0.)}
+REFERENCE_TOP = 185.64
 
 
 def fit_scales(fit: Fit, vertices: list[dict], owners: list[set], joints: dict[str, tuple],
@@ -366,7 +374,7 @@ def fit_scales(fit: Fit, vertices: list[dict], owners: list[set], joints: dict[s
         head = min(max(on_joint, sunk), limit)
         drop = 0.
         if sunk > on_joint:                          # no neck: the head reaches down to the shoulder line
-            drop = top - (native['head'][1] + head * rise)
+            drop = min(0., top - (native['head'][1] + head * rise))     # never lifted off its joint
             offsets = {role: (0., float(drop), 0.) for role in HEAD_ROLES} if abs(drop) > 1e-9 else {}
         report['head_rule'] = (f'top of the head at {fit.height:g} x the native top; '
                                + ('spanning down to the native shoulder height' if sunk > on_joint
@@ -378,6 +386,8 @@ def fit_scales(fit: Fit, vertices: list[dict], owners: list[set], joints: dict[s
             raise EnemyWriterError("the head scale is a number, None or 'native_top'")
         head = float(fit.head)
     report.update(torso=float(torso), head=float(head), hands=float(hands))
+    report['shape'] = _fitted_shape(vertices, owners, joints, native, torso, head,
+                                    offsets.get('head', (0., 0., 0.))[1])
     scales = {role: float(torso) for role in TORSO_ROLES if torso != limbs}
     scales.update({role: float(head) for role in HEAD_ROLES if head != limbs})
     scales.update({role: float(hands) for role in HAND_ROLES if hands != limbs})
@@ -403,6 +413,55 @@ OPTION_GROUP_DECISION = {
         'whether a record without a native depth-only proxy (mesh type 0x1020) casts a shadow',
         'how the native atlas material shades this surface, and whether overlapping copies show under blending'],
 }
+
+
+def _extent(vertices: list[dict], owners: list[set], role: str) -> tuple[float, float] | None:
+    heights = [vertex['position'][1] for vertex, owner in zip(vertices, owners) if role in owner]
+    return (min(heights), max(heights)) if heights else None
+
+
+def _fitted_shape(vertices, owners, joints, native, torso: float, head: float, drop: float) -> dict:
+    """Where the fitted torso and head end up (cm): the highest chest vertex and the middle of the head. Recorded as
+    a fact for the reviewer; a collar behind a head and a head inside a torso give the same numbers."""
+    chest, skull = _extent(vertices, owners, 'chest'), _extent(vertices, owners, 'head')
+    shape = {'torso_top': None, 'head_middle': None}
+    if chest is not None:
+        shape['torso_top'] = float(native['chest'][1] + torso * (chest[1] - joints['chest'][1]))
+    if skull is not None:
+        shape['head_middle'] = float(native['head'][1] + drop + head * ((skull[0] + skull[1]) / 2 - joints['head'][1]))
+    return shape
+
+
+def fitted_points(vertices: list[dict], gltf: dict, world, nodes: dict[str, int], native: dict[str, tuple],
+                  limbs: float, role_scales: dict, role_offsets: dict, *, orphans: bool = False) -> list[tuple]:
+    """The donor's vertices where a build would put them on the bind pose `native` (the transfer alone, no archive)."""
+    from . import mtf_retarget
+    parents = {child: i for i, node in enumerate(gltf['nodes']) for child in node.get('children', [])}
+    points = {i: tuple(float(v) for v in matrix[:3, 3]) for i, matrix in enumerate(world)}
+    order = list(ROLES)
+    fitted, _ = mtf_retarget.transfer(
+        vertices, points, parents, {k: tuple(native[role]) for k, role in enumerate(order)},
+        {role: (nodes[role], k) for k, role in enumerate(order)}, dict(SEGMENTS), scale=limbs,
+        role_scales=role_scales or None, role_offsets=role_offsets or None,
+        orphan_role=ORPHAN_ROLE if orphans else None)
+    return [vertex['position'] for vertex in fitted]
+
+
+def vertical_holes(points: list[tuple], triangles: list[tuple], low: float, high: float,
+                   least: float = 3.) -> list[tuple[float, float]]:
+    """Heights between `low` and `high` that no triangle of the fitted donor spans, at least `least` cm tall: a body
+    whose parts do not meet there (a chest floating above its hips, a head above its neck)."""
+    spans = sorted((min(points[i][1] for i in face), max(points[i][1] for i in face)) for face in triangles)
+    holes, reached = [], low
+    for bottom, top in spans:
+        if bottom > reached and min(bottom, high) - reached >= least:
+            holes.append((float(reached), float(min(bottom, high))))
+        reached = max(reached, top)
+        if reached >= high:
+            break
+    if high - reached >= least:
+        holes.append((float(reached), float(high)))
+    return holes
 
 
 # --- skeleton -----------------------------------------------------------------------------------------------------
@@ -885,7 +944,8 @@ def author(archive: bytes, source: Path, target: EnemySet, *, source_roles: dict
                     'role_offsets': {role: list(offset) for role, offset in role_offsets.items()},
                     'scales': {'limbs': used, 'torso': sizes['torso'], 'head': sizes['head'], 'hands': sizes['hands']},
                     'rules': {key: sizes[key] for key in ('torso_rule', 'hands_rule', 'head_rule', 'native_top',
-                                                          'head_drop') if key in sizes}}
+                                                          'head_drop') if key in sizes},
+                    'shape': sizes['shape']}
         if fitted is not None and any(fitted[key] != this_fit[key] for key in ('cross_section_scale', 'role_scales',
                                                                               'role_offsets')):
             raise EnemyWriterError('the models of one set must be fitted with the same scales')
@@ -1430,6 +1490,7 @@ def author_mix(archive: bytes, riders: list[tuple[Path, dict, Fit, str]], target
                                    'hands': sizes['hands']},
                         'rules': {key: sizes[key] for key in ('torso_rule', 'hands_rule', 'head_rule', 'native_top',
                                                               'head_drop') if key in sizes},
+                        'shape': sizes['shape'],
                         'bounds': imported['bounds'],
                         'height': imported['bounds']['max']['y'] - imported['bounds']['min']['y'],
                         'native_height': imported['original_bounds']['max']['y'] - imported['original_bounds']['min']['y']}

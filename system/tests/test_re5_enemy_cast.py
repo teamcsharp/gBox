@@ -86,16 +86,35 @@ def test_parse_assignment_reads_one_donor_or_a_mix(tmp_path):
             C.parse_assignment(bad, [tmp_path])
 
 
-def test_survey_says_which_entries_can_be_enemy_donors_and_why_not(donor, tmp_path):
+def test_survey_says_which_entries_can_be_enemy_donors_and_why_not(donor, tmp_path, monkeypatch):
     library(tmp_path, 'whole', donor.read_bytes())
     library(tmp_path, 'stub', b'x', roles={role: joint for role, joint in W.SOURCE_ROLES.items() if role != 'head'})
     library(tmp_path, 'renamed', b'y', roles=dict(W.SOURCE_ROLES) | {'l_hand': 'no_such_joint'})
+    # the fixture donor is loose triangles: fitted on the Majini joints it is far from a whole figure
+    loose = {row['slug']: row for row in C.survey([tmp_path], ['whole'])}['whole']
+    assert not loose['usable'] and 'does not fit the Majini skeleton well: nothing of it is drawn between' in loose['reason']
+    assert set(loose['scales']) == {'limbs', 'torso', 'head', 'hands'}
+    monkeypatch.setattr(W, 'vertical_holes', lambda points, triangles, low, high: [])
     rows = {row['slug']: row for row in C.survey([tmp_path])}
     assert rows['whole'] == rows['whole'] | {'usable': True, 'franchise': 'Synthetic Game', 'vertices': 57,
                                              'triangles': 19, 'roles_without_vertices': []}
     assert not rows['stub']['usable'] and rows['stub']['reason'].endswith('names no joint for head')
     assert not rows['renamed']['usable'] and "l_hand ('no_such_joint': 0 joints)" in rows['renamed']['reason']
     assert [row['slug'] for row in C.survey([tmp_path], ['whole', 'absent'])] == ['whole', 'absent']
+    # with an original archive the survey also builds the donor once and keeps the writer's own verdict
+    archive, target = enemy_arc()
+    monkeypatch.setitem(W.SETS, 'body', target)
+    monkeypatch.setitem(W.ARCHIVES, 'uOne', W.EnemyArchive('uOne', 'nativeNXx64/ImgNX/Archive/uOne.arc',
+                                                           hashlib.sha256(archive).hexdigest(), ('body',), ('body',),
+                                                           (9, 2, (1.,)), ()))
+    assert C.survey([tmp_path], ['whole'], trial=(archive, 'uOne'))[0] == rows['whole'] | {'trial': 'built on body'}
+
+    def collapse(*args, **kwargs):
+        raise ValueError('retarget produced an undefined surface normal')
+    monkeypatch.setattr(W.re5_mesh_import, 'build_archive', collapse)
+    tried = C.survey([tmp_path], ['whole'], trial=(archive, 'uOne'))[0]
+    assert not tried['usable'] and tried['reason'] == ('whole cannot be fitted on body: retarget produced an undefined '
+                                                       'surface normal')
 
 
 @pytest.fixture

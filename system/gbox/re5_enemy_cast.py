@@ -137,11 +137,16 @@ def franchise(donor: writer.Donor) -> str:
     return str(donor.provenance.get('game') or 'unknown')
 
 
-def survey(libraries: list[Path], slugs: list[str] | None = None, *, atlas_size=(512, 256)) -> list[dict]:
+def survey(libraries: list[Path], slugs: list[str] | None = None, *, atlas_size=(512, 256),
+           trial: tuple[bytes, str] | None = None) -> list[dict]:
     """Go/no-go for library entries as enemy donors, with the reason for every refusal.
 
     A donor is usable when its metadata names the fifteen roles, its model loads through the atlas importer at the
-    enemy atlas size, and `check_rig` accepts its joints. Nothing is built; the fit is measured at build time.
+    enemy atlas size, `check_rig` accepts its joints, and the default fit on the measured `em1000` joints gives a
+    whole figure: no height between the ankles and the head joint is left without geometry (a chest floating above
+    its hips, a head above its neck). `trial` = (original archive bytes, class) also builds every such donor on the
+    first model of that class and keeps only the ones the writer accepts (a fit can still collapse a triangle or
+    need a fifth skin influence); the trial archive is thrown away. Without it nothing is built.
     """
     names = slugs if slugs is not None else sorted({p.parent.name for lib in libraries
                                                     for p in Path(lib).glob('*/meta.json')})
@@ -154,11 +159,28 @@ def survey(libraries: list[Path], slugs: list[str] | None = None, *, atlas_size=
             vertices, triangles, _, report = mtf_materials.source_mesh(donor.model, atlas_size=atlas_size)
             gltf, _, _, world = characters._load(donor.model)
             nodes, joints = writer._donor_joints(gltf, world, donor.roles, slug)
-            owners = writer._role_owners(vertices, gltf, nodes)
+            orphans: set = set()
+            owners = writer._role_owners(vertices, gltf, nodes, orphans)
             rig = writer.check_rig(vertices, owners, joints, slug)
             floor = min(v['position'][1] for v in vertices)
             if any(joints[f'{side}_foot'][1] - floor <= 1e-6 for side in 'lr'):
                 raise writer.EnemyWriterError(f'{slug} has an incomplete rig: its ankles are not above its floor')
+            bind = writer.REFERENCE_BIND
+            limbs, scales, offsets, fitted = writer.fit_scales(writer.NATIVE_HEIGHT, vertices, owners, joints, bind,
+                                                               writer.REFERENCE_TOP)
+            row.update(scales={key: round(fitted[key], 3) for key in ('limbs', 'torso', 'head', 'hands')})
+            placed = writer.fitted_points(vertices, gltf, world, nodes, bind, limbs, scales, offsets,
+                                          orphans=bool(orphans))
+            holes = writer.vertical_holes(placed, triangles, bind['l_foot'][1], bind['head'][1])
+            problems = [f'nothing of it is drawn between {a:.0f} and {b:.0f} cm' for a, b in holes]
+            if problems:
+                raise writer.EnemyWriterError(f'{slug} does not fit the Majini skeleton well: ' + '; '.join(problems))
+            if trial is not None:
+                enemy = writer.ARCHIVES[trial[1]]
+                target = enemy.targets()[0]
+                first = target.models[0][0].rsplit('\\', 1)[-1]
+                writer.build_donor(trial[0], donor, enemy, models=(first,))
+                row['trial'] = f'built on {first}'
             row.update(usable=True, vertices=len(vertices), triangles=len(triangles),
                        texture_scale=report.get('texture_scale'),
                        roles_without_vertices=rig['roles_without_vertices'])
@@ -236,7 +258,8 @@ def _stack(rows: list[Path], out: Path) -> None:
 
 def _fit_row(fit: dict) -> dict:
     return {'name': fit['name'], 'scales': fit['scales'], 'rules': fit['rules'], 'role_offsets': fit['role_offsets'],
-            'height_cm': fit['height'], 'native_height_cm': fit['native_height'], 'bounds': fit['bounds']}
+            'height_cm': fit['height'], 'native_height_cm': fit['native_height'], 'bounds': fit['bounds'],
+            'shape': fit['shape']}
 
 
 def build_cast(name: str, assignments: list[Assignment], archives: dict[str, bytes], out: Path, *,
@@ -384,13 +407,21 @@ def main(argv=None) -> int:
     parser.add_argument('--pool-exclude', default='', help='comma-separated text; a slug or franchise holding it is out')
     parser.add_argument('--only-models', action='append', default=[], help='CLASS=model[,model] (a bisect build)')
     parser.add_argument('--no-preview', action='store_true')
-    parser.add_argument('--survey', action='store_true', help='print the go/no-go of the library entries and exit')
+    parser.add_argument('--survey', action='store_true',
+                        help='print the go/no-go of the library entries and exit; with --archives each usable donor '
+                             'is also trial-built on em1000')
     parser.add_argument('--slugs', help='limit --survey to these comma-separated slugs')
     args = parser.parse_args(argv)
     libraries = [Path(p) for p in args.library]
     try:
         if args.survey:
-            print(json.dumps(survey(libraries, args.slugs.split(',') if args.slugs else None), indent=1))
+            trial = None
+            if args.archives:                                 # with the originals at hand, also try each donor
+                path = Path(args.archives) / Path(writer.ARCHIVES['uEm10'].path).name
+                if not path.is_file():
+                    raise CastError(f'{path} is missing')
+                trial = (path.read_bytes(), 'uEm10')
+            print(json.dumps(survey(libraries, args.slugs.split(',') if args.slugs else None, trial=trial), indent=1))
             return 0
         chosen = [bool(args.cast), bool(args.assign), args.pool is not None]
         if sum(chosen) != 1 or not args.archives or not args.out:
