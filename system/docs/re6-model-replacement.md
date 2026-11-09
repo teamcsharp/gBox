@@ -70,11 +70,16 @@ name hash (five 72-byte records, identical except `0x6390b116`, `0x61c18195`, `0
 so the material→texture binding is still unnamed. New measurement (round 8): the body MOD carries the material **names**
 themselves at offset `0x24D4` (`pl_cloth`, `pl_base2`, `pl_cloth1`, `pl_base1`, `pl_skin`, 128 bytes each), and the MRL
 v36 hash is exactly `crc32(name) ^ 0xFFFFFFFF` — all five match (`0x6390b116`, `0x61c18195`, `0xa56925da`, `0xf8c8d02f`,
-`0x68b3d093`). The MOD contains **no texture references** (every texture-name hash was searched in the file), so the
-material→texture link is a runtime convention, not a stored table. The encoder side now exists:
-`re6_switch_tex.replace_albedo` writes a new mip chain in that same two-half layout (BC4 detail plus a flat per-tile BC1
+`0x68b3d093`). The body MOD contains **no texture references** (every texture-name hash was searched in the file). Round
+9 found where they live instead: **every `uPlTex####_*.arc` ends with its own `MRL v36` entry (`pl0003_0`)** — 10
+materials, a **17-entry texture-path table** at offset 40 (88-byte records, path at +24) and the material table at 1536.
+The paths are the full resource names (`data\chara\pl\pl0000\model\pl0000_00head_NM`, `data\chara\textures\pl_Blood_BM`,
+...), i.e. the actual material→texture binding; `re6_switch_tex.texture_set_mrl` returns it. The material command records
+(16-byte records at the per-material offsets, carrying name-hash-like values) still need their field layout decoded
+before a donor atlas can be written to the right entries. The encoder side exists:
+`re6_switch_tex.replace_albedo` writes a new mip chain in the two-half layout (BC4 detail plus a flat per-tile BC1
 colour) and round-trips through a real TEX at **49.4 dB** detail PSNR, and `re6_switch_tex.export_textures` writes a
-character's whole texture set (Leon: 272 surfaces, 241 PNGs) so the reader is exercised on every measured format.
+character's whole texture set (Leon: 272 surfaces, 241 PNGs).
 
 The rest of this document describes the earlier **Xbox 360** analysis. It is kept because the scale/bind lessons are
 platform-neutral and the 360 measurements are what the Switch fit reuses, but its writer and mods are **not** the

@@ -192,6 +192,36 @@ def export_textures(romfs, character: str, out_dir, *, formats=(0x2B, 0x1F, 0x19
     return written
 
 
+def texture_set_mrl(archive) -> dict:
+    """The material→texture MRL that every `uPlTex####_*.arc` ends with (`pl0003_0`).
+
+    Measured header: `MRL v36`, 10 materials, 17 textures, texture table at 40 (88-byte records, path at +24) and the
+    material table at 1536. The texture paths are full resource paths (`data\\chara\\pl\\pl0000\\model\\pl0000_00head_NM`),
+    which is exactly the material→texture binding the body MRL lacks; the material command records still need their
+    field layout decoded, so this returns the container facts and the paths only.
+    """
+    import zlib as _zlib
+
+    entry = archive.entries[-1]
+    try:
+        raw = _zlib.decompress(entry.data)
+    except _zlib.error:
+        raw = entry.data
+    if raw[:4] != b"MRL\0":
+        raise TexError("the archive does not end with the texture-set MRL")
+    magic, version, count, texture_count, shader, texture_offset, material_offset = struct.unpack_from(
+        "<4sIIIQQQ", raw)
+    paths = []
+    for index in range(texture_count):
+        offset = texture_offset + index * 88 + 24
+        if offset + 64 > len(raw):
+            raise TexError("texture path record runs outside the MRL")
+        paths.append(raw[offset:offset + 64].split(b"\0", 1)[0].decode("ascii", "replace"))
+    return {"entry": entry.name.rsplit("\\", 1)[-1], "version": version, "materials": count,
+            "textures": texture_count, "shader": shader, "texture_offset": texture_offset,
+            "material_offset": material_offset, "paths": paths}
+
+
 def describe_arc(archive) -> list[dict]:
     """Every TEX in an `mt_arc` archive as a row: name, format, dimensions, mips, block size."""
     rows = []

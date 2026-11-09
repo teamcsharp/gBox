@@ -38,6 +38,18 @@ def test_a_normal_map_decodes_to_a_normal_map():
 
 
 @needs_arc
+def test_the_texture_set_mrl_lists_the_bindings():
+    """Each uPlTex arc ends with an MRL v36 that names 17 texture paths - the binding the body MRL lacks."""
+    arc = mt_arc.parse(ARC.read_bytes())
+    info = X.texture_set_mrl(arc)
+    assert info["version"] == 36
+    assert info["materials"] == 10 and info["textures"] == 17
+    assert all(path.startswith("data\\chara\\") for path in info["paths"])
+    assert any(path.endswith("pl0000_00head_NM") for path in info["paths"])
+    assert any(path.endswith("pl_Blood_BM") for path in info["paths"])
+
+
+@needs_arc
 def test_export_textures_writes_pngs(tmp_path):
     rows = X.export_textures(ROMFS, "leon", tmp_path, formats=(0x2B,))
     done = [row for row in rows if row.get("png")]
