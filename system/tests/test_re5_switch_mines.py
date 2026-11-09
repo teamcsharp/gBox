@@ -56,10 +56,10 @@ def test_a_bomb_is_due_every_interval_but_not_with_a_majini_near_or_beside_a_bom
     assert m.tick(p(), snap(), foes((1200, 0)), MN.EVERY_S + 1)["hold"][:2] == MN.RUN
     assert m.state == "idle" and m.stats["mine_blocked_reason"] == "last bomb too close"
     m._site_until = None
-    m.last_pos, m.bombs = (900.0, 0.0, 0.0), {0x77: (0.0, 0.0, -400.0)}
-    # the bomb at -400 is within his blast and not the one he just placed: the guard now runs him out of it, and no
-    # placement starts while he is in its blast (the SPACING_CM check would block it too)
-    act = m.tick(p(), snap(ground=[{"ptr": 0x77, "pos": (0.0, 0.0, -400.0)}]), foes((1200, 0)), MN.EVERY_S + 1)
+    m.last_pos, m.bombs = (900.0, 0.0, 0.0), {0x77: (0.0, 0.0, -300.0)}
+    # the bomb at -300 is within CALM_CM and not the one he just placed: the guard runs him off it, and no
+    # placement starts while he is that near (the SPACING_CM check would block it too)
+    act = m.tick(p(), snap(ground=[{"ptr": 0x77, "pos": (0.0, 0.0, -300.0)}]), foes((1200, 0)), MN.EVERY_S + 1)
     assert act is not None and act.get("hold") and m.state == "idle"            # the guard runs, no cycle started
     assert m.stats["mine_status"] == "in his own bomb's blast: out before it detonates"
     m.bombs = {}
@@ -306,7 +306,7 @@ def test_a_close_majini_outranks_the_blast_run_he_lets_go_and_the_fight_unloads_
     assert m.state == "idle"                                         # no mine cycle started
     # The same bomb, a close Majini only beyond FOE_CLEAR_CM: the old guard still runs him out of the blast.
     far = [{"ptr": 10, "pos": (0.0, 0.0, 1500.0), "hp": 800}]
-    act = m.tick(p(pos=(0.0, 0.0, -400.0)), snap(ground=[bomb]), far, 1.4)   # 7 m from the old bomb: in the blast again
+    act = m.tick(p(pos=(0.0, 0.0, -50.0)), snap(ground=[bomb]), far, 1.4)    # 3.5 m from the old bomb: too near it
     assert act is not None and act["hold"][:2] == MN.RUN
     assert m.stats["mine_status"] == "in his own bomb's blast: out before it detonates"
 
@@ -382,7 +382,9 @@ def test_incident_replay_runs_out_of_own_bombs_blast_from_the_recorded_fields():
     act = b.tick(scene)
     assert b.doing == "mine" and act["hold"][:2] == MN.RUN
     assert b.stats["mine_clear_runs"] == 1
-    assert b.stats["mine_status"] == "in his own bomb's blast: out before it detonates"
+    assert b.stats["mine_status"] in ("in his own bomb's blast: out before it detonates",
+                                       "a Majini nearing his bomb: out to the standoff",
+                                       "a Majini at his bomb: out of its blast")
 
 
 def test_mid_cycle_guard_aborts_place_when_in_old_bomb_blast():
@@ -688,3 +690,45 @@ def test_the_stacks_dormant_unit_is_never_run_from_or_a_reason_to_give_up_a_plan
     bomb = {"ptr": 0x5D4D7ABC10, "pos": (near_it[0], 0.0, near_it[2] + 57.0)}
     m.tick(p(pos=near_it, motion=29), held(ground=[bomb]), [], t + MN.NEUTRAL_S + 0.9)
     assert m.stats["mines_placed"] == 1 and bomb["ptr"] not in m.baseline
+
+
+def test_a_bomb_nobody_is_near_only_keeps_him_a_few_metres_off_and_one_a_majini_nears_the_whole_standoff():
+    """lilspark 2026-11-09: a bomb lay in a trench for two minutes with no Majini coming; at the 15 m standoff the guard
+    held him "in his own bomb's blast", turning on the spot beside it, for 116 s (three kills in six minutes)."""
+    bomb = {"ptr": 0x77, "pos": (0.0, 0.0, 600.0)}
+    nobody = [{"ptr": 10, "pos": (0.0, 0.0, 4000.0), "hp": 800}]             # 34 m from the bomb
+    m = MN.Mines({})
+    m.new_round(0.0)
+    m.bombs = {0x77: bomb["pos"]}
+    m.last_pos = (0.0, 0.0, -9000.0)
+    assert m.tick(p(), snap(ground=[bomb]), nobody, 1.0) is None            # 6 m from a quiet bomb: free to fight
+    assert m.stats["mine_clear_runs"] == 0
+    assert m.tick(p(pos=(0.0, 0.0, 300.0)), snap(ground=[bomb]), nobody, 1.1)["hold"][:2] == MN.RUN   # 3 m: off it
+    coming = [{"ptr": 10, "pos": (0.0, 0.0, 600.0 + MN.DANGER_CM - 50.0), "hp": 800}]   # a Majini nearing the bomb
+    m2 = MN.Mines({})
+    m2.new_round(0.0)
+    m2.bombs = {0x77: bomb["pos"]}
+    m2.last_pos = (0.0, 0.0, -9000.0)
+    act = m2.tick(p(), snap(ground=[bomb]), coming, 1.0)                    # the same 6 m, now it may go off: out
+    assert act["hold"][:2] == MN.RUN and m2.stats["mine_status"] == "a Majini nearing his bomb: out to the standoff"
+    assert m2.tick(p(pos=(0.0, 0.0, 550.0 - MN.BLAST_CM)), snap(ground=[bomb]), coming, 1.2) is None   # past 15 m: done
+
+
+def test_a_guard_run_that_gains_no_ground_gives_the_pad_back():
+    """A wall or a dead end between him and the standoff: the run is given up for CLEAR_YIELD_S (the fight and the map
+    move him), never turned on the spot for minutes."""
+    bomb = {"ptr": 0x77, "pos": (0.0, 0.0, 300.0)}
+    coming = [{"ptr": 10, "pos": (0.0, 0.0, 900.0), "hp": 800}]
+    m = MN.Mines({})
+    m.new_round(0.0)
+    m.bombs = {0x77: bomb["pos"]}
+    m.last_pos = (0.0, 0.0, -9000.0)
+    t = 1.0
+    assert m.tick(p(), snap(ground=[bomb]), coming, t)["hold"][:2] == MN.RUN
+    while t < 1.0 + MN.CLEAR_STUCK_S:                                       # he does not move: a wall
+        t += 0.05
+        m.tick(p(), snap(ground=[bomb]), coming, t)
+    assert m.tick(p(), snap(ground=[bomb]), coming, t + 0.1) is None       # given up: the fight has the pad
+    assert m.stats["mine_clear_stuck"] == 1
+    assert m.tick(p(), snap(ground=[bomb]), coming, t + MN.CLEAR_YIELD_S - 0.5) is None
+    assert m.tick(p(), snap(ground=[bomb]), coming, t + MN.CLEAR_YIELD_S + 0.2)["hold"][:2] == MN.RUN   # tried again

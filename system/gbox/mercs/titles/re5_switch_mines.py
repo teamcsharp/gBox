@@ -62,6 +62,12 @@ CONFIRM_CM = 200.0                       # a new bomb this near where he stood i
 STANDOFF_CM = 100.0 * float(getattr(_doctrine, "MINE_STANDOFF_M", 15.0))
 RETREAT_CM, RETREAT_S, RETREAT_GAP_R = STANDOFF_CM, 6.0, 800.0
 BLAST_CM, TRIGGER_CM, CLOSE_MAJINI_CM = STANDOFF_CM, 350.0, 300.0
+# The guard's two radii. A bomb with a Majini within DANGER_CM of it may go off any moment: he keeps the whole
+# standoff (BLAST_CM). A bomb nobody is near just lies there (live 2026-11-09: one sat in a trench for two minutes):
+# he only stays CALM_CM off it. With BLAST_CM alone, at the operator's 15 m, that bomb held him turning on the spot
+# beside it - "in his own bomb's blast" for 116 s, three kills in six minutes. And a guard run that gains no ground
+# for CLEAR_STUCK_S (a wall, a dead end) gives the pad back for CLEAR_YIELD_S: the fight and the map move him.
+DANGER_CM, CALM_CM, CLEAR_STUCK_S, CLEAR_YIELD_S, CLEAR_GAIN_CM = 800.0, 400.0, 2.5, 4.0, 100.0
 # the guard: a Majini this near a bomb of his, him within BLAST_CM of it: out. CLOSE_MAJINI_CM: a Majini this close
 # to him while he is in the blast - he cannot run the gap through a close crowd (the cluster's remaining incidents),
 # so the run is given up and the fight unloads on the threat instead. FOE_CLEAR_CM (5 m) is the placement's rule
@@ -124,6 +130,8 @@ class Mines:
         self.bombs: dict = {}                          # his bombs still on the ground: unit -> position
         self.saw_place = False
         self.clear_from = None                         # the bomb the guard is running from
+        self._clear_run = None                         # that run: {"ptr", "since", "best", "best_at"}
+        self._clear_yield = -1e9                       # the guard gives the pad back until then (a run that stuck)
         self.gun_grid = None
         self.hist = collections.deque(maxlen=64)       # (t, kills, his health) of the recent ticks
         self.blast = None                              # the open blast window: {"t0", "until", "kills", "hp"}
@@ -155,6 +163,7 @@ class Mines:
         self.last_at, self.last_pos, self.site, self.clear_from = None, None, None, None
         self.bombs, self.blast = {}, None
         self.baseline = None
+        self._clear_run, self._clear_yield = None, -1e9
         self.hist.clear()
         self._tracked_at = None
         self._retry_at = self._relocate_retry_at = 0.0
@@ -302,7 +311,7 @@ class Mines:
         self.stats["mine_status"] = "mine due: running to a clear placement site"
         return self._run(p, live, self._avoid_site)
 
-    def _clear(self, p: dict, snap: dict, live: list) -> dict | None:
+    def _clear(self, p: dict, snap: dict, live: list, now: float | None = None) -> dict | None:
         """The guard: the bot standing in an old bomb's blast while a Majini is at it, or simply in the blast.
 
         Out through the widest gap. The first case is the old guard (Majini closing, the bomb triggers on contact).
@@ -337,7 +346,8 @@ class Mines:
                 continue                                     # a mine from before this round, not his
             if self.baseline and g["ptr"] in self.baseline and g["ptr"] not in self.bombs:
                 continue                                     # up before he planted anything: the stack's own unit
-            if flat(pos, b) >= BLAST_CM:
+            threatened = any(flat(e["pos"], b) <= DANGER_CM for e in live)
+            if flat(pos, b) >= (BLAST_CM if threatened else CALM_CM):
                 continue
             if g["ptr"] in seen:
                 continue
@@ -345,6 +355,8 @@ class Mines:
             ptr = g["ptr"]
             if any(flat(e["pos"], b) <= TRIGGER_CM for e in live):
                 reason = "a Majini at his bomb: out of its blast"
+            elif threatened:
+                reason = "a Majini nearing his bomb: out to the standoff"
             else:
                 reason = "in his own bomb's blast: out before it detonates"
             in_blast = True
@@ -361,12 +373,26 @@ class Mines:
                 # due() and relocation retain the stricter placement clearance.
                 return None
         if in_blast:
+            if now is not None:
+                if now < self._clear_yield:
+                    self.stats["mine_status"] = "no way out of the bomb's reach from here: the fight has the pad"
+                    return None
+                run, off = self._clear_run, flat(pos, b)
+                if run is None or run["ptr"] != ptr:
+                    run = self._clear_run = {"ptr": ptr, "best": off, "best_at": now}
+                elif off > run["best"] + CLEAR_GAIN_CM:
+                    run["best"], run["best_at"] = off, now
+                elif now - run["best_at"] > CLEAR_STUCK_S:
+                    self._clear_run, self._clear_yield = None, now + CLEAR_YIELD_S
+                    self.stats["mine_clear_stuck"] = self.stats.get("mine_clear_stuck", 0) + 1
+                    self.stats["mine_status"] = "no way out of the bomb's reach from here: the fight has the pad"
+                    return None
             if self.clear_from != ptr:
                 self.clear_from = ptr
                 self.stats["mine_clear_runs"] += 1
             self.stats["mine_status"] = reason
             return self._run(p, live, b)
-        self.clear_from = None
+        self.clear_from, self._clear_run = None, None
         return None
 
     def _clear_mid_cycle(self, p: dict, snap: dict, live: list, now: float) -> dict | None:
@@ -393,7 +419,7 @@ class Mines:
             # placed lands ~57 cm ahead of his feet, and last_pos is not set until confirmation.
             if self.site is not None and flat(self.site, b) < CONFIRM_CM:
                 continue
-            if flat(pos, b) >= BLAST_CM:
+            if flat(pos, b) >= (BLAST_CM if any(flat(e["pos"], b) <= DANGER_CM for e in live) else CALM_CM):
                 continue
             # Skip mines that were already on the ground before this placement cycle AND are not the bot's
             # confirmed bombs: the stack's own uWp0a units (always in ground_mines, never in self.bombs) would
@@ -425,7 +451,7 @@ class Mines:
         self._tick_at = now
         self._track(p, snap, now)
         if self.state == "idle":
-            act = self._clear(p, snap, live)
+            act = self._clear(p, snap, live, now)
             if act is not None or busy:
                 if busy:
                     self.stats["mine_blocked_reason"] = "emergency action"
