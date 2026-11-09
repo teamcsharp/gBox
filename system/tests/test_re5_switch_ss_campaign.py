@@ -102,6 +102,13 @@ def test_the_bots_learning_is_the_stage_being_played_not_the_next_target(monkeyp
     b2 = R.Bot(stats={}, clock=lambda: 0.0)
     b2._new_round(0.0)
     assert seen[-1] is None and b2._nav.grid.stage == "unknown#round"     # unknown: only the pooled values
+    monkeypatch.setitem(R.SELECTION, "stage", 1)                          # the operator pinned The Mines
+    b3 = R.Bot(stats={}, clock=lambda: 0.0)
+    b3._new_round(0.0)
+    assert seen[-1] == "The Mines"                                       # nothing read yet: the pin
+    b4 = R.Bot(stats={"ss_stage": "Prison"}, clock=lambda: 0.0)
+    b4._new_round(0.0)
+    assert seen[-1] == "Prison"                                          # what the round is played on wins
 
 
 def enemies(*dists):

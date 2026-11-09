@@ -3772,6 +3772,9 @@ class Bot:
         for k in ("ss_stage", "stage"):
             if (self.stats or {}).get(k) in STAGE_NAMES:
                 return self.stats[k]
+        pinned = SELECTION.get("stage")                  # nothing read yet: the operator's pinned stage, if any (every
+        if isinstance(pinned, int) and 0 <= pinned < len(STAGE_NAMES):   # round is played on it while it stands)
+            return STAGE_NAMES[pinned]
         return None
 
     def _stage_learning(self, stage) -> None:
