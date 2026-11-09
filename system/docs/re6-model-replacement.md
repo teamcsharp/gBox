@@ -47,8 +47,15 @@ costume clamps to 97.5 cm, Incineroar on Piers to 163.2 cm).
 | ![Robin](evidence/re6-scale/switch-robin-as-leon.png) | ![Peach](evidence/re6-scale/switch-peach-as-ada.png) | ![Greninja](evidence/re6-scale/switch-greninja-as-chris.png) |
 
 The only remaining Switch gap is **donor textures**: RE6's body MRL has no embedded texture table (`uPlTex*.arc`
-hold them), so the first port replaces geometry and the native material still samples its own textures. Patching the
-`uPlTex` entries (or the MRL v36 bindings) is the next step, as is a live round on the console/Eden.
+hold them), so the first port replaces geometry and the native material still samples its own textures. Measured on the
+extracted RomFS: TEX containers are `TEX v0xA1` with revision byte `0x20` (RE5's is `0x80`), the same 20-byte header
+plus per-mip offset table, and the player texture formats are `0x19` BC4 (`_MM` mask), `0x1F` BC5 (`_NM` normal) and
+`0x2B` (`_BM` albedo; the vendor format table calls `0x2B` **BC3_UNORM_SRGB**). Normal maps decode correctly through the
+existing RE5 GOB de-swizzle (`mtf_tex._addresses`), but the `0x2B` albedo does not: BC3-decoding the mip gives a
+uniform green channel (~124,255,122 on every texel), which is the signature of the block data being arranged as
+separate planes (or another 16-byte layout), not interleaved BC3 blocks. The TEX writer (`mtf_tex.replace_image`)
+supports BC7 (`0x30/0x31`); a complete texture step needs the `0x2B` layout resolved and the MRL v36 texture binding
+identified, so the donor atlas can replace the sampled `uPlTex` entry.
 
 The rest of this document describes the earlier **Xbox 360** analysis. It is kept because the scale/bind lessons are
 platform-neutral and the 360 measurements are what the Switch fit reuses, but its writer and mods are **not** the
