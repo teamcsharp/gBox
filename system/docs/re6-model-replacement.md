@@ -22,6 +22,19 @@ w1/w2 at 24) — the one part of the Switch MOD writer that only a live frame ca
 now takes `reverse_bones=True` (store b3,b2,b1,b0) and `C:\_tools\gBox\.tmp\build_rev_variant.py` builds the
 `re6sw_sonic_leon_rev` probe for it.
 
+**Menu/lobby models are not the gameplay body (measured 2026-11-09, live).** The Mercenaries and campaign "system
+settings / START GAME" lobbies render a human Leon even with the Sonic overlay active and his head/hands blanked — the
+lobby draws a separate menu model, not `uPl00Leon*.arc`, so the replacement only becomes visible once the round/campaign
+stage loads. That also means lobby screenshots can never confirm the model; only gameplay frames can.
+
+**The Spark's RE6 now crashes on every stage load (measured 2026-11-09).** With the overlay active the campaign chapter
+load and the Mercenaries stage load both end in a black frame and a dead session, and a **vanilla** launch (no overlay,
+`selected.build` null) crashes in the Mercenaries path the same way. The same builds had played full rounds earlier in
+the session, so this is the emulator/save state on the Spark (most likely the save was left half-written when a scripted
+menu drive pressed A through a "Now saving" dialog), not the mod. Recovery: reboot the Spark, and if it persists move
+`…/eden-linux/data/eden/nand/user/save/0000000000000000/01002A000CD48000` aside so the title writes a fresh save (its
+unlock-on-load reopens the main menu).
+
 **Material → texture path binding (texture-set MRL v36, measured 2026-11-09).** `re6_switch_tex.texture_set_materials`
 now gives each material's full paths, not just indices. For Leon's `pl0000_0` set:
 
