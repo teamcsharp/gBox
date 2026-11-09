@@ -4881,6 +4881,10 @@ class BootHung(RuntimeError):
     """A Switch title that mapped its memory but never drew a changing frame (or whose emulator died) during boot."""
 
 
+class EdenGpuInitStalled(BootHung):
+    """A black boot with the unchanged, measured ChannelSetTimeout log signature."""
+
+
 _SWITCH_TID_TAG = re.compile(r"\[([0-9A-Fa-f]{16})\]")
 # Catalog rows that carry no serial (the share's "Resident Evil 5.nsp" has no [TITLEID] tag and the catalog does not read
 # its ticket): named by title, the way gbox.re_switch.capabilities does.
@@ -5046,6 +5050,7 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         self.address_mode = eden_memory.mode_for(self.nce)
         self._mem, self._mem_checked_at = None, -1e9
         self.overlay_state, self.restarts, self.restart_error, self._stopped = None, 0, None, False
+        self._restart_lock = threading.RLock()
 
     @property
     def use_nce(self) -> bool:
@@ -5217,26 +5222,84 @@ class SwitchLinuxAdapter(StandaloneAdapter):
                 self.stop_game()
                 raise
 
-    def _boot_watch(self) -> dict:
+    def _boot_watch(self, *, accept_static: bool = False, expected_proc=None) -> dict:
         """After the memory map: BOOT_WATCH_SETTLE_S past the emulator's own loading overlay, then frames until three
         differ (the title's logos and intro) inside BOOT_WATCH_S; a still screen or an emulator that died raises
-        BootHung, which launch_game answers with one more start."""
+        BootHung, which launch_game answers with one more start. Restarts accept a visible static menu, and only
+        classify the known GPU-init stall when decoded black frames and a fresh, unchanged log agree."""
         start = time.monotonic()
         seen: set = set()
+        expected_proc = expected_proc or self.proc
+        black_frames, last_log, unchanged_since = 0, None, start
         while time.monotonic() - start < BOOT_WATCH_S:
+            if self._stopped or self.proc is not expected_proc:
+                raise RuntimeError('boot monitoring cancelled: this process was stopped or replaced')
+            if self.paused:
+                return {'watched': False, 'paused': True}
             if not self.proc or self.proc.poll() is not None:
                 raise BootHung(f"{self.name} exited during boot: {self.log_tail(600)}")
+            if accept_static:
+                tail = self.log_tail(8000)
+                if tail != last_log:
+                    last_log, unchanged_since = tail, time.monotonic()
             if time.monotonic() - start >= BOOT_WATCH_SETTLE_S:
                 try:
                     frame = self.get_frame()
                 except Exception:                         # noqa: BLE001 - the display may be busy
                     frame = b""
                 if frame:
+                    if accept_static:
+                        content = self._boot_frame_content(frame)
+                        if self._stopped or self.proc is not expected_proc:
+                            raise RuntimeError('boot monitoring cancelled: this process was stopped or replaced')
+                        if self.paused:
+                            return {'watched': False, 'paused': True}
+                        if content is True:
+                            return {'watched': True, 'rendered': True, 'after_s': round(time.monotonic()-start,1)}
+                        black_frames = black_frames + 1 if content is False else 0
+                        time.sleep(BOOT_WATCH_EVERY_S)
+                        continue
                     seen.add(hashlib.sha1(frame).digest())
                     if len(seen) >= 3:
                         return {"watched": True, "frames": len(seen), "after_s": round(time.monotonic() - start, 1)}
+                elif accept_static:
+                    black_frames = 0                      # missing capture is not current black-frame evidence
             time.sleep(BOOT_WATCH_EVERY_S)
+        if self._stopped or self.proc is not expected_proc:
+            raise RuntimeError('boot monitoring cancelled: this process was stopped or replaced')
+        if self.paused:
+            return {'watched': False, 'paused': True}
+        if not self.proc or self.proc.poll() is not None:
+            raise BootHung(f'{self.name} exited during boot: {self.log_tail(600)}')
+        if (accept_static and black_frames >= 3 and time.monotonic()-unchanged_since >= BOOT_WATCH_SETTLE_S
+                and last_log == self.log_tail(8000) and self._eden_boot_stalled() and self._boot_log_fresh()):
+            raise EdenGpuInitStalled('mapped guest stayed black with unchanged nvhost_gpu ChannelSetTimeout log')
+        if accept_static:
+            raise BootHung(f'{self.name} drew no confirmed visible content in {BOOT_WATCH_S:.0f} s after mapping the game')
         raise BootHung(f"{self.name} drew no changing frame in {BOOT_WATCH_S:.0f} s after mapping the game (a hung boot)")
+
+    @staticmethod
+    def _boot_frame_content(frame):
+        """Visible content, black, or unreadable. JPEG byte changes alone are not rendering evidence."""
+        from io import BytesIO
+        from PIL import Image
+        try:
+            with Image.open(BytesIO(frame)) as image:
+                w,h = image.size
+                image = image.convert('L').crop((w//10,h//10,w-w//10,h-h//10)).resize((64,36))
+                values = list(image.getdata())
+                bright = sum(v > 16 for v in values)/len(values)
+                if bright >= .01 and max(values)-min(values) > 8:
+                    return True
+                return False if bright < .005 and sum(values)/len(values) < 3 else None
+        except (OSError,ValueError):
+            return None
+
+    def _boot_log_fresh(self):
+        try:
+            return self.eden_log().stat().st_mtime >= self._boot_spawn_wall
+        except (OSError,AttributeError):
+            return False
 
     # --- an in-game swap: the same title again in this session (LayeredFS is applied at boot) ---
     def _check_overlay(self, overlay) -> None:
@@ -5291,14 +5354,59 @@ class SwitchLinuxAdapter(StandaloneAdapter):
                **self.env}
         out = open(self.log_path, "ab") if self.log_path else subprocess.DEVNULL
         from .cpu_affinity import fast_argv
+        self._boot_spawn_wall = time.time()
         self.proc = subprocess.Popen(fast_argv(argv), env=env, stdout=out, stderr=subprocess.STDOUT)
 
-    def _settle(self) -> None:
+    def _settle(self, expected_proc) -> None:
         try:
-            self._wait_guest_ready()
+            self._finish_restart(expected_proc)
             self._park_pointer()
-        except Exception as e:                            # noqa: BLE001 - the pump ends the session if Eden is gone
-            self.restart_error = str(e)[:300]
+        except Exception:                                # noqa: BLE001 - _finish_restart records owned failures
+            pass
+
+    def _finish_restart(self, expected_proc):
+        """One process-scoped retry budget for synchronous and asynchronous restarts."""
+        from . import switch_nsp
+        watched = (switch_nsp.title_id(self.rom) or '').upper() in BOOT_WATCH_TITLES and not self.debug
+        proc = expected_proc
+        for attempt in range(self.BOOT_STALL_MAX_RELAUNCHES+1):
+            try:
+                if self._stopped or self.proc is not proc:
+                    raise RuntimeError('boot monitoring cancelled: this process was stopped or replaced')
+                arena = self._wait_guest_ready()
+                if self._stopped or self.proc is not proc:
+                    raise RuntimeError('boot monitoring cancelled: this process was stopped or replaced')
+                watch = self._boot_watch(accept_static=True,expected_proc=proc) if watched else {'watched':False}
+                return arena,watch
+            except EdenGpuInitStalled as exc:
+                with self._restart_lock:
+                    if self._stopped or self.paused or self.proc is not proc:
+                        raise RuntimeError('boot retry cancelled: process ownership or pause state changed') from exc
+                    if attempt == self.BOOT_STALL_MAX_RELAUNCHES:
+                        self.restart_error = f'GPU boot stalled again after one retry: {exc}'
+                        raise
+                    self._p(70,'Eden mapped memory but stalled in GPU init; retrying the same launch once')
+                    restarting = None
+                    try:
+                        self._stop_eden(proc)
+                        restarting = self.proc
+                        if self._stopped:
+                            raise RuntimeError('the session was stopped during boot recovery')
+                        self._mem = None
+                        self._spawn(self._argv(self.rom))   # selection/settings already written; do not apply new edits
+                        proc = self.proc
+                        self.restarts += 1
+                        self._coop_started()
+                    except Exception as retry_exc:
+                        if self.proc is restarting:
+                            self.proc = proc              # no replacement: expose the stopped process to the pump
+                        if not self._stopped:
+                            self.restart_error = str(retry_exc)[:300]
+                        raise
+            except Exception as exc:
+                if self.proc is proc and not self._stopped:
+                    self.restart_error = str(exc)[:300]
+                raise
 
     def restart_title(self, overlay=KEEP_OVERLAY, *, wait: bool = True, progress=None) -> dict:
         """The booted title again in this session: Eden stops (its own process tree; the display, the stream and the
@@ -5316,26 +5424,30 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         before, old = getattr(self, "progress", None), self.proc
         self.progress = progress
         try:
-            self.overlay_build, self._stopped, self.restart_error = target, False, None
-            self._p(10, "Stopping Eden (the session, its display and stream stay)")
-            self._stop_eden(old)
-            if self._stopped:
-                raise RuntimeError("the session was stopped while its title restarted")
-            self._mem = None
-            self._p(40, "Writing the LayeredFS selection while Eden is down")
-            self._ensure()
-            self._spawn(self._argv(self.rom))
-            self.restarts += 1
-            self._coop_started()
+            with self._restart_lock:
+                old = self.proc
+                self.overlay_build, self._stopped, self.restart_error = target, False, None
+                self._p(10, "Stopping Eden (the session, its display and stream stay)")
+                self._stop_eden(old)
+                if self._stopped:
+                    raise RuntimeError("the session was stopped while its title restarted")
+                self._mem = None
+                self._p(40, "Writing the LayeredFS selection while Eden is down")
+                self._ensure()
+                self._spawn(self._argv(self.rom))
+                self.restarts += 1
+                self._coop_started()
+                expected_proc = self.proc
             out = {"restarted": True, "same_session": True, "pid": self.proc.pid,
                    "previous_pid": getattr(old, "pid", None), "overlay": self.overlay_state, "restarts": self.restarts,
                    "coop_players": self.coop_players}
             if not wait:
-                threading.Thread(target=self._settle, daemon=True, name="eden-restart").start()
+                threading.Thread(target=self._settle, args=(expected_proc,), daemon=True, name="eden-restart").start()
                 return out | {"ready": "booting"}
-            arena = self._wait_guest_ready()
+            arena,watch = self._finish_restart(expected_proc)
             self._park_pointer()
-            return out | {"ready": "guest_memory", "guest_arena": [hex(arena["lo"]), hex(arena["hi"])]}
+            return out | {"pid":self.proc.pid,"restarts":self.restarts,"boot_watch":watch,
+                          "ready": "guest_memory", "guest_arena": [hex(arena["lo"]), hex(arena["hi"])]}
         except BaseException:
             if isinstance(self.proc, _EdenRestarting):
                 self.proc = old                           # no new Eden: the pump sees the old one gone, the session ends
@@ -5364,8 +5476,7 @@ class SwitchLinuxAdapter(StandaloneAdapter):
     # nondeterministic and emulator-side, not content-driven. Eden's log stops mid-line at ~2.65s at nvhost_gpu
     # ChannelSetTimeout on a shared GPU node; every stall was followed by a load of identical bytes in 10-30s.
     # A single relaunch fixes the operator-visible symptom without knowing the root cause.)
-    BOOT_STALL_CHECK_S = 90.0                             # if no frame by this time, check Eden log for stall signature
-    BOOT_STALL_LOG_MARKER = "Nvdec"                       # Eden log must reach this by BOOT_STALL_CHECK_S or it is a stall
+    BOOT_STALL_LOG_MARKER = "Nvdec"                       # reached video decode: not the observed GPU-init stall
     BOOT_STALL_MAX_RELAUNCHES = 1                         # one retry; if that also stalls, report it
 
     def _eden_boot_stalled(self) -> bool:
@@ -5376,54 +5487,34 @@ class SwitchLinuxAdapter(StandaloneAdapter):
             return False
         if self.BOOT_STALL_LOG_MARKER in tail:
             return False                                  # reached Nvdec, not stalled
-        # The stall signature: log mentions nvhost_gpu but never reaches Nvdec, and the process is still alive
-        if "nvhost_gpu" in tail and self.proc and self.proc.poll() is None:
+        # The measured tail ends at ChannelSetTimeout, sometimes followed by a partial NVDRV warning.
+        # Freshness, lack of log progress and actual black frames are required separately by _boot_watch.
+        if ("nvhost_gpu" in tail and "ChannelSetTimeout" in tail[-1000:]
+                and self.proc and self.proc.poll() is None):
             return True
         return False
 
     def _wait_guest_ready(self) -> dict:
         """A window or an error dialog is not a booted game (#3688, #3769 on Windows): require this process's
-        HostMemory arena, which Eden creates when the game boots.
-
-        Also watches for the intermittent GPU init stall (2026-11-06): if Eden's log hasn't reached Nvdec by
-        BOOT_STALL_CHECK_S and the process is alive, relaunch once. Every observed stall was followed by a load
-        of identical bytes in 10-30s, so a single retry fixes the symptom."""
+        HostMemory arena, which Eden creates when the game boots. Mapping alone does not confirm rendering;
+        launch_game / _finish_restart own the subsequent boot check and its single retry budget."""
         deadline = time.monotonic() + float(getattr(self, "boot_timeout_s", None) or self.BOOT_S)
-        stall_check_at = time.monotonic() + self.BOOT_STALL_CHECK_S
-        stall_relaunched = False
+        expected_proc = self.proc
         self._p(85, "Waiting for Eden to map the Switch guest memory")
         error = None
         while time.monotonic() < deadline:
+            if self._stopped or self.proc is not expected_proc:
+                raise RuntimeError('guest-memory wait cancelled: this process was stopped or replaced')
             if not self.proc or self.proc.poll() is not None:
                 raise RuntimeError(f"Eden exited before booting the game: {self.log_tail(2000)}")
             try:
                 return self._guest()[1]
             except (RuntimeError, OSError) as exc:
                 error = exc
-            # Boot stall watchdog: if we are past the check time and Eden is stuck in GPU init, relaunch once
-            if not stall_relaunched and time.monotonic() >= stall_check_at and self._eden_boot_stalled():
-                self._p(70, f"Eden boot stall detected (no {self.BOOT_STALL_LOG_MARKER} after {self.BOOT_STALL_CHECK_S:.0f}s); "
-                            "relaunching once")
-                self._signal("SIGTERM")
-                time.sleep(self.RESTART_GRACE_S)
-                if self.proc and self.proc.poll() is None:
-                    self._signal("SIGKILL")
-                    time.sleep(1)
-                self._mem = None
-                # Relaunch with the same overlay and settings
-                try:
-                    self.restart_title(wait=False)
-                    stall_relaunched = True
-                    stall_check_at = time.monotonic() + self.BOOT_STALL_CHECK_S  # reset the check for the new launch
-                    self._p(85, "Relaunched after boot stall; waiting for guest memory again")
-                    continue
-                except Exception as relaunch_exc:         # noqa: BLE001 - relaunch failure is not the original error
-                    self._p(60, f"Boot stall relaunch failed: {relaunch_exc}")
-                    # Fall through to the normal timeout path
             time.sleep(0.25)
         stall_note = ""
         if self._eden_boot_stalled():
-            stall_note = " (Eden log shows GPU init stall signature: nvhost_gpu without Nvdec)"
+            stall_note = " (Eden log ends near nvhost_gpu ChannelSetTimeout without Nvdec)"
         raise RuntimeError(f"Eden did not map guest memory before the boot deadline ({error}){stall_note}; its window or a dialog "
                            f"alone does not confirm a booted game. Log tail: {self.log_tail(1500)}")
 
@@ -5437,16 +5528,17 @@ class SwitchLinuxAdapter(StandaloneAdapter):
 
     def stop_game(self) -> dict:
         self._stopped = True                              # a restart under way does not start Eden again
-        if self.paused:                                   # a SIGSTOPped process would not act on SIGTERM
-            self._signal("SIGCONT")
-            self.paused = False
-        self._signal("SIGTERM")                           # AppRun and the eden binary under it
-        result = super().stop_game()
-        self._mem = None
-        if getattr(self, "_coop_config_path", None) is not None:
-            from . import switch_coop
-            switch_coop.drop_session_config(self)
-        return result
+        with self._restart_lock:
+            if self.paused:                               # a SIGSTOPped process would not act on SIGTERM
+                self._signal("SIGCONT")
+                self.paused = False
+            self._signal("SIGTERM")                       # AppRun and the eden binary under it
+            result = super().stop_game()
+            self._mem = None
+            if getattr(self, "_coop_config_path", None) is not None:
+                from . import switch_coop
+                switch_coop.drop_session_config(self)
+            return result
 
     def query_runtime(self) -> dict:
         d = {"running": bool(self.proc and self.proc.poll() is None), "emulator": "eden", "paused": self.paused,

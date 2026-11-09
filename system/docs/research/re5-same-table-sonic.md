@@ -8,6 +8,14 @@ a synchronized native-animation comparison are developed.
 
 ## Current build path and structural checks (2026-11-08)
 
+An identical v12 archive also exposed an emulator restart problem: Eden mapped guest memory but stayed black with
+its log unchanged near `nvhost_gpu ChannelSetTimeout`. The memory waiter returned before its old stall check could
+run. Same-session restarts now check visible rendering after the existing eight-second loading grace, accepting a
+static visible menu. Only repeated decoded black frames plus a fresh, unchanged known GPU-init tail permit one
+process-owned retry within 45 seconds; stale logs, unknown stalls, paused/stopped/replaced processes do not. The
+recursive memory-wait relaunch was removed so asynchronous retries cannot renew their budget. This is boot recovery,
+not evidence that the custom character's animation is accepted.
+
 `re5_char_swap.plan_changes()` now includes `exefs/main.ips` whenever a native `uEm10.arc -> uEm11.arc` swap is selected.
 Both files belong to one tracked overlay edit. This is the measured native-class replacement; replacing that archive
 without the code patch is the failed boot path described below. Production callers require the **existing**
