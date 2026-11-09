@@ -108,6 +108,16 @@ def test_zl_is_tapped_the_new_bomb_confirms_the_placing_motion_plays_out_he_runs
     assert m.tick(p(pos=(-900.0, 0.0, 0.0)), snap(ground=[bomb]), live, t0 + 4.0) is None   # the next waits EVERY_S
 
 
+def tick_until(m, live, start, end, *, held_inv=None, step=0.5):
+    """Tick at the engine's real cadence (it ticks every 0.05 s; GAP_S keeps test gaps inside one active window)."""
+    t = start
+    inv = held_inv
+    while t < end:
+        t = min(end, t + step)
+        m.tick(p(), inv if inv is not None else held(), live, t)
+    return t
+
+
 def test_an_unconfirmed_press_still_leaves_when_the_placing_motion_was_seen_and_rearms_when_not():
     t = MN.EVERY_S
     m = MN.Mines({})
@@ -115,13 +125,15 @@ def test_an_unconfirmed_press_still_leaves_when_the_placing_motion_was_seen_and_
     to_place(m, [], t)
     t0 = t + MN.NEUTRAL_S + 0.2
     m.tick(p(motion=29), held(), [], t0 + 0.1)
-    act = m.tick(p(), held(), [], t0 + MN.PLACE_S + 0.1)
+    tick_until(m, [], t0 + 0.1, t0 + MN.PLACE_S + 0.1)
+    act = m.tick(p(), held(), [], t0 + MN.PLACE_S + 0.2)
     assert m.stats["mine_unconfirmed"] == 1 and m.stats["mines_placed"] == 0
     assert m.state == "retreat" and act["hold"][:2] == MN.RUN and m.last_pos == (0.0, 0.0, 0.0)
     m = MN.Mines({})
     m.new_round(0.0)
     to_place(m, [], t)
-    assert m.tick(p(), held(), [], t0 + MN.PLACE_S + 0.1) == {"hold": ()}
+    tick_until(m, [], t0, t0 + MN.PLACE_S + 0.1)
+    assert m.tick(p(), held(), [], t0 + MN.PLACE_S + 0.2) == {"hold": ()}
     assert m.stats["mine_unconfirmed"] == 1 and m.state == "rearm"
     m = MN.Mines({})
     m.new_round(0.0)
@@ -140,16 +152,18 @@ def test_a_falling_count_is_not_actor_proof_and_a_failed_equip_retries_without_s
     assert m.stats["mines_placed"] == 0
     m.tick(p(motion=29), held(rounds=4, ground=[far]), [], t0 + 0.57)            # the flag off: the count falls
     assert m.stats["mines_placed"] == 0 and m.bombs == {} and m.state == "place"
-    assert m.tick(p(), held(rounds=4), [], t0 + MN.PLACE_S + 0.1)["hold"][:2] == MN.RUN
+    tick_until(m, [], t0 + 0.57, t0 + MN.PLACE_S + 0.1, held_inv=held(rounds=4))
+    assert m.tick(p(), held(rounds=4), [], t0 + MN.PLACE_S + 0.2)["hold"][:2] == MN.RUN
     assert m.stats["mine_unconfirmed"] == 1 and m.state == "retreat"
     m = MN.Mines({})
     m.new_round(0.0)
     m.tick(p(), snap(), [], t)
     m.tick(p(), snap(), [], t + MN.NEUTRAL_S)
-    assert m.tick(p(), snap(), [], t + MN.NEUTRAL_S + MN.EQUIP_S + 0.1) is None
-    failed_at = t + MN.NEUTRAL_S + MN.EQUIP_S + 0.1
+    tick_until(m, [], t + MN.NEUTRAL_S, t + MN.NEUTRAL_S + MN.EQUIP_S + 0.1, held_inv=snap())
+    assert m.tick(p(), snap(), [], t + MN.NEUTRAL_S + MN.EQUIP_S + 0.2) is None
     assert m.stats["mine_equip_failures"] == 1 and m.last_at is None
-    assert m._retry_at == pytest.approx(failed_at + MN.RETRY_S)
+    failed_at = t + MN.NEUTRAL_S + MN.EQUIP_S + 0.2
+    assert t + MN.NEUTRAL_S + MN.EQUIP_S <= m._retry_at - MN.RETRY_S <= failed_at
     m.tick(p(), snap(), [], failed_at + .1)  # the gun was still in hand: rearm finishes
     assert m.tick(p(), snap(), [], failed_at + MN.RETRY_S) == {"hold": ()}
     assert m.state == "neutral"
@@ -556,3 +570,38 @@ def test_close_blast_guard_yields_to_gun_before_due_then_due_mine_seeks_clearanc
     assert action["hold"][:2] == MN.RUN and "zl" not in action["hold"]
     assert bot.doing == "mine" and bot.mines.state == "idle"
     assert bot.stats["mine_attempts"] == bot.stats["mines_placed"] == 0
+
+def test_a_long_tick_gap_pauses_the_equip_clock_instead_of_failing_the_attempt():
+    """Live 2026-11-09: the first round after the supply change counted mine_attempts 1 / mine_equip_failures 1 -
+    the tap was correct but the bot was grabbed by a Majini, and the wall clock ran the equip window out while the
+    controller was not ticking. A gap longer than GAP_S pauses the cycle's clock instead."""
+    m = MN.Mines({})
+    m.new_round(0.0)
+    live = []
+    assert m.tick(p(), snap(), live, MN.EVERY_S) == {"hold": ()} and m.state == "neutral"
+    assert m.tick(p(), snap(), live, MN.EVERY_S + MN.NEUTRAL_S) == {"tap": "dup"} and m.state == "equip"
+    # a 4 s grab: no tick during it, the bomb still comes to hand just after
+    t_after = MN.EVERY_S + MN.NEUTRAL_S + 4.0
+    assert m.tick(p(), held(), live, t_after) == {"hold": ("zl",)} and m.state == "place"
+    assert m.stats["mine_equip_failures"] == 0
+
+
+def test_a_bomb_in_hand_with_no_quick_grid_still_plants():
+    """The equip press can leave the item's grid record outside QUICK: the hand flag alone is the plant's proof."""
+    m = MN.Mines({})
+    m.new_round(0.0)
+    live = []
+    m.state, m.t = "equip", MN.EVERY_S
+    hand_only = dict(BOMB, grid=0, hand=True)
+    inv = [dict(GUN, hand=False), hand_only]
+    assert m.stack(inv) is None and m.equipped(inv) is hand_only
+    act = m.tick(p(), {"inventory": inv, "ground_mines": STACK}, live, MN.EVERY_S + 0.2)
+    assert act == {"hold": ("zl",)} and m.state == "place"
+    assert m.stats["mine_equip_failures"] == 0
+
+
+def test_an_empty_in_hand_stack_is_not_equipment():
+    m = MN.Mines({})
+    assert m.equipped([dict(BOMB, rounds=0, hand=True)]) is None
+    assert m.equipped([dict(BOMB, rounds=5, hand=False)]) is None
+    assert m.equipped([dict(BOMB, rounds=5, hand=True)]) is not None

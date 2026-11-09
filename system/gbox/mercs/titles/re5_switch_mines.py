@@ -60,6 +60,8 @@ BLAST_CM, TRIGGER_CM, CLOSE_MAJINI_CM = 800.0, 350.0, 300.0
 # itself had the Majini at 300 cm, and he did run it (the replay keeps the run), while a tighter crowd is a death.
 REARM_S = 1.2
 RELOCATE_S, RELOCATE_PAUSE_S, RETRY_S = 3.0, 1.0, 3.0
+GAP_S = 0.75                             # a tick gap longer than this (held, healing, a reload stall above this module)
+                                         # pauses the cycle's clock: EQUIP_S/PLACE_S/SETTLE_S measure active control
 QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}
 RUN = ("b", "lup")
 KNIVES = frozenset({0x01, 0x0E, 0x14, 0x23, 0x24})
@@ -108,6 +110,7 @@ class Mines:
         self._relocate_until, self._relocate_retry_at = None, 0.0
         self._blocked, self._avoid_site = None, None
         self._ground_observed = False
+        self._tick_at = None                           # the previous tick's clock (the gap pause, GAP_S)
         self.saw_spent = False
         for k in COUNTERS:
             self.stats.setdefault(k, 0)
@@ -131,6 +134,7 @@ class Mines:
         self.hist.clear()
         self._tracked_at = None
         self._retry_at = self._relocate_retry_at = 0.0
+        self._tick_at = None
         self._relocate_until = None
         self._blocked, self._avoid_site = None, None
         self._ground_observed = False
@@ -143,6 +147,17 @@ class Mines:
     def stack(inv) -> dict | None:
         return next((s for s in inv or () if s.get("id") == MINE_ID and (s.get("rounds") or 0) > 0
                      and s.get("grid") in QUICK), None)
+
+    @staticmethod
+    def equipped(inv) -> dict | None:
+        """The bomb in hand, whatever its grid record says.
+
+        The D-pad equip can move the item's grid value (or hand it over from a record the loadout only just wrote),
+        so requiring the quick-grid lookup here turned a successful press into "the bomb did not come to hand"
+        (live 2026-11-09: mine_attempts 1 / mine_equip_failures 1 in the first round after the supply change).
+        """
+        return next((s for s in inv or () if s.get("id") == MINE_ID and (s.get("rounds") or 0) > 0
+                     and s.get("hand")), None)
 
     def watch(self, p: dict, snap: dict, now: float) -> None:
         """Every tick, whatever the bot decided (held, healing, fighting): the bombs and their blasts (_track)."""
@@ -344,6 +359,12 @@ class Mines:
     def tick(self, p: dict, snap: dict, live: list, now: float, *, busy: bool = False) -> dict | None:
         inv = snap.get("inventory") or ()
         mine = self.stack(inv)
+        hand = self.equipped(inv)
+        if self._tick_at is not None and now - self._tick_at > GAP_S:
+            # The bot was held, healing or otherwise away from this module: the cycle's clock pauses with it, so
+            # EQUIP_S/PLACE_S/SETTLE_S never expire over time the controller did not actually spend on the cycle.
+            self.t += now - self._tick_at
+        self._tick_at = now
         self._track(p, snap, now)
         if self.state == "idle":
             act = self._clear(p, snap, live)
@@ -370,14 +391,16 @@ class Mines:
         if self.state == "neutral":
             if now - self.t < NEUTRAL_S:
                 return {"hold": ()}
-            if mine is None:
+            if mine is None and hand is None:
                 self.state = "idle"
                 return None
             self.state, self.t = "equip", now
             self.stats["mine_attempts"] += 1
-            return {"tap": QUICK[mine["grid"]]}
+            if mine is not None and hand is None:
+                return {"tap": QUICK[mine["grid"]]}
+            return {"hold": ()}                         # already in hand (a prior press landed)
         if self.state == "equip":
-            if mine is not None and mine.get("hand"):
+            if hand is not None:
                 why = self._clearance(p, live)
                 if why or "ground_mines" not in snap:
                     self.stats["mine_blocked_reason"] = why or "ground mine observation unavailable"
@@ -385,7 +408,7 @@ class Mines:
                     return {"hold": ()}                 # no plant while a threat closed during equip
                 self.state, self.t, self.saw_place = "place", now, False
                 self.saw_spent = False
-                self.count0 = mine.get("rounds")
+                self.count0 = hand.get("rounds")
                 self.ground0 = {g["ptr"] for g in snap.get("ground_mines") or ()}
                 self._ground_observed = True
                 self.site = tuple(p["pos"])
