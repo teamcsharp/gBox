@@ -151,6 +151,14 @@ reached a **live Public Assembly round** (timer `1:59`, combo counter, enemies p
 This makes the pair the viable import unit: author a Sonic MOD against the donor MRL's part/material count, or write the
 MRL side with it.
 
+That next test was run: a Sonic one-bone MOD with **349 records** (the donor `em1001_low` mesh count) and the donor’s
+material index, paired with the **donor `em1001_low` MRL**, boots to the title and still stops at `NOW LOADING`. So the
+MRL is not satisfied by mesh count and material index alone. Its 112 KB tail must carry per-mesh data that the MOD has
+to match — most likely the per-part vertex/index layout, not just material bindings.
+
+A donor MRL can therefore only wear the donor’s own MOD (or a MOD that reproduces that per-mesh layout). Importing Sonic
+requires the MRL tail to be decoded and rewritten, or a runtime path that bypasses the loader.
+
 ### The compression level was the confound: zlib 6 works
 
 Recompressing the original low MOD at zlib **level 9** (identical uncompressed bytes, same entry size, same tag) hung at
