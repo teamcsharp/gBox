@@ -14,7 +14,10 @@ Encode: :func:`pvr_slot_encode` (VQ, same payload size) and
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import struct
+import time
 from pathlib import Path
 
 import numpy as np
@@ -253,6 +256,60 @@ def replace_slot(data: bytes, slot: int, slot_bytes: bytes) -> bytes:
         raise ValueError("replacement slot changed the allocated size")
     out[body_start + offs[slot]:body_start + end] = slot_bytes
     return bytes(out)
+
+
+# ---------------------------------------------------------------- routed writer (op=use)
+
+def _donor_from_meta(ctx, meta) -> np.ndarray:
+    """RGBA donor texture for a routed Illbleed swap: the library character's texture."""
+    from . import characters as C
+    from PIL import Image
+    root = C.library_root(ctx.config) / meta["slug"]
+    cands = sorted(root.glob("targets/*.png")) or sorted(root.rglob("*.png"))
+    if not cands:
+        raise ValueError(f"no donor texture for {meta['slug']!r} under {root}; import a character texture first")
+    return np.asarray(Image.open(cands[0]).convert("RGBA"))
+
+
+def use(ctx, meta, game, inp, donor_rgba=None):
+    """Routed op=use for Illbleed: swap the donor's texture into one native playable's
+    CMCK slot 0 (default C04 - the pinned jorg/yor target), build an isolated mod and
+    register the target. The native NJCM model, skeleton and motion are untouched;
+    only the VQ texture body of the target slot is replaced.
+
+    inp.slot may name a character key (C00/C01A/C02A/C03/C04); any other value
+    (e.g. "player") replaces the default C04 target."""
+    import shutil
+    from . import characters as C, filemods
+    gid = game["game_id"]
+    slot_key = getattr(inp, "slot", None) or "player"
+    char = slot_key if slot_key in CHARACTERS else "C04"
+    name = f"illbleed_{meta['slug']}"
+    d = filemods.mod_dir(ctx.config, gid, name)
+    built = None
+    if getattr(inp, "rebuild", False) or not (d / ".gbox-mod.json").exists():
+        if not C.library_root(ctx.config).is_dir():
+            raise ValueError("Illbleed swaps build on the control-plane node (the Spark): run this there")
+        gdi = C._dc_gdi(ctx, game)
+        donor = donor_rgba if donor_rgba is not None else _donor_from_meta(ctx, meta)
+        if d.exists():
+            shutil.rmtree(d)
+        mod = build_mod(gdi, char, 0, donor, d)
+        w, h, _rgba, _desc = pvr_slot_decode(cmck_slots(load_character(gdi, char)[0])[0])
+        msha = hashlib.sha256(mod.read_bytes()).hexdigest()
+        (d / ".gbox-mod.json").write_text(json.dumps({
+            "name": name, "game_id": gid, "image": mod.name, "built": time.time(),
+            "character": meta["slug"], "target": f"AMAZON/{char}.NJ CMCK slot 0 ({w}x{h} VQ)",
+            "mod_sha256": msha}))
+        built = {"mod": name, "image": mod.name, "sha256": msha}
+        C._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
+               json={"game_id": gid, "slot": char, "mod": name, "nodes": [C.HOST_OS],
+                     "notes": f"donor texture replaces {char} CMCK slot 0 (VQ {w}x{h}); native skeleton + motion kept"})
+    out = {"mod": name, "build": built, "replaces": f"{char} (Illbleed playable, {CHARACTERS[char][0]})"}
+    if not getattr(inp, "launch", False):
+        return out | {"status": "built" if built else "ready"}
+    l = C._launch(ctx, gid, name, C.HOST_OS)
+    return out | {"status": "built+launched" if built else "launched", "launch": l}
 
 
 # ---------------------------------------------------------------- selftest (independent fixtures, no disc)

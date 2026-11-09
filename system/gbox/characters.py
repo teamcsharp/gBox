@@ -2046,6 +2046,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import sa2_chars
     if gid in sa2_chars.GAME_IDS and inp.slot == "player":    # Sonic Adventure 2 (DC): Sonic -> sa2_<slug> (GD-ROM copy)
         return {"result": out | sa2_chars.use(ctx, meta, game, inp)}
+    from . import illbleed_chars
+    if gid in illbleed_chars.GAME_IDS:               # Illbleed (DC): donor texture -> native playable CMCK slot 0
+        return {"result": out | illbleed_chars.use(ctx, meta, game, inp)}
     from . import jgr
     if gid in jgr.GAME_IDS:                                   # JGR: id:N names a native ID; NN names an archive index
         return {"result": out | jgr.use(ctx, meta, game, inp)}
