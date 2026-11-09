@@ -39,6 +39,7 @@ import threading
 import time
 
 from .. import tuning                      # learned per-stage constants and dead ends (gbox/mercs/tuning.py)
+from .. import ss_ledger                   # the SS campaign: the round's clock, its rank, its stage and character
 from pathlib import Path
 from ..bot_look import BotLook, make_target
 from ..driver import Driver
@@ -56,6 +57,12 @@ MAIN_GAMESYS = 0x584E0
 GS_PHASE, GS_TIMER, GS_START, GS_KILLS = 0x944, 0x948, 0x94C, 0x96C
 GS_COMBO_ON, GS_COMBO, GS_MAX_COMBO, GS_COMBO_T, GS_SCORE = 0x970, 0x974, 0x978, 0x97C, 0x990
 PHASE_INTRO, PHASE_PLAYING, PHASE_OVER = 0, 1, 3
+# The results' rank (static analysis of main, 2026-11-09; gbox/mercs/ss_ledger.py RANKS): the round's end walks the
+# score down a threshold row of main+0x17C1B7C - the third row (SS 400,000 ... C 30,000) when +0xA76 (No Mercy) is set
+# - and stores the rank index at +0x994 (0 SS, 1 S, 2 A, 3 B, 4 C, 5 D) and the exchange points at +0x998. Read at the
+# results only (phase over) and recorded beside the score's own rank (ss_ledger.result_rank): a rank goes into the
+# round's result_rank only when the two agree.
+GS_RANK, GS_RANK_POINTS, GS_NO_MERCY = 0x994, 0x998, 0xA76
 P_FIRST, P_POS, P_ROT, P_HP = 0x30, 0x60, 0x70, 0x1EB8
 P_MOTION = 0x8F8                         # u8 motion (also at +0x2550), live 2026-10-26 (rounds v2c / v2d): 0 standing,
                                          # 1 walking, 7 backing up, 9 / 10 turning, 22 the gun coming up, 26 aimed, 29 a
@@ -139,6 +146,12 @@ CHARACTERS = ("Chris (BSAA)", "Chris (Safari)", "Chris (STARS)", "Sheva (BSAA)",
 # used"). The names are labels for the stats; what the bot must NOT do is stop at index 9. The screen's own cursor is
 # an integer over every entry, so the roster size is learned from the game - walked to its wrap, persisted in the
 # cycle file - and every entry then takes part in the rotation. Until it is known, the whole plausible range is used.
+# The player object's RAM class names its character by number (uPl00ChrisNormal ...; the RomFS player archives are named
+# after these classes: uPl00Chris*, uPl01Sheba*, uPl02Jill, uPl03Wesker, uPl04Josh, uPl05Excella, uPl06Barry,
+# uPl07Rebecca - docs/research/re5-switch-ram.md). The costume is not read from it: RE5Switch._identity uses the
+# number only to check (or, with nothing else, name) the character.
+PLAYER_FAMILIES = {"00": "Chris", "01": "Sheva", "02": "Jill", "03": "Wesker", "04": "Josh", "05": "Excella",
+                   "06": "Barry", "07": "Rebecca"}
 CHARACTER_SLOTS = 0                 # learned entry count of the select screen (0 = not learned yet)
 CHARACTER_SLOTS_MAX = 64            # a hard ceiling for the walk (far above any real page count)
 FORWARD_KEYS = ("dright",)          # the button that moves the select cursor right (CURSORED's forward)
@@ -591,6 +604,11 @@ HEADING_GOV, HEADING_GOV_DEG_S, QUICK_TURN = True, 150.0, True
 # stage in DOOR_FILE across rounds; when he is stuck (the wall governor's recovery, the PiP's Flawed button) and no Majini
 # is within DOOR_FIGHT_R he walks to the nearest one not tried in DOOR_RETRY_S, where its prompt shows and is taken.
 DOOR_GO_S, DOOR_REACH_R, DOOR_FIGHT_R, DOOR_RETRY_S, DOOR_SPOTS_KEPT = 12.0, 120.0, 500.0, 30.0, 64
+# The key a stage's remembered doors (DOOR_FILE) and learned grid (re5_switch_nav: nav_grids/<key>.json) are kept under.
+# Until 2026-11-09 both were keyed by stage_target() at the round's start - the NEXT round's target, never the stage
+# being played (Bot._stage_now) - so every stage's doors and grid were other stages' (a door "seen here before" walked
+# him at a wall). The round's own stage now names them, in a new namespace: the old entries are left unread.
+STAGE_KEY = "{}#round"
 DOOR_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "learned" / "010018100CD46000" / "door_spots.json"
 SHOT_TAIL_S = 0.15                     # Bot._shot_tail: no stick in the boosted shot motion nor this long after it
 SHOT_TAIL_KEYS = frozenset({"lup", "ldown", "lleft", "lright", "rleft", "rright", "rup", "rdown"})
@@ -887,6 +905,22 @@ RUSH_R = 250.0
 GRENADES = True
 GRENADE_EVERY_S = 3.0
 GRENADE_CROWD_N, GRENADE_CROWD_R = 4, 450.0
+# The flash in an emergency (operator 2026-11-09, of his bombs: "Then flashbanging and running away and getting
+# distance ... have him force his way out"; the native flash stuns every Majini around him, the one holding him
+# included: docs/research/re5-native-flash.md). What kills him (docs/research/re5-ss-campaign.md, the 270 deaths
+# since 11-03): he goes down in the crowd - 92 % of the health he loses is lost with 3+ Majini within 6 m, half of
+# the 400+ hits land while he is held with a crowd round him, and 68 % of the deaths came with no heal left ("critical
+# retreat ... (no heals)"); and his own bombs (the guard below gives the run up for a close Majini). The grenade burst
+# above never fires then: it needs a verified firing follow-through, and the gun is down while he is held, healing
+# or running. So, once per CRIT_FLASH_GAP_S at most: held (not dying - the native controller refuses a dying player)
+# with another Majini within CRIT_FLASH_R; at CRIT_FLASH_HP of his health or less with CRIT_FLASH_N within it; or the
+# moment his bomb guard gave up the run out of a blast for a close Majini (re5_switch_mines close_in_blast_at). A
+# confirmed flash gives the guard its FLASH_S of reeling Majini, so he runs out instead of fighting inside his own
+# blast. A side effect, like the grenade burst: the tick's pad action is unchanged - he never stands for it and
+# never holds fire for it. stats crit_flashes (confirmed), crit_flash_requests, crit_flash_reason.
+CRIT_FLASH = True
+CRIT_FLASH_R, CRIT_FLASH_N, CRIT_FLASH_HP, CRIT_FLASH_GAP_S = 300.0, 2, 0.3, 4.0
+CRIT_FLASH_COUNTERS = ("crit_flashes", "crit_flash_requests")
 MESH_PROBE_CM = 150.0                    # _mesh_guard: how far ahead his way is checked on the nav mesh
 MESH_TURNS = tuple(math.radians(d) for d in (22.5, -22.5, 45, -45, 67.5, -67.5, 90, -90, 112.5, -112.5, 135, -135))
 HAZARD_FREE_R, HAZARD_SPREAD = 400.0, 60.0   # health lost with no Majini this near: the floor there hurts (_hazard_hit)
@@ -1475,6 +1509,14 @@ def snapshot(m) -> dict:
                     score=at(GS_SCORE, "<i"))
         if coop and _i32(m, gs + GS_PLAYERS) == PLAYERS_SPLIT:
             snap["scoring_players"] = 2                     # a team round: the score is both players'
+        if snap["mercenaries_phase"] == PHASE_OVER:         # the results: the rank the game computed (GS_RANK)
+            try:
+                rank, points = struct.unpack("<ii", m.rd(gs + GS_RANK, 8))
+                snap["rank_index"] = rank if 0 <= rank <= 5 else None
+                snap["rank_points"] = points
+                snap["no_mercy"] = bool(m.rd(gs + GS_NO_MERCY, 1)[0])
+            except (ValueError, OSError, struct.error):
+                snap["rank_index"] = None
     # the stage's own navmesh (re5_switch_native_nav): discovered once via find_sai,
     # cached; None until sAI is found or between rounds
     from . import re5_switch_native_nav
@@ -1772,6 +1814,9 @@ class Bot:
         self.target = None
         self.aim_since = None
         self._grenade_last, self._grenade_inflight = -1e9, False   # the GRENADES knob: last native flash burst, in flight
+        self._crit_flash_at, self._crit_pending = -1e9, None     # CRIT_FLASH: the last request; (confirmed count, at)
+        for k in CRIT_FLASH_COUNTERS:
+            self.stats.setdefault(k, 0)
         self.fire_down = False
         self.yaw_pulse = self.pitch_pulse = self.turn_pulse = 0
         self.on_key, self.on_ticks = None, 0      # the target the dot has sat on, for how many ticks in a row
@@ -3260,7 +3305,7 @@ class Bot:
     # --- doors, exits, ledges remembered per stage (DOOR_* above) ------------------------------------------------------
     def _door_spots(self) -> list:
         import json
-        stage = tuning.stage_name(STAGE_NAMES, stage_target()) or "unknown"
+        stage = STAGE_KEY.format(self._stage_now() or "unknown")      # the round's own stage (_stage_now)
         if getattr(self, "_doors_stage", None) != stage:
             self._doors_stage = stage
             try:
@@ -3680,6 +3725,7 @@ class Bot:
             self._round_started = now
             self.look.new_round()
             self._new_round(now)
+        self._stage_sync()
         if self.pending_mine and self.mines is not None and self.mines.enabled:
             # the loadout the round was built from is the one that decides it: fire the tactic the moment a bomb is in hand
             inv = snap.get("inventory")
@@ -3715,13 +3761,39 @@ class Bot:
             self.mines.new_round(now)
         if self.__dict__.get("_map_goals") is not None:
             self._map_goals.reset()                          # a new round: the last one's marks are gone
-        tuning.apply(MAP_ID, tuning.stage_name(STAGE_NAMES, stage_target()), self.stats)
+        self._stage_learning(self._stage_now())
+
+    def _stage_now(self) -> str | None:
+        """The stage this round is played on: the driver's identity (stats ss_stage: the navigation signature, else the
+        selects' confirmation; RE5Switch._identity), None while unknown. Never stage_target(): by the round's first tick
+        the cycle has already drawn the NEXT round's target (never the stage just started), so until 2026-11-09 the
+        tuning, the learned grid and the remembered doors were all read and written under another stage's name - the
+        rows' tuning_stage names another stage than the one they were played on in 1,257 of 1,308 (96 %)."""
+        for k in ("ss_stage", "stage"):
+            if (self.stats or {}).get(k) in STAGE_NAMES:
+                return self.stats[k]
+        return None
+
+    def _stage_learning(self, stage) -> None:
+        """What the bot learned for this stage, in force: the tuning (its constants and avoid spots), the learned
+        grid and the remembered doors (STAGE_KEY: the namespace written since the stage is the round's own - the old
+        files were keyed by the next round's target and are left unread)."""
+        self._learned_stage = stage
+        tuning.apply(MAP_ID, stage, self.stats)
         self._dead_ends = tuning.dead_ends(MAP_ID)       # the stage's learned dead ends, before this round's own
         # the learned occupancy-grid navigator (re5_switch_nav): seeded from the trail and walls each tick
-        stage_name = tuning.stage_name(STAGE_NAMES, stage_target()) or "unknown"
+        stage_name = STAGE_KEY.format(stage or "unknown")
         if getattr(self, "_nav", None) is None or self._nav.grid.stage != stage_name:
             from .re5_switch_nav import Navigator
             self._nav = Navigator(stage_name, learn_dir=self._learn_dir)
+
+    def _stage_sync(self) -> None:
+        """The round's stage learned after its first tick (the navigation signature reads a moment later, or corrects a
+        stage carried over from another round): the stage's learning comes into force then."""
+        stage = self._stage_now()
+        if stage is not None and stage != getattr(self, "_learned_stage", None):
+            self.stats["stage_learning_resync"] = self.stats.get("stage_learning_resync", 0) + 1
+            self._stage_learning(stage)
 
     def _start_face_open(self, p, now) -> dict | None:
         """Once per round: face the most open compass direction before moving.
@@ -3994,8 +4066,50 @@ class Bot:
             self._look_tick(snap, now)
         except Exception as exc:                             # noqa: BLE001 - the look never stops the bot
             self.stats["look_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        try:
+            self._critical_flash(snap, now)                  # CRIT_FLASH: held / low in a crowd (side effect)
+        except Exception as exc:                             # noqa: BLE001 - the flash never stops the bot
+            self.stats["crit_flash_error"] = f"{type(exc).__name__}: {exc}"[:160]
         self._grenade_crowd(snap, now)                       # the GRENADES knob: a flash burst at a crowd (side effect)
         return act
+
+    def _critical_flash(self, snap, now) -> None:
+        """CRIT_FLASH above: one native flash when he is held in a crowd, low in a crowd, or in his own bomb's blast with
+        a Majini too close to run; a confirmed one lets the bomb guard run him out while they reel."""
+        pend = self._crit_pending
+        if pend is not None:                                 # a request in flight: confirmed, or let go
+            if (self.stats.get("crit_flashes") or 0) > pend[0]:
+                self._crit_pending = None
+                if self.mines is not None:
+                    self.mines.flash_until = max(self.mines.flash_until, pend[1] + re5_switch_mines_flash_s())
+            elif now - pend[1] > 1.5:
+                self._crit_pending = None
+        if not CRIT_FLASH or self._crit_pending is not None or now - self._crit_flash_at < CRIT_FLASH_GAP_S:
+            return
+        p = snap.get("player") or {}
+        hp, top, pos = p.get("hp") or 0, p.get("hp_max") or 0, p.get("pos")
+        if hp <= DYING_HP or not pos or snap.get("mercenaries_phase") not in (None, PHASE_PLAYING):
+            return                                           # dying or dead: the native controller refuses it
+        px, py, pz = pos
+        near = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")
+                and abs(e["pos"][1] - py) <= LEVEL_DY
+                and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CRIT_FLASH_R]
+        m = self.mines
+        reason = None
+        if p.get("motion") in MOTION_HELD and len(near) >= 2:
+            reason = f"held with {len(near) - 1} more within {CRIT_FLASH_R / 100:.0f} m: the flash breaks it"
+        elif top > 0 and hp <= CRIT_FLASH_HP * top and len(near) >= CRIT_FLASH_N:
+            reason = f"{hp / top:.0%} health with {len(near)} within {CRIT_FLASH_R / 100:.0f} m: the flash, then out"
+        elif m is not None and getattr(m, "close_in_blast_at", None) == now:
+            reason = "in his own bomb's blast with a Majini too close to run: the flash, then out"
+        if reason is None:
+            return
+        self._crit_flash_at = now
+        self.stats["crit_flash_requests"] = self.stats.get("crit_flash_requests", 0) + 1
+        self.stats["crit_flash_reason"] = reason
+        before = self.stats.get("crit_flashes") or 0
+        if self._native_flash(snap, now, reason, "crit_flashes"):
+            self._crit_pending = (before, now)
 
     def _native_flash(self, snap, now, reason: str, counter: str) -> bool:
         """Ask the native controller for a flash at his position now (asynchronous, like the crowd flash; one at a
@@ -5773,7 +5887,7 @@ class RE5Switch(Driver):
                       "aim_repositions", "target_feedback_fire_blocks", "target_feedback_write_failures",
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
                       "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS \
-        + THREAT_COUNTERS \
+        + THREAT_COUNTERS + CRIT_FLASH_COUNTERS \
         + AIM_COUNTERS + MEASURE_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
@@ -5781,6 +5895,7 @@ class RE5Switch(Driver):
         self._timer = (None, 0.0)
         self.stats: dict | None = None
         self._tally = None                      # the results tally being watched (result_ready)
+        self._player_class = (None, None)       # (player object, its RAM class name): read once a round
 
     def snapshot(self, m) -> dict:
         return snapshot(m)
@@ -5794,13 +5909,68 @@ class RE5Switch(Driver):
             if control is not None:
                 control.confirmed_round()
             self._cycle_started(m)
+            self._identity(m, snap)
             now, t = self.clock(), snap.get("timer")
             if t != self._timer[0]:
                 self._timer = (t, now)
             elif now - self._timer[1] > HANG_S:
                 where = "loading"                           # the clock stopped: frozen (the engine calls it lost)
         self._mods(m, snap, where == "playing")
+        ss_ledger.clock_tick(self.stats, snap, where, self.clock())   # the round's real play seconds (ss_*)
+        if where == "results":
+            ss_ledger.result_rank(self.stats, snap)         # the results' rank: RAM beside the score's table
         return where
+
+    def _identity(self, m, snap) -> None:
+        """The round's stage and character in its stats when this visit's selects did not name them: a fragment that
+        starts mid-round (a bot reload, a restarted autoplay) never sees the selects, and its Notebook row named neither
+        (2026-11-09: both 400-kill wins). The stage: the navigation signature's (ss_ledger.SIGNATURES, measured), which
+        also corrects a stage left over from another round; else the cycle's last confirmed start. The character: the
+        cycle's last confirmed start when its stage agrees and the player object's RAM class is of that character
+        (uPlNN: PLAYER_FAMILIES), else the class's character alone. Never overrides a character the selects confirmed.
+        stats ss_stage (+ ss_stage_source), ss_character_source, player_class."""
+        st = self.stats
+        if st is None:
+            return
+        try:
+            sig = getattr(snap.get("nav"), "learning_sig", None)
+            named = ss_ledger.stage_of_signature(sig)
+            c = _CYCLE.get("c")
+            last = c.last if c is not None and isinstance(getattr(c, "last", None), tuple) else None
+            if named:
+                if st.get("stage") != named:
+                    st["stage"] = named
+                st.update(ss_stage=named, ss_stage_source="navigation signature")
+            elif st.get("stage") in STAGE_NAMES:
+                if st.get("ss_stage") != st["stage"]:
+                    st.update(ss_stage=st["stage"], ss_stage_source="selects")
+            elif last and 0 <= last[0] < len(STAGE_NAMES):
+                st.update(stage=STAGE_NAMES[last[0]], ss_stage=STAGE_NAMES[last[0]],
+                          ss_stage_source="the cycle's last start")
+            p = snap.get("player") or {}
+            ptr = p.get("ptr")
+            if ptr and self._player_class[0] != ptr:
+                self._player_class = (ptr, class_name(m, ptr))
+            cls = self._player_class[1] if ptr else None
+            family = PLAYER_FAMILIES.get(cls[3:5]) if isinstance(cls, str) and cls.startswith("uPl") else None
+            if cls:
+                st["player_class"] = cls
+            if st.get("character") not in (None, "", "unknown"):
+                if family:
+                    st["ss_character_check"] = "class agrees" if str(st["character"]).startswith(family) \
+                        else f"class {cls} disagrees"
+                return
+            guess = None
+            if last and 0 <= last[1] < max(len(CHARACTERS), character_count()):
+                name = CHARACTERS[last[1]] if last[1] < len(CHARACTERS) else f"character {last[1] + 1}"
+                if (named is None or STAGE_NAMES[last[0]] == named) and (family is None or name.startswith(family)):
+                    guess = (name, "the cycle's last start" + (" (class agrees)" if family else ""))
+            if guess is None and family:
+                guess = (family, f"player class {cls}")
+            if guess:
+                st.update(character=guess[0], ss_character_source=guess[1])
+        except Exception as exc:                            # noqa: BLE001 - identity never costs a tick
+            st["ss_identity_error"] = f"{type(exc).__name__}: {exc}"[:160]
 
     def _cycle_started(self, m=None) -> None:
         """A round is up on what the selects confirmed: the stage cycle counts it; the round's stats name it."""
@@ -5816,7 +5986,8 @@ class RE5Switch(Driver):
             # an entry past the known names (a later page of the select) is still a character the bot played: name it
             # by its select index rather than dropping the round's stats
             name = CHARACTERS[char] if 0 <= char < len(CHARACTERS) else f"character {char + 1}"
-            self.stats.update(stage=STAGE_NAMES[stage], character=name, stage_coverage=c.coverage_text())
+            self.stats.update(stage=STAGE_NAMES[stage], character=name, stage_coverage=c.coverage_text(),
+                              ss_stage=STAGE_NAMES[stage], ss_stage_source="selects", ss_character_source="selects")
 
     def _mods(self, m, snap, playing: bool, stats: dict | None = None) -> None:
         """The session's live mods (re5_switch_mods: fire_rate's time scale during shots, the no-ammo flags'

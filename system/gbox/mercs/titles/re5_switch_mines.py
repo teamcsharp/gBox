@@ -180,6 +180,7 @@ class Mines:
         self._tick_at = None                           # the previous tick's clock (the gap pause, GAP_S)
         self._site_until = None                        # last_pos blocks a placement until then (an unconfirmed press)
         self.flash_until = -1e9                        # a flash went off at his feet: no Majini blocks a plant until then
+        self.close_in_blast_at = None                  # the tick the guard gave up a run for a close Majini (CRIT_FLASH)
         self.saw_spent = False
         for k in COUNTERS:
             self.stats.setdefault(k, 0)
@@ -426,12 +427,19 @@ class Mines:
                 reason = "in his own bomb's blast: out before it detonates"
             in_blast = True
             break
+        reeling = now is not None and now < self.flash_until
         for e in live:
-            if flat(pos, e["pos"]) < CLOSE_MAJINI_CM and in_blast:
+            if flat(pos, e["pos"]) < CLOSE_MAJINI_CM and in_blast and not reeling:
                 # The cluster's remaining incidents: he stood in the old bomb's blast (bomb_cm 8-95) while a Majini
                 # was right on him. He cannot outrun the blast through a close crowd - the crowd fire unloads on him
                 # and the blast finishes it (live: 5 within 2 m, 11 within 4 m, and the death). The bomb's timer is
                 # already running, so the run is given up and the gun comes up: the fight unloads on the threat.
+                # Unless a flash of his has them reeling (flash_until: the bot's CRIT_FLASH answers this very moment,
+                # close_in_blast_at, with one): then nobody grabs him on the way, and he runs out as the operator
+                # asked ("flashbanging and running away and getting distance"). The ledger, 2026-11-09: this was the
+                # bomb guard's last word in 73 of the 270 deaths since 11-03, and 5 of the night's 13 deaths lost
+                # 142-1,545 health inside his own bombs' blast windows (mine_blast_hp_loss).
+                self.close_in_blast_at = now
                 self.stats["mine_status"] = "in the blast and a close Majini first: the gun up"
                 # A neutral action still owns this tick and would suppress the
                 # gun/combat on every subsequent tick. Yield actual control;
