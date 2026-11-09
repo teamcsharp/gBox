@@ -69,3 +69,9 @@ names the surface directly and cannot be wrong, and every texture question above
 * A build filed under the title id is invisible to `launch?mod=`.
 * A per-pack edit aimed at a pack the game is not drawing does nothing, silently - that is what cost five rounds of `pl00` builds.
 * Run the **stock control** before concluding a build broke something; it is one boot and it separates the build from the harness.
+
+## Update 2026-11-09: formats re-read, texture join corrected, four offline player-model candidates
+
+`re4-switch-model-replacement.md` supersedes this page's texture section (the join is `(pack id, index)` into
+`imagepackhd/<pack id:08x>.pack.fen`; Leon's textures are `01000008.pack.fen`) and its "a rebuilt mesh is not drawn"
+conclusion (not established; `native-rewrite-v1` is the test). Nothing in that note has been booted.
