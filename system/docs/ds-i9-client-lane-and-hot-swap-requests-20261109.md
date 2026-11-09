@@ -232,3 +232,62 @@ The unlock runs on the i9 now — and it refuses for a precise reason, which is 
    update with every keyset on the share. `gbox/switch_nca.py` is the replacement path for Switch extraction on
    clients; it needs only the CPU (AES-NI) and `prod.keys`.
 5. `switch_mods op=hotswap` (round 4, `499505ae`) is ready for the hot-reload test the moment a round is reachable.
+
+## Round 6 status (2026-11-09, ~16:55 CST): RE6 reaches THE MERCENARIES on the i9
+
+1. **The main menu and THE MERCENARIES are up on the i9.** With the update's ExeFS layered on the base NSP, RE6 boots,
+   loads the save, and the menu walk reaches THE MERCENARIES (Solo / Create Game (duo) / Join Game (duo) / Split /
+   Skill Settings / Leaderboards), then STAGE SELECT and CHARACTER SELECT, and a Solo round starts loading
+   (`screen() where=loading`, `snapshot timer=120.0 mode=mercenaries phase=0`).
+2. **The menus are driven from RAM over the Yuzu GDB stub, not from pixels.** `gbox.mercs.titles.re6_switch.screen(m)`
+   and `snapshot(m)` run against a Yuzu session through the guest-memory shim: the walk reads `where`, `cursor` and
+   `target` after each press (main_menu cursor 0 → play_game target 3 → extra_content cursor 1 → the Mercenaries menu
+   → select_stage cursor 0 target 4 → select_player cursor 0 target 4). This is the first time the RE6 menu state has
+   been readable on a Windows client; the bot's own walk (`STEPS`/`CURSORED`) is now usable there.
+   One naming note: the Mercenaries menu itself is reported as `mercs_wrong_mode`, which the bot's `STEPS` treats as a
+   dialog to back out of (`b`) — on Yuzu that screen is the real menu, so the step needs the Yuzu case.
+3. **A round needs the update's RomFS.** Two builds tried:
+   - update ExeFS + roster overlay: the stage load crashes Yuzu's dynarmic with
+     `CheckMemoryAccess … unmapped memory access at 0x4` (the patched `main` reads data the base RomFS does not have);
+   - update ExeFS only: the start stops at the `CONTINUE? YES / NO` prompt and does not proceed.
+   Either way the missing piece is the update's **RomFS** section (BKTR, crypt type 4, 71.6 MB at 0x4000). The next
+   build is the BKTR branch of `gbox.switch_nca` (relocation/subsection blocks + per-subsection CTR), then the update
+   RomFS as a RomFS overlay on top of the ExeFS one.
+4. **Hot reload/instant swap stay queued behind that round**: `switch_mods op=hotswap` is in and tested, but its
+   acceptance test needs a live round (two frames, one session, no restart) — the first candidate is the roster
+   overlay's character arc, swapped in place at the round boundary.
+5. Housekeeping: the i9 session was stopped, no game is left running, the worker stays online; the combined build
+   `recovery-re6-update-roster-v1-20261109` (51 files, 53.5 MB) and the update-only build are both on the i9.
+
+## Requirements added by the operator (2026-11-09, ~17:00 CST)
+
+The operator added three requirements on top of the live-swap work. Recorded here with what already exists, so the
+PM/operator can correct the plan before more is built.
+
+1. **Every enemy in these games replaced with fun reskins, driven live by MercMode sidebar parameters.**
+   - Exists: `gbox/re5_enemy_writer.py` (RE5: reviewed enemy-model families, donor-on-enemy swaps with option groups
+     and montage carriers — the asset-level template), `re4gc_enemies.py` (RE4 GameCube enemy swaps), and
+     `re_mods_tool.spawn_multiplier` (RE4 Switch: clones the game's own spawns; not a model swap).
+   - Missing: an RE6 enemy reskin path (no writer, no identified enemy archives), and a **live parameter binding** —
+     today a reskin is a build-time overlay; "dynamically affected by connected parameters" needs the sidebar's
+     values to reach either the asset choice or a RAM-level tint/scale hook.
+   - RE6 note: the enemy model arcs live in the update's RomFS, which is the BKTR section still to extract (the same
+     section a round needs), so that extraction is the prerequisite for both.
+2. **Finish the grenade ring: a ring of grenades out from the player, on demand during gameplay.**
+   - Exists: `merc_live_controls.grenade_ring` (RE5 Switch only) with `kind` = flash / hand / incendiary — the sidebar's
+     three buttons; RE4 has `flashbang` / `grenade target=player|aim` and `flashbang_loop` (detonation, not a ring).
+   - Missing: the RE6 implementation (the sidebar shows the three kinds as "unavailable" there), and the RE4 ring shape.
+     RE5's op is the reference: spawn N entities in a ring around the player and let them detonate.
+3. **MCP interaction with the bot: guide it and cause events in the game.**
+   - Exists: `gbox/mcp_server.py` (`gbox mcp`) with `bot_sessions`, `bot_directive` (fight / explore / mine / ... and
+     free text), `bot_strategy` (retained mods and MercMode settings), `game_mod` / `game_mod_ops`, `read_memory`,
+     `ask_gbox`, and per-tool `job_*` wrappers. What is still false: `spawn_enemies` (no verified spawn write in RE4
+     or RE5) and any **event injection** beyond the mods' own ops — "cause events to happen" maps to new ops, not to
+     the MCP transport.
+   - Plan: the three requirements become ops on the live-controls/`game_mod` surface (so MCP and the sidebar share one
+     path): `enemy_skin` (per family, with the sidebar parameters), `grenade_ring` per game, and the existing
+     `bot_directive` for guidance.
+4. **Observed this round, for the queue:** in the RE6 setup screen (SYSTEM SETTINGS / NETWORK SELECTION ... START GAME)
+   the A press on START GAME does nothing while ONLINE COMMUNICATION = ALLOW (the game appears to wait on a network
+   session); the setting must be forced to DON'T ALLOW in the launch config or the menu walk, and the lobby screen
+   needs the same RAM read (`screen()` named it `mercs_wrong_mode` earlier).
