@@ -988,6 +988,30 @@ MESH_ROUTE, MESH_REPLAN_S, MESH_WP_CM = True, 1.0, 120.0
 # only): left out of the routes for the rest of the stage, another way planned. stats mesh_links_tried,
 # mesh_links_refused, level_changes (the crossings made).
 MESH_LINKS, MESH_LINK_TRY_S, MESH_LINK_PUSH_CM, MESH_LINKS_AVOIDED = True, 3.0, 150.0, 24
+# Out of the bus (Public Assembly, live 2026-11-09 21:30 UTC, the operator's mark 5 m east of the bus's back wall: the
+# bot ran the bus's 7.6 m east and west for two minutes and never took its one door; docs/research/re5-bus-nav.md).
+# On the stage's mesh the bus is ten floor triangles 2.5 m wide with a single 63 cm opening whose corners ARE the
+# door jambs, two ramp triangles down to the ground. What each rule did wrong, and the fix:
+#   * the route's corner at the jamb was "reached" (MESH_WP_CM) from inside the bus, 1 m south of the door, and the
+#     next corner - beyond the bus wall - was aimed at through the wall. MESH_LOOKAHEAD: a waypoint within MESH_WP_CM
+#     is passed only once the next one lies on open floor from him (within MESH_WP_NEAR_CM whatever lies beyond), and
+#     the corners are kept MESH_CORNER_CLEARANCE_CM in from a portal's ends (a narrow door is crossed at its middle);
+#   * the wall governor's recovery walked him back along his trail - the bus's length - for RECOVERY_S, then its retry
+#     window turned him to that reverse heading with the stick off. WALL_ROUTE_YIELD: a wall met while the mesh's route
+#     steers is a short back-step (the bounded probe, 2 x WALL_BACK_S), the route plans again, and the wall memory's
+#     preempt and the retry window do not apply to a route-steered push (only a measured stall counts);
+#   * a crossing that stalls him MESH_CROSSING_PUSHES times is one the game does not let him walk (a Majini-only door,
+#     a prop): it is left out of the stage's routes for MESH_AVOID_S like a refused ladder (route(avoid=)) and
+#     another way is planned - stats mesh_crossings_refused; with no other way the mesh says so (mesh_no_route,
+#     nav_status "no usable exit ...") and the operator's mark closes as unavailable instead of the bot looping;
+#   * a link's landing is confirmed by his height (nearer the landing's floor than the foot's) or his arrival on the
+#     landing: the Traversal is passed, stats mesh_links_taken, and the walker no longer pushes back at the portal
+#     from below until the next plan;
+#   * within NAV_DIRECT_R the straight line took over even through a wall (the mark 2 m away behind the bus's end):
+#     the mesh's route stays in charge unless the line to the goal is open floor.
+MESH_LOOKAHEAD, MESH_WP_NEAR_CM, MESH_CORNER_CLEARANCE_CM = True, 45.0, 35.0
+MESH_CROSSING_PUSHES, MESH_AVOID_S = 3, 120.0
+WALL_ROUTE_YIELD, WALL_GOV_GOAL = True, True
 # A Majini in gun range with no open floor between them (a wall, a floor's edge) and more than CLOSE_IN_R away: he
 # goes round to him by the mesh at a run instead of raising the gun at the wall (asked every CLOSE_IN_CHECK_S).
 # RUN_R: a walk to a Majini farther than this is a run (B).
@@ -3483,7 +3507,11 @@ class Bot:
         def clear(h):
             end = (pos[0] + MESH_PROBE_CM * math.sin(h), pos[1], pos[2] + MESH_PROBE_CM * math.cos(h))
             try:
-                return None if mesh.member(pos) is None else bool(mesh.floor_segment(pos, end))
+                if mesh.member(pos) is None:
+                    return None
+                if MESH_LOOKAHEAD:                           # (the far end at the floor's own height: a ramp is clear)
+                    return self._mesh_open(mesh, pos, end[0], end[2])
+                return bool(mesh.floor_segment(pos, end))
             except Exception:                               # noqa: BLE001 - the mesh never stops a decision
                 return None
         if clear(rot) is not False:
@@ -3540,6 +3568,8 @@ class Bot:
             h = rot + a
             end = (pos[0] + STAND_PROBE_CM * math.sin(h), pos[1], pos[2] + STAND_PROBE_CM * math.cos(h))
             try:
+                if MESH_LOOKAHEAD:                           # (a ramp down through a door is open floor too)
+                    return self._mesh_open(mesh, tuple(pos), end[0], end[2])
                 return bool(mesh.floor_segment(tuple(pos), end))
             except Exception:                                # noqa: BLE001 - the mesh never stops a decision
                 return False
@@ -3946,8 +3976,10 @@ class Bot:
         act = re5_target_feedback.apply(self, snap, act, now)
         act = re5_target_feedback.keep_active(self, snap, act, now)
         act = self._mesh_guard(act, snap)                # the way probed on the stage's own nav mesh before a wall
-        if getattr(self, "_goal_drive", None) != now:    # (the operator's mark drives by the mesh: no wall recovery -
-            act = self._wall_gov(act, snap, now)         # live 21:30 it bounced him along the bus for minutes)
+        if WALL_GOV_GOAL or getattr(self, "_goal_drive", None) != now:
+            # (the operator's mark: live 21:30 the trail recovery bounced him along the bus for minutes; the governor
+            # now yields to the route - WALL_ROUTE_YIELD - so the mark drives with it: a blocked door is learned)
+            act = self._wall_gov(act, snap, now)
         act = self._never_stand(act, snap, now)          # whatever decided it: he does not stand
         act = self._calm_sticks(act, snap, now)
         act = self._governor(act, snap, now)
@@ -4453,7 +4485,10 @@ class Bot:
             self._gun_down()
             self._goal_drive = now
             self.doing, self.why = "walk", f"the operator's spot on the map, {d / 100:.0f} m off - by the map"
-            return {"hold": ("lup", "b") + self._approach(p, (gx, g.goal["floor_y"], gz), now, link=True)}
+            keys = self._approach(p, (gx, g.goal["floor_y"], gz), now, link=True)
+            if self._mesh_no_exit():                         # every way out of this floor region refused: said, not looped
+                return self._goal_no_exit(g, p)
+            return {"hold": ("lup", "b") + keys}
         key, d, dy = row.get("ptr", row.get("slot")), flat(row), row["pos"][1] - py
         if abs(dy) <= MAX_DY and d <= GOAL_FIRE_R and not self._walled_off(p, row, now):
             back = self._gun_back(snap, now)
@@ -4475,7 +4510,25 @@ class Bot:
         self.doing = "walk"
         self.why = (f"the operator's target {d / 100:.0f} m off"
                     + (f", {dy:+.0f} cm off his floor" if abs(dy) > LEVEL_DY else "") + " - by the map, at a run")
-        return {"hold": ("lup", "b") + self._approach(p, row["pos"], now, link=True)}
+        keys = self._approach(p, row["pos"], now, link=True)
+        if self._mesh_no_exit():
+            return self._goal_no_exit(g, p)
+        return {"hold": ("lup", "b") + keys}
+
+    def _mesh_no_exit(self) -> bool:
+        """The mesh's last plan failed only because of the crossings refused on this stage (_mesh_waypoint's
+        nav_status): the floor region he is in has no usable way out toward the goal."""
+        r = self.__dict__.get("_mroute") or {}
+        return r.get("pts") is None and str(self.stats.get("nav_status") or "").startswith("no usable exit")
+
+    def _goal_no_exit(self, g, p) -> None:
+        """The operator's mark closes as unavailable with the mesh's reason (the loop the operator watched in the bus
+        was the alternative); his own play resumes - and it never stands. stats map_goals_no_exit."""
+        g.goal.update(state="unavailable", reason=str(self.stats.get("nav_status") or "no usable exit")[:140])
+        self.stats["map_goals_no_exit"] = self.stats.get("map_goals_no_exit", 0) + 1
+        self._goal_log("state", g.goal, p, force=True)
+        self.doing, self.why = "none", ""
+        return None
 
     def _gait(self, dist: float) -> tuple:
         """The left stick for a walk to a Majini `dist` away: a run beyond RUN_R."""
@@ -4499,18 +4552,71 @@ class Bot:
                 c["off"] = False
         return c["off"]
 
-    def _mesh_avoid(self, mesh) -> list:
-        """The links he could not take on this stage's mesh (their portals), for route(avoid=)."""
+    def _mesh_avoid(self, mesh, now=None) -> list:
+        """The crossings he could not take on this stage's mesh (their portals, as (x, y, z)) for route(avoid=):
+        the ladders and drops that never let him through and the floor crossings that stalled him
+        (MESH_CROSSING_PUSHES), each kept MESH_AVOID_S."""
         a = self.__dict__.setdefault("_mavoid", {"sig": None, "pts": []})
         sig = getattr(mesh, "sig", None)
         if a["sig"] != sig:
             a["sig"], a["pts"] = sig, []
-        return a["pts"]
+        if now is not None:
+            a["pts"] = [q for q in a["pts"] if len(q) < 4 or q[3] > now]
+        return [tuple(q[:3]) for q in a["pts"]]
+
+    def _mesh_refuse(self, mesh, point, now, why: str) -> None:
+        """This crossing is left out of the stage's routes for MESH_AVOID_S; the route is planned again next tick."""
+        a = self.__dict__.setdefault("_mavoid", {"sig": None, "pts": []})
+        a["sig"] = getattr(mesh, "sig", None) if a["sig"] is None else a["sig"]
+        a["pts"] = [q for q in a["pts"] if math.dist(q[:3], point[:3]) >= 1.0] + [tuple(point[:3]) + (now + MESH_AVOID_S,)]
+        del a["pts"][:-MESH_LINKS_AVOIDED]
+        r = self.__dict__.get("_mroute")
+        if r is not None:
+            r["at"], r["pts"] = -1e9, None
+        self.__dict__.setdefault("_mlink", {"key": None, "since": now})["key"] = None
+        self.stats["mesh_refused_last"] = f"{why} at {point[0]:.0f},{point[1]:.0f},{point[2]:.0f}"[:120]
+
+    def _mesh_open(self, mesh, pos, x: float, z: float) -> bool:
+        """Whether the straight way from `pos` to (x, z) is open floor on the mesh, the far end taken at the floor's own
+        height there (a ramp down through a door is open; the old probe at his height called the drop a wall)."""
+        end = (x, pos[1], z)
+        try:
+            if callable(getattr(mesh, "find", None)) and callable(getattr(mesh, "_height", None)):
+                tri = mesh.find(end, floor_only=True)
+                h = mesh._height(tri, x, z) if tri is not None else None
+                if h is not None:
+                    end = (x, h, z)
+        except Exception:                                    # noqa: BLE001 - (a mesh without floors: his own height)
+            end = (x, pos[1], z)
+        try:
+            return bool(mesh.floor_segment(tuple(pos), end))
+        except Exception:                                    # noqa: BLE001 - the mesh never costs a tick
+            return False
+
+    def _route_wall(self, p, now) -> bool:
+        """The wall governor met a wall while the route steered (WALL_ROUTE_YIELD): the push at the route's waypoint
+        is counted and, MESH_CROSSING_PUSHES of them, that crossing is refused for the stage (route(avoid=)): the game
+        does not let him walk it. -> whether it was refused now. stats mesh_crossing_pushes, mesh_crossings_refused."""
+        wp, mesh = getattr(self, "_mesh_wp", None), getattr(self, "_mesh", None)
+        if wp is None or mesh is None:
+            return False
+        key = (round(wp[0] / 50.0), round(wp[1] / 50.0))
+        st = self.__dict__.setdefault("_mpush", {"key": None, "n": 0, "at": -1e9})
+        if st["key"] != key or now - st["at"] > 10.0:
+            st["key"], st["n"] = key, 0
+        st["n"], st["at"] = st["n"] + 1, now
+        self.stats["mesh_crossing_pushes"] = self.stats.get("mesh_crossing_pushes", 0) + 1
+        if st["n"] < MESH_CROSSING_PUSHES:
+            return False
+        st["key"], st["n"] = None, 0
+        self._mesh_refuse(mesh, (wp[0], p["pos"][1], wp[1]), now, "a crossing the game does not let him walk")
+        self.stats["mesh_crossings_refused"] = self.stats.get("mesh_crossings_refused", 0) + 1
+        return True
 
     def _mesh_waypoint(self, p, goal, now):
         """The next point (x, z) of the nav mesh's route from him to `goal` (x, y, z), or None when the mesh is not
         read, an end is off it, or no route joins them. A ladder or a drop on the way (MESH_LINKS) is walked into at
-        its foot; self._mesh_link says he is at one this tick."""
+        its foot; self._mesh_link says he is at one this tick. stats nav_status says why there is no route."""
         mesh = getattr(self, "_mesh", None)
         self._mesh_link = False
         if not MESH_ROUTE or mesh is None or not hasattr(mesh, "route") or len(goal) < 3:
@@ -4521,8 +4627,12 @@ class Bot:
         stale = now - r["at"] >= MESH_REPLAN_S
         if (r["cell"] != cell and now - r["at"] >= NAV_REPLAN_MIN_S) or stale:
             r["cell"], r["at"] = cell, now
+            avoid = tuple(self._mesh_avoid(mesh, now))
             try:
-                avoid = tuple(self._mesh_avoid(mesh))
+                kw = {"clearance": MESH_CORNER_CLEARANCE_CM} if MESH_CORNER_CLEARANCE_CM > 0 else {}
+                pts = mesh.route((px, py, pz), tuple(goal[:3]), avoid=avoid, **kw) if avoid \
+                    else mesh.route((px, py, pz), tuple(goal[:3]), **kw)
+            except TypeError:                                # an older re5_nav without clearance (a partial reload)
                 pts = mesh.route((px, py, pz), tuple(goal[:3]), avoid=avoid) if avoid \
                     else mesh.route((px, py, pz), tuple(goal[:3]))
             except Exception as exc:                         # noqa: BLE001 - the mesh never costs a tick
@@ -4531,12 +4641,41 @@ class Bot:
             r["pts"] = list(pts) if pts else None
             self.stats["mesh_routes" if pts else "mesh_no_route"] = \
                 self.stats.get("mesh_routes" if pts else "mesh_no_route", 0) + 1
+            if pts:
+                self.stats["nav_status"] = "route"
+            else:
+                free = None
+                if avoid:                                    # (the refusals the cause? the same route without them)
+                    try:
+                        free = mesh.route((px, py, pz), tuple(goal[:3]))
+                    except Exception:                        # noqa: BLE001
+                        free = None
+                self.stats["nav_status"] = (
+                    f"no usable exit from this floor region toward {goal[0]:.0f},{goal[2]:.0f}: "
+                    f"{len(avoid)} crossing(s) refused" if free else
+                    "no mesh route (an end off the mesh, or no floor path between them)")
+                if free:
+                    self.stats["mesh_no_exit"] = self.stats.get("mesh_no_exit", 0) + 1
         pts = r["pts"]
         while pts:
             q = pts[0]
             link = hasattr(q, "approach")
             point = q.approach if link else q            # a Traversal is walked to on its own floor
-            at = math.hypot(point[0] - px, point[2] - pz) <= MESH_WP_CM
+            d = math.hypot(point[0] - px, point[2] - pz)
+            at = d <= MESH_WP_CM
+            if link and MESH_LINKS:
+                # the crossing made: his height nearer the landing's floor than the foot's (a ladder, a drop), or he
+                # stands on the landing (a jump over at one height): the Traversal is behind him
+                dy_link = q[1] - q.approach[1]
+                landed = (abs(dy_link) > LEVEL_DY / 2 and abs(py - q[1]) < abs(py - q.approach[1])) or \
+                    (abs(dy_link) <= LEVEL_DY / 2 and math.hypot(q[0] - px, q[2] - pz) <= MESH_WP_NEAR_CM)
+                if landed:
+                    self.stats["mesh_links_taken"] = self.stats.get("mesh_links_taken", 0) + 1
+                    self.__dict__.setdefault("_mlink", {"key": None, "since": now})["key"] = None
+                    pts.pop(0)
+                    if pts:
+                        continue
+                    return None
             if link and at and MESH_LINKS:
                 # at a ladder's or a drop's foot: on through its edge, where the game's prompt shows (the prompt rule
                 # presses it) or the floor simply falls away; a link that never lets him through is the Majini's only
@@ -4546,12 +4685,9 @@ class Bot:
                     st["key"], st["since"] = key, now
                     self.stats["mesh_links_tried"] = self.stats.get("mesh_links_tried", 0) + 1
                 if now - st["since"] > MESH_LINK_TRY_S:
-                    avoid = self._mesh_avoid(mesh)
-                    avoid.append(tuple(q.portal))
-                    del avoid[:-MESH_LINKS_AVOIDED]
-                    st["key"], r["at"], r["pts"] = None, -1e9, None     # another way, planned at the next call
+                    self._mesh_refuse(mesh, tuple(q.portal), now, "a ladder or drop that never let him through")
                     self.stats["mesh_links_refused"] = self.stats.get("mesh_links_refused", 0) + 1
-                    return None
+                    return None                              # another way, planned at the next call
                 dx, dz = q.portal[0] - q.approach[0], q.portal[2] - q.approach[2]
                 n = math.hypot(dx, dz)
                 if n < 1.0:                                  # (no direction in the link itself: toward its landing)
@@ -4563,8 +4699,14 @@ class Bot:
                 self._mesh_wp = out + (now,)
                 return out
             if len(pts) > 1 and at:
-                pts.pop(0)
-                continue
+                # passed - unless the next point lies beyond a wall from here (a door's far corner seen from inside
+                # the bus): then this one is still the way, until he is nearly on it
+                nxt = pts[1]
+                nxt_pt = nxt.approach if hasattr(nxt, "approach") else nxt
+                if not MESH_LOOKAHEAD or d <= MESH_WP_NEAR_CM or self._mesh_open(mesh, p["pos"], nxt_pt[0], nxt_pt[2]):
+                    pts.pop(0)
+                    continue
+                self.stats["mesh_lookahead_holds"] = self.stats.get("mesh_lookahead_holds", 0) + 1
             self.stats["mesh_route_ticks"] = self.stats.get("mesh_route_ticks", 0) + 1
             self._mesh_wp = (point[0], point[2], now)        # (the guard defers to the route on this tick)
             return point[0], point[2]
@@ -4578,6 +4720,11 @@ class Bot:
         tx, tz = gx, gz
         nav = getattr(self, "_nav", None)
         far = math.hypot(gx - px, gz - pz) > NAV_DIRECT_R or (link and len(goal) > 2 and abs(goal[1] - _py) > LEVEL_DY)
+        mesh = getattr(self, "_mesh", None)
+        if not far and MESH_LOOKAHEAD and mesh is not None and hasattr(mesh, "floor_segment") and len(goal) > 2 \
+                and not self._mesh_open(mesh, p["pos"], gx, gz):
+            far = True                                       # near, but behind a wall: the mesh's way round, not the line
+            self.stats["nav_near_walled"] = self.stats.get("nav_near_walled", 0) + 1
         wp = self._mesh_waypoint(p, goal, now) if far else None   # (link: one right above or below him too)
         if wp is not None:                                   # the game's own mesh: the corridors as they are
             return self._turn(wrap(heading(wp[0] - px, wp[1] - pz) - p["rot"]), TURN_TOL if tol is None else tol)
