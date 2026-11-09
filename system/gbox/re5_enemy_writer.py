@@ -1005,7 +1005,8 @@ def author(archive: bytes, source: Path, target: EnemySet, *, source_roles: dict
     if len(set(indices)) != len(indices) or not target.models:
         raise EnemyWriterError('the reviewed entry indices must be distinct')
     texture = _entry(parsed, *target.albedo, b'TEX\0')
-    _entry(parsed, *target.normal, b'TEX\0'), _entry(parsed, *target.mask, b'TEX\0')
+    for maps in (target.normal, target.mask):              # the secondary maps must be the reviewed TEX entries
+        _entry(parsed, *maps, b'TEX\0')
     surface = mtf_tex.parse(texture)
     vertices, triangles, _, appearance = mtf_materials.source_mesh(source, atlas_size=(surface.width, surface.height),
                                                                    strict_samplers='in_range')

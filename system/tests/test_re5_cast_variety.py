@@ -302,9 +302,10 @@ def test_build_series_writes_builds_sets_refused_donors_aside_and_keeps_the_mani
     for enemy in ('uEm10', 'uEm11'):
         (archives_dir / f'{enemy}.arc').write_bytes(b'ARC' + enemy.encode())
     monkeypatch.setattr(S, 'enemy_slots', lambda tables=None: {'uEm10': 3, 'uEm11': 2})
-    windings_seen, refused_once = {}, []
+    windings_seen, refused_once, cast_calls = {}, [], []
 
     def fake_cast(romfs, library, assignment, out, *, plan=None):
+        cast_calls.append(json.dumps(assignment, sort_keys=True))
         if 'd002' in assignment.values() and not refused_once:                 # one player refusal, once
             refused_once.append('d002')
             key = next(k for k, v in assignment.items() if v == 'd002')
@@ -316,9 +317,10 @@ def test_build_series_writes_builds_sets_refused_donors_aside_and_keeps_the_mani
             path.write_bytes(f'player {slug}'.encode())
             slots[key] = {'donor': slug, 'output': {'path': 'romfs/' + P.SLOTS[key].archive, 'bytes': path.stat().st_size,
                                                     'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}}
-        (out / 'receipt.json').write_text('{}', encoding='utf-8')
+        receipt = {'slots': slots, 'assignment': assignment}
+        (out / 'receipt.json').write_text(json.dumps(receipt), encoding='utf-8')
         (out / 'contact-sheet.png').write_bytes(b'png')
-        return {'slots': slots, 'assignment': assignment}
+        return receipt
 
     def fake_build_cast(name, assignments, archives, out, *, previews=True, secondary='neutral'):
         rows = {}
@@ -349,6 +351,8 @@ def test_build_series_writes_builds_sets_refused_donors_aside_and_keeps_the_mani
     assert 'player' in manifest['refusals']['d002'] and 'enemy' in manifest['refusals']['d009']
     assert any('set aside for the player role: d002' in m for m in messages)
     assert any('set aside for the enemy role: d009' in m for m in messages)
+    # an enemy refusal re-deals the enemies and keeps the build's player deal: no second player build for it
+    assert len(cast_calls) == len(set(cast_calls)) and len(cast_calls) < len(messages)
     for row in manifest['builds']:
         enemy_slugs = {s for v in row['enemies'].values() for s in v}
         assert not enemy_slugs & {'d007', 'd009'} and 'd002' not in {v['donor'] for v in row['players'].values()}

@@ -150,6 +150,25 @@ def _refused_slug(message: str, candidates: list[str]) -> str | None:
     return named[0] if len(named) == 1 else None
 
 
+def _kept_players(out: Path, build: Build) -> dict | None:
+    """The player receipt already under `out` when it is this build's player deal and its files are intact (an
+    enemy refusal re-deals only the enemies: the player deal of the build does not change), else None."""
+    path = out / 'receipt-players.json'
+    if not path.is_file():
+        return None
+    try:
+        receipt = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if receipt.get('assignment') != build.players:
+        return None
+    for row in receipt.get('slots', {}).values():
+        file = out / row['output']['path']
+        if not file.is_file() or hashlib.sha256(file.read_bytes()).hexdigest() != row['output']['sha256']:
+            return None
+    return receipt
+
+
 def _rename(folder: Path, old: str, new: str) -> None:
     source = folder / old
     if source.is_file():
@@ -168,17 +187,25 @@ def build_one(build: Build, *, romfs: Path, archives_dir: Path, library: Path, o
     caller can record the refusal and deal the series again from this build on.
     """
     out = Path(out)
-    if out.exists():
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
-    try:
-        players_receipt = players.cast(Path(romfs), Path(library), build.players, out, plan={'series': build.seed})
-    except players.CastWriterError as exc:
-        slug = _refused_slug(str(exc), list(build.players.values()))
-        error = SeriesError(f'{build.name}: player slot refused {slug}: {exc}')
-        error.role, error.slug = 'player', slug
-        raise error from exc
-    _rename(out, 'receipt.json', 'receipt-players.json')
+    players_receipt = _kept_players(out, build)
+    if players_receipt is None:
+        if out.exists():
+            shutil.rmtree(out)
+        out.mkdir(parents=True)
+        try:
+            players_receipt = players.cast(Path(romfs), Path(library), build.players, out, plan={'series': build.seed})
+        except players.CastWriterError as exc:
+            slug = _refused_slug(str(exc), list(build.players.values()))
+            error = SeriesError(f'{build.name}: player slot refused {slug}: {exc}')
+            error.role, error.slug = 'player', slug
+            raise error from exc
+        _rename(out, 'receipt.json', 'receipt-players.json')
+    else:                                     # an enemy refusal re-deals the enemies; the same player deal is kept
+        for path in out.iterdir():
+            if path.name.startswith('preview') or path.name in ('receipt.json', 'receipt-enemies.json'):
+                path.unlink()
+        for enemy in writer.ARCHIVES.values():
+            (out / 'romfs' / enemy.path).unlink(missing_ok=True)
     assignments = []
     archives = {}
     for enemy, slugs in build.enemies.items():
@@ -281,6 +308,9 @@ def build_series(seed, *, survey_path: Path, enemy_survey_path: Path | None, rom
             if progress:
                 progress(f'set aside for the {exc.role} role: {exc.slug}; dealing again from {build.name}')
             builds = plan_series(seed, donors, enemy_pool=enemy_pool, sizes=sizes, refusals=refusals, fixed=fixed)
+            manifest = _manifest(seed, survey_path, enemy_survey_path, donors, enemy_pool, sizes, refusals, builds,
+                                 built, exclude)
+            manifest_path.write_text(json.dumps(manifest, indent=1), encoding='utf-8')   # the refusal is on record
             continue
         fixed.append(build)
         built.append(receipt)
