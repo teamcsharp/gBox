@@ -163,6 +163,12 @@ not a table or compression one.
 A one-mesh Sonic low MOD compressed at level 6 now **boots to the title** (the level-9 one-mesh was black at boot) but
 still stops at `NOW LOADING`, so the one-mesh/MRL mismatch remains after the compression fix.
 
+Packing the same Sonic triangle against **expanded bounds before** the short-position encode (and updating the global
+bounds plus the patched part's 144-byte envelope) still stops at `NOW LOADING`. The envelope coordinates are documented
+as a different space from the model-space points the vertex decoder reports, so `pack_weight_bound` is likely not the
+right writer for that table. The displacement limit is therefore not fixed by moving the global box; the per-bone
+envelope (or the instance's own spatial check) is the remaining suspect.
+
 `mtf_author.combine` also needed a fix: the index stream is global to the shared vertex buffer, so `combine` now
 subtracts each part's `vertex_index` before adding its own base. Without it, the low self one-mesh produced triangle
 56072 with only 55667 vertices.
