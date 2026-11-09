@@ -89,6 +89,10 @@ not an extracted owned-game donor. Keep that provenance distinction. No listed M
    Verified identical under the deployed share code, the clean deploy clone and a BOM/LF-normalized closure overlay on
    lilspark: recipe drift, not environment. The live overlay still hashes `d96c9c9e…` and the artifact store can
    restore it. Do not register/promote V15 until a faithful builder exists.
+   **Correction (later 2026-11-09):** it was the environment. Those runs varied the code on one machine; the
+   authoring PC rebuilds `d96c9c9e…`, and another BLAS kernel on that PC fails the same way. The model's kernel
+   dependence is fixed in `gbox/re5_sonic_residue.py`; a lilspark run is still owed. See "Reproduce v15" in
+   [the continuation guide](../DEEPSEEK-LIVE-REPLACEMENT-HANDOFF.md).
 2. Inventory the extracted RE5 RomFS with `re5_char_swap.catalogue()`. Map actual selection IDs to **costume archive
    paths**, not only the eight family shortcuts in `skin_swap.CHARACTER_ARCS`. `re5_switch.CHARACTERS` labels 14 choices
    but its selector can learn a larger wrap count. The remote `re5-onemesh-all` folder contains 31 player archive paths,

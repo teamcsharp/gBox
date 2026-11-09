@@ -27,6 +27,11 @@ and uEm11 (≈7-8, HP 700)** plus `uEm20`/`uEm21`/`uEm62` specials. Inside prist
 cannot author this target yet; the first Mario enemy candidate needs a small group-aware enemy writer. Full details in
 [the research handoff](research/re5-sonic-mario-handoff.md).
 
+**Correction (later 2026-11-09): the conclusion of this block is wrong.** The recipe did not drift. The runs below
+were all on lilspark; the authoring PC rebuilds `d96c9c9e…` from `4e0ecc31` and from main, and forcing another BLAS
+kernel on that PC reproduces this failure. `gbox/re5_sonic_residue.py` fixes the model's kernel dependence; a run on
+lilspark is still owed. See "Reproduce v15" in [the continuation guide](DEEPSEEK-LIVE-REPLACEMENT-HANDOFF.md).
+
 **v15 byte-exact reproduction does NOT work as the guide describes.** Verified facts:
 
 - Pristine inputs on lilspark check out: original Chris ARC `8ab0dc18…` at

@@ -37,7 +37,7 @@ measurement stage. None of G1–G3 may be described as finished in the operator'
 |---|---|---|
 | Round-boundary acceptance for the repeating queue | **Accepted** | 7 real boundaries relaunched the exact build/character/stage (`d1257c16…`, `f8fc0664…`, `ce8c36cf…`, `43ab169e…`, `fc4ba1de…`, `ed700fe8…`), combat advanced each time; frames + stream health in the resume block of [reply.md](reply.md) |
 | Sonic v15 as the Chris (BSAA) slot | **Live-verified, not final** | artifact `d96c9c9e…` renders and fights as Chris BSAA; head/quill occlusion, detailed grip, feet still unaccepted |
-| Reproducing v15 from source | **Broken (recipe drift)** | committed `build_grip_candidate` no longer yields `d96c9c9e…`; see §4.1 — do not promote before this is resolved |
+| Reproducing v15 from source | **Works on the authoring PC; unverified on lilspark** | `build_grip_candidate` yields `d96c9c9e…` under three x86 BLAS kernel families after the §4.1 fix; the earlier "recipe drift" was kernel rounding. Run it once on lilspark before promoting |
 | Native Sheva→Chris counterpart | **Accepted for one pair** | output `ee04244c…`, visible gameplay 300/1 → 2400/8; reverse pairs refused 409 |
 | Mario enemy replacement | **Measured, not built** | live census (2 boots) names `uEm10`/`uEm11`; `uEm10.arc` mapped; the existing writer cannot author it (no group 0) |
 | Mines in every loadout | **Implemented, deployed; live acceptance incomplete** | 54/54 templates verified; `ecba20b1` fix deployed (share hash `0db520de…`); live placement receipts still owed |
@@ -212,21 +212,30 @@ permits, with `grounds` growing and later shrinking as bombs detonate.
 
 ## 4. Issues encountered and struggles (what actually went wrong)
 
-### 4.1 The v15 recipe no longer reproduces its own artifact — **the biggest structural risk**
+### 4.1 The v15 recipe's bytes depended on the BLAS kernel — fixed for the model, unverified on lilspark
 
 - Pristine inputs still verify on lilspark: original Chris ARC `8ab0dc18…`,
   `~/gBox_alt/switch/romfs/010018100CD46000/nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc`; source GLB `5dd7cc07…`.
   The live overlay still hashes `d96c9c9e…`.
-- But committed `build_grip_candidate` fails its own guard chain: stage-1 `build()` now yields MOD97 `cec895d2…`
-  instead of the reviewed v12 `b87ecc87…`; even stitching the stored v12 MOD through `re5_sonic_hands.author` yields
+- On lilspark, committed `build_grip_candidate` failed its own guard chain: stage-1 `build()` yielded MOD97
+  `cec895d2…` instead of the reviewed v12 `b87ecc87…`; the stored v12 MOD through `re5_sonic_hands.author` yielded
   `e9c2bf23…` instead of pinned v14 `426ac8ad…`.
-- Verified identical under the deployed share code (service venv, numpy 2.5.3 + ispc_texcomp 1.0.1), the clean
-  `gBox-src` deploy clone, and a BOM/LF-normalized copy of the committed closure — so it is **recipe drift in the
-  repository, not an environment artifact**. Most likely an uncommitted writer state produced the original artifacts.
-- Consequence: `plan()` cannot be registered with "exact-source/target guards" honestly. The live artifact and the
-  content-addressed store (`GET /api/artifacts/d96c9c9e…`) remain the source of truth.
-- Do **not** "fix" this by editing the guard hashes. Either reconstruct the builder that reproduces the accepted
-  bytes, or adopt an artifact-based route that pins the exact SHA and refuses anything else.
+- **This was read as recipe drift; it was not.** Those checks changed the code three ways on the same machine and
+  never changed the machine. On the authoring PC the code as committed in `4e0ecc31` and in main `6a041c30` both
+  rebuild `d96c9c9e…`. The same commit on that PC with `OPENBLAS_CORETYPE=Haswell` or `Nehalem` stops at the same
+  guard (stage-1 MOD `44296edc…`, `26c7a135…`). The reviewed bytes carry the rounding of OpenBLAS's SkylakeX kernels
+  in the skeleton tables `reposition_bind_pose` writes: zeros stored as 1e-13 residue and, under Haswell, one
+  sub-micron offset on the neighbouring float32. Nothing else in the model differs.
+- Fix: `gbox/re5_sonic_residue.py` settles those slots to the reviewed bytes when they are within 1e-9 and every
+  other byte is identical, and otherwise changes nothing. The pinned guard hashes are untouched. The chain now
+  returns `d96c9c9e…` under the SkylakeX, Haswell and Nehalem kernels on the PC.
+- Still open: it has not been run on lilspark. The model is expected to match there; the BC7 atlas
+  (`ispc_texcomp`, Pillow mips) and zlib framing are unmeasured on aarch64 and the recipe cannot make them portable.
+  `re5_sonic_writer.grip_reproduction(archive)` names the payload that differs.
+- Do **not** edit the guard hashes. If the host run misses only in the atlas or framing, build on the PC and
+  register an artifact-based route that pins the exact SHA and refuses anything else.
+- For the next donors: any MOD whose hash is pinned carries its authoring kernel's rounding the same way. Derive
+  its table with `re5_sonic_residue.record` when the hash is pinned, or the stage will only rebuild on that kernel.
 
 ### 4.2 Deployed-vs-repo confusion (line endings, BOM)
 
@@ -292,7 +301,7 @@ needs `system/tests` on `PYTHONPATH`; failures pre-date the mine work). Do not c
 | # | Issue | Impact | Resolution path |
 |---|---|---|---|
 | 1 | **Mines live acceptance incomplete** | G4 unproven | restore RE5 modified run -> probe + telemetry (§6.C) |
-| 2 | **v15 recipe drift** | G1/G2 cannot be promoted honestly | reconstruct builder or adopt artifact-pinned registration (§6.D) |
+| 2 | **v15 rebuild unverified on lilspark** | G1/G2 promotion waits on one host run | run `build_grip_candidate` on lilspark (§4.1); register with exact guards if it reproduces, artifact-pinned if the atlas or framing differs (§6.D) |
 | 3 | **Mario enemy writer blocked on group-0 guard** | G3 not started | small group-aware enemy writer (§6.E) |
 | 4 | **MercMode config drifted to RE6/PS3** | wrong content on air | restore the exact RE5 queue when the operator/RE6 stream is done (§6.B) |
 | 5 | Sonic head/quill occlusion and feet contact | acceptance quality | use the comparison window isolated views, then decide; do not hide by camera angle |
@@ -339,9 +348,10 @@ completion; confirm a fresh RE5 Switch session with that build before declaring 
 1. Use the comparison window for aimed-fire, reload, melee and locomotion; use the isolated-hand view for grip.
 2. If the hands/weapon intersect or point wrongly, fix the measured bind/attachment mapping — do not accept it by
    camera framing, and do not disable the head in the final recipe.
-3. Promotion requires a builder that reproduces the accepted bytes. Two honest options:
-   - reconstruct the writer so `build_grip_candidate` yields `d96c9c9e…` again (then register with the existing
-     exact-source/target guards);
+3. Promotion requires a builder that reproduces the accepted bytes. It does on the authoring PC (§4.1); run it on
+   lilspark and read `reproduces_reviewed` in the receipt. Two honest options:
+   - if `build_grip_candidate` yields `d96c9c9e…` on the host, register with the existing exact-source/target
+     guards;
    - or register an artifact-pinned route: require the exact output SHA from the artifact store and refuse anything
      else, with `replacement_scope.complete=false` until cutscenes/costumes are accounted for.
 4. Never default to Chris when a different character is running; the UI must show the one supported slot.
@@ -405,7 +415,8 @@ it kills every emulator. Never schedule it.
 
 ### 7.3 Build and write a candidate
 
-Follow the reproduction block in the continuation guide, but heed §4.1: the current writer does not reproduce v15.
+Follow the reproduction block in the continuation guide and heed §4.1: the writer reproduces v15 on the authoring
+PC and is unverified on lilspark.
 For a new donor, pin its GLB hash, extend the recipe's role profile, build offline, then:
 
 ```json
