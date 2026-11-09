@@ -159,6 +159,21 @@ to match — most likely the per-part vertex/index layout, not just material bin
 A donor MRL can therefore only wear the donor’s own MOD (or a MOD that reproduces that per-mesh layout). Importing Sonic
 requires the MRL tail to be decoded and rewritten, or a runtime path that bypasses the loader.
 
+### A Sonic patch inside the donor’s own MOD plays a live round
+
+The first build with Sonic geometry in a **loaded** slot: `em1001_low`’s own MOD was patched in place (one part, 327
+Sonic triangles, donor vertex format and original table) and paired with `em1001_low`’s own MRL in the `em1000_low`
+slot. It reached a live Public Assembly round — timer `1:22`, enemies, HUD, no crash.
+
+![Donor em1001_low MRL + its own MOD carrying a one-part Sonic patch, playing a live round](evidence/re5-donor-sonic-patch-round.jpg)
+
+The visible enemies are still the donor variant; the one-part Sonic patch is not visually identifiable yet. But the
+**Sonic data is in a model the round actually loads**, which is the first time that has been true.
+
+Next: patch **all donor parts** (keeping the donor table/formats) rather than one, so the body is Sonic end to end.
+
+![Donor-pair round with the one-part Sonic patch; enemies remain the donor variant](evidence/re5-donor-sonic-patch-enemies.jpg)
+
 The MRL tail is not opaque noise. Its first words are a header
 (`0x108cf1c4`, `0x20601028`, `0x8c800000`, four `1.0` floats), then a **count** that differs per variant:
 `0x2e` (46) for `em1000_low` and `0x32` (50) for `em1001_low`, alongside `count1` 70/79 and 76/83 texture paths. That
