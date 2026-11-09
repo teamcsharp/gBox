@@ -155,10 +155,10 @@ patched part’s weight-bound envelope) still stops at `NOW LOADING`. So compres
 Next: move the three vertices in small steps (1 → 10 → 50 units) to find the displacement limit, and pack against the
 **expanded** bounds rather than the original box.
 
-Measured: **+1 and +10 units play live rounds** (Public Assembly, normal HUD and Majini); **+50 units blacks at boot**.
-The low instance tolerates small vertex motion but not large displacement. The Sonic triangle’s vertices are far outside
-that range, which is why it still stops at `NOW LOADING`. The displacement limit is therefore a real engine constraint,
-not a table or compression one.
+Measured with a clean title wait: **+1, +10 and +50 unit displacements all play live Public Assembly rounds**. The
+earlier “+50 blacks at boot” was a prepare/timing failure, not the model: the +50 build reaches the title and a round.
+Displacement magnitude is therefore **not** the low-model limit, and the Sonic triangle failure is not explained by
+“vertices moved too far”.
 
 A one-mesh Sonic low MOD compressed at level 6 now **boots to the title** (the level-9 one-mesh was black at boot) but
 still stops at `NOW LOADING`, so the one-mesh/MRL mismatch remains after the compression fix.
@@ -166,8 +166,8 @@ still stops at `NOW LOADING`, so the one-mesh/MRL mismatch remains after the com
 Packing the same Sonic triangle against **expanded bounds before** the short-position encode (and updating the global
 bounds plus the patched part's 144-byte envelope) still stops at `NOW LOADING`. The envelope coordinates are documented
 as a different space from the model-space points the vertex decoder reports, so `pack_weight_bound` is likely not the
-right writer for that table. The displacement limit is therefore not fixed by moving the global box; the per-bone
-envelope (or the instance's own spatial check) is the remaining suspect.
+right writer for that table. But since a +50 translation plays a round, bounds/displacement are not the low limit; the
+remaining difference for the Sonic triangle is its **shape/skinning fields**, not how far it moved.
 
 `mtf_author.combine` also needed a fix: the index stream is global to the shared vertex buffer, so `combine` now
 subtracts each part's `vertex_index` before adding its own base. Without it, the low self one-mesh produced triangle
