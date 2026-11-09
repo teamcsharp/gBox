@@ -119,6 +119,7 @@ class Mines:
         self.round_t0 = None
         self.count0 = None
         self.ground0: set = set()                      # the uWp0a units before the press
+        self.baseline = None                           # the uWp0a units up when the round's watch began: never his bombs
         self.site = None                               # where the bomb went down (the retreat's origin)
         self.bombs: dict = {}                          # his bombs still on the ground: unit -> position
         self.saw_place = False
@@ -153,6 +154,7 @@ class Mines:
         self.state, self.t, self.round_t0 = "idle", now, now
         self.last_at, self.last_pos, self.site, self.clear_from = None, None, None, None
         self.bombs, self.blast = {}, None
+        self.baseline = None
         self.hist.clear()
         self._tracked_at = None
         self._retry_at = self._relocate_retry_at = 0.0
@@ -192,6 +194,13 @@ class Mines:
         if self._tracked_at == now:
             return
         self._tracked_at = now
+        if self.baseline is None and "ground_mines" in snap and self.state == "idle":   # (never mid-cycle)
+            # What is on the line before he has planted anything is not a bomb of his: the stack keeps a dormant uWp0a
+            # of its own there all round (Public Assembly: always at 557, 158, 1409). The guards skipped it only once
+            # a press had recorded ground0, so until the round's first plant - and after a bot reload - he ran from it
+            # whenever he came within BLAST_CM and gave up the placements he had started (live 2026-11-09, the day
+            # BLAST_CM went from 8 m to the operator's 15: three attempts, none planted).
+            self.baseline = {g["ptr"] for g in snap.get("ground_mines") or ()}
         kills, hp = snap.get("kills"), p.get("hp")
         self.hist.append((now, kills, hp))
         b = self.blast
@@ -326,6 +335,8 @@ class Mines:
                 continue                                     # the bomb he just placed (site not yet confirmed)
             if g["ptr"] in self.ground0 and g["ptr"] not in self.bombs:
                 continue                                     # a mine from before this round, not his
+            if self.baseline and g["ptr"] in self.baseline and g["ptr"] not in self.bombs:
+                continue                                     # up before he planted anything: the stack's own unit
             if flat(pos, b) >= BLAST_CM:
                 continue
             if g["ptr"] in seen:
@@ -389,6 +400,8 @@ class Mines:
             # otherwise trigger the guard every tick. Confirmed bombs ARE in self.bombs, so they are checked.
             if g["ptr"] in self.ground0 and g["ptr"] not in self.bombs:
                 continue
+            if self.baseline and g["ptr"] in self.baseline and g["ptr"] not in self.bombs:
+                continue                                     # (the stack's own unit: see _track)
             if g["ptr"] in seen:
                 continue
             seen.add(g["ptr"])

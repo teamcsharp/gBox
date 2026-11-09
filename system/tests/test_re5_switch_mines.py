@@ -669,3 +669,22 @@ def test_he_leaves_his_own_bomb_by_the_operators_fifteen_metres():
     assert doctrine.MINE_STANDOFF_M == 15.0
     assert MN.RETREAT_CM == MN.BLAST_CM == 1500.0
     assert MN.RETREAT_S * 400.0 >= MN.RETREAT_CM            # the cap leaves room for 15 m at a 4 m/s run
+
+
+def test_the_stacks_dormant_unit_is_never_run_from_or_a_reason_to_give_up_a_plant():
+    """The bomb stack keeps a uWp0a of its own on the line all round (STACK: Public Assembly's sits at 557, 158, 1409).
+    Before the round's first plant - and after a bot reload - nothing had recorded it, and inside BLAST_CM of it he ran
+    from "his own bomb" and gave up the placements he started (lilspark 2026-11-09: three attempts, none planted)."""
+    m = MN.Mines({})
+    m.new_round(0.0)
+    near_it = (557.0 - 600.0, 0.0, 1409.0)                              # 6 m from the dormant unit, nobody about
+    assert m.tick(p(pos=near_it), snap(), [], 1.0) is None              # no run: it was there before he planted anything
+    assert m.stats["mine_clear_runs"] == 0 and m.baseline == {g["ptr"] for g in STACK}
+    t = MN.EVERY_S
+    assert m.tick(p(pos=near_it), snap(), [], t) == {"hold": ()} and m.state == "neutral"
+    assert m.tick(p(pos=near_it), snap(), [], t + MN.NEUTRAL_S) == {"tap": "dup"}
+    assert m.tick(p(pos=near_it), held(), [], t + MN.NEUTRAL_S + 0.2) == {"hold": ("zl",)} and m.state == "place"
+    # a bomb that appears during the round is his to keep clear of, baseline or not
+    bomb = {"ptr": 0x5D4D7ABC10, "pos": (near_it[0], 0.0, near_it[2] + 57.0)}
+    m.tick(p(pos=near_it, motion=29), held(ground=[bomb]), [], t + MN.NEUTRAL_S + 0.9)
+    assert m.stats["mines_placed"] == 1 and bomb["ptr"] not in m.baseline
