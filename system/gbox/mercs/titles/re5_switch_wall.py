@@ -23,6 +23,16 @@ def _flat(a, b):
     return math.hypot(a[0] - b[0], a[2] - b[2])
 
 
+def _travel_heading(player, hold):
+    """World direction actually requested by the left stick, including retreat."""
+    keys = set(hold or ())
+    forward = int("lup" in keys) - int("ldown" in keys)
+    sideways = int("lleft" in keys) - int("lright" in keys)
+    if not forward and not sideways:
+        return None
+    return player.get("rot", 0.) + math.atan2(sideways, forward)
+
+
 def _passed(pos, start, target):
     if abs(pos[1] - target[1]) > MAX_FLOOR_CHANGE:
         return False
@@ -51,7 +61,7 @@ def _observe(bot, player, now, config):
         state["trail"] = (state["trail"] + [pos])[-64:]
     state["seen"] = now, pos, player.get("ptr")
     previous, state["previous"] = state["previous"], None
-    if previous is not None and 0 < now - previous[0] <= MAX_SAMPLE_GAP and previous[2]:
+    if previous is not None and 0 < now - previous[0] <= MAX_SAMPLE_GAP and previous[2] is not None:
         anchor = state["anchor"]
         if anchor is None or _flat(pos, anchor) >= config.WALL_MIN_CM:
             state["anchor"], state["effort"] = pos, 0.
@@ -85,11 +95,11 @@ def start_route(bot, player, now):
     bot.stats["wall_route_yields"] = bot.stats.get("wall_route_yields", 0) + 1
 
 
-def start(bot, player, now, preempt):
+def start(bot, player, now, preempt, travel_head=None):
     from . import re5_switch as config
     state, pos = _state(bot), tuple(player["pos"])
     if not preempt:
-        bot.wall_memory(pos[0], pos[2], player["rot"])
+        bot.wall_memory(pos[0], pos[2], player["rot"] if travel_head is None else travel_head)
     # Each adjacent breadcrumb was actually traversed at normal tick cadence.
     # Old sparse trail points can lie across walls or on another floor.
     path, previous, distance = [], pos, 0.
@@ -105,7 +115,8 @@ def start(bot, player, now, preempt):
         if distance >= 20.:
             break
     target = path[0] if path else None
-    head = config.heading(target[0] - pos[0], target[2] - pos[2]) if target else config.wrap(player["rot"] + math.pi)
+    blocked_head = player["rot"] if travel_head is None else travel_head
+    head = config.heading(target[0] - pos[0], target[2] - pos[2]) if target else config.wrap(blocked_head + math.pi)
     bot._wall_rec = {"since": now, "until": now + RECOVERY_S, "head": head, "target": target,
                      "path": path if path else None, "origin": pos, "segment_start": pos}
     state["effort"], state["anchor"], state["previous"] = 0., None, None
@@ -154,8 +165,12 @@ def _recover(bot, action, player, now, config):
         # No observed way out: bounded back/side probes, then turn away. Never
         # turn-and-run blindly forward or call an elapsed timer a successful escape.
         elapsed = now - rec["since"]
-        movement = ("ldown",) if elapsed < config.WALL_BACK_S else \
-            (("lleft",) if bot.stats.get("wall_hits", 0) % 2 else ("lright",)) \
+        probes = ((0., "lup"), (math.pi / 2, "lleft"), (math.pi, "ldown"), (-math.pi / 2, "lright"))
+        away = "ldown" if rec.get("route") else min(probes, key=lambda item: abs(config.wrap(item[0] - err)))[1]
+        # (a routed yield keeps his heading, so the probe nearest it would be forward: back off it instead)
+        side_err = config.wrap(err + (math.pi / 2 if bot.stats.get("wall_hits", 0) % 2 else -math.pi / 2))
+        side = min(probes, key=lambda item: abs(config.wrap(item[0] - side_err)))[1]
+        movement = (away,) if elapsed < config.WALL_BACK_S else (side,) \
             if elapsed < 2 * config.WALL_BACK_S else tuple(bot._turn(err, config.TURN_TOL))
         why = "a short step back off the route's wall, then the route again" if rec.get("route") else \
             "bounded back/side probe; waiting for observed movement"
@@ -179,14 +194,15 @@ def apply(bot, action, snap, now):
         return action
     if bot._wall_rec is not None:
         return _recover(bot, action, player, now, config)
-    if "lup" not in hold:
+    travel_head = _travel_heading(player, hold)
+    if travel_head is None:
         return action
     pos = player["pos"]
     # The route's own push (WALL_ROUTE_YIELD): only a measured stall counts - the wall memory's preempt and the retry
     # window would stop every approach to a door he has once bumped and turn him to the reverse heading, the stick off.
     routed = getattr(config, "WALL_ROUTE_YIELD", False) and route_steers(bot, now)
     remembered = not routed and any(math.hypot(w[0] - pos[0], w[1] - pos[2]) <= config.WALL_MEM_R
-                                    and abs(config.wrap(player["rot"] - w[2])) <= math.radians(config.WALL_MEM_DEG)
+                                    and abs(config.wrap(travel_head - w[2])) <= math.radians(config.WALL_MEM_DEG)
                                     for w in bot._walls)
     stalled = state["effort"] >= config.WALL_WINDOW_S
     if not (remembered or stalled):
@@ -206,7 +222,7 @@ def apply(bot, action, snap, now):
             route_wall(player, now)                           # the crossing counted; refused after enough pushes
         start_route(bot, player, now)
         return _recover(bot, action, player, now, config)
-    start(bot, player, now, remembered)
+    start(bot, player, now, remembered, travel_head)
     return _recover(bot, action, player, now, config)
 
 
@@ -214,6 +230,6 @@ def feedback(bot, action, snap, now):
     """Sample the final pad output after calm/heading/shot-tail governors."""
     state, player = _state(bot), snap.get("player")
     hold = action.get("hold") or ()
-    forward = bool(player and "lup" in hold and not {"zl", "zr"} & set(hold)
-                   and bot.doing not in PRIORITY and bot._wall_rec is None)
-    state["previous"] = (now, tuple(player["pos"]), forward) if player else None
+    travel_head = _travel_heading(player, hold) if player and not {"zl", "zr"} & set(hold) \
+        and bot.doing not in PRIORITY and bot._wall_rec is None else None
+    state["previous"] = (now, tuple(player["pos"]), travel_head) if player else None

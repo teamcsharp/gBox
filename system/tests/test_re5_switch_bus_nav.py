@@ -345,8 +345,9 @@ def test_main_as_at_2130_with_the_wall_governor_stands_turning_for_seconds(monke
     which the operator forbids - and the door is found only by luck, 8.8 s in on this model (never, live)."""
     b, w, tr = run_bus(monkeypatch, *MIDDLE, flags={**MAIN, "WALL_GOV_GOAL": True})
     assert longest_stand(tr) >= 45                             # 1.5 s and more with no stick
-    assert b.stats["wall_hits"] + b.stats["wall_preempts"] >= 2 and b.stats.get("wall_recovery_failures", 0) >= 1
-    assert tr["ticks"] >= 200
+    # (the live share's governor of 2026-10-31, merged in later, backs off along the travel heading: fewer hits, same stand)
+    assert b.stats["wall_hits"] + b.stats["wall_preempts"] >= 1
+    assert tr["ticks"] >= 120                                 # (several times the fix's 34)
 
 
 @pytest.mark.parametrize("start,rot_deg,limit", [
