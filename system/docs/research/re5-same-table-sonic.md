@@ -139,25 +139,21 @@ tail that may describe the mesh/material binding the MOD must match.
 This is now an MRL/loader problem, not an authoring-table problem. The next experiment is an MRL edit (or a donor
 MOD+MRL pair), not another MOD variation.
 
-### The recompressed stream itself is what the low loader rejects
+### The compression level was the confound: zlib 6 works
 
-The control that settles it: take the **original uncompressed `em1000_low` MOD bytes**, recompress them with Python
-zlib, pad to the **exact original compressed size**, and keep the original tag. The uncompressed model is byte-for-byte
-identical. The round still stops at `NOW LOADING`.
+Recompressing the original low MOD at zlib **level 9** (identical uncompressed bytes, same entry size, same tag) hung at
+`NOW LOADING`. Recompressing at **level 6** is **byte-identical to the shipped entry** — the archive already uses zlib 6.
 
-So the low loader is not comparing mesh data, vertex counts, face ranges, part counts, entry sizes, offsets or tags. It
-is rejecting the **new compressed byte stream**. Possibilities:
+A 1-unit, three-vertex nudge compressed at **level 6** then reached a **live Public Assembly round** (timer `1:45`,
+several Majini, normal gameplay). That is the first proof that in-place archive edits to `em1000_low` can load; the
+earlier “any content change hangs” conclusion was caused by level-9 compression, not by the geometry.
 
-* the game's inflate is a custom implementation that hangs on a stream Python's zlib emits but the original compressor
-  did not (different block choices), or
-* a compressed-stream identity/checksum exists outside the archive fields examined (not the ARC tag, not a CRC32 found
-  in the MRL or main module).
+The same three-vertex patch moved to **Sonic positions** (level 6, original face count, expanded global bounds and the
+patched part’s weight-bound envelope) still stops at `NOW LOADING`. So compression is no longer the blocker; the
+**positions/scale/skin envelope of the moved vertices** are now the open variable.
 
-Either way, archive-level Sonic edits cannot be validated by more MOD authoring. The practical next routes are:
-
-1. a **runtime memory injection** of the decompressed MOD (no archive recompression), or
-2. a deflate stream that preserves the original block structure, or
-3. the Ghidra loader path to identify the actual check.
+Next: move the three vertices in small steps (1 → 10 → 50 units) to find the displacement limit, and pack against the
+**expanded** bounds rather than the original box.
 
 `mtf_author.combine` also needed a fix: the index stream is global to the shared vertex buffer, so `combine` now
 subtracts each part's `vertex_index` before adding its own base. Without it, the low self one-mesh produced triangle
