@@ -304,8 +304,10 @@ checkpoints = false   # 2026-10-13: off until the checkpoint ring is proven not 
 
 [builds]
 # operator 2026-10-26: a build reaches a PC only when the operator downloads it there (Builds > download icon).
-# Agent, Hermes, background-testing, screensaver/MercMode/roulette and launch-failure work never copies one over.
-auto_send = false
+# Reversed by the operator 2026-11-09 ("I need kiosks able to do whatever tasks we assign to them"): agent,
+# Hermes/DeepSeek lanes, MercMode and background work may copy builds onto the worker PCs (the i9 lane was blocked
+# on BuildNotOptedIn). The storage rules still hold: builds on the PC's data drive, never C:, purge unplayed ones.
+auto_send = true
 
 [quest]
 # Meta Quest games in Refract Native (gbox/refract.py; Based on Refract: https://github.com/MIXIDtheSilly/Refract).

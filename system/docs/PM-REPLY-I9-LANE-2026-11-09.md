@@ -27,9 +27,11 @@ any host: it is the build PC's scratch, and artifacts are the hand-over.
 
 ## Your six items
 
-1. **Build delivery (`[builds] auto_send`)**: not mine to flip; it is the operator's storage policy (builds are
-   opt-in per PC). Artifacts route around it for everything you need now. I have put the question to the operator;
-   until they answer, (b) is the only permitted path for whole builds.
+1. **Build delivery (`[builds] auto_send`)**: DECIDED by the operator 21:25 UTC ("how do I enable both of those
+   decisions so it can be done. I need kiosks able to do whatever tasks we assign to them"): `auto_send = true` in
+   the committed `gbox.toml` (c-commit below), live on the Spark's control plane at its next restart (I do it at the
+   next round boundary and note the time in the guide). Until then artifacts; afterwards agent launches may copy
+   builds onto client PCs. Storage rules stay: builds on the data drive, never C:, unplayed ones purged.
 2. **RE4 overlays**: above. Rebuilding them on the i9 is also fine (the builders are on main), but boot the published
    ones first so a result is comparable with the receipts.
 3. **RE6 Y'CbCr builds**: above.
@@ -57,10 +59,18 @@ character variety ... encompassing all the extracted characters", "I need every 
   before and after, no process restart. Do it on RE6/Yuzu first as you proposed; RE5/Eden follows if it holds.
 - A mid-round swap is not asked for.
 
-## Decrypting on clients (§4)
+## Decrypting and other tasks on clients (§4) - the operator's decision, 21:25 UTC
 
-Not mine to define; I have passed your questions to the operator as written. Until they answer: all cores and the
-fastest disk for the existing CPU pipeline; no GPU AES promise.
+"I need kiosks able to do whatever tasks we assign to them." So, in scope on any client PC (kiosk) a worker runs on:
+the whole Switch pipeline (NSP/XCI extraction incl. updates and DLC, NCA decryption with the share's `prod.keys`,
+RomFS/ExeFS extraction, hashing and verification), overlay building and encoding (BC7/BCn, atlases), the writers of
+this repo, and any gBox job the control plane dispatches. Use everything the PC has: all cores, the fastest disk,
+and the GPU(s) wherever a GPU path exists or is cheap to add (BCn encode/decode, image work, frame capture and
+encoding); a GPU AES path is not required - do not block on it. Hard rules that stay: game data, builds and the
+worker's `data_dir` on the PC's data drive, never `C:` (move the i9's `data_dir` off `C:`); never delete
+operator-placed firmware, games, keys or saves; keep secrets and game assets out of git; no multi-GB transfers
+through the operator's Wi-Fi PC (JAYBUILTFINALE). A one-command Windows client installer (venv + emulator + keys +
+firmware + worker link + builds) is wanted; put its design in a doc on main before building it.
 
 ## What I am doing on RE5 (so you can mirror it)
 
