@@ -154,6 +154,37 @@ def test_the_guard_follows_the_route_instead_of_turning_him_away_from_its_corner
     bot._mesh_wp = (20.0, 400.0, 5.0)                        # the route's point 3 degrees off his facing: walk on
     assert bot._mesh_guard(dict(walk), snap) == walk and bot.stats["mesh_follows"] == 1
     bot._mesh_wp = (400.0, 100.0, 5.0)                       # the route's point 76 degrees to his left: round to it first
-    assert bot._mesh_guard(dict(walk), snap)["hold"] == ("b", "rleft")
+    assert bot._mesh_guard(dict(walk), snap)["hold"] == ("lleft", "rleft")   # toward it while he turns: no B, no spot
     bot._mesh_wp = (20.0, 400.0, 4.9)                        # a route of an earlier tick is not this tick's
     assert "rright" in bot._mesh_guard(dict(walk), snap)["hold"]
+
+
+def test_he_never_stands_a_step_along_open_floor_after_three_seconds_on_one_spot(bot):
+    """Operator 2026-11-09: "There is never ever ever a reason to stand still. it makes no sense. Its inorganic." Live
+    that hour: seven minutes on one spot, 'b,rleft' held (with B held he does not turn), 15 Majini alive."""
+    snap = {"nav": Wall(), "player": player(), "mercenaries_phase": R.PHASE_PLAYING}
+    spin = {"hold": ("b", "rleft")}
+    bot.doing = "walk"
+    assert bot._never_stand(dict(spin), snap, 10.0) == spin                      # the first look
+    assert bot._never_stand(dict(spin), snap, 10.0 + R.STAND_MAX_S - 0.1) == spin
+    act = bot._never_stand(dict(spin), snap, 10.0 + R.STAND_MAX_S)
+    assert bot.stats["stand_breaks"] == 1 and "b" not in act["hold"]
+    assert set(act["hold"]) & {"lup", "ldown", "lleft", "lright"}                # the left stick: he moves
+    assert act["hold"] == ("lright", "lup")                                      # (this mesh: floor only to his right)
+    assert bot._never_stand(dict(spin), snap, 10.5 + R.STAND_MAX_S) == act       # the step, to its end
+    moved = dict(snap, player=player(pos=(-200.0, 0.0, 100.0)))
+    assert bot._never_stand(dict(spin), moved, 20.0) == spin                     # he moved: nothing to break
+    # an aimed shot, a plant, a heal are not standing
+    for busy, doing in (({"hold": ("zl", "zr")}, "fire"), ({"hold": ()}, "mine"), ({"hold": ()}, "heal")):
+        bot.doing = doing
+        for dt in (0.0, 5.0, 10.0):
+            assert bot._never_stand(dict(busy), moved, 30.0 + dt) == busy
+    assert bot.stats["stand_breaks"] == 1
+
+
+def test_the_left_stick_goes_toward_the_bearing_he_is_turning_to():
+    import math as m
+    assert R.Bot._stick_toward(0.0) == ("lup",)
+    assert R.Bot._stick_toward(m.radians(80)) == ("lleft",)
+    assert R.Bot._stick_toward(m.radians(-40)) == ("lright", "lup")
+    assert R.Bot._stick_toward(m.radians(170)) == ("ldown",)

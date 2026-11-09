@@ -1002,6 +1002,21 @@ LOCATE_SWITCH, LOCATE_BLOCK_S = 0.6, 8.0
 # MESH_FOLLOW: on a tick the mesh's own route steers him the guard does not choose another heading - within
 # MESH_FOLLOW_TOL of the route's point he walks on, beyond it he turns to it on the spot. stats mesh_follows.
 MESH_FOLLOW, MESH_FOLLOW_TOL = True, math.radians(25)
+# He never stands (operator 2026-11-09, after seven minutes of him turning on one spot with 15 Majini alive: "the
+# point of this mode is to seek and dispatch the enemies. There is never ever ever a reason to stand still. it
+# makes no sense. Its inorganic."). That stall: the route's corner more than MESH_FOLLOW_TOL off his facing, the
+# guard held 'b' + the turn key with no left stick, and with B held he does not turn - kills 331 from 19:41 to
+# 19:48 UTC, 'b,rleft' held throughout (the 80 s stall an hour before held 'b,rright'). So:
+#   * a turn the guard asks for is never made on the spot: the left stick goes toward the point he is turning to
+#     (the nearest of the eight directions, _stick_toward), B released, until he faces it and runs;
+#   * NEVER_STAND, the backstop for every cause not yet met: his position unchanged by STAND_MOVE_CM for
+#     STAND_MAX_S outside a plant, a heal, a grab, a prompt or an aimed shot, and he steps STAND_STEP_S along open
+#     floor (the mesh's, STAND_PROBE_CM ahead; toward the route's point when he has one). stats stand_breaks.
+NEVER_STAND, STAND_MAX_S, STAND_MOVE_CM, STAND_STEP_S, STAND_PROBE_CM = True, 3.0, 80.0, 1.2, 250.0
+STICK_8 = ((0, ("lup",)), (45, ("lleft", "lup")), (90, ("lleft",)), (135, ("ldown", "lleft")), (180, ("ldown",)),
+           (-180, ("ldown",)), (-135, ("ldown", "lright")), (-90, ("lright",)), (-45, ("lright", "lup")))
+STAND_BUSY = frozenset({"held", "heal", "mine", "prompt", "dead", "flashbang", "native_equip", "quick_turn",
+                        "reload", "rearm"})
 # The operator's hand on the map (2026-11-09): "If I click on an enemy on the map, I want the bot to navigate to
 # that enemy and dispatch [it] ... I want that enemy to be targeted and I want the bot to dispatch them ASAP no
 # matter what. Anywhere I double click on the map, I want the bot navigating to that area. And then if I just leave
@@ -3441,16 +3456,66 @@ class Bot:
             self.stats["mesh_follows"] = self.stats.get("mesh_follows", 0) + 1
             if abs(err) <= MESH_FOLLOW_TOL:
                 return act                               # along the mesh's own route: on
-            keys = tuple(k for k in hold if k not in ("lup", "rleft", "rright"))
-            return dict(act, hold=keys + (("rleft",) if err > 0 else ("rright",)))   # round to it first
+            keys = tuple(k for k in hold if k not in ("lup", "b", "rleft", "rright"))   # toward it while he turns
+            return dict(act, hold=keys + self._stick_toward(err) + (("rleft",) if err > 0 else ("rright",)))
         for turn in MESH_TURNS:
             if clear(rot + turn):
                 self.stats["mesh_steers"] = self.stats.get("mesh_steers", 0) + 1
                 keys = tuple(k for k in hold if k not in ("rleft", "rright", "lup"))
-                keys += (("lup",) if abs(turn) <= math.radians(45) else ()) + (("rleft",) if turn > 0 else ("rright",))
+                if abs(turn) <= math.radians(45):
+                    keys += ("lup",)
+                else:                                    # (never on the spot, and no B without the stick forward)
+                    keys = tuple(k for k in keys if k != "b") + self._stick_toward(turn)
+                keys += (("rleft",) if turn > 0 else ("rright",))
                 return dict(act, hold=keys)
         self.stats["mesh_blocked"] = self.stats.get("mesh_blocked", 0) + 1
         return dict(act, hold=tuple(k for k in hold if k != "lup"))
+
+    @staticmethod
+    def _stick_toward(err: float) -> tuple:
+        """The left stick toward a bearing in his own frame (radians, + = his left): the nearest of eight."""
+        a = math.degrees(wrap(err))
+        return min(STICK_8, key=lambda o: abs(o[0] - a))[1]
+
+    def _never_stand(self, act, snap, now) -> dict:
+        """NEVER_STAND above: the step along open floor when he has not moved for STAND_MAX_S."""
+        p = snap.get("player") or {}
+        pos, hold = p.get("pos"), tuple(act.get("hold") or ())
+        st = self.__dict__.setdefault("_stand", {"pos": None, "at": now, "until": -1e9, "keys": ()})
+        busy = (not NEVER_STAND or not pos or (p.get("hp") or 0) <= 0 or "zl" in hold or "tap" in act
+                or self.doing in STAND_BUSY or snap.get("mercenaries_phase") not in (None, PHASE_PLAYING))
+        if busy:
+            st["pos"], st["at"], st["until"] = (tuple(pos) if pos else None), now, -1e9
+            return act
+        if now < st["until"]:
+            return dict(act, hold=st["keys"])               # the step, to its end
+        if st["pos"] is None or math.hypot(pos[0] - st["pos"][0], pos[2] - st["pos"][2]) > STAND_MOVE_CM:
+            st["pos"], st["at"] = tuple(pos), now
+            return act
+        if now - st["at"] < STAND_MAX_S:
+            return act
+        rot, mesh = p.get("rot") or 0.0, snap.get("nav")
+        wp = getattr(self, "_mesh_wp", None)
+        want = wrap(heading(wp[0] - pos[0], wp[1] - pos[2]) - rot) if wp is not None and now - wp[2] <= 1.0 else 0.0
+
+        def open_floor(a: float) -> bool:
+            h = rot + a
+            end = (pos[0] + STAND_PROBE_CM * math.sin(h), pos[1], pos[2] + STAND_PROBE_CM * math.cos(h))
+            try:
+                return bool(mesh.floor_segment(tuple(pos), end))
+            except Exception:                                # noqa: BLE001 - the mesh never stops a decision
+                return False
+        turns = sorted((math.radians(d) for d, _ in STICK_8 if d != -180), key=lambda a: abs(wrap(a - want)))
+        go = next((a for a in turns if mesh is not None and hasattr(mesh, "floor_segment") and open_floor(a)),
+                  turns[st.get("n", 0) % len(turns)])        # (no mesh, or no floor found: another way each time)
+        st["n"] = st.get("n", 0) + 1
+        keys = self._stick_toward(go)
+        if abs(want) > MESH_FOLLOW_TOL:
+            keys += ("rleft",) if want > 0 else ("rright",)
+        st.update(pos=tuple(pos), at=now, until=now + STAND_STEP_S, keys=keys)
+        self.stats["stand_breaks"] = self.stats.get("stand_breaks", 0) + 1
+        self.doing, self.why = "walk", f"stood {STAND_MAX_S:.0f} s: a step along open floor (he never stands)"
+        return dict(act, hold=keys)
 
     def _turn(self, err: float, tol: float = 0.0) -> tuple:
         """The body (gun down): the right stick, pulsed inside TURN_FINE so it does not swing past him."""
@@ -3844,6 +3909,7 @@ class Bot:
         act = re5_target_feedback.keep_active(self, snap, act, now)
         act = self._mesh_guard(act, snap)                # the way probed on the stage's own nav mesh before a wall
         act = self._wall_gov(act, snap, now)
+        act = self._never_stand(act, snap, now)          # whatever decided it: he does not stand
         act = self._calm_sticks(act, snap, now)
         act = self._governor(act, snap, now)
         act = self._shot_tail(act, snap, now)
