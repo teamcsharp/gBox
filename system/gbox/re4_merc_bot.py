@@ -986,8 +986,11 @@ class Bot:
         self.turns, self.circles, self.turn_first = [], {}, False   # circle detection (heading history, per goal)
         self.detour_dir = 1
         self.stuck_n = 0
-        from .mercs.core.doctrine import Reader       # the operator's instant commands (stats directive*),
-        self.commands = Reader()                      # else the universal doctrine's (doctrine_directive*)
+        try:                                          # the operator's instant commands (stats directive*),
+            from .mercs.core.doctrine import Reader   # else the universal doctrine's (doctrine_directive*)
+        except ImportError:                           # a worker still holding a doctrine module from before Reader
+            Reader = operator_commands.Reader
+        self.commands = Reader()
         self.explore = None                           # {"goal": (x, z), "at"}: where "navigate more of the level" is heading
         self.stuck_log: list = []                     # every stuck this run (the last STUCK_LOG_MAX): where, why, what he did
         self._stuck_pending: list = []                # ... not yet written to r<room>-stuck.jsonl (save())

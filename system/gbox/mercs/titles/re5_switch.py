@@ -4019,7 +4019,10 @@ class Bot:
         """The operator's instant commands (gbox.mercs.directives, the PS3 bot's set): one-shots act on the tick they
         arrive, the standing modes (fight / hunt / score) are returned for the fight to apply. A command never presses
         a key itself: the fight, the heal, the escape and the bombs' rules still decide every press."""
-        from ..core.doctrine import Reader   # the operator's commands, else the doctrine's
+        try:                                     # the operator's commands, else the doctrine's
+            from ..core.doctrine import Reader
+        except ImportError:                      # a worker still holding a doctrine module from before Reader
+            from ..directives import Reader      # (2026-11-09: that import failing every tick ended the run)
         if self.commands is None:
             self.commands = Reader()
         cmd, fresh = self.commands.current(self.stats, time.time())

@@ -3202,7 +3202,10 @@ class Bot:
         basically tells the bot to navigate the level in a different way"): the bonus or goal he was walking to is left
         for BONUS_SKIP_S and he walks WALL_ESCAPE_S along the clearest way that is not into a wall (_open_heading, the
         nav mesh), then decides again. stats wall_reports."""
-        from ..core.doctrine import Reader   # the operator's commands, else the doctrine's
+        try:                                     # the operator's commands, else the doctrine's
+            from ..core.doctrine import Reader
+        except ImportError:                      # a worker still holding a doctrine module from before Reader
+            from ..directives import Reader      # (2026-11-09: that import failing every tick ended the run)
         if getattr(self, "commands", None) is None:
             self.commands = Reader()
         try:

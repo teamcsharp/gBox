@@ -26,6 +26,7 @@ import traceback
 import uuid
 
 from . import driver as D
+from .core import doctrine          # at import: the bot hot reload only tracks modules loaded with the worker
 from .reactions import PromptPresser
 from .read_retry import NativeReadRetry
 
@@ -139,7 +140,6 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     director = None
     if not observe_only:
         try:
-            from .core import doctrine
             title_mod = doctrine.title_module(drv)
             director = doctrine.Director(stats, weights_of=lambda: doctrine.weights(title_mod))
             director.reset(clock())
