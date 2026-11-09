@@ -585,7 +585,8 @@ def _snap_no_heals(hp, hp_max=1000, enemy=(0.0, 0.0, 300.0), rot=0.0):
     """A snapshot at critical HP with an empty heal supply (no HEAL_IDS in the inventory)."""
     return {"player": {"pos": (0.0, 0.0, 0.0), "rot": rot, "hp": hp, "hp_max": hp_max},
             "enemies": [{"ptr": 1, "pos": enemy, "hp": 800, "hp_max": 800}],
-            "inventory": [{"id": 0x101, "type": 1, "item": 0x01, "rounds": 30, "grid": 1, "hand": True}]}
+            # the M92F (was the knife, 0x01, as a stand-in gun: a knife in hand now has its own melee controller)
+            "inventory": [{"id": 0x102, "type": 1, "item": 0x02, "rounds": 30, "grid": 1, "hand": True}]}
 
 
 def test_critical_hp_with_no_heals_retreats_instead_of_fighting():

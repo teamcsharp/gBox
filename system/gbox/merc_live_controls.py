@@ -23,6 +23,9 @@ MODS = {
         ("infinite_spray", "Infinite first aid spray", "infinite_spray", None),
         ("instant_qte", "Native QTE assist", "qte_assist.enabled", None),
         ("fire_rate", "Fire rate", "fire_rate_x", (1, 80, 1)),
+        # per-weapon rates (operator 2026-11-09): the rotten egg's / the longbow's own animation, while it is in hand
+        ("egg_rate", "Rotten egg throw rate ×", "egg_rate_x", (1, 40, 1)),
+        ("bow_rate", "Bow fire rate ×", "bow_rate_x", (1, 20, 1)),
         ("bullet_damage", "Bullet damage", "bullet_damage_x", (0.1, 1000, 0.1)),
         ("turn_speed", "Turning and aiming speed", "turn_speed_x", (1, 10, 0.5)),
         ("kill_time", "Time added per kill", "kill_time_on", None),
