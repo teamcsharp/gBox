@@ -16,8 +16,10 @@ How a bomb goes down (live 2026-10-27, two private Citron runs on the Spark; doc
     His own bombs hurt him: never two together, never one with a Majini near, and out of the blast before one comes.
 
 Mines (the bot's) places one every EVERY_S seconds of the round:
-  * not with a Majini within FOE_CLEAR_CM, not within SPACING_CM of the last site or of a bomb of his still down, not
-    while held, healing or dying; ordinary fleeing can make room for the due placement;
+  * not with a Majini within the margin (FOE_CLEAR_CM on time; an overdue bomb accepts a closer crowd, down to
+    FOE_FLOOR_CM after RELAX_S, while he has RELAX_HP of his health), not within SPACING_CM of a bomb of his still
+    down (or of an unconfirmed press's site, for UNCONFIRMED_SITE_S), not while held, healing or dying; ordinary
+    fleeing can make room for the due placement;
   * the gun comes down and the pad rests NEUTRAL_S (the D-pad equip needs a neutral pad: the PS3's verified second),
     the bomb's D-pad slot, then ZL tapped PRESS_S; confirmed by a new native bomb actor on the ground near him,
     within PLACE_S;
@@ -59,7 +61,19 @@ BLAST_CM, TRIGGER_CM, CLOSE_MAJINI_CM = 800.0, 350.0, 300.0
 # (a run of 8 m clears it); the guard's crowd rule is tighter and looser than the trigger: the recorded incident
 # itself had the Majini at 300 cm, and he did run it (the replay keeps the run), while a tighter crowd is a death.
 REARM_S = 1.2
-RELOCATE_S, RELOCATE_PAUSE_S, RETRY_S = 3.0, 1.0, 3.0
+RELOCATE_S, RELOCATE_PAUSE_S, RETRY_S = 1.5, 3.0, 3.0   # (was 3 s on, 1 s off: the gun down three seconds of four)
+# No Mercy (operator 2026-11-09: "place them randomly every 30 seconds as they are traversing the level"). Live the same
+# day on lilspark, MINE_FOE_CLEAR_CM 400: two rounds, 11 minutes, 80 kills and ONE bomb - a Majini stood inside the
+# margin for 195 s on end, and the 40 s before that went on "moving away from the last bomb" whose blast was long over.
+# All that time he ran for a clear site with the gun down, three seconds of every four, which the operator watched as
+# "the bot just sits idle ... lets enemies close in on him without dispatching them". So: an overdue placement accepts
+# a closer crowd second by second, down to a floor a grab does not cross during the plant (only while he has the
+# health for the blast of a bomb a Majini reaches too soon), and the run for a clear site is a short burst that hands
+# the pad back to the fight for longer than it took it.
+RELAX_S = 10.0                           # overdue seconds over which the Majini margin shrinks to its floor
+FOE_FLOOR_CM = 250.0                     # the least margin: the plant roots him ~1.3 s, a grab reaches ~1.5 m
+RELAX_HP = 0.5                           # the smaller margin only with this share of his health (350 of 1000 at 3.8 m)
+UNCONFIRMED_SITE_S = 8.0                 # an unconfirmed press may have left a bomb nobody saw: its site blocks this long
 GAP_S = 0.75                             # a tick gap longer than this (held, healing, a reload stall above this module)
                                          # pauses the cycle's clock: EQUIP_S/PLACE_S/SETTLE_S measure active control
 QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}
@@ -111,6 +125,7 @@ class Mines:
         self._blocked, self._avoid_site = None, None
         self._ground_observed = False
         self._tick_at = None                           # the previous tick's clock (the gap pause, GAP_S)
+        self._site_until = None                        # last_pos blocks a placement until then (an unconfirmed press)
         self.saw_spent = False
         for k in COUNTERS:
             self.stats.setdefault(k, 0)
@@ -135,12 +150,13 @@ class Mines:
         self._tracked_at = None
         self._retry_at = self._relocate_retry_at = 0.0
         self._tick_at = None
+        self._site_until = None
         self._relocate_until = None
         self._blocked, self._avoid_site = None, None
         self._ground_observed = False
         self.saw_place = self.saw_spent = False
         self.stats.update(mine_overdue_s=0.0, mine_blocked_reason=None, mine_relocating=False,
-                          mine_last_actor=0, mine_last_placed_at=0.0)
+                          mine_last_actor=0, mine_last_placed_at=0.0, mine_clearance_cm=self.foe_clear_cm)
         self.stats.pop("mine_last_confirmation", None)
 
     @staticmethod
@@ -215,21 +231,43 @@ class Mines:
         if "ground_mines" not in snap:
             self.stats["mine_blocked_reason"] = "ground mine observation unavailable"
             return None
-        if why := self._clearance(p, live):
+        if why := self._clearance(p, live, now):
             self.stats["mine_blocked_reason"] = self._blocked = why
             return None
         return "due"
 
-    def _clearance(self, p: dict, live: list) -> str | None:
-        """Keep the placement margins both before equip and immediately before pressing ZL."""
+    def margin(self, p: dict) -> float:
+        """The Majini margin in force: foe_clear_cm on time, shrinking to FOE_FLOOR_CM over RELAX_S of overdue time.
+
+        The full margin was never free in a No Mercy crowd (RELAX_S above), so an overdue bomb goes down with a Majini
+        as near as the floor. Not below RELAX_HP of his health: a Majini who reaches the bomb before he is out of its
+        blast costs up to a third of it, and the cadence is not worth the round."""
+        full = self.foe_clear_cm
+        floor = min(FOE_FLOOR_CM, full)
+        over = float(self.stats.get("mine_overdue_s") or 0.0)
+        hp, top = p.get("hp"), p.get("hp_max")
+        hurt = isinstance(hp, (int, float)) and isinstance(top, (int, float)) and top > 0 and hp < RELAX_HP * top
+        m = full if hurt or over <= 0.0 else max(floor, full - (full - floor) * min(1.0, over / RELAX_S))
+        self.stats["mine_clearance_cm"] = round(m, 1)
+        return m
+
+    def _clearance(self, p: dict, live: list, now: float | None = None) -> str | None:
+        """Keep the placement margins both before equip and immediately before pressing ZL.
+
+        A bomb still down keeps its spacing (a double blast). The last site alone does not: once its bomb has gone
+        off there is nothing there, and waiting to be SPACING_CM from it cost 40 s of a round (2026-11-09). Only an
+        unconfirmed press, which may have left a bomb nobody saw, keeps its site, for UNCONFIRMED_SITE_S."""
         pos = p["pos"]
-        sites = ([self.last_pos] if self.last_pos is not None else []) + list(self.bombs.values())
+        sites = list(self.bombs.values())
+        if self.last_pos is not None and self._site_until is not None and (now is None or now < self._site_until):
+            sites.insert(0, self.last_pos)
         blocked = next((b for b in sites if flat(pos, b) < self.spacing_cm), None)
         if blocked is not None:
             self._avoid_site = blocked
             self.stats["mine_status"] = "moving away from the last bomb first"
             return "last bomb too close"
-        if any(flat(pos, e["pos"]) < self.foe_clear_cm for e in live):
+        margin = self.margin(p)
+        if any(flat(pos, e["pos"]) < margin for e in live):
             self.stats["mine_status"] = "a Majini too close to place one"
             return "enemy too close"
         return None
@@ -401,7 +439,7 @@ class Mines:
             return {"hold": ()}                         # already in hand (a prior press landed)
         if self.state == "equip":
             if hand is not None:
-                why = self._clearance(p, live)
+                why = self._clearance(p, live, now)
                 if why or "ground_mines" not in snap:
                     self.stats["mine_blocked_reason"] = why or "ground mine observation unavailable"
                     self.state, self.t = "rearm", now
@@ -445,6 +483,7 @@ class Mines:
                 self.stats["mine_last_placed_at"] = now
                 self.stats["mine_overdue_s"] = 0.0
                 self.last_at, self.last_pos = now, self.site
+                self._site_until = None                     # the bomb itself is tracked (self.bombs) while it is down
                 self.state, self.t = "settle", now
                 return {"hold": ()}
             if now - self.t > PLACE_S:
@@ -453,6 +492,7 @@ class Mines:
                     self.last_at = now
                     self.stats["mine_status"] = "placement unconfirmed: leaving all the same"
                     self.last_pos = self.site
+                    self._site_until = now + UNCONFIRMED_SITE_S
                     self.state, self.t = "retreat", now
                     return self._run(p, live, self.site)
                 self.stats["mine_status"] = "placement unconfirmed"

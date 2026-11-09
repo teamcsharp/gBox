@@ -26,9 +26,10 @@ mirror gbox/mercs/titles/re5_switch.py (S_PLAYER 0x1CF1C98, P_FIRST 0x30, P_POS 
 0x38, S_UNIT 0x26A3270, line 11 stride 0x30, next 0x18, uWp0a +0x60). An inventory-owned mine (the stack's
 own unit) is excluded by object identity, exactly as the snapshot does.
 
-What a good run looks like: `mine=(0x10a, 5, 5, 1, 0)` early (five bombs, grid 1, not in hand), then a
-`NEW_MINE` line a short distance ahead of the player, roughly every 30 s while clearance permits, with
-`grounds` growing and later shrinking when a Majini sets a bomb off.
+What a good run looks like: `mine=(0x10a, 5, 5, 1, 0)` early (five bombs, grid 1, not in hand), `BASELINE`
+lines for the units already on the line (the stack's own dormant unit is one: it is not a placement), then a
+`NEW_MINE` line within a couple of metres of the player roughly every 30 s while clearance permits, and a
+`MINE_GONE` when a Majini sets that bomb off.
 """
 from __future__ import annotations
 
@@ -146,6 +147,7 @@ def _dti_class(api: Api, sid: str, vtable: int) -> str | None:
         return None
 
 
+BASELINE = "baseline"                                       # seen[BASELINE]: the units down before the probe began
 UNIT_HEAD = E_POS + 12                                      # one read a unit: vtable +0, next +0x18, position +0x60
 
 
@@ -196,7 +198,11 @@ def sample(api: Api, sid: str, base: int, seen: dict, names: dict) -> list:
                 if all(math.isfinite(v) for v in p) and unit not in owned:
                     grounds.append((unit, p))
             unit, walked = u64(head, UNIT_NEXT), walked + 1
-    fresh = [g for g in grounds if g[0] not in seen]
+    if BASELINE not in seen:                                 # (see fast_sample: the stack's dormant unit is no mine)
+        seen[BASELINE] = {g[0] for g in grounds}
+        for unit, p in grounds:
+            print(f"  BASELINE ptr={unit:#x} pos={tuple(round(v, 1) for v in p)} (not a placement)", flush=True)
+    fresh = [g for g in grounds if g[0] not in seen and g[0] not in seen[BASELINE]]
     for unit, p in fresh:
         seen[unit] = (now, p)
     shown = None if pos is None else tuple(round(v, 1) for v in pos)
@@ -231,7 +237,15 @@ def fast_sample(api: Api, sid: str, seen: dict):
     p, mine, foes = r["player"], r.get("mine") or {}, r.get("foes") or {}
     row = (hex(mine["id"]), mine.get("rounds"), mine.get("cap"), mine.get("grid"), int(bool(mine.get("hand")))) \
         if mine else None
-    fresh = [g for g in r["ground_mines"] if g["ptr"] not in seen]
+    if BASELINE not in seen:
+        # The units already on the line when the probe starts are not placements: the bomb stack keeps a dormant
+        # uWp0a of its own there all round (live: always at 557, 158, 1409 on Public Assembly), and a mine planted
+        # before the probe began cannot be timed. Only a unit that appears later is a NEW_MINE.
+        seen[BASELINE] = {g["ptr"] for g in r["ground_mines"]}
+        for g in r["ground_mines"]:
+            print(f"  BASELINE ptr={g['ptr']:#x} pos={tuple(g['pos'])} dist_cm={g['dist_cm']} (not a placement)",
+                  flush=True)
+    fresh = [g for g in r["ground_mines"] if g["ptr"] not in seen and g["ptr"] not in seen[BASELINE]]
     print(f"t={now:.0f} pos={tuple(p['pos'])} hp={p.get('hp')} mine={row} kills={r.get('kills')} "
           f"score={r.get('score')} timer={r.get('timer')} foes={foes.get('alive')} "
           f"nearest_cm={foes.get('nearest_cm')} in4m={foes.get('within_400')} "
@@ -242,7 +256,8 @@ def fast_sample(api: Api, sid: str, seen: dict):
         print(f"  NEW_MINE ptr={g['ptr']:#x} pos={tuple(g['pos'])} dist_cm={g['dist_cm']}", flush=True)
         receipts.append((now, g["ptr"], g["pos"], g["dist_cm"]))
     down = {g["ptr"] for g in r["ground_mines"]}
-    for ptr in [k for k in seen if k not in down]:
+    seen[BASELINE] &= down                                   # a baseline unit that left may come back as a real mine
+    for ptr in [k for k in seen if k != BASELINE and k not in down]:
         print(f"  MINE_GONE ptr={ptr:#x} after_s={round(now - seen[ptr][0], 1)}", flush=True)
         del seen[ptr]                                        # reported once; a reused pointer is a new mine
     return receipts

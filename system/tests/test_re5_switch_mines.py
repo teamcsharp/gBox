@@ -51,9 +51,11 @@ def test_a_bomb_is_due_every_interval_but_not_with_a_majini_near_or_beside_a_bom
     assert m.tick(p(), snap(), foes((1200, 0)), 5.0) is None                    # too soon
     assert m.tick(p(), snap(), foes((400, 0)), MN.EVERY_S + 1)["hold"][:2] == MN.RUN
     assert m.state == "idle" and m.stats["mine_blocked_reason"] == "enemy too close"
-    m.last_at, m.last_pos = 0.0, (500.0, 0.0, 0.0)
+    # an unconfirmed press may have left a bomb nobody saw: its site keeps the spacing for UNCONFIRMED_SITE_S
+    m.last_at, m.last_pos, m._site_until = 0.0, (500.0, 0.0, 0.0), MN.EVERY_S + 5
     assert m.tick(p(), snap(), foes((1200, 0)), MN.EVERY_S + 1)["hold"][:2] == MN.RUN
     assert m.state == "idle" and m.stats["mine_blocked_reason"] == "last bomb too close"
+    m._site_until = None
     m.last_pos, m.bombs = (900.0, 0.0, 0.0), {0x77: (0.0, 0.0, -400.0)}
     # the bomb at -400 is within his blast and not the one he just placed: the guard now runs him out of it, and no
     # placement starts while he is in its blast (the SPACING_CM check would block it too)
@@ -461,7 +463,7 @@ def test_the_sidebar_cadence_and_clearance_reach_a_running_bot_every_tick(monkey
 def test_overdue_crowd_relocation_is_bounded_and_starts_placement_once_clear():
     m = MN.Mines({})
     m.new_round(0.0)
-    live = foes((400, 0))
+    live = foes((200, 0))                                    # inside the floor: no overdue time makes this plantable
     now = MN.EVERY_S + 7.0
     assert m.tick(p(), snap(), live, now)["hold"][:2] == MN.RUN
     assert m.stats["mine_overdue_s"] == 7.0 and m.stats["mine_relocating"]
@@ -469,10 +471,59 @@ def test_overdue_crowd_relocation_is_bounded_and_starts_placement_once_clear():
     # A blocked route does not own input indefinitely or reset the due timer.
     assert m.tick(p(), snap(), live, now + MN.RELOCATE_S) is None
     assert not m.stats["mine_relocating"] and m.last_at is None
+    # ... and the fight has the pad for longer than the run took it (the gun was down three seconds of four)
+    assert MN.RELOCATE_PAUSE_S > MN.RELOCATE_S
+    assert m.tick(p(), snap(), live, now + MN.RELOCATE_S + MN.RELOCATE_PAUSE_S / 2) is None
     assert m.tick(p(), snap(), live, now + MN.RELOCATE_S + MN.RELOCATE_PAUSE_S)["hold"][:2] == MN.RUN
-    # Moving two metres away clears the unchanged five-metre placement margin.
+    # Moving two metres away puts the Majini outside the margin an overdue bomb accepts.
     assert m.tick(p(pos=(0., 0., -200.)), snap(), live, now + 5.0) == {"hold": ()}
     assert m.state == "neutral" and not m.stats["mine_relocating"]
+
+
+def test_an_overdue_bomb_accepts_a_closer_crowd_down_to_the_floor_but_not_when_he_is_hurt():
+    """lilspark 2026-11-09, No Mercy: a Majini stood inside the 4 m margin for 195 s on end and one bomb went down in 11
+    minutes. The margin shrinks over RELAX_S of overdue time to FOE_FLOOR_CM; below RELAX_HP of his health it does not."""
+    m = MN.Mines({})
+    m.new_round(0.0)
+    m.foe_clear_cm = 400.0
+    live = foes((300, 0))
+    assert m.tick(p(), snap(), live, MN.EVERY_S + 1.0)["hold"][:2] == MN.RUN     # 1 s overdue: 385 cm, still blocked
+    assert m.stats["mine_blocked_reason"] == "enemy too close" and m.stats["mine_clearance_cm"] == 385.0
+    m = MN.Mines({})
+    m.new_round(0.0)
+    m.foe_clear_cm = 400.0
+    assert m.tick(p(), snap(), live, MN.EVERY_S + MN.RELAX_S) == {"hold": ()}    # the floor: 250 cm, 300 is clear
+    assert m.state == "neutral" and m.stats["mine_clearance_cm"] == MN.FOE_FLOOR_CM
+    m = MN.Mines({})
+    m.new_round(0.0)
+    m.foe_clear_cm = 400.0
+    assert m.tick(p(), snap(), foes((240, 0)), MN.EVERY_S + 60.0)["hold"][:2] == MN.RUN   # never inside the floor
+    hurt = dict(p(), hp=400)
+    m = MN.Mines({})
+    m.new_round(0.0)
+    m.foe_clear_cm = 400.0
+    assert m.tick(hurt, snap(), live, MN.EVERY_S + 60.0)["hold"][:2] == MN.RUN   # under half health: the full margin
+    assert m.stats["mine_clearance_cm"] == 400.0
+
+
+def test_the_site_of_a_bomb_that_went_off_no_longer_blocks_the_next_one():
+    """2026-11-09: 40 s of a round "moving away from the last bomb" whose blast was long over."""
+    m = MN.Mines({})
+    m.new_round(0.0)
+    t = MN.EVERY_S
+    to_place(m, [], t)
+    t0 = t + MN.NEUTRAL_S + 0.2
+    bomb = {"ptr": 0x5D4D7ABC10, "pos": (-3.0, 3.0, 57.0)}
+    m.tick(p(motion=29), held(ground=[bomb]), [], t0 + 0.69)
+    assert m.stats["mines_placed"] == 1 and m.last_pos == bomb["pos"] and m._site_until is None
+    m.state = "idle"                                          # (the retreat and the rearm are other tests')
+    due = t0 + 0.69 + MN.EVERY_S + 0.1
+    # still down and he is beside it: the spacing holds (the guard runs him out of its blast first)
+    assert m.tick(p(), snap(ground=[bomb]), [], due)["hold"][:2] == MN.RUN and m.state == "idle"
+    # it went off: he may plant right there
+    assert m.tick(p(), snap(), [], due + 0.05) is None or m.state == "neutral"
+    assert m.stats["mines_gone"] == 1
+    assert m.tick(p(), snap(), [], due + 1.0) == {"hold": ()} and m.state == "neutral"
 
 
 def test_overdue_close_crowd_seeks_space_without_planting_and_yields_to_explicit_emergency():
