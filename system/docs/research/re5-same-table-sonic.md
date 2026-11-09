@@ -155,6 +155,14 @@ patched part’s weight-bound envelope) still stops at `NOW LOADING`. So compres
 Next: move the three vertices in small steps (1 → 10 → 50 units) to find the displacement limit, and pack against the
 **expanded** bounds rather than the original box.
 
+Measured: **+1 and +10 units play live rounds** (Public Assembly, normal HUD and Majini); **+50 units blacks at boot**.
+The low instance tolerates small vertex motion but not large displacement. The Sonic triangle’s vertices are far outside
+that range, which is why it still stops at `NOW LOADING`. The displacement limit is therefore a real engine constraint,
+not a table or compression one.
+
+A one-mesh Sonic low MOD compressed at level 6 now **boots to the title** (the level-9 one-mesh was black at boot) but
+still stops at `NOW LOADING`, so the one-mesh/MRL mismatch remains after the compression fix.
+
 `mtf_author.combine` also needed a fix: the index stream is global to the shared vertex buffer, so `combine` now
 subtracts each part's `vertex_index` before adding its own base. Without it, the low self one-mesh produced triangle
 56072 with only 55667 vertices.
