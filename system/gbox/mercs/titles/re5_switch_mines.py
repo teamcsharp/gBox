@@ -437,8 +437,8 @@ class Mines:
                 # Unless a flash of his has them reeling (flash_until: the bot's CRIT_FLASH answers this very moment,
                 # close_in_blast_at, with one): then nobody grabs him on the way, and he runs out as the operator
                 # asked ("flashbanging and running away and getting distance"). The ledger, 2026-11-09: this was the
-                # bomb guard's last word in 73 of the 270 deaths since 11-03, and 5 of the night's 13 deaths lost
-                # 142-1,545 health inside his own bombs' blast windows (mine_blast_hp_loss).
+                # bomb guard's last word in 73 of the 270 deaths since 11-03, and 6 of the night's 13 deaths lost
+                # health inside his own bombs' blast windows (mine_blast_hp_loss: 2,587 in all, up to 1,545 in one).
                 self.close_in_blast_at = now
                 self.stats["mine_status"] = "in the blast and a close Majini first: the gun up"
                 # A neutral action still owns this tick and would suppress the

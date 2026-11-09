@@ -534,7 +534,11 @@ def attempts_tier(n: int) -> int:
     return 0 if n <= 0 else 1 if n <= 2 else 2 if n <= 9 else 3
 
 
-def plan_queue(cells: dict, build: str | None = None, n: int = QUEUE_MAX, characters=CHARACTERS) -> list:
+PROBES = 1                  # a character no round has been played with yet: this many entries of it per plan
+
+
+def plan_queue(cells: dict, build: str | None = None, n: int = QUEUE_MAX, characters=CHARACTERS,
+               probes: int = PROBES) -> list:
     """The next n (<= QUEUE_MAX) MercMode queue entries for RE5 Switch No Mercy.
 
     Order: the (stage, character) pairs without SS, the least-tried tier first (attempts_tier: a pair never played
@@ -542,11 +546,15 @@ def plan_queue(cells: dict, build: str | None = None, n: int = QUEUE_MAX, charac
     SS, the slowest time to 400 first. Mixed: each pick is, among its tier's pairs, the one whose stage and character
     the plan has used least so far, and never the stage or the character of the entry before it when another pair of
     the tier allows (the playlist moves on every round, as the operator asked: "multiple characters and stages
-    transitioning")."""
+    transitioning"). A character the board has no round of at all - the select's second page (Josh, Excella, Barry,
+    Rebecca) has never been reached by the bot (re5-switch-cycle.json: character_slots 0, only entries 0-9 counted) -
+    is a probe: at most `probes` entries of it per plan, so a page the walk cannot reach costs a few rounds, not the
+    queue; once a round of it is on the board it plans like any other."""
     n = max(0, min(int(n), QUEUE_MAX))
     pairs = [(s, c) for s in STAGE_NAMES for c in characters]
     def cell(p):
         return cells.get(p) or _cell(*p)
+    tried = {c for (s, c), v in cells.items() if v.get("attempts")}
     def tier(p):
         c = cell(p)
         return (1, 0) if c["best_rank"] == "SS" else (0, attempts_tier(c["attempts"]))
@@ -556,6 +564,9 @@ def plan_queue(cells: dict, build: str | None = None, n: int = QUEUE_MAX, charac
     pool = sorted(pairs, key=lambda p: (tier(p), worth(p), STAGE_NAMES.index(p[0]), list(characters).index(p[1])))
     used_s, used_c, out, last = {}, {}, [], None
     while pool and len(out) < n:
+        pool = [p for p in pool if p[1] in tried or used_c.get(p[1], 0) < probes]
+        if not pool:
+            break
         head = tier(pool[0])
         same = [p for p in pool if tier(p) == head]
         fresh = [p for p in same if last is None or (p[0] != last[0] and p[1] != last[1])] \

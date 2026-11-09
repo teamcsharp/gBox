@@ -908,7 +908,7 @@ GRENADE_CROWD_N, GRENADE_CROWD_R = 4, 450.0
 # The flash in an emergency (operator 2026-11-09, of his bombs: "Then flashbanging and running away and getting
 # distance ... have him force his way out"; the native flash stuns every Majini around him, the one holding him
 # included: docs/research/re5-native-flash.md). What kills him (docs/research/re5-ss-campaign.md, the 270 deaths
-# since 11-03): he goes down in the crowd - 92 % of the health he loses is lost with 3+ Majini within 6 m, half of
+# since 11-03): he goes down in the crowd - 87 % of the health he loses is lost with 3+ Majini within 6 m, half of
 # the 400+ hits land while he is held with a crowd round him, and 68 % of the deaths came with no heal left ("critical
 # retreat ... (no heals)"); and his own bombs (the guard below gives the run up for a close Majini). The grenade burst
 # above never fires then: it needs a verified firing follow-through, and the gun is down while he is held, healing

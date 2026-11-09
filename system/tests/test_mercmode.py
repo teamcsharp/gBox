@@ -1827,6 +1827,6 @@ def test_dj_queue_takes_the_switch_no_mercy_roster_when_re5_means_switch():
     assert M.resolve_selection(cfg['queue'][4],random.Random(1),cfg)['mode']=='no_mercy'   # Barry (STARS): Switch's
     with pytest.raises(ValueError):
         M.configure(store,w['name'],{'queue':[{'title':'re5','mode':'no_mercy','character':'Chris (Heavy Metal)'}]})
-    plan=ss_ledger.plan_queue({},build='re5_stock')
+    plan=ss_ledger.plan_queue({},build='re5_stock',probes=2)       # an empty board: every character a probe
     cfg=M.configure(store,w['name'],{'queue':plan,'repeat_queue':True})
     assert len(cfg['queue'])==len(plan)==M.QUEUE_MAX and all(e['mod']=='re5_stock' for e in cfg['queue'])

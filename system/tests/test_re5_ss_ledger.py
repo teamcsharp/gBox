@@ -142,6 +142,18 @@ def test_the_planner_fills_holes_first_and_mixes_stages_and_characters():
     assert (L.STAGE_NAMES[slowest["stage"]], slowest["character"]) == (L.STAGE_NAMES[-1], L.CHARACTERS[-1])
 
 
+def test_a_character_no_round_was_played_with_is_only_probed():
+    # the select's second page has never been reached (re5-switch-cycle.json: only entries 0-9 counted): one entry
+    # of each such character per plan, the rest from the characters the board knows
+    cells = {(s, c): dict(L._cell(s, c), attempts=12, best_rank="A", best_score=200_000)
+             for s in L.STAGE_NAMES for c in L.CHARACTERS[:10]}
+    plan = L.plan_queue(cells)
+    names = [e["character"] for e in plan]
+    assert len(plan) == L.QUEUE_MAX and names[:4] and set(names[:4]) == set(L.CHARACTERS[10:])
+    assert all(names.count(c) == 1 for c in L.CHARACTERS[10:])
+    assert len(L.plan_queue({}, probes=3)) == L.QUEUE_MAX and len(L.plan_queue({})) == len(L.CHARACTERS)
+
+
 def snap(ptr=0x5000, kills=0, timer=120.0, score=0, **extra):
     return {"module_base": 0x3CA89C3000, "player": {"ptr": ptr, "hp": 1000}, "kills": kills, "timer": timer,
             "score": score, **extra}
