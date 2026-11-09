@@ -436,8 +436,10 @@ seconds from the main menu. Tune `menu_speed` thresholds (`MIN/MAX_*`, `FAST`, `
 
 ### 5.4 Roster: verify and ship
 
-0. First boot: one of the three small mixed-franchise overlays of §0.5 (45 files, 26-27 MB each), every character
-   with COSTUME 1. A native human on a covered character settles which body costume 1 is (§0.3).
+0. First boot: one of the three small mixed-franchise overlays of §0.5 (45 files, 25-26 MB each), every character
+   with COSTUME 1. A native human on a covered character settles which body costume 1 is (§0.3). 17 of their 27
+   bodies are reposed donors (`pose`, never live) and 10 are kept ones; `re6sw_roster_mix_s15` has both kinds side by
+   side (Toni Cipriani, RE5 Chris and the 007 hostage are kept; Mario, Liquid Snake, Aya and Aerith are reposed).
 1. The bone-count caveat is resolved (§4.14). Rebuild `re6sw_smash_cast` with the current code (vetted material, all
    accessory-head MODs blanked), then spot-check 3–5 slots (255 files, ~346 MB — upload in batches) by playing rounds
    with different drawn characters/costumes.
