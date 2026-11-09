@@ -276,7 +276,7 @@ class Mines:
         self.stats["mine_clearance_cm"] = round(m, 1)
         return m
 
-    def _clearance(self, p: dict, live: list, now: float | None = None) -> str | None:
+    def _clearance(self, p: dict, live: list, now: float | None = None, committed: bool = False) -> str | None:
         """Keep the placement margins both before equip and immediately before pressing ZL.
 
         A bomb still down keeps its spacing (a double blast). The last site alone does not: once its bomb has gone
@@ -291,7 +291,10 @@ class Mines:
             self._avoid_site = blocked
             self.stats["mine_status"] = "moving away from the last bomb first"
             return "last bomb too close"
-        margin = self.margin(p)
+        # committed: the bomb is already in his hand (the gun came down for it half a second ago). Giving the plant
+        # up there for a Majini at 3.5 m costs the same two seconds as planting and leaves nothing behind: live
+        # 2026-11-09, eight attempts for one bomb. Only one inside the floor stops a plant that far along.
+        margin = min(self.margin(p), FOE_FLOOR_CM) if committed else self.margin(p)
         if any(flat(pos, e["pos"]) < margin for e in live):
             self.stats["mine_status"] = "a Majini too close to place one"
             return "enemy too close"
@@ -485,7 +488,7 @@ class Mines:
             return {"hold": ()}                         # already in hand (a prior press landed)
         if self.state == "equip":
             if hand is not None:
-                why = self._clearance(p, live, now)
+                why = self._clearance(p, live, now, committed=True)
                 if why or "ground_mines" not in snap:
                     self.stats["mine_blocked_reason"] = why or "ground mine observation unavailable"
                     self.state, self.t = "rearm", now

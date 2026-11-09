@@ -553,7 +553,7 @@ def test_enemy_closing_during_equip_prevents_press_and_missing_ground_scan_canno
     assert m.stats["mine_blocked_reason"] == "ground mine observation unavailable"
     assert m.tick(p(), snap(), [], now + 1) == {"hold": ()}
     assert m.tick(p(), snap(), [], now + 1 + MN.NEUTRAL_S) == {"tap": "dup"}
-    assert m.tick(p(), held(), foes((350, 0)), now + 1 + MN.NEUTRAL_S + .2) == {"hold": ()}
+    assert m.tick(p(), held(), foes((200, 0)), now + 1 + MN.NEUTRAL_S + .2) == {"hold": ()}
     assert m.state == "rearm" and m.stats["mines_placed"] == 0
     assert m.stats["mine_blocked_reason"] == "enemy too close"
 
@@ -732,3 +732,24 @@ def test_a_guard_run_that_gains_no_ground_gives_the_pad_back():
     assert m.stats["mine_clear_stuck"] == 1
     assert m.tick(p(), snap(ground=[bomb]), coming, t + MN.CLEAR_YIELD_S - 0.5) is None
     assert m.tick(p(), snap(ground=[bomb]), coming, t + MN.CLEAR_YIELD_S + 0.2)["hold"][:2] == MN.RUN   # tried again
+
+
+def test_a_plant_already_in_hand_goes_down_unless_a_majini_is_inside_the_floor():
+    """lilspark 2026-11-09: eight attempts for one bomb - the gun came down, the bomb came to hand, and the plant was
+    given up because a Majini had stepped inside the on-time margin. With the bomb in hand only the floor stops it."""
+    m = MN.Mines({})
+    m.new_round(0.0)
+    m.foe_clear_cm = 400.0
+    t = MN.EVERY_S
+    clear = foes((900, 0))
+    assert m.tick(p(), snap(), clear, t) == {"hold": ()} and m.state == "neutral"
+    assert m.tick(p(), snap(), clear, t + MN.NEUTRAL_S) == {"tap": "dup"}
+    stepped_in = foes((320, 0))                                      # inside the 4 m margin, outside the 2.5 m floor
+    assert m.tick(p(), held(), stepped_in, t + MN.NEUTRAL_S + 0.2) == {"hold": ("zl",)} and m.state == "place"
+    m = MN.Mines({})
+    m.new_round(0.0)
+    m.foe_clear_cm = 400.0
+    m.tick(p(), snap(), clear, t)
+    m.tick(p(), snap(), clear, t + MN.NEUTRAL_S)
+    on_him = foes((200, 0))                                          # inside the floor: not now
+    assert m.tick(p(), held(), on_him, t + MN.NEUTRAL_S + 0.2) == {"hold": ()} and m.state == "rearm"
