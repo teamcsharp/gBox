@@ -47,7 +47,10 @@ def test_repeat_launch_keeps_the_explicit_build_and_character():
     assert M.settings(store, w['name'])['queue'][0]['mod'] == 'sonic-test'
 
 
-def test_repeated_same_build_rounds_keep_explicit_character_selection():
+def test_a_repeated_build_that_is_already_loaded_plays_on_in_the_same_session():
+    """A one-build repeating playlist: the session already booted with that build, so a round boundary restarts nothing.
+    The running bot takes the entry's character at its menus and the entry stays queued (lilspark 2026-11-09: a ~50 s
+    boot every round, and Eden hung black on 4 of 9 of them)."""
     store, w, saver, calls, now, tick, run, job = playing()
     title = run['mercmode']['title']
     character = 'Ada' if title == 're4' else 'Chris (BSAA)'
@@ -55,25 +58,44 @@ def test_repeated_same_build_rounds_keep_explicit_character_selection():
     store.put(S.STATE, w['name'], run)
     M.configure(store, w['name'], {'titles': [title], 'repeat_queue': True,
         'queue': [{'title': title, 'character': character, 'mod': 'sonic-test'}]})
-    for rid in ('b' * 32, 'c' * 32):
+    for rid in ('b' * 32, 'c' * 32, 'd' * 32):
+        before = len(calls)
         receipt = boundary(run, now[0]) | {'round_id': rid}
-        assert saver.round_boundary(receipt, job, now[0])['rotate_requested'] is True
+        assert saver.round_boundary(receipt, job, now[0])['rotate_requested'] is False
+        state = store.get(S.STATE, w['name'])
+        assert not state.get('mercmode_mod_rotate') and state['session_id'] == run['session_id']
+        sent = calls[before:]
+        assert [c['input'].get('op') for c in sent] == ['mercs_select']          # the selection, to the live game
+        assert sent[0]['input']['session_id'] == run['session_id'] and sent[0]['input']['character'] == character
         tick(1)
-        assert calls[-1]['input']['op'] == 'stop_game'
-        session = store.get('session', run['session_id'])
-        store.put('session', run['session_id'], session | {'state': 'ended'})
-        tick(1)
-        launch = calls[-1]
-        assert launch['tool'] == 'launch_game' and launch['input']['mod'] == 'sonic-test'
-        assert launch['input']['game']['launch']['mercmode']['selection']['character'] == character
-        assert M.settings(store, w['name'])['queue'][0]['mod'] == 'sonic-test'
-        sid = 'w1-' + launch['id']
-        store.put('session', sid, {'session_id': sid, 'game_id': run['game_id'], 'state': 'running'})
-        tick(1); tick(S.START_GRACE)
-        run = store.get(S.STATE, w['name'])
-        job = store.get('job', run['autoplay_job']) | {'state': 'succeeded'}
-        store.put('job', job['id'], job)
-        S.telemetry_put(sid, {'running': True, 'stats': {}}, now=now[0])
+        assert all(c['input'].get('op') != 'stop_game' and c['tool'] != 'launch_game' for c in calls[before:])
+        assert M.settings(store, w['name'])['queue'][0]['mod'] == 'sonic-test'      # still queued: it repeats
+        now[0] += 30
+        S.telemetry_put(run['session_id'], {'running': True, 'stats': {}}, now=now[0])
+
+
+def test_a_repeated_build_that_is_not_the_loaded_one_still_restarts_the_title():
+    """LayeredFS is read at boot: another build (or a session that booted without one) needs the cold launch, and
+    the launch carries the explicit build and character."""
+    store, w, saver, calls, now, tick, run, job = playing()
+    title = run['mercmode']['title']
+    character = 'Ada' if title == 're4' else 'Chris (BSAA)'
+    run['mod'] = 'stock-or-older-build'
+    store.put(S.STATE, w['name'], run)
+    M.configure(store, w['name'], {'titles': [title], 'repeat_queue': True,
+        'queue': [{'title': title, 'character': character, 'mod': 'sonic-test'}]})
+    receipt = boundary(run, now[0]) | {'round_id': 'b' * 32}
+    assert saver.round_boundary(receipt, job, now[0])['rotate_requested'] is True
+    assert store.get(S.STATE, w['name'])['mercmode_mod_rotate']
+    tick(1)
+    assert calls[-1]['input']['op'] == 'stop_game'
+    session = store.get('session', run['session_id'])
+    store.put('session', run['session_id'], session | {'state': 'ended'})
+    tick(1)
+    launch = calls[-1]
+    assert launch['tool'] == 'launch_game' and launch['input']['mod'] == 'sonic-test'
+    assert launch['input']['game']['launch']['mercmode']['selection']['character'] == character
+    assert M.settings(store, w['name'])['queue'][0]['mod'] == 'sonic-test'
 
 
 @pytest.mark.parametrize('supported', [False, True])

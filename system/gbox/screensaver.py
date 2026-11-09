@@ -1528,6 +1528,14 @@ class Screensaver:
             rotate = rotate or skin_rotate
             mod_rotate = bool(head and head.get('mod') and head['title'] == run['mercmode']['title']
                               and playable(head['title']))
+            if mod_rotate and not skin_rotate and head['mod'] == (
+                    run.get('mod') or (self.store.get('session', run['session_id']) or {}).get('mod')):
+                # The queued build is the one this session booted with (a repeating playlist of one build): LayeredFS
+                # has nothing new to load, so the title is not restarted - the running bot takes the entry's character
+                # and stage at its menus, as for any same-game queue entry. Restarting it anyway cost a ~50 s boot
+                # every round, and Eden hung black at boot on 4 of 9 of those restarts on lilspark (2026-11-09), two
+                # more minutes each before the black watch gave the game back.
+                mod_rotate = False
             if mod_rotate:
                 # A LayeredFS build is loaded at boot. Keep this queue entry until _start launches it; sending its
                 # character/stage to the live menus would consume the request without ever loading the replacement.
