@@ -18,7 +18,9 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
                   target_roles: dict[str, int], segments: dict[str, str], scale: float,
                   material_index: int = 0, template_index: int = 0, continuous: bool = False,
                   pose_mode: str = 'native_segments', height: float = 180., centre_hip: bool = False,
-                  repose_frames: dict | None = None, retarget_root_translation: bool = False):
+                  repose_frames: dict | None = None, retarget_root_translation: bool = False,
+                  role_scales: dict[str, float] | None = None, role_offsets: dict[str, tuple] | None = None,
+                  orphan_role: str | None = None):
     """Return (archive, MOD, atlas, receipt), using caller-reviewed roles and native material.
 
     Source roles name GLB nodes; target roles name native bone indices. Every source
@@ -33,6 +35,8 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
         raise ValueError('explicit repose frames require the source_reposed mode')
     if retarget_root_translation and pose_mode != 'source_reposed':
         raise ValueError('root translation retargeting requires the source_reposed mode')
+    if (role_scales or role_offsets or orphan_role) and pose_mode != 'native_segments':
+        raise ValueError('per-role scales, offsets and the orphan role require the native_segments mode')
     parsed = mt_arc.parse(archive)
     matches = {}
     for index, entry in enumerate(parsed.entries):
@@ -130,7 +134,8 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
         skin.update(scale=scale, height=height, centre_hip=centre_hip)
     else:
         fitted, skin = mtf_retarget.transfer(vertices, source_points, parents, target_points, roles, segments,
-                                           scale=scale, continuous=continuous)
+                                           scale=scale, continuous=continuous, role_scales=role_scales,
+                                           role_offsets=role_offsets, orphan_role=orphan_role)
     import numpy as np
     if pose_mode == 'native_segments':
         normals = np.zeros((len(fitted), 3))
