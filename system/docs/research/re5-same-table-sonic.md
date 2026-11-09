@@ -199,6 +199,13 @@ blacks at **boot**, before the title. `em1000_low` accepted +1/+10/+50 at the ro
 Sonic patch at the round. `em1101` accepts neither a nudge nor a patch. That points at the model being loaded and
 validated during boot (menu/streaming) and an integrity/identity check that our archive edits do not satisfy.
 
+Even replacing the **whole `uEm11.arc` file with `uEm10.arc`** (a structurally valid archive, just the wrong class)
+blacks at boot. So `uEm11` is not a free-form container for this slot: the boot path binds it to the registered class.
+
+Ghidra anchor: `_INIT_247` at `0x0014f5f0` registers the enemy archives with `FUN_00cd28d0`, including
+`"uEm10"` (hash `0x3001000`) and `"uEm11"` (hash `0x3001100`). That registration table and its archive hash are the
+next place to look for the boot-time binding.
+
 ![Donor-pair round with the one-part Sonic patch; enemies remain the donor variant](evidence/re5-donor-sonic-patch-enemies.jpg)
 
 The MRL tail is not opaque noise. Its first words are a header
