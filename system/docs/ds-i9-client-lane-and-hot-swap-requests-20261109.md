@@ -337,3 +337,25 @@ PM/operator can correct the plan before more is built.
 5. **Enemy model inventory for the operator's reskin request**: the enemy families are the `nativeNXx64/arc/NX/e####.arc`
    arcs (`e1000`, `e1010`, `e1040`, `e1045`, `e1050`, `e1060`, `e1070`, …). That is the donor/overlay surface for
    "replace any and all enemies"; `re5_enemy_writer` remains the asset-level template.
+
+## Round 9 status (2026-11-09, ~17:35 CST): the overlay starts the round but its data is not valid yet
+
+1. **With the r2 overlay the round start proceeds**: title → menu → EXTRA CONTENT → character select → A starts
+   LOADING (on the previous build the same A was ignored). It then **hangs at LOADING** (60 FPS, no crash, no
+   unmapped access, no error in the log).
+2. **The extracted data files are invalid, and that is the likely cause.** The base `Game_eng.arc` starts with
+   `ARC\0` (a real arc container); the extracted patch copy of the same file starts with random bytes and the same
+   size — i.e. the file-data decryption/mapping is still wrong, so the game hangs reading it.
+3. **What is proven about the patch format**: the patch's RomFS *header* decrypts correctly (all ten fields), and the
+   file-table area at phys `0x22e50f0` decrypts to readable strings (`…soft\mes…`), so the BKTR CTR convention (bytes
+   0-3 = `reversed(section_ctr)[0:4]`, 4-7 = subsection `ctr_val`, 8-15 = `(section_offset + phys) >> 4`) is right for
+   the table area. The **data area** is the open question: with the base file table's offsets mapped through the base
+   virtual space (`romfs_offset + data_offset + offset`) the target lands in patch region 8
+   (`virt 0x9ddcf40..0x9f34830`, `phys 0x286bba0`) but neither the region start nor the file's computed phys decrypts
+   to an arc header, and the bytes are not stored plaintext either.
+4. **Next**: parse the **patch's own file table** (it decrypts — the names are readable) and map that table's file
+   offsets through the patch's data area, instead of going through the base table's offsets; the patch header's
+   `data_offset = 0x200` and the table's file entries should give the exact positions. That avoids the base-table
+   mapping entirely and should produce the real `ARC\0` files.
+5. Housekeeping: the session and game are stopped; the r2 build stays on the i9 (it is the one that reaches LOADING),
+   and the extraction probes are in `.tmp/re6upd/` for the next round.
