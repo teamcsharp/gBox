@@ -212,6 +212,12 @@ permits, with `grounds` growing and later shrinking as bombs detonate.
   It used the `native_segments` path with the role map measured on the Majini skeleton, so the group-0 guard was not
   touched; every one of the 55 option groups carries the donor and every native record is blanked. **It has never been
   booted.** Facts, decision, checks and the first-round checklist: [research/re5-mario-enemy-writer.md](research/re5-mario-enemy-writer.md).
+- **Update 2026-11-09, later (enemy cast, offline only):** the coordinating session reported that candidate loading
+  and drawing Marios in Public Assembly. Built on that, still offline and unbooted: any library donor with complete
+  role metadata (`build_donor`), the second Majini class `uEm11` (`em1100`), a native-height fit, several donors on
+  one model through the montage table that was found in the archive (`MTG`, entry 763; `build_mix`), seeded pools,
+  and the enemy classes of all eight Mercenaries stages read from the stage layouts. Overlays, hashes, the stage
+  table, what is inferred and what a live round must show: [research/re5-enemy-cast.md](research/re5-enemy-cast.md).
 
 ---
 

@@ -3,9 +3,20 @@
 2026-11-09. `gbox/re5_enemy_writer.py` builds a complete `uEm10.arc` in which the Majini model `em1000` (and its
 `_mid` and `_low` variants) draws SM64 DS Mario on the native skeleton, materials and motion.
 
-**Nothing here has been booted.** The candidate passes every offline structural check below and two CPU previews. It
-has not been loaded by the game, so it is not known to load, to be drawn, or to look right. Do not describe it as
-Mario working in RE5.
+**Status 2026-11-09, later the same day.** This note was written before any boot and is kept as written below. Since
+then the coordinating session reported one live result for the candidate (build
+`recovery-mario-em10-v1-test-20261109`, session `a66b9d370de14727-98b48cb5b2b74d45`, Public Assembly): it loaded on
+the first boot, the round played (199 kills at 9 minutes), and a gameplay frame showed two textured SM64 DS Marios
+attacking the player beside a stock executioner, about 2.4 m tall, with faceted shading. That report is the
+coordinator's observation; the work below and its follow-up were done offline and saw no frame. Shimmer from the
+overlapping copies and culling could not be judged from the still frame.
+
+Two statements below are superseded by [re5-enemy-cast.md](re5-enemy-cast.md): the archive DOES say which groups a
+spawn can draw (entry 763 is an `MTG` montage table), and the writer now builds any library donor, the second Majini
+class `uEm11`, and several donors on one model.
+
+**Nothing here had been booted when this was written.** The candidate passes every offline structural check below and
+two CPU previews.
 
 | | |
 |---|---|
@@ -49,7 +60,9 @@ All of this was re-read from the archive bytes; the writer refuses an input wher
   is followed by one zero alignment word. Envelope table length, per-record counts and the header count at `0xA0` agree.
 - Native skin never weights root bone 0. The hips hang off the pelvis (animation id 15).
 - No texture is private to `em1000`: every one is also named by the `em1001` MRLs, some by `em2100`.
-- Nothing in the archive says which groups a spawn selects or which model set a stage draws.
+- ~~Nothing in the archive says which groups a spawn selects or which model set a stage draws.~~ Superseded: entry
+  763 (`MTG`, 61 parts, 51 montages) lists the group combinations, and the stage layouts name the model type and the
+  montage number of every spawn. See [re5-enemy-cast.md](re5-enemy-cast.md).
 
 ## Role map
 

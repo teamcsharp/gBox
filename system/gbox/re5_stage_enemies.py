@@ -10,7 +10,7 @@ Majini classes, the model type and the montage number of the spawn.
     census(layouts)              -> {mode: {class: {count, layouts, model_types, montages}}}
     stage_layouts(arc_bytes)     -> {mode: {layout name: raw}} from a whole stage archive
 
-Measured 2026-11-09 on s400-s407 (all eight Mercenaries stages, 363 layouts, every one read to its last byte). The
+Measured 2026-11-09 on s400-s407 (all eight Mercenaries stages, 372 enemy layouts, every one read to its last byte). The
 census is what the layouts CAN spawn in a mode; which layouts a round activates is decided by the mode's FSM files,
 so it is an upper bound per mode, not a per-round list. Nothing here touches a running game.
 """
@@ -28,7 +28,7 @@ LAYOUT_HASH = 0x15302EF4
 STAGES = {'s400': 'Public Assembly', 's401': 'The Mines', 's402': 'Village', 's403': 'Ancient Ruins',
           's404': 'Experimental Facility', 's405': 'Missile Area', 's406': 'Ship Deck', 's407': 'Prison'}
 #: Mode folders under `soft`. The names are the game's; the reading of each is from their content and the PC edition.
-MODES = {'merce': 'The Mercenaries', 'merceex': 'No Mercy (three times the layouts, 30 enemies each)',
+MODES = {'merce': 'The Mercenaries', 'merceex': 'No Mercy (about twice the layouts, most of 30 enemies)',
          'mercedc': 'The Mercenaries Reunion', 'vsm': 'Versus (same layouts as merce)', 'vss': 'Versus (slayers)'}
 RANDOM_MONTAGE = 0xFFFFFFFF
 
