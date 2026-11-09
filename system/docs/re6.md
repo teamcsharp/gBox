@@ -27,6 +27,30 @@ donors can enter this build pipeline when their roles are mapped; a successful b
 each donor/target pair looks or animates in game. The new tests use synthetic glTF/MOD/ARC assets to verify fit
 changes in encoded native geometry and explicit target propagation, without launching an emulator.
 
+### Scale-exact fitting and the Smash cast roster (2026-11-09)
+
+The RE5 review showed that the remaining "does not load / looks wrong" cases after the archive fixes were scale and
+bind-pose problems, so RE6's writer gained the same fix: **`pose_mode='source_proportions'`** keeps the donor's
+surface, scales it uniformly to a requested height (default 180 cm), clamps it inside the native quantisation box by
+translation (never stretching) and moves the **native bind joints** to the donor's joint positions. Measured with the
+SA2 Sonic donor: the old segment fit produced a 212.9 cm Sonic with an arm/height ratio of 0.250 against the donor's
+0.16152; the new path produces 180.0 cm and 0.16153, round-trips within 0.01 units and stays inside the transform's
+unit box. `re6 op=build_mod character=sonic target=leon scale={"pose": "source_proportions", "height": 180}` selects
+it; `gbox.re6_models.fit_source_proportions` / `reposition_bind_pose` are the implementation, with tests in
+`tests/test_re6_source_proportions.py` and evidence in `docs/re6-model-replacement.md`.
+
+`gbox/re6_cast.py` uses that writer to put a **different collection character on every RE6 player slot** and build
+one roster mod (`re6 op=cast`, `cast_plan`, `cast_status`). Because each native character then shows a different cast
+member, RE6's own Mercenaries character select — already randomised per round by
+`gbox.mercs.round_controls.Controls.choose_character` — rotates the cast every round without a per-round relaunch.
+With `per_costume=true` the planner fills **every costume** of every slot (RE6 keeps one body archive per costume and
+the select randomises the costume too), which fits the whole extracted Brawl cast in one mod (44 slots, 41 distinct
+fighters). `default_mods` on MercMode (`POST /api/mercmode {"host":…, "default_mods":{"re6":"re6_brawl_cast"}}`)
+makes every RE6 round boot that build. This is not real-time in-memory model swapping: a different build still needs
+a relaunch, and only the Xbox 360 edition has a writer. The Smash donors come from `gbox.ssbu_models` (SSBU
+`data.arc`, Sonic inserted as `re6_ssbu_sonic`) and `gbox.ssbb_models` (all 46 Brawl fighter dirs). Full details,
+measured numbers and the remaining work: `docs/re6-model-replacement.md`.
+
 ## Boot profile "RE6: Everything unlocked" (default for every RE6 launch through gBox)
 
 Two saved switches (`GET/POST /api/re6/settings`, both **on** by default; tool ops `everything_unlocked on=` /

@@ -19,7 +19,11 @@ OBSERVED = 'mercmode_observed'
 COMMAND = 'mercmode_command'
 ADOPTION = 'mercmode_adoption'
 DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title': 1,
-           'presentation_priority': False, 'queue': [], 'repeat_queue': False, 'keep_warm': 1, 'preferred_editions': {},
+           'presentation_priority': False, 'queue': [], 'keep_warm': 1, 'preferred_editions': {},
+           # a per-title build every round of that title plays with (mod folder name in the worker's mods cache):
+           # e.g. {"re6": "re6_smash_roster"} makes each RE6 round boot with the cast roster, so the title's own
+           # character rotation shows its assigned character. An explicit DJ queue mod still wins for that round.
+           'default_mods': {},
            # the bots' stalemate rule (gbox.mercs.stalemate; operator 2026-10-26): no enemies for 15 s with time on the
            # clock -> the clock is cut to stalemate_cut_s once per round. Rides in the launch payload (game.launch.mercmode)
            'stalemate_cut': True, 'stalemate_cut_s': 5,
@@ -48,8 +52,8 @@ STALEMATE_KEYS = ('stalemate_cut', 'stalemate_cut_s')
 STALEMATE_FEATURE = 'mercmode_stalemate_cut'     # worker feature: its mercmode tool accepts the stalemate settings
 COOP_FEATURE = 'mercmode_coop_ratio'             # worker feature: split-screen launches (gbox.switch_coop) and its tool
 CAST_FEATURE = 'mercmode_cast_swap'              # worker feature: its mercmode tool takes cast_swap (inverted cast)
+DEFAULT_MODS_FEATURE = 'mercmode_default_mods'   # worker feature: its mercmode tool takes default_mods (per-title build)
 SKIN_FEATURE = 'mercmode_skin_swap'              # worker feature: its mercmode tool takes skin_swap
-REPEAT_QUEUE_FEATURE = 'mercmode_repeat_queue'   # repeat a configured build/roster playlist without consuming it
 COOP_RATIOS = ('off', '1:1', '2:1', '3:1', '4:1', '5:1', '6:1', '8:1', '10:1', 'only')   # co-op : solo turns
 COOP_MAPS = frozenset({'010018100CD46000', '01002A000CD48000'})   # RE5 / RE6 Switch: split screen (switch_team)
 # Warm pool (operator 2026-10-24: "now that there is more ram on the spark, get the swapping of mercenary modes more
@@ -156,8 +160,6 @@ def normalize(patch, current=None):
     if type(out['enabled']) is not bool or type(out['presentation_priority']) is not bool or type(out['rounds_per_title']) is not int \
             or not 1 <= out['rounds_per_title'] <= 20:
         raise ValueError('MercMode needs enabled true/false and 1..20 rounds per title')
-    if type(out['repeat_queue']) is not bool:
-        raise ValueError('MercMode repeat_queue must be true or false')
     from .mercs.stalemate import CUT_MIN_S, CUT_MAX_S
     if out['coop_ratio'] not in COOP_RATIOS:
         raise ValueError('MercMode coop_ratio is co-op : solo turns, one of ' + ', '.join(COOP_RATIOS))
@@ -174,6 +176,15 @@ def normalize(patch, current=None):
     out['queue'] = [queue_entry(e) for e in (out.get('queue') or [])]
     if len(out['queue']) > QUEUE_MAX:
         raise ValueError(f'The MercMode queue holds at most {QUEUE_MAX} rounds')
+    mods = out.get('default_mods') or {}
+    if not isinstance(mods, dict):
+        raise ValueError('MercMode default_mods maps a title to one build folder name')
+    mods = {k: v for k, v in mods.items() if v}
+    if set(mods) - set(TITLES) or any(
+            not isinstance(v, str) or not re.fullmatch(r'(?=.*[A-Za-z0-9])[A-Za-z0-9_.-]{1,64}', v)
+            for v in mods.values()):
+        raise ValueError('MercMode default_mods maps a title to one build folder name')
+    out['default_mods'] = mods
     return out
 
 
@@ -283,10 +294,7 @@ def memory_reason(worker, now=None):
 def pop_queue(store, host):
     cfg = settings(store, host)
     if cfg['queue']:
-        tail = cfg['queue'][1:]
-        if cfg['repeat_queue']:
-            tail += cfg['queue'][:1]
-        store.put(SETTING, host, cfg | {'queue': tail})
+        store.put(SETTING, host, cfg | {'queue': cfg['queue'][1:]})
 
 
 def selection_job(title, sid, selection):
@@ -1015,6 +1023,16 @@ def _picked(store, worker, row):
     return row
 
 
+def default_mod(cfg, row):
+    """The configured build for this round's title (a DJ queue `mod` for that round still wins)."""
+    mod = (cfg.get('default_mods') or {}).get(row.get('title'))
+    if not mod:
+        return row
+    selection = dict(row.get('selection') or {})
+    selection.setdefault('mod', mod)
+    return row | {'selection': selection}
+
+
 def choose(store, worker, rng, cfg=None):
     cfg = cfg or settings(store, worker['name'])
     rows = inventory(store, worker, cfg)
@@ -1023,12 +1041,14 @@ def choose(store, worker, rng, cfg=None):
         store.delete(NEXT, worker['name'])
         row = next((r for r in rows if r['playable'] and r['title'] == ahead.get('title')), None)
         if row:
-            return _picked(store, worker, row | ({'selection': ahead['selection']} if ahead.get('selection') else {})
-                           | ({'_queue_pending': True} if ahead.get('_queue_pending') else {}))
+            return _picked(store, worker, default_mod(cfg, row | ({'selection': ahead['selection']}
+                                                                  if ahead.get('selection') else {})
+                                                      | ({'_queue_pending': True} if ahead.get('_queue_pending') else {})))
     head = (cfg.get('queue') or [None])[0]
     queued = next((r for r in rows if head and r['playable'] and r['title'] == head['title']), None)
     if queued:                                   # the DJ's next round comes first, even for an unchecked title
-        return _picked(store, worker, queued | {'selection': resolve_selection(head, rng), '_queue_pending': True})
+        return _picked(store, worker, default_mod(cfg, queued | {'selection': resolve_selection(head, rng),
+                                                                 '_queue_pending': True}))
     pool = [r for r in rows if r['playable'] and r['title'] in cfg['titles']]
     history = store.get(HISTORY, worker['name']) or {}
     fresh = [r for r in pool if r['game_id'] != history.get('last_game_id')] or pool
@@ -1036,7 +1056,8 @@ def choose(store, worker, rng, cfg=None):
         return None
     picks = store.get(PICKS, worker['name']) or {}            # the rotation: the title picked longest ago (never = first)
     oldest = min(picks.get(r['title'], 0) for r in fresh)
-    return _picked(store, worker, rng.choice([r for r in fresh if picks.get(r['title'], 0) == oldest]))
+    return _picked(store, worker, default_mod(
+        cfg, rng.choice([r for r in fresh if picks.get(r['title'], 0) == oldest])))
 
 
 def successor_autoplay(run, job, original):

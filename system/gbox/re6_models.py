@@ -533,15 +533,21 @@ def _skin4_vb(P, N, UV, B, dq_inv) -> bytes:
     return v.tobytes()
 
 
-def write_body(m: Mod, prims: list[dict], material: int, mesh_id: int, draw: int, group: int = 0, data1: int | None = None) -> bytes:
+def write_body(m: Mod, prims: list[dict], material: int, mesh_id: int, draw: int, group: int = 0,
+               data1: int | None = None, dequant=None) -> bytes:
     """Replace every primitive of `m` with `prims` (pos in model space, nrm, uv (already atlas-mapped), tris, bone
     per vertex in J[:, 0]) as rigid 0xA8FAB018 primitives in all LODs with one material; recompute inverse binds,
-    bounds and envelopes."""
+    bounds and envelopes.
+
+    ``dequant`` keeps a measured quantisation transform (uniform scale + offset) instead of deriving a new one. The
+    scale-exact bind path passes the native one: the game's animations were authored against it, and a new scale would
+    reinterpret every root-motion translation. Callers then own the requirement that every position lies inside the
+    transform's unit box."""
     W = m.world()
     allp = np.concatenate([p["pos"] for p in prims])
     allb = np.concatenate([np.asarray(p["J"])[:, 0] for p in prims]).astype(int)
     lo, hi = allp.min(0) - 1.0, allp.max(0) + 1.0
-    D = _quantiser(lo, hi)
+    D = _quantiser(lo, hi) if dequant is None else np.asarray(dequant, float)
     m.inv = np.array([D @ np.linalg.inv(W[i]) for i in range(len(W))])
     Dinv = np.linalg.inv(D)
     vb, ib, new = bytearray(), [], []
@@ -574,6 +580,214 @@ def write_body(m: Mod, prims: list[dict], material: int, mesh_id: int, draw: int
     return m.serialize()
 
 
+# ------------------------------------------------------------------ scale-exact replacement (RE5 source_proportions port)
+# The segment retarget above matches each limb to the *target's* bone lengths, which necessarily rewrites the donor's
+# proportions (a 100 cm character fitted into RE6's 150-195 cm range is stretched). RE5's measured fix was the other
+# way round: keep the donor surface, scale it uniformly, and move the native bind joints to the donor's joint
+# positions ("source proportions"). Rotations, hierarchy and the quantisation transform stay native, so the game's own
+# animations still drive the mesh. This is that writer for RE6's big-endian .mod.
+
+def quantisation_box(m: "Mod") -> dict:
+    """The model-space box the native vertex encoding can represent: {scale, offset, lo, hi}."""
+    D = np.asarray(m.dequant(), float)
+    S = float(D[0, 0])
+    if not np.allclose(D[:3, :3], np.eye(3) * S, atol=1e-6 * max(1.0, abs(S))):
+        raise ValueError("the native position transform is not a uniform scale: no scale-exact fit")
+    off = np.asarray(D[3, :3], float)
+    return {"scale": S, "offset": off, "lo": off, "hi": off + S, "transform": D}
+
+
+def native_bounds(m: "Mod") -> tuple[np.ndarray, np.ndarray]:
+    """The measured bounding box stored at 0x40 (after the bounding sphere)."""
+    vals = struct.unpack(">12f", bytes(m.info[:48]))
+    return np.asarray(vals[4:7], float), np.asarray(vals[8:11], float)
+
+
+def _role_joint_resolver(rig: dict):
+    """joint -> the nearest ancestor joint that names an anatomical role (None when the chain has none)."""
+    role_of = {int(j): r for r, j in (rig.get("roles") or {}).items()}
+    parent = list(rig.get("parent") or [])
+    cache: dict[int, str | None] = {}
+
+    def resolve(joint: int) -> str | None:
+        joint = int(joint)
+        if joint in cache:
+            return cache[joint]
+        seen, cur = set(), joint
+        while cur >= 0 and cur not in role_of:
+            if cur in seen or cur >= len(parent):
+                cur = -1
+                break
+            seen.add(cur)
+            cur = parent[cur]
+        cache[joint] = role_of.get(cur) if cur >= 0 else None
+        return cache[joint]
+
+    return resolve
+
+
+def reposition_bind_pose(m: "Mod", anchors: dict[int, tuple], *, root: int = 0) -> dict:
+    """Move the native bind joints to measured model-space positions, keeping every rotation and the root.
+
+    Intermediate bones on an anchored path are placed by arc-length interpolation, so a whole limb follows its two
+    measured joints instead of leaving gaps. Inverse binds are rebuilt by :func:`write_body` from the resulting world
+    matrices with the *native* quantisation transform, so animation channels are not reinterpreted.
+    """
+    W = m.world()
+    parents = [b[1] if b[1] != 255 else -1 for b in m.bones]
+    if any(p >= i for i, p in enumerate(parents) if p >= 0):
+        raise ValueError("the native skeleton is not stored parents-first: refusing to reposition bind joints")
+    targets = {}
+    for bone, point in anchors.items():
+        bone, point = int(bone), np.asarray(point, float)
+        if not 0 <= bone < len(parents) or point.shape != (3,) or not np.isfinite(point).all():
+            raise ValueError("bind anchor references an invalid bone or position")
+        targets[bone] = point
+    if root in targets:
+        if float(np.linalg.norm(targets[root] - W[root][3, :3])) > 1e-4:
+            raise ValueError("the root bone carries absolute animation translations and must not move")
+        targets.pop(root)
+    if not targets:
+        raise ValueError("no non-root bind anchor to place")
+    intermediate: dict[int, np.ndarray] = {}
+    for bone in list(targets):
+        chain, seen, parent = [bone], {bone}, parents[bone]
+        while parent not in targets:
+            if parent < 0:
+                chain = []
+                break
+            if parent in seen:
+                raise ValueError("cyclic native skeleton parent chain")
+            seen.add(parent)
+            chain.append(parent)
+            parent = parents[parent]
+        if not chain:
+            continue
+        chain.append(parent)
+        chain.reverse()
+        distances = [0.0]
+        for a, b in zip(chain, chain[1:]):
+            distances.append(distances[-1] + float(np.linalg.norm(W[b][3, :3] - W[a][3, :3])))
+        for item, distance in zip(chain[1:-1], distances[1:-1]):
+            fraction = distance / distances[-1] if distances[-1] else 0.0
+            point = targets[parent] * (1.0 - fraction) + targets[bone] * fraction
+            if item in intermediate and float(np.linalg.norm(intermediate[item] - point)) > 1e-4:
+                raise ValueError("incompatible anchors share an unconstrained branch")
+            intermediate[item] = point
+    targets.update(intermediate)
+    local = np.array(m.local, float, copy=True)
+    world: dict[int, np.ndarray] = {}
+    for i in range(len(parents)):
+        parent = parents[i]
+        parent_world = world[parent] if parent >= 0 else np.eye(4)
+        if i in targets:
+            local[i][3, :3] = (targets[i] - parent_world[3, :3]) @ np.linalg.inv(parent_world[:3, :3])
+        world[i] = local[i] @ parent_world
+    m.local = local
+    for i, bone in enumerate(m.bones):
+        bone[5] = float(np.linalg.norm(local[i][3, :3]))
+        bone[6], bone[7], bone[8] = (float(v) for v in local[i][3, :3])
+    return {"moved_bones": sorted(int(b) for b in targets), "root_unchanged": True, "rotations_preserved": True,
+            "animation_channels_changed": False}
+
+
+def fit_source_proportions(m: "Mod", rig: dict, roles_t: dict[str, int], *, height: float = 180.0,
+                           centre_hip: bool = True, margin: float = 0.01) -> tuple[list[dict], dict]:
+    """Fit a donor's surface into the native skeleton without changing its proportions.
+
+    The donor is scaled uniformly to ``height`` (cm), centred on the hip when asked, put with its feet on the native
+    floor and its hip above the native root, then clamped inside the transform's unit box by translation and, only if
+    it cannot fit, by a further uniform reduction. Every bind joint with a role is then moved to the fitted donor's
+    joint position (:func:`reposition_bind_pose`), and every vertex is bound rigidly to the bone of its nearest named
+    ancestor. Returns ``(prims, receipt)``.
+    """
+    if not np.isfinite(height) or height <= 0:
+        raise ValueError("a scale-exact fit needs a finite positive height")
+    if not roles_t:
+        raise ValueError("a scale-exact fit needs mapped native bones")
+    prims = [p for p in (rig.get("prims") or []) if isinstance(p.get("pos"), np.ndarray) and len(p["pos"])]
+    if not prims:
+        raise ValueError("the donor rig holds no geometry")
+    P0 = np.concatenate([np.asarray(p["pos"], float) for p in prims])
+    lo, hi = P0.min(0), P0.max(0)
+    source_height = float(hi[1] - lo[1])
+    if not np.isfinite(source_height) or source_height <= 1e-6:
+        raise ValueError("the donor has no measurable height")
+    box = quantisation_box(m)
+    S = box["scale"]
+    inner_lo, inner_hi = box["lo"] + S * margin, box["hi"] - S * margin
+    joints = np.asarray(rig.get("joints"), float)
+    roles = rig.get("roles") or {}
+    if centre_hip and "hip" in roles:
+        hip = joints[int(roles["hip"])]
+        origin = np.array([hip[0], lo[1], hip[2]], float)
+    else:
+        origin = np.array([(lo[0] + hi[0]) / 2, lo[1], (lo[2] + hi[2]) / 2], float)
+    root = m.world()[0][3, :3]
+    native_lo, native_hi = native_bounds(m)
+    floor = max(float(native_lo[1]), float(inner_lo[1]))
+    # a T-posed donor can be wider than the native box even at the requested height: the fit is always uniform, so the
+    # limiting axis shrinks the whole model (recorded as height_clamped) instead of stretching it
+    source_extent = np.maximum(hi - lo, 1e-6)
+    available = np.array([inner_hi[0] - inner_lo[0], inner_hi[1] - floor, inner_hi[2] - inner_lo[2]], float)
+    s = min(float(height) / source_height, *(float(available[i] / source_extent[i]) for i in range(3)))
+    if s <= 1e-6:
+        raise ValueError("the native box cannot hold any geometry")
+    scaled = (P0 - origin) * s
+    slo, shi = scaled.min(0), scaled.max(0)
+    translate = np.array([float(root[0]), floor, float(root[2])], float)
+    for axis in (0, 2):
+        low_violation = inner_lo[axis] - (slo[axis] + translate[axis])
+        high_violation = (shi[axis] + translate[axis]) - inner_hi[axis]
+        if low_violation > 0:
+            translate[axis] += low_violation
+        elif high_violation > 0:
+            translate[axis] -= high_violation
+    fitted = (P0 - origin) * s + translate
+    flo, fhi = fitted.min(0), fitted.max(0)
+    if float(fhi[1] - flo[1]) > inner_hi[1] - inner_lo[1] + 1e-4:
+        raise ValueError("the fitted height does not fit the native quantisation box")
+    outside = float(max(np.max(box["lo"] - flo), np.max(fhi - box["hi"]), 0.0))
+    if outside > 1e-4:
+        raise ValueError(f"the fitted model leaves the native quantisation box by {outside:.3f} units")
+    anchors = {}
+    for role, bone in roles_t.items():
+        if role not in roles or int(bone) == 0:
+            continue
+        anchors[int(bone)] = tuple(float(v) for v in ((joints[int(roles[role])] - origin) * s + translate))
+    if not anchors:
+        raise ValueError("no role maps onto a movable native bone (only the root is mapped)")
+    receipt = reposition_bind_pose(m, anchors)
+    resolve = _role_joint_resolver(rig)
+    out = []
+    unmapped = 0
+    for prim in prims:
+        pos = (np.asarray(prim["pos"], float) - origin) * s + translate
+        owner = np.asarray(prim.get("owner", np.zeros(len(pos))), int)
+        bones = np.zeros(len(pos), int)
+        for joint in np.unique(owner):
+            role = resolve(int(joint))
+            bone = int(roles_t.get(role, 0)) if role else 0
+            bones[owner == joint] = bone
+            unmapped += int(0 if bone else (owner == joint).sum())
+        out.append(prim | {"pos": pos, "J": bones.reshape(-1, 1)})
+    world = m.world()
+    targets = np.asarray([world[int(b)][3, :3] for b in sorted(set(int(b) for b in roles_t.values() if int(b) < len(world)))])
+    fitted0 = np.concatenate([p["pos"] for p in out])
+    return out, {
+        "pose_mode": "source_proportions",
+        "source_height": source_height, "requested_height": float(height), "fitted_height": float(fhi[1] - flo[1]),
+        "uniform_scale": s, "height_clamped": bool(abs(s * source_height - height) > 1e-4),
+        "centre_hip": bool(centre_hip), "origin": [float(v) for v in origin],
+        "translate": [float(v) for v in translate], "quantisation": {"scale": S, "offset": [float(v) for v in box["lo"]]},
+        "box_usage": float(np.max(fitted0.max(0) - fitted0.min(0)) / S),
+        "native_bounds": {"min": native_bounds(m)[0].tolist(), "max": native_hi.tolist()},
+        "proportion_error": float(abs((fhi[1] - flo[1]) / float(height) - 1.0)),
+        "unmapped_vertices": unmapped, "bind": receipt, "bone_targets": targets.tolist(),
+        "live_verified": False,
+    }
+
+
 def blank_part(m: Mod) -> bytes:
     """Hide a part model (head, hands): one degenerate triangle on bone 0, everything else removed."""
     W = m.world()
@@ -598,11 +812,26 @@ def solid_tex(rgb, size: int = 128) -> bytes:
 
 
 def build_swap(base: Path, model: Path, roles: dict, char: str = "leon", costume: str | None = None,
-               slug: str = "swap", preview: Path | None = None, scale: dict | None = None) -> dict:
+               slug: str = "swap", preview: Path | None = None, scale: dict | None = None,
+               pose_mode: str = "segment", height: float = 180.0, centre_hip: bool = True) -> dict:
     """A collection character (glTF + body roles) as an RE6 player: returns {"files": {disc path: bytes}, ...}.
     Body .mod = the retargeted model (rigid, on the character's own skeleton, so every animation drives it);
     head / hands = hidden; the body material's colour / normal / mask textures -> new gbox textures (every damage
-    state's .mrl). Nothing in the original arcs is written: the result is new arc files for a mod folder."""
+    state's .mrl). Nothing in the original arcs is written: the result is new arc files for a mod folder.
+
+    ``pose_mode='segment'`` (default) fits each limb to the native bone lengths. ``'source_proportions'`` keeps the
+    donor's own proportions and moves the native bind joints instead (:func:`fit_source_proportions`), which is the
+    measured fix for a donor that the segment fit stretched."""
+    if pose_mode not in ("segment", "source_proportions"):
+        raise ValueError("pose_mode must be 'segment' or 'source_proportions'")
+    options = dict(scale or {})
+    pose_mode = str(options.get("pose") or pose_mode)
+    if pose_mode not in ("segment", "source_proportions"):
+        raise ValueError("pose must be 'segment' or 'source_proportions'")
+    if options.get("height") is not None:
+        height = float(options["height"])
+    if options.get("centre_hip") is not None:
+        centre_hip = bool(options["centre_hip"])
     from . import characters as C
     from .re4gc_enemies import retarget
     c = CHARACTERS[char]
@@ -615,28 +844,33 @@ def build_swap(base: Path, model: Path, roles: dict, char: str = "leon", costume
     body_arc = arcs[body_stem]
     body_name = parts[body_stem]["mod"]
     body = Mod(body_arc.get(body_arc.find(body_name, "mod")))
+    native_dequant = quantisation_box(body)["transform"] if pose_mode == "source_proportions" else None
     rig = C.rig_from_gltf(Path(model), roles)
     roles_t = role_indices(body)
     missing = [r for r in ("pelvis", "hip", "chest", "neck", "head", "l_upper", "l_fore", "l_hand", "r_upper", "r_fore",
                            "r_hand", "l_thigh", "l_shin", "l_foot", "r_thigh", "r_shin", "r_foot") if r not in roles_t]
     if missing:
         raise ValueError(f"{char} {costume}: skeleton lacks {missing}")
-    prims = retarget(rig, _Tmpl(body), roles_t, height_range=(150.0, 195.0), scale=scale)
-    # big-headed characters (Mario, chibi models): the head is fitted on the head bone and rises far above a human
-    # head (the camera then sits inside it). Shrink the head bone's vertices toward the bone until the top is at
-    # ~1.85 m; joints stay where they are.
-    Wb = body.world()
-    hb = roles_t["head"]
-    hp = Wb[hb][3, :3]
-    top = max(float(np.asarray(p["pos"])[:, 1].max()) for p in prims)
-    if top > 190.0:
-        k = max(0.35, (185.0 - hp[1]) / max(top - hp[1], 1e-3))
-        for p in prims:
-            sel = np.asarray(p["J"])[:, 0] == hb
-            if sel.any():
-                P = np.asarray(p["pos"], float)
-                P[sel] = hp + (P[sel] - hp) * k
-                p["pos"] = P
+    fit = None
+    if pose_mode == "source_proportions":
+        prims, fit = fit_source_proportions(body, rig, roles_t, height=height, centre_hip=centre_hip)
+    else:
+        prims = retarget(rig, _Tmpl(body), roles_t, height_range=(150.0, 195.0), scale=scale)
+        # big-headed characters (Mario, chibi models): the head is fitted on the head bone and rises far above a human
+        # head (the camera then sits inside it). Shrink the head bone's vertices toward the bone until the top is at
+        # ~1.85 m; joints stay where they are.
+        Wb = body.world()
+        hb = roles_t["head"]
+        hp = Wb[hb][3, :3]
+        top = max(float(np.asarray(p["pos"])[:, 1].max()) for p in prims)
+        if top > 190.0:
+            k = max(0.35, (185.0 - hp[1]) / max(top - hp[1], 1e-3))
+            for p in prims:
+                sel = np.asarray(p["J"])[:, 0] == hb
+                if sel.any():
+                    P = np.asarray(p["pos"], float)
+                    P[sel] = hp + (P[sel] - hp) * k
+                    p["pos"] = P
     atlas = _pack(prims)
     vis = [p for p in body.prims if p["fmt"] == SKIN4 and Mod.pflags(p)["lod"] == 1 and Mod.pflags(p)["group"] == 0
            and p["draw"] == 65015] or [p for p in body.prims if p["fmt"] not in EDGE_FORMATS]
@@ -686,7 +920,7 @@ def build_swap(base: Path, model: Path, roles: dict, char: str = "leon", costume
     if not patched:
         notes.append(f"no .mrl with material {mat_hash:08x} found: the model draws with {c['name']}'s textures")
     body_bytes = write_body(body, prims, mat, main["mesh_id"], main["draw"], Mod.pflags(main)["group"],
-                            main["data1"] if main["fmt"] == SKIN4 else None)
+                            main["data1"] if main["fmt"] == SKIN4 else None, dequant=native_dequant)
     body_arc.put(body_name, "mod", body_bytes)
     files[f"nativeXenon/arc/X360/{body_stem}.arc"] = body_arc.build()
     for stem, info in parts.items():
@@ -697,7 +931,8 @@ def build_swap(base: Path, model: Path, roles: dict, char: str = "leon", costume
         files[f"nativeXenon/arc/X360/{stem}.arc"] = a.build()
     out = {"files": files, "character": char, "costume": costume, "triangles": int(sum(len(p["tris"]) for p in prims)),
            "vertices": int(sum(len(p["pos"]) for p in prims)), "material": f"{mat_hash:08x}", "mrl_patched": patched,
-           "hidden_parts": [s for s in parts if s != body_stem], "notes": notes}
+           "hidden_parts": [s for s in parts if s != body_stem], "notes": notes,
+           "pose_mode": pose_mode, "fit": fit}
     if preview is not None:                               # what was written, read back through the reader
         from .melee_models import write_gltf
         chk = Mod(body_bytes)

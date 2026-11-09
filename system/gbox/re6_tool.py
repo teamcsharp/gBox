@@ -26,6 +26,11 @@ ops (live ones need session_id of a running RE6 session):
   catalog                     the item list (names from the disc)
   capabilities                character writer support and limits (no session needed)
   build_mod character=<library name> [target=leon costume=]   character swap mod (no launch)
+  cast [cast=sonic,mario] [seed=] [pose=source_proportions] [height=180] [launch=true] [per_costume=true]
+                              one mod with a different collection character on every RE6 player slot (or every costume,
+                              per_costume=true: up to 44 characters in one mod); the game's own Mercenaries character
+                              and costume randomisation then rotates the cast every round (cast_plan previews,
+                              cast_status reads an installed roster)
   mods                        RE6 mods built on this node
 """
 from __future__ import annotations
@@ -159,6 +164,14 @@ def fetch_model(ctx, meta: dict) -> Path:
     return m
 
 
+def cast_slots(game: dict | None = None) -> list[dict]:
+    """The native player slots a collection character can replace, for the coverage matrix and cast_swap."""
+    from . import re6_models as M
+    return [{"slot": target, "name": M.CHARACTERS[target]["name"], "kind": "player",
+             "writer": "re6_models.build_swap", "costumes": list(M.CHARACTERS[target]["costumes"])}
+            for target in M.CHARACTERS]
+
+
 def character_capabilities() -> dict:
     """Static writer capabilities, without starting a watcher or inspecting a running game."""
     from . import re6_models as M
@@ -166,6 +179,15 @@ def character_capabilities() -> dict:
             "character_replacement": {"build_mod": True, "relaunch": True, "requires_relaunch": True,
                                       "realtime": False, "active_target_detection": False,
                                       "animation_retarget": False, "binding": "rigid geometry on the native skeleton",
+                                      "pose_modes": ["segment", "source_proportions"],
+                                      "pose_default": "segment",
+                                      "scale_exact": {"mode": "source_proportions",
+                                                      "what": "donor surface preserved, native bind joints moved; "
+                                                              "height in cm, centred on the hip"},
+                                      "cast_roster": {"op": "cast", "slots": list(M.CHARACTERS),
+                                                      "rotation": "RE6's own Mercenaries character select (one cast "
+                                                                  "member per native slot, rotated every round)",
+                                                      "per_round_relaunch": False},
                                       "targets": [{"id": k, "name": v["name"], "costumes": list(v["costumes"])}
                                                   for k, v in M.CHARACTERS.items()]},
             "unsupported_platforms": ["pc", "ps3", "ps4"],
@@ -255,6 +277,84 @@ def build_character(ctx, meta: dict, target: str = "leon", costume: str = "", pr
     return res | {"target": target, "costumes": costumes, "requires_relaunch": True, "realtime": False,
                   "fit_key": _fit_key(meta), "triangles": report[0]["triangles"],
                   "hidden": report[0]["hidden_parts"], "notes": sorted({n for r in report for n in r["notes"]}), "preview": prev}
+
+
+def cast_op(ctx, inp) -> dict:
+    """Plan, build or report the RE6 cast roster (`cast` / `cast_plan` / `cast_status`)."""
+    from . import characters as C, re6_cast as R
+    op = inp.op
+    name = inp.name or R.DEFAULT_NAME
+    if op == "cast_status":
+        meta_path = mod_dir(ctx.config, name) / ".gbox-mod.json"
+        if not meta_path.is_file():
+            return {"mod": name, "installed": False,
+                    "message": f"no {name} mod on this node: build it with re6 op=cast first"}
+        meta = json.loads(meta_path.read_text())
+        return {"mod": name, "installed": True, "assignment": meta.get("assignment") or {},
+                "rotation": meta.get("rotation") or [], "pose": meta.get("pose"),
+                "message": "the round's native character selects the cast member (see rotation)"}
+    cols = C._api(ctx, "GET", "/api/characters")
+    try:                                               # a model extracted on this node and not yet delivered still casts
+        local = C.list_all(C.library_root(ctx.config))
+    except Exception:                                  # noqa: BLE001 - no local library is normal
+        local = []
+    seen = {m.get("slug") for m in cols}
+    cols = list(cols) + [m for m in local if m.get("slug") not in seen]
+    slugs = [str(s) for s in (inp.cast or []) if str(s).strip()]
+    try:
+        if getattr(inp, "per_costume", False):
+            assignment = R.plan_per_costume(cols, seed=inp.seed)
+        else:
+            assignment = (R.plan_from_slugs(cols, slugs, seed=inp.seed) if slugs else R.plan(cols, seed=inp.seed))
+    except R.CastError as exc:
+        raise ValueError(str(exc)) from None
+    plan = {"mod": name, "pose": inp.pose or R.POSE, "height": float(inp.height or 180.0),
+            "per_costume": bool(getattr(inp, "per_costume", False)),
+            "rotation": R.rotation(assignment), "description": R.describe(assignment)}
+    if getattr(inp, "per_costume", False):
+        plan["costume_rotation"] = R.costume_rotation(assignment)
+        plan["characters"] = len({m["slug"] for v in assignment.values() for m in v.values()})
+    assignment_rows = ({t: {c: {"slug": m["slug"], "name": m["name"]} for c, m in v.items()}
+                        for t, v in assignment.items()}
+                       if getattr(inp, "per_costume", False) else
+                       {t: {"slug": m["slug"], "name": m["name"]} for t, m in assignment.items()})
+    if op == "cast_plan":
+        return plan | {"assignment": assignment_rows}
+    if C.HOST_OS != "windows":                       # the extracted disc and Xenia live on the Windows node
+        w = next((x["id"] for x in C._api(ctx, "GET", "/api/workers")
+                  if x.get("os") == "windows" and x.get("online")), None)
+        if not w:
+            raise Unsupported("no Windows node online to build the RE6 cast roster on")
+        j = C._job(ctx, "re6", {"op": "cast", "cast": slugs, "seed": inp.seed, "pose": inp.pose,
+                                "height": inp.height, "name": name, "launch": inp.launch,
+                                "per_costume": getattr(inp, "per_costume", False)}, w, 3600)
+        return (j.get("output") or {}).get("result") or {"status": j.get("state"), "error": j.get("error")}
+    roster = R.build(ctx, base(ctx.config, ctx.progress), assignment, name=name,
+                     height=float(inp.height or 180.0), progress=ctx.progress)
+    out = plan | {"assignment": assignment_rows,
+                  "slots": roster["slots"], "files": roster["files"], "build": roster["build"],
+                  "mercmode": {"default_mods": {"re6": name},
+                               "how": "POST /api/mercmode with {host: <this PC>, default_mods: {re6: " + name + "}} "
+                                      "to play every RE6 MercMode round with this roster"},
+                  "message": f"Built {name}: {plan['description']}. The Mercenaries character you pick each round shows "
+                             f"the cast member assigned to it."}
+    if getattr(inp, "per_costume", False):
+        out["characters"] = roster["characters"]
+        out["characters_shown"] = roster["characters_shown"]
+    if getattr(inp, "mercmode_default", False) or getattr(inp, "host", ""):
+        try:
+            host = getattr(inp, "host", "") or next(
+                (x.get("name") for x in C._api(ctx, "GET", "/api/workers")
+                 if inp.session_id and x.get("id") == inp.session_id.split("-")[0]), "")
+            if not host:
+                raise ValueError("name the PC with host=<name> to set its MercMode default build")
+            C._api(ctx, "POST", "/api/mercmode", json={"host": host, "default_mods": {"re6": name}})
+            out["mercmode"] |= {"applied_to": host}
+        except Exception as exc:                       # noqa: BLE001 - the build is the product; the setting is a hint
+            out["mercmode"]["error"] = str(exc)
+    if inp.launch:
+        out |= _launch_mod(ctx, re6.GAME_ID, name, inp)
+    return out
 
 
 def use(ctx, meta: dict, game: dict, inp) -> dict:
@@ -1208,6 +1308,13 @@ class Re6In(BaseModel):
     player: str = ""            # replace_enemies: also play as this collection character (Leon's slot)
     launch: bool = True         # replace_enemies: launch RE6 with the mod (replaces the running RE6)
     seed: int | None = None
+    cast: list = []             # cast: collection slugs, in slot order (default: the whole collection, shuffled)
+    pose: str = ""              # cast: source_proportions (default) | segment
+    height: float = 180.0       # cast: fitted height in cm
+    name: str = ""              # cast: mod folder name (default re6_smash_roster)
+    host: str = ""              # cast: the PC whose MercMode should play every RE6 round with the roster
+    mercmode_default: bool = False   # cast: set default_mods.re6 on that PC's MercMode
+    per_costume: bool = False   # cast: a different character on every costume of every slot (one mod, ~44 cast members)
 
 
 class Re6Out(BaseModel):
@@ -1271,6 +1378,8 @@ def re6_tool(inp: Re6In, ctx):
         if not meta:
             raise ValueError(f"{inp.character!r} isn't in the collection")
         return {"result": build_character(ctx, meta, inp.target, inp.costume, ctx.progress, scale=inp.scale)}
+    if op in ("cast", "cast_plan", "cast_status"):
+        return {"result": cast_op(ctx, inp)}
     if op == "loadout_set":
         op = "set_loadout"
     if op == "weapon_classes":

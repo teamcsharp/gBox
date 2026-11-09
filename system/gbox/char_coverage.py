@@ -34,7 +34,11 @@ WRITERS = [
     ("gta_vc_swap", ["player", "ped:<dff name>", "peds:all", "all"],
      "Tommy (player.dff/.txd), one ped or every ped on his skeleton in a rebuilt models/gta3.img (classic RenderWare PC "
      "port only; the owned install is the UE4 Definitive Edition, which use() detects and reports as a gap)"),
-    ("re6_tool", ["player", "enemies", "enemy:<family>"], "Leon in every costume; zombies / J'avo"),
+    ("re6_tool", ["player", "enemies", "enemy:<family>"],
+     "Leon, Helena, Chris, Piers, Jake, Sherry and Ada in every costume (one mod per slot, or a full cast roster that "
+     "rides the native Mercenaries character/costume rotation: re6 op=cast; per_costume=true puts a different "
+     "character on every costume, up to 44 per mod); zombies / J'avo. pose=source_proportions keeps a donor's own "
+     "proportions instead of stretching it to the native bone lengths"),
     ("metal_arms", ["player", "npc", "enemy"], "Glitch; any bot (picked on screen)"),
     ("aki_wrestling", ["<wrestler>", "player"], "any wrestler (several per ROM: op=match); No Mercy USA, "
                                                 "World Tour USA and Revenge USA (gbox.aki_wcw)"),

@@ -1750,6 +1750,7 @@ class MercModeSettings(BaseModel):
     coop_ratio: str | None = None               # co-op : solo turns on RE5 / RE6 Switch (off, 1:1 ... 6:1 ..., only)
     skin_swap: str | None = None                # off | random: each round plays a character with another's skin
     cast_swap: str | None = None                # off | on: the zombies wear cast models and the player wears majini clothes
+    default_mods: dict | None = None            # per-title build every round plays with, e.g. {"re6": "re6_smash_roster"}
     # gbox.re_switch: e.g. {"re5": {"platform": "switch", "mode": "no_mercy", "title_id": "010018100CD46000"}}; {} = the
     # native editions. Missing here, the field was dropped silently (the mercmode tool and MCP posted it) - 2026-10-26.
     preferred_editions: dict | None = None
@@ -1976,6 +1977,7 @@ def install(app, store, config, auth, submit, workers, archive):
                        and (k not in mercmode.STALEMATE_KEYS or mercmode.STALEMATE_FEATURE in features)
                        and (k != 'coop_ratio' or mercmode.COOP_FEATURE in features)
                        and (k != 'cast_swap' or mercmode.CAST_FEATURE in features)     # older tools forbid it
+                       and (k != 'default_mods' or mercmode.DEFAULT_MODS_FEATURE in features)   # ... and this one
                        and (k != 'skin_swap' or mercmode.SKIN_FEATURE in features)     # ... and these two
                        and (k != 'repeat_queue' or mercmode.REPEAT_QUEUE_FEATURE in features)
                        and not (k=='preferred_editions' and not v)}      # unset: never sent to a worker that lacks it
