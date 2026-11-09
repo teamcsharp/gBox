@@ -204,15 +204,23 @@ def test_the_switch_bot_offers_enemy_and_spot_goals_and_goes_for_the_marked_enem
     flat = lambda e: math.hypot(e['pos'][0], e['pos'][2])
     marked = {'slot': 3, 'ptr': 0xA0, 'pos': (0., 0., 4000.), 'hp': 800}
     close = {'slot': 4, 'ptr': 0xA1, 'pos': (300., 0., 0.), 'hp': 800}                   # another, right beside him
+    far = {'slot': 5, 'ptr': 0xA2, 'pos': (900., 0., 0.), 'hp': 800}                     # another, 9 m off
     snap = {'player': p, 'enemies': [marked, close]}
     assert bot._operator_goal(p, snap, [marked, close], flat, 5.0) is None               # no mark: his own play
     mark(bot, 'enemy', entity_id=3, pos=[0, 0, 4000])
     assert bot.stats['map_goals_taken'] == 1
     act = bot._operator_goal(p, snap, [marked, close], flat, 5.1)
-    assert act['hold'][:2] == ('lup', 'b') and "operator's target 40 m" in bot.why       # 40 m off: to him at a run
+    assert act == {'hold': ('zl', 'zr')} and bot.fought == [[0xA1]]                    # the one beside him first
+    assert 'fighting through' in bot.why and bot._goals().public()['state'] == 'deferred'
+    bot.fought.clear()
+    act = bot._operator_goal(p, dict(snap, enemies=[marked, far]), [marked, far], flat, 5.15)
+    assert act['hold'][:2] == ('lup', 'b') and "operator's target 40 m" in bot.why       # 9 m off is not in the way
     assert bot.fought == []
     near = dict(marked, pos=(0., 0., 900.))
     act = bot._operator_goal(p, dict(snap, enemies=[near, close]), [near, close], flat, 5.2)
+    assert act == {'hold': ('zl', 'zr')} and bot.fought == [[0xA1]]                    # the one beside him still first
+    bot.fought.clear()
+    act = bot._operator_goal(p, dict(snap, enemies=[near]), [near], flat, 5.25)
     assert act == {'hold': ('zl', 'zr')} and bot.fought == [[0xA0]] and bot.target == 0xA0   # the fight, on him alone
     dead = dict(near, hp=0)
     assert bot._operator_goal(p, dict(snap, enemies=[dead, close]), [close], flat, 5.3) is None   # down: his own play
@@ -227,7 +235,8 @@ def test_a_marked_spot_is_run_to_and_then_he_plays_on_by_himself():
     act = bot._operator_goal(p, {'player': p, 'enemies': []}, [], flat, 5.1)
     assert act['hold'][:2] == ('lup', 'b') and "operator's spot" in bot.why
     grabber = {'slot': 4, 'ptr': 0xA1, 'pos': (100., 0., 100.), 'hp': 800}
-    assert bot._operator_goal(p, {'player': p, 'enemies': [grabber]}, [grabber], flat, 5.2) is None   # one at arm's length
+    act = bot._operator_goal(p, {'player': p, 'enemies': [grabber]}, [grabber], flat, 5.2)
+    assert act == {'hold': ('zl', 'zr')} and bot.fought == [[0xA1]]                    # one at arm's length: fought
     assert bot._goals().public()['state'] == 'deferred'
     there = dict(p, pos=(50., 0., 2900.))
     assert bot._operator_goal(there, {'player': there, 'enemies': []}, [], flat, 5.3) is None

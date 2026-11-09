@@ -1027,7 +1027,10 @@ STAND_BUSY = frozenset({"held", "heal", "mine", "prompt", "dead", "flashbang", "
 # GOAL_FIRE_R with open floor between them, then the fight on him alone until he is down. A marked spot: by the
 # mesh at a run until he stands on it; only a Majini within GOAL_THREAT_R is fought on the way. Then his own play
 # again. stats map_goal_status, map_goals_taken, map_goal_fight_ticks, map_goal_walk_ticks.
-MAP_GOALS, GOAL_FIRE_R, GOAL_THREAT_R = True, 1500.0, 200.0
+# ... and the way there is fought (operator 2026-11-09: "click on an enemy on the other side of the map and the bot
+# fights their way over to dispatching that target"): anyone on his floor within GOAL_FIGHT_R, or at arm's length
+# (GOAL_THREAT_R) on any floor, is dispatched first, then he goes on; the mark stays until the marked one is down.
+MAP_GOALS, GOAL_FIRE_R, GOAL_THREAT_R, GOAL_FIGHT_R = True, 1500.0, 200.0, 600.0
 # Mines are not negotiable (operator 2026-11-09: "I want it placing mines. Then flashbanging and running away and
 # getting distance ... have him force his way out"). MINE_FLASH: the native flash (the GRENADES knob's own, no item
 # screen) goes off the moment a bomb of his is confirmed down, so the crowd reels while he runs out to the standoff;
@@ -4365,10 +4368,16 @@ class Bot:
             g.defer("Finishing the bomb in his hand first")
             return None
         px, py, pz = p["pos"]
+        marked = row.get("ptr", row.get("slot")) if "hp" in row else None
+        near = [e for e in live if e.get("ptr", e.get("slot")) != marked
+                and ((flat(e) <= GOAL_FIGHT_R and abs(e["pos"][1] - py) <= LEVEL_DY) or flat(e) <= GOAL_THREAT_R)]
+        if near:                                             # the way there is fought
+            g.defer(f"Fighting through {len(near)} on the way")
+            self.stats["map_goal_fight_ticks"] = self.stats.get("map_goal_fight_ticks", 0) + 1
+            act = self._decide(p, near, flat, min(near, key=flat), min(flat(e) for e in near), snap, now)
+            self.why = "the operator's mark, fighting through: " + str(self.why)
+            return act
         if "hp" not in row:                                  # a spot on the map
-            if any(flat(e) <= GOAL_THREAT_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in live):
-                g.defer("A Majini at arm's length first")
-                return None
             gx, _gy, gz = row["pos"]
             if g.goal.get("floor_y") is None:
                 g.goal["floor_y"] = self._floor_y(gx, gz, py)

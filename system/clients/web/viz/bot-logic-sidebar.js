@@ -16,7 +16,9 @@
     // turning and aiming speed (operator 2026-10-28: "He is getting decimated by trying to swing around the gun all slow")
     if (title === "re5") return (RE5?.DEFINITIONS || [])
       .map(d => ({ ...d, kind: d.multiplier ? "float" : "bool", ...(d.op === "fire_rate" ? { min: 1, max: 80, step: 1 } : {}),
-        ...(d.op === "turn_speed" ? { min: 1, max: 10, step: 0.5 } : {}) }));
+        ...(d.op === "turn_speed" ? { min: 1, max: 10, step: 0.5 } : {}),
+        // operator 2026-11-09: "I need the parameter to specify how much time is added per kill" - the seconds beside the switch
+        ...(d.op === "kill_time" ? { seconds: { min: d.min ?? 0.1, max: d.max ?? 30, step: d.step ?? 0.1, field: "kill_time_s", fallback: 5 } } : {}) }));
     if (title === "re6") return [...(RE6?.TOGGLES || []).map(d => ({ ...d, kind: "bool" })),
       ...(RE6?.MULTIPLIERS || []).map(d => ({ ...d, kind: "float", step: 0.5 }))];
     return [];
@@ -63,8 +65,13 @@
       const input = d.kind === "bool"
         ? `<input type="checkbox" data-bl-mod="${ESC(d.op)}"${value === true ? " checked" : ""} ${scope}${disabled}>`
         : `<input type="number" data-bl-mod="${ESC(d.op)}" min="${d.min}" max="${d.max}" step="${d.step}" value="${ok ? value : ""}" aria-label="${ESC(d.label)} multiplier" ${scope}${disabled}>`;
+      const secs = d.seconds ? (typeof state.status?.[d.seconds.field] === "number" && state.status[d.seconds.field] > 0
+        ? state.status[d.seconds.field] : d.seconds.fallback) : null;
+      const seconds = d.seconds ? `<label class="bl-row bl-seconds"><span>Seconds added per kill</span>`
+        + `<input type="number" data-bl-mod-seconds="${ESC(d.op)}" min="${d.seconds.min}" max="${d.seconds.max}" step="${d.seconds.step}" `
+        + `value="${ok ? secs : ""}" aria-label="${ESC(d.label)}: seconds per kill" ${scope}${disabled}></label>` : "";
       return `<label class="bl-row"><span>${ESC(d.label)}${d.kind === "float" ? " ×" : ""}</span>${input}`
-        + (reason ? `<small>${ESC(reason)}</small>` : "") + `</label>`;
+        + (reason ? `<small>${ESC(reason)}</small>` : "") + `</label>` + seconds;
     }).join("");
     const groups = {};
     for (const k of view?.knobs || []) (groups[k.group] = groups[k.group] || []).push(k);
@@ -109,6 +116,7 @@
         const el = e.target, data = el?.dataset || {}, value = el?.type === "checkbox" ? el.checked : el?.value;
         if (data.bl) set(data.bl, value, data.blScope);
         if (data.blMod) setMod(data.blMod, value, data.blScope);
+        if (data.blModSeconds) setModSeconds(data.blModSeconds, value, data.blScope);
         if ("blWeapon" in data && value !== "") equip(Number(value), data.blScope);
       });
       panel.addEventListener("input", e => { const n = e.target?.dataset?.bl; const o = n && panel.querySelector(`[data-bl-out="${n}"]`); if (o) o.textContent = e.target.value; });
@@ -224,6 +232,23 @@
         await validate(bound);
         s.status = mods(out.status || await job(bound, s, "status"));
         confirmValue(d, modValue(s.status, d), v);
+      }, scope);
+    }
+    function setModSeconds(op, value, scope = target?.scope) {
+      // the seconds per kill: sets them and switches the mod on (the worker keeps them while it is off)
+      return act(async (bound, s) => {
+        const d = definitions(bound.title).find(row => row.op === op);
+        if (!d?.seconds || !available(bound.title, s.status, d)) throw new Error("That mod is unavailable for the current game.");
+        const n = typeof value === "number" || typeof value === "string" && value.trim() ? Number(value) : NaN;
+        if (!Number.isFinite(n) || n < d.seconds.min || n > d.seconds.max)
+          throw new Error(`${d.label} must be ${d.seconds.min}–${d.seconds.max} seconds.`);
+        const out = await job(bound, s, op, { on: true, seconds: n });
+        verified(out);
+        await validate(bound);
+        s.status = mods(out.status || await job(bound, s, "status"));
+        const actual = s.status?.[d.seconds.field];
+        if (typeof actual !== "number" || Math.abs(actual - n) > 0.0001)
+          throw new Error(`${d.label} was not confirmed by the current settings. Refresh to check its value.`);
       }, scope);
     }
     function equip(id, scope = target?.scope) {
