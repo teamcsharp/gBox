@@ -182,6 +182,18 @@ This makes the **target archive** the next identification problem: `uEm10` is no
 route already names `uEm10/uEm11/uEm21/uEm62`; the same Sonic-patched donor pair must be applied to the archive the
 visible enemy actually uses.
 
+### The visible Public Assembly Majini is `uEm11` / `em1101`
+
+Patching `uEm11.arc`’s **`em1101`** MOD in place (own MRL, own table, level 6) with either:
+* one part (51 Sonic triangles), or
+* every LOD0 part,
+
+boots to the title and then stops at **`NOW LOADING`**. Patching `uEm10`’s `em1001_low` by the same method plays a round
+but leaves the visible Majini unchanged.
+
+That is the identification: the camera-visible Public Assembly enemy is **`uEm11` / `em1101`**, and it shares the low
+model’s strict geometry path. The next import target is `em1101`, not `em1000_low`.
+
 ![Donor-pair round with the one-part Sonic patch; enemies remain the donor variant](evidence/re5-donor-sonic-patch-enemies.jpg)
 
 The MRL tail is not opaque noise. Its first words are a header
