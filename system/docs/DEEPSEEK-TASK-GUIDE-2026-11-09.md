@@ -11,6 +11,70 @@ reading wins.
 
 ---
 
+## 0. Update, 2026-11-09 19:30 UTC (main at `c5972da2`): read this before §2
+
+Section 2 was written an hour earlier. Since then:
+
+**The operator added four requirements (their words)**
+- "It is important that they dispatch a foe every 3 seconds and never fail at it. The mode is a ballet and it's
+  important to never ever lose the combo. Have the bot understanding the combo and the amount of time left in it at all
+  times and manage it."
+- "The bot should never stand still. The bot needs to pursue the enemy dots and navigate to and dispatch them."
+- "As the bot is walking the level without enemies around, they need to be placing mines as they are navigating to the
+  enemies to dispatch them."
+- "If I click on an enemy on the map, I want the bot to navigate to that enemy and dispatch [it] ... ASAP no matter
+  what. Anywhere I double click on the map, I want the bot navigating to that area. And then if I just leave it, they
+  just take control and just go back to whatever they were doing."
+
+**What changed in the RE5 Switch bot (live on lilspark; commits `5b266f48`, `ea7920cf`, `1db47626`, `7211ca76`)**
+- The combo is a clock: `doctrine.KILL_PACE_S = 3`, `doctrine.combo_left(snap)`. The push for the quickest kill starts
+  3 s after a kill (was with 3 s left of 10); with nobody in reach the pursuit starts at once and runs by the mesh.
+  New stats: `combo_left_s`, `combo_since_kill_s`.
+- Time bonuses wait while any enemy is alive, unless the clock is under 120 s or he is passing the statue.
+  Before: 36 bonus runs for 1 statue in a round, 0 pursuits.
+- A due bomb that is blocked no longer runs him "to a clear placement site"; a quiet bomb only moves him after he has
+  stood beside it 4 s; plants are timed to the window right after a kill; a bomb laid with nobody within 20 m needs no
+  run out (`mine_trail_plants`).
+- Mesh routes take ladders and drops (`MESH_LINKS`: at a link's foot he pushes on through, the prompt rule presses; a
+  link that never lets him through is left out of later routes). The mesh guard follows the route instead of turning
+  him away from its corners (`MESH_FOLLOW`). That fight between the two rules was the standing the operator watched:
+  245 guard steers in 8 s, a target 30 m off for 80 s.
+- Map goals: `POST /api/autoplay/tactical/{sid}/goal` takes `{"round","stage","seq","kind":"enemy","id"}` and
+  `{"round","stage","seq","kind":"point","x","z"}`; `re5_switch.Bot._operator_goal` obeys them ahead of everything but
+  being held, dying and healing. **Seen live once**: session `0a61e625f9d844d6-c7110e927fb64024`, a Majini 19 m off and
+  3.4 m below marked at 19:24:26 UTC, the bot ran to within 11 m by the map, the enemy went down, the goal closed
+  "completed". The double-click (point) has only its unit tests. The desktop app needs a reload for the new map script.
+
+**Numbers so far, one early round after the changes (not a measurement yet)**: 80 kills in the first 85 s of play, max
+combo 48, 3 combo breaks, longest idle 27 s, `doctrine_idle_s` 45 of 85 s (the meter counts the plant and heal pauses).
+The ten-round before/after of package E and F is still to do.
+
+**Not yet seen live**: a ladder or drop actually taken by the route (`mesh_links_tried` was still 0), the bombs' combo
+timing, the double-click, the enemy mix (it loaded, but no Public Assembly round was looked at).
+
+**A trap that cost an hour: files on the Spark's share that main does not have.** `gbox/mercs/tactical.py` and
+`gbox/mercs/titles/re5_switch_nav.py` on the share were edited there on 2026-10-31 and never merged; every deploy keeps
+such files, so a change to them on main never runs. Main now carries both as they run live (`7211ca76`), and
+`tactical.py` was copied to the share by hand (backup in
+`gbox-data/deploy-backups/manual-20261109-tactical/`). Before you rely on a deployed change, compare the share's file
+with main (`ssh spark sha256sum ~/gBox/system/<path>` against `git show HEAD:system/<path> | sha256sum`), and when they
+differ, read the share's version first: it may be the newer work.
+
+**RE6 (merged `c5972da2`, offline, nothing booted)**: the colour problem is solved on paper. The `0x2B` albedo is BC3
+holding Y'CbCr; the old encoder wrote RGB where chroma belongs, which reproduces the teal quills and pink gloves of the
+live frame. `system/docs/re6-switch-handover.md` §0 has the model, the fixed roster-integrity bugs and the boot order:
+`re6sw_probe_albedo_solid` first (it also tells which body costume 1 uses), then `re6sw_sonic_leon_ycc`, then
+`re6sw_roster_mix_s15`. All are under `.scratch-merc-recovery/assets/re6/` with receipts. Package D starts there.
+The donor survey of the host library: 519 characters bind on all 18 roles, 984 with neck and clavicles optional (DOA,
+the wrestlers and the Sonic Adventure rigs are only in the second set).
+
+**Corrections to §2 and §4**: the service was restarted at 19:16 UTC, so `catalog.local_copy` and the other
+control-plane merges are live; the worker id is now `0a61e625f9d844d6`. Package E's first two bullets (routes across
+floors, pursuit until the stage is empty) have their first version in the bot: measure and finish them rather than
+start them. The plan document's §6 still mentions a six-minute round cap; there is none (`ROUND_CAP_S = 0`).
+
+---
+
 ## 1. What the operator wants (their words, 2026-11-09)
 
 - "I want mercmode and the character swapper fully assembled and working in mercmode for RE 4/5/6."

@@ -1,5 +1,9 @@
 # MercMode character replacement: where it stands and the path to finish it (2026-11-09)
 
+> **Later the same day:** the round cap this document mentions was withdrawn (`doctrine.ROUND_CAP_S = 0`; rounds end by
+> death or the kill goal), and the state has moved on. The current account is §0 of
+> [the DeepSeek task guide](DEEPSEEK-TASK-GUIDE-2026-11-09.md).
+
 For the operator, DeepSeek and any agent picking up a piece. It follows
 [the project-manager handover](PROJECT-MANAGER-HANDOVER-2026-11-09.md) and
 [the RE6 Switch handover](re6-switch-handover.md); where it disagrees with them, this is newer. Where a live reading
