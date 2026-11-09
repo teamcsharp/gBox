@@ -359,3 +359,24 @@ PM/operator can correct the plan before more is built.
    mapping entirely and should produce the real `ARC\0` files.
 5. Housekeeping: the session and game are stopped; the r2 build stays on the i9 (it is the one that reaches LOADING),
    and the extraction probes are in `.tmp/re6upd/` for the next round.
+
+## Round 10 status (2026-11-09, ~17:50 CST, main at the switch_bktr commit): BKTR tables encapsulated; payload still open
+
+1. **`gbox/switch_bktr.py` + tests** (9 tests across the three decryption modules pass): superblock offsets, the
+   relocation block (0x4000 header + bucket at 0x4000, entries **packed 0x14**), the subsection block (0x10), patch
+   region derivation, the subsection lookup and the BKTR CTR construction. That is the measured RE6 update layout,
+   now in the repository instead of only in probes.
+2. **The payload is still not decrypted, and the tests for it are now excluded rather than guessed.** What was ruled
+   out this round:
+   - the base plaintext at `virt 0x9EDBC90` is `ARC\0…` (confirmed), the patch's ciphertext at the mapped
+     `phys 0x296AAF0` does not xor to any candidate CTR keystream (16 combinations of lead bytes 0-3, ctr_val 0/1 and
+     absolute/relative/zero offset bases) — so the mapped payload is either not this file or not plain CTR;
+   - the raw bytes at every patch-region start are random (no ARC/PFS0/zlib/Yaz0 magic), so the payload is not stored
+     plaintext;
+   - no base file starts exactly on a patch-region boundary, so the regions are arbitrary ranges rather than whole
+     files — a per-file split cannot be assumed.
+3. **Consequence for the lane:** the r2 overlay (19 extracted files, invalid) is what makes START GAME proceed to
+   LOADING and then hang; a build without those files is ignored at START GAME. The next attempt should not include
+   the invalid data files: keep the update ExeFS only until the payload path is understood, or find the payload's
+   real encoding (a candidate is that the update's data area is stored with a different keyblob/CTR seed than its
+   tables, which the keystream test can settle once the right region is identified).
