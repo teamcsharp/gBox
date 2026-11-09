@@ -209,9 +209,9 @@ def test_author_body_writes_the_donor_on_the_native_skeleton():
 
     target, archive = player_pack(seed=3), make_pack(PACK_ID).build()
     donor, _names = donor_record()
-    files, receipt = M.author_body(target, archive, donor)
-    assert set(files) == {"bio4/em/{pack}.udas", "bio4/imagepackhd/01000008.pack.fen"}
-    before, after = slots_of(target), slots_of(files["bio4/em/{pack}.udas"])
+    out, (archive_name, grown), receipt = M.author_body(target, archive, donor)
+    assert archive_name == "01000008.pack.fen"
+    before, after = slots_of(target), slots_of(out)
     body, stock = A.HdBin.parse(after[M.BODY][1]), A.HdBin.parse(before[M.BODY][1])
     assert body.vertex_count == 3 * len(donor["faces"]) and body.material_count == 1 and body.bone_count == 26
     assert body.sections["bones"] == stock.sections["bones"]
@@ -221,7 +221,7 @@ def test_author_body_writes_the_donor_on_the_native_skeleton():
     table = A.Tpl.parse(after[M.BODY_TPL][1]).images
     assert len(table) == 6 and (table[5].pack_id, table[5].index, table[5].width, table[5].height) == (PACK_ID, 2, 16, 16)
     assert [(i.pack_id, i.index) for i in table[:5]] == [(PACK_ID, k) for k in range(5)]
-    pack = A.ImagePack.parse(files["bio4/imagepackhd/01000008.pack.fen"])
+    pack = A.ImagePack.parse(grown)
     assert len(pack.entries) == 3 and pack.textures()[2]["fourcc"] == "DXT5"
     assert [e[:2] for e in pack.entries[:2]] == [e[:2] for e in A.ImagePack.parse(archive).entries]
     decoded = np.asarray(Image.open(io.BytesIO(pack.entries[2][1])).convert("RGBA"), np.int32)
@@ -237,7 +237,7 @@ def test_author_body_writes_the_donor_on_the_native_skeleton():
     assert receipt["live_verified"] is False and receipt["body"]["skeleton_bytes_identical"]
     assert receipt["texture"] == {"archive": "01000008.pack.fen", "entry": 2, "table_image": 5, "width": 64,
                                   "height": 64, "format": "DXT5", "entries": 3}
-    assert A.roundtrip("pl08.udas", files["bio4/em/{pack}.udas"])["identical"]
+    assert A.roundtrip("pl08.udas", out)["identical"] and A.roundtrip(archive_name, grown)["identical"]
 
 
 def test_author_body_refuses_a_wrong_archive_image_or_skeleton():

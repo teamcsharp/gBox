@@ -258,8 +258,8 @@ def fit(vertices: list[dict], joints: dict, parents: dict, role_nodes: dict[str,
 
 
 def author_body(target: bytes, archive: bytes, donor: dict, *, image: int = 5, shrink: float = 0.1,
-                scales: dict[str, float] = SCALES) -> tuple[dict[str, bytes], dict]:
-    """A donor body on `target`'s skeleton: ({file name: bytes}, receipt) for the pack and its texture archive.
+                scales: dict[str, float] = SCALES) -> tuple[bytes, tuple[str, bytes], dict]:
+    """A donor body on `target`'s skeleton: (pack bytes, (archive file name, archive bytes), receipt).
 
     The donor surface replaces the body mesh (slot 0) as one material drawn with the donor's atlas, which is
     appended to the pack's own archive and named by table image `image` (an image only the body uses). The native
@@ -329,7 +329,7 @@ def author_body(target: bytes, archive: bytes, donor: dict, *, image: int = 5, s
                "parts_shrunk": {str(k): v for k, v in sorted(hidden.items())}, "shrink": shrink,
                "slots_replaced": changed, "other_slots_byte_identical": len(after) - len(changed),
                "live_verified": False}
-    return {f"{PACK_DIR}/{{pack}}.udas": out, f"{IMAGE_DIR}/{name}": images.build()}, receipt
+    return out, (name, images.build()), receipt
 
 
 def write_overlay(root: Path, files: dict[str, bytes], receipt: dict, sources: dict[str, bytes]) -> dict:
@@ -384,8 +384,10 @@ def main(argv=None) -> int:
         _pack, dat = A.pack_slots(target)
         archive_name = A.Tpl.parse(dat.slots[BODY_TPL][1]).images[0].archive()
         archive = (args.imagepack / archive_name).read_bytes()
-        files, receipt = author_body(target, archive, load_donor(args.source))
-        files = {name.format(pack=args.target): payload for name, payload in files.items()}
+        out, (written_name, written), receipt = author_body(target, archive, load_donor(args.source))
+        if written_name != archive_name:
+            raise ModelError("the writer grew another archive than the one that was read")
+        files = {f"{PACK_DIR}/{args.target}.udas": out, f"{IMAGE_DIR}/{written_name}": written}
         receipt |= {"target_pack": args.target, "source_sha256": sha256(args.source.read_bytes()),
                     "expect_live": args.expect}
         result = write_overlay(args.out, files, receipt, {f"{PACK_DIR}/{args.target}.udas": target,
