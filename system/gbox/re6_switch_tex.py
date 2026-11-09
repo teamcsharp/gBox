@@ -192,6 +192,73 @@ def export_textures(romfs, character: str, out_dir, *, formats=(0x2B, 0x1F, 0x19
     return written
 
 
+BODY_MATERIAL_NAMES = ("pl_cloth", "pl_cloth1", "pl_base1", "pl_base2", "pl_skin")
+
+
+def body_albedo_paths(archive) -> dict[str, list[str]]:
+    """{body material name: its `_BM` texture paths} from the archive's texture-set MRLs.
+
+    This is the body-material half of the binding: `pl_base2` -> shoes, `pl_skin` -> hands, `pl_base1` -> bottom,
+    `pl_cloth1` -> shirts, and the unnamed materials cover the vest/leather/holster sets. It lets a caller replace only
+    the albedos the body materials actually sample instead of every `_BM` in the character's texture set.
+    """
+    names = {zlib.crc32(name.encode()) ^ 0xFFFFFFFF: name for name in BODY_MATERIAL_NAMES}
+    out: dict[str, list[str]] = {}
+    for texture_set in texture_set_materials(archive):
+        for material in texture_set["materials"]:
+            name = names.get(material["name_hash"])
+            if name is None:
+                continue
+            for path in material["paths"]:
+                if path.endswith("_BM") and path not in out.get(name, []):
+                    out.setdefault(name, []).append(path)
+    return out
+
+
+def texture_set_materials(archive) -> list[dict]:
+    """Every texture-set MRL in an archive with each material's referenced texture indices.
+
+    The material record (72 bytes) carries its name hash at +8, the size of its command region at +12 and the region
+    offset at +56. Scanning that region for 32-bit values in ``1..texture_count`` yields the material's texture list in
+    table order (indices are 1-based; e.g. ``pl_skin`` -> 4,5,6,7 = hand_NM, hand_BM, pl_Blood_BM, hand_MM and
+    ``pl_cloth1`` -> 17..22 = the shirt set). A texture shared by two materials (the blood map) appears in both lists.
+    """
+    import zlib as _zlib
+
+    out = []
+    for entry in archive.entries:
+        try:
+            raw = _zlib.decompress(entry.data)
+        except _zlib.error:
+            raw = entry.data
+        if raw[:4] != b"MRL\0":
+            continue
+        magic, version, count, texture_count, shader, texture_offset, material_offset = struct.unpack_from(
+            "<4sIIIQQQ", raw)
+        paths = []
+        for index in range(texture_count):
+            offset = texture_offset + index * 88 + 24
+            paths.append(raw[offset:offset + 64].split(b"\0", 1)[0].decode("ascii", "replace"))
+        materials = []
+        for index in range(count):
+            offset = material_offset + index * 72
+            if offset + 60 > len(raw):
+                break
+            name_hash = struct.unpack_from("<I", raw, offset + 8)[0]
+            size = struct.unpack_from("<I", raw, offset + 12)[0]
+            region = struct.unpack_from("<I", raw, offset + 56)[0]
+            refs = []
+            for position in range(region, min(region + size, len(raw)) - 3, 4):
+                value = struct.unpack_from("<I", raw, position)[0]
+                if 1 <= value <= texture_count:
+                    refs.append(value - 1)
+            materials.append({"name_hash": name_hash, "region_size": size,
+                              "textures": refs, "paths": [paths[i] for i in refs]})
+        out.append({"entry": entry.name.rsplit("\\", 1)[-1], "version": version, "texture_count": texture_count,
+                    "paths": paths, "materials": materials})
+    return out
+
+
 def texture_set_mrl(archive) -> dict:
     """The material→texture MRL that every `uPlTex####_*.arc` ends with (`pl0003_0`).
 

@@ -38,6 +38,23 @@ def test_a_normal_map_decodes_to_a_normal_map():
 
 
 @needs_arc
+def test_material_texture_bindings():
+    """Each texture-set material lists its texture indices; the body materials map to their part albedos."""
+    body_arc = ROMFS / "nativeNXx64" / "arc" / "NX" / "uPlTex0010_2.arc"
+    if not body_arc.is_file():
+        pytest.skip("the body texture set is not present")
+    arc = mt_arc.parse(body_arc.read_bytes())
+    sets = X.texture_set_materials(arc)
+    row = next(material for texture_set in sets for material in texture_set["materials"]
+               if material["name_hash"] == 0x68B3D093)
+    assert row["textures"] == [3, 4, 5, 6]                       # hand NM/BM, blood, hand MM
+    body = X.body_albedo_paths(arc)
+    assert any(path.endswith("pl0010_25_shoes_BM") for path in body["pl_base2"])
+    assert any(path.endswith("pl0010_23_bottom_BM") for path in body["pl_base1"])
+    assert any(path.endswith("pl0010_24_hand_BM") for path in body["pl_skin"])
+
+
+@needs_arc
 def test_the_texture_set_mrl_lists_the_bindings():
     """Each uPlTex arc ends with an MRL v36 that names 17 texture paths - the binding the body MRL lacks."""
     arc = mt_arc.parse(ARC.read_bytes())

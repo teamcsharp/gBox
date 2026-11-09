@@ -98,9 +98,13 @@ v36 hash is exactly `crc32(name) ^ 0xFFFFFFFF` — all five match (`0x6390b116`,
 9 found where they live instead: **every `uPlTex####_*.arc` ends with its own `MRL v36` entry (`pl0003_0`)** — 10
 materials, a **17-entry texture-path table** at offset 40 (88-byte records, path at +24) and the material table at 1536.
 The paths are the full resource names (`data\chara\pl\pl0000\model\pl0000_00head_NM`, `data\chara\textures\pl_Blood_BM`,
-...), i.e. the actual material→texture binding; `re6_switch_tex.texture_set_mrl` returns it. The material command records
-(16-byte records at the per-material offsets, carrying name-hash-like values) still need their field layout decoded
-before a donor atlas can be written to the right entries. The encoder side exists:
+...), i.e. the actual material→texture binding; `re6_switch_tex.texture_set_mrl` returns it. Round 13 also decoded the
+material side: each 72-byte material record carries its name hash at +8, its command-region size at +12 and the region
+offset at +56, and the region contains the material's **1-based texture indices** in table order. Measured on
+`uPlTex0010_2.arc` (7 materials, 28 textures): `pl_skin` → 4,5,6,7 = `hand_NM`, `hand_BM`, `pl_Blood_BM`, `hand_MM`;
+`pl_base2` → shoes; `pl_base1` → bottom; `pl_cloth1` → the shirt set; and the three unnamed materials cover the
+vest/leather/holster sets. `texture_set_materials` exposes the per-material lists and `body_albedo_paths` maps the body
+material names to their `_BM` paths, so a texture step can replace exactly the albedos the body samples. The encoder side exists:
 `re6_switch_tex.replace_albedo` writes a new mip chain in the two-half layout (BC4 detail plus a flat per-tile BC1
 colour) and round-trips through a real TEX at **49.4 dB** detail PSNR, and `re6_switch_tex.export_textures` writes a
 character's whole texture set (Leon: 272 surfaces, 241 PNGs).
