@@ -11,7 +11,7 @@ import pytest
 
 from gbox.dmc1_iso import parse_pld_children, walk_dir, SECTOR
 
-RAW = Path("/home/ehm_eckx/.hermes/cache/scratch/dmc1/dmc1_usa.bin")
+RAW = Path("/home/ehm_eckx/gBox_alt/gbox-cache/modbase/d460ea70167416a2/Devil May Cry (USA).iso")
 RAW_SHA = "9e4d87fa0bae06e7282c085bb58693f83cf857bede9803f4bd235e3dfcfe0726"
 
 
@@ -87,3 +87,78 @@ def test_parse_child_table_rejects_bad():
     from gbox.dmc1_iso import parse_child_table
     with pytest.raises(ValueError):
         parse_child_table(struct.pack("<I", 99) + b"\0" * 8)
+
+
+def _child6_blob(count, offsets):
+    import struct
+    return bytearray(struct.pack("<I", count) + struct.pack("<%dI" % count, *offsets)
+        + b"\x00" * (0x1000 - 4 - 4 * count))
+
+
+def test_parse_child6_table_synthetic():
+    """Structural path only; tag bytes left zero since the bit-field
+    classification is not yet pinned (no GIF-tag layout verified)."""
+    import struct
+    from gbox.dmc1_iso import parse_child6_table
+    blob = bytearray(struct.pack("<I", 3) + struct.pack("<3I", 0, 0x100, 0x200)
+        + b"\x00" * (0x1000 - 4 - 4 * 3))
+    recs = parse_child6_table(blob)
+    assert len(recs) == 3
+    assert [r["off"] for r in recs] == [0, 0x100, 0x200]
+    assert all(r["kind"] == "data" for r in recs)  # zero tag -> nreg 0
+
+
+def test_parse_child6_table_rejects_bad_sort():
+    import pytest
+    from gbox.dmc1_iso import parse_child6_table
+    # even offsets 0, 0x200, 0x100 -> not strictly increasing
+    blob = _child6_blob(5, [0, 0x100, 0x200, 0x200, 0x100])
+    with pytest.raises(ValueError):
+        parse_child6_table(blob)
+
+
+@pytest.mark.skipif(not RAW.exists(), reason="raw image not extracted")
+def test_parse_child6_table_real():
+    """Verified table invariants on the real owned image only.
+
+    The kind/GIF-tag classification is NOT yet pinned (bit-field brute force
+    on 2026-11-06 found no GS GIF-tag layout decoding the pinned headers),
+    so these assertions stop at table structure + pinned header bytes.
+    """
+    import struct
+    from gbox.dmc1_iso import parse_child6_table
+    with open(RAW, "rb") as f:
+        n, ch = parse_pld_children(f, 1043291, 1547616)
+        assert ch[6][1] == 1042640
+        f.seek((1043291 * 2048) + ch[6][0])
+        blob = f.read(ch[6][1])
+    assert struct.unpack_from("<I", blob, 0)[0] == 215
+    offs = list(struct.unpack_from("<215I", blob, 4))
+    recs = parse_child6_table(blob)
+    assert len(recs) == 215
+    assert [r["off"] for r in recs] == offs
+    assert all(o < len(blob) for o in offs)
+    evens, odds = offs[0::2], offs[1::2]
+    assert len(evens) == 108 and evens == sorted(evens) and len(set(evens)) == 108
+    assert len(odds) == 107 and len(set(odds)) == 51  # shared odd sections
+    assert recs[0]["off"] == 0                        # entry 0 = table itself
+    # Pinned header evidence (hex verified 2026-11-06):
+    assert blob[0x6C0:0x6D4] == bytes.fromhex("3e001fff80" + "0102030405060708090a0b0c0d0e0f")
+    assert blob[0x2888:0x28A0] == bytes.fromhex(
+        "3e002222000000004000000080000000c000000000010000")
+
+
+@pytest.mark.skipif(not RAW.exists(), reason="raw image not extracted")
+def test_decode_child6_sections_real():
+    """Structure-only summary on the real image; kind split is provisional."""
+    from gbox.dmc1_iso import decode_child6_sections
+    with open(RAW, "rb") as f:
+        n, ch = parse_pld_children(f, 1043291, 1547616)
+        f.seek((1043291 * 2048) + ch[6][0])
+        blob = f.read(ch[6][1])
+    s = decode_child6_sections(blob)
+    assert s["count"] == 215
+    off_set = {r["off"] for r in s["sections"]}
+    assert 0x6C0 in off_set and 0x2888 in off_set
+    assert s["unique_palettes"] <= 51  # every odd offset maps to <= 51 sections
+    assert all(r["off"] < len(blob) for r in s["sections"])

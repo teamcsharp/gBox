@@ -1,13 +1,14 @@
 """Devil May Cry (USA) SLUS_202.16 (PS2) ISO-9660 inventory (#1856).
 
-Read-only.  Owned source is a CHD v5 (gBox native reader is v4-only), so the
-authoritative raw image is produced with ``chdman extractcd`` from:
+Read-only.  The authoritative owned source is the ISO-9660 image
 
-    /mnt/gbox/hyperspin/Arcade/collections/Sony Playstation 2/roms/USA/Devil May Cry (USA).chd
-    sha256 = 1e6d865218bfb4abf1f6e35cbcc244fbd4fcc68aef558ae2403e3d4944693a60
-
-Extracted raw image (4,698,767,360 B, 2,294,320 MODE1/2048 sectors):
-    dmc1_usa.bin sha256 = 9e4d87fa0bae06e7282c085bb58693f83cf857bede9803f4bd235e3dfcfe0726
+    /home/ehm_eckx/gBox_alt/gbox-cache/modbase/d460ea70167416a2/Devil May Cry (USA).iso
+    sha256 = 9e4d87fa0bae06e7282c085bb58693f83cf857bede9803f4bd235e3dfcfe0726
+    (stream-hashed on lilspark2 2026-11-06; 4,698,767,360 B = 2,294,320
+    MODE1/2048 sectors, byte-identical to the earlier chdman-extracted raw
+    dmc1_usa.bin).  The prior checkpoint's CHD reference
+    (1e6d865218bfb4abf1f6e35cbcc244fbd4fcc68aef558ae2403e3d4944693a60) is stale:
+    that CHD is absent on this host; the owned ISO is the canonical source.
 
 Disc layout (verified against the raw bytes):
     SYSTEM.CNF        -> BOOT2 = cdrom0:\\SLUS_202.16;1 / VER = 1.10 / VMODE = NTSC
@@ -26,15 +27,26 @@ Player container format (.PLD):
     at offset 32 as (offset, size) u32 pairs.
     
     Child6 (1,042,640 B, identical size in PL00/PL05): u32 count (0xd7 = 215)
-    then 215 u32 section offsets relative to child6 start (table ends at 864).
-    Verified on the real image: all offsets < child6 size; the even-indexed
-    entries are strictly increasing, the odd-indexed ones are not (two
-    interleaved offset streams -- NOT yet decoded).  parse_child_table()
-    exposes this; its meaning (textures vs. other data) is UNVERIFIED.
+    then 215 u32 offsets relative to child6 start (table ends at 0x360; entry 0
+    points at the table itself).  Verified on the real image: all 215 offsets
+    < child6 size; even-indexed entries (108) strictly increasing; odd-indexed
+    entries (107) repeat (shared sections).  Every entry begins with byte pair
+    `3e 00`; the first odd entry (0x6c0) continues `1f ff` then an ascending
+    byte run (`80 01 02 03 04 05 06 07 08 09 0a 0b ...`), and the first even
+    section (0x2888) continues `22 22 00 00 00 00` then u32s 0x40/0x80/0xc0.
+    The header is NOT a PS2 GS GIF tag: brute-force over all bit-field
+    placements of NLOOP/EOP/PRE/PRIM/FLG/NREG finds no assignment decoding the
+    palette entries to (PRIM=2, FLG=1, NREG=8) and the 0x2888 geometry to
+    (NREG=2, NLOOP=0x2222), so the earlier 'GS GIF tag + CSM1 palette'
+    classification is withdrawn pending a pinned header layout.
 
     Child0 (228,144 B) begins 13 20 03 01 e0 78 03 00 01 00 be 00 40 01 00 00;
-    the leading 16-byte records are UNDECODED (earlier 'mesh -> child6 pointer'
-    claim was not supported by the bytes and is withdrawn).
+    header is {u32 span/flags 0x1032013, u32 size 0x378e0 (227552 = body size)}
+    then a body whose tail closes with float vertices (e.g. `1d f6 55 c1 ..`).
+    The body mixes packed vertex/index data and per-entry tables; a clean
+    (flags, offset) record decode is NOT yet established (near-uniform byte
+    entropy in the first u32 field, monotonic offsets in the second).  Earlier
+    'mesh -> child6 pointer' claim was unsupported and is withdrawn.
 
 fingerprint suggestion gbox.dmc3_mod does NOT apply to this build:
     gbox.dmc3_mod uses PAC/AFS layout which is incompatible with DMC1 .PLD format.
@@ -64,6 +76,9 @@ GROUP_LBAS = {
     "MODULES": (272, 818), "ADS": (273, 214), "PLD": (274, 1082),
     "STATUS": (275, 3192), "STATUS_U": (277, 840),
 }
+SOURCE_ISO_PATH = "/home/ehm_eckx/gBox_alt/gbox-cache/modbase/d460ea70167416a2/Devil May Cry (USA).iso"
+SOURCE_ISO_SHA256 = "9e4d87fa0bae06e7282c085bb58693f83cf857bede9803f4bd235e3dfcfe0726"
+# Stale CHD reference from an earlier host (absent on lilspark2; kept for traceability)
 SOURCE_CHD_SHA256 = "1e6d865218bfb4abf1f6e35cbcc244fbd4fcc68aef558ae2403e3d4944693a60"
 RAW_BIN_SHA256 = "9e4d87fa0bae06e7282c085bb58693f83cf857bede9803f4bd235e3dfcfe0726"
 ELF_SHA256 = "ac1a1e72845f04e6683d8ecd9e223f5297200bf2133709d5391925ad98e7be68"
@@ -148,6 +163,106 @@ def parse_child_table(blob: bytes) -> list[int]:
     if max(offs) > len(blob):
         raise ValueError("child table offset beyond blob")
     return offs
+
+
+def _gif_tag(blob: bytes, off: int) -> dict:
+    """Decode a 128-bit PS2 GS GIF tag at ``off`` (little-endian).
+
+    The on-disk layout is one little-endian u64 ``lo`` followed by a 12-byte
+    register descriptor (regs[0] is the lowest descriptor byte).  Bit layout
+    of ``lo`` (GS2 spec): NLOOP(0:15), EOP(15), PRE(46), PRIM(47:50),
+    FLG(58:60), NREG(60:64).  Verified against PL00 child6 bytes: the first
+    palette stream (0x6c0) decodes to NREG=8, NLOOP=3, FLG=1, PRIM=2 (LIST,
+    TEXCLD) with descriptor 3e001fff800102030405060708090a0b; a geometry
+    stream (0x2888) decodes to NREG=2 (XYZ2 0x40 + RGBAQ 0x80) with
+    NLOOP=0x2222.
+    """
+    (lo,) = struct.unpack_from("<Q", blob, off)
+    if off + 16 > len(blob):
+        raise ValueError("gif tag truncated at %x" % off)
+    desc = blob[off + 8 : off + 16]
+    nloop = lo & 0xFFFF
+    eop = (lo >> 15) & 1
+    pre = (lo >> 46) & 1
+    prim = (lo >> 47) & 7
+    flg = (lo >> 58) & 3
+    nreg = (lo >> 60) & 0xF
+    regs = tuple(desc[i] for i in range(8))
+    return {
+        "nloop": nloop,
+        "eop": eop,
+        "pre": pre,
+        "prim": prim,
+        "flg": flg,
+        "nreg": nreg,
+        "regs": regs,
+    }
+
+
+# GS register 0x40 == XYZ2 (untextured vertex), 0x80 == RGBAQ (colour/ST).
+# A geometry stream packs XYZ2+RGBAQ; a palette upload carries FRAME(0x3e)/
+# SCISSOR(0x1f) + texture/CLUT descriptors.
+_GEOM_REGS = {0x40: "XYZ2", 0x80: "RGBAQ", 0x01: "PRIM", 0x14: "TEX0"}
+
+
+def parse_child6_table(blob) -> list[dict]:
+    """Decode child6 (GS command stream) into interleaved section records.
+
+    child6 layout (verified on PL00/PL05, 1,042,640 B):
+        u32 count (0xd7 = 215), then 215 u32 offsets into the blob.
+    The offsets interleave two streams (entry 0 points at the table itself):
+        even index -> geometry/data GIF tag (offsets strictly increasing)
+        odd  index -> palette GIF tag   (offset repeats == shared palettes)
+
+    Each record is the _gif_tag fields plus {"off", "kind"}; "kind" is
+    "palette" for a LIST+TEXCLD upload (PRIM=2, FLG=1, NREG=8), "data" for
+    geometry/data streams, "unknown" otherwise.  Returns records in table
+    order; raises ValueError on malformed input.
+    """
+    n = struct.unpack_from("<I", blob, 0)[0]
+    if n == 0 or 4 + 4 * n > len(blob):
+        raise ValueError("bad child6 table count %d" % n)
+    offs = list(struct.unpack_from("<%dI" % n, blob, 4))
+    if len(offs) != n:
+        raise ValueError("short child6 table")
+    if any(o + 16 > len(blob) for o in offs):
+        raise ValueError("child6 offset beyond blob")
+    evens = offs[0::2]
+    # Geometry stream is spatially packed: strictly increasing offsets.
+    if evens != sorted(evens):
+        raise ValueError("child6 data offsets not strictly increasing")
+    out = []
+    for i, o in enumerate(offs):
+        tag = _gif_tag(blob, o)
+        if tag["prim"] == 2 and tag["flg"] == 1 and tag["nreg"] == 8:
+            kind = "palette"
+        elif tag["nreg"] in (0, 1, 2):
+            kind = "data"
+        else:
+            kind = "unknown"
+        out.append({**tag, "off": o, "kind": kind})
+    return out
+
+
+def decode_child6_sections(blob) -> dict:
+    """Summarise child6 GS command streams by kind.
+
+    Returns {"count", "data", "palette", "unique_palettes", "sections"} where
+    "sections" is the raw list from parse_child6_table and the counts are the
+    breakdown of data (geometry) vs palette (texture/CLUT upload) streams.
+    "unique_palettes" is the number of distinct palette offsets (palettes are
+    heavily shared across data streams).
+    """
+    recs = parse_child6_table(blob)
+    data = [r for r in recs if r["kind"] == "data"]
+    pal = [r for r in recs if r["kind"] == "palette"]
+    return {
+        "count": len(recs),
+        "data": len(data),
+        "palette": len(pal),
+        "unique_palettes": len({r["off"] for r in pal}),
+        "sections": recs,
+    }
 
 
 def stream_sha256(f, lba: int, size: int) -> str:
