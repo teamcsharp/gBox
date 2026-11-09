@@ -1,0 +1,418 @@
+{
+ "re6sw_sonic_leon_ycc": {
+  "files": [
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00AcHeadLeonAsia.arc",
+    "sha256": "f6b12b87d5663016ef07a894baf00fd9dca6237d4f6f98744fba660cb8049c64",
+    "bytes": 1497744
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00AcHeadLeonUsa.arc",
+    "sha256": "f6b12b87d5663016ef07a894baf00fd9dca6237d4f6f98744fba660cb8049c64",
+    "bytes": 1497744
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00HandLeftLeonAsia.arc",
+    "sha256": "31e71d786e5c651dc9b4429790220ded57e778cd93182fcf5ae54541c0686312",
+    "bytes": 33693
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00HandLeftLeonUsa.arc",
+    "sha256": "e4475425c0a72ef88db7c0a4323f3e79c6c68aeb9e8c5816772457fc7b50dd49",
+    "bytes": 33664
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00HandRightLeonAsia.arc",
+    "sha256": "3d2dfea61fc90dcd2b055609a475ee5ce4f607433bc2d78e6aef244639b66e39",
+    "bytes": 33694
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00HandRightLeonUsa.arc",
+    "sha256": "3b39e584b3e11949811894dc56d264809f390c4f7aa5fc1e2ba9fc3a4e0f9518",
+    "bytes": 33667
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00HeadLeonAsia.arc",
+    "sha256": "b0af66b0842489270e5ccf4619d1c71c7d348aac6b6914e7867d6b400f728301",
+    "bytes": 68488
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00HeadLeonUsa.arc",
+    "sha256": "353681f69524209edfe3a7feb55830e6dc569ac6cc6d8c050d7b55a072ce977e",
+    "bytes": 68488
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00LeonAsia.arc",
+    "sha256": "bdb1eeaf58719a931076995859028fa3126a5e92dace40222edd833f8776b5cb",
+    "bytes": 1352168
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00LeonUsa.arc",
+    "sha256": "b251c752de18dc85aac54e1678bc499997758cf5a5042f63a3efeafce0bb6fb8",
+    "bytes": 1350109
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPlTex0000_0.arc",
+    "sha256": "5d39dab312307967becef47a0b5dc6f972ec2b2d75aea68907bb02d3ceff63ab",
+    "bytes": 4232097
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPlTex0000_1.arc",
+    "sha256": "358714b0aaa2d20ae26e04e5f4774d7f299447d52a9300f4102d06a9679c0a87",
+    "bytes": 4299778
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPlTex0000_2.arc",
+    "sha256": "2d56dd51c7e1b385602bee428ee9c203a3b181643d92c35aeadc79a866679ade",
+    "bytes": 4299712
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPlTex0010_0.arc",
+    "sha256": "204a0ffb06fe697a0c67fe3ec6f2950963e1f368d92553b8f34c37aa600e2d11",
+    "bytes": 5046230
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPlTex0010_1.arc",
+    "sha256": "afd3e0e067ba1e87178cb31770f51a83005c3d126b13877b45e0e78fa85ac2dd",
+    "bytes": 5075071
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPlTex0010_2.arc",
+    "sha256": "5ec9b3342a3d382d467110b3b730f1fc75b7ecf74bdf91bf7597bc64f0cfa080",
+    "bytes": 5068571
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPlTex0010_3.arc",
+    "sha256": "260f3515fa02627684ad46511ba78881c07f493b3d60d3bc06eb81acb66202ad",
+    "bytes": 5073347
+   }
+  ]
+ },
+ "re6sw_probe_albedo_solid": {
+  "files": [
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPlTex0000_0.arc",
+    "sha256": "e3af5a50ec89b67c5d31255554dd82112aed7927233b144344d4b7fb16c2e7be",
+    "bytes": 4158287
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPlTex0000_1.arc",
+    "sha256": "eaba2c8a7daeb65ba67c006d81f3d4a48b25d118e2cc67cd1cca66410f513f96",
+    "bytes": 4225968
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPlTex0000_2.arc",
+    "sha256": "9fc35fb3f0bd7dd7e9c3e91cf3559720ba9774b5fac9ec6947597cec07292cec",
+    "bytes": 4225902
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPlTex0010_0.arc",
+    "sha256": "e9ea26e95db92be7fcfc34d37e0b2c9bc698ac4b021be34f0ddef99a204fef03",
+    "bytes": 4993754
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPlTex0010_1.arc",
+    "sha256": "ce5f4d16b026e35a561e07bfd4af86932337e9bdff4a02c6d55bbea676ef05db",
+    "bytes": 5022595
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPlTex0010_2.arc",
+    "sha256": "1fcf82a8caf218fa9b38fa439df7c89a612e61c75066e33d8124e796041f3795",
+    "bytes": 5016095
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPlTex0010_3.arc",
+    "sha256": "863d6b1e98a92da4123c5ab1cc6f783e55b3b0b9cb7d736187b9e43cd1bccceb",
+    "bytes": 5020871
+   }
+  ]
+ },
+ "re6sw_roster_mix_s15": {
+  "files": [
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00AcHeadLeonAsia.arc",
+    "sha256": "47bba23bcd586a962bc5825173572e167ba66385a3da3b19faa386edeee3abb6",
+    "bytes": 1375390
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00AcHeadLeonUsa.arc",
+    "sha256": "47bba23bcd586a962bc5825173572e167ba66385a3da3b19faa386edeee3abb6",
+    "bytes": 1375390
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00HandLeftLeonAsia.arc",
+    "sha256": "31e71d786e5c651dc9b4429790220ded57e778cd93182fcf5ae54541c0686312",
+    "bytes": 33693
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00HandLeftLeonUsa.arc",
+    "sha256": "e4475425c0a72ef88db7c0a4323f3e79c6c68aeb9e8c5816772457fc7b50dd49",
+    "bytes": 33664
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00HandRightLeonAsia.arc",
+    "sha256": "3d2dfea61fc90dcd2b055609a475ee5ce4f607433bc2d78e6aef244639b66e39",
+    "bytes": 33694
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00HandRightLeonUsa.arc",
+    "sha256": "3b39e584b3e11949811894dc56d264809f390c4f7aa5fc1e2ba9fc3a4e0f9518",
+    "bytes": 33667
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00HeadLeonAsia.arc",
+    "sha256": "b0af66b0842489270e5ccf4619d1c71c7d348aac6b6914e7867d6b400f728301",
+    "bytes": 68488
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00HeadLeonUsa.arc",
+    "sha256": "353681f69524209edfe3a7feb55830e6dc569ac6cc6d8c050d7b55a072ce977e",
+    "bytes": 68488
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00LeonAsia.arc",
+    "sha256": "4bede388fba930edf278494fbeee44ee6b6727b08f3f06ff6bceed5188a41d22",
+    "bytes": 1457547
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl00LeonUsa.arc",
+    "sha256": "5379edba9663dc5641a57cc56ddd7b302da04aea8b087f1fe7bba52ccb9c59b5",
+    "bytes": 1455481
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl01AcHeadHelenaAsia.arc",
+    "sha256": "2b3db11c41794a001ca7161c20579fa4638e1ef691d7abeea9e575d15451aee1",
+    "bytes": 1478839
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl01AcHeadHelenaUsa.arc",
+    "sha256": "2b3db11c41794a001ca7161c20579fa4638e1ef691d7abeea9e575d15451aee1",
+    "bytes": 1478839
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl01HandLeftHelenaAsia.arc",
+    "sha256": "969c32c7d69072862c354d20e2a421d33352acbe83dc4bfc4f5f78d37eb94561",
+    "bytes": 33687
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl01HandLeftHelenaUsa.arc",
+    "sha256": "927943741908c98f28f9587a233cca0f1c1ff2ee720861d49cc1f1c0076dcb7b",
+    "bytes": 33670
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl01HandRightHelenaAsia.arc",
+    "sha256": "bd6425046644945c1d3a77290d8a105383d1d8add5406c8c3bd0464468661192",
+    "bytes": 33682
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl01HandRightHelenaUsa.arc",
+    "sha256": "31f836ecca147b0f573fc7e37b2c37245898781931ff750f85efe61dbc403ce9",
+    "bytes": 33663
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl01HeadHelenaAsia.arc",
+    "sha256": "1ae52181cb539596f1bc3e45019eda6961d44b70e71dbd822ec26ff74ac4bdf0",
+    "bytes": 86141
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl01HeadHelenaUsa.arc",
+    "sha256": "1ae52181cb539596f1bc3e45019eda6961d44b70e71dbd822ec26ff74ac4bdf0",
+    "bytes": 86141
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl01HelenaAsia.arc",
+    "sha256": "2421b0867b7d9bb9f1eb5f6afd7b51537b8eeff402b59fb8807144b56821bbfe",
+    "bytes": 1316093
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl01HelenaUsa.arc",
+    "sha256": "056c41202f36a37dea32eb9ab1996cacbc4dd993d3b2e799c0cac01d8467c86e",
+    "bytes": 1313960
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl02AcHeadChrisAsia.arc",
+    "sha256": "7aeecad3c17cbcbbdd7ab01f0422c945c923c276181f1ad4f7df549f943806e2",
+    "bytes": 447060
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl02ChrisAsia.arc",
+    "sha256": "124e81d9cf0676de4ad73e1c91a9a471d6b92a33d745356b7bbd6c95a0568e68",
+    "bytes": 1357923
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl02HandLeftChrisAsia.arc",
+    "sha256": "9273b68f207d739653b1ef0dc5fb54b14f4f12abaf9917981333932195332539",
+    "bytes": 33659
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl02HandRightChrisAsia.arc",
+    "sha256": "1712f7cc387a6d63d36c895a12a88cfaecbd23211a17365217c42addcec1760f",
+    "bytes": 33666
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl02HeadChrisAsia.arc",
+    "sha256": "34ede2208be705da065a162b831a6797e57e9f80538a3f53d14e93122935afd2",
+    "bytes": 87376
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl03AcHeadPiersAsia.arc",
+    "sha256": "935610e3c8e0d2169c77da401673f4fe33f1f45c34ae1f7791b9804ac546d880",
+    "bytes": 733950
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl03HandLeftPiersAsia.arc",
+    "sha256": "2979a48a09963223f0e6eab91d371c7e3d50c93f124caed3b486a6d51332ee4a",
+    "bytes": 33658
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl03HandRightPiersAsia.arc",
+    "sha256": "9e856d2cec8731d6777f21aaf284f33e36fef31f9aa523d857c99007714566c2",
+    "bytes": 33665
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl03HeadPiersAsia.arc",
+    "sha256": "abf4068ef93b2654db812f24ce545e666350618340882d6c7e20897d310b7e6c",
+    "bytes": 76264
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl03PiersAsia.arc",
+    "sha256": "6da5854fe1212c7fadde73d9638e3e855e2065e5cdb8b784ceb9d256f61c1337",
+    "bytes": 4340587
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl04AcHeadJakeAsia.arc",
+    "sha256": "bda757a60b0b2c0dfd69db1f2c91df0b66c5d5a59a7207920f73d97b36fe4ce1",
+    "bytes": 156317
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl04HandLeftJakeAsia.arc",
+    "sha256": "ea974af65dc66f528038d9ca94998d1e5481e95fa6d1c98f37489071164c58a1",
+    "bytes": 33656
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl04HandRightJakeAsia.arc",
+    "sha256": "da8f2183373c2f633dbaaee997d2aaddc9dde02c4375de003fac5e4bb31b4bc8",
+    "bytes": 33663
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl04HeadJakeAsia.arc",
+    "sha256": "d3ae2b1dfea3bac8c715c73b26fb23228e9d53e52acf67fd29ddecca3e180285",
+    "bytes": 79930
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl04JakeAsia.arc",
+    "sha256": "6beb0225883910054d696ca52c3b7120ca9c335aa0bd03888029735ecb427fe2",
+    "bytes": 1726011
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl05AcHeadSherryAsia.arc",
+    "sha256": "ad360bfacaee891796c9fb9d6382e8c0ab5f1a25a0f8e6775b9c9376af2e3204",
+    "bytes": 1316405
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl05HandLeftSherryAsia.arc",
+    "sha256": "84a2166348a816bc8a9b041f6134f7693cf7fd06c8cdf60af97e4657a66f9514",
+    "bytes": 33735
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl05HandRightSherryAsia.arc",
+    "sha256": "8e2fc65d6080bdecd2947282d61872899a04a6e421095838a6735df741e5c5eb",
+    "bytes": 33724
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl05HeadSherryAsia.arc",
+    "sha256": "bf908e11d4eb3128bf6b91733ba8e18f2729ca9112f4aab6dec2bc9715a7460e",
+    "bytes": 85916
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl05SherryAsia.arc",
+    "sha256": "3729fbb6d2ba98ce3254ed392bd724e50d33fa71047d73864fe8e305b60925b0",
+    "bytes": 1281355
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl06AcHeadAdaA.arc",
+    "sha256": "4e4cb6c4eefd36ea98c4fd92df3f45816a897ec26c056fa8bd067ef6d875d814",
+    "bytes": 772545
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl06AdaA.arc",
+    "sha256": "2a2720e147f931b4e44c378ced9d3435eb0d33670d5a5ea3f2555c82a3936847",
+    "bytes": 1329085
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl06HandLeftAdaA.arc",
+    "sha256": "6ddc1435d6cbbba23237d2ce8460957c6e66b92301886e949c81edebdd30cef0",
+    "bytes": 33670
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl06HandRightAdaA.arc",
+    "sha256": "3e10bca6179e7fbb1017928ff09cecc4d2e869266cadeab3cf925973329bf4d1",
+    "bytes": 33666
+   },
+   {
+    "romfs_path": "nativeNXx64/arc/NX/uPl06HeadAdaA.arc",
+    "sha256": "2c6abd770975755692d1169e1abb0c52fa41c2b691f74b224702763272d9a45d",
+    "bytes": 80041
+   }
+  ]
+ },
+ "re4-sonic-on-leon-v1": {
+  "files": [
+   {
+    "romfs_path": "bio4/em/pl08.udas",
+    "sha256": "611db6146b0ecdb96e3fd394bd636c1924cd6d9427c40db0f5797a1904b0a278",
+    "bytes": 1408992
+   },
+   {
+    "romfs_path": "bio4/imagepackhd/01000008.pack.fen",
+    "sha256": "aa22281d536e83a5d24dd27745da78a510633a22a0ee2b7713750e6f8f501003",
+    "bytes": 3398077
+   }
+  ]
+ },
+ "re4-native-swap-v1-control": {
+  "files": [
+   {
+    "romfs_path": "bio4/em/pl08.udas",
+    "sha256": "65b6ff3d5527d6189d1d063c0f9c7c7a055765eb77e0ac0b782b612b73516e8b",
+    "bytes": 1464960
+   }
+  ]
+ },
+ "re4-native-rewrite-v1": {
+  "files": [
+   {
+    "romfs_path": "bio4/em/pl08.udas",
+    "sha256": "2fe0fe6c9bde26c49f524cfd0b3895193340b2d4ef1b50cf7425a49efc2fe951",
+    "bytes": 1708256
+   }
+  ]
+ },
+ "re4-native-swap-v1": {
+  "files": [
+   {
+    "romfs_path": "bio4/em/pl08.udas",
+    "sha256": "187b912806f3eeec7073b5ffb182ee8da741629140eb6ff29aaca9311e359912",
+    "bytes": 1644960
+   }
+  ]
+ },
+ "stage-greybox-s400-v1": {
+  "files": [
+   {
+    "romfs_path": "nativeNXx64/ImgNX/Archive/s400.arc",
+    "sha256": "f26d283605658a10bead2ec0ff03d6da4cdfe38a60b0d72bdfaa99172b4c4bb2",
+    "bytes": 30759743
+   }
+  ]
+ },
+ "prop-box-crate-v1": {
+  "files": [
+   {
+    "romfs_path": "nativeNXx64/ImgNX/Archive/uOm0889.arc",
+    "sha256": "4812b7541e2dc46e56ef68a8865f169f9ba9b43c58a4714d4fc26fb2d61aaf2c",
+    "bytes": 1469494
+   }
+  ]
+ }
+}
