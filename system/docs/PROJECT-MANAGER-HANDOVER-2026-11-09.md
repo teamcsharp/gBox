@@ -207,6 +207,11 @@ permits, with `grounds` growing and later shrinking as bombs detonate.
 - Donors measured and ready: `sm64ds_mario` (`ea509bdf…`, 17 joints, complete role metadata), `melee_mario`
   (61 joints, fingers), plus `sm64_mario`, `melee_luigi/peach/bowser/yoshi`. Provenance of `*_hd` Render96 models is
   a model pack, not an extracted game donor — keep that distinction.
+- **Update 2026-11-09 (offline only):** `gbox/re5_enemy_writer.py` now builds a `uEm10.arc` candidate with
+  `sm64ds_mario` on `em1000` + `_mid` + `_low` — SHA-256 `322c58a1092abbb8f6e43c7fd49550b7badd481997f2b878011a0976b524d7c7`.
+  It used the `native_segments` path with the role map measured on the Majini skeleton, so the group-0 guard was not
+  touched; every one of the 55 option groups carries the donor and every native record is blanked. **It has never been
+  booted.** Facts, decision, checks and the first-round checklist: [research/re5-mario-enemy-writer.md](research/re5-mario-enemy-writer.md).
 
 ---
 
@@ -348,7 +353,9 @@ completion; confirm a fresh RE5 Switch session with that build before declaring 
 
 ### E. Build the first Mario enemy (G3)
 
-1. Write a **group-aware enemy writer** (new bounded module): replace the body-group meshes of `em1000` +
+1. *(Built offline 2026-11-09: `gbox/re5_enemy_writer.py`, candidate `322c58a1…`, not booted — start at step 3 with
+   [research/re5-mario-enemy-writer.md](research/re5-mario-enemy-writer.md).)*
+   Write a **group-aware enemy writer** (new bounded module): replace the body-group meshes of `em1000` +
    `em1000_mid` + `em1000_low` (and the `em1001` set if in scope) inside `uEm10.arc`, retaining the native 92-bone
    skeleton, materials and motion. Reuse `mtf_author`, `mtf_mrl.bind_albedo`, `mtf_tex.replace_image`; extend the
    existing `re5_mesh_import` guard only with an explicit, reviewed group list — do not loosen it globally.
@@ -481,6 +488,7 @@ Invoke-RestMethod ("http://10.89.1.246:8765/api/autoplay/telemetry/" + $sid) -He
 | Mine controller | `system/gbox/mercs/titles/re5_switch_mines.py` |
 | RE5 RAM map / bot | `system/gbox/mercs/titles/re5_switch.py`, `re5_switch_mods.py` |
 | Replacement pipeline | `system/gbox/{mt_arc,mt_model,mtf_*}.py`, `re5_mesh_import.py`, `re5_sonic_*.py` |
+| Mario enemy writer (offline candidate, unbooted) | `system/gbox/re5_enemy_writer.py`, [research/re5-mario-enemy-writer.md](research/re5-mario-enemy-writer.md) |
 | Native counterpart | `re5_player_archive.py`, `re5_character_writer.py`, `re5_char_swap.py`, `re5_ips.py` |
 | Comparison window | `system/clients/desktop/decrypt-lab-compare-window.cjs`, `gbox/decrypt_lab.py` |
 | RE5 Switch title / game | `010018100CD46000` / `52d15709be0fda1a` |
