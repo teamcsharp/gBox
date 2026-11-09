@@ -8,14 +8,24 @@ The entries below this checkpoint are historical and may describe failures or pe
 
 Resumed from `49a7e7e3`. **Step 1 of the continuation guide is now accepted with evidence**: the repeating queue
 survived real terminal round boundaries. Observed launches at 1794208280 (`d1257c164cc0405e`), 1794209480
-(`f8fc0664b1f04ab5`), 1794210293, 1794211188 (`ce8c36cf91e64207`) and 1794213xxx (`43ab169ea6b34f4d`) — every new
-session carried the exact same selection: build/mod `recovery-sonic-native-grip-v15-20261109`, Chris (BSAA), Public
-Assembly, `repeat_queue=true`. Combat advanced on post-boundary rounds (round `bd6b72d8…`: 35 kills / 13,010 score
-rising to 71 kills / 32,410; next round `0f73673d…`: 18 kills / 7,310). Captured frames show Sonic's blue body in
-third-person combat with stock enemies visible — confirming both that the player replacement renders each round and
+(`f8fc0664b1f04ab5`), 1794210293, 1794211188 (`ce8c36cf91e64207`), 1794213xxx (`43ab169ea6b34f4d`) and 1794214275
+(`fc4ba1ded7b5445c`) — every new session carried the exact same selection: build/mod
+`recovery-sonic-native-grip-v15-20261109`, Chris (BSAA), Public Assembly, `repeat_queue=true`. Combat advanced on
+post-boundary rounds (round `bd6b72d8…`: 35 kills / 13,010 score
+rising to 71 kills / 32,410; next round `0f73673d…`: 18 kills / 7,310 then 65,000 / 164; round on `fc4ba1de…` also
+progressed). Captured frames show Sonic's blue body in third-person combat with stock enemies visible — confirming both that the player replacement renders each round and
 that **Mario enemies are still not implemented**. Stream health stayed green (age 0.02 s, p95 19.6 ms, zero gaps
 >100 ms over 600 samples). Receipt frames live in scratch: `boundary-frame-2/3/4.jpg`
 (SHA256 `2a4d7bb8…`, `742b005f…`, `e92ab8bf…`).
+
+**Step 4 first half is now measured, not assumed.** A read-only live-RAM enemy census (two boots of the owned session,
+DTI class names exactly like `re5_switch.class_name`) shows Public Assembly draws **uEm10 (≈27-28 of 40 slots, HP 800)
+and uEm11 (≈7-8, HP 700)** plus `uEm20`/`uEm21`/`uEm62` specials. Inside pristine `uEm10.arc`
+(SHA-256 `1fa271890891ff31ac1aeb8d6dfc9a6d8bdcdd1ec252954b9d22a61519634a0c`) the drawn models are MOD entries
+234/235/236 (`em1000`/`_low`/`_mid`, MRLs 196-198) and 237-239 (`em1001` variants): ~341-351 mesh records, 92 bones,
+70 materials, option groups 1..225 and **no group 0** — so the current one-mesh group-0-guarded `re5_mesh_import`
+cannot author this target yet; the first Mario enemy candidate needs a small group-aware enemy writer. Full details in
+[the research handoff](research/re5-sonic-mario-handoff.md).
 
 **v15 byte-exact reproduction does NOT work as the guide describes.** Verified facts:
 

@@ -81,6 +81,14 @@ not an extracted owned-game donor. Keep that provenance distinction. No listed M
    aimed-fire, movement and melee view. Record loaded overlay hash, character, advancing timer/score, hand contact and
    camera usability; do not infer them from black boot or an occluded frame. Preserve the user's existing MercMode
    settings and avoid enabling random characters while only one custom slot is covered.
+   **2026-11-09 resume update:** the repeating queue survived four real terminal-round boundaries (sessions
+   `d1257c16…`, `f8fc0664…`, `ce8c36cf…`, `43ab169e…`, `fc4ba1de…`), each relaunching the exact build/Chris BSAA/Public
+   Assembly with advancing combat and fresh frames. **However, the committed `build_grip_candidate` no longer
+   reproduces V15 byte-exactly:** stage-1 `build()` yields MOD97 `cec895d2…`, not the reviewed v12 `b87ecc87…`, and
+   even the stored v12 MOD stitched through `re5_sonic_hands.author` yields `e9c2bf23…`, not pinned v14 `426ac8ad…`.
+   Verified identical under the deployed share code, the clean deploy clone and a BOM/LF-normalized closure overlay on
+   lilspark: recipe drift, not environment. The live overlay still hashes `d96c9c9e…` and the artifact store can
+   restore it. Do not register/promote V15 until a faithful builder exists.
 2. Inventory the extracted RE5 RomFS with `re5_char_swap.catalogue()`. Map actual selection IDs to **costume archive
    paths**, not only the eight family shortcuts in `skin_swap.CHARACTER_ARCS`. `re5_switch.CHARACTERS` labels 14 choices
    but its selector can learn a larger wrap count. The remote `re5-onemesh-all` folder contains 31 player archive paths,
@@ -91,11 +99,27 @@ not an extracted owned-game donor. Keep that provenance distinction. No listed M
    exact hash guards or assumptions about target animation translation. Verify bounds, all triangles, skin sums, welded
    seams, bind inverse matrices, normal/tangent frames and paired motion before live testing each slot/costume.
 4. For Mario enemies, first identify the archive/model/group actually drawn by one controlled Public Assembly enemy.
-   The prior failed coverage included `uEm0b`, `uEm10`, `uEm11`, `uEm12`, with `em1000/em1001` high/mid/low models and
+   **Done 2026-11-09 with live-RAM receipts (two boots of the owned repeating-queue session, enemy array walked at
+   `sEnemy(main+0x1CF04B8) → +0x38 count / +0x48 pointer array`, classes named through the DTI vtable path exactly as
+   `re5_switch.class_name` does, all through read-only `read_memory` jobs):** 40 slots each boot. Boot 1: `uEm10`×28
+   (HP 800), `uEm11`×7 (HP 700), `uEm20`×1 (HP 8000 boss), `uEm62`×1 (dynamite prop HP 1), `uEmIntel10`, `cUnit`.
+   Boot 2: `uEm10`×27, `uEm11`×8, `uEm21`×1 (dynamite carrier HP 1400), `uEm62`, `uEmIntel10`, `cUnit`. So the drawn
+   Majini are classes **uEm10/uEm11 → `uEm10.arc`/`uEm11.arc`**; the raw audit also confirms 139 enemy archives via
+   `re5_char_swap.catalogue()`. Inside `uEm10.arc` (pristine SHA-256 `1fa271890891ff31ac1aeb8d6dfc9a6d8bdcdd1ec252954b9d22a61519634a0c`)
+   the measured models are MOD entries 234/235/236 = `em1000`/`em1000_low`/`em1000_mid` (paired MRLs 196-198) and
+   237-239 = `em1001` variants (MRLs 199-201): ~341-351 mesh records each, 92 bones, 70 materials with `gam01_*_BM`
+   albedos, groups 1..225 (head/costume/LOD option groups; **no group 0**, unlike the player archive). The prior failed
+   coverage included `uEm0b`, `uEm10`, `uEm11`, `uEm12`, with `em1000/em1001` high/mid/low models and
    option groups. Target a visible body group and all its selected LODs; do not spread one character across mutually
    exclusive head/costume groups. The measured `uEm11 -> uEm10` class-rebind route requires its exact IPS and existing
    verified NSO build. It is not a generic cross-class archive-copy permission. Start with one Mario donor and one
    positively identified enemy, then extend the observed class/stage matrix.
+   **Next bounded step:** the existing one-mesh `re5_mesh_import.build_archive` guards require a group-0 template, which
+   enemy MODs lack, so a Mario enemy candidate needs a small new group-aware enemy writer (or an explicit reviewed
+   relaxation of that guard) that replaces the body-group meshes of `em1000` + `em1000_mid` + `em1000_low` (and the
+   matching `em1001` set if that variant is in scope) while retaining the native 92-bone skeleton, materials and motion.
+   Candidate donor: `sm64ds_mario` GLB SHA-256 `ea509bdf870190e7…` (17 joints, complete role metadata) or `melee_mario`
+   (61 joints, fingers). Build it as a separate `recovery-mario-*` overlay; never write into the live v15 build.
 5. Compose accepted player and enemy archive changes into one tracked overlay with `switch_mods.write_files`, preserving
    existing unrelated entries and pending-edit/in-use handling. Refuse duplicate target-path collisions. Scope registration
    to RE5 title `010018100CD46000` / game `52d15709be0fda1a`; make source/slot coverage explicit. Do not alter RE4/RE6,

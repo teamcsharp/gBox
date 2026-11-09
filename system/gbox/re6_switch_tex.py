@@ -1,4 +1,4 @@
-"""RE6 (Switch) TEX surfaces: measured format table, header parsing and the decodable formats.
+"""RE6 (Switch) TEX surfaces: measured format table, header parsing, decode and albedo encode.
 
 The player textures live in `uPlTex####_*.arc` as MTF `TEX` containers. Measured on the extracted No Mercy RomFS
 (2026-11-09), the container is `TEX v0xA1` with revision byte `0x20` (RE5's is `0x80`) and the usual 20-byte header
@@ -7,15 +7,16 @@ plus a `u32` offset per mip; the mip sizes validate for 16-byte blocks on the BC
 
 * ``0x19`` BC4 / ATI1 - the ``_MM`` mask maps (8-byte blocks)
 * ``0x1F`` BC5 / ATI2 - the ``_NM`` normal maps (16-byte blocks)
-* ``0x2B`` the ``_BM`` colour maps. The community format table calls it BC3_UNORM_SRGB, but decoding the mip as BC3
-  (interleaved 8-byte alpha + 8-byte colour blocks) yields a uniform green channel; the block statistics (bytes 0-7
-  vary, bytes 8-11 are nearly constant, bytes 12-15 are the constant ``0xAA`` padding pattern) show the 0x2B mip is not
-  interleaved BC3 and still needs its own layout. :func:`decode` therefore supports the formats it can prove (BC4/BC5)
-  and refuses the rest instead of emitting garbage.
+* ``0x2B`` the ``_BM`` albedo maps. Each 16-byte block is **two channels**: bytes 0-7 decode as BC4 and resolve to the
+  albedo's greyscale detail (Leon's head map is his face with the mouth/teeth atlas); bytes 8-15 decode as BC1 and hold
+  a low-resolution per-4x4-tile colour that is nearly uniform inside a tile. The community format table calls ``0x2B``
+  BC3_UNORM_SRGB, which does not decode this layout; the two-half model is what the pixels prove. The detail layer is
+  what :meth:`Surface.decode` returns; :meth:`Surface._albedo_layers` exposes both halves and
+  :func:`replace_albedo` writes a new mip chain in the same two-half layout.
 * ``0x09`` / ``0x0E`` - uncoded-looking MVTF/VTF maps.
 
-The decoder de-swizzles with the same Tegra GOB addressing `gbox.mtf_tex` uses (verified: a 512x512 BC5 normal map and a
-256x256 BC5 normal map both decode to recognisable fabric/buckle normal maps).
+The decoder and writer de-swizzle/re-swizzle with the same Tegra GOB addressing `gbox.mtf_tex` uses (verified: a
+512x512 BC5 normal map and a 256x256 BC5 normal map both decode to recognisable fabric/buckle normal maps).
 """
 from __future__ import annotations
 
@@ -159,5 +160,119 @@ def describe_arc(archive) -> list[dict]:
         rows.append({"name": entry.name.rsplit("\\", 1)[-1], "format": surface.format,
                      "width": surface.width, "height": surface.height, "mips": surface.mip_count,
                      "block_bytes": BLOCK_BYTES.get(surface.format),
-                     "decodable": surface.format in DECODABLE})
+                     "decodable": surface.format in DECODABLE or surface.format == 0x2B})
     return rows
+
+
+# --- writing the two-half albedo -------------------------------------------------
+
+def _quant565(rgb) -> int:
+    r, g, b = (int(round(v)) for v in rgb)
+    return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+
+
+def _expand565(value: int) -> tuple[int, int, int]:
+    r = (value >> 11) & 0x1F
+    g = (value >> 5) & 0x3F
+    b = value & 0x1F
+    return (r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2)
+
+
+def _bc1_block(tile: np.ndarray) -> bytes:
+    """One 8-byte BC1 block (two 565 endpoints, 16 two-bit indices) for a 4x4 RGB tile."""
+    flat = tile.reshape(-1, 3).astype(np.int32)
+    lo, hi = flat.min(0), flat.max(0)
+    c0, c1 = _quant565(hi), _quant565(lo)
+    if c0 < c1:
+        c0, c1 = c1, c0
+    if c0 == c1:
+        c0 = min(0xFFFF, c0 + 1)
+    a, b = _expand565(c0), _expand565(c1)
+    palette = [a, b, tuple((2 * a[i] + b[i]) // 3 for i in range(3)),
+               tuple((a[i] + 2 * b[i]) // 3 for i in range(3))]
+    diff = np.abs(flat[:, None, :] - np.asarray(palette, np.int32)[None, :, :]).sum(2)
+    indices = diff.argmin(1)
+    bits = 0
+    for pixel, index in enumerate(indices):
+        bits |= int(index) << (2 * pixel)
+    return struct.pack("<HHI", c0, c1, bits)
+
+
+def _bc4_block(values: np.ndarray) -> bytes:
+    """One 8-byte BC4 block (8-value mode) for a 4x4 uint8 tile."""
+    flat = values.reshape(-1).astype(np.int32)
+    a0, a1 = int(flat.max()), int(flat.min())
+    if a0 == a1:
+        a0 = min(255, a1 + 1)
+    palette = [a0, a1] + [((5 - i) * a0 + (i + 1) * a1) // 7 for i in range(6)]
+    diff = np.abs(flat[:, None] - np.asarray(palette, np.int32)[None, :])
+    indices = diff.argmin(1)
+    bits = 0
+    for pixel, index in enumerate(indices):
+        bits |= int(index) << (3 * pixel)
+    return bytes((a0, a1)) + bits.to_bytes(6, "little")
+
+
+def encode_albedo(image) -> bytes:
+    """Encode an RGB image as `0x2B` blocks: BC4 greyscale detail (bytes 0-7) + BC1 tile tint (bytes 8-15)."""
+    from PIL import Image
+
+    rgb = np.asarray(Image.fromarray(np.asarray(image, np.uint8)).convert("RGB"), np.uint8)
+    height, width = rgb.shape[:2]
+    # BC blocks cover 4x4 pixels; edge-repeat the last row/column for dimensions that are not multiples of four
+    padded_h, padded_w = (height + 3) // 4 * 4, (width + 3) // 4 * 4
+    if (padded_h, padded_w) != (height, width):
+        rgb = np.pad(rgb, ((0, padded_h - height), (0, padded_w - width), (0, 0)), mode="edge")
+    height, width = rgb.shape[:2]
+    luminance = ((rgb[..., 0].astype(np.int32) * 299 + rgb[..., 1].astype(np.int32) * 587
+                  + rgb[..., 2].astype(np.int32) * 114) // 1000).astype(np.uint8)
+    blocks = bytearray()
+    for y in range(0, height, 4):
+        for x in range(0, width, 4):
+            tile = rgb[y:y + 4, x:x + 4]
+            average = tile.reshape(-1, 3).mean(0)
+            tint = _quant565(average)
+            # a flat tile: both endpoints equal, every index 0
+            blocks += _bc4_block(luminance[y:y + 4, x:x + 4]) + struct.pack("<HHI", tint, tint, 0)
+    return bytes(blocks)
+
+
+def replace_albedo(template: bytes, image) -> bytes:
+    """A TEX with the same header/dimensions/mips as `template` and a new `0x2B` mip chain from `image`.
+
+    The template must be an `0x2B` surface; header fields other than the size and mip offsets are preserved, every mip
+    is regenerated (the image is scaled down with Lanczos) and stored in the same Tegra layout the reader expects.
+    """
+    from . import mtf_tex
+    from PIL import Image
+
+    surface = Surface(template)
+    if surface.format != 0x2B:
+        raise TexError(f"replace_albedo needs a 0x2B template, not 0x{surface.format:02x}")
+    base = Image.fromarray(np.asarray(image, np.uint8)).convert("RGB")
+    if base.size != (surface.width, surface.height):
+        base = base.resize((surface.width, surface.height), Image.LANCZOS)
+    payload = bytearray()
+    offsets = []
+    for mip in range(surface.mip_count):
+        width, height = max(1, surface.width >> mip), max(1, surface.height >> mip)
+        blocks = encode_albedo(base.resize((width, height), Image.LANCZOS) if mip else base)
+        by = (height + 3) // 4
+        bh = max(1, min(16, (1 << (by - 1).bit_length()) // 8))
+        bx = (width + 3) // 4
+        pitch = ((bx * 16 + 63) // 64) * 64
+        size = pitch * ((by + 8 * bh - 1) // (8 * bh)) * 8 * bh
+        level = mtf_tex.Mip(width, height, 0, size, bh)
+        addresses = mtf_tex._addresses(level, 16)
+        storage = np.zeros(size, np.uint8)
+        data = np.frombuffer(blocks, np.uint8).reshape(-1, 16)
+        if len(data) != addresses.shape[0]:
+            raise TexError(f"mip {mip}: {len(data)} blocks do not fill {addresses.shape[0]}")
+        storage[addresses] = data
+        offsets.append(len(payload))
+        payload += storage.tobytes()
+    header = bytearray(template[:surface.start])
+    struct.pack_into("<I", header, 16, len(payload))
+    for index, offset in enumerate(offsets):
+        struct.pack_into("<I", header, 20 + index * 4, offset)
+    return bytes(header + payload)
