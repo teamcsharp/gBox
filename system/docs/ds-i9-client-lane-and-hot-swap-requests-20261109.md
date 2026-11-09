@@ -315,3 +315,25 @@ PM/operator can correct the plan before more is built.
 4. **Next**: settle the IVFC level chain (or dump the base RomFS through Yuzu's own game-list "Dump RomFS" and use its
    paths), then map the update's BKTR relocations onto that virtual space and extract only the changed files for the
    overlay. That remains the gate for a Mercenaries round and for the enemy-model assets the operator asked for.
+
+## Round 8 status (2026-11-09, ~17:20 CST, main at `3ba575c7`): the update patch is decrypted and mapped
+
+1. **`gbox/switch_romfs.py`** (`3ba575c7`): the RomFS header and the directory/file table walk over a caller-provided
+   virtual reader; synthetic-table tests pass. On the real base NSP it walks **60,645 files** under `nativeNXx64/`
+   (18.7 GB), with `arc/NX/*.arc` (3,209 files).
+2. **The BKTR patch is fully decrypted.** The relocation table (at section `0x4780200`, 0x8000 bytes) decrypts with the
+   section's own CTR; the block is header@0 + bucket@0x4000, entries packed at **0x14 bytes** (`u64 virt, u64 phys,
+   u32 is_patch`): 126 entries = **52 patch regions**. The subsection block has two ranges (`offset 0` ctr 0,
+   `offset 0x4780200` ctr 1). Patch data decrypts with the **BKTR CTR**: bytes 0-3 = `reversed(section_ctr)[0:4]`,
+   bytes 4-7 = the subsection's `ctr_val` (big-endian), bytes 8-15 = `(absolute_offset >> 4)` (big-endian).
+3. **The update changes only 19 files (2.6 MB)**: `Credit_*.arc`, `Game_*.arc` (locale arcs), `Msg_*.arc`,
+   `Stp.arc`, `movie/Thumbs.db`. No enemy arcs. Overlay `recovery-re6-update-v131072-r2-20261109` (24 entries) was
+   built with those plus the update ExeFS.
+4. **START GAME now proceeds**: with the data overlay, the A press on START GAME leaves the lobby and shows
+   `LOADING...` — on the earlier build the same press was ignored outright. The stage load then **hangs** at LOADING
+   (60 FPS, no crash, no unmapped access). Next candidate causes: the lobby's ONLINE COMMUNICATION / PARTNER JOIN left
+   at ALLOW (the setup screen defaults) as it waits on a partner, or a stage file the 1.0.2 main wants that the patch
+   does not carry.
+5. **Enemy model inventory for the operator's reskin request**: the enemy families are the `nativeNXx64/arc/NX/e####.arc`
+   arcs (`e1000`, `e1010`, `e1040`, `e1045`, `e1050`, `e1060`, `e1070`, …). That is the donor/overlay surface for
+   "replace any and all enemies"; `re5_enemy_writer` remains the asset-level template.
