@@ -115,3 +115,37 @@ What I need from the PM to scope it:
    the native swap and Sonic-on-Leon.
 4. Draft the hot-reload experiment for RE6/Yuzu (in-place overwrite of one body arc at a round boundary, same size) with
    the two-frames-in-one-session acceptance and no restart.
+
+---
+
+## Round 2 status (2026-11-09, ~15:40 CST, main at `29930119`)
+
+1. **The published overlays are built on the i9 from the artifact store** — all seven, hash-verified against
+   `overlay-artifacts-2026-11-09.json`: `recovery-re4-native-swap-v1-control/rewrite/v1/sonic-on-leon-20261109` and
+   `recovery-re6sw_probe_albedo_solid/sonic_leon_ycc/roster_mix_s15-20261109`. Built with `switch_mods op=write` +
+   `{"artifact": sha}` exactly as you said; no permit needed. **One trap:** the per-PC build retention keeps only **3**
+   builds per game (default), so my fourth RE4 candidate deleted the first as it landed. I raised the RE4 game to 6 via
+   `POST /api/build-retention` on the i9; the RE6 game is at 3/3. Two of the seven vanished before I found this.
+2. **RE4 Switch boots on the i9 under Yuzu** (1.0.2, intro movie, 60 FPS with CUDA video decode) — but only with the
+   **Spark's cache NSP** (`9d9e6465…`), not the share's copy of the same name (`9763f2df…`). Yuzu rejects the share
+   file with "different type (unknown) … Error 52". Since MercMode's launch stages the *share* file, any Windows Yuzu
+   lane for RE4 needs the cache copy or a corrected share file. The operator has taken RE4 to the main system.
+3. **Yuzu guest memory is implemented and pushed (`29930119`)** — `gbox.yuzu_runtime.guest_rows()` and
+   `YuzuAdapter._guest()`. Measured on Yuzu 1734: guest reads work at `0x80000000`–`0x84000000` and are refused at
+   `0x84800000`, below `0x80000000`, and above; the stub has **no memory map** (`qSupported`, `qXfer:memory-map`,
+   `qMemoryRegionInfo` unanswered), reads run at ~5 MB/s, and RE6 main's signature is at `0x82151af8` → main base
+   `0x80000af8`. Both `readable` and `mapped` keys are returned (the title drivers read one, the unlock watcher the
+   other). 9 tests pass in `test_yuzu_runtime.py`.
+4. **Live proof the shim works:** the RE6 session `37e4b812d84f4723-0518903dd7e04768` with `debug=true` now reports
+   `unlock_watch.state` = **`watching`** where the same launch reported `unsupported` an hour ago. Session
+   `0de35724f23b4457-929ea388b9f54426` is the earlier one (old worker code).
+5. **The remaining blocker is one button press.** The unlock watcher waits for `uIdTitle00`, which only appears after
+   "PRESS ANY BUTTON" (`uIdSignIn00`). gBox's own session-input path cannot deliver it to an off-screen window:
+   `win_send_keys` refuses unless the game (or gBox) owns the foreground, and `keep_offscreen` parks the window at
+   (-32000,-32000). For hands-off unlocks on a client PC this needs either (a) a debug-session input path that targets
+   the window directly (a `hidden_ok` variant for automation nodes), or (b) the app's docked view keeping the window in
+   front. I am not posting keys or moving windows on the operator's desktop; that is their machine and their mouse.
+6. **Mouse incident, for the record:** the operator had to replug the mouse twice. gBox has no `BlockInput`,
+   `ClipCursor` or cursor API (searched); USB selective suspend was **enabled** on AC and several hubs, and is now
+   disabled on this PC. The per-device "allow the computer to turn off this device" flags need elevation and are still
+   set. The other suspect is the pen/touch display (`VID_1D02` pen + touch + keyboard) with its Wacom virtual router.
