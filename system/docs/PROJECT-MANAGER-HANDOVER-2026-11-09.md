@@ -5,6 +5,11 @@ Read this first, then [reply.md](reply.md), [DEEPSEEK-LIVE-REPLACEMENT-HANDOFF.m
 and [research/re5-sonic-mario-handoff.md](research/re5-sonic-mario-handoff.md). Where this document and an older one
 disagree, this document wins; where a live reading disagrees with this document, the live reading wins.
 
+> **Later the same day (17:45 UTC):** G3 has its first live proof (Mario as the town Majini), G4 is accepted on the
+> game's memory with one reservation, MercMode rotates stages in one session, and §4.6 below was wrong (the ten
+> failing tests were a real regression). Results, corrections and the work in flight are in
+> [the replacement plan](CHARACTER-REPLACEMENT-PLAN-2026-11-09.md); where it disagrees with this document, it wins.
+
 ---
 
 ## 1. The goal, in the operator's words

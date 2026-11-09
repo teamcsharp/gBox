@@ -263,6 +263,13 @@ and 22 across the fast-menu/cadence/mercs-bot suites.
 
 ### 5.1 Recover the Spark (blocker for everything live)
 
+> **Do not run the block below as written (checked 2026-11-09).** The save directory is one level deeper, under the
+> user id: `…/eden/nand/user/save/0000000000000000/86D8304D23A3AC808BC2AA4890B84EF9/01002A000CD48000`, so the `mv`
+> would do nothing and say nothing. `pkill -f gbox` also kills the service and anything with gbox in its command
+> line. No orphaned Eden process was running when this was checked. See
+> [the replacement plan](CHARACTER-REPLACEMENT-PLAN-2026-11-09.md) §7.
+
+
 ```bash
 SAVE=~/gBox/system/gbox-data/runtime-linux-aarch64/eden-linux/data/eden/nand/user/save/0000000000000000/01002A000CD48000
 mv "$SAVE" "$SAVE.bak-$(date +%s)" 2>/dev/null || true

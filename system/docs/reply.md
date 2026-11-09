@@ -1,3 +1,27 @@
+## Claude session — 2026-11-09 15:00 to 17:45 UTC (newest; supersedes the blocks below where they differ)
+
+Full account, with ids and hashes: [the replacement plan](CHARACTER-REPLACEMENT-PLAN-2026-11-09.md). In short:
+
+- **MercMode is running again** on lilspark: RE5 Switch No Mercy, one build, six stages in rotation, rounds changing
+  stage inside one session (`a66b9d370de14727-98b48cb5b2b74d45`: Public Assembly, The Mines, Village, …). It had been
+  idle 15 minutes behind a launch whose run kept a pre-restart worker id (`7d74b564`); a queued build that is already
+  loaded no longer restarts the title each round (`58006c6f`); a round is capped at six minutes of play (`56388d99`).
+- **Mario is the town Majini, live**: build `recovery-mario-em10-v1-test-20261109` (`uEm10.arc` `322c58a1…` beside the
+  v15 Sonic player archive), first boot, 199 kills in nine minutes; frames `ae1cfd35…`, `5d5915e4…`, `a2ae198e…`,
+  `630b28b9…` in the artifact store. Other stages' Majini classes are still stock.
+- **Mines accepted on the game's own memory**: inventory `(0x10a, 5, 5, grid 1)`, four new native `uWp0a` actors in
+  127 s (gaps 12.9 / 29.2 / 7.7 s), kills 21 to 78 in that window, session `…5849b9f202a449ad`. One self-blast of 350 hp
+  was seen at the old 8 m retreat; the retreat is now 15 m when a Majini can reach the bomb (operator), not re-measured.
+- **The bot**: the #5053 wind-up rule restarted a quick turn every tick (46 % of a round, 10 kills in 183 s); fixed
+  (`365ad370`), 26 to 29 kills a minute since. A universal doctrine (`gbox/mercs/core/doctrine.py`) now weighs seven
+  goals for every title and steers the bots through their existing commands; its weights are dots on the behavior
+  wheel. RE5 routes every walk on the stage's own nav mesh and goes to find enemies when none is in sight.
+- **Main was missing `repeat_queue`** (merge `cf0f400f` dropped it; restored `7b96f0b7`). The ten "noise" test failures
+  were that.
+- **v15 did not drift**: its bytes depend on the BLAS kernel's rounding; settled in `re5_sonic_residue` (`8587a1bb`).
+- **Not done**: a different character per round, zombies beyond the town Majini, RE6 colours and stage loads on the
+  Spark, anything in RE4, the hot-swap experiment. Agents and Hermes tickets on each are listed in the plan, §5.
+
 ## Current handoff — 2026-11-09 07:15 UTC
 
 Start with [the DeepSeek continuation guide](DEEPSEEK-LIVE-REPLACEMENT-HANDOFF.md) and

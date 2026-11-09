@@ -314,6 +314,27 @@ service for this) — the share currently runs the pre-fix mine module; (c) run
 inventory `0x10A`, `mines_placed` rising with new `uWp0a` actors ~30 s apart when clearance permits, a safe departure
 and survival; (d) only then call the requested behavior operational and record the receipt here.
 
+### Mine acceptance, 2026-11-09 16:26 to 16:28 UTC (Claude session)
+
+Accepted on the game's own memory, with one reservation. Session `a66b9d370de14727-5849b9f202a449ad`, build
+`recovery-sonic-native-grip-v15-20261109`, Public Assembly, `system/scripts/re5_mine_probe.py` in its one-job mode
+(`re5_mods op=mine_probe`), 60 samples over 127 s:
+
+- inventory row `(0x10a, 5, 5, grid 1, not in hand)` on every sample;
+- one `BASELINE` unit at (557.0, 158.5, 1409.1): the bomb stack's own dormant `uWp0a`, not a placement (the first
+  version of the probe, and the idle guard before `dce30155`, both mistook it for a bomb);
+- `NEW_MINE` at +56 s (86 cm from him), +69 s, +98 s and +106 s, each gone 4 to 7 s later: gaps 12.9, 29.2 and 7.7 s
+  (the short ones are the doctrine sending a mine into a mob between the 30 s ones);
+- kills 21 to 78 and score 9,530 to 42,650 in the window; health 804 at its start, 1000 at its end.
+
+The reservation: the bot's own counters for the same stretch show one blast that cost him 350 hp. The run out was 8 m
+then. The operator set 15 m the same hour; it is in force (`87e4532e`, `da69c278`: the whole 15 m when a Majini is
+within 8 m of the bomb, 4 m from a bomb nobody is near) and has not been measured since.
+
+What changed to get here: an overdue bomb accepts a closer crowd, down to 2.5 m (`27b61af4`: at the old fixed 4 m a
+Majini stood inside the margin for 195 s on end and one bomb went down in 11 minutes); the site of a bomb that has gone
+off no longer blocks the next one; the search for a clear site is a 1.5 s run and then 3 s of fighting.
+
 The live telemetry endpoint publishes scalar stats only (`tools.py`); nested `mine_supply` and `mine_last_confirmation` objects are not in that endpoint. Use its strict `mines_placed` counter with fresh session/gameplay evidence, and read native inventory/ground actors or full job results for detailed receipts. Do not interpret an omitted dictionary as supply being disabled. Deployment also synced concurrent main work to disk; only the four mine-related bot modules were activated here. Do not restart the service solely because a broader deploy-pending marker exists.
 
 ## Runtime/service continuity and safe resumption
