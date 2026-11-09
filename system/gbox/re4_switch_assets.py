@@ -329,18 +329,23 @@ class HdBin:
         return np.frombuffer(self.sections["weight_index"], "<u2", self.vertex_count)
 
     def bones(self) -> list[tuple[int, int, tuple[float, float, float]]]:
-        """[(id, parent or 0xFF, parent-relative bind translation)]."""
+        """[(id, parent id or 0xFF, parent-relative bind translation)].
+
+        Ids are the character's skeleton ids: a body lists 0..n-1, a part (head, hair, hand) lists only the bones
+        it needs, by the same ids, and its weight sets name those ids.
+        """
         raw = self.sections["bones"]
         return [(raw[16 * i], raw[16 * i + 1], struct.unpack_from("<3f", raw, 16 * i + 4))
                 for i in range(self.bone_count)]
 
-    def bone_world(self) -> np.ndarray:
-        """Bind position of each bone in model space (translations only: the bind pose carries no rotation)."""
-        table = self.bones()
-        out = np.zeros((len(table), 3))
-        for index, (_ident, parent, local) in enumerate(table):
-            _need(parent == 0xFF or parent < index, f"bone {index} has parent {parent} after itself")
-            out[index] = np.asarray(local) + (out[parent] if parent != 0xFF else 0.0)
+    def bone_world(self) -> dict[int, np.ndarray]:
+        """{bone id: bind position in model space} (translations only: the bind pose carries no rotation).
+
+        A parent that the table does not list is treated as the origin, which is what a part's first bone means.
+        """
+        out: dict[int, np.ndarray] = {}
+        for ident, parent, local in self.bones():
+            out.setdefault(ident, np.asarray(local, float) + (out[parent] if parent in out else 0.0))
         return out
 
     def weights(self) -> list[tuple[tuple[int, int], ...]]:
@@ -402,8 +407,9 @@ class HdBin:
         """A new surface on this model's skeleton: header constants, bones, bonepair and adjacency are kept.
 
         Vertices must already be in drawing order (materials consume them sequentially). `weight_sets` is a list of
-        up to 255 sets, each up to three (bone, percent) pairs summing to 100. Normals are any length; they are
-        stored at the native length. Nothing is clamped or recentred.
+        up to 255 sets, each up to three (bone id, percent) pairs summing to at most 100 (the native files hold a
+        few sets under 100; `weight_table` always writes 100). Normals are any length; they are stored at the
+        native length. Nothing is clamped or recentred.
         """
         positions = np.asarray(positions, "<f4").reshape(-1, 3)
         count = len(positions)
@@ -420,8 +426,9 @@ class HdBin:
         stored = (normals / lengths[:, None] * NORMAL_SCALE).astype("<f4")
         records = b""
         for number, entry in enumerate(weight_sets):
-            _need(1 <= len(entry) <= 3 and sum(w for _b, w in entry) == 100 and all(w > 0 for _b, w in entry)
-                  and all(0 <= b < self.bone_count for b, _w in entry), f"weight set {number} is not 1-3 bones at 100%")
+            _need(1 <= len(entry) <= 3 and 0 < sum(w for _b, w in entry) <= 100
+                  and all(0 <= w <= 100 and 0 <= b <= 0xFF for b, w in entry),
+                  f"weight set {number} is not 1-3 bones within 100%")
             bones = [b for b, _w in entry] + [0] * (3 - len(entry))
             shares = [w for _b, w in entry] + [0] * (3 - len(entry))
             records += bytes(bones + [len(entry)] + shares + [0])

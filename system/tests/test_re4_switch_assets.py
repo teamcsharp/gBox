@@ -20,10 +20,11 @@ def material(prims, diffuse=0, flag=0):
     return A.Material(bytes(header), prims)
 
 
-def make_bin(*, bonepair=True, adjacent=True, morph=False, version=0x20030818, tail=b""):
-    """A 14-vertex model: a 3-triangle list+strip material and a quad material, on a 3-bone chain."""
-    bones = b"".join(struct.pack("<BBH3f", i, 0xFF if i == 0 else i - 1, 0, 0.0, 10.0 * (i + 1), float(i))
-                     for i in range(3))
+def make_bin(*, bonepair=True, adjacent=True, morph=False, version=0x20030818, tail=b"", skeleton=None):
+    """A 14-vertex model: a 3-triangle list+strip material and a quad material, on a 3-bone chain (or `skeleton`,
+    a list of (id, parent id, (x, y, z)))."""
+    skeleton = skeleton or [(i, 0xFF if i == 0 else i - 1, (0.0, 10.0 * (i + 1), float(i))) for i in range(3)]
+    bones = b"".join(struct.pack("<BBH3f", ident, parent, 0, *place) for ident, parent, place in skeleton)
     weights = bytes([0, 0, 0, 1, 100, 0, 0, 0]) + bytes([1, 2, 0, 2, 80, 20, 0, 0])
     count = 14
     positions = (np.arange(count * 3, dtype="<f4").reshape(count, 3) * 0.5).tobytes()
@@ -44,7 +45,7 @@ def make_bin(*, bonepair=True, adjacent=True, morph=False, version=0x20030818, t
               ("materials", b"".join(m.encode() for m in mats) + bytes(8) + tail)]
     header = bytearray(A.BIN_HEAD)
     header[0x0C] = 0x50
-    header[0x28], header[0x29] = 2, 3
+    header[0x28], header[0x29] = 2, len(skeleton)
     struct.pack_into("<H", header, 0x2A, len(mats))
     struct.pack_into("<II", header, 0x38, 0xA0000300, 2)
     header[0x40] = 4
@@ -164,6 +165,11 @@ def test_bin_decodes_arrays_bones_weights_and_triangles():
     assert model.positions()[3].tolist() == [4.5, 5.0, 5.5] and model.uvs().shape == (14, 2)
     assert np.allclose(np.linalg.norm(model.normals(), axis=1), A.NORMAL_SCALE, rtol=1e-6)
     assert model.bones()[2][:2] == (2, 1) and model.bone_world()[2].tolist() == [0.0, 60.0, 3.0]
+    part = bytearray(make_bin())                      # a part lists skeleton ids, not 0..n-1: ids 4, 26, 27
+    for row, (ident, parent) in enumerate(((4, 0xFF), (26, 4), (27, 4))):
+        part[A.BIN_HEAD + 16 * row:A.BIN_HEAD + 16 * row + 2] = bytes((ident, parent))
+    world = A.HdBin.parse(bytes(part), verify=False).bone_world()
+    assert sorted(world) == [4, 26, 27] and world[27].tolist() == [0.0, 40.0, 2.0]
     assert model.weights() == [((0, 100),), ((1, 80), (2, 20))]
     assert model.weight_index().tolist() == [0, 1] * 7 and model.colors().min() == 255
     first, second = A.triangles(model.materials())
@@ -243,7 +249,7 @@ def test_bin_new_geometry_refuses_what_the_format_cannot_hold():
     args = dict(positions=np.zeros((3, 3)), normals=np.tile([0, 0, 1.0], (3, 1)), uvs=np.zeros((3, 2)),
                 weight_sets=[((0, 100),)], weight_index=[0, 0, 0], materials=[material([(A.PRIM_LIST, 3)])])
     template.with_geometry(**args)
-    for change, message in (({"weight_sets": [((0, 60),)]}, "100%"), ({"weight_sets": [((7, 100),)]}, "100%"),
+    for change, message in (({"weight_sets": [((0, 160),)]}, "100%"), ({"weight_sets": [((0, 25),) * 4]}, "100%"),
                             ({"weight_index": [0, 0, 1]}, "weight sets"), ({"normals": np.zeros((3, 3))}, "normal"),
                             ({"materials": [material([(A.PRIM_LIST, 6)])]}, "consume the vertex array")):
         with pytest.raises(A.AssetError, match=message):
