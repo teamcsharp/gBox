@@ -264,6 +264,42 @@ The follow-up code prepares all 54 native loadout templates before actor constru
 
 Mine implementation commit `1a56e529` was pushed with concurrent RE6 work preserved in merge `63f241db`. The four bot modules (`re5_switch`, `re5_switch_mines`, `re5_switch_mods`, `mercs_bot`) were reloaded through the installed deployment's bot-only function; one bot resumed in 0.9 seconds, with the service and emulator unchanged. The final targeted suite passed **140 tests**. A read-only native RAM audit verified **54/54 actual Mercenaries templates** carry positive-count quick-slot mines, with zero missing blocks. The old live player still had grenades because its inventory predates this change; the next native round must construct the new inventory. Check the newest acceptance below before claiming live placements.
 
+### Mine acceptance attempt, 2026-11-09 ~10:45-11:30 UTC (DeepSeek resume)
+
+First round after a bot-reload round started with the new inventory: `re5_mods op=status` reported `mine_loadout=true`,
+`mine_settings={enabled:true, interval_s:30.0}`, and the live autoplay telemetry
+(`GET /api/autoplay/telemetry/<sid>`) showed `mines_placed=0, mine_attempts=1, mine_equip_failures=1` with
+`mine_blocked_reason="enemy too close"` and `mine_relocating=true`. Two defects were fixed in `re5_switch_mines.py`:
+
+1. **The bomb was looked up only through its quick-grid record** (`stack()` requires `grid in QUICK`). When the equip
+   press moves or re-hands the item, that lookup fails and a successful press was scored as "the bomb did not come to
+   hand". The new `Mines.equipped()` finds the bomb by its own `rounds>0` + `hand` flags, and the equip state plants
+   from that.
+2. **The cycle's state clock ran on wall time even while the controller was not ticking** (held by a Majini, healing,
+   a reload stall). A grab longer than `EQUIP_S` therefore failed an attempt whose press had landed. `GAP_S = 0.75`
+   now pauses `self.t` across tick gaps, so `EQUIP_S`/`PLACE_S`/`SETTLE_S` measure only active control. The engine's
+   real cadence is 0.05 s, so a real gap of that size is always an interruption.
+
+Tests: `test_re5_switch_mines.py` gained the gap-pause, in-hand-without-grid and empty-stack cases; the two tests that
+depended on sparse tick spacing now tick at the engine cadence. Mine/policy/supply suites: **49 passed**; the
+`mods`/`parity`/`directives` suites also pass. (The 10 `test_mercmode_repeat_queue.py` failures pre-date this change:
+they fail identically on the stashed tree in this checkout.)
+
+Commit `ecba20b1` is pushed. **Live acceptance is still not claimed** — two blockers, in order:
+
+- The Spark's only Switch emulator was taken by the operator's RE6 Switch session (`4e342e9e…-4d2815d5…`, launched
+  by actor `operator`, no autobot, 0 stream viewers), so MercMode reported "a game is already running there" and no
+  RE5 round could run. This session must not be killed by an agent.
+- After that, the workstation's `pwsh` startup wedged machine-wide (even `git log -1` and `whoami` hang; a fresh
+  subagent sees the same), so no further git/HTTP/test/deploy work was possible from this session.
+
+Next session, in order: (a) wait for the RE6 session to end (or have the operator stop it) so MercMode restores the
+modified RE5 run; (b) deploy `ecba20b1` to the Spark with `deploy_main.sh --deploy` (bot-only reload; never restart the
+service for this) — the share currently runs the pre-fix mine module; (c) run
+`.scratch-deepseek/mine_probe.py <sid> 40 5` while sampling `GET /api/autoplay/telemetry/<sid>` to confirm real
+inventory `0x10A`, `mines_placed` rising with new `uWp0a` actors ~30 s apart when clearance permits, a safe departure
+and survival; (d) only then call the requested behavior operational and record the receipt here.
+
 The live telemetry endpoint publishes scalar stats only (`tools.py`); nested `mine_supply` and `mine_last_confirmation` objects are not in that endpoint. Use its strict `mines_placed` counter with fresh session/gameplay evidence, and read native inventory/ground actors or full job results for detailed receipts. Do not interpret an omitted dictionary as supply being disabled. Deployment also synced concurrent main work to disk; only the four mine-related bot modules were activated here. Do not restart the service solely because a broader deploy-pending marker exists.
 
 ## Runtime/service continuity and safe resumption
