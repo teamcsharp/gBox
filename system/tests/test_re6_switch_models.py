@@ -94,7 +94,7 @@ def test_a_multiple_root_skeleton_falls_back_to_native():
     meta = characters.get(LIB, "shulk_ssbu")
     body = S.body_arcs(ROMFS)[("piers", "Canon")]
     payload, receipt = S.build_body(body.read_bytes(), LIB / "shulk_ssbu" / meta["model"],
-                                    source_roles=meta["rig"]["roles"])
+                                    source_roles=meta["rig"]["roles"], bind_mode="reposition")
     assert receipt["pose_mode"] == "native_skeleton"
     assert "single native root" in receipt["skeleton_fallback"]
     model = _model(payload)
@@ -111,7 +111,8 @@ def test_a_donor_body_is_authored_on_the_native_skeleton():
     source = LIB / "sonic_ssbu" / meta["model"]
     path = S.body_arcs(ROMFS)[("leon", "Usa")]
     original = _model(path.read_bytes())
-    payload, receipt = S.build_body(path.read_bytes(), source, source_roles=meta["rig"]["roles"], height=180.0)
+    payload, receipt = S.build_body(path.read_bytes(), source, source_roles=meta["rig"]["roles"], height=180.0,
+                                    bind_mode="reposition")
     model = _model(payload)
     header = model.header()
     assert receipt["pose_mode"] == "source_proportions"
@@ -125,3 +126,23 @@ def test_a_donor_body_is_authored_on_the_native_skeleton():
     assert receipt["live_verified"] is False
     # the native MRL entry is untouched
     assert [e.name for e in mt_arc.parse(payload).entries] == [e.name for e in mt_arc.parse(path.read_bytes()).entries]
+
+
+@pytest.mark.skipif(not (LIB / "sonic_ssbu").is_dir(), reason="sonic_ssbu is not in the library")
+@needs_romfs
+def test_keep_bind_leaves_the_native_skeleton_unchanged():
+    """The live fix (2026-11-09): the native bind pose is left byte-identical and the fitted surface is authored in it,
+    so the title's own animations still find every joint where they expect it."""
+    from gbox import characters
+
+    meta = characters.get(LIB, "sonic_ssbu")
+    source = LIB / "sonic_ssbu" / meta["model"]
+    path = S.body_arcs(ROMFS)[("leon", "Usa")]
+    native = _model(path.read_bytes())
+    payload, receipt = S.build_body(path.read_bytes(), source, source_roles=meta["rig"]["roles"], height=180.0)
+    model = _model(payload)
+    assert receipt["bind_mode"] == "keep"
+    assert receipt["pose_mode"] == "native_bind_kept"
+    assert model.bone_world() == native.bone_world()
+    assert model.bone_table()["parents"] == native.bone_table()["parents"]
+    assert abs(receipt["fitted_height"] - 180.0) < 1e-3

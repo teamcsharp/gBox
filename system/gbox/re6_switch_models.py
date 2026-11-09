@@ -214,15 +214,23 @@ def _source_geometry(source: Path):
 
 def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], height: float = 180.0,
                material_index: int = 0, template_index: int = 0, margin: float = 0.01,
-               atlas_size=(1024, 1024), textures: bool = False, source_geometry=None) -> tuple[bytes, dict]:
+               atlas_size=(1024, 1024), textures: bool = False, source_geometry=None,
+               reverse_bones: bool = False, bind_mode: str = "keep") -> tuple[bytes, dict]:
     """Return (new archive, receipt) with the donor's surface authored onto the native body skeleton.
 
     ``source_roles`` maps a collection role ('hip', 'chest', ...) to the donor's joint name; ``material_index`` picks
     the native material the new mesh is drawn with (the MRL is kept untouched). The donor geometry is scaled
-    uniformly to ``height`` (cm), its feet on the native floor and its hip above the native root; the native bind
-    joints are moved to the donor's joint positions, never the donor stretched. Raises when the fitted surface cannot
-    be represented by the native position transform.
+    uniformly to ``height`` (cm), its feet on the native floor and its hip above the native root.
+
+    ``bind_mode`` picks how the native skeleton is treated: ``"keep"`` (default) leaves the native bind pose exactly
+    as the game ships it and authors the fitted surface in that pose, so the rest render is the donor and the native
+    LMT animations still find every joint where they expect it. ``"reposition"`` moves the native bind joints to the
+    donor's joint positions; the live Switch frame showed that this distorts the rest render because the native
+    animations carry absolute locals and are not rewritten (see ``mtf_retarget.reposition_bind_pose``'s docstring),
+    so it is kept only for comparison.
     """
+    if bind_mode not in ("keep", "warp", "reposition"):
+        raise SwitchModelError("bind_mode must be 'keep', 'warp' or 'reposition'")
     arc = mt_arc.parse(bytes(archive))
     model_index, mrl_index, mod_raw = _find_model(arc)
     model = mt_model.parse_mod(mod_raw)
@@ -291,14 +299,20 @@ def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], he
     anchors = {target: tuple((np.asarray(joints[source_joint], float) - origin) * scale + translate)
                for source_joint, target in roles_map.values() if target != 0}
     fallback = None
-    try:
-        model, bind = mtf_retarget.reposition_bind_pose(model, anchors)
-    except ValueError as exc:
-        # A native skeleton with more than one root (or anchor branches that cannot hold the donor's proportions)
-        # cannot have its joints moved by the measured rule. Keep the native skeleton as it is: the donor surface
-        # still rests at its own proportions and binds rigidly to the nearest native bone, so the slot is filled
-        # instead of skipped; only animation deformation is approximate.
-        bind, fallback = {"skipped": str(exc)}, str(exc)
+    if bind_mode == "reposition":
+        try:
+            model, bind = mtf_retarget.reposition_bind_pose(model, anchors)
+        except ValueError as exc:
+            # A native skeleton with more than one root (or anchor branches that cannot hold the donor's proportions)
+            # cannot have its joints moved by the measured rule. Keep the native skeleton as it is: the donor surface
+            # still rests at its own proportions and binds rigidly to the nearest native bone, so the slot is filled
+            # instead of skipped; only animation deformation is approximate.
+            bind, fallback = {"skipped": str(exc)}, str(exc)
+    else:
+        bind = {"kept": "native bind pose unchanged; fitted surface authored in the native pose"} | {"anchors": len(anchors)}
+        if bind_mode == "warp":
+            bind = {"warped": "native bind kept; the fitted surface is warped onto the native joints"} | {
+                "anchors": len(anchors)}
     # Every source influence must walk to a named role; unmapped root/finger influences fall back to the hip role.
     source_anchors = {source_joint for source_joint, _target in roles_map.values()}
 
@@ -320,14 +334,37 @@ def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], he
         vertex["source_joints"] = [joint for joint, _weight in keep]
         vertex["source_weights"] = [weight / total for _joint, weight in keep]
     fitted, skin = mtf_retarget.map_weights(fitted, parents, roles_map)
+    if bind_mode == "warp":
+        # Keep the native bind pose (the LMT animations carry absolute locals, so rewriting the bind breaks them) and
+        # instead warp the fitted surface so every mapped joint lands on its native bone: each vertex takes the
+        # blended translation between where the donor's joint would sit and where the native bone is. This puts the
+        # head at the native head (the game's camera and animation pivots use it) instead of leaving a cartoon body
+        # below it, which the live frame showed as an off-screen player.
+        native_world = {index: np.asarray(point, float) for index, *point in model.bone_world()}
+        deltas = {bone: native_world[bone] - np.asarray(anchors[bone], float) for bone in anchors if bone in native_world}
+        warped = []
+        for vertex in fitted:
+            shift = np.zeros(3)
+            for bone, weight in zip(vertex.get("bones", ()), vertex.get("weights", ())):
+                delta = deltas.get(int(bone))
+                if delta is not None and weight:
+                    shift = shift + weight * delta
+            warped.append(vertex | {"position": tuple(np.asarray(vertex["position"], float) + shift)})
+        fitted = warped
+        fitted_low = np.asarray([v["position"] for v in fitted]).min(0)
+        fitted_high = np.asarray([v["position"] for v in fitted]).max(0)
     authored = mtf_author.build_one_mesh(model, fitted, triangles, material_index=material_index,
-                                        template_index=template_index, four_weights=True)
+                                        template_index=template_index, four_weights=True,
+                                        reverse_bones=reverse_bones)
     bounds_new = {"min": dict(zip("xyz", fitted_low)), "max": dict(zip("xyz", fitted_high)),
                   "sphere": dict(zip("xyz", (fitted_low + fitted_high) / 2)) |
                              {"r": float(np.linalg.norm(fitted_high - fitted_low) / 2)}}
     authored = mt_model.rebuild_mod(mt_model.parse_mod(authored), bounds=bounds_new)
     payload = mtf_author.replace_archive_model(bytes(archive), model_index, authored)
-    receipt = {"pose_mode": "native_skeleton" if fallback else "source_proportions",
+    receipt = {"pose_mode": ("native_skeleton" if fallback else
+                             "native_bind_kept" if bind_mode == "keep" else
+                             "native_bind_warped" if bind_mode == "warp" else "source_proportions"),
+               "bind_mode": bind_mode,
                "skeleton_fallback": fallback, "source_height": source_height,
                "fitted_height": float(fitted_high[1] - fitted_low[1]), "uniform_scale": scale,
                "height_clamped": bool(abs(scale * source_height - height) > 1e-4),
@@ -335,6 +372,7 @@ def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], he
                "roles": {role: index for role, (joint, index) in roles_map.items()},
                "root_index": roles_map[ROOT_ROLE][1], "bind": bind, "skin": skin,
                "material_index": material_index, "triangle_count": len(triangles), "vertex_count": len(fitted),
+               "bones_reversed": bool(reverse_bones),
                "model_entry": model_index, "mrl_entry": mrl_index,
                "textures": "native material kept: the donor's textures are not yet written (uPlTex####_*.arc step)",
                "archive_sha256": None, "live_verified": False}

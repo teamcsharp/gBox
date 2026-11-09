@@ -1,5 +1,50 @@
 # RE6 model replacement: scale-exact fitting, a Smash cast roster, and the round hook
 
+## Live run on the Spark (2026-11-09)
+
+The first live Switch run is recorded here. The built overlay `re6sw_sonic_leon` was uploaded to the control plane as
+30 artifacts and written into lilspark's Eden load directory through `switch_mods op=write` (30 files, 33.5 MB), then
+selected with `switch_mods op=select` (the older `cast-inverted`, `re6-body-swap` and `re6-head` builds disabled) and the
+title launched with `POST /api/games/115f9cdbba115432/launch?node=lilspark&mod=re6sw_sonic_leon`.
+
+Session `4e342e9ebf5948da-4d2815d5baff43b2`: state running, `mod: re6sw_sonic_leon`, `mod_build: re6sw_sonic_leon`,
+`detail.overlay.enabled: re6sw_sonic_leon` with 30 files. The game booted through "PRESS ANY BUTTON", the load/autosave
+notices and the title's own unlock watcher, reached the main menu, and the menus were driven to **THE MERCENARIES NO MERCY
+on Urban Chaos** (the round HUD shows the timer, 000/300 and the score; the operator confirms the round plays).
+
+Operator observation from the live frame: **texture and mesh are a little off**. This is expected for this first build:
+it is the **geometry-only** variant, so the donor mesh carries the donor's own UVs while the native Leon material still
+samples Leon's textures — the colours cannot match. The fix is already built and does not need new geometry analysis:
+install the **textured** variant (`re6sw_sonic_leon_tex`, 37 files / 46.3 MB), which authors the body with the donor
+atlas UVs and writes the donor atlas into every `0x2B` albedo of Leon's texture set. If the silhouette is still wrong
+after that, the next A/B is the four-weight bone/weight pairing in the authored vertex format (bones at 16, w0 at 6,
+w1/w2 at 24) — the one part of the Switch MOD writer that only a live frame can settle; `mtf_author.build_one_mesh`
+now takes `reverse_bones=True` (store b3,b2,b1,b0) and `C:\_tools\gBox\.tmp\build_rev_variant.py` builds the
+`re6sw_sonic_leon_rev` probe for it.
+
+**The textured build crashes the title (measured 2026-11-09, live).** Both `re6sw_sonic_leon_tex` and the keep-bind
+`re6sw_sonic_leon_keep` boot and load the save, then the session ends within a couple of minutes, while the
+geometry-only `re6sw_sonic_leon_keep_plain` runs the same round indefinitely (score 2700, 9 kills in the verification
+frame). The difference is the `uPlTex####_*.arc` rewrite (`re6_switch_tex.replace_albedo`): the game accepts the new
+body MOD but not the rewritten `0x2B` albedo entries, so the next texture load takes the process down. Next step for
+textures: ship one texture arc at a time and match the entry's exact size/format (the current encoder writes the atlas
+at a fixed 1024x1024 layout).
+
+The session was launched **without** `autoplay=true`, so gBox booted the title with the mod but no bot: the viewer's
+"autobot" badge is not a running bot. `autoplay op=start` on the session (or the viewer's Autoplay control) is the
+hand-off for gameplay; `autoplay op=prepare` is a different thing (it drives a paused warm game's menus to a round start
+and timed out on this running session).
+
+**The Mercenaries playbook does not step on this title (measured 2026-11-09, live).** `autoplay op=start` succeeds and
+reports `playbook: mercs_bot`, but its status shows `steps: 0` at the title, in the lobby and inside a live round; the
+game sat untouched until it died. The playbook's `Boot`/`screen()` layer needs `module_base(m)` and guest memory reads;
+on this Eden session `read_memory` fails with `Switch address 0x... is outside the guest arena (direct mode)` even for an
+address inside the arena reported by the session detail, and the title's unlock watcher never leaves `watching` — the
+same memory-path symptom. Until the Eden arena/read path is fixed for this worker, the title cannot be menu-driven by
+the playbook. As a stopgap, `C:\_tools\gBox\.tmp\re6_keep_playing.py <session id> <minutes>` drives gameplay with plain
+input (ZL aim + ZR bursts + movement + prompt presses) so the game is played rather than idle; the measured live result
+is the round HUD advancing with score (evidence: `evidence/re6-scale/switch-live-autoplay-urban-chaos.jpg`).
+
 ## Target platform: **RE6 on Switch** (No Mercy edition)
 
 The deliverable is the Switch edition (`01002A000CD48000`, gBox game id `115f9cdbba115432`), never the Xbox 360

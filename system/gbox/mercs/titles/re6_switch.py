@@ -32,6 +32,7 @@ from pathlib import Path
 
 from .. import tuning                      # learned per-stage constants (gbox/mercs/tuning.py)
 from ..driver import Driver
+from .. import menu_speed                  # learned menu cadence: the Navigator's cursor knobs, measured
 
 TITLE_ID = "01002A000CD48000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/01002A000CD48000-ram.json
@@ -40,6 +41,8 @@ SIG_OFF = 0x2151000                     # 64 read-only bytes of main, unique in 
 SIGNATURE = bytes.fromhex("f304353f08208038386c3bbd286b6ece8716993eb743ba51a0d80b3e00401c46"
                           "008097436666863facc5273700c0284520bcbe4b017ba13ddb0fc93f48e17a3f")
 S_GAMEMAN, S_PLAYER, S_ENEMY, S_UNIT = 0x28E9B10, 0x28EAC10, 0x28E9AA8, 0x2A60780
+_MENU_SPEED: "menu_speed.Speed | None" = None
+NAV_CURSOR: dict = {}                   # the learned cadence's live dict (gbox.mercs.menu_speed), set at the first screen()
 GM_MODE, GM_PHASE, GM_TIMER, GM_BONUS_S = 0x54, 0x3DEC, 0x3DF0, 0x3DF8
 GM_KILLS, GM_COMBO_ON, GM_COMBO, GM_MAX_COMBO, GM_COMBO_T = 0x408C, 0x4090, 0x4094, 0x4098, 0x409C
 GM_COMBO_BONUS, GM_SCORE, GM_BASE = 0x40AC, 0x40B0, 0x40BC
@@ -328,7 +331,12 @@ P_EQUIPPED, P_SLOTS, SLOT_STRIDE, N_SLOTS = 0x5064, 0x5070, 0x28, 24   # the equ
 
 def _rows(m):
     """The guest's readable rows [(start, end, perms)] in guest addresses (the Citron / Eden adapter's HostMemory arena;
-    direct addressing under NCE), or what m says itself."""
+    direct addressing under NCE), or what m says itself.
+
+    ``readable`` (every readable row in the guest span) is preferred over the memfd heap rows: the title's main module
+    can be a file-backed/anonymous mapping beside the heap, and the build-signature scan has to see it (live 2026-11-09:
+    the bot's module_base never found main on an Eden session because only the heap rows were scanned).
+    """
     ad = getattr(m, "adapter", None)
     guest = getattr(ad, "_guest", None)
     if callable(guest):
@@ -337,7 +345,8 @@ def _rows(m):
         except Exception:                                   # noqa: BLE001 - not booted yet
             return []
         shift = 0 if getattr(ad, "address_mode", "direct") == "direct" else arena.get("base", 0)
-        return [(s - shift, e - shift, p) for s, e, p in arena.get("mapped", [])]
+        rows = arena.get("readable") or arena.get("mapped", [])
+        return [(s - shift, e - shift, p) for s, e, p in rows]
     rows = getattr(m, "rows", None)
     return list(rows() if callable(rows) else rows or [])
 
@@ -1020,7 +1029,32 @@ class _Title:
 TITLE = _Title()
 
 
+def _speed_for(m) -> menu_speed.Speed:
+    """The title's learned menu cadence, bound to this adapter's data dir on first use; NAV_CURSOR stays one dict so
+    the Navigator (which holds it by reference) sees every update without a rebuild."""
+    global _MENU_SPEED
+    if _MENU_SPEED is None:
+        data_dir = None
+        try:
+            data_dir = m.adapter.config.data_dir
+        except AttributeError:
+            data_dir = None
+        _MENU_SPEED = menu_speed.for_title(MAP_ID, data_dir)
+        NAV_CURSOR.update(_MENU_SPEED.profile())
+    return _MENU_SPEED
+
+
 def screen(m, merc=None, now: float | None = None) -> dict:
+    """The menus interface with the learned cadence folded in (gbox.mercs.menu_speed): the Navigator's NAV_CURSOR is
+    updated in place from every confirmed screen change, and the receipt carries `menu_speed`."""
+    scr = _screen(m, merc=merc, now=now)
+    speed = _speed_for(m)
+    speed.observed(scr.get("where"), now)
+    scr["menu_speed"] = speed.stats()
+    return scr
+
+
+def _screen(m, merc=None, now: float | None = None) -> dict:
     """The deployment's menus interface (gbox/mercs_bot.py): where RE6 is, from RAM. A dialog first (its id names the
     button), then the round (playing / dead / results from the player, the HUD and the result units), then the menus
     with their cursors and targets: title / main_menu / play_game / extra_content / mercs_mode / select_stage /
@@ -1171,6 +1205,8 @@ def wandered(scr: dict) -> str | None:
 
 
 def pressed(scr: dict, key: str) -> None:
+    if _MENU_SPEED is not None:
+        _MENU_SPEED.pressed(scr.get("where"))
     return None
 
 

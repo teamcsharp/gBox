@@ -75,7 +75,12 @@ def guest_arena(lines) -> dict | None:
     lo, hi = rows[lo_i]["start"], rows[hi_i]["end"]
     mapped = [(r["start"], r["end"], r["perms"]) for r in rows[lo_i:hi_i + 1] if r["path"].startswith(HOSTMEM)]
     every = sorted((r["start"], r["end"], r["perms"]) for r in rows if r["path"].startswith(HOSTMEM))
-    return {"lo": lo, "hi": hi, "base": -(-lo // HUGE_PAGE) * HUGE_PAGE, "mapped": mapped, "rows": every}
+    # Every readable row inside the guest span, not only the memfd heap rows: Eden maps the title's code/rodata as
+    # file-backed or anonymous rows beside the heap, and the RAM map readers (module_base signature scans) need them.
+    readable = sorted((r["start"], r["end"], r["perms"]) for r in rows
+                      if "r" in r["perms"] and lo <= r["start"] < hi)
+    return {"lo": lo, "hi": hi, "base": -(-lo // HUGE_PAGE) * HUGE_PAGE, "mapped": mapped, "rows": every,
+            "readable": readable}
 
 
 def mode_for(nce: bool) -> str:

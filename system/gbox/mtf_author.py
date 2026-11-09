@@ -297,11 +297,15 @@ def bone_local_points(model: mt_model.ModFile, bone: int, points) -> list[tuple[
 
 def build_one_mesh(model: mt_model.ModFile, vertices: list[dict], triangles: list[tuple[int, int, int]],
                    *, material_index: int = 0, template_index: int = 0, mesh_count: int | None = None,
-                   four_weights: bool = False) -> bytes:
+                   four_weights: bool = False, reverse_bones: bool = False) -> bytes:
     """A one-mesh copy of `model`: its skeleton, groups, materials and bounds, with new geometry.
 
     The mesh record is based on the target's `template_index` record so fields this writer does not name keep the
     values the engine already accepted; the fields that describe the new geometry are overwritten.
+
+    ``reverse_bones`` stores the four joint bytes least-important-first (b3,b2,b1,b0 at 16..19) while the weights keep
+    their order (w0 at 6, w1/w2 at 24, w3 implicit). The Xbox 360 four-weight layout reads the joint bytes in that
+    reversed order and the Switch layout is unverified in-game; this is the A/B probe for a live frame, off by default.
     """
     if not vertices or not triangles:
         raise AuthorError("an authored model needs vertices and triangles")
@@ -335,7 +339,8 @@ def build_one_mesh(model: mt_model.ModFile, vertices: list[dict], triangles: lis
             bones, weights = [b for b, _ in pairs], [w for _, w in pairs]
             bones += [0] * (4 - len(bones))
             weights += [0.] * (4 - len(weights))
-            vertex["bones"], vertex["weights"] = bones, weights[1:3]
+            stored_bones = list(reversed(bones)) if reverse_bones else bones
+            vertex["bones"], vertex["weights"] = stored_bones, weights[1:3]
             influences.append(list(zip(bones, weights)))
         else:
             bone = int((vertex.get("bones") or [vertex.get("bone", 0)])[0])

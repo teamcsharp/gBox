@@ -66,7 +66,9 @@ class Navigator:
         # change of the cursor on the same screen settles in stable_s, only a D-pad press that has not shown in RAM is
         # sent again after retry_s (the cursor did not move: no double step), and cursor screens are read every poll_s
         # (RE5 2026-10-26: ~1.1 s a cursor step, 7 steps a round gap on average). Every other wait stays as it was.
-        self.cursor = dict(cursor or {})
+        # The dict is kept by reference: gbox.mercs.menu_speed updates it in place, so later steps use what the run has
+        # learned instead of the values captured at boot.
+        self.cursor = cursor if isinstance(cursor, dict) else {}
         self.cursor_only = False                            # the last change RAM showed moved only the cursor
         self.last_input_confirmed = False
 

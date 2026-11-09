@@ -160,6 +160,22 @@ def test_restructured_mesh_clones_the_exact_selected_native_template():
     assert written.meshes()[0]["mesh_id"] == 134
 
 
+def test_four_weight_bones_can_be_stored_least_important_first():
+    """The live A/B probe: `reverse_bones` stores b3..b0 while the weights keep their order."""
+    model = mt_model.parse_mod(make_target(1))
+    bounds = model.bounds()
+    vertices = [{"position": p, "normal": (0.0, 1.0, 0.0), "uv": (0.5, 0.5),
+                 "bones": [1, 0], "weights": [0.75, 0.25], "bounds": bounds}
+                for p in ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 2.0, 0.0))]
+    forward = mt_model.parse_mod(mtf_author.build_one_mesh(model, vertices, [(0, 1, 2)], four_weights=True))
+    probe = mt_model.parse_mod(mtf_author.build_one_mesh(model, vertices, [(0, 1, 2)], four_weights=True,
+                                                         reverse_bones=True))
+    assert forward.bone_ids(0)[0] == (1, 0, 0, 0)
+    assert probe.bone_ids(0)[0] == (0, 0, 0, 1)
+    assert forward.positions(0) == probe.positions(0)
+    assert probe.header()["vertex_count"] == forward.header()["vertex_count"] == 3
+
+
 def test_replace_archive_model_updates_the_entry_tag_to_the_new_uncompressed_size():
     from gbox import mt_arc
     source = mt_arc.build(mt_arc.Arc(version=7, entries=[mt_arc.Entry(
