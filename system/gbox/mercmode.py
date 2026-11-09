@@ -41,9 +41,19 @@ DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title'
            # models while the player wears the majini's textures, and the rest of the cast swap skins between
            # themselves (gbox.skin_swap.cast_swap_build). 'off' plays the title with its own enemies.
            'cast_swap': 'off',
+           # operator 2026-11-09 ("all the levels and assets rendered in this UE-blueprint look with a toggle to turn
+           # it off and on in the mod panel ... across mercenary titles"): every queue entry plays on its build's
+           # blueprint companion `<build>-blueprint` (switch_mods op=blueprint: the build's files plus the greybox
+           # stage / object archives, gbox.re5_stage_greybox) while this is on, the plain build when off; the switch
+           # happens at the next round boundary (round_boundary compares the running build with effective_mod)
+           'blueprint_look': False,
            'coop_ratio': 'off'}
 SKIN_SWAPS = ('off', 'random')
 CAST_SWAPS = ('off', 'on')
+BLUEPRINT_FEATURE = 'mercmode_blueprint_look'   # worker feature: its mercmode tool takes blueprint_look
+# The companion's name. The brief wrote `<build>+blueprint`; `+` is outside switch_mods.NAME (the emulator's add-on
+# folder names) and the queue's mod pattern, so the realisation is `-blueprint` (gbox.switch_mods.BLUEPRINT_SUFFIX).
+BLUEPRINT_SUFFIX = '-blueprint'
 # How long one round may play before a random skin swap draws the next pair (seconds). The rotation normally fires on
 # the bot's native round boundary; this is the fallback for a title whose boundary never arrives (lilspark posted none
 # in two hours on 2026-11-05), so a skin swap cannot stay stuck on its first draw.
@@ -163,6 +173,8 @@ def normalize(patch, current=None):
         raise ValueError('MercMode needs enabled true/false and 1..20 rounds per title')
     if type(out['repeat_queue']) is not bool:
         raise ValueError('MercMode repeat_queue must be true or false')
+    if type(out['blueprint_look']) is not bool:
+        raise ValueError('MercMode blueprint_look must be true or false')
     from .mercs.stalemate import CUT_MIN_S, CUT_MAX_S
     if out['coop_ratio'] not in COOP_RATIOS:
         raise ValueError('MercMode coop_ratio is co-op : solo turns, one of ' + ', '.join(COOP_RATIOS))
@@ -1029,14 +1041,48 @@ def _picked(store, worker, row):
     return row
 
 
-def default_mod(cfg, row):
-    """The configured build for this round's title (a DJ queue `mod` for that round still wins)."""
-    mod = (cfg.get('default_mods') or {}).get(row.get('title'))
+def blueprint_name(mod):
+    """`<build>` -> `<build>-blueprint` (already a companion: unchanged)."""
+    return mod if not mod or mod.endswith(BLUEPRINT_SUFFIX) else mod + BLUEPRINT_SUFFIX
+
+
+def plain_mod(mod):
+    """`<build>-blueprint` -> `<build>`."""
+    return mod[:-len(BLUEPRINT_SUFFIX)] if mod and mod.endswith(BLUEPRINT_SUFFIX) and len(mod) > len(BLUEPRINT_SUFFIX) \
+        else mod
+
+
+def effective_mod(cfg, mod):
+    """The build a round plays for a queue entry's `mod` under these settings: its blueprint companion while
+    blueprint_look is on, the entry's own build when off. A `mod` of None (the stock game) stays None: the stock
+    game has no companion (make one from an empty build with switch_mods op=blueprint and queue that build)."""
     if not mod:
-        return row
+        return mod
+    return blueprint_name(mod) if (cfg or {}).get('blueprint_look') else mod
+
+
+def same_build(cfg, head_mod, run_mod, run=None):
+    """Does the running session already play what the queue head asks for under these settings? True when the
+    running build is the head's effective build, or the plain build after a recorded blueprint fallback (the
+    companion was missing at launch: no restart loop until it exists). A toggle flip is therefore a restart at the
+    next round boundary: on -> the companion is not what runs; off -> the companion that runs is not the plain."""
+    if not head_mod or not run_mod:
+        return False
+    if run_mod == effective_mod(cfg, head_mod):
+        return True
+    return bool((run or {}).get('blueprint_fallback')) and run_mod == head_mod
+
+
+def default_mod(cfg, row):
+    """The configured build for this round's title (a DJ queue `mod` for that round still wins), then the build's
+    blueprint companion when blueprint_look is on (effective_mod)."""
+    mod = (cfg.get('default_mods') or {}).get(row.get('title'))
     selection = dict(row.get('selection') or {})
-    selection.setdefault('mod', mod)
-    return row | {'selection': selection}
+    if mod:
+        selection.setdefault('mod', mod)
+    if selection.get('mod'):
+        selection['mod'] = effective_mod(cfg, selection['mod'])
+    return row | {'selection': selection} if selection else row
 
 
 def choose(store, worker, rng, cfg=None):

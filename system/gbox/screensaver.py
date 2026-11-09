@@ -531,6 +531,17 @@ class Screensaver:
             # the DJ's queued round names a build: play it from this PC's own copy (local_build_ok), exactly the
             # roulette's build launch, so a mod swap from the lab reaches a real MercMode round
             build = {'name': merc_pick['selection']['mod']}
+            # blueprint_look asked for the build's companion (mercmode.effective_mod) but this PC's index knows the
+            # plain build and not the companion yet (switch_mods op=blueprint not run for it): the plain build plays,
+            # the run records the fallback so the boundary does not restart into the same miss every round
+            plain = mercmode.plain_mod(build['name'])
+            if plain != build['name'] and self.builds:
+                known = {str(b.get('name') or '') for b in self.builds(g['game_id'])}
+                if known and build['name'] not in known and plain in known:
+                    self.store.audit(ACTOR, 'mercmode.blueprint_missing', w['name'],
+                                     {'wanted': build['name'], 'playing': plain, 'game_id': g['game_id']})
+                    build = {'name': plain, 'blueprint_fallback': True}
+                    merc_pick = merc_pick | {'selection': merc_pick['selection'] | {'mod': plain}}
         elif merc_pick and merc_cfg.get('cast_swap') in ('on', 'random', True):
             # the operator's inverted cast (2026-11-06: "I really want to only see the characters replaced as zombies
             # too ... and the characters wearing majini clothes"): the zombies wear cast characters' whole models and
@@ -589,7 +600,8 @@ class Screensaver:
                                                **coop,
                                                **({'selection': merc_pick['selection']} if merc_pick.get('selection') else {})}}
                                               if merc_pick else {}),
-                                          **({"mod": build["name"], "build": label} if build else {})})
+                                          **({"mod": build["name"], "build": label} if build else {}),
+                                          **({'blueprint_fallback': True} if build and build.get('blueprint_fallback') else {})})
         return f"launching {g['title']}" + (f" ({label})" if build else "")
 
     def _advance(self, w, run, cfg, running, now):
@@ -1528,13 +1540,14 @@ class Screensaver:
             rotate = rotate or skin_rotate
             mod_rotate = bool(head and head.get('mod') and head['title'] == run['mercmode']['title']
                               and playable(head['title']))
-            if mod_rotate and not skin_rotate and head['mod'] == (
-                    run.get('mod') or (self.store.get('session', run['session_id']) or {}).get('mod')):
+            if mod_rotate and not skin_rotate and mercmode.same_build(
+                    cfg, head['mod'], run.get('mod') or (self.store.get('session', run['session_id']) or {}).get('mod'), run):
                 # The queued build is the one this session booted with (a repeating playlist of one build): LayeredFS
                 # has nothing new to load, so the title is not restarted - the running bot takes the entry's character
                 # and stage at its menus, as for any same-game queue entry. Restarting it anyway cost a ~50 s boot
                 # every round, and Eden hung black at boot on 4 of 9 of those restarts on lilspark (2026-11-09), two
-                # more minutes each before the black watch gave the game back.
+                # more minutes each before the black watch gave the game back. With blueprint_look the comparison is
+                # against the build's companion (mercmode.same_build): flipping the toggle restarts at this boundary.
                 mod_rotate = False
             if mod_rotate:
                 # A LayeredFS build is loaded at boot. Keep this queue entry until _start launches it; sending its
@@ -1763,6 +1776,7 @@ class MercModeSettings(BaseModel):
     presentation_priority: bool | None = None
     queue: list[dict] | None = None             # the DJ queue: [{title, mode, character, stage}], None fields = random
     repeat_queue: StrictBool | None = None     # retain a single build or cycle a playlist every round
+    blueprint_look: StrictBool | None = None   # play each entry's `<build>-blueprint` companion (grid textures); next round
     keep_warm: int | None = None                # titles waiting paused beside the playing one (0 = cold switches)
     stalemate_cut: bool | None = None           # the bots cut the clock when no enemy shows for 15 s (gbox.mercs.stalemate)
     stalemate_cut_s: int | None = None          # ... to this many seconds (1..60; default 5)
@@ -1973,6 +1987,8 @@ def install(app, store, config, auth, submit, workers, archive):
                                     '(or press F5 there to update it), then try again')
         if _local_scheduler(worker) and patch.get('repeat_queue') is True and mercmode.REPEAT_QUEUE_FEATURE not in features:
             raise HTTPException(409,f'{host} needs an updated gBox to repeat its MercMode queue')
+        if _local_scheduler(worker) and patch.get('blueprint_look') is True and mercmode.BLUEPRINT_FEATURE not in features:
+            raise HTTPException(409,f'{host} needs an updated gBox for the blueprint look')
         try:
             desired=mercmode.configure(store,host,patch)
         except ValueError as exc:
@@ -1999,6 +2015,7 @@ def install(app, store, config, auth, submit, workers, archive):
                        and (k != 'default_mods' or mercmode.DEFAULT_MODS_FEATURE in features)   # ... and this one
                        and (k != 'skin_swap' or mercmode.SKIN_FEATURE in features)     # ... and these two
                        and (k != 'repeat_queue' or mercmode.REPEAT_QUEUE_FEATURE in features)
+                       and (k != 'blueprint_look' or mercmode.BLUEPRINT_FEATURE in features)
                        and not (k=='preferred_editions' and not v)}      # unset: never sent to a worker that lacks it
                 if dispatched:
                     relay|={'command':command,'dispatch_id':dispatched['id'],

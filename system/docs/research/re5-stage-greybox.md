@@ -440,12 +440,13 @@ patches the grid is right on the median patch and off by up to ×2 on the others
 
 ## Generalising to s401..s407
 
-`build(archive, stage='s401')` is the same code: the scope is `stage\sNNN\scr\scr01\`, every rule is measured per
-archive, nothing is keyed to s400's names except the Japanese words of the tie-breaker. It was **not** run on the
-other seven stages: only `s400.arc` was copied (the other seven are 43-99 MB each, 460 MB in all, within the transfer
-budget but not needed for the method). Before running it there, the fvf survey should be repeated on each (a format
-outside the six measured ones is skipped, not guessed, and the survey says how many meshes that is) and the `_BM`
-format checked (anything not BC7 is left native and listed).
+Done the same day: [blueprint-look.md](blueprint-look.md) has the per-archive survey, the overlay set of all eight
+stages and the 71 object archives they place (`stage-greybox-all-v1`), the MercMode toggle and the panel switch, and
+what the first live frame of `stage-greybox-s400-v1` showed (it renders; several wall labels read mirrored, fixed by
+measuring the UV handedness per texture). What the survey changed in the method: the scenery folder is not always
+`scr01` (s402 draws from `scr00`, s405 from `scr01..07` and a borrowed `s314` piece), albedo names carry `_BM-NN`
+suffixes in s401 and s405, three more vertex formats follow the measured layout (`0x2C207F5E`, `0x2D30A6AF`,
+`0x33C09993`), one s403 texture (`_NUKI`) is in a format `mtf_tex` does not parse and stays native.
 
 ## Reproduce
 
