@@ -73,6 +73,13 @@ CLASSES = (
                "Another game was running on this PC and could not be saved first, so gBox kept it running and refused "
                "to replace it. The new game never started. The blocker is the running game's save state, not this game.",
                "none"),
+    ErrorClass("stream_pip_watched",
+               re.compile(r"Watching (?P<titles>.+?) in a connected stream or PiP", re.I),
+               "A connected stream or picture-in-picture view was still watching this game on the PC, so gBox's "
+               "operator guard kept it running and refused to replace it. This is operator protection, not a game "
+               "fault: the view must be closed by the operator, or its watch lease must expire, before another game "
+               "can load on this PC. No automatic remedy is safe while the view is live.",
+               "none"),
     ErrorClass("content_timeout",
                re.compile(r"started but content not running after (?P<secs>\d+)\s*s", re.I),
                "The emulator process started but did not report the game as running within its boot timeout. Usual "
@@ -155,6 +162,8 @@ def classify(error: str, *, adapter: str = "", session_exit: dict | None = None)
         if c.cls == "previous_game_blocking":
             label = (f"previous game ({g['blocker'][:60]}) could not be saved, so it kept running"
                      if g.get("blocker") else "the previous emulator could not be closed")
+        elif c.cls == "stream_pip_watched":
+            label = f"an operator view was still watching {g.get('titles', 'the game')[:60]}"
         elif c.cls == "content_timeout":
             label = f"{adapter or 'emulator'} content not running after {g.get('secs', '30')}s"
         elif c.cls == "missing_bios":
@@ -436,6 +445,10 @@ class Ledger:
         from .refract import NOT_A_FAILURE_RX
         if NOT_A_FAILURE_RX.search(err):
             return "a Quest game's ownership is not confirmed yet, or its Refract setup is still running on that PC"
+        from .operator_guard import WATCHING_RX
+        if WATCHING_RX.search(err):
+            return ("refused by the operator-watch guard (a stream or PiP view was open on that PC): the game was "
+                    "protected on purpose, not a failed launch")
         if job.get("agent_use"):
             return "agent test launch (evidence capture / investigation): reported by its own task"
         if job.get("parent_request_id"):

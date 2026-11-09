@@ -1,0 +1,40 @@
+{
+  "schema": "gbox.mercs.analysis/1",
+  "report_id": "ebf0713cb7df2a0121886c7dd01581662dba32cba43074f30e2eeb8763d5911a",
+  "round_id": "3b3991fbe37c43a385a491b9ac68467d",
+  "summary": "Chris (STARS) solo round, outcome died @258.09 s, score 22050 with rank fully unverified (native/score_based_estimate/estimate_source all null, verified=false); round accuracy computed 76/170 = 44.7% with round_trigger_s 7.1 s while recorded accuracy/round_accuracy are null; 13 player damage events vs 8 hits_taken with incidents state unavailable; 2 holds, 6 escapes, 0 burst backoffs, 0 heals, 3 dying and round_deaths null despite outcome died; enemy DB shows 2 classes seen and 18 learned from 87732 samples while this round contributed db_shots=0 and 12 damage samples; atlas, checkpoints beyond 1 bonus, and mines are unavailable/zero because this title records no navigation atlas, checkpoints or mines.",
+  "findings": [
+    "Provenance verified true against owning local autoplay job 7a436b7386b74fd0, session 576fd561328e4ba1-382a8fbd8f3b4603, game 52d15709be0fda1a, title 010018100CD46000; report ebf0713cb7df2a0121886c7dd01581662dba32cba43074f30e2eeb8763d5911a, round 3b3991fbe37c43a385a491b9ac68467d, geometry 1350-1664-ff6314937b448650-a383d0a7b930.",
+    "Outcome died at timer 258.09 s; rank score 22050 with all verification fields null and verified=false, so the rank remains unverified and no guessed result rank is claimed.",
+    "Aim: 76 hits of 170 shots = 44.7% computed, round_trigger_s 7.1 s; recorded accuracy, round_accuracy, misses, round_quick_shots, round_melee, round_reloads, shots_s and pitch_offset are all null, so only the computed ratio is evidence.",
+    "Damage: 13 player damage events vs 8 hits_taken is a 5-event attribution gap; incidents state unavailable with events empty, so no per-incident attribution is possible and round_used_health_protection is null.",
+    "Grabs: round_holds 2; crowd escapes round_escapes 6 with round_burst_backoffs 0; both are recorded counts, not attributed to specific enemies or positions.",
+    "Heals: round_heals 0, round_heal_starts 0, round_heal_failures 0; no health-protection usage recorded.",
+    "Dying/death: round_dying 3 but round_deaths null while outcome is died; deaths counter null is a gap, dying 3 is the only recorded dying evidence.",
+    "Route: backoffs 0, nav_recoveries 0, route_replans 0, routes_blocked 0, routes_given_up 0, stuck 0; all navigation detail fields (navigation_distance_m, replans, detours, wall_detours, learned_floor_cells, learned_walls, nav_oscillations, motion_idle_spin_s, stuck_events, stuck_reason) are null.",
+    "Atlas state unavailable with reason this title has no navigation atlas; bounded_fragments false and measured_reviews empty, so route review is limited to recorded counters only.",
+    "Checkpoints: bonuses_taken 1, bonus_s 0, bonus_actor_removals 0, time_bonuses_remaining null; no checkpoint progression evidence beyond one bonus taken.",
+    "Mines: all mine fields 0; the title records no mines, so mine escape is unknown by design, not an evasion.",
+    "Engagement: 53 kills, max_combo 13; attacks_avoided, attacks_landed, attacks_prevented, attacks_seen, evades, react_vi_med, respond_vi_med, thrown_seen, thrown_shot are all null, so kill count is the only engagement evidence.",
+    "Enemy knowledge DB: 23 classes total, 2 seen, 18 learned, 87732 samples, enemy_db_damage 12, enemy_db_hits 0, enemy_db_kills 0, enemy_db_shots 0; this round fed 12 damage samples and 2 seen classes while shots recorded to the DB are 0, a scope discrepancy between per-class learned data and round counters.",
+    "Per-class learned context (DB, not this round): uEm10 humanoid 28629 shots 75% hit, aim chest 1.21m c1.0, range 1.5-5m, 1.4 shots/kill, hurt us 7997x, danger 0-2m 0.02; uEm12 10746 shots 85% hit, aim head 1.53m c0.9, range 1.5-2m, 1.6 shots/kill, hurt us 3359x, danger 0-2m 0.03; uEm0b 2066 shots 20% hit, aim chest 1.02m c0.8, range 5-10m, 5.1 shots/kill, hurt us 10654x, danger 0-2m 0.35.",
+    "Learning state evaluation_pending, analysis_policy_applied false, source_policy_ids empty, validated_existing_consumer null; the existing validated learner is separate and no policy was applied by this analysis.",
+    "Assistance classification unknown, effects empty, verified false; no assistance verification available.",
+    "QTE: qte_presses 0, resuscitate_presses 0; tablets round_tablets, round_tablet_presses, round_tablet_misses all null.",
+    "Named unknowns: exact rank; per-incident damage attribution (5-event gap); attacker identity per hold/escape; why round_deaths is null; misses count; quick shots, melee and reload counts; all navigation distance/detail fields; time_bonuses_remaining; tablet counters; attacker attribution for the 12 enemy_db_damage samples; bow fields are null and not recorded for this title; checkpoint progression detail beyond bonuses_taken 1."
+  ],
+  "proposals": [
+    {
+      "kind": "evaluate_aim",
+      "reason": "Computed round accuracy 44.7% (76/170) vs recorded accuracy null, and enemy DB db_shots 0 vs 87732 samples with 2 seen classes suggests the aim counters are not being fed to the per-class DB this round; uEm10 (75% chest 1.21m 1.5-5m) and uEm12 (85% head 1.53m 1.5-2m) are the two seen classes; independent review should confirm whether 44.7% is a true round signal or a recording gap before any aim policy change."
+    },
+    {
+      "kind": "review_damage_incidents",
+      "reason": "13 player damage events vs 8 hits_taken (5-event gap) with incidents state unavailable and events empty; no per-incident attribution exists, so the death chain cannot be reconstructed; recommend incident recording be confirmed operational for this title before damage attribution."
+    },
+    {
+      "kind": "review_measured_route",
+      "reason": "Route counters are all zero (backoffs 0, stuck 0, nav_recoveries 0, routes_blocked 0, routes_given_up 0) while all navigation detail fields are null and atlas is unavailable for this title; with 6 escapes and 2 holds but no route evidence, a measured-route review is limited to counters only and cannot assess navigation quality."
+    }
+  ]
+}

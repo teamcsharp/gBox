@@ -14,13 +14,18 @@ from dataclasses import dataclass, field
 
 MAGIC = 0x0401FFFF
 
+# Capacity sentinel: unused float-pool slots are 0xcdcdcdcd.
+SENTINEL = struct.unpack("<f", bytes.fromhex("cdcdcdcd"))[0]  # -431602080.0
+
 
 @dataclass
 class Mesh:
     offset: int
     pool_count_hdr: int      # first word of 0x200f1/0x10035 blob
     pool_words: int          # float words after the 2-word blob header
-    npool: int               # strip index-space size
+    pool_off: int = 0        # byte offset of the float pool (after count+flag words)
+    pool_end: int = 0        # byte offset where the pool ends (parent (0x401ffff,1) end)
+    npool: int = 0           # strip index-space size
     indices: list = field(default_factory=list)
     kind: str = "pos"        # pos (0x200f1) or uv (0x10035)
 
@@ -47,7 +52,17 @@ def read_dff(data: bytes) -> list[Mesh]:
             blob = cs + 12
             _, bs, _ = struct.unpack_from("<3I", data, blob)
             cnt = struct.unpack_from("<I", data, blob + 12)[0]
-            m = Mesh(mo, cnt, (csz - 12 - 8) // 4, 0,
+            # Explicit pool bounds: the blob leaf size is NOT the payload bound;
+            # the float pool is [count][flag][floats] running to the parent
+            # (0x401ffff,1) container end.  Validate the region before trusting it.
+            pool_off = blob + 12 + 8          # skip the [count, flag] header words
+            pool_end = cs + 12 + csz          # parent container end
+            nwords = (pool_end - pool_off) // 4
+            assert 0 <= pool_off <= pool_end <= len(data), \
+                f"pool bounds out of range @ {mo:#x}: off={pool_off:#x} end={pool_end:#x}"
+            assert nwords > 0, f"empty float pool @ {mo:#x}"
+            assert cnt < 0x10000, f"implausible pool count {cnt} @ {mo:#x}"
+            m = Mesh(mo, cnt, nwords, pool_off=pool_off, pool_end=pool_end,
                      kind="pos" if bs == 0x200F1 else "uv")
             for so, st, ss, ssz in chunks(data, mo + 12, end):
                 for xo, xt, xs, xsz in ([(so, st, ss, ssz)] +
@@ -70,6 +85,83 @@ def strip_triangles(idx):
             continue
         out.append((a, c, b) if i & 1 else (a, b, c))
     return out
+
+
+
+@dataclass
+class FloatRow:
+    """One 17-word float-pool row: pos(3) + 4xvec3(12) + vec2(2).
+
+    ``mask`` marks each word real (True) or 0xcdcdcdcd sentinel slot (False).
+    """
+    index: int
+    words: tuple
+    mask: tuple
+    real_count: int
+
+    @property
+    def pos(self):
+        return self.words[0:3]
+
+    @property
+    def unit_vecs(self):
+        return [self.words[3 + 3 * t:3 + 3 * t + 3] for t in range(4)]
+
+    @property
+    def tail2(self):
+        return self.words[15:17]
+
+
+@dataclass
+class FloatPool:
+    """Stride-17 row decode of an owned NB2003 .dff float pool.
+
+    Verified on nb2003_ape.dff mesh0 (3918 words, count hdr 225):
+    rows 0..149 fully real; row 150 = 14 real with sentinel slots at
+    words 13..15 (trailing word 0.0); row 151 =
+    [0.0 0.0 S*15]; rows 152..229 all sentinel; 8-word all-sentinel tail.
+    1352 sentinel words total.  Pools without capacity padding (ape.dff
+    mesh4..7) decode with sentinel_words == 0.
+    """
+    stride: int
+    rows: list
+    tail: tuple
+    n_full: int
+    n_partial: int
+    n_sentinel_rows: int
+    sentinel_words: int
+    real_words: int
+
+    def full_rows(self):
+        return [r for r in self.rows if r.real_count == self.stride]
+
+
+def decode_float_pool(words, stride=17, sentinel=SENTINEL):
+    """Decode a raw float-pool word list into stride-17 rows + tail.
+
+    Every complete row carries a per-word real/sentinel mask; the ``n % stride``
+    leftover words form the (all-sentinel on owned pools) tail.  No stride or
+    capacity is assumed beyond ``stride``; row classes are derived from the
+    sentinel mask.
+    """
+    n = len(words)
+    rows = []
+    for i in range(n // stride):
+        r = tuple(words[i * stride:(i + 1) * stride])
+        mask = tuple(w != sentinel for w in r)
+        rows.append(FloatRow(i, r, mask, sum(mask)))
+    cut = (n // stride) * stride
+    tail = tuple(words[cut:])
+    return FloatPool(
+        stride,
+        rows,
+        tail,
+        sum(1 for r in rows if r.real_count == stride),
+        sum(1 for r in rows if 0 < r.real_count < stride),
+        sum(1 for r in rows if r.real_count == 0),
+        sum(stride - r.real_count for r in rows) + sum(1 for w in tail if w == sentinel),
+        sum(r.real_count for r in rows) + sum(1 for w in tail if w != sentinel),
+    )
 
 
 if __name__ == "__main__":
