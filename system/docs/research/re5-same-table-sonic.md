@@ -172,6 +172,16 @@ The visible enemies are still the donor variant; the one-part Sonic patch is not
 
 Next: patch **all donor parts** (keeping the donor table/formats) rather than one, so the body is Sonic end to end.
 
+That build also played a live round: every LOD0 part of `em1001_low` was given Sonic geometry (formats/table preserved)
+and paired with its own MRL. **The visible Majini were still normal** — the patched `uEm10`/`em1001_low` entry is not the
+enemy the camera sees in Public Assembly, or its changed parts are hidden in that view.
+
+![All-LOD0 Sonic donor patch in a live round; visible Majini remain normal](evidence/re5-donor-lod0-sonic-stock-enemies.jpg)
+
+This makes the **target archive** the next identification problem: `uEm10` is not sufficient. The verified enemy-cast
+route already names `uEm10/uEm11/uEm21/uEm62`; the same Sonic-patched donor pair must be applied to the archive the
+visible enemy actually uses.
+
 ![Donor-pair round with the one-part Sonic patch; enemies remain the donor variant](evidence/re5-donor-sonic-patch-enemies.jpg)
 
 The MRL tail is not opaque noise. Its first words are a header
