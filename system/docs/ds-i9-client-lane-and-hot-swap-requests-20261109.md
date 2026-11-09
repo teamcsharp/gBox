@@ -291,3 +291,27 @@ PM/operator can correct the plan before more is built.
    the A press on START GAME does nothing while ONLINE COMMUNICATION = ALLOW (the game appears to wait on a network
    session); the setting must be forced to DON'T ALLOW in the launch config or the menu walk, and the lobby screen
    needs the same RAM read (`screen()` named it `mercs_wrong_mode` earlier).
+
+## Round 7 status (2026-11-09, ~17:30 CST, main at `9289d3ea`): the base NSP decrypts; RomFS tables next
+
+1. **Fixed a real bug in `switch_nca`** (`9289d3ea`): `pfs0_offset`/`pfs0_size` were read 8 bytes early (fs-header
+   +0x38/+0x40 is the superblock's block size + padding). They live at +0x40/+0x48. The new synthetic-header test
+   (`test_switch_nca_synthetic.py`) builds an encrypted header, runs without `prod.keys`, and asserts the offsets — it
+   fails on the old code. `test_switch_nca.py` still passes 3 + 2 skipped (the keyed vectors skip when this PC's
+   `hactool.keys_path()` is empty; the real NCA test needs the operator's keys).
+2. **Base NSP decryption now verified end to end for the ExeFS**: base ticket block at 0x180 with `titlekek_07` and
+   the absolute-offset CTR IV decrypt the base program NCA's ExeFS section to `PFS0`. The same key/IV convention as the
+   update; the base game's ExeFS is readable from the local cache NSP (member `7d1de582…`, 18.8 GB, ExeFS at
+   0x45ceb0000, PFS0 at +0x8000).
+3. **Base RomFS is located but its tables are not decoded yet.** The section is at NCA offset `0x1c000`, size
+   `0x45ce94000`, CTR with `section_ctr 0000000002000000`; the IVFC superblock (fs header 1) gives 6 levels; level 5's
+   logical offset `0x22f8000` is the RomFS header, which parses cleanly:
+   `header_size 0x50, dir_hash 0x45a820fb8/0x21c4, dir_meta 0x45a82317c/0x10844, file_hash 0x45a8339c0/0x3b39c,
+   file_meta 0x45a86ed5c/0x32d264, data_offset 0x200`.
+   Reading the meta tables at those *section-absolute* offsets decrypts to garbage, and adding the header offset
+   overruns the section, so the offsets are relative to the **IVFC data level** whose physical base is not the section
+   start — the level mapping (hactool's `ivfc_levels[i].data_offset` chain) is the open question. Note also that a
+   CTR read must be rounded up to a 16-byte block (a partial-block read silently truncates), which bit the probe.
+4. **Next**: settle the IVFC level chain (or dump the base RomFS through Yuzu's own game-list "Dump RomFS" and use its
+   paths), then map the update's BKTR relocations onto that virtual space and extract only the changed files for the
+   overlay. That remains the gate for a Mercenaries round and for the enemy-model assets the operator asked for.
