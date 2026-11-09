@@ -73,6 +73,29 @@ control-plane merges are live; the worker id is now `0a61e625f9d844d6`. Package 
 floors, pursuit until the stage is empty) have their first version in the bot: measure and finish them rather than
 start them. The plan document's §6 still mentions a six-minute round cap; there is none (`ROUND_CAP_S = 0`).
 
+## 0b. Update, 2026-11-09 20:10 UTC (main at `a828db36` or later)
+
+- **First library character drawn live as the player by the generic writer:** session `0a61e625f9d844d6-3ddd04616ed846de`,
+  build `recovery-cast-pool-03-chris-test-20261109`, the queue entry "Chris (Safari)" at The Mines drew **Ryo Hazuki
+  (Shenmue)** - the donor cast pool 03 wrote into `uPl00ChrisCos2.arc` (its "STARS" row). So the Chris costume labels
+  are crossed exactly as Sheva's were found to be offline: the roster's Safari loads the Cos2 archive. Fix the label
+  table in `re5_cast_writer` from this. Frame artifact `59ab8767…` (he is on the floor in the dying prompt, mobbed).
+- **Mario on Chris (BSAA)** (`cast-pool-03`, `0a6df563…`): the launch died at 88 s with the screen never read
+  (session `…a72f41d8`); the Eden black-boot flake or the archive - not decided. Retry it alone before blaming the fit.
+- **Playing next** (queued, loads at the next round boundary): `recovery-pool-01-cast-03-test-20261109` = enemy-pool-01
+  (`uEm10` `315260a4…` ten donors, `uEm11` `5981edc7…` Amy and Claude - the first edited uEm11 ever loaded) + Ryo and
+  the Twin Snakes soldier on the Chris costume slots + the proven v15 Sonic on Chris (BSAA). Six entries over Public
+  Assembly and The Mines. The operator, watching the mix: "I need every zombie replaced with random people. The
+  gameplay is getting more interesting as you add more random replacements." Package G (the other classes: uEm12,
+  uEm13, uEm14, uEm21, uEm0b, the specials) is therefore the next most valuable thing after A.
+- **The bot** (`e70fad25`): he never stands - the guard's turns move him toward the corner instead of turning on the
+  spot (with B held he does not turn: the cause of a 7-minute stall), and a backstop steps him along open floor after
+  3 s without movement (`stand_breaks`). Measure it (package E) before anything else on the bot.
+- **Both RE5 agents' work is merged** (`68f518fd` cast writer and donor pool, `a828db36` enemy cast and stage census,
+  one conflict in the shared `mtf_retarget.transfer` / `re5_mesh_import.build_archive` resolved by keeping both forms
+  of per-role scaling). The operator has DeepSeek working locally on the RE4 and RE6 loaders; the RE5 writers are the
+  reference for both.
+
 ---
 
 ## 1. What the operator wants (their words, 2026-11-09)
