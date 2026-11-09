@@ -132,3 +132,24 @@ def test_hand_frame_maps_fingers_and_thumb_without_reflecting_either_side(side):
     assert np.linalg.det(rotation) == pytest.approx(1.)
     with pytest.raises(ValueError,match='parallel'):
         mtf_retarget.direction_frame((1.,0.,0.),(2.,0.,0.))
+
+
+def test_per_role_scales_size_one_part_apart_and_stand_a_foot_on_the_floor():
+    vertices = [{"position": (0., 1., .5), "normal": (0., 0., 1.), "source_joints": (1,), "source_weights": (1.,)},
+                {"position": (.5, -1., 1.), "normal": (0., -1., 0.), "source_joints": (2,), "source_weights": (1.,)}]
+    args = (vertices, {1: (0., 2., 0.), 2: (0., 0., 0.)}, {}, {0: (0., 50., 0.), 1: (0., 10., 0.)},
+            {"shin": (1, 0), "foot": (2, 1)}, {"shin": "foot"})
+    uniform, _ = mtf_retarget.transfer(*args, scale=2.)
+    same, receipt = mtf_retarget.transfer(*args, scale={"shin": 2., "foot": 2.})
+    assert [v["position"] for v in same] == [v["position"] for v in uniform]
+    assert receipt["scale"] == {"shin": 2., "foot": 2.}
+    # the shin still spans the native 40 units; the foot keeps scale 2 across and takes 10 upward: its sole is on y 0
+    stood, _ = mtf_retarget.transfer(*args, scale={"shin": 2., "foot": (2., 10., 2.)})
+    assert stood[0]["position"] == pytest.approx(uniform[0]["position"])
+    assert stood[1]["position"] == pytest.approx((1., 0., 2.))
+    assert stood[1]["normal"] == pytest.approx((0., -1., 0.))
+    for bad in ({"shin": 2.}, {"shin": (2., 2., 2.), "foot": 2.}, {"shin": 2., "foot": 0.}, {"shin": 2., "foot": (1., 2.)}):
+        with pytest.raises(ValueError):
+            mtf_retarget.transfer(*args, scale=bad)
+    with pytest.raises(ValueError):
+        mtf_retarget.transfer(*args, scale={"shin": 2., "foot": 2.}, continuous=True)

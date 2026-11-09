@@ -89,3 +89,41 @@ def test_reposed_pipeline_rotates_surface_and_normals_but_retains_native_root(tm
     assert model.bone_world()[1][1:]==pytest.approx((0.,50.,0.))
     assert receipt['skin']['rotation_determinants']==pytest.approx({'hip':1.,'head':1.})
     assert receipt['skin']['height']==50. and receipt['triangles']==1
+
+
+
+def test_native_segments_options_address_entries_keep_normals_and_turn_clockwise_donors(tmp_path,monkeypatch):
+    arc,source=inputs(tmp_path,monkeypatch)
+    args=dict(model_name='body',source_roles={'hip':'hip','head':'head'},target_roles={'hip':0,'head':1},segments={},scale=1.)
+    twice=mt_arc.parse(arc);twice.entries+=twice.entries[:2]
+    doubled=mt_arc.build(twice)
+    with pytest.raises(ValueError,match='ambiguous'):
+        importer.build_archive(doubled,source,**args)
+    result,raw,_,receipt=importer.build_archive(doubled,source,**args,model_entry=4,mrl_entry=5)
+    before,after=mt_arc.parse(doubled),mt_arc.parse(result)
+    assert [i for i,(a,b) in enumerate(zip(before.entries,after.entries)) if a.data!=b.data]==[4]
+    assert (receipt['model_entry'],receipt['mrl_entry'],receipt['changed_entry_indices'])==(4,5,[4,2])
+    for wrong in (dict(model_entry=4),dict(model_entry=5,mrl_entry=4),dict(model_entry=2,mrl_entry=5)):
+        with pytest.raises(ValueError):
+            importer.build_archive(doubled,source,**args,**wrong)
+    original=importer.mtf_materials.source_mesh
+    def tilted(path,atlas_size,**options):
+        vertices,faces,atlas,report=original(path,atlas_size)
+        return [v|{'normal':(0.,.6,.8)} for v in vertices],faces,atlas,report|{'face_normal_fallback_corners':0,'options':options}
+    monkeypatch.setattr(importer.mtf_materials,'source_mesh',tilted)
+    _,flat,_,recomputed=importer.build_archive(arc,source,**args)
+    _,kept,_,carried=importer.build_archive(arc,source,**args,keep_source_normals=True,samplers_in_range=True)
+    assert mt_model.parse_mod(flat).normals(0)[0]==pytest.approx((0.,0.,1.),abs=.008)
+    assert mt_model.parse_mod(kept).normals(0)[0]==pytest.approx((0.,.6,.8),abs=.008)
+    assert (recomputed['normals'],carried['normals'])==('recomputed per stored vertex','source')
+    assert carried['appearance']['options']=={'strict_samplers':'in_range'} and recomputed['appearance']['options']=={}
+    _,turned,_,reversed_=importer.build_archive(arc,source,**args,keep_source_normals=True,reverse_winding=True)
+    from gbox import mtf_author
+    assert mtf_author.mesh_triangles(mt_model.parse_mod(kept),0)==[(0,1,2)]
+    assert mtf_author.mesh_triangles(mt_model.parse_mod(turned),0)==[(0,2,1)] and reversed_['winding_reversed']
+    with pytest.raises(ValueError,match='only the native_segments mode'):
+        importer.build_archive(arc,source,**args,pose_mode='source_proportions',height=50.,keep_source_normals=True)
+    monkeypatch.setattr(importer.mtf_materials,'source_mesh',lambda path,atlas_size:(
+        *original(path,atlas_size)[:3],{'face_normal_fallback_corners':3}))
+    with pytest.raises(ValueError,match='clockwise donor needs its own normals'):
+        importer.build_archive(arc,source,**args,reverse_winding=True)

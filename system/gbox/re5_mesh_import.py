@@ -18,7 +18,10 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
                   target_roles: dict[str, int], segments: dict[str, str], scale: float,
                   material_index: int = 0, template_index: int = 0, continuous: bool = False,
                   pose_mode: str = 'native_segments', height: float = 180., centre_hip: bool = False,
-                  repose_frames: dict | None = None, retarget_root_translation: bool = False):
+                  repose_frames: dict | None = None, retarget_root_translation: bool = False,
+                  model_entry: int | None = None, mrl_entry: int | None = None,
+                  keep_source_normals: bool = False, reverse_winding: bool = False,
+                  samplers_in_range: bool = False):
     """Return (archive, MOD, atlas, receipt), using caller-reviewed roles and native material.
 
     Source roles name GLB nodes; target roles name native bone indices. Every source
@@ -26,9 +29,21 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
     influences survive; native four-weight encoding refuses a larger merged set.
     ``source_proportions`` preserves the donor surface at explicit height and edits
     existing child bind translations. It retains root0 and every native animation.
+
+    ``model_entry`` and ``mrl_entry`` name the MOD and its MRL by archive index when the
+    basename occurs more than once (a costume archive holds the base ``pl0000`` beside the
+    costume's). ``keep_source_normals`` (``native_segments`` only) keeps the donor's own
+    smoothing through the fit instead of recomputing one normal per stored vertex, which
+    creases every UV seam. ``reverse_winding`` turns each triangle of a donor exported with
+    clockwise fronts, whose normals face against its geometric faces. ``samplers_in_range``
+    accepts a donor texture with a clamped or mirrored sampler while its UVs stay inside 0..1.
     """
     if pose_mode not in ('native_segments','source_proportions','source_reposed'):
         raise ValueError('choose an explicit measured experimental pose mode')
+    if keep_source_normals and pose_mode != 'native_segments':
+        raise ValueError('only the native_segments mode recomputes normals; the other modes already keep them')
+    if (model_entry is None) != (mrl_entry is None):
+        raise ValueError('name the MOD entry and its MRL entry together, or neither')
     if repose_frames and pose_mode != 'source_reposed':
         raise ValueError('explicit repose frames require the source_reposed mode')
     if retarget_root_translation and pose_mode != 'source_reposed':
@@ -38,6 +53,8 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
     for index, entry in enumerate(parsed.entries):
         if entry.name.replace('\\', '/').rsplit('/', 1)[-1] != model_name:
             continue
+        if model_entry is not None and index not in (model_entry, mrl_entry):
+            continue
         raw = zlib.decompress(entry.data)
         if raw[:4] in (b'MOD\0', b'MRL\0'):
             if raw[:4] in matches:
@@ -45,6 +62,10 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
             matches[raw[:4]] = index, raw
     if set(matches) != {b'MOD\0', b'MRL\0'}:
         raise ValueError('the named native model needs exactly one MOD and paired MRL')
+    if model_entry is not None and (
+            (matches[b'MOD\0'][0], matches[b'MRL\0'][0]) != (model_entry, mrl_entry)
+            or parsed.entries[model_entry].name != parsed.entries[mrl_entry].name):
+        raise ValueError('the explicit entries are not the named MOD and its paired MRL')
     model_index, raw = matches[b'MOD\0']
     mrl_index, mrl = matches[b'MRL\0']
     model = mt_model.parse_mod(raw)
@@ -63,7 +84,12 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
         raise ValueError('the native albedo path must identify one existing TEX entry')
     texture_index, texture = texture_matches[0]
     surface = mtf_tex.parse(texture)
-    vertices, triangles, atlas, appearance = mtf_materials.source_mesh(source, atlas_size=(surface.width,surface.height))
+    vertices, triangles, atlas, appearance = mtf_materials.source_mesh(
+        source, atlas_size=(surface.width,surface.height), **({'strict_samplers': 'in_range'} if samplers_in_range else {}))
+    if reverse_winding:
+        if appearance.get('face_normal_fallback_corners'):
+            raise ValueError('a clockwise donor needs its own normals; its face normals would point inward')
+        triangles = [(a, c, b) for a, b, c in triangles]
     gltf, _, _, world = characters._load(source)
     names = {}
     for index, node in enumerate(gltf['nodes']):
@@ -132,7 +158,7 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
         fitted, skin = mtf_retarget.transfer(vertices, source_points, parents, target_points, roles, segments,
                                            scale=scale, continuous=continuous)
     import numpy as np
-    if pose_mode == 'native_segments':
+    if pose_mode == 'native_segments' and not keep_source_normals:
         normals = np.zeros((len(fitted), 3))
         for face in triangles:
             points = np.asarray([fitted[i]['position'] for i in face])
@@ -183,6 +209,9 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
                'source_roles': source_roles, 'target_roles': target_roles, 'segments': segments,
                'appearance': appearance, 'material': binding, 'original_bounds': original_bounds, 'bounds': bounds,
                'pose_mode':pose_mode, 'bind_skeleton':bind, 'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),
+               'normals':'recomputed per stored vertex' if pose_mode == 'native_segments' and not keep_source_normals
+                         else 'source',
+               'winding_reversed':bool(reverse_winding), 'model_entry':model_index, 'mrl_entry':mrl_index,
                'tangent_frames':'UV derivatives with handedness; authored occlusion1',
                'position_roundtrip_max_error': error, 'envelope_count': checked.header()['weight_bound_count'],
                'mesh_id': checked.meshes()[0]['mesh_id'], 'changed_entry_indices': [model_index, texture_index],
