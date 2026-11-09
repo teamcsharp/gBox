@@ -4677,7 +4677,7 @@ class Bot:
         """The operator's instant commands (gbox.mercs.directives). One-shots act on the tick they arrive; the standing modes
         (fight / hunt / score) are returned for _tick to apply. A command never presses a key itself: the normal combat,
         navigation, heal and prompt logic still decides every press. None: no command applies."""
-        from ..directives import Reader
+        from ..core.doctrine import Reader   # the operator's commands, else the doctrine's
         if getattr(self, "commands", None) is None:
             self.commands = Reader()
         cmd, fresh = self.commands.current(self.stats, time.time())

@@ -139,6 +139,41 @@ def view(snap: dict, drv=None, module=None) -> dict | None:
     return {"pos": (px, pz), "foes": foes, "kills": snap.get("kills"), "combo": snap.get("combo")}
 
 
+def _commands():
+    from .. import directives
+    return directives
+
+
+class Reader:
+    """A bot's view of its commands: the operator's first (gbox.mercs.directives.Reader), else the doctrine's.
+
+    Every bot builds this one. directives itself is never hot-reloaded (it holds the chat's in-memory store), so a
+    worker that has not restarted since the doctrine arrived still runs a directives.Reader that knows nothing of
+    doctrine_directive*: the fallback lives here, in a module that does reload, and is a no-op once the restarted
+    worker's own Reader already hands the doctrine's command over."""
+
+    def __init__(self):
+        self.base = _commands().Reader()
+        self.seen_auto = None
+
+    def current(self, stats: dict, now: float | None = None) -> tuple:
+        import time
+        now = time.time() if now is None else now
+        cmd, fresh = self.base.current(stats, now)
+        if cmd is not None:
+            if cmd == stats.get("doctrine_directive") and stats.get("doctrine_directive_seq") is not None \
+                    and not (stats.get("directive") and now < float(stats.get("directive_until") or 0)):
+                self.seen_auto = stats.get("doctrine_directive_seq")     # the base handed the doctrine's over itself
+            return cmd, fresh
+        auto, aseq = stats.get("doctrine_directive"), stats.get("doctrine_directive_seq")
+        if auto in _commands().COMMANDS and aseq is not None \
+                and now < float(stats.get("doctrine_directive_until") or 0):
+            fresh = aseq != self.seen_auto
+            self.seen_auto = aseq
+            return auto, fresh
+        return None, False
+
+
 class Director:
     """One round's doctrine: observe() every playing tick -> the goal in force (or None).
 

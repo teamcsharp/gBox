@@ -179,3 +179,36 @@ def test_a_gap_between_ticks_never_counts_as_idle_time():
     d.observe(None, None, 1001.0)                                        # a menu / loading: no player
     d.observe(D.view(crowd), {"hold": ("zl", "zr")}, 1060.0)             # back a minute later
     assert stats["doctrine_played_s"] == 0.0 and stats["doctrine_idle_s"] == 0.0
+
+
+def test_the_doctrines_own_reader_works_over_a_directives_reader_from_before_the_doctrine():
+    """directives is never hot-reloaded: a worker that has not restarted keeps a Reader that knows only the operator's
+    commands. The bots build doctrine.Reader, which adds the doctrine's on top and never hands one over twice."""
+    class Old:                                                            # directives.Reader as it was before today
+        def __init__(self):
+            self.seen = None
+
+        def current(self, stats, now=None):
+            cmd, seq = stats.get('directive'), stats.get('directive_seq')
+            if not cmd or seq is None:
+                return None, False
+            fresh = seq != self.seen
+            self.seen = seq
+            if fresh or now < float(stats.get('directive_until') or 0):
+                return cmd, fresh
+            return None, False
+    for base in (Old, directives.Reader):
+        r = D.Reader()
+        r.base = base()
+        stats = {}
+        assert r.current(stats, 10.0) == (None, False)
+        stats.update(doctrine_directive="fight", doctrine_directive_seq="d1", doctrine_directive_until=14.0)
+        assert r.current(stats, 10.0) == ("fight", True), base.__name__
+        assert r.current(stats, 11.0) == ("fight", False), base.__name__
+        stats.update(directive="explore", directive_seq=4, directive_until=30.0)      # the operator's wins
+        assert r.current(stats, 12.0) == ("explore", True), base.__name__
+        assert r.current(stats, 13.0) == ("explore", False), base.__name__
+        stats.update(doctrine_directive="score", doctrine_directive_seq="d2", doctrine_directive_until=50.0)
+        assert r.current(stats, 20.0) == ("explore", False), base.__name__            # still theirs
+        assert r.current(stats, 31.0) == ("score", True), base.__name__               # theirs lapsed: the doctrine's
+        assert r.current(stats, 32.0) == ("score", False), base.__name__
