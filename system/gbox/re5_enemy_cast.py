@@ -4,9 +4,11 @@ Three ways to put more than one character into a round, all composed here from `
 
 * **one donor per class** - donor A on `uEm10` (the men), donor B on `uEm11` (the women). Every option group of the
   class carries the donor; this is the shape the game has loaded and drawn (SM64 DS Mario on `uEm10`, 2026-11-09).
-* **a mix** - several donors on ONE class, one per montage carrier (`uEm10`: the ten pants textures, `uEm11`: the two
-  shirts). A spawn then shows the donor of the pants its montage selects. This rests on an inferred reading of the
-  montage table and has not been booted; its receipt says what a live frame must show.
+* **a mix** - several donors on ONE class, one per montage carrier (`uEm10`: sixteen shirt, pants and skin groups that
+  are an exact cover of its montages, or the ten pants textures of the first table; `uEm11`: the two shirts; `uEm12`:
+  four bodies; `uEm13`: two pants; `uEm14`: nine tops; `uEm21`: one shirt). A spawn then shows the donor of the carrier
+  its montage selects. This rests on an inferred reading of the montage table; the ten-pants mix on `uEm10` has been
+  loaded and drawn by the game (2026-11-09), the wider tables and the other classes have not.
 * **a pool** - `plan(seed, ...)` deals donors from a surveyed library over the carriers of every class without a
   repeat inside one overlay, alternating franchises, so different seeds give different rounds.
 
@@ -67,6 +69,36 @@ FIRST_BOOT_RISKS = {
         'em1100 has an origin bone above its body root that em1000 does not have; the donor is bound to the same role '
         'bones, but a donor standing in the floor or floating would point at that bone.',
     ],
+    'uEm12': [
+        'uEm12.arc has never been loaded with an edit. Its skeleton carries a detached second root (an unskinned bone '
+        'at the origin, animation id 250) that the writer ignores; a donor planted at the origin or floating would '
+        'point at it.',
+        'The _low and _mid models keep two native records with LOD mask 255 (a tongue and an eye); they are blanked '
+        'like every other native record. A tongue or eye floating in the air means a blanked record was still drawn.',
+        'Body textures are 1024x2048, the largest atlas any carrier offers: a donor should look sharper here than on uEm10.',
+    ],
+    'uEm13': [
+        'uEm13.arc has never been loaded with an edit. Its mask maps (_CMM, format 0x13) could not be neutralised and '
+        'stay native: a donor whose surface shows a pattern of patches that follows nothing on it is sampling a native '
+        'mask through its own UVs.',
+        'LOD masks 3 and 254 (near+middle, middle+far) are read as unions of levels; a part that appears or disappears '
+        'with distance on a donor would say the reading is wrong, but every such native record is blanked here.',
+    ],
+    'uEm14': [
+        'uEm14.arc has never been loaded with an edit. It has an option group 0 (the first face), which the writer keeps '
+        'and blanks like the others; the detached root bone of uEm12 is here too.',
+        'The montage table draws several groups of one category at once (boots in every montage); the nine carriers are '
+        'an exact cover found by search, not one category. Group 1 (the body skin) carries 26 of 56 montages: one donor '
+        'on about half the spawns of a random layout is the expected picture, not a fault.',
+        'The layouts of Experimental Facility name montages 22-25, 34, 40, 44-46 and 50 explicitly beside random ones; '
+        'those spawns show the carriers 22, 19, 1, 20, 14 and 15 in that order.',
+    ],
+    'uEm21': [
+        'uEm21.arc has never been loaded with an edit; it holds em2100 under the em10 model folder, the same name as the '
+        'em2100 inside uEm10.arc. Which archive the game takes the model and its shared textures from when both are '
+        'loaded in Public Assembly is not known: a stock em2100 means the uEm10 copy was drawn.',
+        'Montages 1 and 2 draw no head; the shirt carrier is drawn in all three, so the donor should always be whole.',
+    ],
 }
 MIX_RISKS = [
     'Donor records exist only in the carrier groups. If the game selects groups in another way than the montage table '
@@ -117,6 +149,10 @@ class Assignment:
     fits: tuple[writer.Fit, ...]
     mix: bool = False                       # one donor may also be built as a mix (carried by the carrier groups only)
     models: tuple[str, ...] | None = None   # narrow the class to some model names (a bisect build)
+    table: str | None = None                # another reviewed mix table of the class (`writer.MIX_TABLES`)
+
+    def mix_table(self) -> writer.MixTable:
+        return writer.MIX_TABLES[self.table] if self.table else writer.MIXES[self.enemy]
 
 
 # --- library ------------------------------------------------------------------------------------------------------
@@ -137,8 +173,21 @@ def franchise(donor: writer.Donor) -> str:
     return str(donor.provenance.get('game') or 'unknown')
 
 
+def donor_from_pool(resolved, library: Path, winding: str = 'ccw') -> writer.Donor:
+    """The enemy writer's `Donor` from a `re5_donor_pool.Donor` (the shared survey's row): the role profile the
+    shared `rig_check` accepted, the pinned model bytes, the provenance it recorded, and the winding the shared
+    survey measured (`rig.winding` of its row: 'cw' donors have each triangle turned)."""
+    if winding not in ('cw', 'ccw'):
+        raise CastError(f"{resolved.slug}: the winding is 'cw' or 'ccw'")
+    return writer.Donor(slug=resolved.slug, name=resolved.name, model=Path(library) / resolved.slug / resolved.model,
+                        sha256=resolved.sha256, roles=resolved.role_names(),
+                        provenance={'game': resolved.game, 'franchise': resolved.franchise, 'platform': resolved.platform,
+                                    'provenance': resolved.provenance, 'roles_from': resolved.roles_from},
+                        winding=winding)
+
+
 def survey(libraries: list[Path], slugs: list[str] | None = None, *, atlas_size=(512, 256),
-           trial: tuple[bytes, str] | None = None) -> list[dict]:
+           trial: tuple[bytes, str] | None = None, donors: list[writer.Donor] | None = None) -> list[dict]:
     """Go/no-go for library entries as enemy donors, with the reason for every refusal.
 
     A donor is usable when its metadata names the fifteen roles, its model loads through the atlas importer at the
@@ -146,17 +195,24 @@ def survey(libraries: list[Path], slugs: list[str] | None = None, *, atlas_size=
     whole figure: no height between the ankles and the head joint is left without geometry (a chest floating above
     its hips, a head above its neck). `trial` = (original archive bytes, class) also builds every such donor on the
     first model of that class and keeps only the ones the writer accepts (a fit can still collapse a triangle or
-    need a fifth skin influence); the trial archive is thrown away. Without it nothing is built.
+    need a fifth skin influence); the trial archive is thrown away. Without it nothing is built. `donors` surveys
+    already resolved donors (the shared survey's rows through `donor_from_pool`) instead of library folders.
     """
-    names = slugs if slugs is not None else sorted({p.parent.name for lib in libraries
-                                                    for p in Path(lib).glob('*/meta.json')})
+    if donors is not None:
+        names = [donor.slug for donor in donors]
+        given = {donor.slug: donor for donor in donors}
+    else:
+        names = slugs if slugs is not None else sorted({p.parent.name for lib in libraries
+                                                        for p in Path(lib).glob('*/meta.json')})
+        given = {}
     rows = []
     for slug in names:
         row = {'slug': slug, 'usable': False}
         try:
-            donor = find_donor(slug, libraries)
-            row.update(name=donor.name, franchise=franchise(donor), sha256=donor.sha256)
-            vertices, triangles, _, report = mtf_materials.source_mesh(donor.model, atlas_size=atlas_size)
+            donor = given[slug] if slug in given else find_donor(slug, libraries)
+            row.update(name=donor.name, franchise=franchise(donor), sha256=donor.sha256, winding=donor.winding)
+            vertices, triangles, _, report = mtf_materials.source_mesh(donor.model, atlas_size=atlas_size,
+                                                                       strict_samplers='in_range')
             gltf, _, _, world = characters._load(donor.model)
             nodes, joints = writer._donor_joints(gltf, world, donor.roles, slug)
             orphans: set = set()
@@ -229,11 +285,18 @@ def plan(seed: int, slots: dict[str, int], donors: dict[str, str]) -> dict[str, 
 
 # --- overlays -----------------------------------------------------------------------------------------------------
 
-def parse_assignment(text: str, libraries: list[Path], models: dict[str, tuple[str, ...]] | None = None) -> Assignment:
-    """`uEm10=sm64ds_mario`, `uEm10=sm64ds_mario@proportional`, or a mix `uEm10=sonic+sa2_shadow+sm64ds_luigi`."""
+def parse_assignment(text: str, libraries: list[Path], models: dict[str, tuple[str, ...]] | None = None,
+                     tables: dict[str, str] | None = None) -> Assignment:
+    """`uEm10=sm64ds_mario`, `uEm10=sm64ds_mario@proportional`, or a mix `uEm10=sonic+sa2_shadow+sm64ds_luigi`.
+    `tables` names another reviewed mix table per class (`{'uEm10': 'em1000-pants'}`)."""
     enemy, _, rest = text.partition('=')
     if enemy not in writer.ARCHIVES or not rest:
         raise CastError(f'{text!r} is not CLASS=slug[@fit][+slug...] with a class of {sorted(writer.ARCHIVES)}')
+    table = (tables or {}).get(enemy)
+    if table is not None and (table not in writer.MIX_TABLES
+                              or writer.MIX_TABLES[table].target not in writer.ARCHIVES[enemy].sets):
+        raise CastError(f'{table!r} is not a reviewed mix table of {enemy}; choose from '
+                        f'{sorted(n for n, t in writer.MIX_TABLES.items() if t.target in writer.ARCHIVES[enemy].sets)}')
     donors, fits = [], []
     for part in rest.split('+'):
         slug, _, fit = part.partition('@')
@@ -241,7 +304,22 @@ def parse_assignment(text: str, libraries: list[Path], models: dict[str, tuple[s
             raise CastError(f'{fit!r} is not a fit; choose from {sorted(writer.FITS)}')
         donors.append(find_donor(slug, libraries))
         fits.append(writer.FITS[fit or 'native_height'])
-    return Assignment(enemy, tuple(donors), tuple(fits), mix=len(donors) > 1, models=(models or {}).get(enemy))
+    return Assignment(enemy, tuple(donors), tuple(fits), mix=len(donors) > 1, models=(models or {}).get(enemy),
+                      table=table)
+
+
+def pool_sizes(archives_dir: Path, text: str = 'auto') -> dict[str, int]:
+    """{class: carriers} for a pool: `CLASS=count,...`, or `auto` = every reviewed class whose original archive is in
+    `archives_dir`, each with as many donors as its default mix table has carriers."""
+    if text != 'auto':
+        return {enemy: int(count) for enemy, _, count in (p.partition('=') for p in text.split(','))}
+    sizes = {}
+    for enemy, mix in writer.MIXES.items():
+        if (Path(archives_dir) / Path(writer.ARCHIVES[enemy].path).name).is_file():
+            sizes[enemy] = len(mix.carriers)
+    if not sizes:
+        raise CastError(f'no original archive of a reviewed class under {archives_dir}')
+    return sizes
 
 
 def _stack(rows: list[Path], out: Path) -> None:
@@ -288,7 +366,7 @@ def build_cast(name: str, assignments: list[Assignment], archives: dict[str, byt
         try:
             if a.mix:
                 built[a.enemy] = writer.build_mix(archives[a.enemy], list(a.donors), enemy, fits=list(a.fits),
-                                                  models=a.models, secondary=secondary)
+                                                  models=a.models, secondary=secondary, table=a.table)
             else:
                 built[a.enemy] = writer.build_donor(archives[a.enemy], a.donors[0], enemy, models=a.models,
                                                     fit=a.fits[0], secondary=secondary)
@@ -301,7 +379,7 @@ def build_cast(name: str, assignments: list[Assignment], archives: dict[str, byt
         path = out / 'romfs' / enemy.path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(output)
-        target = writer.SETS[writer.MIXES[a.enemy].target] if a.mix else enemy.targets()[0]
+        target = writer.SETS[a.mix_table().target] if a.mix else enemy.targets()[0]
         if a.models is not None:
             target = writer.only_models(target, a.models)
         row = {'archive': 'romfs/' + enemy.path, 'class': enemy.name, 'source_sha256': enemy.sha256,
@@ -309,9 +387,10 @@ def build_cast(name: str, assignments: list[Assignment], archives: dict[str, byt
                'models': receipt['target']['models'], 'not_replaced': receipt['target']['not_replaced'],
                'unbuilt': receipt['target']['unbuilt'],
                'option_group_slots': {slot: list(ids) for slot, ids in target.groups},
+               'stage_coverage_no_mercy': writer.STAGE_COVERAGE.get(enemy.name, {}),
                'role_map': receipt['role_map'], 'counts': receipt['counts'],
                'entries_replaced': receipt['entries_replaced'], 'live_verified': False}
-        carriers = list(writer.MIXES[a.enemy].carriers) if a.mix else [None]
+        carriers = list(a.mix_table().carriers) if a.mix else [None]
         shown = {}                                           # one picture row per different donor
         for number, carrier in enumerate(carriers):
             key = receipt['carriers'][number]['donor']['slug'] if a.mix else a.donors[0].slug
@@ -324,15 +403,21 @@ def build_cast(name: str, assignments: list[Assignment], archives: dict[str, byt
             for slug, carrier in shown.items():
                 still = out / f'preview-{enemy.name}-{slug}.png'
                 moving = out / f'preview-{enemy.name}-{slug}-posed.png'
-                moved = writer.posed_preview(archives[a.enemy], output, moving, motion_entry=entry, clip=clip,
-                                             frames=frames, target=target, backdrop=BACKDROP, carrier=carrier,
-                                             sampled=sampled)
-                sampled = moved.pop('sampled', None)
                 pictures[slug] = {
-                    'rest': writer.preview(output, still, target=target, backdrop=BACKDROP, carrier=carrier)
-                    | {'preview': still.name},
-                    'posed': moved | {'preview': moving.name}}
+                    'rest': writer.preview(output, still, target=target, backdrop=BACKDROP, carrier=carrier,
+                                           original=archives[a.enemy])
+                    | {'preview': still.name}}
                 rest.append(still)
+                try:                 # the CPU sampler cannot read every native clip or skin layout (em2000's
+                    moved = writer.posed_preview(archives[a.enemy], output, moving, motion_entry=entry, clip=clip,
+                                                 frames=frames, target=target, backdrop=BACKDROP, carrier=carrier,
+                                                 sampled=sampled)                 # 0x1580b60c weights, em22's tracks)
+                except ValueError as exc:          # MotionError is a ValueError; the archive itself is unaffected
+                    pictures[slug]['posed'] = {'preview': None, 'error': f'{type(exc).__name__}: {exc}',
+                                               'shows': 'nothing: the comparison sampler refused this clip or skin'}
+                    continue
+                sampled = moved.pop('sampled', None)
+                pictures[slug]['posed'] = moved | {'preview': moving.name}
                 posed.append(moving)
         if a.mix:
             row.update(
@@ -344,8 +429,11 @@ def build_cast(name: str, assignments: list[Assignment], archives: dict[str, byt
                            'montages': c['montages'],
                            'share_if_montages_are_uniform': c['share_if_montages_are_uniform'],
                            'texture_scale': c['atlas_source'].get('texture_scale')} for c in receipt['carriers']],
-                montage_table=receipt['montage_table'], first_boot_risks=MIX_RISKS + FIRST_BOOT_RISKS[enemy.name][-3:]
-                if enemy.name == 'uEm11' else MIX_RISKS)
+                montage_table=receipt['montage_table'],
+                secondary_maps_kept_native=receipt['appearance']['secondary_maps_kept_native'],
+                first_boot_risks=MIX_RISKS + (FIRST_BOOT_RISKS[enemy.name][-3:] if enemy.name == 'uEm11'
+                                              else FIRST_BOOT_RISKS.get(enemy.name, []) if enemy.name != 'uEm10'
+                                              else []))
             row['live_test'] = mix_expectation(row)
         else:
             fit = receipt['fit']
@@ -361,7 +449,8 @@ def build_cast(name: str, assignments: list[Assignment], archives: dict[str, byt
         rows[enemy.name] = row
     if previews:
         _stack(rest, out / 'preview.png')
-        _stack(posed, out / 'preview-posed.png')
+        if posed:
+            _stack(posed, out / 'preview-posed.png')
     donors = {}
     for enemy, row in rows.items():
         if row['kind'] == 'mix':
@@ -376,7 +465,7 @@ def build_cast(name: str, assignments: list[Assignment], archives: dict[str, byt
         'recipe': 're5_enemy_cast', 'name': name, 'title_id': TITLE_ID, 'game_id': GAME_ID,
         'donors': donors, 'archives': rows,
         'overlay_files': [row['archive'] for row in rows.values()],
-        'previews': {'rest': 'preview.png', 'posed': 'preview-posed.png'} if previews else {},
+        'previews': ({'rest': 'preview.png'} | ({'posed': 'preview-posed.png'} if posed else {})) if previews else {},
         'classes_left_native': 'every enemy class without an archive in this overlay (executioners, dogs, bosses, '
                                'the other Majini classes) is drawn as shipped',
         'install': 'a separate recovery-* LayeredFS build through switch_mods; never the live acceptance build',
@@ -389,11 +478,11 @@ def build_cast(name: str, assignments: list[Assignment], archives: dict[str, byt
 def main(argv=None) -> int:
     """CLI: --archives DIR --library DIR [--library DIR] --out DIR
     (--cast NAME | --name NAME --assign CLASS=slug[@fit][+slug...] | --name NAME --pool SEED [--pool-from FILE])
-    [--only-models CLASS=model[,model]] [--no-preview] | --survey [--slugs a,b]"""
+    [--only-models CLASS=model[,model]] [--table CLASS=table] [--mix] [--no-preview] | --survey [--slugs a,b]"""
     import argparse
     import sys
     parser = argparse.ArgumentParser(description='Build an offline RE5 Switch enemy-cast overlay tree')
-    parser.add_argument('--archives', help='folder holding the original uEm10.arc / uEm11.arc')
+    parser.add_argument('--archives', help='folder holding the original class archives (uEm10.arc ... uEm21.arc)')
     parser.add_argument('--library', action='append', required=True, help='a character library folder (repeatable)')
     parser.add_argument('--out', help='parent folder; the tree is written to <out>/<name>')
     parser.add_argument('--cast', choices=sorted(CASTS), help='one of the reviewed casts')
@@ -402,10 +491,15 @@ def main(argv=None) -> int:
                         help='CLASS=slug[@fit] or a mix CLASS=slug+slug+..., e.g. uEm10=sm64ds_mario')
     parser.add_argument('--pool', type=int, help='seed: deal surveyed donors over the mix carriers of every class')
     parser.add_argument('--pool-from', help='a survey JSON written by --survey (default: survey the libraries now)')
-    parser.add_argument('--pool-size', default='uEm10=10,uEm11=2', help='CLASS=count,... different donors per class')
+    parser.add_argument('--pool-size', default='auto',
+                        help='CLASS=count,... different donors per class; auto = every class whose original is under '
+                             '--archives, as many donors as its default mix table has carriers')
     parser.add_argument('--pool-max-vertices', type=int, default=4500, help='leave out heavier donors')
     parser.add_argument('--pool-exclude', default='', help='comma-separated text; a slug or franchise holding it is out')
+    parser.add_argument('--table', action='append', default=[],
+                        help='CLASS=table: another reviewed mix table (' + ', '.join(sorted(writer.MIX_TABLES)) + ')')
     parser.add_argument('--only-models', action='append', default=[], help='CLASS=model[,model] (a bisect build)')
+    parser.add_argument('--mix', action='store_true', help='build every --assign class as a mix, also with one donor')
     parser.add_argument('--no-preview', action='store_true')
     parser.add_argument('--survey', action='store_true',
                         help='print the go/no-go of the library entries and exit; with --archives each usable donor '
@@ -429,10 +523,13 @@ def main(argv=None) -> int:
         name = args.cast or args.name
         if not name:
             raise CastError('--assign and --pool builds need a --name')
-        only = {}
+        only, tables = {}, {}
         for text in args.only_models:
             enemy, _, models = text.partition('=')
             only[enemy] = tuple(model for model in models.split(',') if model)
+        for text in args.table:
+            enemy, _, table = text.partition('=')
+            tables[enemy] = table
         if args.pool is not None:
             rows = (json.loads(Path(args.pool_from).read_text(encoding='utf-8')) if args.pool_from
                     else survey(libraries))
@@ -440,16 +537,19 @@ def main(argv=None) -> int:
             usable = {row['slug']: row['franchise'] for row in rows
                       if row.get('usable') and row.get('vertices', 0) <= args.pool_max_vertices
                       and not any(word in row['slug'] or word in row['franchise'] for word in out_words)}
-            sizes = {enemy: int(count) for enemy, _, count in (p.partition('=') for p in args.pool_size.split(','))}
+            sizes = pool_sizes(Path(args.archives), args.pool_size)
+            for enemy, table in tables.items():                   # a named table decides how many donors it takes
+                if enemy in sizes and args.pool_size == 'auto':
+                    sizes[enemy] = len(writer.MIX_TABLES[table].carriers)
             dealt = plan(args.pool, sizes, usable)
             texts = [f'{enemy}=' + '+'.join(slugs) for enemy, slugs in dealt.items()]
         elif args.cast:
             texts = [f'{enemy}={slug}@{fit}' for enemy, slug, fit in CASTS[args.cast]]
         else:
             texts = args.assign
-        assignments = [parse_assignment(text, libraries, only) for text in texts]
-        if args.pool is not None:                            # a pool is always a mix, also with one donor in a class
-            assignments = [Assignment(a.enemy, a.donors, a.fits, True, a.models) for a in assignments]
+        assignments = [parse_assignment(text, libraries, only, tables) for text in texts]
+        if args.pool is not None or args.mix:                # a pool is always a mix, also with one donor in a class
+            assignments = [Assignment(a.enemy, a.donors, a.fits, True, a.models, a.table) for a in assignments]
         archives = {}
         for a in assignments:
             path = Path(args.archives) / Path(writer.ARCHIVES[a.enemy].path).name

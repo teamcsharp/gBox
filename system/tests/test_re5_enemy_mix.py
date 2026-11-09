@@ -76,13 +76,25 @@ def test_reviewed_mix_tables_cover_the_whole_category_with_distinct_textures():
     pants = W.EM1000_PANTS
     assert sorted(g for c in pants.carriers for g in c.groups) == sorted(dict(W.EM1000.groups)['pants'])
     assert len({c.albedo[0] for c in pants.carriers}) == len(pants.carriers) == 10 and pants.montage[0] == 763
-    assert pants.category == 11 and W.MIXES['uEm10'] is pants and pants.target == 'em1000'
+    assert pants.category == 11 and pants.categories == (11,) and pants.target == 'em1000'
+    assert W.MIX_TABLES['em1000-pants'] is pants and W.MIXES['uEm10'] is W.EM1000_WIDE
     shirt = W.EM1100_SHIRT
     assert sorted(g for c in shirt.carriers for g in c.groups) == sorted(dict(W.EM1100.groups)['shirt'])
     assert (shirt.montage[0], shirt.category, shirt.target) == (383, 2, 'em1100') and W.MIXES['uEm11'] is shirt
-    for table in (pants, shirt):                       # a carrier never reuses an entry of the model or its MRL
+    wide, shirts = W.EM1000_WIDE, W.EM1000_SHIRTS
+    em1000 = dict(W.EM1000.groups)
+    assert wide.categories == (10, 11, 2) and len(wide.carriers) == 16 and len(shirts.carriers) == 15
+    assert sorted(wide.groups()) == sorted(set(em1000['shirt']) - {4, 14} | {5, 15, 25, 222})
+    assert sorted(shirts.groups()) == sorted(set(em1000['shirt']) | {222})
+    for table in W.MIX_TABLES.values():                # a carrier never reuses an entry of the model or its MRL
         used = {i for c in table.carriers for i in (c.albedo[0], c.normal[0], c.mask[0])}
         assert not used & {i for _, mod, mrl in W.SETS[table.target].models for i in (mod, mrl)}
+        assert len({c.albedo[0] for c in table.carriers}) == len(table.carriers)      # one texture per carrier
+        groups = table.groups()
+        assert len(set(groups)) == len(groups) and set(groups) <= set(W.SETS[table.target].group_ids())
+    assert {enemy: len(mix.carriers) for enemy, mix in W.MIXES.items()} == {
+        'uEm10': 16, 'uEm11': 2, 'uEm12': 4, 'uEm13': 2, 'uEm14': 9, 'uEm21': 1}
+    assert all(W.SETS[mix.target].name in W.ARCHIVES[enemy].sets for enemy, mix in W.MIXES.items())
     assert set(W.MONTAGE_READING) == {'measured', 'inferred', 'unknown'}        # the receipt says which is which
 
 
@@ -109,14 +121,23 @@ def test_a_mix_needs_exactly_one_carrier_in_every_drawn_montage():
     counted = W.account_mix(model, W.parse_montage(montage(PARTS, ROWS)), mix)
     assert counted == {'shares': {0: [1, 2], 1: [0]}, 'empty_montages': [3], 'drawn_montages': 3}
     headless = ROWS + [({HEAD: 9}, 1.)]                               # draws a body and feet but no head group
-    with pytest.raises(W.EnemyWriterError, match='montage 4 draws 0 head groups'):
+    with pytest.raises(W.EnemyWriterError, match='montage 4 draws 0 head carrier groups'):
         W.account_mix(model, W.parse_montage(montage(PARTS, headless)), mix)
     both = [(1, HEAD, 1), (11, HEAD, 3), (2, BODY, 1), (7, FEET, 1)]  # value 0 selects both head groups
-    with pytest.raises(W.EnemyWriterError, match='montage 0 draws 2 head groups'):
+    with pytest.raises(W.EnemyWriterError, match='montage 0 draws 2 head carrier groups'):
         W.account_mix(model, W.parse_montage(montage(both, ROWS)), mix)
-    partial = W.MixTable('x', 'body', mix.montage, HEAD, 'head', mix.carriers[:1])
-    with pytest.raises(W.EnemyWriterError, match='not exactly the head groups'):
+    partial = W.MixTable('x', 'body', mix.montage, HEAD, 'head', mix.carriers[:1])      # montage 0 has no carrier
+    with pytest.raises(W.EnemyWriterError, match='montage 0 draws 0 head carrier groups'):
         W.account_mix(model, W.parse_montage(montage(PARTS, ROWS)), partial)
+    foreign = W.MixTable('x', 'body', mix.montage, HEAD, 'head', mix.carriers + (W.Carrier((2,), mix.carriers[0].albedo, mix.carriers[0].normal, mix.carriers[0].mask),))
+    with pytest.raises(W.EnemyWriterError, match=r'not distinct head groups of the model: \[2\]'):
+        W.account_mix(model, W.parse_montage(montage(PARTS, ROWS)), foreign)      # 2 is a body group
+    # a cover across categories: the body group carries montage 0 (the only montage that draws head 1 is 0, and the
+    # body is drawn everywhere - so a table of {11, 2} is refused, while {11} + {1} holds)
+    across = W.MixTable('x', 'body', mix.montage, (HEAD, BODY), 'head/body', (mix.carriers[0], W.Carrier((2,), mix.carriers[1].albedo, mix.carriers[1].normal, mix.carriers[1].mask)))
+    with pytest.raises(W.EnemyWriterError, match='montage 1 draws 2 head/body carrier groups'):
+        W.account_mix(model, W.parse_montage(montage(PARTS, ROWS)), across)
+    assert W.uncarried_groups(model, W.parse_montage(montage(PARTS, ROWS)), partial) == [1]
 
 
 def test_graft_pieces_adds_each_donor_to_its_own_groups_through_its_own_material():
@@ -175,7 +196,7 @@ def test_author_mix_draws_one_donor_per_carrier_group_and_nothing_else(donor):
     assert receipt['montage_table'] == receipt['montage_table'] | {'entry': 9, 'drawn_montages': 3, 'empty_montages': [3]}
     groups = receipt['option_groups']['groups']
     assert groups['11']['donor_record'] == 'carrier 0: first' and groups['2']['donor_record'] == 'none'
-    assert receipt['option_groups']['choice'] == 'carry_in_one_category' and receipt['counts']['native_records_blanked'] == 16
+    assert receipt['option_groups']['choice'] == 'carry_in_carrier_groups' and receipt['counts']['native_records_blanked'] == 16
     assert receipt['live_verified'] is False and receipt['recipe'] == 're5_enemy_writer.mix'
     # the written file is re-read against what the mix promised
     expect = {name: {11: (1, 0), 1: (0, 1)} for name in ('body', 'body_low')}
@@ -202,7 +223,7 @@ def test_author_mix_refuses_what_it_cannot_promise(donor):
     with pytest.raises(W.EnemyWriterError, match='fifteen'):
         W.author_mix(archive, [riders(donor)[0], (donor, {'hip': 'skl_root'}, W.PROPORTIONAL, 'stub')], target, mix)
     headless, _, _ = mix_arc(rows=ROWS + [({HEAD: 9}, 1.)])
-    with pytest.raises(W.EnemyWriterError, match='draws 0 head groups'):
+    with pytest.raises(W.EnemyWriterError, match='draws 0 head carrier groups'):
         W.author_mix(headless, riders(donor), target, mix)
     wrong = W.MixTable(mix.name, 'body', (6, 'untouched'), HEAD, 'head', mix.carriers)
     with pytest.raises(W.EnemyWriterError, match='MTG resource'):
