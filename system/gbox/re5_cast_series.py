@@ -91,12 +91,20 @@ def substitute(build: Build, enemy: str, refused: str, *, candidates: set[str], 
     raise SeriesError(f'{build.name}: no donor is left to take the place of {refused} on {enemy}')
 
 
-def enemy_slots(classes: list[str] | None = None, tables: dict[str, str] | None = None) -> dict[str, int]:
-    """{class: carriers} for the reviewed classes (or `classes`), with another reviewed table per class on request."""
+def enemy_slots(classes: list[str] | None = None, tables: dict[str, str] | None = None, *,
+                singles: bool = False) -> dict[str, int]:
+    """{class: donors} for the reviewed classes (or `classes`): one per carrier of the class's mix table (another
+    reviewed table per class on request), and with `singles` one donor for every reviewed class that has no mix
+    table (the boss and special classes, written on every option group)."""
     sizes = {}
-    for enemy in (classes or sorted(writer.MIXES)):
-        table = writer.MIX_TABLES[tables[enemy]] if tables and enemy in tables else writer.MIXES[enemy]
-        sizes[enemy] = len(table.carriers)
+    for enemy in (classes or sorted(writer.MIXES) + (sorted(set(writer.ARCHIVES) - set(writer.MIXES)) if singles else [])):
+        if enemy in writer.MIXES or (tables and enemy in tables):
+            table = writer.MIX_TABLES[tables[enemy]] if tables and enemy in tables else writer.MIXES[enemy]
+            sizes[enemy] = len(table.carriers)
+        elif enemy in writer.ARCHIVES:
+            sizes[enemy] = 1
+        else:
+            raise SeriesError(f'{enemy} is not a reviewed enemy class')
     return sizes
 
 
@@ -245,7 +253,8 @@ def build_one(build: Build, *, romfs: Path, archives_dir: Path, library: Path, o
             slugs = build.enemies[enemy]
             resolved = [enemies.donor_from_pool(donors[slug], library, windings.get(slug, 'ccw')) for slug in slugs]
             assignment = enemies.Assignment(enemy, tuple(resolved), tuple([writer.NATIVE_HEIGHT] * len(resolved)),
-                                            mix=True, table=(tables or {}).get(enemy))
+                                            mix=enemy in writer.MIXES or bool((tables or {}).get(enemy)),
+                                            table=(tables or {}).get(enemy))
             try:
                 class_receipts[enemy] = enemies.build_cast(build.name, [assignment], {enemy: archive}, out,
                                                            previews=previews)
@@ -318,7 +327,8 @@ def build_one(build: Build, *, romfs: Path, archives_dir: Path, library: Path, o
 
 def build_series(seed, *, survey_path: Path, enemy_survey_path: Path | None, romfs: Path, archives_dir: Path,
                  library: Path, out: Path, count: int, tables: dict[str, str] | None = None,
-                 exclude: set[str] | frozenset = frozenset(), previews: bool = True, progress=None) -> dict:
+                 exclude: set[str] | frozenset = frozenset(), previews: bool = True, progress=None,
+                 singles: bool = False) -> dict:
     """Plan the series and write its first `count` builds; return the manifest (also written to <out>/manifest.json).
 
     `enemy_survey_path` is the enemy go/no-go (`re5_enemy_cast.survey`) over the shared survey's donors; without it
@@ -335,7 +345,7 @@ def build_series(seed, *, survey_path: Path, enemy_survey_path: Path | None, rom
         enemy_reasons = {row['slug']: row['reason'] for row in rows if not row.get('usable') and row['slug'] in by_slug}
     else:
         enemy_pool, enemy_reasons = set(by_slug), {}
-    sizes = enemy_slots(tables=tables)
+    sizes = enemy_slots(tables=tables, singles=singles)
     refusals: dict[str, dict[str, str]] = {slug: {'enemy': reason} for slug, reason in enemy_reasons.items()}
     manifest_path = out / 'manifest.json'
     fixed: list[Build] = []
@@ -399,9 +409,11 @@ def _manifest(seed, survey_path, enemy_survey_path, donors, enemy_pool, sizes, r
                          if enemy_survey_path else None, 'eligible': len(enemy_pool)},
         'franchises': dict(sorted(franchises.items(), key=lambda kv: (-kv[1], kv[0]))),
         'slots': {'players': {key: players.SLOTS[key].label for key in PLAYER_SLOTS},
-                  'enemies': {enemy: {'carriers': count, 'table': writer.MIXES[enemy].name,
+                  'enemies': {enemy: {'carriers': count,
+                                      'table': writer.MIXES[enemy].name if enemy in writer.MIXES else 'every option group',
                                       'stage_coverage_no_mercy': writer.STAGE_COVERAGE.get(enemy, {})}
                               for enemy, count in sizes.items()},
+                  'classes_without_a_writer': writer.UNBUILDABLE_CLASSES,
                   'donors_per_build': len(PLAYER_SLOTS) + sum(sizes.values())},
         'builds': rows, 'build_count': len(builds), 'built': len(built),
         'coverage': {'donors_dealt': len(covered), 'donors_in_pool': len(donors),
@@ -430,6 +442,8 @@ def main(argv=None) -> int:
     parser.add_argument('--table', action='append', default=[], help='CLASS=table (another reviewed mix table)')
     parser.add_argument('--exclude', default='', help='comma-separated slugs to leave out')
     parser.add_argument('--no-preview', action='store_true')
+    parser.add_argument('--with-bosses', action='store_true',
+                        help='also deal one donor to every reviewed class without a mix table (the boss classes)')
     parser.add_argument('--plan-only', action='store_true', help='print the plan, write nothing')
     args = parser.parse_args(argv)
     tables = dict(text.split('=', 1) for text in args.table) or None
@@ -444,8 +458,8 @@ def main(argv=None) -> int:
                 rows = json.loads(Path(args.enemy_survey).read_text(encoding='utf-8'))
                 enemy_pool = {row['slug'] for row in rows if row.get('usable')}
                 refusals = {row['slug']: {'enemy': row['reason']} for row in rows if not row.get('usable')}
-            builds = plan_series(args.seed, donors, enemy_pool=enemy_pool, sizes=enemy_slots(tables=tables),
-                                 refusals=refusals)
+            builds = plan_series(args.seed, donors, enemy_pool=enemy_pool,
+                                 sizes=enemy_slots(tables=tables, singles=args.with_bosses), refusals=refusals)
             print(json.dumps([{'name': b.name, 'players': b.players, 'enemies': b.enemies,
                                'first_time': len(b.first_time)} for b in builds], indent=1))
             return 0
@@ -453,7 +467,8 @@ def main(argv=None) -> int:
                                 enemy_survey_path=Path(args.enemy_survey) if args.enemy_survey else None,
                                 romfs=Path(args.romfs), archives_dir=Path(args.archives), library=Path(args.library),
                                 out=Path(args.out), count=args.count, tables=tables, exclude=exclude,
-                                previews=not args.no_preview, progress=lambda text: print(text, flush=True))
+                                previews=not args.no_preview, progress=lambda text: print(text, flush=True),
+                                singles=args.with_bosses)
     except (SeriesError, players.CastWriterError, enemies.CastError, writer.EnemyWriterError, ValueError) as exc:
         print(f'error: {exc}', file=sys.stderr)
         return 1

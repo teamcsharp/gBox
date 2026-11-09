@@ -83,6 +83,8 @@ class EnemySet:
     normal: tuple[int, str]                              # that material's BC5 normal map
     mask: tuple[int, str]                                # that material's BC4 mask map
     lod_masks: tuple[int, ...] = NATIVE_LOD_MASKS        # the LOD masks its native records were measured to use
+    roles_by_ids: bool = False                           # take the animation ids where the bind-pose measurement refuses
+    shared_atlas: bool = False                           # the atlas may be sampled by several materials (all blanked)
 
     def group_ids(self) -> list[int]:
         return [group for _, ids in self.groups for group in ids]
@@ -147,7 +149,7 @@ EM1200 = EnemySet(
     groups=(('head', (1, 11, 21, 31)), ('body', (2, 12, 22, 32)), ('leg', (3,)), ('l_hand', (4, 14)),
             ('r_hand', (5, 15)), ('accessory', (6, 16, 26, 36)), ('waist', (7, 17))),
     albedo=(22, _MODEL12 + 'em1200_01_BM'), normal=(24, _MODEL12 + 'em1200_01_NM'), mask=(23, _MODEL12 + 'em1200_01_MM'),
-    lod_masks=(1, 2, 252, 255))
+    lod_masks=(1, 2, 252, 255), shared_atlas=True)
 SETS['em1200'] = EM1200
 #: The Mines / Prison class, reviewed against uEm13.arc `1db1a79a...`: one model, 89 bones (a ground bone at the origin
 #: above the body root, as em1100), four groups: head 1, body 2, pants 3 and 13. LOD masks 3 and 254 beside 1, 2, 252
@@ -187,6 +189,51 @@ EM2100 = EnemySet(
     albedo=(9, _MODEL + 'gam01_254_BM'), normal=(8, _MODEL + 'gam01_254_NM'), mask=(10, _MODEL + 'gam01_254_MM'),
     lod_masks=(1, 2, 252, 254))
 SETS['em2100'] = EM2100
+
+#: The seven boss and special classes whose skeletons are standing bipeds with the fifteen role ids at the Majini bind
+#: positions (hip 0, 114, 0; head 0, 165, -2.34; wrists +-70.4; ankles +-9.2, 13.5 - em2300's legs are +-10.2 apart,
+#: em3400 is the same figure 2.3 times taller: hip 186, hands +-185, top 436 cm). Their bind-pose hierarchy measurement
+#: refuses them (the chest carries more branches than two arms and a neck: weapons, aprons, chains), so their role maps
+#: come from the animation ids with `check_role_geometry` (`roles_by_ids`); em2300 measures outright. None has a
+#: montage table that selects among several parts of a kind (uEm92's names one group per category), so each is
+#: written as one donor on every option group, the shape the game has drawn. Their atlases are the largest BC7 albedo
+#: whose samplers all bind the same maps; where several materials sample it (`shared_atlas`) every one is blanked.
+#: Reviewed 2026-11-09 against the archives of the RomFS (SHA-256 in ARCHIVES below).
+_MODEL20, _MODEL22, _MODEL23 = 'pawn\\em\\em20\\model\\', 'pawn\\em\\em22\\model\\', 'pawn\\em\\em23\\model\\'
+_MODEL24, _MODEL26, _MODEL34, _MODEL92 = ('pawn\\em\\em24\\model\\', 'pawn\\em\\em26\\model\\', 'pawn\\em\\em34\\model\\',
+                                          'pawn\\em\\em92\\model\\')
+EM2000 = EnemySet(                      # uEm20: Public Assembly (6 No Mercy spawns); 120 bones, 59 records, one group
+    name='em2000', models=((_MODEL20 + 'em2000', 59, 40),), groups=(('body', (0,)),),
+    albedo=(23, _MODEL20 + 'em2000_02epu_BM'), normal=(25, _MODEL20 + 'em2000_02epu_NM'),
+    mask=(24, _MODEL20 + 'em2000_02epu_MM'), lod_masks=(1, 2, 252, 254), roles_by_ids=True, shared_atlas=True)
+EM2600 = EnemySet(                      # uEm26: Prison (5); the em20 skeleton (120 bones), 99 records, one group
+    name='em2600', models=((_MODEL26 + 'em2600', 63, 44),), groups=(('body', (0,)),),
+    albedo=(27, _MODEL26 + 'em2000_03zubon_BM'), normal=(29, _MODEL26 + 'em2000_03zubon_NM'),
+    mask=(28, _MODEL26 + 'em2000_03zubon_MM'), lod_masks=(1, 2, 252), roles_by_ids=True, shared_atlas=True)
+EM2200 = EnemySet(                      # uEm22: Ship Deck (14); 98 bones, 38 records, six groups, masks 254 and 255
+    name='em2200', models=((_MODEL22 + 'em2200', 52, 40),),
+    groups=(('head', (1,)), ('body', (2,)), ('leg', (3,)), ('pants', (5,)), ('wig', (6,)), ('key', (8,))),
+    albedo=(25, _MODEL22 + 'em20_005_BM'), normal=(27, _MODEL22 + 'em20_005_NM'), mask=(26, _MODEL22 + 'em20_005_MM'),
+    lod_masks=(1, 2, 252, 254, 255), roles_by_ids=True)
+EM2400 = EnemySet(                      # uEm24: Village (8) and Ancient Ruins (13); 89 bones, 66 records, top 195.7 cm
+    name='em2400', models=((_MODEL24 + 'em2400', 66, 50),), groups=(('head', (0,)), ('body', (1,)), ('leg', (2,))),
+    albedo=(31, _MODEL24 + 'em2400_BM_01'), normal=(36, _MODEL24 + 'em2400_NM_01'), mask=(34, _MODEL24 + 'em2400_MM_01'),
+    lod_masks=(1, 2, 252), roles_by_ids=True, shared_atlas=True)
+EM2300 = EnemySet(                      # uEm23: Missile Area (6), Ship Deck Reunion (1); 93 bones, 81 records; its
+    name='em2300', models=((_MODEL23 + 'em2300', 81, 63),),      # bind pose measures outright; _CMM masks stay native
+    groups=(('body', (0,)), ('gear', (1,)), ('grass', (2,)), ('head', (3,)), ('gun', (4,)), ('cloth', (205,))),
+    albedo=(16, _MODEL23 + 'em2300_BM'), normal=(18, _MODEL23 + 'em2300_NM'), mask=(17, _MODEL23 + 'em2300_CMM'),
+    lod_masks=(1, 2, 3, 4, 252))
+EM9200 = EnemySet(                      # uEm92: Public Assembly Reunion (1); 117 bones, 84 records, three groups
+    name='em9200', models=((_MODEL92 + 'em9200', 43, 39),), groups=(('body', (0,)), ('hair', (1,)), ('head', (3,))),
+    albedo=(11, _MODEL92 + 'em92_002_BM'), normal=(13, _MODEL92 + 'em92_002_NM'), mask=(12, _MODEL92 + 'em92_002_MM'),
+    lod_masks=(1, 2, 252, 255), roles_by_ids=True, shared_atlas=True)
+EM3400 = EnemySet(                      # uEm34: The Mines (7); 98 bones, 42 records, one group, 4.36 m tall
+    name='em3400', models=((_MODEL34 + 'em3400', 71, 48),), groups=(('body', (0,)),),
+    albedo=(19, _MODEL34 + 'em3400_00_BM'), normal=(22, _MODEL34 + 'em3400_00_NM'), mask=(21, _MODEL34 + 'em3400_00_MM'),
+    lod_masks=(1, 2, 252), roles_by_ids=True, shared_atlas=True)
+for _set in (EM2000, EM2600, EM2200, EM2400, EM2300, EM9200, EM3400):
+    SETS[_set.name] = _set
 
 #: Measured and deliberately not buildable: `em1101` (entry 90, 109 bones, 63 records in the same ten groups). Its role
 #: map measures and agrees with the animation ids, but (a) its drawn records use formats 0x2270D877 / 0x1E5013A0 /
@@ -235,12 +282,62 @@ ARCHIVES = {
     'uEm21': EnemyArchive('uEm21', 'nativeNXx64/ImgNX/Archive/uEm21.arc',
                           '3c01b16d948a3dc831207e4828aad8aa3fc4dede895b46dce9caf547fb0635a3', ('em2100',), ('em2100',),
                           (33, 105, (0., 30., 60.)), ()),
+    # The boss and special classes (one donor on every group). Their own motion sets pose the previews where they
+    # carry no em10 set: `em20` clip 0 (491 frames), `em22` clip 0 (342), `em23_g23` clip 0 (170), `em34` clip 0 (420).
+    'uEm20': EnemyArchive('uEm20', 'nativeNXx64/ImgNX/Archive/uEm20.arc',
+                          '269559f2de336138a695b4b57f764a022525b3570723063d60cb3b3f2627a5f0', ('em2000',), ('em2000',),
+                          (60, 0, (0., 30., 60.)), ()),
+    'uEm22': EnemyArchive('uEm22', 'nativeNXx64/ImgNX/Archive/uEm22.arc',
+                          '2020d20dababa0487df919213762f567788d737e78796399ca090d45c076e137', ('em2200',), ('em2200',),
+                          (53, 0, (0., 30., 60.)), ()),
+    'uEm23': EnemyArchive('uEm23', 'nativeNXx64/ImgNX/Archive/uEm23.arc',
+                          '4441a22c2e43f54b9c5fec337bc9de6ea56632fd7542104f743668ccc8b17528', ('em2300',), ('em2300',),
+                          (82, 0, (0., 30., 60.)), ()),
+    'uEm24': EnemyArchive('uEm24', 'nativeNXx64/ImgNX/Archive/uEm24.arc',
+                          '482172df0b734b0e2d7f660b314548fd83f9e258b4738a649e1b6c6508cff35f', ('em2400',), ('em2400',),
+                          (72, 105, (0., 30., 60.)), ()),
+    'uEm26': EnemyArchive('uEm26', 'nativeNXx64/ImgNX/Archive/uEm26.arc',
+                          '31010f45f9c9a7d7d4f2ea7ca4397eb1e8c6e4e419093537b0185d5e2ba37472', ('em2600',), ('em2600',),
+                          (64, 0, (0., 30., 60.)), ()),
+    'uEm34': EnemyArchive('uEm34', 'nativeNXx64/ImgNX/Archive/uEm34.arc',
+                          '6050bb8168d0e121a70d67551d19a5169ccc966b17936c829412c01f62ff617b', ('em3400',), ('em3400',),
+                          (75, 0, (0., 30., 60.)), ('em3401', 'em3402', 'em3403')),
+    'uEm92': EnemyArchive('uEm92', 'nativeNXx64/ImgNX/Archive/uEm92.arc',
+                          '7da2e47838354ef3b43e5baf6df8ca50bab99f816b372aca925f51069684ea94', ('em9200',), ('em9200',),
+                          (54, 105, (0., 30., 60.)), ('evf2800', 'evf2801', 'evf2803')),
 }
 #: Placed spawns per class in the No Mercy layouts of the eight stages (`re5_stage_enemies`, 2026-11-09): what a class
 #: replacement covers. uEm10 is the horde of five stages; uEm12 Village and Ancient Ruins; uEm14 Experimental Facility.
+#: Reunion-only classes carry their Reunion counts (`mercedc`).
 STAGE_COVERAGE = {'uEm10': {'s400': 320, 's401': 369, 's405': 393, 's406': 385, 's407': 353},
                   'uEm11': {'s400': 72}, 'uEm12': {'s402': 325, 's403': 386}, 'uEm13': {'s401': 22, 's407': 28},
-                  'uEm14': {'s404': 227}, 'uEm21': {'s400': 1}}
+                  'uEm14': {'s404': 227}, 'uEm21': {'s400': 1},
+                  'uEm20': {'s400': 6, 's407': 4}, 'uEm22': {'s406': 14}, 'uEm23': {'s405': 6, 's406 (Reunion)': 1},
+                  'uEm24': {'s402': 8, 's403': 13}, 'uEm26': {'s407': 5}, 'uEm34': {'s401': 7},
+                  'uEm92': {'s400 (Reunion)': 1}}
+#: Classes the layouts place that no donor writer can take, with the measured reason (the archives were read):
+#: the fifteen role animation ids exist on these skeletons but name bones whose bind pose is not a standing biped.
+UNBUILDABLE_CLASSES = {
+    'uEm32': {'spawns': {'s404': 172}, 'model': 'em3200 (83 bones, 16 records, one group) + _low/_mid',
+              'sha256': '42ea8e01a4a7a07db4c68d001713a7e69ff14400930b14f465b330096672000c',
+              'reason': 'a crawling body: the model is 27 cm tall at the bind pose, the pelvis and spine trunks cannot '
+                        'be told apart, and the role ids put the left leg on -X and the feet level with the hips; a '
+                        'standing donor fitted to those joints would lie on the floor in a knot'},
+    'uEm0b': {'spawns': {'s402': 66, 's403 (Reunion)': 5, 's400 (Reunion)': 8},
+              'model': 'em0b00 (70 bones, 21 records, one group)',
+              'sha256': '01a2580b962fc43bea61188c3f5b2749ea56e57cffd0fd2fa2ca40c3f629a592',
+              'reason': 'a quadruped 86 cm tall: the role ids name legs that rise instead of descending and hands below '
+                        'the hips; no biped donor fits a four-legged bind pose'},
+    'uEm62': {'spawns': {'s407': 10, 'every other stage': 1}, 'model': 'em6200 (20 bones, 60 records, two groups)',
+              'sha256': '984fcb15141897644d8575035cf452f940edd6f62714a93aade74e6b2499c685',
+              'reason': 'a flying body with 20 bones: the leg role ids are absent and no native record uses the '
+                        "donor's vertex format (no template), so there is nothing to write a biped into"},
+    'uEm30': {'spawns': {'s401 (Reunion)': 13}, 'model': 'em3000 (90 bones, 78 records, 7 groups), em3100 (94, 90, 2)',
+              'sha256': 'b50b3208a4e05b401c55482dfd06e72e156f384a111e4fc920cdca6bc5b6db7b',
+              'reason': 'the fifteen ids exist but sit on bones whose bind pose is no biped (hip at 16 cm beside the '
+                        'left hand, the "legs" rising to 73 cm, left and right crossed), 119 cm tall; the montage '
+                        'table (4 montages, 3 carriers) is readable but there is no body to fit a donor to'},
+}
 
 
 # --- donors -------------------------------------------------------------------------------------------------------
@@ -694,15 +791,56 @@ def roles_by_animation_id(model: mt_model.ModFile) -> dict[str, int]:
     return roles
 
 
-def role_map(model: mt_model.ModFile) -> tuple[dict[str, int], dict]:
-    """The role map, accepted only when the bind-pose measurement and the animation ids name the same bones."""
-    measured, extra = measure_roles(model)
+def check_role_geometry(model: mt_model.ModFile, roles: dict[str, int]) -> dict:
+    """Hold a role map that came from the animation ids alone against the bind pose: fifteen distinct bones, the left
+    side on +X, legs that descend thigh, shin, foot, arms that run outward upper, fore, hand, head above chest above
+    the thighs and hips above the shins. Facing is not measured here (every RE5 pawn skeleton read so far faces +Z).
+    Returns what was checked; anything else raises."""
+    points = {i: np.array((x, y, z), float) for i, x, y, z in model.bone_world()}
+    if len(set(roles.values())) != 15 or any(bone not in points for bone in roles.values()):
+        raise EnemyWriterError('the animation ids do not name fifteen distinct bones of this skeleton')
+    at = {role: points[bone] for role, bone in roles.items()}
+    problems = []
+    for part in ('upper', 'fore', 'hand', 'thigh', 'shin', 'foot'):
+        if not at[f'l_{part}'][0] > at[f'r_{part}'][0]:
+            problems.append(f'l_{part} is not on the +X side of r_{part}')
+    for side in 'lr':
+        if not at[f'{side}_thigh'][1] > at[f'{side}_shin'][1] > at[f'{side}_foot'][1]:
+            problems.append(f'the {side} leg does not descend thigh, shin, foot')
+        reach = [abs(at[f'{side}_{part}'][0] - at['hip'][0]) for part in ('upper', 'fore', 'hand')]
+        if not reach[0] < reach[1] < reach[2]:
+            problems.append(f'the {side} arm does not run outward upper, fore, hand')
+    if not at['head'][1] > at['chest'][1] > at['l_thigh'][1] or not at['hip'][1] > at['l_shin'][1]:
+        problems.append('head, chest, hips and legs are not stacked upward')
+    if problems:
+        raise EnemyWriterError('the animation ids name bones that cannot be the roles: ' + '; '.join(problems))
+    return {'left_side': '+X', 'facing': 'assumed +Z (not measured by this path)', 'legs_descend': True,
+            'arms_outward': True, 'stacked_upward': True}
+
+
+def role_map(model: mt_model.ModFile, *, allow_ids: bool = False) -> tuple[dict[str, int], dict]:
+    """The role map, accepted when the bind-pose measurement and the animation ids name the same bones.
+
+    `allow_ids` takes the animation ids alone where the bind-pose measurement refuses the skeleton (the executioner's
+    chest carries more than two arms' worth of branches, the giant's and the chainsaw men's likewise), provided
+    `check_role_geometry` holds; the evidence then says so and names the refusal.
+    """
     named = roles_by_animation_id(model)
-    if measured != named:
-        wrong = sorted(role for role in named if measured.get(role) != named[role])
-        raise EnemyWriterError(f'the bind pose and the animation ids disagree on {wrong}')
+    try:
+        measured, extra = measure_roles(model)
+    except EnemyWriterError as exc:
+        if not allow_ids:
+            raise
+        extra = check_role_geometry(model, named) | {'bind_pose_measurement': f'refused: {exc}'}
+        measured, method = named, ('RE5 animation ids, geometry-checked; the bind-pose hierarchy measurement refused '
+                                   'this skeleton (see skeleton.bind_pose_measurement)')
+    else:
+        if measured != named:
+            wrong = sorted(role for role in named if measured.get(role) != named[role])
+            raise EnemyWriterError(f'the bind pose and the animation ids disagree on {wrong}')
+        method = 'bind-pose hierarchy and joint positions, cross-checked against RE5 animation ids'
     points = {i: (x, y, z) for i, x, y, z in model.bone_world()}
-    return measured, {'method': 'bind-pose hierarchy and joint positions, cross-checked against RE5 animation ids',
+    return measured, {'method': method,
                       'animation_ids': {role: ROLE_ANIMATION_IDS[role] for role in measured},
                       'bind_position': {role: [round(float(v), 4) for v in points[bone]] for role, bone in measured.items()},
                       'skeleton': extra, 'bone_count': len(points)}
@@ -814,8 +952,8 @@ def graft_pieces(native: mt_model.ModFile, pieces: list[tuple[mt_model.ModFile, 
         raise EnemyWriterError('the native model needs a complete mesh table and skeleton')
     if sorted(record['mesh_id'] for record in records) != list(range(1, count + 1)):
         raise EnemyWriterError('native mesh ids are not the measured permutation of 1..count')
-    if any(record['min_index'] != record['vertex_index'] or
-           record['max_index'] != record['vertex_index'] + record['vertex_count'] - 1 for record in records):
+    if any(not record['vertex_index'] <= record['min_index'] <= record['max_index']
+           <= record['vertex_index'] + record['vertex_count'] - 1 for record in records):
         raise EnemyWriterError('a native record does not address its own vertex window')
     every = [group for _, groups, _ in pieces for group in groups]
     if not pieces or not every or len(set(every)) != len(every) or count + len(every) > 0xFFFF:
@@ -1024,8 +1162,8 @@ def author(archive: bytes, source: Path, target: EnemySet, *, source_roles: dict
         native_raw, mrl = _entry(parsed, mod_index, name, b'MOD\0'), _entry(parsed, mrl_index, name, b'MRL\0')
         native, short = mt_model.parse_mod(native_raw), name.rsplit('\\', 1)[-1]
         accounted = account_groups(native, target)
-        roles, evidence = role_map(native)
-        material_index, material = _material(mrl, native, target)
+        roles, evidence = role_map(native, allow_ids=target.roles_by_ids)
+        material_index, material = _material(mrl, native, target, unique=not target.shared_atlas)
         template = _template(native.meshes())
         top = top if top is not None else float(native.bounds()['max']['y'])     # one head size for every LOD model
         used, role_scales, role_offsets, sizes = fit_scales(fit, vertices, owners, joints,
@@ -1184,7 +1322,11 @@ def _check_model(native_raw: bytes, raw: bytes, target: EnemySet, expect: dict |
         span = words[record['face_index']:record['face_index'] + record['face_count']]
         real = span[span != 0xFFFF]
         need(len(real) and real.min() >= record['min_index'] and real.max() <= record['max_index']
-             and record['max_index'] - record['min_index'] == record['vertex_count'] - 1, 'indices inside the vertex window')
+             and record['vertex_index'] <= record['min_index']
+             and record['max_index'] - record['vertex_index'] <= record['vertex_count'] - 1
+             and (record['mesh_id'] <= len(originals)
+                  or record['max_index'] - record['min_index'] == record['vertex_count'] - 1),
+             'indices inside the vertex window')
         need(mt_model.fvf_stride(record['vertex_format']) == record['vertex_stride'], 'vertex format stride')
         (donors if record['mesh_id'] > len(originals) else natives).append(i)     # donor ids follow the native ones
     need(len(natives) == len(originals) and all(records[i]['level_of_detail'] in target.lod_masks for i in natives)
@@ -1712,7 +1854,7 @@ def author_mix(archive: bytes, riders: list[tuple[Path, dict, Fit, str]], target
         if shares not in (None, counted):
             raise EnemyWriterError('the models of one set must draw the same carriers for every montage')
         shares = counted
-        roles, evidence = role_map(native)
+        roles, evidence = role_map(native, allow_ids=target.roles_by_ids)
         template = _template(native.meshes())
         top = top if top is not None else float(native.bounds()['max']['y'])
         positions = positions or evidence['bind_position']

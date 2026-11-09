@@ -203,7 +203,10 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
         authored = bytes(data)
     checked = mt_model.parse_mod(authored)
     error = max(abs(a-b) for v,p in zip(fitted, checked.positions(0)) for a,b in zip(v['position'],p))
-    if not checked.split_valid() or len(mtf_author.mesh_triangles(checked, 0)) != len(triangles) or error > .01:
+    # short positions are quantised to 32767 steps of the written span: a 4.4 m figure (em3400) has a 0.012 cm step,
+    # so the tolerance is one step of the widest axis, never less than the 0.01 cm the player bodies were held to
+    step = max(high[i] - low[i] for i in range(3)) / 32767.
+    if not checked.split_valid() or len(mtf_author.mesh_triangles(checked, 0)) != len(triangles) or error > max(.01, step):
         raise ValueError('authored geometry does not round-trip the complete retargeted source')
     edited_texture = mtf_tex.replace_image(texture, atlas)
     edited_mrl, binding = mtf_mrl.bind_albedo(mrl, authored, [material_index], albedo['path'])

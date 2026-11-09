@@ -403,16 +403,21 @@ def build_cast(name: str, assignments: list[Assignment], archives: dict[str, byt
             for slug, carrier in shown.items():
                 still = out / f'preview-{enemy.name}-{slug}.png'
                 moving = out / f'preview-{enemy.name}-{slug}-posed.png'
-                moved = writer.posed_preview(archives[a.enemy], output, moving, motion_entry=entry, clip=clip,
-                                             frames=frames, target=target, backdrop=BACKDROP, carrier=carrier,
-                                             sampled=sampled)
-                sampled = moved.pop('sampled', None)
                 pictures[slug] = {
                     'rest': writer.preview(output, still, target=target, backdrop=BACKDROP, carrier=carrier,
                                            original=archives[a.enemy])
-                    | {'preview': still.name},
-                    'posed': moved | {'preview': moving.name}}
+                    | {'preview': still.name}}
                 rest.append(still)
+                try:                 # the CPU sampler cannot read every native clip or skin layout (em2000's
+                    moved = writer.posed_preview(archives[a.enemy], output, moving, motion_entry=entry, clip=clip,
+                                                 frames=frames, target=target, backdrop=BACKDROP, carrier=carrier,
+                                                 sampled=sampled)                 # 0x1580b60c weights, em22's tracks)
+                except ValueError as exc:          # MotionError is a ValueError; the archive itself is unaffected
+                    pictures[slug]['posed'] = {'preview': None, 'error': f'{type(exc).__name__}: {exc}',
+                                               'shows': 'nothing: the comparison sampler refused this clip or skin'}
+                    continue
+                sampled = moved.pop('sampled', None)
+                pictures[slug]['posed'] = moved | {'preview': moving.name}
                 posed.append(moving)
         if a.mix:
             row.update(
@@ -444,7 +449,8 @@ def build_cast(name: str, assignments: list[Assignment], archives: dict[str, byt
         rows[enemy.name] = row
     if previews:
         _stack(rest, out / 'preview.png')
-        _stack(posed, out / 'preview-posed.png')
+        if posed:
+            _stack(posed, out / 'preview-posed.png')
     donors = {}
     for enemy, row in rows.items():
         if row['kind'] == 'mix':
@@ -459,7 +465,7 @@ def build_cast(name: str, assignments: list[Assignment], archives: dict[str, byt
         'recipe': 're5_enemy_cast', 'name': name, 'title_id': TITLE_ID, 'game_id': GAME_ID,
         'donors': donors, 'archives': rows,
         'overlay_files': [row['archive'] for row in rows.values()],
-        'previews': {'rest': 'preview.png', 'posed': 'preview-posed.png'} if previews else {},
+        'previews': ({'rest': 'preview.png'} | ({'posed': 'preview-posed.png'} if posed else {})) if previews else {},
         'classes_left_native': 'every enemy class without an archive in this overlay (executioners, dogs, bosses, '
                                'the other Majini classes) is drawn as shipped',
         'install': 'a separate recovery-* LayeredFS build through switch_mods; never the live acceptance build',

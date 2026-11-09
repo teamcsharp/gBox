@@ -209,11 +209,58 @@ def test_a_clockwise_donor_has_its_triangles_turned_on_the_way_in(donor, monkeyp
     assert seen == [True, True] and one['appearance']['winding_reversed'] is True
 
 
+def test_role_map_takes_the_animation_ids_where_the_bind_pose_measurement_refuses_and_checks_geometry():
+    bones = skeleton()
+    # a boss skeleton: a chain hanging off the chest beside the arms and the neck (an apron, a weapon)
+    boss = bones + [('apron', 200, 'chest', (0., 125., 8.)), ('apron_1', 201, 'apron', (0., 110., 10.)),
+                    ('apron_2', 202, 'apron_1', (0., 95., 12.))]
+    model = mt_model.parse_mod(variety_mod(boss))
+    with pytest.raises(W.EnemyWriterError, match='two legs, two arms and one neck'):
+        W.role_map(model)
+    roles, evidence = W.role_map(model, allow_ids=True)
+    assert roles == W.roles_by_animation_id(model) and evidence['method'].startswith('RE5 animation ids')
+    assert evidence['skeleton']['bind_pose_measurement'].startswith('refused:') and evidence['skeleton']['legs_descend']
+    # the plain skeleton still goes through the measurement, ids or not
+    plain = mt_model.parse_mod(variety_mod(bones))
+    assert W.role_map(plain, allow_ids=True)[1]['method'].startswith('bind-pose hierarchy')
+    # ids that name bones in the wrong places are refused by the geometry check: swap the left and right leg ids
+    swapped = [(name, {20: 16, 16: 20}.get(animation, animation), parent, point) for name, animation, parent, point in boss]
+    with pytest.raises(W.EnemyWriterError, match='cannot be the roles'):
+        W.role_map(mt_model.parse_mod(variety_mod(swapped)), allow_ids=True)
+    # a quadruped's ids (legs that rise) are refused the same way
+    dog = [(name, animation, parent, (point[0], 200 - point[1], point[2]) if name.endswith(('_shin', '_foot', '_toe')) else point)
+           for name, animation, parent, point in boss]
+    with pytest.raises(W.EnemyWriterError, match='does not descend'):
+        W.check_role_geometry(mt_model.parse_mod(variety_mod(dog)), W.roles_by_animation_id(mt_model.parse_mod(variety_mod(dog))))
+
+
+def test_the_boss_class_registry_is_consistent():
+    bosses = ('uEm20', 'uEm22', 'uEm23', 'uEm24', 'uEm26', 'uEm34', 'uEm92')
+    for enemy in bosses:
+        archive = W.ARCHIVES[enemy]
+        assert len(archive.sha256) == 64 and archive.default_sets == archive.sets and len(archive.sets) == 1
+        target = W.SETS[archive.sets[0]]
+        ids = target.group_ids()
+        assert len(ids) == len(set(ids)) and len(target.models) == 1 and set(target.lod_masks) >= {1, 2, 252}
+        assert len({target.albedo[0], target.normal[0], target.mask[0], target.models[0][1], target.models[0][2]}) == 5
+        assert enemy not in W.MIXES and W.STAGE_COVERAGE[enemy]
+    assert W.EM2300.roles_by_ids is False and W.EM2000.roles_by_ids and W.EM3400.shared_atlas
+    assert set(W.UNBUILDABLE_CLASSES) == {'uEm32', 'uEm0b', 'uEm62', 'uEm30'}
+    assert all(len(row['sha256']) == 64 and row['reason'] and row['spawns'] for row in W.UNBUILDABLE_CLASSES.values())
+    assert not set(W.UNBUILDABLE_CLASSES) & set(W.ARCHIVES)
+
+
 def test_the_label_table_and_the_class_tables_are_what_the_series_reads():
     assert P.LABEL_ARCHIVES['Chris (Safari)'] == 'uPl00ChrisCos2' and P.LABEL_ARCHIVES['Chris (STARS)'] == 'uPl00ChrisCos1'
     assert S.enemy_slots() == {'uEm10': 16, 'uEm11': 2, 'uEm12': 4, 'uEm13': 2, 'uEm14': 9, 'uEm21': 1}
     assert S.enemy_slots(['uEm10'], {'uEm10': 'em1000-pants'}) == {'uEm10': 10}
     assert S.enemy_slots(['uEm10'], {'uEm10': 'em1000-shirts'}) == {'uEm10': 15}
+    with_bosses = S.enemy_slots(singles=True)
+    assert {k: v for k, v in with_bosses.items() if k in W.MIXES} == S.enemy_slots()
+    assert {k: v for k, v in with_bosses.items() if k not in W.MIXES} == {
+        'uEm20': 1, 'uEm22': 1, 'uEm23': 1, 'uEm24': 1, 'uEm26': 1, 'uEm34': 1, 'uEm92': 1}
+    with pytest.raises(S.SeriesError, match='not a reviewed enemy class'):
+        S.enemy_slots(['uEm99'])
     assert S.PLAYER_SLOTS == tuple(P.SLOTS) and len(S.PLAYER_SLOTS) == 6
     assert set(S.ROTATION) == {'today', 'with_hotswap', 'ordering', 'players'}
 
@@ -317,7 +364,7 @@ def test_build_series_writes_builds_sets_refused_donors_aside_and_keeps_the_mani
     archives_dir.mkdir()
     for enemy in ('uEm10', 'uEm11'):
         (archives_dir / f'{enemy}.arc').write_bytes(b'ARC' + enemy.encode())
-    monkeypatch.setattr(S, 'enemy_slots', lambda tables=None: {'uEm10': 3, 'uEm11': 2})
+    monkeypatch.setattr(S, 'enemy_slots', lambda tables=None, **options: {'uEm10': 3, 'uEm11': 2})
     windings_seen, refused_once, cast_calls = {}, [], []
 
     def fake_cast(romfs, library, assignment, out, *, plan=None):
@@ -419,8 +466,10 @@ def test_the_reviewed_tables_hold_on_the_measured_class_archives():
                 model = mt_model.parse_mod(W._entry(parsed, mod_index, model_name, b'MOD\0'))
                 mrl = W._entry(parsed, mrl_index, model_name, b'MRL\0')
                 assert len(W.account_groups(model, target)) == len(target.group_ids())
-                roles, _ = W.role_map(model)
-                assert len(roles) == 15
+                roles, evidence = W.role_map(model, allow_ids=target.roles_by_ids)
+                assert len(roles) == 15 and len(evidence['bind_position']) == 15
+                W._material(mrl, model, target, unique=not target.shared_atlas)
+                W._template(model.meshes())
                 for table in W.MIX_TABLES.values():
                     if table.target == name:
                         mtg = W.parse_montage(W._entry(parsed, *table.montage, b'MTG\0'))

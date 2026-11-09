@@ -3,18 +3,21 @@
 2026-11-09. Follow-up to [re5-enemy-cast.md](re5-enemy-cast.md) and [re5-cast-pool-writer.md](re5-cast-pool-writer.md),
 for the operator's "I want even more character variety mixed into the game encompassing all the extracted characters."
 
-**Nothing in this note has been booted.** What has been seen live before it: the ten-donor pants mix on `uEm10` loaded
-and drew donors (enemy-mix-v1), and a library donor (Ryo) was drawn as the player through `uPl00ChrisCos2.arc`
-(cast pool 03). Every overlay below passes the offline re-read checks and has CPU pictures; none is known to load or
-to look right in the game.
+**Nothing in this note has been booted.** What has been seen live before and beside it: the ten-donor pants mix on
+`uEm10` loaded and drew donors (enemy-mix-v1); a library donor (Ryo) was drawn as the player through
+`uPl00ChrisCos2.arc` (cast pool 03); and, reported by the coordinator on 2026-11-09 22:00 UTC, the `enemy-pool-01`
+build (`uEm10` `315260a4…` + `uEm11` `5981edc7…`) booted and won a No Mercy round on Public Assembly (400 routed, SS)
+with Link (OoT) seen live as a Majini - so an edited `uEm11.arc` loads, and the pants-carrier reading drew at least
+that donor. Every overlay below passes the offline re-read checks and has CPU pictures; none is known to load or to
+look right in the game.
 
 | | |
 |---|---|
-| Writer changes | `system/gbox/re5_enemy_writer.py`: `MixTable` over several categories (`EM1000_WIDE`, 16 carriers; `EM1000_SHIRTS`, 15), the reviewed sets and tables of `em1200`, `em1300`, `em1400`, `em2100`, `account_mix` as an exact-cover check, `measure_roles` reading past a detached root, per-set LOD masks, donor records told apart by mesh id, a mask map the codec cannot rewrite kept native and named, samplers in range and winding reversal as the player writer has them |
+| Writer changes | `system/gbox/re5_enemy_writer.py`: `MixTable` over several categories (`EM1000_WIDE`, 16 carriers; `EM1000_SHIRTS`, 15), the reviewed sets and tables of `em1200`, `em1300`, `em1400`, `em2100`, the boss sets `em2000`, `em2200`, `em2300`, `em2400`, `em2600`, `em3400`, `em9200` (`roles_by_ids`, `shared_atlas`), `UNBUILDABLE_CLASSES`, `account_mix` as an exact-cover check, `measure_roles` reading past a detached root, `role_map(allow_ids)` with `check_role_geometry`, per-set LOD masks, donor records told apart by mesh id, a mask map the codec cannot rewrite kept native and named, samplers in range and winding reversal as the player writer has them. `mtf_mrl._is_albedo_name` (`_BM_NN`), `re5_mesh_import` round-trip tolerance of one quantisation step |
 | Cast changes | `system/gbox/re5_enemy_cast.py`: `--table`, `--mix`, `--pool-size auto`, `donor_from_pool`, the survey over resolved donors; `system/gbox/re5_cast_writer.py`: the Chris label table (`LABEL_ARCHIVES`, `LABEL_EVIDENCE`) |
 | New module | `system/gbox/re5_cast_series.py`: `plan_series`, `build_series`, CLI |
 | Tests | `system/tests/test_re5_cast_variety.py` (12, synthetic fixtures; one opt-in test on the real class archives with `GBOX_RE5_CLASS_ARCHIVES`), updates in `test_re5_enemy_mix.py`, `test_re5_cast_writer.py` |
-| Outputs (not in Git) | `C:\_tools\gBox\.scratch-merc-recovery\assets\variety-uEm10-wide-v1\`, `variety-uEm12-v1\`, `variety-uEm13-v1\`, `variety-uEm14-v1\`, `variety-uEm21-v1\`, `pool-series\` (manifest + four builds) |
+| Outputs (not in Git) | `C:\_tools\gBox\.scratch-merc-recovery\assets\variety-uEm10-wide-v1\`, `variety-uEm12-v1\`, `variety-uEm13-v1\`, `variety-uEm14-v1\`, `variety-uEm21-v1\`, the boss classes `variety-uEm20-v1\` … `variety-uEm92-v1\`, `pool-series\` (manifest + four builds) |
 | Working files (not in Git) | `C:\_tools\gBox\.scratch-merc-recovery\variety\` (the six originals in one folder, the table re-read `table-check.json`, the enemy go/no-go over the 650 donors, build logs) |
 
 ## 1. More donors per round: the carriers are an exact cover, not a category
@@ -133,6 +136,38 @@ form: several whole characters of that class at once, none body-less, none doubl
 em2100 means the game drew the copy inside `uEm10.arc`; for `uEm13`, a patchy surface that follows nothing on the donor
 is the native mask sampled through the donor's UVs.
 
+### Every other class the stages place
+
+The operator (2026-11-09 22:00 UTC): "I want any and all enemies in these games replaced." The eleven remaining
+classes of the eight stages' layouts were copied from the Spark (read-only, 195 MB) and read the same way. Seven are
+standing bipeds with the fifteen role ids at the Majini bind positions and take a donor; four are not bodies a biped
+donor can stand in. Spawn counts are No Mercy placements unless marked Reunion.
+
+| class (spawns) | archive, SHA-256, entries | model | what it needed | overlay, donor, SHA-256, bytes, changed / untouched |
+|---|---|---|---|---|
+| `uEm24` Village 8, Ancient Ruins 13 | `482172df…`, 217 | `em2400` 66/50, 89 bones, 66 records, groups 0 head, 1 body, 2 leg (its textures are `em1200_*` and `em2400_BM_01`), top 195.7 | roles by ids (the chest carries more than two arms and a neck); its albedo is named `em2400_BM_01`, which the MRL binder's `_BM` suffix rule refused - the rule now takes `_BM_NN` | `variety-uEm24-v1`: Knuckles, `aaeb92f2a0f6bb2e…`, 22,774,043, 4 / 213 |
+| `uEm22` Ship Deck 14 | `2020d20d…`, 164 | `em2200` 52/40, 98 bones, 38 records, groups 1 head, 2 body, 3 leg, 5 pants, 6 wig, 8 key; masks 254 and 255 | roles by ids; `em22` clip 0 has two tracks for one bone, so the CPU sampler draws no posed picture (the archive is unaffected) | `variety-uEm22-v1`: Fox (Melee), `72d830bcde7229ab…`, 13,989,095, 4 / 160 |
+| `uEm20` Public Assembly 6, Prison 4 | `269559f2…`, 166 | `em2000` 59/40, 120 bones, 59 records, one group, mask 254 | roles by ids; the apron atlas (1024 squared, three materials, `shared_atlas`); the sampler cannot read the skin weights of its 0x1580b60c records, so no posed picture | `variety-uEm20-v1`: Astaroth (SoulCalibur), `3f4d1dd0c3193e35…`, 12,611,516, 4 / 162 |
+| `uEm34` The Mines 7 | `6050bb81…`, 507 | `em3400` 71/48, 98 bones, 42 records, one group, 4.36 m tall (hip 186 cm, hands +-185) | roles by ids (its neck chain is ambiguous to the measurement); the position round-trip tolerance was 0.01 cm, below one quantisation step of a 4 m span (0.012) - it is now one step of the widest axis, never under 0.01 | `variety-uEm34-v1`: Malprave (007), `9067a5f584bb76e2…`, 18,877,776, 4 / 503 |
+| `uEm23` Missile Area 6, Ship Deck Reunion 1 | `4441a22c…`, 187 | `em2300` 81/63, 93 bones, 81 records, groups 0-4 and 205, masks 3 and 4 | measures outright; its masks are `_CMM` (format 0x13) and stay native | `variety-uEm23-v1`: Solid Snake (TTS), `fb2464fd7f23e6ca…`, 16,961,881, 3 / 184 |
+| `uEm26` Prison 5 | `31010f45…`, 170 | `em2600` 63/44, the em20 skeleton, 99 records, one group | roles by ids; three native records address a window two vertices inside their range (`min_index = vertex_index + 2`), which the graft and the re-read now allow for native records (donor records stay exact) | `variety-uEm26-v1`: Voldo, `ff63d2fcf55bd1f7…`, 14,658,190, 4 / 166 |
+| `uEm92` Public Assembly Reunion 1 | `7da2e478…`, 159 | `em9200` 43/39, 117 bones, 84 records, groups 0 body, 1 hair, 3 head, mask 255; its montage table names one group per category | roles by ids; `evf28xx` cutscene models left native | `variety-uEm92-v1`: Aerith (FF7 field), `842d3be0df1e811e…`, 15,781,669, 4 / 155 |
+| `uEm32` Experimental Facility **172** | `42ea8e01…`, 394 | `em3200` + `_low`/`_mid`, 83 bones, 16 records, one group | **no writer**: a crawling body 27 cm tall at the bind pose; the pelvis and spine trunks cannot be told apart and the role ids put the left leg on -X with the feet level with the hips. A standing donor fitted to those joints would lie on the floor in a knot | - |
+| `uEm0b` Village 66, Reunion Ruins 5, Reunion Public Assembly 8 | `01a2580b…`, 197 | `em0b00`, 70 bones, 21 records, one group, 86 cm | **no writer**: a quadruped; the role ids name legs that rise and hands below the hips | - |
+| `uEm30` The Mines Reunion 13 | `b50b3208…`, 381 | `em3000` 90 bones / 78 records / 7 groups, `em3100` 94 / 90 / 2, 119-132 cm; montage table 4 montages, 3 carriers | **no writer**: the fifteen ids exist but sit on bones whose bind pose is no biped (hip at 16 cm beside the left hand, the "legs" rising to 73 cm, left and right crossed) | - |
+| `uEm62` Prison 10, one in every other stage | `984fcb15…`, 83 | `em6200`, 20 bones, 60 records, two groups, 50 cm | **no writer**: a flying body; the leg ids are absent and no record uses the donor's vertex format (no template) | - |
+
+The boss-class overlays are one donor on every option group (the shape the game has drawn), `live_verified: false`,
+with the same receipts and pictures as the others (`preview-posed.png` is missing where the sampler refused the clip).
+Giants come out as the donor stretched to the class's bind pose: Knuckles 196 cm on `em2400`, Malprave 318 cm on
+`em3400` (its head at the Reaper's head joint, 257 cm). What the writer learned from them: `role_map(allow_ids=True)`
+with `check_role_geometry` (left on +X, legs descend, arms outward, head over chest over hips), `EnemySet.roles_by_ids`
+and `shared_atlas`, the `_BM_NN` albedo names, the native window rule, the round-trip step tolerance, and a posed
+preview that fails without taking the archive with it. `re5_cast_series --with-bosses` deals one donor to each of
+the seven beside the mix classes (`enemy_slots(singles=True)`); the four series builds below were dealt without them
+and keep the six-class deal they started with. `UNBUILDABLE_CLASSES` carries the four blockers with hashes and spawn
+counts, and the series manifest lists them under `classes_without_a_writer`.
+
 ## 3. A series over every donor
 
 `re5_cast_series.plan_series(seed, donors, enemy_pool=…)` deals the whole library into builds. One build is one
@@ -146,8 +181,13 @@ and refusals give the same series.
 Eligibility and refusals are part of the plan. Before planning, the enemy go/no-go (`re5_enemy_cast.survey` over the
 650 through `donor_from_pool`: importer at 512×256 with samplers in range, `check_rig`, the hole test on the measured
 `em1000` joints) left **599** eligible as enemies; the 51 others (32 whose chest joint sits below the hip joint - waist-jointed rigs the enemy fit has no lower-spine mapping for - 5 mirrored, 2 whose head does not rise above its joint, 12 with a height the fitted figure leaves empty) stay in the player pool and are
-covered there. A donor a slot refuses while building is recorded against that role (`manifest.refusals`) and the
-series is dealt again from that build on, so the manifest and the archives agree.
+covered there. A donor a slot refuses while building is recorded against that role (`manifest.refusals`): a player
+slot's refusal has the series dealt again from that build on; an enemy class's refusal (the fit collapses a triangle,
+a fifth skin influence, a surface the atlas cannot take - things the cheap survey does not see) gives that carrier to
+a deterministic `substitute` (from the build seed: an unseen donor of the same franchise first, then any unseen, then
+a seen one; never one already in the build) and only that class is built again (`manifest.builds[].substitutions`).
+The enemy classes are built one at a time for that reason. So the manifest and the archives agree, and a refusal
+costs one class, not a build.
 
 `C:\_tools\gBox\.scratch-merc-recovery\assets\pool-series\manifest.json` lists all SERIES_COUNT builds (donor per slot
 and class, which donors appear for the first time), the four that were built (`build-01` … `build-04`, each with its
@@ -217,7 +257,10 @@ cd ..; $env:PYTHONPATH='system;system/tests'; $env:GBOX_RE5_CLASS_ARCHIVES='ORIG
 
 - No boot of anything here; the first-boot order of the enemy-cast note still applies (one class at a time, `uEm10`
   first, the new classes one by one).
-- The boss and animal classes (`uEm20`, `uEm22`–`uEm26`, `uEm32`, `uEm34`, `uEm0b`, `uEm62`) have no tables.
+- `uEm32` (the Experimental Facility's 172 crawlers), `uEm0b` (the Village dogs), `uEm30` and `uEm62` have no writer:
+  their bodies are not bipeds (section 2). A writer for them would be a new fit, not a table.
+- The boss overlays have one donor each and no posed picture for `uEm20`, `uEm22`, `uEm26` (the CPU sampler refuses
+  their clips or skin layouts); the giants' look at 2-4 m is a guess until a frame shows it.
 - The montage distribution per stage is "if uniform" for the `-1` spawns; the census stores the set of explicit
   montage numbers per class and mode, not a count per spawn.
 - The series' later builds are planned, not built; a refusal found while building them re-deals from that build on.
