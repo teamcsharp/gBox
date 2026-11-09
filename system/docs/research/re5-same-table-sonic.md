@@ -194,6 +194,11 @@ but leaves the visible Majini unchanged.
 That is the identification: the camera-visible Public Assembly enemy is **`uEm11` / `em1101`**, and it shares the low
 model’s strict geometry path. The next import target is `em1101`, not `em1000_low`.
 
+`em1101` is stricter still: a **+1 unit** move of one ordinary part (156 vertices, part 4, level 6, own MRL/table)
+blacks at **boot**, before the title. `em1000_low` accepted +1/+10/+50 at the round; `em1001_low` accepted a one-part
+Sonic patch at the round. `em1101` accepts neither a nudge nor a patch. That points at the model being loaded and
+validated during boot (menu/streaming) and an integrity/identity check that our archive edits do not satisfy.
+
 ![Donor-pair round with the one-part Sonic patch; enemies remain the donor variant](evidence/re5-donor-sonic-patch-enemies.jpg)
 
 The MRL tail is not opaque noise. Its first words are a header
