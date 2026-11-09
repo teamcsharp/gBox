@@ -158,7 +158,7 @@ def _read_text(path: Path) -> tuple[str, str, str]:
         raw = Path(path).read_bytes()
     except FileNotFoundError:
         return "", "", "\n"
-    bom = "﻿" if raw.startswith(b"\xef\xbb\xbf") else ""
+    bom = "\ufeff" if raw.startswith(b"\xef\xbb\xbf") else ""
     text = raw.decode("utf-8-sig", errors="replace")
     nl = "\r\n" if "\r\n" in text else "\n"
     return text.replace("\r\n", "\n"), bom, nl
@@ -661,6 +661,51 @@ def write_files(cfg, game_id: str, name: str, changes: dict, *, in_use: bool = F
             return out | {"pending": True, "applied": [], "overlay": summary(folder)}
         res = apply_pending(folder, kind=kind)
         return out | {"pending": False, "applied": res["applied"], "overlay": res["overlay"]}
+
+
+def hotswap(cfg, game_id: str, name: str, changes: dict, *, in_round: bool = False, by: str = "") -> dict:
+    """Overwrite a build's own files in place, same length, for a running title: the emulator re-reads them at its
+    next load and no restart happens (the hot-reload experiment, docs/switch-mods.md; the operator's "hot reloading").
+
+    Refuses while a round plays (a swap belongs at a round boundary), a file the build does not hold, and new bytes
+    longer than the file already there: a different length makes the layer re-pack, which is a restart, not a hot
+    swap. The manifest keeps its file list (a switch that does not work leaves the build valid) and gains a
+    `reload: true` history entry per swap."""
+    if in_round:
+        raise ValueError("a round is playing: hot swap at a round boundary (the title's next load)")
+    if not changes:
+        raise ValueError("no changes to swap")
+    folder = build_dir(cfg, game_id, name)
+    if not folder.is_dir():
+        raise ValueError(f"no build {name!r} for this game on this PC")
+    with _lock(folder):
+        meta = read_meta(folder)
+        if not is_overlay(meta):
+            raise ValueError(f"{name} is not a Switch LayeredFS build of {game_id}")
+        rows = []
+        for key, ch in changes.items():
+            rel = norm_path(key)
+            target = folder / rel
+            if not target.is_file():
+                raise ValueError(f"{rel}: not a file of {name} (a hot swap replaces a file the build already holds)")
+            data = _content(folder, rel, ch, None)
+            old = target.stat().st_size
+            if len(data) > old:
+                raise ValueError(f"{rel}: {len(data)} bytes does not fit the {old} there; a hot swap keeps the "
+                                 "file's length (rebuild for a new size)")
+            with target.open("r+b") as fh:
+                fh.write(data + b"\x00" * (old - len(data)))
+            rows.append({"path": rel, "change": "hot", "size": old, "from_size": len(data)})
+        history = list(meta.get("history") or [])
+        history.append({"id": f"hot{int(time.time() * 1000)}", "ts": time.time(), "by": by or "",
+                        "note": f"hot swap in place, same length: {len(rows)} file(s)", "files": rows,
+                        "state": "applied", "reload": True})
+        meta["history"] = history[-HISTORY_MAX:]
+        meta["hot_swaps"] = int(meta.get("hot_swaps") or 0) + 1
+        meta["edited"] = time.time()
+        _write_meta(folder, meta)
+    return {"build": name, "dir": str(folder), "files": len(rows), "rows": rows,
+            "note": "in place, same length; the title re-reads it at its next load, no restart"}
 
 
 def revert(cfg, game_id: str, name: str, edit: str = "last", paths: Iterable[str] = (), *, in_use: bool = False,
@@ -1368,7 +1413,7 @@ def character_use(ctx, api, meta: dict | None, game: dict, inp, op: str = "use")
 # --- the tool ---------------------------------------------------------------------------------------------------------
 
 class SwitchModsIn(BaseModel):
-    op: str = "status"          # status | write | revert | new_build | select | apply_pending | apply_live | audit | convert | purge
+    op: str = "status"          # status | write | hotswap | revert | new_build | select | apply_pending | apply_live | audit | convert | purge
     game_id: str = ""
     build: str | None = None    # the overlay build; None = the active one (the session's, else the one this node last started)
     session_id: str = ""        # apply_live: the running session (on this worker)
@@ -1381,6 +1426,7 @@ class SwitchModsIn(BaseModel):
     dry_run: bool = True        # convert: report only (the default)
     items: list[str] = []       # convert: ids from the audit (empty: every convertible one)
     force_empty: bool = False   # convert: a container copy with byte patches becomes an empty overlay (patches dropped)
+    in_round: bool = False      # hotswap: refuse while a round is playing (a swap belongs at a round boundary)
     confirm: bool = False       # purge: delete the full copies convert moved aside (nothing else)
 
 
@@ -1601,7 +1647,7 @@ def switch_mods_tool(inp: SwitchModsIn, ctx):
                                       for n, f, m in builds_for(cfg, gid, tid)],
                            "load_entries": [{"name": n, "gbox": _ours(cfg, tdir / n), "enabled": n not in disabled}
                                             for n in entries]}}
-    if inp.op in ("write", "revert", "apply_pending", "new_build") and active and _collection_elsewhere(ctx, gid, active):
+    if inp.op in ("write", "hotswap", "revert", "apply_pending", "new_build") and active and _collection_elsewhere(ctx, gid, active):
         raise ValueError(f"{active} lives in the central collection: edit it there (switch_mods with require_os=linux); "
                          "this PC fetches the edited build when it next starts it")
     if inp.op == "write":
@@ -1611,6 +1657,11 @@ def switch_mods_tool(inp: SwitchModsIn, ctx):
                           create={"title_id": tid, "game_title": game.get("title") or "", "base": base})
         return {"result": {"op": "write", **res, "note": "restart the title to load it (op=apply_live)" if res["pending"]
                            else "in place; a running game loads it at its next start (op=apply_live restarts it now)"}}
+    if inp.op == "hotswap":
+        if not active:
+            raise ValueError("no active build: name the build to hot swap (build=...)")
+        return {"result": {"op": "hotswap", **hotswap(cfg, gid, active, _resolve(ctx, inp.changes),
+                                                      in_round=inp.in_round, by=by)}}
     if not active and inp.op in ("revert", "apply_pending"):
         raise ValueError("no active build for this title on this node: name one (build=...)")
     if inp.op == "revert":

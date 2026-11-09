@@ -115,3 +115,92 @@ What I need from the PM to scope it:
    the native swap and Sonic-on-Leon.
 4. Draft the hot-reload experiment for RE6/Yuzu (in-place overwrite of one body arc at a round boundary, same size) with
    the two-frames-in-one-session acceptance and no restart.
+
+---
+
+## Round 2 status (2026-11-09, ~15:40 CST, main at `29930119`)
+
+1. **The published overlays are built on the i9 from the artifact store** — all seven, hash-verified against
+   `overlay-artifacts-2026-11-09.json`: `recovery-re4-native-swap-v1-control/rewrite/v1/sonic-on-leon-20261109` and
+   `recovery-re6sw_probe_albedo_solid/sonic_leon_ycc/roster_mix_s15-20261109`. Built with `switch_mods op=write` +
+   `{"artifact": sha}` exactly as you said; no permit needed. **One trap:** the per-PC build retention keeps only **3**
+   builds per game (default), so my fourth RE4 candidate deleted the first as it landed. I raised the RE4 game to 6 via
+   `POST /api/build-retention` on the i9; the RE6 game is at 3/3. Two of the seven vanished before I found this.
+2. **RE4 Switch boots on the i9 under Yuzu** (1.0.2, intro movie, 60 FPS with CUDA video decode) — but only with the
+   **Spark's cache NSP** (`9d9e6465…`), not the share's copy of the same name (`9763f2df…`). Yuzu rejects the share
+   file with "different type (unknown) … Error 52". Since MercMode's launch stages the *share* file, any Windows Yuzu
+   lane for RE4 needs the cache copy or a corrected share file. The operator has taken RE4 to the main system.
+3. **Yuzu guest memory is implemented and pushed (`29930119`)** — `gbox.yuzu_runtime.guest_rows()` and
+   `YuzuAdapter._guest()`. Measured on Yuzu 1734: guest reads work at `0x80000000`–`0x84000000` and are refused at
+   `0x84800000`, below `0x80000000`, and above; the stub has **no memory map** (`qSupported`, `qXfer:memory-map`,
+   `qMemoryRegionInfo` unanswered), reads run at ~5 MB/s, and RE6 main's signature is at `0x82151af8` → main base
+   `0x80000af8`. Both `readable` and `mapped` keys are returned (the title drivers read one, the unlock watcher the
+   other). 9 tests pass in `test_yuzu_runtime.py`.
+4. **Live proof the shim works:** the RE6 session `37e4b812d84f4723-0518903dd7e04768` with `debug=true` now reports
+   `unlock_watch.state` = **`watching`** where the same launch reported `unsupported` an hour ago. Session
+   `0de35724f23b4457-929ea388b9f54426` is the earlier one (old worker code).
+5. **The remaining blocker is one button press.** The unlock watcher waits for `uIdTitle00`, which only appears after
+   "PRESS ANY BUTTON" (`uIdSignIn00`). gBox's own session-input path cannot deliver it to an off-screen window:
+   `win_send_keys` refuses unless the game (or gBox) owns the foreground, and `keep_offscreen` parks the window at
+   (-32000,-32000). For hands-off unlocks on a client PC this needs either (a) a debug-session input path that targets
+   the window directly (a `hidden_ok` variant for automation nodes), or (b) the app's docked view keeping the window in
+   front. I am not posting keys or moving windows on the operator's desktop; that is their machine and their mouse.
+6. **Mouse incident, for the record:** the operator had to replug the mouse twice. gBox has no `BlockInput`,
+   `ClipCursor` or cursor API (searched); USB selective suspend was **enabled** on AC and several hubs, and is now
+   disabled on this PC. The per-device "allow the computer to turn off this device" flags need elevation and are still
+   set. The other suspect is the pen/touch display (`VID_1D02` pen + touch + keyboard) with its Wacom virtual router.
+
+## Round 3 status (2026-11-09, ~15:55 CST): the RE6 update is the wall
+
+The unlock runs on the i9 now — and it refuses for a precise reason, which is progress, not a failure.
+
+- Session `37e4b812d84f4723-0518903dd7e04768`, `debug=true`, build `recovery-re6sw_probe_albedo_solid-20261109`:
+  `unlock_watch.state` = **`watching`** (was `unsupported` before the guest-memory shim). The worker log then says
+  `gBox: unlock-on-load …: refused (0 writes)`.
+- Running `apply()` directly over the stub against that session gives the refusal verbatim:
+  `main+0xad5d6c is not the title gate of build 061D2A06CD700785E987C42CE2D72231`. The module base is
+  `0x80000af8` (signature found at `0x82151af8`), the gate bytes on the **1.0.0** image are
+  `68a64229…08191d12` and the profile's are `b4f00090…682a0839`. **The base NSP's main is a different build**, so
+  every 1.0.0 unlock attempt is correctly refused; the update v131072 (1.0.2) is mandatory for the RAM unlock or the
+  save-flag patch.
+- I could not make **Yuzu 1734** apply the update headlessly. Tried, each time checking the title bar (`… | 1.0.0`):
+  the update NSP beside the base in the cache folder, beside the base in a games folder, its five NCAs + `.tik` + `.cert`
+  extracted into `nand/user/Contents/registered/01002A000CD48800/` (PFS0 v7, 64-bit entries, data at 0x1d0), the same
+  files copied into `registered/01002A000CD48000/`, and `[UI] Paths\external_content_dirs` pointing at the folder that
+  holds base + update (Eden's route; this Yuzu ignores it). Yuzu's log shows it querying NSO patches for the base and
+  finding none.
+- So the remaining routes are: (1) Yuzu's own **Install Files to NAND** dialog (a window interaction on the operator's
+  desktop), (2) a verified **1.0.0 profile** for the unlock (the gate/flag addresses differ from 1.0.2: new RE work,
+  the signature still locates main, and the 1.0.0 image is on this PC to disassemble), or (3) RE6 rounds on **Eden**,
+  where `external_content_dirs` applies the update (`RE6 v131072: "ExeFS: Update (v0.2.0) applied successfully"`).
+- Small but useful: `win_send_keys` refuses an off-screen window, so gBox's own session-input API cannot press a
+  button on a parked window (`keep_offscreen` parks it at -32000,-32000). `hidden_ok` exists but is restricted to
+  Dolphin's F13–F15 hotkeys. A debug-session, window-targeted input path would make client PCs hands-off.
+
+## Round 4 status (2026-11-09, ~16:10 CST, main at `499505ae`)
+
+1. **The project's `hactool` cannot read this library's NSPs — on either node.** With every `prod.keys` on the share
+   (16 025 B, 14 612 B, `prod1.keys`, `pre10.bak`) and with the binary's own directory holding `prod.keys`, both the
+   i9's `system/tools/bin/hactool.exe` (built 2020-06-01) and the Spark's Linux build (built 2026-11-07) end at
+   `Invalid NCA header! Are keys correct?` for the RE6 **base and update** containers, and print
+   `[WARN] prod.keys does not exist.` to stdout even when `--keyset=` names an existing file. The keys themselves are
+   good: Yuzu boots both containers with the same `prod.keys`.
+2. **A client-side decryptor is viable; the header convention is understood.** A Python probe with `cryptography`
+   decrypts the NCA3 header with the public retail `header_key` once the XTS sector index is encoded **big-endian**:
+   magic `NCA3`, content type 0, keygen 2, `nca_size` `0x61D8200`, title id `01002A000CD48000`. hactool's failure is
+   therefore a tool/build problem, not a file problem — a `gbox.switch_nca` (header → key area → section CTR → ExeFS/
+   RomFS) is the next build, and it is the missing piece for the update-as-LayeredFS route below.
+3. **Yuzu cannot apply v131072 by any headless route.** Tried and re-verified: update beside the base in the cache and
+   in a games folder; the five NCAs + `.tik` + `.cert` under `nand/user/Contents/registered/01002A000CD48800/` and
+   under `…/01002A000CD48000/`; the ticket in `nand/system/Contents/ticket/`; `[UI] Paths\external_content_dirs`.
+   Still `1.0.0`. `yuzu.exe` has no `--install` and no `external_content` string; `yuzu-cmd.exe` has neither. The only
+   remaining Yuzu route is its GUI **Install Files to NAND** dialog.
+4. **`switch_mods op=hotswap` is in (`499505ae`).** It rewrites a build's own file in place, at the same path and the
+   same length, while the title runs — the hot-reload experiment's tool. It refuses a round in progress
+   (`in_round=true`), a file the build does not hold, and bytes longer than the file already there (a length change
+   re-packs the layer and is a restart, not a hot swap); it pads shorter payloads, keeps the manifest's file list, and
+   records a `reload: true` history entry per swap. 4 new tests in `test_switch_mods_hotswap.py`; the switch_mods
+   suite is 36 passed, 1 skipped.
+5. **Caveat for the lane:** the RE6 unlock's gate is 1.0.2's main. Until the update is in Yuzu (GUI install, or the
+   Python extractor + a LayeredFS `exefs/main` overlay), the i9 can build, probe and hot-swap but cannot open the
+   main menu for a Mercenaries round; rounds stay on Eden until then.
