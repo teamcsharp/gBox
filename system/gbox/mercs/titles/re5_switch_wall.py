@@ -62,6 +62,29 @@ def _observe(bot, player, now, config):
     return state
 
 
+def route_steers(bot, now) -> bool:
+    """Whether the mesh's route chose this tick's heading (Bot._mesh_waypoint set _mesh_wp this tick)."""
+    wp = getattr(bot, "_mesh_wp", None)
+    return wp is not None and len(wp) > 2 and wp[2] == now
+
+
+def start_route(bot, player, now):
+    """WALL_ROUTE_YIELD (2026-11-09, the bus): a wall met while the route steers. No trail path - the trail is the
+    route's own way back, and walking it reversed him along the bus for RECOVERY_S - only the bounded back-step
+    (2 x WALL_BACK_S), then the route again, planned afresh; the heading kept, so nothing turns him round."""
+    from . import re5_switch as config
+    state, pos = _state(bot), tuple(player["pos"])
+    bot.wall_memory(pos[0], pos[2], player["rot"])
+    bot._wall_rec = {"since": now, "until": now + 2 * config.WALL_BACK_S, "head": player["rot"], "target": None,
+                     "path": None, "origin": pos, "segment_start": pos, "route": True}
+    state["effort"], state["anchor"], state["previous"] = 0., None, None
+    bot._wall_push, bot._wall_hist = None, []
+    r = bot.__dict__.get("_mroute")
+    if r is not None:
+        r["at"] = -math.inf                                   # the route planned again at the next call
+    bot.stats["wall_route_yields"] = bot.stats.get("wall_route_yields", 0) + 1
+
+
 def start(bot, player, now, preempt):
     from . import re5_switch as config
     state, pos = _state(bot), tuple(player["pos"])
@@ -111,12 +134,14 @@ def _recover(bot, action, player, now, config):
         bot._wall_rec = None
         state["retry_at"] = now + RETRY_S
         state["retry_head"] = rec["head"]
-        return {**action, "hold": keys}
+        return action if rec.get("route") else {**action, "hold": keys}   # (the route's own keys: on at once)
     if now >= rec["until"]:
         bot.stats["wall_recovery_failures"] = bot.stats.get("wall_recovery_failures", 0) + 1
         bot._wall_rec = None
         state["retry_at"] = now + RETRY_S
         state["retry_head"] = rec["head"]
+        if rec.get("route"):
+            return action                                    # the route steers on; a stall is counted again
         return {**action, "hold": keys + tuple(bot._turn(config.wrap(rec["head"] - player["rot"]), config.TURN_TOL))}
     err = config.wrap(rec["head"] - player["rot"])
     if target is not None:
@@ -132,7 +157,8 @@ def _recover(bot, action, player, now, config):
         movement = ("ldown",) if elapsed < config.WALL_BACK_S else \
             (("lleft",) if bot.stats.get("wall_hits", 0) % 2 else ("lright",)) \
             if elapsed < 2 * config.WALL_BACK_S else tuple(bot._turn(err, config.TURN_TOL))
-        why = "bounded back/side probe; waiting for observed movement"
+        why = "a short step back off the route's wall, then the route again" if rec.get("route") else \
+            "bounded back/side probe; waiting for observed movement"
     else:
         movement, why = (), "recorded return path exhausted; waiting for observed movement"
     bot.doing, bot.why = "walk", "wall: " + why
@@ -156,13 +182,16 @@ def apply(bot, action, snap, now):
     if "lup" not in hold:
         return action
     pos = player["pos"]
-    remembered = any(math.hypot(w[0] - pos[0], w[1] - pos[2]) <= config.WALL_MEM_R
-                     and abs(config.wrap(player["rot"] - w[2])) <= math.radians(config.WALL_MEM_DEG)
-                     for w in bot._walls)
+    # The route's own push (WALL_ROUTE_YIELD): only a measured stall counts - the wall memory's preempt and the retry
+    # window would stop every approach to a door he has once bumped and turn him to the reverse heading, the stick off.
+    routed = getattr(config, "WALL_ROUTE_YIELD", False) and route_steers(bot, now)
+    remembered = not routed and any(math.hypot(w[0] - pos[0], w[1] - pos[2]) <= config.WALL_MEM_R
+                                    and abs(config.wrap(player["rot"] - w[2])) <= math.radians(config.WALL_MEM_DEG)
+                                    for w in bot._walls)
     stalled = state["effort"] >= config.WALL_WINDOW_S
     if not (remembered or stalled):
         return action
-    if now < state["retry_at"]:
+    if now < state["retry_at"] and not routed:
         head = state["retry_head"]
         turn = tuple(bot._turn(config.wrap(head - player["rot"]), config.TURN_TOL)) if head is not None else ()
         return {**action, "hold": tuple(k for k in hold if k not in MOVE_KEYS)
@@ -171,6 +200,12 @@ def apply(bot, action, snap, now):
     bot.stats[counter] += 1
     if stalled:
         bot.stats["wall_push_s"] = round(bot.stats["wall_push_s"] + state["effort"], 2)
+    if routed:
+        route_wall = getattr(bot, "_route_wall", None)
+        if callable(route_wall):
+            route_wall(player, now)                           # the crossing counted; refused after enough pushes
+        start_route(bot, player, now)
+        return _recover(bot, action, player, now, config)
     start(bot, player, now, remembered)
     return _recover(bot, action, player, now, config)
 

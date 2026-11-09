@@ -322,14 +322,17 @@ class NavMesh:
         p, q = self.points[t[edge % 3]], self.points[t[(edge + 1) % 3]]
         return tuple((p[k] + q[k]) / 2.0 for k in range(3))
 
-    def route(self, start, goal, avoid=(), pull=True, blocked_links=(), link_penalties=None) -> list | None:
+    def route(self, start, goal, avoid=(), pull=True, blocked_links=(), link_penalties=None,
+              clearance=0.0) -> list | None:
         """Floor waypoints and explicit candidate Traversal links along the cheapest directed triangle path.
 
         pull=False uses floor-edge midpoints instead of funnel corners. Steep-face chains and off-mesh links
         retain a floor approach and landing; they cannot become ordinary walk commands. Endpoints must be on
         non-steep floors within 60 cm of their own height. avoid: positions of
         crossings the player could not take (an AI-only drop or climb): links through a portal within AVOID_R of one
-        are left out."""
+        are left out. clearance (cm, pull=True): the funnel's corners are kept this far in from a portal's ends
+        (an edge narrower than twice it is crossed at its middle), so a walker with a body does not aim at a door
+        jamb (the Public Assembly bus, 2026-11-09: its 63 cm door's corner IS the jamb)."""
         a, b = (self.find(p, floor_only=True, height_slack=61.0) for p in (start, goal))
         if a is None or b is None:
             return None
@@ -386,13 +389,13 @@ class NavMesh:
                 exit_portal = self._portal(last_u, last_edge)
                 shared_exit = {self.tris[last_u][last_edge % 3], self.tris[last_u][(last_edge + 1) % 3]}
                 landing = self._inset(v, exit_portal) if shared_exit <= set(self.tris[v]) else self.centre[v]
-                out += funnel(seg_start, seg, approach) if pull else seg + [approach]
+                out += funnel(seg_start, seg, approach, clearance) if pull else seg + [approach]
                 out.append(Traversal(landing, approach, portal))
                 seg_start, seg = landing, []
             else:
                 seg.append(self._edge(u, edge, v) if pull else FloorWaypoint(self._portal(u, edge), (u, v)))
             index += 1
-        return out + (funnel(seg_start, seg, tuple(goal)) if pull else seg + [tuple(goal)])
+        return out + (funnel(seg_start, seg, tuple(goal), clearance) if pull else seg + [tuple(goal)])
 
     def _inset(self, node, portal):
         centre = self.centre[node]
@@ -955,9 +958,24 @@ def _area2(a, b, c) -> float:
     return (c[0] - a[0]) * (b[2] - a[2]) - (b[0] - a[0]) * (c[2] - a[2])
 
 
-def funnel(start, portals: list, goal) -> list:
+def shrink_portal(left, right, clearance: float) -> tuple:
+    """A portal's ends moved `clearance` cm toward each other in x / z (to its middle when it is narrower than twice
+    that): the funnel's corner then clears the edge's end instead of touching it."""
+    dx, dz = right[0] - left[0], right[2] - left[2]
+    n = math.hypot(dx, dz)
+    if clearance <= 0.0 or n < 1e-6:
+        return tuple(left), tuple(right)
+    t = min(0.5, clearance / n)
+    return (tuple(left[k] + t * (right[k] - left[k]) for k in range(3)),
+            tuple(right[k] - t * (right[k] - left[k]) for k in range(3)))
+
+
+def funnel(start, portals: list, goal, clearance: float = 0.0) -> list:
     """String pulling (the simple stupid funnel algorithm, in x / z): the corners of the shortest path from start to
-    goal through the portals [(left, right), ...], then the goal. [goal] without portals."""
+    goal through the portals [(left, right), ...], then the goal. [goal] without portals. clearance: see
+    shrink_portal (0: the corners on the portals' own ends)."""
+    if clearance > 0.0:
+        portals = [shrink_portal(a, b, clearance) for a, b in portals]
     pts = list(portals) + [(tuple(goal), tuple(goal))]
     apex = left = right = tuple(start)
     ai = li = ri = -1

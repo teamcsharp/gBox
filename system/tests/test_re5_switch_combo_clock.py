@@ -113,8 +113,9 @@ def test_at_a_links_foot_he_pushes_on_through_it_and_gives_up_one_that_never_let
     assert bot._mesh_waypoint(foot, goal, 10.2 + R.MESH_LINK_TRY_S - 0.1) is not None
     assert bot._mesh_waypoint(foot, goal, 10.3 + R.MESH_LINK_TRY_S) is None   # never through: the Majini's only
     assert bot.stats["mesh_links_refused"] == 1 and bot._mesh_avoid(mesh) == [(1000.0, 0.0, 0.0)]
-    assert bot._mesh_waypoint(foot, goal, 20.0) is None and mesh.asked[-1] == ((1000.0, 0.0, 0.0),)
-    assert bot.stats["mesh_no_route"] >= 1
+    assert bot._mesh_waypoint(foot, goal, 20.0) is None and ((1000.0, 0.0, 0.0),) in mesh.asked[-2:]
+    assert bot.stats["mesh_no_route"] >= 1                   # (asked once more without the refusal: it IS the cause)
+    assert bot.stats["nav_status"].startswith("no usable exit") and bot.stats["mesh_no_exit"] == 1
 
 
 def test_the_locate_run_takes_the_mesh_across_floors_and_keeps_its_majini(bot):
