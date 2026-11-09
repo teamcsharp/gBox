@@ -49,6 +49,7 @@ ROLE_IDS = {"hip": 1, "chest": 2, "neck": 3, "head": 4,
 ROOT_ROLE = "hip"                     # the hip is the MTF root bone (id 1, index 0 in the measured body)
 REQUIRED = ("hip", "chest", "neck", "head", "r_upper", "r_fore", "r_hand", "l_upper", "l_fore", "l_hand",
             "r_thigh", "r_shin", "r_foot", "l_thigh", "l_shin", "l_foot")
+KEEP_REQUIRED = tuple(role for role in REQUIRED if role != "neck")    # what a donor must name when the bind is kept
 
 
 class SwitchModelError(ValueError):
@@ -115,19 +116,88 @@ def roles_for(model) -> dict[str, int]:
     return roles
 
 
-def _find_model(arc) -> tuple[int, int, bytes]:
-    matches = {}
+def _entry_bytes(entry) -> bytes:
+    try:
+        return zlib.decompress(entry.data)
+    except zlib.error:
+        return entry.data
+
+
+def model_entries(arc) -> list[dict]:
+    """Every MOD of an archive: its entry index and name, its skeleton and mesh counts, and the MRL of the same name.
+
+    A body archive holds exactly one skinned `plNNNN` MOD (under `data/chara/pl/.../model`) and two skeleton-less
+    effect models (`md000c_02`, `md008c`, under `effect/mod`); an accessory-head archive holds up to three skinned
+    MODs (`cs_plNN00` head, `cs_plNN01`, `cs_plNN02`). Measured over all 54 body and 212 part archives of the title.
+    """
+    mrls: dict[str, int] = {}
+    rows = []
     for index, entry in enumerate(arc.entries):
-        try:
-            raw = zlib.decompress(entry.data)
-        except zlib.error:
-            raw = entry.data
-        if raw[:4] in (b"MOD\0", b"MRL\0"):
-            matches.setdefault(raw[:4], (index, raw))
-    if b"MOD\0" not in matches:
+        raw = _entry_bytes(entry)
+        if raw[:4] == b"MRL\0":
+            mrls.setdefault(entry.name, index)
+        elif raw[:4] == b"MOD\0" and len(raw) >= 0x60:
+            bones, meshes, materials = (int.from_bytes(raw[6 + 2 * k:8 + 2 * k], "little") for k in range(3))
+            rows.append({"index": index, "name": entry.name, "bones": bones, "meshes": meshes,
+                         "materials": materials, "vertices": int.from_bytes(raw[0x0C:0x10], "little"),
+                         "raw": raw})
+    for row in rows:
+        row["mrl"] = mrls.get(row["name"], -1)
+    return rows
+
+
+def _find_model(arc) -> tuple[int, int, bytes]:
+    """(MOD entry, its MRL entry, MOD bytes) of the archive's body: the MOD with the largest skeleton.
+
+    Entry order is not relied on: an effect model (no bones) listed before the body, or a second character part in
+    the same archive, never becomes "the body". The MRL is the entry that shares the MOD's name.
+    """
+    rows = model_entries(arc)
+    if not rows:
         raise SwitchModelError("the body archive holds no MOD")
-    mod_index, mod_raw = matches[b"MOD\0"]
-    return mod_index, matches.get(b"MRL\0", (-1, b""))[0], mod_raw
+    body = max(rows, key=lambda row: (row["bones"], -row["index"]))
+    mrl = body["mrl"]
+    if mrl < 0:
+        mrl = next((index for index, entry in enumerate(arc.entries)
+                    if _entry_bytes(entry)[:4] == b"MRL\0"), -1)
+    return body["index"], mrl, body["raw"]
+
+
+def body_materials(model) -> list[str]:
+    """The body MOD's material names in material-index order (128-byte records at the materials offset).
+
+    A mesh's `material_index` points here; the name's `crc32 ^ 0xFFFFFFFF` is the hash the texture-set MRL keys its
+    material by. Leon's `pl0000` reads `pl_cloth, pl_base2, pl_cloth1, pl_base1, pl_skin`, so a one-mesh donor on
+    material 0 is drawn with the jacket material and samples only that material's textures.
+    """
+    header = model.header()
+    start = header["offsets"]["materials"]
+    names = []
+    for index in range(header["material_count"]):
+        record = model.raw[start + index * 128:start + (index + 1) * 128]
+        names.append(record.split(b"\0", 1)[0].decode("ascii", "replace"))
+    return names
+
+
+def slot_report(archive: bytes) -> dict:
+    """What a body archive's own skeleton is: the body entry, its bone count, roots and role coverage.
+
+    The 51 body slots report 36..89 bones. That is each costume's own skeleton (cloth, hair and prop chains differ
+    per costume; Piers' cannon arm has 89 bones and five roots), not a wrong MOD: every slot holds one skinned MOD
+    and all of them carry the same 18 role ids, which is what the animations address.
+    """
+    arc = mt_arc.parse(bytes(archive))
+    rows = model_entries(arc)
+    index, mrl, raw = _find_model(arc)
+    model = mt_model.parse_mod(raw)
+    table = model.bone_table()
+    anim = [int(value) for value in table.get("anim_map", [])]
+    return {"entry": arc.entries[index].name, "entry_index": index, "mrl_index": mrl,
+            "models": [{k: row[k] for k in ("index", "name", "bones", "meshes", "vertices")} for row in rows],
+            "skinned_models": sum(1 for row in rows if row["bones"]),
+            "bones": model.header()["bone_count"], "roots": sum(1 for parent in table.get("parents", []) if parent == 255),
+            "roles": sorted(role for role, role_id in ROLE_IDS.items() if role_id in anim),
+            "materials": body_materials(model)}
 
 
 def _source_rig(source: Path, roles: dict[str, str]):
@@ -205,7 +275,11 @@ def _source_geometry(source: Path):
                 vertices.append({"position": tuple(position), "normal": tuple(normal),
                                  "uv": tuple(uv), "source_joints": [j for j, _ in influences],
                                  "source_weights": [w for _, w in influences]})
-            for triangle in acc(prim["indices"]).reshape(-1, 3):
+            if prim.get("mode", 4) != 4:
+                raise SwitchModelError(f"{source} has a primitive that is not a triangle list (mode {prim['mode']})")
+            # a primitive without an index accessor draws its vertices three at a time (FF7's field models do)
+            indices = acc(prim["indices"]).reshape(-1) if "indices" in prim else np.arange(len(positions))
+            for triangle in indices[:len(indices) // 3 * 3].reshape(-1, 3):
                 triangles.append(tuple(int(i) + base for i in triangle))
     if not vertices or not triangles:
         raise SwitchModelError(f"{source} has no body geometry")
@@ -249,7 +323,10 @@ def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], he
         vertices, triangles = _source_geometry(Path(source))
     gltf, names, parents, joints = _source_rig(Path(source), source_roles)
     roles_map = {role: (names[name], roles[role]) for role, name in source_roles.items() if role in roles}
-    missing = [role for role in REQUIRED if role not in roles_map]
+    # Moving the native joints needs every anchor. Keeping (or warping onto) the native bind does not: a donor rig
+    # without a neck or clavicles still binds, its neck and shoulder vertices following the next named ancestor.
+    needed = REQUIRED if bind_mode == "reposition" else KEEP_REQUIRED
+    missing = [role for role in needed if role not in roles_map]
     if missing:
         raise SwitchModelError(f"the donor cannot supply target roles {missing}")
     # the native root stays fixed; the hip bone is index 1 and is moved to the fitted donor hip
@@ -374,7 +451,9 @@ def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], he
                "material_index": material_index, "triangle_count": len(triangles), "vertex_count": len(fitted),
                "bones_reversed": bool(reverse_bones),
                "model_entry": model_index, "mrl_entry": mrl_index,
-               "textures": "native material kept: the donor's textures are not yet written (uPlTex####_*.arc step)",
+               "material": (body_materials(model)[material_index:material_index + 1] or [None])[0],
+               "textures": "native material kept: the mesh samples that material's own textures; "
+                           "material_texture_changes writes a donor atlas onto its albedo",
                "archive_sha256": None, "live_verified": False}
     import hashlib
     receipt["archive_sha256"] = hashlib.sha256(payload).hexdigest()
@@ -411,20 +490,26 @@ def blank_arc(archive: bytes) -> bytes:
     The material/MRL and the rest of the archive are kept, so the game still loads the resource and the part simply
     draws nothing visible; this is the Switch counterpart of the Xbox 360 writer's blanked head/hands.
     """
-    arc = mt_arc.parse(bytes(archive))
-    model_index, _mrl, mod_raw = _find_model(arc)
-    model = mt_model.parse_mod(mod_raw)
-    root = model.bone_world()[0]
-    x, y, z = float(root[1]), float(root[2]), float(root[3])
-    vertices = [{"position": (x + dx, y + dy, z + dz), "normal": (0.0, 1.0, 0.0), "uv": (0.0, 0.0),
-                 "bones": [0], "weights": [1.0]} for dx, dy, dz in ((0, 0, 0), (0.01, 0, 0), (0, 0.01, 0))]
-    authored = mtf_author.build_one_mesh(model, vertices, [(0, 1, 2)], material_index=0, template_index=0,
-                                        four_weights=False)
-    authored = mt_model.rebuild_mod(mt_model.parse_mod(authored),
-                                    bounds={"min": {"x": x, "y": y, "z": z}, "max": {"x": x + 0.01, "y": y + 0.01,
-                                                                                      "z": z},
-                                            "sphere": {"x": x, "y": y, "z": z, "r": 0.02}})
-    return mtf_author.replace_archive_model(bytes(archive), model_index, authored)
+    payload = bytes(archive)
+    rows = [row for row in model_entries(mt_arc.parse(payload)) if row["bones"]]
+    if not rows:
+        raise SwitchModelError("the part archive holds no skinned MOD")
+    # Every skinned MOD is blanked, not only the first: the accessory-head archives of the campaign costumes hold
+    # three (`cs_plNN00` head, `cs_plNN01`, `cs_plNN02`), and blanking one left the other two drawn.
+    for row in rows:
+        model = mt_model.parse_mod(row["raw"])
+        root = model.bone_world()[0]
+        x, y, z = float(root[1]), float(root[2]), float(root[3])
+        vertices = [{"position": (x + dx, y + dy, z + dz), "normal": (0.0, 1.0, 0.0), "uv": (0.0, 0.0),
+                     "bones": [0], "weights": [1.0]} for dx, dy, dz in ((0, 0, 0), (0.01, 0, 0), (0, 0.01, 0))]
+        authored = mtf_author.build_one_mesh(model, vertices, [(0, 1, 2)], material_index=0, template_index=0,
+                                            four_weights=False)
+        authored = mt_model.rebuild_mod(mt_model.parse_mod(authored),
+                                        bounds={"min": {"x": x, "y": y, "z": z},
+                                                "max": {"x": x + 0.01, "y": y + 0.01, "z": z},
+                                                "sphere": {"x": x, "y": y, "z": z, "r": 0.02}})
+        payload = mtf_author.replace_archive_model(payload, row["index"], authored)
+    return payload
 
 
 def donor_atlas(source: Path, *, atlas_size=(1024, 1024)):
@@ -435,17 +520,22 @@ def donor_atlas(source: Path, *, atlas_size=(1024, 1024)):
     return atlas
 
 
-def texture_changes(romfs: Path, character: str, atlas, *, formats=(0x2B,)) -> dict[str, dict]:
+SHARED_TEXTURE_DIR = "data\\chara\\textures\\"       # `pl_Blood_BM`, `pl_VTF`: shared by every player material
+
+
+def texture_changes(romfs: Path, character: str, atlas, *, formats=(0x2B,), shared: bool = False) -> dict[str, dict]:
     """LayeredFS changes replacing every `0x2B` albedo of a character's texture set with `atlas`.
 
-    The body MRL does not name its textures and the material command records are still undecoded, so the whole
-    character texture set is replaced with the same atlas: the donor mesh carries the atlas UVs, so whichever
-    material samples whichever `_BM`, it reads the donor texel. One atlas therefore serves a character (all its
-    costumes) - per-costume donors need the binding first.
+    The blunt route: every `_BM` of every `uPlTex` archive of the character takes the same atlas, so whichever
+    material the donor mesh is drawn with reads the donor texel, and all of the character's costumes show that donor.
+    :func:`material_texture_changes` replaces only the albedo the donor's material samples and is the precise one.
+    The shared maps under `data/chara/textures` (`pl_Blood_BM` is the blood mask of the colour-mask materials, not an
+    albedo) are left alone unless ``shared`` is set. Colours are written through the Y'CbCr path of
+    :func:`gbox.re6_switch_tex.encode_albedo`.
     """
     from PIL import Image
 
-    from . import mt_arc, mtf_author, skin_swap
+    from . import skin_swap
     from .re6_switch_tex import TexError, from_arc_entry, replace_albedo
 
     romfs = Path(romfs)
@@ -459,6 +549,8 @@ def texture_changes(romfs: Path, character: str, atlas, *, formats=(0x2B,)) -> d
         arc = mt_arc.parse(data)
         replaced = 0
         for index, entry in enumerate(arc.entries):
+            if not shared and entry.name.lower().startswith(SHARED_TEXTURE_DIR):
+                continue
             try:
                 surface = from_arc_entry(entry)
             except TexError:
@@ -475,6 +567,146 @@ def texture_changes(romfs: Path, character: str, atlas, *, formats=(0x2B,)) -> d
     if not changes:
         raise SwitchModelError(f"no {formats} albedo found in {character}'s texture set")
     return changes
+
+
+def texture_set_arcs(romfs: Path, body: Path) -> list[Path]:
+    """The archives that carry a body's material definitions and textures.
+
+    The campaign costumes keep them outside the body arc, one archive per dirt variant, named after the body MOD
+    (`pl0000` -> `uPlTex0000_0.arc` ... `_2`; `pl0010` -> `uPlTex0010_0` ... `_3`); the variants bind differently
+    named albedos (`pl0000_00jacket_BM` in `_0`, `pl0000_70jacket_d1_BM` in `_1`), so a texture is always resolved
+    through each archive's own MRL. The extra costumes carry everything in the body arc, which is then the answer.
+    """
+    body = Path(body)
+    arc = mt_arc.parse(body.read_bytes())
+    index, _mrl, _raw = _find_model(arc)
+    stem = arc.entries[index].name.rsplit("\\", 1)[-1]
+    match = re.match(r"^pl(\d{4})$", stem)
+    found = sorted(archive_root(romfs).glob(f"uPlTex{match.group(1)}_*.arc")) if match else []
+    return found or [body]
+
+
+def donor_material(romfs: Path, body: Path) -> dict:
+    """Which body material a one-mesh donor should be drawn with: {index, name, vetted, why, candidates}.
+
+    A mesh takes its whole look and render state from the material its record names. Material 0 is not a safe
+    default: on `uPl01HelenaUsa` and `uPl02ChrisAsia` it is `pl_nuki`, an alpha-tested patch material
+    (`FTransparencyAlpha`) whose albedo alpha would cut a donor out. The choice here is read from the costume's own
+    texture-set MRL: the first material in MOD order that is opaque (`BSSolid` blend, plain `FTransparency`) and has
+    no cloth displacement; failing that the first opaque one. When the texture set is not in this RomFS the answer
+    is index 0 with ``vetted: False``.
+    """
+    from .re6_switch_tex import material_bindings
+
+    body = Path(body)
+    _index, _mrl, raw = _find_model(mt_arc.parse(body.read_bytes()))
+    names = body_materials(mt_model.parse_mod(raw))
+    arcs = texture_set_arcs(romfs, body)
+    archive = mt_arc.parse(arcs[0].read_bytes())
+    rows = []
+    for index, name in enumerate(names):
+        binding = material_bindings(archive, name)
+        if binding is None:
+            continue
+        functions = binding["functions"]
+        rows.append({"index": index, "name": name,
+                     "opaque": binding.get("blend") == "BSSolid" and functions.get("FTransparency") == "FTransparency",
+                     "displaced": functions.get("FVertexDisplacement") != "FVertexDisplacement",
+                     "albedo": (binding["slots"].get("tAlbedoMap") or "").rsplit("\\", 1)[-1] or None,
+                     "function": functions.get("FAlbedo")})
+    still = [row for row in rows if row["opaque"] and not row["displaced"]]
+    opaque = [row for row in rows if row["opaque"]]
+    if still:
+        return {**still[0], "vetted": True, "source": arcs[0].name,
+                "why": "first opaque material without cloth displacement", "candidates": len(rows)}
+    if opaque:
+        return {**opaque[0], "vetted": True, "source": arcs[0].name,
+                "why": "first opaque material (every opaque one carries the cloth displacement)",
+                "candidates": len(rows)}
+    return {"index": 0, "name": names[0] if names else None, "vetted": False, "source": arcs[0].name,
+            "why": "the costume's texture set is not in this RomFS: material 0 taken unvetted",
+            "candidates": len(rows)}
+
+
+def replace_textures(archive: bytes, replacements: dict) -> tuple[bytes, list[dict]]:
+    """Replace named TEX entries of an archive: {texture path: callable(Surface) -> new TEX bytes}.
+
+    Returns the new archive and one row per replaced entry (path, format, size, sha256 before and after). A path that
+    names no TEX entry of this archive is reported with ``"missing": True`` instead of being skipped silently.
+    """
+    import hashlib
+
+    from .re6_switch_tex import TexError, from_arc_entry
+
+    payload = bytes(archive)
+    arc = mt_arc.parse(payload)
+    rows = []
+    for path, writer in replacements.items():
+        wanted = path.replace("/", "\\").lower()
+        index = surface = None
+        for position, entry in enumerate(arc.entries):
+            if entry.name.lower() != wanted:
+                continue
+            try:
+                surface = from_arc_entry(entry)
+            except TexError:
+                continue
+            index = position
+            break
+        if index is None:
+            rows.append({"texture": path, "missing": True})
+            continue
+        new = writer(surface)
+        payload = mtf_author.replace_archive_model(payload, index, new)
+        rows.append({"texture": path, "entry": index, "format": surface.format, "width": surface.width,
+                     "height": surface.height, "mips": surface.mip_count,
+                     "source_sha256": hashlib.sha256(surface.data).hexdigest(),
+                     "output_sha256": hashlib.sha256(new).hexdigest()})
+    return payload, rows
+
+
+def material_texture_changes(romfs: Path, body: Path, image, *, material_index: int = 0, chroma: bool = True,
+                             slot: str = "tAlbedoMap") -> tuple[dict[str, dict], list[dict]]:
+    """LayeredFS changes that put `image` on the one albedo the donor mesh is drawn with.
+
+    The mesh's material index names a material of the body MOD; that material's `tAlbedoMap` is looked up in the MRL
+    of every archive of the costume's texture set (each dirt variant binds its own) and only that TEX is rewritten.
+    Head, hair, hands, the other garments and the shared blood mask stay native. Returns ``(changes, report)``.
+    """
+    from PIL import Image
+
+    from .re6_switch_tex import material_bindings, replace_albedo
+
+    body = Path(body)
+    _index, _mrl, raw = _find_model(mt_arc.parse(body.read_bytes()))
+    names = body_materials(mt_model.parse_mod(raw))
+    if not 0 <= material_index < len(names):
+        raise SwitchModelError(f"material {material_index} is outside the body's {len(names)} materials")
+    material = names[material_index]
+    changes: dict[str, dict] = {}
+    report = []
+    for path in texture_set_arcs(romfs, body):
+        data = path.read_bytes()
+        binding = material_bindings(mt_arc.parse(data), material)
+        texture = (binding or {}).get("slots", {}).get(slot)
+        if not texture:
+            report.append({"archive": path.name, "material": material, "slot": slot, "missing": True})
+            continue
+
+        def writer(surface, _image=image):
+            scaled = _image if _image.size == (surface.width, surface.height) else _image.resize(
+                (surface.width, surface.height), Image.LANCZOS)
+            return replace_albedo(surface.data, scaled, chroma=chroma)
+
+        data, rows = replace_textures(data, {texture: writer})
+        for row in rows:
+            report.append({"archive": path.name, "mrl": binding["mrl"], "material": material, "slot": slot,
+                           "function": binding["functions"].get("FAlbedo"), **row})
+        if rows and not rows[0].get("missing"):
+            changes[f"romfs/{ARCHIVE_DIR.as_posix()}/{path.name}"] = {"bytes": data}
+    if not changes:
+        raise SwitchModelError(f"no archive of {body.name}'s texture set binds {slot} for {material}")
+    return changes, report
 
 
 def character_changes(root: Path, character: str, source: Path, *, source_roles: dict[str, str],

@@ -322,7 +322,7 @@ def switch_cast_op(ctx, inp) -> dict:
         return R.status(ctx.config, name)
     romfs = _switch_romfs(ctx, inp)
     library = Path(inp.library) if getattr(inp, "library", "") else C.library_root(ctx.config)
-    pool = R.donor_pool(library)
+    pool = R.donor_pool(library, tier=getattr(inp, "tier", "") or "full")
     slots = []
     for value in getattr(inp, "slots", []) or []:
         text = str(value)
@@ -331,7 +331,7 @@ def switch_cast_op(ctx, inp) -> dict:
         character, costume = text.split("/", 1)
         slots.append((character.strip().lower(), costume.strip()))
     assignment = R.plan(romfs, pool, seed=int(inp.seed or 7), slots=slots or None,
-                        per_character=bool(inp.textures))
+                        per_character=bool(inp.textures), mix=bool(getattr(inp, "mix", False)))
     rows = [{"slot": f"{character}/{costume}", "donor": meta["slug"], "name": meta["name"]}
             for (character, costume), meta in sorted(assignment.items())]
     if inp.op == "switch_cast_plan":
@@ -1399,6 +1399,8 @@ class Re6In(BaseModel):
     library: str = ""           # switch_cast: the character library root (default: this node's library)
     slots: list = []            # switch_cast: only these slots, "character/costume" (default: every native body slot)
     textures: bool = False      # switch_cast: also write the donor atlas into the character's 0x2B albedo entries
+    mix: bool = False           # switch_cast: spread the draw over the donors' source games (no game twice first)
+    tier: str = "full"          # switch_cast: full = all 18 rig roles | core = a rig without neck/clavicles too
 
 
 class Re6Out(BaseModel):
