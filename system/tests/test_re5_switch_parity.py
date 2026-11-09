@@ -453,3 +453,33 @@ def test_rotten_eggs_only_puts_the_egg_in_every_gun_slot_with_an_endless_stock_a
     assert out["verified"] and flag() == 0 and ids(g, 14)[3] == 0x102
     with pytest.raises(ValueError):
         SM.tool_run(ad, "rotten_egg_only", 50, True)
+
+
+def test_a_round_is_cut_to_its_last_seconds_after_the_doctrines_cap_once_per_round(monkeypatch):
+    """Operator 2026-11-09: "I want to see multiple characters and stages transitioning" - one round had run 30 minutes.
+    After ROUND_CAP_S of play the authoritative clock is cut to ROUND_CAP_CUT_S, once; a new round's player counts anew."""
+    from gbox.mercs.core import doctrine
+    monkeypatch.setattr(doctrine, "ROUND_CAP_S", 360.0)
+    monkeypatch.setattr(doctrine, "ROUND_CAP_CUT_S", 5.0)
+    g, game = clock_guest()
+    ad = Adapter(g)
+    SM.RE5Switch(ad)                                                           # (the session's state exists)
+    master = lambda: struct.unpack("<f", g.rd(game + SM.GAME_CLOCK, 4))[0]
+    clock = [1000.0]
+    tick = lambda: SM.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert "round_capped" not in tick() and master() == 97.5                   # the round's first look
+    clock[0] += 359.0
+    assert "round_capped" not in tick() and master() == 97.5                   # under the cap
+    clock[0] += 2.0
+    out = tick()
+    assert out["round_capped"]["verified"] and out["writes"] == 1 and master() == 5.0
+    g.put(R.game_sys(g, BASE) + R.GS_TIMER, struct.pack("<f", 5.0))            # (the game copies it to the HUD)
+    clock[0] += 1.0
+    assert "round_capped" not in tick() and master() == 5.0                    # once a round
+    monkeypatch.setattr(doctrine, "ROUND_CAP_S", 0.0)                          # 0: no cap at all
+    st = SM.ORIG[id(ad)]
+    st["round_cap"] = {"player": None}
+    g.put(game + SM.GAME_CLOCK, struct.pack("<f", 97.5))
+    g.put(R.game_sys(g, BASE) + R.GS_TIMER, struct.pack("<f", 97.5))
+    clock[0] += 5000.0
+    assert "round_capped" not in tick() and master() == 97.5

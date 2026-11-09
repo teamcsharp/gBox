@@ -83,6 +83,11 @@ BOSS_HP_MIN = 3000                # gbox.mercs.weapon_choice.BOSS_HP_MIN: this m
 # themselves". Every title's mine / remote-bomb logic leaves its own explosive by this much and stays this far from
 # any of his still down (RE5 Switch: re5_switch_mines RETREAT_CM / BLAST_CM; live the same day one blast cost 350 hp).
 MINE_STANDOFF_M = 15.0
+# The operator, 2026-11-09: "I want to see multiple characters and stages transitioning". The same day, with the bot
+# fighting well, one No Mercy round's time bonuses kept a single stage up for 30 minutes (392 kills). A round lasts at
+# most ROUND_CAP_S of play; then the title's own verified clock write cuts the clock to ROUND_CAP_CUT_S and the round
+# ends on its results screen, so MercMode's playlist moves to its next character and stage with no restart. 0: no cap.
+ROUND_CAP_S, ROUND_CAP_CUT_S = 360.0, 5.0
 TICK_MAX_S = 0.5                  # a longer gap between ticks (a loading screen, a held frame) counts as this much
 ATTACK_KEYS = frozenset({"zr", "zl", "r1", "l1", "r2", "l2", "rt", "lt", "r", "square", "x"})   # the gun up, or fired
 MOVE_KEYS = frozenset({"lup", "ldown", "lleft", "lright", "up", "down", "left", "right"})

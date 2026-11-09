@@ -64,6 +64,7 @@ import threading
 import time
 
 from . import re5_switch as R
+from ..core import doctrine as _doctrine
 
 GAME = "Resident Evil 5 (Nintendo Switch 010018100CD46000 v1.0.0, main EBFFDB223149A725A93CD9B60979F6AA)"
 MAP_ID = R.MAP_ID
@@ -1032,6 +1033,34 @@ def rotten_egg_only(g: RE5Switch, on: bool, rate=None) -> dict:
             "native_equipped": False, "effective_next_round": True}
 
 
+def _maintain_round_cap(ad, st, snap, now) -> dict:
+    """The universal doctrine's round cap (ROUND_CAP_S of play, then the clock cut to ROUND_CAP_CUT_S), once a round.
+    A round is one player object: a new pointer starts the count again. -> {} or {"round_capped": ..., "writes": 1}."""
+    cap = float(getattr(_doctrine, "ROUND_CAP_S", 0.0) or 0.0)
+    cut = float(getattr(_doctrine, "ROUND_CAP_CUT_S", 5.0) or 5.0)
+    p = (snap or {}).get("player")
+    if cap <= 0 or not p or not p.get("ptr") or (p.get("hp") or 0) <= 0:
+        return {}
+    rc = st.setdefault("round_cap", {})
+    if rc.get("player") != p["ptr"]:
+        rc.update(player=p["ptr"], t0=now, done=False, tries=0)
+        return {}
+    timer = (snap or {}).get("timer")
+    if rc["done"] or now - rc["t0"] < cap or not isinstance(timer, (int, float)) or timer <= cut + 3.0:
+        return {}
+    if rc["tries"] >= 3 or now - rc.get("tried_at", -1e9) < 2.0:      # an unconfirmed write: again, a few times
+        return {}
+    rc["tries"], rc["tried_at"] = rc["tries"] + 1, now
+    try:
+        res = _add_clock(RE5Switch(ad), absolute=cut)
+    except RuntimeError as exc:                          # the clock's owner and the HUD disagree this frame
+        return {"round_capped": {"verified": False, "reason": str(exc)[:120]}}
+    rc["done"] = bool(res.get("verified"))
+    return {"round_capped": {"verified": rc["done"], "after_s": round(now - rc["t0"], 1),
+                             "clock_before": res.get("clock_before"), "clock_after": res.get("clock_after")},
+            "writes": 1 if rc["done"] else 0}
+
+
 def mine_probe(g: RE5Switch) -> dict:
     """One read-only sample of the mine requirement, from the game's memory at this moment (scripts/re5_mine_probe.py).
 
@@ -1236,6 +1265,10 @@ def maintain(ad, snap=None, *, enabled: bool = True, prepare_mines: bool = False
             kt = st.get("kill_time")
             if enabled and kt and kt.get("on"):
                 out["writes"] += _maintain_kill_time(RE5Switch(ad), kt, snap)
+            if enabled:
+                capped = _maintain_round_cap(ad, st, snap, now)
+                out["writes"] += capped.pop("writes", 0)
+                out.update(capped)
             hs = st.get("health")
             if enabled and hs and hs.get("on"):
                 hs["last"] = res = _maintain_health(ad, hs, snap)
