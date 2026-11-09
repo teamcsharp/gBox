@@ -19,7 +19,7 @@ OBSERVED = 'mercmode_observed'
 COMMAND = 'mercmode_command'
 ADOPTION = 'mercmode_adoption'
 DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title': 1,
-           'presentation_priority': False, 'queue': [], 'keep_warm': 1, 'preferred_editions': {},
+           'presentation_priority': False, 'queue': [], 'repeat_queue': False, 'keep_warm': 1, 'preferred_editions': {},
            # the bots' stalemate rule (gbox.mercs.stalemate; operator 2026-10-26): no enemies for 15 s with time on the
            # clock -> the clock is cut to stalemate_cut_s once per round. Rides in the launch payload (game.launch.mercmode)
            'stalemate_cut': True, 'stalemate_cut_s': 5,
@@ -49,6 +49,7 @@ STALEMATE_FEATURE = 'mercmode_stalemate_cut'     # worker feature: its mercmode 
 COOP_FEATURE = 'mercmode_coop_ratio'             # worker feature: split-screen launches (gbox.switch_coop) and its tool
 CAST_FEATURE = 'mercmode_cast_swap'              # worker feature: its mercmode tool takes cast_swap (inverted cast)
 SKIN_FEATURE = 'mercmode_skin_swap'              # worker feature: its mercmode tool takes skin_swap
+REPEAT_QUEUE_FEATURE = 'mercmode_repeat_queue'   # repeat a configured build/roster playlist without consuming it
 COOP_RATIOS = ('off', '1:1', '2:1', '3:1', '4:1', '5:1', '6:1', '8:1', '10:1', 'only')   # co-op : solo turns
 COOP_MAPS = frozenset({'010018100CD46000', '01002A000CD48000'})   # RE5 / RE6 Switch: split screen (switch_team)
 # Warm pool (operator 2026-10-24: "now that there is more ram on the spark, get the swapping of mercenary modes more
@@ -155,6 +156,8 @@ def normalize(patch, current=None):
     if type(out['enabled']) is not bool or type(out['presentation_priority']) is not bool or type(out['rounds_per_title']) is not int \
             or not 1 <= out['rounds_per_title'] <= 20:
         raise ValueError('MercMode needs enabled true/false and 1..20 rounds per title')
+    if type(out['repeat_queue']) is not bool:
+        raise ValueError('MercMode repeat_queue must be true or false')
     from .mercs.stalemate import CUT_MIN_S, CUT_MAX_S
     if out['coop_ratio'] not in COOP_RATIOS:
         raise ValueError('MercMode coop_ratio is co-op : solo turns, one of ' + ', '.join(COOP_RATIOS))
@@ -280,7 +283,10 @@ def memory_reason(worker, now=None):
 def pop_queue(store, host):
     cfg = settings(store, host)
     if cfg['queue']:
-        store.put(SETTING, host, cfg | {'queue': cfg['queue'][1:]})
+        tail = cfg['queue'][1:]
+        if cfg['repeat_queue']:
+            tail += cfg['queue'][:1]
+        store.put(SETTING, host, cfg | {'queue': tail})
 
 
 def selection_job(title, sid, selection):

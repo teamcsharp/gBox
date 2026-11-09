@@ -36,7 +36,7 @@ import threading
 import time
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 SETTING = "autoplay_screensaver"
 STATE = "autoplay_screensaver_run"          # worker name -> current run
@@ -1743,6 +1743,7 @@ class MercModeSettings(BaseModel):
     rounds_per_title: int | None = None
     presentation_priority: bool | None = None
     queue: list[dict] | None = None             # the DJ queue: [{title, mode, character, stage}], None fields = random
+    repeat_queue: StrictBool | None = None     # retain a single build or cycle a playlist every round
     keep_warm: int | None = None                # titles waiting paused beside the playing one (0 = cold switches)
     stalemate_cut: bool | None = None           # the bots cut the clock when no enemy shows for 15 s (gbox.mercs.stalemate)
     stalemate_cut_s: int | None = None          # ... to this many seconds (1..60; default 5)
@@ -1950,6 +1951,8 @@ def install(app, store, config, auth, submit, workers, archive):
             # an older mercmode tool there forbids the dispatch fields: say so instead of a job that fails on that PC
             raise HTTPException(409,f'{host} runs an older gBox without remote dispatch: relaunch gBox on that PC '
                                     '(or press F5 there to update it), then try again')
+        if _local_scheduler(worker) and patch.get('repeat_queue') is True and mercmode.REPEAT_QUEUE_FEATURE not in features:
+            raise HTTPException(409,f'{host} needs an updated gBox to repeat its MercMode queue')
         try:
             desired=mercmode.configure(store,host,patch)
         except ValueError as exc:
@@ -1974,6 +1977,7 @@ def install(app, store, config, auth, submit, workers, archive):
                        and (k != 'coop_ratio' or mercmode.COOP_FEATURE in features)
                        and (k != 'cast_swap' or mercmode.CAST_FEATURE in features)     # older tools forbid it
                        and (k != 'skin_swap' or mercmode.SKIN_FEATURE in features)     # ... and these two
+                       and (k != 'repeat_queue' or mercmode.REPEAT_QUEUE_FEATURE in features)
                        and not (k=='preferred_editions' and not v)}      # unset: never sent to a worker that lacks it
                 if dispatched:
                     relay|={'command':command,'dispatch_id':dispatched['id'],
