@@ -3607,8 +3607,14 @@ def _prepare_round(inp: AutoplayIn, ctx: Ctx) -> dict:
     if inp.selection:                                            # the DJ's pick: the title's menus select it (re4_menus.request /
         launch = dict(game.get("launch") or {})                  # re5 coverage().request through the playbook's own path)
         merc = launch.get("mercmode") if isinstance(launch.get("mercmode"), dict) else {}
+        selection = dict(inp.selection)
+        if title == '010018100CD46000':
+            import uuid
+            # A new prepare may intentionally request the same round again;
+            # restarting its bot or resuming its launch must not requeue it.
+            selection.setdefault('request_id', str(getattr(ctx, 'job_id', None) or uuid.uuid4().hex))
         game["launch"] = launch | {"mercmode": {**merc, "random_characters": True, "random_stages": True,
-                                                "selection": dict(inp.selection)}}
+                                                "selection": selection}}
     run = AUTOPLAY[sid] = {"driver": d, "sid": sid, "since": since, "mode": "prepare", "mission": f"prepare: {name}",
                            "ctx": ctx, "inp": inp, "live": {}, "prepare": rp}
 

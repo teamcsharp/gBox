@@ -611,7 +611,7 @@ def test_registered_prepare_uses_real_typed_catalog_path_for_each_verified_disc(
     result=mercmode(MercModeIn(op='prepare'),SimpleNamespace(server='http://fixture',headers={},worker='w1',config=cfg))
     assert result['result']['saved'] is True
     from gbox import re_switch
-    switch=(re_switch.RE5_GAME_ID,re_switch.RE6_GAME_ID)   # the Switch No Mercy editions a host may prefer
+    switch=(re_switch.RE4_GAME_ID,re_switch.RE5_GAME_ID,re_switch.RE6_GAME_ID)   # all preferred Switch editions
     merc3d=M.TITLES['merc3d']['game_ids']                    # the 3DS title the i9 loops (2026-10-27)
     assert requests==[('GET','/api/catalog/'+gid) for gid in (RE4,alternate,RE5,*switch,*merc3d)]+[('POST','/api/mercmode/preparation')]
     assert posted[0]['worker_id']=='w1' and posted[0]['result']['games'][alternate]['reachable'] is True
@@ -1243,13 +1243,16 @@ def test_preload_gets_presentation_priority_like_the_launch_it_replaces():
     assert not M.presentation_launch(store,w,stored|{'actor':'operator'})
 
 
-def test_an_unplayable_preferred_edition_explains_itself_instead_of_showing_a_blank():
+def test_an_unplayable_preferred_edition_explains_itself_instead_of_showing_a_blank(monkeypatch):
     """2026-11-07: RE4 on lilspark listed playable=false with reason "", so the panel offered nothing to act on.
 
-    A Switch edition keeps its explanation in `notes` (gbox.re_switch.preferred_spec: RE4 is `'playable': False` with
-    RE4_REASON in notes), while the inventory only read `reason`. Every unplayable row must say why.
+    A Switch edition can keep its explanation in `notes`, while the inventory once only read `reason`.
+    Reproduce the original unavailable backend even though RE4 now has a verified screen playbook.
     """
     from gbox import re_switch
+    preferred_spec = re_switch.preferred_spec
+    monkeypatch.setattr(re_switch, 'preferred_spec', lambda title, native, cfg:
+                        preferred_spec(title, native, cfg) | ({'playable': False} if title == 're4' else {}))
     store,w,*_=rig()
     switch_pref={'re4':{'platform':'switch','mode':'mercenaries','title_id':re_switch.RE4_TITLE_ID}}
     M.configure(store,w['name'],{'enabled':True,'preferred_editions':switch_pref})

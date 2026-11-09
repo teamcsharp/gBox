@@ -488,6 +488,8 @@ class ArcSwapIn(BaseModel):
     donor_arc: str            # the .arc that supplies the replacement model
     donor_entry: str          # the entry inside the donor arc
     build: str = "gbox-lab"
+    entry_index: int | None = None   # required when the target name occurs more than once
+    donor_index: int | None = None   # required when the donor name occurs more than once
 
 
 class ModelSwapIn(BaseModel):
@@ -514,6 +516,15 @@ class ModelSwapIn(BaseModel):
     tag_follow: bool = False  # a map of another size moves too, its tag travelling with it (an experiment)
     group: str | None = None  # the slot's material group, when the title's layout defeats the default heuristic
     donor_group: str | None = None  # the donor's material group (defaults to its body group)
+
+
+class CharacterSwapIn(BaseModel):
+    """Replace an RE5 native character archive, including its mesh, rig and textures."""
+    title: str
+    arc_path: str
+    donor_arc: str
+    build: str = "mercmode-swap"
+    plan_only: bool = False
 
 
 class StripClothesIn(BaseModel):
@@ -672,7 +683,7 @@ def zombie_cast_plan(title_id: str, available: list[str], cast: list[str], *, st
 
 def _swap_arc_bytes(root: Path, arc_inner: str, donor_inner: str, *, tag_follow: bool = False,
                     with_mesh: bool = False, with_textures: bool = False, group: str | None = None,
-                    donor_group: str | None = None) -> tuple[bytes, dict]:
+                    donor_group: str | None = None, slot_bytes: bytes | None = None) -> tuple[bytes, dict]:
     """The slot archive's bytes with the donor's skin (and optionally its mesh and the donor's textures) in it.
 
     One implementation for every route that swaps an archive's contents, so a fix lands on all of them: the
@@ -680,12 +691,14 @@ def _swap_arc_bytes(root: Path, arc_inner: str, donor_inner: str, *, tag_follow:
     """
     from . import mt_arc, skin_swap
     arc_file, donor_file = root / arc_inner, root / donor_inner
-    data, slot_group, donor_group_name = skin_swap.swap_arc(arc_file.read_bytes(), donor_file.read_bytes(),
+    source_slot = arc_file.read_bytes() if slot_bytes is None else slot_bytes
+    source_donor = donor_file.read_bytes()
+    data, slot_group, donor_group_name = skin_swap.swap_arc(source_slot, source_donor,
                                                             follow_tag=bool(tag_follow), group=group,
                                                             donor_group_name=donor_group)
     info: dict = {"slot": slot_group, "donor": donor_group_name, "mesh": [], "maps": [], "textures_added": []}
     try:                                   # which maps actually moved: a 2/3 swap keeps one map of the slot's own
-        slot_arc, donor_arc = mt_arc.parse(arc_file.read_bytes()), mt_arc.parse(donor_file.read_bytes())
+        slot_arc, donor_arc = mt_arc.parse(source_slot), mt_arc.parse(source_donor)
         slot_maps = skin_swap.material_groups(slot_arc).get(slot_group) or {}
         donor_maps = skin_swap.material_groups(donor_arc).get(donor_group_name) or {}
         moved_maps = [k for k in ("BM", "MM", "NM")
@@ -706,7 +719,7 @@ def _swap_arc_bytes(root: Path, arc_inner: str, donor_inner: str, *, tag_follow:
         # uWp06.arc carries two `wp0600` entries: the MRL model and a MOD container. Choosing by size wrote the MOD
         # into the MRL slot, the engine could not parse it, and the title hung at loading.
         from . import model_swap, mt_model
-        slot_arc, donor_arc = mt_arc.parse(arc_file.read_bytes()), mt_arc.parse(donor_file.read_bytes())
+        slot_arc, donor_arc = mt_arc.parse(source_slot), mt_arc.parse(source_donor)
         # MRL only, exactly as this route has always moved: a shape change is `model_swap.swap_models`, not this.
         slot_models = model_swap.model_indices(slot_arc, magic=mt_model.MAGIC)
         donor_models = model_swap.model_indices(donor_arc, magic=mt_model.MAGIC)
@@ -721,7 +734,7 @@ def _swap_arc_bytes(root: Path, arc_inner: str, donor_inner: str, *, tag_follow:
         # missing ones in, by the path the model names, so the swap is self-contained.
         from . import mt_model
         slot_arc = mt_arc.parse(data)
-        donor_arc = mt_arc.parse(donor_file.read_bytes())
+        donor_arc = mt_arc.parse(source_donor)
         present = {e.name for e in slot_arc.entries}
         by_base = {e.name.rsplit("\\", 1)[-1]: e for e in donor_arc.entries}
         wanted: list[str] = []
@@ -1047,6 +1060,66 @@ def install(app, store, config, auth, tactical_store=None):
             base.mkdir(parents=True, exist_ok=True)
             return base
 
+    def _write_overlay(title: str, name: str, changes: dict, note: str) -> dict:
+        """Panel edits use the same pending files, backups and manifest as switch_mods."""
+        from . import switch_mods
+        game_id = _game_id_for(title)
+        if game_id == title:
+            raise HTTPException(409, "this Switch title is missing from the catalog; no build was written")
+        try:
+            return switch_mods.write_files(
+                _CONFIG, game_id, name, changes,
+                in_use=bool(switch_mods.running_users(game_id, name)), note=note, by="decrypt-lab",
+                create={"title_id": _title_id(title), "game_title": title, "kind": "character"}, kind="character")
+        except (ValueError, OSError) as exc:
+            raise HTTPException(409, str(exc)[:300]) from exc
+
+    def _target_arc_bytes(title: str, name: str, root: Path, inner: str) -> bytes:
+        """Compose a panel edit on this build's newest target; donors always come from the pristine RomFS."""
+        from . import switch_mods
+        try:
+            rel = switch_mods.norm_path(inner)
+            if not rel.startswith("romfs/"):
+                raise ValueError("character archives must be relative RomFS paths")
+            base = root / rel[len("romfs/"):]
+            folder = switch_mods.build_dir(_CONFIG, _game_id_for(title), name)
+            with switch_mods._lock(folder):
+                meta = switch_mods.read_meta(folder)
+                if meta and not switch_mods.is_overlay(meta):
+                    raise ValueError(f"{name} is not a Switch LayeredFS build")
+                for edit in reversed(switch_mods.pending_edits(folder)):
+                    change = next((row for row in edit.get("files", []) if row.get("path") == rel), None)
+                    if change is None:
+                        continue
+                    if change.get("change") == "removed":
+                        return base.read_bytes()       # a pending revert restores the game's own archive
+                    pending = folder / switch_mods.PENDING / edit["id"] / "files" / rel
+                    if not pending.resolve().is_relative_to(folder.resolve()) or not pending.is_file():
+                        raise ValueError(f"the pending edit of {inner} is incomplete; resolve it before editing again")
+                    return pending.read_bytes()
+                target = folder / rel
+                if target.is_file():
+                    if not switch_mods.is_overlay(meta) or not target.resolve().is_relative_to(folder.resolve()):
+                        raise ValueError(f"{name} does not hold a valid overlay archive")
+                    return target.read_bytes()
+                return base.read_bytes()
+        except (ValueError, OSError) as exc:
+            raise HTTPException(409, str(exc)[:300]) from exc
+
+    def _compose_overlay_edit(endpoint):
+        """Keep the target read and tracked write together when two panel requests edit the same build."""
+        from functools import wraps
+        from . import switch_mods
+        @wraps(endpoint)
+        def composed(body):
+            try:
+                folder = switch_mods.build_dir(_CONFIG, _game_id_for(body.title), body.build)
+            except (ValueError, OSError) as exc:
+                raise HTTPException(409, str(exc)[:300]) from exc
+            with switch_mods._lock(folder):
+                return endpoint(body)
+        return composed
+
     def _romfs_root(title_id: str) -> Path | None:
         """An extracted RomFS tree for this title, if one has been produced (hactool --romfsdir)."""
         homes = [Path.home()]
@@ -1265,6 +1338,7 @@ def install(app, store, config, auth, tactical_store=None):
                 "note": "the overlay applies when the title next boots (LayeredFS)"}
 
     @app.post("/api/decrypt-lab/strip-clothes", dependencies=[Depends(auth)])
+    @_compose_overlay_edit
     def decrypt_lab_strip_clothes(body: StripClothesIn):
         """Repaint a character's clothing groups with its body skin maps: the MercMode panel's 'remove clothes'.
 
@@ -1285,7 +1359,8 @@ def install(app, store, config, auth, tactical_store=None):
         if not str(arc_file).startswith(str(root.resolve())) or not arc_file.is_file():
             raise HTTPException(404, "the extracted tree does not hold that archive")
         try:
-            arc = mt_arc.parse(arc_file.read_bytes())
+            source = _target_arc_bytes(body.title, body.build, root, inner)
+            arc = mt_arc.parse(source)
         except mt_arc.ArcError as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -1333,21 +1408,21 @@ def install(app, store, config, auth, tactical_store=None):
                 replaced.append(dst.name)
         if not replaced:
             raise HTTPException(409, "no clothing map shares the body's format: nothing could be repainted safely")
-        data = arc_file.read_bytes()
+        data = source
         for name, payload in patched_entries:
             data = mt_arc.replace(data, name, payload)
-        folder = _mod_build(body.title, body.build)
-        target = folder / "romfs" / inner
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        edit = _write_overlay(body.title, body.build, {f"romfs/{inner}": {"bytes": data}},
+                              f"strip clothes: {inner}")
+        target = Path(edit["dir"]) / "romfs" / inner
         lab_state.event(body.title, "strip-clothes",
                         f"{len(replaced)} clothing map(s) repainted with {body_group[1]}'s skin in {inner}",
                         {"build": body.build, "replaced": len(replaced), "skipped": len(skipped)})
         return {"v": FORMAT, "ok": True, "target": str(target), "size": len(data), "body_group": body_group[1],
-                "replaced": replaced[:64], "skipped": skipped[:64],
+                "replaced": replaced[:64], "skipped": skipped[:64], "edit": edit["edit"], "pending": edit["pending"],
                 "note": "the overlay applies when the title next boots (LayeredFS)"}
 
     @app.post("/api/decrypt-lab/arc-swap", dependencies=[Depends(auth)])
+    @_compose_overlay_edit
     def decrypt_lab_arc_swap(body: ArcSwapIn):
         """Swap one model entry inside an .arc: the slot keeps its name, the donor's bytes replace the payload.
 
@@ -1361,36 +1436,68 @@ def install(app, store, config, auth, tactical_store=None):
             raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
 
         def resolve(inner: str) -> Path:
-            inner = (inner or "").strip().lstrip("/")
-            if not inner or len(inner) > 400 or inner.startswith("/") or ".." in inner.split("/"):
+            inner = (inner or "").strip().replace("\\", "/")
+            if not inner or len(inner) > 400 or inner.startswith("/") or ":" in inner or ".." in inner.split("/"):
                 raise HTTPException(400, "paths must be relative RomFS paths")
             target = (root / inner).resolve()
-            if not str(target).startswith(str(root.resolve())) or not target.is_file():
+            if not target.is_relative_to(root.resolve()) or not target.is_file():
                 raise HTTPException(404, f"the extracted tree does not hold {inner}")
             return target
 
         arc_file = resolve(body.arc_path)
         donor_file = resolve(body.donor_arc)
+        inner = arc_file.relative_to(root.resolve()).as_posix()
+        source = _target_arc_bytes(body.title, body.build, root, f"romfs/{inner}")
+
+        def select(arc, name, index, label):
+            name = name.replace("/", "\\")
+            if index is not None:
+                if not 0 <= index < len(arc.entries) or arc.entries[index].name != name:
+                    raise HTTPException(409, f"{label} index does not match the requested entry")
+                return index, arc.entries[index]
+            matches = [(i, entry) for i, entry in enumerate(arc.entries) if entry.name == name]
+            if not matches:
+                raise HTTPException(404, f"the {label} archive has no such entry")
+            if len(matches) != 1:
+                raise HTTPException(409, f"{label} entry name is ambiguous; specify its index from {[i for i, _ in matches]}")
+            return matches[0]
+
         try:
+            target_arc = mt_arc.parse(source)
             donor = mt_arc.parse(donor_file.read_bytes())
         except mt_arc.ArcError as exc:
-            raise HTTPException(400, f"donor archive: {exc}") from exc
-        donor_entry = donor.find(body.donor_entry)
-        if donor_entry is None:
-            raise HTTPException(404, "the donor archive has no such entry")
+            raise HTTPException(400, str(exc)) from exc
+        entry_index, target_entry = select(target_arc, body.entry, body.entry_index, "target")
+        donor_index, donor_entry = select(donor, body.donor_entry, body.donor_index, "donor")
+        if target_entry.hash != donor_entry.hash:
+            raise HTTPException(409, "the target and donor entry types differ")
+        def resource_kind(payload):
+            import zlib
+            for window in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+                try:
+                    payload = zlib.decompress(payload, window)
+                    break
+                except zlib.error:
+                    continue
+            return payload[:4] if payload[:4] in (b"MOD\0", b"MRL\0", b"TEX\0") else None
+        target_kind, donor_kind = resource_kind(target_entry.data), resource_kind(donor_entry.data)
+        if (target_kind or donor_kind) and target_kind != donor_kind:
+            raise HTTPException(409, "the target and donor resource kinds differ (MOD, MRL or TEX)")
         try:
-            patched = mt_arc.replace(arc_file.read_bytes(), body.entry, donor_entry.data)
+            # The low 24 bits hold the decompressed payload size, not the target's old size.
+            tag = (target_entry.tag & 0xFF000000) | (donor_entry.tag & 0x00FFFFFF)
+            patched = mt_arc.replace_at(source, entry_index, donor_entry.data, tag=tag)
         except mt_arc.ArcError as exc:
             raise HTTPException(400, str(exc)) from exc
-        folder = _mod_build(body.title, body.build)
-        target = folder / "romfs" / body.arc_path.strip().lstrip("/")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(patched)
+        edit = _write_overlay(body.title, body.build, {f"romfs/{inner}": {"bytes": patched}},
+                              f"archive entry {entry_index}: {inner} <- {body.donor_arc}:{donor_index}")
+        target = Path(edit["dir"]) / "romfs" / inner
         lab_state.event(body.title, "arc-swap",
                         f"{body.entry} <- {body.donor_entry} ({len(donor_entry.data)} B) in {body.arc_path}",
                         {"build": body.build, "size": len(donor_entry.data), "arc": body.arc_path})
         return {"v": FORMAT, "ok": True, "target": str(target), "size": len(patched),
-                "entry_bytes": len(donor_entry.data),
+                "entry_bytes": len(donor_entry.data), "entry_index": entry_index, "donor_index": donor_index,
+                "edit": edit["edit"], "pending": edit["pending"],
                 "note": "the overlay applies when the title next boots (LayeredFS)"}
 
     @app.get("/api/decrypt-lab/report-digest", dependencies=[Depends(auth)])
@@ -1785,11 +1892,14 @@ def install(app, store, config, auth, tactical_store=None):
         if root is None:
             raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
         arcs = dict(skin_swap.CHARACTER_ARCS.get(str(tid).upper()) or {})
-        arcs.update({"uEm6c": "nativeNXx64/ImgNX/Archive/uEm6c.arc",
-                     "uEm71": "nativeNXx64/ImgNX/Archive/uEm71.arc",
+        if str(tid).upper() == "010018100CD46000":
+            arcs.update({"zombie": "nativeNXx64/ImgNX/Archive/uEm6c.arc",
+                     "zombie2": "nativeNXx64/ImgNX/Archive/uEm71.arc",
                      "mine": "nativeNXx64/ImgNX/Archive/uWp06.arc",
                      "mine2": "nativeNXx64/ImgNX/Archive/uWp07.arc",
                      "grenade": "nativeNXx64/ImgNX/Archive/uWp0a.arc"})
+        elif zombie := skin_swap.PLAYER_AS_MAJINI.get(str(tid).upper()):
+            arcs["zombie"] = zombie
         tags: dict = {}
         for name, inner in arcs.items():
             path = root / inner
@@ -2072,7 +2182,42 @@ def install(app, store, config, auth, tactical_store=None):
                 "geometry_bytes": len(model.tail), "roundtrip_identical": rebuilt == raw,
                 "models_in_archive": [pair[0].name for pair in models]}
 
+    @app.post("/api/decrypt-lab/character-swap", dependencies=[Depends(auth)])
+    def decrypt_lab_character_swap(body: CharacterSwapIn):
+        """RE5 native archives: a complete donor archive, separate from the skin-map operation."""
+        from . import re5_char_swap
+        tid = _title_id(body.title)
+        if tid != "010018100CD46000":
+            raise HTTPException(409, "native character archive replacement is currently measured on RE5 Switch only")
+        root = _romfs_root(tid)
+        if root is None:
+            raise HTTPException(409, "the RomFS tree has not been extracted yet (extract_tree)")
+        prefix = re5_char_swap.ARCHIVE_DIR.as_posix() + "/"
+        def archive_name(value: str) -> str:
+            value = str(value or "").strip().replace("\\", "/")
+            return value[len(prefix):] if value.startswith(prefix) else value
+        try:
+            pair = (archive_name(body.donor_arc), archive_name(body.arc_path))
+            main = re5_char_swap.rebind_main(config) if pair == ("uEm10.arc", "uEm11.arc") else None
+            report, changes = re5_char_swap.plan_changes(root, [pair], main=main)
+        except (re5_char_swap.SwapError, ValueError, OSError) as exc:
+            raise HTTPException(409, str(exc)[:300]) from exc
+        if not changes:
+            raise HTTPException(409, f"nothing to replace: {report.skipped}")
+        scope = {"complete": False, "gameplay_verified": False,
+                 "notes": ["native archive replacement; this pair needs visual verification",
+                           "costumes, in-engine cutscenes and prerecorded movies are not verified"]}
+        result = {"v": FORMAT, "ok": True, "build": body.build, "pairs": report.pairs,
+                  "files": list(changes), "replacement_scope": scope, "plan_only": body.plan_only}
+        if body.plan_only:
+            return result
+        edit = _write_overlay(body.title, body.build, changes, "native character archive replacement")
+        lab_state.event(body.title, "character-swap", f"{body.arc_path} <- {body.donor_arc}", {"build": body.build})
+        return result | {"edit": edit["edit"], "pending": edit["pending"],
+                         "note": "the donor archive loads at the next title boot; the current round is not preserved"}
+
     @app.post("/api/decrypt-lab/model-swap", dependencies=[Depends(auth)])
+    @_compose_overlay_edit
     def decrypt_lab_model_swap(body: ModelSwapIn):
         """Swap a slot's character skin with a donor archive's (the panel's clothes / cast / zombie actions).
 
@@ -2102,26 +2247,28 @@ def install(app, store, config, auth, tactical_store=None):
                                          body.donor_arc.strip().lstrip("/"),
                                          tag_follow=bool(body.tag_follow), with_mesh=bool(body.with_mesh),
                                          with_textures=bool(body.with_textures), group=body.group,
-                                         donor_group=body.donor_group)
+                                         donor_group=body.donor_group,
+                                         slot_bytes=_target_arc_bytes(body.title, body.build, root, body.arc_path))
         except mt_arc.ArcError as exc:
             raise HTTPException(400, str(exc)) from exc
         except ValueError as exc:                      # both archives parsed, but one has no model to move
             raise HTTPException(409, str(exc)) from exc
         slot_group, donor_group = info["slot"], info["donor"]
         meshes, moved_maps, added_textures = info["mesh"], info["maps"], info["textures_added"]
-        folder = _mod_build(body.title, body.build)
-        target = folder / "romfs" / body.arc_path.strip().lstrip("/")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        inner = body.arc_path.strip().lstrip("/")
+        edit = _write_overlay(body.title, body.build, {f"romfs/{inner}": {"bytes": data}},
+                              f"model skin swap: {inner} <- {body.donor_arc}")
+        target = Path(edit["dir"]) / "romfs" / inner
         lab_state.event(body.title, "model-swap",
                         f"{slot_group} <- {donor_group} skin ({len(data)} B) in {body.arc_path}",
                         {"build": body.build, "size": len(data)})
         return {"v": FORMAT, "ok": True, "target": str(target), "size": len(data),
                 "slot": slot_group, "donor": donor_group, "mesh": meshes, "maps": moved_maps,
-                "textures_added": added_textures,
+                "textures_added": added_textures, "edit": edit["edit"], "pending": edit["pending"],
                 "note": "the overlay applies when the title next boots (LayeredFS)"}
 
     @app.post("/api/decrypt-lab/zombie-cast", dependencies=[Depends(auth)])
+    @_compose_overlay_edit
     def decrypt_lab_zombie_cast(body: ZombieCastIn):
         """Every enemy archive a round spawns, wearing the game's cast - one build, one call.
 
@@ -2149,12 +2296,13 @@ def install(app, store, config, auth, tactical_store=None):
         on_disk = [arc for arc in (skin_swap.ZOMBIE_ARCS.get(str(tid).upper()) or ()) if (root / arc).is_file()]
         plan = zombie_cast_plan(tid, on_disk, cast)
         rows: list[dict] = []
+        changes = {}
         for row in plan:
             arc = row["arc"]
             if row["status"] == "absent":
                 rows.append(row)                      # the tree does not hold this enemy: nothing to swap
                 continue
-            slot_bytes = (root / arc).read_bytes()
+            slot_bytes = _target_arc_bytes(body.title, body.build, root, arc)
             donor_bytes = (root / cast_arcs[row["donor"]]).read_bytes()
             if body.max_growth and len(donor_bytes) > len(slot_bytes) * body.max_growth:
                 rows.append({**row, "status": "too_big", "slot_bytes": len(slot_bytes),
@@ -2165,19 +2313,18 @@ def install(app, store, config, auth, tactical_store=None):
             except (model_swap.SwapError, ValueError, OSError) as exc:
                 rows.append({**row, "status": "failed", "reason": str(exc)[:160]})
                 continue
-            folder = _mod_build(body.title, body.build)
-            target = folder / "romfs" / arc
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(out["data"])
+            changes[f"romfs/{arc}"] = {"bytes": out["data"]}
             rows.append({**row, "status": "swapped", "bytes": len(out["data"]),
                          "meshes": out["meshes"], "textures": len(out["textures"]),
                          "shape": bool(body.geometry)})
         done = [r for r in rows if r["status"] == "swapped"]
+        edit = _write_overlay(body.title, body.build, changes, "enemy cast skin swap") if changes else None
         lab_state.event(body.title, "zombie-cast",
                         f"{len(done)}/{len(on_disk)} enemy archive(s) wear the cast in {body.build}",
                         {"build": body.build, "arcs": len(on_disk), "swapped": len(done)})
         return {"v": FORMAT, "ok": bool(done), "build": body.build, "cast": cast,
                 "arcs": rows, "swapped": len(done), "spawned": len(on_disk),
+                "edit": edit["edit"] if edit else None, "pending": bool(edit and edit["pending"]),
                 "note": ("the overlay applies when the title next boots (LayeredFS)" if done
                          else "no enemy archive could take a cast model")}
 

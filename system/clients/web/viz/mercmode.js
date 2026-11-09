@@ -1,6 +1,8 @@
 (function(root,factory){const api=factory();if(typeof module==='object'&&module.exports)module.exports=api;else root.GBoxMercMode=api;})(globalThis,function(){
   'use strict';
   const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const nativeLibrary=()=>globalThis.GBoxNativeCharacterUse||
+    (typeof module==='object'&&module.exports?require('./native-character-use.js'):null);
   // bot+bot split screen on RE5 / RE6 Switch (operator 2026-10-27: "the ratio of co-op matches to single player matches
   // six to one"): each turn draws co-op or solo by this co-op : solo ratio (gbox/mercmode.py draw_coop). RE6's co-op is
   // No Mercy split screen; RE5's is Mercenaries United's split screen, RE5's No Mercy being single-player only
@@ -301,6 +303,13 @@
   // A game id to the decrypt lab's title key (the swap API addresses a title by that key).
   const LAB_TITLES = {'52d15709be0fda1a': 're5_switch', '115f9cdbba115432': 're6_switch',
                       '270a15eb98dab4d7': 're4_switch'};
+  const RE6_SWAP = {slots: {
+    leon:'nativeNXx64/arc/NX/uPl00LeonUsa.arc',helena:'nativeNXx64/arc/NX/uPl01HelenaUsa.arc',
+    chris:'nativeNXx64/arc/NX/uPl02ChrisAsia.arc',piers:'nativeNXx64/arc/NX/uPl03PiersAsia.arc',
+    jake:'nativeNXx64/arc/NX/uPl04JakeAsia.arc',sherry:'nativeNXx64/arc/NX/uPl05SherryAsia.arc',
+    ada:'nativeNXx64/arc/NX/uPl06AdaA.arc',carla:'nativeNXx64/arc/NX/uPl06AdaCarla.arc',
+    helper:'nativeNXx64/arc/NX/uPl07HelperNormal.arc',zombie:'nativeNXx64/arc/NX/uEm5200.arc'},objects:{}};
+  function swapSet(title){return title==='re5_switch'?SWAP:title==='re6_switch'?RE6_SWAP:null;}
   function labTitleFor(gameId){ return LAB_TITLES[String(gameId||'')] || null; }
   function swapOptions(map, selected){
     return Object.keys(map).map(k=>`<option value="${escape(k)}"${k===selected?' selected':''}>${escape(k)}</option>`).join('');
@@ -325,18 +334,24 @@
   }
   function swapHTML(title){
     if (title === 're4_switch') return re4SwapHTML();
+    const swaps=swapSet(title);
+    if(!swaps)return '';
+    const re5=title==='re5_switch';
     return `<div class="pip-mm-swaps"><small>Characters &amp; zombies · applies at the next boot</small>`+
-      `<label>Slot <select data-mm-swap-slot>${swapOptions(SWAP.slots,'chris')}</select></label>`+
-      `<label>Donor <select data-mm-swap-donor>${swapOptions(SWAP.slots,'jill')}</select></label>`+
+      `<label>Slot <select data-mm-swap-slot>${swapOptions(swaps.slots,re5?'chris':'leon')}</select></label>`+
+      `<label>Donor <select data-mm-swap-donor>${swapOptions(swaps.slots,re5?'jill':'helena')}</select></label>`+
       `<span class="pip-mm-swap-buttons">`+
+      (re5?`<button type="button" data-mm-swap="character">Replace native character</button>`:'')+
       `<button type="button" data-mm-swap="clothes">Swap clothes</button>`+
-      `<button type="button" data-mm-swap="plain">Plain (remove clothes)</button>`+
-      `<button type="button" data-mm-swap="to-zombie">Character → zombie</button>`+
-      `<button type="button" data-mm-swap="from-cast">Zombies → cast</button>`+
+      (re5?`<button type="button" data-mm-swap="plain">Plain (remove clothes)</button>`:'')+
+      `<button type="button" data-mm-swap="to-zombie">Wear zombie textures</button>`+
+      `<button type="button" data-mm-swap="from-cast">Cast textures on enemies</button>`+
       `</span><label class="pip-mm-retag"><input type="checkbox" data-mm-retag> Allow a skin of another size `+
       `(retags the slot's texture; off by default)</label>`+
       `<label class="pip-mm-retag"><input type="checkbox" data-mm-shape> Move the mesh too (a shape change; `+
-      `unmeasured on this engine)</label></div>`;
+      `unmeasured on this engine)</label>`+
+      (re5&&nativeLibrary()?`<details><summary>Use a collection character's native counterpart</summary>`+
+        nativeLibrary().fields()+`<button type="button" data-native-use>Apply library counterpart and restart</button></details>`:'')+`</div>`;
   }
 
   // RE4's four operations, each one call to /api/decrypt-lab/replace. The donor is the collection's Sonic model for the two "proportions"
@@ -365,9 +380,14 @@
     };
     root.querySelectorAll('[data-mm-r4]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); run(b); }));
   }
-  function wireSwaps(root,{api,title,sessionId,done,fail}){
+  function wireSwaps(root,{api,title,sessionId,currentSessionId,done,fail}){
     const APPLY = 'mercmode-swap';            // every panel swap writes this build; apply_live boots it in place
     if (title === 're4_switch') { wireRe4Swaps(root, {api, title, done, fail}); return; }
+    const swaps=swapSet(title);
+    if(!swaps)return;
+    let busy=false;
+    const current=()=>{if(sessionId&&currentSessionId&&currentSessionId()!==sessionId)
+      throw Error('The displayed session changed. Reopen its swap controls before applying.');};
     // which pairs a donor actually moves (gbox.skin_swap refuses maps of a different size or format), so the panel
     // can strike out a donor instead of letting a click end in a refusal
     let matrix = null;
@@ -387,23 +407,36 @@
       [...donor.options].forEach((o) => {
         const row = (matrix.pairs || {})[slot + '|' + o.value];
         const ok = !row || row.ok;
-        o.disabled = !ok;
-        o.textContent = o.value + (ok ? '' : ' (format mismatch)');
+        // Texture compatibility must not disable a donor for the whole-archive replacement action.
+        o.disabled = false;
+        o.textContent = o.value + (ok ? '' : ' (texture format mismatch)');
       });
     }
     root.querySelector('[data-mm-swap-slot]')?.addEventListener('change', markDonors);
+    root.querySelector('[data-mm-retag]')?.addEventListener('change', markDonors);
     const applyNow = async(session)=>{
       // Eden layers mods only at boot, so a live swap is the title restarting in this same session (gbox.switch_mods
       // apply_live): the operator sees the new skin without ending the round's session
       const worker=String(session).split('-')[0];
-      let job=await api('/api/jobs',{tool:'switch_mods',require_worker:worker,
-        input:{op:'apply_live',session_id:session,build:APPLY}});
-      for(let i=0;i<200&&['queued','running','assigned'].includes(job?.state);i++){
-        await new Promise(r=>setTimeout(r,1500));
-        job=await api('/api/jobs/'+encodeURIComponent(job.id),undefined,'GET');
+      const wait=async(job)=>{
+        for(let i=0;i<200&&['queued','running','assigned'].includes(job?.state);i++){
+          await new Promise(r=>setTimeout(r,1500));
+          job=await api('/api/jobs/'+encodeURIComponent(job.id),undefined,'GET');
+        }
+        if(job?.state!=='succeeded')throw Error(job?.error?.message||job?.error||job?.state||'the restart did not finish');
+        return job;
+      };
+      let job=await wait(await api('/api/jobs',{tool:'switch_mods',require_worker:worker,
+        input:{op:'apply_live',session_id:session,build:APPLY}}));
+      const result=job.output?.result||{};
+      if(result.same_session===true)return ' · applied now: the title restarted in this session';
+      if(result.swap_job){
+        job=await wait(await api('/api/jobs/'+encodeURIComponent(result.swap_job),undefined,'GET'));
+        const sid=job.output?.session_id||job.output?.result?.session_id;
+        if(!sid)throw Error('the relaunch did not report its new session');
+        return ` · applied now: the title relaunched in session ${sid}`;
       }
-      if(job?.state!=='succeeded')throw Error(job?.error?.message||job?.error||job?.state||'the restart did not finish');
-      return job;
+      throw Error('the restart did not report a completed session');
     };
     // A retagged swap moves a skin whose dimensions differ from the slot's, letting the tag travel with the donor's
     // data (gbox.skin_swap follow_tag). Measured 2026-11-05: such a build boots, renders and plays rounds, so a
@@ -417,10 +450,15 @@
     // the title's whole cast, one member per enemy, so the round shows several characters at once.
     const zombieCast = async()=> api('/api/decrypt-lab/zombie-cast',{title,build:APPLY,geometry:shape()});
     const run=async(kind)=>{
-      const slotKey=root.querySelector('[data-mm-swap-slot]')?.value||'chris';
-      const donorKey=root.querySelector('[data-mm-swap-donor]')?.value||'jill';
-      const slot=SWAP.slots[slotKey], donor=SWAP.slots[donorKey];
+      const slotKey=root.querySelector('[data-mm-swap-slot]')?.value||(title==='re5_switch'?'chris':'leon');
+      const donorKey=kind==='to-zombie'?'zombie':root.querySelector('[data-mm-swap-donor]')?.value||(title==='re5_switch'?'jill':'helena');
+      const slot=swaps.slots[slotKey], donor=swaps.slots[donorKey];
       if(!slot||!donor)throw Error('Choose a slot and a donor.');
+      if(kind==='character'){
+        if(slotKey.startsWith('zombie')||donorKey.startsWith('zombie'))
+          throw Error('Native player/enemy archive substitution needs a verified class binding. Choose two playable characters.');
+        return api('/api/decrypt-lab/character-swap',{title,arc_path:slot,donor_arc:donor,build:APPLY});
+      }
       // 'from-cast' uses the whole cast, not the donor dropdown, so a mismatched donor must not block it
       if(kind!=='plain' && kind!=='from-cast' && !retag() && refused(slotKey,donorKey))
         throw Error(`${slotKey} and ${donorKey} do not share a texture format: pick another donor, or allow a skin of another size.`);
@@ -431,29 +469,37 @@
         // every enemy archive the title spawns, each wearing a different cast member, in one build
         return zombieCast();
       let arc=slot, from=donor, extra={};
-      if(kind==='to-zombie'){arc=slot;from=SWAP.slots.zombie;}
+      if(kind==='to-zombie'){arc=slot;from=swaps.slots.zombie;}
       if(!from)throw Error('That swap has no donor archive.');
       return api('/api/decrypt-lab/model-swap',{title,arc_path:arc,donor_arc:from,build:APPLY,
         ...(retag()?{tag_follow:true}:{}),...extra});
     };
     root.querySelectorAll('[data-mm-swap]').forEach(b=>b.addEventListener('click',async e=>{
       e.stopPropagation();
+      if(busy)return;
+      busy=true;b.disabled=true;
       try{
+        current();
         const r=await run(b.dataset.mmSwap);
+        if(r?.ok===false)throw Error(r.note||'No replacement files were built.');
         let live='';
         if(sessionId){
-          try{await applyNow(sessionId);live=' · applied now: the title restarted in this session';}
+          try{live=await applyNow(sessionId);}
           catch(err){live=` · built, but the live restart failed: ${err.message}`;}
         }
         if(b.dataset.mmSwap==='from-cast'){
           const arcs=r.arcs||[];
-          const done=arcs.filter(a=>a.status==='swapped');
+          const changed=arcs.filter(a=>a.status==='swapped');
           const rest=arcs.filter(a=>a.status!=='swapped');
-          const detail=done.map(a=>`${a.arc.split('/').pop()}=${a.donor}`).join(', ');
+          const detail=changed.map(a=>`${a.arc.split('/').pop()}=${a.donor}`).join(', ');
           const missed=rest.length?`; not swapped: ${rest.map(a=>`${a.arc.split('/').pop()} (${a.status}${a.reason?': '+a.reason:''})`).join(', ')}`:'';
           done(b.dataset.mmSwap==='from-cast'
-            ? `Zombies now wear the cast: ${done.length}/${r.spawned} spawned enemy archive(s) — ${detail}${missed}${live||' (applies at the next boot)'}`
+            ? `Cast textures built: ${changed.length}/${r.spawned} enemy archive(s) — ${detail}${missed}${live||' (applies at the next boot)'}`
             : '');
+          return;
+        }
+        if(b.dataset.mmSwap==='character'){
+          done(`Native character archive built; this pair still needs visual verification${live||' (applies at the next boot)'}`);
           return;
         }
         const kept = (r.maps || []).find((m) => String(m).startsWith('kept:'));
@@ -463,10 +509,31 @@
           : `${b.textContent}: ${r.slot} ← ${r.donor}${extent}${live||' (applies at the next boot)'}`);
       }
       catch(error){fail(error);}
+      finally{busy=false;b.disabled=false;}
     }));
-    root.querySelector('[data-mm-obj-swap]')?.addEventListener('click',async e=>{
+    const libraryButton=root.querySelector('[data-native-use]');
+    libraryButton?.addEventListener('click',async e=>{
       e.stopPropagation();
+      if(busy)return;
+      busy=true;libraryButton.disabled=true;
+      const label=libraryButton.textContent;
       try{
+        current();
+        if(!sessionId)throw Error('Choose a running RE5 session before applying a library counterpart.');
+        const result=await nativeLibrary().apply(api,{gameId:'52d15709be0fda1a',sessionId,
+          character:root.querySelector('[data-native-donor]')?.value,slot:root.querySelector('[data-native-slot]')?.value},
+          {currentSessionId,progress:text=>{libraryButton.textContent=text;}});
+        done(result.message);
+      }catch(error){fail(error);}
+      finally{busy=false;libraryButton.disabled=false;libraryButton.textContent=label;}
+    });
+    const objectButton=root.querySelector('[data-mm-obj-swap]');
+    objectButton?.addEventListener('click',async e=>{
+      e.stopPropagation();
+      if(busy)return;
+      busy=true;objectButton.disabled=true;
+      try{
+        current();
         const slot=SWAP.objects[root.querySelector('[data-mm-obj-slot]')?.value||'mine'];
         const donor=SWAP.objects[root.querySelector('[data-mm-obj-donor]')?.value||'grenade'];
         if(!slot||!donor||slot===donor)throw Error('Choose two different objects.');
@@ -474,37 +541,47 @@
         // screen=loading for 5+ minutes while a skin build reached playing and advanced rounds), so the panel never
         // asks for with_mesh. The API still offers it for experiments.
         const r=await api('/api/decrypt-lab/model-swap',{title,arc_path:slot,donor_arc:donor,build:APPLY});
+        if(r?.ok===false)throw Error(r.note||'No replacement files were built.');
         let live='';
         if(sessionId){
-          try{await applyNow(sessionId);live=' · applied now: the title restarted in this session';}
+          try{live=await applyNow(sessionId);}
           catch(err){live=` · built, but the live restart failed: ${err.message}`;}
         }
         done(`${r.slot} now looks like ${r.donor}${live||' (applies at the next boot)'}`);
       }
       catch(error){fail(error);}
+      finally{busy=false;objectButton.disabled=false;}
     });
-    root.querySelector('[data-mm-zombie]')?.addEventListener('click',async e=>{
+    const zombieButton=root.querySelector('[data-mm-zombie]');
+    zombieButton?.addEventListener('click',async e=>{
       e.stopPropagation();
+      if(busy)return;
+      busy=true;zombieButton.disabled=true;
       try{
+        current();
         // both directions in one build: the player arc takes the enemy's skin, the enemy arc takes the cast's
         const player=SWAP.slots[root.querySelector('[data-mm-swap-slot]')?.value||'chris'];
         const enemy=SWAP.slots.zombie;
         const a=await api('/api/decrypt-lab/model-swap',{title,arc_path:player,donor_arc:enemy,build:APPLY,
           ...(retag()?{tag_follow:true}:{})});
+        if(a?.ok===false)throw Error(a.note||'No player replacement files were built.');
         const b=await api('/api/decrypt-lab/model-swap',{title,arc_path:enemy,donor_arc:player,build:APPLY,
           ...(retag()?{tag_follow:true}:{})});
+        if(b?.ok===false)throw Error(b.note||'No enemy replacement files were built.');
         let live='';
         if(sessionId){
-          try{await applyNow(sessionId);live=' · applied now: the title restarted in this session';}
+          try{live=await applyNow(sessionId);}
           catch(err){live=` · built, but the live restart failed: ${err.message}`;}
         }
         done(`Zombie round: you as ${a.donor} (${a.slot}) and the enemies as ${b.donor} (${b.slot})`+
              `${live||' (applies at the next boot)'}`);
       }
       catch(error){fail(error);}
+      finally{busy=false;zombieButton.disabled=false;}
     });
   }
-  function objectsHTML(){
+  function objectsHTML(title){
+    if(title!=='re5_switch')return '';
     return `<div class="pip-mm-objects"><small>Mines &amp; grenades · what appears when one is placed or thrown</small>`+
       `<label>Object <select data-mm-obj-slot>${swapOptions(SWAP.objects,'mine')}</select></label>`+
       `<label>Looks like <select data-mm-obj-donor>${swapOptions(SWAP.objects,'grenade')}</select></label>`+
@@ -517,6 +594,7 @@
   }
   function menuHTML(host,open=false,catalog=null,session=null){
     if(!host)return `<div class="pip-mercmode"><small>MercMode: no gBox PC owns this game.</small></div>`;
+    const labTitle=labTitleFor(session?.game_id || host.current_run?.game_id);
     const on=!!host.settings?.enabled,chosen=host.settings?.titles||[];
     const label=on?'🔁 MercMode: rotating titles · click to stay in this game':'▶ MercMode: play across titles · click to turn on';
     const titles=(host.titles||[]).map(t=>`<label${t.playable?'':' class="pip-mercmode-off"'}><input type="checkbox" data-mm-title="${escape(t.title)}" ${chosen.includes(t.title)?'checked':''} ${t.playable?'':'disabled'}> ${escape(t.name)}${t.playable?'':` <small>· unavailable: ${escape(t.reason||'')}</small>`}</label>`).join('');
@@ -527,7 +605,7 @@
       `<label class="pip-mm-coop">Bot+bot split screen (Switch RE5 / RE6) ${coopSelect('data-mm-coop',host.settings?.coop_ratio)}</label>`+
       `<label class="pip-mm-skin"><input type="checkbox" data-mm-skin-swap ${host.settings?.skin_swap==='random'?'checked':''}> 🎭 Random skin swap: each round plays one character with another's model (Switch RE5)</label>`+
       (SWITCH_GAMES[session?.game_id]?`<button type="button" data-mm-play-bot title="You play Player 1, the bot plays Player 2 in split screen. The title restarts in this session with Player 2 connected.">🎮 Play with bot (${SWITCH_GAMES[session.game_id]} split screen)</button>`:'')+
-      `${host.current_run?.mercmode?`<small>${escape(host.current_run.phase)}: ${escape(host.current_run.title)} · ${Number(host.current_run.mercmode_rounds)||0} verified rounds</small>`:''}${queueHTML(host,catalog)}${swapHTML(labTitleFor(compactSession?.game_id || host?.current_run?.game_id) || '')}${objectsHTML()}</div></div>`;
+      `${host.current_run?.mercmode?`<small>${escape(host.current_run.phase)}: ${escape(host.current_run.title)} · ${Number(host.current_run.mercmode_rounds)||0} verified rounds</small>`:''}${queueHTML(host,catalog)}${swapHTML(labTitle)}${objectsHTML(labTitle)}</div></div>`;
   }
   // "Play with bot" (operator 2026-10-27): the operator as Player 1, the bot as Player 2 in this exact Switch session -
   // the team role, Player 2 connected by an in-place title restart, then the autobot; each step a job confirmed in turn

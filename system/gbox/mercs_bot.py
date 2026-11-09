@@ -494,11 +494,13 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
         begin_run(session_id=session_id, job=source_job_id, prepare=prepare, turn=isinstance(merc, dict) and bool(merc))
     m = m or _memory(ad)
     # Keep reads fast while title-specific, verified maintenance writes use the owning adapter.
+    control = None
     if ad is not None:
         m.adapter = ad
         from .mercs.round_controls import attach
-        attach(ad, prof['map_id'], session_id)
+        control = attach(ad, prof['map_id'], session_id)
     E = title_engine(prof)
+    native_pick = selection_receipt = None
     pick = (((game or {}).get('launch') or {}).get('mercmode') or {})
     pick = pick.get('selection') if isinstance(pick, dict) else None
     if isinstance(pick, dict) and pick.get('title') == 're5' and prof['map_id'] == 'BLUS30491':
@@ -509,6 +511,25 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
             stats['queued_selection'] = f"{pick.get('mode')} / {pick.get('character')} / {pick.get('stage_name', pick.get('stage'))}"
         except (ValueError, OSError) as exc:
             stats['queued_selection_error'] = str(exc)[:160]
+    if isinstance(pick, dict) and pick.get('title') == 're5' and prof['map_id'] == '010018100CD46000':
+        # A warm Switch session owns its own one-round DJ pick. The operator's
+        # persistent mercs_select queue must not leak this pick to other games.
+        from .mercs.titles import re5_switch_mods
+        try:
+            took = re5_switch_mods.mercs_selection(pick.get('mode'), pick.get('character'), pick.get('stage'))
+            if not took.get('verified'):
+                raise ValueError(took.get('reason') or 'The requested Switch round could not be selected')
+            if control is None:
+                raise ValueError('The requested Switch round needs its owning session adapter')
+            native_pick = took['selection']
+            stats['queued_selection'] = (f"{native_pick['mode']} / {native_pick['character']} / {native_pick['stage_name']}")
+        except (ValueError, OSError) as exc:
+            stats['queued_selection_error'] = str(exc)[:160]
+            if prepare:
+                # A requested unsupported mode must not prepare an unrelated
+                # default round and report it as the queued DJ choice.
+                stats['wandered'] = 'Requested round could not be selected: ' + stats['queued_selection_error']
+                return stats
     if isinstance(pick, dict) and pick.get('title') == 're6' and prof['map_id'] == '01002A000CD48000':
         # RE6 Switch: the selects take the queued character and stage (None: Chris, a random unlocked stage; the
         # costume is random every round); a pick a round already started with is not taken again
@@ -611,6 +632,9 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     menu_read_retry = NativeReadRetry(stats, 'menu')
     previous_assignment = None
     try:
+        if native_pick is not None:
+            selection_receipt = control.queue_selection(native_pick['stage'], native_pick['character_index'], pick.get('request_id'))
+            stats['queued_selection_request'] = selection_receipt
         while not stopped():
             team = runtime.poll(m, base_driver) if runtime is not None else None
             assignment = runtime.signature() if runtime is not None else None
@@ -693,6 +717,18 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
             if scr.get("where") == "playing" and prepare:
                 # MercMode prepare: the round is up - stop here with nothing pressed in it (the playing_ops and the
                 # engine belong to the autoplay that starts after the switch); the caller pauses the game at this frame
+                confirmed = control.confirmed_round() if control is not None and control.title == 're5' else None
+                if selection_receipt is not None and selection_receipt.get('already_played'):
+                    stats['wandered'] = 'The requested round was already prepared or played in this session'
+                    break
+                if selection_receipt is not None and selection_receipt['state'] != 'confirmed':
+                    stats['wandered'] = 'The native menus did not confirm the requested stage and character'
+                    break
+                if confirmed is not None:
+                    stage, character = confirmed
+                    stats.update(stage=control.names[stage], stage_index=stage,
+                                 character=control.characters[character] if character < len(control.characters)
+                                 else f'character {character + 1}')
                 stats.update(screen="playing", prepared=True)
                 roster = getattr(menus, "ROSTER", None)          # RE5: the round's character from the title's own roster
                 character = scr.get("character") or (roster is not None and ((roster.round or [None])[0] or roster.last))
@@ -770,6 +806,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 break
             sleep(boot.nav.poll_s(scr, POLL_S))             # cursor screens a little faster (the title's NAV_CURSOR)
     finally:
+        if selection_receipt is not None:
+            control.cancel_selection(selection_receipt)
         menu_read_retry.stopped()
         if runtime is not None:
             runtime.release()

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import zlib
 
-from . import mt_arc, mt_model
+from . import mt_arc, mt_model, mtf_author
 
 
 class BuildError(ValueError):
@@ -28,10 +28,13 @@ def find_model(arc: mt_arc.Arc, entry_name: str | None = None) -> tuple[int, str
     for index, entry in enumerate(arc.entries):
         if entry_name and entry.name.rsplit("\\", 1)[-1] != entry_name:
             continue
-        try:
-            raw = zlib.decompress(entry.data)
-        except zlib.error:
-            continue
+        raw = b""
+        for window in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+            try:
+                raw = zlib.decompress(entry.data, window)
+                break
+            except zlib.error:
+                continue
         if raw[:4] == mt_model.MOD_MAGIC:
             return index, entry.name, raw
     raise BuildError("no MOD model found in this archive")
@@ -64,13 +67,14 @@ def build_modified_arc(source: bytes, entry_name: str | None, part_index: int, t
                  **({"uv": uvs[i]} if uvs else {}),
                  **({"bones": bones[i]} if bones else {}),
                  **({"weights": weights[i]} if weights else {})} for i in range(len(moved))]
-    packed = mt_model.pack_vertices(vertices, record["vertex_format"], record["vertex_stride"])
+    packed = model.pack_part(part_index, vertices)
     rebuilt = mt_model.replace_part(raw, part_index, packed, len(moved), record["vertex_format"],
                                     record["vertex_stride"])
     check = mt_model.parse_mod(rebuilt)
     if not check.split_valid() or len(check.meshes()) != len(model.meshes()):
         raise BuildError("the rebuilt model does not describe itself")
-    new_arc = mt_arc.replace(source, name, zlib.compress(rebuilt, 9)[2:-4])
+    # MRL and MOD entries can have the same name. Replace the exact MOD index, and use the measured level-6 stream.
+    new_arc = mtf_author.replace_archive_model(source, index, rebuilt)
     again = mt_arc.parse(new_arc)
     if len(again.entries) != len(arc.entries):
         raise BuildError("the rebuilt archive lost entries")

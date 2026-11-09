@@ -334,6 +334,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/last-played.js"></script>
 <script src="/live-poll.js"></script>
 <script src="/viz/character-popup.js"></script>
+<script src="/viz/native-character-use.js"></script>
 <script src="/viz/model-texture-paint.js"></script>
 <script src="/viz/photocraft-popup.js"></script>
 <script src="/viz/game-build-request.js"></script>
@@ -3001,11 +3002,12 @@ async function charsInit() {
       <b><button class="act" data-character-preview title="View in 3D, examine, export to Blender or retarget">${esc(c.name)}</button>${c.ready?.length ? ' <span class="ok" title="' + esc(c.ready.map(r => r.slot + ": " + r.mod).join(", ")) + '">ready</span>' : ""}</b>
       <span class="mut">${esc(c.source?.game_title || "")}</span>
       ${c.variant_of ? `<span class="mut" style="font-size:11px" title="${esc((c.props || []).map(p => p.node + " on " + p.bone).join(", "))}">↳ variant of ${esc(c.variant?.base_name || c.variant_of)}${c.props?.length ? ` · ${c.props.length} prop${c.props.length > 1 ? "s" : ""}` : ""}${stale(c) ? ' · <b class="warn">needs rebuild</b>' : ""}</span>` : ""}
-      <button class="act" data-use>Use in this game</button>
-      <button class="act" data-rt title="Retarget editor: adjust how ${esc(c.name)} is scaled and proportioned into this game (saved per slot; the next build uses it)">✎ Retarget…</button>
+      ${GBoxNativeCharacterUse.supports(gid,c.slug)?GBoxNativeCharacterUse.fields({donor:false}):''}
+      <button class="act" data-use>${GBoxNativeCharacterUse.supports(gid,c.slug)?'Use native Switch counterpart':'Use in this game'}</button>
+      <button class="act" data-rt ${GBoxNativeCharacterUse.supports(gid,c.slug)?"disabled":""} title="Retarget editor: adjust how ${esc(c.name)} is scaled and proportioned into this game (saved per slot; the next build uses it)">✎ Retarget…</button>
       <button class="act" data-bl title="Copy to Blender's clipboard: Ctrl+V in a Blender 3D viewport pastes it, textured">⧉ Blender</button>
       <label class="mut" style="font-size:11px;display:flex;align-items:center;gap:3px" title="Head size: builds '${esc(c.name)} – big head' as a variant and uses it in this game (SM64, RE4 GC)">Head
-        <input type="range" data-head min="0.5" max="3" step="0.1" value="1" style="flex:1;min-width:0"><output>1.0×</output></label>
+        <input type="range" data-head ${GBoxNativeCharacterUse.supports(gid,c.slug)?"disabled":""} min="0.5" max="3" step="0.1" value="1" style="flex:1;min-width:0"><output>1.0×</output></label>
       <button class="act" data-headgo hidden>Build head ×1.0</button>
       <i class="mut" style="font-size:11px;white-space:pre-wrap"></i></div>`;
   const sortBar = `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;font-size:11px">${[["recent", "Recently used"], ["name", "Name"], ["console", "Console"], ["size", "File size"]]
@@ -3047,12 +3049,20 @@ async function charsInit() {
     const box = b.closest(".chc"), c = cs[+box.dataset.i], st = box.querySelector("i");
     b.disabled = true; st.textContent = "working…";
     try {
+      if(GBoxNativeCharacterUse.supports(gid,c.slug)){
+        const native=await GBoxNativeCharacterUse.apply(api,{gameId:gid,character:c.slug,sessionId:sid,
+          slot:box.querySelector('[data-native-slot]')?.value},
+          {progress:text=>{st.textContent=text;},currentSessionId:()=>el.dataset.sid});
+        st.textContent=native.message;
+        return;
+      }
       let j = await api("/api/jobs", { tool: "characters", input: { op: "use", character: c.slug, session_id: sid, game_id: gid } });
       while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 1000)); j = await api("/api/jobs/" + j.id);
         if (j.progress?.msg) st.textContent = "building · " + j.progress.msg; }
       if (j.state !== "succeeded") throw new Error(j.error || j.state);
       const r = j.output.result;
       if (r.status === "missing") return charMissing(c, r, sid, st, box);
+      if(r.status==='failed')throw Error(r.reason||r.message||'The requested character replacement is not supported.');
       st.textContent = r.status === "native" ? r.message : `${r.status} · ${r.mod}${r.notes ? " · " + r.notes : ""}`;
     } catch (err) { st.textContent = "failed: " + err.message.slice(0, 200); st.title = err.message; }
     finally { b.disabled = false; }

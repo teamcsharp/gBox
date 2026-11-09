@@ -73,11 +73,14 @@
       <div class="stage-box">
         <strong>Swap inside an archive</strong>
         <p class="muted">Replace one entry of an MT Framework .arc with another archive's entry (a mine, grenade, clothing or
-          character texture). The slot keeps its name, so the game still asks for the file it expects.</p>
+          character texture). The slot keeps its name, so the game still asks for the file it expects.
+          If a name belongs to multiple entries, the error lists their zero-based indices; select the matching type in both archives.</p>
         <input id="swap-arc" placeholder="arc to patch: nativeNXx64/ImgNX/Archive/uWp06.arc" autocomplete="off">
         <input id="swap-entry" placeholder="entry in it: pawn\wp\wp06\model\wep06_00_BM" autocomplete="off">
+        <input id="swap-entry-index" type="number" min="0" step="1" placeholder="target entry index (optional)" aria-label="Target archive entry index">
         <input id="swap-donor-arc" placeholder="donor arc: nativeNXx64/ImgNX/Archive/uWp0a.arc" autocomplete="off">
         <input id="swap-donor-entry" placeholder="donor entry: pawn\wp\wp0a\model\om4e00_BM" autocomplete="off">
+        <input id="swap-donor-index" type="number" min="0" step="1" placeholder="donor entry index (optional)" aria-label="Donor archive entry index">
         <input id="swap-build" placeholder="overlay name (gbox-lab)" autocomplete="off">
         <button id="swap-go">Swap entry</button>
         <span id="swap-status" class="muted"></span>
@@ -114,5 +117,6 @@
   </aside>
 </main>
 <script src="vendor/three.min.js"></script>
+<script src="decrypt-lab-swap.js"></script>
 <script src="decrypt-lab.js"></script>
 </body></html>

@@ -411,24 +411,21 @@
 
   async function swapEntry() {
     const t = currentTitle();
-    const arc = $('swap-arc').value.trim();
-    const entry = $('swap-entry').value.trim();
-    const donorArc = $('swap-donor-arc').value.trim();
-    const donorEntry = $('swap-donor-entry').value.trim();
-    const build = ($('swap-build').value.trim() || 'gbox-lab');
-    if (!t || !arc || !entry || !donorArc || !donorEntry) {
-      $('swap-status').textContent = 'give the archive, its entry, and the donor archive and entry';
-      return;
-    }
-    $('swap-status').textContent = `swapping ${entry}…`;
     try {
-      const r = await api.api('/api/decrypt-lab/arc-swap',
-        { title: t.id, arc_path: arc, entry, donor_arc: donorArc, donor_entry: donorEntry, build }, 'POST');
+      const body = window.GBoxArchiveSwap.request({
+        title: t?.id, arc_path: $('swap-arc').value, entry: $('swap-entry').value,
+        donor_arc: $('swap-donor-arc').value, donor_entry: $('swap-donor-entry').value,
+        entry_index: $('swap-entry-index').value, donor_index: $('swap-donor-index').value,
+        build: $('swap-build').value,
+      });
+      $('swap-status').textContent = `swapping ${body.entry}…`;
+      const r = await api.api('/api/decrypt-lab/arc-swap', body, 'POST');
       $('swap-status').textContent =
-        `swapped ${r.entry_bytes} bytes into ${r.target} (applies at next boot)`;
+        `swapped ${r.entry_bytes} bytes into ${r.target} (target index ${r.entry_index}, donor index ${r.donor_index}; ` +
+        (r.pending ? 'queued; apply pending build edits before restarting)' : 'applies at next boot)');
       await loadState();
     } catch (err) {
-      $('swap-status').textContent = String(err.message || err).slice(0, 160);
+      $('swap-status').textContent = String(err.message || err);
     }
   }
 

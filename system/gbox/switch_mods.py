@@ -1272,6 +1272,15 @@ def register_writer(title_id: str, writer: Callable) -> None:
     WRITERS[title_id.upper()] = writer
 
 
+def _writer_for(title_id: str | None) -> Callable | None:
+    """Load bounded built-ins only when their title is requested; explicit registrations win."""
+    tid = str(title_id or "").upper()
+    if tid not in WRITERS and tid == "010018100CD46000":
+        from .re5_character_writer import plan
+        register_writer(tid, plan)
+    return WRITERS.get(tid)
+
+
 def _session_of(api, ctx, sid: str) -> dict | None:
     if not sid:
         return None
@@ -1299,13 +1308,17 @@ def character_use(ctx, api, meta: dict | None, game: dict, inp, op: str = "use")
     restarts in the same session). Never a copy of the NSP. Without a writer for the title: the durable repair request
     (char_coverage.no_writer) plus where the files would go."""
     tid = title_id_for(None, game.get("serial") or (game.get("launch") or {}).get("title_id"))
-    session = _session_of(api, ctx, getattr(inp, "session_id", "") or "")
+    sid = getattr(inp, "session_id", "") or ""
+    session = _session_of(api, ctx, sid)
+    if (sid and (not session or session.get("state") != "running" or session.get("game_id") != game.get("game_id"))) or (op == "live_use" and not sid):
+        return {"status": "failed", "reason": "live replacement needs a current session of the target game; no files were written"}
+    plan_only = bool(getattr(inp, "plan_only", False))
     build = (getattr(inp, "mod_name", "") or "") or active_build(ctx.config, game, session)
     hint = {"layeredfs": True, "title_id": tid, "active_build": build,
             "how": "switch_mods op=write game_id=<id> build=<active build> changes={<RomFS path>: {artifact|from|romfs}}"
                    " (in place), op=apply_live session_id=<id> to restart the running title with it",
             "copies": "none: a Switch build is only its changed files, linked into the emulator's load folder"}
-    writer = WRITERS.get(tid or "")
+    writer = _writer_for(tid)
     if writer is None:
         need = {"target": f"{game.get('title')}: its character files in the RomFS",
                 "format": "the title's own model files, written by a Switch writer for this title",
@@ -1314,7 +1327,7 @@ def character_use(ctx, api, meta: dict | None, game: dict, inp, op: str = "use")
                           "a running session restarts the title in place to load them (Eden reads mods at boot)"],
                 "have": "the LayeredFS overlay path (gbox.switch_mods): in-place edits with backups, title restart, "
                         "no NSP copies; no Switch model writer yet"}
-        if meta and op != "cast_swap":
+        if meta and op != "cast_swap" and not plan_only:
             from . import char_coverage
             res = char_coverage.no_writer(ctx, api, meta, game, need, inp)
         else:
@@ -1326,6 +1339,11 @@ def character_use(ctx, api, meta: dict | None, game: dict, inp, op: str = "use")
     if not changes:
         return {"status": "failed", "reason": plan.get("reason") or "the writer produced no files",
                 "switch_overlay": hint}
+    if plan_only:
+        return {"status": "planned", "plan_only": True, "files": [norm_path(p) for p in changes],
+                "slots": plan.get("slots") or [], "switch_overlay": hint,
+                **({"replacement_scope": plan["replacement_scope"]} if plan.get("replacement_scope") else {}),
+                "note": "no overlay was written and no session was restarted"}
     folder_name = build or default_build_name(game)
     gid = game["game_id"]
     res = write_files(ctx.config, gid, folder_name, changes, in_use=bool(running_users(gid, folder_name)),
@@ -1334,12 +1352,13 @@ def character_use(ctx, api, meta: dict | None, game: dict, inp, op: str = "use")
                       create={"title_id": tid, "game_title": game.get("title") or "",
                               "base": Path(str(game.get("rel_path") or "")).name, "kind": plan.get("kind") or "character"})
     out = {"status": "applied" if not res["pending"] else "pending_restart", "mod": folder_name, "edit": res["edit"],
-           "files": res["files"], "slots": plan.get("slots") or [], "switch_overlay": hint | {"active_build": folder_name}}
+           "files": res["files"], "slots": plan.get("slots") or [], "switch_overlay": hint | {"active_build": folder_name},
+           **({"replacement_scope": plan["replacement_scope"]} if plan.get("replacement_scope") else {})}
     if session and session.get("state") == "running" and session.get("game_id") == gid:
         job = api(ctx, "POST", f"/api/sessions/{session['session_id']}/swap", json={"mod": folder_name, "keep_state": True})
         out |= {"status": "restarting", "swap_job": (job or {}).get("id"),
                 "note": "the title restarts in this session with the edited build (Eden reads mods at boot)"}
-    elif getattr(inp, "launch", False):
+    elif getattr(inp, "launch", False) and (op != "cast_swap" or "launch" in getattr(inp, "model_fields_set", set())):
         job = api(ctx, "POST", "/api/jobs", json={"tool": "@launch", "input": {"game_id": gid, "mod": folder_name,
                                                                              "node": HOST_OS}})
         out |= {"launch": {"job": (job or {}).get("id"), "state": (job or {}).get("state")}}

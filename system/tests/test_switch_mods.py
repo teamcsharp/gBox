@@ -482,10 +482,10 @@ def test_session_op_reset_reports_the_restarted_emulators_pid(tmp_path, monkeypa
     monkeypatch.setattr(tools, "track_emulator", lambda cfg, sid, pid, add=True: tracked.append((sid, pid)))
     monkeypatch.setattr(warm_boot, "cancel", lambda *a, **k: None)
     out = tools.session_op(tools.SessionIn(session_id="w-1", op="reset"), SimpleNamespace(config=cfg(tmp_path)))
-    assert out["result"]["session_detail"] == {"pid": 11} and tracked == [("w-1", 11)]
+    assert out["result"]["session_detail"] == {"pid": 11, "process_created": None} and tracked == [("w-1", 11)]
     store = _Store({"w-1": {"session_id": "w-1", "state": "running", "detail": {"pid": 10, "display": ":99"}}})
     tools._session_accept(store, tools.SessionOut(**out), "tester")
-    assert store.docs["w-1"]["detail"] == {"pid": 11, "display": ":99"}
+    assert store.docs["w-1"]["detail"] == {"pid": 11, "display": ":99", "process_created": None}
 
 
 class _Store:
@@ -706,10 +706,10 @@ def test_without_a_switch_writer_the_repair_request_names_the_overlay_route(tmp_
     c = cfg(tmp_path)
     monkeypatch.setattr(char_coverage, "no_writer", lambda ctx, api, meta, game, need, inp: {
         "status": "missing", "missing": need, "request": {"number": 7}})
-    game = {"game_id": GID, "title": "Resident Evil 5", "platform": "switch", "serial": RE5}
+    game = {"game_id": GID, "title": "Resident Evil 6", "platform": "switch", "serial": RE6}
     out = SM.character_use(SimpleNamespace(config=c, job_id="j", server="", headers={}), lambda *a, **k: [],
                            {"slug": "wesker", "name": "Wesker"}, game,
                            SimpleNamespace(session_id="", mod_name="", launch=False))
     assert out["status"] == "missing" and out["request"] == {"number": 7}
-    assert out["switch_overlay"]["layeredfs"] and out["switch_overlay"]["title_id"] == RE5
+    assert out["switch_overlay"]["layeredfs"] and out["switch_overlay"]["title_id"] == RE6
     assert "LayeredFS" in out["missing"]["have"] and not (c.cache / "mods").exists()

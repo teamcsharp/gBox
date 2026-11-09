@@ -54,11 +54,9 @@ BAD_ENDS = {"black": "the game showed only black: next game", "hung": "the game 
 
 
 ROTATION = "verified native round boundary: next MercMode title"   # why a MercMode run ends at its native round boundary
-NO_PROGRESS_S = 600.0       # a playing MercMode turn whose bot delivers no accepted native round boundary this long ends as
-                            # a finished turn does (2026-10-27: RE4 resumed on its last Result screen, its reader called that
-                            # a round and the bot "played" it for 24 min - MercMode frozen until a restart). A No Mercy round
-                            # with its time bonuses is 2-5 min and RE4's at most about 7, plus about a minute of menus.
-NO_PROGRESS = "no native round boundary for {minutes:g} min: next MercMode title"
+NO_PROGRESS_S = 600.0       # Recover a stuck turn after neither a native boundary nor verified combat progress.
+                            # No Mercy time bonuses can keep healthy combat in one round much longer than ten minutes.
+NO_PROGRESS = "no native round or combat progress for {minutes:g} min: next MercMode title"
 
 PENDING = "autoplay_on_launch"            # launch job id -> {game_id, at}: start autoplay when that game is up
 PENDING_TTL = 15 * 60
@@ -335,7 +333,8 @@ class Screensaver:
                     out[w["name"]] = self._advance(w, run, host_cfg, running, now)
                     if run.get('mercmode') and host_cfg["enabled"] and not _local_scheduler(w) \
                             and self.store.get(STATE, w["name"]) is None and str(out[w["name"]]).startswith(
-                                (f'ended: {ROTATION}', *(f'ended: {why}' for why in BAD_ENDS.values()))):
+                                (f'ended: {ROTATION}', f'ended: {NO_PROGRESS.format(minutes=NO_PROGRESS_S / 60)}',
+                                 *(f'ended: {why}' for why in BAD_ENDS.values()))):
                         # a MercMode rotation, or a frozen / black game closed: the next title starts in this same tick
                         # (the ready one is resumed at once: no 30 s gap between the park or the stop and the swap)
                         running = self.store.running_sessions()
@@ -560,7 +559,7 @@ class Screensaver:
         if merc_pick:
             game = game | {'launch':dict(game.get('launch') or {}) | {
                 'mercmode': mercmode.launch_block(merc_cfg, merc_pick.get('selection'), coop)}}
-            if merc_pick.get('selection'):
+            if merc_pick.get('_queue_pending'):
                 mercmode.pop_queue(self.store, w['name'])        # the DJ's queued round is on its way
         inp = {"game": game, "jump": True, "memory_cards": "operator"} | (
             {"mod": build["name"], "local_build_ok": True} if build else {})    # a stale copy here still demos
@@ -698,7 +697,7 @@ class Screensaver:
                 # A random skin swap has to become visible even when the bot never reports a round end: on lilspark no
                 # native terminal boundary was posted in two hours, so the round never rotated and every session wore
                 # the first skin drawn. After SKIN_ROTATE_S of play the turn ends the way a finished one does.
-                if merc.get('skin_swap') == 'random' and \
+                if not run.get('mercmode_pinned') and merc.get('skin_swap') == 'random' and \
                         now - (run.get('playing_since') or run.get('started') or now) >= mercmode.SKIN_ROTATE_S:
                     run = run | {'mercmode_rotate_requested': True, 'mercmode_skin_rotate': True}
                     self.store.put(STATE, w['name'], run)
@@ -714,9 +713,10 @@ class Screensaver:
                 # ROTATION is the exact reason the tick below restarts the next title in this same tick: a skin
                 # rotation must carry it too, or the stop ends the run and nothing launches again
                 why = NO_PROGRESS.format(minutes=NO_PROGRESS_S / 60) if run.get('mercmode_no_progress') else ROTATION
-                if run.get('mercmode_skin_rotate'):
+                if run.get('mercmode_skin_rotate') or run.get('mercmode_mod_rotate') or run.get('mercmode_no_progress'):
                     # a skin swap is read from the layered overlay at boot: a warm (parked, paused) game resumes with
-                    # the skin it already loaded, so this rotation closes the game and the next one boots cold
+                    # the skin it already loaded, so this rotation closes the game and the next one boots cold.
+                    # A stalled game also needs a fresh boot, never another turn in the same stuck warm session.
                     return self._stop(w, run, now, why)
                 return self._park(w, run, now, why)
             if phase in ('starting', 'playing') and sid:
@@ -1005,7 +1005,20 @@ class Screensaver:
         from . import mercmode
         running = self.store.running_sessions()
         row = self._warm(w, running, now).get(pick['title'])
-        if not row or row.get('state') == 'releasing':
+        if not row:
+            return None
+        if self._mod_boot(pick, merc_cfg):
+            if not row.get('session_id'):
+                # A stock preload already in flight cannot be stopped by session id yet. Let _warm close its exact
+                # session when it arrives, preserving this replacement pick and the queue entry until a cold launch.
+                mercmode.keep_warm(self.store, w['name'], pick['title'], row | {'state': 'releasing'})
+                self.store.put(mercmode.NEXT, w['name'], {'title': pick['title'], 'selection': pick.get('selection'),
+                    'at': now, 'cold': True, '_queue_pending': bool(pick.get('_queue_pending'))})
+                return f"waiting for {pick['name']}'s stock preload to close before loading its replacement build"
+            self._warm_stop(w, row, 'the next round must load its replacement build at boot')
+            mercmode.take_warm(self.store, w['name'], pick['title'])
+            return None
+        if row.get('state') == 'releasing':
             return None
         from .mercs.round_controls import warm_stage_allowed
         if row.get('state') == 'ready' and not warm_stage_allowed(self.store, w['name'], pick['title'], row.get('prepared')):
@@ -1020,6 +1033,8 @@ class Screensaver:
             mercmode.take_warm(self.store, w['name'], pick['title'])
             return None
         mercmode.take_warm(self.store, w['name'], pick['title'])
+        if pick.get('_queue_pending'):
+            mercmode.pop_queue(self.store, w['name'])
         selection = {'selection': pick['selection']} if pick.get('selection') else {}
         base = {'worker': w['name'], 'worker_id': w['id'], 'game_id': row.get('game_id') or pick['game_id'],
                 'title': pick['name'], 'started': now, 'job': row.get('job'), 'warm_from': row.get('state'),
@@ -1097,18 +1112,44 @@ class Screensaver:
         return self._finish(w, run, now, why)
 
     def _no_progress(self, w, run, now):
-        """A playing MercMode turn whose bot delivered no accepted native round boundary for NO_PROGRESS_S: {at, since,
-        idle_s} when the turn should end, else None. Only accepted boundaries count - the bot's own activity (turning,
-        prompts, menu presses) does not. Never under the operator: a handed-over, yielding or pinned run, or one whose pad
-        the operator holds, is left alone; so is a title with nothing else to rotate to."""
+        """A MercMode turn with no accepted boundary or native combat progress for NO_PROGRESS_S: {at, since, idle_s}
+        when the turn should end, else None. The bot's own activity (turning, prompts, menu presses) does not count.
+        Never under the operator: a handed-over, yielding or pinned run, or one whose pad
+        the operator holds, is left alone. With one ready title, restart it cold instead of leaving it stuck forever."""
         from . import mercmode
         if run.get('mercmode_pinned') or run.get('handover') or run.get('yield') or not run.get('session_id'):
             return None
-        since = max(run.get('playing_since') or 0, (run.get('mercmode_last_round') or {}).get('at') or 0)
+        live = telemetry_get(run['session_id'], now)
+        stats = live.get('stats') or {}
+        fresh = live.get('running') and 0 <= live.get('age_s', 99) < 15
+        owned_fresh = fresh and run.get('autoplay_job') and stats.get('source_session_id') == run['session_id'] \
+            and stats.get('source_autoplay_job_id') == run['autoplay_job']
+        if owned_fresh and stats.get('icon_panel_holds_title'):
+            # Replay/loop deliberately suppresses native boundaries. Its fresh runtime is an intentional hold, not
+            # a stuck turn; retain the last observation so releasing the loop gives the next round a full interval.
+            run['mercmode_last_hold'] = now
+            self.store.put(STATE, w['name'], run)
+            return None
+        if owned_fresh and stats.get('screen') == 'playing':
+            # Driver.progress reads these counters from native RAM. Result-screen tallying, timer bonuses, bot
+            # actions and reports from a superseded autoplay job cannot keep a stuck turn alive. The first exact
+            # sample establishes a baseline (and one grace interval after a server update); repeated static counters
+            # do not refresh it. Counter resets between rounds only establish another baseline, without buying time.
+            counters = {k: stats[k] for k in ('kills', 'score') if type(stats.get(k)) is int and stats[k] >= 0}
+            prev = run.get('mercmode_native_progress') or {}
+            sample_at = now - live['age_s']
+            if counters and sample_at > prev.get('sample_at', 0):
+                same_round = stats.get('round_evidence_id') == prev.get('round_id')
+                advanced = same_round and any(k in prev and v > prev[k] for k, v in counters.items())
+                run['mercmode_native_progress'] = counters | {'sample_at': sample_at,
+                    'round_id': stats.get('round_evidence_id'), 'at': now if advanced or not prev else prev.get('at', 0)}
+                self.store.put(STATE, w['name'], run)
+        since = max(run.get('playing_since') or 0, (run.get('mercmode_last_round') or {}).get('at') or 0,
+                    run.get('mercmode_last_hold') or 0, (run.get('mercmode_native_progress') or {}).get('at') or 0)
         if not since or now - since < NO_PROGRESS_S or operator_has_pad(run['session_id'], now):
             return None
         cfg = mercmode.settings(self.store, w['name'])
-        if not cfg['enabled'] or not any(r['playable'] and r['title'] in cfg['titles'] and r['game_id'] != run['game_id']
+        if not cfg['enabled'] or not any(r['playable'] and r['title'] in cfg['titles']
                                          for r in mercmode.inventory(self.store, w, cfg)):
             return None
         return {'at': now, 'since': since, 'idle_s': round(now - since)}
@@ -1162,6 +1203,12 @@ class Screensaver:
             self.store.put(mercmode.WARM, w['name'], pool)
         return self._finish(w, run | {'mercmode_kept_warm': True}, now, why)
 
+    @staticmethod
+    def _mod_boot(pick, cfg):
+        """Queued overlays and newly drawn swaps must pass through _start's build selection before booting."""
+        return bool((pick.get('selection') or {}).get('mod') or cfg.get('skin_swap') == 'random'
+                    or cfg.get('cast_swap') == 'on')
+
     def _prelaunch(self, w, run, cfg_merc, now):
         """Once per run (and again after a failed attempt, round_boundary), as soon as this title is up: pick the title
         that plays next and boot it beside this one, paused (or note that it already waits warm), so that it is ready -
@@ -1180,8 +1227,16 @@ class Screensaver:
         if not pick or pick['title'] == run['mercmode']['title']:
             mark(title=None)
             return None
-        if pick.get('selection'):
+        if pick.get('_queue_pending'):
             mercmode.pop_queue(self.store, w['name'])
+        if self._mod_boot(pick, cfg_merc):
+            # The preload path boots stock assets. Preserve the queued selection and defer its launch until _start
+            # attaches the requested build (or draws the next swap), otherwise a warm resume silently drops the mod.
+            self.store.put(mercmode.NEXT, w['name'], {'title': pick['title'], 'selection': pick.get('selection'),
+                                                      'at': now, 'cold': True,
+                                                      **({'queued': True} if pick.get('selection') else {})})
+            mark(title=pick['title'], cold=True, skipped='the next round loads a replacement build at boot')
+            return f"{pick['name']} plays next (cold switch: loading its replacement build)"
         if self._switch_slot(pick['title'], cfg_merc) \
                 and self._resident_switch_titles(w, cfg_merc, run['mercmode']['title'], exclude=pick['title']):
             # RE5 and RE6 share the one Citron/Eden Switch emulator: booting a second instance beside the resident
@@ -1450,13 +1505,26 @@ class Screensaver:
             ahead = self.store.get(mercmode.NEXT, run['worker']) if cfg['enabled'] and not run.get('mercmode_pinned') else None
             playable = lambda title: worker is not None and any(
                 r['playable'] and r['title'] == title for r in mercmode.inventory(self.store, worker, cfg))
+            if ahead and ahead.get('queued') and playable(ahead.get('title')):
+                # The first queued round was already consumed into NEXT by _prelaunch. Its followers must not
+                # replace that promise (or be applied to this game's menus before the promised round plays).
+                head = None
             # A random skin swap is a new round even when only one title is selected: the swap is drawn at launch
             # (gbox/skin_swap), so the round must relaunch. Without this, skin_swap only ever applied to the first
             # round, because `alternatives` (the other selected titles) is empty with a single title.
-            skin_rotate = bool(cfg.get('skin_swap') == 'random' and not alternatives
+            skin_rotate = bool(cfg['enabled'] and cfg.get('skin_swap') == 'random' and not alternatives
                                and not run.get('mercmode_pinned') and playable(run['mercmode']['title']))
             rotate = rotate or skin_rotate
-            if head and head['title'] == run['mercmode']['title']:
+            mod_rotate = bool(head and head.get('mod') and head['title'] == run['mercmode']['title']
+                              and playable(head['title']))
+            if mod_rotate:
+                # A LayeredFS build is loaded at boot. Keep this queue entry until _start launches it; sending its
+                # character/stage to the live menus would consume the request without ever loading the replacement.
+                rotate = True
+                self.store.delete(mercmode.NEXT, run['worker'])
+                ahead = None
+                run = {k: v for k, v in run.items() if k != 'mercmode_prelaunch'}
+            elif head and head['title'] == run['mercmode']['title']:
                 # the DJ queued this same game next: no relaunch, the running bot takes the selection at its menus
                 rotate = False
                 selection = mercmode.resolve_selection(head, self.rng)
@@ -1482,7 +1550,7 @@ class Screensaver:
                 run = {k: v for k, v in run.items() if k not in ('mercmode_stay', 'mercmode_stay_round',
                                                                   'mercmode_warm_attempts', 'mercmode_prelaunch')}
             cold_next = bool((ahead or {}).get('cold'))     # a Switch->Switch cold switch: no warm preload to wait on
-            if rotate and not skin_rotate and worker and self._warm_capable(worker, cfg) and not cold_next:
+            if rotate and not skin_rotate and not mod_rotate and worker and self._warm_capable(worker, cfg) and not cold_next:
                 # the switch waits until the next title is ready - booted, paused on the first frame of its round (a
                 # worker without op=prepare: paused at its menu) - and this title plays another round meanwhile, never a
                 # loading screen or a menu walk (operator 2026-10-24: "they could play a 2nd round of mercenaries and
@@ -1516,7 +1584,8 @@ class Screensaver:
             # a restarted autobot in this same session (the operator's F3, the hang relaunch) owns the run from here
             self.store.put(STATE,run['worker'],run | {'mercmode_round_ids':ids,'autoplay_job':parent_job['id'],
                 'mercmode_rounds':count,'mercmode_quick_deaths':quick_deaths,'mercmode_rounds_played':played,
-                'mercmode_last_round':receipt,'mercmode_rotate_requested':rotate})
+                'mercmode_last_round':receipt,'mercmode_rotate_requested':rotate,
+                'mercmode_skin_rotate':bool(rotate and skin_rotate),'mercmode_mod_rotate':bool(rotate and mod_rotate)})
         if rotate:
             self.nudge('native round boundary: the next title is ready')      # park and swap now, not at the next tick
         return {'saved': True, 'rotate_requested': rotate}

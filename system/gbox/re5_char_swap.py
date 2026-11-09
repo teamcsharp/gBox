@@ -40,9 +40,11 @@ class SwapReport:
     skipped: list[dict] = field(default_factory=list)
     build: str = ""
     written: list[str] = field(default_factory=list)
+    pending: bool = False
 
     def as_dict(self) -> dict:
         return {"build": self.build, "pairs": self.pairs, "skipped": self.skipped, "written": self.written,
+                "pending_restart": self.pending,
                 "effective": "the title's next boot (MercMode applies this build)"}
 
 
@@ -68,6 +70,9 @@ def plan(romfs: Path, pairs: list[tuple[str, str]]) -> SwapReport:
     root = archive_root(romfs)
     report = SwapReport()
     for donor, target in pairs:
+        if any(not name or "/" in name or "\\" in name or ":" in name or name in (".", "..")
+               for name in (donor, target)):
+            raise SwapError("donor and target must be archive basenames inside the RE5 archive folder")
         src, dst = root / donor, root / target
         missing = [str(p.name) for p in (src, dst) if not p.is_file()]
         if missing:
@@ -75,27 +80,72 @@ def plan(romfs: Path, pairs: list[tuple[str, str]]) -> SwapReport:
             continue
         report.pairs.append({"donor": donor, "target": target, "bytes": dst.stat().st_size,
                              "donor_bytes": src.stat().st_size,
-                             "kind": "character" if PLAYER_RE.match(target) else "enemy"})
+                             "kind": "character" if PLAYER_RE.match(target) else "enemy",
+                             **({"class_rebind": "uEm11->uEm10"}
+                                if (donor, target) == ("uEm10.arc", "uEm11.arc") else {})})
     return report
+
+
+def rebind_main(config) -> bytes:
+    """Read the existing expanded main for this measured patch; never extract executable content here."""
+    from .re5_ips import TITLE_ID, assert_supported_main
+    from . import provision, re_switch
+    paths = [Path(config.cache) / "exefs" / TITLE_ID / "main.bin"]
+    try:
+        paths.append(provision.switch_linux_dir(config) / "dump" / TITLE_ID / "nso"
+                     / f"main-{re_switch.RE5_MAIN_BUILD_ID}.nso")
+    except AttributeError:
+        pass  # Minimal callers can supply just the canonical cache directory.
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            data = path.read_bytes()
+            assert_supported_main(data)
+        except (OSError, ValueError) as exc:
+            raise SwapError(f"uEm11 replacement needs an existing verified main; {path}: {exc}") from exc
+        return data
+    raise SwapError(f"uEm11 replacement needs an existing verified main at {' or '.join(map(str, paths))}")
+
+
+def plan_changes(romfs: Path, pairs: list[tuple[str, str]], *, main: bytes | None = None) -> tuple[SwapReport, dict]:
+    """Prepare the complete overlay edit, including the IPS required by the measured uEm11 replacement."""
+    root = archive_root(romfs)
+    report = plan(romfs, pairs)
+    changes = {}
+    for row in report.pairs:
+        archive = (root / row["donor"]).read_bytes()
+        if row.get("class_rebind"):
+            from .re5_ips import rebind_changes
+            if main is None:
+                raise SwapError("uEm11 replacement requires the existing verified decompressed NSO main.bin")
+            changes.update(rebind_changes(archive, main=main))
+        else:
+            changes[f"romfs/{ARCHIVE_DIR.as_posix()}/{row['target']}"] = {"bytes": archive}
+    return report, changes
 
 
 def build(config, romfs: Path, game_id: str, title_id: str, pairs: list[tuple[str, str]],
           build_name: str = DEFAULT_BUILD, write: bool = True) -> SwapReport:
     """Write the overlay: every target archive replaced by its donor's bytes."""
-    root = archive_root(romfs)
-    report = plan(romfs, pairs)
+    needs_rebind = ("uEm10.arc", "uEm11.arc") in pairs
+    if needs_rebind:
+        from .re5_ips import TITLE_ID
+        if title_id.upper() != TITLE_ID:
+            raise SwapError(f"the uEm11 class rebind is only measured for RE5 Switch {TITLE_ID}")
+    report, changes = plan_changes(romfs, pairs, main=rebind_main(config) if needs_rebind else None)
     report.build = build_name
     if not report.pairs:
         raise SwapError(f"nothing to swap: {report.skipped or 'no pairs given'}")
-    changes = {f"romfs/{ARCHIVE_DIR.as_posix()}/{row['target']}": {"bytes": (root / row["donor"]).read_bytes()}
-               for row in report.pairs}
     if write:
         from . import switch_mods
         result = switch_mods.write_files(config, game_id, build_name, changes,
+                                         in_use=bool(switch_mods.running_users(game_id, build_name)),
                                          create={"title_id": title_id, "kind": "file", "game_title": "re5"},
                                          note="character archive swap: " + ", ".join(
                                              f"{r['target']}<-{r['donor']}" for r in report.pairs))
         report.written = list(result.get("files") or changes)
+        report.pending = bool(result.get("pending"))
     else:
         report.written = list(changes)
     return report

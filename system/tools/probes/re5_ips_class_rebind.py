@@ -14,26 +14,9 @@ to make the camera-visible enemy load the uEm10 class.
 """
 from __future__ import annotations
 
-import struct
+from pathlib import Path
+import sys
 
-OFFSET = 0x4F824
-ORIGINAL = 0x11100284       # add w4, w20, #0x400
-REBIND = 0x110C0284         # add w4, w20, #0x300
-
-
-def make_ips(*, noop: bool = False) -> bytes:
-    """IPS32 patch for the class-hash immediate; `noop` writes the original bytes back."""
-    data = struct.pack("<I", ORIGINAL if noop else REBIND)
-    return b"IPS32" + struct.pack(">IH", OFFSET, len(data)) + data + b"EEOF"
-
-
-def apply_patch(blob: bytearray, *, noop: bool = False) -> bytearray:
-    """Apply the same 4-byte change directly to an NSO/ELF image (for tests or a full main build)."""
-    blob[OFFSET:OFFSET + 4] = struct.pack("<I", ORIGINAL if noop else REBIND)
-    return blob
-
-
-def assert_original(blob: bytes) -> None:
-    got = struct.unpack_from("<I", blob, OFFSET)[0]
-    if got != ORIGINAL:
-        raise ValueError(f"offset {OFFSET:#x} holds {got:#010x}, expected the uEm11 immediate {ORIGINAL:#010x}")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# Keep old probe imports working while using the revision and layout checks maintained by the reusable helper.
+from gbox.re5_ips import OFFSET, ORIGINAL, REBIND, make_ips, apply_patch, assert_original, assert_supported_main

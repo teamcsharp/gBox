@@ -1253,6 +1253,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/build-shot.js"></script>
 <script src="../web/viz/build-local.js"></script>
 <script src="../web/viz/character-popup.js"></script>
+<script src="../web/viz/native-character-use.js"></script>
 <script src="../web/viz/mods-gallery.js"></script>
 <script src="../web/viz/retarget-handles.js"></script>
 <script src="../web/viz/texture-review.js"></script>
@@ -4619,16 +4620,18 @@ async function pipMercMode(m, opening, open = false) {
     if (EMB.authority && EMB.authority !== S.apiUrl) throw Error('Reconnect to this game’s service before changing MercMode.');
     const sid = globalThis.gboxStreamWatchdog?.sessionOf($('#compact-stream')?.getAttribute?.('src') || '') || (COMPACT.on ? COMPACT.sid : EMB.sid);
     const data = await api('/api/mercmode', undefined, 'GET');
+    const session = compactSession?.session_id === sid ? compactSession
+      : (await api('/api/sessions?include_ended=false', undefined, 'GET')).find(s => s.session_id === sid);
     const host = GBoxMercMode.hostFor(data, sid, compactSession?.detail?.worker_name || S.workerName);
     if (m.opening !== opening) return;
-    slot.innerHTML = GBoxMercMode.menuHTML(host, open, data.catalog, compactSession);
+    slot.innerHTML = GBoxMercMode.menuHTML(host, open, data.catalog, session);
     const queue = slot.querySelector('[data-mm-queue]');
     if (queue) GBoxMercMode.wireQueue(queue, { api, host, catalog: data.catalog,
       done: async message => { toast(message); await pipMercMode(m, opening, true); }, fail: error => toast(error.message) });
     // character / zombie model swaps (clothes, cast, zombies): a model group moves between two archives at the next boot
     const swaps = slot.querySelector('.pip-mm-swaps');
-    if (swaps) GBoxMercMode.wireSwaps(swaps, { api, title: GBoxMercMode.labTitleFor(compactSession?.game_id || host?.current_run?.game_id),
-      sessionId: compactSession?.session_id || host?.current_run?.session_id,
+    if (swaps) GBoxMercMode.wireSwaps(slot, { api, title: GBoxMercMode.labTitleFor(session?.game_id || host?.current_run?.game_id),
+      sessionId: sid, currentSessionId: () => compactCurrentSid() || EMB.sid,
       done: message => toast(message), fail: error => toast(error.message) });
     slot.addEventListener('change', e => e.stopPropagation()); slot.addEventListener('click', e => { if (e.target.closest('select')) e.stopPropagation(); });
     const act = async (action, value) => {

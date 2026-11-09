@@ -1,8 +1,130 @@
 # RE5 Switch: a same-table donor-topology injection and the live harness that applies it
 
 2026-11-08. This note records the first experiment that puts **Sonic's own triangles** into a Majini's existing part
-table, and the harness problems that had to be solved before the result means anything. It is not an acceptance: no
-Sonic mesh is visible in a captured round yet.
+table, and the harness problems that had to be solved before the result means anything. Later controls now show
+recognizable Sonic geometry and textures in the Chris player slot, with articulated gloves in live combat. Full
+front-view deformation and the final material treatment remain under review; the custom library writer is not registered.
+
+## Current build path and structural checks (2026-11-08)
+
+`re5_char_swap.plan_changes()` now includes `exefs/main.ips` whenever a native `uEm10.arc -> uEm11.arc` swap is selected.
+Both files belong to one tracked overlay edit. This is the measured native-class replacement; replacing that archive
+without the code patch is the failed boot path described below. Production callers require the **existing**
+`cache/exefs/010018100CD46000/main.bin`, verify its NSO header, measured build ID, uncompressed text layout and original
+instruction, and refuse the rebind if any check fails. An existing Eden `dump/<title>/nso/main-<build-id>.nso` is also
+accepted: expanded dumps retain compressed NSO header flags, so all three original segment SHA256 hashes must match
+the actual bytes at `0x100 + memory_offset`, with the exact mapped-image plus BSS length. This operation never extracts
+an executable. `re5_ips.apply_patch()`
+uses the same checks; ELF offsets are not treated as NSO offsets. The standalone experimental probe can omit `--main`,
+but records `target_revision_verified: false` in that case.
+
+The previous `re5_em10_high_sonic.py` only budgeted vertices while assigning triangles. Repeated/shared source vertices
+could fill a part's index allocation first, overwrite the following part, and still produce a parseable container. It
+also silently stopped assigning triangles when full and matched `em1000` by substring (including `em1000_low`).
+
+The probe now uses `mtf_author.replace_topology()`: exact model selection; fixed vertex **and index** allocations;
+preserved part table, face counts, bounds, material table and target skin bytes; restart markers in spare index words;
+and an explicit failure if any source triangle cannot fit. Shared-buffer `vertex_index` remains part of both the vertex
+address and emitted indices. Overlapping allocations and unsupported LOD0 layouts fail before producing an artifact.
+The GLB reader applies source node/skin transforms and fits all three axes uniformly within the target's existing bounds.
+
+The same shared-buffer address bug was still present in `ModFile.mesh_bytes()`, `positions()` and `replace_part()`.
+Those now include `vertex_index * vertex_stride`, so previews, decoded bones and in-place writes read the intended
+part. On the actual Switch `em1000`, parts 4/5 share `vertex_offset=33536`, with indices 0/48 and stride 20; part 5's
+12 vertices start immediately after part 4's 48 vertices. A regression uses visibly different triangles for the two
+parts. The partitioned author now uses independent buffer bases with local indices (`vertex_index=0`), matching its
+emitted triangle streams. Resizing a shared allocation through `replace_part()` is refused until its indices are rebuilt.
+
+Further inspection corrected three assumptions that invalidate the earlier “89 LOD0 parts” result:
+
+* The packed mesh word at `+4` contains group ID (12 bits), material index (12 bits), and LOD **mask** (8 bits). The old
+  byte fields selected materials 0–15, largely heads. Actual `em1000` has 132 parts at LOD bit 0, 121 at bit 1, and 88
+  sharing bits 2–7. Group IDs vary across character options, so distributing one Sonic over all groups cannot establish
+  a complete visible character. Parser/writer regressions now preserve each independent packed field.
+* Short positions use `root inverse_bind * root local`, rather than three independent bounding-box spans. In `em1000`
+  this is uniform scale `276.5325928`, translated by `(-90.8923950, -1.6845016, -19.0313511)`. Correctly decoded LOD0 now
+  reaches the declared box within 0.005 units in every direction; the old decoder crushed depth roughly 6.7 times.
+  `ModFile.positions`, `pack_part`, and the author/build/import paths now share that transform. Bone world matrices also
+  compose local before parent, matching MT row-vector matrices.
+* Shipped archive entries contain wrapped zlib streams. The old author stripped their header and checksum, confounding
+  all earlier edited-model hangs. Replacements now preserve the original framing and update only the exact entry's
+  uncompressed size tag. Same-name MOD and MRL entries remain distinct.
+
+The packed fields, root transform and vertex shader layouts agree with the primary
+[MT model implementation](https://github.com/tge-was-taken/umvc3-tools/blob/main/src/python/mtio/modules/mtlib/rmodel.py)
+and [shader database](https://github.com/tge-was-taken/umvc3-tools/blob/main/src/python/mtio/modules/mtlib/mvc3shaderdb.py).
+The newly decoded `0x244042BB` layout is `IASkinTB8wt` and has short positions; it is no longer silently omitted.
+
+A local coherent one-mesh candidate contains all 1,369 Sonic triangles, a four-material RGBA atlas encoded into an existing
+BC7 BM texture, and the original paired MRL/shader. It changes exactly the MOD and BM archive entries, uses LOD mask 255,
+and round-trips the fitted positions within 0.005 units. Its explicit rigid-root binding is a geometry/texture test,
+not retargeted animation. The first live test stayed black and never reached a menu or round; it failed acceptance.
+An independent review then found authored envelope coordinates must be bone-local, rather than model-space. The author
+now transforms envelope points by the inverse composed bone bind matrix, including rotated parents; regressions cover
+this conversion. A second independent check found the global envelope count at header `0xA0` still claimed 3,799 records
+after the table had become one record. The rebuilt header now derives that count from the 144-byte trailer and requires
+it to match the sum of per-mesh counts. All 21 original MOD models in the archive satisfy this relationship. Restructured
+records also clone the exact selected 56-byte native template before changing fields, preserving the mesh ID at `+0x26`
+and all opaque bytes. Regression fixtures check 3,799-to-one rebuilding and sentinel metadata retention.
+
+Native group spheres also appear locally attached, and group 1 gates a head option, so a single authored
+group remains an experimental choice. The byte-exact native rebind and one-part contraction controls both booted.
+After the envelope count and coordinate fixes, coherent v2 reached the title screen. Coherent v3 preserved the mesh ID
+and reached a sustained Public Assembly round, advancing through 15,380 points and 34 kills. Close screenshots still
+showed stock enemies: changing only `em1000` in group 1 does not establish visible replacement across the archive's
+enemy model variants and option groups.
+
+A deterministic player control replaces the `pl0000` MOD and existing Gear BM texture in `uPl00ChrisNormal.arc`, with
+all 1,369 triangles, all four source materials in a 512-by-256 atlas, group 0 and a rigid root binding. It booted and
+advanced to 38,410 points. Blue custom geometry was visible near the player's feet; this exposed an unsuitable fit:
+fitting all three original Chris bounds made Sonic only 70.969 units tall to satisfy the native shallow depth. The
+height-v2 control instead uses a uniform 180-unit height and records its enlarged model, group and bone-local envelope
+bounds. All encoded coordinates still lie within the existing positive quantization interval. Live frames now show
+the full blue Sonic silhouette, establishing visible geometry and source-atlas acceptance. This rigid control does not
+establish completed retargeted animation.
+
+Three separate anatomical retarget experiments were rejected by offline visual review: direct role offsets separated
+the limbs, segment scaling retained gaps, and a continuous displacement field stretched thin arm triangles. The segment
+path then revealed an in-place NumPy normalization bug that accidentally set its longitudinal scale to one. Correcting
+that mutation produces connected geometry, but fitting Sonic to the native human skeleton elongates his proportions.
+Coincident source vertices already remained coincident; welding UV-seam duplicates could not repair the earlier gaps.
+
+The alternative `re5_mesh_import.build_archive(pose_mode='source_proportions')` preserves the source surface and weights
+while repositioning existing child bind joints. Native IDs, hierarchy and rotations remain; inverse binds are recomputed
+with the original compression matrix. All 51 LMT resources in the measured Chris archive were inspected (127,336 tracks):
+the main body roles have rotation/scale tracks, while root and toes have absolute translation tracks. Root0 is therefore
+left unchanged and source toe weights resolve to the native feet. The v3 experiment boots and shows articulated gloves
+in combat, but a CPU reference-pose comparison exposes torso stretching from placing the donor hip 69 units ahead of
+the native root to avoid negative compressed coordinates. The centred-v7 experiment instead aligns source hip X/Z with
+root0 while keeping feet at the original floor. Its complete surface stays inside signed-normalized position range;
+CPU reference poses lose that extreme torso stretch. Runtime verification of this centred candidate remains separate.
+
+Newly authored buffers derive UV tangent frames and handedness, and explicitly write occlusion1. Earlier buffers had
+zero normal.w/tangent.w; the measured native shader identifies these as occlusion and tangent sign. Synthetic mirrored
+UV and degenerate-UV tests cover the replacement, and in-place writes still preserve those bytes unless explicitly
+supplied. Source smooth normals are preserved for uniform fits. The source-proportion v6 control changes only tangent,
+handedness and occlusion bytes relative to v3; geometry, skeleton, UVs, materials and source atlas remain identical.
+
+The final v9 candidate is built by the unregistered `re5_sonic_writer.build()` recipe: centered source proportions,
+180-unit height, 1,369 triangles, 1,422 vertices after preserving smooth source normals and splitting mirrored-UV
+handedness seams, 15 bone envelopes, source RGBA atlas, UV tangents, occlusion1, and neutral Gear NM/MM controls. It
+changes exactly archive entries 34, 35, 36 and 97. Its output SHA256 is
+`e76bc042501aabcc6c9273ac0dcff76dca97f7b6ddc5b61d594b49fe7e92752f`. The recipe accepts only the measured original
+`sonic/sa2_sonic_0.glb` hash and Chris-normal archive hash, and its library plan requires the explicit Chris slot.
+134 core tests pass. The recipe remains unregistered while this final artifact undergoes live visual review.
+
+```sh
+python3 tools/probes/re5_em10_high_sonic.py \
+  --archive /path/to/uEm10.arc --source /path/to/sa2_sonic_0.glb \
+  --output /tmp/em10_high_sonic.arc --overlay /tmp/em11-sonic-test
+```
+
+The output directory contains the archive, decoded MOD and JSON receipt; the optional overlay contains both
+`romfs/nativeNXx64/ImgNX/Archive/uEm11.arc` and `exefs/main.ips`. The command builds files only. Install them through
+`switch_mods`, then capture an advancing live round before accepting the result. The receipt deliberately records
+`live_verified: false`: structural tests do not establish visible replacement. Source textures and retargeted animation
+are still missing; this path retains the target materials and skin bindings. The chronology below records older probes,
+including conclusions later corrected by better controls.
 
 ## The harness now works: a queued round can carry a build
 

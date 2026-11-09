@@ -204,3 +204,107 @@ def test_status_receipts_are_detached_from_internal_state(controls):
     status['stages'][0]['enabled'] = False
     assert controls.status()['receipt']['status'] == 'queued'
     assert controls.rows[0]['enabled'] is True
+
+
+@pytest.mark.parametrize('character', [10, 11, 12, 13])
+def test_re5_extended_roster_can_choose_and_complete_a_replay(tmp_path, character):
+    control = R.Controls('re5', 's5', path=tmp_path / 'stages.json')
+    control.observed(0, character)
+    assert command(control, 'replay', mode='once')['receipt']['status'] == 'queued'
+    assert control.choose_character([character, 0]) == 0
+    control.observed(0, character)
+    assert control.once is not None
+    control.observed(0, 0)
+    assert control.once is None
+    assert control.status()['receipt']['status'] == 'applied'
+
+
+def test_re5_replay_still_requires_another_character_not_another_costume(tmp_path):
+    control = R.Controls('re5', 's5', path=tmp_path / 'stages.json')
+    control.observed(0, 8)  # Wesker (Midnight)
+    command(control, 'replay', mode='once')
+    assert control.choose_character([8, 9]) is None
+    control.observed(0, 9)  # Wesker (STARS)
+    assert control.once is not None
+    assert control.choose_character([9, 13]) == 13  # Rebecca
+    control.observed(0, 13)
+    assert control.once is None
+
+
+def test_re5_learned_menu_entries_are_kept_in_configured_rotation(tmp_path, monkeypatch):
+    from gbox.mercs.titles import re5_switch
+    monkeypatch.setattr(re5_switch, 'CHARACTER_SLOTS', 18)
+    control = R.Controls('re5', 's5', path=tmp_path / 'stages.json')
+    assert control.choose_character([-1, True, 17, 18]) == 17
+    control.observed(0, 17)
+    assert control.current_character == 17
+    command(control, 'replay', mode='once')
+    assert control.choose_character([17]) is None
+    assert control.choose_character([17, 16]) == 16
+    control.observed(0, 16)
+    assert control.once is None
+
+
+def test_dj_picks_belong_to_each_warm_session_and_are_consumed_once(tmp_path, monkeypatch):
+    from gbox.mercs.titles import re5_switch
+    monkeypatch.setattr(re5_switch, 'SELECTION', {'stage': 2, 'character': 8})
+    adapters = [SimpleNamespace(config=SimpleNamespace(data_dir=tmp_path)) for _ in range(2)]
+    controls = [R.attach(ad, re5_switch.MAP_ID, f's{i}') for i, ad in enumerate(adapters)]
+    memories = [SimpleNamespace(adapter=ad) for ad in adapters]
+    first = controls[0].queue_selection(0, 0)
+    second = controls[1].queue_selection(7, 13)
+    assert [re5_switch.stage_target(m) for m in memories] == [0, 7]
+    assert [re5_switch.player_target(m) for m in memories] == [0, 13]
+    controls[0].observed(0, 1)  # A different round cannot consume the requested character.
+    assert first['state'] == 'queued'
+    controls[0].observed(0, 0)
+    assert first['state'] == 'confirmed' and second['state'] == 'queued'
+    assert [re5_switch.stage_target(m) for m in memories] == [2, 7]
+    assert [re5_switch.player_target(m) for m in memories] == [8, 13]
+    assert not controls[0].path.exists()
+    assert re5_switch.SELECTION == {'stage': 2, 'character': 8}
+
+
+def test_dj_pick_temporarily_overrides_pool_without_changing_saved_preferences(tmp_path):
+    control = R.Controls('re5', 's5', path=tmp_path / 'stages.json')
+    command(control, 'stages', stages=[{'id': i, 'enabled': i == 1, 'weight': 100 if i == 1 else 0}
+                                      for i in range(len(control.names))])
+    saved = control.path.read_bytes()
+    receipt = control.queue_selection(0, 0)
+    assert control.choose_stage(range(8)) == 0
+    assert control.choose_character([0, 1]) == 0
+    control.menu_pressed({'where': 'select_stage', 'cursor': 0, 'target': 0}, 'a')
+    control.menu_pressed({'where': 'select_player', 'cursor': 0, 'target': 0}, 'a')
+    assert control.confirmed_round() == (0, 0)
+    assert receipt['state'] == 'confirmed'
+    assert control.choose_stage(range(8)) == 1
+    assert control.path.read_bytes() == saved
+
+
+def test_replaced_or_cancelled_prepare_cannot_clear_another_sessions_pick(tmp_path):
+    control = R.Controls('re5', 's5', path=tmp_path / 'stages.json')
+    first = control.queue_selection(0, 0)
+    second = control.queue_selection(1, 13)
+    assert first['state'] == 'replaced'
+    control.cancel_selection(first)
+    assert control.selection is second and second['state'] == 'queued'
+    assert control.choose_stage([0]) is None
+    assert control.choose_character([0]) is None
+    control.cancel_selection(second)
+    assert second['state'] == 'cancelled' and control.selection is None
+    assert not control.managed and not control.path.exists()
+
+
+def test_attach_rebinds_pre_reload_instance_without_losing_consumed_choices(tmp_path):
+    from gbox.mercs.titles import re5_switch
+    adapter = SimpleNamespace(config=SimpleNamespace(data_dir=tmp_path))
+    control = R.attach(adapter, re5_switch.MAP_ID, 's5')
+    control.queue_selection(0, 0, 'first-job')
+    control.observed(0, 0)
+    lock = control.lock
+    old_class = type('Controls', (), {'__module__': R.__name__})
+    control.__class__ = old_class
+    attached = R.attach(adapter, re5_switch.MAP_ID, 's5')
+    assert attached is control and type(attached) is R.Controls and attached.lock is lock
+    assert attached.queue_selection(0, 0, 'first-job')['already_played']
+    assert attached.queue_selection(0, 0)['already_played']

@@ -1516,6 +1516,8 @@ class RE5ModsIn(BaseModel):
     mode: str = "reunion"
     character: str = "Chris (Heavy Metal)"
     stage: int = 0
+    one_round: bool = False       # MercMode DJ pick: this session's next confirmed round, not the operator's persistent selection
+    request_id: str = ""          # stable per queued one-round request (the job id when omitted)
     weapon: int | None = None      # existing loaded quick-slot gun; selection is retained for this session
     only: bool = False             # weapon_override: the chosen weapon in every gun slot (e.g. longbow-only rounds)
     ops: list[dict] = []           # apply_saved: [{name, op, on, multiplier?, weapon?, only?}]
@@ -1577,6 +1579,25 @@ def re5_mods(inp: RE5ModsIn, ctx):
         from .mercs.titles import re5_switch_mods as SW
         if (inp.op or "").strip().lower() == "apply_saved":
             return {"result": SW.apply_saved(ad, inp.ops)}
+        if (inp.op or "").strip().lower() == "mercs_select" and inp.one_round:
+            from .mercs import round_controls
+            planned = SW.mercs_selection(inp.mode, inp.character, inp.stage)
+            if not planned.get('verified'):
+                return {'result': planned}
+            selected = planned['selection']
+            request_id = inp.request_id or str(getattr(ctx, 'job_id', '') or '')
+            if not request_id:
+                raise ValueError('A one-round selection needs a request id or owning job id')
+            control = round_controls.attach(ad, SWITCH_TITLE, inp.session_id)
+            if control is None:
+                raise ValueError('The requested round needs its owning session adapter')
+            receipt = control.queue_selection(selected['stage'], selected['character_index'], request_id)
+            return {'result': {'verified': True, 'queued': receipt['state'] == 'queued', 'selection': selected,
+                               'request_id': request_id, 'session_id': inp.session_id, 'one_round': True,
+                               'native_start_verified': receipt['state'] == 'confirmed',
+                               'already_played': bool(receipt.get('already_played')), 'receipt': dict(receipt),
+                               'note': 'This session takes the choice once at its next native menu boundary; '
+                                       'the operator selection and saved stage pool are unchanged.'}}
         return {"result": SW.tool_run(ad, inp.op, inp.multiplier, inp.on, operator=True, mode=inp.mode,
                                       character=inp.character, stage=inp.stage, weapon=inp.weapon, only=inp.only,
                                       **({"seconds": inp.seconds} if inp.seconds is not None else {}))}

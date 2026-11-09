@@ -25,6 +25,7 @@ Measured layout (all values little-endian, verified against nine models in uPl00
 from __future__ import annotations
 
 import struct
+import math
 from dataclasses import dataclass, field
 
 MAGIC = b"MRL\x00"
@@ -150,9 +151,8 @@ MOD_MESH_RECORD_V211 = 56            # measured: 31 of 31 models sum their recor
 MOD_MESH_FIELDS = (
     ("mesh_type", 0x00, "H"),
     ("vertex_count", 0x02, "H"),
-    ("material_index", 0x05, "B"),
-    ("level_of_detail", 0x06, "B"),
-    ("group_index", 0x08, "B"),
+    # +0x04 is a packed word: group 12 bits, material 12 bits, LOD mask 8 bits (handled below).
+    ("vertex_flags", 0x08, "B"),
     ("mesh_class", 0x09, "B"),
     ("vertex_stride", 0x0A, "B"),
     ("render_mode", 0x0B, "B"),
@@ -163,6 +163,7 @@ MOD_MESH_FIELDS = (
     ("face_offset", 0x20, "I"),
     ("bone_map_index", 0x24, "B"),
     ("vertex_group_count", 0x25, "B"),
+    ("mesh_id", 0x26, "H"),
     ("min_index", 0x28, "H"),
     ("max_index", 0x2A, "H"),
 )
@@ -189,7 +190,8 @@ def fvf_stride(value: int) -> int | None:
 
 # Formats whose position is three signed shorts. Everything else in the record is per-format; positions are what the
 # 3D view needs first, and they are the component that can be validated against the model's own box.
-MOD_SHORT_POSITION = frozenset({0x133098B0, 0x18B0FAA8, 0x1580B60C, 0x1C201FC3, 0x2000D414, 0x14A07DDB, 0x16C020A3})
+MOD_SHORT_POSITION = frozenset({0x133098B0, 0x18B0FAA8, 0x1580B60C, 0x1C201FC3, 0x2000D414, 0x14A07DDB,
+                                0x16C020A3, 0x244042BB})
 # Formats whose first component is three FLOAT32 positions (from the documented layouts).
 MOD_FLOAT_POSITION = frozenset({0x36D0D7A7, 0x3AA06FC6, 0x287029D8, 0x3870A4D1, 0x37607D20, 0x29F0B449,
                                 0x2C207F5E, 0x3C004EA1, 0x2D30A6AF, 0x2ED06F92, 0x2AE06DB8, 0x33C09993,
@@ -350,7 +352,31 @@ def encode_uvs(uvs: list[tuple[float, float]], vertex_format: int) -> bytes:
     return b"".join(struct.pack("<2e", u, v) for u, v in uvs)
 
 
-def pack_vertices(vertices: list[dict], vertex_format: int, stride: int, base: bytes | None = None) -> bytes:
+def _transform_point(point, matrix):
+    """MT matrices use row vectors; translation is in the last row."""
+    return tuple(sum(point[k] * matrix[k * 4 + axis] for k in range(3)) + matrix[12 + axis]
+                 for axis in range(3))
+
+
+def _inverse_matrix(matrix):
+    rows = [[float(matrix[r * 4 + c]) for c in range(4)] + [float(r == c) for c in range(4)]
+            for r in range(4)]
+    for col in range(4):
+        pivot = max(range(col, 4), key=lambda row: abs(rows[row][col]))
+        if abs(rows[pivot][col]) < 1e-12:
+            raise ModelError("the position transform is singular")
+        rows[col], rows[pivot] = rows[pivot], rows[col]
+        divisor = rows[col][col]
+        rows[col] = [v / divisor for v in rows[col]]
+        for row in range(4):
+            if row != col:
+                scale = rows[row][col]
+                rows[row] = [a - scale * b for a, b in zip(rows[row], rows[col])]
+    return tuple(rows[r][c + 4] for r in range(4) for c in range(4))
+
+
+def pack_vertices(vertices: list[dict], vertex_format: int, stride: int, base: bytes | None = None,
+                  *, position_transform=None) -> bytes:
     """Build a vertex buffer: each component written at its documented offset inside the stride.
 
     This is what a writer hands to the container. A vertex is a dict with any of "position" (model-space x, y, z),
@@ -367,6 +393,7 @@ def pack_vertices(vertices: list[dict], vertex_format: int, stride: int, base: b
     if not (short_position or float_position):
         raise ModelError(f"format {vertex_format:08x} has no known position layout")
     bone_field = MOD_BONE_FIELDS.get(vertex_format)
+    inverse = _inverse_matrix(position_transform) if position_transform is not None and short_position else None
     out = bytearray()
     for index, vertex in enumerate(vertices):
         if base is not None and (index + 1) * stride <= len(base):
@@ -377,15 +404,22 @@ def pack_vertices(vertices: list[dict], vertex_format: int, stride: int, base: b
         if "position" in vertex:
             x, y, z = vertex["position"]
             if short_position:
-                if not bounds:
+                if inverse is not None:
+                    normalized = _transform_point((x, y, z), inverse)
+                    if any(not math.isfinite(v) or v < -1.0001 or v > 1.0001 for v in normalized):
+                        raise ModelError("the position does not fit the target skeleton's quantisation transform")
+                    struct.pack_into("<3h", packed, 0,
+                                     *(max(-32767, min(32767, round(v * 32767))) for v in normalized))
+                elif not bounds:
                     raise ModelError("a short-position vertex needs the model bounds to quantise against")
-                low = (bounds["min"]["x"], bounds["min"]["y"], bounds["min"]["z"])
-                span = (bounds["max"]["x"] - low[0], bounds["max"]["y"] - low[1], bounds["max"]["z"] - low[2])
-                values = []
-                for axis, value in enumerate((x, y, z)):
-                    scaled = 0.0 if not span[axis] else (value - low[axis]) / span[axis]
-                    values.append(max(0, min(32767, int(round(scaled * 32767.0)))))
-                struct.pack_into("<3H", packed, 0, *values)
+                else:
+                    low = (bounds["min"]["x"], bounds["min"]["y"], bounds["min"]["z"])
+                    span = (bounds["max"]["x"] - low[0], bounds["max"]["y"] - low[1], bounds["max"]["z"] - low[2])
+                    values = []
+                    for axis, value in enumerate((x, y, z)):
+                        scaled = 0.0 if not span[axis] else (value - low[axis]) / span[axis]
+                        values.append(max(0, min(32767, int(round(scaled * 32767.0)))))
+                    struct.pack_into("<3H", packed, 0, *values)
             else:
                 struct.pack_into("<3f", packed, 0, x, y, z)
         if "normal" in vertex and "normal" in layout:
@@ -402,6 +436,19 @@ def pack_vertices(vertices: list[dict], vertex_format: int, stride: int, base: b
                              max(-127, min(127, int(round(tx * 127)))),
                              max(-127, min(127, int(round(ty * 127)))),
                              max(-127, min(127, int(round(tz * 127)))))
+        # These authored layouts store occlusion in normal.w and bitangent handedness in tangent.w.
+        # Only explicit values are written, preserving opaque/base bytes for in-place edits.
+        if vertex_format in MOD_TANGENT_FORMATS:
+            if "occlusion" in vertex:
+                occlusion = float(vertex["occlusion"])
+                if not math.isfinite(occlusion) or not 0 <= occlusion <= 1:
+                    raise ModelError("occlusion must be finite and between zero and one")
+                struct.pack_into("<b", packed, layout["normal"]+3, round(occlusion*127))
+            if "tangent_sign" in vertex:
+                sign = float(vertex["tangent_sign"])
+                if sign not in (-1.,1.):
+                    raise ModelError("tangent handedness must be -1 or 1")
+                struct.pack_into("<b", packed, MOD_TANGENT_OFFSET+3, int(sign*127))
         if "weights" in vertex and vertex_format in MOD_WEIGHT_FIELDS:
             offset, width, code = MOD_WEIGHT_FIELDS[vertex_format]
             values = list(vertex["weights"])[:width]
@@ -423,12 +470,11 @@ def pack_vertices(vertices: list[dict], vertex_format: int, stride: int, base: b
 
 
 def decode_positions(data: bytes, vertex_format: int, count: int, stride: int, bounds: dict,
-                     limit: int = 0) -> list[tuple[float, float, float]]:
-    """Positions from a mesh's vertex data, dequantised by the model's box.
+                     limit: int = 0, *, position_transform=None) -> list[tuple[float, float, float]]:
+    """Decode positions with the skeleton's model transform when supplied.
 
-    Measured on 903 meshes: `box_min + (short / 32767) * (box_max - box_min)` puts every sampled vertex inside the
-    model's own bounding box, which is what identifies the quantisation. The earlier claim that the shorts "do not map
-    linearly" was a bad test - it compared raw values against the box instead of normalising them.
+    Being inside the bounding box did not validate the old per-axis scale: real em1000 uses a uniform 276.5326 scale
+    stored in root inverse-bind * root local. The box path remains for standalone buffers without a usable skeleton.
     """
     if vertex_format in MOD_FLOAT_POSITION:
         out = []
@@ -450,9 +496,9 @@ def decode_positions(data: bytes, vertex_format: int, count: int, stride: int, b
         if base + 6 > len(data):
             break
         sx, sy, sz = struct.unpack_from("<3h", data, base)
-        out.append((low[0] + (sx / 32767.0) * span[0],
-                    low[1] + (sy / 32767.0) * span[1],
-                    low[2] + (sz / 32767.0) * span[2]))
+        normalized = (sx / 32767.0, sy / 32767.0, sz / 32767.0)
+        out.append(_transform_point(normalized, position_transform) if position_transform is not None else
+                   tuple(low[i] + normalized[i] * span[i] for i in range(3)))
     return out
 MOD_OFFSET_NAMES = ("bones", "groups", "materials", "meshes", "vertex_buffer", "index_buffer", "end")
 
@@ -556,6 +602,10 @@ class ModFile:
 
     def bone_world(self) -> list[tuple[int, float, float, float]]:
         """(index, x, y, z) per bone, composed along the hierarchy from the local bind matrices."""
+        return [(i, w[12], w[13], w[14]) for i, w in enumerate(self.bone_world_matrices())]
+
+    def bone_world_matrices(self) -> list[tuple[float, ...]]:
+        """Uncompressed bind matrices used for anatomy and bone-local envelope coordinates."""
         table = self.bone_table()
         if not table.get("consistent") or not table.get("local"):
             return []
@@ -567,10 +617,10 @@ class ModFile:
             if parent == 255 or parent >= len(parents) or world[parent] is None:
                 world[index] = list(local[index])
             else:
-                a, b = world[parent], local[index]
+                a, b = local[index], world[parent]
                 world[index] = [sum(a[r * 4 + k] * b[k * 4 + c] for k in range(4))
                                 for r in range(4) for c in range(4)]
-        return [(i, w[12], w[13], w[14]) for i, w in enumerate(world) if w is not None]
+        return [tuple(w) for w in world if w is not None]
 
     def bone_roles(self) -> dict:
         """Bone roles inferred from where the bones actually are - the table a retarget needs.
@@ -646,7 +696,29 @@ class ModFile:
         data, record = self.mesh_bytes(mesh_index)
         if not data:
             raise ModelError(f"part {mesh_index} has no vertex data")
-        return pack_vertices(vertices, record["vertex_format"], record["vertex_stride"], base=data)
+        return pack_vertices(vertices, record["vertex_format"], record["vertex_stride"], base=data,
+                             position_transform=self.position_transform())
+
+    def position_transform(self) -> tuple[float, ...] | None:
+        """Model-space transform for normalized short positions: root inverse-bind * root local.
+
+        The root inverse bind includes position compression; it is not a conventional unscaled inverse bind. Preserve
+        it when authoring against the existing skeleton. No-skeleton/zero-matrix synthetic buffers use the box fallback.
+        """
+        table = self.bone_table()
+        if not table.get("consistent") or not table.get("local"):
+            return None
+        a = struct.unpack("<16f", table["inverse_bind"][0])
+        b = struct.unpack("<16f", table["local"][0])
+        matrix = tuple(sum(a[r * 4 + k] * b[k * 4 + c] for k in range(4))
+                       for r in range(4) for c in range(4))
+        if not all(math.isfinite(v) for v in matrix) or abs(matrix[15] - 1.) > 1e-5:
+            return None
+        try:
+            _inverse_matrix(matrix)
+        except ModelError:
+            return None
+        return matrix
 
     def mesh_bytes(self, mesh_index: int) -> tuple[bytes, dict]:
         """One mesh's vertex data and its record, so a caller can decode whichever components it needs."""
@@ -655,8 +727,11 @@ class ModFile:
         if not 0 <= mesh_index < len(meshes):
             return b"", {}
         record = meshes[mesh_index]
-        start = header["offsets"]["vertex_buffer"] + record["vertex_offset"]
+        start = (header["offsets"]["vertex_buffer"] + record["vertex_offset"]
+                 + record["vertex_index"] * record["vertex_stride"])
         end = start + record["vertex_count"] * record["vertex_stride"]
+        if not header["offsets"]["vertex_buffer"] <= start <= end <= header["offsets"]["index_buffer"] <= len(self.raw):
+            raise ModelError(f"part {mesh_index}'s vertices run outside the vertex buffer")
         return self.raw[start:end], record
 
     def normals(self, mesh_index: int = 0) -> list[tuple[float, float, float]]:
@@ -679,16 +754,12 @@ class ModFile:
 
     def positions(self, mesh_index: int = 0, limit: int = 0) -> list[tuple[float, float, float]]:
         """The dequantised positions of one mesh, in model space (centimetres on the models measured)."""
-        header = self.header()
         bounds = self.bounds()
-        meshes = self.meshes()
-        if bounds is None or not 0 <= mesh_index < len(meshes):
+        data, record = self.mesh_bytes(mesh_index)
+        if bounds is None or not data:
             return []
-        record = meshes[mesh_index]
-        start = header["offsets"]["vertex_buffer"] + record["vertex_offset"]
-        end = start + record["vertex_count"] * record["vertex_stride"]
-        return decode_positions(self.raw[start:end], record["vertex_format"], record["vertex_count"],
-                                record["vertex_stride"], bounds, limit)
+        return decode_positions(data, record["vertex_format"], record["vertex_count"],
+                                record["vertex_stride"], bounds, limit, position_transform=self.position_transform())
 
     def header(self) -> dict:
         """The documented header fields, decoded for the Switch version (211: u32 counts, u64 offsets)."""
@@ -702,8 +773,11 @@ class ModFile:
                             for i in range(MOD_BLOCKS))))
         return {"version": version, "revision": revision, "bone_count": bone, "mesh_count": mesh,
                 "material_count": material, "vertex_count": vertices, "face_count": faces, "edge_count": edges,
+                "polygon_count": edges,  # +0x14; retain edge_count as the older caller-facing alias
                 "vertex_buffer_size": vertex_buffer, "vertex_buffer_2_size": vertex_buffer_2,
-                "group_count": groups, "offsets": offsets}
+                "group_count": groups, "offsets": offsets,
+                "weight_bound_count": struct.unpack_from("<I", self.raw, 0xa0)[0]
+                    if offsets["bones"] >= 0xa4 and len(self.raw) >= 0xa4 else None}
 
     def bounds(self) -> dict | None:
         """The model's bounding sphere and box, from the documented 48 bytes after the header's offset table.
@@ -744,6 +818,9 @@ class ModFile:
             record = {"index": index}
             for name, offset, code in MOD_MESH_FIELDS:
                 record[name] = struct.unpack_from("<" + code, self.raw, base + offset)[0]
+            packed = struct.unpack_from("<I", self.raw, base + 4)[0]
+            record.update(group_index=packed & 0xFFF, material_index=(packed >> 12) & 0xFFF,
+                          level_of_detail=packed >> 24)
             record["vertex_format"] = int.from_bytes(self.raw[base + MOD_MESH_FORMAT_OFFSET:
                                                               base + MOD_MESH_FORMAT_OFFSET + 4], "big")
             record["format_stride"] = fvf_stride(record["vertex_format"])
@@ -862,22 +939,23 @@ def replace_part(data: bytes, part_index: int, vertices: bytes, vertex_count: in
         raise ModelError(f"no part {part_index} (the model has {len(meshes)})")
     if len(vertices) != vertex_count * stride:
         raise ModelError("the vertex data does not match the count and stride")
+    model.mesh_bytes(part_index)  # validate the target allocation before any in-place slice assignment
     vb = header["offsets"]["vertex_buffer"]
     blocks = []
     for index, record in enumerate(meshes):
         if index == part_index:
             blocks.append(vertices)
         else:
-            start = vb + record["vertex_offset"]
-            blocks.append(model.raw[start:start + record["vertex_count"] * record["vertex_stride"]])
+            blocks.append(model.mesh_bytes(index)[0])
     # A same-size rewrite must not move anything: models do NOT necessarily store their parts in record order, so
     # re-laying the buffer out contiguously points every other part at the wrong bytes. Measured on RE5's uEm10 (341
     # parts): a rewrite in which all 340 comparable parts' data came back byte-identical still moved 301,633 bytes of the
     # buffer, and the game hung. So when the new data is the same length as the part's, patch it in place and leave every
     # record and every other byte untouched.
-    target_start = vb + meshes[part_index]["vertex_offset"]
-    target_length = meshes[part_index]["vertex_count"] * meshes[part_index]["vertex_stride"]
-    if len(vertices) == target_length and target_length:
+    target = meshes[part_index]
+    target_start = vb + target["vertex_offset"] + target["vertex_index"] * target["vertex_stride"]
+    target_length = target["vertex_count"] * target["vertex_stride"]
+    if (vertex_count, stride, vertex_format) == (target["vertex_count"], target["vertex_stride"], target["vertex_format"]) and target_length:
         patched = bytearray(data)
         patched[target_start:target_start + target_length] = vertices
         if bounds is not None:
@@ -891,6 +969,8 @@ def replace_part(data: bytes, part_index: int, vertices: bytes, vertex_count: in
                 struct.pack_into("<3f", patched, tail_start + 32,
                                  bounds["max"]["x"], bounds["max"]["y"], bounds["max"]["z"])
         return bytes(patched)
+    if any(record["vertex_index"] for record in meshes):
+        raise ModelError("resizing a shared vertex buffer needs an index rebuild; use an explicit topology author")
     records = []
     running = 0
     for index, record in enumerate(meshes):
@@ -944,14 +1024,31 @@ def rebuild_mod(model: ModFile, *, vertex_buffer: bytes | None = None, index_buf
             head = bytearray(old[:MOD_MESH_RECORD_V211 * len(mesh_records)])
             trailer = old[len(head):]
         else:
-            # a restructured model: new records, and the old record block is dropped while the undecoded remainder stays
-            head = bytearray(MOD_MESH_RECORD_V211 * len(mesh_records))
+            # Restructured records still start from exact native templates. Copying only decoded dictionaries loses
+            # opaque flags/IDs/pointers whenever the layout is incomplete. A caller can explicitly select another
+            # native template; the parsed record's `index` already identifies its source by default.
+            head = bytearray()
+            for record in mesh_records:
+                template = int(record.get("_template_index", record.get("index", 0)))
+                if not 0 <= template < header["mesh_count"]:
+                    raise ModelError(f"mesh template {template} is outside the original part table")
+                start = template * MOD_MESH_RECORD_V211
+                head += old[start:start + MOD_MESH_RECORD_V211]
             trailer = old[MOD_MESH_RECORD_V211 * header["mesh_count"]:]
         for index, record in enumerate(mesh_records):
             base = index * MOD_MESH_RECORD_V211
             for name, offset, code in MOD_MESH_FIELDS:
                 if name in record:
                     struct.pack_into("<" + code, head, base + offset, record[name])
+            packed = struct.unpack_from("<I", head, base + 4)[0]
+            for name, shift, mask in (("group_index", 0, 0xFFF), ("material_index", 12, 0xFFF),
+                                      ("level_of_detail", 24, 0xFF)):
+                if name in record:
+                    value = int(record[name])
+                    if not 0 <= value <= mask:
+                        raise ModelError(f"{name} {value} does not fit its packed mesh field")
+                    packed = (packed & ~(mask << shift)) | (value << shift)
+            struct.pack_into("<I", head, base + 4, packed)
             # the vertex format is written BIG-endian at +0x14 and is not in MOD_MESH_FIELDS, so a record built from
             # scratch needs it packed here: without it the format reads as 0 and no position decodes (measured).
             if "vertex_format" in record:
@@ -987,10 +1084,16 @@ def rebuild_mod(model: ModFile, *, vertex_buffer: bytes | None = None, index_buf
     # needs to change it and inventing values for it would be exactly the guess that breaks a load.
     header_end = MOD_BLOCK_OFFSETS + 8 * MOD_BLOCKS
     tail = bytearray(model.raw[header_end:offsets["bones"]] if offsets["bones"] >= header_end else b"")
+    if mesh_trailer is not None:
+        if len(tail) < 68 or len(mesh_trailer) % MOD_WEIGHT_BOUND:
+            raise ModelError("the authored envelope table must have complete 144-byte records and its header count")
+        envelope_count = len(mesh_trailer) // MOD_WEIGHT_BOUND
+        records = mesh_records if mesh_records is not None else model.meshes()
+        if sum(record.get("vertex_group_count", 0) for record in records) != envelope_count:
+            raise ModelError("the mesh envelope counts disagree with the authored envelope table")
+        struct.pack_into("<I", tail, 0xa0 - header_end, envelope_count)
     if bounds is not None:
-        # the short position formats are quantised against THIS box, so geometry that leaves it is clamped to the box
-        # edges. Measured: scaling every part 2x with the old box collapsed each part to zero width at its corners,
-        # with no structural error anywhere - the trap this parameter exists to close.
+        # Culling bounds are independent of the preserved skeleton's position quantisation transform.
         if len(tail) < 48:
             raise ModelError("the model has no bounding box to rewrite")
         struct.pack_into("<4f", tail, 0, bounds["sphere"]["x"], bounds["sphere"]["y"], bounds["sphere"]["z"],

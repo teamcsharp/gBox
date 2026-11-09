@@ -65,6 +65,9 @@ def normalize(rows, names):
 
 
 class Controls:
+    selection = None  # old live instances also accept this field after a bot hot reload
+    selection_consumed = None
+
     def __init__(self, title, sid=None, *, path=PATH, rng=None):
         self.title, self.sid, self.path = title, sid, Path(path)
         self.names, self.characters = catalog(title)
@@ -84,6 +87,8 @@ class Controls:
         self.stage = self.character = None
         self.loop_stage = None
         self.once = None
+        self.selection = None
+        self.selection_consumed = set()
         self.receipts = OrderedDict()
         self.seen_requests = set()
         self.reason = ''
@@ -113,7 +118,38 @@ class Controls:
     def managed(self):
         with self.lock:
             self.sync_preferences()
-            return self.configured or self.once is not None or self.loop_stage is not None
+            return self.configured or self.once is not None or self.loop_stage is not None or self.selection is not None
+
+    def queue_selection(self, stage, character, request_id=None):
+        """A session's DJ pick, consumed by one confirmed native round, never persisted."""
+        with self.lock:
+            if type(stage) is not int or not 0 <= stage < len(self.names) \
+                    or type(character) is not int or not 0 <= character < self._character_count():
+                raise ValueError('The requested native stage or character is not available')
+            if request_id is not None and (not isinstance(request_id, str) or not request_id or len(request_id) > 128):
+                raise ValueError('A round selection request_id must be a nonempty string of at most 128 characters')
+            value_key = f'round:{stage}:{character}'
+            key = f'request:{request_id}' if request_id is not None else value_key
+            if self.selection_consumed is None:
+                self.selection_consumed = set()
+            receipt = {'stage': stage, 'character': character, 'state': 'queued', 'key': key, 'value_key': value_key}
+            if key in self.selection_consumed:
+                return dict(receipt, state='confirmed', already_played=True)
+            if self.selection is not None:
+                self.selection['state'] = 'replaced'
+            self.selection = receipt
+            self.stage = self.character = None
+            self.confirmed.clear()
+            return self.selection
+
+    def cancel_selection(self, receipt):
+        """Only the owner of this menu walk may cancel its still-pending pick."""
+        with self.lock:
+            if self.selection is receipt:
+                receipt['state'] = 'cancelled'
+                self.selection = None
+                self.stage = self.character = None
+                self.confirmed.clear()
 
     def holds_title(self):
         with self.lock:
@@ -123,7 +159,7 @@ class Controls:
         with self.lock:
             self.sync_preferences()
             allowed = [r for r in self.rows if r['enabled'] and r['weight'] > 0 and r['id'] in unlocked]
-            replay = self.once['stage'] if self.once else self.loop_stage
+            replay = self.selection['stage'] if self.selection else self.once['stage'] if self.once else self.loop_stage
             if replay is not None:
                 # The explicit replay overrides the random pool, but never a native lock.
                 if replay not in unlocked:
@@ -138,14 +174,35 @@ class Controls:
             self.reason = ''
             return self.stage
 
+    def _character_count(self):
+        if self.title == 're5':
+            from .titles.re5_switch import character_count
+            return max(len(self.characters), character_count())
+        return len(self.characters)
+
+    def _character_family(self, index):
+        # The RE5 roster now includes the Reunion characters and can discover
+        # additional native menu entries. Known costumes share a name; unknown
+        # entries keep their own index until their character names are mapped.
+        if self.title == 're5' and type(index) is int and 0 <= index < len(self.characters):
+            return self.characters[index].split(' (', 1)[0].casefold()
+        return index
+
     def choose_character(self, unlocked):
         with self.lock:
-            choices = [i for i in unlocked if type(i) is int and 0 <= i < len(self.characters)]
+            count = self._character_count()
+            choices = [i for i in unlocked if type(i) is int and 0 <= i < count]
+            if self.selection is not None:
+                chosen = self.selection['character']
+                if chosen not in choices:
+                    self.reason = 'The requested character is not currently unlocked; waiting at the menu'
+                    return None
+                self.character, self.reason = chosen, ''
+                return chosen
             previous = self.once['character'] if self.once else self.current_character
             # RE5's select ids include costumes: Wesker STARS after Midnight is
             # still Wesker, so a replay must change the actual character family.
-            family = lambda i: (0, 0, 0, 1, 1, 1, 2, 2, 3, 3)[i] if self.title == 're5' and i is not None else i
-            different = [i for i in choices if family(i) != family(previous)]
+            different = [i for i in choices if self._character_family(i) != self._character_family(previous)]
             if not different and self.holds_title():
                 self.reason = 'A different unlocked character is required for replay'
                 return None
@@ -160,10 +217,13 @@ class Controls:
             if type(stage) is not int or not 0 <= stage < len(self.names):
                 return
             self.current_stage = stage
-            self.current_character = character if type(character) is int and 0 <= character < len(self.characters) else None
-            family = lambda i: (0, 0, 0, 1, 1, 1, 2, 2, 3, 3)[i] if self.title == 're5' and i is not None else i
+            self.current_character = character if type(character) is int and 0 <= character < self._character_count() else None
+            if self.selection is not None and (stage, character) == (self.selection['stage'], self.selection['character']):
+                self.selection['state'] = 'confirmed'
+                self.selection_consumed.update((self.selection['key'], self.selection['value_key']))
+                self.selection = None
             if self.once and stage == self.once['stage'] and self.current_character is not None \
-                    and family(self.current_character) != family(self.once['character']):
+                    and self._character_family(self.current_character) != self._character_family(self.once['character']):
                 rid = self.once['request_id']
                 if rid in self.receipts:
                     self.receipts[rid][1].update(status='applied', stage_id=stage, character_id=character)
@@ -191,6 +251,7 @@ class Controls:
                 stage, character = self.confirmed['stage'], self.confirmed['character']
                 self.confirmed = {}
                 self.observed(stage, character)
+                return stage, character
 
     def quick_status(self):
         if self.title != 're6':
@@ -301,6 +362,12 @@ def attach(ad, map_id, sid=None):
         return None
     with _attach:
         control = getattr(ad, '_merc_round_controls', None)
+        if control is not None and type(control) is not Controls and type(control).__module__ == __name__ \
+                and type(control).__name__ == 'Controls':
+            # Adapter-owned instances are outside hot_reload's module keep-list.
+            # Preserve their locks, preferences and consumed picks, but bind the
+            # current methods before a new bot calls the selection API.
+            control.__class__ = Controls
         if control is None or control.title != MAPS[map_id] or (sid and control.sid and sid != control.sid):
             root = getattr(getattr(ad, 'config', None), 'data_dir', None)
             control = Controls(MAPS[map_id], sid, path=Path(root) / 'mercs' / 'stage-rotation.json' if root else PATH)

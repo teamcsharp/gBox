@@ -287,7 +287,8 @@ def selection_job(title, sid, selection):
     """(tool, input) that queues `selection` at the running game's next native menu visit, or None."""
     if title == 're5':
         return 're5_mods', {'session_id': sid, 'op': 'mercs_select', 'mode': selection['mode'],
-                            'character': selection['character'], 'stage': selection['stage']}
+                            'character': selection['character'], 'stage': selection['stage'],
+                            'one_round': True, 'request_id': uuid.uuid4().hex}
     if title == 're4':
         return 're_mods', {'session_id': sid, 'op': 'mercs_select', 'character': selection['character'],
                            'target': str(selection['stage'])}
@@ -1016,11 +1017,12 @@ def choose(store, worker, rng, cfg=None):
         store.delete(NEXT, worker['name'])
         row = next((r for r in rows if r['playable'] and r['title'] == ahead.get('title')), None)
         if row:
-            return _picked(store, worker, row | ({'selection': ahead['selection']} if ahead.get('selection') else {}))
+            return _picked(store, worker, row | ({'selection': ahead['selection']} if ahead.get('selection') else {})
+                           | ({'_queue_pending': True} if ahead.get('_queue_pending') else {}))
     head = (cfg.get('queue') or [None])[0]
     queued = next((r for r in rows if head and r['playable'] and r['title'] == head['title']), None)
     if queued:                                   # the DJ's next round comes first, even for an unchecked title
-        return _picked(store, worker, queued | {'selection': resolve_selection(head, rng)})
+        return _picked(store, worker, queued | {'selection': resolve_selection(head, rng), '_queue_pending': True})
     pool = [r for r in rows if r['playable'] and r['title'] in cfg['titles']]
     history = store.get(HISTORY, worker['name']) or {}
     fresh = [r for r in pool if r['game_id'] != history.get('last_game_id')] or pool

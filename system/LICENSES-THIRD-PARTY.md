@@ -11,6 +11,7 @@ The exceptions are vendored under `gbox/vendor/`, each with its licence file and
 | Component | Use | License | How it's integrated |
 |---|---|---|---|
 | FastAPI, Pydantic, Uvicorn, HTTPX | control plane | MIT / BSD-3 | pip dependency |
+| ispc_texcomp 1.0.1 (Rudolf Kolbe), Intel ISPCTextureCompressor | CPU BC7 encoding for Switch MT Framework TEX, preserving native mip storage | MIT / MIT | optional `textures` pip extra; [Python bindings](https://github.com/K0lb3/ispc_texcomp_py), [encoder](https://github.com/GameTechDev/ISPCTextureCompressor); native wheels include Windows x64 and Linux aarch64 |
 | RetroArch | emulator frontend | GPLv3 | separate process, UDP commands; not bundled |
 | shadPS4 | PS4 emulation | GPL-2.0-or-later | optional official portable release, separate process with IPC and process-memory inspection; source: https://github.com/shadps4-emu/shadPS4 |
 | Flycast (libretro core) | Dreamcast | GPLv2 | loaded by RetroArch; not bundled |

@@ -30,6 +30,16 @@ class SwapError(ValueError):
 MAGICS = (b"MRL\x00", b"MOD\x00")
 
 
+def _inflate(data: bytes) -> bytes:
+    """Read shipped zlib streams and older authored raw-deflate streams without changing their bytes."""
+    for window in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+        try:
+            return zlib.decompress(data, window)
+        except zlib.error:
+            continue
+    return b""
+
+
 def model_indices(arc: mt_arc.Arc, magic: bytes | None = None) -> list[int]:
     """The indexes of the entries that are model payloads (MRL models and MOD meshes), optionally of one magic.
 
@@ -41,10 +51,7 @@ def model_indices(arc: mt_arc.Arc, magic: bytes | None = None) -> list[int]:
     wanted = (magic,) if magic else MAGICS
     found = []
     for index, entry in enumerate(arc.entries):
-        try:
-            raw = zlib.decompress(entry.data)
-        except zlib.error:
-            continue
+        raw = _inflate(entry.data)
         if raw[:4] in wanted:
             found.append(index)
     return found
@@ -52,14 +59,10 @@ def model_indices(arc: mt_arc.Arc, magic: bytes | None = None) -> list[int]:
 
 def model_paths(data: bytes) -> list[str]:
     """Every texture path that any MRL model in this archive names."""
-    import zlib as _z
     paths: list[str] = []
     arc = mt_arc.parse(data)
     for entry in arc.entries:
-        try:
-            raw = _z.decompress(entry.data)
-        except _z.error:
-            continue
+        raw = _inflate(entry.data)
         if raw[:4] != mt_model.MAGIC:
             continue
         try:
@@ -91,7 +94,11 @@ def swap_models(slot: bytes, donor: bytes, *, textures: bool = True, geometry: b
         if not slot_models or not donor_models:
             continue
         for slot_i, donor_i in zip(slot_models, donor_models):
-            data = mt_arc.replace_at(data, slot_i, donor_arc.entries[donor_i].data)
+            target_entry, donor_entry = slot_arc.entries[slot_i], donor_arc.entries[donor_i]
+            # The low 24 bits describe the inflated payload length. Keep the target's
+            # resource flags and the donor's encoded length; copy its stream verbatim.
+            tag = (target_entry.tag & 0xFF000000) | (donor_entry.tag & 0x00FFFFFF)
+            data = mt_arc.replace_at(data, slot_i, donor_entry.data, tag=tag)
             meshes.append(slot_arc.entries[slot_i].name)
             swapped += 1
     if not swapped:

@@ -559,10 +559,8 @@ def mines(g: RE5Switch, interval=None, on: bool = True) -> dict:
     return out
 
 
-def mercs_select(g: RE5Switch, mode=None, character=None, stage=None) -> dict:
-    """The PS3 tool's mercs_select: the next round's stage and character. The Switch's own menus (re5_switch.screen)
-    walk the stage and character selects to them at the next menu boundary; the current round goes on. No Mercy's
-    original roster (re5_switch.CHARACTERS); the Reunion roster's select positions are not mapped here yet."""
+def mercs_selection(mode=None, character=None, stage=None) -> dict:
+    """Validate a native menu choice without queueing it or changing any session."""
     m = str(mode or "no_mercy").strip().lower().replace(" ", "_")
     if m in ("reunion", "mercenaries_reunion"):
         return {"verified": False, "queued": False,
@@ -570,7 +568,7 @@ def mercs_select(g: RE5Switch, mode=None, character=None, stage=None) -> dict:
     if m not in ("no_mercy", "mercenaries", "mercenaries_united", "united"):
         raise ValueError("mercs_select mode: no_mercy (mercenaries) on Switch")
     if stage in (None, ""):
-        st = R.stage_target()
+        raise ValueError('A round preparation needs an explicit stage')
     elif isinstance(stage, str) and not stage.strip().isdigit():
         names = [n.lower() for n in R.STAGE_NAMES]
         if stage.strip().lower() not in names:
@@ -581,7 +579,7 @@ def mercs_select(g: RE5Switch, mode=None, character=None, stage=None) -> dict:
     if not 0 <= st < len(R.STAGE_NAMES):
         raise ValueError("mercs_select stage: 0..7")
     if character in (None, ""):
-        ch = R.player_target()
+        raise ValueError('A round preparation needs an explicit character')
     elif isinstance(character, int) or str(character).strip().isdigit():
         ch = int(character)
     else:
@@ -593,8 +591,18 @@ def mercs_select(g: RE5Switch, mode=None, character=None, stage=None) -> dict:
         ch = names.index(str(character).strip().lower())
     if not 0 <= ch < len(R.CHARACTERS):
         raise ValueError("mercs_select character: 0..9")
-    R.SELECTION.update(stage=st, character=ch)
-    sel = {"mode": "no_mercy", "stage": st, "stage_name": R.STAGE_NAMES[st], "character": R.CHARACTERS[ch]}
+    return {"verified": True, "selection": {"mode": "no_mercy", "stage": st, "stage_name": R.STAGE_NAMES[st],
+                                           "character": R.CHARACTERS[ch], "character_index": ch}}
+
+
+def mercs_select(g: RE5Switch, mode=None, character=None, stage=None) -> dict:
+    """The operator's next menu choice; the current round continues unchanged."""
+    planned = mercs_selection(mode, R.player_target() if character in (None, '') else character,
+                             R.stage_target() if stage in (None, '') else stage)
+    if not planned.get('verified'):
+        return planned
+    sel = dict(planned['selection'])
+    R.SELECTION.update(stage=sel['stage'], character=sel.pop('character_index'))
     return {"verified": True, "queued": True, "selection": sel, "effective_next_round": True,
             "native_start_verified": False,
             "note": "Selection saved for the next native menu boundary; current round continues."}

@@ -411,3 +411,74 @@ before removing any.
 
 From now on, keep one working build per non-MercMode game, and delete your own superseded test builds. Job 2, demotion while
 MercMode runs, still stands.
+
+---
+
+## Codex recovery and replacement work, 2026-11-08
+
+Reviewed main through `1e374eb2`, including the measured `4f8a1916` IPS class rebind. The abandoned research session
+`62189d68a8004464-5995101502a24fc1` was preventing MercMode from scheduling. After ending that agent-owned session,
+stock RE5 resumed real combat: captured frames and native telemetry showed advancing score and kills (up to 69,580).
+
+After the operator rebooted lilspark, SSH recovered but the QuickSwap2 CIFS mount had failed during boot with
+`Network is unreachable`. Restarting `mnt-gbox-quickswap2.mount` restored the read-only library and RE5 launches.
+Added `x-systemd.automount` to that mount's existing fstab options, preserving the read-only mount and credentials;
+backup: `/etc/fstab.gbox-merc-recovery-20261108.bak`. Reloaded systemd and confirmed the generated automount unit loads.
+The unrelated failed HyperSpin mount was not changed. A post-reboot frame showed Rebecca fighting at score 18,580,
+timer 03:01. RE4 Switch combat and a complete RE4/RE5/RE6 rotation are not established by these RE5 results.
+
+The scheduler changes cover single-title stalled-round recovery, queued build ownership, and fresh combat progress.
+Only fresh telemetry belonging to the current session and autoplay job, with increasing score or kills, extends the
+progress deadline; old/foreign stats, menu activity and timer movement do not. Pinned or disabled rotations retain
+their existing ownership protections.
+
+Replacement infrastructure now composes successive edits against the latest pending overlay, preserves backups,
+waits for the actual swap job, and refuses a missing/mismatched live session. Same-named MOD/MRL archive entries are
+selected by index. RE5 class-rebind operations include a verified IPS and the donor archive in one edit; they read an
+existing expanded NSO, validate its build ID and segment hashes, and do not extract executable content.
+
+The source atlas and native texture writer preserve RGBA, all source materials, BC7 mipmaps and Switch texture tiling.
+The optional encoder `ispc_texcomp==1.0.1` was installed in lilspark's existing service venv. Geometry corrections
+include shared vertex-buffer offsets, independent group/material/LOD bitfields, native root quantization, wrapped
+zlib streams, bone-local bounds, global envelope counts, and preservation of the original mesh record metadata.
+The original 21 models / 2,167 mesh records were audited for native short-position round trips without byte drift.
+
+Live trials use only named `recovery-*` builds on lilspark; no test data went into `cast-inverted`, and no operator
+saves, keys, firmware or other agents' scratch were changed. The byte-identical archive/class-rebind control boots.
+The one-part vertex contraction control also reached combat (score 2,000 / combo 5). The first full rigid Sonic build
+stayed black; its rebuilt header incorrectly declared 3,799 bone envelopes while carrying one. Correcting the count
+and envelope coordinates lets the full model reach the title screen. Public Assembly visual/animation acceptance is
+still being tested; a title screen or structural validation is not a finished replacement.
+
+Further live results: `recovery-sonic-rigid-v3-20261108` reached Public Assembly combat, score 15,380 / 34 kills,
+but close-up frames still showed stock enemies. That proves the rebuilt model loads, not that the chosen enemy variant
+draws it. Switched to the deterministic Chris player slot. `recovery-sonic-player-rigid-20261108` reached score 38,410 /
+79 kills; custom blue geometry was visible near the feet, with the native weapon floating above it. Decoded bounds
+explained the scale problem: the old all-axis fit reduced Sonic to 70.97 cm tall to fit Chris's narrow depth bounds.
+The next player control fits 180 cm height within the native quantization interval and updates all authored bounds.
+Rigid-root geometry is still explicitly not an animation result.
+
+Validation completed so far: 613 Python tests across the affected scheduler, overlay, model/texture and IPS paths;
+51 JavaScript tests covering MercMode and desktop swap handling. Later stage-selection fixes passed another focused
+176-test run. RE5 Switch prepare now owns a per-session, single-round selection, confirms the native menu choices,
+and does not replay an already-consumed pick after prepare/start or bot reload. Expanded roster indices no longer
+index the old ten-character family table. Final code and live checks are recorded below when complete.
+
+
+### Checkpoint pushed for parallel RE6 work
+
+Final combined validation of this checkpoint: **779 Python tests and 57 JavaScript tests passed**; `git diff --check` passed.
+The deterministic Chris-slot Sonic trials now load textured, smooth-shaded, skinned geometry and reach real combat.
+The latest v9 archive changes only the model and Gear BM/MM/NM entries (97, 34, 35, 36), retains 1,369 triangles,
+and maps 15 skeletal roles. Same-session restart was verified repeatedly on lilspark.
+
+**Sonic is rejected, not complete.** The operator observed backwards arms and hands sticking out behind the body.
+The standard shoulder camera is also dominated by the large head. CPU pose and back-view gameplay checks were insufficient;
+correct arm/hand orientation and front/side animation comparison are now the next acceptance requirement.
+`re5_sonic_writer.py` is a bounded, hash-checked experimental recipe and remains **unregistered**. Do not enable it or claim
+custom replacement is finished from this checkpoint. The library UI exposes only the separately bounded native-counterpart route.
+
+The operator requested this Git checkpoint so DeepSeek can progress on **RE6** in parallel. Current ownership here remains
+MercMode recovery, shared replacement infrastructure, and RE5 Sonic arm/hand correction plus a model/animation comparison window.
+Coordinate any shared-file changes; no RE6-specific implementation was changed in this checkpoint. Runtime deployment and final
+MercMode restoration still follow acceptance. The active lilspark research session uses only `recovery-*` builds.

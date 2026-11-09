@@ -6,6 +6,85 @@ import pytest
 from gbox import mt_model
 
 
+def test_packed_mesh_group_material_and_lod_are_independent_fields():
+    raw = bytearray(make_mod())
+    start = mt_model.parse_mod(raw).header()["offsets"]["meshes"]
+    struct.pack_into("<I", raw, start + 4, 0xFC025054)
+    raw[start + 8:start + 10] = b"\x29\xa5"
+    struct.pack_into("<H", raw, start + 0x26, 134)
+    model = mt_model.parse_mod(raw)
+    record = model.meshes()[0]
+    assert (record["group_index"], record["material_index"], record["level_of_detail"]) == (84, 37, 252)
+    assert (record["vertex_flags"], record["mesh_class"]) == (41, 165)
+    assert record["mesh_id"] == 134
+    assert mt_model.rebuild_mod(model, mesh_records=model.meshes()) == raw
+    out = mt_model.rebuild_mod(model, mesh_records=[{"material_index": 69}])
+    assert struct.unpack_from("<I", out, start + 4)[0] == 0xFC045054
+    assert out[start + 8:start + 10] == b"\x29\xa5"
+
+
+def test_short_positions_use_root_bind_transform_instead_of_box_spans():
+    from tests.test_mtf_author import make_target
+    raw = bytearray(make_target(1))
+    h = mt_model.parse_mod(raw).header()
+    root = h["offsets"]["bones"]
+    local = (1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 114., 0., 1.)
+    inverse = (280., 0., 0., 0., 0., 280., 0., 0., 0., 0., 280., 0., -90., -115., -19., 1.)
+    struct.pack_into("<16f", raw, root + 2 * 24, *local)
+    struct.pack_into("<16f", raw, root + 2 * 88, *inverse)
+    struct.pack_into("<3h", raw, h["offsets"]["vertex_buffer"], 16384, 8192, 4096)
+    model = mt_model.parse_mod(raw)
+    expected = (-90 + 280 * 16384 / 32767, -1 + 280 * 8192 / 32767, -19 + 280 * 4096 / 32767)
+    assert model.positions(0)[0] == pytest.approx(expected)
+    original, _ = model.mesh_bytes(0)
+    assert model.pack_part(0, [{"position": p} for p in model.positions(0)]) == original
+
+
+def test_bone_world_composes_local_before_parent_for_row_vector_matrices():
+    raw = bytearray(make_mod(bones=2))
+    root = mt_model.parse_mod(raw).header()["offsets"]["bones"]
+    raw[root + 1], raw[root + 25] = 255, 0
+    parent = (0., 1., 0., 0., -1., 0., 0., 0., 0., 0., 1., 0., 10., 20., 0., 1.)
+    child = (1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 5., 0., 0., 1.)
+    struct.pack_into("<32f", raw, root + 2 * 24, *parent, *child)
+    assert mt_model.parse_mod(raw).bone_world()[1] == (1, 10., 25., 0.)
+
+
+def test_shared_buffer_reads_and_writes_the_requested_part_only():
+    from tests.test_mtf_author import make_target
+    from gbox import mtf_author
+    raw = bytearray(make_target(2))
+    header = mt_model.parse_mod(raw).header()
+    record = header["offsets"]["meshes"] + 56
+    struct.pack_into("<I", raw, record + 0x0c, 3)
+    struct.pack_into("<I", raw, record + 0x10, 0)
+    struct.pack_into("<4H", raw, header["offsets"]["index_buffer"] + 8, 3, 4, 5, 0xFFFF)
+    target = mt_model.parse_mod(raw)
+    assert target.positions(0)[0][0] == pytest.approx(-1., abs=0.003)
+    assert target.positions(1)[0][0] == pytest.approx(9., abs=0.003)
+    combined = mtf_author.combine(target)
+    assert combined["triangles"] == [(0, 1, 2), (3, 4, 5)]
+    assert combined["vertices"][3]["position"][0] == pytest.approx(9., abs=0.003)
+    replacement = target.pack_part(1, [{"position": (20., 30., 10.), "bounds": target.bounds()}] * 3)
+    out = mt_model.replace_part(raw, 1, replacement, 3, mtf_author.ONE_BONE_FORMAT, 20)
+    written = mt_model.parse_mod(out)
+    assert written.mesh_bytes(0) == target.mesh_bytes(0)
+    assert written.positions(1)[0] == pytest.approx((20., 30., 10.), abs=0.004)
+    with pytest.raises(mt_model.ModelError, match="index rebuild"):
+        mt_model.replace_part(raw, 1, replacement + replacement[:20], 4, mtf_author.ONE_BONE_FORMAT, 20)
+
+
+def test_part_write_refuses_a_vertex_allocation_inside_the_index_buffer():
+    from tests.test_mtf_author import make_target
+    from gbox import mtf_author
+    raw = bytearray(make_target(2))
+    h = mt_model.parse_mod(raw).header()
+    struct.pack_into("<I", raw, h["offsets"]["meshes"] + 0x10,
+                     h["offsets"]["index_buffer"] - h["offsets"]["vertex_buffer"])
+    with pytest.raises(mt_model.ModelError, match="outside the vertex buffer"):
+        mt_model.replace_part(raw, 0, b"\0" * 60, 3, mtf_author.ONE_BONE_FORMAT, 20)
+
+
 def make_mrl(paths=("pawn\\pl\\pl00\\model\\a_BM",), count1=7):
     """A synthetic MRL: the header, the constant block and one 88-byte record per path."""
     out = bytearray(mt_model.MAGIC)
