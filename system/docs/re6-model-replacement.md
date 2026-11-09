@@ -63,8 +63,9 @@ mouth/teeth atlas), bytes 8-15 are BC1 and decode to a low-resolution per-4x4-ti
 a tile. Decoding the detail layer is proven; whether the shader combines it with that colour half (and how) is not, so
 `Surface.decode` returns the detail layer and `_albedo_layers` exposes both. The MRL v36 material records carry only a
 name hash (five 72-byte records, identical except `0x6390b116`, `0x61c18195`, `0xa56925da`, `0xf8c8d02f`, `0x68b3d093`),
-so the material→texture binding is still unnamed. A donor texture step needs that binding plus an encoder for the
-two-half `0x2B` block.
+so the material→texture binding is still unnamed. The encoder side now exists: `re6_switch_tex.replace_albedo` writes a
+new mip chain in that same two-half layout (BC4 detail plus a flat per-tile BC1 colour) and round-trips through a real
+TEX at **49.4 dB** detail PSNR, so the texture step is down to the material→texture binding.
 
 The rest of this document describes the earlier **Xbox 360** analysis. It is kept because the scale/bind lessons are
 platform-neutral and the 360 measurements are what the Switch fit reuses, but its writer and mods are **not** the
