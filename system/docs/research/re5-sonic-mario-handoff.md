@@ -118,6 +118,8 @@ not an extracted owned-game donor. Keep that provenance distinction. No listed M
    exclusive head/costume groups. The measured `uEm11 -> uEm10` class-rebind route requires its exact IPS and existing
    verified NSO build. It is not a generic cross-class archive-copy permission. Start with one Mario donor and one
    positively identified enemy, then extend the observed class/stage matrix.
+   **Update 2026-11-09:** that writer now exists offline — `gbox/re5_enemy_writer.py`, candidate SHA-256
+   `322c58a1…`, never booted; see [re5-mario-enemy-writer.md](re5-mario-enemy-writer.md). The step as it was written:
    **Next bounded step:** the existing one-mesh `re5_mesh_import.build_archive` guards require a group-0 template, which
    enemy MODs lack, so a Mario enemy candidate needs a small new group-aware enemy writer (or an explicit reviewed
    relaxation of that guard) that replaces the body-group meshes of `em1000` + `em1000_mid` + `em1000_low` (and the
