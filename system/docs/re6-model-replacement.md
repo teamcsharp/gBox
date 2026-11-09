@@ -53,15 +53,15 @@ usual mod delivery). `re6 op=switch_cast_plan` shows the assignment and the same
 anything.
 
 The only remaining Switch gap is **donor textures**: RE6's body MRL has no embedded texture table (`uPlTex*.arc`
-hold them), so the first port replaces geometry and the native material still samples its own textures. Measured on the
-extracted RomFS: TEX containers are `TEX v0xA1` with revision byte `0x20` (RE5's is `0x80`), the same 20-byte header
-plus per-mip offset table, and the player texture formats are `0x19` BC4 (`_MM` mask), `0x1F` BC5 (`_NM` normal) and
-`0x2B` (`_BM` albedo; the vendor format table calls `0x2B` **BC3_UNORM_SRGB**). Normal maps decode correctly through the
-existing RE5 GOB de-swizzle (`mtf_tex._addresses`), but the `0x2B` albedo does not: BC3-decoding the mip gives a
-uniform green channel (~124,255,122 on every texel), which is the signature of the block data being arranged as
-separate planes (or another 16-byte layout), not interleaved BC3 blocks. The TEX writer (`mtf_tex.replace_image`)
-supports BC7 (`0x30/0x31`); a complete texture step needs the `0x2B` layout resolved and the MRL v36 texture binding
-identified, so the donor atlas can replace the sampled `uPlTex` entry.
+hold them), so the first port replaces geometry and the native material still samples its own textures. `gbox.re6_switch_tex`
+now parses the containers (TEX `v0xA1` revision `0x20`, 20-byte header + mip offsets) and decodes the measured formats
+that are proven (BC4 `0x19` masks, BC5 `0x1F` normals, BC7 `0x30/0x31`); it refuses the `0x2B` albedo instead of
+emitting garbage. Measured limits: the `_BM` albedo is 16 bytes/block and the community format table calls `0x2B`
+BC3_UNORM_SRGB, but a BC3 decode yields a uniform green channel and the block statistics (bytes 0-7 vary, bytes 8-11 are
+nearly constant, bytes 12-15 are the constant `0xAA` padding pattern) show it is not interleaved BC3. The MRL v36
+material records carry only a name hash (no texture paths or command lists; five records of 72 bytes, identical except
+`0x6390b116`, `0x61c18195`, `0xa56925da`, `0xf8c8d02f`, `0x68b3d093`), so the material→texture link is also unnamed.
+Both are required before a donor atlas can replace the sampled `uPlTex` entry.
 
 The rest of this document describes the earlier **Xbox 360** analysis. It is kept because the scale/bind lessons are
 platform-neutral and the 360 measurements are what the Switch fit reuses, but its writer and mods are **not** the
