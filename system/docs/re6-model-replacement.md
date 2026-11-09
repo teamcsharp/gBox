@@ -41,6 +41,14 @@ the two `0x2B` halves is still unproven in-game; the atlas is written with the d
 per-tile average colour in the BC1 half, which is correct for every interpretation measured so far (detail, tint, or
 product).
 
+Measured textured roster (`re6sw_textured_cast`, 2026-11-09): **51 slots, 7 native characters with one donor each**
+(Ada ← Villager, Chris ← Bowser, Helena ← Corrin, Jake ← Pokemon Trainer, Leon ← Olimar, Piers ← Ness, Sherry ← Sheik),
+**296 overlay files / 440 MB**, 1328 s. The body is authored with the donor atlas UVs and every `0x2B` albedo of that
+character's texture set is replaced; reading one back from the built overlay shows the donor atlas, and rendering a slot
+with its atlas gives the textured donor:
+
+![Bowser textured on the RE6 Switch Chris slot](evidence/re6-scale/switch-bowser-chris-textured.png)
+
 The role ids are the same family **on every character**, but the bone *order* differs (Helena's head is index 13, Ada's
 left clavicle 22), so `roles_for` always resolves them from the anim ids instead of hard-coding indices. The
 `gbox.re6_switch_models.body_arcs` scan finds **51 native body slots** (9 characters including Carla and the helper,
