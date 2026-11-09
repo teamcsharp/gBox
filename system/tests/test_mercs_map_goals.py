@@ -120,3 +120,113 @@ def test_collection_endpoint_requires_auth_and_limits_body(cfg):
     assert c.post(path,json=body|{'pos':[0,0,0]}).status_code==422
     assert c.post(path,json={'extra':'x'*2050}).status_code==413
     assert c.post(path,json={'cancel':True}).json()['state']=='cancelled'
+
+
+# --- the operator's click on an enemy, the double click on a spot (2026-11-09) ----------------------------------------
+# "If I click on an enemy on the map, I want the bot to navigate to that enemy and dispatch [it] ... I want that enemy
+# to be targeted and I want the bot to dispatch them ASAP no matter what. Anywhere I double click on the map, I want the
+# bot navigating to that area. And then if I just leave it, they just take control and just go back to whatever they
+# were doing."
+import math
+
+from gbox.mercs.titles import re5_switch as SW
+
+
+def switch_frame(round='c'*32):
+    return {'v': 1, 'screen': 'playing', 'stage': 'switch.test', 'goal_round': round,
+            'goal_capabilities': ['enemy', 'point'], 'player': {'pos': [0, 150, 0]},
+            'enemies': [{'id': 3, 'kind': 'Majini', 'pos': [1600, 400, 0]}]}
+
+
+def test_the_map_takes_an_enemy_and_a_spot_as_goals_only_from_a_bot_that_offers_them():
+    now = [100.]; store = TM.Store(clock=lambda: now[0]); f = switch_frame(); store.put_frame('w-s', f)
+    base = {'round': f['goal_round'], 'stage': f['stage'], 'seq': 1}
+    goal = store.command('w-s', base | {'kind': 'enemy', 'id': 3})
+    assert goal['kind'] == 'enemy' and goal['entity_id'] == 3 and goal['pos'] == [1600, 400, 0]
+    assert goal['label'] == 'Dispatch Majini' and store.put_frame('w-s', f)['operator_goal'] == goal
+    spot = store.command('w-s', base | {'kind': 'point', 'x': -820, 'z': 2400.5})
+    assert spot['kind'] == 'point' and spot['entity_id'] == 0 and spot['pos'] == [-820.0, 150.0, 2400.5]
+    assert store.put_frame('w-s', f)['operator_goal'] == spot          # the newest mark is the one in force
+    for bad in ({'kind': 'enemy', 'id': 9}, {'kind': 'enemy', 'id': True}, {'kind': 'point', 'x': 1},
+                {'kind': 'point', 'x': float('nan'), 'z': 0}, {'kind': 'point', 'x': 0, 'z': 0, 'id': 3}):
+        with pytest.raises(ValueError): store.command('w-s', base | bad)
+    old = TM.Store(clock=lambda: now[0]); g = frame(); old.put_frame('w-s', g)           # a bot of bonuses and items only
+    with pytest.raises(ValueError, match='does not take map targets'):
+        old.command('w-s', {'round': g['goal_round'], 'stage': g['stage'], 'seq': 1, 'kind': 'enemy', 'id': 3})
+
+
+def test_a_marked_enemy_is_followed_until_he_is_down_and_a_marked_spot_until_he_stands_on_it():
+    goals = Goals()
+    value = {'id': 'g1', 'round': goals.round, 'stage': 's', 'kind': 'enemy', 'entity_id': 3, 'pos': [1600, 0, 0],
+             'label': 'Dispatch Majini', 'state': 'queued'}
+    goals.receive(value, 10.)
+    foe = {'slot': 3, 'ptr': 0xA0, 'pos': (1700., 0., 0.), 'hp': 800}
+    snap = {'player': {'pos': (0., 0., 0.)}, 'enemies': [foe]}
+    assert goals.resolve(snap, 11.) is foe and goals.public()['state'] == 'active'       # wherever he has walked to
+    assert goals.resolve(dict(snap, enemies=[dict(foe, ptr=0xB0)]), 12.) is None         # another unit in the slot
+    assert goals.public()['state'] == 'completed'
+    goals.receive(dict(value, id='g2'), 20.)
+    assert goals.resolve(dict(snap, enemies=[dict(foe, hp=0)]), 21.) is None and goals.public()['state'] == 'completed'
+    goals.receive(dict(value, id='g3', kind='point', entity_id=0, pos=[500, 0, 0], label='Go to the marked spot'), 30.)
+    assert goals.resolve(snap, 31.) == {'kind': 'point', 'pos': (500, 0, 0)}
+    assert goals.resolve({'player': {'pos': (420., 0., 60.)}}, 32.) is None and goals.public()['state'] == 'completed'
+    goals.receive(dict(value, id='g4', kind='point', entity_id=0, pos=[500, 0, 0]), 40.)
+    assert goals.resolve(snap, 40. + 121.) is None and goals.public()['state'] == 'expired'
+
+
+def switch_bot():
+    b = object.__new__(SW.Bot)
+    b.stats, b.mines, b._now, b.target, b.target_at, b._goal_dy = {}, None, 5.0, None, None, None
+    b._mesh, b._nav, b.doing, b.why = None, None, '', ''
+    b._gun_down = lambda: None
+    b._gun_back = lambda snap, now: None
+    b._turn = lambda err, tol=0.0: () if abs(err) <= tol else (('rleft',) if err > 0 else ('rright',))
+    b._set_target = lambda key, now: setattr(b, 'target', key)
+    b.fought = []
+    b._decide = lambda p, live, flat, near_e, near, snap, now: b.fought.append([e['ptr'] for e in live]) or {'hold': ('zl', 'zr')}
+    return b
+
+
+def mark(bot, kind, **kw):
+    g = bot._goals()
+    bot.receive_map_goal({'id': 'm' + kind + str(kw.get('entity_id')), 'round': g.round, 'stage': 's', 'kind': kind,
+                          'state': 'queued', 'label': 'mark', **kw})
+    return g
+
+
+def test_the_switch_bot_offers_enemy_and_spot_goals_and_goes_for_the_marked_enemy_ahead_of_the_rest():
+    bot = switch_bot()
+    plan = bot.plan()
+    assert plan['goal_capabilities'] == ['enemy', 'point'] and plan['goal_round'] == bot._goals().round
+    p = {'pos': (0., 0., 0.), 'rot': 0.0, 'hp': 1000}
+    flat = lambda e: math.hypot(e['pos'][0], e['pos'][2])
+    marked = {'slot': 3, 'ptr': 0xA0, 'pos': (0., 0., 4000.), 'hp': 800}
+    close = {'slot': 4, 'ptr': 0xA1, 'pos': (300., 0., 0.), 'hp': 800}                   # another, right beside him
+    snap = {'player': p, 'enemies': [marked, close]}
+    assert bot._operator_goal(p, snap, [marked, close], flat, 5.0) is None               # no mark: his own play
+    mark(bot, 'enemy', entity_id=3, pos=[0, 0, 4000])
+    assert bot.stats['map_goals_taken'] == 1
+    act = bot._operator_goal(p, snap, [marked, close], flat, 5.1)
+    assert act['hold'][:2] == ('lup', 'b') and "operator's target 40 m" in bot.why       # 40 m off: to him at a run
+    assert bot.fought == []
+    near = dict(marked, pos=(0., 0., 900.))
+    act = bot._operator_goal(p, dict(snap, enemies=[near, close]), [near, close], flat, 5.2)
+    assert act == {'hold': ('zl', 'zr')} and bot.fought == [[0xA0]] and bot.target == 0xA0   # the fight, on him alone
+    dead = dict(near, hp=0)
+    assert bot._operator_goal(p, dict(snap, enemies=[dead, close]), [close], flat, 5.3) is None   # down: his own play
+    assert bot._goals().public()['state'] == 'completed'
+
+
+def test_a_marked_spot_is_run_to_and_then_he_plays_on_by_himself():
+    bot = switch_bot()
+    p = {'pos': (0., 0., 0.), 'rot': 0.0, 'hp': 1000}
+    flat = lambda e: math.hypot(e['pos'][0], e['pos'][2])
+    mark(bot, 'point', entity_id=0, pos=[0, 0, 3000])
+    act = bot._operator_goal(p, {'player': p, 'enemies': []}, [], flat, 5.1)
+    assert act['hold'][:2] == ('lup', 'b') and "operator's spot" in bot.why
+    grabber = {'slot': 4, 'ptr': 0xA1, 'pos': (100., 0., 100.), 'hp': 800}
+    assert bot._operator_goal(p, {'player': p, 'enemies': [grabber]}, [grabber], flat, 5.2) is None   # one at arm's length
+    assert bot._goals().public()['state'] == 'deferred'
+    there = dict(p, pos=(50., 0., 2900.))
+    assert bot._operator_goal(there, {'player': there, 'enemies': []}, [], flat, 5.3) is None
+    assert bot._goals().public()['state'] == 'completed'

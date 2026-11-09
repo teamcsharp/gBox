@@ -376,7 +376,8 @@ class Tracker:
                      "units": self.units, "screen": str(screen or ("playing" if p else "loading"))[:24]}
         if (plan or {}).get('goal_round'):
             out['goal_round'] = str(plan['goal_round'])[:32]
-            out['goal_capabilities'] = [k for k in plan.get('goal_capabilities', []) if k in ('bonus', 'item')]
+            out['goal_capabilities'] = [k for k in plan.get('goal_capabilities', [])
+                                        if k in ('bonus', 'item', 'enemy', 'point')]
             if isinstance(plan.get('operator_goal'), dict):
                 out['operator_goal'] = dict(plan['operator_goal'])
         clock = {k: v for k, v in (("left", _n(snap.get("timer"), 2)), ("start", _n(snap.get("timer_start"), 1)),

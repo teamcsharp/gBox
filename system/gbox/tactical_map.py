@@ -21,6 +21,7 @@ PORTRAIT_EVERY_S, and only nearer PORTRAIT_BEST_CM than the one it has.
 from __future__ import annotations
 
 import json
+import math
 import re
 import threading
 import time
@@ -90,9 +91,37 @@ class Store:
                     goal = self.goals[sid] = dict(goal, id=uuid.uuid4().hex, state='cancelled')
                     return dict(goal)
                 return {'state': 'cancelled', 'label': 'Map goal'}
-            if set(body) != {'round', 'stage', 'kind', 'id', 'seq'} or body['round'] != frame.get('goal_round') \
+            # Operator 2026-11-09: "If I click on an enemy on the map, I want the bot to navigate to that enemy and
+            # dispatch [it] ... Anywhere I double click on the map, I want the bot navigating to that area." So two
+            # more kinds beside the collection goals: 'enemy' (a live enemy of this frame, by its id) and 'point'
+            # (a spot, x and z in the stage's units; its height is the player's until the bot finds the floor).
+            keys = {'round', 'stage', 'kind', 'x', 'z', 'seq'} if body.get('kind') == 'point' \
+                else {'round', 'stage', 'kind', 'id', 'seq'}
+            if set(body) != keys or body['round'] != frame.get('goal_round') \
                     or body['stage'] != frame.get('stage') or type(body['seq']) is not int or not 0 < body['seq'] <= row['seq']:
                 raise ValueError('The map round changed; choose the item again')
+            if body['kind'] in ('enemy', 'point'):
+                if body['kind'] not in frame.get('goal_capabilities', []):
+                    raise ValueError('This bot does not take map targets yet')
+                if body['kind'] == 'point':
+                    x, z = body['x'], body['z']
+                    if any(type(v) not in (int, float) or not math.isfinite(v) or abs(v) > 1e7 for v in (x, z)):
+                        raise ValueError('Invalid map point')
+                    height = (frame['player'].get('pos') or [0, 0, 0])[1]
+                    entity_id, pos, label, life = 0, [float(x), float(height), float(z)], 'Go to the marked spot', 120.
+                else:
+                    entity_id = body['id']
+                    if type(entity_id) is not int:
+                        raise ValueError('This enemy is no longer present in the live game')
+                    entity = next((e for e in frame.get('enemies', []) if e.get('id') == entity_id), None)
+                    if not entity:
+                        raise ValueError('This enemy is no longer present in the live game')
+                    pos, label, life = entity['pos'], 'Dispatch ' + str(entity.get('kind') or 'the marked enemy'), 300.
+                goal = {'id': uuid.uuid4().hex, 'round': body['round'], 'stage': body['stage'],
+                        'kind': body['kind'], 'entity_id': entity_id, 'pos': pos, 'label': str(label)[:80],
+                        'state': 'queued', 'expires': self.clock()+life}
+                self.goals[sid] = goal
+                return dict(goal)
             kind, entity_id = body['kind'], body['id']
             if kind not in ('bonus', 'item') or kind not in frame.get('goal_capabilities', []) or type(entity_id) is not int:
                 raise ValueError('This entity does not support collection commands')

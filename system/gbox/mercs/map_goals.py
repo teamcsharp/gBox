@@ -8,6 +8,12 @@ import math
 import uuid
 
 TERMINAL = {'cancelled', 'expired', 'unavailable', 'completed', 'observed_removed'}
+# Operator 2026-11-09: "If I click on an enemy on the map, I want the bot to navigate to that enemy and dispatch
+# [it]. Anywhere I double click on the map, I want the bot navigating to that area. And then if I just leave it,
+# they just take control and just go back to whatever they were doing." 'enemy': the live enemy in that slot until
+# he is down or another unit has the slot. 'point': the spot until he is within ARRIVE of it, POINT_S at most.
+KINDS = ('bonus', 'item', 'enemy', 'point')
+ARRIVE, POINT_S = 200., 120.
 
 
 class Goals:
@@ -25,7 +31,7 @@ class Goals:
             return
         if self.goal and self.goal['id'] == value.get('id'):
             return
-        if value.get('kind') not in ('bonus', 'item') or type(value.get('entity_id')) is not int:
+        if value.get('kind') not in KINDS or type(value.get('entity_id')) is not int:
             return
         pos = value.get('pos')
         if not isinstance(pos, (list, tuple)) or len(pos) != 3 \
@@ -48,6 +54,26 @@ class Goals:
         if now-self.received_at > 300.:
             goal.update(state='expired', reason='Map goal expired after five minutes; choose it again')
             return None
+        if goal['kind'] == 'point':
+            at = (snap.get('player') or {}).get('pos')
+            if now-self.received_at > POINT_S:
+                goal.update(state='expired', reason='The marked spot was not reached in two minutes')
+                return None
+            if at and math.hypot(at[0]-goal['pos'][0], at[2]-goal['pos'][2]) <= ARRIVE:
+                goal.update(state='completed', reason='He is at the marked spot; back to his own play')
+                return None
+            goal.update(state='active', reason='On his way to the marked spot by the map')
+            return {'kind': 'point', 'pos': tuple(goal['pos'])}
+        if goal['kind'] == 'enemy':
+            row = next((e for e in snap.get('enemies') or () if e.get('slot', e.get('id')) == goal['entity_id']), None)
+            unit = row.get('ptr') if row else None
+            if row is not None and goal.setdefault('unit', unit) != unit:
+                row = None                                  # another unit has the slot: the marked one is gone
+            if row is None or (row.get('hp') or 0) <= 0:
+                goal.update(state='completed', reason='The marked enemy is down; back to his own play')
+                return None
+            goal.update(state='active', reason='Going for the marked enemy ahead of everything else')
+            return row
         rows = snap.get('bonuses' if goal['kind'] == 'bonus' else 'health_items') or []
         row = next((r for r in rows if r.get('ptr') == goal['entity_id']), None)
         if row and math.dist(row['pos'], goal['pos']) > 60.:

@@ -526,7 +526,7 @@
       `<button class="act" type="button" data-tm-zoom="in" aria-label="Zoom in" title="Zoom in">+</button></div>` +
       `<div class="tm-stage"><canvas role="img" tabindex="0" style="touch-action:none;cursor:grab" aria-label="Top-down map of the round"></canvas><div class="tm-status" data-tm="status"></div>` +
       `<div class="tm-tip" data-tm="tip" hidden></div></div>` +
-      `<div class="mut" data-tm="interaction">Hover to hold the view. Wheel to zoom; drag to pan. Follow resumes tracking.</div>` +
+      `<div class="mut" data-tm="interaction">Hover to hold the view. Wheel to zoom; drag to pan. Follow resumes tracking. Click an enemy to send the bot after it; double-click a spot to send him there.</div>` +
       `<div class="tm-bar" data-tm="goal-box" hidden><span data-tm="goal" role="status" aria-live="polite"></span><button type="button" class="act" data-tm="cancel-goal">Cancel goal</button></div>` +
       `<div class="tm-legend" aria-label="Legend"><span>${ICON.player}Player</span><span>${ICON.enemy}Majini</span>` +
       `<span>${ICON.hidden}out of sight</span><span>${ICON.attack}attacking</span><span>${ICON.time}time bonus</span>` +
@@ -694,12 +694,27 @@
       if (canvas.hasPointerCapture?.(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
       if (clicked) {
         const m = hit(e).best;
-        if (m && ['bonus','item'].includes(m.kind) && !m.taken) {
+        // a bonus or an item: go and take it. An enemy: go to it and dispatch it, ahead of everything else.
+        if (m && ['bonus','item','enemy'].includes(m.kind) && !m.taken) {
           if (!frame?.goal_round || !frame?.goal_capabilities?.includes(m.kind) || !frame.live)
-            goalMessage('This session is not ready for map commands.');
-          else command({round:frame.goal_round,stage:frame.stage,kind:m.kind,id:m.id,seq:frame.seq}, m.tip);
+            goalMessage(m.kind === 'enemy' ? 'This bot does not take map targets yet.' : 'This session is not ready for map commands.');
+          else command({round:frame.goal_round,stage:frame.stage,kind:m.kind,id:m.id,seq:frame.seq},
+                       m.kind === 'enemy' ? `Dispatch ${m.name || 'this enemy'}` : m.tip);
         }
       }
+    });
+    // a double click on open map: the bot goes to that spot, then plays on by itself
+    canvas.addEventListener('dblclick', e => {
+      if (!camera) return;
+      const {best, x, y} = hit(e);
+      if (best && ['bonus','item','enemy'].includes(best.kind)) return;      // a mark: its own click already went
+      e.preventDefault();
+      if (!frame?.goal_round || !frame?.goal_capabilities?.includes('point') || !frame.live) {
+        goalMessage('This bot does not take map targets yet.'); return;
+      }
+      const [wx, wz] = unproject(viewOf(camera, size), x, y);
+      command({round:frame.goal_round,stage:frame.stage,kind:'point',x:Math.round(wx),z:Math.round(wz),seq:frame.seq},
+              'Go to the marked spot');
     });
     const endDrag = () => { drag = null; tip.hidden = true; if (!over && !manual) held = null; };
     canvas.addEventListener('pointercancel', endDrag);

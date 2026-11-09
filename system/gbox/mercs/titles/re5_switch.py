@@ -1002,6 +1002,17 @@ LOCATE_SWITCH, LOCATE_BLOCK_S = 0.6, 8.0
 # MESH_FOLLOW: on a tick the mesh's own route steers him the guard does not choose another heading - within
 # MESH_FOLLOW_TOL of the route's point he walks on, beyond it he turns to it on the spot. stats mesh_follows.
 MESH_FOLLOW, MESH_FOLLOW_TOL = True, math.radians(25)
+# The operator's hand on the map (2026-11-09): "If I click on an enemy on the map, I want the bot to navigate to
+# that enemy and dispatch [it] ... I want that enemy to be targeted and I want the bot to dispatch them ASAP no
+# matter what. Anywhere I double click on the map, I want the bot navigating to that area. And then if I just leave
+# it, they just take control and just go back to whatever they were doing." MAP_GOALS: the click arrives through
+# the tactical publisher (receive_map_goal, gbox.mercs.map_goals) and comes ahead of the bombs, the statues, the
+# relocation and every other target - only being held, dying and healing come first, and a bomb already in his
+# hand is finished. The marked enemy: by the mesh at a run (ladders and drops taken) until he is within
+# GOAL_FIRE_R with open floor between them, then the fight on him alone until he is down. A marked spot: by the
+# mesh at a run until he stands on it; only a Majini within GOAL_THREAT_R is fought on the way. Then his own play
+# again. stats map_goal_status, map_goals_taken, map_goal_fight_ticks, map_goal_walk_ticks.
+MAP_GOALS, GOAL_FIRE_R, GOAL_THREAT_R = True, 1500.0, 200.0
 # Mines are not negotiable (operator 2026-11-09: "I want it placing mines. Then flashbanging and running away and
 # getting distance ... have him force his way out"). MINE_FLASH: the native flash (the GRENADES knob's own, no item
 # screen) goes off the moment a bomb of his is confirmed down, so the crowd reels while he runs out to the standoff;
@@ -3569,6 +3580,8 @@ class Bot:
         self._dyn, self._dynamite_e = {}, None
         if self.mines is not None:
             self.mines.new_round(now)
+        if self.__dict__.get("_map_goals") is not None:
+            self._map_goals.reset()                          # a new round: the last one's marks are gone
         tuning.apply(MAP_ID, tuning.stage_name(STAGE_NAMES, stage_target()), self.stats)
         self._dead_ends = tuning.dead_ends(MAP_ID)       # the stage's learned dead ends, before this round's own
         # the learned occupancy-grid navigator (re5_switch_nav): seeded from the trail and walls each tick
@@ -4158,6 +4171,8 @@ class Bot:
             act = self._heal(p, snap, live, flat, now)
             if act is not None:
                 self.doing, self.why = "heal", str(self.stats.get("heal_status") or "")
+            elif (act := self._operator_goal(p, snap, live, flat, now)) is not None:
+                self.escape = None                           # the operator's mark on the map: ahead of the rest
             elif self.mines is not None and (act := self.mines.tick(p, snap, live, now)) is not None:
                 # A due mine is part of fleeing, not blocked by a persistent escape.
                 # Held/dying and healing already take priority above. The mine
@@ -4228,6 +4243,99 @@ class Bot:
             err = wrap(heading(point[0] - px, point[2] - pz) - p["rot"])
             return dict(act, hold=("lup", "b") + self._turn(err, TURN_TOL))
         return act
+
+    # --- the operator's marks on the map (MAP_GOALS above) -----------------------------------------------------------
+    def _goals(self):
+        g = self.__dict__.get("_map_goals")
+        if g is None:
+            from ..map_goals import Goals
+            g = self._map_goals = Goals()
+        return g
+
+    def receive_map_goal(self, value) -> None:
+        """The tactical publisher's hand-over, on the engine's thread: the operator's click."""
+        g = self._goals()
+        before = (g.goal or {}).get("id")
+        g.receive(value, time.time() if self._now is None else self._now)
+        if g.goal and g.goal.get("id") != before and g.goal.get("state") == "queued":
+            self.stats["map_goals_taken"] = self.stats.get("map_goals_taken", 0) + 1
+
+    def plan(self) -> dict:
+        """What the tactical map shows of his intent: his target, the mesh route he is on, and the round's map-goal
+        token with what a click may ask for (an enemy, a spot)."""
+        out: dict = {"fallback": True}
+        tgt = getattr(self, "target", None)
+        if isinstance(tgt, int) and not isinstance(tgt, bool):
+            out["target"] = {"kind": "enemy", "id": tgt}
+        if MAP_GOALS:
+            g = self._goals()
+            out.update(goal_round=g.round, goal_capabilities=["enemy", "point"], operator_goal=g.public())
+        return out
+
+    def _floor_y(self, x: float, z: float, py: float) -> float:
+        """The floor's height under a spot on the map (the mesh's floor there nearest his own height), else his."""
+        mesh = getattr(self, "_mesh", None)
+        try:
+            if mesh is not None and hasattr(mesh, "grid") and hasattr(mesh, "centre"):
+                from . import re5_nav
+                cell = (int(math.floor(x / re5_nav.CELL)), int(math.floor(z / re5_nav.CELL)))
+                for y in sorted({round(mesh.centre[i][1]) for i in mesh.grid.get(cell, ())}, key=lambda v: abs(v - py)):
+                    if mesh.find((x, y, z), floor_only=True) is not None:
+                        return float(y)
+        except Exception:                                    # noqa: BLE001 - the mesh never costs a tick
+            pass
+        return float(py)
+
+    def _operator_goal(self, p, snap, live, flat, now) -> dict | None:
+        """MAP_GOALS: this tick's action for the operator's mark on the map, None when there is none (or it waits)."""
+        g = self.__dict__.get("_map_goals")
+        if not MAP_GOALS or g is None or g.goal is None:
+            return None
+        try:
+            row = g.resolve(snap, now)
+        except Exception as exc:                             # noqa: BLE001 - a mark never stops the bot
+            self.stats["map_goal_error"] = f"{type(exc).__name__}: {exc}"[:120]
+            return None
+        self.stats["map_goal_status"] = f"{g.goal.get('label')}: {g.goal.get('state')}"[:120]
+        if row is None:
+            return None
+        if self.mines is not None and self.mines.state != "idle":
+            g.defer("Finishing the bomb in his hand first")
+            return None
+        px, py, pz = p["pos"]
+        if "hp" not in row:                                  # a spot on the map
+            if any(flat(e) <= GOAL_THREAT_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in live):
+                g.defer("A Majini at arm's length first")
+                return None
+            gx, _gy, gz = row["pos"]
+            if g.goal.get("floor_y") is None:
+                g.goal["floor_y"] = self._floor_y(gx, gz, py)
+            d = math.hypot(gx - px, gz - pz)
+            self.stats["map_goal_walk_ticks"] = self.stats.get("map_goal_walk_ticks", 0) + 1
+            self._gun_down()
+            self.doing, self.why = "walk", f"the operator's spot on the map, {d / 100:.0f} m off - by the map"
+            return {"hold": ("lup", "b") + self._approach(p, (gx, g.goal["floor_y"], gz), now, link=True)}
+        key, d, dy = row.get("ptr", row.get("slot")), flat(row), row["pos"][1] - py
+        if abs(dy) <= MAX_DY and d <= GOAL_FIRE_R and not self._walled_off(p, row, now):
+            back = self._gun_back(snap, now)
+            if back is not None:                             # (a bomb or a grenade in hand: the gun first)
+                self._gun_down()
+                self.doing, self.why = "rearm", "the gun back for the operator's target"
+                return back
+            if self.target != key:
+                self._set_target(key, now)
+                self.target_at = now
+            self.stats["map_goal_fight_ticks"] = self.stats.get("map_goal_fight_ticks", 0) + 1
+            act = self._decide(p, [row], flat, row, d, snap, now)   # the fight, on him alone
+            self.why = "the operator's target: " + str(self.why)
+            return act
+        self.stats["map_goal_walk_ticks"] = self.stats.get("map_goal_walk_ticks", 0) + 1
+        self._goal_dy = dy
+        self._gun_down()
+        self.doing = "walk"
+        self.why = (f"the operator's target {d / 100:.0f} m off"
+                    + (f", {dy:+.0f} cm off his floor" if abs(dy) > LEVEL_DY else "") + " - by the map, at a run")
+        return {"hold": ("lup", "b") + self._approach(p, row["pos"], now, link=True)}
 
     def _gait(self, dist: float) -> tuple:
         """The left stick for a walk to a Majini `dist` away: a run beyond RUN_R."""
