@@ -257,3 +257,13 @@ images 30 | resolved 18
 **What this unblocks.** A pack's texture is now addressable from the pack itself: read the descriptor, format the id, and
 the archive holding that surface is known and editable. That is the missing half of RE4 Switch skin and clothes
 replacement - the write side (`fen_patch`) still has to be built, but there is no longer a lookup in the way.
+
+## CORRECTION (2026-11-09): the join is (pack id, index), and the player's textures were never missing
+
+The 8-byte record after a table's image headers is `(u32 pack id, u32 index)`, not "(a constant, a global id)": the
+archive is `imagepackhd/<pack id:08x>.pack.fen` and the surface is entry `index` inside it. `plNN` uses pack id
+`0x010000NN` (Leon's Mercenaries body: `01000008.pack.fen`, 30 entries), `emNN` uses `0x000000NN`. Measured on the 27
+player packs and `em16`: 666 of 666 table images resolve to an existing entry with the same aspect ratio. The sections
+above that format the *index* as a file name (`00000030.pack.fen` for "id 48"), that report archives as absent, and
+that send the search to an `imagepack/` directory or to RAM are superseded by this.
+See `re4-switch-model-replacement.md` (readers: `gbox/re4_switch_assets.py`).
