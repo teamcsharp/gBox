@@ -349,6 +349,36 @@ def load_model(arc: DataArc, fighter: str) -> S.Numdlb:
 
 
 @needs_arc
+def test_the_default_object_set_keeps_one_eye_layer(arc):
+    """``eye1`` is the untextured white copy of ``eye2``; both survive in the file and z-fight if both are exported."""
+    model = load_model(arc, "sonic")
+    selected = S.default_object_indices(model)
+    names = [model.mesh.objects[i]["name"].lower() for i in selected]
+    assert any("eye2" in name for name in names)
+    assert not any("eye1" in name for name in names)
+
+
+@needs_arc
+def test_an_eye_material_composites_a_white_base(arc):
+    """Sonic's ``eyeW_*`` white base is not shipped; the iris layer must still come out opaque on white."""
+    model = load_model(arc, "sonic")
+    textures = {}
+    for name in S._texture_candidates(model, S.default_object_indices(model)):
+        try:
+            textures[name] = S.nutexb_image(arc.read(f"fighter/sonic/model/body/c00/{name}.nutexb"))[0]
+        except Exception:
+            continue
+    for label in ("EyeL2", "EyeR2"):
+        if model.matl.entry(label) is None:
+            continue
+        image = model.matl.composite_albedo(label, textures)
+        if image is None:
+            continue
+        assert image.shape[2] == 4
+        assert float((image[..., 3] > 200).mean()) > 0.9          # one opaque surface, not a transparent iris
+
+
+@needs_arc
 def test_real_sonic_mesh_geometry(arc):
     model = load_model(arc, "sonic")
     mesh = model.mesh
@@ -432,7 +462,9 @@ def test_extract_sonic_round_trips_through_rig_from_gltf(arc, tmp_path):
     assert result["joints"] == 115
     assert len(result["roles"]) >= 10
     assert result["textures"] >= (7 if HAS_BC7 else 0)
-    assert result["materials"] >= 6
+    # the untextured white ``EyeL``/``EyeR`` layer is no longer exported (it duplicates the iris layer and
+    # z-fights it), so 5 materials remain instead of the file's 7 eye/body materials
+    assert result["materials"] >= 5
     glb, preview = Path(result["glb"]), Path(result["preview"])
     assert glb.is_file() and preview.is_file()
     assert glb.read_bytes()[:4] == b"glTF"

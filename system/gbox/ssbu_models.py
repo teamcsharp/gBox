@@ -41,6 +41,12 @@ Measured on the operator's own ``data.arc`` (title 01006A800016E000, base game 1
   ``eyeR_sonic_001_col``, ``skin_sonic_mouthD/E_001_*``) have **no entry anywhere** in this archive:
   the multi-hash table contains no record whose file-name hash is that name (``def_sonic_001_col``
   has 16). The extractor therefore falls back to a material colour for them and says so in ``notes``.
+* The eye is stored **twice**: ``eye1`` is an untextured white surface and ``eye2`` the iris layer with the
+  same geometry and UVs. Exporting both makes them z-fight (the white wins, the iris shows as slivers), so
+  :func:`default_object_indices` drops ``eye1`` and :meth:`Numatb.composite_albedo` composites the iris over an
+  opaque white base (synthesised when the white ``eyeW_*`` map is not shipped). Faces/eyes were the visible
+  artefact this fixes; the z-buffered preview (:func:`gbox.characters.render_preview` ``depth=True``) is what
+  shows the result the way the camera sees it.
 
 ``.nutexb`` textures are *footer-first*: the block-linear surface payload starts at offset 0, followed by
 one 0x40-byte mip-size table per array layer and a 112-byte footer at the end of the file. The footer's
@@ -741,30 +747,50 @@ class Numatb(_Ssbh):
         return self.composite_albedo(label, textures)
 
     def composite_albedo(self, label: str, textures: Mapping[str, np.ndarray]) -> np.ndarray | None:
-        """Pick the albedo image, compositing the eye shader's two colour maps when both exist.
+        """Pick the albedo image, compositing the eye shader's colour layers into one opaque base map.
 
-        Measured: eye materials put a white/face base in ``Texture0`` and an alpha iris map in
-        ``Texture1`` (``eye_mario_w_col`` + ``eye_mario_b_col``, ``eye_link_w_col`` + ``eye_link_b_col``).
-        A glTF material has one base-colour texture, so the iris is alpha-composited over the base here;
-        a caller that only wants the raw slot-0 image can use :meth:`texture_slots`.
+        Measured: eye materials put a white base in ``Texture0`` and an alpha iris map in ``Texture1``
+        (``eye_mario_w_col`` + ``eye_mario_b_col``, ``eye_link_w_col`` + ``eye_link_b_col``). On this base game some
+        white-eye textures (Sonic's ``eyeW_*``) are **not shipped at all**, so the only present map is the mostly
+        transparent iris overlay. A glTF material has one base-colour texture, so for an eye material the base is the
+        first opaque colour map if one exists, otherwise an opaque white: every remaining alpha layer is composited
+        over it. Without the synthesised base the eye renders mostly transparent, which is what made the extracted
+        faces look wrong.
         """
-        names = [name for name in self.albedo_candidates(label) if name in textures]
-        if not names:
+        declared = self.albedo_candidates(label)
+        present = [name for name in declared if name in textures]
+        if not present:
             return None
-        base = textures[names[0]]
-        for name in names[1:]:
-            overlay = textures[name]
-            if overlay.shape != base.shape:
+        eye = label.lower().startswith("eye") or (bool(declared) and declared[0].lower().startswith("eyew"))
+        if not eye:
+            base = textures[present[0]]
+            for name in present[1:]:
+                overlay = textures[name]
+                if overlay.shape != base.shape:
+                    continue
+                coverage = float((overlay[..., 3] > 128).mean())
+                if not 0.005 < coverage < 0.9:          # an opaque map is not an overlay
+                    continue
+                base = self._over(base, overlay)
+            return base
+        layers = [textures[name] for name in present]
+        base = next((layer for layer in layers if float((layer[..., 3] > 128).mean()) >= 0.9), None)
+        if base is None:
+            base = np.full_like(layers[0], 255)         # the white sclera the archive does not ship
+        for overlay in layers:
+            if overlay is base or overlay.shape != base.shape:
                 continue
-            coverage = float((overlay[..., 3] > 128).mean())
-            if not 0.005 < coverage < 0.9:          # an opaque map is not an overlay
-                continue
-            alpha = overlay[..., 3:4].astype(np.float32) / 255.0
-            rgb = (base[..., :3].astype(np.float32) * (1.0 - alpha)
-                   + overlay[..., :3].astype(np.float32) * alpha)
-            out = np.dstack([rgb, np.full(base.shape[:2], 255.0, np.float32)])
-            return np.clip(out + 0.5, 0, 255).astype(np.uint8)
+            if float((overlay[..., 3] > 128).mean()) >= 0.9:
+                continue                                # an opaque layer already won
+            base = self._over(base, overlay)
         return base
+
+    @staticmethod
+    def _over(base: np.ndarray, overlay: np.ndarray) -> np.ndarray:
+        alpha = overlay[..., 3:4].astype(np.float32) / 255.0
+        rgb = base[..., :3].astype(np.float32) * (1.0 - alpha) + overlay[..., :3].astype(np.float32) * alpha
+        out = np.dstack([rgb, np.full(base.shape[:2], 255.0, np.float32)])
+        return np.clip(out + 0.5, 0, 255).astype(np.uint8)
 
     def fallback_colour(self, label: str) -> tuple[float, float, float, float]:
         """A flat colour for a material whose albedo texture is unavailable.
@@ -1299,12 +1325,19 @@ def default_object_indices(model: Numdlb) -> list[int]:
     """
     assert model.mesh is not None
     mesh = model.mesh
+    names = {obj["name"].lower() for obj in mesh.objects}
     out = []
     for index, obj in enumerate(mesh.objects):
         base = obj["name"].lower()
         if any(hint in base for hint in _FORM_HINTS):
             continue
-        if "eye" in base:                          # eye whites / irises are part of the default face
+        if "eye" in base:
+            # SSBU packs the eye as two identical surfaces: ``eye1`` is the untextured white layer and
+            # ``eye2`` the iris layer with the same geometry and UVs. Keeping both makes them z-fight (the
+            # white wins and the iris shows only as slivers); the iris layer's texture is composited over
+            # white by the material exporter, so the white copy is dropped when the iris one exists.
+            if "eye1" in base and base.replace("eye1", "eye2") in names:
+                continue
             out.append(index)
             continue
         if "face" in base:

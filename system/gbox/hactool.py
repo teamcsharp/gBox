@@ -33,7 +33,7 @@ def binary() -> pathlib.Path | None:
     if override:
         path = pathlib.Path(override).expanduser()
         return path if path.is_file() else None
-    for candidate in (_root() / "tools" / "bin" / "hactool",):
+    for candidate in (_root() / "tools" / "bin" / "hactool", _root() / "tools" / "bin" / "hactool.exe"):
         if candidate.is_file():
             return candidate
     found = shutil.which("hactool")
@@ -41,7 +41,10 @@ def binary() -> pathlib.Path | None:
 
 
 def keys_path() -> pathlib.Path | None:
-    """Where this system keeps the Switch keys: `~/gBox_alt/switch/prod.keys`, else `~/.switch/prod.keys`."""
+    """Where this system keeps the Switch keys: `GBOX_SWITCH_KEYS`, `~/gBox_alt/switch/prod.keys`, then `~/.switch`."""
+    override = os.environ.get("GBOX_SWITCH_KEYS")
+    if override and pathlib.Path(override).expanduser().is_file():
+        return pathlib.Path(override).expanduser()
     for candidate in (pathlib.Path.home() / "gBox_alt" / "switch" / "prod.keys",
                       pathlib.Path.home() / ".switch" / "prod.keys"):
         if candidate.is_file():

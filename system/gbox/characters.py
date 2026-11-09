@@ -436,13 +436,17 @@ def _triangles(path: Path):
 
 
 def render_preview(path: Path, out: Path, size: int = 384, yaw: float = -30.0, persp: tuple | None = None,
-                   cull: bool | str = False) -> Path:
-    """Headless preview (no GPU): flat-shaded, textured per triangle (corner + centre samples), painter's order,
-    3/4 front view of a character facing +Z. persp=(P00, P11): perspective from the origin looking down -Z instead
-    (a captured scene seen through the game's own camera). cull=True (or "ccw") drops the triangles facing away from
-    the camera with glTF's counter-clockwise fronts, cull="cw" with clockwise fronts (a model exported in a game's own
-    winding, e.g. Soul Calibur II's GX lists), the way a game that culls back faces draws them: single-sided parts
-    seen from behind show as holes instead of their inner side."""
+                   cull: bool | str = False, depth: bool = False) -> Path:
+    """Headless preview (no GPU): flat-shaded, textured per triangle (corner + centre samples), 3/4 front view of a
+    character facing +Z. persp=(P00, P11): perspective from the origin looking down -Z instead (a captured scene seen
+    through the game's own camera). cull=True (or "ccw") drops the triangles facing away from the camera with glTF's
+    counter-clockwise fronts, cull="cw" with clockwise fronts (a model exported in a game's own winding, e.g. Soul
+    Calibur II's GX lists), the way a game that culls back faces draws them: single-sided parts seen from behind show
+    as holes instead of their inner side.
+
+    ``depth=True`` rasterises with a z-buffer instead of painter's order. Layered geometry (eyes on a face plate,
+    overlapping hair/cape panels) is where painter's order mottles or hides parts: the z-buffer draws the surface the
+    camera actually sees first, which is what makes a face/eye preview trustworthy."""
     from PIL import Image, ImageDraw
     tris = _triangles(path)
     if not tris:
@@ -469,6 +473,7 @@ def render_preview(path: Path, out: Path, size: int = 384, yaw: float = -30.0, p
     light = np.array([0.35, 0.55, 0.75])
     light /= np.linalg.norm(light)
     items = []
+    image_px, depth_px = np.zeros((H * ss, W * ss, 3), np.float32), np.full((H * ss, W * ss), -np.inf, np.float32)
     for P, UV, img, col in tris:
         q = (P @ R.T) - cen
         xy = to2d(q)
@@ -489,12 +494,53 @@ def render_preview(path: Path, out: Path, size: int = 384, yaw: float = -30.0, p
             colr = col
         shade = 0.4 + 0.6 * abs(float(n @ light) / ln)
         pts = [(W * ss / 2 * (1 + x), H * ss / 2 * (1 - y)) for x, y in xy]
-        items.append((q[:, 2].mean(), pts, tuple(int(v) for v in np.clip(colr * shade, 0, 255))))
+        color = tuple(int(v) for v in np.clip(colr * shade, 0, 255))
+        if depth:
+            _raster_triangle(image_px, depth_px, np.asarray(pts, float),
+                             np.asarray(q[:, 2], float), np.array(color, np.float32))
+        else:
+            items.append((q[:, 2].mean(), pts, color))
+    if depth:
+        Image.fromarray(image_px.astype(np.uint8)).resize((W, H), Image.LANCZOS).save(out)
+        return Path(out)
     items.sort(key=lambda t: t[0])
     for _, pts, colr in items:
         dr.polygon(pts, fill=colr)
     im.resize((W, H), Image.LANCZOS).save(out)
     return Path(out)
+
+
+def _raster_triangle(image: np.ndarray, zbuf: np.ndarray, pts: np.ndarray, z: np.ndarray, color: np.ndarray):
+    """One flat-shaded triangle into (image, z-buffer): screen-space barycentrics, nearest surface wins."""
+    h, w = zbuf.shape
+    x0 = max(0, int(np.floor(pts[:, 0].min())))
+    x1 = min(w - 1, int(np.ceil(pts[:, 0].max())))
+    y0 = max(0, int(np.floor(pts[:, 1].min())))
+    y1 = min(h - 1, int(np.ceil(pts[:, 1].max())))
+    if x1 < x0 or y1 < y0:
+        return
+    ax, ay = pts[0]
+    bx, by = pts[1]
+    cx, cy = pts[2]
+    det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+    if abs(det) < 1e-9:
+        return
+    xs = np.arange(x0, x1 + 1, dtype=np.float32) + 0.5
+    ys = np.arange(y0, y1 + 1, dtype=np.float32) + 0.5
+    px, py = np.meshgrid(xs, ys)
+    l0 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / det
+    l1 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / det
+    l2 = 1.0 - l0 - l1
+    inside = (l0 >= -1e-6) & (l1 >= -1e-6) & (l2 >= -1e-6)
+    if not inside.any():
+        return
+    zi = l0 * z[0] + l1 * z[1] + l2 * z[2]
+    sub = zbuf[y0:y1 + 1, x0:x1 + 1]
+    hit = inside & (zi > sub)                    # camera looks down -Z: the larger view z is nearer
+    if not hit.any():
+        return
+    sub[hit] = zi[hit]
+    image[y0:y1 + 1, x0:x1 + 1][hit] = color
 
 
 def check_preview(path: Path) -> dict:

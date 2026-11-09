@@ -1,5 +1,38 @@
 # RE6 model replacement: scale-exact fitting, a Smash cast roster, and the round hook
 
+## Target platform: **RE6 on Switch** (No Mercy edition)
+
+The deliverable is the Switch edition (`01002A000CD48000`, gBox game id `115f9cdbba115432`), never the Xbox 360
+disc. The Switch game keeps the same role/character layout as the 360 edition but native little-endian MTF resources:
+one body `.arc` per character **and costume** under `nativeNXx64/arc/NX` (`uPl00LeonUsa.arc`, `uPl00LeonAsia.arc`,
+`uPl00LeonOmake00.arc`, ...), with the body's `data\chara\pl\plNNNN\model\plNNNN` entry holding an `MRL` (materials) and
+a `MOD` (geometry + 54-bone skeleton). Heads, hands and hair are **separate** archives (`uPl00HeadLeonUsa.arc`,
+`uPl00HandLeftLeonUsa.arc`, `uPl00HandRightLeonUsa.arc`, `uPl00AcHeadLeonUsa.arc`), and player textures live in
+`uPlTex####_*.arc` files.
+
+The Switch writer (`gbox/re6_switch_models.py`, measured 2026-11-09 on the extracted RomFS) parses the body arc with
+`mt_arc`/`mt_model`, maps the 18 anatomical roles to native bone indices by the **RE6 global bone ids carried in the MTF
+bone headers** (hip 1, chest 2, neck 3, head 4, right arm 5–8, left arm 10–13, right leg 16–18, left leg 20–22), fits
+the donor uniformly into the native quantisation box (source proportions, feet on the floor, hip over the root), moves
+the native bind joints to the donor's joints, authors the mesh with `mtf_author`, and replaces only the MOD entry. Head,
+hand and accessory-head archives are replaced by a single degenerate triangle so the donor is the whole visible body.
+Everything is emitted as a LayeredFS overlay through `switch_mods.write_files` (`romfs/nativeNXx64/arc/NX/...`), never a
+disc edit.
+
+Measured: SSBU Sonic (`sonic_ssbu`, 8,094 triangles, 18/18 roles) onto **all six Leon costumes** — 6 body arcs + 24
+blanked part arcs = 30 overlay files, 33.5 MB, 53 s. Every authored body reads back as 4,981 vertices / 8,094 triangles
+on the native 54-bone skeleton with the original parent list. A z-buffered render of the authored arc:
+
+![SSBU Sonic authored onto the RE6 Switch Leon body](evidence/re6-scale/switch-sonic-on-leon.png)
+
+The only remaining Switch gap is **donor textures**: RE6's body MRL has no embedded texture table (`uPlTex*.arc`
+hold them), so the first port replaces geometry and the native material still samples its own textures. Patching the
+`uPlTex` entries (or the MRL v36 bindings) is the next step, as is a live round on the console/Eden.
+
+The rest of this document describes the earlier **Xbox 360** analysis. It is kept because the scale/bind lessons are
+platform-neutral and the 360 measurements are what the Switch fit reuses, but its writer and mods are **not** the
+deliverable and are not exposed as RE6 Switch output.
+
 2026-11-09. This continues the RE5 same-table work (`docs/research/re5-same-table-sonic.md`) on Resident Evil 6
 (Xbox 360, Xenia; game id `0871eee3b68cdea3`, title 43430819). The RE5 review showed that the failures reported as
 "the model does not load" were, after the zlib-6 and MRL fixes, mostly **scale and bind-pose** failures: fitting a
