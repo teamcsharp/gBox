@@ -215,6 +215,19 @@ shown) but the game never reaches a frame; the naive hash alias likely collides 
 ExeFS overlays are a viable delivery path, but the class patch needs a collision-safe design: either patch the registry
 to accept an alias, or patch the **loader call** for `uEm11` instead of its class hash.
 
+A **no-op `exefs/main` IPS** control settles the delivery format: a byte-identical `main` file replacement hangs at the
+Switch “Launching…” splash, while a no-op **IPS patch** (`exefs/main.ips`, offset `0x4f824`, original bytes) boots to the
+title normally. The working code-delivery path is **IPS**, not a replaced `main`.
+
+The real IPS patch — `add w4,w20,#0x400` → `#0x300`, i.e. `uEm11`’s class hash `0x3001100` → `0x3001000` — plus
+`uEm11.arc` = `uEm10.arc` **boots and plays a live Public Assembly round**. The visible Majini change: they are now the
+`uEm10` models, not the original `uEm11` ones, and the round has normal HUD/timer/combat.
+
+![uEm11 rebound to the uEm10 class via an IPS code patch; visible Majini are uEm10 models](evidence/re5-ips-class-rebind-uEm10.jpg)
+
+This is the first **code-level rebind** of the visible enemy class. The next build puts a **uEm10 archive with the high
+`em1000` Sonic patch** under the `uEm11` class, so the enemy the camera sees loads the Sonic geometry.
+
 ![Donor-pair round with the one-part Sonic patch; enemies remain the donor variant](evidence/re5-donor-sonic-patch-enemies.jpg)
 
 The MRL tail is not opaque noise. Its first words are a header
