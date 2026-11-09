@@ -21,12 +21,13 @@ PORTRAIT_EVERY_S, and only nearer PORTRAIT_BEST_CM than the one it has.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import threading
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 
 from fastapi import Depends, HTTPException, Request
 
@@ -39,6 +40,9 @@ STAGES_KEEP = 24
 KEY_RE = re.compile(r"[A-Za-z0-9._-]{1,120}")
 PORTRAIT_EVERY_S, PORTRAIT_BEST_CM, PORTRAIT_PX = 20.0, 350.0, 160
 SID_RE = re.compile(r"[\w.-]{1,120}")
+LOG = logging.getLogger("gbox.tactical")
+GOAL_LOG_KEEP = 100                        # map goal requests kept per session (operator 2026-11-09: "I want it to
+                                           # be logged so that you're able to check ... whenever I click on the live map")
 
 
 class Store:
@@ -48,6 +52,7 @@ class Store:
         self.stages: OrderedDict[str, dict] = OrderedDict()
         self.seq = 0
         self.goals: dict[str, dict] = {}
+        self.goal_log: dict[str, deque] = {}       # sid -> the last GOAL_LOG_KEEP requests and what became of them
         self.lock = threading.Lock()
 
     def put_frame(self, sid: str, frame: dict) -> dict:
@@ -75,7 +80,34 @@ class Store:
             return reply
 
     def command(self, sid: str, body: dict) -> dict:
-        """A live, observed entity only. The game worker remains the sole input owner."""
+        """A live, observed entity only. The game worker remains the sole input owner. Every request is kept
+        (goal_history) and logged, accepted or refused, so a click that did nothing can be read afterwards."""
+        try:
+            goal = self._command(sid, body)
+        except ValueError as e:
+            self._note(sid, body, error=str(e))
+            raise
+        self._note(sid, body, goal=goal)
+        return goal
+
+    def _note(self, sid: str, body, goal: dict | None = None, error: str | None = None) -> None:
+        row = {"at": self.clock(), "body": body if isinstance(body, dict) else str(body)[:200],
+               "result": {k: goal[k] for k in ("id", "kind", "entity_id", "pos", "label", "state") if k in goal}
+               if goal else None, "error": error}
+        with self.lock:
+            self.goal_log.setdefault(sid, deque(maxlen=GOAL_LOG_KEEP)).append(row)
+        LOG.info("map goal %s %s -> %s", sid, json.dumps(row["body"], default=str)[:300],
+                 error or json.dumps(row["result"], default=str)[:300])
+
+    def goal_history(self, sid: str) -> list:
+        """The last requests for this session, newest last, each with the frame-side state the bot last reported."""
+        with self.lock:
+            rows = list(self.goal_log.get(sid, ()))
+            frame = (self.frames.get(sid) or {}).get("frame") or {}
+        return {"requests": rows, "operator_goal": frame.get("operator_goal"), "goal_round": frame.get("goal_round"),
+                "goal_capabilities": frame.get("goal_capabilities")}
+
+    def _command(self, sid: str, body: dict) -> dict:
         if not isinstance(body, dict):
             raise ValueError('Invalid map command')
         with self.lock:
@@ -309,6 +341,10 @@ def install(app, auth, frame_of=None, portraits_root=None) -> Store:
     @app.get("/api/autoplay/tactical/{sid}")
     async def tactical_frame_get(sid: str, after: int | None = None, actor=Depends(auth)):
         return store.get_frame(sid, after)
+
+    @app.get("/api/autoplay/tactical/{sid}/goals")
+    async def tactical_goal_history(sid: str, actor=Depends(auth)):
+        return store.goal_history(sid)
 
     @app.post("/api/autoplay/tactical/{sid}/goal")
     async def tactical_goal(sid: str, request: Request, actor=Depends(auth)):

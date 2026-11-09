@@ -150,6 +150,9 @@ def test_the_map_takes_an_enemy_and_a_spot_as_goals_only_from_a_bot_that_offers_
     for bad in ({'kind': 'enemy', 'id': 9}, {'kind': 'enemy', 'id': True}, {'kind': 'point', 'x': 1},
                 {'kind': 'point', 'x': float('nan'), 'z': 0}, {'kind': 'point', 'x': 0, 'z': 0, 'id': 3}):
         with pytest.raises(ValueError): store.command('w-s', base | bad)
+    hist = store.goal_history('w-s')                                   # every request kept, refused ones with why
+    assert [r['result']['kind'] if r['result'] else r['error'][:12] for r in hist['requests']][:3] == ['enemy', 'point', 'This enemy i']
+    assert len(hist['requests']) == 7 and hist['goal_capabilities'] == ['enemy', 'point']
     old = TM.Store(clock=lambda: now[0]); g = frame(); old.put_frame('w-s', g)           # a bot of bonuses and items only
     with pytest.raises(ValueError, match='does not take map targets'):
         old.command('w-s', {'round': g['goal_round'], 'stage': g['stage'], 'seq': 1, 'kind': 'enemy', 'id': 3})

@@ -1031,6 +1031,11 @@ STAND_BUSY = frozenset({"held", "heal", "mine", "prompt", "dead", "flashbang", "
 # fights their way over to dispatching that target"): anyone on his floor within GOAL_FIGHT_R, or at arm's length
 # (GOAL_THREAT_R) on any floor, is dispatched first, then he goes on; the mark stays until the marked one is down.
 MAP_GOALS, GOAL_FIRE_R, GOAL_THREAT_R, GOAL_FIGHT_R = True, 1500.0, 200.0, 600.0
+# Every mark and what he does with it, a line a second while it is in force, to MAP_GOAL_LOG on the worker (JSON
+# lines; operator 2026-11-09: "make sure that anytime I click on the map that it logs to the terminal the output of
+# what the bot is doing in conjunction with my actions"). The newest line is also stats map_goal_trace.
+MAP_GOAL_LOG = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "map-goals.log"
+MAP_GOAL_LOG_EVERY_S = 1.0
 # Mines are not negotiable (operator 2026-11-09: "I want it placing mines. Then flashbanging and running away and
 # getting distance ... have him force his way out"). MINE_FLASH: the native flash (the GRENADES knob's own, no item
 # screen) goes off the moment a bomb of his is confirmed down, so the crowd reels while he runs out to the standoff;
@@ -4328,6 +4333,29 @@ class Bot:
         g.receive(value, time.time() if self._now is None else self._now)
         if g.goal and g.goal.get("id") != before and g.goal.get("state") == "queued":
             self.stats["map_goals_taken"] = self.stats.get("map_goals_taken", 0) + 1
+            self._goal_log("received", g.goal, None, force=True)
+        elif isinstance(value, dict) and value.get("state") == "cancelled":
+            self._goal_log("cancelled", g.goal or value, None, force=True)
+
+    def _goal_log(self, event: str, goal, p, force: bool = False, **more) -> None:
+        """MAP_GOAL_LOG: one JSON line (at most one a second unless forced); never raises."""
+        now = time.time()
+        if not force and now - getattr(self, "_goal_log_at", -1e9) < MAP_GOAL_LOG_EVERY_S:
+            return
+        self._goal_log_at = now
+        try:
+            import json as _json
+            row = {"t": round(now, 2), "utc": time.strftime("%H:%M:%S", time.gmtime(now)), "event": event,
+                   "goal": {k: (goal or {}).get(k) for k in ("id", "kind", "entity_id", "pos", "label", "state", "reason")},
+                   "player": [round(v) for v in (p or {}).get("pos", ())] if p else None,
+                   "doing": self.doing, "why": str(self.why)[:140], "kills": self.stats.get("kills"), **more}
+            line = _json.dumps(row, default=str)
+            self.stats["map_goal_trace"] = line[:400]
+            MAP_GOAL_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with MAP_GOAL_LOG.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except Exception:                                    # noqa: BLE001 - a log never costs a tick
+            pass
 
     def map_goal_plan(self) -> dict:
         """For the tactical map (tactical._take_map_goals, beside what it already takes from this bot): the round's
@@ -4362,12 +4390,19 @@ class Bot:
             self.stats["map_goal_error"] = f"{type(exc).__name__}: {exc}"[:120]
             return None
         self.stats["map_goal_status"] = f"{g.goal.get('label')}: {g.goal.get('state')}"[:120]
+        if g.goal.get("state") != getattr(self, "_goal_state_seen", None):
+            self._goal_state_seen = g.goal.get("state")
+            self._goal_log("state", g.goal, p, force=True)
         if row is None:
             return None
         if self.mines is not None and self.mines.state != "idle":
             g.defer("Finishing the bomb in his hand first")
+            self._goal_log("deferred", g.goal, p)
             return None
         px, py, pz = p["pos"]
+        gd = math.hypot(row["pos"][0] - px, row["pos"][2] - pz)
+        self._goal_log("active", g.goal, p, dist_m=round(gd / 100, 1), hold=",".join(self.stats.get("combat_hold", "") or "")
+                       if isinstance(self.stats.get("combat_hold"), str) else self.stats.get("combat_hold"))
         marked = row.get("ptr", row.get("slot")) if "hp" in row else None
         near = [e for e in live if e.get("ptr", e.get("slot")) != marked
                 and ((flat(e) <= GOAL_FIGHT_R and abs(e["pos"][1] - py) <= LEVEL_DY) or flat(e) <= GOAL_THREAT_R)]
