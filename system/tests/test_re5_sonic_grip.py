@@ -95,6 +95,7 @@ def test_grip_candidate_uses_corrected_cuff_and_preserves_unverified_gate(monkey
     assert calls == [(b'v14-mod',b'native-mod',source,base['skin'])]
     assert output == b'v15-arc'
     assert report['written_sha256'] == hashlib.sha256(output).hexdigest()
+    assert report['reviewed_sha256'] == writer.GRIP_ARCHIVE_SHA256 and report['reproduces_reviewed'] is False
     assert report['grip_recipe_version'] == 1 and report['envelope_count'] == 47
     assert report['gameplay_verified'] is False and report['writer_registered'] is False
     assert 'grip_fit' not in base

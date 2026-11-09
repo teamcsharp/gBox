@@ -11,6 +11,7 @@ import zlib
 import numpy as np
 
 from . import characters, mt_arc, mt_model, mtf_author, mtf_secondary, mtf_motion_edit, re5_mesh_import
+from . import re5_sonic_residue
 from .re_switch import RE5_TITLE_ID
 
 SOURCE_SHA256 = '5dd7cc07f3116a8f1f59ccc9bde8da5ccae65338cbf83d8c7151608c2ae74df4'
@@ -28,6 +29,15 @@ TARGET_ANIMATION_IDS = {'hip':0, 'chest':2, 'head':4, 'l_upper':11, 'l_fore':12,
                         'r_thigh':16, 'r_shin':17, 'r_foot':18}
 SEGMENTS = {'l_upper':'l_fore','l_fore':'l_hand','r_upper':'r_fore','r_fore':'r_hand',
             'l_thigh':'l_shin','l_shin':'l_foot','r_thigh':'r_shin','r_shin':'r_foot'}
+# The accepted v15 archive, and the SHA-256 of each uncompressed payload the recipe recomputes so a miss can name
+# its cause. Every other entry is the native archive's own compressed bytes.
+GRIP_ARCHIVE_SHA256 = 'd96c9c9e8efaee4cf3a0eda9f10ff12ef1515e1efd604f9c34d081cd3a80cb8a'
+GRIP_PAYLOADS = (('model pl0000',97,'45f130636f32c7a403d8fb68687f19994ebf9093a55ca2d988b308f30c3c7fb9'),
+                 ('BC7 albedo atlas pl00Gear_BM',34,'8a2075180a192cd2294e39f2a9d715549b8426d6bd8e40f3c3b14248b7157b8d'),
+                 ('neutral mask pl00Gear_MM',35,'9e5064238b62df8d0fe9b1a3ecac2e51ac8cac9548045b337ab97fe01750b5c7'),
+                 ('neutral normal pl00Gear_NM',36,'be58a3c9fd4e5b0772bc08ec1ec3c7c652724c5b5e747c3e541dbd86e8a03d85'))
+# Over the SHA-256 digests of all 51 LMT payloads in entry order: 50 carry the scaled root track.
+GRIP_MOTION_SHA256 = 'e7abaf818ce4985df61c5bdbf4c13a5f320b2c816d0f53b404b4c5144c513ce2'
 
 
 def _repose_frames(source, model):
@@ -65,6 +75,10 @@ def build(archive: bytes, source: Path):
         source_roles=SOURCE_ROLES,target_roles=roles,segments=SEGMENTS,scale=1.,material_index=108,template_index=0,
         pose_mode='source_reposed',height=HEIGHT,centre_hip=True,repose_frames=_repose_frames(source,model),
         retarget_root_translation=True)
+    # The bind tables carry BLAS rounding residue; the reviewed v12 bytes are the authoring kernel's.
+    settled = re5_sonic_residue.settle(authored_model)
+    if settled != authored_model:
+        authored, authored_model = mtf_author.replace_archive_model(authored,97,settled), settled
     secondary = []
     for path,channels in ((r'pawn\pl\pl00\model\pl00Gear_MM',(0,)),
                           (r'pawn\pl\pl00\model\pl00Gear_NM',(128,128))):
@@ -129,11 +143,36 @@ def build_grip_candidate(archive:bytes,source:Path):
     native = zlib.decompress(mt_arc.parse(archive).entries[97].data)
     model,grip = re5_sonic_grip.author(model,native,source,receipt['skin'])
     authored = mtf_author.replace_archive_model(authored,97,model)
+    written = hashlib.sha256(authored).hexdigest()
     return authored,receipt | {'grip_recipe_version':1,'grip_fit':grip,
                               'envelope_count':grip['envelope_count'],
-                              'written_sha256':hashlib.sha256(authored).hexdigest(),
+                              'written_sha256':written,'reviewed_sha256':GRIP_ARCHIVE_SHA256,
+                              'reproduces_reviewed':written == GRIP_ARCHIVE_SHA256,
                               'acceptance':'experimental v15 grip fit; runtime weapon contact remains unverified',
                               'gameplay_verified':False,'writer_registered':False}
+
+
+def grip_reproduction(archive:bytes):
+    """Whether ``archive`` is the accepted v15 archive; a miss names the recomputed payloads that differ.
+
+    The model is rebuilt identically under every BLAS kernel measured (see ``re5_sonic_residue``). The atlas blocks
+    come from the native BC7 encoder and the entry framing from the linked zlib, which this recipe cannot make
+    portable, so an unmeasured platform can still miss the archive hash; this separates those causes without the
+    artifact at hand.
+    """
+    written = hashlib.sha256(archive).hexdigest()
+    report = {'reviewed_sha256':GRIP_ARCHIVE_SHA256,'written_sha256':written,'exact':written == GRIP_ARCHIVE_SHA256}
+    if report['exact']:
+        return report
+    payloads = [zlib.decompress(entry.data) for entry in mt_arc.parse(archive).entries]
+    differing = [name for name,index,expected in GRIP_PAYLOADS
+                 if index >= len(payloads) or hashlib.sha256(payloads[index]).hexdigest() != expected]
+    motion = hashlib.sha256(b''.join(hashlib.sha256(p).digest() for p in payloads if p[:4] == b'LMT\0'))
+    if motion.hexdigest() != GRIP_MOTION_SHA256:
+        differing.append('root motion LMT')
+    return report | {'differing_payloads':differing,
+                     'cause':'recomputed payloads differ: '+', '.join(differing) if differing else
+                             'every recomputed payload matches; zlib framing or a native entry differs'}
 
 
 def plan(ctx,game:dict,inp,meta:dict|None):

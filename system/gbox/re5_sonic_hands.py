@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 import numpy as np
 
-from . import characters, mt_model, mtf_author, mtf_materials, mtf_motion, mtf_retarget
+from . import characters, mt_model, mtf_author, mtf_materials, mtf_motion, mtf_retarget, re5_sonic_residue
 
 SOURCE_SHA256 = '5dd7cc07f3116a8f1f59ccc9bde8da5ccae65338cbf83d8c7151608c2ae74df4'
 BASE_MOD_SHA256 = 'b87ecc87d3fb414f4692dd1d237f949d7b7db6bd969c028e43669ea5d199d3fb'
@@ -290,7 +290,8 @@ def author(model_bytes:bytes, source:Path, skin_receipt:dict, *, correct_wrist:b
     import struct
     data = bytearray(output)
     struct.pack_into('<4f',data,parsed.header()['offsets']['groups']+16,*centre,radius)
-    output = bytes(data)
+    # The rebuilt bind tables carry BLAS rounding residue; the reviewed v14 bytes are the authoring kernel's.
+    output = re5_sonic_residue.settle(bytes(data))
     return output,{'experimental':True,'writer_registered':False,'gameplay_verified':False,
                    'source_sha256':SOURCE_SHA256,'base_mod_sha256':BASE_MOD_SHA256,
                    'written_mod_sha256':hashlib.sha256(output).hexdigest(),'edited_vertices':len(edited),

@@ -105,3 +105,67 @@ def test_experimental_recipe_pairs_reposed_root_with_own_motion_and_retains_acce
     assert receipt['changed_entry_indices']==[35,36,97,104]
     assert not receipt['gameplay_verified'] and not receipt['writer_registered']
     assert zlib.decompress(mt_arc.parse(output).entries[104].data)==b'LMT\0scaled'
+
+
+def synthetic_archive(payloads):
+    import zlib
+    from gbox import mt_arc
+    entries=[mt_arc.Entry(f'unused{i}',1,1,0,0,zlib.compress(b'untouched')) for i in range(106)]
+    for index,(path,payload) in payloads.items():
+        entries[index]=mt_arc.Entry(path,1,len(payload),0,0,zlib.compress(payload,6))
+    return mt_arc.build(mt_arc.Arc(7,entries))
+
+
+def test_stage_one_stores_the_settled_model_and_reads_the_root_from_it(tmp_path,monkeypatch):
+    import hashlib
+    import zlib
+    from gbox import mt_arc,mtf_author
+    source=tmp_path/'source.glb';source.write_bytes(b'measured source')
+    archive=synthetic_archive({35:(r'pawn\pl\pl00\model\pl00Gear_MM',b'TEX mm'),
+                               36:(r'pawn\pl\pl00\model\pl00Gear_NM',b'TEX nm'),
+                               97:('pl0000',b'MOD original'),104:('pl00motion',b'LMT\0original')})
+    monkeypatch.setattr(writer,'SOURCE_SHA256',hashlib.sha256(source.read_bytes()).hexdigest())
+    monkeypatch.setattr(writer,'ARCHIVE_SHA256',hashlib.sha256(archive).hexdigest())
+    heights={b'MOD original':120.,b'MOD this kernel':61.,b'MOD reviewed':60.}
+    class Model:
+        def __init__(self,height):self.height=height
+        def bone_table(self):return {'anim_map':list(writer.TARGET_ANIMATION_IDS.values())}
+        def bone_world(self):return [(0,0.,self.height,0.)]
+    monkeypatch.setattr(writer.mt_model,'parse_mod',lambda raw:Model(heights[raw]))
+    monkeypatch.setattr(writer,'_repose_frames',lambda source,model:{})
+    monkeypatch.setattr(writer.re5_mesh_import,'build_archive',lambda data,path,**kwargs:(
+        mtf_author.replace_archive_model(data,97,b'MOD this kernel'),b'MOD this kernel',None,{}))
+    monkeypatch.setattr(writer.re5_sonic_residue,'settle',
+                        lambda model:b'MOD reviewed' if model==b'MOD this kernel' else model)
+    monkeypatch.setattr(writer.mtf_secondary,'constant_channels',lambda raw,channels:raw+b'neutral')
+    scales=[]
+    monkeypatch.setattr(writer.mtf_motion_edit,'scale_root_y',lambda raw,scale:(scales.append(scale) or raw,{}))
+    output,receipt=writer.build(archive,source)
+    assert zlib.decompress(mt_arc.parse(output).entries[97].data)==b'MOD reviewed'
+    assert scales==[.5]
+    assert receipt['written_sha256']==hashlib.sha256(output).hexdigest() and 97 in receipt['changed_entry_indices']
+
+
+def test_reproduction_report_separates_the_encoder_the_model_and_the_framing(monkeypatch):
+    import hashlib
+    import zlib
+    from gbox import mt_arc,mtf_author
+    sha=lambda data:hashlib.sha256(data).hexdigest()
+    payloads={34:('atlas',b'TEX atlas'),35:('mask',b'TEX mask'),36:('normal',b'TEX normal'),
+              97:('pl0000',b'MOD grip'),104:('motion',b'LMT\0scaled'),105:('face',b'LMT\0face')}
+    archive=synthetic_archive(payloads)
+    monkeypatch.setattr(writer,'GRIP_ARCHIVE_SHA256',sha(archive))
+    monkeypatch.setattr(writer,'GRIP_PAYLOADS',tuple((name,index,sha(payloads[index][1]))
+                        for name,index in (('model',97),('atlas',34),('mask',35),('normal',36))))
+    monkeypatch.setattr(writer,'GRIP_MOTION_SHA256',
+                        sha(hashlib.sha256(b'LMT\0scaled').digest()+hashlib.sha256(b'LMT\0face').digest()))
+    assert writer.grip_reproduction(archive)=={'reviewed_sha256':sha(archive),'written_sha256':sha(archive),'exact':True}
+    encoder=writer.grip_reproduction(mtf_author.replace_archive_model(archive,34,b'TEX other encoder'))
+    assert not encoder['exact'] and encoder['differing_payloads']==['atlas'] and 'atlas' in encoder['cause']
+    drift=mtf_author.replace_archive_model(mtf_author.replace_archive_model(archive,97,b'MOD other'),104,b'LMT\0other')
+    assert writer.grip_reproduction(drift)['differing_payloads']==['model','root motion LMT']
+    framed=mt_arc.parse(archive)
+    framed.entries[97].data=zlib.compress(b'MOD grip',0)
+    framing=writer.grip_reproduction(mt_arc.build(framed))
+    assert not framing['exact'] and framing['differing_payloads']==[] and 'zlib framing' in framing['cause']
+    assert framing['reviewed_sha256']==sha(archive)!=framing['written_sha256']
