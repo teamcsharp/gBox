@@ -65,6 +65,37 @@ Why not "decrypt everything and patch the ROM": the ROMs are already decrypted a
 the overlay gives the same result without ever writing a ROM. Rebuilding ROMs would add minutes per change and remove
 the per-file tracking, backups and revert that `switch_mods` has.
 
+### 2a. The random cast (operator, later the same day)
+
+> "I want rounds to alternate who is the zombie and who is the player. I want to see all the different types of
+> characters extracted showing up in the game randomly. I want the system able to vary and show multiple different
+> characters in a round instead of just one single enemy type. Sometimes I want the player to be Mario and other times,
+> Snake or DOA characters. Everyone extracted should be randomly showing up in matches of merc mode across all titles
+> and all stages and characters."
+
+What that adds to the path above, and who is on it:
+
+1. **One donor survey for every writer.** The library on lilspark has 1,483 entries; a donor is usable for a title when
+   its rig resolves the roles that title's skeleton needs. One shared module answers "which donors, for which title,
+   and why not the rest" for the player writers and the enemy writers of all three titles (RE5 player-cast agent;
+   ticket #9077 audits the Sonic and Mario families first).
+2. **A seeded planner.** `plan(seed, slots or classes, donors)`: no donor twice in one overlay, donors used by the
+   last few overlays avoided, an optional filter by franchise. The seed is in the receipt, so a round can be named
+   and replayed.
+3. **A pool of overlays per title, built ahead.** Each overlay fills every player slot and every enemy class it can
+   with different donors (RE5: `cast-pool-NN`, `enemy-pool-NN`; RE6: roster overlays). MercMode's playlist then
+   draws (overlay, slot, stage) per round. Inside one overlay a new player character costs nothing (a different
+   roster slot); a new overlay costs one title restart, or nothing if the hot swap of §2 item 4 holds.
+4. **Several characters in one round.** Two routes, both being built by the RE5 enemy agent: a different donor per
+   enemy class archive (works by construction: Public Assembly draws uEm10 and uEm11 together), and different donors
+   on different option groups of ONE model, so a single class spawns as several characters. The second depends on
+   how a spawn picks its groups, which is not known; candidate `enemy-mix-v1` is the test.
+5. **Hero and horde swap sides.** A playlist rule, not a build rule: the franchise that supplied the player last
+   round supplies enemies this round, drawn from the pool. It needs item 3 first.
+
+None of 1 to 5 is live. What is live is one donor (SM64 DS Mario) on one enemy class and one donor (SA2 Sonic) in one
+player slot.
+
 ---
 
 ## 3. Are the emulators equipped
@@ -94,9 +125,12 @@ Already local, on its own NVMe, none of it on the NAS:
 - Full RomFS break-outs: `~/gBox_alt/switch/romfs/<title>/` (RE5 19 GB / 17,483 files, RE6 18 GB / 60,645, RE4 13 GB / 5,275).
 - Asset indexes: `~/gBox_alt/switch/assets/<title>.json`. Keys: `~/gBox_alt/switch/prod.keys`.
 
-Still to do for "ironclad": (a) confirm a launch never consults the NAS path for these three (a dropped NAS mount has
-ended launches with "ROM not reachable" before); (b) mark these folders as never-purge in the storage policy;
-(c) a second copy off the NVMe. Disk: 326 GB free of 3.7 TB.
+What was not ironclad: the library still names the NAS path for each title (`/mnt/gbox/quickswap2/Emulation/_switch/…`),
+and every launch asked the share for the file before using the copy it had already staged, so a dropped mount ended
+launches with "ROM not reachable" beside a complete local copy. `catalog.local_copy` now stands the staged copy in
+when the share does not answer, in the launcher and in MercMode's reachability check (active from the next service
+restart). Still to do: (a) mark these folders never-purge in the storage policy; (b) a second copy off the NVMe;
+(c) pull the NAS mount once on purpose and watch a launch. Disk: 326 GB free of 3.7 TB.
 
 ---
 

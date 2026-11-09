@@ -1193,6 +1193,13 @@ def inspect_rom_access(config,game):
     try:
         path=rom_path(CatalogEntry.model_validate(game),config)
         reachable=path.exists()
+        if not reachable:
+            # the share is down but this PC staged the file at an earlier launch: the launch plays that copy
+            from .catalog import local_copy
+            own=local_copy(path,str((game or {}).get('game_id') or ''),config)
+            if own is not None:
+                return {'reachable':True,'checked_at':time.time(),'reason':'','path':str(own),
+                        'source':'local cache copy (library share offline)'}
         return {'reachable':reachable,'checked_at':time.time(),'reason':'' if reachable else
                 'The configured ROM path is not reachable on this PC','path':str(path)}
     except Exception as exc:

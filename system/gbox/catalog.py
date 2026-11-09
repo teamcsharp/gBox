@@ -915,6 +915,24 @@ class StageCopy:
                 "staged_at": time.time(), "evicted": evicted}
 
 
+def local_copy(src: Path, game_id: str, config: Config) -> Path | None:
+    """This PC's own staged copy of a library file whose share is not answering, or None.
+
+    A launch stages a big library file to <cache>/<game id>/<name> and plays that copy; yet every later launch still
+    asked the share for the file first, so when lilspark's CIFS mounts fell (a Wi-Fi blip, 2026-10-27 and after) every
+    MercMode launch died with "ROM not reachable" beside a complete local copy. Operator 2026-11-09: "for the titles
+    in merc mode, I want those roms on the lilspark itself so it is ironclad". Only a non-empty file of the same name
+    counts, and only when the source itself is out of reach (a reachable source is still the one that is checked)."""
+    try:
+        src = Path(src)
+        if src.exists():
+            return None
+        staged = Path(config.cache) / str(game_id) / src.name
+        return staged if staged.is_file() and staged.stat().st_size > 0 else None
+    except OSError:
+        return None
+
+
 def stage_begin(src: Path, game_id: str, config: Config) -> "dict | StageCopy":
     """A staging receipt when the cache already holds this file (or it is on the local disk already), else the
     running StageCopy filling the cache (a launch of the same game while one runs joins it)."""

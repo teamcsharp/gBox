@@ -911,6 +911,11 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         detail = ad.launch_game(prepared["install"]["app"])
     else:
         src = rom_path(g, ctx.config)
+        own = catalog.local_copy(src, g.game_id, ctx.config)   # the share is down and this PC holds the file
+        if own is not None:
+            ctx.progress(18, f"The library share is not answering; playing this PC's own copy of {src.name}")
+            diag["rom_source"] = "local cache copy (library share offline)"
+            src = own
         # A complete mod is its own game copy. Do not wake/stat the library
         # share just to obtain a base ROM that this launch will never read.
         local_mod = None
