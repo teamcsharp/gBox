@@ -301,9 +301,9 @@ STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "mercs_wr
          "alert": "b", "split_lobby": "a"}     # split_lobby: A starts the game (only once Player 2 has joined on its pad)
 MENU_HANDOFF = ("results", "alert_ok", "alert_leaderboard", "alert_wait", "alert", "select_stage", "select_player",
                 "dead")
-CURSORED = {"main_menu": ("dup", "ddown"), "play_game": ("dup", "ddown"), "extra_content": ("dup", "ddown"),
-            "mercs_mode": ("dup", "ddown"), "select_stage": ("dup", "ddown"), "select_player": ("dup", "ddown"),
-            "dead": ("dleft", "dright")}
+CURSORED = {"main_menu": ("up", "down"), "play_game": ("up", "down"), "extra_content": ("up", "down"),
+            "mercs_mode": ("up", "down"), "select_stage": ("up", "down"), "select_player": ("up", "down"),
+            "dead": ("left", "right")}
 TITLE_STUCK_S = 45.0                    # the title up this long without its main-menu byte: the unlock is off
 
 # The camera (any uCamera: mCameraPos +0x60, mTargetPos +0x80, registered by main+0x124DE70) and the laser sight
@@ -888,7 +888,7 @@ def _decode_nav(m, nav: int) -> NavMesh | None:
 # R2 0x200, the D-pad 0x10-0x80; 0x10000-0x80000 the stick (a mash). prompts() lists the shown ones.
 S_ACTION_BUTTON, AB_MGR, AB_MGR_SIZE, AB_MGRS, AB_UNITS = 0x28E7AF0, 0x50, 0x398, 8, (0x248, 0x2E0)
 PAD_KEYS = ((0x4000, "b"), (0x8000, "y"), (0x2000, "a"), (0x1000, "x"), (0x0800, "r"), (0x0400, "l"),
-            (0x0200, "zr"), (0x0100, "zl"), (0x0010, "dup"), (0x0020, "dright"), (0x0040, "ddown"), (0x0080, "dleft"))
+            (0x0200, "zr"), (0x0100, "zl"), (0x0010, "up"), (0x0020, "right"), (0x0040, "down"), (0x0080, "left"))
 PAD_STICK = 0xF0000
 
 
@@ -1200,7 +1200,7 @@ def step(scr: dict) -> str | None:
         if cursor == target:
             cc, ct = scr.get("costume_cursor"), scr.get("costume_target")
             if isinstance(cc, int) and isinstance(ct, int) and cc != ct:
-                return "dright" if cc < ct else "dleft"         # the character select's costume, then A
+                return "right" if cc < ct else "left"         # the character select's costume, then A
             return "a"
         back, fwd = CURSORED[where]
         return fwd if cursor < target else back
@@ -1215,7 +1215,7 @@ FAST_SEGMENT_S = 2.0                    # one segment's screen transition budget
 # Cursor indexes of the first screens are fixed by the shipped menus (CAMPAIGN first under PLAY GAME, AGENT HUNT first
 # under EXTRA CONTENT). Pressing those deltas blind is safer than trusting a cursor read: live 2026-11-09 the walk read
 # PLAY GAME's cursor as its target (3) and confirmed CAMPAIGN SELECT, and the run then died in the campaign's online lobby.
-FAST_FIXED = {"play_game": ["ddown"] * 3, "extra_content": ["ddown"] * 2, "mercs_mode": []}
+FAST_FIXED = {"play_game": ["down"] * 3, "extra_content": ["down"] * 2, "mercs_mode": []}
 
 
 def fast_batch(scr: dict) -> list[str]:
@@ -2976,7 +2976,7 @@ class Bot:
             if cursor == want:                                   # A only on the answer the pace wants
                 self.continued = "yes" if want == CONTINUE_YES else "no"
                 return self._go("dead", "continue", {"tap": "a"}, f"Continue? {self.continued}")
-            return self._go("dead", "continue", {"tap": "dleft" if cursor > want else "dright"}, "Continue? cursor")
+            return self._go("dead", "continue", {"tap": "left" if cursor > want else "right"}, "Continue? cursor")
         self.dead_since = None
         hp_now = p.get("hp")
         if self.doing == "bomb" and isinstance(hp_now, int) and isinstance(self._tick_hp, int) and hp_now < self._tick_hp:
@@ -4647,7 +4647,7 @@ class Bot:
             cx = sum(e["pos"][0] for e in group) / len(group)
             cz = sum(e["pos"][2] for e in group) / len(group)
             self.nade = n = {"kind": kind, "index": nades[NADE_TYPES[kind]][0], "phase": "equip", "at": now - NADE_STEP_S,
-                             "steps": 0, "to": (cx, cz), "since": now, "seen": [eq], "back_key": "dright",
+                             "steps": 0, "to": (cx, cz), "since": now, "seen": [eq], "back_key": "right",
                              "gun": eq if isinstance(eq, int) and eq < WEAPON_INDEXES else None}
         if n["seen"][-1] != eq:
             n["seen"].append(eq)
@@ -4752,8 +4752,8 @@ class Bot:
                 self._nade_done(n, now)
                 return None
             if n["steps"] >= NADE_STEPS:
-                if n["back_key"] == "dright":                    # the other way round the wheel
-                    n.update(back_key="dleft", steps=0)
+                if n["back_key"] == "right":                    # the other way round the wheel
+                    n.update(back_key="left", steps=0)
                 else:
                     self.stats["nade_back_fails"] += 1
                     self._nade_done(n, now)
@@ -4793,7 +4793,7 @@ class Bot:
         cz = sum(e["pos"][2] for e in group) / len(group)
         self.stats["held_item_throws"] = self.stats.get("held_item_throws", 0) + 1
         self.nade = {"kind": kind, "index": eq, "phase": "face", "at": now, "steps": 0, "to": (cx, cz), "since": now,
-                     "seen": [eq], "back_key": "dright", "gun": None}
+                     "seen": [eq], "back_key": "right", "gun": None}
         cam = snap.get("camera")
         vis = [e for e in live if not self.is_blocked(e, now)]
         out = self._nade(p, vis, live, flat, cam["yaw"] if cam else p["rot"], snap, now)
@@ -4827,8 +4827,8 @@ class Bot:
         first down only opens the wheel, then down steps 9 -> 10 -> 11 -> 12 and stops; up goes straight to 12, then
         11, 10; on an item, down steps up the indexes and up steps down them)."""
         if isinstance(eq, int) and eq >= WEAPON_INDEXES:
-            return "ddown" if eq < index else "dup"
-        return "dup" if index >= NADE_UP_FROM else "ddown"
+            return "down" if eq < index else "up"
+        return "up" if index >= NADE_UP_FROM else "down"
 
     @staticmethod
     def _clusters(vis, flat) -> int:

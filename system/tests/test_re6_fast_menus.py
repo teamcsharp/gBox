@@ -51,8 +51,8 @@ def test_cursor_moves_are_batched_and_the_route_reaches_playing():
     assert ok is True
     assert fake.where == "playing"
     assert stats["fast_start"]["ok"] is True
-    # main_menu A; play_game ddown x3 A; extra_content ddown x2 A; mercs_mode A; select_stage A; select_player A
-    assert fake.presses == ["a", "ddown", "ddown", "ddown", "a", "ddown", "ddown", "a", "a", "a", "a"]
+    # main_menu A; play_game down x3 A; extra_content down x2 A; mercs_mode A; select_stage A; select_player A
+    assert fake.presses == ["a", "down", "down", "down", "a", "down", "down", "a", "a", "a", "a"]
     assert stats["fast_start"]["presses"] == 11
 
 
