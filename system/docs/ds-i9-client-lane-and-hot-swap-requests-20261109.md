@@ -397,3 +397,23 @@ PM/operator can correct the plan before more is built.
 4. **Next**: with the readable table strings as anchors, locate the patch's directory/file meta tables (they sit in the
    patch's data area, e.g. the region containing `phys 0x29c3390`), parse them with `switch_romfs.walk`, and extract
    the changed files with the BKTR IV; rebuild `recovery-re6-update-v131072-r2` and retry the round.
+
+## Round 12 status (2026-11-09, ~18:20 CST): patch recombination in code; the region payload still resists
+
+1. **`gbox/switch_patch.py` + 4 tests**: `patched_files` (find base files whose virtual range a patch region overlaps,
+   clipped at the file boundaries), `changed_ranges` (the offsets within a file), and `rebuild` (base bytes outside
+   the ranges, patch bytes inside, chunked with a short-read refusal). This is what the RE6 update needs because its
+   52 regions cut *across* file boundaries — a whole-file overlay cannot be built by copying one file per region.
+2. **Correction to the round-11 note**: the plain section IV and the BKTR IV differ **only in the first 16-byte block**
+   (the counter increments through bytes 8-15; byte 7 does not change between blocks). Region 2 matched the base
+   because its comparison was beyond the first block; the byte-7 distinction is real but it is not the whole payload
+   problem.
+3. **Region 8 payload still does not decrypt.** Verified: the base at `virt 0x9EDBC90` is `ARC\0…` and the patch's
+   ciphertext at the mapped `phys 0x296AAF0` does not decrypt to it with the CT val 0/1, lead-bytes variants or
+   physical/virtual/zero counter bases, and it is not plaintext or XTS with the title key. Region 2's payload *does*
+   match the base (the update changed a few bytes), so the reader and the mapping are right for at least part of the
+   patch — the remaining question is specific to the payload ranges (a per-region counter or a different encoding).
+4. **Next**: use `switch_patch.rebuild` with the region-2-style reader to reconstruct the files the patch *does*
+   decrypt (starting with `Core.arc`), compare them against the base to confirm the recombination, then isolate the
+   payload-range difference (e.g. print the counter for a region whose data matches and one that does not, and diff
+   the region's phys/virt offsets).
