@@ -34,9 +34,12 @@ atlas-UV path:
 ![SSBU Sonic textured on the RE6 Switch Leon body](evidence/re6-scale/switch-sonic-textured-leon.png)
 
 The replacement is per **character**, not per costume: without the material→texture binding, every `_BM` of the set gets
-the same atlas, so all of a character's costumes show that donor. The exact shader reading of the two `0x2B` halves is
-still unproven in-game; the atlas is written with the donor's luminance in the BC4 half and its per-tile average colour
-in the BC1 half, which is correct for every interpretation measured so far (detail, tint, or product).
+the same atlas, so all of a character's costumes show that donor. `re6 op=switch_cast textures=true` therefore plans
+with `re6_switch_cast.plan(per_character=True)` — one donor per native character — and builds a whole textured roster
+(`re6sw_textured_cast`); the per-costume roster (`re6sw_smash_cast`) stays geometry-only. The exact shader reading of
+the two `0x2B` halves is still unproven in-game; the atlas is written with the donor's luminance in the BC4 half and its
+per-tile average colour in the BC1 half, which is correct for every interpretation measured so far (detail, tint, or
+product).
 
 The role ids are the same family **on every character**, but the bone *order* differs (Helena's head is index 13, Ada's
 left clavicle 22), so `roles_for` always resolves them from the anim ids instead of hard-coding indices. The

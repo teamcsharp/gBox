@@ -23,6 +23,15 @@ def test_plan_puts_a_distinct_donor_on_every_slot():
     assert len({meta["slug"] for meta in assignment.values()}) == len(slots)
 
 
+def test_per_character_plan_reuses_one_donor_per_character():
+    """A textured build needs one donor per character (its albedo set is shared by its costumes)."""
+    pool = [{"slug": f"donor{i:02d}", "name": f"Donor {i}"} for i in range(9)]
+    slots = [("leon", "Usa"), ("leon", "Asia"), ("ada", "A")]
+    assignment = R.plan(ROMFS, pool, seed=1, slots=slots, per_character=True)
+    assert assignment[("leon", "Usa")]["slug"] == assignment[("leon", "Asia")]["slug"]
+    assert assignment[("leon", "Usa")]["slug"] != assignment[("ada", "A")]["slug"]
+
+
 def test_plan_refuses_a_pool_smaller_than_the_slots():
     pool = [{"slug": "one", "name": "One"}]
     with pytest.raises(R.CastError):
