@@ -275,8 +275,23 @@ def transfer(vertices: list[dict], source_positions: dict[int, tuple], source_pa
     while cross sections use the supplied uniform scale. Terminal parts inherit the
     incoming segment orientation, keeping both sides of a joint coincident. Geometry
     uses complete source weights; normalized target weights are merged by bone.
+
+    ``scale`` may instead map every role to its own scale, so a part can be sized
+    apart from the rest (a head that must stay under a height, feet that must reach
+    the floor). A part without an outgoing segment may take three model-axis scales
+    (x, y, z), applied after its orientation; a segmented part takes one number.
     """
-    if not roles or not np.isfinite(scale) or scale <= 0:
+    per_role = isinstance(scale, dict)
+    if per_role:
+        if continuous or set(scale) != set(roles):
+            raise ValueError("per-role scales must name exactly the roles, without the continuous warp")
+        parts = {role: np.asarray(value, float) for role, value in scale.items()}
+        if any(value.shape not in ((), (3,)) or not np.isfinite(value).all() or (value <= 0).any()
+               or (value.shape == (3,) and role in segments) for role, value in parts.items()):
+            raise ValueError("a per-role scale is one finite positive number, or three for a part without a segment")
+    elif not roles or not np.isfinite(scale) or scale <= 0:
+        raise ValueError("retarget needs roles and a finite positive uniform scale")
+    if not roles:
         raise ValueError("retarget needs roles and a finite positive uniform scale")
     for source, target in roles.values():
         if source not in source_positions or target not in target_positions:
@@ -284,9 +299,13 @@ def transfer(vertices: list[dict], source_positions: dict[int, tuple], source_pa
     by_source = {source: role for role, (source, _) in roles.items()}
     if len(by_source) != len(roles):
         raise ValueError("source role anchors must be distinct")
-    transforms = {}
+    uniform, transforms = scale, {}
     for role, (source, target) in roles.items():
-        transform = np.eye(3) * scale
+        axes = None
+        if per_role:
+            axes = parts[role] if parts[role].shape == (3,) else None
+            scale = float(parts[role]) if axes is None else 1.
+        transform = np.eye(3) * scale if axes is None else np.diag(axes)
         if role in segments:
             if segments[role] not in roles:
                 raise ValueError("retarget segment references an absent role")
@@ -301,9 +320,11 @@ def transfer(vertices: list[dict], source_positions: dict[int, tuple], source_pa
             incoming = [start for start, end in segments.items() if end == role]
             if len(incoming) == 1:
                 previous_source, previous_target = roles[incoming[0]]
-                transform = _aim_rotation(np.subtract(source_positions[source], source_positions[previous_source]),
-                                          np.subtract(target_positions[target], target_positions[previous_target])) * scale
+                rotation = _aim_rotation(np.subtract(source_positions[source], source_positions[previous_source]),
+                                         np.subtract(target_positions[target], target_positions[previous_target]))
+                transform = rotation * scale if axes is None else np.diag(axes) @ rotation
         transforms[role] = transform
+    scale = uniform
     mapping = {}
     output = []
     for vertex in vertices:

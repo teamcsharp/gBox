@@ -172,18 +172,20 @@ def build_atlas(materials: list[dict], uv_ranges: dict[int, tuple], *, size=(512
                               'alpha_preserved': True}
 
 
-def source_mesh(path: Path, *, atlas_size=(512, 512), strict_samplers: bool = True):
+def source_mesh(path: Path, *, atlas_size=(512, 512), strict_samplers: bool | str = True):
     """Return (vertices, triangles, PIL RGBA atlas, report) in the source's posed world space.
 
     Vertex records carry atlas UVs and source_material for diagnostics. Skin matrices
     place the source bind pose; these records do not claim target skeleton bindings.
     Unsupported UV transforms, sampler modes and nontriangle geometry fail explicitly.
+    ``strict_samplers='in_range'`` accepts a clamped or mirrored sampler whose UVs stay
+    inside 0..1, where its wrap mode cannot show; outside that range it still fails.
     """
     path = Path(path)
     if path.stat().st_size > 64 * 1024 * 1024:
         raise MaterialError('source model exceeds the 64 MiB input budget')
     gl, acc, image, world = characters._load(path)
-    materials, material_map, ranges, chunks = [], {}, {}, []
+    materials, material_map, ranges, chunks, bounded = [], {}, {}, [], set()
     count = 0
     alpha_modes = set()
     for ni, node in enumerate(gl.get('nodes', [])):
@@ -234,7 +236,9 @@ def source_mesh(path: Path, *, atlas_size=(512, 512), strict_samplers: bool = Tr
                     texture = gl['textures'][texture_info['index']]
                     sampler = gl.get('samplers', [])[texture['sampler']] if 'sampler' in texture else {}
                     if strict_samplers and any(sampler.get(key, 10497) != 10497 for key in ('wrapS', 'wrapT')):
-                        raise MaterialError('atlas import currently supports repeat texture samplers only')
+                        if strict_samplers != 'in_range':
+                            raise MaterialError('atlas import currently supports repeat texture samplers only')
+                        bounded.add(len(materials))
                     if 'TEXCOORD_0' not in attrs:
                         raise MaterialError('textured source primitive has no UVs')
                     tex = image(texture_info['index'])
@@ -253,6 +257,10 @@ def source_mesh(path: Path, *, atlas_size=(512, 512), strict_samplers: bool = Tr
                 bounds = (min(old[0], bounds[0]), min(old[1], bounds[1]), max(old[2], bounds[2]), max(old[3], bounds[3]))
             ranges[mi] = bounds
             chunks.append((positions, uv, indices.reshape(-1, 3), mi, owners, normals))
+    for index in sorted(bounded & set(ranges)):
+        if min(ranges[index][:2]) < -1e-4 or max(ranges[index][2:]) > 1 + 1e-4:
+            raise MaterialError('a clamped or mirrored sampler is used outside the 0..1 UV range; '
+                                'the atlas cannot reproduce it')
     atlas, regions, report = build_atlas(materials, ranges, size=atlas_size)
     vertices, triangles, lookup = [], [], {}
     skipped = 0

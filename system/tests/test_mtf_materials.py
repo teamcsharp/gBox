@@ -166,3 +166,17 @@ def test_smooth_normals_do_not_merge_opposite_uv_tangent_handedness(tmp_path, mo
     assert [derived[i]['tangent_sign'] for i in faces[0]] == [1., 1., 1.]
     assert [derived[i]['tangent_sign'] for i in faces[1]] == [-1., -1., -1.]
     assert report['uv_handedness_seams_preserved']
+
+
+def test_clamped_sampler_is_accepted_only_while_its_uvs_stay_inside_the_unit_square(tmp_path, monkeypatch):
+    path, gl, arrays = source_fixture(tmp_path, monkeypatch)
+    gl['textures'][0]['sampler'] = 0
+    gl['samplers'] = [{'wrapS': 33071, 'wrapT': 33648}]
+    with pytest.raises(materials.MaterialError, match='repeat'):
+        materials.source_mesh(path, atlas_size=(32, 32))
+    vertices, triangles, _, report = materials.source_mesh(path, atlas_size=(32, 32), strict_samplers='in_range')
+    assert len(triangles) == 2 and report['materials'] == 2
+    arrays[1] = np.array([[.25, .25], [1.5, .25], [.25, .75]])          # the wrap mode would now show
+    with pytest.raises(materials.MaterialError, match='outside the 0..1 UV range'):
+        materials.source_mesh(path, atlas_size=(32, 32), strict_samplers='in_range')
+    assert len(materials.source_mesh(path, atlas_size=(32, 32), strict_samplers=False)[1]) == 2
