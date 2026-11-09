@@ -437,3 +437,24 @@ Consequence: the update really is required for RE6 on the i9, so the payload enc
 remaining unknown from round 12: region 8's data does not decrypt with any CTR variant, is not plaintext, and is not
 XTS with the title key) stays the gate for the live round and for the `arc/NX/e####.arc` reskin overlays. The 1.0.0
 route is now closed with evidence rather than left open.
+
+## Round 14 status (2026-11-09, ~18:55 CST): a client decrypting CLI, verified on the real containers
+
+`gbox/switch_extract.py` (`python -m gbox.switch_extract`) is the deployable client path over the new readers —
+`switch_nca` (header, ticket title key, sections), `switch_romfs` (header, directory/file tables) and `switch_bktr`
+(BKTR tables), with CPU AES only. Verified against the RE6 containers on the i9:
+
+* `info` lists the update NSP's seven members (five NCAs, `.tik`, `.cert`);
+* `romfs-list` on the **18.8 GB base NSP** (NCA `7d1de582…`) reads the NCA identity, its three sections and walks the
+  RomFS to **60,645 files** (`nativeNXx64/…`);
+* `romfs-get` extracts `nativeNXx64/serial.srt` (22 bytes, content `0000000000000000000000`);
+* `exefs` extracts the update's five ExeFS members (`main` 18,700,260 bytes, `main.npdm`, `rtld`, `sdk`, `subsdk0`).
+
+`Nca.romfs()` locates the RomFS header from the section's **IVFC level 5 logical offset** (the level headers live in the
+FS header at `0x400 + index*0x200 + 8 + 0x10 + level*0x18`) instead of scanning — the same convention measured in
+rounds 7-8. Three CLI tests pass (member table, `info` without keys, a missing-member refusal).
+
+This is the "full decrypting tasks on client computers" arm of the operator's objective: any PC with `prod.keys` can
+now read this library's containers, which the shipped `hactool` cannot (it reports `Invalid NCA header` on both nodes).
+The RE6 update *payload* (round 12-13: region 8's data does not decrypt as CTR/plaintext/XTS and is not zlib/gzip/bz2/
+lzma) is unchanged and remains the gate for a live Mercenaries round.
