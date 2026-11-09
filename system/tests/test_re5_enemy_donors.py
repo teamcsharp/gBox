@@ -262,7 +262,7 @@ def test_a_joint_above_the_hips_is_carried_by_the_hips_and_reported(donor, monke
                   'source_weights': (1.,)} for p in ((.3, 5.8, .2), (0., 6.1, .2), (-.3, 5.8, .2))]
     triangles += [(base, base + 1, base + 2)]
     monkeypatch.setattr(W.characters, '_load', lambda _: ({'nodes': nodes}, None, None, world + [matrix]))
-    monkeypatch.setattr(W.mtf_materials, 'source_mesh', lambda _, atlas_size: (
+    monkeypatch.setattr(W.mtf_materials, 'source_mesh', lambda _, atlas_size, **options: (
         [dict(v) for v in vertices], list(triangles), image.resize(atlas_size), report))
     output, receipt = W.author(archive, donor, target, who='toon')
     assert receipt['donor_rig']['joints_outside_the_roles'] == ['all_root'] and receipt['donor_rig']['carried_by'] == 'hip'

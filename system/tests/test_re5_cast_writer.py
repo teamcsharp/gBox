@@ -178,6 +178,17 @@ def test_the_six_reviewed_slots_name_distinct_archives_models_and_entries():
     # the costume the archive holds was read from its own model: Sheva's Cos1 is the tribal outfit, Cos2 the club one
     assert (W.SLOTS['sheva_tribal'].player_class, W.SLOTS['sheva_clubbin'].player_class) == ('uPl01ShebaCos1', 'uPl01ShebaCos2')
     assert W.SLOTS['chris_bsaa'].archive == 'nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc'
+    # Chris's labels are crossed the same way, and that one was SEEN: the roster entry "Chris (Safari)" drew the donor
+    # cast pool 03 had written into uPl00ChrisCos2.arc (Ryo, 2026-11-09, session 0a61e625f9d844d6-3ddd04616ed846de)
+    assert (W.SLOTS['chris_safari'].player_class, W.SLOTS['chris_stars'].player_class) == ('uPl00ChrisCos2', 'uPl00ChrisCos1')
+    assert W.SLOTS['chris_safari'].sha256.startswith('4df4a987') and W.SLOTS['chris_stars'].sha256.startswith('fa3f0a85')
+    assert W.SLOTS['chris_safari'].models[0].name.endswith('pl11\\model\\pl1100')       # the archive's own costume body
+    assert W.SLOTS['chris_stars'].models[0].name.endswith('pl10\\model\\pl0000')
+    assert W.LABEL_ARCHIVES == {'Chris (BSAA)': 'uPl00ChrisNormal', 'Chris (Safari)': 'uPl00ChrisCos2',
+                                'Chris (STARS)': 'uPl00ChrisCos1', 'Sheva (BSAA)': 'uPl01ShebaNormal',
+                                'Sheva (Clubbin)': 'uPl01ShebaCos2', 'Sheva (Tribal)': 'uPl01ShebaCos1'}
+    assert W.LABEL_EVIDENCE['Chris (Safari)'] == 'live' and W.LABEL_EVIDENCE['Sheva (Tribal)'] == 'offline'
+    assert set(W.LABEL_EVIDENCE) == set(W.LABEL_ARCHIVES)
     for slot in W.SLOTS.values():
         indices = [i for m in slot.models for i in (m.mod, m.mrl, m.albedo[0], m.normal[0], m.mask[0])]
         assert len(set(indices)) == len(indices) and len(slot.models) == (1 if slot.player_class.endswith('Normal') else 2)

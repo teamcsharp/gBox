@@ -55,7 +55,18 @@ SEGMENTS = {'l_upper': 'l_fore', 'l_fore': 'l_hand', 'r_upper': 'r_fore', 'r_for
 NORMAL_HASH, MASK_HASH = 0x22660, 0xED1B        # measured: all 70 em1000 materials bind _NM and _MM through these
 DONOR_FORMAT, DONOR_STRIDE = 0x2000D414, 28      # the four-weight layout `mtf_author.build_one_mesh` writes
 ALL_LODS = 0xFF
-NATIVE_LOD_MASKS = (1, 2, 252)                   # measured on all six Majini models: near, middle, bits 2-7
+NATIVE_LOD_MASKS = (1, 2, 252)                   # measured on all six em1000/em1001 models: near, middle, bits 2-7
+#: The LOD mask is one bit per level of detail: bit 0 the near model, bit 1 the middle one, bits 2-7 the far ones.
+#: em1000 only uses 1, 2 and 252. em1300 adds 3 (near and middle: its `gam_Eyes_LOD0_LOD1` material) and 254 (middle
+#: and far: `gam_Mouth_LOD1_LOD2`), em1400 and em2100 add 254, em1200's `_low` / `_mid` models carry two tongue and eye
+#: records with 255. Every native record keeps its mask; a donor record is told apart by its mesh id, never by the mask.
+LOD_MASK_READING = {'bits': 'bit k = level of detail k; 1 near, 2 middle, 252 far (bits 2-7), 3 near+middle, '
+                            '254 middle+far, 255 every level',
+                    'measured_on': {'em1000': [1, 2, 252], 'em1100': [1, 2, 252], 'em1200': [1, 2, 252],
+                                    'em1200_low / em1200_mid': [1, 2, 252, 255], 'em1300': [1, 2, 3, 252, 254],
+                                    'em1400': [1, 2, 252, 254], 'em2100': [1, 2, 252, 254]},
+                    'evidence': 'em1300 material names carry the levels their records draw: gam_Eyes_LOD0_LOD1 has '
+                                'mask 3, gam_Mouth_LOD1_LOD2 has mask 254, the LOD2 body materials have 252'}
 
 
 class EnemyWriterError(ValueError):
@@ -71,6 +82,7 @@ class EnemySet:
     albedo: tuple[int, str]                              # the BC7 entry that receives the donor atlas
     normal: tuple[int, str]                              # that material's BC5 normal map
     mask: tuple[int, str]                                # that material's BC4 mask map
+    lod_masks: tuple[int, ...] = NATIVE_LOD_MASKS        # the LOD masks its native records were measured to use
 
     def group_ids(self) -> list[int]:
         return [group for _, ids in self.groups for group in ids]
@@ -121,6 +133,61 @@ EM1100 = EnemySet(
     albedo=(45, _MODEL11 + 'gof01_08_BM'), normal=(47, _MODEL11 + 'gof01_08_NM'), mask=(46, _MODEL11 + 'gof01_08_MM'))
 SETS['em1100'] = EM1100
 
+_MODEL12, _MODEL13, _MODEL14 = 'pawn\\em\\em12\\model\\', 'pawn\\em\\em13\\model\\', 'pawn\\em\\em14\\model\\'
+#: The Village / Ancient Ruins class, reviewed 2026-11-09 against uEm12.arc `4224faf2...`: three models (high, `_low`,
+#: `_mid`), 19 option groups, no group 0. Slots from the material names and the montage categories: head (1, `em12_Head`,
+#: four variants), body (2, `em12_Body`, four variants), leg (3), left hand (4, 14), right hand (5, 15), accessories (6,
+#: 16, 26, 36; one material), waist cloth (7, 17). The skeleton is stored parents-first with ONE extra root: a childless,
+#: unskinned bone at the origin with animation id 250 (bone 80 / 30 / 62), which `measure_roles` lists as detached. The
+#: `_low` and `_mid` models carry a tongue (and an eye) record with LOD mask 255 in group 1. The atlas of the one-donor
+#: route is the first body texture, 1024x2048, sampled by the three body materials of group 2 (Body1, Body2, plaga1).
+EM1200 = EnemySet(
+    name='em1200',
+    models=((_MODEL12 + 'em1200', 93, 74), (_MODEL12 + 'em1200_low', 94, 75), (_MODEL12 + 'em1200_mid', 95, 76)),
+    groups=(('head', (1, 11, 21, 31)), ('body', (2, 12, 22, 32)), ('leg', (3,)), ('l_hand', (4, 14)),
+            ('r_hand', (5, 15)), ('accessory', (6, 16, 26, 36)), ('waist', (7, 17))),
+    albedo=(22, _MODEL12 + 'em1200_01_BM'), normal=(24, _MODEL12 + 'em1200_01_NM'), mask=(23, _MODEL12 + 'em1200_01_MM'),
+    lod_masks=(1, 2, 252, 255))
+SETS['em1200'] = EM1200
+#: The Mines / Prison class, reviewed against uEm13.arc `1db1a79a...`: one model, 89 bones (a ground bone at the origin
+#: above the body root, as em1100), four groups: head 1, body 2, pants 3 and 13. LOD masks 3 and 254 beside 1, 2, 252
+#: (see LOD_MASK_READING). Its mask maps are `_CMM` textures in format 0x13, which the texture codec does not decode, so
+#: they stay native (`Carrier.neutral` leaves them out). Atlas of the one-donor route: the first pants texture, 1024x512.
+EM1300 = EnemySet(
+    name='em1300', models=((_MODEL13 + 'em1300', 49, 39),),
+    groups=(('head', (1,)), ('body', (2,)), ('pants', (3, 13))),
+    albedo=(22, _MODEL13 + 'em1302_BM'), normal=(24, _MODEL13 + 'em1302_NM'), mask=(23, _MODEL13 + 'em1302_CMM'),
+    lod_masks=(1, 2, 3, 252, 254))
+SETS['em1300'] = EM1300
+#: The Experimental Facility class, reviewed against uEm14.arc `52399b0b...`: three models, 41 option groups INCLUDING
+#: group 0 (the first face), the same detached extra root as em1200, LOD mask 254 beside 1, 2, 252. Slots from the
+#: material names; the montage categories are 1 headgear, 2 tops, 3 lower body and gear, 4 belts, 5 the dog tag.
+EM1400 = EnemySet(
+    name='em1400',
+    models=((_MODEL14 + 'em1400', 124, 106), (_MODEL14 + 'em1400_low', 125, 107), (_MODEL14 + 'em1400_mid', 126, 108)),
+    groups=(('face', (0, 5)), ('body', (1, 2, 3)), ('hands', (4,)), ('pants', (6, 7, 8, 9, 10, 11, 12)),
+            ('boots', (13,)), ('jacket', (14, 15)), ('vest', (16,)), ('shirt', (17, 18, 19, 20, 21, 22)),
+            ('goods', (23, 24, 25)), ('bomb', (26,)), ('gun_belt', (27, 28)), ('bandana', (29, 30)),
+            ('cap', (31, 32, 33, 34, 35)), ('armor_mask', (36,)), ('armor_body', (37,)), ('armor_foot', (38,)),
+            ('face_guard', (39,)), ('dog_tag', (40,))),
+    albedo=(20, _MODEL14 + 'em1400_01_BM'), normal=(22, _MODEL14 + 'em1400_01_NM'), mask=(21, _MODEL14 + 'em1400_01_MM'),
+    lod_masks=(1, 2, 252, 254))
+SETS['em1400'] = EM1400
+#: The second Public Assembly class, reviewed against uEm21.arc `3c01b16d...`: the archive holds `em2100` under the em10
+#: model folder (the same name as the em2100 inside uEm10.arc). One model, 90 bones, 38 records, seven groups: head 101,
+#: body 22, leg 23, sandals 7, shirt 254, pants 255 and group 4, which the montage table does not name and which holds
+#: the shirt's far-LOD records (mask 252) alone. Its montages 1 and 2 draw no head (value 31). The one-donor atlas is the
+#: shirt, 1024x1024, the only texture of this archive that uEm10.arc does not also carry (its pants are gam01_005_BM, the
+#: em1000 pants carrier 5, and its leg maps are gam01_022; which archive's copy the game samples when both are loaded in
+#: Public Assembly is not known).
+EM2100 = EnemySet(
+    name='em2100', models=((_MODEL + 'em2100', 26, 25),),
+    groups=(('head', (101,)), ('body', (22,)), ('leg', (23,)), ('sandals', (7,)), ('shirt', (254,)),
+            ('shirt_far', (4,)), ('pants', (255,))),
+    albedo=(9, _MODEL + 'gam01_254_BM'), normal=(8, _MODEL + 'gam01_254_NM'), mask=(10, _MODEL + 'gam01_254_MM'),
+    lod_masks=(1, 2, 252, 254))
+SETS['em2100'] = EM2100
+
 #: Measured and deliberately not buildable: `em1101` (entry 90, 109 bones, 63 records in the same ten groups). Its role
 #: map measures and agrees with the animation ids, but (a) its drawn records use formats 0x2270D877 / 0x1E5013A0 /
 #: 0x1AC0F6CB and none is the donor's 0x2000D414, so there is no native record of the donor's shape; (b) three
@@ -155,7 +222,25 @@ ARCHIVES = {
     'uEm11': EnemyArchive('uEm11', 'nativeNXx64/ImgNX/Archive/uEm11.arc',
                           'a33ae046d908254053b9d8bb00cc3542057efb967986143c7990e3481b7f44dc', ('em1100',), ('em1100',),
                           (100, 105, (0., 30., 60.)), ('em1101', 'evf2300', 'evf2303', 'evf2304')),
+    # The four classes below share the em10 motion set; the posed preview samples `em10_g06` clip 105 as uEm11 does.
+    'uEm12': EnemyArchive('uEm12', 'nativeNXx64/ImgNX/Archive/uEm12.arc',
+                          '4224faf2cc80d1b4ffdcb30e205925f7971fada0d8582be1faf3ddf78e37e70b', ('em1200',), ('em1200',),
+                          (101, 105, (0., 30., 60.)), ()),
+    'uEm13': EnemyArchive('uEm13', 'nativeNXx64/ImgNX/Archive/uEm13.arc',
+                          '1db1a79a0b1421639f4a6d4c068e227fd68b0d6adfb49249d9cdd3a3e1633018', ('em1300',), ('em1300',),
+                          (56, 105, (0., 30., 60.)), ()),
+    'uEm14': EnemyArchive('uEm14', 'nativeNXx64/ImgNX/Archive/uEm14.arc',
+                          '52399b0b7e189b5b481399cf5870c87790390da7926151c3670c7b1228963759', ('em1400',), ('em1400',),
+                          (134, 105, (0., 30., 60.)), ()),
+    'uEm21': EnemyArchive('uEm21', 'nativeNXx64/ImgNX/Archive/uEm21.arc',
+                          '3c01b16d948a3dc831207e4828aad8aa3fc4dede895b46dce9caf547fb0635a3', ('em2100',), ('em2100',),
+                          (33, 105, (0., 30., 60.)), ()),
 }
+#: Placed spawns per class in the No Mercy layouts of the eight stages (`re5_stage_enemies`, 2026-11-09): what a class
+#: replacement covers. uEm10 is the horde of five stages; uEm12 Village and Ancient Ruins; uEm14 Experimental Facility.
+STAGE_COVERAGE = {'uEm10': {'s400': 320, 's401': 369, 's405': 393, 's406': 385, 's407': 353},
+                  'uEm11': {'s400': 72}, 'uEm12': {'s402': 325, 's403': 386}, 'uEm13': {'s401': 22, 's407': 28},
+                  'uEm14': {'s404': 227}, 'uEm21': {'s400': 1}}
 
 
 # --- donors -------------------------------------------------------------------------------------------------------
@@ -172,6 +257,7 @@ class Donor:
     sha256: str
     roles: dict = field(compare=False)
     provenance: dict = field(default_factory=dict, compare=False)
+    winding: str = field(default='ccw', compare=False)     # 'cw' turns every triangle (the shared survey measures it)
 
 
 def load_donor(entry: Path, *, sha256: str | None = None) -> Donor:
@@ -478,7 +564,9 @@ def measure_roles(model: mt_model.ModFile) -> tuple[dict[str, int], dict]:
     body root (`em1100`, `em1101`), and helper chains as deep as the limb they hang from (the `em1101` skirt bones
     under each thigh). A tie in depth is settled by anatomy only - a leg continues through the child that reaches the
     floor, an arm through the child that reaches farthest from the midline - and stays an error when that is not
-    unique.
+    unique. A third shape, measured on `uEm12.arc` and `uEm14.arc`: beside the body root the table holds a second
+    root with no children (an unskinned attachment bone at the origin, animation id 250). Such detached bones are
+    listed in the report and play no part; a second root WITH children is still refused.
     """
     table = model.bone_table()
     parents = [int(p) for p in table.get('parents', [])]
@@ -486,9 +574,13 @@ def measure_roles(model: mt_model.ModFile) -> tuple[dict[str, int], dict]:
     count = len(parents)
     if not table.get('consistent') or not count or len(points) != count:
         raise EnemyWriterError('the enemy skeleton is incomplete')
+    if any(parent != 255 and parent >= i for i, parent in enumerate(parents)):
+        raise EnemyWriterError('the enemy skeleton needs parents stored before their children')
     roots = [i for i, parent in enumerate(parents) if parent == 255]
-    if len(roots) != 1 or any(parent != 255 and parent >= i for i, parent in enumerate(parents)):
-        raise EnemyWriterError('the enemy skeleton needs one root and parents stored before their children')
+    detached = [i for i in roots if i not in parents]
+    roots = [i for i in roots if i in parents]
+    if len(roots) != 1:
+        raise EnemyWriterError('the enemy skeleton needs one root with children')
     children = {i: [] for i in range(count)}
     depth, low, high = [1] * count, [points[i][1] for i in range(count)], [points[i][1] for i in range(count)]
     middle = points[roots[0]][0]
@@ -559,6 +651,8 @@ def measure_roles(model: mt_model.ModFile) -> tuple[dict[str, int], dict]:
              'left_side': '+X' if left > 0 else '-X'}
     if ground:
         extra['ground_bones'] = ground
+    if detached:
+        extra['detached_bones'] = detached
     for thigh, shin, foot, toe in chains.values():
         s = side(thigh)
         if not points[thigh][1] > points[shin][1] > points[foot][1]:
@@ -629,8 +723,8 @@ def account_groups(model: mt_model.ModFile, target: EnemySet) -> dict[int, dict]
     reviewed, table = target.group_ids(), group_table(model)
     records = model.meshes()
     used = {record['group_index'] for record in records}
-    if len(set(reviewed)) != len(reviewed) or 0 in reviewed:
-        raise EnemyWriterError('the reviewed option-group list must hold distinct nonzero ids')
+    if len(set(reviewed)) != len(reviewed):
+        raise EnemyWriterError('the reviewed option-group list must hold distinct ids')
     if sorted(table) != sorted(reviewed) or not used <= set(reviewed):
         raise EnemyWriterError(f'option groups differ from the reviewed list: unreviewed '
                                f'{sorted((set(table) | used) - set(reviewed))}, absent {sorted(set(reviewed) - set(table))}')
@@ -639,8 +733,9 @@ def account_groups(model: mt_model.ModFile, target: EnemySet) -> dict[int, dict]
     for group in reviewed:
         own = [record for record in records if record['group_index'] == group]
         masks = sorted({record['level_of_detail'] for record in own})
-        if not own or any(mask not in NATIVE_LOD_MASKS for mask in masks):
-            raise EnemyWriterError(f'option group {group} does not have the measured native LOD records')
+        if not own or any(mask not in target.lod_masks for mask in masks):
+            raise EnemyWriterError(f'option group {group} does not have the measured native LOD records '
+                                   f'(masks {masks}; reviewed {list(target.lod_masks)})')
         out[group] = {'slot': slots[group], 'native_records': len(own),
                       'native_vertices': sum(record['vertex_count'] for record in own), 'native_lod_masks': masks}
     return out
@@ -838,6 +933,26 @@ def _material(mrl: bytes, model: mt_model.ModFile, target, *, unique: bool = Tru
                                   'materials_sampling_it': len(rows)}
 
 
+def _neutral(parsed: mt_arc.Arc, maps: list[tuple[tuple[int, str], tuple[int, ...]]], payloads: dict[int, bytes],
+             kept: list[str]) -> None:
+    """Flatten the normal maps and zero the mask maps named in `maps` ((entry, name), channel values) into
+    `payloads`. A map whose texture format the codec does not decode (em1300's `_CMM` masks, format 0x13) is left as
+    shipped and its name appended to `kept`; nothing is guessed about such a texture."""
+    tried: set[int] = set()
+    for (index, name), value in maps:
+        if index in payloads or index in tried:
+            continue
+        tried.add(index)
+        raw = _entry(parsed, index, name, b'TEX\0')
+        try:
+            payloads[index] = mtf_secondary.constant_channels(raw, value)
+        except ValueError as exc:
+            if 'unsupported Switch TEX format' not in str(exc):
+                raise EnemyWriterError(f'{name.rsplit(chr(92), 1)[-1]} is not a secondary map the writer can '
+                                       f'neutralise: {exc}') from exc
+            kept.append(name.rsplit('\\', 1)[-1])
+
+
 def _entry(parsed: mt_arc.Arc, index: int, name: str, magic: bytes) -> bytes:
     if not 0 <= index < len(parsed.entries) or parsed.entries[index].name != name:
         raise EnemyWriterError(f'entry {index} is not the reviewed {name!r}')
@@ -866,13 +981,15 @@ def _contact_scale(vertices: list[dict], joints: dict[str, tuple], native: dict[
 
 def author(archive: bytes, source: Path, target: EnemySet, *, source_roles: dict[str, str] | None = None,
            segments: dict[str, str] | None = None, scale: float | None = None, secondary: str = 'neutral',
-           fit: Fit | None = None, who: str = 'the donor'):
+           fit: Fit | None = None, who: str = 'the donor', reverse_winding: bool = False):
     """Return (archive, receipt) with every model of `target` carrying the donor; inputs are not hash-checked here.
 
     `fit` sizes the donor (see `Fit`). Left unset it is the first candidate's fit: one cross-section and extremity
     scale, `scale` when given and otherwise measured so the soles meet the ground; limbs always stretch to the native
     segment lengths. `secondary='neutral'` flattens the atlas material's normal map and zeroes its mask (its native
-    detail would be sampled through unrelated atlas UVs); `'native'` leaves both maps as shipped.
+    detail would be sampled through unrelated atlas UVs); `'native'` leaves both maps as shipped. A map in a texture
+    format the codec cannot rewrite stays native either way and is named in the receipt. `reverse_winding` turns each
+    triangle of a donor exported with clockwise fronts (the shared donor survey measures the winding).
     """
     if secondary not in ('neutral', 'native'):
         raise EnemyWriterError("secondary maps are either 'neutral' or 'native'")
@@ -888,9 +1005,10 @@ def author(archive: bytes, source: Path, target: EnemySet, *, source_roles: dict
     if len(set(indices)) != len(indices) or not target.models:
         raise EnemyWriterError('the reviewed entry indices must be distinct')
     texture = _entry(parsed, *target.albedo, b'TEX\0')
-    normal, mask = _entry(parsed, *target.normal, b'TEX\0'), _entry(parsed, *target.mask, b'TEX\0')
+    _entry(parsed, *target.normal, b'TEX\0'), _entry(parsed, *target.mask, b'TEX\0')
     surface = mtf_tex.parse(texture)
-    vertices, triangles, _, appearance = mtf_materials.source_mesh(source, atlas_size=(surface.width, surface.height))
+    vertices, triangles, _, appearance = mtf_materials.source_mesh(source, atlas_size=(surface.width, surface.height),
+                                                                   strict_samplers='in_range')
     gltf, _, _, world = characters._load(source)
     nodes, joints = _donor_joints(gltf, world, source_roles, who)
     orphans: set = set()
@@ -915,7 +1033,8 @@ def author(archive: bytes, source: Path, target: EnemySet, *, source_roles: dict
             result, donor_raw, _, imported = re5_mesh_import.build_archive(
                 archive, source, model_name=short, source_roles=source_roles, target_roles=roles,
                 segments=segments, scale=used, material_index=material_index, template_index=template,
-                pose_mode='native_segments', **({'role_scales': role_scales} if role_scales else {}),
+                pose_mode='native_segments', samplers_in_range=True, reverse_winding=reverse_winding,
+                **({'role_scales': role_scales} if role_scales else {}),
                 **({'role_offsets': role_offsets} if role_offsets else {}),
                 **({'orphan_role': ORPHAN_ROLE} if orphans else {}))
         except EnemyWriterError:
@@ -964,13 +1083,14 @@ def author(archive: bytes, source: Path, target: EnemySet, *, source_roles: dict
             'position_roundtrip_max_error': imported['position_roundtrip_max_error'],
             'native_sha256': hashlib.sha256(native_raw).hexdigest(), 'sha256': hashlib.sha256(grafted).hexdigest()}
     payloads[target.albedo[0]] = atlas_payload
+    kept_native: list[str] = []
     if secondary == 'neutral':
-        payloads[target.normal[0]] = mtf_secondary.constant_channels(normal, (128, 128))
-        payloads[target.mask[0]] = mtf_secondary.constant_channels(mask, (0,))
+        _neutral(parsed, [(target.normal, (128, 128)), (target.mask, (0,))], payloads, kept_native)
     output = archive
     for index in sorted(payloads):                 # explicit index, never a name: MOD and MRL share names
         output = mtf_author.replace_archive_model(output, index, payloads[index])
-    checks = verify(archive, output, target, secondary=secondary)
+    textures = [target.albedo[0]] + [index for index in (target.normal[0], target.mask[0]) if index in payloads]
+    checks = verify(archive, output, target, secondary=secondary, textures=textures)
     final = mt_arc.parse(output)
     one = next(iter(models.values()))
     receipt = {
@@ -1002,6 +1122,7 @@ def author(archive: bytes, source: Path, target: EnemySet, *, source_roles: dict
             'atlas_entry': target.albedo[0], 'atlas_texture': target.albedo[1],
             'atlas_size': [surface.width, surface.height], 'atlas_source': appearance,
             'material': one['material']['name'], 'mrl_entries_changed': False, 'secondary_maps': secondary,
+            'secondary_maps_kept_native': kept_native, 'winding_reversed': bool(reverse_winding),
             'normals': 'recomputed from the fitted triangles; flat wherever the donor splits its vertices per face',
             'shared_texture_note': 'the atlas, normal and mask entries are also sampled by other models of this '
                                    'archive that are not replaced; the part that wears this material there shows '
@@ -1064,18 +1185,19 @@ def _check_model(native_raw: bytes, raw: bytes, target: EnemySet, expect: dict |
         need(len(real) and real.min() >= record['min_index'] and real.max() <= record['max_index']
              and record['max_index'] - record['min_index'] == record['vertex_count'] - 1, 'indices inside the vertex window')
         need(mt_model.fvf_stride(record['vertex_format']) == record['vertex_stride'], 'vertex format stride')
-        (donors if record['level_of_detail'] == ALL_LODS else natives).append(i)
-    need(len(natives) == len(originals) and all(records[i]['level_of_detail'] in NATIVE_LOD_MASKS for i in natives),
-         'native records keep their LOD masks')
+        (donors if record['mesh_id'] > len(originals) else natives).append(i)     # donor ids follow the native ones
+    need(len(natives) == len(originals) and all(records[i]['level_of_detail'] in target.lod_masks for i in natives)
+         and all(records[i]['level_of_detail'] == ALL_LODS for i in donors), 'native records keep their LOD masks')
     native_vertices = native.raw[old['vertex_buffer']:old['index_buffer']]
     need(raw[new['vertex_buffer']:new['vertex_buffer'] + len(native_vertices)] == native_vertices,
          'native vertex bytes are untouched')
     native_words = np.frombuffer(native_raw[old['index_buffer']:old['index_buffer'] + 2 * before['face_count']], '<u2')
     need(np.array_equal(words[:len(native_words)] == 0xFFFF, native_words == 0xFFFF), 'native strip restarts are kept')
     old_envelopes, cursor, kept, drawn = _envelopes(native), new['meshes'] + size * len(records), 0, 0
+    native_rows = set(natives)
     for i, record in enumerate(records):
         length = mt_model.MOD_WEIGHT_BOUND * record['vertex_group_count']
-        if record['level_of_detail'] != ALL_LODS:
+        if i in native_rows:
             original = originals[kept]
             start = old['meshes'] + size * kept
             need(raw[new['meshes'] + size * i:new['meshes'] + size * (i + 1)] == native_raw[start:start + size],
@@ -1259,7 +1381,7 @@ def build_donor(archive: bytes, donor: Donor, enemy: EnemyArchive, *, sets: tupl
     output, receipt, steps = archive, None, {}
     for target in targets:
         output, step = author(output, donor.model, target, source_roles=donor.roles, fit=fit, secondary=secondary,
-                              who=donor.slug)
+                              who=donor.slug, reverse_winding=donor.winding == 'cw')
         steps[target.name] = step
         if receipt is None:
             receipt = step
@@ -1291,8 +1413,10 @@ def build_donor(archive: bytes, donor: Donor, enemy: EnemyArchive, *, sets: tupl
 
 @dataclass(frozen=True)
 class Carrier:
-    """The option groups of one selection category that natively draw one albedo texture, and that texture's maps.
-    In a mix one donor rides on them: its records sit in these groups and its atlas replaces this texture."""
+    """Option groups that natively draw one albedo texture, and that texture's maps. In a mix one donor rides on
+    them: its records sit in these groups and its atlas replaces this texture. The groups of one carrier may come
+    from different montage categories (a shirt and a pair of pants) as long as the carriers of the table together
+    are an exact cover of the drawn montages: every drawn montage draws exactly one carrier group."""
     groups: tuple[int, ...]
     albedo: tuple[int, str]
     normal: tuple[int, str]
@@ -1301,13 +1425,26 @@ class Carrier:
 
 @dataclass(frozen=True)
 class MixTable:
-    """A reviewed way to draw several donors with one enemy model: the montage category whose groups carry them."""
+    """A reviewed way to draw several donors with one enemy model: the option groups that carry them.
+
+    `category` names the MTG category (or categories) the carrier groups are taken from. The first tables used one
+    category whose groups are drawn one per montage (the em1000 pants). A wider table takes groups of several
+    categories, chosen so that every drawn montage still draws exactly one of them (`account_mix` proves it on the
+    montage table of the archive being written; see EM1000_WIDE).
+    """
     name: str
     target: str                                 # the reviewed set it applies to
     montage: tuple[int, str]                    # the MTG entry: index and exact name
-    category: int                               # the MTG category whose parts are the carriers
+    category: int | tuple[int, ...]             # the MTG category or categories the carriers are drawn from
     slot: str
     carriers: tuple[Carrier, ...]               # most drawn first (number of montages that select them)
+
+    @property
+    def categories(self) -> tuple[int, ...]:
+        return tuple(self.category) if isinstance(self.category, tuple) else (self.category,)
+
+    def groups(self) -> list[int]:
+        return [group for carrier in self.carriers for group in carrier.groups]
 
 
 #: Reviewed 2026-11-09 against uEm10.arc `1fa27189...`, entry 763 (`MTG`, 61 parts, 51 montages). Category 11 is the
@@ -1338,7 +1475,105 @@ EM1100_SHIRT = MixTable(
         Carrier((15,), (36, _MODEL11 + 'gof01_05_2_BM'), (39, _MODEL11 + 'gof01_05_NM'), (38, _MODEL11 + 'gof01_05_MM')),
         Carrier((5,), (37, _MODEL11 + 'gof01_05_BM'), (39, _MODEL11 + 'gof01_05_NM'), (38, _MODEL11 + 'gof01_05_MM')),
     ))
-MIXES = {'uEm10': EM1000_PANTS, 'uEm11': EM1100_SHIRT}
+#: Sixteen carriers on em1000, reviewed 2026-11-09 against the same MTG entry 763 by an exhaustive exact-cover search
+#: over its 47 drawn montages (431 exact covers exist; 16 distinct albedo textures is the most any of them holds, and
+#: only two reach it: this one, and the same with head group 131 in place of arm skin 222). The shirt category (10)
+#: holds 14 groups with 14 textures but is not a cover by itself: montages 14 and 34 draw no shirt (bare torso: arm
+#: skin 222, drawn in exactly those two), and shirts 4 and 14 are drawn in montages {0, 2, 6} and {1, 3}, which are
+#: also exactly the montages of pants 5 {0, 1, 6}, 15 {2} and 25 {3}. So: the twelve other shirts, those three pants
+#: and the bare-torso arm skin draw one and only one carrier in every drawn montage. Shares if montages are uniform:
+#: 6, 5, 4, 4, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 1, 1 of 47 (the pants table: 13, 8, 7, 5, 4, 3, 3, 2, 1, 1 of 47). Every
+#: albedo is sampled by one material or by the LOD0/LOD1 pair of the same part, all with the same normal and mask maps.
+#: Pants 5 keep gam01_005_BM, which em2100 (the second Public Assembly class, in this archive and in uEm21.arc) also
+#: wears as its pants; EM1000_SHIRTS below avoids every texture that uEm21.arc carries, at the price of one carrier.
+EM1000_WIDE = MixTable(
+    name='em1000-wide', target='em1000', montage=(763, _MODEL + 'em1000'), category=(10, 11, 2), slot='shirt/pants/skin',
+    carriers=(
+        Carrier((104,), (19, _MODEL + 'em1000_104_BM'), (21, _MODEL + 'em1000_104_NM_HQ'), (20, _MODEL + 'em1000_104_MM')),
+        Carrier((184,), (165, _MODEL + 'gam01_184_BM'), (132, _MODEL + 'gam01_054_NM_HQ'), (130, _MODEL + 'gam01_054_MM')),
+        Carrier((74,), (137, _MODEL + 'gam01_074_BM'), (132, _MODEL + 'gam01_054_NM_HQ'), (130, _MODEL + 'gam01_054_MM')),
+        Carrier((114,), (22, _MODEL + 'em1000_114_BM'), (21, _MODEL + 'em1000_104_NM_HQ'), (20, _MODEL + 'em1000_104_MM')),
+        Carrier((5,), (105, _MODEL + 'gam01_005_BM'), (107, _MODEL + 'gam01_005_NM'), (106, _MODEL + 'gam01_005_MM')),
+        Carrier((54,), (129, _MODEL + 'gam01_054_BM'), (132, _MODEL + 'gam01_054_NM_HQ'), (130, _MODEL + 'gam01_054_MM')),
+        Carrier((64,), (133, _MODEL + 'gam01_064_BM'), (132, _MODEL + 'gam01_054_NM_HQ'), (130, _MODEL + 'gam01_054_MM')),
+        Carrier((124,), (23, _MODEL + 'em1000_124_BM'), (21, _MODEL + 'em1000_104_NM_HQ'), (20, _MODEL + 'em1000_104_MM')),
+        Carrier((174,), (164, _MODEL + 'gam01_174_BM'), (132, _MODEL + 'gam01_054_NM_HQ'), (130, _MODEL + 'gam01_054_MM')),
+        Carrier((194,), (166, _MODEL + 'gam01_194_BM'), (132, _MODEL + 'gam01_054_NM_HQ'), (130, _MODEL + 'gam01_054_MM')),
+        Carrier((84,), (139, _MODEL + 'gam01_084_BM'), (132, _MODEL + 'gam01_054_NM_HQ'), (140, _MODEL + 'gam01_084_MM')),
+        Carrier((154,), (162, _MODEL + 'gam01_154_BM'), (132, _MODEL + 'gam01_054_NM_HQ'), (130, _MODEL + 'gam01_054_MM')),
+        Carrier((164,), (163, _MODEL + 'gam01_164_BM'), (132, _MODEL + 'gam01_054_NM_HQ'), (130, _MODEL + 'gam01_054_MM')),
+        Carrier((222,), (123, _MODEL + 'gam01_032_BM'), (120, _MODEL + 'gam01_022_NM'), (119, _MODEL + 'gam01_022_MM')),
+        Carrier((15,), (125, _MODEL + 'gam01_035_BM'), (107, _MODEL + 'gam01_005_NM'), (106, _MODEL + 'gam01_005_MM')),
+        Carrier((25,), (122, _MODEL + 'gam01_025_BM'), (107, _MODEL + 'gam01_005_NM'), (106, _MODEL + 'gam01_005_MM')),
+    ))
+#: Fifteen carriers: all fourteen shirts and the bare-torso arm skin. The second-largest exact cover, and the one whose
+#: textures uEm21.arc does not carry (shirts 4 and 14 replace pants 5, 15, 25). Shares: 6, 5, 4, 4, 3, 3, 3, 3, 3, 3,
+#: 2, 2, 2, 2, 2 of 47.
+EM1000_SHIRTS = MixTable(
+    name='em1000-shirts', target='em1000', montage=(763, _MODEL + 'em1000'), category=(10, 2), slot='shirt/skin',
+    carriers=EM1000_WIDE.carriers[:4] + (
+        Carrier((4,), (100, _MODEL + 'gam01_004_BM'), (104, _MODEL + 'gam01_004_NM'), (103, _MODEL + 'gam01_004_MM')),
+    ) + EM1000_WIDE.carriers[5:11] + (
+        Carrier((14,), (116, _MODEL + 'gam01_014_BM'), (104, _MODEL + 'gam01_004_NM'), (103, _MODEL + 'gam01_004_MM')),
+    ) + EM1000_WIDE.carriers[11:14])
+#: uEm12.arc entry 606 (`MTG`, 24 parts of which one is an all-zero row, 16 montages, all drawn). Categories: 1 head
+#: (four variants), 2 body (four), 3 leg (one present), 4 accessories (four groups, one texture), 5 waist (two), 8 left
+#: hand and 9 right hand (two each, two textures). Head and body are each an exact cover of four textures; the body is
+#: taken (a hidden head would take the whole donor with it) and its textures are 1024x2048. Four montages each.
+EM1200_BODY = MixTable(
+    name='em1200-body', target='em1200', montage=(606, _MODEL12 + 'em1200'), category=2, slot='body',
+    carriers=(
+        Carrier((2,), (22, _MODEL12 + 'em1200_01_BM'), (24, _MODEL12 + 'em1200_01_NM'), (23, _MODEL12 + 'em1200_01_MM')),
+        Carrier((12,), (47, _MODEL12 + 'em1200_11_BM'), (49, _MODEL12 + 'em1200_11_NM'), (48, _MODEL12 + 'em1200_11_MM')),
+        Carrier((22,), (53, _MODEL12 + 'em1200_21_BM'), (55, _MODEL12 + 'em1200_21_NM'), (54, _MODEL12 + 'em1200_21_MM')),
+        Carrier((32,), (59, _MODEL12 + 'em1200_31_BM'), (61, _MODEL12 + 'em1200_31_NM'), (60, _MODEL12 + 'em1200_31_MM')),
+    ))
+#: uEm13.arc entry 123 (`MTG`, 4 parts, 2 montages): montage 0 draws pants 3, montage 1 pants 13; head and body are
+#: drawn in both. Two carriers. The `_CMM` masks (format 0x13) are kept native, see EM1300.
+EM1300_PANTS = MixTable(
+    name='em1300-pants', target='em1300', montage=(123, _MODEL13 + 'em1300'), category=3, slot='pants',
+    carriers=(
+        Carrier((3,), (22, _MODEL13 + 'em1302_BM'), (24, _MODEL13 + 'em1302_NM'), (23, _MODEL13 + 'em1302_CMM')),
+        Carrier((13,), (25, _MODEL13 + 'em1304_BM'), (28, _MODEL13 + 'em1304_NM'), (26, _MODEL13 + 'em1304_CMM')),
+    ))
+#: uEm14.arc entry 642 (`MTG`, 41 parts, 56 montages, all drawn). Its masks hold several bits, so a category value draws
+#: several groups at once (the boots, group 13, in every montage; the body skin 1 in 26) and no single category is a
+#: cover of one group per montage. The exhaustive search finds 26 exact covers; the largest holds nine textures, all of
+#: category 2 (tops): body skin 1, jackets 14 and 15, shirts 17-22. Shares: 26, 5, 5, 5, 4, 3, 3, 3, 2 of 56. The Mercenaries
+#: layouts of Experimental Facility name montages 22-25, 34, 40, 44-46 and 50 beside the random ones: those select
+#: carriers 22, 22, 19, 19, 1, 20, 14, 1, 15, 1.
+EM1400_TOPS = MixTable(
+    name='em1400-tops', target='em1400', montage=(642, _MODEL14 + 'em1400'), category=2, slot='tops',
+    carriers=(
+        Carrier((1,), (20, _MODEL14 + 'em1400_01_BM'), (22, _MODEL14 + 'em1400_01_NM'), (21, _MODEL14 + 'em1400_01_MM')),
+        Carrier((14,), (30, _MODEL14 + 'em1400_10_Jacket_BM'), (32, _MODEL14 + 'em1400_10_Jacket_NM'),
+                (31, _MODEL14 + 'em1400_10_Jacket_MM')),
+        Carrier((15,), (33, _MODEL14 + 'em1400_11_Jacket_BM'), (32, _MODEL14 + 'em1400_10_Jacket_NM'),
+                (31, _MODEL14 + 'em1400_10_Jacket_MM')),
+        Carrier((22,), (52, _MODEL14 + 'em1400_48_WhiteShirt_BM'), (46, _MODEL14 + 'em1400_41_BombShirt_NM'),
+                (45, _MODEL14 + 'em1400_41_BombShirt_MM')),
+        Carrier((20,), (50, _MODEL14 + 'em1400_45_PinkShirt_BM'), (46, _MODEL14 + 'em1400_41_BombShirt_NM'),
+                (45, _MODEL14 + 'em1400_41_BombShirt_MM')),
+        Carrier((17,), (47, _MODEL14 + 'em1400_42_BlackShirt_BM'), (46, _MODEL14 + 'em1400_41_BombShirt_NM'),
+                (45, _MODEL14 + 'em1400_41_BombShirt_MM')),
+        Carrier((18,), (48, _MODEL14 + 'em1400_43_GreenShirt_BM'), (46, _MODEL14 + 'em1400_41_BombShirt_NM'),
+                (45, _MODEL14 + 'em1400_41_BombShirt_MM')),
+        Carrier((21,), (51, _MODEL14 + 'em1400_46_RedShirt_BM'), (46, _MODEL14 + 'em1400_41_BombShirt_NM'),
+                (45, _MODEL14 + 'em1400_41_BombShirt_MM')),
+        Carrier((19,), (49, _MODEL14 + 'em1400_44_BombShirt_BM'), (46, _MODEL14 + 'em1400_41_BombShirt_NM'),
+                (45, _MODEL14 + 'em1400_41_BombShirt_MM')),
+    ))
+#: uEm21.arc entry 139 (`MTG`, 8 parts, 3 montages). Shirt 254 and pants 255 are drawn in all three (montages 1 and 2
+#: have no head and montage 1 names a body group the model lacks); one carrier, the shirt, whose texture no other
+#: archive carries.
+EM2100_SHIRT = MixTable(
+    name='em2100-shirt', target='em2100', montage=(139, _MODEL + 'em2100'), category=10, slot='shirt',
+    carriers=(Carrier((254,), (9, _MODEL + 'gam01_254_BM'), (8, _MODEL + 'gam01_254_NM'), (10, _MODEL + 'gam01_254_MM')),))
+#: Every reviewed table by name, and the default table of each class (the one with the most carriers).
+MIX_TABLES = {table.name: table for table in (EM1000_PANTS, EM1000_WIDE, EM1000_SHIRTS, EM1100_SHIRT, EM1200_BODY,
+                                               EM1300_PANTS, EM1400_TOPS, EM2100_SHIRT)}
+MIXES = {'uEm10': EM1000_WIDE, 'uEm11': EM1100_SHIRT, 'uEm12': EM1200_BODY, 'uEm13': EM1300_PANTS,
+         'uEm14': EM1400_TOPS, 'uEm21': EM2100_SHIRT}
 
 MONTAGE_READING = {
     'measured': 'MTG version 2: 32-byte header, 8 bytes per part (u16 option group, u16 category, u32 mask), 20 bytes '
@@ -1364,13 +1599,14 @@ def parse_montage(raw: bytes) -> dict:
             or len(raw) != montages_at + 20 * montages):
         raise EnemyWriterError('the montage table is not the measured version 2 layout')
     rows = [struct.unpack_from('<HHI', raw, parts_at + 8 * i) for i in range(parts)]
-    if any(category >= 16 or not mask for _, category, mask in rows):
+    empty = [i for i, row in enumerate(rows) if row == (0, 0, 0)]      # em1200's table carries one all-zero row
+    if any(category >= 16 or not mask for i, (_, category, mask) in enumerate(rows) if i not in empty):
         raise EnemyWriterError('a montage part has no mask or a category outside the sixteen value bytes')
     table = []
     for i in range(montages):
         at = montages_at + 20 * i
         table.append((tuple(raw[at:at + 16]), struct.unpack_from('<f', raw, at + 16)[0]))
-    return {'parts': rows, 'montages': table}
+    return {'parts': rows, 'montages': table, 'empty_parts': empty}
 
 
 def montage_groups(table: dict, index: int, present: set[int]) -> dict[int, list[int]]:
@@ -1384,36 +1620,49 @@ def montage_groups(table: dict, index: int, present: set[int]) -> dict[int, list
 
 
 def account_mix(model: mt_model.ModFile, table: dict, mix: MixTable) -> dict:
-    """Check that the carriers are the whole category and that every drawn montage draws exactly one of them; return
-    {carrier index: [montages]}. A mix that could leave a spawn with no donor, or with two, is refused here."""
+    """Check that the carrier groups are an exact cover of the drawn montages - every drawn montage draws exactly one
+    of them, in whichever category - and return {carrier index: [montages]}. The carriers must be groups the model
+    has, each named once, all from the table's categories. A mix that could leave a spawn with no donor, or with
+    two, is refused here."""
     present = set(group_table(model))
     carried = [group for carrier in mix.carriers for group in carrier.groups]
-    category = sorted(group for group, kind, _ in table['parts'] if kind == mix.category and group in present)
-    if len(set(carried)) != len(carried) or sorted(carried) != category:
-        raise EnemyWriterError(f'the carriers of {mix.name} are not exactly the {mix.slot} groups of the model: '
-                               f'{category}')
+    categories = {group: kind for group, kind, mask in table['parts'] if mask}
+    allowed = sorted(group for group, kind in categories.items() if kind in mix.categories and group in present)
+    if len(set(carried)) != len(carried) or not set(carried) <= set(allowed):
+        raise EnemyWriterError(f'the carriers of {mix.name} are not distinct {mix.slot} groups of the model: '
+                               f'{sorted(set(carried) - set(allowed))} are not; the model offers {allowed}')
     owner = {group: index for index, carrier in enumerate(mix.carriers) for group in carrier.groups}
     shares, empty = {index: [] for index in range(len(mix.carriers))}, []
     for number in range(len(table['montages'])):
         drawn = montage_groups(table, number, present)
-        hits = drawn.get(mix.category, [])
+        hits = [group for groups in drawn.values() for group in groups if group in owner]
         if not drawn:
             empty.append(number)
         elif len(hits) != 1:
-            raise EnemyWriterError(f'montage {number} draws {len(hits)} {mix.slot} groups; a mix needs exactly one')
+            raise EnemyWriterError(f'montage {number} draws {len(hits)} {mix.slot} carrier groups; a mix needs '
+                                   f'exactly one')
         else:
             shares[owner[hits[0]]].append(number)
     return {'shares': shares, 'empty_montages': empty, 'drawn_montages': len(table['montages']) - len(empty)}
+
+
+def uncarried_groups(model: mt_model.ModFile, table: dict, mix: MixTable) -> list[int]:
+    """Groups of the mix's categories that the model has and no carrier takes (they are blanked like every other
+    native record; listed so a receipt says which parts of the category were left out)."""
+    present = set(group_table(model))
+    owner = set(mix.groups())
+    return sorted(group for group, kind, mask in table['parts']
+                  if mask and kind in mix.categories and group in present and group not in owner)
 
 
 def author_mix(archive: bytes, riders: list[tuple[Path, dict, Fit, str]], target: EnemySet, mix: MixTable, *,
                secondary: str = 'neutral'):
     """Return (archive, receipt) with one donor per carrier of `mix` on every model of `target`.
 
-    `riders[i]` is (model file, role joints, fit, name) for `mix.carriers[i]`; the same donor may ride on several
-    carriers. Every native record of every option group is blanked, and donor records exist only in the carrier
-    groups, so a spawn draws the one donor of the pants (or shirt) its montage selects, once. Inputs are not
-    hash-checked here.
+    `riders[i]` is (model file, role joints, fit, name[, winding]) for `mix.carriers[i]`; the same donor may ride on
+    several carriers; `winding` is 'cw' for a donor exported with clockwise fronts, whose triangles are then turned.
+    Every native record of every option group is blanked, and donor records exist only in the carrier groups, so a
+    spawn draws the one donor of the carrier its montage selects, once. Inputs are not hash-checked here.
     """
     if secondary not in ('neutral', 'native'):
         raise EnemyWriterError("secondary maps are either 'neutral' or 'native'")
@@ -1427,20 +1676,24 @@ def author_mix(archive: bytes, riders: list[tuple[Path, dict, Fit, str]], target
         raise EnemyWriterError('the reviewed entry indices must be distinct')
     table = parse_montage(_entry(parsed, *mix.montage, b'MTG\0'))
     sources = []
-    for (source, roles, fit, who), carrier in zip(riders, mix.carriers):
+    for rider, carrier in zip(riders, mix.carriers):
+        source, roles, fit, who = rider[:4]
+        winding = rider[4] if len(rider) > 4 else 'ccw'
+        if winding not in ('cw', 'ccw'):
+            raise EnemyWriterError(f"{who}: the winding is 'cw' or 'ccw'")
         source, roles = Path(source), dict(roles)
         if set(roles) != set(ROLE_ANIMATION_IDS):
             raise EnemyWriterError(f'{who} must name the fifteen measured roles')
         surface = mtf_tex.parse(_entry(parsed, *carrier.albedo, b'TEX\0'))
-        vertices, triangles, _, appearance = mtf_materials.source_mesh(source,
-                                                                       atlas_size=(surface.width, surface.height))
+        vertices, triangles, _, appearance = mtf_materials.source_mesh(
+            source, atlas_size=(surface.width, surface.height), strict_samplers='in_range')
         gltf, _, _, world = characters._load(source)
         nodes, joints = _donor_joints(gltf, world, roles, who)
         orphans: set = set()
         owners = _role_owners(vertices, gltf, nodes, orphans)
         sources.append({'source': source, 'roles': roles, 'fit': fit, 'who': who, 'vertices': vertices,
                         'triangles': len(triangles), 'owners': owners, 'joints': joints, 'appearance': appearance,
-                        'orphans': bool(orphans),
+                        'orphans': bool(orphans), 'winding': winding,
                         'rig': check_rig(vertices, owners, joints, who) | {
                             'joints_outside_the_roles': sorted(str(gltf['nodes'][i].get('name', i)) for i in orphans),
                             'carried_by': ORPHAN_ROLE if orphans else None},
@@ -1473,7 +1726,8 @@ def author_mix(archive: bytes, riders: list[tuple[Path, dict, Fit, str]], target
                 result, donor_raw, _, imported = re5_mesh_import.build_archive(
                     archive, rider['source'], model_name=short, source_roles=rider['roles'], target_roles=roles,
                     segments=dict(SEGMENTS), scale=used, material_index=material_index, template_index=template,
-                    pose_mode='native_segments', **({'role_scales': role_scales} if role_scales else {}),
+                    pose_mode='native_segments', samplers_in_range=True, reverse_winding=rider['winding'] == 'cw',
+                    **({'role_scales': role_scales} if role_scales else {}),
                     **({'role_offsets': role_offsets} if role_offsets else {}),
                     **({'orphan_role': ORPHAN_ROLE} if rider['orphans'] else {}))
             except ValueError as exc:
@@ -1516,19 +1770,20 @@ def author_mix(archive: bytes, riders: list[tuple[Path, dict, Fit, str]], target
             'native_sha256': hashlib.sha256(native_raw).hexdigest(), 'sha256': hashlib.sha256(grafted).hexdigest()}
     for number, carrier in enumerate(mix.carriers):
         payloads[carrier.albedo[0]] = atlases[number]
+    kept_native: list[str] = []
     if secondary == 'neutral':
-        for carrier in mix.carriers:
-            for (index, name), value in ((carrier.normal, (128, 128)), (carrier.mask, (0,))):
-                if index not in payloads:
-                    payloads[index] = mtf_secondary.constant_channels(_entry(parsed, index, name, b'TEX\0'), value)
+        _neutral(parsed, [(carrier.normal, (128, 128)) for carrier in mix.carriers]
+                 + [(carrier.mask, (0,)) for carrier in mix.carriers], payloads, kept_native)
     output = archive
     for index in sorted(payloads):
         output = mtf_author.replace_archive_model(output, index, payloads[index])
-    textures = albedos + (seconds if secondary == 'neutral' else [])
+    textures = albedos + ([index for index in seconds if index in payloads] if secondary == 'neutral' else [])
     checks = verify(archive, output, target, secondary=secondary, textures=textures, expect=expect)
     final = mt_arc.parse(output)
     drawn = shares['drawn_montages']
     owner = {group: number for number, carrier in enumerate(mix.carriers) for group in carrier.groups}
+    first_model = mt_model.parse_mod(_entry(parsed, target.models[0][1], target.models[0][0], b'MOD\0'))
+    left_out = uncarried_groups(first_model, table, mix)
     receipt = {
         'recipe': 're5_enemy_writer.mix', 'recipe_version': RECIPE_VERSION, 'enemy_set': target.name,
         'mix': mix.name, 'slot': mix.slot,
@@ -1541,22 +1796,25 @@ def author_mix(archive: bytes, riders: list[tuple[Path, dict, Fit, str]], target
                               'sha256': hashlib.sha256(payloads[index]).hexdigest()} for index in sorted(payloads)],
         'montage_table': MONTAGE_READING | {
             'entry': mix.montage[0], 'name': mix.montage[1], 'untouched': True, 'category': mix.category,
-            'parts': len(table['parts']), 'montages': len(table['montages']),
-            'drawn_montages': drawn, 'empty_montages': shares['empty_montages']},
+            'categories': list(mix.categories), 'parts': len(table['parts']), 'empty_parts': table['empty_parts'],
+            'montages': len(table['montages']), 'drawn_montages': drawn, 'empty_montages': shares['empty_montages'],
+            'exact_cover': 'every drawn montage draws exactly one carrier group (checked on every model of the set)',
+            'uncarried_groups_of_these_categories': left_out},
         'carriers': [{
             'carrier': number, 'groups': list(carrier.groups), 'albedo_entry': carrier.albedo[0],
             'albedo': carrier.albedo[1], 'atlas_size': rider['atlas_size'],
             'donor': {'name': rider['who'], 'model': rider['source'].name, 'sha256': rider['sha256']},
             'fit': fits[number], 'donor_rig': rider['rig'], 'atlas_source': rider['appearance'],
+            'winding_reversed': rider['winding'] == 'cw',
             'source_vertices': len(rider['vertices']), 'source_triangles': rider['triangles'],
             'montages': shares['shares'][number],
             'share_if_montages_are_uniform': f'{len(shares["shares"][number])} of {drawn}'}
             for number, (rider, carrier) in enumerate(zip(sources, mix.carriers))],
         'option_groups': {
-            'choice': 'carry_in_one_category',
+            'choice': 'carry_in_carrier_groups',
             'native_records': 'kept byte for byte in all groups; index words collapsed so each draws nothing',
-            'donor_records': f'only in the {mix.slot} groups: one record per group, all LODs, the whole donor of that '
-                             'carrier',
+            'donor_records': f'only in the {mix.slot} carrier groups: one record per group, all LODs, the whole donor '
+                             'of that carrier',
             'count': len(groups), 'groups': {
                 str(group): row | {'native_action': 'index words collapsed; records, vertices and envelopes kept',
                                    'donor_record': (f'carrier {owner[group]}: {sources[owner[group]]["who"]}'
@@ -1570,21 +1828,23 @@ def author_mix(archive: bytes, riders: list[tuple[Path, dict, Fit, str]], target
                    'donor_records_per_model': len(owner),
                    'native_records_blanked': sum(m['native_records'] for m in models.values())},
         'appearance': {'mrl_entries_changed': False, 'secondary_maps': secondary,
+                       'secondary_maps_kept_native': kept_native,
                        'normals': 'recomputed from the fitted triangles'},
         'checks': checks, 'live_verified': False, 'gameplay_verified': False, 'writer_registered': False}
     return output, receipt
 
 
 def build_mix(archive: bytes, donors: list[Donor], enemy: EnemyArchive, *, fits: list[Fit] | None = None,
-              models: tuple[str, ...] | None = None, secondary: str = 'neutral'):
+              models: tuple[str, ...] | None = None, secondary: str = 'neutral', table: str | None = None):
     """Return (complete enemy archive, receipt) with several donors on one enemy model, one per montage carrier.
 
     The donors are dealt over the carriers in order, most drawn carrier first, and repeat from the start when there
-    are fewer donors than carriers. The archive must be the measured original and has a reviewed table in `MIXES`.
+    are fewer donors than carriers. The archive must be the measured original and has a reviewed table in `MIXES`;
+    `table` names another reviewed table of the same class from `MIX_TABLES` (`em1000-pants`, `em1000-shirts`).
     """
-    mix = MIXES.get(enemy.name)
-    if mix is None:
-        raise EnemyWriterError(f'{enemy.name} has no reviewed mix table')
+    mix = MIXES.get(enemy.name) if table is None else MIX_TABLES.get(table)
+    if mix is None or SETS[mix.target].name not in enemy.sets:
+        raise EnemyWriterError(f'{enemy.name} has no reviewed mix table' + (f' named {table!r}' if table else ''))
     if hashlib.sha256(archive).hexdigest() != enemy.sha256:
         raise EnemyWriterError(f'{enemy.name} needs the exact measured original {enemy.path.rsplit("/", 1)[-1]}')
     fits = list(fits) if fits is not None else [NATIVE_HEIGHT] * len(donors)
@@ -1599,7 +1859,7 @@ def build_mix(archive: bytes, donors: list[Donor], enemy: EnemyArchive, *, fits:
     if models is not None:
         target = only_models(target, tuple(models))
     dealt = [number % len(donors) for number in range(len(mix.carriers))]
-    riders = [(donors[i].model, donors[i].roles, fits[i], donors[i].slug) for i in dealt]
+    riders = [(donors[i].model, donors[i].roles, fits[i], donors[i].slug, donors[i].winding) for i in dealt]
     output, receipt = author_mix(archive, riders, target, mix, secondary=secondary)
     by_slug = {donor.slug: donor for donor in donors}
     for row in receipt['carriers']:
@@ -1629,13 +1889,31 @@ def build_mix(archive: bytes, donors: list[Donor], enemy: EnemyArchive, *, fits:
     return output, receipt
 
 
-def _donor(archive: bytes, target: EnemySet, carrier: Carrier | None = None):
+def _is_donor_record(record: dict, native_count: int | None) -> bool:
+    """A written donor record: its mesh id follows the native ids when the native count is known; otherwise the
+    one-mesh shape the writer authors (all LODs, the donor format, mesh type 0xFFFF, vertex index 0)."""
+    if native_count is not None:
+        return record['mesh_id'] > native_count
+    return (record['level_of_detail'] == ALL_LODS and record['vertex_format'] == DONOR_FORMAT
+            and record['mesh_type'] == 0xFFFF and record['vertex_index'] == 0)
+
+
+def _native_count(original: bytes | None, target: EnemySet) -> int | None:
+    if original is None:
+        return None
+    parsed = mt_arc.parse(original)
+    name, mod_index, _ = target.models[0]
+    return len(mt_model.parse_mod(_entry(parsed, mod_index, name, b'MOD\0')).meshes())
+
+
+def _donor(archive: bytes, target: EnemySet, carrier: Carrier | None = None, native_count: int | None = None):
     """A written donor record of the set's first model and the atlas the archive holds for it: the first one, or in
-    a mix the one that rides on `carrier`."""
+    a mix the one that rides on `carrier`. `native_count` (the original model's record count) tells donor records
+    apart by mesh id, which also works where native records use LOD mask 255 (em1200's `_low` and `_mid`)."""
     parsed = mt_arc.parse(archive)
     name, mod_index, _ = target.models[0]
     model = mt_model.parse_mod(_entry(parsed, mod_index, name, b'MOD\0'))
-    index = next((i for i, record in enumerate(model.meshes()) if record['level_of_detail'] == ALL_LODS
+    index = next((i for i, record in enumerate(model.meshes()) if _is_donor_record(record, native_count)
                   and (carrier is None or record['group_index'] == carrier.groups[0])), None)
     if index is None:
         raise EnemyWriterError('the archive holds no donor record to preview')
@@ -1687,13 +1965,14 @@ def _sheet(poses, uvs, triangles, atlas, yaws, size: int, png: Path, backdrop=No
 
 
 def preview(archive: bytes, png: Path, *, target: EnemySet = EM1000, size: int = 384, backdrop=None,
-            carrier: Carrier | None = None) -> dict:
+            carrier: Carrier | None = None, original: bytes | None = None) -> dict:
     """Write a rest-pose picture (front, side, three-quarter) of the donor record the archive actually holds.
 
     The geometry is decoded from the written MOD and the colours from the written BC7 atlas, so the picture shows the
-    candidate's own bytes in the native bind pose. It is not the game's shading, animation or camera.
+    candidate's own bytes in the native bind pose. It is not the game's shading, animation or camera. `original`
+    (the archive before the write) lets the donor records be told apart by mesh id.
     """
-    model, index, atlas = _donor(archive, target, carrier)
+    model, index, atlas = _donor(archive, target, carrier, _native_count(original, target))
     points, triangles = model.positions(index), mtf_author.mesh_triangles(model, index)
     _sheet([points], model.uvs(index), triangles, atlas, (0., -90., -30.), size, Path(png), backdrop)
     return {'preview': str(png), 'model': target.models[0][0].rsplit('\\', 1)[-1], 'record': index,
@@ -1717,7 +1996,8 @@ def posed_preview(original: bytes, candidate: bytes, png: Path, *, motion_entry:
     motion = zlib.decompress(entries[motion_entry].data) if 0 <= motion_entry < len(entries) else b''
     if motion[:4] != b'LMT\0':
         raise EnemyWriterError(f'entry {motion_entry} is not a native motion resource')
-    model, index, atlas = _donor(candidate, target, carrier)
+    native_count = _native_count(original, target)
+    model, index, atlas = _donor(candidate, target, carrier, native_count)
     records = model.meshes()
     if sampled is None:
         sampled = mtf_motion.sample_compare(original, candidate, motion, animation_index=clip, frames=frames,
@@ -1726,7 +2006,7 @@ def posed_preview(original: bytes, candidate: bytes, png: Path, *, motion_entry:
     for i in sampled['candidate']['mesh_indices']:
         starts[i] = cursor
         cursor += records[i]['vertex_count']
-    copies = [i for i in starts if records[i]['level_of_detail'] == ALL_LODS
+    copies = [i for i in starts if _is_donor_record(records[i], native_count)
               and (carrier is None or records[i]['group_index'] in carrier.groups)]
     count, poses, spread = records[index]['vertex_count'], [], 0.
     for frame in sampled['candidate']['frames']:
