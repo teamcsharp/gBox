@@ -207,6 +207,14 @@ Ghidra anchor: `_INIT_247` at `0x0014f5f0` registers the enemy archives with `FU
 `"uEm10"` (hash `0x3001000`) and `"uEm11"` (hash `0x3001100`). That registration table and its archive hash are the
 next place to look for the boot-time binding.
 
+An **ExeFS patch test** was run. In `_INIT_247`, the `add w4,w20,#0x400` at module offset `0x4f724` builds `uEm11`’s
+hash `0x3001100`; changing the immediate to `#0x300` makes it `0x3001000` (uEm10’s hash). The patched NSO was delivered
+as `exefs/main` with `uEm11.arc` = `uEm10.arc`. The emulator loads the patched main (the Switch “Launching…” splash is
+shown) but the game never reaches a frame; the naive hash alias likely collides in `FUN_00cd28d0`’s registry.
+
+ExeFS overlays are a viable delivery path, but the class patch needs a collision-safe design: either patch the registry
+to accept an alias, or patch the **loader call** for `uEm11` instead of its class hash.
+
 ![Donor-pair round with the one-part Sonic patch; enemies remain the donor variant](evidence/re5-donor-sonic-patch-enemies.jpg)
 
 The MRL tail is not opaque noise. Its first words are a header
