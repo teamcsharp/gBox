@@ -188,7 +188,7 @@ def normalize(patch, current=None):
     if not isinstance(out['titles'], list) or not out['titles'] or len(out['titles']) > 3 \
             or any(t not in TITLES for t in out['titles']) or len(set(out['titles'])) != len(out['titles']):
         raise ValueError('Choose distinct titles from re4, re5, re6, re3 and merc3d')
-    out['queue'] = [queue_entry(e) for e in (out.get('queue') or [])]
+    out['queue'] = [queue_entry(e, out) for e in (out.get('queue') or [])]
     if len(out['queue']) > QUEUE_MAX:
         raise ValueError(f'The MercMode queue holds at most {QUEUE_MAX} rounds')
     mods = out.get('default_mods') or {}
@@ -203,19 +203,31 @@ def normalize(patch, current=None):
     return out
 
 
-def catalog():
-    """What the DJ queue can ask for, per verified title: modes -> characters (native roster order), stages."""
+def catalog(cfg=None):
+    """What the DJ queue can ask for, per verified title: modes -> characters (native roster order), stages.
+
+    cfg: the host's settings. Where its preferred_editions make RE5 the Switch No Mercy edition, RE5's first mode is
+    no_mercy with that edition's own select roster (re5_switch.CHARACTERS: both pages, Josh (BSAA), Barry (STARS) and
+    Rebecca (STARS) included - the PS3 rosters refused them, and Excella only in 'reunion'), and a random mode is
+    no_mercy (default_mode); the PS3 rosters stay valid, so a queue saved before still reads (the Switch menus refuse
+    a Reunion pick themselves, re5_switch_mods.mercs_selection)."""
     from . import re4_menus
     from .mercs.titles import re5_ps3, re6_switch
+    re5 = {'modes': {m: list(r) for m, r in re5_ps3.MODE_ROSTERS.items()}, 'stages': list(re5_ps3.STAGE_NAMES)}
+    if 're5' in ((cfg or {}).get('preferred_editions') or {}):
+        from .mercs.titles import re5_switch
+        re5 = {'modes': {'no_mercy': list(re5_switch.CHARACTERS), **re5['modes']},
+               'stages': list(re5_switch.STAGE_NAMES), 'default_mode': 'no_mercy'}
     return {'re4': {'modes': {'mercenaries': list(re4_menus.PLAYERS)}, 'stages': list(re4_menus.STAGES)},
-            're5': {'modes': {m: list(r) for m, r in re5_ps3.MODE_ROSTERS.items()}, 'stages': list(re5_ps3.STAGE_NAMES)},
+            're5': re5,
             're6': {'modes': {'no_mercy': list(re6_switch.CHARACTERS)}, 'stages': list(re6_switch.STAGES)}}
 
 
-def queue_entry(entry):
+def queue_entry(entry, cfg=None):
     """One queued round (operator 2026-10-24: "be the DJ ... what mode is being played next, who's being played next
     ... and see the queue ahead"): {title, mode, character, stage}; mode / character / stage None = random.
-    An optional `mod` names a build (a LayeredFS overlay of the title) that this round plays with."""
+    An optional `mod` names a build (a LayeredFS overlay of the title) that this round plays with. cfg: the host's
+    settings (catalog: the edition it plays)."""
     if not isinstance(entry, dict) or set(entry) - {'title', 'mode', 'character', 'stage', 'mod'} or entry.get('title') not in TITLES:
         raise ValueError('A queued round needs a known title and only mode, character, stage and mod')
     title = entry['title']
@@ -226,7 +238,7 @@ def queue_entry(entry):
         if not isinstance(mod, str) or not re.fullmatch(r'(?=.*[A-Za-z0-9])[A-Za-z0-9_.-]{1,64}', mod):
             raise ValueError('A queued round\'s mod must be one build folder name')
         out['mod'] = mod
-    known = catalog().get(title)
+    known = catalog(cfg).get(title)
     if known is None:
         if out['mode'] or out['character'] or out['stage'] is not None:
             raise ValueError(f"{TITLES[title]['name']} has no verified roster or stage list yet")
@@ -242,13 +254,14 @@ def queue_entry(entry):
     return out
 
 
-def resolve_selection(entry, rng):
-    """A queued round's random parts drawn now, so the game receives an exact mode, character and stage."""
-    known = catalog().get(entry['title'])
+def resolve_selection(entry, rng, cfg=None):
+    """A queued round's random parts drawn now, so the game receives an exact mode, character and stage. cfg: the
+    host's settings (catalog: the edition it plays)."""
+    known = catalog(cfg).get(entry['title'])
     if known is None:
         return dict(entry)
     mode = entry.get('mode') or next((m for m, r in known['modes'].items() if entry.get('character') in r), None) \
-        or rng.choice(sorted(known['modes']))
+        or known.get('default_mode') or rng.choice(sorted(known['modes']))
     character = entry.get('character') or rng.choice(known['modes'][mode])
     stage = entry['stage'] if entry.get('stage') is not None else rng.randrange(len(known['stages']))
     out = {'title': entry['title'], 'mode': mode, 'character': character, 'stage': stage,
@@ -1099,7 +1112,7 @@ def choose(store, worker, rng, cfg=None):
     head = (cfg.get('queue') or [None])[0]
     queued = next((r for r in rows if head and r['playable'] and r['title'] == head['title']), None)
     if queued:                                   # the DJ's next round comes first, even for an unchecked title
-        return _picked(store, worker, default_mod(cfg, queued | {'selection': resolve_selection(head, rng),
+        return _picked(store, worker, default_mod(cfg, queued | {'selection': resolve_selection(head, rng, cfg),
                                                                  '_queue_pending': True}))
     pool = [r for r in rows if r['playable'] and r['title'] in cfg['titles']]
     history = store.get(HISTORY, worker['name']) or {}

@@ -124,7 +124,10 @@ def touches(title, names) -> list:
 
 
 def stage_of(observed, row_stage=None):
-    for v in (observed.get('tuning_stage'), observed.get('stage'), row_stage):
+    # ss_stage (RE5 Switch: the navigation signature's stage) and stage (the selects' confirmation) before tuning_stage:
+    # until 2026-11-09 RE5 Switch stamped tuning_stage with the NEXT round's target (re5_switch.Bot._stage_now), in
+    # 1,257 of the 1,308 rows that name both
+    for v in (observed.get('ss_stage'), observed.get('stage'), observed.get('tuning_stage'), row_stage):
         if isinstance(v, str) and v and v != 'unknown':
             return v[:80]
     return None
