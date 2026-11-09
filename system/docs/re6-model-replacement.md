@@ -36,6 +36,14 @@ now gives each material's full paths, not just indices. For Leon's `pl0000_0` se
 vector textures. This is the binding needed to replace **one material's** albedo (jacket vs pants vs hands) instead of
 every `0x2B` in the set, which is what the current textured build does.
 
+**`pl_VTF` is a float colour ramp (measured 2026-11-09).** `pl_VTF` is format `0x0E`, 128x4, one mip, 4096 bytes; its
+body reads as little-endian floats in `0..1` (`0x3D20A0A1` ~ 0.039, `0x3DA8A8A9` ~ 0.082, `0x3E048485` ~ 0.129, ...),
+i.e. per-material colour parameters rather than pixels. `_MVTF` is format `0x09`, 128x128, 8 mips, 4 bytes/texel with a
+mostly `00 00 00 FF` body (an RGBA8 mask). These are the most likely source of the colour cast over the `0x2B` detail
+layer: the shader can multiply the greyscale detail by a VTF colour, which would tint any atlas we write. Next
+experiment (needs the Spark): neutralise `pl_VTF`/`MVTF` to white and see whether the textured Sonic's colours become
+the atlas's own.
+
 **0x2B albedo: the second half is not per-tile colour (measured 2026-11-09).** Splitting a native Leon albedo
 (`uPlTex0000_0`, 512x512, 10 mips) into its two 8-byte halves shows the first half is a real BC4 greyscale detail map
 (the jacket/pants/boots are recognisable in `evidence/re6-scale/switch-native-albedo-detail-layer.png`), while the second
