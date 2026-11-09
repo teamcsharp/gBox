@@ -1,3 +1,47 @@
+## Current handoff — 2026-11-09 07:15 UTC
+
+Start with [the DeepSeek continuation guide](DEEPSEEK-LIVE-REPLACEMENT-HANDOFF.md) and
+[the Sonic/Mario source inventory and implementation plan](research/re5-sonic-mario-handoff.md).
+The entries below this checkpoint are historical and may describe failures or pending activation that were subsequently resolved.
+
+Code through `554a3e20f3039d0c4dc5de6fe7ad7d9b89c41111` is pushed and active on lilspark.
+MercMode is enabled for **RE5 only**, with `repeat_queue=true` and the single exact modified build
+`recovery-sonic-native-grip-v15-20261109`, Chris (BSAA), Public Assembly. Random skin/cast/co-op rotation
+and keep-warm are off. This keeps the supported Sonic player selected; **the other Mercenaries cast
+and Mario enemies are not implemented**. Native enemies remain visible. Do not resume stock roulette.
+
+Live acceptance: full Sonic visibly rendered in actual No Mercy combat, progressing from
+13,220 score / 43 kills at 07:14:47 UTC to 26,210 / 57 at 07:15:06 UTC. Current observations:
+
+- Worker `4e342e9ebf5948da`; session `4e342e9ebf5948da-d1257c164cc0405e`.
+- Emulator PID `1316339`; launch job `d1257c164cc0405e`; autoplay job `1f343320be524907`.
+- Full candidate ARC SHA-256 `d96c9c9e8efaee4cf3a0eda9f10ff12ef1515e1efd604f9c34d081cd3a80cb8a`.
+- Stable viewing feed `/api/broadcast/pc/lilspark.mjpg` delivered three fresh JPEGs in 0.23 seconds.
+  Stream age was 0.0 seconds; capture p50/p95 were 16.65/23.48 ms, with no gaps over 100 ms in 600 samples.
+- Exact repeating queue remained intact during combat. A subsequent real round boundary still needs live acceptance.
+
+The screenshot shows Sonic's arm/hand and pistol forward, and the comparison window remains open with native
+Chris beside v12/v14/v15 and synchronized animation/hand isolation. This is not final acceptance of all grip,
+reload, melee, camera and foot-contact poses: Sonic's head/quills still obscure useful views. The v15 native
+grip builder is reproducible but **unregistered**; ordinary `build()`/`plan()` still select the earlier recipe.
+DeepSeek must follow the exact builder and hashes in the continuation guide, finish visible acceptance, then
+promote that recipe. Do not advertise arbitrary live GLB replacement. Current Switch apply restarts the title
+within a session and loses the round; it is not zero-restart RAM asset loading.
+
+Service activation completed at 07:10:42 UTC, PID `1307414`. New comparison and native replacement planning
+routes respond correctly; Sheva-to-Chris plan produces the accepted hash, reverse pairs return 409, and that
+API smoke performed no writes. Nine external cron processes and the Hermes gateway survived; all eight
+agents posted fresh progress after restart and inference was serving eight requests with none waiting at
+07:12:49 UTC. In-flight generations could retry; this was not a zero-interruption deployment.
+
+Validation includes 57 focused v15 tests, 10 new repeat-queue tests and 174 existing scheduler/recovery tests.
+The handoff supplies exact artifacts, reproduction, API/configuration examples, stream/recovery procedures,
+owned donor inventories, failure lessons, and ordered acceptance checkpoints for Mario enemies, the remaining
+Sonic cast, composite overlays and the cross-title pick-whip loader. Local receipts/screenshots/assets are
+ignored and are not Git-delivered prerequisites. Re-resolve all session/process identities before later operations.
+
+---
+
 Thanks. Items 1, 2 (the commit), 3 and 5 look right. Two corrections.
 
 A. Emulator config: no decision is needed, because the config is effectively auto.
