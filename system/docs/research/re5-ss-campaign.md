@@ -143,6 +143,8 @@ Assembly), and the night's win played with Ship Deck's tuning. Changed:
 - `tuning.STAGE_V` (RE5 Switch: 2): dead-end notes carry `stage_v`, the tuner counts only those, writes `avoid_v`, and
   `apply()` steers by avoid spots only from a file of that version; the tuner drops the per-stage overrides, avoid spots
   and per-stage trials made under the old key once (log status `migrated`), keeping the pooled values.
+- `learning.stage_of` (the stage the learning loop and the tuner's avoid trials group a round under): `ss_stage`,
+  then the selects' `stage`, before `tuning_stage` (RE6 Switch and RE5 PS3 carry the same value in both).
 - `re5_switch_mines.BLAST_CM` tuning bounds 1500-2000 cm: the old 800-1200 left **9 m in force on two stages** (the
   live file: Ship Deck and The Mines) after the operator's 15 m standoff; a tuned value can no longer go under 15 m.
 
@@ -299,7 +301,7 @@ queue still reads. **It is control-plane code: in force after a service restart.
 
 Commits: a795c231 (the ledger), 94e6ea44 (the bot: identity, clock, rank, stage key, CRIT_FLASH), ec6c2d54 (the tuner),
 4070f866 (the queue validator), 96952009 (the planner's probes), 2a2401ef (this document), 5a2fdb58 (a round's
-identity carries the player object's generation). Tests: `tests/test_re5_ss_ledger.py` (15),
+identity carries the player object's generation), eb621831 (doc), db5d2a94 (learning.stage_of). Tests: `tests/test_re5_ss_ledger.py` (15),
 `tests/test_re5_switch_ss_campaign.py` (7), `tests/test_mercs_tuner.py` (15, the pooled-trial test that was red on main
 now expects the pooled file), `tests/test_mercmode.py::test_dj_queue_takes_the_switch_no_mercy_roster_when_re5_means_switch`;
 the RE5 Switch, tuner, learning and MercMode suites pass but for the 11 known-red RE5 tests (bonus, bonus_giveup,
