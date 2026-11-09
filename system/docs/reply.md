@@ -1,3 +1,47 @@
+## Current handoff — 2026-11-09 07:15 UTC
+
+Start with [the DeepSeek continuation guide](DEEPSEEK-LIVE-REPLACEMENT-HANDOFF.md) and
+[the Sonic/Mario source inventory and implementation plan](research/re5-sonic-mario-handoff.md).
+The entries below this checkpoint are historical and may describe failures or pending activation that were subsequently resolved.
+
+Code through `554a3e20f3039d0c4dc5de6fe7ad7d9b89c41111` is pushed and active on lilspark.
+MercMode is enabled for **RE5 only**, with `repeat_queue=true` and the single exact modified build
+`recovery-sonic-native-grip-v15-20261109`, Chris (BSAA), Public Assembly. Random skin/cast/co-op rotation
+and keep-warm are off. This keeps the supported Sonic player selected; **the other Mercenaries cast
+and Mario enemies are not implemented**. Native enemies remain visible. Do not resume stock roulette.
+
+Live acceptance: full Sonic visibly rendered in actual No Mercy combat, progressing from
+13,220 score / 43 kills at 07:14:47 UTC to 26,210 / 57 at 07:15:06 UTC. Current observations:
+
+- Worker `4e342e9ebf5948da`; session `4e342e9ebf5948da-d1257c164cc0405e`.
+- Emulator PID `1316339`; launch job `d1257c164cc0405e`; autoplay job `1f343320be524907`.
+- Full candidate ARC SHA-256 `d96c9c9e8efaee4cf3a0eda9f10ff12ef1515e1efd604f9c34d081cd3a80cb8a`.
+- Stable viewing feed `/api/broadcast/pc/lilspark.mjpg` delivered three fresh JPEGs in 0.23 seconds.
+  Stream age was 0.0 seconds; capture p50/p95 were 16.65/23.48 ms, with no gaps over 100 ms in 600 samples.
+- Exact repeating queue remained intact during combat. A subsequent real round boundary still needs live acceptance.
+
+The screenshot shows Sonic's arm/hand and pistol forward, and the comparison window remains open with native
+Chris beside v12/v14/v15 and synchronized animation/hand isolation. This is not final acceptance of all grip,
+reload, melee, camera and foot-contact poses: Sonic's head/quills still obscure useful views. The v15 native
+grip builder is reproducible but **unregistered**; ordinary `build()`/`plan()` still select the earlier recipe.
+DeepSeek must follow the exact builder and hashes in the continuation guide, finish visible acceptance, then
+promote that recipe. Do not advertise arbitrary live GLB replacement. Current Switch apply restarts the title
+within a session and loses the round; it is not zero-restart RAM asset loading.
+
+Service activation completed at 07:10:42 UTC, PID `1307414`. New comparison and native replacement planning
+routes respond correctly; Sheva-to-Chris plan produces the accepted hash, reverse pairs return 409, and that
+API smoke performed no writes. Nine external cron processes and the Hermes gateway survived; all eight
+agents posted fresh progress after restart and inference was serving eight requests with none waiting at
+07:12:49 UTC. In-flight generations could retry; this was not a zero-interruption deployment.
+
+Validation includes 57 focused v15 tests, 10 new repeat-queue tests and 174 existing scheduler/recovery tests.
+The handoff supplies exact artifacts, reproduction, API/configuration examples, stream/recovery procedures,
+owned donor inventories, failure lessons, and ordered acceptance checkpoints for Mario enemies, the remaining
+Sonic cast, composite overlays and the cross-title pick-whip loader. Local receipts/screenshots/assets are
+ignored and are not Git-delivered prerequisites. Re-resolve all session/process identities before later operations.
+
+---
+
 Thanks. Items 1, 2 (the commit), 3 and 5 look right. Two corrections.
 
 A. Emulator config: no decision is needed, because the config is effectively auto.
@@ -550,3 +594,41 @@ The v14 comparison window is open with synchronized playback and an isolated han
 v14 live boot drew the title, then stalled during menu preparation with an unchanging faded frame and a Vic video
 decoder error. Explicit resume and manual input did not advance it; one same-artifact restart is being checked.
 Sonic's live weapon grip, arm direction during combat and feet contact remain unaccepted.
+
+### Hand inspection and parallel-work checkpoint, 2026-11-09
+
+The exact v14 retry reached visible combat, advancing from 0 to 5,400 score / 18 kills. An inspection-only
+headless variant and a separate +65 cm root-translation variant exposed the arms without changing their local
+geometry, bind or finger rotations. These frames show the arm reaching forward with the held weapon; the
+original backwards-arm failure is no longer apparent. The oversized glove still fits the weapon poorly:
+its wrist-to-knuckle span is about 2.4 times the native hand's. Grip contact and foot IK remain unaccepted.
+Neither inspection artifact is a playable release or registered recipe. A temporary weapon-template override
+was reverted with verified readback, and the native controller setting was restored to Type D.
+
+The local comparison now offers a hash-bound Hand grip shortcut for the measured two-frame native finger
+animation, plus catalog labels. Both models share the frame and scale, and hands can be isolated from the
+occluding head/body. This is raw animation comparison, not the engine's layered animation or IK. The updated
+preview is open; its refresh resets to the recorded starting pose. Eight focused unit tests and two browser
+tests passed in the final rerun (the sandbox could not start the browser supervisor).
+
+Activation scope was corrected: Hermes agents run in separate service/worker cgroups, so their mere existence
+does not require waiting for whole agent runs to finish. The actual restart concern is active inference requests
+proxied through gBox, plus in-process jobs. Those requests were still active at the latest audit; the running
+backend has not restarted, and the new public replacement routes still await activation and route acceptance.
+No external Hermes execution, queued remote job or gateway drain marker was altered.
+
+V15 adds a separate, still-unregistered native grip-fit candidate. It preserves the arm/wrist transforms and
+proximal cuff, fits the palm with a proper rotation and positive scale, and places the finger chains at native
+wrist-local anchors. Its exact reproduced ARC is
+`d96c9c9e8efaee4cf3a0eda9f10ff12ef1515e1efd604f9c34d081cd3a80cb8a`.
+All 1,369 triangles remain, with no inverted/collapsed triangles or opened source seams. Fourteen sampled
+animation frames keep body vertices and non-finger transforms unchanged; maximum native digit-anchor error is
+0.000001732 cm. These are offline checks, not runtime grip acceptance. The default recipe is unchanged.
+Validation: 57 focused grip, finger, writer, retarget and author tests passed.
+
+Stock MercMode was explicitly resumed after the inspection: session
+`e93128c2856b4eab-d4094b530aea4d66` advanced from 3,190 score / 10 kills to 26,320 / 50, with fresh gameplay frames.
+The backend activation review established that cron uses streaming transport without delivery callbacks;
+interrupted pre-delivery generations can retry while separate agent processes and completed tools survive.
+A scoped quick restart is being prepared under the operator's existing authorization. Current generation compute
+may be lost and retried; this is not a claim of a zero-interruption deployment.

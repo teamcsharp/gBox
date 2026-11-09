@@ -185,6 +185,36 @@ library recipe and is not gameplay-verified. The larger source palm still places
 than Chris's palm; the native weapon attachment offset, offhand contact and procedural leg behavior need an engine
 check. No gun scaling, guessed attachment-bone edit or foot-goal change is part of this candidate.
 
+V14 subsequently loaded in the engine. Its hands lie well below Chris's camera: an idle sample places Sonic's wrists
+near Y52 versus Chris's Y97, with the source-proportioned shoulders near Y80 versus Y147. An isolated visibility
+diagnostic therefore hides only the 551 unambiguously head-bound triangles and adds 65 cm to existing root0 translation
+reference values and quantized Y offsets. Packed keys, rotations, virtual root255, rig and vertex bytes remain unchanged.
+All sampled joints and vertices move by exactly that lift within 0.00001 cm; sparse finger layers inherit the base in the
+engine and are not standalone lift proofs. Engine captures show forward arms and the attached gun moving with the body,
+but the gloves are visibly oversized. This diagnostic is not an accepted replacement and does not assess ground contact
+or procedural leg IK.
+
+The measured V14 palm is approximately 2.4 times Chris's contact dimensions. Keeping those knuckle positions while only
+curling the fingers cannot reach several native contacts: for example, the right little finger needs 16.22 cm of reach
+but its two distal segments total 10.22 cm. V15 applies a bounded hand-only fit: proper palm rotations of about 15 degrees,
+uniform palm scales 0.4111/0.4146, and exact native wrist-relative digit anchors. The original proximal cuff and all arm,
+wrist and non-finger bone transforms stay unchanged. A smooth cuff taper joins the smaller palm; distal segment lengths
+match native contacts while retaining their native directions. Normals use the deformation Jacobian, including the taper
+gradient. Every original triangle remains nondegenerate and keeps its orientation, and welded seams have zero gap.
+
+`re5_sonic_writer.build_grip_candidate()` reproduces the separate V15 archive byte for byte, SHA256
+`d96c9c9e8efaee4cf3a0eda9f10ff12ef1515e1efd604f9c34d081cd3a80cb8a`. Across 14 sampled frames of wp00 clips0/20/110 and
+body clip83, its wrist-local digit-anchor error relative to Chris is at most 0.000002 cm; body vertex change from V14 is
+zero. The single-clip sampler does not prove engine finger-layer blending or surface contact against the actual weapon.
+The full-body and wrist-local comparisons show the smaller palm joined to the retained Sonic cuff. Fifty-seven focused
+grip, hand, writer, bind and author tests pass. The default recipe remains V12 and custom dispatch remains disabled.
+
+A separate V15 headless/lifted visibility archive has SHA256
+`99238b72667ddedb667b0e947d3e064f91464c8e52522f5ad409cbb937e499d0`. It reuses every previously audited lifted LMT resource
+byte for byte and replaces only MOD97 with the V15 model plus the same head index mask. Body/hand indices, all vertex
+bytes, skeleton, inverse binds, materials and textures remain exactly V15. Both V15 outputs explicitly remain
+unregistered and `gameplay_verified: false` pending an unobstructed live weapon-contact check.
+
 ```sh
 python3 tools/probes/re5_em10_high_sonic.py \
   --archive /path/to/uEm10.arc --source /path/to/sa2_sonic_0.glb \
