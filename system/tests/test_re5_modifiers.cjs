@@ -323,7 +323,7 @@ test('server capability blocks a supported control; unimplemented hooks never se
 
 test('unknown state and escaped server reasons cannot become checked working controls', () => {
   const html = M.html({ status: { capabilities: { random_weapon: { available: false, reason: '<script>bad</script>' } } }, stale: false });
-  assert.equal((html.match(/aria-checked="mixed"/g) || []).length, 8);   // existing modifiers plus native QTE assistance
+  assert.equal((html.match(/aria-checked="mixed"/g) || []).length, 9);   // existing modifiers, native QTE assistance, the unread blueprint look
   assert.match(html, /&#60;script&#62;bad&#60;\/script&#62;/);
   assert.doesNotMatch(html, /<script>bad/);
 });
@@ -978,4 +978,64 @@ test('Switch split screen: bots on both players, Player 2 connected by an in-pla
   const ps3 = M.html({ team: { ...structuredClone(team), split_screen: false }, teamOnly: true });
   assert.doesNotMatch(ps3, /bots_p1_p2/);
   assert.match(ps3, /Prepare Player 2 controller for next launch/);
+});
+
+test('the blueprint look switch sits in the RE5 panel as this PC\'s MercMode setting and applies at the next round', async () => {
+  const r = rig();
+  let look = false;
+  const posts = [];
+  const base = r.api;
+  r.api = async (path, body, method) => {
+    if (path === '/api/mercmode') {
+      if (method === 'POST') { posts.push(body); look = body.blueprint_look; }
+      return { hosts: [{ name: 'lilspark', id: 'worker', settings: { blueprint_look: look }, current_run: { session_id: SESSION.session_id } }] };
+    }
+    return base(path, body, method);
+  };
+  r.control = M.create({ session: SESSION, api: r.api, render: s => r.paints.push(s), delay: async ms => { r.clock += ms; }, now: () => r.clock });
+  await r.control.refresh();
+  assert.deepEqual(r.control.state().blueprint, { host: 'lilspark', on: false, reason: '' });
+  const html = M.html(r.control.state());
+  assert.match(html, /<legend>MercMode look<\/legend>[\s\S]*Blueprint look \(grid textures on the level\)/);
+  assert.match(html, /data-re5-blueprint[^>]*aria-checked="false">/);
+  assert.match(html, /applies at the next round · MercMode on lilspark/);
+  assert.match(html, /blueprint companion while this is on; the round being played does not change/);
+  await r.control.setBlueprint(true);
+  assert.deepEqual(posts, [{ host: 'lilspark', blueprint_look: true }]);
+  assert.equal(r.control.state().blueprint.on, true);
+  assert.equal(r.control.state().error, false);
+  assert.match(r.control.state().message, /Blueprint look on: .* at the next round/);
+  assert.equal(r.commands().length, 0);                                       // no re5_mods mutation for it
+  assert.match(M.html(r.control.state()), /data-re5-blueprint[^>]*aria-checked="true" checked>/);
+  await r.control.setBlueprint('on');                                         // not a boolean: refused
+  assert.equal(posts.length, 1);
+  // the PiP's panel: the checkbox click posts through the controller and shows the readback, never the click
+  const fired = [];
+  const host = { innerHTML: '', querySelector: () => null, onchange: null, oninput: null, onclick: null };
+  const ctl = M.mount(host, { session: SESSION, api: r.api, delay: async () => {}, now: () => 0 });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const input = { checked: false, disabled: false, matches: sel => sel.includes('data-re5-blueprint'), closest: () => null, dataset: {} };
+  const ctlSet = ctl.setBlueprint; ctl.setBlueprint = v => { fired.push(v); return ctlSet(v); };
+  host.onchange({ target: input });
+  assert.deepEqual(fired, [false]);
+  assert.equal(input.checked, ctl.state().blueprint?.on === true);
+  ctl.stop();
+});
+
+test('the RE6 team-only panel and a PC without the feature show no live blueprint switch', async () => {
+  const r = rig();
+  const base = r.api;
+  r.api = async (path, body, method) => {
+    if (path !== '/api/mercmode') return base(path, body, method);
+    assert.notEqual(method, 'POST', 'nothing is posted to the MercMode route');
+    return { hosts: [{ name: 'lilspark', id: 'worker', settings: { enabled: true }, current_run: { session_id: SESSION.session_id } }] };
+  };
+  r.control = M.create({ session: SESSION, api: r.api, render: () => {}, delay: async () => {}, now: () => 0 });
+  await r.control.refresh();
+  assert.equal(r.control.state().blueprint.on, null);
+  assert.match(M.html(r.control.state()), /re5-blueprint" disabled>[\s\S]*older gBox/);
+  await r.control.setBlueprint(true);                                         // unknown setting: refused silently
+  assert.equal(r.control.state().blueprint.on, null);
+  assert.equal(M.html({ teamOnly: true, status: {} }).includes('MercMode look'), false);
+  assert.equal(M.blueprintHTML({ teamOnly: true }), '');
 });

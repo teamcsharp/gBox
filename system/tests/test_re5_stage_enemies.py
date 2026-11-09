@@ -15,7 +15,7 @@ ITEM = [('mName', STRING), ('mItemNo', U32)]
 
 
 def xfs(rows, classes=(LAYOUT, SET, INFO, ITEM)):
-    """One layout in the measured 64-bit XFS layout; `rows` = (unit class, info class, model type, montage)."""
+    """One layout in the measured 64-bit XFS layout; `rows` = (unit class, info class, model type, montage[, mName])."""
     names = bytearray()
     blocks = []
     for properties in classes:
@@ -42,13 +42,14 @@ def xfs(rows, classes=(LAYOUT, SET, INFO, ITEM)):
     def one(fmt, *values):
         return struct.pack('<I', 1) + struct.pack(fmt, *values)
     sets = b''
-    for serial, (unit, info, model_type, montage) in enumerate(rows):
+    for serial, (unit, info, model_type, montage, *rest) in enumerate(rows):
+        name = (rest[0] if rest else '').encode() + b'\0'
         if info == 'cSetInfoItem':
             inner = obj(3, serial, struct.pack('<I', 1) + b'box\0' + one('<I', 7))
         elif info is None:
             inner = struct.pack('<hH', -2, 0)                                      # an empty reference
         else:
-            inner = obj(2, serial, struct.pack('<I', 1) + b'\0' + one('<4f', 1., 2., 3., 0.) + one('<I', model_type)
+            inner = obj(2, serial, struct.pack('<I', 1) + name + one('<4f', 1., 2., 3., 0.) + one('<I', model_type)
                         + one('<I', montage) + one('<?', True))
         sets += obj(1, serial, one('<i', serial) + struct.pack('<I', 1) + (info or 'cSetInfoEnemy').encode() + b'\0'
                     + struct.pack('<I', 1) + unit.encode() + b'\0' + struct.pack('<I', 1) + inner)

@@ -17,12 +17,25 @@ centimetres one UV tile spans along u and along v. The grid then has one cell pe
 consistent per surface class even though the native textures tile at very different scales. Names (`jimen` = ground,
 `kabe` = wall, …) are only a tie-breaker where the geometry is mixed; the receipt records which rule decided.
 
-**2. The prop path** (`build_prop_box`). One native object model (the wooden crate `om0889` of `uOm0889.arc` here)
-has its LOD-0 and LOD-1 geometry rewritten in place as a box of the model's native bounds, textured with the grid, and
-its albedos replaced; every other entry is native. The geometry is written inside the native vertex and index
-allocations (the measured lesson of `mt_model.replace_part`: a moved buffer hangs the game even when the bytes agree).
+**2. The prop path** (`build_prop_textures`, `build_prop_box`). Every albedo an object archive's models bind is drawn
+as the orange prop grid with the object's reading as its label (geometry native). One native object model (the wooden
+crate `om0889` of `uOm0889.arc`) can also have its LOD-0 and LOD-1 geometry rewritten in place as a box of the
+model's native bounds (`build_prop_box`); every other entry is native. The geometry is written inside the native
+vertex and index allocations (the measured lesson of `mt_model.replace_part`: a moved buffer hangs the game even when
+the bytes agree).
 
-Measured on `s400.arc` (SHA-256 246e3dd4…, 2026-11-09), see `docs/research/re5-stage-greybox.md`:
+**3. The whole set** (`build_all`, CLI `all`): every stage archive and every object archive its layouts place
+(`placed_objects`), one overlay folder, one receipt (`stage-greybox-all-v1`). `blueprint_look` in MercMode plays it:
+`switch_mods op=blueprint` writes these archives over a copy of a build (`<build>-blueprint`), and the scheduler
+plays that companion while the setting is on (docs/research/blueprint-look.md).
+
+Live, 2026-11-09 (session ae02be4bd9974915-32e89a55f69c46db, build recovery-greybox-s400-pool-test-20261109): the
+s400 overlay `f26d2836…` boots and renders - grids, metre labels, native lighting - with several wall labels reading
+mirrored. The UV handedness of every texture is now measured (`Surface.mirror_share`) and the glyphs are drawn
+flipped where the mapping is mirrored, both ways where a texture's surfaces are of both hands.
+
+Measured on `s400.arc` (SHA-256 246e3dd4…, 2026-11-09), see `docs/research/re5-stage-greybox.md`; the s401..s407
+survey is in `docs/research/blueprint-look.md`:
 
 * 590 entries, all wrapped zlib streams that recompress byte-identically at level 6; `mt_arc.build(parse(x)) == x`;
   every tag is `0x40000000 | uncompressed length`.
@@ -48,6 +61,7 @@ import struct
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterable
 
 import numpy as np
 
@@ -70,7 +84,20 @@ STAGE_LAYOUT = {
     0x2ED06F92: {'normal': 12, 'uv': 20, 'uv2': 24, 'colour': 28},
     0x2FC0B663: {'normal': 12, 'uv': 20, 'uv2': 24, 'lightmap_uv': 28},
     0x32305512: {'normal': 12, 'uv': 20, 'uv2': 24, 'lightmap_uv': 28},
+    # the s401..s407 survey (2026-11-09, docs/research/blueprint-look.md): the same first 24 bytes (normal of unit
+    # length on 100 % of the vertices, finite UVs under 64), a half2 second UV at +24; 0x33C09993 adds RGBA8 at +28
+    0x2C207F5E: {'normal': 12, 'uv': 20, 'uv2': 24},            # 28: s401 (2 meshes), s407 (32)
+    0x2D30A6AF: {'normal': 12, 'uv': 20, 'uv2': 24},            # 28: s405, s407 (a mesh each)
+    0x33C09993: {'normal': 12, 'uv': 20, 'uv2': 24, 'colour': 28},   # 32: s405 (one 12,493-vertex piece)
 }
+#: Scenery folders inside a stage archive: `stage\sNNN\scr\scrNN\`. s400 draws from scr01, s402 from scr00, s405 from
+#: scr01..scr07 and a piece borrowed from chapter s314 (its own folder inside s405.arc) - measured 2026-11-09.
+SCENE_FOLDER = re.compile(r'stage\\s\d{3}\\scr\\scr\d{2}\\')
+#: An albedo's name: `_BM`, or `_BM-NN` (s401's `_BM-62`, s405's `_BM-00` .. `_BM-97` - the same BC7 TEX container)
+ALBEDO_NAME = re.compile(r'_BM(-\d+)?$')
+#: Where a texture's label glyphs read mirrored: the share of its drawn area whose UV handedness is flipped must pass
+#: this for the glyphs to be drawn flipped (above MIXED_LOW and below MIXED_HIGH both readings are drawn)
+MIRROR_SHARE, MIXED_LOW, MIXED_HIGH = 0.5, 0.25, 0.75
 UP, SIDE = 0.5, 0.5                        # |normal.y| above UP counts as floor/ceiling, below SIDE as wall
 FLOOR_WORDS = ('jimen', 'jime', 'yuka', 'miti', 'michi', 'doro', 'suna', 'dobu', 'soko', 'jiso', 'asiba', 'tatami',
                'kaidan', 'road', 'floor', 'ground', 'dote')
@@ -78,6 +105,9 @@ WALL_WORDS = ('kabe', 'heki', 'totan', 'renga', 'block', 'wall', 'saku', 'hei', 
               'window', 'yatai', 'biru', 'bill', 'ie', 'koya')
 SKY_WORDS = ('sky', 'sora')
 ROOF_WORDS = ('yane',)                     # a roof faces up like a floor; a blockout does not paint it as one
+#: An albedo no measured scenery material binds and whose name says sprite / light / shadow: left native. A grid on a
+#: smoke puff or a light-bulb glow would read as a bug, not a blockout (s404 `g-s404-dummysmoke_BM`, s401 `s103_denkyu01`).
+EFFECT_WORDS = ('smoke', 'kemuri', 'shadow', 'kage', 'dummy', 'denkyu', 'flare', 'glow', 'hikari', 'light', 'nuki')
 MIN_CELLS, MAX_CELLS = 1, 32
 #: Thin cut-out surfaces (fences, wires, leaves) keep their alpha whatever the class; a solid texture keeps it too.
 VARIANTS = ('floor', 'wall', 'other', 'sky', 'prop')
@@ -101,16 +131,34 @@ def _wrap(raw: bytes) -> bytes:
 
 
 def stage_scope(stage: str) -> str:
+    """The folder s400 draws from (`stage\\s400\\scr\\scr01\\`); `scene_folders` finds every stage's own folders."""
     if not re.fullmatch(r's\d{3}', stage):
         raise GreyboxError(f'{stage!r} is not a stage code like s400')
     return f'stage\\{stage}\\scr\\scr01\\'
 
 
-def stage_models(arc: mt_arc.Arc, scope: str) -> list[tuple[str, int, int]]:
-    """(name, MOD entry index, MRL entry index) for every scene piece in `scope` that has both."""
+def scene_folders(arc: mt_arc.Arc) -> tuple[str, ...]:
+    """Every `stage\\sNNN\\scr\\scrNN\\` folder of the archive that holds a MOD (the scenery, wherever this stage keeps
+    it), sorted. Empty when the archive has no such geometry."""
+    found = set()
+    for entry in arc.entries:
+        match = SCENE_FOLDER.match(entry.name)
+        if match and _raw(entry)[:4] == b'MOD\0':
+            found.add(match.group(0))
+    return tuple(sorted(found))
+
+
+def _in_scope(name: str, scope) -> bool:
+    prefixes = (scope,) if isinstance(scope, str) else tuple(scope)
+    return any(name.startswith(prefix) for prefix in prefixes)
+
+
+def stage_models(arc: mt_arc.Arc, scope) -> list[tuple[str, int, int]]:
+    """(name, MOD entry index, MRL entry index) for every scene piece in `scope` (one folder prefix, or several) that
+    has both."""
     kinds: dict[str, dict[bytes, int]] = {}
     for index, entry in enumerate(arc.entries):
-        if not entry.name.startswith(scope):
+        if not _in_scope(entry.name, scope):
             continue
         magic = _raw(entry)[:4]
         if magic in (b'MOD\0', b'MRL\0'):
@@ -193,6 +241,12 @@ class Surface:
     tile_v_cm: float | None = None
     tile_u_quartiles: tuple[float, float] | None = None
     tile_v_quartiles: tuple[float, float] | None = None
+    #: UV handedness (2026-11-09 live frame: labels read mirrored on several walls). Of the area with a usable UV
+    #: Jacobian (`handed_cm2`), `mirrored_cm2` is drawn with (T x B) . N > 0: seen from outside, the texture's u/v
+    #: basis is the mirror image of the screen's right/down, so glyphs read backwards there.
+    handed_cm2: float = 0.0
+    mirrored_cm2: float = 0.0
+    bound: bool = True             # a scenery material binds it (False: found by name only, nothing measured)
     _u_samples: list = field(default_factory=list, repr=False)
     _v_samples: list = field(default_factory=list, repr=False)
     _w_samples: list = field(default_factory=list, repr=False)
@@ -204,6 +258,10 @@ class Surface:
     def shares(self) -> dict:
         total = self.area_cm2 or 1.0
         return {'up': self.up_cm2 / total, 'side': self.side_cm2 / total, 'down': self.down_cm2 / total}
+
+    def mirror_share(self) -> float | None:
+        """The share of the measured area where the texture appears mirrored (None: no UV Jacobian measured)."""
+        return None if self.handed_cm2 <= 0 else self.mirrored_cm2 / self.handed_cm2
 
     def settle(self) -> None:
         """Area-weighted medians and quartiles of the centimetres one UV tile spans along u and along v."""
@@ -221,10 +279,12 @@ class Surface:
             setattr(self, f'tile_{axis}_quartiles', (quartiles[0], quartiles[2]))
 
     def report(self) -> dict:
+        mirrored = self.mirror_share()
         return {'name': self.name, 'entry': self.entry, 'width': self.width, 'height': self.height,
                 'format': self.format, 'mips': self.mips, 'materials': self.materials, 'families': self.families,
                 'alpha_tested': self.alpha_tested, 'triangles': self.triangles, 'area_m2': round(self.area_cm2 / 1e4, 2),
                 'shares': {k: round(v, 3) for k, v in self.shares().items()},
+                'mirror_share': None if mirrored is None else round(mirrored, 3), 'bound': self.bound,
                 'tile_u_cm': None if self.tile_u_cm is None else round(self.tile_u_cm, 1),
                 'tile_v_cm': None if self.tile_v_cm is None else round(self.tile_v_cm, 1),
                 'tile_u_quartiles_cm': None if self.tile_u_quartiles is None else
@@ -233,11 +293,15 @@ class Surface:
                 [round(v, 1) for v in self.tile_v_quartiles]}
 
 
-def albedo_surfaces(arc: mt_arc.Arc, scope: str) -> dict[str, Surface]:
-    """Every BC7 `_BM` TEX in `scope`, keyed by its full path, before any geometry is charged to it."""
+def albedo_surfaces(arc: mt_arc.Arc, scope, extra: Iterable[str] = ()) -> dict[str, Surface]:
+    """Every BC7 albedo TEX in `scope` (`_BM` / `_BM-NN` names), plus the `extra` entry names (albedos the scenery
+    materials bind from elsewhere under `stage\\`), keyed by full path, before any geometry is charged to them.
+    Returns the surfaces; the names that are not a BC7 TEX `mtf_tex` parses are reported by `measure`."""
     out: dict[str, Surface] = {}
+    wanted = set(extra)
     for index, entry in enumerate(arc.entries):
-        if not entry.name.startswith(scope) or not entry.name.endswith('_BM'):
+        named = _in_scope(entry.name, scope) and bool(ALBEDO_NAME.search(entry.name))
+        if not named and entry.name not in wanted:
             continue
         raw = _raw(entry)
         if raw[:4] != b'TEX\0':
@@ -251,15 +315,21 @@ def albedo_surfaces(arc: mt_arc.Arc, scope: str) -> dict[str, Surface]:
         if entry.name in out:
             raise GreyboxError(f'two TEX entries share the name {entry.name!r}; the writer addresses by name')
         out[entry.name] = Surface(name=entry.name, entry=index, width=tex.width, height=tex.height,
-                                  format=tex.format, mips=len(tex.mips))
+                                  format=tex.format, mips=len(tex.mips), bound=False)
     return out
 
 
-def measure(arc: mt_arc.Arc, scope: str) -> tuple[dict[str, Surface], dict]:
-    """Charge every triangle of every stage mesh to the albedo its material binds; returns (surfaces, notes)."""
-    surfaces = albedo_surfaces(arc, scope)
+def measure(arc: mt_arc.Arc, scope) -> tuple[dict[str, Surface], dict]:
+    """Charge every triangle of every stage mesh to the albedo its material binds; returns (surfaces, notes).
+
+    `scope` is one folder prefix or several (`scene_folders`). The albedos are the BC7 TEX the scenery materials bind
+    in the albedo slot (wherever they live under `stage\\`) and the BC7 `_BM` TEX named in the folders; a bound
+    albedo that is not a BC7 TEX `mtf_tex` parses (s403's `_NUKI`) is listed in `albedo_unparsed` and left native.
+    """
     notes = {'models': 0, 'meshes': 0, 'meshes_skipped_format': 0, 'triangles': 0, 'unbound_materials': 0,
-             'mrl_unparsed': []}
+             'mrl_unparsed': [], 'albedo_unparsed': [], 'formats_skipped': {}}
+    models = []
+    bound_names: set[str] = set()
     for name, mod_index, mrl_index in stage_models(arc, scope):
         mod_raw, mrl_raw = _raw(arc.entries[mod_index]), _raw(arc.entries[mrl_index])
         try:
@@ -267,12 +337,19 @@ def measure(arc: mt_arc.Arc, scope: str) -> tuple[dict[str, Surface], dict]:
         except mtf_mrl.MaterialBindingError as exc:
             notes['mrl_unparsed'].append({'name': name, 'reason': str(exc)})
             continue
+        models.append((name, mod_raw, bindings))
+        bound_names.update(b['albedo'] for b in bindings if b['albedo'] and b['albedo'].startswith('stage\\'))
+    surfaces = albedo_surfaces(arc, scope, bound_names)
+    notes['albedo_unparsed'] = sorted(n for n in bound_names if n not in surfaces)
+    for name, mod_raw, bindings in models:
         model = mt_model.parse_mod(mod_raw)
         notes['models'] += 1
         for k, record in enumerate(model.meshes()):
             geometry = mesh_geometry(model, k)
             if geometry is None:
                 notes['meshes_skipped_format'] += 1
+                key = f'{record["vertex_format"]:08X}'
+                notes['formats_skipped'][key] = notes['formats_skipped'].get(key, 0) + 1
                 continue
             material = bindings[record['material_index']] if record['material_index'] < len(bindings) else None
             albedo = material and material['albedo']
@@ -280,6 +357,7 @@ def measure(arc: mt_arc.Arc, scope: str) -> tuple[dict[str, Surface], dict]:
             if surface is None:
                 notes['unbound_materials'] += 1
                 continue
+            surface.bound = True
             notes['meshes'] += 1
             positions, normals, uvs, triangles = geometry
             notes['triangles'] += len(triangles)
@@ -327,6 +405,13 @@ def _charge(surface: Surface, positions, normals, uvs, triangles) -> None:
     surface._u_samples.extend(u_cm[sane].tolist())
     surface._v_samples.extend(v_cm[sane].tolist())
     surface._w_samples.extend(area[ok][sane].tolist())
+    # Handedness: the image is upright to a viewer outside the surface when (T, B) turns like the screen's (right,
+    # down), whose cross product points into the screen, i.e. along -N. (T x B) . N > 0 is therefore a mirrored
+    # mapping; N is the geometric normal of the winding (the measured convention: CCW seen from outside).
+    handed = np.einsum('ij,ij->i', np.cross(tangent, bitangent), geometric[ok])[sane]
+    weights = area[ok][sane]
+    surface.handed_cm2 += float(weights.sum())
+    surface.mirrored_cm2 += float(weights[handed > 0].sum())
 
 
 # --- classification ------------------------------------------------------------------------------------------------
@@ -352,7 +437,11 @@ def classify(surface: Surface) -> tuple[str, str]:
     for word in WALL_WORDS:
         if word in lower:
             return 'wall', f'name:{word}'
-    return 'other', 'default' if surface.area_cm2 > 0 else 'unbound'
+    if surface.area_cm2 > 0:
+        return 'other', 'default'
+    if any(word in lower for word in EFFECT_WORDS):
+        return 'keep', 'unbound:effect'               # left native: nothing measured draws it, the name says sprite
+    return 'other', 'unbound'
 
 
 def grid_cells(tile_cm: float | None) -> int:
@@ -394,10 +483,35 @@ def _font(size: int):
         return ImageFont.load_default()
 
 
+def _glyphs(text: str, font, fill, *, mirror: bool) -> 'Image.Image':
+    """The text as an RGBA image, flipped left-right when `mirror` (so it reads forwards on a mirrored mapping)."""
+    from PIL import Image, ImageDraw, ImageOps
+
+    left, top, right, bottom = font.getbbox(text)
+    image = Image.new('RGBA', (max(1, right - left), max(1, bottom - top)), (0, 0, 0, 0))
+    ImageDraw.Draw(image).text((-left, -top), text, fill=fill, font=font)
+    return ImageOps.mirror(image) if mirror else image
+
+
+def _label(image, draw, text: str, size: int, colours: dict, centre: tuple[float, float], *, mirror: bool,
+           box: bool = True) -> None:
+    glyphs = _glyphs(text, _font(size), colours['text'], mirror=mirror)
+    x, y = round(centre[0] - glyphs.width / 2), round(centre[1] - glyphs.height / 2)
+    if box:
+        pad = max(2, size // 6)
+        draw.rectangle([x - pad, y - pad, x + glyphs.width + pad, y + glyphs.height + pad], fill=colours['base'])
+    image.paste(glyphs, (x, y), glyphs)
+
+
 def grid_image(width: int, height: int, variant: str, cells_u: int = 1, cells_v: int = 1, label: str = '',
-               corner: str = '') -> 'Image.Image':
+               corner: str = '', *, mirror: bool = False, both: bool = False) -> 'Image.Image':
     """An RGB grid texture: `cells_u` x `cells_v` major cells (one per metre), four minor cells per major cell where
-    they stay readable, the `label` across the middle and `corner` small in the top-left."""
+    they stay readable, the `label` across the middle and `corner` small in the top-left.
+
+    `mirror` draws the glyphs flipped left-right: on a surface whose UV mapping is the mirror image of the screen
+    (measured per texture, `Surface.mirror_share`) they then read forwards. `both` adds the other reading below the
+    label at 0.6 size, for a texture whose surfaces are of both hands (one of the two always reads).
+    """
     from PIL import Image, ImageDraw
 
     if variant not in VARIANTS:
@@ -433,21 +547,23 @@ def grid_image(width: int, height: int, variant: str, cells_u: int = 1, cells_v:
         draw.line([(0, y), (width - 1, y)], fill=colours['major'], width=thick)
     if label and min(width, height) >= 32:
         size = max(8, min(width, height) // 6)
-        font = _font(size)
-        box = draw.textbbox((0, 0), label, font=font)
-        tw, th = box[2] - box[0], box[3] - box[1]
-        x, y = (width - tw) / 2 - box[0], (height - th) / 2 - box[1]
-        pad = max(2, size // 6)
-        draw.rectangle([x + box[0] - pad, y + box[1] - pad, x + box[2] + pad, y + box[3] + pad], fill=colours['base'])
-        draw.text((x, y), label, fill=colours['text'], font=font)
+        if both and height >= 64:
+            # a texture drawn on surfaces of both hands: the dominant reading above the middle, the other below it
+            _label(image, draw, label, size, colours, (width / 2, height / 2 - size * 0.55), mirror=mirror)
+            _label(image, draw, label, max(8, int(size * 0.6)), colours, (width / 2, height / 2 + size * 0.5),
+                   mirror=not mirror)
+        else:
+            _label(image, draw, label, size, colours, (width / 2, height / 2), mirror=mirror)
     if corner and min(width, height) >= 64:
         size = max(8, min(width, height) // 14)
-        draw.text((max(2, width // 64), max(2, height // 64)), corner, fill=colours['text'], font=_font(size))
+        glyphs = _glyphs(corner, _font(size), colours['text'], mirror=mirror)
+        # the corner tag stays top-left in texture space; mirrored glyphs read forwards on a mirrored surface
+        image.paste(glyphs, (max(2, width // 64), max(2, height // 64)), glyphs)
     return image
 
 
 def greybox_texture(native: bytes, variant: str, cells_u: int, cells_v: int, label: str, corner: str = '',
-                    *, keep_alpha: bool = True) -> tuple[bytes, dict]:
+                    *, keep_alpha: bool = True, mirror: bool = False, both: bool = False) -> tuple[bytes, dict]:
     """A TEX with `native`'s container, dimensions, format and mip chain, drawn as a grid; the native alpha is kept.
 
     Returns (bytes, report). The report carries what was drawn so a receipt can say it without decoding the result.
@@ -457,7 +573,8 @@ def greybox_texture(native: bytes, variant: str, cells_u: int, cells_v: int, lab
     tex = mtf_tex.parse(native)
     if tex.format not in BC7:
         raise GreyboxError(f'only BC7 albedos are rewritten (format 0x{tex.format:02x})')
-    image = grid_image(tex.width, tex.height, variant, cells_u, cells_v, label, corner).convert('RGBA')
+    image = grid_image(tex.width, tex.height, variant, cells_u, cells_v, label, corner, mirror=mirror,
+                       both=both).convert('RGBA')
     alpha_note = 'opaque'
     if keep_alpha:
         source = mtf_tex.decode(native, 0)
@@ -471,20 +588,22 @@ def greybox_texture(native: bytes, variant: str, cells_u: int, cells_v: int, lab
         raise GreyboxError('the rewritten TEX does not keep the native header and mip table')
     return out, {'variant': variant, 'cells': [cells_u, cells_v], 'label': label, 'corner': corner,
                  'alpha': alpha_note, 'width': tex.width, 'height': tex.height, 'format': tex.format,
-                 'mips': len(tex.mips)}
+                 'mips': len(tex.mips), 'glyphs': ('both ways' if both else 'mirrored' if mirror else 'upright')}
 
 
 # --- the stage overlay -----------------------------------------------------------------------------------------------
 
 def plan(surfaces: dict[str, Surface], overrides: dict[str, str] | None = None) -> list[dict]:
-    """One row per albedo: the variant, the rule that chose it, the cells and labels the grid will carry."""
+    """One row per albedo: the variant, the rule that chose it, the cells and labels the grid will carry, and how the
+    glyphs are drawn (`mirror`: flipped for a mapping of mirrored handedness; `both`: both readings, mixed surfaces).
+    A `keep` row names a texture left native."""
     rows = []
     for name in sorted(surfaces):
         surface = surfaces[name]
         variant, rule = classify(surface)
         if overrides and surface.basename in overrides:
             variant, rule = overrides[surface.basename], 'override'
-            if variant not in VARIANTS:
+            if variant not in VARIANTS and variant != 'keep':
                 raise GreyboxError(f'override {variant!r} for {surface.basename} is not a variant')
         cells_u, cells_v = grid_cells(surface.tile_u_cm), grid_cells(surface.tile_v_cm)
         if variant == 'floor':
@@ -492,30 +611,44 @@ def plan(surfaces: dict[str, Surface], overrides: dict[str, str] | None = None) 
         else:
             u, v = span_label(surface.tile_u_cm), span_label(surface.tile_v_cm)
             label, corner = (u if cells_u == cells_v else f'{u} x {v}'), ''
+        share = surface.mirror_share()
+        mirror = share is not None and share > MIRROR_SHARE
+        both = share is not None and MIXED_LOW <= share <= MIXED_HIGH
         rows.append({'variant': variant, 'rule': rule, 'cells': [cells_u, cells_v], 'label': label,
-                     'corner': corner, **surface.report()})
+                     'corner': corner, 'mirror': mirror, 'both': both, **surface.report()})
     return rows
 
 
 def build(archive: bytes, *, stage: str = 's400', overrides: dict[str, str] | None = None,
-          progress=lambda *_: None) -> tuple[bytes, dict]:
-    """The stage archive with every `scr01` albedo drawn as a greybox grid; returns (archive, receipt)."""
+          progress=lambda *_: None, scope=None) -> tuple[bytes, dict]:
+    """The stage archive with every scenery albedo drawn as a greybox grid; returns (archive, receipt).
+
+    The scenery folders are found in the archive (`scene_folders`: s400's scr01, s402's scr00, s405's scr01..07 and
+    the s314 piece); `scope` overrides them with one folder prefix or several.
+    """
     arc = mt_arc.parse(archive)
     if mt_arc.build(arc) != archive:
         raise GreyboxError('the archive does not rebuild byte-identically; refusing to write on top of it')
-    scope = stage_scope(stage)
-    surfaces, notes = measure(arc, scope)
+    folders = scope if scope is not None else scene_folders(arc)
+    if not folders:
+        raise GreyboxError('no scenery folder (stage\\sNNN\\scr\\scrNN\\ with a MOD) in the archive')
+    surfaces, notes = measure(arc, folders)
     if not surfaces:
-        raise GreyboxError(f'no BC7 albedo under {scope}')
+        raise GreyboxError(f'no BC7 albedo under {folders}')
     rows = plan(surfaces, overrides)
     changed = []
+    kept = []
     for row in rows:
+        if row['variant'] == 'keep':
+            kept.append(row)
+            continue
         entry = arc.entries[row['entry']]
         native = _raw(entry)
         if entry.data != _wrap(native):
             raise GreyboxError(f'{entry.name}: the native stream is not a level-6 zlib wrap; cannot rewrite it faithfully')
         progress(row['name'], row['variant'])
-        out, report = greybox_texture(native, row['variant'], *row['cells'], row['label'], row['corner'])
+        out, report = greybox_texture(native, row['variant'], *row['cells'], row['label'], row['corner'],
+                                      mirror=row['mirror'], both=row['both'])
         entry.data = _wrap(out)
         entry.size = len(entry.data)
         if entry.tag != (0x40000000 | len(out)):
@@ -529,23 +662,36 @@ def build(archive: bytes, *, stage: str = 's400', overrides: dict[str, str] | No
     if any(original.entries[i].data != final.entries[i].data for i in untouched):
         raise GreyboxError('an entry outside the albedo list changed')
     counts = {}
+    glyphs = {'upright': 0, 'mirrored': 0, 'both ways': 0}
     for row in rows:
+        if row['variant'] == 'keep':
+            continue
         counts[row['variant']] = counts.get(row['variant'], 0) + 1
+        glyphs[row['glyphs']] += 1
     receipt = {
         'title_id': TITLE_ID, 'stage': stage, 'archive': f'{stage}.arc', 'route': 're5_stage_greybox.build',
+        'scene_folders': list(folders) if not isinstance(folders, str) else [folders],
         'source_sha256': hashlib.sha256(archive).hexdigest(), 'written_sha256': hashlib.sha256(written).hexdigest(),
         'bytes': len(written), 'entries': len(final.entries), 'changed_entries': sorted(changed),
-        'unchanged_entries': len(untouched), 'variants': counts, 'measurement': notes, 'textures': rows,
+        'unchanged_entries': len(untouched), 'variants': counts, 'glyphs': glyphs, 'measurement': notes,
+        'textures': [row for row in rows if row['variant'] != 'keep'],
+        'kept_native_textures': [{'name': row['name'], 'rule': row['rule']} for row in kept],
         'kept_native': ['every MOD, MRL, _NM normal map, _MM mask, _LM light map, _AM alpha map, _CM cube map, the '
-                        'layouts, sounds, effects and the navigation mesh', 'the alpha channel of every albedo'],
+                        'layouts, sounds, effects and the navigation mesh', 'the alpha channel of every albedo',
+                        'albedos no measured material binds whose name says sprite / light / shadow (kept_native_textures)',
+                        'albedos mtf_tex does not parse (measurement.albedo_unparsed)'],
         'live_verified': False, 'gameplay_verified': False,
         'what_must_be_seen': ['the whole stage drawn in grey and blue grid tiles with metre labels, lit as before '
                               '(light maps are native)', 'floors blue with the pixel size and a metre tag, walls grey '
-                              'with the metre label, props and foliage checkered', 'fences, wires and leaves still '
-                              'cut out (native alpha)', 'enemies and players unchanged'],
+                              'with the metre label, props and foliage checkered', 'labels read forwards (glyphs are '
+                              'flipped on textures whose mapping is mirrored; a texture of mixed hands shows both)',
+                              'fences, wires and leaves still cut out (native alpha)', 'enemies and players unchanged'],
         'failure_signs': ['black screen or hang at stage load: a TEX the game rejects (bisect by variant)',
-                          'a surface still showing a photo texture: an albedo bound by a material outside scr01 or by '
-                          'an effect', 'solid slabs where fences or wires were: alpha was not kept',
+                          'a surface still showing a photo texture: an albedo bound by a material outside the scenery '
+                          'folders, by an effect, or listed in albedo_unparsed / kept_native_textures',
+                          'solid slabs where fences or wires were: alpha was not kept',
+                          'a label still reading backwards: that texture\'s mirror_share is on the wrong side of 0.5 '
+                          '(a per-mesh UV edit would be exact; the receipt row says the share)',
                           'grid lines of very different size on one surface class: the UV measurement is off for '
                           'that texture; its tile quartiles are in the receipt'],
         'acceptance': 'experimental; offline structural checks only'}
@@ -566,7 +712,7 @@ def verify(original: bytes, candidate: bytes, receipt: dict | None = None) -> di
         if a.data == b.data:
             continue
         changed.append(index)
-        if not a.name.endswith('_BM'):
+        if not ALBEDO_NAME.search(a.name):
             raise GreyboxError(f'entry {index} {a.name} is not an albedo but changed')
         raw_a, raw_b = _raw(a), _raw(b)
         if b.data != _wrap(raw_b):
@@ -652,10 +798,10 @@ def render_stage(candidate: bytes, png: Path, *, stage: str = 's400', size: int 
     from PIL import Image
 
     arc = mt_arc.parse(candidate)
-    scope = stage_scope(stage)
+    scope = scene_folders(arc) or stage_scope(stage)
     textures: dict[str, np.ndarray] = {}
     for index, entry in enumerate(arc.entries):
-        if entry.name.startswith(scope) and entry.name.endswith('_BM'):
+        if entry.name.startswith('stage\\') and ALBEDO_NAME.search(entry.name):
             raw = _raw(entry)
             try:
                 mip = 0
@@ -790,7 +936,196 @@ def render_model(archive: bytes, model_name: str, png: Path, *, size: int = 320,
             'shows': 'the archive\'s LOD-0 drawn parts with the albedo each material binds; flat shade, not the game'}
 
 
-# --- the prop path: one object model rewritten as a grid box -------------------------------------------------------
+# --- the objects a stage places ------------------------------------------------------------------------------------
+
+def placed_objects(arc: mt_arc.Arc) -> dict[str, list[str]]:
+    """{`uOmNNNN.arc`: [layout entries]} of the object archives the stage's layouts place: the static scenery rows
+    (`*_IDo00_Ins`, class `uIm`, `mpInfo.mName` = `om0816_IDo00_U001`, `om083fF_…`, `OM100C_…`) and the interactive
+    objects (`soft\\<mode>\\*_IDF00/01_Ins`, `mUnitClass` = `uOm0886`). File names carry lower-case hex, as the
+    host's archives do. Measured on s400..s407 (2026-11-09); s400 gives the 32 archives of the research note."""
+    from .re5_stage_enemies import read_xfs, XfsError
+
+    found: dict[str, set] = {}
+    for entry in arc.entries:
+        if not re.search(r'_ID[oF]\d\d_Ins$', entry.name):
+            continue
+        raw = _raw(entry)
+        if raw[:4] != b'XFS\0':
+            continue
+        try:
+            tree = read_xfs(raw)
+        except XfsError:
+            continue
+        infos = tree.get('mSetInfos') or []
+        for info in infos if isinstance(infos, list) else [infos]:
+            if not isinstance(info, dict):
+                continue
+            unit = info.get('mUnitClass') or ''
+            extra = info.get('mpInfo') if isinstance(info.get('mpInfo'), dict) else {}
+            name = extra.get('mName') if isinstance(extra.get('mName'), str) else ''
+            match = re.fullmatch(r'uOm([0-9a-fA-F]{4})', unit) or re.match(r'(?i)om([0-9a-f]{4})', name)
+            if match:
+                found.setdefault(f'uOm{match.group(1).lower()}.arc', set()).add(entry.name)
+    return {key: sorted(value) for key, value in sorted(found.items())}
+
+
+# --- the prop path, textures only: every object albedo as the orange grid, geometry native ------------------------
+
+#: What an object's texture name says it is (romaji, from the s400 object table of docs/research/re5-stage-greybox.md
+#: and the s401..s407 archives); the label the grid carries. Unknown names are labelled with their romaji.
+PROP_READINGS = {
+    'kibako': 'CRATE', 'taru': 'BARREL', 'reddrum': 'DRUM', 'takarabako': 'CHEST', 'sunadokei': 'HOURGLASS',
+    'danboll': 'BOX', 'desk': 'TABLE', 'kabe': 'WALL', 'door': 'DOOR', 'window': 'WINDOW', 'car': 'CAR', 'tv': 'TV',
+    'parasol': 'PARASOL', 'bananatree': 'TREE', 'satoukibi': 'CANE', 'yatai': 'STALL', 'sentaku': 'LAUNDRY',
+    'polytank': 'CAN', 'grapefruit': 'FRUIT', 'tomato': 'FRUIT', 'kago': 'BASKET', 'gaikotu': 'SKULL',
+    'chikuden': 'BATTERY', 'oil': 'TANK', 'hikidashi': 'DRAWERS', 'nuno': 'CLOTH', 'hashigo': 'LADDER',
+    'hashigoshort': 'LADDER', 'tsukue': 'TABLE', 'isu': 'CHAIR', 'tana': 'SHELF', 'bin': 'BOTTLE', 'hako': 'BOX',
+    'doramu': 'DRUM', 'drum': 'DRUM', 'tire': 'TYRE', 'taiya': 'TYRE', 'fence': 'FENCE', 'saku': 'FENCE',
+}
+
+
+def prop_label(texture_name: str) -> str:
+    """`pawn\\om\\om0889\\model\\om_kibakoC01_01_BM` -> `CRATE`; an unknown romaji is the label itself, upper-cased."""
+    base = texture_name.rsplit('\\', 1)[-1]
+    base = ALBEDO_NAME.sub('', base)
+    base = re.sub(r'^(om|s\d{3}_[a-z]_|[a-z]_)', '', base, count=1).lstrip('_')
+    base = re.sub(r'_\d{2}$', '', base)                     # om_kibakoC01_01 -> om_kibakoC01
+    base = re.sub(r'[A-Z]?\d{2,}$', '', base)                # kibakoC01 -> kibako, reddrumA01 -> reddrum, door100C -> door
+    base = re.sub(r'\d+$', '', base)
+    word = base.lower()
+    for key in sorted(PROP_READINGS, key=len, reverse=True):
+        if key in word:
+            return PROP_READINGS[key]
+    return (word.upper() or 'PROP')[:10]
+
+
+def object_models(arc: mt_arc.Arc) -> list[tuple[str, int, int]]:
+    """(name, MOD index, MRL index) of every object model (`pawn\\...`) with both entries: the intact model and its
+    broken form; effect models (`effect\\mod\\...`) are not objects and keep their sheets."""
+    return stage_models(arc, 'pawn\\')
+
+
+def measure_objects(arc: mt_arc.Arc) -> tuple[dict[str, Surface], dict]:
+    """Charge every drawn triangle of every object model to the albedo its material binds (the object formats have
+    quantised positions, decoded through the model's own transform); returns (surfaces, notes)."""
+    notes = {'models': 0, 'meshes': 0, 'meshes_skipped': 0, 'triangles': 0, 'unbound_materials': 0,
+             'mrl_unparsed': [], 'albedo_unparsed': []}
+    models = []
+    bound_names: set[str] = set()
+    for name, mod_index, mrl_index in object_models(arc):
+        mod_raw, mrl_raw = _raw(arc.entries[mod_index]), _raw(arc.entries[mrl_index])
+        try:
+            bindings = material_bindings(mod_raw, mrl_raw)
+        except mtf_mrl.MaterialBindingError as exc:
+            notes['mrl_unparsed'].append({'name': name, 'reason': str(exc)})
+            continue
+        models.append((name, mod_raw, bindings))
+        bound_names.update(b['albedo'] for b in bindings if b['albedo'])
+    surfaces = albedo_surfaces(arc, (), bound_names)
+    notes['albedo_unparsed'] = sorted(n for n in bound_names if n not in surfaces)
+    for name, mod_raw, bindings in models:
+        model = mt_model.parse_mod(mod_raw)
+        notes['models'] += 1
+        for k, record in enumerate(model.meshes()):
+            if record['mesh_type'] != 0xFFFF or record['material_index'] >= len(bindings):
+                notes['meshes_skipped'] += 1                 # depth proxies and shadow parts draw no albedo
+                continue
+            try:
+                positions = np.asarray(model.positions(k), np.float64)
+                uvs = np.asarray(model.uvs(k), np.float64)
+                normals = np.asarray(model.normals(k), np.float64)
+                triangles = np.asarray(mtf_author.mesh_triangles(model, k), np.int64).reshape(-1, 3) - record['vertex_index']
+            except (ValueError, KeyError, struct.error):
+                notes['meshes_skipped'] += 1
+                continue
+            if not len(positions) or len(uvs) != len(positions) or not len(triangles) \
+                    or triangles.min() < 0 or triangles.max() >= len(positions):
+                notes['meshes_skipped'] += 1
+                continue
+            if len(normals) != len(positions):
+                normals = np.zeros_like(positions)           # the geometric normal of each triangle stands in
+            albedo = bindings[record['material_index']]['albedo']
+            surface = surfaces.get(albedo) if albedo else None
+            if surface is None:
+                notes['unbound_materials'] += 1
+                continue
+            surface.bound = True
+            notes['meshes'] += 1
+            notes['triangles'] += len(triangles)
+            material = bindings[record['material_index']]
+            if material['name'] not in surface.materials:
+                surface.materials.append(material['name'])
+                surface.families.append(material['family'])
+            surface.alpha_tested = surface.alpha_tested or material['alpha_tested']
+            _charge(surface, positions, normals, uvs, triangles)
+    for surface in surfaces.values():
+        surface.settle()
+    return surfaces, notes
+
+
+def build_prop_textures(archive: bytes, *, archive_name: str = '', progress=lambda *_: None) -> tuple[bytes, dict]:
+    """An object archive with every albedo its models bind drawn as the orange prop grid (one cell per metre of the
+    measured tile span, the object's reading as the label, native alpha kept); geometry, normal and mask maps, the
+    effect sheets, sounds, collision and motions byte-identical. Returns (bytes, receipt)."""
+    arc = mt_arc.parse(archive)
+    if mt_arc.build(arc) != archive:
+        raise GreyboxError('the archive does not rebuild byte-identically; refusing to write on top of it')
+    surfaces, notes = measure_objects(arc)
+    rows = []
+    changed = []
+    for name in sorted(surfaces):
+        surface = surfaces[name]
+        if not surface.bound:
+            continue
+        cells_u, cells_v = grid_cells(surface.tile_u_cm), grid_cells(surface.tile_v_cm)
+        u, v = span_label(surface.tile_u_cm), span_label(surface.tile_v_cm)
+        share = surface.mirror_share()
+        mirror = share is not None and share > MIRROR_SHARE
+        both = share is not None and MIXED_LOW <= share <= MIXED_HIGH
+        row = {'variant': 'prop', 'rule': 'object albedo', 'cells': [cells_u, cells_v], 'label': prop_label(name),
+               'corner': u if cells_u == cells_v else f'{u} x {v}', 'mirror': mirror, 'both': both, **surface.report()}
+        entry = arc.entries[row['entry']]
+        native = _raw(entry)
+        if entry.data != _wrap(native):
+            raise GreyboxError(f'{entry.name}: the native stream is not a level-6 zlib wrap; cannot rewrite it faithfully')
+        progress(name, 'prop')
+        out, report = greybox_texture(native, 'prop', cells_u, cells_v, row['label'], row['corner'], mirror=mirror,
+                                      both=both)
+        entry.data = _wrap(out)
+        entry.size = len(entry.data)
+        if entry.tag != (0x40000000 | len(out)):
+            raise GreyboxError(f'{entry.name}: the tag is not the measured 0x40000000 | length form')
+        row.update(report, payload_sha256=hashlib.sha256(out).hexdigest())
+        rows.append(row)
+        changed.append(row['entry'])
+    if not rows:
+        raise GreyboxError('no object model of the archive binds a BC7 albedo')
+    written = mt_arc.build(arc)
+    before, after = mt_arc.parse(archive), mt_arc.parse(written)
+    for i, (a, b) in enumerate(zip(before.entries, after.entries)):
+        if i not in set(changed) and a.data != b.data:
+            raise GreyboxError('an entry outside the albedo list changed')
+        if (a.name, a.hash, a.tag) != (b.name, b.hash, b.tag):
+            raise GreyboxError('an entry changed its name, hash or tag')
+    receipt = {
+        'title_id': TITLE_ID, 'archive': archive_name, 'route': 're5_stage_greybox.build_prop_textures',
+        'source_sha256': hashlib.sha256(archive).hexdigest(), 'written_sha256': hashlib.sha256(written).hexdigest(),
+        'bytes': len(written), 'entries': len(after.entries), 'changed_entries': sorted(changed),
+        'unchanged_entries': len(after.entries) - len(changed), 'variants': {'prop': len(rows)},
+        'measurement': notes, 'textures': rows,
+        'kept_native': ['every MOD (geometry untouched), MRL, _NM normal map, _MM mask, effect models and their '
+                        'sheets, motions, collision and sounds', 'the alpha channel of every albedo'],
+        'live_verified': False, 'gameplay_verified': False,
+        'what_must_be_seen': ['the object in the orange grid with its label, the native shape, shadow and breakage',
+                              'its broken form and debris in the same grid (they sample the same albedos)'],
+        'failure_signs': ['the object still shows a photo texture: a material binds an albedo outside the measured '
+                          'list (measurement.unbound_materials / albedo_unparsed)',
+                          'a hang at stage load: a TEX the game rejects (the TEX header and mips are native)'],
+        'acceptance': 'experimental; offline structural checks only'}
+    return written, receipt
+
+
+# --- the prop path, geometry: one object model rewritten as a grid box ---------------------------------------------
 
 @dataclass(frozen=True)
 class PropTarget:
@@ -975,15 +1310,178 @@ def build_prop_box(archive: bytes, target: PropTarget = CRATE, *, lods=(0, 1)) -
     return written, receipt
 
 
+def preview_set(out: Path, *, stage: str | None = None, objects: bool = False, size: int = 768,
+                max_triangles: int = 120_000, merge: bool = False) -> dict:
+    """PNGs for a written overlay set (`build_all` output): a stage's texture sheet and CPU view, or one sheet of every
+    object albedo written. Each call writes a `<name>-preview.json` sidecar; `merge` folds the sidecars into
+    receipt.json (`previews` per stage, `object_previews`). Separate from the build so that the slow CPU rasteriser
+    (about a millisecond a triangle) can run per stage, in parallel, after the archives exist."""
+    out = Path(out)
+    receipt_path = out / 'receipt.json'
+    receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+    done = []
+    if stage:
+        row = receipt['stages'][stage]
+        archive = (out / 'romfs' / Path(ARCHIVE_DIR) / f'{stage}.arc').read_bytes()
+        arc = mt_arc.parse(archive)
+        entries = {row_['name']: row_ for row_ in row['textures']}
+        rows = [{'entry': i, 'name': e.name, 'variant': entries[e.name]['variant']}
+                for i, e in enumerate(arc.entries) if e.name in entries]
+        contact_sheet(archive, rows, out / f'{stage}-textures.png')
+        view = render_stage(archive, out / f'{stage}-view.png', stage=stage, size=size, max_triangles=max_triangles)
+        view['png'] = f'{stage}-view.png'
+        (out / f'{stage}-preview.json').write_text(json.dumps(
+            [{'png': f'{stage}-textures.png', 'shows': 'every written albedo, mip 0'}, view], indent=1), encoding='utf-8')
+        done.append(stage)
+    if merge:
+        for name in list(receipt['stages']):
+            sidecar = out / f'{name}-preview.json'
+            if sidecar.is_file():
+                receipt['stages'][name]['previews'] = json.loads(sidecar.read_text(encoding='utf-8'))
+        sidecar = out / 'objects-preview.json'
+        if sidecar.is_file():
+            receipt['object_previews'] = json.loads(sidecar.read_text(encoding='utf-8'))
+        receipt_path.write_text(json.dumps(receipt, indent=1), encoding='utf-8')
+        done.append('merged')
+    if objects:
+        from PIL import Image, ImageDraw
+        tiles = []
+        for name, row in receipt['objects'].items():
+            if 'skipped' in row:
+                continue
+            arc = mt_arc.parse((out / 'romfs' / Path(ARCHIVE_DIR) / name).read_bytes())
+            for tex in row['textures']:
+                index = next(i for i, e in enumerate(arc.entries) if e.name == tex['name'])
+                tiles.append((name[:-4] + ' ' + tex['label'], mtf_tex.decode(_raw(arc.entries[index]), 0).convert('RGB')))
+        columns, thumb = 10, 96
+        lines = -(-len(tiles) // columns) or 1
+        sheet = Image.new('RGB', (columns * thumb, lines * (thumb + 14)), (30, 30, 30))
+        draw = ImageDraw.Draw(sheet)
+        font = _font(9)
+        for n, (label, image) in enumerate(tiles):
+            x, y = (n % columns) * thumb, (n // columns) * (thumb + 14)
+            sheet.paste(image.resize((thumb, thumb)), (x, y))
+            draw.text((x + 2, y + thumb), label[:20], fill=(220, 220, 220), font=font)
+        sheet.save(out / 'objects-textures.png')
+        (out / 'objects-preview.json').write_text(json.dumps(
+            [{'png': 'objects-textures.png', 'shows': f'{len(tiles)} object albedos, mip 0'}], indent=1), encoding='utf-8')
+        done.append('objects')
+    return {'rendered': done}
+
+
 # --- CLI ------------------------------------------------------------------------------------------------------------
 
-def write_overlay(out_dir: Path, archive_name: str, data: bytes, receipt: dict) -> Path:
+def write_overlay(out_dir: Path, archive_name: str, data: bytes, receipt: dict | None) -> Path:
     folder = Path(out_dir) / 'romfs' / Path(ARCHIVE_DIR)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / archive_name
     path.write_bytes(data)
-    (Path(out_dir) / 'receipt.json').write_text(json.dumps(receipt, indent=1), encoding='utf-8')
+    if receipt is not None:
+        (Path(out_dir) / 'receipt.json').write_text(json.dumps(receipt, indent=1), encoding='utf-8')
     return path
+
+
+def build_all(inputs: Path, uom_dir: Path, out: Path, *, stages: Iterable[str] = STAGES, box_crate: bool = True,
+              preview: bool = True, rebuild_check: bool = False, log=print) -> dict:
+    """The whole overlay set: every stage archive of `stages` found in `inputs` through `build`, every object archive
+    their layouts place (found in `uom_dir`) through `build_prop_textures`, the crate boxed when `box_crate`
+    (build_prop_box, the one in-place geometry edit the research note proved offline), all under
+    `out/romfs/nativeNXx64/ImgNX/Archive/`, with one receipt.json (SHA-256 per file, per-stage counts, what must be
+    seen, failure signs) and the preview PNGs. `rebuild_check` builds everything a second time in this process and
+    refuses a difference (a second run in another process compared by hash is the cheaper evidence). Nothing is
+    launched. Returns the receipt."""
+    inputs, uom_dir, out = Path(inputs), Path(uom_dir), Path(out)
+    files: dict[str, dict] = {}
+    stage_rows = {}
+    objects_needed: dict[str, dict] = {}
+    for stage in stages:
+        src = inputs / f'{stage}.arc'
+        if not src.is_file():
+            stage_rows[stage] = {'skipped': f'{src} not present'}
+            continue
+        archive = src.read_bytes()
+        log(f'{stage}: measuring and writing')
+        written, receipt = build(archive, stage=stage, progress=lambda *_: None)
+        verify(archive, written, receipt)
+        if rebuild_check and build(archive, stage=stage)[0] != written:
+            raise GreyboxError(f'{stage}: two builds in one process differ; the writer is not deterministic')
+        path = write_overlay(out, f'{stage}.arc', written, None)
+        for name, layouts in placed_objects(mt_arc.parse(archive)).items():
+            objects_needed.setdefault(name, {})[stage] = layouts
+        row = {k: receipt[k] for k in ('source_sha256', 'written_sha256', 'bytes', 'entries', 'unchanged_entries',
+                                       'variants', 'glyphs', 'scene_folders', 'kept_native_textures')}
+        row |= {'changed_entries': len(receipt['changed_entries']), 'textures_written': len(receipt['textures']),
+                'measurement': receipt['measurement'], 'rebuild_identical': True if rebuild_check else 'see the second run',
+                'textures': [{k: r.get(k) for k in ('name', 'variant', 'rule', 'cells', 'label', 'glyphs',
+                                                     'mirror_share', 'tile_u_cm', 'tile_v_cm', 'payload_sha256')}
+                             for r in receipt['textures']]}
+        if preview:
+            contact_sheet(written, receipt['textures'], out / f'{stage}-textures.png')
+            row['previews'] = [{'png': f'{stage}-textures.png', 'shows': 'every written albedo, mip 0'},
+                               render_stage(written, out / f'{stage}-view.png', stage=stage)]
+            row['previews'][1]['png'] = f'{stage}-view.png'
+        stage_rows[stage] = row
+        files[f'romfs/{ARCHIVE_DIR}/{stage}.arc'] = {'sha256': receipt['written_sha256'], 'bytes': len(written),
+                                                     'source_sha256': receipt['source_sha256'], 'kind': 'stage'}
+    object_rows = {}
+    for name in sorted(objects_needed):
+        src = uom_dir / name
+        if not src.is_file():
+            object_rows[name] = {'skipped': 'archive not present locally', 'stages': sorted(objects_needed[name])}
+            continue
+        archive = src.read_bytes()
+        try:
+            if box_crate and name == CRATE.archive:
+                boxed, box_receipt = build_prop_box(archive, CRATE)
+                written, receipt = build_prop_textures(boxed, archive_name=name)
+                receipt['box'] = {k: box_receipt[k] for k in ('model', 'route')}
+                receipt['source_sha256'] = hashlib.sha256(archive).hexdigest()
+                receipt['route'] = 're5_stage_greybox.build_prop_box + build_prop_textures'
+                receipt['changed_entries'] = sorted(set(receipt['changed_entries']) | set(box_receipt['changed_entries']))
+                receipt['unchanged_entries'] = receipt['entries'] - len(receipt['changed_entries'])
+            else:
+                written, receipt = build_prop_textures(archive, archive_name=name)
+        except GreyboxError as exc:
+            object_rows[name] = {'skipped': str(exc), 'stages': sorted(objects_needed[name])}
+            continue
+        if rebuild_check:
+            rebuilt, _ = (build_prop_textures(build_prop_box(archive, CRATE)[0], archive_name=name)
+                          if box_crate and name == CRATE.archive else build_prop_textures(archive, archive_name=name))
+            if rebuilt != written:
+                raise GreyboxError(f'{name}: two builds in one process differ; the writer is not deterministic')
+        write_overlay(out, name, written, None)
+        object_rows[name] = {'stages': sorted(objects_needed[name]), 'layouts': objects_needed[name],
+                             **{k: receipt[k] for k in ('route', 'source_sha256', 'written_sha256', 'bytes', 'entries',
+                                                        'changed_entries', 'unchanged_entries', 'measurement')},
+                             'textures': [{k: r.get(k) for k in ('name', 'label', 'cells', 'corner', 'glyphs',
+                                                                  'mirror_share', 'payload_sha256')}
+                                          for r in receipt['textures']],
+                             **({'box': receipt['box']} if 'box' in receipt else {}),
+                             'rebuild_identical': True if rebuild_check else 'see the second run'}
+        files[f'romfs/{ARCHIVE_DIR}/{name}'] = {'sha256': receipt['written_sha256'], 'bytes': len(written),
+                                                'source_sha256': receipt['source_sha256'], 'kind': 'object'}
+    combined = {
+        'title_id': TITLE_ID, 'overlay': out.name, 'route': 're5_stage_greybox.build_all',
+        'files': files, 'stages': stage_rows, 'objects': object_rows,
+        'manifest_note': 'files maps each RomFS path to the SHA-256 of the written archive: upload each as an artifact '
+                         'and pass {path: {"artifact": sha256}} to switch_mods op=blueprint (or op=write)',
+        'live_verified': False, 'gameplay_verified': False,
+        'proven_live_before_this_set': ['stage-greybox-s400-v1 (s400.arc f26d2836…) booted and rendered on lilspark '
+                                        '2026-11-09 (session ae02be4bd9974915-32e89a55f69c46db): grids, labels, '
+                                        'lighting; several wall labels read mirrored - fixed here by handedness'],
+        'what_must_be_seen': ['every Mercenaries stage in blue / grey grid tiles with metre labels under native light',
+                              'labels reading forwards on walls that read mirrored in the s400-v1 frame',
+                              'every placed object (barrels, crates, drums, chests, hourglasses, stalls, cars) in the '
+                              'orange grid with its label; shooting them still breaks them',
+                              'enemies, players, effects and the sky untouched except the flat sky tint'],
+        'failure_signs': ['black screen or hang on one stage only: that stage\'s archive (bisect by variant there)',
+                          'a photo surface left: see that stage\'s kept_native_textures / albedo_unparsed, or a '
+                          'material outside the scenery folders', 'a backwards label: that texture\'s mirror_share',
+                          'an object still photo-textured: its archive is in objects with skipped, or a variant '
+                          'archive the host names differently (uOm08b8 / uOm0912 on this host)'],
+        'acceptance': 'experimental; offline structural checks only'}
+    (out / 'receipt.json').write_text(json.dumps(combined, indent=1), encoding='utf-8')
+    return combined
 
 
 def main(argv=None) -> int:
@@ -1004,15 +1502,56 @@ def main(argv=None) -> int:
     p.add_argument('archive')
     p.add_argument('--target', default='crate', choices=('crate', 'desk'))
     p.add_argument('--out', required=True)
+    t = sub.add_parser('props', help='redraw the albedos of one object archive as the prop grid (geometry native)')
+    t.add_argument('archive')
+    t.add_argument('--out', required=True)
+    a = sub.add_parser('all', help='every stage in --inputs and every object its layouts place: one overlay set')
+    a.add_argument('--inputs', required=True, help='folder with s400.arc .. s407.arc')
+    a.add_argument('--uom', required=True, help='folder with the uOm*.arc object archives')
+    a.add_argument('--out', required=True)
+    a.add_argument('--stages', default=','.join(STAGES))
+    a.add_argument('--no-box-crate', action='store_true', help='keep the crate geometry native (textures only)')
+    a.add_argument('--no-preview', action='store_true')
+    a.add_argument('--rebuild-check', action='store_true', help='build everything twice in this process and compare')
+    pv = sub.add_parser('preview', help='render the PNGs of a written overlay set (one stage per call, or the objects)')
+    pv.add_argument('--out', required=True, help='the overlay set folder (receipt.json inside is updated)')
+    pv.add_argument('--stage', help='s400 .. s407: its texture sheet and stage view')
+    pv.add_argument('--objects', action='store_true', help='one sheet of every written object albedo')
+    pv.add_argument('--size', type=int, default=768)
+    pv.add_argument('--max-triangles', type=int, default=120_000)
+    pv.add_argument('--merge', action='store_true', help='fold the rendered sidecars into receipt.json')
     v = sub.add_parser('verify', help='check a written stage overlay against its original')
     v.add_argument('--original', required=True)
     v.add_argument('--candidate', required=True)
     v.add_argument('--receipt')
     args = parser.parse_args(argv)
+    if args.command == 'preview':
+        print(json.dumps(preview_set(Path(args.out), stage=args.stage, objects=args.objects, size=args.size,
+                                     max_triangles=args.max_triangles, merge=args.merge), indent=1))
+        return 0
     if args.command == 'survey':
         arc = mt_arc.parse(Path(args.archive).read_bytes())
-        surfaces, notes = measure(arc, stage_scope(args.stage))
-        print(json.dumps({'measurement': notes, 'textures': plan(surfaces)}, indent=1))
+        folders = scene_folders(arc) or stage_scope(args.stage)
+        surfaces, notes = measure(arc, folders)
+        print(json.dumps({'scene_folders': list(folders) if not isinstance(folders, str) else [folders],
+                          'measurement': notes, 'objects': placed_objects(arc), 'textures': plan(surfaces)}, indent=1))
+        return 0
+    if args.command == 'props':
+        archive = Path(args.archive).read_bytes()
+        written, receipt = build_prop_textures(archive, archive_name=Path(args.archive).name)
+        out = Path(args.out)
+        path = write_overlay(out, Path(args.archive).name, written, receipt)
+        print(json.dumps({'written': str(path), 'sha256': receipt['written_sha256'], 'bytes': receipt['bytes'],
+                          'textures': [(r['name'].rsplit(chr(92), 1)[-1], r['label']) for r in receipt['textures']]}, indent=1))
+        return 0
+    if args.command == 'all':
+        receipt = build_all(Path(args.inputs), Path(args.uom), Path(args.out), stages=args.stages.split(','),
+                            box_crate=not args.no_box_crate, preview=not args.no_preview,
+                            rebuild_check=args.rebuild_check)
+        print(json.dumps({'files': {k: v['sha256'] for k, v in receipt['files'].items()},
+                          'stages': {k: v.get('variants', v.get('skipped')) for k, v in receipt['stages'].items()},
+                          'objects_skipped': {k: v['skipped'] for k, v in receipt['objects'].items() if 'skipped' in v}},
+                         indent=1))
         return 0
     if args.command == 'build':
         overrides = dict(item.split('=', 1) for item in args.override)

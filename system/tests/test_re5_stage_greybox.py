@@ -128,39 +128,44 @@ def stage_mrl(materials, bindings, paths):
     return bytes(raw)
 
 
-def quad(x0, x1, y0, y1, z0, z1, axis_normal, uv_scale):
-    """Two triangles over a rectangle; `uv_scale` is UV units per centimetre along each in-plane axis."""
-    if axis_normal == 'y':                                   # floor: spans x and z at height y0
-        points = [(x0, y0, z0), (x1, y0, z0), (x0, y0, z1), (x1, y0, z1)]
-        uvs = [(0, 0), ((x1 - x0) * uv_scale, 0), (0, (z1 - z0) * uv_scale), ((x1 - x0) * uv_scale, (z1 - z0) * uv_scale)]
+def quad(x0, x1, y0, y1, z0, z1, axis_normal, uv_scale, *, v_down=False):
+    """Two triangles over a rectangle; `uv_scale` is UV units per centimetre along each in-plane axis. A wall's v
+    runs up the wall (+y) by default - the image's top row at the wall's foot, a mirrored mapping as the writer
+    measures it; `v_down` runs v down the wall, the upright mapping (the image's top row at the top of the wall)."""
+    if axis_normal == 'y':                                   # floor: spans x and z at height y0, wound CCW seen from above
+        points = [(x0, y0, z0), (x0, y0, z1), (x1, y0, z0), (x1, y0, z1)]
+        uvs = [(0, 0), (0, (z1 - z0) * uv_scale), ((x1 - x0) * uv_scale, 0), ((x1 - x0) * uv_scale, (z1 - z0) * uv_scale)]
         normal = (0.0, 1.0, 0.0)
     else:                                                    # wall: spans x and y at depth z0
         points = [(x0, y0, z0), (x1, y0, z0), (x0, y1, z0), (x1, y1, z0)]
-        uvs = [(0, 0), ((x1 - x0) * uv_scale, 0), (0, (y1 - y0) * uv_scale), ((x1 - x0) * uv_scale, (y1 - y0) * uv_scale)]
+        top, foot = ((0, (y1 - y0) * uv_scale) if v_down else (0, 0)), ((0, 0) if v_down else (0, (y1 - y0) * uv_scale))
+        uvs = [top, (top[0] + (x1 - x0) * uv_scale, top[1]), foot, (foot[0] + (x1 - x0) * uv_scale, foot[1])]
         normal = (0.0, 0.0, 1.0)
     return {'points': points, 'normals': [normal] * 4, 'uvs': uvs, 'strips': [[0, 1, 2, 3]]}
 
 
-def stage_arc(*, floor_tile_cm=400.0, wall_tile_cm=200.0, alpha=255):
+def stage_arc(*, floor_tile_cm=400.0, wall_tile_cm=200.0, alpha=255, scope=SCOPE, wall_name='y_kabe_BM',
+              wall_v_down=False, extra=()):
     """(archive, names): a floor quad on the lightmapped format, a wall quad on the vertex-lit one, one unbound
     albedo, a sky albedo, a normal map, a light map and an untouched entry."""
     floor = quad(0, 1600, 0, 0, 0, 800, 'y', 1.0 / floor_tile_cm) | {'fmt': LIT, 'material': 0, 'lod': 1,
                                                                       'lightmap_uvs': [(0, 0), (1, 0), (0, 1), (1, 1)]}
-    wall = quad(0, 600, 0, 300, 0, 0, 'z', 1.0 / wall_tile_cm) | {'fmt': VERTEX, 'material': 1, 'lod': 1}
+    wall = quad(0, 600, 0, 300, 0, 0, 'z', 1.0 / wall_tile_cm, v_down=wall_v_down) | {'fmt': VERTEX, 'material': 1, 'lod': 1}
     materials = ('floorMesh.None.XfB_L_1', 'wallMesh.None.XfBAW_2')
     mod = stage_mod([floor, wall], materials)
-    paths = [SCOPE + 'y_floor_BM', 'system\\texture\\NullWhite', SCOPE + 'L_floor_LM', SCOPE + 'y_kabe_BM',
-             SCOPE + 'y_kabe_NM']
+    paths = [scope + 'y_floor_BM', 'system\\texture\\NullWhite', scope + 'L_floor_LM', scope + wall_name,
+             scope + 'y_kabe_NM']
     mrl = stage_mrl(materials, {'floorMesh.None.XfB_L_1': [(G.ALBEDO_HASH, 1), (0x9333B, 2), (G.LIGHTMAP_HASH, 3)],
                                 'wallMesh.None.XfBAW_2': [(G.NORMAL_HASH, 5), (G.ALBEDO_HASH, 4), (0x9333B, 2)]},
                     paths)
-    contents = [(SCOPE + 'y_floor_BM', bc7_tex(64, 32, (90, 120, 60, 255))),
-                (SCOPE + 'y_kabe_BM', bc7_tex(32, 32, (150, 100, 80, alpha))),
-                (SCOPE + 'y_unused_BM', bc7_tex(32)),
-                (SCOPE + 'y_s400_skyA_BM', bc7_tex(64, 32, (100, 150, 220, 255))),
-                (SCOPE + 'y_kabe_NM', tex(0x1F)), (SCOPE + 'L_floor_LM', tex(0x13)),
+    contents = [(scope + 'y_floor_BM', bc7_tex(64, 32, (90, 120, 60, 255))),
+                (scope + wall_name, bc7_tex(32, 32, (150, 100, 80, alpha))),
+                (scope + 'y_unused_BM', bc7_tex(32)),
+                (scope + 'y_s400_skyA_BM', bc7_tex(64, 32, (100, 150, 220, 255))),
+                (scope + 'y_kabe_NM', tex(0x1F)), (scope + 'L_floor_LM', tex(0x13)),
                 ('stage\\s400\\soft\\merce\\s400_fsm', b'XFS\0kept'),
-                (SCOPE + 'piece', mrl), (SCOPE + 'piece', mod)]
+                *extra,
+                (scope + 'piece', mrl), (scope + 'piece', mod)]
     entries = [mt_arc.Entry(name=name, hash=0x241F5DEB, tag=0x40000000 | len(data), size=0, offset=0,
                             data=zlib.compress(data, 6)) for name, data in contents]
     return mt_arc.build(mt_arc.Arc(7, entries)), [name for name, _ in contents]
@@ -315,9 +320,16 @@ def test_verify_refuses_changes_outside_the_albedos_and_mismatched_receipts():
 
 
 def test_build_refuses_a_scope_without_albedos_and_a_bad_stage_code():
-    archive, _ = stage_arc()
+    archive, names = stage_arc()
+    # the scenery folders come from the archive itself (s402 draws from scr00, s405 from scr01..07): the stage code
+    # only names the output; an explicit scope with no albedo is refused, as is an archive without scenery
+    assert G.scene_folders(mt_arc.parse(archive)) == (SCOPE,)
     with pytest.raises(G.GreyboxError):
-        G.build(archive, stage='s401')
+        G.build(archive, stage='s401', scope=G.stage_scope('s401'))
+    arc = mt_arc.parse(archive)
+    bare = mt_arc.build(mt_arc.Arc(7, [e for e in arc.entries if e.name != SCOPE + 'piece']))
+    with pytest.raises(G.GreyboxError, match='no scenery folder'):
+        G.build(bare, stage='s400')
     with pytest.raises(G.GreyboxError):
         G.stage_scope('stage400')
 
@@ -456,3 +468,161 @@ def test_build_prop_box_changes_only_the_model_and_its_albedos():
     assert mt_arc.build(after) == written
     with pytest.raises(G.GreyboxError):
         G.build_prop_box(archive, G.DESK)
+
+
+# --- all stages and assets (2026-11-09): handedness, every scenery folder, the objects' albedos ----------------------
+
+def test_uv_handedness_is_measured_and_flips_the_label_glyphs():
+    # the fixture wall runs v up the wall (the image's top row at its foot): a mirrored mapping; the floor is upright
+    archive, _ = stage_arc()
+    surfaces, _ = G.measure(mt_arc.parse(archive), SCOPE)
+    floor, wall = surfaces[SCOPE + 'y_floor_BM'], surfaces[SCOPE + 'y_kabe_BM']
+    assert floor.mirror_share() == pytest.approx(0.0) and wall.mirror_share() == pytest.approx(1.0)
+    assert surfaces[SCOPE + 'y_unused_BM'].mirror_share() is None
+    rows = {row['name'].rsplit('\\', 1)[-1]: row for row in G.plan(surfaces)}
+    assert rows['y_kabe_BM']['mirror'] is True and rows['y_kabe_BM']['both'] is False
+    assert rows['y_floor_BM']['mirror'] is False and rows['y_unused_BM']['mirror'] is False
+    # the same wall with v running down (the image's top row at the top of the wall) is upright
+    upright, _ = stage_arc(wall_v_down=True)
+    surfaces, _ = G.measure(mt_arc.parse(upright), SCOPE)
+    assert surfaces[SCOPE + 'y_kabe_BM'].mirror_share() == pytest.approx(0.0)
+    # mirrored glyphs are the left-right mirror of the upright ones, and the texture differs only by them
+    font = G._font(16)
+    a = np.asarray(G._glyphs('02 m', font, (255, 255, 255), mirror=False))
+    b = np.asarray(G._glyphs('02 m', font, (255, 255, 255), mirror=True))
+    assert a.shape == b.shape and np.array_equal(np.fliplr(a), b) and a[..., 3].max() == 255
+    plain = np.asarray(G.grid_image(128, 64, 'wall', 2, 1, '02 m'))
+    flipped = np.asarray(G.grid_image(128, 64, 'wall', 2, 1, '02 m', mirror=True))
+    both = np.asarray(G.grid_image(128, 64, 'wall', 2, 1, '02 m', both=True))
+    assert not np.array_equal(plain, flipped) and not np.array_equal(plain, both) and not np.array_equal(flipped, both)
+    assert np.array_equal(plain[:, :8], flipped[:, :8])        # the grid itself is the same; only the glyphs differ
+    _, report = G.greybox_texture(bc7_tex(32), 'wall', 1, 1, '01 m', mirror=True)
+    assert report['glyphs'] == 'mirrored'
+    # a mixed texture (both hands) gets both readings
+    mixed = G.Surface(name=SCOPE + 'x_BM', entry=0, width=64, height=64, format=0x30, mips=7, area_cm2=10.0,
+                      side_cm2=10.0, handed_cm2=10.0, mirrored_cm2=4.0)
+    row = G.plan({mixed.name: mixed})[0]
+    assert row['mirror'] is False and row['both'] is True and row['mirror_share'] == 0.4
+
+
+def test_scenery_is_found_in_any_scr_folder_and_suffixed_albedo_names_are_written():
+    # s402 keeps its scenery in scr00, s405 names albedos `_BM-19`: both are found from the archive itself
+    scope = 'stage\\s402\\scr\\scr00\\'
+    archive, names = stage_arc(scope=scope, wall_name='y_kabe_BM-19')
+    arc = mt_arc.parse(archive)
+    assert G.scene_folders(arc) == (scope,)
+    surfaces, notes = G.measure(arc, G.scene_folders(arc))
+    assert scope + 'y_kabe_BM-19' in surfaces and notes['meshes'] == 2 and notes['albedo_unparsed'] == []
+    written, receipt = G.build(archive, stage='s402')
+    assert receipt['scene_folders'] == [scope] and receipt['archive'] == 's402.arc'
+    changed = {names[i] for i in receipt['changed_entries']}
+    assert changed == {scope + 'y_floor_BM', scope + 'y_kabe_BM-19', scope + 'y_unused_BM', scope + 'y_s400_skyA_BM'}
+    assert G.verify(archive, written, receipt)['changed'] == receipt['changed_entries']
+    # a stage code names the output only; the fixture's folder is not scr01
+    assert G.stage_models(arc, G.stage_scope('s402')) == []
+
+
+def test_unbound_sprite_like_albedos_stay_native_and_are_listed():
+    smoke = (SCOPE + 'g-s404-dummysmoke_BM', bc7_tex(32))
+    archive, names = stage_arc(extra=(smoke,))
+    written, receipt = G.build(archive, stage='s400')
+    assert names.index(smoke[0]) not in receipt['changed_entries']
+    assert receipt['kept_native_textures'] == [{'name': smoke[0], 'rule': 'unbound:effect'}]
+    assert receipt['variants'] == {'floor': 1, 'wall': 1, 'other': 1, 'sky': 1}
+    before, after = mt_arc.parse(archive), mt_arc.parse(written)
+    assert before.entries[names.index(smoke[0])].data == after.entries[names.index(smoke[0])].data
+    assert G.verify(archive, written, receipt)['changed'] == receipt['changed_entries']
+
+
+def test_the_s401_s407_vertex_formats_follow_the_measured_layout():
+    for fmt in (0x2C207F5E, 0x2D30A6AF, 0x33C09993):
+        assert G.STAGE_LAYOUT[fmt]['normal'] == 12 and G.STAGE_LAYOUT[fmt]['uv'] == 20
+    assert 0x37607D20 not in G.STAGE_LAYOUT and 0x36D0D7A7 not in G.STAGE_LAYOUT      # skipped, not guessed
+
+
+def prop_textures_arc():
+    """The crate archive with a parseable MRL: material 0 binds om_kibakoC01_01_BM, material 1 om_kibakoC01_02_BM;
+    an effect sheet tx0001_BM no model binds."""
+    model = 'pawn\\om\\om0889\\model\\om0889'
+    folder = 'pawn\\om\\om0889\\model\\'
+    materials = ('near.None.XfB_N__E', 'far.None.XfB_N__E1')
+    paths = [folder + 'om_kibakoC01_01_BM', 'system\\texture\\NullWhite', folder + 'om_kibakoC01_02_BM',
+             folder + 'om_kibakoC01_01_NM']
+    mrl = stage_mrl(materials, {'near.None.XfB_N__E': [(G.ALBEDO_HASH, 1), (0x9333B, 2), (G.NORMAL_HASH, 4)],
+                                'far.None.XfB_N__E1': [(G.ALBEDO_HASH, 3), (0x9333B, 2)]}, paths)
+    contents = [(folder + 'om_kibakoC01_01_BM', bc7_tex(32)), (folder + 'om_kibakoC01_01_NM', tex(0x1F)),
+                (folder + 'om_kibakoC01_02_BM', bc7_tex(16)), ('effect\\tex\\0001\\tx0001_BM', bc7_tex(16)),
+                (model, mrl), (model, prop_mod()), (folder + 'om0889_01', prop_mod())]
+    entries = [mt_arc.Entry(name=name, hash=0x241F5DEB, tag=0x40000000 | len(data), size=0, offset=0,
+                            data=zlib.compress(data, 6)) for name, data in contents]
+    return mt_arc.build(mt_arc.Arc(7, entries)), [name for name, _ in contents]
+
+
+def test_build_prop_textures_redraws_only_the_albedos_the_object_models_bind():
+    archive, names = prop_textures_arc()
+    written, receipt = G.build_prop_textures(archive, archive_name='uOm0889.arc')
+    before, after = mt_arc.parse(archive), mt_arc.parse(written)
+    assert receipt['changed_entries'] == [0, 2]                    # the two bound albedos; the sheet and the NM stay
+    for i, (a, b) in enumerate(zip(before.entries, after.entries)):
+        assert (a.name, a.hash, a.tag) == (b.name, b.hash, b.tag)
+        assert (a.data == b.data) == (i not in (0, 2))
+    assert [t['label'] for t in receipt['textures']] == ['CRATE', 'CRATE']
+    assert all(t['variant'] == 'prop' and t['payload_sha256'] for t in receipt['textures'])
+    assert receipt['measurement']['models'] == 1 and receipt['measurement']['meshes'] == 2     # the drawn parts only
+    assert mt_arc.build(after) == written and receipt['live_verified'] is False
+    again, _ = G.build_prop_textures(archive, archive_name='uOm0889.arc')
+    assert again == written
+    # the boxed crate goes through the same texture pass (the overlay set's crate)
+    boxed, _ = G.build_prop_box(archive, G.CRATE)
+    textured, receipt2 = G.build_prop_textures(boxed, archive_name='uOm0889.arc')
+    assert receipt2['changed_entries'] == [0, 2]
+    with pytest.raises(G.GreyboxError, match='no object model'):
+        G.build_prop_textures(stage_arc()[0])
+
+
+def test_prop_labels_read_the_romaji_and_placed_objects_lists_the_archives():
+    assert G.prop_label('pawn\\om\\om0889\\model\\om_kibakoC01_01_BM') == 'CRATE'
+    assert G.prop_label('pawn\\om\\om0890\\model\\om_taruA01_BM') == 'BARREL'
+    assert G.prop_label('pawn\\om\\om0886\\model\\om_reddrumA01_BM') == 'DRUM'
+    assert G.prop_label('pawn\\om\\om0100\\model\\sunadokei_BM') == 'HOURGLASS'
+    assert G.prop_label('pawn\\om\\om100c\\model\\om_door100C_BM') == 'DOOR'
+    assert G.prop_label('pawn\\om\\om0999\\model\\om_mysteryA01_BM-03') == 'MYSTERY'
+    from test_re5_stage_enemies import xfs
+    static = xfs([('uIm', 'cSetInfoInsModel', 0, 0, 'om0816_IDo00_U001'), ('uIm', 'cSetInfoInsModel', 0, 0, 'om083fF_IDo00_U002'),
+                  ('uIm', 'cSetInfoInsModel', 0, 0, 'OM100C_IDo00_U003'), ('', '', 0, 0)])
+    interactive = xfs([('uOm0886', 'cSetInfoInsModel', 0, 0), ('uOm0100', 'cSetInfoInsModel', 0, 0), ('uWp06', 'cSetInfoItem', 0, 0)])
+    contents = [('stage\\s400\\scr\\scr00\\s400_IDo00_Ins', static), ('stage\\s400\\soft\\merce\\s400_IDF01_Ins', interactive),
+                ('stage\\s400\\soft\\merce\\s400_Item', interactive), ('stage\\s400\\soft\\merce\\s400_fsm', b'XFS\0kept')]
+    entries = [mt_arc.Entry(name=name, hash=0x15302EF4, tag=0x40000000 | len(data), size=0, offset=0,
+                            data=zlib.compress(data, 6)) for name, data in contents]
+    placed = G.placed_objects(mt_arc.parse(mt_arc.build(mt_arc.Arc(7, entries))))
+    assert placed == {'uOm0100.arc': ['stage\\s400\\soft\\merce\\s400_IDF01_Ins'],
+                      'uOm0816.arc': ['stage\\s400\\scr\\scr00\\s400_IDo00_Ins'],
+                      'uOm083f.arc': ['stage\\s400\\scr\\scr00\\s400_IDo00_Ins'],
+                      'uOm0886.arc': ['stage\\s400\\soft\\merce\\s400_IDF01_Ins'],
+                      'uOm100c.arc': ['stage\\s400\\scr\\scr00\\s400_IDo00_Ins']}
+
+
+def test_build_all_writes_one_overlay_set_with_a_combined_receipt(tmp_path):
+    inputs, uom, out = tmp_path / 'in', tmp_path / 'uom', tmp_path / 'stage-greybox-all-test'
+    inputs.mkdir(), uom.mkdir()
+    from test_re5_stage_enemies import xfs
+    layout = xfs([('uOm0889', 'cSetInfoInsModel', 0, 0), ('uOm0999', 'cSetInfoInsModel', 0, 0)])
+    archive, _ = stage_arc(extra=(('stage\\s400\\soft\\merce\\s400_IDF01_Ins', layout),))
+    (inputs / 's400.arc').write_bytes(archive)
+    crate, _ = prop_textures_arc()
+    (uom / 'uOm0889.arc').write_bytes(crate)
+    receipt = G.build_all(inputs, uom, out, stages=('s400', 's401'), box_crate=True, preview=False, rebuild_check=True,
+                          log=lambda *_: None)
+    files = receipt['files']
+    assert set(files) == {'romfs/nativeNXx64/ImgNX/Archive/s400.arc', 'romfs/nativeNXx64/ImgNX/Archive/uOm0889.arc'}
+    for rel, row in files.items():
+        data = (out / rel).read_bytes()
+        assert hashlib.sha256(data).hexdigest() == row['sha256'] and len(data) == row['bytes']
+    assert receipt['stages']['s401'] == {'skipped': f'{inputs / "s401.arc"} not present'}
+    assert receipt['stages']['s400']['variants'] == {'floor': 1, 'wall': 1, 'other': 1, 'sky': 1}
+    assert receipt['stages']['s400']['rebuild_identical'] is True
+    assert receipt['objects']['uOm0999.arc'] == {'skipped': 'archive not present locally', 'stages': ['s400']}
+    crate_row = receipt['objects']['uOm0889.arc']
+    assert crate_row['stages'] == ['s400'] and 'box' in crate_row and crate_row['route'].startswith('re5_stage_greybox.build_prop_box')
+    assert json.loads((out / 'receipt.json').read_text(encoding='utf-8'))['live_verified'] is False
