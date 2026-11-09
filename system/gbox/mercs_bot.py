@@ -195,6 +195,7 @@ class Boot:
                              pressed=pressed, cursor=getattr(menus, "NAV_CURSOR", None))
         self.hooks, self.jump_at, self.round_hooks = hooks, jump_at, round_hooks
         self.hooked, self.moment_tried, self.at_jump = False, False, False
+        self.fast_at = None                     # the menu screen a burst start was already attempted on
         self.lost_since, self.still_since, self.progress = None, None, None
         self.boot_pressed, self.named = float("-inf"), False
         self.loading_since = None
@@ -252,6 +253,16 @@ class Boot:
                 self.stats["boot_presses"] = self.stats.get("boot_presses", 0) + 1
         else:
             self.lost_since, self.named = None, True
+        # A title that can move a whole menu segment in one burst (gbox.mercs.titles.re6_switch.fast_start) does the
+        # next screen that way; the Navigator below presses only if the burst did not already change the screen.
+        fast = getattr(self.menus, "fast_start", None)
+        if callable(fast) and scr.get("where") in getattr(self.menus, "FAST_SEGMENTS", ()) \
+                and self.fast_at != scr.get("where"):
+            self.fast_at = scr.get("where")
+            try:
+                fast(self.m, self.nav.send, lambda: False, stats=self.stats)
+            except OSError as exc:
+                self.stats["fast_start_error"] = str(exc)[:160]
         self.nav.tick(scr)
         if self.nav.confirmation_error:
             return self.nav.confirmation_error

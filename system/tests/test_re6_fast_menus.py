@@ -8,7 +8,7 @@ class FakeGame:
     def __init__(self):
         self.where = "main_menu"
         self.cursor = 0
-        self.targets = {"main_menu": 0, "play_game": 2, "extra_content": 2, "mercs_mode": 0,
+        self.targets = {"main_menu": 0, "play_game": 3, "extra_content": 2, "mercs_mode": 0,
                         "select_stage": 0, "select_player": 0}
         self.next = {"main_menu": "play_game", "play_game": "extra_content", "extra_content": "mercs_mode",
                      "mercs_mode": "select_stage", "select_stage": "select_player", "select_player": "playing"}
@@ -51,9 +51,9 @@ def test_cursor_moves_are_batched_and_the_route_reaches_playing():
     assert ok is True
     assert fake.where == "playing"
     assert stats["fast_start"]["ok"] is True
-    # main_menu A; play_game ddown ddown A; extra_content ddown ddown A; mercs_mode A; select_stage A; select_player A
-    assert fake.presses == ["a", "ddown", "ddown", "a", "ddown", "ddown", "a", "a", "a", "a"]
-    assert stats["fast_start"]["presses"] == 10
+    # main_menu A; play_game ddown x3 A; extra_content ddown x2 A; mercs_mode A; select_stage A; select_player A
+    assert fake.presses == ["a", "ddown", "ddown", "ddown", "a", "ddown", "ddown", "a", "a", "a", "a"]
+    assert stats["fast_start"]["presses"] == 11
 
 
 def test_a_stuck_screen_falls_back_without_spamming():

@@ -1212,6 +1212,10 @@ def step(scr: dict) -> str | None:
 FAST_SEGMENTS = ("main_menu", "play_game", "extra_content", "mercs_mode", "select_stage", "select_player")
 FAST_POLL_S = 0.025                     # how often screen() is read inside a fast segment
 FAST_SEGMENT_S = 2.0                    # one segment's screen transition budget
+# Cursor indexes of the first screens are fixed by the shipped menus (CAMPAIGN first under PLAY GAME, AGENT HUNT first
+# under EXTRA CONTENT). Pressing those deltas blind is safer than trusting a cursor read: live 2026-11-09 the walk read
+# PLAY GAME's cursor as its target (3) and confirmed CAMPAIGN SELECT, and the run then died in the campaign's online lobby.
+FAST_FIXED = {"play_game": ["ddown"] * 3, "extra_content": ["ddown"] * 2, "mercs_mode": []}
 
 
 def fast_batch(scr: dict) -> list[str]:
@@ -1222,6 +1226,8 @@ def fast_batch(scr: dict) -> list[str]:
     the resulting screen change needs confirming: three D-pad steps become one transition instead of three.
     """
     where = scr.get("where")
+    if where in FAST_FIXED:
+        return FAST_FIXED[where] + ["a"]
     if where in CURSORED:
         return _cursor_batch(scr) + ["a"]
     if where in ("press_any_button", "title"):
