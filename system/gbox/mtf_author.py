@@ -257,9 +257,10 @@ def replace_archive_model(archive: bytes, entry_index: int, model: bytes) -> byt
         raise AuthorError(f"entry {entry_index} is outside the archive")
     entry = arc.entries[entry_index]
     tag = (entry.tag & 0xFF000000) | len(model)
-    return mt_arc.replace_at(archive, entry_index, zlib.compress(model, 9)[2:-4], tag=tag)
+    return mt_arc.replace_at(archive, entry_index, zlib.compress(model, 6)[2:-4], tag=tag)
 
 
 def build_archive(source_archive: bytes, model: bytes, entry_index: int) -> bytes:
     """The archive with one model entry replaced by an authored one."""
     return replace_archive_model(source_archive, entry_index, model)
+

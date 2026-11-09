@@ -107,7 +107,7 @@ def build_arc(name):
         if m.variant!='model' or m.header()['vertex_count']<500: continue
         if 'evf' in e.name.lower() or 'em2100' in e.name.lower(): continue
         new,parts,tris=inject(raw)
-        e.data=zlib.compress(new,9)[2:-4]; e.size=len(e.data); e.tag=(e.tag & 0xFF000000)|len(new)
+        e.data=zlib.compress(new,6)[2:-4]; e.size=len(e.data); e.tag=(e.tag & 0xFF000000)|len(new)
         done.append((e.name,len(new),parts,tris))
     out=mt_arc.build(arc); Path('/tmp/'+name+'.sonic').write_bytes(out)
     print(name,'entries',len(done)); [print(' ',d) for d in done]
@@ -117,3 +117,4 @@ if __name__=='__main__':
     for n in sys.argv[1:] or ['uEm10.arc','uEm11.arc']:
         try: build_arc(n)
         except Exception as exc: print('FAIL',n,exc)
+
