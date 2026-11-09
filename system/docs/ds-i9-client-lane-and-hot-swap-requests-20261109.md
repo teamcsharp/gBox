@@ -380,3 +380,20 @@ PM/operator can correct the plan before more is built.
    the invalid data files: keep the update ExeFS only until the payload path is understood, or find the payload's
    real encoding (a candidate is that the update's data area is stored with a different keyblob/CTR seed than its
    tables, which the keystream test can settle once the right region is identified).
+
+## Round 11 status (2026-11-09, ~18:05 CST): the patch payload decrypts with the BKTR IV
+
+1. **Root cause of the "no names anywhere" result found**: I had been decrypting the patch section with the plain
+   section IV (`section_iv`: bytes 0-7 = the whole reversed section_ctr). BKTR data uses only bytes 0-3 from the
+   section_ctr, sets bytes 4-7 to the subsection `ctr_val`, and bytes 8-15 to the offset: with `ctr_val = 0` the
+   difference is byte 7 (`00` vs `01`), which garbled every payload probe.
+2. **With `switch_bktr.bktr_ctr` the patch data reads**: at `phys 0x22e50f0` it shows a table record followed by
+   `soft\message\font\mes_font_chS_01_ID` (the same record the *base* stores at the same virtual address, with the
+   update's small changes), and at `phys 0x29c3390` it shows `chS\gameover2_BM_NOMIP` — both are file-table strings.
+   So the patch carries its own RomFS table data, and the file/name layout is readable.
+3. **Consequence**: the earlier 19 extracted files were produced with the wrong IV and are garbage — that is what
+   hangs the LOADING screen. The extraction must be redone passing `switch_bktr.bktr_ctr(sc, ctr_val, absolute)` for
+   the section read, then mapping each file's virtual range through the region list.
+4. **Next**: with the readable table strings as anchors, locate the patch's directory/file meta tables (they sit in the
+   patch's data area, e.g. the region containing `phys 0x29c3390`), parse them with `switch_romfs.walk`, and extract
+   the changed files with the BKTR IV; rebuild `recovery-re6-update-v131072-r2` and retry the round.
