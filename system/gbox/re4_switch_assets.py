@@ -283,8 +283,13 @@ class HdBin:
             if value:
                 _need(BIN_HEAD <= value < len(data), f"BIN section '{name}' at {value:#x} is outside the file")
                 found.append((value, name))
-        found.sort()
-        _need(len({offset for offset, _n in found}) == len(found), "two BIN sections share one offset")
+        # A rigid model (the room scenery: one bone, no weight sets - measured on the 462 scene models of the four
+        # Mercenaries rooms) has an empty weight table whose pointer is the next section's offset. That empty
+        # section sorts first at its offset, so it rebuilds to the same pointer; any other shared offset is refused.
+        empty = {"weights"} if data[0x28] == 0 and struct.unpack_from("<H", data, 0x42)[0] == 0 else set()
+        found.sort(key=lambda row: (row[0], row[1] not in empty))
+        shared = [name for (offset, name), (other, _n) in zip(found, found[1:]) if offset == other]
+        _need(all(name in empty for name in shared), "two BIN sections share one offset")
         _need(found[0] == (BIN_HEAD, "bones") and found[-1][1] == "materials",
               "BIN sections are not bones-first, materials-last")
         ends = [offset for offset, _n in found[1:]] + [len(data)]
@@ -371,7 +376,8 @@ class HdBin:
         _need(len(self.sections["bones"]) >= 16 * self.bone_count, "bone table shorter than its count")
         _need(len(self.sections["weights"]) >= 8 * self.weight_count, "weight table shorter than its count")
         if count:
-            _need(int(self.weight_index().max()) < self.weight_count, "a vertex names a weight set past the table")
+            # a rigid scene model has no weight sets at all and every vertex names set 0 (measured on the rooms)
+            _need(int(self.weight_index().max()) < max(self.weight_count, 1), "a vertex names a weight set past the table")
         materials = self.materials()
         _need(sum(m.vertex_count for m in materials) == count, "primitive runs do not consume the vertex array exactly")
 
@@ -674,31 +680,49 @@ def _bc1_blocks(rgb: np.ndarray) -> np.ndarray:
     return out
 
 
-def encode_dds(rgba: np.ndarray, *, mipmaps: bool = True) -> bytes:
-    """An opaque-or-alpha RGBA image as a DXT5 DDS with a full mip chain (the layout the player archives use).
+DXT_BLOCK_BYTES = {"DXT1": 8, "DXT3": 16, "DXT5": 16}
 
-    Alpha is stored as the block's two extremes with the nearest of the eight interpolants per texel.
-    """
+
+def _dxt_levels(rgba: np.ndarray, mipmaps: bool | int) -> list[np.ndarray]:
+    """The mip chain of an RGBA image: box-filtered halves down to 1x1 (or `mipmaps` levels when it is a count)."""
     from PIL import Image
 
     rgba = np.asarray(rgba, np.uint8)
     _need(rgba.ndim == 3 and rgba.shape[2] == 4 and rgba.shape[0] % 4 == 0 and rgba.shape[1] % 4 == 0,
           "encode_dds takes an RGBA image whose sides are multiples of 4")
-    height, width = rgba.shape[:2]
     levels, image = [], Image.fromarray(rgba, "RGBA")
+    wanted = None if isinstance(mipmaps, bool) else int(mipmaps)
     while True:
         levels.append(np.asarray(image, np.uint8))
-        if not mipmaps or (image.width == 1 and image.height == 1):
+        if wanted is not None:
+            if len(levels) >= wanted:
+                break
+        elif not mipmaps or (image.width == 1 and image.height == 1):
             break
         image = image.resize((max(1, image.width // 2), max(1, image.height // 2)), Image.BOX)
-    data = b""
-    for level in levels:
+    return levels
+
+
+def encode_dxt(level: np.ndarray, fourcc: str = "DXT5") -> bytes:
+    """One mip level as DXT1 / DXT3 / DXT5 blocks (range-fit colour; DXT3 explicit 4-bit alpha, DXT5 interpolated).
+
+    DXT3 is what the room archives hold (216 of 218 entries of `44000400.pack.fen`), DXT5 the player archives.
+    """
+    _need(fourcc in DXT_BLOCK_BYTES, f"encode_dxt writes DXT1, DXT3 or DXT5, not {fourcc!r}")
+    level = np.asarray(level, np.uint8)
+    h, w = level.shape[:2]
+    if h % 4 or w % 4:                                  # the last levels are smaller than a block: replicate
+        level = np.pad(level, ((0, -h % 4), (0, -w % 4), (0, 0)), mode="edge")
         h, w = level.shape[:2]
-        if h % 4 or w % 4:                              # the last levels are smaller than a block: replicate
-            level = np.pad(level, ((0, -h % 4), (0, -w % 4), (0, 0)), mode="edge")
-            h, w = level.shape[:2]
-        colour = _bc1_blocks(level[:, :, :3])
-        alpha = level[:, :, 3].reshape(h // 4, 4, w // 4, 4).transpose(0, 2, 1, 3).reshape(-1, 16).astype(np.int32)
+    colour = _bc1_blocks(level[:, :, :3])
+    if fourcc == "DXT1":
+        return colour.tobytes()
+    alpha = level[:, :, 3].reshape(h // 4, 4, w // 4, 4).transpose(0, 2, 1, 3).reshape(-1, 16).astype(np.int32)
+    block = np.zeros((len(colour), 16), np.uint8)
+    if fourcc == "DXT3":
+        nibbles = ((alpha + 8) // 17).clip(0, 15).astype(np.uint8)          # 4 bits per texel, row-major
+        block[:, :8] = (nibbles[:, 0::2] | (nibbles[:, 1::2] << 4))
+    else:
         a0, a1 = alpha.max(1), alpha.min(1)
         steps = np.where((a0 > a1)[:, None],
                          np.stack([a0, a1] + [((7 - k) * a0 + k * a1) // 7 for k in range(1, 7)], 1),
@@ -706,19 +730,43 @@ def encode_dds(rgba: np.ndarray, *, mipmaps: bool = True) -> bytes:
         pick = np.abs(alpha[:, :, None] - steps[:, None, :]).argmin(2).astype(np.uint64)
         pick = np.where((a0 > a1)[:, None], pick, 0).astype(np.uint64)
         bits = (pick << (3 * np.arange(16, dtype=np.uint64))[None, :]).sum(1).astype(np.uint64)
-        block = np.zeros((len(colour), 16), np.uint8)
         block[:, 0], block[:, 1] = a0, a1
         block[:, 2:8] = bits.astype("<u8").view(np.uint8).reshape(-1, 8)[:, :6]
-        block[:, 8:] = colour
-        data += block.tobytes()
+    block[:, 8:] = colour
+    return block.tobytes()
+
+
+def encode_dds(rgba: np.ndarray, *, mipmaps: bool | int = True, fourcc: str = "DXT5") -> bytes:
+    """An RGBA image as a DXT DDS with a full mip chain (the layout the player archives use; DXT5 by default).
+
+    DXT5 alpha is stored as the block's two extremes with the nearest of the eight interpolants per texel; DXT3
+    alpha is the texel's upper four bits. `mipmaps` True = down to 1x1, False = one level, a number = that many.
+    """
+    levels = _dxt_levels(rgba, mipmaps)
+    height, width = levels[0].shape[:2]
+    data = b"".join(encode_dxt(level, fourcc) for level in levels)
     header = bytearray(128)
     header[:4] = b"DDS "
     flags = 0x1 | 0x2 | 0x4 | 0x1000 | 0x80000 | (0x20000 if len(levels) > 1 else 0)
-    struct.pack_into("<7I", header, 4, 124, flags, height, width, max(1, (width + 3) // 4) * max(1, (height + 3) // 4) * 16,
-                     0, len(levels))
-    struct.pack_into("<II4s", header, 76, 32, 0x4, b"DXT5")
+    struct.pack_into("<7I", header, 4, 124, flags, height, width,
+                     max(1, (width + 3) // 4) * max(1, (height + 3) // 4) * DXT_BLOCK_BYTES[fourcc], 0, len(levels))
+    struct.pack_into("<II4s", header, 76, 32, 0x4, fourcc.encode("ascii"))
     struct.pack_into("<I", header, 108, 0x1000 | (0x400008 if len(levels) > 1 else 0))
     return bytes(header) + data
+
+
+def replace_dds_pixels(native: bytes, rgba: np.ndarray) -> bytes:
+    """`native`'s 128-byte header kept byte for byte, its pixel data replaced by `rgba` encoded in the native fourcc
+    with the native mip count. Refuses a size, format or mip chain that does not reproduce the native data length,
+    so a rewritten entry is exactly as large as the one it replaces."""
+    info = dds_info(native)
+    rgba = np.asarray(rgba, np.uint8)
+    _need(rgba.shape[:2] == (info["height"], info["width"]), "replace_dds_pixels needs an image of the native size")
+    _need(info["fourcc"] in DXT_BLOCK_BYTES, f"native DDS is {info['fourcc']!r}, which this module does not encode")
+    levels = _dxt_levels(rgba, max(1, info["mipmaps"]))
+    data = b"".join(encode_dxt(level, info["fourcc"]) for level in levels)
+    _need(len(data) == len(native) - 128, f"encoded {len(data)} pixel bytes, the native entry holds {len(native) - 128}")
+    return native[:128] + data
 
 
 # ----------------------------------------------------------------------------------------------------- summaries
