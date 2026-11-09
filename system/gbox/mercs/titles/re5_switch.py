@@ -3863,10 +3863,20 @@ class Bot:
             return {"tap": "dleft" if cursor > want else "dright"}
         self.dead_since = None
         if WINDUP_FIRE:
-            # #5053 faced_melee: an incoming melee this close, already winding up - the quick turn, the gun down
-            # for it. Measured from the snapshot itself (never the wind-up ledger: the decision order runs the
-            # melee before the ledger fills). The slow aim turn (turn + laser settle, trigger only once aimed)
-            # lets the swing land - the recorded frames show the bot aiming, no trigger, when the hit connected.
+            # #5053 faced_melee: an incoming melee this close, already winding up. Measured from the snapshot itself
+            # (never the wind-up ledger: the decision order runs the melee before the ledger fills). The slow aim turn
+            # (turn + laser settle, trigger only once aimed) lets the swing land - the recorded frames show the bot
+            # aiming, no trigger, when the hit connected.
+            # The operator's rule for it, every title (2026-11-09): "enemies transitioning into attack animations need
+            # to be shot, dispatched, meleed or interrupted". So he is the target at once, and:
+            #   * behind him (past QUICK_ERR): ONE quick turn brings the gun round - QUICK_GAP_S apart, never restarted
+            #     while one is playing;
+            #   * in front or at his side: no detour - the fight below fires on him this tick. A quick turn there
+            #     turned his back on the swing.
+            # The first version took over on EVERY tick a wind-up showed, restarted the quick turn each time and so only
+            # ever held the stick back with the gun down. Live 2026-11-09 (No Mercy: someone in the crowd is always
+            # swinging): 2,218 quick-turn starts in 183 s, 46 % of the round, the trigger held 0.6 s, 10 kills, 10 hits
+            # taken - what the operator watched as "the bot just sits idle ... lets enemies close in on him".
             live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0]
             if live:
                 px, py, pz = p["pos"]
@@ -3880,14 +3890,15 @@ class Bot:
                     key = wu.get("ptr", wu.get("slot"))
                     self._set_target(key, now)
                     self.target_at = now
-                    self._gun_down()
-                    self.stats["behind_turns"] += 1
-                    self.stats["quick_turns"] += 1
-                    self.quick = 2
-                    self.doing, self.why = ("quick_turn",
-                                            f"faced melee: a swing winding up {flat(wu) / 100:.1f} m "
-                                            f"({math.degrees(err):+.0f} deg): the quick turn")
-                    return {"hold": ("ldown",)}
+                    if QUICK_TURN and abs(err) > QUICK_ERR and not self.quick and now - self.quick_at > QUICK_GAP_S:
+                        self._gun_down()
+                        self.stats["behind_turns"] += 1
+                        self.stats["quick_turns"] += 1
+                        self.quick = 2
+                        self.doing, self.why = ("quick_turn",
+                                                f"faced melee: a swing winding up {flat(wu) / 100:.1f} m behind "
+                                                f"({math.degrees(err):+.0f} deg): the quick turn")
+                        return {"hold": ("ldown",)}
         self._round_start(snap, now)
         # start each round facing open ground (once per round, before any movement)
         if not getattr(self, "_start_facing_done", True):
