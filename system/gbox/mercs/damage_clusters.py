@@ -244,7 +244,7 @@ def _decision(title, logic, held, p):
         label = 'aim'
     elif 'b' in keys:
         label = 'run'
-    elif keys & {'dup', 'ddown', 'dleft', 'dright'}:
+    elif keys & {'dup', 'ddown', 'dleft', 'dright', 'up', 'down', 'left', 'right'}:   # (RE6 Switch: the plain names)
         label = 'item (D-pad)'
     elif keys & {'lup', 'ldown', 'lleft', 'lright'}:
         label = 'walk'
