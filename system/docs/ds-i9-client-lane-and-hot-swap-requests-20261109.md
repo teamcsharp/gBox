@@ -204,3 +204,31 @@ The unlock runs on the i9 now — and it refuses for a precise reason, which is 
 5. **Caveat for the lane:** the RE6 unlock's gate is 1.0.2's main. Until the update is in Yuzu (GUI install, or the
    Python extractor + a LayeredFS `exefs/main` overlay), the i9 can build, probe and hot-swap but cannot open the
    main menu for a Mercenaries round; rounds stay on Eden until then.
+
+## Round 5 status (2026-11-09, ~16:20 CST, main at `26d796eb`): RE6 1.0.2 on the i9, decrypted by gBox
+
+**The update's ExeFS is extracted and running on the i9.** No `hactool`, no emulator installer.
+
+1. **`gbox/switch_nca.py`** (commit `26d796eb`) reads NCAs on a client PC: header, section records, the ticket title
+   key and the ExeFS PFS0. Every convention was measured against the RE6 update rather than assumed:
+   - the fixed header (0xC00) is AES-128-XTS with the retail `header_key` and the **sector index big-endian**;
+   - section entries (0x240, 4 × 0x10) are in **0x200 sectors** (entry 0: 0x23ca1–0x30ec1 → 0x4794200, 27.5 MB);
+   - the PFS0 begins at `section_offset + pfs0_offset` (0x8000), not at the section start;
+   - the CTR IV is `reversed(section_ctr) || big-endian(absolute_offset >> 4)`;
+   - the title key is the ticket's block at **0x180** decrypted with `titlekek_<keyblob-1>` (keyblob 8 → 07).
+   Extraction gave the five ExeFS members, and `main` hashed **8b81f49f…**, exactly the update profile's
+   `EXEFS_MAIN_SHA256`. The ticket title key is `24d558e6b6aa20f396dc908b85caaa3c`.
+2. **The update runs as a LayeredFS ExeFS build on the i9** — `recovery-re6-update-v131072-20261109` (5 files: main,
+   main.npdm, rtld, sdk, subsdk0), written through `switch_mods op=write` from the local files. RE6 boots to the title
+   on the **base** RomFS with the patched main (a slower load, then normal), and the unlock watcher — the one that
+   refused `main+0xad5d6c is not the title gate of build 061D2A06…` on the base image — now logs
+   **`unlock-on-load …: already_unlocked (0 writes)`**. The Prologue gate is open on the i9; the title screen's menu
+   path is live (session `37e4b812d84f4723-daf25d2a41c8481e`, build `recovery-re6-update-v131072-20261109`).
+3. **What is still missing for a Mercenaries round:** the update's **RomFS** section (BKTR, crypt type 4, 71.6 MB at
+   0x4000). The base RomFS carries the game to the title and the menu, but a round needs the update's files. Next:
+   either extract the BKTR RomFS (same module, plus the relocation/subsection blocks) or combine the update ExeFS with
+   the roster build's RomFS and drive the menu to THE MERCENARIES.
+4. **`hactool` stays unusable for this library** (unchanged finding): `Invalid NCA header` on both nodes for base and
+   update with every keyset on the share. `gbox/switch_nca.py` is the replacement path for Switch extraction on
+   clients; it needs only the CPU (AES-NI) and `prod.keys`.
+5. `switch_mods op=hotswap` (round 4, `499505ae`) is ready for the hot-reload test the moment a round is reachable.
