@@ -267,7 +267,9 @@ def repose(vertices: list[dict], source_positions: dict[int, tuple], source_pare
 
 def transfer(vertices: list[dict], source_positions: dict[int, tuple], source_parents: dict[int, int],
              target_positions: dict[int, tuple], roles: dict[str, tuple[int, int]],
-             segments: dict[str, str], *, scale: float, continuous: bool = False):
+             segments: dict[str, str], *, scale: float, continuous: bool = False,
+             role_scales: dict[str, float] | None = None, role_offsets: dict[str, tuple] | None = None,
+             orphan_role: str | None = None):
     """Transfer each influence through its nearest named ancestor's anatomical frame.
 
     ``roles`` maps role -> (source scene node, target bone). ``segments`` maps a role
@@ -280,6 +282,15 @@ def transfer(vertices: list[dict], source_positions: dict[int, tuple], source_pa
     apart from the rest (a head that must stay under a height, feet that must reach
     the floor). A part without an outgoing segment may take three model-axis scales
     (x, y, z), applied after its orientation; a segmented part takes one number.
+    With a uniform ``scale``, ``role_scales`` replaces it for the named roles only (a donor head
+    that must end at the native head height while the body keeps its ground contact).
+    Every role keeps its own joint, so parts still meet at the native joints.
+    ``role_offsets`` then moves the named roles' geometry by a target-space vector
+    (a head without a neck that sits lower than the native head joint it turns on).
+    ``orphan_role`` carries an influence whose joint has no named ancestor (a root or
+    prop joint above the hips) by that role instead of refusing it. (The two per-role
+    forms came from the player-cast and enemy-cast writers of 2026-11-09; a dict
+    ``scale`` and ``role_scales`` are not combined.)
     """
     per_role = isinstance(scale, dict)
     if per_role:
@@ -293,6 +304,21 @@ def transfer(vertices: list[dict], source_positions: dict[int, tuple], source_pa
         raise ValueError("retarget needs roles and a finite positive uniform scale")
     if not roles:
         raise ValueError("retarget needs roles and a finite positive uniform scale")
+    role_scales = dict(role_scales or {})
+    if per_role and role_scales:
+        raise ValueError("per-role scales are given either as the scale dict or as role_scales, not both")
+    if (any(role not in roles for role in role_scales)
+            or any(not np.isfinite(value) or value <= 0 for value in role_scales.values())):
+        raise ValueError("per-role scales must be finite, positive and name mapped roles")
+    role_offsets = {role: tuple(float(v) for v in offset) for role, offset in (role_offsets or {}).items()}
+    if any(role not in roles or len(offset) != 3 or not np.isfinite(offset).all()
+           for role, offset in role_offsets.items()):
+        raise ValueError("per-role offsets must be finite 3-vectors and name mapped roles")
+    if (role_scales or role_offsets) and continuous:
+        raise ValueError("per-role scales and offsets cannot be combined with the continuous warp")
+    if orphan_role is not None and orphan_role not in roles:
+        raise ValueError("the orphan role must be a mapped role")
+    uniform = scale
     for source, target in roles.values():
         if source not in source_positions or target not in target_positions:
             raise ValueError("retarget role references an absent joint")
@@ -305,6 +331,8 @@ def transfer(vertices: list[dict], source_positions: dict[int, tuple], source_pa
         if per_role:
             axes = parts[role] if parts[role].shape == (3,) else None
             scale = float(parts[role]) if axes is None else 1.
+        else:
+            scale = role_scales.get(role, uniform)
         transform = np.eye(3) * scale if axes is None else np.diag(axes)
         if role in segments:
             if segments[role] not in roles:
@@ -342,13 +370,17 @@ def transfer(vertices: list[dict], source_positions: dict[int, tuple], source_pa
             anchor = joint
             while anchor not in by_source:
                 if anchor in chain or anchor not in source_parents:
-                    raise ValueError(f"source joint {joint} has no anatomical ancestor")
+                    if orphan_role is None:
+                        raise ValueError(f"source joint {joint} has no anatomical ancestor")
+                    anchor = None
+                    break
                 chain.add(anchor)
                 anchor = source_parents[anchor]
-            role = by_source[anchor]
+            role = by_source[anchor] if anchor is not None else orphan_role
             source, target = roles[role]
             transform = transforms[role]
-            moved += weight * (transform @ (point - source_positions[source]) + target_positions[target])
+            moved += weight * (transform @ (point - source_positions[source]) + target_positions[target]
+                               + np.asarray(role_offsets.get(role, (0., 0., 0.))))
             rotated += weight * (np.linalg.inv(transform).T @ normal)
             target_weights[target] = target_weights.get(target, 0.) + weight
             mapping[joint] = {"role": role, "target": target}
@@ -384,12 +416,13 @@ def transfer(vertices: list[dict], source_positions: dict[int, tuple], source_pa
         distances = np.sum((query[:, None] - original[None, :]) ** 2, axis=2)
         weights = 1. / np.maximum(distances, 1e-12) ** 2
         weights /= weights.sum(axis=1, keepdims=True)
-        displacement = desired - original * scale
-        moved = query * scale + weights @ displacement
+        displacement = desired - original * uniform
+        moved = query * uniform + weights @ displacement
         if not np.isfinite(moved).all():
             raise ValueError("continuous retarget produced nonfinite geometry")
         for vertex, point in zip(output, moved):
             vertex['position'] = tuple(map(float, point))
-    return output, {"scale": scale, "joint_mapping": mapping,
+    return output, {"scale": uniform, "joint_mapping": mapping, **({"role_scales": role_scales} if role_scales else {}),
+                    **({"role_offsets": role_offsets} if role_offsets else {}),
                     "method": "bounded inverse-distance anatomical warp" if continuous else "anatomical segment lengths; uniform cross sections",
                     "vertices": len(output), "discarded_influences": 0, "live_verified": False}

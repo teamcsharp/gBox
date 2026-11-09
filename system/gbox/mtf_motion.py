@@ -344,11 +344,20 @@ def _rig(model):
         visited.add(bone)
     for bone in range(len(parents)):
         visit(bone)
-    lookup = {}
-    for bone, aid in enumerate(table['anim_map']):
+    lookup, ids, bone_map = {}, table['anim_map'], table.get('map') or b''
+    # The 256-byte map is the engine's own ID -> bone lookup. It may settle a duplicate only when it is a real map:
+    # every entry it fills names a bone whose header carries that ID.
+    mapped_ok = len(bone_map) == 256 and all(b == 255 or (b < len(ids) and ids[b] == i) for i, b in enumerate(bone_map))
+    for bone, aid in enumerate(ids):
         if aid != 255:
             if aid in lookup:
-                raise MotionError(f'duplicate native animation bone ID {aid}')
+                # Two headers may carry one ID (uEm11 em1100: the ground bone and the body root both say 0, and the
+                # map names the body root). Without a map that names one of them the ID stays ambiguous.
+                mapped = bone_map[aid] if mapped_ok else 255
+                if mapped not in (lookup[aid], bone):
+                    raise MotionError(f'duplicate native animation bone ID {aid}')
+                lookup[aid] = mapped
+                continue
             lookup[aid] = bone
     return table, local, inverse, lookup
 
