@@ -947,6 +947,14 @@ LOCATE = True
 # the bot mapping the levels and understanding how to navigate them"). The goal is planned to a NAV_GOAL_CELL square
 # (a moving Majini is not a new plan every tick) at most every NAV_REPLAN_MIN_S; within NAV_DIRECT_R the line is his.
 NAV_APPROACH, NAV_GOAL_CELL, NAV_REPLAN_MIN_S, NAV_DIRECT_R = True, 200.0, 0.75, 300.0
+# ... and first of all by the stage's OWN nav mesh (re5_switch_native_nav: the walkable triangles the game's AI uses,
+# the same mesh the tactical map draws). The learned map counts ground he has never walked as open, so a route
+# across it still aimed him through walls: the operator's screenshot the same day shows him in a dead-end room, six
+# Majini two corridors away, and the plan line straight through the wall between. MESH_ROUTE: every approach, the
+# locate run, the time-bonus run and the run out from a bomb take the mesh's route (A* over its triangles, corners
+# pulled tight) when both ends are on it; replanned at most every MESH_REPLAN_S or when the goal leaves its square,
+# a waypoint counts as reached within MESH_WP_CM. stats mesh_route_ticks, mesh_routes, mesh_no_route.
+MESH_ROUTE, MESH_REPLAN_S, MESH_WP_CM = True, 1.0, 120.0
 MINE_FOE_CLEAR_CM, MINE_SPACING_CM = 400.0, 450.0
 MINE_COUNTERS = ("mines_placed", "mine_attempts", "mine_unconfirmed", "mine_retreats_completed", "mine_equip_failures",
                  "mines_gone", "mine_clear_runs", "mine_blasts", "mine_kills", "mine_blast_hp_loss", "gun_backs")
@@ -2074,6 +2082,13 @@ class Bot:
         if nav is not None:
             nav.plan((px, pz), (bx, bz), now)
         off = math.radians(70) * run["side"] if now < run["detour_until"] else 0.0
+        wp = self._mesh_waypoint(p, (bx, by, bz), now) if off == 0.0 and d > NAV_DIRECT_R else None
+        if wp is not None:                                   # the stage's own mesh: round the walls, not at them
+            err = wrap(heading(wp[0] - px, wp[1] - pz) - p["rot"])
+            self.doing = "walk"
+            self.why = (f"time bonus {b.get('secs')} s at {d / 100:.1f} m (dy {by - py:+.0f}), "
+                        f"{len(open_)} left - mesh route")
+            return {"hold": ((("lup", "b") if d > BONUS_WALK_R else ("lup",))) + self._turn(err, TURN_TOL)}
         # learned-grid navigation: A* waypoints when the grid has a route, else the straight line
         nav = getattr(self, "_nav", None)
         nav_wp = None
@@ -3848,6 +3863,7 @@ class Bot:
 
     def _tick(self, snap: dict, now: float) -> dict:
         p = snap.get("player")
+        self._mesh = snap.get("nav")                       # the stage's own nav mesh this tick (None: not read)
         if not p:
             self._gun_down()
             return {"hold": ()}
@@ -4004,6 +4020,7 @@ class Bot:
                 self.escape = None
                 self._gun_down()
                 self.doing, self.why = "mine", str(self.stats.get("mine_status") or "")
+                act = self._mine_route(p, act, now)
             else:
                 act = self._escape(p, live, flat, now)
                 if act is not None:
@@ -4028,6 +4045,74 @@ class Bot:
             self.move_at = now
         return act
 
+    def _mine_route(self, p, act, now) -> dict:
+        """The mine controller's run out (its retreat, its guard) picks a heading by the widest gap among the Majini;
+        in a corridor that is a wall. With the mesh read, the run follows the mesh's own retreat route instead: floor
+        all the way, never toward the bomb, to the standoff. stats mine_mesh_retreats."""
+        from . import re5_switch_mines
+        m, mesh = self.mines, getattr(self, "_mesh", None)
+        hold = act.get("hold") or ()
+        if not MESH_ROUTE or m is None or mesh is None or not hasattr(mesh, "retreat") or "lup" not in hold:
+            return act
+        hazard = m.site if m.state == "retreat" else m.bombs.get(m.clear_from) if m.clear_from is not None else None
+        if hazard is None or len(hazard) < 3:
+            return act
+        px, py, pz = p["pos"]
+        r = self.__dict__.setdefault("_mretreat", {"key": None, "at": -1e9, "pts": None})
+        key = (round(hazard[0]), round(hazard[2]))
+        if r["key"] != key or now - r["at"] >= MESH_REPLAN_S:
+            r["key"], r["at"] = key, now
+            try:
+                pts = mesh.retreat((px, py, pz), tuple(hazard[:3]), min_distance=re5_switch_mines.RETREAT_CM,
+                                   max_travel=2.5 * re5_switch_mines.RETREAT_CM)
+            except Exception as exc:                         # noqa: BLE001
+                self.stats["nav_error"] = f"mesh retreat {type(exc).__name__}: {exc}"[:120]
+                pts = None
+            r["pts"] = list(pts) if pts else None
+            if pts:
+                self.stats["mine_mesh_retreats"] = self.stats.get("mine_mesh_retreats", 0) + 1
+        pts = r["pts"]
+        while pts:
+            q = pts[0]
+            point = q                                         # (a FloorWaypoint is its own point)
+            if len(pts) > 1 and math.hypot(point[0] - px, point[2] - pz) <= MESH_WP_CM:
+                pts.pop(0)
+                continue
+            err = wrap(heading(point[0] - px, point[2] - pz) - p["rot"])
+            return dict(act, hold=("lup", "b") + self._turn(err, TURN_TOL))
+        return act
+
+    def _mesh_waypoint(self, p, goal, now):
+        """The next point (x, z) of the nav mesh's route from him to `goal` (x, y, z), or None when the mesh is not
+        read, an end is off it, or they are not joined by floor (another floor: a ladder or a drop between)."""
+        mesh = getattr(self, "_mesh", None)
+        if not MESH_ROUTE or mesh is None or not hasattr(mesh, "route") or len(goal) < 3:
+            return None
+        px, py, pz = p["pos"]
+        cell = (round(goal[0] / NAV_GOAL_CELL), round(goal[1] / 100.0), round(goal[2] / NAV_GOAL_CELL))
+        r = self.__dict__.setdefault("_mroute", {"cell": None, "at": -1e9, "pts": None})
+        stale = now - r["at"] >= MESH_REPLAN_S
+        if (r["cell"] != cell and now - r["at"] >= NAV_REPLAN_MIN_S) or stale:
+            r["cell"], r["at"] = cell, now
+            try:
+                pts = mesh.route((px, py, pz), tuple(goal[:3]))
+            except Exception as exc:                         # noqa: BLE001 - the mesh never costs a tick
+                self.stats["nav_error"] = f"mesh {type(exc).__name__}: {exc}"[:120]
+                pts = None
+            r["pts"] = list(pts) if pts else None
+            self.stats["mesh_routes" if pts else "mesh_no_route"] = \
+                self.stats.get("mesh_routes" if pts else "mesh_no_route", 0) + 1
+        pts = r["pts"]
+        while pts:
+            q = pts[0]
+            point = q.approach if hasattr(q, "approach") else q   # a Traversal is walked to on its own floor
+            if len(pts) > 1 and math.hypot(point[0] - px, point[2] - pz) <= MESH_WP_CM:
+                pts.pop(0)
+                continue
+            self.stats["mesh_route_ticks"] = self.stats.get("mesh_route_ticks", 0) + 1
+            return point[0], point[2]
+        return None
+
     def _approach(self, p, goal, now, tol=None) -> tuple:
         """The turn keys toward `goal` (a position): along the learned map's route when it has one (NAV_APPROACH
         above), else the straight line. stats nav_approach_ticks (walked by the map), nav_direct_ticks (by the line)."""
@@ -4035,6 +4120,9 @@ class Bot:
         gx, gz = goal[0], goal[2] if len(goal) > 2 else goal[1]
         tx, tz = gx, gz
         nav = getattr(self, "_nav", None)
+        wp = self._mesh_waypoint(p, goal, now) if math.hypot(gx - px, gz - pz) > NAV_DIRECT_R else None
+        if wp is not None:                                   # the game's own mesh: the corridors as they are
+            return self._turn(wrap(heading(wp[0] - px, wp[1] - pz) - p["rot"]), TURN_TOL if tol is None else tol)
         if NAV_APPROACH and nav is not None and math.hypot(gx - px, gz - pz) > NAV_DIRECT_R:
             try:
                 cell = (round(gx / NAV_GOAL_CELL) * NAV_GOAL_CELL, round(gz / NAV_GOAL_CELL) * NAV_GOAL_CELL)
