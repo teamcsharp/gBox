@@ -1121,6 +1121,36 @@ def u64(m, a) -> int:
     return struct.unpack("<Q", m.rd(a, 8))[0]
 
 
+class _SteadyGoals(__import__("gbox.mercs.map_goals", fromlist=["Goals"]).Goals):
+    """map_goals.Goals with the enemy rule of 2026-11-09 20:50 (no health reading is alive; a slot empty for
+    ENEMY_GONE_S is down), here as well as in map_goals so the live worker gets it by hot reload (that module is
+    first imported after the worker starts and is not tracked by the reload)."""
+    ENEMY_GONE_S = 1.5
+
+    def resolve(self, snap, now):
+        goal = self.goal
+        if not goal or goal['kind'] != 'enemy' or goal['state'] in __import__("gbox.mercs.map_goals", fromlist=["TERMINAL"]).TERMINAL:
+            return super().resolve(snap, now)
+        if now - self.received_at > 300.:
+            goal.update(state='expired', reason='Map goal expired after five minutes; choose it again')
+            return None
+        row = next((e for e in snap.get('enemies') or () if e.get('slot', e.get('id')) == goal['entity_id']), None)
+        unit = row.get('ptr') if row else None
+        if row is not None and goal.setdefault('unit', unit) != unit:
+            row = None
+        hp = row.get('hp') if row is not None else None
+        if row is None or (isinstance(hp, (int, float)) and not isinstance(hp, bool) and hp <= 0):
+            self.missing_at = now if self.missing_at is None else self.missing_at
+            if now - self.missing_at < self.ENEMY_GONE_S:
+                self.defer('Waiting for a stable sight of the marked enemy')
+                return None
+            goal.update(state='completed', reason='The marked enemy is down; back to his own play')
+            return None
+        self.missing_at = None
+        goal.update(state='active', reason='Going for the marked enemy ahead of everything else')
+        return row
+
+
 def re5_switch_mines_flash_s() -> float:
     from . import re5_switch_mines
     return float(getattr(re5_switch_mines, "FLASH_S", 3.5))
@@ -4323,7 +4353,8 @@ class Bot:
         g = self.__dict__.get("_map_goals")
         if g is None:
             from ..map_goals import Goals
-            g = self._map_goals = Goals()
+            g = self._map_goals = _SteadyGoals()
+            assert isinstance(g, Goals)
         return g
 
     def receive_map_goal(self, value) -> None:

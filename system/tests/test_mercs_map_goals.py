@@ -166,10 +166,16 @@ def test_a_marked_enemy_is_followed_until_he_is_down_and_a_marked_spot_until_he_
     foe = {'slot': 3, 'ptr': 0xA0, 'pos': (1700., 0., 0.), 'hp': 800}
     snap = {'player': {'pos': (0., 0., 0.)}, 'enemies': [foe]}
     assert goals.resolve(snap, 11.) is foe and goals.public()['state'] == 'active'       # wherever he has walked to
+    unread = dict(foe, hp=None)                                                           # far off: no health reading
+    assert goals.resolve(dict(snap, enemies=[unread]), 11.5) is unread and goals.public()['state'] == 'active'
     assert goals.resolve(dict(snap, enemies=[dict(foe, ptr=0xB0)]), 12.) is None         # another unit in the slot
+    assert goals.public()['state'] == 'deferred'                                          # ... for a moment
+    assert goals.resolve(dict(snap, enemies=[dict(foe, ptr=0xB0)]), 12. + 1.6) is None
     assert goals.public()['state'] == 'completed'
     goals.receive(dict(value, id='g2'), 20.)
-    assert goals.resolve(dict(snap, enemies=[dict(foe, hp=0)]), 21.) is None and goals.public()['state'] == 'completed'
+    assert goals.resolve(snap, 20.5) is foe
+    assert goals.resolve(dict(snap, enemies=[dict(foe, hp=0)]), 21.) is None and goals.public()['state'] == 'deferred'
+    assert goals.resolve(dict(snap, enemies=[dict(foe, hp=0)]), 22.6) is None and goals.public()['state'] == 'completed'
     goals.receive(dict(value, id='g3', kind='point', entity_id=0, pos=[500, 0, 0], label='Go to the marked spot'), 30.)
     assert goals.resolve(snap, 31.) == {'kind': 'point', 'pos': (500, 0, 0)}
     assert goals.resolve({'player': {'pos': (420., 0., 60.)}}, 32.) is None and goals.public()['state'] == 'completed'
@@ -226,7 +232,8 @@ def test_the_switch_bot_offers_enemy_and_spot_goals_and_goes_for_the_marked_enem
     act = bot._operator_goal(p, dict(snap, enemies=[near]), [near], flat, 5.25)
     assert act == {'hold': ('zl', 'zr')} and bot.fought == [[0xA0]] and bot.target == 0xA0   # the fight, on him alone
     dead = dict(near, hp=0)
-    assert bot._operator_goal(p, dict(snap, enemies=[dead, close]), [close], flat, 5.3) is None   # down: his own play
+    assert bot._operator_goal(p, dict(snap, enemies=[dead, close]), [close], flat, 5.3) is None   # down: a moment
+    assert bot._operator_goal(p, dict(snap, enemies=[dead, close]), [close], flat, 7.0) is None   # ... his own play
     assert bot._goals().public()['state'] == 'completed'
 
 

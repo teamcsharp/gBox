@@ -13,7 +13,7 @@ TERMINAL = {'cancelled', 'expired', 'unavailable', 'completed', 'observed_remove
 # they just take control and just go back to whatever they were doing." 'enemy': the live enemy in that slot until
 # he is down or another unit has the slot. 'point': the spot until he is within ARRIVE of it, POINT_S at most.
 KINDS = ('bonus', 'item', 'enemy', 'point')
-ARRIVE, POINT_S = 200., 120.
+ARRIVE, POINT_S, ENEMY_GONE_S = 200., 120., 1.5
 
 
 class Goals:
@@ -69,9 +69,18 @@ class Goals:
             unit = row.get('ptr') if row else None
             if row is not None and goal.setdefault('unit', unit) != unit:
                 row = None                                  # another unit has the slot: the marked one is gone
-            if row is None or (row.get('hp') or 0) <= 0:
+            hp = row.get('hp') if row is not None else None
+            # Live 2026-11-09 20:50: a mark on a Majini 48 m off closed as "down" 0.08 s after it was taken - far or
+            # not yet active enemies carry no health reading. No reading is alive; only a number at or below zero,
+            # or a slot empty for ENEMY_GONE_S, is down.
+            if row is None or (isinstance(hp, (int, float)) and not isinstance(hp, bool) and hp <= 0):
+                self.missing_at = now if self.missing_at is None else self.missing_at
+                if now - self.missing_at < ENEMY_GONE_S:
+                    self.defer('Waiting for a stable sight of the marked enemy')
+                    return None
                 goal.update(state='completed', reason='The marked enemy is down; back to his own play')
                 return None
+            self.missing_at = None
             goal.update(state='active', reason='Going for the marked enemy ahead of everything else')
             return row
         rows = snap.get('bonuses' if goal['kind'] == 'bonus' else 'health_items') or []
