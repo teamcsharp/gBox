@@ -482,10 +482,20 @@ def test_uv_handedness_is_measured_and_flips_the_label_glyphs():
     rows = {row['name'].rsplit('\\', 1)[-1]: row for row in G.plan(surfaces)}
     assert rows['y_kabe_BM']['mirror'] is True and rows['y_kabe_BM']['both'] is False
     assert rows['y_floor_BM']['mirror'] is False and rows['y_unused_BM']['mirror'] is False
-    # the same wall with v running down (the image's top row at the top of the wall) is upright
+    # v grows up this wall: the image stands on its head there, so the glyphs are also turned; floors never are
+    assert wall.upside_share() == pytest.approx(1.0) and rows['y_kabe_BM']['turn'] is True
+    assert floor.upside_share() is None and rows['y_floor_BM']['turn'] is False and rows['y_unused_BM']['turn'] is False
+    # the same wall with v running down (the image's top row at the top of the wall) is upright and not turned
     upright, _ = stage_arc(wall_v_down=True)
     surfaces, _ = G.measure(mt_arc.parse(upright), SCOPE)
     assert surfaces[SCOPE + 'y_kabe_BM'].mirror_share() == pytest.approx(0.0)
+    assert surfaces[SCOPE + 'y_kabe_BM'].upside_share() == pytest.approx(0.0)
+    assert G.glyph_flags(surfaces[SCOPE + 'y_kabe_BM'], 'wall') == {'mirror': False, 'both': False, 'turn': False}
+    # mirror + turn is a vertical flip; turn alone is a half turn
+    upright_glyphs = np.asarray(G._glyphs('02 m', G._font(16), (255, 255, 255), mirror=False))
+    turned = np.asarray(G._glyphs('02 m', G._font(16), (255, 255, 255), mirror=False, turn=True))
+    flipped = np.asarray(G._glyphs('02 m', G._font(16), (255, 255, 255), mirror=True, turn=True))
+    assert np.array_equal(turned, np.rot90(upright_glyphs, 2)) and np.array_equal(flipped, np.flipud(upright_glyphs))
     # mirrored glyphs are the left-right mirror of the upright ones, and the texture differs only by them
     font = G._font(16)
     a = np.asarray(G._glyphs('02 m', font, (255, 255, 255), mirror=False))
@@ -496,8 +506,8 @@ def test_uv_handedness_is_measured_and_flips_the_label_glyphs():
     both = np.asarray(G.grid_image(128, 64, 'wall', 2, 1, '02 m', both=True))
     assert not np.array_equal(plain, flipped) and not np.array_equal(plain, both) and not np.array_equal(flipped, both)
     assert np.array_equal(plain[:, :8], flipped[:, :8])        # the grid itself is the same; only the glyphs differ
-    _, report = G.greybox_texture(bc7_tex(32), 'wall', 1, 1, '01 m', mirror=True)
-    assert report['glyphs'] == 'mirrored'
+    _, report = G.greybox_texture(bc7_tex(32), 'wall', 1, 1, '01 m', mirror=True, turn=True)
+    assert report['glyphs'] == 'mirrored' and report['turned'] is True
     # a mixed texture (both hands) gets both readings
     mixed = G.Surface(name=SCOPE + 'x_BM', entry=0, width=64, height=64, format=0x30, mips=7, area_cm2=10.0,
                       side_cm2=10.0, handed_cm2=10.0, mirrored_cm2=4.0)

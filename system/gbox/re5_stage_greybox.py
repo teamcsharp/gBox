@@ -32,7 +32,9 @@ plays that companion while the setting is on (docs/research/blueprint-look.md).
 Live, 2026-11-09 (session ae02be4bd9974915-32e89a55f69c46db, build recovery-greybox-s400-pool-test-20261109): the
 s400 overlay `f26d2836…` boots and renders - grids, metre labels, native lighting - with several wall labels reading
 mirrored. The UV handedness of every texture is now measured (`Surface.mirror_share`) and the glyphs are drawn
-flipped where the mapping is mirrored, both ways where a texture's surfaces are of both hands.
+flipped where the mapping is mirrored, both ways where a texture's surfaces are of both hands, and turned half a turn
+on the few walls whose v grows upwards (`Surface.upside_share`, `glyph_flags`). A CPU head-on view of the v1 archive
+reproduces the backwards label offline; the same view of this writer's output reads forwards.
 
 Measured on `s400.arc` (SHA-256 246e3dd4…, 2026-11-09), see `docs/research/re5-stage-greybox.md`; the s401..s407
 survey is in `docs/research/blueprint-look.md`:
@@ -246,6 +248,10 @@ class Surface:
     #: basis is the mirror image of the screen's right/down, so glyphs read backwards there.
     handed_cm2: float = 0.0
     mirrored_cm2: float = 0.0
+    #: Which way is up on the walls: of the side-facing area with a usable Jacobian (`vertical_cm2`), `upside_cm2` has
+    #: the image's up direction (-B: v grows down the image) pointing down in the world (B.y > 0) - a label upside down
+    vertical_cm2: float = 0.0
+    upside_cm2: float = 0.0
     bound: bool = True             # a scenery material binds it (False: found by name only, nothing measured)
     _u_samples: list = field(default_factory=list, repr=False)
     _v_samples: list = field(default_factory=list, repr=False)
@@ -263,6 +269,10 @@ class Surface:
         """The share of the measured area where the texture appears mirrored (None: no UV Jacobian measured)."""
         return None if self.handed_cm2 <= 0 else self.mirrored_cm2 / self.handed_cm2
 
+    def upside_share(self) -> float | None:
+        """The share of the side-facing area where the image stands upside down (None: no wall area measured)."""
+        return None if self.vertical_cm2 <= 0 else self.upside_cm2 / self.vertical_cm2
+
     def settle(self) -> None:
         """Area-weighted medians and quartiles of the centimetres one UV tile spans along u and along v."""
         for axis, samples in (('u', self._u_samples), ('v', self._v_samples)):
@@ -279,12 +289,13 @@ class Surface:
             setattr(self, f'tile_{axis}_quartiles', (quartiles[0], quartiles[2]))
 
     def report(self) -> dict:
-        mirrored = self.mirror_share()
+        mirrored, upside = self.mirror_share(), self.upside_share()
         return {'name': self.name, 'entry': self.entry, 'width': self.width, 'height': self.height,
                 'format': self.format, 'mips': self.mips, 'materials': self.materials, 'families': self.families,
                 'alpha_tested': self.alpha_tested, 'triangles': self.triangles, 'area_m2': round(self.area_cm2 / 1e4, 2),
                 'shares': {k: round(v, 3) for k, v in self.shares().items()},
-                'mirror_share': None if mirrored is None else round(mirrored, 3), 'bound': self.bound,
+                'mirror_share': None if mirrored is None else round(mirrored, 3),
+                'upside_share': None if upside is None else round(upside, 3), 'bound': self.bound,
                 'tile_u_cm': None if self.tile_u_cm is None else round(self.tile_u_cm, 1),
                 'tile_v_cm': None if self.tile_v_cm is None else round(self.tile_v_cm, 1),
                 'tile_u_quartiles_cm': None if self.tile_u_quartiles is None else
@@ -412,6 +423,11 @@ def _charge(surface: Surface, positions, normals, uvs, triangles) -> None:
     weights = area[ok][sane]
     surface.handed_cm2 += float(weights.sum())
     surface.mirrored_cm2 += float(weights[handed > 0].sum())
+    # Up on a wall: the image's up is -B (v grows down the image); it points down in the world where B.y > 0, i.e. v
+    # grows up the wall - the label then stands on its head (a CPU head-on view of s400 showed it on both readings)
+    side = (np.abs(ny[ok]) <= SIDE)[sane]
+    surface.vertical_cm2 += float(weights[side].sum())
+    surface.upside_cm2 += float(weights[side & (bitangent[sane][:, 1] > 0)].sum())
 
 
 # --- classification ------------------------------------------------------------------------------------------------
@@ -483,19 +499,22 @@ def _font(size: int):
         return ImageFont.load_default()
 
 
-def _glyphs(text: str, font, fill, *, mirror: bool) -> 'Image.Image':
-    """The text as an RGBA image, flipped left-right when `mirror` (so it reads forwards on a mirrored mapping)."""
+def _glyphs(text: str, font, fill, *, mirror: bool, turn: bool = False) -> 'Image.Image':
+    """The text as an RGBA image, flipped left-right when `mirror` (so it reads forwards on a mirrored mapping) and
+    turned half a turn when `turn` (so it stands upright on a wall whose v grows upwards)."""
     from PIL import Image, ImageDraw, ImageOps
 
     left, top, right, bottom = font.getbbox(text)
     image = Image.new('RGBA', (max(1, right - left), max(1, bottom - top)), (0, 0, 0, 0))
     ImageDraw.Draw(image).text((-left, -top), text, fill=fill, font=font)
-    return ImageOps.mirror(image) if mirror else image
+    if mirror:
+        image = ImageOps.mirror(image)
+    return image.rotate(180) if turn else image
 
 
 def _label(image, draw, text: str, size: int, colours: dict, centre: tuple[float, float], *, mirror: bool,
-           box: bool = True) -> None:
-    glyphs = _glyphs(text, _font(size), colours['text'], mirror=mirror)
+           turn: bool = False, box: bool = True) -> None:
+    glyphs = _glyphs(text, _font(size), colours['text'], mirror=mirror, turn=turn)
     x, y = round(centre[0] - glyphs.width / 2), round(centre[1] - glyphs.height / 2)
     if box:
         pad = max(2, size // 6)
@@ -504,13 +523,14 @@ def _label(image, draw, text: str, size: int, colours: dict, centre: tuple[float
 
 
 def grid_image(width: int, height: int, variant: str, cells_u: int = 1, cells_v: int = 1, label: str = '',
-               corner: str = '', *, mirror: bool = False, both: bool = False) -> 'Image.Image':
+               corner: str = '', *, mirror: bool = False, both: bool = False, turn: bool = False) -> 'Image.Image':
     """An RGB grid texture: `cells_u` x `cells_v` major cells (one per metre), four minor cells per major cell where
     they stay readable, the `label` across the middle and `corner` small in the top-left.
 
     `mirror` draws the glyphs flipped left-right: on a surface whose UV mapping is the mirror image of the screen
     (measured per texture, `Surface.mirror_share`) they then read forwards. `both` adds the other reading below the
-    label at 0.6 size, for a texture whose surfaces are of both hands (one of the two always reads).
+    label at 0.6 size, for a texture whose surfaces are of both hands (one of the two always reads). `turn` turns
+    the glyphs half a turn, for walls whose v grows upwards (`Surface.upside_share`). The grid is the same in all.
     """
     from PIL import Image, ImageDraw
 
@@ -549,21 +569,22 @@ def grid_image(width: int, height: int, variant: str, cells_u: int = 1, cells_v:
         size = max(8, min(width, height) // 6)
         if both and height >= 64:
             # a texture drawn on surfaces of both hands: the dominant reading above the middle, the other below it
-            _label(image, draw, label, size, colours, (width / 2, height / 2 - size * 0.55), mirror=mirror)
+            _label(image, draw, label, size, colours, (width / 2, height / 2 - size * 0.55), mirror=mirror, turn=turn)
             _label(image, draw, label, max(8, int(size * 0.6)), colours, (width / 2, height / 2 + size * 0.5),
-                   mirror=not mirror)
+                   mirror=not mirror, turn=turn)
         else:
-            _label(image, draw, label, size, colours, (width / 2, height / 2), mirror=mirror)
+            _label(image, draw, label, size, colours, (width / 2, height / 2), mirror=mirror, turn=turn)
     if corner and min(width, height) >= 64:
         size = max(8, min(width, height) // 14)
-        glyphs = _glyphs(corner, _font(size), colours['text'], mirror=mirror)
+        glyphs = _glyphs(corner, _font(size), colours['text'], mirror=mirror, turn=turn)
         # the corner tag stays top-left in texture space; mirrored glyphs read forwards on a mirrored surface
         image.paste(glyphs, (max(2, width // 64), max(2, height // 64)), glyphs)
     return image
 
 
 def greybox_texture(native: bytes, variant: str, cells_u: int, cells_v: int, label: str, corner: str = '',
-                    *, keep_alpha: bool = True, mirror: bool = False, both: bool = False) -> tuple[bytes, dict]:
+                    *, keep_alpha: bool = True, mirror: bool = False, both: bool = False,
+                    turn: bool = False) -> tuple[bytes, dict]:
     """A TEX with `native`'s container, dimensions, format and mip chain, drawn as a grid; the native alpha is kept.
 
     Returns (bytes, report). The report carries what was drawn so a receipt can say it without decoding the result.
@@ -574,7 +595,7 @@ def greybox_texture(native: bytes, variant: str, cells_u: int, cells_v: int, lab
     if tex.format not in BC7:
         raise GreyboxError(f'only BC7 albedos are rewritten (format 0x{tex.format:02x})')
     image = grid_image(tex.width, tex.height, variant, cells_u, cells_v, label, corner, mirror=mirror,
-                       both=both).convert('RGBA')
+                       both=both, turn=turn).convert('RGBA')
     alpha_note = 'opaque'
     if keep_alpha:
         source = mtf_tex.decode(native, 0)
@@ -588,15 +609,27 @@ def greybox_texture(native: bytes, variant: str, cells_u: int, cells_v: int, lab
         raise GreyboxError('the rewritten TEX does not keep the native header and mip table')
     return out, {'variant': variant, 'cells': [cells_u, cells_v], 'label': label, 'corner': corner,
                  'alpha': alpha_note, 'width': tex.width, 'height': tex.height, 'format': tex.format,
-                 'mips': len(tex.mips), 'glyphs': ('both ways' if both else 'mirrored' if mirror else 'upright')}
+                 'mips': len(tex.mips), 'glyphs': ('both ways' if both else 'mirrored' if mirror else 'upright'),
+                 'turned': bool(turn)}
 
 
 # --- the stage overlay -----------------------------------------------------------------------------------------------
 
+def glyph_flags(surface: Surface, variant: str) -> dict:
+    """How the label glyphs of one texture are drawn, from its measured mapping: `mirror` (most of its area is of
+    mirrored handedness), `both` (both hands in strength: both readings), `turn` (on its walls v grows upwards, so
+    the glyphs are turned half a turn - only for a clear majority, over MIXED_HIGH: at about half either way is
+    wrong for half the surface). Floors are never turned: a floor has no up for every viewer."""
+    share, upside = surface.mirror_share(), surface.upside_share()
+    walls = surface.area_cm2 > 0 and surface.side_cm2 / surface.area_cm2 >= MIXED_LOW
+    return {'mirror': share is not None and share > MIRROR_SHARE,
+            'both': share is not None and MIXED_LOW <= share <= MIXED_HIGH,
+            'turn': variant != 'floor' and walls and upside is not None and upside > MIXED_HIGH}
+
+
 def plan(surfaces: dict[str, Surface], overrides: dict[str, str] | None = None) -> list[dict]:
     """One row per albedo: the variant, the rule that chose it, the cells and labels the grid will carry, and how the
-    glyphs are drawn (`mirror`: flipped for a mapping of mirrored handedness; `both`: both readings, mixed surfaces).
-    A `keep` row names a texture left native."""
+    glyphs are drawn (`glyph_flags`: mirrored, both readings, turned). A `keep` row names a texture left native."""
     rows = []
     for name in sorted(surfaces):
         surface = surfaces[name]
@@ -611,11 +644,8 @@ def plan(surfaces: dict[str, Surface], overrides: dict[str, str] | None = None) 
         else:
             u, v = span_label(surface.tile_u_cm), span_label(surface.tile_v_cm)
             label, corner = (u if cells_u == cells_v else f'{u} x {v}'), ''
-        share = surface.mirror_share()
-        mirror = share is not None and share > MIRROR_SHARE
-        both = share is not None and MIXED_LOW <= share <= MIXED_HIGH
         rows.append({'variant': variant, 'rule': rule, 'cells': [cells_u, cells_v], 'label': label,
-                     'corner': corner, 'mirror': mirror, 'both': both, **surface.report()})
+                     'corner': corner, **glyph_flags(surface, variant), **surface.report()})
     return rows
 
 
@@ -648,7 +678,7 @@ def build(archive: bytes, *, stage: str = 's400', overrides: dict[str, str] | No
             raise GreyboxError(f'{entry.name}: the native stream is not a level-6 zlib wrap; cannot rewrite it faithfully')
         progress(row['name'], row['variant'])
         out, report = greybox_texture(native, row['variant'], *row['cells'], row['label'], row['corner'],
-                                      mirror=row['mirror'], both=row['both'])
+                                      mirror=row['mirror'], both=row['both'], turn=row['turn'])
         entry.data = _wrap(out)
         entry.size = len(entry.data)
         if entry.tag != (0x40000000 | len(out)):
@@ -662,10 +692,11 @@ def build(archive: bytes, *, stage: str = 's400', overrides: dict[str, str] | No
     if any(original.entries[i].data != final.entries[i].data for i in untouched):
         raise GreyboxError('an entry outside the albedo list changed')
     counts = {}
-    glyphs = {'upright': 0, 'mirrored': 0, 'both ways': 0}
+    glyphs = {'upright': 0, 'mirrored': 0, 'both ways': 0, 'turned': 0}
     for row in rows:
         if row['variant'] == 'keep':
             continue
+        glyphs['turned'] += int(row['turned'])
         counts[row['variant']] = counts.get(row['variant'], 0) + 1
         glyphs[row['glyphs']] += 1
     receipt = {
@@ -1079,18 +1110,15 @@ def build_prop_textures(archive: bytes, *, archive_name: str = '', progress=lamb
             continue
         cells_u, cells_v = grid_cells(surface.tile_u_cm), grid_cells(surface.tile_v_cm)
         u, v = span_label(surface.tile_u_cm), span_label(surface.tile_v_cm)
-        share = surface.mirror_share()
-        mirror = share is not None and share > MIRROR_SHARE
-        both = share is not None and MIXED_LOW <= share <= MIXED_HIGH
+        flags = glyph_flags(surface, 'prop')
         row = {'variant': 'prop', 'rule': 'object albedo', 'cells': [cells_u, cells_v], 'label': prop_label(name),
-               'corner': u if cells_u == cells_v else f'{u} x {v}', 'mirror': mirror, 'both': both, **surface.report()}
+               'corner': u if cells_u == cells_v else f'{u} x {v}', **flags, **surface.report()}
         entry = arc.entries[row['entry']]
         native = _raw(entry)
         if entry.data != _wrap(native):
             raise GreyboxError(f'{entry.name}: the native stream is not a level-6 zlib wrap; cannot rewrite it faithfully')
         progress(name, 'prop')
-        out, report = greybox_texture(native, 'prop', cells_u, cells_v, row['label'], row['corner'], mirror=mirror,
-                                      both=both)
+        out, report = greybox_texture(native, 'prop', cells_u, cells_v, row['label'], row['corner'], **flags)
         entry.data = _wrap(out)
         entry.size = len(entry.data)
         if entry.tag != (0x40000000 | len(out)):
@@ -1412,8 +1440,9 @@ def build_all(inputs: Path, uom_dir: Path, out: Path, *, stages: Iterable[str] =
                                        'variants', 'glyphs', 'scene_folders', 'kept_native_textures')}
         row |= {'changed_entries': len(receipt['changed_entries']), 'textures_written': len(receipt['textures']),
                 'measurement': receipt['measurement'], 'rebuild_identical': True if rebuild_check else 'see the second run',
-                'textures': [{k: r.get(k) for k in ('name', 'variant', 'rule', 'cells', 'label', 'glyphs',
-                                                     'mirror_share', 'tile_u_cm', 'tile_v_cm', 'payload_sha256')}
+                'textures': [{k: r.get(k) for k in ('name', 'variant', 'rule', 'cells', 'label', 'glyphs', 'turned',
+                                                     'mirror_share', 'upside_share', 'tile_u_cm', 'tile_v_cm',
+                                                     'payload_sha256')}
                              for r in receipt['textures']]}
         if preview:
             contact_sheet(written, receipt['textures'], out / f'{stage}-textures.png')
@@ -1453,8 +1482,8 @@ def build_all(inputs: Path, uom_dir: Path, out: Path, *, stages: Iterable[str] =
         object_rows[name] = {'stages': sorted(objects_needed[name]), 'layouts': objects_needed[name],
                              **{k: receipt[k] for k in ('route', 'source_sha256', 'written_sha256', 'bytes', 'entries',
                                                         'changed_entries', 'unchanged_entries', 'measurement')},
-                             'textures': [{k: r.get(k) for k in ('name', 'label', 'cells', 'corner', 'glyphs',
-                                                                  'mirror_share', 'payload_sha256')}
+                             'textures': [{k: r.get(k) for k in ('name', 'label', 'cells', 'corner', 'glyphs', 'turned',
+                                                                  'mirror_share', 'upside_share', 'payload_sha256')}
                                           for r in receipt['textures']],
                              **({'box': receipt['box']} if 'box' in receipt else {}),
                              'rebuild_identical': True if rebuild_check else 'see the second run'}
