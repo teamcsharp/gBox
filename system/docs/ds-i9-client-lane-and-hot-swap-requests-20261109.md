@@ -417,3 +417,23 @@ PM/operator can correct the plan before more is built.
    decrypt (starting with `Core.arc`), compare them against the base to confirm the recombination, then isolate the
    payload-range difference (e.g. print the counter for a region whose data matches and one that does not, and diff
    the region's phys/virt offsets).
+
+## Round 13 status (2026-11-09, ~18:40 CST): the 1.0.0 base image does not carry the 1.0.2 unlock layout
+
+Tested the hypothesis that the base game (1.0.0, no update) could be unlocked with the same structure addresses, which
+would have bypassed the update and its payload entirely:
+
+- `module_base` from the profile's signature is **not found** in the 1.0.0 image (the signature scan returns None at
+  `SIG_OFF`); forcing `0x80004000` and walking `sInfoMan` gives a plausible `cSystemInfo` (`0x825c3410`) and a vtable,
+  but `cSystemInfo+0x55c8` reads a code pointer (the second flag copy is at a different offset in 1.0.0), and
+  **`ui_units` finds none** of the menu units — so the title-state detection the unlock needs does not work there.
+- The title gate bytes at `main+0xad5d6c` are different from 1.0.2 (`08d163f9…`), as expected.
+- Writing bit 0 at the computed `cSystemInfo+0xb8` (0 → 1, read back 1) and pressing A gave the normal
+  "Load successful" screen and then the title loop again — **no main menu**. The address is therefore not the flag on
+  1.0.0 (or the title does not read it), and a 1.0.0 profile would need real RE work (locating sInfoMan and the flag in
+  the 1.0.0 image, not just re-using 1.0.2 offsets).
+
+Consequence: the update really is required for RE6 on the i9, so the payload encoding of the update NSP (the one
+remaining unknown from round 12: region 8's data does not decrypt with any CTR variant, is not plaintext, and is not
+XTS with the title key) stays the gate for the live round and for the `arc/NX/e####.arc` reskin overlays. The 1.0.0
+route is now closed with evidence rather than left open.
