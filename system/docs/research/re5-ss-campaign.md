@@ -16,7 +16,8 @@ a short read-only script in the scratchpad) over the live Notebook on the Spark
 the RE5 Switch main ELF on the Spark (`gbox-data/analysis/switch/re5/re5_switch_main_EBFFDB22.elf`) and the rank code
 disassembled there with capstone. Tests: the branch's own and the touched suites (section 9). **Not run**: nothing here
 was played in the game; the bot changes (sections 4 and 6) and the RAM rank read are offline-tested only, and they reach
-the Spark by the normal deploy (the queue validator after a service restart).
+the Spark by the normal deploy - the bot with its next reload or restart, the tuner and the queue validator (both in
+the control plane) only after a service restart.
 
 ## 1. The board, as of 2026-11-09 23:19 UTC
 
@@ -289,14 +290,16 @@ queue still reads. **It is control-plane code: in force after a service restart.
 - `crit_flashes` per round: a flash when he is held in a crowd or low with two on him. Expect fewer "held" deaths; the
   measure is deaths per round and kills at death on the board. Flashes the native controller refuses ("awaits recovery
   after an uncertain operation") cost nothing but a request.
-- Tuner trials on RE5 Switch confirm on about six game rounds (a few hours of MercMode) and keep or revert on the goal.
+- Tuner trials on RE5 Switch (after the service restart) confirm on about six game rounds - a few hours of MercMode -
+  and keep or revert on the goal; the first pass drops the old per-stage tuning once (`migrated`).
 - The first four queued rounds of a plan test the second page; if the walk cannot reach it the round plays the entry
   the cursor stops on, and the ledger records the character that was actually played.
 - The time to 400 will not fall much until the endgame hunt (section 5) is fixed: today the last 20 kills cost 4-8
   minutes when he finds them, and the round when he does not.
 
 Commits: a795c231 (the ledger), 94e6ea44 (the bot: identity, clock, rank, stage key, CRIT_FLASH), ec6c2d54 (the tuner),
-4070f866 (the queue validator), 96952009 (the planner's probes). Tests: `tests/test_re5_ss_ledger.py` (14),
+4070f866 (the queue validator), 96952009 (the planner's probes), 2a2401ef (this document), 5a2fdb58 (a round's
+identity carries the player object's generation). Tests: `tests/test_re5_ss_ledger.py` (15),
 `tests/test_re5_switch_ss_campaign.py` (7), `tests/test_mercs_tuner.py` (15, the pooled-trial test that was red on main
 now expects the pooled file), `tests/test_mercmode.py::test_dj_queue_takes_the_switch_no_mercy_roster_when_re5_means_switch`;
 the RE5 Switch, tuner, learning and MercMode suites pass but for the 11 known-red RE5 tests (bonus, bonus_giveup,
