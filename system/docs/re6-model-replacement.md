@@ -34,6 +34,18 @@ the 18 roles. The roster planner (`gbox.re6_switch_cast.plan`) puts a distinct l
 rotates the cast — `re6 op=switch_cast_plan` previews it, `re6 op=switch_cast` builds it, `re6 op=switch_cast_status`
 reads it.
 
+Measured roster (`re6sw_smash_cast`, seed 7, 2026-11-09): **46 of 51 slots, 46 distinct donors** (SSBU and Brawl
+mixed), 230 overlay files, **317 MB**, built in **341 s**. Five slots are skipped and recorded with their reason:
+`piers/Canon` (native skeleton has more than one root) and four Sherry costumes whose native anchor branches cannot hold
+the chosen donor's proportions; the builder skips such a slot instead of failing the roster. Rigid donor props (Robin's
+sword and tome) are placed with their node transform, not left at the origin. Every authored body reads back on its
+native skeleton; heights are 180 cm unless the native quantisation box forces a smaller uniform fit (Sherry's Snow
+costume clamps to 97.5 cm, Incineroar on Piers to 163.2 cm).
+
+| Robin on Leon (USA) | Peach on Ada (A) | Greninja on Chris (Europe) |
+|---|---|---|
+| ![Robin](evidence/re6-scale/switch-robin-as-leon.png) | ![Peach](evidence/re6-scale/switch-peach-as-ada.png) | ![Greninja](evidence/re6-scale/switch-greninja-as-chris.png) |
+
 The only remaining Switch gap is **donor textures**: RE6's body MRL has no embedded texture table (`uPlTex*.arc`
 hold them), so the first port replaces geometry and the native material still samples its own textures. Patching the
 `uPlTex` entries (or the MRL v36 bindings) is the next step, as is a live round on the console/Eden.

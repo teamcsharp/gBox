@@ -158,16 +158,21 @@ def _source_geometry(source: Path):
     """
     from . import characters
 
-    gltf, acc, _image, _world = characters._load(Path(source))
+    gltf, acc, _image, world = characters._load(Path(source))
     vertices, triangles = [], []
-    for node in gltf.get("nodes", []):
+    for node_index, node in enumerate(gltf.get("nodes", [])):
         if "mesh" not in node:
             continue
         skin = gltf["skins"][node["skin"]] if "skin" in node and "skins" in gltf else None
         joint_nodes = skin["joints"] if skin else None
+        # a rigid prop node (sword, tome) carries its own place in the model; a skinned node's POSITION is already
+        # model-space in the collection GLBs
+        transform = np.asarray(world[node_index], float) if skin is None else None
         for prim in gltf["meshes"][node["mesh"]].get("primitives", []):
             attributes = prim["attributes"]
             positions = acc(attributes["POSITION"]).astype(float)
+            if transform is not None and len(positions):
+                positions = positions @ transform[:3, :3].T + transform[:3, 3]
             normals = acc(attributes["NORMAL"]).astype(float) if "NORMAL" in attributes else np.tile([0, 1.0, 0],
                                                                                                    (len(positions), 1))
             uvs = acc(attributes["TEXCOORD_0"]).astype(float) if "TEXCOORD_0" in attributes else np.zeros((len(positions), 2))

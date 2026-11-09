@@ -69,6 +69,8 @@ def build(config, romfs: Path, library: Path, assignment: dict[tuple[str, str], 
     library = Path(library)
     root = M.archive_root(romfs)
     bodies = M.body_arcs(romfs)
+    cache = Path(config.cache) / "re6sw_cast_cache" / name
+    cache.mkdir(parents=True, exist_ok=True)
     changes: dict[str, dict] = {}
     receipts, skipped = [], []
     for index, ((character, costume), meta) in enumerate(sorted(assignment.items()), 1):
@@ -80,8 +82,16 @@ def build(config, romfs: Path, library: Path, assignment: dict[tuple[str, str], 
             raise CastError(f"donor {meta['slug']} has no model file at {source}")
         if progress:
             progress(f"[{index}/{len(assignment)}] {character}/{costume} <- {meta['name']}")
+        cached_arc, cached_receipt = cache / f"{body.stem}.arc", cache / f"{body.stem}.json"
         try:
-            payload, receipt = M.build_body(body.read_bytes(), source, source_roles=meta["rig"]["roles"], height=height)
+            if cached_arc.is_file() and cached_receipt.is_file():
+                payload = cached_arc.read_bytes()
+                receipt = json.loads(cached_receipt.read_text())
+            else:
+                payload, receipt = M.build_body(body.read_bytes(), source, source_roles=meta["rig"]["roles"],
+                                                height=height)
+                cached_arc.write_bytes(payload)
+                cached_receipt.write_text(json.dumps(receipt))
         except (M.SwitchModelError, ValueError) as exc:
             # one donor that cannot be fitted (odd skeleton/normals) must not throw away the whole roster
             skipped.append({"character": character, "costume": costume, "donor": meta["slug"],
@@ -95,7 +105,14 @@ def build(config, romfs: Path, library: Path, assignment: dict[tuple[str, str], 
         for stem in M.part_stems(body):
             part = root / f"{stem}.arc"
             if part.is_file():
-                changes[f"romfs/{M.ARCHIVE_DIR.as_posix()}/{part.name}"] = {"bytes": M.blank_arc(part.read_bytes())}
+                blank_cache = cache / "parts" / part.name
+                blank_cache.parent.mkdir(parents=True, exist_ok=True)
+                if blank_cache.is_file():
+                    changes[f"romfs/{M.ARCHIVE_DIR.as_posix()}/{part.name}"] = {"bytes": blank_cache.read_bytes()}
+                else:
+                    data = M.blank_arc(part.read_bytes())
+                    blank_cache.write_bytes(data)
+                    changes[f"romfs/{M.ARCHIVE_DIR.as_posix()}/{part.name}"] = {"bytes": data}
                 receipt.setdefault("blanked_parts", []).append(part.name)
         receipts.append(receipt)
     note = "RE6 Switch cast roster: " + ", ".join(f"{r['character']}/{r['costume']}<-{r['donor']}" for r in receipts)
