@@ -492,8 +492,10 @@ def test_an_overdue_bomb_accepts_a_closer_crowd_down_to_the_floor_but_not_when_h
     m.new_round(0.0)
     m.foe_clear_cm = 400.0
     live = foes((300, 0))
-    assert m.tick(p(), snap(), live, MN.EVERY_S + 1.0)["hold"][:2] == MN.RUN     # 1 s overdue: 385 cm, still blocked
-    assert m.stats["mine_blocked_reason"] == "enemy too close" and m.stats["mine_clearance_cm"] == 385.0
+    live = foes((MN.FOE_FLOOR_CM + 20, 0))                                       # just outside the floor
+    assert m.tick(p(), snap(), live, MN.EVERY_S + 1.0)["hold"][:2] == MN.RUN     # 1 s overdue: still blocked
+    assert m.stats["mine_blocked_reason"] == "enemy too close"
+    assert m.stats["mine_clearance_cm"] == round(400.0 - (400.0 - MN.FOE_FLOOR_CM) / MN.RELAX_S, 1)
     m = MN.Mines({})
     m.new_round(0.0)
     m.foe_clear_cm = 400.0
@@ -502,12 +504,12 @@ def test_an_overdue_bomb_accepts_a_closer_crowd_down_to_the_floor_but_not_when_h
     m = MN.Mines({})
     m.new_round(0.0)
     m.foe_clear_cm = 400.0
-    assert m.tick(p(), snap(), foes((240, 0)), MN.EVERY_S + 60.0)["hold"][:2] == MN.RUN   # never inside the floor
+    assert m.tick(p(), snap(), foes((MN.FOE_FLOOR_CM - 10, 0)), MN.EVERY_S + 60.0)["hold"][:2] == MN.RUN   # never inside the floor
     hurt = dict(p(), hp=400)
     m = MN.Mines({})
     m.new_round(0.0)
     m.foe_clear_cm = 400.0
-    assert m.tick(hurt, snap(), live, MN.EVERY_S + 60.0)["hold"][:2] == MN.RUN   # under half health: the full margin
+    assert m.tick(hurt, snap(), live, MN.EVERY_S + 60.0)["hold"][:2] == MN.RUN   # under RELAX_HP: the full margin
     assert m.stats["mine_clearance_cm"] == 400.0
 
 

@@ -84,8 +84,11 @@ RELOCATE_S, RELOCATE_PAUSE_S, RETRY_S = 1.5, 3.0, 3.0   # (was 3 s on, 1 s off: 
 # health for the blast of a bomb a Majini reaches too soon), and the run for a clear site is a short burst that hands
 # the pad back to the fight for longer than it took it.
 RELAX_S = 10.0                           # overdue seconds over which the Majini margin shrinks to its floor
-FOE_FLOOR_CM = 250.0                     # the least margin: the plant roots him ~1.3 s, a grab reaches ~1.5 m
-RELAX_HP = 0.5                           # the smaller margin only with this share of his health (350 of 1000 at 3.8 m)
+# Live the same evening at a 250 cm floor and half health: 13 bombs planted, about 8 of them went off on him (350 hp
+# each, 2,777 in all) - a Majini 2.5 m off reaches the bomb while the placing motion still roots him. The floor is
+# 3 m and the smaller margin needs nearly full health, so one blast never takes him below half before he heals.
+FOE_FLOOR_CM = 300.0                     # the least margin: the plant roots him ~1.3 s, a grab reaches ~1.5 m
+RELAX_HP = 0.8                           # the smaller margin only with this share of his health (350 of 1000 a blast)
 UNCONFIRMED_SITE_S = 8.0                 # an unconfirmed press may have left a bomb nobody saw: its site blocks this long
 GAP_S = 0.75                             # a tick gap longer than this (held, healing, a reload stall above this module)
                                          # pauses the cycle's clock: EQUIP_S/PLACE_S/SETTLE_S measure active control
