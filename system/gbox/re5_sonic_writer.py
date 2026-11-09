@@ -121,6 +121,21 @@ def build_finger_candidate(archive:bytes,source:Path,*,correct_wrist:bool=False)
                               'gameplay_verified':False,'writer_registered':False}
 
 
+def build_grip_candidate(archive:bytes,source:Path):
+    """Unregistered v15 experiment; the default recipe remains unchanged."""
+    from . import re5_sonic_grip
+    authored,receipt = build_finger_candidate(archive,source,correct_wrist=True)
+    model = zlib.decompress(mt_arc.parse(authored).entries[97].data)
+    native = zlib.decompress(mt_arc.parse(archive).entries[97].data)
+    model,grip = re5_sonic_grip.author(model,native,source,receipt['skin'])
+    authored = mtf_author.replace_archive_model(authored,97,model)
+    return authored,receipt | {'grip_recipe_version':1,'grip_fit':grip,
+                              'envelope_count':grip['envelope_count'],
+                              'written_sha256':hashlib.sha256(authored).hexdigest(),
+                              'acceptance':'experimental v15 grip fit; runtime weapon contact remains unverified',
+                              'gameplay_verified':False,'writer_registered':False}
+
+
 def plan(ctx,game:dict,inp,meta:dict|None):
     """An explicit Chris-normal slot and original library identity produce one tracked overlay edit."""
     from . import re5_character_writer as native, skin_swap, switch_mods

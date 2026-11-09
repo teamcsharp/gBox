@@ -572,3 +572,19 @@ does not require waiting for whole agent runs to finish. The actual restart conc
 proxied through gBox, plus in-process jobs. Those requests were still active at the latest audit; the running
 backend has not restarted, and the new public replacement routes still await activation and route acceptance.
 No external Hermes execution, queued remote job or gateway drain marker was altered.
+
+V15 adds a separate, still-unregistered native grip-fit candidate. It preserves the arm/wrist transforms and
+proximal cuff, fits the palm with a proper rotation and positive scale, and places the finger chains at native
+wrist-local anchors. Its exact reproduced ARC is
+`d96c9c9e8efaee4cf3a0eda9f10ff12ef1515e1efd604f9c34d081cd3a80cb8a`.
+All 1,369 triangles remain, with no inverted/collapsed triangles or opened source seams. Fourteen sampled
+animation frames keep body vertices and non-finger transforms unchanged; maximum native digit-anchor error is
+0.000001732 cm. These are offline checks, not runtime grip acceptance. The default recipe is unchanged.
+Validation: 57 focused grip, finger, writer, retarget and author tests passed.
+
+Stock MercMode was explicitly resumed after the inspection: session
+`e93128c2856b4eab-d4094b530aea4d66` advanced from 3,190 score / 10 kills to 26,320 / 50, with fresh gameplay frames.
+The backend activation review established that cron uses streaming transport without delivery callbacks;
+interrupted pre-delivery generations can retry while separate agent processes and completed tools survive.
+A scoped quick restart is being prepared under the operator's existing authorization. Current generation compute
+may be lost and retried; this is not a claim of a zero-interruption deployment.
