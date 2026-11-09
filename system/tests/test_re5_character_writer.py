@@ -45,7 +45,18 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(W, "_romfs", lambda config: root)
     monkeypatch.setattr(S, "running_users", lambda *a: [])
     monkeypatch.setattr(S, "WRITERS", {})
+    # Structural/provenance exercises below are not runtime acceptance.
+    monkeypatch.setattr(W, "VERIFIED_NATIVE_PAIRS", frozenset({("chris", "sheva"), ("sheva", "chris")}))
     return SimpleNamespace(config=cfg, job_id="native-test"), root
+
+
+def test_failed_native_trial_is_gated_before_asset_reads_or_writes(setup, monkeypatch):
+    ctx, _ = setup
+    monkeypatch.setattr(W, "VERIFIED_NATIVE_PAIRS", frozenset())
+    monkeypatch.setattr(W, "_romfs", lambda *a: pytest.fail("unaccepted pair read game assets"))
+    result = W.plan(ctx, GAME, C.CharIn(op="live_use", character="re5ps3_sheva_normal", slot="chris"), native_meta())
+    assert result == {"reason": W.UNVERIFIED_REASON}
+    assert not ctx.config.cache.exists()
 
 
 @pytest.mark.parametrize("donor,target", [("chris", "sheva"), ("sheva", "chris")])

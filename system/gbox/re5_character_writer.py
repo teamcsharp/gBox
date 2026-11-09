@@ -12,6 +12,14 @@ from pathlib import Path
 
 from .re_switch import RE5_TITLE_ID
 
+# Whole-player ARC filename substitution booted an invisible, nonfunctional
+# Chris slot in the 2026-11-09 live test. Only individually proven composed
+# player pairs may be exposed through characters use/live_use.
+VERIFIED_NATIVE_PAIRS: frozenset[tuple[str, str]] = frozenset()
+UNVERIFIED_REASON = ("Native RE5 player replacement is temporarily unavailable: the whole-archive Sheva-to-Chris "
+                     "trial booted with an invisible player. Slot resource composition and gameplay acceptance "
+                     "must pass before this pair is enabled; no files were written.")
+
 
 def _native_donor(meta: dict | None) -> str:
     from . import re5ps3_collection as source
@@ -95,6 +103,8 @@ def plan(ctx, game: dict, inp, meta: dict | None) -> dict:
         target = _target(inp, arcs)
         if donor == target:
             raise ValueError(f"{target.title()} already uses that native normal archive; no replacement was written")
+        if (donor, target) not in VERIFIED_NATIVE_PAIRS:
+            return {"reason": UNVERIFIED_REASON}
         root = _romfs(ctx.config)
         archive_root = re5_char_swap.archive_root(root).resolve()
         for name in (donor, target):

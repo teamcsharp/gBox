@@ -502,3 +502,23 @@ entry point avoids restarting the desktop or starting another worker. No game as
 Validation before the final recipe update: **892 Python tests, 67 JavaScript tests, and 2 browser tests passed**.
 The custom Sonic recipe remains unregistered and experimental until visible hand/weapon/leg checks pass. This work
 does not alter RE6-specific code; DeepSeek can continue from the pushed shared infrastructure checkpoint.
+
+### Live acceptance correction, 2026-11-09
+
+`d8a54660` is deployed on disk, but the running service has not been restarted. The activation guard found
+10 real Hermes executions with matching live process identities and fresh progress, including DeepSeek review work.
+Activation remains pending to preserve that work. No Hermes jobs or drain markers were changed. Stock RE5 MercMode
+continued in Public Assembly: exact session `e93128c2856b4eab-e72ea32980d644fb` advanced from 0 to 3,000 score / 10 kills,
+with a matching gameplay frame. This establishes RE5 gameplay, not the full three-title rotation.
+
+The native Sheva-to-Chris archive trial **failed**. The isolated deployed writer produced the expected original Sheva
+archive and the existing session-swap route restarted the same owned session, but the selected Chris slot rendered an
+invisible player and made no combat progress. Structural validity and successful boot were insufficient. The public
+native writer now refuses unverified player pairs before reading or writing RomFS. It must stay gated until slot resource
+composition and visible gameplay pass. The generic archive-swap helper is unchanged. The new characters API has not been
+activated or accepted. MercMode was enabled before stopping the failed owned trial.
+
+The Sonic audit also found that each glove was rigidly bound to its wrist; native finger animation could not close it
+around a gun. Finger rigging is in progress, bounded to the measured source. The model comparison gained a close joint
+view; a local, read-only artifact preview is being prepared while backend activation waits. Do not treat a local preview as
+proof that the deployed API is active or that Sonic's live weapon grip is accepted.
