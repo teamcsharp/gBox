@@ -75,6 +75,22 @@ LEVEL_M = 2.5                     # ... on his own floor: one this far above or 
 SIGHT_M = 18.0                    # ... this near is "on sight"
 CROWD_N, CROWD_M = 4, 6.0         # a mob: this many within this far
 COMBO_MIN_S, COMBO_MAX_S = 2.0, 5.0   # the operator's window: a kill every 2-5 seconds
+# The combo is a clock every bot reads every tick (operator 2026-11-09, watching a 22 combo expire in front of a
+# Majini: "it is important that they dispatch a foe every 3 seconds and never fail at it. The mode is a ballet and
+# it's important to never ever lose the combo. Have the bot understanding the combo and the amount of time left in
+# it at all times and manage it"). KILL_PACE_S after a kill the next one is owed: from then the quickest kill is
+# the target, nobody in reach means the run to the nearest by the map, and nothing that takes the gun out of his
+# hand for seconds (a bomb's plant, a time bonus) may start. Such things start in the window right after a kill.
+KILL_PACE_S = 3.0
+
+
+def combo_left(snap) -> float | None:
+    """Seconds left in a running combo's window (snap combo / combo_timer), None when no combo runs or it is not
+    read. Every title's driver puts those two in its snapshot."""
+    combo, left = (snap or {}).get("combo"), (snap or {}).get("combo_timer")
+    if type(combo) is not int or combo <= 0 or isinstance(left, bool) or not isinstance(left, (int, float)):
+        return None
+    return float(left) if 0.0 < left < 600.0 else None
 ANCHOR_M, ANCHOR_MIN_S, ANCHOR_MAX_S = 6.0, 8.0, 20.0   # within this of one spot this long: posturing
 CELL_M = 5.0                      # the level in squares this wide: the ones he has stood in are "explored"
 MOVE_M_S = 0.6                    # slower than this over MOVE_WINDOW_S: standing

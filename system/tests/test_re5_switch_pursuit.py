@@ -44,13 +44,19 @@ def test_the_combo_running_down_with_nobody_in_reach_he_runs_to_the_census_best(
     assert b.stats["pursuits"] == 1 and b.stats["census_count"] == 2 and b.stats["census_units"] == 2
 
 
-def test_no_pursuit_with_one_in_reach_or_the_window_still_long():
+def test_no_pursuit_with_one_in_reach_and_at_once_with_nobody_in_reach_however_long_the_window():
+    """Operator 2026-11-09: "dispatch a foe every 3 seconds and never fail at it ... the amount of time left in it
+    at all times". The pursuit used to wait until 6 s of the window were left (PURSUE_S); with a combo running
+    and nobody in reach he is off at once."""
     b, clock = bot()
     b.tick(snap([at(800, 0), at(2000, 10)], combo=4, window=5.0))
     assert b.stats["pursuits"] == 0
     b2, _ = bot()
     b2.tick(snap([at(2000, 10)], combo=4, window=8.0))
-    assert b2.stats["pursuits"] == 0
+    assert b2.stats["pursuits"] == 1 and R.PURSUE_S >= R.COMBO_WINDOW_S
+    b3, _ = bot()
+    b3.tick(snap([at(2000, 10)], combo=0, window=0.0))
+    assert b3.stats["pursuits"] == 0                       # no combo: the walk / the locate run, not the pursuit
 
 
 def test_nobody_on_his_level_at_all_he_still_pursues_from_the_census():

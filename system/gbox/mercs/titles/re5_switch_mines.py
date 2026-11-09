@@ -67,7 +67,26 @@ BLAST_CM, TRIGGER_CM, CLOSE_MAJINI_CM = STANDOFF_CM, 350.0, 300.0
 # he only stays CALM_CM off it. With BLAST_CM alone, at the operator's 15 m, that bomb held him turning on the spot
 # beside it - "in his own bomb's blast" for 116 s, three kills in six minutes. And a guard run that gains no ground
 # for CLEAR_STUCK_S (a wall, a dead end) gives the pad back for CLEAR_YIELD_S: the fight and the map move him.
+# CALM_DWELL_S, the same evening: a quiet bomb lay in a corridor between him and the Majini, the guard turned him
+# back the moment he came within CALM_CM of it, and he went to and fro beside it for minutes (the operator's map:
+# 234 kills at 14:01 and at 13:06, six Majini alive elsewhere). Walking past a bomb nobody is near is nothing (two
+# seconds at a run); only standing beside it CALM_DWELL_S sends him off it.
 DANGER_CM, CALM_CM, CLEAR_STUCK_S, CLEAR_YIELD_S, CLEAR_GAIN_CM = 800.0, 400.0, 2.5, 4.0, 100.0
+CALM_DWELL_S = 4.0
+# The combo and the bombs (operator 2026-11-09: "never ever lose the combo ... the amount of time left in it at all
+# times"; and "I want the bot always placing mines"). A plant takes the gun out of his hand for 3 to 10 s, a combo
+# window is 10: live that day 9 of 10 lost combos had a Majini in reach. So with a combo running a cycle starts only
+# while COMBO_PLANT_MIN_S or more of its window is left (right after a kill), unless the bomb is COMBO_WAIT_S
+# overdue; the run out ends once he is COMBO_STANDOFF_CM off and the window is down to COMBO_CUT_S (the gun back,
+# the next kill); and the guard asks only COMBO_STANDOFF_CM of him while the window is that short. stats
+# mine_combo_waits (ticks a due bomb waited for the window), mine_combo_cuts (runs out ended for the combo).
+COMBO_PLANT_MIN_S, COMBO_WAIT_S, COMBO_CUT_S, COMBO_STANDOFF_CM = 8.0, 12.0, 4.0, 800.0
+# A due bomb that is blocked (his last one too near, a Majini inside the margin) no longer takes the pad to run
+# "to a clear placement site": that run went away from the last bomb into whatever wall was there, 1.5 s of every
+# 4.5, against the fight's own heading - the standing the operator watched ("the bot should not sit idle and let
+# these enemies sit idle"). The fight, the pursuit and the map move him; the bomb goes down the moment the site is
+# clear (and the flash clears a crowd for it).
+RELOCATE_RUN = False
 # the guard: a Majini this near a bomb of his, him within BLAST_CM of it: out. CLOSE_MAJINI_CM: a Majini this close
 # to him while he is in the blast - he cannot run the gap through a close crowd (the cluster's remaining incidents),
 # so the run is given up and the fight unloads on the threat instead. FOE_CLEAR_CM (5 m) is the placement's rule
@@ -173,6 +192,7 @@ class Mines:
         self.bombs, self.blast = {}, None
         self.baseline = None
         self._clear_run, self._clear_yield = None, -1e9
+        self._calm_since = {}                          # quiet bombs he is beside: unit -> since when
         self.hist.clear()
         self._tracked_at = None
         self._retry_at = self._relocate_retry_at = 0.0
@@ -243,6 +263,16 @@ class Mines:
             else:
                 self.blast["until"] = now + BLAST_AFTER_S
 
+    @staticmethod
+    def combo_left(snap: dict) -> float | None:
+        """Seconds left in a running combo's window, None without one (the doctrine's reading of the snapshot)."""
+        read = getattr(_doctrine, "combo_left", None)
+        if read is not None:
+            return read(snap)
+        combo, left = snap.get("combo"), snap.get("combo_timer")
+        ok = type(combo) is int and combo > 0 and isinstance(left, (int, float)) and not isinstance(left, bool)
+        return float(left) if ok and 0.0 < left < 600.0 else None
+
     def due(self, p: dict, snap: dict, live: list, now: float) -> str | None:
         """Why a cycle may start now (None: not now)."""
         self._blocked, self._avoid_site = None, None
@@ -264,6 +294,11 @@ class Mines:
             return None
         if "ground_mines" not in snap:
             self.stats["mine_blocked_reason"] = "ground mine observation unavailable"
+            return None
+        left = self.combo_left(snap)
+        if left is not None and left < COMBO_PLANT_MIN_S and self.stats["mine_overdue_s"] < COMBO_WAIT_S:
+            self.stats["mine_blocked_reason"] = "the combo's window: after the next kill"
+            self.stats["mine_combo_waits"] = self.stats.get("mine_combo_waits", 0) + 1
             return None
         if why := self._clearance(p, live, now):
             self.stats["mine_blocked_reason"] = self._blocked = why
@@ -361,8 +396,14 @@ class Mines:
             if self.baseline and g["ptr"] in self.baseline and g["ptr"] not in self.bombs:
                 continue                                     # up before he planted anything: the stack's own unit
             threatened = any(flat(e["pos"], b) <= DANGER_CM for e in live)
-            if flat(pos, b) >= (BLAST_CM if threatened else CALM_CM):
+            left = self.combo_left(snap)
+            standoff = COMBO_STANDOFF_CM if left is not None and left <= COMBO_CUT_S else BLAST_CM
+            calm = self.__dict__.setdefault("_calm_since", {})
+            if flat(pos, b) >= (standoff if threatened else CALM_CM):
+                calm.pop(g["ptr"], None)
                 continue
+            if not threatened and now is not None and now - calm.setdefault(g["ptr"], now) < CALM_DWELL_S:
+                continue                                     # a quiet bomb: he may walk past it
             if g["ptr"] in seen:
                 continue
             seen.add(g["ptr"])
@@ -472,7 +513,7 @@ class Mines:
                     self.stats["mine_relocating"] = False
                 return act
             if self.due(p, snap, live, now) is None:
-                if self._blocked in ("last bomb too close", "enemy too close"):
+                if RELOCATE_RUN and self._blocked in ("last bomb too close", "enemy too close"):
                     return self._relocate(p, live, now)
                 self.stats["mine_relocating"] = False
                 return None
@@ -570,6 +611,11 @@ class Mines:
             return self._run(p, live, self.site)
         if self.state == "retreat":
             away = self.site is not None and flat(p["pos"], self.site) >= RETREAT_CM
+            left = self.combo_left(snap)
+            if (not away and left is not None and left <= COMBO_CUT_S and self.site is not None
+                    and flat(p["pos"], self.site) >= COMBO_STANDOFF_CM):
+                away = True                               # out of its blast and the combo's window nearly gone
+                self.stats["mine_combo_cuts"] = self.stats.get("mine_combo_cuts", 0) + 1
             if away or now - self.t > RETREAT_S:
                 if away:
                     self.stats["mine_retreats_completed"] += 1

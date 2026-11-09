@@ -444,7 +444,19 @@ LEVEL_COUNTERS = ("pitch_swings", "off_level_picks", "close_keeps")
 # read: the next Majini not dispatched in time) is a combo_lapse, as the PS3 bot counts them. COMBO_PUSH: with a combo
 # running and its window under COMBO_URGENT_S, the target is the quickest kill (the cheapest in reach, his level first,
 # no stickiness), and with nobody within COMBO_REACH he walks to the nearest (combo_pushes counts the ticks).
-COMBO_PUSH, COMBO_URGENT_S, COMBO_LAPSE_S, COMBO_REACH = True, 3.0, 0.6, 900.0
+# 2026-11-09 (the operator, a 22 combo expiring with a Majini in front of him): "it is important that they dispatch
+# a foe every 3 seconds and never fail at it ... Have the bot understanding the combo and the amount of time left in
+# it at all times and manage it." The window is the game's 10 s (COMBO_WINDOW_S; combo_window_full reads it), the
+# pace the doctrine's KILL_PACE_S: the push starts KILL_PACE_S after a kill (COMBO_URGENT_S of the window left, was
+# 3.0 - seven seconds of doing something else first), and a target he is already aiming at is kept (no re-pick
+# every tick). stats combo_left_s (the window now), combo_since_kill_s.
+COMBO_WINDOW_S = 10.0
+try:
+    from ..core import doctrine as _doctrine
+    KILL_PACE_S = float(getattr(_doctrine, "KILL_PACE_S", 3.0))
+except ImportError:                      # (a worker holding no doctrine module yet)
+    KILL_PACE_S = 3.0
+COMBO_PUSH, COMBO_URGENT_S, COMBO_LAPSE_S, COMBO_REACH = True, COMBO_WINDOW_S - KILL_PACE_S, 0.6, 900.0
 # Threat first (operator 2026-10-27 14:30, watching RE5: "the bot aim sporadically where they're pointing at enemies
 # that are way farther away despite them being crowded in the same area by enemies that are a much more immediate
 # threat ... jumping his view around way too much"): with a Majini on his level within THREAT_NEAR_R, no target beyond
@@ -735,6 +747,15 @@ BONUS, BONUS_VT, BONUS_SCAN_S, BONUS_FIGHT_R, BONUS_WALK_R, BONUS_BLOCK_S, BONUS
 # proximity produces. Rounds measured bonuses_seen 8-11 with bonuses_taken 0-1, knife_swings 0 and detours 11-27 - the bot circled.
 # Bounded so a statue it genuinely cannot reach still falls through to the detour/give-up path.
 BONUS_PRESS_IN_S = 4.0
+# The enemies and the combo come before the statues (operator 2026-11-09, the map showing him headed for a time
+# bonus with six Majini alive elsewhere: "The bot needs to go to that enemy and dispatch them"; live that round 36
+# bonus runs for 1 statue taken, 91 detours, 0 pursuits). With a Majini alive anywhere a statue is run for only when
+# the clock needs it (BONUS_NEED_S or less on it), or he is passing it (BONUS_NEAR_R from him, his own floor) and no
+# combo window is running down (none, or BONUS_COMBO_MIN_S of it left). BONUS_NEAR_R is a pass, not a trip: the
+# operator's next map had him standing 7.9 m from a statue, nine Majini alive ("the bot should never stand still.
+# The bot needs to pursue the enemy dots and navigate to and dispatch them"). stats bonus_deferred (ticks a statue
+# waited).
+BONUS_NEED_S, BONUS_NEAR_R, BONUS_COMBO_MIN_S = 120.0, 300.0, 8.0
 # KNIFE_R was 90 cm: inside a statue's own footprint, so the bot walked up, circled (bonus_detours 6-27 a round) and never
 # entered the reach that starts the swing. Four consecutive rounds measured knife_swings 0 with bonuses_taken 0 (the only take
 # came from a context prompt), while bonuses_seen was 8-11 a round. 160 cm is where the bot actually stands when it arrives, and
@@ -780,7 +801,10 @@ AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "wall_aim_s", "frozen_dots", "
 # no PURSUE_PROGRESS_CM closer in PURSUE_STUCK_S: a detour (PURSUE_DETOUR_DEG off the heading for PURSUE_DETOUR_S, the
 # side alternating); PURSUE_MAX_DETOURS on one Majini: another for PURSUE_BLOCK_S. pursuit_kills: a kill during a
 # pursuit or within PURSUE_CREDIT_S after it (once a pursuit); pursuit_lapses: a combo lapse during one.
-PURSUIT, PURSUE_S, PURSUE_DY_W, PURSUE_CREDIT_S = True, 6.0, 3.0, 4.0
+# PURSUE_S covers the whole window since 2026-11-09 (was 6.0: four seconds of a combo spent before he set off; live
+# that day pursuits 0 in 90 minutes, because the time-bonus run stood ahead of it), and the run goes by the stage's
+# mesh (_approach), the straight line only inside a detour.
+PURSUIT, PURSUE_S, PURSUE_DY_W, PURSUE_CREDIT_S = True, 11.0, 3.0, 4.0
 PURSUE_PROGRESS_CM, PURSUE_STUCK_S, PURSUE_DETOUR_DEG, PURSUE_DETOUR_S = 50.0, 1.5, 70.0, 0.9
 PURSUE_MAX_DETOURS, PURSUE_BLOCK_S = 3, 8.0
 ENEMY_LINE, CENSUS_S = 10, 2.0
@@ -955,6 +979,22 @@ NAV_APPROACH, NAV_GOAL_CELL, NAV_REPLAN_MIN_S, NAV_DIRECT_R = True, 200.0, 0.75,
 # pulled tight) when both ends are on it; replanned at most every MESH_REPLAN_S or when the goal leaves its square,
 # a waypoint counts as reached within MESH_WP_CM. stats mesh_route_ticks, mesh_routes, mesh_no_route.
 MESH_ROUTE, MESH_REPLAN_S, MESH_WP_CM = True, 1.0, 120.0
+# The mesh's routes cross floors by its action links (a ladder, a drop, a ledge: re5_nav.Traversal). Until
+# 2026-11-09 the walker went to a link's foot and then straight at the next point on the other floor - a wall. The
+# operator's maps that day: the Majini two corridors and a "ladder / drop" away, his route drawn through it ("The
+# bot needs to know that these enemies are on the map and that he needs to go and dispatch them"). MESH_LINKS: at a
+# link's foot he pushes on through its edge toward the landing, where the game shows the prompt and the prompt rule
+# presses it; MESH_LINK_TRY_S there without leaving that floor and the link is one he cannot take (the Majini's
+# only): left out of the routes for the rest of the stage, another way planned. stats mesh_links_tried,
+# mesh_links_refused, level_changes (the crossings made).
+MESH_LINKS, MESH_LINK_TRY_S, MESH_LINK_PUSH_CM, MESH_LINKS_AVOIDED = True, 3.0, 150.0, 24
+# A Majini in gun range with no open floor between them (a wall, a floor's edge) and more than CLOSE_IN_R away: he
+# goes round to him by the mesh at a run instead of raising the gun at the wall (asked every CLOSE_IN_CHECK_S).
+# RUN_R: a walk to a Majini farther than this is a run (B).
+CLOSE_IN, CLOSE_IN_R, CLOSE_IN_CHECK_S, RUN_R = True, 800.0, 0.5, 600.0
+# The locate run keeps its Majini while he lives unless another is LOCATE_SWITCH times nearer, and one the mesh has
+# no route to is passed over for LOCATE_BLOCK_S (the next nearest instead).
+LOCATE_SWITCH, LOCATE_BLOCK_S = 0.6, 8.0
 # Mines are not negotiable (operator 2026-11-09: "I want it placing mines. Then flashbanging and running away and
 # getting distance ... have him force his way out"). MINE_FLASH: the native flash (the GRENADES knob's own, no item
 # screen) goes off the moment a bomb of his is confirmed down, so the crowd reels while he runs out to the standoff;
@@ -1933,12 +1973,13 @@ class Bot:
                 pur["target"] = None
         off = math.radians(PURSUE_DETOUR_DEG) * pur["side"] if now < pur["detour_until"] else 0.0
         err = wrap(heading(tgt["pos"][0] - px, tgt["pos"][2] - pz) + off - p["rot"])
+        turn = self._turn(err, TURN_TOL) if off else self._approach(p, tgt["pos"], now, link=True)
         self.target = key
         self.doing = "walk"
         self.why = (f"pursuit: combo {combo}, {window:.1f} s left, the best of {len(census)} at {d / 100:.1f} m "
                     f"(dy {tgt['pos'][1] - py:+.0f})" + (" - a detour" if off else ""))
         self._gun_down()
-        return {"hold": ("lup", "b") + self._turn(err, TURN_TOL)}
+        return {"hold": ("lup", "b") + turn}
 
     @staticmethod
     def _escape_keys(p, crowd) -> tuple:
@@ -1996,6 +2037,17 @@ class Bot:
             return None
         self._bonus_block = {k: t for k, t in self._bonus_block.items() if t > now}
         open_ = [b for b in bonuses if b["ptr"] not in self._bonus_block]
+        timer = snap.get("timer")
+        if open_ and any((e.get("hp") or 0) > 0 for e in snap.get("enemies") or ()) \
+                and not (isinstance(timer, (int, float)) and timer <= BONUS_NEED_S):
+            left = self._combo_left(snap)                  # the enemies and the combo first (BONUS_NEED_S above)
+            calm = left is None or left >= BONUS_COMBO_MIN_S
+            near = [b for b in open_ if calm and abs(b["pos"][1] - py) <= LEVEL_DY
+                    and math.hypot(b["pos"][0] - px, b["pos"][2] - pz) <= BONUS_NEAR_R]
+            if not near:
+                self.stats["bonus_deferred"] = self.stats.get("bonus_deferred", 0) + 1
+                self._bonus = None
+            open_ = near
         if not open_:
             return None
         cost = lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz) + 3.0 * abs(b["pos"][1] - py)
@@ -3267,6 +3319,9 @@ class Bot:
             self.stats["combo_window_full"] = round(max(window, self.stats.get("combo_window_full") or 0.0), 1)
         self._combo_prev = combo
         self._combo_window = window if combo > 0 else None
+        left = self._combo_left(snap)                      # the clock he plays by, every tick
+        self.stats["combo_left_s"] = round(left, 1) if left is not None else None
+        self.stats["combo_since_kill_s"] = round(max(0.0, COMBO_WINDOW_S - left), 1) if left is not None else None
 
     def _lapse_cause(self, snap) -> None:
         p = snap.get("player") or {}
@@ -3279,6 +3334,14 @@ class Bot:
         self.stats["combo_lapse_far" if near > COMBO_REACH else "combo_lapse_near"] += 1
         if self.aim_since is not None:
             self.stats["combo_lapse_aimed"] += 1
+
+    @staticmethod
+    def _combo_left(snap) -> float | None:
+        """Seconds left in the running combo's window (None: no combo, or not read)."""
+        combo, window = snap.get("combo"), snap.get("combo_timer")
+        if type(combo) is not int or combo <= 0 or isinstance(window, bool) or not isinstance(window, (int, float)):
+            return None
+        return float(window) if 0.0 < window < 600.0 else None
 
     def _combo_urgent(self, snap) -> bool:
         combo, window = snap.get("combo"), snap.get("combo_timer")
@@ -4151,10 +4214,42 @@ class Bot:
             return dict(act, hold=("lup", "b") + self._turn(err, TURN_TOL))
         return act
 
+    def _gait(self, dist: float) -> tuple:
+        """The left stick for a walk to a Majini `dist` away: a run beyond RUN_R."""
+        return ("lup", "b") if dist > RUN_R else ("lup",)
+
+    def _walled_off(self, p, e, now) -> bool:
+        """CLOSE_IN: whether the mesh says there is no open floor on the line between him and this Majini."""
+        mesh = getattr(self, "_mesh", None)
+        if not CLOSE_IN or mesh is None or not hasattr(mesh, "floor_segment"):
+            return False
+        key = e.get("ptr", e.get("slot"))
+        c = self.__dict__.setdefault("_walled", {"key": None, "at": -1e9, "off": False})
+        if c["key"] != key or now - c["at"] >= CLOSE_IN_CHECK_S:
+            c["key"], c["at"] = key, now
+            try:
+                start, goal = tuple(p["pos"]), tuple(e["pos"])
+                on = mesh.find(start, floor_only=True) is not None and mesh.find(goal, floor_only=True) is not None
+                c["off"] = bool(on and not mesh.floor_segment(start, goal))
+            except Exception as exc:                         # noqa: BLE001 - the mesh never costs a tick
+                self.stats["nav_error"] = f"mesh segment {type(exc).__name__}: {exc}"[:120]
+                c["off"] = False
+        return c["off"]
+
+    def _mesh_avoid(self, mesh) -> list:
+        """The links he could not take on this stage's mesh (their portals), for route(avoid=)."""
+        a = self.__dict__.setdefault("_mavoid", {"sig": None, "pts": []})
+        sig = getattr(mesh, "sig", None)
+        if a["sig"] != sig:
+            a["sig"], a["pts"] = sig, []
+        return a["pts"]
+
     def _mesh_waypoint(self, p, goal, now):
         """The next point (x, z) of the nav mesh's route from him to `goal` (x, y, z), or None when the mesh is not
-        read, an end is off it, or they are not joined by floor (another floor: a ladder or a drop between)."""
+        read, an end is off it, or no route joins them. A ladder or a drop on the way (MESH_LINKS) is walked into at
+        its foot; self._mesh_link says he is at one this tick."""
         mesh = getattr(self, "_mesh", None)
+        self._mesh_link = False
         if not MESH_ROUTE or mesh is None or not hasattr(mesh, "route") or len(goal) < 3:
             return None
         px, py, pz = p["pos"]
@@ -4164,7 +4259,9 @@ class Bot:
         if (r["cell"] != cell and now - r["at"] >= NAV_REPLAN_MIN_S) or stale:
             r["cell"], r["at"] = cell, now
             try:
-                pts = mesh.route((px, py, pz), tuple(goal[:3]))
+                avoid = tuple(self._mesh_avoid(mesh))
+                pts = mesh.route((px, py, pz), tuple(goal[:3]), avoid=avoid) if avoid \
+                    else mesh.route((px, py, pz), tuple(goal[:3]))
             except Exception as exc:                         # noqa: BLE001 - the mesh never costs a tick
                 self.stats["nav_error"] = f"mesh {type(exc).__name__}: {exc}"[:120]
                 pts = None
@@ -4174,22 +4271,48 @@ class Bot:
         pts = r["pts"]
         while pts:
             q = pts[0]
-            point = q.approach if hasattr(q, "approach") else q   # a Traversal is walked to on its own floor
-            if len(pts) > 1 and math.hypot(point[0] - px, point[2] - pz) <= MESH_WP_CM:
+            link = hasattr(q, "approach")
+            point = q.approach if link else q            # a Traversal is walked to on its own floor
+            at = math.hypot(point[0] - px, point[2] - pz) <= MESH_WP_CM
+            if link and at and MESH_LINKS:
+                # at a ladder's or a drop's foot: on through its edge, where the game's prompt shows (the prompt rule
+                # presses it) or the floor simply falls away; a link that never lets him through is the Majini's only
+                st = self.__dict__.setdefault("_mlink", {"key": None, "since": now})
+                key = tuple(round(v) for v in q.portal)
+                if st["key"] != key:
+                    st["key"], st["since"] = key, now
+                    self.stats["mesh_links_tried"] = self.stats.get("mesh_links_tried", 0) + 1
+                if now - st["since"] > MESH_LINK_TRY_S:
+                    avoid = self._mesh_avoid(mesh)
+                    avoid.append(tuple(q.portal))
+                    del avoid[:-MESH_LINKS_AVOIDED]
+                    st["key"], r["at"], r["pts"] = None, -1e9, None     # another way, planned at the next call
+                    self.stats["mesh_links_refused"] = self.stats.get("mesh_links_refused", 0) + 1
+                    return None
+                dx, dz = q.portal[0] - q.approach[0], q.portal[2] - q.approach[2]
+                n = math.hypot(dx, dz)
+                if n < 1.0:                                  # (no direction in the link itself: toward its landing)
+                    dx, dz = q[0] - px, q[2] - pz
+                    n = math.hypot(dx, dz) or 1.0
+                self._mesh_link, self._goal_dy = True, q[1] - py
+                self.stats["mesh_route_ticks"] = self.stats.get("mesh_route_ticks", 0) + 1
+                return q.portal[0] + dx / n * MESH_LINK_PUSH_CM, q.portal[2] + dz / n * MESH_LINK_PUSH_CM
+            if len(pts) > 1 and at:
                 pts.pop(0)
                 continue
             self.stats["mesh_route_ticks"] = self.stats.get("mesh_route_ticks", 0) + 1
             return point[0], point[2]
         return None
 
-    def _approach(self, p, goal, now, tol=None) -> tuple:
+    def _approach(self, p, goal, now, tol=None, link=False) -> tuple:
         """The turn keys toward `goal` (a position): along the learned map's route when it has one (NAV_APPROACH
         above), else the straight line. stats nav_approach_ticks (walked by the map), nav_direct_ticks (by the line)."""
         px, _py, pz = p["pos"]
         gx, gz = goal[0], goal[2] if len(goal) > 2 else goal[1]
         tx, tz = gx, gz
         nav = getattr(self, "_nav", None)
-        wp = self._mesh_waypoint(p, goal, now) if math.hypot(gx - px, gz - pz) > NAV_DIRECT_R else None
+        far = math.hypot(gx - px, gz - pz) > NAV_DIRECT_R or (link and len(goal) > 2 and abs(goal[1] - _py) > LEVEL_DY)
+        wp = self._mesh_waypoint(p, goal, now) if far else None   # (link: one right above or below him too)
         if wp is not None:                                   # the game's own mesh: the corridors as they are
             return self._turn(wrap(heading(wp[0] - px, wp[1] - pz) - p["rot"]), TURN_TOL if tol is None else tol)
         if NAV_APPROACH and nav is not None and math.hypot(gx - px, gz - pz) > NAV_DIRECT_R:
@@ -4219,14 +4342,37 @@ class Bot:
         if not (LOCATE and census):
             return None
         flat = lambda q: math.hypot(q[0] - px, q[2] - pz)
-        tgt = min(census, key=lambda e: flat(e["pos"]) + PURSUE_DY_W * abs(e["pos"][1] - py))
-        key, tx, ty, tz = tgt.get("ptr", tgt.get("slot")), *tgt["pos"]
+        ident = lambda e: e.get("ptr", e.get("slot"))
+        cost = lambda e: flat(e["pos"]) + PURSUE_DY_W * abs(e["pos"][1] - py)
+        block = self.__dict__.setdefault("_locate_block", {})
+        for k in [k for k, t in block.items() if t <= now]:
+            del block[k]
+        census = [e for e in census if ident(e) not in block] or census
+        tgt = min(census, key=cost)
+        kept = next((e for e in census if ident(e) == getattr(self, "_locate_key", None)), None)
+        if kept is not None and cost(tgt) > LOCATE_SWITCH * cost(kept):
+            tgt = kept                                       # the one he set off for, unless another is much nearer
+        key, tx, ty, tz = ident(tgt), *tgt["pos"]
         if getattr(self, "_locate_key", None) != key:
             self._locate_key = key
             self.stats["locates"] = self.stats.get("locates", 0) + 1
         d, dy = flat(tgt["pos"]), ty - py
         self.stats["locate_m"], self.stats["locate_dy_cm"] = round(d / 100.0, 1), round(dy)
         goal, how = tgt["pos"], "by the map"
+        wp = self._mesh_waypoint(p, tgt["pos"], now)        # the stage's own mesh, its ladders and drops included
+        if wp is not None:
+            self.doing = "walk"
+            self.why = (f"locating: a Majini {d / 100:.0f} m off"
+                        + (f", {dy:+.0f} cm off his floor" if abs(dy) > LEVEL_DY else "") + " - by the stage's mesh"
+                        + (", through a ladder or drop" if self._mesh_link else ""))
+            if not self._mesh_link:
+                self._goal_dy = dy
+            self._gun_down()
+            return {"hold": ("lup", "b") + self._turn(wrap(heading(wp[0] - px, wp[1] - pz) - p["rot"]), TURN_TOL)}
+        if getattr(self, "_mesh", None) is not None and len(census) > 1 and key not in block \
+                and (self.__dict__.get("_mroute") or {}).get("pts") is None:
+            block[key] = now + LOCATE_BLOCK_S                # no route to this one: the next nearest meanwhile
+            self.stats["locate_unreachable"] = self.stats.get("locate_unreachable", 0) + 1
         if abs(dy) > LEVEL_DY:                             # another floor: a way up or down he has seen here
             spots = [s_ for s_ in self._door_spots() if abs(s_[1] - py) < 150.0 and flat(s_) > DOOR_REACH_R]
             if spots:
@@ -4371,7 +4517,7 @@ class Bot:
                 tgt = min(others, key=lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz))
                 self.doing, self.why = "walk", f"{self.mode}: the nearest Majini off his level"
                 self._gun_down()
-                return {"hold": ("lup",) + self._approach(p, tgt["pos"], now)}
+                return {"hold": ("lup", "b") + self._approach(p, tgt["pos"], now, link=True)}
             self.doing, self.why = "no_foes", "no Majini alive on his level"
             self._gun_down()
             return {"hold": ()}
@@ -4379,7 +4525,7 @@ class Bot:
         if self.mode in ("hunt", "rush") and near > reach and self.aim_since is None:   # hunt / rush: close in on the nearest
             self.doing, self.why = "walk", f"{self.mode}: the nearest {near / 100:.1f} m"
             self._gun_down()
-            return {"hold": ("lup",) + self._approach(p, near_e["pos"], now)}
+            return {"hold": self._gait(near) + self._approach(p, near_e["pos"], now)}
         self._track_approach(p, live, now)
         self._threat_now = self._threat_near(p, live)
         crowded = NEAR_FOCUS and any(flat(e) <= RAMPAGE_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in live)
@@ -4413,11 +4559,14 @@ class Bot:
             self.stats["combo_pushes"] += 1
             reach = [e for e in live if flat(e) <= COMBO_REACH]
             if not reach and self.aim_since is None:         # nobody in reach: run to the nearest, the gun down
-                self.doing, self.why = "walk", f"combo {snap.get('combo')}: the nearest {near / 100:.1f} m"
+                self.doing, self.why = "walk", (f"combo {snap.get('combo')}, {self._combo_left(snap) or 0:.1f} s left: "
+                                                f"the nearest {near / 100:.1f} m")
                 self._gun_down()
-                return {"hold": ("lup", "b") + self._approach(p, near_e["pos"], now)}
+                return {"hold": ("lup", "b") + self._approach(p, near_e["pos"], now, link=True)}
         if urgent and reach and not self._threat_now:        # (a threat near: the threat pick is the quickest kill)
-            tgt = min(reach, key=lambda e: self._cost(p, e))
+            held = next((e for e in reach if e.get("ptr", e.get("slot")) == self.target), None) \
+                if self.aim_since is not None else None      # the one his gun is already on: finish him
+            tgt = held if held is not None else min(reach, key=lambda e: self._cost(p, e))
             self._set_target(tgt.get("ptr", tgt.get("slot")), now)
         else:
             tgt = self._choose(p, live, now) if self.mode != "score" else min(live, key=flat)   # score: the nearest
@@ -4446,10 +4595,16 @@ class Bot:
                 foot = fix["pos"]
                 dist = flat(fix)
                 body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
-        if dist > ENGAGE_R:                                  # nobody in range: walk to him
+        if dist > ENGAGE_R:                                  # nobody in range: to him, at a run
             self.doing, self.why = "walk", f"nearest target {dist / 100:.1f} m"
             self._gun_down()
-            return {"hold": ("lup",) + self._approach(p, foot, now)}
+            return {"hold": self._gait(dist) + self._approach(p, foot, now, link=True)}
+        if self.aim_since is None and dist > CLOSE_IN_R and self._walled_off(p, tgt, now):
+            self.doing, self.why = "walk", (f"target {dist / 100:.1f} m with no open floor between them: "
+                                            f"round to him by the map")
+            self.stats["close_in_ticks"] = self.stats.get("close_in_ticks", 0) + 1
+            self._gun_down()
+            return {"hold": ("lup", "b") + self._approach(p, foot, now, link=True)}
         motion = p.get("motion")
         if self.aim_since is None:
             if now < self.backoff_until:                     # a back-off under way (a crowd's burst ended it): finish it

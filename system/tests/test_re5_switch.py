@@ -442,7 +442,7 @@ def test_bot_without_a_laser_unit_aims_by_heading():
     clock[0] = 0.3
     first, second = b.tick(snap_with((0.0, 0.0, 600.0)))["hold"], b.tick(snap_with((0.0, 0.0, 600.0)))["hold"]
     assert first == second == ("zl", "zr") and b.stats["laserless"] == 2
-    assert b.tick(snap_with((0.0, 0.0, 5000.0)))["hold"] == ("lup",)     # nobody in range: walk to him
+    assert b.tick(snap_with((0.0, 0.0, 5000.0)))["hold"] == ("lup", "b")   # nobody in range: to him at a run (RUN_R)
     assert b.tick(snap_with(None))["hold"] == ()
 
 
