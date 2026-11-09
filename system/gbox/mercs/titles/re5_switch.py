@@ -4260,17 +4260,13 @@ class Bot:
         if g.goal and g.goal.get("id") != before and g.goal.get("state") == "queued":
             self.stats["map_goals_taken"] = self.stats.get("map_goals_taken", 0) + 1
 
-    def plan(self) -> dict:
-        """What the tactical map shows of his intent: his target, the mesh route he is on, and the round's map-goal
-        token with what a click may ask for (an enemy, a spot)."""
-        out: dict = {"fallback": True}
-        tgt = getattr(self, "target", None)
-        if isinstance(tgt, int) and not isinstance(tgt, bool):
-            out["target"] = {"kind": "enemy", "id": tgt}
-        if MAP_GOALS:
-            g = self._goals()
-            out.update(goal_round=g.round, goal_capabilities=["enemy", "point"], operator_goal=g.public())
-        return out
+    def map_goal_plan(self) -> dict:
+        """For the tactical map (tactical._take_map_goals, beside what it already takes from this bot): the round's
+        map-goal token, what a click may ask for (an enemy, a spot) and the mark in force."""
+        if not MAP_GOALS:
+            return {}
+        g = self._goals()
+        return {"goal_round": g.round, "goal_capabilities": ["enemy", "point"], "operator_goal": g.public()}
 
     def _floor_y(self, x: float, z: float, py: float) -> float:
         """The floor's height under a spot on the map (the mesh's floor there nearest his own height), else his."""

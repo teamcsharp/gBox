@@ -33,6 +33,7 @@ the navmesh's route length (straight line without one) at RUN_SPEED, marked "est
 from __future__ import annotations
 
 import math
+import heapq
 import struct
 import threading
 import time
@@ -112,6 +113,9 @@ def stage_key(title: str, mesh) -> str:
     crc = zlib.crc32(struct.pack(f"<{len(pts)}i", *pts)) & 0xFFFFFFFF if pts else 0
     indices = [v for triangle in mesh.tris for v in triangle[:3]]
     crc = zlib.crc32(struct.pack(f"<{len(indices)}i", *indices), crc) & 0xFFFFFFFF
+    links = [v for i, row in enumerate(getattr(mesh, "links", ()) or ())
+             for nb, edge, *_ in sorted(row) for v in (i, nb, edge)]
+    crc = zlib.crc32(struct.pack(f"<{len(links)}i", *links), crc) & 0xFFFFFFFF
     return f"{title}.nav{len(mesh.tris)}.{crc:08x}"
 
 
@@ -214,7 +218,84 @@ def take_plan(bot) -> dict:
     route = getattr(bot, "route", None)
     if route and (out.get("target") or {}).get("kind") == "bonus" and getattr(bot, "route_for", None) == out["target"]["id"]:
         out["route"] = [tuple(w) for w in list(route)[:MAX_ROUTE]]
+    _take_learned_navigation(out, bot)
+    _take_native_route(out, bot)
+    _take_map_goals(out, bot)
     return out
+
+
+def _take_map_goals(out: dict, bot) -> None:
+    """A bot without a plan() of its own that takes the operator's marks on the map (RE5 Switch: a clicked enemy,
+    a double-clicked spot): its round token, what a click may ask for, and the mark in force."""
+    fn = getattr(bot, "map_goal_plan", None)
+    if not callable(fn):
+        return
+    try:
+        extra = fn()
+    except Exception:                                       # noqa: BLE001 - a mark never costs the map a frame
+        return
+    if isinstance(extra, dict):
+        out.update({k: extra[k] for k in ("goal_round", "goal_capabilities", "operator_goal") if k in extra})
+
+
+def _take_native_route(out: dict, bot) -> None:
+    if not getattr(bot, "_native_route_active", False):
+        return
+    route = []
+    needs_prompt = False
+    for waypoint in list(getattr(bot, "_native_route", ()) or ())[:MAX_ROUTE]:
+        approach = _xyz(getattr(waypoint, "approach", ()))
+        if approach is not None:
+            route.append(approach)
+            needs_prompt = True
+        point = _xyz(waypoint)
+        if point is not None:
+            route.append(point)
+    if route:
+        out["route"] = route[:MAX_ROUTE]
+        out["route_source"] = "native_navmesh"
+        out["route_requires_prompt"] = needs_prompt
+        bonus = getattr(bot, "_bonus", None)
+        if isinstance(bonus, dict):
+            out["target"] = {"kind": "bonus", "id": bonus.get("ptr")}
+
+
+def _take_learned_navigation(out: dict, bot) -> None:
+    """Copy RE5 Switch's observations on the engine thread; these are not a level mesh.
+
+    The learned grid collapses height and permits unknown cells. Stalls are body
+    positions, not located wall surfaces. Keep those limits in the payload.
+    """
+    nav = getattr(bot, "_nav", None)
+    grid = getattr(nav, "grid", None)
+    cells = getattr(grid, "cells", None)
+    if not isinstance(cells, dict) or not getattr(grid, 'identity', None):
+        return
+    from .titles.re5_switch_nav import CELL, C_WALKED, C_WALL
+    trail = [p for row in list(getattr(bot, "_trail", ()))[-240:]
+             if isinstance(row, (list, tuple)) and len(row) == 2 and (p := _xyz(row[1])) is not None]
+    if trail:
+        out["trail"] = trail
+    pos = trail[-1] if trail else (0, 0, 0)
+    observed = [(k, c) for k, c in cells.items() if c <= C_WALKED or c >= C_WALL]
+    nearby = heapq.nsmallest(256, observed, key=lambda row: (row[0][0]*CELL-pos[0])**2 + (row[0][1]*CELL-pos[2])**2)
+    out["navigation"] = {"source": "learned_grid", "height_aware": False, "unknown_passable": True,
+                         "cell_cm": CELL, "stage": str(getattr(grid, "stage", ""))[:60],
+                         "geometry_identity": grid.identity, "identity_source": "native_geometry",
+                         "observed_total": len(observed), "truncated": len(observed) > len(nearby),
+                         "walked": [[k[0]*CELL, k[1]*CELL] for k, c in nearby if c <= C_WALKED],
+                         "stalled": [[k[0]*CELL, k[1]*CELL] for k, c in nearby if c >= C_WALL]}
+    out["phase"] = str(getattr(bot, "doing", ""))[:32]
+    why = str(getattr(bot, "why", ""))
+    out["note"] = why[:MAX_NOTE]
+    # A remembered route can outlive the action that used it. Only advertise the
+    # bonus route while this tick actually follows it; no stale combat route.
+    bonus = getattr(bot, "_bonus", None)
+    if "time bonus" in why and isinstance(bonus, dict):
+        out["target"] = {"kind": "bonus", "id": bonus.get("ptr")}
+        if "nav route" in why and getattr(nav, "route", None):
+            out["route"] = [(x, pos[1], z) for x, z in list(nav.route)[:MAX_ROUTE]]
+            out["route_source"] = "learned_grid"
 
 
 def _with_aim(out: dict, bot) -> dict:
@@ -245,6 +326,10 @@ def _clean_plan(raw: dict, enemies: dict, bonuses: dict) -> dict:
     route = [p for p in (_xyz(w) for w in (raw.get("route") or ())[:MAX_ROUTE]) if p is not None]
     if route:
         out["route"] = route
+        if raw.get("route_source") in ("learned_grid", "native_navmesh"):
+            out["route_source"] = raw["route_source"]
+        if raw.get("route_requires_prompt"):
+            out["route_requires_prompt"] = True
     trail = [p for p in (_xyz(w) for w in (raw.get("trail") or ())[-240:]) if p is not None]
     if trail:
         out["trail"] = trail
@@ -269,6 +354,12 @@ def _clean_plan(raw: dict, enemies: dict, bonuses: dict) -> dict:
                 "pos": pos, "dist": _n(nb.get("dist")), "eta_s": _n(nb.get("eta_s"), 1)}
         if nb.get("est"):
             near["est"] = True
+        if nb.get("path") in ("native", "unavailable", "unknown"):
+            near["path"] = nb["path"]
+        if nb.get("distance_kind") == "direct":
+            near["distance_kind"] = "direct"
+        if near.get("path") in ("unavailable", "unknown"):
+            near.pop("eta_s", None)
         out["nearest_bonus"] = {k: v for k, v in near.items() if v is not None}
     flags = {}
     for k, v in (raw.get("enemy_flags") or {}).items() if isinstance(raw.get("enemy_flags"), dict) else ():
@@ -319,7 +410,7 @@ class Tracker:
     def stage_for(self, mesh) -> str:
         if mesh is self._mesh and self.stage_key:
             return self.stage_key
-        st = stage_from_navmesh(mesh, self.title, self.units)
+        st = stage_from_navmesh(mesh, self.title, self.units, name=getattr(mesh, "stage_name", None))
         if len(self.stages) >= 4:
             self.stages.pop(next(iter(self.stages)))
         self.stages[st["key"]] = st
@@ -333,11 +424,14 @@ class Tracker:
 
     def nearest(self, ppos, standing: list, mesh, now: float) -> dict | None:
         """The fallback's nearest bonus: by route length on the navmesh (re-routed every ROUTE_EVERY_S for the
-        ROUTE_TRIES nearest in a straight line), else the straight line; eta_s at RUN_SPEED, marked est."""
+        ROUTE_TRIES nearest in a straight line). A direct distance is not evidence
+        of a reachable path, so it has no travel ETA."""
         if not standing:
             return None
         by_line = sorted(standing, key=lambda b: _flat(ppos, b["pos"]))
-        lengths = self._near[1]
+        lengths = self._near[1] if mesh is not None else {}
+        if mesh is None:
+            self._near = (float("-inf"), {})
         if mesh is not None and now - self._near[0] >= ROUTE_EVERY_S:
             lengths = {}
             for b in by_line[:ROUTE_TRIES]:
@@ -354,8 +448,12 @@ class Tracker:
             self._near = (now, lengths)
         cands = [(lengths[b["id"]], b) for b in by_line[:ROUTE_TRIES] if lengths.get(b["id"]) is not None]
         d, b = min(cands, key=lambda c: c[0]) if cands else (_flat(ppos, by_line[0]["pos"]), by_line[0])
-        return {"id": b["id"], "kind": b["kind"], "pos": b["pos"], "dist": _n(d),
-                "eta_s": _n(d / RUN_SPEED.get(self.units, 450.0), 1), "est": True}
+        near = {"id": b["id"], "kind": b["kind"], "pos": b["pos"], "dist": _n(d), "est": True}
+        if cands:
+            near.update(path="native", eta_s=_n(d / RUN_SPEED.get(self.units, 450.0), 1))
+        else:
+            near.update(path="unavailable" if mesh is not None else "unknown", distance_kind="direct")
+        return near
 
     def frame(self, snap: dict | None, plan: dict | None = None, screen: str | None = None,
               now: float | None = None) -> dict:
@@ -366,6 +464,16 @@ class Tracker:
         snap = snap or {}
         p = snap.get("player")
         mesh = (snap.get("nav") or snap.get("navmesh"))
+        navigation = (plan or {}).get('navigation')
+        if isinstance(navigation, dict) and navigation.get('source') == 'learned_grid':
+            from .titles.re5_switch_nav import geometry_identity
+            if navigation.get('geometry_identity') != geometry_identity(mesh) or mesh is None:
+                plan = dict(plan)
+                for key in ('navigation', 'trail'):
+                    plan.pop(key, None)
+                if plan.get('route_source') == 'learned_grid':
+                    plan.pop('route', None)
+                    plan.pop('route_source', None)
         if mesh is not None and hasattr(mesh, "tris"):
             prev = self.stage_key
             if self.stage_for(mesh) != prev and prev:
@@ -374,6 +482,12 @@ class Tracker:
         current_stage = self.stage_key if mesh is not None and hasattr(mesh, "tris") else ""
         out: dict = {"v": FORMAT, "t": round(now, 3), "title": self.title, "stage": current_stage,
                      "units": self.units, "screen": str(screen or ("playing" if p else "loading"))[:24]}
+        out["geometry"] = ({"status": "available", "source": "native_navmesh", "triangles": len(mesh.tris)}
+                           if current_stage else {"status": "unavailable", "source": "none",
+                                                  "reason": "No native level mesh in this frame"})
+        navigation = (plan or {}).get("navigation")
+        if isinstance(navigation, dict) and navigation.get("source") == "learned_grid":
+            out["navigation"] = navigation
         if (plan or {}).get('goal_round'):
             out['goal_round'] = str(plan['goal_round'])[:32]
             out['goal_capabilities'] = [k for k in plan.get('goal_capabilities', [])

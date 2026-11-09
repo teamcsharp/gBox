@@ -196,8 +196,10 @@ def mark(bot, kind, **kw):
 
 def test_the_switch_bot_offers_enemy_and_spot_goals_and_goes_for_the_marked_enemy_ahead_of_the_rest():
     bot = switch_bot()
-    plan = bot.plan()
+    plan = T.take_plan(bot)                                  # (through the publisher's own hand-over)
     assert plan['goal_capabilities'] == ['enemy', 'point'] and plan['goal_round'] == bot._goals().round
+    frame_ = T.Tracker('Resident Evil 5').frame({'player': {'pos': (0., 0., 0.), 'rot': 0., 'hp': 1000}}, plan, now=5.0)
+    assert frame_['goal_capabilities'] == ['enemy', 'point'] and frame_['goal_round'] == plan['goal_round']
     p = {'pos': (0., 0., 0.), 'rot': 0.0, 'hp': 1000}
     flat = lambda e: math.hypot(e['pos'][0], e['pos'][2])
     marked = {'slot': 3, 'ptr': 0xA0, 'pos': (0., 0., 4000.), 'hp': 800}
