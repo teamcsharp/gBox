@@ -46,6 +46,12 @@ costume clamps to 97.5 cm, Incineroar on Piers to 163.2 cm).
 |---|---|---|
 | ![Robin](evidence/re6-scale/switch-robin-as-leon.png) | ![Peach](evidence/re6-scale/switch-peach-as-ada.png) | ![Greninja](evidence/re6-scale/switch-greninja-as-chris.png) |
 
+The round hook: `re6 op=switch_cast host=<PC> mercmode_default=true` sets `default_mods.re6` on that PC's MercMode, so
+every RE6 round it plays boots the roster build; `session_id=<id>` also launches the title there with it. The build is a
+LayeredFS overlay, so the worker running the emulator must hold `cache/mods/115f9cdbba115432/<build>` (copy it with the
+usual mod delivery). `re6 op=switch_cast_plan` shows the assignment and the same `default_mods` hint without writing
+anything.
+
 The only remaining Switch gap is **donor textures**: RE6's body MRL has no embedded texture table (`uPlTex*.arc`
 hold them), so the first port replaces geometry and the native material still samples its own textures. Measured on the
 extracted RomFS: TEX containers are `TEX v0xA1` with revision byte `0x20` (RE5's is `0x80`), the same 20-byte header

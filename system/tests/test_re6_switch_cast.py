@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from gbox import re6_switch_cast as R
+from gbox import re6_switch_models as S
 
 ROMFS = Path(os.environ.get("GBOX_RE6_SWITCH_ROMFS", r"C:\_tools\gBox\.tmp\re6sw_romfs"))
 LIB = Path(os.environ.get("GBOX_CHARACTER_LIBRARY", r"D:\gBox\cache\characters"))
@@ -46,3 +47,22 @@ def test_status_reports_an_absent_build(tmp_path):
 
     out = R.status(Cfg(), "no_such_mod")
     assert out["built"] is False and out["mod"] == "no_such_mod"
+
+
+@needs_romfs
+@pytest.mark.skipif(not LIB.is_dir(), reason="the character library is not present")
+def test_the_tool_plans_the_switch_roster():
+    from types import SimpleNamespace
+
+    from gbox import re6_tool as T
+
+    ctx = SimpleNamespace(config=SimpleNamespace(cache=Path(r"D:\gBox\cache"),
+                                                 data_dir=Path(r"C:\_tools\gBox\system\gbox-data")),
+                          server=None, headers={}, progress=lambda _s: None)
+    out = T.switch_cast_op(ctx, T.Re6In(op="switch_cast_plan", romfs=str(ROMFS), seed=7))
+    assert out["slots"] == len(S.body_arcs(ROMFS))
+    assert len({row["donor"] for row in out["assignment"]}) == out["slots"]
+    assert out["mercmode"]["default_mods"] == {"re6": R.DEFAULT_NAME}
+    subset = T.switch_cast_op(ctx, T.Re6In(op="switch_cast_plan", romfs=str(ROMFS),
+                                           slots=["leon/Usa", "ada/A"]))
+    assert [row["slot"] for row in subset["assignment"]] == ["ada/A", "leon/Usa"]

@@ -332,9 +332,26 @@ def switch_cast_op(ctx, inp) -> dict:
             for (character, costume), meta in sorted(assignment.items())]
     if inp.op == "switch_cast_plan":
         return {"romfs": str(romfs), "slots": len(rows), "assignment": rows,
+                "mercmode": {"default_mods": {"re6": name},
+                             "how": "POST /api/mercmode with {host: <this PC>, default_mods: {re6: " + name + "}} "
+                                    "or re6 op=switch_cast host=<name> mercmode_default=true"},
                 "message": "the round's native character/costume selects the donor (one LayeredFS build)"}
     built = R.build(ctx.config, romfs, library, assignment, name=name, height=float(inp.height or 180.0),
                     progress=ctx.progress)
+    if getattr(inp, "mercmode_default", False) or getattr(inp, "host", ""):
+        try:
+            host = getattr(inp, "host", "") or next(
+                (x.get("name") for x in C._api(ctx, "GET", "/api/workers")
+                 if inp.session_id and x.get("id") == inp.session_id.split("-")[0]), "")
+            if not host:
+                raise ValueError("name the PC with host=<name> to set its MercMode default build")
+            C._api(ctx, "POST", "/api/mercmode", json={"host": host, "default_mods": {"re6": name}})
+            built["mercmode"] = {"default_mods": {"re6": name}, "applied_to": host}
+        except Exception as exc:                       # noqa: BLE001 - the build is the product; the setting is a hint
+            built["mercmode"] = {"error": str(exc)}
+    if getattr(inp, "session_id", ""):
+        from . import re6_switch_models as SM
+        built |= _launch_mod(ctx, SM.GAME_ID, name, inp)
     return built
 
 
