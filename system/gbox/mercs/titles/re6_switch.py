@@ -1196,6 +1196,87 @@ def step(scr: dict) -> str | None:
     return STEPS.get(where)
 
 
+FAST_SEGMENTS = ("main_menu", "play_game", "extra_content", "mercs_mode", "select_stage", "select_player")
+FAST_POLL_S = 0.025                     # how often screen() is read inside a fast segment
+FAST_SEGMENT_S = 2.0                    # one segment's screen transition budget
+
+
+def fast_batch(scr: dict) -> list[str]:
+    """The whole key batch for the current menu screen: every cursor move at once, then the confirm.
+
+    The Navigator sends one key and waits for RAM after each; that is safe but costs a confirmation round-trip a step.
+    A cursor screen's move is deterministic from its own RAM cursor/target, so the keys can go in one burst and only
+    the resulting screen change needs confirming: three D-pad steps become one transition instead of three.
+    """
+    where = scr.get("where")
+    if where in CURSORED:
+        return _cursor_batch(scr) + ["a"]
+    if where in ("press_any_button", "title"):
+        return ["a"]
+    return []
+
+
+def _cursor_batch(scr: dict) -> list[str]:
+    cursor, target = scr.get("cursor"), scr.get("target")
+    if not isinstance(cursor, int) or not isinstance(target, int) or cursor == target:
+        return []
+    back, fwd = CURSORED.get(scr.get("where"), ("up", "down"))
+    return [fwd if cursor < target else back] * abs(target - cursor)
+
+
+def fast_start(m, send, stopped=lambda: False, stats: dict | None = None, *, screen_fn=None,
+               sleep=time.sleep, clock=time.monotonic, hold_s: float = 0.045, gap_s: float | None = None) -> bool:
+    """Drive the native menus in bursts until the round starts, confirming only segment boundaries.
+
+    Returns True once RAM says the round is up (playing / loading with the player), False when the current screen is not
+    a menu segment (the caller falls back to the confirmed Navigator walk). `stats["fast_start"]` carries the receipt:
+    segments, presses and seconds, so the playbook reports how fast the menus actually went.
+    """
+    screen_fn = screen_fn or screen
+    stats = stats if stats is not None else {}
+    speed = _speed_for(m)
+    gap = float(speed.profile().get("stable_s", 0.10) if gap_s is None else gap_s)
+    started, presses, segments = clock(), 0, 0
+    last = None
+    for _ in range(len(FAST_SEGMENTS) + 4):
+        if stopped():
+            return False
+        scr = screen_fn(m)
+        where = scr.get("where")
+        if where in ("playing", "dead", "results", "loading"):
+            stats["fast_start"] = {"segments": segments, "presses": presses,
+                                   "s": round(clock() - started, 2), "reached": where, "ok": True}
+            return True
+        if where not in FAST_SEGMENTS and where not in ("press_any_button", "title"):
+            stats["fast_start"] = {"segments": segments, "presses": presses,
+                                   "s": round(clock() - started, 2), "reached": where, "ok": False}
+            return False
+        batch = fast_batch(scr)
+        if not batch:
+            return False
+        if where == last:
+            # the batch went in but the screen did not move: let the confirmed walker take over instead of spamming
+            stats["fast_start"] = {"segments": segments, "presses": presses,
+                                   "s": round(clock() - started, 2), "reached": where, "ok": False}
+            return False
+        last = where
+        for key in batch:
+            send([{"key": key, "down": True}])
+            sleep(hold_s)
+            send([{"key": key, "down": False}])
+            presses += 1
+            sleep(gap)
+        segments += 1
+        deadline = clock() + FAST_SEGMENT_S
+        while clock() < deadline and not stopped():
+            sleep(FAST_POLL_S)
+            if screen_fn(m).get("where") != where:
+                break
+    stats["fast_start"] = {"segments": segments, "presses": presses, "s": round(clock() - started, 2),
+                           "reached": screen_fn(m).get("where"), "ok": False}
+    return False
+
+
 def wandered(scr: dict) -> str | None:
     """The title held without its main-menu byte: A would start the Prologue, so the run stops and says why."""
     if scr.get("where") == "title_locked" and (scr.get("title_wait_s") or 0) > TITLE_STUCK_S:

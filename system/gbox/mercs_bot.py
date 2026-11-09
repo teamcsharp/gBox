@@ -609,6 +609,17 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 hooks=(lambda: training_ops([x for x in package if x[0] not in early])) if ad is not None else None,
                 jump_at=prof.get("jump_at") or "select_player",
                 round_hooks=(lambda: training_ops(round_ops, stats)) if ad is not None and round_ops else None)
+    # A title that can move its menus in bursts (gbox.mercs.titles.re6_switch.fast_start) starts the next round that
+    # way: whole cursor batches with only segment boundaries confirmed. It never guesses: when the screens do not line
+    # up it returns False and the confirmed Navigator walk below takes over, so the worst case is the old behaviour.
+    fast = getattr(menus, "fast_start", None)
+    if callable(fast):
+        try:
+            first = menus.screen(m)
+            if first.get("where") in getattr(menus, "FAST_SEGMENTS", ()):
+                fast(m, p1_send if coop is not None else send, stopped, stats=stats, sleep=sleep, clock=clock)
+        except OSError as exc:                              # a booting title: the walker handles the RAM retry
+            stats["fast_start_error"] = str(exc)[:160]
     run = time.strftime("%Y%m%d-%H%M%S", time.localtime(clock()))
     lessons = lessons_writer(prof["map_id"], run)
     if prof["map_id"] == "BLUS30491":
