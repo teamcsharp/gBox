@@ -232,3 +232,29 @@ The unlock runs on the i9 now — and it refuses for a precise reason, which is 
    update with every keyset on the share. `gbox/switch_nca.py` is the replacement path for Switch extraction on
    clients; it needs only the CPU (AES-NI) and `prod.keys`.
 5. `switch_mods op=hotswap` (round 4, `499505ae`) is ready for the hot-reload test the moment a round is reachable.
+
+## Round 6 status (2026-11-09, ~16:55 CST): RE6 reaches THE MERCENARIES on the i9
+
+1. **The main menu and THE MERCENARIES are up on the i9.** With the update's ExeFS layered on the base NSP, RE6 boots,
+   loads the save, and the menu walk reaches THE MERCENARIES (Solo / Create Game (duo) / Join Game (duo) / Split /
+   Skill Settings / Leaderboards), then STAGE SELECT and CHARACTER SELECT, and a Solo round starts loading
+   (`screen() where=loading`, `snapshot timer=120.0 mode=mercenaries phase=0`).
+2. **The menus are driven from RAM over the Yuzu GDB stub, not from pixels.** `gbox.mercs.titles.re6_switch.screen(m)`
+   and `snapshot(m)` run against a Yuzu session through the guest-memory shim: the walk reads `where`, `cursor` and
+   `target` after each press (main_menu cursor 0 → play_game target 3 → extra_content cursor 1 → the Mercenaries menu
+   → select_stage cursor 0 target 4 → select_player cursor 0 target 4). This is the first time the RE6 menu state has
+   been readable on a Windows client; the bot's own walk (`STEPS`/`CURSORED`) is now usable there.
+   One naming note: the Mercenaries menu itself is reported as `mercs_wrong_mode`, which the bot's `STEPS` treats as a
+   dialog to back out of (`b`) — on Yuzu that screen is the real menu, so the step needs the Yuzu case.
+3. **A round needs the update's RomFS.** Two builds tried:
+   - update ExeFS + roster overlay: the stage load crashes Yuzu's dynarmic with
+     `CheckMemoryAccess … unmapped memory access at 0x4` (the patched `main` reads data the base RomFS does not have);
+   - update ExeFS only: the start stops at the `CONTINUE? YES / NO` prompt and does not proceed.
+   Either way the missing piece is the update's **RomFS** section (BKTR, crypt type 4, 71.6 MB at 0x4000). The next
+   build is the BKTR branch of `gbox.switch_nca` (relocation/subsection blocks + per-subsection CTR), then the update
+   RomFS as a RomFS overlay on top of the ExeFS one.
+4. **Hot reload/instant swap stay queued behind that round**: `switch_mods op=hotswap` is in and tested, but its
+   acceptance test needs a live round (two frames, one session, no restart) — the first candidate is the roster
+   overlay's character arc, swapped in place at the round boundary.
+5. Housekeeping: the i9 session was stopped, no game is left running, the worker stays online; the combined build
+   `recovery-re6-update-roster-v1-20261109` (51 files, 53.5 MB) and the update-only build are both on the i9.
