@@ -149,3 +149,30 @@ What I need from the PM to scope it:
    `ClipCursor` or cursor API (searched); USB selective suspend was **enabled** on AC and several hubs, and is now
    disabled on this PC. The per-device "allow the computer to turn off this device" flags need elevation and are still
    set. The other suspect is the pen/touch display (`VID_1D02` pen + touch + keyboard) with its Wacom virtual router.
+
+## Round 3 status (2026-11-09, ~15:55 CST): the RE6 update is the wall
+
+The unlock runs on the i9 now — and it refuses for a precise reason, which is progress, not a failure.
+
+- Session `37e4b812d84f4723-0518903dd7e04768`, `debug=true`, build `recovery-re6sw_probe_albedo_solid-20261109`:
+  `unlock_watch.state` = **`watching`** (was `unsupported` before the guest-memory shim). The worker log then says
+  `gBox: unlock-on-load …: refused (0 writes)`.
+- Running `apply()` directly over the stub against that session gives the refusal verbatim:
+  `main+0xad5d6c is not the title gate of build 061D2A06CD700785E987C42CE2D72231`. The module base is
+  `0x80000af8` (signature found at `0x82151af8`), the gate bytes on the **1.0.0** image are
+  `68a64229…08191d12` and the profile's are `b4f00090…682a0839`. **The base NSP's main is a different build**, so
+  every 1.0.0 unlock attempt is correctly refused; the update v131072 (1.0.2) is mandatory for the RAM unlock or the
+  save-flag patch.
+- I could not make **Yuzu 1734** apply the update headlessly. Tried, each time checking the title bar (`… | 1.0.0`):
+  the update NSP beside the base in the cache folder, beside the base in a games folder, its five NCAs + `.tik` + `.cert`
+  extracted into `nand/user/Contents/registered/01002A000CD48800/` (PFS0 v7, 64-bit entries, data at 0x1d0), the same
+  files copied into `registered/01002A000CD48000/`, and `[UI] Paths\external_content_dirs` pointing at the folder that
+  holds base + update (Eden's route; this Yuzu ignores it). Yuzu's log shows it querying NSO patches for the base and
+  finding none.
+- So the remaining routes are: (1) Yuzu's own **Install Files to NAND** dialog (a window interaction on the operator's
+  desktop), (2) a verified **1.0.0 profile** for the unlock (the gate/flag addresses differ from 1.0.2: new RE work,
+  the signature still locates main, and the 1.0.0 image is on this PC to disassemble), or (3) RE6 rounds on **Eden**,
+  where `external_content_dirs` applies the update (`RE6 v131072: "ExeFS: Update (v0.2.0) applied successfully"`).
+- Small but useful: `win_send_keys` refuses an off-screen window, so gBox's own session-input API cannot press a
+  button on a parked window (`keep_offscreen` parks it at -32000,-32000). `hidden_ok` exists but is restricted to
+  Dolphin's F13–F15 hotkeys. A debug-session, window-targeted input path would make client PCs hands-off.
