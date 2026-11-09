@@ -955,6 +955,13 @@ NAV_APPROACH, NAV_GOAL_CELL, NAV_REPLAN_MIN_S, NAV_DIRECT_R = True, 200.0, 0.75,
 # pulled tight) when both ends are on it; replanned at most every MESH_REPLAN_S or when the goal leaves its square,
 # a waypoint counts as reached within MESH_WP_CM. stats mesh_route_ticks, mesh_routes, mesh_no_route.
 MESH_ROUTE, MESH_REPLAN_S, MESH_WP_CM = True, 1.0, 120.0
+# Mines are not negotiable (operator 2026-11-09: "I want it placing mines. Then flashbanging and running away and
+# getting distance ... have him force his way out"). MINE_FLASH: the native flash (the GRENADES knob's own, no item
+# screen) goes off the moment a bomb of his is confirmed down, so the crowd reels while he runs out to the standoff;
+# and when a bomb has been overdue MINE_FLASH_OVERDUE_S with a Majini inside the floor, a flash opens the way and the
+# controller plants while they reel (re5_switch_mines.FLASH_S), at most every MINE_FLASH_GAP_S. stats mine_flashes
+# (after a plant), mine_preflashes (to open the way).
+MINE_FLASH, MINE_FLASH_OVERDUE_S, MINE_FLASH_GAP_S = True, 6.0, 8.0
 MINE_FOE_CLEAR_CM, MINE_SPACING_CM = 400.0, 450.0
 MINE_COUNTERS = ("mines_placed", "mine_attempts", "mine_unconfirmed", "mine_retreats_completed", "mine_equip_failures",
                  "mines_gone", "mine_clear_runs", "mine_blasts", "mine_kills", "mine_blast_hp_loss", "gun_backs")
@@ -1031,6 +1038,11 @@ def module_base(m) -> int | None:
 
 def u64(m, a) -> int:
     return struct.unpack("<Q", m.rd(a, 8))[0]
+
+
+def re5_switch_mines_flash_s() -> float:
+    from . import re5_switch_mines
+    return float(getattr(re5_switch_mines, "FLASH_S", 3.5))
 
 
 def ptr_ok(p) -> bool:
@@ -3757,6 +3769,61 @@ class Bot:
         self._grenade_crowd(snap, now)                       # the GRENADES knob: a flash burst at a crowd (side effect)
         return act
 
+    def _native_flash(self, snap, now, reason: str, counter: str) -> bool:
+        """Ask the native controller for a flash at his position now (asynchronous, like the crowd flash; one at a
+        time). -> whether it was asked. stats[counter] counts the confirmed ones."""
+        p = snap.get("player") or {}
+        ad = getattr(getattr(self, "_m", None), "adapter", None)
+        if (self._grenade_inflight or ad is None or getattr(self._m, "mercs_no_modifications", False)
+                or (p.get("hp") or 0) <= 0 or self.stats.get("operator_control")
+                or snap.get("mercenaries_phase") != PHASE_PLAYING):
+            return False
+        self._grenade_last, self._grenade_inflight = now, True
+        self.stats.update(bot_grenade_state='requested', bot_grenade_reason=reason, bot_grenade_error='',
+                          bot_grenade_requested_at=now, bot_grenade_request_reason=reason)
+
+        def fire():
+            try:
+                from ..interventions import native_controller
+                res = native_controller(ad).flash()
+                if isinstance(res, dict) and res.get("state") == "confirmed":
+                    self.stats[counter] = self.stats.get(counter, 0) + 1
+                    self.stats["native_flash_confirmed_at"] = time.time()
+                    self.stats.update(bot_grenade_state='confirmed', bot_grenade_reason=reason, bot_grenade_error='')
+                else:
+                    detail = str(res.get('reason') or res.get('state') or 'no confirmation') \
+                        if isinstance(res, dict) else 'no confirmation'
+                    self.stats.update(bot_grenade_state='unconfirmed', bot_grenade_reason=detail[:120])
+            except Exception as exc:                         # noqa: BLE001 - never stall or crash the bot
+                error = f"{type(exc).__name__}: {exc}"[:120]
+                self.stats.update(bot_grenade_state='failed', bot_grenade_reason=error, bot_grenade_error=error)
+            finally:
+                self._grenade_inflight = False
+        threading.Thread(target=fire, daemon=True, name="re5-bot-mine-flash").start()
+        return True
+
+    def _mine_flash(self, snap, now) -> None:
+        """MINE_FLASH above: the flash the moment a bomb is down, and the one that opens the way for an overdue bomb."""
+        m = self.mines
+        if not MINE_FLASH or m is None:
+            return
+        placed = self.stats.get("mines_placed", 0) or 0
+        seen = getattr(self, "_mines_flashed", None)
+        if seen is None or placed < seen:
+            self._mines_flashed = seen = placed          # the first look, or the counters began again
+        if placed > seen:
+            self._mines_flashed = placed
+            if self._native_flash(snap, now, "a bomb is down: the flash, then out to the standoff", "mine_flashes"):
+                m.flash_until = now + re5_switch_mines_flash_s()
+            return
+        if (m.state == "idle" and self.stats.get("mine_blocked_reason") == "enemy too close"
+                and (self.stats.get("mine_overdue_s") or 0.0) >= MINE_FLASH_OVERDUE_S
+                and now - getattr(self, "_mine_preflash_at", -1e9) >= MINE_FLASH_GAP_S):
+            if self._native_flash(snap, now, "a bomb overdue and the crowd on him: the flash opens the way",
+                                  "mine_preflashes"):
+                self._mine_preflash_at = now
+                m.flash_until = now + re5_switch_mines_flash_s()
+
     def _grenade_crowd(self, snap, now) -> None:
         """A crowded, verified attack threat can justify one flash during fire.
 
@@ -4041,6 +4108,8 @@ class Bot:
                     if self._windup_e.get("ptr", self._windup_e.get("slot")) != self.target:
                         self._set_target(self._windup_e.get("ptr", self._windup_e.get("slot")), now)
                         self.target_at = now
+        if self.mines is not None:
+            self._mine_flash(snap, now)                      # a bomb just down, or one overdue behind a crowd
         if set(act.get("hold", ())) & {"rleft", "rright", "lup", "ldown"} and "zl" not in act.get("hold", ()):
             self.move_at = now
         return act

@@ -84,11 +84,16 @@ RELOCATE_S, RELOCATE_PAUSE_S, RETRY_S = 1.5, 3.0, 3.0   # (was 3 s on, 1 s off: 
 # health for the blast of a bomb a Majini reaches too soon), and the run for a clear site is a short burst that hands
 # the pad back to the fight for longer than it took it.
 RELAX_S = 10.0                           # overdue seconds over which the Majini margin shrinks to its floor
-# Live the same evening at a 250 cm floor and half health: 13 bombs planted, about 8 of them went off on him (350 hp
-# each, 2,777 in all) - a Majini 2.5 m off reaches the bomb while the placing motion still roots him. The floor is
-# 3 m and the smaller margin needs nearly full health, so one blast never takes him below half before he heals.
-FOE_FLOOR_CM = 300.0                     # the least margin: the plant roots him ~1.3 s, a grab reaches ~1.5 m
-RELAX_HP = 0.8                           # the smaller margin only with this share of his health (350 of 1000 a blast)
+# Live the same evening at this floor: 13 bombs planted, about 8 of them went off on him (350 hp each) - a Majini
+# 2.5 m off reaches the bomb while the placing motion still roots him. Asked whether to plant less, the operator:
+# "mines are non negotiable ... I want it placing mines. Then flashbanging and running away and getting distance. I
+# want the bot always placing mines" and "have him force his way out". So the margin has no health condition, and
+# the answer to the crowd is the flash: the bot (re5_switch.Bot._mine_flash) sets one off the moment a bomb is down,
+# and one to open the way when an overdue bomb is blocked at the floor; for FLASH_S after a flash the Majini around
+# him are reeling and none of them blocks a plant (flash_until).
+FOE_FLOOR_CM = 250.0                     # the least margin: the plant roots him ~1.3 s, a grab reaches ~1.5 m
+RELAX_HP = 0.0                           # (no health condition: the operator's word; was 0.5, then 0.8)
+FLASH_S = 3.5                            # a flash at his feet: this long nobody near him blocks a plant
 UNCONFIRMED_SITE_S = 8.0                 # an unconfirmed press may have left a bomb nobody saw: its site blocks this long
 GAP_S = 0.75                             # a tick gap longer than this (held, healing, a reload stall above this module)
                                          # pauses the cycle's clock: EQUIP_S/PLACE_S/SETTLE_S measure active control
@@ -145,6 +150,7 @@ class Mines:
         self._ground_observed = False
         self._tick_at = None                           # the previous tick's clock (the gap pause, GAP_S)
         self._site_until = None                        # last_pos blocks a placement until then (an unconfirmed press)
+        self.flash_until = -1e9                        # a flash went off at his feet: no Majini blocks a plant until then
         self.saw_spent = False
         for k in COUNTERS:
             self.stats.setdefault(k, 0)
@@ -298,6 +304,8 @@ class Mines:
         # up there for a Majini at 3.5 m costs the same two seconds as planting and leaves nothing behind: live
         # 2026-11-09, eight attempts for one bomb. Only one inside the floor stops a plant that far along.
         margin = min(self.margin(p), FOE_FLOOR_CM) if committed else self.margin(p)
+        if now is not None and now < self.flash_until:       # they are reeling from his flash: the bomb goes down
+            self.stats["mine_clearance_cm"] = margin = 0.0
         if any(flat(pos, e["pos"]) < margin for e in live):
             self.stats["mine_status"] = "a Majini too close to place one"
             return "enemy too close"

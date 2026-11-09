@@ -485,9 +485,10 @@ def test_overdue_crowd_relocation_is_bounded_and_starts_placement_once_clear():
     assert m.state == "neutral" and not m.stats["mine_relocating"]
 
 
-def test_an_overdue_bomb_accepts_a_closer_crowd_down_to_the_floor_but_not_when_he_is_hurt():
+def test_an_overdue_bomb_accepts_a_closer_crowd_down_to_the_floor_whatever_his_health():
     """lilspark 2026-11-09, No Mercy: a Majini stood inside the 4 m margin for 195 s on end and one bomb went down in 11
-    minutes. The margin shrinks over RELAX_S of overdue time to FOE_FLOOR_CM; below RELAX_HP of his health it does not."""
+    minutes. The margin shrinks over RELAX_S of overdue time to FOE_FLOOR_CM. No health condition: asked whether to
+    plant less when it hurts him, the operator said "mines are non negotiable ... I want the bot always placing mines"."""
     m = MN.Mines({})
     m.new_round(0.0)
     m.foe_clear_cm = 400.0
@@ -509,8 +510,8 @@ def test_an_overdue_bomb_accepts_a_closer_crowd_down_to_the_floor_but_not_when_h
     m = MN.Mines({})
     m.new_round(0.0)
     m.foe_clear_cm = 400.0
-    assert m.tick(hurt, snap(), live, MN.EVERY_S + 60.0)["hold"][:2] == MN.RUN   # under RELAX_HP: the full margin
-    assert m.stats["mine_clearance_cm"] == 400.0
+    assert m.tick(hurt, snap(), live, MN.EVERY_S + 60.0) == {"hold": ()} and m.state == "neutral"   # hurt: still planting
+    assert MN.RELAX_HP == 0.0 and m.stats["mine_clearance_cm"] == MN.FOE_FLOOR_CM
 
 
 def test_the_site_of_a_bomb_that_went_off_no_longer_blocks_the_next_one():
@@ -755,3 +756,42 @@ def test_a_plant_already_in_hand_goes_down_unless_a_majini_is_inside_the_floor()
     m.tick(p(), snap(), clear, t + MN.NEUTRAL_S)
     on_him = foes((200, 0))                                          # inside the floor: not now
     assert m.tick(p(), held(), on_him, t + MN.NEUTRAL_S + 0.2) == {"hold": ()} and m.state == "rearm"
+
+
+def test_after_a_flash_at_his_feet_nobody_near_him_blocks_the_plant():
+    """Operator 2026-11-09: "I want it placing mines. Then flashbanging and running away and getting distance ... have
+    him force his way out." While the Majini reel from his flash (flash_until) the bomb goes down among them."""
+    m = MN.Mines({})
+    m.new_round(0.0)
+    on_him = foes((120, 0), (150, 90), (180, 200))                      # a crowd inside the floor
+    t = MN.EVERY_S + MN.RELAX_S
+    assert m.tick(p(), snap(), on_him, t)["hold"][:2] == MN.RUN and m.state == "idle"   # no flash: blocked
+    m.flash_until = t + MN.FLASH_S
+    assert m.tick(p(), snap(), on_him, t + 0.1) == {"hold": ()} and m.state == "neutral"
+    assert m.tick(p(), snap(), on_him, t + 0.1 + MN.NEUTRAL_S) == {"tap": "dup"}
+    assert m.tick(p(), held(), on_him, t + 0.3 + MN.NEUTRAL_S) == {"hold": ("zl",)} and m.state == "place"
+    assert m.stats["mine_clearance_cm"] == 0.0
+
+
+def test_the_bot_flashes_the_moment_a_bomb_is_down_and_to_open_the_way_for_an_overdue_one(switch_bot):
+    R, bot, clock = switch_bot
+    asked = []
+    bot._native_flash = lambda snap_, now, reason, counter: asked.append(counter) or True
+    state = bot_snap([dict(GUN), dict(BOMB)])
+    bot.stats["mines_placed"] = 0
+    bot._mine_flash(state, 100.0)
+    assert asked == []                                                   # nothing down, nothing blocked
+    bot.stats["mines_placed"] = 1                                        # the controller confirmed a bomb
+    bot._mine_flash(state, 100.1)
+    assert asked == ["mine_flashes"] and bot.mines.flash_until == 100.1 + MN.FLASH_S
+    bot._mine_flash(state, 100.2)
+    assert asked == ["mine_flashes"]                                     # once a bomb
+    # an overdue bomb with the crowd inside the floor: a flash opens the way, MINE_FLASH_GAP_S apart
+    bot.mines.state = "idle"
+    bot.stats.update(mine_blocked_reason="enemy too close", mine_overdue_s=R.MINE_FLASH_OVERDUE_S + 1.0)
+    bot._mine_flash(state, 200.0)
+    assert asked == ["mine_flashes", "mine_preflashes"] and bot.mines.flash_until == 200.0 + MN.FLASH_S
+    bot._mine_flash(state, 201.0)
+    assert len(asked) == 2                                               # inside the gap: not again
+    bot._mine_flash(state, 200.0 + R.MINE_FLASH_GAP_S + 0.1)
+    assert len(asked) == 3
