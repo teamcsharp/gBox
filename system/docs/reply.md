@@ -4,6 +4,47 @@ Start with [the DeepSeek continuation guide](DEEPSEEK-LIVE-REPLACEMENT-HANDOFF.m
 [the Sonic/Mario source inventory and implementation plan](research/re5-sonic-mario-handoff.md).
 The entries below this checkpoint are historical and may describe failures or pending activation that were subsequently resolved.
 
+## DeepSeek resume session — 2026-11-09 ~08:35 UTC (supersedes parts of the block below)
+
+Resumed from `49a7e7e3`. **Step 1 of the continuation guide is now accepted with evidence**: the repeating queue
+survived real terminal round boundaries. Observed launches at 1794208280 (`d1257c164cc0405e`), 1794209480
+(`f8fc0664b1f04ab5`), 1794210293, 1794211188 (`ce8c36cf91e64207`) and 1794213xxx (`43ab169ea6b34f4d`) — every new
+session carried the exact same selection: build/mod `recovery-sonic-native-grip-v15-20261109`, Chris (BSAA), Public
+Assembly, `repeat_queue=true`. Combat advanced on post-boundary rounds (round `bd6b72d8…`: 35 kills / 13,010 score
+rising to 71 kills / 32,410; next round `0f73673d…`: 18 kills / 7,310). Captured frames show Sonic's blue body in
+third-person combat with stock enemies visible — confirming both that the player replacement renders each round and
+that **Mario enemies are still not implemented**. Stream health stayed green (age 0.02 s, p95 19.6 ms, zero gaps
+>100 ms over 600 samples). Receipt frames live in scratch: `boundary-frame-2/3/4.jpg`
+(SHA256 `2a4d7bb8…`, `742b005f…`, `e92ab8bf…`).
+
+**v15 byte-exact reproduction does NOT work as the guide describes.** Verified facts:
+
+- Pristine inputs on lilspark check out: original Chris ARC `8ab0dc18…` at
+  `~/gBox_alt/switch/romfs/010018100CD46000/nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc`; source GLB `5dd7cc07…`.
+- The live overlay archive still hashes exactly `d96c9c9e…` (re-verified on disk).
+- But running committed `build_grip_candidate` against those exact inputs fails its own guard chain: stage-1 `build()`
+  now produces MOD97 `cec895d2…` / ARC `7252a8da…`, while `re5_sonic_hands.author` requires reviewed v12 MOD
+  `b87ecc87…`. Identical result under the deployed share code (service venv, numpy 2.5.3 + ispc_texcomp 1.0.1), the
+  clean `gBox-src` clone, and a BOM/LF-normalized closure overlay — so it is not an environment artifact. Even
+  stitching the stored v12 MOD into `re5_sonic_hands.author` yields `e9c2bf23…`, not the pinned v14 MOD `426ac8ad…`.
+- Conclusion: the shipped recipe drifted from what actually produced the accepted artifacts (likely uncommitted
+  writer state when the originals were built). Until a faithful builder exists, do **not** promote/register v15 via
+  `plan()` — the guide's own "exact-source/target guards" requirement cannot be met by the current code. The live
+  build itself remains correct and is playing.
+- Practical recovery path if rebuilds are ever needed: the content-addressed store still serves
+  `GET /api/artifacts/d96c9c9e8efaee4cf3a0eda9f10ff12ef1515e1efd604f9c34d081cd3a80cb8a`, and the overlay bytes verify.
+
+**Deployment note:** the Spark deploy clone `~/gBox_alt/gBox-src` carries commits past `554a3e20` (RE5 mine-supply bot
+work, merges, RE6/SSBU `1ae145a6`, cdx `af45c05a`); `deployed-main.txt` says `63f241db` with `deploy-restart-pending`
+present. The v15 recipe closure files are content-identical between HEAD and the deployed share (only BOM/CRLF
+differ), so this does not affect the Sonic run. Do not restart gbox.service merely for the pending marker while the
+acceptance run plays.
+
+Next steps unchanged: finish front/side isolated-hand acceptance within owned control, implement Mario enemy
+replacement (step 4), then decide promotion. Stock RE4/RE5/RE6 roulette stays disabled; modified-only playback holds.
+
+---
+
 Code through `554a3e20f3039d0c4dc5de6fe7ad7d9b89c41111` is pushed and active on lilspark.
 MercMode is enabled for **RE5 only**, with `repeat_queue=true` and the single exact modified build
 `recovery-sonic-native-grip-v15-20261109`, Chris (BSAA), Public Assembly. Random skin/cast/co-op rotation

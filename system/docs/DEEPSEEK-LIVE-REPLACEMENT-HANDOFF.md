@@ -14,7 +14,7 @@ The user specifically rejected the earlier Sonic arms/hands pointing backwards. 
 
 | Area | Established result | Remaining boundary |
 | --- | --- | --- |
-| MercMode recovery | RE5 Switch preparation, session-owned round selection, scheduler/watchdog, overlay restart and repeating-queue fixes are implemented and tested. `554a3e20` is activated and the exact repeating Sonic v15 queue is configured. | Confirm the resulting live session and real next-round build; configured settings alone are not gameplay acceptance. |
+| MercMode recovery | RE5 Switch preparation, session-owned round selection, scheduler/watchdog, overlay restart and repeating-queue fixes are implemented and tested. `554a3e20` is activated and the exact repeating Sonic v15 queue is configured. **Accepted 2026-11-09 ~08:35 UTC:** real terminal boundaries relaunched the same build/character/stage (sessions `d1257c16…`, `f8fc0664…`, `ce8c36cf…`, `43ab169e…`), each with advancing score/kills and fresh frames. | Round-boundary acceptance is done; detailed hand/feet contact views remain open. |
 | Live overlay | Eden title restarts repeatedly kept the same gBox session/display/stream while the process PID changed. | This is a title reboot, **not zero-restart RAM asset hot reload**. The current round is lost. Audio continuity was not verified. |
 | Native player replacement | Exact native Sheva normal -> Chris BSAA composition rendered Sheva and advanced score/kills from 300/1 to 2400/8 in Public Assembly. | Only that bounded recipe/output was accepted. Reverse pairs, other slots/costumes, cinematics and complete appearance coverage remain unverified. |
 | Sonic | Full v15 visibly rendered and fought in Public Assembly as Chris BSAA: score/kills advanced from 13220/43 to 26210/57 between 07:14:47 and 07:15:06 UTC. The arm/hand and pistol point forward in the actual screenshot. | Head/quill occlusion, detailed weapon contact and feet acceptance remain incomplete. It is **unregistered**, experimental, and not the default `plan()` recipe. |
@@ -59,6 +59,15 @@ The full v15 write job `e017b01a58644903` succeeded on lilspark through the exis
 Local owned inputs/candidates currently exist under `.scratch-merc-recovery/assets/`: `uPl00ChrisNormal.arc`, `sonic.glb`, and the `sonic-player-root-scaled-v12`, `sonic-player-cuff-v14`, `sonic-player-grip-v15` folders, each candidate containing `romfs/<archive path above>`. These ignored files are conveniences, not prerequisites supplied by Git.
 
 ### Reproduce v15 without ignored helper scripts
+
+**Update 2026-11-09 resume session: this recipe no longer reproduces byte-exactly.** With the verified pristine
+inputs below, committed `build_grip_candidate` now fails its own guard chain — stage-1 `build()` yields MOD97
+`cec895d2…` instead of the reviewed v12 `b87ecc87…`, and even feeding the stored v12 MOD directly into
+`re5_sonic_hands.author` yields `e9c2bf23…` instead of the pinned v14 `426ac8ad…`. Confirmed identical under the
+deployed share code, the clean deploy clone and a BOM/LF-normalized closure overlay on lilspark (service venv), so it
+is recipe drift, not environment. The live overlay bytes still hash exactly `d96c9c9e…` and remain the source of
+truth; `GET /api/artifacts/d96c9c9e…` can restore them. Do not promote or register v15 until a builder that actually
+reproduces these hashes exists. The procedure below is kept as the intended contract for such a fixed builder.
 
 Use committed `gbox.re5_sonic_writer.build_grip_candidate`, **not** `build()` or `plan()`; those intentionally still use the earlier unregistered recipe. Run with `system` on `PYTHONPATH`, the audit environment's dependencies, an owned original archive and the exact library GLB:
 
