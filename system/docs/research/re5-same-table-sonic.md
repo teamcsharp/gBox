@@ -195,7 +195,8 @@ That is the identification: the camera-visible Public Assembly enemy is **`uEm11
 model’s strict geometry path. The next import target is `em1101`, not `em1000_low`.
 
 `em1101` is stricter still: a **+1 unit** move of one ordinary part (156 vertices, part 4, level 6, own MRL/table)
-blacks at **boot**, before the title. `em1000_low` accepted +1/+10/+50 at the round; `em1001_low` accepted a one-part
+blacks at **boot**, before the title. A 60-second boot wait confirms it never reaches the title, so this is not the
+launch-timing failure that confused the +50 test. `em1000_low` accepted +1/+10/+50 at the round; `em1001_low` accepted a one-part
 Sonic patch at the round. `em1101` accepts neither a nudge nor a patch. That points at the model being loaded and
 validated during boot (menu/streaming) and an integrity/identity check that our archive edits do not satisfy.
 
