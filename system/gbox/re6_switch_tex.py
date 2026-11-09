@@ -84,15 +84,45 @@ class Surface:
         source = np.frombuffer(self.data, dtype=np.uint8, count=end - begin, offset=self.start + begin)
         return source[mtf_tex._addresses(level, block)].tobytes()
 
-    def decode(self, mip: int = 0):
-        """Decode a mip for the formats whose decode is proven (BC4/BC5; BC7 through the optional decoder)."""
-        if self.format not in DECODABLE:
-            raise TexError(f"format 0x{self.format:02x} is not decoded yet (0x2B albedo needs its own layout)")
-        name, block = DECODABLE[self.format]
+    def _albedo_layers(self, mip: int = 0):
+        """(detail, tint) for an `0x2B` block: BC4 greyscale (bytes 0-7) and the BC1 half (bytes 8-15)."""
         import texture2ddecoder
-        from PIL import Image
 
         width, height = max(1, self.width >> mip), max(1, self.height >> mip)
+        blocks = np.frombuffer(self.linear_blocks(mip), np.uint8).reshape(-1, 16)
+        cols = width // 4
+        detail = np.zeros((height, width), np.uint8)
+        tint = np.zeros((height, width, 3), np.uint8)
+        for index, block in enumerate(blocks):
+            y, x = divmod(index, cols)
+            detail[y * 4:(y + 1) * 4, x * 4:(x + 1) * 4] = np.frombuffer(
+                texture2ddecoder.decode_bc4(block[:8].tobytes(), 4, 4), np.uint8).reshape(4, 4, 4)[:, :, 2]
+            tint[y * 4:(y + 1) * 4, x * 4:(x + 1) * 4] = np.frombuffer(
+                texture2ddecoder.decode_bc1(block[8:].tobytes(), 4, 4), np.uint8).reshape(4, 4, 4)[:, :, [2, 1, 0]]
+        return detail, tint
+
+    def decode(self, mip: int = 0):
+        """Decode a mip: BC4/BC5/BC7 directly; an `0x2B` albedo yields its **greyscale detail** layer.
+
+        `0x2B` blocks are two channels in 16 bytes: bytes 0-7 decode as BC4 and resolve to the albedo's greyscale
+        detail (the head map is a face with a mouth/teeth atlas), bytes 8-15 decode as BC1 and are a low-resolution
+        per-4x4-tile colour that is nearly uniform inside a tile. :meth:`_albedo_layers` returns both; the combined
+        `tint * detail` is a plausible colourisation but the tint half is not yet proven to be the shader's colour
+        (it decodes to a pale yellow-green over the whole face), so `decode` returns the layer that is certain.
+        """
+        from PIL import Image
+
+        if self.format == 0x2B:
+            detail, _tint = self._albedo_layers(mip)
+            rgba = np.dstack([np.repeat(detail[..., None], 3, axis=2),
+                              np.full(detail.shape, 255, np.uint8)])
+            return Image.fromarray(rgba, "RGBA")
+        width, height = max(1, self.width >> mip), max(1, self.height >> mip)
+        if self.format not in DECODABLE:
+            raise TexError(f"format 0x{self.format:02x} is not decoded yet")
+        import texture2ddecoder
+
+        name, _block = DECODABLE[self.format]
         blocks = self.linear_blocks(mip)
         if name == "bc5":
             raw = texture2ddecoder.decode_bc5(blocks, width, height)

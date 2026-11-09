@@ -38,8 +38,17 @@ def test_a_normal_map_decodes_to_a_normal_map():
 
 
 @needs_arc
-def test_the_unresolved_albedo_layout_is_refused():
+def test_the_albedo_decodes_its_detail_layer():
+    """0x2B blocks are BC4 detail (bytes 0-7) + a BC1 half (bytes 8-15); the detail layer must be a real image."""
     arc = mt_arc.parse(ARC.read_bytes())
     entry = next(e for e in arc.entries if e.name.endswith("_BM"))
-    with pytest.raises(X.TexError):
-        X.from_arc_entry(entry).decode()
+    surface = X.from_arc_entry(entry)
+    assert surface.format == 0x2B
+    image = surface.decode()
+    assert image.size == (surface.width, surface.height)
+    grey = image.convert("L")
+    values = [grey.getpixel((x, y)) for x in range(0, grey.width, 32) for y in range(0, grey.height, 32)]
+    assert max(values) - min(values) > 32                  # a detail map, not a flat fill
+    detail, tint = surface._albedo_layers()
+    assert detail.shape == (surface.height, surface.width)
+    assert tint.shape == (surface.height, surface.width, 3)

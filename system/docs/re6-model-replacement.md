@@ -56,14 +56,15 @@ anything.
 
 The only remaining Switch gap is **donor textures**: RE6's body MRL has no embedded texture table (`uPlTex*.arc`
 hold them), so the first port replaces geometry and the native material still samples its own textures. `gbox.re6_switch_tex`
-now parses the containers (TEX `v0xA1` revision `0x20`, 20-byte header + mip offsets) and decodes the measured formats
-that are proven (BC4 `0x19` masks, BC5 `0x1F` normals, BC7 `0x30/0x31`); it refuses the `0x2B` albedo instead of
-emitting garbage. Measured limits: the `_BM` albedo is 16 bytes/block and the community format table calls `0x2B`
-BC3_UNORM_SRGB, but a BC3 decode yields a uniform green channel and the block statistics (bytes 0-7 vary, bytes 8-11 are
-nearly constant, bytes 12-15 are the constant `0xAA` padding pattern) show it is not interleaved BC3. The MRL v36
-material records carry only a name hash (no texture paths or command lists; five records of 72 bytes, identical except
-`0x6390b116`, `0x61c18195`, `0xa56925da`, `0xf8c8d02f`, `0x68b3d093`), so the material→texture link is also unnamed.
-Both are required before a donor atlas can replace the sampled `uPlTex` entry.
+parses the containers (TEX `v0xA1` revision `0x20`, 20-byte header + mip offsets) and decodes the measured formats:
+BC4 `0x19` masks, BC5 `0x1F` normals, BC7 `0x30/0x31`, and the `0x2B` albedo. The albedo is **two channels per 16-byte
+block**: bytes 0-7 are BC4 and decode to a real greyscale detail map (Leon's head map resolves to his face with the
+mouth/teeth atlas), bytes 8-15 are BC1 and decode to a low-resolution per-4x4-tile colour that is nearly uniform inside
+a tile. Decoding the detail layer is proven; whether the shader combines it with that colour half (and how) is not, so
+`Surface.decode` returns the detail layer and `_albedo_layers` exposes both. The MRL v36 material records carry only a
+name hash (five 72-byte records, identical except `0x6390b116`, `0x61c18195`, `0xa56925da`, `0xf8c8d02f`, `0x68b3d093`),
+so the material→texture binding is still unnamed. A donor texture step needs that binding plus an encoder for the
+two-half `0x2B` block.
 
 The rest of this document describes the earlier **Xbox 360** analysis. It is kept because the scale/bind lessons are
 platform-neutral and the 360 measurements are what the Switch fit reuses, but its writer and mods are **not** the
