@@ -17,17 +17,18 @@ How a bomb goes down (live 2026-10-27, two private Citron runs on the Spark; doc
 
 Mines (the bot's) places one every EVERY_S seconds of the round:
   * not with a Majini within FOE_CLEAR_CM, not within SPACING_CM of the last site or of a bomb of his still down, not
-    while held, healing, escaping or dying;
+    while held, healing or dying; ordinary fleeing can make room for the due placement;
   * the gun comes down and the pad rests NEUTRAL_S (the D-pad equip needs a neutral pad: the PS3's verified second),
-    the bomb's D-pad slot, then ZL tapped PRESS_S; confirmed by a new bomb on the ground near him or the count falling,
+    the bomb's D-pad slot, then ZL tapped PRESS_S; confirmed by a new native bomb actor on the ground near him,
     within PLACE_S;
   * the placing motion plays out (he cannot move in it), then he runs RETREAT_S out through the widest gap among the
     Majini, the bomb counted among them (never back over it), at least RETREAT_CM from it, and the gun comes back by
     its own D-pad slot;
   * the guard, all round: a Majini within TRIGGER_CM of a bomb of his while he is within BLAST_CM of it: he runs out of
     its blast the same way.
-A placement counts (mines_placed) only when confirmed. One whose placing motion was seen but no bomb or count drop came
-still sends him out of its way (mine_unconfirmed); one with neither waits EVERY_S again.
+A placement counts (mines_placed) only when a new nearby uWp0a actor is observed. A count drop or placing motion alone
+still sends him out of its way (mine_unconfirmed), but is not actor proof. An overdue placement blocked by clearance
+buys a bounded run to a clearer site; it does not wait forever for stationary combat to create a gap.
 
 What the bombs did (the round's counters): a bomb that leaves sUnit's line went off (mines_gone; the bot never picks one
 up). The live blast showed the kills a poll before the units left the line, so a window from BLAST_BEFORE_S before the
@@ -41,7 +42,7 @@ import collections
 import math
 
 MINE_ID = 0x10A
-EVERY_S = 20.0                           # one every 20 s while he plays the round (tunable; operator 2026-10-31: more)
+EVERY_S = 30.0                           # requested cadence; clearance/emergency actions can delay a placement
 SPACING_CM = 600.0                       # never within this of the last site or of a bomb still down (a double blast)
 FOE_CLEAR_CM = 500.0                     # a Majini this near: not now (out of the blast before it comes: a run of 8 m;
                                          # was 8 m - none were ever placed in a No Mercy crowd, 19:50 / 19:53)
@@ -58,6 +59,7 @@ BLAST_CM, TRIGGER_CM, CLOSE_MAJINI_CM = 800.0, 350.0, 300.0
 # (a run of 8 m clears it); the guard's crowd rule is tighter and looser than the trigger: the recorded incident
 # itself had the Majini at 300 cm, and he did run it (the replay keeps the run), while a tighter crowd is a death.
 REARM_S = 1.2
+RELOCATE_S, RELOCATE_PAUSE_S, RETRY_S = 3.0, 1.0, 3.0
 QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}
 RUN = ("b", "lup")
 KNIVES = frozenset({0x01, 0x0E, 0x14, 0x23, 0x24})
@@ -102,6 +104,11 @@ class Mines:
         self.hist = collections.deque(maxlen=64)       # (t, kills, his health) of the recent ticks
         self.blast = None                              # the open blast window: {"t0", "until", "kills", "hp"}
         self._tracked_at = None
+        self._retry_at = 0.0
+        self._relocate_until, self._relocate_retry_at = None, 0.0
+        self._blocked, self._avoid_site = None, None
+        self._ground_observed = False
+        self.saw_spent = False
         for k in COUNTERS:
             self.stats.setdefault(k, 0)
 
@@ -120,6 +127,14 @@ class Mines:
         self.last_at, self.last_pos, self.site, self.clear_from = None, None, None, None
         self.bombs, self.blast = {}, None
         self.hist.clear()
+        self._tracked_at = None
+        self._retry_at = self._relocate_retry_at = 0.0
+        self._relocate_until = None
+        self._blocked, self._avoid_site = None, None
+        self._ground_observed = False
+        self.saw_place = self.saw_spent = False
+        self.stats.update(mine_overdue_s=0.0, mine_blocked_reason=None, mine_relocating=False)
+        self.stats.pop("mine_last_confirmation", None)
 
     @staticmethod
     def stack(inv) -> dict | None:
@@ -162,22 +177,62 @@ class Mines:
 
     def due(self, p: dict, snap: dict, live: list, now: float) -> str | None:
         """Why a cycle may start now (None: not now)."""
-        if not self.enabled or self.stack(snap.get("inventory")) is None:
-            return None
+        self._blocked, self._avoid_site = None, None
+        self.stats["mine_blocked_reason"] = None
         start = self.last_at if self.last_at is not None else self.round_t0
         if start is None:
             self.round_t0 = start = now
+        self.stats["mine_overdue_s"] = round(max(0.0, now - start - self.every_s), 2)
+        if not self.enabled:
+            self.stats["mine_blocked_reason"] = "disabled"
+            return None
+        if self.stack(snap.get("inventory")) is None:
+            self.stats["mine_blocked_reason"] = "no usable mine in a quick slot"
+            return None
         if now - start < self.every_s:
             return None
-        pos = p["pos"]
-        sites = ([self.last_pos] if self.last_pos is not None else []) + list(self.bombs.values())
-        if any(flat(pos, b) < self.spacing_cm for b in sites):
-            self.stats["mine_status"] = "moving away from the last bomb first"
+        if now < self._retry_at:
+            self.stats["mine_blocked_reason"] = "retry cooldown"
             return None
-        if any(flat(pos, e["pos"]) < self.foe_clear_cm for e in live):
-            self.stats["mine_status"] = "a Majini too close to place one"
+        if "ground_mines" not in snap:
+            self.stats["mine_blocked_reason"] = "ground mine observation unavailable"
+            return None
+        if why := self._clearance(p, live):
+            self.stats["mine_blocked_reason"] = self._blocked = why
             return None
         return "due"
+
+    def _clearance(self, p: dict, live: list) -> str | None:
+        """Keep the placement margins both before equip and immediately before pressing ZL."""
+        pos = p["pos"]
+        sites = ([self.last_pos] if self.last_pos is not None else []) + list(self.bombs.values())
+        blocked = next((b for b in sites if flat(pos, b) < self.spacing_cm), None)
+        if blocked is not None:
+            self._avoid_site = blocked
+            self.stats["mine_status"] = "moving away from the last bomb first"
+            return "last bomb too close"
+        if any(flat(pos, e["pos"]) < self.foe_clear_cm for e in live):
+            self.stats["mine_status"] = "a Majini too close to place one"
+            return "enemy too close"
+        return None
+
+    def _relocate(self, p: dict, live: list, now: float) -> dict | None:
+        """Seek clearance for a due mine without lowering the placement or close-crowd safety margins."""
+        if any(flat(p["pos"], e["pos"]) < CLOSE_MAJINI_CM for e in live):
+            self._relocate_until = None
+            self.stats["mine_relocating"] = False
+            return None                                      # the close threat still belongs to combat
+        if self._relocate_until is not None and now >= self._relocate_until:
+            self._relocate_until = None
+            self._relocate_retry_at = now + RELOCATE_PAUSE_S
+        if now < self._relocate_retry_at:
+            self.stats["mine_relocating"] = False
+            return None                                      # a bounded attempt, then combat can make space
+        if self._relocate_until is None:
+            self._relocate_until = now + RELOCATE_S
+        self.stats["mine_relocating"] = True
+        self.stats["mine_status"] = "mine due: running to a clear placement site"
+        return self._run(p, live, self._avoid_site)
 
     def _clear(self, p: dict, snap: dict, live: list) -> dict | None:
         """The guard: the bot standing in an old bomb's blast while a Majini is at it, or simply in the blast.
@@ -241,7 +296,7 @@ class Mines:
         self.clear_from = None
         return None
 
-    def _clear_mid_cycle(self, p: dict, snap: dict, live: list) -> dict | None:
+    def _clear_mid_cycle(self, p: dict, snap: dict, live: list, now: float) -> dict | None:
         """Mid-cycle guard (place/settle/retreat): if the bot is in an OLD bomb's blast, abort the cycle and run out.
 
         The cluster's remaining incidents (2026-10-31): held=['zl'] means the bot was mid-place (bomb in hand) when
@@ -279,7 +334,7 @@ class Mines:
             if self.clear_from != g["ptr"]:
                 self.clear_from = g["ptr"]
                 self.stats["mine_clear_runs"] += 1
-            self.state, self.t = "retreat", p.get("t", 0.0)
+            self.state, self.t, self.site = "retreat", now, b
             self.stats["mine_status"] = "in an old bomb's blast mid-cycle: aborting and running out"
             return self._run(p, live, b)
         return None
@@ -290,8 +345,17 @@ class Mines:
         self._track(p, snap, now)
         if self.state == "idle":
             act = self._clear(p, snap, live)
-            if act is not None or busy or self.due(p, snap, live, now) is None:
+            if act is not None or busy:
+                if busy:
+                    self.stats["mine_blocked_reason"] = "emergency action"
                 return act
+            if self.due(p, snap, live, now) is None:
+                if self._blocked in ("last bomb too close", "enemy too close"):
+                    return self._relocate(p, live, now)
+                self.stats["mine_relocating"] = False
+                return None
+            self._relocate_until = None
+            self.stats["mine_relocating"] = False
             gun = next((s for s in inv if s.get("hand") and s.get("type") == 1 and s.get("item") not in THROWN), None)
             self.gun_grid = gun.get("grid") if gun else self.gun_grid
             self.state, self.t = "neutral", now
@@ -311,49 +375,65 @@ class Mines:
             return {"tap": QUICK[mine["grid"]]}
         if self.state == "equip":
             if mine is not None and mine.get("hand"):
+                why = self._clearance(p, live)
+                if why or "ground_mines" not in snap:
+                    self.stats["mine_blocked_reason"] = why or "ground mine observation unavailable"
+                    self.state, self.t = "rearm", now
+                    return {"hold": ()}                 # no plant while a threat closed during equip
                 self.state, self.t, self.saw_place = "place", now, False
+                self.saw_spent = False
                 self.count0 = mine.get("rounds")
                 self.ground0 = {g["ptr"] for g in snap.get("ground_mines") or ()}
+                self._ground_observed = True
                 self.site = tuple(p["pos"])
                 return {"hold": ("zl",)}
             if now - self.t > EQUIP_S:
                 self.stats["mine_equip_failures"] += 1
                 self.stats["mine_status"] = "the bomb did not come to hand"
                 self.state, self.t = "rearm", now
-                self.last_at = now                        # wait a whole interval before the next try
+                self._retry_at = now + RETRY_S             # a failed equip did not satisfy the mine cadence
                 return None
             return {"hold": ()}
         if self.state == "place":
-            mid = self._clear_mid_cycle(p, snap, live)
+            mid = self._clear_mid_cycle(p, snap, live, now)
             if mid is not None:
                 return mid
             self.saw_place = self.saw_place or p.get("motion") == MOTION_PLACE
-            spent = mine is None or (self.count0 is not None and (mine.get("rounds") or 0) < self.count0)
+            observed_mine = next((s for s in inv if s.get("id") == MINE_ID), None)
+            spent = (observed_mine is not None and self.count0 is not None
+                     and (observed_mine.get("rounds") or 0) < self.count0)
+            self.saw_spent = self.saw_spent or spent
             new = [g for g in snap.get("ground_mines") or ()
-                   if g["ptr"] not in self.ground0 and self.site is not None and flat(self.site, g["pos"]) <= CONFIRM_CM]
-            if spent or new:
+                   if self._ground_observed and g.get("ptr") and g["ptr"] not in self.ground0
+                   and self.site is not None and len(g.get("pos") or ()) == 3
+                   and all(math.isfinite(v) for v in g["pos"])
+                   and math.dist(self.site, g["pos"]) <= CONFIRM_CM]
+            if new:
                 self.stats["mines_placed"] += 1
                 self.stats["mine_status"] = "bomb down: leaving it behind"
-                if new:
-                    self.site = tuple(new[0]["pos"])
-                    self.bombs[new[0]["ptr"]] = self.site
+                self.site = tuple(new[0]["pos"])
+                self.bombs[new[0]["ptr"]] = self.site
+                self.stats["mine_last_confirmation"] = {"source": "native_uWp0a_actor", "ptr": new[0]["ptr"],
+                    "pos": list(self.site), "at": now}
+                self.stats["mine_overdue_s"] = 0.0
                 self.last_at, self.last_pos = now, self.site
                 self.state, self.t = "settle", now
                 return {"hold": ()}
             if now - self.t > PLACE_S:
                 self.stats["mine_unconfirmed"] += 1
-                self.last_at = now
-                if self.saw_place:                        # it may be down all the same: out of its way
+                if self.saw_place or self.saw_spent:       # it may be down all the same: out of its way
+                    self.last_at = now
                     self.stats["mine_status"] = "placement unconfirmed: leaving all the same"
                     self.last_pos = self.site
                     self.state, self.t = "retreat", now
                     return self._run(p, live, self.site)
                 self.stats["mine_status"] = "placement unconfirmed"
+                self._retry_at = now + RETRY_S
                 self.state, self.t = "rearm", now
                 return {"hold": ()}
             return {"hold": ("zl",)} if now - self.t < PRESS_S else {"hold": ()}
         if self.state == "settle":                        # the placing motion: he cannot move until it ends
-            mid = self._clear_mid_cycle(p, snap, live)
+            mid = self._clear_mid_cycle(p, snap, live, now)
             if mid is not None:
                 return mid
             if p.get("motion") == MOTION_PLACE and now - self.t < SETTLE_S:

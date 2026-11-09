@@ -216,11 +216,14 @@ def test_profile_round_ops_forward_magnums_and_preserve_supplies_before_native_i
     for i in SM.MERC_DESC:
         guns = [wid for wid in ids(g, i) if SM._is_gun(wid) and wid & 0xFF not in SM.THROWN_ITEMS]
         assert guns and set(guns) <= set(draw["pool"])               # each slot its own draw: shotgun AND magnum
+        supplies = bytearray(before[i])
+        SM._mine_block(supplies)                                  # boot now prepares quick mines before native inventory
+        assert SM._quick_mine(g.rd(block_at(i),SM.TEMPLATE_REC*SM.TEMPLATE_RECS))
         for k in range(SM.TEMPLATE_RECS):
             original = before[i][k * SM.TEMPLATE_REC:(k + 1) * SM.TEMPLATE_REC]
             old_id = struct.unpack_from("<I", original)[0]
             if not SM._is_gun(old_id) or old_id & 0xFF in SM.THROWN_ITEMS:
-                assert g.rd(block_at(i) + k * SM.TEMPLATE_REC, SM.TEMPLATE_REC) == original
+                assert g.rd(block_at(i) + k * SM.TEMPLATE_REC, SM.TEMPLATE_REC) == supplies[k*SM.TEMPLATE_REC:(k+1)*SM.TEMPLATE_REC]
     assert 0x115 not in ids(g, 16)
     assert all(BASE <= address < BASE + SM.MAIN_SPAN for address, _ in ad.writes)
 

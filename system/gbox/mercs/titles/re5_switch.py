@@ -926,11 +926,11 @@ DOINGS = ("fire", "aim", "raise", "reraise", "restale", "turn", "unaim", "quick_
           "escape", "heal", "held", "reload", "walk", "no_foes", "dead", "reposition", "mine", "rearm", "sweep",
           "relocate", "prompt")
 # Proximity bombs left behind (re5_switch_mines: one every MINE_EVERY_S, operator 2026-10-27); only with the bomb in the
-# inventory (re5_switch_mods.mine_loadout gives Chris (BSAA) the stack). gun_backs: the gun back with a throwable in hand
-# More mines (operator 2026-10-31): every 20 s by default; the sidebar's MINE_EVERY_S reaches the running bot every tick
+# inventory (re5_switch_mods prepares every character's quick-slot stack). gun_backs: the gun back with a throwable in hand
+# Operator 2026-11-09: mines about every 30 s while leaving areas; the sidebar reaches the running bot every tick
 # when it is the quicker cadence (it used to reach only a bot built after it), and a placement waits only for a Majini
 # within MINE_FOE_CLEAR_CM (was 5 m) or a bomb within MINE_SPACING_CM (was 6 m).
-MINES, MINE_EVERY_S = True, 20.0
+MINES, MINE_EVERY_S = True, 30.0
 MINE_FOE_CLEAR_CM, MINE_SPACING_CM = 400.0, 450.0
 MINE_COUNTERS = ("mines_placed", "mine_attempts", "mine_unconfirmed", "mine_retreats_completed", "mine_equip_failures",
                  "mines_gone", "mine_clear_runs", "mine_blasts", "mine_kills", "mine_blast_hp_loss", "gun_backs")
@@ -3965,8 +3965,11 @@ class Bot:
             act = self._heal(p, snap, live, flat, now)
             if act is not None:
                 self.doing, self.why = "heal", str(self.stats.get("heal_status") or "")
-            elif self.mines is not None and (act := self.mines.tick(p, snap, live, now,
-                                                                      busy=self.escape is not None)) is not None:
+            elif self.mines is not None and (act := self.mines.tick(p, snap, live, now)) is not None:
+                # A due mine is part of fleeing, not blocked by a persistent escape.
+                # Held/dying and healing already take priority above. The mine
+                # controller finds clearance and owns the plant/retreat sequence.
+                self.escape = None
                 self._gun_down()
                 self.doing, self.why = "mine", str(self.stats.get("mine_status") or "")
             else:
@@ -5008,20 +5011,10 @@ class RE5Switch(Driver):
         if ad is None or getattr(m, "mercs_no_modifications", False):
             return
         from . import re5_switch_mods
-        res = re5_switch_mods.maintain(ad, snap, enabled=playing)
-        if getattr(self, "pending_mine", False):
-            # The operator asked for a mine and this round's loadout had grenades: give them one to equip. RE5 builds the
-            # inventory from a loadout template at round start, so this arms the next round - the tactic itself is fired by
-            # _round_start the moment the bomb is in hand. Once per round: the op rewrites a template, not a key.
-            if getattr(self, "_mine_armed_round", None) != getattr(self, "_round_started", None):
-                try:
-                    arm = re5_switch_mods.mines(ad, on=True)
-                    self._mine_armed_round = getattr(self, "_round_started", None)
-                    self.stats["mine_arm"] = {"verified": bool(arm.get("verified")),
-                                              "effective": str(arm.get("effective") or arm.get("note") or "")[:120]}
-                except Exception as exc:                      # noqa: BLE001 - a refused arm must not stop the bot
-                    self._mine_armed_round = getattr(self, "_round_started", None)
-                    self.stats["mine_arm"] = {"error": f"{type(exc).__name__}: {exc}"[:140]}
+        # Prepare supply during menus, before the engine creates the inventory.
+        # pending_mine belongs to Bot, not this Driver; the former fallback here
+        # could never arm missing loadouts. Upkeep now runs independently of a tactic.
+        res = re5_switch_mods.maintain(ad, snap, enabled=playing, prepare_mines=True)
         if snap is not None:
             snap['infinite_ammo'] = res.get('infinite_ammo') if res.get('verified') else None
             snap["mine_settings"] = re5_switch_mods.mine_settings(ad)   # the `mines` op's cadence for the bot
@@ -5032,6 +5025,8 @@ class RE5Switch(Driver):
             if target_stats is not None:
                 primary_weapon.record(target_stats, snap['primary_weapon'])
         if self.stats is not None:
+            if res.get("mine_supply") is not None:
+                self.stats["mine_supply"] = res["mine_supply"]
             self.stats["rapid_fire_active"] = bool(res.get("active"))
             self.stats["mod_writes"] = self.stats.get("mod_writes", 0) + res.get("writes", 0)
             if not res.get("verified", True):

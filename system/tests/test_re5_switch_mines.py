@@ -1,6 +1,6 @@
 """RE5 Switch proximity bombs left behind (gbox.mercs.titles.re5_switch_mines), on the live facts of 2026-10-27: one
 every EVERY_S of the round, never with a Majini within FOE_CLEAR_CM or beside a bomb still down, the pad neutral
-before the D-pad, ZL tapped (held, a second bomb), confirmed by a new uWp0a unit near him or the count falling, the
+before the D-pad, ZL tapped (held, a second bomb), confirmed by a new uWp0a unit near him, the
 placing motion played out, the run out of the blast (never back over the bomb), the gun back; the blast guard; the
 fight never raising a bomb (re5_switch.Bot._gun_back); the ground bombs read from sUnit's line 11."""
 import math
@@ -49,10 +49,11 @@ def test_a_bomb_is_due_every_interval_but_not_with_a_majini_near_or_beside_a_bom
     m = MN.Mines({})
     m.new_round(0.0)
     assert m.tick(p(), snap(), foes((1200, 0)), 5.0) is None                    # too soon
-    assert m.tick(p(), snap(), foes((400, 0)), MN.EVERY_S + 1) is None          # one within FOE_CLEAR_CM (his blast)
-    assert m.stats["mine_status"] == "a Majini too close to place one"
+    assert m.tick(p(), snap(), foes((400, 0)), MN.EVERY_S + 1)["hold"][:2] == MN.RUN
+    assert m.state == "idle" and m.stats["mine_blocked_reason"] == "enemy too close"
     m.last_at, m.last_pos = 0.0, (500.0, 0.0, 0.0)
-    assert m.tick(p(), snap(), foes((1200, 0)), MN.EVERY_S + 1) is None         # still beside the last site
+    assert m.tick(p(), snap(), foes((1200, 0)), MN.EVERY_S + 1)["hold"][:2] == MN.RUN
+    assert m.state == "idle" and m.stats["mine_blocked_reason"] == "last bomb too close"
     m.last_pos, m.bombs = (900.0, 0.0, 0.0), {0x77: (0.0, 0.0, -400.0)}
     # the bomb at -400 is within his blast and not the one he just placed: the guard now runs him out of it, and no
     # placement starts while he is in its blast (the SPACING_CM check would block it too)
@@ -64,16 +65,16 @@ def test_a_bomb_is_due_every_interval_but_not_with_a_majini_near_or_beside_a_bom
     assert MN.Mines({}).tick(p(), {"inventory": [GUN]}, [], 99.0) is None        # no bomb in the inventory
 
 
-def test_default_mine_cadence_waits_twenty_seconds_and_can_be_explicitly_configured():
+def test_default_mine_cadence_waits_thirty_seconds_and_can_be_explicitly_configured():
     from gbox.mercs.titles import re5_switch as R
     from gbox.mercs.titles import re5_switch_mods as SM
 
-    assert MN.EVERY_S == R.MINE_EVERY_S == SM.MINE_EVERY_DEFAULT == 20.0
+    assert MN.EVERY_S == R.MINE_EVERY_S == SM.MINE_EVERY_DEFAULT == 30.0
     m = MN.Mines({})
     m.new_round(0.0)
-    for now in (9.0, 19.9):
+    for now in (9.0, 29.9):
         assert m.tick(p(), snap(), [], now) is None
-    assert m.tick(p(), snap(), [], 20.0) == {"hold": ()} and m.state == "neutral"
+    assert m.tick(p(), snap(), [], 30.0) == {"hold": ()} and m.state == "neutral"
     m = MN.Mines({})
     m.configure({"enabled": True, "interval_s": 180.0})
     m.new_round(0.0)
@@ -128,7 +129,7 @@ def test_an_unconfirmed_press_still_leaves_when_the_placing_motion_was_seen_and_
     assert m.tick(p(), snap(), [], t + 0.1, busy=True) is None and m.state == "rearm"   # grabbed before the press
 
 
-def test_a_falling_count_confirms_too_the_stacks_own_units_never_do_and_a_missing_equip_waits_an_interval():
+def test_a_falling_count_is_not_actor_proof_and_a_failed_equip_retries_without_satisfying_the_cadence():
     t = MN.EVERY_S
     m = MN.Mines({})
     m.new_round(0.0)
@@ -138,13 +139,20 @@ def test_a_falling_count_confirms_too_the_stacks_own_units_never_do_and_a_missin
     m.tick(p(motion=29), held(ground=[far]), [], t0 + 0.3)
     assert m.stats["mines_placed"] == 0
     m.tick(p(motion=29), held(rounds=4, ground=[far]), [], t0 + 0.57)            # the flag off: the count falls
-    assert m.stats["mines_placed"] == 1 and m.last_pos == (0.0, 0.0, 0.0) and m.bombs == {}
+    assert m.stats["mines_placed"] == 0 and m.bombs == {} and m.state == "place"
+    assert m.tick(p(), held(rounds=4), [], t0 + MN.PLACE_S + 0.1)["hold"][:2] == MN.RUN
+    assert m.stats["mine_unconfirmed"] == 1 and m.state == "retreat"
     m = MN.Mines({})
     m.new_round(0.0)
     m.tick(p(), snap(), [], t)
     m.tick(p(), snap(), [], t + MN.NEUTRAL_S)
     assert m.tick(p(), snap(), [], t + MN.NEUTRAL_S + MN.EQUIP_S + 0.1) is None
-    assert m.stats["mine_equip_failures"] == 1 and m.last_at == pytest.approx(t + MN.NEUTRAL_S + MN.EQUIP_S + 0.1)
+    failed_at = t + MN.NEUTRAL_S + MN.EQUIP_S + 0.1
+    assert m.stats["mine_equip_failures"] == 1 and m.last_at is None
+    assert m._retry_at == pytest.approx(failed_at + MN.RETRY_S)
+    m.tick(p(), snap(), [], failed_at + .1)  # the gun was still in hand: rearm finishes
+    assert m.tick(p(), snap(), [], failed_at + MN.RETRY_S) == {"hold": ()}
+    assert m.state == "neutral"
 
 
 def test_the_guard_runs_him_out_of_a_bombs_blast_when_a_majini_reaches_it_and_counts_the_bombs_gone():
@@ -170,7 +178,7 @@ def test_the_guard_runs_him_out_of_a_bombs_blast_when_a_majini_reaches_it_and_co
 def bot_snap(inv, enemies=((0.0, 0.0, 900.0),), motion=0):
     return {"player": {"ptr": 1, "pos": (0.0, 0.0, 0.0), "rot": 0.0, "hp": 1000, "hp_max": 1000, "motion": motion},
             "enemies": [{"ptr": 10 + i, "pos": e, "hp": 800, "hp_max": 800} for i, e in enumerate(enemies)],
-            "inventory": inv, "timer": 100.0, "timer_start": 120.0,
+            "inventory": inv, "ground_mines": list(STACK), "timer": 100.0, "timer_start": 120.0,
             "laser": {"from": (0, 0, 0), "at": (0, 0, 0), "up": False}}
 
 
@@ -372,7 +380,7 @@ def test_mid_cycle_guard_aborts_place_when_in_old_bomb_blast():
     m.last_pos = None  # no recent placement
     # He is at origin, mid-place cycle (bomb in hand, held=['zl'])
     live = []  # no Majini
-    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, live)
+    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, live, 100.)
     assert act is not None
     assert act["hold"][:2] == MN.RUN
     assert m.stats["mine_clear_runs"] == 1
@@ -393,7 +401,7 @@ def test_mid_cycle_guard_fires_for_unconfirmed_mines_not_in_self_bombs():
     assert m.bombs == {}  # not tracked
     m.last_pos = None
     live = []
-    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, live)
+    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, live, 100.)
     assert act is not None
     assert act["hold"][:2] == MN.RUN
     assert m.state == "retreat"
@@ -409,7 +417,7 @@ def test_mid_cycle_guard_skips_the_bomb_just_placed():
     just_placed = {"ptr": 0x77, "pos": (300.0, 0.0, 0.0)}
     snap = {"ground_mines": [just_placed]}
     m.last_pos = (300.0, 0.0, 0.0)  # this is the one he just placed
-    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, [])
+    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, [], 100.)
     assert act is None  # skipped: last_pos matches
 
 
@@ -419,7 +427,7 @@ def test_mid_cycle_guard_fires_outside_blast_radius():
     m.new_round(0.0)
     far = {"ptr": 0x77, "pos": (900.0, 0.0, 0.0)}  # 900 cm: outside BLAST_CM=800
     snap = {"ground_mines": [far]}
-    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, [])
+    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, [], 100.)
     assert act is None
 
 
@@ -434,3 +442,92 @@ def test_the_sidebar_cadence_and_clearance_reach_a_running_bot_every_tick(monkey
     assert m.every_s == 5.0
     assert m.due(p(), snap(), foes((420, 0)), 5.0) == "due"           # a Majini at 4.2 m: placed now (was 5 m)
     assert m.due(p(), snap(), foes((380, 0)), 5.0) is None            # ... at 3.8 m: not yet
+
+
+def test_overdue_crowd_relocation_is_bounded_and_starts_placement_once_clear():
+    m = MN.Mines({})
+    m.new_round(0.0)
+    live = foes((400, 0))
+    now = MN.EVERY_S + 7.0
+    assert m.tick(p(), snap(), live, now)["hold"][:2] == MN.RUN
+    assert m.stats["mine_overdue_s"] == 7.0 and m.stats["mine_relocating"]
+    assert m.stats["mine_attempts"] == 0 and m.last_at is None
+    # A blocked route does not own input indefinitely or reset the due timer.
+    assert m.tick(p(), snap(), live, now + MN.RELOCATE_S) is None
+    assert not m.stats["mine_relocating"] and m.last_at is None
+    assert m.tick(p(), snap(), live, now + MN.RELOCATE_S + MN.RELOCATE_PAUSE_S)["hold"][:2] == MN.RUN
+    # Moving two metres away clears the unchanged five-metre placement margin.
+    assert m.tick(p(pos=(0., 0., -200.)), snap(), live, now + 5.0) == {"hold": ()}
+    assert m.state == "neutral" and not m.stats["mine_relocating"]
+
+
+def test_overdue_relocation_preserves_close_threat_and_explicit_emergency_priority():
+    m = MN.Mines({})
+    m.new_round(0.)
+    now = MN.EVERY_S + 1
+    assert m.tick(p(), snap(), foes((200, 0)), now) is None
+    assert m.state == "idle" and m.stats["mine_attempts"] == 0
+    assert m.tick(p(), snap(), [], now + 1, busy=True) is None
+    assert m.stats["mine_blocked_reason"] == "emergency action"
+    assert m.tick(p(), snap(), [], now + 2) == {"hold": ()}
+
+
+def test_enemy_closing_during_equip_prevents_press_and_missing_ground_scan_cannot_start():
+    m = MN.Mines({})
+    m.new_round(0.)
+    now = MN.EVERY_S
+    missing = snap()
+    missing.pop("ground_mines")
+    assert m.tick(p(), missing, [], now) is None
+    assert m.stats["mine_blocked_reason"] == "ground mine observation unavailable"
+    assert m.tick(p(), snap(), [], now + 1) == {"hold": ()}
+    assert m.tick(p(), snap(), [], now + 1 + MN.NEUTRAL_S) == {"tap": "dup"}
+    assert m.tick(p(), held(), foes((350, 0)), now + 1 + MN.NEUTRAL_S + .2) == {"hold": ()}
+    assert m.state == "rearm" and m.stats["mines_placed"] == 0
+    assert m.stats["mine_blocked_reason"] == "enemy too close"
+
+
+def test_inventory_disappearance_or_count_drop_never_counts_as_a_native_bomb_actor():
+    m = MN.Mines({})
+    m.new_round(0.)
+    to_place(m, [], MN.EVERY_S)
+    now = MN.EVERY_S + MN.NEUTRAL_S + .2
+    for offset, inventory in ((.3, []), (.5, [dict(BOMB, rounds=4)]), (.6, [dict(BOMB, rounds=0)])):
+        m.tick(p(motion=29), {"inventory": inventory, "ground_mines": STACK}, [], now + offset)
+        assert m.stats["mines_placed"] == 0 and "mine_last_confirmation" not in m.stats
+    actor = {"ptr": 0x123456, "pos": (0., 3., 57.)}
+    m.tick(p(motion=29), held(ground=[actor]), [], now + .7)
+    assert m.stats["mines_placed"] == 1
+    assert m.stats["mine_last_confirmation"] == {"source": "native_uWp0a_actor", "ptr": actor["ptr"],
+        "pos": list(actor["pos"]), "at": now + .7}
+    m.tick(p(motion=29), held(ground=[actor]), [], now + .8)
+    assert m.stats["mines_placed"] == 1
+    m.new_round(now + 5.)
+    assert "mine_last_confirmation" not in m.stats
+
+
+def test_an_existing_actor_or_new_actor_on_another_floor_is_not_placement_proof():
+    m = MN.Mines({})
+    m.new_round(0.)
+    to_place(m, [], MN.EVERY_S)
+    now = MN.EVERY_S + MN.NEUTRAL_S + .2
+    reused = dict(STACK[0], pos=(0., 0., 57.))
+    upper_floor = {"ptr": 0x123456, "pos": (0., 400., 57.)}
+    m.tick(p(motion=29), held(ground=[reused, upper_floor]), [], now + .7)
+    assert m.stats["mines_placed"] == 0 and "mine_last_confirmation" not in m.stats
+
+
+def test_mid_cycle_escape_keeps_actual_bomb_site_and_current_clock_on_later_ticks():
+    m = MN.Mines({})
+    m.new_round(0.)
+    m.state, m.t, m.site = "place", 99., (0., 0., -1000.)
+    bomb = {"ptr": 0x77, "pos": (300., 0., 0.)}
+    state = held(ground=[bomb])
+    assert m.tick(p(), state, [], 100.)["hold"][:2] == MN.RUN
+    assert m.state == "retreat" and m.t == 100. and m.site == bomb["pos"]
+    # The player has no timestamp field, and is far from the abandoned planting
+    # site but only 3 m from the real hazard. Neither may end the escape early.
+    assert m.tick(p(), state, [], 100.1) == m._run(p(), [], bomb["pos"])
+    assert m.state == "retreat" and m.stats["mine_retreats_completed"] == 0
+    assert m.tick(p(pos=(-600., 0., 0.)), state, [], 100.5) == {"hold": ()}
+    assert m.state == "rearm" and m.stats["mine_retreats_completed"] == 1

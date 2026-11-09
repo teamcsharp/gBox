@@ -400,6 +400,15 @@ def apply_ops(ad, ops, prof: dict | None = None, stats: dict | None = None) -> l
                 stats["cheats"] = res["telemetry"]
         except Exception as e:                              # noqa: BLE001 - one failed mod never stops the run
             failed.append(f"{op}: {e}")
+    if (prof or {}).get("map_id") == "010018100CD46000":
+        # Switch inventories are built when leaving the character select.
+        # playing_ops and Driver.screen are too late for the first round;
+        # Boot invokes round_ops here before confirming the native selection.
+        supply = RM.maintain(ad, None, enabled=False, prepare_mines=True).get("mine_supply") or {}
+        if stats is not None:
+            stats["mine_supply"] = supply
+        if not supply.get("verified"):
+            failed.append("mine loadout: " + str(supply.get("status") or "preparation failed"))
     if (prof or {}).get("map_id") == "BLUS30491" and stats is not None:
         try:
             from .mercs.titles import re5_mines

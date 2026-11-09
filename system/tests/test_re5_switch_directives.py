@@ -21,7 +21,7 @@ def snap(enemies, inv=None):
     """Chris at the origin facing +z; enemies: [(x, y, z)]."""
     return {"player": {"ptr": 1, "pos": (0.0, 0.0, 0.0), "rot": 0.0, "hp": 1000, "hp_max": 1000, "motion": 0},
             "enemies": [{"ptr": 10 + i, "pos": e, "hp": 800, "hp_max": 800} for i, e in enumerate(enemies)],
-            "inventory": inv or [dict(GUN)], "timer": 100.0, "timer_start": 120.0,
+            "inventory": inv or [dict(GUN)], "ground_mines": [], "timer": 100.0, "timer_start": 120.0,
             "laser": {"from": (0, 0, 0), "at": (0, 0, 0), "up": False}}
 
 

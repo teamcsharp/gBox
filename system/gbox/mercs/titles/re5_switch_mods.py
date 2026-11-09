@@ -12,7 +12,7 @@ ops:
   fire_rate multiplier=N    the player's own time scale x N while his shot motion plays (1..80; 1 = off): a held ZR
                             repeats about N times faster, up to the frame rate. Aiming, walking and turning keep the
                             game's speed (the scale is 1 whenever the shot motion is not playing)
-  mine_loadout on=true      Chris (BSAA)'s loadout template: proximity bomb x5 at grid 1 (D-pad up) in place of his
+  mine_loadout on=true      every verified Mercenaries template: proximity bomb x5 on a D-pad slot; legacy Chris-only
                             hand grenades. The game builds the stack itself at the next round's start (no item record or
                             pointer is ever written); with infinite_ammo's flag on the bomb (WP0A) a placement spends
                             none. Off: the grenades back (the next round)
@@ -101,7 +101,8 @@ MAGNUMS = (0x10B, 0x11A, 0x11B)
 RAMPAGE_GUN, QUICK_GRIDS = 0x119, frozenset({1, 3, 5, 7})   # WP19 Hydra
 ROCKETS, LONG_GUNS = frozenset({0x10D}), frozenset({0x10D, 0x105, 0x11C, 0x120})   # rocket launcher; and the snipers
 HEALTH_MAX = 30000                                           # unlimited_health's boosted maximum (the PS3's)
-MINE_EVERY_DEFAULT = 20.0                                    # the Switch bot's cadence unless `mines` sets one
+MINE_EVERY_DEFAULT = 30.0                                    # the Switch bot's cadence unless `mines` sets one
+MINE_KEEP = 5                                               # replenish only a still-live, positive-count stack
 THROWN_ITEMS = frozenset({0x06, 0x07, 0x08, 0x0A})           # grenades and the bomb: a loadout draw keeps them
 ORIG: dict = {}                                              # id(adapter) -> this boot's originals and settings
 _LOCK = threading.RLock()
@@ -242,17 +243,27 @@ def chris_block(g: RE5Switch, off: int) -> bool:
 
 
 def mine_loadout(g: RE5Switch, on: bool) -> dict:
-    """Chris (BSAA)'s loadout template, both banks: record 1 the proximity bomb (on) or the hand grenades (off). Only the
-    id word of a block whose records match is written; the round after builds its inventory from it. Once the template
-    ops own the blocks (MercMode's round loadout composes them every round), every character carries the bomb
-    (compose_templates, _mine_block)."""
+    """Prepare every verified Mercenaries loadout, retaining a legacy Chris-only fallback.
+
+    The full descriptor table is validated before any writes. Off restores the
+    original templates together with other active template edits.
+    """
+    g.state["mine_settings"] = {"enabled":bool(on),
+                               "interval_s":(g.state.get("mine_settings") or {}).get("interval_s",MINE_EVERY_DEFAULT),
+                               "only":False}
     want = MINE_ID if on else GRENADE_ID
+    if g.state.get("tpl_orig") is None:
+        try:
+            _tpl_orig(g)                                    # validate every Mercenaries descriptor before writing
+        except RuntimeError:
+            pass                                           # legacy Chris-only callers still report their limited scope
     if g.state.get("tpl_orig") is not None:              # the template ops own the blocks now: compose them
         g.state["mine_loadout"] = bool(on)
         res = compose_templates(g)
         at = [g.base + off + MINE_SLOT * TEMPLATE_REC for off in CHRIS_TEMPLATES]
         done = [hex(off) for off, a in zip(CHRIS_TEMPLATES, at) if g.u32(a) == want]
-        return {"mine_loadout": bool(on), "verified": bool(res["verified"] and done), "blocks": done,
+        return {"mine_loadout": bool(on), "verified": bool(res["verified"]), "blocks": done,
+                "template_blocks": res["blocks"], "missing_mine_blocks": res.get("missing_mine_blocks", []),
                 "effective": "the next round's start",
                 "note": "every character's grenades as the proximity bomb" if on else "the game's grenades back"}
     blocks, ok = [], True
@@ -262,6 +273,8 @@ def mine_loadout(g: RE5Switch, on: bool) -> dict:
         at = g.base + off + MINE_SLOT * TEMPLATE_REC
         if g.u32(at) != want:
             ok = g.wr(at, struct.pack("<I", want)) and ok
+            if on and ok:
+                g.state.setdefault("legacy_mine_offsets", []).append(off)
         blocks.append(off)
         ok = ok and g.u32(at) == want
     g.state["mine_loadout"] = bool(on)
@@ -320,16 +333,19 @@ def template_blocks(g: RE5Switch) -> list:
 
 
 def _tpl_orig(g: RE5Switch) -> dict:
-    """Every loadout block as the game had it (read once a boot; a bomb mine_loadout wrote counted as the grenades it
-    replaced, so a block read after it is still the original)."""
+    """Cache original templates, undoing only our recorded legacy Chris substitutions.
+
+    A native mine in another costume is its original item and must survive off.
+    """
     orig = g.state.get("tpl_orig")
     if orig is None:
         orig = {}
         for _i, ptr in template_blocks(g):
             t = bytearray(g.rd(ptr, TEMPLATE_REC * TEMPLATE_RECS))
-            for k in range(TEMPLATE_RECS):         # a bomb mine_loadout wrote counts as the grenade it replaced
-                if struct.unpack_from("<I", t, k * TEMPLATE_REC + REC_ID)[0] == MINE_ID:
-                    struct.pack_into("<I", t, k * TEMPLATE_REC + REC_ID, GRENADE_ID)
+            if ptr-g.base in g.state.get("legacy_mine_offsets", ()):
+                at = MINE_SLOT*TEMPLATE_REC+REC_ID
+                if struct.unpack_from("<I", t, at)[0] == MINE_ID:
+                    struct.pack_into("<I", t, at, GRENADE_ID)
             orig[ptr] = bytes(t)
         g.state["tpl_orig"] = orig
     return orig
@@ -341,13 +357,13 @@ def _is_gun(idw: int) -> bool:
 
 def compose_templates(g: RE5Switch) -> dict:
     """Every loadout block from its original and the template ops on now, in order: weapon_override (else loadout's
-    draw), then the rocket / long-gun replacements, then mine_loadout's bomb in Chris's record 1. A replaced weapon's
+    draw), then the rocket / long-gun replacements, then each costume's quick-slot mine. A replaced weapon's
     upgrade levels go to 0 (none indexes past the new weapon's table). Only a block that differs is written, then read
     back. Effective at the next round's start (the game copies the block into the inventory then)."""
     import random
     orig = _tpl_orig(g)
     override, draw, repl = g.state.get("weapon_override"), g.state.get("loadout"), g.state.get("replace")
-    writes, records, ok = 0, 0, True
+    writes, records, ok, missing = 0, 0, True, []
     for ptr, raw in orig.items():
         t = bytearray(raw)
         used: list = []
@@ -378,27 +394,79 @@ def compose_templates(g: RE5Switch) -> dict:
             records += int(_rampage_block(t))
         if g.state.get("mine_loadout"):
             records += int(_mine_block(t))
+            if not _quick_mine(t):
+                missing.append(hex(ptr-g.base))
         if g.rd(ptr, len(t)) != bytes(t):
             ok = g.wr(ptr, bytes(t)) and ok
             ok = ok and g.rd(ptr, len(t)) == bytes(t)
             writes += 1
-    return {"verified": bool(ok), "blocks": len(orig), "blocks_written": writes, "records_changed": records,
+    return {"verified": bool(ok and not missing), "blocks": len(orig), "blocks_written": writes, "records_changed": records,
+            "missing_mine_blocks": missing,
             "effective_next_round": True,
             "note": "takes effect at the next round start (the game copies the template into the inventory then)"}
 
 
-def _mine_block(t: bytearray) -> bool:
-    """Every character carries proximity bombs (operator 2026-10-28: "every round of RE5 needs mines"; Chris (BSAA) alone
-    had them, so a Jill or Sheva round placed none): the block's hand grenades become the bomb, else its first other
-    grenade (incendiary, flash). False when it has the bomb already or no grenade to swap."""
-    ids = [struct.unpack_from("<I", t, k * TEMPLATE_REC + REC_ID)[0] for k in range(TEMPLATE_RECS)]
-    if MINE_ID in ids:
+def _quick_mine(t) -> bool:
+    occupied = [struct.unpack_from("<I",t,k*TEMPLATE_REC+REC_GRID)[0] for k in range(TEMPLATE_RECS)
+                if struct.unpack_from("<I",t,k*TEMPLATE_REC+REC_ID)[0]
+                and struct.unpack_from("<I",t,k*TEMPLATE_REC+REC_GRID)[0] < 9]
+    if len(occupied) != len(set(occupied)):
         return False
-    for want in (GRENADE_ID, 0x107, 0x108):
-        if want in ids:
-            struct.pack_into("<I", t, ids.index(want) * TEMPLATE_REC + REC_ID, MINE_ID)
-            return True
-    return False
+    return any(struct.unpack_from("<I", t, k*TEMPLATE_REC+REC_ID)[0] == MINE_ID
+               and struct.unpack_from("<I", t, k*TEMPLATE_REC+REC_GRID)[0] in QUICK_GRIDS
+               and struct.unpack_from("<i", t, k*TEMPLATE_REC+REC_COUNT)[0] >= MINE_KEEP
+               for k in range(TEMPLATE_RECS))
+
+
+def _mine_block(t: bytearray) -> bool:
+    """Put a usable stack on a quick slot without deleting a gun, knife or healing item.
+
+    Grenade-free costumes use an empty grid record, then an ammo record if full.
+    A non-quick mine swaps grid positions with an unequipped quick-slot item;
+    both items remain. Failure is reported by compose_templates, never hidden.
+    """
+    before = bytes(t)
+    ids = [struct.unpack_from("<I", t, k * TEMPLATE_REC + REC_ID)[0] for k in range(TEMPLATE_RECS)]
+    grids = [struct.unpack_from("<I", t, k*TEMPLATE_REC+REC_GRID)[0] for k in range(TEMPLATE_RECS)]
+    hands = [struct.unpack_from("<I", t, k*TEMPLATE_REC+REC_HAND)[0] for k in range(TEMPLATE_RECS)]
+    occupied = {grids[k]:k for k in range(TEMPLATE_RECS) if ids[k] and grids[k] < 9}
+    if len(occupied) != sum(bool(ids[k]) and grids[k] < 9 for k in range(TEMPLATE_RECS)):
+        return False                                       # never bless an already overlapping inventory
+    free = sorted(set(range(9))-occupied.keys(),key=lambda grid:(grid not in QUICK_GRIDS,grid))
+    index = next((ids.index(w) for w in (MINE_ID,GRENADE_ID,0x107,0x108) if w in ids),None)
+    if index is None:
+        index = next((k for k in range(TEMPLATE_RECS) if free and ids[k] == 0 and grids[k] < 9 and not hands[k]),None)
+        if index is not None:
+            grids[index] = free[0]                          # empty record grid values need not be unoccupied
+    if index is None:
+        index = next((k for k in range(TEMPLATE_RECS) if ids[k] >> 8 == 2 and grids[k] < 9 and not hands[k]),None)
+    if index is None:
+        return False
+    changed_grids = {index:grids[index]}
+    if grids[index] not in QUICK_GRIDS:
+        quick_free = sorted(QUICK_GRIDS-occupied.keys())
+        if quick_free:
+            changed_grids[index] = quick_free[0]
+        else:
+            choices = [k for grid,k in occupied.items() if grid in QUICK_GRIDS and not hands[k]
+                       and ids[k] not in KNIFE_IDS]
+            destination = grids[index] if grids[index] < 9 else next(iter(free),None)
+            if not choices or destination is None:
+                return False
+            other = min(choices,key=lambda k:(ids[k] >> 8 != 2,ids[k] & 0xff not in THROWN_ITEMS,k))
+            changed_grids[other],changed_grids[index] = destination,grids[other]
+    candidate = bytearray(t)
+    for k,grid in changed_grids.items():
+        struct.pack_into("<I",candidate,k*TEMPLATE_REC+REC_GRID,grid)
+    offset = index*TEMPLATE_REC
+    struct.pack_into("<I",candidate,offset+REC_ID,MINE_ID)
+    count = struct.unpack_from("<i",t,offset+REC_COUNT)[0]
+    struct.pack_into("<i",candidate,offset+REC_COUNT,max(MINE_KEEP,count))
+    struct.pack_into("<I",candidate,offset+REC_UPG,0)
+    if not _quick_mine(candidate):
+        return False
+    t[:] = candidate
+    return bytes(t) != before
 
 
 def _rampage_block(t: bytearray) -> bool:
@@ -967,7 +1035,68 @@ def rotten_egg_only(g: RE5Switch, on: bool, rate=None) -> dict:
 def mine_settings(ad) -> dict | None:
     """The session's mine settings for the Switch bot (None: never set: the bot's defaults)."""
     st = ORIG.get(id(ad)) or {}
+    if st.get("mine_loadout") is False:
+        return {"enabled":False,"interval_s":(st.get("mine_settings") or {}).get("interval_s",MINE_EVERY_DEFAULT),
+                "only":False}
     return dict(st["mine_settings"]) if st.get("mine_settings") else None
+
+
+def _prepare_mine_supply(ad, snap, now) -> dict:
+    """Driver opt-in: prepare all native templates before inventory construction.
+
+    Existing explicit off settings win. Never synthesize a live inventory record
+    or restore an item pointer; a missing/consumed stack needs the next round.
+    """
+    g = RE5Switch(ad)
+    st = g.state
+    if st.get("mine_loadout") is False or (st.get("mine_settings") or {}).get("enabled") is False:
+        return {"status":"disabled","verified":True,"writes":0}
+    st.setdefault("mine_settings",{"enabled":True,"interval_s":MINE_EVERY_DEFAULT,"only":False})
+    st.setdefault("mine_loadout",True)
+    if now-st.get("mine_templates_checked",-1e9) >= CHECK_S:
+        result = compose_templates(g)
+        st["mine_templates_checked"] = now
+        st["mine_supply_templates"] = result
+    else:
+        result = st.get("mine_supply_templates") or {}
+        result = result | {"blocks_written":0}
+    return {"status":"ready_next_round" if result.get("verified") else "template_coverage_incomplete",
+            "verified":bool(result.get("verified")),"writes":result.get("blocks_written",0),
+            "template_blocks":result.get("blocks",0),"missing_blocks":result.get("missing_mine_blocks",[])}
+
+
+def _maintain_mines(ad, snap) -> dict:
+    """Keep a native mine object alive by replenishing before its last use.
+
+    Zero count may be an item deletion in progress even while +0x30 still has
+    its old pointer. It is deliberately not revived. No other field is edited.
+    """
+    if not (snap or {}).get("player"):
+        return {"status":"ready_next_round","writes":0}
+    for row in (snap or {}).get("inventory") or ():
+        if row.get("id") != MINE_ID or row.get("grid") not in QUICK_GRIDS:
+            continue
+        start = snap["player"].get("ptr",0)+R.P_INV
+        if (not snap["player"].get("ptr") or type(row.get("addr")) is not int
+                or not start <= row["addr"] < start+R.INV_SLOT*R.INV_SLOTS
+                or (row["addr"]-start) % R.INV_SLOT):
+            continue
+        raw = ad.read_memory(row["addr"],R.INV_SLOT)
+        idw,count,cap = struct.unpack_from("<Iii",raw,R.INV_ID)
+        grid = struct.unpack_from("<I",raw,R.INV_GRID)[0]
+        obj = struct.unpack_from("<Q",raw,R.INV_OBJ)[0]
+        if idw != MINE_ID or grid not in QUICK_GRIDS or not obj or count <= 0:
+            continue
+        if count >= MINE_KEEP:
+            return {"status":"ready","writes":0}
+        desired = struct.pack("<ii",MINE_KEEP,max(MINE_KEEP,cap))
+        at = row["addr"]+R.INV_ROUNDS
+        ad.write_memory(at,desired)
+        if ad.read_memory(at,8) != desired:
+            return {"status":"refill_not_verified","writes":1,"verified":False}
+        row.update(rounds=MINE_KEEP,cap=max(MINE_KEEP,cap))
+        return {"status":"ready","writes":1,"refilled":True}
+    return {"status":"missing_live_stack_next_round","writes":0}
 
 
 def _restore_scale(ad, st) -> int:
@@ -985,7 +1114,7 @@ def _restore_scale(ad, st) -> int:
     return 0
 
 
-def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> dict:
+def maintain(ad, snap=None, *, enabled: bool = True, prepare_mines: bool = False, clock=time.monotonic) -> dict:
     """Each driver snapshot: fire_rate's time scale up while the shot motion plays and the game's own value otherwise
     (and whenever enabled is False: out of a round, the bot stopping); infinite_ammo's flags read back every CHECK_S
     and put back if the game reset them. Writes only for a setting an op turned on, and only into the snapshot's own
@@ -993,6 +1122,17 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
     with _LOCK:
         st = ORIG.get(id(ad))
         out = {"active": False, "writes": 0, "verified": True, "infinite_ammo": None}
+        if prepare_mines:
+            try:
+                supply = _prepare_mine_supply(ad,snap,clock())
+                out["mine_supply"] = supply
+                out["writes"] += supply["writes"]
+                if not supply["verified"]:
+                    out.update(verified=False,reason="Not every Mercenaries template has a quick-slot mine")
+                st = ORIG.get(id(ad))
+            except Exception as exc:
+                out.update(verified=False,reason=f"Mine supply: {type(exc).__name__}: {exc}"[:160],
+                           mine_supply={"status":"prepare_failed","verified":False})
         if not st:
             return out
         try:
@@ -1042,6 +1182,12 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
                 out["writes"] += kept
                 if kept:
                     out["spray_kept"] = True
+            if enabled and st.get("mine_loadout") and (st.get("mine_settings") or {}).get("enabled",True):
+                kept = _maintain_mines(ad,snap)
+                out["mine_supply"] = (out.get("mine_supply") or {}) | kept
+                out["writes"] += kept["writes"]
+                if kept.get("verified") is False:
+                    out.update(verified=False,reason="Mine refill read-back failed")
             _confirm_weapon(st, snap)
             dr = st.get("loadout")
             if enabled and dr and dr.get("each_round") and p and p.get("ptr"):
@@ -1073,7 +1219,9 @@ def revert_all(g: RE5Switch) -> dict:
            **({"turn_speed": turn_speed(g, 1.0)["verified"]} if g.state.get("turn_speed") else {}),
            "infinite_spray": infinite_spray(g, False)["verified"],
            "unlimited_health": unlimited_health(g, False)["verified"]}
-    g.state.pop("mine_settings", None)
+    g.state["mine_settings"] = {"enabled":False,
+                               "interval_s":(g.state.get("mine_settings") or {}).get("interval_s",MINE_EVERY_DEFAULT),
+                               "only":False}
     if (g.state.get("eggs") or {}).get("on"):
         out["rotten_eggs"] = rotten_egg_only(g, False)["verified"]
     if g.state.get("kill_time"):
@@ -1353,6 +1501,8 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Switch |
         if op == "infinite_spray":
             return infinite_spray(g, bool(on))
         if op in ("mine_loadout", "proximity_bombs"):
+            if on and (g.state.get("mine_settings") or {}).get("enabled") is False:
+                return {"mine_loadout":False,"verified":True,"note":"saved operator mines-off setting retained"}
             return mine_loadout(g, bool(on))
         if op == "revert_all":
             return revert_all(g)
