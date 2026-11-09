@@ -87,6 +87,11 @@ COMBO_PLANT_MIN_S, COMBO_WAIT_S, COMBO_CUT_S, COMBO_STANDOFF_CM = 8.0, 12.0, 4.0
 # these enemies sit idle"). The fight, the pursuit and the map move him; the bomb goes down the moment the site is
 # clear (and the flash clears a crowd for it).
 RELOCATE_RUN = False
+# Bombs on the way (operator 2026-11-09: "as the bot is walking the level without enemies around, they need to be
+# placing mines as they are navigating to the enemies to dispatch them"). With no Majini within TRAIL_CM of the bomb
+# there is nothing to run from: no run out to the standoff (it took him back the way he came, up to 6 s) - the gun
+# comes back and he goes on along his route, the bomb left behind him. stats mine_trail_plants.
+TRAIL_CM = 2000.0
 # the guard: a Majini this near a bomb of his, him within BLAST_CM of it: out. CLOSE_MAJINI_CM: a Majini this close
 # to him while he is in the blast - he cannot run the gap through a close crowd (the cluster's remaining incidents),
 # so the run is given up and the fight unloads on the threat instead. FOE_CLEAR_CM (5 m) is the placement's rule
@@ -607,6 +612,11 @@ class Mines:
                 return mid
             if p.get("motion") == MOTION_PLACE and now - self.t < SETTLE_S:
                 return {"hold": ()}
+            if self._trail(live):
+                self.stats["mine_trail_plants"] = self.stats.get("mine_trail_plants", 0) + 1
+                self.stats["mine_status"] = "bomb down on his way: nobody near it, on he goes"
+                self.state, self.t = "rearm", now
+                return {"hold": ()}
             self.state, self.t = "retreat", now
             return self._run(p, live, self.site)
         if self.state == "retreat":
@@ -634,6 +644,10 @@ class Mines:
             self.t = now - REARM_S + 0.6                  # one tap, then wait for it
             return {"tap": QUICK[gun["grid"]]}
         return None
+
+    def _trail(self, live: list) -> bool:
+        """The bomb just planted has no Majini within TRAIL_CM of it: left behind on his way, no run out."""
+        return self.site is not None and not any(flat(e["pos"], self.site) <= TRAIL_CM for e in live)
 
     def _run(self, p: dict, live: list, site) -> dict:
         """Run out through the widest gap among the Majini within RETREAT_GAP_R, the bomb at site counted among them."""

@@ -860,3 +860,17 @@ def test_the_bot_flashes_the_moment_a_bomb_is_down_and_to_open_the_way_for_an_ov
     assert len(asked) == 2                                               # inside the gap: not again
     bot._mine_flash(state, 200.0 + R.MINE_FLASH_GAP_S + 0.1)
     assert len(asked) == 3
+
+
+def test_a_bomb_laid_on_his_way_with_nobody_near_needs_no_run_out():
+    """Operator 2026-11-09: "as the bot is walking the level without enemies around, they need to be placing mines as
+    they are navigating to the enemies to dispatch them." Nobody within TRAIL_CM of the bomb: the gun back and on along
+    his route; a Majini that near: the run out to the standoff as ever."""
+    m = MN.Mines({})
+    m.new_round(0.0)
+    m.state, m.t, m.site = "settle", 50.0, (0.0, 0.0, 57.0)
+    assert m.tick(p(), snap(), foes((MN.TRAIL_CM + 300, 0)), 50.0 + MN.SETTLE_S) == {"hold": ()}
+    assert m.state == "rearm" and m.stats["mine_trail_plants"] == 1
+    m.state, m.t, m.site = "settle", 60.0, (0.0, 0.0, 57.0)
+    assert m.tick(p(), snap(), foes((900, 0)), 60.0 + MN.SETTLE_S)["hold"][:2] == MN.RUN
+    assert m.state == "retreat" and m.stats["mine_trail_plants"] == 1

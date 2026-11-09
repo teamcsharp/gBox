@@ -995,6 +995,13 @@ CLOSE_IN, CLOSE_IN_R, CLOSE_IN_CHECK_S, RUN_R = True, 800.0, 0.5, 600.0
 # The locate run keeps its Majini while he lives unless another is LOCATE_SWITCH times nearer, and one the mesh has
 # no route to is passed over for LOCATE_BLOCK_S (the next nearest instead).
 LOCATE_SWITCH, LOCATE_BLOCK_S = 0.6, 8.0
+# The route and the guard. _mesh_guard probes MESH_PROBE_CM along his FACING and, off the floor, turns him to the
+# nearest clear heading; the route's next point is a corner of the mesh, so facing it the probe clips the wall
+# beside it - the guard turned him away, the route turned him back, every tick (live 2026-11-09, the first minute
+# after the combo change: mesh_steers 245 in 8 s, held 'b,rright', a target 30.3 m off for 80 s, idle 78 of 78 s).
+# MESH_FOLLOW: on a tick the mesh's own route steers him the guard does not choose another heading - within
+# MESH_FOLLOW_TOL of the route's point he walks on, beyond it he turns to it on the spot. stats mesh_follows.
+MESH_FOLLOW, MESH_FOLLOW_TOL = True, math.radians(25)
 # Mines are not negotiable (operator 2026-11-09: "I want it placing mines. Then flashbanging and running away and
 # getting distance ... have him force his way out"). MINE_FLASH: the native flash (the GRENADES knob's own, no item
 # screen) goes off the moment a bomb of his is confirmed down, so the crowd reels while he runs out to the standoff;
@@ -3417,6 +3424,14 @@ class Bot:
                 return None
         if clear(rot) is not False:
             return act
+        wp = getattr(self, "_mesh_wp", None)
+        if MESH_FOLLOW and wp is not None and wp[2] == getattr(self, "_now", None):   # the route steers this tick
+            err = wrap(heading(wp[0] - pos[0], wp[1] - pos[2]) - rot)
+            self.stats["mesh_follows"] = self.stats.get("mesh_follows", 0) + 1
+            if abs(err) <= MESH_FOLLOW_TOL:
+                return act                               # along the mesh's own route: on
+            keys = tuple(k for k in hold if k not in ("lup", "rleft", "rright"))
+            return dict(act, hold=keys + (("rleft",) if err > 0 else ("rright",)))   # round to it first
         for turn in MESH_TURNS:
             if clear(rot + turn):
                 self.stats["mesh_steers"] = self.stats.get("mesh_steers", 0) + 1
@@ -4296,11 +4311,14 @@ class Bot:
                     n = math.hypot(dx, dz) or 1.0
                 self._mesh_link, self._goal_dy = True, q[1] - py
                 self.stats["mesh_route_ticks"] = self.stats.get("mesh_route_ticks", 0) + 1
-                return q.portal[0] + dx / n * MESH_LINK_PUSH_CM, q.portal[2] + dz / n * MESH_LINK_PUSH_CM
+                out = (q.portal[0] + dx / n * MESH_LINK_PUSH_CM, q.portal[2] + dz / n * MESH_LINK_PUSH_CM)
+                self._mesh_wp = out + (now,)
+                return out
             if len(pts) > 1 and at:
                 pts.pop(0)
                 continue
             self.stats["mesh_route_ticks"] = self.stats.get("mesh_route_ticks", 0) + 1
+            self._mesh_wp = (point[0], point[2], now)        # (the guard defers to the route on this tick)
             return point[0], point[2]
         return None
 

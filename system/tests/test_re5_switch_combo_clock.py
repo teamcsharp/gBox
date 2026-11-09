@@ -131,3 +131,29 @@ def test_the_locate_run_takes_the_mesh_across_floors_and_keeps_its_majini(bot):
     rest = other if first == 0x22 else below
     bot._locate(player(), {"enemies": [rest, nearer]}, 10.1)
     assert bot._locate_key == first and bot.stats["locates"] == 1
+
+
+class Wall:
+    """A mesh whose floor ends right ahead of him along his facing; clear 45 degrees to his right."""
+
+    def member(self, pos):
+        return 1
+
+    def floor_segment(self, a, b):
+        return b[0] < a[0] - 50.0                            # only headings well to his right (x falling) are floor
+
+
+def test_the_guard_follows_the_route_instead_of_turning_him_away_from_its_corner(bot):
+    """Live 2026-11-09: the route turned him to its next corner, the guard (its probe clipping the wall beside that
+    corner) turned him away, every tick - 'b,rright' held for 80 s, a target 30 m off, 245 steers in 8 s."""
+    snap = {"nav": Wall(), "player": player()}
+    walk = {"hold": ("lup", "b", "rleft")}
+    bot._now, bot._mesh_wp = 5.0, None
+    turned = bot._mesh_guard(dict(walk), snap)               # no route this tick: the guard's own heading, as before
+    assert "rright" in turned["hold"] and bot.stats["mesh_steers"] == 1
+    bot._mesh_wp = (20.0, 400.0, 5.0)                        # the route's point 3 degrees off his facing: walk on
+    assert bot._mesh_guard(dict(walk), snap) == walk and bot.stats["mesh_follows"] == 1
+    bot._mesh_wp = (400.0, 100.0, 5.0)                       # the route's point 76 degrees to his left: round to it first
+    assert bot._mesh_guard(dict(walk), snap)["hold"] == ("b", "rleft")
+    bot._mesh_wp = (20.0, 400.0, 4.9)                        # a route of an earlier tick is not this tick's
+    assert "rright" in bot._mesh_guard(dict(walk), snap)["hold"]
