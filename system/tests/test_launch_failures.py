@@ -238,6 +238,16 @@ def test_skips_cancels_intentional_and_agent_launches(plane):
     assert swapped.observe_job(failed_launch(p)) is None
 
 
+def test_watch_guard_refusals_are_not_launch_failures(plane):
+    p, ledger = plane
+    err = ("Watching Phantasy Star Online Episode I & II Plus (USA) in a connected stream or PiP. "
+           "Close that view before loading another game on this PC.")
+    job = failed_launch(p, err=err)
+    assert ledger.observe_job(job) is None
+    assert not p.store.all("request")
+    assert "operator-watch guard" in ledger.skip_reason(job)
+
+
 def test_a_swap_failure_carries_the_launch_it_ran(plane):
     p, ledger = plane
     p.store.put("session", f"{PC}-s1", {"session_id": f"{PC}-s1", "game_id": DOA2, "title": "Dead or Alive 2",
