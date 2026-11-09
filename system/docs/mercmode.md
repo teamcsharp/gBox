@@ -239,3 +239,16 @@ At the next native round end, the head of the queue decides what happens:
 RE4 now picks a random character and stage every round by default. Before this change it
 chose randomly only in MercMode launches; launches with the game's own default always took
 the same character. A launch with `launch.mercmode: false` keeps the old default picks.
+
+### Per-title default build (`default_mods`)
+
+`default_mods` maps a title to one built mod folder that **every** round of that title plays
+with, for example `{"re6": "re6_smash_roster"}` (`POST /api/mercmode` with the PC's `host`).
+`gbox.mercmode.choose` attaches it as the round selection's `mod` (a DJ queue entry's own
+`mod` for that round still wins; a kept-warm `NEXT` pick keeps it too), so the scheduler
+launches or preloads the title with that build without a per-round queue entry. This is how
+RE6's cast roster rides the round rotation: each native character slot in the roster shows a
+different collection character, and the title's own per-round character pick then changes
+the visible character every round (`docs/re6-model-replacement.md`). The field is gated on
+the worker feature `mercmode_default_mods`, so an older worker's stricter tool is never
+sent it.

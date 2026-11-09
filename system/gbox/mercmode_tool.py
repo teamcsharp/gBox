@@ -22,6 +22,8 @@ class MercModeIn(BaseModel):
     skin_swap: Literal['off','random'] | None=None  # random other-character model swap each round (gbox.skin_swap)
     # zombies as cast models and the player in majini clothes each round (gbox.skin_swap.cast_swap_build)
     cast_swap: Literal['off','on'] | None=None
+    # per-title build every round of that title plays with, e.g. {"re6": "re6_smash_roster"} (gbox.mercmode.DEFAULT['default_mods'])
+    default_mods: dict | None=None
     # a dispatch from the app (gbox.mercmode DISPATCH_FEATURE): start / stop / switch this PC's MercMode, its PiP here
     command: Literal['start','stop','switch'] | None=None
     title: Literal['re4','re5','re6','re3','merc3d'] | None=None

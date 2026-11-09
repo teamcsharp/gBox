@@ -10,7 +10,7 @@ test = ["pytest>=8", "psutil>=5.9"]
 browser = ["psutil>=5.9", "playwright>=1.40"] # isolated UI evidence / browser diagnostics
 mcp = ["mcp>=2.3"]                # gbox mcp: Claude Desktop / Claude Code / other agents
 overlay = ["opencv-contrib-python-headless>=4.8"]   # PC venv: overlay swap tracker (clients/desktop/overlay_track.py, CSRT)
-textures = ["ispc_texcomp==1.0.1"]  # optional CPU BC7 encoder for Switch MT Framework TEX replacement
+textures = ["ispc_texcomp==1.0.1", "texture2ddecoder>=1.0.6"]  # optional CPU BC7 encoder / BCn decoder for Switch textures
 
 [project.scripts]
 gbox = "gbox.__main__:main"

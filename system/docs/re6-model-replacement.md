@@ -1,0 +1,183 @@
+# RE6 model replacement: scale-exact fitting, a Smash cast roster, and the round hook
+
+2026-11-09. This continues the RE5 same-table work (`docs/research/re5-same-table-sonic.md`) on Resident Evil 6
+(Xbox 360, Xenia; game id `0871eee3b68cdea3`, title 43430819). The RE5 review showed that the failures reported as
+"the model does not load" were, after the zlib-6 and MRL fixes, mostly **scale and bind-pose** failures: fitting a
+donor into the native bounding box made Sonic 70.9 units tall, and fitting each limb to the native bone lengths
+stretched his proportions (arm/height 0.25 instead of 0.16). RE6's writer had the same second problem. This is the
+port of the fix, plus the cast pipeline that uses it.
+
+## The scale-exact fit (`re6_models.fit_source_proportions`)
+
+RE6's player `.mod` (big-endian, version 0xD3) stores, per bone, a local 4x4, an inverse bind 4x4 and a 24-byte record
+with the rest translation. Vertex positions are quantised against one uniform transform `D` (scale + offset) that is
+folded into every inverse bind: `real = q / 32767 * D`. Animations were authored against that transform, in particular
+the absolute root translations some bones carry, so a new `D` reinterprets every translation channel.
+
+The segment retarget (`pose_mode='segment'`, the earlier path) matched each limb to the native bone lengths and
+clamped the total height into 150..195 cm. Measured on the SA2 Sonic donor against Leon's body (`uPl00LeonUsa.arc`):
+
+| build | decoded height | arm / height | triangle count |
+|---|---|---|---|
+| native Leon body (`pl0000`) | 162.2 cm (bbox -0.29..161.94) | — | — |
+| `pose_mode='segment'` | 212.9 cm | 0.250 | 1369 |
+| `pose_mode='source_proportions'` | 180.0 cm | 0.16153 | 1369 |
+| donor surface (SA2 Sonic) | 10.805 units | 0.16152 | 1369 |
+
+`source_proportions` works the other way round:
+
+1. Scale the donor **uniformly** to the requested height (default 180 cm), centred on the donor hip when available,
+   with its feet on the native floor and its hip above the native root.
+2. Check every position against the native quantisation box (`quantisation_box`): translation is used first; only if
+   the model cannot fit is it reduced uniformly (never stretched).
+3. Move the **native bind joints** to the fitted donor's joint positions (`reposition_bind_pose`): rotations,
+   hierarchy, root and the compression transform stay untouched; intermediate bones on an anchored path are placed by
+   arc-length interpolation so a limb follows two measured joints instead of leaving a gap. Inverse binds are rebuilt
+   from the resulting world matrices with the original `D`.
+4. Bind every vertex rigidly to the bone of its nearest named ancestor (`_role_joint_resolver`), so a donor without a
+   complete skeleton still maps onto the native one; unmapped vertices fall back to the root and are counted.
+
+The result round-trips through the writer and decoder within 0.01 units and stays inside the quantisation box
+(measured q range 0.0100..0.7338 for the 180 cm Sonic). Evidence:
+
+![Sonic fitted with the segment retarget: stretched arms and legs, detached shoes](evidence/re6-scale/sanic-segment-fit.png)
+![Sonic fitted with source proportions: the donor surface is preserved](evidence/re6-scale/sonic-source-proportions.png)
+
+The write path is `re6 op=build_mod character=sonic target=leon scale={"pose": "source_proportions", "height": 180}`
+(the `scale` dict also carries the Retarget editor profile). `re6_models.write_body(..., dequant=...)` keeps the
+measured transform; without it the writer derives a new one, which is correct for the segment path only.
+
+## The cast roster (`gbox/re6_cast.py`) and the round hook
+
+RE6 keeps one body archive per native character: `nativeXenon/arc/X360/uPl00LeonUsa.arc`, `uPl01Helena*`,
+`uPl02Chris*`, `uPl03Piers*`, `uPl04Jake*`, `uPl05Sherry*`, `uPl06Ada*` (+ `uPl00Head*`, `uPl00HandLeft/Right*` for
+the head and hands, which the writer hides, and `uPlTex####_*` for the material textures). The Mercenaries character
+select picks one of those native characters each round, and `gbox.mercs.round_controls.Controls.choose_character`
+already randomises that choice and never repeats a family back to back.
+
+So the roster is one mod that replaces **every** player slot with a different collection character:
+
+```python
+from gbox import re6_cast
+assignment = re6_cast.plan(entries, seed=7)      # {leon: mario, helena: sonic, ...}
+rotation = re6_cast.rotation(assignment)          # [{select_id: 0, native: leon, cast: mario}, ...]
+```
+
+Because each native slot now shows a different cast member, the game's own round rotation shows a different Smash
+character every round **without a relaunch per round**: the archive is loaded at boot, and the round-to-round change
+is the game's native select. `re6 op=cast` builds the roster (all costumes per slot) and `re6 op=cast_status` reports
+the installed assignment; `re6 op=cast_plan` previews it. A DJ round (MercMode `queue[].mod`) can also name the
+roster build explicitly for one round, which is the documented per-round override. To make every round of the title
+boot with the roster, set MercMode's per-title build — `POST /api/mercmode`
+`{"host": "<pc>", "default_mods": {"re6": "re6_smash_roster"}}` (`gbox.mercmode.choose` attaches it to the round
+selection; a DJ entry's own `mod` still wins). `re6 op=cast host=<pc>` returns that patch and, with
+`mercmode_default=true`, applies it.
+
+Measured roster build on the i9-NUC (2026-11-09, `re6_cast.build`, source-proportion fit, 180 cm): the seven SA2 /
+Mario collection characters went into one `re6_smash_roster` mod in 168 s — 217 changed arcs, one per body/head/hand
+and texture archive of every slot:
+
+| select id | native slot | cast member |
+|---|---|---|
+| 0 | Leon | Tails |
+| 1 | Helena | Sonic |
+| 2 | Chris | Shadow |
+| 3 | Piers | Mario |
+| 4 | Jake | Rouge |
+| 5 | Sherry | Amy Rose |
+| 6 | Ada | Knuckles |
+
+![Tails fitted into RE6's Leon slot by the roster build (source proportions)](evidence/re6-scale/roster-tails-as-leon.png)
+
+Honest limits: this is **not** real-time in-memory model swapping. Loading a different body archive mid-round is not
+supported by the engine's resource system, so a *different* build (for example a new cast assignment) still needs a
+relaunch; what rotates per round is the native character, and with it the cast member. The same applies to the PC,
+PS3 and PS4 editions: only the Xbox 360 writer is measured.
+
+## Tools and hooks
+
+| hook | what it does |
+|---|---|
+| `re6 op=capabilities` | lists the writer targets, the two pose modes, the cast slots and the honesty limits |
+| `re6 op=build_mod character=… [target=…] [scale={…}]` | one native character (all costumes) |
+| `re6 op=cast [cast=slug,slug] [seed=N] [height=180] [launch=true]` | the whole roster mod, optionally launched |
+| `re6 op=cast_plan` / `cast_status` | preview the assignment / report the installed one |
+| `re6_cast.plan / rotation / current` | deterministic assignment, select-id mapping, which cast member a round shows |
+| `gbox.mercs.round_controls` | the existing native per-round character rotation the roster rides on |
+| `gbox.re6_tool.build_character` / `build_combined` | the per-target and enemy-family writers (unchanged) |
+
+## Smash Ultimate Sonic inserted into RE6 (measured 2026-11-09)
+
+`gbox.ssbu_arc` reads the base game's `data.arc` (14,460,050,172 bytes) and returns the four model files
+(`model.numdlb` references the geometry in `model.numshb`; `model.nusktb`/`model.numatb` are the skeleton and
+materials) plus the material textures `<name>.nutexb`; the container facts are in the module docstring.
+`gbox.ssbu_models` decodes the SSBH `MODL`/`SKEL`/`MATL`/`MESH` payloads into a skinned glTF (Sonic: 8,294 triangles,
+5,098 vertices, 115 joints, 7 textures, 18/18 body roles), and `roles_from_bones` maps the fighter chain onto the
+collection body roles. The collection entry `sonic_ssbu` ("Sonic (Smash Ultimate)") was registered and the writer
+built `re6_ssbu_sonic` — 27 changed arcs, SSBU Sonic on Leon's slot with the source-proportion fit (10.8 -> 180.0 cm,
+uniform scale 16.66, inside the quantisation box):
+
+![SSBU Sonic fitted into RE6's Leon slot by the source-proportion writer](evidence/re6-scale/ssbu-sonic-as-leon.png)
+
+This is the model-insertion half of the objective: the extracted Smash Ultimate Sonic is what RE6's Leon archive now
+contains. Gameplay verification of this exact build (a live Mercenaries round) is still pending; the image is the
+writer's read-back through the RE6 reader.
+
+## The Brawl cast, one character per costume (measured 2026-11-09)
+
+`gbox.ssbb_models` reads the Brawl fighter PACs (ARC container -> BRRES -> MDL0 v9 + TEX0/PLT0) and extracted
+**all 46 fighter directories** of the operator's own disc (39 playable roster entries plus Giga Bowser, Wario-Man,
+Pokemon Trainer and the four Sandbag props; 313,114 triangles, 60 MB of GLBs, every GLB round-trips through
+`characters.rig_from_gltf`). `roles_from_bones` maps the Brawl `HipN/WaistN/BustN/NeckN/HeadN/...` chain to the
+collection roles. Known role gaps (measured, never invented): Brawl Sonic has no Head bone (15/18), Kirby / Meta
+Knight / Jigglypuff have no neck/head (15/18), Pikachu has no head (17/18), and R.O.B.'s non-standard bone names
+(Bane/Fjiku/Nemoto/DummyLegJCon...) map only 6/18, so it is extracted and registered but stays out of the automatic
+cast until a role map is supplied.
+
+RE6 stores one body archive **per costume** (`uPl00LeonUsa.arc`, `...Asia.arc`, ...), and the Mercenaries character
+select randomises the costume too, so `re6_cast.plan_per_costume` puts a different collection character on **every
+costume of every slot**. The roster `re6_brawl_cast` therefore covers all 44 costume slots with 41 distinct Brawl
+fighters (the 41 with a complete role map; three repeats fill the last slots):
+
+| select id | native slot | costumes (Brawl characters) |
+|---|---|---|
+| 0 | Leon | Kirby, Mr. Game & Watch, Luigi, Giga Bowser, Ivysaur |
+| 1 | Helena | Squirtle, Sheik, Meta Knight, Ganondorf, Lucario, Wario-Man |
+| 2 | Chris | Pit, Sonic, Pikachu, Charizard, Pokemon Trainer, Mario |
+| 3 | Piers | Captain Falcon, Fox, Wolf, Yoshi, Ness, King Dedede, Princess Peach |
+| 4 | Jake | Pikmin & Olimar, Marth, Diddy Kong, Falco, Ike, Lucas, Donkey Kong |
+| 5 | Sherry | Zero Suit Samus, Samus, Wario, Bowser, Link, Solid Snake, Zelda |
+| 6 | Ada | Jigglypuff, Toon Link, Ice Climber (Popo), Kirby, Mr. Game & Watch, Luigi |
+
+With MercMode's per-title build set to `re6_brawl_cast`, every RE6 round boots that mod and the title's own
+character/costume pick shows a different Brawl fighter; `re6 op=cast per_costume=true` rebuilds it with another seed.
+`re6 op=cast_plan per_costume=true` prints the 44-row plan without building.
+
+Measured build (i9-NUC, 2026-11-09, seed 11, source-proportion fit): `re6_brawl_cast` in **256 s** — 217 changed arcs,
+44 costume slots, 41 distinct fighters. The uniform fit lands most fighters at 180.0 cm; a T-posed donor wider than the
+native box is shrunk uniformly (recorded as `height_clamped`), e.g. Diddy Kong at 155.7 cm, Kirby at 176.5 cm — never
+stretched. Previews of three slots:
+
+| Pit as Chris (Europe) | Diddy Kong as Jake (Monitor) | Jigglypuff as Ada (A) |
+|---|---|---|
+| ![Pit](evidence/re6-scale/brawl-pit-as-chris.png) | ![Diddy](evidence/re6-scale/brawl-diddy-as-jake.png) | ![Jigglypuff](evidence/re6-scale/brawl-jigglypuff-as-ada.png) |
+
+(The preview is the repo's painter's-order rasteriser, so dense overlapping meshes like Kirby's body and face show
+some mottling; the geometry and textures are the game's own.)
+
+## What is not done yet
+
+- **Gameplay verification of the source-proportion builds.** The offline read-back and previews are checked for every
+  donor; the two live Mercenaries frames for Mario-as-Leon predate this fit and do not verify it. Neither
+  `re6_ssbu_sonic` nor `re6_brawl_cast` has been captured in a live round yet.
+- **R.O.B.** is extracted and registered but its non-standard bone names map only 6/18 roles, so it is left out of the
+  automatic cast until a role map is supplied. Brawl Sonic (no Head bone) and Kirby / Meta Knight / Jigglypuff (no
+  neck/head) keep their mapped roles; their head geometry binds to the nearest named ancestor.
+- **SSBU texture payload**: the GLBs carry 512x512 BC7 textures with full mip chains (Link's is 12.6 MB); shrinking
+  them to the 1024² atlas the RE6 writer uses would make a full SSBU roster practical. Three SSBU eye/base textures
+  have no entry in the base-game archive and fall back to a material colour (documented by the extractor).
+- **Multi-weight skinning**: the writer binds rigidly (one bone per vertex), which is why live limbs deform rigidly.
+  `mtf_retarget.map_weights` already produces up to four influences and the RE6 vertex format carries four; only the
+  author path is missing.
+- **Animation retargeting**: RE6's `.lmt` motions are native; donors reuse RE6's animations (rigid bind), not their
+  own.
