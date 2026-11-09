@@ -165,6 +165,14 @@ Object archives skipped: `uOm070d.arc` (no object model of the archive binds a B
 
 Rebuild check: a second independent run (C:\_tools\gBox\.scratch-merc-recovery\stage\rebuild-check) gave the same SHA-256 for every file.
 
+The set: 76 files, 334,045,978 bytes (the sources are 536,924,607 bytes of stages plus 92 MB of objects; grids
+compress far better than photographs, and every uncompressed size and tag is unchanged). The crate `uOm0889.arc` is
+`c98e7fb07a8e14b3a838d46c1834715d4d8a1c1abba48ed110a4591646255e98` (1,476,152 bytes): its boxed MOD payload
+`5a96568e…` is the one in `prop-box-crate-v1`, and its two albedos now carry the metre corner tag. The s400 archive
+has v1's (`f26d2836…`) 159 albedos with the same variants, cells and label texts; the labels are now pasted from
+their own glyph image (so they can be flipped or turned), which changes their anti-aliased pixels, so only 9 of the
+159 payloads are byte-identical to v1's (measured against the v1 receipt).
+
 Pictures: `sNNN-textures.png` (every written albedo of the stage, mip 0), `sNNN-view.png` (the stage from above,
 orthographic, the written albedos on the native LOD-0 geometry, flat shade, 120,000 triangles at most - not the
 game's lighting), `objects-textures.png` (every written object albedo), and `s400-headon-<texture>.png` (four s400 walls seen
