@@ -29,6 +29,19 @@ def test_body_arcs_cover_the_nine_slots_and_costumes():
     assert len(bodies) >= 40
     assert bodies[("leon", "Usa")].name == "uPl00LeonUsa.arc"
     assert bodies[("leon", "Omake00")].name == "uPl00LeonOmake00.arc"
+    # head/hand/accessory-head/texture archives are never body arcs, whatever the character number
+    assert not any("head" in path.name.lower() or "hand" in path.name.lower() or "tex" in path.name.lower()
+                   for path in bodies.values())
+
+
+@needs_romfs
+def test_every_native_body_slot_maps_the_measured_roles():
+    buildable = S.buildable_slots(ROMFS)
+    assert len(buildable) == len(S.body_arcs(ROMFS))
+    for slot, path in buildable.items():
+        model = _model(path.read_bytes())
+        roles = S.roles_for(model)
+        assert len(roles) == 18, slot
 
 
 @needs_romfs

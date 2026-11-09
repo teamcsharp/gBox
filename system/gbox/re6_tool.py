@@ -31,6 +31,9 @@ ops (live ones need session_id of a running RE6 session):
                               per_costume=true: up to 44 characters in one mod); the game's own Mercenaries character
                               and costume randomisation then rotates the cast every round (cast_plan previews,
                               cast_status reads an installed roster)
+  switch_cast                 RE6 **Switch** roster: a Smash donor on every native body slot, written as a LayeredFS
+                              overlay from the extracted RomFS (switch_cast_plan previews the assignment,
+                              switch_cast_status reads an installed build; romfs= overrides the RomFS root)
   mods                        RE6 mods built on this node
 """
 from __future__ import annotations
@@ -174,7 +177,7 @@ def cast_slots(game: dict | None = None) -> list[dict]:
 
 def character_capabilities() -> dict:
     """Static writer capabilities, without starting a watcher or inspecting a running game."""
-    from . import re6_models as M
+    from . import re6_models as M, re6_switch_models as SM, re6_switch_cast as SC
     return {"game_id": re6.GAME_ID, "platform": "xbox360", "backend": "xenia", "host_os": "windows",
             "character_replacement": {"build_mod": True, "relaunch": True, "requires_relaunch": True,
                                       "realtime": False, "active_target_detection": False,
@@ -190,9 +193,20 @@ def character_capabilities() -> dict:
                                                       "per_round_relaunch": False},
                                       "targets": [{"id": k, "name": v["name"], "costumes": list(v["costumes"])}
                                                   for k, v in M.CHARACTERS.items()]},
+            "switch_replacement": {"game_id": SM.GAME_ID, "title_id": SM.TITLE_ID, "platform": "switch",
+                                   "writer": "gbox.re6_switch_models.build_body",
+                                   "roster": {"planner": "gbox.re6_switch_cast.plan", "op": "switch_cast",
+                                              "slots": 51, "per_round_relaunch": False,
+                                              "rotation": "the game's own character/costume select"},
+                                   "binding": "rigid geometry on the native MTF skeleton; head/hands blanked",
+                                   "textures": "native material kept; the uPlTex####_*.arc step is not written yet",
+                                   "live_verified": False},
             "unsupported_platforms": ["pc", "ps3", "ps4"],
-            "limitations": ["Requires an extracted Xbox 360 disc and a donor with body roles.",
-                            "The selected native character must be chosen in game after launching the mod.",
+            "limitations": ["The Xbox 360 writer needs an extracted disc; the deliverable is the Switch edition "
+                            "(switch_cast, re6_switch_models).",
+                            "Xbox 360: the selected native character must be chosen in game after launching the mod.",
+                            "Switch: donor textures are not written yet; the native material samples its own uPlTex "
+                            "textures.",
                             "No writer for the native PC, PS3 or PS4 edition; no realtime body replacement.",
                             "A successful build does not verify its appearance or animations in gameplay."]}
 
@@ -277,6 +291,51 @@ def build_character(ctx, meta: dict, target: str = "leon", costume: str = "", pr
     return res | {"target": target, "costumes": costumes, "requires_relaunch": True, "realtime": False,
                   "fit_key": _fit_key(meta), "triangles": report[0]["triangles"],
                   "hidden": report[0]["hidden_parts"], "notes": sorted({n for r in report for n in r["notes"]}), "preview": prev}
+
+
+def _switch_romfs(ctx, inp) -> Path:
+    """The extracted RE6 Switch RomFS: the explicit argument, then the switch skin-swap root, then Eden's dump."""
+    from . import re6_switch_models as M, skin_swap, switch_mods
+    if getattr(inp, "romfs", ""):
+        root = Path(inp.romfs)
+        if not (root / M.ARCHIVE_DIR).is_dir():
+            raise ValueError(f"{root} has no {M.ARCHIVE_DIR}")
+        return root
+    root = skin_swap.romfs_root(M.TITLE_ID)
+    if root is not None:
+        return root
+    base = switch_mods.base_romfs(ctx.config, M.TITLE_ID)
+    if base is not None:
+        return base
+    raise Unsupported("no extracted RE6 Switch RomFS on this node: pass romfs=<the RomFS root that holds "
+                      "nativeNXx64/arc/NX>")
+
+
+def switch_cast_op(ctx, inp) -> dict:
+    """Plan, build or report the RE6 **Switch** roster (`switch_cast` / `switch_cast_plan` / `switch_cast_status`)."""
+    from . import characters as C, re6_switch_cast as R
+    name = inp.name or R.DEFAULT_NAME
+    if inp.op == "switch_cast_status":
+        return R.status(ctx.config, name)
+    romfs = _switch_romfs(ctx, inp)
+    library = Path(inp.library) if getattr(inp, "library", "") else C.library_root(ctx.config)
+    pool = R.donor_pool(library)
+    slots = []
+    for value in getattr(inp, "slots", []) or []:
+        text = str(value)
+        if "/" not in text:
+            raise ValueError(f"slot {text!r} is not character/costume")
+        character, costume = text.split("/", 1)
+        slots.append((character.strip().lower(), costume.strip()))
+    assignment = R.plan(romfs, pool, seed=int(inp.seed or 7), slots=slots or None)
+    rows = [{"slot": f"{character}/{costume}", "donor": meta["slug"], "name": meta["name"]}
+            for (character, costume), meta in sorted(assignment.items())]
+    if inp.op == "switch_cast_plan":
+        return {"romfs": str(romfs), "slots": len(rows), "assignment": rows,
+                "message": "the round's native character/costume selects the donor (one LayeredFS build)"}
+    built = R.build(ctx.config, romfs, library, assignment, name=name, height=float(inp.height or 180.0),
+                    progress=ctx.progress)
+    return built
 
 
 def cast_op(ctx, inp) -> dict:
@@ -1315,6 +1374,9 @@ class Re6In(BaseModel):
     host: str = ""              # cast: the PC whose MercMode should play every RE6 round with the roster
     mercmode_default: bool = False   # cast: set default_mods.re6 on that PC's MercMode
     per_costume: bool = False   # cast: a different character on every costume of every slot (one mod, ~44 cast members)
+    romfs: str = ""             # switch_cast: the extracted RE6 Switch RomFS (nativeNXx64/arc/NX)
+    library: str = ""           # switch_cast: the character library root (default: this node's library)
+    slots: list = []            # switch_cast: only these slots, "character/costume" (default: every native body slot)
 
 
 class Re6Out(BaseModel):
@@ -1380,6 +1442,8 @@ def re6_tool(inp: Re6In, ctx):
         return {"result": build_character(ctx, meta, inp.target, inp.costume, ctx.progress, scale=inp.scale)}
     if op in ("cast", "cast_plan", "cast_status"):
         return {"result": cast_op(ctx, inp)}
+    if op in ("switch_cast", "switch_cast_plan", "switch_cast_status"):
+        return {"result": switch_cast_op(ctx, inp)}
     if op == "loadout_set":
         op = "set_loadout"
     if op == "weapon_classes":

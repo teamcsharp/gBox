@@ -25,6 +25,15 @@ on the native 54-bone skeleton with the original parent list. A z-buffered rende
 
 ![SSBU Sonic authored onto the RE6 Switch Leon body](evidence/re6-scale/switch-sonic-on-leon.png)
 
+The role ids are the same family **on every character**, but the bone *order* differs (Helena's head is index 13, Ada's
+left clavicle 22), so `roles_for` always resolves them from the anim ids instead of hard-coding indices. The
+`gbox.re6_switch_models.body_arcs` scan finds **51 native body slots** (9 characters including Carla and the helper,
+every costume; `uPl01AcHeadHelenaAsia.arc`-style head/hand/accessory/texture archives are excluded) and every one maps
+the 18 roles. The roster planner (`gbox.re6_switch_cast.plan`) puts a distinct library donor on each slot and
+`gbox.re6_switch_cast.build` authors them all into one overlay, so the game's own per-round character/costume select
+rotates the cast — `re6 op=switch_cast_plan` previews it, `re6 op=switch_cast` builds it, `re6 op=switch_cast_status`
+reads it.
+
 The only remaining Switch gap is **donor textures**: RE6's body MRL has no embedded texture table (`uPlTex*.arc`
 hold them), so the first port replaces geometry and the native material still samples its own textures. Patching the
 `uPlTex` entries (or the MRL v36 bindings) is the next step, as is a live round on the console/Eden.

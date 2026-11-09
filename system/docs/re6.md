@@ -51,6 +51,18 @@ a relaunch, and only the Xbox 360 edition has a writer. The Smash donors come fr
 `data.arc`, Sonic inserted as `re6_ssbu_sonic`) and `gbox.ssbb_models` (all 46 Brawl fighter dirs). Full details,
 measured numbers and the remaining work: `docs/re6-model-replacement.md`.
 
+### The deliverable is the Switch edition
+
+The Xbox 360 route above is the earlier edition. The target is **RE6 on Switch** (`01002A000CD48000`, gBox game id
+`115f9cdbba115432`), whose native bodies are MTF resources under `nativeNXx64/arc/NX` (`uPl00LeonUsa.arc`, one per
+character and costume, 51 body slots measured). `gbox/re6_switch_models.py` authors a donor surface onto the native
+54-bone MTF skeleton (same source-proportions fit, roles resolved from the RE6 bone ids in the bone headers), blanks
+the native head/hands/accessory-head arcs, and `gbox/re6_switch_cast.py` fills every slot with a distinct library
+donor and writes one LayeredFS overlay (`re6 op=switch_cast_plan|switch_cast|switch_cast_status`). Measured: SSBU
+Sonic on all six Leon costumes in 53 s, 30 overlay files; the full 51-slot roster is built the same way. Donor
+textures are not written yet: RE6 keeps them in `uPlTex####_*.arc`, so the native material still samples its own
+textures until that step lands.
+
 ## Boot profile "RE6: Everything unlocked" (default for every RE6 launch through gBox)
 
 Two saved switches (`GET/POST /api/re6/settings`, both **on** by default; tool ops `everything_unlocked on=` /

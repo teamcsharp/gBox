@@ -32,7 +32,13 @@ TITLE_ID = "01002A000CD48000"
 GAME_ID = "115f9cdbba115432"
 BODY_RE = re.compile(r"^uPl([0-9A-Fa-f]{2})(?P<name>[A-Za-z]+)(?P<costume>[A-Za-z0-9]+)\.arc$",
                      re.IGNORECASE)
-PART_PREFIX = ("uPl00Head", "uPl00Hand", "uPl00AcHead")
+PART_MARKERS = ("achead", "head", "hand", "tex")
+
+
+def _is_part_archive(stem: str) -> bool:
+    """Head / hand / accessory-head / texture archives are not body arcs (whatever the character's number)."""
+    lower = stem.lower()
+    return any(marker in lower for marker in PART_MARKERS)
 
 #: RE6 global bone ids (the anim id in the MTF bone header). Identical ids on the Xbox 360 edition (re6_models).
 ROLE_IDS = {"hip": 1, "chest": 2, "neck": 3, "head": 4,
@@ -77,7 +83,7 @@ def body_arcs(root: Path) -> dict[tuple[str, str], Path]:
         costumes = sorted(list(CHARACTERS[character]["costumes"]) + ["DebugId"], key=len, reverse=True)
         for path in sorted(archive_root(root).glob(f"uPl{prefix}*.arc")):
             stem = path.stem
-            if "tex" in stem.lower() or path.name.startswith(PART_PREFIX):
+            if _is_part_archive(stem):
                 continue
             suffix = stem[6:]                      # after "uPlXX"
             costume = next((c for c in costumes if suffix.lower().endswith(c.lower())), None)
@@ -143,6 +149,64 @@ def _source_rig(source: Path, roles: dict[str, str]):
     return gltf, names, parents, joints
 
 
+def _source_geometry(source: Path):
+    """The donor's body surface: merged vertices (position, normal, uv, source influences) and triangles.
+
+    Unlike `mtf_materials.source_mesh` this does not pack textures: an RE6 body MOD has no texture table (the
+    player's textures live in `uPlTex####_*.arc`), so only geometry and UVs are needed here. Source joint indices are
+    the glTF node indices, the same space `mtf_retarget.map_weights` walks with `parents`.
+    """
+    from . import characters
+
+    gltf, acc, _image, _world = characters._load(Path(source))
+    vertices, triangles = [], []
+    for node in gltf.get("nodes", []):
+        if "mesh" not in node:
+            continue
+        skin = gltf["skins"][node["skin"]] if "skin" in node and "skins" in gltf else None
+        joint_nodes = skin["joints"] if skin else None
+        for prim in gltf["meshes"][node["mesh"]].get("primitives", []):
+            attributes = prim["attributes"]
+            positions = acc(attributes["POSITION"]).astype(float)
+            normals = acc(attributes["NORMAL"]).astype(float) if "NORMAL" in attributes else np.tile([0, 1.0, 0],
+                                                                                                   (len(positions), 1))
+            uvs = acc(attributes["TEXCOORD_0"]).astype(float) if "TEXCOORD_0" in attributes else np.zeros((len(positions), 2))
+            joints = acc(attributes["JOINTS_0"]).astype(int) if "JOINTS_0" in attributes else None
+            weights = acc(attributes["WEIGHTS_0"]).astype(float) if "WEIGHTS_0" in attributes else None
+            base = len(vertices)
+            for index in range(len(positions)):
+                influences = []
+                if joints is not None and weights is not None:
+                    for slot, weight in zip(joints[index], weights[index]):
+                        if weight <= 0 or not np.isfinite(weight):
+                            continue
+                        joint = int(joint_nodes[int(slot)]) if joint_nodes is not None else int(slot)
+                        influences.append((joint, float(weight)))
+                total = sum(weight for _joint, weight in influences)
+                if total > 0:
+                    influences = [(joint, weight / total) for joint, weight in influences]
+                normal = np.asarray(normals[index], float)
+                length = float(np.linalg.norm(normal))
+                if not np.all(np.isfinite(normal)) or length < 1e-8:
+                    normal = np.array([0.0, 1.0, 0.0])       # a degenerate donor normal must not abort the author
+                else:
+                    normal = normal / length
+                position = np.asarray(positions[index], float)
+                if not np.all(np.isfinite(position)):
+                    position = np.zeros(3)
+                uv = np.asarray(uvs[index], float)
+                if not np.all(np.isfinite(uv)):
+                    uv = np.zeros(2)
+                vertices.append({"position": tuple(position), "normal": tuple(normal),
+                                 "uv": tuple(uv), "source_joints": [j for j, _ in influences],
+                                 "source_weights": [w for _, w in influences]})
+            for triangle in acc(prim["indices"]).reshape(-1, 3):
+                triangles.append(tuple(int(i) + base for i in triangle))
+    if not vertices or not triangles:
+        raise SwitchModelError(f"{source} has no body geometry")
+    return vertices, triangles
+
+
 def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], height: float = 180.0,
                material_index: int = 0, template_index: int = 0, margin: float = 0.01,
                atlas_size=(512, 512)) -> tuple[bytes, dict]:
@@ -162,7 +226,7 @@ def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], he
         raise SwitchModelError(f"the donor needs a '{ROOT_ROLE}' joint (the native root bone is the hip)")
     from . import characters
 
-    vertices, triangles, atlas, appearance = mtf_materials.source_mesh(Path(source), atlas_size=atlas_size)
+    vertices, triangles = _source_geometry(Path(source))
     gltf, names, parents, joints = _source_rig(Path(source), source_roles)
     roles_map = {role: (names[name], roles[role]) for role, name in source_roles.items() if role in roles}
     missing = [role for role in REQUIRED if role not in roles_map]
@@ -215,6 +279,26 @@ def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], he
     anchors = {target: tuple((np.asarray(joints[source_joint], float) - origin) * scale + translate)
                for source_joint, target in roles_map.values() if target != 0}
     model, bind = mtf_retarget.reposition_bind_pose(model, anchors)
+    # Every source influence must walk to a named role; unmapped root/finger influences fall back to the hip role.
+    source_anchors = {source_joint for source_joint, _target in roles_map.values()}
+
+    def reaches_anchor(joint: int) -> bool:
+        current, seen = joint, set()
+        while current not in source_anchors:
+            if current in seen or current not in parents:
+                return False
+            seen.add(current)
+            current = parents[current]
+        return True
+
+    for vertex in fitted:
+        keep = [(joint, weight) for joint, weight in zip(vertex.get("source_joints", ()),
+                                                        vertex.get("source_weights", ())) if reaches_anchor(joint)]
+        if not keep:
+            keep = [(roles_map[ROOT_ROLE][0], 1.0)]
+        total = sum(weight for _joint, weight in keep)
+        vertex["source_joints"] = [joint for joint, _weight in keep]
+        vertex["source_weights"] = [weight / total for _joint, weight in keep]
     fitted, skin = mtf_retarget.map_weights(fitted, parents, roles_map)
     authored = mtf_author.build_one_mesh(model, fitted, triangles, material_index=material_index,
                                         template_index=template_index, four_weights=True)
@@ -236,6 +320,23 @@ def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], he
     import hashlib
     receipt["archive_sha256"] = hashlib.sha256(payload).hexdigest()
     return payload, receipt
+
+
+def buildable_slots(romfs: Path) -> dict[tuple[str, str], Path]:
+    """Only the body slots whose skeleton carries the measured 18-role humanoid layout.
+
+    The extracted tree also contains non-humanoid bodies (the helper/creature slots and some debug costumes) whose
+    bone ids are a different family; they are skipped instead of failing the roster.
+    """
+    out: dict[tuple[str, str], Path] = {}
+    for slot, path in body_arcs(romfs).items():
+        try:
+            _, _, mod_raw = _find_model(mt_arc.parse(path.read_bytes()))
+            roles_for(mt_model.parse_mod(mod_raw))
+        except (SwitchModelError, mt_model.ModelError, mt_arc.ArcError):
+            continue
+        out[slot] = path
+    return out
 
 
 def part_stems(body: Path) -> list[str]:
