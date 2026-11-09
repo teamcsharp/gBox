@@ -1546,7 +1546,7 @@ class Screensaver:
             elif head and head['title'] == run['mercmode']['title']:
                 # the DJ queued this same game next: no relaunch, the running bot takes the selection at its menus
                 rotate = False
-                selection = mercmode.resolve_selection(head, self.rng)
+                selection = mercmode.resolve_selection(head, self.rng, cfg)
                 spec = mercmode.selection_job(head['title'], run['session_id'], selection)
                 if spec:
                     from .server import JobRequest

@@ -1801,3 +1801,32 @@ def test_the_savers_log_sink_never_raises_even_without_a_store():
     saver = object.__new__(S.Screensaver)
     saver.store = NoStore()
     saver.log('cast_swap_built', build='x')          # a log sink must never break a tick
+
+
+def test_dj_queue_takes_the_switch_no_mercy_roster_when_re5_means_switch():
+    """2026-11-09: the queue validator knew only the PS3 rosters, so the RE5 Switch No Mercy select's own entries -
+    Josh (BSAA), Barry (STARS), Rebecca (STARS) - were refused and Excella was only in 'reunion'. With the host's RE5
+    edition the Switch, the Switch roster is RE5's first mode (no_mercy) and a random mode is no_mercy; the PS3 rosters
+    stay valid so a queue saved before still reads. The SS campaign planner's entries are accepted as they come."""
+    from gbox import re_switch
+    from gbox.mercs import ss_ledger
+    from gbox.mercs.titles import re5_switch
+    store,w,*_=rig()
+    page2=[{'title':'re5','mode':'no_mercy','character':c,'stage':i} for i,c in
+           enumerate(('Josh (BSAA)','Barry (STARS)','Rebecca (STARS)','Excella'))]
+    with pytest.raises(ValueError):                                   # RE5 PS3: not on its rosters
+        M.configure(store,w['name'],{'queue':page2[:1]})
+    pref={'re5':dict(re_switch.EDITIONS['re5'])}
+    cfg=M.configure(store,w['name'],{'preferred_editions':pref,'queue':page2+[{'title':'re5','character':'Barry (STARS)'},
+                                                                          {'title':'re5','mode':'reunion','character':'Barry'}]})
+    assert [e['character'] for e in cfg['queue']][:4]==['Josh (BSAA)','Barry (STARS)','Rebecca (STARS)','Excella']
+    assert M.catalog(cfg)['re5']['modes']['no_mercy']==list(re5_switch.CHARACTERS) and len(re5_switch.CHARACTERS)==14
+    assert list(M.catalog(cfg)['re5']['modes'])[0]=='no_mercy' and M.catalog()['re5'].get('default_mode') is None
+    sel=M.resolve_selection({'title':'re5','mode':None,'character':None,'stage':None},random.Random(4),cfg)
+    assert sel['mode']=='no_mercy' and sel['character'] in re5_switch.CHARACTERS
+    assert M.resolve_selection(cfg['queue'][4],random.Random(1),cfg)['mode']=='no_mercy'   # Barry (STARS): Switch's
+    with pytest.raises(ValueError):
+        M.configure(store,w['name'],{'queue':[{'title':'re5','mode':'no_mercy','character':'Chris (Heavy Metal)'}]})
+    plan=ss_ledger.plan_queue({},build='re5_stock')
+    cfg=M.configure(store,w['name'],{'queue':plan,'repeat_queue':True})
+    assert len(cfg['queue'])==len(plan)==M.QUEUE_MAX and all(e['mod']=='re5_stock' for e in cfg['queue'])
