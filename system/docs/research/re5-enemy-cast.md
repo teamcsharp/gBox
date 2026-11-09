@@ -71,6 +71,9 @@ model: `em1001` and `em1101` are not what Mercenaries draws. For `uEm11` that is
 
 ### The other Majini classes, measured but not built
 
+*Superseded 2026-11-09 by [re5-cast-variety.md](re5-cast-variety.md): all four classes now have reviewed tables,
+mix carriers and overlays, and `uEm10` carries sixteen donors instead of ten. The rows below are the state before.*
+
 Copied and measured the same way (`uEm12`, `uEm13`, `uEm14`, `uEm21`; 118 MB). All four share the `em10` motion set
 and have a native record in the donor's vertex format.
 

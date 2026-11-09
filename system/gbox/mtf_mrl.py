@@ -113,6 +113,12 @@ def inspect_bindings(mrl: bytes, model: bytes | mt_model.ModFile) -> list[dict]:
     return found
 
 
+def _is_albedo_name(path: str) -> bool:
+    """A native albedo slot: `..._BM`, or `..._BM_NN` as the giant Majini's `em2400_BM_01` is named."""
+    name = path.replace('/', '\\').rsplit('\\', 1)[-1]
+    return name.endswith('_BM') or (name.rsplit('_', 1)[0].endswith('_BM') and name.rsplit('_', 1)[-1].isdigit())
+
+
 def bind_albedo(mrl: bytes, model: bytes | mt_model.ModFile, material_indices, texture_path: str):
     """Point selected materials' existing albedo command at an existing native BM slot.
 
@@ -125,7 +131,7 @@ def bind_albedo(mrl: bytes, model: bytes | mt_model.ModFile, material_indices, t
     table, records = parse(mrl), inspect_bindings(mrl, model)
     texture_path = texture_path.replace('/', '\\')
     matches = [i for i, path in enumerate(table['textures']) if path == texture_path]
-    if len(matches) != 1 or not texture_path.endswith('_BM'):
+    if len(matches) != 1 or not _is_albedo_name(texture_path):
         raise MaterialBindingError('atlas target must name one existing native BM texture slot')
     texture_index = matches[0]
     edits = []
@@ -134,7 +140,7 @@ def bind_albedo(mrl: bytes, model: bytes | mt_model.ModFile, material_indices, t
             raise MaterialBindingError('selected MOD material index is outside the model')
         record = records[index]
         albedo = [binding for binding in record['bindings'] if binding['shader_hash'] == ALBEDO_HASH]
-        if len(albedo) != 1 or not albedo[0]['path'].endswith('_BM'):
+        if len(albedo) != 1 or not _is_albedo_name(albedo[0]['path']):
             raise MaterialBindingError('selected material does not have one measured native albedo BM binding')
         edits.append((index, albedo[0]))
     result = bytearray(mrl)

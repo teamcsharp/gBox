@@ -111,6 +111,15 @@ def _sheva_base(mod: int, mrl: int, drawn: str) -> SlotModel:
 #: costume an archive holds was read from its own model: the body was decoded and drawn with its native textures.
 #: A costume archive holds the base body `pl0000` / `pl0100` byte for byte beside the costume's model.
 #:
+#: Which ARCHIVE each roster label loads is a separate fact, and both costume pairs are crossed against the file names:
+#: - Chris: seen live 2026-11-09 (session 0a61e625f9d844d6-3ddd04616ed846de, build recovery-cast-pool-03-chris-test):
+#:   the queue entry "Chris (Safari)" drew the donor that cast pool 03 had written into uPl00ChrisCos2.arc (Ryo, its
+#:   "STARS" row). So the roster's Safari loads Cos2 and its STARS loads Cos1, whatever the decoded costume models show
+#:   (Cos1 holds the patterned shirt, Cos2 the green vest; the game's own menu labels were not read).
+#: - Sheva: read offline from the archives: Cos1 holds the tribal outfit and Cos2 the club outfit, so Tribal loads Cos1
+#:   and Clubbin loads Cos2. Not yet seen live.
+#: The `costume` field keeps what the archive's model shows; `label` is the roster entry the bot selects to load it.
+#:
 #: The atlas material of each model is the native material with the measured standard shader (`STANDARD_STATE`,
 #: `STANDARD_COMMANDS_SHA256`) and its own BC7 albedo, BC5 normal and BC4 mask whose shader constants are nearest to
 #: Chris's Gear material, the larger albedo and then the larger near-LOD use breaking ties. The base Chris body is
@@ -119,18 +128,20 @@ SLOTS = {slot.key: slot for slot in (
     Slot('chris_bsaa', 'Chris (BSAA)', 'uPl00ChrisNormal',
          '8ab0dc181d1f6ec155e193c5820d1756d877acf711424863b16f7850b592f6c8', 327,
          (_chris_base(97, 87, 'body'),), 'BSAA tactical gear'),
-    Slot('chris_safari', 'Chris (Safari)', 'uPl00ChrisCos1',
-         'fa3f0a85ca2c8c99546161871536f67e251108e6509dd2edce61dd9e40d53676', 365,
-         (SlotModel(_PL10 + 'pl0000', 140, 129, 'Knife.tuka_004_LOD0_M4.polymsh.cls.otherPolygons.XfB_N__E6',
-                    (118, _PL10 + 'pl1000_17Knife_BM'), (117, _PL10 + 'pl1000_17Knife_NM'),
-                    (119, _PL10 + 'pl1000_17Knife_MM'), 'costume body'),
-          _chris_base(134, 123, 'base body')), 'open short-sleeved patterned shirt over a black top'),
-    Slot('chris_stars', 'Chris (STARS)', 'uPl00ChrisCos2',
+    Slot('chris_safari', 'Chris (Safari)', 'uPl00ChrisCos2',
          '4df4a987b59761cba76025c72b4129c05c78fcc1555926714ff769beb88e7e7b', 365,
          (SlotModel(_PL11 + 'pl1100', 140, 129, 'Pl0001Head.Head_002_LOD0_M7.polymsh.cls.otherPolygons.XfB_N__E2',
                     (85, _PL11 + 'pl00Face_BM'), (84, _PL11 + 'pl00Face_NM'), (86, _PL11 + 'pl00Face_MM'),
                     'costume body'),
-          _chris_base(134, 123, 'base body')), 'green S.T.A.R.S. vest over a white shirt'),
+          _chris_base(134, 123, 'base body')),
+         'green S.T.A.R.S. vest over a white shirt (the Cos2 model; the roster entry "Chris (Safari)" loaded it live)'),
+    Slot('chris_stars', 'Chris (STARS)', 'uPl00ChrisCos1',
+         'fa3f0a85ca2c8c99546161871536f67e251108e6509dd2edce61dd9e40d53676', 365,
+         (SlotModel(_PL10 + 'pl0000', 140, 129, 'Knife.tuka_004_LOD0_M4.polymsh.cls.otherPolygons.XfB_N__E6',
+                    (118, _PL10 + 'pl1000_17Knife_BM'), (117, _PL10 + 'pl1000_17Knife_NM'),
+                    (119, _PL10 + 'pl1000_17Knife_MM'), 'costume body'),
+          _chris_base(134, 123, 'base body')),
+         'open short-sleeved patterned shirt over a black top (the Cos1 model; inferred from the Safari observation)'),
     Slot('sheva_bsaa', 'Sheva (BSAA)', 'uPl01ShebaNormal',
          '77e9ede6a6bf84d74fa487acaca77624e503377c2910d1af62dda0b7f914957e', 332,
          (_sheva_base(92, 78, 'body'),), 'purple top, BSAA gear'),
@@ -147,6 +158,13 @@ SLOTS = {slot.key: slot for slot in (
                     'costume body'),
           _sheva_base(124, 109, 'base body')), 'leopard-print top, red loincloth, tooth necklace'),
 )}
+#: Label -> archive stem, the table the live observation corrected (roster label on the left, file on the right).
+LABEL_ARCHIVES = {slot.label: slot.player_class for slot in SLOTS.values()}
+#: What was seen for each crossing: 'live' (a session drew a donor written to that archive under that roster label)
+#: or 'offline' (the archive's own model was decoded; the roster has not been watched loading it).
+LABEL_EVIDENCE = {'Chris (Safari)': 'live', 'Chris (STARS)': 'live (the other half of the same crossing)',
+                  'Sheva (Clubbin)': 'offline', 'Sheva (Tribal)': 'offline',
+                  'Chris (BSAA)': 'live (Sonic v15 and cast pool 03)', 'Sheva (BSAA)': 'offline'}
 
 
 def slot_for(archive: bytes) -> Slot:

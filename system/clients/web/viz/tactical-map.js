@@ -76,9 +76,11 @@
     out.clock = clockText(c.left);
     if (c.combo) out.combo = `×${c.combo}` + (c.combo_left > 0 ? ` · ${c.combo_left.toFixed(1)} s` : "");
     if (c.score != null) out.score = `${c.score.toLocaleString("en-US")} pts` + (c.kills != null ? ` · ${c.kills} kills` : "");
-    const nb = plan.nearest_bonus;
+    const nb = plan.nearest_bonus && { ...plan.nearest_bonus };
+    if (["unavailable", "unknown"].includes(nb?.path)) nb.eta_s = null;
     if (nb && (nb.dist != null || nb.eta_s != null)) {
-      out.nearest = [bonusName(nb.kind), metres(nb.dist, units),
+      out.nearest = [bonusName(nb.kind), metres(nb.dist, units) + (nb.distance_kind === "direct" ? " direct" : ""),
+                     nb.path === "unavailable" ? "path unavailable" : nb.path === "unknown" ? "path unknown" : "",
                      nb.eta_s != null ? `${nb.est ? "~" : ""}${nb.eta_s.toFixed(1)} s` : ""].filter(Boolean).join(" · ");
     }
     const t = plan.target;
@@ -95,6 +97,22 @@
   }
 
   // ---- the view (pure) ----
+  function geometryText(f, st, failed = false) {
+    if (!f) return "";
+    const native = st && st.kind === "mesh" && st.key === f.stage && st.units === f.units;
+    let text = native ? `${st.name ? st.name + ': ' : ''}Walkable floor and boundaries: ${Math.floor(st.tris.length / 3)} triangles`
+      : f.stage ? failed ? "Level geometry could not be loaded; retrying" : "Loading level geometry"
+      : "Level geometry unavailable: walls, floors and connections are unknown";
+    if (f.navigation?.source === "learned_grid") {
+      text += ". Cyan cells = walked; red crosses = stalled. Observations combine floors";
+      if (f.plan?.route_source === "learned_grid") text += ". Dashed route assumes unknown space is passable";
+      if (f.navigation.truncated) text += ". Nearest 256 observations shown";
+    }
+    if (f.plan?.route_source === "native_navmesh") text += f.plan.route_requires_prompt
+      ? ". Native route: crossings require the game's prompt" : ". Route follows the native floor mesh";
+    return text;
+  }
+
   function stageBounds(st) {
     const b = st && st.bounds;
     return Array.isArray(b) && b.length === 4 ? b : null;
@@ -103,7 +121,14 @@
   function want(f, st, o = {}) {
     const units = f?.units || st?.units || "cm", p = f?.player, m = perM(units), zoom = o.zoom || 1;
     const rot = o.headingUp && p && p.facing != null ? Math.atan2(VIEW.x * Math.sin(p.facing), VIEW.z * Math.cos(p.facing)) : 0;
-    const b = stageBounds(st);
+    let b = stageBounds(st);
+    if (!b && f?.navigation?.source === "learned_grid") {
+      const pts = [...(f.navigation.walked || []), ...(f.navigation.stalled || []),
+        ...(f.plan?.trail || []).map(p => [p[0], p[2]]), ...(f.bonuses || []).map(b => [b.pos[0], b.pos[2]])];
+      if (p) pts.push([p.pos[0], p.pos[2]]);
+      if (pts.length) b = [Math.min(...pts.map(p => p[0])) - 200, Math.min(...pts.map(p => p[1])) - 200,
+        Math.max(...pts.map(p => p[0])) + 200, Math.max(...pts.map(p => p[1])) + 200];
+    }
     if (o.mode === "stage" || !p) {
       if (b) return { cx: (b[0] + b[2]) / 2, cz: (b[1] + b[3]) / 2, radius: Math.max(b[2] - b[0], b[3] - b[1]) / 2 * 1.04, rot };
       return { cx: p ? p.pos[0] : 0, cz: p ? p.pos[2] : 0, radius: FOLLOW_M[1] * m, rot };
@@ -170,7 +195,8 @@
       out.push({ kind: "stand", x, y, r: Math.max(8, (plan.stand.r || 0) * v.scale), tip: `Stand spot · ${away(plan.stand.pos)}` });
     }
     if (p && plan.route?.length) {
-      out.push({ kind: "route", pts: [project(v, p.pos[0], p.pos[2]), ...plan.route.map(w => project(v, w[0], w[2]))] });
+      out.push({ kind: "route", estimated: plan.route_source === "learned_grid",
+        pts: [project(v, p.pos[0], p.pos[2]), ...plan.route.map(w => project(v, w[0], w[2]))] });
     }
     const nb = plan.nearest_bonus, goal = plan.route?.length ? plan.route[plan.route.length - 1] : plan.target?.pos;
     if (p && nb?.pos && !(goal && flat(goal, nb.pos) < 0.5 * perM(units))) {
@@ -303,6 +329,24 @@
     ctx.fillStyle = t.void; ctx.fillRect(0, 0, v.w, v.h);
     const p = f && f.player, units = (f && f.units) || (st && st.units) || "cm";
     if (st && st.units === units) drawStage(ctx, st, v, p ? p.pos[1] : null, t);
+    // Observed cell centres are evidence of movement/stalls, not filled floors or
+    // measured wall surfaces. Never draw unknown/near-wall heuristic cells.
+    if (f?.navigation?.source === "learned_grid") {
+      const nav = f.navigation, half = Math.min(50, nav.cell_cm / 2);
+      ctx.strokeStyle = "#42bfd9"; ctx.lineWidth = 1; ctx.globalAlpha = 0.45; ctx.setLineDash([2, 2]);
+      ctx.beginPath();
+      for (const [x,z] of nav.walked || []) {
+        const corners = [[x-half,z-half],[x+half,z-half],[x+half,z+half],[x-half,z+half]].map(q => project(v,...q));
+        corners.forEach((q,i) => i ? ctx.lineTo(...q) : ctx.moveTo(...q)); ctx.closePath();
+      }
+      ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.strokeStyle = "#ff786a"; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (const pt of nav.stalled || []) {
+        const [x,y] = project(v,...pt);
+        ctx.moveTo(x-4,y-4); ctx.lineTo(x+4,y+4); ctx.moveTo(x+4,y-4); ctx.lineTo(x-4,y+4);
+      }
+      ctx.stroke();
+    }
     const ms = marks(f, v);
     for (const c of (st && st.units === units && st.climbs) || []) {
       const [x, y] = project(v, c[0], c[1]);
@@ -416,19 +460,22 @@
   }
 
   // ---- the feed (no DOM): polls the frames, fetches each stage once ----
-  function create({ sid, api, onFrame, onStage, onStatus, visible = () => true, fast = FAST_MS, slow = SLOW_MS,
+  function create({ sid, api, onFrame, onStage, onStageError, onStatus, visible = () => true, fast = FAST_MS, slow = SLOW_MS,
                     setTimer = setTimeout, clearTimer = clearTimeout, now = () => Date.now() }) {
     let seq = null, frame = null, stopped = false, timer = null, busy = false, fails = 0, stageKey = null, stageFailed = 0;
     async function loadStage(key) {
-      if (stages.has(key)) { stageKey = key; return onStage && onStage(stages.get(key)); }
+      if (stages.has(key)) { stageKey = key; onStageError && onStageError(false); return onStage && onStage(stages.get(key)); }
       if (key === stageKey || now() - stageFailed < STAGE_RETRY_MS) return;
       stageKey = key;
       try {
         const st = await api(`/api/autoplay/tactical/stage/${encodeURIComponent(key)}`);
         stages.set(key, st);
         while (stages.size > STAGES_KEEP) stages.delete(stages.keys().next().value);
-        if (!stopped && key === stageKey && onStage) onStage(st);
-      } catch { if (key === stageKey) { stageKey = null; stageFailed = now(); } }   // tried again with a later frame
+        if (!stopped && key === stageKey) {
+          onStageError && onStageError(false);
+          onStage && onStage(st);
+        }
+      } catch { if (key === stageKey) { stageKey = null; stageFailed = now(); onStageError && onStageError(true); } }
     }
     async function tick() {
       timer = null;
@@ -444,6 +491,7 @@
           else {
             if (!out.stage || out.stage !== frame?.stage) {
               stageKey = null; stageFailed = 0;
+              onStageError && onStageError(false);
               onStage && onStage(null);
             }
             frame = out; seq = out.seq; onFrame && onFrame(frame);
@@ -518,9 +566,10 @@
       `<span class="tm-phase" data-tm="phase" title="What the bot is doing"></span><span data-tm="combo" title="Combo and its window"></span>` +
       `<span class="mut" data-tm="score"></span><span class="tm-line" data-tm="nearest" title="The nearest time bonus: distance along the route and time to reach it"></span>` +
       `<span class="tm-line mut" data-tm="target"></span></div>` +
+      `<div class="tm-geometry" data-tm="geometry" role="status" style="padding:6px 10px;border-left:3px solid #e4a348;line-height:1.4"></div>` +
       `<div class="tm-bar" role="toolbar" aria-label="Tactical map view">` +
       `<button class="act" type="button" data-tm-mode="follow" aria-pressed="true" title="Centred on the player, zoomed to what he is going for">Follow</button>` +
-      `<button class="act" type="button" data-tm-mode="stage" aria-pressed="false" title="The whole stage">Stage</button>` +
+      `<button class="act" type="button" data-tm-mode="stage" aria-pressed="false" title="Fit the stage, or all available observations when geometry is missing">Stage</button>` +
       `<button class="act" type="button" data-tm-heading aria-pressed="false" title="Turn the map with the player: his facing is up">Heading up</button>` +
       `<button class="act" type="button" data-tm-zoom="out" aria-label="Zoom out" title="Zoom out">−</button>` +
       `<button class="act" type="button" data-tm-zoom="in" aria-label="Zoom in" title="Zoom in">+</button></div>` +
@@ -569,7 +618,7 @@
     const box = sect.querySelector(".tmap"), canvas = sect.querySelector("canvas"), stageEl = sect.querySelector(".tm-stage");
     const $ = k => sect.querySelector(`[data-tm="${k}"]`), tip = $("tip");
     const o = prefs();
-    let frame = null, stage = null, ms = [], radius = null, size = { w: 0, h: 0 }, stopped = false, lastSeq = null;
+    let frame = null, stage = null, ms = [], radius = null, size = { w: 0, h: 0 }, stopped = false, lastSeq = null, stageError = false;
     let camera = null, held = null, manual = false, over = false, drag = null, goalBusy = false;
     const visible = () => !stopped && sect.isConnected && sect.open && !sect.hidden && doc.visibilityState !== "hidden";
 
@@ -599,6 +648,7 @@
       const h = hud(frame);
       $("clock").textContent = h.clock; $("phase").textContent = h.phase; $("combo").textContent = h.combo;
       $("score").textContent = h.score; $("status").textContent = h.status;
+      $("geometry").textContent = geometryText(frame, stage, stageError);
       const kinds = kindsHtml(frame, opts.portrait), kindsBox = $("kinds");
       if (kindsBox && kindsBox.dataset.html !== kinds) {          // only when the types or counts change: no image flicker
         kindsBox.dataset.html = kinds; kindsBox.innerHTML = kinds;
@@ -624,6 +674,7 @@
       render();
     }
     const feed = create({ sid, api, visible, ...opts, onFrame: show, onStage: st => { stage = st; render(); },
+      onStageError: failed => { stageError = failed; render(); },
                           onStatus: f => { if (f) { frame = f; render(); } } });
 
     function paintButtons() {
@@ -818,7 +869,7 @@
     return svg;
   }
 
-  const api = { html, mount, detach, create, hud, want, viewOf, project, unproject, panView, zoomView, screenDir, marks, draw, phaseLabel, clockText,
+  const api = { html, mount, detach, create, hud, geometryText, want, viewOf, project, unproject, panView, zoomView, screenDir, marks, draw, phaseLabel, clockText,
     kindColor, kindsHtml,
                 metres, themeOf, renderSVG, VIEW, _stages: stages };
   if (typeof module === "object" && module.exports) module.exports = api;

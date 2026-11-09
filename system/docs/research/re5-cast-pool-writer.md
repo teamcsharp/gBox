@@ -27,14 +27,26 @@ archive holds was read from the archive: its body model was decoded and drawn wi
 | roster label | archive | SHA-256 | body models (MOD / MRL entry) | what the decoded model shows |
 |---|---|---|---|---|
 | Chris (BSAA) | `uPl00ChrisNormal.arc` | `8ab0dc18…` | `pl00\model\pl0000` 97 / 87 | BSAA tactical gear |
-| Chris (Safari) | `uPl00ChrisCos1.arc` | `fa3f0a85…` | `pl10\model\pl0000` 140 / 129, base `pl00\model\pl0000` 134 / 123 | open patterned short-sleeved shirt |
-| Chris (STARS) | `uPl00ChrisCos2.arc` | `4df4a987…` | `pl11\model\pl1100` 140 / 129, base 134 / 123 | green S.T.A.R.S. vest |
+| Chris (Safari) | `uPl00ChrisCos2.arc` (corrected 2026-11-09 20:10, see below) | `4df4a987…` | `pl11\model\pl1100` 140 / 129, base `pl00\model\pl0000` 134 / 123 | green S.T.A.R.S. vest |
+| Chris (STARS) | `uPl00ChrisCos1.arc` (corrected) | `fa3f0a85…` | `pl10\model\pl0000` 140 / 129, base 134 / 123 | open patterned short-sleeved shirt |
 | Sheva (BSAA) | `uPl01ShebaNormal.arc` | `77e9ede6…` | `pl01\model\pl0100` 92 / 78 | purple top, BSAA gear |
 | Sheva (Clubbin) | `uPl01ShebaCos2.arc` | `f63256a6…` | `pl13\model\pl0100` 126 / 111, base `pl01\model\pl0100` 121 / 106 | gold halter top, miniskirt, bob |
 | Sheva (Tribal) | `uPl01ShebaCos1.arc` | `d550005e…` | `pl12\model\pl1200` 129 / 114, base 124 / 109 | leopard top, red loincloth, tooth necklace |
 
+- **Chris's roster labels are crossed against the file names, and that one was seen.** This table first put
+  `Chris (Safari)` on `Cos1` because the Cos1 model shows the patterned shirt. Live (session
+  `0a61e625f9d844d6-3ddd04616ed846de`, build `recovery-cast-pool-03-chris-test-20261109`) the queue entry
+  "Chris (Safari)" drew Ryo Hazuki, the donor cast pool 03 had written into `uPl00ChrisCos2.arc`. So the roster's
+  Safari loads Cos2 and its STARS loads Cos1; `re5_cast_writer.SLOTS` was corrected from this (`LABEL_ARCHIVES`,
+  `LABEL_EVIDENCE`), and cast pools 01-03 carry the old rows in their receipts (their Safari-row donor is on the STARS
+  roster entry and the other way round). Whether the game's own menu calls the Cos2 vest "Safari" or the bot's label
+  list (`re5_switch.CHARACTERS`) has the two Chris costumes in the other order was not read; the writer maps the
+  bot's label to the archive it loads, which is what the live frame showed. The pinned vtable list
+  (`mercs/native/re5_ebffdb22/vtables.py`) names Cos2 before Cos1 for every character, which fits a roster whose
+  second entry is Cos2 for everyone. See [re5-cast-variety.md](re5-cast-variety.md).
 - **Sheva's costume numbers are crossed.** `Cos1` holds the tribal outfit and `Cos2` the club outfit. A table built from
-  the file names alone would have put each donor on the other slot.
+  the file names alone would have put each donor on the other slot. With the vtable order above, Clubbin = Cos2 and
+  Tribal = Cos1 is the consistent reading; it has not been seen live.
 - **A costume archive holds two bodies.** It carries the costume's own model beside the base body, which is byte for
   byte the model of the `Normal` archive. The executable names both model paths. Which of the two the costume class
   draws was not determined offline, so the writer puts the donor in both. Two models share a basename in

@@ -223,7 +223,7 @@ def donor(tmp_path, monkeypatch):
     source = tmp_path / 'donor.glb'
     source.write_bytes(b'synthetic donor')
     monkeypatch.setattr(W.characters, '_load', lambda _: ({'nodes': nodes}, None, None, world))
-    monkeypatch.setattr(W.mtf_materials, 'source_mesh', lambda _, atlas_size: (
+    monkeypatch.setattr(W.mtf_materials, 'source_mesh', lambda _, atlas_size, **options: (
         [dict(v) for v in vertices], list(triangles), Image.new('RGBA', atlas_size, 'red'), {'materials': 1}))
     monkeypatch.setattr(W.mtf_tex, 'replace_image',
                         lambda data, image: mtf_tex.replace_blocks(data, bytes([7]) * 1024, 0))

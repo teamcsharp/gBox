@@ -186,7 +186,7 @@ def test_build_cast_writes_the_overlay_tree_with_a_receipt_and_previews(real_loa
     assert row['role_map']['bones']['body']['l_foot'] + 1 == row['role_map']['bones']['body_low']['l_foot']
     assert set(row['fit']['scales']) == {'limbs', 'torso', 'head', 'hands'} and row['counts']['donor_triangles'] == 19
     assert json.loads((out / 'receipt.json').read_text(encoding='utf-8'))['archives']['uOne']['output_sha256'] == row['output_sha256']
-    assert seen == [('posed', 'preview-uOne-alpha-posed.png', 2, False), ('rest', 'preview-uOne-alpha.png', None)]
+    assert seen == [('rest', 'preview-uOne-alpha.png', None), ('posed', 'preview-uOne-alpha-posed.png', 2, False)]
     assert Image.open(out / 'preview.png').size == (144, 48) and Image.open(out / 'preview-posed.png').size == (192, 48)
     assert row['previews']['alpha']['posed']['evaluation_mode'] == 'sampled_fk' and 'sampled' not in row['previews']['alpha']['posed']
 

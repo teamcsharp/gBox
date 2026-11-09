@@ -50,7 +50,12 @@ EVERY_S = 30.0                           # requested cadence; clearance/emergenc
 SPACING_CM = 600.0                       # never within this of the last site or of a bomb still down (a double blast)
 FOE_CLEAR_CM = 500.0                     # a Majini this near: not now (out of the blast before it comes: a run of 8 m;
                                          # was 8 m - none were ever placed in a No Mercy crowd, 19:50 / 19:53)
-NEUTRAL_S, EQUIP_S = 0.5, 1.2
+# EQUIP_S / EQUIP_RETAP_S (2026-11-09): the bot turns the D-pad press into a native (RAM) equip request and swallows
+# the press; when that request has not finished within its own NATIVE_EQUIP_GIVEUP_S (2.0 s) the next press goes
+# through as a plain D-pad press. With one press and a 1.2 s window that next press never came: live that evening
+# 36 of 88 attempts ended "the bomb did not come to hand", each ~3 s with the gun down. So the press repeats every
+# EQUIP_RETAP_S while the bomb is not in hand, and the window outlasts the native give-up.
+NEUTRAL_S, EQUIP_S, EQUIP_RETAP_S = 0.5, 2.6, 0.45
 PRESS_S, PLACE_S = 0.25, 1.5             # ZL tapped (held, a second bomb at 1.25 s); the bomb shows by 0.7 s
 MOTION_PLACE = 29                        # the placing motion (the same byte as a shot)
 SETTLE_S = 1.6                           # the placing motion plays at most this long (live: 1.27-1.41 s from the press)
@@ -539,11 +544,17 @@ class Mines:
                 self.state = "idle"
                 return None
             self.state, self.t = "equip", now
+            self._equip_tap_at = now
             self.stats["mine_attempts"] += 1
             if mine is not None and hand is None:
                 return {"tap": QUICK[mine["grid"]]}
             return {"hold": ()}                         # already in hand (a prior press landed)
         if self.state == "equip":
+            if (hand is None and mine is not None and now - self.__dict__.get("_equip_tap_at", self.t) >= EQUIP_RETAP_S
+                    and now - self.t <= EQUIP_S):
+                self._equip_tap_at = now                   # again: the native request's fallback needs a press
+                self.stats["mine_equip_retaps"] = self.stats.get("mine_equip_retaps", 0) + 1
+                return {"tap": QUICK[mine["grid"]]}
             if hand is not None:
                 why = self._clearance(p, live, now, committed=True)
                 if why or "ground_mines" not in snap:

@@ -874,3 +874,23 @@ def test_a_bomb_laid_on_his_way_with_nobody_near_needs_no_run_out():
     m.state, m.t, m.site = "settle", 60.0, (0.0, 0.0, 57.0)
     assert m.tick(p(), snap(), foes((900, 0)), 60.0 + MN.SETTLE_S)["hold"][:2] == MN.RUN
     assert m.state == "retreat" and m.stats["mine_trail_plants"] == 1
+
+
+def test_the_bomb_press_repeats_until_it_is_in_hand_and_outlasts_the_native_equip_fallback():
+    """Live 2026-11-09: 36 of 88 attempts "the bomb did not come to hand" - the bot swallows the D-pad press for a native
+    equip request and lets a press through only after NATIVE_EQUIP_GIVEUP_S (2.0 s); one press in a 1.2 s window never
+    reached that point."""
+    from gbox.mercs.titles import re5_switch as R
+    assert MN.EQUIP_S > R.NATIVE_EQUIP_GIVEUP_S
+    m = MN.Mines({})
+    m.new_round(0.0)
+    t = MN.EVERY_S
+    assert m.tick(p(), snap(), [], t) == {"hold": ()} and m.state == "neutral"
+    assert m.tick(p(), snap(), [], t + MN.NEUTRAL_S) == {"tap": "dup"} and m.state == "equip"
+    t0 = t + MN.NEUTRAL_S
+    assert m.tick(p(), snap(), [], t0 + 0.2) == {"hold": ()}                           # waiting on the first press
+    assert m.tick(p(), snap(), [], t0 + MN.EQUIP_RETAP_S + 0.01) == {"tap": "dup"}     # not in hand: again
+    assert m.tick(p(), snap(), [], t0 + 2.2) == {"tap": "dup"}                         # (past the native give-up)
+    assert m.stats["mine_equip_retaps"] == 2
+    assert m.tick(p(), held(), [], t0 + 2.3) == {"hold": ("zl",)} and m.state == "place"   # in hand: the plant
+    assert m.stats["mine_equip_failures"] == 0

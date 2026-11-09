@@ -48,6 +48,25 @@ def private_debug_config(exe: Path, config) -> Path:
     return path
 
 
+# --- guest memory ----------------------------------------------------------------------------------------------------
+# The guest app address space of a Switch title under Yuzu (measured 2026-11-09 on Yuzu 1734: RE6 1.0.0/1.0.2 and
+# RE4 1.0.2). 0x80000000 reads as main's ARM64 code, 0x84000000 still reads, 0x84800000 and everything below
+# 0x80000000 is refused ("stub refused read at ...: E01"). The GDB stub answers reads by guest address but has no
+# memory map (qSupported / qXfer:memory-map / qMemoryRegionInfo go unanswered), so a bot's module signature scan
+# (gbox.mercs.titles.*.module_base, gbox.re6_switch_unlock) is given this measured span as its one readable row: it
+# covers main's image for RE5/RE6 and never claims an address the stub refuses. Reads run over the stub at about
+# 5 MB/s (a 16 MB chunk in about 3 s), so the scan happens once per session; module_base's later checks are one
+# 64-byte read.
+SWITCH_APP_BASE = 0x80000000
+SWITCH_APP_END = 0x84000000
+SWITCH_APP_FLAGS = "r-x"
+
+
+def guest_rows() -> list[tuple[int, int, str]]:
+    """(start, end, perms) readable rows of the Switch app region Yuzu maps: one row for the module scans."""
+    return [(SWITCH_APP_BASE, SWITCH_APP_END, SWITCH_APP_FLAGS)]
+
+
 SWITCH_KEYS = {'a': 'c', 'b': 'x', 'x': 'v', 'y': 'z', 'l': 'q', 'r': 'e',
                'zl': 'r', 'zr': 't', 'l2': 'r', 'r2': 't', 'plus': 'm', 'start': 'm',
                'minus': 'n', 'select': 'n', 'lstick': 'f', 'rstick': 'g',

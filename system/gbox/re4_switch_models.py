@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +24,7 @@ import numpy as np
 from . import re4_switch_assets as A
 
 TITLE_ID = "010099A00BC1E000"
+GAME_ID = "270a15eb98dab4d7"             # the catalog entry MercMode uses (gbox.re_switch.RE4_GAME_ID)
 PACK_DIR = "bio4/em"
 IMAGE_DIR = "bio4/imagepackhd"
 
@@ -39,9 +41,57 @@ CAST = {
     "ada": {"pack": "pl0b", "evidence": "inferred: art (plain red dress) + layout, but pl0c (tactical) and pl16 "
                                         "(butterfly dress) have the same layout - not told apart offline"},
 }
+#: Select Player order (re4_menus.PLAYERS) -> cast key: the roster the MercMode queue names its characters by.
+ROSTER = {"Leon": "leon", "Ada": "ada", "Krauser": "krauser", "HUNK": "hunk", "Wesker": "wesker"}
 
 BODY, BODY_TPL, HEAD, HEAD_TPL, FACE, HAIR, FAR_HEAD = 0, 1, 2, 3, 4, 5, 8
 HANDS = tuple(range(14, 22))
+
+
+@dataclass(frozen=True)
+class PackLayout:
+    """Which slots of one playable pack make up the character (measured 2026-11-09 on the stock packs: each BIN's
+    skin bones, bounding box and texture indices - docs/research/re4-parity.md).
+
+    `body` takes the donor; `image` is the body table's image the donor atlas goes to (one the body samples and no
+    other model bound to that table does); `heads` are shrunk toward the donor's head, `hands` and `parts` (other
+    pieces of the native body: Krauser's torso, Wesker's legs, straps) toward their own centre. Slots named by no
+    field stay byte for byte native (knife, sheath, items, animations, effects).
+    """
+    pack: str
+    body: int = BODY
+    table: int = BODY_TPL
+    image: int = 5
+    heads: tuple = (HEAD, FACE, HAIR, FAR_HEAD)
+    hands: tuple = HANDS
+    parts: tuple = ()
+    note: str = ""
+
+    def hidden(self) -> tuple:
+        return tuple(sorted({*self.heads, *self.hands, *self.parts}))
+
+
+LAYOUTS = {
+    # Leon: the layout the four published candidates were built with (sonic-on-leon-v1 etc.) - unchanged, so they
+    # still reproduce. Slot 7 (a 98-vertex collar piece on bone 3) stays native here for that reason.
+    "pl08": PackLayout("pl08", image=5, note="one body slot (6,591 vertices, headless and handless); image 5 is the "
+                                               "shirt, sampled by the body only"),
+    "pl06": PackLayout("pl06", image=0, heads=(2, 7, 8), hands=(14, 16, 17),
+                       note="HUNK: one body slot (9,849 vertices); the gas mask is slot 2, slot 7 a collar; three hand "
+                            "poses; slots 4, 5, 6, 9-12, 15, 18-21 are empty in this pack"),
+    "pl0a": PackLayout("pl0a", image=1, heads=(2, 7, 8), hands=(14, 15, 16, 17), parts=(4, 6, 10, 20),
+                       note="Krauser: slot 0 is the LEGS (bones 17-25 only, y -1..1240); the torso and arms are slot "
+                            "4, slot 6 the torso with the blade arm (x to 1949), slot 10 a thigh piece, slot 20 a "
+                            "strap over the left shoulder - all hidden under the donor; slot 9 (the knife on bone 10) "
+                            "stays"),
+    "pl0d": PackLayout("pl0d", image=0, heads=(2, 4, 7, 8), hands=(14, 16, 18, 20), parts=(6,),
+                       note="Wesker: slot 0 is the upper body and coat (y 888..1647), slot 6 the legs (bones 17-25); "
+                            "slot 4 the face, slot 7 the glasses; four hand poses"),
+    "pl0b": PackLayout("pl0b", image=4, heads=(2, 4, 5, 7, 8), hands=(13, 14, 15, 16, 17, 18, 19, 21, 147),
+                       note="Ada (plain red dress): one body slot (10,293 vertices, 81 bones; bind joints up to 104 "
+                            "units from Leon's); slot 5 is the hair (19 bones), slot 10 a wrist item on bone 10 "
+                            "(kept); nine hand poses, one of them slot 147"),
+}
 
 #: Leon-family skeleton ids for the body roles (`gbox.characters.tree_roles` vocabulary). x < 0 is the right side:
 #: the model faces +z (toes at +z), y is up.
@@ -66,13 +116,14 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _body(dat: A.Dat) -> tuple[A.HdBin, A.Tpl]:
-    if len(dat.slots) < 22 or dat.slots[BODY][0] != "BIN" or dat.slots[BODY_TPL][0] != "TPL":
+def _body(dat: A.Dat, layout: "PackLayout | None" = None) -> tuple[A.HdBin, A.Tpl]:
+    body_slot, table_slot = (layout.body, layout.table) if layout else (BODY, BODY_TPL)
+    if len(dat.slots) < 22 or dat.slots[body_slot][0] != "BIN" or dat.slots[table_slot][0] != "TPL":
         raise ModelError("not a playable player pack: slot 0 is not a body BIN followed by its TPL")
-    body = A.HdBin.parse(dat.slots[BODY][1])
+    body = A.HdBin.parse(dat.slots[body_slot][1])
     if [ident for ident, _p, _t in body.bones()] != list(range(body.bone_count)):
         raise ModelError("the body does not list its skeleton as ids 0..n-1")
-    return body, A.Tpl.parse(dat.slots[BODY_TPL][1])
+    return body, A.Tpl.parse(dat.slots[table_slot][1])
 
 
 def skeleton_report(target: A.HdBin, donor: A.HdBin) -> dict:
@@ -165,7 +216,7 @@ def shrink_part(payload: bytes, factor: float, centre=None) -> bytes:
 
 # ------------------------------------------------------------------------------------------------- donor bodies
 
-def load_donor(source: Path, roles: dict[str, str] | None = None) -> dict:
+def load_donor(source: Path, roles: dict[str, str] | None = None, *, atlas_size=(1024, 1024)) -> dict:
     """A skinned .glb as the donor record `author_body` takes, through the loaders the RE5/RE6 writers use.
 
     `vertices` carry position, normal, atlas uv and the glTF node ids that drive them; `joints` are node rest
@@ -174,7 +225,8 @@ def load_donor(source: Path, roles: dict[str, str] | None = None) -> dict:
     """
     from . import characters, mtf_materials
 
-    vertices, faces, atlas, report = mtf_materials.source_mesh(Path(source), atlas_size=(1024, 1024))
+    vertices, faces, atlas, report = mtf_materials.source_mesh(Path(source), atlas_size=tuple(atlas_size),
+                                                              strict_samplers="in_range")
     gltf, _acc, _image, world = characters._load(Path(source))
     names = roles or characters.tree_roles(Path(source))
     by_name = {node.get("name"): index for index, node in enumerate(gltf["nodes"])}
@@ -189,8 +241,44 @@ def load_donor(source: Path, roles: dict[str, str] | None = None) -> dict:
             "report": {k: v for k, v in report.items() if isinstance(v, (int, float, str, bool))}}
 
 
+def library_donor(library: Path, slug: str, *, roles: dict[str, str] | None = None, atlas_size=(1024, 1024),
+                  sha256_expected: str | None = None) -> dict:
+    """A library entry (`<library>/<slug>/meta.json` + model) as a donor record, through the shared donor module.
+
+    With `roles` given (a `re5_donor_pool.Donor.role_names()` from a survey) the folder is not resolved again;
+    without, `re5_donor_pool.resolve` judges the rig and supplies the roles. The record carries the donor's slug,
+    name, game, franchise and model hash, so a receipt can name it the way the RE5 receipts do.
+    """
+    from . import re5_donor_pool
+
+    folder = Path(library) / slug
+    if not (folder / "meta.json").is_file():
+        raise ModelError(f"no library entry {slug!r} under {library}")
+    meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+    if roles is None:
+        try:
+            donor, _rig = re5_donor_pool.resolve(folder)
+        except re5_donor_pool.DonorError as exc:
+            raise ModelError(f"{slug}: {exc.category}: {exc}") from exc
+        roles, model, info = donor.role_names(), folder / donor.model, donor
+    else:
+        model = folder / str(meta.get("model") or next(p.name for p in sorted(folder.iterdir()) if p.suffix.lower() in (".glb", ".gltf")))
+        info = None
+    data = model.read_bytes()
+    digest = sha256(data)
+    if sha256_expected and digest != sha256_expected:
+        raise ModelError(f"{slug}: model is {digest[:12]}, the survey pinned {sha256_expected[:12]}")
+    record = load_donor(model, roles=roles, atlas_size=atlas_size)
+    game = info.game if info else re5_donor_pool.game_of(meta)
+    record["donor"] = {"slug": slug, "name": str(meta.get("name") or slug), "game": game,
+                       "franchise": info.franchise if info else re5_donor_pool.franchise_of(game),
+                       "model": model.name, "sha256": digest, "roles": dict(roles)}
+    return record
+
+
 def fit(vertices: list[dict], joints: dict, parents: dict, role_nodes: dict[str, int], bones: dict[int, np.ndarray],
-        *, scales: dict[str, float] = SCALES) -> tuple[np.ndarray, np.ndarray, list[list[tuple[int, float]]], dict]:
+        *, scales: dict[str, float] = SCALES, role_bones: dict[str, int] = ROLE_BONES
+        ) -> tuple[np.ndarray, np.ndarray, list[list[tuple[int, float]]], dict]:
     """Donor vertices placed on the native bind skeleton: (positions, normals, per-vertex (bone, weight), report).
 
     Every donor joint influence walks up to the nearest role joint. A role's part is rotated so its segment points
@@ -203,13 +291,13 @@ def fit(vertices: list[dict], joints: dict, parents: dict, role_nodes: dict[str,
     from .mtf_retarget import _aim_rotation
 
     floor = min(float(v["position"][1]) for v in vertices)
-    anchor = {role: np.asarray(bones[ROLE_BONES[role]], float) for role in ROLE_BONES}
-    cross = {role: float(scales[ROLE_FAMILY.get(role, "limb")]) for role in ROLE_BONES}
+    anchor = {role: np.asarray(bones[role_bones[role]], float) for role in role_bones}
+    cross = {role: float(scales[ROLE_FAMILY.get(role, "limb")]) for role in role_bones}
     for side in ("r_foot", "l_foot"):
         height = float(joints[role_nodes[side]][1]) - floor
         anchor[side] = np.array([anchor[side][0], height * cross[side], anchor[side][2]])
     transform = {}
-    for role in ROLE_BONES:
+    for role in role_bones:
         start = role if role in SEGMENTS else next(a for a, b in SEGMENTS.items() if b == role)
         end = SEGMENTS[start]
         source = joints[role_nodes[end]] - joints[role_nodes[start]]
@@ -242,7 +330,7 @@ def fit(vertices: list[dict], joints: dict, parents: dict, role_nodes: dict[str,
             role = role_of(int(joint))
             moved += weight * (transform[role] @ (point - joints[role_nodes[role]]) + anchor[role])
             turned += weight * (np.linalg.inv(transform[role]).T @ normal)
-            merged[ROLE_BONES[role]] = merged.get(ROLE_BONES[role], 0.0) + float(weight)
+            merged[role_bones[role]] = merged.get(role_bones[role], 0.0) + float(weight)
         total = sum(merged.values())
         if total <= 0 or not np.isfinite(moved).all():
             raise ModelError("a donor vertex has no usable joint influence")
@@ -253,30 +341,21 @@ def fit(vertices: list[dict], joints: dict, parents: dict, role_nodes: dict[str,
     report = {"method": "per-role rotate + stretch onto the native bind joints; native bind joints not moved",
               "scales": dict(scales), "donor_floor": floor,
               "foot_anchor_height": {s: float(anchor[s][1]) for s in ("r_foot", "l_foot")},
-              "roles": {role: {"donor_node": int(role_nodes[role]), "bone": ROLE_BONES[role]} for role in ROLE_BONES}}
+              "roles": {role: {"donor_node": int(role_nodes[role]), "bone": role_bones[role]} for role in role_bones}}
     return np.asarray(positions), np.asarray(normals), influences, report
 
 
-def author_body(target: bytes, archive: bytes, donor: dict, *, image: int = 5, shrink: float = 0.1,
-                scales: dict[str, float] = SCALES) -> tuple[bytes, tuple[str, bytes], dict]:
-    """A donor body on `target`'s skeleton: (pack bytes, (archive file name, archive bytes), receipt).
-
-    The donor surface replaces the body mesh (slot 0) as one material drawn with the donor's atlas, which is
-    appended to the pack's own archive and named by table image `image` (an image only the body uses). The native
-    head, face, hair, far head and hands are shrunk to `shrink` of their size where they stand, because the donor
-    brings its own head and hands in the body mesh.
-    """
-    pack, dat = A.pack_slots(target)
-    body, table = _body(dat)
-    if not 0 <= image < len(table.images):
-        raise ModelError(f"the body table has {len(table.images)} images; {image} is not one of them")
-    vertices, faces = donor["vertices"], donor["faces"]
+def donor_surface(body: A.HdBin, donor: dict, *, image: int, scales: dict[str, float] = SCALES,
+                  role_bones: dict[str, int] = ROLE_BONES) -> tuple[A.HdBin, dict, int]:
+    """The donor fitted onto `body`'s skeleton and written as one material naming table image `image`:
+    (model, fit report, weight percent step). Shared by the player and the enemy writers."""
     bones = body.bone_world()
-    absent = [role for role, bone in ROLE_BONES.items() if bone not in bones]
+    absent = [role for role, bone in role_bones.items() if bone not in bones]
     if absent:
         raise ModelError(f"the body skeleton has no bone for {absent}")
+    vertices, faces = donor["vertices"], donor["faces"]
     positions, normals, influences, fit_report = fit(vertices, donor["joints"], donor["parents"], donor["role_nodes"],
-                                                     bones, scales=scales)
+                                                     bones, scales=scales, role_bones=role_bones)
     sets, index, step = A.weight_table(influences)
     order, runs = A.soup([np.asarray(faces, np.int64)])
     native = body.materials()
@@ -287,6 +366,29 @@ def author_body(target: bytes, archive: bytes, donor: dict, *, image: int = 5, s
     built = body.with_geometry(positions=positions[order], normals=normals[order], uvs=uvs[order],
                                weight_sets=sets, weight_index=index[order],
                                materials=[A.Material(bytes(header), runs[0])])
+    fit_report["bbox"] = [positions.min(0).round(2).tolist(), positions.max(0).round(2).tolist()]
+    fit_report["_bounds"] = (positions.min(0), positions.max(0))          # unrounded, for the head centre
+    return built, fit_report, step
+
+
+def author_body(target: bytes, archive: bytes, donor: dict, *, image: int | None = None, shrink: float = 0.1,
+                scales: dict[str, float] = SCALES, layout: PackLayout | None = None,
+                role_bones: dict[str, int] = ROLE_BONES) -> tuple[bytes, tuple[str, bytes], dict]:
+    """A donor body on `target`'s skeleton: (pack bytes, (archive file name, archive bytes), receipt).
+
+    The donor surface replaces the body mesh (`layout.body`, slot 0) as one material drawn with the donor's atlas,
+    which is appended to the pack's own archive and named by table image `image` (the layout's measured choice: an
+    image only the body uses). The native head pieces, hands and other body parts the layout names are shrunk to
+    `shrink` of their size where they stand, because the donor brings its own head and hands in the body mesh.
+    Without a layout the pack is Leon's (the published candidates' layout).
+    """
+    layout = layout or LAYOUTS["pl08"]
+    image = layout.image if image is None else image
+    pack, dat = A.pack_slots(target)
+    body, table = _body(dat, layout)
+    if not 0 <= image < len(table.images):
+        raise ModelError(f"the body table has {len(table.images)} images; {image} is not one of them")
+    built, fit_report, step = donor_surface(body, donor, image=image, scales=scales, role_bones=role_bones)
     pixels = np.asarray(donor["atlas"], np.uint8)
     images = A.ImagePack.parse(archive)
     if images.pack_id != table.images[image].pack_id:
@@ -295,41 +397,148 @@ def author_body(target: bytes, archive: bytes, donor: dict, *, image: int = 5, s
     table.images[image] = A.TplImage(pixels.shape[1] // 4, pixels.shape[0] // 4, 0x0E, images.pack_id, entry,
                                      table.images[image].sampler)
     before = [sha256(payload) for _ext, payload in dat.slots]
-    dat.replace(BODY, built.build())
-    dat.replace(BODY_TPL, A.Tpl(table.images).slot())
-    low, high = positions.min(0), positions.max(0)
-    head_centre = np.asarray(bones[ROLE_BONES["head"]], float) + [0.0, 0.25 * (high[1] - bones[ROLE_BONES["head"]][1]), 0.0]
+    dat.replace(layout.body, built.build())
+    dat.replace(layout.table, A.Tpl(table.images).slot())
+    low, high = fit_report.pop("_bounds")
+    bones = body.bone_world()
+    head_centre = np.asarray(bones[role_bones["head"]], float) + [0.0, 0.25 * (high[1] - bones[role_bones["head"]][1]), 0.0]
     hidden = {}
-    for slot in (HEAD, FACE, HAIR, FAR_HEAD) + HANDS:
+    for slot in layout.hidden():
+        if slot >= len(dat.slots):
+            continue
         ext, payload = dat.slots[slot]
         if ext != "BIN":
             continue
-        centre = head_centre if slot in (HEAD, FACE, HAIR) else None
+        centre = head_centre if slot in layout.heads and slot != FAR_HEAD else None
         dat.replace(slot, shrink_part(payload, shrink, centre))
         hidden[slot] = "toward the donor head" if centre is not None else "toward its own centroid"
     out = A.pack_build(pack, dat)
     _again_pack, again = A.pack_slots(out)
     after = [sha256(payload) for _ext, payload in again.slots]
     changed = [i for i, (x, y) in enumerate(zip(before, after)) if x != y]
-    if changed != sorted({BODY, BODY_TPL, *hidden}):
+    if changed != sorted({layout.body, layout.table, *hidden}):
         raise ModelError(f"the rebuilt pack changed slots {changed}")
-    check = A.HdBin.parse(again.slots[BODY][1])
+    check = A.HdBin.parse(again.slots[layout.body][1])
     used_bones = sorted({bone for entry_ in check.weights() for bone, _w in entry_})
     name = f"{images.pack_id:08x}.pack.fen"
     receipt = {"operation": "donor body authored on the native skeleton", "source": donor.get("name"),
-               "source_report": donor.get("report", {}),
+               "source_report": donor.get("report", {}), "layout": layout.pack,
                "fit": fit_report,
-               "body": {"vertices": check.vertex_count, "triangles": len(faces), "materials": check.material_count,
+               "body": {"slot": layout.body, "vertices": check.vertex_count, "triangles": len(donor["faces"]),
+                        "materials": check.material_count,
                         "weight_sets": check.weight_count, "weight_percent_step": step, "bones_used": used_bones,
                         "bones": check.bone_count, "bytes": [len(body.build()), len(built.build())],
-                        "bbox": [low.round(2).tolist(), high.round(2).tolist()],
+                        "bbox": fit_report["bbox"],
                         "skeleton_bytes_identical": check.sections["bones"] == body.sections["bones"]},
                "texture": {"archive": name, "entry": entry, "table_image": image, "width": int(pixels.shape[1]),
                            "height": int(pixels.shape[0]), "format": "DXT5", "entries": len(images.entries)},
                "parts_shrunk": {str(k): v for k, v in sorted(hidden.items())}, "shrink": shrink,
                "slots_replaced": changed, "other_slots_byte_identical": len(after) - len(changed),
                "live_verified": False}
+    if donor.get("donor"):
+        receipt["donor"] = donor["donor"]
     return out, (name, images.build()), receipt
+
+
+# ------------------------------------------------------------------------------------------------------ cast pool
+
+CAST_EXPECTATION = {
+    "what_must_be_seen": [
+        "Leon's slot first: the round's player is the dealt library character, about 2 m tall with Leon's limb "
+        "lengths, standing on the ground, no Leon head or hands, knife and sheath floating at his hip",
+        "the character moves with Leon's animations (walk, aim, knife swing); the camera and the laser sight are "
+        "where Leon's were",
+        "another slot only once the Select Player walk steers to it (today the walk confirms the default, Leon): "
+        "HUNK, Krauser, Wesker, Ada each drawn as their dealt donor",
+    ],
+    "failure_signs": [
+        "stock character: the overlay was not applied, or the character loads a pack this table does not name "
+        "(Ada: pl0c / pl16 instead of pl0b)",
+        "body invisible or black with small specks at head height: the composed mesh or the appended archive entry "
+        "is refused (see native-rewrite-v1 / sonic-on-leon-v1 first)",
+        "donor shape in a stock texture: the appended archive entry is not read; the table's pack id is ignored",
+        "native torso, legs or strap drawn through the donor (Krauser, Wesker): a hidden part slot the game draws "
+        "from another table than measured",
+        "hang at stage load: the rebuilt container of that pack (bisect by removing one pack file)",
+    ],
+}
+
+
+def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, seed, out: Path, *,
+              slots: tuple = tuple(CAST), history: list | tuple = (), avoid_last: int = 3,
+              games: list[str] | None = None, exclude: dict[str, str] | None = None,
+              atlas_size=(1024, 1024), max_vertices: int = 12000, name: str | None = None) -> dict:
+    """Deal library donors to the Mercenaries player slots from a seed (`re5_donor_pool.plan`, the RE5 rule) and
+    write one overlay: every dealt pack and its grown archive under `out/romfs/bio4/...`, plus `receipt.json`.
+
+    `donors` are `re5_donor_pool.Donor` rows (a survey); donors above `max_vertices` are left out before the deal.
+    A donor the writer refuses on its slot is set aside and the plan is dealt again from the same seed, so the
+    outcome follows from the seed, the donors, the history and `exclude` alone (as `re5_cast_writer.pool_cast`).
+    """
+    from . import re5_donor_pool
+
+    em_dir, imagepack_dir, library, out = Path(em_dir), Path(imagepack_dir), Path(library), Path(out)
+    if (out / "receipt.json").exists():
+        raise ModelError(f"{out} already holds an overlay; candidates are never overwritten")
+    refused: dict[str, str] = dict(exclude or {})
+    pool = list(donors)
+    by_slug = {d.slug: d for d in pool}
+    slot_names = list(slots)
+    while True:
+        assignment = re5_donor_pool.plan(seed, slot_names, pool, history=history, avoid_last=avoid_last, games=games,
+                                         exclude=set(refused))
+        built, files, sources, rows = {}, {}, {}, {}
+        failed = None
+        for slot, slug in assignment.items():
+            pack_name = CAST[slot]["pack"]
+            layout = LAYOUTS[pack_name]
+            donor = by_slug[slug]
+            try:
+                record = library_donor(library, slug, roles=donor.role_names(), atlas_size=atlas_size,
+                                       sha256_expected=donor.sha256)
+                if len(record["vertices"]) > max_vertices:
+                    raise ModelError(f"{slug}: {len(record['vertices'])} vertices, above the pool limit {max_vertices}")
+                target = (em_dir / f"{pack_name}.udas").read_bytes()
+                _pack, dat = A.pack_slots(target)
+                archive_name = A.Tpl.parse(dat.slots[layout.table][1]).images[layout.image].archive()
+                archive = (imagepack_dir / archive_name).read_bytes()
+                pack_out, (written_name, written), receipt = author_body(target, archive, record, layout=layout)
+                if written_name != archive_name:
+                    raise ModelError("the writer grew another archive than the one that was read")
+            except (ModelError, A.AssetError, ValueError, OSError) as exc:
+                failed = (slug, f"{slot} ({pack_name}) <- {slug}: {exc}")
+                break
+            files[f"{PACK_DIR}/{pack_name}.udas"] = pack_out
+            files[f"{IMAGE_DIR}/{written_name}"] = written
+            sources[f"{PACK_DIR}/{pack_name}.udas"] = target
+            sources[f"{IMAGE_DIR}/{written_name}"] = archive
+            rows[slot] = {"pack": pack_name, "roster_name": next(k for k, v in ROSTER.items() if v == slot),
+                          "pack_evidence": CAST[slot]["evidence"], "layout": layout.note,
+                          "donor": record["donor"] | {"platform": donor.platform, "provenance": donor.provenance},
+                          "pack_sha256": sha256(pack_out), "archive": written_name, "archive_sha256": sha256(written),
+                          "body": receipt["body"], "texture": receipt["texture"], "fit": receipt["fit"],
+                          "parts_shrunk": receipt["parts_shrunk"], "slots_replaced": receipt["slots_replaced"],
+                          "live_verified": False}
+        if failed is None:
+            break
+        slug, reason = failed
+        if slug in refused:
+            raise ModelError(reason)
+        refused[slug] = reason
+        print(f"set aside: {reason}", flush=True)
+    receipt = {"recipe": "re4_switch_models.cast_pool", "name": name or out.name, "game_id": GAME_ID,
+               "plan": {"seed": seed, "slots": slot_names, "games": games, "avoid_last": avoid_last,
+                        "history": [dict(row) if isinstance(row, dict) else list(row) for row in history],
+                        "pool_size": len(pool), "max_vertices": max_vertices, "set_aside": dict(refused),
+                        "rule": "re5_donor_pool.plan: a donor at most once, recently used donors last, franchises in turn"},
+               "assignment": assignment, "slots": rows,
+               "role_bones": {"hip": ROLE_BONES["hip"], "note": "hip on bone 0 (the root), as the published Leon "
+                              "candidates; the native skins bind the hips to bone 17 (pelvis) - see re4-parity.md"},
+               "roster_note": "The queue names characters by re4_menus.PLAYERS; the RE4 Switch walk today confirms "
+                              "Select Player on its default (Leon), so only Leon's pack is drawn until the walk "
+                              "steers to a portrait (re4_switch.step).",
+               **CAST_EXPECTATION, "acceptance": "experimental; offline structural checks only"}
+    return write_overlay(out, files, receipt, sources)
 
 
 def write_overlay(root: Path, files: dict[str, bytes], receipt: dict, sources: dict[str, bytes]) -> dict:
@@ -363,15 +572,44 @@ def main(argv=None) -> int:
     swap.add_argument("--donor", required=True)
     swap.add_argument("--rewrite", action="store_true", help="re-encode the donor body through the composer")
     swap.add_argument("--out", type=Path, required=True)
-    author = sub.add_parser("author", help="a skinned .glb written onto a pack's own skeleton")
+    author = sub.add_parser("author", help="a skinned .glb (or a library entry) written onto a pack's own skeleton")
     author.add_argument("--em", type=Path, required=True)
     author.add_argument("--imagepack", type=Path, required=True, help="a folder holding the stock .pack.fen files")
-    author.add_argument("--target", default="pl08")
-    author.add_argument("--source", type=Path, required=True)
+    author.add_argument("--target", default="pl08", help="plXX; the measured layout of that pack is used (LAYOUTS)")
+    author.add_argument("--source", type=Path, help="a skinned .glb")
+    author.add_argument("--library", type=Path, help="a character library folder (with --slug)")
+    author.add_argument("--slug", help="the library entry to write")
     author.add_argument("--out", type=Path, required=True)
+    pool = sub.add_parser("cast-pool", help="deal surveyed library donors to the five Mercenaries player packs")
+    pool.add_argument("--em", type=Path, required=True)
+    pool.add_argument("--imagepack", type=Path, required=True)
+    pool.add_argument("--library", type=Path, required=True)
+    pool.add_argument("--survey", type=Path, required=True, help="a re5_donor_pool.survey JSON of that library")
+    pool.add_argument("--seed", required=True)
+    pool.add_argument("--out", type=Path, required=True)
+    pool.add_argument("--history", default="", help="comma-separated receipt.json files of earlier overlays, oldest first")
+    pool.add_argument("--avoid-last", type=int, default=3)
+    pool.add_argument("--games", default="", help="comma-separated game titles or franchises to keep")
+    pool.add_argument("--exclude", default="", help="comma-separated donor slugs to leave out")
+    pool.add_argument("--max-vertices", type=int, default=12000)
+    sub.add_parser("layouts", help="print the measured per-character slot layouts")
     for command in (swap, author):
         command.add_argument("--expect", default="", help="what a live round must show; stored in the receipt")
     args = parser.parse_args(argv)
+    if args.command == "layouts":
+        print(json.dumps({name: layout.__dict__ for name, layout in LAYOUTS.items()}, indent=2, default=list))
+        return 0
+    if args.command == "cast-pool":
+        from . import re5_donor_pool
+        donors = re5_donor_pool.donors_of(json.loads(args.survey.read_text(encoding="utf-8")))
+        history = [json.loads(Path(name).read_text(encoding="utf-8"))["assignment"]
+                   for name in args.history.split(",") if name]
+        result = cast_pool(args.em, args.imagepack, args.library, donors, args.seed, args.out, history=history,
+                           avoid_last=args.avoid_last, games=[g for g in args.games.split(",") if g] or None,
+                           exclude={s: "left out by the caller" for s in args.exclude.split(",") if s},
+                           max_vertices=args.max_vertices)
+        print(json.dumps({"out": str(args.out), "assignment": result["assignment"], "files": result["files"]}, indent=2))
+        return 0
     target = (args.em / f"{args.target}.udas").read_bytes()
     if args.command == "native-swap":
         donor = (args.em / f"{args.donor}.udas").read_bytes()
@@ -381,15 +619,22 @@ def main(argv=None) -> int:
                     "expect_live": args.expect}
         result = write_overlay(args.out, {name: out}, receipt, {name: target})
     else:
+        layout = LAYOUTS.get(args.target, LAYOUTS["pl08"])
         _pack, dat = A.pack_slots(target)
-        archive_name = A.Tpl.parse(dat.slots[BODY_TPL][1]).images[0].archive()
+        archive_name = A.Tpl.parse(dat.slots[layout.table][1]).images[layout.image].archive()
         archive = (args.imagepack / archive_name).read_bytes()
-        out, (written_name, written), receipt = author_body(target, archive, load_donor(args.source))
+        if args.library and args.slug:
+            record = library_donor(args.library, args.slug)
+            source_hash = record["donor"]["sha256"]
+        elif args.source:
+            record, source_hash = load_donor(args.source), sha256(args.source.read_bytes())
+        else:
+            raise ModelError("author needs --source or --library with --slug")
+        out, (written_name, written), receipt = author_body(target, archive, record, layout=layout)
         if written_name != archive_name:
             raise ModelError("the writer grew another archive than the one that was read")
         files = {f"{PACK_DIR}/{args.target}.udas": out, f"{IMAGE_DIR}/{written_name}": written}
-        receipt |= {"target_pack": args.target, "source_sha256": sha256(args.source.read_bytes()),
-                    "expect_live": args.expect}
+        receipt |= {"target_pack": args.target, "source_sha256": source_hash, "expect_live": args.expect}
         result = write_overlay(args.out, files, receipt, {f"{PACK_DIR}/{args.target}.udas": target,
                                                           f"{IMAGE_DIR}/{archive_name}": archive})
     print(json.dumps({"out": str(args.out), "files": result["files"]}, indent=2))
