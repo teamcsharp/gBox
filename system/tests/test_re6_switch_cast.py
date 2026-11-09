@@ -188,6 +188,23 @@ def test_author_slot_draws_the_donor_with_a_vetted_material():
 
 @needs_romfs
 @needs_library
+def test_author_slot_reposes_only_the_donors_that_rest_out_of_the_bind_pose():
+    by_slug = {meta["slug"]: meta for meta in R.donor_pool(LIB, tier="core")}
+    wanted = {"melee_mario": "keep", "mgs2_snake_7473dc814d0cf869": "pose"}
+    if not set(wanted) <= set(by_slug) or ("leon", "Usa") not in S.body_arcs(ROMFS):
+        pytest.skip("the T-pose and arms-down donors are not present")
+    for slug, mode in wanted.items():
+        _files, receipt = R.author_slot(ROMFS, LIB, ("leon", "Usa"), by_slug[slug], blank=False)
+        gap = receipt["rest_pose_deviation"]["max_degrees"]
+        assert (receipt["bind_mode"], receipt["bind_mode_requested"]) == (mode, "auto")
+        assert (gap > S.POSE_TOLERANCE_DEGREES) == (mode == "pose")
+    _files, forced = R.author_slot(ROMFS, LIB, ("leon", "Usa"), by_slug["mgs2_snake_7473dc814d0cf869"], blank=False,
+                                   bind_mode="keep")
+    assert forced["bind_mode"] == "keep" and forced["rest_pose_deviation"]["max_degrees"] > 80
+
+
+@needs_romfs
+@needs_library
 def test_the_tool_plans_the_switch_roster():
     from types import SimpleNamespace
 

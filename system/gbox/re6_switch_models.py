@@ -50,6 +50,10 @@ ROOT_ROLE = "hip"                     # the hip is the MTF root bone (id 1, inde
 REQUIRED = ("hip", "chest", "neck", "head", "r_upper", "r_fore", "r_hand", "l_upper", "l_fore", "l_hand",
             "r_thigh", "r_shin", "r_foot", "l_thigh", "l_shin", "l_foot")
 KEEP_REQUIRED = tuple(role for role in REQUIRED if role != "neck")    # what a donor must name when the bind is kept
+#: limb segments whose direction a donor must share with the native bind for the native animations to fit it
+POSE_SEGMENTS = {"l_upper": "l_fore", "l_fore": "l_hand", "r_upper": "r_fore", "r_fore": "r_hand",
+                 "l_thigh": "l_shin", "l_shin": "l_foot", "r_thigh": "r_shin", "r_shin": "r_foot"}
+POSE_TOLERANCE_DEGREES = 20.0         # above this on any limb segment, `auto` reposes the donor
 
 
 class SwitchModelError(ValueError):
@@ -286,6 +290,33 @@ def _source_geometry(source: Path):
     return vertices, triangles
 
 
+def pose_deviation(archive: bytes, source: Path, source_roles: dict[str, str]) -> dict:
+    """How far the donor's rest pose is from the native bind pose: the angle of each limb segment, in degrees.
+
+    `bind_mode="keep"` leaves the donor surface in its own rest pose and binds it to native bones that rest in the
+    native bind pose. The native animations rotate those bones away from *their* rest, so a donor standing with its
+    arms down or in a fighting stance has every limb turned by its rest-pose difference for the whole round. The one
+    live-proven build was a T-posed donor on Leon's T-posed bind. ``max_degrees`` is what `auto` compares with
+    :data:`POSE_TOLERANCE_DEGREES`.
+    """
+    model = mt_model.parse_mod(_find_model(mt_arc.parse(bytes(archive)))[2])
+    roles = roles_for(model)
+    _gltf, names, _parents, joints = _source_rig(Path(source), source_roles)
+    native = {index: np.array((x, y, z), float) for index, x, y, z in model.bone_world()}
+    angles = {}
+    for start, end in POSE_SEGMENTS.items():
+        if not all(role in source_roles and role in roles for role in (start, end)):
+            continue
+        a = np.asarray(joints[names[source_roles[end]]], float) - np.asarray(joints[names[source_roles[start]]], float)
+        b = native[roles[end]] - native[roles[start]]
+        if np.linalg.norm(a) < 1e-9 or np.linalg.norm(b) < 1e-9:
+            continue
+        cosine = float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
+        angles[f"{start}>{end}"] = round(math.degrees(math.acos(max(-1.0, min(1.0, cosine)))), 1)
+    return {"segments": angles, "max_degrees": max(angles.values(), default=0.0),
+            "tolerance_degrees": POSE_TOLERANCE_DEGREES}
+
+
 def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], height: float = 180.0,
                material_index: int = 0, template_index: int = 0, margin: float = 0.01,
                atlas_size=(1024, 1024), textures: bool = False, source_geometry=None,
@@ -301,10 +332,13 @@ def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], he
     LMT animations still find every joint where they expect it. ``"reposition"`` moves the native bind joints to the
     donor's joint positions; the live Switch frame showed that this distorts the rest render because the native
     animations carry absolute locals and are not rewritten (see ``mtf_retarget.reposition_bind_pose``'s docstring),
-    so it is kept only for comparison.
+    so it is kept only for comparison. ``"pose"`` keeps the native skeleton exactly as ``"keep"`` does and first turns
+    the donor's limbs into the native bind directions (`mtf_retarget.repose`: donor segment lengths kept, each arm and
+    leg segment rotated about its own joint), for a donor whose rest pose is not the native one
+    (:func:`pose_deviation`); it is offline work, never loaded by the game.
     """
-    if bind_mode not in ("keep", "warp", "reposition"):
-        raise SwitchModelError("bind_mode must be 'keep', 'warp' or 'reposition'")
+    if bind_mode not in ("keep", "pose", "warp", "reposition"):
+        raise SwitchModelError("bind_mode must be 'keep', 'pose', 'warp' or 'reposition'")
     arc = mt_arc.parse(bytes(archive))
     model_index, mrl_index, mod_raw = _find_model(arc)
     model = mt_model.parse_mod(mod_raw)
@@ -410,7 +444,57 @@ def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], he
         total = sum(weight for _joint, weight in keep)
         vertex["source_joints"] = [joint for joint, _weight in keep]
         vertex["source_weights"] = [weight / total for _joint, weight in keep]
-    fitted, skin = mtf_retarget.map_weights(fitted, parents, roles_map)
+    if bind_mode == "pose":
+        # The donor's own rest pose is turned into the native bind pose before it is bound: every limb segment is
+        # rotated about its joint onto the native segment's direction, lengths and proportions kept. The repose works
+        # in donor space (it applies the uniform scale itself), so it takes the unfitted positions.
+        segments = {start: end for start, end in POSE_SEGMENTS.items() if start in roles_map and end in roles_map}
+        target_points = {index: (x, y, z) for index, x, y, z in model.bone_world()}
+        posed_input = [fit | {"position": original["position"]} for fit, original in zip(fitted, vertices)]
+        # Some rigs hang the spine beside the hip instead of under it (Parasite Eve). A role chain that reaches the
+        # top of the scene without meeting a named role is hung on the hip, which is where it sits anatomically.
+        pose_parents = dict(parents)
+        hip_joint = roles_map[ROOT_ROLE][0]
+        for role, (joint, _target) in roles_map.items():
+            current, seen = joint, {joint}
+            while role != ROOT_ROLE:
+                parent = pose_parents.get(current)
+                if parent is None:
+                    pose_parents[current] = hip_joint
+                    break
+                if parent in source_anchors or parent in seen:
+                    break
+                seen.add(parent)
+                current = parent
+        try:
+            fitted, _geometry, skin = mtf_retarget.repose(
+                posed_input, joints, pose_parents, target_points, roles_map, segments, scale=scale, root_role=ROOT_ROLE,
+                root_position=tuple((hip - origin) * scale + translate))
+        except ValueError as exc:
+            raise SwitchModelError(f"the donor cannot be reposed into the native bind pose: {exc}") from exc
+        # A reposed body has another floor, height and width (arms now spread): one more uniform fit, feet back on
+        # the floor, the wanted height unless the quantisation box forces it smaller.
+        points = np.asarray([v["position"] for v in fitted], float)
+        plow, phigh = points.min(0), points.max(0)
+        extent_p = np.maximum(phigh - plow, 1e-6)
+        refit = min(scale * source_height / extent_p[1], *(float(available[i] / extent_p[i]) for i in range(3)))
+        pivot = np.array([float(translate[0]), plow[1], float(translate[2])])     # the hip's column, at the feet
+        place = np.array([float(root[0]), floor, float(root[2])])
+        points = (points - pivot) * refit + place
+        for axis in (0, 2):                              # hip over the root unless the box needs the body shifted
+            under = inner_lo[axis] - points[:, axis].min()
+            over = points[:, axis].max() - inner_hi[axis]
+            points[:, axis] += under if under > 0 else -over if over > 0 else 0.0
+        fitted = [v | {"position": tuple(map(float, point))} for v, point in zip(fitted, points)]
+        fitted_low, fitted_high = points.min(0), points.max(0)
+        outside = float(max(np.max(box_lo - fitted_low), np.max(fitted_high - box_hi), 0.0))
+        if outside > 1e-4:
+            raise SwitchModelError(f"the reposed model leaves the native quantisation box by {outside:.3f} units")
+        bind = {"posed": "native bind kept; the donor's limb segments turned into the native bind directions",
+                "segments": sorted(segments), "refit_scale": float(refit), "anchors": len(anchors)}
+        scale = scale * refit
+    else:
+        fitted, skin = mtf_retarget.map_weights(fitted, parents, roles_map)
     if bind_mode == "warp":
         # Keep the native bind pose (the LMT animations carry absolute locals, so rewriting the bind breaks them) and
         # instead warp the fitted surface so every mapped joint lands on its native bone: each vertex takes the
@@ -440,11 +524,13 @@ def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], he
     payload = mtf_author.replace_archive_model(bytes(archive), model_index, authored)
     receipt = {"pose_mode": ("native_skeleton" if fallback else
                              "native_bind_kept" if bind_mode == "keep" else
+                             "native_bind_posed" if bind_mode == "pose" else
                              "native_bind_warped" if bind_mode == "warp" else "source_proportions"),
                "bind_mode": bind_mode,
                "skeleton_fallback": fallback, "source_height": source_height,
                "fitted_height": float(fitted_high[1] - fitted_low[1]), "uniform_scale": scale,
-               "height_clamped": bool(abs(scale * source_height - height) > 1e-4),
+               "height_clamped": bool(abs(float(fitted_high[1] - fitted_low[1]) - height) > 1e-3
+                                      if bind_mode == "pose" else abs(scale * source_height - height) > 1e-4),
                "box_usage": float(np.max(fitted_high - fitted_low) / scale_axis),
                "roles": {role: index for role, (joint, index) in roles_map.items()},
                "root_index": roles_map[ROOT_ROLE][1], "bind": bind, "skin": skin,

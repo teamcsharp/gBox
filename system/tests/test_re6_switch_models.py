@@ -396,3 +396,39 @@ def test_a_donor_without_index_buffers_is_authored():
     payload, receipt = S.build_body(path.read_bytes(), LIB / "ff7_earith" / meta["model"],
                                     source_roles=meta["rig"]["roles"])
     assert receipt["triangle_count"] == 1101 and len(_model(payload).triangles()) == 1101
+
+
+@pytest.mark.skipif(not ((LIB / HOST_DONOR).is_dir() and (LIB / "mgs2_snake_7473dc814d0cf869").is_dir()),
+                    reason="the T-pose and arms-down donors are not present")
+@needs_romfs
+def test_a_donor_resting_out_of_the_native_bind_pose_is_reposed():
+    """Keeping the bind leaves the donor in its own rest pose. MGS2's Snake rests with his arms down, 90 degrees
+    from Leon's T-posed bind; `pose` turns his limbs into it and still leaves the native skeleton untouched."""
+    from gbox import characters
+
+    path = S.body_arcs(ROMFS)[("leon", "Usa")]
+    native = path.read_bytes()
+    mario = characters.get(LIB, HOST_DONOR)
+    assert S.pose_deviation(native, LIB / HOST_DONOR / mario["model"], mario["rig"]["roles"])["max_degrees"] < 5.0
+    slug = "mgs2_snake_7473dc814d0cf869"
+    meta = characters.get(LIB, slug)
+    source = LIB / slug / meta["model"]
+    gap = S.pose_deviation(native, source, meta["rig"]["roles"])
+    assert abs(gap["max_degrees"] - 90.0) < 1.0 and gap["max_degrees"] > S.POSE_TOLERANCE_DEGREES
+    assert gap["segments"]["l_thigh>l_shin"] < 10.0               # the legs already agree; the arms do not
+    kept, kept_receipt = S.build_body(native, source, source_roles=meta["rig"]["roles"])
+    posed, receipt = S.build_body(native, source, source_roles=meta["rig"]["roles"], bind_mode="pose")
+    assert (receipt["bind_mode"], receipt["pose_mode"]) == ("pose", "native_bind_posed")
+    assert set(receipt["bind"]["segments"]) == set(S.POSE_SEGMENTS)
+    assert _model(posed).block(0) == _model(native).block(0) == _model(kept).block(0)
+    assert abs(receipt["fitted_height"] - 180.0) < 1e-3 and not receipt["height_clamped"]
+    assert receipt["vertex_count"] == kept_receipt["vertex_count"]
+    assert receipt["triangle_count"] == kept_receipt["triangle_count"] == 2872
+
+    def span(archive):
+        points = np.asarray(_model(archive).positions(0))
+        return float(points[:, 0].max() - points[:, 0].min())
+
+    assert span(posed) > 2.0 * span(kept) and span(posed) > 120.0  # arms out to the sides now
+    with pytest.raises(S.SwitchModelError):
+        S.build_body(native, source, source_roles=meta["rig"]["roles"], bind_mode="stretch")

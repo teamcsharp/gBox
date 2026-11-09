@@ -49,7 +49,15 @@ now gives each material's full paths, not just indices. For Leon's `pl0000_0` se
 vector textures. This is the binding needed to replace **one material's** albedo (jacket vs pants vs hands) instead of
 every `0x2B` in the set, which is what the current textured build does.
 
-**`pl_VTF` is a float colour ramp (measured 2026-11-09).** `pl_VTF` is format `0x0E`, 128x4, one mip, 4096 bytes; its
+**Correction (2026-11-09, offline; see `re6-switch-handover.md` §0).** The two paragraphs below read the data wrongly.
+`0x2B` is BC3 holding **Y'CbCr + alpha**: luma in the alpha block, `Cr` in red, `Cb` in blue, opacity in green; the
+"constant block" `0x7FEF / 0xAAAAAAAA` is a neutral opaque tile, and skin, hair and the effect sheets carry real chroma
+there. `pl_VTF` and `_MVTF` are the cloth's **vertex-displacement** curve and mask (`tVtxDisplacement`,
+`tVtxDispMask`), not colour. The earlier encoder wrote plain RGB where chroma belongs, which decodes to exactly the
+teal quills and pink gloves of the live frame. `re6_switch_tex.encode_albedo` now writes Y'CbCr; the fix is built as
+`re6sw_sonic_leon_ycc` and is not live-verified.
+
+**`pl_VTF` is a float colour ramp (measured 2026-11-09; superseded above).** `pl_VTF` is format `0x0E`, 128x4, one mip, 4096 bytes; its
 body reads as little-endian floats in `0..1` (`0x3D20A0A1` ~ 0.039, `0x3DA8A8A9` ~ 0.082, `0x3E048485` ~ 0.129, ...),
 i.e. per-material colour parameters rather than pixels. `_MVTF` is format `0x09`, 128x128, 8 mips, 4 bytes/texel with a
 mostly `00 00 00 FF` body (an RGBA8 mask). These are the most likely source of the colour cast over the `0x2B` detail
@@ -57,7 +65,8 @@ layer: the shader can multiply the greyscale detail by a VTF colour, which would
 experiment (needs the Spark): neutralise `pl_VTF`/`MVTF` to white and see whether the textured Sonic's colours become
 the atlas's own.
 
-**0x2B albedo: the second half is not per-tile colour (measured 2026-11-09).** Splitting a native Leon albedo
+**0x2B albedo: the second half is not per-tile colour (measured 2026-11-09; superseded above - it is chroma and
+opacity, constant only where the surface is grey and opaque).** Splitting a native Leon albedo
 (`uPlTex0000_0`, 512x512, 10 mips) into its two 8-byte halves shows the first half is a real BC4 greyscale detail map
 (the jacket/pants/boots are recognisable in `evidence/re6-scale/switch-native-albedo-detail-layer.png`), while the second
 half is the *same constant block in every tile*: `c0 = c1 = 0x7FEF`, indices `0xAAAAAAAA` (a flat pale-yellow BC1

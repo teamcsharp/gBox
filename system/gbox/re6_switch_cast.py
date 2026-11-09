@@ -172,13 +172,20 @@ def plan(romfs: Path, pool: list[dict], *, seed: int = 7, slots: list[tuple[str,
 
 
 def author_slot(romfs: Path, library: Path, slot: tuple[str, str], meta: dict, *, height: float = 180.0,
-                textures: bool = False, source_geometry=None, blank: bool = True) -> tuple[dict, dict]:
+                textures: bool = False, source_geometry=None, blank: bool = True,
+                bind_mode: str = "auto") -> tuple[dict, dict]:
     """One body slot authored from one donor: ({archive name: bytes}, receipt). Nothing is written.
 
     The donor mesh is drawn with a body material vetted from the costume's own texture set
     (:func:`gbox.re6_switch_models.donor_material`): opaque and, when there is one, without the cloth displacement.
     Material 0 is not assumed - on Helena (USA) and Chris (Asia) it is `pl_nuki`, an alpha-tested patch material that
     would cut the donor out by a patch texture's alpha.
+
+    ``bind_mode="auto"`` keeps the native skeleton either way and looks at the donor's rest pose
+    (:func:`gbox.re6_switch_models.pose_deviation`): a donor within the tolerance of the native bind pose is authored
+    as it stands (``keep``, the live-proven mode); one that rests with its arms down or in a stance is first turned
+    into the native bind pose (``pose``), because the native animations would otherwise carry that difference on
+    every limb. Pass ``"keep"`` or ``"pose"`` to force one.
     """
     romfs, library = Path(romfs), Path(library)
     character, costume = slot
@@ -189,13 +196,19 @@ def author_slot(romfs: Path, library: Path, slot: tuple[str, str], meta: dict, *
     if not source.is_file():
         raise CastError(f"donor {meta['slug']} has no model file at {source}")
     material = M.donor_material(romfs, body)
-    payload, receipt = M.build_body(body.read_bytes(), source, source_roles=meta["rig"]["roles"], height=height,
+    native = body.read_bytes()
+    deviation = M.pose_deviation(native, source, meta["rig"]["roles"])
+    mode = bind_mode
+    if bind_mode == "auto":
+        mode = "keep" if deviation["max_degrees"] <= M.POSE_TOLERANCE_DEGREES else "pose"
+    payload, receipt = M.build_body(native, source, source_roles=meta["rig"]["roles"], height=height,
                                     textures=textures, source_geometry=source_geometry,
-                                    material_index=material["index"])
+                                    material_index=material["index"], bind_mode=mode)
     files = {body.name: payload}
     receipt = {"character": character, "costume": costume, "donor": meta["slug"], "donor_name": meta["name"],
                "donor_source": (meta.get("source") or {}).get("game_title"), "archive": body.name,
-               "material_choice": material, **receipt}
+               "material_choice": material, "rest_pose_deviation": deviation, "bind_mode_requested": bind_mode,
+               **receipt}
     if blank:
         for stem in M.part_stems(body):
             part = M.archive_root(romfs) / f"{stem}.arc"
@@ -206,7 +219,7 @@ def author_slot(romfs: Path, library: Path, slot: tuple[str, str], meta: dict, *
 
 
 def build(config, romfs: Path, library: Path, assignment: dict[tuple[str, str], dict], *, name: str = DEFAULT_NAME,
-          height: float = 180.0, textures: bool = False, progress=None) -> dict:
+          height: float = 180.0, textures: bool = False, progress=None, bind_mode: str = "auto") -> dict:
     """Author every assigned body slot and write the overlay build; returns a receipt (never touches the RomFS).
 
     ``textures`` authors the body with the donor's atlas UVs and writes that atlas into every `0x2B` albedo of each
@@ -245,7 +258,7 @@ def build(config, romfs: Path, library: Path, assignment: dict[tuple[str, str], 
             else:
                 cached = mesh_cache.get(meta["slug"])
                 files, receipt = author_slot(romfs, library, (character, costume), meta, height=height,
-                                             textures=textures,
+                                             textures=textures, bind_mode=bind_mode,
                                              source_geometry=(cached[0], cached[1]) if cached else None)
                 parts.mkdir(parents=True, exist_ok=True)
                 for part, data in files.items():
