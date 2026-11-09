@@ -176,3 +176,31 @@ The unlock runs on the i9 now — and it refuses for a precise reason, which is 
 - Small but useful: `win_send_keys` refuses an off-screen window, so gBox's own session-input API cannot press a
   button on a parked window (`keep_offscreen` parks it at -32000,-32000). `hidden_ok` exists but is restricted to
   Dolphin's F13–F15 hotkeys. A debug-session, window-targeted input path would make client PCs hands-off.
+
+## Round 4 status (2026-11-09, ~16:10 CST, main at `499505ae`)
+
+1. **The project's `hactool` cannot read this library's NSPs — on either node.** With every `prod.keys` on the share
+   (16 025 B, 14 612 B, `prod1.keys`, `pre10.bak`) and with the binary's own directory holding `prod.keys`, both the
+   i9's `system/tools/bin/hactool.exe` (built 2020-06-01) and the Spark's Linux build (built 2026-11-07) end at
+   `Invalid NCA header! Are keys correct?` for the RE6 **base and update** containers, and print
+   `[WARN] prod.keys does not exist.` to stdout even when `--keyset=` names an existing file. The keys themselves are
+   good: Yuzu boots both containers with the same `prod.keys`.
+2. **A client-side decryptor is viable; the header convention is understood.** A Python probe with `cryptography`
+   decrypts the NCA3 header with the public retail `header_key` once the XTS sector index is encoded **big-endian**:
+   magic `NCA3`, content type 0, keygen 2, `nca_size` `0x61D8200`, title id `01002A000CD48000`. hactool's failure is
+   therefore a tool/build problem, not a file problem — a `gbox.switch_nca` (header → key area → section CTR → ExeFS/
+   RomFS) is the next build, and it is the missing piece for the update-as-LayeredFS route below.
+3. **Yuzu cannot apply v131072 by any headless route.** Tried and re-verified: update beside the base in the cache and
+   in a games folder; the five NCAs + `.tik` + `.cert` under `nand/user/Contents/registered/01002A000CD48800/` and
+   under `…/01002A000CD48000/`; the ticket in `nand/system/Contents/ticket/`; `[UI] Paths\external_content_dirs`.
+   Still `1.0.0`. `yuzu.exe` has no `--install` and no `external_content` string; `yuzu-cmd.exe` has neither. The only
+   remaining Yuzu route is its GUI **Install Files to NAND** dialog.
+4. **`switch_mods op=hotswap` is in (`499505ae`).** It rewrites a build's own file in place, at the same path and the
+   same length, while the title runs — the hot-reload experiment's tool. It refuses a round in progress
+   (`in_round=true`), a file the build does not hold, and bytes longer than the file already there (a length change
+   re-packs the layer and is a restart, not a hot swap); it pads shorter payloads, keeps the manifest's file list, and
+   records a `reload: true` history entry per swap. 4 new tests in `test_switch_mods_hotswap.py`; the switch_mods
+   suite is 36 passed, 1 skipped.
+5. **Caveat for the lane:** the RE6 unlock's gate is 1.0.2's main. Until the update is in Yuzu (GUI install, or the
+   Python extractor + a LayeredFS `exefs/main` overlay), the i9 can build, probe and hot-swap but cannot open the
+   main menu for a Mercenaries round; rounds stay on Eden until then.
