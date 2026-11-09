@@ -1,0 +1,43 @@
+{
+  "schema": "gbox.mercs.checkpoint/1",
+  "request": "c0d8f9765a727e0b",
+  "round_id": "3cf9101eda3a4fe69a6c153ffae2a68e",
+  "report_id": "48ddb3f521718054eafd3a8a675d046b8678b0980c318393964306fcc406ece4",
+  "node": "sparkDeux",
+  "mode": "READ-ONLY text evidence inventory",
+  "artifacts_read": {
+    "round_json": "/home/ehm_eckx/gBox/system/gbox-data/mercs/navigation/G4BE08/rounds/312d8f1bb4ad2a72662da0e7/round.json",
+    "frames": 85,
+    "span_s": 196.35,
+    "map_svg": "path reference only, not inspected (read-only scope)",
+    "reviewer_endpoint": "/api/mercs/reviewer/round?title=G4BE08&id=3cf9101eda3a4fe69a6c153ffae2a68e (not called)"
+  },
+  "key_findings": [
+    "rank.verified=false, rank=null, estimate_source=null; geometry_available=false; availability all false; clock score/kills null all frames -> rank uncertainty is structural (missing geometry + rank counters), not merely unverified",
+    "measured 85-frame path 12.485m vs review distance 16.503m (25% gap); commanded_stationary_s=47.45; nav_oscillations=0; wall_detours=52; plan.phase cycles take_bonus->ladder_down->fight->run_out with route=[] every frame",
+    "checkpoint_order=[] (no checkpoints); time_bonuses_acquired=0; take_bonus phase opened but bonus_acquisition availability false; bonus actor state not recorded",
+    "2 HP drops unattributed: 1860->1518 (-342) at ts 1793636721.78, 1518->827 (-691) at ts 1793636734.52; nearest enemy id45 within ~450-600u in both windows; heal 827->1860 at ts 1793636749.08; report hits_taken=1 vs 2 HP drops unresolved (incidents.state=none_available)",
+    "mines: 0 placements/actors/detonations/retreats - no mine evidence in round",
+    "aim: shots=0 hits=0 round_shots=null vs engagement.attacks_landed=3 - counter scope mismatch",
+    "outcome discrepancy: report outcome='died' vs round.json outcome='interrupted'; HP never 0 in trace (min 827); trace ends 39.9s after report 'ended' ts at clock 98.4s"
+  ],
+  "unknowns": [
+    "death event: no frame-level death record, no QTE/resuscitate data, no incident events",
+    "attacker attribution for both HP drops (forbidden by report limits)",
+    "rank/score counters unreadable",
+    "G4BE08-room-0404 geometry/wall map unavailable",
+    "bonus actor state (take_bonus never resolved)",
+    "units semantics for distance discrepancy (units_per_m=1000.0 nominal)",
+    "inputs_observed=false (legacy_bot_input_route): 103 sampled inputs not tied to verified bot commands",
+    "map.svg contents not inspected"
+  ],
+  "advisory_proposals": [
+    {"kind": "review_damage_incidents", "reason": "2 unattributed HP drops (342/691) with nearest-enemy proximity data; no incident attribution recorded"},
+    {"kind": "review_measured_route", "reason": "12.485m measured vs 16.503m review distance + 47.45s commanded stationary + 52 wall detours with geometry_available=false"},
+    {"kind": "evaluate_aim", "reason": "aim.shots=0 vs engagement.attacks_landed=3 scope mismatch; reconcile counter scopes before any aim policy"}
+  ],
+  "no_policy_applied": true,
+  "no_gameplay_changes": true,
+  "next_acceptance_step": "Reconcile report outcome 'died' vs round.json 'interrupted' via death-event capture; then acquire G4BE08-room-0404 geometry before route/rank scoring.",
+  "resumable_by": "any local inference host; all IDs and evidence are on the request and in this checkpoint"
+}
