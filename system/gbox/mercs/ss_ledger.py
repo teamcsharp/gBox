@@ -17,7 +17,8 @@ non-terminal fragment, the next one starting at or above its kills on the same s
     stage        the stage NAME: the round's navigation signature (rounds.stage, e.g. 1636-2187-... = Public Assembly;
                  SIGNATURES, measured over the 1,687 rows) or the cycle-confirmed data.stage. Never tuning_stage: until
                  this change the bot stamped it with the NEXT round's target (re5_switch._new_round asked stage_target()
-                 after the cycle had already moved on), and 70 % of the rows name a stage they were not played on.
+                 after the cycle had already moved on): 1,257 of the 1,308 rows that name both carry a tuning_stage
+                 they were not played on (96 %).
     character    the row's character, data.character, or the bot's identity fallback (ss_character_source); a
                  continuation fragment inherits its round's
     outcome      won (400 kills, results), died, timeout (the clock ran out: results, a rank, not a win), unfinished
@@ -49,8 +50,9 @@ time to 400. 8 stages x the select's characters (CHARACTERS: 14 names, two pages
 
 THE OBJECTIVE (round_cost(), objective()): what the tuner judges a trial on for this title. Lower is better, in
 seconds: a won round costs its time to 400; a round not won costs its projected time to 400 at the pace it had
-(play_s x 400 / kills) plus NOT_WON_S, and a death DEATH_S more on top, so any win beats any loss and any loss beats
-any death; each combo break adds COMBO_BREAK_S and the max combo takes off up to MAX_COMBO_CREDIT_S. Judged per stage:
+(play_s x 400 / kills) plus NOT_WON_S plus SHORT_S per kill short of 400, and a death DEATH_S more on top - any win
+beats any loss, a death costs more than the same round run out of time, and dying at 135 kills beats dying at 50;
+each combo break adds COMBO_BREAK_S and the max combo takes off up to MAX_COMBO_CREDIT_S. Judged per stage:
 each trial round against its own stage's baseline mean (stage_baselines), the ratios pooled over every stage, so a
 trial confirms on the rounds of a day rather than a stage's handful.
 
@@ -104,8 +106,9 @@ CONT_KILL_SLACK = 3         # ... at or above its kills (less this: a read at th
 CONT_GAP_KILLS = 30         # ... and at most this many more (a few may fall in the gap while no bot runs)
 FRAGMENT_GAP_CAP_S = 180.0  # a gap between two fragments counts as play up to this (the game's clock ran on)
 # the objective (seconds; lower is better)
-NOT_WON_S = 1800.0
-DEATH_S = 1800.0
+NOT_WON_S = 2400.0          # a round not won: more than any win so far takes (both wins of 2026-11-09: ~21 min)
+SHORT_S = 10.0              # ... and this per kill short of 400 (the pace is ~3 s a kill: dying early costs more)
+DEATH_S = 1800.0            # ... and a death this much more (the hard penalty)
 COMBO_BREAK_S = 10.0
 MAX_COMBO_CREDIT_S, MAX_COMBO_PER_S = 60.0, 0.5   # 0.5 s off per combo step, at most 60 s
 PACE_FLOOR_KILLS = 10       # a round with fewer kills projects at this many (a 3-kill death is not a 40-minute pace)
@@ -193,7 +196,9 @@ def fragment(row: dict, run_map: dict | None = None) -> dict:
             "round_key": d.get("ss_round_key"),
             "round_play_s": _num(d.get("ss_round_play_s")), "kill400_s": _num(d.get("ss_kill400_s")),
             "rank_ram": ram_rank, "rank_ram_index": _int(d.get("result_rank_ram")),
-            "tuning_version": d.get("tuning_version"), "map": d.get("round_map_file")}
+            "tuning_version": d.get("tuning_version"),
+            "tuning_params": d.get("tuning_params") if isinstance(d.get("tuning_params"), str) else None,
+            "map": d.get("round_map_file")}
 
 
 def _continues(a: dict, b: dict) -> bool:
@@ -282,7 +287,9 @@ def round_record(frags: list) -> dict:
             "mine_blast_hp_loss": total("mine_blast_hp_loss"),
             "play_s": round(play, 1) if play is not None else None, "time_source": source,
             "to_400_s": round(to_400, 1) if to_400 is not None else None, "rank": rank, "rank_source": rank_source,
-            "tuning_versions": sorted({f["tuning_version"] for f in frags if f["tuning_version"]})}
+            "tuning_versions": sorted({f["tuning_version"] for f in frags if f["tuning_version"]}),
+            # what each fragment played with: (tuning version, its tuning_params) - the tuner's confirmation
+            "tuning": [(f["tuning_version"], f["tuning_params"]) for f in frags if f["tuning_version"]]}
 
 
 def ledger(rows, maps: dict | None = None) -> list:
@@ -308,6 +315,37 @@ def read_rows(path, since: float = 0.0, limit: int = 20000) -> list:
         out.append({"id": rid, "ts": ts, "stage": stage, "mode": mode, "character": char, "outcome": outcome,
                     "data": d})
     return out
+
+
+class NotebookTail:
+    """The newest `keep` Notebook rows, read incrementally (only rows past the last rowid are parsed): the tuner looks
+    every minute and must not parse the whole Notebook each time."""
+
+    def __init__(self, path, keep: int = 800):
+        self.path, self.keep, self.rowid, self._rows = Path(path), keep, 0, []
+
+    def rows(self) -> list:
+        if not self.path.is_file():
+            return list(self._rows)
+        try:
+            with closing(sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
+                if not self.rowid:
+                    top = db.execute("SELECT COALESCE(MAX(rowid),0) FROM rounds").fetchone()[0]
+                    self.rowid = max(0, top - self.keep)
+                found = db.execute("SELECT rowid, id, ts, stage, mode, character, outcome, data FROM rounds "
+                                   "WHERE rowid>? ORDER BY rowid LIMIT 400", (self.rowid,)).fetchall()
+        except sqlite3.Error:
+            return list(self._rows)
+        for rowid, rid, ts, stage, mode, char, outcome, data in found:
+            self.rowid = rowid
+            try:
+                d = json.loads(data) if data and len(data) <= 512 * 1024 else {}
+            except ValueError:
+                d = {}
+            self._rows.append({"id": rid, "ts": ts, "stage": stage, "mode": mode, "character": char,
+                               "outcome": outcome, "data": d})
+        self._rows = sorted(self._rows, key=lambda r: r["ts"] or 0)[-self.keep:]
+        return list(self._rows)
 
 
 MAP_GAP_CAP_S = 2.5          # a run map's sample gap counts at most this (a frozen read, no player: not play)
@@ -448,8 +486,10 @@ def round_cost(r: dict) -> float | None:
     play = r.get("play_s")
     if play is None:
         return None
-    pace = play * GOAL_KILLS / max(r.get("kills") or 0, PACE_FLOOR_KILLS)
-    return round(pace + NOT_WON_S + (DEATH_S if r["outcome"] == "died" else 0.0) + combo, 1)
+    kills = r.get("kills") or 0
+    pace = play * GOAL_KILLS / max(kills, PACE_FLOOR_KILLS)
+    short = SHORT_S * max(0, GOAL_KILLS - kills)
+    return round(pace + NOT_WON_S + short + (DEATH_S if r["outcome"] == "died" else 0.0) + combo, 1)
 
 
 def stage_baselines(rounds: list, last_n: int = 10) -> dict:

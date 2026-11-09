@@ -16,6 +16,22 @@ dead_ends.jsonl) in one GRID_CM cell of a stage, a spot; judged on the round fau
 
 Every step, keep, revert and expiry is a line in <data>/mercs/learned/<title>/tuning-log.jsonl and a change document
 of gbox.mercs.learning (kind "tuning"), so GET /api/mercs/learning shows what changed and its effect.
+
+A round confirms a trial when it PLAYED THE TRIAL'S VALUE (its tuning_params, tuning.in_force), not when it carries
+the file's version: the per-stage avoid trials rewrite the file - a new version - every few minutes, so a numeric
+trial's version was superseded before any round could carry it ("0 of 8 rounds confirmed it in time", every pooled
+trial of 2026-11-09 expired so).
+
+THE OPERATOR'S GOAL (OBJECTIVES; RE5 Switch No Mercy, operator 2026-11-09: "400 kills as fast as possible with a combo
+being maintained the entire time ... faster and faster ... until it has SS rank on every level"). For these titles a
+numeric trial is judged on gbox.mercs.ss_ledger's game rounds (the Notebook's fragments stitched), not on its rule's
+causes: each round's cost (ss_ledger.round_cost: a win costs its seconds to 400, a round not won its projected time
+plus NOT_WON_S, a death DEATH_S more; combo breaks add, the max combo takes off) over its own stage's mean cost before
+the trial (the baseline, per stage, OBJ_BASE_ROUNDS each), the ratios pooled over every stage - judged per stage, but
+confirmed on the rounds of a day. Kept unless the mean ratio is WORSE above 1; reverted (and blocked BLOCK_S) when it is,
+or when deaths per round rose more than OBJ_DEATH_TOL over the baseline's (the hard penalty). Confirmed by
+OBJ_EVAL_ROUNDS judged rounds that played the value; expired when OBJ_EXPIRE_ROUNDS judged rounds of the title went by
+without them (the hooks not live) or after OBJ_EXPIRE_S. The rules' cause metrics still pick WHICH constant to try.
 """
 from __future__ import annotations
 
@@ -56,6 +72,14 @@ RULES = {
     ),
 }
 AVOID = 'avoid'
+# titles whose numeric trials are judged on the operator's goal (the module text): title -> its ledger module
+OBJECTIVES = {'010018100CD46000': 'ss_ledger'}
+OBJ_EVAL_ROUNDS = 6           # judged game rounds that played the trial's value
+OBJ_EXPIRE_ROUNDS = 30        # ... judged rounds of the title since the trial began without them: expired
+OBJ_EXPIRE_S = 72 * 3600
+OBJ_BASE_ROUNDS = 10          # each stage's last this many judged rounds before a trial are its baseline
+OBJ_BASE_MIN = 5              # fewer judged rounds than this before it: no baseline, the rule's own metric judges
+OBJ_DEATH_TOL = 0.25          # deaths per round up more than this over the baseline's: reverted (the hard penalty)
 
 
 def shipped(name):
@@ -73,13 +97,47 @@ def metric(rounds, joined, dead, sigs):
     return round((eps + DEATH_W * deaths) / len(rounds), 3)
 
 
+def ran_with(params, name, value, default) -> bool:
+    """Whether a round with these tuning_params played `name` at `value` (tuning.in_force; None: no hooks, no)."""
+    got = T.in_force(params, name, default)
+    return got is not None and value is not None and abs(float(got) - float(value)) < 1e-6
+
+
 class Tuner:
     def __init__(self, store, data_dir, learning, *, now=time.time, defaults=shipped):
         self.store, self.learning, self.now, self.defaults = store, learning, now, defaults
         self.base = Path(data_dir) / 'mercs' / 'learned'
+        self.data = Path(data_dir)
+        self._tails = {}                          # title -> ss_ledger.NotebookTail (OBJECTIVES)
 
     def state(self):
         return self.store.get(STATE, 'state') or {'titles': {}}
+
+    def ledger(self, title) -> list:
+        """The title's game rounds (gbox.mercs.ss_ledger), oldest first, from the newest Notebook rows."""
+        from . import ss_ledger
+        tail = self._tails.get(title)
+        if tail is None:
+            tail = self._tails[title] = ss_ledger.NotebookTail(self.data / 'mercs/curriculum' / title / 'rounds.sqlite')
+        return ss_ledger.ledger(tail.rows())
+
+    def migrate(self, title, ts) -> list:
+        """A title whose stage key changed (tuning.STAGE_V): its per-stage overrides, avoid spots and per-stage trials
+        were made under other stages' names - dropped once, the pooled '*' values kept. -> the log lines."""
+        want = T.STAGE_V.get(title, 1)
+        if (ts.get('stage_v') or 1) >= want:
+            return []
+        dropped = sorted(s for s in ts['overrides'] if s != '*') + sorted(ts['avoid'])
+        ts['overrides'] = {s: v for s, v in ts['overrides'].items() if s == '*'}
+        ts['avoid'] = {}
+        for stage, st in ts['stages'].items():
+            if stage != '*':
+                st['trial'] = None
+        ts['stage_v'] = want
+        self.write(title, ts)
+        return [self.log(title, '*', 'migrated', {'param': 'stage_key', 'old': dropped, 'new': want},
+                         f'stage key version {want}: per-stage values and avoid spots of {len(dropped)} stage entries '
+                         'were keyed by the next round\'s target - dropped, the pooled values kept')]
 
     def tune(self, labelled, deaths):
         """One look at every title's stages. -> the log lines written this pass."""
@@ -96,6 +154,9 @@ class Tuner:
             dj, _u2 = assign([(i, s, True) for i, s, _e in deaths if i.get('game_id') == gid], rounds)
             dead = {rid: [s for _i, s, _n in items] for rid, items in dj.items()}
             ts = state['titles'].setdefault(title, {'overrides': {}, 'avoid': {}, 'stages': {}})
+            if 'stage_v' not in ts and not ts['overrides'] and not ts['avoid'] and not ts['stages']:
+                ts['stage_v'] = T.STAGE_V.get(title, 1)              # a fresh state is keyed by the right stage
+            lines += self.migrate(title, ts)
             # The stage-agnostic survival constants are trialed once, pooled under '*', over EVERY round of the title:
             # tuning.apply applies '*' params to every stage and each round carries the file's version, so the whole
             # day's rounds (~36) count toward the EVAL_ROUNDS confirmation instead of a single stage's handful (~4.5),
@@ -140,12 +201,32 @@ class Tuner:
         if pick is None:
             return []
         _ratio, rule, name, sigs, old, new, base = pick
+        objective = self.objective_baseline(title)
         self.set(ts, '*', name, new)
         version = self.write(title, ts)
         st['trial'] = {'rule': rule, 'param': name, 'causes': list(sigs), 'old': old, 'new': new,
-                       'baseline': base, 'at': self.now(), 'version': version, 'rounds_before': len(recent)}
-        return [self.log(title, '*', 'trial', st['trial'],
-                         f"{rule}: metric {base} per round over the last {len(recent)} rounds")]
+                       'baseline': base, 'at': self.now(), 'version': version, 'rounds_before': len(recent),
+                       'default': self.defaults(name), 'objective': objective}
+        why = f"{rule}: metric {base} per round over the last {len(recent)} rounds"
+        if objective:
+            why += (f"; judged on the goal against {objective['rounds']} rounds' per-stage baselines "
+                    f"(deaths {objective['deaths_rate']} per round)")
+        return [self.log(title, '*', 'trial', st['trial'], why)]
+
+    def objective_baseline(self, title) -> dict | None:
+        """OBJECTIVES: the per-stage baselines a trial starting now is judged against, None for another title or too
+        few judged rounds (the rule's own metric judges it then)."""
+        if title not in OBJECTIVES:
+            return None
+        from . import ss_ledger
+        judged = [r for r in self.ledger(title) if ss_ledger.round_cost(r) is not None]
+        if len(judged) < OBJ_BASE_MIN:
+            return None
+        recent = judged[-max(OBJ_BASE_ROUNDS * len(ss_ledger.STAGE_NAMES), 30):]
+        base = ss_ledger.stage_baselines(recent, OBJ_BASE_ROUNDS)
+        return {'baselines': {k: round(v, 1) for k, v in base.items()}, 'rounds': len(recent),
+                'deaths_rate': round(sum(r['deaths'] for r in recent[-30:]) / len(recent[-30:]), 3),
+                'wins': sum(r['outcome'] == 'won' for r in recent)}
 
     def avoid_trial(self, title, stage, group, ts, spots, joined, dead):
         """Per-stage dead-end avoid spots; also drains any legacy per-stage numeric trial left in flight."""
@@ -173,7 +254,15 @@ class Tuner:
     def judge(self, title, stage, ts, st, group, joined, dead):
         from .learning import fault_rate
         trial = st['trial']
-        confirm = [r for r in group if r['ts'] >= trial['at'] and r.get('tuning_version') == trial['version']]
+        if trial['param'] != AVOID and trial.get('objective'):
+            return self.judge_objective(title, stage, ts, st)
+        if trial['param'] == AVOID:
+            confirm = [r for r in group if r['ts'] >= trial['at'] and r.get('tuning_version') == trial['version']]
+        else:                                                # the value in force, not the file's version
+            default = trial.get('default', self.defaults(trial['param']))
+            confirm = [r for r in group if r['ts'] >= trial['at'] and r.get('tuning_version')
+                       and ran_with((r.get('observed') or {}).get('tuning_params'), trial['param'], trial['new'],
+                                    default)]
         if len(confirm) < EVAL_ROUNDS:
             if self.now() - trial['at'] >= EXPIRE_S:
                 self.set(ts, stage, trial['param'], trial['old'])
@@ -199,6 +288,44 @@ class Tuner:
                         f"metric {trial['baseline']} -> {after} per round over {len(rounds)} rounds")
         return [line]
 
+    def judge_objective(self, title, stage, ts, st):
+        """OBJECTIVES: the trial's game rounds against their stages' baselines (the module text)."""
+        from . import ss_ledger
+        trial, obj = st['trial'], st['trial']['objective']
+        default = trial.get('default', self.defaults(trial['param']))
+        played = [r for r in self.ledger(title) if r['ended_at'] >= trial['at'] and ss_ledger.round_cost(r) is not None]
+        confirm = [r for r in played if r.get('tuning')
+                   and all(ran_with(params, trial['param'], trial['new'], default) for _v, params in r['tuning'])]
+        if len(confirm) < OBJ_EVAL_ROUNDS:
+            if len(played) - len(confirm) >= OBJ_EXPIRE_ROUNDS or self.now() - trial['at'] >= OBJ_EXPIRE_S:
+                self.set(ts, stage, trial['param'], trial['old'])
+                self.write(title, ts)
+                st['trial'] = None
+                return [self.log(title, stage, 'expired', trial,
+                                 f"{len(confirm)} of {OBJ_EVAL_ROUNDS} game rounds played {trial['new']} "
+                                 f"({len(played)} judged since it began): put back")]
+            return []
+        res = ss_ledger.objective(confirm[:OBJ_EVAL_ROUNDS], obj['baselines'])
+        if res is None:
+            return []
+        worse_goal = res['ratio'] > 1 + WORSE
+        worse_deaths = res['deaths_rate'] > obj['deaths_rate'] + OBJ_DEATH_TOL
+        status = 'reverted' if worse_goal or worse_deaths else 'kept'
+        if status == 'reverted':
+            self.set(ts, stage, trial['param'], trial['old'])
+            st['blocked'][trial['param']] = self.now() + BLOCK_S
+            self.write(title, ts)
+        done = dict(trial, after=res['ratio'], rounds_after=res['rounds'], status=status,
+                    objective_after=res)
+        st['trial'] = None
+        why = (f"the goal: cost {res['ratio']:.3f} x the per-stage baseline over {res['rounds']} game rounds "
+               f"({res['wins']} won, deaths {obj['deaths_rate']} -> {res['deaths_rate']} per round)")
+        if worse_deaths:
+            why += f"; deaths up more than {OBJ_DEATH_TOL} per round: the hard penalty"
+        elif worse_goal:
+            why += f"; more than {WORSE:.0%} slower to the goal"
+        return [self.log(title, stage, status, done, why)]
+
     @staticmethod
     def set(ts, stage, name, value):
         if name == AVOID:
@@ -219,7 +346,8 @@ class Tuner:
         """The file the bots read (atomic). -> its version."""
         body = {'params': ts['overrides'], 'avoid': ts['avoid']}
         version = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:12]
-        data = {'schema': T.SCHEMA, 'title': title, 'version': version, 'written': self.now(), **body}
+        data = {'schema': T.SCHEMA, 'title': title, 'version': version, 'written': self.now(),
+                'avoid_v': ts.get('stage_v') or 1, **body}
         path = self.base / title / T.FILE
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix('.tmp')
@@ -256,6 +384,8 @@ class Tuner:
                 continue
             if not isinstance(n, dict) or self.now() - (n.get('at') or 0) > EVIDENCE_S:
                 continue
+            if (n.get('stage_v') or 1) < T.STAGE_V.get(title, 1):
+                continue                                 # noted under another stage's name (tuning.STAGE_V)
             for xk, zk in (('x', 'z'), ('gx', 'gz')):          # where he stopped, and the goal he ran for
                 if type(n.get(xk)) not in (int, float) or type(n.get(zk)) not in (int, float):
                     continue

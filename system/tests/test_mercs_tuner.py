@@ -125,11 +125,13 @@ def hits(start, n_rounds, per_round, sig='crowd_4_in_2m'):
     return out, ends
 
 
-def play(book, ends, stage=None, version=None):
+def play(book, ends, stage=None, version=None, params=None):
+    """Rounds ending at `ends`; with a version, rounds that ran the tuning hooks with `params` in force (tuning_params:
+    a round confirms a numeric trial by the value it played, tuner.ran_with, not by the file's version)."""
     for ts in ends:
         extra = {'tuning_stage': stage} if stage else {}
         if version:
-            extra['tuning_version'] = version
+            extra.update(tuning_version=version, tuning_params=params or '')
         book.add(ts, **extra)
 
 
@@ -141,15 +143,16 @@ def test_a_rule_over_its_floor_steps_its_constant_and_a_confirmed_trial_is_kept(
     assert [(x['status'], x['param'], x['old'], x['new'], x['baseline']) for x in lines] == \
         [('trial', 're5_switch.RELOC_CROWD_N', None, 5, 2.0)]
     data = json.loads((t.base / TITLE / T.FILE).read_text())
-    assert data['params'] == {'The Mines': {'re5_switch.RELOC_CROWD_N': 5}}
+    assert data['params'] == {'*': {'re5_switch.RELOC_CROWD_N': 5}}     # pooled over every stage (tuner.tune)
     version = data['version']
-    assert t.tune(before, []) == []                                  # one trial per stage: it waits for its rounds
+    assert t.tune(before, []) == []                                  # one trial at a time: it waits for its rounds
     after, ends2 = hits(20_000.0, 8, 1)                              # 1 per round with it
-    play(book, ends2, stage='The Mines', version=version)
+    # another write (an avoid trial) has moved the file's version on: the rounds still played the trial's value
+    play(book, ends2, stage='The Mines', version='a-later-version', params='RELOC_CROWD_N=5')
     clock[0] = 25_000.0
     lines = t.tune(before + after, [])
     assert [(x['status'], x['after']) for x in lines] == [('kept', 1.0)]
-    assert json.loads((t.base / TITLE / T.FILE).read_text())['params'] == {'The Mines': {'re5_switch.RELOC_CROWD_N': 5}}
+    assert json.loads((t.base / TITLE / T.FILE).read_text())['params'] == {'*': {'re5_switch.RELOC_CROWD_N': 5}}
     assert [c['status'] for c in learning.changes(TITLE)] == ['trial', 'kept']
     assert len((t.base / TITLE / TU.LOG).read_text().splitlines()) == 2
 
@@ -161,7 +164,7 @@ def test_a_trial_that_makes_it_worse_is_reverted_and_left_alone(tuner):
     t.tune(before, [])
     version = json.loads((t.base / TITLE / T.FILE).read_text())['version']
     after, ends2 = hits(20_000.0, 8, 3)                              # worse with it
-    play(book, ends2, version=version)
+    play(book, ends2, version=version, params='RELOC_CROWD_N=5')
     clock[0] = 25_000.0
     lines = t.tune(before + after, [])
     assert [(x['status'], x['stage']) for x in lines] == [('reverted', '*')]
@@ -187,12 +190,129 @@ def test_dead_end_notes_become_an_avoid_spot_trial(tuner):
     store, t, book, clock, learning = tuner
     path = t.base / TITLE / T.DEAD_ENDS
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(''.join(json.dumps({'at': clock[0] - 60, 'stage': 'Village', 'x': 1000 + i, 'z': 500})
-                            + '\n' for i in range(3)) + json.dumps({'at': clock[0], 'stage': 'Village', 'x': 9000,
-                                                                     'z': 0}) + '\n')
+    # notes in the round-keyed format (tuning.STAGE_V: stage_v 2), and two older ones (named by the NEXT round's
+    # target) in another cell that never become a spot
+    path.write_text(''.join(json.dumps({'at': clock[0] - 60, 'stage': 'Village', 'x': 1000 + i, 'z': 500,
+                                        'stage_v': 2}) + '\n' for i in range(3))
+                    + json.dumps({'at': clock[0], 'stage': 'Village', 'x': 9000, 'z': 0, 'stage_v': 2}) + '\n'
+                    + ''.join(json.dumps({'at': clock[0] - 30, 'stage': 'Village', 'x': -5000, 'z': -5000}) + '\n'
+                              for _ in range(3)))
     _l, ends = hits(10_000.0, 10, 0)
     for ts in ends:
         book.add(ts, tuning_stage='Village', round_reloc_stuck=1)
     lines = t.tune([], [])
     assert [(x['status'], x['param']) for x in lines] == [('trial', 'avoid')]
-    assert json.loads((t.base / TITLE / T.FILE).read_text())['avoid'] == {'Village': [[1001, 500, TU.SPOT_R]]}
+    data = json.loads((t.base / TITLE / T.FILE).read_text())
+    assert data['avoid'] == {'Village': [[1001, 500, TU.SPOT_R]]} and data['avoid_v'] == 2
+
+
+# --- the operator's goal (tuner.OBJECTIVES: RE5 Switch No Mercy, gbox.mercs.ss_ledger) -----------------------------
+
+def game_round(book, ts, outcome, kills, play_s, stage='1636-2187-d3a75164ca01dcaa-e1163f7867c9', params=None,
+               version=None, breaks=4, max_combo=40):
+    """One game round in the Notebook as the bot now writes it (its own round clock, ss_*)."""
+    book.n += 1
+    rid = f'{book.n:032x}'
+    data = {'source_session_id': 's1', 'kills': kills, 'max_combo': max_combo, 'round_combo_breaks': breaks,
+            'ss_round_play_s': play_s, 'ss_t0_kills': 0, 'ss_round_key': f'k{book.n}', 'score': kills * 1000}
+    if version:
+        data.update(tuning_version=version, tuning_params=params or '')
+    book.db.execute('INSERT INTO rounds VALUES(?,?,?,?,?,?,?,NULL)',
+                    (rid, ts, stage, 'mercenaries', 'Chris (BSAA)', outcome, json.dumps(data)))
+    book.db.commit()
+
+
+def start_trial(t, book, clock):
+    """Ten rounds that died at ~100 kills in 5 minutes with two crowd episodes each: the crowd rule's trial starts."""
+    before, ends = hits(10_000.0, 10, 2)
+    for ts in ends:
+        game_round(book, ts, 'died', 100, 300.0, version='shipped')
+    lines = t.tune(before, [])
+    assert [(x['status'], x['param']) for x in lines] == [('trial', 're5_switch.RELOC_CROWD_N')]
+    trial = t.state()['titles'][TITLE]['stages']['*']['trial']
+    assert trial['objective']['rounds'] == 10 and trial['objective']['deaths_rate'] == 1.0
+    return before
+
+
+def test_the_goal_judges_a_trial_and_keeps_what_brings_the_400_closer(tuner):
+    store, t, book, clock, learning = tuner
+    before = start_trial(t, book, clock)
+    for i in range(TU.OBJ_EVAL_ROUNDS):                               # with it: rounds that reach 400
+        game_round(book, 20_000.0 + 100 * i, 'completed', 400, 1300.0, params='RELOC_CROWD_N=5', version='other')
+    clock[0] = 25_000.0
+    lines = t.tune(before, [])
+    assert [x['status'] for x in lines] == ['kept'] and lines[0]['after'] < 0.5
+    assert 'the goal' in lines[0]['reason'] and f'{TU.OBJ_EVAL_ROUNDS} won' in lines[0]['reason']
+    assert json.loads((t.base / TITLE / T.FILE).read_text())['params'] == {'*': {'re5_switch.RELOC_CROWD_N': 5}}
+
+
+def test_the_goal_reverts_a_trial_that_dies_more(tuner):
+    store, t, book, clock, learning = tuner
+    before = start_trial(t, book, clock)
+    for i in range(TU.OBJ_EVAL_ROUNDS):                               # with it: earlier deaths
+        game_round(book, 20_000.0 + 100 * i, 'died', 30, 150.0, params='RELOC_CROWD_N=5', version='other')
+    for i in range(3):                                                # rounds without the value do not count
+        game_round(book, 21_000.0 + 100 * i, 'completed', 400, 1000.0, params='', version='other')
+    clock[0] = 25_000.0
+    lines = t.tune(before, [])
+    assert [x['status'] for x in lines] == ['reverted'] and lines[0]['after'] > 1.1
+    assert json.loads((t.base / TITLE / T.FILE).read_text())['params'] == {}
+    assert t.state()['titles'][TITLE]['stages']['*']['blocked']['re5_switch.RELOC_CROWD_N'] > clock[0]
+
+
+def test_the_goal_expires_a_trial_no_round_played(tuner):
+    store, t, book, clock, learning = tuner
+    before = start_trial(t, book, clock)
+    for i in range(TU.OBJ_EXPIRE_ROUNDS):                             # the hooks not live: the shipped value played
+        game_round(book, 20_000.0 + 100 * i, 'died', 100, 300.0, params='', version='other')
+    clock[0] = 25_000.0
+    lines = t.tune(before, [])
+    assert [x['status'] for x in lines] == ['expired'] and 'game rounds played 5' in lines[0]['reason']
+
+
+def test_ran_with_reads_the_value_a_round_played():
+    assert TU.ran_with('HEAL_CRITICAL=0.3,RELOC_CROWD_N=5', 're5_switch.RELOC_CROWD_N', 5, 6)
+    assert not TU.ran_with('HEAL_CRITICAL=0.3', 're5_switch.RELOC_CROWD_N', 5, 6)    # not listed: the shipped 6
+    assert TU.ran_with('', 're5_switch.RELOC_CROWD_N', 6, 6)
+    assert not TU.ran_with(None, 're5_switch.RELOC_CROWD_N', 6, 6)                  # no hooks ran
+    assert T.in_force('BLAST_CM=900.0', 're5_switch_mines.BLAST_CM') == 900.0
+
+
+def test_the_stage_key_migration_drops_what_was_learned_under_the_wrong_stage(tuner):
+    store, t, book, clock, learning = tuner
+    state = {'titles': {TITLE: {'overrides': {'*': {'re5_switch.RELOC_CROWD_N': 5},
+                                              'Ship Deck': {'re5_switch_mines.BLAST_CM': 900.0}},
+                                'avoid': {'Ship Deck': [[1232, 17199, 250.0]]},
+                                'stages': {'Ship Deck': {'trial': {'param': 'avoid'}, 'blocked': {}}}}}}
+    store.put(TU.STATE, 'state', state)
+    _l, ends = hits(10_000.0, 3, 0)
+    play(book, ends)
+    lines = t.tune([], [])
+    assert [x['status'] for x in lines] == ['migrated']
+    data = json.loads((t.base / TITLE / T.FILE).read_text())
+    assert data['params'] == {'*': {'re5_switch.RELOC_CROWD_N': 5}} and data['avoid'] == {} and data['avoid_v'] == 2
+    ts = t.state()['titles'][TITLE]
+    assert ts['stage_v'] == 2 and ts['stages']['Ship Deck']['trial'] is None
+    assert t.tune([], []) == []                                      # once
+
+
+def test_avoid_spots_of_an_older_stage_key_are_not_steered_by(tmp_path, monkeypatch):
+    mod = types.ModuleType('gbox.mercs.titles.re5_switch_fake')
+    monkeypatch.setitem(T.PARAMS, TITLE, {})
+    write(tmp_path, TITLE, avoid={'Village': [[0, 800, 250]]})        # no avoid_v: made under the old key
+    T.apply(TITLE, 'Village', {}, base=tmp_path)
+    assert T.steer(TITLE, (0, 0), 0.0, 800.0) == 0.0
+    path = Path(tmp_path) / TITLE / T.FILE
+    data = json.loads(path.read_text())
+    path.write_text(json.dumps(dict(data, avoid_v=2)))
+    T._cache.clear()
+    T.apply(TITLE, 'Village', {}, base=tmp_path)
+    assert T.steer(TITLE, (0, 0), 0.0, 800.0) == pytest.approx(math.radians(30))
+    T.note_dead_end(TITLE, (1.0, 2.0), base=tmp_path, now=1.0)
+    assert json.loads((Path(tmp_path) / TITLE / T.DEAD_ENDS).read_text())['stage_v'] == 2
+    T._state.pop(TITLE, None)
+
+
+def test_the_blast_standoff_is_never_tuned_under_the_operators_15_m():
+    low, high, step = T.PARAMS[TITLE]['re5_switch_mines.BLAST_CM']
+    assert low >= 1500.0 and step > 0 and T.clamp(TITLE, 're5_switch_mines.BLAST_CM', 900.0) == 1500.0
