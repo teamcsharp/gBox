@@ -3946,7 +3946,8 @@ class Bot:
         act = re5_target_feedback.apply(self, snap, act, now)
         act = re5_target_feedback.keep_active(self, snap, act, now)
         act = self._mesh_guard(act, snap)                # the way probed on the stage's own nav mesh before a wall
-        act = self._wall_gov(act, snap, now)
+        if getattr(self, "_goal_drive", None) != now:    # (the operator's mark drives by the mesh: no wall recovery -
+            act = self._wall_gov(act, snap, now)         # live 21:30 it bounced him along the bus for minutes)
         act = self._never_stand(act, snap, now)          # whatever decided it: he does not stand
         act = self._calm_sticks(act, snap, now)
         act = self._governor(act, snap, now)
@@ -4450,6 +4451,7 @@ class Bot:
             d = math.hypot(gx - px, gz - pz)
             self.stats["map_goal_walk_ticks"] = self.stats.get("map_goal_walk_ticks", 0) + 1
             self._gun_down()
+            self._goal_drive = now
             self.doing, self.why = "walk", f"the operator's spot on the map, {d / 100:.0f} m off - by the map"
             return {"hold": ("lup", "b") + self._approach(p, (gx, g.goal["floor_y"], gz), now, link=True)}
         key, d, dy = row.get("ptr", row.get("slot")), flat(row), row["pos"][1] - py
@@ -4468,6 +4470,7 @@ class Bot:
             return act
         self.stats["map_goal_walk_ticks"] = self.stats.get("map_goal_walk_ticks", 0) + 1
         self._goal_dy = dy
+        self._goal_drive = now
         self._gun_down()
         self.doing = "walk"
         self.why = (f"the operator's target {d / 100:.0f} m off"
