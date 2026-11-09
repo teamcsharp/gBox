@@ -931,6 +931,9 @@ DOINGS = ("fire", "aim", "raise", "reraise", "restale", "turn", "unaim", "quick_
 # when it is the quicker cadence (it used to reach only a bot built after it), and a placement waits only for a Majini
 # within MINE_FOE_CLEAR_CM (was 5 m) or a bomb within MINE_SPACING_CM (was 6 m).
 MINES, MINE_EVERY_S = True, 30.0
+# The universal doctrine's goal weights on this title (gbox.mercs.core.doctrine: the operator's standing goals for
+# every title, 2026-11-09; the behavior wheel's goal dots and the bot-logic sidebar set these, 0..1)
+GOAL_ENGAGE, GOAL_COMBO, GOAL_EXPLORE, GOAL_EXPLOSIVES, GOAL_INTERRUPT, GOAL_BOSS = 1.0, 0.9, 0.7, 0.6, 1.0, 1.0
 MINE_FOE_CLEAR_CM, MINE_SPACING_CM = 400.0, 450.0
 MINE_COUNTERS = ("mines_placed", "mine_attempts", "mine_unconfirmed", "mine_retreats_completed", "mine_equip_failures",
                  "mines_gone", "mine_clear_runs", "mine_blasts", "mine_kills", "mine_blast_hp_loss", "gun_backs")

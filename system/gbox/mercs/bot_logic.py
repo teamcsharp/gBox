@@ -43,6 +43,13 @@ KNOBS: dict[str, list[tuple]] = {
         ("WINDUP_R", "Attacker range (cm)", "Aim", "float", 100, 600, 25, ""),
         ("PROMPTS", "Take the game's prompts", "Objectives", "bool", 0, 1, 1, "Y hourglass, ledges, QTEs"),
         ("HEAL_CRITICAL", "Heal at health fraction", "Survival", "float", 0.1, 0.6, 0.05, ""),
+        ("GOAL_ENGAGE", "Engage: always shoot", "Goals", "float", 0, 1, 0.05,
+         "fire on sight; brutal fire while enemies are in his way; never idle"),
+        ("GOAL_COMBO", "Combo: a kill every 2-5 s", "Goals", "float", 0, 1, 0.05, "the combo never drops"),
+        ("GOAL_EXPLORE", "Explore: always moving", "Goals", "float", 0, 1, 0.05,
+         "no posturing in one place: on through the whole level"),
+        ("GOAL_EXPLOSIVES", "Explosives into mobs", "Goals", "float", 0, 1, 0.05, "mines / grenades / launcher"),
+        ("GOAL_BOSS", "Bosses on sight", "Goals", "float", 0, 1, 0.05, ""),
     ],
     "re6": [
         ("NADES", "Grenades", "Crowd control", "bool", 0, 1, 1, "frags and incendiaries into clusters"),
@@ -85,6 +92,13 @@ KNOBS: dict[str, list[tuple]] = {
         ("HEAL_FILL", "Eat on while this much of a tablet fits", "Survival", "float", 0.2, 1.0, 0.1,
          "after a tablet, more until he is topped up; never past his maximum"),
         ("TAUNTS", "Taunts", "Style", "bool", 0, 1, 1, ""),
+        ("GOAL_ENGAGE", "Engage: always shoot", "Goals", "float", 0, 1, 0.05,
+         "fire on sight; brutal fire while enemies are in his way; never idle"),
+        ("GOAL_COMBO", "Combo: a kill every 2-5 s", "Goals", "float", 0, 1, 0.05, "the combo never drops"),
+        ("GOAL_EXPLORE", "Explore: always moving", "Goals", "float", 0, 1, 0.05,
+         "no posturing in one place: on through the whole level"),
+        ("GOAL_EXPLOSIVES", "Explosives into mobs", "Goals", "float", 0, 1, 0.05, "mines / grenades / launcher"),
+        ("GOAL_BOSS", "Bosses on sight", "Goals", "float", 0, 1, 0.05, ""),
     ],
 }
 MODULES = {"re5": "gbox.mercs.titles.re5_switch", "re6": "gbox.mercs.titles.re6_switch"}

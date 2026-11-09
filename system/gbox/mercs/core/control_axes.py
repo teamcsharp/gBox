@@ -53,6 +53,12 @@ AXES = {
     "mine_place":       ("Mine placement", 0.0, 1.0, 0.05, 0.4, "mine / remote-bomb cadence while relocating"),
     "melee":            ("Melee", 0.0, 1.0, 0.05, 0.5, "quick attacks and melee follow-ups"),
     "knife":            ("Knife", 0.0, 1.0, 0.05, 0.3, "knife preference (no current build wires it)"),
+    # The operator's standing goals (gbox.mercs.core.doctrine, 2026-11-09): the weights the doctrine scores them by.
+    "goal_engage":      ("Goal: engage", 0.0, 1.0, 0.05, 1.0, "always shoot: on sight, brutally while they are in his way"),
+    "goal_combo":       ("Goal: combo", 0.0, 1.0, 0.05, 0.9, "a kill every 2-5 seconds: the combo never drops"),
+    "goal_explore":     ("Goal: explore", 0.0, 1.0, 0.05, 0.7, "always moving: no posturing, the whole level"),
+    "goal_explosives":  ("Goal: explosives", 0.0, 1.0, 0.05, 0.6, "mines / grenades / launcher into mobs"),
+    "goal_boss":        ("Goal: bosses", 0.0, 1.0, 0.05, 1.0, "bosses dispatched on sight"),
 }
 # title -> axis -> its targets, primary first: the primary's row decides the axis's availability and shown value.
 # A knob belongs to at most one axis (two dots fighting over one knob would make the last drag win silently).
@@ -68,6 +74,11 @@ MAPS = {
         "grenade_use":      (("behavior.GRENADES", "gate", 0.25),),
         "mine_place":       (("behavior.MINE_EVERY_S", "lin", 60.0, 3.0),
                              ("behavior.MINES", "gate", 0.2)),
+        "goal_engage":      (("behavior.GOAL_ENGAGE", "pass"),),
+        "goal_combo":       (("behavior.GOAL_COMBO", "pass"),),
+        "goal_explore":     (("behavior.GOAL_EXPLORE", "pass"),),
+        "goal_explosives":  (("behavior.GOAL_EXPLOSIVES", "pass"),),
+        "goal_boss":        (("behavior.GOAL_BOSS", "pass"),),
     },
     "re6": {
         "aggression":       (("behavior.FIRE_ZONE_R", "lin", 300.0, 2000.0),
@@ -85,6 +96,11 @@ MAPS = {
         "melee":            (("mod.quick_attack", "lin", 1.0, 10.0),
                              ("behavior.PERIODIC_QA", "gate", 0.3),
                              ("behavior.HIT_QS_N", "lin", 0, 10)),
+        "goal_engage":      (("behavior.GOAL_ENGAGE", "pass"),),
+        "goal_combo":       (("behavior.GOAL_COMBO", "pass"),),
+        "goal_explore":     (("behavior.GOAL_EXPLORE", "pass"),),
+        "goal_explosives":  (("behavior.GOAL_EXPLOSIVES", "pass"),),
+        "goal_boss":        (("behavior.GOAL_BOSS", "pass"),),
     },
 }
 # An axis a title cannot express yet: the grey dot's reason.

@@ -103,20 +103,30 @@ def apply_to_stats(stats: dict, row: dict | None) -> None:
 
 
 class Reader:
-    """One bot's view of the directive stats: current() -> (command or None, fresh)."""
+    """One bot's view of the directive stats: current() -> (command or None, fresh).
+
+    The operator's command first, while it is fresh or still in force. With none, the universal doctrine's
+    (gbox.mercs.core.doctrine: the operator's standing goals, weighed every half second and issued as these same
+    commands into doctrine_directive*), so every title that takes commands plays by the doctrine with no code of its
+    own. A doctrine command is one of COMMANDS and is fresh once per issue, exactly like a typed one."""
 
     def __init__(self):
         self.seen = None
+        self.seen_auto = None
 
     def current(self, stats: dict, now: float | None = None) -> tuple[str | None, bool]:
-        cmd, seq = stats.get('directive'), stats.get('directive_seq')
-        if not cmd or seq is None:
-            return None, False
         now = time.time() if now is None else now
-        fresh = seq != self.seen
-        self.seen = seq
-        if fresh or now < float(stats.get('directive_until') or 0):
-            return cmd, fresh
+        cmd, seq = stats.get('directive'), stats.get('directive_seq')
+        if cmd and seq is not None:
+            fresh = seq != self.seen
+            self.seen = seq
+            if fresh or now < float(stats.get('directive_until') or 0):
+                return cmd, fresh
+        auto, aseq = stats.get('doctrine_directive'), stats.get('doctrine_directive_seq')
+        if auto in COMMANDS and aseq is not None and now < float(stats.get('doctrine_directive_until') or 0):
+            fresh = aseq != self.seen_auto
+            self.seen_auto = aseq
+            return auto, fresh
         return None, False
 
 

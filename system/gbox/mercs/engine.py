@@ -134,6 +134,17 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                        # QTE vision fallback (gbox.mercs.qte): RAM first, vision only when RAM can't tell, so a title
                        # with no RAM map - or a frame where a RAM read tore - still answers its prompts (grab escapes).
                        vision=None if observe_only else (getattr(drv, "prompt_vision", lambda *_: None)(m, stats)))
+    # The universal doctrine (gbox.mercs.core.doctrine): the operator's standing goals for every title, measured on
+    # each playing tick and handed to the bot as the commands it already takes. Never costs the round a tick.
+    director = None
+    if not observe_only:
+        try:
+            from .core import doctrine
+            title_mod = doctrine.title_module(drv)
+            director = doctrine.Director(stats, weights_of=lambda: doctrine.weights(title_mod))
+            director.reset(clock())
+        except Exception as exc:                     # noqa: BLE001
+            stats["doctrine_error"] = f"{type(exc).__name__}: {exc}"[:160]
     held: set = set()
     gone_since = lost_since = None
     hits_seen = stats.get("hits_taken", 0)
@@ -372,6 +383,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         stats.update(round_evidence_id=round_id,round_evidence_closed=False)
         _enemy_round(prof.get("map_id") if isinstance(prof, dict) else None)
         start_capture()
+        if director is not None:                      # a new round: its own doctrine measures
+            director.reset(clock())
         if prof.get("map_id") == "BLUS30491":
             from .route_trace import Recorder
             from . import lessons as lesson_store
@@ -579,6 +592,11 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 continue
             if trace is not None:
                 trace.observe(snap, bot, stats, now, act.get("hold", ()), "decision", act.get("tap"))
+            if director is not None and where == "playing":
+                try:
+                    director.observe(doctrine.view(snap, drv, title_mod), act, now)
+                except Exception as exc:              # noqa: BLE001 - the doctrine never costs the round a tick
+                    stats["doctrine_error"] = f"{type(exc).__name__}: {exc}"[:160]
             vi = frame_fn.vi(m) if frame_fn is not None and hasattr(frame_fn, "vi") else None
             lat.observe(bot, snap, act, held, vi)
             if stats.get("hits_taken", 0) > hits_seen:   # what hit him, for the lessons
