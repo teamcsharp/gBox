@@ -1070,6 +1070,27 @@ MINE_FLASH, MINE_FLASH_OVERDUE_S, MINE_FLASH_GAP_S = True, 6.0, 8.0
 MINE_FOE_CLEAR_CM, MINE_SPACING_CM = 400.0, 450.0
 MINE_COUNTERS = ("mines_placed", "mine_attempts", "mine_unconfirmed", "mine_retreats_completed", "mine_equip_failures",
                  "mines_gone", "mine_clear_runs", "mine_blasts", "mine_kills", "mine_blast_hp_loss", "gun_backs")
+# Weapon mastery (operator 2026-11-09: "Any weapon that I choose to equip the bot with, I need the bot able to masterfully
+# use that. So if I choose to have the bot use rotten eggs or a bow and arrow, they need to be able to spam fire that";
+# the same night's round: "the bot did an absolutely atrocious performance"). re5_weapons.MASTERY gives every family its
+# controller; the laser guns keep the laser fight below (Bot._decide / _rampage), and Bot._mastery runs the rest - the
+# longbow, rotten eggs, the grenades, both launchers, the knives / stun rod and the flamethrower - each aimed by the heading
+# and the camera pitch (the RAM aim writer when the session has one, else the right stick), its trigger pattern as fast
+# as the weapon's own animation takes a press, the self-blast distance kept for the explosives, the gun never lowered
+# and raised again between shots (no raise flicker), moving whenever nobody is in its band (closing in, or out of its
+# blast). WM_KEEP_CHOICE: the operator's weapon (the native primary, else select_weapon's) stays in hand - the crowd
+# fire's shotgun swap and the gun-back never take it away - unless it is empty and cannot reload (no ammo in the
+# inventory, or WM_RELOAD_WAIT_S of ZL + B without a round). stats wm_<family>_<shots | hits | kills | hand_s |
+# range_s | range_shots | trigger_s | idle_s | shots_per_s | kills_per_min | spent | backoffs | raises>, wm_summary, and
+# weapon_motions_seen (the weapon's own motion bytes while its trigger is held: to fill re5_weapons.RATE_MOTIONS).
+# The raise flicker (live Ancient Ruins 2026-11-09: 413 raises in 28 s): re5_switch_aim.keep_active's reposition put the
+# gun down every tick of its 0.65 s step while the crowd fire raised it again the next tick - a raise a tick. During a
+# reposition the fight now leaves the gun down (stats raise_holds) and the step runs to its end.
+WEAPON_MASTERY, WM_KEEP_CHOICE, WM_RELOAD_WAIT_S, WM_PITCH_GRACE_S = True, True, 2.5, 0.4
+WM_THROW_AIM_H = KNEE_H                  # a throw lands at their legs (the arc's end); arrows and splash at the chest
+WM_MOTIONS_KEPT = 32                     # weapon_motions_seen: at most this many motion ids per weapon
+WM_STATS = ("shots", "hits", "kills", "hand_s", "range_s", "range_shots", "trigger_s", "idle_s", "spent", "backoffs",
+            "raises")
 # The fight is the RE5 PS3 combat core's (re5_switch_brain.Fighter, operator 2026-10-27: "I assume the bot will get the
 # same mind that we trained on the ps5"); False: the Switch's own fight below (_decide), kept until the PS3 core has
 # proven itself in MercMode turns
@@ -1935,9 +1956,12 @@ class Bot:
     def _kcost(self, p, e, now) -> float:
         """_cost, K_RANGE_PREF less for a Majini standing where K says his class's shots do the most (learned, sure)."""
         c = self._cost(p, e)
+        d = math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+        if WEAPON_MASTERY and self._item is not None:        # the weapon in hand's band: rifles far, magnums big, ...
+            from . import re5_weapons as _w
+            c *= _w.band_cost(self._item, d, e.get("hp_max"), self._corridor(p, e, now))
         if not K_PLAN or not e.get("class"):
             return c
-        d = math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
         plan = self._plan(e, d, self._item, now)
         if self._sure(plan, "range_cm") and plan.range_cm and plan.range_cm[0] <= d <= plan.range_cm[1]:
             return c * K_RANGE_PREF
@@ -2294,6 +2318,13 @@ class Bot:
     def _rampage_gun(self, inv):
         """Prefer the gun already in hand within each family; avoid swapping equivalent shotguns."""
         from . import re5_weapons
+        choice = getattr(self, "_choice", None) if WM_KEEP_CHOICE else None
+        if choice is not None:                           # the operator's weapon: never swapped away from in a crowd
+            row = next((s_ for s_ in inv or () if s_.get("type") == 1 and s_.get("item") == choice
+                        and (s_.get("hand") or s_.get("grid") in QUICK) and self._loaded_gun(s_)), None)
+            if row is not None:
+                spec = re5_weapons.WEAPONS.get(choice)
+                return (row, spec.family) if spec is not None and re5_weapons.laser_family(choice) else (None, None)
         # --- weapon_swap hook (arsenal mode): family preference for the no-wheel D-pad/native swap ---
         # Single integration point for gbox.mercs.weapon_swap; None keeps the stock RAMPAGE_FAMILIES.
         # The chosen family is equipped by its D-pad quick slot, which re5_switch._native_equipment
@@ -2358,6 +2389,12 @@ class Bot:
         if not ring:
             self._ramp, self._restore = None, None       # keep the equipped gun when the circle clears
             return None
+        if WEAPON_MASTERY and held is not None and held.get("type") == 1:
+            from . import re5_weapons as _w
+            if _w.mastery(held.get("item")) is not None and not _w.laser_family(held.get("item")) \
+                    and self._rampage_gun(inv)[0] is None:
+                self._ramp, self._restore = None, None   # no laser gun to put up (or the operator's own weapon): the
+                return None                              # weapon's own controller fights the crowd (Bot._mastery)
         kills = snap.get("kills")
         if self._ramp is None:
             self._ramp = {"since": now, "main": held.get("item") if held and held.get("type") == 1 else None,
@@ -2415,6 +2452,10 @@ class Bot:
             self.stats["idle_in_5m_s"] = round(self.stats["idle_in_5m_s"] + dt, 2)
             return {"hold": ("ldown",)}
         if self.aim_since is None:
+            if self._repositioning(now, snap):           # keep_active's step under way: the gun stays down to its end
+                self.stats["raise_holds"] = self.stats.get("raise_holds", 0) + 1   # (it raised again every tick: the
+                self.doing, self.why = "aim", "crowd fire: the reposition step first (the gun stays down)"   # flicker)
+                return {"hold": ()}
             if gun is not None and not gun.get("hand") and now - self._swap_at >= SWAP_GAP_S:
                 self._swap_at = now                      # the shotgun / magnum first (one press, the gun down)
                 self.stats["rampage_swaps"] += 1
@@ -3548,7 +3589,7 @@ class Bot:
         p = snap.get("player") or {}
         pos, hold = p.get("pos"), tuple(act.get("hold") or ())
         st = self.__dict__.setdefault("_stand", {"pos": None, "at": now, "until": -1e9, "keys": ()})
-        busy = (not NEVER_STAND or not pos or (p.get("hp") or 0) <= 0 or "zl" in hold or "tap" in act
+        busy = (not NEVER_STAND or not pos or (p.get("hp") or 0) <= 0 or "zl" in hold or "l" in hold or "tap" in act
                 or self.doing in STAND_BUSY or snap.get("mercenaries_phase") not in (None, PHASE_PLAYING))
         if busy:
             st["pos"], st["at"], st["until"] = (tuple(pos) if pos else None), now, -1e9
@@ -3851,9 +3892,12 @@ class Bot:
             else:
                 self._primary_want = (None, 0.0)
         want = (snap.get("preferred_weapon") or {}).get("item")      # the operator's gun (re5_switch_mods.select_weapon)
+        keep = WEAPON_MASTERY and WM_KEEP_CHOICE                     # (any weapon he chose but the bomb: its controller)
+        melee = lambda s: s.get("item") in KNIVES or s.get("item") == 0x22
         choice = next((s for s in inv if s.get("type") == 1 and s.get("item") == want and s.get("grid") in QUICK
-                       and s.get("item") not in KNIVES and s.get("item") not in THROWN
-                       and self._loaded_gun(s)), None) if want else None
+                       and s.get("item") != 0x0A
+                       and (keep or (s.get("item") not in KNIVES and s.get("item") not in THROWN))
+                       and (self._loaded_gun(s) or (keep and melee(s)))), None) if want else None
         if choice is not None and not choice.get("hand") and self.aim_since is None:
             if now - self._gun_back_at < GUN_BACK_GAP_S:
                 return {"hold": ()}
@@ -3862,6 +3906,21 @@ class Bot:
             return {"tap": QUICK[choice["grid"]]}
         empty = bool(held and held.get('type') == 1 and held.get('item') not in KNIVES
                      and held.get('item') not in THROWN and not self._loaded_gun(held))
+        rw = self.__dict__.setdefault("_wm_reload", {"item": None, "since": None})
+        if empty and keep and held.get("item") == getattr(self, "_choice", None):
+            # the operator's weapon empty: it stays while it can reload (ammo in the inventory), ZL + B for at most
+            # WM_RELOAD_WAIT_S; only then the loaded fallback below
+            if rw["item"] != held.get("item") or rw["since"] is None:
+                rw.update(item=held.get("item"), since=now)
+            ammo = any(s.get("type") == 2 and (s.get("rounds") or 0) > 0 for s in inv)
+            if ammo and now - rw["since"] < WM_RELOAD_WAIT_S:
+                self.stats["wm_reload_waits"] = self.stats.get("wm_reload_waits", 0) + 1
+                return {"hold": ("zl", "b")}
+        else:
+            rw.update(item=None, since=None)
+        if keep and held is not None and held.get("type") == 1 and not empty and held.get("item") != 0x0A \
+                and held.get("item") == getattr(self, "_choice", None):
+            return None                                      # the operator's own weapon in hand (a grenade too): kept
         if empty and self.native_equip is not None:
             candidates = [s for s in inv if s.get('type') == 1 and s.get('item') not in KNIVES
                           and s.get('item') not in THROWN and self._loaded_gun(s)
@@ -3885,8 +3944,9 @@ class Bot:
                     self.stats['empty_weapon_reason'] = 'loaded slot attachment unconfirmed; releasing the wait'
                     return None
                 return {'hold': ()}
-        if held is None or held.get("type") != 1 or (held.get("item") not in THROWN and not empty):
-            return None
+        if held is None or held.get("type") != 1 or (held.get("item") not in THROWN and not empty
+                                                      and not (keep and melee(held))):
+            return None                                      # (a knife nobody chose goes back to a gun, as a grenade)
         if self._rearm(inv, None) is None:
             return None                                      # no gun on a D-pad slot: nothing to go back to
         if now - self._gun_back_at < GUN_BACK_GAP_S:
@@ -3965,6 +4025,8 @@ class Bot:
         self.doing, self.why, self._now = "none", "", now
         held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
         self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
+        self._wm_active = False                              # (Bot._mastery sets it when its controller runs)
+        self._choice = self._chosen_item(snap) if WM_KEEP_CHOICE else None   # the operator's weapon, if any
         from . import re5_switch_aim as re5_target_feedback, re5_weapons
         visible = re5_target_feedback.visible_target(snap)
         self._feedback_visible = visible.get('ptr', visible.get('slot')) if visible else None
@@ -3995,6 +4057,11 @@ class Bot:
         except Exception as exc:                             # noqa: BLE001 - the look never stops the bot
             self.stats["look_error"] = f"{type(exc).__name__}: {exc}"[:160]
         self._grenade_crowd(snap, now)                       # the GRENADES knob: a flash burst at a crowd (side effect)
+        if WEAPON_MASTERY:
+            try:
+                self._wm_tick(snap, act, now)                # the per-family ledger (stats wm_*)
+            except Exception as exc:                         # noqa: BLE001 - accounting never stops the bot
+                self.stats["wm_error"] = f"{type(exc).__name__}: {exc}"[:160]
         return act
 
     def _native_flash(self, snap, now, reason: str, counter: str) -> bool:
@@ -4904,6 +4971,318 @@ class Bot:
         return {"hold": ()}
 
 
+    # --- weapon mastery (WEAPON_MASTERY above) --------------------------------------------------------------------------
+    def _repositioning(self, now, snap=None) -> bool:
+        """re5_switch_aim.keep_active's bounded step is under way (the gun is down for it until its end) - unless this
+        snapshot already shows a shot (aimed, the dot on a living Majini near him on his level: keep_active's own rule
+        that ends the step early), which ends it here and lets the gun come up."""
+        st = getattr(self, "_aim_wait", None)
+        if not (st and st.get("until") is not None and now < st["until"]):
+            return False
+        p = (snap or {}).get("player") or {}
+        ray = (snap or {}).get("laser") or {}
+        if p.get("pos") and p.get("motion") == MOTION_AIMED and ray.get("up") and ray.get("from") and ray.get("at") \
+                and all(math.isfinite(v) for v in (*ray["from"], *ray["at"])):
+            px, py, pz = p["pos"]
+            if math.dist(ray["from"], (px, py + MUZZLE_H, pz)) < 200.0 and any(
+                    (e.get("hp") or 0) > 0 and e.get("pos") and abs(e["pos"][1] - py) <= LEVEL_DY
+                    and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= THREAT_CAP_R and dot_on(ray["at"], e["pos"])
+                    for e in snap.get("enemies") or ()):
+                return False                                 # the step opened a shot: the gun comes up (keep_active ends it)
+        return True
+
+    @staticmethod
+    def _chosen_item(snap):
+        """The operator's weapon: the native three-minute primary while usable, else select_weapon's preference."""
+        primary = snap.get("primary_weapon")
+        if primary and primary.get("usable") is not False and type(primary.get("item")) is int:
+            return primary["item"]
+        want = (snap.get("preferred_weapon") or {}).get("item")
+        return want if type(want) is int else None
+
+    def _corridor(self, p, e, now):
+        """A floor corridor to this Majini on the stage's mesh (cached 0.5 s each): True / False, None when unknown or
+        when the weapon in hand does not weigh it (only the arrow and the throws: a soft preference)."""
+        from . import re5_weapons as _w
+        spec = _w.mastery(self._item)
+        mesh = getattr(self, "_mesh", None)
+        if spec is None or spec.mode not in ("arrow", "throw") or mesh is None or not hasattr(mesh, "floor_segment") \
+                or math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) > spec.max_cm:
+            return None                                      # (only within its reach: a few mesh queries a second)
+        cache = self.__dict__.setdefault("_wm_corr", {})
+        key = e.get("ptr", e.get("slot"))
+        hit = cache.get(key)
+        if hit is None or now - hit[0] >= 0.5:
+            try:
+                ok = bool(mesh.floor_segment(tuple(p["pos"]), tuple(e["pos"])))
+            except Exception:                                # noqa: BLE001 - the mesh never stops a decision
+                ok = None
+            if len(cache) > 128:
+                cache.clear()
+            cache[key] = hit = (now, ok)
+        return hit[1]
+
+    def _wm_count(self, fam, what, n=1) -> None:
+        key = f"wm_{fam}_{what}"
+        self.stats[key] = self.stats.get(key, 0) + n
+
+    def _wm_press(self, now) -> None:
+        """A tap pattern's press tick: a trigger edge (a shot: the pull's hit window opens)."""
+        if not self.fire_down:
+            self.stats["shots"] += 1
+            if self.trigger_since is None:
+                self.trigger_since = now
+            self._pull_start(now)
+        self.fire_down, self.fire_at = True, now
+
+    def _wm_release(self, now) -> None:
+        """A tap pattern's release tick (not a slip: the next press is the next shot)."""
+        if self.fire_down:
+            self._pull_end(now)
+        self.fire_down = False
+
+    def _mastery(self, p, live, flat, tgt, snap, now):
+        """WEAPON_MASTERY: the weapon in hand's own controller when it has no laser fight (re5_weapons.MASTERY: the
+        longbow, rotten eggs, grenades, the launchers, the knife / stun rod, the flamethrower); None for the laser guns.
+        Out of its band he moves (closes in at a run, or steps out of his own blast facing them); in it the stance stays
+        up between shots (never lowered and raised again: only an aim UNAIM_ERR off for UNAIM_HOLD_S turns the body),
+        the aim is re-made every tick (the RAM writer, else the stick) and the trigger runs its pattern while aligned."""
+        self._wm_active = False
+        if not WEAPON_MASTERY or tgt is None:
+            return None
+        from . import re5_weapons as W
+        inv = snap.get("inventory") or ()
+        held = next((s for s in inv if s.get("hand")), None)
+        item = held.get("item") if held and held.get("type") == 1 else None
+        spec = W.mastery(item)
+        if spec is None or spec.mode == "laser":
+            return None
+        self._wm_active = True
+        st = self.__dict__.setdefault("_wmc", {})
+        if st.get("item") != item:
+            st.clear()
+            st.update(item=item, phase=0, off_since=None, w_at=None, aligned_at=None)
+        px, py, pz = p["pos"]
+        level = [e for e in live if abs(e["pos"][1] - py) <= LEVEL_DY] or live
+        foot = tuple(tgt["pos"])
+        fam, name = spec.family, W.WEAPONS[item].name
+        n = 1
+        if spec.aim == "crowd":
+            centre, n = W.crowd_point(foot, level)
+            h = WM_THROW_AIM_H if spec.mode == "throw" else CHEST_H
+            aim = (centre[0], centre[1] + h, centre[2])
+        else:
+            aim = (foot[0], foot[1] + self._aim_h(tgt, flat(tgt), now), foot[2])
+        adist = math.hypot(aim[0] - px, aim[2] - pz)
+        key = tgt.get("ptr", tgt.get("slot"))
+        body_err = wrap(heading(aim[0] - px, aim[2] - pz) - p["rot"])
+        who = f"the crowd of {n}" if n > 1 else "him"
+        self.stats["wm_controller"] = f"{name}: {spec.mode} / {spec.pattern}"
+        # out of his own blast first: the impact (the crowd's centre) inside it - out, facing them (the mines' standoff)
+        if not W.blast_ok(snap, (aim[0], foot[1], aim[2]), spec):
+            if self.aim_since is not None:
+                self._gun_down()
+            close = [e for e in level if flat(e) <= spec.blast_cm + 150.0] or [tgt]
+            self._wm_count(fam, "backoffs")
+            self.doing, self.why = "backoff", (f"{name}: {who} {adist / 100:.1f} m is inside its "
+                                               f"{spec.blast_cm / 100:.0f} m blast: stepping out")
+            return {"hold": self._escape_keys(p, close) + self._turn(body_err, TURN_TOL)}
+        if adist > spec.max_cm:                              # beyond its reach: in at a run (never standing)
+            if self.aim_since is not None:
+                self._gun_down()
+            self.doing, self.why = "walk", f"{name}: {who} {adist / 100:.1f} m, its reach {spec.max_cm / 100:.0f} m"
+            return {"hold": (self._gait(adist) if spec.mode != "contact" else ("lup",))
+                    + self._approach(p, foot, now, link=True)}
+        weapon = f"0x{held['id']:03x}" if isinstance(held.get("id"), int) else name
+        loaded = self._loaded_gun(held)
+        tol = W.fire_tol(spec, adist, BODY_R)
+        ctx = {"target": key, "dist": adist, "bearing": body_err, "yaw_err": body_err, "where": None,
+               "laserless": True, "weapon": weapon, "foot": foot, "item": item, "class": tgt.get("class"),
+               "hp_max": tgt.get("hp_max"), "shooter": tuple(p["pos"]), "py": py}
+        if spec.mode == "contact":                           # the knife / stun rod: face him, L held, ZR swung
+            if self.aim_since is not None:
+                self._gun_down()
+            if abs(body_err) > tol:
+                st["phase"] = 0
+                self._wm_release(now)
+                self.doing, self.why = "aim", f"{name}: facing him ({math.degrees(body_err):+.0f} deg, {adist / 100:.1f} m)"
+                return {"hold": self._turn(body_err)}
+            ok, why = W.mastery_gate(item, aligned=True, loaded=True, in_band=True)
+            self._aimctx = dict(ctx, gate=f"{fam}: {why}")
+            st["phase"] ^= 1
+            keys = {"l"}
+            if st["phase"]:
+                keys.add("zr")
+                self._wm_press(now)
+            else:
+                self._wm_release(now)
+            self.doing, self.why = "fire", f"{name}: swinging at {adist / 100:.1f} m"
+            return {"hold": tuple(sorted(keys))}
+        cam = snap.get("aim_cam")
+        cam_ok = bool(cam and cam.get("player") == p.get("ptr") and cam.get("generation") == p.get("generation"))
+        origin = (px, py + MUZZLE_H, pz)
+        lz = snap.get("laser") or {}
+        ray = None
+        if spec.mode == "splash" and lz.get("up") and lz.get("from") and lz.get("at") \
+                and all(math.isfinite(v) for v in (*lz["from"], *lz["at"])) and math.dist(lz["from"], origin) < 200.0:
+            ray = (tuple(lz["from"]), tuple(lz["at"]))       # a launcher's laser: the dot is the impact
+        want_yaw = heading(aim[0] - px, aim[2] - pz)
+        yaw_err = wrap(want_yaw - (cam["heading"] if cam_ok else p["rot"]))
+        have_p = cam["pitch"] if cam_ok else (-p["aim_pitch"] if isinstance(p.get("aim_pitch"), (int, float)) else None)
+        pitch_err = None if have_p is None else W.aim_pitch(spec, aim, origin) - have_p
+        if ray is not None:
+            yaw_err, pitch_err = ray_error(ray[0], ray[1], aim)
+        if self.aim_since is None:                           # the stance down: turn the body, then up once (no flicker)
+            if abs(body_err) > max(self.raise_tol(adist), 3.0 * tol, math.radians(20)):
+                self.stats["turns"] += 1
+                self.turning = True
+                self._wm_release(now)
+                self.doing, self.why = "turn", f"{name}: turning to {who} ({math.degrees(body_err):+.0f} deg)"
+                return {"hold": self._turn(body_err)}
+            self.turning = False
+            self.aim_since = self._raise_t = now
+            self.stats["raises"] += 1
+            self._wm_count(fam, "raises")
+            st.update(phase=0, off_since=None, aligned_at=None)
+        if abs(yaw_err) > UNAIM_ERR:                         # far off for UNAIM_HOLD_S (after MIN_UP_S up): down, turn
+            st["off_since"] = st.get("off_since") or now
+            if now - st["off_since"] >= UNAIM_HOLD_S and now - self.aim_since >= MIN_UP_S:
+                self.stats["unaims"] += 1
+                self._gun_down()
+                self.doing, self.why = "unaim", f"{name}: {math.degrees(yaw_err):+.0f} deg off {who}: turning"
+                return {"hold": self._turn(body_err)}
+        else:
+            st["off_since"] = None
+        keys = {"zl"}
+        ready = now - self.aim_since >= READY_S
+        wrote = False
+        writer = self._writer() if cam_ok and ready else None
+        if writer is not None:                               # the aim by RAM: the heading and the camera pitch, rate-held
+            dt = now - st["w_at"] if st.get("w_at") is not None else 1.0 / 30.0
+            st["w_at"] = now
+            pitch = None if pitch_err is None else max(-re5_switch_aim.PITCH_LIMIT, min(
+                re5_switch_aim.PITCH_LIMIT, cam["pitch"] + re5_switch_aim.step(pitch_err, re5_switch_aim.PITCH_RATE, dt)))
+            hd = wrap(cam["heading"] + re5_switch_aim.step(yaw_err, re5_switch_aim.YAW_RATE, dt))
+            try:
+                wrote = bool(writer(cam, pitch, hd))
+            except Exception:                                # noqa: BLE001 - a failed write: the stick
+                wrote = False
+            self._wm_count(fam, "ram_writes" if wrote else "ram_write_failures")
+        if not wrote:
+            keys |= self._yaw(yaw_err)
+            if pitch_err is not None and adist >= CLOSE_PITCH_R:
+                keys |= self._pitch(pitch_err)
+        if p.get("motion") in W.rate_motions(item) and keys & {"rleft", "rright", "rup", "rdown"}:
+            keys -= {"rleft", "rright", "rup", "rdown"}      # the weapon's scaled motion: no stick in it (shot_stick_drops)
+            self.stats["shot_stick_drops"] += 1
+        blast = True
+        if ray is not None:
+            o, dot = ray
+            on_body = any(dot_on(dot, e["pos"]) or through(o, dot, e["pos"]) for e in level)
+            aligned = on_body or math.dist(dot, aim) <= W.SPLASH_IMPACT_R
+            blast = not spec.blast_cm or W.clearance(snap, dot, spec.blast_cm)
+            ctx.update(laserless=False, origin=o, dot=dot, yaw_err=yaw_err, pitch_err=pitch_err)
+        else:
+            yaw_ok = abs(yaw_err) <= tol
+            if not yaw_ok:
+                st["aligned_at"] = None
+            elif st.get("aligned_at") is None:
+                st["aligned_at"] = now
+            pitch_ok = pitch_err is None or abs(pitch_err) <= max(tol, math.radians(6.0)) \
+                or (yaw_ok and now - st["aligned_at"] >= WM_PITCH_GRACE_S)   # an unsettled pitch never holds it long
+            aligned = yaw_ok and pitch_ok
+            ctx.update(yaw_err=yaw_err, pitch_err=pitch_err)
+        ok, why = W.mastery_gate(item, aligned=aligned, loaded=loaded, in_band=adist <= spec.max_cm, blast=blast)
+        fire = ready and ok
+        self._aimctx = dict(ctx, gate=f"{fam}: {why}")
+        if spec.pattern == "hold":
+            keys |= self._trigger(fire, now)
+        elif fire:                                           # tap: a fresh ZR edge every second tick
+            st["phase"] ^= 1
+            if st["phase"]:
+                keys.add("zr")
+                self._wm_press(now)
+            else:
+                self._wm_release(now)
+        else:
+            st["phase"] = 0
+            self._wm_release(now)
+        self.doing = "fire" if fire else "aim"
+        self.why = (f"{why} at {who} {adist / 100:.1f} m (yaw {math.degrees(yaw_err):+.1f}"
+                    + (f", pitch {math.degrees(pitch_err):+.1f}" if pitch_err is not None else "") + " deg)"
+                    + ("" if ready else "; the stance coming up"))
+        self.stats["wm_gate"] = self.why[:160]
+        return {"hold": tuple(sorted(keys))}
+
+    def _wm_tick(self, snap, act, now) -> None:
+        """Per family, while its weapon is in hand: shots (trigger edges), hits (target health lost near a pull, the
+        existing measurement), kills, seconds in hand, seconds with a target in its band and the shots then, idle
+        seconds with one in its band (no trigger this tick or the last, no left stick), rounds spent (the slot's count
+        falling: without infinite ammo), and the weapon's own motion bytes while its trigger is held."""
+        from . import re5_weapons as W
+        st = self.__dict__.setdefault("_wm", {"t": None, "item": None, "slot": None, "rounds": None, "kills": None,
+                                              "hits": None, "zr": False})
+        dt = 0.0 if st["t"] is None else max(0.0, min(now - st["t"], LOOK_STEP_MAX_S))
+        p = snap.get("player") or {}
+        held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
+        item = held.get("item") if held and held.get("type") == 1 else None
+        spec = W.mastery(item)
+        hold = set(act.get("hold") or ()) | ({act["tap"]} if act.get("tap") else set())
+        zr = "zr" in hold
+        kills, hits = snap.get("kills"), self.stats.get("hits", 0)
+        if spec is not None and p.get("pos") and (p.get("hp") or 0) > 0:
+            fam = spec.family
+            same = st["item"] == item
+            px, py, pz = p["pos"]
+            reach = max(spec.max_cm, 300.0)
+            in_range = any((e.get("hp") or 0) > 0 and e.get("pos") and abs(e["pos"][1] - py) <= LEVEL_DY
+                           and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= reach for e in snap.get("enemies") or ())
+            acc = self.__dict__.setdefault("_wm_acc", {})
+            for what, add in (("hand_s", dt), ("range_s", dt if in_range else 0.0),
+                              ("trigger_s", dt if st["zr"] else 0.0),   # (a held trigger: the guns' and the flame's spam)
+                              ("idle_s", dt if in_range and not zr and not st["zr"]
+                               and not hold & {"lup", "ldown", "lleft", "lright"} else 0.0)):
+                k = f"wm_{fam}_{what}"
+                acc[k] = acc.get(k, float(self.stats.get(k) or 0.0)) + add
+                self.stats[k] = round(acc[k], 2)
+            if zr and not st["zr"]:
+                self._wm_count(fam, "shots")
+                if in_range:
+                    self._wm_count(fam, "range_shots")
+            if same and type(hits) is int and type(st["hits"]) is int and hits > st["hits"]:
+                self._wm_count(fam, "hits", hits - st["hits"])
+            if same and type(kills) is int and type(st["kills"]) is int and kills > st["kills"]:
+                self._wm_count(fam, "kills", kills - st["kills"])
+            rounds = held.get("rounds")
+            if same and st["slot"] == held.get("slot") and type(rounds) is int and type(st["rounds"]) is int \
+                    and rounds < st["rounds"] and snap.get("infinite_ammo") is not True:
+                self._wm_count(fam, "spent", st["rounds"] - rounds)
+            rs, hs = self.stats.get(f"wm_{fam}_range_s") or 0.0, self.stats.get(f"wm_{fam}_hand_s") or 0.0
+            self.stats[f"wm_{fam}_shots_per_s"] = round((self.stats.get(f"wm_{fam}_range_shots") or 0) / rs, 2) if rs else 0.0
+            self.stats[f"wm_{fam}_kills_per_min"] = round(60.0 * (self.stats.get(f"wm_{fam}_kills") or 0) / hs, 2) \
+                if hs else 0.0
+            self.stats["wm_family"] = fam
+            if spec.mode != "laser" and (zr or st["zr"]) and type(p.get("motion")) is int:
+                seen = self.stats.setdefault("weapon_motions_seen", {})
+                row = seen.setdefault(f"0x{item:02x}", {})
+                m = str(p["motion"])
+                if m in row or len(row) < WM_MOTIONS_KEPT:
+                    row[m] = row.get(m, 0) + 1
+                self.stats["weapon_motions_seen_text"] = " | ".join(
+                    f"{k}: " + " ".join(f"{mm}x{c}" for mm, c in sorted(v.items(), key=lambda x: -x[1]))
+                    for k, v in sorted(seen.items()))[:400]
+            if not same or now - st.get("sum_at", -1e9) >= 1.0:
+                st["sum_at"] = now
+                parts = []
+                for f in sorted({k[3:].rsplit("_", 2)[0] for k in self.stats if k.startswith("wm_") and k.endswith("_hand_s")}):
+                    g = lambda w: self.stats.get(f"wm_{f}_{w}") or 0
+                    parts.append(f"{f} {g('shots')} shots {g('shots_per_s')}/s in range, ZR held {g('trigger_s')} s, "
+                                 f"{g('hits')} hits, "
+                                 f"{g('kills')} kills {g('kills_per_min')}/min, idle {g('idle_s')} s of {g('range_s')} s")
+                self.stats["wm_summary"] = " | ".join(parts)[:600]
+        st.update(t=now, item=item, slot=held.get("slot") if held else None,
+                  rounds=held.get("rounds") if held else None, kills=kills, hits=hits, zr=zr)
+
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
         px, py, pz = p["pos"]
         self._goal_dy = None                             # (set again by the bonus run / the pursuit this tick)
@@ -5018,6 +5397,9 @@ class Bot:
             self.stats["close_in_ticks"] = self.stats.get("close_in_ticks", 0) + 1
             self._gun_down()
             return {"hold": ("lup", "b") + self._approach(p, foot, now, link=True)}
+        act = self._mastery(p, live, flat, tgt, snap, now)  # the weapon in hand has no laser: its own controller
+        if act is not None:
+            return act
         motion = p.get("motion")
         if self.aim_since is None:
             if now < self.backoff_until:                     # a back-off under way (a crowd's burst ended it): finish it
@@ -5061,6 +5443,10 @@ class Bot:
                 self.turning = True
                 return {"hold": self._turn(body_err)}
             self.turning = False
+            if self._repositioning(now, snap):               # keep_active's step under way: no raise until it ends
+                self.stats["raise_holds"] = self.stats.get("raise_holds", 0) + 1
+                self.doing, self.why = "aim", "the reposition step first (the gun stays down)"
+                return {"hold": ()}
             self.aim_since = self._raise_t = now
             self._lower_pitch, self._first_ray = self._ray_pitch, True
             self._first_check, self._raise_is_reroll, self._reroll_next = True, self._reroll_next, False

@@ -97,7 +97,7 @@
       + (state.pc ? `<p class="bl-target">${ESC(state.pc)} · the game shown in this PiP</p>` : "")
       + `<p class="${state.ok && message ? "bl-ok" : "bl-msg"}" role="status">${ESC(message || (state.busy ? "Reading or applying settings…" : ""))}</p>`
       + `<button type="button" data-bl-refresh ${scope}${state.busy ? " disabled" : ""}>Refresh current settings</button>`
-      + (mods ? `<h4>Live mods</h4>${mods}<p class="bl-note">Fire rate is a multiplier; 1× restores the game's rate. Actual shots per second vary.</p>` : "")
+      + (mods ? `<h4>Live mods</h4>${mods}<p class="bl-note">Fire rate is a multiplier; 1× restores the game's rate. Actual shots per second vary.${title === "re5" ? " The rotten egg and bow rates speed up that weapon's own animation while it is in hand." : ""}</p>` : "")
       + `<fieldset${locked || !view ? " disabled" : ""}>${rows}`
       + `<p><button type="button" data-bl-reset ${scope}>Reset behavior to the bot's defaults</button></p></fieldset>`;
   }

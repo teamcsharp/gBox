@@ -18,6 +18,10 @@
     { op: "instant_qte", label: "Native QTE assist", field: "qte_assist", read: status => status?.qte_assist?.enabled,
       note: status => `Wiggle and accumulation events${status?.capabilities?.instant_qte?.solo_recovery?.available ? ", plus solo recovery assistance" : ""}; other QTEs use automatic inputs. ${status?.qte_assist?.reason || "Waiting for an active event."}` },
     { op: "fire_rate", label: "Fire rate", field: "fire_rate_x", multiplier: 80, min: 0.1, max: 1000, step: 0.1 },
+    // per-weapon rates on Switch (operator 2026-11-09: "throw eggs 20x the regular speed and fire the bow at 10x regular
+    // speed with adjustable sliders"): that weapon's own animation x N while it is in hand
+    { op: "egg_rate", label: "Rotten egg throw rate ×", field: "egg_rate_x", multiplier: 20, min: 1, max: 40, step: 1, switchOnly: true },
+    { op: "bow_rate", label: "Bow fire rate ×", field: "bow_rate_x", multiplier: 10, min: 1, max: 20, step: 1, switchOnly: true },
     { op: "bullet_damage", label: "Bullet damage", field: "bullet_damage_x", multiplier: 10, min: 0.1, max: 1000, step: 0.1 },
     { op: "turn_speed", label: "Turning and aiming speed", field: "turn_speed_x", multiplier: 3, min: 0.25, max: 50, step: 0.25 },
     // on / off only: the worker retains the operator's seconds per kill
@@ -153,8 +157,10 @@
     return `Saved for this game: ${ROLES[team.role] || team.role} · ${PROFILES[team.training_profile] || team.training_profile}`
       + `${team.auto_reduce_mods ? " · gradual reduction allowed" : ""}.${where}`;
   }
+  // a Switch-only control (the per-weapon rates) is not shown on the PS3 edition
+  const shown = (state, def) => !def.switchOnly || state?.edition === "switch";
   function rows(state) {
-    return DEFINITIONS.map(def => {
+    return DEFINITIONS.filter(def => shown(state, def)).map(def => {
       const on = value(state.status, def), cap = capability(state.status, def.op);
       return { ...def, on, ...cap, disabled: state.busy || state.pending || state.weaponPending || state.stale || !cap.available || on === null };
     });
@@ -397,7 +403,7 @@
       try {
         await preflight(); await read(false); await saved;
         state.message = state.weaponPending ? "Weapon switch is still pending. Refresh to check its result."
-          : DEFINITIONS.every(def => capability(state.status, def.op).available)
+          : DEFINITIONS.filter(def => shown(state, def)).every(def => capability(state.status, def.op).available)
             ? (savedPrefs ? "Settings read from the running game. Choices are kept for this game across reloads and relaunches."
               : "Settings read from the running game. Choices are kept for this session.")
             : "Settings read. Unavailable controls show their status below.";
