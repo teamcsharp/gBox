@@ -33,7 +33,9 @@ ops (live ones need session_id of a running RE6 session):
                               cast_status reads an installed roster)
   switch_cast                 RE6 **Switch** roster: a Smash donor on every native body slot, written as a LayeredFS
                               overlay from the extracted RomFS (switch_cast_plan previews the assignment,
-                              switch_cast_status reads an installed build; romfs= overrides the RomFS root)
+                              switch_cast_status reads an installed build; romfs= overrides the RomFS root;
+                              textures=true authors the atlas UVs and writes the donor atlas into the character's
+                              0x2B albedo entries, one donor per character)
   mods                        RE6 mods built on this node
 """
 from __future__ import annotations
@@ -199,7 +201,8 @@ def character_capabilities() -> dict:
                                               "slots": 51, "per_round_relaunch": False,
                                               "rotation": "the game's own character/costume select"},
                                    "binding": "rigid geometry on the native MTF skeleton; head/hands blanked",
-                                   "textures": "native material kept; the uPlTex####_*.arc step is not written yet",
+                                   "textures": "donor atlas written into every 0x2B albedo of the character's set "
+                                               "(per character; the shader reading of the two halves is unverified)",
                                    "live_verified": False},
             "unsupported_platforms": ["pc", "ps3", "ps4"],
             "limitations": ["The Xbox 360 writer needs an extracted disc; the deliverable is the Switch edition "

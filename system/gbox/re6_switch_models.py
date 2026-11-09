@@ -214,7 +214,7 @@ def _source_geometry(source: Path):
 
 def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], height: float = 180.0,
                material_index: int = 0, template_index: int = 0, margin: float = 0.01,
-               atlas_size=(1024, 1024), textures: bool = False) -> tuple[bytes, dict]:
+               atlas_size=(1024, 1024), textures: bool = False, source_geometry=None) -> tuple[bytes, dict]:
     """Return (new archive, receipt) with the donor's surface authored onto the native body skeleton.
 
     ``source_roles`` maps a collection role ('hip', 'chest', ...) to the donor's joint name; ``material_index`` picks
@@ -231,7 +231,9 @@ def build_body(archive: bytes, source: Path, *, source_roles: dict[str, str], he
         raise SwitchModelError(f"the donor needs a '{ROOT_ROLE}' joint (the native root bone is the hip)")
     from . import characters
 
-    if textures:
+    if source_geometry is not None:
+        vertices, triangles = list(source_geometry[0]), list(source_geometry[1])
+    elif textures:
         # atlas UVs: the same packing the texture step writes into the character's albedo entries
         vertices, triangles, _atlas_image, _appearance = mtf_materials.source_mesh(Path(source),
                                                                                   atlas_size=atlas_size)

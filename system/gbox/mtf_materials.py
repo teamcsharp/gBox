@@ -172,7 +172,7 @@ def build_atlas(materials: list[dict], uv_ranges: dict[int, tuple], *, size=(512
                               'alpha_preserved': True}
 
 
-def source_mesh(path: Path, *, atlas_size=(512, 512)):
+def source_mesh(path: Path, *, atlas_size=(512, 512), strict_samplers: bool = True):
     """Return (vertices, triangles, PIL RGBA atlas, report) in the source's posed world space.
 
     Vertex records carry atlas UVs and source_material for diagnostics. Skin matrices
@@ -233,7 +233,7 @@ def source_mesh(path: Path, *, atlas_size=(512, 512)):
                         raise MaterialError('atlas import supports only untransformed TEXCOORD_0')
                     texture = gl['textures'][texture_info['index']]
                     sampler = gl.get('samplers', [])[texture['sampler']] if 'sampler' in texture else {}
-                    if any(sampler.get(key, 10497) != 10497 for key in ('wrapS', 'wrapT')):
+                    if strict_samplers and any(sampler.get(key, 10497) != 10497 for key in ('wrapS', 'wrapT')):
                         raise MaterialError('atlas import currently supports repeat texture samplers only')
                     if 'TEXCOORD_0' not in attrs:
                         raise MaterialError('textured source primitive has no UVs')

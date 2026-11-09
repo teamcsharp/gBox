@@ -87,6 +87,16 @@ def build(config, romfs: Path, library: Path, assignment: dict[tuple[str, str], 
     cache.mkdir(parents=True, exist_ok=True)
     changes: dict[str, dict] = {}
     receipts, skipped, atlases = [], [], {}
+    mesh_cache: dict[str, tuple] = {}
+    if textures:
+        # one atlas + one atlas-UV mesh per donor, reused by every slot the donor fills
+        for meta in {meta["slug"]: meta for meta in assignment.values()}.values():
+            source = library / meta["slug"] / meta["model"]
+            if progress:
+                progress(f"packing {meta['slug']} atlas")
+            vertices, triangles, atlas, _appearance = M.mtf_materials.source_mesh(
+                source, atlas_size=(1024, 1024), strict_samplers=False)
+            mesh_cache[meta["slug"]] = (vertices, triangles, atlas)
     for index, ((character, costume), meta) in enumerate(sorted(assignment.items()), 1):
         body = bodies.get((character, costume))
         if body is None:
@@ -102,8 +112,10 @@ def build(config, romfs: Path, library: Path, assignment: dict[tuple[str, str], 
                 payload = cached_arc.read_bytes()
                 receipt = json.loads(cached_receipt.read_text())
             else:
+                cached = mesh_cache.get(meta["slug"])
                 payload, receipt = M.build_body(body.read_bytes(), source, source_roles=meta["rig"]["roles"],
-                                                height=height, textures=textures)
+                                                height=height, textures=textures,
+                                                source_geometry=(cached[0], cached[1]) if cached else None)
                 cached_arc.write_bytes(payload)
                 cached_receipt.write_text(json.dumps(receipt))
         except (M.SwitchModelError, ValueError) as exc:
@@ -133,10 +145,8 @@ def build(config, romfs: Path, library: Path, assignment: dict[tuple[str, str], 
         for character in sorted({row["character"] for row in receipts}):
             meta = next(meta for (slot_character, _costume), meta in assignment.items()
                         if slot_character == character)
-            atlas = atlases.get(character)
-            if atlas is None:
-                atlas = M.donor_atlas(library / meta["slug"] / meta["model"])
-                atlases[character] = atlas
+            atlas = atlases.get(character) or mesh_cache[meta["slug"]][2]
+            atlases[character] = atlas
             changes.update(M.texture_changes(romfs, character, atlas))
     note = "RE6 Switch cast roster: " + ", ".join(f"{r['character']}/{r['costume']}<-{r['donor']}" for r in receipts)
     written = switch_mods.write_files(config, M.GAME_ID, name, changes,
