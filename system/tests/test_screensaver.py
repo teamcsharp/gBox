@@ -292,6 +292,38 @@ def test_a_demo_never_adopts_another_launch_of_the_same_game():
     assert s.get("slabel", "w1-agentjob") is None and len(calls) == 1
 
 
+def test_a_launch_queued_across_a_service_restart_is_followed_to_the_new_worker_id():
+    """The PC re-registers under a new id and its queued launch is re-pinned to it (server._register): the run adopts
+    the game that launch starts instead of waiting out LAUNCH_TIMEOUT with no bot (lilspark, 2026-11-09)."""
+    s, w, saver, calls, tick = rig()
+    tick()
+    gid = calls[0]["input"]["game"]["game_id"]
+    assert s.get(S.STATE, "i9-NUC")["worker_id"] == "w1"
+    w["id"] = "w2"                                              # the restart: same PC, new registration
+    s.put("job", "job0", calls[0] | {"require_worker": "w2"})   # ... and the queued launch follows it
+    s.put("session", "w2-job0", {"session_id": "w2-job0", "game_id": gid, "state": "running"})
+    tick(5)
+    run = s.get(S.STATE, "i9-NUC")
+    assert run["worker_id"] == "w2" and run["session_id"] == "w2-job0" and run["phase"] == "starting"
+    assert s.get("slabel", "w2-job0")["owner"] == "agent"
+    tick(S.START_GRACE)
+    assert calls[1]["tool"] == "autoplay" and calls[1]["require_worker"] == "w2"
+    assert calls[1]["input"]["session_id"] == "w2-job0"
+
+
+def test_a_restart_never_moves_a_run_to_a_launch_that_is_not_on_the_new_worker():
+    """Only the run's own re-pinned launch moves it: a job still pinned to the old id leaves the run where it was."""
+    s, w, saver, calls, tick = rig()
+    tick()
+    gid = calls[0]["input"]["game"]["game_id"]
+    w["id"] = "w2"
+    s.put("session", "w2-other", {"session_id": "w2-other", "game_id": gid, "state": "running"})
+    tick(5)
+    run = s.get(S.STATE, "i9-NUC")
+    assert run["worker_id"] == "w1" and run["phase"] == "launching" and "session_id" not in run
+    assert s.get("slabel", "w2-other") is None and len(calls) == 1
+
+
 def test_claim_drops_a_queued_demo_launch_when_the_pc_already_runs_a_game(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from gbox.config import Config

@@ -1032,6 +1032,40 @@ def rotten_egg_only(g: RE5Switch, on: bool, rate=None) -> dict:
             "native_equipped": False, "effective_next_round": True}
 
 
+def mine_probe(g: RE5Switch) -> dict:
+    """One read-only sample of the mine requirement, from the game's memory at this moment (scripts/re5_mine_probe.py).
+
+    The proximity bomb's inventory record, every uWp0a unit planted on the ground with its distance from him, the
+    Majini around him and the round's counters, in one job. None of it comes from the bot's own mine counters, so a
+    placement the bot miscounts (or never made) shows here as it is. The script's first version read the same things
+    one read_memory job at a time: ~50 jobs and most of a minute a sample, too slow to time a 30 s cadence, and a
+    worker with jobs in flight is "busy with jobs" to MercMode's scheduler, which then starts no next round."""
+    snap = R.snapshot(g.m)
+    out: dict = {"verified": True, "at": round(time.time(), 2), "module_base": hex(g.base), "player": None,
+                 "mine": None, "ground_mines": [], "kills": snap.get("kills"), "score": snap.get("score"),
+                 "timer": snap.get("timer"), "mine_settings": g.state.get("mine_settings"),
+                 "mine_loadout": bool(g.state.get("mine_loadout"))}
+    p = snap.get("player")
+    if not p:
+        return out
+    pos = p["pos"]
+    flat = lambda q: round(math.hypot(q[0] - pos[0], q[2] - pos[2]), 1)
+    out["player"] = {"pos": [round(v, 1) for v in pos], "hp": p.get("hp"), "hp_max": p.get("hp_max"),
+                     "motion": p.get("motion")}
+    inv = snap.get("inventory") or []
+    mine = next((s for s in inv if s.get("id") == R.MINE_ITEM), None)
+    if mine:
+        out["mine"] = {k: mine.get(k) for k in ("id", "rounds", "cap", "grid", "hand", "slot")}
+    out["in_hand"] = next((s.get("id") for s in inv if s.get("hand")), None)
+    out["ground_mines"] = [{"ptr": m["ptr"], "pos": [round(v, 1) for v in m["pos"]], "dist_cm": flat(m["pos"])}
+                           for m in snap.get("ground_mines") or ()]
+    near = sorted(flat(e["pos"]) for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0)
+    out["foes"] = {"alive": len(near), "nearest_cm": near[0] if near else None,
+                   "within_250": sum(1 for d in near if d < 250.0), "within_400": sum(1 for d in near if d < 400.0),
+                   "within_800": sum(1 for d in near if d < 800.0)}
+    return out
+
+
 def mine_settings(ad) -> dict | None:
     """The session's mine settings for the Switch bot (None: never set: the bot's defaults)."""
     st = ORIG.get(id(ad)) or {}
@@ -1393,6 +1427,9 @@ def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Swi
         elif op == "addresses":
             res.update(game=GAME, addresses={k: {**v, "address": f"main+0x{v['offset']:X}"} for k, v in ADDRESSES.items()},
                        weapons={f"0x{k:02X}": w.name for k, w in sorted(_weapons().items())})
+            return res
+        elif op == "mine_probe":                             # read only, and small: no status block rides along
+            res.update(mine_probe(g))
             return res
         elif op in NOT_YET:
             res.update(verified=False, supported=False, reason=f"not yet on Switch: {NOT_YET[op]}")

@@ -597,8 +597,19 @@ class Screensaver:
         phase = run.get("phase")
         if phase == "launching":
             job = self.store.get("job", run.get("job")) or {}
+            if run.get('worker_id') != w['id'] and w['id'] in (job.get('worker_id'), job.get('require_worker')):
+                # The service restarted while this launch was queued: the PC registered under a new worker id and its
+                # queued launch was re-pinned to it (server._register), so the game comes up as "<new id>-<job>". The
+                # run follows its own launch there. 2026-11-09 09:01: the run kept the old id, never found the game it
+                # had launched, and the Spark sat on a title screen with no bot until LAUNCH_TIMEOUT (15 minutes).
+                run = run | {'worker_id': w['id']}
+                self.store.put(STATE, w['name'], run)
             if job.get("state") in ("failed", "rejected", "invalid", "cancelled") or now - run["started"] > LAUNCH_TIMEOUT:
-                why = f"launch {job.get('state') or 'timed out'}: {str(job.get('error') or '')[:200]}"
+                failed = job.get("state") in ("failed", "rejected", "invalid", "cancelled")
+                # a timeout names itself: "launch succeeded: " read as good news in the note of a run that had just
+                # given up on a game it never found (2026-11-09)
+                why = f"launch {job.get('state')}: {str(job.get('error') or '')[:200]}" if failed else \
+                    f"launch timed out: its game never showed up (launch job {job.get('state') or 'missing'})"
                 if run.get('prelaunched'):                   # the warm preload failed: that title launches cold next
                     return self._warm_fallback(w, run, now, 'warm ' + why)
                 return self._finish(w, run, now, why)
