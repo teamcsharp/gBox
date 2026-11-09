@@ -1,0 +1,38 @@
+{
+  "schema": "gbox.mercs.opening_phase_protocol/1",
+  "source_request_id": "4ffb97eaaee54068",
+  "request_number": 4847,
+  "operator_instruction_verbatim": "So for the initial part of a mercenaries round, typically what the player needs to be doing is running from Checkpoint to Checkpoint, grabbing the time bonuses and dispatching enough enemies to get to the time bonuses and navigating to each time bonus while dropping lines. And then after grabbing all the time bonuses, that's when the match truly begins and they can begin to make a stand and start trying to defend themselves while running around and fighting through the level and going after threats and dealing with threats themselves. In Resident Evil Five, the only way to grab a time bonus is to walk up to it and melee it. Same thing with Resident Evil Six. You can't shoot it from a distance. You have to walk up to it and dispatch the time bonus physically.",
+  "phases": [
+    {
+      "name": "opening",
+      "order": 1,
+      "objective": "run checkpoint to checkpoint; dispatch enough enemies to reach each time bonus; navigate to each time bonus while dropping lines",
+      "end_condition": "all time bonuses grabbed",
+      "bot_requirements": [
+        "route checkpoint to checkpoint",
+        "dispatch enemies blocking the path to each time bonus",
+        "drop lines while navigating to time bonuses",
+        "walk up to each time bonus and melee it (ranged acquisition invalid)"
+      ]
+    },
+    {
+      "name": "match",
+      "order": 2,
+      "objective": "make a stand, defend, fight through the level, go after and deal with threats",
+      "start_condition": "all time bonuses grabbed"
+    }
+  ],
+  "time_bonus_acquisition": {
+    "resident_evil_5": {
+      "method": "walk_up_and_melee",
+      "can_be_shot_from_distance": false
+    },
+    "resident_evil_6": {
+      "method": "walk_up_and_melee",
+      "can_be_shot_from_distance": false
+    }
+  },
+  "status": "coaching_record_only",
+  "note": "Durable coaching knowledge for the mercs autoplay bot; behavior implementation and live verification are the follow-up acceptance steps."
+}
