@@ -278,6 +278,22 @@ def test_plan_series_honours_refusals_eligibility_and_fixed_builds():
         S.plan_series('s', donors, enemy_pool=slugs, sizes=sizes, limit=1)
 
 
+def test_substitute_is_deterministic_prefers_an_unseen_donor_of_the_franchise_and_never_repeats_the_build():
+    donors = many_donors(40)
+    franchise_of = {d.slug: d.franchise for d in donors}
+    build = S.Build(3, 's-03', {'chris_bsaa': 'd000'}, {'uEm10': ['d001', 'd002', 'd003']})
+    pool_ = {d.slug for d in donors}
+    seen = {f'd{i:03d}' for i in range(4, 30)}
+    first = S.substitute(build, 'uEm10', 'd002', candidates=pool_, seen=seen, franchise_of=franchise_of)
+    again = S.substitute(build, 'uEm10', 'd002', candidates=set(pool_), seen=set(seen), franchise_of=franchise_of)
+    assert first == again and first not in build.slugs() and first not in seen
+    assert franchise_of[first] == franchise_of['d002']                      # an unseen donor of the same franchise
+    everyone_seen = S.substitute(build, 'uEm10', 'd002', candidates=pool_, seen=pool_, franchise_of=franchise_of)
+    assert everyone_seen not in build.slugs() and franchise_of[everyone_seen] == franchise_of['d002']
+    with pytest.raises(S.SeriesError, match='no donor is left'):
+        S.substitute(build, 'uEm10', 'd002', candidates=set(build.slugs()), seen=set(), franchise_of=franchise_of)
+
+
 def test_refused_slug_is_read_from_both_writers_messages():
     slugs = ['sonic', 'sa2_shadow', 'sonic_x']
     assert S._refused_slug('build-01: chris_bsaa <- sonic_x: sonic_x is not a usable donor (rig_refused): ...', slugs) == 'sonic_x'
@@ -324,6 +340,7 @@ def test_build_series_writes_builds_sets_refused_donors_aside_and_keeps_the_mani
 
     def fake_build_cast(name, assignments, archives, out, *, previews=True, secondary='neutral'):
         rows = {}
+        assert len(assignments) == 1 and set(archives) == {assignments[0].enemy}      # one class at a time
         for a in assignments:
             assert a.mix and len(a.donors) == {'uEm10': 3, 'uEm11': 2}[a.enemy] and a.table is None
             for d in a.donors:
@@ -339,6 +356,8 @@ def test_build_series_writes_builds_sets_refused_donors_aside_and_keeps_the_mani
                              'mix': 'test', 'output_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
                              'output_bytes': path.stat().st_size}
         (out / 'receipt.json').write_text('{}', encoding='utf-8')
+        (out / 'preview.png').write_bytes(b'png')
+        (out / 'preview-posed.png').write_bytes(b'png')
         return {'archives': rows}
     monkeypatch.setattr(S.players, 'cast', fake_cast)
     monkeypatch.setattr(S.enemies, 'build_cast', fake_build_cast)
@@ -350,13 +369,19 @@ def test_build_series_writes_builds_sets_refused_donors_aside_and_keeps_the_mani
     assert manifest['refusals']['d007'] == {'enemy': 'd007 does not fit the Majini skeleton well'}
     assert 'player' in manifest['refusals']['d002'] and 'enemy' in manifest['refusals']['d009']
     assert any('set aside for the player role: d002' in m for m in messages)
-    assert any('set aside for the enemy role: d009' in m for m in messages)
-    # an enemy refusal re-deals the enemies and keeps the build's player deal: no second player build for it
+    assert any('set aside for the enemy role: d009' in m and 'takes its carrier' in m for m in messages)
+    # an enemy refusal gives the carrier to a substitute inside the build: the player deal is built once per deal
     assert len(cast_calls) == len(set(cast_calls)) and len(cast_calls) < len(messages)
+    swapped = [row for row in manifest['builds'] if row['substitutions']]
+    assert len(swapped) == 1 and swapped[0]['substitutions'][0]['refused'] == 'd009'
+    taker = swapped[0]['substitutions'][0]['substitute']
+    assert taker in {s for v in swapped[0]['enemies'].values() for s in v} and taker not in ('d007', 'd009')
+    assert swapped[0]['built'] and swapped[0]['files']
     for row in manifest['builds']:
         enemy_slugs = {s for v in row['enemies'].values() for s in v}
         assert not enemy_slugs & {'d007', 'd009'} and 'd002' not in {v['donor'] for v in row['players'].values()}
         assert row['players']['chris_safari']['archive'] == 'uPl00ChrisCos2'
+        assert len({v["donor"] for v in row["players"].values()} | enemy_slugs) == row["donors"]   # no donor twice
     # the written builds agree with the manifest and their receipts, file by file
     for row in manifest['builds'][:2]:
         folder = out / row['folder']
@@ -365,7 +390,9 @@ def test_build_series_writes_builds_sets_refused_donors_aside_and_keeps_the_mani
         for path, info in row['files'].items():
             data = (folder / path).read_bytes()
             assert hashlib.sha256(data).hexdigest() == info['sha256'] and len(data) == info['bytes']
-        assert (folder / 'receipt-players.json').is_file() and (folder / 'receipt-enemies.json').is_file()
+        assert (folder / 'receipt-players.json').is_file() and (folder / 'receipt-uEm10.json').is_file()
+        assert (folder / 'preview-uEm11.png').is_file() and not (folder / 'preview.png').exists()
+        assert receipt['receipts']['enemies'] == {'uEm10': 'receipt-uEm10.json', 'uEm11': 'receipt-uEm11.json'}
         assert receipt['label_table']['archives']['Chris (Safari)'] == 'uPl00ChrisCos2'
         assert receipt['what_must_be_seen'] and receipt['failure_signs']
     assert windings_seen.get('d005', 'ccw') == ('cw' if 'd005' in windings_seen else 'ccw')

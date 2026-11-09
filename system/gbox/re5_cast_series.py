@@ -10,15 +10,17 @@ the same series.
     plan_series(seed, donors, ...)      -> the builds as {slot: slug} plans, nothing written
     build_series(...)                   -> writes the first N builds under <out>/build-NN/ and <out>/manifest.json
 
-Refusals are part of the plan: a donor a slot refuses while building (its surface does not fit that slot's atlas,
-the enemy fit collapses a triangle) is recorded against that role and the series is dealt again from that build on,
-so the manifest and the archives on disk always agree. Nothing here installs, launches or registers anything; every
-receipt says `live_verified: false`.
+Refusals are part of the plan: a player slot that refuses its donor (its surface does not fit that slot's atlas)
+has the series dealt again from that build on; an enemy class that refuses a donor (the fit collapses a triangle,
+a fifth skin influence) gives that carrier to a deterministic substitute and the class is built again, the rest of
+the build untouched. Both are recorded (`refusals`, `substitutions`), so the manifest and the archives on disk
+always agree. Nothing here installs, launches or registers anything; every receipt says `live_verified: false`.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import random
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -59,6 +61,7 @@ class Build:
     players: dict[str, str]                       # roster slot key -> slug
     enemies: dict[str, list[str]]                 # class -> slugs, one per carrier
     first_time: list[str] = field(default_factory=list)   # donors dealt for the first time in the series
+    substitutions: list[dict] = field(default_factory=list)   # {class, refused, substitute, reason} while building
 
     @property
     def name(self) -> str:
@@ -66,6 +69,26 @@ class Build:
 
     def slugs(self) -> list[str]:
         return list(self.players.values()) + [slug for slugs in self.enemies.values() for slug in slugs]
+
+
+def substitute(build: Build, enemy: str, refused: str, *, candidates: set[str], seen: set[str],
+               franchise_of: dict[str, str]) -> str:
+    """The donor that takes a refused donor's carrier: deterministic from the build seed, never one already in the
+    build, an unseen donor of the same franchise first, then any unseen donor, then a seen one of the franchise,
+    then any. `candidates` are the enemy-eligible slugs not refused for the role."""
+    taken = set(build.slugs())
+    open_ = sorted(slug for slug in candidates if slug not in taken and slug != refused)
+    if not open_:
+        raise SeriesError(f'{build.name}: no donor is left to take the place of {refused} on {enemy}')
+    rng = random.Random(f're5-series:{build.seed}:{enemy}:{refused}')
+    rng.shuffle(open_)
+    same = franchise_of.get(refused)
+    for tier in ((lambda s: s not in seen and franchise_of.get(s) == same), (lambda s: s not in seen),
+                 (lambda s: franchise_of.get(s) == same), (lambda s: True)):
+        picks = [slug for slug in open_ if tier(slug)]
+        if picks:
+            return picks[0]
+    raise SeriesError(f'{build.name}: no donor is left to take the place of {refused} on {enemy}')
 
 
 def enemy_slots(classes: list[str] | None = None, tables: dict[str, str] | None = None) -> dict[str, int]:
@@ -179,14 +202,19 @@ def _rename(folder: Path, old: str, new: str) -> None:
 
 
 def build_one(build: Build, *, romfs: Path, archives_dir: Path, library: Path, out: Path,
-              windings: dict[str, str], donors: dict[str, pool.Donor],
-              tables: dict[str, str] | None = None, previews: bool = True) -> dict:
+              windings: dict[str, str], donors: dict[str, pool.Donor], enemy_pool: set[str] = frozenset(),
+              seen: set[str] = frozenset(), refusals: dict[str, dict[str, str]] | None = None,
+              tables: dict[str, str] | None = None, previews: bool = True, progress=None) -> dict:
     """Write one build under `out` (players and enemies into one `romfs/` tree) and return its receipt.
 
-    Raises `SeriesError` with attributes `role` ('player' / 'enemy') and `slug` when a donor is refused, so the
-    caller can record the refusal and deal the series again from this build on.
+    The players are built first; a player slot that refuses its donor raises `SeriesError` with `role` 'player'
+    and `slug`, and the caller deals the series again from this build. The enemy classes are then built one at a
+    time; a class that refuses a donor records the refusal in `refusals` (role 'enemy') and the donor's carrier goes
+    to a `substitute` from `enemy_pool` (minus refusals and the build), the class is built again and the build's
+    plan and `substitutions` are updated in place. Nothing of a class is written before every carrier of it builds.
     """
     out = Path(out)
+    refusals = refusals if refusals is not None else {}
     players_receipt = _kept_players(out, build)
     if players_receipt is None:
         if out.exists():
@@ -200,36 +228,53 @@ def build_one(build: Build, *, romfs: Path, archives_dir: Path, library: Path, o
             error.role, error.slug = 'player', slug
             raise error from exc
         _rename(out, 'receipt.json', 'receipt-players.json')
-    else:                                     # an enemy refusal re-deals the enemies; the same player deal is kept
+    else:                                     # the same player deal is kept; the enemy classes are built afresh
         for path in out.iterdir():
-            if path.name.startswith('preview') or path.name in ('receipt.json', 'receipt-enemies.json'):
+            if path.name.startswith('preview') or path.name.startswith('receipt-uEm') or path.name == 'receipt.json':
                 path.unlink()
         for enemy in writer.ARCHIVES.values():
             (out / 'romfs' / enemy.path).unlink(missing_ok=True)
-    assignments = []
-    archives = {}
-    for enemy, slugs in build.enemies.items():
-        resolved = [enemies.donor_from_pool(donors[slug], library, windings.get(slug, 'ccw')) for slug in slugs]
-        assignments.append(enemies.Assignment(enemy, tuple(resolved), tuple([writer.NATIVE_HEIGHT] * len(resolved)),
-                                              mix=True, table=(tables or {}).get(enemy)))
+    franchise_of = {slug: donor.franchise for slug, donor in donors.items()}
+    class_receipts = {}
+    for enemy in list(build.enemies):
         path = Path(archives_dir) / Path(writer.ARCHIVES[enemy].path).name
         if not path.is_file():
             raise SeriesError(f'{build.name}: the original {path} is missing')
-        archives[enemy] = path.read_bytes()
-    try:
-        enemies_receipt = enemies.build_cast(build.name, assignments, archives, out, previews=previews)
-    except enemies.CastError as exc:
-        slug = _refused_slug(str(exc), [slug for slugs in build.enemies.values() for slug in slugs])
-        error = SeriesError(f'{build.name}: enemy class refused {slug}: {exc}')
-        error.role, error.slug = 'enemy', slug
-        raise error from exc
-    _rename(out, 'receipt.json', 'receipt-enemies.json')
+        archive = path.read_bytes()
+        while True:
+            slugs = build.enemies[enemy]
+            resolved = [enemies.donor_from_pool(donors[slug], library, windings.get(slug, 'ccw')) for slug in slugs]
+            assignment = enemies.Assignment(enemy, tuple(resolved), tuple([writer.NATIVE_HEIGHT] * len(resolved)),
+                                            mix=True, table=(tables or {}).get(enemy))
+            try:
+                class_receipts[enemy] = enemies.build_cast(build.name, [assignment], {enemy: archive}, out,
+                                                           previews=previews)
+            except enemies.CastError as exc:
+                refused = _refused_slug(str(exc), list(slugs))
+                if refused is None:
+                    raise SeriesError(f'{build.name}: {enemy} refused without naming a donor: {exc}') from exc
+                refusals.setdefault(refused, {})['enemy'] = str(exc)
+                candidates = {slug for slug in enemy_pool if 'enemy' not in refusals.get(slug, {})}
+                taker = substitute(build, enemy, refused, candidates=candidates, seen=set(seen),
+                                   franchise_of=franchise_of)
+                build.enemies[enemy] = [taker if slug == refused else slug for slug in slugs]
+                build.substitutions.append({'class': enemy, 'refused': refused, 'substitute': taker,
+                                            'reason': str(exc)})
+                if progress:
+                    progress(f'set aside for the enemy role: {refused}; {taker} takes its carrier on {enemy} of '
+                             f'{build.name}')
+                continue
+            break
+        _rename(out, 'receipt.json', f'receipt-{enemy}.json')
+        _rename(out, 'preview.png', f'preview-{enemy}.png')
+        _rename(out, 'preview-posed.png', f'preview-{enemy}-posed.png')
     files = {}
     for key, row in players_receipt['slots'].items():
         files[row['output']['path']] = {'role': 'player', 'slot': key, 'label': players.SLOTS[key].label,
                                         'donor': row['donor'], 'sha256': row['output']['sha256'],
                                         'bytes': row['output']['bytes']}
-    for enemy, row in enemies_receipt['archives'].items():
+    for enemy, receipt in class_receipts.items():
+        row = receipt['archives'][enemy]
         files[row['archive']] = {'role': 'enemy', 'class': enemy, 'donors': [d['slug'] for d in row['donors']],
                                  'mix': row.get('mix'), 'sha256': row['output_sha256'], 'bytes': row['output_bytes']}
     for path, row in files.items():          # the files on disk are what the receipts say they are
@@ -244,9 +289,11 @@ def build_one(build: Build, *, romfs: Path, archives_dir: Path, library: Path, o
                     for key, slug in build.players.items()},
         'enemies': {enemy: [{'slug': slug, 'name': donors[slug].name, 'game': donors[slug].game}
                             for slug in slugs] for enemy, slugs in build.enemies.items()},
-        'first_time_in_series': build.first_time,
-        'files': files, 'receipts': {'players': 'receipt-players.json', 'enemies': 'receipt-enemies.json'},
-        'previews': {'players': 'contact-sheet.png', 'enemies_rest': 'preview.png', 'enemies_posed': 'preview-posed.png'},
+        'first_time_in_series': build.first_time, 'substitutions': build.substitutions,
+        'files': files, 'receipts': {'players': 'receipt-players.json',
+                                     'enemies': {enemy: f'receipt-{enemy}.json' for enemy in class_receipts}},
+        'previews': {'players': 'contact-sheet.png',
+                     'enemies': {enemy: [f'preview-{enemy}.png', f'preview-{enemy}-posed.png'] for enemy in class_receipts}},
         'label_table': {'archives': players.LABEL_ARCHIVES, 'evidence': players.LABEL_EVIDENCE},
         'what_must_be_seen': [
             'Each roster entry of the six loads the donor the manifest names for its label (Chris (Safari) loads the '
@@ -298,9 +345,11 @@ def build_series(seed, *, survey_path: Path, enemy_survey_path: Path | None, rom
         build = builds[len(built)]
         if progress:
             progress(f'{build.name}: {len(build.slugs())} donors, {len(build.first_time)} for the first time')
+        seen = {slug for earlier in fixed for slug in earlier.slugs()}
         try:
             receipt = build_one(build, romfs=romfs, archives_dir=archives_dir, library=library, out=out / build.name,
-                                windings=windings, donors=by_slug, tables=tables, previews=previews)
+                                windings=windings, donors=by_slug, enemy_pool=enemy_pool, seen=seen,
+                                refusals=refusals, tables=tables, previews=previews, progress=progress)
         except SeriesError as exc:
             if getattr(exc, 'slug', None) is None:
                 raise
@@ -312,6 +361,7 @@ def build_series(seed, *, survey_path: Path, enemy_survey_path: Path | None, rom
                                  built, exclude)
             manifest_path.write_text(json.dumps(manifest, indent=1), encoding='utf-8')   # the refusal is on record
             continue
+        build.first_time = sorted(set(build.slugs()) - seen)      # substitutions may have changed the deal
         fixed.append(build)
         built.append(receipt)
         builds = plan_series(seed, donors, enemy_pool=enemy_pool, sizes=sizes, refusals=refusals, fixed=fixed)
@@ -331,7 +381,8 @@ def _manifest(seed, survey_path, enemy_survey_path, donors, enemy_pool, sizes, r
         row = {'index': build.index, 'name': build.name, 'seed': build.seed, 'built': build.index in receipts,
                'players': {key: {'label': players.SLOTS[key].label, 'archive': players.SLOTS[key].player_class,
                                  'donor': slug} for key, slug in build.players.items()},
-               'enemies': build.enemies, 'donors': len(build.slugs()), 'first_time_in_series': build.first_time}
+               'enemies': build.enemies, 'donors': len(build.slugs()), 'first_time_in_series': build.first_time,
+               'substitutions': build.substitutions}
         if build.index in receipts:
             row.update(folder=build.name, files=receipts[build.index]['files'])
         rows.append(row)
