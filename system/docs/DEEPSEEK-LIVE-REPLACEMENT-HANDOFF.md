@@ -60,14 +60,28 @@ Local owned inputs/candidates currently exist under `.scratch-merc-recovery/asse
 
 ### Reproduce v15 without ignored helper scripts
 
-**Update 2026-11-09 resume session: this recipe no longer reproduces byte-exactly.** With the verified pristine
-inputs below, committed `build_grip_candidate` now fails its own guard chain — stage-1 `build()` yields MOD97
-`cec895d2…` instead of the reviewed v12 `b87ecc87…`, and even feeding the stored v12 MOD directly into
-`re5_sonic_hands.author` yields `e9c2bf23…` instead of the pinned v14 `426ac8ad…`. Confirmed identical under the
-deployed share code, the clean deploy clone and a BOM/LF-normalized closure overlay on lilspark (service venv), so it
-is recipe drift, not environment. The live overlay bytes still hash exactly `d96c9c9e…` and remain the source of
-truth; `GET /api/artifacts/d96c9c9e…` can restore them. Do not promote or register v15 until a builder that actually
-reproduces these hashes exists. The procedure below is kept as the intended contract for such a fixed builder.
+**Correction 2026-11-09: the recipe did not drift; the lilspark failure was BLAS-kernel rounding.** The resume
+session saw stage-1 `build()` yield MOD97 `cec895d2…` instead of the reviewed v12 `b87ecc87…`, and the stored v12
+MOD through `re5_sonic_hands.author` yield `e9c2bf23…` instead of the pinned v14 `426ac8ad…`. All three of its runs
+were on lilspark (aarch64); it varied the code, never the machine. On the authoring PC (JAYBUILTFINALE, NumPy 2.5.4,
+OpenBLAS SkylakeX kernels) the code as committed in `4e0ecc31` and in main `6a041c30` both rebuild `d96c9c9e…`, and
+the only later changes to the recipe's modules are optional parameters that default to the old behaviour. Forcing
+another kernel on that PC (`OPENBLAS_CORETYPE=Haswell` or `Nehalem`) stops the same commit at the same guard, with
+stage-1 MOD `44296edc…` or `26c7a135…`. The differing bytes are float32 slots of the skeleton tables within 1e-12
+of the reviewed values; no vertex, weight, envelope or bound byte differs.
+
+`gbox.re5_sonic_residue` now settles those slots to the reviewed bytes and refuses any other difference, so
+`build_grip_candidate` returns `d96c9c9e…` under all three kernel families on the PC. **It has not been run on
+lilspark.** Run the block below there: the receipt carries `reproduces_reviewed`, and when it is false
+`re5_sonic_writer.grip_reproduction(archive)` names the payload that differs. The model is expected to match now.
+The BC7 atlas comes from the native `ispc_texcomp` encoder and Pillow mips, and the entry framing from the linked
+zlib; the recipe cannot make those portable and they are unmeasured on aarch64. If they differ on the host, build
+on the PC and promote through the artifact-pinned route (handover §6.D option 2). `GET /api/artifacts/d96c9c9e…`
+still serves the accepted bytes.
+
+Opt-in check on a PC that owns the inputs:
+`GBOX_RE5_SONIC_ASSETS=<folder with uPl00ChrisNormal.arc and sonic.glb> pytest tests/test_re5_sonic_reproduction.py`
+rebuilds all stages under the automatic, Haswell and Nehalem kernels, about a minute each.
 
 Use committed `gbox.re5_sonic_writer.build_grip_candidate`, **not** `build()` or `plan()`; those intentionally still use the earlier unregistered recipe. Run with `system` on `PYTHONPATH`, the audit environment's dependencies, an owned original archive and the exact library GLB:
 

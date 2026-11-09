@@ -11,7 +11,7 @@ import hashlib
 from pathlib import Path
 import numpy as np
 
-from . import characters, mt_model, mtf_author, mtf_materials, mtf_motion, mtf_retarget
+from . import characters, mt_model, mtf_author, mtf_materials, mtf_motion, mtf_retarget, re5_sonic_residue
 from .re5_sonic_hands import CHAINS, SOURCE_SHA256
 
 V14_MOD_SHA256 = '426ac8adbad137b8ad42e1b3748d1fb56e5b1f87664ac0acc6626ad6ad241d56'
@@ -173,7 +173,8 @@ def author(model_bytes: bytes, native_bytes: bytes, source: Path, skin_receipt: 
     for i in range(len(vertices)):
         if i not in edited:
             buffer[i*28:(i+1)*28] = raw[i*28:(i+1)*28]
-    output = mt_model.rebuild_mod(parsed,vertex_buffer=bytes(buffer))
+    # The rebuilt bind tables carry BLAS rounding residue; the reviewed v15 bytes are the authoring kernel's.
+    output = re5_sonic_residue.settle(mt_model.rebuild_mod(parsed,vertex_buffer=bytes(buffer)))
     parsed = mt_model.parse_mod(output)
     positions = np.asarray(parsed.positions(0)); old_positions = np.asarray(model.positions(0))
     faces = np.asarray(triangles)
