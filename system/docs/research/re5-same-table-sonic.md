@@ -164,6 +164,27 @@ The first v12 engine round reached 16,340 points and more than 31 kills, establi
 Its normal camera captures show back quills while cropping the much lower source shoulders and hands. Those captures
 do not establish hand orientation, weapon attachment or correct leg contacts; a deliberate front/side view is pending.
 
+The next offline diagnostics address the remaining rigid gloves. Each source glove has 66 welded positions and four
+separate finger lobes plus a thumb, but its 190/194 glove vertices all follow one source bone. The bounded
+`re5_sonic_hands.author()` adds measured native digit anchors and seam-consistent weights, and straightens the already
+curved source fingers into native bind directions before native finger animation is applied. V13 changes 260 digit
+vertices; native wp00 clip110 is a two-frame finger-grip layer and visibly curls the new digits in the paired CPU view.
+
+V14 additionally corrects the wrist pivot. Source node039/058 still skins a thin forearm segment; child040/059 is the
+actual glove/cuff pivot, 0.596828 source units farther along the arm. Native forearm twist8/13 stays at the old pivot,
+native wrist9/14 advances exactly 7.5244026/7.5244024 cm into the cuff, and 15 forearm vertices per side transfer their
+wrist influence to the corresponding twist bone. V14 retains V13 rest positions, normals, UVs and tangents byte for
+byte. The v12 body geometry stays unchanged; only those 30 forearm weight records change outside the digits. All
+1,369 triangles remain nondegenerate, welded seam gaps are zero, weights sum to one with at most four influences,
+and the 47 envelope records match the header and mesh count. Native hierarchy, animation IDs and wrist orientations
+remain unchanged. Only MOD entry97 changes relative to the v12 archive; its LMT files and materials stay intact.
+
+`re5_sonic_writer.build_finger_candidate(..., correct_wrist=True)` reproduces this separate experimental candidate.
+The v14 archive SHA256 is `4025fe19aab2d431d14dd8b7a2ed86a3f2a5fd1733ee092087a08be7562a33ce`. It is not the registered
+library recipe and is not gameplay-verified. The larger source palm still places its knuckles farther from the wrist
+than Chris's palm; the native weapon attachment offset, offhand contact and procedural leg behavior need an engine
+check. No gun scaling, guessed attachment-bone edit or foot-goal change is part of this candidate.
+
 ```sh
 python3 tools/probes/re5_em10_high_sonic.py \
   --archive /path/to/uEm10.arc --source /path/to/sa2_sonic_0.glb \

@@ -85,6 +85,11 @@ def test_same_true_clip_frames_for_both_models_and_joint_displacements():
     assert result['diagnostics']['buffered_tracks'] == 1
     assert all(j['distance_cm'] == 0 for f in result['diagnostics']['joint_displacements'] for j in f['joints'])
     assert result['native']['frames'][2]['skeleton']['world_matrices'][1][12] == 5.
+    # The isolated-limb view follows real skin ownership, even when posed
+    # vertices overlap an unrelated body part; these are bone indices, not IDs.
+    for side in ('native', 'candidate'):
+        assert result[side]['skin_influences'] == [[[0, 1.]], [[1, 1.]], [[0, 1.]]]
+        assert all('skin_influences' not in frame for frame in result[side]['frames'])
 
 
 def test_bind_pose_keeps_native_and_candidate_skeleton_difference_visible():
@@ -286,6 +291,11 @@ def test_animated_vertices_blend_all_positive_bones_instead_of_dominant_only():
     # Child travels eight units; a quarter-weight moves each vertex two units.
     displacement = positions(result, frame=1)-positions(result, frame=0)
     assert displacement == pytest.approx(np.tile((2., 0., 0.), (3, 1)), abs=.001)
+    for row in result['native']['skin_influences']:
+        # Quantized layouts can carry a small residual on another slot for
+        # bone zero. Limb isolation must sum every positive contribution.
+        assert {bone for bone, _ in row} == {0, 1}
+        assert [sum(weight for bone, weight in row if bone == b) for b in (0, 1)] == pytest.approx([.75, .25], abs=4e-5)
 
 
 def test_invalid_positive_bone_and_invalid_weight_sum_refuse():

@@ -1,6 +1,7 @@
 'use strict';
 // A comparison-only Electron entry point. It deliberately never imports main.js.
-// Existing runtime: gBox.exe <this-file> --api <origin> --token-file <path> [--build <name>]
+// Existing runtime: gBox.exe <this-file> --token-file <path> [--build <name>] --api <origin>
+// On Windows keep the API URL last: Electron refuses subsequent switches before loading the entry.
 const fs=require('node:fs');
 const path=require('node:path');
 const {pathToFileURL}=require('node:url');
@@ -13,7 +14,7 @@ function options(argv){
   const keys=new Set(['api','token-file','build','title','animation-entry','animation-index']);
   for(let i=0;i<argv.length;i++){
     const key=argv[i].replace(/^--/,'');
-    if(!argv[i].startsWith('--')||!keys.has(key)||!argv[i+1]||argv[i+1].startsWith('--'))throw Error('Use --api <origin> --token-file <path> and an optional --build <name>.');
+    if(!argv[i].startsWith('--')||!keys.has(key)||!argv[i+1]||argv[i+1].startsWith('--'))throw Error('Use --token-file <path>, an optional --build <name>, then --api <origin> last.');
     const value=argv[++i];
     if(key==='api')out.origin=value;
     else if(key==='token-file')out.tokenFile=path.resolve(value);

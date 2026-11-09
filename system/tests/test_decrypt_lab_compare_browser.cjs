@@ -16,7 +16,7 @@ test('comparison window renders both models and synchronizes frame, view and joi
     await send('Page.navigate',{url:`http://127.0.0.1:${server.address().port}`});
     for(const end=Date.now()+10000;!await evaluate('!!window.GBoxModelCompare');){if(Date.now()>end)throw Error('Comparison script did not load');await new Promise(r=>setTimeout(r,30));}
     await evaluate(`window.calls=[];
-      window.model=(offset)=>({triangles:[0,1,2],frames:[0,1,2].map(frame=>({frame,positions:[0,0,0,1,0,0,0,2+frame*.1,0],skeleton:{anim_ids:[0,14],parents:[255,0],bones:[[0,0,0],[offset+frame*.1,1,0]]}}))});
+      window.model=(offset)=>({triangles:[0,1,2],skin_influences:[[[1,1]],[[1,1]],[[1,1]]],frames:[0,1,2].map(frame=>({frame,positions:[0,0,0,1,0,0,0,2+frame*.1,0],skeleton:{anim_ids:[0,14],parents:[255,0],bones:[[0,0,0],[offset+frame*.1,1,0]]}}))});
       window.payload={fps:30,frame_indices:[0,1,2],clip:{animation_index:0,frame_count:150},native:model(0),candidate:model(.5)};
       window.panel=GBoxModelCompare.mount({title:'re5_switch',arcPath:'nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc',build:'candidate',
         api:async(path,body)=>{calls.push(body);return body.op==='list'?{builds:[{name:'candidate'}],selected_animation_entry:115,motions:[{entry_index:115,name:'Walk',clips:[{index:0,frame_count:150,supported:true},{index:1,frame_count:150,supported:false,raw_fk_supported:true,reason:'Game IK'}]}]}:payload;}});
@@ -32,6 +32,15 @@ test('comparison window renders both models and synchronizes frame, view and joi
     await evaluate(`document.querySelector('[data-next]').click()`);
     assert.match(await evaluate(`document.querySelector('[data-time]').textContent`),/Frame 1/);
     assert.match(await evaluate(`document.querySelector('[data-difference]').textContent`),/difference: X 0.50/);
+    const originalDifference=await evaluate(`document.querySelector('[data-difference]').textContent`);
+    await evaluate(`document.querySelector('[data-focus]').click()`);
+    assert.match(await evaluate(`document.querySelector('[data-focus-state]').textContent`),/Focused: Left hand/);
+    assert.equal(await evaluate(`document.querySelector('[data-difference]').textContent`),originalDifference);
+    await evaluate(`document.querySelector('[data-isolate]').click()`);
+    assert.equal(await evaluate(`document.querySelector('[data-isolate]').checked`),true);
+    await evaluate(`document.querySelector('[data-full]').click()`);
+    assert.equal(await evaluate(`document.querySelector('[data-isolate]').checked`),false);
+    assert.equal(await evaluate(`document.querySelector('[data-focus-state]').textContent`),'Full model');
     await evaluate(`document.querySelector('[data-view="x"]').click();document.querySelector('[data-frame]').value='2';document.querySelector('[data-frame]').dispatchEvent(new Event('input'));`);
     assert.match(await evaluate(`document.querySelector('[data-time]').textContent`),/Frame 2/);
     await evaluate(`document.querySelector('[data-later]').click();new Promise(r=>setTimeout(r,50));`);
@@ -43,7 +52,7 @@ test('comparison window renders both models and synchronizes frame, view and joi
     await evaluate(`document.querySelector('[data-load]').click();new Promise(r=>setTimeout(r,50));`);
     if(process.env.GBOX_COMPARE_FIXTURE){const payload=JSON.parse(fs.readFileSync(process.env.GBOX_COMPARE_FIXTURE,'utf8'));await evaluate(`window.realPayload=${JSON.stringify(payload)};panel.setData(realPayload);document.querySelector('[data-clip]').replaceChildren(new Option(realPayload.clip.animation_index==null?'Bind pose':'Animation '+realPayload.clip.animation_index+' · '+realPayload.clip.frame_count+' frames',realPayload.clip.animation_index??''));if(realPayload.source?.build)document.querySelector('[data-build]').replaceChildren(new Option(realPayload.source.build,realPayload.source.build));document.querySelector('[data-motion]').replaceChildren(new Option('pl00wp00','115'));document.querySelector('[data-raw-fk]').checked=realPayload.evaluation_mode==='raw_fk_without_game_ik';new Promise(r=>setTimeout(r,150));`);}
     assert.ok(await evaluate(`document.querySelectorAll('[data-joints] span').length<=8`));
-    if(process.env.GBOX_COMPARE_ARTIFACT_DIR){fs.mkdirSync(process.env.GBOX_COMPARE_ARTIFACT_DIR,{recursive:true});for(const [view,name] of [['z','front'],['x','side']]){await evaluate(`document.querySelector('[data-view="${view}"]').click();new Promise(r=>setTimeout(r,100));`);const shot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(process.env.GBOX_COMPARE_ARTIFACT_DIR,`model-comparison-${name}.png`),Buffer.from(shot.result.data,'base64'));}}
+    if(process.env.GBOX_COMPARE_ARTIFACT_DIR){fs.mkdirSync(process.env.GBOX_COMPARE_ARTIFACT_DIR,{recursive:true});for(const [view,name] of [['z','front'],['x','side'],['z','hand'],['z','isolated-hand']]){await evaluate(`document.querySelector('[data-view="${view}"]').click();${name==='hand'?"document.querySelector('[data-focus]').click();":name==='isolated-hand'?"document.querySelector('[data-isolate]').click();":''}new Promise(r=>setTimeout(r,100));`);if(name==='isolated-hand')assert.equal(await evaluate(`document.querySelector('[data-isolate]').checked&&!document.querySelector('[data-isolate]').disabled`),true);const shot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(process.env.GBOX_COMPARE_ARTIFACT_DIR,`model-comparison-${name}.png`),Buffer.from(shot.result.data,'base64'));}}
     await evaluate(`document.querySelector('[data-close]').click()`);
     assert.equal(await evaluate(`document.querySelector('.model-compare')`),null);
     assert.equal(await evaluate(`calls.every(row=>row.op==='list'||row.op==='sample')`),true);

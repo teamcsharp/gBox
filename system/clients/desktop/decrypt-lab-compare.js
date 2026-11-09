@@ -51,6 +51,34 @@
     const delta=candidate.position.map((v,i)=>v-native.position[i]);
     return {native,candidate,delta,distance:Math.hypot(...delta)};
   }
+  function focusOffsets(data,index,animationId){
+    const pair=jointDifference(data,index,animationId);
+    if(!pair||[...pair.native.position,...pair.candidate.position].some(v=>!Number.isFinite(v)))return null;
+    return {native:pair.native.position.map(v=>-v),candidate:pair.candidate.position.map(v=>-v),radius:25};
+  }
+  function limbSelection(model,index,animationId){
+    const sk=skeleton(model,index),parents=sk.parents||model.parents||[],ids=sk.anim_ids||model.anim_ids||[],rootBone=ids.indexOf(Number(animationId));
+    if(rootBone<0||!Array.isArray(model.skin_influences)||model.skin_influences.length!==flat(model.frames[index].positions).length/3)return null;
+    const bones=new Set([rootBone]);let changed=true;
+    while(changed){changed=false;parents.forEach((parent,bone)=>{if(bones.has(parent)&&!bones.has(bone)){bones.add(bone);changed=true;}});}
+    const retained=model.skin_influences.map(rows=>Array.isArray(rows)&&rows.reduce((sum,pair)=>sum+(Array.isArray(pair)&&bones.has(pair[0])&&Number.isFinite(pair[1])&&pair[1]>0?pair[1]:0),0)>=.5);
+    const source=flat(model.triangles),triangles=[];
+    for(let i=0;i<source.length;i+=3)if(retained[source[i]]||retained[source[i+1]]||retained[source[i+2]])triangles.push(source[i],source[i+1],source[i+2]);
+    return {bones,triangles};
+  }
+  function limbRadius(data,animationId){
+    let radius=25;
+    for(const model of [data.native,data.candidate]){
+      const selection=limbSelection(model,0,animationId);if(!selection)continue;
+      const vertices=new Set(selection.triangles);
+      for(let index=0;index<model.frames.length;index++){
+        const sk=skeleton(model,index),bone=(sk.anim_ids||model.anim_ids||[]).indexOf(Number(animationId)),origin=sk.bones?.[bone];
+        if(!origin)continue;const positions=flat(model.frames[index].positions);
+        for(const vertex of vertices)radius=Math.max(radius,Math.hypot(...origin.map((v,axis)=>positions[vertex*3+axis]-v)));
+      }
+    }
+    return radius;
+  }
   function mount({api,title,arcPath,build='',animationEntry,onClose,THREE=root.THREE,document=root.document}={}){
     if(!THREE)throw Error('The 3D viewer is unavailable.');
     const dialog=document.createElement('dialog');dialog.className='model-compare';
@@ -69,7 +97,8 @@
         <button data-earlier disabled>Earlier frames</button><button data-later disabled>Later frames</button></div>
       <div class="compare-controls"><button data-view="z">Front (+Z)</button><button data-view="-z">Back (−Z)</button><button data-view="x">Side (+X)</button><button data-view="-x">Side (−X)</button>
         <label><input type="checkbox" data-bones checked> Bones</label><label><input type="checkbox" data-labels checked> Joint names</label><label><input type="checkbox" data-wire> Wireframe</label>
-        <label>Joint <select data-joint>${Object.entries(ROLES).map(([id,name])=>`<option value="${id}" ${id==='14'?'selected':''}>${name}</option>`).join('')}</select></label></div>
+        <label>Joint <select data-joint>${Object.entries(ROLES).map(([id,name])=>`<option value="${id}" ${id==='14'?'selected':''}>${name}</option>`).join('')}</select></label>
+        <button data-focus disabled>Focus joint</button><label><input type="checkbox" data-isolate disabled> Isolate limb</label><button data-full disabled>Full model</button><span data-focus-state>Full model</span></div>
       <p data-difference>Choose a joint to compare its position.</p><p>Selected joint axes: X red, Y green, Z blue.</p><details><summary>Comparison details</summary><pre data-details></pre></details>`;
     document.body.append(dialog);dialog.showModal();
     const q=s=>dialog.querySelector(s),on=(s,event,fn)=>q(s).addEventListener(event,fn);
@@ -77,29 +106,40 @@
     renderer.setPixelRatio(Math.min(root.devicePixelRatio||1,2));renderer.setClearColor(0x111923);renderer.setScissorTest(true);
     const camera=new THREE.PerspectiveCamera(40,1,.1,10000),center=new THREE.Vector3();
     let data=null,views=[],dead=false,raf=0,sequence=0,frame=0,playing=false,seconds=0,last=0;
-    let yaw=Math.PI/2,pitch=.12,distance=350,size=180,drag=null;
+    let yaw=Math.PI/2,pitch=.12,distance=350,size=180,drag=null,focused=false,fullSize=180,fullDistance=350;
+    const fullCenter=new THREE.Vector3();
     function place(){camera.position.set(center.x+Math.cos(yaw)*Math.cos(pitch)*distance,center.y+Math.sin(pitch)*distance,center.z+Math.sin(yaw)*Math.cos(pitch)*distance);camera.lookAt(center);camera.updateMatrixWorld();}
     function disposeViews(){for(const v of views)v.scene.traverse(o=>{o.geometry?.dispose();for(const m of [].concat(o.material||[]))m.dispose();});views=[];}
     function makeView(model){
       const scene=new THREE.Scene();scene.add(new THREE.HemisphereLight(0xffffff,0x405060,1.7));
       const light=new THREE.DirectionalLight(0xffffff,1.1);light.position.set(100,180,140);scene.add(light);
+      const group=new THREE.Group();scene.add(group);
       const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(flat(model.frames[0].positions)),3));geometry.setIndex(flat(model.triangles));geometry.computeVertexNormals();
-      const mesh=new THREE.Mesh(geometry,new THREE.MeshStandardMaterial({color:0xa8bfd3,roughness:.8,metalness:0,side:THREE.DoubleSide}));scene.add(mesh);
-      const lines=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xffcd75,depthTest:false}));lines.renderOrder=2;scene.add(lines);
-      const points=new THREE.Points(new THREE.BufferGeometry(),new THREE.PointsMaterial({color:0xffcd75,size:3,sizeAttenuation:false,depthTest:false}));points.renderOrder=3;scene.add(points);
-      const axes=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({vertexColors:true,depthTest:false}));axes.renderOrder=4;scene.add(axes);
-      return {scene,geometry,mesh,lines,points,axes,model};
+      const mesh=new THREE.Mesh(geometry,new THREE.MeshStandardMaterial({color:0xa8bfd3,roughness:.8,metalness:0,side:THREE.DoubleSide}));group.add(mesh);
+      const lines=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xffcd75,depthTest:false}));lines.renderOrder=2;group.add(lines);
+      const points=new THREE.Points(new THREE.BufferGeometry(),new THREE.PointsMaterial({color:0xffcd75,size:3,sizeAttenuation:false,depthTest:false}));points.renderOrder=3;group.add(points);
+      const axes=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({vertexColors:true,depthTest:false}));axes.renderOrder=4;group.add(axes);
+      return {scene,group,geometry,mesh,lines,points,axes,model};
     }
     function showFrame(index){
       if(!data)return;frame=Math.max(0,Math.min(data.native.frames.length-1,index));
       q('[data-frame]').value=String(frame);
       const actual=frameNumbers(data)[frame];q('[data-time]').textContent=data.clip?.animation_index==null?'Bind pose':`Frame ${actual} · ${(actual/data.fps).toFixed(3)} s`;
       const selected=Number(q('[data-joint]').value),difference=jointDifference(data,frame,selected);
+      const offsets=focused?focusOffsets(data,frame,selected):null;
+      const isolatable=[data.native,data.candidate].every(model=>Array.isArray(model.skin_influences));q('[data-isolate]').disabled=!isolatable;
+      if(!isolatable)q('[data-isolate]').checked=false;
+      q('[data-focus]').disabled=!difference;q('[data-full]').disabled=!focused;
+      q('[data-focus-state]').textContent=focused?`Focused: ${ROLES[selected]||'Joint '+selected} · centered separately`:'Full model';
       for(const v of views){
+        v.group.position.set(...(offsets?offsets[v.model===data.native?'native':'candidate']:[0,0,0]));
+        const isolationKey=q('[data-isolate]').checked?selected:null;
+        if(v.isolationKey!==isolationKey){v.isolation=isolationKey===null?null:limbSelection(v.model,frame,selected);v.isolationKey=isolationKey;v.geometry.setIndex(v.isolation?v.isolation.triangles:flat(v.model.triangles));}
         v.geometry.attributes.position.array.set(flat(v.model.frames[frame].positions));v.geometry.attributes.position.needsUpdate=true;v.geometry.computeVertexNormals();v.geometry.computeBoundingSphere();
         const sk=skeleton(v.model,frame),bones=sk.bones||[],parents=sk.parents||v.model.parents||[],links=[];
-        bones.forEach((p,i)=>{if(bones[parents[i]]&&parents[i]!==i)links.push(...bones[parents[i]],...p);});
-        v.lines.geometry.setAttribute('position',new THREE.Float32BufferAttribute(links,3));v.points.geometry.setAttribute('position',new THREE.Float32BufferAttribute(bones.flat(),3));
+        const visible=i=>!v.isolation||v.isolation.bones.has(i);
+        bones.forEach((p,i)=>{if(bones[parents[i]]&&parents[i]!==i&&visible(i)&&visible(parents[i]))links.push(...bones[parents[i]],...p);});
+        v.lines.geometry.setAttribute('position',new THREE.Float32BufferAttribute(links,3));v.points.geometry.setAttribute('position',new THREE.Float32BufferAttribute(bones.filter((_,i)=>visible(i)).flat(),3));
         v.lines.visible=v.points.visible=q('[data-bones]').checked;v.mesh.material.wireframe=q('[data-wire]').checked;
         const id=(sk.anim_ids||v.model.anim_ids||[]).indexOf(selected),m=(sk.world_matrices||sk.matrices)?.[id],p=bones[id],axisPoints=[],colors=[];
         if(m&&p&&m.length===16){for(let a=0;a<3;a++){const axis=[m[a*4],m[a*4+1],m[a*4+2]],n=Math.hypot(...axis)||1;axisPoints.push(...p,...p.map((x,i)=>x+axis[i]/n*size*.06));const c=[0,0,0];c[a]=1;colors.push(...c,...c);}}
@@ -111,7 +151,8 @@
       validate(value);disposeViews();data=value;views=[makeView(data.native),makeView(data.candidate)];
       const low=[Infinity,Infinity,Infinity],high=[-Infinity,-Infinity,-Infinity];
       for(const model of [data.native,data.candidate])for(const row of model.frames){const p=flat(row.positions);for(let i=0;i<p.length;i++){const a=i%3;low[a]=Math.min(low[a],p[i]);high[a]=Math.max(high[a],p[i]);}}
-      center.set(...low.map((v,i)=>(v+high[i])/2));size=Math.max(...low.map((v,i)=>high[i]-v),1);distance=size*2.5;camera.near=Math.max(.001,size/1000);camera.far=size*100;camera.updateProjectionMatrix();place();
+      fullCenter.set(...low.map((v,i)=>(v+high[i])/2));fullSize=Math.max(...low.map((v,i)=>high[i]-v),1);fullDistance=fullSize*2.5;
+      if(focused)fitFocus();else{center.copy(fullCenter);size=fullSize;distance=fullDistance;}camera.near=Math.max(.001,size/1000);camera.far=Math.max(fullSize,size)*100;camera.updateProjectionMatrix();place();
       frame=0;seconds=0;playing=false;q('[data-play]').textContent='Play';
       q('[data-frame]').max=String(data.native.frames.length-1);
       for(const name of ['frame','play','prev','next'])q(`[data-${name}]`).disabled=data.native.frames.length<2;
@@ -149,7 +190,7 @@
       const selected=Number(q('[data-joint]').value),visible=jointLabels(selected),paneWidth=width/2;
       views.forEach((v,side)=>{const sk=skeleton(v.model,frame),ids=sk.anim_ids||v.model.anim_ids||[];
         const projected=[];
-        (sk.bones||[]).forEach((p,i)=>{const id=ids[i];if(!visible.includes(id))return;const point=new THREE.Vector3(...p).project(camera);if(point.z< -1||point.z>1||Math.abs(point.x)>1||Math.abs(point.y)>1)return;
+        (sk.bones||[]).forEach((p,i)=>{const id=ids[i];if(!visible.includes(id)||(v.isolation&&!v.isolation.bones.has(i)))return;const point=new THREE.Vector3(...p).add(v.group.position).project(camera);if(point.z< -1||point.z>1||Math.abs(point.x)>1||Math.abs(point.y)>1)return;
           projected.push({id,x:(point.x+1)*paneWidth/2,y:(1-point.y)*height/2});});
         projected.sort((a,b)=>a.y-b.y);let bottom=36;
         for(let i=0;i<projected.length;i++){const p=projected[i],labelWidth=ROLES[p.id].length*6+16;
@@ -173,7 +214,12 @@
     on('[data-frame]','input',()=>seek(Number(q('[data-frame]').value)));on('[data-prev]','click',()=>seek(frame-1));on('[data-next]','click',()=>seek(frame+1));
     on('[data-earlier]','click',()=>{q('[data-start]').value=Math.max(0,frameNumbers(data)[0]-WINDOW_FRAMES);load();});
     on('[data-later]','click',()=>{q('[data-start]').value=frameNumbers(data).at(-1)+1;load();});
-    for(const key of ['bones','labels','wire','joint'])on(`[data-${key}]`,'change',()=>showFrame(frame));
+    for(const key of ['bones','labels','wire'])on(`[data-${key}]`,'change',()=>showFrame(frame));
+    on('[data-joint]','change',()=>{if(focused){fitFocus();place();}showFrame(frame);});
+    function fitFocus(){const radius=limbRadius(data,Number(q('[data-joint]').value)),stage=q('.compare-stage'),aspect=stage.clientWidth/2/Math.max(1,stage.clientHeight),angle=Math.atan(Math.tan(camera.fov*Math.PI/360)*Math.min(1,aspect));center.set(0,0,0);size=radius*2;distance=radius/Math.sin(angle)*1.1;}
+    function focusView(value){if(!data)return;focused=value;if(focused)fitFocus();else{q('[data-isolate]').checked=false;center.copy(fullCenter);size=fullSize;distance=fullDistance;}place();showFrame(frame);}
+    on('[data-focus]','click',()=>focusView(true));on('[data-full]','click',()=>focusView(false));
+    on('[data-isolate]','change',()=>{if(q('[data-isolate]').checked)focusView(true);else showFrame(frame);});
     dialog.querySelectorAll('[data-view]').forEach(button=>button.addEventListener('click',()=>{yaw={z:Math.PI/2,'-z':-Math.PI/2,x:0,'-x':Math.PI}[button.dataset.view];pitch=0;place();}));
     function changed(){sequence++;playing=false;q('[data-play]').textContent='Play';q('[data-load]').disabled=false;for(const name of ['frame','play','prev','next','earlier','later'])q(`[data-${name}]`).disabled=true;q('[data-status]').textContent='Selection changed. Load comparison to show the selected models and frames.';}
     on('[data-refresh]','click',()=>{changed();catalog(q('[data-motion]').value===''?undefined:Number(q('[data-motion]').value));});on('[data-motion]','change',()=>{const selected=Number(q('[data-motion]').value);q('[data-start]').value=0;changed();catalog(selected);});on('[data-load]','click',load);
@@ -183,6 +229,6 @@
     on('[data-close]','click',close);dialog.addEventListener('cancel',e=>{e.preventDefault();close();});
     place();raf=root.requestAnimationFrame(draw);const ready=catalog(animationEntry);return {close,setData,load,dialog,ready};
   }
-  const exported={mount,validate,frameNumbers,frameAtTime,jointDifference,jointLabels,ROLES,WINDOW_FRAMES};
+  const exported={mount,validate,frameNumbers,frameAtTime,jointDifference,focusOffsets,limbSelection,limbRadius,jointLabels,ROLES,WINDOW_FRAMES};
   if(typeof module==='object'&&module.exports)module.exports=exported;else root.GBoxModelCompare=exported;
 })(typeof window!=='undefined'?window:globalThis);

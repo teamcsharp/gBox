@@ -4,7 +4,7 @@ const {EventEmitter}=require('node:events');
 const {pathToFileURL}=require('node:url');
 const C=require('../clients/desktop/decrypt-lab-compare-window.cjs');
 const path=require('node:path');
-const argv=['--api','http://127.0.0.1:8765','--token-file','known-token','--build','candidate','--animation-index','25'];
+const argv=['--token-file','known-token','--build','candidate','--animation-index','25','--api','http://127.0.0.1:8765'];
 
 function setup(){
   const handlers=new Map(),calls=[];let quits=0;

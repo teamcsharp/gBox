@@ -103,6 +103,24 @@ def build(archive: bytes, source: Path):
     return authored,receipt
 
 
+def build_finger_candidate(archive:bytes,source:Path,*,correct_wrist:bool=False):
+    """Unregistered next experiment: v12 body plus a measured five-digit glove rig.
+
+    This is intentionally separate from build()/plan(): runtime grip, native
+    weapon attachment and foot checks have not accepted the finger candidate.
+    """
+    from . import re5_sonic_hands
+    authored,receipt = build(archive,source)
+    model = zlib.decompress(mt_arc.parse(authored).entries[97].data)
+    model,fingers = re5_sonic_hands.author(model,source,receipt['skin'],correct_wrist=correct_wrist)
+    authored = mtf_author.replace_archive_model(authored,97,model)
+    return authored,receipt | {'finger_recipe_version':2 if correct_wrist else 1,'finger_rig':fingers,
+                              'envelope_count':fingers['envelope_count'],
+                              'written_sha256':hashlib.sha256(authored).hexdigest(),
+                              'acceptance':'experimental finger rig; native weapon grip and live animation unverified',
+                              'gameplay_verified':False,'writer_registered':False}
+
+
 def plan(ctx,game:dict,inp,meta:dict|None):
     """An explicit Chris-normal slot and original library identity produce one tracked overlay edit."""
     from . import re5_character_writer as native, skin_swap, switch_mods

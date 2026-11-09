@@ -38,3 +38,24 @@ test('joint labels follow the selected limb instead of hiding the model under al
   assert.deepEqual(C.jointLabels(0),[0,2,4]);
   assert.equal(C.WINDOW_FRAMES,60);
 });
+
+test('joint focus centers corresponding joints independently and preserves absolute differences',()=>{
+  const data=fixture(),before=C.jointDifference(data,1,14);
+  assert.deepEqual(C.focusOffsets(data,1,14),{native:[-2,-1,-0],candidate:[-3,-1,-0],radius:25});
+  assert.deepEqual(C.jointDifference(data,1,14),before);
+  assert.equal(C.focusOffsets(data,0,200),null);
+});
+
+test('limb isolation follows skin ownership and descendants even when head and glove overlap',()=>{
+  const positions=[0,0,0,1,0,0,0,1,0,0,0,0,1,0,0,0,1,0];
+  const model={triangles:[0,1,2,3,4,5],skin_influences:[[[2,1]],[[2,1]],[[2,1]],[[1,.1],[1,.15],[3,.25],[1,-1],[0,.5]],[[0,1]],[[0,1]]],
+    frames:[{positions,skeleton:{anim_ids:[0,14,4,100],parents:[255,0,0,1],bones:[[0,0,0],[0,0,0],[0,0,0],[0,0,0]]}}]};
+  const result=C.limbSelection(model,0,14);
+  assert.deepEqual([...result.bones],[1,3]);
+  assert.deepEqual(result.triangles,[3,4,5]);
+  assert.deepEqual(model.triangles,[0,1,2,3,4,5]);
+  assert.equal(C.limbSelection({...model,skin_influences:undefined},0,14),null);
+  const extended=structuredClone(model);extended.frames.push(structuredClone(extended.frames[0]));extended.frames[1].positions[9]=40;
+  assert.equal(C.limbRadius({native:model,candidate:extended},14),40);
+  assert.equal(C.limbRadius({native:model,candidate:model},14),25);
+});

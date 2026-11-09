@@ -472,6 +472,10 @@ def _sample_model(model, tracks, frames, loop):
                for t in tracks if t.anim_id not in rig[3] and t.anim_id != 255]
     return {'model_sha256': hashlib.sha256(model.raw).hexdigest(), 'vertex_count': len(points),
             'mesh_indices': selected, 'triangles': triangles, 'frames': output,
+            # Static bone indices/weights let the viewer isolate a limb without
+            # guessing from its posed bounds (a hand may overlap the head).
+            'skin_influences': [[[int(bone), float(weight)] for bone, weight in zip(row_ids, row_weights) if weight > 0]
+                                for row_ids, row_weights in zip(ids, weights)],
             'bind_bounds': {'min': points.min(axis=0).tolist(), 'max': points.max(axis=0).tolist()},
             'unmapped_tracks': missing}
 

@@ -522,3 +522,20 @@ The Sonic audit also found that each glove was rigidly bound to its wrist; nativ
 around a gun. Finger rigging is in progress, bounded to the measured source. The model comparison gained a close joint
 view; a local, read-only artifact preview is being prepared while backend activation waits. Do not treat a local preview as
 proof that the deployed API is active or that Sonic's live weapon grip is accepted.
+
+The local comparison window is now verified open with real source/candidate hashes, playback, frame stepping,
+front/side cameras and joint focus. Limb isolation removes occluding head/body geometry using the actual skin weights,
+and fits both hands at one shared scale. The Windows Electron launcher requires the API URL to be the final argument.
+
+Sonic v14 adds measured finger chains and moves each wrist 7.5244 cm from the source forearm endpoint into the actual
+glove cuff. It preserves the corrected arm/body geometry and remains separate from the unregistered v12 recipe.
+The exact original Chris ARC and Sonic GLB reproduce candidate SHA256
+`4025fe19aab2d431d14dd8b7a2ed86a3f2a5fd1733ee092087a08be7562a33ce`.
+Validation: 105 focused core tests, 55 motion tests, 13 comparison Node tests and two real browser tests passed.
+No source game assets or generated candidate binaries are committed. Live weapon grip and foot IK remain unaccepted.
+
+The revised native composition preserves Chris's internal resource names and all motion/control entries, replaces
+only the main MOD/MRL payloads, and imports Sheva's exact texture dependencies. Its isolated live trial now shows Sheva
+visibly fighting in the Chris slot, advancing from 300 score / 1 kill to 2,400 / 8. Public route integration is being
+completed separately; the service has still not restarted. The same owned session is being reused for the Sonic v14
+trial to avoid an unnecessary stock relaunch. Restore MercMode enabled before the final trial stop.
