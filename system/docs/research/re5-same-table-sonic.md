@@ -169,6 +169,10 @@ as a different space from the model-space points the vertex decoder reports, so 
 right writer for that table. But since a +50 translation plays a round, bounds/displacement are not the low limit; the
 remaining difference for the Sonic triangle is its **shape/skinning fields**, not how far it moved.
 
+A field bisect is still unfinished: writing the Sonic **positions only** (keeping the base normals/UV/skin bytes) blacked
+at boot, while writing positions+normals+UV reached the title and then stopped at `NOW LOADING`. That means the
+normal/UV fields are load-bearing at boot and cannot be dropped, but it does not identify the round-time field yet.
+
 `mtf_author.combine` also needed a fix: the index stream is global to the shared vertex buffer, so `combine` now
 subtracts each part's `vertex_index` before adding its own base. Without it, the low self one-mesh produced triangle
 56072 with only 55667 vertices.
