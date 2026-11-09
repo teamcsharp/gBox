@@ -139,6 +139,18 @@ tail that may describe the mesh/material binding the MOD must match.
 This is now an MRL/loader problem, not an authoring-table problem. The next experiment is an MRL edit (or a donor
 MOD+MRL pair), not another MOD variation.
 
+### The low slot accepts a matched MOD+MRL pair
+
+The first positive low-slot replacement: the **MRL and MOD of `em1001_low`** (a different Majini variant in the same
+archive) were copied into the `em1000_low` entries, both with their original tags and without recompression. The build
+reached a **live Public Assembly round** (timer `1:59`, combo counter, enemies present). The low slot therefore accepts a
+**matched MRL+MOD pair**, unlike a MOD-only edit or a one-mesh MOD against the old MRL.
+
+![em1001_low MRL+MOD pair in the em1000_low slot, playing a live Public Assembly round](evidence/re5-low-pair-round.jpg)
+
+This makes the pair the viable import unit: author a Sonic MOD against the donor MRL's part/material count, or write the
+MRL side with it.
+
 ### The compression level was the confound: zlib 6 works
 
 Recompressing the original low MOD at zlib **level 9** (identical uncompressed bytes, same entry size, same tag) hung at
