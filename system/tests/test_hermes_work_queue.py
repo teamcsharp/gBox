@@ -1294,3 +1294,14 @@ def test_an_ordinary_inbox_ticket_has_no_cause_hold(env):
                                   'created': 1, 'no_progress_runs': 9}
     options = q.candidates(env, reqs, [], set(), set(), now=1000)
     assert [k for k, _ in options] == ['inbox:' + R] and env['items']['inbox:' + R]['cause_hold'] == ''
+
+
+def test_the_idle_round_faults_are_the_same_threat_response_ticket(env):
+    """learning.FAULTS' idle_among_foes / unaimed_in_5m (live 2026-11-10: in progress on RE5 beside the damage
+    batches) are the doctrine's cause too."""
+    reqs, verified = _causes(env, _cause('c' * 16, 'crowd_gun_down', 10, number=31),
+                             _cause('d' * 16, 'round:idle_among_foes', 20, number=32),
+                             _cause('e' * 16, 'round:bonus_missed', 30, number=33))
+    options = q.candidates(env, reqs, [], set(), set(), now=1000, verified=verified)
+    assert sorted(k for k, _ in options) == ['inbox:' + 'c' * 16, 'inbox:' + 'e' * 16]
+    assert env['items']['inbox:' + 'd' * 16]['cause_hold'].startswith('the same cause as #31')

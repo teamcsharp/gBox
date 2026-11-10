@@ -138,6 +138,10 @@ DOCTRINE_CAUSES = {
     'faced_melee': ('round_threat_unanswered', 'round_hurt_while_idle'),
     'grabbed_front': ('round_threat_answered_flash', 'round_hurt_while_idle'),
     'grabbed_from_behind': ('round_threat_unanswered', 'round_hurt_while_idle'),
+    # the learning loop's round faults of the same cause (gbox.mercs.learning.FAULTS; live 2026-11-10 both in progress
+    # on RE5 beside the damage batches): enemies within 5 m left alive, the gun lowered with them within 5 m
+    'round:idle_among_foes': ('round_threat_unanswered', 'round_hurt_while_idle'),
+    'round:unaimed_in_5m': ('round_threat_unanswered', 'round_threat_answered_fire'),
 }
 DOCTRINE_STATS = ('round_threat_ticks', 'round_threat_answered_flash', 'round_threat_answered_mine',
                   'round_threat_answered_fire', 'round_threat_unanswered', 'round_hurt_while_idle')
@@ -876,7 +880,7 @@ class Clusters:
         ticket per title), instead of a request of its own. -> the cluster document (linked), or None (its own path:
         not a doctrine cause, already the owner of a request, or no open doctrine ticket for its title yet)."""
         sig = doc.get('signature')
-        if doc.get('kind') == 'round' or sig not in DOCTRINE_CAUSES:
+        if sig not in DOCTRINE_CAUSES:
             return None
         if old.get('linked_to'):
             rid = old.get('request_id')
@@ -908,7 +912,7 @@ class Clusters:
                     req.setdefault('messages', []).append({
                         'id': 'doctrine-link-' + doc['id'], 'author': 'agent', 'ts': now, 'attachments': [],
                         'text': (f"Same cause for Hermes, linked here instead of a ticket of its own: {doc['label']} "
-                                 f"({doc['episodes']} episodes, {doc['deaths']} deaths in the last "
+                                 f"({doc.get('episodes', 0)} episodes, {doc.get('deaths', 0)} deaths in the last "
                                  f"{WINDOW_S // 3600} h; damage cluster {doc['id']}). Its doctrine stats: "
                                  + ', '.join(DOCTRINE_CAUSES[sig]) + '.')})
                     ctx = req.setdefault('context', {})
@@ -1158,7 +1162,7 @@ def render(doc):
                 f"{t['episodes_per_round']}/round, {t['deaths']} deaths" for t in turns[-8:])) + '.']
     lines += [f"Suspected bot decision: {doc['suspect']}.",
               'Code it implicates: ' + '; '.join(f"{c['file']} {c['function']}" for c in doc.get('code') or []) + '.']
-    if doc.get('kind') != 'round' and doc.get('signature') in DOCTRINE_CAUSES:
+    if doc.get('signature') in DOCTRINE_CAUSES:
         lines.append(
             "The doctrine measures this cause (gbox/mercs/core/respond.py: under threat a flash, a mine, or fire - never "
             "nothing). Read these per-round stats first (the round reports' metrics.doctrine, rounds.sqlite): "
