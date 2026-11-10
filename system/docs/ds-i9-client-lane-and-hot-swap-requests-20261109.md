@@ -1144,3 +1144,19 @@ The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned b
   the village. Both are mechanical once chosen.
 * The technical claim this lane needed - the RE4 overlay applies and the game runs under it - is already proven (rounds
   50 and 55: title at 60 FPS, NEW GAME starts, cutscenes play with `recovery-re4-sonic-on-leon-v1` applied).
+
+## Round 59 status (2026-11-10, ~03:35 CST): a third texture hypothesis tested (unit-prefixed names) - inconclusive frame
+
+* Checked the tag vocabulary first: the cast maps (`uPlTex0200_0`) and the enemy arc share the same texture tags
+  (`0x40055e3c`, `0x40015e38`, `0x40003434`, `0x4000b438`, ...), so "the appended entries carry the wrong tag" is out.
+* Third hypothesis: the enemy unit builds its texture table from entries **under its own path prefix**. Built
+  `recovery-re6-prefixed-r59`: Chris's model in `uEm5200` plus his 61 maps **renamed to
+  `data\chara\em\em5200\model\<basename>`** with the hashes/tags/data kept (27,000,067 bytes).
+* The build launched and a round ran (`01'27"51` in `r59-shot5.jpg`). The frame shows a **fully textured zombie** right
+  beside the player - but that zombie is the original green-shirt model, not Chris's, so the frame neither confirms nor
+  refutes the swapped enemy. A wider camera angle (or the character-select preview) is needed to see the Chris-model
+  enemy specifically.
+* Three texture hypotheses have now been tried and each produced an untextured swapped enemy (append by name, replace
+  slots in place, rename under the unit prefix). The next productive step is to parse the swapped **MRL's material
+  table** (not the arc's entries) and see which texture identifiers it binds - `model_swap` already locates the MRL, so
+  the table format is the remaining unknown.
