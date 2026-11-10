@@ -72,3 +72,37 @@ def data_refs(img: bytes, target: int, window: int = 8) -> list:
 
 def sectors_for(size: int) -> int:
     return (size + 0x7FF) >> 11
+
+
+# ---- PS_DOA.BIN directory table (proved from SLUS_006.06 0x8004c83c/0x80050d54) ----
+# The loader builds a 512-slot x 8-byte table at RAM 0x80067ab0 from the first
+# sectors of PS_DOA.BIN.  Each slot: u32 size (bytes) + 3 BCD bytes (min, sec,
+# frame) giving the entry's start sector RELATIVE to the file start (CdPosToInt
+# at 0x8004ca90; the loader adds the CdlFILE pos and converts back with
+# CdIntToPos 0x8004cb1c, then CdControl-seeks via CdlLOC at 0x80051550).
+# Entry sector count = (size + 0x7ff) >> 11 (0x80050da0).  Entries are
+# contiguous.  This supersedes the earlier "(u8 id, u8 count)" guess.
+TABLE_RAM = 0x80067AB0
+TABLE_SLOTS = 0x200
+
+
+def _bcd(b):
+    return (b >> 4) * 10 + (b & 15)
+
+
+def msf_ref_to_sector(ref):
+    """Decode the u32 ref (bytes 0..2 = BCD min/sec/frame) to a relative sector."""
+    return _bcd(ref & 255) * 4500 + _bcd((ref >> 8) & 255) * 75 + _bcd((ref >> 16) & 255)
+
+
+def parse_asset_table(head):
+    """Return [(index, size, start_sector, byte_offset)] from PS_DOA.BIN's first 4096 bytes."""
+    import struct as _s
+    out = []
+    for i in range(TABLE_SLOTS):
+        size, ref = _s.unpack_from("<II", head, i * 8)
+        if size == 0 and ref == 0:
+            break
+        sec = 0 if i == 0 else msf_ref_to_sector(ref)
+        out.append((i, size, sec, sec * 2048))
+    return out

@@ -35,3 +35,28 @@ def test_state_table(img):
     import struct
     vals = struct.unpack_from("<7I", img, o)
     assert vals[1:6] == (0x8004C608, 0x8004C618, 0x8004C670, 0x8004C6DC, 0x8004C728)
+
+
+BIN = os.environ.get("DOA_PSX_BIN", "/home/ehm_eckx/gBox_alt/gbox-cache/5b699968cf37a8ac/PS_DOA.BIN")
+
+
+def test_msf_decode():
+    assert L.msf_ref_to_sector(0x730200) == 223
+    assert L.msf_ref_to_sector(0x000001) == 4500 and L.msf_ref_to_sector(0x655800) == 4415
+
+
+def test_table_contiguous_on_disc():
+    if not os.path.exists(BIN):
+        pytest.skip("owned PS_DOA.BIN not present")
+    with open(BIN, "rb") as f:
+        head = f.read(4096)
+        f.seek(0, 2)
+        total = f.tell() // 2048
+    t = L.parse_asset_table(head)
+    assert len(t) == 338
+    exp = 0
+    for i, size, sec, _ in t:
+        assert sec == exp, i
+        exp = sec + (size + 0x7FF) // 2048
+    assert exp == 22661 and total - exp == 2
+    assert t[1][1:3] == (10608, 223) and t[85][1:3] == (173412, 4500)
