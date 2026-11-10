@@ -96,3 +96,58 @@ class PpcElf:
                 if s.startswith("HEAD_"):
                     out.add(s)
         return sorted(out)
+
+
+# ---- SEC resource (kind-1 container, e.g. ashrah.sec / krypt.sec) -----------
+# Layout (big-endian, verified on owned GQNE5D ashrah.sec/krypt.sec):
+#   'SEC ', version(4), 0, tag, n_entries, name_pool_size, total_size  (28 B)
+#   n_entries * (type, offset, size, name_off)   offsets contiguous, relative to sec start
+#   name pool (NUL-separated) ; entry payloads.
+# type 3 = texture: 0x100-byte header (little-endian fields, 'PAD32' fill) + GX CMPR data
+# (hypothesis: type 4 = geometry/display-list blobs, type 2 = CI8 textures; unproved).
+
+def parse_sec_resource(buf):
+    import struct
+    if buf[:4] != b"SEC ":
+        raise ValueError("not a SEC resource")
+    ver, _z, tag, n, pool_sz, total = struct.unpack(">6I", buf[4:28])
+    ents = []
+    for i in range(n):
+        t, o, s, nm = struct.unpack(">4I", buf[28 + 16 * i:44 + 16 * i])
+        ents.append({"i": i, "type": t, "offset": o, "size": s, "name_off": nm})
+    pool = buf[28 + 16 * n:28 + 16 * n + pool_sz]
+    return {"version": ver, "tag": tag, "count": n, "pool_size": pool_sz,
+            "total_size": total, "entries": ents, "names": [x.decode("latin1") for x in pool.split(b"\0") if x]}
+
+
+def validate_sec_resource(r):
+    e = r["entries"]
+    return all(e[i]["offset"] == e[i - 1]["offset"] + e[i - 1]["size"] for i in range(2, len(e))) \
+        and e[-1]["offset"] + e[-1]["size"] == r["total_size"]
+
+
+def decode_gx_cmpr(data, w, h):
+    """GameCube CMPR (S3TC/DXT1 in 8x8 tiles of 2x2 4x4 sub-blocks) -> RGBA bytes."""
+    import struct
+    out = bytearray(w * h * 4)
+    p = 0
+    for ty in range(0, h, 8):
+        for tx in range(0, w, 8):
+            for sy in (0, 4):
+                for sx in (0, 4):
+                    c0, c1, idx = struct.unpack(">HHI", data[p:p + 8]); p += 8
+
+                    def rgb(c):
+                        return (((c >> 11) & 31) * 255 // 31, ((c >> 5) & 63) * 255 // 63, (c & 31) * 255 // 31)
+                    a, b = rgb(c0), rgb(c1)
+                    if c0 > c1:
+                        pal = [a + (255,), b + (255,), tuple((2 * x + y) // 3 for x, y in zip(a, b)) + (255,),
+                               tuple((x + 2 * y) // 3 for x, y in zip(a, b)) + (255,)]
+                    else:
+                        pal = [a + (255,), b + (255,), tuple((x + y) // 2 for x, y in zip(a, b)) + (255,), (0, 0, 0, 0)]
+                    for py in range(4):
+                        for px in range(4):
+                            v = pal[(idx >> (30 - 2 * (py * 4 + px))) & 3]
+                            o = ((ty + sy + py) * w + tx + sx + px) * 4
+                            out[o:o + 4] = bytes(v)
+    return bytes(out)

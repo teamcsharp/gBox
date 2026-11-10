@@ -32,3 +32,20 @@ def test_real_ashrah_table_matches_ssf():
     assert t["sections"][0]["name"] == "ashrah.sec"
     assert all((s["offset"], s["size"]) in offs for s in t["sections"])
     assert "HEAD_SCORPION" in e.char_names()
+
+
+from gbox.formats.midway_ssf import parse_sec_resource, validate_sec_resource, decode_gx_cmpr
+
+def test_cmpr_decode_solid():
+    blk = struct.pack(">HHI", 0xF800, 0x0000, 0)  # all index 0 -> pure red
+    px = decode_gx_cmpr(blk * 4, 8, 8)
+    assert px[:4] == bytes([255, 0, 0, 255]) and len(px) == 8 * 8 * 4
+
+@pytest.mark.skipif(not os.path.exists(SSF), reason="owned GQNE5D files absent")
+def test_real_ashrah_sec_resource():
+    d = parse_ssf_directory(open(SSF, "rb").read())
+    raw = open(SSF, "rb").read()
+    s0 = d["entries"][0]
+    r = parse_sec_resource(raw[s0["offset"]:s0["offset"] + s0["size"]])
+    assert r["count"] == 14 and validate_sec_resource(r)
+    assert r["names"][3] == "ASHRAH_000" and sum(e["type"] == 3 for e in r["entries"]) == 11
