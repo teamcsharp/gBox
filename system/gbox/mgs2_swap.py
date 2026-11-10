@@ -777,7 +777,8 @@ def build_disc(src_iso: Path, out_iso: Path | None, jobs: list[dict], progress=l
                         data[f[2]:f[2] + f[3]] = nb_
                 pages[kk] = bytes(data)
         try:
-            blob = inv.rebuild_stage(st, a.key, pages, raw)
+            blob = inv.rebuild_stage(st, a.key, pages, raw,
+                                  orig=a.disc.sectors(a.lba + st.sector, st.sectors))
         except inv.FormatError as x:
             for rep in reports:
                 for m in rep["models"]:

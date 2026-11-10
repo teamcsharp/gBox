@@ -63,3 +63,17 @@ def test_sol_game_id_routes_to_writer():
     w = CC.writer_for({"game_id": inv.SOL_GAME_ID, "title": "Metal Gear Solid 2 - Sons of Liberty (USA)", "platform": "ps2"})
     assert w and w["writer"] == "gbox.mgs2_swap" and w["routed"] is True
     assert "soldiers" in w["slots"] and S.is_slot("soldier_tanker")
+
+
+@need_iso
+def test_unchanged_stage_roundtrip_is_byte_identical():
+    """No-op round trip: rebuild_stage with no page changed (orig supplied) reproduces the stored stage exactly,
+    including the non-zero header padding, inter-page padding and unreferenced tail of the span."""
+    d = inv.Disc(str(ISO))
+    idx = M.Index(d)
+    fn, a = next(iter(idx.archives.items()))
+    for name in ("r_tnk0", "w00a", "init"):
+        st = a.stage(name)
+        raw = {k: a.page_raw(st, k) for k in range(len(st.pages))}
+        orig = a.disc.sectors(a.lba + st.sector, st.sectors)
+        assert inv.rebuild_stage(st, a.key, {}, raw, orig=orig) == orig

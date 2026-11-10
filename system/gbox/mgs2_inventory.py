@@ -426,9 +426,13 @@ def encode_stage_header(rows: list[tuple[int, int]], key: int, name: str) -> byt
 
 
 def rebuild_stage(st: Stage, key: int, page_data: dict[int, bytes], old_raw: dict[int, bytes],
-                  files: dict[int, list] | None = None, seed: int | None = None) -> bytes:
+                  files: dict[int, list] | None = None, seed: int | None = None,
+                  orig: bytes | None = None) -> bytes:
     """A stage's new stored bytes: pages in page_data are re-encoded (their file tables from `files` when given),
-    the others are kept byte for byte (old_raw). Raises when the result is longer than the stage's span."""
+    the others are kept byte for byte (old_raw) with their original row. With `orig` (the stage's original stored
+    bytes) every byte outside the header and the written pages -- inter-page padding, the unreferenced tail of the
+    span -- is kept too, so a stage with nothing changed rebuilds byte-identical. Raises when the result is longer
+    than the stage's span."""
     rows = list(st.rows)
     blobs = []
     coff = 0
@@ -447,16 +451,31 @@ def rebuild_stage(st: Stage, key: int, page_data: dict[int, bytes], old_raw: dic
                     rows[pi + 1 + j] = ((f[0] << 24) | f[1], f[2])
         else:
             raw = old_raw[k]
-        rows[p.rows[1]] = ((0x7E << 24) | len(raw), coff)
+        if k in page_data or orig is None:
+            rows[p.rows[1]] = ((0x7E << 24) | len(raw), coff)
+        else:
+            rows[p.rows[1]] = (rows[p.rows[1]][0], coff)    # unchanged page: keep its stored size field
         blobs.append((coff, raw))
         coff += (len(raw) + SECTOR - 1) // SECTOR * SECTOR
     head = encode_stage_header(rows, key, st.name)
+    if orig is not None and len(orig) >= len(head):
+        # keep the original header's padding after the rows (it is not zero on the disc)
+        plain_old = Cipher.for_stage(key, st.name).run(bytes(orig[:len(head)]))
+        used = 4 + 8 * len(rows)
+        plain_new = Cipher.for_stage(key, st.name).run(head)
+        head = Cipher.for_stage(key, st.name).run(plain_new[:used] + plain_old[used:])
     body = bytearray(coff)
     for o, raw in blobs:
         body[o:o + len(raw)] = raw
     out = head + bytes(body)
     if len(out) > st.sectors * SECTOR:
         raise FormatError(f"{st.name}: rebuilt stage is {len(out)} bytes, its span is {st.sectors * SECTOR}")
+    if orig is not None and len(orig) >= st.sectors * SECTOR:
+        keep = bytearray(orig[:st.sectors * SECTOR])
+        keep[:len(head)] = head
+        for o, raw in blobs:
+            keep[len(head) + o:len(head) + o + len(raw)] = raw
+        return bytes(keep)
     return out + b"\0" * (st.sectors * SECTOR - len(out))
 
 
