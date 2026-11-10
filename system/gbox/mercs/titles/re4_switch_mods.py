@@ -39,6 +39,17 @@ KILL_TIME_S = 3.0
 KILL_TIME_MAX_S = 30.0
 CLOCK_HOLD_TOL = 1.5                    # the next read within this of what was written (the clock runs on meanwhile)
 
+# The firepower-per-level table (module data, rows of 7 f32: levels 1-5, a 6th, the exclusive), read from the
+# decrypted executable 2026-11-10 (work/re4-nsp/main.bin, data segment file 0xae2100 -> mem 0xae2000). Rows named by
+# their stats (inferred, RE4's published values): the first value is checked before any write.
+FIREPOWER_ROWS = {"punisher": (0xAF0EA8, 0.9), "handgun": (0xAF0EC4, 1.0), "red9": (0xAF0EE0, 1.6),
+                  "blacktail": (0xAF0EFC, 1.6), "broken_butterfly": (0xAF0F18, 13.0), "killer7": (0xAF0F34, 25.0),
+                  "shotgun": (0xAF0F50, 4.0), "striker": (0xAF0F6C, 6.0), "rifle": (0xAF0F88, 4.0),
+                  "semi_auto_rifle": (0xAF0FA4, 7.0), "tmp": (0xAF0FC0, 0.4), "handcannon": (0xAF1030, 30.0),
+                  "riot_gun": (0xAF1228, 5.0)}
+ROW_N, POWER_MAX_X = 7, 20.0
+AIM_FRESH_S = 0.35                     # an aim request (re4_switch.AIM_REQUEST) older than this is not written
+
 ORIG: dict = {}                         # id(adapter) -> this boot's settings
 _LOCK = threading.RLock()
 RELOAD_KEEP = ("ORIG", "_LOCK")
@@ -137,6 +148,80 @@ def unlimited_health(ad, on: bool, snap: dict | None = None) -> dict:
     kept = _keep_life(ad, snap) if on else 0
     return {"unlimited_health": bool(on), "verified": True, "kept": kept,
             "note": "the player's life put back to its maximum whenever it falls (re4_switch.PLAYER_LIFE)"}
+
+
+def _rows(ad, base: int, st: dict) -> dict:
+    """{name: (address, the boot's own 7 values)} of the firepower rows whose first value is the expected one
+    (read once a boot and kept: a scaled row is never taken for the original)."""
+    orig = st.setdefault("fp_orig", {})
+    out = {}
+    for name, (off, first) in FIREPOWER_ROWS.items():
+        if name not in orig:
+            try:
+                vals = struct.unpack("<7f", bytes(ad.read_memory(base + off, 4 * ROW_N)))
+            except (ValueError, OSError, struct.error):
+                continue
+            if abs(vals[0] - first) > 1e-3 or any(not math.isfinite(v) or v <= 0 for v in vals):
+                continue                               # not the row this build was measured with
+            orig[name] = vals
+        out[name] = (base + off, orig[name])
+    return out
+
+
+def _apply_power(ad, base: int, st: dict) -> int:
+    """Every known firepower row written as (its max if max_level else its own) x weapon_power, read back."""
+    mult = float(st.get("weapon_power", 1.0))
+    top = bool(st.get("max_level"))
+    n = 0
+    for name, (addr, vals) in _rows(ad, base, st).items():
+        want = tuple(((max(vals) if top else v) * mult) for v in vals)
+        try:
+            ad.write_memory(addr, struct.pack("<7f", *want))
+            back = struct.unpack("<7f", bytes(ad.read_memory(addr, 4 * ROW_N)))
+        except (ValueError, OSError, RuntimeError, struct.error):
+            continue
+        n += all(abs(a - b) < 1e-3 * max(1.0, abs(a)) for a, b in zip(back, want))
+    return n
+
+
+def weapon_power(ad, multiplier, snap: dict | None = None) -> dict:
+    st = _state(ad)
+    st["weapon_power"] = _num(multiplier, 1.0, POWER_MAX_X, "weapon_power")
+    base = (snap or {}).get("module_base")
+    rows = _apply_power(ad, base, st) if isinstance(base, int) else 0
+    st.pop("fp_applied_base", None) if not rows else None
+    return {"weapon_power_x": st["weapon_power"], "verified": True, "rows": rows,
+            "note": "every weapon's firepower table x this (RAM; a relaunch restores the game's)"}
+
+
+def max_level(ad, on: bool, snap: dict | None = None) -> dict:
+    st = _state(ad)
+    st["max_level"] = bool(on)
+    base = (snap or {}).get("module_base")
+    rows = _apply_power(ad, base, st) if isinstance(base, int) else 0
+    return {"max_level": bool(on), "verified": True, "rows": rows,
+            "note": "every weapon fires at its top (exclusive) firepower at any upgrade level"}
+
+
+def aim_lock(ad, on: bool) -> dict:
+    _state(ad)["aim_lock"] = bool(on)
+    return {"aim_lock": bool(on), "verified": True,
+            "note": "the player's facing written onto the bot's target each snapshot (re4_switch.AIM_REQUEST)"}
+
+
+def _aim(ad, snap: dict) -> int:
+    """The bot's aim request (re4_switch.AIM_REQUEST) written to the player's facing (unit + U_YAW), read back."""
+    req = D.AIM_REQUEST
+    p = (snap or {}).get("player") or {}
+    if not req or req.get("ptr") != p.get("ptr") or time.monotonic() - req.get("at", -1e9) > AIM_FRESH_S:
+        return 0
+    addr = p["ptr"] + D.U_YAW
+    try:
+        ad.write_memory(addr, struct.pack("<f", req["yaw"]))
+        back = struct.unpack("<f", bytes(ad.read_memory(addr, 4)))[0]
+    except (ValueError, OSError, RuntimeError, struct.error):
+        return 0
+    return 1 if abs(back - req["yaw"]) < 1e-3 else 0
 
 
 def one_hit(ad, on: bool, snap: dict | None = None) -> dict:
@@ -241,7 +326,8 @@ def maintain(ad, snap: dict | None = None) -> dict:
         if st.get("base") is None:
             st["base"] = snap["module_base"]
         elif st["base"] != snap["module_base"]:          # a new boot: the operator's settings stay, the counts go
-            keep = {k: st[k] for k in ("enemy_health", "one_hit", "kill_time", "unlimited_health") if k in st}
+            keep = {k: st[k] for k in ("enemy_health", "one_hit", "kill_time", "unlimited_health", "weapon_power",
+                                      "max_level", "aim_lock") if k in st}
             st.clear()
             st.update(keep, base=snap["module_base"])
         frac = 0.0 if st.get("one_hit") else st.get("enemy_health")
@@ -254,6 +340,14 @@ def maintain(ad, snap: dict | None = None) -> dict:
             st["life_kept"] = st.get("life_kept", 0) + n
             if n:
                 out["life_kept"] = n
+        if (st.get("weapon_power", 1.0) != 1.0 or st.get("max_level")) and not st.get("fp_applied_base") == snap["module_base"]:
+            out["power_rows"] = _apply_power(ad, snap["module_base"], st)   # once a boot (the table is static data)
+            st["fp_applied_base"] = snap["module_base"]
+        if st.get("aim_lock"):
+            n = _aim(ad, snap)
+            st["aim_writes"] = st.get("aim_writes", 0) + n
+            if n:
+                out["aim_writes"] = n
         new = _kills_of(snap, st)
         kt = st.get("kill_time") or {}
         if new and kt.get("on") and kt.get("seconds", 0) > 0:
@@ -277,7 +371,8 @@ def status(ad, snap: dict | None = None) -> dict:
            "kill_time_added": round(st.get("kill_time_added", 0.0), 1), "capped_total": st.get("capped_total", 0),
            "clock_holds": st.get("clock_holds"),
            "unlimited_health": bool(st.get("unlimited_health")), "life_kept": st.get("life_kept", 0),
-           "infinite_ammo": None,
+           "infinite_ammo": None, "weapon_power_x": st.get("weapon_power", 1.0), "max_level": bool(st.get("max_level")),
+           "aim_lock": bool(st.get("aim_lock")), "aim_writes": st.get("aim_writes", 0),
            "capabilities": {
                "enemy_health": {"available": True}, "one_hit": {"available": True},
                "kill_time": {"available": True, "clock_found": bool((snap or {}).get("clock_addr")),
@@ -315,6 +410,14 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, snap: dict | N
             return kill_time(ad, on, extra.get("seconds"))
         if op == "unlimited_health":
             return unlimited_health(ad, on, snap)
+        if op == "weapon_power":
+            return weapon_power(ad, 1.0 if multiplier is None else multiplier, snap)
+        if op == "max_level":
+            r = max_level(ad, on, snap)
+            _state(ad).pop("fp_applied_base", None)
+            return r
+        if op == "aim_lock":
+            return aim_lock(ad, on)
         if op == "infinite_ammo":
             return {"verified": False, "reason": status(ad)["capabilities"][op]["reason"]}
         if op == "revert_all":

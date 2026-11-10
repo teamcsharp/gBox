@@ -123,6 +123,10 @@ PLAYER_CLASSES: tuple = (0xB0C0A0, 0xB09A60)
 # 0xB09A60 / 0xB0C0A0) and not a Ganado's or a set object's. The class is reported (player_class) and kept.
 PLAYER_VTABLE_RANGE = (0xAC0000, 0xB40000)
 SEEN_PLAYER_CLASSES: dict = {}                  # class offset -> times read through the player pointer
+# The fight's aim request for the RAM aim lock (re4_switch_mods.aim_lock): {ptr, yaw, at}, written onto the player's
+# facing by the mods each snapshot while it is fresh (the operator 2026-11-10: "using hooks and ram byte readers to
+# aim and shoot").
+AIM_REQUEST: dict = {}
 
 
 def player_classes() -> tuple:
@@ -1290,6 +1294,8 @@ class Bot:
         if pick is not None:
             dist, err, e = pick
             self.target = e.get("ptr")
+            if p.get("ptr") is not None and p.get("rot") is not None:
+                AIM_REQUEST.update(ptr=p["ptr"], yaw=wrap((p.get("rot") or 0.0) + err), at=time.monotonic())
             if self.__dict__.get("_pick_blocked"):
                 fl = self.__dict__.get("_flank")
                 if not fl or fl["key"] != self.target or now >= fl["until"]:

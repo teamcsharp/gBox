@@ -36,6 +36,9 @@ MODS = {
         ("one_hit", "One-hit kills", "one_hit", None),
         ("enemy_health", "Enemy health \u00d7", "enemy_health_x", (0.05, 1, 0.05)),
         ("kill_time", "Time added per kill", "kill_time_on", None),
+        ("weapon_power", "Weapon power \u00d7", "weapon_power_x", (1, 20, 1)),
+        ("max_level", "Every weapon at max level", "max_level", None),
+        ("aim_lock", "RAM aim lock", "aim_lock", None),
     ],
     "re6": [
         ("infinite_ammo", "Infinite ammo", "infinite_ammo", None),

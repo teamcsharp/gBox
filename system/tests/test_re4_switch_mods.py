@@ -206,3 +206,52 @@ def test_the_tool_routes_re4_switch():
     from gbox import re5_mods_tool as T
     assert T.is_switch_re4({"game_id": "270a15eb98dab4d7"}) and T.is_switch_re4({"map_id": "010099a00bc1e000"})
     assert not T.is_switch_re4({"game_id": "52d15709be0fda1a"})
+
+
+
+def _fp_table(ad):
+    """The measured firepower rows in a fake module."""
+    import struct as _s
+    for name, (off, first) in M.FIREPOWER_ROWS.items():
+        vals = [first * (1 + 0.1 * i) for i in range(7)]
+        ad.put(BASE + off, _s.pack("<7f", *vals))
+
+
+def test_weapon_power_and_max_level_rewrite_the_firepower_rows(ad):
+    _fp_table(ad)
+    s = snap(ad)
+    out = M.run(ad, "weapon_power", 5, snap=s)
+    assert out["verified"] and out["rows"] == len(M.FIREPOWER_ROWS)
+    off, first = M.FIREPOWER_ROWS["broken_butterfly"]
+    vals = struct.unpack("<7f", ad.read_memory(BASE + off, 28))
+    assert abs(vals[0] - first * 5) < 1e-3
+    M.run(ad, "max_level", on=True, snap=s)
+    vals = struct.unpack("<7f", ad.read_memory(BASE + off, 28))
+    assert all(abs(v - first * 1.6 * 5) < 1e-2 for v in vals), "every level at the exclusive value, x5"
+    M.run(ad, "weapon_power", 1, snap=s)
+    M.run(ad, "max_level", on=False, snap=s)
+    vals = struct.unpack("<7f", ad.read_memory(BASE + off, 28))
+    assert abs(vals[0] - first) < 1e-3, "back to the game's own"
+
+
+def test_a_row_that_does_not_match_is_never_written(ad):
+    _fp_table(ad)
+    off, _ = M.FIREPOWER_ROWS["handgun"]
+    ad.put(BASE + off, struct.pack("<7f", *([99.0] * 7)))
+    M.run(ad, "weapon_power", 3, snap=snap(ad))
+    assert struct.unpack("<7f", ad.read_memory(BASE + off, 28))[0] == 99.0
+
+
+def test_the_aim_lock_writes_the_bots_aim_onto_the_facing(ad):
+    import time as _t
+    ptr = 0x5D50100000
+    raw = bytearray(D.UNIT_SIZE)
+    ad.put(ptr, raw)
+    M.run(ad, "aim_lock", on=True)
+    D.AIM_REQUEST.update(ptr=ptr, yaw=1.25, at=_t.monotonic())
+    s = snap(ad)
+    s["player"] = {"ptr": ptr, "pos": (0, 0, 0), "rot": 0.0}
+    assert M.maintain(ad, s).get("aim_writes") == 1
+    assert abs(struct.unpack("<f", ad.read_memory(ptr + D.U_YAW, 4))[0] - 1.25) < 1e-6
+    D.AIM_REQUEST.update(at=_t.monotonic() - 5)
+    assert "aim_writes" not in M.maintain(ad, s), "a stale request is not written"
