@@ -312,3 +312,24 @@ def from_json(data: dict, formats=None) -> RoomMap:
         raise ValueError("the floor mask is shorter than its grid")
     return RoomMap(data["room"], g["origin_mm"], g["cell_mm"], g["cols"], g["rows"], floor, data.get("walls", ()),
                    stage=data.get("stage", ""), source=data.get("source"))
+
+
+def open_span(rm, pos, reach: float, *, headings: int = 8, step: float = 200.0, body_r: float = 0.0) -> float:
+    """How far open floor runs from pos along the best of `headings` directions (mm, up to reach, in `step`s): the room's
+    size as the walker sees it. A probe longer than the room is always inside a wall (#9527)."""
+    best = 0.0
+    for i in range(headings):
+        h = 2 * math.pi * i / headings
+        d = 0.0
+        while d + step <= reach + 1e-6:
+            end = (pos[0] + (d + step) * math.sin(h), pos[1], pos[2] + (d + step) * math.cos(h))
+            if rm.walk_block(tuple(pos), end, end_r=0.0, body_r=body_r) is not None:
+                break
+            d += step
+        best = max(best, d)
+    return best
+
+
+def scaled_probe(rm, pos, reach: float, *, minimum: float = 400.0, share: float = 0.4) -> float:
+    """The wall probe for this room: `share` of its open span, between `minimum` and `reach` (small room: short probe)."""
+    return max(minimum, min(reach, share * open_span(rm, pos, reach * 3.0)))

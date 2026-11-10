@@ -43,6 +43,8 @@ import time
 from ..driver import Driver
 from ..core import combat                          # the universal fight (UNIVERSAL_CORE): at import, for the hot reload
 from ..core import respond                         # the doctrine's answer to a threat (RESPOND): at import, too
+from ..core import walk_metrics                    # #9527: reversals / wall seconds / path per minute
+from ..core import room_map as core_room_map       # #9527: the probe scaled to the room
 from ..core import aim_book                        # the per-shot truth and the learning on every miss (AIM_BOOK)
 from . import re4_nav, re4_walk                    # the stage mesh (room collision), the walker and the map's marks
 from . import re4_room_map                         # the room's real map (#9342): walls / floor for walks and shots
@@ -1578,6 +1580,11 @@ ROOM_BRUSH_MM = 200.0     # the probe's own body half width: closer than this to
 # sweep, the walker's straight line - and the line of sight. A doorway narrower than the margins allow gets margins
 # scaled to its width (core.room_map.GAP_MARGIN_X).
 ROOM_LEGS = True
+# #9527 (operator: the bot swivels in a small room): ROOM_SCALED_PROBE shortens the room-map probe to a share of the
+# room's open span (core.room_map.scaled_probe, ROOM_PROBE_MIN_MM at least), so a small room's walls are not always
+# 'ahead'; UNWALL_HOLD_S (0 = off: 0.8 made him overshoot a wall's end in test_re4_room_map) keeps an unwall for this long before arrival ends it (the walker and unwall
+# stop alternating tick by tick). WALK_METRICS merges core.walk_metrics' wm_* counters into the stats. Off: as before.
+ROOM_SCALED_PROBE, ROOM_PROBE_MIN_MM, UNWALL_HOLD_S, WALK_METRICS = True, 400.0, 0.0, True
 # The camera collapsed (the operator's screenshot 2026-11-10: Krauser and Leon pinned, the camera inside a wall; the
 # camera read from RAM: camera_state, #9386). The engine pulls the camera in against geometry, so while the stick walks
 # him (in control, the gun down CAM_SETTLE_S - the aim's own zoom-in is no wall) a camera-to-player distance
@@ -2267,6 +2274,8 @@ class Bot:
         if UNIVERSAL_CORE:
             act = self._idle_core(p, act, snap, now)   # the gun up at one in range without a shot: round him
             act = self._wall_core(p, act, snap, now)   # never walking into a wall (pressed: away to open floor)
+        if WALK_METRICS:
+            self._walk_metrics(p, snap, now)
         up = AIM_BTN in set(act.get("hold") or ())
         self._aim_since = (self._aim_since if self._aim_since is not None else now) if up else None
         if self.director is not None:
@@ -2844,6 +2853,28 @@ class Bot:
             return False
         return clear
 
+    def _walk_metrics(self, p, snap, now) -> None:
+        """WALK_METRICS (#9527): this tick into core.walk_metrics; near a wall = the room map's wall within 600 mm."""
+        try:
+            d = self.__dict__
+            wm = d.get("_wm")
+            if wm is None:
+                wm = d["_wm"] = walk_metrics.WalkMetrics()
+            near = False
+            rm = self._room_map(snap)
+            if rm is not None and p.get("pos") and self.doing != "dead":
+                pos = tuple(p["pos"])
+                for i in range(8):
+                    h = i * math.pi / 4
+                    if rm.walk_block(pos, (pos[0] + 600.0 * math.sin(h), pos[1], pos[2] + 600.0 * math.cos(h)),
+                                     end_r=0.0, body_r=0.0) is not None:
+                        near = True
+                        break
+            wm.observe(now, p.get("pos"), p.get("rot"), self.doing, near)
+            self.stats.update(wm.summary())
+        except Exception as exc:                             # noqa: BLE001 - measuring never costs the tick
+            self._core_error(exc)
+
     def _route_leg(self, act, p=None) -> bool:
         """ROOM_LEGS: this tick's action is the mesh walker's own route leg (re4_walk.Walker.leg: the route's steer,
         not a backstop step, toward a waypoint the mesh's floor reaches in a straight line from him), unchanged, with
@@ -2880,6 +2911,11 @@ class Bot:
             return None                                      # a jump-over / a ladder: through it is the way
         hold = set(act.get("hold") or ())
         reach = ROOM_PROBE_RUN_MM if RUN_BTN in hold else ROOM_PROBE_MM
+        if ROOM_SCALED_PROBE:
+            try:
+                reach = core_room_map.scaled_probe(rm, tuple(pos), reach, minimum=ROOM_PROBE_MIN_MM)
+            except Exception:                                # noqa: BLE001 - the probe keeps its length
+                pass
         end = (pos[0] + reach * math.sin(rot), pos[1], pos[2] + reach * math.cos(rot))
         why = rm.walk_block(tuple(pos), end, end_r=0.0, body_r=ROOM_BRUSH_MM)
         if why is None:
@@ -2919,7 +2955,8 @@ class Bot:
             prof, k = self._profile(), MM_PER_CM
             pos_cm, rot = prof.pos_cm(p["pos"]), p.get("rot")
             un = d.get("_uc_unwall")
-            if un is not None and (now >= un["until"] or self._flat(p["pos"], un["goal"]) <= ESCAPE_ARRIVED_MM):
+            if un is not None and (now >= un["until"] or (self._flat(p["pos"], un["goal"]) <= ESCAPE_ARRIVED_MM
+                                                          and now - un.get("since", -1e9) >= UNWALL_HOLD_S)):
                 un = d["_uc_unwall"] = None
             out = {"hold": self._unwall_keys(p, un["goal"])} if un is not None else act
             hold = set(out.get("hold") or ())
@@ -2959,7 +2996,7 @@ class Bot:
             why = ("pressed against a wall: turning away onto open floor" if pressed else
                    "a wall he pressed before lies that way: along it instead" if refused else
                    "the room map: a wall ahead, along it instead")
-            d["_uc_unwall"] = {"until": now + UNWALL_S, "goal": goal, "why": why}
+            d["_uc_unwall"] = {"until": now + UNWALL_S, "goal": goal, "why": why, "since": now}
             d.setdefault("_fz", {"pos": None, "rot": None, "tap": -1e9, "on": False})["stepped"] = now
             self.doing, self.why = "unwall", why
             return {"hold": self._unwall_keys(p, goal)}
