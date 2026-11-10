@@ -237,3 +237,29 @@ def test_changed_build_cannot_clear_native_failure():
     with pytest.raises(N.Unavailable,match='executable'):
         ctl.recover_completed_call()
     assert ctl.failed
+
+
+def test_status_names_the_grenade_kinds_before_a_worker_has_claimed(tmp_path):
+    """The PiP asks once the round starts: a title with no ring must say so, not "worker not connected" alone."""
+    store=Store(tmp_path); app=FastAPI()
+    store.put('session','sid',{'state':'running','game_id':'270a15eb98dab4d7'})     # RE4 Switch
+    I.install(app, store, lambda: 'fixture')
+    with TestClient(app) as client:
+        out=client.get('/api/sessions/sid/interventions').json()
+    rows={r['kind']:r for r in out['options']['grenade_kinds']}
+    assert set(rows)=={'flash','hand','incendiary'}
+    assert all(r['available'] is False for r in rows.values())
+    assert 'not built for RE4 Switch' in rows['flash']['reason']
+    assert out['available'] is False
+    store.db.close()
+
+
+def test_status_never_invents_a_kind_for_a_title_with_a_ring_but_no_worker(tmp_path):
+    store=Store(tmp_path); app=FastAPI()
+    store.put('session','sid',{'state':'running','game_id':'115f9cdbba115432'})     # RE6 Switch
+    I.install(app, store, lambda: 'fixture')
+    with TestClient(app) as client:
+        rows={r['kind']:r for r in client.get('/api/sessions/sid/interventions').json()['options']['grenade_kinds']}
+    assert rows['flash']['available'] is False
+    assert 'controller is not available' in rows['flash']['reason']
+    store.db.close()

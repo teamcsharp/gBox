@@ -55,6 +55,9 @@ E_COUNT, E_ARRAY, E_POS, E_HP = 0x40, 0x50, 0x60, 0x1368
 # Rejecting that whole list made every threat disappear from the bot's view.
 MAX_ENEMIES = 512
 GET_DTI_SLOT, DTI_NAME = 5, 0x8
+# The grenade ring's auto-deploy rule (gbox.mercs.grenade_ring): settable from the PiP's bot-logic sidebar. RING off
+# never fires it; RING_N is the crowd inside a few metres that counts as surrounded; RING_EVERY_S is the cooldown.
+RING, RING_N, RING_EVERY_S, RING_KIND = True, 4, 20.0, "flash"
 
 UNIT_LINES, LINE_STRIDE, UNIT_NEXT, N_LINES = 0x268, 0x30, 0x20, 32
 UI_LINES = (0, 1, 18, 19)               # the interface units' lines (title / dialogs, the extras' backdrop, menus / HUD)
