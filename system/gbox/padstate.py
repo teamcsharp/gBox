@@ -137,6 +137,24 @@ _XI = {0x0001: "up", 0x0002: "down", 0x0004: "left", 0x0008: "right", 0x0010: "s
 PLAYER_TOUCH: dict[str, float] = {}     # sid -> last time the operator pressed/moved their own pad (worker process)
 CHORD: dict[str, object] = {}           # sid -> callable run when the operator holds Select/View and presses A (autoplay)
 CHORD_KEYS = frozenset({"select", "b"})  # physical Xbox A is RetroPad 'b' here (positional labels, see _XI)
+# Per-session chord. PSO binds Select + L1 + R1 (RetroPad 'l' + 'r') to its equipment randomizer; every other
+# title keeps the default Select + A.
+CHORD_BY_SESSION: dict[str, frozenset] = {}
+
+
+def chord_keys(sid: str) -> frozenset:
+    """The keys that make up this session's operator chord (the default Select + A when none is set)."""
+    return CHORD_BY_SESSION.get(sid) or CHORD_KEYS
+
+
+def set_chord(sid: str, keys) -> frozenset:
+    """Bind a session's chord and return the set in force. Every chord holds Select, so it cannot fire while
+    playing without the operator deliberately holding it."""
+    keys = frozenset(str(k).lower() for k in keys)
+    if "select" not in keys or len(keys) < 2:
+        raise ValueError("an operator chord is Select plus at least one other key")
+    CHORD_BY_SESSION[sid] = keys
+    return keys
 ANCHOR: dict[str, object] = {}          # sid -> callable(at): save the screen the operator reacted to (gbox.imitate)
 
 
@@ -151,9 +169,15 @@ def touched_after(sid: str, t: float) -> bool:
 
 def chord_step(sid: str, before: set, now: set, moved: bool, chording: bool) -> tuple[bool, bool]:
     """One pad report: (fire the chord now, still chording). While the chord's own keys are held (and nothing else),
-    the report is not a touch, so autoplay the chord just started doesn't hand control straight back."""
-    fire = CHORD_KEYS <= now and "b" not in before
-    chording = (chording or fire) and bool(now) and now <= CHORD_KEYS and not moved
+    the report is not a touch, so a chord's own action does not hand control straight back.
+
+    The chord fires on the *press* that completes it, so holding Select and tapping the action keys repeats cleanly and
+    holding the whole chord does not repeat. With a three-key chord (PSO's Select + L1 + R1) any one of the action keys
+    completing the set fires it."""
+    keys = chord_keys(sid)
+    action = keys - {"select"}
+    fire = bool(keys <= now) and bool(action - before)
+    chording = (chording or fire) and bool(now) and now <= keys and not moved
     if not chording and (now or moved):
         PLAYER_TOUCH[sid] = time.time()                  # the operator is playing (a playing bot yields: pad_lease)
     return fire, chording
@@ -181,6 +205,25 @@ def pad_lease(sid: str, keys: set) -> None:
         pass
 
 
+def operator_slot(get_state, st, *, samples: int = 12, gap: float = 0.05) -> int:
+    """The XInput slot the operator's own pad is on: the first that reports a button or a moved stick.
+
+    Slot 0 is not safe to assume. A leftover virtual pad from an earlier session holds slot 0 on this PC and
+    sits at all zeros forever, so the operator's real controller enumerates on slot 1 and a watcher bound to
+    slot 0 sees nothing at all (proven on the i9-NUC 2026-11-10: the operator's pad reported live packets and
+    analog values on slot 1 while slot 0 stayed exactly zero). Falls back to 0 when nothing moves.
+    """
+    for _ in range(max(1, samples)):
+        for s in range(4):
+            if xinput.read(get_state, s, st) is None:
+                continue
+            g = st.gamepad
+            if g.buttons or abs(g.lx) > 7849 or abs(g.ly) > 7849 or abs(g.rx) > 7849 or abs(g.ry) > 7849:
+                return s
+        time.sleep(gap)
+    return 0
+
+
 def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
     """Windows worker: stream the operator's own controller (pad 0) to the controller glyph while the session lives.
     The game reads the pad itself; this only mirrors it (XInput works whatever window has focus)."""
@@ -190,12 +233,14 @@ def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
     if get_state is None:
         return
     st, held, last_pkt, last_stick, chording = xinput.XInputState(), set(), -1, (0.0, 0.0, 0.0, 0.0), False
+    slot = operator_slot(get_state, st)          # the operator's pad: not always XInput slot 0
+    print(f"padstate: mirroring the operator's pad on XInput slot {slot}", flush=True)
     last_active = 0.0
     ax = lambda v: 0.0 if abs(v) < 7849 else round(max(-1.0, v / 32767), 2)      # XInput's recommended deadzone
     with httpx.Client(base_url=server, headers=headers, timeout=3) as c:
         while alive():
             time.sleep(1 / 30)
-            if xinput.read(get_state, 0, st) is None:
+            if xinput.read(get_state, slot, st) is None:
                 continue                                    # empty slot or a failed call: keep mirroring
             if st.packet == last_pkt:                       # unchanged: a button or stick still held is still input
                 if (held or any(abs(v) > 0.3 for v in last_stick)) and not chording:
