@@ -1194,6 +1194,8 @@ class Bot:
             self.doing, self.why = "idle", "no player in RAM"
             return {}
         self._count_kills(snap, now)
+        if snap.get("kill_candidates"):                # the probe's counters beside the census (KILL_CANDIDATES)
+            self.stats["kill_candidates"] = " ".join(f"{k}={v}" for k, v in snap["kill_candidates"].items())
         owed = self.combo_owed(now)
         self.stats["combo_owed_s"] = round(owed, 1) if owed is not None else None
         frozen = self._frozen(p, now)
