@@ -308,3 +308,28 @@ passed**.
 
 **Deploy needs**: the title module hot-reloads, but the new `classes.py` and `tools/` are new files and the worker
 imports them - a `gbox.service` restart at a gap (already asked above) covers it.
+
+## Round 50 (2026-11-10, later session) — RE6 launcher rounds: the tables pinned, and why they cannot ride the bomb wrapper
+
+Hand-off lane B item 2 ("find the shell spawn path, put real launcher rounds into `grenade_scatter`'s random kinds").
+
+**Pinned in code** (`native/re6_061d2a06/classes.py`, branch `ds-re6-launcher-shells-20261110`):
+`SHELLS` uWp1302/1303/1304 (items 0x133-0x135, DTIs `0x2952098`/`0x29520d0`/`0x2952108`, size 0xE5C, parent
+`uWpShellLauncher`), the `SHELL_FAMILY` chain (uWpShell `0x2950b60`, uWpShellLauncher `0x2950b98`, Bowgun, Homing,
+Rifle 0x138), the `LAUNCHERS` (uWp1080 Grenade Launcher item 0x112 `0x2951260`; uWp1120 Rocket Launcher 0x11B
+`0x2951458`) and `LAUNCHER_ROUNDS` (uWp1080 -> the three rounds). The test cross-checks every row against
+`docs/research/re6-weapon-dti-tree.json`, so the code and the research tree cannot drift.
+
+**The blocker, from our own wrapper's disassembly:** the detonate image checks the unit's **action object** against the
+bomb action class `0x288C9A0` (words 30-36) before it fires, and the final comparison is against `0x288C868`. A round
+carries the launcher's action, so the wrapper returns 0 - a clean refusal (no crash, no explosion). Parameterising the
+class cannot fix that: a shell is a **projectile the weapon spawns with a velocity**, so the barrage needs the
+launcher's own fire/explode path. That is the next step, and it is a live-iterated one (the fire function's arguments
+have to be observed on a running RE6 round).
+
+**No false advertising:** `grenade_scatter` still refuses shell kinds - a test asserts the shell names are in neither
+`RING_IMPLEMENTED_KINDS` nor the ring's `CLASSES`, so nothing can fire a round that cannot explode. `re6_dti_emu`'s
+table and this module now agree; the barrage's random kinds stay flash-only until a kind has a live receipt.
+
+Tests: `test_re6_class_images.py` (21) incl. the tree cross-check and the "not a ring kind" guard; the RE6/intervention
+set **126 passed**.

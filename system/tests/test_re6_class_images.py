@@ -5,6 +5,8 @@ word for word; the controller runs against a fake emulator that records every na
 handed.
 """
 import hashlib
+import json
+import pathlib
 import struct
 import threading
 
@@ -271,3 +273,39 @@ def test_the_cave_scanner_finds_a_hole_and_a_reference_into_it():
     # a non-zero byte in the cave is not a hole
     image[C.SPAWN_CLASS[0]] = 0x01
     assert tool.scan(bytes(image), ranges)["holes"] == {"spawn_class": False}
+
+# ---- the launcher rounds ---------------------------------------------------------------------------------------------------
+
+TREE = pathlib.Path(__file__).resolve().parents[1] / "docs" / "research" / "re6-weapon-dti-tree.json"
+
+
+def test_the_shell_and_launcher_rows_match_the_research_tree():
+    rows = {row["name"]: row for row in json.loads(TREE.read_text(encoding="utf-8"))["entries"]}
+    for shell in C.SHELLS.values():
+        row = rows[shell.name]
+        assert int(row["dti"], 16) == shell.dti
+        assert int(row["weapon_item"], 16) == shell.item
+        assert row["parent"] == shell.parent
+        assert int(row["size"], 16) == shell.size
+    for name, (dti, item, size) in C.LAUNCHERS.items():
+        assert int(rows[name]["dti"], 16) == dti
+        assert int(rows[name]["weapon_item"], 16) == item
+        assert int(rows[name]["size"], 16) == size
+    for name, (dti, item, size) in C.SHELL_FAMILY.items():
+        assert int(rows[name]["dti"], 16) == dti
+        assert (None if item is None else int(rows[name]["weapon_item"], 16)) == item
+        assert int(rows[name]["size"], 16) == size
+
+
+def test_the_grenade_launcher_fires_the_three_round_classes():
+    assert [s.name for s in C.shell_rounds()] == ["uWp1302", "uWp1303", "uWp1304"]
+    assert [s.item for s in C.shell_rounds()] == [0x133, 0x134, 0x135]
+    assert [s.name for s in C.shell_rounds("uWp1120")] == ["uWp1304"]
+    assert C.shell_for_item(0x135).name == "uWp1304" and C.shell_for_item(0x999) is None
+
+
+def test_a_shell_is_not_advertised_as_a_ring_kind():
+    # the round is a projectile of the launcher, not an item thrown by the player: our wrapper's action-object check
+    # (0x288c9a0) refuses it, so it stays out of the ring's kinds until the launcher's own fire path is wired.
+    assert set(C.SHELLS) & set(N.RING_IMPLEMENTED_KINDS) == set()
+    assert set(C.SHELLS) & set(C.CLASSES) == set()

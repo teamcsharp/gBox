@@ -99,3 +99,64 @@ def class_for(kind: str) -> GrenadeClass:
         return CLASSES[(kind or "").lower()]
     except KeyError:
         raise KeyError(f"unknown grenade class {kind!r}") from None
+
+
+# --- the launcher rounds (hand-off lane B item 2) ---------------------------------------------------------------------------
+#
+# The grenade launcher uWp1080 (item 0x112) fires the round classes uWp1302/1303/1304 (items 0x133-0x135), subclasses of
+# uWpShellLauncher -> uWpShell -> uWeapon (docs/research/re6-weapon-dti-tree.md, Hermes #9437). Their DTIs are pinned
+# here so the barrage can name them; they are **not** wired into the ring yet, and the reason is in the disassembly of
+# our own detonation wrapper (`detonate` image, 0x18F29C0+):
+#
+#   word 30-36  ldr x0, [x19, #0x13F0] / cbz / ldr x1, [x0] / cmp x1, 0x288C9A0   <- the unit's *action* object must be
+#               the bomb's own class; a shell carries the launcher's, so the wrapper returns 0 (refused, not a crash)
+#   word 52-56  the same shape against 0x288C868 before reporting the explosion
+#
+# So a shell cannot be detonated by parameterising this wrapper: it needs the launcher's own fire/explode path (the
+# round is a projectile the weapon spawns with a velocity, not an item thrown by the player). The table is here so that
+# path has its addresses and ids; `grenade_scatter` deliberately refuses `kind="shell*"` until then rather than firing
+# a round that cannot explode.
+
+@dataclass(frozen=True)
+class ShellClass:
+    name: str
+    item: int
+    dti: int
+    parent: str
+    size: int
+
+
+SHELLS = {
+    "uWp1302": ShellClass("uWp1302", 0x133, 0x2952098, "uWpShellLauncher", 0xE5C),
+    "uWp1303": ShellClass("uWp1303", 0x134, 0x29520D0, "uWpShellLauncher", 0xE5C),
+    "uWp1304": ShellClass("uWp1304", 0x135, 0x2952108, "uWpShellLauncher", 0xE5C),
+}
+
+SHELL_FAMILY = {
+    "uWpShell": (0x2950B60, None, 0xE58),
+    "uWpShellLauncher": (0x2950B98, None, 0xE5C),
+    "uWpShellBowgun": (0x2950BD0, None, 0xE78),
+    "uWpShellHoming": (0x2950C40, None, 0xE64),
+    "uWpShellRifle": (0x2950DC8, 0x138, 0xE5C),
+}
+
+LAUNCHERS = {
+    "uWp1080": (0x2951260, 0x112, 0xE28),      # Grenade Launcher
+    "uWp1120": (0x2951458, 0x11B, 0xE2C),      # Rocket Launcher
+}
+
+#: class name -> the round it fires (what "real launcher rounds in the barrage" means)
+LAUNCHER_ROUNDS = {"uWp1080": ("uWp1302", "uWp1303", "uWp1304"), "uWp1120": ("uWp1304",)}
+
+
+def shell_for_item(item: int) -> ShellClass | None:
+    """The launcher round class for an inventory item id (0x133-0x135), or None."""
+    for shell in SHELLS.values():
+        if shell.item == item:
+            return shell
+    return None
+
+
+def shell_rounds(launcher: str = "uWp1080") -> tuple:
+    """The round classes a launcher fires, by name (default the grenade launcher)."""
+    return tuple(SHELLS[name] for name in LAUNCHER_ROUNDS.get(launcher, ()))
