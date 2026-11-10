@@ -543,3 +543,68 @@ Every branch is pushed. None has been merged, and **none has a live receipt yet*
 
 The grenade suites' pre-existing reds are unchanged by these branches (the hand-off's 11 RE5 / 3 RE6 known-red files
 are untouched: no branch edits a file in that list). The counts above are the suites the branches themselves affect.
+
+## Checkpoint 0 - the pushed work made safe to merge, on one branch (2026-11-10 14:25 CST, `ds-grenade-merge-20261110`)
+
+The integration branch the RE session can merge and deploy in one gap. It is cut from `54b2a78e` and merges the four
+branches in the doc's order; the only conflict was this lane log (append-against-append), resolved keeping every
+section in time order, and there was **no code conflict**:
+
+1. `ds-re6-ring-explosive-floor-20261110` (`2a0ff081` - the RE6 classes, the launcher shells, the 600 cm explosive ring floor);
+2. `ds-re5-scatter-20261110` (`a03fa8f5` - the RE5 classes, the class pair, the scatter barrage);
+3. `ds-re5-ring-explosive-floor-20261110` (`11cb05a2` - the RE5 explosive ring floor);
+4. `ds-grenade-handover-20261110` (`ceec7da8` - the branch map and the probe requests).
+
+**0.1 - RE5 tolerates the old pair.** `re5_switch_native` reads `main+0x118E820` / `main+0x118E9D0` *before* `attach()`
+installs anything: the old shipped `spawn` / `explode` => the old `PRE_CLASS_CODE` table and the old call shapes
+(two-argument spawn, four-argument explosion; the DTI and vtable are compiled in), so flash/ring/scatter keep working
+and `hand` / `incendiary` answer `Unavailable` "this emulator runs the pre-class pair; the next emulator gets it";
+zero caves => the class pair, as now; any other (or half-installed) bytes => everything refuses with no install. The
+old bytes are never written. Tests: `test_re5_pair_fallback.py` (6) - the old pair fires the flash through the old
+shape and writes nothing to the pair, hand/incendiary are refused before any native call, a zero cave installs the
+class pair and fires the class shape, a pair the class images already wrote is reused, other and half-installed bytes
+refuse everything.
+
+**0.2 - the explosive floor in both scatters.** `re6_switch_native.grenade_scatter` and
+`re5_switch_native.grenade_scatter` place every non-flash round at `max(lo, RING_EXPLOSIVE_CLEAR_CM, safe_cm +
+SCATTER_SAFE_CM)` (600 cm with no learned reach), raise `hi` to that floor when the threat or the learned reach pulls
+it lower, and report `floor_cm` / `floors_cm` in the receipt. The placement adds the 1 cm rounding margin so the
+*measured* distance stays at or above the floor. Tests: an explicit `kind="hand"` barrage with no `safe_cm` places
+every round at 600 cm or more, on both titles.
+
+**0.3 - the flash floor in both scatters.** Flash rounds start at `FLASH_PLACE_MIN_CM` when the title has it
+(`mercs-aim-book` will set 400 on RE5) and never below 400 cm (`flash_place_min_cm()`), instead of 300. Tests: a
+random (flash) barrage has no round under 400 cm on either title, even with the threat at 120 cm.
+
+**0.4 - RE5's automatic barrage off.** `re5_switch.SCATTER = False`; the `grenade_scatter` op stays advertised
+whenever the controller has it, so the probe route and the operator's button work. Test:
+`test_the_re5_automatic_barrage_is_off_until_checkpoint_d_but_the_op_stays`. Checkpoint D turns it back on under
+`FLASH_MIN_GAP_S`.
+
+**Tests on the merged tree** (from `<worktree>/system`, `PYTHONPATH="<worktree>/system;<worktree>/system/tests"`):
+`test_re6_class_images`, `test_re5_class_pair`, `test_re5_class_table`, `test_re5_scatter`, `test_re6_grenade_ring`,
+`test_re5_grenade_ring`, `test_mercs_grenade_status`, `test_mercs_grenade_ring`, `test_re6_native_build`,
+`test_merc_interventions`, `test_intervention_worker`, `test_re5_switch_native`, `test_bot_logic`,
+`test_re5_switch_ss_campaign`, `test_mercs_engine`, plus `test_re6_grenade_scatter` and `test_re5_pair_fallback`:
+**219 passed, 0 failed**. None of the known-red files is in this set. One main test was updated knowingly:
+`test_re6_grenade_scatter.test_the_barrage_is_rapid_and_refuses_unverified_kinds` now expects the resource refusal
+("hand resources are not loaded ...") because the class branch makes `hand` an implemented probe kind and the
+resource gate answers first; the old "not yet verified" case is still covered by `test_re6_class_images`.
+
+Branch: `ds-grenade-merge-20261110`. The code commit is `5068b945` (the four merges, 0.1-0.4, the two new test files
+and the two updated tests); this log and the request below are the commits on top of it.
+
+## REQUEST 14:32 CST - merge `ds-grenade-merge-20261110`, then restart `gbox.service` in the same gap
+
+- needs: merge `ds-grenade-merge-20261110` @ `5068b945` (the branch tip also carries this request), then a
+  `gbox.service` restart **in the same gap** on lilspark
+- why together: the restart is what loads `interventions.py` and the new `classes.py` modules, and what gives every
+  RE5 emulator the class pair. An RE5 emulator that keeps running the old pair keeps its flash (0.1) and answers
+  "pre-class pair" for hand/incendiary - nothing hangs and no executed instruction is rewritten.
+- then, after the restart: read `GET /api/sessions/{sid}/interventions` once on an **RE5** and once on an **RE6**
+  MercMode session (expect `flash` available; `hand` / `incendiary` unavailable with the "no live receipt yet"
+  reasons), and **fire one RE5 flash**
+- record: the two status reads (a screenshot of the PiP rows or the JSON), the RE5 flash receipt (`state`,
+  `detonated`, `hp_before` / `hp_after`), and the doctrine `crit_flashes` / `mine_flashes` (or the PiP flash receipt)
+  showing the flash confirmed after the deploy
+- headers: `x-gbox-actor: agent`; the token is `system/gbox-data/api_token` - never print it
