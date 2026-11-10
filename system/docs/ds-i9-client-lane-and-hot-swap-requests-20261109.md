@@ -504,3 +504,22 @@ stood idle; the round timer ran out). So:
 A swap build is ready for the next round: `recovery-re6-update-roster-v2-20261109` (50 entries: the update's five
 ExeFS files + the 45 roster RomFS files, **without** the invalid data), so the next session can capture swapped-
 character gameplay frames and then run the `op=hotswap` acceptance test (two frames of one session, no restart).
+
+## Round 17 status (2026-11-09, ~18:30 CST): live RE6 gameplay with a swap overlay; the 45-arc roster needs arbitration
+
+1. **The update+single-arc overlay plays a full round in-engine.** `recovery-re6-update-swap1-20261109` (the update's
+   five ExeFS files + one roster arc, `uPl00HeadLeonUsa.arc`) loads Urban Chaos and runs it: captured frames show
+   `MISSION START`, the timer counting (01'57"74 -> 01'47"11), `000/150`, Score 0000000, the player character in
+   frame and a hostile NPC in the street. So the LayeredFS mechanism, the update ExeFS and a RomFS arc overlay all
+   work together on the i9.
+2. **The full 45-arc roster build crashes instead**: `unmapped memory access at 0x0 / 0x4` during the load, the same
+   signature as the invalid r2 data overlay. The 45 artifacts are structurally valid arcs (their first 0x40 bytes are
+   identical to the base arc's header: `ARC\\0 07 00 05 00 data\\chara\\pl\\pl0000\\model...`) but **all 45 are smaller
+   than the game's own arcs** (e.g. Heads `0x10b88` vs `0x6512d`, bodies `0x163d8b` vs `0x1a628a`) — they are rebuilt
+   donor arcs, not drop-in copies.
+3. So the roster needs **arbitration**: either the smaller donor arcs are incompatible with this build's model data, or
+   only some of them are. The single-arc test proves the mechanism, so the next step is a bisect (binary-search the 45
+   arcs by halves) to find the incompatible ones, and/or rebuild the donor arcs against the game's own arc layout
+   (`switch_extract` can now read the exact base arc bytes for that).
+4. `switch_extract`/`switch_decrypt` make that bisect cheap to prepare offline: compare each donor arc's directory
+   (entry count, resource types) against the base arc before launching.
