@@ -1741,19 +1741,70 @@ game -- the same shape as P6a, which built an object-moved disc and had it boot 
 
 P1's guild counter also remains open as the only route to a field arrival by real presses.
 
+## Round 33 (2026-11-10) — the character swap works at the file level; the launch did not use it
+
+### The swap, verified
+
+`plAnj.bml` is the HUmar pack (BQF's class). Its entries are `plAbdy00.nj` (body) plus twelve head/hair/cap files.
+Rebuilding it unchanged is **byte-identical** (34,816 bytes), which is the foundation any swap needs -- the entry table and
+the 0x800 alignment are handled correctly.
+
+Then the real thing: replace the body entry with a **HUcast** body (`plCbdy00.nj`, 24,732 bytes):
+
+```
+rebuilt pack  63,488 bytes
+body entry    24,732 bytes  == the donor, exactly
+head entry    unchanged
+```
+
+A disc image was built from it and the build reports its change:
+
+```
+{"mod": "pso_hotswap_humar_to_hucast",
+ "image": ".../pso_hotswap_humar_to_hucast/Phantasy Star Online Episode I & II Plus (USA).iso",
+ "files": ["plAnj.bml"]}
+```
+
+So P7a/P7b now have a working **file-level** hot swap: any class's body can be dropped into another class's pack, and the
+image builds with the FST updated by `gc_put_file`.
+
+### The boot did not prove it, and the reason is mine
+
+The launch was issued with `{"mod": "pso_hotswap_humar_to_hucast"}`, and the job's own diagnostics say the mod was **not**
+applied:
+
+```
+detail.mod            ""
+detail.timings.mod_s  0.0
+```
+
+The boot that followed was the base disc, so `pw0-charselect.jpg` shows BQF as a HUmar -- it proves the image boots and the
+save is intact, and nothing about the swap. `LaunchIn.mod` exists and is documented as *"launch a file mod built with
+file_mod (folder games, e.g. PS3)"*, so for a single-image GameCube title the modded image is probably selected another
+way (the build's directory is registered per game, and the launcher may need that build named rather than the `mod` field).
+
+That is the first thing next round: find how a single-image build is selected at launch, boot the swapped image, and look
+at the character select -- which previews the model and is therefore the cleanest proof of a character swap.
+
+### One caller bug worth recording
+
+`bml_build` matches replacement keys **lower-cased** (`{'plabdy00.nj': ...}`); passing the on-disc spelling
+(`plAbdy00.nj`) silently changed nothing but the pack's padding, so the first attempt looked like a successful rebuild
+whose body had not changed. The verification (`pso_gc.bml_entry` on the rebuilt pack, compared byte-for-byte with the
+donor) is what caught it -- a size-only check would have passed.
+
 ## 7. Next
 
-1. **P7a's write-back:** the model builds (7 meshes, 7 textures); now run the swap path against a disc and see the
-   changed character in game. Same shape as P6a: rebuild the BML, write the image, boot, look. The BML entry
-   alignment (0x800 for `pl<X>nj.bml`) and `ninja_swap` are the pieces involved.
-2. **P6a's in-game proof** is still owed: the object-moved disc booted to the Sonic Team splash, which proves the
-   image is valid but not that the moved object is where it should be.
-3. **P1's guild counter** remains the only route to a field arrival by real presses. Route in is walked:
-   (102,105) -> (33,-34) -> (-84,27) -> (-223,-24); the counter needs the character in front of the keeper.
-4. Then P1's accept test (three cold launches, both players), P6b (editor page), P7b (hot swap) and the demo ->
-   route fixture.
+1. **Boot the swapped image.** `LaunchIn.mod` is documented for folder games; for a single-image GameCube title the
+   built image is probably selected by naming the build rather than the `mod` field -- find how, boot
+   `pso_hotswap_humar_to_hucast`, and look at the character select, which previews the model and is the cleanest proof
+   of a character swap.
+2. **P6a's in-game proof** is still owed: the object-moved disc boots to the Sonic Team splash, which validates the
+   image but not the moved object.
+3. **P1's guild counter** remains the only route to a field arrival by real presses: (102,105) -> (33,-34) ->
+   (-84,27) -> (-223,-24), then walk around the counter and face the keeper.
+4. Then P1's accept test, P6b (editor page), P7b (hot swap in game) and the demo -> route fixture.
 
-P7a milestone: `pso_player.build` now runs end to end on `GPOE8P` -- a manifest with 7 meshes, materials, a skeleton
-and 7 decoded GVR textures. Three format differences were fixed to get there: Dreamcast path spelling, big-endian
-NJCM payloads, and GVR-vs-PVR textures. All 286 character textures decode, so the round-1 palette bug does not bite
-player models.
+P7a/P7b file-level swap verified this round: `plAnj.bml` round-trips byte-identically, a HUcast body replaces the
+HUmar one exactly (24,732 bytes, head untouched), and the modded image builds with `plAnj.bml` replaced. The launch
+route ignored `mod` (mod_s 0.0), so the in-game proof is still pending.
