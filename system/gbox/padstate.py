@@ -134,6 +134,10 @@ _XI = {0x0001: "up", 0x0002: "down", 0x0004: "left", 0x0008: "right", 0x0010: "s
        0x0080: "r3", 0x0100: "l", 0x0200: "r", 0x1000: "b", 0x2000: "a", 0x4000: "y", 0x8000: "x"}
 
 
+RELAY_STICK = 0.3          # the same push that counts as a touch: below it a stick is drift, not input
+RELAY_MIN_EVENT_S = 0.02    # do not relay more often than the pad itself updates
+
+
 RELAY: dict[str, bool] = {}       # sid -> relay the operator's physical pad into the session's input queue
 RELAY_SEEN: dict[str, tuple] = {}   # sid -> the last relayed state, so a held button is not re-sent forever
 
@@ -253,6 +257,7 @@ def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
             last_pkt, g = st.packet, st.gamepad
             now = {name for bit, name in _XI.items() if g.buttons & bit} | ({"l2"} if g.lt > 30 else set()) | ({"r2"} if g.rt > 30 else set())
             stick = (ax(g.lx), -ax(g.ly), ax(g.rx), -ax(g.ry))
+            stick_changed = stick != last_stick
             ev = [{"key": k, "down": True} for k in now - held] + [{"key": k, "down": False} for k in held - now]
             if not ev and stick == last_stick:
                 continue
@@ -268,11 +273,19 @@ def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
                 if t - last_active >= 0.7 and not chording and ANCHOR.get(sid):
                     threading.Thread(target=ANCHOR[sid], args=(t,), daemon=True).start()
                 last_active = t
-            if RELAY.get(sid) and ev:
+            relayable = [e for e in ev if not e["key"].endswith(("left", "right", "up", "down"))] \
+                or (any(abs(v) > RELAY_STICK for v in stick) and ev)
+            if RELAY.get(sid) and relayable and stick_changed:
                 # Dolphin is reading gBox's virtual pad, so the operator's own controller reaches the game only if we
-                # put their presses on the session's input queue (which the worker sends to that pad).
+                # put their presses on the session's input queue. Buttons are relayed always; STICKS only past a real
+                # deflection, because a resting pad's drift (this one sits at lx -160, ly 1387) changes the packet
+                # continuously and a flood of "operator" input starves the bot's own presses (pad_takeover yields the
+                # pad to the operator while they are "playing").
                 try:
-                    c.post(f"/api/sessions/{sid}/input", json={"events": ev}, timeout=1)
+                    events = [e for e in ev if abs(stick[0]) > RELAY_STICK or abs(stick[1]) > RELAY_STICK
+                              or abs(stick[2]) > RELAY_STICK or abs(stick[3]) > RELAY_STICK
+                              or not e["key"].endswith(("left", "right", "up", "down"))]
+                    c.post(f"/api/sessions/{sid}/input", json={"events": events}, timeout=1)
                 except Exception:                        # noqa: BLE001 - a relay hiccup must not stop the mirror
                     pass
             try:

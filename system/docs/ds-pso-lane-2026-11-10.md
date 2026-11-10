@@ -706,12 +706,67 @@ the screen changed, and this round nearly shipped "the stick is broken" because 
 game was in a conversation. Both were measurements of the *wrong state*. A negative result needs the same evidence bar as
 a positive one, and "nothing happened" is the easiest result to misread.
 
+## Round 11 (2026-11-10) — the conversation signal found, and the relay that was starving the bot
+
+### The signal round 10 said was missing: `mode 5` / `17` is a conversation
+
+Watching `0x80516303` while Principal Tyrell's tutorial ran gives the missing "a conversation is open" signal:
+
+| mode | meaning |
+|---|---|
+| **5** | a conversation page is up |
+| **17** | a conversation page just advanced (it alternates with 5 as A is pressed) |
+| 0 / 4 | the title / attract |
+| 1 | a menu (main menu **and** SELECT CHARACTER) |
+| 9 | SELECT GAME MODE |
+
+The actor fields do **not** move during the conversation (`control_mode` 1, `action_state` 1, `hit_records` 1 the whole
+time), so the boot-mode byte is the only usable signal -- which is why round 10's movement tests were meaningless: the
+mode was 5/17 throughout and movement is locked there. A driver can now press A *while* the mode is 5/17 and stop the
+moment it is not, instead of guessing how many pages a conversation has.
+
+### The bug that probably caused the input stall: the relay starved the bot
+
+Round 10 ended with the game ignoring every press (A and START both did nothing while the render and RAM stayed
+healthy) -- the third appearance of this stall. The likely cause is the relay added in round 9: it forwarded *every*
+change of the operator's physical pad to the session's input queue, and their pad's sticks **drift** (`lx -160,
+ly 1387` at rest, changing packet by packet). A continuous flood of operator-sourced input makes `pad_takeover` treat
+the operator as playing, and a playing bot yields the pad -- so gBox's own presses wait forever.
+
+`padstate` now relays **buttons always, sticks only past a real deflection** (`RELAY_STICK = 0.3`, the same threshold
+the watcher uses for `moved`). Whether that fully explains the stall is **not proven** -- a fresh session after the
+change accepted input for the whole boot sequence, but the previous session had also just been restarted and started
+healthy. The falsifiable test for the next round: drive ~100 presses in one session and check that input still lands.
+
+### The boot sequence is state-dependent, and the script is not
+
+With input working, `gbox.pso_boot_walk.walk` ran its six steps and ended **without a player**, with the mode
+oscillating `1 -> 0 -> 1 -> 1 -> 0 -> 1`. The same `ddown`+A at the main menu produced SELECT GAME MODE (mode 9) in
+round 4 and the title (mode 0) here. The menu remembers its cursor, so the same key sequence lands on a different item
+depending on history -- a fixed press list cannot be right for both.
+
+So the walk needs to *see* each screen before choosing the next press. The mode byte alone cannot do that (1 is two
+different screens). What the round did establish is what to build: a frame-per-step driver that captures the screen at
+each step (the round's frames are 110-123 KB JPEGs and readable), labels it, and records the press that moved it --
+turning the walk into an evidence-backed sequence instead of my memory of round 4.
+
+### Not done
+
+Pioneer 2 -> Forest 1 did not happen in this round either. The pieces are all present (the route through
+`TObjCityDoor_Guild` at 185,173, the walker, the conversation signal); what is missing is a boot sequence that copes
+with a remembered cursor.
+
 ## 7. Next
 
-1. Find a RAM signal for "a conversation is open" (sample `control_mode` +0x324, `action_state` +0x326 and
-   `hit_records` +0xA8 during and after Principal Tyrell's conversation), so a driver knows when to stop pressing A.
-   Until the character is free, every movement measurement is noise - this round's were.
-2. Then measure movement once, properly: two seconds of a held direction with the character free, position read
-   back. Only then call the analog stick broken or working.
+1. A **frame-per-step boot driver**: capture the screen at each step, label it, and record the press that moved it.
+   The menu remembers its cursor, so a fixed press list is wrong depending on history (the same `ddown`+A gave
+   SELECT GAME MODE in round 4 and the title here). The mode byte cannot name a screen (1 = main menu and SELECT
+   CHARACTER), so the frames are the only per-step evidence available.
+2. Use the conversation signal (`mode 5/17`) to press through conversations exactly, then measure movement with the
+   character free - the measurement round 10 could not make.
 3. Then Pioneer 2 -> the Hunter's Guild door (185,173 room 10) -> the teleporter (254,25) -> Forest 1, then the
    three cold launches with both players, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
+
+Open item to falsify: the relay throttle (`RELAY_STICK = 0.3`, buttons always, sticks only past a real deflection)
+is intended to stop the operator's stick drift from starving the bot's presses. Drive ~100 presses in one session
+and check that input still lands.
