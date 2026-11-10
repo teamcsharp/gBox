@@ -479,3 +479,17 @@ def test_owned_disc_noop_rebuild_of_the_snake_stage():
         o = inv.SECTOR + p.coff
         assert blob[o:o + p.csize] == on_disc[o:o + p.csize]
     d.close()
+
+
+@pytest.mark.skipif(_owned() is None, reason="owned MGS2 PS2 disc not available")
+def test_owned_disc_changed_donor_dry_run_fits_snake_stages(donor):
+    """A changed donor on the real disc: every stage that carries the snake model rebuilds within the stage span,
+    nothing is written (dry run), and the slot reports built models with sizes under the cap."""
+    glb, roles = donor
+    r = S.build_disc(_owned(), None, [{"slot": "snake", "model": glb, "roles": roles, "name": "Donor"}])
+    assert r["image"] is None
+    ms = r["reports"][0]["models"]
+    assert ms and all(m["status"] in ("built", "hidden") for m in ms)     # hidden = the slot's secondary models
+    assert any(m["status"] == "built" for m in ms)
+    assert all(m["size"] <= m["cap"] for m in ms if "size" in m)
+    assert any(m["stage"] == "MGS2/STAGE.DAT:r_plt10" for m in ms)
