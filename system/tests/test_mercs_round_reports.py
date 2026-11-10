@@ -372,3 +372,38 @@ def test_an_eligible_round_has_no_failed_condition_and_a_team_round_is_refused()
     team = R.report_for("BLUS30491", _round(scoring_scope="team"), {}, session, provenance)
     assert team["eligibility"]["eligible"] is False
     assert "did not score as a team" in team["eligibility"]["reason"]
+
+def test_the_round_report_carries_the_doctrine_stats(tmp_path, monkeypatch):
+    """gbox.mercs.core.respond's per-round counters (round_threat_* / round_hurt_while_idle) are the report's doctrine
+    metrics: what the threat-response cause batches point at."""
+    monkeypatch.setenv('GBOX_HERMES_HOME', str(tmp_path/'hermes'))
+    title = '010018100CD46000'
+    store, runner = switch_round(tmp_path, title, extra={
+        'round_threat_ticks': 120, 'round_threat_answered_flash': 6, 'round_threat_answered_mine': 4,
+        'round_threat_answered_fire': 104, 'round_threat_unanswered': 6, 'round_hurt_while_idle': 2,
+        'round_threat_forced_fire': 31})
+    runner.scan()
+    doc = runner.materialize(store.get(R.KIND, R.identity(title, RID)))
+    got = doc['report']['metrics']['doctrine']
+    assert got['round_threat_ticks'] == 120 and got['round_threat_unanswered'] == 6
+    assert got['round_hurt_while_idle'] == 2 and got['round_threat_answered_fire'] == 104
+    assert got['round_threat_lacks_flash'] is None, 'a counter the round did not carry stays None'
+
+
+def test_a_new_analysis_supersedes_the_oldest_open_ones_not_the_newest(tmp_path, monkeypatch):
+    """ANALYSIS_QUEUE_CAP: the oldest open analyses of a title are closed as superseded and the newest stay. (The slice
+    taken from the end closed the newest and kept the two oldest open for good: every round's ticket was superseded
+    by the next round before Hermes reached it while the same two old ones were worked again and again.)"""
+    monkeypatch.setenv('GBOX_HERMES_HOME', str(tmp_path/'hermes'))
+    title = '010018100CD46000'
+    store, runner = switch_round(tmp_path, title)
+    for n in range(R.ANALYSIS_QUEUE_CAP):
+        store.put('request', f'old{n}', {'id': f'old{n}', 'number': 100 + n, 'source': 'mercs_round_analysis',
+                                         'status': 'open', 'created': 10.0 + n, 'messages': [],
+                                         'title': f'Mercenaries {title} mercenaries old{n}'})
+    runner.scan()
+    doc = runner.materialize(store.get(R.KIND, R.identity(title, RID)))
+    status = {f'old{n}': store.get('request', f'old{n}')['status'] for n in range(R.ANALYSIS_QUEUE_CAP)}
+    assert status == {'old0': 'done', 'old1': 'open', 'old2': 'open'}
+    assert store.get('request', doc['request_id'])['status'] == 'open'
+    assert 'Superseded by a later round' in store.get('request', 'old0')['messages'][-1]['text']
