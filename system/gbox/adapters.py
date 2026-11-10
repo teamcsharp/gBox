@@ -5628,7 +5628,15 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         try:
             self._write_host(pid, host, data)
         except OSError as e:
-            raise ValueError(f"Switch address {address:#x} is not writable: {e}") from None
+            # a read-only guest page (code / rodata) is a shared mapping /proc/<pid>/mem cannot write: the same memfd
+            # bytes mapped writable elsewhere in the process (eden_memory.writable_alias) take the write instead
+            alias = eden_memory.writable_alias(self._guest()[1], host, len(data))
+            if alias is None:
+                raise ValueError(f"Switch address {address:#x} is not writable: {e}") from None
+            try:
+                self._write_host(pid, alias, data)
+            except OSError as e2:
+                raise ValueError(f"Switch address {address:#x} is not writable (alias {alias:#x}): {e2}") from None
         if self.read_memory(address, len(data)) != data:
             raise RuntimeError("memory write not confirmed by read-back")
         return {"address": address, "written": len(data), "verified": True, "address_mode": self.address_mode}

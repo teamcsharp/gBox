@@ -40,7 +40,7 @@ ARENA_PERMS = {"rw-p", "---p"}                 # the reservation: PROT_READ|PROT
 
 
 def parse_maps(lines) -> list[dict]:
-    """/proc/<pid>/maps rows -> [{start, end, perms, path}] (path "" for anonymous memory)."""
+    """/proc/<pid>/maps rows -> [{start, end, perms, offset, path}] (path "" for anonymous memory)."""
     out = []
     for ln in lines:
         parts = ln.split(None, 5)
@@ -50,7 +50,12 @@ def parse_maps(lines) -> list[dict]:
             a, b = (int(x, 16) for x in parts[0].split("-"))
         except ValueError:
             continue
-        out.append({"start": a, "end": b, "perms": parts[1], "path": parts[5].strip() if len(parts) > 5 else ""})
+        try:
+            off = int(parts[2], 16)
+        except ValueError:
+            off = 0
+        out.append({"start": a, "end": b, "perms": parts[1], "offset": off,
+                    "path": parts[5].strip() if len(parts) > 5 else ""})
     return out
 
 
@@ -79,8 +84,11 @@ def guest_arena(lines) -> dict | None:
     # file-backed or anonymous rows beside the heap, and the RAM map readers (module_base signature scans) need them.
     readable = sorted((r["start"], r["end"], r["perms"]) for r in rows
                       if "r" in r["perms"] and lo <= r["start"] < hi)
+    # the memfd's rows with their file offsets: a guest page mapped read-only (code, rodata) is also mapped writable
+    # elsewhere by Eden (its own view of the same memfd), which is where a write to such a page has to go
+    memfd = sorted((r["start"], r["end"], r["perms"], r.get("offset", 0)) for r in rows if r["path"].startswith(HOSTMEM))
     return {"lo": lo, "hi": hi, "base": -(-lo // HUGE_PAGE) * HUGE_PAGE, "mapped": mapped, "rows": every,
-            "readable": readable}
+            "readable": readable, "memfd": memfd}
 
 
 def mode_for(nce: bool) -> str:
@@ -127,6 +135,22 @@ def mapped(arena: dict, host: int, length: int, perm: str | None = "r") -> bool:
     process: in offset mode host_address has already kept `host` inside lo/hi, and every memfd row there is the walk's."""
     row = _row(arena, host)
     return row is not None and host + length <= row[1] and (perm is None or perm in row[2])
+
+
+def writable_alias(arena: dict, host: int, length: int) -> int | None:
+    """Another host address of the same memfd bytes as [host, host+length) in a WRITABLE row, or None. A guest page the
+    title maps read-only (its code and rodata: RE4 Switch's fire-rate and weapon tables, 2026-11-10) is a shared
+    read-only mapping of the memfd, which /proc/<pid>/mem cannot write; the same file offset mapped writable (Eden's
+    own view) can be, and the guest sees the change at once (one shared page)."""
+    rows = arena.get("memfd") or []
+    src = next((r for r in rows if r[0] <= host < r[1]), None)
+    if src is None or host + length > src[1]:
+        return None
+    off = src[3] + (host - src[0])
+    for s, e_, p, o in rows:
+        if "w" in p and o <= off and off + length <= o + (e_ - s):
+            return s + (off - o)
+    return None
 
 
 def guest_address(arena: dict, host: int, mode: str) -> int:
