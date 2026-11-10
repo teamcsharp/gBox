@@ -52,7 +52,8 @@ MODS = {
         ("auto_qte_ram", "Native grab escape", "auto_qte_ram", None),
         ("kill_time", "Time added per kill", "kill_time_on", None),
         ("fire_rate", "Fire rate", "fire_rate_x", (1, 80, 0.5)),
-        ("magnum_speed", "Magnum fire and recoil speed", "magnum_speed_x", (1, 6, 0.5)),
+        ("magnum_speed", "Magnum fire and recoil speed", "magnum_speed_x", (1, 20, 0.5)),
+        ("bomb_mind", "Remote bombs set off by mind (no detonator)", "bomb_mind", None),
         ("throw_speed", "Grenade throw speed", "throw_speed_x", (1, 20, 0.5)),
         ("quick_attack", "Quick attack speed", "quick_attack_x", (1, 10, 0.5)),
         ("down_fire", "Fire rate while down", "down_fire_x", (1, 10, 0.5)),
@@ -66,9 +67,16 @@ ALLOWED = {
     "magnum_quick4": {"session_id", "op", "request_id"},
     "equip_primary": {"session_id", "op", "request_id", "item"},
     "grenade_ring": {"session_id", "op", "request_id", "kind"},
+    "grenade_scatter": {"session_id", "op", "request_id", "kind"},     # RE6 Switch: the scatter barrage at will
     "set_infinite_ammo": {"session_id", "op", "request_id", "enabled"},
+    "detonate": {"session_id", "op"},                    # RE6 Switch: his remote bombs set off now, by the hook
+    "bomb_detonate": {"session_id", "op"},               # (the same: the operator's name for it, 2026-11-10)
+    "bomb_drop": {"session_id", "op"},                   # RE6 Switch: a remote bomb down at his feet, placed and armed
 }
+DETONATE_TITLES = {"re6"}
+BOMB_OPS = {"detonate": "detonate", "bomb_detonate": "detonate", "bomb_drop": "bomb_drop"}   # op -> the worker's op
 GRENADE_RING_KINDS = ("flash", "hand", "incendiary")
+GRENADE_SCATTER_KINDS = ("random",) + GRENADE_RING_KINDS
 SCHEMA = {"type": "object", "additionalProperties": False,
           "properties": {"session_id": {"type": "string"},
               "op": {"type": "string", "enum": list(ALLOWED), "default": "status"},
@@ -76,7 +84,7 @@ SCHEMA = {"type": "object", "additionalProperties": False,
               "value": {"type": ["number", "boolean"]}, "request_id": {"type": "string"},
               "enabled": {"type": "boolean"},
               "item": {"type": "integer", "minimum": 1, "maximum": 255},
-              "kind": {"type": "string", "enum": list(GRENADE_RING_KINDS)}},
+              "kind": {"type": "string", "enum": list(GRENADE_SCATTER_KINDS)}},
           "required": ["session_id"]}
 
 
@@ -91,7 +99,7 @@ def validate_request(args):
         raise ValueError("invalid session_id")
     if op == "set" and (not isinstance(args.get("control"), str) or "value" not in args):
         raise ValueError("set needs control and value")
-    if op in ("flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "set_infinite_ammo"):
+    if op in ("flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "grenade_scatter", "set_infinite_ammo"):
         import uuid
         try:
             uuid.UUID(args.get("request_id", ""))
@@ -103,6 +111,8 @@ def validate_request(args):
         raise ValueError("infinite ammo needs an explicit boolean enabled value")
     if op == "grenade_ring" and "kind" in args and args["kind"] not in GRENADE_RING_KINDS:
         raise ValueError("invalid grenade ring kind")
+    if op == "grenade_scatter" and "kind" in args and args["kind"] not in GRENADE_SCATTER_KINDS:
+        raise ValueError("invalid grenade scatter kind")
     if "job_id" in args and (not isinstance(args["job_id"], str) or not args["job_id"] or len(args["job_id"]) > 160):
         raise ValueError("invalid job_id")
     return op
@@ -219,7 +229,8 @@ class Controls:
         inp = job.get("input") or {}
         if (job.get("tool") != "re5_mods" or inp.get("session_id") != sid
                 or job.get("require_worker", job.get("worker_id")) != ctx["worker_id"]
-                or inp.get("op") not in {"live_controls", "bot_logic", *(d[0] for d in MODS.get(ctx["controls_title"], []))}):
+                or inp.get("op") not in {"live_controls", "bot_logic", *(d[0] for d in MODS.get(ctx["controls_title"], [])),
+                                         *(set(BOMB_OPS.values()) if ctx["controls_title"] in DETONATE_TITLES else ())}):
             raise ValueError("That job does not belong to these live controls.")
         if job.get("state") in WAITING:
             return {"id": jid, "state": job["state"]}
@@ -270,13 +281,15 @@ class Controls:
             result["reason"] = "This game's worker has no live behavior sliders; native actions appear when supported."
         cached = self.cache.get(sid, {})
         result["controls"] = control_inventory(ctx["controls_title"], cached.get("view", {}), cached.get("status", {}))
-        if op in ("flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "set_infinite_ammo"):
+        if op in ("flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "grenade_scatter", "set_infinite_ammo"):
             await self.check_run(ctx)  # reject a handover between the capability read and click
             body = {"op": op, "request_id": args["request_id"]}
             if op == "equip_primary":
                 body["args"] = {"item": args["item"]}
             if op == "grenade_ring":
                 body["args"] = {"kind": args.get("kind", "flash")}
+            if op == "grenade_scatter":
+                body["args"] = {"kind": args.get("kind", "random")}
             if op == "set_infinite_ammo":
                 body["args"] = {"enabled": args["enabled"]}
             out = await self.post(f"/api/sessions/{quote(sid, safe='')}/interventions", body)
@@ -284,8 +297,27 @@ class Controls:
             result["action"] = {"state": row["state"], "request": row}
             return result
         if not ctx["controls_title"]:
-            if op == "set":
+            if op == "set" or op in BOMB_OPS:
                 raise ValueError(result["reason"])
+            return result
+        if op in BOMB_OPS:
+            # A momentary action, not a control value: one re5_mods job (routed to re6_switch_mods.detonate or its
+            # instant bomb_drop), its own verified receipt returned - and no knob to read back.
+            if ctx["controls_title"] not in DETONATE_TITLES:
+                raise ValueError("This game has no remote-bomb hook.")
+            await self.check_run(ctx)
+            job = await self.job(ctx, {"op": BOMB_OPS[op]})
+            self.pending.pop(job.get("id"), None)
+            if job.get("state") in WAITING:
+                result["action"] = {"state": "pending", "job_id": job["id"]}
+                return result
+            out = (job.get("output") or {}).get("result") or {}
+            if job.get("state") != "succeeded" or out.get("verified") is not True:
+                raise ValueError(str(out.get("reason") or job.get("error") or "No remote bomb was set off.")[:300])
+            result["action"] = {"state": "confirmed", "job_id": job["id"], "op": BOMB_OPS[op],
+                                "detonated": out.get("count"), "went_off": len(out.get("went_off") or []),
+                                "dropped": out.get("unit") is not None, "pos": out.get("pos")}
+            await self.check_run(ctx)
             return result
         pending = None
         if args.get("job_id"):

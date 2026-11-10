@@ -24,7 +24,7 @@ def image(fill: bytes = b"") -> bytearray:
 def test_the_pinned_build_with_pristine_caves_is_accepted():
     report = N.verify_build(bytes(image()))
     assert report["ok"] is True and report["build_signature"] is True and report["reason"] == ""
-    assert set(report["caves"]) == {"call", "spawn", "detonate"}
+    assert set(report["caves"]) == {"call", "spawn", "detonate", "spawn_bomb"}   # (the instant bomb drop's too)
     assert all(c["pristine_padding"] and c["installable"] for c in report["caves"].values())
 
 
