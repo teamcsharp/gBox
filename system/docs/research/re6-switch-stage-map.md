@@ -4,7 +4,7 @@ Offline measurement over the local RomFS `01002A000CD48000/nativeNXx64/arc/NX`; 
 
 ## 1. Archive pairing (measured)
 
-Geometry arc `s12NN.arc` (NN=00..09) pairs with spawn/logic arc `s12(NN+10)Soft.arc`, as already listed in `re6-parity.md` section 3.1 (column check below). The Soft arc holds the enemy layouts (`sNNNN_emXX`), `Attack_Control`, `Em_BossPop`, `RankUp`, `SecretEnemy_Pop` entries; the geometry arcs contain **no** nav-named entries (measured, 0 of 10), so NAV lives in the Soft sets / learned stage books, not in `s120x.arc`.
+Geometry arc `s12NN.arc` (NN=00..09) has two per-mode sets: `s12NNSoft.arc` = THE MERCENARIES and `s12(NN+10)Soft.arc` = NO MERCY (measured: `Attack_Control_*` entries top out at 150 kills in `s1200/1204/1208Soft`, at 300 in `s1210/1214/1218Soft`). The tables below list the No Mercy set; section 3 gives both. The Soft arc holds the enemy layouts (`sNNNN_emXX`), `Attack_Control`, `Em_BossPop`, `RankUp`, `SecretEnemy_Pop` entries; the geometry arcs contain **no** nav-named entries (measured, 0 of 10), so NAV lives in the Soft sets / learned stage books, not in `s120x.arc`.
 
 ## 2. Stage name -> archive -> evidence
 
@@ -21,11 +21,11 @@ Geometry arc `s12NN.arc` (NN=00..09) pairs with spawn/logic arc `s12(NN+10)Soft.
 | Mining the Depths (inferred) | `s1208.arc` (372 entries) | `s1218Soft.arc` | s1218Soft nav matches documented Mining-the-Depths nav (prior run, learned book); +10 pairing gives s1208; scr `kaityuu`(undersea) `kaimennaka`, `lp_base_Labo` | inferred |
 | not determined (lava hall, inferred) | `s1209.arc` (525 entries) | `s1219Soft.arc` | scr `lp_base_LavaHall_l/r`, `ami_tuuro` | inferred (descriptor only) |
 
-No stage-name string was recovered: `Merce_eng`/`MerceUI_eng`/`Collection_eng` text entries (`extra360`, `merce`) are glyph-index encoded (no ASCII/UTF-16 text), so names cannot be read without the font glyph table. That is the exact check that would settle the 9 open names: decode the `merce` text arc with the glyph map and match the stage-select order in `STAGES` (`gbox/mercs/titles/re6_switch.py`).
+No stage-name string was recovered (measured). `Merce_eng` and `MerceUI_eng` hold no text entries, only baked textures (`names_BM_NOMIP` = the ten character names Leon..Agent; `merce_BM_NOMIP` = MISSION START/END, COMBO TIME, Sec., Score; `common02*`, `costumes`, `extra`, `merce_title02`). None contains a stage name, so the earlier "glyph-index encoded text" explanation is **withdrawn**: the names are not in these arcs at all. The remaining candidate is the glyph-encoded message arc (`Msg_eng`-class), which needs the game's font glyph table. The cheaper check that settles all 9 open names: one boot of each stage logging `snapshot()['navmesh'].name` beside the select-index pick (`STAGES`, `gbox/mercs/titles/re6_switch.py:87`); section 5 gives the nav fingerprint to match. Not done here (no game sessions allowed).
 
 ## 3. Enemy census per Soft set (measured, `gbox.re6_switch_enemies.stage_census`)
 
-Counts are placed instances by enemy class archive (`uEm*`). Mercenaries and No Mercy use the same Soft set per stage in this measurement; a per-mode split was not separately derivable (not determined).
+Counts are placed instances by enemy class archive (`uEm*`). **Mode split (measured):** rows `s1200Soft`..`s1209Soft` are THE MERCENARIES (<=150 kills), rows `s1210Soft`..`s1219Soft` are NO MERCY (<=300). Pair rows by `s120N`/`s121N`;
 
 | Soft arc | Enemy classes (count) | Layouts |
 |---|---|---|
@@ -52,4 +52,38 @@ Counts are placed instances by enemy class archive (`uEm*`). Mercenaries and No 
 
 ## 4. s1211Soft discrepancy (resolved)
 
-Local census of `s1211Soft`: uEm1200 298, uEm1000 130, uEm5210 6, uEm4800 3, uEm3300 1. `re6-parity.md` row `s1201 -> s1211` lists `uEm1200 298, uEm1000 130, uEm5210 6, uEm4800 3, uEm3300 1`: identical. The previous run's "uEm1000=194 uEm3200=182" came from unrelated grep hits (`mercmode.py:194`, `182.2 cm`), not a census row. No doc change needed.
+Local census of `s1211Soft`: uEm1200 298, uEm1000 130, uEm5210 6, uEm4800 3, uEm3300 1. `re6-parity.md` row `s1201 -> s1211` lists `uEm1200 298, uEm1000 130, uEm5210 6, uEm4800 3, uEm3300 1`: identical. The previous run's "uEm1000=194 uEm3200=182" came from unrelated grep hits (`mercmode.py:194`, `182.2 cm`), not a census row.
+Re-run (`stage_census(open('.../s1211Soft.arc','rb').read())` from the repo root): `{'uEm1200': 298, 'uEm1000': 130, 'uEm5210': 6, 'uEm4800': 3, 'uEm3300': 1}`, 18 layouts: matches the `re6-parity.md` row. (The 194/182 hits are measured as `mercmode.py:194` and `182.2 cm` in `re6-parity.md`; the earlier run's own source of the numbers is not reproduced here, so that attribution is partly inferred.)
+
+## 5. NAV per stage (measured; the earlier per-arc comparison failed)
+
+Cause of the earlier failure: geometry arcs `s120N.arc` contain no NAV entry (section 1), and the `NAV` resource is the entry `...s12XX\\s12XX` of the *Soft* arc, zlib-compressed, so searching geometry arcs or raw bytes finds nothing. After decompression the header is `NAV\0`, `u32 0x22`, then at byte offset 0x23 (unaligned) `u32 vertices, u32 triangles`.
+
+| stage code | Mercenaries Soft | No Mercy Soft | vertices | triangles | NAV bytes | Mercenaries == No Mercy |
+|---|---|---|---|---|---|---|
+| s1200 | s1200Soft | s1210Soft | 2015 | 3274 | 566278 | yes |
+| s1201 | s1201Soft | s1211Soft | 1823 | 2799 | 482101 | yes |
+| s1202 | s1202Soft | s1212Soft | 1887 | 2829 | 493071 | yes |
+| s1203 | s1203Soft | s1213Soft | 1052 | 1710 | 325717 | yes |
+| s1204 | s1204Soft | s1214Soft | 4225 | 7120 | 1156590 | yes |
+| s1205 | s1205Soft | s1215Soft | 1237 | 1888 | 334738 | yes |
+| s1206 | s1206Soft | s1216Soft | 2213 | 3611 | 581939 | yes |
+| s1207 | s1207Soft | s1217Soft | 1547 | 2587 | 458685 | yes |
+| s1208 | s1208Soft | s1218Soft | 2005 | 3434 | 619456 | yes |
+| s1209 | s1209Soft | s1219Soft | 1824 | 3030 | 515705 | yes |
+
+Cross-check against the live game: only `s1218` (2005 / 3434, `re6_switch.py:669`, MercMode 17:20) has an independent live number in the repo, and it equals the s1218Soft/s1208Soft row, so that is the one measured name (Mining the Depths = s1208 code, select index 2). The other nine have no live fingerprint on disk (the learned stage-book JSONs were not found under `~/gBox_alt`); a previous checkpoint's s1210-s1219 sizes were reused as a hypothesis and equalled these Soft values, but are not independently re-verified. Names for the nine remain **not determined**; the NAV vertex/triangle pair above is the key to match once a boot logs `navmesh.name` per pick.
+
+Reproduce (repo root): the script below prints the table rows.
+
+```python
+import sys,zlib,struct; sys.path.insert(0,'.')
+from gbox import mt_arc
+d='<romfs>/01002A000CD48000/nativeNXx64/arc/NX/'
+def nav(n):
+    for e in mt_arc.parse(open(d+f's{n}Soft.arc','rb').read()).entries:
+        if e.name.endswith(f's{n}\\s{n}'):
+            b=zlib.decompress(e.data)
+            if b[:3]==b'NAV': return struct.unpack_from('<II',b,0x23)+(len(b),)
+for k in range(10): print(k, nav(1200+k), nav(1210+k))
+```
