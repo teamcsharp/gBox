@@ -207,3 +207,17 @@ swap at character select first (CP12's live frame), then decide. The exact chang
 `pso_gc_paths` lookup over the class's `plA<hed|hai|cap><NN>.nj` names when `disc` is a GC disc.
 
 Daisy rebuilt identically after the `speck_nj` change (788 triangles, SAFE), so the fix is a no-op for the current outputs.
+
+## Round 93: the GameCube head stand-in became an opt-in, with the naming helper tested
+
+Round 89 recorded the gap (the stand-in loop is Dreamcast-path-only) and deliberately did not act on it. This round made it
+available without changing any current output:
+
+* **pso_player.gc_head_parts(names, cls)** matches the disc's real naming - flat, lower-case, indexed. Measured: class **C**
+  has **five** heads and **no hair** (HUcast is an android: plChed00.nj ... plChed04.nj), while class A has heads and hair.
+* **uild_swap(..., replace_heads=False)** - when enabled, the class's GameCube head/hair/cap parts are written with
+  speck_nj(e) stand-ins, exactly like the Dreamcast path already did. **Default off**, because nobody has yet verified in
+  game that a GC build accepts those replacements; CP12's character-select frame should be looked at first.
+
+Tests: 	ests/test_pso_gc_heads.py **3 passed** - the helper on synthetic names (including a case-mixed one) and on the real
+disc, plus a check that the opt-in defaults to False.
