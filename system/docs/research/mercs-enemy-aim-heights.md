@@ -17,7 +17,7 @@ Throwaway script: `~/.hermes/cache/scratch/build.py` (outside the repo). Human p
 
 Findings:
 - The real human skeleton is HEAD 165 / CHEST 132 / KNEE 57.5 / SHOULDER 151 / RADIUS 17 (RE5 Majini); RE6 J'avo/zombies 162 / 129 / 55 / 148 / 16.5. The bot's HUMAN profile has a 36 cm BODY_R (2x the measured half-width), CHEST_H 22 cm below the spine bone and KNEE_H 12 cm below the knee joint.
-- Measured classes: RE5 13, RE6 19. Not determined: RE5 7, RE6 18.
+- Measured classes: RE5 13, RE6 20. Not determined: RE5 7, RE6 17. (Milestone 2: uEm3301's archive carries the em1370 model entry 298; re-measured there, identical to uEm1370 = 162.1 / 129.1 / 54.6 / 147.9 / 16.5, height 187.0. uEm9906 holds only the sm5051 parachute prop, 1127 cm mesh: not a creature, stays not determined.)
 - Low classes (mesh top above origin): Licker uEm32 27 cm (existing LOW_BODIES head 45 is above the model's top), dogs uEm0b 86.5 cm, Zombie Dog uEm5700 119 cm (mesh includes ears), Adjule uEm30 119 cm.
 
 ## RE5 (sorted by deviation from the human profile, largest first)
@@ -84,13 +84,13 @@ Findings:
 | uEm5600 | Whopper | measured | upright | 161.9 | 128.9 | 44.6 | 147.7 | 22.5 | 181.9 | 181.1 | head b4, chest b2, knee b29/b33, shoulder b12/b21, hips b28/b32 |
 | uEm2300 | Chrysalid | not determined | not determined | not determined | not determined | not determined | not determined | not determined | 137.4 | 198.9 | not human layout; geometry only |
 | uEm3200 | Napad | measured | upright | 171.2 | 122.0 | 46.6 | 148.8 | 36.0 | 219.0 | 219.7 | head b22, chest b2, knee b32/b36, shoulder b4/b11, hips b31/b35; mesh top is 48.5 cm above the head bone (other geometry above the head) |
-| uEm3301 | J'avo mutant (em1370 body) | not determined | not determined | not determined | not determined | not determined | not determined | not determined | not determined | - | no stand-in MOD for this class |
-| uEm9906 | Parachute | not determined | not determined | not determined | not determined | not determined | not determined | not determined | not determined | - | no stand-in MOD for this class |
+| uEm3301 | J'avo mutant (em1370 body) | measured | upright | 162.1 | 129.1 | 54.6 | 147.9 | 16.5 | 187.0 | 181.8 | em1370 model (uEm3301.arc entry 298), same bones as uEm1370: head 4, chest 2, knee 29/33, shoulder 8/16 |
+| uEm9906 | Parachute | not determined | not determined | not determined | not determined | not determined | not determined | not determined | not determined | - | archive holds only the sm5051 parachute prop (not a creature) |
 
 ## Not determined (what would settle it)
 
 - Creature skeletons (uEm32 Licker, uEm0b/uEm5700 dogs, uEm30, uEm0c, uEm0d, uEm0e, uEm62, uEm2xxx mutations, uEm2300, uEm3000, uEm3100, uEm4701/4710, uEm3320): The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone.
-- RE6 uEm3300 Gnezdo: the main MOD has 3 vertices (a 4 cm stub); em3310 is not a human layout. uEm3301 and uEm9906: no MOD named after the class (uEm3301 carries em3300/em3310; uEm9906 only `sm5051`), the stand-in model is not the enemy.
+- RE6 uEm3300 Gnezdo: the main MOD has 3 vertices (a 4 cm stub); em3310 is not a human layout. uEm9906: no MOD named after the class (uEm3301 carries em3300/em3310; uEm9906 only `sm5051`), the stand-in model is not the enemy.
 - Values for the non-determined creatures in the JSON are geometry only (mesh extent, percentiles of vertex height, leaf bones near the ground, highest bone). They are measurements of the mesh, not head/chest/knee/shoulder heights.
 - Idle-pose head height: needs the idle clip's number (not stored in the LMT) and, for RE5 legs, the engine's IK.
 

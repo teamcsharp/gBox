@@ -673,7 +673,7 @@
    "mesh_min_y": -0.1
   },
   "uEm32": {
-   "name": "Licker \u03b2",
+   "name": "Licker β",
    "status": "not determined",
    "model": "pawn/em/em32/model/em3200",
    "arc": "uEm32.arc",
@@ -2387,19 +2387,64 @@
   },
   "uEm3301": {
    "name": "J'avo mutant (em1370 body)",
-   "status": "not determined",
-   "model": null,
-   "arc": null,
-   "head": "not determined",
-   "chest": "not determined",
-   "knee": "not determined",
-   "shoulder": "not determined",
-   "radius": "not determined",
-   "height": "not determined",
-   "bones": "not determined",
-   "posture": "not determined",
+   "status": "measured",
+   "model": "data/chara/em/em1370/model/em1370",
+   "arc": "uEm3301.arc",
+   "head": 162.1,
+   "chest": 129.1,
+   "knee": 54.6,
+   "shoulder": 147.9,
+   "radius": 16.5,
+   "height": 187.0,
+   "bones": {
+    "head": {
+     "bone": 4,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 2,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 3) is 153.1 cm"
+    },
+    "knee": {
+     "bones": [
+      29,
+      33
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      8,
+      16
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 33.0,
+     "hip_width": 19.4,
+     "hip_bones": [
+      28,
+      32
+     ],
+     "shoulder_bones": [
+      8,
+      16
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only. uEm3301.arc entry 298 holds the em1370 model; re-measured from this archive, all values equal the uEm1370.arc measurement (57 bones)",
    "idle_pose_head": "bind pose only",
-   "why_not_determined": "no MOD named em3301 in uEm3301.arc; settled by reading the class's other MOD/arc"
+   "mesh_top_y": 181.8,
+   "mesh_min_y": -5.2
   },
   "uEm3320": {
    "name": "Gnezdo (core)",
@@ -3537,18 +3582,20 @@
   "uEm9906": {
    "name": "Parachute",
    "status": "not determined",
-   "model": null,
-   "arc": null,
+   "model": "data/chara/sm/sm5051/model/sm5051",
+   "arc": "uEm9906.arc",
    "head": "not determined",
    "chest": "not determined",
    "knee": "not determined",
    "shoulder": "not determined",
    "radius": "not determined",
-   "height": "not determined",
+   "height": 1127.0,
    "bones": "not determined",
    "posture": "not determined",
    "idle_pose_head": "bind pose only",
-   "why_not_determined": "no MOD named em9906 in uEm9906.arc; settled by reading the class's other MOD/arc"
+   "why_not_determined": "uEm9906.arc holds one model, sm5051 (a prop, 22 bones, mesh y -2.6..1124.4 cm: the parachute canopy and lines), not a creature skeleton; no enemy body to take aim heights from. Not an enemy class (enemy_identity: harmless, \"dropped parachute\").",
+   "mesh_top_y": 1124.4,
+   "mesh_min_y": -2.6
   }
  }
 }
