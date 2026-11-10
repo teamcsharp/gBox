@@ -47,11 +47,14 @@ Measured 2026-11-09 from the operator's disc RomFS
   strings only, not the prompt bank.
 - Each mes_ entry is zlib-compressed (magic 0x789c) and decompresses to an
   MT "MSG2" bank. Measured header of `mes_system_e` (275,168 bytes decoded):
-  `4D 53 47 32 40` ("MSG2@"), then u32 entry-count-like fields
-  (0x432e0, 0x80000, 0x5000900, 0x240012) and an offset table of 0x800000-
-  ranged pointers starting at 0x48. Text is NOT plain ASCII/UTF-16 — the MT
-  charset table (per-language) is required; no readable runs of 4+ chars
-  exist until decoded.
+  `4D 53 47 32 40` ("MSG2@"), u32 total size 0x432e0 @0x08, then 0x80000
+  @0x0c, 0x5000900 @0x10, 0x240012 @0x14, 0 @0x18, and 68,802 (0x10cc2)
+  @0x1c. From 0x48 the bank is a repeating u32 structure: values
+  0x800000+x with x in 0x0..0x9e (targets inside the bank's first 0x100
+  bytes) separated by the marker 0x04010000 — 259 groups / 2,281 pointer
+  values over the first ~0x2800 bytes (the structure continues). Text is
+  NOT plain ASCII/UTF-16 — the MT charset table (per-language) is required;
+  no readable runs of 4+ chars exist until decoded.
 
 ## Frequency + character coverage (measured, rounds.sqlite)
 
@@ -71,12 +74,18 @@ prompt counters are inside the `data` JSON).
 
 ## Next acceptance step (bounded)
 
-1. Recover the MT MSG2 per-language charset table (RE5/RE6 Switch; likely in
-   main NSO data or `sa/NX_64/*.arc`) and decode `mes_system_e` /
-   `mes_item_e` / `mes_event_e` into an id->text table.
+1. Recover the MT MSG2 per-language charset table (RE5/RE6 Switch; a 0x100
+   byte->char map per language). Candidates: the main NSO (ExeFS, outside
+   this RomFS) or `nativeNXx64/sa/NX_64/*.arc`. Decoding `mes_system_e` /
+   `mes_item_e` / `mes_event_e` into an id->text table is the acceptance
+   gate for the on_screen_text column.
 2. Join label ids (7, 8, 9, 14, 28, 55, 58, 100, 112 + all ids observed in
    `rounds.data.specials_labels_text`) to their strings; assign the
    per-character finisher prompts.
 3. Fill the on_screen_text column and per-character finisher table above.
 
-No pending jobs this run; no remote work started. No gameplay changes; read-only.
+Run 2026-11-10 (lilspark2): reused the published worktree (commit 61a033f9);
+re-verified the frequency/character columns against rounds.sqlite and
+extended the MSG2 structure measurements above (table span, group/marker
+structure, header @0x1c). No pending jobs; no remote work; read-only. Next
+acceptance step stands: the per-language charset table.
