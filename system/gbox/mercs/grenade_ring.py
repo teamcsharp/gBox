@@ -380,7 +380,8 @@ def control(ad, prof, *, ring=None):
 SCATTER_TITLES = frozenset({"01002A000CD48000", "010018100CD46000"})   # RE6 and RE5 Switch
 SCATTER_DEFAULTS = {"enabled": True, "cooldown_s": 12.0, "count": 8, "near_cm": 500.0, "reach_cm": 1500.0,
                     "floor_dy_cm": 150.0, "hurt_s": 3.0, "min_pack": 3, "surround_n": 4, "surround_cm": 400.0,
-                    "kill_window_s": 8.0, "toward_n": 6, "after_ring_s": 6.0}   # (no barrage right after a ring)
+                    "kill_window_s": 8.0, "toward_n": 6, "after_ring_s": 6.0,   # (no barrage right after a ring)
+                    "kinds": ("flash",)}         # what "random" draws; a title's scatter_kinds() overrides it
 
 
 def scatter_policy(title_module=None, stats=None) -> dict:
@@ -394,12 +395,19 @@ def scatter_policy(title_module=None, stats=None) -> dict:
                 out[key] = value
         if not isinstance(source, dict):
             out.update(flash_rules(source))
+    hook = getattr(title_module, "scatter_kinds", None) if title_module is not None else None
+    if callable(hook):
+        try:                                              # the title's native verified set (checkpoint C extends it)
+            out["kinds"] = tuple(str(k) for k in hook())
+        except Exception:                                 # noqa: BLE001 - no native module: the flash is the default
+            pass
     try:
         out["enabled"] = bool(out["enabled"])
         out["cooldown_s"] = max(1.0, min(float(out["cooldown_s"]), 600.0))
         out["count"] = max(1, min(int(out["count"]), 16))
+        out["kinds"] = tuple(k for k in (out.get("kinds") or ("flash",)) if isinstance(k, str) and k) or ("flash",)
     except (TypeError, ValueError):
-        out.update({k: SCATTER_DEFAULTS[k] for k in ("enabled", "cooldown_s", "count")})
+        out.update({k: SCATTER_DEFAULTS[k] for k in ("enabled", "cooldown_s", "count", "kinds")})
     return out
 
 
@@ -428,7 +436,8 @@ def decide_scatter(snap: dict, stats: dict, now: float, policy_: dict | None = N
     """Fire the barrage or not, with the reason (pure apart from the crowd history the ring's observe keeps)."""
     policy_ = policy_ or scatter_policy(stats=stats)
     player, pos = _player(snap)
-    out = {"fire": False, "count": int(policy_["count"]), "toward": [], "reason": "",
+    kinds = tuple(policy_.get("kinds") or ("flash",))
+    out = {"fire": False, "count": int(policy_["count"]), "toward": [], "reason": "", "kinds": list(kinds),
            "safe_cm": float(stats.get("bomb_safe_cm") or 0.0)}
     if not policy_["enabled"]:
         return {**out, "reason": "the barrage is switched off (SCATTER)"}
@@ -449,6 +458,19 @@ def decide_scatter(snap: dict, stats: dict, now: float, policy_: dict | None = N
             if abs(float(e["pos"][1]) - pos[1]) <= float(policy_["floor_dy_cm"])]   # on his floor: never the void
     if not rows:
         return {**out, "reason": "no threat on his floor within reach"}
+    # Checkpoint D1 - the one flash clock. A barrage whose every round is a flash is held by FLASH_MIN_GAP_S exactly
+    # like the ring; a mixed barrage leaves the flash out inside the gap instead of refusing outright (so a verified
+    # non-flash kind can still answer the tough moment).
+    gap = policy_.get("flash_gap_s")
+    last = last_flash(stats)
+    if "flash" in kinds and isinstance(gap, (int, float)) and gap and last is not None \
+            and time.time() - last < gap:
+        held = f"a flash went off {time.time() - last:.0f} s ago: one every {gap:.0f} s (FLASH_MIN_GAP_S)"
+        stats["flash_gap_skips"] = int(stats.get("flash_gap_skips", 0)) + 1
+        remaining = tuple(k for k in kinds if k != "flash")
+        if not remaining:
+            return {**out, "reason": held}
+        out.update(kinds=list(remaining), flash_held=held, narrowed=True)
     if policy_.get("flash_only"):                         # every round of it a flash: the flash rules hold it
         held = flash_held(snap, stats, policy_, title)
         if held is not None:
@@ -457,6 +479,8 @@ def decide_scatter(snap: dict, stats: dict, now: float, policy_: dict | None = N
             out["toward"] = [(float(e["pos"][0]), float(e["pos"][2])) for _d, e in rows[:int(policy_["toward_n"])]]
             return {**out, "fire": True, "flash": True,
                     "reason": f"surrounded: {int(policy_['flash_tight_n'])}+ within {float(policy_['flash_tight_cm']):.0f} cm"}
+    if all(k == "flash" for k in out["kinds"]):           # a barrage that is all flash stamps the clock when it goes
+        out["flash"] = True
     out["toward"] = [(float(e["pos"][0]), float(e["pos"][2])) for _d, e in rows[:int(policy_["toward_n"])]]
     near = sum(1 for d, _e in rows if d <= float(policy_["near_cm"]))
     surround = sum(1 for d, _e in rows if d <= float(policy_["surround_cm"]))
@@ -484,16 +508,22 @@ def fire_scatter(ad, decision: dict, stats: dict, now: float, *, ring=None) -> d
         stats["scatter_failures"] = int(stats.get("scatter_failures", 0)) + 1
         stats["scatter_last_failure"] = "this title's native controller has no scatter barrage"
         return {"state": "unavailable", "reason": stats["scatter_last_failure"]}
+    options = {"count": decision.get("count"), "toward": decision.get("toward") or None,
+               "safe_cm": decision.get("safe_cm")}
+    if decision.get("narrowed") and decision.get("kinds"):
+        options["kinds"] = tuple(decision["kinds"])
     try:
-        receipt = target.grenade_scatter("random", count=decision.get("count"), toward=decision.get("toward") or None,
-                                         safe_cm=decision.get("safe_cm"))
+        receipt = target.grenade_scatter("random", **options)
     except Exception as exc:                             # noqa: BLE001
         stats["scatter_failures"] = int(stats.get("scatter_failures", 0)) + 1
         stats["scatter_last_failure"] = f"{type(exc).__name__}: {exc}"[:200]
         return {"state": "failed", "reason": stats["scatter_last_failure"]}
     if isinstance(receipt, dict) and receipt.get("state") == "confirmed":
-        if decision.get("flash"):
-            stamp_flash(stats, "scatter", decision.get("reason") or "")
+        fired = receipt.get("kinds")
+        if not isinstance(fired, (list, tuple)):
+            fired = ["flash"] if decision.get("flash") else []
+        if decision.get("flash") or "flash" in [str(k) for k in fired]:
+            stamp_flash(stats, "scatter", decision.get("reason") or "")   # one clock: the title's own rules wait too
         stats["scatters_fired"] = int(stats.get("scatters_fired", 0)) + 1
         stats["scatter_rounds"] = int(stats.get("scatter_rounds", 0)) + int(receipt.get("detonated") or 0)
         kills = stats.get("kills")

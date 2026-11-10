@@ -532,6 +532,12 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                             stats["scatters_fired"] = stats.get("scatters_fired", 0) + 1
                                             stats["scatter_rounds"] = stats.get("scatter_rounds", 0) + int(
                                                 result.get("detonated") or 0)
+                                            # A click's flash is a flash too (checkpoint D1): the same one clock the
+                                            # bot's own rules read, so his next automatic flash waits the minute.
+                                            kinds = result.get('kinds')
+                                            if isinstance(kinds, (list, tuple)) and \
+                                                    'flash' in [str(k) for k in kinds]:
+                                                stats["native_flash_confirmed_at"] = time.time()
                                             kills = stats.get("kills")
                                             stats["scatter_pending"] = {"at": time.time(),
                                                                         "kills": kills if isinstance(kills, int) else None}

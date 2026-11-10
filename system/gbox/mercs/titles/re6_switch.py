@@ -66,9 +66,15 @@ GET_DTI_SLOT, DTI_NAME = 5, 0x8
 # never fires it; RING_N is the crowd inside a few metres that counts as surrounded; RING_EVERY_S is the cooldown.
 RING, RING_N, RING_EVERY_S, RING_KIND = True, 4, 20.0, "flash"
 # The scatter barrage's rule (gbox.mercs.grenade_ring.decide_scatter, operator 2026-11-10 ~07:00: "spray a scatter shot
-# of grenades from his postion at threats at will ... whenever the going gets tough"): SCATTER off, a barrage at most
-# every SCATTER_EVERY_S, SCATTER_N rounds (re6_switch_native.grenade_scatter; the PiP's bot-logic sidebar sets them).
+# of grenades from his postion at threats at will ... whenever the going gets tough"): a barrage at most every
+# SCATTER_EVERY_S, SCATTER_N rounds (re6_switch_native.grenade_scatter; the PiP's bot-logic sidebar sets them).
 SCATTER, SCATTER_EVERY_S, SCATTER_N = True, 12.0, 8
+
+
+def scatter_kinds() -> tuple:
+    """The kinds a random barrage can draw: the native controller's verified set (the flash today; A/C extend it)."""
+    from . import re6_switch_native as native
+    return tuple(native.SCATTER_KINDS)
 
 UNIT_LINES, LINE_STRIDE, UNIT_NEXT, N_LINES = 0x268, 0x30, 0x20, 32
 UI_LINES = (0, 1, 18, 19)               # the interface units' lines (title / dialogs, the extras' backdrop, menus / HUD)
