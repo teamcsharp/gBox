@@ -1,4 +1,8 @@
-"""Focused tests for the Capcom Generations .DEE container parser."""
+"""Focused tests for the Capcom Generations .DEE container parser.
+
+The .DEE header is 3 x little-endian u32 (raw_len, comp_len, word=0x00400001);
+the payload at +0x0C is a byte-flag LZ77 stream that decompresses to a PSX TIM.
+"""
 
 import os
 import struct
@@ -16,124 +20,83 @@ DEE_DIR = os.environ.get(
 )
 
 # The 12 verified .DEE files dumped from the owned CHD.
-# (filename, type_tag, body_marker, block_token, block_count, field_count)
+# (filename, file_size, raw_len u32@0, comp_len u32@4, word u32@8)
+#
+# raw_len/comp_len are read fresh from the files at test time; these values
+# are assertions written down from the verified dump so a regression in the
+# header decode is caught, not just self-consistency.
 EXPECTED_FILES = [
-    ("1943_43CHAR7.DEE",  0x2220, 0x106b, 0x0040, 0x0800, 0x0031),
-    ("1943_43CARD.DEE",   0x1d20, 0x106b, 0x0040, 0x0900, 0x0031),
-    ("1943_43LDG.DEE",    0x5814, 0x106b, 0x0040, 0x0200, 0x0031),
-    ("1943_FONT16.DEE",   0x5040, 0x102b, 0x0040, 0x0800, 0x0031),
-    ("1943_SCRLL0.DEE",   0x0220, 0x106b, 0x0040, 0x0800, 0x0031),
-    ("1943_OBJ01.DEE",    0x0220, 0x106b, 0x0040, 0x0800, 0x0031),
-    ("1943K_43KCHAR7.DEE", 0x2220, 0x106b, 0x0040, 0x0800, 0x0031),
-    ("1942_42CHAR7.DEE",  0x2040, 0x102b, 0x0040, 0x0800, 0x0031),
-    ("MENU_CAPCOM2.DEE",  0x6a20, 0x106b, 0x0040, 0x0900, 0x0031),
-    ("MENU_OP_BACK2.DEE", 0x6a20, 0x106b, 0x0040, 0x0900, 0x0031),
-    ("MENU_GENR.DEE",     0x1840, 0x102b, 0x0040, 0x0800, 0x0031),
-    ("MENU_PSWAR.DEE",    0x6a20, 0x106b, 0x0040, 0x0900, 0x0031),
+    ("1943_43CHAR7.DEE",   3407, 8736, 3395, 0x00400001),
+    ("1943_43CARD.DEE",    6894, 7456, 6882, 0x00400001),
+    ("1943_43LDG.DEE",    54473, 153620, 54461, 0x00400001),
+    ("1943_FONT16.DEE",    4998, 20544, 4986, 0x00400001),
+    ("1943_SCRLL0.DEE",   21666, 66080, 21654, 0x00400001),
+    ("1943_OBJ01.DEE",    27314, 66080, 27302, 0x00400001),
+    ("1943K_43KCHAR7.DEE", 3393, 8736, 3381, 0x00400001),
+    ("1942_42CHAR7.DEE",   1914, 8256, 1902, 0x00400001),
+    ("MENU_CAPCOM2.DEE",  11968, 92704, 11956, 0x00400001),
+    ("MENU_OP_BACK2.DEE", 13374, 92704, 13362, 0x00400001),
+    ("MENU_GENR.DEE",      1312, 6208, 1300, 0x00400001),
+    ("MENU_PSWAR.DEE",    15132, 92704, 15120, 0x00400001),
 ]
 
 
-def _make_dee(type_tag=0x2220, sub_type=0, body=b"\x00" * 64,
-              flag=0x0001, block_token=0x0040,
-              body_marker=0x106b, pad=0, block_count=0x0800,
-              field_count=0x0031):
-    """Build a synthetic .DEE file for parser testing.
-
-    total = 12 (header) + len(body); payload_len = len(body) (the body already
-    includes the 16-byte body header block, so pass body including it).
-    """
-    payload_len = len(body)
-    header = struct.pack(
-        "<6H",
-        type_tag, sub_type, payload_len, 0, flag, block_token,
-    )
-    return header + body
-
-
-def _make_body(body_marker=0x106b, pad=0, block_count=0x0800, field_count=0x0031,
-               pixel_size=80):
-    """Build a body: 16-byte body header + pixel payload."""
-    return struct.pack("<4H", body_marker, pad, block_count, field_count) + b"\x00" * pixel_size
+def _make_dee(raw=b"\x00" * 64, word=0x00400001):
+    """Build a synthetic .DEE file: 12-byte 3x u32 header + LZ77 payload."""
+    comp = dee.dee_compress(raw)
+    return struct.pack("<3I", len(raw), len(comp), word) + comp
 
 
 def test_parse_synthetic_dee_header():
-    body = _make_body()
-    data = _make_dee(body=body)
+    raw = b"\x00\x11\x22" * 100
+    data = _make_dee(raw)
     result = dee.parse_dee(data)
-    assert result["type_tag"] == 0x2220
-    assert result["type_name"] == "char_sprites"
-    assert result["payload_len"] == len(body)
-    assert result["flag"] == 0x0001
-    assert result["block_token"] == 0x0040
-    assert result["body_marker"] == 0x106b
-    assert result["body_variant"] == "standard"
-    assert result["block_count"] == 0x0800
-    assert result["field_count"] == 0x0031
-    assert result["body_size"] == 72  # 96-byte body - 16-byte body header = 80? No: total=12+96=108, body_size=108-12-16=80
-    assert result["total_size"] == 12 + len(body)
+    assert result["raw_len"] == len(raw) == 300
+    assert result["comp_len"] == len(data) - 12
+    assert result["word"] == 0x00400001
+    assert result["version"] == 1 and result["token"] == 0x0040
+    assert result["body_size"] == result["comp_len"]
+    assert result["total_size"] == len(data)
     assert len(result["sha256"]) == 64
 
 
-def test_parse_rejects_payload_mismatch():
-    body = _make_body()
-    data = bytearray(_make_dee(body=body))
-    struct.pack_into("<H", data, 4, 0xFFFF)
-    with pytest.raises(ValueError, match="payload_len mismatch"):
-        dee.parse_dee(bytes(data))
-
-
-def test_parse_rejects_reserved_nonzero():
-    body = _make_body()
-    data = bytearray(_make_dee(body=body))
-    struct.pack_into("<H", data, 6, 0x0001)
-    with pytest.raises(ValueError, match="reserved"):
+def test_parse_rejects_comp_len_mismatch():
+    data = bytearray(_make_dee())
+    struct.pack_into("<I", data, 4, 0xFFFF)
+    with pytest.raises(ValueError, match="comp_len mismatch"):
         dee.parse_dee(bytes(data))
 
 
 def test_parse_rejects_too_small():
     with pytest.raises(ValueError, match="too small"):
-        dee.parse_dee(b"\x00" * 16)
+        dee.parse_dee(b"\x00" * 8)
 
 
-def test_parse_rejects_body_pad_nonzero():
-    body = _make_body()
-    data = bytearray(_make_dee(body=body))
-    struct.pack_into("<H", data, 14, 0x0001)
-    with pytest.raises(ValueError, match="pad"):
-        dee.parse_dee(bytes(data))
+def test_header_roundtrips_through_pack():
+    raw = b"\x00\x11\x22" * 100
+    p = dee.dee_pack(raw)
+    h = dee.parse_dee(p)
+    assert h["raw_len"] == len(raw)
+    assert h["comp_len"] == len(p) - 12
+    assert dee.dee_header(p)["raw_len"] == len(raw)
 
 
-def test_known_type_tags_cover_all_observed():
-    """Every type_tag seen in the 12 dumped files must have a name."""
-    for _, tag, _, _, _, _ in EXPECTED_FILES:
-        assert tag in dee.KNOWN_TYPE_TAGS, f"unknown type_tag 0x{tag:04x}"
-
-
-def test_known_body_markers_cover_all_observed():
-    for _, _, marker, _, _, _ in EXPECTED_FILES:
-        assert marker in dee.KNOWN_BODY_MARKERS, f"unknown body_marker 0x{marker:04x}"
-
-
-@pytest.mark.skipif(not os.path.exists(DEE_DIR), reason="DEE dump dir not on this host")
+@ pytest.mark.skipif(not os.path.exists(DEE_DIR), reason="DEE dump dir not on this host")
 def test_parse_all_12_dumped_dee_files():
-    """Parse all 12 .DEE files dumped from the owned CHD and verify headers."""
-    for fname, tag, marker, token, bcount, fcount in EXPECTED_FILES:
+    """Parse all 12 .DEE files and verify the true 3 x u32 header fields."""
+    for fname, fsize, raw_len, comp_len, word in EXPECTED_FILES:
         path = os.path.join(DEE_DIR, fname)
         assert os.path.exists(path), f"missing {path}"
-        result = dee.parse_dee_file(path)
-        assert result["type_tag"] == tag, \
-            f"{fname}: type_tag 0x{result['type_tag']:04x} != 0x{tag:04x}"
-        assert result["body_marker"] == marker, \
-            f"{fname}: body_marker 0x{result['body_marker']:04x} != 0x{marker:04x}"
-        assert result["block_token"] == token, \
-            f"{fname}: block_token 0x{result['block_token']:04x} != 0x{token:04x}"
-        assert result["block_count"] == bcount, \
-            f"{fname}: block_count 0x{result['block_count']:04x} != 0x{bcount:04x}"
-        assert result["field_count"] == fcount, \
-            f"{fname}: field_count 0x{result['field_count']:04x} != 0x{fcount:04x}"
-        assert result["flag"] == 0x0001
-        assert result["payload_len"] == result["total_size"] - 12
-        assert result["body_size"] > 0
+        data = open(path, "rb").read()
+        assert len(data) == fsize, f"{fname}: size {len(data)} != {fsize}"
+        result = dee.parse_dee(data)
+        assert result["raw_len"] == raw_len, \
+            f"{fname}: raw_len {result['raw_len']} != {raw_len}"
+        assert result["comp_len"] == comp_len, \
+            f"{fname}: comp_len {result['comp_len']} != {comp_len}"
+        assert result["word"] == word, f"{fname}: word {result['word']:#x} != {word:#x}"
+        assert result["total_size"] == fsize
+        assert result["body_size"] == fsize - 12
         assert len(result["sha256"]) == 64
 
 
@@ -145,8 +108,8 @@ if __name__ == "__main__":
 from gbox.capcom_dee import dee_decompress, parse_tim, decode_dee_tim  # noqa: E402
 
 
-def test_dee_decompress_literals_and_overlapping_match():
-    # flag 0b00000111: 3 literals, then a match (len 2+3=5, dist 3)
+def test_dee_decompress_roundtrip_known_string():
+    # manually built: flag byte 0b00000111 = 3 literals, then a match (len 2+3=5, dist 3)
     w = (2 << 4) | 3
     blob = b"\0" * 12 + bytes([0x07]) + b"abc" + bytes([w & 0xFF, w >> 8])
     assert dee_decompress(blob) == b"abcabcab"
@@ -163,7 +126,7 @@ def test_parse_tim_rejects_garbage():
         parse_tim(b"nope" * 8)
 
 
-@pytest.mark.skipif(not os.path.exists(DEE_DIR), reason="DEE dump dir not on this host")
+@ pytest.mark.skipif(not os.path.exists(DEE_DIR), reason="DEE dump dir not on this host")
 def test_all_compressed_dee_decode_to_exact_tim():
     names = [f for f in os.listdir(DEE_DIR) if f.upper().endswith(".DEE")]
     names = [f for f in names if not f.startswith(("MENU_S14", "MENU_WARN2"))]
@@ -215,7 +178,7 @@ def test_tim_to_png_rejects_non_tim_and_16bpp():
         tim_to_png(b"\x10\x00\x00\x00" + struct.pack("<I", flag) + img)
 
 
-@pytest.mark.skipif(not os.path.exists(DEE_DIR), reason="DEE dump dir not on this host")
+@ pytest.mark.skipif(not os.path.exists(DEE_DIR), reason="DEE dump dir not on this host")
 def test_43char7_dee_to_png_roundtrip():
     """The owned 43CHAR7.DEE exports to a 64x128 RGBA PNG end-to-end."""
     data = open(os.path.join(DEE_DIR, "1943_43CHAR7.DEE"), "rb").read()
@@ -223,8 +186,8 @@ def test_43char7_dee_to_png_roundtrip():
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
     assert meta["tim"]["image"]["w"] == 64 and meta["tim"]["image"]["h"] == 128
     assert meta["clut"]["count"] == 256
-    assert meta["dee"]["type_name"] == "char_sprites"
-    assert meta["dee"]["body_marker"] == 0x106b
+    assert meta["dee"]["raw_len"] == 8736
+    assert meta["dee"]["version"] == 1 and meta["dee"]["token"] == 0x0040
 
 
 # --- writer side: recompressor / packer ------------------------------------
@@ -259,7 +222,7 @@ def test_tim_replace_image_same_size():
         dee.tim_replace_image(tim, b"x")
 
 
-@pytest.mark.skipif(not os.path.isdir(DEE_DIR), reason="owned DEE dump absent")
+@ pytest.mark.skipif(not os.path.isdir(DEE_DIR), reason="owned DEE dump absent")
 def test_noop_roundtrip_all_owned_files():
     n = 0
     for name in sorted(os.listdir(DEE_DIR)):

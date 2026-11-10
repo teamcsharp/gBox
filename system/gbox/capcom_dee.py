@@ -1,26 +1,21 @@
 """Capcom Generations (Europe) (Disc 1) (PS1) - .DEE container format parser.
 
-The .DEE files are custom sprite/texture containers found in the 1942, 1943,
-1943K, and MENU directories on the owned disc.  They are NOT PS1 TIM1/TIM2.
+The .DEE files are custom LZ77-compressed sprite/texture containers found in
+the 1942, 1943, 1943K, and MENU directories on the owned disc.  The LZ77
+payload decompresses to a standard PSX TIM image (CLUT-indexed 4bpp/8bpp).
 
-Header layout (12 bytes, little-endian u16 pairs):
-  +0x00  type_tag     -- varies by asset type (0x2220 char sprites, 0x1d20 cards,
-                         0x0220 scroll/obj, 0x6a20 menu, 0x5040 font, etc.)
-  +0x02  sub_type     -- 0x0000 or 0x0001/0x0002
-  +0x04  payload_len  -- == file_size - 12 (verified for all 12 dumped files)
-  +0x06  reserved     -- always 0x0000
-  +0x08  flag         -- 0x0001 in all observed files
-  +0x0A  block_token  -- 0x0040 (most), 0x0090 (CARD/menu), 0x0200 (43LDG)
+Header layout (12 bytes, little-endian u32 x3), verified on 53 owned files:
+  +0x00 u32  raw_len    -- decompressed (TIM) length in bytes
+  +0x04 u32  comp_len   -- compressed payload length (== file_size - 12)
+  +0x08 u32  word       -- 0x00400001 (u16 version = 1, u16 token = 0x40)
 
-Body starts at 0x0C:
-  +0x0C  body_marker  -- 0x106b (9 files) or 0x102b (42CHAR7, FONT16, GENR)
-  +0x0E  pad          -- 0x0000
-  +0x10  block_count  -- 0x0800 (most), 0x0900 (CARD/menu), 0x0200 (43LDG)
-  +0x12  field_count  -- 0x0031 (49) in all observed files
+The body (payload) at +0x0C is a byte-flag LZ77 stream; the first byte is a
+flag byte (bit set = literal, clear = 2-byte match), NOT a "body marker".
 
-The body after the 16-byte header block contains sprite geometry descriptors
-and/or 4bpp pixel data with a palette.  The exact sub-layout requires Ghidra
-analysis of the loader in SLES_018.81 to confirm.
+Two files are not TIM payloads and are handled specially:
+  * MENU_WARN2.DEE -- u32 header absent (raw_len=0x10, comp_len=9, word=0x20c)
+      is an uncompressed/raw TIM (0x10 magic at offset 0).
+  * MENU_S14.DEE / MENU_S14K.DEE -- non-TIM payloads (not standard containers).
 """
 
 from __future__ import annotations
@@ -29,77 +24,38 @@ import hashlib
 import struct
 
 DEE_HEADER_SIZE = 12
-DEE_BODY_HEADER_SIZE = 16  # body_marker, pad, block_count, field_count (4 x u16)
-DEE_MIN_SIZE = DEE_HEADER_SIZE + DEE_BODY_HEADER_SIZE  # 28
+DEE_MIN_SIZE = DEE_HEADER_SIZE
 
-KNOWN_TYPE_TAGS = {
-    0x2220: "char_sprites",
-    0x2040: "char_sprites_1942",
-    0x1d20: "cards",
-    0x0220: "scroll_obj",
-    0x6a20: "menu",
-    0x5040: "font",
-    0x1840: "menu_genr",
-    0x5814: "loading",
-}
-
-KNOWN_BODY_MARKERS = {
-    0x106b: "standard",
-    0x102b: "compact",
-}
+DEE_TRAILER_WORD = 0x00400001
 
 
 def parse_dee(data: bytes) -> dict:
-    """Parse a .DEE container header.
+    """Parse a compressed .DEE container header (3 x u32).
 
-    Returns a dict with header fields and body summary.  Does not interpret
-    the pixel/geometry payload (that requires Ghidra loader analysis).
+    Returns the raw_len/comp_len/word fields plus a body summary: the
+    compressed payload size and the source SHA-256.  Does not interpret the
+    pixel payload; use dee_unpack + parse_tim for that.
     """
     if len(data) < DEE_MIN_SIZE:
         raise ValueError(
             "DEE file too small: %d bytes < %d" % (len(data), DEE_MIN_SIZE)
         )
 
-    type_tag, sub_type, payload_len, reserved, flag, block_token = (
-        struct.unpack_from("<6H", data, 0)
-    )
-
-    # Verify payload_len == file_size - 12
+    raw_len, comp_len, word = struct.unpack_from("<3I", data, 0)
     expected_payload = len(data) - DEE_HEADER_SIZE
-    if payload_len != expected_payload:
+    if comp_len != expected_payload:
         raise ValueError(
-            "DEE payload_len mismatch: header says 0x%x (%d), file says 0x%x (%d)"
-            % (payload_len, payload_len, expected_payload, expected_payload)
+            "DEE comp_len mismatch: header says 0x%x (%d), file says 0x%x (%d)"
+            % (comp_len, comp_len, expected_payload, expected_payload)
         )
 
-    if reserved != 0:
-        raise ValueError("DEE reserved field @0x06 is nonzero: 0x%04x" % reserved)
-
-    body_marker, pad, block_count, field_count = struct.unpack_from(
-        "<4H", data, DEE_HEADER_SIZE
-    )
-
-    if pad != 0:
-        raise ValueError("DEE body pad @0x0E is nonzero: 0x%04x" % pad)
-
-    body_size = len(data) - DEE_HEADER_SIZE - DEE_BODY_HEADER_SIZE
-    if body_size < 0:
-        raise ValueError("DEE body size negative: %d" % body_size)
-
-    type_name = KNOWN_TYPE_TAGS.get(type_tag, "unknown")
-    body_variant = KNOWN_BODY_MARKERS.get(body_marker, "unknown")
-
+    body_size = expected_payload
     return {
-        "type_tag": type_tag,
-        "type_name": type_name,
-        "sub_type": sub_type,
-        "payload_len": payload_len,
-        "flag": flag,
-        "block_token": block_token,
-        "body_marker": body_marker,
-        "body_variant": body_variant,
-        "block_count": block_count,
-        "field_count": field_count,
+        "raw_len": raw_len,
+        "comp_len": comp_len,
+        "word": word,
+        "version": word & 0xFFFF,
+        "token": (word >> 16) & 0xFFFF,
         "body_size": body_size,
         "total_size": len(data),
         "sha256": hashlib.sha256(data).hexdigest(),
@@ -284,7 +240,7 @@ def dee_to_png(data: bytes) -> tuple:
     tim = dee_decompress(data)
     png, meta = tim_to_png(tim)
     meta["tim"] = parse_tim(tim)
-    meta["dee"] = {k: hdr[k] for k in ("type_tag", "type_name", "body_marker", "block_token")}
+    meta["dee"] = {k: hdr[k] for k in ("raw_len", "comp_len", "word", "version", "token")}
     return png, meta
 
 
@@ -297,7 +253,6 @@ def dee_to_png(data: bytes) -> tuple:
 #   +0x08 u32  0x00400001 (u16 version=1, u16 token=0x40)
 # ---------------------------------------------------------------------------
 
-DEE_TRAILER_WORD = 0x00400001
 _MAX_MATCH, _MIN_MATCH, _MAX_DIST = 17, 3, 4096
 
 
