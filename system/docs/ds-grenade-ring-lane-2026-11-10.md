@@ -4,25 +4,30 @@ Lane log for `system/docs/DEEPSEEK-GRENADE-RING-TASK-2026-11-10.md` (the operato
 feature completed across all titles in full ... and all these titles"). Every claim below is either a test in the
 repo or a receipt quoted with its session id.
 
-## Status for the PM (2026-11-10, 07:0x)
+## Status for the PM (2026-11-10, 07:1x)
 
-**Landed on main by this lane, pushable now:** the honest per-kind status, the RE6 Switch ring (code + tests), the
-bot's own when-to-ring rule with its stats and PiP knobs, the RE4 Switch/RE6 status wiring, and the offline check
-that the RE6 native pair matches the operator's installed build. Nothing in the lane changes a title bot's
-decisions outside the ring hook, and the ring is Switch-only per the operator's later update.
+**Read with the operator's 07:07 update to `DEEPSEEK-GRENADE-RING-TASK-2026-11-10.md`:** RE6 grenades now belong to
+the RE session's `re6-bomb-mind` lane (this lane stops touching them; main's RE6 ring stays as it is until that
+branch merges), the "when to ring" rule moves into the now-available `gbox/mercs/core/combat.py`, a **package 6**
+(the scatter barrage on RE4/RE5 Switch) was added, and work is to be pushed to a branch, not main - this commit is
+the one PM note and then the lane returns to its branch (`ds-grenade-ring-20261110`).
+
+**Landed on main already (via this lane and the PM's universal-core merge):** the honest per-kind status, the RE6
+Switch ring (frozen from here), the bot's when-to-ring rule with `rings_deployed`/`ring_kills` and its PiP knobs, the
+PiP chooser, and the offline check that the RE6 native pair matches the operator's installed build. Nothing changes
+a title bot's decisions outside the ring hook, and the ring is Switch-only.
 
 - **Works and is proven:** RE5 Switch flash ring (live: 10/10 detonated, 1.05 s, no self-damage - receipt below);
-  per-kind status on every title (19 tests + the live before/after observations); RE6 ring geometry/partial
-  handling and the native caves against the real 061D2A06 image (10 + 4 tests); the bot rule (13 tests);
-  the PiP chooser (21 JS tests).
-- **Open, and why:** RE6's *live* ring receipt (needs the Spark while an RE6 No Mercy round is up - the local PC is
-  Windows/yuzu and the controller requires Linux ARM64 NCE by design); RE5 hand+incendiary (their item DTIs are
-  unconfirmed and the compiled spawn image pins the flash DTI at link time - needs RE + an ARM64 rebuild); the RE4
-  Switch ring (that title has no native call harness at all yet); and the RE6 status bug's root cause (needs the
-  ready() inputs read from a live RE6 round; the queue was on RE5 for the whole window).
-- **Needs one action from you:** a `gbox.service` restart at a gap on lilspark (and locally if the PC's node is to
-  show the new status). Title modules hot-reload, but `interventions.py`, `engine.py` and the two new modules only
-  load on restart - until then the PiP keeps the old one-string reason.
+  per-kind status on every title (19 tests + live before/after observations); RE6 ring geometry/partial handling and
+  the native caves against the real 061D2A06 image (10 + 4 tests); the bot rule (13 tests); the PiP chooser (21 JS
+  tests).
+- **Open, and why:** package 6 (scatter barrage) not started; the rule still lives in `gbox/mercs/grenade_ring.py`
+  and wants moving onto `core/combat.py` per the doc; RE5 hand+incendiary (item DTIs unconfirmed + an ARM64 rebuild);
+  the RE4 Switch ring (no native call harness on that title); the 4 failing
+  `tests/test_pso_steering_evidence.py` (on this lane's list now); and the RE6 status bug's root cause (RE6 is now
+  the other lane's, so handed over with the ready() evidence request noted below).
+- **Needs one action:** a `gbox.service` restart at a gap on lilspark (and locally if that node should show the new
+  status). Title modules hot-reload; `interventions.py`, `engine.py` and the new modules only load on restart.
 - **Conflicts:** the only file two lanes both added is `gbox/mercs/enemy_identity.py`; this lane uses the other
   lane's module (`tier(title, class, hp_max)`) and keeps no table of its own.
 
