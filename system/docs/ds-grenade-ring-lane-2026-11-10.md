@@ -110,13 +110,21 @@ core lands, `decide()` is the function to move onto it.
 
 ## Commits
 
-- `be21ba0` on `ds-grenade-ring-20261110`: the whole lane (status, RE6 ring, bot rule, JS, tests).
-- `38740baa` on main: the merge of that branch. Its one conflict was `system/gbox/mercs/enemy_identity.py`, added by
-  the enemy-identity lane at the same time; resolved **in favour of that lane's module** - the ring's rule calls
+**This lane now lives on the branch `ds-grenade-ring-20261110` only** (tip `76d098fc`): the operator, 2026-11-10
+06:0x, asked that nothing more go to main while the PM's merge work is in flight. The history:
+
+- `be21ba0` on the branch: the whole lane (status, RE6 ring, bot rule, JS, tests).
+- `38740baa`: the merge with the then-current main. Its one conflict was
+  `system/gbox/mercs/enemy_identity.py`, added by the enemy-identity lane at the same time; resolved **in favour of
+  that lane's module** - the ring's rule calls
   `enemy_identity.tier(title, class, hp_max)` for boss/dangerous instead of keeping its own table, so one enemy
   identity feeds the tactical map, the bots and this rule.
-- `369495c0` on main: Switch-only gating (the operator's 2026-11-10 update), this lane log, and a clicked ring
-  counted in `rings_deployed`/`ring_kills` like the bot's own.
+- `369495c0`: Switch-only gating (the operator's 2026-11-10 update), this lane log, and a clicked ring counted in
+  `rings_deployed`/`ring_kills` like the bot's own.
+- `76d098fc`: the RE6 native-cave verifier and the local-installation check (below).
+
+The PM's own universal-core merge (`cc2898e7` and after) carries this lane's commits into main; the branch stays the
+place for anything further until the operator says otherwise.
 
 ## What the PiP showed before this lane (the observed problem)
 
