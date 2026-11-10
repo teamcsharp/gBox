@@ -869,16 +869,66 @@ Candidates, in order of promise:
 What is *not* on that list: more movement tests in this room. Eight of them have now failed for the same reason, and
 none of them measured the stick.
 
+## Round 14 (2026-11-10) — the write path opened, the scene survived it, and `gbox.pso_write` is the keeper
+
+The round set out to end Principal Tyrell's intro scene by moving the player out of talk range. The move worked; the
+scene did not care. The lasting result is the write path itself, now a tested module.
+
+### Writes have a door, and it is a job
+
+`POST /api/sessions/{sid}/rpc` with `op=write_memory` is refused:
+
+```
+read-only, reset, pause/resume and debug_* ops only; edits go through the write_memory job
+```
+
+The job takes `{session_id, address, hex_bytes}`, returns `{verified, via, rollback_hex}` and **is gated on five minutes
+without operator input** -- the same admission rule as launching, reset by every pad press. A write issued after a
+movement test sits `queued` with `admission_wait.reason = "Waiting for five minutes without operator input."`
+
+Both behaviours are now in `gbox/pso_write.py` (+6 tests): submit, wait out the gate, require `verified`, read the bytes
+back, and keep the rollback. Pointers into the live actor: position is three big-endian floats at `actor+0x38`, room is a
+`u16` at `actor+0x28`.
+
+### What the writes proved
+
+| experiment | result |
+|---|---|
+| teleport the player 300 units (`z -2015 -> -1700`) | **succeeded**, `verified: true, via: process memory`; the character stayed there |
+| did the scene end? | **no** -- mode stayed 5, the dialogue stayed on Principal Tyrell |
+| hold the stick 6 s with an A press in the middle, sampling position every 0.25 s | **no sample moved** -- there is no free window between the four conversation lines |
+| write the room id (`41 -> 10`) to force an area reload | acknowledged, then **immediately overwritten** -- the room is derived from the area state, not authoritative |
+| `floor_spawn` / `boss_warp` in the PSO tooling | item spawning and a boss teleport, **not** a field warp |
+
+So the scene is not proximity-driven, not cancelable by any input tried, and not in the fields a write can reach. The
+four lines it cycles (*"Are you BQF, the Hunter?"*, *"Go talk to my secretary..."*, *"We have a bad situation..."*,
+*"I didn't say anything."*) are four separate conversations in the real game, each ending with the character free -- here
+A re-opens the next one immediately, and the character never gets control.
+
+### Why this matters beyond the scene
+
+P6a (map writer) and P7a (player-model writer) both need live writes, and both need *verified* writes with a rollback.
+`gbox.pso_write` is that, and it encodes the two traps: the RPC refusal and the five-minute gate. Nothing in this round
+touched game memory without a recorded rollback.
+
+### Next
+
+1. The scene's state has to be found in the executive/script structures, not in the actor. The mode alternates 5/17 while
+   a page advances, so something *does* change per page -- a constancy-window diff across one A press, with the write job
+   as the probe, is the way in.
+2. Or sidestep it entirely: bring in **player 2**. The scene is single-player framing, P1 needs two players anyway, and a
+   second pad plus a second card slot is ordinary co-op setup.
+
 ## 7. Next
 
-1. Get past Principal Tyrell's episode-1 intro scene. It cannot be exited by any button tested (A, B, X, Y, START),
-   by waiting, or by any movement input, and the character cannot be moved while it is up. Most promising: a
-   "first visit" flag near the player/area fields that a write can clear (P2b), the scene's own last-page Cancel,
-   or bringing in player 2, who is outside the scene's framing -- and P1 needs player 2 anyway.
-2. Then measure movement with the character free (the one clean test that has never been possible), and walk
-   Pioneer 2 -> the Hunter's Guild door (185,173 room 10) -> the teleporter (254,25) -> Forest 1.
-3. Then the three cold launches with both players, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
+1. Find the cutscene state in the executive/script structures, not in the actor: teleporting the player 300 units
+   and writing the room id both left the scene up, and no input cancels it. The mode alternates 5/17 per page, so a
+   constancy-window diff across one A press is the way in, with the audited write job as the probe.
+2. Or sidestep it: bring in **player 2** (a second virtual pad and a second card slot). The scene is single-player
+   framing, and P1 needs two players anyway.
+3. Then the field: measure movement with the character free, and walk Pioneer 2 -> the Hunter's Guild door (185,173
+   room 10) -> the teleporter (254,25) -> Forest 1, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
 
-Done this round: the boot path to Pioneer 2 is six presses, each verified against a captured frame, and
-`gbox.pso_boot_walk.BOOT_STEPS` now carries exactly that list (9 tests). Not to be repeated: movement tests inside
-the scene -- eight have now failed there for the same reason.
+Landed this round: `gbox/pso_write.py` (+6 tests) -- the audited write path with the five-minute job gate, a
+required acknowledgement, a read-back check and rollback. Constraints worth remembering: the session RPC is
+read-only for memory, every write is a job, and a job right after pad input waits five minutes.
