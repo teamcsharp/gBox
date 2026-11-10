@@ -247,3 +247,29 @@ test('the command dropdown closes when the pointer goes elsewhere, when the wind
   listeners.doc.pointerdown[0]({ target: { inside: true } });            // inside the menu: stays
   assert.ok(!made[2].removed);
 });
+
+test('the command dropdown opens upward and stays on screen when the button sits at the bottom-right (PiP)', () => {
+  const C = require('../clients/web/viz/autoplay-coach.js');
+  const win = { innerWidth: 1000, innerHeight: 700, addEventListener() {}, removeEventListener() {} };
+  const made = [];
+  const doc = {
+    defaultView: win, addEventListener() {}, removeEventListener() {}, querySelectorAll: () => [],
+    createElement() {
+      const el = { className: '', style: {}, innerHTML: '', setAttribute() {}, addEventListener() {}, remove() {},
+        getBoundingClientRect: () => ({ width: 280, height: 300 }), contains: () => false, querySelector: () => null };
+      made.push(el); return el;
+    },
+    body: { append() {} },
+  };
+  let click = null;
+  const button = { addEventListener(t, fn) { if (t === 'click') click = fn; }, setAttribute() {}, focus() {},
+    getBoundingClientRect: () => ({ left: 900, top: 650, bottom: 673 }) };
+  const input = { addEventListener() {}, value: '' }, status = { dataset: {} };
+  const host = { ownerDocument: doc, matches: () => true, querySelector: sel => sel === 'input' ? input : sel === '[data-coach-status]' ? status : sel === '[data-coach-cmds]' ? button : null };
+  C.mount(host, { sid: 'w-2', api: async () => ({}) });
+  click({ preventDefault() {}, stopPropagation() {} });
+  const s = made[0].style;
+  assert.equal(parseInt(s.top), 650 - 4 - 300, 'opens above the button');
+  assert.equal(parseInt(s.left), 1000 - 280 - 4, 'kept inside the right edge');
+  assert.ok(parseInt(s.top) >= 4 && s.overflowY === 'auto');
+});

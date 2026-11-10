@@ -293,7 +293,19 @@
         Object.assign(menu.style, { left: Math.max(4, r.left) + "px", top: r.bottom + 4 + "px" });
         menu.addEventListener("click", ev => { const b = ev.target.closest("[data-cmd]"); if (b) { ev.stopPropagation(); command(b.dataset.cmd); } });
         menu.addEventListener("keydown", ev => { ev.stopPropagation(); if (ev.key === "Escape") { closeMenu(); cmdButton.focus(); } });
-        doc.body.append(menu); cmdButton.setAttribute("aria-expanded", "true"); menu.querySelector("button")?.focus();
+        doc.body.append(menu); cmdButton.setAttribute("aria-expanded", "true");
+        // the PiP sits at the bottom-right: a menu below the button fell off the screen (operator: the dropdown does not
+        // work in PiP), so it opens upward when there is more room above, is kept inside the window and scrolls if tall
+        const win0 = doc.defaultView, vw = (win0 && win0.innerWidth) || 0, vh = (win0 && win0.innerHeight) || 0;
+        if (vw && vh && menu.getBoundingClientRect) {
+          const mr = menu.getBoundingClientRect(), mh = mr.height || 0, mw = mr.width || 0;
+          const below = vh - r.bottom - 8, above = r.top - 8, up = mh > below && above > below;
+          const room = Math.max(80, up ? above : below), h = Math.min(mh, room);
+          menu.style.maxHeight = room + "px"; menu.style.overflowY = "auto";
+          menu.style.top = Math.max(4, up ? r.top - 4 - h : r.bottom + 4) + "px";
+          menu.style.left = Math.max(4, Math.min(r.left, vw - mw - 4)) + "px";
+        }
+        menu.querySelector("button")?.focus();
         // closes on a click anywhere else, on the pointer going to the native game surface (the document loses focus:
         // no DOM click ever arrives from it - operator 2026-10-26: "close dropdowns when i click away. I cant close this
         // now"), on the view being hidden, and on Escape; every path removes its listeners
