@@ -312,6 +312,15 @@ No RAM discriminator for the screen yet (the signature API exists and is tested;
 screen boundary), so the walk still needs a frame or a scripted sequence to know where it is. Pioneer 2, the Hunter's
 Guild and Forest 1 are not reached. P1 remains in progress.
 
+### The next blocker, found at SELECT CHARACTER
+
+The character screen shows **four `NO DATA` slots**, and the memory card this session used
+(`Dolphin User/GC/MemoryCardA.USA.raw`, 16 MiB) does hold a PSO directory entry (`GPOE8P` at `0x20C0`) but **no
+character**. So P1's "character select (or create)" cannot select: it has to create one — through the in-game name
+entry, class, costume and section-ID screens — or the run has to start from a save that already holds a character.
+That is a decision for the operator (a prepared save is far cheaper than automating PSO's name entry), and it is the
+first thing the next round needs settled.
+
 ## 7. Next
 
 1. P1: a RAM screen discriminator. Take one live diff per screen boundary (title/main menu, main menu/SELECT
