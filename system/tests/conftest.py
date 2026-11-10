@@ -89,6 +89,9 @@ def _private_re4_mods(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(mod, "SETTINGS_FILE", tmp_path_factory.mktemp("re4_mods") / "re4-mods.json")
     mod.ORIG.clear()
     monkeypatch.setattr(mod.D, "FIRE_GAP_S", mod.D.FIRE_GAP_S)     # Fire rate x paces the fight: put back after each test
+    if hasattr(mod.D, "HAND_REQUEST"):                              # the bot's grenade asks: none carried between tests
+        monkeypatch.setattr(mod.D, "HAND_REQUEST", {})
+        monkeypatch.setattr(mod.D, "HAND_STATE", {})
 
 
 @pytest.fixture(autouse=True)
@@ -130,6 +133,19 @@ def _private_re5_threats(tmp_path_factory, monkeypatch):
         return
     if hasattr(re5_switch, "THREAT_FILE"):
         monkeypatch.setattr(re5_switch, "THREAT_FILE", tmp_path_factory.mktemp("re5_threats") / "re5-switch-threats.json")
+
+
+@pytest.fixture(autouse=True)
+def _private_re4_re6_threats(tmp_path_factory, monkeypatch):
+    """The same for RE4 and RE6 Switch (re4_switch.THREAT_FILE / re6_switch.THREAT_FILE: the universal core's threat
+    memory, gbox.mercs.core.combat.Threats): no test reads or teaches the live bot's learned threats."""
+    for name in ("re4_switch", "re6_switch"):
+        try:
+            mod = __import__(f"gbox.mercs.titles.{name}", fromlist=["THREAT_FILE"])
+        except Exception:                                    # noqa: BLE001 - a checkout without it
+            continue
+        if hasattr(mod, "THREAT_FILE"):
+            monkeypatch.setattr(mod, "THREAT_FILE", tmp_path_factory.mktemp(f"{name}_threats") / f"{name}-threats.json")
 
 
 @pytest.fixture(autouse=True)
