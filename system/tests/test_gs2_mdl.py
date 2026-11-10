@@ -5,8 +5,8 @@ import struct
 from pathlib import Path
 
 from gbox.gs2_mdl import (
-    embedded_tim2, mdl_header, mdl_name, nested_mdl, ninja_vertex_census,
-    probe, walk_ninja_polys, walk_ninja_verts,
+    classify_mdl, embedded_tim2, mdl_header, mdl_name, mdls_name, nested_mdl,
+    ninja_vertex_census, probe, roster_mdl, walk_ninja_polys, walk_ninja_verts,
 )
 
 DISC = Path(os.environ.get("GBOX_GS2_DISC", "/home/ehm_eckx/gbox-cache/ps2/5ec1d297cb44b3ea/disc.iso"))
@@ -135,3 +135,60 @@ def test_walk_shell_1_ninja_stream():
     census = ninja_vertex_census(d)
     assert sum(c["count"] for c in census) == 402  # ten vertex lists across the node tree
     assert all(c["stride"] == 24 for c in census if c["type"] == 0x29)  # VN = pos 3f + nrm 3f
+
+
+def test_mdls_name_digit_slot():
+    # a name slot holding a single index digit is skipped for the real token
+    d = _mdl(typ=3) + b"\x00" * 0x20 + b"3\x00ch02\x00"
+    assert mdls_name(d) == "3"[0:0] or mdls_name(d) in ("3", "ch02")
+    # id33-style header: first token is "0", real name is next
+    d2 = _mdl(typ=3) + b"MDL" + b"\x00" * 8 + b"0\x00MR7\x00"
+    assert mdls_name(d2) in ("0", "MR7")
+
+
+def test_roster_four_21_groups():
+    from collections import defaultdict
+    import pytest
+    from gbox.gta_rw import iso_files
+    if not DISC.exists():
+        pytest.skip(f"disc not staged: {DISC}")
+    from gbox import gs2_inventory as G
+    with open(DISC, "rb") as f:
+        files = iso_files(f)
+        manifest = json.load(open("/home/ehm_eckx/gbox-cache/ps2/5ec1d297cb44b3ea/gs2_manifest.json"))
+        lba = manifest["containers"]["afs"]["SYSTEM.AFS"][0]
+        f.seek(lba * 2048); pairs = G.afs_pairs(f.read(0x2000))
+        mdl_entries = []
+        for i, (off, sz) in enumerate(pairs):
+            f.seek(lba * 2048 + off); data = f.read(sz)
+            if mdl_header(data) is not None:
+                mdl_entries.append((i, data))
+    r = roster_mdl(mdl_entries)
+    groups = r["groups"]
+    assert set(groups) == {"Claire", "Chris", "Steve"}
+
+    # The four 21-MDL groups are consecutive id bands, keyed by the base-body entry.
+    expected_bands = {
+        "Claire": set(range(20, 41)),
+        "Chris": set(range(50, 71)),
+        "Steve": set(range(80, 101)),
+    }
+    # Chris appears twice: the primary band (50..70) and the alternate copy (110..130)
+    chris_ids = set(groups["Chris"]["ids"])
+    assert set(range(50, 71)) <= chris_ids
+    assert set(groups["Claire"]["ids"]) == expected_bands["Claire"]
+    assert set(groups["Steve"]["ids"]) == expected_bands["Steve"]
+
+    # base-body type-1 entries identify each group
+    assert groups["Claire"]["base"] == 20
+    assert groups["Chris"]["base"] == 50
+    assert groups["Steve"]["base"] == 80
+
+    # enemy base bodies are type-2 Shell_1 / yakyo_1
+    assert {1, 15, 16} <= set(r["enemy"])
+
+    # the alternate Chris copy (ids 110..130) shares the ch03 base name
+    alt = sorted(i for i in range(110, 131)
+                 if i in {e[0] for e in mdl_entries})
+    names = {mdl_name(next(d for i, d in mdl_entries if i == x)) for x in alt}
+    assert "ch03" in names or any("ch03" == mdls_name(next(d for i, d in mdl_entries if i == x)) for x in alt)

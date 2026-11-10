@@ -35,6 +35,7 @@ MIPS R5900LE project step (next).
 from __future__ import annotations
 
 import math
+import re
 import struct
 
 MDL_PREFIX = b"MDL"
@@ -216,3 +217,108 @@ def probe(data: bytes) -> dict | None:
     h["vertices"] = sum(c["count"] for c in vcs)
     h["vertex_types"] = sorted({c["type"] for c in vcs})
     return h
+
+
+# --- roster mapping ----------------------------------------------------------
+
+_BASE_TOKENS = {  # type-1 base-body model name -> character
+    "cl02": "Claire",
+    "ch03": "Chris",
+    "STU_05": "Steve",
+}
+_ENEMY_TOKENS = {"Shell_1": "Shell_1", "yakyo_1": "yakyo_1"}
+# Weapons/items shared per character (also observed as second token on weapon MDLs).
+_ITEM_TOKENS = {
+    "ZIPPO", "BR_93R", "BR_93RRC", "PYTHON", "Ingram", "bowgun", "SPAS12",
+    "AK47S", "M79", "knife", "MR7", "PF3", "LN_02", "luger", "gl17",
+    "142", "ch02", "ch04", "rodo08",
+}
+
+
+def mdls_name(data: bytes) -> str | None:
+    """Robust model-name read: first plausible ``len>=3`` ASCII token in the header.
+
+    ``mdl_name`` reads four fixed 8-byte slots and misses models whose first name slot
+    holds a short index digit (e.g. ``b"0"``/``b"2"``/``b"3"``/``b"5"`` at ids 33/38/63/83..97);
+    this scans the leading 0x200 bytes for the first readable identifier instead.
+    """
+    if mdl_header(data) is None:
+        return None
+    for m in re.finditer(rb"[A-Za-z0-9_]{3,}", data[:0x200]):
+        tok = m.group()
+        if tok == MDL_PREFIX:  # the magic is not a name
+            continue
+        return tok.decode("ascii", "replace")
+    return None
+
+
+def classify_mdl(data: bytes) -> dict | None:
+    """Classify one MDL entry: character base-body, per-character item, or enemy.
+
+    Returns ``{kind, name, base, char}`` or ``None`` when the header is not an MDL.
+    ``base``/``char`` are set for character and per-character-item models so the reader
+    can re-route a replaced donor into the matching slot.
+    """
+    h = mdl_header(data)
+    if h is None:
+        return None
+    name = mdls_name(data) or mdl_name(data)
+    if name in _BASE_TOKENS and h["type"] in (1, 4):
+        return {"kind": "base", "name": name, "base": _BASE_TOKENS[name],
+                "char": _BASE_TOKENS[name]}
+    if name in _ENEMY_TOKENS and h["type"] == 2:
+        return {"kind": "enemy", "name": name, "base": None, "char": name}
+    if name in _BASE_TOKENS or name in _ITEM_TOKENS:
+        return {"kind": "item", "name": name, "base": None, "char": None}
+    return {"kind": "unknown", "name": name, "base": None, "char": None}
+
+
+def roster_mdl(entries: list[tuple[int, bytes]]) -> dict:
+    """Group MDL entries ``(afs_id, data)`` into the character/item/enemy roster.
+
+    The four 21-MDL groups in SYSTEM.AFS are four near-identical copies of one cast +
+    weapon set; the base-body (type-1) entries identify the owning character. Returns
+    ``{char: {"base": afs_id, "ids": [..]}}`` keyed by character, plus ``enemy`` and
+    ``unknown`` lists. ``base`` is built from the first type-1 base body in each group.
+    """
+    groups: dict[str, dict] = {}
+    enemies: list[int] = []
+    unknown: list[tuple[int, str]] = []
+    first_base: dict[str, int] = {}
+    for afs_id, data in entries:
+        c = classify_mdl(data)
+        if c is None:
+            continue
+        if c["kind"] == "enemy":
+            enemies.append(afs_id)
+            continue
+        if c["kind"] == "base":
+            g = groups.setdefault(c["char"], {"base": afs_id, "ids": []})
+            if c["char"] not in first_base:
+                first_base[c["char"]] = afs_id
+                g["base"] = afs_id
+            g["ids"].append(afs_id)
+        elif c["kind"] == "item":
+            pass  # items are attributed when a base precedes them (see _attribute)
+        else:
+            unknown.append((afs_id, c["name"] or ""))
+    for afs_id, data in entries:
+        c = classify_mdl(data)
+        if c is None or c["kind"] != "item":
+            continue
+        _attribute(groups, first_base, afs_id)
+    for afs_id, data in entries:
+        c = classify_mdl(data)
+        if c is None or c["kind"] != "base":
+            continue
+        groups[c["char"]]["ids"] = sorted(set(groups[c["char"]]["ids"]))
+    return {"groups": groups, "enemy": sorted(enemies), "unknown": unknown}
+
+
+def _attribute(groups, first_base, afs_id):
+    # items sit in the same contiguous id band as their group's base; fall back to
+    # adjacency when a prior base has not been seen yet.
+    for char, base in first_base.items():
+        if base <= afs_id < base + 21:
+            groups[char]["ids"].append(afs_id)
+            return
