@@ -1047,16 +1047,65 @@ This round spent most of its steps on the launch-gate cycle: every launch needs 
 that clock is reset by the very presses a launch is being tested with. Each verify-a-launch round therefore costs about
 ten minutes of wall clock for two or three frames of evidence. Worth knowing when planning the remaining P1 work.
 
+## Round 18 (2026-11-10) — player 2 has a pad, and each player's character select only answers that player
+
+The session is parked inside player 2's character creator with a HUmar appearance randomized. Getting there produced two
+findings that will matter for every later co-op step.
+
+### Finding 1: the P2 screen ignores P1's pad
+
+On "Please select Player 2's character." every press of P1's virtual pad was a no-op -- `ddown`, `dright`, `A` (three of
+them), all leaving the frame byte-identical. PSO's multiplayer character select answers **each player's own pad**, and P2
+is the keyboard device Dolphin calls `GCPad2`. P2's `D` (its A button) opened the prompt immediately:
+
+```
+"Please select Player 2's character."
+  P2 A  ->  "Want to create a new Character?"  YES / NO      (cursor on NO)
+  P2 up, P2 A  ->  CHARACTER SELECT, PLAYER2, HUmar highlighted
+  P2 A  ->  the class preview with B CANCEL / A OK
+  P2 A  ->  CHARACTER CREATION: FACE HAIR COSTUME SKIN COLOR PROPORTION CHARACTER NAME AUTO OK
+  6 x P2 down, P2 A  ->  AUTO:  "B MENU   A CHANGE"
+  P2 A  ->  a new appearance
+```
+
+### Finding 2: the key names are uppercase or nothing
+
+`win_send_keys` accepted `NUMPAD7` (`sent: 2`) and silently dropped `numpad7` (`sent: 0`). Dolphin's P2 bindings are the
+uppercase spellings (`NUMPAD7`, `NUMPAD9`, `SPACE`, `D`, `R`), so a driver that lowercases them does nothing and reports
+success-shaped emptiness. That is now `gbox/pso_pad2.py` (+6 tests): the mapping `pso_coop_setup.PAD2_WIN` actually
+installs, a `key()` that refuses unknown buttons and lowercase numpad names, and `events`/`chord` builders in the shape
+the input API wants.
+
+### Still blocked, and where exactly
+
+The **AUTO** sub-screen offers only "B MENU" and "A CHANGE", and B does not leave it: P2's `R` (B) and `SPACE` (START)
+were both accepted by `win_send_keys` (`sent: 2`) and the screen did not change; P2's D-pad down did nothing either.
+So the creator cannot yet be finished -- `CHARACTER NAME` (possibly needed) and `OK` (definitely needed) are both on the
+menu behind this screen.
+
+Next round's first move is therefore not "press more buttons": it is to check whether P2's B is really `R`, by
+sending a *known* B action somewhere the game visibly responds to B (the `YES/NO` prompt takes B as cancel). If `R` is
+wrong, the INI's P2 mapping is wrong and that is a one-line fix in `pso_coop_setup.PAD2_WIN`; if `R` is right, the AUTO
+screen is simply not leavable by B and the creator must be driven through `FACE`/`HAIR`/... directly instead of via AUTO.
+
+### Method note
+
+Everything this round was done through the keyboard path (`win_send_keys`) with the window restored to the foreground,
+and it worked -- unlike P1's pad, P2's pad needs no virtual pad at all. That is worth remembering: for co-op work the two
+players are driven by two completely different mechanisms, and the window has to be foreground for P2 only.
+
 ## 7. Next
 
-1. Create **player 2's temporary character** in MULTI MODE (the game is parked on "Please select Player 2's
-   character."). P2 cannot borrow BQF from the card; the creator is the same flow round 4 walked, with the name
-   typed on the on-screen keyboard. Check the keyboard mapping first: round 4 produced **BQF** when **DSH** was
-   intended, so the column offset needs one verification before a character that must be identified later is made.
-2. Then the field leg: Pioneer 2 -> the Hunter's Guild door (185,173 room 10) -> the teleporter (254,25) -> Forest 1,
-   with both players, and the movement measurement that has been impossible from inside the single-player intro.
+1. Finish player 2's temporary character. The session is in the creator's **AUTO** sub-screen, which offers only
+   "B MENU" (does not respond to P2's `R`) and "A CHANGE" (works). First check whether P2's B really is `R` by
+   sending it at the `YES/NO` prompt, which takes B as cancel: if `R` is wrong the INI mapping is wrong and that is a
+   one-line fix in `pso_coop_setup.PAD2_WIN`; if it is right, drive `FACE`/`HAIR`/.../`CHARACTER NAME` directly
+   instead of going through AUTO, and press `OK`.
+2. Then MULTI MODE's Pioneer 2 and the field leg: the Hunter's Guild door (185,173 room 10), the teleporter
+   (254,25), Forest 1 -- with both players, and the movement measurement that has been impossible from inside the
+   single-player intro.
 3. Then the three cold launches, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
 
-Three layers were needed for two controllers and each gave a different symptom: `[GCPad2]` in GCPadNew.ini (no pad
-at all), `Options/Always Connected` on it (input bound but not connected), and `SIDevice1 = 6` in Dolphin.ini (the
-console finally sees it). Only the third made MULTI MODE open.
+Two facts for every co-op step: each player's character select answers **only that player's pad**, and
+`win_send_keys` accepts only the **uppercase** key names (`NUMPAD7`, `SPACE`) -- a lowercase name reports `sent: 0`
+and does nothing.
