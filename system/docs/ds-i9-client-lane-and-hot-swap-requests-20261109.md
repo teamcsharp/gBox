@@ -483,3 +483,24 @@ input on the operator's desktop.
 
 The RE6 update payload (rounds 12-13: region 8's data does not decrypt as CTR/plaintext/XTS and is not zlib/gzip/bz2/
 lzma) is unchanged and still the gate for a live Mercenaries round.
+
+## Round 16 status (2026-11-09, ~18:05 CST): a Mercenaries round RAN on the i9 — the payload was never needed
+
+The update-only build (`recovery-re6-update-v131072-20261109`, the update's ExeFS patch on the base NSP) loads and
+plays a full Mercenaries round on the i9. The RAM-driven walk logged the whole flow:
+
+    main_menu -> play_game(target 3) -> extra_content(cursor 1) -> mercs menu -> select_stage
+    -> select_player(target 8 = nine characters) -> loading -> alert_leaderboard -> results
+
+with the RESULTS screen showing "Urban Chaos", "LEON S. KENNEDY", Kills 0 / Max Combo 0 / Score 0 / Rank E (the player
+stood idle; the round timer ran out). So:
+
+* the earlier **LOADING hang was the invalid r2 data overlay**, not the update's RomFS payload: with those 19 bogus
+  files removed, the round loads and completes;
+* **the BKTR payload is not needed for a live RE6 round** — the base RomFS + the update's ExeFS is enough, and the
+  unlock (`already_unlocked` with the save's flag) opens the menu;
+* the lobby's ONLINE COMMUNICATION / PARTNER JOIN defaults (ALLOW) did not block the round.
+
+A swap build is ready for the next round: `recovery-re6-update-roster-v2-20261109` (50 entries: the update's five
+ExeFS files + the 45 roster RomFS files, **without** the invalid data), so the next session can capture swapped-
+character gameplay frames and then run the `op=hotswap` acceptance test (two frames of one session, no restart).
