@@ -14,13 +14,11 @@ edits it cannot verify.
 """
 from __future__ import annotations
 
+from . import pso_class_registry as REG
 from . import pso_map_write as W
 from . import pso_setdata as P
 
 KINDS = ("object", "enemy", "event")
-CLASS_NAMES = {
-    0: "player", 1: "npc", 2: "object", 3: "enemy", 4: "item", 5: "door", 6: "warp", 7: "light", 8: "camera",
-}
 
 
 def kind_of(name: str) -> str | None:
@@ -64,14 +62,18 @@ def sets(disc) -> list[dict]:
 
 
 def placements(disc, set_name: str) -> dict:
-    """The set's placements, in editor form: ``{set, count, records: [{index, kind, class, x, y, z}]}``."""
+    """The set's placements, in editor form: ``{set, count, records: [{index, kind, class, family, x, y, z}]}``.
+
+    The class name and family come from the executable's own registry (`pso_class_registry`), so a marker reads
+    "door"/"warp"/"switch" or a real class name instead of a number.
+    """
     data, where = W.read_set(disc, set_name)
     recs = P.records(data)
     rows = []
     for rec in recs:
         cls = P.kind_class(rec["kind"])
         rows.append({"index": int(rec["index"]), "kind": int(rec["kind"]), "class_index": cls,
-                     "class": CLASS_NAMES.get(cls, f"class{cls}"),
+                     "class": REG.label(cls), "family": REG.family(cls),
                      "x": round(float(rec["x"]), 3), "y": round(float(rec["y"]), 3), "z": round(float(rec["z"]), 3),
                      "angle": round(float(rec["angle"]), 3)})
     return {"set": set_name, "where": where, "count": len(rows), "records": rows}
