@@ -52,3 +52,27 @@ CP12's snapshot 1, CP13's body-endian 3, CP15 9, pad aliases 5; the PSO swap sui
 - the RE session's review/merge of the sixteen branches above (**CP12 before CP13**);
 - a CP8 decision (install `chdman` for the Dreamcast data, or accept the GameCube form recorded here);
 - one operator-absent window for CP4 / CP5 / CP9-seed / CP10 / CP12's frame / CP13 / CP16.
+
+## Round 90: every checkpoint branch's own suites run green from its pushed tip
+
+The checkpoint branches are **parallel** (each carries the tests for the modules it changed), so a regression check has to run
+per branch. Done this round, each from its **origin tip**:
+
+| branch | suite(s) run | result |
+|---|---|---|
+| `ds-pso-cp12-rigged-swap-20261110` (with CP13 stacked) | all swap / body / player / NJ / endian suites (36 files) | **438 passed, 26 skipped** |
+| `ds-pso-cp00-classes-20261110` | `test_pso_classes.py`, `test_pso_class_registry.py` | 5 passed |
+| `ds-pso-cp04-jump-state-20261110` | `test_pad_aliases.py`, `test_pso_boot_walk.py` | 10 passed |
+| `ds-pso-cp06-evt-opcodes-20261110` | `test_pso_evt.py` | 8 passed |
+| `ds-pso-cp06-nrel-20261110` | `test_pso_nrel.py` | 8 passed |
+| `ds-pso-cp08-room-pieces-20261110` | `test_pso_rooms.py` | 6 passed |
+| `ds-pso-cp09-save-data-20261110` | `test_pso_memcard.py` | 8 passed |
+| `ds-pso-cp11-editor-page-20261110` | `test_pso_editor_views.py`, `test_pso_editor.py` | 20 passed |
+
+**Total 503 passed, 0 failed, 26 skipped** - and the skipped set is the disc/config-dependent group that is skipped without the
+disc, not a regression.
+
+**One trap worth recording for the review:** several **local** branches in this clone are stale (they were created before later
+pushes to the same name), so `git checkout <branch>` can give an old tree - the first pass reported "no test files found" for
+CP6.2 for exactly that reason. Always verify against `origin/<branch>` (this is also why every piece of evidence names a tip
+hash rather than a branch name alone).
