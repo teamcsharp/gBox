@@ -166,6 +166,24 @@ Also present: `gsl_set_object.gsl` / `gsl_set_enemy.gsl` / `gsl_set_event.gsl` (
 It does **not** name any individual `*o.dat` / `*e.dat`; those names are assembled at run time, which is why a
 string search for `map_forest01_00o.dat` in the DOL finds nothing while the archive is referenced directly.
 
+## 5b. The small-data areas (why so much static state has no direct reference)
+
+The CRT sets the two bases before `main`, in the DOL's init section at `0x8000C180` (`r2` at `+0x180`, `r13` at
+`+0x188`):
+
+| register | value | what it is |
+|---|---|---|
+| `r2` | **`0x805CFD00`** | `_SDA2_BASE_`: the small read-only float pool (`unaff_r2 - 0x36f0` in decompiled code) |
+| `r13` | **`0x805CA600`** | `_SDA_BASE_`: the small data area (`unaff_r13 - 0x5260` everywhere) |
+
+That is why a string search for `lis`/`ori` so often finds nothing: any global inside `0x805CA600 ± 32 KiB` is reached
+with a D-form displacement (`lwz r3, -0x5260(r13)`), and **anything above `0x805D25FF` cannot be reached that way at
+all** - which is exactly the case for the class-name table at `0x805D3138`, and why its readers must resolve it through
+a pointer variable. `gbox/pso_sda.py` turns this into a tool: `globals_used(dol)` decodes every `r13`-based D-form
+access and returns `{address: [instruction addresses]}` - **4,803 distinct globals** on the owned disc - so the lane can
+name the globals it already knows (`pso_ram`) and find the ones it does not. Its tests pin the two base values, the
+window behaviour and a synthetic DOL.
+
 ## 6. Encrypted or checksummed
 
 - **On the disc:** the only cipher is PSO's own v2 stream cipher over a PRS stream, used by `.pr2` / `.pr3` (the text
