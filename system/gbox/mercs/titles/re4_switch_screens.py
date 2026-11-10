@@ -116,7 +116,7 @@ def menu_cursor(y: float | None) -> tuple[str, int] | None:
     return (best[0], best[1]) if best[2] <= ROW_TOLERANCE else None
 
 
-# "You Are Dead - Continue Yes / No" (measured 2026-11-10 on lilspark, tests/fixtures/re4sw_dead_continue.jpg): an almost
+# "You Are Dead - Continue Yes / No" (measured 2026-11-10 on lilspark, artifact 0c0a88732908d1a8..., kept out of git): an almost
 # black frame (mean 6.5, so it read as "loading") with the prompt's rule - rows 391-394, every pixel of x 415..958
 # above 40 - grey "Continue Yes / No" text above it and the red "You Are Dead" over the darkened scene.
 DEAD_MEAN_MAX = 25.0

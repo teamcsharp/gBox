@@ -332,10 +332,21 @@ def test_a_fixed_screen_confirms_once_it_has_settled():
 FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
 
 
+# The two live frames are gameplay screenshots, so they stay out of git (the publish guard refuses them here): they
+# are in the control plane's artifact store, and a checkout that has fetched them into tests/fixtures/ runs the check.
+#   re4sw_dead_continue.jpg  0c0a88732908d1a8b82d786c7fa76007fb6ec01241ed89823e797fc82ebe360e
+#   re4sw_round_hud.jpg      b0c729a2cf45e3854bae6f53e9ab771edb0e4d3a9321eadcbaccc3c94950527e
+LIVE_FRAMES = [FIXTURES / "re4sw_dead_continue.jpg", FIXTURES / "re4sw_round_hud.jpg"]
+
+
+@__import__("pytest").mark.skipif(not all(p.exists() for p in LIVE_FRAMES), reason="the live RE4 frames are not fetched")
+def test_the_recorded_death_and_round_frames_are_named():
+    """Recorded 2026-11-10: the death frame is almost black (mean 6.5) and read as loading, so nothing answered it."""
+    assert S.classify(LIVE_FRAMES[0].read_bytes()) == {"where": "dead_continue"}
+    assert S.classify(LIVE_FRAMES[1].read_bytes()) == {"where": "playing"}
+
+
 def test_the_death_screen_is_named_not_taken_for_a_load():
-    """Recorded 2026-11-10: the frame is almost black (mean 6.5) and read as loading, so nothing answered it."""
-    assert S.classify((FIXTURES / "re4sw_dead_continue.jpg").read_bytes()) == {"where": "dead_continue"}
-    assert S.classify((FIXTURES / "re4sw_round_hud.jpg").read_bytes()) == {"where": "playing"}
     black = png_of(np.zeros((S.H, S.W, 3), dtype=np.uint8))
     assert S.classify(black)["where"] == "loading"
 

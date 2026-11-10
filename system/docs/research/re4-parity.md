@@ -529,7 +529,7 @@ Code from this (`re4_switch.py`, recorded bytes in `tests/fixtures/re4sw_units_l
 `S_PLAYER 0x11310F0` / `S_PLAYER_2 0x113B398` (the snapshot reads the player through the pointer; the census scans
 the heap for the Ganados), `SET_OBJECT_CLASSES`, `UNIT_SIZE`. The playbook therefore fights from RAM on the next round
 (`stats.fight == "ram"`). The death screen is now named (`re4_switch_screens.is_dead_continue`, from the recorded
-frame `tests/fixtures/re4sw_dead_continue.jpg`) and answered Continue: Yes (the same stage again; `stats.deaths`).
+frame `artifact 0c0a88732908d1a8..., kept out of git`) and answered Continue: Yes (the same stage again; `stats.deaths`).
 
 What the next RE4 round must show, in order: `stats.fight == "ram"` and `player_read` true; the player's `pos` changes
 as he walks; `enemies_read` > 0 with Ganados' health falling when shot and `kills_seen` rising; the bot turns *toward*
