@@ -213,6 +213,24 @@ def step(scr: dict) -> str | None:
     return STEPS.get(where)
 
 
+def combat_profile():
+    """RE6 PS3 described for the universal core (gbox.mercs.core.combat.TitleProfile; the operator 2026-11-10: "I want
+    the ps3 versions of RE 5 and 6 back if we have them able to do character replacement and hardcore modding live").
+    Descriptive only: this edition has no fight and no measured address (the module text), so nothing here runs. The
+    aim and trigger are the MT Framework RE6's, as on Switch (inferred, not measured on PS3): the camera's line and the
+    laser (laser_camera_geometry), L1 aim, R1 a press a shot (edge) for the semi-automatics; the core's camera driver
+    can drive it once a snapshot exists (sPlayer's instance, the enemy list, the camera and the laser)."""
+    from ..core import combat
+    return combat.TitleProfile(
+        title="re6_ps3", title_id="BLUS30855", units_per_cm=1.0, aim_model="laser_camera_geometry",
+        sticks="(inferred from the Switch / X360 editions) the right stick turns the camera and the aim, the left stick "
+               "walks camera-relative; L1 aims, R1 fires once a press (held for the automatics)",
+        aim_btn="l1", fire_btn="r1", turn_sign=1, level_dy_cm=100.0, page_key="cross",
+        bodies=combat.BodyTable(default=combat.Body(160.0, 115.0, 45.0, 145.0, 36.0)),
+        fire_pattern=False, fire_style="edge", fire_tick_s=0.05, fire_cap_hz=0.0,
+        fire_cap_note="not measured: no RE6 PS3 address has been read live (screen() answers unknown)")
+
+
 def wandered(scr: dict) -> str | None:
     """A story / other mode: once menu_state() names one. Identifies the mode the X360 sibling escapes too."""
     where = scr.get("where")

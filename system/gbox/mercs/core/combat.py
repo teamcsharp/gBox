@@ -38,6 +38,9 @@ title's own units (RE4's world is in mm):
   (g) the raise / aim discipline  stand_engaged (the fight meets the never-stand rule), AimStick (the stick that
                  moves the aim with the gun up, learned), open_step (a step along open floor).
   (h) WallPress  pressed against a wall: remembered, turned away from, never walked into again.
+  (i) the fire pattern  gbox.mercs.core.fire_pattern: the PS3 magnum's rapid repeat (the title's trigger at its
+                 fastest accepted cadence) and scatter (shot after shot across his body, earned by an effect, and the
+                 hop to a neighbour on the gun's line); fire_spec / fire_driver / fire_cadence, the profile's fire_*.
 
 Nothing here reads or writes the game, and nothing here presses a key: a bot maps each verdict onto its own sticks.
 """
@@ -51,6 +54,7 @@ from pathlib import Path
 from typing import Callable
 
 from .. import threat_memory
+from . import fire_pattern                 # (i): the PS3 magnum's rapid repeat and scatter (imports nothing from here)
 
 try:                                     # per title and enemy class a name and a tier (branch enemy-identity); until
     from .. import enemy_identity as _identity   # it lands every title's own fallback tier stands (identity_tier)
@@ -294,6 +298,16 @@ class TitleProfile:
     throw_max_cm: float = 1200.0             # ... and within the throw's range
     flash_r_cm: float = 400.0                # a wind-up or a grab threat this near: the flash
     throw_kill_s: float = 3.0                # kills this soon after a throw are its kills
+    # (i) the fire pattern (gbox.mercs.core.fire_pattern: the PS3 magnum's rapid repeat and scatter, every title)
+    fire_pattern: bool = False               # the title's FIRE_PATTERN switch (off: every shot at the chest, as before)
+    fire_style: str = "hold"                 # "hold": the game repeats a held trigger; "edge": a fresh press a shot
+                                             # (down a tick, up a tick); "tap": down + up in one batch (the engine's)
+    fire_gap_s: float = 0.0                  # never a press sooner than this after the last (the title's own floor)
+    fire_tick_s: float = 0.05                # the bot's decision tick
+    fire_cap_hz: float = 0.0                 # the most shots a second the game takes from a single-shot gun with the
+                                             # title's mods (0: not known)
+    fire_cap_note: str = ""                  # where fire_cap_hz comes from: measured / static analysis / not measured
+    family: Callable | None = None           # the title's gun in hand -> its fire_pattern family (None: not read)
 
     def cm(self, v: float) -> float:
         return float(v) / self.units_per_cm
@@ -315,12 +329,33 @@ class TitleProfile:
 
 
 TITLES = {"re4_switch": "gbox.mercs.titles.re4_switch", "re5_switch": "gbox.mercs.titles.re5_switch",
-          "re6_switch": "gbox.mercs.titles.re6_switch"}
+          "re6_switch": "gbox.mercs.titles.re6_switch",
+          # the other editions (the operator 2026-11-10: "I want it able to work with even the ps3, and gamecube
+          # versions"): their profiles describe them for the core; their own fights do not consult them yet
+          "re5_ps3": "gbox.mercs.titles.re5_ps3", "re6_ps3": "gbox.mercs.titles.re6_ps3",
+          "re4_gc": "gbox.mercs.titles.re4_gc"}
 
 
 def profile(title: str) -> TitleProfile:
     """The title's profile as its module builds it now (its live constants)."""
     return importlib.import_module(TITLES[title]).combat_profile()
+
+
+# --- (i) the fire pattern -------------------------------------------------------------------------------------------------
+def fire_spec(prof: TitleProfile, family) -> fire_pattern.FireSpec | None:
+    """The fire pattern's spec for this family on this title: None with the title's FIRE_PATTERN off (prof.fire_pattern)
+    or for a family that has none (the automatics, launchers, bows)."""
+    return fire_pattern.spec(family) if prof.fire_pattern else None
+
+
+def fire_driver(prof: TitleProfile, stats: dict | None = None, prefix: str = "fire_pattern"):
+    """The fire pattern's driver for the title's aim model (fire_pattern.TankDriver / LaserDriver / CameraDriver)."""
+    return fire_pattern.driver(prof, stats, prefix)
+
+
+def fire_cadence(prof: TitleProfile) -> float:
+    """The presses (shots) a second the title's trigger style reaches at its tick and floor, under its known cap."""
+    return fire_pattern.cadence_hz(prof.fire_style, prof.fire_tick_s, prof.fire_gap_s, prof.fire_cap_hz)
 
 
 # --- (b) not in control -------------------------------------------------------------------------------------------------

@@ -2332,6 +2332,30 @@ GRUDGE_R, LETHAL_KEEP_X, LETHAL_BACKOFF_MAX_S = 1000.0, 1.15, 1.8
 FROZEN, FROZEN_KEY, FROZEN_FIRE_S, FROZEN_FIRE_SHOTS, FROZEN_PAGE_MAX_S = True, "a", 5.0, 8, 4.0
 FROZEN_CM, FROZEN_RAD, FROZEN_TAP_S, FROZEN_CLEAR_R = 3.0, 0.01, 0.2, 150.0
 IDLE_AIM_S, IDLE_WALK_S = 2.0, 1.0
+# The fire pattern (gbox.mercs.core.fire_pattern; the operator 2026-11-10: "the bot fired the magnum with a nice scatter
+# and a very rapid repeat and i want that across all these titles"). The rapid repeat is RE6's own and stays: ZR a tick
+# down, a tick up (_trigger: a semi-automatic fires once a press) while the line is on a zombie and the native cooldown
+# (player +0x5AEC) has run out - at the 20 Hz tick that is FIRE_CAP_HZ presses a second, the bot's own ceiling; the game
+# would take more (re6_switch_mods: the magnums' interval 0.8 / 1.2 s / MAGNUM_FIRE_X 24 = 30 / 20 a second, the recoil
+# animation at MAGNUM_SPEED_X 6 - the game's actual shots a second not counted). What the pattern adds is the scatter:
+# every press goes to the next point across his body (combat.CameraDriver: an offset added to aim_point, the lock's and
+# the sticks' target), so the RAM lock's write moves between presses - a move over LOCK_SETTLE marks a redirect and holds
+# the trigger one tick, which is the up tick of the edge anyway. Earned (an enemy's health falling or a kill within
+# earn_s), never within min_cm; the hop is RE6's own lock sweep (SWEEP_SHOTS aimed shots each, then the next one).
+# FIRE_FAMILY: the gun's id (snapshot weapon_id, re6_switch_mods.WEAPON_KIND) -> its family; the automatics (AUTO_IDS)
+# have none. Off: every press at aim_point, as before. Stats fire_pattern_*.
+FIRE_PATTERN = True
+FIRE_CAP_HZ = 10.0                      # the bot's own: a press every second 20 Hz tick (the game's own rate not counted)
+FIRE_FAMILY = {1: "handgun", 2: "handgun", 3: "handgun", 40: "handgun", 4: "shotgun", 5: "shotgun", 6: "shotgun",
+               16: "shotgun", 7: "magnum", 8: "magnum", 9: "rifle", 10: "rifle", 11: "rifle"}
+
+
+def fire_family(p) -> str | None:
+    """The fire pattern's family of the gun in his hand (the player row's weapon_id), None for the automatics."""
+    wid = (p or {}).get("weapon_id")
+    if not isinstance(wid, int) or isinstance(wid, bool) or wid in AUTO_IDS:
+        return None
+    return FIRE_FAMILY.get(wid)
 
 
 def attack_named(e) -> bool:
@@ -2368,7 +2392,11 @@ def combat_profile() -> combat.TitleProfile:
         page_clear_cm=FROZEN_CLEAR_R, idle_aim_s=IDLE_AIM_S,
         # the throw's hook (combat.ThrowPolicy) with RE6's own grenade distances; throw_kinds stays () - RE6's grenades
         # are its own _nade (another branch wires the shared policy in)
-        throw_kinds=(), pack_n=NADE_N, pack_r_cm=NADE_CLUSTER_R, throw_min_cm=NADE_MIN_R, throw_max_cm=NADE_MAX_R)
+        throw_kinds=(), pack_n=NADE_N, pack_r_cm=NADE_CLUSTER_R, throw_min_cm=NADE_MIN_R, throw_max_cm=NADE_MAX_R,
+        fire_pattern=FIRE_PATTERN, fire_style="edge", fire_gap_s=0.0, fire_tick_s=TICK_S, fire_cap_hz=FIRE_CAP_HZ,
+        fire_cap_note="the bot's: an edge every second tick at TICK_S; the game's interval at the magnums' 24x allows "
+                      "20-30 a second (static: re6_switch_mods), the recoil at 6x - shots a second not counted live",
+        family=fire_family)
 
 
 # Threats only (operator 19:09, a frame at low health aiming up at the ceiling with nothing there: "Aiming up for no reason
@@ -2948,6 +2976,40 @@ class Bot:
         self.stats["shots"] += 1
         self.pending.append(now)
         return {"zr"}
+
+    # --- the fire pattern (FIRE_PATTERN: gbox.mercs.core.fire_pattern, the camera driver) ---
+    def _fp_driver(self):
+        d = self.__dict__.get("_fp_drv")
+        if d is None:
+            d = self._fp_drv = combat.fire_driver(combat_profile(), self.stats)
+        return d
+
+    def _fp_offset(self, p, e, now):
+        """The scatter's offset (cm) from e's aim point for this press, or None (no pattern gun, or a pattern error:
+        fire_pattern_error - the aim point as it was)."""
+        try:
+            prof = combat_profile()
+            fam = prof.family(p) if prof.family is not None else None
+            if e is None or combat.fire_spec(prof, fam) is None:
+                return None
+            drv = self._fp_driver()
+            snap = getattr(self, "_snap", None) or {}
+            kills = snap.get("kills")
+            drv.observe(now, snap.get("enemies"), kills=kills if isinstance(kills, int) else None)
+            return drv.offset(prof, fam, e, p["pos"], aim_point(e, p["pos"]), now)
+        except Exception as exc:                                 # noqa: BLE001 - the pattern never costs the shot
+            self.stats["fire_pattern_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            return None
+
+    def _fp_fired(self, p, e, now) -> None:
+        try:
+            prof = combat_profile()
+            fam = prof.family(p) if prof.family is not None else None
+            drv = self._fp_driver()
+            drv.offset(prof, fam, e, p["pos"], aim_point(e, p["pos"]), now, shot=True)
+            drv.fired(now, e.get("ptr", e.get("slot")), fam)
+        except Exception as exc:                                 # noqa: BLE001
+            self.stats["fire_pattern_error"] = f"{type(exc).__name__}: {exc}"[:160]
 
     def _gun_down(self) -> None:
         self.aim_since, self.fire_down, self.ray_key, self.reraised = None, False, None, False
@@ -4136,7 +4198,9 @@ class Bot:
             back = self._stick(self._open_heading(p, live, self.hazard), yaw)
         elif self.survival and near_e is not None:              # low health: away from the nearest as he fires
             back = self._stick(self._open_heading(p, live, (near_e["pos"][0], near_e["pos"][2])), yaw)
-        self._locked = (self._lock(p, tgt, snap, now), tgt.get("ptr", tgt.get("slot")))   # the lock from the raise on
+        self._locked = (self._lock(p, tgt, snap, now,                                   # the lock from the raise on
+                                   scatter=self._fp_offset(p, tgt, now) if FIRE_PATTERN else None),
+                        tgt.get("ptr", tgt.get("slot")))
         if p.get("ammo") == 0:
             self._trigger(False, now)
             empty = getattr(self, "_empty_weapon", None)
@@ -4208,8 +4272,10 @@ class Bot:
         chest = aim_point(tgt, p["pos"])
         yaw_err, pitch_err = ray_error(origin, dot, chest)
         aim_at = on_e or tgt
+        fp_off = self._fp_offset(p, aim_at, now) if FIRE_PATTERN else None   # the scatter across him (FIRE_PATTERN)
         done, done_id = getattr(self, "_locked", (False, None))
-        locked = done if done_id == aim_at.get("ptr", aim_at.get("slot")) else self._lock(p, aim_at, self._snap, now)
+        locked = done if done_id == aim_at.get("ptr", aim_at.get("slot")) else self._lock(p, aim_at, self._snap, now,
+                                                                                          scatter=fp_off)
         if abs(yaw_err) > UNAIM_ERR and on_e is None and not locked:
             line_yaw = heading(dot[0] - origin[0], dot[2] - origin[2])
             px, _, pz = p["pos"]
@@ -4267,7 +4333,14 @@ class Bot:
             self.fire_track[3] = now
         if trig and locked:
             self._aimed_shot(on_e or tgt, now)
-        steer = set() if locked else self._yaw(yaw_err) | self._pitch(pitch_err)
+        if trig and fp_off is not None:
+            self._fp_fired(p, on_e or tgt, now)                  # this press's point in the stats; the next point
+        if not locked and fp_off is not None and on and any(fp_off):
+            ap = aim_point(aim_at, p["pos"])                     # on him: the sticks to the scatter's point
+            sy, spi = ray_error(origin, dot, (ap[0] + fp_off[0], ap[1] + fp_off[1], ap[2] + fp_off[2]))
+            steer = self._yaw(sy) | self._pitch(spi)
+        else:
+            steer = set() if locked else self._yaw(yaw_err) | self._pitch(pitch_err)
         keys = {"zl"} | steer | trig | set(back)
         self._aimctx = {"target": (on_e or tgt).get("ptr", (on_e or tgt).get("slot")), "dist": dist,
                         "yaw_err": yaw_err, "source": source,
@@ -4439,15 +4512,18 @@ class Bot:
             self.lock_w = None
             self.stats["lock_fallbacks"] += 1
 
-    def _lock(self, p, tgt, snap, now, point=None) -> bool:
+    def _lock(self, p, tgt, snap, now, point=None, scatter=None) -> bool:
         """The player camera's yaw onto the camera's line through tgt's aim point (or point), its pitch from that line's
         slope plus the learned correction; written and read back. A sustained actual-ray miss yields to the sticks.
-        True: written this tick (no camera keys); a material redirect must await a new laser sample before firing."""
+        True: written this tick (no camera keys); a material redirect must await a new laser sample before firing.
+        scatter: the fire pattern's offset (dx, dy, dz) added to his aim point (FIRE_PATTERN), the guards unchanged."""
         if tgt is None or not self._lock_ready(snap, now):
             self.lock_w = None
             return False
         ac, cam = snap["aim_cam"], snap["camera"]
         pt, c = (point if point is not None else aim_point(tgt, p["pos"])), cam["pos"]
+        if scatter is not None and point is None:
+            pt = (pt[0] + scatter[0], pt[1] + scatter[1], pt[2] + scatter[2])
         want_yaw = heading(pt[0] - c[0], pt[2] - c[2])
         want_pitch = math.atan2(pt[1] - c[1], max(math.hypot(pt[0] - c[0], pt[2] - c[2]), 1.0))
         if (self.close_threat or self.survival) and point is None:

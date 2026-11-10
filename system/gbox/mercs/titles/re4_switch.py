@@ -765,6 +765,12 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
                                      PHASE_OVER if game["phase"] == "results" else
                                      PHASE_PLAYING if game["phase"] in ROUND_PHASES else None)
         snap["score"], snap["combo"] = game["score"], game["combo"]
+        if FIRE_PATTERN:                                 # the equipped class (the fire pattern's family): one byte
+            try:
+                from . import re4_weapons as _w
+                snap["weapon_class"] = bytes(m.rd(base + _w.GAME_OBJ + _w.G_CLASS, 1))[0]
+            except (ValueError, OSError, TypeError, IndexError, AttributeError):
+                pass
         if 0 <= game["kills"] <= MERC_KILLS_MAX:
             # the game's own kill count (MercSysWk + MW_KILL): live 2026-11-10 04:46-04:47 it read 1, 2, 3, 4 with
             # the score 300, 600, 920, 1220, back to 0 at the Continue's new intro, then 1 .. 6 while the census
@@ -1351,6 +1357,42 @@ HAND_STATE: dict = {}         # its answer: {"seq", "item" (in hand now, None = 
 # Body profiles: enemy class -> a combat.KIND_BODIES name or a combat.Body (cm). Every Ganado is one class (villager,
 # zealot and soldier alike, a heavy too), so his is the default; a class of another shape joins the census first.
 BODY_CLASSES: dict = {}
+# The fire pattern (gbox.mercs.core.fire_pattern; the operator 2026-11-10: "the bot fired the magnum with a nice scatter
+# and a very rapid repeat and i want that across all these titles"). RE4's rapid repeat is already the bot's own: ZR
+# tapped every FIRE_GAP_S, which re4_switch_mods.fire_rate paces to 0.25 s / N (0.05 s, a tap every 20 Hz tick, at the
+# live 20x); the game takes at most FIRE_CAP_HZ (the shot gate waits for the firing motion to cross frame int(FR) - 2,
+# so FR 3.0 at 30 Hz frames is the floor - re4_weapons.RAPID_FIRE_FLOOR, static analysis, not counted live). What the
+# pattern adds is the scatter and the crowd hop, both through the aim RE4 already has:
+#   * the scatter: no pitch here (tank aim), so shot after shot the facing goes to his bearing plus a yaw offset across
+#     his body (combat.TankDriver: up to 0.6 of his half width for a magnum) - by AIM_REQUEST, which the aim lock
+#     (re4_switch_mods.aim_lock, on live) writes into his facing every snapshot; the fire gate stays the body's
+#     half-angle on the bearing error, so a scattered shot is one the gate allowed before. Earned: only within
+#     fire_pattern's earn_s of a hit or a kill - an intro card (no effect) keeps every shot on his chest, so the
+#     NotInControl fire rule sees the unmoving facing it did before;
+#   * the hop: after hop_every taps on one living Ganado, the next goes to one already inside the gun's line cone
+#     within 2.5 m of him, on his level and in the clear - only for the REST picks (FIRE_HOP_WHYS: the crowd's, the
+#     combo's, the nearest), never away from a wind-up, a boss / dangerous one or a grudge.
+# The family of the gun in hand: the game state's equipped class (re4_weapons.G_CLASS, read in snapshot as
+# snap["weapon_class"]; the byte the random weapon writes) through CLASS_FAMILY; an unread class is FIRE_DEFAULT_FAMILY.
+# Off: every shot at his chest, as before (one constant). Stats fire_pattern_*.
+FIRE_PATTERN = True
+FIRE_CAP_HZ = 10.0                       # static: FR 3.0 frames at 30 Hz (the shot gate's floor), not counted live
+FIRE_DEFAULT_FAMILY = "handgun"
+CLASS_FAMILY = {0x01: "handgun", 0x02: "handgun", 0x03: "handgun", 0x04: "handgun", 0x11: "handgun",
+                0x05: "magnum", 0x06: "magnum", 0x0F: "magnum",      # Broken Butterfly, Killer7, Handcannon
+                0x07: "shotgun", 0x08: "shotgun", 0x21: "shotgun",   # Shotgun, Striker, Riot Gun
+                0x09: "rifle", 0x0A: "rifle",
+                0x0B: None, 0x0C: None, 0x0D: None, 0x0E: None, 0x10: None, 0x1C: None, 0x2E: None}   # automatics,
+                                         # launchers, the knife, the bow, the P.R.L.: no pattern
+FIRE_HOP_WHYS = ("crowd fire", "the combo is owed", "the nearest Ganado")   # _choose's REST picks
+
+
+def fire_family(snap) -> str | None:
+    """The fire pattern's family of the gun in his hand (snap["weapon_class"]), FIRE_DEFAULT_FAMILY when unread."""
+    cls = (snap or {}).get("weapon_class")
+    if not isinstance(cls, int) or isinstance(cls, bool):
+        return FIRE_DEFAULT_FAMILY
+    return CLASS_FAMILY.get(cls, FIRE_DEFAULT_FAMILY)
 
 
 def threat_class(e) -> str | None:
@@ -1385,7 +1427,11 @@ def combat_profile() -> combat.TitleProfile:
         page_clear_cm=0.0, idle_aim_s=IDLE_AIM_S,
         throw_kinds=tuple(THROW_ITEMS) if THROWS else (), throw_gap_s=THROW_GAP_S, pack_n=THROW_PACK_N,
         pack_r_cm=THROW_PACK_MM / MM_PER_CM, throw_min_cm=THROW_MIN_MM / MM_PER_CM,
-        throw_max_cm=THROW_MAX_MM / MM_PER_CM, flash_r_cm=THROW_FLASH_MM / MM_PER_CM)
+        throw_max_cm=THROW_MAX_MM / MM_PER_CM, flash_r_cm=THROW_FLASH_MM / MM_PER_CM,
+        fire_pattern=FIRE_PATTERN, fire_style="tap", fire_gap_s=FIRE_GAP_S, fire_tick_s=0.05, fire_cap_hz=FIRE_CAP_HZ,
+        fire_cap_note="static: the shot gate's FR 3.0 floor at 30 Hz frames (re4_weapons); the bot taps every "
+                      "FIRE_GAP_S (0.05 s at fire_rate 20x); magnum classes' own rows not read",
+        family=fire_family)
 
 
 @re4_walk.attach                       # .walker (approach(goal) -> stick keys), snap["nav"], the map's marks, plan()
@@ -1576,6 +1622,52 @@ class Bot:
         self.why = "the nearest Ganado"
         return min(near, key=lambda t: t[0])
 
+    # --- the fire pattern (FIRE_PATTERN: gbox.mercs.core.fire_pattern, the tank driver) ---
+    def _fp(self):
+        d = self.__dict__.get("_fp_driver")
+        if d is None:
+            d = self._fp_driver = combat.fire_driver(combat_profile(), self.stats)
+        return d
+
+    def _fp_aim(self, p, live, dist, err, e, snap, now) -> tuple:
+        """(dist, err, enemy, the yaw offset) for this tick's shot: the hop to a neighbour on the gun's line after
+        hop_every taps on a REST pick, then the scatter's yaw offset on whoever it is. A pattern error never costs the
+        shot: the pick as it was, no offset (fire_pattern_error)."""
+        try:
+            prof, drv = self._profile(), self._fp()
+            fam = prof.family(snap) if prof.family is not None else None
+            if combat.fire_spec(prof, fam) is None:
+                return dist, err, e, 0.0
+            drv.observe(now, snap.get("enemies"), kills=snap.get("kills") if isinstance(snap.get("kills"), int) else None)
+            hits = self.__dict__.get("_hit_at")
+            drv.fp.effect(max(hits.values(), default=-1e9) if isinstance(hits, dict) else None)
+            drv.fp.effect(self.__dict__.get("_kill_at"))
+            rest = isinstance(self.why, str) and self.why.startswith(FIRE_HOP_WHYS)
+            nb = drv.hop(prof, fam, now, p["pos"], e, [t[2] for t in live], locked=not rest)
+            if nb is not None:
+                t = next((t for t in live if t[2] is nb and t[0] <= ENGAGE_RANGE_CM), None)
+                if t is not None and (snap.get("nav") is None and snap.get("obstacles") is None
+                                      or self._line_of_sight_ok(p, nb, snap)):
+                    dist, err, e = t
+                    self.why = f"fire pattern: the hop to the next one on the gun's line ({dist / 1000:.1f} m)"
+            steer, off = drv.aim(prof, fam, e, dist, err, now)
+            return dist, err, e, off
+        except Exception as exc:                         # noqa: BLE001 - the pattern never costs the shot
+            self.stats["fire_pattern_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            return dist, err, e, 0.0
+
+    def _fp_fired(self, e, dist, err, snap, now) -> None:
+        """A tap went out: the shot's point in the stats (scattered / centred / unearned), the scatter's next point."""
+        try:
+            prof, drv = self._profile(), self._fp()
+            fam = prof.family(snap) if prof.family is not None else None
+            if combat.fire_spec(prof, fam) is None:
+                return
+            drv.aim(prof, fam, e, dist, err, now, shot=True)
+            drv.fired(now, e.get("ptr"), fam)
+        except Exception as exc:                         # noqa: BLE001
+            self.stats["fire_pattern_error"] = f"{type(exc).__name__}: {exc}"[:160]
+
     def _turn(self, err: float) -> set:
         # an error > 0 turns LEFT with TURN_SIGN 1: the GameCube RE4 / RE5 convention (the Switch world is the
         # GameCube's data - re4_switch_nav), the one re4_walk uses; _learn_turn checks it on every turn tick.
@@ -1702,9 +1794,12 @@ class Bot:
         pick = self._choose(live, now, p, snap)          # a command never stops a shot at one in range (RE5 HUNT_R)
         if pick is not None:
             dist, err, e = pick
+            fp_off = 0.0                                 # the fire pattern's yaw offset across his body (FIRE_PATTERN)
+            if FIRE_PATTERN and not self.__dict__.get("_pick_blocked"):
+                dist, err, e, fp_off = self._fp_aim(p, live, dist, err, e, snap, now)
             self.target = e.get("ptr")
             if p.get("ptr") is not None and p.get("rot") is not None:
-                AIM_REQUEST.update(ptr=p["ptr"], yaw=wrap((p.get("rot") or 0.0) + err), at=time.monotonic())
+                AIM_REQUEST.update(ptr=p["ptr"], yaw=wrap((p.get("rot") or 0.0) + err + fp_off), at=time.monotonic())
             if self.__dict__.get("_pick_blocked"):
                 fl = self.__dict__.get("_flank")
                 if not fl or fl["key"] != self.target or now >= fl["until"]:
@@ -1742,18 +1837,21 @@ class Bot:
             if abs(err) > tol:
                 self.stats["raises"] += 1
                 self.doing = "aim"
+                aim_err = err + fp_off                       # toward this shot's point on him (0 offset: his bearing)
                 if abs(err) <= AIM_NUDGE:                    # close: a tap of the right stick, not a sweep past him
                     if UNIVERSAL_CORE:
                         self._aim_stick().rest()
-                    return {"hold": {AIM_BTN}, "tap": next(iter(self._aim_turn(err)))}
+                    return {"hold": {AIM_BTN}, "tap": next(iter(self._aim_turn(aim_err)))}
                 if UNIVERSAL_CORE and self._aim_since is not None:
-                    self._aim_stick().observe(now, p.get("rot"), 1 if err > 0 else -1)   # does this stick move it?
-                return {"hold": {AIM_BTN} | self._aim_turn(err)}   # the gun up, the right stick turns the aim
+                    self._aim_stick().observe(now, p.get("rot"), 1 if aim_err > 0 else -1)   # does this stick move it?
+                return {"hold": {AIM_BTN} | self._aim_turn(aim_err)}   # the gun up, the right stick turns the aim
             ready = self._aim_since is not None and now - self._aim_since >= AIM_READY_S
             if not ready or now - self._last_fire < FIRE_GAP_S:
                 self.doing = "aim"
                 return {"hold": {AIM_BTN}}
             self._last_fire = now
+            if FIRE_PATTERN:
+                self._fp_fired(e, dist, err, snap, now)
             self._since_reload += 1
             self.stats["shots"] += 1
             n = self.stats["shots"]
