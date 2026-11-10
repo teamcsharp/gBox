@@ -1581,6 +1581,13 @@ def re5_mods(inp: RE5ModsIn, ctx):
                 status = result.get("status", result)
             return {"result": {"verified": True, "title": title, "view": view, "status": status}}
         return {"result": view}
+    from .mercs.titles import merc3d_mods as M3     # Mercenaries 3D (3DS): its own ops
+    if M3.is_merc3d(g):
+        result = M3.run(ad, inp.op, inp.multiplier, inp.on,
+                        **({"seconds": inp.seconds} if inp.seconds is not None else {}))
+        if result.get("verified") is True and (inp.op or "status") != "status":
+            result = {**result, "status": M3.run(ad, "status")}
+        return {"result": result}
     if is_switch_re4(g):                                 # RE4 on Switch: its own ops
         from .mercs.titles import re4_switch_mods as R4
         result = R4.run(ad, inp.op, inp.multiplier, inp.on,
