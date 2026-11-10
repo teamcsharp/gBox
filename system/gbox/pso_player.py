@@ -367,7 +367,7 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
         # draws garbage. Every node keeps its vertex chunks, the character's vertices follow from cache slot vbase,
         # and only the strips change.
         models = {}
-        empty_pl = struct.pack("<HH", 0xFF, 0)
+        empty_pl = struct.pack(e + "HH", 0xFF, 0)          # the end-of-list marker follows the container endianness
         for j, nd in enumerate(nodes):
             keep = keep_vl(nd)
             if j in geo:
