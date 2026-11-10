@@ -66,3 +66,24 @@ def test_the_region_kinds_are_contiguous_and_cover_the_file(disc):
     assert regs[-1]["offset"] + regs[-1]["length"] == len(data)
     kinds = {r["kind"] for r in regs}
     assert kinds <= {"indices", "floats", "raw"}
+
+
+def test_the_vertex_arrays_are_found_by_signature_and_fit_the_index_max(disc):
+    """The fmt2 offset 0x3834 is not a contiguous vertex array; the real ones are found by the float-triple signature."""
+    data = disc.read("Scene/map_aancient01_00n.rel")
+    runs = N.vertex_runs(data)
+    assert runs, "no vertex run found"
+    assert runs[0]["count"] == 1313 and runs[0]["offset"] == 0x527F4
+    assert runs[1]["count"] == 1041 and runs[1]["offset"] == 0x90078
+    index_max = max(v for r in N.index_runs(data) for v in r["values"])
+    assert index_max == 1036
+    assert index_max < runs[1]["count"]            # the indices address the 1,041-vertex array
+
+
+def test_a_vertex_run_decodes_to_points(disc):
+    data = disc.read("Scene/map_aancient01_00n.rel")
+    run = N.vertex_runs(data)[1]
+    pts = N.vertices(data, run)
+    assert len(pts) == 1041
+    assert all(abs(c) <= 10000 for p in pts for c in p)
+    assert len(set(pts)) > 100                     # not a degenerate array of repeats

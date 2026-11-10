@@ -168,3 +168,32 @@ contiguity/coverage of the regions.
 `map_aancient01_00n.rel`, since Forest 1's own `n.rel` is Dreamcast-side per CP7.3) and the triangle count compared against
 `c.rel`'s footprint ✓ (12,896 vs 11,549). What is still not done is turning the float regions into **named vertices** - the
 positions are located and round-tripped, not yet interpreted into a mesh with a vertex/index correspondence.
+
+## Round 72: the vertex arrays found by signature (the fmt2 offset was a decoy)
+
+The fmt2 header's offset `0x3834` looked like a vertex array (`0x3420` = 13,344 bytes = 1,112 x 12), but it is **not**
+contiguous: only **76** float triples are plausible from `0x383c` before non-float data (the scan stops at `0x3bcc`), and
+decoding 1,112 triples from there produces astronomically large coordinates.
+
+Scanning the **whole file** for the real signature - three consecutive finite floats with `|v| <= 10,000` at 12-byte
+positions - finds the arrays:
+
+| run | vertices | offset |
+|---|---|---|
+| 1 | **1,313** | `0x527f4` |
+| 2 | **1,041** | `0x90078` |
+| 3 | 796 | `0x5799c` |
+| 4 | 605 | `0x940a4` |
+| 5 | 543 | `0xaa64c` |
+
+**And the cross-check lands:** the index runs' maximum index is **1,036**, which fits the **1,041-vertex** array at
+`0x90078` - the indices address that array. So CP6.2 now has *both* halves of a mesh: 12,896 triangles whose indices are
+bounded by a real vertex array of 1,041 points.
+
+**New in `gbox/pso_nrel.py`:** `vertex_runs(data)` (the signature scan, largest first) and `vertices(data, run)` (the
+points). Tests in `tests/test_pso_nrel.py` now **8 passed** - the run offsets/counts, the index max 1,036 < 1,041, and the
+point decoding (all coordinates in range, no degenerate repeats).
+
+**What remains for a full mesh:** the *correspondence* - which index run belongs to which vertex array (the file holds
+several of each, and the pairs must be matched, probably by each run's position relative to its array). That is a
+per-record pairing problem, not a decoding one.

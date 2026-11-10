@@ -121,3 +121,31 @@ def roundtrip(data: bytes, **kw) -> tuple[bytes, dict]:
         else:
             parts.append(chunk)
     return b"".join(parts), totals
+
+
+# ---------------------------------------------------------------- vertex arrays
+def vertex_runs(data: bytes, *, limit: float = 10000.0, min_run: int = 64) -> list[dict]:
+    """Runs of three consecutive plausible floats (|v| <= limit, finite) at 12-byte positions.
+
+    The fmt2 header's own offset (0x3834) is *not* a contiguous vertex array: only 76 float triples are contiguous
+    there before non-float data. The real arrays are found by this signature - the longest is **1,313 vertices at
+    0x527f4**, then **1,041 at 0x90078**, and the index runs' maximum (1,036) fits the 1,041 one exactly. Returns
+    [{offset, count}] largest first.
+    """
+    import numpy as np
+    words = np.frombuffer(data[: len(data) // 4 * 4], dtype=">f4")
+    ok = np.isfinite(words) & (np.abs(words) <= limit)
+    n = (len(words) // 3) * 3
+    slots = ok[0:n:3] & ok[1:n:3] & ok[2:n:3]
+    edges = np.concatenate(([-1], np.flatnonzero(~slots), [len(slots)]))
+    lens = np.diff(edges) - 1
+    runs = []
+    for i, length in enumerate(lens):
+        if length >= min_run:
+            runs.append({"offset": int(edges[i] + 1) * 12, "count": int(length)})
+    return sorted(runs, key=lambda r: -r["count"])
+
+
+def vertices(data: bytes, run: dict) -> list[tuple]:
+    """The (x, y, z) points of a run returned by :func:`vertex_runs`."""
+    return [struct.unpack_from(">3f", data, run["offset"] + 12 * i) for i in range(run["count"])]
