@@ -412,3 +412,13 @@ def test_a_load_prompt_reading_without_the_list_before_it_is_not_the_prompt(monk
     r.read(b"")
     monkeypatch.setattr(S, "classify", lambda _png: {"where": "story_prompt", "prompt": "load"})
     assert r.read(b"") == {"where": "story_prompt", "prompt": "load"}
+
+
+
+def test_after_yes_no_save_list_press_until_the_main_menu_settles():
+    """Live 2026-11-10 22:55: a second A 0.8 s after Yes landed on the main menu's LOAD and went straight back in."""
+    D.begin_run()
+    now = 200.0
+    assert D.step({"where": "story_prompt", "prompt": "cancel", "cursor": "yes"}, now) == "a"
+    assert D.step({"where": "story_prompt", "prompt": "cancel", "cursor": "yes"}, now + 1.0) is None
+    assert D.step({"where": "story"}, now + 2.0) is None

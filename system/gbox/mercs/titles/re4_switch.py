@@ -669,6 +669,7 @@ STORY_UP_KEY = "dup"                 # Cancel loading?'s cursor up to Yes
 STORY_RECOVER_MAX = 4
 STORY_GAP_S = 2.0
 STORY_ANSWER_GAP_S = 0.8
+STORY_LEAVE_S = 4.0                  # after Yes: no press until the main menu has settled
 _story_presses = 0
 _story_last = float("-inf")          # a fresh walk may cancel straight away
 
@@ -692,7 +693,9 @@ def _story_answer(key: str, now: float | None = None) -> str | None:
     now = time.monotonic() if now is None else now
     if now - _story_last < STORY_ANSWER_GAP_S:
         return None
-    _story_last = now
+    # the A on Yes leaves LOAD for the main menu, whose cursor opens on LOAD: a second A in the next seconds goes
+    # straight back in (live 2026-11-10 22:55, frames 0.4 s apart: Yes, black, LOAD highlighted, black, the list)
+    _story_last = now + (STORY_LEAVE_S if key == "a" else 0.0)
     return key
 
 
