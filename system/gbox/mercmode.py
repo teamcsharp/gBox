@@ -96,6 +96,12 @@ PREPARE_FEATURE = 'mercmode_prepare'    # worker feature: autoplay op=prepare dr
 WARM_MIN_FREE_BYTES = 8 * 1024**3       # memory guard: an extra emulator needs this much free RAM on the host ...
 WARM_MAX_MEMORY_PERCENT = 80            # ... and the host under this much used, both measured in the last 30 s
 QUEUE_MAX = 20
+# a queue entry's purpose (queue_entry): 'donor_swap' = the operator's "this character's model is broken: swap it"
+# (gbox.donor_swap). A purpose entry is let through at the next round boundary before rounds_per_title is reached
+# (operator 2026-11-10: "unless these launches have purposes, i want to see at least 5 matches per title"), plays
+# once even in a repeating playlist, and does not count toward QUEUE_MAX (at most PURPOSE_MAX wait at once).
+PURPOSES = ('donor_swap',)
+PURPOSE_MAX = 3
 # Dispatch from the app (operator 2026-10-27: "i want to be able to dispatch autoplay titles happening on different instance
 # of gbox from gbox. So the first request is to play mercenaries 3d on that computer pip mode"): POST /api/mercmode with a
 # command starts, stops or switches MercMode on any PC, and "pip" asks that PC's app to show its own run in its PiP.
@@ -189,7 +195,8 @@ def normalize(patch, current=None):
             or any(t not in TITLES for t in out['titles']) or len(set(out['titles'])) != len(out['titles']):
         raise ValueError('Choose distinct titles from re4, re5, re6, re3 and merc3d')
     out['queue'] = [queue_entry(e, out) for e in (out.get('queue') or [])]
-    if len(out['queue']) > QUEUE_MAX:
+    if sum(1 for e in out['queue'] if not e.get('purpose')) > QUEUE_MAX \
+            or sum(1 for e in out['queue'] if e.get('purpose')) > PURPOSE_MAX:
         raise ValueError(f'The MercMode queue holds at most {QUEUE_MAX} rounds')
     mods = out.get('default_mods') or {}
     if not isinstance(mods, dict):
@@ -228,10 +235,17 @@ def queue_entry(entry, cfg=None):
     ... and see the queue ahead"): {title, mode, character, stage}; mode / character / stage None = random.
     An optional `mod` names a build (a LayeredFS overlay of the title) that this round plays with. cfg: the host's
     settings (catalog: the edition it plays)."""
-    if not isinstance(entry, dict) or set(entry) - {'title', 'mode', 'character', 'stage', 'mod'} or entry.get('title') not in TITLES:
-        raise ValueError('A queued round needs a known title and only mode, character, stage and mod')
+    if not isinstance(entry, dict) or set(entry) - {'title', 'mode', 'character', 'stage', 'mod', 'purpose'} \
+            or entry.get('title') not in TITLES:
+        raise ValueError('A queued round needs a known title and only mode, character, stage, mod and purpose')
     title = entry['title']
     out = {'title': title, 'mode': entry.get('mode'), 'character': entry.get('character'), 'stage': entry.get('stage')}
+    if entry.get('purpose') is not None:
+        # a round queued for a reason (the operator's donor swap, gbox.donor_swap): it plays at the next round
+        # boundary even before rounds_per_title is reached, and a repeating playlist plays it once, not again
+        if entry['purpose'] not in PURPOSES:
+            raise ValueError('A queued round purpose is one of ' + ', '.join(PURPOSES))
+        out['purpose'] = entry['purpose']
     mod = entry.get('mod')
     if mod is not None:
         # one cache-folder component, and it must name something: '.', '..' or '---' are refused
@@ -268,6 +282,8 @@ def resolve_selection(entry, rng, cfg=None):
            'stage_name': known['stages'][stage]}
     if entry.get('mod'):
         out['mod'] = entry['mod']            # the DJ's build for this round (a LayeredFS overlay of the title)
+    if entry.get('purpose'):
+        out['purpose'] = entry['purpose']
     return out
 
 
@@ -323,7 +339,7 @@ def pop_queue(store, host):
     cfg = settings(store, host)
     if cfg['queue']:
         tail = cfg['queue'][1:]
-        if cfg['repeat_queue']:
+        if cfg['repeat_queue'] and not cfg['queue'][0].get('purpose'):    # a purpose round plays once
             tail += cfg['queue'][:1]
         store.put(SETTING, host, cfg | {'queue': tail})
 
@@ -1094,16 +1110,24 @@ def same_build(cfg, head_mod, run_mod, run=None):
     return bool((run or {}).get('blueprint_fallback')) and run_mod == head_mod
 
 
-def default_mod(cfg, row):
-    """The configured build for this round's title (a DJ queue `mod` for that round still wins), then the build's
-    blueprint companion when blueprint_look is on (effective_mod)."""
+def default_mod(cfg, row, supersede=None):
+    """The configured build for this round's title (a DJ queue `mod` for that round still wins), then the variant
+    that superseded that build (`supersede`: gbox.donor_swap.resolve - the operator's donor swap replaced it for
+    good), then the build's blueprint companion when blueprint_look is on (effective_mod)."""
     mod = (cfg.get('default_mods') or {}).get(row.get('title'))
     selection = dict(row.get('selection') or {})
     if mod:
         selection.setdefault('mod', mod)
     if selection.get('mod'):
-        selection['mod'] = effective_mod(cfg, selection['mod'])
+        selection['mod'] = effective_mod(cfg, supersede(selection['mod']) if supersede else selection['mod'])
     return row | {'selection': selection} if selection else row
+
+
+def build_resolver(store, game_id):
+    """mod -> the build that plays for it now on this game (gbox.donor_swap.resolve), for default_mod and the
+    round boundary's same-build test."""
+    from . import donor_swap
+    return lambda mod: donor_swap.resolve(store, game_id, mod)
 
 
 def choose(store, worker, rng, cfg=None):
@@ -1116,12 +1140,14 @@ def choose(store, worker, rng, cfg=None):
         if row:
             return _picked(store, worker, default_mod(cfg, row | ({'selection': ahead['selection']}
                                                                   if ahead.get('selection') else {})
-                                                      | ({'_queue_pending': True} if ahead.get('_queue_pending') else {})))
+                                                      | ({'_queue_pending': True} if ahead.get('_queue_pending') else {}),
+                                                      build_resolver(store, row['game_id'])))
     head = (cfg.get('queue') or [None])[0]
     queued = next((r for r in rows if head and r['playable'] and r['title'] == head['title']), None)
     if queued:                                   # the DJ's next round comes first, even for an unchecked title
         return _picked(store, worker, default_mod(cfg, queued | {'selection': resolve_selection(head, rng, cfg),
-                                                                 '_queue_pending': True}))
+                                                                 '_queue_pending': True},
+                                                  build_resolver(store, queued['game_id'])))
     pool = [r for r in rows if r['playable'] and r['title'] in cfg['titles']]
     history = store.get(HISTORY, worker['name']) or {}
     fresh = [r for r in pool if r['game_id'] != history.get('last_game_id')] or pool
@@ -1129,8 +1155,8 @@ def choose(store, worker, rng, cfg=None):
         return None
     picks = store.get(PICKS, worker['name']) or {}            # the rotation: the title picked longest ago (never = first)
     oldest = min(picks.get(r['title'], 0) for r in fresh)
-    return _picked(store, worker, default_mod(
-        cfg, rng.choice([r for r in fresh if picks.get(r['title'], 0) == oldest])))
+    row = rng.choice([r for r in fresh if picks.get(r['title'], 0) == oldest])
+    return _picked(store, worker, default_mod(cfg, row, build_resolver(store, row['game_id'])))
 
 
 def successor_autoplay(run, job, original):

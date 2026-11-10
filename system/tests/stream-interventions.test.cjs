@@ -212,3 +212,26 @@ test('late ring capability read cannot send to the next session; concurrent clic
   releases[1]({available:true,capabilities:['grenade_ring'],options:{}});releases[0]({available:true,capabilities:['grenade_ring'],options:{}});
   await ringSettled();assert.deepEqual(f.calls,[['re6','flash'],['re6','flash']]);f.control.dispose();
 });
+test('model swap: one UUID per click, honest states from the control plane, refusals shown',async()=>{
+  const {bindModelSwap,swapText}=require('../clients/web/viz/stream-interventions.js');
+  const calls=[],timers=[];let listener=null;
+  const button={dataset:{},attrs:{},title:'',textContent:'',disabled:false,addEventListener(t,f){listener=f;},removeEventListener(){},
+    setAttribute(k,v){this.attrs[k]=v;}};
+  const status={textContent:''};
+  let state={state:'queued',session_id:'pc-1',variant:'X-fix1',rejected:[{donor:'sm64ds_mario'}]};
+  const api=async(path,body)=>{calls.push([path,body]);if(body&&body.request_id==='refuse')throw Error('not a donor build');return {swap:{...state}};};
+  let id=0;const c=bindModelSwap(button,{api,sid:()=> 'pc-1',uuid:()=>['u1','refuse'][id++],schedule:(fn)=>{timers.push(fn);return timers.length;},cancel:()=>{},status});
+  await new Promise(r=>setImmediate(r));
+  calls.length=0;
+  await listener({preventDefault(){},stopPropagation(){}});
+  assert.deepEqual(calls,[['/api/sessions/pc-1/donor-swap',{request_id:'u1'}]]);
+  assert.match(status.textContent,/queued \(sm64ds_mario out\)/);assert.equal(button.disabled,true);
+  state={...state,state:'ready',message:'plays next round: chris_bsaa sm64ds_mario -> melee_marth'};
+  await timers.pop()();
+  assert.equal(calls.at(-1)[1],undefined);                      // a poll reads, it never re-sends the swap
+  assert.match(status.textContent,/plays next round: chris_bsaa sm64ds_mario -> melee_marth/);assert.equal(button.disabled,false);
+  await listener({preventDefault(){},stopPropagation(){}});
+  assert.match(status.textContent,/Model swap refused: not a donor build/);
+  assert.equal(swapText({state:'failed',error:'X-fix1 already exists'}),'Model swap failed: X-fix1 already exists');
+  c.dispose();
+});

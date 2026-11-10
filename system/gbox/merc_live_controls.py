@@ -72,9 +72,13 @@ ALLOWED = {
     "detonate": {"session_id", "op"},                    # RE6 Switch: his remote bombs set off now, by the hook
     "bomb_detonate": {"session_id", "op"},               # (the same: the operator's name for it, 2026-11-10)
     "bomb_drop": {"session_id", "op"},                   # RE6 Switch: a remote bomb down at his feet, placed and armed
+    # "this character's model is broken: swap it" (gbox.donor_swap): the round's donor goes on the reject list and the
+    # build without it plays from the next round boundary; `enemy` also swaps an enemy class (or one enemy donor)
+    "model_swap": {"session_id", "op", "request_id", "enemy"},
 }
 DETONATE_TITLES = {"re6"}
 BOMB_OPS = {"detonate": "detonate", "bomb_detonate": "detonate", "bomb_drop": "bomb_drop"}   # op -> the worker's op
+CLICKS = ("flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "grenade_scatter", "set_infinite_ammo", "model_swap")
 GRENADE_RING_KINDS = ("flash", "hand", "incendiary")
 GRENADE_SCATTER_KINDS = ("random",) + GRENADE_RING_KINDS
 SCHEMA = {"type": "object", "additionalProperties": False,
@@ -84,6 +88,7 @@ SCHEMA = {"type": "object", "additionalProperties": False,
               "value": {"type": ["number", "boolean"]}, "request_id": {"type": "string"},
               "enabled": {"type": "boolean"},
               "item": {"type": "integer", "minimum": 1, "maximum": 255},
+              "enemy": {"type": "string", "maxLength": 80},
               "kind": {"type": "string", "enum": list(GRENADE_SCATTER_KINDS)}},
           "required": ["session_id"]}
 
@@ -99,7 +104,7 @@ def validate_request(args):
         raise ValueError("invalid session_id")
     if op == "set" and (not isinstance(args.get("control"), str) or "value" not in args):
         raise ValueError("set needs control and value")
-    if op in ("flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "grenade_scatter", "set_infinite_ammo"):
+    if op in CLICKS:
         import uuid
         try:
             uuid.UUID(args.get("request_id", ""))
@@ -109,6 +114,9 @@ def validate_request(args):
         raise ValueError("invalid primary weapon item")
     if op == "set_infinite_ammo" and type(args.get("enabled")) is not bool:
         raise ValueError("infinite ammo needs an explicit boolean enabled value")
+    if op == "model_swap" and "enemy" in args and (not isinstance(args["enemy"], str) or not args["enemy"]
+                                                   or len(args["enemy"]) > 80):
+        raise ValueError("enemy names one enemy class or donor of the round's build")
     if op == "grenade_ring" and "kind" in args and args["kind"] not in GRENADE_RING_KINDS:
         raise ValueError("invalid grenade ring kind")
     if op == "grenade_scatter" and "kind" in args and args["kind"] not in GRENADE_SCATTER_KINDS:
@@ -197,6 +205,7 @@ class Controls:
             raise ValueError("The active MercMode run changed or is waiting. Refresh the stream controls.")
         return {"session_id": sid, "worker_id": wid, "title": row.get("title", ""),
                 "game_id": row.get("game_id"), "adapter": row.get("adapter"),
+                "model_swap": (host or {}).get("donor_swap"),
                 "controls_title": SWITCH.get(row.get("game_id")) if row.get("adapter") in ("citron", "eden") else None}
 
     async def check_run(self, ctx):
@@ -276,12 +285,22 @@ class Controls:
         intervention = await self.get(f"/api/sessions/{quote(sid, safe='')}/interventions")
         result = {"session": ctx, "session_id": sid, "worker_id": ctx["worker_id"], "title": ctx["title"],
                   "available": bool(ctx["controls_title"] or intervention.get("available") and intervention.get("capabilities")),
-                  "controls": [], "interventions": intervention}
+                  "controls": [], "interventions": intervention,
+                  # the newest donor swap of this PC: queued, building, ready (plays next round), playing or failed
+                  "model_swap": ctx.get("model_swap")}
+        if op == "model_swap":
+            await self.check_run(ctx)  # the click is for this round's build, never the next title's
+            body = {"request_id": args["request_id"], **({"enemy": args["enemy"]} if args.get("enemy") else {})}
+            out = await self.post(f"/api/sessions/{quote(sid, safe='')}/donor-swap", body)
+            swap = (out or {}).get("swap") or {}
+            result["model_swap"] = swap
+            result["action"] = {"state": swap.get("state"), "message": swap.get("message"), "swap": swap}
+            return result
         if not ctx["controls_title"]:
             result["reason"] = "This game's worker has no live behavior sliders; native actions appear when supported."
         cached = self.cache.get(sid, {})
         result["controls"] = control_inventory(ctx["controls_title"], cached.get("view", {}), cached.get("status", {}))
-        if op in ("flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "grenade_scatter", "set_infinite_ammo"):
+        if op in CLICKS:
             await self.check_run(ctx)  # reject a handover between the capability read and click
             body = {"op": op, "request_id": args["request_id"]}
             if op == "equip_primary":

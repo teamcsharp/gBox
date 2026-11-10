@@ -607,7 +607,8 @@ def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, se
               slots: tuple = tuple(CAST), history: list | tuple = (), avoid_last: int = 3,
               games: list[str] | None = None, exclude: dict[str, str] | None = None,
               atlas_size=(1024, 1024), max_vertices: int = 12000, name: str | None = None,
-              assignment: dict[str, str] | None = None, opaque_atlas: bool = True) -> dict:
+              assignment: dict[str, str] | None = None, opaque_atlas: bool = True,
+              rejects: dict[str, str] | None = None) -> dict:
     """Deal library donors to the Mercenaries player slots from a seed (`re5_donor_pool.plan`, the RE5 rule) and
     write one overlay: every dealt pack and its grown archive under `out/romfs/bio4/...`, plus `receipt.json`.
 
@@ -616,17 +617,21 @@ def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, se
     outcome follows from the seed, the donors, the history and `exclude` alone (as `re5_cast_writer.pool_cast`).
     `assignment` pins the deal ({slot: slug}, an earlier receipt's): nothing is dealt and a refusal is an error, so
     a pool is rebuilt with the same donors. `opaque_atlas` uploads each atlas through `finish_atlas`.
+    `rejects` ({slug: reason}, default: RE4's entries of gbox.donor_rejects, the donors out of proportion on the
+    native rig) are never dealt; a pinned assignment still rebuilds them (a fit fix is verified on the same donors)
+    and the receipt names them under `rejected_but_pinned`.
     """
-    from . import re5_donor_pool
+    from . import donor_rejects, re5_donor_pool
 
     em_dir, imagepack_dir, library, out = Path(em_dir), Path(imagepack_dir), Path(library), Path(out)
     if (out / "receipt.json").exists():
         raise ModelError(f"{out} already holds an overlay; candidates are never overwritten")
-    refused: dict[str, str] = dict(exclude or {})
+    listed = donor_rejects.rejected("re4") if rejects is None else dict(rejects)
+    pinned = dict(assignment) if assignment else None
+    refused: dict[str, str] = dict(exclude or {}) | ({} if pinned else listed)
     pool = list(donors)
     by_slug = {d.slug: d for d in pool}
     slot_names = list(assignment) if assignment else list(slots)
-    pinned = dict(assignment) if assignment else None
     if pinned:
         unknown = [f"{slot} <- {slug}" for slot, slug in pinned.items() if slot not in CAST or slug not in by_slug]
         if unknown:
@@ -679,6 +684,8 @@ def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, se
                         "history": [dict(row) if isinstance(row, dict) else list(row) for row in history],
                         "pool_size": len(pool), "max_vertices": max_vertices, "set_aside": dict(refused),
                         "pinned_assignment": bool(pinned), "opaque_atlas": opaque_atlas,
+                        "donor_rejects": len(listed),
+                        "rejected_but_pinned": sorted(s for s in (pinned or {}).values() if s in listed),
                         "rule": "re5_donor_pool.plan: a donor at most once, recently used donors last, franchises in turn"},
                "assignment": assignment, "slots": rows,
                "role_bones": {"hip": ROLE_BONES["hip"], "note": "hip on bone 0 (the root), as the published Leon "
