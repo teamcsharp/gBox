@@ -148,7 +148,23 @@ def _apply(title, stage, stats, base):
     except Exception as exc:                 # noqa: BLE001 - the operator's settings never stop a round
         if stats is not None:
             stats['bot_logic_error'] = f'{type(exc).__name__}: {exc}'[:160]
+    try:                                     # the operator's strategy stack: read each round (hot), recorded for the bots
+        from . import strategy
+        if str(title).lower() in strategy.STRATEGIES:
+            stack = strategy.apply_saved(title)
+            _state.setdefault(title, {})['strategy'] = stack
+            if stats is not None and stack:
+                stats['strategy'] = ','.join(f'{k}={v["intensity"]:g}' for k, v in
+                                             sorted(stack.items(), key=lambda kv: kv[1]['order']) if v['enabled'])
+    except Exception as exc:                 # noqa: BLE001 - the operator's settings never stop a round
+        if stats is not None:
+            stats['strategy_error'] = f'{type(exc).__name__}: {exc}'[:160]
     return applied
+
+
+def strategy_stack(title) -> dict:
+    """The strategy stack in force this round ({name: {enabled, intensity, order}}); {} before any round."""
+    return dict((_state.get(title) or {}).get('strategy') or {})
 
 
 def steer(title, pos, heading, dist) -> float:
