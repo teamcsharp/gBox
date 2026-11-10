@@ -819,3 +819,18 @@ from the material resource's texture references, then feed `swap_arc(..., group=
 
 Delivered this round: **`switch_decrypt` op `arc-list`** - an ARC's entries with name/size/hash/tag through
 `gbox.mt_arc`; verified on `uEm5200.arc` (319 entries). Tests: 6 pass in the tool suite.
+
+## Round 35 status (2026-11-09, ~22:40 CST): RE6 character swaps are whole-model swaps - and one ran live
+
+* **The BM/MM/NM texture-group model does not apply to RE6 player arcs.** `uPl00LeonUsa.arc` (113 entries) is mostly
+  effects (`effect\efl\pl\pl0000` x52) and sounds, with only four `\model\` entries named `pl0000` (sizes 99 / 389103 /
+  514 / 50) and no `_BM/_MM/_NM` names. The character's skin is carried by the **model payload**, not by map groups.
+* **The working mechanism is `gbox.model_swap.swap_models(slot, donor)`** - it replaces the slot's model payloads (it
+  reported `meshes` = `data\chara\pl\pl0000\model\pl0000`, `effect\mod\000c\md000c_02`, `effect\mod\008c\md008c`) and
+  returns the patched archive in `data`.
+* Built `recovery-re6-leon-as-chris-20261109` (the update ExeFS + Leon's body arc carrying Chris's model) and ran it:
+  character select -> round, **live** at `01'26"55`, `000/150`, the player model rendering normally in frame
+  (`chris-live.jpg`) - no broken mesh, unlike the re-encoded donor artifacts.
+* So the mercmode `skin_swap`/`cast_swap` path for RE6 should use `swap_models` (whole character models), not the
+  `swap_arc` texture-group heuristic. `skin_swap.random_swap_build` needs an RE6 branch that calls `swap_models` and
+  writes the patched arc as the overlay.
