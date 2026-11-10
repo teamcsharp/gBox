@@ -212,3 +212,22 @@ z -0.04..22.59) match the rigged candidate's (x -7.92..9.02, y -11.71..6.04, z -
 The lesson is worth recording for the rest of the program: **a render is only as good as the export feeding it**, and
 `ninja.NJ`'s snapshot is load-bearing for any multi-node body. A regression test for that (two nodes reusing a cache base)
 is the follow-up on this branch.
+
+## Round 83: the snapshot regression test that round 82's correction called for
+
+`tests/test_pso_nj_snapshot.py` (**1 passed**) builds a real two-node `NJCM` with `ninja.cnk_model_lists` and
+`ninja.write_tree` - the same writers the swap uses - forcing both nodes onto **cache base 5** with different positions, and
+asserts the three facts that make the render trustworthy:
+
+1. the tree has **2 bones**;
+2. the **final cache holds only the last writer's** positions (`(10, 20, 30)` present, `(1, 2, 3)` gone) - the reuse that
+   broke the round-81 export;
+3. the **triangles still see both nodes' own vertices** through their per-corner snapshots (`(1, 2, 3)` and `(10, 20, 30)`
+   both present).
+
+Getting there needed one detail worth remembering: `ninja.write_tree` takes `child`/`sibling` as **indices** into the node
+list, not offsets, so an unlinked second node silently disappears (the first run parsed one bone).
+
+This closes CP12's offline work: gate safe, candidate render clean, game-body render clean, and now the parser invariant that
+makes that render meaningful is pinned by a test. The remaining accept line is the character-select frame, which needs the
+CP4 window.
