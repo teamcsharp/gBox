@@ -4933,7 +4933,7 @@ class Bot:
         return {"hold": ("lup",) + self._turn(err, 0.2)}
 
     # --- exploring by the doors he knows (DOOR_EXPLORE above) -------------------------------------------------------
-    def _explore(self, p, flat, snap, now) -> dict | None:
+    def _explore(self, p, flat, snap, now, early=False) -> dict | None:
         """DOOR_EXPLORE above: with nobody to fight, the doors / windows / ledges seen on this stage, one after another.
         None when there is somebody to fight (or not yet known), no door left to go to, or the operator's mark is in
         force: his play as before."""
@@ -4946,7 +4946,9 @@ class Bot:
         k = snap.get("kills")
         if type(k) is int and k != kw["kills"]:
             kw["kills"], kw["at"] = k, now
-        if census:
+        if census and early:                             # (the locate's: the only census is off his floor, no way known)
+            reason = f"the {len(census)} Majini on another floor, no way up or down known: a door / ledge, not the wall"
+        elif census:
             if now - kw["at"] < DOOR_EXPLORE_S \
                     or any(flat(e) <= DOOR_FIGHT_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in census):
                 self._explore_st = None
@@ -7175,6 +7177,14 @@ class Bot:
             if spots:
                 best = min(spots, key=lambda q: flat(q) + math.hypot(q[0] - tx, q[2] - tz))
                 goal, how = (best[0], best[1], best[2]), f"by the {(best[3] if len(best) > 3 else None) or 'way'} he knows here"
+            elif not (self.__dict__.get("_mroute") or {}).get("pts") and self.stats.get("wall_hits", 0):
+                # no route, no known way, and the straight line to a Majini a floor away runs into the stage's walls
+                # (request #5665: wall_hits 11, 3 failed recoveries, 280 of 300 s idle): the doors' exploration now
+                # instead of waiting DOOR_EXPLORE_S for it
+                act = self._door_safe(self._explore, p, flat, snap, now, True)
+                if act is not None:
+                    self.stats["locate_explores"] = self.stats.get("locate_explores", 0) + 1
+                    return act
         self._goal_dy = dy
         self.doing = "walk"
         self.why = (f"locating: the nearest Majini {d / 100:.0f} m off"
