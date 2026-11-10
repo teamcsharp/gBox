@@ -329,6 +329,17 @@ class Screensaver:
                     have.add(gid)
         return games
 
+    def _runnable(self, w, games: list[dict]) -> list[dict]:
+        """The demo / roulette games this PC runs: none whose platform its excluded_platforms lists (operator 2026-11-10:
+        no PS3 / Xbox work on the Spark). The screensaver plays another game there instead of failing a launch; the
+        same games stay in the pool of a PC that runs them."""
+        from . import platform_exclusion
+        excluded = platform_exclusion.of_worker(w)
+        if not excluded:
+            return games
+        return [g for g in games
+                if platform_exclusion.game_platform(self.store.catalog_get(g["game_id"]) or {}) not in excluded]
+
     # --- schedule ---
     def tick(self, now: float | None = None) -> dict:
         now = time.time() if now is None else now
@@ -520,7 +531,8 @@ class Screensaver:
             if resumed:
                 return resumed
         g = ({'game_id': merc_pick['game_id'], 'title': merc_pick['name']} if merc_pick else None) \
-            if merc_cfg['enabled'] else choose([x for x in self.games(cfg) if x["game_id"] not in mercmode.replaced_editions(merc_cfg)],
+            if merc_cfg['enabled'] else choose(self._runnable(w, [x for x in self.games(cfg)
+                                                                  if x["game_id"] not in mercmode.replaced_editions(merc_cfg)]),
                                                self._recent(), now, self.rng, cfg["games"])
         game = g and self.store.catalog_get(g["game_id"])
         if not game:
@@ -2006,11 +2018,21 @@ def install(app, store, config, auth, submit, workers, archive):
             out[f["game_id"]] = {"game_id": f["game_id"], "title": f.get("title") or f["game_id"], "favorite": True}
         return [c for c in out.values() if not cfg["games"] or c["game_id"] in cfg["games"]]
 
+    def roulette_skip(game) -> str | None:
+        """Why the roulette's Linux build nodes build nothing for this game: every online one excludes its platform."""
+        from . import platform_exclusion
+        nodes = [w for w in workers() if w.get("online") and w.get("os") == "linux"
+                 and "characters" in (w.get("tools") or [])]
+        plat = platform_exclusion.game_platform(game)
+        if nodes and plat and all(plat in platform_exclusion.of_worker(w) for w in nodes):
+            return platform_exclusion.worker_reason(nodes[0], plat)
+        return None
+
     saver.builder = roulette.Builder(
         store, lambda call: submit(JobRequest(tool=call["tool"], input=call["input"], require_os="linux",
                                               agent_use=True, low_priority=True),
                                    actor=roulette.ACTOR, origin={"via": "autoplay roulette"}),
-        builds_for, roulette_candidates)
+        builds_for, roulette_candidates, skip=roulette_skip)
 
     @app.get("/api/autoplay-screensaver")
     def screensaver_status(actor=Depends(auth)):

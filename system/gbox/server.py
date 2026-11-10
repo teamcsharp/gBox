@@ -28,6 +28,7 @@ from . import padstate
 from . import pad_takeover
 from . import fit_events
 from . import operator_guard
+from . import platform_exclusion
 from .config import HOST_OS, Config
 from .models import Job, JobState, new_id, KnowledgeEdge, Receipt, RunRecord, WorkerInfo
 from .registry import REGISTRY
@@ -2841,7 +2842,8 @@ def create_app(config: Config) -> FastAPI:
             if j["state"] == JobState.QUEUED and j.get("require_worker") and _wid(j["require_worker"]) == w.id != j["require_worker"]:
                 store.put("job", j["id"], j | {"require_worker": w.id})
         store.put("worker", w.id, w.model_dump())
-        store.audit(actor, "worker.register", w.id, {"name": w.name, "os": w.os, "tools": w.tools, "unavailable": w.unavailable})
+        store.audit(actor, "worker.register", w.id, {"name": w.name, "os": w.os, "tools": w.tools, "unavailable": w.unavailable,
+                                                     **({"excluded_platforms": w.excluded_platforms} if w.excluded_platforms else {})})
         return {"id": w.id}
 
     def _demo_preempted(j, wid) -> bool:
@@ -2914,6 +2916,23 @@ def create_app(config: Config) -> FastAPI:
                 if (j["state"] == JobState.QUEUED and j["tool"] in w["tools"]
                         and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])
                         and (not foreground_only or _is_stop_job(j) or foreground_session_job(store,j,wid))):   # by name: launched while that worker was restarting
+                    if why := platform_exclusion.claim_reason(store, w, j):
+                        # this PC's excluded_platforms lists the job's game platform (operator 2026-11-10: no PS3 /
+                        # Xbox work on the Spark): never claimed here. Another PC may take it; one that only excluded
+                        # PCs could take (pinned here, or no other online candidate) fails with the named error.
+                        blocked, plats = platform_exclusion.blocked_workers(store, j, workers())
+                        if platform_exclusion.placement_reason(j, blocked | {wid}, plats, workers()):
+                            failed = j | {'state': JobState.FAILED, 'finished': time.time(), 'error': why}
+                            failed.pop('admission_wait', None)
+                            store.put('job', j['id'], failed)
+                            build_notes.job_ended(failed)
+                            store.audit(actor, 'job.refused', j['id'], {'worker': w['name'], 'why': why,
+                                                                       'code': platform_exclusion.CODE})
+                        elif not j.get('admission_wait'):
+                            # noted once; another PC's own wait reason is never overwritten (no write per poll)
+                            store.put('job', j['id'], j | {'admission_wait': {'worker': w['name'], 'reason': why,
+                                                                           'code': platform_exclusion.CODE}})
+                        continue
                     if _demo_preempted(j, wid):
                         continue
                     from .autoplay_resume import claim_reason as autoplay_resume_claim_reason
@@ -2996,7 +3015,11 @@ def create_app(config: Config) -> FastAPI:
                     store.audit(actor, "job.claim", j["id"], {"worker": wid})
                     # what this job may copy onto that PC (gbox/storage_policy.py): handed over, never stored
                     from . import storage_policy
-                    return j | {"build_permit": storage_policy.permit(store, config, j, w)}
+                    # game_platforms: the job's game platforms, for the worker's own excluded_platforms refusal
+                    # (worker._run_job); handed over with the job, never stored
+                    plats = sorted(platform_exclusion.job_platforms(store, j))
+                    return j | {"build_permit": storage_policy.permit(store, config, j, w),
+                                **({"game_platforms": plats} if plats else {})}
         return Response(status_code=204)
 
     @app.post("/api/workers/{wid}/result")
@@ -3416,8 +3439,16 @@ def create_app(config: Config) -> FastAPI:
             from . import storage_purge as storage_purge_mod
             job.input = storage_purge_mod.prepare_input(
                 app, store, job.input, store.get("worker", job.require_worker) if job.require_worker else None, origin)
+        # excluded_platforms (gbox/platform_exclusion.py; operator 2026-11-10: no PS3 / Xbox work on the Spark): a PC
+        # whose list covers this job's game platform never takes it. Pinned to one, or with only such PCs online to
+        # take it, the job is rejected with the named PlatformExcluded error; a launch never picks one as its candidate.
+        px_job = {"tool": t.name, "input": job.input, "require_worker": job.require_worker,
+                  "require_os": job.require_os, "parent_request_id": job.parent_request_id}
+        px_off, px_plats = platform_exclusion.blocked_workers(store, px_job, workers())
+        if job.state == JobState.QUEUED and (why := platform_exclusion.placement_reason(px_job, px_off, px_plats, workers())):
+            job.state, job.error = JobState.REJECTED, why
         if t.name == "launch_game" and job.state == JobState.QUEUED:
-            online = [w for w in workers() if w["online"] and t.name in (w.get("tools") or [])]
+            online = [w for w in workers() if w["online"] and t.name in (w.get("tools") or []) and w["id"] not in px_off]
             candidates = [w for w in online if (not job.require_worker or w["id"] == job.require_worker)
                           and (not job.require_os or w.get("os") == job.require_os)]
             if job.require_worker and not candidates:
@@ -3436,7 +3467,7 @@ def create_app(config: Config) -> FastAPI:
             # (a black screen mid-match). The in-app chat agent (gbox-agent) acts on the operator's own words and is
             # exempt; MCP/Hermes/background launches go to another PC or are refused (docs/stream-stability.md).
             keep = inp.get("keep_session") or ""
-            online = [w for w in workers() if w["online"] and t.name in (w.get("tools") or [])]
+            online = [w for w in workers() if w["online"] and t.name in (w.get("tools") or []) and w["id"] not in px_off]
             if job.require_worker:
                 cands = [w for w in online if w["id"] == job.require_worker] or [
                     {"id": job.require_worker, "name": (store.get("worker", job.require_worker) or {}).get("name")}]
@@ -4184,7 +4215,8 @@ def create_app(config: Config) -> FastAPI:
             # #2386: the operator's own Play that names no PC boots on the PC it was asked from, never on another one.
             from .job_routing import requester_worker
             here = requester_worker(workers(), origin.get("remote"), req.require_os)
-            if here:
+            # ...unless that PC never runs this platform (excluded_platforms): the game boots where it may instead
+            if here and not platform_exclusion.worker_reason(here, platform_exclusion.game_platform(e)):
                 req.require_worker, req.require_os = here["id"], None
         job = submit(req, actor, origin)
         if autoplay and not debug:                          # a bot demo (any PC; the Spark button): plays itself once up

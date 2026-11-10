@@ -108,6 +108,9 @@ class WorkerInfo(BaseModel):
     pending_results: int = 0       # executed once; delivery is unresolved, so maintenance must wait
     address: str = ""              # where it registers/heartbeats from (set by the server): a Play from that PC stays there
     features: list[str] = []
+    # catalog platforms this PC never runs (its gbox.toml excluded_platforms: gbox/platform_exclusion.py); the control
+    # plane routes no job for a game on them here, and the worker refuses one anyway
+    excluded_platforms: list[str] = []
     resources: dict[str, Any] = {}  # measured CPU/GPU/RAM; empty means unknown, never zero load
     ollama: dict[str, Any] = {}  # loopback-only model inventory; probing never loads weights
     build_sources: dict[str, str] = {}  # immutable process-start writer hashes; changed code needs a safe refresh

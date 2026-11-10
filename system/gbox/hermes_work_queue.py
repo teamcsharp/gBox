@@ -583,7 +583,66 @@ def cause_hold(key, item, request, data, owners) -> str:
     return ''
 
 
-def candidates(data, requests, native, owned, on_main, *, now, verified=None):
+def _host_exclusions() -> frozenset:
+    """The platforms this machine's own gBox worker never runs (its registration's excluded_platforms: Hermes runs on
+    the Spark, where its agents' sandboxes, builds and emulators run). An unreachable or odd answer excludes nothing."""
+    from . import platform_exclusion
+    try:
+        workers = _api('/api/workers')
+    except Exception:                                # noqa: BLE001 - the rest of tick() fails loudly on its own calls
+        return frozenset()
+    return platform_exclusion.host_exclusions(workers if isinstance(workers, list) else [])
+
+
+def _fill_platforms(data) -> None:
+    """Give each game item its catalog platform: a favorite carries its own (sync); an inbox ticket's game (or an old
+    windows_native row, which may be an original Xbox game) is looked up once and kept with the game id it is for."""
+    from . import platform_exclusion
+    for item in data['items'].values():
+        gid = item.get('game_id')
+        if not isinstance(gid, str) or not ID.fullmatch(gid):
+            continue
+        own = platform_exclusion.normalize(item.get('platform'))
+        if item.get('lane') == 'favorite' and own and own != 'windows_native':
+            continue
+        if item.get('platform_game') == gid and isinstance(item.get('game_platform'), str):
+            continue
+        try:
+            entry = _api('/api/catalog/' + gid)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                continue                             # unknown now: looked up again next tick
+            entry = {}
+        except Exception:                            # noqa: BLE001
+            continue
+        item.update(game_platform=platform_exclusion.game_platform(entry if isinstance(entry, dict) else {}),
+                    platform_game=gid)
+
+
+def item_platform(item) -> str:
+    """The catalog platform of an item's game ('' when unknown)."""
+    from . import platform_exclusion
+    if item.get('game_id') and item.get('platform_game') == item.get('game_id') \
+            and isinstance(item.get('game_platform'), str):
+        return item['game_platform']
+    return platform_exclusion.normalize(item.get('platform'))
+
+
+def platform_hold(item, excluded) -> str:
+    """Why this item is not dispatched here: its game's platform is one this machine never runs ('' = none)."""
+    if not excluded:
+        return ''
+    from . import platform_exclusion
+    plat = item_platform(item)
+    if not plat or plat not in excluded:
+        return ''
+    import platform as _platform
+    return 'skipped: ' + platform_exclusion.message(_platform.node(), {plat}, excluded)
+
+
+def candidates(data, requests, native, owned, on_main, *, now, verified=None, excluded=frozenset()):
+    """excluded: the platforms this machine never runs (_host_exclusions): their items are held (platform_hold), not
+    dispatched to fail."""
     by_id = {r['id']: r for r in requests}
     owners = _doctrine_owners(data, by_id)
     busy_requests = set(owned) | {j.get('parent_request_id') for j in native}
@@ -613,6 +672,12 @@ def candidates(data, requests, native, owned, on_main, *, now, verified=None):
                         for i in data['items'].values() if i.get('unlock_work'))
     for key, item in data['items'].items():
         rid = item.get('request_id')
+        # excluded_platforms (gbox/platform_exclusion.py; operator 2026-11-10: no PS3 / Xbox work on the Spark): the
+        # game's platform is one this machine never runs, so the item waits with its reason instead of failing a run
+        if hold := platform_hold(item, excluded):
+            item['platform_hold'] = hold
+            continue
+        item.pop('platform_hold', None)
         shared = (item.get('lane') == 'inbox' and rid in priority and not launches_emulator(item)
                   and item.get('game_id') not in native_games
                   and running.count(item.get('game_id')) < PRIORITY_PER_GAME)
@@ -1077,7 +1142,10 @@ def tick(*, now=None):
             data['unlock_admission'] = _api('/api/custom-build-unlocks/dispatch-admission')
         except Exception:
             data['unlock_admission'] = {'allowed': False}  # unrelated queue work remains eligible
-        options = candidates(data, requests, native, owned, _on_main(), now=now, verified=verified)
+        excluded = _host_exclusions()                  # this machine's excluded_platforms: their games are held
+        if excluded:
+            _fill_platforms(data)
+        options = candidates(data, requests, native, owned, _on_main(), now=now, verified=verified, excluded=excluded)
         _save(data)  # Preserve review holds/guidance even when there are no free slots.
         # Both gates apply and the stricter wins: the operator's game on the Spark defers emulator-launching items
         # and caps unpooled dispatch at 1 (docs/stream-stability.md); the local route allows only small tasks, one

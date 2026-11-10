@@ -55,7 +55,10 @@ async function tick() {
     $('#active').innerHTML=jobs(data.active,'No operation is running on this worker.');
     $('#queue').innerHTML=jobs(data.eligible_queue,'No compatible queued job is currently assigned.');
     $('#results').innerHTML=jobs(data.recent_results,'No worker results in the recent history window.');
-    $('#capabilities').innerHTML=`<p>${data.capabilities.available} available tools</p>`+Object.entries(data.capabilities.unavailable).map(([name,why])=>`<details><summary>${esc(name)} unavailable</summary><p class="mut">${esc(why)}</p></details>`).join('');
+    // excluded_platforms (gbox/platform_exclusion.py): the platforms this PC never runs, from its own gbox.toml
+    const never=(data.worker?.excluded_platforms||[]);
+    $('#capabilities').innerHTML=`<p>${data.capabilities.available} available tools</p>`
+      +(never.length?`<p class="mut">Never runs ${esc(never.join(', '))} work on this PC (excluded_platforms)</p>`:'')+Object.entries(data.capabilities.unavailable).map(([name,why])=>`<details><summary>${esc(name)} unavailable</summary><p class="mut">${esc(why)}</p></details>`).join('');
     $('#pause').disabled=!data.background_testing;
     const session=data.sessions.find(s=>s.agent_owned);
     $('#game').hidden=!session;

@@ -421,9 +421,25 @@ def request_of(pull: dict) -> str | None:
     return m[1] if m else None
 
 
+def _excluded(ctx):
+    """ctx's test for a game on a platform this node never runs (excluded_platforms; a test's own ctx without one
+    skips nothing)."""
+    fn = getattr(ctx, 'excluded_game', None)
+    if not callable(fn):
+        return lambda game, excluded=None: False
+    here = getattr(ctx, 'excluded_here', None)
+    if not callable(here):
+        return fn
+    mine = here()                                   # this node's list, read once per chore pass
+    return lambda game, excluded=None: fn(game, mine if excluded is None else excluded)
+
+
 def fingerprints(ctx, give_way) -> dict:
-    """One favorite queue game without a usable assimilate fingerprint: run assimilate op=fingerprint for it."""
-    items = [i for i in ctx.queue_favorites() if not i.get('fingerprint') or (i.get('fingerprint') or {}).get('source') == 'error']
+    """One favorite queue game without a usable assimilate fingerprint: run assimilate op=fingerprint for it. A game on
+    a platform this node excludes is skipped (its assimilate job would be refused here)."""
+    skip = _excluded(ctx)
+    items = [i for i in ctx.queue_favorites() if (not i.get('fingerprint') or (i.get('fingerprint') or {}).get('source') == 'error')
+             and not skip(i)]
     if not items:
         return {'missing': 0}
     item = items[0]
@@ -447,8 +463,12 @@ def character_readiness(ctx, give_way) -> dict:
 
 
 def collect_characters(ctx, give_way) -> dict:
-    """One favorite or recently played game with a registered reader and no collection: run its collect job."""
+    """One favorite or recently played game with a registered reader and no collection: run its collect job (never one
+    on a platform this node excludes: that collect would be refused here)."""
+    skip = _excluded(ctx)
     for game in ctx.collection_candidates():
+        if skip(game):
+            continue
         give_way()
         job_id = ctx.schedule_collect(game)
         if not job_id:
@@ -507,7 +527,8 @@ def hot_cache(ctx, give_way) -> dict:
     from . import cache_tiers
     give_way()
     games = ctx.recent_games(days=3) + [g.get('game_id') for g in ctx.favorites()]
-    keys = [g for g in dict.fromkeys(games) if g]
+    skip = _excluded(ctx)
+    keys = [g for g in dict.fromkeys(games) if g and not skip(g)]   # never a game this node excludes on the hot tier
     if cache_tiers.ACTIVE is None:
         return {'tiers': 'single tier', 'games': len(keys)}
     cache_tiers.touch(*keys, queue=True)
@@ -527,6 +548,15 @@ def verify_launch_fixes(ctx, give_way) -> dict:
     node = ctx.verify_node()
     if not node:
         return {'tickets': len(tickets), 'waiting': 'no allowed idle node (i9-NUC / Spark)'}
+    from . import platform_exclusion
+    if excluded := platform_exclusion.of_worker(node):
+        # never a verification launch of a game on a platform that node excludes (its launch would be refused)
+        skip = _excluded(ctx)
+        fits = [r for r in tickets if not skip(r['context']['game_id'], excluded)]
+        if not fits:
+            return {'tickets': len(tickets), 'waiting': f"{node.get('name')} excludes these games' platforms "
+                                                        f"({', '.join(sorted(excluded))})"}
+        tickets = fits
     r = min(tickets, key=lambda r: r.get('completed') or 0)
     gid = r['context']['game_id']
     give_way()
@@ -754,6 +784,39 @@ class ServiceContext:
         if job.get('state') not in ('queued', 'running'):
             return job
         return self.wait_job(job['id'], give_way, timeout_s)
+
+    # -- excluded platforms (gbox/platform_exclusion.py; operator 2026-11-10: no PS3 / Xbox work on the Spark)
+    def excluded_here(self) -> frozenset:
+        """The platforms this node never runs: its gbox.toml's excluded_platforms and its workers' registrations."""
+        from . import platform_exclusion as PX
+        own = getattr(self.config, 'excluded_platforms_for', None)
+        out = set(PX.normalize_all(own() if callable(own) else ()))
+        with contextlib.suppress(Exception):
+            rows = list(self._workers() or [])
+            local = spark_workers(rows)
+            for w in rows:
+                if w.get('id') in local:
+                    out |= PX.of_worker(w)
+        return frozenset(out)
+
+    def excluded_game(self, game, excluded=None) -> bool:
+        """Whether a game (catalog entry, work-queue item or game id) is on a platform `excluded` (default: this
+        node's) lists: the chores skip it instead of queueing a job that is refused."""
+        from . import platform_exclusion as PX
+        excluded = self.excluded_here() if excluded is None else PX.normalize_all(excluded)
+        if not excluded:
+            return False
+        if isinstance(game, str):
+            game = self.store.catalog_get(game) or {}
+        if not isinstance(game, dict):
+            return False
+        plat = PX.game_platform(game)
+        if 'lane' in game:                             # a Hermes work-queue item: its looked-up platform first
+            from .hermes_work_queue import item_platform
+            plat = item_platform(game) or plat
+        if (not plat or plat == 'windows_native') and isinstance(game.get('game_id'), str) and 'launch' not in game:
+            plat = PX.game_platform(self.store.catalog_get(game['game_id']) or {}) or plat
+        return bool(plat) and plat in excluded
 
     # -- games
     def favorites(self) -> list[dict]:

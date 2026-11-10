@@ -342,6 +342,20 @@ def routes(app, store, cfg, auth, create_request, investigate, workers=lambda: [
         inv = getattr(app.state, 'built_mods_invalidate', None)
         if inv: inv()
 
+    def platform_hold(gid):
+        """Why no research worker works this game: every online Linux research worker (the Spark) excludes its
+        platform (excluded_platforms, gbox/platform_exclusion.py; operator 2026-11-10: no PS3 / Xbox work on the
+        Spark). The favorite is skipped, never dispatched to fail."""
+        from . import platform_exclusion as PX
+        linux = [w for w in workers() if w.get('online') is True and w.get('os') == 'linux']
+        if not linux or not all(PX.of_worker(w) for w in linux):
+            return ''                                    # no exclusion on some research worker: no catalog read
+        plat = PX.game_platform(store.catalog_get(gid) or {})
+        if plat and all(plat in PX.of_worker(w) for w in linux):
+            return 'Skipped: ' + PX.worker_reason(linux[0], plat)
+        return ''
+    app.state.custom_build_unlocks_platform_hold = platform_hold
+
     def files_and_signature(rec):
         if rec.get('base'):
             profile = store.get(PROFILE, rec['game_id']) or {}
@@ -411,6 +425,13 @@ def routes(app, store, cfg, auth, create_request, investigate, workers=lambda: [
             dispatched_this_pass = 0
             for gid, builds in groups.items():
                 if all(badge(store, r)['status'] == 'verified' for r in builds): continue
+                if hold := platform_hold(gid):
+                    # no research worker runs this platform: skipped (no ticket, no dispatch), the reason on its task
+                    task = store.get(TASK, gid) or {'game_id': gid}
+                    if (task.get('state'), task.get('reason'), task.get('dispatched')) != ('skipped', hold, False):
+                        store.put(TASK, gid, task | {'state': 'skipped', 'reason': hold, 'dispatched': False,
+                                                     'updated': now})
+                    continue
                 game = store.catalog_get(gid) or {'game_id': gid, 'title': gid}
                 profile = store.get(PROFILE, gid)
                 task = store.get(TASK, gid) or {'game_id': gid}
@@ -520,7 +541,7 @@ def routes(app, store, cfg, auth, create_request, investigate, workers=lambda: [
                         'profile_revision': task.get('profile_revision')}
                         and task.get('versions') == versions.get(task['game_id'])
                         and task.get('profile_revision') == (store.get(PROFILE, task['game_id']) or {}).get('revision')
-                        and pending(task['game_id'])):
+                        and pending(task['game_id']) and not platform_hold(task['game_id'])):
                     eligible.append(task['request_id'])
         return {'allowed': not bool(reason), 'reason': reason, 'request_ids': eligible,
                 'dispatch_per_hour': policy['dispatch_per_hour']}
@@ -538,6 +559,8 @@ def routes(app, store, cfg, auth, create_request, investigate, workers=lambda: [
                 return 'Unlock research has no current admitted task'
             if not pending(task['game_id']):
                 return 'All current exact targets already have verified coverage'
+            if hold := platform_hold(task['game_id']):
+                return hold
             release = (request.get('context') or {}).get('unlock_dispatch')
             current_versions = {r['name']: version(r) for r in targets() if r['game_id'] == task['game_id']}
             if (release != {'versions': task.get('versions'), 'profile_revision': task.get('profile_revision')}

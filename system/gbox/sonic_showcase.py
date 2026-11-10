@@ -54,7 +54,7 @@ LIMITS = {"favorites": (0, 200), "recent": (0, 100), "budget_gb": (1, 4000), "bu
           "whole_cast_max_slots": (1, 400), "interval_s": (30, 86400)}
 # stages a record can be in; "due" ones are looked at again on the next pass
 WAITING = {"queued", "building", "deferred", "collecting_donors", "waiting_storage", "rate_limited", "over_budget",
-           "readiness_pending", "no_donors"}
+           "readiness_pending", "no_donors", "platform_excluded"}
 
 
 # ------------------------------------------------------------------------------------------------- settings
@@ -338,6 +338,16 @@ class Showcase:
     def record(self, gid: str) -> dict:
         return dict(self.store.get(KIND, gid) or {})
 
+    def platform_hold(self, game: dict) -> str:
+        """Why no Linux build node builds this title: every online one excludes its platform (excluded_platforms,
+        gbox/platform_exclusion.py; operator 2026-11-10: no PS3 / Xbox work on the Spark). Skipped, never queued."""
+        from . import platform_exclusion as PX
+        nodes = [w for w in self.workers() or [] if w.get("online") and w.get("os") == "linux"]
+        plat = PX.game_platform(game)
+        if nodes and plat and all(plat in PX.of_worker(w) for w in nodes):
+            return "skipped: " + PX.worker_reason(nodes[0], plat)
+        return ""
+
     def _put(self, game: dict, rec: dict, **kw) -> dict:
         rec = rec | kw | {"game_id": game["game_id"], "title": game.get("title") or rec.get("title"),
                           "platform": game.get("platform") or rec.get("platform"),
@@ -550,6 +560,11 @@ class Showcase:
                     continue
                 if donor_reader(g):
                     rec = self._put(g, rec, stage="donor_game", message="a donor game (Sonic Adventure): not swapped")
+                    st["queue"].append(self._row(g, rec))
+                    continue
+                if hold := self.platform_hold(g):
+                    if (rec.get("stage"), rec.get("message")) != ("platform_excluded", hold):
+                        rec = self._put(g, rec, stage="platform_excluded", message=hold)
                     st["queue"].append(self._row(g, rec))
                     continue
                 w = self.writer_of(g)
