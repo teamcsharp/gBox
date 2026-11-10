@@ -563,3 +563,40 @@ def test_the_code_patch_stays_refused_under_nce_even_when_turned_on(tmp_path, mo
     assert out["route"] == "in_hand" and not [a for a, _ in ad.writes if a - BASE < TEXT_END]
     ad.use_nce = False
     assert M._code_patch_refusal(ad) is None
+
+
+def test_every_random_round_draws_a_magnum_or_a_shotgun(ad):
+    """#9560: MAGNUM_SHARE 1.0 - the draw never lands on the pistol class while a heavy gun is on offer."""
+    W = _armoury(ad)
+    M._state(ad)["random_weapon"] = True
+    seen = set()
+    for _ in range(25):
+        M.maintain(ad, _round("dead", control=False, clock=False))
+        M.maintain(ad, _round("intro", control=False))
+        assert M.maintain(ad, _round())["weapon_given"] == 1
+        seen.add(_hand(ad, W)[1])
+    assert seen <= M.HEAVY and len(seen) > 1, seen
+
+
+def test_fire_tables_are_retried_when_the_first_write_reads_nothing_and_reported_per_round(ad, tmp_path, monkeypatch):
+    """#9560: pre_round marked the boot applied with 0 tables written, so the 20x rate never landed."""
+    monkeypatch.setattr(M, "SETTINGS_FILE", tmp_path / "re4-mods.json")
+    monkeypatch.setattr(M, "FIRE_RETRY_S", 0.0)
+    W = _armoury(ad)
+    gap = D.FIRE_GAP_S
+    st = M._state(ad)
+    st["fire_rate"] = 20.0
+    try:
+        assert M.maintain(ad, _round("none", control=False, clock=False)).get("fire_tables", 0) == 0
+        assert st.get("rf_applied_boot") is None, "nothing read back: the boot is not marked done"
+        _weapon_tables(ad)
+        _armoury(ad)
+        out = M.maintain(ad, _round("none", control=False, clock=False))
+        assert out["fire_tables"] > 0 and st["rf_applied_boot"] is not None
+        st["random_weapon"] = True
+        assert M.maintain(ad, _round())["weapon_given"] == 1
+        stat = M.status(ad)
+        assert stat["fire_tables_written"] > 0 and stat["rounds"]["1"]["fire_tables"] > 0
+        assert stat["rounds"]["1"]["weapon"]
+    finally:
+        D.FIRE_GAP_S = gap

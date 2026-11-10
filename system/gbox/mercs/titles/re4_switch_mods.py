@@ -386,6 +386,29 @@ def _apply_fire_rate(ad, base: int, st: dict) -> int:
         n += _write_table(ad, base, W.RIFLE_FIRE_TBL, "f", want)
     gap0 = st.setdefault("fire_gap_orig", D.FIRE_GAP_S)
     D.FIRE_GAP_S = max(FIRE_GAP_MIN_S, gap0 / mult)
+    st["fire_tables_last"] = n                          # tables that read back (0: unreadable - retried, see below)
+    st["fire_tables_total"] = st.get("fire_tables_total", 0) + n
+    return n
+
+
+FIRE_RETRY_S = 3.0
+
+
+def _fire_tables_due(st: dict, boot) -> bool:
+    """Whether this boot's fire tables still have to be written. A boot is only marked done once a table read back:
+    #9560 - pre_round marked it applied even when the module was unreadable (0 tables), so no 20x rate was ever
+    written and no stat said so. Retries are paced (FIRE_RETRY_S)."""
+    if st.get("fire_rate", 1.0) == 1.0 or st.get("rf_applied_boot") == boot:
+        return False
+    return time.monotonic() - st.get("fire_try_at", -1e9) >= FIRE_RETRY_S
+
+
+def _apply_fire_rate_boot(ad, base: int, st: dict, boot) -> int:
+    st["fire_try_at"] = time.monotonic()
+    st["fire_tries"] = st.get("fire_tries", 0) + 1
+    n = _apply_fire_rate(ad, base, st)
+    if n > 0:
+        st["rf_applied_boot"] = boot
     return n
 
 
@@ -553,7 +576,9 @@ SWAPPABLE = frozenset(W.MAX_LEVELS) | frozenset(lo["equips"] for lo in W.MERC_LO
 # The magnums come up often (operator 2026-11-10: "the scatter works if they have a magnum and 20x firerate. Its boring
 # with the pistol"): a random draw is one of them MAGNUM_SHARE of the time (3 of the 15 HIGH_POWER otherwise: 1 in 5).
 MAGNUMS = frozenset({0x29, 0x2A, 0x37})        # Broken Butterfly, Killer7, Handcannon
-MAGNUM_SHARE = 0.5
+MAGNUM_SHARE = 1.0          # #9560 (operator 18:20): a magnum or a shotgun EVERY round, never the pistol class
+SHOTGUNS = frozenset({0x2C, 0x2D})             # Shotgun, Striker
+HEAVY = MAGNUMS | SHOTGUNS
 
 
 def _code_patch_refusal(ad) -> str | None:
@@ -592,8 +617,8 @@ def _give_weapon(ad, base: int, st: dict, rng, fixed: int | None = None, exclude
         picks = [i for i in pool if i not in exclude] or pool
     if not picks:
         return {"verified": False, "was": held["name"], "reason": "no weapon row to give"}
-    magnums = [i for i in picks if i in MAGNUMS]
-    iid = rng.choice(magnums if fixed is None and magnums and rng.random() < MAGNUM_SHARE else picks)
+    heavy = [i for i in picks if i in HEAVY]
+    iid = rng.choice(heavy if fixed is None and heavy and rng.random() < MAGNUM_SHARE else picks)
     row, lv = rows[iid], W.max_levels(iid)
     cap = row["capacity"][lv["capacity"]] or max(row["capacity"])
     loaded = 99 if cap in (0, W.CAP_INFINITE) else min(cap, 0x1FFF)
@@ -626,6 +651,19 @@ def _give_weapon(ad, base: int, st: dict, rng, fixed: int | None = None, exclude
                 "reason": "the swap did not read back: his own weapon put back"}
     return {"id": iid, "name": W.name(iid), "was": held["name"], "loaded": loaded, "levels": lv["packed"],
             "verified": True}
+
+
+def _round_report(ad, snap: dict, st: dict, given: dict) -> None:
+    """The per-round line (status()['rounds']): the weapon given, the fire tables written so far, the bow's motion rate."""
+    rounds = st.setdefault("rounds", {})
+    mr = st.get("motion_rate") or {}
+    rounds[str(given.get("round"))] = {
+        "weapon": given.get("name"), "verified": bool(given.get("verified")), "tries": st.get("rw_tries", 0),
+        "fire_tables": st.get("fire_tables_last", 0), "fire_rate_x": st.get("fire_rate", 1.0),
+        "motion_rate_x": min(float(st.get("fire_rate", 1.0) or 1.0), MOTION_RATE_MAX_X) if st.get("fire_rate", 1.0) > 1 else 1.0,
+        "motion_rate_writes": st.get("motion_rate_writes", 0), "reason": given.get("reason")}
+    for k in sorted(rounds, key=int)[:-8]:               # the last eight rounds only
+        rounds.pop(k, None)
 
 
 def _round_weapon(ad, snap: dict, st: dict) -> dict | None:
@@ -1016,8 +1054,7 @@ def pre_round(ad, m=None) -> dict:
             out["power_rows"] = _apply_power(ad, base, st)
             st["fp_applied_boot"] = boot
         if st.get("fire_rate", 1.0) != 1.0:
-            out["fire_tables"] = _apply_fire_rate(ad, base, st)
-        st["rf_applied_boot"] = boot
+            out["fire_tables"] = _apply_fire_rate_boot(ad, base, st, boot)
         refused = _code_patch_refusal(ad) if st.get("random_weapon") or st.get("loadout_weapon") else None
         if refused:
             st["loadouts"] = {}                         # nobody's loadout is code: _round_weapon gives in hand
@@ -1097,9 +1134,8 @@ def maintain(ad, snap: dict | None = None) -> dict:
         if (st.get("weapon_power", 1.0) != 1.0 or st.get("max_level")) and st.get("fp_applied_boot") != boot:
             out["power_rows"] = _apply_power(ad, snap["module_base"], st)   # once a boot (the table is static data)
             st["fp_applied_boot"] = boot
-        if st.get("fire_rate", 1.0) != 1.0 and st.get("rf_applied_boot") != boot:
-            out["fire_tables"] = _apply_fire_rate(ad, snap["module_base"], st)
-            st["rf_applied_boot"] = boot
+        if _fire_tables_due(st, boot):
+            out["fire_tables"] = _apply_fire_rate_boot(ad, snap["module_base"], st, boot)
         if st.get("infinite_ammo"):
             n = _keep_mag(ad, snap["module_base"], st)
             st["mag_refills"] = st.get("mag_refills", 0) + n
@@ -1119,6 +1155,11 @@ def maintain(ad, snap: dict | None = None) -> dict:
             given = _round_weapon(ad, snap, st)
             if given is not None and given.get("verified"):
                 out["weapon_given"] = 1
+            if given is not None:
+                _round_report(ad, snap, st, given)
+                if st.get("fire_rate", 1.0) != 1.0:      # a round's start: the tables written again if they slipped
+                    out["fire_tables"] = out.get("fire_tables", 0) + _apply_fire_rate(ad, snap["module_base"], st)
+                    st["rf_applied_boot"] = boot if st.get("fire_tables_last") else st.get("rf_applied_boot")
         if st.get("aim_lock"):
             ram0, sway0 = st.get("aim_ram_writes", 0), st.get("aim_sway_zeroed", 0)
             n = _aim(ad, snap)
@@ -1160,7 +1201,10 @@ def status(ad, snap: dict | None = None) -> dict:
            "aim_lock": bool(st.get("aim_lock")), "aim_writes": st.get("aim_writes", 0),
            "aim_ram_writes": st.get("aim_ram_writes", 0), "aim_sway_zeroed": st.get("aim_sway_zeroed", 0),
            "aim_sway_was": st.get("aim_sway_was"), "aim_ram_refused": st.get("aim_ram_refused", 0),
-           "mag_refills": st.get("mag_refills", 0), "pre_round": st.get("pre_round_result"),
+           "mag_refills": st.get("mag_refills", 0), "rounds": st.get("rounds"),
+           "fire_tables_written": st.get("fire_tables_total", 0), "fire_tables_last": st.get("fire_tables_last"),
+           "fire_tries": st.get("fire_tries", 0), "fire_applied_this_boot": st.get("rf_applied_boot") is not None,
+           "pre_round": st.get("pre_round_result"),
            "motion_rate_on": (st.get("motion_rate") or {}).get("kind"), "motion_rate_kind": st.get("motion_rate_kind"),
            "motion_rate_writes": st.get("motion_rate_writes", 0), "motion_rate_restores": st.get("motion_rate_restores", 0),
            "motion_rate_refused": st.get("motion_rate_refused", 0), "arrow_refills": st.get("arrow_refills", 0),
