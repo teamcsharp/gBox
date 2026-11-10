@@ -1223,3 +1223,74 @@ def test_prune_stops_at_its_per_tick_limit_and_skips_a_failed_remove(monkeypatch
              'last_run_at': '2026-10-27T08:00:00-06:00'} for i in range(5)]
     out = q.prune({'items': {}}, jobs, set(), now=q._stamp('2026-10-27T10:00:00-06:00'))
     assert out == ['j1', 'j2'] and len(calls) == 3
+
+
+# --- the damage cause batches: one ticket per cause per title, none re-run past its no-progress cap -----------------
+RE5_SWITCH_GAME = '52d15709be0fda1a'
+
+
+def _cause(rid, signature, created, game=RE5_SWITCH_GAME, runs=0, number=None):
+    req = request(rid, number=number or created, source='mercs_damage_cluster', author='agent', kind='report',
+                  status='open', automated=True, created=created,
+                  context={'damage_cluster': True, 'operator_requested': True, 'damage_cluster_id': rid[:16],
+                           'signature': signature, 'game_id': game})
+    item = {'lane': 'inbox', 'request_id': rid, 'attempts': runs, 'last_dispatched': 0, 'created': created,
+            'number': req['number'], 'damage_cluster_verified': True, 'signature': signature, 'game_id': game,
+            'no_progress_runs': runs}
+    return req, item
+
+
+def _causes(env, *rows):
+    reqs, verified = [], {}
+    for req, item in rows:
+        env['items']['inbox:' + req['id']] = item
+        reqs.append(req)
+        verified[(q.requested_damage_cluster, req['id'])] = True
+    return reqs, verified
+
+
+def test_the_threat_response_is_one_ticket_per_title_the_oldest_worked(env):
+    reqs, verified = _causes(env, _cause('1' * 16, 'crowd_4_in_2m', 10, number=11),
+                             _cause('2' * 16, 'crowd_gun_down', 20, number=12),
+                             _cause('3' * 16, 'faced_melee', 30, number=13),
+                             _cause('4' * 16, 'ranged', 40, number=14))
+    options = q.candidates(env, reqs, [], set(), set(), now=1000, verified=verified)
+    assert sorted(k for k, _ in options) == ['inbox:' + '1' * 16, 'inbox:' + '4' * 16], \
+        'the oldest threat-response ticket and the other cause; the two duplicates wait'
+    held = env['items']['inbox:' + '2' * 16]['cause_hold']
+    assert held.startswith('the same cause as #11') and 'round_hurt_while_idle' in held
+
+
+def test_a_cause_with_three_runs_without_progress_is_not_dispatched_again_on_any_node(env):
+    reqs, verified = _causes(env, _cause('5' * 16, 'ranged', 10, runs=q.CAUSE_NO_PROGRESS_MAX - 1),
+                             _cause('6' * 16, 'own_bomb', 20, runs=q.CAUSE_NO_PROGRESS_MAX))
+    options = q.candidates(env, reqs, [], set(), set(), now=1000, verified=verified)
+    assert [k for k, _ in options] == ['inbox:' + '5' * 16]
+    assert 'runs without progress' in env['items']['inbox:' + '6' * 16]['cause_hold']
+    env['items']['inbox:' + '5' * 16]['no_progress_runs'] = q.CAUSE_NO_PROGRESS_MAX
+    assert q.candidates(env, reqs, [], set(), set(), now=1000, verified=verified) == []
+
+
+def test_a_held_threat_response_holds_its_duplicates_too_and_the_operator_listing_lifts_it(env):
+    reqs, verified = _causes(env, _cause('7' * 16, 'grabbed_front', 10, runs=q.CAUSE_NO_PROGRESS_MAX, number=21),
+                             _cause('8' * 16, 'crowd_gun_down', 20, number=22))
+    assert q.candidates(env, reqs, [], set(), set(), now=1000, verified=verified) == [], \
+        'the cause hit its cap: a duplicate of it is not a fresh start'
+    env['priority'] = ['21']                                          # the operator names the ticket (its number)
+    options = q.candidates(env, reqs, [], set(), set(), now=1000, verified=verified)
+    assert [k for k, _ in options] == ['inbox:' + '7' * 16]
+
+
+def test_other_titles_keep_their_own_threat_response_ticket(env):
+    reqs, verified = _causes(env, _cause('9' * 16, 'crowd_4_in_2m', 10),
+                             _cause('a' * 16, 'crowd_4_in_2m', 20, game='115f9cdbba115432'))
+    options = q.candidates(env, reqs, [], set(), set(), now=1000, verified=verified)
+    assert len(options) == 2, 'RE5 and RE6 Switch: one each'
+
+
+def test_an_ordinary_inbox_ticket_has_no_cause_hold(env):
+    reqs = [request(R, status='open')]
+    env['items']['inbox:' + R] = {'lane': 'inbox', 'request_id': R, 'attempts': 9, 'last_dispatched': 0,
+                                  'created': 1, 'no_progress_runs': 9}
+    options = q.candidates(env, reqs, [], set(), set(), now=1000)
+    assert [k for k, _ in options] == ['inbox:' + R] and env['items']['inbox:' + R]['cause_hold'] == ''
