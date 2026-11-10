@@ -66,3 +66,35 @@ def variant_census(container_path: str) -> dict:
             counts[c] += 1
             members[c].append(i)
     return {"counts": dict(counts), "members": {k: v[:8] for k, v in members.items()}}
+
+
+def entry_span(entries, index: int) -> tuple[int, int]:
+    """(offset, length) of the real slot of CHCM entry ``index``.
+
+    The 32B-table ``size`` field understates char_dat bodies (entry 0026 says 720 B but
+    its header declares sec4 @0x272E40); the payload really occupies the slot up to the
+    next entry's offset (0027 - 0026 = 0x274800).  Last entry falls back to ``size``.
+    """
+    size, _d, _z, off = entries[index]
+    end = entries[index + 1][3] if index + 1 < len(entries) else off + size
+    return off, max(end - off, size)
+
+
+def variant_census_span(container_path: str) -> dict:
+    """Like variant_census but classifies the full slot span instead of the stored size."""
+    entries = chcm.parse_entries(container_path)
+    counts = collections.Counter()
+    members = collections.defaultdict(list)
+    with open(container_path, "rb") as fh:
+        for i, (size, _d, _z, off) in enumerate(entries):
+            if size < 8:
+                continue
+            fh.seek(off)
+            if fh.read(8) != b"char_dat":
+                continue
+            off, length = entry_span(entries, i)
+            fh.seek(off)
+            c = classify(fh.read(length))
+            counts[c] += 1
+            members[c].append(i)
+    return {"counts": dict(counts), "members": {k: v[:8] for k, v in members.items()}}

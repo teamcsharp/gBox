@@ -7,7 +7,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from gbox.doa5lr_char_dat_variants import classify, variant_census  # noqa: E402
+from gbox.doa5lr_char_dat_variants import classify, entry_span, variant_census, variant_census_span  # noqa: E402
 
 LNK = os.environ.get(
     "DOA5LR_CHARA_COMMON",
@@ -30,3 +30,13 @@ def test_variant_census_owned_source():
     assert r["members"]["ok_v7"][0] == 18  # target entry 0018 stays in the parsed class
     assert r["members"]["ptable2"][0] == 211
     assert r["members"]["other"] == [642]
+
+
+@pytest.mark.skipif(not os.path.exists(LNK), reason="owned chara_common.lnk not present")
+def test_span_resolves_truncated_entries():
+    from gbox.doa5lr_chcm_extract import parse_entries
+    es = parse_entries(LNK)
+    assert entry_span(es, 26) == (13107200, 0x274800)  # stored size 720, real slot 2,574,336
+    r = variant_census_span(LNK)
+    # no stub/truncated remain once the slot span is used: all are real v7/v6/ptable2 bodies
+    assert r["counts"] == {"ok_v7": 146, "v6": 56, "ptable2": 48, "reserved_00": 1, "other": 1}
