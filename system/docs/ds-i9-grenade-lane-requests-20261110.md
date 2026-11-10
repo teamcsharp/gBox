@@ -221,3 +221,8 @@ run E6's no-op proof and F's live flash receipt. Any nonzero byte rules that pag
 242 passed) and restart `gbox.service` in a gap, so the next RE4 block can exercise the harness. The doctrine line
 (`respond.Kit(fire=fire, flash=None, ...)`) is the RE session's to write after F's receipt flips the status row to
 verified.
+
+
+**Block progress (18:36):** the RE4 session is at round 2/5, **stage 3** - that is the second stage load, so a read
+taken now plus one at the next stage completes the three-load watch within this block. Still read-only, five pages,
+16 bytes each.
