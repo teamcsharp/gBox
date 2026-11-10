@@ -171,7 +171,7 @@ def test_fpk_pack_roundtrip_and_checksum():
 def test_fpk_pack_stored_raw_entries():
     # compress=False stores non-empty entries raw (stored == size); fpk_decompress passes them through.
     entries = [("chr/nrt/0000.brplt", b"\x01\x02\x03\x04"), ("chr/nrt/0000.seq", b"hello world")]
-    d = cnr2.fpk_pack(entries, compress=False, allow_unverified_raw=True)
+    d = cnr2.fpk_pack(entries, compress=False)
     assert [e["compressed"] for e in cnr2.fpk_index(d)] == [False, False]
     assert struct.unpack_from(">I", d, 0)[0] == cnr2.fpk_checksum(d)
     assert dict(cnr2.fpk_decompress(d)) == dict(entries)
@@ -195,10 +195,15 @@ def test_real_disc_fpk_repack_noop_roundtrip():
         assert got[f"chr/nrt/{name}"] == (DISC / "chr/nrt" / name).read_bytes()
 
 
-def test_unverified_nonempty_raw_fallback_requires_explicit_opt_in():
-    for compress in (True, False):
-        with pytest.raises(ValueError, match='not verified'):
-            cnr2.fpk_pack([('a', b'x')], compress=compress)
+def test_raw_fallback_is_default_when_prs_does_not_shrink():
+    # Loader accepts non-empty raw entries (stored == original memcpy path, main.dol 0x80017cc4),
+    # so a payload PRS can't shrink below its own size is stored raw rather than rejected.
+    incompressible = __import__("os").urandom(1024)  # high-entropy -> PRS expands, not shrinks
+    d = cnr2.fpk_pack([('a', incompressible)], compress=True)
+    e = cnr2.fpk_index(d)[0]
+    assert e['compressed'] is False            # stored == original -> raw passthrough
+    assert dict(cnr2.fpk_decompress(d)) == {'a': incompressible}
+    assert struct.unpack_from(">I", d, 0)[0] == cnr2.fpk_checksum(d)
 
 
 def test_repack_preserves_original_bytes_and_changes_only_requested_member():

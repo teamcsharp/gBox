@@ -13,8 +13,9 @@ The DATA partition ships Eighting's own build tree (.svn dirs, makefile, autofpk
 FPK layout (big-endian):  0x00 u32 checksum (low 16 bits = byte sum of every entry payload; verified on all
 224 shipped packs), 0x04 u32 entry count, 0x08 u32 table offset (0x10), 0x0C u32 file size; entries 0x30
 bytes = name[0x20] (NUL padded path), u32 0, u32 data offset, u32 stored size, u32 original size.
-Payloads are Eighting PRS streams (`prs_decompress`); an entry with stored == original is stored raw
-(the shipped packs only use that for zero-length placeholder entries).
+Payloads are Eighting PRS streams (`prs_decompress`); an entry with stored == original is stored raw.
+The loader handles non-empty raw entries via a direct memcpy branch (stored == original path in main.dol,
+member decoder 0x80017cc4), so a writer may store raw when PRS does not shrink the payload.
 
 BRRES (NW4R resource archive, documented by BrawlBox/BrawlCrate): "bres" FEFF, u16 pad, u32 size, u16 root
 offset, u16 section count; root "root" + size + index group.  Index group: u32 size, u32 count, then
@@ -156,7 +157,11 @@ def prs_compress(data: bytes) -> bytes:
 
 
 def fpk_checksum(data: bytes) -> int:
-    """The low 16 bits of the header u32: the byte sum of every entry payload (224/224 packs)."""
+    """The low 16 bits of the header u32: the byte sum of every entry payload (224/224 packs).
+
+    Recomputing it keeps canonical packs byte-identical; the game loader does not read it
+    (main.dol only touches +0x04 count and +0x08 table offset), so it is not a runtime gate.
+    """
     total = 0
     for e in fpk_index(data):
         total += sum(data[e["offset"]:e["offset"] + e["stored"]])
@@ -173,12 +178,11 @@ def fpk_decompress(data: bytes) -> list[tuple[str, bytes]]:
     return out
 
 
-def fpk_pack(entries: list[tuple[str, bytes]], compress: bool = True, *, allow_unverified_raw: bool = False) -> bytes:
+def fpk_pack(entries: list[tuple[str, bytes]], compress: bool = True) -> bytes:
     """Rebuild an Eighting .fpk pack from (name, raw bytes) entries.
 
-    Each payload is PRS-compressed. Raw fallback requires explicit allow_unverified_raw (an entry with
-    stored == original; the shipped packs only use that for zero-length placeholders, so the
-    loader's handling of non-empty raw entries is still to be confirmed in main.dol).  The
+    Each payload is PRS-compressed; when PRS does not shrink a non-empty payload it is stored
+    raw (stored == original) instead, which the loader accepts via its memcpy branch.  The
     header u32 checksum (byte sum of every stored payload) is recomputed.  Entry order and
     names are preserved by the caller, which is what lets a writer swap one costume's files.
     """
@@ -191,8 +195,6 @@ def fpk_pack(entries: list[tuple[str, bytes]], compress: bool = True, *, allow_u
             raise ValueError(f"invalid fpk entry name {name!r}")
         blob = prs_compress(raw) if compress else raw
         if raw and (not compress or len(blob) >= len(raw)):
-            if not allow_unverified_raw:
-                raise ValueError('Non-empty raw FPK entries are not verified in the game loader')
             blob = raw
         rows += nb.ljust(0x20, b"\0") + struct.pack(">4I", 0, table + 0x30 * len(entries) + len(body), len(blob), len(raw))
         body += blob
@@ -204,8 +206,8 @@ def fpk_repack(source: bytes, replacements: dict[str, bytes]) -> bytes:
     """Edit existing compressed members within their original occupied extent.
 
     Unchanged packs round-trip byte-identically. Unchanged members, padding and
-    unknown header fields remain untouched; only changed compressed bytes, their
-    stored/original sizes and the checksum are rewritten. Growing beyond the
+    unknown header fields remain untouched; only changed compressed or raw bytes,
+    their stored/original sizes and the checksum are rewritten. Growing beyond the
     occupied member needs a separately verified relocation writer.
     """
     entries = fpk_index(source)
@@ -235,8 +237,8 @@ def fpk_repack(source: bytes, replacements: dict[str, bytes]) -> bytes:
         if raw == original:
             continue
         blob = prs_compress(raw)
-        if raw and len(blob) == len(raw):
-            raise ValueError('Compressed size is ambiguous with unverified raw FPK storage')
+        if raw and len(blob) >= len(raw):
+            blob = raw  # stored == original; loader's memcpy branch accepts raw members
         if len(blob) > stored:
             raise ValueError('Replacement exceeds the original FPK member extent')
         out[offset:offset + len(blob)] = blob
