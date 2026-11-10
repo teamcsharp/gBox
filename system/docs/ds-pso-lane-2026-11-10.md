@@ -1094,18 +1094,74 @@ Everything this round was done through the keyboard path (`win_send_keys`) with 
 and it worked -- unlike P1's pad, P2's pad needs no virtual pad at all. That is worth remembering: for co-op work the two
 players are driven by two completely different mechanisms, and the window has to be foreground for P2 only.
 
+## Round 19 (2026-11-10) — two players in Pioneer 2, and the movement answer
+
+This round got past everything P1 was stuck on. Three things happened, in order.
+
+### 1. Player 2's temp character exists: HUmar, name `3P`, GREENILL
+
+Driven entirely through P2's keyboard pad. Two input details that cost a cycle each:
+
+* P2's **B needs a hold** (~0.4 s). A 120 ms tap on the AUTO screen's "B MENU" did nothing; the same key held took the
+  creator straight back to its menu. A and the D-pad work as short taps.
+* From the name screen's keyboard, two `dright` from the opening cell lands on `3` and two `ddown` lands on `P`, so the
+  name came out **3P** -- the same off-by-one shape as round 4's BQF/DSH, and again the name is only cosmetic for a temp
+  character, but the offset is now recorded rather than rediscovered.
+
+The path: `SELECT CHARACTER` (P2's pad only) -> "Want to create a new Character?" YES -> class HUmar -> preview -> A ->
+`CHARACTER CREATION` (FACE/HAIR/COSTUME/SKIN/PROPORTION/NAME/AUTO/OK) -> AUTO x6 -> A (randomize) -> long B back ->
+`CHARACTER NAME` -> typed `3P` -> `OK` -> summary (TYPE HUmar, NAME 3P, SECTION ID GREENILL) -> CONFIRM.
+
+### 2. MULTI MODE loads both players into Pioneer 2 with **no cutscene**
+
+`VERIFY CHARACTER` shows PLAYER1 (BQF) and PLAYER2 (3P) side by side and asks "Are you ready?"; **each player confirms
+with their own pad** -- P2's A stamped `OK!` under PLAYER2, P1's A moved the game on to `GAME OPTION` (difficulty NORMAL,
+mode NORMAL, EPISODE 1, `START GAME`). After that:
+
+```
+mode 1   floor 0   slots 2
+p1 (BQF) 229.0, 254.0  room 10        <- the Pioneer 2 lobby, not the Principal's office (room 41)
+p2 (3P)  231.0, 267.0  room 10
+```
+
+and the frame `pic-lobby.jpg` is **split-screen**: BQF's view on top, 3P's below, both standing in the lobby with their
+own HUDs. **The single-player intro scene is simply not on this path** -- the thing ten rounds of presses, writes and
+teleports could not get past is bypassed by playing the game in the mode that has two players.
+
+### 3. Movement works -- through the keyboard, never through the virtual pad
+
+Measured with both characters standing free in room 10, positions read from the actor table:
+
+| driver | input | held | result |
+|---|---|---|---|
+| P1 | virtual pad, `up`/`down`/`left`/`right` (analog stick) | 1.2 s each | **position unchanged** |
+| P1 | virtual pad, `dup`/`ddown`/`dleft`/`dright` (D-pad) | 1.2 s each | **position unchanged** |
+| P1 | keyboard **arrow keys** (its INI fallback bindings) | 1.4 s each | 229,254 -> **175,254** -> 222,234 |
+| P2 | keyboard `NUMPAD8`/`NUMPAD2` (its pad) | 1.4 s each | 231,267 -> **181,274** -> 233,274 |
+
+So the virtual pad's **buttons** reach the game (every menu in this lane was walked with them) but its **analog stick
+never does**, while the keyboard bindings both pads carry as fallbacks move the characters perfectly. `win_send_keys`
+needs the Dolphin window foreground; that has been true all along and is why P2 could be driven this whole time.
+
+`gbox/pso_pad2.py` now carries `MOVEMENT` / `move_key` / `move_events` for both players (+2 tests), with the measurement
+table in a comment so the next reader does not repeat it.
+
+### What this unlocks
+
+* **P1's field leg** is now mechanical: both players can be walked, so Pioneer 2 -> the Hunter's Guild door (185,173
+  room 10) -> the teleporter (254,25) -> Forest 1 is `gbox.pso_move` with a keyboard backend.
+* The **movement bug** is a real gBox defect worth its own note: `vpad_win` writes the stick, XInput shows it, and the
+  game acts on buttons from the same pad but not on its axes -- either Dolphin's XInput axis binding or the pad's axis
+  report is wrong, and both players' fallbacks being keyboard is what hid it.
+
 ## 7. Next
 
-1. Finish player 2's temporary character. The session is in the creator's **AUTO** sub-screen, which offers only
-   "B MENU" (does not respond to P2's `R`) and "A CHANGE" (works). First check whether P2's B really is `R` by
-   sending it at the `YES/NO` prompt, which takes B as cancel: if `R` is wrong the INI mapping is wrong and that is a
-   one-line fix in `pso_coop_setup.PAD2_WIN`; if it is right, drive `FACE`/`HAIR`/.../`CHARACTER NAME` directly
-   instead of going through AUTO, and press `OK`.
-2. Then MULTI MODE's Pioneer 2 and the field leg: the Hunter's Guild door (185,173 room 10), the teleporter
-   (254,25), Forest 1 -- with both players, and the movement measurement that has been impossible from inside the
-   single-player intro.
-3. Then the three cold launches, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
+1. Walk both players from the Pioneer 2 lobby to the Hunter's Guild door (185,173 room 10), then the teleporter
+   (254,25), then Forest 1 -- using the **keyboard** path (`win_send_keys` with the window foreground), which is the
+   only movement that works, and `gbox.pso_move` closing the loop on each player's RAM position.
+2. Then P1's accept test: three cold launches to the field with both players, no warp.
+3. Then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
 
-Two facts for every co-op step: each player's character select answers **only that player's pad**, and
-`win_send_keys` accepts only the **uppercase** key names (`NUMPAD7`, `SPACE`) -- a lowercase name reports `sent: 0`
-and does nothing.
+Two things to remember: the single-player intro scene is bypassed entirely by MULTI MODE (both players load into the
+Pioneer 2 lobby, room 10, with no cutscene), and movement must go through the keyboard -- the virtual pad's analog
+stick never reaches the game although its buttons do (measured both ways in split-screen co-op, round 19).

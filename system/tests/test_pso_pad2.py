@@ -41,3 +41,18 @@ def test_a_chord_presses_then_releases_in_reverse():
 def test_an_unknown_button_says_what_is_known():
     with pytest.raises(KeyError, match="known"):
         K.key("trigger")
+
+
+def test_movement_keys_are_the_ones_that_actually_move_the_characters():
+    """Measured in split-screen co-op: P1's arrows and P2's numpad move; the virtual pad's stick never does."""
+    assert K.move_key(1, "up") == "up" and K.move_key(1, "right") == "right"
+    assert K.move_key(2, "up") == "NUMPAD8" and K.move_key(2, "down") == "NUMPAD2"
+    start, stop = K.move_events(1, "up")
+    assert start == [{"key": "up", "down": True}] and stop == [{"key": "up", "down": False}]
+
+
+def test_an_unknown_player_or_direction_says_what_is_known():
+    with pytest.raises(KeyError, match="player 3"):
+        K.move_key(3, "up")
+    with pytest.raises(KeyError, match="known"):
+        K.move_key(1, "sideways")
