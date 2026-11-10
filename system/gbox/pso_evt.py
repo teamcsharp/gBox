@@ -43,16 +43,46 @@ def header(data: bytes) -> dict:
     return {"a": a, "b": b, "c": c, "d": d}
 
 
+def table_end(data: bytes) -> int:
+    """Where the record table ends and the event's script begins: ``header.a == HEADER_SIZE + RECORD_SIZE * header.c``.
+
+    Every one of the 147 event files on the owned disc satisfies that identity (`tests/test_pso_evt.py` checks it for
+    all of them). Reading ``(len(data) - HEADER_SIZE) // RECORD_SIZE`` records instead - what this module did before
+    CP6 - fabricates records **out of the script's bytes** in 138 of the 147 files, because the script is not a
+    multiple of 20. The count is in the file; it has to be used.
+    """
+    h = header(data)
+    end = HEADER_SIZE + RECORD_SIZE * h["c"]
+    if h["a"] != end:
+        raise EventError(f"the header's size field is {h['a']} but {h['c']} records of {RECORD_SIZE} bytes need {end}")
+    if end > len(data):
+        raise EventError(f"the table claims {h['c']} records ({end} bytes) but the file has {len(data)}")
+    return end
+
+
+def script(data: bytes) -> bytes:
+    """The event's script blob: everything after the record table (0 to 404 bytes across the disc)."""
+    return data[table_end(data):]
+
+
+def build(header_fields: dict, recs: list[dict], script: bytes = b"") -> bytes:
+    """The inverse of :func:`header`/:func:`records`/:func:`script` - byte-identical for every event file on the disc."""
+    body = b"".join(struct.pack("<IHHHHII", r["id"], r["flags"], r["page"], r["opcode"], r["arg"], r["value"],
+                                r["offset"]) for r in recs)
+    head = struct.pack("<4I", HEADER_SIZE + len(body), header_fields["b"], len(recs), header_fields["d"])
+    return head + body + script
+
+
 def records(data: bytes) -> list[dict]:
     """The 20-byte records after the header, interpreting each word the way the offsets in the file suggest.
 
     ``id`` looks like the event id (sequential across records), ``opcode`` the operation, ``arg`` its parameter, and
     ``value``/``offset`` the two trailing words -- the last of which steps by six per record in the file measured.
-    A trailing partial record is ignored rather than guessed at.
+    The count comes from the header (:func:`table_end`), so the script is never read as records.
     """
     h = header(data)
     out = []
-    body = data[HEADER_SIZE:]
+    body = data[HEADER_SIZE:table_end(data)]
     for i in range(len(body) // RECORD_SIZE):
         off = i * RECORD_SIZE
         rid, flags, index, opcode, arg, value, offset = struct.unpack_from("<IHHHHII", body, off)
@@ -70,7 +100,8 @@ def summary(data: bytes) -> dict:
         ops[r["opcode"]] = ops.get(r["opcode"], 0) + 1
     ids = [r["id"] for r in recs]
     runs = sum(1 for a, b in zip(ids, ids[1:]) if b == a + 1)
-    return {"header": h, "records": len(recs), "trailing_bytes": (len(data) - HEADER_SIZE) % RECORD_SIZE,
+    return {"header": h, "records": len(recs), "script_bytes": len(script(data)),
+            "trailing_bytes": (len(data) - HEADER_SIZE) % RECORD_SIZE,
             "opcodes": dict(sorted(ops.items())),
             "first_id": ids[0] if ids else None,
             "id_min": min(ids) if ids else None, "id_max": max(ids) if ids else None,
