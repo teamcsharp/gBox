@@ -556,5 +556,69 @@ def file_record(rom: bytes, idx: int) -> dict:
             "path": "packed" if typ == 1 else "raw_dma"}
 
 
+# --- packed-record decompressor (proved from 0x8007C620 / helpers 0x8007C938,998,9EC) ---
+PACKED_DECOMPRESSOR = 0x8007C620
+LZW_CLEAR, LZW_END, LZW_MAX_WIDTH = 0x100, 0x101, 12
+
+
+def unpack_record(blob: bytes) -> bytes:
+    """Decode a type-1 file: word0 = unpacked size (BE), then an MSB-first
+    variable-width (9..12 bit) LZW stream starting at word1.
+
+    Codes 0x100 = clear (width 9, next 0x102), 0x101 = end.  A new entry is
+    previous-string + first byte of the current string, stored as (offset into
+    the output, length) exactly like the game (no dictionary tree).  The code
+    width grows when the next free index reaches 2**width - 1 (early change).
+    """
+    size = struct.unpack_from(">I", blob, 0)[0]
+    out = bytearray()
+    lit = bytes(range(256))
+    pos = 32                                   # bit cursor, past word0
+    nbits = len(blob) * 8
+    width, nxt = 9, 0x102
+    prev_start = prev_len = None
+    table: dict[int, tuple[int, int]] = {}      # code -> (out_off, len) for >=0x102
+
+    while pos + width <= nbits and len(out) < size + 1:
+        code = int.from_bytes(blob[pos >> 3:(pos >> 3) + 4].ljust(4, b"\0"), "big")
+        code = (code >> (32 - (pos & 7) - width)) & ((1 << width) - 1)
+        pos += width
+        if code == LZW_END:
+            break
+        if code == LZW_CLEAR:
+            width, nxt, prev_start, prev_len = 9, 0x102, None, None
+            table.clear()
+            continue
+        if code < 256:
+            start = len(out)
+            out += lit[code:code + 1]
+            cur_len = 1
+        elif code in table:
+            o, n = table[code]
+            start = len(out)
+            out += out[o:o + n]
+            cur_len = n
+        elif code == nxt and prev_start is not None:
+            start = len(out)
+            out += out[prev_start:prev_start + prev_len]
+            out.append(out[prev_start])
+            cur_len = prev_len + 1
+        else:
+            raise ValueError(f"bad LZW code {code:#x} at bit {pos - width}")
+        if prev_start is not None:
+            table[nxt] = (prev_start, prev_len + 1)
+            nxt += 1
+            if nxt == (1 << width) - 1 and width < LZW_MAX_WIDTH:
+                width += 1
+        prev_start, prev_len = start, cur_len
+    return bytes(out[:size]) if len(out) >= size else bytes(out)
+
+
+def unpack_file(rom: bytes, idx: int) -> bytes:
+    rec = file_record(rom, idx)
+    blob = rom[rec["start"]:rec["end"]]
+    return unpack_record(blob) if rec["type"] == 1 else bytes(blob)
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

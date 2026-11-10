@@ -269,3 +269,37 @@ def test_owned_build_file_index_matches_segment_table():
     for r in recs[:5] + recs[-5:]:
         f = mk.file_record(rom, mk.FILE_TABLE_FIRST_REAL + r["index"])
         assert (f["start"], f["end"], f["type"]) == (r["start"], r["end"], r["flag"])
+
+
+def _pack_bits(codes_widths) -> bytes:
+    acc = n = 0
+    for c, w in codes_widths:
+        acc = (acc << w) | c
+        n += w
+    acc <<= (-n) % 32
+    n += (-n) % 32
+    return acc.to_bytes(n // 8, "big")
+
+
+def test_unpack_record_synthetic_lzw_with_kwkwk():
+    # "ABABABA": A, B, 0x102(AB), 0x104(KwKwK = ABA), end -> ABABABA
+    data = b"ABABABA"
+    stream = _pack_bits([(0x100, 9), (65, 9), (66, 9), (0x102, 9), (0x104, 9), (0x101, 9)])
+    blob = struct.pack(">I", len(data)) + stream
+    assert mk.unpack_record(blob) == data
+
+
+def test_unpack_all_packed_files_match_declared_size():
+    rom = _owned_rom()
+    h = hashlib.sha256()
+    n = 0
+    for idx in range(mk.FILE_TABLE_FIRST_REAL, mk.FILE_TABLE_FIRST_REAL + 144):
+        rec = mk.file_record(rom, idx)
+        if rec["type"] != 1 or rec["size"] == 0:
+            continue
+        out = mk.unpack_file(rom, idx)
+        assert len(out) == struct.unpack_from(">I", rom, rec["start"])[0]
+        h.update(out)
+        n += 1
+    assert n == 58
+    assert h.hexdigest() == "c10d2ef0b24b66f17b0e78e14fce83a604f060c6dac8618a73cd0996756da905"
