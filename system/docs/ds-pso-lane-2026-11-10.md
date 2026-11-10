@@ -1651,16 +1651,57 @@ The city navigation stands where round 29 left it: the party is in room 20 near 
 inert, and the guild counter has not been reached. That remains the one thing between this lane and a field arrival by
 real presses.
 
+## Round 31 (2026-11-10) — P7a is running now, and it fails in the right place
+
+### The model build gets all the way to the textures
+
+With `pso_gc_paths` from round 30 in place, `pso_player.build` was run against the disc for real. The failure moved three
+times, each one a genuine format difference rather than a missing file:
+
+| attempt | failure | what it was |
+|---|---|---|
+| round 30 | `FileNotFoundError PSO/PL...` | the Dreamcast path spelling — fixed by `pso_gc_paths` |
+| this round, first run | `struct.error: 806354952 bytes at offset 806354944` | **GC NJCM payloads are big-endian**, `ninja.NJ` defaults to little-endian |
+| this round, with the body and head parsed | `KeyError 'PSO/PLCTEX.AFS'` | three more reads bypassed the translator |
+| this round, all reads translated | `ValueError: no PVRT chunk` | **the textures are GVR, not PVRT** — the Dreamcast texture path |
+
+So the model parse now works on a real GameCube body: `plCbdy00.nj` and `plChed00.nj` both load, and the code walks the
+node tree until it reaches the texture archive.
+
+### The endianness finding
+
+`ninja.NJ`'s docstring had this half right — the **chunk size** field is little-endian on both platforms, and a comment
+already records that. What was missing is that the **node/vertex payload** is big-endian on GameCube. The probe is one
+field: the root node's model offset. As little-endian it read `0x30100000` (a 806 MB offset into a 24 KB file); as
+big-endian it reads `0x1030`, which points inside the chunk.
+
+`pso_gc_paths.njcm_is_big_endian(data)` reads that field both ways and believes whichever lands inside the chunk
+(both plausible -> the smaller). `nj_part(disc, path)` then reads *and* parses a part in one call, and `pso_player` uses it
+for the body and the head. Three more direct reads (`textures`, `pack`, `afs_data`) were switched to `read_part` as well —
+they had bypassed the translator.
+
+Tests: the probe is asserted on synthetic payloads in both byte orders, and `njcm_payload` on the chunk framing.
+
+### Next for P7a
+
+The texture step wants `PVRT`, the Dreamcast format; this disc's textures are **GVR**. `pso_gc.gvr_decode` already exists
+and is the decoder this lane has been using for the area textures -- the note from round 1 still stands, that its
+`flags & 8` palette branch raises on 42 of the 42 CI textures on this disc, so P7a needs that fix as well as the switch.
+
+Honest status: P7a is **not** done, but it is no longer blocked on a mystery -- it is three known pieces away (GVR decode
+in the player build, the palette branch, and then writing the swapped model back).
+
 ## 7. Next
 
-1. **P7a end to end:** with `pso_gc_paths` in place, run `pso_player.build` against the disc and see how far the
-   model path gets -- the four part files now resolve, so the next failure (if any) is real model code, not a path.
-2. **P1's guild counter:** the party is in room 20 by the shop row; the guild door entity is inert and the counter
-   has to be reached by walking around it and facing the keeper. The route in is walked: (102,105) -> (33,-34) ->
-   (-84,27) -> (-223,-24).
-3. Then the quest and its warp to the surface, then P1's accept test (three cold launches, both players), then P6a's
-   in-game proof, P6b, P7a's hot swap and the demo -> route fixture.
+1. **P7a's texture step:** the player build wants `PVRT` (Dreamcast) and this disc has **GVR**. Switch that path to
+   `pso_gc.gvr_decode` and fix its `flags & 8` palette branch, which raises on all 42 CI textures on `GPOE8P` -- that
+   is the one known bug left between the model parse (working) and a built model.
+2. **P1's guild counter:** still the only route to a field arrival by real presses. Route in is walked:
+   (102,105) -> (33,-34) -> (-84,27) -> (-223,-24); the counter needs the character in front of the keeper, not
+   across it.
+3. Then the quest warp, P1's accept test (three cold launches, both players), P6a's in-game proof, P6b, P7a's hot
+   swap and the demo -> route fixture.
 
-Fixed this round: the Dreamcast/GameCube character path spelling (`PSO/PLABDY00.NJ` vs `plAbdy00.nj`), which is why
-every `pso_player` call failed on this disc. `gbox/pso_gc_paths.py` (+9 tests, one of them checking the names against
-the real 3,510-file disc catalogue).
+Progress on P7a this round is measurable: the failure went from "file not found" to "the model parsed and the
+textures are the wrong format". GC NJCM node payloads are big-endian (the chunk size field is not), detected by one
+field probe that has its own tests.

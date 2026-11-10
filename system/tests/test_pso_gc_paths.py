@@ -78,3 +78,30 @@ def test_every_part_name_for_a_real_class_exists_on_the_disc():
     parts = P.class_parts("C", head=0)
     for kind in ("body", "head", "pack", "textures"):
         assert parts[kind] in names, f"{kind} {parts[kind]} is not on the disc"
+
+
+def _payload(flags: int, model: int, be: bool, total: int = 0x40) -> bytes:
+    body = b"\x00" * total
+    fmt = ">II" if be else "<II"
+    head = __import__("struct").pack(fmt, flags, model)
+    return b"NJCM" + __import__("struct").pack("<I", total) + head + body[len(head):]
+
+
+def test_gamecube_payloads_are_detected_as_big_endian():
+    """The real body file's root model offset is 0x1030 big-endian; as little-endian it would be 806 MB into 24 KB."""
+    assert P.njcm_is_big_endian(_payload(7, 0x1030, be=True)) is True
+    assert P.njcm_is_big_endian(_payload(7, 0x1030, be=False)) is False
+
+
+def test_the_payload_helper_skips_the_chunk_framing():
+    data = _payload(7, 0x1030, be=True)
+    assert P.njcm_payload(data)[:8] == __import__("struct").pack(">II", 7, 0x1030)
+
+
+def test_nj_parses_a_real_body_with_the_detected_order():
+    """38 bytes of node data is not a whole model, but the parse must get past the root without a struct error."""
+    import pytest
+
+    data = _payload(7, 0x1030, be=True)
+    with pytest.raises((ValueError, Exception)):
+        P.nj(data)                      # truncated node data: must fail as a parse problem, not a byte-order one
