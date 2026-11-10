@@ -118,7 +118,8 @@ def enemies(*dists):
 def flash_bot(monkeypatch, confirm=True):
     calls = []
     monkeypatch.setattr(interventions, "native_controller", lambda ad: SimpleNamespace(
-        flash=lambda: calls.append(1) or {"state": "confirmed" if confirm else "refused"}))
+        flash=lambda: calls.append(1) or {"state": "confirmed" if confirm else "refused"},
+        flash_at=lambda x, y, z: calls.append(1) or {"state": "confirmed" if confirm else "refused"}))
     monkeypatch.setattr(R.threading, "Thread", lambda **kw: SimpleNamespace(start=kw["target"]))
     b = R.Bot(stats={}, clock=lambda: 0.0)
     b._m = SimpleNamespace(adapter=object())

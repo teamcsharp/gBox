@@ -12,7 +12,7 @@ from its caller:
 The derived images live in two caves this repository has not used before - zero runs at `main+0x18F2BC0` and
 `main+0x18F2CC0`, inside the same never-executed padding tail as the existing four images (the pristine image's
 `.text` is one zero run from `0x18F2630` to its end, and no B/BL/ADR/ADRP+ADD target and no 64-bit literal in
-`.text`/`.rodata` points into them - checked by `tools/verify_re6_classes.py`). The original verified images stay
+`.text`/`.rodata` points into them - checked by `scripts/verify_re6_classes.py`). The original verified images stay
 installed and in use for the flash path; these are only installed when a class that needs them is fired.
 
 Classes (branch re6-bomb-mind, 2026-11-10; docs/research/re6-weapon-dti-tree.md, Hermes #9437):

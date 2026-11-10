@@ -769,3 +769,140 @@ What a live adapter still needs:
 * RE6: `shots` per second should not fall. `lock_ray_misses`, `lock_fallbacks` and `lock_limited`
   should not rise.
 * `frozen_*`: unchanged on intro cards (the scatter is earned).
+
+## 11. The aim book: per-shot truth and the learning on every miss, across titles (2026-11-10)
+
+Branch `mercs-aim-book`. The operator, 2026-11-10: "Every missed shot should train the bot to how they need to adjust
+their fire ... If the bot has access to the ram and hex info of the game, I want the aim impeccable"; "this is also why
+i wanted the aimbot universal. I want it improving and learning across these titles so they all get better"; "never let
+the bot get stunned by their own flash grenades ... use that time to plan mines and throw grenades and clear the crowd".
+Code: `gbox/mercs/core/aim_book.py`, `gbox/mercs/core/flash_window.py`; tests `test_mercs_aim_book.py`,
+`test_re4_switch_aim_ram.py`, `test_mercs_flash_window.py` (all synthetic).
+
+### 11.1 Measured before
+
+* RE4 Switch (the coordinator's reads): Castle 352 shots / 48 hits (14 %), Village 201 / 38 (19 %). Heading-only aim,
+  no pitch read or written, no per-shot record, nothing learned (`learned/010099A00BC1E000` held only `menu_pace.json`).
+* RE5 Switch, the notebook's last 24 h (108 rounds, `curriculum/010018100CD46000/rounds.jsonl`): 22,865 pulls,
+  11,926 hits (52 %); by band <3 m 55 %, 3-8 m 57 %, 8-15 m 53 %, >15 m 44 %; `pulls_ray_miss` 7,211,
+  `pulls_dot_miss` 1,591; magnum 61 %, shotgun 74 %. The live look (2026-11-10 13:1x, 30 pulls): "body segment"
+  contacts 5 hits / 9 misses, "body endpoint" 6 / 0; at <1.5 m 1 hit in 8; **the misses' pitch error median 27 deg
+  against the hits' 2 deg** - the segment test passed lines through his knees or over his head at arm's length.
+  A pull on a Majini who died and left the census inside the window counted as a miss (no health fall was seen).
+* RE6 Switch, 24 h (29 rounds): 4,767 shots / 1,605 hits (34 %), `pulls_hit` 1,184 / `pulls_miss` 1,720.
+
+### 11.2 RE4 Switch: the gun's own aim in RAM (static, main.bin `82C2A04A...`)
+
+Every offset below is seen in a Switch instruction (capstone, file offset = vaddr + 0x100), against the GameCube
+decompilation (`~/gBox_alt/reference/re4-gc-decomp`: `pl_wep.cpp`, `objWep.cpp`, `em_sub.cpp`). Not yet read in a live
+round: `re4_switch.decode_aim` refuses any value outside its range and the bot falls back to the old aim.
+
+| what | where | instruction |
+|---|---|---|
+| PlWepLockCtrl (the aim each frame) | 0x33DF80 | calls PlWepLockRand at 0x33E5EC |
+| waist twist m_Fwork0 (the aim yaw = facing + it) | unit + 0x524 | 0x33E3D8 `str s1, [x19, #0x524]`; 0x33E3E4 `add x3, x19, #0x524` |
+| facing ang.y | unit + 0xB4 (U_YAW) | 0x33E4C0 `str s1, [x19, #0xb4]` |
+| m3r, the pitch blend (now, target, rate), -1 down .. +1 up | module + 0x1265A08 (GOT 0xB27D00) | 0x33E2F8 `ldp s2, s5, [x10]`; 0x33E310 `str s4, [x10, #4]` |
+| pl->Wep (weapon control) | unit + 0x938 | 0x33EC7C `ldr x21, [x0, #0x938]` |
+| centre pitch / centre waist | Wep + 0x28 / + 0x2C | 0x33ED00 `str w8, [x21, #0x28]`; 0x33ED08 `str w8, [x21, #0x2c]` |
+| weapon object | Wep + 0x38 | 0x33EC84 `ldr x9, [x21, #0x38]` |
+| the sway (bureX, bureY, bureSpeedX, bureSpeedY) | object + 0x3E0 .. 0x3EC | 0x33EC88 .. 0x33ECA4 |
+| r_no_0 (1 ready, 2 fire) | object + 0x402 | 44 x `strh [.., #0x402]` (setStat) |
+| m_SightEm (the enemy the line meets first) | object + 0x418 | 0x2E87CC `add x4, x19, #0x418` -> GetWepTargetPos 0x1D1980 |
+| the laser's statics lpos / lcross | module + 0x1265314 / + 0x1265320 | drawLaserSight 0x2E8744: `adrp x24, #0x1265000; add x24, x24, #0x310` |
+| pG->weapon_no | pG + 0x5034 | 0x2E87C4 `mov w9, #0x5034` |
+
+What it means for the misses: PlWepLockRand random-walks the aim +-5.7 deg in pitch and yaw about its centre (the
+yaw clamp uses the pitch range) and kicks it to a fresh random point on every shot (the recoil, mflag 2); the right
+stick moves the waist (up to 12 deg) before it turns him, so the old lock's facing write left the waist where the taps
+had put it; nothing set the pitch. The handgun's bullet runs down the gun's own line (+-200 mm at 50 m, 0.23 deg).
+The steady aim (`re4_switch._ram_aim` + `re4_switch_mods._steady`, with the aim lock on): the sway's four bounds to 0
+(the clamp then holds the aim exactly on its centre: no walk, no kick), the waist and its centre to 0, the facing and
+the centre pitch onto the book's point through the laser's own line (closed loop, pitch gain 0.8), no right-stick
+taps, and ZR only while m_SightEm names a living Ganado (1.5 s without one: the old gate, `aim_ram_sight_fallbacks`).
+
+### 11.3 The book
+
+* **Shot record** (`Ledger.fired`): target, family, class, body kind, band, the point meant, the gun's line (or angles),
+  the error and the residual (the line against the commanded point), where the line crossed his body (u across his
+  radius, v along his half span), LOS, contact, his lateral speed, the correction in force. **Resolution** within
+  `HIT_S` (0.45 s) from the census: hit, kill (health 0, or he left the census as the kill count rose), lost (left with
+  no kill count: neither), miss with its cause (`no_los`, `off_body`, `moved`, `on_body`, `unmeasured`). Stats
+  `aimbook_*` (hit_rate, err_deg, err_p90_deg, miss_<cause>, <band>_shots / _hits, last_miss, book, book_change);
+  RE4 also as `hit_rate` / `aim_err_deg`. Every resolved shot is a line of `gbox-data/mercs/shots/<title>/<date>.jsonl`.
+* **Learning** (`learn_cell`): the bias (a windowed median of 16 residuals, misses twice; it moves only when the median
+  stands 2.5 standard errors out of its own noise, else it decays to 0; at most 1 deg a shot, 10 deg in all); the body
+  point (hits pull it, a miss with the line on him pushes it away; |u| <= 0.5, v in -0.6 .. 0.9); the contact tolerance
+  (a miss inside it shrinks it, a hit outside grows it; 0.35 .. 1); the lead (a mover missed with the line behind him
+  along his motion adds 0.01 s, ahead takes 0.01 s; 0 .. 0.3 s). Never from a shot with no line of sight.
+* **Across titles**: `learned/<title>/aim_book.json` (family, class, band) and `learned/_universal/aim_book.json`
+  (family, body kind, band) with one sub-cell per title. A title's correction = (n_own x own + w x prior) / (n_own + w),
+  the prior the OTHER titles' sub-cells pooled by their evidence, `w = PRIOR_N[field] x min(1, n_others / 30)`:
+  bias 4, body point 12, tolerance 12, lead 6 shot-equivalents. A fresh RE4 cell starts from RE5's and RE6's lessons
+  for the same weapon family, body kind and band; after 12 of its own shots its own evidence weighs as much as the
+  prior, after 60 it is 83 % of the value.
+* **Applied**: RE4 - the book's point is where the facing / centre pitch are written; RE5 - `re5_switch_aim.apply`
+  steers the laser to it (the body point only where the bot aims at his plain chest; a special's site, the dynamite
+  and K's learned height keep their own, with the lead and the angular part), and `AIM_BOOK_GATE` counts a "body
+  segment" contact only inside the book's ellipse (tol of his radius across, 0.8 x tol of his half span up / down: his
+  torso while tol is 1); the dot ON him always counts (`aimbook_gate_edge_holds`); RE6 - the offset joins the fire
+  pattern's scatter in `_lock` and the sticks' point.
+
+### 11.4 RE5 flash: never at his feet, and its seconds used
+
+* `FLASH_PLACE`: every bot flash (the doctrine's, the critical one, the mine flashes, the crowd burst) goes off at
+  `flash_window.place` - the crowd's centre (1 / d weights) pushed to 4 m from him along the line to it, at most 9 m,
+  on his floor - through `re5_switch_native.Controller.flash_at` (the verified spawn / explode with the unit's transform
+  and home copy moved first, the grenade ring's own step, which has run live). Nobody within 12 m: no flash. The ring's
+  first grenade goes out no nearer than 4 m too (`grenade_ring.policy`), and a flash ring waits out `FLASH_MIN_GAP_S`
+  after any flash. One clock for every flash: the bot's own, the ring's and the operator's receipts
+  (`native_flash_confirmed_at`, put on the bot's clock as first seen); a thrown flash grenade counts too.
+* The self-stun is measured, not assumed: `flash_self_n_<where>`, `flash_self_stun_s_<where>`,
+  `flash_self_stunned_<where>` (where = feet / crowd / other) and `flash_self_motions` (his motion ids outside the free
+  set in the 2.5 s after a flash). No RAM write suppresses a flinch: none is mapped.
+* `FLASH_WINDOW` (3.5 s after a confirmed flash, any source): a mine first (`Mines.urge`, the reeling ones blocking no
+  plant), then a grenade at the stunned pack (the throw's gap waived once), then a step of at most 0.9 s to open floor
+  5 m from them (the mesh checked), then fire; never over a step under way. Stats `flash_window_windows / _mines /
+  _throws / _moves / _fires / _kills / _idle`.
+
+### 11.5 Watch live
+
+* RE4: `mods_aim_ram_writes`, `mods_aim_sway_zeroed` (once per weapon), `aim_ram` ("line" once the laser reads),
+  `aim_ram_shots`, `aim_ram_holds`, `aim_ram_sight_fallbacks` (should stay near 0 - many means the sight offset does
+  not read), `hit_rate` (expected from 0.14-0.19 to 0.6+ on the steady line), `aim_err_deg`, `aimbook_miss_*`; the
+  shot log's `gun.sight` / `gun.swayed` and `cam` columns. The worker needs a restart (or a hot reload of re4_switch,
+  re4_switch_mods and the new core module); the aim lock must be on (it is: `re4-mods.json` aim_lock true).
+* RE5: `aimbook_gate_edge_holds`, `aimbook_hit_rate` against `pulls_hit / pulls` (the vanish fix alone lifts the
+  measured rate), `aimbook_miss_on_body` at <3 m (expected to fall with the gate), `flash_placed`, `flash_place_cm`
+  (4-9 m), `flash_self_stunned_crowd` (expected 0), `flash_window_*`.
+* RE6: `aimbook_*` from its presses; the RE5 / RE4 prior shows in the book's `source`.
+
+### 11.6 RE6 flash: one a minute, only when he needs it, the gun first
+
+The operator, 2026-11-10 14:30: "RE6 flashes far too often; at most one flash per minute; and the RE6 bot is not
+proactive enough at shooting"; then "flashes should only come in tight situations where the bot actually needs help.
+Some enemies can't be beaten by a flash and must be killed with weapons. Constant flashes are distracting". Live before
+(3 rounds): threat_flashes 156, rings 34, scatter barrages 59 (472 flash rounds), wheel flashes 22 + the flurry;
+threat_answered_flash 3,792 against _fire 1,459; t_nade 331 s against t_fire 9.3 s; 96 shots against 243 throws.
+
+* `core.flash_window.FlashGate`: one clock (the last of `flash_stamp_at` and `native_flash_confirmed_at`, wall time), every
+  automatic flash path asking `allow(path, reason)` and saying `stamp(path, reason)`; the operator's own emergency click
+  is never held but stamps the clock. `core.flash_window.tight`: grabbed; a flashable wind-up in reach with no clear way
+  out; 4+ flashable within 3 m with no clear way out; his health at 35 % or under and falling within 1.5 s. A boss tier or
+  FLASH_IMMUNE_HP (1,500) of maximum health never counts: weapons for them.
+* RE6 paths on the gate: the doctrine's native flash (`_respond_flash`; the Responder's own gap now follows the live
+  constant), the wheel's flash, the flurry, a flash grenade in hand (put away when none is due), the cluster burst's
+  flash fallback, the ring (`grenade_ring.flash_held`: the gap, and for FLASH_TIGHT titles only the surround, the big ones
+  not counted) and the scatter whenever all it fires is flashes (`SCATTER_FLASH_ONLY`). The bomb drop no longer waits for
+  a flash that will not come. Sliders (bot_logic re6): FLASH_MIN_GAP_S (10-300 s, default 60), FLASH_TIGHT, FIRE_FIRST,
+  FIRE_FIRST_R. Stats flash_gap_skips, flash_untight_skips, flash_skip_<path>, flash_reason_last, flash_reasons,
+  flash_paths.
+* Fire first: no new grenade cycle while a flashable one stands in clear sight within FIRE_FIRST_R (4 m) on his level; a
+  cycle still on the wheel is called off; the doctrine counts a grenade cycle as no answer then and fires. Grenades go to
+  groups beyond it. Stats nade_fire_first_skips / _aborts.
+* Replayed minute (`test_re6_flash_policy_replay.py`, synthetic static crowd, the wheel answered by a stand-in):
+  surrounded (4 within 3 m) - before 10 flashes, 23 shots, t_fire 1.1 s, t_nade 15.3 s; after 1 flash (reason
+  "surrounded"), 50 shots, t_fire 2.5 s, t_nade 5.4 s. Three near (not tight) - before 8 flashes, 38 shots, t_nade 8.7 s;
+  after 0 flashes, 74 shots, t_nade 0 s.
+* Not done: a per-enemy weapon pick (magnum / shotgun for the armoured, the launcher at groups) beyond what RE6's own
+  AUTO_SWITCH already does; the gate keeps the flash off them, the weapon choice is the title's as before.

@@ -50,6 +50,8 @@ from .. import qte                         # universal QTE handling: the vision 
 from .. import threat_memory               # who hurt him and what they did first, learned per class (THREAT_FILE)
 from ..core import combat                  # the universal fight (UNIVERSAL_CORE): at import, for the hot reload
 from ..core import respond                 # the doctrine's answer to a threat (RESPOND): at import, for the hot reload
+from ..core import aim_book                # the per-shot truth and the learning on every miss (AIM_BOOK)
+from ..core import flash_window            # the flash on the crowd and the window it opens (FLASH_PLACE, FLASH_WINDOW)
 
 TITLE_ID = "010018100CD46000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/010018100CD46000-ram.json
@@ -1226,6 +1228,42 @@ GRENADES = True
 FLASH_MIN_GAP_S = 60.0                  # the sidebar's FLASH_MIN_GAP_S slider (bot_logic) changes it live
 GRENADE_EVERY_S = 3.0
 GRENADE_CROWD_N, GRENADE_CROWD_R = 4, 450.0
+# Never stunned by his own flash (the operator 2026-11-10: "When the bot flashbangs, do not have the bot impacted by the
+# explosion. Skip making them stunned"; "never let the bot get stunned by their own flash grenades"). The native flash
+# went off at his own position (re5_switch_native.Controller.flash: spawn.c copies his +0x60 to the unit). With
+# FLASH_PLACE every bot flash goes off ON THE CROWD instead (Controller.flash_at: the same verified spawn / explode, the
+# unit's live transform and home copy moved before the blast - the step the grenade ring has run live, ring_kills): at
+# core.flash_window.place - the crowd's centre (the nearer ones weigh more) pushed out to FLASH_PLACE_MIN_CM from him
+# along the line to it, at most FLASH_PLACE_MAX_CM, on his floor. No crowd point (nobody within FLASH_PLACE_FROM_CM): no
+# flash. The self-stun itself is MEASURED, not assumed (flash_self_*: his motion in the FLASH_STUN_S after a confirmed
+# flash, by where it went off - at his feet before, on the crowd now; a motion outside SELF_FREE_MOTIONS is a reaction).
+# No RAM write suppresses a flinch: none is mapped (the motion ids a flash gives him are what flash_self_motions shows).
+FLASH_PLACE = True
+FLASH_PLACE_MIN_CM, FLASH_PLACE_MAX_CM, FLASH_PLACE_FROM_CM = 400.0, 900.0, 1200.0
+FLASH_STUN_S = 2.5
+SELF_FREE_MOTIONS = frozenset({0, 1, 7, 9, 10, 22, 26, 29, 32})   # standing, walking, backing, turning, the gun, reload
+# The flash window (core.flash_window; the operator: "Have the bot dropping landmines and running around during the
+# flashbang making optimal use of their time ... use that time to plan mines and throw grenades and clear the crowd"):
+# for FLASH_WINDOW_S after a confirmed flash (native_flash_confirmed_at, his own or the operator's), while the Majini
+# reel: a mine first (Mines.urge: the controller's own clearances and the learned blast reach kept, the reeling ones
+# blocking nothing - flash_until), then a grenade at the stunned pack (THROWS, the throw's gap waived once a window),
+# then a step to open floor that puts them in front at a firing distance (the plan's spot, at most FLASH_MOVE_S, the mesh
+# checked), then fire on the stunned ones - never standing. Stats flash_window_mines / _throws / _moves / _kills / _fires.
+FLASH_WINDOW = True
+FLASH_WINDOW_S = 3.5
+FLASH_MOVE_S = 0.9
+# The aim book (gbox.mercs.core.aim_book; the operator 2026-11-10: "They are firing and missing. The bot needs to learn
+# from missed shots and make corrections. I need hooks analyzing and improving the aimbot"): every trigger pull is a shot
+# record (the point meant, the laser's line at the pull, the game's answer within aim_book.HIT_S - a target that leaves
+# the census as the kill count rises is a kill, not the miss pulls_* counted it as), and every resolved one teaches the
+# book (learned/010018100CD46000/aim_book.json; its sub-cells in learned/_universal for RE4 / RE6). The aim
+# (re5_switch_aim.apply) goes to the book's point - his chest moved by the learned body point, his lead and the angular
+# correction - and, AIM_BOOK_GATE, a 'body segment' contact counts only with the line crossing him inside the book's
+# tolerance ellipse (the live look 2026-11-10 13:1x: the misses' pitch error median 27 deg against the hits' 2 - at
+# 1-1.5 m the segment test passed lines that crossed his knees or above his head; the hits' were on his torso).
+AIM_BOOK = True
+AIM_BOOK_GATE = True
+AIM_LEAD_PRIOR_S = 0.08
 # The flash in an emergency (operator 2026-11-09, of his bombs: "Then flashbanging and running away and getting
 # distance ... have him force his way out"; the native flash stuns every Majini around him, the one holding him
 # included: docs/research/re5-native-flash.md). What kills him (docs/research/re5-ss-campaign.md, the 270 deaths
@@ -3894,11 +3932,15 @@ class Bot:
                                 and (infinite or (s.get("rounds") or 0) > 0)), None)
                     if row is not None:
                         rows[kind] = row
+                if "flash" in rows and (now - self._grenade_last < FLASH_MIN_GAP_S or self._flashed_lately(now)):
+                    rows.pop("flash")                        # a thrown flash is a flash too: one a minute (FLASH_MIN_GAP_S)
                 plan = pol.decide(prof, now, p, live, set(rows), fleeing=fleeing)
                 if plan is None:
                     return None
                 row = rows[plan.kind]
                 pol.started(now)
+                if plan.kind == "flash":
+                    self._grenade_last = now
                 st = d["_uc_throw"] = {"plan": plan, "item": row["item"], "grid": row.get("grid"), "id": row.get("id"),
                                        "phase": "equip", "since": now, "tap_at": -1e9, "shots0": None}
             plan = st["plan"]
@@ -5635,6 +5677,252 @@ class Bot:
         self.aim_since, self.fire_down, self.ray_key, self.trigger_since = None, False, None, None
         self._raise_t = None
 
+    # --- the aim book (AIM_BOOK: gbox.mercs.core.aim_book) ------------------------------------------------------------
+    def _aim_core(self):
+        c = self.__dict__.get("_aim_book_core")
+        if c is None:
+            c = self._aim_book_core = aim_book.AimCore(combat_profile(), self.stats, lead_prior_s=AIM_LEAD_PRIOR_S)
+        return c
+
+    def _aim_tick(self, snap, now) -> None:
+        """The census to the aim book every tick: the open shots resolved, learned and saved."""
+        self._ab_snap = snap
+        if AIM_BOOK:
+            kills = snap.get("kills")
+            self._aim_core().tick(now, snap.get("enemies") or (), kills if type(kills) is int else None)
+
+    def _aim_family(self) -> str:
+        from . import re5_weapons as _w
+        spec = _w.WEAPONS.get(self._item)
+        return spec.family if spec is not None else "gun"
+
+    def _aim_book_point(self, tgt, chest, aim_h, origin, now) -> tuple:
+        """The point re5_switch_aim.apply steers the laser onto: his chest (as the bot chose it) moved by the book's
+        body point - only where the bot aims at his plain chest (a special's site, the dynamite, K's learned height keep
+        their own) - his lead and the angular correction. Kept for the pull's record (_aim_book_shot)."""
+        if not AIM_BOOK:
+            return chest
+        try:
+            b = body(tgt)
+            plain = abs(aim_h - b.chest) < 1.0 or abs(aim_h - CHEST_H) < 1.0
+            plan = self._aim_core().plan(tgt, origin, self._aim_family(), now, body=b)
+            if plan is None:
+                return chest
+            key = tgt.get("ptr", tgt.get("slot"))
+            self._ab_plan = (key, plan)
+            if plain:
+                d = tuple(plan.point[k] - plan.chest[k] for k in range(3))
+            else:                                         # the site kept: the lead and the angular correction only
+                p0 = (chest[0], chest[1], chest[2])
+                lead = tuple(v * plan.corr.lead_s for v in (plan.vel[0], 0.0, plan.vel[2]))
+                q = aim_book.turn_point(origin, tuple(p0[k] + lead[k] for k in range(3)), plan.corr.yaw, plan.corr.pitch)
+                d = tuple(q[k] - p0[k] for k in range(3))
+            return (chest[0] + d[0], chest[1] + d[1], chest[2] + d[2])
+        except Exception as exc:                          # noqa: BLE001 - the book never costs the aim
+            self.stats["aimbook_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            return chest
+
+    def _aim_book_contact(self, tgt, origin, dot) -> bool | None:
+        """AIM_BOOK_GATE: whether the laser's line crosses him inside the book's tolerance ellipse round its point (None:
+        not measured / no plan)."""
+        if not (AIM_BOOK and AIM_BOOK_GATE):
+            return None
+        got = self.__dict__.get("_ab_plan")
+        key = tgt.get("ptr", tgt.get("slot"))
+        if not got or got[0] != key:
+            return None
+        return self._aim_core().contact_ok(got[1], origin, dot, tgt, body(tgt))
+
+    def _aim_book_shot(self, ctx, now) -> None:
+        """The pull's record for the aim book: the target as the census has him now, the plan the aim went for, the
+        laser's line at the pull, the contact the gate accepted, the line of sight the ray showed."""
+        if not AIM_BOOK:
+            return
+        try:
+            snap = self.__dict__.get("_ab_snap") or {}
+            key = ctx.get("target")
+            e = next((x for x in snap.get("enemies") or () if x.get("ptr", x.get("slot")) == key), None)
+            if e is None:
+                return
+            laserless = bool(ctx.get("laserless"))
+            origin, dot = (None, None) if laserless else (ctx.get("origin"), ctx.get("dot"))
+            got = self.__dict__.get("_ab_plan")
+            plan = got[1] if got and got[0] == key else None
+            p = snap.get("player") or {}
+            if plan is None and p.get("pos"):
+                px, py, pz = p["pos"]
+                plan = self._aim_core().plan(e, origin or (px, py + MUZZLE_H, pz), self._aim_family(), now, body=body(e))
+            los = self.__dict__.get("_ab_los")
+            los = los[1] if los and los[0] == key else None
+            contact = ctx.get("body_contact")
+            self._aim_core().shot(now, e, plan, origin=origin, at=dot,
+                                  contact=None if laserless or contact is None else bool(contact), los=los,
+                                  family=self._aim_family(), body=body(e))
+        except Exception as exc:                          # noqa: BLE001 - the book never costs the pull
+            self.stats["aimbook_error"] = f"{type(exc).__name__}: {exc}"[:160]
+
+    # --- the flash on the crowd (FLASH_PLACE) and its window (FLASH_WINDOW): gbox.mercs.core.flash_window ---------------
+    def _flashed_lately(self, now) -> bool:
+        """A flash from anywhere - the ring, the operator's button, his own - went off within FLASH_MIN_GAP_S: its
+        receipt (native_flash_confirmed_at, wall time) put on the bot's clock the first time it is seen."""
+        conf = self.stats.get("native_flash_confirmed_at")
+        if not isinstance(conf, (int, float)):
+            return False
+        seen = self.__dict__.get("_flash_conf_seen")
+        if seen is None or seen[0] != conf:
+            seen = self._flash_conf_seen = (conf, now - max(0.0, time.time() - conf))
+        return now - seen[1] < FLASH_MIN_GAP_S
+
+    def _flash_point(self, snap):
+        """Where a bot flash goes off: flash_window.place round him (None: nobody near - no flash wanted)."""
+        p = snap.get("player") or {}
+        pos = p.get("pos")
+        if not pos:
+            return None
+        foes = [tuple(e["pos"]) for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")]
+        return flash_window.place(tuple(pos), foes, FLASH_PLACE_MIN_CM, FLASH_PLACE_MAX_CM, FLASH_PLACE_FROM_CM, LEVEL_DY)
+
+    def _flash_go(self, ad, point) -> dict:
+        """The native flash: on the crowd at point (Controller.flash_at - also on a controller made before the method
+        existed: the class's own function, the hot reload) or, without a point, at his feet (FLASH_PLACE off)."""
+        from ..interventions import native_controller
+        ctl = native_controller(ad)
+        if point is None:
+            self._flash_where = ("feet", time.time())
+            return ctl.flash()
+        fn = getattr(ctl, "flash_at", None)
+        if fn is None and hasattr(ctl, "_ring_one"):        # a controller of the class before the reload
+            from . import re5_switch_native
+            fn = lambda x, y, z: re5_switch_native.Controller.flash_at(ctl, x, y, z)   # noqa: E731
+        if fn is None:
+            raise RuntimeError("the native controller cannot place a flash (never one at his feet)")
+        self._flash_where = ("crowd", time.time())
+        res = fn(*point)
+        if isinstance(res, dict) and res.get("from_player_cm") is not None:
+            self.stats["flash_place_cm"] = res["from_player_cm"]
+        return res
+
+    def _flash_self_tick(self, snap, now) -> None:
+        """His own motion in the FLASH_STUN_S after a confirmed flash (any source), by where it went off: a motion
+        outside SELF_FREE_MOTIONS (and not a Majini's hold) is his reaction to it (flash_self_stun_s_<where>,
+        flash_self_stunned_<where>, flash_self_n_<where>, flash_self_motions)."""
+        conf = self.stats.get("native_flash_confirmed_at")
+        w = self.__dict__.get("_fself")
+        if isinstance(conf, (int, float)) and (w is None or w["conf"] != conf) and time.time() - conf <= FLASH_STUN_S:
+            if w is not None and not w.get("done"):
+                self._flash_self_close(w)
+            fw = self.__dict__.get("_flash_where")
+            where = fw[0] if isinstance(fw, tuple) and abs(conf - fw[1]) <= 3.0 else "other"   # the ring's, the operator's
+            w = self._fself = {"conf": conf, "until": now + FLASH_STUN_S - max(0.0, time.time() - conf),
+                               "where": where, "stun": 0.0, "last": now, "motions": {}, "done": False}
+            self._flash_where = None
+        if w is None or w.get("done"):
+            return
+        p = snap.get("player") or {}
+        motion = p.get("motion")
+        dt = max(0.0, min(0.2, now - w["last"]))
+        w["last"] = now
+        if motion is not None and motion not in SELF_FREE_MOTIONS and motion not in MOTION_HELD:
+            w["stun"] += dt
+            w["motions"][motion] = w["motions"].get(motion, 0) + 1
+        if now >= w["until"]:
+            self._flash_self_close(w)
+
+    def _flash_self_close(self, w) -> None:
+        w["done"] = True
+        where = w["where"]
+        self.stats[f"flash_self_n_{where}"] = self.stats.get(f"flash_self_n_{where}", 0) + 1
+        self.stats[f"flash_self_stun_s_{where}"] = round(self.stats.get(f"flash_self_stun_s_{where}", 0.0) + w["stun"], 2)
+        if w["stun"] >= 0.3:
+            self.stats[f"flash_self_stunned_{where}"] = self.stats.get(f"flash_self_stunned_{where}", 0) + 1
+        seen = self.__dict__.setdefault("_fself_motions", {})
+        for m, n in w["motions"].items():
+            seen[m] = seen.get(m, 0) + n
+        if seen:
+            self.stats["flash_self_motions"] = " ".join(f"{m}x{n}" for m, n in sorted(seen.items(), key=lambda t: -t[1])[:8])
+
+    @staticmethod
+    def _heading_keys(p, h) -> tuple:
+        """The left stick toward heading h in his frame (_escape_keys' table)."""
+        a = math.degrees(wrap(h - (p.get("rot") or 0.0)))
+        options = ((0, ("lup",)), (45, ("lleft", "lup")), (90, ("lleft",)), (135, ("ldown", "lleft")),
+                   (180, ("ldown",)), (-180, ("ldown",)), (-135, ("ldown", "lright")), (-90, ("lright",)),
+                   (-45, ("lright", "lup")))
+        return min(options, key=lambda o: abs(o[0] - a))[1]
+
+    def _flash_window(self, snap, act, now) -> dict:
+        """FLASH_WINDOW: the seconds after a confirmed flash, used (flash_window.Window.plan): the mine, the grenade, the
+        step to a firing spot, the fire. Never over a step already under way (a mine being planted, a throw, a heal, a
+        hold, a prompt)."""
+        if not FLASH_WINDOW or snap.get("mercenaries_phase") != PHASE_PLAYING or self.stats.get("operator_control"):
+            return act
+        p = snap.get("player") or {}
+        if not p.get("pos") or (p.get("hp") or 0) <= DYING_HP:
+            return act
+        try:
+            w = self.__dict__.get("_fwin")
+            if w is None:
+                w = self._fwin = flash_window.Window(self.stats, FLASH_WINDOW_S, FLASH_MOVE_S)
+            conf = self.stats.get("native_flash_confirmed_at")
+            kills = snap.get("kills")
+            if isinstance(conf, (int, float)) and conf != self.__dict__.get("_fwin_conf") \
+                    and time.time() - conf <= FLASH_WINDOW_S:
+                self._fwin_conf = conf
+                w.open(now - max(0.0, time.time() - conf), kills if type(kills) is int else None)
+            w.observe(now, kills if type(kills) is int else None)
+            if not w.active(now):
+                return act
+            m = self.mines
+            busy = (self.doing in ("mine", "heal", "held", "prompt", "rearm", "flashbang", "native_equip")
+                    or (m is not None and m.state != "idle") or self.__dict__.get("_uc_throw") is not None
+                    or p.get("motion") in MOTION_HELD)
+            if busy:
+                return act
+            px, py, pz = p["pos"]
+            stunned = [tuple(e["pos"]) for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")
+                       and abs(e["pos"][1] - py) <= LEVEL_DY
+                       and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= FLASH_PLACE_FROM_CM]
+            inv = snap.get("inventory") or ()
+            mine_ready = bool(m is not None and m.enabled and m.state == "idle" and m.stack(inv) is not None)
+            infinite = getattr(self, "_infinite_ammo", False) is True
+            throw_ready = bool(THROWS and any(s.get("type") == 1 and s.get("item") in (THROW_ITEMS["hand"], THROW_ITEMS["fire"])
+                                              and (infinite or (s.get("rounds") or 0) > 0) for s in inv))
+            mesh = snap.get("nav")
+
+            def clear(a, b):
+                if mesh is None or not hasattr(mesh, "floor_segment"):
+                    return True
+                try:
+                    return mesh.member(a) is None or bool(mesh.floor_segment(a, b))
+                except Exception:                         # noqa: BLE001 - no geometry: the plan's spot stands
+                    return True
+            from . import re5_weapons as _w
+            blast = float(_w.MASTERY["thrown"].blast_cm) + THROW_BLAST_PAD
+            step = w.plan(now, (px, py, pz), stunned, mine_ready, throw_ready, clear, blast)
+            if step is None:
+                return act
+            self.stats["flash_window_step"] = step.why[:120]
+            if step.kind == "mine":
+                m.urge(now)
+                m.flash_until = max(m.flash_until, w.at + FLASH_WINDOW_S)   # the reeling ones block no plant
+                return act
+            if step.kind == "throw":
+                pol = self.__dict__.get("_uc_throws")
+                if pol is not None:
+                    pol.last_at = -1e9                    # the throw's gap waived once this window: _throw_core next
+                return act
+            if step.kind == "move" and step.point is not None:
+                self._gun_down()
+                self.doing, self.why = "escape", step.why
+                return {"hold": self._heading_keys(p, heading(step.point[0] - px, step.point[2] - pz))}
+            keys = set(act.get("hold") or ()) | ({act["tap"]} if act.get("tap") else set())
+            if not keys:
+                self.stats["flash_window_idle"] = self.stats.get("flash_window_idle", 0) + 1
+            return act
+        except Exception as exc:                          # noqa: BLE001 - the window never costs the tick
+            self.stats["flash_window_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            return act
+
     # --- the characters' special moves (re5_specials) ----------------------------------------------------------------
     def _specials(self):
         """The special-move layer, made on first use. A bot built before the layer existed, or one holding a layer of a
@@ -5899,6 +6187,8 @@ class Bot:
         self._sm = self._room_map(snap)                  # the stage's real map this tick (ROOM_MAP), else None
         act = self._tick(snap, now)
         act = self._respond(snap, act, now)              # under threat: a flash, a mine or fire - never nothing
+        self._flash_self_tick(snap, now)                 # his own motion after a flash (flash_self_*: measured)
+        act = self._flash_window(snap, act, now)         # the flash's seconds used: mine, grenade, step, fire
         self._defer_trigger = False
         act = re5_target_feedback.apply(self, snap, act, now)
         act = re5_target_feedback.keep_active(self, snap, act, now)
@@ -6038,24 +6328,30 @@ class Bot:
         time). -> whether it was asked. stats[counter] counts the confirmed ones."""
         p = snap.get("player") or {}
         ad = getattr(getattr(self, "_m", None), "adapter", None)
-        if now - self._grenade_last < FLASH_MIN_GAP_S:
+        if now - self._grenade_last < FLASH_MIN_GAP_S or self._flashed_lately(now):
             self.stats["flash_gap_skips"] = self.stats.get("flash_gap_skips", 0) + 1
             return False                                     # one flash a minute, whichever rule asks (FLASH_MIN_GAP_S)
         if (self._grenade_inflight or ad is None or getattr(self._m, "mercs_no_modifications", False)
                 or (p.get("hp") or 0) <= 0 or self.stats.get("operator_control")
                 or snap.get("mercenaries_phase") != PHASE_PLAYING):
             return False
+        point = self._flash_point(snap) if FLASH_PLACE else None
+        if FLASH_PLACE and point is None:
+            self.stats["flash_place_none"] = self.stats.get("flash_place_none", 0) + 1
+            return False                                     # nobody near enough to flash: never one at his feet
         self._grenade_last, self._grenade_inflight = now, True
         self.stats.update(bot_grenade_state='requested', bot_grenade_reason=reason, bot_grenade_error='',
                           bot_grenade_requested_at=now, bot_grenade_request_reason=reason)
 
         def fire():
             try:
-                from ..interventions import native_controller
-                res = native_controller(ad).flash()
+                res = self._flash_go(ad, point)
                 if isinstance(res, dict) and res.get("state") == "confirmed":
                     self.stats[counter] = self.stats.get(counter, 0) + 1
-                    self.stats["native_flash_confirmed_at"] = time.time()
+                    if point is not None:
+                        self.stats["flash_placed"] = self.stats.get("flash_placed", 0) + 1
+                    self.stats["native_flash_confirmed_at"] = conf = time.time()
+                    self._flash_conf_seen = (conf, now)          # his own: on the bot's clock at its ask
                     self.stats.update(bot_grenade_state='confirmed', bot_grenade_reason=reason, bot_grenade_error='')
                 else:
                     detail = str(res.get('reason') or res.get('state') or 'no confirmation') \
@@ -6107,8 +6403,8 @@ class Bot:
             return
         if self._grenade_inflight:
             return
-        if now - self._grenade_last < max(GRENADE_EVERY_S, FLASH_MIN_GAP_S):   # the minute (the sidebar's slider)
-            return
+        if now - self._grenade_last < max(GRENADE_EVERY_S, FLASH_MIN_GAP_S) or self._flashed_lately(now):
+            return                                           # the minute (the sidebar's slider), whoever flashed last
         if self.stats.get("operator_control") or snap.get("mercenaries_phase") != PHASE_PLAYING:
             blocked('not autonomous live combat')
             return
@@ -6144,6 +6440,10 @@ class Bot:
         threat = min(threats, key=distance)
         reason = (f"interrupt {len(threats)} attack windup(s), nearest {distance(threat)/100:.1f} m; "
                   f"{len(crowd)} nearby, verified firing follow-through")
+        point = self._flash_point(snap) if FLASH_PLACE else None
+        if FLASH_PLACE and point is None:
+            blocked('no crowd point for the flash (never at his feet)')
+            return
         self._grenade_last, self._grenade_inflight = now, True
         self.stats.update(bot_grenade_state='requested', bot_grenade_reason=reason, bot_grenade_error='',
                           bot_grenade_requested_at=now, bot_grenade_request_reason=reason,
@@ -6151,11 +6451,13 @@ class Bot:
 
         def fire():
             try:
-                from ..interventions import native_controller
-                res = native_controller(ad).flash()
+                res = self._flash_go(ad, point)
                 if isinstance(res, dict) and res.get("state") == "confirmed":
                     self.stats["bot_grenades"] = self.stats.get("bot_grenades", 0) + 1
-                    self.stats["native_flash_confirmed_at"] = time.time()
+                    if point is not None:
+                        self.stats["flash_placed"] = self.stats.get("flash_placed", 0) + 1
+                    self.stats["native_flash_confirmed_at"] = conf = time.time()
+                    self._flash_conf_seen = (conf, now)          # his own: on the bot's clock at its ask
                     self.stats.update(bot_grenade_state='confirmed', bot_grenade_reason=reason, bot_grenade_error='')
                 else:
                     detail = str(res.get('reason') or res.get('state') or 'no confirmation') if isinstance(res, dict) else 'no confirmation'
@@ -6275,6 +6577,7 @@ class Bot:
             if act is not None:
                 return act
         self._score_hits(snap, now)
+        self._aim_tick(snap, now)                        # the aim book: the open shots resolved and learned (AIM_BOOK)
         if p.get("pos"):                                 # every living enemy's motion, for the hits to come (THREAT_FILE)
             self._tm.observe(now, [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0], p["pos"],
                              attacking=lambda e: (e.get("act") or 0) & E_ATTACKING)
@@ -7928,6 +8231,7 @@ class Bot:
     def _pull_start(self, now) -> None:
         """Record a trigger edge and measured aim evidence, not an emitted bullet."""
         ctx = self._aimctx or {}
+        self._aim_book_shot(ctx, now)                        # the aim book's shot record (AIM_BOOK)
         if self._raise_t is not None:                        # the first pull since the gun went up
             self.stats["first_pull_n"] += 1
             self.stats["first_pull_s"] = round(self.stats["first_pull_s"] + max(0.0, now - self._raise_t), 2)

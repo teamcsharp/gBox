@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib
 import math
+import time
 
 from . import enemy_identity
 
@@ -58,6 +59,14 @@ def policy(title_module=None, stats=None) -> dict:
     Bounds are enforced here so a bad saved value can never turn the ring into a zero-radius or one-per-second tic.
     """
     out = dict(DEFAULTS)
+    # A flash ring is a flash (RE5 Switch, the operator 2026-11-10: "only be able to flashbang once a minute or on a
+    # slider"; "never let the bot get stunned by their own flash grenades"): the title's FLASH_MIN_GAP_S holds it too, and
+    # with the title's FLASH_PLACE its first grenade goes off no nearer him than FLASH_PLACE_MIN_CM.
+    if title_module is not None and not isinstance(title_module, dict):
+        out.update(flash_rules(title_module))
+        clear = getattr(title_module, "FLASH_PLACE_MIN_CM", None)
+        if getattr(title_module, "FLASH_PLACE", False) and isinstance(clear, (int, float)):
+            out["inner_cm"] = max(float(out["inner_cm"]), float(clear))
     for source in (title_module, (stats or {}).get("ring") if isinstance(stats, dict) else None):
         if source is None:
             continue
@@ -78,6 +87,58 @@ def policy(title_module=None, stats=None) -> dict:
         out.update({k: DEFAULTS[k] for k in ("enabled", "min_enemies", "cooldown_s", "kind", "radius_cm",
                                              "near_cm", "danger_cm")})
     return out
+
+
+def flash_rules(title_module) -> dict:
+    """The title's flash rules for the ring and the scatter (RE6 / RE5 Switch, the operator 2026-11-10: "at most one
+    flash per minute" and "flashes should only come in tight situations"): flash_gap_s (FLASH_MIN_GAP_S), and with
+    FLASH_TIGHT the tight test - flash_tight_n flashable ones (no boss / dangerous class) within flash_tight_cm."""
+    out = {}
+    gap = getattr(title_module, "FLASH_MIN_GAP_S", None)
+    if isinstance(gap, (int, float)) and not isinstance(gap, bool) and gap > 0:
+        out["flash_gap_s"] = float(gap)
+    if getattr(title_module, "FLASH_TIGHT", False):
+        out["flash_tight_n"] = int(getattr(title_module, "FLASH_TIGHT_N", 4))
+        out["flash_tight_cm"] = float(getattr(title_module, "FLASH_TIGHT_R", 300.0))
+    if getattr(title_module, "SCATTER_FLASH_ONLY", False):
+        out["flash_only"] = True
+    return out
+
+
+def last_flash(stats: dict) -> float | None:
+    """The last flash from any source (wall clock): a gated path's stamp or a native receipt."""
+    vals = [stats.get(k) for k in ("flash_stamp_at", "native_flash_confirmed_at")]
+    vals = [v for v in vals if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    return max(vals) if vals else None
+
+
+def flash_held(snap: dict, stats: dict, policy_: dict, title: str | None) -> str | None:
+    """Why a flash (a flash ring, an all-flash barrage) may not go now - the minute since the last flash, or no tight
+    situation (fewer than flash_tight_n flashable ones within flash_tight_cm) - counted like the bot's own skips; None:
+    it may."""
+    gap, last = policy_.get("flash_gap_s"), last_flash(stats)
+    if isinstance(gap, (int, float)) and last is not None and time.time() - last < gap:
+        stats["flash_gap_skips"] = int(stats.get("flash_gap_skips", 0)) + 1
+        return f"a flash went off {time.time() - last:.0f} s ago: one every {gap:.0f} s (FLASH_MIN_GAP_S)"
+    n = policy_.get("flash_tight_n")
+    if n:
+        r = float(policy_.get("flash_tight_cm") or 300.0)
+        tight = [e for _d, e in enemies_near(snap, r) if not dangerous(e, title)]
+        if len(tight) < int(n):
+            stats["flash_untight_skips"] = int(stats.get("flash_untight_skips", 0)) + 1
+            return f"not tight: {len(tight)} flashable within {r:.0f} cm (FLASH_TIGHT wants {int(n)})"
+    return None
+
+
+def stamp_flash(stats: dict, path: str, reason: str) -> None:
+    """A flash ring / barrage went off: the shared clock and its reason (FlashGate's stats names)."""
+    stats["native_flash_confirmed_at"] = stats["flash_stamp_at"] = time.time()
+    stats["flash_reason_last"] = f"{path}: {reason}"[:120]
+    for key, k in (("flash_reasons", "surrounded"), ("flash_paths", path)):
+        d = stats.get(key)
+        if not isinstance(d, dict):
+            d = stats[key] = {}
+        d[k] = d.get(k, 0) + 1
 
 
 def _player(snap: dict) -> tuple:
@@ -198,6 +259,14 @@ def decide(snap: dict, stats: dict, now: float, policy_: dict | None = None, *, 
     last = stats.get("ring_last_at")
     if isinstance(last, (int, float)) and now - last < float(policy_["cooldown_s"]):
         return {**out, "reason": f"{float(policy_['cooldown_s']) - (now - last):.1f} s of the ring cooldown left"}
+    if out["kind"] == "flash":
+        held = flash_held(snap, stats, policy_, title)
+        if held is not None:
+            return {**out, "reason": held}
+        if policy_.get("flash_tight_n"):                   # tight: the surround alone (a boss ignores a flash)
+            tight = [e for _d, e in enemies_near(snap, float(policy_["flash_tight_cm"])) if not dangerous(e, title)]
+            return {**out, "fire": True, "reason": f"surrounded: {len(tight)} within "
+                                                   f"{float(policy_['flash_tight_cm']):.0f} cm"}
     if risky:
         return {**out, "fire": True,
                 "reason": f"{len(risky)} boss/dangerous within {policy_.get('danger_cm', policy_['near_cm']):.0f} cm"}
@@ -238,6 +307,8 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
         stats["rings_deployed"] = int(stats.get("rings_deployed", 0)) + 1
         stats["ring_kind_fired"] = receipt.get("kind", kind)
         stats["ring_last_detonated"] = receipt.get("detonated")
+        if receipt.get("kind", kind) == "flash":
+            stamp_flash(stats, "ring", decision.get("reason") or "")   # a flash like any other: its window, the gap
         kills = stats.get("kills")
         stats["ring_pending"] = {"at": now, "kills": kills if isinstance(kills, int) else None}
     else:
@@ -321,6 +392,8 @@ def scatter_policy(title_module=None, stats=None) -> dict:
             value = source.get(key) if isinstance(source, dict) else getattr(source, name, None)
             if value is not None:
                 out[key] = value
+        if not isinstance(source, dict):
+            out.update(flash_rules(source))
     try:
         out["enabled"] = bool(out["enabled"])
         out["cooldown_s"] = max(1.0, min(float(out["cooldown_s"]), 600.0))
@@ -376,6 +449,14 @@ def decide_scatter(snap: dict, stats: dict, now: float, policy_: dict | None = N
             if abs(float(e["pos"][1]) - pos[1]) <= float(policy_["floor_dy_cm"])]   # on his floor: never the void
     if not rows:
         return {**out, "reason": "no threat on his floor within reach"}
+    if policy_.get("flash_only"):                         # every round of it a flash: the flash rules hold it
+        held = flash_held(snap, stats, policy_, title)
+        if held is not None:
+            return {**out, "reason": held}
+        if policy_.get("flash_tight_n"):
+            out["toward"] = [(float(e["pos"][0]), float(e["pos"][2])) for _d, e in rows[:int(policy_["toward_n"])]]
+            return {**out, "fire": True, "flash": True,
+                    "reason": f"surrounded: {int(policy_['flash_tight_n'])}+ within {float(policy_['flash_tight_cm']):.0f} cm"}
     out["toward"] = [(float(e["pos"][0]), float(e["pos"][2])) for _d, e in rows[:int(policy_["toward_n"])]]
     near = sum(1 for d, _e in rows if d <= float(policy_["near_cm"]))
     surround = sum(1 for d, _e in rows if d <= float(policy_["surround_cm"]))
@@ -411,6 +492,8 @@ def fire_scatter(ad, decision: dict, stats: dict, now: float, *, ring=None) -> d
         stats["scatter_last_failure"] = f"{type(exc).__name__}: {exc}"[:200]
         return {"state": "failed", "reason": stats["scatter_last_failure"]}
     if isinstance(receipt, dict) and receipt.get("state") == "confirmed":
+        if decision.get("flash"):
+            stamp_flash(stats, "scatter", decision.get("reason") or "")
         stats["scatters_fired"] = int(stats.get("scatters_fired", 0)) + 1
         stats["scatter_rounds"] = int(stats.get("scatter_rounds", 0)) + int(receipt.get("detonated") or 0)
         kills = stats.get("kills")

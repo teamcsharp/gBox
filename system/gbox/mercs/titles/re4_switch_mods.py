@@ -273,7 +273,8 @@ def aim_lock(ad, on: bool) -> dict:
 
 
 def _aim(ad, snap: dict) -> int:
-    """The bot's aim request (re4_switch.AIM_REQUEST) written to the player's facing (unit + U_YAW), read back."""
+    """The bot's aim request (re4_switch.AIM_REQUEST) written to the player's facing (unit + U_YAW), read back. A
+    request with steady (the gun up: re4_switch.AIM_RAM) also holds the gun itself (_steady)."""
     req = D.AIM_REQUEST
     p = (snap or {}).get("player") or {}
     if not req or req.get("ptr") != p.get("ptr") or time.monotonic() - req.get("at", -1e9) > AIM_FRESH_S:
@@ -284,7 +285,68 @@ def _aim(ad, snap: dict) -> int:
         back = struct.unpack("<f", bytes(ad.read_memory(addr, 4)))[0]
     except (ValueError, OSError, RuntimeError, struct.error):
         return 0
+    if req.get("steady") and getattr(D, "AIM_RAM", False):
+        _steady(ad, snap, req)
     return 1 if abs(back - req["yaw"]) < 1e-3 else 0
+
+
+# The steady aim (re4_switch AIM_RAM; the operator 2026-11-10: "I want the aim impeccable"): data writes only, each one
+# re-read just before it (the chain player -> weapon control -> weapon object must still be the snapshot's) and read back:
+#   * the sway's four bounds (weapon object + 0x3E0 .. +0x3EC) to 0: no random walk, no recoil kick (PlWepLockRand then
+#     clamps the aim onto its centre every frame);
+#   * the waist twist (unit + 0x524) and its centre (weapon control + 0x2C) to 0: the aim's yaw IS his facing, which the
+#     facing write above puts on the target;
+#   * the centre pitch (weapon control + 0x28) to the request's pitch (blend x pi/2, clamped to STEADY_PITCH_MAX): the
+#     aim's pitch follows it.
+# A weapon object read back with its sway restored (a new weapon's init) is zeroed again on the next snapshot. The
+# counts go to the state (aim_ram_writes / aim_sway_zeroed / aim_ram_refused) and out through maintain().
+STEADY_PITCH_MAX = 1.45
+STEADY_EPS = 1e-4
+
+
+def _steady(ad, snap: dict, req: dict) -> int:
+    aim = (snap or {}).get("aim") or {}
+    p = (snap or {}).get("player") or {}
+    st = _state(ad)
+    wep, obj = aim.get("wep"), aim.get("obj")
+    if not isinstance(wep, int) or not isinstance(obj, int) or req.get("wep") not in (None, wep):
+        st["aim_ram_refused"] = st.get("aim_ram_refused", 0) + 1
+        return 0
+    n = 0
+    try:
+        if struct.unpack("<Q", bytes(ad.read_memory(p["ptr"] + D.PL_WEP, 8)))[0] != wep \
+                or struct.unpack("<Q", bytes(ad.read_memory(wep + D.WEP_OBJ, 8)))[0] != obj:
+            st["aim_ram_refused"] = st.get("aim_ram_refused", 0) + 1
+            return 0
+        sway = struct.unpack("<4f", bytes(ad.read_memory(obj + D.OBJ_SWAY, 16)))
+        if not all(math.isfinite(v) and 0.0 <= v <= D.SWAY_SANE for v in sway):
+            st["aim_ram_refused"] = st.get("aim_ram_refused", 0) + 1
+            return 0
+        if any(v > STEADY_EPS for v in sway):
+            ad.write_memory(obj + D.OBJ_SWAY, struct.pack("<4f", 0.0, 0.0, 0.0, 0.0))
+            if all(v == 0.0 for v in struct.unpack("<4f", bytes(ad.read_memory(obj + D.OBJ_SWAY, 16)))):
+                st["aim_sway_zeroed"] = st.get("aim_sway_zeroed", 0) + 1
+                st["aim_sway_was"] = [round(v, 4) for v in sway]
+                n += 1
+        writes = [(p["ptr"] + D.PL_WAIST_YAW, 0.0), (wep + D.WEP_CENTER_Y, 0.0)]
+        pitch = req.get("pitch")
+        if isinstance(pitch, (int, float)) and math.isfinite(pitch):
+            writes.append((wep + D.WEP_PITCH, max(-STEADY_PITCH_MAX, min(STEADY_PITCH_MAX, float(pitch)))))
+        for addr, want in writes:
+            now = struct.unpack("<f", bytes(ad.read_memory(addr, 4)))[0]
+            if not math.isfinite(now) or abs(now) > D.PITCH_SANE:
+                st["aim_ram_refused"] = st.get("aim_ram_refused", 0) + 1
+                continue
+            if abs(now - want) <= STEADY_EPS:
+                continue
+            ad.write_memory(addr, struct.pack("<f", want))
+            if abs(struct.unpack("<f", bytes(ad.read_memory(addr, 4)))[0] - want) <= 1e-4:
+                n += 1
+    except (ValueError, OSError, RuntimeError, struct.error, KeyError, TypeError) as exc:
+        st["aim_ram_error"] = f"{type(exc).__name__}: {exc}"[:120]
+        return n
+    st["aim_ram_writes"] = st.get("aim_ram_writes", 0) + n
+    return n
 
 
 # --- fire rate, infinite ammo, a random max-level campaign weapon (re4_weapons: the static analysis) ------------
@@ -334,7 +396,95 @@ def fire_rate(ad, multiplier, snap: dict | None = None) -> dict:
     base = (snap or {}).get("module_base")
     n = _apply_fire_rate(ad, base, st) if isinstance(base, int) else 0
     return {"fire_rate_x": st["fire_rate"], "verified": True, "tables": n, "trigger_gap_s": round(D.FIRE_GAP_S, 3),
-            "note": "every weapon's frames between shots / this (never under the shot gate's 3-frame floor)"}
+            "note": "every weapon's frames between shots / this (never under the shot gate's 3-frame floor); the bow "
+                    "and the grenades, which no table paces, play their weapon routine's motions this much faster "
+                    "(_motion_rate, every snapshot while one is in hand)"}
+
+
+# The bow / throwables' rate (re4_weapons.MOTION_RATE_CLASSES; the operator 2026-11-10 #9508: "fire the bow 20x
+# faster"): while the class in hand is one of them and the player is in its weapon routine, his motion speed (unit +
+# P_MOTION_SPEED) and his weapon object's (+ OBJ_MOTION_SPEED) are the fire_rate multiplier (at most MOTION_RATE_MAX_X);
+# the routine ends, each one put back to what it read before the first write. Every write is preceded by a fresh read
+# of the routine bytes and the speed (outside MOTION_SPEED_SANE: refused, nothing written) and read back. The state:
+# st["motion_rate"] = {"kind", "addrs": {address: the speed it read}, "speed"} while it is on.
+MOTION_RATE_MAX_X = 20.0
+
+
+def _motion_rate(ad, snap: dict, st: dict) -> int:
+    """One snapshot of the bow's rate (see above). -> writes made (on, refreshed or put back)."""
+    mult = min(float(st.get("fire_rate", 1.0) or 1.0), MOTION_RATE_MAX_X)
+    p = (snap or {}).get("player") or {}
+    on = st.get("motion_rate")
+    ptr = p.get("ptr")
+    rd = lambda a, n: bytes(ad.read_memory(a, n))                         # noqa: E731
+    n = 0
+    try:
+        kind = None
+        if mult > 1.0 and isinstance(ptr, int) and D.ptr_ok(ptr):
+            kind = W.motion_rate_kind(snap.get("weapon_class"), tuple(rd(ptr + W.P_ROUTINE, 4)))
+        if kind is None:
+            if on:                                       # the routine is over: each speed back to what it was
+                for addr, was in list(on["addrs"].items()):
+                    cur = struct.unpack("<f", rd(addr, 4))[0]
+                    if abs(cur - on["speed"]) <= 1e-3:   # (still ours: a speed the game set since is the game's)
+                        ad.write_memory(addr, struct.pack("<f", was))
+                        n += abs(struct.unpack("<f", rd(addr, 4))[0] - was) <= 1e-4
+                st["motion_rate"] = None
+                st["motion_rate_restores"] = st.get("motion_rate_restores", 0) + 1
+            return n
+        addrs = [ptr + W.P_MOTION_SPEED]
+        wep = struct.unpack("<Q", rd(ptr + D.PL_WEP, 8))[0]
+        if D.ptr_ok(wep):
+            obj = struct.unpack("<Q", rd(wep + D.WEP_OBJ, 8))[0]
+            if D.ptr_ok(obj):
+                addrs.append(obj + W.OBJ_MOTION_SPEED)
+        if on is None or on.get("ptr") != ptr:
+            on = st["motion_rate"] = {"kind": kind, "ptr": ptr, "addrs": {}, "speed": mult}
+        on["speed"], on["kind"] = mult, kind
+        lo, hi = W.MOTION_SPEED_SANE
+        for addr in addrs:
+            cur = struct.unpack("<f", rd(addr, 4))[0]
+            if not math.isfinite(cur) or not lo <= cur <= hi:
+                st["motion_rate_refused"] = st.get("motion_rate_refused", 0) + 1
+                st["motion_rate_refused_last"] = f"{addr:#x} read {cur!r}: not a motion speed"[:120]
+                continue
+            if abs(cur - mult) <= 1e-3:
+                continue                                 # ours already
+            on["addrs"][addr] = cur                      # the game's own (set since or not): what goes back at the end
+            ad.write_memory(addr, struct.pack("<f", mult))
+            if abs(struct.unpack("<f", rd(addr, 4))[0] - mult) <= 1e-4:
+                n += 1
+        st["motion_rate_kind"] = kind
+        st["motion_rate_writes"] = st.get("motion_rate_writes", 0) + n
+    except (ValueError, OSError, RuntimeError, struct.error, TypeError) as exc:
+        st["motion_rate_error"] = f"{type(exc).__name__}: {exc}"[:120]
+    return n
+
+
+def _keep_arrows(ad, base: int, st: dict) -> int:
+    """Infinite ammo for the bow (its arrows are an item of their own, re4_weapons.ARROWS, not a magazine _keep_mag
+    can fill): with the bow in hand each arrows stack in his case kept at the most it held this boot (never above
+    ARROWS_MAX), read back. -> stacks refilled."""
+    rd = lambda a, n: bytes(ad.read_memory(a, n))                         # noqa: E731
+    try:
+        reader = W.Reader(rd, base)
+        held = reader.equipped()
+        if held is None or W.CLASS_OF.get(held["id"]) not in (0x1C,):
+            return 0
+        tops = st.setdefault("arrows_top", {})
+        n = 0
+        for it in reader.items():
+            if it["id"] != W.ARROWS or not it.get("addr"):
+                continue
+            key = str(it["addr"])
+            top = min(W.ARROWS_MAX, max(tops.get(key, 0), it["count"]))
+            tops[key] = top
+            if 0 < it["count"] < top:
+                ad.write_memory(it["addr"] + 2, struct.pack("<H", top))
+                n += struct.unpack("<H", rd(it["addr"] + 2, 2))[0] == top
+        return n
+    except (ValueError, OSError, RuntimeError, struct.error, KeyError, TypeError):
+        return 0
 
 
 def _keep_mag(ad, base: int, st: dict) -> int:
@@ -955,6 +1105,14 @@ def maintain(ad, snap: dict | None = None) -> dict:
             st["mag_refills"] = st.get("mag_refills", 0) + n
             if n:
                 out["mag_refills"] = n
+            n = _keep_arrows(ad, snap["module_base"], st)    # the bow's arrows: an item of their own
+            st["arrow_refills"] = st.get("arrow_refills", 0) + n
+            if n:
+                out["arrow_refills"] = n
+        if st.get("fire_rate", 1.0) > 1.0 or st.get("motion_rate"):
+            n = _motion_rate(ad, snap, st)                   # the bow / throwables: their motion x fire_rate
+            if n:
+                out["motion_rate_writes"] = n
         # The random (or chosen) weapon: in his hand by data writes once the round is live, every round
         # (_round_weapon). The loadout code patch is off (LOADOUT_CODE_PATCH: it hung every stage load).
         if st.get("random_weapon") or st.get("loadout_weapon"):
@@ -962,10 +1120,15 @@ def maintain(ad, snap: dict | None = None) -> dict:
             if given is not None and given.get("verified"):
                 out["weapon_given"] = 1
         if st.get("aim_lock"):
+            ram0, sway0 = st.get("aim_ram_writes", 0), st.get("aim_sway_zeroed", 0)
             n = _aim(ad, snap)
             st["aim_writes"] = st.get("aim_writes", 0) + n
             if n:
                 out["aim_writes"] = n
+            if st.get("aim_ram_writes", 0) > ram0:              # the steady aim's writes (_steady)
+                out["aim_ram_writes"] = st["aim_ram_writes"] - ram0
+            if st.get("aim_sway_zeroed", 0) > sway0:
+                out["aim_sway_zeroed"] = st["aim_sway_zeroed"] - sway0
         new = _kills_of(snap, st)
         kt = st.get("kill_time") or {}
         if new and kt.get("on") and kt.get("seconds", 0) > 0:
@@ -995,7 +1158,12 @@ def status(ad, snap: dict | None = None) -> dict:
            "loadouts": st.get("loadouts"), "loadout_weapon": st.get("loadout_weapon"),
            "weapon_power_x": st.get("weapon_power", 1.0), "max_level": bool(st.get("max_level")),
            "aim_lock": bool(st.get("aim_lock")), "aim_writes": st.get("aim_writes", 0),
+           "aim_ram_writes": st.get("aim_ram_writes", 0), "aim_sway_zeroed": st.get("aim_sway_zeroed", 0),
+           "aim_sway_was": st.get("aim_sway_was"), "aim_ram_refused": st.get("aim_ram_refused", 0),
            "mag_refills": st.get("mag_refills", 0), "pre_round": st.get("pre_round_result"),
+           "motion_rate_on": (st.get("motion_rate") or {}).get("kind"), "motion_rate_kind": st.get("motion_rate_kind"),
+           "motion_rate_writes": st.get("motion_rate_writes", 0), "motion_rate_restores": st.get("motion_rate_restores", 0),
+           "motion_rate_refused": st.get("motion_rate_refused", 0), "arrow_refills": st.get("arrow_refills", 0),
            "capabilities": {
                "enemy_health": {"available": True}, "one_hit": {"available": True},
                "kill_time": {"available": True, "clock_found": bool((snap or {}).get("clock_addr")),

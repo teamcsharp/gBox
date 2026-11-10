@@ -112,6 +112,13 @@ def test_tough_moments_fire_the_barrage_and_the_cooldown_holds():
     stats["scatter_last_at"] = 10.0
     assert not G.decide_scatter(snap_with(ring4), stats, 15.0, sp, title=R6.TITLE_ID)["fire"]   # the cooldown
     heavy = [((0.0, 0.0, 1100.0), 1500, "uEm1370")]
+    # since 2026-11-10 14:3x every round of RE6's barrage is a flash (SCATTER_FLASH_ONLY): only a tight surround, never
+    # for the big ones (a flash does not stop them), and one flash a minute from any source
+    d = G.decide_scatter(snap_with(heavy), {}, 100.0, sp, title=R6.TITLE_ID)
+    assert not d["fire"] and "not tight" in d["reason"]
+    assert not G.decide_scatter(snap_with(ring4), {"native_flash_confirmed_at": __import__("time").time()}, 30.0, sp,
+                                title=R6.TITLE_ID)["fire"], "a flash went off just now"
+    sp = dict(sp, flash_only=False)                                            # a barrage of other kinds: as before
     d = G.decide_scatter(snap_with(heavy), {}, 100.0, sp, title=R6.TITLE_ID)
     assert d["fire"] and "dangerous" in d["reason"]
     one = [((0.0, 0.0, 450.0), 300, "uEm1000")]
@@ -142,7 +149,7 @@ def test_fire_scatter_keeps_the_stats_and_counts_kills_in_its_window():
     assert stats["scatter_failures"] == 1
 
 
-def test_the_engine_step_runs_the_barrage_when_no_ring_fires():
+def test_the_engine_step_runs_the_barrage_when_no_ring_fires(monkeypatch):
     G.reset()
     fired = []
 
@@ -155,6 +162,11 @@ def test_the_engine_step_runs_the_barrage_when_no_ring_fires():
             return {"state": "confirmed", "detonated": kw["count"]}
     step = G.control(None, {"map_id": R6.TITLE_ID, "menus": "gbox.mercs.titles.re6_switch"}, ring=Ctl())
     heavy = [((0.0, 0.0, 1100.0), 1500, "uEm1370")]                           # past the ring's 8 m danger reach
+    out = step(snap_with(heavy), {"bomb_safe_cm": 700}, 10.0)
+    assert not out.get("fired") and not fired, "an all-flash barrage at a heavy: never (weapons for him)"
+    monkeypatch.setattr(R6, "SCATTER_FLASH_ONLY", False)                      # a barrage of other kinds
+    G.reset()
+    step = G.control(None, {"map_id": R6.TITLE_ID, "menus": "gbox.mercs.titles.re6_switch"}, ring=Ctl())
     out = step(snap_with(heavy), {"bomb_safe_cm": 700}, 10.0)
     assert out.get("fired") and fired and fired[0]["count"] == R6.SCATTER_N
 

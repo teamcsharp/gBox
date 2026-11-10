@@ -28,7 +28,8 @@ def test_verified_crowd_fire_can_flash_once_and_respects_cadence(monkeypatch):
     monkeypatch.setattr(R, 'GRENADES', True)
     calls = []
     monkeypatch.setattr(interventions, 'native_controller', lambda ad: SimpleNamespace(
-        flash=lambda: calls.append(ad) or {'state': 'confirmed'}))
+        flash=lambda: calls.append(ad) or {'state': 'confirmed'},
+        flash_at=lambda x, y, z: calls.append(ad) or {'state': 'confirmed', 'from_player_cm': 400.0}))
     monkeypatch.setattr(R.threading, 'Thread', lambda **kw: SimpleNamespace(start=kw['target']))
     b = R.Bot(stats={}, clock=lambda: 1.)
     b._m = SimpleNamespace(adapter=object())
@@ -94,7 +95,8 @@ def test_attack_flag_is_useful_evidence_and_success_clears_prior_failure(monkeyp
     s = crowd()
     for e in s['enemies']: e.update(motion=4, act=0)
     s['enemies'][0]['act'] = R.E_ATTACKING
-    monkeypatch.setattr(interventions, 'native_controller', lambda ad: SimpleNamespace(flash=lambda: {'state':'confirmed'}))
+    monkeypatch.setattr(interventions, 'native_controller', lambda ad: SimpleNamespace(
+        flash=lambda: {'state':'confirmed'}, flash_at=lambda x, y, z: {'state':'confirmed'}))
     monkeypatch.setattr(R.threading, 'Thread', lambda **kw: SimpleNamespace(start=kw['target']))
     b._grenade_crowd(s, 1.)
     assert b.stats['bot_grenade_threats'] == 1 and b.stats['bot_grenade_threat'] == 10
@@ -108,7 +110,8 @@ def test_native_nonconfirmation_never_counts_as_success(monkeypatch):
     b.doing, b.fire_down = 'fire', True
     b.stats['target_feedback_on'] = True
     monkeypatch.setattr(interventions, 'native_controller', lambda ad: SimpleNamespace(
-        flash=lambda: {'state':'refused', 'reason':'player changed'}))
+        flash=lambda: {'state':'refused', 'reason':'player changed'},
+        flash_at=lambda x, y, z: {'state':'refused', 'reason':'player changed'}))
     monkeypatch.setattr(R.threading, 'Thread', lambda **kw: SimpleNamespace(start=kw['target']))
     b._grenade_crowd(crowd(), 1.)
     assert not b.stats.get('bot_grenades') and not b._grenade_inflight

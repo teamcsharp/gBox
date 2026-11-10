@@ -78,6 +78,15 @@ KNOBS: dict[str, list[tuple]] = {
         ("FLASH_N", "Crowd size for a flash", "Crowd control", "int", 2, 8, 1, ""),
         ("FLASH_R", "Flash crowd radius (cm)", "Crowd control", "float", 200, 900, 25, ""),
         ("FLASH_GAP_S", "Seconds between flashes", "Crowd control", "float", 0.5, 15, 0.5, "the fight window after one"),
+        ("FLASH_MIN_GAP_S", "Seconds between flashbangs", "Crowd control", "float", 10, 300, 5,
+         "one flash per this many seconds at most, from every source - the wheel, the doctrine, the ring, the barrage "
+         "(operator 2026-11-10: at most one a minute)"),
+        ("FLASH_TIGHT", "Flash only when he needs it", "Crowd control", "bool", 0, 1, 1,
+         "grabbed, a wind-up with no way out, 4+ within 3 m with no way out, or his health low and falling; never at a "
+         "boss or a heavy (weapons for them)"),
+        ("FIRE_FIRST", "Fire first (no grenade cycle at one in sight)", "Crowd control", "bool", 0, 1, 1,
+         "one in clear sight within the fire-first range: the gun answers him; grenades go to groups beyond it"),
+        ("FIRE_FIRST_R", "Fire-first range (cm)", "Crowd control", "float", 200, 1500, 50, ""),
         ("FLASH_BURST_S", "Flurry length (s)", "Crowd control", "float", 0, 5, 0.5, "0 = one flash at a time"),
         ("FLASH_BURST_N", "Swarm size for a flurry", "Crowd control", "int", 3, 10, 1, ""),
         ("RING", "Grenade ring (auto)", "Crowd control", "bool", 0, 1, 1,
