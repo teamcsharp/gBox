@@ -717,3 +717,48 @@ not the shot. What is needed is the shell object created by a real shot.
   above. A `read_memory` dump of `unit+0x0..0x140` and `unit+0x3880..0x3960` is enough.
 - if no character in the RE6 block carries the launcher for a whole block, a read-only capture on the player object of
   any round that does is equally useful; the goal is the shell object's shape, not the kill.
+
+## Round 54 (2026-11-10 15:58 CST) - the RE4 image is here, F1 passes, and E1's cave is found and vetted
+
+**The image.** The Spark's decrypt-lab state (`GET /api/decrypt-lab/state`) showed RE4 Switch already extracted from
+the same update NSP this box has: `main-82C2A04A21D3E0B850F273D4149C9003.nso`, with a disassembly and five fields
+confirmed. The extracted files are on its home share, so no request to the PM/RE session is needed for them:
+
+    \\10.89.1.246\ehm_eckx\gBox_alt\gbox-cache\exefs\010099A00BC1E000\main.bin   (11,716,664 bytes)
+    \\10.89.1.246\ehm_eckx\gBox_alt\gbox-cache\exefs\010099A00BC1E000\main       (5,260,117 bytes, the raw NSO)
+
+copied read-only to `D:\gBox\cache\re4-base\` (data drive, as the storage rule says). Nothing on the Spark was
+started, stopped or written.
+
+**The build check.** The 64-byte signature at virtual `0x100000` matches `re4_switch.SIGNATURE` exactly, and the
+decrypt-lab's identify stage names build `82C2A04A21D3E0B850F273D4149C9003`. One honest note on
+`MAIN_NSO_SHA256`: the documented `98ca897f...` is Citron `dump_nso`'s **30,146,816-byte** form (0x100 header + the
+image at vaddr 0 including .bss, with the compressed-offset header values). This expanded image hashes to
+`d006951b...`; padding it to the full 30,146,816 bytes hashes to `85de53b1...`, so the difference is the header
+(and/or the dump's padding), not the code. The signature and the blast anchors below are what identify the build;
+the raw Citron dump is not on the share any more. The header layout, measured here: `.text 0..0x655850`,
+`.rodata 0x656000..0xAE1BCC`, `.rwdata 0xAE2000..0xB2C738`, `.bss 0xB2C738..0x1CC0000`.
+
+**F1 passes.** `re4_switch_blasts.verify(open('main.bin','rb').read())` returns **no problems** on the operator's own
+image: all three blast anchors (`0x2E48B0` hand, `0x2E4AA0` simple, `0x2E4E50` flash), their vtable slots, the
+`AREA_ATTACK` call targets and the 6000/15000 radii all check out. Evidence: the empty problem list above; the
+research doc is `docs/research/re4-switch-grenade-flash.md` (request #9436).
+
+**E1's cave.** New tool `tools/verify_re4_caves.py` (see its docstring for the exact contract) reads the layout from
+the image's own NSO header, takes the first 64-byte line after the declared `.text`, and proves:
+
+- cave **`main+0x655880`**, size **0x780 (1920 bytes)**, ends at the RX page boundary `0x656000`;
+- the whole range is zero and 64-byte aligned (`0x655880 % 64 == 0`), inside the executable mapping (`text_size`
+  rounds up to `0x656000`), and `.rodata` starts exactly at the page end - no overlap;
+- **no** B/BL, ADR, ADRP+ADD target and **no** 64-bit literal in `.text`/`.rodata`/`.rwdata` points into it
+  (the scanner also looks up to 3 instructions after an ADRP, not just the next one);
+- verdict **PASS** on `D:\gBox\cache\re4-base\main.bin`; the same run prints the section table above.
+
+Tests: `tests/test_re4_caves.py` (10) - a clean synthetic NSO yields the aligned tail cave; a B, an ADRP+ADD pair
+and a 64-bit literal into the cave are each caught; a nonzero byte fails the hole test; a page-aligned `.text`
+leaves no cave; truncated/foreign images are refused; the measured RE4 layout is pinned as a regression case
+(`0x655880`, `0x780`); the CLI's PASS/FAIL exit codes and the `--at/--size` override are covered. Run together with
+`test_re4_switch_blasts.py`: **11 passed, 1 skipped** (the skip is the test that wants the real image present).
+
+**Next.** E2: the player unit's per-frame vtable slot (the `0xB09A60` / `0xB0C0A0` class tables are static, so the
+clone-vtable trigger can be designed against the image), then E3/E4/E5. The pinned cave is the one to install into.
