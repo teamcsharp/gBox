@@ -73,3 +73,11 @@ def test_eff_led_packs_use_first_bin_slot(key, verts, tex):
     glb, stats = R.export_udas((ROOT / "em" / f"{key}.udas").read_bytes(), ROOT)
     js, _ = read_glb(glb)
     assert stats["vertices"] == verts and len(js["images"]) == tex and stats["textures_missing"] == 0
+
+
+@pytest.mark.skipif(not (ROOT / "em/pl07.udas").exists(), reason="owned RE4 Switch romfs not extracted")
+def test_pl07_bin_bin_tpl_group_resolves_textures():
+    # pl07 slots are BIN,BIN,TPL(3 images): the body's TPL follows the BIN run, not the next slot.
+    glb, stats = R.export_udas((ROOT / "em" / "pl07.udas").read_bytes(), ROOT)
+    js, _ = read_glb(glb)
+    assert stats["vertices"] == 4371 and len(js["images"]) == 3 and stats["textures_missing"] == 0

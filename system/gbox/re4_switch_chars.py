@@ -201,7 +201,11 @@ def export_udas(udas: bytes, root: Path | None) -> tuple[bytes, dict]:
     body = next((i for i, (t, b) in enumerate(dat.slots) if t == "BIN" and b), None)
     if body is None:
         raise AssetError("pack has no body BIN slot")
-    tpl = next((b for t, b in dat.slots[body + 1:body + 2] if t == "TPL" and b), None)
+    # The TPL is the next slot, or (pl07: BIN,BIN,TPL groups) the first TPL after the consecutive BIN run.
+    nxt = body + 1
+    while nxt < len(dat.slots) and dat.slots[nxt][0] == "BIN":
+        nxt += 1
+    tpl = dat.slots[nxt][1] if nxt < len(dat.slots) and dat.slots[nxt][0] == "TPL" and dat.slots[nxt][1] else None
     return build_glb(dat.slots[body][1], tpl, root)
 
 
