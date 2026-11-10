@@ -1110,6 +1110,7 @@ SIGHT_LOG = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re4-s
 SIGHT_LOG_EVERY_S = 1.0
 WALK_LOG = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re4-walk-presses.jsonl"
 FROZEN_MM, FROZEN_RAD, FROZEN_TAP_S, FROZEN_KEY = 30.0, 0.01, 0.2, "a"
+FROZEN_FIRE_S, FROZEN_FIRE_SHOTS = 5.0, 8   # firing this long / this many shots, unmoved and without a hit: not in control
 TURN_LEARN, TURN_LEARN_N = True, 16
 MELEE_MM, MELEE_REACH_MM, MELEE_CLEAR_MM = 2500.0, 1400.0, 2000.0
 MELEE_WINDOW_S, MELEE_TAP_S, MELEE_CONE = 1.6, 0.3, 0.5
@@ -1576,12 +1577,23 @@ class Bot:
         pos, rot = tuple(p["pos"]), p.get("rot")
         moved = (fz["pos"] is None or self._flat(fz["pos"], pos) > FROZEN_MM
                  or (rot is not None and fz["rot"] is not None and abs(wrap(rot - fz["rot"])) > FROZEN_RAD))
+        shots = self.stats.get("shots", 0) or 0
         if moved:
-            fz.update(pos=pos, rot=rot, at=now, on=False)
+            fz.update(pos=pos, rot=rot, at=now, on=False, shots0=shots)
             return None
         stepped = fz.get("stepped")
-        if not FROZEN or stepped is None or stepped < fz.get("at", -1e9) or now - stepped < STAND_STEP_S:
+        # Firing into a screen that takes no input (live 2026-11-10 03:52, Krauser on Waterworld's intro card "Eliminate
+        # as many Ganados as you can": 620 shots, 0 hits, "crowd fire" for minutes): aiming and firing never step, so
+        # the step rule above never armed. FROZEN_FIRE_SHOTS shots over FROZEN_FIRE_S without moving and without one
+        # hit since he last moved is not a fight either.
+        last_hit = max(self._hit_at.values(), default=-1e9) if isinstance(getattr(self, "_hit_at", None), dict) else -1e9
+        fire_stuck = (FROZEN and now - fz.get("at", now) >= FROZEN_FIRE_S and last_hit < fz.get("at", -1e9)
+                      and shots - fz.get("shots0", shots) >= FROZEN_FIRE_SHOTS)
+        if not FROZEN or not fire_stuck and (stepped is None or stepped < fz.get("at", -1e9)
+                                             or now - stepped < STAND_STEP_S):
             return None                                  # no step tried since he last moved, or it is still running
+        if fire_stuck and not fz["on"]:
+            self.stats["frozen_fire_spells"] = self.stats.get("frozen_fire_spells", 0) + 1
         if not fz["on"]:
             fz["on"] = True
             self.stats["frozen_spells"] = self.stats.get("frozen_spells", 0) + 1

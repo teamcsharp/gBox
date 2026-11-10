@@ -484,3 +484,24 @@ def test_a_heavy_at_arms_length_is_run_from_not_fought():
     b2 = bot()
     b2.tick(far, now=1.0)
     assert b2.doing != "evade", "beyond HEAVY_KEEP_MM he is a target"
+
+
+def test_firing_into_a_screen_that_takes_no_input_taps_a():
+    """Live 2026-11-10 03:52: Krauser on Waterworld's intro card ("Eliminate as many Ganados ..."), the bot "crowd
+    fire" for minutes - 620 shots, 0 hits - and nothing pressed A. Firing never steps, so only this rule sees it."""
+    b = bot()
+    p = {"pos": (0.0, 0.0, 0.0), "rot": 0.0}
+    b.stats["shots"] = 0
+    assert b._frozen(p, 10.0) is None                      # the first read: he "moved" (nothing known yet)
+    b.stats["shots"] = 4
+    assert b._frozen(p, 13.0) is None                      # firing, not yet long enough
+    b.stats["shots"] = 12
+    act = b._frozen(p, 15.5)
+    assert act == {"hold": set(), "tap": D.FROZEN_KEY} and b.doing == "frozen"
+    assert b.stats["frozen_fire_spells"] == 1
+    b2 = bot()
+    b2.stats["shots"] = 0
+    b2._frozen(p, 10.0)
+    b2._hit_at[123] = 12.0                                 # a hit landed: a real fight
+    b2.stats["shots"] = 12
+    assert b2._frozen(p, 15.5) is None
