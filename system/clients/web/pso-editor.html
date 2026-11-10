@@ -44,6 +44,11 @@
       <button id="preview-btn">preview move</button>
       <input id="mod-name" size="18" placeholder="mod name (build)">
       <button id="build-btn">build mod</button>
+      <span style="margin-left:12px">swap fit</span>
+      <input id="fit-host" size="2" value="A">
+      <span>&rarr;</span>
+      <input id="fit-donor" size="2" value="C">
+      <button id="fit-btn">check</button>
     </div>
     <table><thead><tr><th>#</th><th>class</th><th>family</th><th>kind</th><th>x</th><th>y</th><th>z</th><th>world</th></tr></thead>
     <tbody id="records"></tbody></table>
@@ -123,6 +128,14 @@ document.getElementById("build-btn").onclick = async () => {
     const v = data.verification || {};
     msg("built " + data.name + ": " + data.image + " - verification ok=" + v.ok);
   } catch (err) { msg("build failed: " + err.message); }
+};
+document.getElementById("fit-btn").onclick = async () => {
+  const host = document.getElementById("fit-host").value.trim().toUpperCase();
+  const donor = document.getElementById("fit-donor").value.trim().toUpperCase();
+  try {
+    const data = await (await api(`/api/pso/editor/swapfit?host=${host}&donor=${donor}`)).json();
+    msg(`swap ${data.donor.class} -> ${data.host.class}: ${data.safe ? (data.deforms ? "SAFE (will deform)" : "SAFE") : "REFUSE"} - ${data.why}`);
+  } catch (err) { msg("swap fit failed: " + err.message); }
 };
 loadSets().catch(err => msg("error: " + err.message));
 </script>

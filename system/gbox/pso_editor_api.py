@@ -178,6 +178,28 @@ def routes(app, config, auth):
         return {"ok": True, "name": name, "image": None if image is None else str(image),
                 "verification": out.get("verification"), "edits": out.get("edits")}
 
+    @app.get("/api/pso/editor/swapfit")
+    def swapfit(host: str = "A", donor: str = "C", actor=Depends(auth)):
+        """Will a raw body copy from `donor` over `host` work? The P7b gate, from the disc's own bodies.
+
+        Textures and vertex counts come from each class's PL<x>BDY00.NJ on the running disc, and the verdict is
+        `pso_swapfit.compare`'s: buckets must match (the crash case), matching buckets with a different vertex count
+        is the deformed case, everything equal is safe.
+        """
+        from . import ninja, pso_gc, pso_player, pso_swapfit
+        host, donor = host.strip().upper(), donor.strip().upper()
+        for letter in (host, donor):
+            if letter not in pso_player.CLASS_ROLES:
+                raise HTTPException(400, f"unknown class letter {letter!r} (A..I)")
+        signatures = {}
+        for letter in (host, donor):
+            body = pso_player.pso_gc_paths.read_part(disc(), pso_player.pso_gc_paths.gc_path(
+                f"PSO/PL{letter}BDY00.NJ") if True else f"PSO/PL{letter}BDY00.NJ")
+            signatures[letter] = pso_swapfit.signature_nj(ninja.NJ(body, be=True))
+        verdict = pso_swapfit.compare(signatures[host], signatures[donor])
+        return {"host": {"class": host, **signatures[host]}, "donor": {"class": donor, **signatures[donor]},
+                "safe": verdict["safe"], "deforms": verdict.get("deforms", False), "why": verdict["why"]}
+
     @app.post("/api/pso/editor/preview")
     def preview(body: PreviewIn, actor=Depends(auth)):
         try:

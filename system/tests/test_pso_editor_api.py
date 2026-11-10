@@ -158,3 +158,47 @@ def test_a_failed_build_is_a_400_with_the_reason(monkeypatch):
                                    json={"name": "boom", "ops": [{"op": "move", "set": "map_city00_00o.dat",
                                                                   "index": 1, "x": 1.0, "y": 2.0, "z": 3.0}]})
     assert res.status_code == 400 and "the writer refused" in res.text
+
+
+# ---- the swap-fit gate ------------------------------------------------------------------------------------------------------
+
+def test_the_swap_fit_endpoint_uses_the_disc_bodies_and_the_compare_rule(monkeypatch):
+    from gbox import ninja, pso_player, pso_swapfit
+    seen = []
+    monkeypatch.setattr(pso_player.pso_gc_paths, "read_part", lambda disc, path: b"fake-body")
+    monkeypatch.setattr(ninja, "NJ", lambda data, be=False: object())
+
+    def fake_signature(nj):
+        seen.append(nj)
+        return {"bones": 64, "buckets": [0, 1, 2, 3, 4], "vertices": 269 if len(seen) == 1 else 311}
+
+    monkeypatch.setattr(pso_swapfit, "signature_nj", fake_signature)
+    res = client(monkeypatch).get("/api/pso/editor/swapfit?host=A&donor=C")
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["host"]["class"] == "A" and data["donor"]["class"] == "C"
+    assert data["safe"] is True and data["deforms"] is True and "vertices" in data["why"]
+    assert len(seen) == 2
+
+
+def test_the_swap_fit_refuses_an_unknown_class_letter(monkeypatch):
+    assert client(monkeypatch).get("/api/pso/editor/swapfit?host=Z&donor=C").status_code == 400
+    assert client(monkeypatch).get("/api/pso/editor/swapfit?host=A&donor=Q").status_code == 400
+
+
+def test_the_real_disc_reproduces_the_two_round_35_observations():
+    import pathlib
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gbox import pso_editor_api as API
+    disc = pathlib.Path(r"D:\gBox\cache\mods\436e0bb84d5337d1\pso_city_npc_moved"
+                        r"\Phantasy Star Online Episode I & II Plus (USA).iso")
+    if not disc.is_file():
+        pytest.skip("the disc is not on this machine")
+    app = FastAPI()
+    API.routes(app, type("Cfg", (), {"cache": r"D:\gBox\cache"})(), lambda: "agent")
+    c = TestClient(app)
+    deforms = c.get("/api/pso/editor/swapfit?host=A&donor=C").json()
+    assert deforms["safe"] is True and deforms["deforms"] is True           # HUcast: renders, deformed
+    refused = c.get("/api/pso/editor/swapfit?host=A&donor=B").json()
+    assert refused["safe"] is False and "buckets" in refused["why"]         # HUnewearl: the crash case
