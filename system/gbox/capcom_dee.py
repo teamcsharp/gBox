@@ -181,3 +181,96 @@ def decode_dee_tim(data: bytes) -> tuple:
     """Return (tim_bytes, tim_info) for a compressed DEE file."""
     tim = dee_decompress(data)
     return tim, parse_tim(tim)
+
+
+def _png_chunk(tag: bytes, payload: bytes) -> bytes:
+    import zlib
+    return (struct.pack(">I", len(payload)) + tag + payload
+            + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF))
+
+
+def _clut_color(value: int) -> tuple:
+    """Decode a PSX 16-bit CLUT entry to RGBA.
+
+    The entry is 5:5:5 STP/X:B:G:R (bit 15 = semi-transparency / transparent
+    select bit, bit 0 is the LSB of red).  We keep the STP bit as an opaque
+    channel only when clear; STP=1 marks the pixel transparent (alpha 0).
+    """
+    stp = (value >> 15) & 1
+    r = (value & 0x1F) << 3
+    g = ((value >> 5) & 0x1F) << 3
+    b = ((value >> 10) & 0x1F) << 3
+    return (r, g, b, 0 if stp else 255)
+
+
+def tim_to_png(tim: bytes) -> tuple:
+    """Decode a PSX TIM to an RGBA PNG, honoring CLUT STP transparency.
+
+    Supports 4bpp (CLUT-indexed, 2 pixels/byte, low nibble = left pixel) and
+    8bpp (CLUT-indexed).  16/24bpp direct-color TIMs are not produced by any
+    observed Capcom Generations .DEE asset, so they raise ValueError.
+
+    Returns (png_bytes, meta) where meta carries the image/clut dimensions and
+    the decoded CLUT entry count.  This is the editable-artefact export path
+    (DEE -> LZ77 -> TIM -> PNG) for character replacement.
+    """
+    if len(tim) < 8 or tim[:4] != b"\x10\x00\x00\x00":
+        raise ValueError("not a TIM")
+    flag = struct.unpack_from("<I", tim, 4)[0]
+    bpp = flag & 3
+    off = 8
+    clut: list = []
+    clut_meta = None
+    if flag & 8:
+        csize, cx, cy, cw, ch = struct.unpack_from("<I4H", tim, off)
+        ncolors = (csize - 12) // 2
+        clut = [_clut_color(v) for v in struct.unpack_from("<%dH" % ncolors, tim, off + 12)]
+        clut_meta = {"x": cx, "y": cy, "w": cw, "h": ch, "count": ncolors}
+        off += csize
+    isize, ix, iy, iw, ih = struct.unpack_from("<I4H", tim, off)
+    pix = tim[off + 12: off + isize]
+
+    if bpp == 0:  # 4bpp: two pixels per byte, low nibble first (left)
+        indices = []
+        for y in range(ih):
+            row_start = y * (iw // 2)
+            for x in range(iw):
+                byte = pix[row_start + x // 2]
+                indices.append(byte & 0xF if x % 2 == 0 else (byte >> 4) & 0xF)
+    elif bpp == 1:  # 8bpp
+        indices = list(pix[:iw * ih])
+    else:
+        raise ValueError("TIM bpp %d (16/24-bit direct color) is unsupported" % bpp)
+
+    raw = bytearray(iw * ih * 4)
+    for i, idx in enumerate(indices):
+        r, g, b, a = clut[idx] if idx < len(clut) else (0, 0, 0, 0)
+        raw[i * 4:i * 4 + 4] = bytes((r, g, b, a))
+
+    idat = bytearray()
+    stride = iw * 4
+    for y in range(ih):
+        idat += b"\x00" + bytes(raw[y * stride:(y + 1) * stride])
+    import zlib
+    png = (b"\x89PNG\r\n\x1a\n"
+           + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", iw, ih, 8, 6, 0, 0, 0))
+           + _png_chunk(b"IDAT", zlib.compress(bytes(idat), 9))
+           + _png_chunk(b"IEND", b""))
+    meta = {"image": {"x": ix, "y": iy, "w": iw, "h": ih},
+            "bpp": {0: 4, 1: 8, 2: 16, 3: 24}[bpp],
+            "clut": clut_meta}
+    return png, meta
+
+
+def dee_to_png(data: bytes) -> tuple:
+    """Full path: decompress a .DEE body and render the TIM to a PNG.
+
+    Returns (png_bytes, meta) where meta also carries the DEE header summary
+    so the exporter can record source identity end-to-end.
+    """
+    hdr = parse_dee(data)
+    tim = dee_decompress(data)
+    png, meta = tim_to_png(tim)
+    meta["tim"] = parse_tim(tim)
+    meta["dee"] = {k: hdr[k] for k in ("type_tag", "type_name", "body_marker", "block_token")}
+    return png, meta

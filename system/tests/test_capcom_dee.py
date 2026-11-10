@@ -173,3 +173,55 @@ def test_all_compressed_dee_decode_to_exact_tim():
         assert info["bpp"] in (4, 8, 16) and info["image"]["w"] >= 0, f
     tim, info = decode_dee_tim(open(os.path.join(DEE_DIR, "1943_43CHAR7.DEE"), "rb").read())
     assert len(tim) == 8736 and info["clut"] == {"size": 524, "x": 0, "y": 480, "w": 256, "h": 1}
+
+
+# --- TIM -> PNG exporter ---------------------------------------------------
+from gbox.capcom_dee import tim_to_png, dee_to_png  # noqa: E402
+
+
+def _make_tim_4bpp(w=4, h=4, clut_colors=(0x0000, 0x7FFF, 0x001F, 0x8000)):
+    """Synthesize a 4bpp TIM: CLUT + one 4x4 image, low nibble = left pixel."""
+    flag = 0x08 | 0x00  # has CLUT, 4bpp
+    csize = 12 + 2 * len(clut_colors)
+    clut = struct.pack("<IHHHH", csize, 0, 480, 256, 1) + struct.pack(
+        "<%dH" % len(clut_colors), *clut_colors)
+    imgsize = 12 + (w * h) // 2
+    img = struct.pack("<IHHHH", imgsize, 0, 0, w, h)
+    # index pattern: 0,1,2,3 -> 0x3210 bytes
+    pix = bytes([0x10, 0x32]) + b"\x00" * ((w * h) // 2 - 2)
+    return b"\x10\x00\x00\x00" + struct.pack("<I", flag) + clut + img + pix
+
+
+def test_tim_to_png_4bpp_decodes_and_honors_stp_transparency():
+    tim = _make_tim_4bpp()
+    png, meta = tim_to_png(tim)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert meta["image"] == {"x": 0, "y": 0, "w": 4, "h": 4}
+    assert meta["bpp"] == 4
+    assert meta["clut"]["count"] == 4
+    # 1 index (0x8000) has STP set -> alpha 0; others opaque
+    from gbox.capcom_dee import _clut_color
+    assert _clut_color(0x8000)[3] == 0
+    assert _clut_color(0x0000)[3] == 255
+
+
+def test_tim_to_png_rejects_non_tim_and_16bpp():
+    with pytest.raises(ValueError):
+        tim_to_png(b"nope" * 8)
+    # 16bpp (bpp==2) is unsupported by this exporter
+    flag = 0x02
+    img = struct.pack("<IHHHH", 12 + 8, 0, 0, 2, 2) + b"\x00" * 8
+    with pytest.raises(ValueError, match="unsupported"):
+        tim_to_png(b"\x10\x00\x00\x00" + struct.pack("<I", flag) + img)
+
+
+@pytest.mark.skipif(not os.path.exists(DEE_DIR), reason="DEE dump dir not on this host")
+def test_43char7_dee_to_png_roundtrip():
+    """The owned 43CHAR7.DEE exports to a 64x128 RGBA PNG end-to-end."""
+    data = open(os.path.join(DEE_DIR, "1943_43CHAR7.DEE"), "rb").read()
+    png, meta = dee_to_png(data)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert meta["tim"]["image"]["w"] == 64 and meta["tim"]["image"]["h"] == 128
+    assert meta["clut"]["count"] == 256
+    assert meta["dee"]["type_name"] == "char_sprites"
+    assert meta["dee"]["body_marker"] == 0x106b
