@@ -706,12 +706,179 @@ the screen changed, and this round nearly shipped "the stick is broken" because 
 game was in a conversation. Both were measurements of the *wrong state*. A negative result needs the same evidence bar as
 a positive one, and "nothing happened" is the easiest result to misread.
 
+## Round 11 (2026-11-10) — the conversation signal found, and the relay that was starving the bot
+
+### The signal round 10 said was missing: `mode 5` / `17` is a conversation
+
+Watching `0x80516303` while Principal Tyrell's tutorial ran gives the missing "a conversation is open" signal:
+
+| mode | meaning |
+|---|---|
+| **5** | a conversation page is up |
+| **17** | a conversation page just advanced (it alternates with 5 as A is pressed) |
+| 0 / 4 | the title / attract |
+| 1 | a menu (main menu **and** SELECT CHARACTER) |
+| 9 | SELECT GAME MODE |
+
+The actor fields do **not** move during the conversation (`control_mode` 1, `action_state` 1, `hit_records` 1 the whole
+time), so the boot-mode byte is the only usable signal -- which is why round 10's movement tests were meaningless: the
+mode was 5/17 throughout and movement is locked there. A driver can now press A *while* the mode is 5/17 and stop the
+moment it is not, instead of guessing how many pages a conversation has.
+
+### The bug that probably caused the input stall: the relay starved the bot
+
+Round 10 ended with the game ignoring every press (A and START both did nothing while the render and RAM stayed
+healthy) -- the third appearance of this stall. The likely cause is the relay added in round 9: it forwarded *every*
+change of the operator's physical pad to the session's input queue, and their pad's sticks **drift** (`lx -160,
+ly 1387` at rest, changing packet by packet). A continuous flood of operator-sourced input makes `pad_takeover` treat
+the operator as playing, and a playing bot yields the pad -- so gBox's own presses wait forever.
+
+`padstate` now relays **buttons always, sticks only past a real deflection** (`RELAY_STICK = 0.3`, the same threshold
+the watcher uses for `moved`). Whether that fully explains the stall is **not proven** -- a fresh session after the
+change accepted input for the whole boot sequence, but the previous session had also just been restarted and started
+healthy. The falsifiable test for the next round: drive ~100 presses in one session and check that input still lands.
+
+### The boot sequence is state-dependent, and the script is not
+
+With input working, `gbox.pso_boot_walk.walk` ran its six steps and ended **without a player**, with the mode
+oscillating `1 -> 0 -> 1 -> 1 -> 0 -> 1`. The same `ddown`+A at the main menu produced SELECT GAME MODE (mode 9) in
+round 4 and the title (mode 0) here. The menu remembers its cursor, so the same key sequence lands on a different item
+depending on history -- a fixed press list cannot be right for both.
+
+So the walk needs to *see* each screen before choosing the next press. The mode byte alone cannot do that (1 is two
+different screens). What the round did establish is what to build: a frame-per-step driver that captures the screen at
+each step (the round's frames are 110-123 KB JPEGs and readable), labels it, and records the press that moved it --
+turning the walk into an evidence-backed sequence instead of my memory of round 4.
+
+### Not done
+
+Pioneer 2 -> Forest 1 did not happen in this round either. The pieces are all present (the route through
+`TObjCityDoor_Guild` at 185,173, the walker, the conversation signal); what is missing is a boot sequence that copes
+with a remembered cursor.
+
+## Round 12 (2026-11-10) — the virtual pad was flaky, not broken; and two more tests that measured the wrong thing
+
+### The real defect this round: `_setup_vpad` sometimes returns None
+
+A launch right after a `stop_game` produced `GCPadNew.ini` with **no** `Options/Always Connected` and
+`Device = XInput/1/Gamepad` -- the no-vpad fallback. In that session gBox cannot press at all: its only other path is
+`win_send_keys`, which Windows refuses from a background process. ViGEm releases the previous session's pad
+asynchronously, so the next launch's pad creation fails.
+
+`DolphinWinAdapter._setup_vpad` now retries pad creation **three times** with a short backoff before falling back, and
+says how many attempts it made. Verified: the next launch wrote `Options/Always Connected = True` +
+`Device = XInput/0/Gamepad`, and gBox's presses moved the title menu's cursor.
+
+### The stick is not broken, and two of this round's "tests" were invalid
+
+Tracing the write end to end settled it:
+
+* `vpad_win` calls `pad.left_joystick(x_value=_clamp(lx), y_value=_clamp(ly))` with **ints** +/-32767. `vgamepad`
+  rejects floats (`TypeError: 'float' object cannot be interpreted as an integer`) and accepts ints, so the call is
+  right -- my first hypothesis (wrong units) was wrong.
+* A pad written that way **does** show up in XInput: `ints +/-32767 -> {lx: 32767, ly: 32767}`. So a stick write
+  reaches the OS.
+
+Two tests from earlier this turn were therefore measuring the wrong thing:
+
+1. **The title menu responds to the D-pad, not the stick.** `ddown` moved the highlight from ONLINE GAME to OFFLINE
+   GAME; a 1.5 s hold of the *stick* `down` moved nothing. That is menu behaviour, not a stick failure.
+2. **The XInput probe that "proved" the stick never reaches a pad** ran in the session whose `_setup_vpad` had returned
+   None -- there was no virtual pad to write to. It proved the *fallback* session has no pad, nothing more.
+
+So the analog stick's behaviour in the field is still **unmeasured**. The one clean way to measure it is in-game with
+the character free, which is exactly where every attempt has failed because the game spends that time in Principal
+Tyrell's conversation.
+
+### The boot-mode byte is coarser than the lane doc said
+
+Newly observed values, all from this round's frames and reads:
+
+| mode | screens seen with it |
+|---|---|
+| 0 | the attract, **the title main menu** (after a cursor move), **SELECT CHARACTER** |
+| 1 | the title main menu (on entry), the SELECT CHARACTER confirm prompt |
+| 4 | the title with the menu closed |
+| 5 / 17 | a conversation |
+| 9 | SELECT GAME MODE |
+
+So `mode` cannot name a screen. Round 11's "5/17 is a conversation" still holds (nothing else has produced those
+values), but the walk cannot be driven by the byte alone.
+
+### What did advance
+
+The character-select path is now known exactly, from frames: at SELECT CHARACTER press **A** (opens
+`Confirm / Cancel / Recreate`), then **A** again (Confirm) -- the character loads from the card and the game enters
+Pioneer 2. That is what round 9's cold boot did by hand, and it is three presses with two visible confirmations, so it
+can be scripted with a frame check at each step.
+
+## Round 13 (2026-11-10) — the boot to Pioneer 2 is now six verified presses, and the intro scene is the wall
+
+### The path, press by press, each one checked against a frame
+
+Every step below was driven by gBox's own virtual pad and confirmed by a captured frame and a RAM read:
+
+| # | press | screen it reached |
+|---|---|---|
+| 1 | START (at PRESS START) | the title main menu (mode **1**) |
+| 2 | `ddown` + A | **SELECT GAME MODE** (mode **9**) -- the cursor starts on ONLINE GAME |
+| 3 | A | **SELECT CHARACTER** (mode 1), BQF / HUmar / ORAN on the card |
+| 4 | A | the **Confirm / Cancel / Recreate** prompt, Confirm highlighted |
+| 5 | A | **SELECT EPISODE** (mode 1), EPISODE 1 highlighted |
+| 6 | A | the warp, then **Pioneer 2**: mode **5**, player at `(0.0, -2015.0)` room 41, 29 entities |
+
+`gbox.pso_boot_walk.BOOT_STEPS` now carries exactly this list (it previously carried my memory of round 4, which had a
+`dup` step and no confirm or episode step). Step 2 is the only one with an unambiguous RAM checkpoint -- mode 9 appears
+nowhere else -- so it asserts `mode == 9` and the rest are judged by the arrival, because mode 1 is the main menu,
+SELECT CHARACTER and SELECT EPISODE alike.
+
+### The wall: the intro scene loops and nothing exits it
+
+In Pioneer 2 the game is in Principal Tyrell's episode-1 intro, mode **5** continuously. Measured, once each, with the
+mode watched after every action:
+
+| action | result |
+|---|---|
+| A, 50 presses at 1 s | cycles four lines forever (below), mode stays 5 |
+| B, X, Y | mode stays 5 |
+| START | consumed by the scene, mode stays 5 |
+| wait 4 s with no input | mode stays 5 |
+| stick `down` 1.5 s and 5 s | position unchanged |
+| D-pad `ddown`, `dleft`, `dup` 1.5 s | position unchanged |
+| stick held **together with** A | position unchanged |
+
+The four lines it cycles through: *"Are you BQF, the Hunter?"*, *"Go talk to my secretary. Irene will help you."*,
+*"We have a bad situation... We need to act quickly."*, *"I didn't say anything."* -- so A advances a page, and once the
+scene has run out A re-opens it, because the character is standing in front of the Principal.
+
+So **the character cannot be moved while the scene is up, and the scene cannot be left by pressing anything tested**.
+That combination is what has defeated every movement measurement since round 10, and it means the field leg needs a way
+past this specific scene rather than another movement test.
+
+### Next: get past the scene
+
+Candidates, in order of promise:
+
+1. The scene is scripted per area entry, so it may key off a **flag in the player or area structure** that a write can
+   clear (P2b's `pso_ram` map has `room`, `floor`, `episode`; a "first visit" flag is the likely neighbour).
+2. The scene may be **cancelled by the talk prompt's own Cancel** path -- the Confirm/Cancel widget seen at character
+   select is the same widget family, and the dialog might accept `B` *only on its last page*, which a driver cannot
+   detect without a frame check.
+3. A **second player** (co-op) would be outside the scene's single-player framing; P1 needs player 2 anyway.
+
+What is *not* on that list: more movement tests in this room. Eight of them have now failed for the same reason, and
+none of them measured the stick.
+
 ## 7. Next
 
-1. Find a RAM signal for "a conversation is open" (sample `control_mode` +0x324, `action_state` +0x326 and
-   `hit_records` +0xA8 during and after Principal Tyrell's conversation), so a driver knows when to stop pressing A.
-   Until the character is free, every movement measurement is noise - this round's were.
-2. Then measure movement once, properly: two seconds of a held direction with the character free, position read
-   back. Only then call the analog stick broken or working.
-3. Then Pioneer 2 -> the Hunter's Guild door (185,173 room 10) -> the teleporter (254,25) -> Forest 1, then the
-   three cold launches with both players, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
+1. Get past Principal Tyrell's episode-1 intro scene. It cannot be exited by any button tested (A, B, X, Y, START),
+   by waiting, or by any movement input, and the character cannot be moved while it is up. Most promising: a
+   "first visit" flag near the player/area fields that a write can clear (P2b), the scene's own last-page Cancel,
+   or bringing in player 2, who is outside the scene's framing -- and P1 needs player 2 anyway.
+2. Then measure movement with the character free (the one clean test that has never been possible), and walk
+   Pioneer 2 -> the Hunter's Guild door (185,173 room 10) -> the teleporter (254,25) -> Forest 1.
+3. Then the three cold launches with both players, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
+
+Done this round: the boot path to Pioneer 2 is six presses, each verified against a captured frame, and
+`gbox.pso_boot_walk.BOOT_STEPS` now carries exactly that list (9 tests). Not to be repeated: movement tests inside
+the scene -- eight have now failed there for the same reason.

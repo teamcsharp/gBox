@@ -32,14 +32,25 @@ import time
 from . import pso_entities as entities_mod
 from . import pso_ram
 
-# The press script: (name, keys, the checkpoint that must hold after it).
+# The press script, verified step by step against captured frames (2026-11-10). Each row is one press of the game's own
+# input: the (name, keys, the checkpoint that must hold after it).
+#
+#   1 START at PRESS START        -> the title main menu (mode 1)
+#   2 ddown + A                   -> SELECT GAME MODE (mode 9)  [the cursor starts on ONLINE GAME, so it takes a move]
+#   3 A                           -> SELECT CHARACTER (mode 1)
+#   4 A                           -> the Confirm / Cancel / Recreate prompt, Confirm highlighted
+#   5 A                           -> SELECT EPISODE
+#   6 A                           -> the warp, then Pioneer 2 (mode 5, player at 0,-2015 room 41)
+#
+# Press 2 is the only one with an unambiguous RAM checkpoint (mode 9 appears nowhere else); the rest are asserted by the
+# arrival, because `mode` reads 1 for the main menu, SELECT CHARACTER and SELECT EPISODE alike.
 BOOT_STEPS = (
     ("press_start", ("start",), "left_title"),
-    ("offline_game", ("ddown", "a"), None),
-    ("single_mode", ("a",), "past_game_mode"),
-    ("slot_a", ("a",), "creating_or_selecting"),
-    ("accept_new", ("dup", "a"), None),          # answers "Want to create a new Character?" YES when it appears
-    ("episode_one", ("a",), "in_town"),          # after the character editor and the episode choice
+    ("offline_game", ("ddown", "a"), "game_mode_select"),
+    ("single_mode", ("a",), None),
+    ("character_slot", ("a",), None),
+    ("confirm_character", ("a",), None),
+    ("episode_one", ("a",), "in_town"),
 )
 
 TITLE_MODES = (0, 4, 22)
@@ -65,6 +76,9 @@ def _check(name: str, before: dict, after: dict) -> tuple[bool, str]:
     if name == "left_title":
         ok = after["mode"] not in TITLE_MODES or after["player"] is not None
         return ok, "" if ok else f"still on the title (mode {after['mode']})"
+    if name == "game_mode_select":
+        ok = after["mode"] == GAME_MODE_SELECT
+        return ok, "" if ok else f"ddown+A did not open SELECT GAME MODE (mode {after['mode']})"
     if name == "past_game_mode":
         ok = after["mode"] != GAME_MODE_SELECT
         return ok, "" if ok else "still on SELECT GAME MODE"

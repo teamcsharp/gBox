@@ -1,8 +1,35 @@
 # DeepSeek grenade-ring lane — 2026-11-10
 
 Lane log for `system/docs/DEEPSEEK-GRENADE-RING-TASK-2026-11-10.md` (the operator: "i need the grenade deployment
-feature completed across all titles in full ... and all these titles"). Work branch `ds-grenade-ring-20261110`;
-every claim below is either a test in the repo or a receipt quoted with its session id.
+feature completed across all titles in full ... and all these titles"). Every claim below is either a test in the
+repo or a receipt quoted with its session id.
+
+## Status for the PM (2026-11-10, 07:1x)
+
+**Read with the operator's 07:07 update to `DEEPSEEK-GRENADE-RING-TASK-2026-11-10.md`:** RE6 grenades now belong to
+the RE session's `re6-bomb-mind` lane (this lane stops touching them; main's RE6 ring stays as it is until that
+branch merges), the "when to ring" rule moves into the now-available `gbox/mercs/core/combat.py`, a **package 6**
+(the scatter barrage on RE4/RE5 Switch) was added, and work is to be pushed to a branch, not main - this commit is
+the one PM note and then the lane returns to its branch (`ds-grenade-ring-20261110`).
+
+**Landed on main already (via this lane and the PM's universal-core merge):** the honest per-kind status, the RE6
+Switch ring (frozen from here), the bot's when-to-ring rule with `rings_deployed`/`ring_kills` and its PiP knobs, the
+PiP chooser, and the offline check that the RE6 native pair matches the operator's installed build. Nothing changes
+a title bot's decisions outside the ring hook, and the ring is Switch-only.
+
+- **Works and is proven:** RE5 Switch flash ring (live: 10/10 detonated, 1.05 s, no self-damage - receipt below);
+  per-kind status on every title (19 tests + live before/after observations); RE6 ring geometry/partial handling and
+  the native caves against the real 061D2A06 image (10 + 4 tests); the bot rule (13 tests); the PiP chooser (21 JS
+  tests).
+- **Open, and why:** package 6 (scatter barrage) not started; the rule still lives in `gbox/mercs/grenade_ring.py`
+  and wants moving onto `core/combat.py` per the doc; RE5 hand+incendiary (item DTIs unconfirmed + an ARM64 rebuild);
+  the RE4 Switch ring (no native call harness on that title); the 4 failing
+  `tests/test_pso_steering_evidence.py` (on this lane's list now); and the RE6 status bug's root cause (RE6 is now
+  the other lane's, so handed over with the ready() evidence request noted below).
+- **Needs one action:** a `gbox.service` restart at a gap on lilspark (and locally if that node should show the new
+  status). Title modules hot-reload; `interventions.py`, `engine.py` and the new modules only load on restart.
+- **Conflicts:** the only file two lanes both added is `gbox/mercs/enemy_identity.py`; this lane uses the other
+  lane's module (`tier(title, class, hp_max)`) and keeps no table of its own.
 
 ## What works now, per title and kind
 
@@ -110,13 +137,20 @@ core lands, `decide()` is the function to move onto it.
 
 ## Commits
 
-- `be21ba0` on `ds-grenade-ring-20261110`: the whole lane (status, RE6 ring, bot rule, JS, tests).
-- `38740baa` on main: the merge of that branch. Its one conflict was `system/gbox/mercs/enemy_identity.py`, added by
-  the enemy-identity lane at the same time; resolved **in favour of that lane's module** - the ring's rule calls
-  `enemy_identity.tier(title, class, hp_max)` for boss/dangerous instead of keeping its own table, so one enemy
-  identity feeds the tactical map, the bots and this rule.
-- `369495c0` on main: Switch-only gating (the operator's 2026-11-10 update), this lane log, and a clicked ring
-  counted in `rings_deployed`/`ring_kills` like the bot's own.
+- `be21ba0` (branch `ds-grenade-ring-20261110`): the whole lane (status, RE6 ring, bot rule, JS, tests).
+- `38740baa`: the merge with the then-current main. Its one conflict was
+  `system/gbox/mercs/enemy_identity.py`, added by the enemy-identity lane at the same time; resolved **in favour of
+  that lane's module** - the ring's rule calls `enemy_identity.tier(title, class, hp_max)` for boss/dangerous instead
+  of keeping its own table, so one enemy identity feeds the tactical map, the bots and this rule.
+- `369495c0`: Switch-only gating (the operator's 2026-11-10 update), this lane log, and a clicked ring counted in
+  `rings_deployed`/`ring_kills` like the bot's own.
+- `76d098fc` (on the branch `ds-grenade-ring-20261110`): the RE6 native-cave verifier and the local-installation
+  check (below). It is on main as the cherry-pick `690f1d28` - the branch commit's hash differs because it was
+  cherry-picked onto main rather than merged.
+- the two PM-note commits (`09cfc9a7`, `f2c7004f`): the status block above, cherry-picked onto main together with
+  the verifier.
+
+The branch stays the place for the next round of work; main carries everything shipped so far.
 
 ## What the PiP showed before this lane (the observed problem)
 
@@ -133,9 +167,33 @@ played (receipts under `.tmp/evidence/` on the Windows box, sessions named):
   a minute later the joined module refusals - the status was either blind (dead worker) or a paragraph of internals,
   never "the ring is not built for this title".
 
+## The RE6 native pair checked against the operator's own installation (2026-11-10, offline)
+
+The operator pointed this lane at the local RE6 Switch copy: `D:\gBox\cache\115f9cdbba115432\Resident Evil 6
+[01002A000CD48000].nsp` (base 1.0.0) plus `Resident Evil 6 [01002A000CD48800][v131072].nsp` (the update). No game
+was launched for this; it is file analysis only.
+
+1. `python -m gbox.switch_extract exefs <nsp> <program.nca> <out> --keys \\10.89.1.125\QuickSwap2\Emulation\_switch\prod.keys`
+   pulled `main` out of each program NCA; `hactool -t nso --uncompressed=main.bin main` (the repo's
+   `system/tools/bin/hactool.exe`) expanded the LZ4 sections.
+2. **The installed build is the pinned one.** The base NSP's `main` is build `2A797A895C35383B0C8052BC6E2B281B`;
+   the *update's* `main` is **`061D2A06CD700785E987C42CE2D72231`** - exactly `re6_switch.BUILD_ID`.
+3. **The ring's caves are still padding on it.** `re6_switch_native.verify_build(main.bin)` (new; a pure function
+   with tests in `tests/test_re6_native_build.py`) reports the pinned signature at virtual `0x2151000` and all three
+   install targets **pristine zero padding**: `0x18F2640` (call, 536 bytes), `0x18F2880` (spawn, 256), `0x18F29C0`
+   (detonate, 232), every one `installable: true`. The same check refuses the base 1.0.0 image by its signature.
+   Receipt: `.tmp/evidence/re6-build-verify.json` (local).
+
+So the RE6 ring's native pair is right for this installation; what it needs to *run* is an ARM64 Linux NCE host
+(the Spark), because the controller installs into the guest's HostMemory through `/proc` and memfd. This PC
+(Windows, yuzu/Dynarmic) cannot execute it by design - hence the local run was not used for the ring itself.
+
+How to repeat: extract the update's `main` as above and run
+`python -c "from gbox.mercs.titles import re6_switch_native as N; print(N.verify_build(open('main.bin','rb').read()))"`.
+
 ## Tests
 
-New: `tests/test_mercs_grenade_status.py` (19), `tests/test_re6_grenade_ring.py` (9),
+New: `tests/test_mercs_grenade_status.py` (19), `tests/test_re6_grenade_ring.py` (10), `tests/test_re6_native_build.py` (4),
 `tests/test_mercs_grenade_ring.py` (13), worker/status cases in `tests/test_intervention_worker.py` and
 `tests/test_merc_interventions.py`, and the chooser case in `tests/stream-interventions.test.cjs` (21 JS tests pass).
 

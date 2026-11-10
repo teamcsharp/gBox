@@ -849,6 +849,29 @@ THROWS = True
 THROW_GAP_S, THROW_PACK_N, THROW_FLASH_R, THROW_BLAST_PAD = 5.0, 3, 400.0, 100.0
 THROW_EQUIP_S, THROW_MAX_S, THROW_SETTLE_S = 2.0, 3.0, 0.5
 THROW_ITEMS = {"hand": 0x06, "fire": 0x07, "flash": 0x08}    # WP06 / WP07 / WP08 (THROWN)
+# The fire pattern (gbox.mercs.core.fire_pattern; the operator 2026-11-10: "the bot fired the magnum with a nice scatter
+# and a very rapid repeat and i want that across all these titles"). The rapid repeat is RE5's own and stays: ZR held
+# while the laser is on a body (_trigger), the game repeating it at re5_switch_mods.fire_rate's time scale in the shot
+# motion (FIRE_MAX 5x: the M92F measured 8.7 shots/s at x4 and 15.3 at x8 - x5 itself not counted; a magnum's shot motion
+# was never checked to be MOTION_SHOT, so whether the time scale reaches the magnums is not known). What the pattern
+# adds is the PS3's scatter: the old rule steered only with the laser OFF him (once on, the aim stood still and every
+# repeat hit one spot); with FIRE_PATTERN a pattern gun (re5_weapons family magnum / handgun / shotgun / rifle) on him
+# is steered, between shot motions only (the stick waits in MOTION_SHOT as before), onto the next point of the scatter
+# across his body (combat.LaserDriver: R2 points, inside the body the hit test uses, his aim height kept - a special's
+# site gets the lateral scatter only). The scatter steps on every shot motion that begins (else every 1 / step_hz of the
+# held trigger); it is earned (an enemy's health falling or a kill within earn_s), never on a long shot (LONG_R, the
+# settle rule's), a confirmed shot at another Majini, or within min_cm. The hop is RE5's own CONFIRMED_FIRE: the dot
+# drifting onto a neighbour makes him the shot. Off: as before. Stats fire_pattern_*, fire_pattern_steer_ticks,
+# fire_pattern_motion_waits (ticks the shot motion kept the stick still).
+FIRE_PATTERN = True
+
+
+def fire_family(snap) -> str | None:
+    """The fire pattern's family of the gun in his hand (the inventory's in-hand weapon, re5_weapons.WEAPONS)."""
+    from . import re5_weapons as _w
+    gun = next((s for s in (snap or {}).get("inventory") or () if s.get("hand") and s.get("type") == 1), None)
+    w = _w.WEAPONS.get(gun.get("item")) if gun else None
+    return w.family if w is not None else None
 
 
 def combat_profile() -> combat.TitleProfile:
@@ -875,7 +898,11 @@ def combat_profile() -> combat.TitleProfile:
         tier=combat.identity_tier(TITLE_ID, fallback=combat.hp_tier(boss_hp=_d.BOSS_HP_MIN)),
         page_key=FROZEN_KEY, frozen_cm=FROZEN_CM, frozen_rad=FROZEN_RAD, no_effect_s=FROZEN_FIRE_S,
         no_effect_shots=FROZEN_FIRE_SHOTS, no_effect_trigger_s=FROZEN_TRIGGER_S, page_tap_s=FROZEN_TAP_S,
-        page_max_s=FROZEN_PAGE_MAX_S, page_clear_cm=FROZEN_CLEAR_R)
+        page_max_s=FROZEN_PAGE_MAX_S, page_clear_cm=FROZEN_CLEAR_R,
+        fire_pattern=FIRE_PATTERN, fire_style="hold", fire_tick_s=1.0 / 30.0, fire_cap_hz=0.0,
+        fire_cap_note="measured (M92F, ZR held): 2.7 shots/s at x1, 8.7 x4, 15.3 x8, 24.7 x80 (re5_switch_mods); the "
+                      "live cap FIRE_MAX 5x not counted; the magnums' shot motion not checked",
+        family=fire_family)
 # Dynamite Majini (operator: "dynamite Majini - see them, keep away, shoot the dynamite"). A Majini carrying a lit
 # stick of dynamite is a threat of its own: the fuse is already burning, so the blast is coming whether or not his
 # own attack flag is up. Three behaviors, in the wind-up's pattern:
@@ -5255,6 +5282,44 @@ class Bot:
         self.fire_down, self.fire_at = True, now
         return {"zr"}
 
+    def _fp_steer(self, p, tgt, chest, origin, dot, snap, motion, now) -> set:
+        """FIRE_PATTERN: the laser on him with a pattern gun - the stick toward the scatter's next point on his body
+        (combat.LaserDriver), between shot motions only; the scatter steps as a shot motion begins (else every
+        1 / step_hz of the held trigger). A pattern error never costs the tick (fire_pattern_error): no stick."""
+        try:
+            prof = combat_profile()
+            fam = prof.family(snap) if prof.family is not None else None
+            sp = combat.fire_spec(prof, fam)
+            if sp is None:
+                return set()
+            drv = self.__dict__.get("_fp_driver")
+            if drv is None:
+                drv = self._fp_driver = combat.fire_driver(prof, self.stats)
+            kills = snap.get("kills")
+            drv.observe(now, snap.get("enemies"), kills=kills if isinstance(kills, int) else None)
+            key = tgt.get("ptr", tgt.get("slot"))
+            entered = motion == MOTION_SHOT and self.__dict__.get("_fp_motion") != MOTION_SHOT
+            self._fp_motion = motion
+            if entered:                                      # a shot left: its point in the stats, the next point
+                drv.point(prof, fam, tgt, p["pos"], chest, now, shot=True)
+                drv.fired(now, key, fam)
+            else:
+                drv.fp.hold_tick(now, True, sp, key, fam)
+            if motion == MOTION_SHOT:                        # the shot plays at fire_rate's time scale: no stick
+                self.stats["fire_pattern_motion_waits"] = self.stats.get("fire_pattern_motion_waits", 0) + 1
+                return set()
+            pt = drv.point(prof, fam, tgt, p["pos"], chest, now)
+            if math.dist(pt, chest) < 1.0:
+                return set()
+            ye, pe = ray_error(origin, dot, pt)
+            keys = self._yaw(ye) | self._pitch(pe)
+            if keys:
+                self.stats["fire_pattern_steer_ticks"] = self.stats.get("fire_pattern_steer_ticks", 0) + 1
+            return keys
+        except Exception as exc:                             # noqa: BLE001 - the pattern never costs the tick
+            self.stats["fire_pattern_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            return set()
+
     def _round_start(self, snap, now) -> None:
         """The first tick alive of a round: the engine's marker, once (a marker changed again on a replay made the
         engine close the replay's fresh evidence at once: "ended" rows at 119.9 s in the first MercMode turn); after a
@@ -7428,6 +7493,8 @@ class Bot:
         if not on and not settling and math.dist(origin, dot) >= min(STEER_RAY_CM, 0.5 * math.dist(origin, chest)):
             keys |= self._yaw(yaw_err, windows[0]) | self._pitch_settled(pitch_err, windows[1], now)   # steer only off him: a raised fire rate paces the
                                                                   # aim with the shot (re5_switch_mods)
+        elif FIRE_PATTERN and on and not long_shot and not confirmed:
+            keys |= self._fp_steer(p, tgt, chest, origin, dot, snap, motion, now)   # on him: across his body (the scatter)
         if dist < CLOSE_PITCH_R and keys & {"rup", "rdown"}:
             keys -= {"rup", "rdown"}                     # up close: the yaw only (by the laser) ...
             self.stats["close_pitch_skips"] += 1

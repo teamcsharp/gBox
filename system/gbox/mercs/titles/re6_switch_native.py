@@ -78,6 +78,35 @@ def ring_defaults():
             "ripple_ms": RING_RIPPLE_MS_DEFAULT, "expand": True}
 
 
+def verify_build(image: bytes) -> dict:
+    """Check a decompressed `main` image (hactool `--uncompressed`, its 0x100 header still in front) against the
+    pinned build: the module signature and the three code caves this controller installs into.
+
+    Every address in that output is 0x100 higher than its virtual address (gbox.nso_elf), so the image offset is
+    ``vaddr + 0x100``. Returns the facts; raises nothing, so a wrong image is reported instead of trusted.
+    """
+    shift = 0x100
+    out = {"image_bytes": len(image) if image else 0, "build_signature": False, "caves": {}, "ok": False}
+    if not isinstance(image, (bytes, bytearray)) or len(image) < shift + R.SIG_OFF + len(R.SIGNATURE):
+        return {**out, "reason": "image is shorter than the signature's address"}
+    out["build_signature"] = bytes(image[shift + R.SIG_OFF:shift + R.SIG_OFF + len(R.SIGNATURE)]) == R.SIGNATURE
+    ok = out["build_signature"]
+    for off, name, size, digest in CODE + (SPAWN_BOMB,):     # (the instant bomb drop's cave too, 2026-11-10)
+        data = IMAGES[name]
+        at = shift + off
+        before = bytes(image[at:at + size])
+        usable = len(before) == size and (before == data or not any(before))
+        out["caves"][name] = {"vaddr": hex(off), "size": size,
+                              "image_bytes_match": before == data, "pristine_padding": not any(before),
+                              "installable": usable,
+                              "image_sha256": hashlib.sha256(data).hexdigest()}
+        ok = ok and usable
+    out["ok"] = ok
+    out["reason"] = "" if ok else ("this image is not the pinned RE6 build" if not out["build_signature"]
+                                   else "a code cave is neither pristine padding nor this controller's own image")
+    return out
+
+
 class Unavailable(RuntimeError):
     pass
 
