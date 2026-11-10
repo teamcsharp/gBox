@@ -135,7 +135,12 @@ U_POS: int | None = 0xA4
 U_YAW: int | None = 0xB4                # rotation y; the heading convention (0 = +z, + toward +x) is INFERRED
 U_HP_MAX: int | None = 0x3C4
 U_SCALE = 0xBC
-PLAYER_HP_IN_UNIT = False               # the player's +0x3c2 is not his life (see above): hp None until it is found
+PLAYER_HP_IN_UNIT = False               # the player's +0x3c2 is not his life (see above): PLAYER_LIFE is
+# The player's life (u16, module + 0x1279360; his maximum the u16 beside it), found by scripts/re4sw_life_probe.py on
+# a live round 2026-11-10 23:10 (2a5953853331456c-0c42a27a33764dcd, HUNK / Castle): 1680, 1152, 96, 0 at the death
+# screen; 1680 = HUNK's 7 bars x 240 (Leon's 7.75 x 240 = 1860, the value an earlier read could not place).
+PLAYER_LIFE: int | None = 0x1279360
+LIFE_SANE = (1, 12000)                  # a maximum outside this is not a life
 UNIT_HP_MAX = 30000                     # a health above this is not a health (a freed or foreign object)
 UNIT_SCAN_CHUNK = 1 << 24               # 16 MiB per read while the census scans the heap
 UNIT_RESCAN_S = 4.0                     # new spawns: the census looks again this often, inside the pool it found
@@ -563,6 +568,22 @@ def player_unit(m, base: int) -> dict | None:
     return None
 
 
+def player_life(m, base: int) -> tuple:
+    """(life, maximum) from PLAYER_LIFE, or (None, None): the maximum is the u16 beside it that is at least the
+    life (after, then before), inside LIFE_SANE."""
+    if PLAYER_LIFE is None:
+        return None, None
+    try:
+        raw = bytes(m.rd(base + PLAYER_LIFE - 2, 6))
+    except (ValueError, OSError):
+        return None, None
+    before, life, after = struct.unpack("<3H", raw)
+    for top in (after, before):
+        if LIFE_SANE[0] <= top <= LIFE_SANE[1] and life <= top:
+            return life, top
+    return None, None
+
+
 def _finder(m, name, kind):
     obj = getattr(m, name, None)
     if not isinstance(obj, kind):
@@ -600,7 +621,7 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
         player = player_unit(m, base) or player       # the bss pointer first: no scan needed for him
         if player is not None:
             if not PLAYER_HP_IN_UNIT:
-                player["hp"] = player["hp_max"] = None     # his +0x3c2 is not his life (measured, see U_ID above)
+                player["hp"], player["hp_max"] = player_life(m, base)   # module PLAYER_LIFE, not his unit
             player.setdefault("hp_max", None)
             player.setdefault("rot", None)
             snap["player"] = player
@@ -962,6 +983,9 @@ FIRE_HALF_WIDTH_MM, FIRE_TOL_MIN, AIM_NUDGE = 300.0, 0.02, 0.2
 # is how a bot gets grabbed), steps in to MELEE_REACH_MM and taps Y every MELEE_TAP_S while the window lasts. A Y
 # with no prompt does nothing. Distances in mm.
 MELEE = True
+# Low life (PLAYER_LIFE): under LOW_LIFE of his maximum with a Ganado within LOW_LIFE_MM he turns and runs (the
+# quick turn, then B + up) for LOW_LIFE_RUN_S rather than trade another hit.
+LOW_LIFE, LOW_LIFE_MM, LOW_LIFE_RUN_S = 0.35, 3000.0, 1.2
 # The turn sign, checked live by the fight itself (2026-11-10: the stock round turned 4,365 ticks for 19 raises, the
 # shape of a turn that runs away from its target): every turn tick compares the bearing error with the last one on
 # the same Ganado; TURN_LEARN_N samples with the error growing at least 3x as often as it shrinks (+4) flip
@@ -1240,6 +1264,9 @@ class Bot:
             self.doing, self.why = "backoff", "standing near his own explosive"
             near = min(live, key=lambda t: t[0]) if live else None
             return {"hold": {"lup", TURN["right" if near and near[1] > 0 else "left"]}}
+        low = self._low_life(p, live, now)
+        if low is not None:
+            return low
         swarm = [t for t in live if t[0] <= SWARM_CM]
         if len(swarm) >= SWARM_N:
             self.stats["escapes"] += 1
@@ -1307,6 +1334,25 @@ class Bot:
             self.doing, self.why = "reload", f"{RELOAD_SHOTS} shots since the last reload and nobody near"
             return {"hold": {AIM_BTN}, "tap": RELOAD_BTN}
         return self._locate(p, live, now, cmd, snap)
+
+    def _low_life(self, p, live, now) -> dict | None:
+        """LOW_LIFE: the quick turn then a run away from the nearest Ganado, LOW_LIFE_RUN_S at a time."""
+        hp, top = p.get("hp"), p.get("hp_max")
+        run = self.__dict__.get("_low_run")
+        if run and now < run["until"]:
+            return {"hold": {"lup", RUN_BTN}}
+        if not isinstance(hp, int) or not isinstance(top, int) or top <= 0 or hp <= 0 or hp > top * LOW_LIFE:
+            return None
+        near = [t for t in live if t[0] <= LOW_LIFE_MM]
+        if not near:
+            return None
+        self._low_run = {"until": now + LOW_LIFE_RUN_S}
+        self.stats["low_life_runs"] = self.stats.get("low_life_runs", 0) + 1
+        self.doing, self.why = "retreat", f"life {hp}/{top}: away from {len(near)} near"
+        d, err, _e = min(near, key=lambda t: t[0])
+        if abs(err) < 1.6:                               # facing him: the quick turn first
+            return {"hold": set(QUICK_TURN)}
+        return {"hold": {"lup", RUN_BTN}}
 
     def _melee(self, live, now) -> dict | None:
         """The melee follow-up (MELEE_*): in to a Ganado just hit, then Y at the prompt; None when there is none."""

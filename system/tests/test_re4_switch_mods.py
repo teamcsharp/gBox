@@ -130,10 +130,42 @@ def test_time_per_kill_from_the_census(ad):
     assert struct.unpack("<f", ad.read_memory(CLOCK, 4))[0] == 98.0
 
 
-def test_life_and_ammo_say_they_are_not_mapped(ad):
-    for op in ("unlimited_health", "infinite_ammo"):
-        out = M.run(ad, op, snap=snap(ad))
-        assert out["verified"] is False and "not mapped" in out["reason"]
+def test_ammo_says_it_is_not_mapped(ad):
+    out = M.run(ad, "infinite_ammo", snap=snap(ad))
+    assert out["verified"] is False and "not mapped" in out["reason"]
+
+
+def test_unlimited_life_puts_the_life_back_at_its_maximum(ad):
+    """re4_switch.PLAYER_LIFE (measured 2026-11-10: HUNK 1680 -> 1152 -> 96 -> 0): kept at its maximum while on."""
+    life = BASE + D.PLAYER_LIFE
+    ad.put(life - 2, struct.pack("<3H", 0, 1152, 1680))
+    s = snap(ad)
+    s["player"] = {"hp": 1152, "hp_max": 1680}
+    out = M.run(ad, "unlimited_health", on=True, snap=s)
+    assert out["verified"] and out["kept"] == 1 and struct.unpack("<H", ad.read_memory(life, 2))[0] == 1680
+    ad.put(life - 2, struct.pack("<3H", 0, 900, 1680))
+    s["player"] = {"hp": 900, "hp_max": 1680}
+    assert M.maintain(ad, s)["life_kept"] == 1 and M.status(ad)["unlimited_health"] is True
+    ad.put(life - 2, struct.pack("<3H", 0, 0, 1680))
+    s["player"] = {"hp": 0, "hp_max": 1680}
+    assert "life_kept" not in M.maintain(ad, s), "a death stays the game's"
+
+
+def test_the_life_is_read_from_the_module_with_its_maximum_beside_it():
+    class Mem:
+        def rd(self, a, n):
+            assert a == BASE + D.PLAYER_LIFE - 2 and n == 6
+            return struct.pack("<3H", 7, 1152, 1680)
+    assert D.player_life(Mem(), BASE) == (1152, 1680)
+
+
+def test_low_life_turns_and_runs_from_the_nearest():
+    b = D.Bot(stats={}, director=False)
+    s = {"player": {"pos": (0.0, 0.0, 0.0), "rot": 0.0, "hp": 300, "hp_max": 1680, "ptr": 1},
+         "enemies": [{"pos": (0.0, 0.0, 1500.0), "hp": 400, "ptr": 9}]}
+    act = b.tick(s, now=1.0)
+    assert act["hold"] == set(D.QUICK_TURN) and b.doing == "retreat" and b.stats["low_life_runs"] == 1
+    assert b.tick(s, now=1.5)["hold"] == {"lup", D.RUN_BTN}, "the run holds LOW_LIFE_RUN_S"
 
 
 def test_a_new_boot_keeps_the_operators_settings_but_not_the_counts(ad):

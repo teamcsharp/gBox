@@ -111,6 +111,34 @@ def enemy_health(ad, multiplier, snap: dict | None = None) -> dict:
             "note": "every living Ganado's health kept at most this share of his maximum (lowered only, read back)"}
 
 
+def _keep_life(ad, snap) -> int:
+    """Unlimited life: the player's life (re4_switch.PLAYER_LIFE) back at its maximum when it fell. 1 = written."""
+    p = (snap or {}).get("player") or {}
+    hp, top = p.get("hp"), p.get("hp_max")
+    base = (snap or {}).get("module_base")
+    if D.PLAYER_LIFE is None or not isinstance(base, int) or not isinstance(hp, int) or not isinstance(top, int):
+        return 0
+    if hp <= 0 or hp >= top:
+        return 0                                       # dead (the round's end is the game's), or full
+    addr = base + D.PLAYER_LIFE
+    try:
+        now = struct.unpack("<H", bytes(ad.read_memory(addr, 2)))[0]
+        if now <= 0 or now >= top:
+            return 0
+        ad.write_memory(addr, struct.pack("<H", top))
+        return 1 if struct.unpack("<H", bytes(ad.read_memory(addr, 2)))[0] == top else 0
+    except (ValueError, OSError, RuntimeError, struct.error):
+        return 0
+
+
+def unlimited_health(ad, on: bool, snap: dict | None = None) -> dict:
+    st = _state(ad)
+    st["unlimited_health"] = bool(on)
+    kept = _keep_life(ad, snap) if on else 0
+    return {"unlimited_health": bool(on), "verified": True, "kept": kept,
+            "note": "the player's life put back to its maximum whenever it falls (re4_switch.PLAYER_LIFE)"}
+
+
 def one_hit(ad, on: bool, snap: dict | None = None) -> dict:
     st = _state(ad)
     st["one_hit"] = bool(on)
@@ -213,7 +241,7 @@ def maintain(ad, snap: dict | None = None) -> dict:
         if st.get("base") is None:
             st["base"] = snap["module_base"]
         elif st["base"] != snap["module_base"]:          # a new boot: the operator's settings stay, the counts go
-            keep = {k: st[k] for k in ("enemy_health", "one_hit", "kill_time") if k in st}
+            keep = {k: st[k] for k in ("enemy_health", "one_hit", "kill_time", "unlimited_health") if k in st}
             st.clear()
             st.update(keep, base=snap["module_base"])
         frac = 0.0 if st.get("one_hit") else st.get("enemy_health")
@@ -221,6 +249,11 @@ def maintain(ad, snap: dict | None = None) -> dict:
             n = _cap_health(ad, snap.get("enemies"), frac)
             st["capped_total"] = st.get("capped_total", 0) + n
             out["capped"] = n
+        if st.get("unlimited_health"):
+            n = _keep_life(ad, snap)
+            st["life_kept"] = st.get("life_kept", 0) + n
+            if n:
+                out["life_kept"] = n
         new = _kills_of(snap, st)
         kt = st.get("kill_time") or {}
         if new and kt.get("on") and kt.get("seconds", 0) > 0:
@@ -243,13 +276,13 @@ def status(ad, snap: dict | None = None) -> dict:
            "kill_time_on": bool(kt.get("on")), "kill_time_s": kt.get("seconds", KILL_TIME_S),
            "kill_time_added": round(st.get("kill_time_added", 0.0), 1), "capped_total": st.get("capped_total", 0),
            "clock_holds": st.get("clock_holds"),
-           "unlimited_health": None, "infinite_ammo": None,
+           "unlimited_health": bool(st.get("unlimited_health")), "life_kept": st.get("life_kept", 0),
+           "infinite_ammo": None,
            "capabilities": {
                "enemy_health": {"available": True}, "one_hit": {"available": True},
                "kill_time": {"available": True, "clock_found": bool((snap or {}).get("clock_addr")),
                              "note": "adds time once the driver has found the round clock"},
-               "unlimited_health": {"available": False, "reason": "the player's life on Switch is not mapped yet "
-                                                                  "(re4_switch PLAYER_HP_IN_UNIT)"},
+               "unlimited_health": {"available": True},
                "infinite_ammo": {"available": False, "reason": "the RE4 Switch inventory is not mapped yet"}}}
     if snap:
         found = _clock(ad, snap)
@@ -280,11 +313,13 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, snap: dict | N
             return set_time(ad, extra.get("seconds"), snap)
         if op == "kill_time":
             return kill_time(ad, on, extra.get("seconds"))
-        if op in ("unlimited_health", "infinite_ammo"):
+        if op == "unlimited_health":
+            return unlimited_health(ad, on, snap)
+        if op == "infinite_ammo":
             return {"verified": False, "reason": status(ad)["capabilities"][op]["reason"]}
         if op == "revert_all":
             st = _state(ad)
-            for k in ("enemy_health", "one_hit", "kill_time"):
+            for k in ("enemy_health", "one_hit", "kill_time", "unlimited_health"):
                 st.pop(k, None)
             return {"verified": True, "note": "no more caps or time per kill (health already taken stays taken)"}
     raise ValueError(f"re4_switch_mods: unknown op {op!r}")

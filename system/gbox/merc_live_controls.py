@@ -32,6 +32,7 @@ MODS = {
     ],
     # RE4 Switch (gbox.mercs.titles.re4_switch_mods): what is mapped so far - the Ganados' health and the clock
     "re4": [
+        ("unlimited_health", "Unlimited life", "unlimited_health", None),
         ("one_hit", "One-hit kills", "one_hit", None),
         ("enemy_health", "Enemy health \u00d7", "enemy_health_x", (0.05, 1, 0.05)),
         ("kill_time", "Time added per kill", "kill_time_on", None),
