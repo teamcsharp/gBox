@@ -402,6 +402,13 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event):
                     continue
                 ctx = context()
                 response = client.post(f"/api/sessions/{sid}/interventions/claim", json=ctx)
+                if response.status_code == 422:
+                    # A report the control plane refuses (one bad option row) must not leave the status stale for the
+                    # whole round: report the capability-free context with the refusal as its reason instead.
+                    detail = str(response.json().get("detail") if response.headers.get(
+                        "content-type", "").startswith("application/json") else response.text)[:200]
+                    response = client.post(f"/api/sessions/{sid}/interventions/claim", json={
+                        "epoch": "refused", "capabilities": [], "reason": f"worker report refused: {detail}"})
                 if response.status_code == 200:
                     rows = response.json().get("requests", [])
                     had_requests = bool(rows)

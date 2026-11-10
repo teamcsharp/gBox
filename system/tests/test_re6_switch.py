@@ -117,6 +117,16 @@ def _fresh_caches(tmp_path, monkeypatch):
     R._COVERAGE["data"] = None
 
 
+def throws(acts):
+    """Acts with ZL and ZR held: the throw (since 2026-11-10 it may carry the flee's stick keys: thrown on the move)."""
+    return [a for a in acts if {"zl", "zr"} <= set(a.get("hold") or ())]
+
+
+def readied(acts):
+    """Acts with ZL held and not ZR: the grenade readied (the stick may go on too)."""
+    return [a for a in acts if "zl" in set(a.get("hold") or ()) and "zr" not in set(a.get("hold") or ())]
+
+
 def round_guest(phase=R.PHASE_PLAYING, hp=900, timer=97.5, enemies=((300.0, 0.0, 500.0, 700),), player=True,
                 state=0, ammo=18, cam_yaw=0.0, hud=True, laser=None, mode=R.MODE_NO_MERCY, tablets=8, guns=()):
     g = Guest()
@@ -791,7 +801,7 @@ def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypat
     assert {"tap": "up"} in acts and bot.nade["kind"] == "flash"            # the wheel's up to the flash grenade
     snap["player"]["equipped"] = 11
     acts = run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
-    assert {"hold": ("zl",)} in acts and {"hold": ("zl", "zr")} in acts and bot.stats["flashes"] == 1
+    assert readied(acts) and throws(acts) and bot.stats["flashes"] == 1
     acts = run(bot, snap, clock, int((R.NADE_STEP_S + R.NADE_THROW_S) / 0.05) + 3)
     assert {"tap": "right"} in acts                                          # the gun back
     snap["player"]["equipped"] = 0
@@ -822,7 +832,7 @@ def test_the_throw_is_held_and_flashes_come_in_a_flurry_while_they_crowd_him(mon
     run(bot, snap, clock, 3)
     snap["player"]["equipped"] = 11                                           # the flash in hand
     acts = run(bot, snap, clock, int((R.NADE_AIM_S + R.NADE_THROW_S) / 0.05) + 2)
-    assert sum(1 for a in acts if a.get("hold") == ("zl", "zr")) >= int(R.NADE_THROW_S / 0.05)   # held, not tapped
+    assert len(throws(acts)) >= int(R.NADE_THROW_S / 0.05)   # held, not tapped
     acts = run(bot, snap, clock, 30)
     assert bot.stats["flashes"] >= 2 and bot.stats.get("flash_burst_throws", 0) >= 1
     assert {"tap": "right"} not in acts or bot.stats["flashes"] >= 2             # no gun back mid-flurry
@@ -956,7 +966,7 @@ def test_a_grenade_in_hand_is_thrown_with_one_close_and_a_throw_is_called_off_on
     snap["player"]["equipped"] = 9                                            # the frag in hand ...
     snap["enemies"].append(dict(snap["enemies"][0], pos=(0.0, 0.0, 100.0), ptr=0x7777, slot=9))   # ... one at arm's length
     acts = run(bot, snap, clock, int((R.NADE_FACE_S + R.NADE_AIM_S) / 0.05) + 4)
-    assert {"hold": ("zl", "zr")} in acts and bot.stats["frags"] == 1         # thrown at the cluster, not put away
+    assert throws(acts) and bot.stats["frags"] == 1                       # thrown at the cluster, not put away
     assert bot.stats["nade_aborts"] == 0 and bot.stats["throws_by_kind"] == {"frag": 1}
     assert bot.stats["unsafe_trigger_blocks"] == 0
     bot2, clock2, snap2 = brain(round_guest(enemies=cluster, cam_yaw=0.0))  # not in hand yet: called off for the fight
@@ -977,9 +987,9 @@ def test_a_grenade_lifted_outside_a_throw_is_thrown_at_the_best_cluster_four_met
     snap["player"].update(equipped=10, nades={0x113: (9, 5), 0x114: (10, 3)})   # the incendiary in his hand, no throw
     acts = run(bot, snap, clock, int((R.NADE_FACE_S + R.NADE_AIM_S) / 0.05) + 4)
     assert bot.stats["held_item_throws"] == 1 and bot.stats["fires"] == 1
-    assert {"hold": ("zl", "zr")} in acts and bot.stats["unsafe_trigger_blocks"] == 0
+    assert throws(acts) and bot.stats["unsafe_trigger_blocks"] == 0
     assert bot.stats["throws_by_kind"] == {"fire": 1}
-    assert all(a.get("tap") != "right" for a in acts[:acts.index({"hold": ("zl", "zr")})])   # never put away first
+    assert all(a.get("tap") != "right" for a in acts[:acts.index(throws(acts)[0])])   # never put away first
 
 
 def test_a_frag_starts_with_one_near_him_when_the_cluster_is_clear_of_its_blast(monkeypatch):
@@ -1540,8 +1550,9 @@ def test_magnum_speed_runs_the_magnums_fire_and_recoil_faster_only(mods, monkeyp
     mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
     assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 1.0
     assert mods.ORIG[id(ad)]["magnum_fast"] == 1
+    assert mods.run(ad, "magnum_speed", multiplier=20)["magnum_speed_x"] == 20.0    # (2026-11-10: the 20x cap)
     with pytest.raises(ValueError):
-        mods.run(ad, "magnum_speed", multiplier=20)
+        mods.run(ad, "magnum_speed", multiplier=mods.MAGNUM_SPEED_MAX + 1)
 def u_mesh(cells=((0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (1, 2), (0, 2)), size=100.0):
     """A walkable U of 1 m squares (two triangles each) around a hole at (0..1, 1): vertices, triangles, links."""
     verts, index, tris = [], {}, []
@@ -1814,9 +1825,11 @@ def test_frags_and_incendiaries_go_in_turn_at_most_every_ten_seconds(monkeypatch
     snap["player"]["equipped"] = 0
     run(bot, snap, clock, int(R.NADE_STEP_S / 0.05) + 3)
     assert bot.stats["frags"] == 1 and bot.nade is None
-    run(bot, snap, clock, int(5.0 / 0.05))                                    # 5 s on: not again yet
+    # 2026-11-10 ("throwing grenades all the time"): the next one within NADE_GAP_S never, then as soon as he has
+    # moved on or NADE_MOVE_WAIT_S passed (he stands still here) - no 10 s gap any more
+    run(bot, snap, clock, int((R.NADE_GAP_S - 0.5) / 0.05))
     assert bot.nade is None and bot.stats["fires"] == 0
-    clock[0] += R.FRAG_GAP_S
+    clock[0] += R.NADE_MOVE_WAIT_S
     run(bot, snap, clock, 2)
     assert bot.nade["kind"] == "fire"                                         # the incendiary's turn
 
@@ -3520,7 +3533,7 @@ def test_overwhelmed_he_flashes_even_with_one_at_arms_length_and_time_overwhelme
     assert bot.nade is not None and bot.nade["kind"] == "flash" and bot.stats["over_s"] > 0
     snap["player"]["equipped"] = 11                                           # in hand: never called off
     acts = run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
-    assert {"hold": ("zl", "zr")} in acts and bot.stats["flashes"] == 1 and bot.stats["nade_aborts"] == 0
+    assert throws(acts) and bot.stats["flashes"] == 1 and bot.stats["nade_aborts"] == 0
     assert bot.push is not None and abs(R.wrap(bot.push["h"] - math.pi)) <= math.radians(60)   # the way out: behind
 
 

@@ -426,6 +426,8 @@ class Controller:
     def current_weapon(self):
         player, _ = self.ready()
         index, item, _ = R.inventory_state(self, player)
+        if not item or not 1 <= item <= 255:                 # Hand-To-Hand (0): no weapon the claim can carry
+            return None
         return item if any(slot == index and 0 <= slot < R.WEAPON_INDEXES and (kind & 255) == item
                            for kind, slot in R.inventory_guns(self, player).items()) else None
 

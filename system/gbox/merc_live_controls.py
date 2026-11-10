@@ -52,7 +52,8 @@ MODS = {
         ("auto_qte_ram", "Native grab escape", "auto_qte_ram", None),
         ("kill_time", "Time added per kill", "kill_time_on", None),
         ("fire_rate", "Fire rate", "fire_rate_x", (1, 80, 0.5)),
-        ("magnum_speed", "Magnum fire and recoil speed", "magnum_speed_x", (1, 6, 0.5)),
+        ("magnum_speed", "Magnum fire and recoil speed", "magnum_speed_x", (1, 20, 0.5)),
+        ("bomb_mind", "Remote bombs set off by mind (no detonator)", "bomb_mind", None),
         ("throw_speed", "Grenade throw speed", "throw_speed_x", (1, 20, 0.5)),
         ("quick_attack", "Quick attack speed", "quick_attack_x", (1, 10, 0.5)),
         ("down_fire", "Fire rate while down", "down_fire_x", (1, 10, 0.5)),
@@ -67,7 +68,9 @@ ALLOWED = {
     "equip_primary": {"session_id", "op", "request_id", "item"},
     "grenade_ring": {"session_id", "op", "request_id", "kind"},
     "set_infinite_ammo": {"session_id", "op", "request_id", "enabled"},
+    "detonate": {"session_id", "op"},                    # RE6 Switch: his remote bombs set off now, by the hook
 }
+DETONATE_TITLES = {"re6"}
 GRENADE_RING_KINDS = ("flash", "hand", "incendiary")
 SCHEMA = {"type": "object", "additionalProperties": False,
           "properties": {"session_id": {"type": "string"},
@@ -219,7 +222,8 @@ class Controls:
         inp = job.get("input") or {}
         if (job.get("tool") != "re5_mods" or inp.get("session_id") != sid
                 or job.get("require_worker", job.get("worker_id")) != ctx["worker_id"]
-                or inp.get("op") not in {"live_controls", "bot_logic", *(d[0] for d in MODS.get(ctx["controls_title"], []))}):
+                or inp.get("op") not in {"live_controls", "bot_logic", *(d[0] for d in MODS.get(ctx["controls_title"], [])),
+                                         *(("detonate",) if ctx["controls_title"] in DETONATE_TITLES else ())}):
             raise ValueError("That job does not belong to these live controls.")
         if job.get("state") in WAITING:
             return {"id": jid, "state": job["state"]}
@@ -284,8 +288,26 @@ class Controls:
             result["action"] = {"state": row["state"], "request": row}
             return result
         if not ctx["controls_title"]:
-            if op == "set":
+            if op in ("set", "detonate"):
                 raise ValueError(result["reason"])
+            return result
+        if op == "detonate":
+            # A momentary action, not a control value: one re5_mods job (routed to re6_switch_mods.detonate), its own
+            # verified receipt returned - the bombs' count and whether each went off - and no knob to read back.
+            if ctx["controls_title"] not in DETONATE_TITLES:
+                raise ValueError("This game has no remote-bomb hook.")
+            await self.check_run(ctx)
+            job = await self.job(ctx, {"op": "detonate"})
+            self.pending.pop(job.get("id"), None)
+            if job.get("state") in WAITING:
+                result["action"] = {"state": "pending", "job_id": job["id"]}
+                return result
+            out = (job.get("output") or {}).get("result") or {}
+            if job.get("state") != "succeeded" or out.get("verified") is not True:
+                raise ValueError(str(out.get("reason") or job.get("error") or "No remote bomb was set off.")[:300])
+            result["action"] = {"state": "confirmed", "job_id": job["id"],
+                                "detonated": out.get("count"), "went_off": len(out.get("went_off") or [])}
+            await self.check_run(ctx)
             return result
         pending = None
         if args.get("job_id"):
