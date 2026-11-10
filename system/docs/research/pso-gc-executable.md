@@ -183,9 +183,23 @@ string search for `map_forest01_00o.dat` in the DOL finds nothing while the arch
 1. **The menu walk (P1 needs it).** The phase byte is known (`0x804FE120`, 10 → 3 → 9 through a boot) but the cursor
    and selection bytes for PRESS START, the offline/online choice, character select and the Hunter's Guild are not
    named. `gbox/pso_menu_observer.py` has behaviour for some of them; the addresses are not yet in `pso_ram.py`.
-2. **The floor → map index/variant resolver.** `FUN_80207E88` (104 bytes) and `FUN_802077CC` (64 bytes) are the
-   functions that turn a floor id into a map name and layout; decompiling them would explain why Forest 2 resolves to
-   both `forest02` and `aforest02` and would let the area catalogue bind every floor to its file without a live load.
+2. **The floor → map index/variant resolver.** **Decoded 2026-11-10 (branch `ds-pso-floor-map-20261110`).**
+   - `FUN_80207E88(floor)` returns a `{char **names, u32 count}` entry for `floor < 0x24` from one of two 36-entry
+     tables: `0x804C8FC0` (Episode 1) or `0x804C9270` (Episode 2), chosen by `FUN_8030A6A8` (it reads
+     `+current_episode == 3` and two helpers).
+   - The entry names `count` area/layout pairs: `names[2i]` is the area's map name and `names[2i+1]` the layout's.
+     Floor 0 = (`map_city00`, `map_city00_00`); floor 3 = Cave 1 with six layouts `map_cave01_00` .. `_05`;
+     floor 15 = the lobby's fifteen rooms; floor 16 = `map_vs01` with three; floors 30-33 = `map_boss05` .. `08`.
+   - The Episode 2 table is the same table with the `a`-prefixed areas for floors 0-14 and identical floors 15+
+     (which is why Forest 2 resolves to `forest02` or `aforest02`: it is floor 2 in either table).
+   - `FUN_802077CC(0..0x11, out)` copies three words per row from an 18 x 12-byte **.bss** table at `0x80513920`,
+     initialised by `FUN_80207C60` from a static 18 x 8-byte source at `0x8044B894` (each row's first word defaults
+     to `-1`). That second table is a per-floor three-word record, not the map names; its meaning is the remaining
+     question, and the static source at `0x8044B894` is where to read it.
+   - `gbox/pso_floor_map.py` pins both map-name tables, exposes `floor_names` / `area_for_floor` /
+     `layouts_for_floor` / `layout_name` / `area_id`, and `derive()` re-reads the table from a `PsoV3.dol`
+     (`tools/verify_pso_floors.py`). It verifies against the owned disc (both tables, 36 floors each), and floors
+     0-11 match `pso_areas.EPISODE1` in order.
 3. **The object-class registry ordering.** 315 names exist; the table that maps a class index (the low byte of a
    placement's `kind`) to one of them is not located. That is the single highest-value decompile left for the editor,
    because it turns a marker's number into "door", "warp", "switch" or "Booma".
