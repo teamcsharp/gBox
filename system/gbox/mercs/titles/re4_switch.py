@@ -360,6 +360,10 @@ M3R = 0x1265A08
 SWAY_SANE, WAIST_SANE, PITCH_SANE = 0.5, 0.35, 1.58     # rad: a read past these is not the field
 LASER_NEAR_MM = (300.0, 3000.0)          # the ray's origin this near his position (ground) / this high over his feet
 LASER_MIN_MM = 400.0                     # a ray shorter than this (a wall at the muzzle) is no line
+# The weapon object's r_no_0 while the laser is drawn: setStat writes 0 .. 6 on Switch (69 strh sites; the GameCube's
+# enum stops at 5, the PS2's has S_SET between S_READY and S_FIRE), so ready / set / fire are 1 .. 3 here (the bot's
+# own "the gun is up AIM_READY_S" is the other half of the freshness test)
+LASER_UP_STATS = (1, 2, 3)
 
 
 def decode_aim(wep_raw: bytes, obj_raw: bytes, waist_raw: bytes, laser_raw: bytes, m3r_raw: bytes | None,
@@ -417,7 +421,7 @@ def aim_state(m, base: int, player: int) -> dict | None:
 
 def laser_of(aim: dict | None, player: dict | None) -> dict | None:
     """The laser line {from, at, up} when the aim's statics are a line from his gun (its origin beside him, at a
-    gun's height, the line long enough), else None. up: the weapon object stands ready / firing (r_no_0 1 / 2)."""
+    gun's height, the line long enough), else None. up: the weapon object stands ready / firing (LASER_UP_STATS)."""
     if not aim or not player or not player.get("pos"):
         return None
     lp, lc, pos = aim["lpos"], aim["lcross"], player["pos"]
@@ -425,7 +429,7 @@ def laser_of(aim: dict | None, player: dict | None) -> dict | None:
         return None
     if math.dist(lp, lc) < LASER_MIN_MM:
         return None
-    return {"from": lp, "at": lc, "up": aim.get("stat") in (1, 2), "source": "ram"}
+    return {"from": lp, "at": lc, "up": aim.get("stat") in LASER_UP_STATS, "source": "ram"}
 
 
 def game_state(m, base: int | None = None) -> dict | None:

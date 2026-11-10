@@ -235,8 +235,30 @@ def test_every_resolved_shot_is_a_line_of_the_rounds_shot_log(tmp_path):
     core = A.AimCore(prof(), stats, root=tmp_path, clock=clock)
     e = target()
     shoot(core, clock, e, (0.0, 140.0, 0.0), bias=(math.radians(1.0), 0.0))
+    core.save()                                           # (the lines are kept until a flush: at save, or 32 of them)
     files = list((tmp_path / "_shots" / "010018100CD46000").glob("*.jsonl"))
     assert len(files) == 1
     row = _json.loads(files[0].read_text(encoding="utf-8").splitlines()[0])
     assert row["round"] == "r42" and row["outcome"] in ("hit", "kill", "miss") and row["source"] == "line"
     assert row["err_deg"][0] == pytest.approx(1.0, abs=0.05) and row["band"] == A.band(500.0)
+
+
+def test_the_gate_takes_a_line_through_his_torso_and_refuses_one_through_his_knees(tmp_path):
+    core = A.AimCore(prof(), {}, root=tmp_path)
+    e = target(z=120.0)                                   # arm's length: the 2026-11-10 misses' range
+    o = (0.0, 140.0, 0.0)
+    plan = core.plan(e, o, "magnum")
+    b = combat.HUMAN
+    assert core.contact_ok(plan, o, (0.0, b.chest, 120.0), e) is True
+    assert core.contact_ok(plan, o, (0.0, b.knee - 5.0, 120.0), e) is False, "through his knees"
+    assert core.contact_ok(plan, o, (0.0, b.head + 15.0, 120.0), e) is False, "over his head"
+    assert core.contact_ok(plan, o, (0.0, 140.0, -100.0), e) is None, "a line away from him: not measured"
+
+
+def test_a_shot_whose_pitch_was_not_read_teaches_the_yaw_only():
+    c = A.new_cell()
+    for _ in range(30):
+        A.learn_cell(c, {"outcome": "miss", "resid": (math.radians(3), None)}, 0.0)
+    assert c["bias"][0] > math.radians(2.5) and c["bias"][1] == 0.0
+    row = A.shot_row({"err": (0.01, None), "outcome": "miss"}, "x")
+    assert row["err_deg"][1] is None

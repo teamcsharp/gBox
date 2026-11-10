@@ -233,13 +233,17 @@ def learn_cell(c: dict, shot: dict, now: float) -> list:
     c["recent"] = (c.get("recent", "") + ("H" if hit else "M"))[-RECENT_N:]
     c["updated"] = round(now, 1)
     res = shot.get("resid")
-    if res is not None and all(isinstance(x, (int, float)) and math.isfinite(x) for x in res):
+    num = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)   # noqa: E731
+    if res is not None and len(res) == 2 and num(res[0]):
         win = c.setdefault("res", [])
-        for _ in range(1 if hit else MISS_WEIGHT):
-            win.append([round(float(res[0]), 5), round(float(res[1]), 5)])
+        for _ in range(1 if hit else MISS_WEIGHT):     # an unread pitch (RE4's facing alone) is kept as None
+            win.append([round(float(res[0]), 5), round(float(res[1]), 5) if num(res[1]) else None])
         del win[:-BIAS_WINDOW]
         for axis in (0, 1):
-            est, _se, sig = robust_bias([w[axis] for w in win])
+            vals = [w[axis] for w in win if num(w[axis])]
+            if axis == 1 and not num(res[1]):
+                continue                                   # this shot says nothing about the pitch
+            est, _se, sig = robust_bias(vals)
             old = c["bias"][axis]
             target, eta = (est, BIAS_ETA) if sig else (0.0, BIAS_DECAY_ETA)
             new = _clip(old + _clip(eta * (target - old), -BIAS_STEP, BIAS_STEP), -BIAS_MAX, BIAS_MAX)
@@ -495,17 +499,23 @@ def shot_row(s: dict, title_id: str, round_key=None) -> dict:
         row[k] = v
     for k in ("err", "resid"):
         if s.get(k) is not None:
-            row[k + "_deg"] = [round(math.degrees(x), 2) for x in s[k]]
+            row[k + "_deg"] = [None if x is None else round(math.degrees(x), 2) for x in s[k]]
     return row
 
 
+LOG_FLUSH_N, LOG_FLUSH_S = 32, 10.0
+
+
 class ShotLog:
-    """The per-round shot lines (see the module text): appended as each shot resolves, a file a day per title."""
+    """The per-round shot lines (see the module text): kept as each shot resolves and appended LOG_FLUSH_N at a time or
+    every LOG_FLUSH_S (and at save), a file a day per title."""
 
     def __init__(self, title_id: str, root: Path | str | None = None):
         self.title_id = str(title_id)
         self.root = Path(root) if root is not None else None
         self.errors = 0
+        self.rows: list = []
+        self.flushed_at = time.monotonic()
 
     def path(self) -> Path:
         base = self.root if self.root is not None else DATA.parent / "shots"
@@ -513,11 +523,24 @@ class ShotLog:
 
     def write(self, s: dict, round_key=None) -> None:
         try:
+            self.rows.append(json.dumps(shot_row(s, self.title_id, round_key), separators=(",", ":")))
+        except (TypeError, ValueError):
+            self.errors += 1
+            return
+        if len(self.rows) >= LOG_FLUSH_N or time.monotonic() - self.flushed_at >= LOG_FLUSH_S:
+            self.flush()
+
+    def flush(self) -> None:
+        self.flushed_at = time.monotonic()
+        if not self.rows:
+            return
+        rows, self.rows = self.rows, []
+        try:
             p = self.path()
             p.parent.mkdir(parents=True, exist_ok=True)
             with p.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(shot_row(s, self.title_id, round_key), separators=(",", ":")) + "\n")
-        except (OSError, TypeError, ValueError):
+                fh.write("\n".join(rows) + "\n")
+        except OSError:
             self.errors += 1
 
 
@@ -557,7 +580,7 @@ class Ledger:
             self._s(f"{b}_shots")
         err = shot.get("err")
         if err is not None:
-            d = math.degrees(math.hypot(err[0], err[1]))
+            d = math.degrees(math.hypot(err[0], err[1] if err[1] is not None else 0.0))
             if d < 90.0:
                 self._errs = (self._errs + [d])[-ERRS_KEPT:]
                 self.stats[f"{self.prefix}_err_deg"] = round(sum(self._errs) / len(self._errs), 2)
@@ -631,7 +654,7 @@ class Ledger:
             self._s("miss_" + s["cause"])
             self.stats[f"{self.prefix}_last_miss"] = (
                 f"{s.get('family') or 'gun'} at {s.get('cls')} {(s.get('dist_cm') or 0) / 100:.1f} m: {s['cause']}"
-                + (f", the line {math.degrees(s['err'][0]):+.1f}/{math.degrees(s['err'][1]):+.1f} deg off"
+                + (f", the line {math.degrees(s['err'][0]):+.1f}/{math.degrees(s['err'][1] or 0.0):+.1f} deg off"
                    if s.get("err") is not None else ""))[:160]
         judged = self.stats[f"{self.prefix}_hits"] + self.stats[f"{self.prefix}_misses"]
         self.stats[f"{self.prefix}_hit_rate"] = round(self.stats[f"{self.prefix}_hits"] / max(judged, 1), 3)
@@ -694,6 +717,8 @@ class AimCore:
             done = self.ledger.observe(now, enemies, kills, self.target_key)
             if done:
                 self.book.save()
+            if self.log is not None and self.log.rows and time.monotonic() - self.log.flushed_at >= LOG_FLUSH_S:
+                self.log.flush()
             if now - self._summary_at >= 5.0:
                 self._summary_at = now
                 self.stats[f"{self.prefix}_book"] = self.book.summary()
@@ -762,8 +787,8 @@ class AimCore:
                 cy, cp = angles(o, p1)
                 ay = actual[0]
                 ap = actual[1] if len(actual) > 1 and actual[1] is not None else None
-                err = (combat.wrap(ay - iy), (ap - ip) if ap is not None else 0.0)
-                resid = (combat.wrap(ay - cy), (ap - cp) if ap is not None else 0.0)
+                err = (combat.wrap(ay - iy), (ap - ip) if ap is not None else None)
+                resid = (combat.wrap(ay - cy), (ap - cp) if ap is not None else None)
             vel = plan.vel or (0.0, 0.0, 0.0)
             ref = o if o is not None else foot
             _h, lat, _fw = frame(ref, foot)
@@ -797,4 +822,6 @@ class AimCore:
         return ((uv[0] - plan.corr.pu) / tol) ** 2 + ((uv[1] - plan.corr.pv) / (GATE_V * tol)) ** 2 <= 1.0
 
     def save(self, force: bool = True) -> bool:
+        if self.log is not None:
+            self.log.flush()
         return self.book.save(force=force)
