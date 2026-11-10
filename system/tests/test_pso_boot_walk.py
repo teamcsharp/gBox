@@ -66,7 +66,9 @@ def test_a_walk_that_stalls_before_the_town_is_named():
 
     out = W.walk(g.state, press, settle=0.0, sleep=lambda _s: None)
     assert out["ok"] is False
-    assert "still on SELECT GAME MODE" in out["why"]
+    # with the verified step list, a stalled A is caught at the arrival checkpoint (only `offline_game` and the
+    # arrival have unambiguous RAM signals; the menus in between all read mode 1)
+    assert "no player in Pioneer 2" in out["why"]
 
 
 def test_in_field_reports_town_and_field_from_floor_alone():
@@ -78,8 +80,8 @@ def test_in_field_reports_town_and_field_from_floor_alone():
 
 def test_the_checkpoints_name_what_ram_can_prove():
     assert W.TITLE_MODES == (0, 4, 22) and W.GAME_MODE_SELECT == 9
-    assert [s[0] for s in W.BOOT_STEPS] == ["press_start", "offline_game", "single_mode", "slot_a",
-                                           "accept_new", "episode_one"]
+    assert [s[0] for s in W.BOOT_STEPS] == ["press_start", "offline_game", "single_mode", "character_slot",
+                                           "confirm_character", "episode_one"]
     assert W.BOOT_STEPS[0][2] == "left_title"
     assert W.BOOT_STEPS[-1][2] == "in_town"
 
@@ -119,3 +121,24 @@ def test_the_attract_skip_gives_up_and_says_how_long_it_tried():
     g = Stuck()
     out = W.reach_title(g.state, g.press, tries=5, settle=0.0, sleep=lambda _s: None)
     assert out["ok"] is False and out["presses"] == 5 and "attract" in out["why"]
+
+
+def test_the_offline_step_must_reach_select_game_mode():
+    """The one unambiguous checkpoint on the way in: mode 9 appears nowhere else."""
+    class NoGameMode(Model):
+        def press(self, keys):
+            self.presses.append(tuple(keys))
+
+    g = NoGameMode()
+    g.at = Model.SCREENS.index("main_menu")
+    out = W.walk(g.state, g.press, settle=0.0, sleep=lambda _s: None, start_at="offline_game")
+    assert out["ok"] is False and "SELECT GAME MODE" in out["why"]
+    assert g.presses == [("ddown", "a")]          # it stopped rather than pressing on blindly
+
+
+def test_the_verified_path_arrives_with_six_presses():
+    g = Model()
+    out = W.walk(g.state, g.press, settle=0.0, sleep=lambda _s: None)
+    assert out["ok"] is True and out["arrived"] is True
+    assert len(g.presses) == 6
+    assert g.presses[0] == ("start",) and g.presses[1] == ("ddown", "a")
