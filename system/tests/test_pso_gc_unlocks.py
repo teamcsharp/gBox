@@ -90,3 +90,11 @@ def test_dry_run_does_not_write(tmp_path):
                              dry_run=True)
     assert report['applied'] is True
     assert save.read_bytes() == before
+
+
+def test_profile_names_save_files_without_claiming_unlocks():
+    prof = u.profile()
+    assert set(prof['evidence']['save_files']) == {'PSO_SYSTEM', 'PSO_CHARACTER', 'PSO_GUILDCARD'}
+    assert prof['evidence']['save_files']['PSO_CHARACTER']['blocks'] == 11
+    assert 'SaveData %d' in prof['evidence']['not_save_routine']
+    assert prof['verified'] is False and u.plan()['edits'] == []

@@ -44,6 +44,20 @@ DATA_FILES = ('PsoCardDataTbl_Base.prs', 'PlyLevelTbl.cpt', 'QtOffTitleList_e.re
               'ItemPMT.prs', 'ItemRTT.prs', 'ItemMagEdit.prs', 'BattleParamEntry.dat',
               'screen.bin', 'iplist.txt')
 
+# Memory-card save files the build opens (names read from PsoV3.dol strings at
+# 0x804c88c0..0x804c89dc; directory entries and block counts read from owned
+# GPOE card images in gbox-data/memory-cards). PSO_CHARACTER holds the per-character
+# progress (quest/difficulty flags, items, costume); PSO_SYSTEM the account-level
+# settings. Field offsets inside them are NOT decoded yet.
+SAVE_FILES = {
+    'PSO_SYSTEM': {'blocks': 3, 'dol_xrefs': ('0x801fbbf8', '0x801fc604', '0x80339dc4')},
+    'PSO_CHARACTER': {'blocks': 11, 'dol_xrefs': ('0x801fbb38', '0x801fc6ac', '0x80339dc4')},
+    'PSO_GUILDCARD': {'blocks': 10, 'dol_xrefs': ('0x801fbb98', '0x801fc588', '0x80339de0')},
+}
+# 'SaveData %d' (0x8043ef90, code 0x80136734) is the online-lobby player debug
+# print over 0x43c-byte records, NOT the memory-card save routine.
+NOT_SAVE_ROUTINE = {'SaveData %d': '0x80136734'}
+
 BACKUP_SUFFIX = '.gbox-unlock-backup'
 
 _UNRESOLVED = 'the save layout that holds this category flag is not resolved yet'
@@ -71,6 +85,8 @@ def profile() -> dict:
                            'source': 'owned disc image 436e0bb84d5337d1 (GPOE8P rev 2)'},
             'revision_stamp': REVISION_STAMP.hex(),
             'data_files': list(DATA_FILES),
+            'save_files': {k: dict(v) for k, v in SAVE_FILES.items()},
+            'not_save_routine': dict(NOT_SAVE_ROUTINE),
             'runtime': 'not yet observed: no live acceptance run for this build',
         },
     }
