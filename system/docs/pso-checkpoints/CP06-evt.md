@@ -60,3 +60,36 @@ Tests: 11 passed in `test_pso_evt.py`; CP0 baseline otherwise unchanged.
 
 Next: the `.evt` interpreter's dispatch in the executable (CP7) so the opcode groups can carry names, then the
 byte-identical rebuild from named ops.
+
+## Round 68: the event system's debug path, and a runtime field it names (object `+0x84` = event number)
+
+Searching the string table for the event system's own messages finds **`"EVT NO : %d"`** at four addresses, each referenced
+by a small function (112-120 bytes) with the same shape:
+
+```c
+void FUN_8015bb8c(int param_1) {
+    FUN_803d8090(0xff00ff);                                        // set the debug colour
+    FUN_803d853c(0x130020, s_EVT_NO____d_80440830, *(u32 *)(param_1 + 0x84));   // draw "EVT NO : %d"
+    FUN_803d8090(0xf0f0f0ff);
+    FUN_80141cf4(*(f32 *)(r2 - 0x4960), param_1 + 0x38, &DAT_804a7448);         // draw a box at object +0x38
+}
+```
+
+(`FUN_80188814` and `FUN_8018cbf0` are the same routine for the other areas/languages; `FUN_8018cbf0` is 120 bytes.)
+
+Two measured facts come out of that:
+
+* **the event number lives at object `+0x84`** - the debug overlay prints it for the object at `param_1`, so an object
+  that carries an event (a door, a switch, a scripted NPC) is identified by a word at `+0x84`;
+* **the object's draw position is at `+0x38`** (the box is drawn there), which matches the placement-to-object copy in
+  CP7.2 (`FUN_801057a8` writes the position to `+0x38`).
+
+That is a **runtime** hook, not the interpreter: the overlay draws the number, it does not dispatch it. It is nevertheless the
+first piece of the event system's *object* side to be named, and it is the field a CP15 door test would read (the door's
+event number) once a live session exists.
+
+**What this does not give:** the opcode dispatch. The interpreter still has to be found either by its file path (the `.evt`
+name is built at run time, like the `.rel` names, so there is no string reference to follow) or from a live breakpoint on a
+known event number's use.
+
+Tests: none changed; CP0 baseline unchanged.
