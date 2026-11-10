@@ -121,6 +121,9 @@ KNOBS["re4"] = [                                 # gbox.mercs.titles.re4_switch 
     ("SWARM_CM", "Swarm radius (mm)", "Crowd control", "float", 1000, 4000, 100, ""),
     ("RUN_CM", "Run past this distance (mm)", "Movement", "float", 2000, 20000, 500, ""),
     ("STAND_MAX_S", "Never stand: seconds before a step", "Movement", "float", 0.5, 4.0, 0.1, ""),
+    ("MELEE", "Melee follow-up (Y after a hit)", "Specials", "bool", 0, 1, 1,
+     "in to a Ganado just hit and Y at the prompt: kicks, suplex, neckbreaker; never in a crowd"),
+    ("MELEE_MM", "Melee: go in from (mm)", "Specials", "float", 1500, 4000, 100, ""),
     ("KILL_PACE_S", "Combo: a kill owed after (s)", "Goals", "float", 1.0, 5.0, 0.5,
      "past this since the last kill he takes the quickest one and runs"),
 ]

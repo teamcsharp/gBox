@@ -248,3 +248,37 @@ def test_an_attached_walker_steers_the_run():
     act = b.tick(snap([((0.0, 0.0, 3000.0), 400)]), now=1.0)
     assert act["hold"] == {"lup", "lright"} and b.walker.goals == [mm((0.0, 0.0, 3000.0))], "the walker's keys"
     assert "walker" in b.why
+
+
+def test_a_ganado_just_hit_in_front_gets_the_melee_follow_up():
+    """The shot -> stun -> Y loop (specials research 2.1): in to MELEE_REACH_MM, then Y at the prompt."""
+    b = bot()
+    b.tick(snap([((0.0, 0.0, 200.0), 400)]), now=0.0)
+    step = b.tick(snap([((0.0, 0.0, 200.0), 300)]), now=0.1)          # hit: 2 m in front
+    assert step["hold"] == {"lup"} and b.doing == "melee" and b.stats["hits"] == 1
+    tap = b.tick(snap([((0.0, 0.0, 120.0), 300)]), now=0.2)           # 1.2 m: the prompt
+    assert tap.get("tap") == D.ACTION_BTN and b.stats["melee_taps"] == 1
+    assert b.tick(snap([((0.0, 0.0, 120.0), 300)]), now=0.3).get("tap") is None, "taps paced MELEE_TAP_S"
+    b.tick(snap([((0.0, 0.0, 120.0), 0)]), now=0.6)
+    assert b.stats["melee_kills"] == 1
+
+
+def test_no_melee_with_another_at_arms_reach_or_after_the_window():
+    b = bot()
+    two = lambda h: snap([((0.0, 0.0, 200.0), h), ((150.0, 0.0, 100.0), 400)])     # noqa: E731
+    b.tick(two(400), now=0.0)
+    act = b.tick(two(300), now=0.1)
+    assert b.doing != "melee" and act.get("tap") != D.ACTION_BTN
+    late = bot()
+    late.tick(snap([((0.0, 0.0, 200.0), 400)]), now=0.0)
+    late.tick(snap([((0.0, 0.0, 200.0), 300)]), now=0.1)
+    late.tick(snap([((0.0, 0.0, 200.0), 300)]), now=0.1 + D.MELEE_WINDOW_S + 0.1)
+    assert late.doing != "melee"
+
+
+def test_the_melee_can_be_turned_off(monkeypatch):
+    monkeypatch.setattr(D, "MELEE", False)
+    b = bot()
+    b.tick(snap([((0.0, 0.0, 200.0), 400)]), now=0.0)
+    b.tick(snap([((0.0, 0.0, 200.0), 300)]), now=0.1)
+    assert b.doing != "melee"

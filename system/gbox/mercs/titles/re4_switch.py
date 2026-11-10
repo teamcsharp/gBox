@@ -881,6 +881,16 @@ SWEEP_S = 3.0                            # nobody on the map: walk, turning this
 KILL_PACE_S = 3.0                        # doctrine.KILL_PACE_S: from this long after a kill the next one is owed
 COMBO_WINDOW_S = 5.0                     # doctrine.COMBO_MAX_S: a kill later than this after the last one breaks the combo
 FIRE_GAP_S = 0.25                        # between trigger taps (a tap is down + up: the engine never holds the trigger)
+# The melee follow-up (docs/research/mercenaries-character-specials.md 2.1 / 6.1): RE4's Mercenaries is played shot ->
+# stun -> the action button at the prompt (Leon's roundhouse / suplex, Krauser's double kick, HUNK's neckbreaker,
+# Wesker's thrust punch, Ada's fan kick): a melee is a near-certain kill, hits the crowd round it and costs no ammo.
+# The stun itself is not read from RAM yet, so the bot takes a Ganado whose health just fell (a hit, which is what
+# stuns) within MELEE_MM in front, with nobody else at arm's reach (MELEE_CLEAR_MM: a melee's recovery in a crowd
+# is how a bot gets grabbed), steps in to MELEE_REACH_MM and taps Y every MELEE_TAP_S while the window lasts. A Y
+# with no prompt does nothing. Distances in mm.
+MELEE = True
+MELEE_MM, MELEE_REACH_MM, MELEE_CLEAR_MM = 2500.0, 1400.0, 2000.0
+MELEE_WINDOW_S, MELEE_TAP_S, MELEE_CONE = 1.6, 0.3, 0.5
 
 
 @re4_walk.attach                       # .walker (approach(goal) -> stick keys), snap["nav"], the map's marks, plan()
@@ -897,7 +907,8 @@ class Bot:
 
     TURN_TOL = 0.12                                      # rad: close enough to fire
     COUNTERS = ("shots", "hits", "turns", "backoffs", "holds", "dying", "escapes", "locates", "stand_breaks",
-                "crowd_picks", "sweeps", "kills_seen", "raises", "combo_breaks", "reloads")
+                "crowd_picks", "sweeps", "kills_seen", "raises", "combo_breaks", "reloads", "melee_tries",
+                "melee_taps", "melee_kills")
 
     def __init__(self, stats: dict | None = None, clock=time.monotonic, director=True):
         self.stats = stats if stats is not None else {}
@@ -913,6 +924,9 @@ class Bot:
         self._since_reload = 0                           # shots since the last reload
         self._stand = {"pos": None, "at": None, "until": -1e9, "keys": ()}
         self._sweep_at, self._sweep_dir = None, 1
+        self._hit_at: dict = {}                          # enemy ptr -> when his health last fell (a hit)
+        self._melee_at: dict = {}                        # enemy ptr -> the last Y tap at him
+        self._melee_tap = -1e9
         self.walker = None                               # a mesh walker (approach(goal) -> stick keys), when attached
         self.director = self.reader = None
         if director:
@@ -961,9 +975,15 @@ class Bot:
             if key is None:
                 continue
             hp = e.get("hp") or 0
-            if self._hp.get(key, 0) > 0 and hp <= 0:
+            was = self._hp.get(key, 0)
+            if was > 0 and hp < was:
+                self.stats["hits"] += 1
+                self._hit_at[key] = now
+            if was > 0 and hp <= 0:
                 self.stats["kills_seen"] += 1
                 self._kill_at = now
+                if now - self._melee_at.get(key, -1e9) <= MELEE_WINDOW_S:
+                    self.stats["melee_kills"] += 1          # he went down inside a melee's window
             seen[key] = hp
         self._hp = seen
         self.stats["kills_source"] = "census"
@@ -1091,6 +1111,9 @@ class Bot:
             self.stats["escapes"] += 1
             self.doing, self.why = "escape", f"{len(swarm)} Ganados at arm's length: the quick turn and away"
             return {"hold": set(QUICK_TURN)}
+        melee = self._melee(live, now)
+        if melee is not None:
+            return melee
         cmd = self._command(now)
         pick = self._choose(live, now)                   # a command never stops a shot at one in range (RE5 HUNT_R)
         if pick is not None:
@@ -1128,6 +1151,32 @@ class Bot:
             self.doing, self.why = "reload", f"{RELOAD_SHOTS} shots since the last reload and nobody near"
             return {"hold": {AIM_BTN}, "tap": RELOAD_BTN}
         return self._locate(p, live, now, cmd, snap)
+
+    def _melee(self, live, now) -> dict | None:
+        """The melee follow-up (MELEE_*): in to a Ganado just hit, then Y at the prompt; None when there is none."""
+        if not MELEE:
+            return None
+        cand = [t for t in live if t[0] <= MELEE_MM and abs(t[1]) <= MELEE_CONE
+                and now - self._hit_at.get(t[2].get("ptr"), -1e9) <= MELEE_WINDOW_S]
+        if not cand:
+            return None
+        dist, err, e = min(cand, key=lambda t: t[0])
+        if any(t[2] is not e and t[0] <= MELEE_CLEAR_MM for t in live):
+            return None                                  # another at arm's reach: the gun, not a melee
+        key = e.get("ptr")
+        if self.target != key or self.doing != "melee":
+            self.stats["melee_tries"] += 1
+        self.target, self.doing = key, "melee"
+        if dist > MELEE_REACH_MM:
+            self.why = f"a Ganado just hit, {dist / 1000:.1f} m: in for the melee"
+            return {"hold": {"lup"} | (self._turn(err) if abs(err) > self.TURN_TOL else set())}
+        self.why = "the melee prompt: Y"
+        if now - self._melee_tap >= MELEE_TAP_S:
+            self._melee_tap = now
+            self._melee_at[key] = now
+            self.stats["melee_taps"] += 1
+            return {"hold": set(), "tap": ACTION_BTN}
+        return {"hold": set()}
 
     def _approach(self, p, goal, err, snap, run: bool = False) -> tuple:
         """(stick keys, how) toward goal: the mesh walker when one is attached (Bot.walker.approach(goal) -> keys, the
