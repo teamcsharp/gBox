@@ -1563,17 +1563,61 @@ Co-op session live. P1 (BQF) in room 20 on the terrace at `(102.2, 105.2)`; P2 (
 3. Then P1's accept test (three cold launches, both players, no warp), then P6a's in-game proof, P6b, P7a and the
    demo -> route fixture.
 
+## Round 29 (2026-11-10) — the guild door is inert, and a crossing route across the city
+
+### `TObjCityDoor_Guild` at (185,173) is not an active door
+
+Four approaches, each ending within 5 units of the coordinate:
+
+| approach from | arrived at | room after |
+|---|---|---|
+| (210, 173) | (167.8, 170.7) | 10 |
+| (185, 140) | (185.6, 170.7) | 10 |
+| (185, 205) | (187.5, 171.6) | 10 |
+| (160, 160) | (179.3, 170.0) | 10 |
+
+Two of those sat *on* the door's coordinate, and `A` pressed there did nothing either. So the entity is a marker, not a
+portal: the only working transition in the city is the one the probe found at **(105-160, 100-163)** between the lobby
+(room 10) and the big area (room 20).
+
+### A crossing route, mapped by walking
+
+The area west of the terrace is walled at x ≈ 102 for z from 94 to 160, but there is a gap to the south. Leg by leg
+(`push_through` on, each leg restarted on `stuck`):
+
+```
+(102,105) terrace  ->  (33.5, -33.9)      through the gap in the south wall
+                   ->  (-29.6, -36.7)
+                   ->  (-84.6,   27.1)
+                   ->  (-223.1, -24.6)    the west end of the area
+                   ->  (-250.0, -44.0)    a shop counter with a keeper behind it
+```
+
+That is roughly **350 units across two halves of the city**, including a wall gap no straight line would have found. It is
+also the first time a route this long has been walked under control.
+
+### Where the guild is not
+
+The west end is a **shop row**: `ps1-cloakroom.jpg` shows a glowing counter, a shopkeeper and stock shelves, with the
+cloakroom NPC (`TObjNpcCloakroomBase`, `-267,-24`) sitting among them. Pressing `A` at the counter produced no dialogue --
+the character is across the counter rather than in front of the keeper -- so shops and the guild are both in this area and
+the guild's own counter has not been reached yet.
+
+### What this round established for the next one
+
+* A **known route** to the west end of the city, with waypoints that have been walked: `(102,105)`, `(33,-34)`, `(-84,27)`,
+  `(-223,-24)`.
+* The guild door entity is a dead end, so the guild has to be found inside room 20 rather than through a labelled door.
+* Interacting with a counter needs the character **in front of** the keeper, not across the counter from them -- so the
+  next attempts should walk *around* a counter and face the keeper before pressing `A`.
+
 ## 7. Next
 
-1. **The guild is at the cloakroom end of the city.** `TObjNpcCloakroomBase` sits at `(-267,-24)` in room 20, and
-   P1 is on the terrace at `(102,105)` unable to go straight at it -- a wall, not a walker failure. Probe room 20
-   with `pso_explore.probe` (now greedy-backed) and follow the open axis instead of walking through the wall.
-2. At the guild, talk to the receptionist, take a quest, and let the quest warp the party to the surface -- menu
-   driven, so still real presses and still P1's requirement.
-3. Then P1's accept test (three cold launches with both players), then P6a's in-game proof, P6b, P7a and the
-   demo -> route fixture.
-
-Correction to earlier rounds: the lobby/market boundary is around (105-158, 100-163), **not** at the
-`TObjCityDoor_Guild` coordinate (185,173). Standing on that coordinate never crossed and was never going to. The
-city itself is one large connected area -- the central dome with its red-cross medical door, the market street and an
-outdoor terrace are all room 20 -- and the `room` id changes only at specific thresholds.
+1. **Find the guild inside room 20.** The `TObjCityDoor_Guild` entity at (185,173) is inert -- four approaches
+   arrived on it, `A` included, and the room never changed -- so the guild is not behind a labelled door. The west
+   end of the area is a shop row with the cloakroom NPC among the shops, so the guild counter is nearby and has to be
+   reached by walking *around* a counter and facing the keeper before pressing `A`.
+2. Use the walked route to get there: `(102,105)` terrace -> `(33,-34)` through the south wall gap -> `(-84,27)` ->
+   `(-223,-24)` -> `(-250,-44)`. That is 350 units and is the first long route completed under control.
+3. Then the quest and its warp to the surface, then P1's accept test (three cold launches, both players), then
+   P6a's in-game proof, P6b, P7a and the demo -> route fixture.
