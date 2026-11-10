@@ -28,6 +28,8 @@ test('background controls render measured load, default budget, gaming toggle an
     await new Promise(r=>setTimeout(r,30));
     assert.equal(await evaluate(`calls.at(-1).body.available`),false);
     assert.match(await evaluate(`document.querySelector('#testpcmenu').textContent`),/Gaming/);
+    assert.equal(await evaluate(`document.querySelector('[data-w]').checked`),true);
+    assert.equal(await evaluate(`!!document.querySelector('#testpcmenu details [data-budget]')`),true);
   });
 });
 
