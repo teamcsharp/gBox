@@ -1333,16 +1333,54 @@ The temptation here was to use `pso_gc_extras`' `boss_warp` to drop the characte
 would have worked and it would have been a lie: P1's acceptance is *"boot to the field by real presses, no warp"*, and a
 memory-driven area change is exactly what the guide excludes. The field leg stays open until a walk-and-menu route works.
 
+## Round 24 (2026-11-10) — the pad is inert even underfoot, and probing replaces guessing
+
+### Two hypotheses tested, both negative
+
+1. **"The teleporter needs a precise approach."** P1 walked onto the pad's **centre** -- `(229.9, 0.7)` with a 3-unit
+   tolerance, after approaching from the south as well as the east -- and nothing happened: mode stayed in the town family,
+   no destination list, no transition. So it is not a footstep trigger and not a rim-only interaction; A had already been
+   tried on the rim.
+2. **"Both players on the pad."** Not testable yet: P2's route was attempted but the walker is not reliable enough over
+   250+ units. Three legs took P2 from `(206.4, 369.5)` to `(204.7, 167.9)`, then to `(132.2, 152.1)` -- *away* from the
+   target -- and finally into room 20. Long multi-leg routes across the lobby need waypoints that have been seen to work,
+   not a straight line with recalibration.
+
+### `gbox/pso_explore.py` (+4 tests) — probing instead of guessing
+
+Pioneer 2's sub-areas are entered through **archways in the level**, not door objects (only room 10 has
+`TObjCityDoor_*`), so the exits have to be *found*. This module does that systematically:
+
+* `grid(centre, spacing, rings)` -- probe points around the character, **nearest first**, so a probe finds close exits
+  before far ones.
+* `probe(read_pos, hold, room_of, points)` -- walk each point with a bounded walk, record the room it ended in, and **stop
+  at the first change**, because continuing would step into a room the caller has not planned for. Returns
+  `{ok, start_room, transitions, visited, why}`; finding nothing is a result, not an exception.
+
+The tests model a room whose archway moves the character to another room, and assert that a probe finds it, stops there,
+and records every point it visited with its room -- so the next town leg is a measurement, not another guess.
+
+### The honest position on P1
+
+Boot to Pioneer 2 is proven and reproducible (six presses, frame-verified). Two players in the city is proven
+(split-screen, both free, no cutscene). Movement is proven (keyboard path, 33 units/s, closed-loop to a named object).
+The **city-to-field leg is not**: the teleporter does not respond, and the guild route has not been walked yet.
+
+Given the round count, the next move should be the guild: probe room 20 for its archway with the new tool, take a quest,
+and let the quest's own warp carry the party to Forest 1 -- which is still "real presses", so it satisfies P1's
+acceptance rather than dodging it.
+
 ## 7. Next
 
-1. Test **both players on the teleporter pad** in room 40 -- the one hypothesis the last nine positions did not
-   cover. P2 is in room 10; the route is `TObjCityDoor_Warp` at (254,25), which leads to room 40.
-2. If that fails, take the **Hunter's Guild quest** route instead: the guild interior has no `TObjCityDoor_*` of its
-   own, so its entrance is an archway in the plaza (room 20) -- find it by walking a coarse grid and watching the
-   room id, the same way the doors in room 10 were found.
-3. Then the field, then P1's accept test (three cold launches, both players, no warp), then P6a's in-game proof,
-   P6b, P7a and the demo -> route fixture.
+1. **Probe room 20 for the guild's archway** with `gbox.pso_explore.probe` (grid, nearest first, stop at the first
+   room change) and take a quest from the receptionist. The quest's own warp to the surface is still real presses, so
+   it satisfies P1 rather than dodging it -- unlike `boss_warp`, which is a memory-driven area change and is excluded.
+2. Long routes need **proven waypoints**: P2's three-leg attempt to the warp door drifted to `(132.2, 152.1)` and
+   then into room 20. Build routes from points a leg has actually reached, not from a straight line plus
+   recalibration.
+3. Then P1's accept test (three cold launches to the field, both players, no warp), then P6a's in-game proof, P6b,
+   P7a and the demo -> route fixture.
 
-Deliberately not done: `boss_warp` would put the character in a field area in one call, and it is exactly what P1's
-acceptance excludes ("boot to the field by real presses, no warp"). Using it would have closed the ticket and
-falsified the evidence.
+Negative results recorded: the teleporter pad is inert from its rim *and* its centre `(229.9, 0.7)`, with A tried on
+the rim; mode never leaves the town family, so it is not a footstep trigger. Movement, boot, co-op and closed-loop
+navigation to a named object are all proven and tested (20 movement tests).
