@@ -156,6 +156,8 @@ MERC_LOADOUTS = {
 #              (0x72114 for the Blacktail's 0x2114), so new levels would come out ANDed with the old ones; it is
 #              replaced by the full mask 0x7FFFF (MOV w8, #0x7ffff, or AND w8, wN, #0x7ffff).
 # Each entry: (module offset, role, the build's own instruction word); every word was read from main.bin and checked.
+# NOT WRITTEN by default: re4_switch_mods.LOADOUT_CODE_PATCH is off (every boot with it hung at the stage load; code
+# written from outside the emulator is not coherent under NCE - docs/research/re4-weapons-ram.md).
 # Not patched, so a random weapon reaches them by the in-hand swap instead: Ada's semi-auto rifle (the scope 0x45 is
 # attached to it by index), Wesker's semi-auto rifle (its own rifle code at 0x295FD0), Krauser's bow (no level block:
 # a gun given there would start with an empty magazine and arrows for ammo).
@@ -191,6 +193,67 @@ LOADOUT_SLOTS = {
     ),
 }
 FULL_MASK = 0x7FFFF            # item+6 levels | item+8 bits 0-2 (the empty bit and its neighbours): everything kept
+
+# --- the attache case: what the loadout's gives can hold ---------------------------------------------------------
+# The give 0x3578E0(id, count, mode) places every new item in a case grid first (0x3558A0 builds it from the items
+# already there; mode 0, the Mercenaries loadout's, is 10 x 6) and makes the item (0x2942D0) ONLY when it fits: first
+# fit, row by row, then turned. An item that does not fit is silently not given - and the loadout code after it
+# searches the inventory for it (a null item, 0x29526C / 0x29559C / ...; Ada's and Wesker's attachment searches at
+# 0x295DFC / 0x295EC4 have no bound at all). Measured 2026-11-10: the shapes are the item table at 0xB0C2E0 (0x60-byte
+# entries: u16 id, +4 u8 width, +5 u8 height); the live HUNK case (Custom TMP at 0,0, TMP ammo at 4,0, grenades at 6..8,
+# spray at 9) is exactly what case_layout gives.
+CASE_COLS, CASE_ROWS = 10, 6
+ITEM_SHAPE = {                  # id: (width, height) in case cells
+    0x01: (1, 2), 0x02: (1, 2), 0x03: (5, 2), 0x04: (2, 1), 0x05: (1, 2), 0x07: (2, 1), 0x0E: (1, 2), 0x18: (2, 1),
+    0x20: (2, 1), 0x21: (3, 2), 0x23: (3, 2), 0x25: (4, 2), 0x27: (3, 2), 0x29: (4, 2), 0x2A: (4, 2), 0x2C: (8, 2),
+    0x2D: (5, 2), 0x2E: (9, 1), 0x2F: (7, 2), 0x30: (3, 2), 0x34: (7, 3), 0x35: (8, 2), 0x37: (4, 2), 0x3E: (4, 2),
+    0x3F: (2, 1), 0x45: (3, 1), 0x52: (7, 3), 0x6D: (8, 2), 0x72: (4, 1), 0x94: (8, 2),
+}
+
+
+def case_layout(items) -> list:
+    """[(id, (col, row, turned) or None)] for gives in this order into an empty Mercenaries case, the way 0x3578E0
+    places them (None: not given). Items are (id, count) pairs; an id with no measured shape raises."""
+    grid = [[False] * CASE_COLS for _ in range(CASE_ROWS)]
+
+    def place(w, h):
+        for r in range(CASE_ROWS - h + 1):
+            for c in range(CASE_COLS - w + 1):
+                if not any(grid[r + y][c + x] for y in range(h) for x in range(w)):
+                    for y in range(h):
+                        for x in range(w):
+                            grid[r + y][c + x] = True
+                    return c, r
+        return None
+
+    out = []
+    for iid, _count in items:
+        if iid not in ITEM_SHAPE:
+            raise ValueError(f"no case shape for item {iid:#x} ({name(iid)})")
+        w, h = ITEM_SHAPE[iid]
+        at = place(w, h)
+        if at is not None:
+            out.append((iid, (at[0], at[1], False)))
+            continue
+        at = place(h, w) if w != h else None
+        out.append((iid, (at[0], at[1], True) if at is not None else None))
+    return out
+
+
+def merc_gives(ch: int, ids) -> list:
+    """Character ch's Mercenaries gives in the loadout's order with its LOADOUT_SLOTS weapons replaced by ids (None
+    keeps a slot's own)."""
+    stock = MERC_LOADOUTS[ch]["items"]
+    items = list(stock)
+    for slot, iid in zip(LOADOUT_SLOTS.get(ch, ()), ids):
+        if iid is not None:                       # the slot's place in the stock order (not in the list being edited)
+            items[next(n for n, (i, _) in enumerate(stock) if i == slot["id"])] = (iid, 1)
+    return items
+
+
+def case_fits(items) -> bool:
+    """Does every give of this list find room in the case (so none is silently left out)?"""
+    return all(at is not None for _, at in case_layout(items))
 
 
 def movz_w(rd: int, imm: int) -> int:

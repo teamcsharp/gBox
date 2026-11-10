@@ -394,3 +394,172 @@ def test_pre_round_puts_the_saved_settings_into_the_boot_once(ad, tmp_path, monk
         assert M.status(ad)["pre_round"]["fire_tables"] == 2
     finally:
         D.FIRE_GAP_S = gap
+
+
+# --- the random weapon in his hand (data writes once the round is live; no code) -----------------------------------
+ITEM = 0x5D60000000
+PLAYER = 0x5D70000000
+TEXT_END = 0x656000                         # main's text segment: module 0 .. here (rodata from 0x656000)
+
+
+def _armoury(ad, held=0x27, character=0, levels=0x2114):
+    """A weapon table with real ids and classes (re4_weapons.CLASS_OF), the item manager holding `held`, the game
+    object through its pointer variable."""
+    from gbox.mercs.titles import re4_weapons as W
+    ids = sorted(W.CLASS_OF)[:W.WEAPON_N]
+    caps = {0x37: (3, 4, 5, 6, 8, 10, W.CAP_INFINITE), 0x2D: (7, 9, 12, 14, 17, 20, 100)}
+    rows = b"".join(struct.pack("<HBBBBH7H", i, 0, W.CLASS_OF[i], 1 if i == 0x6B else 0, 0, 0x04,
+                                *caps.get(i, (5, 6, 7, 8, 9, 10, 0))) for i in ids)
+    rows += bytes(W.WEAPON_N * W.WEAPON_SZ - len(rows))
+    ad.put(BASE + W.WEAPON_TBL, rows)
+    ad.put(BASE + W.GAME_PTR_VAR, struct.pack("<Q", BASE + W.GAME_OBJ))
+    g = BASE + W.GAME_OBJ
+    blob = bytearray(16)
+    blob[W.G_CLASS - 0x5030:W.G_CLASS - 0x5030 + 6] = bytes([W.CLASS_OF.get(held, 0x13), 0, 0, 4, 1, 2])
+    blob[W.G_CHARACTER - 0x5030] = character
+    blob[W.G_RELOAD - 0x5030] = 1
+    ad.put(g + 0x5030, blob)
+    ad.put(BASE + W.ITEM_MGR + W.M_EQUIPPED, struct.pack("<QH", ITEM, held) + bytes(6))
+    ad.put(ITEM, struct.pack("<HHBBHHBBBB", held, 1, 1, 0, levels, 9 << 3, 0, 0, 0, 1))
+    return W
+
+
+def _round(phase="playing", control=True, clock=True, player=True):
+    game = {"phase": phase, "in_control": control and phase == "playing", "clock_running": clock}
+    return {"module_base": BASE, "clock_addr": None, "enemies": [], "game": game,
+            "player": {"ptr": PLAYER} if player else None}
+
+
+def _hand(ad, W):
+    it = W.decode_item(ad.read_memory(ITEM, W.ITEM_SZ))
+    held = struct.unpack("<H", ad.read_memory(BASE + W.ITEM_MGR + W.M_EQUIPPED_ID, 2))[0]
+    g = BASE + W.GAME_OBJ
+    return it, held, ad.read_memory(g + W.G_CLASS, 6), ad.read_memory(g + W.G_RELOAD, 1)[0]
+
+
+def test_the_random_weapon_goes_in_his_hand_once_the_round_is_live(ad):
+    W = _armoury(ad)
+    M._state(ad)["random_weapon"] = True
+    for phase in ("none", "intro"):                     # the stage load and the intro card: never written
+        assert "weapon_given" not in M.maintain(ad, _round(phase, control=False, clock=False))
+    assert M.maintain(ad, _round("playing", clock=False)) == {}, "his clock not running yet"
+    assert not ad.writes
+    assert M.maintain(ad, _round())["weapon_given"] == 1
+    it, held, cls, reload = _hand(ad, W)
+    lv = W.max_levels(it["id"])
+    assert it["id"] in W.HIGH_POWER and it["id"] != 0x27 and held == it["id"]
+    assert it["levels_raw"] == lv["packed"] and not it["empty"] and it["loaded"] > 0
+    assert cls == bytes([W.CLASS_OF[it["id"]], 0, 0, lv["firepower"], lv["firing_speed"], lv["capacity"]])
+    assert reload == lv["reload"]
+    first = it["id"]
+    n = len(ad.writes)
+    assert "weapon_given" not in M.maintain(ad, _round()) and len(ad.writes) == n, "once a round"
+    M.maintain(ad, _round("dead", control=False, clock=False))
+    M.maintain(ad, _round("intro", control=False))     # Continue: the game's next round
+    assert M.maintain(ad, _round())["weapon_given"] == 1
+    assert _hand(ad, W)[0]["id"] != first, "a fresh draw, never the last round's"
+    assert M.status(ad)["weapon_given"]["round"] == 2 and M.status(ad)["random_weapon_route"] == "in_hand"
+
+
+def test_the_chosen_weapon_every_round_with_its_exclusive_magazine(ad):
+    W = _armoury(ad, held=0x3E, character=3, levels=0x2204)
+    st = M._state(ad)
+    st["loadout_weapon"] = 0x37                         # the Handcannon: its exclusive capacity is infinite
+    assert M.maintain(ad, _round())["weapon_given"] == 1
+    it, held, cls, _ = _hand(ad, W)
+    assert it["id"] == held == 0x37 and it["levels_raw"] == W.max_levels(0x37)["packed"] and it["loaded"] == 99
+    assert st["weapon_given"]["character"] == "HUNK" and st["weapon_given"]["was"] == "Custom TMP"
+
+
+class _DropsHeldId(Ad):
+    """An emulator that takes every write but the item manager's held id (it reads back the old one)."""
+    def write_memory(self, addr, data):
+        from gbox.mercs.titles import re4_weapons as W
+        if addr == BASE + W.ITEM_MGR + W.M_EQUIPPED_ID:
+            self.writes.append((addr, bytes(data)))
+            return
+        super().write_memory(addr, data)
+
+
+def test_a_swap_that_does_not_read_back_puts_his_own_weapon_back():
+    M.ORIG.clear()
+    ad = _DropsHeldId()
+    W = _armoury(ad)
+    before = ad.read_memory(ITEM, W.ITEM_SZ), ad.read_memory(BASE + W.GAME_OBJ + W.G_CLASS, 6)
+    M._state(ad)["random_weapon"] = True
+    for _ in range(M.ROUND_WEAPON_TRIES + 2):
+        assert "weapon_given" not in M.maintain(ad, _round())
+    assert (ad.read_memory(ITEM, W.ITEM_SZ), ad.read_memory(BASE + W.GAME_OBJ + W.G_CLASS, 6)) == before
+    given = M._state(ad)["weapon_given"]
+    assert given["verified"] is False and "put back" in given["reason"]
+    item_writes = [a for a, _ in ad.writes if a == ITEM]
+    assert len(item_writes) == 2 * M.ROUND_WEAPON_TRIES, "a swap and its undo per try, then left alone"
+
+
+def test_no_swap_without_the_games_state_a_player_or_with_a_grenade_in_hand(ad):
+    W = _armoury(ad)
+    st = M._state(ad)
+    st["random_weapon"] = True
+    s = _round()
+    s.pop("game")
+    M.maintain(ad, s)
+    M.maintain(ad, _round(player=False))
+    st["hand_saved"] = {"item": ITEM}                   # the bot's grenade swap holds his hand
+    M.maintain(ad, _round())
+    assert not ad.writes
+    st.pop("hand_saved")
+    ad.put(ITEM, struct.pack("<HHBBHHBBBB", 0x01, 1, 1, 0, 0, 1 << 3, 0, 0, 0, 1))   # a hand grenade in hand
+    ad.write_memory(BASE + W.ITEM_MGR + W.M_EQUIPPED_ID, struct.pack("<H", 0x01))
+    ad.writes.clear()
+    M.maintain(ad, _round())
+    assert not ad.writes and "not a gun" in st["weapon_given"]["reason"]
+
+
+class _CodeAndData(Ad):
+    """The loadout function's patchable words (main.bin's) beside the data the mods write."""
+    def __init__(self):
+        super().__init__()
+        from gbox.mercs.titles import re4_weapons as W
+        for slots in W.LOADOUT_SLOTS.values():
+            for s in slots:
+                for off, _, orig in s["code"]:
+                    self.put(BASE + off, struct.pack("<I", orig))
+
+
+def test_pre_round_writes_no_code_and_the_weapon_still_comes(tmp_path, monkeypatch):
+    """Regression (2026-11-10, every boot with random_weapon hung at the stage load): the loadout is never code."""
+    monkeypatch.setattr(M, "SETTINGS_FILE", tmp_path / "re4-mods.json")
+    monkeypatch.setattr(D, "module_base", lambda m: BASE)
+    M.ORIG.clear()
+    ad = _CodeAndData()
+    W = _armoury(ad)
+    _weapon_tables(ad)
+    _armoury(ad)                                        # (the real weapon rows back over the fire-rate test's)
+    code = {a: bytes(d) for a, d in ad.at.items() if a - BASE < TEXT_END}
+    gap = D.FIRE_GAP_S
+    try:
+        M.run(ad, "random_weapon", on=True, snap=_round("none"))
+        M.run(ad, "fire_rate", 5, snap=_round("none"))
+        M.ORIG.clear()
+        ad.writes.clear()
+        out = M.pre_round(ad)
+        assert out["loadout_route"] == "in_hand" and "LOADOUT_CODE_PATCH" in out["loadout_code"]
+        assert out["fire_tables"] == 2
+        assert not [a for a, _ in ad.writes if BASE <= a < BASE + TEXT_END], "no write into main's code"
+        assert {a: bytes(d) for a, d in ad.at.items() if a - BASE < TEXT_END} == code
+        assert M.maintain(ad, _round())["weapon_given"] == 1 and _hand(ad, W)[0]["id"] in W.HIGH_POWER
+    finally:
+        D.FIRE_GAP_S = gap
+
+
+def test_the_code_patch_stays_refused_under_nce_even_when_turned_on(tmp_path, monkeypatch):
+    monkeypatch.setattr(M, "SETTINGS_FILE", tmp_path / "re4-mods.json")
+    monkeypatch.setattr(M, "LOADOUT_CODE_PATCH", True)
+    M.ORIG.clear()
+    ad = _CodeAndData()
+    ad.use_nce = True
+    assert "NCE" in M._code_patch_refusal(ad)
+    out = M.loadout_weapon(ad, 0x37, snap={"module_base": BASE})
+    assert out["route"] == "in_hand" and not [a for a, _ in ad.writes if a - BASE < TEXT_END]
+    ad.use_nce = False
+    assert M._code_patch_refusal(ad) is None
