@@ -604,3 +604,18 @@ the worker cache and one donor file was missing from `recovery-re6-update-roster
 the working update-only build was recreated as `recovery-re6-update-only-20261109b`. Any test that depends on a build
 must recreate it or use the current one. `Yuzu`'s `pauseWhenInBackground` is already false, so a 0 FPS screen means the
 game deadlocked, not that the emulator paused.
+
+## Round 22 status (2026-11-09, ~19:45 CST): the bad donor is identified - Helena - and the multi-swap build runs
+
+1. **Artifacts recovered from the content-addressed store.** The worker cache had pruned the donor files (every roster
+   build was an empty shell), but the Spark serves `/api/artifacts/<sha256>`: all **45 roster donors restored and
+   verified** (26,037,744 bytes, 45/45 sha256 match) into `.tmp/roster-restore/`. So builds are ephemeral but the
+   artifact store is the durable source — the "local offerings" path holds even when the cache does not.
+2. **Bisect result: `uPl01HeadHelenaUsa.arc` (and its Asia twin) is the bad donor.**
+   * 9 heads (all) -> deadlock after "Save successful";
+   * 7 heads (all except Helena) -> **runs a full round**: the RESULTS screen shows "Urban Chaos", "LEON S. KENNEDY",
+     Kills 0 / Score 0 / Rank E at 51 FPS;
+   * the Leon+Helena pair reached RESULTS once but a later run of it logged `Unmapped ReadBlock @ 0x0C00000103`, so
+     Helena's head is unstable rather than strictly fatal — it must be excluded.
+3. That single bad donor explains the 36-file non-body hang as well (Helena's head was in it). The 45-file roster may
+   also involve the body group, which is the next test: the full roster **minus the Helena files** (41 arcs).
