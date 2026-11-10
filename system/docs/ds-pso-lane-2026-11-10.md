@@ -1295,17 +1295,92 @@ still in the lobby the whole time.
 P1's accept test therefore remains open, but the *navigation* problem is now solved and instrumented; what is left is
 finding the pad's trigger and getting the party together.
 
+## Round 23 (2026-11-10) — the city mapped, the teleporter still silent
+
+### A research doc instead of another guess
+
+`docs/research/pso-gc-pioneer2-rooms.md` now records what the city's room ids are, measured on the live disc rather than
+inferred:
+
+| room | what |
+|---|---|
+| 10 | the lobby -- both co-op players spawn here, the four `TObjCityDoor_*` entities, the teleporter pedestal |
+| 20 | the plaza -- nine NPCs (cloakroom, connoisseur, fat/macho/tall/dwarf/old civilians, two soldiers) |
+| 30 | the shop floor -- five merchant NPCs |
+| 40 | a large interior with the round teleporter structure **and** the hospital (two `TObjNpcNurseBase`) |
+| 41 | the Principal's office -- Expert x2, Governor, Secretary; where the single-player intro plays |
+
+The area table from the DOL names them `city00`, `lobby`, `forest01`, ... and `FLOOR_LAYOUTS` pairs episode 1 with floors
+0, 1, 2 -- so **floor 0 is the city and floor 1 is Forest 1**, and `pso_ram.FLOOR` answers "am I in the field yet?" in one
+read.
+
+The important entry in that doc is the shared-world evidence: walking to `(185,173)` from room 10 gives room 20, and
+walking to the *same* coordinate from room 20 gives room 10. A doorway is a position, not an exit object.
+
+### The teleporter did not answer
+
+Nine positions in room 40 -- `(300,25)`, `(257,-40)`, `(210,25)`, `(257,90)`, `(229,10)`, `(229,-10)`, `(255,0)`,
+`(200,0)`, and `(252,-3)` with a 2.5-unit tolerance -- plus an `A` press on arrival. No destination menu, and the mode
+byte stayed in the town family throughout. The walker could not even reach `(229, 0)`; it stalled at `(252,-2.7)`, which
+says the pad's centre is not walkable and the interaction is from its rim.
+
+So the honest state is: the pad's trigger is unknown, and one specific hypothesis remains untested -- **both players on the
+pad** (P2 was in room 10 the whole time). That is the first thing to test, and it is cheap.
+
+### Nightmare avoided
+
+The temptation here was to use `pso_gc_extras`' `boss_warp` to drop the character into a field area and call P1 done. It
+would have worked and it would have been a lie: P1's acceptance is *"boot to the field by real presses, no warp"*, and a
+memory-driven area change is exactly what the guide excludes. The field leg stays open until a walk-and-menu route works.
+
+## Round 24 (2026-11-10) — the pad is inert even underfoot, and probing replaces guessing
+
+### Two hypotheses tested, both negative
+
+1. **"The teleporter needs a precise approach."** P1 walked onto the pad's **centre** -- `(229.9, 0.7)` with a 3-unit
+   tolerance, after approaching from the south as well as the east -- and nothing happened: mode stayed in the town family,
+   no destination list, no transition. So it is not a footstep trigger and not a rim-only interaction; A had already been
+   tried on the rim.
+2. **"Both players on the pad."** Not testable yet: P2's route was attempted but the walker is not reliable enough over
+   250+ units. Three legs took P2 from `(206.4, 369.5)` to `(204.7, 167.9)`, then to `(132.2, 152.1)` -- *away* from the
+   target -- and finally into room 20. Long multi-leg routes across the lobby need waypoints that have been seen to work,
+   not a straight line with recalibration.
+
+### `gbox/pso_explore.py` (+4 tests) — probing instead of guessing
+
+Pioneer 2's sub-areas are entered through **archways in the level**, not door objects (only room 10 has
+`TObjCityDoor_*`), so the exits have to be *found*. This module does that systematically:
+
+* `grid(centre, spacing, rings)` -- probe points around the character, **nearest first**, so a probe finds close exits
+  before far ones.
+* `probe(read_pos, hold, room_of, points)` -- walk each point with a bounded walk, record the room it ended in, and **stop
+  at the first change**, because continuing would step into a room the caller has not planned for. Returns
+  `{ok, start_room, transitions, visited, why}`; finding nothing is a result, not an exception.
+
+The tests model a room whose archway moves the character to another room, and assert that a probe finds it, stops there,
+and records every point it visited with its room -- so the next town leg is a measurement, not another guess.
+
+### The honest position on P1
+
+Boot to Pioneer 2 is proven and reproducible (six presses, frame-verified). Two players in the city is proven
+(split-screen, both free, no cutscene). Movement is proven (keyboard path, 33 units/s, closed-loop to a named object).
+The **city-to-field leg is not**: the teleporter does not respond, and the guild route has not been walked yet.
+
+Given the round count, the next move should be the guild: probe room 20 for its archway with the new tool, take a quest,
+and let the quest's own warp carry the party to Forest 1 -- which is still "real presses", so it satisfies P1's
+acceptance rather than dodging it.
+
 ## 7. Next
 
-1. **Find the teleporter's trigger.** P1 stood at four positions in the teleporter room (room 40) and no destination
-   menu opened. Either the pad must be stepped on precisely (an 8-unit tolerance is coarse: try a 2-unit walk onto
-   the pad's centre) or multiplayer's teleporter needs both players present. Test the precise approach first -- it is
-   cheap -- then bring P2 through the `TObjCityDoor_Warp` door at (254,25).
-2. Then the destination list -> Forest 1, and P1's accept test (three cold launches, both players, no warp).
-3. Then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
+1. **Probe room 20 for the guild's archway** with `gbox.pso_explore.probe` (grid, nearest first, stop at the first
+   room change) and take a quest from the receptionist. The quest's own warp to the surface is still real presses, so
+   it satisfies P1 rather than dodging it -- unlike `boss_warp`, which is a memory-driven area change and is excluded.
+2. Long routes need **proven waypoints**: P2's three-leg attempt to the warp door drifted to `(132.2, 152.1)` and
+   then into room 20. Build routes from points a leg has actually reached, not from a straight line plus
+   recalibration.
+3. Then P1's accept test (three cold launches to the field, both players, no warp), then P6a's in-game proof, P6b,
+   P7a and the demo -> route fixture.
 
-Route facts established this round: Pioneer 2's sub-rooms **share one world space** -- walking to (185,173) went
-room 10 -> 20, and walking back to the same coordinate returned 20 -> 10, with no button press. `TObjCityDoor_Guild`
-(185,173) leads to the plaza (room 20); `TObjCityDoor_Warp` (254,25) leads to the teleporter room (room 40); room 41
-is the Principal's office; room 30 the shops. `walk_path` now records room transitions per leg and refuses a route
-written for another room.
+Negative results recorded: the teleporter pad is inert from its rim *and* its centre `(229.9, 0.7)`, with A tried on
+the rim; mode never leaves the town family, so it is not a footstep trigger. Movement, boot, co-op and closed-loop
+navigation to a named object are all proven and tested (20 movement tests).
