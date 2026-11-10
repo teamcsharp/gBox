@@ -1793,18 +1793,56 @@ at the character select -- which previews the model and is therefore the cleanes
 whose body had not changed. The verification (`pso_gc.bml_entry` on the rebuilt pack, compared byte-for-byte with the
 donor) is what caught it -- a size-only check would have passed.
 
+## Round 34 (2026-11-10) — the hot swap is real: the model visibly changes, and it deforms
+
+### Two things were wrong, both now understood
+
+1. **The launch `mod` is a query parameter, not a body field.** `POST /api/games/{gid}/launch` declares
+   `mod: str = ""` alongside `node`: it is read from the query string. Round 33 sent `{"mod": ...}` as JSON and the
+   server silently ignored it -- `detail.mod` came back empty and `mod_s` was 0.0. With
+   `?node=<worker>&mod=pso_hotswap2_both` the detail reports `mod: pso_hotswap2_both`, and Dolphin's own command line
+   (read from the process) ends with `-e "...\pso_hotswap2_both\...iso"`.
+2. **The game does not read the body out of `plAnj.bml`.** Swapping the pack alone left the character preview
+   pixel-identical. The disc also carries the same parts **loose at the root** (`plAbdy00.nj`, 21,308 bytes), and that is
+   what the game loads. Replacing both the pack and the loose file is what changed anything.
+
+### The visible result
+
+| image | character-select preview |
+|---|---|
+| base disc | a small, correctly-posed HUmar in orange (BQF's own colours) |
+| `pso_hotswap_humar_to_hucast` (pack only) | **identical** to the base -- proof the pack is not the source |
+| `pso_hotswap2_both` (pack + loose body) | **the viewport fills with giant flat polygons** |
+
+So the swap is in effect: the game is rendering the HUcast mesh as BQF. It is also **deformed**, and that part is not a
+bug in the writer -- a raw mesh swap puts a mesh built for HUcast's bone layout onto a HUmar's skeleton. That is exactly
+what `pso_player.build_swap` / `ninja_swap` (and the rigging pass that wants Blender) exist for: binding the donor mesh
+to the host's joint roles before writing it in.
+
+### What is proven, precisely
+
+* the character pack rebuild is byte-exact when unchanged and exact when swapped (round 33);
+* a single-image build can replace a GSL/BML file and a loose file, and the FST is updated (`gc_put_file`);
+* the launch accepts the build by name and Dolphin runs that ISO (command line, in the log above);
+* the running game reads the **loose** `plAbdy00.nj`, not the pack copy -- a fact this lane did not have before, and one
+  that would have made any pack-only model mod invisible;
+* the swapped mesh renders, and deforms, which bounds what remains: rigging, not plumbing.
+
+### Next
+
+1. Rig the swap: run `pso_player.build_swap`'s mapping (`body_roles`, `target_from_nj`, `ninja_swap`) so the donor mesh
+   is bound to the host skeleton before write-back, and boot it for a model that is *correct* rather than visible.
+2. P6a's in-game proof is still owed (the moved object has never been seen in a field).
+3. P1's guild counter remains the only route to a field arrival by real presses.
+
 ## 7. Next
 
-1. **Boot the swapped image.** `LaunchIn.mod` is documented for folder games; for a single-image GameCube title the
-   built image is probably selected by naming the build rather than the `mod` field -- find how, boot
-   `pso_hotswap_humar_to_hucast`, and look at the character select, which previews the model and is the cleanest proof
-   of a character swap.
-2. **P6a's in-game proof** is still owed: the object-moved disc boots to the Sonic Team splash, which validates the
-   image but not the moved object.
-3. **P1's guild counter** remains the only route to a field arrival by real presses: (102,105) -> (33,-34) ->
-   (-84,27) -> (-223,-24), then walk around the counter and face the keeper.
-4. Then P1's accept test, P6b (editor page), P7b (hot swap in game) and the demo -> route fixture.
-
-P7a/P7b file-level swap verified this round: `plAnj.bml` round-trips byte-identically, a HUcast body replaces the
-HUmar one exactly (24,732 bytes, head untouched), and the modded image builds with `plAnj.bml` replaced. The launch
-route ignored `mod` (mod_s 0.0), so the in-game proof is still pending.
+1. **Rig the swap.** The character hot swap is real and visible: the game renders the donor mesh (the preview fills
+   with polygons instead of a posed character). It deforms because a raw swap puts a HUcast mesh on a HUmar skeleton --
+   `pso_player.build_swap` (`body_roles`, `target_from_nj`, `ninja_swap`) is the rigging pass that binds it first.
+2. **Two hard-won facts for any future model mod:** the launch `mod` is a **query parameter**
+   (`POST /api/games/{gid}/launch?node=<worker>&mod=<build>`), not a JSON body field; and the game reads the character
+   parts **loose at the disc root** (`plAbdy00.nj`), not the copies inside `plAnj.bml` -- a pack-only swap is invisible.
+3. **P6a's in-game proof** is still owed (the moved object has never been seen in a field), and **P1's guild counter**
+   remains the only route to a field arrival by real presses.
+4. Then P1's accept test, P6b (editor page) and the demo -> route fixture.
