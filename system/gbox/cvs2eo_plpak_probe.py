@@ -37,3 +37,38 @@ def parse_plpak(d: bytes) -> dict:
     return {"size": len(d), "sec_a": sec_a, "sec_b": sec_b, "sec_c": sec_c,
             "a_count": n_a, "a_first": ta[0], "a_last": ta[-1], "a_monotone": mono,
             "a_in_range": max(ta) < sec_b, "b_monotone_prefix": n_b + 1, "b_first": tb[0]}
+
+
+def parse_frames(d: bytes) -> dict:
+    """Parse secB as sprite-composition records (verified structure, field meaning hypothesis).
+
+    secB = u32 offset table (relative to secB; count = first_offset/4) then records
+    ``u16 n`` + n x 8-byte parts (4 x u16/s16: x, y, flags/size, sprite index).  On the
+    owned pl00/pl01 packs every record tiles exactly up to the next offset / secC.
+    Part field names and the sprite index -> secA chunk mapping are hypotheses.
+    """
+    import struct as _s
+    if len(d) < 32:
+        raise ValueError("pak too small")
+    h = _s.unpack_from("<8I", d, 0)
+    a, b, c = h[1], h[3], h[5]
+    if not (0 < a < b < c <= len(d)) or b + 4 > len(d):
+        raise ValueError("bad section offsets")
+    n = _s.unpack_from("<I", d, b)[0] // 4
+    if n == 0 or b + 4 * n > c:
+        raise ValueError("bad frame table")
+    tb = _s.unpack_from("<%dI" % n, d, b)
+    frames, exact, max_idx = [], 0, -1
+    for k, o in enumerate(tb):
+        if b + o + 2 > c:
+            raise ValueError("frame offset out of range")
+        cnt = _s.unpack_from("<H", d, b + o)[0]
+        end = b + o + 2 + 8 * cnt
+        nxt = b + tb[k + 1] if k + 1 < n else c
+        exact += end == nxt
+        parts = [_s.unpack_from("<hhhH", d, b + o + 2 + 8 * j) for j in range(cnt) if end <= c]
+        for p in parts:
+            max_idx = max(max_idx, p[3])
+        frames.append(parts)
+    return {"frame_count": n, "exact_tiling": exact, "max_sprite_idx": max_idx,
+            "parts": sum(len(f) for f in frames), "frames": frames}
