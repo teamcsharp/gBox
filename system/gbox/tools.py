@@ -6608,11 +6608,13 @@ def switch_decrypt(inp: SwitchDecryptIn, ctx: Ctx):
         raise ToolUnavailable(f"{container} is not a file on this worker")
     if inp.op == "info":
         return {"result": {"op": "info", "members": switch_extract.members(container)}}
-    if inp.op not in ("exefs", "romfs-list", "romfs-get", "bktr", "arc-compare"):
+    if inp.op not in ("exefs", "romfs-list", "romfs-get", "bktr", "arc-compare", "arc-list"):
         raise ValueError(f"unknown op {inp.op}")
     keys_path = inp.keys or (str(hactool.keys_path()) if hactool.keys_path() else "")
     if not keys_path:
         raise ToolUnavailable("no prod.keys on this worker: pass keys=<path>")
+    if inp.op == "arc-list" and not inp.path:
+        raise ValueError("arc-list needs path=<RomFS arc>")
     if inp.op == "arc-compare" and not (inp.path and inp.donor):
         raise ValueError("arc-compare needs path=<RomFS arc> and donor=<file>")
     if inp.op in ("exefs", "romfs-get") and not inp.out:
@@ -6621,7 +6623,18 @@ def switch_decrypt(inp: SwitchDecryptIn, ctx: Ctx):
     out = {"op": inp.op, "title_id": nca.header["title_id"], "size": nca.header["size"],
            "sections": [{k: s[k] for k in ("index", "offset", "size", "fs_type", "crypt_type")}
                         for s in nca.header["sections"]]}
-    if inp.op == "arc-compare":
+    if inp.op == "arc-list":
+        from . import mt_arc
+        romfs = nca.romfs()
+        entry = next((f for f in romfs["files"] if f["path"] == inp.path), None)
+        if not entry:
+            raise ValueError(f"{inp.path} is not in this RomFS")
+        section = next(s for s in nca.header["sections"] if s["fs_type"] == switch_nca.FS_ROMFS)
+        blob = nca.read_section(section["index"], nca._romfs_at + romfs["header"]["data_offset"] + entry["offset"], entry["size"])
+        arc = mt_arc.parse(blob)
+        out["entries"] = [{"name": e.name, "size": e.size, "hash": e.hash, "tag": e.tag} for e in arc.entries[:inp.limit]]
+        out["entry_count"] = len(arc.entries)
+    elif inp.op == "arc-compare":
         from . import switch_arc
         romfs = nca.romfs()
         entry = next((f for f in romfs["files"] if f["path"] == inp.path), None)
@@ -6662,4 +6675,5 @@ def switch_decrypt(inp: SwitchDecryptIn, ctx: Ctx):
             (target / name).write_bytes(data)
         out["files"] = sorted(files)
     return {"result": out}
+
 
