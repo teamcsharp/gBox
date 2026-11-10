@@ -156,3 +156,27 @@ def recalled_forward_flags(store, fingerprint, floor):
     if not all(type(f) is int and 0 <= f <= 255 for f in flags):
         return None
     return sorted(set(flags))
+
+
+# --- speedrun learning: the best time per area compounds across runs -----------
+def _record_run(self, area, seconds, path=None):
+    """Keep the fastest completed run of an area (and its room path). Returns
+    True when this run is a new best. Non-positive/non-finite times are ignored."""
+    if not isinstance(area, str) or not area or isinstance(seconds, bool) \
+            or not isinstance(seconds, (int, float)) or not 0 < seconds < 1e7:
+        return False
+    rec = self._area(area)
+    rec["runs"] = int(rec.get("runs", 0)) + 1
+    best = rec.get("best_s")
+    improved = not isinstance(best, (int, float)) or seconds < best
+    if improved:
+        rec["best_s"] = float(seconds)
+        clean = [r for r in (path or []) if type(r) is int]
+        if clean:
+            rec["path"] = clean
+    rec["updated"] = time.time()
+    self.save()
+    return improved
+
+
+KnowledgeStore.record_run = _record_run
