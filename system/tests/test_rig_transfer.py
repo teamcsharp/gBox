@@ -14,6 +14,8 @@ def _faces(flip=False):
         out += [tuple(reversed(f)) if flip else f for f in t]
     return out
 
+CUBE_F = _faces()
+
 def test_joint_mapping_across_naming_schemes():
     donor = ["Hips", "Spine", "Neck", "Head", "LeftUpperArm", "LeftForeArm", "LeftHand", "RightHand", "LeftFoot"]
     target = ["b000_pelvis", "b001_spine", "b002_neck", "b003_head", "l_upperarm", "l_forearm", "l_hand", "r_hand", "l_foot"]
@@ -74,3 +76,23 @@ def test_coach_reply_uses_session_donor(tmp_path):
     assert "re5_chris -> leon" in r["reply"]
     assert rt.coach_reply(tmp_path, sess, "nice dodge") is None
     assert rt.coach_reply(tmp_path, {"game_id": "re4"}, "normals inverted") is None
+
+
+def test_all_scale_is_applied():
+    f = rt.empty_fixes("d", "t")
+    rt.apply_correction(f, {"action": "scale_down"})
+    p = rt.apply_fixes({"pelvis": (0, 0, 10), "head": (0, 0, 20)}, f)
+    assert abs(p["head"][2] - 19.0) < 1e-9 and p["pelvis"][2] == 10
+
+
+def test_retarget_entry_point_applies_stored_fixes(tmp_path):
+    donor = {"Hips": (0, 0, 50), "Neck": (0, 0, 100), "Head": (0, 0, 105), "LeftFoot": (0, 0, 0)}
+    target = {"pelvis": (0, 0, 100), "neck": (0, 0, 200), "head": (0, 0, 230), "l_foot": (0, 0, 0)}
+    before = rt.retarget(tmp_path, "dn", "tg", donor, target, faces=CUBE_F, verts=CUBE_V)
+    assert abs(before["fit"]["height"] - 230 / 105) < 1e-9
+    assert "head_seat" in before["flags"] or before["checks"]["head_seat"]["flag"] is not None
+    rt.critique_to_fixes(tmp_path, "dn", "tg", "normals inverted and head shoved down")
+    after = rt.retarget(tmp_path, "dn", "tg", donor, target, faces=CUBE_F, verts=CUBE_V)
+    assert after["fixes_applied"]
+    assert after["positions"]["head"][2] > before["positions"]["head"][2]
+    assert after["faces"][0] == tuple(reversed(before["faces"][0]))

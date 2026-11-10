@@ -174,6 +174,11 @@ def apply_fixes(positions: dict[str, Sequence[float]], fixes: dict) -> dict[str,
     for j, off in fixes.get("joint_offsets", {}).items():
         if j in out:
             out[j] = [out[j][i] + off[i] for i in range(3)]
+    allscale = fixes.get("scales", {}).get("all")
+    if allscale and allscale != 1.0 and out:
+        o = out.get("root") or out.get("pelvis") or [0.0, 0.0, 0.0]
+        o = list(o)
+        out = {k: [o[i] + (v[i] - o[i]) * allscale for i in range(3)] for k, v in out.items()}
     for limb, s in fixes.get("scales", {}).items():
         if limb in LIMBS:
             a, b = LIMBS[limb]
@@ -284,3 +289,38 @@ def coach_reply(root: Path, session: dict, note: str) -> dict | None:
                      f"next round (before/after renders follow with the rebuild)."}
     res.pop("fixes", None)
     return res
+
+
+# ---- writer entry point (stage 1) ----------------------------------------------------------------------
+def flip_faces(faces: Sequence[Sequence[int]], fixes: dict, part: str = "*") -> list[tuple]:
+    """Reverse winding of a part's faces when fixes['part_flips'] names the part or '*'."""
+    flips = fixes.get("part_flips", [])
+    if part in flips or "*" in flips:
+        return [tuple(reversed(tuple(f))) for f in faces]
+    return [tuple(f) for f in faces]
+
+
+def retarget(root: Path, donor: str, target: str, donor_pos: dict[str, Sequence[float]],
+             target_pos: dict[str, Sequence[float]], faces: Sequence[Sequence[int]] | None = None,
+             verts: Sequence[Sequence[float]] | None = None, part: str = "*") -> dict:
+    """One call every writer shares. donor_pos/target_pos are canonical-joint (or aliasable-name) rest positions.
+    Returns canonical positions fitted to the target, the stored per-donor/target fixes applied, flipped faces
+    and the static-check flags (the comparison window shows these verbatim)."""
+    def canon(pos):
+        m = build_joint_map(pos)
+        return {c: pos[n] for c, n in m.items()}
+    dp, tp = canon(donor_pos), canon(target_pos)
+    fixes = load_fixes(root, donor, target)
+    fit = proportional_fit(dp, tp)
+    h = fit.get("height", 1.0)
+    root_d = dp.get("pelvis") or dp.get("root") or [0.0, 0.0, 0.0]
+    root_t = tp.get("pelvis") or tp.get("root") or [0.0, 0.0, 0.0]
+    fitted = {k: [root_t[i] + (v[i] - root_d[i]) * h for i in range(3)] for k, v in dp.items()}
+    fixed = apply_fixes(fitted, fixes)
+    out_faces = flip_faces(faces, fixes, part) if faces is not None else None
+    checks = {"head_seat": check_head_seat(fixed), "stretch": check_stretch(fit)}
+    if faces is not None and verts is not None:
+        checks["normals"] = check_normals(verts, out_faces)
+    return {"donor": donor, "target": target, "fit": fit, "positions": fixed, "faces": out_faces,
+            "checks": checks, "flags": sorted(k for k, v in checks.items() if v.get("flag")),
+            "fixes_applied": bool(fixes["history"])}
