@@ -636,7 +636,7 @@ WALL_SLACK, WALL_DROP_S, WALL_BLOCK_S, FROZEN_TICKS = 10.0, 0.3, 3.0, 3   # (ope
                                          # a gun at a wall, I cry": dropped after 0.3 s for 3 s; wall_aim_s the seconds
                                          # the gun's ray ended on geometry short of the target, target 0)
 BEHIND_R, AWAY_ERR, AWAY_S, EXAMPLES = 300.0, math.radians(45), 0.3, 3
-FAULT_KINDS = ("wall_shot", "wall_block", "frozen_dot", "behind_threat", "aim_away", "sky")
+FAULT_KINDS = ("wall_shot", "wall_block", "frozen_dot", "behind_threat", "aim_away", "sky", "target_giveup")
 # The close-range pitch (the 15:26 turn's pitch_up_last: targets 0.8-2.2 m wanting -23 to -38 deg with the laser at
 # +21 to +28 deg - "ray 50.0 m", the laser's limit: the sky - and the aim +56 / +57 deg just before raises, the guard's
 # rdown held: up close the pitch stick ran the aim up, not down). Within CLOSE_PITCH_R no pitch stick at all (the yaw
@@ -1156,6 +1156,42 @@ CLOSE_IN, CLOSE_IN_R, CLOSE_IN_CHECK_S, RUN_R = True, 800.0, 0.5, 600.0
 # The locate run keeps its Majini while he lives unless another is LOCATE_SWITCH times nearer, and one the mesh has
 # no route to is passed over for LOCATE_BLOCK_S (the next nearest instead).
 LOCATE_SWITCH, LOCATE_BLOCK_S = 0.6, 8.0
+# The target he can neither shoot nor reach (live 2026-11-10 01:29-01:37 UTC, Prison, No Mercy: kills 389 of 400 for
+# over three minutes, doctrine_since_kill_s 186, the combo gone). His own choice kept a Majini on the upper walkway
+# (+317 cm, 13 m off) that his shots never reached ("target 7.2 m behind geometry at 1.7 m", ex_wall_block, over and
+# over) while one on his own floor 44 m off was never pursued; a map click on that one had him run 25 m by the mesh and
+# kill it in 47 s. The wall block (WALL_BLOCK_S) set the walkway one aside for 3 s, and not at all once he was the only
+# one left, so the gun stayed up at the walkway's underside ("zl" held: the never-stand rule does not apply to a shot).
+#   * TARGET_GIVEUP: a Majini his shots end short of on geometry (the wall block) for TARGET_GIVEUP_AFTER_S, the
+#     evidence never more than TARGET_NOSHOT_GAP_S apart, while he comes no TARGET_GIVEUP_PROGRESS_CM nearer (on his
+#     floor the flat distance, on another the mesh's route; no route to that floor at all is no closing) is given up for
+#     TARGET_GIVEUP_S - doubled each time the same one is given up again, at most TARGET_GIVEUP_MAX_S: the choice moves
+#     to the next one, and with nobody left the locate run takes him to the floor they are on. Never one the game's
+#     target feedback shows in front of the gun, never one his dot lands on (that ends the evidence), never one on his
+#     floor within TARGET_GIVEUP_MIN_R (the crowd fire's ring: a grab comes first); one given up comes back early once he
+#     is that near, or on his floor when it was given up off it. stats target_giveups, target_giveup_reason,
+#     target_giveup_lifts, ex_target_giveup.
+#   * REACH_FIRST: the fight's pool is the Majini he can get to - on his floor (LEVEL_DY) or on another floor the
+#     stage's mesh has a route to (asked at most every REACH_CHECK_S per Majini, REACH_ROUTES_PER_TICK new routes a
+#     tick) - and one on another floor with no route only when nobody is reachable. stats unreachable_skip_ticks.
+#   * OFF_FLOOR_GO: everyone in the pool on another floor, the target's shot ending on geometry (or given up before)
+#     and not in front of the gun, and a route to his floor: he runs up or down to it by the mesh (its stairs, ladders,
+#     drops - _approach's link) with the gun down instead of standing under them shooting into the walkway; kept while
+#     the route shortens (the give-up's own clock ends a run that stalls). stats off_floor_runs, off_floor_run_ticks.
+TARGET_GIVEUP, TARGET_GIVEUP_AFTER_S, TARGET_NOSHOT_GAP_S, TARGET_GIVEUP_PROGRESS_CM = True, 2.5, 6.0, 150.0
+TARGET_GIVEUP_S, TARGET_GIVEUP_MAX_S, TARGET_GIVEUP_MIN_R = 12.0, 48.0, 500.0
+REACH_FIRST, REACH_CHECK_S, REACH_ROUTES_PER_TICK = True, 1.5, 2
+OFF_FLOOR_GO = True
+GIVEUP_COUNTERS = ("target_giveups", "target_giveup_lifts", "unreachable_skip_ticks", "off_floor_runs",
+                   "off_floor_run_ticks")
+# Crows (the operator's tactical map, 2026-11-10 01:42 UTC: the frame listed no enemy at all while the bot's plan aimed
+# at one "7.9 m behind geometry"). The game's enemy table holds the crows too (uEm62, 1 health: re5-switch-ram.md),
+# perched high on the stage where no shot reaches. The tactical frame leaves out the dead and anything with hp_max at
+# or under CROW_HP_MAX (gbox.mercs.tactical; the PS3 bot's own rule too); the bot's candidates - the fight, the census
+# of the locate run and the pursuit, the threat and the wind-ups, the dynamite carriers (uEm62 is in DYNAMITE_CLASSES)
+# and the doctrine's view - now leave them out by that rule (Bot.tick, without_crows). CROWS_LAST_RESORT: with no
+# living Majini anywhere on the stage the crows stay (the old behaviour) - never ahead of a Majini. stats crows_alive.
+CROW_HP_MAX, CROWS_LAST_RESORT = 1, True
 # The route and the guard. _mesh_guard probes MESH_PROBE_CM along his FACING and, off the floor, turns him to the
 # nearest clear heading; the route's next point is a corner of the mesh, so facing it the probe clips the wall
 # beside it - the guard turned him away, the route turned him back, every tick (live 2026-11-09, the first minute
@@ -2191,6 +2227,31 @@ def through(origin, dot, foot) -> bool:
     return False
 
 
+def is_crow(e) -> bool:
+    """A crow (CROW_HP_MAX above: the tactical frame's rule): an enemy row whose maximum health is read and at or under
+    CROW_HP_MAX. A row without hp_max (a synthetic one) is a Majini."""
+    hm = e.get("hp_max") if isinstance(e, dict) else None
+    return isinstance(hm, (int, float)) and not isinstance(hm, bool) and hm <= CROW_HP_MAX
+
+
+def without_crows(snap, stats: dict | None = None):
+    """The snapshot the fight decides on: its enemy rows without the crows while any Majini lives on the stage
+    (CROWS_LAST_RESORT: with none, as it came). The game's own counters (kills, combo) are untouched. stats crows_alive."""
+    rows = snap.get("enemies") if isinstance(snap, dict) else None
+    if not rows:
+        if stats is not None:
+            stats["crows_alive"] = 0
+        return snap
+    crows = [e for e in rows if is_crow(e)]
+    if stats is not None:
+        stats["crows_alive"] = sum(1 for e in crows if (e.get("hp") or 0) > 0)
+    if not crows:
+        return snap
+    if CROWS_LAST_RESORT and not any((e.get("hp") or 0) > 0 and not is_crow(e) for e in rows):
+        return snap                                       # nobody else alive: the crows stay, the old way
+    return dict(snap, enemies=[e for e in rows if not is_crow(e)])
+
+
 class Bot:
     """One decision per tick from the snapshot.
 
@@ -2330,7 +2391,8 @@ class Bot:
         self.pending_mine = False                 # a mine tactic waiting for a loadout that carries the bomb
         self.commands = None                      # the operator's instant commands (gbox.mercs.directives.Reader)
         self.blocked: dict = {}                   # target -> until: "repetitive" drops the one he kept at
-        self.mode = None                          # a standing directive: "fight" / "hunt" / "score"
+        self._giveup_state()                      # TARGET_GIVEUP / REACH_FIRST / OFF_FLOOR_GO (made again on first use)
+        self.mode = None                         # a standing directive: "fight" / "hunt" / "score"
         from .re5_switch_mines import Mines
         self.mines = Mines(self.stats, every_s=MINE_EVERY_S) if MINES else None
         self.flashbang = None                     # the emergency flashbang throw (arm -> equip -> ZL throw), one at a time
@@ -2502,6 +2564,8 @@ class Bot:
                   and e.get("ptr", e.get("slot")) not in self._pur_block]
         if not census:
             return None
+        census = [e for e in census if not self._given_up(e.get("ptr", e.get("slot")), now)] \
+            or census                                    # (one given up: another, while there is one)
         cost = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz) + PURSUE_DY_W * abs(e["pos"][1] - py)
         tgt = min(census, key=cost)
         key = tgt.get("ptr", tgt.get("slot"))
@@ -3524,6 +3588,179 @@ class Bot:
         self._set_target(best.get("ptr", best.get("slot")), now)
         return best
 
+    # --- the target he can neither shoot nor reach (TARGET_GIVEUP, REACH_FIRST, OFF_FLOOR_GO above) --------------------
+    def _giveup_state(self) -> None:
+        """Its state, made when missing: a bot the hot reload rebinds to this class never ran this version's __init__.
+        _noshot: target -> his shots' wall evidence (first, last, best distance, best_at, why); _giveup: target ->
+        {"until", "off_floor"}; _giveup_n: target -> times given up (each one longer); _reach_c: target -> (when,
+        reachable, route cm); _reach_budget: (tick, routes asked on it); _off_run: the OFF_FLOOR_GO run's target."""
+        d = self.__dict__
+        if "_reach_budget" not in d or "_noshot" not in d:
+            for k, v in (("_noshot", {}), ("_giveup", {}), ("_giveup_n", {}), ("_reach_c", {}),
+                         ("_reach_budget", (None, 0)), ("_off_run", None)):
+                d.setdefault(k, v)
+        for k in GIVEUP_COUNTERS:
+            self.stats.setdefault(k, 0)
+
+    def _given_up(self, key, now) -> bool:
+        """Whether this Majini is given up now (TARGET_GIVEUP) - never during the fight for the operator's mark."""
+        if self.__dict__.get("_goal_fighting"):
+            return False
+        g = (self.__dict__.get("_giveup") or {}).get(key)
+        return g is not None and g["until"] > now
+
+    def _reach(self, p, e, now) -> tuple:
+        """(reachable, how far): on his floor (LEVEL_DY) (True, the flat distance); on another floor the stage's mesh
+        route to him - (True, its length) or (False, None) - asked at most every REACH_CHECK_S for each Majini and
+        REACH_ROUTES_PER_TICK new ones a tick (none asked yet: (None, None)); no mesh read: (False, None)."""
+        self._giveup_state()
+        px, py, pz = p["pos"]
+        if abs(e["pos"][1] - py) <= LEVEL_DY:
+            return True, math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        mesh = getattr(self, "_mesh", None)
+        if mesh is None or not hasattr(mesh, "route"):
+            return False, None
+        key = e.get("ptr", e.get("slot"))
+        hit = self._reach_c.get(key)
+        if hit is not None and now - hit[0] < REACH_CHECK_S:
+            return hit[1], hit[2]
+        tick, asked = self._reach_budget
+        asked = asked if tick == now else 0
+        if asked >= REACH_ROUTES_PER_TICK:                   # this tick's routes spent: the last answer, if any
+            return (hit[1], hit[2]) if hit is not None else (None, None)
+        self._reach_budget = (now, asked + 1)
+        avoid = tuple(self._mesh_avoid(mesh, now))
+        try:
+            pts = mesh.route((px, py, pz), tuple(e["pos"][:3]), avoid=avoid) if avoid \
+                else mesh.route((px, py, pz), tuple(e["pos"][:3]))
+        except Exception as exc:                             # noqa: BLE001 - the mesh never costs a tick
+            self.stats["nav_error"] = f"mesh reach {type(exc).__name__}: {exc}"[:120]
+            pts = None
+        length = None
+        if pts:
+            length, last = 0.0, (px, py, pz)
+            for q in pts:
+                for point in ((tuple(q.approach), tuple(q)) if hasattr(q, "approach") else (tuple(q),)):
+                    length += math.dist(last, point[:3])
+                    last = point[:3]
+        if len(self._reach_c) > 64:
+            self._reach_c = {k: v for k, v in self._reach_c.items() if now - v[0] < REACH_CHECK_S}
+        self._reach_c[key] = (now, length is not None, length)
+        return length is not None, length
+
+    def _noshot_note(self, p, e, now, why: str) -> None:
+        """His shot at this Majini ended on geometry (the wall block): the give-up's evidence, an episode while the
+        notes come within TARGET_NOSHOT_GAP_S of each other. Not for one the target feedback shows in front of the gun."""
+        self._giveup_state()
+        key = e.get("ptr", e.get("slot")) if e is not None else None
+        if not TARGET_GIVEUP or key is None or key == getattr(self, "_feedback_visible", None):
+            return
+        ep = self._noshot.get(key)
+        if ep is None or now - ep["last"] > TARGET_NOSHOT_GAP_S:
+            _ok, d = self._reach(p, e, now)
+            ep = self._noshot[key] = {"first": now, "last": now, "best": d if d is not None else math.inf,
+                                      "best_at": now, "why": why, "n": 0}
+        ep["last"], ep["why"], ep["n"] = now, why, ep["n"] + 1
+
+    def _giveup_tick(self, p, live, now) -> None:
+        """TARGET_GIVEUP: each Majini in the pool with an open episode of wall evidence - closing on him renews the
+        clock; TARGET_GIVEUP_AFTER_S of evidence with no closing gives him up."""
+        px, py, pz = p["pos"]
+        by = {e.get("ptr", e.get("slot")): e for e in live}
+        for key, ep in list(self._noshot.items()):
+            if now - ep["last"] > TARGET_NOSHOT_GAP_S:
+                del self._noshot[key]                        # the evidence went cold: he has not tried since
+                continue
+            e = by.get(key)
+            if e is None or key in self._giveup:
+                continue
+            if key == getattr(self, "_feedback_visible", None):
+                del self._noshot[key]                        # in front of the gun now: a shot he has
+                continue
+            same = abs(e["pos"][1] - py) <= LEVEL_DY
+            flat = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+            if same and flat <= TARGET_GIVEUP_MIN_R:
+                continue                                     # this near on his floor: the fight's (a grab comes first)
+            ok, d = self._reach(p, e, now)
+            if ok and d is not None and d < ep["best"] - TARGET_GIVEUP_PROGRESS_CM:
+                ep["best"], ep["best_at"] = d, now           # closing on him: the clock again
+                continue
+            if now - ep["first"] < TARGET_GIVEUP_AFTER_S or now - ep["best_at"] < TARGET_GIVEUP_AFTER_S:
+                continue
+            n = self._giveup_n.get(key, 0)
+            dur = min(TARGET_GIVEUP_S * 2 ** n, TARGET_GIVEUP_MAX_S)
+            self._giveup[key] = {"until": now + dur, "off_floor": not same}
+            self._giveup_n[key] = n + 1
+            del self._noshot[key]
+            dy = e["pos"][1] - py
+            how = ("no mesh route to his floor" if ok is False and not same else
+                   f"not {TARGET_GIVEUP_PROGRESS_CM / 100:.1f} m nearer in {now - ep['best_at']:.1f} s")
+            reason = (f"{flat / 100:.1f} m off" + (f", {dy:+.0f} cm off his floor" if not same else "")
+                      + f": {ep['why']} for {now - ep['first']:.1f} s, {how}; left for {dur:.0f} s")
+            self.stats["target_giveups"] = self.stats.get("target_giveups", 0) + 1
+            self.stats["target_giveup_reason"] = reason[:200]
+            self._example("target_giveup", p, now, f"gave up {key}: {reason}")
+            if self.target == key:
+                self.target = None                           # the choice moves on this tick
+            if self._off_run == key:
+                self._off_run = None
+
+    def _giveup_pool(self, p, live, now) -> list:
+        """The fight's pool: the Majini given up left out (TARGET_GIVEUP; back early once near on his floor, or on his
+        floor when given up off it) and, while anyone in it is reachable, only the reachable (REACH_FIRST)."""
+        self._giveup_state()
+        px, py, pz = p["pos"]
+        for key in [k for k, g in self._giveup.items() if g["until"] <= now]:
+            del self._giveup[key]
+        if TARGET_GIVEUP:
+            self._giveup_tick(p, live, now)
+        pool = []
+        for e in live:
+            g = self._giveup.get(e.get("ptr", e.get("slot")))
+            if g is not None:
+                same = abs(e["pos"][1] - py) <= LEVEL_DY
+                if same and (g["off_floor"] or math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= TARGET_GIVEUP_MIN_R):
+                    del self._giveup[e.get("ptr", e.get("slot"))]   # on his floor now, or this near: his again
+                    self.stats["target_giveup_lifts"] = self.stats.get("target_giveup_lifts", 0) + 1
+                else:
+                    continue
+            pool.append(e)
+        if REACH_FIRST and pool:
+            reach = [e for e in pool if self._reach(p, e, now)[0]]
+            if reach and len(reach) < len(pool):
+                self.stats["unreachable_skip_ticks"] = self.stats.get("unreachable_skip_ticks", 0) + 1
+                pool = reach
+        return pool
+
+    def _off_floor_go(self, p, live, tgt, now) -> bool:
+        """OFF_FLOOR_GO: whether this tick is the run to the target's floor by the mesh instead of a shot - everyone in
+        the pool off his floor, the target's shot ending on geometry (an open episode; given up before also counts),
+        not in front of the gun, and a mesh route to him. The run keeps the episode open while it lasts."""
+        py = p["pos"][1]
+        key = tgt.get("ptr", tgt.get("slot"))
+        if not OFF_FLOOR_GO or abs(tgt["pos"][1] - py) <= LEVEL_DY \
+                or any(abs(e["pos"][1] - py) <= LEVEL_DY for e in live) \
+                or key == getattr(self, "_feedback_visible", None):
+            self._off_run = None
+            return False
+        ep = self._noshot.get(key)
+        if ep is None and not self._giveup_n.get(key):
+            self._off_run = None
+            return False
+        ok, d = self._reach(p, tgt, now)
+        if not ok:                                           # no way up or down known: the give-up's clock decides
+            self._off_run = None
+            return False
+        if ep is None:                                       # given up before from below: the run is the evidence
+            ep = self._noshot[key] = {"first": now, "last": now, "best": d if d is not None else math.inf,
+                                      "best_at": now, "why": "given up before from below", "n": 0}
+        ep["last"] = now
+        if self._off_run != key:
+            self._off_run = key
+            self.stats["off_floor_runs"] = self.stats.get("off_floor_runs", 0) + 1
+        self.stats["off_floor_run_ticks"] = self.stats.get("off_floor_run_ticks", 0) + 1
+        return True
+
     @staticmethod
     def _pitch_to(p, e) -> float:
         """The aim's pitch (absolute, radians) from his muzzle to this Majini's chest."""
@@ -4186,6 +4423,7 @@ class Bot:
         self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False
         self._wu, self._windup_e = {}, None
         self._dyn, self._dynamite_e = {}, None
+        self._noshot, self._giveup, self._giveup_n, self._reach_c, self._off_run = {}, {}, {}, {}, None
         if self.mines is not None:
             self.mines.new_round(now)
         if self.__dict__.get("_map_goals") is not None:
@@ -4505,6 +4743,7 @@ class Bot:
             self.doing, self.why = 'native_equip', 'applying the selected primary weapon'
             return {'hold': ()}
         snap = primary_weapon.decision_snapshot(snap)
+        snap = without_crows(snap, self.stats)               # the crows are no candidates while a Majini lives
         self.doing, self.why, self._now = "none", "", now
         held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
         self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
@@ -5073,7 +5312,7 @@ class Bot:
         if near:                                             # the way there is fought
             g.defer(f"Fighting through {len(near)} on the way")
             self.stats["map_goal_fight_ticks"] = self.stats.get("map_goal_fight_ticks", 0) + 1
-            act = self._decide(p, near, flat, min(near, key=flat), min(flat(e) for e in near), snap, now)
+            act = self._goal_decide(p, near, flat, min(near, key=flat), min(flat(e) for e in near), snap, now)
             self.why = "the operator's mark, fighting through: " + str(self.why)
             return act
         if "hp" not in row:                                  # a spot on the map
@@ -5100,7 +5339,7 @@ class Bot:
                 self._set_target(key, now)
                 self.target_at = now
             self.stats["map_goal_fight_ticks"] = self.stats.get("map_goal_fight_ticks", 0) + 1
-            act = self._decide(p, [row], flat, row, d, snap, now)   # the fight, on him alone
+            act = self._goal_decide(p, [row], flat, row, d, snap, now)   # the fight, on him alone
             self.why = "the operator's target: " + str(self.why)
             return act
         self.stats["map_goal_walk_ticks"] = self.stats.get("map_goal_walk_ticks", 0) + 1
@@ -5361,6 +5600,7 @@ class Bot:
         for k in [k for k, t in block.items() if t <= now]:
             del block[k]
         census = [e for e in census if ident(e) not in block] or census
+        census = [e for e in census if not self._given_up(ident(e), now)] or census
         tgt = min(census, key=cost)
         kept = next((e for e in census if ident(e) == getattr(self, "_locate_key", None)), None)
         if kept is not None and cost(tgt) > LOCATE_SWITCH * cost(kept):
@@ -5816,13 +6056,31 @@ class Bot:
         st.update(t=now, item=item, slot=held.get("slot") if held else None,
                   rounds=held.get("rounds") if held else None, kills=kills, hits=hits, zr=zr)
 
+    def _goal_decide(self, p, live, flat, near_e, near, snap, now) -> dict:
+        """The fight for the operator's mark (_operator_goal): _decide on its pool as it is - the marked one never given
+        up nor left for a reachable one, no run off to another floor (TARGET_GIVEUP / REACH_FIRST / OFF_FLOOR_GO are his
+        own play's): _decide is called as before, with the marker set around it."""
+        self._goal_fighting = True
+        try:
+            return self._decide(p, live, flat, near_e, near, snap, now)
+        finally:
+            self._goal_fighting = False
+
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
+        self._giveup_state()
+        own = not self.__dict__.get("_goal_fighting", False)   # his own play (not the fight for the operator's mark)
         px, py, pz = p["pos"]
         self._goal_dy = None                             # (set again by the bonus run / the pursuit this tick)
         if self.blocked:
             self.blocked = {k: t for k, t in self.blocked.items() if t > now}
             rest = [e for e in live if e.get("ptr", e.get("slot")) not in self.blocked]
             live = rest or live
+        if own and live and (TARGET_GIVEUP or REACH_FIRST):  # the ones given up out; the reachable first
+            pool = self._giveup_pool(p, live, now)
+            if len(pool) != len(live):
+                live = pool                              # (none left: the locate run below takes him to them)
+                near_e = min(live, key=flat, default=None)
+                near = flat(near_e) if near_e is not None else math.inf
         self._fault_tick(p, live, flat, snap, now)
         if not live:
             act = self._go_bonus(p, live, flat, snap, now)
@@ -5927,6 +6185,13 @@ class Bot:
             self.doing, self.why = "walk", f"nearest target {dist / 100:.1f} m"
             self._gun_down()
             return {"hold": self._gait(dist) + self._approach(p, foot, now, link=True)}
+        if own and self._off_floor_go(p, live, tgt, now):   # all of them up (or down) there, his shot on geometry: go
+            dy = foot[1] - py
+            self.doing, self.why = "walk", (f"every Majini off his floor, the shot at the one {dist / 100:.1f} m off "
+                                            f"({dy:+.0f} cm) ends on geometry: to his floor by the stage's mesh")
+            self._goal_dy = dy
+            self._gun_down()
+            return {"hold": ("lup", "b") + self._approach(p, foot, now, link=True)}
         if self.aim_since is None and dist > CLOSE_IN_R and self._walled_off(p, tgt, now):
             self.doing, self.why = "walk", (f"target {dist / 100:.1f} m with no open floor between them: "
                                             f"round to him by the map")
@@ -6145,10 +6410,13 @@ class Bot:
                 self.stats["wall_blocks"] += 1
                 self._example("wall_block", p, now, f"target {dist / 100:.1f} m behind geometry at "
                                                     f"{ray_len / 100:.1f} m")
+                self._noshot_note(p, tgt, now, f"his shots end on geometry {ray_len / 100:.1f} m out")
                 self._wall_since = None
                 self.target = None
         elif on or dot_e is not None:
             self._wall_since = None
+            if on and where is not None:                 # the dot on him: a shot he has (no give-up for it)
+                self._noshot.pop(tgt.get("ptr", tgt.get("slot")), None)
         confirmed = False
         if CONFIRMED_FIRE and not on and dot_e is not None and dot_e is not tgt \
                 and not any(flat(e) < GRAB_THREAT_R and e is not dot_e for e in live):
@@ -6700,7 +6968,7 @@ class RE5Switch(Driver):
                       "aim_repositions", "target_feedback_fire_blocks", "target_feedback_write_failures",
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
                       "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS \
-        + THREAT_COUNTERS + CRIT_FLASH_COUNTERS \
+        + THREAT_COUNTERS + CRIT_FLASH_COUNTERS + GIVEUP_COUNTERS \
         + AIM_COUNTERS + MEASURE_COUNTERS + tuple("t_" + d for d in DOINGS) + re5_specials.COUNTERS
 
     def __init__(self, clock=time.monotonic):
@@ -6712,6 +6980,13 @@ class RE5Switch(Driver):
 
     def snapshot(self, m) -> dict:
         return snapshot(m)
+
+    def doctrine_view(self, snap):
+        """The universal doctrine's view of the round (gbox.mercs.core.doctrine.view, this title's units and wind-ups)
+        without the crows (CROW_HP_MAX above): a crow on a roof is neither in sight nor alive while a Majini lives."""
+        import sys
+        from ..core import doctrine
+        return doctrine.view(without_crows(snap), None, sys.modules[__name__])
 
     def screen(self, m, snap: dict | None) -> str:
         snap = self.snapshot(m) if snap is None else snap
