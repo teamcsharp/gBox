@@ -64,3 +64,43 @@ def test_all_slots_parse():
         bones.add(a["models"][0]["n_bones"])
     assert bones  # bone-count variety recorded by the printed -s output
     print(sorted(bones))
+
+
+def _dl(*cmds_params):
+    import struct
+    cmds = [c for c, _ in cmds_params]
+    params = [p for _, ps in cmds_params for p in ps]
+    cmds += [0] * (-len(cmds) % 4)
+    out = b""
+    # one packed group per 4 commands with its parameters following that group
+    i = 0
+    flat = list(cmds_params)
+    while i < len(flat):
+        grp = flat[i:i + 4]
+        out += bytes([c for c, _ in grp] + [0] * (4 - len(grp)))
+        for _, ps in grp:
+            out += struct.pack(f"<{len(ps)}I", *ps)
+        i += 4
+    return out
+
+
+def test_display_list_triangle_and_quad():
+    from gbox.formats.nintendogs import decode_display_list
+    v = lambda x, y, z: (((y & 0xFFFF) << 16) | (x & 0xFFFF), z & 0xFFFF)
+    dl = _dl((0x40, [0]), (0x23, v(4096, 0, 0)), (0x23, v(0, 4096, 0)), (0x23, v(0, 0, 4096)),
+             (0x41, []), (0x40, [1]), (0x23, v(0, 0, 0)), (0x23, v(1, 0, 0)), (0x23, v(1, 1, 0)),
+             (0x23, v(0, 1, 0)), (0x41, []))
+    m = decode_display_list(dl)
+    assert m["verts"][0] == (1.0, 0.0, 0.0)
+    assert len(m["verts"]) == 7 and m["tris"][0] == (0, 1, 2) and len(m["tris"]) == 3
+
+
+def test_real_rom_mesh_counts_match_header():
+    import glob, pytest
+    roms = glob.glob("../work/source/*.nds")
+    if not roms:
+        pytest.skip("owned ROM not present")
+    from gbox.formats.nintendogs import Nintendogs, analyze_nsbmd, mesh_from_nsbmd
+    _, d, _ = Nintendogs(open(roms[0], "rb").read()).export_model("Bgl_a")
+    m, mesh = analyze_nsbmd(d)["models"][0], mesh_from_nsbmd(d)
+    assert (len(mesh["verts"]), len(mesh["tris"])) == (m["n_vertices"], m["n_tris"] + 2 * m["n_quads"])

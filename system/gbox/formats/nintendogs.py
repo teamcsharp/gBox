@@ -140,3 +140,129 @@ def analyze_nsbmd(blob: bytes) -> dict:
     if "TEX0" in info["blocks"]:
         out.update(parse_tex0(blob, info["blocks"]["TEX0"][0]))
     return out
+
+
+# ---- reader: shape display lists -> triangle mesh (Nitro GX) ----------------------------------
+_GX_PARAMS = {
+    0x00: 0, 0x10: 1, 0x11: 0, 0x12: 1, 0x13: 1, 0x14: 1, 0x15: 0, 0x16: 16, 0x17: 12, 0x18: 16, 0x19: 12,
+    0x1A: 9, 0x1B: 3, 0x1C: 3, 0x20: 1, 0x21: 1, 0x22: 1, 0x23: 2, 0x24: 1, 0x25: 1, 0x26: 1, 0x27: 1,
+    0x28: 1, 0x29: 1, 0x2A: 1, 0x2B: 1, 0x30: 1, 0x31: 1, 0x32: 1, 0x33: 1, 0x34: 32, 0x40: 1, 0x41: 0,
+    0x50: 1, 0x60: 1, 0x70: 3, 0x71: 2, 0x72: 1,
+}
+
+
+def _s(v: int, bits: int) -> int:
+    return v - (1 << bits) if v & (1 << (bits - 1)) else v
+
+
+def decode_display_list(dl: bytes, pos_scale: int = 4096) -> dict:
+    """Decode a GX display list: returns {'verts': [(x,y,z)], 'uvs': [(s,t)], 'tris': [(a,b,c)]}.
+    Positions are fixed 1.3.12 (VTX_16) times ``pos_scale``/4096 (MDL0 posScale, 20.12 fixed); texcoords 12.4.
+    Quads/strips are triangulated; matrix commands are skipped (bone transforms are not applied)."""
+    verts: list = []
+    uvs: list = []
+    tris: list = []
+    cur = (0.0, 0.0, 0.0)
+    uv = (0.0, 0.0)
+    mode = None
+    batch: list[int] = []
+    scale = float(pos_scale) / 4096.0  # posScale is 20.12 fixed point
+    unit = scale / 4096.0  # VTX_16 is 1.3.12
+    i = 0
+    n = len(dl) - len(dl) % 4
+
+    def flush():
+        if mode is None or not batch:
+            return
+        b = batch
+        if mode == 0:
+            tris.extend((b[k], b[k + 1], b[k + 2]) for k in range(0, len(b) - 2, 3))
+        elif mode == 1:
+            tris.extend((b[k], b[k + 1], b[k + 2]) for k in range(0, len(b) - 3, 4))
+            tris.extend((b[k], b[k + 2], b[k + 3]) for k in range(0, len(b) - 3, 4))
+        elif mode == 2:
+            for k in range(len(b) - 2):
+                tris.append((b[k], b[k + 1], b[k + 2]) if k % 2 == 0 else (b[k + 1], b[k], b[k + 2]))
+        elif mode == 3:
+            for k in range(0, len(b) - 3, 2):
+                tris.append((b[k], b[k + 1], b[k + 3]))
+                tris.append((b[k], b[k + 3], b[k + 2]))
+
+    def emit(p):
+        nonlocal cur
+        cur = p
+        verts.append(p)
+        uvs.append(uv)
+        batch.append(len(verts) - 1)
+
+    while i + 4 <= n:
+        cmds = dl[i:i + 4]
+        i += 4
+        for c in cmds:
+            if c == 0 and cmds[-1] == 0 and False:
+                break
+            np_ = _GX_PARAMS.get(c)
+            if np_ is None:
+                raise ValueError(f"unknown GX command {c:#x} at {i:#x}")
+            if i + 4 * np_ > len(dl):
+                return {"verts": verts, "uvs": uvs, "tris": tris}
+            ps = struct.unpack_from(f"<{np_}I", dl, i) if np_ else ()
+            i += 4 * np_
+            if c == 0x40:
+                flush()
+                batch = []
+                mode = ps[0]
+            elif c == 0x41:
+                flush()
+                batch = []
+                mode = None
+            elif c == 0x22:
+                uv = (_s(ps[0] & 0xFFFF, 16) / 16.0, _s(ps[0] >> 16, 16) / 16.0)
+            elif c == 0x23:
+                emit(tuple(_s(v, 16) * unit for v in (ps[0] & 0xFFFF, ps[0] >> 16, ps[1] & 0xFFFF)))
+            elif c == 0x24:
+                emit(tuple(_s((ps[0] >> (10 * k)) & 0x3FF, 10) / 64.0 * scale for k in range(3)))
+            elif c in (0x25, 0x26, 0x27):
+                a, b = _s(ps[0] & 0xFFFF, 16) * unit, _s(ps[0] >> 16, 16) * unit
+                x, y, z = cur
+                emit({0x25: (a, b, z), 0x26: (a, y, b), 0x27: (x, a, b)}[c])
+            elif c == 0x28:
+                d = [_s((ps[0] >> (10 * k)) & 0x3FF, 10) / 4096.0 * scale for k in range(3)]
+                emit((cur[0] + d[0], cur[1] + d[1], cur[2] + d[2]))
+    flush()
+    return {"verts": verts, "uvs": uvs, "tris": tris}
+
+
+def parse_shapes(blob: bytes, model_off: int) -> list[dict]:
+    """Shape records of an MDL0 model at ``model_off`` (offset from parse_mdl0): name + display-list slice."""
+    shp_rel = struct.unpack_from("<I", blob, model_off + 0x0C)[0]
+    names, datas = parse_dict(blob, model_off + shp_rel)
+    out = []
+    for name, d in zip(names, datas):
+        s = model_off + shp_rel + struct.unpack("<I", d[:4])[0]
+        flag, dl_rel, dl_size = struct.unpack_from("<III", blob, s + 4)
+        out.append({"name": name, "offset": s, "dl_offset": s + dl_rel, "dl_size": dl_size})
+    return out
+
+
+def mesh_from_nsbmd(blob: bytes) -> dict:
+    """Merge all shapes of the first model into one mesh (local space, no bone transforms)."""
+    info = analyze_nsbmd(blob)
+    m = info["models"][0]
+    merged = {"verts": [], "uvs": [], "tris": [], "shapes": []}
+    for sh in parse_shapes(blob, m["offset"]):
+        mesh = decode_display_list(blob[sh["dl_offset"]:sh["dl_offset"] + sh["dl_size"]], m["pos_scale"])
+        base = len(merged["verts"])
+        merged["verts"] += mesh["verts"]
+        merged["uvs"] += mesh["uvs"]
+        merged["tris"] += [(a + base, b + base, c + base) for a, b, c in mesh["tris"]]
+        merged["shapes"].append({"name": sh["name"], "verts": len(mesh["verts"]), "tris": len(mesh["tris"])})
+    return merged
+
+
+def mesh_to_obj(mesh: dict, name: str = "nintendogs") -> str:
+    lines = [f"o {name}"]
+    lines += [f"v {x:.6f} {y:.6f} {z:.6f}" for x, y, z in mesh["verts"]]
+    lines += [f"vt {u:.6f} {1 - v:.6f}" for u, v in mesh["uvs"]]
+    lines += [f"f {a + 1}/{a + 1} {b + 1}/{b + 1} {c + 1}/{c + 1}" for a, b, c in mesh["tris"]]
+    return "\n".join(lines) + "\n"
