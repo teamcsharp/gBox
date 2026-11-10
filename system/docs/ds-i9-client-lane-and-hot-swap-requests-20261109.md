@@ -1026,3 +1026,14 @@ The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned b
   output differently for this tool (worth a look, not a blocker).
 * That closes the "use MCP to interact and cause events" side for the decrypting lane: an MCP client can dispatch
   container reads, ARC inspection and (through `skin_swap` + `switch_mods`) build/reskin jobs without any local tooling.
+
+## Round 49 status (2026-11-10, ~01:10 CST): correction - dispatched switch_decrypt jobs do return their payloads
+
+* Round 48's note ("a dispatched `switch_decrypt` job reached succeeded but the `result` came back empty") was **my
+  misreading**: the job record carries the tool output under **`output`**, not `result`. Re-read properly, the `op=info`
+  job returned all **8 container members** - the cert, the ticket and six NCAs including the 18.7 GB program NCA
+  `7d1de58250af66dd801f2e76ac4752df.nca` (18,766,315,520 bytes).
+* A second dispatched job (`op=arc-compare`, head arc vs a donor ARC on the worker) returned the full comparison:
+  `game_entries 4`, `donor_entries 318`, `same_paths false`, per-entry ratios (1.0, 1.02, 1.855, 2.084).
+* So the MCP/dispatch path is sound for both the container reads and the ARC inspection - no fix needed, only the record
+  correction. The lesson for the reader: job outputs live in `output` (MCP returns it as `output` too).
