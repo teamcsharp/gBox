@@ -363,6 +363,51 @@ def rewrite_body(disc, cls: str = "A", platform: str = "gc") -> dict:
             "platform": platform}
 
 
+def body_swap(disc, host: str = "A", donor: str = "C", *, platform: str = "gc") -> dict:
+    """Copy one class's **body** over another's on the disc - the raw P7b swap, gated by `pso_swapfit.compare`.
+
+    This is the swap the lane measured live in round 35: a HUcast body over a HUmar renders (deformed), a HUnewearl
+    body crashes the game. The gate is `pso_swapfit`'s own rule - a donor whose texture buckets do not match the host's
+    is refused before a single file is written, because that is the crash case. A bucket match with a different vertex
+    count is allowed and reported as `deforms`.
+
+    Returns ``{files, verdict, deforms, refused, why}``: ``files`` is the same ``{disc path: bytes}`` shape
+    `build_swap` returns (the host's body replaced, the host's BML entry rewritten), and nothing is returned as
+    installed - a mod build and a boot are still the caller's step.
+    """
+    from . import pso_swapfit
+    host, donor = host.upper(), donor.upper()
+    for letter in (host, donor):
+        if letter not in CLASS_ROLES:
+            raise ValueError(f"unknown PSO class letter {letter!r} (A..I)")
+    if host == donor:
+        raise ValueError("host and donor are the same class")
+    e = body_endian(platform)
+    be = e == ">"
+    gc = platform.lower() == "gc"
+
+    def part(suffix: str, letter: str) -> str:
+        logical = f"PSO/PL{letter}{suffix}"
+        return pso_gc_paths.gc_path(logical) if gc else logical
+
+    host_body_path, host_bml_path = part("BDY00.NJ", host), part("NJ.BML", host)
+    donor_body = pso_gc_paths.read_part(disc, part("BDY00.NJ", donor))
+    host_body = pso_gc_paths.read_part(disc, host_body_path)
+    host_sig = pso_swapfit.signature_nj(ninja.NJ(host_body, be=be))
+    donor_sig = pso_swapfit.signature_nj(ninja.NJ(donor_body, be=be))
+    verdict = pso_swapfit.compare(host_sig, donor_sig)
+    if not verdict["safe"]:
+        return {"files": {}, "verdict": verdict, "deforms": False, "refused": True, "why": verdict["why"]}
+
+    # the donor body keeps its own node tree and chunks; only the container tail (POF0) is per-file, so the bytes go in
+    # as they are. The BML entry is the flat class name on GC and the lower-case name on a Dreamcast rip.
+    entry = f"pl{host.lower()}bdy00.nj".encode()
+    bml = pso_gc_paths.read_part(disc, host_bml_path)
+    files_bml = bml_build(bml, {entry.decode(): donor_body}, e=e)
+    return {"files": {host_body_path: donor_body, host_bml_path: files_bml}, "verdict": verdict,
+            "deforms": bool(verdict.get("deforms")), "refused": False, "why": verdict["why"]}
+
+
 def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str = "C", blender: str | None = None,
                progress=lambda p, m: None, scale: dict | None = None, platform: str = "dc") -> dict:
     """disc: a gbox.gdrom.GDRom. -> {files {disc path: bytes}, report, rigged, atlas}.
