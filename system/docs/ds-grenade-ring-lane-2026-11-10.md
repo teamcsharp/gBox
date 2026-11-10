@@ -794,12 +794,19 @@ function pointer appears **304 times** in the image (one per unit class vtable) 
 `ldr xF, [xV, #0x20]; blr xF` at **739 sites in 128 functions**. Slot 2/3 (`0xB290`/`0xB2A0` for non-player classes)
 are tiny stubs or are overridden per family, so they are not the common per-frame call; slot +0x20 is.
 
-**The player classes' vtables are materialised in code at** `0x3C9730`, `0x3F4B9C` (three times), `0x3F4C1C`,
-`0x452768`, `0x483108`, `0x490A58`, `0x6469FC` (Leon A/B respectively), and their literal copies sit at
-`.rodata 0x67E380` / `0x683F48`. Both tables hold 23 functional entries (0..22) before zeros or the next structure
-(`0xB0C0A0` is followed by a string at index 23, `0xB09A60` by two zero words then another function table at 25); a
-32-entry (256-byte) copy of whatever table the live object carries is the safe clone length, because entries past the
-real end are byte-identical to memory the game never indexes as part of that vtable.
+**The player classes' vtables are pointed at from literals in `.rodata`**, at `0x67E380` (→ `0xB09A60`) and
+`0x683F48` (→ `0xB0C0A0`); no code materialises either address with an `adrp`+`add` pair (a strict adjacent-pair
+scan over `.text`: zero hits), so the constructors take the pointer from those literals or from a class table. Both
+tables hold 23 functional entries (0..22) before zeros or the next structure (`0xB0C0A0` is followed by a string at
+index 23, `0xB09A60` by two zero words then another function table at 25); a 32-entry (256-byte) copy of whatever
+table the live object carries is the safe clone length, because entries past the real end are byte-identical to
+memory the game never indexes as part of that vtable.
+
+*Correction (round 58): an earlier version of this section listed `0x3C9730`, `0x3F4B9C`, `0x3F4C1C`, `0x452768`,
+`0x483108`, `0x490A58`, `0x6469FC` as code that materialises the player vtables. That was a scanner bug (it paired an
+`add` with a stale `adrp` from an earlier function); re-checked with adjacent-only pairing, `.text` has no such
+pair, and the two `.rodata` literals above are the only static references. The slot finding itself is unchanged and
+rests on the vtable dumps, the shared `+0x20` entry, the 304 literal slots and the 739 dispatch sites.*
 
 **The E2 design, now with its slot:**
 
