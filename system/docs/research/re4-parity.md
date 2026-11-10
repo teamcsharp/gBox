@@ -23,7 +23,19 @@ Three kinds of statement are kept apart below: **measured** (run on the real fil
 | Overlays (not in Git) | `C:\_tools\gBox\.scratch-merc-recovery\assets\re4\re4-enemy-pool-01\`, `re4-cast-pool-01\`, `re4-stage-greybox-v1\`, each `romfs\bio4\...` + `receipt.json` |
 | Inputs (not in Git) | `.scratch-merc-recovery\re4\inputs\{em,etc,imagepackhd,st4}\` copied read-only from the host; the donor library `.scratch-merc-recovery\cast\inputs\library\` (1,483 entries) and its survey `cast\library-survey.json` (650 usable) |
 
-## 0a. Live results, 2026-11-10 03:00-05:05 UTC (newest; read first)
+## 0b. Live results, 2026-11-10 05:05-06:25 UTC (newest; read first)
+
+| What | Result |
+|---|---|
+| Player life | **mapped**: u16 module + `0x1279360`, its maximum beside it (`re4_switch.player_life`); found by `scripts/re4sw_life_probe.py` (HUNK / Castle: 1680, 1152, 96, 0 at the death screen; 1680 = 7 bars x 240; Wesker 1860 = 7.75 x 240) |
+| Live sidebar (PineLive) | works for RE4: Unlimited life, One-hit kills, Enemy health x, Time added per kill, Weapon power x, Every weapon at max level, RAM aim lock + the bot dials. Measured: Enemy health x 0.5 confirmed and 8 Ganados lowered; Unlimited life confirmed and 26 hits undone (`mods_life_kept`); max level + power x10 rewrote all 13 firepower rows; the aim lock wrote the facing 24 times in 15 s. It needs the user services `gbox-mcp` / `gbox-live-controls` (they had been stopped since 08:56 CST) |
+| Weapon table | the firepower-per-level table is module data at `0xAF0E8C..` (rows of 7 f32; names inferred from RE4's published stats); fire rate is not stored as seconds there - static analysis of the executable is under way (`re4-weapons-ram.md`) |
+| Kill counter | `0x12010c4` **retracted** (HUD 0 kills while it read 8); the census counts. The bot's ClockFinder also picked a wrong float once (20.94 vs HUD 1:43) |
+| Defence | low-life retreat (under 35%: quick turn and run) and a keep-away from heavies (2000+ health) are live; with Unlimited life on, deaths came from single blows that take full life at once |
+| Doors / windows | RE4's come from the room's event data as crossings the walker takes with Y; each one taken or refused is logged to `gbox-data/mercs/re4-crossings.jsonl` |
+| Menus | the save-list loop's cause found by the press log: the runner's round-entry A presses after Yes on Cancel loading? (fixed: back on the menus or the list, no dark screen is a round) |
+
+## 0a. Live results, 2026-11-10 03:00-05:05 UTC
 
 Measured on lilspark in MercMode's own turns (session ids are `88a92225892b4c4f-*` unless named):
 
