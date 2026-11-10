@@ -129,3 +129,41 @@ armoured figure with its great sword, bounds x -3.89..4.46 / y -18.04..3.56 / z 
 **Branch note:** this branch was **rebased onto `ds-pso-cp12-rigged-swap-20261110`**, because the swap path needs CP12's
 endianness fixes (readers, writers, BML and the gate); CP13's commits only add evidence, a script and the donor builds, so the
 rebase was clean. The branch therefore stacks on CP12 and must be reviewed after it.
+
+## Round 88: the same endianness bug in a second place - and a third donor at 708 triangles
+
+A third donor (**Bayonetta**, 13.9 MB) was run to test whether the round-87 fix generalised. It did not - and the failure was
+the *same class of bug* in a second place:
+
+```
+node 13's vertex list, chunk trace: 0x29 (size 0x2b) -> 0x2c (0x40) -> 0x2c (0x2b) -> word 0xFF000000
+```
+
+`0xFF000000` is `struct.pack("<I", 0xFF)` read big-endian: a **null chunk with size 0xFF00**, so the vertex walk skips ~260 KB
+and leaves the body. The writer had it in `build_swap`'s kept-vertex-list branch:
+
+```python
+models[j] = (keep + struct.pack("<I", 0xFF) if keep else b"", empty_pl, ...)     # hard-coded little-endian
+```
+
+so **the vertex-list terminator** (not just the polygon-list one from round 87) was written little-endian. Fixed to
+`struct.pack(e + "I", 0xFF)`.
+
+**All three donors now build, gate and parse:**
+
+| donor | source -> baked | scale | gate | body | render |
+|---|---|---|---|---|---|
+| Daisy | 23,635 -> 788 | 1.3466 | SAFE, subset | 44,424 B, 582 v | coherent figure in a dress |
+| Cloud | 19,926 -> 857 | 1.1249 | SAFE, subset | 50,608 B, 792 v | armoured figure with a great sword |
+| **Bayonetta** | **30,634 -> 708** | **0.7535** | **SAFE, subset** | **49,196 B, 496 v** | **winged figure** (bounds x -18.65..18.64 / y -3.19..10.50 / z -0.17..27.83) |
+
+**The two bugs together explain the donor-dependent behaviour** of rounds 84-87: both end markers were little-endian, so any
+body whose node handed the parser a "plausible" chunk header after a mis-terminated list would either walk off the payload
+(Cloud, Bayonetta) or stop by luck (Daisy). Every built GC body carried both bugs; only some donors exposed them.
+
+**New tests:** `tests/test_pso_body_endian.py` **3 passed** - a synthetic two-node body with an empty polygon list parses in
+**both** endiannesses, and a test that pins the exact round-87 byte fact (`struct.pack("<HH", 0xFF, 0)` read big-endian is
+`0xFF00`, a null chunk, not an end marker).
+
+**CP13's remaining work is unchanged and live-only:** the per-boot donor pick at character select and the hot swap, both in a
+CP4 window. The offline half now covers three donors end to end.

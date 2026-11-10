@@ -1,55 +1,28 @@
 [
  {
-  "donor": "daisy_ssbu",
-  "name": "Daisy",
-  "model": "daisy_ssbu.glb",
-  "model_bytes": 10191548,
-  "triangles": 788,
-  "source_triangles": 23635,
-  "scale": 1.3466,
+  "donor": "bayonetta_ssbu",
+  "name": "Bayonetta",
+  "model": "bayonetta_ssbu.glb",
+  "model_bytes": 13899924,
+  "triangles": 708,
+  "source_triangles": 30634,
+  "scale": 0.7535,
   "safe": true,
-  "why": "same bones and materials, but 518 vertices against the host's 311: a copy renders with the donor's proportions on the host's skeleton (the deformed case, round 35)",
+  "why": "same bones and materials, but 496 vertices against the host's 311: a copy renders with the donor's proportions on the host's skeleton (the deformed case, round 35)",
   "subset": true,
-  "body_bytes": 44424,
-  "vertices": 582,
+  "body_bytes": 49196,
+  "vertices": 742,
   "degenerate": 0,
   "bounds": [
    [
-    -8.81,
-    0.03,
-    -7.14
+    -18.65,
+    -0.17,
+    -10.5
    ],
    [
-    8.8,
-    25.51,
-    12.01
-   ]
-  ]
- },
- {
-  "donor": "cloud_ssbu",
-  "name": "Cloud",
-  "model": "cloud_ssbu.glb",
-  "model_bytes": 16420532,
-  "triangles": 857,
-  "source_triangles": 19926,
-  "scale": 1.1249,
-  "safe": true,
-  "why": "same bones and materials, but 655 vertices against the host's 311: a copy renders with the donor's proportions on the host's skeleton (the deformed case, round 35)",
-  "subset": true,
-  "body_bytes": 50608,
-  "vertices": 792,
-  "degenerate": 0,
-  "bounds": [
-   [
-    -3.89,
-    -0.1,
-    -3.56
-   ],
-   [
-    4.46,
-    23.75,
-    18.04
+    18.64,
+    27.83,
+    3.19
    ]
   ]
  }
