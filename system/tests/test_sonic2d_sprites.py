@@ -321,7 +321,9 @@ def test_identify_titles_and_registration():
     assert t("sonic1")("sonic the hedgehog (usa, europe)", "genesis") and not t("sonic1")("sonic the hedgehog", "sms")
     assert t("sonic2")("sonic the hedgehog 2 (world) (rev a)", "genesis") and not t("sonic2")("sonic 2 delta", "genesis")
     assert t("s3k")("sonic & knuckles + sonic the hedgehog 3 (world)", "genesis")
-    assert t("sk")("sonic & knuckles (world)", "genesis") and not t("sk")("sonic & knuckles + sonic the hedgehog", "genesis")
+    assert t("sk")("sonic & knuckles (world)", "genesis") and t("sk")("sonic & knuckles + sonic the hedgehog", "genesis")
+    assert t("sk")("sonic & knuckles + sonic the hedgehog 2 (world)", "genesis") and not t("s3k")("sonic & knuckles + sonic the hedgehog 2 (world)", "genesis")
+    assert not t("sk")("sonic & knuckles + sonic the hedgehog 3 (world)", "genesis")
     from gbox import characters as C, character_collection as CC
     names = {n for n, *_ in C.DEDICATED}
     assert {"sonic2d_sonic1", "sonic2d_sonic2", "sonic2d_sonic3", "sonic2d_s3k", "sonic2d_sk"} <= names
@@ -488,3 +490,51 @@ def test_owned_sonic3_and_sk():
     ex = _owned("sk")
     assert set(ex.chars) == {"sonic", "knuckles"}        # Tails' art is on the Sonic 3 cart (lock-on only)
     assert ex.signpost is not None
+
+
+LOCK_ROM = Path("/mnt/gbox/hyperspin/Arcade/collections/Sega Genesis/roms/Sonic & Knuckles + Sonic the Hedgehog 2 (World).zip")
+
+
+def test_lock_on_non_s3_uses_only_the_sk_cart():
+    def cart(title, serial, size):
+        d = bytearray(size)
+        d[0x100:0x110] = b"SEGA MEGA DRIVE "
+        d[0x150:0x180] = title.ljust(48)
+        d[0x180:0x18E] = serial
+        return d
+    sk = cart(b"SONIC & KNUCKLES", b"GM MK-1563 -00", 0x200000)
+    other = cart(b"SONIC THE               HEDGEHOG", b"GM 00001009-00", 0x80000)
+    d = bytes(sk + other)
+    assert S.identify(d).key == "sk" and S.base_cart(d) == bytes(sk)
+    assert S.base_cart(bytes(sk)) is not None and len(S.base_cart(bytes(sk))) == 0x200000
+    s3 = bytes(sk + cart(b"SONIC THE             HEDGEHOG 3", b"GM MK-1079 -00", 0x200000))
+    assert S.base_cart(s3) == s3 and S.identify(s3).key == "s3k"        # S3 lock-on stays whole
+
+
+def test_owned_lock_on_sk_plus_s1_extracts_knuckles(tmp_path, monkeypatch):
+    """Independent facts from the S&K disassembly: Sonic's loader loads art from 0x200000 (the S3 cart), so a cart that is
+    not Sonic 3 can give no Sonic; Knuckles' art/DPLC/maps live in the first 2 MB. The Sonic 1 cart at 0x200000 is not read."""
+    if not LOCK_ROM.is_file():
+        pytest.skip("lock-on ROM not mounted")
+    d, meta = S.read_rom(LOCK_ROM)
+    if len(d) != 0x280000:
+        pytest.skip("not the owned build")
+    ex = S.Extractor(d, meta)
+    assert ex.game.key == "sk" and set(ex.chars) == {"knuckles"} and len(ex.d) == 0x200000
+    assert ex.meta["lock_on"]["lock_on_serial"].endswith("00001009-00")
+    kn = ex.chars["knuckles"]
+    assert kn.art < 0x200000 and kn.plc < 0x200000 and kn.maps_off < 0x200000
+    from types import SimpleNamespace
+    from gbox import characters as C, tools
+    monkeypatch.setattr(tools, "rom_path", lambda entry, cfg: LOCK_ROM)
+    real_plans = S.Extractor.plans
+    monkeypatch.setattr(S.Extractor, "plans", lambda self, char: [p for p in real_plans(self, char) if p["name"] in ("jump", "glide")])
+    ctx = SimpleNamespace(config=SimpleNamespace(cache=tmp_path / "cache"), progress=lambda p, m: None)
+    game = {"game_id": "286b3fae79e33f17", "title": "Sonic & Knuckles + Sonic the Hedgehog 2 (World)", "platform": "genesis",
+            "source_paths": ["x.zip"], "format": "zip", "profile_id": "genesis"}
+    root = tmp_path / "characters"
+    res = C.extract_dedicated(ctx, game, "sk_knuckles", root)
+    assert res["status"] == "extracted" and res["extractor"] == "sonic2d_sk"
+    meta = C.get(root, "sk_knuckles")
+    assert meta["kind"] == "sprites" and C.verify_entry(root, meta)["ok"]
+    assert {a["clip"] for a in meta["animations"]} == {"jump", "glide"}

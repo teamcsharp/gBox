@@ -52,7 +52,7 @@ import numpy as np
 
 from .formats import sega_md
 
-VERSION = "1.0"
+VERSION = "1.1"
 READER_VERSION = 1
 FPS = 60.0                 # NTSC Mega Drive vertical blank (the scripts count these)
 MP4_SCALE = 4
@@ -218,6 +218,22 @@ def header(d: bytes) -> dict:
             "checksum": h[142:144].hex(), "region": h[240:243].decode("latin1").strip()}
 
 
+SK_CART_SIZE = 0x200000
+
+
+def base_cart(d: bytes) -> bytes:
+    """The Sonic & Knuckles cartridge of a locked-on dump whose second cart is NOT Sonic 3.
+
+    S&K + Sonic 1/2 dumps are the 2 MB S&K ROM followed by the other cart at 0x200000. S&K boots only its own
+    code (Blue Sphere / Knuckles-in-Sonic-2 hooks are S&K code), so every reader offset is in the first 2 MB; the
+    appended cart is neither read nor extracted from here. A Sonic 3 lock-on is left whole (S3K reads it)."""
+    if "MK-1563" not in header(d)["serial"] or len(d) <= SK_CART_SIZE:
+        return d
+    if b"HEDGEHOG 3" in re.sub(rb"\s+", b" ", d[0x200100:0x200200]):
+        return d
+    return d[:SK_CART_SIZE]
+
+
 def identify(d: bytes) -> Game:
     h = header(d)
     title = re.sub(r"\s+", " ", (h["overseas"] or h["domestic"]).upper())
@@ -226,9 +242,7 @@ def identify(d: bytes) -> Game:
         lock = d[0x200100:0x200200] if len(d) >= 0x200200 else b""
         if b"HEDGEHOG 3" in re.sub(rb"\s+", b" ", lock):
             return GAMES["s3k"]
-        if lock[:4] == b"SEGA":
-            raise Sonic2DError("Sonic & Knuckles locked on to a cartridge other than Sonic 3 is not handled")
-        return GAMES["sk"]
+        return GAMES["sk"]       # incl. S&K + Sonic 1/2: the lock-on cart is never run by Sonic & Knuckles itself
     if not title.startswith("SONIC THE HEDGEHOG"):
         raise Sonic2DError(f"not a Sonic 1/2/3/S&K ROM: {title!r} ({serial})")
     rest = title[len("SONIC THE HEDGEHOG"):].strip()
@@ -1122,7 +1136,14 @@ class Extractor:
     """One ROM: its game profile, characters, palettes and signpost, and the clips each character can give."""
 
     def __init__(self, d: bytes, meta: dict | None = None):
-        self.d, self.meta = d, meta or {}
+        self.meta = dict(meta or {})
+        base = base_cart(d)
+        if len(base) != len(d):
+            self.meta["lock_on"] = {"base_size": len(base), "lock_on_size": len(d) - len(base),
+                                    "lock_on_title": header(d[len(base):])["overseas"] if d[len(base) + 0x100:len(base) + 0x104] == b"SEGA" else None,
+                                    "lock_on_serial": header(d[len(base):])["serial"] if d[len(base) + 0x100:len(base) + 0x104] == b"SEGA" else None}
+        d = base
+        self.d = d
         self.game = identify(d)
         self.lay = LAYOUTS[self.game.layout]
         self.chars = find_characters(d, self.game)
@@ -1431,7 +1452,7 @@ TITLE_TESTS = {
     "sonic2": re.compile(r"^sonic the hedgehog 2( \([^)]*\))*$"),
     "sonic3": re.compile(r"^sonic the hedgehog 3( \([^)]*\))*$"),
     "s3k": re.compile(r"^sonic (&|and) knuckles \+ sonic the hedgehog 3( \([^)]*\))*$"),
-    "sk": re.compile(r"^sonic (&|and) knuckles( \([^)]*\))*$"),
+    "sk": re.compile(r"^sonic (&|and) knuckles( \+ sonic the hedgehog( 2)?)?( \([^)]*\))*$"),
 }
 
 
