@@ -59,6 +59,24 @@ def _mat_dir(m, p):
     return [m[i][0] * p[0] + m[i][1] * p[1] + m[i][2] * p[2] for i in range(3)]
 
 
+
+
+def decode_texture_entry(entry: bytes):
+    """A texture from a character AFS -> (w, h, rgba).
+
+    The Dreamcast packs hold PVR textures and the GameCube packs hold GVR ones, and the two have nothing in common beyond
+    being images. The magic says which: a GVR chunk starts with `GBIX` (its global-index block) or `GVRT` (the texture
+    header), and everything else on this code path is PVR. `pso_gc.gvr_decode` handles every one of the 286 entries in
+    `plCtex.afs` on `GPOE8P`, including the CI ones, so no palette special case is needed here.
+    """
+    if entry[:4] in (b"GBIX", b"GVRT"):
+        from . import pso_gc
+        rgba = pso_gc.gvr_decode(entry)              # (h, w, 4) uint8
+        h, w = rgba.shape[:2]
+        return w, h, rgba.tobytes()                  # ninja.png wants a flat RGBA byte buffer
+    w, h, rgba, _fmt = ninja.pvr_decode(entry)
+    return w, h, rgba
+
 def build(disc, cls: str = "C", head: int = 0, colour: int = 0, out_dir: Path | None = None, name: str | None = None,
           section_id: int = 7):
     """-> uap.Manifest (textures written as PNGs under out_dir/textures). disc: a gbox.gdrom.GDRom."""
@@ -93,7 +111,7 @@ def build(disc, cls: str = "C", head: int = 0, colour: int = 0, out_dir: Path | 
             b_ids, h_ids = list(range(5)), []
         (Path(out_dir) / "textures").mkdir(parents=True, exist_ok=True)
         for slot, idx in [(t, i) for t, i in enumerate(b_ids)] + [(100 + t, i) for t, i in enumerate(h_ids)]:
-            w, h, rgba, _ = ninja.pvr_decode(ents[idx])
+            w, h, rgba = decode_texture_entry(ents[idx])
             rel = f"textures/afs{idx:03d}.png"
             (Path(out_dir) / rel).write_bytes(ninja.png(w, h, rgba))
             tex_files[slot] = rel
