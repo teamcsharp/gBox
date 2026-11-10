@@ -470,15 +470,17 @@ def _pack(a, dtype: str) -> str:
 
 
 def _wall_rows(col: dict) -> list[list[int]]:
-    """The SAT's steep triangles as [x0, z0, x1, z1, y_low, y_high, attr] (whole mm): the two vertices furthest apart in
-    x / z (re4_navmap._wall_segments), for line-of-sight tests and drawing."""
+    """The SAT's steep triangles as [x0, z0, x1, z1, y_low, y_high, attr, ax, ay, az, bx, by, bz, cx, cy, cz] (whole
+    mm): the two vertices furthest apart in x / z (re4_navmap._wall_segments), for drawing and the coarse shot test,
+    then the triangle itself (2026-11-10: the segment with its whole height span reads the empty half of a sloped or
+    stepped facade as solid - 415 held shots in one Castle round - so the shot test confirms on the triangle)."""
     V, T, Nn, A = col["verts"], col["tris"], col["normals"], col["attr"]
     out = []
     for t in np.nonzero(np.abs(Nn[:, 1]) < WALL_NY)[0]:
         P = V[T[t]]
         i, j = max(((0, 1), (1, 2), (0, 2)), key=lambda q: (P[q[0], 0] - P[q[1], 0]) ** 2 + (P[q[0], 2] - P[q[1], 2]) ** 2)
         out.append([int(round(v)) for v in (P[i, 0], P[i, 2], P[j, 0], P[j, 2], P[:, 1].min(), P[:, 1].max())]
-                   + [int(A[t])])
+                   + [int(A[t])] + [int(round(v)) for v in P.reshape(-1)])   # + the triangle (x, y, z) x 3
     return out
 
 

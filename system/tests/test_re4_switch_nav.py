@@ -215,3 +215,22 @@ def test_the_committed_stage_meshes_load_and_hold_one_playable_floor(room):
     assert m.route(m.centre[a], m.centre[b], clearance=350.0) is not None
     lo = data["bounds"]
     assert all(lo["x"][0] <= p[0] <= lo["x"][1] and lo["z"][0] <= p[2] <= lo["z"][1] for p in m.points[:50])
+
+
+
+def test_a_shot_through_the_empty_half_of_a_wall_triangles_box_is_clear():
+    """2026-11-10 (Castle): a wall stored as a segment with its whole height span is a solid box; the triangle under
+    it fills half of that box. A shot over the triangle's sloped edge passes; one into the triangle is blocked."""
+    tri = [0, 0, 0, 0, 4000, 0, 4000, 0, 0]                  # x 0..4000 at z 0: high at x 0, ground at x 4000
+    row = [0, 0, 4000, 0, 0, 4000, 0x40000000] + tri
+    m = re4_nav.Mesh(*_flat_floor(), walls=[row])
+    assert m.blocking_wall((3500, 0, -2000), (3500, 2000, 2000)) is None, "over the sloped edge: clear"
+    hit = m.blocking_wall((500, 0, -2000), (500, 0, 2000))
+    assert hit is not None and hit[0][:7] == tuple(row[:7]), "into the triangle: blocked"
+    coarse = re4_nav.Mesh(*_flat_floor(), walls=[row[:7]])
+    assert coarse.blocking_wall((3500, 0, -2000), (3500, 2000, 2000)) is not None, "old data: the coarse box"
+
+
+def _flat_floor():
+    pts = [(-10000, 0, -10000), (10000, 0, -10000), (10000, 0, 10000), (-10000, 0, 10000)]
+    return pts, [(0, 1, 2), (0, 2, 3)]

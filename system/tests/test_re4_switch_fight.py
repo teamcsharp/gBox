@@ -225,25 +225,21 @@ def test_no_shot_across_a_wall_the_stage_mesh_names(tmp_path, monkeypatch):
     s = snap([((0.0, 0.0, 500.0), 400)], nav=Mesh(clear=False))
     b.tick(s, now=1.0)
     act = b.tick(s, now=1.0 + D.AIM_READY_S)
-    assert act.get("tap") is None and b.doing == "hold" and b.stats["holds"] >= 1
+    assert act.get("tap") is None and D.AIM_BTN not in act["hold"] and b.doing == "flank", "no shot: round it"
     assert b.stats["sight_block_last"]["wall"] == [0, 0, 1000, 0] and (tmp_path / "blocks.jsonl").exists()
 
 
 def test_a_held_shot_becomes_a_flank_then_a_try_again(tmp_path, monkeypatch):
-    """Live 2026-11-10 21:06: 415 holds and a death. Past SIGHT_HOLD_S the gun comes down and he walks round."""
+    """Live 2026-11-10 21:06: 415 holds and a death. No clear line: the gun down, round it, then the shot again."""
     monkeypatch.setattr(D, "SIGHT_LOG", tmp_path / "blocks.jsonl")
     b = bot()
     s = snap([((0.0, 0.0, 500.0), 400)], nav=Mesh(clear=False, waypoints=[mm((-200.0, 0.0, 300.0))]))
-    t = 1.0
-    for _ in range(20):
-        act = b.tick(s, now=t)
-        if b.doing == "flank":
-            break
-        t += 0.1
+    act = b.tick(s, now=1.0)
     assert b.doing == "flank" and "lup" in act["hold"] and D.AIM_BTN not in act["hold"] and b.stats["flanks"] == 1
-    assert b.tick(s, now=t + D.FLANK_S / 2)["hold"] & {"lup"}, "the flank runs FLANK_S"
-    b.tick(s, now=t + D.FLANK_S + 0.1)
-    assert b.doing in ("hold", "aim", "turn"), "then the shot is tried again"
+    assert b.tick(s, now=1.0 + D.FLANK_S / 2)["hold"] & {"lup"}, "the flank runs FLANK_S"
+    clear = snap([((0.0, 0.0, 500.0), 400)], nav=Mesh(clear=True))
+    b.tick(clear, now=1.0 + D.FLANK_S + 0.1)
+    assert b.doing != "flank", "a clear line: the flank is over, the fight again"
 
 
 def test_the_run_to_a_ganado_follows_the_mesh_route():
@@ -336,12 +332,13 @@ def test_a_turn_that_closes_never_flips(monkeypatch):
     assert not b.stats.get("turn_sign_flips") and D.TURN_SIGN == 1
 
 
-def test_holds_say_which_gate_stopped_the_shot():
+def test_holds_say_which_gate_stopped_the_shot(monkeypatch):
+    monkeypatch.setattr(D, "CONTROLS_READY", False)
     b = bot()
-    s = snap([((0.0, 0.0, 500.0), 400)], nav=Mesh(clear=False))
+    s = snap([((0.0, 0.0, 500.0), 400)])
     b.tick(s, now=1.0)
     b.tick(s, now=1.0 + D.AIM_READY_S)
-    assert b.stats.get("hold_sight", 0) >= 1
+    assert b.stats.get("hold_controls", 0) >= 1 and b.doing == "hold"
 
 
 def test_a_frozen_scene_gets_a_until_he_moves():
@@ -418,3 +415,32 @@ def test_any_characters_unit_through_the_player_pointer_is_the_player():
     assert ada is not None and ada["class"] == 0xB0F000 and D.SEEN_PLAYER_CLASSES.get(0xB0F000)
     assert D.player_unit(M(D.ENEMY_CLASSES[0]), base) is None, "a Ganado's unit is never the player"
     assert D.player_unit(M(0x123450), base) is None, "a vtable outside the unit classes is not a unit"
+
+
+
+class SightMesh(Mesh):
+    """Mesh whose shot line is blocked to the Ganados listed in blocked (by their x position in cm)."""
+
+    def __init__(self, blocked_x=(), waypoints=None):
+        super().__init__(clear=True, waypoints=waypoints)
+        self.blocked_x = {round(x * D.MM_PER_CM) for x in blocked_x}
+
+    def clear_segment(self, a, b):
+        return round(b[0]) not in self.blocked_x
+
+
+def test_a_ganado_with_a_clear_line_is_taken_before_a_nearer_one_behind_a_wall():
+    """Live 2026-11-10 21:53: 48 shots held at Ganados behind real walls while others stood round him."""
+    b = bot()
+    behind = ((0.0, 0.0, 300.0), 400)                       # nearest, behind a wall
+    clear = ((10.0, 0.0, 700.0), 400)                       # farther, in the open
+    s = snap([behind, clear], nav=SightMesh(blocked_x=(0.0,)))
+    b.tick(s, now=1.0)
+    assert b.target == 101 and b.stats["visible_picks"] >= 1
+
+
+def test_with_everyone_behind_walls_he_goes_round_instead_of_aiming():
+    b = bot()
+    s = snap([((0.0, 0.0, 500.0), 400)], nav=SightMesh(blocked_x=(0.0,), waypoints=[mm((-300.0, 0.0, 300.0))]))
+    act = b.tick(s, now=1.0)
+    assert b.doing == "flank" and D.AIM_BTN not in act["hold"] and "lup" in act["hold"] and b.stats["blocked_picks"] == 1

@@ -968,7 +968,8 @@ class Bot:
     TURN_TOL = 0.12                                      # rad: close enough to fire
     COUNTERS = ("shots", "hits", "turns", "backoffs", "holds", "dying", "escapes", "locates", "stand_breaks",
                 "crowd_picks", "sweeps", "kills_seen", "raises", "combo_breaks", "reloads", "melee_tries",
-                "melee_taps", "melee_kills", "frozen_taps", "frozen_spells", "flanks")
+                "melee_taps", "melee_kills", "frozen_taps", "frozen_spells", "flanks", "visible_picks",
+                "blocked_picks")
 
     def __init__(self, stats: dict | None = None, clock=time.monotonic, director=True):
         self.stats = stats if stats is not None else {}
@@ -1098,12 +1099,27 @@ class Bot:
         return gate is None
 
     # --- the choice ---
-    def _choose(self, live, now):
+    def _choose(self, live, now, p=None, snap=None):
         """(distance, error, enemy) to fight, or None: the quickest kill once the combo is owed, the one nearest the
-        gun's line in a mob, else the nearest. Only Ganados inside ENGAGE_RANGE_CM are candidates."""
+        gun's line in a mob, else the nearest. Only Ganados inside ENGAGE_RANGE_CM are candidates, and of those the ones
+        with a clear shot line first (live 2026-11-10 21:53, Wesker / Base: 48 held shots at Ganados behind real walls -
+        the exact triangle test agreed on every one - while others stood round him; dead in 40 s). With none clear, the
+        nearest - and self._pick_blocked says so: the fight goes round to him instead of aiming at the wall."""
+        self._pick_blocked = False
         near = [t for t in live if t[0] <= ENGAGE_RANGE_CM]
         if not near:
             return None
+        if p is not None and snap is not None and (snap.get("nav") is not None or snap.get("obstacles") is not None):
+            clear = [t for t in near if self._line_of_sight_ok(p, t[2], snap)]
+            if clear:
+                if len(clear) < len(near):
+                    self.stats["visible_picks"] += 1
+                near = clear
+            else:
+                self._pick_blocked = True
+                self.stats["blocked_picks"] += 1
+                self.why = "every Ganado in range is behind a wall: round to the nearest"
+                return min(near, key=lambda t: t[0])
         crowd = [t for t in near if t[0] <= CROWD_CM]
         if len(crowd) >= CROWD_N:
             lined = [t for t in crowd if abs(t[1]) <= CROWD_CONE]
@@ -1197,10 +1213,16 @@ class Bot:
         if melee is not None:
             return melee
         cmd = self._command(now)
-        pick = self._choose(live, now)                   # a command never stops a shot at one in range (RE5 HUNT_R)
+        pick = self._choose(live, now, p, snap)          # a command never stops a shot at one in range (RE5 HUNT_R)
         if pick is not None:
             dist, err, e = pick
             self.target = e.get("ptr")
+            if self.__dict__.get("_pick_blocked"):
+                fl = self.__dict__.get("_flank")
+                if not fl or fl["key"] != self.target or now >= fl["until"]:
+                    self.stats["flanks"] = self.stats.get("flanks", 0) + 1     # no clear line to anyone: go round
+                    self._log_block(p, e, snap)
+                self._flank = {"key": self.target, "until": now + FLANK_S}
             fl = self.__dict__.get("_flank")
             if fl and fl["key"] == self.target and now < fl["until"]:
                 keys, how = self._approach(p, e["pos"], err, snap, run=False)

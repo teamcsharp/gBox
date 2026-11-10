@@ -408,7 +408,13 @@ class Mesh:
             if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
                 y = ay + t * (by - ay)
                 if lo <= y <= hi and (best is None or t < best[1]):
-                    best = (tuple(self.walls[k][:7]), t, y)
+                    row = self.walls[k]
+                    if len(row) >= 16:                   # the triangle itself: the exact test
+                        hit = _ray_tri((ax, ay, az), (bx, by, bz), row[7:10], row[10:13], row[13:16])
+                        if hit is None:
+                            continue                       # through the empty half of its box
+                        t, y = hit, ay + hit * (by - ay)
+                    best = (tuple(row[:7]), t, y)
         return best
 
     def clear_segment(self, a, b, *, eye: float = EYE_MM, chest: float = CHEST_MM) -> bool:
@@ -418,6 +424,28 @@ class Mesh:
     def describe(self) -> dict:
         return {"room": self.room, "stage": self.stage_name, "points": len(self.points), "tris": len(self.tris),
                 "crossings": len(self.crossing_rows), "walls": len(self.walls), "source": self.geometry_source}
+
+
+def _ray_tri(a, b, p0, p1, p2, eps: float = 1e-9) -> float | None:
+    """Where the segment a -> b meets the triangle p0 p1 p2 (t in 0..1, Moeller-Trumbore), or None."""
+    dx, dy, dz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+    e1 = (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2])
+    e2 = (p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2])
+    hx, hy, hz = dy * e2[2] - dz * e2[1], dz * e2[0] - dx * e2[2], dx * e2[1] - dy * e2[0]
+    det = e1[0] * hx + e1[1] * hy + e1[2] * hz
+    if abs(det) < eps:
+        return None
+    inv = 1.0 / det
+    sx, sy, sz = a[0] - p0[0], a[1] - p0[1], a[2] - p0[2]
+    u = (sx * hx + sy * hy + sz * hz) * inv
+    if u < 0.0 or u > 1.0:
+        return None
+    qx, qy, qz = sy * e1[2] - sz * e1[1], sz * e1[0] - sx * e1[2], sx * e1[1] - sy * e1[0]
+    v = (dx * qx + dy * qy + dz * qz) * inv
+    if v < 0.0 or u + v > 1.0:
+        return None
+    t = (e2[0] * qx + e2[1] * qy + e2[2] * qz) * inv
+    return t if 0.0 <= t <= 1.0 else None
 
 
 def _ok(p) -> bool:
