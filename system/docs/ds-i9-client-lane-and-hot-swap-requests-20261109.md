@@ -1049,3 +1049,22 @@ The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned b
 * So the objective's "RE4 and 6 in parallel" holds on the client: both Switch titles boot on the i9 from the same
   worker, with the same launch path and overlay mechanism. Mercenaries on RE4 still needs the save unlock
   (`re_mods_tool` `mercenaries_unlock`) before its menu entry appears - not attempted this round.
+
+## Round 51 status (2026-11-10, ~01:40 CST): RE6 event injection is mapped but the intervention channel is not connected
+
+* The MCP surface for in-game events exists: `game_intervention` (op `status`, `flash_now`, `equip_primary`,
+  `magnum_quick4`, `grenade_ring`, `set_infinite_ammo`) over `GET/POST /api/sessions/{sid}/interventions`, and the RE6
+  control inventory is already mapped in `merc_live_controls.MODS["re6"]`: infinite ammo / tablets / stamina / grenades
+  and remote bombs, QTE assist (native too), kill time, fire rate, magnum speed, grenade throw speed, quick attack, down
+  fire.
+* `grenade_ring` itself is **RE5 Switch only** (the MCP description says so): spawning ten grenades in a ring from the
+  player's position needs RE5's native spawn path; RE6 has no equivalent mapping yet, so the feature the operator asked
+  for is available on RE5 but not on RE6.
+* A fresh RE6 session on the i9 (`recovery-re6-castswap-tex-r41`) reports the intervention channel as
+  **`available: false, reason: "worker not connected"`** with an empty capability list. The session shows the worker id
+  the launcher used (`cfc1f4ebaf534b05`), and the worker list holds two ids for `i9-NUC` (`900e4fde21514bff` and
+  `cfc1f4ebaf534b05`) after the round-39 restart - the duplicate registration is the likely cause of the channel not
+  attaching.
+* So MCP can drive the *build/decrypt/launch* lane end to end, but the in-game event lane (flash, grenade ring,
+  infinite ammo) is currently unavailable on this worker until the stale worker registration is cleared and the channel
+  re-attaches.
