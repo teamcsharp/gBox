@@ -46,7 +46,7 @@ import math
 from ..core import doctrine as _doctrine
 
 MINE_ID = 0x10A
-EVERY_S = 30.0                           # requested cadence; clearance/emergency actions can delay a placement
+EVERY_S = 15.0                           # requested cadence; clearance/emergency actions can delay a placement
 SPACING_CM = 600.0                       # never within this of the last site or of a bomb still down (a double blast)
 FOE_CLEAR_CM = 500.0                     # a Majini this near: not now (out of the blast before it comes: a run of 8 m;
                                          # was 8 m - none were ever placed in a No Mercy crowd, 19:50 / 19:53)

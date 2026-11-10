@@ -76,16 +76,16 @@ def test_a_bomb_is_due_every_interval_but_not_with_a_majini_near_or_beside_a_bom
     assert MN.Mines({}).tick(p(), {"inventory": [GUN]}, [], 99.0) is None        # no bomb in the inventory
 
 
-def test_default_mine_cadence_waits_thirty_seconds_and_can_be_explicitly_configured():
+def test_default_mine_cadence_waits_fifteen_seconds_and_can_be_explicitly_configured():
     from gbox.mercs.titles import re5_switch as R
     from gbox.mercs.titles import re5_switch_mods as SM
 
-    assert MN.EVERY_S == R.MINE_EVERY_S == SM.MINE_EVERY_DEFAULT == 30.0
+    assert MN.EVERY_S == R.MINE_EVERY_S == SM.MINE_EVERY_DEFAULT == 15.0
     m = MN.Mines({})
     m.new_round(0.0)
-    for now in (9.0, 29.9):
+    for now in (9.0, 14.9):
         assert m.tick(p(), snap(), [], now) is None
-    assert m.tick(p(), snap(), [], 30.0) == {"hold": ()} and m.state == "neutral"
+    assert m.tick(p(), snap(), [], 15.0) == {"hold": ()} and m.state == "neutral"
     m = MN.Mines({})
     m.configure({"enabled": True, "interval_s": 180.0})
     m.new_round(0.0)

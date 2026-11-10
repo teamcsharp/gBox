@@ -685,6 +685,11 @@ CLOSE_COUNTERS = ("close_pitch_skips", "close_sky_reraises", "raise_rerolls")
 # unaims_in_5m (target 0), behind_turns, offscreen_aim_s (the aim over OFFSCREEN_ERR off the nearest inside, target 0),
 # whips (a turn of WHIP_DEG or more reversed by WHIP_BACK_DEG within WHIP_S: target near 0); rampage_weapon: the gun.
 RAMPAGE, RAMPAGE_R, RAMPAGE_RETARGET_S, RAMPAGE_BEHIND = False, 500.0, 0.6, math.radians(100)
+# Close unload (operator 2026-11-10: "when the bot raises their gun, they fire ... too much time deliberating on the shot ...
+# anyone within 5m, they need to be unloading on threat"): with the gun up and the target within CLOSE_UNLOAD_R, the trigger
+# goes down once the yaw is within CLOSE_UNLOAD_YAW of him (the dot need not be on him yet; the aim keeps turning while
+# the burst runs), unless the ray ends on geometry short of him. Counter close_unload_ticks.
+CLOSE_UNLOAD, CLOSE_UNLOAD_R, CLOSE_UNLOAD_YAW = True, 500.0, math.radians(20)
 RAMPAGE_FAMILIES = ("magnum", "shotgun", "automatic")   # operator 2026-10-28: rapid-fire magnums first
 # Near focus (operator 20:2x: "Stop having the bot worry about enemies that are far away whenever they're surrounded by
 # people that are nearby"): with a Majini on his level within RAMPAGE_R, no target, dot switch, confirmed shot, aim line
@@ -1239,7 +1244,7 @@ DOINGS = ("fire", "aim", "raise", "reraise", "restale", "turn", "unaim", "quick_
 # Operator 2026-11-09: mines about every 30 s while leaving areas; the sidebar reaches the running bot every tick
 # when it is the quicker cadence (it used to reach only a bot built after it), and a placement waits only for a Majini
 # within MINE_FOE_CLEAR_CM (was 5 m) or a bomb within MINE_SPACING_CM (was 6 m).
-MINES, MINE_EVERY_S = True, 30.0
+MINES, MINE_EVERY_S = True, 15.0   # operator 2026-11-10: "dropping more mines in RE5" (was 30 s)
 # The universal doctrine's goal weights on this title (gbox.mercs.core.doctrine: the operator's standing goals for
 # every title, 2026-11-09; the behavior wheel's goal dots and the bot-logic sidebar set these, 0..1)
 GOAL_ENGAGE, GOAL_COMBO, GOAL_EXPLORE, GOAL_EXPLOSIVES, GOAL_INTERRUPT, GOAL_BOSS = 1.0, 0.9, 0.7, 0.6, 1.0, 1.0
@@ -7372,6 +7377,10 @@ class Bot:
         key = tgt.get("ptr", tgt.get("slot"))
         self.on_ticks = self.on_ticks + 1 if on and key == self.on_key else (1 if on else 0)
         self.on_key = key if on else None
+        if CLOSE_UNLOAD and not on and dist <= CLOSE_UNLOAD_R and abs(yaw_err) <= CLOSE_UNLOAD_YAW \
+                and ray_len >= chest_len - FIRE_SLACK:       # a ray ending short of him is geometry: still no shot
+            on = True                                        # operator 2026-11-10: gun up, someone within 5 m: unload,
+            self.stats["close_unload_ticks"] = self.stats.get("close_unload_ticks", 0) + 1   # no more deliberating
         long_shot = dist > LONG_R and near > LONG_CLEAR_R    # a far Majini, nobody close: with care
         settling = long_shot and on and not confirmed and not self.fire_down and self.on_ticks < SETTLE_TICKS
         if settling:
