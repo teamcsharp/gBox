@@ -95,32 +95,78 @@ def tree(pid: int) -> list[int]:
     return pids
 
 
-KEEP_S = 30.0
+# 2 s, not 30: Eden (like Citron) re-pins EVERY thread to 10-19 whenever it starts new ones - measured on lilspark
+# 2026-11-10, RE6: 64 threads placed on 5-9,15-19, then 81 threads all back on 10-19 within 12 s (a stage load). With a
+# 30 s keeper the game's GPU and CPU threads spent most of their time on the A725 cores 10-14, and Pine Box measured
+# the game itself rendering ~50 fps unevenly (holds of 50-83 ms, ~1.6/s). The hold below only rewrites the threads whose
+# mask is wrong, in process (no taskset spawn), so a check every 2 s costs a few hundred syscalls.
+KEEP_S = 2.0
 _keeper: dict = {}
+_ioniced: dict = {}                                    # pid -> "bg" | "fg": ionice is spawned only on a change
+
+
+def _tids(pid: int) -> list[int]:
+    try:
+        return [int(t.name) for t in Path(f"/proc/{pid}/task").iterdir() if t.name.isdigit()]
+    except OSError:
+        return []
+
+
+def hold(pids: list[int], *, background: bool) -> int:
+    """Every thread of these processes on the wanted cores (background: the slow ones; else the fast ones), in process:
+    os.sched_setaffinity on each thread whose mask differs. ionice follows a process's placement when it changes.
+    Returns the threads moved. Best effort, never raises."""
+    cores = slow_cores() if background else fast_cores()
+    if not pids or not cores or not hasattr(os, "sched_setaffinity"):
+        return 0
+    want = set(_expand(cores))
+    moved = 0
+    for pid in pids:
+        for tid in _tids(pid):
+            try:
+                if set(os.sched_getaffinity(tid)) != want:
+                    os.sched_setaffinity(tid, want)
+                    moved += 1
+            except OSError:
+                pass
+        kind = "bg" if background else "fg"
+        if _ioniced.get(pid) != kind and shutil.which("ionice"):
+            import subprocess
+            try:
+                subprocess.run(["ionice", *(("-c", "3") if background else ("-c", "2", "-n", "4")), "-p", str(pid)],
+                               capture_output=True, timeout=5)
+                _ioniced[pid] = kind
+            except (OSError, subprocess.SubprocessError):
+                pass
+    return moved
 
 
 def ensure_keeper(roots, period: float = KEEP_S) -> None:
-    """Re-place every live game's tree each `period` s (roots() -> root pids): Citron sets its own thread affinity
-    after boot (2026-10-27: all 68 threads on 10-19, half of them A725) and new threads follow it. A tree at niceness
-    10+ (a MercMode game booting or parked, tools._warm_priority) goes to the slow cores, the rest to the fast ones.
-    One daemon thread per process; a no-op without a fast/slow split."""
+    """Hold every live game's tree on its cores, checked each `period` s (roots() -> root pids): a tree at niceness 10+
+    (a MercMode game booting or parked, tools._warm_priority) on the slow cores, the rest on the fast ones; threads the
+    emulator re-pins or starts later are put back at the next check (KEEP_S). One daemon thread per process; a no-op
+    without a fast/slow split. _keeper["moved"] counts the threads it had to put back."""
     import threading
     if _keeper.get("thread") or not fast_cores() or os.name != "posix":
         _keeper["roots"] = roots
         return
     _keeper["roots"] = roots
+    _keeper.setdefault("moved", 0)
 
     def run():
         import time
         while True:
             time.sleep(period)
             try:
-                for pid in list(_keeper["roots"]() or []):
+                live = list(_keeper["roots"]() or [])
+                for pid in live:
                     try:
                         background = os.getpriority(os.PRIO_PROCESS, pid) >= 10
                     except OSError:
                         continue
-                    place(tree(pid), background=background)
+                    _keeper["moved"] = _keeper.get("moved", 0) + hold(tree(pid), background=background)
+                for gone in [p for p in _ioniced if p not in live]:
+                    _ioniced.pop(gone, None)
             except Exception:                          # noqa: BLE001 - placement is best effort, never fatal
                 pass
     t = threading.Thread(target=run, daemon=True, name="gbox-cpu-affinity")
