@@ -101,3 +101,33 @@ def test_manifest_is_deterministic_and_serialisable():
     assert first["counts"] == second["counts"]
     assert first["byte_order"] == "big-endian"
     json.dumps(first)
+
+
+def test_normalize_rom_byteorders_roundtrip():
+    import pytest
+    from gbox.formats import tetrisphere as T
+
+    z = bytes.fromhex("80371240") + bytes(range(4, 16))
+    v = bytearray(z)
+    for i in range(0, len(v), 2):
+        v[i], v[i + 1] = v[i + 1], v[i]
+    n = bytearray(z)
+    for i in range(0, len(n), 4):
+        n[i:i + 4] = n[i:i + 4][::-1]
+    assert T.normalize_rom(z) == (z, "z64")
+    assert T.normalize_rom(bytes(v)) == (z, "v64")
+    assert T.normalize_rom(bytes(n)) == (z, "n64")
+    with pytest.raises(ValueError):
+        T.normalize_rom(b"\x00\x00\x00\x00")
+
+
+def test_library_zip_matches_pinned_source_hash():
+    import os
+    from gbox.formats import tetrisphere as T
+
+    zp = "/mnt/gbox/hyperspin/Arcade/collections/Nintendo 64/roms/USA/Tetrisphere (USA).zip"
+    if not os.path.exists(zp):
+        pytest.skip("library zip unavailable")
+    data, order, sha = T.load_rom_z64(zp)
+    assert order == "v64" and len(data) == 8388608
+    assert sha == "f7cbc93ac273488bfb89955ab6ae9b60c730907872107a67a56b945e8579ef87"

@@ -68,6 +68,53 @@ def sha256_file(path: str, chunk: int = 1 << 20) -> str:
     return digest.hexdigest()
 
 
+_ROM_ORDERS = {
+    bytes.fromhex("80371240"): "z64",   # big-endian (native)
+    bytes.fromhex("37804012"): "v64",   # 16-bit byte-swapped
+    bytes.fromhex("40123780"): "n64",   # 32-bit little-endian
+}
+
+
+def normalize_rom(raw: bytes) -> Tuple[bytes, str]:
+    """Return (big-endian z64 bytes, detected source order) for a raw dump.
+
+    Library copies are often stored as v64/n64 inside a zip; every offset in
+    this module is for the z64 order, and source identity is the z64 sha256.
+    """
+    order = _ROM_ORDERS.get(bytes(raw[:4]))
+    if order is None:
+        raise ValueError("not an N64 ROM (unknown magic %s)" % bytes(raw[:4]).hex())
+    if order == "z64":
+        return bytes(raw), order
+    if order == "v64":
+        a = array.array("H")
+        a.frombytes(bytes(raw[: len(raw) // 2 * 2]))
+        a.byteswap()
+        return a.tobytes(), order
+    a = array.array("I")
+    a.frombytes(bytes(raw[: len(raw) // 4 * 4]))
+    a.byteswap()
+    return a.tobytes(), order
+
+
+def load_rom_z64(path: str) -> Tuple[bytes, str, str]:
+    """Read a .z64/.v64/.n64 or single-ROM .zip; return (z64 bytes, order, sha256)."""
+    import zipfile
+
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as zf:
+            names = [n for n in zf.namelist() if n.lower().endswith((".z64", ".v64", ".n64"))]
+            if len(names) != 1:
+                raise ValueError("expected exactly one N64 ROM in zip, found %r" % names)
+            raw = zf.read(names[0])
+    else:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    data, order = normalize_rom(raw)
+    return data, order, hashlib.sha256(data).hexdigest()
+
+
+
 def read_rom_header(data: bytes) -> Dict[str, object]:
     """Decode the 0x40-byte N64 ROM header of the owned build."""
     if len(data) < 0x40:
