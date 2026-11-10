@@ -653,15 +653,56 @@ and both players, three cold launches.
 * Forest 1: from Pioneer 2 the route is the Hunter's Guild door (`TObjCityDoor_Guild` at `185, 173` room 10, read from
   the entity list) and then the teleporter; the walker needs to get through the room transitions.
 
+## Round 10 (2026-11-10) — the town leg is blocked by the analog stick, and the dialogue trap that hid it
+
+The plan was Pioneer 2 -> the Hunter's Guild -> Forest 1. Two things stopped it, both found by measurement.
+
+### 1. The analog stick does not reach PSO, even with gBox's own pad bound
+
+Buttons reach the game (A advances dialogue, START opens the menu). Sticks do not: holding ``up``/``down``/``left``/
+``right`` for a second each left the player at ``(0.0, -2015.0) room 41`` every time, and the C-stick did not turn the
+camera either. The decisive check was reading XInput **while the worker was holding the stick**: the slot that gBox's
+pad occupies showed no change at all (`during hold, distinct states: 1`). So the stick never reaches the pad that
+Dolphin reads -- this is not a game-state problem and not a deadzone problem.
+
+That also means round 5's "keyboard moves him" result was the *keyboard* path all along, and that path is now unusable
+(`win_send_keys` returns `sent: 0` because Windows refuses `SetForegroundWindow` from a background process). **Movement
+is therefore currently impossible for the bot**, which blocks the town-to-field leg, P3's traversal, and anything else
+that needs walking. It is the top item for the next round and it is a vpad/stick-write bug, not a RE question.
+
+Candidate causes to check, in order: whether ``DolphinWinAdapter.send_input`` is even taking the vpad branch (a press
+that advances dialogue proves *some* path works, and XInput showing nothing during a stick hold suggests that path is
+not the vpad); whether ``VGamepad._render`` is called at all for a stick-only batch (``apply`` only renders at the end
+when ``rows`` is non-empty, and ``up`` is in ``KEYS``); and whether the ini's ``Main Stick/*`` lines survived the
+fallback INI rewrite.
+
+### 2. The Principal dialogue loops, which made the stick look like it was working
+
+Pressing A repeatedly at the end of Principal Tyrell's conversation **restarts** it: after the last line the game
+returns to free movement, and the next A re-talks to him from where the character stands. So a loop of A presses keeps
+the game in dialogue forever, and movement tests run during it are meaningless -- the first few stick tests in this
+round were run inside the dialogue and could not have failed for the right reason.
+
+The lesson is the same shape as the walk's: a press with no observable effect must not be repeated. The boot script's
+step list is fine (it presses A once per step and lets the ``in_town`` checkpoint judge), but any interactive step
+outside it needs the same discipline.
+
+### What was verified this round
+
+* Buttons reach PSO through the current binding (A advances dialogue, START opens the in-game menu).
+* The stick does not, measured at the XInput layer rather than inferred from the game.
+* `gbox.pso_entities` still reads all 29 Pioneer 2 objects live, including `TObjCityDoor_Guild` at (185, 173) room 10
+  and `TObjCityDoor_Warp` at (254, 25) room 10 -- the route the town leg needs is already available.
+* An attempt to add a `select_character` helper was reverted: RAM cannot distinguish "saved character" from "empty
+  slot" at SELECT CHARACTER (both read ``mode 1`` with no player), so it had no honest verification signal, and the
+  existing step list already covers both branches by pressing A and then answering the create prompt.
+
 ## 7. Next
 
-1. P1 accept: the walk must handle an existing character (a bare A on the row, not the create branch) and then the
-   town-to-field leg -- the Hunter's Guild door (TObjCityDoor_Guild at 185,173 room 10) and the teleporter -- and it
-   must do three cold launches, both players, no warp.
-2. Player 2: a second virtual pad and a second character on the card.
-3. Then P6a's in-game proof (the moved object seen in Forest 1), P6b (the editor page), P7a, and the recorded demo ->
-   route fixture.
-
-Carried open questions: the coarse mode byte cannot tell the title main menu from SELECT CHARACTER, so the walk is a
-script with checkpoints rather than a state machine; and win_send_keys cannot be relied on at all (Windows refuses
-foreground changes from a background process), so every bot press must go through the virtual pad.
+1. **Movement.** Fix the virtual pad's analog stick: it is written into pad_win but never appears on the pad (XInput
+   shows no change during a hold), so the bot cannot walk at all. This blocks the town leg, P3 and every traversal
+   accept test. Buttons are fine, so the fix is in the stick path -- send_input taking the vpad branch, _render
+   running for a stick-only batch, or the INI's Main Stick/* lines.
+2. Then Pioneer 2 -> the Hunter's Guild door (185,173 room 10) -> the teleporter -> Forest 1, with gbox.pso_move
+   closing the loop on the player's RAM position.
+3. Then the three cold launches with both players, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
