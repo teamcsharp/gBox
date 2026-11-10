@@ -38,11 +38,23 @@ def test_time_bonus_acquisition_re5_re6():
         assert tb["can_be_shot_from_distance"] is False
 
 
+def test_bot_implementation_mapping():
+    a = load()
+    assert a["status"] == "implemented_and_live"
+    impl = a["bot_implementation"]
+    assert impl["file"] == "gbox/mercs/titles/re5_ps3.py"
+    m = impl["mapping"]
+    assert "walk_up_and_melee_acquisition" in m
+    assert "dispatch_enemies_blocking_the_path" in m
+    assert "stand_begins_after_all_bonuses" in m
+
+
 def main():
     test_schema_and_source()
     test_phase_order()
     test_time_bonus_acquisition_re5_re6()
-    print("PASS: opening_phase_protocol.json checks (3/3)")
+    test_bot_implementation_mapping()
+    print("PASS: opening_phase_protocol.json checks (4/4)")
 
 
 if __name__ == "__main__":

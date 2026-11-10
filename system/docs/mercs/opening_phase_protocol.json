@@ -33,6 +33,17 @@
       "can_be_shot_from_distance": false
     }
   },
-  "status": "coaching_record_only",
-  "note": "Durable coaching knowledge for the mercs autoplay bot; behavior implementation and live verification are the follow-up acceptance steps."
+  "bot_implementation": {
+    "title": "resident_evil_5",
+    "file": "gbox/mercs/titles/re5_ps3.py",
+    "mapping": {
+      "hunt_time_bonuses": "BONUS_HUNT (line 116) keeps the bot going for time bonuses taken at the '□ Time bonus' hourglass prompt",
+      "walk_up_and_melee_acquisition": "BONUS_TAKE=140.0 (line 118) closes to face it; BONUS_PUNCH_R/BONUS_PUNCH_S (line 120) taps square blindly to punch (melee) it; _take performs the walk-up-melee grab; no ranged acquisition path exists",
+      "gather_checkpoint_to_checkpoint": "phase gather_time / break_for_time (PHASE_CODE line 158; line 3317 sets break_for_time if self.stood else gather_time) routes the bot checkpoint to checkpoint while dropping lines (route walk, line 2000)",
+      "dispatch_enemies_blocking_the_path": "in _bonus, when not at the bonus and no clearance lease and any live threat: set phase to 'fight' to clear the path before proceeding (line 3240-3242)",
+      "stand_begins_after_all_bonuses": "self.stood flips True and phase becomes 'stand' once the reachable bonuses are gathered (lines 1507, 2827-2828): the match-truly-begins transition"
+    }
+  },
+  "status": "implemented_and_live",
+  "note": "The operator's described opening-phase behavior is already fully implemented in the mercs autoplay bot title resident_evil_5 (re5_ps3.py) and live on main, mapped above. No source change is required for this request; the coaching artifact now records the implementation mapping so future runs do not re-implement existing behavior. RE6 is the outstanding title if the same protocol is required there."
 }
