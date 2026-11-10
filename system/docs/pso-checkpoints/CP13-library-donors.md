@@ -36,3 +36,27 @@ the image shows what the game will draw, not the donor source.
 
 Tests: no new unit tests this round (both donors are end-to-end artifacts); the CP12 snapshot test (`1 passed`) guards the
 export that produced the Daisy render.
+
+## Round 85: the Cloud diagnosis above is wrong, and here is why (correction)
+
+The round-84 claim that "Cloud's nodes 0 and 39 overrun their polygon lists" does **not** survive a byte-level look. The
+model struct is `{u32 vlist, u32 plist, float centre x3, float radius}`, and for both bodies node 0's model at `0xd00` reads
+
+```
+vlist 0x0   plist 0xd18   centre (6.14.., 0.00.., ...) radius ...
+0xd18:  ff 00 | 00 00 00 00 0d 34 | 40 c4 ac 73 ...     <- 0xFF is an EMPTY polygon list, then the floats
+```
+
+i.e. `plist` addresses an **empty list** (a lone end chunk) and everything after it is the model's centre/radius floats. My
+round-84 walker started at `plist`, read the end chunk, then kept walking into those floats and pinned the "overrun" on
+arbitrary float bytes - which is exactly what it also did on **Daisy** (it reported `unknown 0x3c` / `unknown 0x78` /
+`unknown 0xc` for Daisy's nodes 0, 26 and 39). So the comparison was measuring my own walker, not the bodies.
+
+**What is actually known about Cloud:** `ninja.NJ(cloud_body, be=True)` raises in `_polys` with an offset beyond the payload,
+and the body is 50,608 bytes with 64 nodes, **18 non-empty polygon lists**, and every model pointer in range. The failure is
+therefore inside one of those 18 lists, and the next step is to instrument `NJ._polys` itself (record the node and offset
+when the walk overruns) rather than reimplementing it - a walker outside the class cannot know where a list legitimately
+ends.
+
+That correction is the round's real result: it stops the next session from chasing a defect that the evidence never showed,
+and it narrows Cloud to "one of 18 lists, found by instrumenting the parser".
