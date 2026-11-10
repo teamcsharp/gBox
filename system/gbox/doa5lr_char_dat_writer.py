@@ -225,3 +225,51 @@ def scan_section_donors(container_path: str, target_index: int) -> list:
             if m:
                 found.append({"index": i, "size": size, "matching_sections": m})
     return found
+
+
+def replace_entry_span_in_container(
+    container_path: str,
+    index: int,
+    new_payload: bytes,
+    output_path: str,
+) -> dict:
+    """Span-aware variant of ``replace_entry_in_container`` (request #2450).
+
+    The CHCM 32B-table ``size`` understates many char_dat bodies, so the real slot is
+    ``entry_span`` (up to the next entry offset).  ``new_payload`` may be shorter than the
+    slot (<=); the remaining slot bytes are preserved from the source.  Only the copy at
+    ``output_path`` (same size as the source, pre-made by the caller) is written, never the
+    source.  Returns entry/container hashes.
+    """
+    from gbox.doa5lr_char_dat_variants import entry_span
+
+    if os.path.abspath(output_path) == os.path.abspath(container_path):
+        raise WriterError("span replacement refuses to write the source container")
+    entries = chcm.parse_entries(container_path)
+    if not 0 <= index < len(entries):
+        raise IndexError("entry %d out of range (%d)" % (index, len(entries)))
+    offset, span = entry_span(entries, index)
+    if len(new_payload) > span:
+        raise WriterError("payload %d B exceeds slot span %d B of entry %d" % (len(new_payload), span, index))
+    if not os.path.exists(output_path):
+        raise FileNotFoundError(output_path)
+    if os.path.getsize(output_path) != os.path.getsize(container_path):
+        raise WriterError("output size differs from source container")
+    with open(output_path, "rb+") as handle:
+        handle.seek(offset)
+        before = handle.read(span)
+        handle.seek(offset)
+        handle.write(new_payload)
+        handle.seek(offset)
+        after = handle.read(span)
+    if after[: len(new_payload)] != new_payload or after[len(new_payload):] != before[len(new_payload):]:
+        raise WriterError("slot readback mismatch for entry %d" % index)
+    return {
+        "index": index,
+        "offset": offset,
+        "span": span,
+        "slot_sha256_before": hashlib.sha256(before).hexdigest(),
+        "slot_sha256_after": hashlib.sha256(after).hexdigest(),
+        "container_sha256": container_sha256(output_path),
+        "container_path": output_path,
+    }

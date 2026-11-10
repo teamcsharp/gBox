@@ -148,3 +148,44 @@ def test_swap_section_size_mismatch_rejected():
     tgt = _load(SAMPLE18)
     with pytest.raises(WriterError):
         swap_section(tgt, _load(SAMPLE940), 0)
+
+
+@pytest.mark.skipif(not os.path.exists(LINK), reason="owned PS3 source not mounted")
+def test_span_replace_entry0058_noop_and_changed():
+    """Entry 0058: table size 164 but real ok_v7 slot 57,344 B (span-aware writer)."""
+    from gbox import doa5lr_chcm_extract as chcm
+    from gbox.doa5lr_char_dat_variants import entry_span
+    from gbox.doa5lr_char_dat_writer import replace_entry_span_in_container
+
+    entries = chcm.parse_entries(LINK)
+    off, span = entry_span(entries, 58)
+    assert span == 57344 and entries[58][0] == 164
+    with open(LINK, "rb") as fh:
+        fh.seek(off)
+        slot = fh.read(span)
+    assert slot[:8] == b"char_dat"
+    parse_char_dat = doa5lr_char_dat.parse_char_dat
+    assert parse_char_dat(slot)["sections"]
+
+    os.makedirs(SCRATCH, exist_ok=True)
+    work = os.path.join(SCRATCH, "chara_common.span.copy")
+    shutil.copy2(LINK, work)
+    try:
+        r0 = replace_entry_span_in_container(LINK, 58, slot, work)
+        assert r0["container_sha256"] == CONTAINER_SHA
+        assert r0["slot_sha256_before"] == r0["slot_sha256_after"]
+        changed = bytearray(slot)
+        s1 = parse_char_dat(slot)["sections"][1]["start"]
+        changed[s1:s1 + 8] = bytes(b ^ 0xFF for b in slot[s1:s1 + 8])
+        assert parse_char_dat(bytes(changed))["sections"] == parse_char_dat(slot)["sections"]
+        r1 = replace_entry_span_in_container(LINK, 58, bytes(changed), work)
+        assert r1["container_sha256"] != CONTAINER_SHA
+        assert r1["slot_sha256_after"] == hashlib.sha256(bytes(changed)).hexdigest()
+        with pytest.raises(WriterError):
+            replace_entry_span_in_container(LINK, 58, slot + b"\0", work)
+        with pytest.raises(WriterError):
+            replace_entry_span_in_container(LINK, 58, slot, LINK)
+        assert container_sha256(LINK) == CONTAINER_SHA
+    finally:
+        if os.path.exists(work):
+            os.unlink(work)
