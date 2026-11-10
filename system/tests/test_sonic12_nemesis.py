@@ -39,3 +39,13 @@ def test_owned_rom_streams():
         tiles, size = an.decode_at(rom, off)
         assert len(tiles) == count * 32
         assert nem.decode(nem.encode(tiles)) == tiles
+
+
+def test_locate_players_matches_verified():
+    rom = Path(os.environ.get("SONIC12_ROM", "work/rom/Sonic 1 and 2.bin"))
+    if not rom.exists() or hashlib.sha256(rom.read_bytes()).hexdigest() != an.ROM_SHA256:
+        pytest.skip("owned ROM absent")
+    found = an.locate_players(rom)
+    assert found["layout"] == "s2"
+    for name, want in an.VERIFIED_S2_PLAYER.items():
+        assert found[name] == want

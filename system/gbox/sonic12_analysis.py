@@ -37,3 +37,25 @@ def probe(rom_path: str | Path, offset: int = 0xD49A, png_out: str | Path | None
         Path(png_out).write_bytes(nem.tiles_to_png_bytes(tiles))
     return {"offset": offset, "tiles": len(tiles) // 32, "compressed_size": size,
             "tiles_sha256": hashlib.sha256(tiles).hexdigest()}
+
+
+# Player tables located through the game's own code (gbox.sonic2d_sprites.inventory, S2 layout).
+# Offsets verified by rendering the decoded walk clip (Sonic, blue, 8 frames).
+VERIFIED_S2_PLAYER = {
+    "sonic": {"art": 0x53080, "dplc": 0x781C8, "mappings": 0x76860, "frames": 214,
+              "anim_table": 0x1F41A, "animations": 36},
+    "tails": {"art": 0x687A0, "dplc": 0x7B300, "mappings": 0x7A6F6, "frames": 139,
+              "anim_table": 0x20EAE, "animations": 33},
+}
+
+
+def locate_players(rom_path: str | Path) -> dict:
+    """Locate Sonic/Tails art, DPLC, mappings and animation tables via the S2 locator."""
+    from gbox import sonic2d_sprites as sp
+
+    inv = sp.inventory(str(rom_path))
+    out = {"layout": inv.get("layout"), "palette_table": inv.get("palette_table")}
+    for name, c in inv["characters"].items():
+        out[name] = {k: (int(c[k], 16) if isinstance(c.get(k), str) else c.get(k))
+                     for k in ("art", "dplc", "mappings", "frames", "anim_table", "animations")}
+    return out
