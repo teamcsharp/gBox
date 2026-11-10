@@ -84,8 +84,48 @@ prompt counters are inside the `data` JSON).
    per-character finisher prompts.
 3. Fill the on_screen_text column and per-character finisher table above.
 
-Run 2026-11-10 (lilspark2): reused the published worktree (commit 61a033f9);
-re-verified the frequency/character columns against rounds.sqlite and
-extended the MSG2 structure measurements above (table span, group/marker
-structure, header @0x1c). No pending jobs; no remote work; read-only. Next
-acceptance step stands: the per-language charset table.
+## Per-character finisher label ids (measured 2026-11-10, rounds.sqlite)
+
+Source: the 54 rounds whose `data` JSON carries `specials_character`
+(Chris 15, Sheva 30, Jill 6, Wesker 2, Barry 1) in the same DB. Action
+label ids parsed from `data.specials_labels_text` (format
+`"prefix: <id>x<count> ..."`); motion ids from `data.specials_motions_text`
+(same format, different namespace — motion-table ids, not action labels).
+MEASURED from the round database; no game-file decode involved.
+
+| character | finisher label ids (total presses) | motion ids seen |
+|-----------|------------------------------------|-----------------|
+| Chris     | 21 (3x), 256 (1x)                  | 6, 12, 15, 45 |
+| Jill      | 21 (1x)                            | 0, 30 |
+| Sheva     | 5 (2x), 6 (2x), 10 (2x), 21 (5x), 191 (1x), 256 (1x) | 6, 11, 12, 15, 21, 45, 85, 100, 111, 112, 150 |
+| Wesker    | not determined (2 rounds, no label pairs in specials_labels_text) | not determined |
+| Barry     | not determined (1 round, no label pairs) | not determined |
+
+Id->move bindings measured via the bot's own `specials_summary` text in the
+same rows (e.g. Sheva: "Sheva Throat Slit ... | Sheva melee (label 5) ... |
+Sheva melee (label 6) ..."): the label->move name binding for Sheva labels
+5 and 6 is MEASURED from bot telemetry, not the string bank. Label 21
+appears for every character that produced pairs (Chris, Jill, Sheva) —
+inference: a shared non-finisher prompt (candidate interrupt/rear), not a
+per-character finisher. Labels 191 (Sheva, 1x) and 256 (Chris 1x, Sheva
+1x) are not determined as moves; the charset decode settles them.
+
+## Next acceptance step (bounded)
+
+1. Recover the MT MSG2 per-language charset table (RE5/RE6 Switch; a 0x100
+   byte->char map per language). Candidates: the main NSO (ExeFS, outside
+   this RomFS) or `nativeNXx64/sa/NX_64/*.arc`. Decoding `mes_system_e` /
+   `mes_item_e` / `mes_event_e` into an id->text table is the acceptance
+   gate for the on_screen_text column.
+2. Join the still-unbound label ids (21, 191, 256, plus all ids observed in
+   `rounds.data.specials_labels_text`) to their decoded strings; fill the
+   on_screen_text column and the per-character finisher table above.
+3. Note: `specials_labels_text`/`specials_summary` only exist in the 54
+   rounds with specials keys; older rounds carry none of these fields.
+
+Run 2026-11-10 (lilspark2, this run): reused worktree at commit c2a3e63b.
+Added the per-character finisher label-id table measured from
+rounds.sqlite (54 rounds, `specials_labels_text`/`specials_motions_text`/
+`specials_summary`); verified the doc is the only changed file. No pending
+jobs; no remote work; read-only. Next acceptance step stands: the
+per-language charset table for on_screen_text.
