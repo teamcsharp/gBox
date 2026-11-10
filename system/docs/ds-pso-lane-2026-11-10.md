@@ -2304,14 +2304,77 @@ session does not spend a round rediscovering it.
 Session live in MULTI MODE, both players in the lobby. `main` is clean and pushed; the hand-off brief carries the full
 status.
 
+## Round 46 (2026-11-10) — the room-local to world offset, found and validated exactly
+
+Round 42/43 could not match placement records to entities because the two live in different coordinate spaces. This round
+found the offset, and the evidence is exact rather than approximate.
+
+### How it was found
+
+`map_city00_00o.dat` opens with four records at tiny coordinates. Two of them are the **co-op spawn points**:
+
+```
+record 4  local (0.995, -37.001)  + (228, 291) = (229.0, 254.0)   = P1's spawn
+record 5  local (3.001, -23.997)  + (228, 291) = (231.0, 267.0)   = P2's spawn
+```
+
+Two independent points agreeing on the same constant is what made it worth testing the constant against everything else.
+
+### The validation
+
+Every record in the set mapped by `(+228, +291)` and compared with the live entity table:
+
+| record | local | world = local + (228,291) | entity | distance |
+|---|---|---|---|---|
+| 17 | (-34.5, -384.5) | (193.5, -93.5) | `TObjCityDoor_Med` | **0.0** |
+| 18 | (-393.0, -143.5) | (-165.0, 147.5) | `TObjCityDoor_Shop` | **0.0** |
+| 20 | (-43.0, -118.0) | (185.0, 173.0) | `TObjCityDoor_Guild` | **0.0** |
+| 21 | (26.0, -266.0) | (254.0, 25.0) | `TObjCityDoor_Warp` | **0.0** |
+| 5 | (3.0, -24.0) | (231.0, 267.0) | `TObjPlayer` | **0.0** |
+| 8, 9, 12, 26 | ... | ... | `TObject` x4 | **0.0** |
+| 0 | (-16.3, -579.5) | (211.7, -288.5) | `TObjNpcNurseBase` | 4.5 |
+
+**10 of the set's 28 records land on a live entity at distance exactly 0.0**, including all four lobby doors and both
+player spawns. That is not a fit to noisy data -- it is an identity.
+
+### What it unlocks
+
+* **P6a's in-game proof is now mechanical.** Move a record, map it with the offset, and the corresponding entity must appear
+  at the moved world position. No more hunting for a coincidence.
+* **The door class indices fall out of the same match**: `0x46` Shop, `0x47` Guild, `0x48` Warp, `0x49` Med. That is the
+  first real mapping from a record's `kind` value to an object class in this lane.
+* **The editor can show world positions.** `pso_editor.world_position(record, set)` and `door_name(kind)` are in, with the
+  offset stored per set in `AREA_OFFSETS` (+3 tests, 11 in that file).
+
+### Why the Guild door was "inert"
+
+It is a real `map_city00_00o.dat` record (`0x47`, `TObjCityDoor_Guild`) sitting at world `(185,173)` -- so it is placed
+like every other door. Walking onto it does not change the room, while the Warp and Med doors do, so "door" as a class does
+not mean "portal": the four door records are placed identically and only some of them transition. That is a fact about the
+*event* side (which set of `*e.dat`/`*.evt` records attaches a transition), not about placement.
+
+### Not finished
+
+The live confirmation of a moved record was attempted in this round and the session did not reach the lobby before the
+budget ran out (the `PRESS START` title needed a fresh sequence). The build exists -- `pso_guilddoor_moved`, which moves
+record 20 from local `(-43,-118)` to `(7,-118)`, i.e. world `(185,173)` -> `(235,173)` -- and the check is a single entity
+read once the party is in the lobby.
+
 ## 7. Next
 
-The hand-off brief (`docs/PSO-HANDOFF-2026-11-10.md`) carries the prioritised list. In order:
+1. **P6a's in-game proof is now mechanical**: `pso_guilddoor_moved` moves `map_city00_00o.dat` record 20 (the Guild
+   door) from world (185,173) to (235,173) using the measured offset (+228,+291); boot it into MULTI MODE and the
+   `TObjCityDoor_Guild` entity must read (235,173). One entity read settles P6a.
+2. **Measure the offset for other areas** the same way (a set whose records include spawn points or several objects
+   with a consistent constant). Only `map_city00_00o.dat` is measured so far.
+3. **P1's field leg** is unchanged by this: the intro cannot be exited by input (rounds 37, 45) and the guild counter
+   has not been found; MULTI MODE plus the guild remains the only route, and the executable's quest/teleport path is
+   the next lever.
+4. **P6b's page** can now show world positions (`pso_editor.world_position`, `door_name`) -- UI over a finished
+   backend. **P7a's rigging** remains open.
 
-1. **P1's field leg** -- the intro cannot be exited by input (rounds 37 and 45), so the route must be MULTI MODE plus
-   the guild. Walk *through* the central dome's large doorways (around (157,102) in room 20), explore room 30 beyond
-   (-236,18), and read the quest/teleport path in the executable.
-2. **The room-local to world offset**, by matching the four room-10 door entities' pairwise distances against a
-   placement set -- translations preserve distances, so one match identifies the set and the offset.
-3. **P6b's page** as UI over `gbox.pso_editor` (backend finished and tested).
-4. **P7a's rigging** -- `build_swap` adapted for GC, gated by `pso_swapfit.compare`.
+Found this round: the room-local to world offset for the Pioneer 2 lobby is **(+228, +291)**, validated at distance
+0.0 on all four lobby doors, both co-op spawns and every `TObject` in the room (10 of 28 records; the next nearest is
+4.5 away). Door kinds: 0x46 Shop, 0x47 Guild, 0x48 Warp, 0x49 Med. Also learned that a `TObjCityDoor_*` record is a
+placed object, not necessarily a working portal -- the Guild door is placed exactly like the Warp door and only the
+latter transitions.

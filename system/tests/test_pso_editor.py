@@ -87,3 +87,26 @@ def test_the_real_disc_exposes_hundreds_of_sets_and_lists_one():
     pl = E.placements(d, found[0]["name"])
     assert pl["count"] > 0
     assert all(set(r) >= {"index", "kind", "class", "x", "y", "z"} for r in pl["records"])
+
+
+def test_the_measured_lobby_offset_maps_records_onto_world_positions():
+    """The four door records, mapped with (+228,+291), are exactly the four door entities the game reports."""
+    local = {"Guild": (-43.0, -118.0), "Shop": (-393.0, -143.5), "Warp": (26.0, -266.0), "Med": (-34.5, -384.5)}
+    world = {"Guild": (185.0, 173.0), "Shop": (-165.0, 147.5), "Warp": (254.0, 25.0), "Med": (193.5, -93.5)}
+    for name, (lx, lz) in local.items():
+        got = E.world_position({"x": lx, "z": lz}, "map_city00_00o.dat")
+        wx, wz = world[name]
+        assert abs(got[0] - wx) < 0.01 and abs(got[1] - wz) < 0.01, f"{name}: {got} != {world[name]}"
+
+
+def test_an_unmeasured_set_has_no_world_position():
+    assert E.world_position({"x": 1.0, "z": 2.0}, "map_forest01_00o.dat") is None
+    assert E.offset_of("map_city00_00o.dat") == (228.0, 291.0)
+
+
+def test_the_door_class_indices_come_from_the_match():
+    assert E.door_name(0x02000047) == "Guild"
+    assert E.door_name(0x02000048) == "Warp"
+    assert E.door_name(0x02000049) == "Med"
+    assert E.door_name(0x02000046) == "Shop"
+    assert E.door_name(0x02000040) is None
