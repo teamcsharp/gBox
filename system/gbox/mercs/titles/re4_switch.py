@@ -142,7 +142,11 @@ UNIT_RESCAN_S = 4.0                     # new spawns: the census looks again thi
 
 # Mercenaries counters as module offsets (PENDING: the probe lists the candidates). Until they are measured the bot
 # counts kills itself from the census (a unit whose health falls to 0) and says so (kills_source "census").
-MERC_KILLS: int | None = None
+# The round's kill count (u32, module + 0x12010c4), measured on two live rounds 2026-11-10: Krauser / Waterworld
+# read 0, 0, 1, 1, 5 ... 5 with five census kills; HUNK / Castle read 1 while the census saw none (a melee kill whose
+# unit was freed between two reads - the census misses those). Trusted up to MERC_KILLS_MAX; above it, the census.
+MERC_KILLS: int | None = 0x12010C4
+MERC_KILLS_MAX = 2000
 # The round probe on the live Krauser / Waterworld round (2026-11-10 22:07, five kills): these u32 module offsets
 # stepped up with the fight - 0x12010c4 read 0, 0, 1, 1, 5 ... 5 (the round's kill count: the leading candidate for
 # MERC_KILLS), the others 0 ... 9. Read beside the census every snapshot (snap["kill_candidates"]) until one is
@@ -612,9 +616,11 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
     for key, off in (("kills", MERC_KILLS), ("combo", MERC_COMBO), ("score", MERC_SCORE)):
         if off is not None:
             try:
-                snap[key] = struct.unpack("<I", bytes(m.rd(base + off, 4)))[0]
+                v = struct.unpack("<I", bytes(m.rd(base + off, 4)))[0]
             except (ValueError, OSError, struct.error):
-                pass
+                continue
+            if key != "kills" or v <= MERC_KILLS_MAX:       # an implausible count: the census counts instead
+                snap[key] = v
     return snap
 
 
