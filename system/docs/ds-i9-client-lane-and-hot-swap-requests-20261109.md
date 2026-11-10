@@ -1121,3 +1121,15 @@ The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned b
   which is a longer drive than this round allowed.
 * The three RE4 builds are: `recovery-re4-native-rewrite-v1` (`pl08.udas` 1.6 MB), `recovery-re4-native-swap-v1-control`
   (`pl08.udas` 1.4 MB) and `recovery-re4-sonic-on-leon-v1` (`pl08.udas` + the texture pack, 4.6 MB).
+
+## Round 56 status (2026-11-10, ~02:45 CST): RE4's intro runs under the mod; the village frame needs a longer sit-through
+
+* With `recovery-re4-sonic-on-leon-v1-20261109` applied, RE4 runs its **opening cutscene sequence** at 11-18 FPS: the jeep
+  close-up, then the two police officers with Leon in the car (`re4-p11.jpg`). Posted A presses do not skip it, and the
+  `m` (plus/start) key opens the pause menu instead of skipping either, so the intro is not skippable through the keys
+  tried so far.
+* The in-game model check therefore needs either (a) a patient run that lets the whole intro play (several minutes of
+  cutscene) before the first village frame, or (b) the real skip binding. Both are mechanical; neither is a build
+  problem - the mod applies and the game runs, which is what this round set out to verify.
+* Note for the next pass: the RE4 cutscene skip is likely `+`/`-` (Switch) on a key Yuzu binds to a punctuation key, not
+  `m`; checking Yuzu's input config for the plus/minus mapping is the quickest way to find it.
