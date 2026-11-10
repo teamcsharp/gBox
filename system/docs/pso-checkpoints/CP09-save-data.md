@@ -290,3 +290,33 @@ entropy.
 
 Attempt scripts kept: `docs/research/pso-save-cipher-attempt.py` (round 54) and this round's exact-ring version in the same
 folder.
+
+## Round 56: the cipher is fully transcribed - the seed is the one remaining unknown, and it is runtime data
+
+The missing generator from round 55 is found and transcribed:
+
+* **`FUN_8007c264(state)`** builds the 256-byte table at `0x80500398` (identity `0..255`) and then does a **Fisher-Yates
+  shuffle** into the table at `0x80500498`: for `i = 255..0`, `j = FUN_8007c584(state, i+1)`, `b = A[j]`, `A[j] = A[i]`,
+  `B[b] = i`, `A[i] = b`. (Ghidra's reference list confirms `FUN_8007c134` *reads* the table and `FUN_8007c264` builds it.)
+* **`FUN_8007c584(state, n)`** = `((n & 0xffff) * (next_key(state) >> 16)) >> 16` - a 16-bit multiply-shift bounded by `n`.
+* The permutation use in `FUN_8007c134`: for each 256-byte block, `dst[256k + B[j]] = src[256k + j]`.
+
+So the complete pipeline is: **seed** -> `FUN_8007c48c` ring init (exact, round 55) -> `FUN_8007c264` permutation table ->
+`FUN_8007c134` byte permutation -> `FUN_8007c0cc` word cipher (`buf[i] = key_i - buf[i]`).
+
+**Swept 64 combinations** (8 seeds x {permute direction, order permute/words, keystream offset 1/2, subtract/add}) against
+the real `PSO_CHARACTER` body: **none produces structured output** (best is still 0.00 zero bytes, 0.37 printable). With the
+ring and the shuffle both verified, what is left is the **seed**.
+
+**The seed is runtime data, not a constant in the file:** `FUN_80202984()` returns `*(*(r13 - 0x4694) + 0x118)` - a field of
+a runtime object - and `FUN_80200560` uses it as the seed for both passes. Nothing in the DOL ties it to the card image, so
+it can only be read from a running session (read that structure's `+0x118` while a save is loaded, or read it from RAM at
+save-load and then decode offline).
+
+**This ties CP9's last step to CP4's live window.** The moment a session is available:
+1. read `[*(state_ptr) + 0x118]`-style seed (the object at `r13-0x4694` is reachable from the save path),
+2. decode `PSO_CHARACTER` with the transcribed pipeline and confirm the entropy drops,
+3. then the byte-flip accept test (prove the game re-reads a modified save, or rejects it).
+
+Attempt scripts kept: `docs/research/pso-save-cipher-exact-ring.py` (round 55 ring) and the round-56 full pipeline with the
+64-combination sweep in the same folder.
