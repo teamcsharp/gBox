@@ -143,6 +143,11 @@ UNIT_RESCAN_S = 4.0                     # new spawns: the census looks again thi
 # Mercenaries counters as module offsets (PENDING: the probe lists the candidates). Until they are measured the bot
 # counts kills itself from the census (a unit whose health falls to 0) and says so (kills_source "census").
 MERC_KILLS: int | None = None
+# The round probe on the live Krauser / Waterworld round (2026-11-10 22:07, five kills): these u32 module offsets
+# stepped up with the fight - 0x12010c4 read 0, 0, 1, 1, 5 ... 5 (the round's kill count: the leading candidate for
+# MERC_KILLS), the others 0 ... 9. Read beside the census every snapshot (snap["kill_candidates"]) until one is
+# confirmed against a second round, then it becomes MERC_KILLS.
+KILL_CANDIDATES: tuple = (0x12010C4, 0x120118C, 0x12014AC, 0x12013E4)
 MERC_COMBO: int | None = None
 MERC_SCORE: int | None = None
 
@@ -596,6 +601,14 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
             player.setdefault("rot", None)
             snap["player"] = player
         snap["enemies"] = [dict(e, hp_max=e.get("hp_max")) for e in enemies]
+    if KILL_CANDIDATES:
+        cand = {}
+        for off in KILL_CANDIDATES:
+            try:
+                cand[hex(off)] = struct.unpack("<I", bytes(m.rd(base + off, 4)))[0]
+            except (ValueError, OSError, struct.error):
+                pass
+        snap["kill_candidates"] = cand
     for key, off in (("kills", MERC_KILLS), ("combo", MERC_COMBO), ("score", MERC_SCORE)):
         if off is not None:
             try:
@@ -921,6 +934,10 @@ SWEEP_S = 3.0                            # nobody on the map: walk, turning this
 KILL_PACE_S = 3.0                        # doctrine.KILL_PACE_S: from this long after a kill the next one is owed
 COMBO_WINDOW_S = 5.0                     # doctrine.COMBO_MAX_S: a kill later than this after the last one breaks the combo
 FIRE_GAP_S = 0.25                        # between trigger taps (a tap is down + up: the engine never holds the trigger)
+# The shot's tolerance is the angle a Ganado's body covers at his distance (live 2026-11-10 22:07: 11 hits from 166
+# shots with a flat 7-degree tolerance - 1.5 m off at 12 m): atan(FIRE_HALF_WIDTH_MM / distance), never under
+# FIRE_TOL_MIN; inside AIM_NUDGE of it the right stick is tapped (a frame of turn) rather than held.
+FIRE_HALF_WIDTH_MM, FIRE_TOL_MIN, AIM_NUDGE = 300.0, 0.02, 0.2
 # The melee follow-up (docs/research/mercenaries-character-specials.md 2.1 / 6.1): RE4's Mercenaries is played shot ->
 # stun -> the action button at the prompt (Leon's roundhouse / suplex, Krauser's double kick, HUNK's neckbreaker,
 # Wesker's thrust punch, Ada's fan kick): a melee is a near-certain kill, hits the crowd round it and costs no ammo.
@@ -1241,10 +1258,13 @@ class Bot:
                         return flank
                 self.doing, self.why = "hold", "aligned, but a fire gate blocks the shot"
                 return {"hold": {AIM_BTN}}                   # aim kept, no shot
-            if abs(err) > self.TURN_TOL:
+            tol = max(FIRE_TOL_MIN, min(self.TURN_TOL, math.atan2(FIRE_HALF_WIDTH_MM, max(dist, 1.0))))
+            if abs(err) > tol:
                 self.stats["raises"] += 1
                 self.doing = "aim"
-                return {"hold": {AIM_BTN} | self._aim_turn(err)}   # the gun up, the right stick fine-turns the aim
+                if abs(err) <= AIM_NUDGE:                    # close: a tap of the right stick, not a sweep past him
+                    return {"hold": {AIM_BTN}, "tap": next(iter(self._aim_turn(err)))}
+                return {"hold": {AIM_BTN} | self._aim_turn(err)}   # the gun up, the right stick turns the aim
             ready = self._aim_since is not None and now - self._aim_since >= AIM_READY_S
             if not ready or now - self._last_fire < FIRE_GAP_S:
                 self.doing = "aim"
@@ -1252,6 +1272,9 @@ class Bot:
             self._last_fire = now
             self._since_reload += 1
             self.stats["shots"] += 1
+            n = self.stats["shots"]
+            self.stats["fire_err_deg"] = round((self.stats.get("fire_err_deg") or 0.0) * (n - 1) / n
+                                             + math.degrees(abs(err)) / n, 2)   # the mean bearing error at a shot
             self.doing = "fire"
             # aim held, trigger TAPPED: the engine sends a tap as down+up before the hold, so the shot fires and the aim
             # key stays down. Holding both (the first cut) never released the trigger, so a round fired once and stuck.

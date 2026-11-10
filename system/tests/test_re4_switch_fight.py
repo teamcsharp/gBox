@@ -444,3 +444,20 @@ def test_with_everyone_behind_walls_he_goes_round_instead_of_aiming():
     s = snap([((0.0, 0.0, 500.0), 400)], nav=SightMesh(blocked_x=(0.0,), waypoints=[mm((-300.0, 0.0, 300.0))]))
     act = b.tick(s, now=1.0)
     assert b.doing == "flank" and D.AIM_BTN not in act["hold"] and "lup" in act["hold"] and b.stats["blocked_picks"] == 1
+
+
+
+def test_the_shot_waits_for_the_angle_the_ganado_covers():
+    """Live 2026-11-10 22:07: 11 hits from 166 shots with a flat 7-degree tolerance. At 10 m a Ganado covers ~1.7
+    degrees: 4 degrees off is a nudge of the right stick (a tap), not a shot."""
+    b = bot()
+    err = math.radians(4.0)
+    s = snap([((1000.0 * math.sin(err), 0.0, 1000.0 * math.cos(err)), 400)])
+    b.tick(s, now=0.0)
+    act = b.tick(s, now=D.AIM_READY_S + 0.1)
+    assert act.get("tap") == D.AIM_TURN["left"] and D.AIM_BTN in act["hold"] and b.stats["shots"] == 0
+    near = math.radians(1.0)
+    s2 = snap([((1000.0 * math.sin(near), 0.0, 1000.0 * math.cos(near)), 400)])
+    b2 = bot()
+    b2.tick(s2, now=0.0)
+    assert b2.tick(s2, now=D.AIM_READY_S + 0.1).get("tap") == D.FIRE_BTN and b2.stats["fire_err_deg"] == 1.0

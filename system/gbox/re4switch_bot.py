@@ -394,6 +394,8 @@ def _snapshot(m, stats: dict) -> dict | None:
     stats["clock_addr"] = hex(snap["clock_addr"]) if isinstance(snap.get("clock_addr"), int) else None
     stats["enemies_read"] = len(snap.get("enemies") or ())
     stats["player_read"] = bool(snap.get("player"))
+    if snap.get("kill_candidates"):
+        stats["kill_candidates"] = " ".join(f"{k}={v}" for k, v in snap["kill_candidates"].items())
     if snap.get("player") and snap["player"].get("class") is not None:
         stats["player_class"] = hex(snap["player"]["class"])
     return snap
