@@ -151,3 +151,31 @@ later (when a slot is parsed) or there is none. Decompiles kept in `docs/researc
 Next: read the slot parser that consumes a record (`FUN_801fe010` and the three words at `+0x278c..+0x2794`), and locate
 the character-name field by walking a record against the known character data (class/level/position fields are
 recognisable in RAM).
+
+## Round 52: all seven records are encoded - round 51's "packed structs" reading is corrected
+
+Walking the character file's **seven `0x2798`-byte records** (area starts at file offset `0x40`; record *i* at
+`0x40 + i*0x2798`):
+
+| record | non-zero bytes | printable runs in the first 1 KiB |
+|---|---|---|
+| 0 | 10,128 / 10,136 (99.9 %) | none |
+| 1 | 10,086 (99.5 %) | `-r y`, `bFM2`, `ranx6`, `{l3G!W`, … |
+| 2 | 10,107 (99.7 %) | `t$uG`, `272.J`, `K/+p`, … |
+| 3 | 10,102 (99.7 %) | `)}Z2`, `Q@bC`, `"S6@`, … |
+| 4 | 10,097 (99.6 %) | `GIgTW`, `9$&{`, `ngjN`, … |
+| 5 | 10,103 (99.7 %) | `@|vL`, `.Y[R{`, `b2*TT`, … |
+| 6 | 10,092 (99.6 %) | `|/86@`, `;ZJS`, `q5z{\}`, … |
+
+**Every record is ~99.6 % non-zero and high-entropy.** A character struct with empty slots would be mostly zeros; this is
+not. So **the storage is encoded**, and round 51's "the save stores packed structs, the cipher weakens" was **wrong** -
+what round 51 proved is narrower and still true: the `FUN_80200560` -> `FUN_80200690` -> `FUN_801fdfb8` path is a plain
+copy, therefore it copies a buffer that is **already decoded** (or the decode happens on the way in/out through the file
+layer's `FUN_8007c0cc` / `FUN_8007c134` / `FUN_8007c264` / `FUN_8007c378` / `FUN_8007c48c` calls in `FUN_80200560`).
+
+**Where the codec must be:** in those file-layer calls (the buffer is full of high-entropy bytes when it is read from the
+card and plain structure copies after), or in a decompression step between the card read and `FUN_80200560`. That is the
+next decompile target, and it is named.
+
+Record 0 is also the one that differs in appearance (its head is a repeating `99 34 / 99 55 / 9d 56` pattern, while records
+1-6 are flat high-entropy) - consistent with record 0 being a *header/slot-0 special* block rather than a character.
