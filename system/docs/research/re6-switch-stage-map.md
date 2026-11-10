@@ -53,7 +53,13 @@ Counts are placed instances by enemy class archive (`uEm*`). **Mode split (measu
 ## 4. s1211Soft discrepancy (resolved)
 
 Local census of `s1211Soft`: uEm1200 298, uEm1000 130, uEm5210 6, uEm4800 3, uEm3300 1. `re6-parity.md` row `s1201 -> s1211` lists `uEm1200 298, uEm1000 130, uEm5210 6, uEm4800 3, uEm3300 1`: identical. The previous run's "uEm1000=194 uEm3200=182" came from unrelated grep hits (`mercmode.py:194`, `182.2 cm`), not a census row.
-Re-run (`stage_census(open('.../s1211Soft.arc','rb').read())` from the repo root): `{'uEm1200': 298, 'uEm1000': 130, 'uEm5210': 6, 'uEm4800': 3, 'uEm3300': 1}`, 18 layouts: matches the `re6-parity.md` row. (The 194/182 hits are measured as `mercmode.py:194` and `182.2 cm` in `re6-parity.md`; the earlier run's own source of the numbers is not reproduced here, so that attribution is partly inferred.)
+Re-run, one stated command (repo root):
+
+```
+python3 -c "import sys; sys.path.insert(0,'.'); from gbox import re6_switch_enemies as r; print(r.stage_census(open('<romfs>/01002A000CD48000/nativeNXx64/arc/NX/s1211Soft.arc','rb').read()))"
+```
+
+Output: `{'classes': {'uEm1200': 298, 'uEm1000': 130, 'uEm5210': 6, 'uEm4800': 3, 'uEm3300': 1}, 'layouts': ['s1211_em00', 's1211_em01', 's1211_em02', 's1211_em04', 's1211_em05', 's1211_em06', 's1211_em07', 's1211_em08', 's1211_em09', 's1211_em10', 's1211_em11', 's1211_em12', 's1211_em13', 's1211_em15', 's1211_em16', 's1211_em17', 's1211_em20', 's1211_em21']}` - the exact classes of the `re6-parity.md:120` row (`| s1201 | 58.0 | s0302 x65, s0300 | s1211 | uEm1200 298, uEm1000 130, uEm5210 6, uEm4800 3, uEm3300 1 |`), reproducible from one command. (The 194/182 hits are measured as `mercmode.py:194` and `182.2 cm` in `re6-parity.md`; the earlier run's own source of the numbers is not reproduced here, so that attribution is partly inferred.)
 
 ## 5. NAV per stage (measured; the earlier per-arc comparison failed)
 
@@ -72,7 +78,7 @@ Cause of the earlier failure: geometry arcs `s120N.arc` contain no NAV entry (se
 | s1208 | s1208Soft | s1218Soft | 2005 | 3434 | 619456 | yes |
 | s1209 | s1209Soft | s1219Soft | 1824 | 3030 | 515705 | yes |
 
-Cross-check against the live game: only `s1218` (2005 / 3434, `re6_switch.py:669`, MercMode 17:20) has an independent live number in the repo, and it equals the s1218Soft/s1208Soft row, so that is the one measured name (Mining the Depths = s1208 code, select index 2). The other nine have no live fingerprint on disk (the learned stage-book JSONs were not found under `~/gBox_alt`); a previous checkpoint's s1210-s1219 sizes were reused as a hypothesis and equalled these Soft values, but are not independently re-verified. Names for the nine remain **not determined**; the NAV vertex/triangle pair above is the key to match once a boot logs `navmesh.name` per pick.
+Cross-check against the live game: only `s1218` (2005 / 3434, `re6_switch.py:669`, MercMode 17:20) has an independent live number in the repo, and it equals the s1218Soft/s1208Soft row, so that is the one measured name (Mining the Depths = s1208 code, select index 2). The other nine were re-verified this run against the learned stage books, which DO exist at `~/gBox/system/gbox-data/mercs/learned/01002A000CD48000/stages/s1210.json`...`s1219.json` (one per real play session, visits 89-151; each records `nav: {name: soft\\stage\\s12NN\\s12NN, vertices, triangles}`). All ten books match the Soft-arc NAV counts in the table above exactly: s1210 2015/3274, s1211 1823/2799, s1212 1887/2829, s1213 1052/1710, s1214 4225/7120, s1215 1237/1888, s1216 2213/3611, s1217 1547/2587, s1218 2005/3434, s1219 1824/3030 - so the NAV table is no longer a hypothesis (the earlier 'not found under ~/gBox_alt' was a search-scope miss; the books live under `~/gBox/system/gbox-data`). Names for the nine remain **not determined**; the (vertex, triangle) pair per row is the fingerprint to match once a boot logs `navmesh.name` per pick.
 
 Reproduce (repo root): the script below prints the table rows.
 
