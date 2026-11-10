@@ -535,9 +535,14 @@ class Screensaver:
             # plain build and not the companion yet (switch_mods op=blueprint not run for it): the plain build plays,
             # the run records the fallback so the boundary does not restart into the same miss every round
             plain = mercmode.plain_mod(build['name'])
-            if plain != build['name'] and self.builds:
-                known = {str(b.get('name') or '') for b in self.builds(g['game_id'])}
-                if known and build['name'] not in known and plain in known:
+            if plain != build['name']:
+                # a donor-swap variant (gbox.donor_swap) has a companion only when its source build had one; the job
+                # said which, so a variant written seconds ago does not wait for the build index to know it
+                from . import donor_swap
+                made = donor_swap.variant(self.store, g['game_id'], plain)
+                known = {str(b.get('name') or '') for b in self.builds(g['game_id'])} if self.builds else set()
+                if (made is not None and not made.get('blueprint')) or (
+                        known and build['name'] not in known and plain in known):
                     self.store.audit(ACTOR, 'mercmode.blueprint_missing', w['name'],
                                      {'wanted': build['name'], 'playing': plain, 'game_id': g['game_id']})
                     build = {'name': plain, 'blueprint_fallback': True}

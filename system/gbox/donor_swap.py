@@ -32,6 +32,7 @@ from . import donor_rejects
 
 STATE = "mercmode_donor_swap"        # host -> the newest swap record
 SUPERSEDE = "mercmode_supersede"     # game id -> {build: the variant that replaced it}
+VARIANTS = "mercmode_donor_variants"  # game id -> {variant: {of, blueprint, at}}: what each variant job wrote
 PURPOSE = "donor_swap"               # the queue entry's purpose: allowed through before rounds_per_title
 MAX_ATTEMPTS = 4                     # donors built for one slot before it goes native
 MAX_RESOLVE = 24                     # library folders resolved while looking for those donors
@@ -76,6 +77,12 @@ def variant_name(build: str, existing=()) -> str:
 
 def superseded(store, game_id: str) -> dict:
     return dict(store.get(SUPERSEDE, game_id) or {})
+
+
+def variant(store, game_id: str, name: str | None) -> dict | None:
+    """What the variant job wrote for `name` ({of, blueprint: companion name or None, at}), None when `name` is no
+    donor-swap variant: the launch plays a variant without a companion as itself while blueprint_look is on."""
+    return (store.get(VARIANTS, game_id) or {}).get(plain(name or "")) if name else None
 
 
 def resolve(store, game_id: str, mod: str | None) -> str | None:
@@ -227,6 +234,9 @@ def accept(store, result: dict, *, now: float | None = None, rejects_path=None) 
     table[record["build"]] = variant
     table[root_of(record["build"])] = variant
     store.put(SUPERSEDE, record["game_id"], table)
+    made = dict(store.get(VARIANTS, record["game_id"]) or {})
+    made[variant] = {"of": record["build"], "blueprint": result.get("blueprint"), "at": now, "swap": swap_id}
+    store.put(VARIANTS, record["game_id"], made)
     cfg = mercmode.settings(store, record["host"])
     head = {"title": record["title"], "mode": None, "character": record.get("character") if record["title"] != "re6"
             else None, "stage": None, "mod": variant, "purpose": PURPOSE}

@@ -313,6 +313,21 @@ def test_a_different_build_waits_but_a_purpose_round_plays_at_the_next_boundary(
     assert [e["mod"] for e in M.settings(store, w["name"])["queue"]] == ["series-02"]
 
 
+def test_a_variant_without_a_companion_plays_as_itself_under_blueprint_look():
+    store, w, saver, calls, now, tick, run, job = playing()
+    title = run["mercmode"]["title"]
+    _swap_round(store, w, run, title)
+    store.put(D.VARIANTS, run["game_id"], {"series-01-fix1": {"of": "series-01", "blueprint": None}})
+    M.configure(store, w["name"], {"blueprint_look": True,
+                                   "queue": [{"title": title, "mod": "series-01-fix1", "purpose": "donor_swap"}]})
+    receipt = boundary(run, now[0]) | {"round_id": "f" * 32}
+    assert saver.round_boundary(receipt, job, now[0])["rotate_requested"] is True
+    tick(1)
+    store.put("session", run["session_id"], store.get("session", run["session_id"]) | {"state": "ended"})
+    tick(1)
+    assert calls[-1]["tool"] == "launch_game" and calls[-1]["input"]["mod"] == "series-01-fix1"
+
+
 def test_a_quick_death_does_not_hold_back_a_purpose_round():
     store, w, saver, calls, now, tick, run, job = playing()
     title = run["mercmode"]["title"]
