@@ -2265,6 +2265,14 @@ NADE_REPEAT_AIM_S, NADE_REPEAT_THROW_S, NADE_REPEAT_RELEASE_S = 0.05, 0.15, 0.12
 # With nobody like that a grenade in his hand goes back by the hook; it is never thrown ahead at nothing. stats
 # nade_void_skips (targets refused), nade_ground_aims (ticks the aim was steered onto the ground).
 NADE_FLOOR_DY = 100.0
+# Where it lands, not only who it is thrown at (operator 2026-11-10 14:45, RE6: "I need it to actually aim the grenades at
+# the ground instead of throwing them in lava"): the target's feet on a walkable triangle of the stage's nav mesh - inside
+# it, at the floor's height there (_floor_at; lava, a pit or the void are not on the zombies' mesh, and NavMesh.locate's
+# nearest-triangle fallback is not floor) - and the aim point, the group's centre, on floor too, with NADE_LAND_SLACK short
+# and long of it on his line (a throw lands a little off) and the floor running there from him. A centre over the lava
+# gives way to the feet of the one nearest it that pass; none: no throw (_nade_landing). stats nade_landing_moves (the
+# aim moved off the centre onto floor), nade_landing_skips (nowhere among them to land it).
+NADE_LAND_SLACK = 150.0
 # Ledge / sniper / rocket threat awareness (operator 2026-11-03: "full awareness of enemy locations in 3D, including
 # enemies UP HIGH, on LEDGES, and at DISTANCE ... any zombie pointing a LASER SIGHT (sniper), or a rocket/sniper threat,
 # becomes a PRIORITY TARGET"). windup() already flags a ranged action within RANGED_R; LEDGE_RANGED_R extends that for
@@ -5737,9 +5745,12 @@ class Bot:
             if ff is not None and kind != "flash" and burst is None:
                 self.stats["nade_fire_first_skips"] = self.stats.get("nade_fire_first_skips", 0) + 1
                 return None                                  # fire first: one in clear sight within FIRE_FIRST_R
-            cx = sum(e["pos"][0] for e in group) / len(group)
-            cz = sum(e["pos"][2] for e in group) / len(group)
-            cy = min(e["pos"][1] for e in group)                 # their feet: the ground the throw is pitched at
+            spot = self._nade_landing(p, group, snap)            # on walkable floor among them, never the lava
+            if spot is None:
+                if self._gburst is not None:
+                    self._burst_end(now)
+                return None
+            cx, cy, cz = spot                                    # their feet: the ground the throw is pitched at
             self.nade = n = {"kind": kind, "index": nades[NADE_TYPES[kind]][0], "phase": "equip", "at": now - NADE_STEP_S,
                              "steps": 0, "to": (cx, cz), "to_y": cy, "since": now, "seen": [eq], "back_key": "right",
                              "gun": eq if isinstance(eq, int) and eq < WEAPON_INDEXES else None, "pos0": (px, pz),
@@ -5821,9 +5832,9 @@ class Bot:
                 self._gburst["left"] -= 1
                 self.stats["re6_last_burst_grenades"] = self._gburst["thrown"]
                 mass = [e for e in vis if flat(e) <= BURST_SURROUND_R] or vis   # (on his ground only)
-                if mass:
-                    n["to"] = (sum(e["pos"][0] for e in mass) / len(mass),
-                               sum(e["pos"][2] for e in mass) / len(mass))
+                spot = self._nade_landing(p, mass, snap) if mass else None      # (never retargeted into the lava)
+                if spot is not None:
+                    n["to"], n["to_y"] = (spot[0], spot[2]), spot[1]
             return self._go("nade", "nade_" + n["kind"], {"hold": ("zl", "zr")}, f"the {n['kind']} grenade thrown")
         if n["phase"] == "throw":
             self._nade_ground(p, live, snap, now, n)
@@ -5920,11 +5931,15 @@ class Bot:
             self.stats["item_gun_backs"] = self.stats.get("item_gun_backs", 0) + 1      # at nothing (2026-11-10)
             return self._go("nade", "gun_back", self._equip_keys(p, self._gun_index(p)),
                             f"a {kind} grenade in hand, nobody on his ground: the gun back")
-        cx = sum(e["pos"][0] for e in group) / len(group)
-        cz = sum(e["pos"][2] for e in group) / len(group)
+        spot = self._nade_landing(p, group, snap)                # where it lands: walkable floor, never the lava
+        if spot is None:
+            self.stats["item_gun_backs"] = self.stats.get("item_gun_backs", 0) + 1
+            return self._go("nade", "gun_back", self._equip_keys(p, self._gun_index(p)),
+                            f"a {kind} grenade in hand, no floor among them to land it on: the gun back")
+        cx, _cy, cz = spot
         self.stats["held_item_throws"] = self.stats.get("held_item_throws", 0) + 1
         self.nade = {"kind": kind, "index": eq, "phase": "face", "at": now, "steps": 0, "to": (cx, cz), "since": now,
-                     "seen": [eq], "back_key": "right", "gun": None, "to_y": min(e["pos"][1] for e in group),
+                     "seen": [eq], "back_key": "right", "gun": None, "to_y": spot[1],
                      "burst": 1, "reason": self.__dict__.get("_flash_reason_now")}
         cam = snap.get("camera")
         vis = [e for e in live if not self.is_blocked(e, now)]
@@ -5992,13 +6007,75 @@ class Bot:
             return hit[2]
         try:
             k = mesh.locate(at)
-            ok = k is not None and abs(mesh.C[k][1] - at[1]) <= NADE_FLOOR_DY and mesh.clear(me, at) is not False
+            ok = (k is not None and abs(mesh.C[k][1] - at[1]) <= NADE_FLOOR_DY and self._floor_at(mesh, at) is not False
+                  and mesh.clear(me, at) is not False)       # (_floor_at: standing on the mesh, not over lava by it)
         except Exception:                                    # noqa: BLE001 - a mesh fault is the floor test alone
             ok = True
         if len(cache) > 256:
             cache.clear()
         cache[tid] = (now, tuple(at), ok)
         return ok
+
+    @staticmethod
+    def _floor_at(mesh, pt, dy: float = NADE_FLOOR_DY) -> bool | None:
+        """True: pt stands on a walkable triangle of the nav mesh (inside it, within dy of the floor's height there);
+        False: no triangle under it - lava, a pit, the void, off the stage; None: this mesh cannot say (no grid)."""
+        grid, verts, tris = getattr(mesh, "grid", None), getattr(mesh, "V", None), getattr(mesh, "T", None)
+        inside = getattr(mesh, "_inside", None)
+        if not isinstance(grid, dict) or verts is None or tris is None or inside is None:
+            return None
+        x, y, z = pt
+        for k in grid.get((int(x // NAV_CELL), int(z // NAV_CELL)), ()):
+            if not inside(k, x, z):
+                continue
+            (ax, ay, az), (bx, by, bz), (cx, cy, cz) = (verts[v][:3] for v in tris[k])
+            det = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz)
+            if abs(det) < 1e-9:
+                h = (ay + by + cy) / 3.0
+            else:                                            # the floor's height under pt (barycentric)
+                wa = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / det
+                wb = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / det
+                h = wa * ay + wb * by + (1.0 - wa - wb) * cy
+            if abs(h - y) <= dy:
+                return True
+        return False
+
+    def _nade_landing(self, p, group, snap) -> tuple | None:
+        """Where this grenade may go (NADE_LAND_SLACK above): the group's centre at their feet when it, the points
+        NADE_LAND_SLACK short and long of it on his line, and the floor from him to it are walkable; else the feet of
+        the one in the group nearest that centre that pass; None: nowhere among them to land it - no throw. Without a
+        mesh the centre (the floor test on each target still holds); a mesh fault is no refusal (as _nade_ground_ok)."""
+        cx = sum(e["pos"][0] for e in group) / len(group)
+        cz = sum(e["pos"][2] for e in group) / len(group)
+        centre = (cx, min(e["pos"][1] for e in group), cz)
+        mesh = snap.get("navmesh") or getattr(self, "_mesh", None)
+        if mesh is None:
+            return centre
+        me = p["pos"]
+
+        def lands(pt) -> bool:
+            try:
+                if self._floor_at(mesh, pt) is False:
+                    return False
+                dx, dz = pt[0] - me[0], pt[2] - me[2]
+                d = math.hypot(dx, dz)
+                if d > 1.0:
+                    for slack in (-NADE_LAND_SLACK, NADE_LAND_SLACK):   # a little short and a little long of it
+                        k = max(0.0, (d + slack) / d)
+                        if self._floor_at(mesh, (me[0] + dx * k, pt[1], me[2] + dz * k)) is False:
+                            return False
+                return mesh.clear(me, pt) is not False
+            except Exception:                                # noqa: BLE001 - a mesh fault: the floor tests alone
+                return True
+        feet = sorted(group, key=lambda e: math.hypot(e["pos"][0] - cx, e["pos"][2] - cz))
+        for i, pt in enumerate([centre] + [tuple(e["pos"]) for e in feet]):
+            if lands(pt):
+                if i:
+                    self.stats["nade_landing_moves"] = self.stats.get("nade_landing_moves", 0) + 1
+                return pt
+        self.stats["nade_landing_skips"] = self.stats.get("nade_landing_skips", 0) + 1
+        self.stats["nade_void_skips"] = self.stats.get("nade_void_skips", 0) + 1
+        return None
 
     def _nade_aim_keys(self, p, n, snap) -> tuple:
         """The right stick while the grenade is readied: the camera's line (mCameraPos -> mTargetPos) onto the ground
@@ -6025,7 +6102,8 @@ class Bot:
         if ((p.get("nades") or {}).get(NADE_TYPES[n["kind"]]) or (0, 0))[1] <= 0:
             return None
         far = [e for e in vis if NADE_MIN_R <= flat(e) <= NADE_MAX_R]
-        return min(far, key=flat) if far else None
+        snap = getattr(self, "_snap", None) or {}
+        return next((e for e in sorted(far, key=flat) if self._nade_landing(p, [e], snap) is not None), None)
 
     def _nade_moved(self, p, now) -> bool:
         """Has he moved on since the last throw cycle - NADE_MOVE_CM from where it stood, or NADE_MOVE_WAIT_S since?"""
