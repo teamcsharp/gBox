@@ -78,9 +78,30 @@ FIRE_SLACK_CM = 60.0                     # a ray ending this much short of him e
 HUMAN = Body(160.0, 110.0, 45.0, 145.0, 36.0)
 KIND_BODIES = {
     "human": HUMAN,
-    "crawler": Body(45.0, 30.0, 0.0, 55.0, 60.0),    # lickers, crawlers: on all fours at his feet
-    "dog": Body(75.0, 55.0, 15.0, 80.0, 50.0),       # dogs
+    "crawler": Body(45.0, 30.0, 0.0, 55.0, 60.0),    # lickers, crawlers: on all fours at his feet (an estimate)
+    "dog": Body(75.0, 55.0, 15.0, 80.0, 50.0),       # dogs (an estimate)
 }
+# #9344 (docs/research/mercs-enemy-aim-heights.md: the RE5 / RE6 Switch class models' skeletons in their bind pose; the
+# rows re-measured from the RomFS 2026-11-10 agree to the 0.1 cm): every human-layout class stands within a head's
+# radius (HEAD_R_CM) of HUMAN's head (Majini 165, J'avo / zombies 160-162, Napad 171, Shrieker 178 cm), so HUMAN stays
+# their body (its chest is the aim point on the body, 110 cm, not the 129-132 cm spine bone the doc names chest; its
+# radius the 36 cm that hits, not the joints' 13-17 cm half spread). The big ones get their own measured body
+# (measured(): re5_switch.MEASURED, re6_switch.MEASURED). The crawlers and dogs (RE5 uEm32 / uEm0b / uEm30, RE6
+# uEm5700, the mutations) are "not determined" there - no human skeleton to read, a bind pose only (RE5's crawler mesh
+# reaches 27.7 cm below its feet: not the pose it crawls in) - so "crawler" and "dog" stay the estimates above.
+
+
+def measured(head: float, chest: float, knee: float, shoulder: float, r: float, floor_r: float = HUMAN.r) -> Body:
+    """A body from #9344's skeleton measures (cm above his feet). r there is half the joints' spread - the joints sit
+    inside the flesh (the human: 17 cm against the 36 cm body that hits) - so the body's radius is never under floor_r
+    (the title's standing radius)."""
+    return Body(float(head), float(chest), float(knee), float(shoulder), max(float(r), float(floor_r)))
+
+
+def differs(b: Body, standing: Body = HUMAN, tol: float = HEAD_R_CM) -> bool:
+    """Whether a measured body stands meaningfully apart from the title's standing one: its head more than a head's
+    radius higher or lower (aimed as a man, the shot would miss it), or its radius more than half again as wide."""
+    return abs(b.head - standing.head) > tol or b.r > 1.5 * standing.r
 
 
 def scaled(b: Body, k: float) -> Body:
