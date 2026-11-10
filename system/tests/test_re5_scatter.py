@@ -127,10 +127,14 @@ def test_the_shared_hook_offers_re5_a_step():
     assert RULE.control(None, {"map_id": "BLUS30491"}) is None          # no PS3 barrage: the rule is Switch work
 
 
-def test_the_re5_automatic_barrage_is_off_until_checkpoint_d_but_the_op_stays():
-    """Checkpoint 0.4: the automatic barrage would be a flash cone outside the operator's one-a-minute cap."""
+def test_the_re5_automatic_barrage_is_on_under_the_flash_clock():
+    """Checkpoint D: the barrage is back on, and every barrage it can draw is a flash, so it obeys FLASH_MIN_GAP_S."""
     from gbox.mercs.titles import re5_switch as R5
-    assert R5.SCATTER is False
-    assert RULE.scatter_policy(R5)["enabled"] is False
-    assert "010018100CD46000" in RULE.SCATTER_TITLES                    # checkpoint D turns it on again
+    assert R5.SCATTER is True
+    assert R5.SCATTER_FLASH_ONLY is True
+    assert R5.scatter_kinds() == ("flash",)
+    policy = RULE.scatter_policy(R5)
+    assert policy["enabled"] is True and policy["flash_only"] is True
+    assert policy["flash_gap_s"] == R5.FLASH_MIN_GAP_S
+    assert "010018100CD46000" in RULE.SCATTER_TITLES
     assert callable(getattr(N.Controller, "grenade_scatter", None))     # the probe route and the operator's button

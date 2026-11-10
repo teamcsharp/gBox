@@ -765,3 +765,52 @@ leaves no cave; truncated/foreign images are refused; the measured RE4 layout is
 
 **Next.** E2: the player unit's per-frame vtable slot (the `0xB09A60` / `0xB0C0A0` class tables are static, so the
 clone-vtable trigger can be designed against the image), then E3/E4/E5. The pinned cave is the one to install into.
+
+## Round 57 (2026-11-10 16:35 CST) - checkpoint D: RE5's barrage back on, under the one flash clock (branch `ds-grenade-re5-scatter-cap-20261110`)
+
+Base: `origin/main` `53cc8962`, which already carries checkpoint 0 and the flash-cap work (`core/flash_window.py`,
+`FLASH_MIN_GAP_S = 60`, `SCATTER_FLASH_ONLY`/`FLASH_TIGHT` for RE6). This lane's checks 0.2/0.3 are in that base too.
+
+**D1 - one clock.** The rule side already had the pieces for a `SCATTER_FLASH_ONLY` title (`flash_rules()` reads
+`FLASH_MIN_GAP_S`, `decide_scatter`'s `flash_only` branch calls `flash_held`, `fire_scatter` stamps). What was missing
+for RE5, and what this branch adds:
+
+- `re5_switch.SCATTER_FLASH_ONLY = True` (its only verified barrage kind is the flash) and
+  `re5_switch.scatter_kinds()` - the title exposes the native verified set, so the rule no longer has to assume it;
+  `re6_switch.scatter_kinds()` does the same for RE6.
+- `scatter_policy()` now carries `kinds` (the title's set, default `("flash",)`), so `decide_scatter` can tell an
+  all-flash barrage from a mixed one; the tests pin `SCATTER_FLASH_ONLY == (scatter_kinds() == ("flash",))` so
+  checkpoint C cannot extend the kinds without revisiting the flag.
+- `decide_scatter()` gate: while the flash clock (`stats["native_flash_confirmed_at"]` / `flash_stamp_at`) is inside
+  `FLASH_MIN_GAP_S`, an all-flash barrage is refused with the same "one every 60 s (FLASH_MIN_GAP_S)" reason the ring
+  uses (and `flash_gap_skips` counts it); a **mixed** barrage instead leaves the flash out (`narrowed`, `kinds` =
+  the non-flash kinds) and may still fire - so a verified hand grenade can answer the moment without breaking the cap.
+- `fire_scatter()` passes the narrowed `kinds` to the controller and stamps `native_flash_confirmed_at` (the shared
+  clock, `stamp_flash`) when the confirmed receipt carried a flash round - not only on the flash-tight early path, so
+  an all-flash barrage on any trigger holds the next automatic flash for the minute.
+- **An operator click is on the same clock.** `interventions.py` already stamped the clock for a clicked ring; a
+  confirmed clicked `grenade_scatter` whose receipt `kinds` include flash now stamps it too, so the bot's own rules
+  wait a minute after the operator's barrage.
+- Both native controllers take `kinds=` for a `random` barrage: each kind must be in `SCATTER_KINDS` (the verified
+  set) or the call refuses before any native work; an explicit kind plus `kinds` is refused. The pre-class-pair
+  fallback still applies (`_require_kind`).
+- **D2:** `re5_switch.SCATTER = True`. The op stays advertised either way; nothing else about it changes.
+
+**Tests.** Focused run (rule, both scatters, both controllers, interventions/worker): **80 passed**. Broad run (the
+CP0 list plus flash-window/aim-book/re6-bomb-mind/re5 autogrenade and the RE4 cave verifier): **247 passed, 0
+failed**. New `tests/test_mercs_scatter_cap.py` (9): RE5 is on and flash-only under its own clock; a closed clock
+refuses the all-flash barrage with the reason and counts the skip; an open clock fires and stamps the clock, and the
+title's own `_flashed_lately` then holds; a mixed barrage inside the gap fires with only the non-flash kind and does
+not stamp; an open clock keeps the full mixed draw; both controllers draw only the narrowed kinds; invalid or empty
+narrowing and narrowing an explicit kind are refused before any native call. `test_re5_scatter.py`'s 0.4 assertion is
+updated to the on-under-clock contract.
+
+**Request: merge `ds-grenade-re5-scatter-cap-20261110`.** The title constant and the rule hot-reload, but
+`interventions.py` (the operator-click stamp) needs a `gbox.service` restart, so merge + restart in one gap as before.
+**Live acceptance (checkpoint D3), on an RE5 MercMode round after that:**
+- one confirmed `grenade_scatter` receipt: `detonated == requested`, every round `>= 400` cm (flash) / `>= 600` cm
+  (explosive), `self_damage 0`, frames and the kill delta;
+- over a block, the telemetry's confirmed flash times are all at least `FLASH_MIN_GAP_S` apart, with
+  `scatters_fired` / `scatter_rounds` / `scatter_kills` moving;
+- if the RE session judges the flash-only barrage not worth having before checkpoint C verifies another kind, say so
+  in the lane log and revert D2 (the fallback the guide allows) rather than living with a cap-breaking barrage.

@@ -68,11 +68,20 @@ PHASE_INTRO, PHASE_PLAYING, PHASE_OVER = 0, 1, 3
 # never fires it; RING_N is the crowd inside a few metres that counts as surrounded; RING_EVERY_S is the cooldown.
 RING, RING_N, RING_EVERY_S, RING_KIND = True, 4, 20.0, "flash"
 # The scatter barrage's own switches (gbox.mercs.grenade_ring.decide_scatter): fired when the going gets tough, at
-# most every SCATTER_EVERY_S, SCATTER_N rounds a barrage. SCATTER is **off** by default (checkpoint 0.4): RE5's
-# automatic barrage is a flash cone until a non-flash kind is verified, and it does not yet read the operator's one
-# flash a minute clock (FLASH_MIN_GAP_S) - checkpoint D turns it back on under that clock. The op itself stays
-# advertised whenever the controller has grenade_scatter, so the probe route and the operator's button still work.
-SCATTER, SCATTER_EVERY_S, SCATTER_N = False, 12.0, 8
+# most every SCATTER_EVERY_S, SCATTER_N rounds a barrage. **On** since checkpoint D (checkpoint 0.4 had it off): the
+# barrage's only verified kind is the flash, so every barrage is a flash cone and SCATTER_FLASH_ONLY puts it on the
+# operator's one-a-minute clock (FLASH_MIN_GAP_S) exactly like the ring - the gate in decide_scatter refuses it inside
+# the minute and fire_scatter stamps the clock on a confirmed flash. When checkpoint C verifies hand or incendiary,
+# SCATTER_KINDS grows and this flag must be revisited (the rule then leaves the flash out of a mixed draw inside the
+# gap instead of refusing; scatter_kinds() below is what it reads).
+SCATTER, SCATTER_EVERY_S, SCATTER_N = True, 12.0, 8
+SCATTER_FLASH_ONLY = True
+
+
+def scatter_kinds() -> tuple:
+    """The kinds a random barrage can draw: the native controller's verified set (the flash today; C extends it)."""
+    from . import re5_switch_native as native
+    return tuple(native.SCATTER_KINDS)
 # The results' rank (static analysis of main, 2026-11-09; gbox/mercs/ss_ledger.py RANKS): the round's end walks the
 # score down a threshold row of main+0x17C1B7C - the third row (SS 400,000 ... C 30,000) when +0xA76 (No Mercy) is set
 # - and stores the rank index at +0x994 (0 SS, 1 S, 2 A, 3 B, 4 C, 5 D) and the exchange points at +0x998. Read at the

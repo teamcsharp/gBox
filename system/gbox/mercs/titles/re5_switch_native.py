@@ -559,7 +559,7 @@ class Controller(N.Controller):
             return {"state": "failed" if detonated == 0 else "uncertain", "verified": False, **receipt}
 
     def grenade_scatter(self, kind="random", *, count=None, toward=None, spread_deg=None, min_cm=None, max_cm=None,
-                        gap_ms=None, safe_cm=None, rng=None):
+                        gap_ms=None, safe_cm=None, rng=None, kinds=None):
         """A scatter barrage: `count` grenades set off at points of a cone from him toward the threats.
 
         The operator (2026-11-10 ~07:00): "i want the bot able to spray a scatter shot of grenades from his postion at
@@ -568,10 +568,11 @@ class Controller(N.Controller):
         its point, the explosion transition), so nothing is equipped and his gun stays in his hand. `toward` is
         [(x, z)] of the threats; without it the cone follows his facing. Rounds run near to far, SCATTER_SPREAD_DEG
         either side, about chest height, SCATTER_GAP_MS apart. kind "random" draws each round from SCATTER_KINDS
-        (only the verified ones: the flash today); an explicit implemented class (hand/incendiary) is the receipt
-        probe and marks the receipt `probe`. An explosive kind keeps every point past safe_cm (his learned reach)
-        and the ring's 600 cm floor; a flash keeps FLASH_PLACE_MIN_CM (400 cm) from him. A partial barrage is
-        uncertain and never replayed.
+        (only the verified ones: the flash today); `kinds` narrows that draw for one barrage (the rule's flash cap
+        leaves the flash out of a mixed draw inside the minute, checkpoint D), and every kind must be in
+        SCATTER_KINDS; an explicit implemented class (hand/incendiary) is the receipt probe and marks the receipt
+        `probe`. An explosive kind keeps every point past safe_cm (his learned reach) and the ring's 600 cm floor; a
+        flash keeps FLASH_PLACE_MIN_CM (400 cm) from him. A partial barrage is uncertain and never replayed.
         """
         import random as _random
         kind = (kind or "random").lower()
@@ -579,7 +580,14 @@ class Controller(N.Controller):
             raise Unavailable(f"unknown grenade kind {kind!r}")
         if kind != "random" and kind not in RING_IMPLEMENTED_KINDS:
             raise Unavailable(RING_KIND_REFUSED.get(kind, "grenade kind not verified"))
-        for planned in (SCATTER_KINDS if kind == "random" else (kind,)):
+        if kinds is not None:
+            if kind != "random":
+                raise Unavailable("a barrage of one explicit kind cannot also narrow its draw")
+            kinds = tuple(str(k).lower() for k in kinds)
+            if not kinds or any(k not in SCATTER_KINDS for k in kinds):
+                raise Unavailable(f"this build's barrage cannot draw {kinds!r} (verified: {SCATTER_KINDS})")
+        draw = (kinds or SCATTER_KINDS) if kind == "random" else (kind,)
+        for planned in draw:
             self._require_kind(planned)
         rng = rng or _random.Random()
         count = max(1, min(int(SCATTER_COUNT_DEFAULT if count is None else count), SCATTER_COUNT_MAX))
@@ -592,8 +600,7 @@ class Controller(N.Controller):
         flash_floor = max(lo, flash_place_min_cm())
         explosive_floor = max(lo, RING_EXPLOSIVE_CLEAR_CM, float(safe_cm or 0.0) + SCATTER_SAFE_CM)
         floors = {"flash": round(flash_floor, 1), "explosive": round(explosive_floor, 1)}
-        planned = SCATTER_KINDS if kind == "random" else (kind,)
-        floor_cm = min(flash_floor if k == "flash" else explosive_floor for k in planned)
+        floor_cm = min(flash_floor if k == "flash" else explosive_floor for k in draw)
         probe = kind != "random" and kind not in RING_VERIFIED_KINDS
         self.ready()
         with self.lock:
@@ -619,7 +626,7 @@ class Controller(N.Controller):
                 self.attach()
                 for i in range(count):
                     self.check()
-                    this = rng.choice(SCATTER_KINDS) if kind == "random" else kind
+                    this = rng.choice(draw) if kind == "random" else kind
                     # + SCATTER_SAFE_CM: the point is built with sin/cos, so the *measured* distance must stay past
                     # the floor the receipt reports, not exactly on it.
                     near = (flash_floor if this == "flash" else explosive_floor) + SCATTER_SAFE_CM
