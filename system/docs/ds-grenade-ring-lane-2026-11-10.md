@@ -819,3 +819,39 @@ that this slot fires every frame. Nothing is claimed live yet; this is the stati
 
 **Next.** E0(c)'s hand-encoded dispatcher (movz/movk, mailbox poll, tail call; checked by capstone round trip and run
 under unicorn) and E3's private storage (RE4's allocator, or a proven-unused `.bss` range).
+
+## Round 56 (2026-11-10 16:25 CST) - checkpoint 0 merged and deployed; the branch re-based on it; live read works
+
+**The PM's merge.** `origin/main` now carries this lane's checkpoint 0: merge `222889e3f` of
+`ds-grenade-merge-20261110` (tip `e621f849`) on top of the flash-cap work (`ef438820`: `core/flash_window.py`,
+`FLASH_MIN_GAP_S = 60`, RE6's tight-situation reasons), and `4fab1f3e` moved the three verify scripts to
+`system/scripts/` because the pre-push guard publishes nothing under `system/tools/`. The PM's note (in
+`ds-i9-grenade-lane-requests-20261110.md` on main) records: targeted tests 629/0 on the merge; deployed to
+lilspark's share; a `gbox.service` restart armed for the end of the current RE6 block; RE5's automatic barrage left
+**off** as this branch set it; the RE6 launcher capture (item 3) still open.
+
+**This branch is re-based on that main** (`265ac34f`), with the E1/E2 work on top: the verify script now resolves at
+`system/scripts/verify_re4_caves.py` (the test points there), and the full relevant suite on the merged tree is
+**286 passed, 1 skipped** (the skip is `test_re4_switch_blasts`'s real-image case). Main's merge changed no code of
+this lane; the E2 slot finding stands.
+
+**The live read path works from the i9.** Read-only `GET http://10.89.1.246:8765/api/sessions/{sid}/interventions` on
+the live RE6 round (`78012a3fd3b146ba-f28ad0a196164cfb`, Ada, Urban Chaos) answered at 16:24:
+
+    available=True, capabilities=[]
+    flash       False  "no living player in an active Mercenaries round"   (the known RE6 stale-base bug)
+    hand        False  "a hand-grenade ring is not yet verified on this build (uWp1091 is known; the compiled spawn
+                        image pins the flash's class)"
+    incendiary  False  "an incendiary-grenade ring is not yet verified on this build (uWp1093 is known; ...)"
+
+That is the pre-restart baseline: the title modules have hot-reloaded the branch code (the reasons are the class
+branch's), while `interventions.py` / `classes.py` still need the armed restart. After it: flash should be available
+and the two kinds' rows should carry the no-receipt reasons (RE5's explicit "no live receipt yet"; RE6's class-branch
+wording names the parameterised pair). The two post-restart reads and the one RE5 flash are the checkpoint-0
+acceptance.
+
+**Next, on a branch from main (the PM's own next step):** D - put RE5's scatter on the one flash clock now live
+(`FLASH_MIN_GAP_S`, `stats["native_flash_confirmed_at"]`): `scatter_policy` reads the gap, `decide_scatter` refuses
+an all-flash barrage while it is closed (and drops the flash from a mixed draw), `fire_scatter` stamps the clock on a
+confirmed flash round; then `re5_switch.SCATTER = True` (D2), with tests. The acceptance barrage is a live RE5 round
+after that branch merges.
