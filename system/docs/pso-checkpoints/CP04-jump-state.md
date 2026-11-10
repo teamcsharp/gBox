@@ -55,3 +55,26 @@ CP03 already exported).
 Tests: none changed (tool only). CP0 baseline unchanged: 45 failed / 1,329 passed / 132 skipped.
 
 Next: CP6 offline (the `.evt` interpreter/opcodes) while the launch path is the RE session's to unblock.
+
+## Correction (round 48): the launch is held by two gates, not by a broken worker
+
+Earlier rounds reported "the i9 worker is online but does not claim the launch". That was the symptom; the plane's own
+reason strings are the cause, and they are **by design**:
+
+1. **`"CPU is at 82.6%; background admission budget is 70%."`** - an agent's `launch_game` is held while the PC's CPU is
+   above 70 %. It was above 70 % *because of this session's own work* (Ghidra/pyghidra runs and the local model). At 60 %
+   the next attempt passed this gate on its own.
+2. **`"Waiting for five minutes without operator input."`** - once the CPU gate passed, the job sat for this instead. The
+   operator was at the machine (this conversation), so the plane holds the automated launch until they have been idle for
+   five minutes. That is the same rule the checkpoint guide states as rule 7 ("live steps only when the operator is
+   away").
+
+Both jobs were cancelled, `/api/sessions?include_ended=false` is empty, and nothing is running or queued - the i9 is as
+it should be.
+
+**What this means for CP4:** nothing needs fixing in the worker or the service. The launch will be admitted when the
+operator has been away for five minutes and the CPU is under 70 %. The driver (`system/tools/pso_boot.py`) and the boot
+walk are ready; the moment the gate opens, `launch` then `walk` then `save-state` runs CP4 end to end.
+
+Jobs measured: `93f4fc790d9a4ba0` (queued 104 s, cancelled), `11b64271c58d4be2` (admission_wait = CPU 82.6 %, cancelled),
+`8d9a2df2aff046f6` (admission_wait = waiting for five minutes without operator input, cancelled).
