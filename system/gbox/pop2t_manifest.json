@@ -1,0 +1,993 @@
+{
+ "source": "/mnt/gbox/hyperspin/Arcade/collections/Nintendo GameCube/roms/Prince of Persia - The Two Thrones (USA).gcz",
+ "source_sha256": "8fd9eaa872a1386b0de6fb4fbca9cfbbbd323a9ea52f913923a598999146ff50",
+ "game_id": "GKME41",
+ "title": "Prince of Persia The Two Thrones",
+ "file_count": 192,
+ "files": [
+  {
+   "name": "ARTWORKS/CHAR/OTHER/CO01.BIK",
+   "offset": 320234872,
+   "size": 15632
+  },
+  {
+   "name": "ARTWORKS/CHAR/OTHER/CO02.BIK",
+   "offset": 320250504,
+   "size": 16012
+  },
+  {
+   "name": "ARTWORKS/CHAR/OTHER/CO03.BIK",
+   "offset": 320266516,
+   "size": 15992
+  },
+  {
+   "name": "ARTWORKS/CHAR/OTHER/CO04.BIK",
+   "offset": 320282508,
+   "size": 16096
+  },
+  {
+   "name": "ARTWORKS/CHAR/OTHER/CO05.BIK",
+   "offset": 320298604,
+   "size": 15816
+  },
+  {
+   "name": "ARTWORKS/CHAR/OTHER/CO06.BIK",
+   "offset": 320314420,
+   "size": 16188
+  },
+  {
+   "name": "ARTWORKS/CHAR/OTHER/CO07.BIK",
+   "offset": 320330608,
+   "size": 16340
+  },
+  {
+   "name": "ARTWORKS/CHAR/OTHER/CO08.BIK",
+   "offset": 320346948,
+   "size": 16232
+  },
+  {
+   "name": "ARTWORKS/CHAR/OTHER/CO09.BIK",
+   "offset": 320363180,
+   "size": 16456
+  },
+  {
+   "name": "ARTWORKS/CHAR/OTHER/CO10.BIK",
+   "offset": 320379636,
+   "size": 16392
+  },
+  {
+   "name": "ARTWORKS/CHAR/OTHER/CO11.BIK",
+   "offset": 320396028,
+   "size": 16288
+  },
+  {
+   "name": "ARTWORKS/CHAR/OTHER/CO12.BIK",
+   "offset": 320412316,
+   "size": 17736
+  },
+  {
+   "name": "ARTWORKS/CHAR/OTHER/CO13.BIK",
+   "offset": 320430052,
+   "size": 14220
+  },
+  {
+   "name": "ARTWORKS/CHAR/OTHER/CO14.BIK",
+   "offset": 320444272,
+   "size": 16100
+  },
+  {
+   "name": "ARTWORKS/CHAR/OTHER/CO15.BIK",
+   "offset": 320460372,
+   "size": 15632
+  },
+  {
+   "name": "ARTWORKS/CHAR/PRINCE/CP01.BIK",
+   "offset": 320476004,
+   "size": 15996
+  },
+  {
+   "name": "ARTWORKS/CHAR/PRINCE/CP02.BIK",
+   "offset": 320492000,
+   "size": 16064
+  },
+  {
+   "name": "ARTWORKS/CHAR/PRINCE/CP03.BIK",
+   "offset": 320508064,
+   "size": 15748
+  },
+  {
+   "name": "ARTWORKS/CHAR/PRINCE/CP04.BIK",
+   "offset": 320523812,
+   "size": 16244
+  },
+  {
+   "name": "ARTWORKS/CHAR/PRINCE/CP05.BIK",
+   "offset": 320540056,
+   "size": 16152
+  },
+  {
+   "name": "ARTWORKS/CHAR/PRINCE/CP06.BIK",
+   "offset": 320556208,
+   "size": 15728
+  },
+  {
+   "name": "ARTWORKS/CHAR/PRINCE/CP07.BIK",
+   "offset": 320571936,
+   "size": 16036
+  },
+  {
+   "name": "ARTWORKS/CHAR/PRINCE/CP08.BIK",
+   "offset": 320587972,
+   "size": 16020
+  },
+  {
+   "name": "ARTWORKS/CHAR/PRINCE/CP09.BIK",
+   "offset": 320603992,
+   "size": 15924
+  },
+  {
+   "name": "ARTWORKS/CHAR/PRINCE/CP10.BIK",
+   "offset": 320619916,
+   "size": 16024
+  },
+  {
+   "name": "ARTWORKS/CHAR/PRINCE/CP11.BIK",
+   "offset": 320635940,
+   "size": 16020
+  },
+  {
+   "name": "ARTWORKS/CHAR/PRINCE/CP12.BIK",
+   "offset": 320651960,
+   "size": 16168
+  },
+  {
+   "name": "ARTWORKS/CHAR/PRINCE/CP13.BIK",
+   "offset": 320668128,
+   "size": 16340
+  },
+  {
+   "name": "ARTWORKS/CHAR/PRINCE/CP14.BIK",
+   "offset": 320684468,
+   "size": 16260
+  },
+  {
+   "name": "ARTWORKS/CHAR/PRINCE/CP15.BIK",
+   "offset": 320700728,
+   "size": 16156
+  },
+  {
+   "name": "ARTWORKS/ILL/SOT/IS01.BIK",
+   "offset": 320716884,
+   "size": 15768
+  },
+  {
+   "name": "ARTWORKS/ILL/SOT/IS02.BIK",
+   "offset": 320732652,
+   "size": 16176
+  },
+  {
+   "name": "ARTWORKS/ILL/SOT/IS03.BIK",
+   "offset": 320748828,
+   "size": 16760
+  },
+  {
+   "name": "ARTWORKS/ILL/SOT/IS04.BIK",
+   "offset": 320765588,
+   "size": 16244
+  },
+  {
+   "name": "ARTWORKS/ILL/SOT/IS05.BIK",
+   "offset": 320781832,
+   "size": 14336
+  },
+  {
+   "name": "ARTWORKS/ILL/SOT/IS06.BIK",
+   "offset": 320796168,
+   "size": 16436
+  },
+  {
+   "name": "ARTWORKS/ILL/SOT/IS07.BIK",
+   "offset": 320812604,
+   "size": 16444
+  },
+  {
+   "name": "ARTWORKS/ILL/SOT/IS08.BIK",
+   "offset": 320829048,
+   "size": 16844
+  },
+  {
+   "name": "ARTWORKS/ILL/SOT/IS09.BIK",
+   "offset": 320845892,
+   "size": 16240
+  },
+  {
+   "name": "ARTWORKS/ILL/SOT/IS10.BIK",
+   "offset": 320862132,
+   "size": 15912
+  },
+  {
+   "name": "ARTWORKS/ILL/SOT/IS11.BIK",
+   "offset": 320878044,
+   "size": 16320
+  },
+  {
+   "name": "ARTWORKS/ILL/SOT/IS12.BIK",
+   "offset": 320894364,
+   "size": 15840
+  },
+  {
+   "name": "ARTWORKS/ILL/SOT/IS13.BIK",
+   "offset": 320910204,
+   "size": 16476
+  },
+  {
+   "name": "ARTWORKS/ILL/SOT/IS14.BIK",
+   "offset": 320926680,
+   "size": 16136
+  },
+  {
+   "name": "ARTWORKS/ILL/T2T/IT01.BIK",
+   "offset": 320942816,
+   "size": 16020
+  },
+  {
+   "name": "ARTWORKS/ILL/T2T/IT02.BIK",
+   "offset": 320958836,
+   "size": 16156
+  },
+  {
+   "name": "ARTWORKS/ILL/T2T/IT03.BIK",
+   "offset": 320974992,
+   "size": 16248
+  },
+  {
+   "name": "ARTWORKS/ILL/T2T/IT04.BIK",
+   "offset": 320991240,
+   "size": 16028
+  },
+  {
+   "name": "ARTWORKS/ILL/T2T/IT05.BIK",
+   "offset": 321007268,
+   "size": 15752
+  },
+  {
+   "name": "ARTWORKS/ILL/T2T/IT06.BIK",
+   "offset": 321023020,
+   "size": 16024
+  },
+  {
+   "name": "ARTWORKS/ILL/T2T/IT07.BIK",
+   "offset": 321039044,
+   "size": 16216
+  },
+  {
+   "name": "ARTWORKS/ILL/T2T/IT08.BIK",
+   "offset": 321055260,
+   "size": 16444
+  },
+  {
+   "name": "ARTWORKS/ILL/T2T/IT09.BIK",
+   "offset": 321071704,
+   "size": 16184
+  },
+  {
+   "name": "ARTWORKS/ILL/T2T/IT10.BIK",
+   "offset": 321087888,
+   "size": 16168
+  },
+  {
+   "name": "ARTWORKS/ILL/T2T/IT11.BIK",
+   "offset": 321104056,
+   "size": 15864
+  },
+  {
+   "name": "ARTWORKS/ILL/T2T/IT12.BIK",
+   "offset": 321119920,
+   "size": 15820
+  },
+  {
+   "name": "ARTWORKS/ILL/T2T/IT13.BIK",
+   "offset": 321135740,
+   "size": 16264
+  },
+  {
+   "name": "ARTWORKS/ILL/T2T/IT14.BIK",
+   "offset": 321152004,
+   "size": 16356
+  },
+  {
+   "name": "ARTWORKS/ILL/T2T/IT15.BIK",
+   "offset": 321168360,
+   "size": 16496
+  },
+  {
+   "name": "ARTWORKS/ILL/WW/IW01.BIK",
+   "offset": 321184856,
+   "size": 16576
+  },
+  {
+   "name": "ARTWORKS/ILL/WW/IW02.BIK",
+   "offset": 321201432,
+   "size": 16000
+  },
+  {
+   "name": "ARTWORKS/ILL/WW/IW03.BIK",
+   "offset": 321217432,
+   "size": 16236
+  },
+  {
+   "name": "ARTWORKS/ILL/WW/IW04.BIK",
+   "offset": 321233668,
+   "size": 16040
+  },
+  {
+   "name": "ARTWORKS/ILL/WW/IW05.BIK",
+   "offset": 321249708,
+   "size": 16284
+  },
+  {
+   "name": "ARTWORKS/ILL/WW/IW06.BIK",
+   "offset": 321265992,
+   "size": 15616
+  },
+  {
+   "name": "ARTWORKS/ILL/WW/IW07.BIK",
+   "offset": 321281608,
+   "size": 15996
+  },
+  {
+   "name": "ARTWORKS/ILL/WW/IW08.BIK",
+   "offset": 321297604,
+   "size": 15988
+  },
+  {
+   "name": "ARTWORKS/ILL/WW/IW09.BIK",
+   "offset": 321313592,
+   "size": 16292
+  },
+  {
+   "name": "ARTWORKS/ILL/WW/IW10.BIK",
+   "offset": 321329884,
+   "size": 16164
+  },
+  {
+   "name": "ARTWORKS/ILL/WW/IW11.BIK",
+   "offset": 321346048,
+   "size": 16312
+  },
+  {
+   "name": "ARTWORKS/ILL/WW/IW12.BIK",
+   "offset": 321362360,
+   "size": 16324
+  },
+  {
+   "name": "ARTWORKS/ILL/WW/IW13.BIK",
+   "offset": 321378684,
+   "size": 16452
+  },
+  {
+   "name": "ARTWORKS/ILL/WW/IW14.BIK",
+   "offset": 321395136,
+   "size": 16164
+  },
+  {
+   "name": "ARTWORKS/ILL/WW/IW15.BIK",
+   "offset": 321411300,
+   "size": 15496
+  },
+  {
+   "name": "BannerGC.tpl",
+   "offset": 321426796,
+   "size": 3680
+  },
+  {
+   "name": "Banneropen.tpl",
+   "offset": 321430476,
+   "size": 3680
+  },
+  {
+   "name": "CREDITS.BIK",
+   "offset": 321434156,
+   "size": 77754064
+  },
+  {
+   "name": "GC_LOAD.BIK",
+   "offset": 399188220,
+   "size": 595924
+  },
+  {
+   "name": "GO_GEN.BIK",
+   "offset": 399784144,
+   "size": 1226416
+  },
+  {
+   "name": "IconGC.tpl",
+   "offset": 401010560,
+   "size": 1632
+  },
+  {
+   "name": "LOGORP.BIK",
+   "offset": 401012192,
+   "size": 1415452
+  },
+  {
+   "name": "MENU/ENGLISH/Fonts/POP3_24.mft",
+   "offset": 402427644,
+   "size": 6801
+  },
+  {
+   "name": "MENU/ENGLISH/P3COMMON.mgb",
+   "offset": 402434448,
+   "size": 21791
+  },
+  {
+   "name": "MENU/ENGLISH/P3INGAME.mgb",
+   "offset": 402456240,
+   "size": 26964
+  },
+  {
+   "name": "MENU/ENGLISH/P3MAIN.mgb",
+   "offset": 402483204,
+   "size": 29231
+  },
+  {
+   "name": "MENU/ENGLISH/US/GSGC.mgb",
+   "offset": 402512436,
+   "size": 2165
+  },
+  {
+   "name": "MENU/ENGLISH/US/MENU.mgb",
+   "offset": 402514604,
+   "size": 1657
+  },
+  {
+   "name": "MENU/ENGLISH/US/SGGC.mgb",
+   "offset": 402516264,
+   "size": 4145
+  },
+  {
+   "name": "MENU/ENGLISH/US/SVNMS.mgb",
+   "offset": 402520412,
+   "size": 2099
+  },
+  {
+   "name": "MENU/ENGLISH/US/SVPTS.mgb",
+   "offset": 402522512,
+   "size": 2061
+  },
+  {
+   "name": "MENU/ENGLISH/US/T100.mgb",
+   "offset": 402524576,
+   "size": 3653
+  },
+  {
+   "name": "MENU/ENGLISH/US/T110.mgb",
+   "offset": 402528232,
+   "size": 1513
+  },
+  {
+   "name": "MENU/ENGLISH/US/T200.mgb",
+   "offset": 402529748,
+   "size": 1993
+  },
+  {
+   "name": "MENU/ENGLISH/US/T300.mgb",
+   "offset": 402531744,
+   "size": 1109
+  },
+  {
+   "name": "MENU/ENGLISH/US/T310.mgb",
+   "offset": 402532856,
+   "size": 1275
+  },
+  {
+   "name": "MENU/ENGLISH/US/T320.mgb",
+   "offset": 402534132,
+   "size": 1067
+  },
+  {
+   "name": "MENU/ENGLISH/US/T400.mgb",
+   "offset": 402535200,
+   "size": 365
+  },
+  {
+   "name": "MENU/ENGLISH/US/T610.mgb",
+   "offset": 402535568,
+   "size": 369
+  },
+  {
+   "name": "MENU/ENGLISH/US/TE.mgb",
+   "offset": 402535940,
+   "size": 1685
+  },
+  {
+   "name": "MENU/ENGLISH/US/TEGC.mgb",
+   "offset": 402537628,
+   "size": 1749
+  },
+  {
+   "name": "MENU/ENGLISH/US/TFI.mgb",
+   "offset": 402539380,
+   "size": 895
+  },
+  {
+   "name": "MENU/ENGLISH/US/TSG.mgb",
+   "offset": 402540276,
+   "size": 1619
+  },
+  {
+   "name": "MENU/ENGLISH/US/TSK.mgb",
+   "offset": 402541896,
+   "size": 1971
+  },
+  {
+   "name": "MENU/ENGLISH/US/TSPC.mgb",
+   "offset": 402543868,
+   "size": 1335
+  },
+  {
+   "name": "MENU/ENGLISH/US/TWC.mgb",
+   "offset": 402545204,
+   "size": 2453
+  },
+  {
+   "name": "MENU/FRENCH/Fonts/POP3_24.mft",
+   "offset": 402547660,
+   "size": 6801
+  },
+  {
+   "name": "MENU/FRENCH/P3COMMON.mgb",
+   "offset": 402554464,
+   "size": 22021
+  },
+  {
+   "name": "MENU/FRENCH/P3INGAME.mgb",
+   "offset": 402576488,
+   "size": 28618
+  },
+  {
+   "name": "MENU/FRENCH/P3MAIN.mgb",
+   "offset": 402605108,
+   "size": 29379
+  },
+  {
+   "name": "MENU/FRENCH/US/GSGC.mgb",
+   "offset": 402634488,
+   "size": 2279
+  },
+  {
+   "name": "MENU/FRENCH/US/MENU.mgb",
+   "offset": 402636768,
+   "size": 1763
+  },
+  {
+   "name": "MENU/FRENCH/US/SGGC.mgb",
+   "offset": 402638532,
+   "size": 5231
+  },
+  {
+   "name": "MENU/FRENCH/US/SVNMS.mgb",
+   "offset": 402643764,
+   "size": 2181
+  },
+  {
+   "name": "MENU/FRENCH/US/SVPTS.mgb",
+   "offset": 402645948,
+   "size": 2113
+  },
+  {
+   "name": "MENU/FRENCH/US/T100.mgb",
+   "offset": 402648064,
+   "size": 5127
+  },
+  {
+   "name": "MENU/FRENCH/US/T110.mgb",
+   "offset": 402653192,
+   "size": 2045
+  },
+  {
+   "name": "MENU/FRENCH/US/T200.mgb",
+   "offset": 402655240,
+   "size": 2605
+  },
+  {
+   "name": "MENU/FRENCH/US/T300.mgb",
+   "offset": 402657848,
+   "size": 1579
+  },
+  {
+   "name": "MENU/FRENCH/US/T310.mgb",
+   "offset": 402659428,
+   "size": 1717
+  },
+  {
+   "name": "MENU/FRENCH/US/T320.mgb",
+   "offset": 402661148,
+   "size": 1339
+  },
+  {
+   "name": "MENU/FRENCH/US/T400.mgb",
+   "offset": 402662488,
+   "size": 435
+  },
+  {
+   "name": "MENU/FRENCH/US/T610.mgb",
+   "offset": 402662924,
+   "size": 427
+  },
+  {
+   "name": "MENU/FRENCH/US/TE.mgb",
+   "offset": 402663352,
+   "size": 1923
+  },
+  {
+   "name": "MENU/FRENCH/US/TEGC.mgb",
+   "offset": 402665276,
+   "size": 1967
+  },
+  {
+   "name": "MENU/FRENCH/US/TFI.mgb",
+   "offset": 402667244,
+   "size": 1137
+  },
+  {
+   "name": "MENU/FRENCH/US/TSG.mgb",
+   "offset": 402668384,
+   "size": 2075
+  },
+  {
+   "name": "MENU/FRENCH/US/TSK.mgb",
+   "offset": 402670460,
+   "size": 2403
+  },
+  {
+   "name": "MENU/FRENCH/US/TSPC.mgb",
+   "offset": 402672864,
+   "size": 1455
+  },
+  {
+   "name": "MENU/FRENCH/US/TWC.mgb",
+   "offset": 402674320,
+   "size": 2789
+  },
+  {
+   "name": "MENU/SPANISH/Fonts/POP3_24.mft",
+   "offset": 402677112,
+   "size": 6801
+  },
+  {
+   "name": "MENU/SPANISH/P3COMMON.mgb",
+   "offset": 402683916,
+   "size": 22009
+  },
+  {
+   "name": "MENU/SPANISH/P3INGAME.mgb",
+   "offset": 402705928,
+   "size": 28540
+  },
+  {
+   "name": "MENU/SPANISH/P3MAIN.mgb",
+   "offset": 402734468,
+   "size": 29403
+  },
+  {
+   "name": "MENU/SPANISH/US/GSGC.mgb",
+   "offset": 402763872,
+   "size": 2197
+  },
+  {
+   "name": "MENU/SPANISH/US/MENU.mgb",
+   "offset": 402766072,
+   "size": 1633
+  },
+  {
+   "name": "MENU/SPANISH/US/SGGC.mgb",
+   "offset": 402767708,
+   "size": 5199
+  },
+  {
+   "name": "MENU/SPANISH/US/SVNMS.mgb",
+   "offset": 402772908,
+   "size": 2219
+  },
+  {
+   "name": "MENU/SPANISH/US/SVPTS.mgb",
+   "offset": 402775128,
+   "size": 2165
+  },
+  {
+   "name": "MENU/SPANISH/US/T100.mgb",
+   "offset": 402777296,
+   "size": 4537
+  },
+  {
+   "name": "MENU/SPANISH/US/T110.mgb",
+   "offset": 402781836,
+   "size": 1837
+  },
+  {
+   "name": "MENU/SPANISH/US/T200.mgb",
+   "offset": 402783676,
+   "size": 2283
+  },
+  {
+   "name": "MENU/SPANISH/US/T300.mgb",
+   "offset": 402785960,
+   "size": 1377
+  },
+  {
+   "name": "MENU/SPANISH/US/T310.mgb",
+   "offset": 402787340,
+   "size": 1531
+  },
+  {
+   "name": "MENU/SPANISH/US/T320.mgb",
+   "offset": 402788872,
+   "size": 1199
+  },
+  {
+   "name": "MENU/SPANISH/US/T400.mgb",
+   "offset": 402790072,
+   "size": 425
+  },
+  {
+   "name": "MENU/SPANISH/US/T610.mgb",
+   "offset": 402790500,
+   "size": 395
+  },
+  {
+   "name": "MENU/SPANISH/US/TE.mgb",
+   "offset": 402790896,
+   "size": 1917
+  },
+  {
+   "name": "MENU/SPANISH/US/TEGC.mgb",
+   "offset": 402792816,
+   "size": 2005
+  },
+  {
+   "name": "MENU/SPANISH/US/TFI.mgb",
+   "offset": 402794824,
+   "size": 1055
+  },
+  {
+   "name": "MENU/SPANISH/US/TSG.mgb",
+   "offset": 402795880,
+   "size": 1859
+  },
+  {
+   "name": "MENU/SPANISH/US/TSK.mgb",
+   "offset": 402797740,
+   "size": 2293
+  },
+  {
+   "name": "MENU/SPANISH/US/TSPC.mgb",
+   "offset": 402800036,
+   "size": 1401
+  },
+  {
+   "name": "MENU/SPANISH/US/TWC.mgb",
+   "offset": 402801440,
+   "size": 2631
+  },
+  {
+   "name": "NINTENDO.BIK",
+   "offset": 402804072,
+   "size": 16432
+  },
+  {
+   "name": "opening.bnr",
+   "offset": 402820504,
+   "size": 6496
+  },
+  {
+   "name": "P3C_010.bik",
+   "offset": 402827000,
+   "size": 45549828
+  },
+  {
+   "name": "P3C_020.bik",
+   "offset": 448376828,
+   "size": 33682900
+  },
+  {
+   "name": "P3C_030.bik",
+   "offset": 482059728,
+   "size": 5573016
+  },
+  {
+   "name": "P3C_040.bik",
+   "offset": 487632744,
+   "size": 9998844
+  },
+  {
+   "name": "P3C_050.bik",
+   "offset": 497631588,
+   "size": 33007304
+  },
+  {
+   "name": "P3C_060.bik",
+   "offset": 530638892,
+   "size": 27147400
+  },
+  {
+   "name": "P3C_070.bik",
+   "offset": 557786292,
+   "size": 16801080
+  },
+  {
+   "name": "pop3.bf",
+   "offset": 574587372,
+   "size": 359079936
+  },
+  {
+   "name": "soundgc.big",
+   "offset": 933667308,
+   "size": 489548624
+  },
+  {
+   "name": "soundgc.fat",
+   "offset": 1423215932,
+   "size": 6260
+  },
+  {
+   "name": "UBIMC.BIK",
+   "offset": 1423222192,
+   "size": 1488988
+  },
+  {
+   "name": "UBISOFT.BIK",
+   "offset": 1424711180,
+   "size": 1430704
+  },
+  {
+   "name": "UPGRADE/0/CRED100.BIK",
+   "offset": 1426141884,
+   "size": 874012
+  },
+  {
+   "name": "UPGRADE/0/CRED150.BIK",
+   "offset": 1427015896,
+   "size": 874360
+  },
+  {
+   "name": "UPGRADE/0/CRED200.BIK",
+   "offset": 1427890256,
+   "size": 874068
+  },
+  {
+   "name": "UPGRADE/0/EYESTORM.BIK",
+   "offset": 1428764324,
+   "size": 881128
+  },
+  {
+   "name": "UPGRADE/0/RECALL.BIK",
+   "offset": 1429645452,
+   "size": 869584
+  },
+  {
+   "name": "UPGRADE/0/SNDSTORM.BIK",
+   "offset": 1430515036,
+   "size": 874060
+  },
+  {
+   "name": "UPGRADE/0/TANK.BIK",
+   "offset": 1431389096,
+   "size": 872964
+  },
+  {
+   "name": "UPGRADE/0/WINDS.BIK",
+   "offset": 1432262060,
+   "size": 878436
+  },
+  {
+   "name": "UPGRADE/1/CRED100.bik",
+   "offset": 1433140496,
+   "size": 872072
+  },
+  {
+   "name": "UPGRADE/1/CRED150.bik",
+   "offset": 1434012568,
+   "size": 871440
+  },
+  {
+   "name": "UPGRADE/1/CRED200.bik",
+   "offset": 1434884008,
+   "size": 871924
+  },
+  {
+   "name": "UPGRADE/1/EYESTORM.bik",
+   "offset": 1435755932,
+   "size": 879084
+  },
+  {
+   "name": "UPGRADE/1/RECALL.bik",
+   "offset": 1436635016,
+   "size": 877408
+  },
+  {
+   "name": "UPGRADE/1/SNDSTORM.bik",
+   "offset": 1437512424,
+   "size": 877788
+  },
+  {
+   "name": "UPGRADE/1/TANK.bik",
+   "offset": 1438390212,
+   "size": 878404
+  },
+  {
+   "name": "UPGRADE/1/WINDS.bik",
+   "offset": 1439268616,
+   "size": 877968
+  },
+  {
+   "name": "UPGRADE/2/CRED100.bik",
+   "offset": 1440146584,
+   "size": 871428
+  },
+  {
+   "name": "UPGRADE/2/CRED150.bik",
+   "offset": 1441018012,
+   "size": 871704
+  },
+  {
+   "name": "UPGRADE/2/CRED200.bik",
+   "offset": 1441889716,
+   "size": 872184
+  },
+  {
+   "name": "UPGRADE/2/EYESTORM.bik",
+   "offset": 1442761900,
+   "size": 870592
+  },
+  {
+   "name": "UPGRADE/2/RECALL.bik",
+   "offset": 1443632492,
+   "size": 871392
+  },
+  {
+   "name": "UPGRADE/2/SNDSTORM.bik",
+   "offset": 1444503884,
+   "size": 873060
+  },
+  {
+   "name": "UPGRADE/2/TANK.bik",
+   "offset": 1445376944,
+   "size": 875860
+  },
+  {
+   "name": "UPGRADE/2/WINDS.bik",
+   "offset": 1446252804,
+   "size": 875132
+  },
+  {
+   "name": "VIDEO06.BIK",
+   "offset": 1447127936,
+   "size": 12850296
+  }
+ ],
+ "extensions": {
+  "bik": 113,
+  "tpl": 3,
+  "mft": 3,
+  "mgb": 69,
+  "bnr": 1,
+  "bf": 1,
+  "big": 1,
+  "fat": 1
+ },
+ "heads": {
+  "soundgc.big": "00150000000001260000038a0000000100005d9800000000ffffffff001700070000000b000000000000000000000005000000000000000d0000000000000000",
+  "pop3.bf": "4249470026000000101a0000050000000000000000000000ffffffffffffffff715c0300010000008e0000cc101a00000500000044000000ffffffff00000000",
+  "MENU/SPANISH/P3MAIN.mgb": "4d41474d41ab0000cd0000000f00028001c000000012743913c9000000125c546578747572655c4672616d652e74676100000000004000408e1d42770000001a",
+  "MENU/FRENCH/P3MAIN.mgb": "4d41474d41ab0000cd0000000f00028001c000000012743913c9000000125c546578747572655c4672616d652e74676100000000004000408e1d42770000001a",
+  "MENU/ENGLISH/P3MAIN.mgb": "4d41474d41ab0000cd0000000f00028001c000000012743913c9000000125c546578747572655c4672616d652e74676100000000004000408e1d42770000001a",
+  "MENU/FRENCH/P3INGAME.mgb": "4d41474d41ab0000cd0000000f00028001c0000000010e629a6e000000165c546578747572655c53746f6e65506167652e746761000000000020002000000000",
+  "MENU/SPANISH/P3INGAME.mgb": "4d41474d41ab0000cd0000000f00028001c0000000010e629a6e000000165c546578747572655c53746f6e65506167652e746761000000000020002000000000",
+  "MENU/ENGLISH/P3INGAME.mgb": "4d41474d41ab0000cd0000000f00028001c0000000010e629a6e000000165c546578747572655c53746f6e65506167652e746761000000000020002000000000",
+  "MENU/FRENCH/P3COMMON.mgb": "4d41474d41ab0000cd0000000f00028001c00000000cdd1be078000000135c546578747572655c4172726f77732e7467610000000000200020dc3dfd5b000000",
+  "MENU/SPANISH/P3COMMON.mgb": "4d41474d41ab0000cd0000000f00028001c00000000cdd1be078000000135c546578747572655c4172726f77732e7467610000000000200020dc3dfd5b000000",
+  "MENU/ENGLISH/P3COMMON.mgb": "4d41474d41ab0000cd0000000f00028001c00000000cdd1be078000000135c546578747572655c4172726f77732e7467610000000000200020dc3dfd5b000000",
+  "MENU/ENGLISH/Fonts/POP3_24.mft": "4d61676d6120466f6e7400008fabcd504f50335f3234000000007c00000124000001da00000382000004c60000062a00000778000007f2000008860000091c00"
+ }
+}
