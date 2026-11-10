@@ -39,6 +39,7 @@ import threading
 import time
 
 from .. import tuning                      # learned per-stage constants and dead ends (gbox/mercs/tuning.py)
+from .. import ss_ledger                   # the SS campaign: the round's clock, its rank, its stage and character
 from pathlib import Path
 from ..bot_look import BotLook, make_target
 from ..driver import Driver
@@ -56,6 +57,12 @@ MAIN_GAMESYS = 0x584E0
 GS_PHASE, GS_TIMER, GS_START, GS_KILLS = 0x944, 0x948, 0x94C, 0x96C
 GS_COMBO_ON, GS_COMBO, GS_MAX_COMBO, GS_COMBO_T, GS_SCORE = 0x970, 0x974, 0x978, 0x97C, 0x990
 PHASE_INTRO, PHASE_PLAYING, PHASE_OVER = 0, 1, 3
+# The results' rank (static analysis of main, 2026-11-09; gbox/mercs/ss_ledger.py RANKS): the round's end walks the
+# score down a threshold row of main+0x17C1B7C - the third row (SS 400,000 ... C 30,000) when +0xA76 (No Mercy) is set
+# - and stores the rank index at +0x994 (0 SS, 1 S, 2 A, 3 B, 4 C, 5 D) and the exchange points at +0x998. Read at the
+# results only (phase over) and recorded beside the score's own rank (ss_ledger.result_rank): a rank goes into the
+# round's result_rank only when the two agree.
+GS_RANK, GS_RANK_POINTS, GS_NO_MERCY = 0x994, 0x998, 0xA76
 P_FIRST, P_POS, P_ROT, P_HP = 0x30, 0x60, 0x70, 0x1EB8
 P_MOTION = 0x8F8                         # u8 motion (also at +0x2550), live 2026-10-26 (rounds v2c / v2d): 0 standing,
                                          # 1 walking, 7 backing up, 9 / 10 turning, 22 the gun coming up, 26 aimed, 29 a
@@ -108,6 +115,7 @@ ALERTS = {0x33: "alert_leaderboard",     # "Connect to the Leaderboards and subm
           0x09: "alert_ok",              # "Save successful." (after Continue? No, and after the results): A = OK
           0x08: "alert_ok"}              # "Load successful.": A = OK
 MENU_CURSOR, MENU_SUB, EXTRA_CURSOR, MODE_CURSOR, PLAYER_CURSOR = 0x74, 0x1C4, 0x1D8, 0x1C8, 0x1D0
+CONTINUE_INPUT, CONTINUE_TAKES_INPUT = 0x1EC, 2   # uIdGameover00 +0x1EC reads 2 once the dialog takes input (live 10-26)
 CONTINUE_CURSOR, CONTINUE_YES, CONTINUE_NO = 0x1CC, 0, 1   # uIdGameover00 "Continue?": +0x1CC 0 Yes / 1 No: Yes
                                          # replays the round at once, No saves and goes to the selects (live 2026-10-26);
                                          # A goes in only with the cursor read on the answer the pace wants
@@ -119,11 +127,41 @@ CONTINUE_CURSOR, CONTINUE_YES, CONTINUE_NO = 0x1CC, 0, 1   # uIdGameover00 "Cont
 REPLAY_ON_DEATH = False                  # (operator 18:03: "a random character / costume each and every round ... and
                                          # level": a death answers No and walks the selects too - never the same round)
 FRESH_ROUND_S = 3.0                      # a clock this close to the round's full time on the first tick alive: it began
+# The one menu skip RAM shows for certain (docs/research/re5-instant-menus.md): "Continue? Yes" restarts the same stage
+# with the same character at once - no save, no results, no selects, no stage load. With REPLAY_ON_DEATH off it is still
+# taken when the next round would be exactly this one anyway: the operator's mercs_select fixed both the stage and the
+# character (SELECTION) and the round that just ended was on them (the stage cycle's record of what the selects
+# confirmed). Never while the icon panel's rotation or a DJ pick owns the next round (round_controls: managed), never
+# under the random cycle (it never repeats a stage), never without that record.
+REPLAY_SAME_ROUND = True
 
 
-def continue_target() -> int:
-    """The "Continue?" answer the pace wants: Yes (replay) unless REPLAY_ON_DEATH is off."""
-    return CONTINUE_YES if REPLAY_ON_DEATH else CONTINUE_NO
+def same_round_next(m=None) -> bool:
+    """Whether the next round's stage and character are this round's (so Continue? Yes is the whole menu walk)."""
+    try:
+        from ..round_controls import for_memory
+        control = for_memory(m)
+        if control is not None and control.managed:
+            return False
+    except Exception:                                    # noqa: BLE001 - no controls: the module's own pick decides
+        pass
+    if not CYCLE or "stage" not in SELECTION or "character" not in SELECTION:
+        return False
+    last = _CYCLE["c"].last if "c" in _CYCLE else None
+    return last is not None and tuple(last) == (int(SELECTION["stage"]), int(SELECTION["character"]))
+
+
+def continue_target(m=None) -> int:
+    """The "Continue?" answer the pace wants: Yes (replay) with REPLAY_ON_DEATH on, or when the next round is this one
+    (REPLAY_SAME_ROUND: the skip of save, results, both selects and the load); No otherwise."""
+    if REPLAY_ON_DEATH:
+        return CONTINUE_YES
+    try:
+        if REPLAY_SAME_ROUND and same_round_next(m):
+            return CONTINUE_YES
+    except Exception:                                    # noqa: BLE001 - any doubt: the walk through the selects
+        pass
+    return CONTINUE_NO
 MAIN_PLAY_GAME, PLAY_EXTRA_CONTENT, EXTRA_MERCENARIES, MODE_NO_MERCY = 0, 1, 0, 3
 STAGE_TARGET, PLAYER_TARGET = 0, 0       # Public Assembly, Chris (BSAA): the selects' first entries
 # The operator's next-round choice (the PS3 tool's mercs_select, re5_switch_mods.mercs_select): the stage and character
@@ -139,6 +177,12 @@ CHARACTERS = ("Chris (BSAA)", "Chris (Safari)", "Chris (STARS)", "Sheva (BSAA)",
 # used"). The names are labels for the stats; what the bot must NOT do is stop at index 9. The screen's own cursor is
 # an integer over every entry, so the roster size is learned from the game - walked to its wrap, persisted in the
 # cycle file - and every entry then takes part in the rotation. Until it is known, the whole plausible range is used.
+# The player object's RAM class names its character by number (uPl00ChrisNormal ...; the RomFS player archives are named
+# after these classes: uPl00Chris*, uPl01Sheba*, uPl02Jill, uPl03Wesker, uPl04Josh, uPl05Excella, uPl06Barry,
+# uPl07Rebecca - docs/research/re5-switch-ram.md). The costume is not read from it: RE5Switch._identity uses the
+# number only to check (or, with nothing else, name) the character.
+PLAYER_FAMILIES = {"00": "Chris", "01": "Sheva", "02": "Jill", "03": "Wesker", "04": "Josh", "05": "Excella",
+                   "06": "Barry", "07": "Rebecca"}
 CHARACTER_SLOTS = 0                 # learned entry count of the select screen (0 = not learned yet)
 CHARACTER_SLOTS_MAX = 64            # a hard ceiling for the walk (far above any real page count)
 FORWARD_KEYS = ("dright",)          # the button that moves the select cursor right (CURSORED's forward)
@@ -162,6 +206,11 @@ CYCLE, CYCLE_MAX_PRESSES = True, 14
 # select, and the stall there is what teaches the true count. 40 is a hard ceiling, not a target - a select with fewer entries
 # stalls long before it, and a cursor that is never read cannot loop forever.
 CALIBRATE_PRESSES = 40
+WRAP_MIN_ENTRY = 3                  # a wrap is learned only from a press at this entry or further (a 4+ entry roster)
+# A forward walk whose cursor RAM shows standing still through STALL_PRESSES forward presses for STALL_S or longer is at
+# the select's end: the walk confirms the entry it rests on now, as CALIBRATE_PRESSES would ~30 presses later (the same
+# entry; a moving walk is never cut short - that cost a mid-roster character and half the score once).
+STALL_PRESSES, STALL_S = 3, 2.0
 
 
 class StageCycle:
@@ -205,6 +254,15 @@ class StageCycle:
                 and cursor == pending[0] and cursor + 1 > len(CHARACTERS) and CHARACTER_SLOTS <= 1):
             CHARACTER_SLOTS = cursor + 1                        # right at the end and the cursor did not move
             self.save()
+        # A forward press that lands on 0 from WRAP_MIN_ENTRY or further wrapped past the last entry (2026-11-09: the
+        # rule above needs more entries than the 14 names, so a 10-entry select never taught its count - every visit
+        # walked CALIBRATE_PRESSES presses round and round and confirmed where it began: 11-07, 51 rounds of 53 on
+        # "Jill (Battle Suit)", 44-48 presses a gap). The press is this visit's own (note_press), never a reopened
+        # select's first read, so the "count of 2" of a reopen at 0 cannot come from here.
+        if (pending is not None and pending[1] in FORWARD_KEYS and cursor == 0 and cursor != pending[0]
+                and pending[0] >= WRAP_MIN_ENTRY and CHARACTER_SLOTS <= 1):
+            CHARACTER_SLOTS = pending[0] + 1
+            self.save()
         # a WRAP during the calibration walk: pressing right only ever increases the cursor, so the first time it falls
         # back from its highest value the walk has gone past the last entry and the count is one past that maximum
         if (CHARACTER_SLOTS <= 1 and self.prev_cursor is not None and cursor < self.prev_cursor
@@ -214,11 +272,33 @@ class StageCycle:
         if cursor > self.max_cursor:
             self.max_cursor = cursor
         self.prev_cursor = cursor
-        self.pending = None
+        if pending is None or cursor != pending[0] or pending[1] not in FORWARD_KEYS:
+            self.pending = None                             # (a forward press RAM has not shown yet is kept for its wrap)
 
     def note_press(self, cursor: int, key: str) -> None:
-        """Remember the cursor and key of a press, so observe_cursor can tell a stall from a move."""
+        """Remember the cursor and key of a press, so observe_cursor can tell a stall from a move; a forward press on
+        the cursor the last forward press was made on (the Navigator presses again only when RAM never showed the last
+        one move it) counts towards the walk's stall."""
         self.pending = (cursor, key)
+        if key in FORWARD_KEYS:
+            clock = getattr(self, "clock", None) or time.monotonic
+            if getattr(self, "fwd_cursor", None) == cursor:
+                self.stalls = getattr(self, "stalls", 0) + 1
+                if getattr(self, "stall_since", None) is None:
+                    self.stall_since = clock()
+            else:
+                self.stalls, self.stall_since = 0, None
+            self.fwd_cursor = cursor
+
+    def stalled(self) -> bool:
+        """The forward walk has stood still (STALL_PRESSES presses over STALL_S at one cursor): the select's end."""
+        clock = getattr(self, "clock", None) or time.monotonic
+        since = getattr(self, "stall_since", None)
+        return getattr(self, "stalls", 0) >= STALL_PRESSES and since is not None and clock() - since >= STALL_S
+
+    def visit(self) -> None:
+        """A new walk on a select (or its A): the stall count starts again."""
+        self.stalls, self.stall_since, self.fwd_cursor = 0, None, None
 
     def save(self) -> None:
         if self.path is None:
@@ -355,6 +435,36 @@ MENU_HANDOFF = ("results", "alert_ok", "alert_leaderboard", "alert", "select_sta
 CURSORED = {"main_menu": ("dup", "ddown"), "play_game": ("dup", "ddown"), "extra_content": ("dup", "ddown"),
             "dead": ("dleft", "dright"),
             "mercs_mode": ("dup", "ddown"), "select_stage": ("dleft", "dright"), "select_player": ("dleft", "dright")}
+
+# Instant menus (operator 2026-11-09: "I need the bot able to flip RAM switches and byte states in the game to get
+# wherever it needs to go as fast as possible ... It is important that the bot learns and navigates menus stronger and
+# faster each time"; docs/research/re5-instant-menus.md). On a menu whose cursor the walk already reads, menu_assist
+# writes the cursor integer the game reads instead of stepping to it option by option, reads it back, waits until a
+# later read (JUMP_HOLD_S on) shows the game kept it, and only then lets the Navigator press. The first JUMP_PROVE_N
+# jumps of a screen write the entry NEXT to the target and let one native D-pad step land on it: the game's own step
+# moving off the written index onto the target proves the game takes that integer as its cursor (a field it ignored
+# would step from its real index instead). After that the screen writes the target itself and confirms with one A. A
+# write that does not hold, or a step that lands elsewhere, is a failure: that visit steps option by option, and a
+# screen with JUMP_FAIL_N failures more than proofs stops jumping (persisted in the menu_speed profile; MENU_JUMPS off
+# and on again clears it). Only entries known to exist are written: the fixed lists' sizes below, and on the character
+# select (two pages, its count still learned) the largest index the game's own cursor has shown there.
+MENU_JUMPS = True                        # the bot_logic knob: RAM cursor jumps on the menus (off: option by option)
+MENU_LEARN = True                        # the per-screen learned waits (gbox.mercs.menu_speed hints; off: the fixed ones)
+JUMP_PROVE_N = 3                         # approach jumps the game's own step must confirm before direct writes
+JUMP_FAIL_N = 2                          # failures (more than the proofs) before a screen goes back to stepping
+JUMP_MIN_GAP = 2                         # an approach jump only saves presses this many entries or more away
+JUMP_HOLD_S = 0.034                      # a write is believed once a read this much later (two frames) still shows it
+# where: (the unit class, the cursor's offset in it, the entries known to exist: an int, or None = learned from the
+# game's own cursor on that screen). The sizes are the documented lists (docs/research/re5-switch-ram.md): PLAY GAME
+# EPISODES / EXTRA CONTENT, the mode list SINGLE PLAYER / CO-OP / SPLIT-SCREEN / NO MERCY, the eight stages; the main
+# menu has more than its first two (the walk has read its cursor on 2), EXTRA CONTENT only THE MERCENARIES UNITED known.
+JUMP_SCREENS = {"main_menu": ("uIdStartUp00", MENU_CURSOR, 2), "play_game": ("uIdStartUp01", MENU_CURSOR, 2),
+                "extra_content": ("uIdStartUp01", EXTRA_CURSOR, 1), "mercs_mode": ("uIdStartUp29", MODE_CURSOR, 4),
+                "select_stage": ("uIdStartUp21", MENU_CURSOR, len(STAGE_NAMES)),
+                "select_player": ("uIdStartUp22", PLAYER_CURSOR, None)}
+_JUMP: dict = {}                         # the jump on the screen being walked (where, unit, value, target, mode, ...)
+_SEEN_CURSOR: dict = {}                  # the last read of a jumpable screen: a write needs the same cursor twice
+_MENU: dict = {"speed": None, "knob": True, "run": None, "stats_at": float("-inf")}
 
 # uLaserSight (sUnit move line 19, the effects line; PS3 line 18): while ZL is held, +0x60 is the laser dot, where the
 # ray lands (a Majini, a wall, the ground), and +0x280 the laser's origin at the muzzle (PS3 +0x30 / +0x200). Measured
@@ -591,6 +701,11 @@ HEADING_GOV, HEADING_GOV_DEG_S, QUICK_TURN = True, 150.0, True
 # stage in DOOR_FILE across rounds; when he is stuck (the wall governor's recovery, the PiP's Flawed button) and no Majini
 # is within DOOR_FIGHT_R he walks to the nearest one not tried in DOOR_RETRY_S, where its prompt shows and is taken.
 DOOR_GO_S, DOOR_REACH_R, DOOR_FIGHT_R, DOOR_RETRY_S, DOOR_SPOTS_KEPT = 12.0, 120.0, 500.0, 30.0, 64
+# The key a stage's remembered doors (DOOR_FILE) and learned grid (re5_switch_nav: nav_grids/<key>.json) are kept under.
+# Until 2026-11-09 both were keyed by stage_target() at the round's start - the NEXT round's target, never the stage
+# being played (Bot._stage_now) - so every stage's doors and grid were other stages' (a door "seen here before" walked
+# him at a wall). The round's own stage now names them, in a new namespace: the old entries are left unread.
+STAGE_KEY = "{}#round"
 DOOR_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "learned" / "010018100CD46000" / "door_spots.json"
 SHOT_TAIL_S = 0.15                     # Bot._shot_tail: no stick in the boosted shot motion nor this long after it
 SHOT_TAIL_KEYS = frozenset({"lup", "ldown", "lleft", "lright", "rleft", "rright", "rup", "rdown"})
@@ -887,6 +1002,22 @@ RUSH_R = 250.0
 GRENADES = True
 GRENADE_EVERY_S = 3.0
 GRENADE_CROWD_N, GRENADE_CROWD_R = 4, 450.0
+# The flash in an emergency (operator 2026-11-09, of his bombs: "Then flashbanging and running away and getting
+# distance ... have him force his way out"; the native flash stuns every Majini around him, the one holding him
+# included: docs/research/re5-native-flash.md). What kills him (docs/research/re5-ss-campaign.md, the 270 deaths
+# since 11-03): he goes down in the crowd - 87 % of the health he loses is lost with 3+ Majini within 6 m, half of
+# the 400+ hits land while he is held with a crowd round him, and 68 % of the deaths came with no heal left ("critical
+# retreat ... (no heals)"); and his own bombs (the guard below gives the run up for a close Majini). The grenade burst
+# above never fires then: it needs a verified firing follow-through, and the gun is down while he is held, healing
+# or running. So, once per CRIT_FLASH_GAP_S at most: held (not dying - the native controller refuses a dying player)
+# with another Majini within CRIT_FLASH_R; at CRIT_FLASH_HP of his health or less with CRIT_FLASH_N within it; or the
+# moment his bomb guard gave up the run out of a blast for a close Majini (re5_switch_mines close_in_blast_at). A
+# confirmed flash gives the guard its FLASH_S of reeling Majini, so he runs out instead of fighting inside his own
+# blast. A side effect, like the grenade burst: the tick's pad action is unchanged - he never stands for it and
+# never holds fire for it. stats crit_flashes (confirmed), crit_flash_requests, crit_flash_reason.
+CRIT_FLASH = True
+CRIT_FLASH_R, CRIT_FLASH_N, CRIT_FLASH_HP, CRIT_FLASH_GAP_S = 300.0, 2, 0.3, 4.0
+CRIT_FLASH_COUNTERS = ("crit_flashes", "crit_flash_requests")
 MESH_PROBE_CM = 150.0                    # _mesh_guard: how far ahead his way is checked on the nav mesh
 MESH_TURNS = tuple(math.radians(d) for d in (22.5, -22.5, 45, -45, 67.5, -67.5, 90, -90, 112.5, -112.5, 135, -135))
 HAZARD_FREE_R, HAZARD_SPREAD = 400.0, 60.0   # health lost with no Majini this near: the floor there hurts (_hazard_hit)
@@ -1070,6 +1201,27 @@ MINE_FLASH, MINE_FLASH_OVERDUE_S, MINE_FLASH_GAP_S = True, 6.0, 8.0
 MINE_FOE_CLEAR_CM, MINE_SPACING_CM = 400.0, 450.0
 MINE_COUNTERS = ("mines_placed", "mine_attempts", "mine_unconfirmed", "mine_retreats_completed", "mine_equip_failures",
                  "mines_gone", "mine_clear_runs", "mine_blasts", "mine_kills", "mine_blast_hp_loss", "gun_backs")
+# Weapon mastery (operator 2026-11-09: "Any weapon that I choose to equip the bot with, I need the bot able to masterfully
+# use that. So if I choose to have the bot use rotten eggs or a bow and arrow, they need to be able to spam fire that";
+# the same night's round: "the bot did an absolutely atrocious performance"). re5_weapons.MASTERY gives every family its
+# controller; the laser guns keep the laser fight below (Bot._decide / _rampage), and Bot._mastery runs the rest - the
+# longbow, rotten eggs, the grenades, both launchers, the knives / stun rod and the flamethrower - each aimed by the heading
+# and the camera pitch (the RAM aim writer when the session has one, else the right stick), its trigger pattern as fast
+# as the weapon's own animation takes a press, the self-blast distance kept for the explosives, the gun never lowered
+# and raised again between shots (no raise flicker), moving whenever nobody is in its band (closing in, or out of its
+# blast). WM_KEEP_CHOICE: the operator's weapon (the native primary, else select_weapon's) stays in hand - the crowd
+# fire's shotgun swap and the gun-back never take it away - unless it is empty and cannot reload (no ammo in the
+# inventory, or WM_RELOAD_WAIT_S of ZL + B without a round). stats wm_<family>_<shots | hits | kills | hand_s |
+# range_s | range_shots | trigger_s | idle_s | shots_per_s | kills_per_min | spent | backoffs | raises>, wm_summary, and
+# weapon_motions_seen (the weapon's own motion bytes while its trigger is held: to fill re5_weapons.RATE_MOTIONS).
+# The raise flicker (live Ancient Ruins 2026-11-09: 413 raises in 28 s): re5_switch_aim.keep_active's reposition put the
+# gun down every tick of its 0.65 s step while the crowd fire raised it again the next tick - a raise a tick. During a
+# reposition the fight now leaves the gun down (stats raise_holds) and the step runs to its end.
+WEAPON_MASTERY, WM_KEEP_CHOICE, WM_RELOAD_WAIT_S, WM_PITCH_GRACE_S = True, True, 2.5, 0.4
+WM_THROW_AIM_H = KNEE_H                  # a throw lands at their legs (the arc's end); arrows and splash at the chest
+WM_MOTIONS_KEPT = 32                     # weapon_motions_seen: at most this many motion ids per weapon
+WM_STATS = ("shots", "hits", "kills", "hand_s", "range_s", "range_shots", "trigger_s", "idle_s", "spent", "backoffs",
+            "raises")
 # The fight is the RE5 PS3 combat core's (re5_switch_brain.Fighter, operator 2026-10-27: "I assume the bot will get the
 # same mind that we trained on the ps5"); False: the Switch's own fight below (_decide), kept until the PS3 core has
 # proven itself in MercMode turns
@@ -1438,8 +1590,9 @@ def snapshot(m) -> dict:
                 over = ui_units(m, base).get("uIdGameover00")
                 try:
                     snap["continue_cursor"] = _i32(m, over + CONTINUE_CURSOR) if over else None
+                    snap["continue_ready"] = _i32(m, over + CONTINUE_INPUT) == CONTINUE_TAKES_INPUT if over else None
                 except (ValueError, OSError):
-                    snap["continue_cursor"] = None
+                    snap["continue_cursor"] = snap["continue_ready"] = None
     snap["unit_enemies_alive"] = unit_enemies_alive(m, base)
     snap["bonuses"] = time_bonuses(m, base)
     se = u64(m, base + S_ENEMY)
@@ -1475,6 +1628,14 @@ def snapshot(m) -> dict:
                     score=at(GS_SCORE, "<i"))
         if coop and _i32(m, gs + GS_PLAYERS) == PLAYERS_SPLIT:
             snap["scoring_players"] = 2                     # a team round: the score is both players'
+        if snap["mercenaries_phase"] == PHASE_OVER:         # the results: the rank the game computed (GS_RANK)
+            try:
+                rank, points = struct.unpack("<ii", m.rd(gs + GS_RANK, 8))
+                snap["rank_index"] = rank if 0 <= rank <= 5 else None
+                snap["rank_points"] = points
+                snap["no_mercy"] = bool(m.rd(gs + GS_NO_MERCY, 1)[0])
+            except (ValueError, OSError, struct.error):
+                snap["rank_index"] = None
     # the stage's own navmesh (re5_switch_native_nav): discovered once via find_sai,
     # cached; None until sAI is found or between rounds
     from . import re5_switch_native_nav
@@ -1517,6 +1678,17 @@ def ui_units(m, base: int | None = None) -> dict:
     su = u64(m, base + S_UNIT)
     if not ptr_ok(su):
         return out
+    # each vtable named once per memory view and boot (a menu poll was ~6 reads a unit, now 2: the menus are read every
+    # couple of frames); a name that did not read is not remembered, so a torn read is tried again next time
+    names = getattr(m, "_ui_names", None)
+    if not isinstance(names, dict):
+        names = {}
+        try:
+            m._ui_names = names
+        except AttributeError:
+            pass
+    if len(names) > 4096:
+        names.clear()
     for line in range(N_LINES):
         try:
             u = u64(m, su + UNIT_LINES + LINE_STRIDE * line)
@@ -1524,7 +1696,15 @@ def ui_units(m, base: int | None = None) -> dict:
             continue
         n = 0
         while ptr_ok(u) and n < UI_MAX:
-            name = class_name(m, u)
+            try:
+                key = (base, u64(m, u))
+            except (ValueError, OSError, struct.error):
+                break
+            name = names.get(key)
+            if name is None:
+                name = class_name(m, u)
+                if name:
+                    names[key] = name
             if name and name.startswith("uId") and name not in out:
                 out[name] = u
             try:
@@ -1540,9 +1720,20 @@ def _i32(m, a):
 
 
 def screen(m, merc=None) -> dict:
-    """The deployment's menus interface (gbox/mercs_bot.py): where RE5 is, from RAM. The round's own fields first
-    (playing / dead / results), then the interface units: a dialog (alert_leaderboard, alert), title / main_menu /
-    play_game / extra_content / mercs_title / mercs_mode / select_stage / select_player (cursor and target), loading."""
+    """The deployment's menus interface (gbox/mercs_bot.py): where RE5 is, from RAM (_screen), with the screen's
+    learned waits folded in for the Navigator (gbox.mercs.menu_speed hints) and every read timed per screen."""
+    scr = _screen(m, merc)
+    try:
+        _menu_seen(m, scr)
+    except Exception as exc:                 # noqa: BLE001 - the timing never costs the walk a read
+        scr["menu_speed_error"] = f"{type(exc).__name__}: {exc}"[:160]
+    return scr
+
+
+def _screen(m, merc=None) -> dict:
+    """Where RE5 is, from RAM. The round's own fields first (playing / dead / results), then the interface units: a
+    dialog (alert_leaderboard, alert), title / main_menu / play_game / extra_content / mercs_title / mercs_mode /
+    select_stage / select_player (cursor, target and the menu's unit), loading."""
     snap = snapshot(m)
     out = {"where": own_screen(snap), "cursor": None, "target": None}
     base = snap.get("module_base")
@@ -1557,14 +1748,14 @@ def screen(m, merc=None) -> dict:
         except (ValueError, OSError):
             up, aid = 0, 0
         if up and aid:
-            return out | {"where": ALERTS.get(aid, "alert"), "alert_id": aid,
+            return out | {"where": ALERTS.get(aid, "alert"), "alert_id": aid, "unit": alert,
                           "confirmation_token": ["alert", alert, aid]}
     if "uIdGameover00" in ui and (out["where"] == "dead" or not snap.get("player")):
         try:
             cursor = _i32(m, ui["uIdGameover00"] + CONTINUE_CURSOR)
         except (ValueError, OSError):
             cursor = None
-        return out | {"where": "dead", "cursor": cursor, "target": continue_target()}
+        return out | {"where": "dead", "cursor": cursor, "target": continue_target(m), "unit": ui["uIdGameover00"]}
     if snap.get("player") and out["where"] == "loading" and snap.get("mercenaries_phase") == PHASE_INTRO \
             and "uIdNowLoading00" not in ui:
         return out | {"where": "playing", "intro": True}    # the round is up (its intro, the clock not yet running):
@@ -1572,35 +1763,42 @@ def screen(m, merc=None) -> dict:
     if snap.get("player") and out["where"] in ("playing", "dead", "loading"):
         return out
     if "uIdMerceEd00" in ui:
-        return out | {"where": "results"}
+        return out | {"where": "results", "unit": ui["uIdMerceEd00"]}
     if "uIdNowLoading00" in ui:
         return out | {"where": "loading"}
-    where, cursor, target = "unknown", None, None
+    where, cursor, target, unit = "unknown", None, None, None
     try:
         if "uIdStartUp22" in ui:
-            where, cursor, target = "select_player", _i32(m, ui["uIdStartUp22"] + PLAYER_CURSOR), player_target(m)
+            unit = ui["uIdStartUp22"]
+            where, cursor, target = "select_player", _i32(m, unit + PLAYER_CURSOR), player_target(m)
         elif "uIdStartUp21" in ui:
-            where, cursor, target = "select_stage", _i32(m, ui["uIdStartUp21"] + MENU_CURSOR), stage_target(m)
+            unit = ui["uIdStartUp21"]
+            where, cursor, target = "select_stage", _i32(m, unit + MENU_CURSOR), stage_target(m)
         elif "uIdStartUp29" in ui:
-            u = ui["uIdStartUp29"]
+            u = unit = ui["uIdStartUp29"]
             if _i32(m, u + MENU_SUB) == 1:
                 where, cursor, target = "mercs_mode", _i32(m, u + MODE_CURSOR), mode_target(m)
             else:
                 where = "mercs_title"                       # START is the first entry and is where it opens
         elif "uIdStartUp01" in ui:
-            u = ui["uIdStartUp01"]
+            u = unit = ui["uIdStartUp01"]
             if _i32(m, u + MENU_SUB):
                 where, cursor, target = "extra_content", _i32(m, u + EXTRA_CURSOR), EXTRA_MERCENARIES
             else:
                 where, cursor, target = "play_game", _i32(m, u + MENU_CURSOR), PLAY_EXTRA_CONTENT
         elif "uIdStartUp00" in ui:
-            where, cursor, target = "main_menu", _i32(m, ui["uIdStartUp00"] + MENU_CURSOR), MAIN_PLAY_GAME
+            unit = ui["uIdStartUp00"]
+            where, cursor, target = "main_menu", _i32(m, unit + MENU_CURSOR), MAIN_PLAY_GAME
         elif snap.get("mercenaries_phase") == PHASE_OVER and not snap.get("player") and not ui.keys() - {"uIdAlert00"}:
             where = "loading"                               # between the results and the selects
     except (ValueError, OSError):
         where = "unknown"
+    if unit is not None and where != "unknown":
+        out["unit"] = unit
     try:                                     # learn the select screen's entry count from the game's own cursor
-        if isinstance(cursor, int):
+        if where not in ("select_stage", "select_player") and "c" in _CYCLE:
+            _CYCLE["c"].pending = None       # off the selects: a press of an earlier visit never meets a reopened one
+        if isinstance(cursor, int) and (_JUMP.get("unit") != unit or unit is None):   # (never from a written one)
             cycle().observe_cursor(cursor, where)
     except Exception:                        # noqa: BLE001 - a roster count never costs a tick
         pass
@@ -1659,12 +1857,18 @@ def warm_probe(m) -> dict:
 
 
 def step(scr: dict) -> str | None:
-    """One key toward the next round: a cursor walks to its target first (D-pad), then A confirms."""
+    """One key toward the next round: a cursor walks to its target first (D-pad), then A confirms. Nothing while a RAM
+    cursor jump waits for a later read to show the game kept it (menu_assist: jump_wait)."""
     where = scr.get("where")
+    if scr.get("jump_wait"):
+        return None
     if CYCLE and where in ("select_stage", "select_player") and isinstance(scr.get("cursor"), int):
         c = cycle()
         if c.where != where:
             c.where, c.presses = where, 0
+            c.visit()
+        if c.stalled():
+            return "a"                                      # the cursor stands at the select's end: the entry it is on
         # The roster calibration walk (select_player with an unknown count) is the ONE case that must not give up on a press
         # budget: it has to reach the right-hand end, because the stall there is what teaches CHARACTER_SLOTS. Cutting it to
         # CYCLE_MAX_PRESSES made it give up mid-roster and confirm whatever character it had reached, and the learning gate
@@ -1691,19 +1895,249 @@ def wandered(scr: dict) -> str | None:
 
 
 def pressed(scr: dict, key: str) -> None:
-    """The menus' press went in: the stage cycle counts the presses on a select and keeps what A confirmed there."""
+    """The menus' press went in: the screen's learner times it (menu_speed), the stage cycle counts the presses on a
+    select and keeps what A confirmed there."""
     where = scr.get("where")
-    if not CYCLE or where not in ("select_stage", "select_player") or not isinstance(scr.get("cursor"), int):
-        return None
-    c = cycle()
-    if c.where != where:
-        c.where, c.presses = where, 0
-    c.note_press(scr["cursor"], key)
-    c.presses += 1
-    if key == "a":
-        c.confirmed["stage" if where == "select_stage" else "character"] = scr["cursor"]
-        c.where, c.presses = None, 0
+    probe = False
+    if CYCLE and where in ("select_stage", "select_player") and isinstance(scr.get("cursor"), int):
+        c = cycle()
+        if c.where != where:
+            c.where, c.presses = where, 0
+            c.visit()
+        c.note_press(scr["cursor"], key)
+        c.presses += 1
+        probe = getattr(c, "stalls", 0) >= 1                # pressing on at the end: "not taken" is the answer
+        if key == "a":
+            c.confirmed["stage" if where == "select_stage" else "character"] = scr["cursor"]
+            c.where, c.presses = None, 0
+            c.visit()
+    speed = _MENU.get("speed")
+    if speed is not None and callable(getattr(speed, "press", None)):
+        try:
+            speed.press("intro" if scr.get("intro") else where, key, learn=not probe)
+        except Exception:                                    # noqa: BLE001 - timing never costs a press
+            pass
     return None
+
+
+# --- instant menus: the learned waits, the RAM cursor jumps, the timing (docs/research/re5-instant-menus.md) ----------
+def _speed_for(m):
+    """The title's menu learner (gbox.mercs.menu_speed), bound to this adapter's data dir on first use. One per process:
+    the Driver (round ends, the clock running) and the menus walk (screens, presses, jumps) time the same transitions."""
+    from .. import menu_speed
+    speed = _MENU.get("speed")
+    if speed is None or not callable(getattr(speed, "hints", None)):
+        data_dir = None
+        try:
+            data_dir = m.adapter.config.data_dir
+        except AttributeError:
+            data_dir = None
+        speed = _MENU["speed"] = menu_speed.for_title(MAP_ID, data_dir)
+    run = _MENU.get("run")
+    if run is not None:                                     # begin_run came before the walk had a memory to bind to
+        _MENU["run"] = None
+        speed.begin_run(prepare=bool(run.get("prepare")))
+    return speed
+
+
+def begin_run(session_id=None, job=None, prepare: bool = False, turn: bool = False, **_kw) -> None:
+    """gbox.mercs_bot.play's start of a menus walk: a MercMode preparation (prepare) is timed apart from the rounds."""
+    _MENU["run"] = {"prepare": bool(prepare), "session": session_id, "job": job}
+    speed = _MENU.get("speed")
+    if speed is not None and callable(getattr(speed, "begin_run", None)):
+        _MENU["run"] = None
+        speed.begin_run(prepare=bool(prepare))
+
+
+def _menu_seen(m, scr: dict) -> None:
+    """One menus read: the screen's learner sees it (a change after a press confirms that press) and, with MENU_LEARN,
+    the screen dict carries the screen's learned waits for the Navigator. A cursor the game itself produced (no jump of
+    the bot's on that unit) is the screen's highest known entry when it is the largest yet."""
+    speed = _speed_for(m)
+    where = scr.get("where")
+    label = "intro" if scr.get("intro") else where
+    token = scr.get("confirmation_token")
+    speed.seen(label, (label, scr.get("unit"), scr.get("cursor"), None if token is None else str(token)))
+    if MENU_LEARN:
+        scr.update(speed.hints(where))
+    if where in JUMP_SCREENS and isinstance(scr.get("cursor"), int) and _JUMP.get("unit") != scr.get("unit"):
+        speed.note_cursor(where, scr["cursor"])
+
+
+def _entries(speed, where: str) -> int | None:
+    """How many entries the screen is known to have (its first n indexes exist): the fixed lists' sizes, and on the
+    character select the largest index the game's own cursor has shown (the menu learner's, the stage cycle's
+    confirmed characters, the roster count once the calibration walk learned it)."""
+    n = JUMP_SCREENS[where][2]
+    if isinstance(n, int):
+        return n
+    tops = [speed.screen(where).get("max_cursor")]
+    if where == "select_player":
+        try:
+            c = cycle()
+            tops.append(max(c.chars) if c.chars else None)
+        except Exception:                                   # noqa: BLE001 - no cycle record: the learner's alone
+            pass
+        if CHARACTER_SLOTS > 1:
+            tops.append(CHARACTER_SLOTS - 1)
+    tops = [t for t in tops if isinstance(t, int) and 0 <= t < CHARACTER_SLOTS_MAX]
+    return max(tops) + 1 if tops else None
+
+
+def _write_cursor(m, unit: int, offset: int, value: int, klass: str) -> str | None:
+    """Write the menu's cursor integer and read it back; None when it took, else why not. The unit's class is checked
+    again first (a unit freed and reused between two reads is never written)."""
+    ad = getattr(m, "adapter", None)
+    if ad is None or not callable(getattr(ad, "write_memory", None)):
+        return "no adapter that writes memory"
+    if getattr(m, "mercs_no_modifications", False):
+        return "the session plays unmodified"
+    if class_name(m, unit) != klass:
+        return f"the unit is no longer {klass}"
+    try:
+        res = ad.write_memory(unit + offset, struct.pack("<i", value))
+    except (ValueError, RuntimeError, OSError, PermissionError) as exc:
+        return f"write refused: {exc}"[:160]
+    if isinstance(res, dict) and res.get("verified") is False:
+        return "the write was not verified"
+    try:
+        if _i32(m, unit + offset) != value:
+            return "the read-back differs"
+    except (ValueError, OSError, struct.error):
+        return "the read-back failed"
+    return None
+
+
+def menu_assist(m, scr: dict, stats: dict | None = None, now: float | None = None) -> dict:
+    """Before the Navigator's press (gbox.mercs_bot.Boot): on a menu whose cursor RAM shows, the cursor is written
+    instead of stepped to (see MENU_JUMPS above); the screen dict goes on as the game is after the write, with
+    jump_wait while the write still has to hold. Writes only; never presses. Also folds the learner's numbers into the
+    run's stats (menu_seconds, menu_seconds_best, menu_seconds_trend, menu_screens, menu_latency ...)."""
+    speed = _speed_for(m)
+    now = speed.clock() if now is None else now
+    if stats is not None and now - _MENU.get("stats_at", float("-inf")) >= 0.5:
+        _MENU["stats_at"] = now
+        stats.update(speed.stats_view())
+    knob = bool(MENU_JUMPS)
+    if knob and not _MENU.get("knob", True):
+        speed.jumps_reset()                                 # the operator turned jumps back on: every screen may again
+    _MENU["knob"] = knob
+    where, unit = scr.get("where"), scr.get("unit")
+    if _JUMP and (_JUMP.get("where") != where or _JUMP.get("unit") != unit):
+        _JUMP.clear()                                       # the screen moved on
+    if _SEEN_CURSOR and _SEEN_CURSOR.get("where") != where:
+        _SEEN_CURSOR.clear()                                # (a unit the game rebuilt at the same address is a new visit)
+    spec = JUMP_SCREENS.get(where)
+    cursor, target = scr.get("cursor"), scr.get("target")
+    if not knob or spec is None or not isinstance(unit, int) or not isinstance(cursor, int) \
+            or not isinstance(target, int):
+        return scr
+    if _JUMP:
+        return _jump_check(speed, scr, stats, now)
+    seen = _SEEN_CURSOR
+    same = seen.get("where") == where and seen.get("unit") == unit and seen.get("cursor") == cursor \
+        and now - seen.get("at", now) <= 1.0                # two reads close together, never one long ago
+    if not same:
+        _SEEN_CURSOR.clear()
+        _SEEN_CURSOR.update(where=where, unit=unit, cursor=cursor, at=now)
+        return scr                                          # one read: a screen still being built may change it
+    if now - seen["at"] < JUMP_HOLD_S or not speed.jump_allowed(where) \
+            or getattr(getattr(m, "adapter", None), "_menu_jump_blocked", None):
+        return scr
+    entries = _entries(speed, where)
+    if entries is None or not 0 <= target < entries or not 0 <= cursor < CHARACTER_SLOTS_MAX:
+        return scr
+    if speed.jump_direct(where, JUMP_PROVE_N):
+        mode, value = "direct", target
+        if cursor == target:
+            return scr
+    else:
+        mode = "approach"
+        if abs(target - cursor) < JUMP_MIN_GAP:
+            return scr                                      # one step is one press either way
+        value = target - 1 if cursor < target else target + 1
+        if not 0 <= value < entries:
+            return scr
+    klass, offset = spec[0], spec[1]
+    why = _write_cursor(m, unit, offset, value, klass)
+    _JUMP.update(where=where, unit=unit, value=value, target=target, prior=cursor, at=now, mode=mode, held=False)
+    if why is not None:
+        _JUMP["failed"] = True                              # this visit steps option by option
+        if stats is not None:
+            stats["menu_jump_error"] = f"{where}: {why}"
+        if why in ("no adapter that writes memory", "the session plays unmodified") or why.startswith("write refused"):
+            try:
+                m.adapter._menu_jump_blocked = why          # this session's adapter cannot take writes: stop trying
+            except AttributeError:
+                pass
+        return scr
+    if stats is not None:
+        stats["menu_jumps"] = stats.get("menu_jumps", 0) + 1
+        stats["menu_last_jump"] = f"{where}: cursor {cursor} -> {value} ({mode}, target {target})"
+    if where in ("select_stage", "select_player") and "c" in _CYCLE:
+        _CYCLE["c"].pending = None                          # the roster learning never reads a written cursor
+    if getattr(speed, "pending", None) is not None:
+        speed.pending = None                                # the write's cursor change confirms no press of the walk's
+    return dict(scr, cursor=value, jump_wait=True, jumped=mode)
+
+
+def _jump_check(speed, scr: dict, stats: dict | None, now: float) -> dict:
+    """A jump under way on this screen: held (a read JUMP_HOLD_S after the write still shows it) lets the Navigator go;
+    on an approach, the game's own step landing on the target proves the field; anything else is a failure."""
+    j, where, cursor = _JUMP, scr.get("where"), scr.get("cursor")
+    if j.get("failed") or j.get("done"):
+        return scr
+    if not j["held"]:
+        if cursor == j["value"]:
+            if now - j["at"] < JUMP_HOLD_S:
+                return dict(scr, jump_wait=True)
+            j["held"] = True
+            speed.jump_result(where, "wrote")
+            if j["mode"] == "direct":
+                j["done"] = True
+            return scr
+        return _jump_failed(speed, scr, stats, f"the write did not hold (cursor {cursor}, wrote {j['value']})")
+    if cursor == j["target"]:                               # an approach: the game's own step moved onto the target
+        j["done"] = True
+        speed.jump_result(where, "proven")
+        if stats is not None:
+            stats["menu_jumps_proven"] = stats.get("menu_jumps_proven", 0) + 1
+        return scr
+    if cursor == j["value"]:
+        return scr                                          # the step not shown yet
+    return _jump_failed(speed, scr, stats, f"the step landed on {cursor}, not {j['target']} (from {j['value']})")
+
+
+def _jump_failed(speed, scr: dict, stats: dict | None, why: str) -> dict:
+    _JUMP["failed"] = True
+    speed.jump_result(scr.get("where"), "failed", JUMP_FAIL_N)
+    if stats is not None:
+        stats["menu_jump_fails"] = stats.get("menu_jump_fails", 0) + 1
+        stats["menu_jump_error"] = f"{scr.get('where')}: {why}"[:200]
+    return scr
+
+
+def menu_status() -> dict:
+    """The sidebar's menus line (bot_logic.status): "menus: X s (best Y s)" and the numbers behind it."""
+    from .. import menu_speed
+    speed = _MENU.get("speed") or menu_speed.cached(MAP_ID)
+    if speed is None or not callable(getattr(speed, "status", None)):
+        return {"text": "menus: not timed yet"}
+    return speed.status()
+
+
+def _menu_clock(m, where: str, snap: dict | None, stats: dict | None = None) -> dict | None:
+    """The Driver's view of a round (every engine tick): its clock running closes the transition being timed (the
+    seconds to gameplay; the run's stats get the numbers at once), its death or results open the next one."""
+    speed = _speed_for(m)
+    rec = None
+    if where == "playing" and (snap or {}).get("mercenaries_phase") == PHASE_PLAYING:
+        rec = speed.gameplay()
+        if rec is not None and stats is not None:
+            stats.update(speed.stats_view())
+    elif where in ("dead", "results"):
+        speed.round_end()
+    return rec
 
 
 def ray_error(origin, dot, target) -> tuple[float, float]:
@@ -1772,6 +2206,9 @@ class Bot:
         self.target = None
         self.aim_since = None
         self._grenade_last, self._grenade_inflight = -1e9, False   # the GRENADES knob: last native flash burst, in flight
+        self._crit_flash_at, self._crit_pending = -1e9, None     # CRIT_FLASH: the last request; (confirmed count, at)
+        for k in CRIT_FLASH_COUNTERS:
+            self.stats.setdefault(k, 0)
         self.fire_down = False
         self.yaw_pulse = self.pitch_pulse = self.turn_pulse = 0
         self.on_key, self.on_ticks = None, 0      # the target the dot has sat on, for how many ticks in a row
@@ -1935,9 +2372,12 @@ class Bot:
     def _kcost(self, p, e, now) -> float:
         """_cost, K_RANGE_PREF less for a Majini standing where K says his class's shots do the most (learned, sure)."""
         c = self._cost(p, e)
+        d = math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+        if WEAPON_MASTERY and self._item is not None:        # the weapon in hand's band: rifles far, magnums big, ...
+            from . import re5_weapons as _w
+            c *= _w.band_cost(self._item, d, e.get("hp_max"), self._corridor(p, e, now))
         if not K_PLAN or not e.get("class"):
             return c
-        d = math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
         plan = self._plan(e, d, self._item, now)
         if self._sure(plan, "range_cm") and plan.range_cm and plan.range_cm[0] <= d <= plan.range_cm[1]:
             return c * K_RANGE_PREF
@@ -2294,6 +2734,13 @@ class Bot:
     def _rampage_gun(self, inv):
         """Prefer the gun already in hand within each family; avoid swapping equivalent shotguns."""
         from . import re5_weapons
+        choice = getattr(self, "_choice", None) if WM_KEEP_CHOICE else None
+        if choice is not None:                           # the operator's weapon: never swapped away from in a crowd
+            row = next((s_ for s_ in inv or () if s_.get("type") == 1 and s_.get("item") == choice
+                        and (s_.get("hand") or s_.get("grid") in QUICK) and self._loaded_gun(s_)), None)
+            if row is not None:
+                spec = re5_weapons.WEAPONS.get(choice)
+                return (row, spec.family) if spec is not None and re5_weapons.laser_family(choice) else (None, None)
         # --- weapon_swap hook (arsenal mode): family preference for the no-wheel D-pad/native swap ---
         # Single integration point for gbox.mercs.weapon_swap; None keeps the stock RAMPAGE_FAMILIES.
         # The chosen family is equipped by its D-pad quick slot, which re5_switch._native_equipment
@@ -2358,6 +2805,12 @@ class Bot:
         if not ring:
             self._ramp, self._restore = None, None       # keep the equipped gun when the circle clears
             return None
+        if WEAPON_MASTERY and held is not None and held.get("type") == 1:
+            from . import re5_weapons as _w
+            if _w.mastery(held.get("item")) is not None and not _w.laser_family(held.get("item")) \
+                    and self._rampage_gun(inv)[0] is None:
+                self._ramp, self._restore = None, None   # no laser gun to put up (or the operator's own weapon): the
+                return None                              # weapon's own controller fights the crowd (Bot._mastery)
         kills = snap.get("kills")
         if self._ramp is None:
             self._ramp = {"since": now, "main": held.get("item") if held and held.get("type") == 1 else None,
@@ -2415,6 +2868,10 @@ class Bot:
             self.stats["idle_in_5m_s"] = round(self.stats["idle_in_5m_s"] + dt, 2)
             return {"hold": ("ldown",)}
         if self.aim_since is None:
+            if self._repositioning(now, snap):           # keep_active's step under way: the gun stays down to its end
+                self.stats["raise_holds"] = self.stats.get("raise_holds", 0) + 1   # (it raised again every tick: the
+                self.doing, self.why = "aim", "crowd fire: the reposition step first (the gun stays down)"   # flicker)
+                return {"hold": ()}
             if gun is not None and not gun.get("hand") and now - self._swap_at >= SWAP_GAP_S:
                 self._swap_at = now                      # the shotgun / magnum first (one press, the gun down)
                 self.stats["rampage_swaps"] += 1
@@ -3260,7 +3717,7 @@ class Bot:
     # --- doors, exits, ledges remembered per stage (DOOR_* above) ------------------------------------------------------
     def _door_spots(self) -> list:
         import json
-        stage = tuning.stage_name(STAGE_NAMES, stage_target()) or "unknown"
+        stage = STAGE_KEY.format(self._stage_now() or "unknown")      # the round's own stage (_stage_now)
         if getattr(self, "_doors_stage", None) != stage:
             self._doors_stage = stage
             try:
@@ -3548,7 +4005,7 @@ class Bot:
         p = snap.get("player") or {}
         pos, hold = p.get("pos"), tuple(act.get("hold") or ())
         st = self.__dict__.setdefault("_stand", {"pos": None, "at": now, "until": -1e9, "keys": ()})
-        busy = (not NEVER_STAND or not pos or (p.get("hp") or 0) <= 0 or "zl" in hold or "tap" in act
+        busy = (not NEVER_STAND or not pos or (p.get("hp") or 0) <= 0 or "zl" in hold or "l" in hold or "tap" in act
                 or self.doing in STAND_BUSY or snap.get("mercenaries_phase") not in (None, PHASE_PLAYING))
         if busy:
             st["pos"], st["at"], st["until"] = (tuple(pos) if pos else None), now, -1e9
@@ -3680,6 +4137,7 @@ class Bot:
             self._round_started = now
             self.look.new_round()
             self._new_round(now)
+        self._stage_sync()
         if self.pending_mine and self.mines is not None and self.mines.enabled:
             # the loadout the round was built from is the one that decides it: fire the tactic the moment a bomb is in hand
             inv = snap.get("inventory")
@@ -3715,13 +4173,42 @@ class Bot:
             self.mines.new_round(now)
         if self.__dict__.get("_map_goals") is not None:
             self._map_goals.reset()                          # a new round: the last one's marks are gone
-        tuning.apply(MAP_ID, tuning.stage_name(STAGE_NAMES, stage_target()), self.stats)
+        self._stage_learning(self._stage_now())
+
+    def _stage_now(self) -> str | None:
+        """The stage this round is played on: the driver's identity (stats ss_stage: the navigation signature, else the
+        selects' confirmation; RE5Switch._identity), None while unknown. Never stage_target(): by the round's first tick
+        the cycle has already drawn the NEXT round's target (never the stage just started), so until 2026-11-09 the
+        tuning, the learned grid and the remembered doors were all read and written under another stage's name - the
+        rows' tuning_stage names another stage than the one they were played on in 1,257 of 1,308 (96 %)."""
+        for k in ("ss_stage", "stage"):
+            if (self.stats or {}).get(k) in STAGE_NAMES:
+                return self.stats[k]
+        pinned = SELECTION.get("stage")                  # nothing read yet: the operator's pinned stage, if any (every
+        if isinstance(pinned, int) and 0 <= pinned < len(STAGE_NAMES):   # round is played on it while it stands)
+            return STAGE_NAMES[pinned]
+        return None
+
+    def _stage_learning(self, stage) -> None:
+        """What the bot learned for this stage, in force: the tuning (its constants and avoid spots), the learned
+        grid and the remembered doors (STAGE_KEY: the namespace written since the stage is the round's own - the old
+        files were keyed by the next round's target and are left unread)."""
+        self._learned_stage = stage
+        tuning.apply(MAP_ID, stage, self.stats)
         self._dead_ends = tuning.dead_ends(MAP_ID)       # the stage's learned dead ends, before this round's own
         # the learned occupancy-grid navigator (re5_switch_nav): seeded from the trail and walls each tick
-        stage_name = tuning.stage_name(STAGE_NAMES, stage_target()) or "unknown"
+        stage_name = STAGE_KEY.format(stage or "unknown")
         if getattr(self, "_nav", None) is None or self._nav.grid.stage != stage_name:
             from .re5_switch_nav import Navigator
             self._nav = Navigator(stage_name, learn_dir=self._learn_dir)
+
+    def _stage_sync(self) -> None:
+        """The round's stage learned after its first tick (the navigation signature reads a moment later, or corrects a
+        stage carried over from another round): the stage's learning comes into force then."""
+        stage = self._stage_now()
+        if stage is not None and stage != getattr(self, "_learned_stage", None):
+            self.stats["stage_learning_resync"] = self.stats.get("stage_learning_resync", 0) + 1
+            self._stage_learning(stage)
 
     def _start_face_open(self, p, now) -> dict | None:
         """Once per round: face the most open compass direction before moving.
@@ -3851,9 +4338,12 @@ class Bot:
             else:
                 self._primary_want = (None, 0.0)
         want = (snap.get("preferred_weapon") or {}).get("item")      # the operator's gun (re5_switch_mods.select_weapon)
+        keep = WEAPON_MASTERY and WM_KEEP_CHOICE                     # (any weapon he chose but the bomb: its controller)
+        melee = lambda s: s.get("item") in KNIVES or s.get("item") == 0x22
         choice = next((s for s in inv if s.get("type") == 1 and s.get("item") == want and s.get("grid") in QUICK
-                       and s.get("item") not in KNIVES and s.get("item") not in THROWN
-                       and self._loaded_gun(s)), None) if want else None
+                       and s.get("item") != 0x0A
+                       and (keep or (s.get("item") not in KNIVES and s.get("item") not in THROWN))
+                       and (self._loaded_gun(s) or (keep and melee(s)))), None) if want else None
         if choice is not None and not choice.get("hand") and self.aim_since is None:
             if now - self._gun_back_at < GUN_BACK_GAP_S:
                 return {"hold": ()}
@@ -3862,6 +4352,21 @@ class Bot:
             return {"tap": QUICK[choice["grid"]]}
         empty = bool(held and held.get('type') == 1 and held.get('item') not in KNIVES
                      and held.get('item') not in THROWN and not self._loaded_gun(held))
+        rw = self.__dict__.setdefault("_wm_reload", {"item": None, "since": None})
+        if empty and keep and held.get("item") == getattr(self, "_choice", None):
+            # the operator's weapon empty: it stays while it can reload (ammo in the inventory), ZL + B for at most
+            # WM_RELOAD_WAIT_S; only then the loaded fallback below
+            if rw["item"] != held.get("item") or rw["since"] is None:
+                rw.update(item=held.get("item"), since=now)
+            ammo = any(s.get("type") == 2 and (s.get("rounds") or 0) > 0 for s in inv)
+            if ammo and now - rw["since"] < WM_RELOAD_WAIT_S:
+                self.stats["wm_reload_waits"] = self.stats.get("wm_reload_waits", 0) + 1
+                return {"hold": ("zl", "b")}
+        else:
+            rw.update(item=None, since=None)
+        if keep and held is not None and held.get("type") == 1 and not empty and held.get("item") != 0x0A \
+                and held.get("item") == getattr(self, "_choice", None):
+            return None                                      # the operator's own weapon in hand (a grenade too): kept
         if empty and self.native_equip is not None:
             candidates = [s for s in inv if s.get('type') == 1 and s.get('item') not in KNIVES
                           and s.get('item') not in THROWN and self._loaded_gun(s)
@@ -3885,8 +4390,9 @@ class Bot:
                     self.stats['empty_weapon_reason'] = 'loaded slot attachment unconfirmed; releasing the wait'
                     return None
                 return {'hold': ()}
-        if held is None or held.get("type") != 1 or (held.get("item") not in THROWN and not empty):
-            return None
+        if held is None or held.get("type") != 1 or (held.get("item") not in THROWN and not empty
+                                                      and not (keep and melee(held))):
+            return None                                      # (a knife nobody chose goes back to a gun, as a grenade)
         if self._rearm(inv, None) is None:
             return None                                      # no gun on a D-pad slot: nothing to go back to
         if now - self._gun_back_at < GUN_BACK_GAP_S:
@@ -3965,6 +4471,8 @@ class Bot:
         self.doing, self.why, self._now = "none", "", now
         held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
         self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
+        self._wm_active = False                              # (Bot._mastery sets it when its controller runs)
+        self._choice = self._chosen_item(snap) if WM_KEEP_CHOICE else None   # the operator's weapon, if any
         from . import re5_switch_aim as re5_target_feedback, re5_weapons
         visible = re5_target_feedback.visible_target(snap)
         self._feedback_visible = visible.get('ptr', visible.get('slot')) if visible else None
@@ -3994,8 +4502,55 @@ class Bot:
             self._look_tick(snap, now)
         except Exception as exc:                             # noqa: BLE001 - the look never stops the bot
             self.stats["look_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        try:
+            self._critical_flash(snap, now)                  # CRIT_FLASH: held / low in a crowd (side effect)
+        except Exception as exc:                             # noqa: BLE001 - the flash never stops the bot
+            self.stats["crit_flash_error"] = f"{type(exc).__name__}: {exc}"[:160]
         self._grenade_crowd(snap, now)                       # the GRENADES knob: a flash burst at a crowd (side effect)
+        if WEAPON_MASTERY:
+            try:
+                self._wm_tick(snap, act, now)                # the per-family ledger (stats wm_*)
+            except Exception as exc:                         # noqa: BLE001 - accounting never stops the bot
+                self.stats["wm_error"] = f"{type(exc).__name__}: {exc}"[:160]
         return act
+
+    def _critical_flash(self, snap, now) -> None:
+        """CRIT_FLASH above: one native flash when he is held in a crowd, low in a crowd, or in his own bomb's blast with
+        a Majini too close to run; a confirmed one lets the bomb guard run him out while they reel."""
+        pend = self._crit_pending
+        if pend is not None:                                 # a request in flight: confirmed, or let go
+            if (self.stats.get("crit_flashes") or 0) > pend[0]:
+                self._crit_pending = None
+                if self.mines is not None:
+                    self.mines.flash_until = max(self.mines.flash_until, pend[1] + re5_switch_mines_flash_s())
+            elif now - pend[1] > 1.5:
+                self._crit_pending = None
+        if not CRIT_FLASH or self._crit_pending is not None or now - self._crit_flash_at < CRIT_FLASH_GAP_S:
+            return
+        p = snap.get("player") or {}
+        hp, top, pos = p.get("hp") or 0, p.get("hp_max") or 0, p.get("pos")
+        if hp <= DYING_HP or not pos or snap.get("mercenaries_phase") not in (None, PHASE_PLAYING):
+            return                                           # dying or dead: the native controller refuses it
+        px, py, pz = pos
+        near = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")
+                and abs(e["pos"][1] - py) <= LEVEL_DY
+                and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CRIT_FLASH_R]
+        m = self.mines
+        reason = None
+        if p.get("motion") in MOTION_HELD and len(near) >= 2:
+            reason = f"held with {len(near) - 1} more within {CRIT_FLASH_R / 100:.0f} m: the flash breaks it"
+        elif top > 0 and hp <= CRIT_FLASH_HP * top and len(near) >= CRIT_FLASH_N:
+            reason = f"{hp / top:.0%} health with {len(near)} within {CRIT_FLASH_R / 100:.0f} m: the flash, then out"
+        elif m is not None and getattr(m, "close_in_blast_at", None) == now:
+            reason = "in his own bomb's blast with a Majini too close to run: the flash, then out"
+        if reason is None:
+            return
+        self._crit_flash_at = now
+        self.stats["crit_flash_requests"] = self.stats.get("crit_flash_requests", 0) + 1
+        self.stats["crit_flash_reason"] = reason
+        before = self.stats.get("crit_flashes") or 0
+        if self._native_flash(snap, now, reason, "crit_flashes"):
+            self._crit_pending = (before, now)
 
     def _native_flash(self, snap, now, reason: str, counter: str) -> bool:
         """Ask the native controller for a flash at his position now (asynchronous, like the crowd flash; one at a
@@ -4175,7 +4730,9 @@ class Bot:
             self.died = True
             if self.dead_since is None:
                 self.dead_since = now
-            if now - self.dead_since < DEAD_WAIT_S:
+            # the dialog's own input state (+0x1EC = 2 once it takes input, docs/research/re5-switch-ram.md) answers on
+            # the first frame it can; it only ever shortens the fixed wait, never holds a press back
+            if now - self.dead_since < DEAD_WAIT_S and snap.get("continue_ready") is not True:
                 return {"hold": ()}
             cursor = snap.get("continue_cursor", "unread")
             if cursor == "unread":                           # no cursor in this snapshot (another reader): v1's taps
@@ -4183,7 +4740,7 @@ class Bot:
                 return {"tap": "dright" if self.dead_taps % 2 else "a"}
             if cursor is None:                               # "Continue?" not up yet
                 return {"hold": ()}
-            want = continue_target()
+            want = continue_target(getattr(self, "_m", None))
             if cursor == want:                               # A only on the answer the pace wants
                 self.continued = "yes" if want == CONTINUE_YES else "no"
                 return {"tap": "a"}
@@ -4904,6 +5461,318 @@ class Bot:
         return {"hold": ()}
 
 
+    # --- weapon mastery (WEAPON_MASTERY above) --------------------------------------------------------------------------
+    def _repositioning(self, now, snap=None) -> bool:
+        """re5_switch_aim.keep_active's bounded step is under way (the gun is down for it until its end) - unless this
+        snapshot already shows a shot (aimed, the dot on a living Majini near him on his level: keep_active's own rule
+        that ends the step early), which ends it here and lets the gun come up."""
+        st = getattr(self, "_aim_wait", None)
+        if not (st and st.get("until") is not None and now < st["until"]):
+            return False
+        p = (snap or {}).get("player") or {}
+        ray = (snap or {}).get("laser") or {}
+        if p.get("pos") and p.get("motion") == MOTION_AIMED and ray.get("up") and ray.get("from") and ray.get("at") \
+                and all(math.isfinite(v) for v in (*ray["from"], *ray["at"])):
+            px, py, pz = p["pos"]
+            if math.dist(ray["from"], (px, py + MUZZLE_H, pz)) < 200.0 and any(
+                    (e.get("hp") or 0) > 0 and e.get("pos") and abs(e["pos"][1] - py) <= LEVEL_DY
+                    and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= THREAT_CAP_R and dot_on(ray["at"], e["pos"])
+                    for e in snap.get("enemies") or ()):
+                return False                                 # the step opened a shot: the gun comes up (keep_active ends it)
+        return True
+
+    @staticmethod
+    def _chosen_item(snap):
+        """The operator's weapon: the native three-minute primary while usable, else select_weapon's preference."""
+        primary = snap.get("primary_weapon")
+        if primary and primary.get("usable") is not False and type(primary.get("item")) is int:
+            return primary["item"]
+        want = (snap.get("preferred_weapon") or {}).get("item")
+        return want if type(want) is int else None
+
+    def _corridor(self, p, e, now):
+        """A floor corridor to this Majini on the stage's mesh (cached 0.5 s each): True / False, None when unknown or
+        when the weapon in hand does not weigh it (only the arrow and the throws: a soft preference)."""
+        from . import re5_weapons as _w
+        spec = _w.mastery(self._item)
+        mesh = getattr(self, "_mesh", None)
+        if spec is None or spec.mode not in ("arrow", "throw") or mesh is None or not hasattr(mesh, "floor_segment") \
+                or math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) > spec.max_cm:
+            return None                                      # (only within its reach: a few mesh queries a second)
+        cache = self.__dict__.setdefault("_wm_corr", {})
+        key = e.get("ptr", e.get("slot"))
+        hit = cache.get(key)
+        if hit is None or now - hit[0] >= 0.5:
+            try:
+                ok = bool(mesh.floor_segment(tuple(p["pos"]), tuple(e["pos"])))
+            except Exception:                                # noqa: BLE001 - the mesh never stops a decision
+                ok = None
+            if len(cache) > 128:
+                cache.clear()
+            cache[key] = hit = (now, ok)
+        return hit[1]
+
+    def _wm_count(self, fam, what, n=1) -> None:
+        key = f"wm_{fam}_{what}"
+        self.stats[key] = self.stats.get(key, 0) + n
+
+    def _wm_press(self, now) -> None:
+        """A tap pattern's press tick: a trigger edge (a shot: the pull's hit window opens)."""
+        if not self.fire_down:
+            self.stats["shots"] += 1
+            if self.trigger_since is None:
+                self.trigger_since = now
+            self._pull_start(now)
+        self.fire_down, self.fire_at = True, now
+
+    def _wm_release(self, now) -> None:
+        """A tap pattern's release tick (not a slip: the next press is the next shot)."""
+        if self.fire_down:
+            self._pull_end(now)
+        self.fire_down = False
+
+    def _mastery(self, p, live, flat, tgt, snap, now):
+        """WEAPON_MASTERY: the weapon in hand's own controller when it has no laser fight (re5_weapons.MASTERY: the
+        longbow, rotten eggs, grenades, the launchers, the knife / stun rod, the flamethrower); None for the laser guns.
+        Out of its band he moves (closes in at a run, or steps out of his own blast facing them); in it the stance stays
+        up between shots (never lowered and raised again: only an aim UNAIM_ERR off for UNAIM_HOLD_S turns the body),
+        the aim is re-made every tick (the RAM writer, else the stick) and the trigger runs its pattern while aligned."""
+        self._wm_active = False
+        if not WEAPON_MASTERY or tgt is None:
+            return None
+        from . import re5_weapons as W
+        inv = snap.get("inventory") or ()
+        held = next((s for s in inv if s.get("hand")), None)
+        item = held.get("item") if held and held.get("type") == 1 else None
+        spec = W.mastery(item)
+        if spec is None or spec.mode == "laser":
+            return None
+        self._wm_active = True
+        st = self.__dict__.setdefault("_wmc", {})
+        if st.get("item") != item:
+            st.clear()
+            st.update(item=item, phase=0, off_since=None, w_at=None, aligned_at=None)
+        px, py, pz = p["pos"]
+        level = [e for e in live if abs(e["pos"][1] - py) <= LEVEL_DY] or live
+        foot = tuple(tgt["pos"])
+        fam, name = spec.family, W.WEAPONS[item].name
+        n = 1
+        if spec.aim == "crowd":
+            centre, n = W.crowd_point(foot, level)
+            h = WM_THROW_AIM_H if spec.mode == "throw" else CHEST_H
+            aim = (centre[0], centre[1] + h, centre[2])
+        else:
+            aim = (foot[0], foot[1] + self._aim_h(tgt, flat(tgt), now), foot[2])
+        adist = math.hypot(aim[0] - px, aim[2] - pz)
+        key = tgt.get("ptr", tgt.get("slot"))
+        body_err = wrap(heading(aim[0] - px, aim[2] - pz) - p["rot"])
+        who = f"the crowd of {n}" if n > 1 else "him"
+        self.stats["wm_controller"] = f"{name}: {spec.mode} / {spec.pattern}"
+        # out of his own blast first: the impact (the crowd's centre) inside it - out, facing them (the mines' standoff)
+        if not W.blast_ok(snap, (aim[0], foot[1], aim[2]), spec):
+            if self.aim_since is not None:
+                self._gun_down()
+            close = [e for e in level if flat(e) <= spec.blast_cm + 150.0] or [tgt]
+            self._wm_count(fam, "backoffs")
+            self.doing, self.why = "backoff", (f"{name}: {who} {adist / 100:.1f} m is inside its "
+                                               f"{spec.blast_cm / 100:.0f} m blast: stepping out")
+            return {"hold": self._escape_keys(p, close) + self._turn(body_err, TURN_TOL)}
+        if adist > spec.max_cm:                              # beyond its reach: in at a run (never standing)
+            if self.aim_since is not None:
+                self._gun_down()
+            self.doing, self.why = "walk", f"{name}: {who} {adist / 100:.1f} m, its reach {spec.max_cm / 100:.0f} m"
+            return {"hold": (self._gait(adist) if spec.mode != "contact" else ("lup",))
+                    + self._approach(p, foot, now, link=True)}
+        weapon = f"0x{held['id']:03x}" if isinstance(held.get("id"), int) else name
+        loaded = self._loaded_gun(held)
+        tol = W.fire_tol(spec, adist, BODY_R)
+        ctx = {"target": key, "dist": adist, "bearing": body_err, "yaw_err": body_err, "where": None,
+               "laserless": True, "weapon": weapon, "foot": foot, "item": item, "class": tgt.get("class"),
+               "hp_max": tgt.get("hp_max"), "shooter": tuple(p["pos"]), "py": py}
+        if spec.mode == "contact":                           # the knife / stun rod: face him, L held, ZR swung
+            if self.aim_since is not None:
+                self._gun_down()
+            if abs(body_err) > tol:
+                st["phase"] = 0
+                self._wm_release(now)
+                self.doing, self.why = "aim", f"{name}: facing him ({math.degrees(body_err):+.0f} deg, {adist / 100:.1f} m)"
+                return {"hold": self._turn(body_err)}
+            ok, why = W.mastery_gate(item, aligned=True, loaded=True, in_band=True)
+            self._aimctx = dict(ctx, gate=f"{fam}: {why}")
+            st["phase"] ^= 1
+            keys = {"l"}
+            if st["phase"]:
+                keys.add("zr")
+                self._wm_press(now)
+            else:
+                self._wm_release(now)
+            self.doing, self.why = "fire", f"{name}: swinging at {adist / 100:.1f} m"
+            return {"hold": tuple(sorted(keys))}
+        cam = snap.get("aim_cam")
+        cam_ok = bool(cam and cam.get("player") == p.get("ptr") and cam.get("generation") == p.get("generation"))
+        origin = (px, py + MUZZLE_H, pz)
+        lz = snap.get("laser") or {}
+        ray = None
+        if spec.mode == "splash" and lz.get("up") and lz.get("from") and lz.get("at") \
+                and all(math.isfinite(v) for v in (*lz["from"], *lz["at"])) and math.dist(lz["from"], origin) < 200.0:
+            ray = (tuple(lz["from"]), tuple(lz["at"]))       # a launcher's laser: the dot is the impact
+        want_yaw = heading(aim[0] - px, aim[2] - pz)
+        yaw_err = wrap(want_yaw - (cam["heading"] if cam_ok else p["rot"]))
+        have_p = cam["pitch"] if cam_ok else (-p["aim_pitch"] if isinstance(p.get("aim_pitch"), (int, float)) else None)
+        pitch_err = None if have_p is None else W.aim_pitch(spec, aim, origin) - have_p
+        if ray is not None:
+            yaw_err, pitch_err = ray_error(ray[0], ray[1], aim)
+        if self.aim_since is None:                           # the stance down: turn the body, then up once (no flicker)
+            if abs(body_err) > max(self.raise_tol(adist), 3.0 * tol, math.radians(20)):
+                self.stats["turns"] += 1
+                self.turning = True
+                self._wm_release(now)
+                self.doing, self.why = "turn", f"{name}: turning to {who} ({math.degrees(body_err):+.0f} deg)"
+                return {"hold": self._turn(body_err)}
+            self.turning = False
+            self.aim_since = self._raise_t = now
+            self.stats["raises"] += 1
+            self._wm_count(fam, "raises")
+            st.update(phase=0, off_since=None, aligned_at=None)
+        if abs(yaw_err) > UNAIM_ERR:                         # far off for UNAIM_HOLD_S (after MIN_UP_S up): down, turn
+            st["off_since"] = st.get("off_since") or now
+            if now - st["off_since"] >= UNAIM_HOLD_S and now - self.aim_since >= MIN_UP_S:
+                self.stats["unaims"] += 1
+                self._gun_down()
+                self.doing, self.why = "unaim", f"{name}: {math.degrees(yaw_err):+.0f} deg off {who}: turning"
+                return {"hold": self._turn(body_err)}
+        else:
+            st["off_since"] = None
+        keys = {"zl"}
+        ready = now - self.aim_since >= READY_S
+        wrote = False
+        writer = self._writer() if cam_ok and ready else None
+        if writer is not None:                               # the aim by RAM: the heading and the camera pitch, rate-held
+            dt = now - st["w_at"] if st.get("w_at") is not None else 1.0 / 30.0
+            st["w_at"] = now
+            pitch = None if pitch_err is None else max(-re5_switch_aim.PITCH_LIMIT, min(
+                re5_switch_aim.PITCH_LIMIT, cam["pitch"] + re5_switch_aim.step(pitch_err, re5_switch_aim.PITCH_RATE, dt)))
+            hd = wrap(cam["heading"] + re5_switch_aim.step(yaw_err, re5_switch_aim.YAW_RATE, dt))
+            try:
+                wrote = bool(writer(cam, pitch, hd))
+            except Exception:                                # noqa: BLE001 - a failed write: the stick
+                wrote = False
+            self._wm_count(fam, "ram_writes" if wrote else "ram_write_failures")
+        if not wrote:
+            keys |= self._yaw(yaw_err)
+            if pitch_err is not None and adist >= CLOSE_PITCH_R:
+                keys |= self._pitch(pitch_err)
+        if p.get("motion") in W.rate_motions(item) and keys & {"rleft", "rright", "rup", "rdown"}:
+            keys -= {"rleft", "rright", "rup", "rdown"}      # the weapon's scaled motion: no stick in it (shot_stick_drops)
+            self.stats["shot_stick_drops"] += 1
+        blast = True
+        if ray is not None:
+            o, dot = ray
+            on_body = any(dot_on(dot, e["pos"]) or through(o, dot, e["pos"]) for e in level)
+            aligned = on_body or math.dist(dot, aim) <= W.SPLASH_IMPACT_R
+            blast = not spec.blast_cm or W.clearance(snap, dot, spec.blast_cm)
+            ctx.update(laserless=False, origin=o, dot=dot, yaw_err=yaw_err, pitch_err=pitch_err)
+        else:
+            yaw_ok = abs(yaw_err) <= tol
+            if not yaw_ok:
+                st["aligned_at"] = None
+            elif st.get("aligned_at") is None:
+                st["aligned_at"] = now
+            pitch_ok = pitch_err is None or abs(pitch_err) <= max(tol, math.radians(6.0)) \
+                or (yaw_ok and now - st["aligned_at"] >= WM_PITCH_GRACE_S)   # an unsettled pitch never holds it long
+            aligned = yaw_ok and pitch_ok
+            ctx.update(yaw_err=yaw_err, pitch_err=pitch_err)
+        ok, why = W.mastery_gate(item, aligned=aligned, loaded=loaded, in_band=adist <= spec.max_cm, blast=blast)
+        fire = ready and ok
+        self._aimctx = dict(ctx, gate=f"{fam}: {why}")
+        if spec.pattern == "hold":
+            keys |= self._trigger(fire, now)
+        elif fire:                                           # tap: a fresh ZR edge every second tick
+            st["phase"] ^= 1
+            if st["phase"]:
+                keys.add("zr")
+                self._wm_press(now)
+            else:
+                self._wm_release(now)
+        else:
+            st["phase"] = 0
+            self._wm_release(now)
+        self.doing = "fire" if fire else "aim"
+        self.why = (f"{why} at {who} {adist / 100:.1f} m (yaw {math.degrees(yaw_err):+.1f}"
+                    + (f", pitch {math.degrees(pitch_err):+.1f}" if pitch_err is not None else "") + " deg)"
+                    + ("" if ready else "; the stance coming up"))
+        self.stats["wm_gate"] = self.why[:160]
+        return {"hold": tuple(sorted(keys))}
+
+    def _wm_tick(self, snap, act, now) -> None:
+        """Per family, while its weapon is in hand: shots (trigger edges), hits (target health lost near a pull, the
+        existing measurement), kills, seconds in hand, seconds with a target in its band and the shots then, idle
+        seconds with one in its band (no trigger this tick or the last, no left stick), rounds spent (the slot's count
+        falling: without infinite ammo), and the weapon's own motion bytes while its trigger is held."""
+        from . import re5_weapons as W
+        st = self.__dict__.setdefault("_wm", {"t": None, "item": None, "slot": None, "rounds": None, "kills": None,
+                                              "hits": None, "zr": False})
+        dt = 0.0 if st["t"] is None else max(0.0, min(now - st["t"], LOOK_STEP_MAX_S))
+        p = snap.get("player") or {}
+        held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
+        item = held.get("item") if held and held.get("type") == 1 else None
+        spec = W.mastery(item)
+        hold = set(act.get("hold") or ()) | ({act["tap"]} if act.get("tap") else set())
+        zr = "zr" in hold
+        kills, hits = snap.get("kills"), self.stats.get("hits", 0)
+        if spec is not None and p.get("pos") and (p.get("hp") or 0) > 0:
+            fam = spec.family
+            same = st["item"] == item
+            px, py, pz = p["pos"]
+            reach = max(spec.max_cm, 300.0)
+            in_range = any((e.get("hp") or 0) > 0 and e.get("pos") and abs(e["pos"][1] - py) <= LEVEL_DY
+                           and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= reach for e in snap.get("enemies") or ())
+            acc = self.__dict__.setdefault("_wm_acc", {})
+            for what, add in (("hand_s", dt), ("range_s", dt if in_range else 0.0),
+                              ("trigger_s", dt if st["zr"] else 0.0),   # (a held trigger: the guns' and the flame's spam)
+                              ("idle_s", dt if in_range and not zr and not st["zr"]
+                               and not hold & {"lup", "ldown", "lleft", "lright"} else 0.0)):
+                k = f"wm_{fam}_{what}"
+                acc[k] = acc.get(k, float(self.stats.get(k) or 0.0)) + add
+                self.stats[k] = round(acc[k], 2)
+            if zr and not st["zr"]:
+                self._wm_count(fam, "shots")
+                if in_range:
+                    self._wm_count(fam, "range_shots")
+            if same and type(hits) is int and type(st["hits"]) is int and hits > st["hits"]:
+                self._wm_count(fam, "hits", hits - st["hits"])
+            if same and type(kills) is int and type(st["kills"]) is int and kills > st["kills"]:
+                self._wm_count(fam, "kills", kills - st["kills"])
+            rounds = held.get("rounds")
+            if same and st["slot"] == held.get("slot") and type(rounds) is int and type(st["rounds"]) is int \
+                    and rounds < st["rounds"] and snap.get("infinite_ammo") is not True:
+                self._wm_count(fam, "spent", st["rounds"] - rounds)
+            rs, hs = self.stats.get(f"wm_{fam}_range_s") or 0.0, self.stats.get(f"wm_{fam}_hand_s") or 0.0
+            self.stats[f"wm_{fam}_shots_per_s"] = round((self.stats.get(f"wm_{fam}_range_shots") or 0) / rs, 2) if rs else 0.0
+            self.stats[f"wm_{fam}_kills_per_min"] = round(60.0 * (self.stats.get(f"wm_{fam}_kills") or 0) / hs, 2) \
+                if hs else 0.0
+            self.stats["wm_family"] = fam
+            if spec.mode != "laser" and (zr or st["zr"]) and type(p.get("motion")) is int:
+                seen = self.stats.setdefault("weapon_motions_seen", {})
+                row = seen.setdefault(f"0x{item:02x}", {})
+                m = str(p["motion"])
+                if m in row or len(row) < WM_MOTIONS_KEPT:
+                    row[m] = row.get(m, 0) + 1
+                self.stats["weapon_motions_seen_text"] = " | ".join(
+                    f"{k}: " + " ".join(f"{mm}x{c}" for mm, c in sorted(v.items(), key=lambda x: -x[1]))
+                    for k, v in sorted(seen.items()))[:400]
+            if not same or now - st.get("sum_at", -1e9) >= 1.0:
+                st["sum_at"] = now
+                parts = []
+                for f in sorted({k[3:].rsplit("_", 2)[0] for k in self.stats if k.startswith("wm_") and k.endswith("_hand_s")}):
+                    g = lambda w: self.stats.get(f"wm_{f}_{w}") or 0
+                    parts.append(f"{f} {g('shots')} shots {g('shots_per_s')}/s in range, ZR held {g('trigger_s')} s, "
+                                 f"{g('hits')} hits, "
+                                 f"{g('kills')} kills {g('kills_per_min')}/min, idle {g('idle_s')} s of {g('range_s')} s")
+                self.stats["wm_summary"] = " | ".join(parts)[:600]
+        st.update(t=now, item=item, slot=held.get("slot") if held else None,
+                  rounds=held.get("rounds") if held else None, kills=kills, hits=hits, zr=zr)
+
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
         px, py, pz = p["pos"]
         self._goal_dy = None                             # (set again by the bonus run / the pursuit this tick)
@@ -5018,6 +5887,9 @@ class Bot:
             self.stats["close_in_ticks"] = self.stats.get("close_in_ticks", 0) + 1
             self._gun_down()
             return {"hold": ("lup", "b") + self._approach(p, foot, now, link=True)}
+        act = self._mastery(p, live, flat, tgt, snap, now)  # the weapon in hand has no laser: its own controller
+        if act is not None:
+            return act
         motion = p.get("motion")
         if self.aim_since is None:
             if now < self.backoff_until:                     # a back-off under way (a crowd's burst ended it): finish it
@@ -5061,6 +5933,10 @@ class Bot:
                 self.turning = True
                 return {"hold": self._turn(body_err)}
             self.turning = False
+            if self._repositioning(now, snap):               # keep_active's step under way: no raise until it ends
+                self.stats["raise_holds"] = self.stats.get("raise_holds", 0) + 1
+                self.doing, self.why = "aim", "the reposition step first (the gun stays down)"
+                return {"hold": ()}
             self.aim_since = self._raise_t = now
             self._lower_pitch, self._first_ray = self._ray_pitch, True
             self._first_check, self._raise_is_reroll, self._reroll_next = True, self._reroll_next, False
@@ -5773,7 +6649,7 @@ class RE5Switch(Driver):
                       "aim_repositions", "target_feedback_fire_blocks", "target_feedback_write_failures",
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
                       "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS \
-        + THREAT_COUNTERS \
+        + THREAT_COUNTERS + CRIT_FLASH_COUNTERS \
         + AIM_COUNTERS + MEASURE_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
@@ -5781,6 +6657,7 @@ class RE5Switch(Driver):
         self._timer = (None, 0.0)
         self.stats: dict | None = None
         self._tally = None                      # the results tally being watched (result_ready)
+        self._player_class = (None, None)       # (player object, its RAM class name): read once a round
 
     def snapshot(self, m) -> dict:
         return snapshot(m)
@@ -5794,13 +6671,73 @@ class RE5Switch(Driver):
             if control is not None:
                 control.confirmed_round()
             self._cycle_started(m)
+            self._identity(m, snap)
             now, t = self.clock(), snap.get("timer")
             if t != self._timer[0]:
                 self._timer = (t, now)
             elif now - self._timer[1] > HANG_S:
                 where = "loading"                           # the clock stopped: frozen (the engine calls it lost)
+        try:
+            _menu_clock(m, where, snap, self.stats)         # the menus' timing: a round's end and its clock running
+        except Exception as exc:                            # noqa: BLE001 - timing never costs the round a tick
+            if self.stats is not None:
+                self.stats["menu_speed_error"] = f"{type(exc).__name__}: {exc}"[:160]
         self._mods(m, snap, where == "playing")
+        ss_ledger.clock_tick(self.stats, snap, where, self.clock())   # the round's real play seconds (ss_*)
+        if where == "results":
+            ss_ledger.result_rank(self.stats, snap)         # the results' rank: RAM beside the score's table
         return where
+
+    def _identity(self, m, snap) -> None:
+        """The round's stage and character in its stats when this visit's selects did not name them: a fragment that
+        starts mid-round (a bot reload, a restarted autoplay) never sees the selects, and its Notebook row named neither
+        (2026-11-09: both 400-kill wins). The stage: the navigation signature's (ss_ledger.SIGNATURES, measured), which
+        also corrects a stage left over from another round; else the cycle's last confirmed start. The character: the
+        cycle's last confirmed start when its stage agrees and the player object's RAM class is of that character
+        (uPlNN: PLAYER_FAMILIES), else the class's character alone. Never overrides a character the selects confirmed.
+        stats ss_stage (+ ss_stage_source), ss_character_source, player_class."""
+        st = self.stats
+        if st is None:
+            return
+        try:
+            sig = getattr(snap.get("nav"), "learning_sig", None)
+            named = ss_ledger.stage_of_signature(sig)
+            c = _CYCLE.get("c")
+            last = c.last if c is not None and isinstance(getattr(c, "last", None), tuple) else None
+            if named:
+                if st.get("stage") != named:
+                    st["stage"] = named
+                st.update(ss_stage=named, ss_stage_source="navigation signature")
+            elif st.get("stage") in STAGE_NAMES:
+                if st.get("ss_stage") != st["stage"]:
+                    st.update(ss_stage=st["stage"], ss_stage_source="selects")
+            elif last and 0 <= last[0] < len(STAGE_NAMES):
+                st.update(stage=STAGE_NAMES[last[0]], ss_stage=STAGE_NAMES[last[0]],
+                          ss_stage_source="the cycle's last start")
+            p = snap.get("player") or {}
+            ptr = p.get("ptr")
+            if ptr and self._player_class[0] != ptr:
+                self._player_class = (ptr, class_name(m, ptr))
+            cls = self._player_class[1] if ptr else None
+            family = PLAYER_FAMILIES.get(cls[3:5]) if isinstance(cls, str) and cls.startswith("uPl") else None
+            if cls:
+                st["player_class"] = cls
+            if st.get("character") not in (None, "", "unknown"):
+                if family:
+                    st["ss_character_check"] = "class agrees" if str(st["character"]).startswith(family) \
+                        else f"class {cls} disagrees"
+                return
+            guess = None
+            if last and 0 <= last[1] < max(len(CHARACTERS), character_count()):
+                name = CHARACTERS[last[1]] if last[1] < len(CHARACTERS) else f"character {last[1] + 1}"
+                if (named is None or STAGE_NAMES[last[0]] == named) and (family is None or name.startswith(family)):
+                    guess = (name, "the cycle's last start" + (" (class agrees)" if family else ""))
+            if guess is None and family:
+                guess = (family, f"player class {cls}")
+            if guess:
+                st.update(character=guess[0], ss_character_source=guess[1])
+        except Exception as exc:                            # noqa: BLE001 - identity never costs a tick
+            st["ss_identity_error"] = f"{type(exc).__name__}: {exc}"[:160]
 
     def _cycle_started(self, m=None) -> None:
         """A round is up on what the selects confirmed: the stage cycle counts it; the round's stats name it."""
@@ -5816,7 +6753,8 @@ class RE5Switch(Driver):
             # an entry past the known names (a later page of the select) is still a character the bot played: name it
             # by its select index rather than dropping the round's stats
             name = CHARACTERS[char] if 0 <= char < len(CHARACTERS) else f"character {char + 1}"
-            self.stats.update(stage=STAGE_NAMES[stage], character=name, stage_coverage=c.coverage_text())
+            self.stats.update(stage=STAGE_NAMES[stage], character=name, stage_coverage=c.coverage_text(),
+                              ss_stage=STAGE_NAMES[stage], ss_stage_source="selects", ss_character_source="selects")
 
     def _mods(self, m, snap, playing: bool, stats: dict | None = None) -> None:
         """The session's live mods (re5_switch_mods: fire_rate's time scale during shots, the no-ammo flags'

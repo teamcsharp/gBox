@@ -12,6 +12,8 @@ ops:
   fire_rate multiplier=N    the player's own time scale x N while his shot motion plays (1..80; 1 = off): a held ZR
                             repeats about N times faster, up to the frame rate. Aiming, walking and turning keep the
                             game's speed (the scale is 1 whenever the shot motion is not playing)
+  egg_rate / bow_rate multiplier=N   the same time scale on the rotten egg's (1..40, default 20) / the longbow's (1..20,
+                            default 10) own motions while it is in hand (re5_weapons.RATE_MOTIONS; empty until measured)
   mine_loadout on=true      every verified Mercenaries template: proximity bomb x5 on a D-pad slot; legacy Chris-only
                             hand grenades. The game builds the stack itself at the next round's start (no item record or
                             pointer is ever written); with infinite_ammo's flag on the bomb (WP0A) a placement spends
@@ -1000,7 +1002,47 @@ def time_bonus_multiplier(g: RE5Switch, mult) -> dict:
 # Live 2026-10-27 10:42: definition 0x36 is WP36 EGG_X here too; 0x136 in a loadout template gives the round the egg (x5
 # at its grid); a ZL tap only raises it (motions 22 / 24): it throws with ZL + ZR, as a gun fires.
 EGG_ID, EGG_ITEM = 0x136, 0x36
-EGG_RATE_DEFAULT, EGG_RATE_MAX = 20.0, 20.0
+EGG_RATE_DEFAULT, EGG_RATE_MAX = 20.0, 40.0
+# Per-weapon rates (operator 2026-11-09 23:10 UTC: "if I set the weapon to a bow or rotten egg, they need to be able to
+# throw eggs 20x the regular speed and fire the bow at 10x regular speed with adjustable sliders for setting their
+# behaviors"): fire_rate's mechanism - the player's time scale (P_TIME_SCALE) x N while a motion plays, put back when it
+# ends - on the weapon's OWN motion set (re5_weapons.RATE_MOTIONS) while that weapon is in hand, instead of the guns'
+# MOTION_SHOT; FIRE_MAX stays the guns' cap. The throw's and the draw's motion bytes are not measured yet: the sets start
+# empty (the slider is saved and does nothing until they are filled), and the bot records every motion it sees while
+# the weapon is in hand and its trigger is held (stats weapon_motions_seen) to fill them. op -> (item, default, max).
+WEAPON_RATES = {"egg": (EGG_ITEM, EGG_RATE_DEFAULT, EGG_RATE_MAX), "bow": (0x0F, 10.0, 20.0)}
+RATE_ITEMS = {item: which for which, (item, _d, _m) in WEAPON_RATES.items()}
+
+
+def weapon_rate_x(st, which) -> float:
+    """The rate in force for egg / bow: the operator's (weapon_rate), else its default."""
+    item, default, _top = WEAPON_RATES[which]
+    v = (st.get("weapon_rates") or {}).get(which)
+    return float(v) if isinstance(v, (int, float)) and math.isfinite(v) else default
+
+
+def weapon_rate(g: RE5Switch, which: str, mult) -> dict:
+    """egg_rate / bow_rate multiplier=N: the time scale x N while that weapon's own motions play (1 = the game's)."""
+    item, default, top = WEAPON_RATES[which]
+    try:
+        k = float(mult if mult is not None else default)
+    except (TypeError, ValueError):
+        raise ValueError(f"{which}_rate multiplier: a number 1..{top:g} (1 = the game's)") from None
+    if not math.isfinite(k) or not 1.0 <= k <= top:
+        raise ValueError(f"{which}_rate multiplier: 1..{top:g} (1 = the game's)")
+    g.state.setdefault("weapon_rates", {})[which] = k
+    from . import re5_weapons
+    motions = sorted(re5_weapons.rate_motions(item))
+    restored = 0
+    if k == 1.0 and g.state.get("scaled_item") == item and g.state.get("scaled"):
+        restored = _restore_scale(g.ad, g.state)
+    return {f"{which}_rate_x": k, "verified": True, "restored": restored, "motions": motions,
+            "motions_known": bool(motions),
+            "note": (f"the player's time scale x {k:g} while the {re5_weapons.WEAPONS[item].name} is in hand and one of its "
+                     f"motions {motions} plays" if motions else
+                     f"saved: x {k:g} for the {re5_weapons.WEAPONS[item].name}; its own motion bytes are not measured "
+                     "yet (the bot's stats weapon_motions_seen lists them live), so nothing is scaled until "
+                     "re5_weapons.RATE_MOTIONS names them")}
 
 
 def rotten_egg_only(g: RE5Switch, on: bool, rate=None) -> dict:
@@ -1010,7 +1052,8 @@ def rotten_egg_only(g: RE5Switch, on: bool, rate=None) -> dict:
     st = g.state.setdefault("eggs", {"rate": EGG_RATE_DEFAULT})
     value = st["rate"] if rate is None else float(rate)
     if not math.isfinite(value) or not 1 <= value <= EGG_RATE_MAX:
-        raise ValueError("egg rate must be 1..20")
+        raise ValueError(f"egg rate must be 1..{EGG_RATE_MAX:g}")
+    g.state.setdefault("weapon_rates", {})["egg"] = value   # the egg's own rate (egg_rate) is the same setting
     name = g.name(EGG_ITEM)
     if not name.startswith("WP36 EGG_X"):
         raise ValueError(f"definition 0x36 is not the rotten egg on this build ({name!r})")
@@ -1165,6 +1208,7 @@ def _maintain_mines(ad, snap) -> dict:
 def _restore_scale(ad, st) -> int:
     scaled = st.pop("scaled", None)
     st.pop('scaled_rate', None)
+    st.pop('scaled_item', None)
     if not scaled:
         return 0
     ptr, before = scaled
@@ -1204,12 +1248,19 @@ def maintain(ad, snap=None, *, enabled: bool = True, prepare_mines: bool = False
             held = next((row for row in (snap or {}).get('inventory') or () if row.get('hand')), None)
             if k > 1.0 and held and held.get('item') in SNIPER_ITEMS:
                 k = SNIPER_FIRE_X
+            motions = (MOTION_SHOT,)                         # the guns: the shot motion, fire_rate (FIRE_MAX)
+            item = held.get('item') if held else None
+            if item in RATE_ITEMS:                           # the egg / the longbow: their own rate on their own motions
+                from . import re5_weapons
+                k, motions = weapon_rate_x(st, RATE_ITEMS[item]), re5_weapons.rate_motions(item)
+                out["weapon_rate"] = {"weapon": RATE_ITEMS[item], "x": k, "motions_known": bool(motions)}
+            playing = bool(p) and p.get("motion") in motions
             scaled = st.get("scaled")
             if scaled and (not p or p.get("ptr") != scaled[0]):
                 st.pop("scaled", None)                       # that player is gone with his round: nothing to put back
-            elif scaled and (not enabled or k <= 1.0 or p.get("motion") != MOTION_SHOT):
+            elif scaled and (not enabled or k <= 1.0 or not playing):
                 out["writes"] += _restore_scale(ad, st)
-            elif scaled and enabled and p and p.get('motion') == MOTION_SHOT:
+            elif scaled and enabled and p and playing:
                 # Change only a scale we own when the current weapon changes.
                 at = p['ptr'] + P_TIME_SCALE
                 current = struct.unpack('<f', ad.read_memory(at, 4))[0]
@@ -1218,13 +1269,14 @@ def maintain(ad, snap=None, *, enabled: bool = True, prepare_mines: bool = False
                     ad.write_memory(at, struct.pack('<f', k))
                     st['scaled_rate'] = k
                     out['writes'] += 1
-            elif enabled and p and k > 1.0 and p.get("motion") == MOTION_SHOT and not scaled:
+            elif enabled and p and k > 1.0 and playing and not scaled:
                 at = p["ptr"] + P_TIME_SCALE
                 before = struct.unpack("<f", ad.read_memory(at, 4))[0]
                 if abs(before - 1.0) < 1e-3:                 # the game's own pace only (not a slow-motion moment)
                     ad.write_memory(at, struct.pack("<f", k))
                     st["scaled"] = (p["ptr"], before)
                     st['scaled_rate'] = k
+                    st['scaled_item'] = item
                     out["writes"] += 1
             out["active"] = bool(st.get("scaled"))
             now = clock()
@@ -1364,6 +1416,10 @@ AVAILABLE = {
     "kill_time": "Seconds added to the authoritative clock per kill, every snapshot.",
     "time_bonus_multiplier": "The round's standing hourglasses' seconds x N; rerun each round.",
     "rotten_egg_only": "Every gun the rotten egg (infinite) from the next round; the throw sped up by the fire rate.",
+    "egg_rate": "The rotten egg's own animation x N while it is in hand (1..40); its motion ids are being measured "
+                "(weapon_motions_seen), nothing is scaled until they are named.",
+    "bow_rate": "The longbow's own animation x N while it is in hand (1..20); its motion ids are being measured "
+                "(weapon_motions_seen), nothing is scaled until they are named.",
     "bullet_damage": "every weapon's firepower group (the upgrade table), read back",
     "random_weapon": "Equips a loaded quick-slot gun or longbow; excludes rockets and sniper rifles.",
 }
@@ -1393,7 +1449,8 @@ def full_status(g: RE5Switch) -> dict:
               if (g.state.get("kill_time") or {}).get("on") else 0.0,
               kill_time_range=f"{(g.state.get('kill_time') or {}).get('seconds', KILL_TIME_S):g}",
               rotten_egg_only=bool((g.state.get("eggs") or {}).get("on")),
-              egg_rate_x=(g.state.get("eggs") or {}).get("rate", EGG_RATE_DEFAULT),
+              egg_rate_x=weapon_rate_x(g.state, "egg"), bow_rate_x=weapon_rate_x(g.state, "bow"),
+              weapon_rate_motions={w: sorted(re5_weapons.rate_motions(i)) for w, (i, _d, _m) in WEAPON_RATES.items()},
               egg_status=(g.state.get("eggs") or {}).get("status", "disabled"),
               egg_native_equipped=False,
               all_weapons=[{"item": k, "weapon": w.name, "family": w.family}
@@ -1441,7 +1498,10 @@ ALIASES = {"fire": "fire_rate", "rapid_fire": "fire_rate", "machine_gun": "fire_
            "more_time": "add_time", "subtract_time": "add_time", "cut_time": "add_time", "set_clock": "set_time",
            "merc_time_set": "set_time", "clock": "set_time", "time_bonus": "time_bonus_multiplier",
            "merc_time_bonus": "time_bonus_multiplier", "auto_qte": "instant_qte", "qte_assist": "instant_qte",
-           "mine_loadout": "mine_loadout", "proximity_bombs": "mine_loadout"}
+           "mine_loadout": "mine_loadout", "proximity_bombs": "mine_loadout",
+           "egg_speed": "egg_rate", "egg_throw_rate": "egg_rate", "rotten_egg_rate": "egg_rate", "egg_rate_x": "egg_rate",
+           "throw_rate": "egg_rate", "bow_speed": "bow_rate", "bow_fire_rate": "bow_rate", "longbow_rate": "bow_rate",
+           "arrow_rate": "bow_rate", "bow_rate_x": "bow_rate"}
 
 
 def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Switch | None = None, **extra) -> dict:
@@ -1503,6 +1563,8 @@ def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Swi
             res.update(select_weapon(g, extra.get("weapon"), bool(on), random_pick=op == "random_weapon"))
         elif op == "rotten_egg_only":
             res.update(rotten_egg_only(g, bool(on), multiplier))
+        elif op in ("egg_rate", "bow_rate"):
+            res.update(weapon_rate(g, op[:-len("_rate")], multiplier if on is not False else 1.0))
         elif op == "mercs_select":
             res.update(mercs_select(g, extra.get("mode"), extra.get("character"), extra.get("stage")))
         elif op in ("arsenal", "weapon_swap", "instant_swap"):
@@ -1524,7 +1586,8 @@ def _weapons() -> dict:
     return re5_weapons.WEAPONS
 
 
-SAVED_OPS = frozenset({"fire_rate", "infinite_ammo", "infinite_spray", "unlimited_health", "mines", "weapon_override"})
+SAVED_OPS = frozenset({"fire_rate", "infinite_ammo", "infinite_spray", "unlimited_health", "mines", "weapon_override",
+                       "egg_rate", "bow_rate"})
 
 
 def apply_saved(ad, ops) -> dict:

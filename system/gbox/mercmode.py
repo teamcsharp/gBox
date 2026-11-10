@@ -41,9 +41,19 @@ DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title'
            # models while the player wears the majini's textures, and the rest of the cast swap skins between
            # themselves (gbox.skin_swap.cast_swap_build). 'off' plays the title with its own enemies.
            'cast_swap': 'off',
+           # operator 2026-11-09 ("all the levels and assets rendered in this UE-blueprint look with a toggle to turn
+           # it off and on in the mod panel ... across mercenary titles"): every queue entry plays on its build's
+           # blueprint companion `<build>-blueprint` (switch_mods op=blueprint: the build's files plus the greybox
+           # stage / object archives, gbox.re5_stage_greybox) while this is on, the plain build when off; the switch
+           # happens at the next round boundary (round_boundary compares the running build with effective_mod)
+           'blueprint_look': False,
            'coop_ratio': 'off'}
 SKIN_SWAPS = ('off', 'random')
 CAST_SWAPS = ('off', 'on')
+BLUEPRINT_FEATURE = 'mercmode_blueprint_look'   # worker feature: its mercmode tool takes blueprint_look
+# The companion's name. The brief wrote `<build>+blueprint`; `+` is outside switch_mods.NAME (the emulator's add-on
+# folder names) and the queue's mod pattern, so the realisation is `-blueprint` (gbox.switch_mods.BLUEPRINT_SUFFIX).
+BLUEPRINT_SUFFIX = '-blueprint'
 # How long one round may play before a random skin swap draws the next pair (seconds). The rotation normally fires on
 # the bot's native round boundary; this is the fallback for a title whose boundary never arrives (lilspark posted none
 # in two hours on 2026-11-05), so a skin swap cannot stay stuck on its first draw.
@@ -163,6 +173,8 @@ def normalize(patch, current=None):
         raise ValueError('MercMode needs enabled true/false and 1..20 rounds per title')
     if type(out['repeat_queue']) is not bool:
         raise ValueError('MercMode repeat_queue must be true or false')
+    if type(out['blueprint_look']) is not bool:
+        raise ValueError('MercMode blueprint_look must be true or false')
     from .mercs.stalemate import CUT_MIN_S, CUT_MAX_S
     if out['coop_ratio'] not in COOP_RATIOS:
         raise ValueError('MercMode coop_ratio is co-op : solo turns, one of ' + ', '.join(COOP_RATIOS))
@@ -176,7 +188,7 @@ def normalize(patch, current=None):
     if not isinstance(out['titles'], list) or not out['titles'] or len(out['titles']) > 3 \
             or any(t not in TITLES for t in out['titles']) or len(set(out['titles'])) != len(out['titles']):
         raise ValueError('Choose distinct titles from re4, re5, re6, re3 and merc3d')
-    out['queue'] = [queue_entry(e) for e in (out.get('queue') or [])]
+    out['queue'] = [queue_entry(e, out) for e in (out.get('queue') or [])]
     if len(out['queue']) > QUEUE_MAX:
         raise ValueError(f'The MercMode queue holds at most {QUEUE_MAX} rounds')
     mods = out.get('default_mods') or {}
@@ -191,19 +203,31 @@ def normalize(patch, current=None):
     return out
 
 
-def catalog():
-    """What the DJ queue can ask for, per verified title: modes -> characters (native roster order), stages."""
+def catalog(cfg=None):
+    """What the DJ queue can ask for, per verified title: modes -> characters (native roster order), stages.
+
+    cfg: the host's settings. Where its preferred_editions make RE5 the Switch No Mercy edition, RE5's first mode is
+    no_mercy with that edition's own select roster (re5_switch.CHARACTERS: both pages, Josh (BSAA), Barry (STARS) and
+    Rebecca (STARS) included - the PS3 rosters refused them, and Excella only in 'reunion'), and a random mode is
+    no_mercy (default_mode); the PS3 rosters stay valid, so a queue saved before still reads (the Switch menus refuse
+    a Reunion pick themselves, re5_switch_mods.mercs_selection)."""
     from . import re4_menus
     from .mercs.titles import re5_ps3, re6_switch
+    re5 = {'modes': {m: list(r) for m, r in re5_ps3.MODE_ROSTERS.items()}, 'stages': list(re5_ps3.STAGE_NAMES)}
+    if 're5' in ((cfg or {}).get('preferred_editions') or {}):
+        from .mercs.titles import re5_switch
+        re5 = {'modes': {'no_mercy': list(re5_switch.CHARACTERS), **re5['modes']},
+               'stages': list(re5_switch.STAGE_NAMES), 'default_mode': 'no_mercy'}
     return {'re4': {'modes': {'mercenaries': list(re4_menus.PLAYERS)}, 'stages': list(re4_menus.STAGES)},
-            're5': {'modes': {m: list(r) for m, r in re5_ps3.MODE_ROSTERS.items()}, 'stages': list(re5_ps3.STAGE_NAMES)},
+            're5': re5,
             're6': {'modes': {'no_mercy': list(re6_switch.CHARACTERS)}, 'stages': list(re6_switch.STAGES)}}
 
 
-def queue_entry(entry):
+def queue_entry(entry, cfg=None):
     """One queued round (operator 2026-10-24: "be the DJ ... what mode is being played next, who's being played next
     ... and see the queue ahead"): {title, mode, character, stage}; mode / character / stage None = random.
-    An optional `mod` names a build (a LayeredFS overlay of the title) that this round plays with."""
+    An optional `mod` names a build (a LayeredFS overlay of the title) that this round plays with. cfg: the host's
+    settings (catalog: the edition it plays)."""
     if not isinstance(entry, dict) or set(entry) - {'title', 'mode', 'character', 'stage', 'mod'} or entry.get('title') not in TITLES:
         raise ValueError('A queued round needs a known title and only mode, character, stage and mod')
     title = entry['title']
@@ -214,7 +238,7 @@ def queue_entry(entry):
         if not isinstance(mod, str) or not re.fullmatch(r'(?=.*[A-Za-z0-9])[A-Za-z0-9_.-]{1,64}', mod):
             raise ValueError('A queued round\'s mod must be one build folder name')
         out['mod'] = mod
-    known = catalog().get(title)
+    known = catalog(cfg).get(title)
     if known is None:
         if out['mode'] or out['character'] or out['stage'] is not None:
             raise ValueError(f"{TITLES[title]['name']} has no verified roster or stage list yet")
@@ -230,13 +254,14 @@ def queue_entry(entry):
     return out
 
 
-def resolve_selection(entry, rng):
-    """A queued round's random parts drawn now, so the game receives an exact mode, character and stage."""
-    known = catalog().get(entry['title'])
+def resolve_selection(entry, rng, cfg=None):
+    """A queued round's random parts drawn now, so the game receives an exact mode, character and stage. cfg: the
+    host's settings (catalog: the edition it plays)."""
+    known = catalog(cfg).get(entry['title'])
     if known is None:
         return dict(entry)
     mode = entry.get('mode') or next((m for m, r in known['modes'].items() if entry.get('character') in r), None) \
-        or rng.choice(sorted(known['modes']))
+        or known.get('default_mode') or rng.choice(sorted(known['modes']))
     character = entry.get('character') or rng.choice(known['modes'][mode])
     stage = entry['stage'] if entry.get('stage') is not None else rng.randrange(len(known['stages']))
     out = {'title': entry['title'], 'mode': mode, 'character': character, 'stage': stage,
@@ -1037,14 +1062,48 @@ def _picked(store, worker, row):
     return row
 
 
-def default_mod(cfg, row):
-    """The configured build for this round's title (a DJ queue `mod` for that round still wins)."""
-    mod = (cfg.get('default_mods') or {}).get(row.get('title'))
+def blueprint_name(mod):
+    """`<build>` -> `<build>-blueprint` (already a companion: unchanged)."""
+    return mod if not mod or mod.endswith(BLUEPRINT_SUFFIX) else mod + BLUEPRINT_SUFFIX
+
+
+def plain_mod(mod):
+    """`<build>-blueprint` -> `<build>`."""
+    return mod[:-len(BLUEPRINT_SUFFIX)] if mod and mod.endswith(BLUEPRINT_SUFFIX) and len(mod) > len(BLUEPRINT_SUFFIX) \
+        else mod
+
+
+def effective_mod(cfg, mod):
+    """The build a round plays for a queue entry's `mod` under these settings: its blueprint companion while
+    blueprint_look is on, the entry's own build when off. A `mod` of None (the stock game) stays None: the stock
+    game has no companion (make one from an empty build with switch_mods op=blueprint and queue that build)."""
     if not mod:
-        return row
+        return mod
+    return blueprint_name(mod) if (cfg or {}).get('blueprint_look') else mod
+
+
+def same_build(cfg, head_mod, run_mod, run=None):
+    """Does the running session already play what the queue head asks for under these settings? True when the
+    running build is the head's effective build, or the plain build after a recorded blueprint fallback (the
+    companion was missing at launch: no restart loop until it exists). A toggle flip is therefore a restart at the
+    next round boundary: on -> the companion is not what runs; off -> the companion that runs is not the plain."""
+    if not head_mod or not run_mod:
+        return False
+    if run_mod == effective_mod(cfg, head_mod):
+        return True
+    return bool((run or {}).get('blueprint_fallback')) and run_mod == head_mod
+
+
+def default_mod(cfg, row):
+    """The configured build for this round's title (a DJ queue `mod` for that round still wins), then the build's
+    blueprint companion when blueprint_look is on (effective_mod)."""
+    mod = (cfg.get('default_mods') or {}).get(row.get('title'))
     selection = dict(row.get('selection') or {})
-    selection.setdefault('mod', mod)
-    return row | {'selection': selection}
+    if mod:
+        selection.setdefault('mod', mod)
+    if selection.get('mod'):
+        selection['mod'] = effective_mod(cfg, selection['mod'])
+    return row | {'selection': selection} if selection else row
 
 
 def choose(store, worker, rng, cfg=None):
@@ -1061,7 +1120,7 @@ def choose(store, worker, rng, cfg=None):
     head = (cfg.get('queue') or [None])[0]
     queued = next((r for r in rows if head and r['playable'] and r['title'] == head['title']), None)
     if queued:                                   # the DJ's next round comes first, even for an unchecked title
-        return _picked(store, worker, default_mod(cfg, queued | {'selection': resolve_selection(head, rng),
+        return _picked(store, worker, default_mod(cfg, queued | {'selection': resolve_selection(head, rng, cfg),
                                                                  '_queue_pending': True}))
     pool = [r for r in rows if r['playable'] and r['title'] in cfg['titles']]
     history = store.get(HISTORY, worker['name']) or {}

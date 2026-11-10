@@ -5,6 +5,8 @@
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   const RE5 = root.GBoxRE5Modifiers || (typeof require === "function" ? require("./re5-modifiers.js") : null);
   const RE6 = root.GBoxRE6Modifiers || (typeof require === "function" ? require("./re6-modifiers.js") : null);
+  // the blueprint look: a MercMode setting of the PC (blueprint-look.js), shown among the live mods, next round
+  const BLUEPRINT = root.GBoxBlueprintLook || (typeof require === "function" ? (() => { try { return require("./blueprint-look.js"); } catch { return null; } })() : null);
   const TITLES = { "52d15709be0fda1a": "re5", "115f9cdbba115432": "re6" };
   const workerOf = s => s?.worker_id || s?.worker || String(s?.session_id || "").split("-")[0];
   const pcOf = s => String(s?.detail?.worker_name || s?.pc || workerOf(s) || "");
@@ -53,6 +55,7 @@
   #bot-logic-panel input[type=number]{width:64px;background:#18181d;color:#fff;border:1px solid #666;border-radius:3px}
   #bot-logic-panel input:disabled,#bot-logic-panel button:disabled{opacity:.5;cursor:default}
   #bot-logic-panel .bl-note{color:#aaa;font-size:10px}
+  #bot-logic-panel .bl-blueprint{border-top:1px dashed #444;padding-top:5px;margin-top:6px}#bot-logic-panel .bl-blueprint small{color:#9cf}
   #bot-logic-panel button{border:1px solid #666;border-radius:3px;background:#18181d;color:#fff;cursor:pointer;font:11px system-ui}`;
 
   function html(view, message = "", state = {}) {
@@ -93,11 +96,19 @@
         + `<option value="">Equip a weapon…</option>`
         + weapons.map(w => `<option value="${ESC(w.id)}"${w.id === current ? " selected" : ""}>${ESC(w.name)}${w.loaded ? " · in hand now" : ""}</option>`).join("")
         + `</select>` : "";
+    // the blueprint look sits with the live mods: a MercMode setting of this PC, applied at the next round
+    const blueprint = BLUEPRINT && (title === "re5" || title === "re6") ? BLUEPRINT.html({ ...(state.blueprint || {}), cls: "bl-row bl-blueprint",
+      disabled: locked || !state.blueprint, attr: `data-bl-blueprint ${scope}` }) : "";
+    // the menus' learned speed (operator 2026-11-09: "get through them faster and faster until it is instantaneous"):
+    // the last round-to-round menu walk and the best so far, from the worker's menu learner (bot_logic menus)
+    const menus = typeof view?.menus?.text === "string" && view.menus.text
+      ? `<p class="bl-target bl-menus" title="${ESC(view.menus.screens || "")}">${ESC(view.menus.text)}</p>` : "";
     return `<div class="bl-head"><h3>Live controls · ${ESC(String(title || "").toUpperCase())}</h3>${pick}</div>`
       + (state.pc ? `<p class="bl-target">${ESC(state.pc)} · the game shown in this PiP</p>` : "")
+      + menus
       + `<p class="${state.ok && message ? "bl-ok" : "bl-msg"}" role="status">${ESC(message || (state.busy ? "Reading or applying settings…" : ""))}</p>`
       + `<button type="button" data-bl-refresh ${scope}${state.busy ? " disabled" : ""}>Refresh current settings</button>`
-      + (mods ? `<h4>Live mods</h4>${mods}<p class="bl-note">Fire rate is a multiplier; 1× restores the game's rate. Actual shots per second vary.</p>` : "")
+      + (mods ? `<h4>Live mods</h4>${mods}${blueprint}<p class="bl-note">Fire rate is a multiplier; 1× restores the game's rate. Actual shots per second vary.${title === "re5" ? " The rotten egg and bow rates speed up that weapon's own animation while it is in hand." : ""}</p>` : blueprint ? `<h4>Live mods</h4>${blueprint}` : "")
       + `<fieldset${locked || !view ? " disabled" : ""}>${rows}`
       + `<p><button type="button" data-bl-reset ${scope}>Reset behavior to the bot's defaults</button></p></fieldset>`;
   }
@@ -117,6 +128,7 @@
         if (data.bl) set(data.bl, value, data.blScope);
         if (data.blMod) setMod(data.blMod, value, data.blScope);
         if (data.blModSeconds) setModSeconds(data.blModSeconds, value, data.blScope);
+        if ("blBlueprint" in data) setBlueprint(value, data.blScope);
         if ("blWeapon" in data && value !== "") equip(Number(value), data.blScope);
       });
       panel.addEventListener("input", e => { const n = e.target?.dataset?.bl; const o = n && panel.querySelector(`[data-bl-out="${n}"]`); if (o) o.textContent = e.target.value; });
@@ -196,8 +208,26 @@
         const out = await job(bound, s, "live_controls");
         s.view = logic(out.view, bound);
         s.status = mods(out.status);
+        s.blueprint = await blueprintState(bound);
         s.stale = false;
       }, target?.scope, true);
+    }
+    async function blueprintState(bound) {
+      // the PC's MercMode setting (GET /api/mercmode); a failed read only disables the switch, never the panel
+      if (!BLUEPRINT) return null;
+      try { return await BLUEPRINT.fetch(api, { sid: bound.sid, pc: bound.pc, worker: bound.worker }); }
+      catch (e) { return { host: null, on: null, reason: "MercMode settings unavailable: " + (e.message || e) }; }
+    }
+    function setBlueprint(value, scope = target?.scope) {
+      // POST /api/mercmode {host, blueprint_look}: the PC's setting; the scheduler loads the `<build>-blueprint`
+      // companion at the next round boundary, so the round being played does not change
+      return act(async (bound, s) => {
+        if (typeof value !== "boolean") throw new Error("Blueprint look needs an on/off value.");
+        if (!BLUEPRINT || !s.blueprint?.host || typeof s.blueprint.on !== "boolean")
+          throw new Error(s.blueprint?.reason || "The blueprint look is unavailable for this PC.");
+        s.blueprint = await BLUEPRINT.set(api, s.blueprint.host, value);
+        s.message = BLUEPRINT.message(value); s.ok = true;
+      }, scope);
     }
     function valueFor(d, value) {
       if (d.kind === "bool") {
@@ -311,7 +341,7 @@
       tab?.remove(); panel?.remove(); style?.remove();
       tab = panel = style = null;
     }
-    return { update, toggle, set, setMod, equip, reset, refresh, dispose, state: () => ({ ...state, ...target, open }) };
+    return { update, toggle, set, setMod, setBlueprint, equip, reset, refresh, dispose, state: () => ({ ...state, ...target, open }) };
   }
   const api = { create, html, eligible, definitions };
   root.GBoxBotLogicSidebar = api;

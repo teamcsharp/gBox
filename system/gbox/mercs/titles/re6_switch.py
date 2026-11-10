@@ -1916,6 +1916,60 @@ BOMB_HOLD_S = 8.0                       # out this long: off once he is clear
 # every title, 2026-11-09; the behavior wheel's goal dots and the bot-logic sidebar set these, 0..1)
 GOAL_ENGAGE, GOAL_COMBO, GOAL_EXPLORE, GOAL_EXPLOSIVES, GOAL_INTERRUPT, GOAL_BOSS = 1.0, 0.9, 0.7, 0.6, 1.0, 1.0
 GOAL_LOCATE = 1.0
+# --- parity with RE5 Switch (2026-11-09; docs/research/re6-parity.md) ------------------------------------------------
+# The doctrine's commands (gbox.mercs.directives, issued by the operator or by gbox.mercs.core.doctrine.Director into
+# the stats; doctrine.Reader hands either over): before this the bot read only explore / next_area (the PiP's wall).
+#   fight   no detour (the bonus run, the bonus shots, a taunt) while anyone is alive on his floor; with nobody on it
+#           the stage's nearest by the mesh (the pursuit) - the default already;
+#   hunt    beyond HUNT_R on his floor, with the gun down: after the nearest by the mesh at once (_pursue);
+#   score   the quickest kill is the target (the nearest open one), as the combo clock's;
+#   mine    the remote bomb due now (MINE_DUE_S): placed at the next moment it can be - the gap since the last
+#           (BOMB_GAP_S) and the crowd it waits for (BOMB_STAND_N) waived, never more often than MINE_CMD_GAP_S; with one
+#           within BOMB_ROOM_R it goes down at his feet as he backs out (the bomb drop) and he leaves its reach;
+#   mine_trail  the same, due again each time the last is down (a bomb in every quiet moment).
+# A command never presses a key itself: the hold, the heal, the prompts and the bombs' rules still decide every press.
+HUNT_R = 1200.0
+MINE_DUE_S, MINE_CMD_GAP_S = 12.0, 10.0
+# The combo clock (operator 2026-11-09: "dispatch a foe every 3 seconds and never fail at it ... Have the bot
+# understanding the combo and the amount of time left in it at all times and manage it"): sGameMan +0x4094 the combo,
+# +0x409C its window's seconds left (measured: about 15 s left after a kill, docs/research/re6-switch-ram.md). The full
+# window is read live (stats combo_window_full: the reading on the tick a kill raised the combo and refilled it);
+# COMBO_WINDOW_S stands in until then.
+# KILL_PACE_S after a kill the next is owed (combo_pace): the quickest kill is the target (the nearest open one; one he
+# is already aiming at is kept) unless a close one is on him, and no time-bonus run starts while any enemy is alive
+# (COMBO_BONUS_WAIT; the clock under BONUS_CLOCK_LOW_S lets it). COMBO_LOW_S (the urgent end) keeps its own rules.
+# stats combo_left_s, combo_since_kill_s, combo_pace_s, combo_window_full.
+COMBO_WINDOW_S = 15.0
+try:
+    from ..core import doctrine as _doctrine
+    KILL_PACE_S = float(getattr(_doctrine, "KILL_PACE_S", 3.0))
+except ImportError:                      # (a worker holding no doctrine module yet)
+    KILL_PACE_S = 3.0
+COMBO_PACE, COMBO_BONUS_WAIT, BONUS_CLOCK_LOW_S = True, True, 120.0
+# Never stand (operator 2026-11-09: "There is never ever ever a reason to stand still"): the backstop for every cause -
+# his position unchanged by STAND_MOVE_CM for STAND_MAX_S outside a hold, a tablet, a prompt, a throw, an aimed shot
+# (ZL held) or a tap, and he steps STAND_STEP_S along open floor (the mesh's, STAND_PROBE_CM ahead; toward the route's
+# next point when he has one). stats stand_breaks.
+NEVER_STAND, STAND_MAX_S, STAND_MOVE_CM, STAND_STEP_S, STAND_PROBE_CM = True, 3.0, 80.0, 1.2, 250.0
+STAND_BUSY = frozenset({"held", "tablet", "reload", "dead", "prompt", "quick_turn", "quick_shot", "nade", "melee"})
+STAND_BUSY_ACTS = frozenset({"bomb_place", "bomb_det", "bomb_det_hold", "bomb_det_block", "bomb_face",
+                             "bomb_walk", "bomb_escape"})   # (the walk off his own bomb has its own side steps)
+# The operator's hand on the map (2026-11-09: "If I click on an enemy on the map, I want the bot to navigate to that
+# enemy and dispatch [it] ... ASAP no matter what. Anywhere I double click on the map, I want the bot navigating to
+# that area. And then if I just leave it, they just take control and just go back to whatever they were doing"): the
+# click arrives through the tactical publisher (receive_map_goal; gbox.mercs.map_goals.Goals, the same title-agnostic
+# goals as RE5's, with its rule that an enemy with no health reading is alive) and comes ahead of the bonuses, the
+# bombs not yet in hand and every other target - only a hold, the dying, a critical tablet, the walk out of his own
+# bomb's reach and a throw already under way come first. The marked enemy: by the mesh until he is within GOAL_FIRE_R
+# on his floor with open floor between them, then the fight on him alone until he is down; a marked spot: by the mesh
+# until he stands on it (map_goals.ARRIVE). Anyone on his floor within GOAL_FIGHT_R, or within GOAL_THREAT_R on any
+# floor, is fought on the way. No mesh route for GOAL_NO_ROUTE_S: the mark closes "unavailable" and his own play goes
+# on. stats map_goal_status, map_goals_taken, map_goal_fight_ticks, map_goal_walk_ticks, map_goals_no_route.
+MAP_GOALS, GOAL_FIRE_R, GOAL_THREAT_R, GOAL_FIGHT_R, GOAL_NO_ROUTE_S = True, 1500.0, 200.0, 600.0, 3.0
+# Every mark and what he does with it, a line a second while it is in force, to MAP_GOAL_LOG on the worker (the same
+# file as RE5's, each line with its title; the newest also in stats map_goal_trace).
+MAP_GOAL_LOG = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "map-goals.log"
+MAP_GOAL_LOG_EVERY_S = 1.0
 NADES = False                            # (on per profile, re6_switch_mods bot_options nades=); the wheel measured live 14:17 (_wheel_key; the D-pad's right from an item lands
                                         # on wheel index 0, between the guns it steps 0 -> 1 -> 2 -> 0; a throw leaves the
                                         # game's own pick of a gun in hand - the knife, index 2 - so the gun back is to his)
@@ -2505,6 +2559,12 @@ class Bot:
         self.long_shot = {}                                  # zombie -> when the trigger was last on him past LONG_KILL_R
         self.qa_in, self.qa_at, self.qa_kills_k = False, None, None   # in a quick attack; when the last began; kills then
         self.pursuit = None                                  # the combo's pursuit under way: {since, kills}
+        self.commands = None                                 # the doctrine's Reader (operator's commands first)
+        self.mode = None                                     # a standing command: "fight" / "hunt" / "score"
+        self.mine_due = None                                 # the mine command: the bomb due until then
+        self.combo_pace = False                              # a kill owed: KILL_PACE_S since the last (the combo clock)
+        self._combo_full = None                              # the combo window's full length, read live
+        self._goal_drive, self._goal_target = None, None     # the map goal drove this tick (when); its marked row
         self.kill_times: list = []                           # when each recent kill came (the kill count's rises)
         self.taunt_due, self.taunt_at, self.taunt_hold_until = None, -1e9, -1e9   # the trigger waiting; the last click
         self._kills_prev, self._bosses = None, {}             # the kill count; the big ones alive {id: max health}
@@ -2556,6 +2616,9 @@ class Bot:
                 tuning.apply(MAP_ID, tuning.stage_name(STAGES, PICK.last.get("stage")), self.stats)
                 self.target, self.hp_prev, self.hp_seen = None, {}, []
                 self.tablet_wait, self.tablet_missed = None, False
+                self.mine_due, self._combo_full = None, None
+                if self.__dict__.get("_map_goals") is not None:
+                    self._map_goals.reset()                  # a new round: the last one's marks are gone
                 self.look.new_round()
             self.continued = None
         if self._round_started is None:
@@ -2819,6 +2882,7 @@ class Bot:
         from . import re6_switch_wall
         out = re6_switch_wall.mesh_guard(self, snap, out)          # the way probed on the nav mesh before the wall
         out = re6_switch_wall.apply(self, snap, out, now)
+        out = self._never_stand(out, snap, now)                    # whatever decided it: he does not stand
         out = self._govern(snap, out, now)
         if "zl" in (out.get("hold") or ()):
             self._zl_at = now
@@ -2864,7 +2928,7 @@ class Bot:
         return next((guns[k] for k in (0x107, 0x108, 0x105, 0x104, 0x106) if k in guns),
                     next((v for k, v in guns.items() if k != 0x11B), None))
 
-    def _equip_keys(self, p, index, legacy='dright'):
+    def _equip_keys(self, p, index, legacy='right'):
         self._equip_result = None
         if self.native_equip is None:
             return {'hold': ()} if getattr(self, '_operator_primary', None) else {'tap': legacy}
@@ -3112,6 +3176,7 @@ class Bot:
             return self._go("held", "break_free", {"hold": WIGGLE[self.wiggle % len(WIGGLE)]},
                             f"held (action {state}): B mashed, the stick round")
         self.in_hold = False
+        self.mode = self._operator_command(p, snap, live, now)   # the operator's commands, else the doctrine's
         took = self._prompt(p, snap, now)                        # the game's own prompt: pressed at once
         if took is not None:
             self.quick, self.qshot_release, self.periodic_qa_arm = 0, False, None
@@ -3152,6 +3217,11 @@ class Bot:
         wall = self._wall_command(p, live, snap, now)            # the PiP's wall button
         if wall is not None:
             return wall
+        goal = self._operator_goal(p, snap, live, flat, now)     # the operator's mark on the map: ahead of the rest
+        if goal is not None:
+            if set(goal.get("hold", ())) & {"lup", "ldown", "lleft", "lright"}:
+                self.move_at = now
+            return goal
         act = self._decide(p, live, flat, near_e, near, snap, now)
         if set(act.get("hold", ())) & {"lup", "ldown", "lleft", "lright"}:
             self.move_at = now
@@ -3202,25 +3272,7 @@ class Bot:
         """The operator's wall (the PiP's wall button sends the explore / next_area command; operator 2026-10-28: "it
         basically tells the bot to navigate the level in a different way"): the bonus or goal he was walking to is left
         for BONUS_SKIP_S and he walks WALL_ESCAPE_S along the clearest way that is not into a wall (_open_heading, the
-        nav mesh), then decides again. stats wall_reports."""
-        try:                                     # the operator's commands, else the doctrine's
-            from ..core.doctrine import Reader
-        except ImportError:                      # a worker still holding a doctrine module from before Reader
-            from ..directives import Reader      # (2026-11-09: that import failing every tick ended the run)
-        if getattr(self, "commands", None) is None:
-            self.commands = Reader()
-        try:
-            # Reader.current consumes one-shots. Leave other commands for their
-            # controller later in this tick (notably the emergency flash).
-            cmd, fresh = (self.commands.current(self.stats, time.time())
-                          if self.stats.get("directive") in ("explore", "next_area") else (None, False))
-        except Exception:                                    # noqa: BLE001 - the command never stops a tick
-            return None
-        if cmd in ("explore", "next_area") and fresh:
-            self.stats["wall_reports"] = self.stats.get("wall_reports", 0) + 1
-            if self.run_target is not None:
-                self.bonus_skip[self.run_target] = now + BONUS_SKIP_S
-            self.wall_escape = (now + WALL_ESCAPE_S, self._open_heading(p, live))
+        nav mesh), then decides again. stats wall_reports. (The command itself is read by _operator_command.)"""
         esc = getattr(self, "wall_escape", None)
         if esc is not None and now < esc[0]:
             cam = snap.get("camera")
@@ -3228,6 +3280,259 @@ class Bot:
             return self._go("walk", "wall_escape", {"hold": self._stick(esc[1], cam["yaw"] if cam else p["rot"])},
                             "the operator's wall: away from it by the clearest open way")
         return None
+
+    # --- the doctrine's commands (HUNT_R / MINE_DUE_S above) ---------------------------------------------------------
+    def _operator_command(self, p, snap, live, now) -> str | None:
+        """The operator's instant commands (gbox.mercs.directives), else the doctrine's (core.doctrine.Reader), read
+        once a tick: the one-shots act on the tick they arrive (explore / next_area: the wall escape; mine: the bomb
+        due), the standing modes (fight / hunt / score) are returned for the decision to apply. The emergency flash
+        reads its own directive (_emergency_flashbang); nothing here presses a key."""
+        try:                                     # the operator's commands, else the doctrine's
+            from ..core.doctrine import Reader
+        except ImportError:                      # a worker still holding a doctrine module from before Reader
+            from ..directives import Reader      # (2026-11-09: that import failing every tick ended the run)
+        try:
+            if self.commands is None:
+                self.commands = Reader()
+            cmd, fresh = self.commands.current(self.stats, time.time())
+        except Exception as exc:                             # noqa: BLE001 - the command never stops a tick
+            self.stats["directive_error"] = f"{type(exc).__name__}: {exc}"[:120]
+            return None
+        if cmd is None:
+            self.stats.pop("directive_active", None)
+            return None
+        self.stats["directive_active"] = cmd
+        if fresh:
+            self.stats["directive_status"] = "acting: " + cmd
+        if cmd in ("explore", "next_area") and fresh:
+            self.stats["wall_reports"] = self.stats.get("wall_reports", 0) + 1
+            if self.run_target is not None:
+                self.bonus_skip[self.run_target] = now + BONUS_SKIP_S
+            self.wall_escape = (now + WALL_ESCAPE_S, self._open_heading(p, live))
+        elif cmd == "mine" and fresh:
+            self.stats["directive_status"] = self._mine_now(p, now, "mine due now: placed at the next moment it "
+                                                                    "can be, then out of its reach")
+        elif cmd == "mine_trail" and self.bomb_phase is None and not (p.get("bomb") or {}).get("out"):
+            self.stats["directive_status"] = self._mine_now(p, now, "mine trail: the next bomb due, then on")
+        return cmd if cmd in ("fight", "hunt", "score") else None
+
+    def _mine_now(self, p, now, ok: str) -> str:
+        """The mine command: the remote bomb due for MINE_DUE_S (the bomb rule's own gates for room and health stay)."""
+        bomb = p.get("bomb")
+        if not BOMBS:
+            return "bombs are switched off (BOMBS)"
+        if not isinstance(bomb, dict) or (bomb.get("count") or 0) <= 0:
+            return "no remote bomb in this loadout"         # (said, and the fight goes on)
+        if self.mine_due is None or now >= self.mine_due:
+            self.stats["mine_commands"] = self.stats.get("mine_commands", 0) + 1
+        self.mine_due = now + MINE_DUE_S
+        return ok
+
+    def _mine_due(self, now) -> bool:
+        return self.mine_due is not None and now < self.mine_due
+
+    # --- the operator's marks on the map (MAP_GOALS above) -----------------------------------------------------------
+    def _goals(self):
+        g = self.__dict__.get("_map_goals")
+        if g is None:
+            from ..map_goals import Goals
+            g = self._map_goals = Goals()
+        return g
+
+    def receive_map_goal(self, value) -> None:
+        """The tactical publisher's hand-over, on the engine's thread: the operator's click."""
+        g = self._goals()
+        before = (g.goal or {}).get("id")
+        g.receive(value, self.clock())
+        if g.goal and g.goal.get("id") != before and g.goal.get("state") == "queued":
+            self.stats["map_goals_taken"] = self.stats.get("map_goals_taken", 0) + 1
+            self._goal_no_route = None
+            self._goal_log("received", g.goal, None, force=True)
+        elif isinstance(value, dict) and value.get("state") == "cancelled":
+            self._goal_log("cancelled", g.goal or value, None, force=True)
+
+    def map_goal_plan(self) -> dict:
+        """For the tactical map (tactical._take_map_goals): the round's map-goal token, what a click may ask for (an
+        enemy, a spot) and the mark in force."""
+        if not MAP_GOALS:
+            return {}
+        g = self._goals()
+        return {"goal_round": g.round, "goal_capabilities": ["enemy", "point"], "operator_goal": g.public()}
+
+    def _goal_log(self, event: str, goal, p, force: bool = False, **more) -> None:
+        """MAP_GOAL_LOG: one JSON line (at most one a second unless forced); never raises."""
+        now = time.time()
+        if not force and now - getattr(self, "_goal_log_at", -1e9) < MAP_GOAL_LOG_EVERY_S:
+            return
+        self._goal_log_at = now
+        try:
+            row = {"t": round(now, 2), "utc": time.strftime("%H:%M:%S", time.gmtime(now)), "title": "re6_switch",
+                   "event": event,
+                   "goal": {k: (goal or {}).get(k) for k in ("id", "kind", "entity_id", "pos", "label", "state", "reason")},
+                   "player": [round(v) for v in (p or {}).get("pos", ())] if p else None,
+                   "doing": self.doing, "why": str(self.why)[:140],
+                   "kills": (getattr(self, "_snap", None) or {}).get("kills"), **more}
+            line = json.dumps(row, default=str)
+            self.stats["map_goal_trace"] = line[:400]
+            MAP_GOAL_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with MAP_GOAL_LOG.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except Exception:                                    # noqa: BLE001 - a log never costs a tick
+            pass
+
+    @staticmethod
+    def _floor_y(mesh, x: float, z: float, py: float) -> float:
+        """The floor's height under a spot on the map: the mesh's triangle there nearest his own height, else his."""
+        try:
+            gx, gz = int(x // NAV_CELL), int(z // NAV_CELL)
+            under = [k for k in mesh.grid.get((gx, gz), ()) if mesh._inside(k, x, z)]
+            if under:
+                return float(mesh.C[min(under, key=lambda k: abs(mesh.C[k][1] - py))][1])
+        except Exception:                                    # noqa: BLE001 - the mesh never costs a tick
+            pass
+        return float(py)
+
+    def _operator_goal(self, p, snap, live, flat, now) -> dict | None:
+        """MAP_GOALS: this tick's action for the operator's mark on the map, None when there is none (or it waits)."""
+        g = self.__dict__.get("_map_goals")
+        if not MAP_GOALS or g is None or g.goal is None:
+            return None
+        try:
+            row = g.resolve(snap, now)
+        except Exception as exc:                             # noqa: BLE001 - a mark never stops the bot
+            self.stats["map_goal_error"] = f"{type(exc).__name__}: {exc}"[:120]
+            return None
+        self.stats["map_goal_status"] = f"{g.goal.get('label')}: {g.goal.get('state')}"[:120]
+        if g.goal.get("state") != getattr(self, "_goal_state_seen", None):
+            self._goal_state_seen = g.goal.get("state")
+            self._goal_log("state", g.goal, p, force=True)
+        if row is None:
+            return None
+        hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
+        if hp_max and 1 < hp <= TABLET_CRITICAL_HP * hp_max and (p.get("tablets") or 0) > 0:
+            g.defer("A tablet first")                        # (the critical tablet is the decision's own first rule)
+            return None
+        if self.nade is not None or self.bomb_phase in ("equip", "face", "aim", "throw", "thrown", "det_aim", "det",
+                                                        "det_wait"):
+            g.defer("Finishing the throw in his hand first")
+            self._goal_log("deferred", g.goal, p)
+            return None
+        px, py, pz = p["pos"]
+        gd = math.hypot(row["pos"][0] - px, row["pos"][2] - pz)
+        self._goal_log("active", g.goal, p, dist_m=round(gd / 100, 1))
+        marked = row.get("ptr", row.get("slot")) if "hp" in row else None
+        self._goal_drive, self._goal_target = now, (row if marked is not None else None)
+        near = [e for e in live if e.get("ptr", e.get("slot")) != marked and flat(e) <= GOAL_FIGHT_R]
+        near += [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e not in near
+                 and e.get("ptr", e.get("slot")) != marked and math.dist(p["pos"], e["pos"]) <= GOAL_THREAT_R]
+        if near:                                             # the way there is fought
+            g.defer(f"Fighting through {len(near)} on the way")
+            self.stats["map_goal_fight_ticks"] = self.stats.get("map_goal_fight_ticks", 0) + 1
+            ne = min(near, key=flat)
+            act = self._decide(p, near, flat, ne, flat(ne), snap, now)
+            self.why = "the operator's mark, fighting through: " + str(self.why)
+            return act
+        mesh = snap.get("navmesh")
+        if marked is None:                                   # a spot on the map
+            gx, _gy, gz = row["pos"]
+            if g.goal.get("floor_y") is None:
+                g.goal["floor_y"] = self._floor_y(mesh, gx, gz, py) if mesh is not None else float(py)
+            self.stats["map_goal_walk_ticks"] = self.stats.get("map_goal_walk_ticks", 0) + 1
+            return self._walk_goal(g, p, (gx, g.goal["floor_y"], gz), snap, now,
+                                   f"the operator's spot on the map, {gd / 100:.0f} m off - by the map")
+        dy = row["pos"][1] - py
+        open_line = True
+        if mesh is not None:
+            try:
+                open_line = mesh.clear(p["pos"], row["pos"]) is not False
+            except Exception:                                # noqa: BLE001 - the mesh never costs a tick
+                open_line = True
+        if abs(dy) <= MAX_DY and gd <= GOAL_FIRE_R and open_line:
+            self.stats["map_goal_fight_ticks"] = self.stats.get("map_goal_fight_ticks", 0) + 1
+            if self.target != marked:
+                self.target, self.target_at = marked, now
+            act = self._decide(p, [row], flat, row, gd, snap, now)   # the fight, on him alone
+            self.why = "the operator's target: " + str(self.why)
+            return act
+        self.stats["map_goal_walk_ticks"] = self.stats.get("map_goal_walk_ticks", 0) + 1
+        return self._walk_goal(g, p, row["pos"], snap, now,
+                               f"the operator's target {gd / 100:.0f} m off"
+                               + (f", {dy:+.0f} cm off his floor" if abs(dy) > MAX_DY else "") + " - by the map")
+
+    def _walk_goal(self, g, p, goal, snap, now, why) -> dict | None:
+        """The walk to a mark by the stage's mesh (straight with no mesh); no route for GOAL_NO_ROUTE_S closes the mark
+        "unavailable" (his own play goes on, and he never stands). A stalled walk side-steps as the pursuit does."""
+        self._gun_down()
+        mesh = snap.get("navmesh")
+        px, _py, pz = p["pos"]
+        want = self._nav_heading(p, goal, snap, now)
+        if want is None and NAV_WALK and mesh is not None and math.hypot(goal[0] - px, goal[2] - pz) > NAV_REACH_R:
+            since = getattr(self, "_goal_no_route", None)
+            if since is None:
+                self._goal_no_route = since = now
+            if now - since >= GOAL_NO_ROUTE_S:
+                g.goal.update(state="unavailable", reason="No route on the stage's mesh to the mark; back to his own "
+                                                          "play")
+                self.stats["map_goals_no_route"] = self.stats.get("map_goals_no_route", 0) + 1
+                self._goal_log("state", g.goal, p, force=True)
+                self._goal_no_route = None
+                return None
+        else:
+            self._goal_no_route = None
+        if self.pursue_spot is None or math.hypot(px - self.pursue_spot[1][0], pz - self.pursue_spot[1][1]) > PURSUE_STUCK_CM:
+            self.pursue_spot = (now, (px, pz))
+        elif now - self.pursue_spot[0] > PURSUE_STUCK_S and now >= self.pursue_side_until:
+            self.stats["pursuit_stuck"] += 1                     # against something: a side step
+            self.pursue_side_until = now + PURSUE_SIDE_S
+            self.detour = "lright" if self.detour == "lleft" else "lleft"
+            self.pursue_spot = (now, (px, pz))
+        side = (self.detour,) if now < self.pursue_side_until else ()
+        if side:
+            self.nav_path = None
+        keys = self._walk_keys(p, heading(goal[0] - px, goal[2] - pz) if want is None else want, snap, side)
+        return self._go("walk", "map_goal_walk", {"hold": keys}, why)
+
+    # --- never stand (NEVER_STAND above) -----------------------------------------------------------------------------
+    def _never_stand(self, act, snap, now) -> dict:
+        """The step along open floor when he has not moved STAND_MOVE_CM for STAND_MAX_S."""
+        p = snap.get("player") or {}
+        pos, hold = p.get("pos"), tuple(act.get("hold") or ())
+        st = self.__dict__.setdefault("_stand", {"pos": None, "at": now, "until": -1e9, "keys": (), "n": 0})
+        busy = (not NEVER_STAND or not pos or (p.get("hp") or 0) <= 0 or "zl" in hold or "tap" in act
+                or self.in_hold or self.down or self.doing in STAND_BUSY or self.stats.get("act") in STAND_BUSY_ACTS
+                or snap.get("mercenaries_phase") not in (None, PHASE_PLAYING))
+        if busy:
+            st["pos"], st["at"], st["until"] = (tuple(pos) if pos else None), now, -1e9
+            return act
+        if now < st["until"]:
+            return dict(act, hold=st["keys"])               # the step, to its end
+        if st["pos"] is None or math.hypot(pos[0] - st["pos"][0], pos[2] - st["pos"][2]) > STAND_MOVE_CM:
+            st["pos"], st["at"] = tuple(pos), now
+            return act
+        if now - st["at"] < STAND_MAX_S:
+            return act
+        cam = snap.get("camera")
+        yaw = cam["yaw"] if cam else (p.get("rot") or 0.0)
+        mesh = snap.get("navmesh")
+        wp = (self.nav_path or [None])[0] if self.nav_path else None
+        want = heading(wp[0] - pos[0], wp[2] - pos[2]) if wp is not None else yaw
+
+        def open_floor(h: float) -> bool:
+            end = (pos[0] + STAND_PROBE_CM * math.sin(h), pos[1], pos[2] + STAND_PROBE_CM * math.cos(h))
+            try:
+                k_end = mesh.locate(end)
+                return (mesh.locate(tuple(pos)) is not None and k_end is not None and mesh._inside(k_end, end[0], end[2])
+                        and mesh.clear(tuple(pos), end) is True)
+            except Exception:                                # noqa: BLE001 - the mesh never stops a decision
+                return False
+        ways = sorted((want + math.radians(d) for d in range(0, 360, 45)), key=lambda h: abs(wrap(h - want)))
+        go = next((h for h in ways if mesh is not None and open_floor(h)), ways[st["n"] % len(ways)])
+        st["n"] += 1                                         # (no mesh, or no floor found: another way each time)
+        keys = self._stick(go, yaw)
+        st.update(pos=tuple(pos), at=now, until=now + STAND_STEP_S, keys=keys)
+        self.stats["stand_breaks"] = self.stats.get("stand_breaks", 0) + 1
+        self.doing, self.why = "walk", f"stood {STAND_MAX_S:.0f} s: a step along open floor (he never stands)"
+        return dict(act, hold=keys)
 
     def _grab_swap(self, p, now) -> None:
         """A grab: a random loaded shotgun or magnum other than the gun in hand, switched to once he is free."""
@@ -3290,7 +3595,7 @@ class Bot:
                     self._empty_cycle_at = now
                     self._gun_down()
                     self.stats['empty_weapon_cycles'] = self.stats.get('empty_weapon_cycles', 0) + 1
-                    return self._go('reload', 'weapon_cycle', {'tap': 'dright'},
+                    return self._go('reload', 'weapon_cycle', {'tap': 'right'},
                                     'no loaded-weapon readback: one ordinary weapon-cycle press')
         want = (held.get(0x100 + primary['item']) if primary else
                 WANT_WEAPON if WANT_WEAPON is not None and WANT_WEAPON_AT >= self.grab_weapon_at else None)
@@ -3486,11 +3791,19 @@ class Bot:
                                 {"hold": self._stick(self._open_heading(p, live, np), yaw)},
                                 "just took ranged damage: moving to open space")
             return self._go("no_foes", "ranged_break", {"hold": ()}, "just took ranged damage: no foes to turn to")
-        ran = None if hot else self._bonus_run(p, live, flat, snap, now)   # phase 1: the bonuses first
-        if ran is not None:
+        goal_tick = self._goal_drive == now                      # the operator's mark drives this tick
+        detours = not goal_tick and not (self.mode == "fight" and live)   # (fight: no detour with one on his floor)
+        if self.mode == "hunt" and live and near > HUNT_R and self.aim_since is None and not goal_tick:
+            self._gun_down()                                     # hunt: after the nearest by the mesh, at once
+            chase = self._pursue(p, snap, now)
+            if chase is not None:
+                self.why = f"hunt: the nearest {near / 100:.0f} m off - " + str(self.why)
+                return chase
+        ran = None if hot or not detours or self._bonus_wait(snap) else self._bonus_run(p, live, flat, snap, now)
+        if ran is not None:                                      # phase 1: the bonuses first (not with a kill owed)
             return ran
-        saved = None if hot else self._green_save(p, live, flat, snap, now)   # a green bonus for a running-out combo
-        if saved is not None:
+        saved = None if hot or not detours else self._green_save(p, live, flat, snap, now)   # a green bonus for a
+        if saved is not None:                                                                  # running-out combo
             return saved
         high = self._off_floor(p, snap, now) if not live else []   # nobody on his floor: one above or below him
         if self.hazard is not None and not live and not self._hazard_break_due(p, live, flat, now):  # nobody to fight and in smoke: out of it
@@ -3499,12 +3812,17 @@ class Bot:
                                                                        cam["yaw"] if cam else p["rot"])},
                             "in a hazard: moving out")
         if not live and not high:
-            taunt = self._taunt(p, live, flat, now)
+            taunt = self._taunt(p, live, flat, now) if detours else None
             if taunt is not None:
                 return taunt
-            took = self._bonus(p, live, flat, snap, now)
+            took = self._bonus(p, live, flat, snap, now) if detours else None
             if took is not None:
                 return took
+            if self._mine_due(now) or self.bomb_phase in ("equip", "face", "aim", "throw", "thrown"):
+                cam = snap.get("camera")                         # the mine command with nobody on his floor: down now
+                bombed = self._bomb(p, live, flat, cam["yaw"] if cam else p["rot"], snap, now)
+                if bombed is not None:
+                    return bombed
             self._gun_down()
             chase = self._pursue(p, snap, now)                   # none on his floor: after the stage's best one
             if chase is not None:
@@ -3569,7 +3887,7 @@ class Bot:
         periodic = self._periodic_quick_attack(p, live, flat, now)
         if periodic is not None:
             return periodic
-        taunt = self._taunt(p, live, flat, now)
+        taunt = self._taunt(p, live, flat, now) if detours else None
         if taunt is not None:
             return taunt
         bombed = self._bomb(p, live, flat, yaw, snap, now)
@@ -3578,10 +3896,24 @@ class Bot:
         thrown = self._nade(p, vis, live, flat, yaw, snap, now)
         if thrown is not None:
             return thrown
-        if self.combo_urgent and vis:                        # the combo running out: the nearest open one
+        if goal_tick and self._goal_target is not None and any(e is self._goal_target for e in live):
+            pass                                             # the operator's target: no other pick
+        elif self.combo_urgent and vis:                      # the combo running out: the nearest open one
             tgt = min(vis, key=flat)
             self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
             foot, dist, err = tgt["pos"], flat(tgt), bearing(tgt)
+        elif (self.combo_pace or self.mode == "score") and vis and not self.close_threat:
+            # a kill owed (the combo clock) or the score command: the quickest kill - the one his gun is already on
+            # while it is in reach, else the nearest open one
+            reach = [e for e in vis if flat(e) <= ENGAGE_R]
+            held = next((e for e in reach if e.get("ptr", e.get("slot")) == self.target), None) \
+                if self.aim_since is not None else None
+            quick = held if held is not None else min(reach or vis, key=flat)
+            if quick is not tgt:
+                self.target, self.target_at = quick.get("ptr", quick.get("slot")), now
+                tgt = quick
+                foot, dist, err = tgt["pos"], flat(tgt), bearing(tgt)
+            self.stats["combo_pace_picks"] = self.stats.get("combo_pace_picks", 0) + 1
         # Walking away turns the body while the camera can still face the threat.
         # A body-relative quick turn then spins that already-correct view away.
         behind = [e for e in live if flat(e) <= QT_BEHIND_R and abs(bearing(e)) > QT_BEHIND_ERR]
@@ -4462,6 +4794,8 @@ class Bot:
         self._walk_skip = {k: until for k, until in getattr(self, "_walk_skip", {}).items() if until > now}
         alive = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0
                  and e.get("ptr", e.get("slot")) not in self._walk_skip]
+        if self._goal_drive == now and self._goal_target is not None:
+            alive = [self._goal_target]                      # the operator's mark: after him, no other
         if not alive:
             return None
         px, py, pz = p["pos"]
@@ -4478,7 +4812,11 @@ class Bot:
             return None
         self._walk_target = e.get("ptr", e.get("slot"))
         d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
-        if self.combo_urgent and self.pursuit is None:
+        if getattr(self, "_locate_key", None) != self._walk_target:   # (RE5's locate stats: the same names)
+            self._locate_key = self._walk_target
+            self.stats["locates"] = self.stats.get("locates", 0) + 1
+        self.stats["locate_m"], self.stats["locate_dy_cm"] = round(d / 100.0, 1), round(e["pos"][1] - py)
+        if (self.combo_urgent or self.combo_pace) and self.pursuit is None:
             self.stats["pursuits"] += 1
             self.pursuit = {"since": now, "kills": snap.get("kills")}
         if self.pursue_spot is None or math.hypot(px - self.pursue_spot[1][0], pz - self.pursue_spot[1][1]) > PURSUE_STUCK_CM:
@@ -4584,10 +4922,35 @@ class Bot:
         return tuple(keys)
 
     # --- grenades and the combo -------------------------------------------------------------------------------------
+    @staticmethod
+    def combo_left(snap) -> float | None:
+        """Seconds left in the running combo's window (sGameMan +0x409C; None: no combo, or not read) -
+        gbox.mercs.core.doctrine.combo_left's reading."""
+        combo, left = (snap or {}).get("combo"), (snap or {}).get("combo_timer")
+        if type(combo) is not int or combo <= 0 or isinstance(left, bool) or not isinstance(left, (int, float)):
+            return None
+        return float(left) if 0.0 < left < 600.0 else None
+
+    def _bonus_wait(self, snap) -> bool:
+        """COMBO_BONUS_WAIT: a kill owed (combo_pace) with an enemy alive anywhere, the clock above BONUS_CLOCK_LOW_S -
+        no time-bonus run starts (one under way waits too; stats bonus_waits counts the ticks)."""
+        if not (COMBO_BONUS_WAIT and self.combo_pace):
+            return False
+        t = snap.get("timer")
+        if isinstance(t, (int, float)) and not isinstance(t, bool) and t <= BONUS_CLOCK_LOW_S:
+            return False
+        if not any((e.get("hp") or 0) > 0 for e in snap.get("enemies") or ()):
+            return False
+        self.stats["bonus_waits"] = self.stats.get("bonus_waits", 0) + 1
+        return True
+
     def _combo_tick(self, snap, live, flat, now) -> None:
         """The combo's count and window (sGameMan): stats combo_best, combo_breaks (it lapsed with a zombie in reach),
         combo_urgent while it runs under COMBO_LOW_S; a grenade's kills (grenade_kills) NADE_KILLS_S after its throw."""
         combo, ct = snap.get("combo"), snap.get("combo_timer")
+        left = self.combo_left(snap)                         # the clock he plays by, every tick
+        if isinstance(combo, int) and combo > self.combo_prev and left is not None:
+            self._combo_full = left                          # a kill refilled the window: its full length, read
         if isinstance(combo, int):
             self.stats["combo_best"] = max(self.stats["combo_best"], combo)
             if self.combo_prev > 0 and combo == 0 and any(flat(e) <= ENGAGE_R for e in live):
@@ -4597,6 +4960,15 @@ class Bot:
                 self.stats["combo_pushes"] += 1
             self.combo_urgent = urgent
             self.combo_prev = combo
+        if self._combo_full is not None:
+            self.stats["combo_window_full"] = round(self._combo_full, 1)
+        full = self._combo_full if (self._combo_full or 0.0) >= KILL_PACE_S + COMBO_LOW_S else COMBO_WINDOW_S
+        since = max(0.0, full - left) if left is not None else None
+        self.stats["combo_left_s"] = round(left, 1) if left is not None else None
+        self.stats["combo_since_kill_s"] = round(since, 1) if since is not None else None
+        self.combo_pace = bool(COMBO_PACE and since is not None and since >= KILL_PACE_S)
+        if self.combo_pace:
+            self.stats["combo_pace_s"] = round(self.stats.get("combo_pace_s", 0.0) + TICK_S, 2)
         if self.nade_kills is not None and now - self.nade_kills[1] >= NADE_KILLS_S:
             k = snap.get("kills")
             if isinstance(k, int) and isinstance(self.nade_kills[0], int):
@@ -5503,22 +5875,25 @@ class Bot:
         if p.get('ammo') == 0 and any(n > 0 for n in (p.get('gun_ammo') or {}).values()):
             return None                                    # an existing bomb still gets its escape/detonation logic above
         hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
-        if (bomb.get("count") or 0) <= 0 or now - self.bomb_last < BOMB_GAP_S or not live:
+        due = self._mine_due(now) and now - self.bomb_last >= MINE_CMD_GAP_S   # the mine command (MINE_DUE_S)
+        if (bomb.get("count") or 0) <= 0 or (now - self.bomb_last < BOMB_GAP_S and not due) or (not live and not due):
             return None
-        near = min(flat(e) for e in live)
+        near = min((flat(e) for e in live), default=math.inf)
         crowd = sum(1 for e in live if flat(e) < CC_BACK_R)
         flashed = now - self.flash_last <= DROP_FLASH_S or ((p.get("nades") or {}).get(NADE_TYPES["flash"]) or (0, 0))[1] <= 0
         self.bomb_drop = (BOMB_DROP and (crowd >= BOMB_DROP_N or self._overwhelmed(p, live, flat, now))
                           and flashed and not (hp_max and hp < DROP_MIN_HP * hp_max))   # the flash, then at his feet
+        if due and near < BOMB_ROOM_R and not (hp_max and hp < DROP_MIN_HP * hp_max):
+            self.bomb_drop = True                                # the mine command with one on him: at his feet, out
         if hp_max and hp < BOMB_MIN_HP * hp_max and not self.bomb_drop:   # hurt: no bomb (a throw can drop it at his
             return None                                          # feet, and he must walk out of its reach first)
         if near < BOMB_ROOM_R and not self.bomb_drop:
             return None                                          # it lands at his feet: never with one near
         coming = sum(1 for e in live if BOMB_COMING_MIN_R <= flat(e) <= BOMB_STAND_R)
-        if coming < BOMB_STAND_N and not self.bomb_drop:
+        if coming < BOMB_STAND_N and not self.bomb_drop and not due:
             return None
         nades = p.get("nades") or {}
-        if (not self.bomb_drop and NADES and min((flat(e) for e in live), default=1e9) < BOMB_NADE_R
+        if (not self.bomb_drop and not due and NADES and min((flat(e) for e in live), default=1e9) < BOMB_NADE_R
                 and any((nades.get(NADE_TYPES[k]) or (0, 0))[1] > 0 for k in ("frag", "fire"))):
             self.stats["nade_choices"] += 1                      # they are already close: a grenade, not a bomb
             self.frag_last = -1e9
@@ -5529,6 +5904,10 @@ class Bot:
             if now - self.flash_last <= DROP_FLASH_S:
                 self.stats["flash_drops"] = self.stats.get("flash_drops", 0) + 1
         self.bomb_why = f"{crowd} on him: dropped as he backs out" if self.bomb_drop else f"{coming} coming at 5-12 m"
+        if due:
+            self.mine_due = None                                 # the command's bomb: going down now
+            self.stats["mine_command_bombs"] = self.stats.get("mine_command_bombs", 0) + 1
+            self.bomb_why = "the mine command: " + self.bomb_why
         self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "equip", now - BOMB_STEP_S, 0
         return self._bomb_press(eq, now, live=live, p=p, yaw=yaw)
 
@@ -5740,10 +6119,13 @@ class Bot:
             self.bomb_phase, self.bomb_phase_at = "face", now
         if self.bomb_phase == "face":
             px, _, pz = p["pos"]
-            group = [e for e in live if math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= BOMB_STAND_R] or live
-            cx = sum(e["pos"][0] for e in group) / len(group)
-            cz = sum(e["pos"][2] for e in group) / len(group)
-            err = wrap(heading(cx - px, cz - pz) - yaw)
+            group = [e for e in live or () if math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= BOMB_STAND_R] \
+                or list(live or ())
+            err = 0.0                                            # (nobody about - the mine command: no one to face)
+            if group:
+                cx = sum(e["pos"][0] for e in group) / len(group)
+                cz = sum(e["pos"][2] for e in group) / len(group)
+                err = wrap(heading(cx - px, cz - pz) - yaw)
             if not self.bomb_drop and abs(err) > BOMB_FACE and now - self.bomb_phase_at < BOMB_FACE_S:
                 return self._go("bomb", tag, {"hold": self._turn(err)}, f"facing them for the bomb ({self.bomb_why})")
             self.bomb_phase, self.bomb_phase_at = "aim", now

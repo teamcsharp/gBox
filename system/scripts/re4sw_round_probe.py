@@ -13,8 +13,8 @@ whose listing does not say agent_owned) unless --allow-operator is given by the 
 job the control plane records (read_memory / memory_search, actor "agent"). Frames prove the round was live: the run
 waits for the HUD (re4_switch_screens.has_hud) and saves a frame with every sample.
 
-    python system/tools/probes/re4sw_round_probe.py --out C:/tmp/re4probe            # finds the running RE4 session
-    python system/tools/probes/re4sw_round_probe.py --session <sid> --out <dir> --samples 8
+    python system/scripts/re4sw_round_probe.py --out C:/tmp/re4probe            # finds the running RE4 session
+    python system/scripts/re4sw_round_probe.py --session <sid> --out <dir> --samples 8
 
 Each dump of the 18.4 MB bss is eleven parallel read_memory jobs (3.9 s measured 2026-11-09); the whole probe moves
 about (2 + samples) x 18 MB from the Spark to this PC - run it on a wired PC when one is free (memory note: no heavy

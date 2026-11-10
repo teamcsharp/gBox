@@ -17,7 +17,7 @@ STATUS 2026-11-09 (docs/research/re4-parity.md section 7):
   the heap windows (BSS_ROWS, HEAP_WINDOWS), and that the main menu holds no float that falls like a round clock.
 - FOUND LIVE, NOT FIXED: the round clock (ClockFinder re-finds it each boot by its fall against wall time, hints first).
 - PENDING: the player and Ganado classes and their position / facing offsets (PLAYER_CLASS, ENEMY_CLASSES, U_POS, U_YAW)
-  and the kill / combo / score fields (MERC_*): tools/probes/re4sw_round_probe.py measures them in one live round.
+  and the kill / combo / score fields (MERC_*): scripts/re4sw_round_probe.py measures them in one live round.
   Until they are set snapshot() reads the clock only, the playbook fights from the frame, and mercs.ready stays false.
 
 Known from RE4 itself (gbox.re4_menus / gbox.re4_merc_bot, GameCube), shared with the Switch port:

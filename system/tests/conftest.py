@@ -38,6 +38,22 @@ def _fresh_re5_pace(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_menu_learners(monkeypatch):
+    """The menus' learners (gbox.mercs.menu_speed: one per title and process, each screen's learned waits, its RAM
+    cursor-jump record, the transition being timed) are process state: every test starts with none, so one test's
+    learned waits or open transition never times another's walk."""
+    import sys
+    mod = sys.modules.get("gbox.mercs.menu_speed")
+    if mod is not None and hasattr(mod, "_CACHE"):
+        monkeypatch.setattr(mod, "_CACHE", {})
+    r5 = sys.modules.get("gbox.mercs.titles.re5_switch")
+    if r5 is not None and isinstance(getattr(r5, "_MENU", None), dict):
+        monkeypatch.setattr(r5, "_MENU", {"speed": None, "knob": True, "run": None, "stats_at": float("-inf")})
+        monkeypatch.setattr(r5, "_JUMP", {})
+        monkeypatch.setattr(r5, "_SEEN_CURSOR", {})
+
+
+@pytest.fixture(autouse=True)
 def _private_enemy_knowledge(tmp_path_factory):
     """Tests never write the real enemy knowledge database (gbox.mercs.enemy_db): its default home is the deployment's
     gbox-data/mercs/knowledge, and a bot test's shots and hits (re5_switch reports every pull) would land in the live

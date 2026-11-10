@@ -212,7 +212,7 @@ def test_managed_replay_answers_no_in_direct_dead_tick_even_when_legacy_retry_is
     snap['continue_cursor']=R.CONTINUE_YES
     run(bot,snap,clock,1)
     clock[0]+=R.DEAD_WAIT_S+.1
-    assert run(bot,snap,clock,1)[0]=={'tap':'dright'}
+    assert run(bot,snap,clock,1)[0]=={'tap':'right'}
     snap['continue_cursor']=R.CONTINUE_NO
     assert run(bot,snap,clock,1)[0]=={'tap':'a'}
     assert bot.continued=='no'

@@ -183,7 +183,7 @@ def test_ordinary_weapon_cycle_waits_for_idle_native_context_and_actual_ammo_rea
     bot._weapon_switch(p, 4)
     assert bot._weapon_switch(p, 4.4) is None             # unresolved/free-state refusal cannot cause pad input
     bridge.ready = True
-    assert bot._weapon_switch(p, 4.5) == {'tap': 'dright'}
+    assert bot._weapon_switch(p, 4.5) == {'tap': 'right'}
     assert bot._weapon_switch(p, 4.6) == {'hold': ()}      # releases edge; no repeated cycle before readback
     p.update(equipped=1, ammo=30)
     assert bot._weapon_switch(p, 4.7) is None
@@ -216,7 +216,7 @@ def test_native_ack_without_equipped_readback_eventually_uses_guarded_normal_inp
     bot._weapon_switch(p, 0)
     assert bot._weapon_switch(p, 4) == {'hold': ()}
     assert bot._weapon_switch(p, 5.6) is None
-    assert bot._weapon_switch(p, 5.7) == {'tap': 'dright'}
+    assert bot._weapon_switch(p, 5.7) == {'tap': 'right'}
     assert bot._weapon_switch(p, 5.8) == {'hold': ()}
 
 

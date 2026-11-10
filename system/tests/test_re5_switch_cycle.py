@@ -85,6 +85,48 @@ def test_the_calibration_walk_may_pass_the_locked_entry_budget(cyc, monkeypatch)
     assert R.step(scr) == "a"
 
 
+def test_a_ten_entry_select_learns_its_count_from_the_wrap_of_its_own_forward_press(cyc, monkeypatch):
+    """11-06..11-08 every calibration walk went round a 10-entry select 4 times (40 presses) and confirmed where it
+    began (11-07: 51 of 53 rounds the same costume): the wrap rule wanted more than the 14 names."""
+    monkeypatch.setattr(R, "CHARACTER_SLOTS", 0)
+    cyc.observe_cursor(0, "select_player")                       # a reopened select at 0: no count from that
+    assert R.CHARACTER_SLOTS == 0
+    for cursor in range(9):
+        cyc.note_press(cursor, "dright")
+        cyc.observe_cursor(cursor + 1, "select_player")
+    assert R.CHARACTER_SLOTS == 0
+    cyc.note_press(9, "dright")
+    cyc.observe_cursor(9, "select_player")                       # the press not shown yet: nothing learned, kept
+    assert R.CHARACTER_SLOTS == 0
+    cyc.observe_cursor(0, "select_player")                       # ... 9 -> 0: the wrap
+    assert R.CHARACTER_SLOTS == 10 and json.loads(open(cyc.path, encoding="utf-8").read())["character_slots"] == 10
+    monkeypatch.setattr(R, "CHARACTER_SLOTS", 0)
+    cyc.note_press(1, "dright")
+    cyc.observe_cursor(0, "select_player")                       # from entry 1: never a count of 2
+    assert R.CHARACTER_SLOTS == 0
+
+
+def test_a_walk_standing_at_the_end_confirms_at_once_but_a_moving_one_is_never_cut(cyc, monkeypatch):
+    monkeypatch.setattr(R, "CHARACTER_SLOTS", 1)                 # calibrating
+    now = [0.0]
+    cyc.clock = lambda: now[0]
+    cyc.held = (0, 30)
+    for cursor in range(10):                                      # moving: every press moves it
+        scr = {"where": "select_player", "cursor": cursor, "target": 30}
+        assert R.step(scr) == "dright"
+        R.pressed(scr, "dright")
+        now[0] += 1.5
+    end = {"where": "select_player", "cursor": 9, "target": 30}
+    for _ in range(R.STALL_PRESSES):                              # standing at 9 through the Navigator's re-presses
+        assert R.step(end) == "dright"
+        R.pressed(end, "dright")
+        now[0] += 0.4
+    now[0] += R.STALL_S
+    assert R.step(end) == "a" and cyc.presses < R.CALIBRATE_PRESSES
+    R.pressed(end, "a")
+    assert cyc.confirmed["character"] == 9 and cyc.stalls == 0
+
+
 def test_the_operators_choice_wins(cyc, monkeypatch):
     monkeypatch.setattr(R, "SELECTION", {"stage": 6, "character": 2})
     assert R.stage_target() == 6 and R.player_target() == 2

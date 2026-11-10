@@ -64,6 +64,11 @@ NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}")          # a new build: fol
 LINK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.~-]{0,159}")  # a launched folder may be a staged <build>~<key> copy
 TID = re.compile(r"[0-9A-F]{16}")
 HISTORY_MAX = 200                           # marker history rows kept (the backups of older edits stay on disk)
+# The blueprint companion of a build (operator 2026-11-09, the UE-blueprint look): `<build>-blueprint` = the build's
+# overlay files plus the greybox stage / object archives (gbox.re5_stage_greybox) written over them. MercMode plays it
+# in place of `<build>` while its blueprint_look setting is on (gbox.mercmode.effective_mod). The brief spelled it
+# `<build>+blueprint`; `+` is outside NAME and the queue's mod pattern, so the suffix is `-blueprint`.
+BLUEPRINT_SUFFIX = "-blueprint"
 
 
 # --- the emulator's folders -------------------------------------------------------------------------------------------
@@ -777,6 +782,112 @@ def copy_build(cfg, game_id: str, src: str, dst: str, *, by: str = "") -> dict:
             "pending_left_in_source": [e.get("id") for e in pending_edits(s)]}
 
 
+def blueprint_name(build: str) -> str:
+    """`<build>` -> `<build>-blueprint` (a companion name stays as it is)."""
+    return build if build.endswith(BLUEPRINT_SUFFIX) else build + BLUEPRINT_SUFFIX
+
+
+def _sha256_file(path: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _wanted_sha256(ch: dict) -> str | None:
+    """The SHA-256 a manifest entry's content has: the artifact key itself, or the hash of the file / bytes given."""
+    import hashlib
+    if "artifact" in ch:
+        return str(ch["artifact"] or "").lower()
+    if "from" in ch:
+        return _sha256_file(Path(ch["from"])) if Path(ch["from"]).is_file() else None
+    if "bytes" in ch:
+        return hashlib.sha256(bytes(ch["bytes"])).hexdigest()
+    if "b64" in ch:
+        return hashlib.sha256(base64.b64decode(ch["b64"], validate=True)).hexdigest()
+    return None
+
+
+def blueprint_build(cfg, game_id: str, build: str, changes: dict, *, by: str = "", note: str = "",
+                    resolve: Callable[[dict], dict] | None = None) -> dict:
+    """Create or refresh `<build>-blueprint`: a copy of overlay `build` (its romfs/ / exefs/ files only) with the
+    greybox archives of `changes` written over it. `changes` is the manifest {RomFS path: {"artifact": sha256} |
+    {"from": file} | {"bytes": ...}} (the receipt.json `files` of gbox.re5_stage_greybox.build_all gives the paths and
+    hashes). Idempotent: a file whose content already matches is not rewritten (an `artifact` key is the content's
+    SHA-256, so nothing is fetched for it); the source's files are re-copied where the companion's differ and
+    companion files that are neither the source's nor the manifest's are removed, so the companion always equals
+    "source + manifest". The source build is never written. `resolve` turns artifact references into bytes (the tool
+    passes switch_mods._resolve) and is only called for files that need writing."""
+    if not changes:
+        raise ValueError("no greybox files: pass the manifest {RomFS path: {artifact: sha256}}")
+    name = blueprint_name(build)
+    if name == build:
+        raise ValueError(f"{build} is already a blueprint companion: name its source build")
+    if not NAME.fullmatch(name):
+        raise ValueError(f"companion name {name!r}: letters, digits, _ and - only, 80 characters at most")
+    src = build_dir(cfg, game_id, build)
+    src_meta = read_meta(src)
+    if not is_overlay(src_meta):
+        raise ValueError(f"{build} is not a Switch LayeredFS build of {game_id}")
+    manifest: dict[str, dict] = {}
+    for key, ch in changes.items():
+        rel = norm_path(key)
+        if not isinstance(ch, dict) or not ({"artifact", "from", "bytes", "b64"} & set(ch)):
+            raise ValueError(f"{key}: a greybox file is one of artifact, from, bytes or b64")
+        if rel in manifest:
+            raise ValueError(f"{key}: named twice")
+        manifest[rel] = ch
+    dst = build_dir(cfg, game_id, name)
+    created = False
+    with _lock(src):
+        if not dst.exists():
+            copy_build(cfg, game_id, build, name, by=by)
+            created = True
+        elif not is_overlay(read_meta(dst)):
+            raise ValueError(f"{name} exists but is not a Switch LayeredFS build of {game_id}")
+        source_files = {f["path"]: f for f in overlay_files(src)}
+        with _lock(dst):
+            edit: dict[str, dict] = {}
+            unchanged, written, removed, copied = [], [], [], []
+            companion_files = {f["path"] for f in overlay_files(dst)}
+            for rel in sorted(companion_files - set(source_files) - set(manifest)):
+                edit[rel] = {"remove": True}             # left over from an older source state
+                removed.append(rel)
+            for rel in sorted(set(source_files) - set(manifest)):
+                cur = _current(dst, rel)
+                if cur is None or _sha256_file(cur) != _sha256_file(src / rel):
+                    edit[rel] = {"from": str(src / rel)}
+                    copied.append(rel)
+            for rel, ch in manifest.items():
+                cur = _current(dst, rel)
+                if cur is not None and _sha256_file(cur) == _wanted_sha256(ch):
+                    unchanged.append(rel)
+                    continue
+                edit[rel] = ch
+                written.append(rel)
+            out = {"mod": name, "of": build, "dir": str(dst), "created": created, "written": written,
+                   "copied_from_source": copied, "removed": removed, "unchanged": unchanged}
+            if edit:
+                need = {rel: ch for rel, ch in edit.items() if "artifact" in ch}
+                if need:
+                    fetched = resolve(need) if resolve else None
+                    if not fetched or set(fetched) != set(need):
+                        raise ValueError("artifact references need the control plane to fetch them (resolve)")
+                    edit.update(fetched)
+                res = write_files(cfg, game_id, name, edit, in_use=bool(running_users(game_id, name)),
+                                  note=note or f"blueprint companion of {build}", by=by)
+                out |= {"edit": res["edit"], "pending": res["pending"], "overlay": res["overlay"]}
+            else:
+                out |= {"edit": None, "pending": False, "overlay": summary(dst)}
+            meta = read_meta(dst)
+            _write_meta(dst, meta | {"blueprint_of": build, "blueprint_manifest": {
+                rel: (ch.get("artifact") or ch.get("from") or "bytes") for rel, ch in manifest.items()},
+                "blueprint_refreshed": time.time()})
+    return out
+
+
 # --- the emulator's view: links and the selection ------------------------------------------------------------------------
 
 def _linked(p: Path) -> bool:
@@ -1413,11 +1524,12 @@ def character_use(ctx, api, meta: dict | None, game: dict, inp, op: str = "use")
 # --- the tool ---------------------------------------------------------------------------------------------------------
 
 class SwitchModsIn(BaseModel):
-    op: str = "status"          # status | write | hotswap | revert | new_build | select | apply_pending | apply_live | audit | convert | purge
+    op: str = "status"          # status | write | hotswap | revert | new_build | select | apply_pending | apply_live | audit | convert | purge | blueprint
     game_id: str = ""
     build: str | None = None    # the overlay build; None = the active one (the session's, else the one this node last started)
     session_id: str = ""        # apply_live: the running session (on this worker)
     changes: dict = {}          # write / apply_live: {RomFS path: {from|artifact|b64|romfs|patch|remove}}
+                                # blueprint: the greybox manifest {RomFS path: {artifact: sha256}} written over a copy of `build`
     new_name: str = ""          # new_build: the new build (a copy of `build`'s overlay folder only, or empty)
     edit: str = "last"          # revert: which edit (its id from status, or last)
     paths: list[str] = []       # revert: only these files
@@ -1613,7 +1725,10 @@ def switch_mods_tool(inp: SwitchModsIn, ctx):
     revert [edit] [paths] | new_build new_name [build]: a copy of the overlay folder only (KB-MB) | select [build]: the
     build the next start enables ("" = the original) | apply_pending | apply_live session_id [build] [changes]: the
     edit + one restart of the running title (Eden: same session) | audit: full Switch copies on this node with sizes |
-    convert [items] dry_run=false [force_empty]: into overlays, the copies moved aside | purge confirm=true."""
+    convert [items] dry_run=false [force_empty]: into overlays, the copies moved aside | purge confirm=true |
+    blueprint game_id build changes: create or refresh `<build>-blueprint` = a copy of the build with the greybox
+    stage / object archives of `changes` ({RomFS path: {artifact: sha256}}) written over it; idempotent, the source
+    build untouched; MercMode's blueprint_look plays the companion."""
     cfg = ctx.config
     if inp.op == "audit":
         return {"result": {"op": "audit", **audit(cfg, switch_ids=_switch_ids(ctx), romfs_dir=inp.romfs_dir or None)}}
@@ -1647,9 +1762,17 @@ def switch_mods_tool(inp: SwitchModsIn, ctx):
                                       for n, f, m in builds_for(cfg, gid, tid)],
                            "load_entries": [{"name": n, "gbox": _ours(cfg, tdir / n), "enabled": n not in disabled}
                                             for n in entries]}}
-    if inp.op in ("write", "hotswap", "revert", "apply_pending", "new_build") and active and _collection_elsewhere(ctx, gid, active):
+    if inp.op in ("write", "hotswap", "revert", "apply_pending", "new_build", "blueprint") and active \
+            and _collection_elsewhere(ctx, gid, active):
         raise ValueError(f"{active} lives in the central collection: edit it there (switch_mods with require_os=linux); "
                          "this PC fetches the edited build when it next starts it")
+    if inp.op == "blueprint":
+        if not active:
+            raise ValueError("blueprint: name the source build (build=...)")
+        res = blueprint_build(cfg, gid, active, inp.changes, by=by, note=inp.note, resolve=lambda ch: _resolve(ctx, ch))
+        return {"result": {"op": "blueprint", **res,
+                           "note": "MercMode plays this companion while its blueprint_look setting is on, from the next "
+                                   "round boundary" + (" (the edit lands when the title restarts)" if res["pending"] else "")}}
     if inp.op == "write":
         name = active or default_build_name(game)
         res = write_files(cfg, gid, name, _resolve(ctx, inp.changes), in_use=bool(running_users(gid, name)),

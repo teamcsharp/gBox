@@ -128,6 +128,9 @@ STICKS = frozenset({'rleft', 'rright', 'rup', 'rdown'})
 YAW_RATE, PITCH_RATE = math.radians(140), math.radians(90)
 MAX_DT = 0.05
 GUN_FAMILIES = frozenset({'handgun', 'magnum', 'shotgun', 'automatic', 'rifle'})
+# Weapon mastery: a shotgun point blank into the crowd, an automatic held through its burst (apply() below)
+SHOTGUN_POINT_BLANK_CM, POINT_BLANK_YAW, POINT_BLANK_PITCH = 250., math.radians(15), math.radians(20)
+AUTO_HOLD_S = .2
 ACQUIRE_S, REPOSITION_S, REPOSITION_CM = .75, .65, 100.
 ACQUIRE_MAX_S, PROGRESS_GRACE_S = 2., .25
 COMBAT_AIM = frozenset({'aim', 'fire', 'raise', 'reraise', 'restale'})
@@ -144,8 +147,14 @@ def keep_active(bot, snap, act, now):
     p, keys = snap.get('player') or {}, set(act.get('hold') or ())
     identity = p.get('ptr'), p.get('generation')
     state = getattr(bot, '_aim_wait', None)
+    # A step under way runs to its end: the fight leaves the gun down meanwhile (Bot._repositioning), so its act has no
+    # ZL. Before, the step lowered the gun every tick and the crowd fire raised it again the next - a raise a tick
+    # (live 2026-11-09: 413 raises in 28 s).
+    stepping = bool(state and state.get('until') is not None and now < state['until']
+                    and state.get('identity') == identity)
     if (bot.stats.get('operator_control') is True or bot.doing not in COMBAT_AIM
-            or 'zl' not in keys
+            or ('zl' not in keys and not stepping)
+            or getattr(bot, '_wm_active', False)            # a non-laser weapon's own controller (Bot._mastery)
             or not p.get('pos') or (p.get('hp') or 0) <= 0
             or p.get('motion') in R.MOTION_HELD or p.get('motion') == R.MOTION_RELOAD
             or 'zr' in keys or p.get('motion') == R.MOTION_SHOT
@@ -158,7 +167,7 @@ def keep_active(bot, snap, act, now):
         state = bot._aim_wait = {'identity': identity, 'since': now, 'seen': now, 'until': None}
     state['seen'] = now
     bot.stats['aim_wait_s'] = round(now - state['since'], 2)
-    if p.get('motion') == 22 and now - state['since'] < R.LASER_STUCK_S:
+    if state['until'] is None and p.get('motion') == 22 and now - state['since'] < R.LASER_STUCK_S:
         return act  # let the native raise complete; the existing laser timeout remains bounded
     # A smooth correction can need more than .75 s after a rear target/raise.
     # Keep it while observed error improves; a successful RAM write by itself
@@ -354,9 +363,18 @@ def apply(bot, snap, act, now):
     body_contact = bool(valid_ray and bot._crowd_hit(origin, dot, foot, False))
     spread_contact = bool(valid_ray and not body_contact and spec.family == 'shotgun'
                           and bot._crowd_hit(origin, dot, foot, True))
+    # Weapon mastery (operator 2026-11-09): a shotgun point blank into the crowd - within SHOTGUN_POINT_BLANK_CM, the
+    # aim inside POINT_BLANK_YAW / _PITCH of him and the ray not stopped short on geometry (it ends on another body or
+    # runs on past him) - is contact: the spread does the rest at that range.
+    short = bool(valid_ray and math.dist(origin, dot) < math.dist(origin, chest) - R.WALL_SLACK
+                 and not any(R.dot_on(dot, e['pos']) for e in candidates))
+    point_blank = bool(valid_ray and not body_contact and not spread_contact and spec.family == 'shotgun'
+                       and dist <= SHOTGUN_POINT_BLANK_CM and not short
+                       and abs(yaw_error) <= POINT_BLANK_YAW and abs(pitch_error) <= POINT_BLANK_PITCH)
     contact_kind = ('body endpoint' if body_contact and R.dot_on(dot, foot) else
-                    'body segment' if body_contact else 'shotgun spread' if spread_contact else '')
-    on = bool(p.get('motion') in (R.MOTION_AIMED, R.MOTION_SHOT) and (body_contact or spread_contact))
+                    'body segment' if body_contact else 'shotgun spread' if spread_contact else
+                    'shotgun point blank' if point_blank else '')
+    on = bool(p.get('motion') in (R.MOTION_AIMED, R.MOTION_SHOT) and (body_contact or spread_contact or point_blank))
     # A nearby target and a long ray do not establish body contact. In particular,
     # UNLOAD's broad yaw/pitch window let the M29 fire beside a target at 4-5 m.
     # Keep correcting above while blocked; keep_active bounds failed acquisition.
@@ -385,6 +403,23 @@ def apply(bot, snap, act, now):
     if recoil:
         on = True
         bot.stats['target_feedback_recoil_holds'] = bot.stats.get('target_feedback_recoil_holds', 0) + 1
+    # An automatic is held through the burst: a ray that slid off the body it was on within AUTO_HOLD_S of the last
+    # accepted contact keeps the trigger down while the aim stays within a body width of him and nothing stands short
+    # on the ray (never a wall). The contact is not refreshed by the hold, so it is bounded.
+    auto = bool(not on and valid_ray and spec.family == 'automatic' and contact and not short
+                and contact.get('kind') in ('body endpoint', 'body segment')
+                and p.get('motion') in (R.MOTION_AIMED, R.MOTION_SHOT)
+                and 0 <= now - contact['at'] <= AUTO_HOLD_S
+                and contact['identity'] == (p.get('ptr'), p.get('generation'))
+                and contact['weapon'] == held.get('item')
+                and contact['target'] == target.get('ptr', target.get('slot'))
+                and abs(yaw_error) <= max(math.radians(5), math.atan2(2 * R.BODY_R, d))
+                and abs(pitch_error) <= math.radians(10))
+    if auto:
+        on, contact_kind = True, 'automatic hold'
+        bot.stats['target_feedback_auto_holds'] = bot.stats.get('target_feedback_auto_holds', 0) + 1
+    if point_blank and on:
+        bot.stats['target_feedback_point_blank'] = bot.stats.get('target_feedback_point_blank', 0) + 1
     if not on:
         bot._feedback_contact = None
         if 'zr' in keys:
@@ -412,7 +447,7 @@ def apply(bot, snap, act, now):
                           gate='verified shot recoil' if recoil else 'measured ' + accepted_kind)
         keys |= bot._trigger(True, now)
         bot.doing = 'fire'
-        if not recoil:
+        if not recoil and not auto:
             bot._feedback_contact = {'at': now, 'identity': (p.get('ptr'), p.get('generation')),
                                      'target': key, 'pos': tuple(p['pos']),
                                      'heading': cam['heading'], 'pitch': cam['pitch'], 'weapon': held.get('item'),

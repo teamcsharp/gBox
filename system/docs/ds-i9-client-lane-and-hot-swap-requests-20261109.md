@@ -315,3 +315,192 @@ PM/operator can correct the plan before more is built.
 4. **Next**: settle the IVFC level chain (or dump the base RomFS through Yuzu's own game-list "Dump RomFS" and use its
    paths), then map the update's BKTR relocations onto that virtual space and extract only the changed files for the
    overlay. That remains the gate for a Mercenaries round and for the enemy-model assets the operator asked for.
+
+## Round 8 status (2026-11-09, ~17:20 CST, main at `3ba575c7`): the update patch is decrypted and mapped
+
+1. **`gbox/switch_romfs.py`** (`3ba575c7`): the RomFS header and the directory/file table walk over a caller-provided
+   virtual reader; synthetic-table tests pass. On the real base NSP it walks **60,645 files** under `nativeNXx64/`
+   (18.7 GB), with `arc/NX/*.arc` (3,209 files).
+2. **The BKTR patch is fully decrypted.** The relocation table (at section `0x4780200`, 0x8000 bytes) decrypts with the
+   section's own CTR; the block is header@0 + bucket@0x4000, entries packed at **0x14 bytes** (`u64 virt, u64 phys,
+   u32 is_patch`): 126 entries = **52 patch regions**. The subsection block has two ranges (`offset 0` ctr 0,
+   `offset 0x4780200` ctr 1). Patch data decrypts with the **BKTR CTR**: bytes 0-3 = `reversed(section_ctr)[0:4]`,
+   bytes 4-7 = the subsection's `ctr_val` (big-endian), bytes 8-15 = `(absolute_offset >> 4)` (big-endian).
+3. **The update changes only 19 files (2.6 MB)**: `Credit_*.arc`, `Game_*.arc` (locale arcs), `Msg_*.arc`,
+   `Stp.arc`, `movie/Thumbs.db`. No enemy arcs. Overlay `recovery-re6-update-v131072-r2-20261109` (24 entries) was
+   built with those plus the update ExeFS.
+4. **START GAME now proceeds**: with the data overlay, the A press on START GAME leaves the lobby and shows
+   `LOADING...` — on the earlier build the same press was ignored outright. The stage load then **hangs** at LOADING
+   (60 FPS, no crash, no unmapped access). Next candidate causes: the lobby's ONLINE COMMUNICATION / PARTNER JOIN left
+   at ALLOW (the setup screen defaults) as it waits on a partner, or a stage file the 1.0.2 main wants that the patch
+   does not carry.
+5. **Enemy model inventory for the operator's reskin request**: the enemy families are the `nativeNXx64/arc/NX/e####.arc`
+   arcs (`e1000`, `e1010`, `e1040`, `e1045`, `e1050`, `e1060`, `e1070`, …). That is the donor/overlay surface for
+   "replace any and all enemies"; `re5_enemy_writer` remains the asset-level template.
+
+## Round 9 status (2026-11-09, ~17:35 CST): the overlay starts the round but its data is not valid yet
+
+1. **With the r2 overlay the round start proceeds**: title → menu → EXTRA CONTENT → character select → A starts
+   LOADING (on the previous build the same A was ignored). It then **hangs at LOADING** (60 FPS, no crash, no
+   unmapped access, no error in the log).
+2. **The extracted data files are invalid, and that is the likely cause.** The base `Game_eng.arc` starts with
+   `ARC\0` (a real arc container); the extracted patch copy of the same file starts with random bytes and the same
+   size — i.e. the file-data decryption/mapping is still wrong, so the game hangs reading it.
+3. **What is proven about the patch format**: the patch's RomFS *header* decrypts correctly (all ten fields), and the
+   file-table area at phys `0x22e50f0` decrypts to readable strings (`…soft\mes…`), so the BKTR CTR convention (bytes
+   0-3 = `reversed(section_ctr)[0:4]`, 4-7 = subsection `ctr_val`, 8-15 = `(section_offset + phys) >> 4`) is right for
+   the table area. The **data area** is the open question: with the base file table's offsets mapped through the base
+   virtual space (`romfs_offset + data_offset + offset`) the target lands in patch region 8
+   (`virt 0x9ddcf40..0x9f34830`, `phys 0x286bba0`) but neither the region start nor the file's computed phys decrypts
+   to an arc header, and the bytes are not stored plaintext either.
+4. **Next**: parse the **patch's own file table** (it decrypts — the names are readable) and map that table's file
+   offsets through the patch's data area, instead of going through the base table's offsets; the patch header's
+   `data_offset = 0x200` and the table's file entries should give the exact positions. That avoids the base-table
+   mapping entirely and should produce the real `ARC\0` files.
+5. Housekeeping: the session and game are stopped; the r2 build stays on the i9 (it is the one that reaches LOADING),
+   and the extraction probes are in `.tmp/re6upd/` for the next round.
+
+## Round 10 status (2026-11-09, ~17:50 CST, main at the switch_bktr commit): BKTR tables encapsulated; payload still open
+
+1. **`gbox/switch_bktr.py` + tests** (9 tests across the three decryption modules pass): superblock offsets, the
+   relocation block (0x4000 header + bucket at 0x4000, entries **packed 0x14**), the subsection block (0x10), patch
+   region derivation, the subsection lookup and the BKTR CTR construction. That is the measured RE6 update layout,
+   now in the repository instead of only in probes.
+2. **The payload is still not decrypted, and the tests for it are now excluded rather than guessed.** What was ruled
+   out this round:
+   - the base plaintext at `virt 0x9EDBC90` is `ARC\0…` (confirmed), the patch's ciphertext at the mapped
+     `phys 0x296AAF0` does not xor to any candidate CTR keystream (16 combinations of lead bytes 0-3, ctr_val 0/1 and
+     absolute/relative/zero offset bases) — so the mapped payload is either not this file or not plain CTR;
+   - the raw bytes at every patch-region start are random (no ARC/PFS0/zlib/Yaz0 magic), so the payload is not stored
+     plaintext;
+   - no base file starts exactly on a patch-region boundary, so the regions are arbitrary ranges rather than whole
+     files — a per-file split cannot be assumed.
+3. **Consequence for the lane:** the r2 overlay (19 extracted files, invalid) is what makes START GAME proceed to
+   LOADING and then hang; a build without those files is ignored at START GAME. The next attempt should not include
+   the invalid data files: keep the update ExeFS only until the payload path is understood, or find the payload's
+   real encoding (a candidate is that the update's data area is stored with a different keyblob/CTR seed than its
+   tables, which the keystream test can settle once the right region is identified).
+
+## Round 11 status (2026-11-09, ~18:05 CST): the patch payload decrypts with the BKTR IV
+
+1. **Root cause of the "no names anywhere" result found**: I had been decrypting the patch section with the plain
+   section IV (`section_iv`: bytes 0-7 = the whole reversed section_ctr). BKTR data uses only bytes 0-3 from the
+   section_ctr, sets bytes 4-7 to the subsection `ctr_val`, and bytes 8-15 to the offset: with `ctr_val = 0` the
+   difference is byte 7 (`00` vs `01`), which garbled every payload probe.
+2. **With `switch_bktr.bktr_ctr` the patch data reads**: at `phys 0x22e50f0` it shows a table record followed by
+   `soft\message\font\mes_font_chS_01_ID` (the same record the *base* stores at the same virtual address, with the
+   update's small changes), and at `phys 0x29c3390` it shows `chS\gameover2_BM_NOMIP` — both are file-table strings.
+   So the patch carries its own RomFS table data, and the file/name layout is readable.
+3. **Consequence**: the earlier 19 extracted files were produced with the wrong IV and are garbage — that is what
+   hangs the LOADING screen. The extraction must be redone passing `switch_bktr.bktr_ctr(sc, ctr_val, absolute)` for
+   the section read, then mapping each file's virtual range through the region list.
+4. **Next**: with the readable table strings as anchors, locate the patch's directory/file meta tables (they sit in the
+   patch's data area, e.g. the region containing `phys 0x29c3390`), parse them with `switch_romfs.walk`, and extract
+   the changed files with the BKTR IV; rebuild `recovery-re6-update-v131072-r2` and retry the round.
+
+## Round 12 status (2026-11-09, ~18:20 CST): patch recombination in code; the region payload still resists
+
+1. **`gbox/switch_patch.py` + 4 tests**: `patched_files` (find base files whose virtual range a patch region overlaps,
+   clipped at the file boundaries), `changed_ranges` (the offsets within a file), and `rebuild` (base bytes outside
+   the ranges, patch bytes inside, chunked with a short-read refusal). This is what the RE6 update needs because its
+   52 regions cut *across* file boundaries — a whole-file overlay cannot be built by copying one file per region.
+2. **Correction to the round-11 note**: the plain section IV and the BKTR IV differ **only in the first 16-byte block**
+   (the counter increments through bytes 8-15; byte 7 does not change between blocks). Region 2 matched the base
+   because its comparison was beyond the first block; the byte-7 distinction is real but it is not the whole payload
+   problem.
+3. **Region 8 payload still does not decrypt.** Verified: the base at `virt 0x9EDBC90` is `ARC\0…` and the patch's
+   ciphertext at the mapped `phys 0x296AAF0` does not decrypt to it with the CT val 0/1, lead-bytes variants or
+   physical/virtual/zero counter bases, and it is not plaintext or XTS with the title key. Region 2's payload *does*
+   match the base (the update changed a few bytes), so the reader and the mapping are right for at least part of the
+   patch — the remaining question is specific to the payload ranges (a per-region counter or a different encoding).
+4. **Next**: use `switch_patch.rebuild` with the region-2-style reader to reconstruct the files the patch *does*
+   decrypt (starting with `Core.arc`), compare them against the base to confirm the recombination, then isolate the
+   payload-range difference (e.g. print the counter for a region whose data matches and one that does not, and diff
+   the region's phys/virt offsets).
+
+## Round 13 status (2026-11-09, ~18:40 CST): the 1.0.0 base image does not carry the 1.0.2 unlock layout
+
+Tested the hypothesis that the base game (1.0.0, no update) could be unlocked with the same structure addresses, which
+would have bypassed the update and its payload entirely:
+
+- `module_base` from the profile's signature is **not found** in the 1.0.0 image (the signature scan returns None at
+  `SIG_OFF`); forcing `0x80004000` and walking `sInfoMan` gives a plausible `cSystemInfo` (`0x825c3410`) and a vtable,
+  but `cSystemInfo+0x55c8` reads a code pointer (the second flag copy is at a different offset in 1.0.0), and
+  **`ui_units` finds none** of the menu units — so the title-state detection the unlock needs does not work there.
+- The title gate bytes at `main+0xad5d6c` are different from 1.0.2 (`08d163f9…`), as expected.
+- Writing bit 0 at the computed `cSystemInfo+0xb8` (0 → 1, read back 1) and pressing A gave the normal
+  "Load successful" screen and then the title loop again — **no main menu**. The address is therefore not the flag on
+  1.0.0 (or the title does not read it), and a 1.0.0 profile would need real RE work (locating sInfoMan and the flag in
+  the 1.0.0 image, not just re-using 1.0.2 offsets).
+
+Consequence: the update really is required for RE6 on the i9, so the payload encoding of the update NSP (the one
+remaining unknown from round 12: region 8's data does not decrypt with any CTR variant, is not plaintext, and is not
+XTS with the title key) stays the gate for the live round and for the `arc/NX/e####.arc` reskin overlays. The 1.0.0
+route is now closed with evidence rather than left open.
+
+## Round 14 status (2026-11-09, ~18:55 CST): a client decrypting CLI, verified on the real containers
+
+`gbox/switch_extract.py` (`python -m gbox.switch_extract`) is the deployable client path over the new readers —
+`switch_nca` (header, ticket title key, sections), `switch_romfs` (header, directory/file tables) and `switch_bktr`
+(BKTR tables), with CPU AES only. Verified against the RE6 containers on the i9:
+
+* `info` lists the update NSP's seven members (five NCAs, `.tik`, `.cert`);
+* `romfs-list` on the **18.8 GB base NSP** (NCA `7d1de582…`) reads the NCA identity, its three sections and walks the
+  RomFS to **60,645 files** (`nativeNXx64/…`);
+* `romfs-get` extracts `nativeNXx64/serial.srt` (22 bytes, content `0000000000000000000000`);
+* `exefs` extracts the update's five ExeFS members (`main` 18,700,260 bytes, `main.npdm`, `rtld`, `sdk`, `subsdk0`).
+
+`Nca.romfs()` locates the RomFS header from the section's **IVFC level 5 logical offset** (the level headers live in the
+FS header at `0x400 + index*0x200 + 8 + 0x10 + level*0x18`) instead of scanning — the same convention measured in
+rounds 7-8. Three CLI tests pass (member table, `info` without keys, a missing-member refusal).
+
+This is the "full decrypting tasks on client computers" arm of the operator's objective: any PC with `prod.keys` can
+now read this library's containers, which the shipped `hactool` cannot (it reports `Invalid NCA header` on both nodes).
+The RE6 update *payload* (round 12-13: region 8's data does not decrypt as CTR/plaintext/XTS and is not zlib/gzip/bz2/
+lzma) is unchanged and remains the gate for a live Mercenaries round.
+
+## Round 15 status (2026-11-09, ~19:10 CST): decryption is now a dispatchable gBox job
+
+`switch_decrypt` is registered in the tool registry: it runs on any worker (the i9 included) and returns structured
+results, so the operator can submit container work through the normal job/MCP path instead of a shell:
+
+    {"tool": "switch_decrypt", "input": {"op": "romfs-list", "container": "<nsp>", "nca": "<nca>",
+                                         "keys": "<prod.keys>", "limit": 20}}
+
+* `info` — the container's members (no keys needed);
+* `exefs` — the NCA's five ExeFS files to `out=`;
+* `romfs-list` — the file count, the RomFS header and a sample of `{path, offset, size}`;
+* `romfs-get` — one RomFS file to `out=` (bytes written reported);
+* `bktr` — the relocation/subsection table offsets and entry counts.
+
+Verified on the 18.8 GB RE6 base container through the tool: `title 01002A000CD48000`, `files 60645`, data offset
+`0x200`, sample `nativeNXx64/Thumbs.db` / `serial.srt`, and a `romfs-get` of `nativeNXx64/serial.srt` writing 22 bytes.
+Five tool tests pass (key-free `info`, missing container, unknown op, missing keys, `out=` required).
+
+Also tried this round: driving Yuzu's GUI installer through posted window messages (Alt-context system keys and posted
+clicks) — the File menu highlights but does not drop, so the GUI install path stays closed without real keyboard/mouse
+input on the operator's desktop.
+
+The RE6 update payload (rounds 12-13: region 8's data does not decrypt as CTR/plaintext/XTS and is not zlib/gzip/bz2/
+lzma) is unchanged and still the gate for a live Mercenaries round.
+
+## Round 16 status (2026-11-09, ~18:05 CST): a Mercenaries round RAN on the i9 — the payload was never needed
+
+The update-only build (`recovery-re6-update-v131072-20261109`, the update's ExeFS patch on the base NSP) loads and
+plays a full Mercenaries round on the i9. The RAM-driven walk logged the whole flow:
+
+    main_menu -> play_game(target 3) -> extra_content(cursor 1) -> mercs menu -> select_stage
+    -> select_player(target 8 = nine characters) -> loading -> alert_leaderboard -> results
+
+with the RESULTS screen showing "Urban Chaos", "LEON S. KENNEDY", Kills 0 / Max Combo 0 / Score 0 / Rank E (the player
+stood idle; the round timer ran out). So:
+
+* the earlier **LOADING hang was the invalid r2 data overlay**, not the update's RomFS payload: with those 19 bogus
+  files removed, the round loads and completes;
+* **the BKTR payload is not needed for a live RE6 round** — the base RomFS + the update's ExeFS is enough, and the
+  unlock (`already_unlocked` with the save's flag) opens the menu;
+* the lobby's ONLINE COMMUNICATION / PARTNER JOIN defaults (ALLOW) did not block the round.
+
+A swap build is ready for the next round: `recovery-re6-update-roster-v2-20261109` (50 entries: the update's five
+ExeFS files + the 45 roster RomFS files, **without** the invalid data), so the next session can capture swapped-
+character gameplay frames and then run the `op=hotswap` acceptance test (two frames of one session, no restart).

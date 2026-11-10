@@ -11,6 +11,8 @@
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   // the Mercenaries clock control (mercs-clock.js: add / take seconds, set the clock): ops add_time / set_time
   const CLOCK = root.GBoxMercsClock || (typeof require === "function" ? (() => { try { return require("./mercs-clock.js"); } catch { return null; } })() : null);
+  // the blueprint look (blueprint-look.js): the PC's MercMode setting, through POST /api/mercmode, next round
+  const BLUEPRINT = root.GBoxBlueprintLook || (typeof require === "function" ? (() => { try { return require("./blueprint-look.js"); } catch { return null; } })() : null);
   const DEFINITIONS = [
     { op: "unlimited_health", label: "Unlimited life", field: "unlimited_health" },
     { op: "infinite_ammo", label: "Infinite ammo", field: "infinite_ammo" },
@@ -18,6 +20,10 @@
     { op: "instant_qte", label: "Native QTE assist", field: "qte_assist", read: status => status?.qte_assist?.enabled,
       note: status => `Wiggle and accumulation events${status?.capabilities?.instant_qte?.solo_recovery?.available ? ", plus solo recovery assistance" : ""}; other QTEs use automatic inputs. ${status?.qte_assist?.reason || "Waiting for an active event."}` },
     { op: "fire_rate", label: "Fire rate", field: "fire_rate_x", multiplier: 80, min: 0.1, max: 1000, step: 0.1 },
+    // per-weapon rates on Switch (operator 2026-11-09: "throw eggs 20x the regular speed and fire the bow at 10x regular
+    // speed with adjustable sliders"): that weapon's own animation x N while it is in hand
+    { op: "egg_rate", label: "Rotten egg throw rate ×", field: "egg_rate_x", multiplier: 20, min: 1, max: 40, step: 1, switchOnly: true },
+    { op: "bow_rate", label: "Bow fire rate ×", field: "bow_rate_x", multiplier: 10, min: 1, max: 20, step: 1, switchOnly: true },
     { op: "bullet_damage", label: "Bullet damage", field: "bullet_damage_x", multiplier: 10, min: 0.1, max: 1000, step: 0.1 },
     { op: "turn_speed", label: "Turning and aiming speed", field: "turn_speed_x", multiplier: 3, min: 0.25, max: 50, step: 0.25 },
     // on / off only: the worker retains the operator's seconds per kill
@@ -153,8 +159,10 @@
     return `Saved for this game: ${ROLES[team.role] || team.role} · ${PROFILES[team.training_profile] || team.training_profile}`
       + `${team.auto_reduce_mods ? " · gradual reduction allowed" : ""}.${where}`;
   }
+  // a Switch-only control (the per-weapon rates) is not shown on the PS3 edition
+  const shown = (state, def) => !def.switchOnly || state?.edition === "switch";
   function rows(state) {
-    return DEFINITIONS.map(def => {
+    return DEFINITIONS.filter(def => shown(state, def)).map(def => {
       const on = value(state.status, def), cap = capability(state.status, def.op);
       return { ...def, on, ...cap, disabled: state.busy || state.pending || state.weaponPending || state.stale || !cap.available || on === null };
     });
@@ -167,6 +175,15 @@
   }
   function clockHTML(state = {}) {
     return CLOCK && !state.teamOnly ? CLOCK.html(clockState(state)) : "";
+  }
+  // the blueprint look: a MercMode setting of the PC that plays this session (blueprint-look.js), not a re5_mods op;
+  // it is read with the status and set through POST /api/mercmode, and takes effect at the next round
+  function blueprintHTML(state = {}) {
+    if (!BLUEPRINT || state.teamOnly) return "";
+    const b = state.blueprint || {};
+    return `<fieldset class="re5-mine-controls re5-blueprint" ${state.busy || state.pending || state.stale || typeof b.on !== "boolean" ? "disabled" : ""}><legend>MercMode look</legend>`
+      + BLUEPRINT.html({ ...b, cls: "re5-mod-row", attr: "data-re5-blueprint", disabled: state.busy || state.pending || state.stale })
+      + `<p class="re5-mod-sub">${ESC(typeof b.on === "boolean" ? "Every queued round plays its build's blueprint companion while this is on; the round being played does not change." : b.reason || "Reading the PC's MercMode settings…")}</p></fieldset>`;
   }
   function html(state = {}) {
     const team = state.team, config = team?.config || {}, teamDisabled = state.busy || state.pending || state.stale || !team;
@@ -295,11 +312,12 @@
       + `<button class="act" type="button" data-re5-merc-select>Play this selection next</button>`
       + `<p class="re5-mod-sub" data-re5-merc-queue role="status">${ESC(queueStatus)}</p></fieldset>` : "";
     const clockControls = clockHTML(state);
+    const blueprintControls = blueprintHTML(state);
     const sw = state.edition === "switch";
     return `<div class="re5-mod-heading"><b>RE5 modifiers${sw ? " (Switch)" : ""}</b><button type="button" class="act" data-re5-refresh `
       + `${state.busy ? "disabled" : ""}>Refresh</button></div><p class="re5-mod-sub">This running session${weapon ? ` · ${ESC(weapon)}` : ""}</p>`
       + (state.saved ? `<p class="re5-mod-sub re5-mod-saved" data-re5-saved>${ESC(savedLine(state))}</p>` : "")
-      + teamControls + controls + clockControls + rotationControls + eggControls + mineControls + liveControls + weaponControls + `<button class="act re5-mod-random" type="button" data-re5-random `
+      + teamControls + controls + blueprintControls + clockControls + rotationControls + eggControls + mineControls + liveControls + weaponControls + `<button class="act re5-mod-random" type="button" data-re5-random `
       + `${state.busy || state.pending || state.weaponPending || state.stale || !random.available ? "disabled" : ""}>Random available weapon</button>`
       + `<p class="re5-mod-sub">${ESC(random.reason || "Equips an eligible gun already in the inventory. Rockets and sniper rifles are excluded.")}</p>`
       + `<details class="re5-mod-extra"><summary>Other requested modifiers</summary>${unavailable}</details>`
@@ -367,8 +385,26 @@
         try { await readTeam(); }
         catch (error) { state.team = null; state.teamError = error.message; }
       }
+      if (BLUEPRINT && !state.teamOnly) await readBlueprint();
       if (saved) await loadSaved();
       return result.status;
+    }
+    async function readBlueprint() {
+      // the PC's MercMode setting; a failed read disables the switch only (the game's own status still shows)
+      try { state.blueprint = await BLUEPRINT.fetch(api, { sid, worker, pc: session?.detail?.worker_name || session?.pc }); }
+      catch (error) { state.blueprint = { host: null, on: null, reason: "MercMode settings unavailable: " + error.message }; }
+    }
+    async function setBlueprint(enabled) {
+      // POST /api/mercmode {host, blueprint_look}: the next round boundary loads the `<build>-blueprint` companion
+      if (typeof enabled !== "boolean" || !BLUEPRINT || state.busy || state.pending || state.stale || disposed
+          || !state.blueprint?.host || typeof state.blueprint.on !== "boolean") return;
+      state.busy = true; state.error = false; state.message = enabled ? "Turning the blueprint look on…" : "Turning the blueprint look off…"; paint();
+      try {
+        await currentSession();
+        state.blueprint = await BLUEPRINT.set(api, state.blueprint.host, enabled);
+        state.message = BLUEPRINT.message(enabled);
+      } catch (error) { state.error = true; state.message = error.message; await readBlueprint(); }
+      finally { state.busy = false; paint(); }
     }
     async function readTeam() {
       const result = await job("status", {}, "mercs_team");
@@ -397,7 +433,7 @@
       try {
         await preflight(); await read(false); await saved;
         state.message = state.weaponPending ? "Weapon switch is still pending. Refresh to check its result."
-          : DEFINITIONS.every(def => capability(state.status, def.op).available)
+          : DEFINITIONS.filter(def => shown(state, def)).every(def => capability(state.status, def.op).available)
             ? (savedPrefs ? "Settings read from the running game. Choices are kept for this game across reloads and relaunches."
               : "Settings read from the running game. Choices are kept for this session.")
             : "Settings read. Unavailable controls show their status below.";
@@ -613,7 +649,7 @@
       finally { state.busy = false; paint(); }
     }
     return { refresh, change, setMultiplier, setMines, setAnyWeapon, setLiveWeapon, setEggs, selectMercs, setTeam, preparePlayer2,
-      addTime, setTime, clockDraft, state: () => ({ ...state, clock: { ...state.clock } }), stop: () => { disposed = true; } };
+      addTime, setTime, clockDraft, setBlueprint, state: () => ({ ...state, clock: { ...state.clock } }), stop: () => { disposed = true; } };
   }
 
   const CSS = `.re5-modifiers{display:block!important;height:auto!important;overflow:visible;border-top:1px solid var(--line,#444);margin-top:5px;padding:9px 4px 2px;min-width:min(300px,calc(100vw - 48px));max-width:400px}
@@ -647,6 +683,12 @@
       }
       if (event.target.matches?.("[data-re5-range]")) {
         ctl.setMultiplier(event.target.dataset.re5Range, event.target.value);
+        return;
+      }
+      if (event.target.matches?.("[data-re5-blueprint]")) {
+        const wanted = event.target.checked;
+        event.target.checked = ctl.state().blueprint?.on === true;     // the fresh readback flips it, not the click
+        ctl.setBlueprint(wanted);
         return;
       }
       if (event.target.matches?.("[data-re5-merc-mode]")) {
@@ -707,7 +749,7 @@
     return ctl;
   }
   const api = { GAME, RE6, SWITCH, RE6_SWITCH, DEFINITIONS, eligible, isSwitch, panelEligible, replacementSession, capability, rows, clockState, html, create, mount,
-    savedText, savedLine, teamSavedLine,
+    savedText, savedLine, teamSavedLine, blueprintHTML,
     sectionHTML: () => `<style>${CSS}${CLOCK ? CLOCK.CSS : ""}</style><section class="re5-modifiers" aria-label="RE5 modifiers"></section>` };
   root.GBoxRE5Modifiers = api;
   if (typeof module === "object" && module.exports) module.exports = api;

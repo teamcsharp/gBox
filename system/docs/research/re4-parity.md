@@ -385,6 +385,16 @@ Tests: from the repo root, `PYTHONPATH="system;system/tests"`, `-m pytest -q -p 
 system/tests/test_re4_switch_assets.py system/tests/test_re4_switch_models.py system/tests/test_re4_switch_enemies.py
 system/tests/test_re4_stage_greybox.py`.
 
+## Decryption state (2026-11-10 00:25 UTC, measured)
+
+RE4 Switch is fully decrypted on lilspark. The library's `Resident Evil 4 [UPDATE 1.0.2] [010099a00bc1e000].nsp` is not
+a delta: it holds one 12,974,144,512-byte program NCA (`97920e35d665773caf9c075e3e0a53e8.nca`), a control NCA and the
+CNMT. That program NCA is byte-for-byte the `~/gBox_alt/switch/work/game-010099A00BC1E000-12974144512.nca` the RomFS
+was extracted from on 2026-11-05 (SHA-256 of 16 MiB slices at offsets 0, 6,487,072,256 and 12,957,367,296 identical:
+`6814eca0…`, `f4950afc…`, `c8025671…`). So `~/gBox_alt/switch/romfs/010099A00BC1E000/bio4/` (5,275 files, 13 GB) is the
+launched image's own RomFS; there is no BKTR patch layer for RE4 as there is for RE6. `gbox.switch_extract` cannot open
+this NSP ("no ticket in the container"): its NCA uses the key area, not a title key.
+
 ## 7. The fight, the round clock and the rotation (2026-11-09, branch `wt-re4-fight-20261109`)
 
 The ask: the RE4 Switch bot plays Mercenaries rounds as well as the RE5 Switch bot - fights, keeps the combo, never
@@ -427,7 +437,7 @@ themselves (the clock) or to be measured by one probe run (the rest), 7.4.
 | the playbook's fight | `re4switch_bot.py` | in a round, with the player in RAM: `Bot.tick` through `Keys` (a held key down once, up when let go; a tap down + up); the frame every 5th tick. Without the player: the blunt cadence as before, its action press now Y (the manual's action button; it was A), `stats["fight"] = "frame"` | `test_with_the_player_in_ram_the_bot_fights_through_holds_and_taps` |
 | round boundaries | `re4switch_bot.py` (`round_boundary` param, `Round`, `_boundary`, `_report`), `mercmode.accept_boundary` | `tools._start_playbook` now passes `round_boundary` (play's signature names it). One boundary per round id: **results** when the clock was seen counting, read >= 60 s at some point, then read 0 for 1 s with at least that many seconds / 1.4 of wall time between (`tally_ready`, `timer: 0`, `clock_high`; a short countdown taken by mistake cannot end a round), **dead** when the player was read alive and then at 0 health. The witness carries `clock_verified`, `player_verified`, `kills`/`kills_source`, `clock_addr`, `hud_seen`; character and stage are the *requested* ones (`character_source: requested`). `accept_boundary` takes `clock_verified` in place of `player_verified` for **RE4 Switch results only** (a death still needs the player's health) | `test_re4_switch_results_count_on_the_clock_witness`, `test_the_clock_witness_is_re4_switch_only`, `test_the_re4_switch_playbook_boundary_shape_is_accepted`, playbook boundary tests |
 | mercs_bot | `mercs_bot.py` | an RE4 Switch pick goes to `re4_switch.request` too, for when the engine path takes the title (`mercs.ready` stays false) | - |
-| the probe | `tools/probes/re4sw_round_probe.py` | one live round, read-only: waits for the HUD, two bss dumps -> the clock (the driver's own finder); `memory_search` for each class lead's vtable word in a heap window, each object read twice -> moving f32 triples (U_POS votes), health; bss dumps every ~4 s -> monotonic small-step u32 / u16 (kills, combo, score shapes). Refuses a session not `agent_owned` | smoke-tested on synthetic dumps only |
+| the probe | `scripts/re4sw_round_probe.py` | one live round, read-only: waits for the HUD, two bss dumps -> the clock (the driver's own finder); `memory_search` for each class lead's vtable word in a heap window, each object read twice -> moving f32 triples (U_POS votes), health; bss dumps every ~4 s -> monotonic small-step u32 / u16 (kills, combo, score shapes). Refuses a session not `agent_owned` | smoke-tested on synthetic dumps only |
 
 Controls (Capcom's official RE4 Switch manual, `docs/research/mercenaries-character-specials.md` 1.1 on main, source
 S37; not yet exercised by this bot live): ready weapon ZL, aiming with the right stick while it is held; fire ZL + ZR;
@@ -457,7 +467,7 @@ Without the worker files deployed, every RE4 turn keeps looping on the main menu
 3. **The boundary**: at the round's end (clock 0) `stats.last_boundary` and `stats.boundaries_posted == 1`, then
    `mercmode_rotate_requested` when the turn's rounds are done; MercMode's log shows the round counted (not a
    no-progress cut). Failure: `mercmode_boundary_error` names the refusal.
-4. **The probe** in that round (`python system/tools/probes/re4sw_round_probe.py --out <dir>`, the bot walking): from
+4. **The probe** in that round (`python system/scripts/re4sw_round_probe.py --out <dir>`, the bot walking): from
    `report.json` set `PLAYER_CLASS` (the class with one object that moves as he walks), `ENEMY_CLASSES` (objects that
    move and lose health at `+0x3c2`), `U_POS` (the top position vote), and the `MERC_*` counters (kills step by 1 per
    kill, score by the kill score); then find `U_YAW` (a float that turns with `lleft`/`lright`) - the 2026-11-05

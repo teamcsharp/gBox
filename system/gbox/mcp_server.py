@@ -221,7 +221,9 @@ CONVENIENCE = {
                            "hold_s": {"type": "number", "minimum": 0, "maximum": 600}}, ["session_id"])),
     "game_live_controls": ("Read or adjust the selected active MercMode run through its bounded live control inventory. "
                            "status returns current mod sliders, behavior knobs and native flash/weapon capabilities. "
-                           "set takes a control ID from that inventory and a bounded value. Native clicks require a fresh UUID. "
+                           "set takes a control ID from that inventory and a bounded value (RE5 Switch per-weapon rates: "
+                           "mod.egg_rate 1..40, the rotten egg's own animation x N while it is in hand; mod.bow_rate "
+                           "1..20, the longbow's; mod.fire_rate stays the guns'). Native clicks require a fresh UUID. "
                            "A pending_job must be polled with status/job_id, never resubmitted. Operator actions preserve playback audio.", LC.SCHEMA),
     "live_run_map": ("Read the current Mercenaries map and stream session on a computer. Follows title changes and ignores warmed/preparing sessions. "
                      "Pass worker name/id, or a session_id on that computer. Returns current tactical data and a relative live-map page for viewer/PiP embedding. "

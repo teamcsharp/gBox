@@ -277,6 +277,14 @@ test('the weapon dropdown sits in the header, most powerful first, the current p
   assert.doesNotMatch(S.html(VIEW, '', { status: STATUS, title: 're6' }), /data-bl-weapon/);   // no list: no dropdown
 });
 
+test('the menus line shows the last round-to-round walk and the best, escaped, only when the worker sends one', () => {
+  const menus = { text: 'menus: 4.2 s (best 3.9 s) · to play 27.5 s', screens: 'alert_ok 0.4s/1p, <b>results</b>' };
+  const h = S.html({ ...VIEW, title: 're5', menus }, '', { status: STATUS, title: 're5', pc: 'lilspark', scope: '1' });
+  assert.match(h, /<p class="bl-target bl-menus" title="[^"]*&#60;b&#62;results[^"]*">menus: 4\.2 s \(best 3\.9 s\) · to play 27\.5 s<\/p>/);
+  assert.ok(h.indexOf('bl-menus') > h.indexOf('the game shown in this PiP'));   // under the PC line
+  assert.doesNotMatch(S.html(VIEW, '', { status: STATUS, title: 're6' }), /bl-menus/);
+});
+
 test('picking a weapon asks bot_logic to equip it and shows the outcome', async () => {
   const r = rig();
   r.view.weapons = structuredClone(WEAPONS);
@@ -293,4 +301,56 @@ test('picking a weapon asks bot_logic to equip it and shows the outcome', async 
   assert.equal(r.sb.state().ok, true);
   assert.equal(await r.sb.equip(99), false);                       // not in the list: refused, nothing sent
   assert.equal(r.jobs().filter(c => c.body.input.weapon !== undefined).length, 1);
+});
+
+test('the blueprint look is this PC\'s MercMode setting: read with the controls, set through /api/mercmode, next round', async () => {
+  const r = rig(RE5);
+  let look = false;
+  const posts = [];
+  r.hook = async (url, body, method) => {
+    if (url !== '/api/mercmode') return null;
+    if (method === 'POST') { posts.push(body); look = body.blueprint_look; }
+    return { hosts: [{ name: 'lilspark', id: 'worker-123', settings: { blueprint_look: look }, current_run: { session_id: RE5.session_id } }] };
+  };
+  assert.equal(await r.sb.refresh(), true);
+  assert.deepEqual(r.sb.state().blueprint, { host: 'lilspark', on: false, reason: '' });
+  const html = S.html(r.sb.state().view, '', r.sb.state());
+  assert.match(html, /<h4>Live mods<\/h4>[\s\S]*Blueprint look \(grid textures on the level\)/);
+  assert.match(html, /data-bl-blueprint data-bl-scope="[^"]+"[^>]*aria-checked="false">/);
+  assert.match(html, /applies at the next round · MercMode on lilspark/);
+  assert.equal(await r.sb.setBlueprint(true), true);
+  assert.deepEqual(posts, [{ host: 'lilspark', blueprint_look: true }]);
+  assert.equal(r.sb.state().blueprint.on, true);
+  assert.match(r.sb.state().message, /Blueprint look on: .* at the next round/);
+  assert.equal(r.sb.state().ok, true);
+  assert.equal(r.changes().length, 0);                          // no re5_mods job: it is not a session mod
+  assert.match(S.html(r.sb.state().view, '', r.sb.state()), /data-bl-blueprint[^>]*aria-checked="true" checked>/);
+  assert.equal(await r.sb.setBlueprint(false), true);
+  assert.equal(posts.at(-1).blueprint_look, false);
+  assert.equal(await r.sb.setBlueprint('yes'), false);          // not a boolean: nothing posted
+  assert.equal(posts.length, 2);
+});
+
+test('without a PC that owns the game, or on a PC without the feature, the blueprint switch is disabled and posts nothing', async () => {
+  const r = rig(RE5);
+  r.hook = async (url, body, method) => url === '/api/mercmode' ? { hosts: [{ name: 'other', id: 'w9', settings: { enabled: true } }] } : null;
+  assert.equal(await r.sb.refresh(), true);
+  assert.equal(r.sb.state().blueprint.on, null);
+  assert.match(S.html(r.sb.state().view, '', r.sb.state()), /data-bl-blueprint[^>]*aria-checked="mixed" disabled>/);
+  assert.equal(await r.sb.setBlueprint(true), false);
+  assert.match(r.sb.state().message, /No gBox PC owns/);
+  const posts = r.calls.filter(c => c.url === '/api/mercmode' && c.method === 'POST');
+  assert.equal(posts.length, 0);
+  // the PC exists but runs an older gBox: its settings lack the flag
+  const r2 = rig(RE5);
+  r2.hook = async (url) => url === '/api/mercmode' ? { hosts: [{ name: 'lilspark', id: 'worker-123', settings: { enabled: true } }] } : null;
+  await r2.sb.refresh();
+  assert.equal(await r2.sb.setBlueprint(true), false);
+  assert.match(r2.sb.state().message, /older gBox/);
+  // a MercMode read that fails disables the switch only; the mods are still there
+  const r3 = rig(RE5);
+  r3.hook = async (url) => { if (url === '/api/mercmode') throw new Error('offline'); return null; };
+  assert.equal(await r3.sb.refresh(), true);
+  assert.equal(r3.sb.state().status.fire_rate_x, 4);
+  assert.match(r3.sb.state().blueprint.reason, /MercMode settings unavailable: offline/);
 });

@@ -32,7 +32,10 @@ PARAMS = {
         're5_switch.RELOC_CROWD_N': (4, 6, -1),            # relocate out of a forming crowd sooner
         're5_switch.HEAL_CRITICAL': (0.25, 0.4, 0.05),     # heal under this whoever is near (the deferral's floor)
         're5_switch.BEHIND_R': (300.0, 450.0, 50.0),       # a Majini this near behind wins the threat pick
-        're5_switch_mines.BLAST_CM': (800.0, 1200.0, 100.0),   # out of his own bomb's way within this
+        # out of his own bomb's way within this - never under the operator's 15 m (doctrine.MINE_STANDOFF_M, 2026-11-09:
+        # "at least 15 meters from the mine"); the old bounds (8-12 m) left 9 m in force on two stages after the
+        # standoff went to 15 m, and every tuned round played with it
+        're5_switch_mines.BLAST_CM': (1500.0, 2000.0, 100.0),
     },
     '01002A000CD48000': {
         're6_switch.CROWD_R': (260.0, 340.0, 20.0),        # two this near: he steps back while he fires
@@ -47,6 +50,11 @@ PARAMS = {
 }
 PACKAGE = 'gbox.mercs.titles.'
 AVOID_MAX, STEER_DEG = 24, (30, -30, 60, -60, 90, -90)
+# The stage key's version per title. RE5 Switch called apply() with the NEXT round's target until 2026-11-09
+# (re5_switch.Bot._stage_now), so its dead-end notes and the avoid spots the tuner made of them name other stages: from
+# version 2 a note carries stage_v, the tuner counts only notes of the title's version and writes avoid_v, and apply()
+# steers by avoid spots only from a file of that version.
+STAGE_V = {'010018100CD46000': 2}
 _cache = {}                  # path -> (mtime, data)
 _state = {}                  # title -> {'stage', 'version', 'avoid'}
 _lock = threading.Lock()
@@ -95,6 +103,23 @@ def clamp(title, name, value):
     return int(round(value)) if isinstance(low, int) and isinstance(high, int) else float(value)
 
 
+def in_force(tuning_params, name, shipped=None):
+    """The value a round played the tunable `name` with, from its stats' tuning_params ("ATTR=value,..."; apply()
+    lists only the values that differ from the shipped ones): a float, `shipped` when the name is not listed, None when
+    the round carries no tuning_params (it did not run the tuning hooks)."""
+    if not isinstance(tuning_params, str):
+        return None
+    attr = name.rsplit('.', 1)[-1]
+    for part in tuning_params.split(','):
+        key, _sep, value = part.partition('=')
+        if key.strip() == attr:
+            try:
+                return float(value)
+            except ValueError:
+                return None
+    return shipped
+
+
 def _module(name):
     mod, attr = name.rsplit('.', 1)
     return sys.modules.get(PACKAGE + mod), attr
@@ -135,6 +160,8 @@ def _apply(title, stage, stats, base):
         if value != shipped[attr]:
             applied[name] = value
     avoid = data.get('avoid') if isinstance(data.get('avoid'), dict) else {}
+    if (data.get('avoid_v') or 1) < STAGE_V.get(title, 1):
+        avoid = {}                           # spots made under another stage's name (STAGE_V): none
     spots = [s for s in (avoid.get(stage) or avoid.get('*') or [])
              if isinstance(s, list) and len(s) == 3 and all(type(v) in (int, float) for v in s)][:AVOID_MAX]
     _state[title] = {'stage': stage, 'version': data.get('version'), 'avoid': spots}
@@ -188,6 +215,8 @@ def note_dead_end(title, pos, goal=None, base=None, now=None) -> None:
     try:
         line = {'at': time.time() if now is None else now, 'stage': (_state.get(title) or {}).get('stage'),
                 'x': round(float(pos[0])), 'z': round(float(pos[1]))}
+        if title in STAGE_V:
+            line['stage_v'] = STAGE_V[title]
         if goal is not None and len(goal) >= 3:
             line.update(gx=round(float(goal[0])), gz=round(float(goal[2])))
         path = root(base) / title / DEAD_ENDS

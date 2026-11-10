@@ -1,4 +1,4 @@
-"""Built-in typed tools. Each declares permissions, availability check, and an independent validator."""
+﻿"""Built-in typed tools. Each declares permissions, availability check, and an independent validator."""
 import functools
 import gzip
 import os
@@ -463,7 +463,7 @@ def _save_previous_game(ad, game: dict, sid: str, ctx) -> dict:
     state_transfer moves a save state between machines, which only RetroArch cores and standalone Dolphin (the
     same release on both) support; their moment is saved through gBox's own slot (op=snapshot: op=export would
     save it through Dolphin's slot 1, the operator's own). Every other emulator can still save its own game: fall
-    back to the adapter's save_state — the same primitive the Stop flow uses — so switching away from RPCS3 /
+    back to the adapter's save_state â€” the same primitive the Stop flow uses â€” so switching away from RPCS3 /
     Xenia / PCSX2 / ... is not refused as a "save states can't move between machines" failure. An unnamed
     adapter keeps the historical state_transfer path.
     """
@@ -857,7 +857,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         timings[name] = round(timings.get(name, 0) + now - mark, 3)
         mark = now
     ctx.nowait = True                                     # progress lines never wait on the control plane (registry.Ctx)
-    ctx.progress(2, f"Loading {g.title} · {g.system or g.platform}")
+    ctx.progress(2, f"Loading {g.title} Â· {g.system or g.platform}")
     diag["stage"] = "pick emulator"
     ad = adapters.for_game(g.model_dump(), ctx.config, debug=inp.debug, mod=inp.mod)
     ad.capture_gameplay = not getattr(ctx,'agent_use',False) and not inp.capture_backend
@@ -883,7 +883,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             prepare()
     except Exception as e:                                 # noqa: BLE001 - never block the launch
         print(f"gBox: audio device prefetch failed: {e}", flush=True)
-    ctx.progress(5, f"Runtime: {ad.name}" + (f" · core {g.core}" if g.core else ""))
+    ctx.progress(5, f"Runtime: {ad.name}" + (f" Â· core {g.core}" if g.core else ""))
     lap("runtime_s")
     if g.launch.get("kind") == "steam":
         checkpoints = _close_previous_games(ctx, keep=[inp.keep_session, *inp.keep_sessions])
@@ -1021,7 +1021,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
                                  f"({left}), so the next launch is local")
             else:
                 staged_on = __import__("platform").node()
-                ctx.progress(70, f"Staged to cache ({'copied' if receipt.get('copied') else 'reused'}) · evicted {len(receipt['evicted'])}")
+                ctx.progress(70, f"Staged to cache ({'copied' if receipt.get('copied') else 'reused'}) Â· evicted {len(receipt['evicted'])}")
                 ctx.artifact("staging_receipt.json", json.dumps(receipt).encode(), "application/json", game=g.game_id)
                 src = Path(receipt["dst"])
         lap("stage_s")
@@ -1094,7 +1094,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         detail["jump"] = jump                                 # session.detail.jump: the screensaver starts at once
     if staging is not None:
         detail["staging"] = staging
-    ctx.progress(100, "Running natively in its own window" if detail.get("local_window") else "Running — connecting the stream")
+    ctx.progress(100, "Running natively in its own window" if detail.get("local_window") else "Running â€” connecting the stream")
     sid = f"{ctx.worker}-{ctx.job_id}"
     gd = g.model_dump()
     gd['mod'] = launch_mod or ''
@@ -1376,7 +1376,7 @@ def _stage_for_launch(src: Path, g, ctx, must_wait: bool = False) -> dict:
         left_s = (total - done) / rate if rate else float("inf")
         if time.monotonic() - shown > 0.5:
             shown = time.monotonic()
-            eta = f" · {left_s:,.0f} s left" if rate else ""
+            eta = f" Â· {left_s:,.0f} s left" if rate else ""
             ctx.progress(30 + 40 * done / max(total, 1), f"Staging {src.name}: {done / 2**20:,.0f} / {total / 2**20:,.0f} MB{eta}")
         waited, measured = time.monotonic() - t0, time.monotonic() - job.t0 >= 3
         if budget and (waited >= budget or (measured and waited + left_s > budget)):
@@ -5168,7 +5168,7 @@ def video_tool(inp: VideoIn, ctx: Ctx):
                             for c in sorted(info.get("comments") or [], key=lambda c: -(c.get("like_count") or 0))[:inp.comments]],
                "ingested": time.time()}
         (kdir / f"{vid}.json").write_text(json.dumps(doc, indent=1), encoding="utf-8")
-        md = [f"# {doc['title']}", "", f"{doc['url']} · {doc['channel']} · {doc['duration']} s", "", "## Description", "",
+        md = [f"# {doc['title']}", "", f"{doc['url']} Â· {doc['channel']} Â· {doc['duration']} s", "", "## Description", "",
               doc["description"] or "", "", "## Transcript", ""]
         md += [f"[{int(x['t'] // 60)}:{int(x['t'] % 60):02d}] {x['text']}" for x in lines]
         md += ["", "## Top comments", ""] + [f"- {c['author']} ({c['likes'] or 0}): {c['text']}" for c in doc["comments"]]
@@ -5206,7 +5206,7 @@ class FileModOut(BaseModel):
 def file_mod(inp: FileModIn, ctx: Ctx):
     """File-replacement mods for folder games: build a modded copy (original untouched, unchanged files hard-linked to
     one local base copy), list, remove (= rollback). Launch it with launch_game mod=<name>.
-    delete_build (Builds ▸ Delete): this PC's copies of a build, its staged copies included; refused while a running
+    delete_build (Builds â–¸ Delete): this PC's copies of a build, its staged copies included; refused while a running
     game on this PC uses one."""
     from . import filemods
     if inp.op in ("delete_build", "quarantine_build"):  # no catalog / base ROM required
@@ -6217,7 +6217,7 @@ def llm_complete(inp: LLMIn, ctx: Ctx):
     return {"text": text, "endpoint": ep.name, "model": ep.model}
 
 
-# --- agent roles (plan §19): what an LLM orchestrator can dispatch, and with which tools ---
+# --- agent roles (plan Â§19): what an LLM orchestrator can dispatch, and with which tools ---
 AGENTS = [
     {"name": "orchestrator", "role": "Owns the task plan; splits requests into typed tool jobs and delegates to the roles below",
      "tools": ["*"], "status": "defined", "notes": "Today the coding agent (Claude Code) plays this role through the inbox + API."},
@@ -6577,3 +6577,75 @@ def reap_orphans(config) -> list[int]:
     except OSError:
         pass
     return killed
+# --- client-side Switch decryption ----------------------------------------------------------------------------------
+
+class SwitchDecryptIn(BaseModel):
+    op: str = "info"                 # info | exefs | romfs-list | romfs-get | bktr
+    container: str                   # the Nintendo container (NSP) on THIS worker
+    nca: str = ""                    # the member NCA for every op except info
+    path: str = ""                   # romfs-get: the RomFS path to extract
+    out: str = ""                    # exefs: a directory; romfs-get: a file
+    keys: str = ""                   # prod.keys; empty = gbox.hactool.keys_path()
+    limit: int = 20                  # romfs-list: how many sample entries to return
+
+
+class SwitchDecryptOut(BaseModel):
+    result: dict
+
+
+@tool("switch_decrypt", "1.0", SwitchDecryptIn, SwitchDecryptOut, capabilities=["catalog"],
+      permissions=[P.EXECUTE], timeout_s=3600, validation="schema",
+      side_effects=["reads a Nintendo container with this PC's prod.keys (CPU AES)",
+                    "writes extracted files under out= when exefs/romfs-get asks for them"])
+def switch_decrypt(inp: SwitchDecryptIn, ctx: Ctx):
+    """Client-side Switch container reading where the shipped hactool fails (gbox.switch_extract): `info` members,
+    `exefs` to a directory, `romfs-list`/`romfs-get` files, `bktr` relocation/subsection tables. Needs a prod.keys on
+    the worker (keys= or the working directory's keys); `info` reads only the container and needs none."""
+    from . import hactool, switch_bktr, switch_extract, switch_nca, switch_romfs
+    container = Path(inp.container)
+    if not container.is_file():
+        raise ToolUnavailable(f"{container} is not a file on this worker")
+    if inp.op == "info":
+        return {"result": {"op": "info", "members": switch_extract.members(container)}}
+    if inp.op not in ("exefs", "romfs-list", "romfs-get", "bktr"):
+        raise ValueError(f"unknown op {inp.op}")
+    keys_path = inp.keys or (str(hactool.keys_path()) if hactool.keys_path() else "")
+    if not keys_path:
+        raise ToolUnavailable("no prod.keys on this worker: pass keys=<path>")
+    if inp.op in ("exefs", "romfs-get") and not inp.out:
+        raise ValueError(f"{inp.op} needs out=")
+    nca = switch_extract.Nca(container, inp.nca, switch_nca.load_keys(keys_path))
+    out = {"op": inp.op, "title_id": nca.header["title_id"], "size": nca.header["size"],
+           "sections": [{k: s[k] for k in ("index", "offset", "size", "fs_type", "crypt_type")}
+                        for s in nca.header["sections"]]}
+    if inp.op == "bktr":
+        fs = next(s["index"] for s in nca.header["sections"] if s["fs_type"] == switch_nca.FS_ROMFS)
+        out["bktr"] = switch_bktr.superblock_offsets(nca.header["header"], fs)
+    elif inp.op == "romfs-list":
+        romfs = nca.romfs()
+        out["files"] = len(romfs["files"])
+        out["header"] = romfs["header"]
+        out["sample"] = romfs["files"][:inp.limit]
+    elif inp.op == "romfs-get":
+        romfs = nca.romfs()
+        entry = next((f for f in romfs["files"] if f["path"] == inp.path), None)
+        if not entry:
+            raise ValueError(f"{inp.path} is not in this RomFS")
+        section = next(s for s in nca.header["sections"] if s["fs_type"] == switch_nca.FS_ROMFS)
+        data = nca.read_section(section["index"], nca._romfs_at + romfs["header"]["data_offset"]
+                               + entry["offset"], entry["size"])
+        Path(inp.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(inp.out).write_bytes(data)
+        out.update(path=inp.path, out=inp.out, bytes=len(data))
+    elif inp.op == "exefs":
+        pfs0 = next((s for s in nca.header["sections"]
+                     if s["fs_type"] == switch_nca.FS_PFS0 and s["partition_type"] == 1), None)
+        if not pfs0:
+            raise ValueError("no PFS0 (ExeFS) section in this NCA")
+        files = switch_nca.read_pfs0(nca.read_section(pfs0["index"], pfs0["pfs0_offset"], pfs0["pfs0_size"]))
+        target = Path(inp.out)
+        target.mkdir(parents=True, exist_ok=True)
+        for name, data in files.items():
+            (target / name).write_bytes(data)
+        out["files"] = sorted(files)
+    return {"result": out}
