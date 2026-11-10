@@ -501,6 +501,47 @@ managed.
    JSONL, so the operator's walk is replayed rather than re-derived.
 3. Keep the recorder running for the whole session; the JSONL is the training set.
 
+## Round 7 (2026-11-10) — the operator's chord: Select + L1 + R1 randomizes the character's equipment
+
+The operator asked for a chord they can hit *while playing*: **Select + L1 + R1** randomizes the build and equipment of
+the character. Three pieces were needed and all three are in.
+
+### 1. The pad watcher followed the wrong pad
+
+`padstate.watch_xinput` mirrored **XInput slot 0 only**. On this PC slot 0 is a leftover virtual pad that sits at
+exactly zero forever, while the operator's real controller reports live packets and analog values on **slot 1** — so
+their input never reached the control plane, and no chord of theirs could ever fire. `operator_slot()` now picks the
+first slot that reports a button or a moved stick (falling back to 0), and `watch_xinput` uses it. This also explains
+round 3's false `verify_pad_binding` result and why the controller glyph and the built-in gameplay memory were blank
+while the operator was playing.
+
+### 2. A per-session, three-key chord
+
+`padstate` had one hardcoded chord (`Select + A`, and the edge test looked for literally `b`). It now has
+`CHORD_BY_SESSION` / `chord_keys(sid)` / `set_chord(sid, keys)`, and `chord_step` fires when the chord is completed by
+a *new* press of any non-Select key. Verified: `{select,l,r}` fires when the third key lands, does **not** fire on
+L1+R1 alone, and does **not** repeat while the chord is held.
+
+### 3. The action: `gbox/pso_quick.py` (+7 tests)
+
+The class-scoped randomizer (`pso_modes`) needs `character_class`, which the GameCube build does not expose
+(`pso_controls` returns `character_class: None` for GC), so a chord wired to it would need a hardcoded class or fail.
+`pso_quick.randomize_equipment` instead takes random **rares** from the owned-disc catalog (weapons, armour, shields,
+units) and gives + equips them one at a time, reporting what the game accepted and what it refused — a class the
+character cannot use shows up as a refusal, not as a crash. The catalog comes from the server and falls back to the
+cached `gbox-data/pso/items-gc-v3.json`. `chord_action()` never raises into the watcher.
+
+Wiring: for a PSO session, `tools.py` calls `padstate.set_chord(sid, {"select","l","r"})` and points
+`padstate.CHORD[sid]` at `pso_quick.chord_action`; every other title keeps Select + A for autoplay.
+
+Input tests still pass (78 passed, 1 skipped, including `test_pso_controls`, `test_gamepads`, `test_padmap`,
+`test_autoplay_input_takeover`).
+
+### Note on the session
+
+Control was handed back to the bot. The recorder (`D:\gBox\pso-ds\pso_demo_rec.py`) is still running and captures
+all four XInput slots plus the RAM state, so operator play from here on is still training data.
+
 ## 7. Next
 
 1. Fix `padstate.watch_xinput` to auto-detect the active XInput slot (it watches slot 0 only, and the
