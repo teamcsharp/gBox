@@ -447,13 +447,64 @@ guild/mission choice and the telepipe into Forest 1, then the same with a second
 2. Then the second player (second virtual pad, second character) and the three cold launches.
 3. Then P6a's in-game proof and P6b.
 
+## Round 6 (2026-11-10) — the operator took the pad: what was blocking their controller, and the recorder that now learns from it
+
+The operator said the game was taking too long, that they would play it themselves, and asked for the system to learn
+from it. This round is that: their controller was not being seen by gBox, and that is now fixed at the capture layer.
+
+### The controller is on XInput slot 1, and gBox watches slot 0
+
+`gbox/padstate.py:watch_xinput` mirrors **XInput pad 0 only**, and `DolphinWinAdapter` binds `XInput/<vpad slot>` into
+`GCPadNew.ini`. On this PC there are two XInput devices:
+
+| slot | what it reports |
+|---|---|
+| 0 | idle: `buttons 0x0`, all sticks exactly 0, a live packet counter |
+| 1 | **the operator's controller**: live packets and real analog values (`lx -126, ly 574, rx -369, ry 351`) |
+
+Slot 0 is an **idle virtual pad left behind by an earlier session** — the same thing that made round 3's
+`verify_pad_binding` claim a pad was bound when the operator's own controller was the device that mattered. So
+`watch_xinput` (and therefore the controller glyph and the built-in gameplay memory) never saw the operator play: the
+game may move, gBox sees nothing.
+
+`XBOX Synthetic Gamepad Bus` (`SWD\SYNTHETICGAMEPADENUM\SYNTHETICGAMEPAD0`) is also reported by Windows in **Error**
+state, which is the likely source of the phantom slot-0 device. Not touched: it needs elevation and a device change
+mid-session is not worth the risk while the operator is playing.
+
+### What was done
+
+1. **A slot-agnostic demonstration recorder** (`D:\gBox\pso-ds\pso_demo_rec.py`, running as a background job) writes
+   JSONL every 0.2 s with: **all four XInput slots** (buttons + both sticks + both triggers, with a `changed` flag on
+   the slot whose state moved), the control plane's pad snapshot, and the game state from RAM — `phase`, `floor`,
+   `episode`, `travelling`, and the player's `x/y/z`, `room`, `hp`, `hp_max`, `action`, `hit`. Once a second it adds
+   the **entity list** (class census plus every `TObjCityDoor_*` with its world position), so a recorded run is also a
+   map of the area and a route the walker can replay.
+   Output: `D:\gBox\pso-ds\demos\dbc5ff9be4ca416c-c91e5802a9844b37.jsonl`.
+2. A per-slot pad logger (`D:\gBox\pso-ds\pso_padwatch.py`) runs alongside it and writes `pads.jsonl`, one line per
+   observed change with its slot, so the slot question is settled by evidence rather than by a guess.
+3. The Dolphin binding was briefly repointed to `XInput/1` and then **reverted**: the live state shows the operator's
+   play reaching the game (Forest 1, HP 20/40 then back to 40/40, room 11 -> 16, position moving), so the binding
+   works and changing it mid-session risked breaking a working pad. The backup is `GCPadNew.ini.bak-slot0`.
+
+### Where the game is now
+
+The operator has already taken the save into the field — `FLOOR 1` (Forest 1), room 11/16, entities
+`TObjContainerItem` x4 and `TObjLazerFenceNorm` x1 in the recorded samples. **That is P1's field arrival, reached by
+the operator's own play**, which is the thing the guide's accept test asks for and what my scripted walk had not yet
+managed.
+
+### Next
+
+1. Fix `padstate.watch_xinput` to auto-detect the active slot (and/or let the adapter pick the operator's pad for
+   operator play), so the glyph, the built-in gameplay memory and any learner see the same input this recorder does.
+2. Turn a recorded demo into a **route fixture** for `gbox.pso_move` (waypoints per area) with a test on the captured
+   JSONL, so the operator's walk is replayed rather than re-derived.
+3. Keep the recorder running for the whole session; the JSONL is the training set.
+
 ## 7. Next
 
-1. P1: finish the Irene briefing, take the guild mission, walk into the teleporter, and confirm `FLOOR`
-   becomes 1 with the Forest collision loaded - that is the field arrival P1's accept test needs.
-2. Then player 2 (second virtual pad, second character) and the three cold launches.
-3. Then P6a's in-game proof (the moved object seen in Forest 1), P6b (the editor page) and P7a.
-
-Open question carried forward: a virtual pad's buttons reach PSO but its analog stick did not, in the
-2026-11-10 session `dbc5ff9be4ca416c-c91e5802a9844b37`; movement works through `win_send_keys` with the
-Dolphin window focused. Settle that before building anything that assumes focus-free walking.
+1. Fix `padstate.watch_xinput` to auto-detect the active XInput slot (it watches slot 0 only, and the
+   operator's controller enumerates on slot 1 because a leftover virtual pad holds slot 0).
+2. Turn the recorded demo (`demos/<session>.jsonl`) into a route fixture for `gbox.pso_move` - waypoints per
+   area - with a test on the captured JSONL, so the operator's walk is replayed rather than re-derived.
+3. Player 2, the three cold launches, then P6a's in-game proof, P6b and P7a.
