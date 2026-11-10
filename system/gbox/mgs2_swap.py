@@ -597,7 +597,7 @@ def build_disc(src_iso: Path, out_iso: Path | None, jobs: list[dict], progress=l
     from . import fit_events as FE
     disc = inv.Disc(src_iso)
     ident = inv.identify(disc)
-    if not ident["exact_build"]:
+    if not ident["supported_build"]:
         raise SwapError(f"{ident['boot']}: the writer is built on {inv.SERIAL} only")
     idx = M.Index(disc)
     reports, changes = [], {}                              # changes[(fn, stage)][(type, hash)] = bytes
@@ -806,7 +806,7 @@ def build_disc(src_iso: Path, out_iso: Path | None, jobs: list[dict], progress=l
     progress(95, "Reading the written stages back from the image")
     back = inv.Disc(out_iso)
     try:
-        bidx = {fn: inv.StageArchive(back, fn) for fn in inv.STAGE_FILES}
+        bidx = {fn: inv.StageArchive(back, fn) for fn in inv.disc_stage_files(back)}
         for _off, _blob, fn, stage in patches:
             st = bidx[fn].stage(stage)
             for (t, h), want in changes[(fn, stage)].items():

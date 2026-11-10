@@ -45,6 +45,8 @@ TITLE = "Metal Gear Solid 2: Substance (USA)"
 SERIAL = "SLUS-20554"
 ELF = "SLUS_205.54"
 ELF_SIZE = 852772
+SOL_ELF = "SLUS_201.44"             # the Sons of Liberty (USA, v1.01) build: same STAGE format, key 0x3bb323d9, no STAGE2.DAT
+SOL_ELF_SHA256 = "4a3e1042d9fbeaf3d0f7031d5be9e4ca364c3f1333bdd28ff7033ed16c4dcdd1"
 ELF_SHA256 = "77de3383cb257a573e631f63fc373eb5eeb1090f9659ea37bb29e129814da2d5"
 CHD_SHA1 = "5a69cb8b2d0354d80651ba4bfa7c859722994a70"
 TOTAL_SECTORS = 3142944
@@ -279,7 +281,14 @@ def identify(disc: Disc) -> dict:
     out["platform"] = "ps2"
     out["exact_build"] = bool(boot == ELF and out["elf_sha256"] == ELF_SHA256 and
                               all(n in disc.files for n in STAGE_FILES))
+    out["sol_build"] = bool(boot == SOL_ELF and out["elf_sha256"] == SOL_ELF_SHA256 and "MGS2/STAGE.DAT" in disc.files)
+    out["supported_build"] = out["exact_build"] or out["sol_build"]
     return out
+
+
+def disc_stage_files(disc: "Disc") -> tuple:
+    """The stage archives this disc carries (Substance: STAGE.DAT + STAGE2.DAT; Sons of Liberty: STAGE.DAT only)."""
+    return tuple(n for n in STAGE_FILES if n in disc.files)
 
 
 # ---------------------------------------------------------------- STAGE.DAT

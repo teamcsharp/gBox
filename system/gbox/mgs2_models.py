@@ -463,7 +463,7 @@ def source_disc(ctx, game: dict) -> Path:
 def open_disc(path) -> tuple:
     disc = inv.Disc(path)
     ident = inv.identify(disc)
-    if not ident["exact_build"]:
+    if not ident["supported_build"]:
         disc.close()
         raise FormatError(f"{ident['boot']} ({ident['elf_sha256']}): the reader is verified on {inv.SERIAL} "
                           f"(ELF sha256 {inv.ELF_SHA256[:16]}) only")
@@ -474,7 +474,7 @@ class Index:
     """Where each kms / texture pack lives: (archive, stage) per (type, hash), from the stage headers only."""
 
     def __init__(self, disc):
-        self.archives = {fn: inv.StageArchive(disc, fn) for fn in inv.STAGE_FILES}
+        self.archives = {fn: inv.StageArchive(disc, fn) for fn in inv.disc_stage_files(disc)}
         self.where: dict[tuple[int, int], list[tuple[str, str]]] = {}
         self._stages: dict[tuple[str, str], inv.Stage] = {}
         for fn, a in self.archives.items():
