@@ -1,0 +1,227 @@
+{
+ "request": 9076,
+ "romfs": "/home/ehm_eckx/gBox_alt/switch/romfs/010018100CD46000",
+ "catalogue_counts": {
+  "characters": 41,
+  "enemies": 139
+ },
+ "phase": "phase1: catalogue + per-archive filename/size/sha256",
+ "incomplete": true,
+ "missing_next": [
+  "body-MOD entry index and name",
+  "bone count",
+  "mesh record count",
+  "option-group id",
+  "material count",
+  "texture entries (index,name,format,dims)",
+  "the 6 Mercenaries roster slots (who/why)"
+ ],
+ "archives": [
+  {
+   "archive": "uPl00ChrisArmorA.arc",
+   "size": 42191749,
+   "sha256": "8a72b6021849b045da6d6bb1261a61b039a1e518137dabffc5ac956a7a1a72d2"
+  },
+  {
+   "archive": "uPl00ChrisArmorB.arc",
+   "size": 42191749,
+   "sha256": "aa0efdce6a209793ee683c2217b8b058d4d19c2ca712e58a1743d3436d29d611"
+  },
+  {
+   "archive": "uPl00ChrisArmorF.arc",
+   "size": 42191749,
+   "sha256": "b11af6a0109683f476140db0bfa2a0ed6bf581d03df89f9834be513271af91d2"
+  },
+  {
+   "archive": "uPl00ChrisCos1.arc",
+   "size": 51701933,
+   "sha256": "fa3f0a85ca2c8c99546161871536f67e251108e6509dd2edce61dd9e40d53676"
+  },
+  {
+   "archive": "uPl00ChrisCos2.arc",
+   "size": 52678658,
+   "sha256": "4df4a987b59761cba76025c72b4129c05c78fcc1555926714ff769beb88e7e7b"
+  },
+  {
+   "archive": "uPl00ChrisCos3.arc",
+   "size": 50536390,
+   "sha256": "96d74a35058f8d19dfeb2eb070e53afce31d2ddd66b0ccdf2c1ccdea443eacf4"
+  },
+  {
+   "archive": "uPl00ChrisCos4.arc",
+   "size": 50258715,
+   "sha256": "79883b7afbe03b68b0b55ee312cd30c52704765af5f3051bc17bb8cadc54362d"
+  },
+  {
+   "archive": "uPl00ChrisEp1.arc",
+   "size": 50662098,
+   "sha256": "c4b8cf5147c63edb94be98369ce6f492eae26cc06210decaee8edc44a3621dd5"
+  },
+  {
+   "archive": "uPl00ChrisNormal.arc",
+   "size": 43337492,
+   "sha256": "8ab0dc181d1f6ec155e193c5820d1756d877acf711424863b16f7850b592f6c8"
+  },
+  {
+   "archive": "uPl00ChrisPlain.arc",
+   "size": 50934540,
+   "sha256": "9ba7809835249a00ee53a76c734bce5c5fa04c7a62a7a81dda82be52500f4809"
+  },
+  {
+   "archive": "uPl00Eff.arc",
+   "size": 6013074,
+   "sha256": "b810b0b4134f0c6eee49a00b9dc56dcdd2a22f4ae3a5a0e893c3bf3b1710f5bc"
+  },
+  {
+   "archive": "uPl01Eff.arc",
+   "size": 5768260,
+   "sha256": "2f481bd3c629cf42f2714ead47c59e0506a76a2c223f802663d82811a109dd97"
+  },
+  {
+   "archive": "uPl01ShebaArmorA.arc",
+   "size": 45236671,
+   "sha256": "96a5c36c5b5755266f79abfdf06347020cd8c3aa23d72841cf6fd8d71f525f00"
+  },
+  {
+   "archive": "uPl01ShebaArmorB.arc",
+   "size": 45236671,
+   "sha256": "6dc21f3ad151616f7f79bf454d7647721b1c4b413386baabbc28b1500adc8b37"
+  },
+  {
+   "archive": "uPl01ShebaArmorF.arc",
+   "size": 45236671,
+   "sha256": "0c711a8aab0db6a40bceab36354d50d566b094fedac48582e32be4ebff56d46b"
+  },
+  {
+   "archive": "uPl01ShebaCos1.arc",
+   "size": 54790744,
+   "sha256": "d550005ea851af8da4398dc56ba87dd89697ea943fc25819ce0150bf4a184a68"
+  },
+  {
+   "archive": "uPl01ShebaCos2.arc",
+   "size": 55398091,
+   "sha256": "f63256a6e61a5b09bd5a527e08a8da3eff532c0699185bf181a8666f0e2b0c38"
+  },
+  {
+   "archive": "uPl01ShebaCos3.arc",
+   "size": 54711602,
+   "sha256": "bf60cfd03eb8179e35dc5b8b326e95bad60825d450d0382901b7ce4a6e888486"
+  },
+  {
+   "archive": "uPl01ShebaCos4.arc",
+   "size": 54081295,
+   "sha256": "a236928f3729f03615dbcce8cb8ac8ea97b9d0632853a75e5cf337fd499ac8df"
+  },
+  {
+   "archive": "uPl01ShebaNormal.arc",
+   "size": 47783794,
+   "sha256": "77e9ede6a6bf84d74fa487acaca77624e503377c2910d1af62dda0b7f914957e"
+  },
+  {
+   "archive": "uPl01ShebaPlain.arc",
+   "size": 53996897,
+   "sha256": "877a03121862ab002c3c08a3f63124b9388aff2521ad6af8c3330987dc4e72b2"
+  },
+  {
+   "archive": "uPl02Eff.arc",
+   "size": 5745450,
+   "sha256": "bea5a46312f29650bd67ad222d9285435463c9e28b14f1b479c94ce90d217b48"
+  },
+  {
+   "archive": "uPl02JillCos1.arc",
+   "size": 14990525,
+   "sha256": "cb0f8371dd07e201a58ca10153f5958508c563ada3b5e8b9a877b238cd3cf1e5"
+  },
+  {
+   "archive": "uPl02JillCos2.arc",
+   "size": 24161016,
+   "sha256": "b52533fc3026cc836d912f143faecacca75a75a0e2a74711b276b2f94f4b2e13"
+  },
+  {
+   "archive": "uPl02JillCos3.arc",
+   "size": 23791548,
+   "sha256": "804991d120df1859aca1929c9f127123a16a306ef3876752e3e074b6ad222a6d"
+  },
+  {
+   "archive": "uPl02JillCos4.arc",
+   "size": 15157257,
+   "sha256": "5cac065d5c36d26daae79548cadfd19fe8ac6e2d046a411dece6d036987b40d9"
+  },
+  {
+   "archive": "uPl03Eff.arc",
+   "size": 5856014,
+   "sha256": "66febd312fbe103d98a36092a5899a54c3629b0b5c03ed55c93230d5823b2a8d"
+  },
+  {
+   "archive": "uPl03WeskerCos1.arc",
+   "size": 21036882,
+   "sha256": "dd1f09202affed7fdf47c19dce4fc03f75e5a5a2a49e174253ec46727c32ab8b"
+  },
+  {
+   "archive": "uPl03WeskerCos2.arc",
+   "size": 21207860,
+   "sha256": "9cbeb48d611d41ab5a044209f38bae34c2fa8d218017f59f91c5ec1e91f62d93"
+  },
+  {
+   "archive": "uPl04Eff.arc",
+   "size": 5743330,
+   "sha256": "bccc6156c85306b02ce6e13fd846cdf5c5941b4ab14cad1ea7e26f8607f495f5"
+  },
+  {
+   "archive": "uPl04Josh.arc",
+   "size": 10549393,
+   "sha256": "d6440509a3a554e3026484f574d127fb7446d8e36438ed38c60c761f43d3017c"
+  },
+  {
+   "archive": "uPl04JoshCos1.arc",
+   "size": 23626695,
+   "sha256": "f7ac23d11cb64bbcc4a2e84c9d06e99563da8946539a3baf4bde279c2dc592a4"
+  },
+  {
+   "archive": "uPl04JoshCos2.arc",
+   "size": 23801889,
+   "sha256": "a85585ae821d342bd01e2adef17b88c8c51bec9c0688b290f83c4ba01d6acd93"
+  },
+  {
+   "archive": "uPl05Eff.arc",
+   "size": 15211848,
+   "sha256": "6bba03d260faba51ff416b140b7996d1efecdbe3761e94e7c186dccecde43567"
+  },
+  {
+   "archive": "uPl05ExcellaNormal.arc",
+   "size": 26992449,
+   "sha256": "9c22ab0e0892f224baa24b852e69f7e94cd42d2bc68876fbda06265665ef1010"
+  },
+  {
+   "archive": "uPl06BarryNormal.arc",
+   "size": 22824032,
+   "sha256": "352e8d8c7537602571d5a1f18a949fd4044b6af06cb4abeaaf72086377aa8e19"
+  },
+  {
+   "archive": "uPl06Eff.arc",
+   "size": 5758492,
+   "sha256": "71069f844414e9b5341a439366b53d6b3e6878288421106f4145726e0db35c44"
+  },
+  {
+   "archive": "uPl07Eff.arc",
+   "size": 5760281,
+   "sha256": "72e70a08cd18c6fd810b96a1c3487960daf89120a410785028e02f8f6eec0379"
+  },
+  {
+   "archive": "uPl07RebeccaNormal.arc",
+   "size": 17843735,
+   "sha256": "94316c133f9bd7bfb56ffa378d0edbd2152454f1ea0283c7bf8227c65566891a"
+  },
+  {
+   "archive": "uPl18Eff.arc",
+   "size": 5762482,
+   "sha256": "9e593a119992d6976d03b6d06311cfbadc37e9c3e618d17c9808af6adc44f0b4"
+  },
+  {
+   "archive": "uPl86Irving.arc",
+   "size": 15821308,
+   "sha256": "4ee9cba711e9d735b1b274586a34ebb0e58124a933200044a8205dd577cd6b17"
+  }
+ ],
+ "count": 41
+}
