@@ -23,6 +23,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from . import re6
+from .burnout_revenge_bgv import BGVError, read_bgv
 
 TITLE_ID = 0x454107DC                 # Burnout Revenge (all regions)
 XEX_MAGIC = b"XEX2"
@@ -128,6 +129,48 @@ def detect_formats(xdvd, paths: list[str]) -> list:
     return out
 
 
+def geometry_summary(disc, cars: dict, limit: int = 24) -> dict:
+    """Parse the per-car .bgv geometry and report vertex/index counts.
+
+    Bounded: samples at most `limit` cars (one .bgv each, the high/us variant when
+    present) so a full-manifest run does not parse every vehicle on the disc. A
+    missing or malformed .bgv is recorded as an error rather than aborting the whole
+    inventory.
+    """
+    out: dict[str, dict] = {}
+    sampled = 0
+    for car in cars:
+        if sampled >= limit:
+            out[car] = {"skipped": "limit"}
+            continue
+        # Prefer the high-quality us variant; fall back to any .bgv for this car.
+        exts = cars[car]
+        bgv_paths = exts.get("bgv", [])
+        pick = None
+        for cand in bgv_paths:
+            if cand.startswith("high"):
+                pick = cand
+                break
+        if pick is None and bgv_paths:
+            pick = bgv_paths[0]
+        if pick is None:
+            out[car] = {"error": "no bgv"}
+            continue
+        p = f"/pveh/{pick}/{car}.bgv"
+        try:
+            blob = disc.read(p)
+            g = read_bgv(blob)
+            out[car] = {"path": p, "compressed": len(blob),
+                        "vertices": g.vertex_count, "indices": g.index_count,
+                        "first_vertex": [round(v, 4) for v in g.positions[0]] if g.positions else None}
+            sampled += 1
+        except BGVError as e:
+            out[car] = {"path": p, "error": f"bgv: {e}"}
+        except (KeyError, OSError, ValueError) as e:
+            out[car] = {"path": p, "error": str(e)}
+    return out
+
+
 def inventory(iso, source_sha256: str | None = None) -> dict:
     """Full manifest of the owned disc image: build identity, container layout, vehicle census."""
     iso = str(iso)
@@ -143,6 +186,7 @@ def inventory(iso, source_sha256: str | None = None) -> dict:
             "/pveh/high/us/Car1Aa.gin", "/pveh/high/us/Car1Ad.gin",
             "/data/Global.txd", "/tracks/tlist.bin",
         ])
+        geometry = geometry_summary(disc, roster["cars"])
         man = {
             "game": "Burnout Revenge",
             "platform": "xbox360",
@@ -153,7 +197,8 @@ def inventory(iso, source_sha256: str | None = None) -> dict:
                      "top_dirs": dict(top), "extensions": dict(exts)},
             "vehicles": {"car_count": len(roster["cars"]), "traffic_count": len(roster["traffic"]),
                          "track_game_data": len(roster["tracks"]), **roster,
-                         "format_magics": FORMAT_MAGICS, "samples": samples},
+                         "format_magics": FORMAT_MAGICS, "samples": samples,
+                         "geometry": geometry},
             "launch": {
                 "emulator": "Xenia (canary)", "boot": "extracted folder with default.xex at root",
                 "base_extraction": "gbox.re6.extract (XDVD extract, resumable)",
