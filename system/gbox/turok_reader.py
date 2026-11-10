@@ -16,7 +16,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import struct
 import sys
+import zlib
 from pathlib import Path
 
 from gbox import turok_analysis as ta
@@ -91,7 +93,7 @@ def build_obj(geom: dict, source_sha256: str | None = None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_mtl(geom: dict) -> str:
+def build_mtl(geom: dict, texture_files: dict | None = None) -> str:
     lines = ["# Turok NTUE Rev B materials"]
     seen = set()
     for node in geom.get("nodes", []):
@@ -104,6 +106,8 @@ def build_mtl(geom: dict) -> str:
                 lines.append(f"newmtl mat_tex{texset if texset is not None else 'none'}")
                 lines.append("Ka 1.000 1.000 1.000")
                 lines.append("Kd 1.000 1.000 1.000")
+                if texset is not None and texture_files and texset in texture_files:
+                    lines.append(f"map_Kd {texture_files[texset]}")
                 lines.append("")
     return "\n".join(lines) + "\n"
 
@@ -153,6 +157,124 @@ def summarize(res: dict, inv: dict, index: int, source_sha256: str) -> dict:
     }
 
 
+# Texture-set format codes (see gbox.turok_inventory.TEXTURE_FORMATS)
+_FMT_CI8 = 0
+_FMT_CI4 = 1
+
+# Sub-blob header is [u32 type=1, u32 ?, u32 size, u32 0] — 16 bytes.
+_SUB_BLOB_HDR = 16
+
+
+def _rgba5551(c: int) -> tuple[int, int, int, int]:
+    r = ((c >> 11) & 0x1F) * 255 // 31
+    g = ((c >> 6) & 0x1F) * 255 // 31
+    b = ((c >> 1) & 0x1F) * 255 // 31
+    a = 255 if (c & 1) else 0
+    return (r, g, b, a)
+
+
+def _palette_from_blob(pal_blob: bytes, n_entries: int) -> list[tuple[int, int, int, int]]:
+    """Parse a CI4 (16) or CI8 (256) RGBA5551 palette from the (header-stripped) blob."""
+    pal = pal_blob[: n_entries * 2]
+    out = []
+    for i in range(n_entries):
+        c = struct.unpack_from(">H", pal, i * 2)[0]
+        out.append(_rgba5551(c))
+    return out
+
+
+def decode_texset_blobs(fmt_blob: bytes, bm_blob: bytes, pal_blob: bytes,
+                        fmt_code: int | None = None) -> dict:
+    """Decode one texture set's format/bitmap/palette blobs into RGBA pixels.
+
+    Pure function (no ROM access) so it can be tested on synthetic blobs.
+    Returns {"format", "width", "height", "rgba", "palette"} where rgba is a
+    bytes object of length width*height*4.
+    """
+    if fmt_code is None:
+        fmt_code = struct.unpack_from(">B", fmt_blob)[0]
+    code = fmt_code
+    # fmt blob layout: [format(1), pad(1), w_shift(1), h_shift(1), 0xff, 0, 0, 0]
+    fmt, _pad, ws, hs = struct.unpack_from(">BBBB", fmt_blob, 0)
+    w = 1 << ws
+    h = 1 << hs
+    pal_blob_d = pal_blob[_SUB_BLOB_HDR:] if len(pal_blob) > _SUB_BLOB_HDR else pal_blob
+    bm_blob_d = bm_blob[_SUB_BLOB_HDR:] if len(bm_blob) > _SUB_BLOB_HDR else bm_blob
+
+    if code == _FMT_CI8:
+        n_pal = 256
+        palette = _palette_from_blob(pal_blob_d, n_pal)
+        # 8-bit indices, one per byte
+        idx = list(bm_blob_d[: w * h])
+        rgba = bytearray()
+        for i in idx:
+            rgba.extend(palette[i])
+    elif code == _FMT_CI4:
+        n_pal = 16
+        palette = _palette_from_blob(pal_blob_d, n_pal)
+        # 4-bit indices, two per byte (high nibble first)
+        pixels = w * h
+        rgba = bytearray()
+        for i in range(pixels):
+            byte = bm_blob_d[i >> 1]
+            nibble = (byte >> 4) if (i & 1) == 0 else (byte & 0x0F)
+            rgba.extend(palette[nibble])
+    else:
+        raise ValueError(f"unhandled texture set format code {code}")
+    return {
+        "format": ti.TEXTURE_FORMATS.get(code, str(code)),
+        "format_code": code,
+        "width": w,
+        "height": h,
+        "rgba": bytes(rgba),
+        "palette": palette,
+    }
+
+
+def decode_texset(rom: bytes, tid: int) -> dict:
+    """Locate and decode texture set *tid* from an owned z64 ROM."""
+    ts_base = ti.CART_ROOT_OFFSET + ti.parse_indexed(rom, ti.CART_ROOT_OFFSET)[3][0]
+    blocks = ti.parse_indexed(rom, ts_base)
+    rel, size = blocks[tid]
+    blob = rom[ts_base + rel: ts_base + rel + size]
+    dec = ti.decode_rnc(blob)
+    sub = ti.parse_indexed(dec, 0)
+    fmt_blob = dec[sub[0][0]: sub[0][0] + sub[0][1]]
+    bm_blob = dec[sub[1][0]: sub[1][0] + sub[1][1]]
+    pal_blob = dec[sub[2][0]: sub[2][0] + sub[2][1]]
+    d = decode_texset_blobs(fmt_blob, bm_blob, pal_blob)
+    d["texset"] = tid
+    return d
+
+
+def png_bytes(width: int, height: int, rgba: bytes) -> bytes:
+    """Encode an RGBA8 buffer as a minimal 8-bit PNG (no external deps)."""
+
+    def _chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    sig = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    raw = b"".join(b"\x00" + rgba[y * width * 4:(y + 1) * width * 4] for y in range(height))
+    return sig + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(raw, 9)) + _chunk(b"IEND", b"")
+
+
+def export_texset_pngs(rom: bytes, inv: dict, out_dir: Path, texset_ids: list[int]) -> dict:
+    """Decode each texset to a PNG and return {tid: filename}."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    result = {}
+    for tid in texset_ids:
+        try:
+            d = decode_texset(rom, tid)
+        except ValueError:  # IA / mip-mapped formats not decoded yet
+            continue
+        name = f"texset_{tid}.png"
+        (out_dir / name).write_bytes(png_bytes(d["width"], d["height"], d["rgba"]))
+        result[tid] = name
+    return result
+
+
 def export_object(rom: bytes, inv: dict, index: int, out_dir: Path) -> dict:
     obj = inv["graphic_objects"]["objects"][index]
     res = ta.decode_object(rom, obj)
@@ -162,14 +284,29 @@ def export_object(rom: bytes, inv: dict, index: int, out_dir: Path) -> dict:
     obj_path = out_dir / f"object_{index}.obj"
     mtl_path = out_dir / f"object_{index}.mtl"
     obj_path.write_text(build_obj(geom, sha))
-    mtl_path.write_text(build_mtl(geom))
+
+    # Decode texsets to PNG and feed the names into the MTL so map_Kd works.
+    tids = sorted({t for t in _all_texset_ids(geom) if t is not None})
+    tex_pngs = export_texset_pngs(rom, inv, out_dir, tids) if tids else {}
+    mtl_path.write_text(build_mtl(geom, tex_pngs))
+
     summary = summarize(res, inv, index, sha)
     summary["obj_file"] = obj_path.name
     summary["mtl_file"] = mtl_path.name
+    summary["texset_pngs"] = {str(k): v for k, v in tex_pngs.items()}
     sp = out_dir / f"object_{index}_summary.json"
     sp.write_text(json.dumps(summary, indent=2) + "\n")
     summary["summary_file"] = sp.name
     return summary
+
+
+def _all_texset_ids(geom: dict) -> list[int | None]:
+    out = []
+    for node in geom.get("nodes", []):
+        for part in node.get("parts") or []:
+            for sec in part.get("sections") or []:
+                out.append(_texset_id(sec))
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:

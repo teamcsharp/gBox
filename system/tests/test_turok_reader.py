@@ -113,6 +113,29 @@ def test_export_object_64_on_owned_build(tmp_path):
             assert sec["triangle_max_index"] < sec["n_vertices"], sec
         assert sec["texset"] is None or 0 <= sec["texset"] < inv["texture_sets"]["total"]
 
+    assert summary["texset_pngs"], "no texture PNGs decoded"
+    for name in summary["texset_pngs"].values():
+        assert (tmp_path / name).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert "map_Kd texset_" in (tmp_path / "object_64.mtl").read_text()
+
     text = (tmp_path / "object_64.obj").read_text()
     assert text.count("\nv ") == summary["total_vertices"]
     assert text.count("\nf ") == summary["total_triangles"]
+
+
+def test_decode_ci4_blobs_and_png():
+    hdr = b"\0" * 16
+    fmt = bytes([1, 0, 1, 1, 255, 0, 0, 0])  # CI4, 2x2
+    pal = hdr + b"".join(c.to_bytes(2, "big") for c in [0xF801, 0x07C1] + [0] * 14)
+    bm = hdr + bytes([0x01, 0x10])
+    d = tr.decode_texset_blobs(fmt, bm, pal)
+    assert (d["width"], d["height"]) == (2, 2)
+    px = [tuple(d["rgba"][i:i + 4]) for i in range(0, 16, 4)]
+    assert px == [(255, 0, 0, 255), (0, 255, 0, 255), (0, 255, 0, 255), (255, 0, 0, 255)]
+    png = tr.png_bytes(2, 2, d["rgba"])
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_build_mtl_maps_texture_file():
+    mtl = tr.build_mtl(_synthetic_geometry(), {7: "texset_7.png"})
+    assert "map_Kd texset_7.png" in mtl
