@@ -39,6 +39,11 @@ def replacement_scope() -> dict:
             'missing': ['ENEMY.AFS police and enforcement actors', 'ENEMY.AFS rival gang members',
                         'Professor K model/resource binding', 'character-select and title presentation models',
                         'cinematic/demo archive model instances'],
+            'evidence': {'enemy_afs': {'path': 'JETRADIO/ENEMY.AFS', 'entries': 54, 'model_pairs': 27,
+                                       'source': 'verified inventory manifest sha256 c107e07fb307e70d...3138a8 (request b3c5aec05e6c47b1)',
+                                       'format': 'raw Ninja chunk dat.bin + txr texture archive; no reader/writer yet'}},
+            'next_step': 'Map the 27 ENEMY.AFS dat/txr pairs to police, gang, Professor K and NPC roles from the disc, '
+                         'then add a reader and a no-op round-trip writer before any donor swap.',
             'message': 'A PLAYER.AFS cast build does not replace police, all gang members, Professor K or every scene. '
                        'Keep those contexts unverified until their separate resources are mapped, written and inspected.'}
 
