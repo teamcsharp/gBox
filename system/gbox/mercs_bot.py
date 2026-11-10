@@ -71,6 +71,16 @@ class Navigator:
         self.cursor = cursor if isinstance(cursor, dict) else {}
         self.cursor_only = False                            # the last change RAM showed moved only the cursor
         self.last_input_confirmed = False
+        # A title may also hand this screen's own learned waits in the screen dict (gbox.mercs.menu_speed hints:
+        # settle_s after a new screen, step_s after a cursor move, retry_s for an unseen D-pad press, hold_s /
+        # dir_hold_s, poll_s). Each is capped at the wait above, so a title without hints walks exactly as before.
+
+    @staticmethod
+    def _hint(scr: dict, key: str, cap: float) -> float:
+        value = scr.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value < cap:
+            return float(value)
+        return cap
 
     @staticmethod
     def sig(scr: dict):
@@ -86,7 +96,11 @@ class Navigator:
         self.confirmation_started, self.confirmation_presses, self.confirmation_error = None, 0, None
 
     def poll_s(self, scr: dict, default: float) -> float:
-        """How long the caller waits before the next look: poll_s on a cursor screen of a title that opted in."""
+        """How long the caller waits before the next look: poll_s on a cursor screen of a title that opted in, or the
+        screen's own poll_s hint (a learned menu screen is read every couple of frames: the press on its first)."""
+        hint = self._hint(scr, "poll_s", default)
+        if hint > 0 and hint < default:
+            return hint
         if self.cursor.get("poll_s") and scr.get("cursor") is not None and scr.get("target") is not None:
             return min(default, float(self.cursor["poll_s"]))
         return default
@@ -126,19 +140,25 @@ class Navigator:
             return None
         fast = bool(self.cursor) and self.cursor_only
         stable = self.cursor.get("stable_s", self.STABLE_S) if fast else self.STABLE_S
+        stable = self._hint(scr, "step_s" if self.cursor_only else "settle_s", stable)
         if scr.get("input_ready") is True and self.cursor.get("ready_s") is not None:
             # the title's own state machine shows this screen taking input now (RE5: a select's state 2, the results'
             # outer 10): no settle wait for a passing moment, the press is read on the game's next frame
             stable = min(stable, float(self.cursor["ready_s"]))
         if now - self.sig_at < stable:
             return None                                     # RAM has only just shown this screen: it may be passing
-        retry = self.cursor.get("retry_s", self.RETRY_S) if self.cursor and str(self.last_key).startswith("d") \
-            and scr.get("cursor") is not None else self.RETRY_S   # RAM shows the cursor did not move: no double step
+        dpad_unseen = str(self.last_key).startswith("d") and scr.get("cursor") is not None
+        retry = self.cursor.get("retry_s", self.RETRY_S) if self.cursor and dpad_unseen \
+            else self.RETRY_S                               # RAM shows the cursor did not move: no double step
+        if dpad_unseen:
+            retry = self._hint(scr, "retry_s", retry)       # (a confirm keeps RETRY_S: a slow screen is never confirmed twice)
         if self.last_key is not None and now - self.last_at < retry:
             return None                                     # the last press has not shown in RAM yet
-        if now - self.last_at < (self.cursor.get("stable_s", self.SETTLE_S) if fast else self.SETTLE_S):
+        settle = self.cursor.get("stable_s", self.SETTLE_S) if fast else self.SETTLE_S
+        if now - self.last_at < self._hint(scr, "step_s" if self.cursor_only else "settle_s", settle):
             return None
         hold = self.DIR_HOLD_S if key.startswith("d") else self.HOLD_S
+        hold = self._hint(scr, "dir_hold_s" if key.startswith("d") else "hold_s", hold) or hold
         down_receipt = self.send([{"key": key, "down": True}])
         self.sleep(hold)
         up_receipt = self.send([{"key": key, "down": False}])
@@ -263,6 +283,14 @@ class Boot:
                 fast(self.m, self.nav.send, lambda: False, stats=self.stats)
             except OSError as exc:
                 self.stats["fast_start_error"] = str(exc)[:160]
+        # A title that can move a menu's cursor in RAM (gbox.mercs.titles.re5_switch.menu_assist: the cursor written,
+        # read back and held before one confirm) hands the Navigator the screen as it is after that; it never presses.
+        assist = getattr(self.menus, "menu_assist", None)
+        if callable(assist):
+            try:
+                scr = assist(self.m, scr, self.stats) or scr
+            except Exception as exc:                        # noqa: BLE001 - a failed assist leaves the walk as it was
+                self.stats["menu_assist_error"] = f"{type(exc).__name__}: {exc}"[:160]
         self.nav.tick(scr)
         if self.nav.confirmation_error:
             return self.nav.confirmation_error

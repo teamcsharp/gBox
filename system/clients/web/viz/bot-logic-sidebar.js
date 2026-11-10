@@ -93,8 +93,13 @@
         + `<option value="">Equip a weapon…</option>`
         + weapons.map(w => `<option value="${ESC(w.id)}"${w.id === current ? " selected" : ""}>${ESC(w.name)}${w.loaded ? " · in hand now" : ""}</option>`).join("")
         + `</select>` : "";
+    // the menus' learned speed (operator 2026-11-09: "get through them faster and faster until it is instantaneous"):
+    // the last round-to-round menu walk and the best so far, from the worker's menu learner (bot_logic menus)
+    const menus = typeof view?.menus?.text === "string" && view.menus.text
+      ? `<p class="bl-target bl-menus" title="${ESC(view.menus.screens || "")}">${ESC(view.menus.text)}</p>` : "";
     return `<div class="bl-head"><h3>Live controls · ${ESC(String(title || "").toUpperCase())}</h3>${pick}</div>`
       + (state.pc ? `<p class="bl-target">${ESC(state.pc)} · the game shown in this PiP</p>` : "")
+      + menus
       + `<p class="${state.ok && message ? "bl-ok" : "bl-msg"}" role="status">${ESC(message || (state.busy ? "Reading or applying settings…" : ""))}</p>`
       + `<button type="button" data-bl-refresh ${scope}${state.busy ? " disabled" : ""}>Refresh current settings</button>`
       + (mods ? `<h4>Live mods</h4>${mods}<p class="bl-note">Fire rate is a multiplier; 1× restores the game's rate. Actual shots per second vary.</p>` : "")

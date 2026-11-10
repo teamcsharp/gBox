@@ -52,6 +52,10 @@ KNOBS: dict[str, list[tuple]] = {
         ("GOAL_BOSS", "Bosses on sight", "Goals", "float", 0, 1, 0.05, ""),
         ("GOAL_LOCATE", "Locate: go and find them", "Goals", "float", 0, 1, 0.05,
          "none in sight: to where the enemy map says they are, on any floor"),
+        ("MENU_JUMPS", "RAM cursor jumps", "Menus", "bool", 0, 1, 1,
+         "the menus' cursors written in RAM (read back, then one confirm) instead of option by option"),
+        ("MENU_LEARN", "Learned menu timing", "Menus", "bool", 0, 1, 1,
+         "each screen's own learned waits (faster on every confirmed press); off: the fixed waits"),
     ],
     "re6": [
         ("NADES", "Grenades", "Crowd control", "bool", 0, 1, 1, "frags and incendiaries into clusters"),
@@ -173,7 +177,16 @@ def status(title, path: Path = PATH) -> dict:
         shipped.setdefault(name, getattr(mod, name))
         knobs.append({"name": name, "label": k[1], "group": k[2], "kind": k[3], "min": k[4], "max": k[5], "step": k[6],
                       "help": k[7], "value": getattr(mod, name), "default": shipped[name], "set": name in saved})
-    return {"verified": True, "title": t, "knobs": knobs}
+    out = {"verified": True, "title": t, "knobs": knobs}
+    menus = getattr(mod, "menu_status", None)            # the sidebar's "menus: X s (best Y s)" line
+    if callable(menus):
+        try:
+            line = menus()
+            if isinstance(line, dict) and isinstance(line.get("text"), str):
+                out["menus"] = line
+        except Exception:                                # noqa: BLE001 - the panel never fails on its menus line
+            pass
+    return out
 
 
 def apply_saved(title, path: Path = PATH) -> dict:

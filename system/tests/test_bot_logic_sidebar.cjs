@@ -277,6 +277,14 @@ test('the weapon dropdown sits in the header, most powerful first, the current p
   assert.doesNotMatch(S.html(VIEW, '', { status: STATUS, title: 're6' }), /data-bl-weapon/);   // no list: no dropdown
 });
 
+test('the menus line shows the last round-to-round walk and the best, escaped, only when the worker sends one', () => {
+  const menus = { text: 'menus: 4.2 s (best 3.9 s) · to play 27.5 s', screens: 'alert_ok 0.4s/1p, <b>results</b>' };
+  const h = S.html({ ...VIEW, title: 're5', menus }, '', { status: STATUS, title: 're5', pc: 'lilspark', scope: '1' });
+  assert.match(h, /<p class="bl-target bl-menus" title="[^"]*&#60;b&#62;results[^"]*">menus: 4\.2 s \(best 3\.9 s\) · to play 27\.5 s<\/p>/);
+  assert.ok(h.indexOf('bl-menus') > h.indexOf('the game shown in this PiP'));   // under the PC line
+  assert.doesNotMatch(S.html(VIEW, '', { status: STATUS, title: 're6' }), /bl-menus/);
+});
+
 test('picking a weapon asks bot_logic to equip it and shows the outcome', async () => {
   const r = rig();
   r.view.weapons = structuredClone(WEAPONS);

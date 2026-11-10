@@ -108,6 +108,7 @@ ALERTS = {0x33: "alert_leaderboard",     # "Connect to the Leaderboards and subm
           0x09: "alert_ok",              # "Save successful." (after Continue? No, and after the results): A = OK
           0x08: "alert_ok"}              # "Load successful.": A = OK
 MENU_CURSOR, MENU_SUB, EXTRA_CURSOR, MODE_CURSOR, PLAYER_CURSOR = 0x74, 0x1C4, 0x1D8, 0x1C8, 0x1D0
+CONTINUE_INPUT, CONTINUE_TAKES_INPUT = 0x1EC, 2   # uIdGameover00 +0x1EC reads 2 once the dialog takes input (live 10-26)
 CONTINUE_CURSOR, CONTINUE_YES, CONTINUE_NO = 0x1CC, 0, 1   # uIdGameover00 "Continue?": +0x1CC 0 Yes / 1 No: Yes
                                          # replays the round at once, No saves and goes to the selects (live 2026-10-26);
                                          # A goes in only with the cursor read on the answer the pace wants
@@ -119,11 +120,41 @@ CONTINUE_CURSOR, CONTINUE_YES, CONTINUE_NO = 0x1CC, 0, 1   # uIdGameover00 "Cont
 REPLAY_ON_DEATH = False                  # (operator 18:03: "a random character / costume each and every round ... and
                                          # level": a death answers No and walks the selects too - never the same round)
 FRESH_ROUND_S = 3.0                      # a clock this close to the round's full time on the first tick alive: it began
+# The one menu skip RAM shows for certain (docs/research/re5-instant-menus.md): "Continue? Yes" restarts the same stage
+# with the same character at once - no save, no results, no selects, no stage load. With REPLAY_ON_DEATH off it is still
+# taken when the next round would be exactly this one anyway: the operator's mercs_select fixed both the stage and the
+# character (SELECTION) and the round that just ended was on them (the stage cycle's record of what the selects
+# confirmed). Never while the icon panel's rotation or a DJ pick owns the next round (round_controls: managed), never
+# under the random cycle (it never repeats a stage), never without that record.
+REPLAY_SAME_ROUND = True
 
 
-def continue_target() -> int:
-    """The "Continue?" answer the pace wants: Yes (replay) unless REPLAY_ON_DEATH is off."""
-    return CONTINUE_YES if REPLAY_ON_DEATH else CONTINUE_NO
+def same_round_next(m=None) -> bool:
+    """Whether the next round's stage and character are this round's (so Continue? Yes is the whole menu walk)."""
+    try:
+        from ..round_controls import for_memory
+        control = for_memory(m)
+        if control is not None and control.managed:
+            return False
+    except Exception:                                    # noqa: BLE001 - no controls: the module's own pick decides
+        pass
+    if not CYCLE or "stage" not in SELECTION or "character" not in SELECTION:
+        return False
+    last = _CYCLE["c"].last if "c" in _CYCLE else None
+    return last is not None and tuple(last) == (int(SELECTION["stage"]), int(SELECTION["character"]))
+
+
+def continue_target(m=None) -> int:
+    """The "Continue?" answer the pace wants: Yes (replay) with REPLAY_ON_DEATH on, or when the next round is this one
+    (REPLAY_SAME_ROUND: the skip of save, results, both selects and the load); No otherwise."""
+    if REPLAY_ON_DEATH:
+        return CONTINUE_YES
+    try:
+        if REPLAY_SAME_ROUND and same_round_next(m):
+            return CONTINUE_YES
+    except Exception:                                    # noqa: BLE001 - any doubt: the walk through the selects
+        pass
+    return CONTINUE_NO
 MAIN_PLAY_GAME, PLAY_EXTRA_CONTENT, EXTRA_MERCENARIES, MODE_NO_MERCY = 0, 1, 0, 3
 STAGE_TARGET, PLAYER_TARGET = 0, 0       # Public Assembly, Chris (BSAA): the selects' first entries
 # The operator's next-round choice (the PS3 tool's mercs_select, re5_switch_mods.mercs_select): the stage and character
@@ -162,6 +193,11 @@ CYCLE, CYCLE_MAX_PRESSES = True, 14
 # select, and the stall there is what teaches the true count. 40 is a hard ceiling, not a target - a select with fewer entries
 # stalls long before it, and a cursor that is never read cannot loop forever.
 CALIBRATE_PRESSES = 40
+WRAP_MIN_ENTRY = 3                  # a wrap is learned only from a press at this entry or further (a 4+ entry roster)
+# A forward walk whose cursor RAM shows standing still through STALL_PRESSES forward presses for STALL_S or longer is at
+# the select's end: the walk confirms the entry it rests on now, as CALIBRATE_PRESSES would ~30 presses later (the same
+# entry; a moving walk is never cut short - that cost a mid-roster character and half the score once).
+STALL_PRESSES, STALL_S = 3, 2.0
 
 
 class StageCycle:
@@ -205,6 +241,15 @@ class StageCycle:
                 and cursor == pending[0] and cursor + 1 > len(CHARACTERS) and CHARACTER_SLOTS <= 1):
             CHARACTER_SLOTS = cursor + 1                        # right at the end and the cursor did not move
             self.save()
+        # A forward press that lands on 0 from WRAP_MIN_ENTRY or further wrapped past the last entry (2026-11-09: the
+        # rule above needs more entries than the 14 names, so a 10-entry select never taught its count - every visit
+        # walked CALIBRATE_PRESSES presses round and round and confirmed where it began: 11-07, 51 rounds of 53 on
+        # "Jill (Battle Suit)", 44-48 presses a gap). The press is this visit's own (note_press), never a reopened
+        # select's first read, so the "count of 2" of a reopen at 0 cannot come from here.
+        if (pending is not None and pending[1] in FORWARD_KEYS and cursor == 0 and cursor != pending[0]
+                and pending[0] >= WRAP_MIN_ENTRY and CHARACTER_SLOTS <= 1):
+            CHARACTER_SLOTS = pending[0] + 1
+            self.save()
         # a WRAP during the calibration walk: pressing right only ever increases the cursor, so the first time it falls
         # back from its highest value the walk has gone past the last entry and the count is one past that maximum
         if (CHARACTER_SLOTS <= 1 and self.prev_cursor is not None and cursor < self.prev_cursor
@@ -214,11 +259,33 @@ class StageCycle:
         if cursor > self.max_cursor:
             self.max_cursor = cursor
         self.prev_cursor = cursor
-        self.pending = None
+        if pending is None or cursor != pending[0] or pending[1] not in FORWARD_KEYS:
+            self.pending = None                             # (a forward press RAM has not shown yet is kept for its wrap)
 
     def note_press(self, cursor: int, key: str) -> None:
-        """Remember the cursor and key of a press, so observe_cursor can tell a stall from a move."""
+        """Remember the cursor and key of a press, so observe_cursor can tell a stall from a move; a forward press on
+        the cursor the last forward press was made on (the Navigator presses again only when RAM never showed the last
+        one move it) counts towards the walk's stall."""
         self.pending = (cursor, key)
+        if key in FORWARD_KEYS:
+            clock = getattr(self, "clock", None) or time.monotonic
+            if getattr(self, "fwd_cursor", None) == cursor:
+                self.stalls = getattr(self, "stalls", 0) + 1
+                if getattr(self, "stall_since", None) is None:
+                    self.stall_since = clock()
+            else:
+                self.stalls, self.stall_since = 0, None
+            self.fwd_cursor = cursor
+
+    def stalled(self) -> bool:
+        """The forward walk has stood still (STALL_PRESSES presses over STALL_S at one cursor): the select's end."""
+        clock = getattr(self, "clock", None) or time.monotonic
+        since = getattr(self, "stall_since", None)
+        return getattr(self, "stalls", 0) >= STALL_PRESSES and since is not None and clock() - since >= STALL_S
+
+    def visit(self) -> None:
+        """A new walk on a select (or its A): the stall count starts again."""
+        self.stalls, self.stall_since, self.fwd_cursor = 0, None, None
 
     def save(self) -> None:
         if self.path is None:
@@ -355,6 +422,36 @@ MENU_HANDOFF = ("results", "alert_ok", "alert_leaderboard", "alert", "select_sta
 CURSORED = {"main_menu": ("dup", "ddown"), "play_game": ("dup", "ddown"), "extra_content": ("dup", "ddown"),
             "dead": ("dleft", "dright"),
             "mercs_mode": ("dup", "ddown"), "select_stage": ("dleft", "dright"), "select_player": ("dleft", "dright")}
+
+# Instant menus (operator 2026-11-09: "I need the bot able to flip RAM switches and byte states in the game to get
+# wherever it needs to go as fast as possible ... It is important that the bot learns and navigates menus stronger and
+# faster each time"; docs/research/re5-instant-menus.md). On a menu whose cursor the walk already reads, menu_assist
+# writes the cursor integer the game reads instead of stepping to it option by option, reads it back, waits until a
+# later read (JUMP_HOLD_S on) shows the game kept it, and only then lets the Navigator press. The first JUMP_PROVE_N
+# jumps of a screen write the entry NEXT to the target and let one native D-pad step land on it: the game's own step
+# moving off the written index onto the target proves the game takes that integer as its cursor (a field it ignored
+# would step from its real index instead). After that the screen writes the target itself and confirms with one A. A
+# write that does not hold, or a step that lands elsewhere, is a failure: that visit steps option by option, and a
+# screen with JUMP_FAIL_N failures more than proofs stops jumping (persisted in the menu_speed profile; MENU_JUMPS off
+# and on again clears it). Only entries known to exist are written: the fixed lists' sizes below, and on the character
+# select (two pages, its count still learned) the largest index the game's own cursor has shown there.
+MENU_JUMPS = True                        # the bot_logic knob: RAM cursor jumps on the menus (off: option by option)
+MENU_LEARN = True                        # the per-screen learned waits (gbox.mercs.menu_speed hints; off: the fixed ones)
+JUMP_PROVE_N = 3                         # approach jumps the game's own step must confirm before direct writes
+JUMP_FAIL_N = 2                          # failures (more than the proofs) before a screen goes back to stepping
+JUMP_MIN_GAP = 2                         # an approach jump only saves presses this many entries or more away
+JUMP_HOLD_S = 0.034                      # a write is believed once a read this much later (two frames) still shows it
+# where: (the unit class, the cursor's offset in it, the entries known to exist: an int, or None = learned from the
+# game's own cursor on that screen). The sizes are the documented lists (docs/research/re5-switch-ram.md): PLAY GAME
+# EPISODES / EXTRA CONTENT, the mode list SINGLE PLAYER / CO-OP / SPLIT-SCREEN / NO MERCY, the eight stages; the main
+# menu has more than its first two (the walk has read its cursor on 2), EXTRA CONTENT only THE MERCENARIES UNITED known.
+JUMP_SCREENS = {"main_menu": ("uIdStartUp00", MENU_CURSOR, 2), "play_game": ("uIdStartUp01", MENU_CURSOR, 2),
+                "extra_content": ("uIdStartUp01", EXTRA_CURSOR, 1), "mercs_mode": ("uIdStartUp29", MODE_CURSOR, 4),
+                "select_stage": ("uIdStartUp21", MENU_CURSOR, len(STAGE_NAMES)),
+                "select_player": ("uIdStartUp22", PLAYER_CURSOR, None)}
+_JUMP: dict = {}                         # the jump on the screen being walked (where, unit, value, target, mode, ...)
+_SEEN_CURSOR: dict = {}                  # the last read of a jumpable screen: a write needs the same cursor twice
+_MENU: dict = {"speed": None, "knob": True, "run": None, "stats_at": float("-inf")}
 
 # uLaserSight (sUnit move line 19, the effects line; PS3 line 18): while ZL is held, +0x60 is the laser dot, where the
 # ray lands (a Majini, a wall, the ground), and +0x280 the laser's origin at the muzzle (PS3 +0x30 / +0x200). Measured
@@ -1438,8 +1535,9 @@ def snapshot(m) -> dict:
                 over = ui_units(m, base).get("uIdGameover00")
                 try:
                     snap["continue_cursor"] = _i32(m, over + CONTINUE_CURSOR) if over else None
+                    snap["continue_ready"] = _i32(m, over + CONTINUE_INPUT) == CONTINUE_TAKES_INPUT if over else None
                 except (ValueError, OSError):
-                    snap["continue_cursor"] = None
+                    snap["continue_cursor"] = snap["continue_ready"] = None
     snap["unit_enemies_alive"] = unit_enemies_alive(m, base)
     snap["bonuses"] = time_bonuses(m, base)
     se = u64(m, base + S_ENEMY)
@@ -1517,6 +1615,17 @@ def ui_units(m, base: int | None = None) -> dict:
     su = u64(m, base + S_UNIT)
     if not ptr_ok(su):
         return out
+    # each vtable named once per memory view and boot (a menu poll was ~6 reads a unit, now 2: the menus are read every
+    # couple of frames); a name that did not read is not remembered, so a torn read is tried again next time
+    names = getattr(m, "_ui_names", None)
+    if not isinstance(names, dict):
+        names = {}
+        try:
+            m._ui_names = names
+        except AttributeError:
+            pass
+    if len(names) > 4096:
+        names.clear()
     for line in range(N_LINES):
         try:
             u = u64(m, su + UNIT_LINES + LINE_STRIDE * line)
@@ -1524,7 +1633,15 @@ def ui_units(m, base: int | None = None) -> dict:
             continue
         n = 0
         while ptr_ok(u) and n < UI_MAX:
-            name = class_name(m, u)
+            try:
+                key = (base, u64(m, u))
+            except (ValueError, OSError, struct.error):
+                break
+            name = names.get(key)
+            if name is None:
+                name = class_name(m, u)
+                if name:
+                    names[key] = name
             if name and name.startswith("uId") and name not in out:
                 out[name] = u
             try:
@@ -1540,9 +1657,20 @@ def _i32(m, a):
 
 
 def screen(m, merc=None) -> dict:
-    """The deployment's menus interface (gbox/mercs_bot.py): where RE5 is, from RAM. The round's own fields first
-    (playing / dead / results), then the interface units: a dialog (alert_leaderboard, alert), title / main_menu /
-    play_game / extra_content / mercs_title / mercs_mode / select_stage / select_player (cursor and target), loading."""
+    """The deployment's menus interface (gbox/mercs_bot.py): where RE5 is, from RAM (_screen), with the screen's
+    learned waits folded in for the Navigator (gbox.mercs.menu_speed hints) and every read timed per screen."""
+    scr = _screen(m, merc)
+    try:
+        _menu_seen(m, scr)
+    except Exception as exc:                 # noqa: BLE001 - the timing never costs the walk a read
+        scr["menu_speed_error"] = f"{type(exc).__name__}: {exc}"[:160]
+    return scr
+
+
+def _screen(m, merc=None) -> dict:
+    """Where RE5 is, from RAM. The round's own fields first (playing / dead / results), then the interface units: a
+    dialog (alert_leaderboard, alert), title / main_menu / play_game / extra_content / mercs_title / mercs_mode /
+    select_stage / select_player (cursor, target and the menu's unit), loading."""
     snap = snapshot(m)
     out = {"where": own_screen(snap), "cursor": None, "target": None}
     base = snap.get("module_base")
@@ -1557,14 +1685,14 @@ def screen(m, merc=None) -> dict:
         except (ValueError, OSError):
             up, aid = 0, 0
         if up and aid:
-            return out | {"where": ALERTS.get(aid, "alert"), "alert_id": aid,
+            return out | {"where": ALERTS.get(aid, "alert"), "alert_id": aid, "unit": alert,
                           "confirmation_token": ["alert", alert, aid]}
     if "uIdGameover00" in ui and (out["where"] == "dead" or not snap.get("player")):
         try:
             cursor = _i32(m, ui["uIdGameover00"] + CONTINUE_CURSOR)
         except (ValueError, OSError):
             cursor = None
-        return out | {"where": "dead", "cursor": cursor, "target": continue_target()}
+        return out | {"where": "dead", "cursor": cursor, "target": continue_target(m), "unit": ui["uIdGameover00"]}
     if snap.get("player") and out["where"] == "loading" and snap.get("mercenaries_phase") == PHASE_INTRO \
             and "uIdNowLoading00" not in ui:
         return out | {"where": "playing", "intro": True}    # the round is up (its intro, the clock not yet running):
@@ -1572,35 +1700,42 @@ def screen(m, merc=None) -> dict:
     if snap.get("player") and out["where"] in ("playing", "dead", "loading"):
         return out
     if "uIdMerceEd00" in ui:
-        return out | {"where": "results"}
+        return out | {"where": "results", "unit": ui["uIdMerceEd00"]}
     if "uIdNowLoading00" in ui:
         return out | {"where": "loading"}
-    where, cursor, target = "unknown", None, None
+    where, cursor, target, unit = "unknown", None, None, None
     try:
         if "uIdStartUp22" in ui:
-            where, cursor, target = "select_player", _i32(m, ui["uIdStartUp22"] + PLAYER_CURSOR), player_target(m)
+            unit = ui["uIdStartUp22"]
+            where, cursor, target = "select_player", _i32(m, unit + PLAYER_CURSOR), player_target(m)
         elif "uIdStartUp21" in ui:
-            where, cursor, target = "select_stage", _i32(m, ui["uIdStartUp21"] + MENU_CURSOR), stage_target(m)
+            unit = ui["uIdStartUp21"]
+            where, cursor, target = "select_stage", _i32(m, unit + MENU_CURSOR), stage_target(m)
         elif "uIdStartUp29" in ui:
-            u = ui["uIdStartUp29"]
+            u = unit = ui["uIdStartUp29"]
             if _i32(m, u + MENU_SUB) == 1:
                 where, cursor, target = "mercs_mode", _i32(m, u + MODE_CURSOR), mode_target(m)
             else:
                 where = "mercs_title"                       # START is the first entry and is where it opens
         elif "uIdStartUp01" in ui:
-            u = ui["uIdStartUp01"]
+            u = unit = ui["uIdStartUp01"]
             if _i32(m, u + MENU_SUB):
                 where, cursor, target = "extra_content", _i32(m, u + EXTRA_CURSOR), EXTRA_MERCENARIES
             else:
                 where, cursor, target = "play_game", _i32(m, u + MENU_CURSOR), PLAY_EXTRA_CONTENT
         elif "uIdStartUp00" in ui:
-            where, cursor, target = "main_menu", _i32(m, ui["uIdStartUp00"] + MENU_CURSOR), MAIN_PLAY_GAME
+            unit = ui["uIdStartUp00"]
+            where, cursor, target = "main_menu", _i32(m, unit + MENU_CURSOR), MAIN_PLAY_GAME
         elif snap.get("mercenaries_phase") == PHASE_OVER and not snap.get("player") and not ui.keys() - {"uIdAlert00"}:
             where = "loading"                               # between the results and the selects
     except (ValueError, OSError):
         where = "unknown"
+    if unit is not None and where != "unknown":
+        out["unit"] = unit
     try:                                     # learn the select screen's entry count from the game's own cursor
-        if isinstance(cursor, int):
+        if where not in ("select_stage", "select_player") and "c" in _CYCLE:
+            _CYCLE["c"].pending = None       # off the selects: a press of an earlier visit never meets a reopened one
+        if isinstance(cursor, int) and (_JUMP.get("unit") != unit or unit is None):   # (never from a written one)
             cycle().observe_cursor(cursor, where)
     except Exception:                        # noqa: BLE001 - a roster count never costs a tick
         pass
@@ -1659,12 +1794,18 @@ def warm_probe(m) -> dict:
 
 
 def step(scr: dict) -> str | None:
-    """One key toward the next round: a cursor walks to its target first (D-pad), then A confirms."""
+    """One key toward the next round: a cursor walks to its target first (D-pad), then A confirms. Nothing while a RAM
+    cursor jump waits for a later read to show the game kept it (menu_assist: jump_wait)."""
     where = scr.get("where")
+    if scr.get("jump_wait"):
+        return None
     if CYCLE and where in ("select_stage", "select_player") and isinstance(scr.get("cursor"), int):
         c = cycle()
         if c.where != where:
             c.where, c.presses = where, 0
+            c.visit()
+        if c.stalled():
+            return "a"                                      # the cursor stands at the select's end: the entry it is on
         # The roster calibration walk (select_player with an unknown count) is the ONE case that must not give up on a press
         # budget: it has to reach the right-hand end, because the stall there is what teaches CHARACTER_SLOTS. Cutting it to
         # CYCLE_MAX_PRESSES made it give up mid-roster and confirm whatever character it had reached, and the learning gate
@@ -1691,19 +1832,249 @@ def wandered(scr: dict) -> str | None:
 
 
 def pressed(scr: dict, key: str) -> None:
-    """The menus' press went in: the stage cycle counts the presses on a select and keeps what A confirmed there."""
+    """The menus' press went in: the screen's learner times it (menu_speed), the stage cycle counts the presses on a
+    select and keeps what A confirmed there."""
     where = scr.get("where")
-    if not CYCLE or where not in ("select_stage", "select_player") or not isinstance(scr.get("cursor"), int):
-        return None
-    c = cycle()
-    if c.where != where:
-        c.where, c.presses = where, 0
-    c.note_press(scr["cursor"], key)
-    c.presses += 1
-    if key == "a":
-        c.confirmed["stage" if where == "select_stage" else "character"] = scr["cursor"]
-        c.where, c.presses = None, 0
+    probe = False
+    if CYCLE and where in ("select_stage", "select_player") and isinstance(scr.get("cursor"), int):
+        c = cycle()
+        if c.where != where:
+            c.where, c.presses = where, 0
+            c.visit()
+        c.note_press(scr["cursor"], key)
+        c.presses += 1
+        probe = getattr(c, "stalls", 0) >= 1                # pressing on at the end: "not taken" is the answer
+        if key == "a":
+            c.confirmed["stage" if where == "select_stage" else "character"] = scr["cursor"]
+            c.where, c.presses = None, 0
+            c.visit()
+    speed = _MENU.get("speed")
+    if speed is not None and callable(getattr(speed, "press", None)):
+        try:
+            speed.press("intro" if scr.get("intro") else where, key, learn=not probe)
+        except Exception:                                    # noqa: BLE001 - timing never costs a press
+            pass
     return None
+
+
+# --- instant menus: the learned waits, the RAM cursor jumps, the timing (docs/research/re5-instant-menus.md) ----------
+def _speed_for(m):
+    """The title's menu learner (gbox.mercs.menu_speed), bound to this adapter's data dir on first use. One per process:
+    the Driver (round ends, the clock running) and the menus walk (screens, presses, jumps) time the same transitions."""
+    from .. import menu_speed
+    speed = _MENU.get("speed")
+    if speed is None or not callable(getattr(speed, "hints", None)):
+        data_dir = None
+        try:
+            data_dir = m.adapter.config.data_dir
+        except AttributeError:
+            data_dir = None
+        speed = _MENU["speed"] = menu_speed.for_title(MAP_ID, data_dir)
+    run = _MENU.get("run")
+    if run is not None:                                     # begin_run came before the walk had a memory to bind to
+        _MENU["run"] = None
+        speed.begin_run(prepare=bool(run.get("prepare")))
+    return speed
+
+
+def begin_run(session_id=None, job=None, prepare: bool = False, turn: bool = False, **_kw) -> None:
+    """gbox.mercs_bot.play's start of a menus walk: a MercMode preparation (prepare) is timed apart from the rounds."""
+    _MENU["run"] = {"prepare": bool(prepare), "session": session_id, "job": job}
+    speed = _MENU.get("speed")
+    if speed is not None and callable(getattr(speed, "begin_run", None)):
+        _MENU["run"] = None
+        speed.begin_run(prepare=bool(prepare))
+
+
+def _menu_seen(m, scr: dict) -> None:
+    """One menus read: the screen's learner sees it (a change after a press confirms that press) and, with MENU_LEARN,
+    the screen dict carries the screen's learned waits for the Navigator. A cursor the game itself produced (no jump of
+    the bot's on that unit) is the screen's highest known entry when it is the largest yet."""
+    speed = _speed_for(m)
+    where = scr.get("where")
+    label = "intro" if scr.get("intro") else where
+    token = scr.get("confirmation_token")
+    speed.seen(label, (label, scr.get("unit"), scr.get("cursor"), None if token is None else str(token)))
+    if MENU_LEARN:
+        scr.update(speed.hints(where))
+    if where in JUMP_SCREENS and isinstance(scr.get("cursor"), int) and _JUMP.get("unit") != scr.get("unit"):
+        speed.note_cursor(where, scr["cursor"])
+
+
+def _entries(speed, where: str) -> int | None:
+    """How many entries the screen is known to have (its first n indexes exist): the fixed lists' sizes, and on the
+    character select the largest index the game's own cursor has shown (the menu learner's, the stage cycle's
+    confirmed characters, the roster count once the calibration walk learned it)."""
+    n = JUMP_SCREENS[where][2]
+    if isinstance(n, int):
+        return n
+    tops = [speed.screen(where).get("max_cursor")]
+    if where == "select_player":
+        try:
+            c = cycle()
+            tops.append(max(c.chars) if c.chars else None)
+        except Exception:                                   # noqa: BLE001 - no cycle record: the learner's alone
+            pass
+        if CHARACTER_SLOTS > 1:
+            tops.append(CHARACTER_SLOTS - 1)
+    tops = [t for t in tops if isinstance(t, int) and 0 <= t < CHARACTER_SLOTS_MAX]
+    return max(tops) + 1 if tops else None
+
+
+def _write_cursor(m, unit: int, offset: int, value: int, klass: str) -> str | None:
+    """Write the menu's cursor integer and read it back; None when it took, else why not. The unit's class is checked
+    again first (a unit freed and reused between two reads is never written)."""
+    ad = getattr(m, "adapter", None)
+    if ad is None or not callable(getattr(ad, "write_memory", None)):
+        return "no adapter that writes memory"
+    if getattr(m, "mercs_no_modifications", False):
+        return "the session plays unmodified"
+    if class_name(m, unit) != klass:
+        return f"the unit is no longer {klass}"
+    try:
+        res = ad.write_memory(unit + offset, struct.pack("<i", value))
+    except (ValueError, RuntimeError, OSError, PermissionError) as exc:
+        return f"write refused: {exc}"[:160]
+    if isinstance(res, dict) and res.get("verified") is False:
+        return "the write was not verified"
+    try:
+        if _i32(m, unit + offset) != value:
+            return "the read-back differs"
+    except (ValueError, OSError, struct.error):
+        return "the read-back failed"
+    return None
+
+
+def menu_assist(m, scr: dict, stats: dict | None = None, now: float | None = None) -> dict:
+    """Before the Navigator's press (gbox.mercs_bot.Boot): on a menu whose cursor RAM shows, the cursor is written
+    instead of stepped to (see MENU_JUMPS above); the screen dict goes on as the game is after the write, with
+    jump_wait while the write still has to hold. Writes only; never presses. Also folds the learner's numbers into the
+    run's stats (menu_seconds, menu_seconds_best, menu_seconds_trend, menu_screens, menu_latency ...)."""
+    speed = _speed_for(m)
+    now = speed.clock() if now is None else now
+    if stats is not None and now - _MENU.get("stats_at", float("-inf")) >= 0.5:
+        _MENU["stats_at"] = now
+        stats.update(speed.stats_view())
+    knob = bool(MENU_JUMPS)
+    if knob and not _MENU.get("knob", True):
+        speed.jumps_reset()                                 # the operator turned jumps back on: every screen may again
+    _MENU["knob"] = knob
+    where, unit = scr.get("where"), scr.get("unit")
+    if _JUMP and (_JUMP.get("where") != where or _JUMP.get("unit") != unit):
+        _JUMP.clear()                                       # the screen moved on
+    if _SEEN_CURSOR and _SEEN_CURSOR.get("where") != where:
+        _SEEN_CURSOR.clear()                                # (a unit the game rebuilt at the same address is a new visit)
+    spec = JUMP_SCREENS.get(where)
+    cursor, target = scr.get("cursor"), scr.get("target")
+    if not knob or spec is None or not isinstance(unit, int) or not isinstance(cursor, int) \
+            or not isinstance(target, int):
+        return scr
+    if _JUMP:
+        return _jump_check(speed, scr, stats, now)
+    seen = _SEEN_CURSOR
+    same = seen.get("where") == where and seen.get("unit") == unit and seen.get("cursor") == cursor \
+        and now - seen.get("at", now) <= 1.0                # two reads close together, never one long ago
+    if not same:
+        _SEEN_CURSOR.clear()
+        _SEEN_CURSOR.update(where=where, unit=unit, cursor=cursor, at=now)
+        return scr                                          # one read: a screen still being built may change it
+    if now - seen["at"] < JUMP_HOLD_S or not speed.jump_allowed(where) \
+            or getattr(getattr(m, "adapter", None), "_menu_jump_blocked", None):
+        return scr
+    entries = _entries(speed, where)
+    if entries is None or not 0 <= target < entries or not 0 <= cursor < CHARACTER_SLOTS_MAX:
+        return scr
+    if speed.jump_direct(where, JUMP_PROVE_N):
+        mode, value = "direct", target
+        if cursor == target:
+            return scr
+    else:
+        mode = "approach"
+        if abs(target - cursor) < JUMP_MIN_GAP:
+            return scr                                      # one step is one press either way
+        value = target - 1 if cursor < target else target + 1
+        if not 0 <= value < entries:
+            return scr
+    klass, offset = spec[0], spec[1]
+    why = _write_cursor(m, unit, offset, value, klass)
+    _JUMP.update(where=where, unit=unit, value=value, target=target, prior=cursor, at=now, mode=mode, held=False)
+    if why is not None:
+        _JUMP["failed"] = True                              # this visit steps option by option
+        if stats is not None:
+            stats["menu_jump_error"] = f"{where}: {why}"
+        if why in ("no adapter that writes memory", "the session plays unmodified") or why.startswith("write refused"):
+            try:
+                m.adapter._menu_jump_blocked = why          # this session's adapter cannot take writes: stop trying
+            except AttributeError:
+                pass
+        return scr
+    if stats is not None:
+        stats["menu_jumps"] = stats.get("menu_jumps", 0) + 1
+        stats["menu_last_jump"] = f"{where}: cursor {cursor} -> {value} ({mode}, target {target})"
+    if where in ("select_stage", "select_player") and "c" in _CYCLE:
+        _CYCLE["c"].pending = None                          # the roster learning never reads a written cursor
+    if getattr(speed, "pending", None) is not None:
+        speed.pending = None                                # the write's cursor change confirms no press of the walk's
+    return dict(scr, cursor=value, jump_wait=True, jumped=mode)
+
+
+def _jump_check(speed, scr: dict, stats: dict | None, now: float) -> dict:
+    """A jump under way on this screen: held (a read JUMP_HOLD_S after the write still shows it) lets the Navigator go;
+    on an approach, the game's own step landing on the target proves the field; anything else is a failure."""
+    j, where, cursor = _JUMP, scr.get("where"), scr.get("cursor")
+    if j.get("failed") or j.get("done"):
+        return scr
+    if not j["held"]:
+        if cursor == j["value"]:
+            if now - j["at"] < JUMP_HOLD_S:
+                return dict(scr, jump_wait=True)
+            j["held"] = True
+            speed.jump_result(where, "wrote")
+            if j["mode"] == "direct":
+                j["done"] = True
+            return scr
+        return _jump_failed(speed, scr, stats, f"the write did not hold (cursor {cursor}, wrote {j['value']})")
+    if cursor == j["target"]:                               # an approach: the game's own step moved onto the target
+        j["done"] = True
+        speed.jump_result(where, "proven")
+        if stats is not None:
+            stats["menu_jumps_proven"] = stats.get("menu_jumps_proven", 0) + 1
+        return scr
+    if cursor == j["value"]:
+        return scr                                          # the step not shown yet
+    return _jump_failed(speed, scr, stats, f"the step landed on {cursor}, not {j['target']} (from {j['value']})")
+
+
+def _jump_failed(speed, scr: dict, stats: dict | None, why: str) -> dict:
+    _JUMP["failed"] = True
+    speed.jump_result(scr.get("where"), "failed", JUMP_FAIL_N)
+    if stats is not None:
+        stats["menu_jump_fails"] = stats.get("menu_jump_fails", 0) + 1
+        stats["menu_jump_error"] = f"{scr.get('where')}: {why}"[:200]
+    return scr
+
+
+def menu_status() -> dict:
+    """The sidebar's menus line (bot_logic.status): "menus: X s (best Y s)" and the numbers behind it."""
+    from .. import menu_speed
+    speed = _MENU.get("speed") or menu_speed.cached(MAP_ID)
+    if speed is None or not callable(getattr(speed, "status", None)):
+        return {"text": "menus: not timed yet"}
+    return speed.status()
+
+
+def _menu_clock(m, where: str, snap: dict | None, stats: dict | None = None) -> dict | None:
+    """The Driver's view of a round (every engine tick): its clock running closes the transition being timed (the
+    seconds to gameplay; the run's stats get the numbers at once), its death or results open the next one."""
+    speed = _speed_for(m)
+    rec = None
+    if where == "playing" and (snap or {}).get("mercenaries_phase") == PHASE_PLAYING:
+        rec = speed.gameplay()
+        if rec is not None and stats is not None:
+            stats.update(speed.stats_view())
+    elif where in ("dead", "results"):
+        speed.round_end()
+    return rec
 
 
 def ray_error(origin, dot, target) -> tuple[float, float]:
@@ -4175,7 +4546,9 @@ class Bot:
             self.died = True
             if self.dead_since is None:
                 self.dead_since = now
-            if now - self.dead_since < DEAD_WAIT_S:
+            # the dialog's own input state (+0x1EC = 2 once it takes input, docs/research/re5-switch-ram.md) answers on
+            # the first frame it can; it only ever shortens the fixed wait, never holds a press back
+            if now - self.dead_since < DEAD_WAIT_S and snap.get("continue_ready") is not True:
                 return {"hold": ()}
             cursor = snap.get("continue_cursor", "unread")
             if cursor == "unread":                           # no cursor in this snapshot (another reader): v1's taps
@@ -4183,7 +4556,7 @@ class Bot:
                 return {"tap": "dright" if self.dead_taps % 2 else "a"}
             if cursor is None:                               # "Continue?" not up yet
                 return {"hold": ()}
-            want = continue_target()
+            want = continue_target(getattr(self, "_m", None))
             if cursor == want:                               # A only on the answer the pace wants
                 self.continued = "yes" if want == CONTINUE_YES else "no"
                 return {"tap": "a"}
@@ -5799,6 +6172,11 @@ class RE5Switch(Driver):
                 self._timer = (t, now)
             elif now - self._timer[1] > HANG_S:
                 where = "loading"                           # the clock stopped: frozen (the engine calls it lost)
+        try:
+            _menu_clock(m, where, snap, self.stats)         # the menus' timing: a round's end and its clock running
+        except Exception as exc:                            # noqa: BLE001 - timing never costs the round a tick
+            if self.stats is not None:
+                self.stats["menu_speed_error"] = f"{type(exc).__name__}: {exc}"[:160]
         self._mods(m, snap, where == "playing")
         return where
 
