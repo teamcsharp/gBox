@@ -4910,7 +4910,12 @@ class Bot:
         if self.blocked:
             self.blocked = {k: t for k, t in self.blocked.items() if t > now}
             rest = [e for e in live if e.get("ptr", e.get("slot")) not in self.blocked]
-            live = rest or live
+            if rest:
+                live = rest
+            else:
+                # The sole survivor is wall-blocked: leave him and go to him across the geometry,
+                # not feed him straight back to a gun that will just re-aim at the same wall.
+                live = []
         self._fault_tick(p, live, flat, snap, now)
         if not live:
             act = self._go_bonus(p, live, flat, snap, now)

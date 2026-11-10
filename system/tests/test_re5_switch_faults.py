@@ -133,3 +133,20 @@ def test_a_far_majini_fired_on_and_then_dead_is_a_long_shot_kill():
     clock[0] = 0.6
     b.tick(snap([far], hp=[0], motion=26))
     assert b.stats["long_shot_kills"] == 1
+
+
+def test_a_sole_survivor_walled_off_is_approached_not_reaimed_at_the_wall():
+    # The last Majini is behind geometry: the old `live = rest or live` fed him straight back to a gun
+    # that re-aimed at the same wall every WALL_BLOCK_S (the "flat, 21 deaths" wall-aim cluster). Now the
+    # bot leaves the pool empty and the locate/pursue path drives him across the geometry to the enemy.
+    b, clock = bot()
+    hidden = at(900, 0)                                  # the only one alive, behind a wall 2.7 m out
+    b.tick(snap([hidden], motion=22))
+    b.target = 10
+    for t in (0.3, 0.5, 0.65, 0.8):                       # the dot held on the wall short of him
+        clock[0] = t
+        b.tick(snap([hidden], dot=(0.0, 140.0, 270.0), motion=26))
+    assert 10 in b.blocked and b.stats["wall_blocks"] == 1
+    # once wall-blocked as the only enemy, it is not re-fed to the aim gate: no wall re-aim, no loop
+    assert b.stats["wall_aim_s"] <= 0.5                  # only the initial drop counted, not the repeated 3 s
+    assert b.target is None or b.doing in ("walk", "locate", "no_foes")
