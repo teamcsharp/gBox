@@ -303,13 +303,21 @@ def pop_queue(store, host):
         store.put(SETTING, host, cfg | {'queue': tail})
 
 
-def selection_job(title, sid, selection):
-    """(tool, input) that queues `selection` at the running game's next native menu visit, or None."""
+def selection_job(title, sid, selection, map_id=None):
+    """(tool, input) that queues `selection` at the running game's next native menu visit, or None.
+
+    `map_id` is the run's edition (pick['map_id']). RE4 Switch (010099A00BC1E000) takes its pick from the launch
+    (game.launch.mercmode.selection: gbox.re4switch_bot steers Select Player / Select Stage to it, as RE6 Switch's pick
+    rides the launch to mercs_bot), so there is no job for it: re_mods' mercs_select writes the GameCube build's TW work
+    area and refused the Switch session, which is how a DJ's RE4 character and stage were dropped (re4-parity.md 4, #8)."""
     if title == 're5':
         return 're5_mods', {'session_id': sid, 'op': 'mercs_select', 'mode': selection['mode'],
                             'character': selection['character'], 'stage': selection['stage'],
                             'one_round': True, 'request_id': uuid.uuid4().hex}
     if title == 're4':
+        from .re_switch import RE4_TITLE_ID
+        if map_id == RE4_TITLE_ID:
+            return None
         return 're_mods', {'session_id': sid, 'op': 'mercs_select', 'character': selection['character'],
                            'target': str(selection['stage'])}
     return None
@@ -1117,11 +1125,19 @@ def accept_boundary(store, run, body, *, parent_job, now=None):
     witness = body.get('witness')
     # a bot+bot split-screen turn (draw_coop, recorded at its start) counts its team rounds; every other run, solo ones
     roles = ('solo_p1', 'bots_p1_p2') if run['mercmode'].get('coop') == 'bots' else ('solo_p1',)
+    terminal = witness.get('screen') if isinstance(witness, dict) else None
+    # RE4 Switch's native terminal reader is its round clock (gbox.mercs.titles.re4_switch.ClockFinder keeps only a
+    # float in the module's bss that fell by the wall time between two reads): its results witness may name the clock
+    # in place of the player while the player unit is still unmapped. Only for that edition, only at the results (a
+    # death still needs the player's own health), and only with the clock seen counting and then at 0 (below).
+    from .re_switch import RE4_TITLE_ID
+    clock_witness = expected_map == RE4_TITLE_ID and terminal == 'results' and isinstance(witness, dict) \
+        and witness.get('clock_verified') is True
     if body.get('map_id') != expected_map or body.get('role') not in roles \
             or body.get('source') != 'native_terminal_reader' or not isinstance(witness, dict) \
-            or witness.get('playing_observed') is not True or witness.get('player_verified') is not True:
+            or witness.get('playing_observed') is not True \
+            or (witness.get('player_verified') is not True and not clock_witness):
         raise ValueError('A solo native terminal-round witness is required')
-    terminal = witness.get('screen')
     # gate 6 (docs/mercmode-adding-titles.md): TITLES['re4'] names the GameCube map, so keying this on spec['map_id']
     # refused every Switch boundary - the round reported correctly and still never counted. expected_map is the run's own
     # edition, recorded at its start.

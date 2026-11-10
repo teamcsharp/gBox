@@ -1070,7 +1070,7 @@ class Screensaver:
                                        'task': f"autoplay screensaver: {pick['name']}"})
         if pick.get('selection') and row.get('selection') != pick['selection']:
             # a DJ pick queued after this game was prepared: its menus are past, so it is taken at the next menu visit
-            spec = mercmode.selection_job(pick['title'], sid, pick['selection'])
+            spec = mercmode.selection_job(pick['title'], sid, pick['selection'], pick.get('map_id'))
             if spec:
                 self.submit(JobRequest(tool=spec[0], input=spec[1], agent_use=True, require_worker=w['id']),
                             actor=ACTOR, origin={'via': 'MercMode queue', 'session_id': sid})
