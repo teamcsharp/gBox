@@ -1,0 +1,306 @@
+{
+ "exe_size": 1460116,
+ "known_build": true,
+ "loader_va": "0xc05ad20",
+ "loader_in_exe": true,
+ "models": [
+  {
+   "key": "PP1A",
+   "high": false,
+   "slot_count": 47,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 47,
+   "textures": 14,
+   "tex_layout_ok": true,
+   "alloc": 26656,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202592656,
+    "textures": 202630792,
+    "alloc": 202595952
+   }
+  },
+  {
+   "key": "PP1A",
+   "high": true,
+   "slot_count": 47,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 47,
+   "textures": 14,
+   "tex_layout_ok": true,
+   "alloc": 38880,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202593412,
+    "textures": 202631656,
+    "alloc": 202595984
+   }
+  },
+  {
+   "key": "PP1B",
+   "high": false,
+   "slot_count": 47,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 47,
+   "textures": 11,
+   "tex_layout_ok": true,
+   "alloc": 26912,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202592844,
+    "textures": 202631032,
+    "alloc": 202595956
+   }
+  },
+  {
+   "key": "PP1B",
+   "high": true,
+   "slot_count": 47,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 47,
+   "textures": 11,
+   "tex_layout_ok": true,
+   "alloc": 45600,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202593600,
+    "textures": 202631896,
+    "alloc": 202595988
+   }
+  },
+  {
+   "key": "PP1C",
+   "high": false,
+   "slot_count": 47,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 47,
+   "textures": 11,
+   "tex_layout_ok": true,
+   "alloc": 28864,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202593032,
+    "textures": 202631224,
+    "alloc": 202595960
+   }
+  },
+  {
+   "key": "PP1C",
+   "high": true,
+   "slot_count": 47,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 47,
+   "textures": 11,
+   "tex_layout_ok": true,
+   "alloc": 36032,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202593788,
+    "textures": 202632088,
+    "alloc": 202595992
+   }
+  },
+  {
+   "key": "PP1D",
+   "high": false,
+   "slot_count": 48,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 48,
+   "textures": 14,
+   "tex_layout_ok": true,
+   "alloc": 27424,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202593220,
+    "textures": 202631416,
+    "alloc": 202595964
+   }
+  },
+  {
+   "key": "PP1D",
+   "high": true,
+   "slot_count": 47,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 47,
+   "textures": 14,
+   "tex_layout_ok": true,
+   "alloc": 38080,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202593976,
+    "textures": 202632280,
+    "alloc": 202595996
+   }
+  },
+  {
+   "key": "PP2A",
+   "high": false,
+   "slot_count": 47,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 47,
+   "textures": 13,
+   "tex_layout_ok": true,
+   "alloc": 33088,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202594164,
+    "textures": 202632520,
+    "alloc": 202595968
+   }
+  },
+  {
+   "key": "PP2A",
+   "high": true,
+   "slot_count": 47,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 47,
+   "textures": 13,
+   "tex_layout_ok": true,
+   "alloc": 90176,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202594916,
+    "textures": 202633336,
+    "alloc": 202596000
+   }
+  },
+  {
+   "key": "PP2B",
+   "high": false,
+   "slot_count": 47,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 47,
+   "textures": 12,
+   "tex_layout_ok": true,
+   "alloc": 30496,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202594352,
+    "textures": 202632744,
+    "alloc": 202595972
+   }
+  },
+  {
+   "key": "PP2B",
+   "high": true,
+   "slot_count": 47,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 47,
+   "textures": 11,
+   "tex_layout_ok": true,
+   "alloc": 86048,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202595104,
+    "textures": 202633560,
+    "alloc": 202596004
+   }
+  },
+  {
+   "key": "PP2C",
+   "high": false,
+   "slot_count": 47,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 47,
+   "textures": 13,
+   "tex_layout_ok": true,
+   "alloc": 33344,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202594540,
+    "textures": 202632952,
+    "alloc": 202595976
+   }
+  },
+  {
+   "key": "PP2C",
+   "high": true,
+   "slot_count": 41,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 41,
+   "textures": 15,
+   "tex_layout_ok": true,
+   "alloc": 70080,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202595292,
+    "textures": 202633752,
+    "alloc": 202596008
+   }
+  },
+  {
+   "key": "PP2D",
+   "high": false,
+   "slot_count": 47,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 47,
+   "textures": 9,
+   "tex_layout_ok": true,
+   "alloc": 32832,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202594728,
+    "textures": 202633176,
+    "alloc": 202595980
+   }
+  },
+  {
+   "key": "PP2D",
+   "high": true,
+   "slot_count": 47,
+   "empty_slots": 0,
+   "slots_subset_of_objects": true,
+   "objects": 47,
+   "textures": 9,
+   "tex_layout_ok": true,
+   "alloc": 86336,
+   "alloc_ok": true,
+   "va": {
+    "slots": 202595456,
+    "textures": 202634008,
+    "alloc": 202596012
+   }
+  }
+ ],
+ "table_literal_refs": {
+  "normal.slots": [
+   "0xc05ae38"
+  ],
+  "normal.counts": [
+   "0xc05ae3c"
+  ],
+  "normal.textures": [
+   "0xc05ae40"
+  ],
+  "normal.alloc": [
+   "0xc05ae4c"
+  ],
+  "high.slots": [
+   "0xc05af20"
+  ],
+  "high.counts": [
+   "0xc05af24"
+  ],
+  "high.textures": [
+   "0xc05af28"
+  ],
+  "high.alloc": [
+   "0xc05af34"
+  ]
+ }
+}
