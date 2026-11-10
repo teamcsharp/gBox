@@ -1,4 +1,4 @@
-# CP00 clean start — in progress (steps 1-3 and 5 done; step 4 next)
+# CP00 clean start — done (steps 1-5)
 
 Session identity: DeepSeek    Branch: ds-pso-cp00-clean-start-20261110    Commits: `6a44d458` + this evidence update
 
@@ -61,13 +61,14 @@ resolved by taking main's version of that file.
 
 `system/docs/pso-checkpoints/CP00-operator-question.md`, and the RE session has been told it is waiting.
 
-## Step 4: the duplicate registry (next)
+## Step 4: the duplicate registry (done)
 
-Not done yet. The plan, on `ds-pso-cp00-classes-20261110` (to be claimed before work): keep `gbox/pso_classes.py` as the
-module (it already has `family`, `label`, the vtable census and the real section-table mapping from
-`ds-pso-classes-family-20261110`), fold the branch's pinned table address `0x805D3138` and its 148-name list in as a
-cross-check test, delete `pso_class_registry.py` rather than alias it, and port `test_pso_class_registry.py` to
-`pso_classes` so both test sets live on.
+`ds-pso-cp00-classes-20261110` @ `a1053cac`, evidence `CP00-classes.md`: `pso_classes.py` stays the module (anchor-derived
+lookup, plus `family`, `label`, the vtable census and the real section-table mapping) and now carries the branch's
+`PINNED_ADDRESS = 0x805D3138` / `PINNED_NAMES` (240 slots, **148 named**) as cross-check data; the derived table equals
+the pinned list on every one of the 240 slots. `pso_class_registry.py` is not added (it never was on main) and nothing
+imports it. Both test sets live on: `test_pso_classes.py` 12 and the ported `test_pso_class_registry.py` 6 — **18
+passed**, 47 with the editor/setdata/offset suites.
 
 ## Baseline (measured, so every checkpoint can be compared)
 
@@ -81,4 +82,4 @@ rather than hidden.
 - the RE session's review/merge of the 23 cleaned branches;
 - the operator's answer recorded above.
 
-Next: claim `ds-pso-cp00-classes-20261110` and finish CP0 step 4 (one registry module, both test sets green).
+Next: CP1 (the local coder model on the 3090) once a live window is allowed.
