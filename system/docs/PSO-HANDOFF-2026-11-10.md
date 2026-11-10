@@ -24,7 +24,9 @@ way to the surface:
 
 * the **single-player intro conversation cannot be exited** — retested with the keyboard walker (round 37), 20 A presses at
   2.2 s, and movement attempts inside the `mode 17` gaps: all negative. It shows as `mode 5` alternating with `17` and no
-  player movement.
+  player movement. The **skip-button sweep** (round 45) closes the rest of the controller: `Y`, `X`, `Z`, `B`, `L`, `R`,
+  `START`+`A`, `A`+`START`, `BBB`, and 30 s of no input all leave the mode at `5`. Whatever ends that scene, it is not a
+  button.
 * **none of rooms 10, 20, 30, 40 has a counter that answers `A`** — the guild has not been found, and the city's room
   graph is mapped in `docs/research/pso-gc-pioneer2-rooms.md`.
 * every other candidate for leaving the city has been ruled out: the room-40 teleporter pad (nine positions, `A`, a

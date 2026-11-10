@@ -2275,15 +2275,43 @@ The working tree was clean, `main` matched `origin/main`, and every PSO change f
 sessions, the built mods and the untracked helper scripts are all named in the hand-off brief so the next session can
 pick them up or discard them deliberately.
 
+## Round 45 (2026-11-10) — the skip-button sweep, and no way out of the intro by input
+
+After the hand-off this round went back at P1's blocker with the one idea not yet tried: the intro conversation might be
+skippable by a button other than `A`.
+
+| input in the conversation | mode after |
+|---|---|
+| `Y`, `X`, `Z`, `B`, `L`, `R` | 5 |
+| `START`+`A`, `A`+`START`, `BBB` | 5 |
+| 30 s with no input at all | 5 |
+
+Combined with round 37's twenty `A` presses and the movement attempts inside the `mode 17` gaps, that closes the whole
+controller: **nothing the player can press ends that scene**. It is recorded in the hand-off brief's P1 section so the next
+session does not spend a round rediscovering it.
+
+### Two operational notes from the same session
+
+* `win_send_keys` raises (`adapters.py:622`) whenever the emulator window is not foreground, and a session driven in that
+  state looks exactly like a game that ignores input. `walklib.hold` now restores the window on every press, but a
+  minimised or covered window still fails.
+* the lobby **spawn area is hard for the greedy walker**: four legs from `(229,254)` drifted to `(303,203)` and then
+  `(257,260)` without ever heading for the boundary. The crossing works from `(170,190) -> (120,120)` when the character
+  starts nearer the middle of the lobby, so this is a spawn-corner problem, not a crossing problem.
+
+### State
+
+Session live in MULTI MODE, both players in the lobby. `main` is clean and pushed; the hand-off brief carries the full
+status.
+
 ## 7. Next
 
 The hand-off brief (`docs/PSO-HANDOFF-2026-11-10.md`) carries the prioritised list. In order:
 
-1. **P1's field leg** -- walk *through* the central dome's large doorways (around (157,102) in room 20), explore room 30
-   beyond (-236,18), and look for the quest/teleport code path in the executable. One of these unlocks P3-P5, P6a's
-   proof and P7b's proof at once.
+1. **P1's field leg** -- the intro cannot be exited by input (rounds 37 and 45), so the route must be MULTI MODE plus
+   the guild. Walk *through* the central dome's large doorways (around (157,102) in room 20), explore room 30 beyond
+   (-236,18), and read the quest/teleport path in the executable.
 2. **The room-local to world offset**, by matching the four room-10 door entities' pairwise distances against a
-   placement set -- translations preserve distances, so the match identifies the set and the offset in one step.
-3. **P6b's page** as UI over `gbox.pso_editor` (its backend is finished and tested).
-4. **P7a's rigging** -- `build_swap` adapted for GC (big-endian body, GVR textures, flat names), gated by
-   `pso_swapfit.compare`.
+   placement set -- translations preserve distances, so one match identifies the set and the offset.
+3. **P6b's page** as UI over `gbox.pso_editor` (backend finished and tested).
+4. **P7a's rigging** -- `build_swap` adapted for GC, gated by `pso_swapfit.compare`.
