@@ -1466,16 +1466,64 @@ two-player scripts are short: P1 presses go through the virtual pad, P2's throug
 through `win_send_keys` with the window foreground. The `stuck -> keep walking past the target` idiom is what makes doors
 work, and it should be folded into `greedy_walk` as an option rather than living in every driver script.
 
+## Round 27 (2026-11-10) — doorway crossing is now a walker feature, and the lobby pedestal is decorative
+
+### `greedy_walk` grew the two door behaviours (+3 tests, 19 walker tests total)
+
+A doorway can fail a walk in two different ways, so there are two options now:
+
+* **`overshoot=<units>`** -- after the walk *arrives* at the target, keep going that far past it along the approach
+  direction. Needed when the walk succeeds on the door's coordinate and therefore stops beside the door: round 26 crossed
+  `(185,173)` only after being told to keep walking, and round 25 walked *over* the same coordinate twice without
+  crossing.
+* **`push_through=<bool>`** -- when the walk is *stuck* (no key moves), re-aim `push_distance` past the goal and keep
+  going, up to `pushes` times, instead of failing. Needed when the door's collision stops the character short.
+
+Both are tested against a model room whose doorway only moves the character once it is clearly past the coordinate, so
+"the walk arrived" and "the character went through" are asserted separately -- they are not the same thing, and that
+distinction is exactly what took four rounds to notice.
+
+### The lobby pedestal is not a teleporter
+
+Both players were walked onto the pedestal at `(233,274)` with push-through -- P1 arrived `(234.2, 275.0)`, P2
+`(233.2, 273.3)`, both within four units of the centre -- and `A` was pressed on both pads. No menu, mode stayed 1, and
+`pp0-pushed.jpg` shows the two of them standing at the pedestal with only the purple diamond above it for company.
+
+So the lobby's big round structure is **decorative**, and the city teleporter (room 40's pad, tested from nine positions in
+rounds 23-25) remains the only candidate -- with no destination list in evidence from any approach tried.
+
+### Ruled out so far, and what that leaves
+
+| hypothesis | result |
+|---|---|
+| proximity to the room-40 pad (8 positions) | no menu |
+| `A` on the pad | no menu |
+| precise approach (2.5 units) | no menu |
+| both players present (at the pad, `A` on both) | no menu |
+| the lobby pedestal is the teleporter | it is decorative |
+
+What is left is the **Hunter's Guild quest**: its warp to the surface is driven by a menu, which is "real presses", and it
+is the one route PSO itself offers to a party that has unlocked nothing.
+
+### A live failure worth recording
+
+Crossing the guild door *from the lobby* failed three times, each time with the walk stuck in the corner around
+`(215-254, 208-254)`: `(254.2, 214.0)`, `(240.7, 254.1)`, `(215.0, 208.1)`. P1 came *from* the market street the other way
+in round 26, so the door works in that direction; the lobby side of that corner is a pocket the greedy walker cannot climb
+out of without waypoints. The route needs one intermediate point on the lobby side of the door rather than a straight
+line from the pad.
+
 ## 7. Next
 
-1. Fold the **`stuck -> push past the target`** idiom into `greedy_walk` (an option such as `push_through=True`):
-   it is what crossed `(185,173)` between rooms 20 and 10, and it currently lives in every driver script instead.
-2. Try the **Hunter's Guild quest** route: the guild has no door entity of its own, so probe the market street
-   (room 20) and the lobby (room 10) for its archway with `pso_explore.probe` **given `greedy_walk`**, then talk to
-   the receptionist and accept a quest. The quest's own warp to the surface is real presses and satisfies P1.
-3. Ruled out for the city teleporter: proximity (8 positions in room 40), `A` on the pad, a precise approach
-   (2.5 units), and both players present (both beside the pads with `A` on both).
+1. **The Hunter's Guild quest is the route.** Every teleporter hypothesis is now ruled out (nine positions on the
+   room-40 pad, `A` on it, a 2.5-unit approach, both players present, and the lobby pedestal is decorative). The
+   guild's warp is menu-driven, so it satisfies P1's "real presses" requirement.
+2. Find the guild: probe room 10 and the market street (room 20) with `pso_explore.probe` **given `greedy_walk`**,
+   and give the lobby route a waypoint on the lobby side of the door at (185,173) -- a straight line from the pad
+   gets stuck in the corner around (215-254, 208-254).
+3. Then the quest, the surface, and P1's accept test (three cold launches with both players), then P6a's in-game
+   proof, P6b, P7a and the demo -> route fixture.
 
-Progress that is proven and reusable: a 300-unit two-room route walked by `greedy_walk` with a door crossed under
-its own control; both players co-located in the lobby at `(227.7,262.7)` and `(236.2,257.9)`; `walklib.py` gives
-any two-player script a uniform mover.
+`greedy_walk` now has `overshoot` (keep walking past a target you arrived at) and `push_through` (re-aim past a target
+you are stuck on) -- both tested, and both needed because a doorway is a volume that has to be crossed, not a point to
+stand on.
