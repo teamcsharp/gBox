@@ -352,3 +352,59 @@ def test_owned_disc_export_character_package(tmp_path):
     # texbanks live at children 1 (5 TIM2), 11 (4), 19 (1), 21 (1), 23 (3), 31 (2)
     from collections import Counter
     assert Counter(t["child"] for t in r["textures"]) == {1: 5, 11: 4, 19: 1, 21: 1, 23: 3, 31: 2}
+
+
+def _vertex_part(counts):
+    n = len(counts)
+    tabs = bytearray()
+    body = bytearray()
+    base = 32 * n
+    for c in counts:
+        offs = []
+        for size in (12, 12, 4, 4, 2):
+            offs.append(base + len(body))
+            body += b"\x00" * (size * c)
+        t = struct.pack("<8I", c, *offs, 0, 0)
+        tabs += t
+    return bytes(tabs + body), offs
+
+
+def test_mesh_blocks_and_decode_synthetic():
+    data, _ = _vertex_part([3, 2])
+    blocks = dmc2.mesh_blocks(data, 0)
+    assert [b["count"] for b in blocks] == [3, 2]
+    ba = bytearray(data)
+    struct.pack_into("<3f", ba, blocks[0]["pos"] + 12, 1.0, 2.0, 3.0)
+    struct.pack_into("<2H", ba, blocks[1]["uv"], 2048, 4096)
+    v = dmc2.decode_mesh_part(bytes(ba), 0)["vertices"]
+    assert len(v) == 5 and v[1]["pos"] == (1.0, 2.0, 3.0) and v[3]["uv"] == (0.5, 1.0)
+    obj = dmc2.part_to_obj(bytes(ba), 0)
+    assert obj.count("\nv ") == 5
+
+
+def test_strip_triangles_restart_flag():
+    vs = [{"idx": 0x8000 | 31}, {"idx": 31}, {"idx": 31}, {"idx": 31}, {"idx": 0x801F}, {"idx": 31}, {"idx": 31}]
+    assert dmc2.strip_triangles(vs) == [(0, 1, 2), (2, 1, 3), (4, 5, 6)]
+
+
+def test_mesh_blocks_rejects_garbage():
+    with pytest.raises(ValueError):
+        dmc2.mesh_blocks(struct.pack("<8I", 1, 0, 0, 0, 0, 0, 0, 0), 0)
+
+
+@pytest.mark.skipif(not ISO.exists(), reason="owned DMC2 Disc 1 image not extracted on this host")
+def test_owned_disc_x108_vertex_blocks():
+    child = _x_data_child(ISO, 108, [0])
+    _, parts = dmc2.mesh_parts(child)
+    total = 0
+    ymin, ymax, xmin, xmax = 1e9, -1e9, 1e9, -1e9
+    for p in parts:
+        d = dmc2.decode_mesh_part(child, p["offset"])
+        assert len(d["vertices"]) == p["count"]
+        total += p["count"]
+        for v in d["vertices"]:
+            ymin, ymax = min(ymin, v["pos"][1]), max(ymax, v["pos"][1])
+            xmin, xmax = min(xmin, v["pos"][0]), max(xmax, v["pos"][0])
+            assert abs(sum(c * c for c in v["nrm"]) - 1.0) < 0.01
+    assert total == 5181
+    assert 170 < ymax < 190 and -5 < ymin < 5 and xmax > 60 and xmin < -60

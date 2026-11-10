@@ -621,3 +621,71 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Mesh vertex-block decoder (analysis stage, proved on owned X:108/0 etc.)
+# ---------------------------------------------------------------------------
+# A mesh part (see mesh_parts) starts with N 32-byte block tables; N is
+# (table0.offsets[0] - part_offset) / 32.  Each table is
+#   u32 count|flags<<16, u32 pos_off, nrm_off, uv_off, w_off, idx_off, 0, 0
+# with ABSOLUTE offsets (relative to the mesh child) to five parallel streams:
+#   pos  f32 x3   nrm f32 x3 (unit length)   uv  u16 x2 (12-bit fixed, /4096)
+#   w    4 bytes (skin weights/bone bytes; hypothesis)   idx u16 (bit15 = strip
+#   restart flag, low bits = bone/matrix id; hypothesis)
+# Sum of block counts equals the part header count for every part of X:108/0.
+
+def mesh_blocks(data: bytes, part_offset: int) -> list[dict]:
+    first = struct.unpack_from("<I", data, part_offset + 4)[0]
+    n = (first - part_offset) // 32
+    if n <= 0 or n > 64:
+        raise ValueError("bad block table count %d" % n)
+    blocks = []
+    for i in range(n):
+        t = struct.unpack_from("<8I", data, part_offset + 32 * i)
+        blocks.append({"count": t[0] & 0xFFFF, "flags": t[0] >> 16,
+                       "pos": t[1], "nrm": t[2], "uv": t[3], "w": t[4], "idx": t[5]})
+    return blocks
+
+
+def decode_mesh_part(data: bytes, part_offset: int) -> dict:
+    verts = []
+    for blk in mesh_blocks(data, part_offset):
+        for k in range(blk["count"]):
+            verts.append({
+                "pos": struct.unpack_from("<3f", data, blk["pos"] + 12 * k),
+                "nrm": struct.unpack_from("<3f", data, blk["nrm"] + 12 * k),
+                "uv": tuple(u / 4096.0 for u in struct.unpack_from("<2H", data, blk["uv"] + 4 * k)),
+                "w": data[blk["w"] + 4 * k: blk["w"] + 4 * k + 4],
+                "idx": struct.unpack_from("<H", data, blk["idx"] + 2 * k)[0],
+                "block": blk,
+            })
+    return {"vertices": verts, "blocks": mesh_blocks(data, part_offset)}
+
+
+def strip_triangles(verts: list[dict]) -> list[tuple[int, int, int]]:
+    """Triangle indices assuming bit15 of idx restarts a strip (hypothesis)."""
+    tris = []
+    start = 0
+    for i in range(len(verts)):
+        if verts[i]["idx"] & 0x8000 and i - start >= 0:
+            start = i
+        k = i - start
+        if k >= 2:
+            a, b, c = (i - 2, i - 1, i) if k % 2 == 0 else (i - 1, i - 2, i)
+            tris.append((a, b, c))
+    return tris
+
+
+def part_to_obj(data: bytes, part_offset: int, name: str = "part") -> str:
+    part = decode_mesh_part(data, part_offset)
+    lines = ["o " + name]
+    for v in part["vertices"]:
+        lines.append("v %.5f %.5f %.5f" % v["pos"])
+    for v in part["vertices"]:
+        lines.append("vt %.5f %.5f" % (v["uv"][0], 1.0 - v["uv"][1]))
+    for v in part["vertices"]:
+        lines.append("vn %.5f %.5f %.5f" % v["nrm"])
+    for a, b, c in strip_triangles(part["vertices"]):
+        lines.append("f %d/%d/%d %d/%d/%d %d/%d/%d" % (a + 1, a + 1, a + 1, b + 1, b + 1, b + 1, c + 1, c + 1, c + 1))
+    return "\n".join(lines) + "\n"
