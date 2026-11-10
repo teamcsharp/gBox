@@ -154,3 +154,42 @@ Two things fall out of that table:
 No walked edge leads to a room the lane has not already seen (10, 20, 30, 40), and none of those contains a counter that
 answers `A`. The guild is therefore behind something not yet walked -- the most likely candidates being the central
 dome's large doorways that were walked *past* rather than *into*, and room 30's own far side.
+
+## Room 10's object map (28 records, world coordinates)
+
+Now that the offset is measured (`+228, +291`) and confirmed in game, `map_city00_00o.dat` can be read as a map. Every
+record, its class, and the live entity that stands there:
+
+| idx | kind | class | world (x, z) | live entity / notes |
+|---|---|---|---|---|
+| 0 | 0x02000040 | 64 | (212, -289) | `TObjNpcNurseBase` (4.5) |
+| 1 | 0x02000040 | 64 | (-165, 278) | `TObjNpcMaleMacho` (8.7) -- shop keeper pair |
+| 2 | 0x02000040 | 64 | (-231, 240) | `TObjNpcMaleFat` (11.4) |
+| 3 | 0x02000040 | 64 | (-202, 266) | `TObjNpcFemaleMacho` (12.3) |
+| 4-7 | 0x02000000 | 0 | (229, 254), (231, 267), (230, 241), (233, 229) | **player spawns** -- P1 and P2 use 4 and 5 |
+| 8 | 0x02000043 | 67 | (360, 26) | `TObject` (0.0) |
+| 9 | 0x00000045 | 69 | (0, -1730) | `TObject` (0.0) -- far south, on the x=0 corridor to the office at (0,-2015) |
+| 10 | 0x02000040 | 64 | (187, 333) | `TObjNpcCloakroomBase` (11.8) |
+| 11 | 0x02000040 | 64 | (-251, -32) | `TObjNpcCloakroomBase` (17.5) |
+| 12 | 0x02000045 | 69 | (0, -60) | `TObject` (0.0) |
+| 13-16 | 0x02000041 | 65 | (-334,-116), (-320,-154), (-258,-206), (-294,-183) | **no entity** -- walked there in round 50, street furniture |
+| 17 | 0x02000049 | 73 | (193.5, -93.5) | `TObjCityDoor_Med` (0.0) |
+| 18 | 0x02000046 | 70 | (-165, 147.5) | `TObjCityDoor_Shop` (0.0) |
+| 19 | 0x02000040 | 64 | (-127, 248) | `TObjNpcConnoisseur` (9.1) |
+| 20 | 0x02000047 | 71 | (185, 173) | `TObjCityDoor_Guild` (0.0) -- **inert** |
+| 21 | 0x02000048 | 72 | (254, 25) | `TObjCityDoor_Warp` (0.0) -- the one working door |
+| 22-25 | 0x02000000 | 0 | (286, 22), (295, 39), (295, 6), (305, 22) | four more spawns, clustered at the Warp door |
+| 26 | 0x02000044 | 68 | (308, 211) | `TObject` (0.0) |
+| 27 | 0x02000057 | 87 | (228, 291) | the only class-87 object in the set -- at the lobby's centre, i.e. the **teleporter pedestal** |
+
+### What the map settles and what it suggests
+
+* **Only one door works.** `0x48` (Warp) transitions to room 40; `0x47` (Guild), `0x46` (Shop) and `0x49` (Med) are placed
+  identically and do not. Med only became reachable from the *room-20 side* in an earlier round, so a door record is not
+  by itself a portal.
+* **The southwest cluster is furniture.** Walking into it (round 50) found no entities at all: the four class-65 records
+  are street fittings, not the guild.
+* **`0x45` at `(0, -60)` and `(0, -1730)`** are the only `TObject`s on the central axis, and the single-player office sits
+  at `(0, -2015)`. That corridor is the most promising unexplored line in the city.
+* **Nothing in this set is a counter that answers `A`.** The guild, if it is an object at all, is not placed by
+  `map_city00_00o.dat`.

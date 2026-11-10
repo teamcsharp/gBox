@@ -2466,11 +2466,55 @@ predict an outcome and then confirm it. That is the property the editor needs, a
 `main` carries the writer, the offset, the editor and its CLI. Session live in MULTI MODE co-op on the i9. The remaining
 open items are unchanged: P1's field leg, P6b's page (pure UI now), P7a's rigging, P3-P5.
 
+## Round 50 (2026-11-10) — room 10 becomes a map, and the one lead it produces is a corridor
+
+With the offset proven in game, this round read the lobby's placement set as a **map** rather than a list: 28 records, each
+converted to world coordinates and matched against the live entity table. The full table is in
+`docs/research/pso-gc-pioneer2-rooms.md`; the findings that matter:
+
+### What the map says
+
+* **Only one of the four doors works.** `0x48` (Warp) transitions to room 40. `0x47` (Guild), `0x46` (Shop) and `0x49`
+  (Med) are placed identically -- same record type, same table, coordinates now known exactly -- and do not transition.
+  A door record is not a portal; the transition is event-side.
+* **The four class-65 objects in the southwest are furniture.** They were the only unexplained cluster on the map
+  (world `(-334,-116)`, `(-320,-154)`, `(-258,-206)`, `(-294,-183)`), so I walked there: the street is real and lit, and
+  the entity table has **nothing** in it but the player. They are street fittings.
+* **Record 27 (`class 87`, world `(228, 291)`) is the only object of its class in the set and sits at the lobby's centre**
+  -- that is the teleporter pedestal, the thing the party stands on and which has never opened a menu.
+* **The interesting lead is `(0, -1730)`.** Two `TObject`s sit on the flag's central axis -- `(0, -60)` and
+  `(0, -1730)` -- and the single-player office is at `(0, -2015)`. That is a straight corridor south that has never been
+  walked to its end, and it is the only line in the city that points somewhere new.
+
+### The walk that produced it
+
+From the spawn, the party's next waypoint after room 20 turned out to be a wall at about `(-15, -45)`; the route through
+room 30 (entered at `(-169, 46)`) then out at `(-270, -60)` reached the southwest street, and the street runs on to
+`(-314, -185)`. That route is now a known-good path: **room 20 -> (-91, 17) -> room 30 at (-167, 41) -> (-263, -59) ->
+(-297, -91) -> (-334, -122)**, and it is the first time the west/southwest of the city has been walked at all.
+
+### So what is left for the guild
+
+Placement records are exhausted as a lead: the map accounts for every object in room 10, and none is a counter. The guild
+must be either an object in a set this lane has not identified as a room set, or reached by a transition whose event
+record names it. The corridor at `x=0` is the cheapest thing left to try, and after that the executable's transition table
+is the only lever that does not involve wandering.
+
+### State
+
+`main` clean; research doc carries the object map. Session live in MULTI MODE co-op, P1 at `(-314, -185)` in room 20
+(the southwest street), P2 in the lobby.
+
 ## 7. Next
 
-1. **P6a is closed.** The writer, the editor, its CLI and the in-game proof all exist; the offset that made the proof
-   possible is `(+228,+291)` for `city00`, and `pso_guilddoor_moved` is the build that demonstrates it.
-2. **Measure a field area's offset** so the same proof can be made there (only `city00` is measured).
-3. **P6b's page** is now pure UI over `python -m gbox.pso_editor` (sets / list --world / move / delete / build).
-4. **P1's field leg** and **P7a's rigging** are the remaining hard items; both are documented in
-   `docs/PSO-HANDOFF-2026-11-10.md` with their next steps.
+1. **Walk the `x=0` corridor south to `(0, -1730)`** -- two `TObject`s sit on the flag's central axis at `(0,-60)` and
+   `(0,-1730)`, and the single-player office is at `(0,-2015)`. It is the only line in the city that points somewhere
+   unwalked.
+2. **The guild is not in `map_city00_00o.dat`.** All 28 records are accounted for (map in the research doc) and none is
+   a counter; the next lever is the executable's transition table, not more wandering.
+3. **A field area's offset** so P6a's in-game proof can be repeated on a floor; only `city00` is measured.
+4. **P6b's page** (pure UI over `python -m gbox.pso_editor`) and **P7a's rigging** remain.
+
+Known-good southwest route from round 50: room 20 -> (-91,17) -> room 30 at (-167,41) -> (-263,-59) -> (-297,-91) ->
+(-334,-122). The four class-65 objects there are street furniture (no entities), and record 27 (class 87) at world
+(228,291) is the lobby's teleporter pedestal -- the only object of its class in the set.
