@@ -100,3 +100,27 @@ def inventory(data: bytes) -> dict:
         if base.startswith(CHARACTER_PREFIXES) and h["kind"] == 6:
             chars[path] = {"file_id": fid, **h}
     return {**ident, "sha256": hashlib.sha256(data).hexdigest(), "kind_census": kinds, "character_bundles": chars}
+
+
+def decode_palette(blob: bytes, bundle: dict) -> list[tuple[int, int, int]]:
+    """Chunk 0 of every kind-6 character bundle is 256 little-endian RGB555 entries (512 B; 72/72 bundles)."""
+    off, n = bundle["chunks"][0]
+    if n != 512:
+        raise ValueError("chunk 0 is not a 512-byte palette")
+    out = []
+    for i in range(256):
+        v = struct.unpack_from("<H", blob, off + 2 * i)[0]
+        out.append(tuple((c & 31) * 255 // 31 for c in (v, v >> 5, v >> 10)))
+    return out
+
+
+def frame_tiles(blob: bytes, bundle: dict) -> list[list[bytes]]:
+    """Chunks 1.. are 8bpp tile data: every length is a multiple of 64 B (72/72 bundles), i.e. N 8x8 tiles of
+    palette indices. Each frame is returned as a list of 64-byte tiles. Tile-to-sprite arrangement (the 16-byte
+    block fields) is NOT decoded yet; empty chunks yield an empty list."""
+    frames = []
+    for off, n in bundle["chunks"][1:]:
+        if n % 64:
+            raise ValueError("chunk is not a whole number of 8bpp tiles")
+        frames.append([blob[off + t:off + t + 64] for t in range(0, n, 64)])
+    return frames

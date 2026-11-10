@@ -62,3 +62,21 @@ def test_owned_build_identity_and_counts():
     assert inv["arm9"] == {"offset": 0x4000, "entry": 0x02000800, "ram": 0x02000000, "size": 875384}
     nml = inv["character_bundles"]["romdir/bank01bin/kbynml_0000_bnd.bin"]
     assert (nml["kind"], nml["count"], nml["size"]) == (6, 9, 5424) and nml["table_hypothesis_ok"]
+
+
+@pytest.mark.skipif(not OWNED, reason="owned Kirby: Canvas Curse ROM not extracted on this host")
+def test_owned_bundles_palette_plus_8bpp_tiles():
+    from gbox.formats import kirby_cc
+    rom = NitroROM(open(OWNED, "rb").read())
+    seen = 0
+    for fid, path in rom.names.items():
+        if not path.rsplit("/", 1)[-1].startswith(kirby_cc.CHARACTER_PREFIXES):
+            continue
+        blob = rom.file(fid)
+        b = kirby_cc.parse_bundle(blob)
+        if b is None:
+            continue
+        assert len(kirby_cc.decode_palette(blob, b)) == 256
+        assert all(len(t) == 64 for fr in kirby_cc.frame_tiles(blob, b) for t in fr)
+        seen += 1
+    assert seen == 72
