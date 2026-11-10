@@ -606,6 +606,52 @@ def driver_bones_from_dol(dol: bytes, letter: str = "A") -> tuple[str, ...]:
     return tuple(out)
 
 
+DRIVER_DRAW_VA = (0x8005d4d4, 0x8005dd5c)  # main.dol (GCTE51): driver pose draw body (immediate-mode GX hierarchy)
+_BL_HELPERS = {0x8008ae70: "trans", 0x8005f4d0: "anim", 0x8008dd08: "draw"}
+
+
+def driver_rig_from_dol(dol: bytes, span: tuple[int, int] = DRIVER_DRAW_VA) -> list[dict]:
+    """Recover the driver skeleton constants from the PPC pose-draw function: the hierarchy is code, not data.
+
+    Linear walk tracking `lis`/`lfs` so each call to 0x8008ae70 (translate f1,f2,f3) yields its offset triple; each
+    call to 0x8005f4d0 (apply joint angle) is tagged with the preceding `lwz r3,N(r26)` pose-array word offset, and each
+    `lwz r3,N(r25)` names the shape slot drawn at that joint. Returns events in draw order:
+    {"va", "op": trans|anim|slot, "v": (x,y,z) | pose word offset | r25 slot offset}."""
+    def w(va):
+        return struct.unpack_from(">I", dol, dol_va_to_offset(dol, va))[0]
+
+    def sx(v):
+        return v - 0x10000 if v >= 0x8000 else v
+
+    regs: dict[int, int | None] = {}
+    fl: dict[int, float | None] = {}
+    out: list[dict] = []
+    for va in range(span[0], span[1], 4):
+        x = w(va)
+        op, rt, ra, im = x >> 26, x >> 21 & 31, x >> 16 & 31, sx(x & 0xFFFF)
+        if op == 15:
+            regs[rt] = (x & 0xFFFF) << 16 if ra == 0 else None
+        elif op == 14 and regs.get(ra) is not None and ra != 0:
+            regs[rt] = (regs[ra] + im) & 0xFFFFFFFF
+        elif op == 14 and ra == 0:
+            regs[rt] = im & 0xFFFFFFFF
+        elif op == 48 and regs.get(ra) is not None:
+            o = dol_va_to_offset(dol, (regs[ra] + im) & 0xFFFFFFFF)
+            fl[rt] = struct.unpack_from(">f", dol, o)[0] if o is not None else None
+        elif op == 32:
+            regs[rt] = None
+            if rt == 3 and ra in (25, 26):
+                out.append({"va": va, "op": "slot" if ra == 25 else "pose", "v": im})
+        elif op == 18 and x & 1:
+            t = (va + (((x & 0x3FFFFFC) ^ 0x2000000) - 0x2000000)) & 0xFFFFFFFF
+            k = _BL_HELPERS.get(t)
+            if k == "trans":
+                out.append({"va": va, "op": "trans", "v": (fl.get(1), fl.get(2), fl.get(3))})
+            elif k == "anim":
+                out.append({"va": va, "op": "anim", "v": None})
+    return out
+
+
 @dataclass
 class Motion:
     offset: int                 # byte offset of the motion in motDC.bin
