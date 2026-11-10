@@ -87,3 +87,22 @@ def test_every_visited_point_records_the_room_it_ended_in():
     out = X.probe(city.read, city.hold, city.room_of, [(10.0, 10.0), (20.0, 20.0)], walk_to=walk_to)
     assert [v["room_after"] for v in out["visited"]] == [10, 10]
     assert all(v["room_before"] == 10 for v in out["visited"])
+
+
+def test_the_default_walker_is_the_greedy_one():
+    """Round 25's 16-point probe used a calibration walker and produced noise; the default must be greedy_walk."""
+    from gbox import pso_kbwalk as B
+
+    class Flat:
+        room = 10
+
+        def read(self):
+            return (0.0, 0.0)
+
+        def hold(self, keys, seconds):
+            return None
+
+    flat = Flat()
+    out = X.probe(flat.read, flat.hold, lambda: flat.room, [(5.0, 5.0)])
+    # with greedy_walk behind it the probe reports through its own keys, not an AttributeError from a wrong signature
+    assert "visited" in out and out["visited"][0]["room_after"] == 10

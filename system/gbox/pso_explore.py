@@ -30,12 +30,16 @@ def grid(centre, *, spacing=60.0, rings=2) -> list[tuple[float, float]]:
 def probe(read_pos, hold, room_of, points, *, walk_to=None, tolerance=8.0, max_steps=10) -> dict:
     """Walk each point and record the room it ended in; stop at the first room change.
 
+    ``walk_to`` defaults to :func:`gbox.pso_kbwalk.greedy_walk`, which is the only walker that has worked live: it
+    re-measures each key's last world effect instead of assuming a camera model. Passing a calibration-based walker here
+    produces grid results that are noise (round 25: 16 points, none reached).
+
     Returns ``{ok, start_room, transitions: [...], visited: [...], why}``. ``ok`` means at least one exit was found --
     a probe that finds nothing is a result, not an error, so the caller gets both cases without an exception.
     """
     if walk_to is None:
-        from .pso_kbwalk import walk_to as _walk_to
-        walk_to = _walk_to
+        from .pso_kbwalk import greedy_walk as _greedy
+        walk_to = _greedy
     start_room = room_of()
     visited, transitions = [], []
     for point in points:
