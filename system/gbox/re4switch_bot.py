@@ -17,6 +17,7 @@ import time
 
 from .mercs.titles import re4_switch as driver
 from .mercs.titles import re4_switch_screens as screens
+from .mercs.titles import re4_walk
 
 GAME_IDS = ("270a15eb98dab4d7",)          # Resident Evil 4 (Switch) [UPDATE 1.0.2], the catalog entry MercMode uses
 ROUND_ENTRY_PRESSES = 3
@@ -53,7 +54,7 @@ def _press(send, key: str, hold_s: float = 0.08) -> None:
 
 
 def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, clock=time.time,
-         max_seconds: float | None = None, still_s: float = 12.0, **_) -> dict:
+         max_seconds: float | None = None, still_s: float = 12.0, tactical=None, **_) -> dict:
     """Walk the menus to a round, start it, and keep moving until `stopped()`.
 
     Returns a dict of what it did. `stats` (when given) is filled live for the watch panel.
@@ -66,6 +67,9 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
     stats = stats if stats is not None else {}
     stats.update({"screen": None, "presses": 0, "rounds": 0, "started": clock(), "stage_seen": False,
                   "story_recoveries": 0, "stall_steps": 0})
+    # the tactical map (tools._start_playbook passes the worker's sink): a frame a tick in a round with the player in
+    # RAM - re4_walk.publish(pub, snap, bot, "playing") where the RAM fight ticks - else the screen once a second
+    pub = re4_walk.publisher(tactical)
     last_action, last_where = clock(), None
     reader = screens.Reader()
     driver.begin_run()
@@ -86,6 +90,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
         screen = reader.read(frame)
         where = screen.get("where")
         stats["screen"] = where
+        re4_walk.publish(pub, None, None, where or "unknown")
         if where is not None and where != last_where:
             # a change of *named screen* is progress, and the only thing that restarts the escape: a cursor moving on a
             # still-stuck menu repaints the picture without going anywhere, so pixels cannot be the reset signal
@@ -147,6 +152,8 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             stats["presses"] += 3
         sleep(0.35)
 
+    if pub is not None:
+        pub.close()
     stats["ended"] = clock()
     stats["seconds"] = round(stats["ended"] - started, 1)
     return {"ok": True, "mode": "re4-switch-screen", "rounds": stats["rounds"], "presses": stats["presses"],

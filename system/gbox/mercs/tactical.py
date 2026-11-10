@@ -48,7 +48,10 @@ IDLE_S = 1.0                      # between rounds: a frame (the screen) a secon
 VIEW = {"x": -1, "z": 1}          # how to draw the world from above: +z up, +x to the left (the engines' worlds are
                                   # right-handed, y up: facing +z, +x is on the player's left - the stick's left turns
                                   # toward larger headings, measured on both titles)
-UNITS = {"BLUS30491": "cm", "G4BE08": "mm"}
+UNITS = {"BLUS30491": "cm", "G4BE08": "mm", "010099A00BC1E000": "mm"}   # RE4 Switch: the room collision's mm
+                                  # (titles.re4_nav; the GameCube's units, its SAT byte-swapped)
+GEOMETRY_SOURCES = ("native_navmesh", "room_collision")   # a mesh's geometry_source: the game's own navmesh in RAM
+                                  # (RE5), or a floor built offline from the room's collision files (RE4 Switch)
 RUN_SPEED = {"cm": 450.0, "mm": 3300.0}   # world units a second running: the fallback ETA (RE4: Up+B ~3,300 measured)
 LEVEL_DY = {"cm": 150.0, "mm": 1500.0}    # within this above / below: the player's own level
 CLIMB_RISE = {"cm": 120.0, "mm": 1200.0}  # a navmesh triangle rising this much, CLIMB_SLOPE times steeper than it is
@@ -178,11 +181,16 @@ def stage_from_navmesh(mesh, title: str, units: str = "cm", name: str | None = N
     xs = [key_of[v][0] for v in used] or [0]
     ys = [key_of[v][1] for v in used] or [0]
     zs = [key_of[v][2] for v in used] or [0]
+    climbs = getattr(mesh, "climbs", None)              # a mesh that knows its ladders (RE4's AEV) says so itself
+    climbs = [[int(round(v)) for v in c[:4]] for c in climbs] if isinstance(climbs, list) \
+        else climbs_of(pts, tris, units)
     out = {"v": FORMAT, "key": stage_key(title, mesh), "title": title, "units": units, "kind": "mesh", "view": dict(VIEW),
            "bounds": [min(xs), min(zs), max(xs), max(zs)], "y": [min(ys), max(ys)],
            "points": [c for v in used for c in key_of[v]],
            "tris": [remap[v] for t in tris if all(0 <= v < len(pts) for v in t) for v in t],
-           "walls": walls, "cross": cross, "climbs": climbs_of(pts, tris, units)}
+           "walls": walls, "cross": cross, "climbs": climbs}
+    if getattr(mesh, "geometry_source", None) in GEOMETRY_SOURCES:
+        out["source"] = mesh.geometry_source
     if name:
         out["name"] = str(name)[:60]
     return out
@@ -326,7 +334,7 @@ def _clean_plan(raw: dict, enemies: dict, bonuses: dict) -> dict:
     route = [p for p in (_xyz(w) for w in (raw.get("route") or ())[:MAX_ROUTE]) if p is not None]
     if route:
         out["route"] = route
-        if raw.get("route_source") in ("learned_grid", "native_navmesh"):
+        if raw.get("route_source") in ("learned_grid",) + GEOMETRY_SOURCES:
             out["route_source"] = raw["route_source"]
         if raw.get("route_requires_prompt"):
             out["route_requires_prompt"] = True
@@ -482,7 +490,9 @@ class Tracker:
         current_stage = self.stage_key if mesh is not None and hasattr(mesh, "tris") else ""
         out: dict = {"v": FORMAT, "t": round(now, 3), "title": self.title, "stage": current_stage,
                      "units": self.units, "screen": str(screen or ("playing" if p else "loading"))[:24]}
-        out["geometry"] = ({"status": "available", "source": "native_navmesh", "triangles": len(mesh.tris)}
+        source = getattr(mesh, "geometry_source", None) if current_stage else None
+        out["geometry"] = ({"status": "available", "source": source if source in GEOMETRY_SOURCES else "native_navmesh",
+                            "triangles": len(mesh.tris)}
                            if current_stage else {"status": "unavailable", "source": "none",
                                                   "reason": "No native level mesh in this frame"})
         navigation = (plan or {}).get("navigation")

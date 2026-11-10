@@ -33,6 +33,7 @@ import struct
 import time
 
 from ..driver import Driver
+from . import re4_nav, re4_walk                    # the stage mesh (room collision), the walker and the map's marks
 from . import re4_switch_screens as screens
 
 TITLE_ID = "010099A00BC1E000"
@@ -455,7 +456,7 @@ class RE4Switch(Driver):
         self.stats: dict | None = None
 
     def snapshot(self, m) -> dict:
-        return snapshot(m)
+        return re4_nav.attach(snapshot(m))             # snap["nav"]: the stage's floor mesh (the tactical map's too)
 
     def screen(self, m, snap: dict | None) -> str:
         snap = self.snapshot(m) if snap is None else snap
@@ -484,6 +485,7 @@ ENGAGE_RANGE_CM = 1200.0                 # do not blind-fire past ~12 m before t
 MINE_CLEAR_CM = 250.0                    # keep at least this far from an own hazard (parity with re5_switch_mines)
 
 
+@re4_walk.attach                       # .walker (approach(goal) -> stick keys), snap["nav"], the map's marks, plan()
 class Bot:
     """One decision per tick from the snapshot. FIRST CUT (mirrors re5 / re6 at a high level): face the nearest living
     Ganado, raise the gun and fire - but every shot passes the operator's fire-gates (_may_fire): controls confirmed,
