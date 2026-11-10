@@ -107,6 +107,18 @@ SET_OBJECT_CLASSES = (0xAED470, 0xAED3B0, 0xAED318, 0xAEDAD0)
 S_PLAYER = 0x11310F0                    # bss: the player unit's pointer (a second copy at S_PLAYER_2)
 S_PLAYER_2 = 0x113B398
 PLAYER_CLASS: int | None = 0xB09A60
+# 2026-11-10 00:58 UTC, a LIVE round (session 44235c1d29b8483e-a94ee7e0f9884280, Village, the bot walking): no object
+# of 0xb09a60 was in the heap at all, S_PLAYER read 0, and S_PLAYER_2 led to exactly one object of class 0xb0c0a0
+# whose +0xa4 moved between two reads 1.5 s apart (x 50,689 -> 50,769) - the live player. 0xb09a60 is the class the
+# death screen showed. Either class is the player when the bss pointer leads to it.
+PLAYER_CLASSES: tuple = (0xB0C0A0, 0xB09A60)
+
+
+def player_classes() -> tuple:
+    """PLAYER_CLASS first, then the other measured player classes; nothing while PLAYER_CLASS is unmapped (None)."""
+    if PLAYER_CLASS is None:
+        return ()
+    return tuple(dict.fromkeys((PLAYER_CLASS,) + tuple(globals().get("PLAYER_CLASSES") or ())))
 ENEMY_CLASSES: tuple = (0xAE7050,)
 U_POS: int | None = 0xA4
 U_YAW: int | None = 0xB4                # rotation y; the heading convention (0 = +z, + toward +x) is INFERRED
@@ -452,7 +464,7 @@ class UnitCensus:
 
     @staticmethod
     def classes() -> tuple:
-        return tuple(c for c in ((PLAYER_CLASS,) + tuple(ENEMY_CLASSES)) if c is not None)
+        return tuple(dict.fromkeys(c for c in (player_classes() + tuple(ENEMY_CLASSES)) if c is not None))
 
     def refresh(self, m, base: int, now: float) -> None:
         if not self.classes() or (self.scanned_at is not None and now - self.scanned_at < UNIT_RESCAN_S):
@@ -487,7 +499,7 @@ class UnitCensus:
                 continue
             seen.add(key)
             u["class"] = cls
-            if cls == PLAYER_CLASS and player is None:
+            if cls in player_classes() and player is None:
                 player = u
             elif cls in ENEMY_CLASSES:
                 u["slot"] = len(enemies)                 # the census order (address order), as re5_switch's slot
@@ -509,8 +521,10 @@ def player_unit(m, base: int) -> dict | None:
         if not ptr_ok(p):
             continue
         u = read_unit(m, p)
-        if u is not None and u["vtable"] == base + PLAYER_CLASS and "pos" in u:
-            u["class"] = PLAYER_CLASS
+        classes = player_classes()
+        cls = next((c for c in classes if u is not None and u["vtable"] == base + c), None)
+        if cls is not None and "pos" in u:
+            u["class"] = cls
             return u
     return None
 

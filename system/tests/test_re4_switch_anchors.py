@@ -276,3 +276,27 @@ def test_the_unit_table_in_the_bss_lists_set_objects_not_ganados():
     fx, _ = live_mem()
     raw = bytes.fromhex(fx["bss"][hex(0x113D2B0)])
     assert struct.unpack_from("<Q", raw, 0x18)[0] == 0x5D55BEBEC8          # id 1, class 0xaed470 (a set object)
+
+
+def test_the_live_player_class_is_taken_through_the_pointer_too(monkeypatch):
+    """Live 2026-11-10: in a round the bss pointer led to one 0xb0c0a0 object (moving), not to 0xb09a60."""
+    assert 0xB0C0A0 in D.PLAYER_CLASSES and 0xB09A60 in D.PLAYER_CLASSES
+    import struct as _s
+    base, ptr = 0x3CA7C04000, 0x5D55AF46E0
+    unit = bytearray(D.UNIT_SIZE)
+    _s.pack_into("<Q", unit, 0, base + 0xB0C0A0)
+    _s.pack_into("<3f", unit, D.U_POS, 50689.0, 20536.0, 17848.0)
+    _s.pack_into("<f", unit, D.U_YAW, 1.84)
+
+    class M:
+        def rd(self, a, n):
+            if a == base + D.S_PLAYER:
+                return bytes(8)
+            if a == base + D.S_PLAYER_2:
+                return _s.pack("<Q", ptr)
+            if ptr <= a < ptr + len(unit):
+                return bytes(unit[a - ptr:a - ptr + n])
+            raise ValueError("unmapped")
+    monkeypatch.setattr(D, "ptr_ok", lambda p: p == ptr, raising=False)
+    u = D.player_unit(M(), base)
+    assert u is not None and u["class"] == 0xB0C0A0 and tuple(round(v) for v in u["pos"]) == (50689, 20536, 17848)
