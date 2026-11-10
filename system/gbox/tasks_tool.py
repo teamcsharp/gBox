@@ -191,9 +191,69 @@ def kill_task(pid: int, config=None) -> dict:
     return {"killed": r["name"], "pid": pid, "processes": len(tree), "session_id": r.get("session_id")}
 
 
+# Background apps with no taskbar icon that fight a game for the pen/input stack or the GPU. Matched by exact
+# executable name (lowercase); nothing else is ever touched by the conflict ops.
+CONFLICT_APPS = {
+    "wacom": ("wacom_tablet.exe", "wacom_tabletuser.exe", "wacomhost.exe", "wacomdesktopcenter.exe",
+              "wacomcenterui.exe", "wtablet*", "wtabletservicepro.exe", "pentablet.exe", "wacom_touchdriver.exe"),
+    "wallpaper engine": ("wallpaper32.exe", "wallpaper64.exe", "webwallpaper32.exe", "webwallpaper64.exe",
+                         "ui32.exe", "wallpaper_engine.exe"),
+}
+
+
+def _conflict_app(name: str) -> str | None:
+    n = (name or "").lower()
+    for app, pats in CONFLICT_APPS.items():
+        for pat in pats:
+            if (pat.endswith("*") and n.startswith(pat[:-1])) or n == pat:
+                return app
+    return None
+
+
+def list_conflicts(processes=None) -> dict:
+    """Running processes of the known conflicting apps (grouped by app). `processes`: iterable of objects with
+    pid/name() for tests; default psutil."""
+    import psutil
+    out: dict[str, list] = {}
+    for p in (processes if processes is not None else psutil.process_iter()):
+        try:
+            name = p.name()
+            app = _conflict_app(name)
+            if app:
+                out.setdefault(app, []).append({"pid": p.pid, "name": name})
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return {"conflicts": out, "count": sum(len(v) for v in out.values())}
+
+
+def stop_conflicts(apps=None, processes=None) -> dict:
+    """End the listed conflicting apps (all known ones, or just `apps`). Returns what was stopped and what failed."""
+    import psutil
+    want = {a.lower() for a in apps} if apps else None
+    if want and (bad := want - set(CONFLICT_APPS)):
+        raise ValueError(f"unknown app(s) {sorted(bad)}; known: {sorted(CONFLICT_APPS)}")
+    found = list_conflicts(processes)["conflicts"]
+    stopped, failed = [], []
+    for app, rows in found.items():
+        if want and app not in want:
+            continue
+        for r in rows:
+            try:
+                proc = next((q for q in (processes if processes is not None else [psutil.Process(r["pid"])])
+                             if q.pid == r["pid"]))
+                proc.kill()
+                stopped.append({"app": app, **r})
+            except psutil.NoSuchProcess:
+                pass
+            except Exception as err:                       # AccessDenied: a service that needs elevation
+                failed.append({"app": app, **r, "error": str(err)})
+    return {"stopped": stopped, "failed": failed}
+
+
 class TasksIn(BaseModel):
-    op: str = "list"            # list | kill
+    op: str = "list"            # list | kill | conflicts | stop_conflicts
     pid: int | None = None
+    apps: list[str] | None = None   # stop_conflicts: limit to these (wacom, wallpaper engine)
 
 
 class TasksOut(BaseModel):
@@ -203,7 +263,12 @@ class TasksOut(BaseModel):
 @tool("tasks", "1.0", TasksIn, TasksOut, capabilities=["runtime"], permissions=[P.EXECUTE], timeout_s=60)
 def tasks(inp: TasksIn, ctx):
     """What gBox is running on this machine (games, emulators, agent test runs, Blender/Ghidra/RenderDoc) with RAM, CPU,
-    GPU % and VRAM per task and machine totals; op=kill pid=N ends a task and everything it started."""
+    GPU % and VRAM per task and machine totals; op=kill pid=N ends a task and everything it started;
+    op=conflicts lists Wacom / Wallpaper Engine background processes, op=stop_conflicts [apps] ends them."""
+    if inp.op == "conflicts":
+        return {"result": list_conflicts()}
+    if inp.op == "stop_conflicts":
+        return {"result": stop_conflicts(inp.apps)}
     if inp.op == "kill":
         return {"result": kill_task(int(inp.pid or 0), ctx.config)}
     return {"result": list_tasks()}
