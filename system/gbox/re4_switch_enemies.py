@@ -256,6 +256,15 @@ def body_image(dat: A.Dat, layout: ClassLayout, body: int) -> tuple[int, dict]:
                    "chosen": image, "free_of_native_models": image not in shared}
 
 
+def body_native(dat: A.Dat, layout: ClassLayout, body: int) -> tuple[A.HdBin, dict]:
+    """One Ganado body and its `re4_switch_models.native_envelope`: the body with the head pieces of its group (the
+    Ganado's drawn top), on the hips-on-17 role bones."""
+    model = A.HdBin.parse(dat.slots[body][1])
+    heads = [A.HdBin.parse(dat.slots[slot][1]) for slot in layout.group_heads.get(body, ())
+             if slot < len(dat.slots) and dat.slots[slot][0] == "BIN"]
+    return model, M.native_envelope([model, *heads], model, role_bones=ENEMY_ROLE_BONES)
+
+
 # ------------------------------------------------------------------------------------------------- the writer
 
 PINNED = object()                                  # build_class(known=PINNED): the KNOWN table of the pack
@@ -263,7 +272,8 @@ PINNED = object()                                  # build_class(known=PINNED): 
 
 def build_class(udas: bytes, archive: bytes, donors: list[dict], *, pack: str = "", layout: ClassLayout | None = None,
                 known=PINNED, trust_measurement: bool = False, shrink: float = 0.1,
-                scales: dict[str, float] = M.SCALES, opaque_atlas: bool = True) -> tuple[bytes, bytes, dict]:
+                scales: dict[str, float] = M.SCALES, opaque_atlas: bool = True, method: str = "proportional",
+                gate: dict | None = None) -> tuple[bytes, bytes, dict]:
     """One Ganado pack with a donor on each body: (pack bytes, archive bytes, receipt).
 
     `donors` are donor records (`re4_switch_models.load_donor` / `library_donor`), one per body in slot order; a
@@ -272,6 +282,8 @@ def build_class(udas: bytes, archive: bytes, donors: list[dict], *, pack: str = 
     for byte the stock pack. The measured layout must agree with `known` (`KNOWN[pack]` by default; None = no
     pinned table) unless `trust_measurement`. `opaque_atlas` (default) uploads each atlas through
     `re4_switch_models.finish_atlas`; False keeps the bytes `recovery-re4-enemy-pool-01` was built with.
+    `method` is the fit (`re4_switch_models.proportional_fit`, or "legacy" with `scales` for the pools before
+    2026-11-10); `gate` (`re4_switch_models.FIT_GATE`) refuses a donor whose fitted shape fails it, naming the donor.
     """
     layout = layout or measure_class(udas, pack)
     known = KNOWN.get(pack) if known is PINNED else known
@@ -290,6 +302,7 @@ def build_class(udas: bytes, archive: bytes, donors: list[dict], *, pack: str = 
         raise EnemyError(f"{pack}: the archive is {images.pack_id:08x}, the tables name {layout.archive}")
     before = [M.sha256(payload) for _ext, payload in dat.slots]
     groups, hidden = [], {}
+    natives = {body: body_native(dat, layout, body)[1] for body in bodies}     # read before any slot is replaced
     for body, donor in zip(bodies, donors):
         model = A.HdBin.parse(dat.slots[body][1])
         table = A.Tpl.parse(dat.slots[layout.bodies[body]][1])
@@ -297,7 +310,8 @@ def build_class(udas: bytes, archive: bytes, donors: list[dict], *, pack: str = 
         slug = (donor.get("donor") or {}).get("slug") or donor.get("name") or "donor"
         try:
             built, fit_report, step = M.donor_surface(model, donor, image=image, scales=scales,
-                                                      role_bones=ENEMY_ROLE_BONES)
+                                                      role_bones=ENEMY_ROLE_BONES, method=method,
+                                                      native=natives[body], gate=gate)
         except (ValueError, A.AssetError) as exc:              # a fit the donor's rig cannot take, named after it
             raise EnemyError(f"{pack} body {body} <- {slug}: {exc}") from exc
         low, high = fit_report.pop("_bounds")
@@ -358,8 +372,9 @@ def build_class(udas: bytes, archive: bytes, donors: list[dict], *, pack: str = 
 EXPECTATION = {
     "what_must_be_seen": [
         "Village round: the Ganados are four different library characters at once (one per body variant), each a "
-        "whole figure about 1.8 m tall with Ganado limb lengths, no Ganado head, hands or clothes on them; the dogs "
-        "are stock",
+        "whole figure of a person's size (the fit gate held each to 0.85-1.2x its Ganado's drawn top, at least 15 cm "
+        "deep, soles on the floor; the game still scales each Ganado 1.01-1.3) with Ganado limb lengths, no Ganado "
+        "head, hands or clothes on them; the dogs are stock",
         "a character keeps its look while it walks, attacks, is shot and falls (the skeleton and animations are the "
         "pack's own)",
         "a parasite that bursts from a head is the stock parasite, on top of the donor's head area",
@@ -382,21 +397,25 @@ def enemy_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, s
                classes: tuple = ("em16", "em1c", "em1d", "em20"), history: list | tuple = (), avoid_last: int = 3,
                games: list[str] | None = None, exclude: dict[str, str] | None = None, atlas_size=ATLAS_SIZE,
                max_vertices: int = 6000, name: str | None = None, etc_dir: Path | None = None,
-               assignment: dict[str, str] | None = None, opaque_atlas: bool = True) -> dict:
+               assignment: dict[str, str] | None = None, opaque_atlas: bool = True, method: str = "proportional",
+               gate: dict | None = M.FIT_GATE, rejects: Path | None = None) -> dict:
     """Deal library donors over every body of every Mercenaries Ganado class from a seed (`re5_donor_pool.plan`)
     and write one overlay tree: `romfs/bio4/em/emXX.udas` and `romfs/bio4/imagepackhd/000000XX.pack.fen` per
     class, plus `receipt.json`. Slots are `emXX:body` (14 with the four classes), so 14 distinct donors.
 
     A donor a body refuses is set aside and the plan is dealt again from the same seed, as the RE5 pools do.
     `assignment` pins the deal ({`emXX:body`: slug}, an earlier receipt's): nothing is dealt and a refusal is an
-    error, so a pool is rebuilt with the same donors (e.g. after a writer fix).
+    error, so a pool is rebuilt with the same donors (e.g. after a writer fix). Every donor is fitted by `method`
+    and checked against `gate` (`re4_switch_models.FIT_GATE`; None: no gate) on its own body before anything is
+    built; one that fails is set aside with the gate's reasons. The cross-title reject list
+    (`re4_switch_models.donor_rejects`) is left out before the deal.
     """
     from . import re5_donor_pool
 
     em_dir, imagepack_dir, library, out = Path(em_dir), Path(imagepack_dir), Path(library), Path(out)
     if (out / "receipt.json").exists():
         raise EnemyError(f"{out} already holds an overlay; candidates are never overwritten")
-    packs = {}
+    packs, natives = {}, {}
     for pack in classes:
         udas = (em_dir / f"{pack}.udas").read_bytes()
         layout = measure_class(udas, pack)
@@ -405,31 +424,43 @@ def enemy_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, s
             if differences:
                 raise EnemyError(f"{pack}: " + "; ".join(differences))
         packs[pack] = (udas, layout, (imagepack_dir / layout.archive).read_bytes())
+        _pack, dat = A.pack_slots(udas)
+        for body in layout.bodies:
+            natives[f"{pack}:{body}"] = body_native(dat, layout, body)
     slots = [f"{pack}:{body}" for pack, (_u, layout, _a) in packs.items() for body in layout.bodies]
-    pool = [d for d in donors if d.slug not in (exclude or {})]
-    refused: dict[str, str] = dict(exclude or {})
+    listed = {k: v for k, v in M.donor_rejects(rejects).items() if k not in (exclude or {})}
+    pool = [d for d in donors if d.slug not in (exclude or {}) and d.slug not in listed]
+    refused: dict[str, str] = dict(exclude or {}) | listed
     records: dict[str, dict] = {}
+    checked: set[tuple[str, str]] = set()
     pinned = dict(assignment) if assignment else None
     if pinned:
         known_slugs = {d.slug for d in pool}
         wrong = sorted(set(pinned) ^ set(slots)) + [s for s in pinned.values() if s not in known_slugs]
         if wrong:
-            raise EnemyError(f"the pinned assignment does not fit these classes and this survey: {wrong}")
+            raise EnemyError(f"the pinned assignment does not fit these classes and this survey (or names a donor "
+                             f"on the reject list): {wrong}")
     while True:
         assignment = pinned or re5_donor_pool.plan(seed, slots, pool, history=history, avoid_last=avoid_last,
                                                    games=games, exclude=set(refused))
         failed = None
         for slot, slug in assignment.items():
-            if slug in records:
-                continue
             donor = next(d for d in pool if d.slug == slug)
             try:
-                record = M.library_donor(library, slug, roles=donor.role_names(), atlas_size=atlas_size,
-                                         sha256_expected=donor.sha256)
-                if len(record["vertices"]) > max_vertices:
-                    raise M.ModelError(f"{len(record['vertices'])} vertices, above the pool limit {max_vertices}")
-                record["donor"] |= {"platform": donor.platform, "provenance": donor.provenance}
-                records[slug] = record
+                if slug not in records:
+                    record = M.library_donor(library, slug, roles=donor.role_names(), atlas_size=atlas_size,
+                                             sha256_expected=donor.sha256)
+                    if len(record["vertices"]) > max_vertices:
+                        raise M.ModelError(f"{len(record['vertices'])} vertices, above the pool limit {max_vertices}")
+                    record["donor"] |= {"platform": donor.platform, "provenance": donor.provenance}
+                    records[slug] = record
+                if gate is not None and (slot, slug) not in checked:
+                    body_model, native = natives[slot]
+                    verdict = M.fit_report(records[slug], body_model, native=native, role_bones=ENEMY_ROLE_BONES,
+                                           method=method, gate=gate)
+                    if not verdict["pass"]:
+                        raise M.ModelError("fit gate: " + "; ".join(verdict["reasons"]))
+                    checked.add((slot, slug))
             except (M.ModelError, A.AssetError, ValueError, OSError) as exc:
                 failed = (slug, f"{slot} <- {slug}: {exc}")
                 break
@@ -439,7 +470,7 @@ def enemy_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, s
                 chosen = [records[assignment[f"{pack}:{body}"]] for body in layout.bodies]
                 try:
                     pack_out, grown, receipt = build_class(udas, archive, chosen, pack=pack, layout=layout,
-                                                           opaque_atlas=opaque_atlas)
+                                                           opaque_atlas=opaque_atlas, method=method, gate=gate)
                 except (M.ModelError, A.AssetError, EnemyError) as exc:
                     text = str(exc)
                     culprit = next((s for s in (r["donor"]["slug"] for r in chosen) if s in text), None)
@@ -467,6 +498,8 @@ def enemy_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, s
                         "history": [dict(row) if isinstance(row, dict) else list(row) for row in history],
                         "pool_size": len(pool), "max_vertices": max_vertices, "atlas_size": list(atlas_size),
                         "set_aside": dict(refused), "pinned_assignment": bool(pinned), "opaque_atlas": opaque_atlas,
+                        "fit_method": method, "fit_gate": M._jsonable(gate) if gate else None,
+                        "reject_list": {"path": str(Path(rejects) if rejects else M.REJECTS), "entries": len(listed)},
                         "rule": "re5_donor_pool.plan: a donor at most once, recently used donors last, franchises in turn"},
                "assignment": assignment,
                "donors": {slot: {k: records[slug]["donor"][k] for k in ("slug", "name", "game", "franchise", "sha256")}
@@ -505,6 +538,10 @@ def main(argv=None) -> int:
     p.add_argument("--assignment", type=Path, help="an earlier pool's receipt.json: rebuild with its donors (no deal)")
     p.add_argument("--atlas-as-built", action="store_true",
                    help="upload each atlas as mtf_materials built it (the pools before 2026-11-10)")
+    p.add_argument("--fit", choices=("proportional", "legacy"), default="proportional",
+                   help="legacy = the fixed-SCALES fit of the pools before 2026-11-10")
+    p.add_argument("--no-gate", action="store_true", help="write donors whatever FIT_GATE says (not for MercMode)")
+    p.add_argument("--rejects", type=Path, help="the cross-title donor reject list (default gbox-data/mercs/...)")
     args = parser.parse_args(argv)
     if args.command == "roster":
         print(json.dumps(roster(args.etc), indent=2))
@@ -528,7 +565,8 @@ def main(argv=None) -> int:
                         exclude={s: "left out by the caller" for s in args.exclude.split(",") if s},
                         max_vertices=args.max_vertices, etc_dir=args.etc,
                         assignment=json.loads(args.assignment.read_text(encoding="utf-8"))["assignment"]
-                        if args.assignment else None, opaque_atlas=not args.atlas_as_built)
+                        if args.assignment else None, opaque_atlas=not args.atlas_as_built, method=args.fit,
+                        gate=None if args.no_gate else M.FIT_GATE, rejects=args.rejects)
     print(json.dumps({"out": str(args.out), "assignment": result["assignment"], "files": result["files"]}, indent=2))
     return 0
 
