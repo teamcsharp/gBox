@@ -225,3 +225,53 @@ def test_43char7_dee_to_png_roundtrip():
     assert meta["clut"]["count"] == 256
     assert meta["dee"]["type_name"] == "char_sprites"
     assert meta["dee"]["body_marker"] == 0x106b
+
+
+# --- writer side: recompressor / packer ------------------------------------
+
+def test_compress_roundtrip_synthetic():
+    import random
+    rnd = random.Random(7)
+    for raw in (b"", b"a", b"abc" * 500, bytes(rnd.randrange(256) for _ in range(5000)),
+                bytes(rnd.randrange(4) for _ in range(20000))):
+        assert dee.dee_decompress(dee.dee_pack(raw)) == raw
+
+
+def test_pack_header_fields():
+    raw = b"\x00\x11\x22" * 100
+    p = dee.dee_pack(raw)
+    h = dee.dee_header(p)
+    assert h == {"raw_len": 300, "comp_len": len(p) - 12, "word": 0x00400001}
+
+
+def test_tim_replace_image_same_size():
+    img = bytes(range(16))
+    tim = (b"\x10\x00\x00\x00" + (8).to_bytes(4, "little")
+           + (12 + 4).to_bytes(4, "little") + b"\x00" * 8 + b"\x00" * 4
+           + (12 + 16).to_bytes(4, "little") + struct.pack("<4H", 0, 0, 8, 2) + img)
+    # fix CLUT block: flag bit3 set => CLUT present
+    tim = (b"\x10\x00\x00\x00" + (8).to_bytes(4, "little") + (12 + 4).to_bytes(4, "little")
+           + struct.pack("<4H", 0, 0, 2, 1) + b"\xff\xff\x00\x00"
+           + (12 + 16).to_bytes(4, "little") + struct.pack("<4H", 0, 0, 8, 2) + img)
+    new = dee.tim_replace_image(tim, bytes(16))
+    assert len(new) == len(tim) and new.endswith(bytes(16)) and new[:-16] == tim[:-16]
+    with pytest.raises(ValueError):
+        dee.tim_replace_image(tim, b"x")
+
+
+@pytest.mark.skipif(not os.path.isdir(DEE_DIR), reason="owned DEE dump absent")
+def test_noop_roundtrip_all_owned_files():
+    n = 0
+    for name in sorted(os.listdir(DEE_DIR)):
+        if not name.endswith(".DEE") or name == "MENU_WARN2.DEE":
+            continue
+        data = open(os.path.join(DEE_DIR, name), "rb").read()
+        try:
+            raw = dee.dee_decompress(data)
+        except ValueError:
+            continue
+        assert dee.dee_header(data)["raw_len"] == len(raw), name
+        assert dee.dee_header(data)["comp_len"] == len(data) - 12, name
+        assert dee.dee_decompress(dee.dee_pack(raw)) == raw, name
+        n += 1
+    assert n >= 12

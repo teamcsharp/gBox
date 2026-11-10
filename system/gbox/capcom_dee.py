@@ -274,3 +274,97 @@ def dee_to_png(data: bytes) -> tuple:
     meta["tim"] = parse_tim(tim)
     meta["dee"] = {k: hdr[k] for k in ("type_tag", "type_name", "body_marker", "block_token")}
     return png, meta
+
+
+# ---------------------------------------------------------------------------
+# Writer side: recompressor + container packer (no-op roundtrip foundation)
+#
+# Corrected 12-byte header (little-endian u32 x3), verified on 50 owned files:
+#   +0x00 u32  decompressed (TIM) length
+#   +0x04 u32  compressed payload length (== file_size - 12)
+#   +0x08 u32  0x00400001 (u16 version=1, u16 token=0x40)
+# ---------------------------------------------------------------------------
+
+DEE_TRAILER_WORD = 0x00400001
+_MAX_MATCH, _MIN_MATCH, _MAX_DIST = 17, 3, 4096
+
+
+def dee_header(data: bytes) -> dict:
+    """Decode the u32 header of a compressed DEE file."""
+    if len(data) < DEE_HEADER_SIZE:
+        raise ValueError("DEE too small")
+    raw_len, comp_len, word = struct.unpack_from("<3I", data, 0)
+    return {"raw_len": raw_len, "comp_len": comp_len, "word": word}
+
+
+def dee_compress(raw: bytes, max_chain: int = 64) -> bytes:
+    """Greedy LZ77 encoder for the DEE stream (inverse of dee_decompress)."""
+    out = bytearray()
+    n = len(raw)
+    heads: dict = {}
+    i = 0
+    group = []  # up to 8 items: ("L", byte) / ("M", word)
+
+    def flush():
+        flags = 0
+        body = bytearray()
+        for k, (kind, v) in enumerate(group):
+            if kind == "L":
+                flags |= 1 << k
+                body.append(v)
+            else:
+                body += struct.pack("<H", v)
+        out.append(flags)
+        out.extend(body)
+        group.clear()
+
+    def index(pos):
+        if pos + 3 <= n:
+            heads.setdefault(raw[pos:pos + 3], []).append(pos)
+
+    while i < n:
+        best_len = best_dist = 0
+        if i + _MIN_MATCH <= n:
+            cands = heads.get(raw[i:i + 3], ())
+            for c in reversed(cands[-max_chain:]):
+                dist = i - c
+                if dist > _MAX_DIST:
+                    break
+                length = 0
+                lim = min(_MAX_MATCH, n - i)
+                while length < lim and raw[c + length] == raw[i + length]:
+                    length += 1
+                if length > best_len:
+                    best_len, best_dist = length, dist
+                    if length == lim:
+                        break
+        if best_len >= _MIN_MATCH:
+            group.append(("M", (best_dist - 1) << 4 | (best_len - 2)))
+            for k in range(best_len):
+                index(i + k)
+            i += best_len
+        else:
+            group.append(("L", raw[i]))
+            index(i)
+            i += 1
+        if len(group) == 8:
+            flush()
+    if group:
+        flush()
+    return bytes(out)
+
+
+def dee_pack(raw: bytes) -> bytes:
+    """Compress raw (TIM) bytes into a complete .DEE file."""
+    comp = dee_compress(raw)
+    return struct.pack("<3I", len(raw), len(comp), DEE_TRAILER_WORD) + comp
+
+
+def tim_replace_image(tim: bytes, pixels: bytes) -> bytes:
+    """Return a TIM with the image-block pixel bytes replaced (same size)."""
+    info = parse_tim(tim)
+    off = 8 + (info["clut"]["size"] if "clut" in info else 0)
+    size = info["image"]["size"]
+    if len(pixels) != size - 12:
+        raise ValueError("pixel data %d != image block %d" % (len(pixels), size - 12))
+    return tim[:off + 12] + bytes(pixels) + tim[off + size:]
