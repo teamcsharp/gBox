@@ -23,6 +23,23 @@ Three kinds of statement are kept apart below: **measured** (run on the real fil
 | Overlays (not in Git) | `C:\_tools\gBox\.scratch-merc-recovery\assets\re4\re4-enemy-pool-01\`, `re4-cast-pool-01\`, `re4-stage-greybox-v1\`, each `romfs\bio4\...` + `receipt.json` |
 | Inputs (not in Git) | `.scratch-merc-recovery\re4\inputs\{em,etc,imagepackhd,st4}\` copied read-only from the host; the donor library `.scratch-merc-recovery\cast\inputs\library\` (1,483 entries) and its survey `cast\library-survey.json` (650 usable) |
 
+## 0a. Live results, 2026-11-10 03:00-05:05 UTC (newest; read first)
+
+Measured on lilspark in MercMode's own turns (session ids are `88a92225892b4c4f-*` unless named):
+
+| What | Result |
+|---|---|
+| RE4 rounds counted by MercMode | yes: Wesker / Base (`693ef1de`), Krauser / Waterworld (`3ced7e9c`, 5 kills), HUNK / Castle (`77e03923`), Wesker / Waterworld (`7f135357`, 5 kills, `kills_source: game`) - deaths witnessed by the game's own death screen (`mercmode.accept_boundary`, RE4 Switch only) |
+| Kill counter | **mapped**: u32 module + `0x12010c4` (`MERC_KILLS`), matched the census on two rounds and caught a melee kill the census missed |
+| Fight | Krauser / Waterworld (remap-all build): 3 min, 5 kills - 2 by the melee follow-up (2 Y taps, 2 kills), 166 shots / 11 hits, 95 swarm escapes, 2 flanks, 0 shots held at walls; the next round with the distance-based fire tolerance: 13 shots / 4 hits |
+| Turn sign | measured four times: error shrinking 24 / 32 / 79 / 44 times vs growing 7 / 9 / 23 / 14 - the GameCube sign holds, the live check never flipped it |
+| Any character | Leon, Ada, Krauser, HUNK, Wesker each read through the player pointer (Leon-only classes left Ada unread before `c6c1a4ad`) |
+| Remap | `recovery-re4-remap-all-20261110` (enemy pool + cast pool + greybox) boots, walks and fights in rotation |
+| Live map | RE4 frames on the tactical map: stage mesh in mm, player, every Ganado, the bot's target and phase |
+| Sight | every logged block re-checked with an exact ray-triangle test on the rebuilt room data: all real walls - the fix was choosing a Ganado with a clear line first (`05ac8155`) |
+| Menus | the save list's Cancel loading? is now answered Yes; a loop after it is still being traced (`gbox-data/mercs/re4-walk-presses.jsonl` logs every press with its source) |
+| Still open | the HUD clock's master copy, combo, score, the player's life (`scripts/re4sw_life_probe.py`), ammo; survival (rounds end in a death within 1-3 min); the PineLive sidebar route needed `gbox-mcp` / `gbox-live-controls` restarted (they had been stopped since 08:56 CST) |
+
 ## 0. Status, 2026-11-10 01:45 UTC (newest; read first)
 
 What is on main and on lilspark's share now (hashes checked equal on the share):
