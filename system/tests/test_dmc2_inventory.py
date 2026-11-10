@@ -288,3 +288,67 @@ def test_owned_disc_decompress():
     m = dmc2.decompress_entry(_x_data_entry(ISO, 105))
     n = struct.unpack_from("<I", m, 4)[0]
     assert n == 11 and all(m[struct.unpack_from("<I", m, 8 + 8 * j)[0]:][:4] == b"TIM2" for j in range(n))
+
+
+# --- TIM2 decode + character package export (reader stage) --------------------------------------
+
+
+def _synthetic_tim2(w=4, h=2):
+    """Minimal PSMT8 TIM2 with a 2-entry RGBA32 CLUT."""
+    clut = bytes([255, 0, 0, 255, 0, 0, 255, 255])  # red, blue
+    img = bytes([0, 1, 1, 0, 0, 0, 1, 1])
+    total = 32 + len(clut) + len(img)
+    blob = b"TIM2" + bytes([0x04, 0x00, 1, 0]) + struct.pack("<I", 16 + total)
+    blob += struct.pack("<II", total, len(clut)) + struct.pack("<II", len(img), 0)
+    blob += struct.pack("<HH", 2, 2) + bytes([0, 0, 3, 5]) + struct.pack("<HH", w, h)
+    blob += b"\x00" * 8 + clut + img
+    return blob
+
+
+def test_tim2_rgba_synthetic():
+    blob = _synthetic_tim2()
+    pics = dmc2.tim2_rgba(blob)
+    assert len(pics) == 1
+    w, h, rgba = pics[0]
+    assert (w, h) == (4, 2)
+    px = [tuple(rgba[i:i + 4]) for i in range(0, len(rgba), 4)]
+    assert px[0] == (255, 0, 0, 255) and px[1] == (0, 0, 255, 255)
+    assert px == [px[0], px[1], px[1], px[0], px[0], px[0], px[1], px[1]]
+
+
+def test_write_png_roundtrip(tmp_path):
+    import zlib
+    rgba = bytes([255, 0, 0, 255] * 2 + [0, 255, 0, 128] * 2)  # 2x2
+    dmc2.write_png(tmp_path / "t.png", 2, 2, rgba)
+    b = (tmp_path / "t.png").read_bytes()
+    assert b[:8] == b"\x89PNG\r\n\x1a\n" and struct.unpack(">II", b[16:24]) == (2, 2)
+    pos, idat = 8, b""
+    while pos < len(b):
+        ln = struct.unpack(">I", b[pos:pos + 4])[0]
+        if b[pos + 4:pos + 8] == b"IDAT":
+            idat += b[pos + 8:pos + 8 + ln]
+        pos += 12 + ln
+    raw = zlib.decompress(idat)
+    assert raw == b"\x00" + rgba[:8] + b"\x00" + rgba[8:]
+
+
+def test_texbank_tim2_offsets():
+    blob = b"\x00" * 0x800 + _synthetic_tim2() + b"\x00" * 9 + b"\x00TIM2!"
+    assert dmc2.texbank_tim2_offsets(blob) == [0x800, len(blob) - 5]
+
+
+@pytest.mark.skipif(not ISO.exists(), reason="owned DMC2 Disc 1 image not extracted on this host")
+def test_owned_disc_export_character_package(tmp_path):
+    r = dmc2.export_character_package(ISO, 108, tmp_path)
+    # mesh child 0: 178016 bytes, 8 parts, first float triple is model-space
+    assert r["mesh"]["child"] == 0 and r["mesh"]["size"] == 178016
+    lay = r["mesh"]["layout"]
+    assert len(lay) == 9 and lay[4]["kind"] == 3 and lay[4]["count"] == 2157
+    assert all(abs(v) < 500 for v in lay[4]["first_float_triple"])
+    # textures: 16 TIM2s, all 256x256 PSMT8, PNG files on disk
+    assert len(r["textures"]) == 16
+    assert all(t["w"] == 256 and t["h"] == 256 for t in r["textures"])
+    assert all(Path(t["path"]).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n" for t in r["textures"])
+    # texbanks live at children 1 (5 TIM2), 11 (4), 19 (1), 21 (1), 23 (3), 31 (2)
+    from collections import Counter
+    assert Counter(t["child"] for t in r["textures"]) == {1: 5, 11: 4, 19: 1, 21: 1, 23: 3, 31: 2}

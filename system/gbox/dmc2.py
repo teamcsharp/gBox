@@ -436,6 +436,175 @@ def inventory(iso: Path, deep: bool = True) -> dict:
             "entries": entries}
 
 
+# ---------------------------------------------------------------------------
+# TIM2 texture decode + character package export (reader stage, #1314)
+# ---------------------------------------------------------------------------
+
+_PSMT_BPP = {0: 4, 1: 2, 2: 2, 3: 1, 4: 1, 5: 1, 6: 1, 8: 4, 9: 2}
+
+
+def tim2_picture_header(buf: bytes, off: int) -> dict:
+    """Parse one TIM2 picture header at `off` (little-endian, revision 0/1)."""
+    if buf[off:off + 4] != b"TIM2":
+        raise ValueError("not a TIM2 blob")
+    version = buf[off + 5]
+    pics = struct.unpack_from("<H", buf, off + 6)[0]
+    p = off + (128 if version == 1 else 16)
+    tot, clut_size, img_size, hdr_size, clut_n = struct.unpack_from("<IIIHH", buf, p)
+    pfmt, mips, clut_type, img_type = buf[p + 16:p + 20]
+    w, h = struct.unpack_from("<HH", buf, p + 20)
+    return {"version": version, "pictures": pics, "total_size": tot, "clut_size": clut_size,
+            "image_size": img_size, "header_size": hdr_size, "clut_colors": clut_n,
+            "clut_type": clut_type, "image_type": img_type, "width": w, "height": h,
+            "_picture": p}
+
+
+def _rgba16(v: int) -> tuple[int, int, int, int]:
+    r = (v & 0x1F) << 3
+    g = (v >> 5 & 0x1F) << 3
+    b = (v >> 10 & 0x1F) << 3
+    a = (0x80 if v >> 15 else 0xFF)
+    return (r | r >> 5, g | g >> 5, b | b >> 5, a)
+
+
+def tim2_rgba(buf: bytes) -> list[tuple[int, int, bytes]]:
+    """Decode every picture of a TIM2 blob into (w, h, rgba) 8-bit rows.
+
+    Supports the DMC2 Disc-1 X_DATA subset: PSMT8/PSMT4 with RGBA32 or RGB5A1
+    CLUTs, PSMT16 and PSMT32 direct. Returns top-down RGBA rows.
+    """
+    out = []
+    hdr = tim2_picture_header(buf, 0)
+    for i in range(hdr["pictures"]):
+        p = hdr["_picture"] + i * (16 + hdr["total_size"] // max(1, hdr["pictures"]))
+        tot, clut_size, img_size, hdr_size, clut_n = struct.unpack_from("<IIIHH", buf, p)
+        clut_type, img_type = buf[p + 18], buf[p + 19]
+        w, h = struct.unpack_from("<HH", buf, p + 20)
+        data = p + 16 + 16  # picture header rows
+        clut = None
+        if clut_size:
+            cb = buf[data:data + clut_size]
+            if clut_size == 4 * clut_n:  # RGBA32 entries
+                clut = [(c & 0xFF, c >> 8 & 0xFF, c >> 16 & 0xFF, c >> 24 & 0xFF)
+                        for c in struct.unpack_from(f"<{clut_n}I", cb)]
+            elif clut_size >= 2 * clut_n:  # RGB5A1 entries
+                clut = [_rgba16(v) for v in struct.unpack_from(f"<{clut_n}H", cb)]
+        img = buf[data + clut_size:]
+        rgba = bytearray(w * h * 4)
+        if img_type in (4, 5) and clut is not None:  # PSMT8/PSMT4 indexed
+            for y in range(h):
+                row = img[y * w: y * w + w] if img_type == 5 else None
+                for x in range(w):
+                    if img_type == 5:
+                        idx = row[x]
+                    else:
+                        byte = img[(y * w + x) // 2]
+                        idx = (byte >> 4) if (x & 1) == 0 else byte & 0xF
+                    r, g, b, a = clut[idx]
+                    o = (y * w + x) * 4
+                    rgba[o:o + 4] = bytes((r, g, b, a))
+        elif img_type == 2:  # PSMT16 direct
+            for y in range(h):
+                for x in range(w):
+                    r, g, b, a = _rgba16(struct.unpack_from("<H", img, (y * w + x) * 2)[0])
+                    o = (y * w + x) * 4
+                    rgba[o:o + 4] = bytes((r, g, b, a))
+        elif img_type == 0:  # PSMT32 direct
+            for y in range(h):
+                rgba[y * w * 4:(y + 1) * w * 4] = img[y * w * 4:(y + 1) * w * 4]
+        else:
+            raise ValueError(f"unsupported TIM2 image_type {img_type:#x}")
+        out.append((w, h, bytes(rgba)))
+    return out
+
+
+def texbank_tim2_offsets(child: bytes) -> list[int]:
+    """Offsets of TIM2 blobs inside a texbank child (type-0x21 texture bank)."""
+    return [i for i in range(len(child) - 4) if child[i:i + 4] == b"TIM2"]
+
+
+def write_png(path, w: int, h: int, rgba: bytes) -> None:
+    """Minimal dependency-free RGBA PNG writer."""
+    import zlib
+    raw = b"".join(b"\x00" + rgba[y * w * 4:(y + 1) * w * 4] for y in range(h))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + \
+            struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    Path(path).write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(
+        ">IIBBBBB", w, h, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+def mesh_part_layout(b: bytes) -> list[dict]:
+    """Per-part payload layout evidence for a mesh (b1=0x22) child.
+
+    Observed on the owned disc: part payloads begin with `count` u32 LE
+    offsets (often 6 values + 2 zeros per 32-byte run), followed by float
+    data whose first triples look like model-space positions (|v| < 500).
+    """
+    _, parts = mesh_parts(b)
+    rows = []
+    for p in parts:
+        o, cnt, kind = p["offset"], p["count"], p["kind"]
+        tab_end = o + 4 * cnt
+        ints = struct.unpack_from(f"<{min(cnt, 8)}I", b, o) if cnt else ()
+        floats = ()
+        for fo in range(tab_end, min(tab_end + 64, len(b) - 12), 4):
+            cand = struct.unpack_from("<3f", b, fo)
+            if all(x == x and abs(x) < 500 for x in cand):
+                floats = cand
+                break
+        rows.append({"kind": kind, "count": cnt, "offset_table_end": tab_end,
+                     "table_head": ints, "first_float_triple": tuple(round(v, 3) for v in floats)})
+    return rows
+
+
+def export_character_package(iso: Path, entry: int, out_dir: Path) -> dict:
+    """Export one X_DATA character package: raw mesh child, part layout
+    evidence and every texbank TIM2 as PNG. Read-only against the ISO."""
+    import hashlib
+    from .gta_rw import iso_files
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with Path(iso).open("rb") as f:
+        files = iso_files(f)
+        lba, size = files["X_DATA.BIN"]
+        base = lba * SECTOR
+        f.seek(base)
+        n = struct.unpack("<I", f.read(8)[4:])[0]
+        f.seek(base)
+        tab = afs_table(f.read(16 + 8 * n), size)
+        f.seek(base + tab["offsets"][entry])
+        pkg = f.read(tab["sizes"][entry])
+    kids = momo_children(pkg)
+    result: dict = {"package": f"X_DATA:{entry}", "children": [], "textures": [], "mesh": None}
+    for j, (o, z) in enumerate(kids):
+        c = pkg[o:o + z]
+        kind = classify(c)
+        if kind == "mesh" and result["mesh"] is None:
+            mp = out_dir / f"x{entry}_mesh{j}.bin"
+            mp.write_bytes(c)
+            result["mesh"] = {"child": j, "size": z, "path": str(mp),
+                              "sha256": hashlib.sha256(c).hexdigest(),
+                              "layout": mesh_part_layout(c)}
+        elif kind == "texbank":
+            for k, off in enumerate(texbank_tim2_offsets(c)):
+                blob = c[off:]
+                try:
+                    pics = tim2_rgba(blob)
+                except ValueError:
+                    continue
+                for pi, (w, h, rgba) in enumerate(pics):
+                    pp = out_dir / f"x{entry}_c{j}_t{k}_p{pi}.png"
+                    write_png(pp, w, h, rgba)
+                    result["textures"].append({"child": j, "tim2_off": off, "w": w, "h": h,
+                                               "path": str(pp),
+                                               "sha256": hashlib.sha256(rgba).hexdigest()})
+        result["children"].append({"index": j, "kind": kind, "size": z})
+    return result
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="DMC2 PS2 disc inventory (read-only)")
