@@ -144,8 +144,11 @@ core lands, `decide()` is the function to move onto it.
   of keeping its own table, so one enemy identity feeds the tactical map, the bots and this rule.
 - `369495c0`: Switch-only gating (the operator's 2026-11-10 update), this lane log, and a clicked ring counted in
   `rings_deployed`/`ring_kills` like the bot's own.
-- `76d098fc`: the RE6 native-cave verifier and the local-installation check (below).
-- the commit this note rides on: the PM status block above, cherry-picked onto main together with `76d098fc`.
+- `76d098fc` (on the branch `ds-grenade-ring-20261110`): the RE6 native-cave verifier and the local-installation
+  check (below). It is on main as the cherry-pick `690f1d28` - the branch commit's hash differs because it was
+  cherry-picked onto main rather than merged.
+- the two PM-note commits (`09cfc9a7`, `f2c7004f`): the status block above, cherry-picked onto main together with
+  the verifier.
 
 The branch stays the place for the next round of work; main carries everything shipped so far.
 
