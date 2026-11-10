@@ -1882,3 +1882,11 @@ def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     moved = state(floor=1)
     moved["players"][1]["room"] = 11
     assert C.apply_master_build_tick(ad, moved, stats) is False and len(calls) == 2
+
+
+def test_speedrun_constants_leave_a_cleared_room_quickly():
+    """Operator #7534: bots stood in one doorway; stall windows must be short, boss hold unaffected."""
+    assert C.SPEEDRUN is True
+    assert C.ADVANCE_STALL_S <= 20.0
+    assert C.ADVANCE_STALL_S < C.STALL_HARDCAP_S <= 80.0
+    assert C.STALL_HARDCAP_S > C.BOSS_NOPROG_S      # boss no-progress escape still precedes the hardcap

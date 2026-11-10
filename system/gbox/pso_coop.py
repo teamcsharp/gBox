@@ -807,14 +807,15 @@ FENCE_PAST_OVERSHOOT = 75.0  # how far PAST the fence to RAM-place P1 so it land
 P1_CROSS_PLACE_S = 5.0       # P1 at an open fence this long without crossing -> RAM-write it past the fence
 FENCE_GIVEUP_S = 28.0        # ANTI-STALL: attempt a fence hold at most this long, then give up and keep MOVING
 FENCE_RETRY_S = 45.0         # after giving up on a fence, explore/fight this long before re-attempting it
-ADVANCE_STALL_S = 90.0       # FULL EXPLORATION (operator 11-03: explore + MAP every room before advancing; warp is
+SPEEDRUN = True              # operator #7534: bots must speedrun; a cleared room that yields no new room is left at once
+ADVANCE_STALL_S = 20.0       # (was 90 s) SPEEDRUN: warp on after 20 s without a new room. Earlier note: FULL EXPLORATION (operator 11-03: explore + MAP every room before advancing; warp is
                              # LAST-RESORT anti-stuck, NOT normal progress). Normal progress = walking door-to-door,
                              # clearing each room; the timer RESETS on every NEW room, so a bot that keeps exploring
                              # never warps. Only when a CLEARED area yields NO new room for this long (reachable rooms
                              # exhausted) does it advance to the next floor. Never-stand (wander/idle-drift) keeps it
                              # MOVING through these windows - exploration IS constant movement. Boss floors exempt.
 ADVANCE_WARP_GAP_S = 10.0    # minimum time between native floor warps (don't spam the loader)
-STALL_HARDCAP_S = 120.0      # ABSOLUTE anti-freeze (non-boss) last resort: no new room for this long -> warp REGARDLESS
+STALL_HARDCAP_S = 80.0       # ABSOLUTE anti-freeze (non-boss) last resort: no new room for this long -> warp REGARDLESS
                              # of enemies/cleared state (a gate that genuinely can't be crossed must never permafreeze).
 STUCK_MOVE_S = 3.0           # P1 hasn't physically TRANSLATED (>WEDGE_MOVE) for this long -> parked: wander to break it
 BOSS_SAFETY_S = 600.0        # BOSS DEFEAT: absolute ceiling - hold a boss floor up to this (10 min) while winning; a
@@ -2432,7 +2433,7 @@ class Controller:
             # FULL EXPLORATION: do NOT advance a cleared area while there are still UNVISITED
             # rooms in it (frontier). Keep exploring room-to-room; only the absolute hardcap
             # (genuinely stuck, can't reach the rest) may warp past unexplored rooms.
-            if self._frontier:
+            if self._frontier and not SPEEDRUN:
                 return False
             room = p1.get('room')
             if any(e.get('kind') == 'enemy' and type(e.get('hp')) in (int, float) and e['hp'] > 0
