@@ -223,11 +223,24 @@ def walk_path(read_pos, hold, waypoints, *, tolerance=8.0, log=None, room_of=Non
 # delta best points at the target, and replaces that estimate with what actually happened. A rotating camera is then just
 # a change in the estimates, absorbed on the next press.
 
-def greedy_walk(read_pos, hold, target, *, keys=KEYS, tolerance=7.0, max_steps=40, step=0.55, log=None) -> dict:
+def greedy_walk(read_pos, hold, target, *, keys=KEYS, tolerance=7.0, max_steps=40, step=0.55, log=None,
+                push_through=False, pushes=2, push_distance=30.0, overshoot=0.0) -> dict:
+    """Reach `target` by pressing one key at a time and re-measuring what each press did.
+
+    Two options exist for doorways, because a door fails in two different ways:
+
+    * ``overshoot`` -- after arriving at the target, keep walking that many units past it along the approach direction.
+      Needed when the walk *succeeds* at the door's coordinate and therefore stops beside it (a doorway is a volume).
+    * ``push_through=True`` -- when the walk is *stuck* (no key moves), re-aim ``push_distance`` past the goal and keep
+      going, ``pushes`` times. Needed when the door's collision stops the character before the coordinate.
+    """
     """Reach `target` by pressing one key at a time and re-measuring what each press did."""
     log = log or (lambda _m: None)
     effects = {}
     trail = []
+    pushes_left = pushes
+    overshoot_left = float(overshoot or 0.0)
+    origin = read_pos() or (0.0, 0.0)
     for key in keys:                                   # bootstrap: every key gets a measured effect
         before = read_pos()
         hold(key, step)
@@ -247,6 +260,18 @@ def greedy_walk(read_pos, hold, target, *, keys=KEYS, tolerance=7.0, max_steps=4
         remaining = math.hypot(dx, dz)
         trail.append({"at": (round(pos[0], 1), round(pos[1], 1)), "remaining": round(remaining, 1)})
         if remaining <= tolerance:
+            if overshoot_left:
+                # arrived at the door's coordinate: a doorway is a volume, so keep going through it
+                ux0, uz0 = _norm(target[0] - origin[0], target[1] - origin[1])
+                if ux0 == 0.0 and uz0 == 0.0:
+                    ux0, uz0 = _norm(pos[0] - origin[0], pos[1] - origin[1])
+                if ux0 == 0.0 and uz0 == 0.0:
+                    ux0, uz0 = 1.0, 0.0
+                target = (target[0] + ux0 * overshoot_left, target[1] + uz0 * overshoot_left)
+                trail[-1]["overshoot_to"] = (round(target[0], 1), round(target[1], 1))
+                log(f"arrived at the door; overshooting to {trail[-1]['overshoot_to']}")
+                overshoot_left = 0.0
+                continue
             return {"ok": True, "why": "arrived", "steps": trail, "end": pos}
         ux, uz = _norm(dx, dz)
         order = sorted(effects.items(), key=lambda kv: -(kv[1][0] * ux + kv[1][1] * uz))
@@ -267,6 +292,23 @@ def greedy_walk(read_pos, hold, target, *, keys=KEYS, tolerance=7.0, max_steps=4
                 break
             effects[key] = (0.0, 0.0)                  # blocked just now: stop trusting it until it works
         if not moved:
+            # A doorway in PSO is a volume you cross, not a point you stand on: a walk that stops *at* a door's
+            # coordinates just stands next to it (round 26 walked through one only after being told to keep going past
+            # the coordinate). So instead of failing, re-aim past the goal and keep walking.
+            if push_through and pushes_left > 0 and effects:
+                pushes_left -= 1
+                ux0, uz0 = _norm(target[0] - origin[0], target[1] - origin[1])
+                if ux0 == 0.0 and uz0 == 0.0:
+                    ux0, uz0 = 1.0, 0.0
+                beyond = (target[0] + ux0 * push_distance, target[1] + uz0 * push_distance)
+                log(f"stuck: pushing through toward {tuple(round(v, 1) for v in beyond)}")
+                trail.append({"at": (round(pos[0], 1), round(pos[1], 1)), "push_to":
+                              (round(beyond[0], 1), round(beyond[1], 1))})
+                # the effects are still valid directionally; keep them and walk to the point beyond the door
+                target = beyond
+                effect_keys = list(effects)
+                effects = {k: effects[k] for k in effect_keys if effects[k] != (0.0, 0.0)} or effects
+                continue
             log("every key failed to move the character")
             return {"ok": False, "why": "stuck: no key moved the character", "steps": trail, "end": read_pos()}
     return {"ok": False, "why": f"gave up after {max_steps} steps", "steps": trail, "end": read_pos()}
