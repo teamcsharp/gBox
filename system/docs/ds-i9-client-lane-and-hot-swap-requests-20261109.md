@@ -604,3 +604,70 @@ the worker cache and one donor file was missing from `recovery-re6-update-roster
 the working update-only build was recreated as `recovery-re6-update-only-20261109b`. Any test that depends on a build
 must recreate it or use the current one. `Yuzu`'s `pauseWhenInBackground` is already false, so a 0 FPS screen means the
 game deadlocked, not that the emulator paused.
+
+## Round 22 status (2026-11-09, ~19:45 CST): the bad donor is identified - Helena - and the multi-swap build runs
+
+1. **Artifacts recovered from the content-addressed store.** The worker cache had pruned the donor files (every roster
+   build was an empty shell), but the Spark serves `/api/artifacts/<sha256>`: all **45 roster donors restored and
+   verified** (26,037,744 bytes, 45/45 sha256 match) into `.tmp/roster-restore/`. So builds are ephemeral but the
+   artifact store is the durable source — the "local offerings" path holds even when the cache does not.
+2. **Bisect result: `uPl01HeadHelenaUsa.arc` (and its Asia twin) is the bad donor.**
+   * 9 heads (all) -> deadlock after "Save successful";
+   * 7 heads (all except Helena) -> **runs a full round**: the RESULTS screen shows "Urban Chaos", "LEON S. KENNEDY",
+     Kills 0 / Score 0 / Rank E at 51 FPS;
+   * the Leon+Helena pair reached RESULTS once but a later run of it logged `Unmapped ReadBlock @ 0x0C00000103`, so
+     Helena's head is unstable rather than strictly fatal — it must be excluded.
+3. That single bad donor explains the 36-file non-body hang as well (Helena's head was in it). The 45-file roster may
+   also involve the body group, which is the next test: the full roster **minus the Helena files** (41 arcs).
+
+## Round 23 status (2026-11-09, ~20:20 CST): the body donors load and play; the 41-arc hang is in hands/accessories
+
+| Build (update ExeFS + …) | Result |
+| --- | --- |
+| 7 heads (no Helena) | runs a full round (RESULTS evidence, round 22) |
+| **9 body arcs** | **loads and plays**: stage select -> "Time Bonus" tip -> LOADING -> live round, timer 01'31"33, 000/150, enemies in the street |
+| 41 arcs (whole roster minus the 4 Helena head/accessory files) | hangs at `loading` |
+| 45 arcs | crashes |
+
+Two findings:
+
+1. The **body donors are loadable** — the first body-swap build to reach gameplay. But the player model renders as a
+   **broken, distorted mesh** (a giant malformed shape in the foreground), which matches their ~0.09-0.48 resource
+   ratios: they are re-encoded donor arcs whose skeleton/skinning does not fit this build. So the reskin works at the
+   engine level and needs correct donor bodies for a good look.
+2. Since the 7-head set and the 9-body set both run, the 41-arc hang must come from a **hand or accessory** donor (8
+   hands + 8 AcHeads remain untested). That is the next bisect: hands alone, then AcHeads alone.
+
+Note: the continue/save prompt appears on every build with a saved state; declining it (right + A) is now part of the
+drive, and the bodies-only run needed that decline before it could reach the stage select.
+
+## Round 24 status (2026-11-09, ~20:25 CST): hands swap runs and renders clean; the 41-arc hang points at the AcHeads
+
+| Build (update ExeFS + …) | Result |
+| --- | --- |
+| 7 heads | runs a full round |
+| 9 bodies | runs; player model renders as a broken/distorted mesh |
+| **18 hands** | **runs and renders cleanly**: live round, timer 01'42"95, 000/150, the character's hands/gloves visible in frame |
+| 41 arcs (heads 7 + hands 18 + bodies 9 + AcHeads 7) | hangs at `loading` |
+| 45 arcs | crashes |
+
+So each of the three groups runs on its own, and the 41-arc hang must come from the **AcHead** group (the only one still
+untested; 9 arcs, or 7 in that build). Next test: AcHeads alone, then the 43-arc roster (all but the 4 Helena files) if
+the AcHeads pass — or the 34-arc roster without the bad AcHead.
+
+Practical note: the hands-only build is the first swap that both runs and looks correct, so it is the current best
+"reskin" candidate for the mercmode parameter work; the body donors need correct assets before they can be shipped.
+
+## Round 25 status (2026-11-09, ~20:35 CST): the AcHead group is the 41-arc hang; its bisect needs the RAM-driven nav
+
+* **9 AcHead arcs alone -> hangs at `loading`** (0 FPS, `LOADING...` on screen, no crash log line). With heads (7) and
+  hands (18) and bodies (9) each running alone, the AcHead group is confirmed as the source of the 41-arc hang.
+* A Leon-AcHead-only build (2 files) was driven with a **fixed key sequence** and drifted into the **Survivors** lobby
+  (CREATE GAME / NETWORK SELECTION / ... / START GAME) instead of the Mercenaries flow - the fixed sequence is not
+  reliable when the menu state differs (the continue state changes the entry path). Inconclusive; the RAM-driven
+  `screen()` navigation is the reliable way and must be used for the next AcHead bisect.
+* Inventory so far: heads 7 run, hands 18 run **and render cleanly**, bodies 9 run (broken mesh), AcHeads 9 hang,
+  Helena head 1 unstable. A shippable clean roster is therefore heads + hands + bodies (34 arcs) today.
+
+Next: RAM-driven AcHead bisect (Leon, then Chris/Piers/Jake/Sherry/Ada, then the Asia duplicates), then the 34-arc
+clean roster as the shipped reskin build, then the hot-reload acceptance test on it.
