@@ -96,3 +96,36 @@ to stay away for five continuous minutes *while it is queued or above it*. The p
 
 Nothing needs changing in the code for this; it is a timing rule, and it is now recorded instead of being discovered again.
 Jobs at this point: `fda9e1b1d19b4151` cancelled, no session, no queue.
+
+## Round 62: the mechanism, exactly (and why "just launch it" from the operator cannot be obeyed directly)
+
+The operator asked for the launch directly. The plane still held it, and reading `gbox/background_testing.py` explains why
+in one function:
+
+```python
+IDLE_MIN_S = 300
+def admission_reason(worker, excluded_names, budget_percent=70, *, allow_active=False, require_gpu=True):
+    if worker.get('os') == 'windows' and not allow_active:
+        idle = worker.get('idle_seconds')
+        if idle is None or idle < IDLE_MIN_S:
+            return 'Waiting for five minutes without operator input.'
+    ... cpu/gpu/memory budgets ...
+```
+
+* **The only bypass is `allow_active=True`, and the only caller that passes it is MercMode presentation launches**
+  (`mercmode.presentation_launch` -> `admission_reason(..., 101, allow_active=True, require_gpu=False)`). For a PSO
+  `launch_game`, `allow_active` is False, so **every agent launch needs 300 s of no operator input** - and the operator
+  typing to this session resets that timer, so the request and the gate are in direct tension.
+* The actor does not matter: `gbox-agent` (the in-app agent) was tried explicitly and the job stayed queued with the same
+  reason, so the exemption in the *route*-level guard is not the gate that fires; the claim-level background-testing
+  admission is.
+* At 16:24 the idle gate did reach **310 s** (so the timer does pass) but the CPU read **74-96 %** in the same window
+  (`budget_percent = 70`), so the CPU gate then held it: both gates must be open in the *same* claim.
+
+**What is left, honestly:** either the operator presses Play (foreground, their own action - the intended path), or they
+stay away for five minutes with the CPU under 70 % and a queued launch will be admitted. A launch job is left queued
+(`0091f40e47964868`) so it fires in the first such window; it can be cancelled at any time with
+`POST /api/jobs/0091f40e47964868/cancel`.
+
+The driver and boot walk are ready: the moment a session exists, `pso_boot.py walk` -> `save-state` -> `install-jumpstates`
+completes CP4, and the same window reads CP9's runtime seed.
