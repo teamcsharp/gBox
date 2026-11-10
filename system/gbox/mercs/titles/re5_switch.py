@@ -47,6 +47,7 @@ from . import re5_switch_aim, re5_switch_prompt
 from . import re5_specials                 # the characters' special moves in play (stun -> finisher, Wesker's dash)
 from .. import qte                         # universal QTE handling: the vision grab-fallback when the RAM read tears
 from .. import threat_memory               # who hurt him and what they did first, learned per class (THREAT_FILE)
+from ..core import combat                  # the universal fight (UNIVERSAL_CORE): at import, for the hot reload
 
 TITLE_ID = "010018100CD46000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/010018100CD46000-ram.json
@@ -491,17 +492,21 @@ HEAD_H, HEAD_R, KNEE_H, SHOULDER_H, BODY_R, CHEST_H = 160.0, 22.0, 45.0, 145.0, 
 # front of him at air"): every aim height and hit test took a Majini's standing body (chest 110 cm), so a crawler at
 # his feet was aimed 80 cm over its back and a dot on it did not count. A class in LOW_BODIES is aimed at and
 # hit-tested with its own heights above its feet (cm): head, chest (the aim), knee..shoulder (the body), radius.
-from collections import namedtuple as _namedtuple
-Body = _namedtuple("Body", "head chest knee shoulder r")
+# The bodies are the universal core's (gbox.mercs.core.combat.KIND_BODIES: a crawler is a crawler and a dog a dog in
+# every title; RE5's measures are where those kinds came from), so a body measured here aims RE4 and RE6 too.
+Body = combat.Body                       # (head chest knee shoulder r), the same fields as before
 HUMAN = Body(HEAD_H, CHEST_H, KNEE_H, SHOULDER_H, BODY_R)
 LOW_BODIES = {
-    "uEm32": Body(45.0, 30.0, 0.0, 55.0, 60.0),   # the Experimental Facility's crawlers (27 cm at the bind pose)
-    "uEm0b": Body(75.0, 55.0, 15.0, 80.0, 50.0),  # the dogs (86 cm, four legs)
+    "uEm32": combat.KIND_BODIES["crawler"],   # the Experimental Facility's crawlers (27 cm at the bind pose)
+    "uEm0b": combat.KIND_BODIES["dog"],       # the dogs (86 cm, four legs)
 }
 
 
 def body(e) -> Body:
-    """The body profile of this enemy's class (LOW_BODIES), else a standing Majini's."""
+    """The body profile of this enemy's class (LOW_BODIES; through combat.BodyTable with UNIVERSAL_CORE), else a
+    standing Majini's."""
+    if UNIVERSAL_CORE:
+        return combat.BodyTable(default=HUMAN, classes=LOW_BODIES).body(e)
     return LOW_BODIES.get((e or {}).get("class"), HUMAN)
 FIRE_SLACK = 60.0                        # a ray ending this much short of him ends on something in front of him
 STEER_RAY_CM = 50.0                      # a shorter ray (the dot at the muzzle) carries too little direction to steer by
@@ -812,6 +817,44 @@ WINDUP_COUNTERS = ("windup_seen", "windup_interrupts", "hits_after_windup", "win
 THREAT_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re5-switch-threats.json"
 LETHAL_KEEP_X, LETHAL_BACKOFF_MAX_S, GRUDGE_R = 1.15, 1.8, 1000.0
 TM_COUNTERS = ("lethal_backoffs", "grudge_picks", "tm_hits_attributed", "tm_hits_unattributed", "tm_lethal_starts")
+# The universal core (gbox.mercs.core.combat; the operator 2026-11-10: "the same aimbot I am critiquing in RE4 to
+# improve across 5 and 6"). RE5 is where most of the shared fight came from (the body profiles, threat memory, the
+# stalled-aim reposition of re5_switch_aim.keep_active); with UNIVERSAL_CORE on it takes what it lacked:
+#   * the not-in-control detector (combat.NotInControl, FROZEN): RE4's fix for the intro card that took 620 shots -
+#     FROZEN_FIRE_SHOTS pulls (or FROZEN_TRIGGER_S of the trigger held) over FROZEN_FIRE_S, unmoved (his position, his
+#     heading, the aim's pitch and the laser's line all still), with no hit, no Majini's health falling and no kill:
+#     A every FROZEN_TAP_S, a spell at most FROZEN_PAGE_MAX_S, never with a Majini within FROZEN_CLEAR_R (a grab is
+#     the held branch's);
+#   * bosses and dangerous foes first (combat.identity_tier: gbox.mercs.enemy_identity once it lands, beside the
+#     doctrine's BOSS_HP_MIN): after the lit dynamite and the wind-ups, before the grudge, never at the cost of one at
+#     arm's length (GRAB_THREAT_R) - _tier_pick in _choose;
+#   * the bodies through the shared table (body() above: combat.BodyTable, the same rows).
+# Off: as before (the rollback).
+UNIVERSAL_CORE = True
+FROZEN, FROZEN_KEY, FROZEN_FIRE_S, FROZEN_FIRE_SHOTS, FROZEN_TRIGGER_S = True, "a", 5.0, 8, 4.0
+FROZEN_CM, FROZEN_RAD, FROZEN_TAP_S, FROZEN_PAGE_MAX_S, FROZEN_CLEAR_R = 3.0, 0.01, 0.2, 4.0, 150.0
+
+
+def combat_profile() -> combat.TitleProfile:
+    """RE5 Switch's calibration of the universal fight, from the live constants (a knob turned is in the next one)."""
+    from ..core import doctrine as _d
+    return combat.TitleProfile(
+        title="re5_switch", title_id=TITLE_ID, units_per_cm=1.0, aim_model="laser_ray",
+        sticks="Type D: the right stick turns the body fast (gun down) and moves the aim slowly (gun up, ~36-42 deg/s); "
+               "ZL raise, ZR held (the game repeats it); the RAM aim lock where it holds",
+        aim_btn="zl", fire_btn="zr", turn_sign=1, raise_s=READY_S, raise_tol=BODY_AIM_TOL, fire_tol_min=AIM_TOL,
+        engage_cm=ENGAGE_R, level_dy_cm=LEVEL_DY, max_dy_cm=MAX_DY,
+        bodies=combat.BodyTable(default=HUMAN, classes=LOW_BODIES), head_r_cm=HEAD_R, fire_slack_cm=FIRE_SLACK,
+        specials=("character_specials", "quick_turn", "dynamite", "mines", "rampage", "flash"),
+        threat_file=THREAT_FILE, windup_r_cm=WINDUP_R, grudge_r_cm=GRUDGE_R, lethal_keep_x=LETHAL_KEEP_X,
+        lethal_backoff_max_s=LETHAL_BACKOFF_MAX_S,
+        attacking=lambda e: bool((e.get("act") or 0) & E_ATTACKING),
+        windup=lambda e: e.get("motion") in WINDUP_MOTIONS or bool((e.get("act") or 0) & E_ATTACKING),
+        turn_w=1.0, level_w=LEVEL_COST, keep_x=KEEP_TARGET, grab_r_cm=GRAB_THREAT_R,
+        tier=combat.identity_tier(TITLE_ID, fallback=combat.hp_tier(boss_hp=_d.BOSS_HP_MIN)),
+        page_key=FROZEN_KEY, frozen_cm=FROZEN_CM, frozen_rad=FROZEN_RAD, no_effect_s=FROZEN_FIRE_S,
+        no_effect_shots=FROZEN_FIRE_SHOTS, no_effect_trigger_s=FROZEN_TRIGGER_S, page_tap_s=FROZEN_TAP_S,
+        page_max_s=FROZEN_PAGE_MAX_S, page_clear_cm=FROZEN_CLEAR_R)
 # Dynamite Majini (operator: "dynamite Majini - see them, keep away, shoot the dynamite"). A Majini carrying a lit
 # stick of dynamite is a threat of its own: the fuse is already burning, so the blast is coming whether or not his
 # own attack flag is up. Three behaviors, in the wind-up's pattern:
@@ -3670,6 +3713,63 @@ class Bot:
         flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         return any(abs(e["pos"][1] - py) <= LEVEL_DY and flat(e) <= HOLD_R for e in live)
 
+    # --- the universal core (UNIVERSAL_CORE: gbox.mercs.core.combat) ------------------------------------------------
+    def _core_error(self, exc) -> None:
+        self.stats["universal_core_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        self.stats["universal_core_errors"] = self.stats.get("universal_core_errors", 0) + 1
+
+    def _tier_pick(self, p, live, cur, now):
+        """The universal scorer's boss / dangerous band over these (combat.priority with combat_profile().tier): a boss
+        or a dangerous Majini in reach on his level is the next target - unless another stands at arm's length
+        (GRAB_THREAT_R): then that one. None: RE5's own choice goes on (the dynamite and the wind-ups came first)."""
+        try:
+            prof = combat_profile()
+            cands = combat.candidates(prof, p, live)
+            for c in cands:
+                c["windup"], c["grudge"] = False, 0          # (the wind-ups are _windup_tick's, the grudge comes next)
+            got = combat.priority(prof, cands)
+        except Exception as exc:                             # noqa: BLE001 - the core never costs the choice
+            self._core_error(exc)
+            return None
+        if got is None:
+            return None
+        c, kind, why = got
+        e = c["e"]
+        if e is not cur:
+            self.stats[kind + "_picks"] = self.stats.get(kind + "_picks", 0) + 1
+            self.target_at = now
+        self.stats["core_pick"] = f"{kind}: {why}"[:160]
+        self._set_target(e.get("ptr", e.get("slot")), now)
+        return e
+
+    def _frozen_core(self, p, snap, near, now) -> dict | None:
+        """combat.NotInControl (FROZEN above): A every FROZEN_TAP_S while his shots do nothing and nothing moves him."""
+        d = self.__dict__
+        try:
+            nic = d.get("_uc_nic")
+            if nic is None:
+                nic = d["_uc_nic"] = combat.NotInControl(self.stats, prefix="frozen")
+            hits = self.stats.get("hits", 0) or 0
+            last = d.get("_uc_hits")
+            if last is None or hits > last[0]:
+                last = d["_uc_hits"] = (hits, now if last is not None else -1e9)   # (a scored hit: an effect)
+            lz = snap.get("laser") or {}
+            ray = (heading(lz["at"][0] - lz["from"][0], lz["at"][2] - lz["from"][2])
+                   if lz.get("up") and lz.get("from") and lz.get("at") else None)
+            page = nic.check(combat_profile(), now, p["pos"], (p.get("rot"), p.get("aim_pitch"), ray),
+                             shots=self.stats.get("shots", 0) or 0, last_hit_at=last[1],
+                             trigger_s=self.stats.get("trigger_s") or 0.0, enemies=snap.get("enemies") or (),
+                             kills=snap.get("kills"), nearest_cm=near)
+        except Exception as exc:                             # noqa: BLE001 - the core never costs the tick
+            self._core_error(exc)
+            return None
+        if page is None:
+            return None
+        self._gun_down()
+        self.doing, self.why = "prompt", (f"not in control ({page.cause}: his shots do nothing and nothing moves him): "
+                                          f"{FROZEN_KEY}")
+        return {"tap": page.tap} if page.tap else {"hold": ()}
+
     def _choose(self, p, live, now):
         """The Majini to fight. A target this close is not flipped to one behind him (the rear target's flip): one this
         near behind is the quick turn's / the turn's, not the aim's. One he can shoot without turning (inside raise_tol,
@@ -3709,6 +3809,10 @@ class Bot:
                 self.target_at = now
             self._set_target(wu.get("ptr", wu.get("slot")), now)
             return wu
+        if UNIVERSAL_CORE:
+            tiered = self._tier_pick(p, live, cur, now)      # a boss / dangerous one in reach (never one at arm's length
+            if tiered is not None:                           # left for him)
+                return tiered
         gr = self._grudge_e
         if gr is not None and any(e is gr for e in live):   # the one that hurt him this round: resolved next
             if gr is not cur:
@@ -5820,6 +5924,10 @@ class Bot:
             self.doing, self.why = "reload", "the gun reloads"
             self.aim_since = now                             # reloading: the gun comes back up by itself
             return {"hold": ("zl",)}
+        if UNIVERSAL_CORE and FROZEN:
+            paged = self._frozen_core(p, snap, near, now)   # his shots do nothing and nothing moves him: A
+            if paged is not None:
+                return paged
         if self.mines is not None:
             if snap.get("mine_settings"):
                 self.mines.configure(snap["mine_settings"])      # the operator's `mines` op (re5_switch_mods.mines)

@@ -27,6 +27,7 @@ import uuid
 
 from . import driver as D
 from .core import doctrine          # at import: the bot hot reload only tracks modules loaded with the worker
+from .core import combat as _combat  # noqa: F401 - the universal fight (the titles' UNIVERSAL_CORE), the same reason
 from .reactions import PromptPresser
 from .read_retry import NativeReadRetry
 

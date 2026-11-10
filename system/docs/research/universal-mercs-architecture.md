@@ -429,3 +429,155 @@ skeleton, and the operator rules in the cited memories.
 transfer functions and their exact curves, the `_universal/tuning.json` two-tier store with
 normalized denormalize-on-read and pooled cross-title confirmation, and all axis
 ranges/defaults in §4.2 (starting points, to be calibrated live like every other constant).
+
+---
+
+## 9. Stage A: one aim-and-fight core for RE4, RE5 and RE6 Switch (2026-11-10)
+
+Branch `mercs-universal-core`. The operator, 2026-11-10: "these mercenary titles are all over
+the shoulder aiming ... I want the same aimbot I am critiquing in RE4 to improve across 5 and 6
+despite their differences ... I hate seeing the bot idle in RE4 but capable in RE5 and insolent
+in RE6 never showing the improvements endeavored." This section is the analysis of the three
+fights as they are on main (grounded in the code), what is the same psychology and what is
+calibration, and what stage A built (`gbox/mercs/core/combat.py`) and wired.
+
+### 9.1 The three pipelines, as they are
+
+| | RE4 Switch (`re4_switch.Bot`) | RE5 Switch (`re5_switch.Bot`) | RE6 Switch (`re6_switch.Bot`) |
+|---|---|---|---|
+| **Units** | mm (`MM_PER_CM` 10, `units_per_m` 1000); constants written in cm x 10 | cm | cm |
+| **Enemy census** | heap scan by vtable (`UnitCensus`): `{ptr, pos, rot, hp, hp_max, class, id}`. Every Ganado is ONE class (0xAE7050); a heavy is told only by `hp_max` (`HEAVY_HP` 2000). **No motion / attack byte.** Kills from the census (the RAM counter was retracted) | MT enemy list: `{ptr/slot, class "uEm10", motion byte, act flags (E_ATTACKING), pos, hp, hp_max}` | sEnemy list: `{slot, ptr, pos, hp, hp_max, class "uEm5200"}`, plus the **action name** (`+0x13F0`, e.g. `cEm1000ActIkakuKnife`) within 20 m |
+| **Line of sight** | the stage room-collision mesh (`re4_nav`: `clear_segment` / `floor_segment`), feet to feet. **No ray of the gun** | the **laser sight's RAM ray** (muzzle -> dot) + the native nav mesh; ray-short-of-him = wall | laser ray when read (flaky on Citron), the camera's line, the nav mesh `clear()`, and **what the shots did** (`NOHIT_S`: a target that loses no health is blocked) |
+| **Body heights** | none: the shot's tolerance is `atan(FIRE_HALF_WIDTH_MM 300 / d)`; no pitch control | `HUMAN` (chest 110) + `LOW_BODIES` per class (crawlers, dogs); `dot_on` / `through` hit tests on the ray | fixed constants (chest 115), one body for every class |
+| **Target pick** | in `ENGAGE_RANGE_CM` (12 m): clear line first (all walled: the nearest, then a flank); a mob (4 in 6 m): the one on the gun's line; the combo owed: the quickest kill; else the nearest. Pre-empted by: own hazard, low life run, heavy keep-away, swarm escape, melee follow-up | rear target, own level (no pitch swings), K's learned cost (enemy_db), **lit dynamite**, **wind-up** (fixed motions / attack flag / learned lethal, within learned reach), **grudge**, close keep, threat-first (threat distance with approach speed, ranged band), in front, commit / keep / no flip-flop; combo urgency | **melee wind-up** (action keys, 5 m), ranged/ledge shooters when none is close, the big ones (`BIG_HP`) with the RAM lock, the lock's sweep, cost (distance x turn), commit / keep; survival: close only; combo: nearest open |
+| **Raise -> aim -> fire** | tank: `|err| > RAISE_TOL` (0.35 rad) body turn with the left stick (`TURN_SIGN`); gates (`_may_fire`: controls / range / sight / hazard); the right stick lays the aim (a tap inside `AIM_NUDGE`); gun up `AIM_READY_S` 0.25; trigger **tapped** every `FIRE_GAP_S`; reload after `RELOAD_SHOTS` | gun down: right stick turns the body (pulsed), the quick turn for one behind; up within `raise_tol` (12 deg, wider up close); `READY_S` 0.15 for the laser; yaw/pitch pulses onto the chest of his body; trigger **held** while the dot is on a body or the ray runs through him; wall / frozen-dot / sky / cam guards; RAM aim lock | gun up with one in `FRONT_CONE` (60 deg) in reach (a kick / quick shot first up close); `READY_S` 0.12; the laser ray, else the camera's line; fire on the line through any zombie, else **geometry fire** (8 deg, mesh-clear or within 5 m) and long shots; trigger tapped (handgun) / held (automatic) under the native cooldown; steps back / kites while firing; `AIM_WALK` in at him (8 m); RAM aim lock |
+| **"In control"** | `_frozen`: a never-stand step that moved nothing, or **8 shots / 5 s unmoved with no hit**: A | held motions / Break-free prompt: mash; sticks pressed and no move: break free; a frozen laser dot: re-raise. **No shots-without-effect rule** | held states: B mash / panic turn; dying; stuck sticks. **No shots-without-effect rule** |
+| **Learns** | the turn sign (live flip), the menus' pace, a sight-block log. **Nothing about enemies** | **threat memory** (who hurt him, lethal motions, reach, attacks that land through his shots), K plans (enemy_db: aim height per class and range), per-band aim errors, tier-a tuner | the blast's reach (`BlastBook`), stage books, prompt spots, the lock's pitch bias, the tablet's gain, the tuner. **No threat memory** |
+
+### 9.2 The same psychology, and the calibrations
+
+**Universal** (the same in every title, now shared code where stage A reached): see the threats
+(who, how far, on his floor, on his line); pick the one that matters - **the one about to hit him
+(survival), the boss / dangerous one in reach, the one that already hurt him, then the cheapest
+by distance x turn x level x line** - and never leave one at arm's length for a boss or a grudge;
+raise when the body is within the raise tolerance; lay the line on the **body of that class**;
+fire while the line is on him; **verify by effect** (his health falls): shots with no effect mean
+a wall (go round) or a scene that takes no input (page it); never stand idle with a threat in
+range (engage, or move); survival pre-empts (escape along open floor, heal, break the grab).
+
+**Per-title calibration** (`combat.TitleProfile`, each title's `combat_profile()` from its live
+constants - a knob turned live is in the next profile):
+
+| Calibration | RE4 | RE5 | RE6 |
+|---|---|---|---|
+| units | mm (10 / cm) | cm | cm |
+| sticks | tank: left stick turns the body, right stick fine-aims with ZL | Type D: right stick body (fast, gun down) / aim (slow, gun up) | right stick camera / aim; left stick camera-relative |
+| turn sign | learned live (`TURN_SIGN`) | +1 (rleft = larger heading) | +1 |
+| aim model | `tank_heading` (no ray, no pitch) | `laser_ray` | `laser_camera_geometry` |
+| raise time | 0.25 s | 0.15 s | 0.12 s |
+| raise tolerance | 0.35 rad | 12 deg (wider up close) | 60 deg cone |
+| fire tolerance | the body's half-angle at d (min 0.02 rad) | the dot on the body / the ray through it | the line through a body; geometry 8 deg, long shot 4 deg |
+| trigger | tapped, `FIRE_GAP_S` | held (the game repeats) | tapped / held, native cooldown |
+| bodies | one Ganado body (r = 30 cm) | `HUMAN` chest 110 + crawlers, dogs | standing zombie chest 115 |
+| his level | 2.5 m | 1.2 m | 1.0 m |
+| wind-up read | none yet | motion byte + attack flag | action names |
+| specials | melee follow-up (Y after a hit), knife, quick turn, Krauser's arm | character specials, dynamite, mines, flash, rampage | quick shot, kick, quick attacks, hit-back quick shots, remote bombs, grenade burst, taunts |
+| page key | A | A | A |
+
+**Improvements one title had and the others lacked** (before stage A):
+* RE4 only: the **shots-without-effect page** (`_frozen` fire rule, the intro card that took 620
+  shots); the **body-width fire tolerance** by distance; the self-learned turn sign; the escape
+  goal searched along open floor; the flank after a held sight gate; the melee follow-up.
+* RE5 only: **threat memory** (grudges, learned lethal wind-ups and reach, step out of attacks his
+  shots do not stop); **per-class low bodies**; the ray-through-body hit test; the wall-shot and
+  frozen-dot guards; threat-first with closing speed; K's learned aim height per class; dynamite;
+  the **stalled-raise reposition** (`re5_switch_aim.keep_active`); no flip-flop / level-first.
+* RE6 only: the **no-hit line-of-sight block** (a target that loses no health is out of sight);
+  geometry fire without the laser; ranged / ledge shooter priority; the big ones focus-fired;
+  hit-back quick shots; native cooldown gating; `AIM_WALK`; the learned blast reach.
+
+### 9.3 What stage A built: `gbox/mercs/core/combat.py`
+
+Pure, title-agnostic, over a normalized view (cm, radians; the profile converts):
+* **(a) bodies** - `Body`, `BodyTable` (class -> a `Body` or a `KIND_BODIES` name: "human",
+  "crawler", "dog" - a body is per kind, so RE5's measured crawler aims RE4 and RE6 too once their
+  class is mapped), and the body-aware `dot_on` / `through` / `line_hits` / `segment_hits` /
+  `half_angle`.
+* **(b) `NotInControl`** - RE4's `_frozen` generalized: the fire rule (`no_effect_shots` or
+  `no_effect_trigger_s` held, over `no_effect_s`, unmoved in position and every facing angle given,
+  no hit / health fall / kill) and the step rule; the page key from the profile; **new**: a spell
+  lasts at most `page_max_s` (a false positive can no longer freeze the bot forever) and no page
+  with an enemy within `page_clear_cm` (titles whose grabs have their own reading).
+* **(c) `Threats`** - `threat_memory` hooked to any title: rows normalized to cm and the profile's
+  class / motion keys; hurt on every health fall (one per `hurt_gap_s`); `priority()`, `step_out()`.
+  `threat_memory` gained `held_needs_flag` (default off: RE5's own wiring unchanged; the core sets
+  it): the motion the attacker is merely in at the hit counts only with his attack flag up -
+  without it a hit taken while a zombie walked taught "walking" as lethal for the round.
+* **(d) the target scorer** - `candidates` / `band` / `rank` / `priority` / `pick`: bands WINDUP
+  (within the class's learned reach) > TIERED (boss / dangerous in reach on his level, distance x
+  `tier_w`) > GRUDGE > REST (distance x turn x level x line, current kept within `keep_x`); in the
+  TIERED and GRUDGE bands one within `grab_r_cm` on his level wins instead. The tier comes from
+  `profile.tier` = `combat.identity_tier(title_id, fallback)`: `gbox.mercs.enemy_identity.tier`
+  (branch enemy-identity; a guarded import in combat.py, so the hookup is already the one line in
+  each profile and goes live when that module is on main) and the title's own read beside it
+  (RE6: `BOSS_HP` / `BIG_HP`; RE4: `HEAVY_HP` = dangerous; RE5: the doctrine's `BOSS_HP_MIN`) -
+  the higher of the two.
+* **(e) `IdleGuard`** - never idle with a threat in range: the gun up `idle_aim_s` without a shot
+  -> "move"; neither attacking nor moving `idle_still_s` -> "engage"; clocks reset over a tick gap.
+* **`TitleProfile`** + `combat.profile(title)`; each title module has `combat_profile()`.
+
+### 9.4 What each title gained (flags: `UNIVERSAL_CORE = True` in `re4_switch`, `re5_switch`, `re6_switch`; off = the old path)
+
+* **RE4**: threat memory (`THREAT_FILE` gbox-data/mercs/re4-switch-threats.json; class key =
+  vtable + max health) - grudges first in `_choose`, reach learned, `_lethal_out` (ready, inert
+  until a Ganado motion is read); boss / dangerous band (a heavy beyond `HEAVY_KEEP_MM` is shot
+  first); body profiles in the fire tolerance (`BODY_CLASSES`, default = the old 30 cm); `_frozen`
+  through `NotInControl` (+ the `FROZEN_PAGE_MAX_S` cap); the idle guard: the gun up `IDLE_AIM_S`
+  (2 s) without a shot at a Ganado in range -> the flank (`FLANK_S` round him) instead of aiming on.
+* **RE5**: `NotInControl` (`FROZEN*`: 8 pulls or 4 s of trigger held over 5 s, unmoved in position,
+  heading, aim pitch and laser line, no effect; not with a Majini within 1.5 m); the boss /
+  dangerous band after the dynamite and the wind-ups (`_tier_pick`); `LOW_BODIES` are now the
+  universal kinds through `combat.BodyTable` (the same numbers).
+* **RE6**: threat memory (`THREAT_FILE` re6-switch-threats.json; motion = the action name) -
+  learned wind-ups the fixed `WINDUP_KEYS` do not know, grudges, `_lethal_out`; the boss /
+  dangerous band (`BOSS_HP` / `BIG_HP`, never past one within `MELEE_R`); `NotInControl`
+  (`FROZEN*`, facing = heading + camera yaw + pitch); body profiles in `aim_point` and every hit
+  test (`BODY_CLASSES`, empty: identical to before); the idle guard: the gun up 2 s without a shot
+  -> `IDLE_WALK_S` in at him as he aims (`AIM_WALK` past 8 m).
+* A core error never costs a tick: the old path runs and `universal_core_error(s)` says so.
+  Shared stats names on every title: `frozen_*`, `windup_picks` / `boss_picks` /
+  `dangerous_picks` / `grudge_picks` / `grab_picks`, `idle_aim_breaks`, `tm_*`, `core_pick`.
+
+**Not wired in stage A (precisely):** RE5's own threat wiring (`self._tm`, `_windup_tick`,
+`_lethal_tick`, the grudge in `_choose`) stays its own and is not yet on `combat.Threats`; RE5 keeps
+its own `keep_active` instead of the idle guard and its own `dot_on` / `through` (the same math);
+the REST band does not replace any title's own cost pick (RE4's crowd cone / combo quickest, RE5's
+threat-first, RE6's lock sweep stay); RE4's learned wind-ups wait for a Ganado motion read (unit
+`+0x116` state, in the layout notes, not yet read by `read_unit`); `BODY_CLASSES` for RE4 / RE6 are
+empty until a low class is measured; the "engage" verdict of the idle guard is measured, not acted
+on, in RE4 / RE6.
+
+### 9.5 Stage B plan
+
+1. **A shared raise / aim / fire controller with per-title stick drivers.** `combat.FireControl`:
+   TURN (body / camera to the target) -> RAISE (`raise_s`) -> LAY (the aim error under the body's
+   half-angle at his distance, from the profile's body table) -> FIRE (tap / hold / cooldown) ->
+   VERIFY (his health within `HIT_S`; no effect -> RE6's no-hit block + RE4's flank + RE5's wall
+   block, one rule). Inputs: a normalized aim error (yaw, pitch) from the title's aim source -
+   heading (RE4), laser ray (RE5), laser / camera / geometry (RE6). Outputs: intents
+   (`turn(err)`, `aim(yaw, pitch)`, `raise`, `fire`, `lower`). Per-title drivers turn intents into
+   keys: `TankDriver` (RE4: left-stick body turn with the learned turn sign, right-stick nudge
+   taps), `TypeDDriver` (RE5: pulsed right stick, dead zones, the quick turn), `CameraDriver` (RE6:
+   camera-relative left stick, fast pitch); the RAM aim lock is a driver capability. Each bot's aim
+   block delegates behind its flag, one title at a time, RE4 first (smallest).
+2. **Cross-title learning of aim offsets per enemy class.** An `AimBook` keyed by (body kind,
+   distance band, weapon family): the aim height and yaw / pitch offset that hit, normalized to the
+   body (a fraction of its height and radius), from RE5's pulls / K plans and RE6's lock shots and
+   pitch bias, stored in `gbox-data/mercs/learned/_universal/aim_book.json` with title-local rows
+   that override; read through each title's class -> kind map. Confirmed by the tuner's bounded
+   step / 8-round confirm / auto-revert with evidence pooled across titles (section 5.3). The same
+   book learns each title's raise time and the hit rate per angular error band (the fire tolerance).
+3. Move RE5's own threat wiring onto `combat.Threats` and turn `held_needs_flag` on for RE5 after
+   a turn of numbers; read RE4's Ganado state for learned wind-ups; fill `BODY_CLASSES` as classes
+   are measured; act on the idle guard's "engage" verdict in RE4 / RE6.
+4. The round reports compare titles by the shared stats names above.

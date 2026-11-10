@@ -38,6 +38,7 @@ import struct
 import time
 
 from ..driver import Driver
+from ..core import combat                          # the universal fight (UNIVERSAL_CORE): at import, for the hot reload
 from . import re4_nav, re4_walk                    # the stage mesh (room collision), the walker and the map's marks
 from . import re4_switch_screens as screens
 
@@ -1114,6 +1115,63 @@ FROZEN_FIRE_S, FROZEN_FIRE_SHOTS = 5.0, 8   # firing this long / this many shots
 TURN_LEARN, TURN_LEARN_N = True, 16
 MELEE_MM, MELEE_REACH_MM, MELEE_CLEAR_MM = 2500.0, 1400.0, 2000.0
 MELEE_WINDOW_S, MELEE_TAP_S, MELEE_CONE = 1.6, 0.3, 0.5
+# The universal core (gbox.mercs.core.combat; the operator 2026-11-10: "I want the same aimbot I am critiquing in RE4 to
+# improve across 5 and 6 ... I hate seeing the bot idle in RE4"): with UNIVERSAL_CORE on, the fight goes through the
+# shared components, each where RE4 had nothing of its own:
+#   * who hurt him (combat.Threats over gbox.mercs.threat_memory, THREAT_FILE): every fall of his life put on the
+#     Ganado that landed it; that one is a grudge for the round and the target before the crowd's / the combo's pick
+#     (_choose); a learned attack that has landed through his shots is run from along open floor (_lethal_out). The
+#     Switch census reads no Ganado motion yet, so the learned wind-ups wait for one (the reach and the grudges do not);
+#   * bosses and dangerous foes first (combat.identity_tier: gbox.mercs.enemy_identity once it lands, beside RE4's own
+#     read - a heavy, HEAVY_HP, is "dangerous"): in reach on his level, before the grudge, never at the cost of one
+#     at arm's length (SWARM_CM) - shot from beyond HEAVY_KEEP_MM, where _heavy_keep leaves him;
+#   * the body profiles (combat.BodyTable, BODY_CLASSES): the shot's tolerance from the target class's own width;
+#   * the not-in-control detector (combat.NotInControl): _frozen's two rules, a spell at most FROZEN_PAGE_MAX_S (paged
+#     that long without a move, A is not the remedy and the fight goes on);
+#   * the idle guard (combat.IdleGuard): the gun up IDLE_AIM_S at a Ganado in range without one shot (a gate that
+#     holds, an aim that does not close) - he rounds him (the flank) instead of standing there aiming.
+# Off: the fight as before (the rollback). A core error never costs the tick: the old path runs (universal_core_error).
+UNIVERSAL_CORE = True
+THREAT_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re4-switch-threats.json"
+THREAT_REACH_MM, GRUDGE_MM, LEVEL_MM = 3000.0, 10000.0, 2500.0   # (RE5's WINDUP_R / GRUDGE_R; doctrine LEVEL_M)
+LETHAL_KEEP_X, LETHAL_BACKOFF_MAX_S, LETHAL_RUN_S = 1.15, 1.8, 1.0
+FROZEN_PAGE_MAX_S = 4.0
+IDLE_AIM_S = 2.0
+# Body profiles: enemy class -> a combat.KIND_BODIES name or a combat.Body (cm). Every Ganado is one class (villager,
+# zealot and soldier alike, a heavy too), so his is the default; a class of another shape joins the census first.
+BODY_CLASSES: dict = {}
+
+
+def threat_class(e) -> str | None:
+    """The class threat memory learns a RE4 enemy under: its unit class with its maximum health (every Ganado is one
+    vtable; a chainsaw man reads 3500 where a villager reads 400)."""
+    cls = (e or {}).get("class")
+    if cls is None:
+        return None
+    top = e.get("hp_max")
+    name = f"{cls:#x}" if isinstance(cls, int) and not isinstance(cls, bool) else str(cls)
+    return f"{name}:{top}" if isinstance(top, int) and not isinstance(top, bool) else name
+
+
+def combat_profile() -> combat.TitleProfile:
+    """RE4 Switch's calibration of the universal fight, from the live constants (a knob turned is in the next one)."""
+    return combat.TitleProfile(
+        title="re4_switch", title_id=TITLE_ID, units_per_cm=MM_PER_CM, aim_model="tank_heading",
+        sticks="tank: the left stick turns the body (TURN, TURN_SIGN); ZL held, the right stick fine-turns the aim "
+               "(AIM_TURN); ZR tapped",
+        aim_btn=AIM_BTN, fire_btn=FIRE_BTN, turn_sign=TURN_SIGN, raise_s=AIM_READY_S, raise_tol=RAISE_TOL,
+        fire_tol_min=FIRE_TOL_MIN, engage_cm=ENGAGE_RANGE_CM / MM_PER_CM, level_dy_cm=LEVEL_MM / MM_PER_CM,
+        max_dy_cm=LEVEL_MM / MM_PER_CM,
+        bodies=combat.BodyTable(default=combat.HUMAN._replace(r=FIRE_HALF_WIDTH_MM / MM_PER_CM), classes=BODY_CLASSES),
+        specials=("melee_follow_up", "quick_turn", "knife", "special_arm"),
+        threat_file=THREAT_FILE, windup_r_cm=THREAT_REACH_MM / MM_PER_CM, grudge_r_cm=GRUDGE_MM / MM_PER_CM,
+        lethal_keep_x=LETHAL_KEEP_X, lethal_backoff_max_s=LETHAL_BACKOFF_MAX_S,
+        class_key=threat_class, motion_key=lambda e: None, attacking=None, windup=None,
+        turn_w=1.0, level_w=0.0, keep_x=1.5, grab_r_cm=SWARM_CM / MM_PER_CM,
+        tier=combat.identity_tier(TITLE_ID, fallback=combat.hp_tier(dangerous_hp=HEAVY_HP)),   # a heavy: dangerous
+        page_key=FROZEN_KEY, frozen_cm=FROZEN_MM / MM_PER_CM, frozen_rad=FROZEN_RAD, no_effect_s=FROZEN_FIRE_S,
+        no_effect_shots=FROZEN_FIRE_SHOTS, step_s=STAND_STEP_S, page_tap_s=FROZEN_TAP_S, page_max_s=FROZEN_PAGE_MAX_S,
+        page_clear_cm=0.0, idle_aim_s=IDLE_AIM_S)
 
 
 @re4_walk.attach                       # .walker (approach(goal) -> stick keys), snap["nav"], the map's marks, plan()
@@ -1283,6 +1341,10 @@ class Bot:
                 self.stats["blocked_picks"] += 1
                 self.why = "every Ganado in range is behind a wall: round to the nearest"
                 return min(near, key=lambda t: t[0])
+        if UNIVERSAL_CORE and p is not None:
+            got = self._threat_pick(p, near)             # the scorer's first tiers: a wind-up, then a grudge
+            if got is not None:
+                return got
         crowd = [t for t in near if t[0] <= CROWD_CM]
         if len(crowd) >= CROWD_N:
             lined = [t for t in crowd if abs(t[1]) <= CROWD_CONE]
@@ -1340,6 +1402,8 @@ class Bot:
             self.doing, self.why = "idle", "no player in RAM"
             return {}
         self._count_kills(snap, now)
+        if UNIVERSAL_CORE:
+            self._core_tick(p, snap, now)             # the profile of this tick, who hurt him (combat.Threats)
         if snap.get("kill_candidates"):                # the probe's counters beside the census (KILL_CANDIDATES)
             self.stats["kill_candidates"] = " ".join(f"{k}={v}" for k, v in snap["kill_candidates"].items())
         owed = self.combo_owed(now)
@@ -1350,6 +1414,8 @@ class Bot:
             return frozen
         act = self._fight(p, snap, now)
         act = self._never_stand(p, act, snap, now)
+        if UNIVERSAL_CORE:
+            act = self._idle_core(p, act, snap, now)   # the gun up at one in range without a shot: round him
         up = AIM_BTN in set(act.get("hold") or ())
         self._aim_since = (self._aim_since if self._aim_since is not None else now) if up else None
         if self.director is not None:
@@ -1375,6 +1441,10 @@ class Bot:
         heavy = self._heavy_keep(live, now, p, snap)
         if heavy is not None:
             return heavy
+        if UNIVERSAL_CORE:
+            act = self._lethal_out(p, live, snap, now)    # a learned attack his shots do not stop: out of its reach
+            if act is not None:
+                return act
         act = self._escaping(p, snap, now, "swarm")
         if act is not None:
             return act
@@ -1419,7 +1489,13 @@ class Bot:
                         return flank
                 self.doing, self.why = "hold", "aligned, but a fire gate blocks the shot"
                 return {"hold": {AIM_BTN}}                   # aim kept, no shot
-            tol = max(FIRE_TOL_MIN, min(self.TURN_TOL, math.atan2(FIRE_HALF_WIDTH_MM, max(dist, 1.0))))
+            half = FIRE_HALF_WIDTH_MM
+            if UNIVERSAL_CORE:                           # the body profile: his class's own half width (mm)
+                try:
+                    half = self._profile().body_units(e).r
+                except Exception as exc:                 # noqa: BLE001 - the core never costs the shot
+                    self._core_error(exc)
+            tol = max(FIRE_TOL_MIN, min(self.TURN_TOL, math.atan2(half, max(dist, 1.0))))
             if abs(err) > tol:
                 self.stats["raises"] += 1
                 self.doing = "aim"
@@ -1572,7 +1648,29 @@ class Bot:
         return {"hold": set()}
 
     def _frozen(self, p, now) -> dict | None:
-        """A tap of FROZEN_KEY while he is not in control (FROZEN_*), else None."""
+        """A tap of FROZEN_KEY while he is not in control (FROZEN_*), else None: through the shared detector
+        (combat.NotInControl) with UNIVERSAL_CORE, else the first version (_frozen_legacy)."""
+        if UNIVERSAL_CORE:
+            if not FROZEN:
+                return None
+            try:
+                stepped = (self.__dict__.get("_fz") or {}).get("stepped")
+                hits = self.__dict__.get("_hit_at")
+                last_hit = max(hits.values(), default=-1e9) if isinstance(hits, dict) else -1e9
+                page = self._uc("nic").check(self._profile(), now, p["pos"], p.get("rot"),
+                                             shots=self.stats.get("shots", 0) or 0, last_hit_at=last_hit,
+                                             stepped_at=stepped)
+            except Exception as exc:                     # noqa: BLE001 - the core never costs the tick
+                self._core_error(exc)
+                return self._frozen_legacy(p, now)
+            if page is None:
+                return None
+            self.doing, self.why = "frozen", f"not in control ({page.cause}: an intro, a death camera or a grab): A"
+            return {"hold": set(), "tap": page.tap} if page.tap else {"hold": set()}
+        return self._frozen_legacy(p, now)
+
+    def _frozen_legacy(self, p, now) -> dict | None:
+        """_frozen before the universal core (UNIVERSAL_CORE off)."""
         fz = self.__dict__.setdefault("_fz", {"pos": None, "rot": None, "tap": -1e9, "on": False})
         pos, rot = tuple(p["pos"]), p.get("rot")
         moved = (fz["pos"] is None or self._flat(fz["pos"], pos) > FROZEN_MM
@@ -1717,11 +1815,112 @@ class Bot:
         self.doing, self.why = "step", f"stood {STAND_MAX_S:.1f} s: a step (he never stands)"
         return dict(act, hold=keys)
 
+    # --- the universal core (UNIVERSAL_CORE: gbox.mercs.core.combat) ---
+    def _uc(self, name: str):
+        """The core's pieces, made on first use (a bot the hot reload rebinds to this class never ran this version's
+        __init__): threats (combat.Threats on THREAT_FILE), nic (combat.NotInControl), idle (combat.IdleGuard)."""
+        d = self.__dict__
+        got = d.get("_uc_" + name)
+        if got is None:
+            if name == "threats":
+                got = combat.Threats(self._profile(), self.stats)
+            elif name == "nic":
+                got = combat.NotInControl(self.stats, prefix="frozen")
+            else:
+                got = combat.IdleGuard(self.stats)
+            d["_uc_" + name] = got
+        return got
+
+    def _profile(self) -> combat.TitleProfile:
+        """This tick's profile (made at the tick's start by _core_tick), else a fresh one."""
+        return self.__dict__.get("_uc_prof") or combat_profile()
+
+    def _core_error(self, exc) -> None:
+        self.stats["universal_core_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        self.stats["universal_core_errors"] = self.stats.get("universal_core_errors", 0) + 1
+
+    def _core_tick(self, p, snap, now) -> None:
+        """Every tick: the profile (the live constants), and who hurt him (the living Ganados, his life's falls)."""
+        try:
+            prof = self.__dict__["_uc_prof"] = combat_profile()
+            self._uc("threats").observe(now, p, snap.get("enemies") or (), prof)
+        except Exception as exc:                         # noqa: BLE001 - the core never costs the tick
+            self._core_error(exc)
+
+    def _threat_pick(self, p, near):
+        """(distance, error, enemy) of the scorer's first tiers among `near` (combat.Threats.priority: a wind-up within
+        its reach, else a grudge on his level), or None: RE4's own choice stands."""
+        try:
+            got = self._uc("threats").priority(p, [t[2] for t in near])
+        except Exception as exc:                         # noqa: BLE001
+            self._core_error(exc)
+            return None
+        if got is None:
+            return None
+        e, kind, why = got
+        pick = next((t for t in near if t[2] is e), None)
+        if pick is None:
+            return None
+        if e.get("ptr") != self.target:
+            self.stats[kind + "_picks"] = self.stats.get(kind + "_picks", 0) + 1
+        self.why = why
+        self.stats["core_pick"] = f"{kind}: {why}"[:160]
+        return pick
+
+    def _lethal_out(self, p, live, snap, now) -> dict | None:
+        """A learned attack that lands through his shots, under way within its reach (combat.Threats.step_out): away
+        along open floor (_escape), LETHAL_RUN_S at a time; walled in, he fights it."""
+        act = self._escaping(p, snap, now, "lethal")
+        if act is not None:
+            return act
+        try:
+            e = self._uc("threats").step_out(p, [t[2] for t in live], now)
+        except Exception as exc:                         # noqa: BLE001
+            self._core_error(exc)
+            return None
+        if e is None:
+            return None
+        act = self._escape(p, live, snap, now, "lethal", LETHAL_RUN_S)
+        if act is None:
+            return None
+        self.doing, self.why = "evade", (f"{threat_class(e)}: an attack that hurt him through his shots (learned): "
+                                         "out of its reach")
+        return act
+
+    def _idle_core(self, p, act, snap, now) -> dict:
+        """combat.IdleGuard on this tick's action: the gun up IDLE_AIM_S at the Ganado in range without a shot ->
+        FLANK_S of the walk round to him (the flank), the gun down."""
+        try:
+            hold = set(act.get("hold") or ())
+            tap = act.get("tap")
+            verdict = self._uc("idle").tick(self._profile(), now, threat=self.target is not None,
+                                            aiming=AIM_BTN in hold, fired=tap in (FIRE_BTN, ACTION_BTN, KNIFE_BTN),
+                                            moving=bool(hold & {"lup", "ldown", "lleft", "lright"}))
+        except Exception as exc:                         # noqa: BLE001
+            self._core_error(exc)
+            return act
+        if verdict != "move":
+            return act
+        e = next((x for x in snap.get("enemies") or () if x.get("ptr") == self.target and x.get("pos")), None)
+        if e is None:
+            return act
+        err = wrap(heading(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) - (p.get("rot") or 0.0))
+        self._flank = {"key": self.target, "until": now + FLANK_S}
+        self.stats["flanks"] = self.stats.get("flanks", 0) + 1
+        keys, how = self._approach(p, e["pos"], err, snap, run=False)
+        self.doing, self.why = "flank", f"the gun up {IDLE_AIM_S:.1f} s without a shot: round him by {how}"
+        return {"hold": keys}
+
     def prompt_ok(self, button, snap, now):
         return False
 
     def save(self):
-        pass
+        t = self.__dict__.get("_uc_threats")
+        if t is not None:
+            try:
+                t.save()                                 # who hurt him, for the next round (THREAT_FILE)
+            except Exception:                            # noqa: BLE001
+                pass
 
 
 def flip_turn_sign(bot=None) -> int:

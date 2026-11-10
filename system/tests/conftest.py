@@ -133,6 +133,19 @@ def _private_re5_threats(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _private_re4_re6_threats(tmp_path_factory, monkeypatch):
+    """The same for RE4 and RE6 Switch (re4_switch.THREAT_FILE / re6_switch.THREAT_FILE: the universal core's threat
+    memory, gbox.mercs.core.combat.Threats): no test reads or teaches the live bot's learned threats."""
+    for name in ("re4_switch", "re6_switch"):
+        try:
+            mod = __import__(f"gbox.mercs.titles.{name}", fromlist=["THREAT_FILE"])
+        except Exception:                                    # noqa: BLE001 - a checkout without it
+            continue
+        if hasattr(mod, "THREAT_FILE"):
+            monkeypatch.setattr(mod, "THREAT_FILE", tmp_path_factory.mktemp(f"{name}_threats") / f"{name}-threats.json")
+
+
+@pytest.fixture(autouse=True)
 def _no_system_drive_rule(monkeypatch):
     """A worker refuses game data on a Windows system drive (gbox/storage_policy.py); tests keep their temporary
     folders wherever pytest puts them (C: on a Windows box), so the rule only applies where a test asks for it
