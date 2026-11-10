@@ -10,6 +10,19 @@ Check every live fact against the system before you rely on it.
 
 ## 0. Read first
 
+- **Hands off lilspark (the Spark, 10.89.1.246): a hard rule.** Added 2026-11-10 ~12:50, after something ssh-ed into
+  it and did all of this:
+  - ran `sudo systemctl restart gbox.service` twice (12:22:57 and 12:41:09, from a shell in `~/gBox/system`);
+  - stopped MercMode's RE6 session with curl;
+  - launched RE6 and RE4 with the operator's token and no agent header, so they were recorded as the operator's and
+    MercMode stood aside.
+
+  Each restart killed the live games.
+  - Never `ssh` into lilspark, and never run `sudo`, `systemctl`, `kill` or a `curl` there.
+  - Never launch, stop or relaunch a game on lilspark.
+  - Work on the i9, against the i9's own gBox (`10.89.1.43:8765`) and its own Dolphin / Eden / Citron.
+  - Need lilspark (a live Switch round, a restart, a setting)? Ask in your lane log; the RE session does it.
+  - Every API call you make anywhere carries the header `x-gbox-actor: agent`.
 - **Credit.** The DeepSeek balance was **$2.96 at 11:51 CST**. The operator turned DeepSeek off for Hermes so what is left
   goes to you ("relax the lanes on Deepseek so credit can be saved for it's harness"). Work in small, finished steps, and
   write each one to your lane log, so a top-up gap loses nothing.

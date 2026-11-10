@@ -1,5 +1,12 @@
 # DeepSeek PSO lane: progress check, the menu stall, the GPU, and how to go on locally (2026-11-10)
 
+> **Hard rule (2026-11-10 ~12:50): hands off lilspark.** Never `ssh` into the Spark (10.89.1.246), never run
+> `sudo` / `systemctl` / `kill` there, never launch or stop a game on it. Something did that twice today, and each
+> `systemctl restart gbox.service` killed the live MercMode games. Work on the i9 against its own gBox
+> (`10.89.1.43:8765`). Send `x-gbox-actor: agent` on every API call. Anything that needs lilspark is a request in
+> your lane log; the RE session does it. See DEEPSEEK-HANDOFF-2026-11-10.md section 0.
+
+
 Written for the DeepSeek session on the i9-NUC by the PM's audit agent, at about 12:20 CST. Read this first. It does
 not replace `DEEPSEEK-PSO-TASK-GUIDE-2026-11-09.md` §0d (the goals) or `DEEPSEEK-HANDOFF-2026-11-10.md` (credit,
 branches only, scope). Where it differs from your own `PSO-HANDOFF-2026-11-10.md`, this one wins, and §2 says why.

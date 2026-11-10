@@ -1,5 +1,12 @@
 # DeepSeek task: the grenade ring on every Mercenaries title (2026-11-10)
 
+> **Hard rule (2026-11-10 ~12:50): hands off lilspark.** Never `ssh` into the Spark (10.89.1.246), never run
+> `sudo` / `systemctl` / `kill` there, never launch or stop a game on it. Something did that twice today, and each
+> `systemctl restart gbox.service` killed the live MercMode games. Work on the i9 against its own gBox
+> (`10.89.1.43:8765`). Send `x-gbox-actor: agent` on every API call. Anything that needs lilspark is a request in
+> your lane log; the RE session does it. See DEEPSEEK-HANDOFF-2026-11-10.md section 0.
+
+
 Written for the DeepSeek session. The operator, 2026-11-10, about the PiP's grenade button, whose menu shows
 "Flash (unavailable) / Hand (unavailable) / Incendiary (unavailable)": "i need the grenade deployment feature completed
 across all titles in full ... and all these titles." The RE session's own agent for this was stopped part-way, so the
