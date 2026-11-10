@@ -277,6 +277,15 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             sleep(0.6)
             continue
         stats["stage_seen"] = stats["stage_seen"] or where == "select_stage"
+        if where in ("main_menu", "extras_menu", "mercs_title", "select_player", "select_stage") \
+                and not stats.get("pre_round_done"):
+            # the saved RE4 mods into this boot before its round is built (the loadouts, the weapon tables)
+            stats["pre_round_done"] = True
+            try:
+                from .mercs.titles import re4_switch_mods
+                stats["pre_round"] = re4_switch_mods.pre_round(ad, m)
+            except Exception as exc:                         # noqa: BLE001 - a mod never costs the walk
+                stats["pre_round_error"] = f"{type(exc).__name__}: {exc}"[:160]
         if where in ("story", "story_prompt", "title", "main_menu", "extras_menu"):
             # back before the stage select: no dark picture is a round until a stage is picked again (live 2026-11-10
             # 23:26: after Yes on Cancel loading? the black was taken for a round and its three entry A presses went

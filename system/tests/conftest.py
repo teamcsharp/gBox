@@ -79,6 +79,19 @@ def _private_enemy_knowledge(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _private_re4_mods(tmp_path_factory, monkeypatch):
+    """Tests never read or write the real RE4 Switch mods settings (re4_switch_mods.SETTINGS_FILE: the operator's saved
+    sidebar choices, which every new session loads); each test starts from none."""
+    try:
+        from gbox.mercs.titles import re4_switch_mods as mod
+    except Exception:                                        # noqa: BLE001 - a checkout without it
+        return
+    monkeypatch.setattr(mod, "SETTINGS_FILE", tmp_path_factory.mktemp("re4_mods") / "re4-mods.json")
+    mod.ORIG.clear()
+    monkeypatch.setattr(mod.D, "FIRE_GAP_S", mod.D.FIRE_GAP_S)     # Fire rate x paces the fight: put back after each test
+
+
+@pytest.fixture(autouse=True)
 def _private_re5_doors(tmp_path_factory, monkeypatch):
     """Tests never write the real RE5 Switch door memory (re5_switch.DOOR_FILE: the doors, windows and ledges each stage
     showed, which the bot walks to when nobody is left to fight) nor its log (DOOR_LOG): a test's synthetic door would

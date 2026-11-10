@@ -287,3 +287,29 @@ def test_the_aim_lock_writes_the_bots_aim_onto_the_facing(ad):
     assert abs(struct.unpack("<f", ad.read_memory(ptr + D.U_YAW, 4))[0] - 1.25) < 1e-6
     D.AIM_REQUEST.update(at=_t.monotonic() - 5)
     assert "aim_writes" not in M.maintain(ad, s), "a stale request is not written"
+
+
+
+def test_settings_outlive_the_session(ad, tmp_path, monkeypatch):
+    """MercMode plays one RE4 round per boot: a setting made in one session is there in the next one."""
+    monkeypatch.setattr(M, "SETTINGS_FILE", tmp_path / "re4-mods.json")
+    M.run(ad, "one_hit", on=True, snap=snap(ad))
+    M.run(ad, "fire_rate", 5, snap=snap(ad))
+    M.ORIG.clear()
+    st = M._state(ad)
+    assert st["one_hit"] is True and st["fire_rate"] == 5.0
+
+
+def test_pre_round_puts_the_saved_settings_into_the_boot_once(ad, tmp_path, monkeypatch):
+    monkeypatch.setattr(M, "SETTINGS_FILE", tmp_path / "re4-mods.json")
+    _weapon_tables(ad)
+    gap = D.FIRE_GAP_S
+    try:
+        M.run(ad, "fire_rate", 20, snap=snap(ad))
+        M.ORIG.clear()
+        monkeypatch.setattr(D, "module_base", lambda m: BASE)
+        out = M.pre_round(ad)
+        assert out["fire_tables"] == 2
+        assert M.pre_round(ad) == {}, "once a boot"
+    finally:
+        D.FIRE_GAP_S = gap

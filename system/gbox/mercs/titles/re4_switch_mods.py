@@ -25,10 +25,12 @@ The player's life is not in his unit on Switch (re4_switch PLAYER_HP_IN_UNIT): u
 """
 from __future__ import annotations
 
+import json
 import math
 import struct
 import threading
 import time
+from pathlib import Path
 
 from . import re4_switch as D
 from . import re4_weapons as W
@@ -69,8 +71,36 @@ class Mem:
         return self.adapter.read_memory(a, n)
 
 
+# The operator's settings outlive a session (MercMode plays one RE4 round per boot): every setter saves them here
+# and a new session's state starts from them, the way RE5's saved mods profile is applied each round.
+SETTINGS_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re4-mods.json"
+SAVED_KEYS = ("enemy_health", "one_hit", "kill_time", "unlimited_health", "weapon_power", "max_level", "aim_lock",
+              "fire_rate", "infinite_ammo", "random_weapon", "loadout_weapon")
+
+
+def _load_saved() -> dict:
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if k in SAVED_KEYS} if isinstance(data, dict) else {}
+
+
+def _save(st: dict) -> None:
+    try:
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SETTINGS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({k: st[k] for k in SAVED_KEYS if k in st}, indent=1), encoding="utf-8")
+        tmp.replace(SETTINGS_FILE)
+    except OSError:
+        pass
+
+
 def _state(ad) -> dict:
-    return ORIG.setdefault(id(ad), {})
+    st = ORIG.get(id(ad))
+    if st is None:
+        st = ORIG[id(ad)] = _load_saved()
+    return st
 
 
 def _num(value, lo: float, hi: float, name: str) -> float:
@@ -121,6 +151,7 @@ def enemy_health(ad, multiplier, snap: dict | None = None) -> dict:
     st["enemy_health"] = frac
     if frac >= 1.0:
         st.pop("enemy_health", None)
+    _save(st)
     capped = _cap_health(ad, (snap or {}).get("enemies"), frac) if frac < 1.0 and snap else 0
     return {"enemy_health_x": frac, "verified": True, "capped": capped,
             "note": "every living Ganado's health kept at most this share of his maximum (lowered only, read back)"}
@@ -149,6 +180,7 @@ def _keep_life(ad, snap) -> int:
 def unlimited_health(ad, on: bool, snap: dict | None = None) -> dict:
     st = _state(ad)
     st["unlimited_health"] = bool(on)
+    _save(st)
     kept = _keep_life(ad, snap) if on else 0
     return {"unlimited_health": bool(on), "verified": True, "kept": kept,
             "note": "the player's life put back to its maximum whenever it falls (re4_switch.PLAYER_LIFE)"}
@@ -191,6 +223,7 @@ def _apply_power(ad, base: int, st: dict) -> int:
 def weapon_power(ad, multiplier, snap: dict | None = None) -> dict:
     st = _state(ad)
     st["weapon_power"] = _num(multiplier, 1.0, POWER_MAX_X, "weapon_power")
+    _save(st)
     base = (snap or {}).get("module_base")
     rows = _apply_power(ad, base, st) if isinstance(base, int) else 0
     st.pop("fp_applied_base", None) if not rows else None
@@ -201,6 +234,7 @@ def weapon_power(ad, multiplier, snap: dict | None = None) -> dict:
 def max_level(ad, on: bool, snap: dict | None = None) -> dict:
     st = _state(ad)
     st["max_level"] = bool(on)
+    _save(st)
     base = (snap or {}).get("module_base")
     rows = _apply_power(ad, base, st) if isinstance(base, int) else 0
     return {"max_level": bool(on), "verified": True, "rows": rows,
@@ -208,7 +242,9 @@ def max_level(ad, on: bool, snap: dict | None = None) -> dict:
 
 
 def aim_lock(ad, on: bool) -> dict:
-    _state(ad)["aim_lock"] = bool(on)
+    st = _state(ad)
+    st["aim_lock"] = bool(on)
+    _save(st)
     return {"aim_lock": bool(on), "verified": True,
             "note": "the player's facing written onto the bot's target each snapshot (re4_switch.AIM_REQUEST)"}
 
@@ -271,6 +307,7 @@ def _apply_fire_rate(ad, base: int, st: dict) -> int:
 def fire_rate(ad, multiplier, snap: dict | None = None) -> dict:
     st = _state(ad)
     st["fire_rate"] = _num(multiplier, 1.0, FIRE_RATE_MAX_X, "fire_rate")
+    _save(st)
     base = (snap or {}).get("module_base")
     n = _apply_fire_rate(ad, base, st) if isinstance(base, int) else 0
     return {"fire_rate_x": st["fire_rate"], "verified": True, "tables": n, "trigger_gap_s": round(D.FIRE_GAP_S, 3),
@@ -295,6 +332,7 @@ def _apply_ammo(ad, base: int, st: dict) -> int:
 def infinite_ammo(ad, on: bool, snap: dict | None = None) -> dict:
     st = _state(ad)
     st["infinite_ammo"] = bool(on)
+    _save(st)
     base = (snap or {}).get("module_base")
     n = _apply_ammo(ad, base, st) if isinstance(base, int) else 0
     return {"infinite_ammo": bool(on), "verified": True, "rows": n,
@@ -400,6 +438,7 @@ def loadout_weapon(ad, weapon, snap: dict | None = None) -> dict:
     picks = {ch: [iid] if iid is not None else [None, None] for ch in W.LOADOUT_SITES}
     done = _patch_loadout(ad, base, picks)
     st["loadout_weapon"] = iid
+    _save(st)
     return {"verified": bool(done), "weapon": W.name(iid) if iid else "the game's own", "characters": len(done),
             "note": "from the next round: every character starts with it, equipped, at max level"}
 
@@ -407,6 +446,7 @@ def loadout_weapon(ad, weapon, snap: dict | None = None) -> dict:
 def random_weapon(ad, on: bool, snap: dict | None = None) -> dict:
     st = _state(ad)
     st["random_weapon"] = bool(on)
+    _save(st)
     st.pop("weapon_given_round", None)                 # a fresh pick on the next snapshot of a round
     st.pop("loadout_drawn", None)
     return {"random_weapon": bool(on), "verified": True,
@@ -416,6 +456,7 @@ def random_weapon(ad, on: bool, snap: dict | None = None) -> dict:
 def one_hit(ad, on: bool, snap: dict | None = None) -> dict:
     st = _state(ad)
     st["one_hit"] = bool(on)
+    _save(st)
     capped = _cap_health(ad, (snap or {}).get("enemies"), 0.0) if on and snap else 0
     return {"one_hit": bool(on), "verified": True, "capped": capped,
             "note": "every living Ganado at 1 health: the first hit kills"}
@@ -468,6 +509,7 @@ def kill_time(ad, on: bool, seconds=None) -> dict:
     st = _state(ad)
     s = KILL_TIME_S if seconds is None else _num(seconds, 0.0, KILL_TIME_MAX_S, "kill_time seconds")
     st["kill_time"] = {"on": bool(on), "seconds": s}
+    _save(st)
     return {"kill_time_on": bool(on), "kill_time_s": s, "verified": True,
             "note": "+seconds on the round clock for every kill the census counts"}
 
@@ -503,6 +545,39 @@ def _kills_of(snap: dict, st: dict) -> int:
         seen[e["ptr"]] = hp
     st["hp_seen"] = seen
     return new
+
+
+def pre_round(ad, m=None) -> dict:
+    """On the menus before a round (re4switch_bot calls it once a boot): the saved settings put into this boot - the
+    static tables (fire rate, ammo, firepower) and the Mercenaries loadouts (a random draw, or the chosen weapon) -
+    so the round the walk is about to start is built with them."""
+    base = D.module_base(m if m is not None else Mem(ad))
+    if base is None:
+        return {}
+    out: dict = {}
+    with _LOCK:
+        st = _state(ad)
+        if st.get("pre_round_base") == base:
+            return {}
+        st["pre_round_base"] = base
+        if st.get("weapon_power", 1.0) != 1.0 or st.get("max_level"):
+            out["power_rows"] = _apply_power(ad, base, st)
+            st["fp_applied_base"] = base
+        if st.get("fire_rate", 1.0) != 1.0:
+            out["fire_tables"] = _apply_fire_rate(ad, base, st)
+        if st.get("infinite_ammo"):
+            out["ammo_rows"] = _apply_ammo(ad, base, st)
+        st["rf_applied_base"] = base
+        if st.get("random_weapon") or st.get("loadout_weapon"):
+            import random as _random
+            fixed = st.get("loadout_weapon")
+            draws = _draw_loadouts(_random.Random(), fixed) if st.get("random_weapon") else \
+                {ch: [fixed] for ch in W.LOADOUT_SITES}
+            done = _patch_loadout(ad, base, draws)
+            st["loadout_drawn"] = base
+            st["loadouts"] = {W.CHARACTERS.get(ch, ch): [W.name(i) for i in ids] for ch, ids in done.items()}
+            out["loadouts"] = len(done)
+    return out
 
 
 def maintain(ad, snap: dict | None = None) -> dict:
