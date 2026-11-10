@@ -23,6 +23,79 @@ Three kinds of statement are kept apart below: **measured** (run on the real fil
 | Overlays (not in Git) | `C:\_tools\gBox\.scratch-merc-recovery\assets\re4\re4-enemy-pool-01\`, `re4-cast-pool-01\`, `re4-stage-greybox-v1\`, each `romfs\bio4\...` + `receipt.json` |
 | Inputs (not in Git) | `.scratch-merc-recovery\re4\inputs\{em,etc,imagepackhd,st4}\` copied read-only from the host; the donor library `.scratch-merc-recovery\cast\inputs\library\` (1,483 entries) and its survey `cast\library-survey.json` (650 usable) |
 
+## 0d. Why donors came out giant, exploded or flat, the fix, and the fit gate (2026-11-10, branch `re4-donor-fit`; nothing booted)
+
+The operator saw oversized and stretched characters ("models that I don't even want to see in the rotation"; Leon's
+donor filled the camera). Measured offline on the 19 donors of `re4-cast-pool-01` / `re4-enemy-pool-01` and on the
+whole library survey (647 loadable usable donors), against the native packs. All numbers are bind pose, mm, y up.
+
+**Causes (measured)**
+
+1. **Absolute cross-section scales.** `fit` sized every cross-section, head, hand and foot by `SCALES` (150 / 80 / 100
+   model mm per donor unit), tuned on SA1 Sonic (about 10 cm units). The library has every unit: metres (Def Jam,
+   SoulCalibur, MGS2, GTA, Stranglehold, DOA, Smash: 1.4-3.0 units tall), about 10 cm (JGR, SM64DS, PSO: 18-22),
+   about 2 cm (007 AUF: 96), FF7 field units (about 1,000). Limbs took the native length whatever the unit, so a metre
+   donor was drawn 5-9 cm deep (Razor 7.6 cm, Proof, Toni, Hawk Hana, Golden Kane), the AUF Alpine guard 3.1 m deep
+   and 2.5 m tall, FF7 Vincent / Cloud 30-80 m. The donor-unit the limbs imply (native/donor length) is 20 mm/unit
+   for AUF, about 100 for JGR, about 950 for metre rigs, 2 for FF7 field: the fixed 100-150 is right for one of them.
+2. **An uncapped hip segment.** The hip part was stretched along the donor's hip->chest vector to the native 220 mm.
+   Rigs whose chest joint sits at or under the hip (RE2 GC HUNK: 0.02 units below, 127 degrees off; JGR Rival Ntank:
+   0.7% of the height, 157 degrees off) or at the waist (SoulCalibur) gave a stretch 10-16x the body's own scale (and
+   the part turned upside down): HUNK 2.96 m, Ntank 4.25 m, the Lizardman 1.76x.
+3. **Off-role skin rode the stretch, and the floor was the lowest vertex.** Skin on joints that are no role (25-54% of
+   the weight on AUF, Def Jam, JGR, SoulCalibur rigs: tails, capes, weapons) took the role's transform; under cause 2
+   the Lizardman's tail went to y -802. Feet were anchored by the lowest vertex anywhere, not the soles.
+4. **The rotation is not a cause.** `_aim_rotation` keeps the donor's +z within 20 degrees (|R z . z| >= 0.94) on every
+   role of every donor whose spine points up; only the inverted hip segments of cause 2 turn it.
+5. **Non-humanoid donors.** None was dealt: "Golden Kane pistol 1" is a Stranglehold gang member of the pistol class
+   (88 joints, hips/spine/head), flat for cause 1. The gate still refuses props, vehicles and bodies on all fours.
+
+**The fix** (`re4_switch_models.proportional_fit`, default for `author_body`, `build_class` and both pools;
+`method="legacy"` reproduces `fit` byte for byte): one unit per donor, the median native/donor length of the spine and
+the eight limb segments; every part takes the native length along its segment (no bind joint moves) and that unit
+across it, raised or lowered so it is never more than 1.6x longer than wide or the reverse; the torso is one part
+from the hip to the head joint (hip and chest skin keep bones 0/17 and 2); the head stays upright, capped so p98 of
+its rise is at most 2.0x the native head's rise and its width/depth at most 1.6x the native head; hands follow the
+forearm; each foot is scaled upward so its own sole lands on y 0 under the native ankle.
+
+**The gate** (`FIT_GATE`, `fit_report(donor, body, native=...)`, `check_library_donor(library, slug, target, em_dir)`;
+the native references from `native_envelope`: the five cast packs 1,763-1,855 mm tall, 227-335 mm deep, floor within
+1.2 mm, skeleton span 1,783 (Ada 1,593), no vertex over 300 mm from a role bone except Krauser's blade, the castle
+leaders' sleeves and J.J.'s gatling, 1.4-8.4%):
+
+| check | threshold | why |
+|---|---|---|
+| height (top / native top) | 0.85-1.20 | the cast spans +-2.5%; the game scales Ganados 1.01-1.3 on top; 98% of fitted donors land 0.95-1.14 |
+| depth (z p2..p98) | >= 150 mm, torso >= 90 | natives 227-429; the flat donors 45-76; fitted p1 229 |
+| depth / native | <= 3.0 | tails and long props (Mewtwo 5.4x, the Lizardman 4.8x); fitted p95 2.5 |
+| floor / soles | lowest >= -50 mm, soles within 5 mm | natives 1.2 mm; a robe hem through the floor (PSO FOmarl -122) |
+| width (x p0.5..p99.5 / native skeleton span) | <= 1.35 | natives 0.74-0.80 (Krauser 1.15); fitted p95 1.27; staffs and swords held out (SoulCalibur Kilik, Taki, Seung Mina 1.41-1.75) |
+| head size / native | <= 1.8 | the fit caps at 1.6 |
+| far from every role bone (> 300 mm) | <= 8% of vertices | natives 0-8.4%; Sonic quills, Ice Climber parkas 15-45% |
+| segment stretch (along / donor unit) | 0.59-1.70 | WWF No Mercy forearms 1.63-1.65 on all 46 wrestlers, Ada's short spine 0.61; beyond: SA1 rigs 0.06-0.29, Pikachu 2.0, SA1 Big 2.43 |
+| segment along / across | <= 1.6 | held by the fit; the legacy fit drew 4-12x |
+| humanoid | each limb >= 1% of the skin, legs >= 0.30 and arms >= 0.15 of the standing height, skeleton >= 0.45 of the mesh height, spine within 45 degrees of upright, thigh->foot within 50 degrees of down, mesh depth <= 1.75x its height | pool extremes 3.7%, 0.40, 0.19, 0.57, 35 and 36 degrees, 1.50; a joint z-spread test was dropped: DOA++ rigs stand in a fighting stance (0.45-0.78) |
+
+Over the 647 donors: legacy fit 0 pass on Leon (10 on Ada, 0 on a Ganado); proportional 592 / 595 / 592. The 55
+refused on Leon: the SA1/SA2 Sonic rigs, tailed or chibi Melee/Mario/Yoshi/Bowser, weapon-holding SoulCalibur fighters,
+PSO FOmarl's hem, two JGR rigs with 0.55x shins, Render96 Mario/Luigi.
+
+**The pools draw only passing donors**: `cast_pool` / `enemy_pool` take `gate=FIT_GATE` by default, set a failing donor
+aside with the gate's reasons and deal again; the cross-title reject list `gbox-data/mercs/donor_rejects.json`
+(`donor_rejects`; shapes `{"rejects": {slug: reason|{reason, titles}}}`, a list, a bare map) is left out before the
+deal; the receipt keeps each donor's `fit.gate` (verdict, metrics, native envelope).
+
+**Builds** on lilspark (`~/gBox_alt/scratch/re4-fit-v2/`, the branch code in `code/` and `code-v3/`, the share
+untouched), written through `switch_mods` op write (actor agent), each with the four stage greybox archives of
+`recovery-re4-fitgate-grey-20261110`: `recovery-re4-fit-v2-20261110` (155a422f) and `recovery-re4-fit-v3-20261110`
+(e441c9d6: the same 19 donors, the head rise cap read at p98 and 2.0x instead of the top vertex and 1.35x, which
+had shrunk DOA Zack's head to 0.61, JGR Plug's to 0.68, RE2 PL00CH's to 0.88; four packs differ). Same seed and
+history as the -01 pools: cast Alpine guard (Leon), Goji (HUNK), Voldo (Krauser; the Lizardman, Nightmare, Rock,
+Seung Mina and Taki set aside by the gate), Vincent field (Wesker), Razor (Ada); 14 Ganado bodies Zack, Plug, Cid
+field, HUnewearl / Nyne, Kokiri Boy, Edge Master, Claude / Meryl, Hawk Hana, PL00CH / Peach, Rig diver, Russian mob
+lieutenant. Receipts with every donor's fit report beside them (`recovery-re4-fit-v*-20261110.receipt.json`), offline
+renders in `renders/` (orthographic, not game frames). Not booted.
+
 ## 0c. Every stage greyboxed, the donor atlases fixed (2026-11-10, branch `re4-greybox-all-stages`; nothing booted)
 
 Built and checked offline on lilspark (`~/gBox_alt/scratch/re4-greybox-all/`, branch code in `code/`, the share
