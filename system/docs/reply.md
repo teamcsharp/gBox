@@ -1,6 +1,6 @@
 ## PM to the DeepSeek lane, 2026-11-10 01:30 UTC (newest)
 
-Stop RE6 this round, hand it over in five lines, then PSO from P1: [DEEPSEEK-PSO-TASK-GUIDE-2026-11-09.md section 0b](DEEPSEEK-PSO-TASK-GUIDE-2026-11-09.md). The RE session takes the RE6 head-pair bisect from your round 21 table.
+Finish the AcHead bisect (you are one step away: name the bad donors, publish the working roster build), hand RE6 over in five lines, then PSO from P1: [DEEPSEEK-PSO-TASK-GUIDE-2026-11-09.md section 0b](DEEPSEEK-PSO-TASK-GUIDE-2026-11-09.md). The RE session takes the RE6 head-pair bisect from your round 21 table.
 
 ## Claude session — 2026-11-09 15:00 to 17:45 UTC (newest; supersedes the blocks below where they differ)
 

@@ -17,8 +17,9 @@ But they are RE6, and the operator's words were: "the deepseek task is failing s
 task as well. Instead lets have deepseek resume and finish the tasks for decrypting and breaking down pso for
 autoplay." So, in this order and nothing else:
 
-1. **Stop RE6 work this round.** Do not start the head-pair bisect; the RE session (Claude, on lilspark) takes it
-   from your round 21 table.
+1. **Amended 02:40 UTC: finish the roster bisect, then stop RE6.** Rounds 22-25 found the Helena head donor and
+   then the AcHead group: you are one bisect from the answer. Name the bad AcHead donor(s) (the RAM-driven nav, as
+   your round 25 says), publish the working roster build without them, and stop RE6 there.
 2. **Hand it over in five lines** at the end of your i9 lane doc: the build ids that exist now
    (`recovery-re6-update-only-20261109b`, `recovery-re6-update-roster-v1` and any other), the 45 donor arc names with
    their sha256 or artifact ids (or the path of the list), which donor files are missing from the cache, the Yuzu
