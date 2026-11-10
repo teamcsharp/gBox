@@ -187,6 +187,79 @@ def character_pointer_table(exe: bytes) -> list[int]:
     return [0x80000000 | (p & 0x1FFFFFFF) for p in ptrs]
 
 
+# --- Loader evidence round 3 (SH-4 disassembly of 1ST_READ.BIN) ---------------
+# Pointers inside the executable are stored in P0 (physical-mirror) form,
+# 0x0cXXXXXX, not 0x8cXXXXXX.  A literal search for the 0x8c form finds
+# nothing; search the low 29 bits instead.  Loader code found this way:
+#   * 0x8c0281fe, 0x8c09dda4 and ~20 other sites load 0x0c19d340 and do
+#     rec = table[slot]; stat = STAT_TABLE[rec[0]]; (rec[1] bounds 1..45
+#     selects a per-costume block via 0x0c1931fc).
+#   * slot range checked by the game is 0..39 (cmp/gt #39), i.e. 40 slots,
+#     not 29: slots 29..39 are Vatsu, Taiyo-M/F, Gorin-M/F, Paci-M/F, Gedo,
+#     Seijun, Jus-M/F (partner / extra characters).
+#   * 0x8c175bec is NOT a model/motion table.  The routine at 0x8c126662
+#     (r4=file slot, r5=index) reads {u16 group,u16 entry,u8[4] flags} and
+#     forwards (handle=[0x0c305e08+4*r4], group, entry) to 0x0c2bdb34, i.e. a
+#     stream/sound table (51 consecutive entries in group 0).
+CHAR_SLOT_COUNT = 40
+CHAR_STAT_TABLE_VA = 0x8C19E5C0
+CHAR_STAT_RECORD_SIZE = 0x6C
+STREAM_TABLE_VA = 0x8C175BEC
+
+
+def p0_to_va(ptr: int) -> int:
+    """Convert a stored 0x0cXXXXXX / 0xacXXXXXX pointer to its 0x8c VA."""
+    return 0x80000000 | (ptr & 0x1FFFFFFF)
+
+
+def character_slots(exe: bytes) -> list[dict]:
+    """All 40 slots reachable via the 0x8c19d340 pointer table.
+
+    ``ids`` are the first four record bytes (b0 = stat-record index into
+    0x8c19e5c0, b1 = costume-block index 1..45, b2/b3 = unresolved).
+    """
+    base = _va_to_off(CHAR_PTR_TABLE_VA)
+    out = []
+    for slot in range(CHAR_SLOT_COUNT):
+        (ptr,) = struct.unpack_from("<I", exe, base + 4 * slot)
+        va = p0_to_va(ptr)
+        off = _va_to_off(va)
+        out.append({"slot": slot, "va": va,
+                    "ids": tuple(exe[off:off + 4]),
+                    "name": _cstr(exe, off + 4, 16)})
+    return out
+
+
+def character_stat_records(exe: bytes) -> list[dict]:
+    """Per-slot stat records via 0x8c19e5c0[rec.b0] (0x6c bytes each).
+
+    Only fields observed in the loader are decoded: s32 +0x08 (171..182,
+    health-like), f32 +0x0c/+0x10 (scale-like, ~0.9..1.1) and two pointers
+    at +0x14/+0x18 whose targets are in the executable image.
+    """
+    tbl = _va_to_off(CHAR_STAT_TABLE_VA)
+    out = []
+    for cs in character_slots(exe):
+        (ptr,) = struct.unpack_from("<I", exe, tbl + 4 * cs["ids"][0])
+        va = p0_to_va(ptr)
+        off = _va_to_off(va)
+        v8, f0, f1, p14, p18 = struct.unpack_from("<i f f I I", exe, off + 8)
+        out.append({"slot": cs["slot"], "name": cs["name"], "stat_va": va,
+                    "value_0x08": v8, "scale_a": f0, "scale_b": f1,
+                    "ptr_0x14": p0_to_va(p14), "ptr_0x18": p0_to_va(p18)})
+    return out
+
+
+def stream_table(exe: bytes, count: int = 80) -> list[dict]:
+    """8-byte {u16 group, u16 entry, u8 flags[4]} stream/sound table."""
+    base = _va_to_off(STREAM_TABLE_VA)
+    out = []
+    for i in range(count):
+        grp, ent, f = struct.unpack_from("<HH4s", exe, base + 8 * i)
+        out.append({"idx": i, "group": grp, "entry": ent, "flags": f.hex()})
+    return out
+
+
 def classify_entry(blob: bytes) -> str:
     """Coarse classification of a positional AFS entry payload."""
     if blob[:4] == b"AFS\x00":

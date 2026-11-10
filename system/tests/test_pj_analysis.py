@@ -18,7 +18,12 @@ from gbox.pj_analysis import (
     afs_descriptors,
     character_pointer_table,
     character_table,
+    CHAR_SLOT_COUNT,
+    character_slots,
+    character_stat_records,
     classify_entry,
+    p0_to_va,
+    stream_table,
     playable_roster,
     uplmdl_pointers,
     wplmot_offsets,
@@ -205,3 +210,30 @@ def test_real_afs_descriptors_match_disc_and_char_ptrs():
     recs = character_table(exe)
     assert ptrs[0] == ptrs[1] == recs[0]["va"]
     assert ptrs[1:] == [r["va"] for r in recs]
+
+
+def test_p0_to_va():
+    assert p0_to_va(0x0C19D340) == 0x8C19D340
+    assert p0_to_va(0xAC19D340) == 0x8C19D340
+
+
+@pytest.mark.skipif(not (CACHE / "1ST_READ.BIN").exists(),
+                    reason="staged 1ST_READ.BIN not present")
+def test_real_loader_tables_40_slots_stats_and_stream_table():
+    import hashlib
+    exe = (CACHE / "1ST_READ.BIN").read_bytes()
+    assert hashlib.sha256(exe).hexdigest() == FIRST_READ_SHA256
+    slots = character_slots(exe)
+    assert len(slots) == CHAR_SLOT_COUNT == 40
+    assert [s["name"] for s in slots[:3]] == ["BATSU", "BATSU", "HINATA"]
+    assert [s["name"] for s in slots[29:]][0] == "VATSU"
+    assert slots[32]["name"] == "GORIN-M" and slots[39]["name"] == "JUS-F"
+    for s in slots[:29]:
+        assert s["ids"][0] == s["slot"] or s["slot"] == 0
+    stats = character_stat_records(exe)
+    assert all(0x8C010000 <= r["stat_va"] < 0x8C300000 for r in stats)
+    assert all(0.5 < r["scale_a"] < 1.5 for r in stats[:29])
+    st = stream_table(exe)
+    assert st[0]["group"] == 0xFFFF
+    assert [r["entry"] for r in st[1:52]] == list(range(51))
+    assert {r["group"] for r in st[1:52]} == {0}
