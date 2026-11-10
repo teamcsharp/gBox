@@ -63,3 +63,36 @@ def inventory(rom: bytes) -> dict:
         "target_decoded_size": len(tiles), "target_tiles_4bpp": len(tiles) // 32,
         "target_sha256": hashlib.sha256(tiles).hexdigest(),
     }
+
+
+# --- analysis stage: HAL "05" OBJ sprite container header (#2486) -------------------
+# 24-byte LE header: u32 version=5 | u32 (tiles<<16 | x) | u32 (flags<<16 | frames)
+# | u32 d3 | u32 d4 | u32 d5.  Observed on the owned build (260 files in ene05, b10, kng18,
+# stay00, ...): for uncompressed containers (flags 0x2000)  size == tiles*32 + d4, and
+# d4-d3 trailing bytes are an embedded palette block.  'z*' files set flags bit 0x0001
+# (tile payload compressed) and do not satisfy the size identity.  Unverified: meaning of
+# d3/d5 sections (frame/OAM tables) and that any slot is the player Kirby.
+OBJ_HDR = struct.Struct("<6I")
+
+
+def obj_header(b: bytes) -> dict | None:
+    if len(b) < 24 or b[:4] != b"\x05\x00\x00\x00":
+        return None
+    _, d1, d2, d3, d4, d5 = OBJ_HDR.unpack_from(b)
+    return {"tiles": d1 >> 16, "d1_low": d1 & 0xFFFF, "flags": d2 >> 16, "frames": d2 & 0xFFFF,
+            "d3": d3, "d4": d4, "d5": d5, "compressed": bool((d2 >> 16) & 1),
+            "size_ok": (d1 >> 16) * 32 + d4 == len(b), "palette_bytes": d4 - d3}
+
+
+def obj_census(rom: bytes) -> dict:
+    r = NitroROM(rom)
+    out = {"containers": 0, "strict": 0, "compressed": 0, "other": 0, "by_dir": {}}
+    for fid, name in sorted(r.names.items()):
+        h = obj_header(r.file(fid))
+        if h is None:
+            continue
+        out["containers"] += 1
+        out["strict" if h["size_ok"] else "compressed" if h["compressed"] else "other"] += 1
+        d = name.rsplit("/", 1)[0]
+        out["by_dir"][d] = out["by_dir"].get(d, 0) + 1
+    return out

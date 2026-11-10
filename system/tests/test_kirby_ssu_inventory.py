@@ -29,3 +29,18 @@ def test_owned_rom_inventory():
     assert inv["kinds"] == {"lz10": 814, "raw": 1072, "lz10-invalid": 0}
     assert inv["target_decoded_size"] == 34816 and inv["target_tiles_4bpp"] == 1088
     assert inv["target_sha256"].startswith("e502f515")
+
+
+def test_obj_header_synthetic_matches_obj_kirby1up_header():
+    # header of rom/stay00/obj_kirby1up (296 B: 8 tiles*32 + d4=0x28)
+    b = bytes.fromhex("050000000000080001000020280000002800000020000000") + b"\0" * 272
+    h = K.obj_header(b)
+    assert h["tiles"] == 8 and h["frames"] == 1 and h["flags"] == 0x2000 and h["size_ok"]
+    assert K.obj_header(b"\x10" + b"\0" * 30) is None
+
+
+@pytest.mark.skipif(not ROM.is_file(), reason="set KSSU_ROM to the extracted owned .nds")
+def test_owned_rom_obj_census():
+    c = K.obj_census(ROM.read_bytes())
+    assert c["containers"] == 260 and c["strict"] == 140
+    assert c["by_dir"]["rom/stay00"] == 6
