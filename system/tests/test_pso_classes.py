@@ -65,3 +65,28 @@ def test_the_real_registry_names_the_city_classes_in_the_order_round_46_measured
     # the two objects round 46 called a plain `TObject` are a flying car and its controller
     assert C.name_of(dol, 0x02000044) == "TObjCityAirCar_Ctrl"
     assert sum(1 for n in reg.values() if n) < len(reg)      # the array is sparse, not ragged
+
+
+@pytest.mark.skipif(not DISC.is_file(), reason="the disc is not on this machine")
+def test_the_kind_word_of_a_real_record_names_its_class():
+    """The field claim: `kind`'s low byte is the class id, checked on the four city doors in the disc's own set.
+
+    Round 46 identified these four records by position; this asserts that the registry agrees with that identification, so
+    the two independent methods -- where a record sits, and what its kind says -- name the same class.
+    """
+    from gbox import gcdisc, pso_editor as E, pso_setdata as P
+
+    d = gcdisc.GCDisc(str(DISC))
+    dol = d.read("PsoV3.dol")
+    data, _ = E.W.read_set(d, "map_city00_00o.dat")
+    recs = P.records(data)
+    expected = {17: "TObjCityDoor_Med", 18: "TObjCityDoor_Shop", 20: "TObjCityDoor_Guild", 21: "TObjCityDoor_Warp"}
+    for idx, name in expected.items():
+        kind = recs[idx]["kind"]
+        assert kind & 0xFF == {"TObjCityDoor_Med": 0x49, "TObjCityDoor_Shop": 0x46,
+                              "TObjCityDoor_Guild": 0x47, "TObjCityDoor_Warp": 0x48}[name]
+        assert C.name_of(dol, kind) == name
+    # and the ids this table leaves empty are the ones the southwest cluster and the pedestal use
+    reg = C.registry(dol)
+    assert reg[0x41] is None and reg[0x57] is None
+    assert recs[13]["kind"] & 0xFF == 0x41 and recs[27]["kind"] & 0xFF == 0x57

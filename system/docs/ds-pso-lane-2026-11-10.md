@@ -2739,14 +2739,54 @@ match by identity (class id, controller), not by nearness.
 `main` clean; 4 registry tests green. P1's gate is unchanged -- still the executable's quest logic -- but the class id space
 is now open, which is what an object-level search of the executable needs.
 
+## Round 56 (2026-11-10) — the class id field is confirmed, and the ids it cannot name
+
+### The field, confirmed by two independent methods
+
+Round 55 calibrated the registry on the four city doors (which round 46 had identified **by position**). This round checked
+the other direction: read the `kind` word of those four records and ask the registry what class it is.
+
+```
+record 20  kind 0x02000047 -> TObjCityDoor_Guild
+record 21  kind 0x02000048 -> TObjCityDoor_Warp
+record 17  kind 0x02000049 -> TObjCityDoor_Med
+record 18  kind 0x02000046 -> TObjCityDoor_Shop
+```
+
+Position and class id name the same four classes. The other words in the record do **not**: `set_id` and `group_id` are
+masked values (`0x00001400`, `0x00001440`) whose low byte is 0, so they resolve to slot 0 and mean nothing -- a reminder
+that a masked lookup will happily return the wrong class for any field you point it at.
+
+This is now a test: for each of the four doors, the kind's low byte equals the expected id **and** the registry's name equals
+the one position gave. Two methods agreeing is the strongest evidence this lane has produced about the record format.
+
+### The ids it cannot name
+
+`0x41` (the four southwest objects) and `0x57` (the lobby pedestal) are **zero slots** in this table. The registry is a
+sparse array -- about a third of the ids up to `0x60` are empty -- so those two classes are either named above `0x60` or in
+the second and third name arrays the sweep found (`0x4f2f08` with 13 names starting `TObjQuestColBase`, and `0x4f3254` with
+22 names starting `TObject`). Widening the lookup to those arrays is the next step, and it is a search with a known shape
+rather than a guess.
+
+### What this round did not do
+
+It did not find the guild, and it did not move P1's gate. What it did is turn the class id from an assumption into a fact
+with two independent confirmations -- which is what an object-level search of the executable will need, because searching
+25,981 functions for "the guild" is hopeless and searching for "code that touches a `TObjCityDoor_Guild` instance" is not.
+
+### State
+
+`main` clean; 5 registry tests green, 4 of them on the real disc.
+
 ## 7. Next
 
-1. **Widen the class registry past 0x60.** Four southwest objects and the lobby pedestal (record 27, kind 0x57) resolve
-   to empty slots in the low range, so their classes live higher in the table or in a second one.
-2. **P1's gate is the executable's quest logic** -- unchanged, and the class ids are now open, which is what an
-   object-level search needs.
+1. **Widen the class lookup to the other two name arrays** the sweep found -- `0x4f2f08` (13 names from
+   `TObjQuestColBase`) and `0x4f3254` (22 names from `TObject`). The two ids this table cannot name are `0x41` (the
+   southwest objects) and `0x57` (the lobby pedestal).
+2. **P1's gate is the executable's quest logic.** The class id is now a confirmed fact with two independent
+   confirmations (position in round 46, kind word in round 56), which is what an object-level search needs.
 3. **P6b's page** (pure UI over `python -m gbox.pso_editor`) and **P7a's rigging** are the items that do not need P1.
 
-Corrections in round 55: the seven `0x40` records near the shop counters are `TObjCamera`, not the keepers; the two
-`TObject`s on x=0 at (0,-60) and (0,-1730) are `TObjCityAirCar_Car` (traffic), so the **"x=0 corridor lead" is retired**.
-Do not identify a record by its distance to an entity -- match class ids or controllers.
+Confirmed in round 56: a placement record's `kind` low byte is the class id (Guild 0x47, Warp 0x48, Med 0x49,
+Shop 0x46 -- the same four classes position identified). `set_id` / `group_id` are masked values and resolve to
+nonsense if fed to the lookup; do not use them for class.
