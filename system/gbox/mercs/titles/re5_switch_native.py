@@ -14,6 +14,7 @@ import threading
 import time
 
 from . import re5_switch as R, re6_switch_native as N
+from ..native.re5_ebffdb22 import classes as CLASSES
 from ..native.re5_ebffdb22.code import IMAGES
 from ..native.re5_ebffdb22.vtables import BASE_ENTRIES, PLAYER_TABLES
 
@@ -22,8 +23,11 @@ process_identity = N.process_identity
 TEMP, UPDATE, DISPATCH = 0x1A91900, 0x799210, 0x118E740
 CODE = (
     (0x118E600, "call", 540, "a29a07b303da4b53b108e63626e7eda4e95b549dbd2d817b4693e2f036d62443"),
-    (0x118E820, "spawn", 432, "3829ed6d9998c556747b70d773ab7ac56c4b28c23a486d37d77da4e5931a0a21"),
-    (0x118E9D0, "explode", 248, "f034000c3b1f9b97571f4d850854463b49c2132fd46a566a5a5ad2ac31a9b890"),
+    # The spawn/explode pair is the parameterised class pair (native/re5_ebffdb22/classes.py): the flash DTI and
+    # vtable/item/update are passed by the controller, so hand and incendiary grenades can use the same verified
+    # wrappers. Same addresses and sizes; only the class constants changed (see the lane log for the receipt plan).
+    (0x118E820, "spawn_class", CLASSES.SPAWN_CLASS[2], CLASSES.SPAWN_CLASS[3]),
+    (0x118E9D0, "explode_class", CLASSES.EXPLODE_CLASS[2], CLASSES.EXPLODE_CLASS[3]),
     (0x118EAC8, "weapons", 1316, "a432bf2ef38b0091cc6431cff91be8300fc501383c72b330cb65b8ce6e639d9f"),
 )
 _CREATE_LOCK = threading.Lock()
@@ -33,9 +37,15 @@ _CREATE_LOCK = threading.Lock()
 # shippable kind. The others are refused with a clear reason and never silently substituted - their
 # projectile classes and explosions have not been verified on this build.
 RING_VERIFIED_KINDS = ("flash",)
+# Implemented but not yet verified live: the parameterised pair takes the class (its DTI and item from the game's own
+# initialiser, its vtable from the allocation, its update function from the class family). They are reachable only
+# with `allow_unverified` - a receipt probe - until each has one; the queue and the PiP see the verified kinds only.
+RING_IMPLEMENTED_KINDS = ("flash",) + tuple(CLASSES.CLASSES)
 RING_KIND_REFUSED = {
-    "hand": "a hand-grenade ring is not yet verified on this build (its projectile class and explosion are unconfirmed)",
-    "incendiary": "an incendiary-grenade ring is not yet verified on this build (its projectile class and explosion are unconfirmed)",
+    "hand": "a hand-grenade ring is built on the parameterised spawn (uWp06, DTI main+0x1D714C8) but has no live "
+            "receipt yet",
+    "incendiary": "an incendiary-grenade ring is built on the parameterised spawn (uWp07, DTI main+0x1D71500) but has "
+                  "no live receipt yet",
 }
 RING_KINDS = RING_VERIFIED_KINDS + tuple(RING_KIND_REFUSED)
 RING_COUNT_DEFAULT, RING_COUNT_MAX = 10, 16
@@ -133,7 +143,7 @@ class Controller(N.Controller):
             raise Unavailable("player vtable is modified or unsupported")
         assets = []
         for off, name, size, digest in CODE:
-            data = IMAGES[name]
+            data = CLASSES.image_bytes(name)
             if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
                 raise Unavailable("native hook asset checksum mismatch")
             assets.append((self.base + off, data))
@@ -236,7 +246,7 @@ class Controller(N.Controller):
             try:
                 self.attach()
                 attached_at = time.monotonic()
-                unit = self.call(0x118E820, self.player, self.generation)
+                unit = self.call(0x118E820, self.player, self.generation, CLASSES.CLASSES["flash"].dti)
                 spawned_at = time.monotonic()
                 if not R.ptr_ok(unit):
                     raise Unavailable("native flash allocation refused")
@@ -246,7 +256,11 @@ class Controller(N.Controller):
                     return self.w(unit + 0x1B28) == 29 and self.rd(unit + 0x1B88, 1) == b"\x01"
                 self.wait(initialized)
                 initialized_at = time.monotonic()
-                if self.call(0x118E9D0, unit, born, self.player, self.generation) != 1:
+                carried = self.q(unit)
+                if carried != self.base + CLASSES.FLASH_VT:
+                    raise Uncertain(f"native flash allocation is not the verified class: {carried:#x}")
+                if self.call(0x118E9D0, unit, born, self.player, self.generation, carried,
+                             CLASSES.CLASSES["flash"].item, self.base + CLASSES.FLASH_UPDATE_OFF) != 1:
                     raise Unavailable("native flash resources or owner are unavailable")
                 self.projectile(unit, born)
                 if self.rd(unit + 0x28A0, 1) != b"\x01":
@@ -272,15 +286,19 @@ class Controller(N.Controller):
         """The ring's kinds as this build can honestly fire them (gbox.mercs.grenade_status reads this)."""
         return ring_kind_options()
 
-    def _ring_one(self, x, y, z, index):
-        """One flash spawned, relocated to (x, y, z), and detonated - the verified flash with a position write.
+    def _ring_one(self, x, y, z, index, kind="flash"):
+        """One grenade of `kind` spawned, relocated to (x, y, z), and detonated.
 
-        Returns the per-grenade record. Raises on any allocation loss, refusal or missing explosion flag so the
-        ring aborts with a partial receipt rather than replaying a request.
+        The spawn/explode pair is the parameterised class pair: the class DTI (from the game's own initialiser), the
+        vtable the allocation carries, its item id and its update function (the flash's own for a flash, the bomb
+        base for the other uWpBomb classes) are all passed in. Returns the per-grenade record. Raises on any
+        allocation loss, refusal or missing explosion flag so the ring aborts with a partial receipt rather than
+        replaying a request.
         """
-        unit = self.call(0x118E820, self.player, self.generation)
+        spec = CLASSES.CLASSES[kind]
+        unit = self.call(0x118E820, self.player, self.generation, spec.dti)
         if not R.ptr_ok(unit):
-            raise Unavailable("native flash allocation refused")
+            raise Unavailable(f"native {kind} allocation refused")
         born = self.q(unit + 0x1A00)
 
         def initialized():
@@ -288,31 +306,39 @@ class Controller(N.Controller):
             return self.w(unit + 0x1B28) == 29 and self.rd(unit + 0x1B88, 1) == b"\x01"
         self.wait(initialized)
         self.projectile(unit, born)
+        carried = self.q(unit)                      # the class this allocation actually carries
+        if kind == "flash" and carried != self.base + CLASSES.FLASH_VT:
+            raise Uncertain(f"native flash allocation is not the verified class: {carried:#x}")
         # Relocate the live transform and its home copy onto the ring before the blast. Keep y (the floor).
         pos = struct.pack("<3f", x, y, z)
         self.write(unit + RING_UNIT_POS, pos)
         self.write(unit + RING_UNIT_HOME, pos)
-        if self.call(0x118E9D0, unit, born, self.player, self.generation) != 1:
-            raise Unavailable("native flash resources or owner are unavailable")
+        update = self.base + (CLASSES.FLASH_UPDATE_OFF if kind == "flash" else CLASSES.BOMB_UPDATE_OFF)
+        if self.call(0x118E9D0, unit, born, self.player, self.generation, carried, spec.item, update) != 1:
+            raise Unavailable(f"native {kind} resources or owner are unavailable")
         self.projectile(unit, born)
         if self.rd(unit + 0x28A0, 1) != b"\x01":
-            raise Uncertain("native flash effect did not publish its explosion flag")
-        return {"index": index, "projectile_generation": born, "pos": [round(x, 1), round(y, 1), round(z, 1)]}
+            raise Uncertain(f"native {kind} effect did not publish its explosion flag")
+        return {"index": index, "kind": kind, "projectile_generation": born,
+                "pos": [round(x, 1), round(y, 1), round(z, 1)], "class_vtable": hex(carried)}
 
-    def grenade_ring(self, kind="flash", *, count=None, radius_cm=None, inner_cm=None, ripple_ms=None, expand=None):
+    def grenade_ring(self, kind="flash", *, count=None, radius_cm=None, inner_cm=None, ripple_ms=None, expand=None,
+                     allow_unverified=False):
         """Spawn `count` grenades in a ring around the player and detonate them in a quick ripple.
 
-        Only kind="flash" is verified and reuses the live flash spawn/explode. The ring grows outward from the
-        player (expand) to a final radius_cm (default 10 grenades, ~6 m). Self-damage is read back and reported;
-        flashes do not take the player's health, and the ring is kept at least RING_SELF_CLEAR_CM out regardless.
-        The receipt is confirmed only if every requested grenade published its explosion; a partial result is
-        reported as uncertain and never replayed.
+        kind="flash" is the live-verified path; "hand" and "incendiary" are built on the parameterised class pair and
+        are reachable only with `allow_unverified` (a research probe taking their first live receipt) until each has
+        one - the queue and the PiP see the verified kinds only. The ring grows outward from the player (expand) to a
+        final radius_cm (default 10 grenades, ~6 m). Self-damage is read back and reported; the ring is kept at least
+        RING_SELF_CLEAR_CM out regardless. The receipt is confirmed only if every requested grenade published its
+        explosion; a partial result is reported as uncertain and never replayed.
         """
         kind = (kind or "flash").lower()
         if kind not in RING_KINDS:
             raise Unavailable(f"unknown grenade kind {kind!r}")
-        if kind not in RING_VERIFIED_KINDS:
+        if kind not in RING_VERIFIED_KINDS and not allow_unverified:
             raise Unavailable(RING_KIND_REFUSED.get(kind, "grenade kind not verified"))
+        spec = CLASSES.CLASSES[kind]
         d = ring_defaults()
         count = d["count"] if count is None else int(count)
         count = max(1, min(count, RING_COUNT_MAX))
@@ -344,7 +370,7 @@ class Controller(N.Controller):
                     r = radius_cm if not expand or count == 1 else inner_cm + (radius_cm - inner_cm) * i / (count - 1)
                     gx, gz = px + r * math.cos(angle), pz + r * math.sin(angle)
                     try:
-                        grenades.append(self._ring_one(gx, py, gz, i))
+                        grenades.append(self._ring_one(gx, py, gz, i, kind))
                     except (Unavailable, AllocationLost) as exc:
                         abort = str(exc)
                         break
@@ -369,7 +395,8 @@ class Controller(N.Controller):
                        "self_damage": self_damage, "grenades": grenades,
                        "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
             if full:
-                return {"state": "confirmed", "verified": True, "effect": "native_flash_ring", **receipt}
+                effect = "native_flash_ring" if kind == "flash" else f"native_{kind}_ring"
+                return {"state": "confirmed", "verified": True, "effect": effect, **receipt}
             # Partial or empty: not replayed. A failure that detonated nothing is failed; anything partial is
             # uncertain so the operator can click again without a stuck controller.
             if abort is not None:

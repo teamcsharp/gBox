@@ -29,7 +29,7 @@ def ring_controller(hp_after=1000, spawn_fail_at=None):
     ctl.heap = 0x220000000
     ctl.lock = threading.RLock()
     ctl.failed = ctl.recoverable = False
-    ctl.mem, ctl.writes, ctl.spawns = {}, [], []
+    ctl.mem, ctl.writes, ctl.spawns, ctl.calls = {}, [], [], []
     hp_box = {"v": 1000}
 
     def put(at, data):
@@ -55,12 +55,14 @@ def ring_controller(hp_after=1000, spawn_fail_at=None):
     put(ctl.player + R.P_POS, struct.pack("<3f", 1000.0, 800.0, -2000.0))
 
     def call(off, *args):
+        ctl.calls.append((off, args))
         if off == SPAWN:
             n = len(ctl.spawns)
             if spawn_fail_at is not None and n == spawn_fail_at:
                 return 0
             unit = 0x230000000 + n * 0x10000
             born = 5000 + n
+            put(unit, struct.pack("<Q", ctl.base + 0x1C5EF58))     # the class vtable the allocation carries
             put(unit + 0x1A00, struct.pack("<Q", born))
             put(unit + 0x1B28, struct.pack("<I", 29))
             put(unit + 0x1B88, b"\x01")
@@ -123,7 +125,7 @@ def test_ring_radius_is_clamped_outward_for_self_safety():
         assert math.hypot(x - px, z - pz) == pytest.approx(N.RING_SELF_CLEAR_CM)
 
 
-@pytest.mark.parametrize("kind,match", [("hand", "not yet verified"), ("incendiary", "not yet verified"),
+@pytest.mark.parametrize("kind,match", [("hand", "no live receipt yet"), ("incendiary", "no live receipt yet"),
                                         ("bogus", "unknown grenade kind")])
 def test_unverified_kinds_are_refused_and_never_substituted(kind, match):
     ctl = ring_controller()

@@ -17,8 +17,11 @@ actually carries, exactly as RE6's parameterised pair does, so no per-class vtab
 """
 from __future__ import annotations
 
+import hashlib
 import struct
 from dataclasses import dataclass
+
+from .code import IMAGES
 
 #: The registration block and the MtDTI constructor it calls (main-relative, `main` image with its 0x100 header).
 BLOCK = (0x84800, 0x86000)
@@ -165,3 +168,65 @@ def class_for(kind: str) -> GrenadeClass:
         return CLASSES[(kind or "").lower()]
     except KeyError:
         raise KeyError(f"unknown grenade class {kind!r}") from None
+
+
+# ---- the parameterised pair (2026-11-10) ------------------------------------------------------------------------------------
+#
+# `spawn.c` builds FLASH_DTI in x1 at words 12-13, but x1 already carries the caller's `generation`; x2 is free until
+# word 14 overwrites w2 with the item line. So the class arrives in **x2** and the image moves it to x1.
+# `explode.c` builds FLASH_VT in x4 at words 4-5 (x4 is free: the wrapper's arguments are x0..x3), and configures the
+# hit volumes with the flash's item id as the immediate `movz w3, #0x108` at word 47. Both are two/one instruction
+# replacements on pinned, verified images - no compiler and no new code cave (RE5's .text tail has none left).
+
+NOP = 0xD503201F
+MOV_X1_X2 = 0xAA0203E1          # orr x1, xzr, x2  - the class DTI, from the caller's third argument
+MOV_W3_W5 = 0x2A0503E3          # orr w3, wzr, w5  - the item id, from the caller's sixth argument
+BLR_X6 = 0xD63F00C0             # blr x6          - the class's update function, from the caller's seventh argument
+
+# The explosion wrapper's last call: the flash runs its own update (0x820E50, live-verified); the other uWpBomb
+# classes run the bomb base update (0x806B80, "creates hit volumes, effects and sound and publishes +28A0" -
+# docs/research/re5-native-flash.md). Both are main-relative; the controller passes one or the other.
+FLASH_UPDATE_OFF = 0x820E50
+BOMB_UPDATE_OFF = 0x806B80
+
+
+def spawn_with_class() -> bytes:
+    """`spawn.c` with the flash DTI build replaced: the class's DTI arrives in x2 (the 3rd call argument)."""
+    words = list(struct.unpack(f"<{len(IMAGES['spawn']) // 4}I", IMAGES["spawn"]))
+    if (words[12], words[13]) != (0xF0005F01, 0x9114E021):      # adrp x1 / add x1, x1, #0x538 (FLASH_DTI)
+        raise ValueError("the pinned spawn image no longer builds the flash DTI where it was verified")
+    words[12], words[13] = MOV_X1_X2, NOP
+    return struct.pack(f"<{len(words)}I", *words)
+
+
+def explode_with_class() -> bytes:
+    """`explode.c` with its three class-specific constants replaced.
+
+    The class vtable arrives in **x4** (the wrapper's own arguments are x0..x3), the item id in **w5** and the update
+    function in **x6** - the flash keeps its own 0x820E50, the other uWpBomb classes get the bomb base 0x806B80.
+    """
+    words = list(struct.unpack(f"<{len(IMAGES['explode']) // 4}I", IMAGES["explode"]))
+    if (words[4], words[5]) != (0x90005684, 0x913D6084):        # adrp x4 / add x4, x4, #0xf58 (FLASH_VT)
+        raise ValueError("the pinned explode image no longer builds the flash vtable where it was verified")
+    if words[47] != 0x52802103:                                  # movz w3, #0x108 (the flash item)
+        raise ValueError("the pinned explode image no longer configures the flash item where it was verified")
+    if words[55] != 0x97DA48E9:                                  # bl 0x820E50 (the flash update)
+        raise ValueError("the pinned explode image no longer calls the flash update where it was verified")
+    words[4], words[5], words[47], words[55] = NOP, NOP, MOV_W3_W5, BLR_X6
+    return struct.pack(f"<{len(words)}I", *words)
+
+
+SPAWN_CLASS_BYTES = spawn_with_class()
+EXPLODE_CLASS_BYTES = explode_with_class()
+SPAWN_CLASS = (0x118E820, "spawn_class", len(SPAWN_CLASS_BYTES),
+               hashlib.sha256(SPAWN_CLASS_BYTES).hexdigest())
+EXPLODE_CLASS = (0x118E9D0, "explode_class", len(EXPLODE_CLASS_BYTES),
+                 hashlib.sha256(EXPLODE_CLASS_BYTES).hexdigest())
+IMAGES_CLASS = {"spawn_class": SPAWN_CLASS_BYTES, "explode_class": EXPLODE_CLASS_BYTES}
+
+
+def image_bytes(name: str) -> bytes:
+    """A pinned image by name: the parameterised pair first, then the shipped ones."""
+    if name in IMAGES_CLASS:
+        return IMAGES_CLASS[name]
+    return IMAGES[name]

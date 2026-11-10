@@ -298,3 +298,42 @@ image builds `FLASH_VT` in **x4** at words 4-5, so there the *caller's x4* is al
 and the wrapper checks the class it was handed. That is the parameterised pair for RE5, in new zero padding vetted
 the same way as RE6's; then the controller kinds and the live receipts (RE5's `grenade_scatter` does not exist yet -
 package 6 on RE5 is hand-off item 4 - so a small explicit probe op or the scatter op is the receipt route).
+
+## Step: RE5's spawn/explode become class parameters (2026-11-10, branch `ds-re5-classes-pair-20261110`)
+
+Hand-off lane B item 3, second half: the RE5 wrappers now take the class, so hand (uWp06) and incendiary (uWp07)
+grenades can use the same live-verified spawn/explode pair as the flash (uWp08). No compiler: every change is the
+replacement of a pinned instruction in the verified blob, with the source words asserted first.
+
+| image | word(s) | was | now | argument |
+|---|---|---|---|---|
+| `spawn` (432 B @ `0x118E820`) | 12-13 | `adrp x1` + `add x1, #0x538` (FLASH_DTI) | `orr x1, xzr, x2` + `nop` | class DTI in **x2** (3rd call arg; x1 already carries the generation) |
+| `explode` (248 B @ `0x118E9D0`) | 4-5 | `adrp x4` + `add x4, #0xf58` (FLASH_VT) | `nop` + `nop` | class vtable in **x4** (the allocation's own, read after initialisation) |
+| | 47 | `movz w3, #0x108` (the flash item) | `orr w3, wzr, w5` | item id in **w5** |
+| | 55 | `bl 0x820E50` (the flash update) | `blr x6` | update in **x6**: `0x820E50` for the flash (verified), **`0x806B80`** for the other uWpBomb classes (the bomb base update the flash's own update calls - the one choice here that the live receipt has to confirm) |
+
+**Where they install - in place, because there is nowhere else.** RE5's `.text` tail is one zero run
+`0x118E5B0..0x118F000`, and the four shipped images already fill it (`call`, `spawn`, `explode`, `weapons` end at
+`0x118EFFC`); there is no second padding cave as there was on RE6. So the pair replaces the two shipped images at the
+same addresses and sizes with their own new pinned digests (`spawn_class` `c288f03f…`, `explode_class`
+`c6137b3d…`); the originals keep their pins in `code.py` as the record. `install()` refuses a cave that holds other
+bytes, so **an emulator already running the old pair refuses rather than being corrupted**; every new session gets
+the parameterised pair. The RE session should re-verify the flash live after this deploys.
+
+**Controller** (`re5_switch_native.py`): the flash passes its verified DTI `0x1D71538`, its vtable is read from the
+allocation and checked against `main+0x1C5EF58`, item `0x108`, update `0x820E50`. Hand/incendiary pass their DTI
+(`0x1D714C8` / `0x1D71500`), the vtable the allocation carries, their item (`0x106` / `0x107`) and `0x806B80`.
+`grenade_ring` takes `allow_unverified` and `grenade_kinds()` still advertises **flash only** -
+`RING_IMPLEMENTED_KINDS` names all three.
+
+**Tests** (`tests/test_re5_class_pair.py`, 11): the four replaced words and nothing else changed; a tampered source
+image refused instead of patched; the update-offset table; hand vs flash argument pass-through on a fake emulator
+(including a vtable the table does not carry, so the wrapper is proven to take the allocation's own); the flash's
+verified values and its class check; unverified/unknown refusals; the advertised kinds. The RE5 ring and native
+suites' fakes were updated for the pair, and the affected set (RE5 native/ring/class pair/class table, interventions,
+worker, grenade status/rule, re5 mods, engine) is **149 passed**.
+
+**Still open on this item:** the live receipts for hand and incendiary. The route is the same explicit-kind probe
+RE6 got, and RE5 has no `grenade_scatter` yet (next item 4), so the clean order is: land the RE5 barrage with the
+explicit-kind probe (one more step), then fire `kind=hand` and `kind=incendiary` on an RE5 Mercenaries round and
+record receipt + frames + self_damage. Until then `grenade_status` keeps advertising flash only, which is honest.
