@@ -74,3 +74,63 @@ def write_mod(rom_path: str, out_path: str, player_row: int = 0, enemy_row: int 
     return {"source_sha256": sha, "mod_sha256": hashlib.sha256(back).hexdigest(),
             "player_row": player_row, "enemy_row": enemy_row, "tile_map": plan,
             "changed_bytes": len(changed), "out": str(out)}
+
+
+MOD_NAME = "smb1_goomba_mario"
+
+
+def _source_rom(path: Path, work: Path) -> Path:
+    """The catalog path may be the hyperspin zip; pull the single .nes out beside the work dir."""
+    if path.suffix.lower() != ".zip":
+        return path
+    import zipfile
+    with zipfile.ZipFile(path) as z:
+        names = [n for n in z.namelist() if n.lower().endswith(".nes")]
+        if len(names) != 1:
+            raise ValueError(f"expected exactly one .nes in {path.name}, found {len(names)}")
+        work.mkdir(parents=True, exist_ok=True)
+        dst = work / Path(names[0]).name
+        dst.write_bytes(z.read(names[0]))
+        return dst
+
+
+def build_mod(cfg, game: dict, player_row: int = 0, enemy_row: int = 0, name: str = MOD_NAME) -> dict:
+    """Build the file mod <cache>/mods/<game_id>/<name> (a modded ROM image beside .gbox-mod.json)."""
+    import json
+    import shutil
+    import time
+    from . import filemods
+    from .models import CatalogEntry
+    from .tools import rom_path
+    gid = game["game_id"]
+    if gid not in GAME_IDS:
+        raise ValueError("smb1_swap only supports Super Mario Bros. (NES)")
+    d = filemods.mod_dir(cfg, gid, name)
+    work = d.parent / f".{name}.src"
+    try:
+        src = _source_rom(rom_path(CatalogEntry.model_validate(game), cfg), work)
+        if d.exists():
+            shutil.rmtree(d)
+        d.mkdir(parents=True)
+        img = "Super Mario Bros. (gBox goomba).nes"
+        rep = write_mod(str(src), str(d / img), player_row, enemy_row)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    mj = {"name": name, "game_id": gid, "image": img, "files": ["@image: Mario CHR tiles <- Goomba row (gbox.smb1_swap)"],
+          "built": time.time(), "source_sha256": rep["source_sha256"], "mod_sha256": rep["mod_sha256"],
+          "player_row": player_row, "enemy_row": enemy_row}
+    (d / ".gbox-mod.json").write_text(json.dumps(mj))
+    return {"mod": name, "image": img, "report": rep}
+
+
+def use(ctx, meta: dict, game: dict, inp) -> dict:
+    """characters op=use for SMB1: build the CHR-swap mod; launch only when inp.launch and a session node is known."""
+    from . import characters as C
+    res = build_mod(ctx.config, game)
+    out = {"mod": res["mod"], "build": res["report"], "replaces": "Mario player frame row 0 tiles (CHR pixels only)",
+           "runtime_verified": False}
+    if not getattr(inp, "launch", False):
+        return out | {"status": "built"}
+    sess = C._session(ctx, inp.session_id) if inp.session_id else None
+    node = sess["session_id"].split("-")[0] if sess else C.HOST_OS
+    return out | {"status": "built+launching", "launch": C._launch(ctx, game["game_id"], res["mod"], node)}

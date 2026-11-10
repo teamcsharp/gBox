@@ -66,3 +66,18 @@ def test_owned_rom_swap_preserves_original(tmp_path):
     assert r["tile_map"] == {2: 170, 3: 171, 4: 172, 5: 173}
     assert r["changed_bytes"] <= 16 * 4 and r["changed_bytes"] > 0
     assert ROM.read_bytes() == before
+
+
+def test_build_mod_and_zip_source(tmp_path):
+    import json, zipfile, types
+    from gbox import filemods
+    src = _synthetic(tmp_path)
+    z = tmp_path / "smb.zip"
+    with zipfile.ZipFile(z, "w") as f:
+        f.write(src, "smb.nes")
+    cfg = types.SimpleNamespace(cache=str(tmp_path / "cache"))
+    got = smb1_swap._source_rom(z, tmp_path / "w")
+    assert got.read_bytes() == src.read_bytes()
+    r = smb1_swap.write_mod(str(got), str(tmp_path / "o.nes"), 0, 0)
+    assert r["mod_sha256"] != r["source_sha256"]
+    assert filemods.mod_dir(cfg, "49b6a2f65aca26a2", smb1_swap.MOD_NAME).name == smb1_swap.MOD_NAME

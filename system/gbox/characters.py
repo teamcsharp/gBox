@@ -2056,6 +2056,9 @@ def characters_tool(inp: CharIn, ctx):
     from . import doa2_swap
     if gid in doa2_swap.GAME_IDS:
         return {"result": out | doa2_swap.use(ctx, meta, game, inp)}
+    from . import smb1_swap
+    if gid in smb1_swap.GAME_IDS and inp.slot == "player":        # SMB1 (NES): CHR tile swap -> smb1_goomba_mario
+        return {"result": out | smb1_swap.use(ctx, meta, game, inp)}
     from . import sm64_swap
     if gid in sm64_swap.GAME_IDS and inp.slot == "player":        # SM64: build sm64_<slug> if missing, launch it
         return {"result": out | sm64_swap.use(ctx, meta, game, inp)}
