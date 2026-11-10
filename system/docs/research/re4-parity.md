@@ -393,7 +393,9 @@ collision. This pass decodes it offline into the mesh `re5_nav.NavMesh` takes, s
 gives the bot RE5's walker and the operator's map marks. **Nothing here has run in a live round**: no launch, no input,
 no API write. Inputs: the read-only copies of the launched 1.0.2 RomFS in
 `C:\_tools\gBox\.scratch-merc-recovery\re4\inputs\` (`st4/r400 r402 r403 r404.udas`, `etc/omake01.esl omake02.esl`;
-r400 sha256 `6d573d3e...`, the file section 3 measured).
+r400 sha256 `6d573d3e...`, the file section 3 measured; all six files' sha256 equal the host's
+`~/gBox_alt/switch/romfs/010099A00BC1E000/bio4/` copies, checked over `ssh spark` read-only on 2026-11-10: r402
+`1ce8367e...`, r403 `42bda316...`, r404 `113d0cba...`, omake01 `7e74dcfc...`, omake02 `4699f8cb...`).
 
 ### 8.1 The collision on the Switch (measured)
 
