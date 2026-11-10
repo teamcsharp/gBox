@@ -1418,6 +1418,33 @@ def test_health_falling_with_nobody_near_marks_a_hazard_and_he_moves_out_of_it()
     assert bot.hazard is None
 
 
+def test_down_at_low_health_with_a_crowd_retreats_instead_of_fighting_the_gun_down():
+    # request #5077 (crowd_gun_down): down at or under SURVIVAL_HP (35 %) with 4+ within 2 m used to take the
+    # gun-down fight (a kick, an aimed fire) - the hits that bleed at 300/900 and below with the gun down.
+    # Now he keeps the gun down and walks the open heading away from the crowd; he fights only when the
+    # crowd thins below the threshold or he is healthier.
+    four = ((0.0, 0.0, 150.0, 700), (150.0, 0.0, 150.0, 700), (-150.0, 0.0, 150.0, 700), (0.0, 0.0, 300.0, 700))
+    bot, clock, snap = brain(round_guest(hp=300, enemies=four))
+    snap["player"].update(hp=300, action="cPlAction_pl_act_dying_loop")     # down, 33 % of 900
+    acts = run(bot, snap, clock, 3)
+    assert bot.down and bot.stats["act"] == "down_crowd_retreat"
+    assert {"tap": "zr"} not in acts and not any("zr" in a.get("hold", ()) for a in acts)  # no kick, no fire
+    assert any(set(a.get("hold", ())) & {"lup", "ldown", "lleft", "lright"} for a in acts)  # the stick walks
+    # the fight resumes once the crowd thins below four within 2 m (a healthier or a thinner scene)
+    snap["player"].update(hp=700, action="cPlAction_pl_act_dying_loop")    # healthier: not the survival band
+    acts = run(bot, snap, clock, 3)
+    assert bot.stats["act"] in ("down_fire", "down_aim", "down_kick")      # the gun-down fight again
+    # and below the threshold even at low health: the felling / rise / fight paths are unchanged
+    snap["player"].update(hp=300, action="cPlAction_pl_act_dying_loop")
+    snap["enemies"] = []
+    for _ in range(3):
+        snap["enemies"] = [{"slot": i, "ptr": 0x9000 + i, "pos": (x, 0.0, 1500.0), "hp": 700, "hp_max": 700}
+                           for i, x in enumerate((0.0, 150.0, -150.0))]   # three within 2 m, not four
+        acts = run(bot, snap, clock, 2)
+        assert bot.stats["act"] != "down_crowd_retreat"                   # below the threshold: no retreat
+        break
+
+
 def test_down_fire_triples_the_table_while_he_is_down_and_puts_it_back(mods):
     g = round_guest()
     table = weapon_table(g)
