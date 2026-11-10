@@ -33,6 +33,11 @@ title's own units (RE4's world is in mm):
                  grudge.
   (e) IdleGuard  never idle with a threat in range: the gun up this long without a shot is "move" (round to him or
                  close in), neither attacking nor moving this long is "engage".
+  (f) ThrowPolicy  a grenade at a pack or a boss (a flash at a wind-up or a grab), at most every throw_gap_s, also
+                 while he flees; the title's own equip / throw path does it.
+  (g) the raise / aim discipline  stand_engaged (the fight meets the never-stand rule), AimStick (the stick that
+                 moves the aim with the gun up, learned), open_step (a step along open floor).
+  (h) WallPress  pressed against a wall: remembered, turned away from, never walked into again.
 
 Nothing here reads or writes the game, and nothing here presses a key: a bot maps each verdict onto its own sticks.
 """
@@ -279,6 +284,16 @@ class TitleProfile:
     # (e) never idle
     idle_aim_s: float = 2.0
     idle_still_s: float = 0.75
+    # (f) the throw (a grenade at a pack: ThrowPolicy)
+    throw_kinds: tuple = ()                  # what the title's own path throws, preferred first ("hand", "fire" for
+                                             # packs; "flash" for a wind-up / a grab at hand); () = no throw path
+    throw_gap_s: float = 5.0                 # at most one throw this often
+    pack_n: int = 3                          # a pack: this many within pack_r_cm of one of them ...
+    pack_r_cm: float = 300.0
+    throw_min_cm: float = 600.0              # ... whose centre is at least this far from him (his own blast reach) ...
+    throw_max_cm: float = 1200.0             # ... and within the throw's range
+    flash_r_cm: float = 400.0                # a wind-up or a grab threat this near: the flash
+    throw_kill_s: float = 3.0                # kills this soon after a throw are its kills
 
     def cm(self, v: float) -> float:
         return float(v) / self.units_per_cm
@@ -715,3 +730,287 @@ class IdleGuard:
             self.stats["idle_still_breaks"] = self.stats.get("idle_still_breaks", 0) + 1
             return "engage"
         return None
+
+
+# --- (g) the raise / aim discipline and the never-stand step (stage B's first pieces; RE4 first) ------------------------
+# Live RE4 2026-11-10 (Krauser, Base; the operator: "It's like walking into the wall flickering"): every target switch
+# lowered the gun, tank-turned and raised it again, and the never-stand step (blind) walked him into a grid wall - the
+# gun up and down every few seconds. The rules, the same for every title (RE5 and RE6 already keep them their own way):
+#   1. with a target in fire range and the shot not blocked, he is not standing while he fires or while his facing turns
+#      toward it: the kill clock is the anti-idle measure there, never a step that lowers the gun (stand_engaged);
+#   2. with the gun up he turns to the next target with the stick that moves the aim, inside keep_cone; the gun goes
+#      down only to turn past it (AimStick learns which stick does it on this title, and its sign);
+#   3. any step goes along open floor (open_step), never into a wall.
+def stand_engaged(target_in_range: bool, blocked: bool, fired_ago_s, facing_turned: bool, stand_s: float) -> bool:
+    """Rule 1: the never-stand rule is met by the fight itself - a target in fire range, his shot not blocked, and a
+    shot within stand_s or his facing turning toward it."""
+    return bool(target_in_range and not blocked
+                and (facing_turned or (isinstance(fired_ago_s, (int, float)) and fired_ago_s <= stand_s)))
+
+
+def open_step(pos, facing: float, clear, dist: float, avoid=(), avoid_r: float = 0.0,
+              tries_deg=(0, 45, -45, 90, -90, 135, -135, 180)):
+    """Rule 3: the end of a step of `dist` (the title's units) along open floor - the first heading from his facing
+    (tries_deg off it) whose segment clear(start, end) allows and whose end is not within avoid_r of any of `avoid`
+    (positions) - or None when every one is walled. clear None: the facing's (no geometry to judge by)."""
+    x, y, z = pos[:3]
+    for deg in tries_deg:
+        h = facing + math.radians(deg)
+        end = (x + dist * math.sin(h), y, z + dist * math.cos(h))
+        if avoid_r and any(math.hypot(end[0] - a[0], end[2] - a[2]) < avoid_r for a in avoid):
+            continue
+        if clear is None:
+            return end
+        try:
+            if clear(tuple(pos[:3]), end):
+                return end
+        except Exception:                                    # noqa: BLE001 - a geometry error: that way is not trusted
+            continue
+    return None
+
+
+class AimStick:
+    """Rule 2's stick: which stick moves the aim while the gun is up, and its sign, learned from his facing. Every tick
+    an aim turn is HELD with one stick (taps are too short to judge), his facing's change since the last such tick
+    (within GAP_S) is read: under still_rad it moved nothing; else it went with the press (toward the target: the
+    error's sign) or against it. `n` presses that moved nothing rule the stick out and the next one is tried; with all
+    ruled out usable() is False and the gun goes down to turn, as before. A stick seen moving the aim is kept; one
+    whose moves run against the press (3x as often + 4 over n) flips its sign. A press that moved nothing only counts
+    within CONTROL_S of the bot seeing himself in control (control(): his facing or position moved), so a scene that
+    takes no input (an intro card) rules no stick out; all ruled out, the first is tried again after RETRY_S. Stats
+    aim_stick, aim_stick_sign, aim_stick_switches, aim_stick_flips."""
+
+    GAP_S, CONTROL_S, RETRY_S = 0.3, 5.0, 30.0
+
+    def __init__(self, stats: dict | None = None, sticks=("right", "left"), n: int = 10, still_rad: float = 0.003):
+        self.stats = stats if stats is not None else {}
+        self.sticks, self.n, self.still_rad = tuple(sticks), int(n), float(still_rad)
+        self.i, self.sign, self.ok = 0, 1, False
+        self.still, self.tally, self.prev = 0, [0, 0], None
+        self.control_at, self.ruled_at = None, None
+        self._publish()
+
+    def control(self, now: float) -> None:
+        """He moved or turned (by any cause): he is in control now. All sticks ruled out RETRY_S ago: the first again."""
+        self.control_at = now
+        if self.stick is None and self.ruled_at is not None and now - self.ruled_at >= self.RETRY_S:
+            self.i, self.still, self.prev = 0, 0, None
+            self._publish()
+
+    def _publish(self) -> None:
+        self.stats["aim_stick"] = self.stick or "none"
+        self.stats["aim_stick_sign"] = self.sign
+
+    @property
+    def stick(self):
+        return self.sticks[self.i] if self.i < len(self.sticks) else None
+
+    def usable(self) -> bool:
+        return self.stick is not None
+
+    def rest(self) -> None:
+        """No aim turn held this tick: the next one starts a fresh comparison."""
+        self.prev = None
+
+    def observe(self, now: float, facing, err_sign: int) -> None:
+        """One tick with the aim turn held on self.stick: his facing now and the sign of the error the press answers."""
+        if not isinstance(facing, (int, float)) or self.stick is None:
+            self.prev = None
+            return
+        prev, self.prev = self.prev, (now, float(facing), err_sign, self.stick)
+        if prev is None or prev[3] != self.stick or now - prev[0] > self.GAP_S:
+            return
+        d = wrap(facing - prev[1])
+        if abs(d) < self.still_rad:
+            if self.control_at is None or now - self.control_at > self.CONTROL_S:
+                return                                   # not seen in control lately: proves nothing about the stick
+            self.still += 1
+            if self.still >= self.n and not self.ok:     # this stick moves nothing with the gun up: the next one
+                self.i += 1
+                self.still, self.tally, self.prev = 0, [0, 0], None
+                self.ruled_at = now
+                self.stats["aim_stick_switches"] = self.stats.get("aim_stick_switches", 0) + 1
+                self._publish()
+            return
+        self.still, self.ok, self.control_at = 0, True, now
+        self.tally[0 if d * prev[2] > 0 else 1] += 1
+        w, a = self.tally
+        if w + a >= self.n and a >= 3 * w + 4:            # it moves, the wrong way round: the sign flips
+            self.sign = -self.sign
+            self.tally = [0, 0]
+            self.stats["aim_stick_flips"] = self.stats.get("aim_stick_flips", 0) + 1
+            self._publish()
+        elif w + a >= 4 * self.n:
+            self.tally = [0, 0]
+
+
+# --- (h) pressed against a wall -------------------------------------------------------------------------------------
+class WallPress:
+    """Pressed against a wall (live RE4 2026-11-10, Krauser at a greybox wall, the camera inside it, not fighting; the
+    operator: "the issue is more like this"): the stick held to walk (pushing) press_s with under press_cm of ground,
+    while he is in control, is a wall in front of him. Each is remembered - its spot and the heading he pushed - for
+    keep_s; a walk from within wall_r_cm of a remembered spot within cone of its heading is refused (blocked): never
+    the same wall again. away(): the open floor to step onto - the first of the tries from straight back (the pushed
+    heading + pi) that is no remembered wall and that the title's geometry calls clear (when it has any). All in cm;
+    clear(a, b) takes cm. Stats walls_pressed."""
+
+    TRIES_DEG = (180, 135, -135, 90, -90, 45, -45)
+    GAP_S = 0.5                                  # pushing seen with a longer gap between ticks: not one press
+
+    def __init__(self, stats: dict | None = None, press_s: float = 0.6, press_cm: float = 15.0, keep_s: float = 60.0,
+                 wall_r_cm: float = 150.0, cone: float = 0.7, n_max: int = 24):
+        self.stats = stats if stats is not None else {}
+        self.press_s, self.press_cm, self.keep_s = press_s, press_cm, keep_s
+        self.wall_r_cm, self.cone, self.n_max = wall_r_cm, cone, n_max
+        self.walls: list = []                    # (x, z, heading, at)
+        self.anchor = None                       # (pos, at) while he pushes
+        self.t = None                            # the last tick seen
+        self.stats.setdefault("walls_pressed", 0)
+
+    def observe(self, now: float, pos, facing, pushing: bool, in_control: bool = True) -> bool:
+        """One tick: True when this tick found him pressed against a wall (it is remembered)."""
+        gap, self.t = self.t is not None and now - self.t > self.GAP_S, now
+        if not pushing or not isinstance(facing, (int, float)) or gap:
+            self.anchor = None if not pushing or not isinstance(facing, (int, float)) else (tuple(pos), now)
+            return False
+        a = self.anchor
+        if a is None or math.hypot(pos[0] - a[0][0], pos[2] - a[0][2]) > self.press_cm:
+            self.anchor = (tuple(pos), now)
+            return False
+        if now - a[1] < self.press_s:
+            return False
+        self.anchor = (tuple(pos), now)
+        if not in_control:                       # a scene that takes no input moves nothing either: no wall learned
+            return False
+        self.remember(now, pos, facing)
+        self.stats["walls_pressed"] = self.stats.get("walls_pressed", 0) + 1
+        return True
+
+    def remember(self, now: float, pos, heading: float) -> None:
+        self.walls = [w for w in self.walls if now - w[3] <= self.keep_s][-(self.n_max - 1):]
+        self.walls.append((float(pos[0]), float(pos[2]), float(heading), now))
+
+    def blocked(self, now: float, pos, heading) -> bool:
+        if not isinstance(heading, (int, float)):
+            return False
+        return any(now - at <= self.keep_s and math.hypot(pos[0] - x, pos[2] - z) <= self.wall_r_cm
+                   and abs(wrap(heading - h)) <= self.cone for x, z, h, at in self.walls)
+
+    def away(self, now: float, pos, facing: float, clear=None, dist_cm: float = 250.0, tries_deg=None):
+        """The end of a step of dist_cm onto open floor away from the wall he pushed (cm), or None (boxed in). tries_deg:
+        the headings off `facing` in order (TRIES_DEG: straight back first)."""
+        x, y, z = pos[:3]
+        for deg in (tries_deg or self.TRIES_DEG):
+            h = facing + math.radians(deg)
+            if self.blocked(now, pos, h):
+                continue
+            end = (x + dist_cm * math.sin(h), y, z + dist_cm * math.cos(h))
+            if clear is not None:
+                try:
+                    if not clear(tuple(pos[:3]), end):
+                        continue
+                except Exception:                    # noqa: BLE001 - a geometry error: not that way
+                    continue
+            return end
+        return None
+
+
+# --- (f) the throw ----------------------------------------------------------------------------------------------------
+# kind: "hand" / "fire" / "flash"; target: the enemy row the throw is laid on; point: where it should land (the pack's
+# centre, the title's own units); n: how many it catches; fleeing: thrown while he runs (back at the pursuers).
+Throw = namedtuple("Throw", "kind target point n fleeing why")
+THROW_COUNTERS = ("grenade_throws", "grenade_kills", "throws_while_fleeing", "throw_starts")
+
+
+class ThrowPolicy:
+    """When to throw a grenade, and which (the operator 2026-11-10: grenades at the enemies all the time, also while
+    fleeing). Every title's bot asks decide() each tick it could throw; its own equip / aim / throw path does the rest
+    and says started() (a try: the gap runs from it, whether or not it lands) and thrown() (it left his hand).
+      flash  a wind-up within its reach, or a grab threat (grab_r_cm), within flash_r_cm on his level, and a flash in
+             his kit: it, at that one;
+      pack   pack_n within pack_r_cm of one another - or a boss / dangerous one (prof.tier) - whose centre lies between
+             throw_min_cm (outside his own blast) and throw_max_cm: the first of the profile's blast kinds he carries
+             (hand, then incendiary), at the centre; the biggest pack first (a tiered one counts as a full pack more),
+             the nearer between equals.
+    Never within throw_gap_s of the last try. Fleeing (his escape under way) is no reason not to: the throw goes back at
+    the pursuers (throws_while_fleeing). The kills of the throw_kill_s after a throw are its own (grenade_kills, from the
+    title's kill count via observe()). Nothing here presses a key."""
+
+    def __init__(self, stats: dict | None = None):
+        self.stats = stats if stats is not None else {}
+        self.last_at = -1e9
+        self._window = None                      # (thrown at, the kill count then)
+        for k in THROW_COUNTERS:
+            self.stats.setdefault(k, 0)
+
+    def ready(self, prof: TitleProfile, now: float) -> bool:
+        return bool(prof.throw_kinds) and now - self.last_at >= prof.throw_gap_s
+
+    def decide(self, prof: TitleProfile, now: float, player, enemies, kinds, fleeing: bool = False,
+               threats: Threats | None = None) -> Throw | None:
+        if not self.ready(prof, now):
+            return None
+        have = [k for k in prof.throw_kinds if k in set(kinds or ())]
+        pos = (player or {}).get("pos")
+        if not have or not pos:
+            return None
+        cands = [c for c in candidates(prof, player, enemies, threats=threats) if abs(c["dy"]) <= prof.max_dy_cm]
+        if not cands:
+            return None
+        k = prof.units_per_cm
+        if "flash" in have:
+            close = [c for c in cands if c["d"] <= prof.flash_r_cm and abs(c["dy"]) <= prof.level_dy_cm
+                     and ((c["windup"] and c["d"] <= c["reach"]) or c["d"] <= prof.grab_r_cm)]
+            if close:
+                c = min(close, key=lambda x: x["d"])
+                why = ("winding up" if c["windup"] else "at arm's length") + f" {c['d'] / 100:.1f} m off: the flash"
+                return Throw("flash", c["e"], tuple(c["e"]["pos"]), len(close), bool(fleeing), why)
+        blast = [x for x in have if x != "flash"]
+        if not blast:
+            return None
+        me = prof.pos_cm(pos)
+        at = {id(c): prof.pos_cm(c["e"]["pos"]) for c in cands}
+        best = None
+        for c in cands:
+            if not prof.throw_min_cm <= c["d"] <= prof.throw_max_cm:
+                continue
+            q = at[id(c)]
+            pack = [o for o in cands if math.hypot(at[id(o)][0] - q[0], at[id(o)][2] - q[2]) <= prof.pack_r_cm]
+            tiered = c.get("tier", "normal") != "normal"
+            if len(pack) < prof.pack_n and not tiered:
+                continue
+            centre = tuple(sum(at[id(o)][i] for o in pack) / len(pack) for i in range(3))
+            dc = math.hypot(centre[0] - me[0], centre[2] - me[2])
+            if not prof.throw_min_cm <= dc <= prof.throw_max_cm:
+                continue                                     # the impact inside his own blast, or out of reach
+            score = (len(pack) + (prof.pack_n if tiered else 0), -dc)
+            if best is None or score > best[0]:
+                best = (score, c, centre, len(pack), tiered)
+        if best is None:
+            return None
+        _s, c, centre, n, tiered = best
+        what = ("a " + c["tier"] + " foe") if tiered else ("a pack of %d" % n)
+        why = "%s %.1f m off%s" % (what, math.hypot(centre[0] - me[0], centre[2] - me[2]) / 100.0,
+                                   " (thrown back as he runs)" if fleeing else "")
+        return Throw(blast[0], c["e"], tuple(v * k for v in centre), n, bool(fleeing), why)
+
+    def started(self, now: float) -> None:
+        self.last_at = now
+        self.stats["throw_starts"] = self.stats.get("throw_starts", 0) + 1
+
+    def thrown(self, now: float, fleeing: bool = False, kills=None) -> None:
+        self.last_at = now
+        self.stats["grenade_throws"] = self.stats.get("grenade_throws", 0) + 1
+        if fleeing:
+            self.stats["throws_while_fleeing"] = self.stats.get("throws_while_fleeing", 0) + 1
+        self._window = (now, kills if isinstance(kills, int) and not isinstance(kills, bool) else None)
+
+    def observe(self, prof: TitleProfile, now: float, kills) -> None:
+        """The title's kill count every tick: its rise within throw_kill_s of a throw is the throw's (grenade_kills)."""
+        w = self._window
+        if w is None or not isinstance(kills, int) or isinstance(kills, bool):
+            return
+        at, k0 = w
+        if k0 is not None and kills > k0 and now - at <= prof.throw_kill_s:
+            self.stats["grenade_kills"] = self.stats.get("grenade_kills", 0) + (kills - k0)
+        self._window = None if now - at > prof.throw_kill_s else (at, kills)

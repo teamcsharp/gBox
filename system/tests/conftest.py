@@ -89,6 +89,9 @@ def _private_re4_mods(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(mod, "SETTINGS_FILE", tmp_path_factory.mktemp("re4_mods") / "re4-mods.json")
     mod.ORIG.clear()
     monkeypatch.setattr(mod.D, "FIRE_GAP_S", mod.D.FIRE_GAP_S)     # Fire rate x paces the fight: put back after each test
+    if hasattr(mod.D, "HAND_REQUEST"):                              # the bot's grenade asks: none carried between tests
+        monkeypatch.setattr(mod.D, "HAND_REQUEST", {})
+        monkeypatch.setattr(mod.D, "HAND_STATE", {})
 
 
 @pytest.fixture(autouse=True)

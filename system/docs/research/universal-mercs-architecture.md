@@ -557,6 +557,39 @@ threat-first, RE6's lock sweep stay); RE4's learned wind-ups wait for a Ganado m
 empty until a low class is measured; the "engage" verdict of the idle guard is measured, not acted
 on, in RE4 / RE6.
 
+### 9.4b Added the same day: the throw, the raise / aim discipline, the wall
+
+* **(f) `ThrowPolicy`** (operator: grenades at the enemies all the time, also while fleeing): a
+  hand / incendiary grenade at a pack (`pack_n` within `pack_r_cm`, its centre between
+  `throw_min_cm` - outside his own blast - and `throw_max_cm`) or a boss / dangerous one, a flash at
+  a wind-up or a grab within `flash_r_cm`; at most every `throw_gap_s`; fleeing is no reason not to
+  (`throws_while_fleeing`); `grenade_kills` = kills within `throw_kill_s` of a throw. Each title's
+  own path does it: **RE5** (`THROWS` on) the grenade's D-pad slot made the native attach by
+  `_native_equipment` (no item screen), `_mastery`'s throw controller (crowd centre, arc, blast
+  standoff, ZL + ZR), then `_gun_back`; infinite grenades are the `infinite_ammo` mod's; no grenade
+  throw-speed mod exists (the egg / bow rates' motions are unmeasured), so normal speed. **RE4**
+  (`THROWS` **off**: the in-hand swap of a grenade id is not seen live yet) asks `re4_switch_mods`
+  through `HAND_REQUEST` (answered in `HAND_STATE` by `maintain()`): `_give_weapon`'s writes, now
+  `_write_hand`, after the hand's own bytes are kept; ZL then ZR; the bytes written back for the gun
+  (a stale ask or a new boot puts the gun back). No RE4 animation-speed mod exists to reuse. **RE6**:
+  the profile hook only (its grenades are another branch's). Bot-logic knobs `THROWS`,
+  `THROW_GAP_S` (RE4, RE5).
+* **(g) the raise / aim discipline** (live RE4, Krauser / Base: "walking into the wall
+  flickering"): `stand_engaged` - a target in fire range with a clear shot meets the never-stand
+  rule while he fires or turns toward it; `AimStick` - which stick moves the aim with the gun up,
+  and its sign, learned from his facing (only while he is seen in control, so an intro card rules
+  nothing out); with it RE4 keeps the gun up for targets within `AIM_KEEP_RAD` and lowers it only to
+  turn past it; `open_step` - a step goes along open floor. RE5 and RE6 already keep these rules
+  their own way (the gun up = no never-stand step; `UNAIM_ERR` keeps the gun up between targets;
+  steps probe the mesh).
+* **(h) `WallPress`** (live RE4, the camera inside a greybox wall, not fighting): the stick held to
+  walk `press_s` with no ground covered while in control = a wall: remembered, never walked into
+  again from there (a refused walk goes along it); pressed, he turns away (the quick turn when the
+  open floor is behind) and steps onto open floor (`away`: straight back first, no remembered wall,
+  the stage mesh's `clear_segment`). RE4's `_wall_core` runs it over every action that walks him
+  (locate, flank, runs, the sweep, steps), and the walker's mesh guard now covers the bot's own
+  walks. The camera distance is not read on RE4 Switch, so it is no signal there yet.
+
 ### 9.5 Stage B plan
 
 1. **A shared raise / aim / fire controller with per-title stick drivers.** `combat.FireControl`:

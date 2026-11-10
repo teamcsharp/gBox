@@ -2362,7 +2362,10 @@ def combat_profile() -> combat.TitleProfile:
         tier=combat.identity_tier(TITLE_ID, fallback=combat.hp_tier(boss_hp=BOSS_HP, dangerous_hp=BIG_HP)),
         page_key=FROZEN_KEY, frozen_cm=FROZEN_CM, frozen_rad=FROZEN_RAD, no_effect_s=FROZEN_FIRE_S,
         no_effect_shots=FROZEN_FIRE_SHOTS, page_tap_s=FROZEN_TAP_S, page_max_s=FROZEN_PAGE_MAX_S,
-        page_clear_cm=FROZEN_CLEAR_R, idle_aim_s=IDLE_AIM_S)
+        page_clear_cm=FROZEN_CLEAR_R, idle_aim_s=IDLE_AIM_S,
+        # the throw's hook (combat.ThrowPolicy) with RE6's own grenade distances; throw_kinds stays () - RE6's grenades
+        # are its own _nade (another branch wires the shared policy in)
+        throw_kinds=(), pack_n=NADE_N, pack_r_cm=NADE_CLUSTER_R, throw_min_cm=NADE_MIN_R, throw_max_cm=NADE_MAX_R)
 
 
 # Threats only (operator 19:09, a frame at low health aiming up at the ceiling with nothing there: "Aiming up for no reason

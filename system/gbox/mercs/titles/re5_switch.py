@@ -833,12 +833,30 @@ TM_COUNTERS = ("lethal_backoffs", "grudge_picks", "tm_hits_attributed", "tm_hits
 UNIVERSAL_CORE = True
 FROZEN, FROZEN_KEY, FROZEN_FIRE_S, FROZEN_FIRE_SHOTS, FROZEN_TRIGGER_S = True, "a", 5.0, 8, 4.0
 FROZEN_CM, FROZEN_RAD, FROZEN_TAP_S, FROZEN_PAGE_MAX_S, FROZEN_CLEAR_R = 3.0, 0.01, 0.2, 4.0, 150.0
+# The throw (combat.ThrowPolicy, THROWS; the operator 2026-11-10: grenades at the enemies all the time, also while he
+# flees): a hand / incendiary grenade at a pack (THROW_PACK_N within the crowd's radius, re5_weapons.CROWD_AIM_R) whose
+# centre lies outside the grenade's own blast (re5_weapons MASTERY "thrown" blast_cm + THROW_BLAST_PAD) and inside its
+# reach, or at a boss / dangerous one; a flash at a wind-up or a grab within THROW_FLASH_R; at most every THROW_GAP_S,
+# his escape run or not (a throw back at the pursuers). Only the title's own path: the grenade's D-pad slot (QUICK,
+# made the native attach by _native_equipment - no item screen), _mastery's throw controller (the crowd's centre, the
+# arc, the blast standoff, ZL + ZR), then _gun_back (the gun's slot). No new memory write: infinite grenades are the
+# infinite_ammo mod's (every gun and grenade); the throw plays at the game's own speed (no grenade motion is scaled -
+# re5_weapons.RATE_MOTIONS knows none). Stats grenade_throws, grenade_kills, throws_while_fleeing, throw_aborts.
+THROWS = True
+THROW_GAP_S, THROW_PACK_N, THROW_FLASH_R, THROW_BLAST_PAD = 5.0, 3, 400.0, 100.0
+THROW_EQUIP_S, THROW_MAX_S, THROW_SETTLE_S = 2.0, 3.0, 0.5
+THROW_ITEMS = {"hand": 0x06, "fire": 0x07, "flash": 0x08}    # WP06 / WP07 / WP08 (THROWN)
 
 
 def combat_profile() -> combat.TitleProfile:
     """RE5 Switch's calibration of the universal fight, from the live constants (a knob turned is in the next one)."""
     from ..core import doctrine as _d
+    from . import re5_weapons as _w
+    thrown = _w.MASTERY["thrown"]
     return combat.TitleProfile(
+        throw_kinds=tuple(THROW_ITEMS) if THROWS else (), throw_gap_s=THROW_GAP_S, pack_n=THROW_PACK_N,
+        pack_r_cm=_w.CROWD_AIM_R, throw_min_cm=thrown.blast_cm + THROW_BLAST_PAD, throw_max_cm=thrown.max_cm,
+        flash_r_cm=THROW_FLASH_R,
         title="re5_switch", title_id=TITLE_ID, units_per_cm=1.0, aim_model="laser_ray",
         sticks="Type D: the right stick turns the body fast (gun down) and moves the aim slowly (gun up, ~36-42 deg/s); "
                "ZL raise, ZR held (the game repeats it); the RAM aim lock where it holds",
@@ -3742,6 +3760,93 @@ class Bot:
         self._set_target(e.get("ptr", e.get("slot")), now)
         return e
 
+    def _throw_core(self, p, snap, live, flat, now) -> dict | None:
+        """THROWS above: this tick's step of a grenade throw (combat.ThrowPolicy decides; the title's own path does it):
+        equip (the grenade's D-pad slot, the native attach), throw (_mastery's controller with the grenade in hand),
+        the follow-through (THROW_SETTLE_S), then None - and _gun_back puts the gun back. None: no throw now."""
+        d = self.__dict__
+        pol = d.get("_uc_throws")
+        if pol is None:
+            pol = d["_uc_throws"] = combat.ThrowPolicy(self.stats)
+        try:
+            prof = combat_profile()
+            pol.observe(prof, now, snap.get("kills"))
+            inv = snap.get("inventory") or ()
+            held = next((s for s in inv if s.get("hand")), None)
+            st = d.get("_uc_throw")
+            fleeing = self.escape is not None and now < self.escape[1]
+            if st is None:
+                if (self.mines is not None and self.mines.state != "idle") or self.stats.get("operator_control") \
+                        or snap.get("mercenaries_phase") not in (None, PHASE_PLAYING):
+                    return None
+                infinite = getattr(self, "_infinite_ammo", False) is True
+                rows = {}
+                for kind, item in THROW_ITEMS.items():
+                    row = next((s for s in inv if s.get("type") == 1 and s.get("item") == item
+                                and (infinite or (s.get("rounds") or 0) > 0)), None)
+                    if row is not None:
+                        rows[kind] = row
+                plan = pol.decide(prof, now, p, live, set(rows), fleeing=fleeing)
+                if plan is None:
+                    return None
+                row = rows[plan.kind]
+                pol.started(now)
+                st = d["_uc_throw"] = {"plan": plan, "item": row["item"], "grid": row.get("grid"), "id": row.get("id"),
+                                       "phase": "equip", "since": now, "tap_at": -1e9, "shots0": None}
+            plan = st["plan"]
+            if st["phase"] == "equip":
+                if held is not None and held.get("item") == st["item"]:
+                    st.update(phase="throw", since=now, shots0=self.stats.get("shots", 0) or 0)
+                elif now - st["since"] > THROW_EQUIP_S:
+                    return self._throw_abort("the grenade never came to hand")
+                else:
+                    self._gun_down()
+                    self.doing, self.why = "rearm", f"a {plan.kind} grenade to hand: {plan.why}"
+                    if st["grid"] in QUICK:
+                        if now - st["tap_at"] >= GUN_BACK_GAP_S:
+                            st["tap_at"] = now
+                            return {"tap": QUICK[st["grid"]]}
+                        return {"hold": ()}
+                    if self.native_equip is not None and st["id"] is not None:
+                        self.native_equip.select(st["grid"], st["id"])
+                        return {"hold": ()}
+                    return self._throw_abort("the grenade on no D-pad slot and no native attach")
+            if st["phase"] == "throw":
+                shots = self.stats.get("shots", 0) or 0
+                if shots > st["shots0"] or held is None or held.get("item") != st["item"]:
+                    if shots <= st["shots0"]:
+                        return self._throw_abort("the grenade left his hand without a throw")
+                    pol.thrown(now, plan.fleeing, snap.get("kills"))
+                    st.update(phase="settle", since=now)
+                elif now - st["since"] > THROW_MAX_S:
+                    return self._throw_abort("no throw within THROW_MAX_S")
+                else:
+                    key = plan.target.get("ptr", plan.target.get("slot"))
+                    tgt = next((e for e in live if e.get("ptr", e.get("slot")) == key), None) \
+                        or min(live, key=flat, default=None)
+                    act = self._mastery(p, live, flat, tgt, snap, now) if tgt is not None else None
+                    if act is None:
+                        return self._throw_abort("no one left to throw at")
+                    self.why = f"grenade ({plan.why}): {self.why}"
+                    return act
+            if st["phase"] == "settle":
+                if now - st["since"] < THROW_SETTLE_S:
+                    self._wm_release(now)
+                    self.doing, self.why = "rearm", f"the {plan.kind} grenade thrown: the follow-through"
+                    return {"hold": ()}
+                d["_uc_throw"] = None                         # done: _gun_back brings the gun back
+                return None
+        except Exception as exc:                             # noqa: BLE001 - the core never costs the tick
+            self._core_error(exc)
+            d["_uc_throw"] = None
+        return None
+
+    def _throw_abort(self, why: str):
+        self.__dict__["_uc_throw"] = None
+        self.stats["throw_aborts"] = self.stats.get("throw_aborts", 0) + 1
+        self.stats["throw_abort_last"] = why[:120]
+        return None
+
     def _frozen_core(self, p, snap, near, now) -> dict | None:
         """combat.NotInControl (FROZEN above): A every FROZEN_TAP_S while his shots do nothing and nothing moves him."""
         d = self.__dict__
@@ -5954,8 +6059,10 @@ class Bot:
                 self.doing, self.why = "mine", str(self.stats.get("mine_status") or "")
                 act = self._mine_route(p, act, now)
             else:
-                act = self._escape(p, live, flat, now)
-                if act is not None:
+                throwing = UNIVERSAL_CORE and THROWS and (act := self._throw_core(p, snap, live, flat, now)) is not None
+                if throwing:
+                    pass                                     # a grenade at the pack (its own doing / why), escape or not
+                elif (act := self._escape(p, live, flat, now)) is not None:
                     self.doing, self.why = "escape", f"{self.round_escapes} this round"
                 elif (act := self._gun_back(snap, now)) is not None:
                     self._gun_down()
@@ -5964,7 +6071,7 @@ class Bot:
                     act = self._fight(live, snap, now)
                 else:
                     act = self._decide(p, live, flat, near_e, near, snap, now)
-                if self._windup_e is not None:
+                if self._windup_e is not None and not throwing:
                     # a Majini winding up within reach (its lunge lands WINDUP_HIT_S later): the shot keeps flying at the air.
                     # The trigger releases, the wind-up is the target, and the next tick's fight re-fires on it.
                     if self.fire_down:
