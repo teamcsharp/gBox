@@ -248,6 +248,21 @@ def test_a_hook_blast_that_never_shows_is_a_failure_and_the_press_follows(monkey
     assert bot.stats["bomb_mind_failures"] == 1 and bot.bomb_phase in ("det_aim", "det", "det_wait", "wait")
 
 
+def test_the_remote_bomb_in_hand_unasked_is_placed_not_put_away(monkeypatch):
+    """Live 2026-11-10: the game re-equipped the selected item after every native gun request; with the remote bomb
+    that was 594 gun backs a round and no bomb out. With the hook bound he places it, and the gun comes back after."""
+    monkeypatch.setattr(R, "BOMB_MIND", True)
+    bot, bridge, mind, clock, snap = mind_bot(((0.0, 0.0, 800.0, 700), (100.0, 0.0, 900.0, 700)))
+    bot.bomb_phase, bot.bomb_at, bot.bomb_last = None, None, -1e9
+    snap["player"]["bomb"] = {"count": 5, "out": False, "armed": False}       # in his hand, none out
+    acts = run(bot, snap, clock, int((R.BOMB_FACE_S + R.BOMB_AIM_S) / 0.05) + 4)
+    assert bot.stats["held_bomb_places"] == 1 and bot.stats["item_gun_backs"] == 0
+    assert any({"zl", "zr"} <= set(a.get("hold") or ()) for a in acts)        # thrown
+    snap["player"]["bomb"] = {"count": 5, "out": True, "armed": True}         # out: the gun back by the hook
+    run(bot, snap, clock, 2)
+    assert bot.stats["bombs_placed"] == 1 and bot.stats["bomb_gun_backs"] >= 1 and 0 in bridge.targets
+
+
 def test_with_the_hook_bound_no_dpad_key_ever_leaves_the_bot():
     bot = R.Bot(stats={}, equip=NativeBridge())
     assert bot._no_wheel({"tap": "right"}) == {"hold": ()}

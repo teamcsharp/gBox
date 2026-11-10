@@ -5266,6 +5266,15 @@ class Bot:
                 or (p.get("bomb") or {}).get("out") or self.down):
             return None
         kind = next((k for k, t in NADE_TYPES.items() if ((p.get("nades") or {}).get(t) or (None,))[0] == eq), None)
+        if kind is None and eq == BOMB_INDEX and self._held_bomb_ok(p, live, flat, now):
+            # The remote bomb in his hand unasked (live 2026-11-10: the game re-equipped the selected item ~0.11 s after
+            # every native gun request - 594 gun backs in a round and not one bomb out): placed, not put away - the
+            # hook sets it off and the gun comes back at once (BOMB_MIND). stats held_bomb_places.
+            self.stats["held_bomb_places"] = self.stats.get("held_bomb_places", 0) + 1
+            self.bomb_drop, self.bomb_why = False, "the remote in his hand: placed"
+            self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "face", now, 0
+            cam = snap.get("camera")
+            return self._bomb_press(eq, now, live=live, p=p, yaw=cam["yaw"] if cam else p["rot"])
         if kind is None:                                         # not a grenade: the gun back before ZL lifts it
             self.stats["item_gun_backs"] = self.stats.get("item_gun_backs", 0) + 1
             return self._go("nade", "gun_back", self._equip_keys(p, self._gun_index(p)), f"an item in hand (slot {eq}): equipping the gun")
@@ -6075,6 +6084,16 @@ class Bot:
         self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "equip", now - BOMB_STEP_S, 0
         return self._bomb_press(eq, now, live=live, p=p, yaw=yaw)
 
+    def _held_bomb_ok(self, p, live, flat, now) -> bool:
+        """The remote bomb in hand may be placed at once: the hook bound (BOMB_MIND), one in his pack, none out, him
+        healthy (BOMB_MIND_HP), nobody within BOMB_ROOM_R (it lands at his feet), someone to set it off on, BOMB_GAP_S
+        since the last."""
+        bomb = p.get("bomb") or {}
+        hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
+        return (BOMBS and BOMB_MIND and self._mind_ok(now) and (bomb.get("count") or 0) > 0 and not bomb.get("out")
+                and not (hp_max and hp < BOMB_MIN_HP * hp_max) and bool(live)
+                and min(flat(e) for e in live) >= BOMB_ROOM_R and now - self.bomb_last >= BOMB_GAP_S)
+
     def _lethal(self, e) -> bool:
         tm = getattr(self, "threats", None)
         try:
@@ -6230,6 +6249,12 @@ class Bot:
             self.bomb_phase = "wait"
         if self.bomb_walk_since is None:
             self.stats["bomb_escapes"] += 1
+        if p.get("equipped") == BOMB_INDEX and self._mind_ok(now):   # the remote in hand: the gun back as he goes
+            gun = self._gun_index(p)                                   # (the request is published; the walk's keys
+            if gun is not None:                                        # go out with it)
+                self._equip_keys(p, gun)
+                if (self._equip_result or {}).get("state") in ("requested", "pending", "equipped"):
+                    self.stats["bomb_gun_backs"] += 1
         cam = snap.get("camera")
         return self._bomb_walk(p, (bx, bz), cam["yaw"] if cam else p["rot"], me, 0, now, act="bomb_escape",
                                why=f"inside the bomb's reach ({me:.0f} of {self.book.radius:.0f} cm): out first",
