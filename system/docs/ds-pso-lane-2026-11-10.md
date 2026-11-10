@@ -2689,17 +2689,64 @@ next step is mechanical -- point `find_pointers` at `0x8000c000 + 0x438140 - 0x1
 
 `main` clean; 7 DOL tests green.
 
+## Round 55 (2026-11-10) — the class registry, decoded (and two of my earlier readings were wrong)
+
+### `gbox/pso_classes.py` (+4 tests)
+
+The executable holds an array of object-class name pointers, and it is **self-calibrating**: find the string
+`TObjCityDoor_Shop`, find the pointer to it, and the array starts `0x46` entries (4 bytes each) before that pointer. That
+anchor is checkable, not assumed -- round 46 had already matched four placement records to the four city doors by position
+and got Shop/Guild/Warp/Med in the order `0x46..0x49`.
+
+The real registry, around the city classes:
+
+| slot | name | evidence |
+|---|---|---|
+| 0x40 | `TObjCamera` | -- |
+| 0x42 | `TObjChip` | -- |
+| 0x44 | `TObjCityAirCar_Ctrl` | a record at world (308,211) is this class |
+| 0x45 | `TObjCityAirCar_Car` | records at (360,26), (0,-60), (0,-1730) |
+| 0x46 | `TObjCityDoor_Shop` | matched at (-165,147.5) |
+| 0x47 | `TObjCityDoor_Guild` | matched at (185,173) -- does not transition |
+| 0x48 | `TObjCityDoor_Warp` | matched at (254,25) -- **does** transition |
+| 0x49 | `TObjCityDoor_Med` | matched at (193.5,-93.5) |
+| 0x4a | `TObjCityDoor_Lobby` | -- |
+| 0x4c-0x55 | `TObjCity_Season_*` | nine seasonal decorations |
+
+### What it corrects
+
+Applying the registry to every record of `map_city00_00o.dat` contradicted two things I had written down:
+
+* **The records near the shopkeepers are cameras, not the shopkeepers.** Rounds 48-50 described the seven `0x40` records as
+  "counters with the keepers behind them" because they landed 9-13 units from the NPC entities. They are `TObjCamera` --
+  fixed camera positions for the shop area that happen to sit behind the counters. The NPCs themselves are placed by
+  somebody else.
+* **The `x=0` "corridor markers" are flying cars.** Round 53 called the two `TObject`s at `(0,-60)` and `(0,-1730)` the most
+  promising unexplored line in the city. They are `TObjCityAirCar_Car`: traffic. The corridor is a road with a car parked on
+  it, and the "lead" I put at the top of the lane's next-steps list does not exist.
+* The four objects in the southwest cluster are an **empty slot** in the low range, as is record 27 (the lobby pedestal), so
+  their classes live above `0x60` or in another table -- the next thing to widen.
+
+### Honest note on the method
+
+The registry is congruent and the doors are exact, so the calibration is sound. What was *not* sound was inferring a
+record's identity from proximity to an entity: an object 10 units from an NPC is a camera, not the NPC. That inference ran
+through rounds 48-53 and this round retired it in two places. The lesson is the same one round 42 taught about coordinates:
+match by identity (class id, controller), not by nearness.
+
+### State
+
+`main` clean; 4 registry tests green. P1's gate is unchanged -- still the executable's quest logic -- but the class id space
+is now open, which is what an object-level search of the executable needs.
+
 ## 7. Next
 
-1. **The class registry is one pointer away.** `TObjCityDoor` is a string at file 0x438140 (address 0x8000C000 +
-   (0x438140-0x100)); run `pso_dol.find_pointers` at that address and follow the table. That names every placement
-   class index -- the half of round 46's work that is still missing.
-2. **P1's gate needs the quest logic.** With `pso_dol` (flat map, base 0x8000c000 matching the Ghidra export) and the
-   class-name strings, the next lever is the quest/teleport path: find what reads the area table and what sets the quest
-   state.
+1. **Widen the class registry past 0x60.** Four southwest objects and the lobby pedestal (record 27, kind 0x57) resolve
+   to empty slots in the low range, so their classes live higher in the table or in a second one.
+2. **P1's gate is the executable's quest logic** -- unchanged, and the class ids are now open, which is what an
+   object-level search needs.
 3. **P6b's page** (pure UI over `python -m gbox.pso_editor`) and **P7a's rigging** are the items that do not need P1.
 
-Recorded this round: `PsoV3.dol` has **no standard section table** (code starts at 0x100, base 0x8000c000), the Ghidra
-export's `image_base` matches it, and the executable carries `TObj*` class names and `map_` fragments but **not** full
-area file names -- those are assembled, which is why searching for `map_forest01_00o.dat` in the executable finds
-nothing.
+Corrections in round 55: the seven `0x40` records near the shop counters are `TObjCamera`, not the keepers; the two
+`TObject`s on x=0 at (0,-60) and (0,-1730) are `TObjCityAirCar_Car` (traffic), so the **"x=0 corridor lead" is retired**.
+Do not identify a record by its distance to an entity -- match class ids or controllers.
