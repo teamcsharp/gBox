@@ -65,7 +65,7 @@ SIGNATURE = bytes.fromhex(
 #   through the job API takes 3.9 s (2.6 s between the first and last row read).
 # * the guest heap the units live in (2026-11-05: Leon's position copy at 0x5d559cafe0, unit objects at 0x5d55a77ad0)
 #   is readable in HEAP_WINDOWS (64 MiB probe steps); the bss holds 1,289 pointers into it at the main menu.
-S_PGLOBAL = S_PLAYER = S_EMMGR = S_MERC = S_TITLE_TASK = None   # no pointer anchor is used (see the finders below)
+S_PGLOBAL = S_EMMGR = S_MERC = S_TITLE_TASK = None   # not found (S_PLAYER is below, with the units)
 DATA_OFF, BSS_OFF, BSS_END = 0xAE2000, 0xB2C738, 0x1CC0000
 BSS_ROWS = ((0xB00000, 0x77D000), (0x127D000, 0x3000), (0x1280000, 0x6000), (0x1286000, 0x100000),
             (0x1386000, 0x5000), (0x138B000, 0x100000), (0x148B000, 0x6000), (0x1491000, 0x100000),
@@ -83,20 +83,36 @@ CLOCK_RATE = (0.6, 1.4)                 # clock seconds per wall second (emulati
 CLOCK_DT = (0.8, 8.0)                   # the two reads this far apart (a shorter gap cannot tell 1.0 from 0.6)
 CLOCK_STALE_S = 4.0                     # a found clock that has not moved this long is re-checked (a pause holds it)
 
-# The units. Code-derived offsets (Ghidra, re4-switch-ram.md "twentieth pass"): FUN_004cd1c0, the damage routine, does
-# hp = *(ushort *)(unit + 0x3c2) - damage(type = *(byte *)(unit + 0x3ce)) and zeroes it at death. The 2026-11-05 class
-# census (objects whose first word is a module vtable, read at +0x3c2) is where the Ganados are expected; the player
-# class, the position / facing offsets and which class is a Ganado are NOT measured (re4sw_round_probe.py measures
-# them in one live round). Until PLAYER_CLASS, ENEMY_CLASSES and U_POS are set the snapshot reads no player and no
-# enemies, the playbook keeps its frame-only cadence, and the map's mercs.ready stays false.
+# The units. Code-derived (Ghidra, re4-switch-ram.md "twentieth pass"): FUN_004cd1c0, the damage routine, does
+# hp = *(ushort *)(unit + 0x3c2) - damage(type = *(byte *)(unit + 0x3ce)) and zeroes it at death; the unit-state code
+# uses unit + 0xa4 / + 0xb4 as vectors. Measured 2026-11-10 on lilspark (session 2608165663e8463e-bde10e3ca2664322,
+# Leon, read on the You Are Dead screen after a round; tests/fixtures/re4sw_units_live.json): every unit is an object
+# 0x10c8 bytes long in one heap pool whose first word is its class's vtable (module data), with
+#   +0xa4 f32 x, y, z (cm; copies at +0x128 and +0x2a8), +0xb0 f32 rotation x, y, z (rad: x = z = 0, so the facing is
+#   +0xb4), +0xbc f32 scale (Ganados 1.01-1.3: RE4 scales each one), +0x110 u32 id, +0x116 state, +0x3c2 / +0x3c4 u16
+#   health / max (Ganados 400/400, one 3500/3500).
+# * the player: class 0xb09a60, ONE object, id 0, pointed at from the bss at module + 0x11310f0 and + 0x113b398. His
+#   +0x3c2 read 1860 with +0x3c4 0 while he lay dead, so his life is NOT that field (the GameCube build keeps it in pG):
+#   the snapshot gives him hp None until it is found.
+# * the Ganados: class 0xae7050 (ids 22, 24 ... 40): the Ganado health, random scale and positions round the player.
+#   Not yet seen moving or losing health (the round was over when they were read) - the first live round confirms.
+# * not units: 0xaed470 / 0xaed3b0 / 0xaed318 (health 1000) and 0xaedad0 (health 1), ids 1-21, the 0x18-stride table at
+#   module + 0x113d2b0 - static set objects (props, lamps). The 2026-11-05 "spawn markers" were 0xae7050 objects read at
+#   +0x4d0 (a home / target point: +0x500 now), not at their position.
 U_ID, U_HP, U_TYPE = 0x110, 0x3C2, 0x3CE
-UNIT_CLASS_LEADS = (0xAED3B0, 0xAE8B10, 0xAED470, 0xAEE5E0)    # census: 26 / 12 / 12 / 8 objects, +0x3c2 = 1000
-MARKER_CLASS = 0xAE7050                 # NOT units: spawn markers (five, never moved, position at +0x4d0)
-PLAYER_CLASS: int | None = None         # PENDING: the player's class (module offset of its vtable)
-ENEMY_CLASSES: tuple = ()               # PENDING: the Ganado classes
-U_POS: int | None = None                # PENDING: f32 x, y, z (cm) inside a unit
-U_YAW: int | None = None                # PENDING: f32 facing (rad, 0 = +z, + toward +x) inside a unit
-U_HP_MAX: int | None = None             # PENDING: u16 max health (None: the first health read stands in)
+UNIT_SIZE = 0x10C8
+UNIT_CLASS_LEADS = (0xAE7050, 0xAED3B0, 0xAE8B10, 0xAED470, 0xAEE5E0)   # what the probe surveys
+MARKER_CLASS = 0xAE7050                 # (kept for the probe: the class 2026-11-05 took for markers - the Ganados)
+SET_OBJECT_CLASSES = (0xAED470, 0xAED3B0, 0xAED318, 0xAEDAD0)
+S_PLAYER = 0x11310F0                    # bss: the player unit's pointer (a second copy at S_PLAYER_2)
+S_PLAYER_2 = 0x113B398
+PLAYER_CLASS: int | None = 0xB09A60
+ENEMY_CLASSES: tuple = (0xAE7050,)
+U_POS: int | None = 0xA4
+U_YAW: int | None = 0xB4                # rotation y; the heading convention (0 = +z, + toward +x) is INFERRED
+U_HP_MAX: int | None = 0x3C4
+U_SCALE = 0xBC
+PLAYER_HP_IN_UNIT = False               # the player's +0x3c2 is not his life (see above): hp None until it is found
 UNIT_HP_MAX = 30000                     # a health above this is not a health (a freed or foreign object)
 UNIT_SCAN_CHUNK = 1 << 24               # 16 MiB per read while the census scans the heap
 UNIT_RESCAN_S = 4.0                     # new spawns: the census looks again this often, inside the pool it found
@@ -318,14 +334,23 @@ def clock_candidates(before: list, after: list, dt: float) -> list:
     return out
 
 
+CLOCK_GROUP_S = 0.05                    # survivors reading within this of each other are copies of one clock
+
+
 def pick_clock(cands: list) -> int | None:
-    """The clock among the survivors: the copy nearest the survivors' median reading (the cluster's copies agree within
-    a few ms; a stray countdown elsewhere does not), the lowest address on a tie."""
+    """The clock among the survivors: the biggest group of copies reading the same (the 2026-11-05 clock was 78 copies
+    0x30 apart; a stray countdown is one float - on 2026-11-10 a lone timer at 26 s was taken at a round's start while
+    the HUD read 1:59), the higher reading between equal groups, the lowest address of the group."""
     if not cands:
         return None
-    vals = sorted(c[2] for c in cands)
-    mid = vals[len(vals) // 2]
-    return min(cands, key=lambda c: (round(abs(c[2] - mid), 2), c[0]))[0]
+    groups: list = []
+    for c in sorted(cands, key=lambda c: c[2]):
+        if groups and c[2] - groups[-1][-1][2] <= CLOCK_GROUP_S:
+            groups[-1].append(c)
+        else:
+            groups.append([c])
+    best = max(groups, key=lambda g: (len(g), max(c[2] for c in g)))
+    return min(c[0] for c in best)
 
 
 class ClockFinder:
@@ -470,6 +495,26 @@ class UnitCensus:
         return player, enemies
 
 
+def player_unit(m, base: int) -> dict | None:
+    """The player's unit through the bss pointer (S_PLAYER, then S_PLAYER_2), checked by its class's vtable word."""
+    if PLAYER_CLASS is None or U_POS is None:
+        return None
+    for off in (S_PLAYER, S_PLAYER_2):
+        if off is None:
+            continue
+        try:
+            p = u64(m, base + off)
+        except (ValueError, OSError, struct.error):
+            continue
+        if not ptr_ok(p):
+            continue
+        u = read_unit(m, p)
+        if u is not None and u["vtable"] == base + PLAYER_CLASS and "pos" in u:
+            u["class"] = PLAYER_CLASS
+            return u
+    return None
+
+
 def _finder(m, name, kind):
     obj = getattr(m, name, None)
     if not isinstance(obj, kind):
@@ -504,7 +549,10 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
         if search:
             census.refresh(m, base, now)
         player, enemies = census.read(m, base)
+        player = player_unit(m, base) or player       # the bss pointer first: no scan needed for him
         if player is not None:
+            if not PLAYER_HP_IN_UNIT:
+                player["hp"] = player["hp_max"] = None     # his +0x3c2 is not his life (measured, see U_ID above)
             player.setdefault("hp_max", None)
             player.setdefault("rot", None)
             snap["player"] = player
@@ -550,7 +598,7 @@ def own_screen(snap: dict) -> str:
 # next screen's default row: LOAD from the title, SEPARATE WAYS from the main menu. So each screen takes one confirm
 # per gap, however long the picture takes to change.
 CONFIRM_GAP_S = {"title": 5.0, "main_menu": 3.0, "extras_menu": 3.0, "mercs_title": 3.0, "select_player": 3.0,
-                 "select_stage": 5.0, "round_intro": INTRO_GAP_S}
+                 "select_stage": 5.0, "round_intro": INTRO_GAP_S, "dead_continue": 3.0}
 _confirmed: dict[str, float] = {}
 
 # A stray confirm can still land on LOAD (a boot press on an unnamed screen, an operator tap) and the story save list
@@ -640,6 +688,10 @@ def step(scr: dict, now: float | None = None) -> str | None:
         return _confirm(where, now)
     if where in ("title", "mercs_title", "round_intro"):
         return _confirm(where, now)                         # these match the reference, so the default entry is up
+    if where == "dead_continue":
+        # "You Are Dead - Continue Yes / No", the cursor on Yes (measured frame): Yes plays the stage again. Measured
+        # 2026-11-10: the frame-only playbook sat on this screen until MercMode's no-progress cut
+        return _confirm(where, now)
     return None
 
 

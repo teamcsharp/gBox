@@ -116,13 +116,37 @@ def menu_cursor(y: float | None) -> tuple[str, int] | None:
     return (best[0], best[1]) if best[2] <= ROW_TOLERANCE else None
 
 
+# "You Are Dead - Continue Yes / No" (measured 2026-11-10 on lilspark, tests/fixtures/re4sw_dead_continue.jpg): an almost
+# black frame (mean 6.5, so it read as "loading") with the prompt's rule - rows 391-394, every pixel of x 415..958
+# above 40 - grey "Continue Yes / No" text above it and the red "You Are Dead" over the darkened scene.
+DEAD_MEAN_MAX = 25.0
+DEAD_RULE_ROWS, DEAD_RULE_X = (385, 401), (415, 958)
+DEAD_TEXT_BOX = (480, 352, 900, 386)            # x0, y0, x1, y1
+DEAD_RED_BOX = (100, 150, 860, 470)
+
+
+def is_dead_continue(rgb, gray) -> bool:
+    if float(gray.mean()) > DEAD_MEAN_MAX:
+        return False
+    x0, x1 = DEAD_RULE_X
+    rule = max(float((gray[y, x0:x1] > 40).mean()) for y in range(*DEAD_RULE_ROWS))
+    tx0, ty0, tx1, ty1 = DEAD_TEXT_BOX
+    text = float((gray[ty0:ty1, tx0:tx1] > 90).mean())
+    rx0, ry0, rx1, ry1 = DEAD_RED_BOX
+    box = rgb[ry0:ry1, rx0:rx1]
+    red = float(((box[..., 0] - box[..., 1] > 15) & (box[..., 0] > 30)).mean())
+    return rule >= 0.9 and text >= 0.05 and red >= 0.03
+
+
 def classify(png: bytes) -> dict:
     """One frame, no memory: {"where": title | main_menu | extras_menu | mercs_title | select_player | select_stage |
-    loading | playing | story | menu | unknown, "cursor": row on a menu}."""
+    dead_continue | loading | playing | story | menu | unknown, "cursor": row on a menu}."""
     rgb = decode(png)
     gray = rgb.mean(axis=2)
     if has_hud(gray):
         return {"where": "playing"}
+    if is_dead_continue(rgb, gray):
+        return {"where": "dead_continue"}
     r, thumb = refs(), thumbnail(rgb)
     for name, limit in FIXED.items():
         if rmse(thumb, r["refs"][name]) <= limit:
@@ -168,6 +192,8 @@ class Reader:
     def press_went_in(self, where: str, key: str) -> None:
         if where == "round_intro" and key == "a":
             self.intro_presses += 1
+        if where == "dead_continue" and key == "a":
+            self.stage_picked, self.intro_presses = True, 0     # Continue: the same stage loads again, intro and all
         if where in self.STEER_SCREENS:
             if key in self.STEER_KEYS:
                 if self.steer != where:

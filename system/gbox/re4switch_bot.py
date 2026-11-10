@@ -272,6 +272,8 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             pace.observe(scr, clock())
             if where == "title" and seen_menu:
                 stats["title_returns"] = stats.get("title_returns", 0) + (prev_where != "title")
+            if where == "dead_continue" and prev_where != "dead_continue":
+                stats["deaths"] = stats.get("deaths", 0) + 1     # the walk answers Continue: Yes (re4_switch.step)
             seen_menu = seen_menu or where in driver.CURSOR_MENUS
             prev_where = where
             # moves on a short cadence once the last one showed; a confirm once its screen has settled (and, on a

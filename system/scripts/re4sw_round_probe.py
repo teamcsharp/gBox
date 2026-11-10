@@ -95,6 +95,7 @@ def dump_bss(api, sid, base) -> dict:
                             done))
     fin = sorted(j.get("finished") for j in done if j.get("finished"))
     return {"rows": [(r["address"], d) for r, d in zip(rows, datas) if d is not None],
+            "row_at": {r["address"]: j.get("finished") for r, j, d in zip(rows, done, datas) if d is not None},
             "at": fin[len(fin) // 2] if fin else (t0 + time.time()) / 2,
             "spread_s": round(fin[-1] - fin[0], 2) if fin else None}
 
@@ -227,7 +228,14 @@ def main(argv=None):
     time.sleep(2.0)
     second = dump_bss(api, sid, base)
     dt = second["at"] - first["at"]
-    cands = D.clock_candidates(first["rows"], second["rows"], dt)
+    # each row against its own read times: the 2026-11-10 run read the rows up to 9 s apart, so one dt for all of
+    # them could not tell the clock (its row read 12.7 s apart by the medians) from a slower float
+    cands = []
+    for (addr, d0), (_, d1) in zip(first["rows"], second["rows"]):
+        t0, t1 = first["row_at"].get(addr), second["row_at"].get(addr)
+        row_dt = (t1 - t0) if t0 and t1 else dt
+        if row_dt > 0:
+            cands += D.clock_candidates([(addr, d0)], [(addr, d1)], row_dt)
     report["clock"] = {"dt": round(dt, 2), "spread_s": [first["spread_s"], second["spread_s"]],
                        "picked": hex(D.pick_clock(cands) - base) if cands else None,
                        "candidates": [(hex(x - base), round(v0, 3), round(v1, 3)) for x, v0, v1 in cands[:80]]}

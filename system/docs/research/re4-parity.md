@@ -494,11 +494,52 @@ this build); the map fills `snap["nav"]`, which the fight uses for line of sight
 | field | where | state | what a mod could do |
 |---|---|---|---|
 | the round clock | f32 seconds, module + ~`0x1274710` (2026-11-05 cluster, copies every 0x30; found per boot by `ClockFinder`, `stats.clock_addr`) | found live 2026-11-05; the finder is offline-tested; **not read this pass** (no round) | freeze / add / cut time (write every copy of the cluster, read back) |
-| unit health | `u16` at unit + `0x3c2` (code: the damage routine writes it) | offset from code; **which unit is the player, which are Ganados: pending** (`PLAYER_CLASS`, `ENEMY_CLASSES`) | player god mode / heal, enemy one-shot or armour |
+| unit health | `u16` at unit + `0x3c2` / max `+0x3c4` (code: the damage routine writes it) | Ganados (class `0xae7050`): measured 2026-11-10 (7.7); the player's life is NOT this field | player god mode / heal, enemy one-shot or armour |
 | unit type | `u8` at unit + `0x3ce` (the damage table's index) | from code | enemy kind swaps (risky: the type picks the damage row) |
 | the game state | pointer at module + `0xb25d78` -> main's data (`0x3ca871ee08` this boot); fields `+0x5037` difficulty, `+0x503c` mode (score x10/x5/x2), `+0x84f0`, `+0x984` (decompiled score routine) | pointer read live; fields from code, not read | difficulty / score-multiplier mods |
 | kills, combo, combo window, score | `MERC_*` | **pending** (the probe lists monotonic small-step counters) | combo-window extension, score boosts |
 | ammo | - | **not looked for** | infinite ammo |
+
+### 7.7 The first RE4 round read live (2026-11-10, session `2608165663e8463e-bde10e3ca2664322`)
+
+With main `b8cb25c7` deployed (the escape fix, not yet the 7.2 pace), MercMode's RE4 turn walked title 00:30:25 ->
+main menu 00:30:33 -> EXTRAS 00:30:49 -> Select Stage 00:31:06 -> the round 00:31:22 UTC (coordinator's timings); the
+turn's telemetry ended with `story_recoveries 0`. Leon (frame: `01'37"97`, score 0, 21 rounds, health ring part
+gone) died about a minute in, and the frame-only cadence never answered "You Are Dead - Continue Yes / No": the turn sat
+there until its cut (the very dark frame read as loading / unknown in turn, so `rounds` counted 5). The probe (run by
+the coordinator, 00:31:42-00:33:13) and my reads (00:34-00:36, read-only) all fell after the death, so nothing below was
+seen *moving*; the layout is from the objects' contents, the code and the pointers.
+
+| what | measured | how / evidence |
+|---|---|---|
+| unit object | 0x10c8 bytes, one heap pool (`0x5d55b4xxxx`-`0x5d55bexxxx` this boot), first word = its class's vtable in main's data | consecutive objects 0x10c8 apart; 3 MB of the pool read around the census hits |
+| position | **`+0xa4` f32 x, y, z** (cm; copies at `+0x128`, `+0x2a8`) | non-round stage coordinates in every unit; the unit-state code uses `+0xa4` as a vector |
+| facing | **`+0xb4` f32** = rotation y of `+0xb0` (x, z read 0) | player -0.271, Ganados 1.102 / 1.012 / -2.35, a prop 0.0. The heading convention (0 = +z) is inferred |
+| scale | `+0xbc` f32 | Ganados 1.01-1.3 (RE4 scales each one), the player and props 1.0 |
+| id / state | `+0x110` u32 / `+0x116` u8 | player id 0 state 0; Ganados even ids 22-40 state 1 |
+| health / max | `+0x3c2` / `+0x3c4` u16 on Ganados | 400/400 x 9, 3500/3500 x 1 (code: the damage routine) |
+| **the player** | class **`0xb09a60`**, one object, id 0; the bss points at it from **module + `0x11310f0`** and **+ `0x113b398`** (`S_PLAYER`, `S_PLAYER_2`) | two static pointers to the unique id-0 object, 5.3 m from the Ganado he died beside. His `+0x3c2` read **1860 with max 0 while dead**: his life is NOT there (`PLAYER_HP_IN_UNIT = False`, hp None) |
+| **the Ganados** | class **`0xae7050`** (the class 11-05 called "spawn markers": it read `+0x4d0`, a home point; `+0x500` now) | Ganado health, random scale, positions round the player. Not yet seen moving or taking damage |
+| not units | `0xaed470`, `0xaed3b0`, `0xaed318` (health 1000) and `0xaedad0` (health 1): ids 1-21 in the **table at module + `0x113d2b0`** (`{pointer, active, next}` every 0x18) | static set objects (props, lamps); all 1000-health "leads" of 11-05 are these |
+| the clock | **not found** | the probe's lone candidate `module + 0x113cce4` (37.1 -> 22.7) is not the HUD clock (1:37.97 at the same moment); the 11-05 hint addresses hold a 0x30-stride array reading a frozen 145.38 on the death screen; the deployed ClockFinder latched a lone short countdown at **module + `0x1265a7c`** (26.3 at the round start while the HUD read 1:59, 2.5 when the turn ended; the session's last stats: rounds 1, shots 0, fight "frame"). Fixed in the code: `pick_clock` takes the biggest group of equal copies; the probe now times each bss row on its own (its rows were read up to 9 s apart) |
+| kills / combo / score, the player's life, ammo | not found | the probe's 120 rising counters include frame counters; nothing correlated (no kill was seen) |
+
+Code from this (`re4_switch.py`, recorded bytes in `tests/fixtures/re4sw_units_live.json`):
+`PLAYER_CLASS 0xB09A60`, `ENEMY_CLASSES (0xAE7050,)`, `U_POS 0xA4`, `U_YAW 0xB4`, `U_HP_MAX 0x3C4`, `U_SCALE 0xBC`,
+`S_PLAYER 0x11310F0` / `S_PLAYER_2 0x113B398` (the snapshot reads the player through the pointer; the census scans
+the heap for the Ganados), `SET_OBJECT_CLASSES`, `UNIT_SIZE`. The playbook therefore fights from RAM on the next round
+(`stats.fight == "ram"`). The death screen is now named (`re4_switch_screens.is_dead_continue`, from the recorded
+frame `tests/fixtures/re4sw_dead_continue.jpg`) and answered Continue: Yes (the same stage again; `stats.deaths`).
+
+What the next RE4 round must show, in order: `stats.fight == "ram"` and `player_read` true; the player's `pos` changes
+as he walks; `enemies_read` > 0 with Ganados' health falling when shot and `kills_seen` rising; the bot turns *toward*
+its target (if it turns away, the facing convention is mirrored: flip the sign in `heading` or `TURN`); a death ends on
+Continue: Yes; `stats.timer` either follows the HUD or stays None (a None clock means no results boundary - the turn
+then ends by its cut). Still to find: the clock, the player's life, the kill / combo / score fields.
+
+Live mods on these fields (7.6): **enemy health** (`+0x3c2` / `+0x3c4` on `0xae7050` units: one-shot, armour) and
+**positions / facing** (`+0xa4` / `+0xb4`: teleport, turn) are addressable now; **unlimited health** needs the player's
+life and **clock add / set** needs the clock, neither found; the combo window and ammo are not looked for yet.
 
 Tests: `test_re4switch_bot.py` (20), `test_re4_switch_menus.py` (40), `test_re4_switch_brain.py` (3),
 `test_re4_switch_fight.py` (24), `test_re4_switch_anchors.py` (19), `test_mercmode.py` (+4).

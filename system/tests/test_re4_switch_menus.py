@@ -325,3 +325,27 @@ def test_a_fixed_screen_confirms_once_it_has_settled():
     pace, title = D.Pace(), {"where": "title"}
     pace.observe(title, 10.0)
     assert not pace.ready(title, 10.0 + D.SETTLE_S - 0.1) and pace.ready(title, 10.0 + D.SETTLE_S)
+
+
+# ---------------------------------------------------------------- You Are Dead - Continue
+
+FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
+
+
+def test_the_death_screen_is_named_not_taken_for_a_load():
+    """Recorded 2026-11-10: the frame is almost black (mean 6.5) and read as loading, so nothing answered it."""
+    assert S.classify((FIXTURES / "re4sw_dead_continue.jpg").read_bytes()) == {"where": "dead_continue"}
+    assert S.classify((FIXTURES / "re4sw_round_hud.jpg").read_bytes()) == {"where": "playing"}
+    black = png_of(np.zeros((S.H, S.W, 3), dtype=np.uint8))
+    assert S.classify(black)["where"] == "loading"
+
+
+def test_continue_is_answered_yes_and_the_stage_intro_is_armed_again():
+    D.begin_run()
+    scr = {"where": "dead_continue"}
+    assert D.step(scr, now=500.0) == "a"
+    D.pressed(scr, "a", now=500.0)
+    assert D.step(scr, now=501.0) is None, "one confirm per gap"
+    r = S.Reader()
+    r.press_went_in("dead_continue", "a")
+    assert r.stage_picked is True and r.intro_presses == 0
