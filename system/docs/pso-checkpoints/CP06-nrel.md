@@ -99,3 +99,23 @@ The **index offsets** in the header (`0x1d234`, `0x1fea4`, `0x4ce4`, `0x9cf54`, 
 into triangles and comparing the triangle count with `c.rel`'s footprint - the accept's remaining half.
 
 Tests: none changed; CP0 baseline unchanged (45 failed / 1,329 passed / 132 skipped).
+
+## Round 60: the 0x3834 block's header numbers
+
+Reading the block the `fmt2` header points at:
+
+* at `0x3834`: **`0x3420` = 13,344** and **`0x57` = 87**. The first number is exactly **1,112 x 12**, i.e. an array of
+  **1,112 twelve-byte records** (a 3-float point plus a fourth word is the obvious reading), and 87 is a plausible
+  sub-object count (1,112 / 87 is not an integer, so the two numbers count different things: a byte size and a group
+  count).
+* the bytes **after** the advertised size are still floats (`-6.37, 47.5, 29.04, ...` at `0x6c5c`), so the position array
+  and its neighbour are contiguous float regions; there is no u16 index array at the block boundary (the words read as
+  float bit patterns, and a naive u16 read gives values up to 65,534, i.e. not indices into 1,112 vertices).
+
+**So the count is measured but the triangle count is not derived:** the `fmt2` geometry is a set of contiguous float
+records with a byte size and a group count in front of each, and the index/primitive arrays that would give triangles have
+not been located. The accept's "triangle count compared against `c.rel`'s footprint" therefore remains open; what this
+round adds is that **13,344 / 12 = 1,112** is the vertex-record count of the first block, which is the denominator a
+triangle count would be compared against.
+
+Tests: none changed; CP0 baseline unchanged.
