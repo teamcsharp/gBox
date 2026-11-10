@@ -98,3 +98,9 @@ restart. I can take the two read-only status reads from the i9 myself the moment
 (`GET /api/sessions/{sid}/interventions` via 10.89.1.246, the pre-restart baseline is captured); the **one RE5 flash
 still needs the operator/RE session** (or a named session + window, then I may POST that one intervention). No write
 of any kind has gone to lilspark.
+
+**Status note, 16:47 CST.** The armed restart has not landed yet: GET /api/mercmode still shows the same RE6 No
+Mercy session (78012a3fd3b146ba-f28ad0a196164cfb, started 15:56) in playing with mercmode_rounds_played = 1 for
+about 45 minutes, so the block has not reached its end. If it is stuck, one restart in a gap would clear it and load
+checkpoint 0 (+ D, if merged first) in one go; the read-only check above is all I can see from the i9.
+
