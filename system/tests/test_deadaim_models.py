@@ -58,3 +58,28 @@ def test_owned_zone_textures_and_shapes():
                 assert h["size_matches"] and h["sections"][0] == 0x4C
                 counts["fsc"] += 1
     assert counts["miz"] > 100 and counts["fsc"] > 20
+
+
+def test_fsc_mesh_real_samples():
+    if not IMAGE or not os.path.exists(IMAGE):
+        pytest.skip("DEADAIM_IMAGE_BIN not set")
+    from gbox.deadaim_models import parse_fsc_mesh
+    f = open(IMAGE, "rb")
+
+    def rd(o, n):
+        f.seek(o)
+        return f.read(n)
+
+    top = parse_fpk(rd, 0, max_depth=0)
+    ok = bad = 0
+    for z in top[1:3]:
+        for e in parse_fpk(rd, z["offset"], max_depth=4):
+            if e["ext"] != "fsc":
+                continue
+            try:
+                m = parse_fsc_mesh(rd(e["offset"], e["size"]))
+                assert max(v for s in m["strips"] for v, _ in s) < len(m["verts"])
+                ok += 1
+            except Exception:
+                bad += 1
+    assert ok >= 90 and ok > 6 * bad
