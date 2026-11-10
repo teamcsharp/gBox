@@ -971,6 +971,52 @@ class WallPress:
         return None
 
 
+class CameraCollapse:
+    """The camera pulled in against a wall (the operator's screenshot, RE4 2026-11-10: Krauser and Leon pinned, the
+    camera inside the wall): a title that reads its camera hands its camera-to-player distance in every tick; while the
+    stick walks him, a distance under collapse_x of its running median for hold_s is a collapse (one per spell: the
+    rising edge), the wall-press signal WallPress takes as a press. The median is of the free distance only (the
+    last n ticks under no collapse, min_n before it judges), so a long spell does not drag it down. Units: the title's.
+    Stats camera_collapses."""
+
+    def __init__(self, stats: dict | None = None, collapse_x: float = 0.6, hold_s: float = 0.15, n: int = 90,
+                 min_n: int = 15):
+        self.stats = stats if stats is not None else {}
+        self.collapse_x, self.hold_s, self.n, self.min_n = collapse_x, hold_s, n, min_n
+        self.free: list = []                     # the recent free distances
+        self.low_since = None                    # under collapse_x of the median since, while pushing
+        self.on = False                          # a collapse spell under way (counted once)
+        self.stats.setdefault("camera_collapses", 0)
+
+    def median(self) -> float | None:
+        if len(self.free) < self.min_n:
+            return None
+        s = sorted(self.free)
+        return s[len(s) // 2]
+
+    def observe(self, now: float, dist, pushing: bool) -> bool:
+        """One tick: True on the tick a collapse is found (he pushes, the distance short of its median hold_s)."""
+        if not isinstance(dist, (int, float)) or isinstance(dist, bool) or not math.isfinite(dist) or dist <= 0:
+            self.low_since = None
+            return False
+        med = self.median()
+        low = med is not None and dist < self.collapse_x * med
+        if not low:
+            self.free = (self.free + [float(dist)])[-self.n:]
+            self.low_since, self.on = None, False
+            return False
+        if not pushing:
+            self.low_since = None
+            return False
+        if self.low_since is None:
+            self.low_since = now
+        if self.on or now - self.low_since < self.hold_s:
+            return False
+        self.on = True
+        self.stats["camera_collapses"] = self.stats.get("camera_collapses", 0) + 1
+        return True
+
+
 # --- (f) the throw ----------------------------------------------------------------------------------------------------
 # kind: "hand" / "fire" / "flash"; target: the enemy row the throw is laid on; point: where it should land (the pack's
 # centre, the title's own units); n: how many it catches; fleeing: thrown while he runs (back at the pursuers).
