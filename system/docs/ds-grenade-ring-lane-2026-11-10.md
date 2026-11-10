@@ -492,3 +492,54 @@ inner_cm), the flash path is untouched. Tests: default hand ring >= 600 cm; an i
 raised to 600 and says so; flash keeps 150/250. RE5 class-pair/ring/native suites: **44 passed**.
 
 Same rule as RE6 (ds-re6-ring-explosive-floor-20261110), so the two titles cannot diverge on the safety margin.
+
+## What is ready, by branch
+
+Merge in the order shown: `->` means "stacked on" (the later branch contains the earlier one, because its tests use the
+earlier code).
+
+| # | branch | commit | what it does | tests measured |
+|---|---|---|---|---|
+| 1 | `ds-re6-bomb-classes-20261110` | `1ec0bfe9` | RE6 hand + incendiary: the class becomes a spawn/detonate parameter (two instructions replaced in the pinned images; new caves vetted by `tools/verify_re6_classes.py`, PASS on the operator's image); ring kinds, explicit-kind barrage probe | 166 passed (RE6 ring/native/classes/interventions/engine) |
+| 2a | `ds-re6-launcher-shells-20261110` -> 1 | `226c985b` | launcher/round tables pinned (uWp1302-1304, items 0x133-0x135, DTIs 0x2952098/d0/0x2952108; launchers uWp1080 0x112, uWp1120 0x11B) cross-checked against the research JSON; **and the measured reason a round cannot ride the bomb wrapper** (action-object check 0x288C9A0) | 126 passed |
+| 2b | `ds-re6-ring-explosive-floor-20261110` -> 2a | `2a0ff081` | explosive kinds get a 600 cm ring floor (the flash's 150/250 near field was inside a grenade's blast); clamp reported in the receipt | 25 passed (RE6 class images) |
+| 3 | `ds-re5-classes-20261110` | `ac5b396f` | RE5 class table derived from the game's own MtDTI initialiser and verified: uWp06 hand `+0x1D714C8`, uWp07 incendiary `+0x1D71500`, uWp08 flash `+0x1D71538` (the last matches the live-verified flash DTI) | 53 passed |
+| 4a | `ds-re5-classes-pair-20261110` -> 3 | `7dc50b31` | RE5 parameterised spawn/explode: class DTI in x2, class vtable in x4, item in w5, update in x6 (flash keeps 0x820E50; the others take the bomb base 0x806B80). **Installed in place** (RE5's .text tail has no free cave left); old sessions refuse, new ones get it | 149 passed |
+| 4b | `ds-re5-scatter-20261110` -> 4a | `a03fa8f5` | RE5 barrage: `grenade_scatter` (cone toward the threats, near to far, chest height, explicit-kind probe), RE5 in `SCATTER_TITLES`, `SCATTER`/`SCATTER_EVERY_S`/`SCATTER_N`, three PiP rows | 169 passed |
+| 4c | `ds-re5-ring-explosive-floor-20261110` -> 4a | `11cb05a2` | the same 600 cm floor on RE5 | 44 passed |
+
+Every branch is pushed. None has been merged, and **none has a live receipt yet** - that is the only thing missing.
+
+## What I need from you (lilspark)
+
+1. **Deploy**: merge 1 + 2b (RE6) and 3 + 4a + 4b (+ 4c) (RE5), then restart `gbox.service` at a gap - the RE6/RE5
+   controller modules are title modules and hot-reload, but a restart makes it deterministic. RE5's pair replaces two
+   shipped images at the same addresses: **an emulator already running the old pair refuses cleanly** (`install()`
+   refuses occupied bytes); every new session gets the parameterised pair. Re-verify the RE5 flash ring once after
+   deploy (it now goes through the parameterised pair with the same values).
+2. **Fire one probe per kind on the matching round** (5-round blocks per title):
+   - `GET /api/mercmode` -> `current_run.title` is RE6 `01002A000CD48000` or RE5 `010018100CD46000`;
+   - `POST /api/sessions/{sid}/interventions`, header `x-gbox-actor: agent`, body
+     `{"op": "grenade_scatter", "request_id": "<new uuid>", "args": {"kind": "hand"}}` - then `{"kind": "incendiary"}`;
+   - read the row back from `GET /api/sessions/{sid}/interventions` and record: `state`, `detonated`/`requested`,
+     `rounds[].class_vtable`, `self_damage`, `effect`, and a frame before/after (`GET /api/sessions/{sid}/frame.jpg`).
+   - A refused row (`state: failed`, reason) is a real result: send it back with the reason, do not retry blindly.
+3. **Send me the receipts** (or paste them here). On a confirmed receipt for a kind I will flip it to advertised:
+   `RING_VERIFIED_KINDS` in `re6_switch_native.py` / `re5_switch_native.py` plus the two "advertised kinds" tests, so
+   the PiP and the queue offer it - `grenade_status` reads that constant, nothing else changes. I will take that as a
+   small follow-up branch per title.
+
+## Not done, and why
+
+- **RE6 launcher rounds in the barrage**: blocked by design, not by effort - a uWpShellLauncher round carries the
+  launcher's action object, and our detonation wrapper requires the bomb's (`0x288C9A0`), so the wrapper refuses it.
+  The round is a projectile the weapon spawns with a velocity; the barrage needs the launcher's own fire path, which
+  must be measured on a running round. The tables are pinned so that path has its addresses.
+- **RE4 harness/flash/ring**: not started. It needs ARM64 code generation and this PC has no toolchain (Ghidra's
+  assembler or an installed gcc/clang is a prerequisite), so it is the one item I cannot start without a decision on
+  tooling.
+
+## Baseline honesty
+
+The grenade suites' pre-existing reds are unchanged by these branches (the hand-off's 11 RE5 / 3 RE6 known-red files
+are untouched: no branch edits a file in that list). The counts above are the suites the branches themselves affect.
