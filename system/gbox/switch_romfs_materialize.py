@@ -16,8 +16,12 @@ from pathlib import Path
 from . import skin_swap, switch_extract, switch_nca
 
 
-def wanted(title_id: str) -> list[str]:
-    """The RomFS paths a swap targets for this title: character bodies, enemies and the player-as-enemy texture arc."""
+def wanted(title_id: str, include: tuple[str, ...] = ()) -> list[str]:
+    """The RomFS paths a swap targets for this title: character bodies, enemies and the player-as-enemy texture arc.
+
+    `include` adds every path whose *basename* starts with one of the given prefixes (e.g. `uPlTex`: RE6 keeps the
+    characters' body textures in 41 separate `uPlTex####_N.arc` archives, 218 MB, not in the body arcs).
+    """
     tid = str(title_id).upper()
     paths = list(skin_swap.CHARACTER_ARCS.get(tid, {}).values())
     paths += list(skin_swap.ZOMBIE_ARCS.get(tid, ()))
@@ -27,8 +31,18 @@ def wanted(title_id: str) -> list[str]:
     return sorted(set(paths))
 
 
+def select(by_path: dict, title_id: str, include: tuple[str, ...] = ()) -> list[str]:
+    """The wanted paths plus every path whose basename starts with an `include` prefix (order: wanted first)."""
+    chosen = list(wanted(title_id))
+    if include:
+        extra = sorted(p for p in by_path
+                       if p.split("/")[-1].startswith(tuple(include)) and p not in chosen)
+        chosen += extra
+    return chosen
+
+
 def materialize(container: str | Path, nca_name: str, keys_path: str | Path, title_id: str,
-                dest: str | Path | None = None) -> dict:
+                dest: str | Path | None = None, include: tuple[str, ...] = ()) -> dict:
     """Extract the wanted arcs under `dest` (default: `skin_swap.romfs_root(title_id)`) and report what was written."""
     tid = str(title_id).upper()
     target = Path(dest) if dest else (skin_swap.romfs_root(tid)
@@ -40,7 +54,7 @@ def materialize(container: str | Path, nca_name: str, keys_path: str | Path, tit
     section = next(s for s in nca.header["sections"] if s["fs_type"] == switch_nca.FS_ROMFS)
     data_at = nca._romfs_at + romfs["header"]["data_offset"]
     written, skipped, total = [], [], 0
-    for path in wanted(tid):
+    for path in select(by_path, tid, include):
         entry = by_path.get(path)
         if entry is None:
             skipped.append(path)
@@ -62,13 +76,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--keys", required=True)
     parser.add_argument("--title", required=True)
     parser.add_argument("--dest", default="")
+    parser.add_argument("--include", action="append", default=[], help="also take every path whose basename starts with this prefix (repeatable)")
     parser.add_argument("--print", dest="show", action="store_true", help="print the wanted paths and exit")
     args = parser.parse_args(argv)
     if args.show:
         for path in wanted(args.title):
             print(path)
         return 0
-    out = materialize(args.container, args.nca, args.keys, args.title, dest=args.dest or None)
+    out = materialize(args.container, args.nca, args.keys, args.title, dest=args.dest or None, include=tuple(args.include))
     print(f"{out['title_id']}: wrote {len(out['written'])} arcs, {out['bytes']} bytes -> {out['dest']}")
     for path in out["skipped"]:
         print(f"  skipped (not in this container): {path}")
@@ -77,3 +92,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

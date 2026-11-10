@@ -875,3 +875,32 @@ So the mercmode chain is now complete on the client side: `switch_romfs_material
   "running" with no emulator process. The properly registered build (`switch_mods op=write` with the 5 ExeFS files and
   the 7 arcs) was submitted, but its job was still queued when the launch job ran (admission), so the launched build did
   not exist yet and the same stall followed. Next step: wait for the build job to reach `succeeded`, then launch it.
+
+## Round 39 status (2026-11-09, ~23:50 CST): worker recovered, cast/enemy swap build launches and starts a round
+
+* **The i9 worker was stuck** (two build jobs claimed but never started, no `started_at`, no files). It was restarted
+  with its real command line (`C:\Users\maste\AppData\Local\gbox\venv\Scripts\python.exe -m gbox --config
+  system\gbox.toml worker --server http://10.89.1.246:8765 --name i9-NUC`, `PYTHONPATH=system`), and the next build job
+  succeeded at once: `recovery-re6-castswap-r39c`.
+* **The cast/enemy swap build launches**: `recovery-re6-castswap-r39c` (5 update ExeFS files + the six swapped enemy arcs
+  + the majini-clad player arc) reached the menu, the CONTINUE? prompt - where **two large white checkered figures stand
+  in the background** (`cs39-now.jpg`: cast models in place of the enemies) - and then a round started with the mission
+  intro ("This is BSAA Echo Team! A chopper is en route...").
+* **The swapped enemy models are untextured** in that frame: the cast_swap report showed `textures: 0` for every arc, so
+  the enemy arcs wear the cast *meshes* but keep no cast textures (white/checker). Next: make the model swap bring the
+  donor's texture maps too (the donor models name their textures; `model_swap.model_paths` lists them, and the arcs hold
+  them under `data\chara\textures\...`).
+
+## Round 40 status (2026-11-09, ~00:05 CST): RE6 character textures live in `uPlTex` arcs - now materialised
+
+* The white enemy models from round 39 are explained: RE6 **body arcs carry no character textures**
+  (`uPl02ChrisAsia.arc` has a 664 KB model plus effect/sound entries only), and `model_swap.model_paths` finds no texture
+  names in them, so `swap_models` had nothing to carry (`textures: 0`).
+* The character body textures live in **41 separate `uPlTex####_N.arc` archives** under `nativeNXx64/arc/NX`
+  (218 MB total: `uPlTex0000_0` 4,998,697 bytes, `uPlTex0010_1` 5,471,879, ...).
+* **`switch_romfs_materialize` gained an `--include` prefix filter** (`select()` picks every path whose basename starts
+  with the prefix, after the wanted list) and 1 new test (6 pass). Running it with `--include uPlTex` materialised
+  **56 arcs / 313,748,499 bytes** into `~/gBox_alt/switch/romfs/01002A000CD48000` - the 15 swap arcs plus all 41 texture
+  arcs, ready for the swap builder.
+* Next: have `swap_models`/`cast_swap_build` resolve a cast model's material texture names against the `uPlTex` arcs and
+  write them into the enemy arc, so swapped enemies render with the cast's real textures instead of white.

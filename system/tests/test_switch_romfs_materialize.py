@@ -52,3 +52,16 @@ def test_print_mode_lists_the_paths(tmp_path, capsys):
     assert M.main(["--print", "--title", "01002A000CD48000", "--keys", "k", "--dest", str(tmp_path), "c.nsp", "a.nca"]) == 0
     out = capsys.readouterr().out
     assert "uPl00LeonUsa.arc" in out and "uEm5200.arc" in out
+
+def test_select_adds_include_prefixes_after_the_wanted_paths():
+    by_path = {
+        "nativeNXx64/arc/NX/uPl00LeonUsa.arc": {},
+        "nativeNXx64/arc/NX/uPlTex0000_0.arc": {},
+        "nativeNXx64/arc/NX/uPlTex0010_1.arc": {},
+        "nativeNXx64/arc/NX/uEm5200.arc": {},
+    }
+    plain = M.select(by_path, "01002A000CD48000")
+    assert all("uPlTex" not in p for p in plain)
+    with_tex = M.select(by_path, "01002A000CD48000", ("uPlTex",))
+    assert len(with_tex) == len(plain) + 2
+    assert with_tex[-2:] == sorted(p for p in by_path if "uPlTex" in p)
