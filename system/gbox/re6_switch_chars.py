@@ -123,23 +123,37 @@ def extract(arc_path: Path, glb_path: Path, name: str = "") -> dict:
         joints.append({"parent": parent if 0 <= parent < len(world) else -1, "world": matrix})
         role = next((r for r, i in roles.items() if i == index and r in role_names), None)
         joint_names.append(role or f"j{index:03d}")
-    # the strips index the part they were authored against (the body surface); v1 reads that part with
-    # its real weights, the same surface the engine's skin shaders deform
-    part = 0
-    record = model.meshes()[part]
-    points = model.positions(part)
+    # the index buffer addresses the whole model's vertex space (all_positions), so the body is one
+    # primitive whose per-vertex weights come from each mesh's own slice of that space
+    points = model.all_positions()
     tris = model.triangles()
     prims = []
     if points and tris:
         count = len(points)
-        data, _vb = model.mesh_bytes(part)
-        weights = mt_model.decode_weights(data, record["vertex_format"], record["vertex_count"], record["vertex_stride"])
-        bones = model.bone_ids(part)
-        J, W = _bind(bones, weights, id_to_index, roles["hip"], count)
-        normals = model.normals(part) or [(0, 1, 0)] * count
-        uvs = model.uvs(part) or [(0, 0)] * count
-        prims.append({"pos": np.asarray(points, np.float32), "nrm": np.asarray(normals, np.float32),
-                      "uv": np.asarray(uvs, np.float32), "tris": np.asarray(tris, np.int64),
+        J = np.full((count, 4), roles["hip"], np.int64)
+        W = np.zeros((count, 4), np.float32)
+        W[:, 0] = 1.0
+        normals_all: list[tuple[float, float, float]] = [(0.0, 1.0, 0.0)] * count
+        uvs_all: list[tuple[float, float]] = [(0.0, 0.0)] * count
+        base = 0
+        for part, record in enumerate(model.meshes()):
+            n = record["vertex_count"]
+            slice_ = slice(base, base + n)
+            data, _vb = model.mesh_bytes(part)
+            weights = mt_model.decode_weights(data, record["vertex_format"], n, record["vertex_stride"])
+            bones = model.bone_ids(part)
+            if bones:
+                Jm, Wm = _bind(bones, weights, id_to_index, roles["hip"], n)
+                J[slice_], W[slice_] = Jm, Wm
+            nrm = model.normals(part)
+            if len(nrm) == n:
+                normals_all[slice_] = nrm
+            uv = model.uvs(part)
+            if len(uv) == n:
+                uvs_all[slice_] = uv
+            base += n
+        prims.append({"pos": np.asarray(points, np.float32), "nrm": np.asarray(normals_all, np.float32),
+                      "uv": np.asarray(uvs_all, np.float32), "tris": np.asarray(tris, np.int64),
                       "J": J, "W": W, "color": (200, 200, 200, 255)})
     if not prims:
         raise SwitchModelError("the body MOD has no skinned geometry")
@@ -160,12 +174,15 @@ def extract_run(ctx, game, e, work):
     slots = _arc_slots(romfs)
     character, _, costume = (e.get("key") or "").partition(":")
     path = slots.get((character, costume))
-    if path is None and costume == "default":                 # roster fallback naming: any default body
-        path = next((p for (c, _cost), p in sorted(slots.items()) if c == character and "Usa" in p.stem), None)
+    if path is None and costume == "default":                 # roster fallback naming: the native default body
+        candidates = sorted(p for (c, _cost), p in slots.items() if c == character)
+        path = (next((p for p in candidates if "Usa" in p.stem), None)
+                or next((p for p in candidates if p.stem.endswith("A")), None)
+                or candidates[0])
     if path is None:
         raise SwitchModelError(f"{e['key']} has no body arc in this RomFS")
     ctx.progress(40, f"Reading {path.name} (MTF body arc)")
-    r = extract(path, Path(work) / f"{e['slug']}.glb", e["name"])
+    r = extract(path, Path(work) / f"{e['slug']}.gltf", e["name"])
     ctx.progress(70, f"{e['name']}: {r['triangles']} triangles, {r['joints']} joints")
     rel = f"{TITLE_ID}:{path.name}"
     return {"files": [r["gltf"]], "tool": "gbox.re6_switch_chars (MTF arc/MOD reader)",
@@ -189,7 +206,7 @@ def main(argv=None) -> int:
     ok = True
     for (character, costume), path in sorted(_arc_slots(Path(a.romfs)).items()):
         try:
-            r = extract(path, out / f"re6sw_{character}_{costume.lower()}.glb")
+            r = extract(path, out / f"re6sw_{character}_{costume.lower()}.gltf")
             print(json.dumps({"key": f"{character}:{costume}", "vertices": r["vertices"],
                               "triangles": r["triangles"], "joints": r["joints"]}), flush=True)
         except Exception as err:                              # noqa: BLE001 - report every slot

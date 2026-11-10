@@ -97,3 +97,30 @@ def test_extract_run_requires_romfs(monkeypatch):
     with pytest.raises(Exception, match="RomFS"):
         re6_switch_chars.extract_run(Ctx(), {"title": "Resident Evil 6"}, {"key": "leon:default",
                                                                             "slug": "re6sw_leon_default"}, None)
+
+
+def test_default_slot_prefers_usa_over_debug(monkeypatch):
+    """Live acceptance on the real RomFS picked DebugId arcs over the real default bodies once;
+    the fallback must prefer *Usa, then a plain *A body, over sorted-first debug slots."""
+    from pathlib import Path
+    slots = {("leon", "DebugId"): Path("uPl00LeonDebugId.arc"), ("leon", "Usa"): Path("uPl00LeonUsa.arc"),
+             ("ada", "Omake00"): Path("uPl06AdaOmake00.arc"), ("ada", "A"): Path("uPl06AdaA.arc")}
+    chosen = {}
+    monkeypatch.setattr(re6_switch_chars, "_arc_slots", lambda _romfs: slots)
+    monkeypatch.setattr(re6_switch_chars, "locate_romfs", lambda *a: Path("romfs"))
+
+    def fake_extract(path, _out, _name):
+        chosen["path"] = path
+        return {"gltf": _out, "vertices": 1, "triangles": 1, "joints": 1, "roles": {}}
+
+    monkeypatch.setattr(re6_switch_chars, "extract", fake_extract)
+
+    class Ctx:
+        config = None
+        def progress(self, *_a):
+            pass
+    for key, want in [("leon:default", "uPl00LeonUsa.arc"), ("ada:default", "uPl06AdaA.arc")]:
+        re6_switch_chars.extract_run(Ctx(), {"title": "Resident Evil 6"},
+                                     {"key": key, "slug": key.replace(":", "_"), "name": key.split(":")[0]},
+                                     Path("."))
+        assert chosen["path"].name == want
