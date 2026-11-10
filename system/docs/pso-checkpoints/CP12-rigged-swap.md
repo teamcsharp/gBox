@@ -54,3 +54,39 @@ smoke run).
 - [ ] it shows at character select with no crash dialog (a frame) - needs the CP4 window
 
 Tests: none changed this round (the render smoke is an artifact, not a unit test).
+
+## Round 79: the swap build attempted - the blocker is endianness, and it is now pinned to the byte
+
+**Inputs that exist:** the donor model **`D:\gBox\pso-ds\p7b\plAbdy00.nj`** (28,724 bytes) and the host body parts on the
+disc (`PSO/PL<C>BDY00.NJ`). `pso_player.build_swap(disc, model, roles, work, name, cls, blender=...)` is the rigged-swap
+pipeline on main, and `pso_swapfit` is the gate.
+
+**The attempt fails at the first host-body parse:**
+
+```
+pso_player.build_swap -> ninja.tree_nodes(data, 0)
+struct.error: unpack_from requires a buffer of at least 1209008136 bytes ... offset 1209008128
+```
+
+**The cause, measured:** the GameCube body part is a **`NJCM`** file whose tree is **big-endian**:
+
+```
+PSO/PLCBDY00.NJ  4e 4a 43 4d  10 60 00 00 ...      # "NJCM", size 0x6010 = 24,592 (little-endian)
+tree at +0x00:  BE 0x00000007 0x00001030 ...       # flags 7, offset 0x1030 - sensible big-endian
+tree at +0x20:  BE 0x3f800000 = 1.0f               # the identity scale; as LE it is 5.6e-41 nonsense
+```
+
+`build_swap` slices the tree correctly (`body_file[8:8+size]`) but then reads it with `struct.unpack_from("<...")` throughout
+(`ninja.tree_nodes`, and every `<` unpack in `build_swap` itself), so the first child offset it reads is 0x30100000 /
+0x07000000-sized garbage and the unpack runs off the buffer.
+
+**The fix, precisely scoped:** make the host-body path endianness-aware - detect `body_file[:4] == b"NJCM"` and parse the tree
+and the model chunks with `>` instead of `<` (a `ninja.tree_nodes(..., endian=">")` parameter, and `>` for the material /
+texture / strip reads inside `build_swap`). The GC *writer* (`pso_gc_paths`, `ninja.write_tree`'s big-endian tree writer) is
+already the target format, so this is a reader-side change on the same branch.
+
+**Note on the "tree endian" branch:** `ds-pso-tree-endian-20261110`'s tip is a docs move only - `git diff origin/main
+origin/ds-pso-tree-endian-20261110 -- system/gbox/ninja.py system/gbox/pso_player.py` is **empty**, so that branch does not
+carry the reader either; the fix belongs here.
+
+Tests: none changed (the diagnosis is from a real build attempt with the real Blender path recorded above).
