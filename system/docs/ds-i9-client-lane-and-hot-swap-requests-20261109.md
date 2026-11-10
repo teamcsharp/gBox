@@ -834,3 +834,16 @@ Delivered this round: **`switch_decrypt` op `arc-list`** - an ARC's entries with
 * So the mercmode `skin_swap`/`cast_swap` path for RE6 should use `swap_models` (whole character models), not the
   `swap_arc` texture-group heuristic. `skin_swap.random_swap_build` needs an RE6 branch that calls `swap_models` and
   writes the patched arc as the overlay.
+
+## Round 36 status (2026-11-09, ~22:55 CST): random_swap_build produces working RE6 whole-model swaps
+
+* **`skin_swap.model_swap_arc`** +3 tests: when `swap_arc` cannot find BM/MM/NM groups (RE6 player arcs), the build falls
+  back to `model_swap.swap_models` and reports `slot="model", donor=<stem>`. `random_swap_build` now returns real builds
+  for RE6: `skin-helena-as-chris` (slot model, donor `uPl02ChrisAsia`), `skin-piers-as-sherry`,
+  `skin-chris-as-leon` - each a LayeredFS overlay whose body arc carries the donor's model payload.
+* The mechanism itself was proven live in round 35: `recovery-re6-leon-as-chris-20261109` ran a Mercenaries round with
+  the swapped model rendering normally (`chris-live.jpg`, timer 01'26"55).
+* The generated `skin-*` builds carry only the swapped arc, so a launch of one alone runs the base 1.0.0 main (the
+  unlocked 1.0.2 menu needs the update ExeFS). The launch path must combine the swap with the update ExeFS - as
+  `recovery-re6-helena-as-chris-20261109` did (built this round: update ExeFS + the swapped Helena arc), or via the
+  mercmode `default_mods`/base-build merge.
