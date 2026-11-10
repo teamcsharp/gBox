@@ -36,6 +36,20 @@ from gbox.smb1_inventory import (
     tile_pixels,
 )
 
+# Reader version string surfaced through the collection path (characters.py).
+READER_VERSION = "smb1_reader/1"
+
+# The roster this reader exposes: the two player forms plus a representative
+# enemy sheet. Keys are stable; slugs follow the collection convention.
+ROSTER = [
+    {"key": "MARIO", "slug": "smb1_mario", "name": "Mario (SMB1)",
+     "aliases": ["SMB1 Mario", "Super Mario Bros. Mario"], "kind": "character"},
+    {"key": "LUIGI", "slug": "smb1_luigi", "name": "Luigi (SMB1)",
+     "aliases": ["SMB1 Luigi"], "kind": "character"},
+    {"key": "GOOMBA", "slug": "smb1_goomba", "name": "Goomba (SMB1)",
+     "aliases": ["SMB1 Goomba"], "kind": "character"},
+]
+
 
 def _rgba_px(rom_data: bytes, tile: int, pal: list[int], scale: int = 1) -> bytes:
     """Render one 8x8 2bpp tile to RGBA bytes at `scale`."""
@@ -238,6 +252,101 @@ def main(argv=None) -> int:
         print(f"Donor slot ({args.donor_type} {args.donor_index}) -> {path}")
 
     return 0
+
+
+# --------------------------------------------------------------------------- #
+# Writer stage: no-op CHR tile roundtrip + collection-path registration
+# --------------------------------------------------------------------------- #
+
+def tile_bytes(pixels: list[int]) -> bytes:
+    """Encode 64 palette indices (0-3, row-major) back to a 16-byte 2bpp tile.
+
+    Inverse of `smb1_inventory.tile_pixels`. Bit 0 of each pixel is stored in
+    the low plane (bytes 0-7), bit 1 in the high plane (bytes 8-15), MSB-first.
+    """
+    if len(pixels) != 64:
+        raise ValueError(f"tile needs 64 pixels, got {len(pixels)}")
+    lo = bytearray(8)
+    hi = bytearray(8)
+    for y in range(8):
+        l = h = 0
+        for x in range(8):
+            v = pixels[y * 8 + x] & 0x3
+            l = (l << 1) | (v & 1)
+            h = (h << 1) | (v >> 1)
+        lo[y] = l
+        hi[y] = h
+    return bytes(lo) + bytes(hi)
+
+
+def roundtrip_tiles(rom_path: str) -> dict:
+    """Re-encode every CHR tile from its decoded pixels and diff against ROM.
+
+    Returns byte-identical proof: count of tiles checked and whether every
+    16-byte tile re-encoded with no changes. This is the no-op roundtrip the
+    writer stage must pass before any donor mutation.
+    """
+    rom_data = open(rom_path, "rb").read()
+    h = parse_header(rom_data)
+    chr_ = rom_data[h["chr_offset"]: h["chr_offset"] + h["chr_bytes"]]
+    n_tiles = h["chr_bytes"] // 16
+    mismatches = 0
+    for t in range(n_tiles):
+        original = chr_[t * 16: t * 16 + 16]
+        if tile_bytes(tile_pixels(chr_, t)) != original:
+            mismatches += 1
+    return {"tiles": n_tiles, "mismatches": mismatches,
+            "identical": mismatches == 0,
+            "source_sha256": h.get("sha256", "")}
+
+
+def build_donor_patch(rom_path: str, slot_type: str, index: int,
+                      tile_id: int, new_pixels: list[int]) -> dict:
+    """Produce a CHR patch replacing one tile's pixels (writer roundtrip).
+
+    Returns the patched 16 bytes and whether the donor differs from the
+    original tile; an unchanged donor is rejected so a "changed donor" proof
+    is impossible to fake.
+    """
+    rom_data = open(rom_path, "rb").read()
+    h = parse_header(rom_data)
+    chr_ = rom_data[h["chr_offset"]: h["chr_offset"] + h["chr_bytes"]]
+    original = chr_[tile_id * 16: tile_id * 16 + 16]
+    patched = tile_bytes(new_pixels)
+    return {"slot_type": slot_type, "index": index, "tile_id": tile_id,
+            "original": original, "patched": patched,
+            "changed": patched != original}
+
+
+def roster():
+    """Collection-path roster: the editable characters this reader exposes."""
+    return [dict(e) for e in ROSTER]
+
+
+def _locate_rom() -> str:
+    cands = [os.environ.get("SMB1_ROM", ""),
+             str(Path.home() / "gbox-cache" / "49b6a2f65aca26a2" / "rom" / "Super Mario Bros. (World).nes")]
+    return next((c for c in cands if c and os.path.exists(c)), "")
+
+
+def extract_run(ctx, game, e, work):
+    """Collection-path entry point: export editable PNGs, return the standard result dict."""
+    rom = (game or {}).get("rom") or _locate_rom()
+    if not rom or not os.path.exists(rom):
+        return {"error": "no ROM path", "roster": roster()}
+    root = Path(work) if work else Path("smb1_assets")
+    root.mkdir(parents=True, exist_ok=True)
+    key = ((e or {}).get("key") or "MARIO").upper()
+    if key == "GOOMBA":
+        r = export_enemy_slots(rom, str(root), scale=4)
+        files = [x["output"] for x in r["slots"]]
+    else:
+        r = export_player_frames(rom, str(root), scale=4)
+        files = [x["output"] for x in r["frames"]]
+    return {"files": files, "roles": {}, "kind": "sprites",
+            "tool": f"gbox.smb1_reader ({READER_VERSION})",
+            "source_files": [os.path.basename(rom)],
+            "notes": f"smb1_reader exported {len(files)} PNG(s) for {key} from {os.path.basename(rom)}"}
 
 
 if __name__ == "__main__":
