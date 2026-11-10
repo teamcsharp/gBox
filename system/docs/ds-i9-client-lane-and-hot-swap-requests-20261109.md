@@ -993,3 +993,23 @@ So the mercmode chain is now complete on the client side: `switch_romfs_material
   launch problem.
 * The build for this run: `recovery-re6-em5200-tagtest-r44` (update ExeFS + `uEm5200` <- Chris model, `keep_tag=False`,
   61 maps, 27,000,067 bytes).
+
+## Round 47 status (2026-11-10, ~00:45 CST): both texture-binding hypotheses tested and both negative
+
+Two experiments against the white swapped enemies, each a full build + live round with frames captured:
+
+1. **Append the cast maps** (`_attach_donor_textures`, round 41) - arc grows by 61 maps, enemy still white.
+2. **Replace the enemy's texture slots in place with the cast maps** (index-aligned, same count/order, names/hashes/tags
+   from `uPlTex0200_*`): 70 slots replaced, 24,132,921-byte arc, build `recovery-re6-aligned-r47`. The round runs
+   (`01'27"22` in `r47-shot5.jpg`) and the swapped enemy **still renders white**.
+
+So neither "maps appended by name" nor "maps placed in the enemy's own texture slots" makes the swapped model resolve
+them. The remaining explanation is the engine's per-unit texture binding: the model's materials reference maps that are
+looked up in the *unit's* loaded texture set (built from the unit's own arc entries by an internal id the materials
+carry), not by the entry table position or name; the attached entries are simply not in that set.
+
+Practical consequence: model-level enemy swaps work (mesh, skeleton, animations all fine) but a *textured* enemy reskin
+needs the donor's material/texture unit data as the engine expects it, which is a deeper MRL/mat-format job. The player
+direction is unaffected (the player's own texture unit is loaded).
+
+The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned builder for the next attempt.
