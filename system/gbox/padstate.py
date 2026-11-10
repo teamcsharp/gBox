@@ -134,6 +134,10 @@ _XI = {0x0001: "up", 0x0002: "down", 0x0004: "left", 0x0008: "right", 0x0010: "s
        0x0080: "r3", 0x0100: "l", 0x0200: "r", 0x1000: "b", 0x2000: "a", 0x4000: "y", 0x8000: "x"}
 
 
+RELAY: dict[str, bool] = {}       # sid -> relay the operator's physical pad into the session's input queue
+RELAY_SEEN: dict[str, tuple] = {}   # sid -> the last relayed state, so a held button is not re-sent forever
+
+
 PLAYER_TOUCH: dict[str, float] = {}     # sid -> last time the operator pressed/moved their own pad (worker process)
 CHORD: dict[str, object] = {}           # sid -> callable run when the operator holds Select/View and presses A (autoplay)
 CHORD_KEYS = frozenset({"select", "b"})  # physical Xbox A is RetroPad 'b' here (positional labels, see _XI)
@@ -264,6 +268,13 @@ def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
                 if t - last_active >= 0.7 and not chording and ANCHOR.get(sid):
                     threading.Thread(target=ANCHOR[sid], args=(t,), daemon=True).start()
                 last_active = t
+            if RELAY.get(sid) and ev:
+                # Dolphin is reading gBox's virtual pad, so the operator's own controller reaches the game only if we
+                # put their presses on the session's input queue (which the worker sends to that pad).
+                try:
+                    c.post(f"/api/sessions/{sid}/input", json={"events": ev}, timeout=1)
+                except Exception:                        # noqa: BLE001 - a relay hiccup must not stop the mirror
+                    pass
             try:
                 c.post(f"/api/sessions/{sid}/pad", json={"events": ev, "source": "player",
                                                         "stick": {"x": stick[0], "y": stick[1]}, "rstick": {"x": stick[2], "y": stick[3]}})

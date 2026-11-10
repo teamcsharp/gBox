@@ -3077,6 +3077,11 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         vpad_ini = self._setup_vpad(self.PAD_INI_WIN)        # full GCPadNew.ini with P1 (+ co-op P2/P3) on virtual pads, or None
         if vpad_ini is None:                                 # no virtual pad (not PSO/i9, or unavailable): keyboard INI
             vpad_ini = pso_coop_setup.pad_ini(self.PAD_INI_WIN, windows=True) if self.coop_players == 2 else self.PAD_INI_WIN
+            # The base INI names XInput/0. A leftover virtual pad can hold slot 0 reporting all zeros forever, and then
+            # the game -- and the operator's own controller -- see nothing (i9-NUC 2026-11-10: slot 0 phantom, the real
+            # pad on slot 1, every press dropped). Bind a pad that actually reports instead.
+            from . import pad_bind
+            vpad_ini = pad_bind.bind_note(vpad_ini, pad_bind.choose_slot(pad_bind.probe_pads()))
         (user / "Config" / "GCPadNew.ini").write_text(vpad_ini)
         self.lane = self._claim_lane()
         (user / "Config" / "Hotkeys.ini").write_text(self.hotkeys_ini(self.lane))   # read once, when this Dolphin starts
