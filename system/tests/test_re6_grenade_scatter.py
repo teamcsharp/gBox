@@ -54,7 +54,8 @@ def test_the_barrage_is_rapid_and_refuses_unverified_kinds(monkeypatch):
     ctl = ring_controller()
     ctl.grenade_scatter(count=5, rng=random.Random(1))
     assert len(gaps) == 4 and all(0.1 <= g <= 0.2 for g in gaps)              # 0.1-0.2 s apart
-    with pytest.raises(N.Unavailable, match="not yet verified"):
+    # a hand probe reaches the resource gate now: the class is implemented, and this character carries the flash only
+    with pytest.raises(N.Unavailable, match="hand resources are not loaded"):
         ring_controller().grenade_scatter("hand")
 
 
@@ -63,6 +64,34 @@ def test_a_lost_round_is_an_uncertain_partial_never_replayed(monkeypatch):
     ctl = ring_controller(spawn_fail_at=3)
     out = ctl.grenade_scatter(count=6, rng=random.Random(2))
     assert out["state"] == "uncertain" and out["detonated"] == 3 and ctl.failed and ctl.recoverable
+
+
+# --- checkpoint 0.2 / 0.3: no round lands inside its own blast --------------------------------------------------------
+
+def test_a_flash_barrage_never_places_a_round_under_400_cm():
+    """The operator: "never let the bot get stunned by their own flash grenades" - even with the threat at 120 cm."""
+    me = (1000.0, 800.0, -2000.0)
+    ctl = ring_controller(position=me)
+    out = ctl.grenade_scatter("random", count=4, toward=[(me[0], me[2] + 120.0)], rng=random.Random(9))
+    assert out["state"] == "confirmed" and out["kinds"] == ["flash"]
+    dists = [r["dist_cm"] for r in out["rounds"]]
+    assert min(dists) >= N.flash_place_min_cm() == 400.0
+    assert min(math.hypot(x - me[0], z - me[2]) for x, _y, z in points(ctl)) >= 400.0
+    assert out["floor_cm"] == 400.0 and out["floors_cm"]["flash"] == 400.0
+
+
+def test_an_explosive_barrage_keeps_the_600_cm_ring_floor_without_a_learned_reach(monkeypatch):
+    """Checkpoint 0.2: the hand/incendiary probe used to be placed at 300 cm - inside its own blast."""
+    from tests.test_re6_class_images import class_controller
+    monkeypatch.setattr(N.R, "inventory_items", lambda m, p: {0x113, 0x114, 0x115})
+    me = (1000.0, 800.0, -2000.0)
+    ctl = class_controller(position=me)
+    out = ctl.grenade_scatter("hand", count=3, toward=[(me[0], me[2] + 200.0)])
+    assert out["state"] == "confirmed" and out["kinds"] == ["hand"]
+    dists = [r["dist_cm"] for r in out["rounds"]]
+    assert min(dists) >= N.RING_EXPLOSIVE_CLEAR_CM == 600.0
+    assert min(math.hypot(x - me[0], z - me[2]) for x, _y, z in points(ctl)) >= 600.0
+    assert out["floor_cm"] == 600.0 and out["floors_cm"]["explosive"] == 600.0
 
 
 # --- the rule: whenever the going gets tough -------------------------------------------------------------------------
@@ -83,6 +112,13 @@ def test_tough_moments_fire_the_barrage_and_the_cooldown_holds():
     stats["scatter_last_at"] = 10.0
     assert not G.decide_scatter(snap_with(ring4), stats, 15.0, sp, title=R6.TITLE_ID)["fire"]   # the cooldown
     heavy = [((0.0, 0.0, 1100.0), 1500, "uEm1370")]
+    # since 2026-11-10 14:3x every round of RE6's barrage is a flash (SCATTER_FLASH_ONLY): only a tight surround, never
+    # for the big ones (a flash does not stop them), and one flash a minute from any source
+    d = G.decide_scatter(snap_with(heavy), {}, 100.0, sp, title=R6.TITLE_ID)
+    assert not d["fire"] and "not tight" in d["reason"]
+    assert not G.decide_scatter(snap_with(ring4), {"native_flash_confirmed_at": __import__("time").time()}, 30.0, sp,
+                                title=R6.TITLE_ID)["fire"], "a flash went off just now"
+    sp = dict(sp, flash_only=False)                                            # a barrage of other kinds: as before
     d = G.decide_scatter(snap_with(heavy), {}, 100.0, sp, title=R6.TITLE_ID)
     assert d["fire"] and "dangerous" in d["reason"]
     one = [((0.0, 0.0, 450.0), 300, "uEm1000")]
@@ -113,7 +149,7 @@ def test_fire_scatter_keeps_the_stats_and_counts_kills_in_its_window():
     assert stats["scatter_failures"] == 1
 
 
-def test_the_engine_step_runs_the_barrage_when_no_ring_fires():
+def test_the_engine_step_runs_the_barrage_when_no_ring_fires(monkeypatch):
     G.reset()
     fired = []
 
@@ -126,6 +162,11 @@ def test_the_engine_step_runs_the_barrage_when_no_ring_fires():
             return {"state": "confirmed", "detonated": kw["count"]}
     step = G.control(None, {"map_id": R6.TITLE_ID, "menus": "gbox.mercs.titles.re6_switch"}, ring=Ctl())
     heavy = [((0.0, 0.0, 1100.0), 1500, "uEm1370")]                           # past the ring's 8 m danger reach
+    out = step(snap_with(heavy), {"bomb_safe_cm": 700}, 10.0)
+    assert not out.get("fired") and not fired, "an all-flash barrage at a heavy: never (weapons for him)"
+    monkeypatch.setattr(R6, "SCATTER_FLASH_ONLY", False)                      # a barrage of other kinds
+    G.reset()
+    step = G.control(None, {"map_id": R6.TITLE_ID, "menus": "gbox.mercs.titles.re6_switch"}, ring=Ctl())
     out = step(snap_with(heavy), {"bomb_safe_cm": 700}, 10.0)
     assert out.get("fired") and fired and fired[0]["count"] == R6.SCATTER_N
 

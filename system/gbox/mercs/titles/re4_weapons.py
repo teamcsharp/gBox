@@ -415,6 +415,41 @@ def gate_frame(fr: float) -> int:
     return int(fr) - GATE_LEAD
 
 
+# The bow and the throwables (the operator 2026-11-10, coaching note #9508 while Krauser played: "fire the bow 20x
+# faster"). They have no row that counts: FIRE_RATE_TBL's class 0x1C and the grenades' rows are not what paces them.
+# Their rate is the FIRE STATE's motion (static, main.bin against the GameCube decompilation's pl_bow.cpp /
+# pl_grenade.cpp): the player's routine bytes P_ROUTINE (r_no 0..3) read 00 06 02 xx while the weapon fires - Switch
+# 0x3143B0 is the bow's fire step 1 (wep28_r3_fire10): PlWepLockCtrl, MotionCheckCrossFrame(+0x228, 16.0) takes the
+# next arrow in hand, (35.0 from rodata 0x6E89CC) nocks it, and motionMove's end (0x2B6400) writes 00 06 01 00 (the
+# set state: the next trigger fires) - so the time between arrows is that motion's length. The motion advances by
+# frame += speed x pG's frame step (0x2B8F10: `ldr s1, [x0, #0xdc]` = P_MOTION_SPEED, the unit's +0x304), and the
+# game's own 0x317FA0 sets the player's +0x304 AND his weapon object's +0x304 together (the bow's string and arrow
+# have a motion of their own); motionMove (0x2B7C60) copies the player's +0x304 into the motion it drives
+# (`ldr w9, [x19, #0x304]; str w9, [x8, #0xdc]`), and the three-way shot motion's set (mot3.set, 0x318F50) never
+# touches it, so a speed written once holds through the shots that follow. So the weapon routine's motions played x the fire_rate multiplier are the bow fired that
+# much faster (re4_switch_mods._motion_rate): the whole routine (r_no_1 6: the draw, the set, the fire, the holster),
+# not the fire step alone - the snapshots come every 50 ms, so a speed written only once the fire step is seen would
+# leave each shot's first frames at the game's pace; the set state's aim idle played fast changes nothing. Written as
+# the routine starts, put back (to what it read) as it ends. Data only. The grenades follow the same routine layout in
+# the decompilation (wep19: 0 ready, 1 set, 2 fire, 3 down, 4 next) and on Switch a five-entry state table is
+# dispatched by r_no_2 (+0x116) at 0x3144A0 (its fire entry 0x314890 dispatching r_no_3 in turn); which class each
+# table belongs to is not traced - with another layout the class / routine test simply never matches.
+MOTION_RATE_CLASSES = {0x1C: "bow", 0x13: "hand grenade", 0x16: "incendiary grenade", 0x17: "flash grenade"}
+ROUTINE_WEAPON, R2_FIRE = 6, 2          # r_no_1 6: the weapon routine; r_no_2 2: its fire state (pl_bow / pl_grenade)
+OBJ_MOTION_SPEED = 0x304                # the weapon object's own motion speed (cModel + 0x304: 0x317FA0 writes it)
+MOTION_SPEED_SANE = (0.05, 30.0)        # a speed outside this is not a motion's speed
+ARROWS, ARROWS_MAX = 0x72, 99
+
+
+def motion_rate_kind(cls, routine) -> str | None:
+    """The MOTION_RATE_CLASSES kind when the class in hand is one of them AND the routine bytes are its weapon
+    routine (r_no_0 0, r_no_1 ROUTINE_WEAPON: drawn, set, firing or holstering)."""
+    if not isinstance(cls, int) or isinstance(cls, bool) or cls not in MOTION_RATE_CLASSES or not routine \
+            or len(routine) < 3:
+        return None
+    return MOTION_RATE_CLASSES[cls] if routine[0] == 0 and routine[1] == ROUTINE_WEAPON else None
+
+
 def rapid_fire_value(fr: float, mult: float) -> float:
     """A planning helper (no write): FR / mult kept at or above RAPID_FIRE_FLOOR, the last value the gate still sees."""
     if mult < 1:

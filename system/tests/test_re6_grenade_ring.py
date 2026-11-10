@@ -75,6 +75,7 @@ def ring_controller(hp_after=1000, spawn_fail_at=None, position=(1000.0, 800.0, 
             ctl.spawns.append(unit)
             hp_box["v"] = hp_after                            # health reads back after the ring's blasts
             return unit
+        put(args[0] + 0x28A0, b"\x01")                        # the effect publishes its explosion flag
         return 1                                              # detonate confirmed
     ctl.call = call
     return ctl
