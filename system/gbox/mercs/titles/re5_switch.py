@@ -1093,6 +1093,7 @@ BONUS, BONUS_VT, BONUS_SCAN_S, BONUS_FIGHT_R, BONUS_WALK_R, BONUS_BLOCK_S, BONUS
 # proximity produces. Rounds measured bonuses_seen 8-11 with bonuses_taken 0-1, knife_swings 0 and detours 11-27 - the bot circled.
 # Bounded so a statue it genuinely cannot reach still falls through to the detour/give-up path.
 BONUS_PRESS_IN_S = 4.0
+BONUS_OFFLEVEL_DY, BONUS_OFFLEVEL_BLOCK_S = 300.0, 30.0   # a statue this far off his floor with no route: not a straight-line walk
 # The enemies and the combo come before the statues (operator 2026-11-09, the map showing him headed for a time
 # bonus with six Majini alive elsewhere: "The bot needs to go to that enemy and dispatch them"; live that round 36
 # bonus runs for 1 statue taken, 91 detours, 0 pursuits). With a Majini alive anywhere a statue is run for only when
@@ -3124,6 +3125,14 @@ class Bot:
                 self.why = (f"time bonus {b.get('secs')} s at {d / 100:.1f} m (dy {by - py:+.0f}), "
                             f"{len(open_)} left - nav route")
                 return {"hold": ((("lup", "b") if d > BONUS_WALK_R else ("lup",))) + self._turn(err, TURN_TOL)}
+        if abs(by - py) > BONUS_OFFLEVEL_DY and d > BONUS_WALK_R:
+            # coaching #5667 (Missile Area, flawed-handling button): no mesh or learned route to a statue 5 m below
+            # him, so the straight line ran him into the wall again and again ("stuck, breaking free" / "wall:
+            # returning along...", 30.8 m, dy -503). No route to another floor: leave this statue for a while.
+            self._bonus_block[b["ptr"]] = now + BONUS_OFFLEVEL_BLOCK_S
+            self._bonus = None
+            self.stats["bonus_offlevel_skips"] = self.stats.get("bonus_offlevel_skips", 0) + 1
+            return None
         err = wrap(heading(bx - px, bz - pz) + off - p["rot"])
         self.doing = "walk"
         self.why = (f"time bonus {b.get('secs')} s at {d / 100:.1f} m (dy {by - py:+.0f}), "
