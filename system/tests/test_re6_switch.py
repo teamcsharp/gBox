@@ -2522,6 +2522,33 @@ def test_grab_panic_no_panic_when_enemy_in_front():
     assert act["hold"] in R.WIGGLE, f"expected WIGGLE, got {act['hold']}"
 
 
+def test_grab_panic_fires_from_break_until_without_hold_state():
+    """A pending break_until (no RAM-held state) with an enemy behind still fires grab panic.
+
+    Damage cluster fc45a6229fe006d0 broadening: the held branch's entry condition widens the
+    break_until guard out of the state-None enclosure, so a bot waiting out break_until still
+    turns toward a grabber >GRAB_PANIC_ERR off facing instead of grinding the WIGGLE round.
+    """
+    bot, clock, snap = brain(round_guest(state=0, enemies=((0.0, 0.0, -200.0, 700),), cam_yaw=0.0))
+    bot.break_until = clock[0] + 1.0                          # break cycle pending, state still 0 (not 8/9/25)
+    act = run(bot, snap, clock, 1)[0]
+    assert bot.stats.get("grab_panics", 0) == 1, f"grab_panics should be 1, got {bot.stats.get('grab_panics')}"
+    assert act["hold"] == ("ldown", "b"), f"expected ('ldown','b'), got {act['hold']}"
+
+
+def test_quick_turn_grab_panic_fires_from_break_until_without_hold_state():
+    """The quick-turn grab-panic guard also widens off the RAM-held state set.
+
+    Damage cluster fc45a6229fe006d0 broadening #2: held_state admits break_until / held(p,now)
+    as well as the RAM states (8/9/25), so the panic turn fires even when the state byte is gone.
+    """
+    bot, clock, snap = brain(round_guest(state=0, enemies=((0.0, 0.0, -200.0, 700),), cam_yaw=0.0))
+    bot.break_until = clock[0] + 1.0
+    acts = run(bot, snap, clock, 1)
+    assert bot.stats.get("grab_panics", 0) == 1, f"grab_panics should be 1, got {bot.stats.get('grab_panics')}"
+    assert acts[0]["hold"] == ("ldown", "b"), f"expected ('ldown','b'), got {acts[0]['hold']}"
+
+
 def test_auto_qte_frees_no_grab_so_he_shakes_at_once_with_it_on():
     bot, clock, snap = brain(round_guest(state=8))
     snap["auto_qte"] = True                                  # live 2026-10-27: the option let every bite land
