@@ -45,7 +45,8 @@ from pathlib import Path
 
 from .. import map_goals
 from .. import tactical as T
-from . import re4_nav
+from ..core import room_map as _room_map
+from . import re4_nav, re4_room_map
 
 # --- the walk (mm) ---------------------------------------------------------------------------------------------------
 REPLAN_S, REPLAN_MIN_S, GOAL_CELL_MM, GOAL_CELL_Y_MM = 1.0, 0.75, 2000.0, 1000.0
@@ -53,6 +54,17 @@ WP_MM, WP_NEAR_MM, CLEARANCE_MM, LOOKAHEAD = 1200.0, 450.0, 350.0, True
 DIRECT_R_MM, LEVEL_DY_MM, RUN_R_MM = 3000.0, 1500.0, 6000.0
 LINK_TRY_S, LINK_PUSH_MM, LINK_PAST_MM = 4.0, 1500.0, 150.0
 CROSSING_PUSHES, AVOID_S, LINKS_AVOIDED = 3, 120.0, 24
+STALL_FOE_MM = 1800.0                    # a stall with a Ganado this near him or the route's point: not the way's fault
+FORGIVE_FLOOR = True                     # floor waypoints refused after stalls that shut every route: forgiven (_waypoint)
+# The route's detours cut short (live 2026-11-10, Castle r402: from the arena's south side to its west doorway the
+# mesh's route ran 6-11 m - north past the doorway to z -23400 and back - where the straight way, open floor clear of
+# every wall, is 3.1-3.6 m; the triangles there share no edge on the direct way, so the A* goes round, and the walker
+# turned toward the far waypoint and back). ROUTE_SHORTCUT: every SHORTCUT_S the walker heads for the farthest of the
+# route's next SHORTCUT_N points (to its first crossing's foot at most, SHORTCUT_MM off at most) that he reaches in a
+# straight line on the mesh's floor (_open) clear of the room map's walls (his body's margin) and of the crossings
+# refused; stats mesh_shortcuts. Off: waypoint by waypoint.
+ROUTE_SHORTCUT = True
+SHORTCUT_N, SHORTCUT_MM, SHORTCUT_S = 4, 9000.0, 0.5
 PROBE_MM = 1500.0
 TURNS = tuple(math.radians(d) for d in (22.5, -22.5, 45, -45, 67.5, -67.5, 90, -90, 112.5, -112.5, 135, -135))
 FOLLOW_TOL = math.radians(25)
@@ -90,7 +102,8 @@ def _flat(a, b) -> float:
 class Walker:
     """See the module docstring. stats (the bot's) gets: walk_how, nav_status, mesh_routes, mesh_no_route,
     mesh_route_ticks, mesh_lookahead_holds, mesh_links_tried, mesh_links_taken, mesh_links_refused,
-    mesh_crossings_refused, nav_near_walled, nav_direct_ticks, stand_breaks, quick_turns, mesh_steers, mesh_blocked."""
+    mesh_crossings_refused, nav_near_walled, nav_direct_ticks, stand_breaks, quick_turns, mesh_steers, mesh_blocked,
+    mesh_shortcuts, mesh_avoid_forgiven, mesh_stall_foe_skips."""
 
     def __init__(self, stats: dict | None = None, *, turn_positive: str = TURN_POSITIVE, clearance: float = CLEARANCE_MM):
         self.stats = stats if stats is not None else {}
@@ -110,6 +123,7 @@ class Walker:
         self.wp = None                                  # (x, z, now) of the route's point steering this tick
         self.at_link = False
         self.how = ""
+        self.leg = None                                 # this tick's route leg ({at, keys, to, crossing, open})
 
     # --- what he stands on ---
     def observe(self, snap: dict, now: float | None = None) -> None:
@@ -165,11 +179,12 @@ class Walker:
         self._avoid["pts"] = [q for q in self._avoid["pts"] if q[3] > self.now]
         return [tuple(q[:3]) for q in self._avoid["pts"]]
 
-    def refuse(self, point, why: str) -> None:
-        """Leave this crossing (its portal) out of the stage's routes for AVOID_S; plan again at the next call."""
+    def refuse(self, point, why: str, floor: bool = False) -> None:
+        """Leave this crossing (its portal) out of the stage's routes for AVOID_S; plan again at the next call. floor:
+        a plain floor waypoint the route stalled at (_route_wall), forgiven when it shuts every way (_waypoint)."""
         self._avoid_pts()
         self._avoid["pts"] = [q for q in self._avoid["pts"] if math.dist(q[:3], point[:3]) >= 1.0] \
-            + [tuple(point[:3]) + (self.now + AVOID_S,)]
+            + [tuple(point[:3]) + (self.now + AVOID_S, bool(floor))]
         del self._avoid["pts"][:-LINKS_AVOIDED]
         self._route.update(at=-1e9, pts=None)
         self._link["key"] = None
@@ -201,13 +216,24 @@ class Walker:
         sig = getattr(mesh, "sig", None)
         cell = (round(goal[0] / GOAL_CELL_MM), round(goal[1] / GOAL_CELL_Y_MM), round(goal[2] / GOAL_CELL_MM))
         if r["sig"] != sig or (r["cell"] != cell and self.now - r["at"] >= REPLAN_MIN_S) or self.now - r["at"] >= REPLAN_S:
-            r.update(cell=cell, at=self.now, sig=sig)
+            r.update(cell=cell, at=self.now, sig=sig, cut_at=-1e9)
             avoid = tuple(self._avoid_pts())
             try:
                 pts = mesh.route(pos, tuple(goal[:3]), avoid=avoid, clearance=self.clearance)
             except Exception as exc:                       # noqa: BLE001 - the mesh never costs a tick
                 self.stats["nav_error"] = f"mesh {type(exc).__name__}: {exc}"[:120]
                 pts = None
+            if not pts and avoid and FORGIVE_FLOOR and any(len(q) > 4 and q[4] for q in self._avoid["pts"]):
+                # the floor waypoints refused after stalls (_route_wall) shut every way to the goal (live 2026-11-10,
+                # Castle: the west doorway refused while the Ganados filled it - no route left, so the straight line
+                # into the jamb): forgiven; the crossings that never let him through stay refused
+                self._avoid["pts"] = [q for q in self._avoid["pts"] if not (len(q) > 4 and q[4])]
+                avoid = tuple(self._avoid_pts())
+                self._count("mesh_avoid_forgiven")
+                try:
+                    pts = mesh.route(pos, tuple(goal[:3]), avoid=avoid, clearance=self.clearance)
+                except Exception:                          # noqa: BLE001
+                    pts = None
             r["pts"] = list(pts) if pts else None
             self._count("mesh_routes" if pts else "mesh_no_route")
             if pts:
@@ -224,6 +250,12 @@ class Walker:
                     f"{len(avoid)} crossing(s) refused" if free else
                     "no mesh route (an end off the mesh, or no floor path between them)")
         pts = r["pts"]
+        if ROUTE_SHORTCUT and pts and len(pts) > 1 and self.now - r.get("cut_at", -1e9) >= SHORTCUT_S:
+            r["cut_at"] = self.now
+            j = self._shortcut(pos, pts)
+            if j:
+                del pts[:j]
+                self._count("mesh_shortcuts")
         while pts:
             q = pts[0]
             link = hasattr(q, "approach")
@@ -271,6 +303,37 @@ class Walker:
             self.wp = (point[0], point[2], self.now)
             return point[0], point[2]
         return None
+
+    def _shortcut(self, pos, pts) -> int:
+        """ROUTE_SHORTCUT: how many of the route's first points to skip - the farthest of its next SHORTCUT_N (to the
+        first crossing's foot at most, SHORTCUT_MM off at most) that he reaches in a straight line on the mesh's floor
+        (_open), clear of the room map's walls by his body's margin (core.room_map.walk_block) and of every crossing
+        refused (re5_nav.AVOID_R); 0 when none past the first is."""
+        cand = []
+        for i, q in enumerate(pts[:SHORTCUT_N + 1]):
+            link = hasattr(q, "approach")
+            point = q.approach if link else q
+            if _flat(point, pos) > SHORTCUT_MM:
+                break
+            cand.append((i, point))
+            if link:
+                break
+        if len(cand) < 2:
+            return 0
+        try:
+            rm = re4_room_map.for_snap(self.snap)
+        except Exception:                                  # noqa: BLE001 - the room map never costs a tick
+            rm = None
+        refused = self._avoid_pts()
+        avoid_mm = re4_nav.re5_nav.AVOID_R * re4_nav.MM_PER_CM
+        for i, point in reversed(cand[1:]):
+            if any(_room_map._dist_seg(q[0], q[2], pos[0], pos[2], point[0], point[2]) < avoid_mm for q in refused):
+                continue
+            if rm is not None and rm.walk_block(pos, (point[0], pos[1], point[2]), end_r=0.0):
+                continue
+            if self._open(pos, point[0], point[2]):
+                return i
+        return 0
 
     def no_exit(self) -> bool:
         """The last plan failed only because of the crossings refused on this stage."""
@@ -322,7 +385,14 @@ class Walker:
             keys = tuple(k for k in keys if k != RUN)
             if int(self.now / ACTION_PULSE_S) % 2 == 0:
                 keys += (ACTION,)
-        return self._backstop(keys)
+        out = self._backstop(keys)
+        # this tick's route leg (the room map leaves it to the mesh: re4_switch._room_ahead): the route's own steer
+        # (not the backstop's step), toward a waypoint the mesh's floor reaches in a straight line from him
+        self.leg = None
+        if wp is not None and tuple(out) == tuple(keys):
+            self.leg = {"at": self.now, "keys": tuple(out), "to": (tx, tz), "crossing": self.at_link,
+                        "open": self.at_link or self._open(pos, tx, tz)}
+        return out
 
     def _backstop(self, keys: tuple) -> tuple:
         """NEVER_STAND for the walk: approach() asked STAND_MAX_S with no STAND_MOVE_MM of ground -> a step."""
@@ -337,8 +407,11 @@ class Walker:
             return keys
         if self.now - st["at"] < STAND_MAX_S:
             return keys
-        if self.wp is not None and not self.at_link:     # the route steered him into this: the push counts there
-            self._route_wall(pos)
+        if self.wp is not None and not self.at_link:     # the route steered him into this: the push counts there -
+            if self._foe_in_way(pos):                    # unless a Ganado stands in the way (a doorway they fill is
+                self._count("mesh_stall_foe_skips")      # not a doorway the game shuts)
+            else:
+                self._route_wall(pos)
         step = self.step(pos)
         st.update(pos=pos, at=self.now, until=self.now + STAND_STEP_S, keys=step)
         self._count("stand_breaks")
@@ -367,6 +440,19 @@ class Walker:
                 else (FORWARD,)
         return (BACK, RUN) if abs(go) >= QUICK_TURN_ERR else ((self.turn_pos,) if go > 0 else (self.turn_neg,))
 
+    def _foe_in_way(self, pos) -> bool:
+        """A living Ganado within STALL_FOE_MM of him or of the route's point steering him (live 2026-11-10, Castle:
+        the Ganados standing in the west doorway stalled him there - a stall that is no reason to refuse it)."""
+        if self.wp is None:
+            return False
+        for e in self.snap.get("enemies") or ():
+            q = e.get("pos")
+            if not q or (e.get("hp") is not None and e.get("hp") <= 0):
+                continue
+            if _flat(q, pos) <= STALL_FOE_MM or math.hypot(q[0] - self.wp[0], q[2] - self.wp[1]) <= STALL_FOE_MM:
+                return True
+        return False
+
     def _route_wall(self, pos) -> bool:
         """A stall at the route's waypoint: counted, and at CROSSING_PUSHES that crossing is refused for the stage."""
         if self.wp is None:
@@ -380,7 +466,7 @@ class Walker:
         if st["n"] < CROSSING_PUSHES:
             return False
         st.update(key=None, n=0)
-        self.refuse((self.wp[0], pos[1], self.wp[1]), "a crossing the game does not let him walk")
+        self.refuse((self.wp[0], pos[1], self.wp[1]), "a crossing the game does not let him walk", floor=True)
         self._count("mesh_crossings_refused")
         return True
 
@@ -579,7 +665,9 @@ def operator_goal_act(bot, snap: dict, now: float, fight) -> dict | None:
 
 def plan(bot, base: dict | None = None) -> dict:
     """bot.plan() for the tactical map (tactical.take_plan): phase, note, the target (an enemy by its slot, the map's
-    id), the walker's route (route_source room_collision) and the map-goal fields."""
+    id), the walker's route (route_source room_collision), the map-goal fields, and what he pressed this tick
+    (controls: the frame's plan.keys, plan.tap, plan.stick - the left stick's angle in his frame and magnitude, the
+    aim stick, the gun up)."""
     out = dict(base or {})
     w = getattr(bot, "walker", None)
     if getattr(bot, "doing", None):
@@ -595,6 +683,10 @@ def plan(bot, base: dict | None = None) -> dict:
         route = w.route_ahead()
         if route:
             out.update(route=route, route_source=ROUTE_SOURCE, route_requires_prompt=w.needs_prompt())
+    last = bot.__dict__.get("_re4_last_act") if hasattr(bot, "__dict__") else None
+    if isinstance(last, tuple) and len(last) == 2 and isinstance(last[1], dict) and "controls" not in out:
+        st = getattr(bot, "stats", None) or {}
+        out["controls"] = T.controls(last[1], aim_btn="zl", aim_stick=st.get("aim_stick"))   # plan.keys / tap / stick
     out.update(map_goal_plan(bot))
     return out
 
@@ -613,9 +705,12 @@ def attach(cls):
             walker_of(self).observe(snap or {}, now)
             game = (snap or {}).get("game") if isinstance(snap, dict) else None
             if isinstance(game, dict) and not game.get("in_control"):
-                return tick(self, snap, *args, **kw)       # not in control (re4_switch.game_state): the mark waits
-            act = operator_goal_act(self, snap or {}, now, lambda s: tick(self, s, *args, **kw))
-            return tick(self, snap, *args, **kw) if act is None else act
+                act = tick(self, snap, *args, **kw)        # not in control (re4_switch.game_state): the mark waits
+            else:
+                act = operator_goal_act(self, snap or {}, now, lambda s: tick(self, s, *args, **kw))
+                act = tick(self, snap, *args, **kw) if act is None else act
+            self.__dict__["_re4_last_act"] = (now, act)    # what he pressed this tick (plan(): the map's controls)
+            return act
         wrapped._re4_walk = True
         cls.tick = wrapped
     if "receive_map_goal" not in cls.__dict__:
