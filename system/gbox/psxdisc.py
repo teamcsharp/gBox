@@ -68,7 +68,19 @@ class CHD:
 
 class PSXDisc:
     def __init__(self, path):
-        self.chd = CHD(path)
+        try:
+            self.chd = CHD(path)
+        except NotImplementedError as exc:
+            if "not supported" not in str(exc):
+                raise
+            # CHD v5 (cdlz / cdzl / cdfl) needs the Huffman map and the LZMA/FLAC
+            # decoders that live in gbox.chd; reuse that reader instead of failing
+            # the whole disc (the HyperSpin PSX set is chdman createcd = v5).
+            from .chd import ChdDisc
+            self.chd = None
+            self._v5 = ChdDisc(path)
+            self.files = dict(self._v5.files)
+            return
         try:
             pvd = self.data(16)
             assert pvd[1:6] == b"CD001", "no ISO9660 PVD"
@@ -84,13 +96,24 @@ class PSXDisc:
 
     def close(self):
         """Close the underlying CHD (safe to call twice; mirrors RawBin.close)."""
-        self.chd.close()
+        if self.chd is not None:
+            self.chd.close()
+        v5 = getattr(self, "_v5", None)
+        if v5 is not None:
+            v5.close()
 
     def data(self, lba: int) -> bytes:
+        if self.chd is None:
+            return self._v5.sector(lba)
         s = self.chd.sector(lba)
         return s[24:24 + 2048] if s[15] == 2 else s[16:16 + 2048]
 
     def read(self, name: str, offset: int = 0, size: int | None = None) -> bytes:
+        if self.chd is None:
+            try:
+                return self._v5.read(name, offset, size)
+            except KeyError:
+                return self._v5.read(name.upper(), offset, size)
         lba, length = self.files[name]
         size = length - offset if size is None else size
         if offset < 0 or size < 0 or offset + size > length:
