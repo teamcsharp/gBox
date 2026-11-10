@@ -534,5 +534,27 @@ def analysis_probe(rom: bytes) -> dict:
     }
 
 
+# Loader-proven file index (RAM 0x80065CE0 size getter / 0x80065D64 loader):
+# record(idx) = {rom_start @+0x4410, rom_end @+0x4414, type @+0x4418} at
+# 0x800A0000 + idx*12.  type==1 -> 0x8007C5D0 (packed/decompress path);
+# otherwise raw PI DMA via 0x80001530(rom, dst, size, 2).  Idx 0..27 are
+# zero in the ROM image; the 144-record table at SEGMENT_TABLE is idx 28..171.
+FILE_TABLE_RAM = 0x800A4410
+FILE_TABLE_FIRST_REAL = (rom_to_ram(SEGMENT_TABLE) - FILE_TABLE_RAM) // 12  # 28
+LOADER_SIZE_GETTER = 0x80065CE0
+LOADER_FILE_LOAD = 0x80065D64
+LOADER_PI_DMA = 0x80001530
+LOADER_PACKED_PATH = 0x8007C5D0
+
+
+def file_record(rom: bytes, idx: int) -> dict:
+    """Decode global file-index ``idx`` exactly as the game's loader does."""
+    off = ram_to_rom(FILE_TABLE_RAM) + 12 * idx
+    start, end, typ = struct.unpack_from(">III", rom, off)
+    return {"idx": idx, "table_off": off, "start": start, "end": end,
+            "size": end - start, "type": typ,
+            "path": "packed" if typ == 1 else "raw_dma"}
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

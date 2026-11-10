@@ -252,3 +252,20 @@ def test_owned_build_packed_headers_are_consistent():
         # unpacked_size is byte-granular (real sprite/image buffers), so we only
         # assert it is sane, not 4-aligned
         assert h["unpacked_size"] > h["packed_size"]
+
+
+def test_file_record_synthetic_layout():
+    rom = bytearray(0xB0000)
+    off = mk.ram_to_rom(mk.FILE_TABLE_RAM) + 12 * 3
+    struct.pack_into(">III", rom, off, 0xB4FC0, 0xB5FC0, 1)
+    r = mk.file_record(bytes(rom), 3)
+    assert (r["start"], r["size"], r["path"]) == (0xB4FC0, 0x1000, "packed")
+    assert mk.FILE_TABLE_FIRST_REAL == 28
+
+
+def test_owned_build_file_index_matches_segment_table():
+    rom = _owned_rom()
+    recs = [r for r in mk.segment_table(rom) if not r["null"]]
+    for r in recs[:5] + recs[-5:]:
+        f = mk.file_record(rom, mk.FILE_TABLE_FIRST_REAL + r["index"])
+        assert (f["start"], f["end"], f["type"]) == (r["start"], r["end"], r["flag"])
