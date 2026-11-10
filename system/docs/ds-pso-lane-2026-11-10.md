@@ -1154,14 +1154,57 @@ table in a comment so the next reader does not repeat it.
   game acts on buttons from the same pad but not on its axes -- either Dolphin's XInput axis binding or the pad's axis
   report is wrong, and both players' fallbacks being keyboard is what hid it.
 
+## Round 20 (2026-11-10) — a calibrated keyboard walker, and the first real movement in the lane
+
+### `gbox/pso_kbwalk.py` (+7 tests)
+
+Round 19 proved the keyboard moves characters and the virtual pad's stick never does. This round turned that into a
+walker that does not need to be told which way is which:
+
+* **`calibrate`** holds each key briefly, measures the world delta it produced, and returns unit vectors plus a speed.
+  On the live game that measured **33.6 world units per second** and axes that are nothing like the key names suggest.
+* **`best_keys`** returns the one or two keys that point at the target. Two is not a flourish: on this build `up` is
+  world `-x` and `down` is almost `-z`, so a diagonal target needs both or the walk zig-zags and never converges. Keys
+  whose directions oppose each other are never combined.
+* **`walk_to`** is closed-loop -- every step re-reads the actor's position from RAM, caps the push at half the remaining
+  distance so the last steps are short, and stops with a named reason instead of grinding: no key pointing at the target
+  (recalibrate), stuck against a wall (after three sidestep attempts), or the player disappeared.
+
+Tests model a world with skewed axes, a wall that blocks movement, a completely dead binding, and the distance-scaled
+step length, so the calibration and the stuck handling are exercised without an emulator.
+
+### The live run: 33 units of real movement, then a railing
+
+From the Pioneer 2 lobby, P1 walked from `(240.4, 136.6)` to `(215.0, 164.4)` -- **33 units** toward the Hunter's Guild
+door at `(185.0, 173.0)` -- and stopped there with 31 units remaining. The frame (`pj0-guilddoor.jpg`) shows why: the
+split screen has BQF out on the plaza, past the lobby's railing, while 3P stays by the teleporter. Both are still in
+room 10, so it was an obstacle, not a room change.
+
+A second attempt exposed the weakness worth fixing next: **calibration is poisoned by walls.** Pressed against the
+railing, the `left` key produced no movement at all, so it calibrated to `(0, 0, 0)` and the walker reported "no key
+points at the target; recalibrate" two steps later. The camera also turns with the character, so a one-time calibration
+goes stale as soon as the character changes facing.
+
+### Next, concretely
+
+1. **Calibrate away from walls** (or retry a key that reads zero, and its opposite, and negate), and **recalibrate** when
+   a walk stalls -- the camera-relative basis changes when the character turns, so a single calibration cannot hold for a
+   long path.
+2. **Waypoints instead of a straight line**: the lobby's doors are all in room 10 and the geometry between them is not
+   open, so the route needs intermediate points (e.g. out of the plaza opening, then along the terrace, then to the guild
+   door).
+3. Then the guild door -> the quest counter -> the teleporter -> Forest 1, with both players.
+
 ## 7. Next
 
-1. Walk both players from the Pioneer 2 lobby to the Hunter's Guild door (185,173 room 10), then the teleporter
-   (254,25), then Forest 1 -- using the **keyboard** path (`win_send_keys` with the window foreground), which is the
-   only movement that works, and `gbox.pso_move` closing the loop on each player's RAM position.
-2. Then P1's accept test: three cold launches to the field with both players, no warp.
-3. Then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
+1. Harden `gbox.pso_kbwalk` for the real lobby: calibrate away from walls (a blocked key reads zero -- retry it and
+   its opposite and negate), and recalibrate when a walk stalls, because the camera turns with the character and the
+   camera-relative basis goes stale.
+2. Use **waypoints**, not a straight line: the Pioneer 2 lobby's four doors are all in room 10 and the space between
+   them is not open -- P1 walked 33 units and stopped at the plaza railing.
+3. Then the guild door -> the quest counter -> the teleporter -> Forest 1 with both players, then P1's accept test
+   (three cold launches), then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
 
-Two things to remember: the single-player intro scene is bypassed entirely by MULTI MODE (both players load into the
-Pioneer 2 lobby, room 10, with no cutscene), and movement must go through the keyboard -- the virtual pad's analog
-stick never reaches the game although its buttons do (measured both ways in split-screen co-op, round 19).
+State: co-op session live in Pioneer 2, room 10, both players free -- P1 (BQF) at (215.0, 164.4) on the plaza, P2
+(3P) at (233.8, 274.5) by the teleporter. The single-player intro scene is bypassed entirely by MULTI MODE, and
+movement works only through the keyboard (`win_send_keys`, window foreground).
