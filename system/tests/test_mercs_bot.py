@@ -222,12 +222,20 @@ def test_boot_confirms_screens_ram_cannot_name_with_the_titles_boot_key():
     assert boot.tick() is None                              # no screen named yet this boot: shader caches may be building
     now[0] = MB.BOOT_LOST_S + 2
     assert "did not name" in boot.tick()                    # still unnamed after the presses: the run ends
-    named = MB.Boot(SimpleNamespace(screen=lambda m, merc=None: {"where": "title"}, step=menus.step,
+    named = MB.Boot(SimpleNamespace(screen=lambda m, merc=None: {"where": "main_menu"}, step=menus.step,
                                     wandered=menus.wandered), None, sent.extend, sleep=lambda s: None, clock=lambda: now[0])
     named.tick()
     named.menus = menus                                     # once a screen was named, the old 30 s rule applies
     now[0] += 1; named.tick(); now[0] += MB.MENU_LOST_S + 1
     assert "did not name" in named.tick()
+    # the boot's own screens (PRESS ANY BUTTON, the title) are named only to be confirmed at once: the save loading
+    # after them is still the boot, with the boot's limit
+    titled = MB.Boot(SimpleNamespace(screen=lambda m, merc=None: {"where": "title"}, step=menus.step,
+                                     wandered=menus.wandered), None, sent.extend, sleep=lambda s: None, clock=lambda: now[0])
+    titled.tick()
+    titled.menus = menus
+    now[0] += 1; titled.tick(); now[0] += MB.MENU_LOST_S + 1
+    assert titled.tick() is None and not titled.named
     sent.clear()
     plain = MB.Boot(SimpleNamespace(screen=menus.screen, step=menus.step, wandered=menus.wandered), None, sent.extend,
                     sleep=lambda s: None, clock=lambda: now[0])

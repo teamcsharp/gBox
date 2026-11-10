@@ -1101,6 +1101,11 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     sid = f"{ctx.worker}-{ctx.job_id}"
     gd = g.model_dump()
     gd['mod'] = launch_mod or ''
+    # the menus' clock (gbox.mercs.core.menu_pace.Clock): a bot's boot walk is timed from this launch, and the time the
+    # game was up before any bot pressed anything (the scheduler's grace) is told apart from the bot's own walk
+    now_wall = time.time()
+    gd['_launched_at'] = round(now_wall - (time.monotonic() - t_start), 2)
+    gd['_up_at'] = round(now_wall, 2)
     if g.launch.get("kind") != "steam" and not isinstance(ad, adapters.RocketLauncherAdapter):
         gd["_rom_path"] = str(src)                     # for the inspector's ROM viewer
     SESSIONS[sid] = (ad, gd)

@@ -171,9 +171,10 @@ Candidates not built (not shown by recorded RAM; each needs a live probe first):
 - the round's intro (about 10 s of phase 0 before the clock runs): whether a press, or cGameSys +0x944 = 1, starts the
   clock early without breaking the round's set-up;
 - The Mercenaries United's START: whether uIdStartUp29 +0x1C4 = 1 opens the mode list without the press and the fade;
-- PRESS ANY BUTTON: `screen()` still calls the title "unknown" (the Boot's `BOOT_KEY` every 3 s); naming it when
-  uIdTitle00 +0x18 is set (as `warm_probe` does) would press it at once, but a named screen shortens the Boot's lost
-  limit from 600 s to 30 s for whatever unnamed stretch follows, so it waits for a live look at that stretch;
+- PRESS ANY BUTTON: built 2026-11-10 (branch mercs-menu-pace). `screen()` names the title "title" once uIdTitle00 +0x18
+  is set (as `warm_probe` does) and the Navigator confirms it on its first read (`menu_pace.title_hints`: no settle),
+  instead of the Boot's `BOOT_KEY` every 3 s on an unnamed screen. The boot's own screens (`mercs_bot.BOOT_SCREENS`)
+  no longer end the boot's grace, so the unnamed save load after the title keeps the 600 s limit, not 30 s;
 - the results tally: MercMode needs it to count a completed round (`result_ready`), so it is not skipped.
 
 ## 4. The learning, the stats and the panel

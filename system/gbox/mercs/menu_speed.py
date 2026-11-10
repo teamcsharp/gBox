@@ -45,9 +45,9 @@ CONFIRM_MISS_S = 2.5         # a confirm (A / B / +) RAM has not shown in this l
 TREND_N, KEEP_TRANSITIONS = 10, 50
 MAX_TRANSITION_S = 600.0     # a "transition" longer than this is a parked or stopped game, not a menu walk
 SAVE_EVERY_S = 2.0           # the profile is written at most this often (and at every transition's end)
-MENU_SCREENS = frozenset({"alert_ok", "alert_leaderboard", "alert", "title", "main_menu", "play_game",
-                          "extra_content", "mercs_title", "mercs_mode", "select_stage", "select_player", "results",
-                          "dead", "loading"})
+MENU_SCREENS = frozenset({"alert_ok", "alert_leaderboard", "alert", "title", "press_any_button", "main_menu",
+                          "play_game", "extra_content", "mercs_title", "mercs_mode", "select_stage", "select_player",
+                          "results", "dead", "loading"})
 SELECTS_DONE = "select_player"   # the walk's last choice: after it, loading / the intro means the menus are done
 
 
@@ -410,6 +410,20 @@ class Speed:
         if self.open is not None:
             out["menu_open_s"] = round(self.clock() - self.open["start"], 1)
         return out
+
+    def pace_line(self, limit: int = 600) -> str:
+        """Each pressed screen's learned waits on one line (the run's menu_pace stat, gbox.mercs.core.menu_pace.Clock):
+        "main_menu settle 0.14 step 0.30 hold 0.10 (26 ok / 1 miss); ..."."""
+        self._ready()
+        parts = []
+        for where in sorted(self.data.get("screens") or {}):
+            rec = self.data["screens"][where]
+            if not isinstance(rec, dict) or not rec.get("presses"):
+                continue
+            parts.append(f"{where} settle {float(rec.get('settle_s') or 0):.2f} step {float(rec.get('step_s') or 0):.2f}"
+                         f" hold {float(rec.get('hold_s') or 0):.2f} ({int(rec.get('hits') or 0)} ok / "
+                         f"{int(rec.get('misses') or 0)} miss)")
+        return "; ".join(parts)[:limit]
 
     def status(self) -> dict:
         """The sidebar's line and numbers (bot_logic.status: the re5_mods live_controls view)."""
