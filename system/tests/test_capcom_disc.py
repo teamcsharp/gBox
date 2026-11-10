@@ -115,3 +115,22 @@ def test_optimal_parse_roundtrip_and_overflow_file_fits():
     assert dee.dee_unpack(packed) == dee.dee_unpack(orig)
     # greedy parse produced 10650 > 10240-byte sector span; optimal parse fits
     assert len(packed) <= -(-len(orig) // 2048) * 2048
+
+
+@pytest.mark.skipif(not os.path.exists(REAL), reason="owned image not present")
+def test_real_obj01_cross_sheet_donor(tmp_path):
+    """P1943 slot 1 (1943/OBJ01.DEE): donor = OBJ23 pixel block grafted on OBJ01's CLUT/header."""
+    target, donor_name = "1943/OBJ01.DEE", "1943/OBJ23.DEE"
+    d = RawBin(REAL, False)
+    t1 = dee.dee_unpack(d.read(target)); t2 = dee.dee_unpack(d.read(donor_name)); d.close()
+    i1 = dee.parse_tim(t1)
+    off = 8 + i1["clut"]["size"] + 12
+    n = i1["image"]["size"] - 12
+    donor = dee.tim_replace_image(t1, t2[off:off + n])
+    assert donor != t1
+    out = str(tmp_path / "mod.bin")
+    disc.replace_dee(REAL, out, {target: dee.dee_pack(donor)})
+    a, b = RawBin(REAL, False), RawBin(out, False)
+    assert dee.dee_unpack(b.read(target)) == donor
+    changed = [k for k in a.files if a.read(k) != b.read(k)]
+    assert changed == [target]
