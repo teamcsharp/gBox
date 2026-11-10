@@ -320,3 +320,54 @@ def test_holds_say_which_gate_stopped_the_shot():
     b.tick(s, now=1.0)
     b.tick(s, now=1.0 + D.AIM_READY_S)
     assert b.stats.get("hold_sight", 0) >= 1
+
+
+def test_a_frozen_scene_gets_a_until_he_moves():
+    """Live 2026-11-10 21:00: the round intro after a Continue, the RAM fight turning at it. A never-stand step that
+    ran its course without moving or turning him: A taps (the intro's continue, a grab's mash); once he moves, the
+    fight again."""
+    b = bot()
+    s = snap([((500.0, 0.0, 0.0), 400)])                         # a turn is commanded every tick, nothing moves
+    assert b.tick(s, now=0.0)["hold"] == {D.TURN["left"]}
+    step = b.tick(s, now=D.STAND_MAX_S + 0.1)
+    assert b.doing == "step" and "lup" in step["hold"]
+    assert b.tick(s, now=D.STAND_MAX_S + 0.1 + D.STAND_STEP_S / 2).get("tap") is None, "the step runs first"
+    t0 = D.STAND_MAX_S + 0.2 + D.STAND_STEP_S
+    tap = b.tick(s, now=t0)
+    assert tap.get("tap") == D.FROZEN_KEY and b.doing == "frozen" and b.stats["frozen_spells"] == 1
+    assert b.tick(s, now=t0 + 0.05).get("tap") is None, "taps paced FROZEN_TAP_S"
+    assert b.tick(s, now=t0 + D.FROZEN_TAP_S + 0.01).get("tap") == D.FROZEN_KEY
+    moved = b.tick(snap([((500.0, 0.0, 0.0), 400)], rot=0.3), now=t0 + 1.0)
+    assert moved.get("tap") is None and b.doing != "frozen"
+
+
+def test_aiming_still_is_never_frozen():
+    b = bot()
+    s = snap([((0.0, 0.0, 500.0), 400)])                         # straight ahead: the gun up, taps of the trigger
+    for i in range(40):
+        act = b.tick(s, now=0.1 * i)
+        assert act.get("tap") != D.FROZEN_KEY
+    assert b.stats.get("frozen_taps", 0) == 0
+
+
+def test_a_clock_that_falls_faster_than_time_is_dropped():
+    import struct
+
+    class M:
+        def __init__(self):
+            self.v = 100.0
+
+        def rd(self, a, n):
+            return struct.pack("<f", self.v)
+
+    c = D.ClockFinder()
+    c.addr, m = 0x1000, M()
+    assert c.observe(m, 0, 0.0) == 100.0
+    m.v = 99.0
+    assert c.observe(m, 0, 1.0) == 99.0
+    m.v = 60.0                                                 # 39 s gone in 1 s: not the clock
+    assert c.observe(m, 0, 2.0) is None and c.addr is None and c.rejects == 1
+    c.addr, m.v = 0x1000, 90.0
+    c.observe(m, 0, 3.0)
+    m.v = 120.0                                                # a bonus adds time: kept
+    assert c.observe(m, 0, 4.0) == 120.0

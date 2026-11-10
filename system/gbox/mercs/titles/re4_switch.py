@@ -83,6 +83,7 @@ CLOCK_LO, CLOCK_HI = 2.0, 121.0         # what a round's clock reads when it is 
 CLOCK_RATE = (0.6, 1.4)                 # clock seconds per wall second (emulation between 60 % and 140 %)
 CLOCK_DT = (0.8, 8.0)                   # the two reads this far apart (a shorter gap cannot tell 1.0 from 0.6)
 CLOCK_STALE_S = 4.0                     # a found clock that has not moved this long is re-checked (a pause holds it)
+CLOCK_JUMP_S = 1.0                      # slack on the fastest fall a real clock can show between two reads
 
 # The units. Code-derived (Ghidra, re4-switch-ram.md "twentieth pass"): FUN_004cd1c0, the damage routine, does
 # hp = *(ushort *)(unit + 0x3c2) - damage(type = *(byte *)(unit + 0x3ce)) and zeroes it at death; the unit-state code
@@ -386,6 +387,12 @@ class ClockFinder:
                 v = None
             if v is None or not math.isfinite(v) or not -1.0 <= v <= CLOCK_MAX_S:
                 self.addr = self.last = None                # gone: search again
+                return None
+            if self.last is not None and v < self.last[1] - (now - self.last[0]) * CLOCK_RATE[1] - CLOCK_JUMP_S:
+                # it fell faster than the round's time runs (live 2026-11-10 21:00: 143 -> 95 in 2 s during the
+                # intro): not the clock - search again (a bonus only ever adds time)
+                self.rejects = self.__dict__.get("rejects", 0) + 1
+                self.addr = self.last = self.sample = None
                 return None
             if self.last is None or v != self.last[1]:
                 self.last = (now, v)
@@ -894,6 +901,13 @@ MELEE = True
 # the same Ganado; TURN_LEARN_N samples with the error growing at least 3x as often as it shrinks (+4) flip
 # TURN_SIGN - here and in re4_walk, so the walker follows - and say so in stats (turn_sign, turn_sign_flips).
 TURN_SIGN = 1                            # 1: an error > 0 turns left (the GameCube convention); -1: right
+# Not in control (live 2026-11-10 21:00: the round intro's "Eliminate as many Ganados ..." after a Continue was not
+# named by the frame reader, and the RAM fight turned at a frozen scene for a minute): a never-stand step (a turn
+# and a walk) that ran its STAND_STEP_S without his position (FROZEN_MM) or his facing (FROZEN_RAD) changing is a
+# scene that waits for a button (an intro text, a death camera) or a Ganado's grab: A tapped every FROZEN_TAP_S (it
+# continues the text and is the grab's shake-off mash) until he moves. Aiming and firing never step, so never count.
+FROZEN = True
+FROZEN_MM, FROZEN_RAD, FROZEN_TAP_S, FROZEN_KEY = 30.0, 0.01, 0.2, "a"
 TURN_LEARN, TURN_LEARN_N = True, 16
 MELEE_MM, MELEE_REACH_MM, MELEE_CLEAR_MM = 2500.0, 1400.0, 2000.0
 MELEE_WINDOW_S, MELEE_TAP_S, MELEE_CONE = 1.6, 0.3, 0.5
@@ -914,7 +928,7 @@ class Bot:
     TURN_TOL = 0.12                                      # rad: close enough to fire
     COUNTERS = ("shots", "hits", "turns", "backoffs", "holds", "dying", "escapes", "locates", "stand_breaks",
                 "crowd_picks", "sweeps", "kills_seen", "raises", "combo_breaks", "reloads", "melee_tries",
-                "melee_taps", "melee_kills")
+                "melee_taps", "melee_kills", "frozen_taps", "frozen_spells")
 
     def __init__(self, stats: dict | None = None, clock=time.monotonic, director=True):
         self.stats = stats if stats is not None else {}
@@ -1108,6 +1122,10 @@ class Bot:
         self._count_kills(snap, now)
         owed = self.combo_owed(now)
         self.stats["combo_owed_s"] = round(owed, 1) if owed is not None else None
+        frozen = self._frozen(p, now)
+        if frozen is not None:
+            self.stats["doing"], self.stats["why"] = self.doing, self.why
+            return frozen
         act = self._fight(p, snap, now)
         act = self._never_stand(p, act, snap, now)
         up = AIM_BTN in set(act.get("hold") or ())
@@ -1202,6 +1220,28 @@ class Bot:
             return {"hold": set(), "tap": ACTION_BTN}
         return {"hold": set()}
 
+    def _frozen(self, p, now) -> dict | None:
+        """A tap of FROZEN_KEY while he is not in control (FROZEN_*), else None."""
+        fz = self.__dict__.setdefault("_fz", {"pos": None, "rot": None, "tap": -1e9, "on": False})
+        pos, rot = tuple(p["pos"]), p.get("rot")
+        moved = (fz["pos"] is None or self._flat(fz["pos"], pos) > FROZEN_MM
+                 or (rot is not None and fz["rot"] is not None and abs(wrap(rot - fz["rot"])) > FROZEN_RAD))
+        if moved:
+            fz.update(pos=pos, rot=rot, at=now, on=False)
+            return None
+        stepped = fz.get("stepped")
+        if not FROZEN or stepped is None or stepped < fz.get("at", -1e9) or now - stepped < STAND_STEP_S:
+            return None                                  # no step tried since he last moved, or it is still running
+        if not fz["on"]:
+            fz["on"] = True
+            self.stats["frozen_spells"] = self.stats.get("frozen_spells", 0) + 1
+        self.doing, self.why = "frozen", "not in control (an intro, a death camera or a grab): A"
+        if now - fz["tap"] >= FROZEN_TAP_S:
+            fz["tap"] = now
+            self.stats["frozen_taps"] = self.stats.get("frozen_taps", 0) + 1
+            return {"hold": set(), "tap": FROZEN_KEY}
+        return {"hold": set()}
+
     def _approach(self, p, goal, err, snap, run: bool = False) -> tuple:
         """(stick keys, how) toward goal: the mesh walker when one is attached (Bot.walker.approach(goal) -> keys, the
         RE4 room-collision walker), else the first waypoint of the stage mesh's route (snap["nav"].route), else
@@ -1266,6 +1306,7 @@ class Bot:
         st["n"] = st.get("n", 0) + 1
         keys = {"lup", TURN["left" if st["n"] % 2 else "right"]}
         st.update(pos=tuple(pos), at=now, until=now + STAND_STEP_S, keys=tuple(keys))
+        self.__dict__.setdefault("_fz", {"pos": None, "rot": None, "tap": -1e9, "on": False})["stepped"] = now
         self.stats["stand_breaks"] += 1
         self.doing, self.why = "step", f"stood {STAND_MAX_S:.1f} s: a step (he never stands)"
         return dict(act, hold=keys)
