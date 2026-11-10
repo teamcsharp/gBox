@@ -1094,18 +1094,172 @@ Everything this round was done through the keyboard path (`win_send_keys`) with 
 and it worked -- unlike P1's pad, P2's pad needs no virtual pad at all. That is worth remembering: for co-op work the two
 players are driven by two completely different mechanisms, and the window has to be foreground for P2 only.
 
+## Round 19 (2026-11-10) — two players in Pioneer 2, and the movement answer
+
+This round got past everything P1 was stuck on. Three things happened, in order.
+
+### 1. Player 2's temp character exists: HUmar, name `3P`, GREENILL
+
+Driven entirely through P2's keyboard pad. Two input details that cost a cycle each:
+
+* P2's **B needs a hold** (~0.4 s). A 120 ms tap on the AUTO screen's "B MENU" did nothing; the same key held took the
+  creator straight back to its menu. A and the D-pad work as short taps.
+* From the name screen's keyboard, two `dright` from the opening cell lands on `3` and two `ddown` lands on `P`, so the
+  name came out **3P** -- the same off-by-one shape as round 4's BQF/DSH, and again the name is only cosmetic for a temp
+  character, but the offset is now recorded rather than rediscovered.
+
+The path: `SELECT CHARACTER` (P2's pad only) -> "Want to create a new Character?" YES -> class HUmar -> preview -> A ->
+`CHARACTER CREATION` (FACE/HAIR/COSTUME/SKIN/PROPORTION/NAME/AUTO/OK) -> AUTO x6 -> A (randomize) -> long B back ->
+`CHARACTER NAME` -> typed `3P` -> `OK` -> summary (TYPE HUmar, NAME 3P, SECTION ID GREENILL) -> CONFIRM.
+
+### 2. MULTI MODE loads both players into Pioneer 2 with **no cutscene**
+
+`VERIFY CHARACTER` shows PLAYER1 (BQF) and PLAYER2 (3P) side by side and asks "Are you ready?"; **each player confirms
+with their own pad** -- P2's A stamped `OK!` under PLAYER2, P1's A moved the game on to `GAME OPTION` (difficulty NORMAL,
+mode NORMAL, EPISODE 1, `START GAME`). After that:
+
+```
+mode 1   floor 0   slots 2
+p1 (BQF) 229.0, 254.0  room 10        <- the Pioneer 2 lobby, not the Principal's office (room 41)
+p2 (3P)  231.0, 267.0  room 10
+```
+
+and the frame `pic-lobby.jpg` is **split-screen**: BQF's view on top, 3P's below, both standing in the lobby with their
+own HUDs. **The single-player intro scene is simply not on this path** -- the thing ten rounds of presses, writes and
+teleports could not get past is bypassed by playing the game in the mode that has two players.
+
+### 3. Movement works -- through the keyboard, never through the virtual pad
+
+Measured with both characters standing free in room 10, positions read from the actor table:
+
+| driver | input | held | result |
+|---|---|---|---|
+| P1 | virtual pad, `up`/`down`/`left`/`right` (analog stick) | 1.2 s each | **position unchanged** |
+| P1 | virtual pad, `dup`/`ddown`/`dleft`/`dright` (D-pad) | 1.2 s each | **position unchanged** |
+| P1 | keyboard **arrow keys** (its INI fallback bindings) | 1.4 s each | 229,254 -> **175,254** -> 222,234 |
+| P2 | keyboard `NUMPAD8`/`NUMPAD2` (its pad) | 1.4 s each | 231,267 -> **181,274** -> 233,274 |
+
+So the virtual pad's **buttons** reach the game (every menu in this lane was walked with them) but its **analog stick
+never does**, while the keyboard bindings both pads carry as fallbacks move the characters perfectly. `win_send_keys`
+needs the Dolphin window foreground; that has been true all along and is why P2 could be driven this whole time.
+
+`gbox/pso_pad2.py` now carries `MOVEMENT` / `move_key` / `move_events` for both players (+2 tests), with the measurement
+table in a comment so the next reader does not repeat it.
+
+### What this unlocks
+
+* **P1's field leg** is now mechanical: both players can be walked, so Pioneer 2 -> the Hunter's Guild door (185,173
+  room 10) -> the teleporter (254,25) -> Forest 1 is `gbox.pso_move` with a keyboard backend.
+* The **movement bug** is a real gBox defect worth its own note: `vpad_win` writes the stick, XInput shows it, and the
+  game acts on buttons from the same pad but not on its axes -- either Dolphin's XInput axis binding or the pad's axis
+  report is wrong, and both players' fallbacks being keyboard is what hid it.
+
+## Round 20 (2026-11-10) — a calibrated keyboard walker, and the first real movement in the lane
+
+### `gbox/pso_kbwalk.py` (+7 tests)
+
+Round 19 proved the keyboard moves characters and the virtual pad's stick never does. This round turned that into a
+walker that does not need to be told which way is which:
+
+* **`calibrate`** holds each key briefly, measures the world delta it produced, and returns unit vectors plus a speed.
+  On the live game that measured **33.6 world units per second** and axes that are nothing like the key names suggest.
+* **`best_keys`** returns the one or two keys that point at the target. Two is not a flourish: on this build `up` is
+  world `-x` and `down` is almost `-z`, so a diagonal target needs both or the walk zig-zags and never converges. Keys
+  whose directions oppose each other are never combined.
+* **`walk_to`** is closed-loop -- every step re-reads the actor's position from RAM, caps the push at half the remaining
+  distance so the last steps are short, and stops with a named reason instead of grinding: no key pointing at the target
+  (recalibrate), stuck against a wall (after three sidestep attempts), or the player disappeared.
+
+Tests model a world with skewed axes, a wall that blocks movement, a completely dead binding, and the distance-scaled
+step length, so the calibration and the stuck handling are exercised without an emulator.
+
+### The live run: 33 units of real movement, then a railing
+
+From the Pioneer 2 lobby, P1 walked from `(240.4, 136.6)` to `(215.0, 164.4)` -- **33 units** toward the Hunter's Guild
+door at `(185.0, 173.0)` -- and stopped there with 31 units remaining. The frame (`pj0-guilddoor.jpg`) shows why: the
+split screen has BQF out on the plaza, past the lobby's railing, while 3P stays by the teleporter. Both are still in
+room 10, so it was an obstacle, not a room change.
+
+A second attempt exposed the weakness worth fixing next: **calibration is poisoned by walls.** Pressed against the
+railing, the `left` key produced no movement at all, so it calibrated to `(0, 0, 0)` and the walker reported "no key
+points at the target; recalibrate" two steps later. The camera also turns with the character, so a one-time calibration
+goes stale as soon as the character changes facing.
+
+### Next, concretely
+
+1. **Calibrate away from walls** (or retry a key that reads zero, and its opposite, and negate), and **recalibrate** when
+   a walk stalls -- the camera-relative basis changes when the character turns, so a single calibration cannot hold for a
+   long path.
+2. **Waypoints instead of a straight line**: the lobby's doors are all in room 10 and the geometry between them is not
+   open, so the route needs intermediate points (e.g. out of the plaza opening, then along the terrace, then to the guild
+   door).
+3. Then the guild door -> the quest counter -> the teleporter -> Forest 1, with both players.
+
+## Round 21 (2026-11-10) — the hardened walker arrived at the guild door, and walked straight through a different one
+
+### `gbox.pso_kbwalk` hardened (+3 tests, 10 total)
+
+Two weaknesses from round 20, both fixed and both tested:
+
+* **Wall-poisoned calibration.** Pressed against the plaza railing, `left` produced no movement and calibrated to
+  `(0, 0, 0)`. `calibrate` now measures the **opposite** key when one reads dead and negates it -- the axis is real, only
+  that direction is blocked. A test presses against a railing and asserts the axis and its speed come out right.
+* **Stale basis.** The camera turns with the character, so a calibration taken a leg ago can point the wrong way.
+  `walk_to` now **recalibrates** after two consecutive no-movement steps, before it gives up (two recalibrations max),
+  and still sidesteps once between attempts.
+* **`walk_path`** walks a list of waypoints, recalibrating between legs -- the lobby is not an open field, so a route is a
+  list of points rather than one straight line.
+
+### Live: it arrived
+
+```
+start (208.6, 124.8)   target (185.0, 173.0)   [TObjCityDoor_Guild, read from the live entity table]
+cal: up (-0.65,-0.76) 34.3 u/s    down (0.66,0.75) 32.2    left (-0.83,0.56) 33.6    right (0.58,-0.81) 33.3
+walk: True arrived  end (180.8, 166.8)  steps 12
+```
+
+Twelve steps, 30 units, and the walker reported arrival within its 8-unit tolerance -- the first time in this lane that a
+character has been steered to a named object by a closed loop reading its own RAM position.
+
+### Then it walked through the wrong door, which is itself the finding
+
+Closing the last 8 units sent P1 through a doorway: **the room changed from 10 to 20 with no button press**, and he came
+out in the Pioneer 2 plaza among NPCs (`pk1-room20.jpg`) while P2 stayed in the lobby (`room 10`, the bottom half of the
+split screen).
+
+Two consequences for the route:
+
+1. **Room transitions are triggered by walking into a door**, not by pressing A, so a walker must *expect* the room id to
+   change underneath it and stop treating the current coordinates as valid.
+2. **Entity coordinates are per-room.** The guild door's `(185, 173)` is a room-10 coordinate; after the transition the
+   character was at `(101.9, 118.8)` in room 20 and those numbers mean nothing there. A route has to be re-read after
+   every transition -- which is exactly what `walk_path`'s per-leg recalibration does for the axes, and what it does not
+   yet do for the geometry.
+
+### State
+
+Co-op session live. P1 (BQF) in **room 20**, the Pioneer 2 plaza, at `(101.9, 118.8)`; P2 (3P) in **room 10** by the
+teleporter at `(233.8, 274.5)`. Both healthy, no cutscene, movement working through the keyboard.
+
+### Next
+
+1. Bring P1 back through the door into room 10 (the transition works both ways) and keep the party together -- PSO co-op
+   expects both players in the same room for area changes.
+2. Give `walk_path` a **room-aware** wrapper: re-read the door list from the entity table after every transition and stall
+   the route if the room is not the one the waypoint belongs to.
+3. Then the guild counter (talk to the receptionist), the quest, and the teleporter to Forest 1.
+
 ## 7. Next
 
-1. Finish player 2's temporary character. The session is in the creator's **AUTO** sub-screen, which offers only
-   "B MENU" (does not respond to P2's `R`) and "A CHANGE" (works). First check whether P2's B really is `R` by
-   sending it at the `YES/NO` prompt, which takes B as cancel: if `R` is wrong the INI mapping is wrong and that is a
-   one-line fix in `pso_coop_setup.PAD2_WIN`; if it is right, drive `FACE`/`HAIR`/.../`CHARACTER NAME` directly
-   instead of going through AUTO, and press `OK`.
-2. Then MULTI MODE's Pioneer 2 and the field leg: the Hunter's Guild door (185,173 room 10), the teleporter
-   (254,25), Forest 1 -- with both players, and the movement measurement that has been impossible from inside the
-   single-player intro.
-3. Then the three cold launches, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
+1. Keep the co-op party together: P1 is in room 20 (the plaza) and P2 in room 10 (the lobby), because P1 walked
+   through a door that P2 did not. PSO co-op expects both players in the same room for area changes, so the route
+   has to move both characters: P1 back through the door, then both to the guild counter.
+2. Make `walk_path` **room-aware**: walking into a door changes the room id with no button press, and entity
+   coordinates are per-room (`TObjCityDoor_Guild` at 185,173 is a room-10 coordinate and means nothing in room 20).
+   A route must re-read the entity table after a transition and refuse waypoints that belong to another room.
+3. Then the guild counter (talk to the receptionist), the quest, and the teleporter to Forest 1, then P1's accept
+   test (three cold launches), then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
 
-Two facts for every co-op step: each player's character select answers **only that player's pad**, and
-`win_send_keys` accepts only the **uppercase** key names (`NUMPAD7`, `SPACE`) -- a lowercase name reports `sent: 0`
-and does nothing.
+Verified this round: `gbox.pso_kbwalk` calibrates around a blocked direction (opposite + negate), recalibrates on a
+stall, and walks waypoints (+3 tests, 10 total). Live, it steered player 1 for 12 steps and 30 units to the Hunter's
+Guild door's coordinates and reported arrival -- the first closed-loop navigation of a named object in this lane.

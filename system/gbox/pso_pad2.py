@@ -65,3 +65,40 @@ def chord(*buttons: str) -> list[dict]:
     """All buttons pressed together, then released in reverse: for prompts whose cursor must move before A lands."""
     names = [key(b) for b in buttons]
     return [{"key": n, "down": True} for n in names] + [{"key": n, "down": False} for n in reversed(names)]
+
+# --- movement: the same keyboard trick applies to BOTH players, and it is the only path that works ---------------
+#
+# Measured in split-screen co-op in Pioneer 2 (i9-NUC 2026-11-10), with both characters standing free in room 10:
+#
+#   P1 (virtual pad)    stick `up/down/left/right`, held 1.2 s each    position unchanged
+#   P1 (keyboard)       arrow keys `up`/`down`, held 1.4 s each        229,254 -> 175,254 -> 222,234   MOVED
+#   P2 (keyboard pad)   `NUMPAD8`/`NUMPAD2`, held 1.4 s each           231,267 -> 181,274 -> 233,274   MOVED
+#
+# So the virtual pad's buttons reach the game (menus advance) but its **analog stick never does**, while the keyboard
+# bindings that both pads carry as fallbacks work perfectly. A driver must therefore move characters through
+# `win_send_keys`, not through the virtual pad -- which also means the Dolphin window has to be foreground while moving.
+MOVEMENT = {
+    1: {"up": "up", "down": "down", "left": "left", "right": "right"},
+    2: {"up": "NUMPAD8", "down": "NUMPAD2", "left": "NUMPAD4", "right": "NUMPAD6"},
+}
+
+
+def move_key(player: int, direction: str) -> str:
+    """The keyboard key that moves ``player`` (1 or 2) in ``direction``."""
+    player = int(player)
+    if player not in MOVEMENT:
+        raise KeyError(f"player {player} has no movement bindings; known: {sorted(MOVEMENT)}")
+    try:
+        return MOVEMENT[player][direction.lower()]
+    except KeyError:
+        raise KeyError(f"unknown direction {direction!r}; known: {sorted(MOVEMENT[player])}") from None
+
+
+def move_events(player: int, direction: str, *, seconds: float = 1.2) -> list[dict]:
+    """A held movement press for the keyboard path: down now, and the caller sends the up after ``seconds``.
+
+    Returned as two batches rather than one so a caller can walk in steps:
+    ``move_events(...)[0]`` to start, sleep, ``move_events(...)[1]`` to stop.
+    """
+    key = move_key(player, direction)
+    return [[{"key": key, "down": True}], [{"key": key, "down": False}]]
