@@ -129,3 +129,34 @@ stay away for five minutes with the CPU under 70 % and a queued launch will be a
 
 The driver and boot walk are ready: the moment a session exists, `pso_boot.py walk` -> `save-state` -> `install-jumpstates`
 completes CP4, and the same window reads CP9's runtime seed.
+
+## Round 65: the launch fired and the RAM reads work - the pad input path does not (the gap is now precise)
+
+The armed launch job (`0091f40e47964868`) **was admitted** once the operator stepped away, and the session it created was
+the intended one: `83202f53e9cd4aa5-0091f40e47964868`, **stock game**, `agent_owned: true`, running on the i9
+(the emulator is the worker's `gBox Dolphin`, pid 8568, window
+`Dolphin 2609 | JIT64 SC | Vulkan | HLE | Phantasy Star Online Episode I & II Plus (GPOE8P)`).
+
+**What works:**
+
+* **`read_memory` works on the i9 session**: `pso_boot_walk.state(reader)` returned `mode 0, floor 0, episode 1, no player`
+  at the attract loop, and later `mode 1` (the title menu) - so every RAM-based checkpoint and CP9's seed read are possible
+  on this plane;
+* `win_bring_to_front(8568)` succeeds (`True`), so the window can be raised;
+* the input API **accepts** presses (`POST /api/sessions/<sid>/input` -> `{"queued": 1}`) for both the `agent` and the
+  `autoplay` actor.
+
+**What does not work:** the presses **do not reach the game**. `mode` stayed `1` through START, A and D-pad-down presses with
+the window focused. The reason is in the tree: `gbox/pso_coop.py` drives input through the **worker's native
+controller** (`controller`/`inputs` inside the adapter), not through the HTTP `/input` relay, and it explicitly handles the
+"game window is not in the foreground" error from `adapters.py` ("must be active to send emulator input"). The HTTP relay
+is `padstate`, which is a keyboard-injection path bound to a **pad configuration** - and this session was launched with
+`"pad": ""`, i.e. no pad spec.
+
+**So CP4's next attempt needs one of:** a launch with a `pad` binding (so `padstate` has a map to inject through), or the
+worker-side input path (`autoplay` tool / `controller` in the worker), which is what the lane's own coop code uses. The
+driver (`pso_boot.py`) reads state correctly and presses through the relay; only the delivery half is missing.
+
+**The session was stopped** (job `3f0dea8b822d4e75`, `succeeded`, `ended: true`), `/api/sessions` is empty, and the i9 is
+clean. One fix was made to the driver on the way: `Reader.read()` did not exist, so `pso_ram.player()` crashed - the
+checked-out tool now carries it (`pso_ram`'s reader protocol).

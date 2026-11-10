@@ -105,6 +105,10 @@ class Reader:
     def bytes(self, address: int, length: int) -> bytes:
         return self.plane.read_memory(self.sid, address, length)
 
+    def read(self, address: int, length: int) -> bytes:
+        # pso_ram's reader protocol is reader.read(addr, n); pso_boot_walk.state() goes through it.
+        return self.bytes(address, length)
+
     def u8(self, address: int) -> int:
         data = self.bytes(address, 1)
         return data[0] if data else 0
