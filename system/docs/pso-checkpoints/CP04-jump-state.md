@@ -78,3 +78,21 @@ walk are ready; the moment the gate opens, `launch` then `walk` then `save-state
 
 Jobs measured: `93f4fc790d9a4ba0` (queued 104 s, cancelled), `11b64271c58d4be2` (admission_wait = CPU 82.6 %, cancelled),
 `8d9a2df2aff046f6` (admission_wait = waiting for five minutes without operator input, cancelled).
+
+## Round 57: the queue-and-wait attempt, and why the window closed
+
+At 16:04 the operator's `idle_seconds` read **188.7** (3.1 min, stepping away) and the CPU was **60 %** - one minute short of
+the five-minute gate. A launch was queued (`fda9e1b1d19b4151`) and polled for 305 s: it stayed queued with
+`"Waiting for five minutes without operator input."`, and when the poll ended the worker reported `idle_seconds = 29.3` -
+**the operator had come back**, resetting the clock. The job was cancelled (`state: failed`), no session is running.
+
+So the gate is evaluated per claim, and a queued launch does **not** accumulate idle time of its own: it needs the operator
+to stay away for five continuous minutes *while it is queued or above it*. The practical recipe for CP4 is therefore:
+
+1. when `idle_seconds` is already **>= 300** (not "approaching"), queue the launch and poll;
+2. keep CPU under 70 % in the same window;
+3. the moment the session appears, run `python system/tools/pso_boot.py walk` (the boot walk is ready), then
+   `save-state` and `install-jumpstates`.
+
+Nothing needs changing in the code for this; it is a timing rule, and it is now recorded instead of being discovered again.
+Jobs at this point: `fda9e1b1d19b4151` cancelled, no session, no queue.
