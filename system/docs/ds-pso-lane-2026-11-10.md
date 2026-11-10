@@ -159,10 +159,95 @@ pass except the one pre-existing `test_pso_enemy` failure in §3.
    (`60fa7646...`). `pso_ragol_unlock.OWNED_EXECUTABLE_SIZE = 5236992` is correct for its own build, not a
    typo - checked against the owned ISO. Address work for Return To Ragol has to be re-derived.
 
+## Round 2 (2026-11-10, later) — P1 started live: the boot-screen id is RAM-readable
+
+The blocker of record is that the campaign "never leaves the title on its own: it does not press Start at PRESS START
+... with the screen read from RAM (the menu state bytes), not from frames". This round found the menu state byte and
+drove the first press from it, in a live session.
+
+### The live session
+
+- gBox control plane on the i9 at `http://127.0.0.1:8765` (started from this checkout: `python -m gbox --config
+  gbox.toml serve --worker`), worker `i9-NUC` `7246f3becd6f47b7` online.
+- `POST /api/games/436e0bb84d5337d1/launch?node=7246f3becd6f47b7` → job `ac1aab64c26240b9` → session
+  **`7246f3becd6f47b7-ac1aab64c26240b9`**, `gBox Dolphin` 2609, JIT64 SC / Vulkan / HLE, disc `GPOE8P`.
+- Note for next time: `debug=true` is **Linux-gated** (`require_os: linux`, so a Windows worker never claims it), and
+  it is not needed — the Windows Dolphin adapter always sets `Dolphin.General.GDBPort` and builds `DolphinProcMem`, so
+  a plain launch on the i9 has `read_memory`/`write_memory`.
+
+### `gbox.pso_ram` proven against a real session
+
+Read through the read-only `read_memory` RPC (the reply is a hex string; `address` must be a **decimal int**, not
+`0x…`). At the title/attract state: `PHASE 0x804FE120 = 10`, `FLOOR 0x805D5FC0 = 0`, `EPISODE = 0`,
+`TRAVELLING = 0`, the four player slots `0`, `ENTITY_TABLE = 0`. The map reads cleanly and rejects nothing, which is
+the first live confirmation of round 1's `pso_ram.py`.
+
+### The boot-screen id (new, and the thing P1 needs)
+
+`0x80516303` is a **u8 boot-screen id**; `0x805145F7` mirrors it (equal in every sample, so a read can be refused when
+they disagree). Values proven by driving transitions and reading the result back:
+
+| id | screen | how it was established |
+|---|---|---|
+| **3** | **PRESS START** | the title with the literal "PRESS START" text (`p1-seq-11-start.jpg`) |
+| **1** | the title main menu (ONLINE GAME / OFFLINE GAME / OPTIONS / WEBSITE) | `p1-d-now2.jpg` |
+| **9** | the ONLINE GAME submenu ("Online Game" / "Options" tabs) | `p1-seq-8-a.jpg` |
+| 0 | transient (unset, or a fade) | seen between screens |
+| 4 | the title with its menu closed | seen before any press |
+
+The decisive transition, reproduced **three times in a row**: at `3`, a `start` press takes the id to `1`.
+
+**`PHASE` at `0x804FE120` does not distinguish the title from the menus** — it read `0` in both. That is why the old
+bot sat on the title: the only "menu" signal the tree had was frames, and the frames path is not RAM state. This round
+also confirmed that `PHASE` cycles on its own at the title (`10` attract → `9` → `0`), so a bot keyed on it alone
+cannot tell "attract" from "menu".
+
+### New module `gbox.pso_menu_walk.py` (+ `tests/test_pso_menu_walk.py`, 7 tests)
+
+- `screen(reader)`, `describe(reader)` — the id, its name, and whether the game is at PRESS START / in the main menu.
+  `screen()` **refuses a torn read** when the id and its mirror disagree.
+- `press_start(reader, press)` — the first P1 step. It refuses to press START on any screen that is not PRESS START
+  (pressing START in a menu confirms the highlighted item, which is how the walk lost its place during this round), it
+  presses once, it waits for the id to move, and it reports the trace with `ok` only when the main menu was reached.
+- `MAIN_MENU_ITEMS` records the menu order; the cursor index variable is **not** identified yet.
+
+Live, through the module: `describe` read `{"screen": 1, "name": "main_menu"}` and `press_start` correctly did
+nothing (`from_press_start: false`), and in the PRESS START state the same call took `3 → 1`.
+
+`gbox/pso_ram.py` gained `BOOT_SCREEN`, `BOOT_SCREEN_MIRROR` and `boot_screen(reader)`, so the RAM map stays in one
+place.
+
+### What went wrong, and what it means for P1
+
+1. **Frames are not a usable feedback loop here.** `/api/sessions/{sid}/frame.jpg` serves the last still a worker
+   uploaded, and with no viewer attached that still never refreshes (two reads 2 s apart came back byte-identical while
+   the game was animating). `gbox.remote_desktop.window_still(pid)` grabs a fresh window image on this machine and is
+   what the round used for the few visual confirmations. P1 must not depend on frames at all — the guide says so, and
+   the mechanics agree.
+2. **A single-byte before/after diff is mostly noise.** `0x80506274` looked exactly like the cursor (it went 3 → 1 on
+   one `dup` press) and is a logo counter: polled with no input it oscillates 3/1. The screen id was found with
+   constancy-filtered whole-RAM snapshots (4 samples, 24 MB each, 13.8 s; 87.7 % of RAM constant within 0.4 s), and
+   then only accepted because driving START moved it and driving it back did not.
+3. **The virtual-pad input channel stopped taking effect** after roughly twenty presses in that session: the game
+   kept animating and the RAM still read, but `dup`/`ddown`/`a`/`b` no longer changed anything, and an explicit
+   all-keys-up release did not recover it. Whether that is the worker's input pump, a stuck ViGEm report or PSO
+   ignoring a pad it saw hold a button is **unresolved**. The next round's walk must therefore assert every step from
+   RAM and re-assert/release the pad, instead of assuming a press landed. This is exactly the failure mode the guide
+   warns about ("a dead autobot looks like a standing character").
+
+### Not done
+
+The rest of P1 — the offline character/file screens, Pioneer 2, the Hunter's Guild, Forest 1, and both players — is
+not walked. The cursor variable inside a menu is not identified, only the screen id. So P1 is **in progress**, not
+accepted: the accept test is three cold launches reaching Forest 1 with both players, and this round reached the
+title main menu from PRESS START by a RAM-decided press, reproducibly.
+
 ## 7. Next
 
-1. P1: boot to the field by real presses, reading state only through `gbox.pso_ram`; three cold launches to Forest 1
-   with both players. This is P2b's accept condition and unblocks P6a's in-game proof and all of P3-P5.
-2. Then: P6a accepted (moved object seen in game), P6b (the editor page over `pso_areas` + `pso_map_write`).
-3. P2b: decompile `FUN_80207E88` and locate the `TObj*` registry table.
-4. P7a start: fix the Dreamcast-era paths in `pso_player`/`pso_enemy` so the player-model writer can run on this disc.
+1. P1: the offline branch. From the main menu, identify the cursor variable (constancy-filtered diff across a
+   `ddown` press, with the menu held open), then OFFLINE GAME -> the character/file screens -> Pioneer 2 -> the
+   Hunter's Guild telepipe -> Forest 1, asserting every transition from `gbox.pso_menu_walk.screen` and never from a
+   frame.
+2. Fix or characterise the input stall above before trusting any walk: a press that lands and a press that silently
+   does not look identical from RAM alone unless the walk checks the expected screen change.
+3. Then P6a's in-game proof (the moved object seen in Forest 1) and P6b (the editor page).

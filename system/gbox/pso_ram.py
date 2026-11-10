@@ -57,6 +57,11 @@ PLAYER_SLOTS = 0x8050EA10
 PLAYER_SLOTS_COUNT = 4
 ENTITY_TABLE = 0x8050D460
 
+# The boot-screen id (u8) and its mirror: 3 = PRESS START, 1 = the title main menu, 9 = the ONLINE GAME submenu,
+# 0 = transient, 4 = the title with its menu closed. Proven live; see gbox.pso_menu_walk for the transitions.
+BOOT_SCREEN = 0x80516303
+BOOT_SCREEN_MIRROR = 0x805145F7
+
 FLOOR_ITEM_TABLE = 0x805D541C
 FLOOR_ITEM_COUNTS = 0x805D5420
 FLOOR_ITEM_RECORD = 36
@@ -162,6 +167,12 @@ class Reader:
 
 
 # ------------------------------------------------------------------------------------------------ readers
+
+def boot_screen(reader) -> int:
+    """The boot-screen id: 3 PRESS START, 1 the title main menu, 9 the ONLINE GAME submenu, 0 transient,
+    4 the title with its menu closed. See :mod:`gbox.pso_menu_walk` for the proven transitions."""
+    return reader.u8(BOOT_SCREEN)
+
 
 def phase(reader) -> int:
     """The game phase/state-machine byte (10 -> 3 -> 9 through a cold boot)."""
