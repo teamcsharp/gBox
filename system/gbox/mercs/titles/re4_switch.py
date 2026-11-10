@@ -889,6 +889,12 @@ FIRE_GAP_S = 0.25                        # between trigger taps (a tap is down +
 # is how a bot gets grabbed), steps in to MELEE_REACH_MM and taps Y every MELEE_TAP_S while the window lasts. A Y
 # with no prompt does nothing. Distances in mm.
 MELEE = True
+# The turn sign, checked live by the fight itself (2026-11-10: the stock round turned 4,365 ticks for 19 raises, the
+# shape of a turn that runs away from its target): every turn tick compares the bearing error with the last one on
+# the same Ganado; TURN_LEARN_N samples with the error growing at least 3x as often as it shrinks (+4) flip
+# TURN_SIGN - here and in re4_walk, so the walker follows - and say so in stats (turn_sign, turn_sign_flips).
+TURN_SIGN = 1                            # 1: an error > 0 turns left (the GameCube convention); -1: right
+TURN_LEARN, TURN_LEARN_N = True, 16
 MELEE_MM, MELEE_REACH_MM, MELEE_CLEAR_MM = 2500.0, 1400.0, 2000.0
 MELEE_WINDOW_S, MELEE_TAP_S, MELEE_CONE = 1.6, 0.3, 0.5
 
@@ -1028,15 +1034,13 @@ class Bot:
     def _may_fire(self, p, e, dist, snap) -> bool:
         """The operator's fire-gates, all of which must pass before a shot: controls confirmed, in range, clear line
         of sight (no wall shots), not on an own hazard (no mine standing)."""
-        if not CONTROLS_READY:
-            return False
-        if dist > ENGAGE_RANGE_CM:
-            return False
-        if not self._line_of_sight_ok(p, e, snap):
-            return False
-        if self._near_own_hazard(p, snap):
-            return False
-        return True
+        gate = ("controls" if not CONTROLS_READY else "range" if dist > ENGAGE_RANGE_CM
+                else "sight" if not self._line_of_sight_ok(p, e, snap) else "hazard" if self._near_own_hazard(p, snap)
+                else None)
+        if gate is not None:
+            key = "hold_" + gate
+            self.stats[key] = self.stats.get(key, 0) + 1
+        return gate is None
 
     # --- the choice ---
     def _choose(self, live, now):
@@ -1059,12 +1063,31 @@ class Bot:
         return min(near, key=lambda t: t[0])
 
     def _turn(self, err: float) -> set:
-        # an error > 0 turns LEFT: the GameCube RE4 / RE5 convention (measured there; the Switch world is the GameCube's
-        # data - re4_switch_nav), the one re4_walk uses. The first cut had it the other way round, unverified.
-        return {TURN["left"] if err > 0 else TURN["right"]}
+        # an error > 0 turns LEFT with TURN_SIGN 1: the GameCube RE4 / RE5 convention (the Switch world is the
+        # GameCube's data - re4_switch_nav), the one re4_walk uses; _learn_turn checks it on every turn tick.
+        return {TURN["left"] if (err > 0) == (TURN_SIGN > 0) else TURN["right"]}
 
     def _aim_turn(self, err: float) -> set:
-        return {AIM_TURN["left"] if err > 0 else AIM_TURN["right"]}
+        return {AIM_TURN["left"] if (err > 0) == (TURN_SIGN > 0) else AIM_TURN["right"]}
+
+    def _learn_turn(self, key, err: float, now: float) -> None:
+        """The turn sign's live check (TURN_LEARN): does the error on the same Ganado shrink between turn ticks?"""
+        last = self.__dict__.get("_turn_seen")
+        self._turn_seen = (key, err, now)
+        if not last or last[0] != key or not 0 < now - last[2] <= 0.6 or max(abs(err), abs(last[1])) > 2.8:
+            return
+        d = abs(err) - abs(last[1])
+        name = "turn_converge" if d < -0.02 else "turn_diverge" if d > 0.02 else None
+        if name is None:
+            return
+        self.stats[name] = self.stats.get(name, 0) + 1
+        self._turn_tally = t = self.__dict__.get("_turn_tally") or {"c": 0, "v": 0}
+        t["c" if name == "turn_converge" else "v"] += 1
+        if TURN_LEARN and t["c"] + t["v"] >= TURN_LEARN_N and t["v"] >= 3 * t["c"] + 4:
+            flip_turn_sign(self)
+            t["c"] = t["v"] = 0
+        elif t["c"] + t["v"] >= 4 * TURN_LEARN_N:
+            t["c"] = t["v"] = 0                          # a fresh window: the evidence stays recent
 
     def _command(self, now):
         if self.reader is None:
@@ -1121,6 +1144,7 @@ class Bot:
             self.target = e.get("ptr")
             if abs(err) > RAISE_TOL:
                 self.stats["turns"] += 1
+                self._learn_turn(self.target, err, now)
                 self.doing = "turn"
                 return {"hold": self._turn(err)}
             if not self._may_fire(p, e, dist, snap):
@@ -1251,6 +1275,22 @@ class Bot:
 
     def save(self):
         pass
+
+
+def flip_turn_sign(bot=None) -> int:
+    """TURN_SIGN flipped (the fight's turns, the aim's, and re4_walk's for every walker made from now on and the
+    bot's own). Returns the new sign."""
+    global TURN_SIGN
+    TURN_SIGN = -TURN_SIGN
+    re4_walk.TURN_POSITIVE, re4_walk.TURN_NEGATIVE = re4_walk.TURN_NEGATIVE, re4_walk.TURN_POSITIVE
+    w = getattr(bot, "walker", None)
+    if w is not None and hasattr(w, "turn_pos"):
+        w.turn_pos, w.turn_neg = w.turn_neg, w.turn_pos
+    st = getattr(bot, "stats", None)
+    if isinstance(st, dict):
+        st["turn_sign_flips"] = st.get("turn_sign_flips", 0) + 1
+        st["turn_sign"] = "error > 0 turns " + ("left" if TURN_SIGN > 0 else "right")
+    return TURN_SIGN
 
 
 DRIVER = RE4Switch

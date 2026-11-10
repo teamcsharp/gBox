@@ -282,3 +282,41 @@ def test_the_melee_can_be_turned_off(monkeypatch):
     b.tick(snap([((0.0, 0.0, 200.0), 400)]), now=0.0)
     b.tick(snap([((0.0, 0.0, 200.0), 300)]), now=0.1)
     assert b.doing != "melee"
+
+
+def test_a_turn_that_runs_away_from_its_target_flips_the_sign(monkeypatch):
+    """The live check: the error on the same Ganado growing tick after tick flips TURN_SIGN (and the walker's)."""
+    from gbox.mercs.titles import re4_walk
+    monkeypatch.setattr(D, "TURN_SIGN", 1)
+    monkeypatch.setattr(re4_walk, "TURN_POSITIVE", "lleft")
+    monkeypatch.setattr(re4_walk, "TURN_NEGATIVE", "lright")
+    b = bot()
+    first = b.tick(snap([((500.0, 0.0, 0.0), 400)], rot=0.0), now=0.0)["hold"]
+    rot = 0.0
+    for i in range(1, D.TURN_LEARN_N + 6):
+        rot -= 0.05                                         # his facing runs away from the Ganado at +x
+        b.tick(snap([((500.0, 0.0, 0.0), 400)], rot=rot), now=0.1 * i)
+        if b.stats.get("turn_sign_flips"):
+            break
+    assert b.stats["turn_sign_flips"] == 1 and D.TURN_SIGN == -1 and b.stats["turn_diverge"] >= 12
+    assert re4_walk.TURN_POSITIVE == "lright"
+    again = bot().tick(snap([((500.0, 0.0, 0.0), 400)], rot=0.0), now=0.0)["hold"]
+    assert again != first, "the flipped sign turns the other way"
+
+
+def test_a_turn_that_closes_never_flips(monkeypatch):
+    monkeypatch.setattr(D, "TURN_SIGN", 1)
+    b = bot()
+    err = 1.5
+    for i in range(40):
+        b.tick(snap([((500.0 * math.sin(err), 0.0, 500.0 * math.cos(err)), 400)]), now=0.1 * i)
+        err = max(err - 0.03, D.RAISE_TOL + 0.05)
+    assert not b.stats.get("turn_sign_flips") and D.TURN_SIGN == 1
+
+
+def test_holds_say_which_gate_stopped_the_shot():
+    b = bot()
+    s = snap([((0.0, 0.0, 500.0), 400)], nav=Mesh(clear=False))
+    b.tick(s, now=1.0)
+    b.tick(s, now=1.0 + D.AIM_READY_S)
+    assert b.stats.get("hold_sight", 0) >= 1
