@@ -75,3 +75,34 @@ the truncation refusal, and the real disc (141 rooms parsed, the measured `00`/`
 (141 rooms, origins and sizes measured). *"a test that a known door entity lands on a section boundary"* - not yet: that
 needs the area's placement set joined to these rectangles, which is a small follow-up on this branch (the entities come from
 `pso_setdata`'s records and the join is a point-in-rectangle test).
+
+## Round 77: the join done - rooms share the placements' space, and the footprints can nest
+
+CP8's second half ("a known door entity lands on a section boundary") is now measured, and it needed two corrections to
+the obvious model.
+
+**The rooms share the placement set's coordinate space.** An area's set spans about +-2000 units
+(`map_ancient01_00_00o.dat`: x -2134..291, z -1976..555) while a room's footprint is 20-300 units, so a per-room offset
+looked necessary (CP8 step 3). A grid search over translations (+-2500 in 50-unit steps) finds **no better offset than
+zero** - the footprints already sit in the set's space, so the join is a plain point-in-rectangle test.
+
+**The footprints are not a partition: rooms can nest.** Room `00` is 200 x 300 at the origin; room `03` is 20 x 40 at
+(-65, 0) and lies **entirely inside room 00**. The other three rooms (01 at x 100..125, 02 at z -175..-150, 04 at
+x 150..175 / z 55..95) are outside room 00 and disjoint from each other. (A naive pairwise-disjointness assertion failed on
+exactly this, and on a 7.6e-06 float artefact where room 00 ends at 100.00000762939453 and room 01 starts at 100.0 - the
+test now allows a millimetre tolerance and asserts the *measured* nesting.)
+
+**The join result:** of the 234 records in `map_ancient01_00_00o.dat`, **126 fall inside exactly one room**, **0 inside
+two** (nothing lands in the 03-in-00 overlap), and **108 inside none** - the set is area-wide, and the room rectangles
+select their parts of it.
+
+**New in `gbox/pso_rooms.py`:** `contains(quad, x, z, margin)`, `translate(quad, dx, dz)`, `count_inside(quad, points)` and
+`best_offset(quad, points, step, span)` (the coarse per-room offset solve, which is a no-op on this data and stays as the
+tool for rooms where it is not).
+
+**Tests:** `tests/test_pso_rooms.py` **6 passed** - the footprint/slope/refusal cases, the real 141 rooms with 12 sloped, and
+the join test asserting the single measured nesting (`03` in `00`) plus the 126/0/108 classification.
+
+**CP8 accept status:** the reader that lists rooms with their origins ✓, and the entity-to-room join ✓ (measured on the
+GameCube ancient area, since Forest 1 has no GC `r.rel`). The Dreamcast `r.rel` section table itself remains unavailable
+(CHD v4, round 71).

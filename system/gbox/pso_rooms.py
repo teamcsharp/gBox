@@ -58,3 +58,40 @@ def rooms(paths: list[str], read) -> list[dict]:
             continue
         out.append({"name": name, "origin": quad["origin"], "size": quad["size"]})
     return out
+
+
+# ---------------------------------------------------------------- joining placements to rooms
+def contains(quad: dict, x: float, z: float, *, margin: float = 0.0) -> bool:
+    """Is (x, z) inside the room's footprint (optionally with a margin)?"""
+    return (quad["min"][0] - margin <= x <= quad["max"][0] + margin
+            and quad["min"][2] - margin <= z <= quad["max"][2] + margin)
+
+
+def translate(quad: dict, dx: float, dz: float) -> dict:
+    """The footprint moved by (dx, dz) - the room's placement in the area's coordinates."""
+    def move(p):
+        return (p[0] + dx, p[1], p[2] + dz)
+    return {"corners": [move(c) for c in quad["corners"]], "origin": move(quad["origin"]),
+            "size": quad["size"], "min": move(quad["min"]), "max": move(quad["max"]),
+            "y": quad["y"], "flat": quad["flat"], "slope": quad["slope"]}
+
+
+def count_inside(quad: dict, points: list[tuple], *, margin: float = 0.0) -> int:
+    return sum(1 for x, z in points if contains(quad, x, z, margin=margin))
+
+
+def best_offset(quad: dict, points: list[tuple], *, step: float = 25.0, span: float = 2500.0) -> dict:
+    """The translation that puts the most points inside the footprint.
+
+    Measured on the real data: an area's placement set spans about +-2000 units while a room's footprint is 20-300 units,
+    so the room sits somewhere in the area and needs its own offset (CP8 step 3's per-room transform). This is the coarse
+    version of that solve: grid search, returning {dx, dz, inside}.
+    """
+    best = {"dx": 0.0, "dz": 0.0, "inside": count_inside(quad, points)}
+    n = int(span / step)
+    for i in range(-n, n + 1):
+        for j in range(-n, n + 1):
+            inside = count_inside(translate(quad, i * step, j * step), points)
+            if inside > best["inside"]:
+                best = {"dx": i * step, "dz": j * step, "inside": inside}
+    return best
