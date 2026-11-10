@@ -675,3 +675,206 @@ Stage bosses [S2][S3]:
 | R1 | `system/gbox/mercs/titles/re5_switch_brain.py` (`PS3_TO_SWITCH`)<br>`system/gbox/mercs/titles/re5_switch_prompt.py` (`KEYS`; `LABEL_TIME_BONUS = 112`, "press:y")<br>`system/gbox/mercs/titles/re5_switch.py` (`MASH` "Resuscitate", A; `WIGGLE` "Break free"; knife L + ZR)<br>`system/docs/research/re5-switch-ram.md` (United menu path, No Mercy enemy count 40-47, live Chris (BSAA) loadout) |
 | R2 | `system/gbox/mercs/titles/re4_switch.py` (`AIM_BTN, FIRE_BTN, RELOAD_BTN = "zl", "zr", "r"`; aim and fire live-confirmed 2026-11-04) |
 | R3 | `system/docs/mercenaries_re5_meta.md`, the earlier deep meta doc: RE5 Reunion section 2, RE4 section 7, and its own source list (stv-tribute, kouryakutsushin, RE5 Zone, residentevilforums t3924, TASVideos, Cyberscore) |
+
+---
+
+## 9. What the RE5 bot does (RE5 Switch, United / No Mercy)
+
+Added 2026-11-10 for the operator's request of 2026-11-09: the bot should use each character's special moves and
+finishers "for added entertainment value ... we don't want the bot standing around, losing the combo, getting lost or
+dying while having them do these moves".
+
+The code is `system/gbox/mercs/titles/re5_specials.py`. `re5_switch.Bot` drives it through `_special(...)`, at seven
+points: `_tick` (observe, the prompt hooks), `_decide` (drive, consider), `_aim_h`, the camera pitch guards, `tick`
+(post) and `_new_round`. The tests are in `system/tests/test_re5_specials.py`.
+
+**Nothing in this section was played in the game.** The tables come from sections 3 and 6.2, and every behaviour was
+tested only on synthetic snapshots. The rows in 9.4 are what has to be measured live.
+
+### 9.1 How one special runs
+
+1. **Aim.** The fight picks its target by its own rules (threat first, the combo push and so on). A special starts on
+   that target only when every gate in 9.2 passes. `Bot._aim_h` then returns the plan's site: the head (160 cm) or
+   the thighs (72 cm, the leg-stun zone in `brain.body`). That height feeds both the stick aim and the RAM aim feedback
+   (`re5_switch_aim.apply`). Three timing rules apply to the trigger:
+   - It waits up to `SITE_PATIENCE_S` (0.6 s) while the dot is on his body short of the site.
+   - It then fires one pull of `SITE_PULL_S` (0.05 s) and waits up to `HIT_WINDOW_S` (0.5 s) for the hit. A held
+     trigger repeats, at up to 25 shots/s with `fire_rate`, and would kill him before any stagger.
+   - With no stagger within `SETUP_MAX_S` (2 s), the special ends and the gun finishes him.
+2. **Stagger.** A hit that leaves him alive, with the dot at the site, counts as the stagger. `STAGGER_MOTIONS` is
+   empty until the enemy stagger motions are measured, so the hit alone is enough for now. The game's prompt is the
+   confirmation.
+3. **Rush.** The gun goes down. He runs (B) to the approach point and walks the last 2.5 m, for at most `STUN_S`
+   (2.2 s, the PS3 bot's stun measure):
+   - For a rear move, the approach point is first 1.3 m out to the Majini's side (while the player is within 75 degrees
+     of his front), then 0.9 m behind him.
+   - For a head move, it is the Majini himself.
+   - The Majini's facing comes from his heading, read from RAM at +0x70 when the four floats there form a unit
+     quaternion. That offset is unverified on enemies. Otherwise the bot assumes he faces the player.
+
+   The rush runs ahead of the crowd fire, which would otherwise shoot the staggered Majini dead from 2 m.
+4. **The press.** The bot's existing prompt rule (`Bot._prompt`) presses the prompt the moment it shows, with the
+   prompt's own keys (Y). The specials layer only attributes the press to a move:
+   - a head site gives the head move;
+   - a leg site gives the rear leg move when the player stands 100 degrees or more round from the Majini's front, and
+     the front leg move otherwise.
+
+   `REAR_DEFER_S`, which is 0 (off), can hold a front prompt for up to that long while he gets behind. It is off
+   because of the operator's standing rule of 2026-10-28: "resolve any QTE events that ever pop up ... always".
+5. **The kill, or the follow-up.** The move is credited (a completion) when the target dies within `COMPLETE_S`
+   (2.5 s) of the press and no trigger was pulled after it. A trigger pull makes it "finished by the gun".
+   - The kills are the round's kill counter over that window, so a multi-kill counts every kill: Rebecca's Flame Spray,
+     or Excella's exploding corpse.
+   - When he survives a move, the bot walks onto him for up to `GROUND_S` (2 s) for the grounded prompt (research row
+     #5), and that grounded move is its own special.
+6. **Bosses.** A Majini with 3,000 HP or more gets no setup, because his stagger states (Kneel, Block, Recovering) are
+   not mapped on Switch. His prompts are still pressed by the prompt rule and counted as "boss melee". After a second
+   melee within 8 s on one with 7,000 HP or more (an Executioner or a Chainsaw Majini), he steps back facing the boss
+   for `BOSS_STEP_S` (1 s), starting 0.8 s after the press. That covers the Executioner's axe answer and the
+   Chainsaw's berserk swing (5.2).
+7. **Opportunistic prompts.** A melee prompt that he did not set up (a Majini staggered by ordinary fire, at arm's
+   length) is counted as well, as "<character> melee (label N)". These are the rows that map the labels.
+
+### 9.2 The schedule and the gates
+
+| Rule | Value | Why |
+|---|---|---|
+| Start only right after a kill | more than `COMBO_WINDOW_S - KILL_PACE_S` = 7.0 s of the combo window left, or no combo running | The doctrine's clock (`core/doctrine.py`): from 3 s after a kill, the next kill is owed and the combo push starts |
+| Drop it when the window runs short | under `ABORT_LEFT_S` (3.0 s) and not yet pressed: the gun finishes him | "never trade the combo for a melee" (6.2). A pressed move is never stopped |
+| Not while held, dying, healing or under the operator's hand | motion 100/106/107/113/114, health 1, `Bot.healing`, `operator_control` | the SS campaign's top death cause: held in the crowd (`docs/research/re5-ss-campaign.md` section 5) |
+| His health | under 40 %: no special | 70 % of deaths were at 3 HP or less 10 s before |
+| Isolated target | no other Majini within 3 m of him or of the target, and at most 2 more within 6 m of him | 87 % of the health he loses goes with 3+ within 6 m. In a crowd the crowd fire keeps the tick |
+| Not on | a boss, a Majini winding up (motion 80/81/60/91 or attack flag 0x40), a lit dynamite carrier | 5.2; the bot's wind-up and dynamite rules |
+| Range and floor | 3-9 m, his own floor (within 1.2 m in height) | nearer than 3 m is a grab threat (the fight's chest rule); farther is a long run |
+| Weapon in hand | handgun, automatic, rifle or magnum (one shot where it is aimed) | a shotgun's spread, a bow, eggs or launchers place no site shot. Their own controllers fight, and their prompts are still pressed and counted |
+| Cephalo risk | a head plan on Missile Area, or on Public Assembly against a 700-HP (female) Majini, becomes the leg plan | [S52][S49] |
+| Not again too soon | 1.5 s between specials; a Majini whose special failed is left alone for 8 s | no ping-pong on one Majini |
+| Never standing | the aim is the fight's own (ZL held); the rush, the follow-up and the dash move him every tick | the operator's rule; `NEVER_STAND` still backs it |
+
+### 9.3 Per character
+
+The moves are the research's top-ranked ones (6.2): row #1 for the rear leg-stun characters and row #2 for the head
+ones. In United, every Chris and Sheva costume plays the base set [S4], so a costume changes only the guns in hand.
+The weapon gate applies; for example, Sheva (Tribal) carries no laser gun.
+
+| Character (costumes) | Stagger shot | Move wanted (kills a regular Majini?) | In front instead | If he survives | Notes |
+|---|---|---|---|---|---|
+| Chris (BSAA, Safari, STARS, Warrior, Heavy Metal) | thighs | **Neckbreaker**, from behind (instant kill, no Plaga) | Uppercut 400 | Stomp 600 (head critical) | Heavy Metal's Gatling is an automatic: site shots work |
+| Sheva (BSAA, Clubbin', Tribal, Business, Fairy Tale) | thighs | **Throat Slit**, from behind (instant kill) | Somersault 350 | Impale 800 | Tribal: no laser gun, so no setup. Her prompts are still counted |
+| Jill (BSAA, Battle Suit) | thighs | **Head Grab**, from behind (instant kill) | Sweep Kick 350 | Double Knee Drop 1,200 (kills) | |
+| Josh | thighs | **Suplex**, from behind (instant kill) | Power Kick 400 | Elbow Drop 1,000 | Reunion values; whether United keeps them is UNCONFIRMED |
+| Excella | thighs | **First Aid**, from behind (instant kill; the corpse explodes, so every kill is counted) | Humiliate 800 | Heel Stomp 500 x4 | |
+| Wesker (Midnight, STARS) | head | **Cobra Strike** 1,200 (kills any regular Majini) | (no side) | Windfall 600 | Missile Area and Public Assembly's female Majini: thighs, then Mustang Kick 500 from behind or Tiger Uppercut 400. Dash and Knee Cannon behind `DASH` (9.5) |
+| Rebecca | head | **Flame Spray** 900 (800 [S19]; several at once) | (no side) | Kick 500 | Cephalo risk: thighs, then Head Cracker 400 or Jump Hit 300 |
+| Barry | head | **Headbutt** 400 (the research's "high critical"; not a kill by its damage) | (no side) | **Miranda Rights** 5,000 (1,200 [S18]) | Cephalo risk: thighs, then Gun Bash 600-800 or Burton Boot 400. If the Headbutt rarely kills live, `PLANS["Barry"] = REAR_KILL` (thighs, then Gun Bash) is the alternative to measure |
+| Any boss | none | his chain's prompts, pressed by the prompt rule ("boss melee") | | | Steps away after the second melee on an Executioner or Chainsaw Majini |
+
+The character comes from the player object's RAM class (`uPl03Wesker...`: `PLAYER_FAMILIES`). The costume comes from
+the round's name (stats `character`, else `queued_selection`), and a name that disagrees with the class is not used.
+
+### 9.4 What to check live (per move and per character)
+
+The stats keys are on the bot's live stats (`/api/autoplay/telemetry/<sid>`). The `round_specials_*` counters go into
+every Notebook row through `RE5Switch.round_counters`.
+
+| Stats key | What it is | What to look for |
+|---|---|---|
+| `specials_moves` | per move ("Wesker Cobra Strike", "Chris Neckbreaker", "Chris melee (label 47)", ...): `attempts`, `presses`, `completions` (pressed, and the target died with no trigger since), `kills`, `s` (seconds spent) | completions / attempts per move. Attempts that die "before a stagger" or with "no prompt" show whether the site shots stagger |
+| `specials_by_character` | per character: `attempts`, `presses`, `completions`, `kills`, `played_s`, `per_min` (moves pressed per minute of play), `completions_per_min` | the operator's goal is visible moves: a few a minute per character, with no rise in deaths or combo breaks |
+| `specials_per_min`, `specials_completions_per_min`, `specials_summary`, `specials_status`, `specials_last` | the current character's rates, a one-line summary, what the layer does now (or why not), the last special's outcome | `specials_status` "idle: ..." names the gate holding it back |
+| `specials_abort_reasons_text` | why specials ended unpressed | a high "the gun killed him before a stagger" means rapid fire kills first. "no prompt within the 2.2 s stun" means no stagger, or the prompt is out of reach. "another Majini ..." means the crowd |
+| `specials_rushes`, `specials_presses`, `specials_rear`, `specials_ground` | stagger rushes, moves pressed, rear moves, grounded follow-ups | presses / rushes (does the stagger give a prompt?); rear / presses (try `REAR_DEFER_S` 0.5 if rear moves are rare) |
+| `specials_site_waits`, `specials_site_holds` | trigger ticks held for the site (at most 0.6 s) or for the stagger (at most 0.5 s) | that the doctrine's `doctrine_passive_s` does not rise |
+| `specials_labels_text` | the prompt labels seen per move position (`head`, `leg_back`, `leg_front`, `grounded`, `boss`, `unknown`) | **the label map** (9.6) |
+| `specials_motions_text` | the target's motion byte after a head hit, after a leg hit, and when the prompt showed | fills `STAGGER_MOTIONS` (head / leg) |
+| `specials_boss_melees`, `specials_boss_steps` | boss prompts pressed; steps away | whether `hits_taken` still rises right after a boss's second melee |
+| `specials_dash_attempts`, `specials_dash_seen`, `specials_dash_status`, `specials_dash_hp_cost` | Wesker's dash (with `DASH` on) | 9.5 |
+| `specials_error` | any exception inside the layer (it never stops the bot) | should stay empty |
+
+Live checks, in order:
+
+1. One round each with Wesker and with Chris. Read `specials_summary`, `specials_abort_reasons_text` and the per-move
+   `completions/attempts`.
+2. The melee labels and the stagger motions, from `specials_labels_text` and `specials_motions_text` (9.6).
+3. Whether `rot` appears on near enemies in the snapshot (the +0x70 heading). If the rear moves' labels agree with the
+   geometry's call, the heading is right.
+4. Rapid fire: the share of "the gun killed him before a stagger". If it is high, the site shot needs a weaker gun or
+   a lower `fire_rate` during setups.
+5. Each character's `per_min` and `completions_per_min`, against the round's deaths and `round_combo_breaks` before
+   and after.
+
+### 9.5 Wesker's dash and Knee Cannon (`DASH = False`)
+
+The trigger is a regular Majini dead ahead (within 10 degrees) 4-10 m away on his floor, with the stage mesh showing
+open floor between them (a wall stops the dash [S2]). His health must be 60 % or more, because the dash costs health
+and neither costume carries a First Aid Spray. The 9.2 gates apply, and dashes are at least 8 s apart.
+
+The pad sequence:
+1. The gun down.
+2. One tick of `DASH_KEYS` (the R-stick click, "rstick") with the left stick forward.
+3. The right stick steers at him.
+4. At 1.7 m, or 0.9 s after the click, one tick of `KNEE_KEYS` (ZR): the Knee Cannon.
+
+It is credited when he dies within 2.5 s with no other pull.
+
+It checks itself. Each click is verified 0.6 s later: a dash covers 2 m or more. After three clicks with no dash seen,
+it switches to `DASH_FALLBACK_KEYS` (both stick clicks), and after three more it turns off for the run
+(`specials_dash_status`). Measured each time: `specials_dash_hp_cost`, the health lost from the click to the check,
+which answers "about 15 %" [S58] against "a small amount" [S2].
+
+To test: one private Wesker round with `re5_specials.DASH = True`. Expect `specials_dash_status` "dash seen ...", the
+Knee Cannon's `completions/attempts`, and the health cost. If ZR does not fire the knee, try `KNEE_KEYS = ("y",)` [S57].
+
+### 9.6 Prompt label ids
+
+These are already in `re5_switch_prompt.py` (the sActionButton's +0x2C label):
+
+| Label | Prompt | Where |
+|---|---|---|
+| 112 | the hourglass statue ("Time bonus"), press:y | stage object, kind 1 |
+| 28 | Break free (a Majini's grab), the stick shaken | kind 0 |
+| 55 | Resuscitate (dying), A mashed | kind 2 |
+| 1 | Pick up | kind 2 |
+| 100 | Place (the proximity bomb), press:zl | kind 2 |
+| 7, 8, 9, 14, 58 | the ledges' jump down, climbs, vaults, a fence | his own actions at fixed spots, never beside a staggered Majini |
+
+Still needed (spark2 ticket #9187 maps them). Until they are mapped, the bot classifies a melee prompt as "a press
+prompt that names a living Majini, or has one on his floor within 2.5 m, and is none of the labels above":
+
+- the **head-stun melee** label (Straight, Roundhouse, High Kick, Cobra Strike, Hammer Blow, High Heel, Headbutt,
+  Flame Spray);
+- the **leg-stun front** and **leg-stun rear** labels (the rear: Neckbreaker, Throat Slit, Head Grab, Suplex, First
+  Aid). Whether the label itself tells the two apart is what `specials_labels_text` "leg_front" / "leg_back" will
+  show;
+- the **arm-stun front and rear** labels (Hook / Kick ...): not set up by the bot, but they will appear as
+  opportunistic presses;
+- the **grounded** melee label (Stomp, Impale, Double Knee Drop, Windfall, Elbow Drop, Heel Stomp, Miranda Rights,
+  Kick);
+- the **finisher** labels (front and back; on a regular Majini only in a partner chain, so for a solo bot they matter
+  on the Gatling and Giant Majini, 5.2), and the **Licker** Stab;
+- the **boss chain** prompts: the Executioner, the Chainsaw, the Gatling, the Giant and the Big Man (their Kneel, Block
+  and Recovering states, 5.2);
+- for each of these: its **kind** (0 / 2 / 3), and whether **+0x48 target** or **+0x08 owner** names the Majini. The
+  bot uses either one when it is a live enemy pointer, else the nearest within 2.5 m.
+
+### 9.7 Hot reload, and the knobs
+
+- `re5_specials.py` is a new bot module. The first deploy loads it through `re5_switch`'s reload (hot_reload:
+  "first imported by this reload"). A later change to `re5_specials.py` alone is not in the worker's start-time
+  source inventory, so the automatic reload does not see it. It needs a named reload (bot-reload with
+  `modules=["gbox.mercs.titles.re5_specials"]`) or the next service restart.
+- The bot reaches the layer through `Bot._special`. The layer is made on first use, so nothing relies on `__init__`.
+  An exception inside it is recorded in `specials_error` and never costs a tick.
+- The knobs, all in `re5_specials`:
+  - `SPECIALS` turns the layer on or off;
+  - `LEG_STUNS` controls the thigh shots (off: the leg-plan characters use their head move);
+  - `DASH`, `DASH_KEYS`, `DASH_FALLBACK_KEYS` and `KNEE_KEYS` control the dash;
+  - `REAR_DEFER_S`;
+  - `PLANS` holds each character's plan;
+  - `STAGGER_MOTIONS` holds the stagger motions;
+  - the timings in 9.1 and 9.2.
+- **A conflict to watch.** On 2026-10-28 the operator disliked the gun "pointing at their feet" and leg shots, which is
+  why the bot's own aim never goes below the chest and why the camera guard exists. The leg-stun plans aim at the
+  thighs (72 cm), from 3 m or more only, so the camera stays within the guard's 10 degrees of the chest (the guard
+  takes the special's height). If it still reads as aiming down, `LEG_STUNS = False` puts every character on head
+  moves.
