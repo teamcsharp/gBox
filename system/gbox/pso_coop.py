@@ -765,6 +765,26 @@ def movement_keys(player, destination):
             4: ["ldown"], -4: ["ldown"], -1: ["lup", "lright"], -2: ["lright"], -3: ["ldown", "lright"]}[turn]
 
 
+def face_enemy_command(player, threats):
+    """A turn-only command that points the buddy's weapon at the nearest living
+    enemy in its room, or None (also None once already within ~10deg). Used when
+    a bot would otherwise hold its heading idle - station keep, a blocked attack
+    spot, or standing after drive - so its weapon visibly tracks a threat instead
+    of pointing where it last moved. Re-evaluated every tick, so the cone sweeps
+    onto the enemy before the `local_aim`/`swarm_aim` firing branch ever runs."""
+    if not threats:
+        return None
+    nearest = min(threats, key=lambda e: math.hypot(e["x"] - player["x"], e["z"] - player["z"]))
+    angle = delta(math.degrees(math.atan2(nearest["x"] - player["x"],
+                                           nearest["z"] - player["z"])),
+                  player["heading_deg"])
+    if abs(angle) < 10:
+        return None
+    return (["lleft" if angle > 0 else "lright"],
+            max(.02, min(.12, abs(angle) / 450)),
+            (nearest["x"], nearest["z"]))
+
+
 RECENTER_S = 2.0            # a pad's L reset is at most this frequent while its actor walks straight
 RECENTER_TURN_DEG = 45      # an actor turning this far since its last reset gets one immediately
 # Operator 2026-11-02: buddies play at 2x by default so a run reaches each teleporter in
@@ -1856,6 +1876,15 @@ class Controller:
             off = (px + (px - leader["x"] or SWARM_SPREAD), pz + (pz - leader["z"]))
             commands.append((slot, movement_keys(player, off), .12))
             steering[slot] = (player, off, "swarm_spread")
+        else:
+            # Station-keeping (within orbit band, no threat targeted): instead of
+            # holding the last walk heading, sweep the weapon onto the nearest
+            # living same-room enemy so the buddy visibly aims at the fight.
+            from .pso_coop_frontier import same_room_threats
+            face = face_enemy_command(player, same_room_threats(state, player))
+            if face is not None:
+                commands.append((slot, face[0], face[1]))
+                steering[slot] = (player, face[2], "swarm_face")
 
     def _force_log(self, room, reason):
         stats = getattr(self.inputs, 'stats', None)
@@ -3554,6 +3583,13 @@ class Controller:
                     if self.drive_forward(state, slot, player, now, commands, moves, steering, fallback_slots):
                         continue
             if destination is None:
+                # Idle fallback: with no move/target/forward driver this tick, still
+                # point the weapon at the nearest same-room enemy so it does not hold
+                # the heading from its last walk while a threat is in view.
+                face = face_enemy_command(player, same_room_threats(state, player))
+                if face is not None:
+                    commands.append((slot, face[0], face[1]))
+                    steering[slot] = (player, face[2], "idle_face")
                 continue
             if field_owned and nav.floor is None:
                 # Local observed defense above may attack/aim in range. Never
