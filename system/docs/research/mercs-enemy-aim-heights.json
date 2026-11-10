@@ -3597,51 +3597,5 @@
    "mesh_top_y": 1124.4,
    "mesh_min_y": -2.6
   }
- },
- "RE4": {
-  "uEm16": {
-   "name": "Ganado (villager)",
-   "status": "measured (shared humanoid skeleton)",
-   "pack": "em16.udas",
-   "bin_slot": 476,
-   "head": 172.3,
-   "chest": 156.0,
-   "shoulder": 150.8,
-   "knee": 57.5,
-   "method": "HdBin.bone_world bind pose, mm->cm; head=bone 28, chest=bone 3, shoulder=bones 6/12, knee=bones 19/23"
-  },
-  "uEm1c": {
-   "name": "Zealot",
-   "status": "measured (shared humanoid skeleton)",
-   "pack": "em1c.udas",
-   "bin_slot": 537,
-   "head": 172.4,
-   "chest": 156.0,
-   "shoulder": 150.8,
-   "knee": 57.5,
-   "method": "HdBin.bone_world bind pose, mm->cm; head=bone 28, chest=bone 3, shoulder=bones 6/12, knee=bones 19/23"
-  },
-  "uEm1d": {
-   "name": "J.J.",
-   "status": "measured (shared humanoid skeleton)",
-   "pack": "em1d.udas",
-   "bin_slot": 555,
-   "head": 172.3,
-   "chest": 156.0,
-   "shoulder": 150.8,
-   "knee": 57.5,
-   "method": "HdBin.bone_world bind pose, mm->cm; head=bone 28, chest=bone 3, shoulder=bones 6/12, knee=bones 19/23"
-  },
-  "uEm20": {
-   "name": "Ganado soldier",
-   "status": "measured (shared humanoid skeleton)",
-   "pack": "em20.udas",
-   "bin_slot": 555,
-   "head": 172.3,
-   "chest": 156.0,
-   "shoulder": 150.8,
-   "knee": 57.5,
-   "method": "HdBin.bone_world bind pose, mm->cm; head=bone 28, chest=bone 3, shoulder=bones 6/12, knee=bones 19/23"
-  }
  }
 }

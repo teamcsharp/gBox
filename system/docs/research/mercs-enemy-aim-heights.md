@@ -97,9 +97,3 @@ Findings:
 ## Next milestone
 
 Read the HIT/XFS hit-zone records of the creature classes (bone-attached spheres give head/chest per zone) and add them to the creature rows.
-
-## RE4 Switch (request #9361)
-
-Source: `~/gBox_alt/switch/romfs/010099A00BC1E000/bio4/em/{em16,em1c,em1d,em20}.udas`, main body BIN slots (em16 #476, em1c #537, em1d #555, em20 #555) parsed with `gbox.re4_switch_assets.HdBin`; bind-pose `bone_world()`, mm -> cm, y=0 at the foot origin.
-All four packs share one humanoid skeleton (bones 0-33 identical in position; em1c adds bones 34-36). Bone 28 (head) y: 172.3 / 172.4 / 172.3 / 172.3 cm; chest (bone 3) 156.0; shoulders (bones 6/12) 150.8; knees (bones 19/23) 57.5; feet bones 21/25 at 4.4.
-Scope: Ganado, Zealot, J.J., Ganado soldier only. Not determined: em28 and other packs, creature/boss rigs, crouch/animated poses (bind pose only). Bone-role labels are inferred from position, not from a name table.
