@@ -1037,3 +1037,15 @@ The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned b
   `game_entries 4`, `donor_entries 318`, `same_paths false`, per-entry ratios (1.0, 1.02, 1.855, 2.084).
 * So the MCP/dispatch path is sound for both the container reads and the ARC inspection - no fix needed, only the record
   correction. The lesson for the reader: job outputs live in `output` (MCP returns it as `output` too).
+
+## Round 50 status (2026-11-10, ~01:25 CST): the RE4 lane is live on the i9
+
+* `Resident Evil 4 [switch]` (`270a15eb98dab4d7`) launches on the i9 from its 12.08 GB update NSP
+  (`Resident Evil 4 [UPDATE 1.0.2] [010099a00bc1e000].nsp`, catalog `rel_path` points at the update) and reaches the
+  **title screen** (`PRESS A`, 59 FPS, window title "resident evil 4 (64-bit) | 1.0.2") and the **main menu**
+  (NEW GAME / LOAD / LEADERBOARDS / HELP & OPTIONS / ACHIEVEMENTS), navigable with posted keys.
+* Three RE4 overlay builds already exist in the i9 cache: `recovery-re4-native-rewrite-v1-20261109`,
+  `recovery-re4-native-swap-v1-control-20261109`, `recovery-re4-sonic-on-leon-v1-20260911`.
+* So the objective's "RE4 and 6 in parallel" holds on the client: both Switch titles boot on the i9 from the same
+  worker, with the same launch path and overlay mechanism. Mercenaries on RE4 still needs the save unlock
+  (`re_mods_tool` `mercenaries_unlock`) before its menu entry appears - not attempted this round.
