@@ -1921,18 +1921,57 @@ Rigging (`build_swap` / `ninja_swap`) is still the path to a *correct* swap, and
 `PSO/PL...` -- all Dreamcast assumptions, three of which this lane has already solved elsewhere
 (`pso_gc_paths`, `njcm_is_big_endian`, `decode_texture_entry`) but not yet wired together into that function.
 
+## Round 37 (2026-11-10) — the intro scene is confirmed unescapable, this time with the input path that works
+
+Round 13 concluded that Principal Tyrell's opening conversation locks movement and cannot be exited, and rounds since then
+had a nagging reason to doubt it: **every movement test in that round used the virtual pad's analog stick**, which round 19
+proved never reaches the game. So the conclusion might have been an artifact of a dead input path.
+
+It was not. Retested with the keyboard walker -- the one that moves characters -- in a fresh single-player boot:
+
+```
+landed room 41  pos (0.0, -2015.0)  mode 5
+keyboard walk -> "no key moved the character"   STILL
+20 A presses at 2.2 s  -> mode alternates 5 / 17 the whole time
+movement during the mode-17 gaps (6 attempts, hold `up` 0.6 s in each gap) -> STILL
+```
+
+So: the scene locks movement, A cycles it forever (the four lines stay the four lines), and the `17` state is not a free
+frame. There is no input that leaves it, with either pad.
+
+### Why this is worth a round
+
+* It **retires a live doubt** rather than adding a new claim. A parked hypothesis that turns out to be wrong would have
+  sent later rounds down a false path; one that survives a retest with the working tool can be built on.
+* It fixes the route: **single-player is a dead end on this disc** until something can skip that scene, so any live work
+  -- P1's field leg, P3-P5, P6a's in-game proof -- must go through **MULTI MODE**, which loads both players into the
+  Pioneer 2 lobby with no cutscene (round 19).
+* It also gives the negative a shape: `mode 5 / 17` alternating is what a *stuck* conversation looks like in RAM, and
+  `mode 5` with no player movement is how a driver can detect it without looking at a frame.
+
+### State
+
+Session live, single-player, parked in the intro conversation in room 41. Nothing to salvage there; the next round starts
+fresh in MULTI MODE.
+
+### Next
+
+1. MULTI MODE boot (both players, lobby, no cutscene) and the guild counter -- the only remaining route to a field
+   arrival by real presses.
+2. P6a's in-game object proof and P6b's editor page remain open behind the same field arrival.
+3. P7a's rigging pass: `build_swap` adapted for GC (big-endian body, GVR textures, flat file names), with
+   `pso_swapfit.compare` gating every build.
+
 ## 7. Next
 
-1. **Check before building.** `gbox.pso_swapfit.compare(host, donor)` refuses a donor whose texture buckets do not
-   match the host (the crash case) and flags one that will render deformed (vertex count differs). Every character
-   build should pass through it -- round 33's build looked perfect and round 34's boot looked fine until the
-   character select drew polygons.
-2. **Rigging is the path to a correct swap**, and it is a GC adaptation of `build_swap`: it parses the body
-   little-endian, writes PVR textures and looks files up as `PSO/PL...`. The three pieces are already solved in
-   isolation (`pso_gc_paths`, `njcm_is_big_endian`, `decode_texture_entry`) and need wiring into that function.
-3. **P6a's in-game proof** (the moved object has never been seen in a field) and **P1's guild counter** (the only
-   route to a field arrival by real presses) remain open, then P6b (editor page) and the demo -> route fixture.
+1. **MULTI MODE is now the only live route.** Single-player is a dead end on this disc: its opening conversation
+   locks movement and no input leaves it -- retested in round 37 with the keyboard walker (which does move
+   characters), 20 A presses, and movement attempts inside the mode-17 gaps, all negative. MULTI MODE loads both
+   players into the Pioneer 2 lobby with no cutscene.
+2. **The guild counter** is still the one thing between this lane and a field arrival by real presses: route in is
+   (102,105) -> (33,-34) -> (-84,27) -> (-223,-24), then walk around the counter and face the keeper.
+3. **P6a's in-game proof** and **P6b's editor page** sit behind that field arrival; **P7a's rigging** needs
+   `build_swap` adapted for GC (big-endian body, GVR textures, flat names), with `pso_swapfit.compare` gating builds.
 
-Measured this round and worth remembering: all nine classes share a **64-bone skeleton**, so bone count never
-distinguishes them; what matters for a raw mesh swap is the **texture/material bucket table**. HUcast has 5 buckets
-like a HUmar (renders, deformed); HUnewearl has 8 (crashes at PC 0x8028f508).
+Detection note: a stuck conversation looks like `mode 5` alternating with `17` and no player movement -- a driver can
+recognise it from RAM without a frame.
