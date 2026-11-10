@@ -783,3 +783,18 @@ character-select or brighter camera frame would make the visual difference more 
 
 Also: the results screen needed the `plus` key to leave - `nav_auto` only knew `results` as an unexpected menu and
 pressed B, which does nothing there.
+
+## Round 33 status (2026-11-09, ~22:35 CST): the i9 can now materialise the swap assets from the container
+
+* **`gbox/switch_romfs_materialize.py`** (+5 tests) extracts exactly the arcs a swap targets - `CHARACTER_ARCS` (9 RE6
+  bodies), `ZOMBIE_ARCS` (6 enemy arcs) and `PLAYER_AS_MAJINI` - straight from the NSP into the extracted-tree layout
+  `skin_swap.romfs_root()` reads (`~/gBox_alt/switch/romfs/<TITLE_ID>`), instead of needing the whole 60,645-file RomFS
+  extracted. Runs a client-side decrypt (CPU AES) with only `prod.keys`.
+* **Verified on the real container**: `01002A000CD48000: wrote 15 arcs, 96,008,758 bytes`. `skin_swap.romfs_root()` now
+  returns the tree and `skin_swap.candidates()` reports `extracted True`, 9 characters, all character and zombie arcs
+  present (sizes confirmed: `uPl00LeonUsa` 1,626,591, `uPl03PiersAsia` 4,866,047, `uEm5200` present, ...).
+* **Blocker found in the swap builder**: `skin_swap.random_swap_build` for RE6 returns `None` for every seed tried
+  (1-12) with `mt_arc.ArcError("a character has no body skin group to swap")` - the MTF group heuristic in
+  `gbox/mt_arc.py`/`swap_arc` does not find a body skin group in these RE6 body arcs. That parser is the next piece:
+  RE6's arc group layout differs from RE5's and needs its own group-naming (the module comments already note RE6 head
+  arcs' largest group is the hair).
