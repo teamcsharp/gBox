@@ -742,3 +742,10 @@ def test_owned_disc_loader_addresses_are_in_linked_rel_text():
     assert r["claimed"]["tri_loader"]["words"][0] == "9421ffe0"
     assert r["claimed"]["resource_key"]["words"][:2] == ["3804ff9f", "5400c00e"]
     assert r["claimed"]["loader_registration"]["words"][0] == "546005ef"
+
+
+@pytest.mark.skipif(not (ISO and Path(ISO).is_file()), reason="set TTS_ISO to an owned Twin Snakes disc 1 image")
+def test_owned_disc_noop_stage_roundtrip():
+    from gbox import ts_roundtrip as R
+    rep = R.roundtrip(ISO)
+    assert rep["stages"] == 114 and rep["ok"], rep
