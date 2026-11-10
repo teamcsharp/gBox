@@ -1,0 +1,1023 @@
+{
+ "title_id": "010099A00BC1E000",
+ "romfs_path": "/home/ehm_eckx/gBox_alt/switch/romfs/010099A00BC1E000/bio4/",
+ "measured_at": "2026-11-09 (lilspark, local disk, read-only)",
+ "totals": {
+  "files": 5275,
+  "bytes": 12934747107
+ },
+ "asset_index_crosscheck": {
+  "entries": 5275,
+  "counts": {
+   "data": 227,
+   "other": 2406,
+   "archive": 776,
+   "texture": 878,
+   "font": 65,
+   "video": 57,
+   "audio": 866
+  },
+  "file_count_match": true,
+  "size_match": true
+ },
+ "directory_tree_depth3": [
+  {
+   "path": "bio4",
+   "files": 7,
+   "bytes": 290845
+  },
+  {
+   "path": "bio4/title",
+   "files": 16,
+   "bytes": 462016
+  },
+  {
+   "path": "bio4/st3",
+   "files": 40,
+   "bytes": 449148768
+  },
+  {
+   "path": "bio4/st2",
+   "files": 42,
+   "bytes": 532854912
+  },
+  {
+   "path": "bio4/ss/esy",
+   "files": 25,
+   "bytes": 4335680
+  },
+  {
+   "path": "bio4/ss/cht",
+   "files": 111,
+   "bytes": 30211264
+  },
+  {
+   "path": "bio4/ss/eng",
+   "files": 110,
+   "bytes": 30201136
+  },
+  {
+   "path": "bio4/ss/cmn",
+   "files": 150,
+   "bytes": 38897800
+  },
+  {
+   "path": "bio4/ss/ger",
+   "files": 109,
+   "bytes": 28679664
+  },
+  {
+   "path": "bio4/ss/item",
+   "files": 418,
+   "bytes": 22702576
+  },
+  {
+   "path": "bio4/ss/ita",
+   "files": 109,
+   "bytes": 28716912
+  },
+  {
+   "path": "bio4/ss/fra",
+   "files": 109,
+   "bytes": 28738320
+  },
+  {
+   "path": "bio4/ss/esp",
+   "files": 109,
+   "bytes": 28733808
+  },
+  {
+   "path": "bio4/ss/jpn",
+   "files": 128,
+   "bytes": 33319552
+  },
+  {
+   "path": "bio4/ss/chs",
+   "files": 111,
+   "bytes": 30211232
+  },
+  {
+   "path": "bio4/sv",
+   "files": 1,
+   "bytes": 458796
+  },
+  {
+   "path": "bio4/font",
+   "files": 67,
+   "bytes": 157122
+  },
+  {
+   "path": "bio4/iww",
+   "files": 40,
+   "bytes": 4096
+  },
+  {
+   "path": "bio4/iww/homebutton2",
+   "files": 1,
+   "bytes": 136
+  },
+  {
+   "path": "bio4/imagepackhd",
+   "files": 1813,
+   "bytes": 6144462613
+  },
+  {
+   "path": "bio4/snd",
+   "files": 225,
+   "bytes": 413932149
+  },
+  {
+   "path": "bio4/snd/foot/st3",
+   "files": 76,
+   "bytes": 40036668
+  },
+  {
+   "path": "bio4/snd/foot/st2",
+   "files": 82,
+   "bytes": 49284474
+  },
+  {
+   "path": "bio4/snd/foot/st0",
+   "files": 4,
+   "bytes": 759274
+  },
+  {
+   "path": "bio4/snd/foot/st4",
+   "files": 32,
+   "bytes": 17611712
+  },
+  {
+   "path": "bio4/snd/foot/st5",
+   "files": 64,
+   "bytes": 30611961
+  },
+  {
+   "path": "bio4/snd/foot/st1",
+   "files": 64,
+   "bytes": 56472760
+  },
+  {
+   "path": "bio4/snd/room/st3",
+   "files": 74,
+   "bytes": 18690090
+  },
+  {
+   "path": "bio4/snd/room/st2",
+   "files": 82,
+   "bytes": 27496005
+  },
+  {
+   "path": "bio4/snd/room/st0",
+   "files": 4,
+   "bytes": 843767
+  },
+  {
+   "path": "bio4/snd/room/st4",
+   "files": 34,
+   "bytes": 9976467
+  },
+  {
+   "path": "bio4/snd/room/st5",
+   "files": 64,
+   "bytes": 16375363
+  },
+  {
+   "path": "bio4/snd/room/st1",
+   "files": 62,
+   "bytes": 20054357
+  },
+  {
+   "path": "bio4/rel",
+   "files": 146,
+   "bytes": 23909848
+  },
+  {
+   "path": "bio4/etc",
+   "files": 46,
+   "bytes": 4151392
+  },
+  {
+   "path": "bio4/etc/eng",
+   "files": 3,
+   "bytes": 366016
+  },
+  {
+   "path": "bio4/etc/jpn",
+   "files": 3,
+   "bytes": 256096
+  },
+  {
+   "path": "bio4/bgm",
+   "files": 6,
+   "bytes": 10296576
+  },
+  {
+   "path": "bio4/em",
+   "files": 162,
+   "bytes": 326433344
+  },
+  {
+   "path": "bio4/gradients",
+   "files": 6,
+   "bytes": 19200
+  },
+  {
+   "path": "bio4/text",
+   "files": 12,
+   "bytes": 128852
+  },
+  {
+   "path": "bio4/movie",
+   "files": 57,
+   "bytes": 2103332672
+  },
+  {
+   "path": "bio4/texture",
+   "files": 1,
+   "bytes": 1152
+  },
+  {
+   "path": "bio4/info",
+   "files": 1,
+   "bytes": 10628
+  },
+  {
+   "path": "bio4/option",
+   "files": 14,
+   "bytes": 133984448
+  },
+  {
+   "path": "bio4/option/newoption/menu",
+   "files": 6,
+   "bytes": 14334528
+  },
+  {
+   "path": "bio4/option/newoption/howto",
+   "files": 8,
+   "bytes": 99540480
+  },
+  {
+   "path": "bio4/achievement",
+   "files": 17,
+   "bytes": 44712672
+  },
+  {
+   "path": "bio4/evd",
+   "files": 304,
+   "bytes": 959239748
+  },
+  {
+   "path": "bio4/st4",
+   "files": 14,
+   "bytes": 156700736
+  },
+  {
+   "path": "bio4/ranking",
+   "files": 14,
+   "bytes": 120508392
+  },
+  {
+   "path": "bio4/st5",
+   "files": 35,
+   "bytes": 400625344
+  },
+  {
+   "path": "bio4/st1",
+   "files": 34,
+   "bytes": 401323968
+  },
+  {
+   "path": "bio4/op",
+   "files": 3,
+   "bytes": 138720
+  }
+ ],
+ "extension_histogram": {
+  "fen": {
+   "count": 2117,
+   "bytes": 7103702361,
+   "examples": [
+    "bio4/imagepackhd/3f0015a4.pack.fen",
+    "bio4/imagepackhd/3f0069c2.pack.fen",
+    "bio4/imagepackhd/43000042.pack.fen"
+   ]
+  },
+  "udas": {
+   "count": 331,
+   "bytes": 2261489152,
+   "examples": [
+    "bio4/st3/r326.udas",
+    "bio4/st3/r31a.udas",
+    "bio4/st3/r328.udas"
+   ]
+  },
+  "usm": {
+   "count": 57,
+   "bytes": 2103332672,
+   "examples": [
+    "bio4/movie/r510s00.usm",
+    "bio4/movie/demo0.usm",
+    "bio4/movie/r317s06.usm"
+   ]
+  },
+  "awb": {
+   "count": 433,
+   "bytes": 698797207,
+   "examples": [
+    "bio4/snd/em17.awb",
+    "bio4/snd/wep14.awb",
+    "bio4/snd/pl12.awb"
+   ]
+  },
+  "fix": {
+   "count": 76,
+   "bytes": 414108624,
+   "examples": [
+    "bio4/title/spa_press_start.fix",
+    "bio4/title/spa_edit_profile.fix",
+    "bio4/title/jpn_edit_profile.fix"
+   ]
+  },
+  "dat": {
+   "count": 445,
+   "bytes": 298975108,
+   "examples": [
+    "bio4/ss/esy/map_obj4c.dat",
+    "bio4/ss/esy/map_obj3e.dat",
+    "bio4/ss/esy/map_obj5d.dat"
+   ]
+  },
+  "bin": {
+   "count": 242,
+   "bytes": 24195976,
+   "examples": [
+    "bio4/ss/cmn/itm19.bin",
+    "bio4/ss/cmn/itm97.bin",
+    "bio4/ss/cmn/itm78.bin"
+   ]
+  },
+  "rel": {
+   "count": 146,
+   "bytes": 23909848,
+   "examples": [
+    "bio4/rel/em48.rel",
+    "bio4/rel/em18.rel",
+    "bio4/rel/wep37.rel"
+   ]
+  },
+  "acb": {
+   "count": 433,
+   "bytes": 3344000,
+   "examples": [
+    "bio4/snd/em39.acb",
+    "bio4/snd/door007.acb",
+    "bio4/snd/doorse006.acb"
+   ]
+  },
+  "snd": {
+   "count": 1,
+   "bytes": 876832,
+   "examples": [
+    "bio4/ss/cmn/title.snd"
+   ]
+  },
+  "eff": {
+   "count": 4,
+   "bytes": 610976,
+   "examples": [
+    "bio4/etc/eng/event.eff",
+    "bio4/etc/eng/id101.eff",
+    "bio4/etc/jpn/event.eff"
+   ]
+  },
+  "tga": {
+   "count": 1,
+   "bytes": 458796,
+   "examples": [
+    "bio4/sv/dbgfont.tga"
+   ]
+  },
+  "t3d": {
+   "count": 6,
+   "bytes": 284362,
+   "examples": [
+    "bio4/uvdata.t3d",
+    "bio4/uvdata_jp.t3d",
+    "bio4/uvdata_de.t3d"
+   ]
+  },
+  "esl": {
+   "count": 20,
+   "bytes": 163264,
+   "examples": [
+    "bio4/etc/omake05.esl",
+    "bio4/etc/omake08.esl",
+    "bio4/etc/omake04.esl"
+   ]
+  },
+  "tpl": {
+   "count": 870,
+   "bytes": 121120,
+   "examples": [
+    "bio4/ss/cht/f05a.tpl",
+    "bio4/ss/cht/f28a.tpl",
+    "bio4/ss/cht/f03a.tpl"
+   ]
+  },
+  "dct": {
+   "count": 8,
+   "bytes": 118307,
+   "examples": [
+    "bio4/text/chinese_t_win32.dct",
+    "bio4/text/french_win32.dct",
+    "bio4/text/spanish_win32.dct"
+   ]
+  },
+  "mdt": {
+   "count": 2,
+   "bytes": 95504,
+   "examples": [
+    "bio4/font/test_0.mdt",
+    "bio4/font/trc.mdt"
+   ]
+  },
+  "fnt": {
+   "count": 65,
+   "bytes": 61618,
+   "examples": [
+    "bio4/font/system_zh-tw.fnt",
+    "bio4/font/stage1_zh-tw.fnt",
+    "bio4/font/event5_zh-cn.fnt"
+   ]
+  },
+  "hed": {
+   "count": 3,
+   "bytes": 49024,
+   "examples": [
+    "bio4/bgm/bio4midi.hed",
+    "bio4/bgm/doorse.hed",
+    "bio4/bgm/bio4str.hed"
+   ]
+  },
+  "dds": {
+   "count": 7,
+   "bytes": 20352,
+   "examples": [
+    "bio4/gradients/gradient4.dds",
+    "bio4/gradients/gradient3.dds",
+    "bio4/gradients/gradient2.dds"
+   ]
+  },
+  "uwf": {
+   "count": 2,
+   "bytes": 11136,
+   "examples": [
+    "bio4/etc/eng/event001.uwf",
+    "bio4/etc/jpn/event001.uwf"
+   ]
+  },
+  "csv": {
+   "count": 4,
+   "bytes": 10545,
+   "examples": [
+    "bio4/text/resident_evil_4_prexence_data.csv",
+    "bio4/text/resident_evil_4_prexence_data-refine_for_xb1.csv",
+    "bio4/text/prexence_data.csv"
+   ]
+  },
+  "ini": {
+   "count": 1,
+   "bytes": 6483,
+   "examples": [
+    "bio4/input.ini"
+   ]
+  },
+  "acf": {
+   "count": 1,
+   "bytes": 3840,
+   "examples": [
+    "bio4/snd/fen.acf"
+   ]
+  }
+ },
+ "container_first16": {
+  "t3d": [
+   {
+    "path": "bio4/uvdata.t3d",
+    "hex": "426567696e204f626a65637420436c61"
+   },
+   {
+    "path": "bio4/uvdata_jp.t3d",
+    "hex": "426567696e204f626a65637420436c61"
+   },
+   {
+    "path": "bio4/uvdata_de.t3d",
+    "hex": "426567696e204f626a65637420436c61"
+   }
+  ],
+  "ini": [
+   {
+    "path": "bio4/input.ini",
+    "hex": "56455253494f4e203d2031360d0a4149"
+   }
+  ],
+  "fix": [
+   {
+    "path": "bio4/title/spa_press_start.fix",
+    "hex": "0000000080ac00000c00000044445320"
+   },
+   {
+    "path": "bio4/title/spa_edit_profile.fix",
+    "hex": "00000000003500000c00000044445320"
+   },
+   {
+    "path": "bio4/title/jpn_edit_profile.fix",
+    "hex": "00000000003500000c00000044445320"
+   }
+  ],
+  "udas": [
+   {
+    "path": "bio4/st3/r326.udas",
+    "hex": "cab6be20cab6be20cab6be20cab6be20"
+   },
+   {
+    "path": "bio4/st3/r31a.udas",
+    "hex": "cab6be20cab6be20cab6be20cab6be20"
+   },
+   {
+    "path": "bio4/st3/r328.udas",
+    "hex": "cab6be20cab6be20cab6be20cab6be20"
+   }
+  ],
+  "dat": [
+   {
+    "path": "bio4/ss/esy/map_obj4c.dat",
+    "hex": "08000000000000000000000000000000"
+   },
+   {
+    "path": "bio4/ss/esy/map_obj3e.dat",
+    "hex": "15000000000000000000000000000000"
+   },
+   {
+    "path": "bio4/ss/esy/map_obj5d.dat",
+    "hex": "09000000000000000000000000000000"
+   }
+  ],
+  "tpl": [
+   {
+    "path": "bio4/ss/cht/f05a.tpl",
+    "hex": "78563412010000001000000000000000"
+   },
+   {
+    "path": "bio4/ss/cht/f28a.tpl",
+    "hex": "78563412010000001000000000000000"
+   },
+   {
+    "path": "bio4/ss/cht/f03a.tpl",
+    "hex": "78563412010000001000000000000000"
+   }
+  ],
+  "snd": [
+   {
+    "path": "bio4/ss/cmn/title.snd",
+    "hex": "20beb6ca20beb6ca20beb6ca20beb6ca"
+   }
+  ],
+  "bin": [
+   {
+    "path": "bio4/ss/cmn/itm19.bin",
+    "hex": "98000000000000000000000050000000"
+   },
+   {
+    "path": "bio4/ss/cmn/itm97.bin",
+    "hex": "98000000000000000000000050000000"
+   },
+   {
+    "path": "bio4/ss/cmn/itm78.bin",
+    "hex": "98000000000000000000000050000000"
+   }
+  ],
+  "tga": [
+   {
+    "path": "bio4/sv/dbgfont.tga",
+    "hex": "0000020000000000000000000002e000"
+   }
+  ],
+  "fnt": [
+   {
+    "path": "bio4/font/system_zh-tw.fnt",
+    "hex": "20000000800000000000000000000000"
+   },
+   {
+    "path": "bio4/font/stage1_zh-tw.fnt",
+    "hex": "20000000800000000000000000000000"
+   },
+   {
+    "path": "bio4/font/event5_zh-cn.fnt",
+    "hex": "20000000800000000000000000000000"
+   }
+  ],
+  "mdt": [
+   {
+    "path": "bio4/font/test_0.mdt",
+    "hex": "0600000030000000da00000000000000"
+   },
+   {
+    "path": "bio4/font/trc.mdt",
+    "hex": "06000000300000003c1e00004a500000"
+   }
+  ],
+  "fen": [
+   {
+    "path": "bio4/imagepackhd/3f0015a4.pack.fen",
+    "hex": "00110e00789cecbd7f709bd779eff91a"
+   },
+   {
+    "path": "bio4/imagepackhd/3f0069c2.pack.fen",
+    "hex": "14a51f00789cbcbc7b20d4e9173ffe9e"
+   },
+   {
+    "path": "bio4/imagepackhd/43000042.pack.fen",
+    "hex": "d0ab0a00789cbcbd6d705b577a268806"
+   }
+  ],
+  "awb": [
+   {
+    "path": "bio4/snd/em17.awb",
+    "hex": "41465332010402009b00000020000000"
+   },
+   {
+    "path": "bio4/snd/wep14.awb",
+    "hex": "41465332010402002200000020000000"
+   },
+   {
+    "path": "bio4/snd/pl12.awb",
+    "hex": "41465332010202000100000020000000"
+   }
+  ],
+  "acb": [
+   {
+    "path": "bio4/snd/em39.acb",
+    "hex": "4055544600001ed8000101580000027e"
+   },
+   {
+    "path": "bio4/snd/door007.acb",
+    "hex": "4055544600001018000101580000027e"
+   },
+   {
+    "path": "bio4/snd/doorse006.acb",
+    "hex": "4055544600001058000101580000027e"
+   }
+  ],
+  "acf": [
+   {
+    "path": "bio4/snd/fen.acf",
+    "hex": "4055544600000ed80001015800000270"
+   }
+  ],
+  "rel": [
+   {
+    "path": "bio4/rel/em48.rel",
+    "hex": "37000000000000000000000013000000"
+   },
+   {
+    "path": "bio4/rel/em18.rel",
+    "hex": "0a000000000000000000000013000000"
+   },
+   {
+    "path": "bio4/rel/wep37.rel",
+    "hex": "83000000000000000000000013000000"
+   }
+  ],
+  "esl": [
+   {
+    "path": "bio4/etc/omake05.esl",
+    "hex": "001b0700800011a0e8030000e10ac600"
+   },
+   {
+    "path": "bio4/etc/omake08.esl",
+    "hex": "011e0e000020110ae8030000410d25fe"
+   },
+   {
+    "path": "bio4/etc/omake04.esl",
+    "hex": "0113002510200301a406000545040bf7"
+   }
+  ],
+  "eff": [
+   {
+    "path": "bio4/etc/eng/event.eff",
+    "hex": "0b000000400000006000000080000000"
+   },
+   {
+    "path": "bio4/etc/eng/id101.eff",
+    "hex": "0b000000400000006000000080000000"
+   },
+   {
+    "path": "bio4/etc/jpn/event.eff",
+    "hex": "0b000000400000006000000080000000"
+   }
+  ],
+  "uwf": [
+   {
+    "path": "bio4/etc/eng/event001.uwf",
+    "hex": "322e3030000e00000d000000ff0200ff"
+   },
+   {
+    "path": "bio4/etc/jpn/event001.uwf",
+    "hex": "322e3030000e00000d000000ff0200ff"
+   }
+  ],
+  "hed": [
+   {
+    "path": "bio4/bgm/bio4midi.hed",
+    "hex": "000000000090060040f2190020222600"
+   },
+   {
+    "path": "bio4/bgm/doorse.hed",
+    "hex": "20000000600000000000000000000000"
+   },
+   {
+    "path": "bio4/bgm/bio4str.hed",
+    "hex": "20000000802d00000000000000000000"
+   }
+  ],
+  "dds": [
+   {
+    "path": "bio4/gradients/gradient4.dds",
+    "hex": "444453207c000000071008000c000000"
+   },
+   {
+    "path": "bio4/gradients/gradient3.dds",
+    "hex": "444453207c000000071008000c000000"
+   },
+   {
+    "path": "bio4/gradients/gradient2.dds",
+    "hex": "444453207c000000071008000c000000"
+   }
+  ],
+  "csv": [
+   {
+    "path": "bio4/text/resident_evil_4_prexence_data.csv",
+    "hex": "efbbbf64656661756c742c656e2c6a61"
+   },
+   {
+    "path": "bio4/text/resident_evil_4_prexence_data-refine_for_xb1.csv",
+    "hex": "efbbbf64656661756c742c656e2c6a61"
+   },
+   {
+    "path": "bio4/text/prexence_data.csv",
+    "hex": "efbbbf64656661756c742c656e2c6a61"
+   }
+  ],
+  "dct": [
+   {
+    "path": "bio4/text/chinese_t_win32.dct",
+    "hex": "44494354001000009f7dd55500000000"
+   },
+   {
+    "path": "bio4/text/french_win32.dct",
+    "hex": "44494354001000009f7dd55500000000"
+   },
+   {
+    "path": "bio4/text/spanish_win32.dct",
+    "hex": "44494354001000009f7dd55500000000"
+   }
+  ],
+  "usm": [
+   {
+    "path": "bio4/movie/r510s00.usm",
+    "hex": "43524944000007f8001806c000000001"
+   },
+   {
+    "path": "bio4/movie/demo0.usm",
+    "hex": "43524944000007f8001806c800000001"
+   },
+   {
+    "path": "bio4/movie/r317s06.usm",
+    "hex": "43524944000007f8001806b800000001"
+   }
+  ]
+ },
+ "mercs_characters": [
+  {
+   "character": "Leon",
+   "suggested_by": "name",
+   "pack": "pl08",
+   "udas_path": "bio4/em/pl08.udas",
+   "udas_bytes": 1512608,
+   "container": {
+    "fill_hex": "cab6be20cab6be20",
+    "fill_32_hex": "cab6be20cab6be20cab6be20cab6be20cab6be20cab6be20cab6be20cab6be20",
+    "datasize_field": 1492704,
+    "dat_offset": 1056,
+    "round_trip": true
+   },
+   "dat": {
+    "slots": 133,
+    "slot_exts": {
+     "": 133
+    },
+    "first16": null
+   }
+  },
+  {
+   "character": "HUNK",
+   "suggested_by": "name",
+   "pack": "pl06",
+   "udas_path": "bio4/em/pl06.udas",
+   "udas_bytes": 1284032,
+   "container": {
+    "fill_hex": "cab6be20cab6be20",
+    "fill_32_hex": "cab6be20cab6be20cab6be20cab6be20cab6be20cab6be20cab6be20cab6be20",
+    "datasize_field": 1265344,
+    "dat_offset": 1056,
+    "round_trip": true
+   },
+   "dat": {
+    "slots": 133,
+    "slot_exts": {
+     "": 133
+    },
+    "first16": null
+   }
+  },
+  {
+   "character": "Krauser",
+   "suggested_by": "name",
+   "pack": "pl0a",
+   "udas_path": "bio4/em/pl0a.udas",
+   "udas_bytes": 1678848,
+   "container": {
+    "fill_hex": "cab6be20cab6be20",
+    "fill_32_hex": "cab6be20cab6be20cab6be20cab6be20cab6be20cab6be20cab6be20cab6be20",
+    "datasize_field": 1658752,
+    "dat_offset": 1056,
+    "round_trip": true
+   },
+   "dat": {
+    "slots": 150,
+    "slot_exts": {
+     "": 150
+    },
+    "first16": null
+   }
+  },
+  {
+   "character": "Wesker",
+   "suggested_by": "name",
+   "pack": "pl0d",
+   "udas_path": "bio4/em/pl0d.udas",
+   "udas_bytes": 1165152,
+   "container": {
+    "fill_hex": "cab6be20cab6be20",
+    "fill_32_hex": "cab6be20cab6be20cab6be20cab6be20cab6be20cab6be20cab6be20cab6be20",
+    "datasize_field": 1146912,
+    "dat_offset": 1056,
+    "round_trip": true
+   },
+   "dat": {
+    "slots": 133,
+    "slot_exts": {
+     "": 133
+    },
+    "first16": null
+   }
+  },
+  {
+   "character": "Ada",
+   "suggested_by": "name",
+   "pack": "pl0b",
+   "udas_path": "bio4/em/pl0b.udas",
+   "udas_bytes": 2008000,
+   "container": {
+    "fill_hex": "cab6be20cab6be20",
+    "fill_32_hex": "cab6be20cab6be20cab6be20cab6be20cab6be20cab6be20cab6be20cab6be20",
+    "datasize_field": 1988544,
+    "dat_offset": 1056,
+    "round_trip": true
+   },
+   "dat": {
+    "slots": 148,
+    "slot_exts": {
+     "": 148
+    },
+    "first16": null
+   }
+  }
+ ],
+ "ganado_packs": [
+  {
+   "pack": "em10",
+   "path": "bio4/em/em10.udas",
+   "bytes": 8903328,
+   "slots": 698,
+   "slot_exts": {
+    "": 698
+   },
+   "round_trip": true
+  },
+  {
+   "pack": "em11",
+   "path": "bio4/em/em11.udas",
+   "bytes": 3960288,
+   "slots": 698,
+   "slot_exts": {
+    "": 698
+   },
+   "round_trip": true
+  },
+  {
+   "pack": "em12",
+   "path": "bio4/em/em12.udas",
+   "bytes": 3848352,
+   "slots": 698,
+   "slot_exts": {
+    "": 698
+   },
+   "round_trip": true
+  },
+  {
+   "pack": "em13",
+   "path": "bio4/em/em13.udas",
+   "bytes": 4258464,
+   "slots": 698,
+   "slot_exts": {
+    "": 698
+   },
+   "round_trip": true
+  },
+  {
+   "pack": "em14",
+   "path": "bio4/em/em14.udas",
+   "bytes": 4354304,
+   "slots": 698,
+   "slot_exts": {
+    "": 698
+   },
+   "round_trip": true
+  },
+  {
+   "pack": "em15",
+   "path": "bio4/em/em15.udas",
+   "bytes": 4104992,
+   "slots": 698,
+   "slot_exts": {
+    "": 698
+   },
+   "round_trip": true
+  },
+  {
+   "pack": "em16",
+   "path": "bio4/em/em16.udas",
+   "bytes": 4016416,
+   "slots": 698,
+   "slot_exts": {
+    "": 698
+   },
+   "round_trip": true,
+   "slot476": {
+    "ext": "",
+    "bytes": 0,
+    "header16": "",
+    "error": "module 'gbox.re4_switch_assets' has no attribute 'Bin'"
+   }
+  },
+  {
+   "pack": "em17",
+   "path": "bio4/em/em17.udas",
+   "bytes": 3658016,
+   "slots": 698,
+   "slot_exts": {
+    "": 698
+   },
+   "round_trip": true
+  }
+ ],
+ "provenance": {
+  "source": "docs/research/re4-switch-model-replacement.md (committed in this repo; measured 2026-11-09 on the same romfs)",
+  "pl08_leon": {
+   "vertices": "6,591",
+   "triangles": "4,577",
+   "bones": "119",
+   "texture_table_images": "83"
+  },
+  "character_mapping": [
+   "| `pl06` | HUNK (gas mask, black fatigues) | playable, 133 slots, 119 bones | **HUNK** |",
+   "| `pl0a` | Krauser (camouflage, war paint, blade arm) | playable, 150 slots, 127 bones | **Krauser** |",
+   "| `pl0d` | Wesker (sunglasses, black leather) | playable, 133 slots, 112 bones | **Wesker** |",
+   "| `pl0b` | Ada, plain red dress | playable, 148 slots, 81 bones | **Ada - inferred**: `pl0c` (tactical) and `pl16` (butterfly dress) have the same layout and cannot be told apart offline |",
+   "| `pl02`, `pl12`, `pl14`, `pl03` | Ada (225 bones), a 64-bone woman, Luis, a 19,626-vertex Leon | NPC/cutscene | not playable layouts |",
+   "`main` (per-pack code names `pl06`, `pl0a`, `pl0b`, `pl0c`, `pl0d` exist as `rel/*.rel` strings); that table was not",
+   "### A playable pack's slots (measured on pl06, pl08, pl0a, pl0b, pl0d: same indices, same kinds)",
+   "HUNK's pack leaves slots 4, 5, 6, 9-12, 15, 18-21 empty; Ada's and Krauser's put tables where Leon has models (5/6,",
+   "{0-5, 7-11, 13-26, 32, 110} and nothing else; HUNK's and Wesker's packs carry animations with exactly that set",
+   "| `native-swap-v1` | `187b9128...9912` (1,644,960 B) | HUNK's body (`pl06` slot 0, 403,360 B, bytes untouched) in Leon's slot 0; slot 1 = HUNK's 4 images + 5 copies of the first, all naming `01000006.pack.fen`. 131 other slots identical |",
+   "3. Which pack is Mercenaries Ada (`pl0b`, `pl0c` or `pl16`), and are HUNK/Krauser/Wesker really `pl06`/`pl0a`/`pl0d`",
+   "6. Can a slot be emptied under Leon's code the way HUNK's pack has it (a cleaner way to remove the head)?"
+  ]
+ },
+ "limitations": [
+  "Slot-level BIN/TPL re-verification was not re-run in this pass; model/texture figures for pl08 come from the committed repo doc measured on the same romfs the same day and are re-verified here only at container level (UDAS/DAT parse + byte round-trip = True for all 5 mercs packs and 8 Ganado packs).",
+  "pl06/pl0a/pl0d/pl0b character names are name-suggested (cross-referenced with repo doc mapping table), not individually live-tested in this run; pl08=Leon is the only live-verified mapping."
+ ]
+}
