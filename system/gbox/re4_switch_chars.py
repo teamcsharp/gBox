@@ -196,11 +196,13 @@ def build_glb(bin_bytes: bytes, tpl_bytes: bytes | None, root: Path | None) -> t
 
 
 def export_udas(udas: bytes, root: Path | None) -> tuple[bytes, dict]:
-    _pack, dat = (lambda p: (p, Dat.parse(p.dat)))(Udas.parse(udas))
-    if len(dat.slots) <= BODY_SLOT or not dat.slots[BODY_SLOT][1]:
-        raise AssetError("pack has no body BIN in slot 0")
-    tpl = dat.slots[TPL_SLOT][1] if len(dat.slots) > TPL_SLOT and dat.slots[TPL_SLOT][1] else None
-    return build_glb(dat.slots[BODY_SLOT][1], tpl, root)
+    """Body = first BIN slot (pl0e/pl0f lead with an EFF effects slot); its TPL is the next TPL slot after it."""
+    dat = Dat.parse(Udas.parse(udas).dat)
+    body = next((i for i, (t, b) in enumerate(dat.slots) if t == "BIN" and b), None)
+    if body is None:
+        raise AssetError("pack has no body BIN slot")
+    tpl = next((b for t, b in dat.slots[body + 1:body + 2] if t == "TPL" and b), None)
+    return build_glb(dat.slots[body][1], tpl, root)
 
 
 def extract_run(ctx, game: dict, e: dict, work) -> dict:

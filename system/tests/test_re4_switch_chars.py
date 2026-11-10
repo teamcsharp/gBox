@@ -64,3 +64,12 @@ def test_owned_pl00_export_is_consistent(tmp_path):
     for im in js["images"]:
         v = js["bufferViews"][im["bufferView"]]
         assert blob[v["byteOffset"]:v["byteOffset"] + 8] == b"\x89PNG\r\n\x1a\n"
+
+
+@pytest.mark.skipif(not (ROOT / "em/pl0e.udas").exists(), reason="owned RE4 Switch romfs not extracted")
+@pytest.mark.parametrize("key,verts,tex", [("pl0e", 6482, 17), ("pl0f", 2042, 4)])
+def test_eff_led_packs_use_first_bin_slot(key, verts, tex):
+    # pl0e/pl0f slot 0 is an EFF container; the body BIN is slot 1 and its TPL slot 2 (read from the slot table).
+    glb, stats = R.export_udas((ROOT / "em" / f"{key}.udas").read_bytes(), ROOT)
+    js, _ = read_glb(glb)
+    assert stats["vertices"] == verts and len(js["images"]) == tex and stats["textures_missing"] == 0
