@@ -1068,3 +1068,16 @@ The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned b
 * So MCP can drive the *build/decrypt/launch* lane end to end, but the in-game event lane (flash, grenade ring,
   infinite ammo) is currently unavailable on this worker until the stale worker registration is cleared and the channel
   re-attaches.
+
+## Round 52 status (2026-11-10, ~01:55 CST): correction - interventions attach to autoplay runs, not manual launches
+
+* Round 51's "worker not connected" was not the duplicate worker registration. The intervention loop is started in
+  `tools.py` **only for autoplay runs**: `interventions.worker_loop` is launched when a bot run's session exists and the
+  mode is not `prepare`. A plain `launch_game` (what every i9 test used) never starts that loop, so
+  `GET /api/sessions/{sid}/interventions` correctly reports `available: false, reason: "worker not connected"`.
+* The channel is therefore available for **bot-driven sessions** (screensaver / MercMode autoplay), which is exactly the
+  lane the operator's "use MCP to interact with the bot and guide it and cause events" describes: the MCP
+  `game_intervention` ops (flash, grenade ring on RE5, infinite ammo, magnum quick4) ride the bot run, not a manual
+  session. The RE6 control inventory in `merc_live_controls.MODS["re6"]` is what such a run exposes.
+* Consequence for the grenade-ring request: on RE6 the ring still has no native mapping, but the *event channel* does
+  work wherever a bot is running; the i9's manual sessions simply do not carry it.
