@@ -21,6 +21,54 @@ CHANGE_STATES = ("open", "acknowledged", "applied", "verified")
 _TRANSITIONS = {"open": {"acknowledged", "applied"}, "acknowledged": {"applied"},
                 "applied": {"verified"}, "verified": set()}
 
+# Where each live Mercenaries bot lives (operator 2026-11-10: "these become reports that get sent through to Hermes that
+# becomes changes"). The implementation request names these files so the agent starts in the bot that played: the
+# Switch editions MercMode rotates (RE always means Switch), never the GameCube re4_merc_bot.py the old ticket text
+# pointed at, nor gbox/mercs_bot.py (the playbook shell; a 2026-11-10 run spent its 200 calls there and changed nothing).
+CORE_FILES = ("gbox/mercs/core/doctrine.py (the standing goals, the commands' fallback)",
+              "gbox/mercs/core/combat.py (the shared fight: targets, throws, fire pattern)",
+              "gbox/mercs/core/respond.py (the answer to a threat)",
+              "gbox/mercs/directives.py (the PiP's instant commands)")
+BOT_FILES = {
+    "270a15eb98dab4d7": ("Resident Evil 4 (Switch, Mercenaries)", (
+        "gbox/mercs/titles/re4_switch.py (class Bot: the fight, the walk to a Ganado, the commands)",
+        "gbox/mercs/titles/re4_walk.py (the mesh walker)",
+        "gbox/re4switch_bot.py (the playbook: menus, rounds, the Bot's keys)"),
+        ("tests/test_re4_switch_fight.py", "tests/test_re4_switch_brain.py", "tests/test_re4switch_bot.py")),
+    "52d15709be0fda1a": ("Resident Evil 5 (Switch, No Mercy)", (
+        "gbox/mercs/titles/re5_switch.py (class Bot: the fight, mines, grenades, the commands)",
+        "gbox/mercs/titles/re5_switch_aim.py / re5_switch_wall.py / re5_switch_mines.py (its helpers)"),
+        ("tests/test_re5_switch.py", "tests/test_re5_switch_directives.py")),
+    "115f9cdbba115432": ("Resident Evil 6 (Switch, No Mercy)", (
+        "gbox/mercs/titles/re6_switch.py (class Bot: the fight, grenades _nade*, bombs, flash, the commands)",
+        "gbox/mercs/titles/re6_switch_wall.py (walls and the nav mesh)",
+        "gbox/mercs/titles/re6_switch_native.py (native flash / grenade ring)"),
+        ("tests/test_re6_switch.py", "tests/test_re6_bomb_drop.py", "tests/test_re6_switch_parity.py")),
+}
+
+
+def bot_files(game_id, title=None) -> tuple:
+    """(name, source files, tests) of the live bot for a game; a title naming RE4 / RE5 / RE6 maps to its Switch bot."""
+    row = BOT_FILES.get(game_id)
+    if row is None:
+        t = str(title or "").lower()
+        key = next((g for g, n in (("270a15eb98dab4d7", "resident evil 4"), ("52d15709be0fda1a", "resident evil 5"),
+                                   ("115f9cdbba115432", "resident evil 6")) if n in t), None)
+        row = BOT_FILES.get(key)
+    if row is None:
+        return (title or game_id, ("gbox/mercs_bot.py and the title module it names (gbox/mercs/titles/)",), ())
+    return row
+
+
+def files_text(game_id, title=None) -> str:
+    """The bot's files as request text: the title's own first, then the shared core, then its tests."""
+    name, files, tests = bot_files(game_id, title)
+    rows = [f"The live bot for {name}. Start in:"] + [f"  - {f}" for f in files]
+    rows += ["Shared by every Mercenaries bot:"] + [f"  - {f}" for f in CORE_FILES]
+    if tests:
+        rows.append("Tests to extend: " + ", ".join(tests))
+    return "\n".join(rows)
+
 
 def playbook_for(game: dict) -> str:
     """Read-only matching; never calls setup/play or imports a caller-supplied name."""
@@ -57,8 +105,9 @@ def for_game(store, game_id):
             "open_changes": sum(row.get("state") != "verified" for row in changes_for(store, game_id)["items"])}
 
 
-def add_change(store, game_id, *, note, text, request_id, message_id, by="operator", session_id=None):
-    """One change per evidence note. Never discard unfinished work or hide a persistence failure."""
+def add_change(store, game_id, *, note, text, request_id, message_id, by="operator", session_id=None, moment=None):
+    """One change per evidence note. Never discard unfinished work or hide a persistence failure. `moment`: one line of
+    what the bot was doing when the note came (coaching.moment_line), written into the implementation request."""
     if not game_id or not request_id or not message_id or not text.strip():
         raise ValueError("A coaching change needs its game, note, ticket and text")
     with store.lock:
@@ -79,6 +128,8 @@ def add_change(store, game_id, *, note, text, request_id, message_id, by="operat
         item = {"id": "chg-" + new_id(), "note": note, "text": text, "request_id": request_id,
                 "message_id": message_id, "session_id": session_id, "state": "open", "by": by,
                 "pr": None, "verification": None, "ts": now, "updated": now}
+        if moment:
+            item["moment"] = str(moment)[:600]
         items.append(item)
         store.put(CHANGES_KIND, game_id, {"game_id": game_id, "items": items, "updated": now})
         return item
@@ -106,6 +157,35 @@ def dispatch_status(store, game_id, change_id):
         return item
 
 
+def request_body(game_id, title, change_id, item) -> str:
+    """The implementation request's text: the critique, where the bot is, the moment, how to read the evidence, and
+    the one deliverable. A run with no file pointers or evidence route read for 200 calls and left nothing
+    (2026-11-10, #7097); "⚠ Flawed (PiP button)" was taken for a game mechanic."""
+    sid, mid, rid = item.get("session_id"), item["message_id"], item["request_id"]
+    moment = item.get("moment")
+    return "\n\n".join(x for x in (
+        f"Operator critique of the {title} bot (typed or clicked in the gBox picture-in-picture while it played): "
+        f"{item['text']}",
+        "\"PiP\", \"⚠ Flawed\" and the quick commands are the operator's buttons in the gBox app, not game mechanics: "
+        "the operator saw the bot handle this moment badly and wants its code to change.",
+        files_text(game_id, title),
+        f"The bot at that moment: {moment}" if moment else "",
+        f"Evidence: coaching ticket {rid}, message {mid} (note {item['note']}). GET /api/sessions/{sid}/coach/{mid} "
+        "lists each capture with its state and sha256 (they may still be pending); GET /api/artifacts/<sha256> "
+        "downloads one: coach-N-frame.png / coach-N-report-frame.jpg (the picture), coach-N-report-moment.json (the "
+        "bot's telemetry: doing, why, directive, target, and the tactical frame with every enemy), coach-N-*-ram.gz "
+        "(the main RAM).",
+        "Deliverable: ONE bounded change in the bot code above that makes the bot do what the critique asks, with a "
+        "focused unit test built from the moment's fields; run the title's tests; publish it as a draft PR "
+        "(publish_task_changes); post the PR link and the effect you expect as a reply on this request; then "
+        f"POST /api/autoplay/bots/{game_id}/changes/{change_id} with state applied and the pr. If you cannot finish, "
+        "post what you found (files, functions, the failing check) on this request before you stop - never end "
+        "silently. Do not claim the critique is fixed from button presses or a successful command alone: the live "
+        "bot measures the change after a deploy (state verified, with the verification). Do not launch, stop, "
+        "restart or swap games, MercMode or gBox; this request does not authorize taking another controller.",
+    ) if x)
+
+
 def ensure_request(store, create_request, game_id, change_id, actor):
     """File one ordinary operator child for Hermes; never pump or bypass admission.
 
@@ -130,19 +210,12 @@ def ensure_request(store, create_request, game_id, change_id, actor):
         title = (parent.get("context") or {}).get("title") or game_id
         request = {"title": f"Improve {title}: coaching note {item['note']}"[:140], "source": "coach_change",
                    "kind": "text", "author": "operator", "parent_request_id": item["request_id"],
+                   # operator_requested: the Hermes queue works an operator's critique before the backlog
+                   # (hermes_work_queue.sync / choose); it edits bot code only, so a game in play never holds it
                    "context": {"coaching_change": True, "coaching_change_id": change_id, "game_id": game_id,
                                "coaching_request_id": item["request_id"], "coaching_message_id": item["message_id"],
-                               "session_id": item.get("session_id")},
-                   "body": f"Operator critique: {item['text']}\n\n"
-                           f"Improve the active bot for this title using the evidence on coaching ticket "
-                           f"{item['request_id']}, message {item['message_id']}. Read the capture status at "
-                           f"/api/sessions/{item.get('session_id')}/coach/{item['message_id']}; "
-                           "captures may still be pending. Inspect the actual bot and reproduce the issue, implement a "
-                           "bounded correction, run relevant tests, and attach a reviewable PR and verification evidence. "
-                           "Do not claim the critique is fixed from button presses or a successful command alone. "
-                           f"Update /api/autoplay/bots/{game_id}/changes/{change_id} through acknowledged, applied "
-                           "(with pr), and verified (with verification). Respect current game ownership, admission, "
-                           "review, and deployment rules; this request does not authorize taking another controller."}
+                               "session_id": item.get("session_id"), "operator_requested": True},
+                   "body": request_body(game_id, title, change_id, item)}
         try:
             child = create_request(request, actor)
             item.update(implementation_request_id=child["id"], implementation_number=child.get("number"),

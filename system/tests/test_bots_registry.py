@@ -105,8 +105,67 @@ class BotQueueTests(unittest.TestCase):
         queue.sync(data, {"count": 0, "items": []}, requests, now=100)
         self.assertEqual(set(data["items"]), {"inbox:" + child["id"]})
         self.assertEqual(len(queue.candidates(data, requests, [], set(), set(), now=100)), 1)
-        self.assertEqual(queue.candidates(data, requests, [{"input": {"game_id": GAME}}], set(), set(), now=100), [])
-        self.assertEqual(queue.candidates(data, requests, [], {child["id"]}, set(), now=100), [])
+        # an operator critique is a code change in a worktree: MercMode playing its game never holds it (2026-11-10)
+        self.assertEqual(len(queue.candidates(data, requests, [{"input": {"game_id": GAME}}], set(), set(), now=100)), 1)
+        self.assertEqual(queue.candidates(data, requests, [], {child["id"]}, set(), now=100), [])   # its own run does
+
+    def test_a_critique_is_operator_first_and_names_the_live_bot_and_its_evidence(self):
+        for gid, name, path in (("115f9cdbba115432", "Resident Evil 6", "gbox/mercs/titles/re6_switch.py"),
+                                ("270a15eb98dab4d7", "Resident Evil 4", "gbox/mercs/titles/re4_switch.py"),
+                                ("52d15709be0fda1a", "Resident Evil 5", "gbox/mercs/titles/re5_switch.py")):
+            text = bots.files_text(gid, name)
+            self.assertIn(path, text)
+            self.assertIn("gbox/mercs/core/doctrine.py", text)
+            self.assertNotIn("re4_merc_bot", text)
+        self.assertIn("re6_switch.py", bots.files_text("other-id", "Resident Evil 6"))   # the title alone finds it
+        item = bots.add_change(self.store, GAME, note=1, text="aim the grenades at the ground, not the lava",
+                               request_id=self.parent["id"], message_id="m-lava", session_id=SID,
+                               moment="doing nade · why the frag grenade readied")
+        child = self.store.get("request", bots.ensure_request(self.store, self.create, GAME, item["id"],
+                                                              "operator")["implementation_request_id"])
+        self.assertTrue(child["context"]["operator_requested"])
+        for words in ("not game mechanics", "/api/artifacts/", f"/api/sessions/{SID}/coach/m-lava",
+                      "doing nade", f"/api/autoplay/bots/{GAME}/changes/{item['id']}", "never end silently"):
+            self.assertIn(words, child["body"])
+        data = {"version": 1, "items": {}, "last_lane": "inbox", "priority": ["x" * 16]}
+        requests = self.store.all("request")
+        queue.sync(data, {"count": 0, "items": []}, requests, now=100)
+        row = data["items"]["inbox:" + child["id"]]
+        self.assertTrue(row["operator_requested"] and row["coaching_change"])
+        self.assertEqual(queue.priority_rank(row, data), 0.5)                 # after the operator's own list only
+        self.assertLess(queue.priority_rank(row, data), queue.priority_rank({"request_id": "backlog"}, data))
+        prompt = queue._prompt(dict(row, game_id="115f9cdbba115432", title="Improve Resident Evil 6: coaching note 1"))
+        self.assertIn("OPERATOR CRITIQUE", prompt)
+        self.assertIn("gbox/mercs/titles/re6_switch.py", prompt)
+        self.assertNotIn("cast_swap", prompt)
+
+    def test_the_ticket_and_the_moment_line_name_the_switch_bot_and_what_it_was_doing(self):
+        body = coaching.TICKET_BODY.format(title="Resident Evil 6", game_id="115f9cdbba115432", kept=50,
+                                           bot_files=bots.files_text("115f9cdbba115432", "Resident Evil 6"))
+        self.assertIn("gbox/mercs/titles/re6_switch.py", body)
+        self.assertNotIn("re4_merc_bot", body)
+        tel = {"mission": "playbook: mercs_bot", "stats": {"doing": "nade", "why": "the frag readied",
+                                                            "directive_active": "fight", "running": True, "x": [1]}}
+        self.assertEqual(coaching.moment_line(tel),
+                         "playbook: mercs_bot · doing nade · why the frag readied · directive_active fight")
+        self.assertEqual(coaching.moment_line({}), "")
+
+    def test_critiques_of_one_game_run_beside_its_other_work_up_to_their_own_cap(self):
+        requests = []
+        for n in range(queue.COACHING_PER_GAME + 2):
+            item = self.add(f"note-{n}")
+            child = self.store.get("request", bots.ensure_request(self.store, self.create, GAME, item["id"],
+                                                                  "operator")["implementation_request_id"])
+            requests.append(child)
+        data = {"version": 1, "items": {}, "last_lane": "inbox"}
+        queue.sync(data, {"count": 0, "items": []}, self.store.all("request"), now=100)
+        data["items"]["inbox:other"] = {"lane": "inbox", "request_id": "other", "game_id": GAME,
+                                        "dispatch_state": "queued"}             # the game's damage batch, running
+        self.assertEqual(len(queue.candidates(data, self.store.all("request"), [], set(), set(), now=100)),
+                         len(requests))
+        for child in requests[:queue.COACHING_PER_GAME]:
+            data["items"]["inbox:" + child["id"]]["dispatch_state"] = "queued"
+        self.assertEqual(queue.candidates(data, self.store.all("request"), [], set(), set(), now=100), [])
 
     def test_existing_legacy_note_dispatch_reuses_evidence_and_cannot_target_another_session(self):
         original = {"id": "saved-note", "author": "operator", "text": "shoot", "ts": 100,

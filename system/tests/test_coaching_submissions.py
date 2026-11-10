@@ -66,14 +66,31 @@ class SubmissionTests(unittest.TestCase):
             self.add(sid="s2")
         self.assertEqual(submit.call_count, 3)
 
-    def test_interrupted_capture_submission_cannot_be_silently_replayed(self):
-        with patch.object(C, "_add_note", side_effect=RuntimeError("interrupted after job submission")) as submit:
+    def test_a_failed_submission_that_filed_nothing_is_filed_by_its_retry(self):
+        # 2026-11-10: a failure must never lock the operator's words out; nothing was filed, so the same ID files it
+        with patch.object(C, "_add_note", side_effect=[RuntimeError("store hiccup"), self.result]) as submit:
             with self.assertRaises(RuntimeError):
                 self.add()
-            with self.assertRaises(HTTPException) as error:
-                self.add()
+            self.assertEqual(C.submission_status(self.store, "s1", "unique-id", "operator")["state"], "missing")
+            out = self.add()
+            again = self.add()
+        self.assertEqual(submit.call_count, 2)
+        self.assertEqual(out["message_id"], "note")
+        self.assertTrue(again["deduplicated"])
+
+    def test_a_submission_that_failed_after_filing_answers_with_the_filed_note(self):
+        self.store.game_requests = lambda gid, statuses=None, limit=200: [
+            {"id": "ticket", "context": {"coaching": True}}]
+        def file_then_fail(store, create, submit, sid, text, actor, now, *rest):
+            store.put("request", "ticket", {"id": "ticket", "number": 5, "messages": [
+                {"id": "filed", "ts": now, "coach": {"session_id": sid, "text": text, "note": 3, "captures": {}}}]})
+            raise RuntimeError("dispatch failed after the note was filed")
+        with patch.object(C, "_add_note", side_effect=file_then_fail) as submit:
+            out = self.add()
+            again = self.add()
         self.assertEqual(submit.call_count, 1)
-        self.assertIn("check the coaching ticket", error.exception.detail)
+        self.assertEqual((out["message_id"], out["note"]), ("filed", 3))
+        self.assertTrue(again["deduplicated"])
 
     def test_history_is_bounded_and_invalid_sessions_do_not_reserve(self):
         with patch.object(C, "_add_note", return_value=self.result) as submit:
