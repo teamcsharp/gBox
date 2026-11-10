@@ -75,6 +75,9 @@ its line; on the PS3 these were +0x30 + 0x20 * line and +8.
 The way into No Mercy from boot is: PRESS ANY BUTTON, Load successful, PLAY GAME, EXTRA CONTENT, THE MERCENARIES
 UNITED, START, NO MERCY, stage, character. After a round: Leaderboards? (B), results (+), STAGE SELECT, CHARACTER
 SELECT, the round. `re5_switch.screen` / `step` walk all of this from RAM, and the menus need held presses (0.3 s).
+Since 2026-11-09 the walk writes these cursors in RAM (read back, held, proven by one native step) and learns each
+screen's waits; the character select's confirmed cursor never passed 9 in 1,289 rounds (inferred: 10 entries that
+wrap): docs/research/re5-instant-menus.md.
 
 ## Controls (Type D, from the game's own Controller Settings)
 
