@@ -384,7 +384,10 @@ class Screensaver:
             # it BootHung; RE6, booting in the render's gaps, was fine.)
             warming = any(r.get('state') == 'prelaunch'
                           for r in (mercmode.warm_pool(self.store, node) or {}).values())
-            comfy.sync(game_active(run) or warming)
+            # Paused only while ComfyUI has work (comfy_coordinator: an idle ComfyUI stays awake during play, operator
+            # 2026-11-10 via Pine Box); the run's title / phase go into its published state for Pine's PiP menu.
+            comfy.sync(game_active(run) or warming,
+                       {"title": (run or {}).get("title"), "phase": (run or {}).get("phase"), "warming": warming})
         except Exception as e:                               # noqa: BLE001 - a comfy hiccup must never stop the schedule
             print(f"comfy-coordinator: tick sync failed: {type(e).__name__}: {e}", flush=True)
 
@@ -1978,7 +1981,13 @@ def install(app, store, config, auth, submit, workers, archive):
     saver.config = config
     if getattr(config, "comfy_pause_on_play", False):
         from .comfy_coordinator import ComfyCoordinator
-        saver.comfy = ComfyCoordinator(getattr(config, "texture_comfy_url", ""), True)
+        from pathlib import Path
+        from .comfy_coordinator import STATE_FILE
+        # its state for Pine Box (paused / pid / since / why / the game), and the watcher that reads ComfyUI's queue
+        # every few seconds while a game plays, so a render asked for mid-round pauses at once, off the scheduler tick
+        saver.comfy = ComfyCoordinator(getattr(config, "texture_comfy_url", ""), True,
+                                       state_path=Path(config.data_dir) / STATE_FILE)
+        saver.comfy.start()
     app.state.autoplay_screensaver = saver
     from . import roulette
     from .server import JobRequest
