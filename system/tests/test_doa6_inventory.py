@@ -182,3 +182,35 @@ def test_classify_counts_window_straddling_magic_and_survives_truncated_tail(tmp
     summary = d6.classify_bin_entries(d6.Rdb(idx), sample=None, initial_chunk=len(first) + 4)
     assert summary["RRPreview.rdb.bin"]["sampled"] == 3
     assert summary["RRPreview.rdb.bin"]["content"] == {"g1t": 1, "g1m": 1, "unreadable": 1}
+def test_loose_override_noop_roundtrip():
+    """Writer-seed: an unmodified IDRK entry rebuilt as a loose override stays byte-identical."""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        idx = root / "CharacterEditor.rdb"
+        idx.write_bytes(build_rdb([("chr@1", 0x1A2B3C4D, b"G1M payload")]))
+        rdb = d6.Rdb(idx)
+        entry = rdb.entries[0]
+        raw = d6.extract_rdb_entry(rdb, entry)
+        assert raw[:8] == d6.IDRK_MAGIC
+        mod = root / "mod"
+        path = d6.write_loose_override(mod, entry.crc1, raw)
+        assert path.name == "0x1a2b3c4d.file"
+        assert path.parent == mod.resolve() / "data"
+        assert path.read_bytes() == raw  # byte-identical no-op round trip
+        # the override still parses and decompresses through the same reader
+        assert d6.Idrk.from_bytes(path.read_bytes()).crc1 == entry.crc1
+
+
+def test_loose_override_validation():
+    import tempfile
+    from pathlib import Path
+    import pytest
+    with tempfile.TemporaryDirectory() as tmp:
+        with pytest.raises(ValueError):
+            d6.loose_override_name(-1)
+        with pytest.raises(ValueError):
+            d6.loose_override_name(0x1_0000_0000)
+        with pytest.raises(ValueError):
+            d6.write_loose_override(Path(tmp) / "m", 1, b"NOTIDRK!")

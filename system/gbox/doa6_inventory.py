@@ -394,6 +394,48 @@ def inventory(game_dir: str | Path, bins_manifest: str | Path | None = None,
     return manifest
 
 
+LOOSE_NAME_FMT = "0x%08x.file"
+
+
+def loose_override_name(crc1: int) -> str:
+    """Loose-file override name for an IDRK entry's `crc1` field.
+
+    The executable resolves loose `data/` files by this 32-bit value (observed as the
+    entry's crc1 field on the owned build; see PR #83 manifest). Not a guess of a hash
+    algorithm: crc1 is read straight from the container header.
+    """
+    if not isinstance(crc1, int) or not 0 <= crc1 <= 0xFFFFFFFF:
+        raise ValueError(f"crc1 must be a u32, got {crc1!r}")
+    return LOOSE_NAME_FMT % crc1
+
+
+def extract_rdb_entry(rdb: Rdb, entry: RdbEntry) -> bytes:
+    """Raw IDRK entry bytes for `entry` from its parsed index/archive file."""
+    start = entry.index_offset
+    if not 0 <= start <= len(rdb.raw) - 8:
+        raise ValueError(f"entry offset {start:#x} outside {rdb.path}")
+    if rdb.raw[start:start + 8] != IDRK_MAGIC:
+        raise ValueError(f"no IDRK entry at {start:#x} of {rdb.path}")
+    return rdb.raw[start:start + entry.entry_size]
+
+
+def write_loose_override(mod_dir: str | Path, crc1: int, entry_bytes: bytes) -> Path:
+    """Write one IDRK entry blob into a mod's `data/` override tree.
+
+    This is the no-op-override builder for the writer stage: dropping the unmodified
+    entry bytes at `data/<loose_override_name(crc1)>` must make the game load the same
+    resource. Never call this on the game directory itself — mods are built in an
+    isolated tree and shipped separately.
+    """
+    mod_dir = Path(mod_dir).resolve()
+    (mod_dir / "data").mkdir(parents=True, exist_ok=True)
+    path = mod_dir / "data" / loose_override_name(crc1)
+    if entry_bytes[:8] != IDRK_MAGIC:
+        raise ValueError("override payload is not an IDRK entry")
+    path.write_bytes(entry_bytes)
+    return path
+
+
 def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="DOA6 owned-build inventory")
