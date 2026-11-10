@@ -302,6 +302,63 @@ def speck_nj() -> bytes:
     return nj_file(data, ptrs)
 
 
+# --- platform-aware body (de)serialisation ---------------------------------------------------------------------------
+#
+# The Dreamcast body is little-endian; the GC body is big-endian in the node tree and the model headers, while the NJCM
+# *container* size stays little-endian on both (`pso_gc.njcm_payload` proves that from the disc). `build_swap` was
+# written for the Dreamcast path, so the GC adaptation starts here: one place that parses and re-emits a class body with
+# the right endianness, which is what the swap's encode() step then edits.
+BODY_ENDIAN = {"dc": "<", "gc": ">"}
+
+
+def body_endian(platform: str) -> str:
+    """The struct format for a platform's node tree ("<" Dreamcast, ">" GameCube)."""
+    try:
+        return BODY_ENDIAN[str(platform).lower()]
+    except KeyError:
+        raise ValueError(f"unknown platform {platform!r}; known: {sorted(BODY_ENDIAN)}") from None
+
+
+def read_body_payload(disc, cls: str, platform: str = "dc") -> tuple[bytes, bytes, bytes, str]:
+    """(the whole body file, its NJCM payload, its tail, the platform's struct format) for a class."""
+    from . import pso_gc as _gc
+    body_file = pso_gc_paths.read_part(disc, f"PSO/PL{cls.upper()}BDY00.NJ")
+    before, payload, after = _gc.njcm_payload(body_file)
+    return body_file, payload, after, body_endian(platform)
+
+
+def body_models(payload: bytes, nodes: list, e: str) -> dict:
+    """{node index: (vertex list bytes, primitive list bytes, centre (x, y, z), radius)} from a parsed payload."""
+    from . import ninja as _ninja
+    models = {}
+    for i, nd in enumerate(nodes):
+        mo = nd.get("model")
+        if not mo:
+            continue
+        vo, po, cx, cy, cz, r = struct.unpack_from(e + "II4f", payload, mo)
+        vl = payload[vo:vo + _ninja.chunk_list_len(payload, vo, "v", e)] if vo else b""
+        pl = payload[po:po + _ninja.chunk_list_len(payload, po, "p", e)] if po else b""
+        models[i] = (vl, pl, (cx, cy, cz), r)
+    return models
+
+
+def rewrite_body(disc, cls: str = "A", platform: str = "gc") -> dict:
+    """Parse a class body with its platform's endianness and re-emit it unchanged.
+
+    Returns {body, nodes, payload, pof0, platform}. The emitted file is `NJCM` + little-endian size + big/little-endian
+    payload + a fresh POF0 table from the writer's pointer list, so it is structurally the same body with the writer's
+    own model layout - the step every swap's encode() takes before it changes a strip.
+    """
+    from . import ninja as _ninja
+    body_file, payload, _after, e = read_body_payload(disc, cls, platform)
+    nodes = _ninja.tree_nodes(payload, 0, e)
+    models = body_models(payload, nodes, e)
+    out_payload, _root, ptrs = _ninja.write_tree(nodes, models, 0, e)
+    body = b"NJCM" + struct.pack("<I", len(out_payload)) + out_payload + _ninja.pof0(ptrs)
+    return {"body": body, "nodes": len(nodes), "payload": len(out_payload), "pof0": len(body) - 8 - len(out_payload),
+            "platform": platform}
+
+
 def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str = "C", blender: str | None = None,
                progress=lambda p, m: None, scale: dict | None = None) -> dict:
     """disc: a gbox.gdrom.GDRom. -> {files {disc path: bytes}, report, rigged, atlas}."""
