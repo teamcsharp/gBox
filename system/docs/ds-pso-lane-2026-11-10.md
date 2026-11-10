@@ -2011,16 +2011,59 @@ quest will not be happy about. Both healthy.
 2. Bring the party together before accepting anything: PSO co-op expects both players in the same area for a quest.
 3. Then the quest warp -> Forest 1, P1's accept test, P6a's in-game proof, P6b, P7a rigging, demo -> route fixture.
 
+## Round 39 (2026-11-10) — the lobby boundary is a band you can flip inside, and room 30 borders room 20
+
+This round set out to walk the two untested room-10 doors and instead found something that explains several flaky rounds.
+
+### The room-10 <-> room-20 transition is a zone, not a line
+
+Walking the boundary from both sides in one session:
+
+```
+room 20  (95,55) -> (115,105) -> (140,150)     became room 10 at (142,152)
+room 10  (142,152) -> (180,40)                 became room 20 again at (93,51)
+room 20  (105,136)                             stuck inside the band, still room 20
+```
+
+The crossing lives around **(95-142, 50-152)**, and **either room can be current while the character is inside it**. That
+reframes several earlier results:
+
+* a waypoint that skims the band flips the room under the walker -- which is what happened twice in this round, and very
+  likely what made rounds 25-29's route attempts drift ("went the wrong way", "stuck", "left room 20") on paths that
+  looked reasonable;
+* reaching a *specific* room means approaching it from well outside the band, not from a nearby waypoint.
+
+Adjacency found the same way: walking from `(-149,12)` toward `(-20,60)` entered **room 30** at about `(-169,46)` and came
+back to room 20, so the shop floor borders room 20 there, not room 10.
+
+### The Med door is still untested, and why
+
+`TObjCityDoor_Med` at `(194,-93)` sits on the far side of that band from the lobby's interior. Every attempt to reach it
+from `(142,152)` flipped into room 20 before arriving. That is a routing problem with a known cause now, not a mystery:
+approach it along the lobby's outside rather than across the band.
+
+### Player 2 is much harder to drive than player 1
+
+Four legs of P2 movement all ended in "stuck" inside the region `(240-310, 180-220)`, with the position drifting between
+legs -- the keys move it, but it does not converge. P1 walked the same city with the same walker. That asymmetry is worth
+knowing before any co-op route depends on P2: for now, **route on P1 and use P2 only for short local moves**, or bring the
+party together by moving P1 and letting P2 follow the same waypoints at a shorter stride.
+
+### Research doc updated
+
+`pso-gc-pioneer2-rooms.md` gained the boundary-zone section and a table of every guild candidate with its status, so the
+next round does not re-walk what is already settled.
+
 ## 7. Next
 
-1. **Three door candidates left, all named:** `TObjCityDoor_Med` at (194,-93) and `TObjCityDoor_Shop` at (-165,148)
-   in room 10 (neither ever walked to), and the central dome's large doorways in room 20. One of them is the guild.
-2. **Keep the party together** before accepting a quest: P1 is in room 20 and P2 in the lobby, and PSO co-op expects
-   both players in the same area.
-3. Then the quest warp -> Forest 1, P1's accept test, P6a's in-game proof, P6b's editor page, P7a's rigging, and the
-   demo -> route fixture.
+1. **Reach `TObjCityDoor_Med` at (194,-93) in room 10** by approaching it from outside the boundary band
+   (95-142, 50-152) rather than from `(142,152)` -- skimming the band flips the room under the walker. Then do the
+   same for `TObjCityDoor_Shop` at (-165,148); one of them is the guild.
+2. **Route on player 1.** P2 could not converge over four legs inside `(240-310, 180-220)` while P1 walked the same
+   city with the same walker; treat P2 as short-move-only until its control path is understood.
+3. Then bring the party together, take the quest, and let its warp carry the party to Forest 1 -- P1's accept test,
+   then P6a's in-game proof, P6b's editor page, P7a's rigging and the demo -> route fixture.
 
-Repeatable from the spawn now (round 38): lobby (229,254) -> (170,190) -> (120,120) crosses into room 20 at about
-(106,101); then (23,-34) -> (-77,29) -> (-224,-26) reaches the west end. `docs/research/pso-gc-pioneer2-rooms.md`
-carries the walked-routes table, and records that the west end is the **shopping district** (GURHAL / LICENSED
-shopfronts, a cloakroom NPC, a night street) with no answering counter -- the guild is elsewhere.
+New this round: the lobby/room-20 boundary is a **band**, not a line -- the room id flips either way while the
+character is inside (95-142, 50-152) -- and room 30 borders room 20 around (-169,46). Both are in
+`docs/research/pso-gc-pioneer2-rooms.md`, together with the status of every guild candidate.
