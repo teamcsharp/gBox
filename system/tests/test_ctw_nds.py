@@ -118,6 +118,49 @@ def test_fat_manifest_digest_is_stable():
     assert manifest["fat_manifest_sha256"] == expected
 
 
+def test_wad_toc_table_is_self_consistent():
+    """ROM.TOC parses as 8-byte records plus a u32 size table that exactly
+    fill the member (loader layout at RAM 0x02002c98)."""
+    manifest = _manifest()
+    toc_member = next(m for m in manifest["members"] if m["name"] == "ROM.TOC")
+    import struct as _s
+    with open(ROM, "rb") as handle:
+        handle.seek(toc_member["start"])
+        raw = handle.read(toc_member["size"])
+    toc = ctw_nds.parse_toc(raw)
+    n_entries, n_sizes = len(toc["entries"]), len(toc["sizes"])
+    assert n_entries > 0 and n_sizes > 0
+    assert 4 + 8 * n_entries + 4 + 4 * n_sizes == toc_member["size"]
+    keys = [e[0] for e in toc["entries"]]
+    assert keys == sorted(keys)  # binary-search precondition
+    assert sum(1 for e in toc["entries"] if e[1] > 0) > len(toc["entries"]) * 9 // 10
+
+
+def test_wad_member_resolution():
+    """Known WAD members resolve by hashed name and return sane bytes."""
+    import struct as _s
+    gxt = ctw_nds.read_wad_member(ROM, "E_MAIN.gxt")
+    assert gxt is not None and gxt["data"][:6] == b"DS_GXT"
+    pal = ctw_nds.read_wad_member(ROM, "TopScreenPaletteSprites.pal")
+    assert pal is not None and pal["size"] == 512
+    first, second = _s.unpack_from("<2H", pal["data"], 0)
+    assert first == 0x7C1F and second == 0x0000  # BGR555 white/black
+    icons = ctw_nds.read_wad_member(ROM, "SS_Icons.bin")
+    assert icons is not None and icons["size"] > 1024
+    missing = ctw_nds.read_wad_member(ROM, "no_such_member.xyz")
+    assert missing is None
+
+
+def test_name_hash_matches_loader():
+    """The hash function reproduces the loader's one-at-a-time variant."""
+    # Case folding: lower and upper spellings must collide.
+    assert ctw_nds.name_hash("E_MAIN.gxt") == ctw_nds.name_hash("e_main.GXT")
+    # Distinct names must not collide on the tested sample.
+    names = ["gtafont.bin", "world.bin", "SS_Icons.bin", "SS_Portraits.bin"]
+    keys = {ctw_nds.name_hash(n) & ctw_nds.TOC_HASH_MASK for n in names}
+    assert len(keys) == len(names)
+
+
 if __name__ == "__main__":
     failures = 0
     for name, func in sorted(globals().items()):

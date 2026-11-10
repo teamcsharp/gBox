@@ -11,9 +11,21 @@ CTW-specific view on top of it:
   * a streaming sha256 of the owned source, so the build identity is recorded
     by hashing the actual bytes rather than copying a reference digest.
 
-Scope note: this stops at the container boundary.  The internal record layout
-of ROM.TOC / ROM.WAD / game.pak is not established yet, so nothing here claims
-to read a character, mesh, skeleton or texture.
+The ROM.TOC / ROM.WAD record layout was reverse engineered from the ARM9
+loader (THUMB code at RAM 0x02002c98..0x02002dac of the owned build, hash
+mask literal 0x00ffffff at 0x02002db0):
+
+  * ROM.TOC is ``u32 entry_bytes`` followed by ``entry_bytes/8`` 8-byte
+    records, then ``u32 count`` and ``count`` u32 sizes;
+  * each record is ``{u24 hash, u24 offset (x256 bytes into ROM.WAD),
+    u16 size index}``;  the byte-3 overlap is resolved because lookups mask
+    the first u32 with 0x00ffffff;
+  * names are hashed with Bob Jenkins' one-at-a-time hash after mapping
+    ``a-z`` to ``A-Z`` (loader code at RAM 0x02002d38).
+
+`read_wad_member` therefore resolves a member by name and returns its stored
+bytes from the owned ROM (sizes come from the u32 table; no decompression is
+applied, matching the loader's direct-read path for these members).
 """
 
 from __future__ import annotations
@@ -21,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import struct
 
 from . import nitro
 
@@ -131,3 +144,92 @@ def manifest(path):
         "fat_manifest_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
         "fat_manifest": entries,
     }
+
+
+# --- ROM.TOC / ROM.WAD member directory (reverse engineered loader) ---
+
+TOC_HASH_MASK = 0x00FFFFFF  # literal at ARM9 RAM 0x02002db0
+_WAD_HEADER = struct.Struct("<4I")
+
+
+def name_hash(name):
+    """One-at-a-time hash (Jenkins) with a-z mapped to A-Z, as the loader at
+    RAM 0x02002d38 computes it."""
+    value = 0
+    for char in str(name).encode("ascii"):
+        if 0x61 <= char <= 0x7A:
+            char -= 0x20
+        value = (value + char) & 0xFFFFFFFF
+        value = (value + (value << 10)) & 0xFFFFFFFF
+        value ^= value >> 6
+    value = (value + (value << 3)) & 0xFFFFFFFF
+    value ^= value >> 11
+    value = (value + (value << 15)) & 0xFFFFFFFF
+    return value
+
+
+def parse_toc(data):
+    """Parse ROM.TOC bytes into ``{"entries": [(hash, offset, size_index)],
+    "sizes": [u32...]}``."""
+    entry_bytes = struct.unpack_from("<I", data, 0)[0]
+    if entry_bytes % 8 or 4 + entry_bytes + 4 > len(data):
+        raise ValueError("ROM.TOC entry area size 0x%x is not a table" % entry_bytes)
+    entries = []
+    for index in range(entry_bytes // 8):
+        record = data[4 + 8 * index:12 + 8 * index]
+        key = struct.unpack_from("<I", record, 0)[0] & TOC_HASH_MASK
+        offset = struct.unpack_from("<I", record[3:6] + b"\0", 0)[0]
+        size_index = struct.unpack_from("<H", record, 6)[0]
+        entries.append((key, offset, size_index))
+    tail = data[4 + entry_bytes:]
+    count = struct.unpack_from("<I", tail, 0)[0]
+    sizes = list(struct.unpack_from("<%dI" % count, tail, 4))
+    return {"entries": entries, "sizes": sizes}
+
+
+def wad_directory(rom):
+    """Return the parsed ROM.TOC of ``rom`` (a nitro.NitroROM)."""
+    toc_id = rom.ids["rom.toc"]
+    start, end = rom.fat[toc_id]
+    return parse_toc(rom.data[start:end])
+
+
+def find_wad_entry(toc, name):
+    """Binary-search the TOC for ``name`` (loader loop at 0x02002d76)."""
+    target = name_hash(name) & TOC_HASH_MASK
+    entries, sizes = toc["entries"], toc["sizes"]
+    low, high = 0, len(entries)
+    while high:
+        half = high >> 1
+        if entries[low + half][0] < target:
+            low += half + 1
+            high -= half + 1
+        else:
+            high = half
+    if low < len(entries) and entries[low][0] == target:
+        return low, entries[low], sizes[entries[low][2]] if entries[low][2] < len(sizes) else None
+    return None, None, None
+
+
+def read_wad_member(path, name):
+    """Resolve and read one ROM.WAD member by name from the ROM at ``path``.
+
+    Returns ``{"offset", "size", "data"}`` or ``None`` when the hashed name is
+    not in the TOC.  ``offset`` is the member start inside the ROM file.
+    """
+    with open(path, "rb") as handle:
+        data = handle.read()
+    rom = nitro.NitroROM(data)
+    toc = wad_directory(rom)
+    wad_start, wad_end = rom.fat[rom.ids["rom.wad"]]
+    wad = data[wad_start:wad_end]
+    if len(wad) < _WAD_HEADER.size:
+        raise ValueError("ROM.WAD truncated")
+    index, entry, size = find_wad_entry(toc, name)
+    if entry is None or size is None:
+        return None
+    offset = wad_start + (entry[1] << 8)
+    if offset + size > len(data):
+        raise ValueError("member %r exceeds ROM bounds" % name)
+    return {"index": index, "offset": offset, "size": size,
+            "data": data[offset:offset + size]}
