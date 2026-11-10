@@ -375,52 +375,60 @@ def _give_weapon(ad, base: int, st: dict, rng) -> dict | None:
 
 
 def _patch_loadout(ad, base: int, picks: dict) -> dict:
-    """The Mercenaries loadout's weapon / level immediates rewritten (re4_weapons.LOADOUT_SITES): picks {character:
-    [weapon id per site]} (None keeps a site's own). Each site is checked against its original instruction (this
-    build) or the one written last before it is written; read back. Returns {character: [ids written]}."""
+    """The Mercenaries loadout's code rewritten slot by slot (re4_weapons.LOADOUT_SLOTS): picks {character: [weapon id
+    per slot]} (None puts a slot's own weapon back). A slot is all or nothing: every word of it (the give, the
+    inventory searches, the levels, the first magazine, the mask) is read and checked against the build's own word or
+    one this writes first (re4_weapons.slot_word_ok); a slot with any other word is never touched. Then each word is
+    written and read back; a write that fails part-way puts the slot's words written so far back. Returns
+    {character: [weapon id per patched slot]}."""
     done: dict = {}
     for ch, ids in picks.items():
-        sites = W.LOADOUT_SITES.get(ch)
-        if not sites:
+        slots = W.LOADOUT_SLOTS.get(ch)
+        if not slots:
             continue
-        for k, (wsite, lsite) in enumerate(zip(sites["weapons"], sites["levels"])):
+        for k, slot in enumerate(slots):
             want = ids[k] if k < len(ids) else None
-            off, rd, orig = wsite
-            iid = orig if want is None else want
-            lv = W.max_levels(iid) if want is not None else None
-            writes = [(off, rd, orig, iid)]
-            if lsite is not None:
-                loff, lrd, lorig = lsite
-                writes.append((loff, lrd, lorig, lv["packed"] if lv else lorig))
+            try:
+                words = W.slot_words(slot, want)
+                roles = {off: role for off, role, _ in slot["code"]}
+                cur = {off: struct.unpack("<I", bytes(ad.read_memory(base + off, 4)))[0] for off, _, _ in words}
+            except (ValueError, OSError, RuntimeError, struct.error):
+                continue
+            if not all(W.slot_word_ok(roles[off], orig, cur[off]) for off, orig, _ in words):
+                continue                                     # not this build's code: never patched
+            written: list = []
             ok = True
-            for o, r_, orig_imm, imm in writes:
+            for off, _orig, new in words:
+                word = struct.pack("<I", new)
                 try:
-                    cur = struct.unpack("<I", bytes(ad.read_memory(base + o, 4)))[0]
-                    got = W.movz_imm(cur)
-                    if got is None or got[0] != r_:
-                        ok = False                       # not this build's instruction: never patched
-                        break
-                    word = struct.pack("<I", W.movz_w(r_, imm))
-                    ad.write_memory(base + o, word)
-                    ok &= bytes(ad.read_memory(base + o, 4)) == word
+                    ad.write_memory(base + off, word)
+                    ok = bytes(ad.read_memory(base + off, 4)) == word
                 except (ValueError, OSError, RuntimeError, struct.error):
                     ok = False
+                if not ok:
                     break
-            if ok:
-                done.setdefault(ch, []).append(iid)
+                written.append(off)
+            if not ok:
+                for off in written:                          # never leave a give without its searches
+                    try:
+                        ad.write_memory(base + off, struct.pack("<I", cur[off]))
+                    except (ValueError, OSError, RuntimeError, struct.error):
+                        pass
+                continue
+            done.setdefault(ch, []).append(want if want is not None else slot["id"])
     return done
 
 
 def _draw_loadouts(rng, fixed: int | None = None) -> dict:
-    """{character: [weapon id per site]}: the fixed pick in the equipped slot, else random high-powered campaign
+    """{character: [weapon id per slot]}: the fixed pick in the equipped slot, else random high-powered campaign
     weapons (no repeat within a character)."""
     out = {}
-    for ch, sites in W.LOADOUT_SITES.items():
+    for ch, slots in W.LOADOUT_SLOTS.items():
         pool = [i for i in W.HIGH_POWER if W.max_levels(i) is not None]
         rng.shuffle(pool)
-        ids = pool[:len(sites["weapons"])]
+        ids = pool[:len(slots)]
         if fixed is not None:
-            ids[0] = fixed
+            ids[[bool(s.get("equipped")) for s in slots].index(True)] = fixed
         out[ch] = ids
     return out
 
@@ -435,7 +443,7 @@ def loadout_weapon(ad, weapon, snap: dict | None = None) -> dict:
     iid = int(weapon) if weapon else None
     if iid is not None and W.max_levels(iid) is None:
         return {"verified": False, "reason": f"no max-level row for weapon {iid:#x} ({W.name(iid)})"}
-    picks = {ch: [iid] if iid is not None else [None, None] for ch in W.LOADOUT_SITES}
+    picks = {ch: [iid if s.get("equipped") else None for s in slots] for ch, slots in W.LOADOUT_SLOTS.items()}
     done = _patch_loadout(ad, base, picks)
     st["loadout_weapon"] = iid
     _save(st)
@@ -450,7 +458,9 @@ def random_weapon(ad, on: bool, snap: dict | None = None) -> dict:
     st.pop("weapon_given_round", None)                 # a fresh pick on the next snapshot of a round
     st.pop("loadout_drawn", None)
     return {"random_weapon": bool(on), "verified": True,
-            "note": "a random max-level high-powered campaign weapon put in his hand each round"}
+            "note": "from the next boot: each character's own loadout slots get random max-level high-powered "
+                    "campaign weapons (built and equipped by the game); a character without a patchable slot gets "
+                    "one put in his hand at the round's start"}
 
 
 def one_hit(ad, on: bool, snap: dict | None = None) -> dict:
@@ -572,7 +582,7 @@ def pre_round(ad, m=None) -> dict:
             import random as _random
             fixed = st.get("loadout_weapon")
             draws = _draw_loadouts(_random.Random(), fixed) if st.get("random_weapon") else \
-                {ch: [fixed] for ch in W.LOADOUT_SITES}
+                {ch: [fixed if s.get("equipped") else None for s in slots] for ch, slots in W.LOADOUT_SLOTS.items()}
             done = _patch_loadout(ad, base, draws)
             st["loadout_drawn"] = base
             st["loadouts"] = {W.CHARACTERS.get(ch, ch): [W.name(i) for i in ids] for ch, ids in done.items()}
@@ -590,9 +600,10 @@ def maintain(ad, snap: dict | None = None) -> dict:
         if st.get("base") is None:
             st["base"] = snap["module_base"]
         elif st["base"] != snap["module_base"]:          # a new boot: the operator's settings stay, the counts go
-            keep = {k: st[k] for k in ("enemy_health", "one_hit", "kill_time", "unlimited_health", "weapon_power",
-                                      "max_level", "aim_lock", "fire_rate", "infinite_ammo", "random_weapon",
-                                      "fire_gap_orig") if k in st}
+            keep = {k: st[k] for k in SAVED_KEYS + ("fire_gap_orig",) if k in st}
+            if st.get("pre_round_base") == snap["module_base"]:  # what pre_round already put into this boot
+                keep.update({k: st[k] for k in ("pre_round_base", "loadouts", "loadout_drawn", "fp_applied_base",
+                                                 "rf_applied_base") if k in st})
             st.clear()
             st.update(keep, base=snap["module_base"])
         frac = 0.0 if st.get("one_hit") else st.get("enemy_health")
@@ -613,19 +624,17 @@ def maintain(ad, snap: dict | None = None) -> dict:
             out["ammo_rows"] = _apply_ammo(ad, snap["module_base"], st) if st.get("infinite_ammo") else 0
             st["rf_applied_base"] = snap["module_base"]
         rnd = snap.get("round_key") or snap["module_base"]
-        if st.get("random_weapon") and st.get("loadout_drawn") != rnd:
-            import random as _random
-            done = _patch_loadout(ad, snap["module_base"], _draw_loadouts(_random.Random()))
-            st["loadout_drawn"] = rnd                   # the next round's loadouts (the game builds them)
-            st["loadouts"] = {W.CHARACTERS.get(ch, ch): [W.name(i) for i in ids] for ch, ids in done.items()}
-            out["loadouts_drawn"] = len(done)
+        # The loadouts are code: pre_round patches them on the menus, before the boot's first round runs that code.
+        # Never here, mid-round: the emulator's JIT may hold the function compiled already, and a later round could
+        # run a mix of old and new blocks (a give without its search is a crash).
         if st.get("random_weapon") and snap.get("player") and st.get("weapon_given_round") != rnd:
             st["weapon_given_round"] = rnd
             try:
                 ch = bytes(ad.read_memory(snap["module_base"] + W.GAME_OBJ + W.G_CHARACTER, 1))[0]
             except (ValueError, OSError):
                 ch = None
-            if ch is not None and ch not in W.LOADOUT_SITES:  # no loadout sites (HUNK): the in-hand swap
+            if ch is not None and W.CHARACTERS.get(ch, ch) not in (st.get("loadouts") or {}):
+                # no loadout slot patched for him this boot (Krauser, or a patch refused): the in-hand swap
                 import random as _random
                 given = _give_weapon(ad, snap["module_base"], st, _random.Random())
                 if given is not None:

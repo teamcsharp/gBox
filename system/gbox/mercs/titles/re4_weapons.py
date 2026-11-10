@@ -142,20 +142,53 @@ MERC_LOADOUTS = {
 }
 
 
-# The Mercenaries loadout's constants in its code (0x295070): MOVZ Wd, #imm16 instructions that hand the case its
-# weapons and their level words, found by decoding the function in the decrypted executable (2026-11-10). Each site:
-# (module offset, register, the build's own immediate). Rewriting an immediate before a round makes the game build
-# and equip that weapon itself - its model, its magazine, its levels - the way RE5's weapon override works.
-LOADOUT_SITES = {
-    0: {"weapons": ((0x2951D4, 0, 0x27), (0x2951E4, 0, 0x94)),           # Leon: Blacktail (equipped), Riot Gun
-        "levels": ((0x295278, 8, 0x2114), (0x2952F8, 8, 0x3204))},
-    2: {"weapons": ((0x2954A0, 0, 0x21), (0x2954C0, 0, 0x2F)),           # Ada: Punisher (equipped), semi-auto rifle
-        "levels": ((0x29530C, 8, 0x3126), None)},
-    4: {"weapons": ((0x295A78, 0, 0x52),),                               # Krauser: the bow (equipped)
-        "levels": (None,)},
-    5: {"weapons": ((0x295C68, 0, 0x23), (0x295C78, 0, 0x2A)),           # Wesker: Handgun (equipped), Killer7
-        "levels": ((0x295D8C, 8, 0x5226), (0x295F80, 8, 0x1101))},
+# The Mercenaries loadout function (0x295070; a jump table by character at 0xA06D98) as decoded from the decrypted
+# executable (2026-11-10). Per weapon the case does three things with its id, and a patch has to change all of them:
+#   give       MOV w0, #id; MOV w1, #count; BL 0x3578E0       the item is made (its model, its magazine)
+#   find       CMP w10, #id                                   the inventory is searched for it - before the level write,
+#              and again before the equip (BL 0x294600). The level block does NOT check the search's result: an id the
+#              search cannot find is a null item and the game reads address 6 (a crash at the round's start), which is
+#              why a give without its finds must never be written.
+#   levels     MOV w8, #levels; BFXIL into item+6; MOV w1, #capacity level + 1; BL 0x293C90 (the first magazine)
+#   mask       the AND that keeps item+6 afterwards: the compiler folded the known levels into the mask constant
+#              (0x72114 for the Blacktail's 0x2114), so new levels would come out ANDed with the old ones; it is
+#              replaced by the full mask 0x7FFFF (MOV w8, #0x7ffff, or AND w8, wN, #0x7ffff).
+# Each entry: (module offset, role, the build's own instruction word); every word was read from main.bin and checked.
+# Not patched, so a random weapon reaches them by the in-hand swap instead: Ada's semi-auto rifle (the scope 0x45 is
+# attached to it by index), Wesker's semi-auto rifle (its own rifle code at 0x295FD0), Krauser's bow (no level block:
+# a gun given there would start with an empty magazine and arrows for ammo).
+LOADOUT_SLOTS = {
+    0: (                                                                  # Leon
+        {"id": 0x27, "equipped": True, "code": (                          # Blacktail
+            (0x2951D4, "give", 0x528004E0), (0x295254, "find", 0x71009D5F), (0x295354, "find", 0x71009D5F),
+            (0x295278, "levels", 0x52842288), (0x295280, "first_mag", 0x320007E1), (0x295294, "mask_mov", 0x11004108))},
+        {"id": 0x94, "code": (                                            # Riot Gun
+            (0x2951E4, "give", 0x52801280), (0x2952D4, "find", 0x7102515F),
+            (0x2952F8, "levels", 0x52864088), (0x295300, "first_mag", 0x321E03E1), (0x295314, "mask_mov", 0x11037908))},
+    ),
+    2: (                                                                  # Ada
+        {"id": 0x21, "equipped": True, "code": (                          # Punisher
+            (0x2954A0, "give", 0x52800420), (0x295584, "find", 0x7100855F), (0x295E94, "find", 0x7100855F),
+            (0x2955A8, "levels", 0x528624C8), (0x2955B0, "first_mag", 0x321E03E1), (0x2955BC, "mask_and", 0x121F46A8))},
+        {"id": 0x30, "code": (                                            # TMP
+            (0x2954B0, "give", 0x321C07E0), (0x2955F8, "find", 0x7100C15F),
+            (0x29561C, "levels", 0x52842088), (0x295624, "first_mag", 0x320007E1), (0x295630, "mask_and", 0x121E42A8))},
+    ),
+    3: (                                                                  # HUNK
+        {"id": 0x3E, "equipped": True, "code": (                          # Custom TMP (an ORR-immediate give)
+            (0x29581C, "give", 0x321F13E0), (0x2958AC, "find", 0x7100F95F), (0x29592C, "find", 0x7100F95F),
+            (0x2958D0, "levels", 0x52844088), (0x2958D8, "first_mag", 0x320007E1), (0x2958EC, "mask_mov", 0x11040108))},
+    ),
+    5: (                                                                  # Wesker
+        {"id": 0x23, "equipped": True, "code": (                          # Handgun (the silencer goes on it)
+            (0x295C68, "give", 0x52800460), (0x295D68, "find", 0x71008D5F), (0x29605C, "find", 0x71008D5F),
+            (0x295D8C, "levels", 0x528A44C8), (0x295D94, "first_mag", 0x321F07E1), (0x295DA8, "mask_mov", 0x11044688))},
+        {"id": 0x2A, "code": (                                            # Killer7 (its mask is already 0x7ffff)
+            (0x295C78, "give", 0x52800540), (0x295F5C, "find", 0x7100A95F),
+            (0x295F80, "levels", 0x52822028), (0x295F88, "first_mag", 0x321F03E1))},
+    ),
 }
+FULL_MASK = 0x7FFFF            # item+6 levels | item+8 bits 0-2 (the empty bit and its neighbours): everything kept
 
 
 def movz_w(rd: int, imm: int) -> int:
@@ -170,6 +203,71 @@ def movz_imm(word: int):
     if (word & 0xFFE00000) != 0x52800000:
         return None
     return word & 31, (word >> 5) & 0xFFFF
+
+
+def cmp_w(rn: int, imm: int) -> int:
+    """CMP Wn, #imm12 (SUBS WZR, Wn, #imm)."""
+    if not (0 <= rn < 31 and 0 <= imm <= 0xFFF):
+        raise ValueError("cmp w: register 0..30, immediate 0..0xfff")
+    return 0x7100001F | (imm << 10) | (rn << 5)
+
+
+def mov_full_mask(rd: int) -> int:
+    """MOV Wd, #0x7ffff (ORR Wd, WZR, #0x7ffff: nineteen ones)."""
+    return 0x32000000 | (18 << 10) | (31 << 5) | rd
+
+
+def and_full_mask(rd: int, rn: int) -> int:
+    """AND Wd, Wn, #0x7ffff."""
+    return 0x12000000 | (18 << 10) | (rn << 5) | rd
+
+
+def slot_words(slot: dict, iid: int | None) -> list:
+    """[(module offset, the build's word, the word for this weapon)] of one loadout slot; iid None (or the slot's own
+    weapon at its own levels) gives every original word back."""
+    out = []
+    lv = max_levels(iid) if iid is not None and iid != slot["id"] else None
+    if iid is not None and iid != slot["id"] and lv is None:
+        raise ValueError(f"no max-level row for weapon {iid:#x} ({name(iid)})")
+    for off, role, orig in slot["code"]:
+        if lv is None:
+            new = orig
+        elif role == "give":
+            new = movz_w(0, iid)
+        elif role == "find":
+            new = cmp_w(10, iid)
+        elif role == "levels":
+            new = movz_w(8, lv["packed"])
+        elif role == "first_mag":
+            new = movz_w(1, min(lv["capacity"] + 1, EXCLUSIVE + 1))
+        elif role == "mask_mov":
+            new = mov_full_mask(8)
+        elif role == "mask_and":
+            new = and_full_mask(orig & 31, (orig >> 5) & 31)
+        else:
+            raise ValueError(f"loadout role {role!r}")
+        out.append((off, orig, new))
+    return out
+
+
+def slot_word_ok(role: str, orig: int, cur: int) -> bool:
+    """Is `cur` at a site of this role the build's own word or one slot_words writes there (any weapon)? Anything else
+    is another build's code: never written."""
+    if cur == orig:
+        return True
+    if role == "give":
+        got = movz_imm(cur)
+        return got is not None and got[0] == 0
+    if role == "find":
+        return (cur & ~(0xFFF << 10)) == (orig & ~(0xFFF << 10))
+    if role in ("levels", "first_mag"):
+        got = movz_imm(cur)
+        return got is not None and got[0] == (8 if role == "levels" else 1)
+    if role == "mask_mov":
+        return cur == mov_full_mask(8)
+    if role == "mask_and":
+        return cur == and_full_mask(orig & 31, (orig >> 5) & 31)
+    return False
 
 
 def name(iid: int) -> str:
