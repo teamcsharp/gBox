@@ -961,3 +961,19 @@ So the mercmode chain is now complete on the client side: `switch_romfs_material
   no `Unmapped` line), so the donor tag plus the appended maps is a loadable configuration.
 * Not yet captured: a gameplay frame with that enemy in view to confirm the maps render. The round ended before the
   capture (the driver pressed through it), so the next pass needs a frame grabbed during play.
+
+## Round 45 status (2026-11-10, ~00:35 CST): the game-side visual check is now a driver problem, not a build problem
+
+* Attempted the in-motion frame three ways: a fixed key sequence landed on the CONTROLS/OPTIONS menu (the save's menu
+  layout differs from the earlier runs), and the RAM-driven driver either skipped through the round (pressing A on the
+  fallback branch) or ended back at the title after a B press. The build itself is fine - round 44's donor-tag build
+  played a full round to RESULTS.
+* Improved `drive_fast.py`: once it declines the CONTINUE? prompt it now **stops pressing keys** and only captures
+  (`declined` flag), so a round cannot be skipped by the driver. It still needs a clean entry into the round from the
+  title state, which the fixed sequence cannot guarantee on this save.
+* Repo change this round: a test that `model_swap.swap_models` exposes `keep_tag` with the merged-tag default (7 tests in
+  the swap suite). The synthetic-arc test for the tag value itself was dropped: building a valid MRL payload for
+  `model_indices` is more than a test fixture should fake.
+* Next: make the driver's entry deterministic - read `screen()` and act per state *including* the options/controls
+  screens (B out), instead of relying on a key sequence; then capture 5 frames over 60 s while never pressing after the
+  prompt is declined.
