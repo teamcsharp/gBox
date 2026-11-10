@@ -173,3 +173,42 @@ character-select still needs the CP4 window.
 
 Tests: `test_pso_swapfit.py` 8 passed; `test_pso_gc_swap.py` + player texture/equipment suites 36 passed (before the writer
 change; the writer change is exercised by the build above).
+
+## Round 82: correction - the built body is fine; round 81's "exploded" was my exporter's bug
+
+The round-81 diagnosis ("the writer biases the strips into the wrong vertex-cache slots") was **wrong**, and the render that
+suggested it was misled by the exporter, not by the game data. The evidence is in the parser itself:
+
+```python
+def _snap(self, idx):
+    """The vertex cache entry as it is when a strip is drawn: later nodes reuse cache slots (player models do),
+    so resolving indices after the whole walk would pick up the wrong vertices."""
+```
+
+`ninja.NJ.tris` stores every corner as `(idx, uv, snap)` with that snapshot, and `ninja.to_manifest` already uses `c[2]`.
+My round-81 OBJ export looked the positions up in the **final** `vbuf` - exactly the mistake `_snap` exists to prevent, which
+is why every node's triangles collapsed onto the last node's cache slots and drew as a heap.
+
+**Re-exported using the per-corner snapshots:**
+
+```
+bones 64, vertices 703 (deduplicated by position), triangles 875, degenerate 0, texture buckets [1]
+bounds  x -8.03..8.18   y -11.32..6.03   z -0.04..22.59
+```
+
+and the render (`D:\gBox\pso-ds\renders\cp12-body2.png`, Cycles, 64 samples, 900x900, **3090 only**) shows a **coherent
+humanoid**: head, torso, arms, legs, feet, the cape and the sword in the same pose as the rigged candidate
+(`cp12-chrom-hucast.png`), with **no exploded polygons and zero degenerate triangles**.
+
+**The two renders now agree, and they agree numerically too:** the built body's bounds (x -8.03..8.18, y -11.32..6.03,
+z -0.04..22.59) match the rigged candidate's (x -7.92..9.02, y -11.71..6.04, z -1.00..22.62) to within a unit.
+
+**CP12's accept is therefore two of three:**
+
+- [x] a swapped body that `pso_swapfit` marks safe - `SAFE: True`, 64 bones, subset buckets, 875 triangles
+- [x] it renders without exploded polygons - `cp12-body2.png` (the game body) and `cp12-chrom-hucast.png` (the candidate)
+- [ ] it shows at character select with no Dolphin crash dialog (a frame) - needs the CP4 window
+
+The lesson is worth recording for the rest of the program: **a render is only as good as the export feeding it**, and
+`ninja.NJ`'s snapshot is load-bearing for any multi-node body. A regression test for that (two nodes reusing a cache base)
+is the follow-up on this branch.

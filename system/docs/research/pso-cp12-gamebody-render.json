@@ -1,0 +1,24 @@
+{
+ "body": "D:\\gBox\\pso-ds\\cp12-work\\out\\PSO_PLCBDY00.NJ",
+ "obj": "D:\\gBox\\pso-ds\\renders\\cp12-body.obj",
+ "bones": 64,
+ "vertices": 703,
+ "triangles": 875,
+ "degenerate": 0,
+ "texture_buckets": [
+  1
+ ],
+ "bounds": [
+  [
+   -8.03,
+   -0.04,
+   -6.03
+  ],
+  [
+   8.18,
+   22.59,
+   11.32
+  ]
+ ],
+ "bytes": 49172
+}
