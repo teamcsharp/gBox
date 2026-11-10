@@ -309,6 +309,8 @@ def create_app(config: Config) -> FastAPI:
     # --- Phantasy Star Online item catalog (from the disc) + item thumbnails (PSO wiki) for the item sidebar ---
     from . import pso_api
     pso_api.routes(app, config, auth)
+    from . import pso_editor_api
+    pso_editor_api.routes(app, config, auth)          # P6b's page: the placement editor (GET /pso/editor)
     from . import pso_run_review
     pso_run_review.install(app, config, auth, store)
     from . import memory_cards
