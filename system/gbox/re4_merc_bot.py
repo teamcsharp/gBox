@@ -6,7 +6,8 @@ frozen, every Ganado cloned twice more, the aim's stick speed x3 (a game constan
 auto: that restarted the magnum's recoil every 3 frames and bent Leon's arm back over his head). play() then drives
 Leon from RAM at ~20 Hz with the pad only, the way a player would
 (operator 2026-10-20: "I want the game to be played like a normal game"; "it is unnatural and nightmare fuel"): it
-reads Leon and never writes him - no facing, aim pitch or position writes:
+reads Leon and never writes his facing or position; since request #3852 (aim_lock, on in play(), GBOX_RE4_AIM_LOCK=0 turns it off) it
+writes the game's own aim state (Leon +0x400 offset, AIM_PITCH) onto the target while the aim pose is up:
   * reads Leon (player em: *0x802B3044, +0x94 position, +0xA4 facing) and every live Ganado (EmMgr 0x8027DF20 slots:
     flags & 0x601 and +0x398 != 0xFF, +0x94 position);
   * steering is closed loop on his real facing: the stick turns him (left = +heading, ~140-230 deg/s measured on the
@@ -131,6 +132,7 @@ AIM_PITCH = 0x80218738                           # the aim's vertical blend, f32
                                                  # (0x8013FA6C); a global (the aim struct 0x80218650 +0xE8), kept between
                                                  # aims. Read only. (Leon +0x258, read before: a motion value, not the aim
                                                  # - it never follows the stick; run1.rec 2026-10-20)
+AIM_OFF_MAX = 0.45                               # |aim offset| the lock writes (aim_of trusts up to 0.5)
 PITCH_SCALE = 1.0                                # radians at a full blend (assumed: the aim-up pose's angle)
 AIM_YAW_OFF = 0x400                              # Leon +0x400 f32: the aim's horizontal offset from his facing while he
                                                  # aims (radians, + left like the facing): the stick moves it first,
@@ -380,6 +382,38 @@ def aim_of(m, pl: int, rot: float, r: tuple) -> tuple:
     return wrap(rot + off), off, pitch
 
 
+def poke(m, addr: int, data: bytes) -> bool:
+    """Write RAM through the bot's writer (m.wr) or, behind a read-only view, the session adapter. Never raises."""
+    try:
+        wr = getattr(m, "wr", None)
+        ad = getattr(m, "adapter", None)
+        if wr is None and ad is not None and callable(getattr(ad, "write_memory", None)):
+            wr = ad.write_memory
+        if wr is None:
+            return False
+        wr(addr, data)
+        return m.rd(addr, len(data)) == data
+    except Exception:                                  # noqa: BLE001 - a lost adapter must not stop the tick
+        return False
+
+
+def aim_lock(m, p: dict, tgt_pos: tuple, aim_y: float) -> dict:
+    """Perfect aim (operator request #3852: "impeccable aim with any weapon"): while Leon's aim pose is up, write the
+    game's own aim state so the gun points at the target - the horizontal offset (Leon +0x400, radians from his facing,
+    the game's range +-AIM_OFF_MAX) and the vertical blend (AIM_PITCH, -1..1 = -/+PITCH_SCALE radians). The shot then
+    leaves along the game's own aim, so it lands on whatever the weapon can hit (a thrown egg included). Never raises;
+    a target out of the offset range (the bot turns him first) or a failed write verifies False."""
+    px, py, pz = p["pos"]
+    tx, _, tz = tgt_pos
+    dist = max(math.hypot(tx - px, tz - pz), 1.0)
+    off = wrap(heading(tx - px, tz - pz) - p["rot"])
+    pitch = max(-PITCH_MAX, min(PITCH_MAX, math.atan2(aim_y - (py + GUN_H), dist)))
+    if abs(off) > AIM_OFF_MAX:
+        return {"verified": False, "reason": "target outside the aim's horizontal range", "off": off}
+    ok = poke(m, p["ptr"] + AIM_YAW_OFF, struct.pack(">f", off)) and poke(m, AIM_PITCH, struct.pack(">f", pitch / PITCH_SCALE))
+    return {"verified": ok, "off": off, "pitch": pitch, **({} if ok else {"reason": "aim write unavailable"})}
+
+
 def snapshot(m) -> dict:
     """room, Merc clock (s), combo, Leon's health, Leon {ptr, pos, rot (his facing), aim_rot (where the gun points:
     facing + the aim's offset), aim_off, pitch (the aim's, radians), r (his routine bytes), stick (the game's pad x,
@@ -611,7 +645,7 @@ class Bot:
     """One decision per tick; the caller sends what it returns ({'hold': keys} / {'tap': key}) and sleeps. Pad only:
     the stick turns Leon, R aims, A fires / vaults, B runs."""
 
-    def __init__(self, m, clock=time.time, nav=None, learn_dir: Path | None = None, round_maps_dir: Path | None = None):
+    def __init__(self, m, clock=time.time, nav=None, learn_dir: Path | None = None, round_maps_dir: Path | None = None, aim_lock: bool = False):
         self.m, self.clock = m, clock
         self.nav = nav if nav is not None else _navmap()
         self.learn_dir = learn_dir
@@ -619,6 +653,7 @@ class Bot:
         # a deployment, RE5's layout) - with no learn_dir the maps were dropped before (2026-10-26)
         self.round_maps_dir = round_maps_dir if round_maps_dir is not None else round_maps_dir_for(None, learn_dir)
         self.learned: LearnedMap | None = None
+        self.aim_lock = bool(aim_lock)
         self.r_since = None                           # since when the bot has held R (the aim pose is up after a moment)
         self.miss_run, self.pitch_i = 0, 0
         self.pitch_up, self.pitch_key = "up", None    # the stick direction that raises the aim (learned); held last tick
@@ -874,6 +909,12 @@ class Bot:
                 return {"hold": {"down", "b"}}
             return {"hold": self._turn(err, aiming=False)}               # turn round first (fast)
         self.r_since = now if self.r_since is None else self.r_since
+        if self.aim_lock and self._pose_up(p, now):                     # perfect aim: the game's aim state onto him
+            lock = globals()["aim_lock"](self.m, p, tgt["pos"], tgt["pos"][1] + (HEAD_AIM_H if band is BODY_BAND and not tgt.get("thrown") else band[2]))
+            self.stats["aim_lock"] = lock
+            if lock.get("verified"):
+                err = wrap(heading(tx - px, tz - pz) - (p["rot"] + lock["off"]))
+                p["aim_rot"], p["pitch"] = wrap(p["rot"] + lock["off"]), lock["pitch"]
         if tgt.get("thrown"):                                           # a weapon in the air: at its own height
             height, level = self._aim_height(p, tgt["pos"][1], dist, now)
         else:                                                           # a body: any pitch that lands on it
@@ -1970,7 +2011,7 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
     m = m or memory(ad)
     if ad is not None and getattr(m, "adapter", None) is None:
         m.adapter = ad                                 # verified writes (the stalemate clock cut) use the owning adapter
-    bot, held = Bot(m, clock=clock, learn_dir=learn_dir or learn_dir_for(ad),
+    bot, held = Bot(m, clock=clock, aim_lock=os.environ.get("GBOX_RE4_AIM_LOCK", "1") != "0", learn_dir=learn_dir or learn_dir_for(ad),
                     round_maps_dir=round_maps_dir_for(ad, learn_dir)), set()
     if stats is not None:
         stats.update(bot.stats)

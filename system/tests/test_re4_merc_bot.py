@@ -1691,3 +1691,44 @@ def test_while_the_operator_has_the_pad_leon_holds_nothing_and_learns_nothing():
     assert (len(bot.learned.blocked) if bot.learned else 0) == walls and bot.goal is None
     bot.stats["operator_control"] = False
     assert bot.tick(B.snapshot(m)) != {"hold": set()}                     # the Ganado ahead: the bot plays again
+
+
+def test_aim_lock_writes_the_game_aim_onto_the_target_and_fires():
+    """Request #3852: with the aim pose up, the lock writes Leon+0x400 / AIM_PITCH so the game's own aim is on him."""
+    now = [0.0]
+    m = world([((600, 0, 1800), True)])
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False, aim_lock=True)
+    bot.r_since = -1.0
+    m.put(PL + 0xFC, ">4B", 0, 6, 1, 1)
+    s = B.snapshot(m)
+    keys = bot.tick(s)["hold"]
+    lock = bot.stats["aim_lock"]
+    off = struct.unpack(">f", m.rd(PL + B.AIM_YAW_OFF, 4))[0]
+    assert lock["verified"] and abs(off - lock["off"]) < 1e-6 and abs(off) > 0.1
+    assert abs(off - B.heading(600, 1800)) < 1e-5
+    assert struct.unpack(">f", m.rd(B.AIM_PITCH, 4))[0] == pytest.approx(lock["pitch"], abs=1e-6)
+    assert "a" in keys and not keys & {"left", "right"}                   # on target: fires, no stick turning
+
+
+def test_aim_lock_off_and_out_of_range_never_write():
+    m = world([((0, 0, 2000), True)])
+    facing(m, 0.0)
+    m.put(PL + 0xFC, ">4B", 0, 6, 1, 1)
+    bot = B.Bot(m, clock=lambda: 0.0, nav=False, aim_lock=False)
+    bot.r_since = -1.0
+    bot.tick(B.snapshot(m))
+    assert m.rd(PL + B.AIM_YAW_OFF, 4) == bytes(4) and "aim_lock" not in bot.stats
+    p = B.snapshot(m)["player"]
+    assert not B.aim_lock(m, p, (2000, 0, 0), 1550.0)["verified"]          # 90 degrees: outside the aim's range
+    assert m.rd(PL + B.AIM_YAW_OFF, 4) == bytes(4)
+
+
+def test_aim_lock_without_a_writer_is_reported_not_raised():
+    class RO:
+        def __init__(self, m): self.m = m
+        def rd(self, a, n): return self.m.rd(a, n)
+    m = world([((0, 0, 2000), True)])
+    facing(m, 0.0)
+    p = B.snapshot(m)["player"]
+    assert B.aim_lock(RO(m), p, (300, 0, 2000), 1550.0)["verified"] is False
