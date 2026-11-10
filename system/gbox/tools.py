@@ -6586,6 +6586,7 @@ class SwitchDecryptIn(BaseModel):
     path: str = ""                   # romfs-get: the RomFS path to extract
     out: str = ""                    # exefs: a directory; romfs-get: a file
     keys: str = ""                   # prod.keys; empty = gbox.hactool.keys_path()
+    donor: str = ""                  # arc-compare: a donor ARC file on this worker to compare against the game's
     limit: int = 20                  # romfs-list: how many sample entries to return
 
 
@@ -6607,18 +6608,30 @@ def switch_decrypt(inp: SwitchDecryptIn, ctx: Ctx):
         raise ToolUnavailable(f"{container} is not a file on this worker")
     if inp.op == "info":
         return {"result": {"op": "info", "members": switch_extract.members(container)}}
-    if inp.op not in ("exefs", "romfs-list", "romfs-get", "bktr"):
+    if inp.op not in ("exefs", "romfs-list", "romfs-get", "bktr", "arc-compare"):
         raise ValueError(f"unknown op {inp.op}")
     keys_path = inp.keys or (str(hactool.keys_path()) if hactool.keys_path() else "")
     if not keys_path:
         raise ToolUnavailable("no prod.keys on this worker: pass keys=<path>")
+    if inp.op == "arc-compare" and not (inp.path and inp.donor):
+        raise ValueError("arc-compare needs path=<RomFS arc> and donor=<file>")
     if inp.op in ("exefs", "romfs-get") and not inp.out:
         raise ValueError(f"{inp.op} needs out=")
     nca = switch_extract.Nca(container, inp.nca, switch_nca.load_keys(keys_path))
     out = {"op": inp.op, "title_id": nca.header["title_id"], "size": nca.header["size"],
            "sections": [{k: s[k] for k in ("index", "offset", "size", "fs_type", "crypt_type")}
                         for s in nca.header["sections"]]}
-    if inp.op == "bktr":
+    if inp.op == "arc-compare":
+        from . import switch_arc
+        romfs = nca.romfs()
+        entry = next((f for f in romfs["files"] if f["path"] == inp.path), None)
+        if not entry:
+            raise ValueError(f"{inp.path} is not in this RomFS")
+        section = next(s for s in nca.header["sections"] if s["fs_type"] == switch_nca.FS_ROMFS)
+        game = nca.read_section(section["index"], nca._romfs_at + romfs["header"]["data_offset"]
+                                + entry["offset"], entry["size"])
+        out["compare"] = switch_arc.compare(game, Path(inp.donor).read_bytes())
+    elif inp.op == "bktr":
         fs = next(s["index"] for s in nca.header["sections"] if s["fs_type"] == switch_nca.FS_ROMFS)
         out["bktr"] = switch_bktr.superblock_offsets(nca.header["header"], fs)
     elif inp.op == "romfs-list":
@@ -6649,3 +6662,4 @@ def switch_decrypt(inp: SwitchDecryptIn, ctx: Ctx):
             (target / name).write_bytes(data)
         out["files"] = sorted(files)
     return {"result": out}
+

@@ -62,3 +62,10 @@ def test_out_is_required_for_file_ops(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="needs out"):
         tools.switch_decrypt(tools.SwitchDecryptIn(op="exefs", container=str(container(tmp_path)), nca="a.nca"),
                              ctx(tmp_path))
+
+def test_arc_compare_needs_path_and_donor(tmp_path, monkeypatch):
+    from gbox import hactool
+    monkeypatch.setattr(hactool, "keys_path", lambda: str(tmp_path / "prod.keys"))
+    with pytest.raises(ValueError, match="needs path"):
+        tools.switch_decrypt(tools.SwitchDecryptIn(op="arc-compare", container=str(container(tmp_path)),
+                                                   nca="a.nca"), ctx(tmp_path))
