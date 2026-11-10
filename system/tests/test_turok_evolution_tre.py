@@ -39,3 +39,30 @@ def test_real_build_head():
     recs = t.parse_index(buf)
     assert len(recs) == 9879 and t.index_is_sorted(recs)
     assert len(t.resolve_pr_paths(buf)) == len(t.pr_paths(buf)) == 1488
+
+
+def test_entry_spans_synthetic():
+    R = t.TreRecord
+    recs = [R(0, 1, 0, 100), R(0, 2, 0, 130), R(0, 3, 0, 130), R(0, 4, 0, 200)]
+    assert t.entry_spans(recs) == {100: 30, 130: 70}
+    assert t.entry_spans(recs, 250)[200] == 50
+
+
+def test_atr_header():
+    assert t.atr_body_size(b"\x01atr\x82\x00\x0e\x60rest") == 3680
+    assert t.atr_body_size(b"SWAP0000") is None
+
+
+@pytest.mark.skipif(not ROM or not os.path.exists(ROM), reason="owned tre head not provided")
+def test_real_build_atr_spans():
+    buf = open(ROM, "rb").read()
+    recs = t.parse_index(buf)
+    spans = t.entry_spans(recs)
+    n = 0
+    for o, s in spans.items():
+        if o + 8 <= len(buf) and o + s <= len(buf):
+            b = t.atr_body_size(buf[o:o + 8])
+            if b is not None:
+                assert s == b + t.ATR_OVERHEAD
+                n += 1
+    assert n >= 500

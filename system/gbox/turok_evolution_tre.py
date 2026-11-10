@@ -57,3 +57,29 @@ def resolve_pr_paths(buf: bytes) -> Dict[str, TreRecord]:
     """Map every plaintext ``*PR`` path to its index record (KeyError-free)."""
     by_crc = {r.crc: r for r in parse_index(buf)}
     return {p: by_crc[path_crc(p)] for p in pr_paths(buf) if path_crc(p) in by_crc}
+
+
+# --- payload layout (verified on owned build, GTKE51) -----------------------
+# Field b is the payload byte offset into supertree0.tre.  Payloads are packed
+# back to back in ascending b order, so stored span = next_b - b.  Fields
+# 'flags' (not a size) and 'a' (not CRC32/Adler32 of the span) are still
+# unresolved.  'atr' payloads carry an 8-byte header
+#   01 'a' 't' 'r' 82 <u24 BE body_size>
+# and span == body_size + 15 on all 528 checked entries.
+ATR_OVERHEAD = 15
+
+
+def entry_spans(recs: List[TreRecord], total_size: int | None = None) -> Dict[int, int]:
+    """Map payload offset b -> stored span (next distinct b - b)."""
+    offs = sorted({r.b for r in recs})
+    spans = {o: n - o for o, n in zip(offs, offs[1:])}
+    if total_size is not None and offs and total_size > offs[-1]:
+        spans[offs[-1]] = total_size - offs[-1]
+    return spans
+
+
+def atr_body_size(head: bytes) -> int | None:
+    """Body size from an 'atr' payload header, or None if not atr."""
+    if len(head) >= 8 and head[0] == 1 and head[1:4] == b"atr" and head[4] == 0x82:
+        return int.from_bytes(head[5:8], "big")
+    return None
