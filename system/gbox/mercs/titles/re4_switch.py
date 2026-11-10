@@ -1430,6 +1430,11 @@ LOW_LIFE, LOW_LIFE_MM, LOW_LIFE_RUN_S = 0.35, 3000.0, 1.2
 ESCAPE_MM, ESCAPE_FROM_MM, ESCAPE_CLEAR_MM, ESCAPE_ARRIVED_MM = 3000.0, 4500.0, 1200.0, 700.0
 ESCAPE_TRIES_DEG = (0, 35, -35, 70, -70, 105, -105, 140, -140)
 ESCAPE_QUICK_RAD = 2.2
+# Walled in on open floor, a ladder DOWN is the way out (operator 2026-11-10: the bot did not notice the ladder and died
+# cornered): the nearest down-ladder crossing of the stage mesh (re4_nav crossing rows, kind "ladder", direction "down")
+# whose approach lies within LADDER_ESCAPE_MM of him and nearer him than any Ganado near him (they would reach it
+# first otherwise). The goal is the landing; the mesh walker takes the crossing (approach, portal, Y pulse).
+LADDER_ESCAPE_MM, LADDER_FOE_MARGIN_MM = 9000.0, 300.0
 # Heavies (the chainsaw Ganados, the Garrador, the Gatling man: a maximum health of HEAVY_HP or more; ordinary Ganados
 # read 400, one 3500 on 2026-11-10): they kill from full life in one blow (live 23:21, HUNK / Base: Unlimited life
 # had undone 26 hits, then one took him from 1560 to 0), so one inside HEAVY_KEEP_MM is run from - the quick turn,
@@ -2368,8 +2373,35 @@ class Bot:
                 except Exception:                        # noqa: BLE001 - a mesh error: that line is not trusted
                     continue
             return goal
+        ladder = self._ladder_escape_goal(p, live, snap)
+        if ladder is not None:
+            self.stats["escape_ladders"] = self.stats.get("escape_ladders", 0) + 1
+            return ladder
         self.stats["escapes_walled_in"] = self.stats.get("escapes_walled_in", 0) + 1
         return None
+
+    def _ladder_escape_goal(self, p, live, snap):
+        """The landing of the nearest ladder DOWN he can reach before the Ganados near him, or None (no mesh, no
+        ladder, none within LADDER_ESCAPE_MM, or a Ganado nearer its approach than he is)."""
+        rows = getattr(snap.get("nav"), "crossing_rows", None)
+        if not isinstance(rows, dict):
+            return None
+        pos = p["pos"]
+        best, gap = None, LADDER_ESCAPE_MM
+        for row in rows.values():
+            try:
+                if row.get("kind") != "ladder" or row.get("direction") != "down":
+                    continue
+                ap, land = row["approach"], row["landing"]
+                if abs(float(ap[1]) - float(pos[1])) > 1500.0:
+                    continue                                 # not on his floor
+                d = self._flat(pos, ap)
+                if d >= gap or any(self._flat(e["pos"], ap) < d + LADDER_FOE_MARGIN_MM for _d, _e, e in live):
+                    continue
+                best, gap = (float(land[0]), float(land[1]), float(land[2])), d
+            except (KeyError, TypeError, ValueError, IndexError):
+                continue
+        return best
 
     def _run_to(self, p, goal, snap) -> dict:
         """The run to an escape goal: the quick turn when it lies behind him, else _approach (the mesh walker) with B."""
