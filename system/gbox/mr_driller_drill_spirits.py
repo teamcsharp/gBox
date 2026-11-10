@@ -99,3 +99,46 @@ def inventory(rom: bytes) -> dict:
             "pak_containers": sum(1 for f in files if rom[f.start:f.start + 4] == b"PAK0"),
             "target": {"path": TARGET_PATH, "rom_offset": tgt.start, "size": tgt.size,
                        "members": members}}
+
+
+# ---- analysis stage: Character.bin cell-layout probe (HYPOTHESIS, data-driven) ----
+FRAME_TILES_W = 4          # tiles per 32x32 cell row (peak of seam-match, see seam_by_width)
+FRAME_BYTES = 512          # 4x4 tiles * 32 B (4bpp 8x8)
+
+
+def split_member(m: bytes) -> dict:
+    """Split a Character.bin member into 2 BGR555 16-colour palettes + 512 B cells."""
+    if len(m) < 0x40:
+        raise ValueError("member shorter than 0x40 header")
+    pals = [list(struct.unpack_from("<16H", m, 0)), list(struct.unpack_from("<16H", m, 0x20))]
+    body = m[0x40:]
+    return {"palettes": pals, "body": body, "cells": len(body) // FRAME_BYTES,
+            "remainder": len(body) % FRAME_BYTES}
+
+
+def _tile(body: bytes, ti: int) -> list[list[int]]:
+    return [[(body[ti * 32 + y * 4 + x // 2] >> 4) if x & 1 else body[ti * 32 + y * 4 + x // 2] & 15
+             for x in range(8)] for y in range(8)]
+
+
+def seam_by_width(body: bytes, w: int) -> float:
+    """Fraction of equal pixel pairs across tile seams if tiles are row-major, w tiles wide.
+    Real tile art scores highest where w matches the true tile stride (and its multiples)."""
+    nt = len(body) // 32
+    h = nt // w
+    if w < 1 or h < 1:
+        raise ValueError("width out of range")
+    T = [_tile(body, i) for i in range(w * h)]
+    hit = cnt = 0
+    for ty in range(h):
+        for tx in range(w):
+            t = T[ty * w + tx]
+            if tx + 1 < w:
+                r = T[ty * w + tx + 1]
+                for y in range(8):
+                    hit += t[y][7] == r[y][0]; cnt += 1
+            if ty + 1 < h:
+                r = T[(ty + 1) * w + tx]
+                for x in range(8):
+                    hit += t[7][x] == r[0][x]; cnt += 1
+    return hit / cnt
