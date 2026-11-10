@@ -137,3 +137,32 @@ def test_a_path_walks_waypoints_in_order():
     out = B.walk_path(w.read, w.hold, [(-30.0, 0.0), (-30.0, -30.0)], tolerance=6.0)
     assert out["ok"] is True and len(out["legs"]) == 2
     assert [leg["to"] for leg in out["legs"]] == [(-30.0, 0.0), (-30.0, -30.0)]
+
+
+def test_a_room_change_is_reported_as_a_transition_not_a_stall():
+    """Walking into a door changes the room with no button press; the route must record it and carry on."""
+    w = World(start=(0.0, 0.0))
+    rooms = {"now": 10}
+
+    def room_of():
+        return rooms["now"]
+
+    class Doored(World):
+        def hold(self, key, seconds):
+            before = tuple(self.pos)
+            super().hold(key, seconds)
+            if tuple(self.pos) != before and self.pos[1] < -20:
+                rooms["now"] = 20            # went through the doorway mid-leg
+
+    d = Doored(start=(0.0, 0.0))
+    out = B.walk_path(d.read, d.hold, [(0.0, -30.0)], tolerance=6.0, room_of=room_of)
+    assert out["ok"] is True
+    leg = out["legs"][0]
+    assert leg["room_before"] == 10 and leg["room_after"] == 20 and leg["transition"] is True
+
+
+def test_a_route_refuses_to_run_in_the_wrong_room():
+    """Entity coordinates are per-room: a waypoint written for room 10 means nothing in room 20."""
+    w = World(start=(0.0, 0.0))
+    out = B.walk_path(w.read, w.hold, [(10.0, 0.0)], tolerance=6.0, room_of=lambda: 20, expect_room=10)
+    assert out["ok"] is False and "room 20" in out["why"] and out["legs"] == []

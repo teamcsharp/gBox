@@ -177,20 +177,37 @@ def distance(a, b) -> float:
     return math.hypot(b[0] - a[0], b[1] - a[1])
 
 
-def walk_path(read_pos, hold, waypoints, *, tolerance=8.0, log=None) -> dict:
+def walk_path(read_pos, hold, waypoints, *, tolerance=8.0, log=None, room_of=None, expect_room=None) -> dict:
     """Walk through ``waypoints`` in order, recalibrating between legs.
 
     The Pioneer 2 lobby is not an open field: its four doors are all in room 10 but the plaza railing sits between them,
     so one straight line stops halfway (round 20 walked 33 units and stalled on it). A route is a list of points the
     character has actually been seen to reach, and each leg is an ordinary closed-loop walk.
+
+    ``room_of`` is a callable returning the character's current room id. Walking into a door changes it **with no button
+    press** (round 21: room 10 -> 20 -> 10, the same coordinates working both ways), so every leg records the room
+    before and after and a change is reported as a ``transition`` rather than treated as a stall. ``expect_room`` makes
+    the route refuse to continue in a room it was not written for -- entity coordinates are per-room, so a waypoint from
+    another room is meaningless.
     """
     log = log or (lambda _m: None)
     legs = []
     for i, point in enumerate(waypoints):
+        if expect_room is not None and room_of is not None:
+            room = room_of()
+            if room is not None and room != expect_room:
+                return {"ok": False, "why": f"leg {i + 1}: in room {room}, route expects {expect_room}", "legs": legs}
+        room_before = room_of() if room_of else None
         cal = calibrate(read_pos, hold)
         leg = walk_to(read_pos, hold, point, cal=cal, tolerance=tolerance)
-        legs.append({"to": point, "ok": leg["ok"], "why": leg["why"], "end": leg["end"]})
-        log(f"leg {i + 1} -> {point}: {'ok' if leg['ok'] else leg['why']}")
+        room_after = room_of() if room_of else None
+        entry = {"to": point, "ok": leg["ok"], "why": leg["why"], "end": leg["end"],
+                 "room_before": room_before, "room_after": room_after}
+        if room_before != room_after:
+            entry["transition"] = True                 # a door was walked through, not a failure
+        legs.append(entry)
+        log(f"leg {i + 1} -> {point}: {'ok' if leg['ok'] else leg['why']}"
+            + (f" [room {room_before} -> {room_after}]" if room_before != room_after else ""))
         if not leg["ok"]:
             return {"ok": False, "why": f"leg {i + 1}: {leg['why']}", "legs": legs}
     return {"ok": True, "why": "arrived", "legs": legs}
