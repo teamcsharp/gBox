@@ -195,7 +195,11 @@
         + "\nEach is filed once, with its own submission ID. Click to retry now." };
   }
   function outboxPaint(sid, kind, ...args) {
-    for (const p of [...(painters.get(sid) || [])]) { try { p[kind](...args); } catch {} }
+    let own = [...(painters.get(sid) || [])];
+    // a note given up on while no view shows its session (MercMode moved on, a reload): any open box says so and gets
+    // the words back, rather than nobody
+    if (!own.length && kind === "failed") own = [...painters.values()].flatMap(set => [...set]);
+    for (const p of own) { try { p[kind](...args); } catch {} }
   }
   function outboxSchedule(entry, delay) {
     stopTimer(entry.timer);
@@ -230,7 +234,8 @@
     if (entry.running) return entry.running;
     if (!outbox.has(entry.clientId)) return Promise.resolve(null);
     stopTimer(entry.timer);
-    const api = apis.get(entry.sid), at = encodeURIComponent(entry.sid);
+    // (any view's api reaches the same control plane: a note of a session no view shows still goes, to its session)
+    const api = apis.get(entry.sid) || [...apis.values()].at(-1), at = encodeURIComponent(entry.sid);
     if (!api) { outboxRetry(entry, "waiting for the app"); return Promise.resolve(null); }
     entry.running = (async () => {
       let phase = "receipt";
