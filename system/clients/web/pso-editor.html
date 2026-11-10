@@ -42,6 +42,8 @@
       <input id="y" size="7" placeholder="y">
       <input id="z" size="7" placeholder="z">
       <button id="preview-btn">preview move</button>
+      <input id="mod-name" size="18" placeholder="mod name (build)">
+      <button id="build-btn">build mod</button>
     </div>
     <table><thead><tr><th>#</th><th>class</th><th>family</th><th>kind</th><th>x</th><th>y</th><th>z</th><th>world</th></tr></thead>
     <tbody id="records"></tbody></table>
@@ -106,6 +108,21 @@ document.getElementById("preview-btn").onclick = async () => {
     const data = await (await api("/api/pso/editor/preview", {method: "POST", body: JSON.stringify({ops: [op]})})).json();
     msg("preview: " + data.files + " file(s), " + data.edits + " edit(s) - no image built");
   } catch (err) { msg("preview refused: " + err.message); }
+};
+document.getElementById("build-btn").onclick = async () => {
+  if (!current) return;
+  const name = document.getElementById("mod-name").value.trim().toLowerCase();
+  if (!name) { msg("name the mod first (lowercase letters, digits, . _ -)"); return; }
+  const idx = document.getElementById("index").value;
+  const op = {op: "move", set: current, index: Number(idx),
+              x: Number(document.getElementById("x").value), y: Number(document.getElementById("y").value),
+              z: Number(document.getElementById("z").value)};
+  msg("building " + name + " ... a real disc build takes minutes");
+  try {
+    const data = await (await api("/api/pso/editor/build", {method: "POST", body: JSON.stringify({name, ops: [op]})})).json();
+    const v = data.verification || {};
+    msg("built " + data.name + ": " + data.image + " - verification ok=" + v.ok);
+  } catch (err) { msg("build failed: " + err.message); }
 };
 loadSets().catch(err => msg("error: " + err.message));
 </script>
