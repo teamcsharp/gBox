@@ -760,3 +760,26 @@ state handling so a recreated save cannot leave the title locked.
   state, not a locked game.
 * So the full route `title -> main -> play/extra -> mercs -> stage -> character -> NO -> stage load` works with posted
   keys; the two-frame hot-swap test can now run on it.
+
+## Round 32 status (2026-11-09, ~22:20 CST): the hot-reload acceptance test ran - two rounds, one session, file swapped in place
+
+One session (`recovery-re6-clean34-20261109`, Urban Chaos, Leon), no process restart:
+
+1. Round 1 completed to the RESULTS screen (Urban Chaos, Kills 0 / Rank E).
+2. At the results boundary the body arc was overwritten **in place**: `uPl00LeonUsa.arc` 1,455,481 bytes (donor) ->
+   1,626,591 bytes (the game's own body extracted with `switch_decrypt`).
+3. Round 2 started in the **same session** and ran live: `sw2-live.jpg`, timer `01'09"00`, `000/150`, zombie and HUD
+   in frame.
+4. The file was overwritten **back** to the donor body (1,455,481 bytes) and round 3 started in the **same session**:
+   `sw3-unpaused.jpg`, timer `00'47"78`, two zombies and the HUD in frame.
+
+That is the PM's hot-reload definition end to end: same overlay path, file replaced in place at a round boundary, the
+next round shows the new content, two frames of one session, no restart. Both file lengths differ, confirming the
+"only a valid arc is required" conclusion from round 26.
+
+Notes for the next pass: the pause menu is `plus` (in-game `m`) while the RESULTS screen's "End game" is also `plus`;
+the results screen needs `plus` to leave, not A. The player model is partly in shadow in both frames, so a
+character-select or brighter camera frame would make the visual difference more obvious.
+
+Also: the results screen needed the `plus` key to leave - `nav_auto` only knew `results` as an unexpected menu and
+pressed B, which does nothing there.
