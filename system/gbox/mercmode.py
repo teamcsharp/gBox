@@ -17,7 +17,7 @@ PREPARATION = 'mercmode_preparation'
 OBSERVED = 'mercmode_observed'
 COMMAND = 'mercmode_command'
 ADOPTION = 'mercmode_adoption'
-DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title': 1,
+DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title': 5,
            'presentation_priority': False, 'queue': [], 'keep_warm': 1, 'preferred_editions': {},
            # the bots' stalemate rule (gbox.mercs.stalemate; operator 2026-10-26): no enemies for 15 s with time on the
            # clock -> the clock is cut to stalemate_cut_s once per round. Rides in the launch payload (game.launch.mercmode)

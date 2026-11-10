@@ -9,6 +9,12 @@ from gbox import mercmode as M, screensaver as S
 from tests.test_screensaver import GIB, Store as BaseStore, worker
 
 
+@pytest.fixture(autouse=True)
+def _one_round_per_title(monkeypatch):
+    # the shipped default is 5 rounds per title (operator #3945); these scenarios exercise a switch after one round
+    monkeypatch.setitem(M.DEFAULT,'rounds_per_title',1)
+
+
 RE4,RE5=M.TITLES['re4']['game_ids'][0],M.TITLES['re5']['game_ids'][0]
 
 
@@ -1589,3 +1595,9 @@ def test_a_bot_may_not_relaunch_a_copy_mercmode_already_closed():
     assert not S.mercmode_closed(store,'w1-run',w['name'])                   # still the run: the bot may reset it
     assert not S.mercmode_closed(store,'w1-mine',w['name'])                  # the operator's game is never MercMode's
     assert not S.mercmode_closed(store,'w1-run','another-host')              # a host without MercMode
+
+
+def test_default_is_five_rounds_per_title_and_is_validated(monkeypatch):
+    monkeypatch.undo()
+    assert M.DEFAULT['rounds_per_title']==5
+    assert M.configure(Store(),'lilspark',{'enabled':True})['rounds_per_title']==5

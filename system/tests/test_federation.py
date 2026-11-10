@@ -363,6 +363,8 @@ def test_native_boundary_resolves_local_autoplay_parent_to_central_job(cfg):
 
 def test_actual_http_relay_launch_adoption_autoplay_and_native_boundary_rotation(cfg,monkeypatch):
     """Synthetic native receipts drive the real HTTP/store/scheduler seams; no game is run."""
+    from gbox import mercmode as _M
+    monkeypatch.setitem(_M.DEFAULT,'rounds_per_title',1)   # shipped default is 5; this scenario rotates after one
     from gbox import mercmode as M,screensaver as S
     from tests.test_mercmode import boundary
     monkeypatch.setattr(S,'START_GRACE',0)
