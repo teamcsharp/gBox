@@ -321,11 +321,77 @@ entry, class, costume and section-ID screens — or the run has to start from a 
 That is a decision for the operator (a prepared save is far cheaper than automating PSO's name entry), and it is the
 first thing the next round needs settled.
 
+## Round 4 (2026-11-10) — a character created by pad, Pioneer 2 reached, and `pso_ram` fixed against a real player
+
+P1's blocker was that the memory card held no character, so the walk could not leave SELECT CHARACTER. This round
+created one with the virtual pad and walked into Pioneer 2.
+
+### The memory card really had no character
+
+Both cards on this machine (`Dolphin User/GC/MemoryCardA.USA.raw`, 16 MiB, and the gameplay-demo card) carry PSO
+directory entries — `PSO_SYSTEM`, `PSO_CHARACTER`, `PSO_GUILDCARD`, game code `GPOE`, company `8P` — but the
+`PSO_CHARACTER` entry's block pointer and size fields read zero, and the game itself showed four `NO DATA` rows.
+PSO's own verdict is the authority: there was no usable character. Creating one was the only way forward, so that is
+what this round did.
+
+### Character creation, all by virtual-pad presses
+
+```
+PRESS START -> main menu -> OFFLINE GAME -> SELECT GAME MODE (SINGLE MODE)
+  -> SELECT CHARACTER (SLOT A, NO DATA) -> "Want to create a new Character?" YES
+  -> CHARACTER SELECT (HUmar) -> FACE editor -> A opens CHARACTER CREATION
+  -> CHARACTER NAME (on-screen keyboard, typed "BQF") -> OK
+  -> TYPE HUmar / CHARACTER NAME BQF / SECTION ID ORAN -> A CONFIRM
+  -> SELECT EPISODE (EPISODE 1) -> Pioneer 2
+```
+
+Frames: `p1c-21-after-start.jpg` (the create prompt), `p1c-45-wait.jpg`..`p1c-57-wait.jpg` (the intro, then the class
+list), `p1e-03-a.jpg` (the CHARACTER CREATION menu), `p1f-00-name.jpg` (the keyboard), `p1g-99-ok.jpg` (name entered),
+`p1h-00-created.jpg` (the confirm summary), `p1h-02-wait.jpg` (SELECT EPISODE), `p1i-01-pioneer2.jpg` (**Pioneer 2**,
+Principal Tyrell: "Are you BQF, the Hunter? I'm Principal Tyrell.").
+
+The on-screen keyboard is a grid navigated with the d-pad. The technique that works: clamp the cursor to a known cell
+first (`ddown` ×12 then `dleft` ×20 lands on `BS`), then move row by row and column by column. My column mapping was
+**two cells off** and produced `BQF` where `DSH` was intended — harmless (the name is now BQF) but recorded so the
+next attempt is exact: target column + 2.
+
+### `pso_ram` was wrong about the class name, and the live player showed it
+
+`pso_ram.player()` read the class name as a string **at** `actor+0x00`. On this build `+0x00` is a **pointer**: the
+live P1 actor at `0x80DA62A0` holds `0x80446F20` there, and `0x80446F20` is the ASCII `TObjPlayer`. So every player
+read returned `None` — the module refused a real player because it was looking at the pointer instead of through it.
+
+Fixed: `OFF_CLASS_POINTER` with `player_class(reader, ptr)` following the pointer, refusing a pointer outside the RAM
+window or one that does not land on printable text (so a stale slot still cannot be reported as a player). Tests
+updated to put the name behind a pointer, with a new test for the bad-pointer and empty-text cases.
+
+**Live, through the fixed reader**, in Pioneer 2:
+
+```json
+{"1": {"cls": "TObjPlayer", "hp": 40, "hp_max": 40, "x": 0.0, "y": -5.4e-07, "z": -2015.0,
+       "room": 41, "control_mode": 1, "action_state": 1, "hit_records": 1}}
+```
+
+and `snapshot()` reports `floor 0 / Pioneer2 / episode 1`. The HUD in the frame agrees (HP 40/40, TP 29/29, Lv 1, name
+BQF), so the RAM map and the screen agree on a real player for the first time.
+
+### Where P1 now stands
+
+The walk reaches Pioneer 2 and the state reader sees the player. What is left for P1's accept test is the town-to-field
+leg — the Hunter's Guild counter, the quest/area choice, the telepipe/warp into Forest 1 — and then the same three
+cold launches with both players. The character now exists on the card, so a relaunch does not have to create one again.
+
+### Next
+
+1. Pioneer 2 -> the Hunter's Guild -> "Forest 1" -> the field, by pad, with `pso_ram` as the state reader.
+2. Player 2: the second controller and the second character (or the same card's second slot).
+3. Then P6a's in-game proof (the moved object seen in Forest 1) and P6b (the editor page).
+
 ## 7. Next
 
-1. P1: a RAM screen discriminator. Take one live diff per screen boundary (title/main menu, main menu/SELECT
-   GAME MODE, SELECT GAME MODE/SELECT CHARACTER) and store each as a `signature()`; then the walk can assert
-   where it is with no frame. Verify it in a second boot before calling it proven.
-2. Then the rest of the offline branch: SELECT CHARACTER (a character exists on the memory card) -> Pioneer 2 ->
-   Hunter's Guild -> the telepipe -> Forest 1, both players.
-3. Then P6a's in-game proof (the moved object seen in Forest 1) and P6b (the editor page).
+1. P1: Pioneer 2 -> the Hunter's Guild -> the area choice -> Forest 1, by virtual-pad presses, with
+   `gbox.pso_ram` as the state reader. The character (HUmar `BQF`, ORAN) now exists on the card, so a relaunch
+   does not have to create one again.
+2. Player 2: the second virtual pad and a second character, then the three cold launches P1's accept test asks
+   for.
+3. Then P6a's in-game proof (the moved object seen in Forest 1) and P6b (the editor page), then P7a.
