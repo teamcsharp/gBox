@@ -23,3 +23,10 @@ def test_tables():
     s = _table(d, 0x80203d8c)
     assert len(s) == EV["tables"]["0x80203d8c"]["entries"]
     assert [n for n in s if n.startswith("MP_YH_plyrA_")] == EV["tables"]["0x80203d8c"]["plyrA_names"]
+
+def test_0x80135158_is_name_string_not_bone_list():
+    d = _dol()
+    o = _off(d, 0x80135158)
+    assert d[o:d.index(b"\0", o)] == b"MP_YH_plyrA_koshi.shp"
+    assert struct.unpack_from(">I", d, _off(d, 0x80203d8c + 16 * 26))[0] == 0x80135158
+    assert struct.unpack_from(">3I", d, _off(d, 0x80203d8c + 16 * 26 + 4)) == (0, 0, 0)
