@@ -6,7 +6,8 @@ titles.re5_room_map: RE5 Switch's Havok stages, #9360). The title modules pick t
   (off the map: water, a void), when it crosses a wall whose height span meets his body (his feet + BODY_LO_MM ..
   BODY_HI_MM: a wall on the floor below or a beam above his head does not count; an invisible blocker does), when it
   brings him nearer than body_r (BRUSH_R_MM: his half width) to such a wall than he already is (a corner, a shallow
-  angle), or when it ends within end_r of one (he would stand pressed to it, the camera inside it);
+  angle), or when it ends within end_r of one (he would stand pressed to it, the camera inside it). Both margins
+  shrink in a gap narrower than they allow (GAP_MARGIN_X of its width): a doorway passes through its middle;
 * a shot is refused when it crosses a wall that is not a blocker at the shot's own height there.
 """
 from __future__ import annotations
@@ -22,6 +23,11 @@ SAMPLE_MM = 125.0                        # the floor along a walk, half a cell a
 BUCKET_MM = 4000.0                       # the walls' lookup buckets
 EYE_MM, CHEST_MM = 1450.0, 1200.0        # a shot from his gun this high to the target's chest this high (RE4's)
 SOLID, BLOCKER, WALKED = 0, 1, 2         # a wall's flag (RoomMap)
+# A gap (a doorway, a corridor) narrower than the margins allow - walls within twice the margin on both sides of the
+# way, their nearest points within twice the margin of each other along it (two jambs, not a jamb and a wall far on) -
+# gets margins of this share of its width: through its middle he passes (a 600 mm door: 240 mm a side, his middle
+# 300 mm off each jamb), off its middle he does not. His collision radius is not measured: conservative, never shut.
+GAP_MARGIN_X = 0.4
 
 
 def _ok(p) -> bool:
@@ -48,6 +54,54 @@ def _dist_seg(px, pz, x0, z0, x1, z1) -> float:
     n2 = dx * dx + dz * dz
     t = 0.0 if n2 < 1e-9 else max(0.0, min(1.0, ((px - x0) * dx + (pz - z0) * dz) / n2))
     return math.hypot(px - (x0 + t * dx), pz - (z0 + t * dz))
+
+
+def _side(ax, az, bx, bz, px, pz) -> int:
+    """Which side of the way a -> b the point p lies on: +1 his left (the larger heading), -1 his right, 0 on it."""
+    c = (bx - ax) * (pz - az) - (bz - az) * (px - ax)
+    return 0 if abs(c) < 1e-9 else (-1 if c > 0 else 1)
+
+
+def _closest_side(ax, az, bx, bz, x0, z0, x1, z1) -> tuple:
+    """(the least distance between the way a-b and the wall, the side of the way its nearest point lies on, how far
+    along the way - mm from a - the way's own nearest point is)."""
+    if _cross(ax, az, bx, bz, x0, z0, x1, z1) is not None:
+        return 0.0, 0, 0.0
+    wx, wz = bx - ax, bz - az
+    L2 = wx * wx + wz * wz
+    L = math.sqrt(L2)
+    best = None
+    for px, pz in ((x0, z0), (x1, z1)):                    # a wall end to the way
+        t = 0.0 if L2 < 1e-9 else max(0.0, min(1.0, ((px - ax) * wx + (pz - az) * wz) / L2))
+        d = math.hypot(px - (ax + t * wx), pz - (az + t * wz))
+        if best is None or d < best[0]:
+            best = (d, _side(ax, az, bx, bz, px, pz), t * L)
+    for qx, qz, s in ((ax, az, 0.0), (bx, bz, L)):         # a way end to the wall: the wall's nearest point
+        dx, dz = x1 - x0, z1 - z0
+        n2 = dx * dx + dz * dz
+        t = 0.0 if n2 < 1e-9 else max(0.0, min(1.0, ((qx - x0) * dx + (qz - z0) * dz) / n2))
+        px, pz = x0 + t * dx, z0 + t * dz
+        d = math.hypot(qx - px, qz - pz)
+        if d < best[0]:
+            best = (d, _side(ax, az, bx, bz, px, pz), s)
+    return best
+
+
+def _point_side(a, b, w) -> int:
+    """The side of the way a -> b the wall's nearest point to b lies on."""
+    dx, dz = w[2] - w[0], w[3] - w[1]
+    n2 = dx * dx + dz * dz
+    t = 0.0 if n2 < 1e-9 else max(0.0, min(1.0, ((b[0] - w[0]) * dx + (b[2] - w[1]) * dz) / n2))
+    return _side(a[0], a[2], b[0], b[2], w[0] + t * dx, w[1] + t * dz)
+
+
+def _gap(rows, window: float = math.inf) -> float:
+    """The way's width between the walls on its two sides, rows (distance, side, wall, along): the least sum of a
+    wall's distance on his left and one's on his right whose nearest points lie within window of each other along the
+    way - a doorway's two jambs, not a jamb here and a wall far on (infinite with no such pair)."""
+    left = [(d, s) for d, side, _w, s in rows if side > 0]
+    right = [(d, s) for d, side, _w, s in rows if side < 0]
+    return min((dl + dr for dl, sl in left for dr, sr in right if abs(sl - sr) <= window), default=math.inf)
 
 
 def _dist_segs(ax, az, bx, bz, x0, z0, x1, z1) -> float:
@@ -170,18 +224,31 @@ class RoomMap:
         if hit is not None:
             w, t = hit
             return f"a wall {w[0]:.0f},{w[1]:.0f}-{w[2]:.0f},{w[3]:.0f} (y {w[4]:.0f}..{w[5]:.0f}) {t * L:.0f} mm on"
+        m = max(body_r, end_r)
+        if m <= 0.0:
+            return None
+        # the walls near the way, each with the side of it they stand on: a gap (a doorway) narrower than the margins
+        # allow gets margins of GAP_MARGIN_X of its width - through its middle he passes, off it he does not
+        rows = []
+        for k in self.walls_near(a, b, pad=2.0 * m):
+            w = self.walls[k]
+            if not self._in_band(w, a[1]):
+                continue
+            d, side, s = _closest_side(a[0], a[2], b[0], b[2], *w[:4])
+            if d < 2.0 * m:
+                rows.append((d, side, w, s))
+        br = min(body_r, GAP_MARGIN_X * _gap(rows, 2.0 * m))
         if body_r > 0.0:
-            for k in self.walls_near(a, b, pad=body_r):
-                w = self.walls[k]
-                if not self._in_band(w, a[1]):
-                    continue
-                d = _dist_segs(a[0], a[2], b[0], b[2], *w[:4])
-                if d < body_r and d < _dist_seg(a[0], a[2], *w[:4]) - 1.0:
-                    return f"brushes a wall {w[0]:.0f},{w[1]:.0f}-{w[2]:.0f},{w[3]:.0f} ({d:.0f} mm)"
+            for d, _side, w, _s in rows:
+                if d < br and d < _dist_seg(a[0], a[2], *w[:4]) - 1.0:
+                    return (f"brushes a wall {w[0]:.0f},{w[1]:.0f}-{w[2]:.0f},{w[3]:.0f} ({d:.0f} mm, margin "
+                            f"{br:.0f})")
         if end_r > 0.0:
-            w = self.wall_near((b[0], a[1], b[2]), end_r)
-            if w is not None:
-                return f"ends {end_r:.0f} mm from a wall {w[0]:.0f},{w[1]:.0f}-{w[2]:.0f},{w[3]:.0f}"
+            ends = [(_dist_seg(b[0], b[2], *w[:4]), _point_side(a, b, w), w, L) for _d, _s, w, _t in rows]
+            er = min(end_r, GAP_MARGIN_X * _gap(ends))
+            for d, _side, w, _s in ends:
+                if d < er:
+                    return f"ends {d:.0f} mm from a wall {w[0]:.0f},{w[1]:.0f}-{w[2]:.0f},{w[3]:.0f} (margin {er:.0f})"
         return None
 
     def walk_clear(self, a, b, **kw) -> bool:
