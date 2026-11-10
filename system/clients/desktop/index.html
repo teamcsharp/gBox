@@ -4565,6 +4565,7 @@ function pipMenu(x, y) {
                  ["ask", "❓ Ask a question…"], ["-"],
                  ["analysis", "Analysis: evidence, console and crystals"],
                  ["tasks", "Tasks: active work and new requests"],
+                 ["tasks-popup", "📊 Spark2 tasks: live 3D dashboard (pop-up)  Ctrl+Shift+T"],
                  ["mercs-map", "🗺 Mercenaries live map ↗"], ["mercs-review", "📊 Mercenaries run reviewer ↗"], ["mercmode", ""],
                  ["fixgame", "⟳ Report & fix (relaunch this game)"],
                  // "⟳ Rebuild & relaunch <PC>": update that PC's code + packages, self-check, restart its worker and app (gbox/node_rebuild.py)
@@ -5051,6 +5052,7 @@ async function gameAction(a) {
     }catch(error){toast(error.message);}return;
   }
   try {
+    if(a==='tasks-popup'){await gbox.tasksOpen({origin:S?.apiUrl}); return;}
     if(a==='tasks'){if(!$('#taskpanel').classList.contains('on'))$('#tb-tasks').click();return;}
     if(a==='mercs-map'||a==='mercs-review')return await openMercsWindow(a==='mercs-map'?'map':'reviewer');
     if (a.startsWith("bot:")) return botDemoInView(EMB.game, a.slice(4));   // "🤖 Bot demo on <PC>" for this game

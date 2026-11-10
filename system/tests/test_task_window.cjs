@@ -156,3 +156,9 @@ test('narrow preload exposes no credential/general IPC, the page is CSP-locked, 
   assert.doesNotMatch(page, /\bimport\s/, 'the popup page uses a classic script, not an ES-module import (blocked over file://)');
   assert.match(html, /vendor\/three\.min\.js/);
 });
+
+test('the in-app PiP right-click menu opens the task popup', () => {
+  const idx = fs.readFileSync(path.join(FOLDER, 'index.html'), 'utf8');
+  assert.match(idx, /\["tasks-popup",/);
+  assert.match(idx, /a==='tasks-popup'[^\n]*gbox\.tasksOpen/);
+});
