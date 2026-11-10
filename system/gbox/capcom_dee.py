@@ -159,6 +159,18 @@ def dee_decompress(data: bytes, start: int = DEE_HEADER_SIZE, max_out: int = 1 <
     return bytes(out)
 
 
+def dee_unpack(data: bytes) -> bytes:
+    """Decompress a DEE honoring its header (ignores sector padding after comp_len)."""
+    h = dee_header(data)
+    end = DEE_HEADER_SIZE + h["comp_len"]
+    if end > len(data):
+        raise ValueError("DEE truncated: header comp_len %d > data" % h["comp_len"])
+    out = dee_decompress(data[:end], max_out=h["raw_len"])
+    if len(out) != h["raw_len"]:
+        raise ValueError("DEE raw_len mismatch: %d != %d" % (len(out), h["raw_len"]))
+    return out
+
+
 def parse_tim(tim: bytes) -> dict:
     """Parse a PSX TIM header; raises ValueError unless blocks tile the buffer exactly."""
     if len(tim) < 20 or tim[:4] != b"\x10\x00\x00\x00":
