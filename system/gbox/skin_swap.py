@@ -249,7 +249,7 @@ def _attach_donor_textures(patched: bytes, donor_arc: Path, root: Path, *, log=N
     return mt_arc.build(arc), added
 
 def cast_swap_build(config, game_id: str, title_id: str, rng, *, name: str | None = None,
-                    title: str = "", log=None) -> dict | None:
+                    title: str = "", base_build: str = "", log=None) -> dict | None:
     """Build the inverted-cast overlay: the zombies wear cast characters' whole models, the player wears majini clothes.
 
     Measured 2026-11-06, which is why the two directions differ: an ENEMY taking a character's model boots and plays a
@@ -333,6 +333,7 @@ def cast_swap_build(config, game_id: str, title_id: str, rng, *, name: str | Non
         if log:
             log("cast_swap_build_failed", error=str(exc)[:200])
         return None
+    _seed_from_base(config, game_id, folder, base_build)
     for rel, data in patched.items():
         path = folder / "romfs" / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -406,5 +407,6 @@ def random_swap_build(config, game_id: str, title_id: str, rng, *, name: str | N
         log("skin_swap_built", build=build, slot=slot, donor=donor_entry, bytes=len(patched))
     return {"build": build, "slot": slot, "donor": donor_entry, "target": target, "source": donor,
             "at": time.time()}
+
 
 

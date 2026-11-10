@@ -548,7 +548,9 @@ class Screensaver:
             # the player wears the majini's texture maps, while the rest of the cast swap skins between themselves
             from . import skin_swap
             made = skin_swap.cast_swap_build(self.config, g['game_id'], merc_pick.get('map_id'), self.rng,
-                                             title=merc_pick.get('title'), log=self.log)
+                                             title=merc_pick.get('title'), log=self.log,
+                                             base_build=(merc_cfg.get('default_mods') or {}).get(
+                                                 merc_pick.get('title'), ''))
             if made:
                 build = {'name': made['build']}
                 self.store.audit(ACTOR, 'mercmode.cast_swap', w['name'],
@@ -558,7 +560,9 @@ class Screensaver:
             # the operator's random skin swap: this round's character plays with another character's model group
             from . import skin_swap
             made = skin_swap.random_swap_build(self.config, g['game_id'], merc_pick.get('map_id'), self.rng,
-                                               title=merc_pick.get('title'))
+                                               title=merc_pick.get('title'),
+                                               base_build=(merc_cfg.get('default_mods') or {}).get(
+                                                   merc_pick.get('title'), ''))
             if made:
                 build = {'name': made['build']}
                 self.store.audit(ACTOR, 'mercmode.skin_swap', w['name'],
@@ -2137,3 +2141,4 @@ def install(app, store, config, auth, submit, workers, archive):
     # shutdown: stop the loop AND always leave ComfyUI resumed (never strand it SIGSTOPped).
     app.on_event("shutdown")(lambda: (stopped.set(), saver.wake.set(),
                                       saver.comfy.release() if saver.comfy is not None else None))
+
