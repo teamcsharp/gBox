@@ -198,3 +198,26 @@ has not started). If you start an RE4 block now, the same round can carry:
 
 No restart and no merge is needed for the watch itself; the branch is ready and its tests are green. Nothing has
 been written to lilspark.
+
+## URGENT WINDOW, 2026-11-10 18:20 CST - the RE4 block is live: the three-load watch can run now
+
+`GET /api/mercmode` shows a live RE4 Switch Mercenaries block:
+
+    session: 25385f8f4eb94342-6eb677c2f1194dea
+    character Krauser, stage 2, round 1/5, mod recovery-re4-fit-v4-20261110
+    telemetry: screen=playing, kills=0, threat_lacks_flash=369        <- the exact F metric, baseline 369
+
+The rounds rotate stages, so **three stage loads fit in this block**. Please ask the RE session (or run yourself)
+this read-only watch while the block lasts:
+
+    read 0x1CB9000, 0x1CBA000, 0x1CBB000, 0x1CBC000, 0x1700000
+    now (stage 2), at the next round's load (stage 3), and at the round after (stage 0/1)
+    16 bytes each is enough; a full 4 KiB page each is better
+
+All zero on all three reads = that page becomes the harness's private mailbox (E3 done), and the next RE4 block can
+run E6's no-op proof and F's live flash receipt. Any nonzero byte rules that page out.
+
+**After the watch:** merge `ds-grenade-re4-bss` @ `b930948e` (it has E0(c)/E4/E5/F2-F4 and its tests are green:
+242 passed) and restart `gbox.service` in a gap, so the next RE4 block can exercise the harness. The doctrine line
+(`respond.Kit(fire=fire, flash=None, ...)`) is the RE session's to write after F's receipt flips the status row to
+verified.
