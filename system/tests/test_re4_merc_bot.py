@@ -450,10 +450,11 @@ def test_the_next_rounds_clock_is_not_a_time_bonus():
 
 def test_shoots_only_what_he_can_hit():
     now = [0.0]
-    far = world([((0, 0, 3000), True)])                                    # inside ENGAGE, beyond SHOOT_RANGE
+    far = world([((0, 0, 3000), True)])                                    # #7495: inside ENGAGE = inside SHOOT_RANGE
     facing(far, 0.0)
+    assert B.SHOOT_RANGE == B.ENGAGE
     act = B.Bot(far, clock=lambda: now[0], nav=False).tick(B.snapshot(far))
-    assert {"r", "a"}.isdisjoint(act["hold"]) and {"up", "b"} <= act["hold"]   # out of range, bonuses left: runs, no shot
+    assert "r" in act["hold"] and "b" not in act["hold"]                   # unloads on him as he approaches: no run-at-him
     close = world([((0, 0, 400), True)])                                   # point blank
     facing(close, 0.0)
     assert B.Bot(close, clock=lambda: now[0], nav=False).tick(B.snapshot(close)) == {"hold": {"r"}}     # aims: no back-off
@@ -1289,7 +1290,7 @@ def test_prepare_drives_the_menus_to_the_round_start_pauses_there_and_the_next_s
     with nothing pressed in it; autoplay started on it afterwards is in a round at once - no menu press."""
     from gbox import re4_menus as RM
     from gbox.mercs import warm_boot
-    from test_re4_menus import FakeRE4
+    from tests.test_re4_menus import FakeRE4
     g = FakeRE4(routine=4, step=0, menu_cursor=3)
     tools, ad, events, ctx, now = _prepare_rig(monkeypatch, tmp_path, g)
     r = tools.autoplay(tools.AutoplayIn(session_id="s4", op="prepare", selection={"title": "re4", "character": "HUNK", "stage": 2}),
@@ -1318,7 +1319,7 @@ def test_a_prepare_on_the_last_rounds_result_screen_walks_to_a_new_round_instead
     Result screen, whose clock word reads 17897063.5 s; read as a running round, the walk ended at once ("ready"), and
     the switch resumed a results screen the bot then "played" for 24 minutes. A clock above CLOCK_MAX_S is the results:
     A leaves them and the walk reaches a real round's first frame."""
-    from test_re4_menus import FakeRE4
+    from tests.test_re4_menus import FakeRE4
 
     class ResultsRE4(FakeRE4):
         def __init__(self):
@@ -1350,7 +1351,7 @@ def test_a_prepare_on_the_last_rounds_result_screen_walks_to_a_new_round_instead
 def test_a_prepare_that_wanders_off_pauses_the_game_back_where_it_is_and_tells_why(monkeypatch, tmp_path):
     from gbox import re4_menus as RM
     from gbox.mercs import warm_boot
-    from test_re4_menus import FakeRE4, PG
+    from tests.test_re4_menus import FakeRE4, PG
     g = FakeRE4(routine=4)
     g.title_task(False)                                                      # the game's own loop runs a story room
     g.put(PG + RM.G_ROUTINE, "B", 3)
@@ -1366,7 +1367,7 @@ def test_a_prepare_that_wanders_off_pauses_the_game_back_where_it_is_and_tells_w
 def test_a_prepare_refuses_a_game_a_bot_is_playing_and_stop_ends_a_walk_without_pausing(monkeypatch, tmp_path):
     import threading
     from gbox.mercs import warm_boot
-    from test_re4_menus import FakeRE4
+    from tests.test_re4_menus import FakeRE4
     g = FakeRE4(routine=4)
     tools, ad, events, ctx, now = _prepare_rig(monkeypatch, tmp_path, g)
     hold = threading.Event()

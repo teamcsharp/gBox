@@ -149,8 +149,11 @@ HEAD_H, GUN_H, HOURGLASS_H = 1550.0, 1400.0, 900.0   # above the feet: a Ganado'
 PITCH_MAX, PITCH_AFTER = 0.5, 0.25              # aim no further up / down (radians); read it once R is held this long
 PITCH_TOL, PITCH_FINE, PITCH_LIMIT_S = 0.05, 0.15, 0.5   # fire within PITCH_TOL of the head; closer than PITCH_FINE the
                                                          # stick is pulsed; a push that moves nothing this long: the limit
-SHOOT_RANGE = 2400.0                             # fire inside this
-BONUS_FIGHT_R = 2400.0                           # bonuses left: only a Ganado in view this close is fought first
+# Fire as they approach (operator 2026-11-10, #7495: "unloading on these zombies on sight no matter what ... rapid fire"):
+# the fire range is the whole ENGAGE range - a Ganado seen 2.4-3.8 m off used to be run at gun-down (a close-in) and only
+# shot once inside 2.4 m; now the gun comes up and fires on him as he comes, the aim and wall-line gates unchanged.
+SHOOT_RANGE = ENGAGE                             # fire inside this (was 2400)
+BONUS_FIGHT_R = ENGAGE                           # bonuses left: only a Ganado in view this close is fought first
 SHOOT_KEEP = 3800.0                              # ... and with the gun already up on him, he stays the target out to here
                                                  # (today 30 % of the raises that never fired came down as he stepped past
                                                  # 2.4 m - median 2.15 m at the last aim - for a run at him; 14 % for a bonus)

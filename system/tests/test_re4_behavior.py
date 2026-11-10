@@ -555,11 +555,11 @@ def test_a_raised_gun_stays_on_its_target_past_the_close_in_range():
     stepped past SHOOT_RANGE (2.4 m; median 2.15 m at the last aim) for a run at him, 14 % for a time bonus. Once up,
     the gun stays on him out to SHOOT_KEEP."""
     now = [0.0]
-    m = world([((0, 0, 3000), True)], room=0x402)                         # 3 m: past SHOOT_RANGE, inside SHOOT_KEEP
+    m = world([((0, 0, 3000), True)], room=0x402)                         # 3 m: inside SHOOT_RANGE (= ENGAGE, #7495)
     facing(m, 0.0)
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
     act = run(bot, m, now, 0.0)[0]
-    assert "up" in act["hold"] and bot.stats["phase"] == "run_to_target"  # gun down: he closes in, as before
+    assert bot.stats["phase"] == "fight" and "up" not in act["hold"]      # fires as he approaches: no run-at-him
     bot.r_since, bot.lock = now[0] - 0.5, 1                               # the gun already up on him
     act = run(bot, m, now, now[0] + 0.05)[0]
     assert "r" in act["hold"] and bot.stats["phase"] == "fight"           # it stays up: aim and fire from here
