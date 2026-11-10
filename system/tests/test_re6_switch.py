@@ -3944,3 +3944,12 @@ def test_ranged_break_in_decide_turns_to_fight_ranged_enemy():
         f"expected doing='turn' (ranged_break), got {bot.doing}: out={out}"
     assert bot.why.startswith("just took ranged damage"), \
         f"expected ranged_break reason, got: {bot.why}"
+
+
+def test_kill_time_takes_the_panels_multiplier_as_seconds(mods):
+    g = round_guest(timer=60.0)
+    ad = Adapter(g)
+    out = mods.run(ad, "kill_time", multiplier=7, on=True)      # RE5-style call (panel / game_prefs)
+    assert out["kill_time"] is True and out["seconds"] == 7.0
+    assert mods.run(ad, "kill_time", on=False)["kill_time"] is False
+    assert mods.run(ad, "kill_time", multiplier=5, on=False)["seconds"] == 7.0   # off keeps the set seconds
