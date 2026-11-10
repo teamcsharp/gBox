@@ -765,3 +765,49 @@ leaves no cave; truncated/foreign images are refused; the measured RE4 layout is
 
 **Next.** E2: the player unit's per-frame vtable slot (the `0xB09A60` / `0xB0C0A0` class tables are static, so the
 clone-vtable trigger can be designed against the image), then E3/E4/E5. The pinned cave is the one to install into.
+
+## Round 58 (2026-11-10 16:45 CST) - E3's static half: a 3.4 MB unreferenced stretch of RE4's .bss, and the watch request
+
+E3 asks for private writable storage (mailbox, generation guard, call arguments, result word). The cave is executable
+code in the RX segment - an install target, never guest-writable - so the storage must be either RE4's own allocator
+(not identified) or a `.bss` range the game never touches. This round builds and runs the static half of that proof.
+
+**Tool.** `system/scripts/verify_re4_bss.py` (same shape as the cave verifier; no gbox runtime dependency beyond
+`gbox.nso_elf`). From the image's own NSO header it:
+
+1. collects every static reference into `.bss`: an `adrp` followed within four instructions by an `add`,
+   `ldr`/`str`/`ldp`/`stp` or other immediate use on the same register, every `adr`, and every 64-bit literal in
+   `.text`/`.rodata`/`.rwdata`;
+2. finds the 4 KiB-aligned windows of at least `--size` bytes with no reference in them (all of them, plus the
+   largest unreferenced stretch);
+3. vets one chosen range with `--at` (inside `.bss`, page-aligned, no reference) and exits 0/1.
+
+Tests: `tests/test_re4_bss.py` (10) - a clean image offers every aligned page; a planted `adrp`+`add`, `adrp`+`ldr`,
+an `adr` and a 64-bit literal each remove their page; a reference just past a window does not count; a range outside
+`.bss`, an unaligned one, a size over a page and truncated/foreign images are refused; the CLI's PASS/FAIL.
+
+**The operator's image** (`D:\gBox\cache\re4-base\main.bin`, layout `.text 0..0x655850`, `.rodata 0x656000..0xAE1BCC`,
+`.rwdata 0xAE2000..0xB2C738`, `.bss 0xB2C738..0x1CC0000` = 18.4 MB):
+
+- **10,285 static references into `.bss`** (mostly literals pointing at the bss base, plus the adrp-based data
+  accesses);
+- **4,381 free 4 KiB pages**;
+- the **largest unreferenced stretch is `0x1681000..0x19C0300`** (0x33F300 = 3.4 MB, bracketed by references at
+  `0x1680000` and `0x19C0300` - so it may be one large buffer, exactly the case the live watch exists for);
+- free tail pages near `0x1CB2000..0x1CBC000`, with references at `0x1CB6000` and `0x1CBF090`.
+
+**Statically vetted candidates** (each PASS: inside `.bss`, page-aligned, no static reference):
+`0x1700000` and `0x1681000` (inside the large stretch), `0x1CB2000` and `0x1CB9000` (the tail).
+
+**The caveat the request carries.** A register-indexed access (`base + xN`) or a pointer stored at run time is
+invisible to a static scan. The chosen page must also read **all zero across three stage loads** on a live RE4 round;
+only then may the controller use it. That watch is now the blocking piece of E3, and it is a read-only request:
+
+- read: `0x1CB9000`, `0x1CBA000`, `0x1CBB000`, `0x1CBC000`, `0x1700000` (a 16-byte read of each is enough; a full
+  4 KiB page is better);
+- when: three stage loads of one RE4 Mercenaries round - the round start, mid-round after a restart, and the next
+  stage;
+- pass: all zero on all three reads. Any nonzero byte rules that page out for good.
+
+Once one page passes, E4/E5 (the code rule and the offline tests) can build the controller's private storage on it
+without touching game state.
