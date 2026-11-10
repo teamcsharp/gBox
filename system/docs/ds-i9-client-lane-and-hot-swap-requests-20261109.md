@@ -1013,3 +1013,16 @@ needs the donor's material/texture unit data as the engine expects it, which is 
 direction is unaffected (the player's own texture unit is loaded).
 
 The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned builder for the next attempt.
+
+## Round 48 status (2026-11-10, ~01:00 CST): the decrypting tools are MCP tools by construction
+
+* `mcp_server.list_tools` maps `GET /api/registry` one-to-one into MCP tools (adding `require_os`/`require_worker`/
+  `parent_request_id`), so **`switch_decrypt` is already exposed as `job_switch_decrypt`** - verified against the live
+  control plane: the registry holds 279 tools including `switch_decrypt`. Documented in `docs/mcp.md` with its ops
+  (`info`, `exefs`, `romfs-list`, `romfs-get`, `bktr`, `arc-list`, `arc-compare`) and the swap-build chain
+  (`random_swap_build`/`cast_swap_build` with `base_build` from `default_mods`).
+* A dispatched `switch_decrypt` job (`op=info` on the 18.8 GB container, i9 worker) reached `succeeded`, but the job's
+  `result` came back empty; the same call returns members when run locally on the i9, so the dispatch path records the
+  output differently for this tool (worth a look, not a blocker).
+* That closes the "use MCP to interact and cause events" side for the decrypting lane: an MCP client can dispatch
+  container reads, ARC inspection and (through `skin_swap` + `switch_mods`) build/reskin jobs without any local tooling.
