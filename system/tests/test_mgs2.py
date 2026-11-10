@@ -172,6 +172,19 @@ def test_two_layers_and_identity(dvd):
     d.close()
 
 
+def _assert_noop_roundtrip(a, st, raw):
+    """A no-op rebuild keeps every header row (incl. each page's true csize) and every page byte; only
+    the zero padding between pages / after the header rows may differ from the on-disc leftovers."""
+    blob = inv.rebuild_stage(st, a.key, {}, raw)
+    assert len(blob) == st.sectors * inv.SECTOR
+    for k, p in enumerate(st.pages):
+        assert blob[inv.SECTOR + p.coff:inv.SECTOR + p.coff + len(raw[k])] == raw[k]
+    plain = inv.Cipher.for_stage(a.key, st.name).run(blob[:inv.SECTOR])
+    assert struct.unpack_from("<I", plain, 0)[0] == len(st.rows)
+    got = [struct.unpack_from("<2I", plain, 4 + 8 * i) for i in range(len(st.rows))]
+    assert got == [(w & 0xFFFFFFFF, o) for w, o in st.rows]
+
+
 def test_archive_toc_stages_pages_and_rebuild(dvd):
     d = inv.Disc(dvd)
     a = inv.StageArchive(d)
@@ -185,6 +198,7 @@ def test_archive_toc_stages_pages_and_rebuild(dvd):
     page = bytearray(a.page(st, 1))
     blob = inv.rebuild_stage(st, a.key, {1: bytes(page)}, raw)
     assert len(blob) == st.sectors * inv.SECTOR
+    _assert_noop_roundtrip(a, st, raw)
     big = bytes(os.urandom(st.sectors * inv.SECTOR))          # incompressible: can't fit the span
     with pytest.raises(inv.FormatError):
         inv.rebuild_stage(st, a.key, {1: big}, raw)
@@ -449,4 +463,19 @@ def test_owned_disc_archives_and_snake(tmp_path):
     pack = a1.file(st, inv.T_TEX, M.parse_kms(kms)["tex"])
     r = M.extract_bytes(kms, [pack], tmp_path / "snake.glb", "snake")
     assert r["verified"] and len(r["roles"]) == 18 and 1.7 < r["height_m"] < 2.1 and not r["missing_textures"]
+    d.close()
+
+
+@pytest.mark.skipif(_owned() is None, reason="owned MGS2 PS2 disc not available")
+def test_owned_disc_noop_rebuild_of_the_snake_stage():
+    d = inv.Disc(_owned())
+    a = inv.StageArchive(d, "MGS2/STAGE.DAT")
+    st = a.stage("r_plt10")
+    raw = {k: a.page_raw(st, k) for k in range(len(st.pages))}
+    _assert_noop_roundtrip(a, st, raw)
+    on_disc = d.sectors(a.lba + st.sector, st.sectors)
+    blob = inv.rebuild_stage(st, a.key, {}, raw)
+    for p in st.pages:                           # the compressed bodies match the disc byte for byte
+        o = inv.SECTOR + p.coff
+        assert blob[o:o + p.csize] == on_disc[o:o + p.csize]
     d.close()

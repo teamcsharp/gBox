@@ -436,7 +436,8 @@ def rebuild_stage(st: Stage, key: int, page_data: dict[int, bytes], old_raw: dic
                     rows[pi + 1 + j] = ((f[0] << 24) | f[1], f[2])
         else:
             raw = old_raw[k]
-        rows[p.rows[1]] = ((0x7E << 24) | len(raw), coff)
+        # a kept page keeps its on-disc compressed size (page_raw hands back the 4-byte-padded copy)
+        rows[p.rows[1]] = ((0x7E << 24) | (len(raw) if k in page_data else p.csize), coff)
         blobs.append((coff, raw))
         coff += (len(raw) + SECTOR - 1) // SECTOR * SECTOR
     head = encode_stage_header(rows, key, st.name)
