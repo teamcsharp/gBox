@@ -640,3 +640,20 @@ Two findings:
 
 Note: the continue/save prompt appears on every build with a saved state; declining it (right + A) is now part of the
 drive, and the bodies-only run needed that decline before it could reach the stage select.
+
+## Round 24 status (2026-11-09, ~20:25 CST): hands swap runs and renders clean; the 41-arc hang points at the AcHeads
+
+| Build (update ExeFS + …) | Result |
+| --- | --- |
+| 7 heads | runs a full round |
+| 9 bodies | runs; player model renders as a broken/distorted mesh |
+| **18 hands** | **runs and renders cleanly**: live round, timer 01'42"95, 000/150, the character's hands/gloves visible in frame |
+| 41 arcs (heads 7 + hands 18 + bodies 9 + AcHeads 7) | hangs at `loading` |
+| 45 arcs | crashes |
+
+So each of the three groups runs on its own, and the 41-arc hang must come from the **AcHead** group (the only one still
+untested; 9 arcs, or 7 in that build). Next test: AcHeads alone, then the 43-arc roster (all but the 4 Helena files) if
+the AcHeads pass — or the 34-arc roster without the bad AcHead.
+
+Practical note: the hands-only build is the first swap that both runs and looks correct, so it is the current best
+"reskin" candidate for the mercmode parameter work; the body donors need correct assets before they can be shipped.
