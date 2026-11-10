@@ -128,3 +128,23 @@ def test_the_stuck_log_is_capped_and_the_count_is_not():
     assert bot.stats["stuck_reason"] == "wall learned at cell (0, 1) room r400 heading 0°: detour, replanned 3 waypoints"
     bot.save()                                                            # no learn_dir: nothing to write, nothing kept
     assert bot._stuck_pending == []
+
+
+def test_the_same_spot_blocking_again_and_again_escapes_with_a_long_back_off_then_a_strafe(tmp_path):
+    """r400 2026-11: 78 stucks at one spot - vault, detour and a 0.6 s back-off never freed him."""
+    bot = B.Bot(world([]), nav=False, learn_dir=tmp_path)
+    bot._round(0x400)
+    p = {"pos": (17698.0, 9000.0, -8196.0), "rot": math.pi}
+    acts, t = [], 0.0
+    while bot.stats.get("escapes", 0) < 1 and t < 120:
+        t += 0.1
+        acts.append((t, bot._go(p, (15134.0, -10933.0), t)))
+    assert bot.stats["escapes"] == 1 and bot.stuck_log[-1]["action"] == "escape"
+    t0 = t
+    holds = []
+    while t < t0 + B.ESCAPE_BACK_S + B.ESCAPE_SIDE_S + 0.5:
+        t += 0.1
+        holds.append(bot._go(p, (15134.0, -10933.0), t).get("hold"))
+    assert {"down"} in holds                                              # backing off, well beyond BACK_S
+    assert sum(h == {"down"} for h in holds) * 0.1 >= B.ESCAPE_BACK_S - 0.3
+    assert any(h and {"up", "b"} <= h and ({"left"} <= h or {"right"} <= h) for h in holds)   # then the strafe

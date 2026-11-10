@@ -242,6 +242,10 @@ EXPLORE_R = 2400.0                               # "navigate more of the level":
 WALLS_PER_SAVE, STUCK_LOG_MAX = 5, 200           # save the learned map after this many new walls; stuck events kept
 DETOUR_S = 1.0                                   # a learned detour round a wall is planned again this often at most
 STUCK_S, STUCK_MOVE = 0.9, 250.0                 # running but moved less than this in that long (any way): blocked
+SPOT_R, SPOT_N = 400.0, 3                        # blocked again within this of the last blocked spot, this many times: the
+                                                 # vault / detour / short back-off do not free him here (r400: 78 stucks at one
+                                                 # spot) - back well off, then strafe a long way before running at the goal
+ESCAPE_BACK_S, ESCAPE_SIDE_S = 1.8, 1.6
 BACK_S = 0.6                                     # still blocked after a vault and a detour: back off this long
 ORBIT_R, ORBIT_ERR = 2500.0, 0.6                 # a goal this near and this far off his heading is inside his turning
                                                  # circle (run ~4 m/s, turn ~2 rad/s): turn on the spot, don't orbit it
@@ -1620,6 +1624,10 @@ class Bot:
                 return {"hold": {"up", "b", "left" if self.unstick["dir"] > 0 else "right"}}
             if self.unstick["stage"] == "back":
                 return {"hold": {"down"}}
+        if self.unstick and self.unstick.get("then"):                    # an escape: the back-off is followed by a strafe
+            self.unstick = dict(self.unstick["then"], until=now + self.unstick["then"]["for"])
+            self._go_at, self._ran = now, True
+            return {"hold": {"up", "b", "left" if self.unstick["dir"] > 0 else "right"}}
         self.unstick = None
         if not getattr(self, "_ran", False) or now - getattr(self, "_go_at", -math.inf) > 0.3:
             # only a run that does not move is blocked: turning on the spot (the goal behind him), a fight, a vault or a
@@ -1642,7 +1650,18 @@ class Bot:
                     self.goal["path"] = self._path((px, py, pz), self.goal["pos"])
                     self.stats["replans"] += 1
                     replanned = len(self.goal["path"])
-            if self.stuck_n == 1:
+            spot = (px, pz)
+            last = getattr(self, "_spot", None)
+            self._spot_n = getattr(self, "_spot_n", 0) + 1 if last and math.dist(last, spot) < SPOT_R else 1
+            self._spot = spot
+            if self._spot_n >= SPOT_N:                                    # the same spot again and again: escape it
+                self.detour_dir = -self.detour_dir
+                self.unstick = {"stage": "back", "until": now + ESCAPE_BACK_S,
+                                "then": {"stage": "detour", "dir": self.detour_dir, "for": ESCAPE_SIDE_S}}
+                self.stats["backoffs"] += 1
+                self.stats["escapes"] = self.stats.get("escapes", 0) + 1
+                act, action = {"hold": {"down"}}, "escape"
+            elif self.stuck_n == 1:
                 self.stats["vaults"] += 1
                 act, action = {"tap": "a"}, "vault"                       # a fence / window: JUMP OVER
             elif self.stuck_n % 3 == 0:                                   # a vault and a detour didn't do it: back
