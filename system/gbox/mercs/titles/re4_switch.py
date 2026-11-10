@@ -238,19 +238,25 @@ def decode_state(system: int, stop: int, status, merc: bytes, countdown: bytes, 
              "die": _flag(status, STA_DIEDEMO), "case": _flag(status, STA_SUB_SCRN),
              "grabbed": _flag(status, STA_PL_CATCHED),
              "key_stop": bool(stop & SPF_KEY), "pl_stop": bool(stop & SPF_PL)}
+    alive = bool(cd_state & CD_ALIVE) and math.isfinite(frame) and -1.0 <= frame <= CLOCK_MAX_S * CD_FPS
+    # MercSysWk is cleared only when the next stage's room starts (MercSysInitRoom), so its run bytes outlive a soft
+    # reset (You Are Dead -> No, the decomp's systemRestartInit): pG's flags are cleared there and the cockpit re-made
+    # (Cckpt.gameInit), so a round's run byte counts only with its clock alive (set before the intro's run byte, live
+    # through the round; the death clears it but sets STA_DIEDEMO, which the reset clears in turn)
     if not mercs:
         phase = "none"
     elif res_run:
         phase = "results"
     elif start_run:
-        phase = "intro"
-    elif main_run:
-        phase = ("dead" if flags["die"] else "case" if flags["case"] else
+        phase = "intro" if alive else "none"
+    elif main_run and flags["die"]:
+        phase = "dead"
+    elif main_run and alive:
+        phase = ("case" if flags["case"] else
                  "held" if flags["event"] or flags["suspend"] or flags["key_stop"] or flags["pl_stop"] else
                  "grabbed" if flags["grabbed"] else "playing")
     else:
         phase = "none"
-    alive = bool(cd_state & CD_ALIVE) and math.isfinite(frame) and -1.0 <= frame <= CLOCK_MAX_S * CD_FPS
     out = {"phase": phase, "in_control": phase == "playing", "why": PHASE_WHY[phase],
            "clock": round(max(frame, 0.0) / CD_FPS, 2) if alive else None,
            # the clock's own state: alive, not paused (STA_SUSPEND / SPF_PL), not stopped by the open case

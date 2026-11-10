@@ -80,6 +80,14 @@ def test_outside_the_mercenaries_or_between_rounds_no_round_runs():
     assert decode(dict(PLAYING, main=0))["phase"] == "none"
 
 
+def test_a_round_byte_left_behind_by_a_soft_reset_is_no_round():
+    """You Are Dead -> No soft-resets the game: pG's flags are cleared and the cockpit re-made, but MercSysWk keeps its
+    round byte until the next stage starts. Without the clock alive it is not a round (and not "in control")."""
+    stale = dict(PLAYING, stop=0, status=(0, 0, 0, 0), cd_state=0, frame=0.0)
+    assert decode(stale)["phase"] == "none" and decode(stale)["in_control"] is False
+    assert decode(dict(INTRO, cd_state=0))["phase"] == "none"
+
+
 def test_the_case_and_a_held_player_are_named():
     assert decode(dict(PLAYING, status=(0x3040310, 0x8000200, 0, 0)))["phase"] == "case"
     assert decode(dict(PLAYING, stop=D.SPF_PL))["phase"] == "held"
