@@ -104,3 +104,27 @@ Hermes can call `list_workers` and `select_idle_worker` to find the Windows work
 The title bar's checkbox controls a Hermes cron job on Spark. Checking it schedules an immediate inbox run and repeats every thirty minutes. Tasks follow Hermes's connected cron cloud route and available fallbacks; the interactive local model remains separate. Each run claims one request, works in an isolated Git worktree, validates changes and uses `publish_task_changes` for a real draft PR. A PR remains separate from verified ticket completion. See [dispatch and delivery](hermes-throughput.md).
 
 For Hermes worktree jobs, launch the gBox MCP Python with `-P -m gbox` so the task working directory cannot shadow its implementation. Set `PYTHONPATH=/home/ehm_eckx/gBox/system`, `GBOX_HERMES_DISPATCH_STATE=/home/ehm_eckx/gBox/system/gbox-data/hermes-dispatch`, and `GBOX_OPERATOR_WORKER` to the PC currently in use. Set `GBOX_TEST_WORKER` when the operator explicitly assigns a test PC; that assignment takes precedence over recent-input telemetry. The no-agent feedback supervisor repairs canonical MCP paths automatically while preserving both PC preferences and the tool allowlist. Enable `prepare_task_workspace`, `publish_task_changes`, and `get_dispatch_feedback` in the gBox MCP tool allowlist.
+
+## Switch decryption and swap builds (client lane, 2026-11)
+
+The Switch readers are ordinary registry tools, so **every one is exposed to MCP automatically** as
+`job_switch_decrypt` (the `list_tools` handler maps `GET /api/registry` one-to-one, adding `require_os`,
+`require_worker` and `parent_request_id`). Verified against the live control plane: `switch_decrypt` is present in the
+registry (279 tools), which is what `job_switch_decrypt` resolves from.
+
+`switch_decrypt` (`gbox.switch_extract`, CPU AES with the operator's `prod.keys`) takes:
+
+| field | meaning |
+|---|---|
+| `op` | `info`, `exefs`, `romfs-list`, `romfs-get`, `bktr`, `arc-list`, `arc-compare` |
+| `container` | the NSP on the worker |
+| `nca` | the member NCA for every op except `info` |
+| `keys` | `prod.keys` (defaults to the worker's) |
+| `path`, `donor`, `out`, `limit` | per-op |
+
+`arc-list` and `arc-compare` are the reskin helpers: `arc-list` dumps an ARC's entries (`name/size/hash/tag` through
+`gbox.mt_arc`); `arc-compare` reports whether a donor keeps the game's entry paths and the per-entry size ratios.
+
+Swap builds are produced by `gbox.skin_swap` (`random_swap_build`, `cast_swap_build`) with `base_build=` set from the
+MercMode sidebar's `default_mods`, so a sidebar-driven reskin launches with the title's own ExeFS. The client pulls the
+arcs it needs straight out of the container with `python -m gbox.switch_romfs_materialize ... --include uPlTex`.
