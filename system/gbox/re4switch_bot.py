@@ -277,6 +277,11 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             sleep(0.6)
             continue
         stats["stage_seen"] = stats["stage_seen"] or where == "select_stage"
+        if where in ("story", "story_prompt", "title", "main_menu", "extras_menu"):
+            # back before the stage select: no dark picture is a round until a stage is picked again (live 2026-11-10
+            # 23:26: after Yes on Cancel loading? the black was taken for a round and its three entry A presses went
+            # into the main menu's LOAD - the walk's press log, runner line 337 - for the whole turn)
+            stats["stage_seen"] = False
 
         # --- menus: the same route the driver walks, one press at a time
         if where not in ("unknown", "playing"):

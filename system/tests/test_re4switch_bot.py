@@ -475,3 +475,22 @@ def test_the_games_death_screen_posts_the_death_boundary(monkeypatch):
     assert stats["deaths"] >= 1 and len(posted) == 1
     w = posted[0]["witness"]
     assert w["screen"] == "dead" and w["death_screen"] is True and w["player_verified"] is True
+
+
+
+def test_back_on_the_save_list_a_dark_screen_is_not_a_round(monkeypatch):
+    """Live 2026-11-10 23:26: after a stage select had been seen, the walk fell back to the save list; the black after
+    Yes on Cancel loading? was taken for a round and its entry A presses went into the main menu's LOAD."""
+    seq = ["select_stage"] * 2 + ["story"] * 3 + ["unknown"] * 60
+    monkeypatch.setattr(B.screens, "Reader", lambda: Reader(seq))
+    monkeypatch.setattr(B.driver, "snapshot", lambda m: {"timer": None, "enemies": [], "player": None})
+    adapter = Adapter([b"frame"] * 200)
+    ticks = {"n": 0}
+
+    def clock():
+        ticks["n"] += 1
+        return 1_000_000.0 + ticks["n"] * 0.5
+    stats = {}
+    B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: ticks["n"] > 60, sleep=lambda s: None,
+           stats=stats, clock=clock, m=object())
+    assert stats["rounds"] == 0 and stats["stage_seen"] is False
