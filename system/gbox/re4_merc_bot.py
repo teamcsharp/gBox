@@ -198,6 +198,13 @@ URGENT_BODY_S, URGENT_BODY_R = 1.0, 1500.0       # a swing / grab / rush landing
 # body-turn while his swing comes down (past AIM_KEEP_ERR the body turn is otherwise the faster aim, but not with a hit
 # landing point-blank).
 INTERRUPT_R, INTERRUPT_CONE = 2000.0, 0.7
+# Fire while the aim closes (operator 2026-11-10, #7487: "He shouldn't look at a single enemy and not be firing on them
+# until they're fully dispatched. especially with a high fire rate"): the gun is up on a live enemy and the aim is still
+# turning onto him (the aim turns ~30 deg/s, so the last few degrees took a quarter second of held fire). With the
+# round's x80 gun verified (_rapid_ok) the held trigger fires through that close, SWEEP_TOL radians (~8 deg) either side
+# of him, so the burst starts as the aim reaches him instead of after it settles. Only while the aim is closing (not
+# drifting away), never with a wall in the aim line and never below the aim height gate.
+SWEEP_TOL = 0.14
 # Fire on sight (operator 2026-11-02, #7444: "I want him unloading on these zombies on sight no matter what ... There's
 # no scenario in which they should be running into these zombies and allowing them to live"): once the gun is up on a
 # live enemy, it STAYS up and fires across this whole forward arc (radians, ~57 deg) instead of being dropped to a
@@ -1452,7 +1459,8 @@ class Bot:
         self._aim_metric(p, err, aim_keys, tgt, now)
         self._target_small = small
         self._look_ctx = {"tgt": tgt, "kind": self._foe_kind(tgt)}         # what the next shots were fired at (the look)
-        if abs(err) > tol or not level:
+        sweep = (not small and abs(err) <= SWEEP_TOL and level and rate * err > 0 and self._rapid_ok())   # closing, x80 gun
+        if (abs(err) > tol and not sweep) or not level:
             self.trigger["down"] = False
             self.rapid["since"] = None                                   # off him: the held trigger's proof starts over
             self.stats["combat"] = f"{tag}aiming slot {tgt['slot']} d {dist:.0f} yaw {deg:+.1f} {'level' if level else 'pitch'}"
@@ -1467,6 +1475,8 @@ class Bot:
         self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
         self.stats["combat"] = f"{tag}on slot {tgt['slot']} d {dist:.0f} yaw {deg:+.1f} FIRE"
         self.stats["fire_gate"] = "on him (interrupt)" if interrupt else "on him"
+        if abs(err) > tol:                                                # fired through the last degrees of the aim
+            self.stats["sweep_fires"] = self.stats.get("sweep_fires", 0) + (not self.trigger["down"])
         if interrupt and not self.trigger["down"]:                       # a fresh press interrupting a point-blank wind-up
             self.stats["interrupt_fires"] = self.stats.get("interrupt_fires", 0) + 1
         was_down = self.trigger["down"]

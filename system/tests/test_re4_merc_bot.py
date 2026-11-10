@@ -1,12 +1,14 @@
 """RE4 Mercenaries playbook (gbox.re4_merc_bot): RAM reading, targeting, the aim by stick, prompts, autoplay picking it."""
 import math
 import struct
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import time
 
+sys.path.insert(0, str(Path(__file__).parent))                          # sibling test helpers (test_re4_menus)
 from gbox import re4_merc_bot as B
 
 
@@ -1868,3 +1870,36 @@ def test_while_the_operator_has_the_pad_leon_holds_nothing_and_learns_nothing():
     assert (len(bot.learned.blocked) if bot.learned else 0) == walls and bot.goal is None
     bot.stats["operator_control"] = False
     assert bot.tick(B.snapshot(m)) != {"hold": set()}                     # the Ganado ahead: the bot plays again
+
+
+def test_x80_gun_fires_through_the_last_degrees_of_the_aim_closing_on_an_enemy():
+    """Operator 2026-11-10 (#7487): he should not look at an enemy without firing. With the x80 trigger verified, the
+    held trigger fires while the aim is still closing on him (inside SWEEP_TOL), not only once it is within fire_tol."""
+    now = [0.0]
+    m = world([((0, 0, 1500), True)], room=0x400)
+    act_state(m, 1, (1, 0x03, 0, 0))
+    facing(m, 0.0)
+    set_pitch(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot._rapid_ok = lambda: True
+    run(bot, m, now, 0.0, 3)
+    tol = B.fire_tol(1500.0)
+    off = (tol + B.SWEEP_TOL) / 2                                           # outside fire_tol, inside SWEEP_TOL
+    facing(m, off)                                                          # gun to the right/left of him by `off`
+    acts = run(bot, m, now, 0.2, 1)                                         # first look: no closing rate yet
+    for k in range(3):                                                      # the aim now closes on him each tick
+        facing(m, off * (0.8 - 0.2 * k))
+        acts += run(bot, m, now, 0.25 + 0.05 * k, 1)
+    assert any("a" in a.get("hold", set()) for a in acts[1:])
+    # drifting away (or beyond SWEEP_TOL) holds fire
+    now2 = [0.0]
+    m2 = world([((0, 0, 1500), True)], room=0x400)
+    act_state(m2, 1, (1, 0x03, 0, 0))
+    facing(m2, 0.0)
+    set_pitch(m2, 0.0)
+    bot2 = B.Bot(m2, clock=lambda: now2[0], nav=False)
+    bot2._rapid_ok = lambda: True
+    run(bot2, m2, now2, 0.0, 3)
+    facing(m2, B.SWEEP_TOL * 2)
+    acts2 = run(bot2, m2, now2, 0.2, 3)
+    assert not any("a" in a.get("hold", set()) for a in acts2)
