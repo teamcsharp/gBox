@@ -294,8 +294,31 @@ def cast_swap_build(config, game_id: str, title_id: str, rng, *, name: str | Non
     return {"build": build, "at": time.time(), **report}
 
 
+def _seed_from_base(config, game_id: str, folder: Path, base_build: str) -> int:
+    """Copy a base build's exefs/romfs into a freshly created build, so a swap keeps the base's files (the update's
+    ExeFS is what opens the unlocked 1.0.2 menu). The build marker is never copied. Returns the number of files."""
+    from . import switch_mods
+    if not base_build:
+        return 0
+    src = switch_mods.build_dir(config, game_id, base_build)
+    if not src.is_dir():
+        return 0
+    copied = 0
+    for part in ("exefs", "romfs"):
+        tree = src / part
+        if not tree.is_dir():
+            continue
+        for path in tree.rglob("*"):
+            if path.is_file():
+                dest = folder / part / path.relative_to(tree)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(path.read_bytes())
+                copied += 1
+    return copied
+
+
 def random_swap_build(config, game_id: str, title_id: str, rng, *, name: str | None = None,
-                      title: str = "", log=None) -> dict | None:
+                      title: str = "", base_build: str = "", log=None) -> dict | None:
     """Build a LayeredFS overlay that plays `title_id`'s character with another character's model group.
 
     Returns {'build', 'slot', 'donor'} or None when the title has no mapped characters (the round plays normally).
@@ -326,6 +349,7 @@ def random_swap_build(config, game_id: str, title_id: str, rng, *, name: str | N
         if log:
             log("skin_swap_build_failed", error=str(exc)[:200])
         return None
+    seeded = _seed_from_base(config, game_id, folder, base_build)
     target_path = folder / "romfs" / arcs[target]
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_bytes(patched)

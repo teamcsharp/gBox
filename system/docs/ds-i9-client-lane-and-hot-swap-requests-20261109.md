@@ -847,3 +847,18 @@ Delivered this round: **`switch_decrypt` op `arc-list`** - an ARC's entries with
   unlocked 1.0.2 menu needs the update ExeFS). The launch path must combine the swap with the update ExeFS - as
   `recovery-re6-helena-as-chris-20261109` did (built this round: update ExeFS + the swapped Helena arc), or via the
   mercmode `default_mods`/base-build merge.
+
+## Round 37 status (2026-11-09, ~23:05 CST): a generated swap is launch-ready (base build seeding)
+
+* **`skin_swap._seed_from_base`** (used by `random_swap_build(base_build=...)`): a freshly created swap build inherits
+  the base build's `exefs/` and `romfs/` trees (the build marker is not copied). That is what makes a one-arc swap
+  launchable: without it the game boots the base 1.0.0 main, where the unlocked 1.0.2 menu does not open.
+* Verified end to end: `swap-verify-r37` = `recovery-re6-helena-as-chris-20261109` as the base + a fresh draw
+  (`uPl07HelperNormal` <- Jake). The build carries the **five update ExeFS files** and both arcs, the game reached the
+  menu and the CONTINUE? prompt, and declining it loaded a Mercenaries round (`Combo Bonus` tip -> `LOADING...` at
+  59 FPS, `sv37-round.jpg`).
+* Tests: 5 in `test_skin_swap_model_fallback.py` (the whole-model fallback + the seed copy/no-op cases).
+
+So the mercmode chain is now complete on the client side: `switch_romfs_materialize` (arcs from the container) ->
+`random_swap_build(base_build=<update build>)` (a launch-ready swap) -> the normal launch path. The `skin_swap` /
+`default_mods` parameters select it.
