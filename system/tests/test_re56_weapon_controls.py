@@ -107,7 +107,8 @@ def test_re6_catalogue_lists_all_named_weapons_with_honest_native_availability(m
     monkeypatch.setattr(R6, 'inventory_guns', lambda *_: {0x107: 0, 0x104: 1})
     monkeypatch.setattr(R6, 'inventory_state', lambda *_: (0, 7, None))
     rows = {row['item']: row for row in W6.choices(ctl)}
-    assert set(rows) == set(M6.WEAPON_NAMES)
+    # every named weapon the control plane can carry (items 1..255): Hand-To-Hand (0) made every claim a 422
+    assert set(rows) == {item for item in M6.WEAPON_NAMES if 1 <= item <= 255} and 0 not in rows
     assert rows[7]['available'] and rows[7]['equipped'] and rows[4]['in_inventory']
     assert not rows[9]['available'] and not rows[9]['in_inventory']
     assert 'creation' in rows[9]['reason']

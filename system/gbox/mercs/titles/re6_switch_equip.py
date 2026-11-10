@@ -65,6 +65,8 @@ GUNS = frozenset(range(0x101, 0x113)) | {0x117, 0x11B, 0x128}
 FREE_ACTIONS = frozenset("cPlAction_pl_act_" + name for name in (
     "wait", "walk", "walk_to_wait", "run", "weapon_ready_begin", "weapon_ready_loop", "weapon_ready_end"))
 TIMEOUT_S = 1.5
+INTEL, INTEL_TARGET = 0x59F0, 0x1274       # the player's Intel (its command layer) and its equip target (main+0xBBF048)
+INTEL_SYNC = True                          # the request keeps that target in step (the item bounce, 2026-11-10)
 
 
 def _native_type(rd, unit):
@@ -229,6 +231,14 @@ def request(memory, base, player, kind, *, now=None, expected_index=None):
         writes = [(player + offset, struct.pack("<i", value)) for offset, value in selection]
         writes += [(player + MANAGER + 0x40, bytes(4)), (player + MANAGER + 0x6C, b"\1\0"),
                    (player + 0xC, struct.pack("<I", 3))]
+        intel = rd.u64(player + INTEL) if INTEL_SYNC else 0
+        if R.ptr_ok(intel):
+            # The player's Intel keeps the equip target the game's own path last asked for (main+0xBBF048: Intel
+            # +0x1274 = +0x5440, or +0x505C for a gun). A native request that leaves the old item there is undone:
+            # live 2026-11-10 (session 3353e106cb7c47bd-ae42844f9e324aae) every native gun request was followed,
+            # 0.1 s later, by the Intel's own equip trigger (+0x75D) and a second weapon change back to that item
+            # (16 bounces in 40 s). The target written here is the one this request selects.
+            writes.append((intel + INTEL_TARGET, struct.pack("<i", view["index"])))
         for address, data in writes:
             if not _same_request_context(rd, view):
                 raise _Stop("identity_changed_before_preparation")

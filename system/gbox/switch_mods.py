@@ -1524,12 +1524,13 @@ def character_use(ctx, api, meta: dict | None, game: dict, inp, op: str = "use")
 # --- the tool ---------------------------------------------------------------------------------------------------------
 
 class SwitchModsIn(BaseModel):
-    op: str = "status"          # status | write | hotswap | revert | new_build | select | apply_pending | apply_live | audit | convert | purge | blueprint
+    op: str = "status"          # status | write | hotswap | revert | new_build | select | apply_pending | apply_live | audit | convert | purge | blueprint | donor_variant
     game_id: str = ""
     build: str | None = None    # the overlay build; None = the active one (the session's, else the one this node last started)
     session_id: str = ""        # apply_live: the running session (on this worker)
     changes: dict = {}          # write / apply_live: {RomFS path: {from|artifact|b64|romfs|patch|remove}}
                                 # blueprint: the greybox manifest {RomFS path: {artifact: sha256}} written over a copy of `build`
+                                # donor_variant: the swap spec of gbox.donor_swap.request (title, players, enemies, exclude)
     new_name: str = ""          # new_build: the new build (a copy of `build`'s overlay folder only, or empty)
     edit: str = "last"          # revert: which edit (its id from status, or last)
     paths: list[str] = []       # revert: only these files
@@ -1550,6 +1551,13 @@ def _accept(store, out: SwitchModsOut, actor: str):
     """apply_live restarted the title in the same session: the session now shows that build (mod), and its Eden pid
     is new (detail.pid: re-docking, audio, re-adoption)."""
     r = out.result if isinstance(out.result, dict) else {}
+    if r.get("op") == "donor_variant":
+        # the operator's donor swap landed: refit refusals of the redraw join the reject list, the variant
+        # supersedes its build and is queued for the next round boundary (gbox.donor_swap.accept)
+        from . import donor_swap
+        donor_swap.record_redraw_rejects(r)
+        donor_swap.accept(store, r)
+        return
     sid = r.get("session_id")
     if r.get("op") != "apply_live" or not r.get("same_session") or not sid:
         return
@@ -1766,6 +1774,15 @@ def switch_mods_tool(inp: SwitchModsIn, ctx):
             and _collection_elsewhere(ctx, gid, active):
         raise ValueError(f"{active} lives in the central collection: edit it there (switch_mods with require_os=linux); "
                          "this PC fetches the edited build when it next starts it")
+    if inp.op == "donor_variant":
+        # gbox.donor_swap: `new_name` = `build` with the swap's slots redrawn or native (+ its blueprint companion);
+        # the source build is never written, and an existing variant name is refused
+        from . import donor_swap
+        if not inp.build or not inp.new_name:
+            raise ValueError("donor_variant: name the source build (build=...) and the variant (new_name=...)")
+        res = donor_swap.build_variant(cfg, gid, inp.build, inp.new_name, inp.changes, by=by,
+                                       log=lambda text: ctx.progress(50, str(text)[:200]))
+        return {"result": res | {"game_id": gid}}
     if inp.op == "blueprint":
         if not active:
             raise ValueError("blueprint: name the source build (build=...)")

@@ -382,16 +382,18 @@ def enemy_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, s
                classes: tuple = ("em16", "em1c", "em1d", "em20"), history: list | tuple = (), avoid_last: int = 3,
                games: list[str] | None = None, exclude: dict[str, str] | None = None, atlas_size=ATLAS_SIZE,
                max_vertices: int = 6000, name: str | None = None, etc_dir: Path | None = None,
-               assignment: dict[str, str] | None = None, opaque_atlas: bool = True) -> dict:
+               assignment: dict[str, str] | None = None, opaque_atlas: bool = True,
+               rejects: dict[str, str] | None = None) -> dict:
     """Deal library donors over every body of every Mercenaries Ganado class from a seed (`re5_donor_pool.plan`)
     and write one overlay tree: `romfs/bio4/em/emXX.udas` and `romfs/bio4/imagepackhd/000000XX.pack.fen` per
     class, plus `receipt.json`. Slots are `emXX:body` (14 with the four classes), so 14 distinct donors.
 
     A donor a body refuses is set aside and the plan is dealt again from the same seed, as the RE5 pools do.
     `assignment` pins the deal ({`emXX:body`: slug}, an earlier receipt's): nothing is dealt and a refusal is an
-    error, so a pool is rebuilt with the same donors (e.g. after a writer fix).
+    error, so a pool is rebuilt with the same donors (e.g. after a writer fix). `rejects` ({slug: reason}, default:
+    RE4's entries of gbox.donor_rejects) are never dealt; a pinned assignment still rebuilds them.
     """
-    from . import re5_donor_pool
+    from . import donor_rejects, re5_donor_pool
 
     em_dir, imagepack_dir, library, out = Path(em_dir), Path(imagepack_dir), Path(library), Path(out)
     if (out / "receipt.json").exists():
@@ -406,10 +408,12 @@ def enemy_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, s
                 raise EnemyError(f"{pack}: " + "; ".join(differences))
         packs[pack] = (udas, layout, (imagepack_dir / layout.archive).read_bytes())
     slots = [f"{pack}:{body}" for pack, (_u, layout, _a) in packs.items() for body in layout.bodies]
-    pool = [d for d in donors if d.slug not in (exclude or {})]
-    refused: dict[str, str] = dict(exclude or {})
-    records: dict[str, dict] = {}
     pinned = dict(assignment) if assignment else None
+    listed = donor_rejects.rejected("re4") if rejects is None else dict(rejects)
+    leave_out = dict(exclude or {}) | ({} if pinned else listed)
+    pool = [d for d in donors if d.slug not in leave_out]
+    refused: dict[str, str] = dict(leave_out)
+    records: dict[str, dict] = {}
     if pinned:
         known_slugs = {d.slug for d in pool}
         wrong = sorted(set(pinned) ^ set(slots)) + [s for s in pinned.values() if s not in known_slugs]

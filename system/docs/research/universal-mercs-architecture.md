@@ -615,6 +615,36 @@ on, in RE4 / RE6.
    are measured; act on the idle guard's "engage" verdict in RE4 / RE6.
 4. The round reports compare titles by the shared stats names above.
 
+### 9.6 The doctrine's answer to a threat: `gbox/mercs/core/respond.py` (2026-11-10)
+
+Branch `mercs-doctrine-response`. The operator: "the secret to all adversarial combat situations
+is either flashbang, drop a mine, or fire the weapon upon them until there's no longer a threat
+... that's gonna result in endless combat reports. And this bot is not learning." Live the same
+day, RE4 Leon / Base: `doctrine_idle_s` 80 of 199 s, long `unwall` ("walled in on every side")
+spells with Ganados around him.
+
+* **Under threat** (cm / s, the profile converts): hurt within 1.5 s with an enemy within 7 m,
+  or one on his level within 2.5 m that is closing (40 cm/s), winding up, or of a class that hurt
+  him (a grudge this round or hits learned in threat memory - then its learned reach counts).
+* **The answer** (`Responder.choose`): flash for 3+ (weighted: a class that hurt him counts 2)
+  within 4 m, a wind-up in reach, one at arm's length, or health at 35 % or under; a mine when 2+
+  converge within 7 m and none is inside the plant margin; else fire - the title's own fight on
+  the threats alone (no detour, no run-off), its wall gates kept. Flash at most every 4 s (RE6:
+  `FLASH_GAP_S`); it answers for 1 s, then he fires on the stunned ones.
+* **Per title** (`Kit`): RE5 - the native flash (`_native_flash`), `Mines.urge` (the cadence
+  waived for 3 s, every clearance kept), `_goal_decide` on the threats. RE6 - the native flash on
+  the session's adapter (`brain()` hands it over; confirmed, `native_flash_confirmed_at` starts the
+  fever), `_mine_now` (the remote bomb due), `_decide` on the threats. RE4 - no flash (`THROWS`
+  off), no mines: `_fight` on the threats with the low-life / heavy / swarm run-offs standing down.
+* **Measured** (every driver's `round_counters`, the round report's `metrics.doctrine`):
+  `threat_ticks`, `threat_answered_flash` / `_mine` / `_fire`, `threat_unanswered` (target 0,
+  `threat_unanswered_why`), `hurt_while_idle`, `threat_forced_fire`, `threat_learned_ticks`,
+  `threat_lacks_flash` / `_mine`. `respond.ENFORCE = False`: measured only; each title's `RESPOND`.
+* **The reports**: the threat-response damage causes (`damage_clusters.DOCTRINE_CAUSES`: swarmed
+  with the gun up / down, faced melee, the grabs) are one ticket per title, the others linked to
+  it, the body pointing at the doctrine stats; `hermes_work_queue.cause_hold` dispatches one per
+  cause per title and none past `CAUSE_NO_PROGRESS_MAX` (3) runs without progress, on any node.
+
 ## 10. The fire pattern: the PS3 magnum's rapid repeat and scatter on every title (2026-11-10)
 
 Branch `mercs-fire-pattern`. The operator, 2026-11-10: "if the agent is universal, I want it able to

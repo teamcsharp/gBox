@@ -1,0 +1,402 @@
+{
+ "schema": "gbox.coaching.moment-fixture/1",
+ "request": 5482,
+ "note": 7,
+ "session_id": "5a68e96bfd1447a2-b8c265e2084944ef",
+ "build": "recovery-re6-roster-shuffle-01-20261110",
+ "title": "01002A000CD48000",
+ "operator": "Flawed handling (PiP button): the way the bot is handling this moment is wrong - running into a wall or corner, or failing to deal with a threat. Investigate this moment and fix it ASAP or the run will never win.",
+ "context": "he faces a pillar on his left with his arm raised while a pack of mutating J'avo (uEm1000) and two uEm1370 (1500 health) come at him from the right at 4-6 m",
+ "clock": {
+  "left": 357.24,
+  "combo": 20,
+  "combo_left": 14.13,
+  "score": 175870,
+  "kills": 115
+ },
+ "player": {
+  "pos": [
+   1978,
+   100,
+   445
+  ],
+  "facing": 1.043,
+  "hp": 900,
+  "hp_max": 900,
+  "state": "0"
+ },
+ "enemies": [
+  {
+   "id": 1,
+   "pos": [
+    -1418,
+    700,
+    -186
+   ],
+   "cls": "uEm1000",
+   "hp": 100,
+   "hp_max": 100,
+   "threat": "low"
+  },
+  {
+   "id": 2,
+   "pos": [
+    1644,
+    100,
+    969
+   ],
+   "cls": "uEm1000",
+   "hp": 74,
+   "hp_max": 450,
+   "threat": "low"
+  },
+  {
+   "id": 3,
+   "pos": [
+    2904,
+    123,
+    1010
+   ],
+   "cls": "uEm1000",
+   "hp": 250,
+   "hp_max": 250,
+   "threat": "low"
+  },
+  {
+   "id": 4,
+   "pos": [
+    -2936,
+    100,
+    310
+   ],
+   "cls": "uEm1000",
+   "hp": 100,
+   "hp_max": 100,
+   "threat": "low"
+  },
+  {
+   "id": 5,
+   "pos": [
+    1590,
+    100,
+    660
+   ],
+   "cls": "uEm1000",
+   "hp": 200,
+   "hp_max": 200,
+   "threat": "low"
+  },
+  {
+   "id": 6,
+   "pos": [
+    1545,
+    100,
+    1096
+   ],
+   "cls": "uEm1000",
+   "hp": 250,
+   "hp_max": 250,
+   "threat": "low"
+  },
+  {
+   "id": 7,
+   "pos": [
+    -2291,
+    750,
+    892
+   ],
+   "cls": "uEm1000",
+   "hp": 100,
+   "hp_max": 100,
+   "threat": "low"
+  },
+  {
+   "id": 8,
+   "pos": [
+    1856,
+    100,
+    650
+   ],
+   "cls": "uEm1000",
+   "hp": 250,
+   "hp_max": 250,
+   "threat": "low"
+  },
+  {
+   "id": 9,
+   "pos": [
+    -3797,
+    91,
+    173
+   ],
+   "cls": "uEm1000",
+   "hp": 100,
+   "hp_max": 100,
+   "threat": "low"
+  },
+  {
+   "id": 10,
+   "pos": [
+    1100,
+    100,
+    869
+   ],
+   "cls": "uEm1000",
+   "hp": 250,
+   "hp_max": 250,
+   "threat": "low"
+  },
+  {
+   "id": 11,
+   "pos": [
+    1310,
+    100,
+    712
+   ],
+   "cls": "uEm1000",
+   "hp": 249,
+   "hp_max": 250,
+   "threat": "low"
+  },
+  {
+   "id": 12,
+   "pos": [
+    1463,
+    100,
+    945
+   ],
+   "cls": "uEm1000",
+   "hp": 249,
+   "hp_max": 250,
+   "threat": "low"
+  },
+  {
+   "id": 13,
+   "pos": [
+    2261,
+    100,
+    1034
+   ],
+   "cls": "uEm1000",
+   "hp": 167,
+   "hp_max": 250,
+   "threat": "low"
+  },
+  {
+   "id": 14,
+   "pos": [
+    1394,
+    100,
+    1093
+   ],
+   "cls": "uEm1000",
+   "hp": 249,
+   "hp_max": 250,
+   "threat": "low"
+  },
+  {
+   "id": 16,
+   "pos": [
+    2347,
+    100,
+    875
+   ],
+   "cls": "uEm1000",
+   "hp": 200,
+   "hp_max": 450,
+   "threat": "low"
+  },
+  {
+   "id": 18,
+   "pos": [
+    1326,
+    100,
+    1050
+   ],
+   "cls": "uEm1370",
+   "hp": 1500,
+   "hp_max": 1500,
+   "threat": "medium"
+  },
+  {
+   "id": 19,
+   "pos": [
+    3526,
+    350,
+    749
+   ],
+   "cls": "uEm1370",
+   "hp": 1500,
+   "hp_max": 1500,
+   "threat": "medium"
+  },
+  {
+   "id": 20,
+   "pos": [
+    2479,
+    100,
+    678
+   ],
+   "cls": "uEm1370",
+   "hp": 1500,
+   "hp_max": 1500,
+   "threat": "medium"
+  },
+  {
+   "id": 21,
+   "pos": [
+    1900,
+    100,
+    1069
+   ],
+   "cls": "uEm1370",
+   "hp": 1500,
+   "hp_max": 1500,
+   "threat": "medium"
+  },
+  {
+   "id": 22,
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "cls": "uEm2030",
+   "hp": 1000,
+   "hp_max": 1000,
+   "threat": "medium"
+  },
+  {
+   "id": 23,
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "cls": "uEm2140",
+   "hp": 1000,
+   "hp_max": 1000,
+   "threat": "medium"
+  },
+  {
+   "id": 24,
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "cls": "uEm2140",
+   "hp": 1000,
+   "hp_max": 1000,
+   "threat": "medium"
+  },
+  {
+   "id": 25,
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "cls": "uEm2140",
+   "hp": 1000,
+   "hp_max": 1000,
+   "threat": "medium"
+  },
+  {
+   "id": 26,
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "cls": "uEm2140",
+   "hp": 1000,
+   "hp_max": 1000,
+   "threat": "medium"
+  },
+  {
+   "id": 27,
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "cls": "uEm2300",
+   "hp": 1000,
+   "hp_max": 1000,
+   "threat": "medium"
+  },
+  {
+   "id": 28,
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "cls": "uEm2300",
+   "hp": 1000,
+   "hp_max": 1000,
+   "threat": "medium"
+  },
+  {
+   "id": 29,
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "cls": "uEm2300",
+   "hp": 1000,
+   "hp_max": 1000,
+   "threat": "medium"
+  },
+  {
+   "id": 30,
+   "pos": [
+    0,
+    0,
+    1
+   ],
+   "cls": "uEm2300",
+   "hp": 1000,
+   "hp_max": 1000,
+   "threat": "medium"
+  },
+  {
+   "id": 31,
+   "pos": [
+    2440,
+    100,
+    807
+   ],
+   "cls": "uEm3000",
+   "hp": 113,
+   "hp_max": 300,
+   "threat": "low"
+  },
+  {
+   "id": 32,
+   "pos": [
+    2605,
+    100,
+    655
+   ],
+   "cls": "uEm3000",
+   "hp": 299,
+   "hp_max": 300,
+   "threat": "low"
+  },
+  {
+   "id": 34,
+   "pos": [
+    2663,
+    100,
+    916
+   ],
+   "cls": "uEm3000",
+   "hp": 300,
+   "hp_max": 300,
+   "threat": "low"
+  }
+ ]
+}

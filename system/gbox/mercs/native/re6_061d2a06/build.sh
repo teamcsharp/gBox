@@ -15,7 +15,10 @@ aarch64-linux-gnu-objcopy -O binary --only-section=.text --only-section=.rodata 
 aarch64-linux-gnu-gcc -c -O2 -ffreestanding -fno-stack-protector -fno-pic -fno-asynchronous-unwind-tables -mgeneral-regs-only "$src/detonate.c" -o "$out/detonate.o"
 aarch64-linux-gnu-ld -Ttext=0x18f29c0 -e detonate --defsym=FLASH_VT=0x284aeb8 --defsym=THROW_VT=0x288c9a0 --defsym=BOMB_VT=0x288c868 --defsym=MANAGER_VT=0x2858318 --defsym=REQUEST=0xf8c7c0 --defsym=UPDATE=0xf8ce10 "$out/detonate.o" -o "$out/detonate.elf"
 aarch64-linux-gnu-objcopy -O binary --only-section=.text "$out/detonate.elf" "$out/detonate.bin"
-for name in call spawn detonate; do
+clang -target aarch64-linux-gnu -O2 -ffreestanding -fno-stack-protector -fno-pic -fno-asynchronous-unwind-tables -c "$src/spawn_bomb.c" -o "$out/spawn_bomb.o"
+aarch64-linux-gnu-ld -Ttext=0x18f2ac0 --section-start=.rodata=0x18f2bc0 -e spawn_bomb --defsym=S_ITEM=0x28ea8e0 --defsym=BOMB_DTI=0x2951538 --defsym=S_STATS=0x28e9be0 --defsym=CREATE_ITEM=0x3bcf90 --defsym=SET_ROTATION=0x125ccf0 --defsym=REGISTER_PROJECTILE=0x3a9e70 "$out/spawn_bomb.o" -o "$out/spawn_bomb.elf"
+aarch64-linux-gnu-objcopy -O binary --only-section=.text --only-section=.rodata "$out/spawn_bomb.elf" "$out/spawn_bomb.bin"
+for name in call spawn detonate spawn_bomb; do
   aarch64-linux-gnu-gcc -O2 -Wall "$src/test_$name.c" -o "$out/test_$name"
   "$out/test_$name" "$out/$name.bin"
 done

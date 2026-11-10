@@ -47,6 +47,7 @@ from ..core import doctrine as _doctrine
 
 MINE_ID = 0x10A
 EVERY_S = 30.0                           # requested cadence; clearance/emergency actions can delay a placement
+URGE_S = 3.0                             # Mines.urge: the doctrine's ask lets a plant skip the cadence this long
 SPACING_CM = 600.0                       # never within this of the last site or of a bomb still down (a double blast)
 FOE_CLEAR_CM = 500.0                     # a Majini this near: not now (out of the blast before it comes: a run of 8 m;
                                          # was 8 m - none were ever placed in a No Mercy crowd, 19:50 / 19:53)
@@ -197,6 +198,12 @@ class Mines:
         self.stats["mine_interval_s"] = self.every_s
         self.stats["mines_enabled"] = self.enabled
 
+    def urge(self, now: float, secs: float = URGE_S) -> None:
+        """The doctrine's ask (gbox.mercs.core.respond: they converge on him): for `secs` a placement need not wait out
+        every_s - every clearance, spacing, combo and standoff rule of due() and the cycle still holds."""
+        self._urge_until = now + secs
+        self.stats["mine_urges"] = self.stats.get("mine_urges", 0) + 1
+
     def new_round(self, now: float) -> None:
         self.state, self.t, self.round_t0 = "idle", now, now
         self.last_at, self.last_pos, self.site, self.clear_from = None, None, None, None
@@ -298,7 +305,7 @@ class Mines:
         if self.stack(snap.get("inventory")) is None:
             self.stats["mine_blocked_reason"] = "no usable mine in a quick slot"
             return None
-        if now - start < self.every_s:
+        if now - start < self.every_s and now >= getattr(self, "_urge_until", -1e9):
             return None
         if now < self._retry_at:
             self.stats["mine_blocked_reason"] = "retry cooldown"

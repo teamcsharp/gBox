@@ -62,6 +62,12 @@ ops:
                             state back to 0); a semi-automatic's next press is taken once it is below the record's
                             +0x20 (player +0x5590)
 
+  detonate [unit=]          every remote bomb of his lying placed set off "with his mind": the detonator's own flag
+                            (bit 0x20 of his byte +0x5A19) cleared, that byte alone, read back; each placed bomb's
+                            setting action requests its own explosion on its next frame (BOMB_ARMED below). No pad, no
+                            detonator in hand. unit= checks a chosen one is his (the game sets them all off together)
+  bomb_mind on=true         the bot sets its bombs off that way (re6_switch.BOMB_MIND; off: ZL + ZR with the remote)
+
 Where (measured live 2026-10-27 in a private Citron NEO session on the Spark; docs/research/re6-switch-ram.md):
   player +0x5070  the inventory: 12 cItem slots of 0x28 (vtable main+0x2875848), +0x8 1 = in use, +0x9 the slot's
                   index, +0xA the item id, +0xE s16 the rounds in the magazine, +0x14 s16 its capacity (the Wing Shooter
@@ -122,6 +128,8 @@ FIRE_ORIGINAL = (10.0, 0.5, 0.6, 0.5, 1.2, 0.8, 0.6, 0.8, 1.2, 10.0, 0.7, 2.25, 
 FIRE_SKIP = frozenset({0x13, 0x14, 0x15, 0x16, 0x2F})   # the grenades and the remote bomb: thrown, never sped up
 FIRE_GUN_MAX = 5.0                                       # a longer interval is the knife's or a melee weapon's
 MAGNUM_RECORDS = frozenset({0x07, 0x08})                 # the magnums' records (0x107 / 0x108): fire_rate magnum=
+THROW_FIRE_MAX = 10.0                                    # fire_rate throw='s cap (operator 2026-11-10 06:45: "5x grenades
+                                                         # 2x faster": the 2.0 s between two throws / 10 = 0.2 s, was / 5)
 THROW_RECORDS = frozenset({0x13, 0x14, 0x15})            # the hand, incendiary and flash grenades' (fire_rate throw=;
                                                          # not the remote bomb's): their 2.0 s, the throw's own wait
 # down_fire (operator 16:22: "I want the fire rate tripled and them becoming even more lethal when grounded so they can
@@ -134,10 +142,13 @@ DOWN_FIRE_X, DOWN_FIRE_MAX = 3.0, 10.0
 # MAGNUM_RECORDS), his mDeltaTime (cUnit +0x30, as quick_attack) at MAGNUM_SPEED_X, 1.0 back after; fire_rate's table
 # stays (the magnum's 8). Only once fire_rate has set the table this boot; the op sets the factor (1 = off). status
 # magnum_fast counts the fire actions sped up.
-MAGNUM_SPEED_X, MAGNUM_SPEED_MAX = 6.0, 6.0   # operator 2026-11-03 "little/no recoil": the recoil animation at the cap
+MAGNUM_SPEED_X, MAGNUM_SPEED_MAX = 20.0, 20.0  # operator 2026-11-10: "the magnum animation should have no recoil and
+                                                # the bot should be able to rapid fire the magnum at 20x just like
+                                                # shotguns" (6 / 6 until then); on whether or not fire_rate is set
 # throw_speed (operator 19:01: "When throwing grenades give them 20x grenade throwing speed animation"): his mDeltaTime
 # at THROW_SPEED_X while the throw runs (the gun's fire action with a grenade in hand: records THROW_RECORDS), as the
-# magnum's; status throw_fast counts them.
+# magnum's; status throw_fast counts them. Since 2026-11-10 ("spam throw 20x grenades rapid fire while fleeing") on
+# whether or not fire_rate is set, as bomb_speed.
 THROW_SPEED_X, THROW_SPEED_MAX = 20.0, 20.0
 # bomb_speed (operator 2026-11-10: "the bot should be able to place mines at 20x speed and be able to detonate them by
 # flipping the switch"): the remote bomb's (record 0x16) fire action - the throw that places it and the press that sets
@@ -145,6 +156,29 @@ THROW_SPEED_X, THROW_SPEED_MAX = 20.0, 20.0
 # status bomb_fast counts them; the bomb_speed op sets the factor (1 = off).
 BOMB_RECORDS = frozenset({0x16})
 BOMB_SPEED_X, BOMB_SPEED_MAX = 20.0, 20.0
+# The remote bomb set off "with his mind" (operator 2026-11-10: "if we have hooks in the game, detonating explosives
+# should be easy and it would allow for the bot to always use a weapon and detonate remote mines at will"). Ghidra /
+# capstone on this build (main = the 1.0.2 program):
+#   * the placed bomb is a uWp1097 unit (DTI main+0x2951538, vtable main+0x284AA58, a uWpBomb: vtable main+0x2857790,
+#     the same throw / explosion code as the grenades uWp1091 / 1093 / 1095) on sUnit's move line 13, owner +0x1300,
+#     generation +0x1308, its action manager at +0x13A8 (the current action +0x13F0). Lying placed, its action is
+#     cWpAction_wp_act_setting (the weapon action table main+0x2825700, entry 24);
+#   * that action's move (main+0x112FF30) asks every frame: owner a uPlayer (DTI main+0x291FD58) whose byte +0x5A19 has
+#     bit 0x20 (bit 0x2000 of the u32 +0x5A18) set - "a remote bomb armed" - or else requests action 10 on itself
+#     (main+0x11302C4: cWpAction_wp_act_bomb, the explosion, the same one the hand grenade's fuse requests);
+#   * the bit is set by cPlAction_pl_act_grenade_remocon_action's throw (mode 1, main+0x108AB7C) and cleared by its
+#     detonation press (mode 8, main+0x108ADF8) and by that action's end in mode 8 (main+0x108B270).
+# So the hook is the detonator's own flag: the bit cleared, every bomb of his lying placed requests its explosion on its
+# next frame - the game's own blast, his kills and combo - whatever he holds (the gun stays in his hand). The game's
+# detonator is per player: one chosen bomb cannot go alone (detonate(unit=) checks it is his, then sets them all off).
+P_FLAGS, BOMB_ARMED = 0x5A18, 0x2000
+ARMED_BYTE, ARMED_BIT = 0x5A19, 0x20                     # the bit's own byte: the only byte the hook writes
+REMOTE_BOMB_CLASS, BOMB_LINES = "uWp1097", (13,)         # the placed bomb's unit and the line it moves on (live 10-27)
+U_OWNER, U_GENERATION, U_ACTION = 0x1300, 0x1308, 0x13F0
+ACT_SETTING, ACT_BLAST = "cWpAction_wp_act_setting", "cWpAction_wp_act_bomb"
+REMOTE_MODE_OFF = 0                                      # the bomb slot's +0xC once a detonation is done (the game's own)
+SETTLE_S = 0.6                                           # the slot still "out" this long after a hook blast with no bomb
+                                                         # left: settle_remote puts the game's own 0 back
 MAGNUM_FIRE_ACTIONS = frozenset({"cPlAction_pl_act_weapon_fire"})
 FIRE_FLOOR = 0.004                                       # never 0: a semi-automatic's next press waits for the countdown
                                                          # to fall below its record's +0x20 (0 for most), so it must pass 0
@@ -253,6 +287,11 @@ _LOCK = threading.RLock()
 RELOAD_KEEP = ("ORIG", "_LOCK")
 
 
+def B_MIND() -> bool:
+    """The bot sets its remote bombs off through the detonator's flag (re6_switch.BOMB_MIND)."""
+    return bool(getattr(R, "BOMB_MIND", False))
+
+
 class Mem:
     """The session's guest memory for re6_switch's readers: rd() and the adapter (its guest rows find main)."""
 
@@ -349,8 +388,10 @@ class RE6Switch:
               "qte_rolled": list(self.state.get("qte_rolled") or ()),
               "infinite_grenades": bool(self.state.get("infinite_grenades")), "auto_qte": bool(self.state.get("auto_qte")),
               "quick_attack_x": self.state.get("quick_attack", 1.0),
-              "throw_speed_x": self.state.get("throw_speed", THROW_SPEED_X) if self.state.get("fire_rate") else self.state.get("throw_speed", 1.0),
-              "magnum_speed_x": self.state.get("magnum_speed", MAGNUM_SPEED_X) if self.state.get("fire_rate") else 1.0,
+              "throw_speed_x": self.state.get("throw_speed", THROW_SPEED_X),
+              "magnum_speed_x": self.state.get("magnum_speed", MAGNUM_SPEED_X),
+              "bomb_mind": B_MIND(), "mind_detonations": self.state.get("mind_detonations", 0),
+              "remote_settles": self.state.get("remote_settles", 0),
               "bomb_speed_x": self.state.get("bomb_speed", BOMB_SPEED_X), "bomb_fast": self.state.get("bomb_fast", 0),
               "down_fire_x": self.state.get("down_fire", DOWN_FIRE_X) if self.state.get("fire_rate") else 1.0,
               "next_weapon": hex(self.state["next_weapon"]) if self.state.get("next_weapon") else None,
@@ -358,6 +399,7 @@ class RE6Switch:
         from . import re6_switch as B
         from .. import weapon_swap
         st["bot"] = {"nades": B.NADES, "flash": B.FLASH, "aim_lock": B.AIM_LOCK, "bomb_drop": B.BOMB_DROP,
+                     "bomb_mind": B.BOMB_MIND,
                      "want_weapon": B.WANT_WEAPON, "arsenal": weapon_swap.PROFILES["re6"].enabled}
         snap = R.snapshot(self.m)
         p = snap.get("player")
@@ -508,6 +550,138 @@ def infinite_stamina(g: RE6Switch, on: bool) -> dict:
             "gauge": None if s is None else {"value": round(s[0], 1), "max": round(s[1], 1)},
             "note": "the combat gauge (player +0x42A0) kept at its maximum (+0x42A4): melee, quick shots and dodges "
                     "never run it dry (its f32 only, re-read before and read back after every write)"}
+
+
+_UNIT_NAMES: dict = {}                                   # (main base, vtable) -> class name (named once a boot)
+
+
+def _unit_class(m, base: int, u: int) -> str | None:
+    vt = R.u64(m, u)
+    key = (base, vt)
+    if key not in _UNIT_NAMES:
+        if len(_UNIT_NAMES) > 512:
+            _UNIT_NAMES.clear()
+        _UNIT_NAMES[key] = R.class_name(m, u)
+    return _UNIT_NAMES[key]
+
+
+def placed_bombs(m, base: int, player: int, lines=BOMB_LINES) -> list[dict]:
+    """His remote bombs lying out: the uWp1097 units on sUnit's lines (BOMB_LINES, then every line when none is there)
+    owned by `player` - [{unit, generation, action, pos}]."""
+    out: list = []
+    su = R.u64(m, base + R.S_UNIT)
+    if not R.ptr_ok(su):
+        return out
+    for group in (tuple(lines), tuple(i for i in range(R.N_LINES) if i not in lines)):
+        for line in group:
+            u, n = R.u64(m, su + R.UNIT_LINES + R.LINE_STRIDE * line), 0
+            while R.ptr_ok(u) and n < R.WALK_MAX:
+                if _unit_class(m, base, u) == REMOTE_BOMB_CLASS and R.u64(m, u + U_OWNER) == player:
+                    act = R.u64(m, u + U_ACTION)
+                    out.append({"unit": u, "generation": struct.unpack("<I", m.rd(u + U_GENERATION, 4))[0],
+                                "action": _unit_class(m, base, act) if R.ptr_ok(act) else None,
+                                "pos": struct.unpack("<3f", m.rd(u + R.P_POS, 12))})
+                u, n = R.u64(m, u + R.UNIT_NEXT), n + 1
+        if out:
+            break
+    return out
+
+
+def bomb_armed(m, player: int) -> bool:
+    """The detonator's flag: a remote bomb of his armed (cPlAction_pl_act_grenade_remocon_action's throw sets it, its
+    press clears it; a bomb lying placed goes off on the first frame it reads it clear)."""
+    return bool(m.rd(player + ARMED_BYTE, 1)[0] & ARMED_BIT)
+
+
+def detonate(ad, snap=None, unit=None, wait_s: float = 0.0, clock=time.monotonic, sleep=time.sleep) -> dict:
+    """Every remote bomb of his lying placed set off through the detonator's own flag (no detonator in his hand, no
+    pad): only while a round plays, him alive, the bombs his and armed; the bit 0x20 of his byte +0x5A19 cleared (that
+    byte alone, re-read just before the write and read back after). unit= a chosen one: checked to be his and placed
+    (the game's detonator sets them all off together). wait_s > 0: waits that long for the bombs' explosion action.
+    -> {verified, detonated: [units], count, armed_before, armed_after, went_off, reason}."""
+    g = RE6Switch(ad)
+    snap = snap if isinstance(snap, dict) and snap.get("player") else R.snapshot(g.m)
+    p = snap.get("player") or {}
+    player = p.get("ptr")
+    out = {"op": "detonate", "verified": False, "detonated": [], "count": 0, "armed_before": None,
+           "armed_after": None, "went_off": []}
+    gm = _gm(g)
+    if not R.ptr_ok(player) or not gm:
+        return out | {"reason": "no player in a round"}
+    if struct.unpack("<i", g.ad.read_memory(gm + R.GM_PHASE, 4))[0] != R.PHASE_PLAYING:
+        return out | {"reason": "no round playing"}
+    sp = R.u64(g.m, g.base + R.S_PLAYER)
+    if R.u64(g.m, sp + R.P_FIRST) != player:
+        return out | {"reason": "the player changed since the snapshot"}
+    if p.get("generation") is not None and struct.unpack("<I", g.ad.read_memory(player + U_GENERATION, 4))[0] != p["generation"]:
+        return out | {"reason": "the player changed since the snapshot"}
+    if struct.unpack("<h", g.ad.read_memory(player + R.P_HP, 2))[0] <= 0:
+        return out | {"reason": "he is not alive"}
+    bombs = placed_bombs(g.m, g.base, player)
+    if unit is not None and all(b["unit"] != unit for b in bombs):
+        return out | {"reason": "that bomb is not one of his lying placed", "bombs": len(bombs)}
+    if not bombs:
+        return out | {"reason": "no remote bomb of his is lying placed"}
+    addr = player + ARMED_BYTE
+    before = g.ad.read_memory(addr, 1)[0]
+    out["armed_before"] = bool(before & ARMED_BIT)
+    if not before & ARMED_BIT:
+        return out | {"reason": "not armed: the game set them off already", "armed_after": False}
+    try:
+        g.ad.write_memory(addr, bytes([before & ~ARMED_BIT & 0xFF]))
+    except RuntimeError as exc:                              # another bit of the byte moved between write and read
+        if str(exc) != "memory write not confirmed by read-back":
+            raise
+    after = g.ad.read_memory(addr, 1)[0]
+    out["armed_after"] = bool(after & ARMED_BIT)
+    if after & ARMED_BIT:
+        return out | {"reason": "the detonator flag read back set"}
+    out.update(verified=True, detonated=[b["unit"] for b in bombs], count=len(bombs))
+    if wait_s > 0:
+        until = clock() + wait_s
+        pending = {b["unit"]: b["generation"] for b in bombs}
+        while pending and clock() < until:
+            for u, gen in list(pending.items()):
+                try:
+                    gone = struct.unpack("<I", g.ad.read_memory(u + U_GENERATION, 4))[0] != gen
+                    act = None if gone else R.u64(g.m, u + U_ACTION)
+                    blast = gone or (R.ptr_ok(act) and _unit_class(g.m, g.base, act) == ACT_BLAST)
+                except (ValueError, OSError, struct.error):
+                    blast = True                             # freed with its blast
+                if blast:
+                    out["went_off"].append(u)
+                    pending.pop(u)
+            if pending:
+                sleep(0.01)
+        out["pending"] = list(pending)
+    st = g.state
+    st["mind_detonations"] = st.get("mind_detonations", 0) + 1
+    st["mind_bombs"] = st.get("mind_bombs", 0) + len(bombs)
+    return out
+
+
+def settle_remote(ad, player: int) -> dict:
+    """After a hook blast: the remote bomb slot (wheel index R.BOMB_INDEX, type 0x116) still at mode 1 ("out") with the
+    detonator flag clear and no bomb of his lying placed is put back at the game's own post-detonation 0 (that byte
+    alone, re-read just before and read back after) - so the next ZL + ZR throws a new bomb instead of pressing a
+    detonator with nothing out. Nothing when the slot is not that or a bomb is still out."""
+    g = RE6Switch(ad)
+    if bomb_armed(g.m, player):
+        return {"verified": False, "settled": False, "reason": "a bomb is armed"}
+    if placed_bombs(g.m, g.base, player):
+        return {"verified": False, "settled": False, "reason": "a bomb is still lying placed"}
+    raw = g.ad.read_memory(player + SLOTS, SLOT_STRIDE * ALL_SLOTS)
+    for i in range(ALL_SLOTS):
+        o = SLOT_STRIDE * i
+        if (struct.unpack_from("<Q", raw, o)[0] == g.base + SLOT_VTABLE and raw[o + SLOT_USED] == 1
+                and raw[o + SLOT_INDEX] == R.BOMB_INDEX and struct.unpack_from("<H", raw, o + SLOT_TYPE)[0] == R.BOMB_TYPE):
+            at = player + SLOTS + o + R.SLOT_MODE
+            if g.ad.read_memory(at, 1)[0] != 1:
+                return {"verified": True, "settled": False, "reason": "the slot is not out"}
+            g.ad.write_memory(at, bytes([REMOTE_MODE_OFF]))  # read back by the adapter
+            g.state["remote_settles"] = g.state.get("remote_settles", 0) + 1
+            return {"verified": True, "settled": True, "slot": at}
+    return {"verified": False, "settled": False, "reason": "no remote bomb slot"}
 
 
 def _pairs(raw: bytes, off: int, n: int) -> list[tuple[int, int]]:
@@ -670,11 +844,14 @@ def unlock_stages(g: RE6Switch, on: bool = True) -> dict:
                     "stages start from its next look, and the game's own next save keeps them"}
 
 
-def auto_qte(g: RE6Switch, on: bool = True) -> dict:
+def auto_qte(g: RE6Switch, on: bool = True, user: bool = False) -> dict:
     """The game's own automatic action button (QTEs and grabs resolve with nothing pressed): cSystemInfo
-    mTempData.mExOptAutoActBtn in both copies set to 1 (off: 0), that field only, read back."""
+    mTempData.mExOptAutoActBtn in both copies set to 1 (off: 0), that field only, read back. user: the operator's op
+    (an off from him is kept: ensure_qte leaves it)."""
     res = _info_bits(g, AUTO_QTE, 0, value=1 if on else 0)
     g.state["auto_qte"] = bool(on)
+    if user:
+        g.state["qte_user_off"] = not on
     return {"auto_qte": bool(on), **res,
             "note": "the game's own automatic action button: every QTE site tests the option (nonzero = automatic)"}
 
@@ -814,14 +991,53 @@ def struggle_units(g: RE6Switch, index: int = 0) -> list[dict]:
     return out
 
 
+QTE_RAM_ANY = True          # (2026-11-10: "ram lock that and solve it instantly") every active unit, held or not
+QTE_CHECK_S = 5.0           # ensure_qte looks again this often while a round plays (a save load can reset the option)
+QTE_RETRY_S = 1.0           # ... and this often while the option has not read back yet (no cSystemInfo before the load)
+
+
+def ensure_qte(ad, snap=None, clock=time.monotonic) -> dict:
+    """The QTEs solved by RAM by default (operator 2026-11-10 06:45): the game's own automatic action button (auto_qte:
+    both cSystemInfo copies at 1, read back) and the RAM escape (auto_qte_ram) on, every QTE_CHECK_S while a round plays.
+    An operator who switched either off on this boot keeps it off. -> {auto_qte, auto_qte_ram, verified, reason}."""
+    with _LOCK:
+        st = ORIG.setdefault(id(ad), {})
+        now = clock()
+        since = now - st.get("qte_checked_at", -1e9)
+        if since < QTE_CHECK_S and st.get("qte_ok"):
+            return {"verified": True, "auto_qte": True, "auto_qte_ram": bool(st.get("auto_qte_ram")), "cached": True}
+        if since < QTE_RETRY_S and not st.get("qte_ok"):     # (not read back yet: again at most every QTE_RETRY_S)
+            return {"verified": False, "auto_qte": bool(st.get("auto_qte")), "auto_qte_ram": bool(st.get("auto_qte_ram")),
+                    "reason": st.get("qte_reason", "not read back yet"), "cached": True}
+        st["qte_checked_at"] = now
+        try:
+            g = RE6Switch(ad)
+        except (RuntimeError, ValueError, OSError) as exc:
+            return {"verified": False, "reason": str(exc)[:160]}
+        if g.state.get("qte_user_off"):
+            return {"verified": True, "auto_qte": bool(g.state.get("auto_qte")), "auto_qte_ram":
+                    bool(g.state.get("auto_qte_ram")), "reason": "switched off by the operator this boot"}
+        prev = g.state.get("auto_qte")
+        res = auto_qte(g, True)
+        g.state["auto_qte_ram"] = True                       # (the RAM escape needs no option: on at once)
+        ok = bool(res.get("verified"))
+        if not ok:                                           # not read back (no cSystemInfo yet): not claimed on
+            g.state["auto_qte"] = prev
+        g.state["qte_ok"] = ok
+        g.state["qte_reason"] = "" if ok else str(res.get("reason") or "the option did not read back")[:160]
+        return {"verified": ok, "auto_qte": ok, "auto_qte_ram": True, "after": res.get("after"),
+                "reason": "" if ok else str(res.get("reason") or "the option did not read back")[:160]}
+
+
 def _complete_struggle(ad, g: RE6Switch, player: int) -> int:
-    """While a zombie holds him (action 8 / 9 / 25): each live struggle unit given the game's own escape - a chance
-    button's rolled outcome set to 0 (free at once) once the roll is done, a mash button's progress up to its target."""
+    """Each live struggle unit given the game's own escape - a chance button's rolled outcome set to 0 (free at once)
+    once the roll is done, a mash button's progress up to its target - while a zombie holds him (action 8 / 9 / 25),
+    and with QTE_RAM_ANY any active unit (a finisher's, a climb's: the grant the game gives a completed press)."""
     try:
         state = ad.read_memory(player + R.P_STATE, 1)[0]
     except (ValueError, OSError):
         return 0
-    if state not in R.HELD_STATES:
+    if state not in R.HELD_STATES and not QTE_RAM_ANY:
         return 0
     n = 0
     for x in struggle_units(g):
@@ -1002,8 +1218,8 @@ def _keep_quick(ad, g: RE6Switch, player: int, st: dict, weapon=None) -> int:
     """mDeltaTime at the multiplier while his action is a quick attack, at the magnum's while the gun's fire runs with a
     magnum in hand, 1.0 otherwise (only over 1.0 or one of its own values)."""
     k = st.get("quick_attack") or 1.0
-    mk = (st.get("magnum_speed", MAGNUM_SPEED_X) or 1.0) if st.get("fire_rate") else 1.0
-    tk = (st.get("throw_speed", THROW_SPEED_X) or 1.0) if st.get("fire_rate") else 1.0
+    mk = st.get("magnum_speed", MAGNUM_SPEED_X) or 1.0       # (2026-11-10: with or without fire_rate, as bomb_speed)
+    tk = st.get("throw_speed", THROW_SPEED_X) or 1.0
     bk = st.get("bomb_speed", BOMB_SPEED_X) or 1.0
     try:
         act = R.u64(g.m, player + UNIT_ACTION)
@@ -1166,7 +1382,7 @@ def fire_rate(g: RE6Switch, mult, magnum=None, throw=None) -> dict:
         raise ValueError("fire_rate multiplier / magnum / throw: 1..80 (1 = the game's)")
     k = min(k, FIRE_MAX)                                     # the operator's cap per weapon (2026-10-28: 5x): clamped
     magnum = min(magnum, MAGNUM_FIRE_X) if magnum is not None else None   # the magnums get their own cap (rapid-fire)
-    throw = min(throw, FIRE_MAX) if throw is not None else None
+    throw = min(throw, max(THROW_FIRE_MAX, FIRE_MAX)) if throw is not None else None   # the grenades' own cap (2x)
     recs = fire_records(g)
     if recs is None:
         return {"fire_rate_x": g.state.get("fire_rate", 1.0), "verified": False, "writes": 0,
@@ -1211,9 +1427,9 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
         keeping = st and any(st.get(k) for k in ("infinite_ammo", "infinite_tablets", "infinite_stamina",
                                                  "infinite_grenades", "auto_qte_ram")) or \
             st and ((st.get("kill_time") or {}).get("on") or (st.get("quick_attack") or 1.0) > 1.0) or down_fire_on
-        mag_on = bool(st and st.get("fire_rate") and ((st.get("magnum_speed", MAGNUM_SPEED_X) or 1.0) > 1.0
-                                                      or (st.get("throw_speed", THROW_SPEED_X) or 1.0) > 1.0
-                                                      or st.get("mag_in") or st.get("throw_in")))
+        mag_on = bool(st is not None and ((st.get("magnum_speed", MAGNUM_SPEED_X) or 1.0) > 1.0
+                                          or (st.get("throw_speed", THROW_SPEED_X) or 1.0) > 1.0
+                                          or st.get("mag_in") or st.get("throw_in")))
         bomb_on = st is not None and ((st.get("bomb_speed", BOMB_SPEED_X) or 1.0) > 1.0 or bool(st.get("bomb_in")))
         keeping = keeping or mag_on or bomb_on
         if not keeping or not enabled:
@@ -1296,11 +1512,13 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
         if op == "set_time":
             return set_time(g, _extra.get("seconds"))
         if op == "auto_qte_ram":
+            if not on:                                       # the operator's off is kept (ensure_qte leaves it)
+                g.state["qte_user_off"] = True
             return auto_qte_ram(g, bool(on))
         if op == "unlock_stages":
             return unlock_stages(g, bool(on))
         if op == "auto_qte":
-            return auto_qte(g, bool(on))
+            return auto_qte(g, bool(on), user=True)
         if op == "merc_loadout":
             return merc_loadout(g, bool(on), rocket=_extra.get("rocket", True) not in (False, "keep", "off"),
                                 thrown=_extra.get("thrown", THROWN_MAX), seed=_extra.get("seed"),
@@ -1336,6 +1554,21 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
             g.state["bomb_speed"] = k
             return {"verified": True, "bomb_speed_x": k,
                     "note": "the remote bomb's throw and its detonation press at this animation speed"}
+        if op in ("detonate", "detonate_bombs", "remote_detonate", "bomb_detonate", "mind_detonate"):
+            unit = _extra.get("unit")
+            return detonate(ad, unit=int(unit, 0) if isinstance(unit, str) else unit, wait_s=0.3)
+        if op in ("bomb_drop", "drop_bomb", "instant_bomb", "mine_drop"):
+            # the instant drop: a remote bomb down at his feet already placed and armed, nothing in his hand
+            from .re6_switch_native import bomb_drop_now
+            out = bomb_drop_now(ad, _extra.get("at"))
+            if out.get("verified"):
+                g.state["bombs_dropped"] = g.state.get("bombs_dropped", 0) + 1
+            return out
+        if op in ("bomb_mind", "mind_bombs"):
+            R.BOMB_MIND = bool(on)
+            return {"verified": True, "bomb_mind": R.BOMB_MIND,
+                    "note": "the bot's remote bombs set off through the detonator's flag (the gun stays in his hand)"
+                            if R.BOMB_MIND else "the bot's remote bombs set off with the detonator in his hand (ZL + ZR)"}
         if op == "down_fire":
             return down_fire(g, 1.0 if on is False else multiplier)
         if op == "fire_rate":
@@ -1350,4 +1583,4 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
                     "merc_loadout": merc_loadout(g, False)}
         raise ValueError(f"re6_switch_mods: unknown op {op!r} (status, infinite_ammo, infinite_tablets, "
                          "infinite_stamina, infinite_grenades, unlock_characters, unlock_stages, auto_qte, auto_qte_ram, "
-                         "kill_time, add_time, set_time, fire_rate, merc_loadout, revert_all)")
+                         "kill_time, add_time, set_time, fire_rate, merc_loadout, detonate, bomb_drop, bomb_mind, revert_all)")
