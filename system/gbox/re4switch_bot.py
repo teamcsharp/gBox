@@ -42,6 +42,8 @@ IDLE_TICKS_BEFORE_ACTION = 2
 # a select screen's steering count) now restarts the stall clock, at most CURSOR_PROGRESS_MAX times per named screen: a
 # cursor that keeps moving without the screen ever changing is still a stall.
 CURSOR_PROGRESS_MAX = 12
+MENU_POLL_S = 0.2                       # the menus are read this often (re4_switch.Pace says when a press may go in)
+UNKNOWN_ROUND_S = 6.0                   # after a stage pick, an unnamed picture this long is the round (no black, no HUD)
 FIGHT_TICK_S = 0.05                     # the RAM fight's loop
 FRAME_EVERY = 5                         # ... which classifies a frame every this many ticks (the menus coming back)
 TALLY_S = 1.0                           # the clock at 0 this long: the round is over (its results are up)
@@ -212,6 +214,10 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
     ticks = 0
     in_round = False
     rnd: Round | None = None
+    pace = driver.Pace()
+    unknown_since = None
+    seen_menu, prev_where = False, None             # title_returns: the title again after a menu (an idle return or
+                                                    # a back press), the stat that tells a walk loop on the live panel
 
     screen = {"where": None}
     while not stopped():
@@ -263,24 +269,45 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             target = (driver.EXTRAS_ROW if where == "main_menu"
                       else driver.MERCENARIES_ROW if where == "extras_menu" else None)
             scr = {**screen, "target": target, "reader": reader}
-            # one confirm per screen per gap: a second A while the fade runs lands on the next screen's default row
-            if clock() - last_step > driver.press_gap(scr):
-                key = driver.step(scr)
+            pace.observe(scr, clock())
+            if where == "title" and seen_menu:
+                stats["title_returns"] = stats.get("title_returns", 0) + (prev_where != "title")
+            if where == "dead_continue" and prev_where != "dead_continue":
+                stats["deaths"] = stats.get("deaths", 0) + 1     # the walk answers Continue: Yes (re4_switch.step)
+            seen_menu = seen_menu or where in driver.CURSOR_MENUS
+            prev_where = where
+            # moves on a short cadence once the last one showed; a confirm once its screen has settled (and, on a
+            # cursor menu, two reads agree it is on the target); the driver's per-screen gap keeps a second A off a
+            # screen that is fading out (it would land on the next screen's default row)
+            if pace.ready(scr, clock()):
+                key = driver.step(scr, clock())               # the driver's per-screen gaps on this run's clock
                 if key:
                     _press(send, key, sleep=sleep)
-                    driver.pressed(scr, key)
+                    driver.pressed(scr, key, clock())
+                    pace.pressed(scr, key, clock())
                     stats["presses"] += 1
+                    stats["menu_presses"] = stats.get("menu_presses", 0) + 1
                     last_step = clock()
-            sleep(0.4)
+            sleep(MENU_POLL_S)
             continue
 
         # --- unknown / the HUD: in the stage (the classifier cannot read a live round's picture, only its HUD)
         if not stats["stage_seen"] and where != "playing":
             sleep(0.4)
             continue                       # a screen nobody can classify before a stage: do not press into the dark
+        unknown_since = (unknown_since or clock()) if where == "unknown" else None
+        if not in_round and where == "unknown" \
+                and getattr(reader, "intro_presses", 0) < getattr(reader, "INTRO_MAX_PRESSES", 0) \
+                and clock() - unknown_since < UNKNOWN_ROUND_S:
+            # the fade after the stage's confirm is not the round: the reader names the intro once the load's black
+            # has shown (and the walk pages it), the HUD names the round; only an unnamed picture that lasts
+            # UNKNOWN_ROUND_S (no black seen, no HUD read) is taken for the round
+            sleep(MENU_POLL_S)
+            continue
         if not in_round:
             in_round = True
             stats["rounds"] += 1
+            stats.setdefault("walk_s", round(clock() - started, 1))     # the boot's walk to its first round
             rnd = Round(clock())
             if where != "playing":                           # the HUD is up: the clock already runs, no entry presses
                 for _ in range(ROUND_ENTRY_PRESSES):

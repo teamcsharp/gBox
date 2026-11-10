@@ -427,6 +427,7 @@ themselves (the clock) or to be measured by one probe run (the rest), 7.4.
 | piece | file | behaviour | evidence |
 |---|---|---|---|
 | walk: the escape | `re4switch_bot.py` | a cursor move (or a select screen's steering step) on the same named screen restarts the stall clock, at most `CURSOR_PROGRESS_MAX = 12` times per screen | the live loop above, replayed in `test_the_main_menu_walk_reaches_extras_without_the_escape_backing_it_out`; a cursor that never settles still escapes |
+| walk: the pace (2026-11-10) | `re4_switch.Pace`, `next_is_move`; `re4switch_bot.py` | a cursor move every 0.8 s once the read cursor shows the last one (2 s without: again); a confirm after its screen has been named 1 s and, on the main menu / EXTRAS, two reads on the target; the per-screen confirm gaps still guard a fading screen; the driver's gaps run on the playbook's clock. An unnamed picture right after the stage confirm is the fade: the round starts on the HUD, after the intro was paged, or after 6 s unnamed (the entry presses used to sleep through the load's black, so the intro was never armed). Stats: `walk_s`, `menu_presses`, `title_returns` | the live loop's cause, from its telemetry: session `47420892ccbd4f6c-b43422ca5fb64631` ended with `story_recoveries` 31, `rounds` 0 after about 10 minutes - the escape's first `b` once per ~19 s loop, not the game's idle return. `test_the_walk_reaches_a_round_fast_and_never_backs_out`: a closed-loop menu simulation (fades drop presses, a 30 s idle return to the title, A on LOAD opens the story list) reaches the round in 19.5 s, no `b`, no story screen; `Pace` unit tests |
 | walk: the HUD | `re4switch_bot.py` | a frame the classifier names `playing` (the HUD) is in the round; before, it went to the menu branch where `step()` returns nothing, so the cadence ran only on frames it could *not* read | tests |
 | DJ pick | `re4_switch.py` (`request`, `SELECTION`, `selection_moves`, `step`, `press_gap`), `re4_switch_screens.py` (`Reader` steering), `re4switch_bot.py` (`selection_of`) | the launch's `game.launch.mercmode.selection` is steered to: `dright` x portrait index on Select Player, `STAGE_MOVES` on the 2x2 stage grid (Village 0 TL, Castle 1 TR, Base 2 BL, Waterworld 3 BR), one move per `STEER_GAP_S = 1.0`, then confirm. The reader keeps the moved (now unmatched) picture named as the select screen with `moved` counted, until the confirm or another screen | **inferred**: the grid and one portrait per press are the GameCube layout (`re4_menus`); no frame of a moved cursor exists yet |
 | `selection_job` | `mercmode.py`, `screensaver.py` (passes `pick['map_id']`) | RE4 Switch -> `None` (the pick rides the launch, as RE6 Switch's does); GameCube RE4 unchanged (`re_mods mercs_select`) | `test_an_re4_switch_pick_rides_the_launch_not_the_gamecube_select_tool` |
@@ -493,11 +494,52 @@ this build); the map fills `snap["nav"]`, which the fight uses for line of sight
 | field | where | state | what a mod could do |
 |---|---|---|---|
 | the round clock | f32 seconds, module + ~`0x1274710` (2026-11-05 cluster, copies every 0x30; found per boot by `ClockFinder`, `stats.clock_addr`) | found live 2026-11-05; the finder is offline-tested; **not read this pass** (no round) | freeze / add / cut time (write every copy of the cluster, read back) |
-| unit health | `u16` at unit + `0x3c2` (code: the damage routine writes it) | offset from code; **which unit is the player, which are Ganados: pending** (`PLAYER_CLASS`, `ENEMY_CLASSES`) | player god mode / heal, enemy one-shot or armour |
+| unit health | `u16` at unit + `0x3c2` / max `+0x3c4` (code: the damage routine writes it) | Ganados (class `0xae7050`): measured 2026-11-10 (7.7); the player's life is NOT this field | player god mode / heal, enemy one-shot or armour |
 | unit type | `u8` at unit + `0x3ce` (the damage table's index) | from code | enemy kind swaps (risky: the type picks the damage row) |
 | the game state | pointer at module + `0xb25d78` -> main's data (`0x3ca871ee08` this boot); fields `+0x5037` difficulty, `+0x503c` mode (score x10/x5/x2), `+0x84f0`, `+0x984` (decompiled score routine) | pointer read live; fields from code, not read | difficulty / score-multiplier mods |
 | kills, combo, combo window, score | `MERC_*` | **pending** (the probe lists monotonic small-step counters) | combo-window extension, score boosts |
 | ammo | - | **not looked for** | infinite ammo |
+
+### 7.7 The first RE4 round read live (2026-11-10, session `2608165663e8463e-bde10e3ca2664322`)
+
+With main `b8cb25c7` deployed (the escape fix, not yet the 7.2 pace), MercMode's RE4 turn walked title 00:30:25 ->
+main menu 00:30:33 -> EXTRAS 00:30:49 -> Select Stage 00:31:06 -> the round 00:31:22 UTC (coordinator's timings); the
+turn's telemetry ended with `story_recoveries 0`. Leon (frame: `01'37"97`, score 0, 21 rounds, health ring part
+gone) died about a minute in, and the frame-only cadence never answered "You Are Dead - Continue Yes / No": the turn sat
+there until its cut (the very dark frame read as loading / unknown in turn, so `rounds` counted 5). The probe (run by
+the coordinator, 00:31:42-00:33:13) and my reads (00:34-00:36, read-only) all fell after the death, so nothing below was
+seen *moving*; the layout is from the objects' contents, the code and the pointers.
+
+| what | measured | how / evidence |
+|---|---|---|
+| unit object | 0x10c8 bytes, one heap pool (`0x5d55b4xxxx`-`0x5d55bexxxx` this boot), first word = its class's vtable in main's data | consecutive objects 0x10c8 apart; 3 MB of the pool read around the census hits |
+| position | **`+0xa4` f32 x, y, z** (cm; copies at `+0x128`, `+0x2a8`) | non-round stage coordinates in every unit; the unit-state code uses `+0xa4` as a vector |
+| facing | **`+0xb4` f32** = rotation y of `+0xb0` (x, z read 0) | player -0.271, Ganados 1.102 / 1.012 / -2.35, a prop 0.0. The heading convention (0 = +z) is inferred |
+| scale | `+0xbc` f32 | Ganados 1.01-1.3 (RE4 scales each one), the player and props 1.0 |
+| id / state | `+0x110` u32 / `+0x116` u8 | player id 0 state 0; Ganados even ids 22-40 state 1 |
+| health / max | `+0x3c2` / `+0x3c4` u16 on Ganados | 400/400 x 9, 3500/3500 x 1 (code: the damage routine) |
+| **the player** | class **`0xb09a60`**, one object, id 0; the bss points at it from **module + `0x11310f0`** and **+ `0x113b398`** (`S_PLAYER`, `S_PLAYER_2`) | two static pointers to the unique id-0 object, 5.3 m from the Ganado he died beside. His `+0x3c2` read **1860 with max 0 while dead**: his life is NOT there (`PLAYER_HP_IN_UNIT = False`, hp None) |
+| **the Ganados** | class **`0xae7050`** (the class 11-05 called "spawn markers": it read `+0x4d0`, a home point; `+0x500` now) | Ganado health, random scale, positions round the player. Not yet seen moving or taking damage |
+| not units | `0xaed470`, `0xaed3b0`, `0xaed318` (health 1000) and `0xaedad0` (health 1): ids 1-21 in the **table at module + `0x113d2b0`** (`{pointer, active, next}` every 0x18) | static set objects (props, lamps); all 1000-health "leads" of 11-05 are these |
+| the clock | **not found** | the probe's lone candidate `module + 0x113cce4` (37.1 -> 22.7) is not the HUD clock (1:37.97 at the same moment); the 11-05 hint addresses hold a 0x30-stride array reading a frozen 145.38 on the death screen; the deployed ClockFinder latched a lone short countdown at **module + `0x1265a7c`** (26.3 at the round start while the HUD read 1:59, 2.5 when the turn ended; the session's last stats: rounds 1, shots 0, fight "frame"). Fixed in the code: `pick_clock` takes the biggest group of equal copies; the probe now times each bss row on its own (its rows were read up to 9 s apart) |
+| kills / combo / score, the player's life, ammo | not found | the probe's 120 rising counters include frame counters; nothing correlated (no kill was seen) |
+
+Code from this (`re4_switch.py`, recorded bytes in `tests/fixtures/re4sw_units_live.json`):
+`PLAYER_CLASS 0xB09A60`, `ENEMY_CLASSES (0xAE7050,)`, `U_POS 0xA4`, `U_YAW 0xB4`, `U_HP_MAX 0x3C4`, `U_SCALE 0xBC`,
+`S_PLAYER 0x11310F0` / `S_PLAYER_2 0x113B398` (the snapshot reads the player through the pointer; the census scans
+the heap for the Ganados), `SET_OBJECT_CLASSES`, `UNIT_SIZE`. The playbook therefore fights from RAM on the next round
+(`stats.fight == "ram"`). The death screen is now named (`re4_switch_screens.is_dead_continue`, from the recorded
+frame `tests/fixtures/re4sw_dead_continue.jpg`) and answered Continue: Yes (the same stage again; `stats.deaths`).
+
+What the next RE4 round must show, in order: `stats.fight == "ram"` and `player_read` true; the player's `pos` changes
+as he walks; `enemies_read` > 0 with Ganados' health falling when shot and `kills_seen` rising; the bot turns *toward*
+its target (if it turns away, the facing convention is mirrored: flip the sign in `heading` or `TURN`); a death ends on
+Continue: Yes; `stats.timer` either follows the HUD or stays None (a None clock means no results boundary - the turn
+then ends by its cut). Still to find: the clock, the player's life, the kill / combo / score fields.
+
+Live mods on these fields (7.6): **enemy health** (`+0x3c2` / `+0x3c4` on `0xae7050` units: one-shot, armour) and
+**positions / facing** (`+0xa4` / `+0xb4`: teleport, turn) are addressable now; **unlimited health** needs the player's
+life and **clock add / set** needs the clock, neither found; the combo window and ammo are not looked for yet.
 
 Tests: `test_re4switch_bot.py` (20), `test_re4_switch_menus.py` (40), `test_re4_switch_brain.py` (3),
 `test_re4_switch_fight.py` (24), `test_re4_switch_anchors.py` (19), `test_mercmode.py` (+4).

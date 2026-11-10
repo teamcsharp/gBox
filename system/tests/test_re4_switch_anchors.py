@@ -5,6 +5,7 @@ menu must never do - pass for a running round clock - and synthetic memories bui
 bss rows, the clock cluster's 0x30 stride, the code-derived unit health at +0x3c2) pin the finders' arithmetic.
 """
 import json
+import math
 import struct
 from pathlib import Path
 
@@ -87,8 +88,9 @@ def test_the_fall_must_match_the_wall_time(drop, dt, found):
 
 def test_the_cluster_is_taken_over_a_stray_countdown():
     """The copies agree within a few ms (a tie at 0.01 s: the lowest address); a lone countdown elsewhere loses."""
-    cands = [(0x40, 110.0, 109.001), (0x10, 110.0, 109.000), (0x70, 110.0, 109.002), (0x900, 50.0, 49.0)]
-    assert D.pick_clock(cands) == 0x10
+    cands = [(0x40, 110.0, 109.001), (0x10, 110.0, 109.000), (0x70, 110.0, 109.002), (0x900, 27.0, 26.3)]
+    assert D.pick_clock(cands) == 0x10, "2026-11-10: a lone 26 s timer was taken while the HUD read 1:59"
+    assert D.pick_clock([(0x900, 27.0, 26.3), (0x10, 110.0, 109.0)]) == 0x10, "equal groups: the higher reading"
     assert D.pick_clock([(0x900, 50.0, 49.0)]) == 0x900
     assert D.pick_clock([]) is None
 
@@ -191,7 +193,8 @@ def test_the_snapshot_reads_the_player_and_the_ganados_once_mapped(mapped):
     m = Mem({B + 0xB00000: bytes(0x77D000), 0x5D55000000: bytes(heap)})
     snap = D.snapshot(m, now=0.0)
     assert snap["player"]["pos"] == pytest.approx((-3668.2, 40.9, 6021.7), abs=0.01)
-    assert snap["player"]["hp"] == 1000 and snap["player"]["rot"] == pytest.approx(0.5)
+    assert snap["player"]["hp"] is None, "the player's +0x3c2 is not his life (measured): no health is claimed"
+    assert snap["player"]["rot"] == pytest.approx(0.5)
     assert sorted((e["id"], e["hp"]) for e in snap["enemies"]) == [(2, 400), (3, 0)]
     # the shape the RE4 map / mesh walker plugs into (re5_switch's): player pos/rot/hp/hp_max, enemies slot/ptr/pos/hp
     assert {"pos", "rot", "hp", "hp_max"} <= set(snap["player"])
@@ -208,8 +211,68 @@ def test_a_unit_whose_position_is_not_finite_is_dropped(mapped):
     assert D.snapshot(m, now=0.0)["player"] is None
 
 
-def test_unmapped_classes_read_no_units():
+def test_unmapped_classes_read_no_units(monkeypatch):
+    monkeypatch.setattr(D, "PLAYER_CLASS", None)
+    monkeypatch.setattr(D, "ENEMY_CLASSES", ())
     m = Mem({B + 0xB00000: bytes(0x77D000)})
-    assert D.PLAYER_CLASS is None and D.ENEMY_CLASSES == () and D.U_POS is None
     snap = D.snapshot(m, now=0.0)
     assert snap["player"] is None and snap["enemies"] == [] and m.re4_units.scans == 0
+
+
+LIVE = Path(__file__).parent / "fixtures" / "re4sw_units_live.json"
+
+
+def live_mem():
+    """The recorded unit objects and the bss slices that point at them, as a guest memory."""
+    fx = json.loads(LIVE.read_text())
+    regions = {o["addr"]: bytes.fromhex(o["hex"]) for o in fx["objects"].values()}
+    regions.update({fx["base"] + int(off, 16): bytes.fromhex(h) for off, h in fx["bss"].items()})
+    return fx, Mem(regions)
+
+
+def test_recorded_units_read_with_the_measured_layout():
+    """Real bytes (2026-11-10): the player and three Ganados through the measured offsets."""
+    fx, m = live_mem()
+    player = D.read_unit(m, fx["objects"]["player"]["addr"])
+    assert player["vtable"] == B + D.PLAYER_CLASS and player["id"] == 0
+    assert player["pos"] == pytest.approx((25619.936, 3000.001, -30616.938), abs=0.01)
+    assert player["rot"] == pytest.approx(-0.271, abs=0.001)
+    g = {k: D.read_unit(m, o["addr"]) for k, o in fx["objects"].items() if k.startswith("ganado")}
+    assert all(u["vtable"] == B + 0xAE7050 for u in g.values())
+    assert sorted((u["hp"], u["hp_max"]) for u in g.values()) == [(400, 400), (400, 400), (3500, 3500)]
+    assert g["ganado_26"]["pos"] == pytest.approx((25998.654, 3000.0, -30241.902), abs=0.01)
+    assert g["ganado_26"]["rot"] == pytest.approx(-2.35, abs=0.001)
+    scale = struct.unpack_from("<f", bytes.fromhex(fx["objects"]["ganado_22"]["hex"]), D.U_SCALE)[0]
+    assert scale == pytest.approx(1.3, abs=0.001), "the big one: RE4 scales each Ganado"
+    prop = D.read_unit(m, fx["objects"]["prop_aed3b0_2"]["addr"])
+    assert prop["vtable"] - B in D.SET_OBJECT_CLASSES and prop["rot"] == 0.0
+
+
+def test_the_player_is_read_through_the_bss_pointer():
+    fx, m = live_mem()
+    assert struct.unpack("<Q", m.rd(B + D.S_PLAYER, 8))[0] == fx["objects"]["player"]["addr"]
+    assert struct.unpack("<Q", m.rd(B + D.S_PLAYER_2, 8))[0] == fx["objects"]["player"]["addr"]
+    u = D.player_unit(m, B)
+    assert u["id"] == 0 and u["class"] == D.PLAYER_CLASS
+
+
+def test_the_live_snapshot_has_the_player_and_the_ganados(monkeypatch):
+    fx, m = live_mem()
+    ganados = sorted(o["addr"] for k, o in fx["objects"].items() if k.startswith("ganado"))
+    windows = tuple((a, a + D.UNIT_SIZE) for a in ganados + [fx["objects"]["prop_aed3b0_2"]["addr"]])
+    monkeypatch.setattr(D, "HEAP_WINDOWS", windows)
+    monkeypatch.setattr(D, "UNIT_SCAN_CHUNK", D.UNIT_SIZE)
+    snap = D.snapshot(m, now=0.0)
+    p = snap["player"]
+    assert p["pos"] == pytest.approx((25619.936, 3000.001, -30616.938), abs=0.01) and p["hp"] is None
+    assert sorted(e["hp"] for e in snap["enemies"]) == [400, 400, 3500]
+    assert {e["class"] for e in snap["enemies"]} == {0xAE7050}, "the 1000-health set objects are not Ganados"
+    near = min(math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) for e in snap["enemies"])
+    assert near == pytest.approx(530, abs=5), "the Ganado he died beside, 5.3 m off"
+
+
+def test_the_unit_table_in_the_bss_lists_set_objects_not_ganados():
+    """module + 0x113d2b0: {pointer, active, next} every 0x18, from id 1 - the 1000-health classes, recorded live."""
+    fx, _ = live_mem()
+    raw = bytes.fromhex(fx["bss"][hex(0x113D2B0)])
+    assert struct.unpack_from("<Q", raw, 0x18)[0] == 0x5D55BEBEC8          # id 1, class 0xaed470 (a set object)

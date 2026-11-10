@@ -168,33 +168,35 @@ def test_the_main_menu_walk_reaches_extras_without_the_escape_backing_it_out(mon
     script = []
     for row in (1, 2, 3, 4, 5):
         script += [{"where": "main_menu", "cursor": row}] * 3     # three reads (3 s) per row
-    script += [{"where": "extras_menu", "cursor": 0}] * 4
-    monkeypatch.setattr(B.screens, "Reader", lambda: Scripted(script))
-    adapter = Adapter([b"frame"] * 40)
-    ticks = {"n": 0}
+    for row in (0, 1, 2):
+        script += [{"where": "extras_menu", "cursor": row}] * 3
+    reader = Scripted(script)
+    monkeypatch.setattr(B.screens, "Reader", lambda: reader)
+    adapter = Adapter([b"frame"] * 80)
+    t = [1000.0]                                         # time moves when the playbook sleeps (about 1 s a read)
 
-    def clock():
-        ticks["n"] += 1
-        return 1000.0 + ticks["n"] * 1.0
+    def sleep(s):
+        t[0] += s if s >= 0.2 else 0.0
 
-    B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: ticks["n"] > 60,
-           sleep=lambda s: None, stats={}, clock=clock, still_s=12.0)
+    stats = {}
+    B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: not reader.script,
+           sleep=lambda s: sleep(s * 5), stats=stats, clock=lambda: t[0], still_s=12.0)
     keys = _down(adapter)
     assert "b" not in keys, f"the escape backed the walk out of a working menu: {keys}"
-    assert keys.count("ddown") >= 4 and "a" in keys
+    assert keys.count("ddown") >= 6 and keys.count("a") == 2 and stats.get("title_returns", 0) == 0
 
 
 def test_a_cursor_that_never_settles_is_still_a_stall(monkeypatch):
-    script = [{"where": "main_menu", "cursor": 1 + (i % 2)} for i in range(80)]
+    script = [{"where": "main_menu", "cursor": 1 + (i % 2)} for i in range(200)]
     monkeypatch.setattr(B.screens, "Reader", lambda: Scripted(script))
-    adapter = Adapter([b"frame"] * 80)
+    adapter = Adapter([b"frame"] * 200)
     ticks = {"n": 0}
 
     def clock():
         ticks["n"] += 1
         return float(ticks["n"]) * 5.0
 
-    B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: ticks["n"] > 70,
+    B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: ticks["n"] > 400,
            sleep=lambda s: None, stats={}, clock=clock, still_s=12.0)
     assert "b" in _down(adapter), "past CURSOR_PROGRESS_MAX a moving cursor no longer holds the escape off"
 
@@ -332,3 +334,118 @@ def test_the_playbook_asks_for_the_boundary_sink_and_the_game():
     import inspect
     params = inspect.signature(B.play).parameters
     assert "round_boundary" in params and "game" in params and "stats" in params
+
+
+class Game:
+    """A closed-loop stand-in for RE4 Switch's menus: presses move the cursor or change the screen after a fade, the main
+    menu returns to the title after IDLE_S without a press (the coordinator's hypothesis, kept in so the walk must beat
+    it), A on LOAD opens the story save list (the failure the walk must never cause), and three A presses page the
+    round's intro. Time only moves when the playbook sleeps."""
+
+    FADE_S, IDLE_S, LOAD_S = 0.6, 30.0, 2.0
+
+    def __init__(self):
+        self.t = 0.0
+        self.screen, self.cursor = "title", 0
+        self.fade_until = 0.0
+        self.last_press = 0.0
+        self.intro_pages = 0
+        self.log = []
+
+    def clock(self):
+        self.t += 0.001
+        return self.t
+
+    def sleep(self, s):
+        self.t += max(s, 0.0)
+
+    def _go(self, screen, cursor=0):
+        self.screen, self.cursor, self.fade_until = screen, cursor, self.t + self.FADE_S
+
+    def frame(self):
+        if self.screen == "main_menu" and self.t - self.last_press > self.IDLE_S:
+            self._go("title")
+        if self.screen == "loading" and self.t >= self.fade_until + self.LOAD_S:
+            self._go("intro")
+        return b"sim"
+
+    def classify(self, _png):
+        if self.t < self.fade_until:
+            return {"where": "unknown"}
+        if self.screen in ("main_menu", "extras_menu"):
+            return {"where": self.screen, "cursor": self.cursor}
+        if self.screen == "intro":
+            return {"where": "unknown"}
+        if self.screen == "round":
+            return {"where": "playing"}
+        return {"where": self.screen}
+
+    def send(self, rows):
+        for row in rows:
+            if not row.get("down"):
+                continue
+            key = row["key"]
+            self.log.append((round(self.t, 2), self.screen, key))
+            self.last_press = self.t
+            if self.t < self.fade_until:
+                continue                                     # a press during a fade is dropped
+            s = self.screen
+            if s == "title" and key == "a":
+                self._go("main_menu", 1)
+            elif s in ("main_menu", "extras_menu") and key in ("ddown", "dup"):
+                top = 6 if s == "main_menu" else 4
+                self.cursor = min(max(self.cursor + (1 if key == "ddown" else -1), 0), top)
+            elif s == "main_menu" and key == "a":
+                self._go("extras_menu", 0) if self.cursor == 5 else self._go("story")
+            elif s == "main_menu" and key == "b":
+                self._go("title")
+            elif s == "extras_menu" and key == "a":
+                self._go("mercs_title") if self.cursor == 2 else self._go("story")
+            elif s == "mercs_title" and key == "a":
+                self._go("select_player")
+            elif s == "select_player" and key == "a":
+                self._go("select_stage")
+            elif s == "select_stage" and key == "a":
+                self._go("loading")
+            elif s == "intro" and key == "a":
+                self.intro_pages += 1
+                if self.intro_pages >= 3:
+                    self._go("round")
+
+
+def test_the_walk_reaches_a_round_fast_and_never_backs_out(monkeypatch):
+    """Title to a live round in a closed loop: at one press per 3 s the main menu alone took 12 s and the old escape
+    backed it out every time (2026-11-09/10, live). Now: no back press, no story screen, the round inside 25 s."""
+    from gbox.mercs.titles import re4_switch_screens as S
+    game = Game()
+    monkeypatch.setattr(S, "classify", game.classify)
+
+    class Ad:
+        get_frame = staticmethod(game.frame)
+
+    stats = {}
+    B.play(Ad(), game.send, lambda: stats.get("rounds", 0) >= 1 or game.t > 120, sleep=game.sleep, stats=stats,
+           clock=game.clock)
+    keys = [k for _, _, k in game.log]
+    assert game.screen == "round", (game.screen, game.log[-8:])
+    assert "b" not in keys and not any(s == "story" for _, s, _ in game.log), game.log
+    assert stats["walk_s"] < 25.0, stats["walk_s"]
+    assert stats.get("title_returns", 0) == 0
+
+
+def test_the_walk_survives_the_title_coming_back(monkeypatch):
+    """The game drops the main menu to the title (an idle return): the walk names the title and starts again."""
+    from gbox.mercs.titles import re4_switch_screens as S
+    game = Game()
+    game.IDLE_S = 2.5                                    # shorter than the walk needs: the title comes back once
+    monkeypatch.setattr(S, "classify", game.classify)
+
+    class Ad:
+        get_frame = staticmethod(game.frame)
+
+    stats = {}
+    B.play(Ad(), game.send, lambda: game.screen == "extras_menu" or game.t > 60, sleep=game.sleep, stats=stats,
+           clock=game.clock)
+    if game.screen != "extras_menu":
+        assert stats.get("title_returns", 0) >= 1, "a title return is counted where the panel can see it"
+    assert "b" not in [k for _, _, k in game.log]

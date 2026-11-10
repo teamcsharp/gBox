@@ -295,3 +295,57 @@ def test_a_steer_ends_when_another_screen_comes_up(monkeypatch):
     r.press_went_in("select_stage", "ddown")
     monkeypatch.setattr(S, "classify", lambda _png: {"where": "loading"})
     assert r.read(b"")["where"] == "loading" and r.steer is None
+
+
+# ---------------------------------------------------------------- the walk's pace (re4switch_bot)
+
+def test_a_cursor_move_waits_for_the_last_one_to_show():
+    pace, scr = D.Pace(), {"where": "main_menu", "cursor": 1, "target": 5}
+    pace.observe(scr, 0.0)
+    assert pace.ready(scr, 0.0)
+    pace.pressed(scr, "ddown", 0.0)
+    assert not pace.ready(scr, D.MOVE_GAP_S + 0.1), "the cursor still reads 1: the move has not shown"
+    assert pace.ready(scr, D.MOVE_RETRY_S + 0.1), "never shown by MOVE_RETRY_S: the move goes in again"
+    moved = dict(scr, cursor=2)
+    pace.observe(moved, 0.5)
+    assert not pace.ready(moved, 0.5) and pace.ready(moved, D.MOVE_GAP_S + 0.01)
+
+
+def test_a_menu_confirm_needs_two_reads_on_the_target_and_a_settled_screen():
+    pace, scr = D.Pace(), {"where": "main_menu", "cursor": 5, "target": 5}
+    pace.observe(scr, 0.0)
+    assert not pace.ready(scr, D.SETTLE_S + 0.1), "one read on EXTRAS is not two"
+    pace.observe(scr, 0.2)
+    assert pace.ready(scr, D.SETTLE_S + 0.1)
+    pace.observe(dict(scr, cursor=4), 0.3)
+    assert not pace.ready(dict(scr, cursor=5), D.SETTLE_S + 0.2), "a read off the target starts the count again"
+
+
+def test_a_fixed_screen_confirms_once_it_has_settled():
+    pace, title = D.Pace(), {"where": "title"}
+    pace.observe(title, 10.0)
+    assert not pace.ready(title, 10.0 + D.SETTLE_S - 0.1) and pace.ready(title, 10.0 + D.SETTLE_S)
+
+
+# ---------------------------------------------------------------- You Are Dead - Continue
+
+FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
+
+
+def test_the_death_screen_is_named_not_taken_for_a_load():
+    """Recorded 2026-11-10: the frame is almost black (mean 6.5) and read as loading, so nothing answered it."""
+    assert S.classify((FIXTURES / "re4sw_dead_continue.jpg").read_bytes()) == {"where": "dead_continue"}
+    assert S.classify((FIXTURES / "re4sw_round_hud.jpg").read_bytes()) == {"where": "playing"}
+    black = png_of(np.zeros((S.H, S.W, 3), dtype=np.uint8))
+    assert S.classify(black)["where"] == "loading"
+
+
+def test_continue_is_answered_yes_and_the_stage_intro_is_armed_again():
+    D.begin_run()
+    scr = {"where": "dead_continue"}
+    assert D.step(scr, now=500.0) == "a"
+    D.pressed(scr, "a", now=500.0)
+    assert D.step(scr, now=501.0) is None, "one confirm per gap"
+    r = S.Reader()
+    r.press_went_in("dead_continue", "a")
+    assert r.stage_picked is True and r.intro_presses == 0
