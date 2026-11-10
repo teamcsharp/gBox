@@ -72,9 +72,11 @@ def test_placements_reports_index_kind_and_position():
     out = E.placements(Disc(), "map_forest01_00o.dat")
     assert out["count"] == 2
     first, second = out["records"]
-    assert first["index"] == 0 and first["kind"] == 2 and first["class"] == "object"
+    # the fake disc has no executable, so the labeller falls back honestly instead of inventing a name
+    assert first["index"] == 0 and first["kind"] == 2 and first["class"] == "class_0x02"
+    assert first["family"] == "unknown"
     assert (first["x"], first["y"], first["z"]) == (10.0, 1.0, -3.0)
-    assert second["class"] == "door" and second["x"] == 20.0
+    assert second["class"] == "class_0x05" and second["family"] == "unknown" and second["x"] == 20.0
 
 
 @pytest.mark.skipif(not DISC.is_file(), reason="the disc is not on this machine")
@@ -159,3 +161,20 @@ def test_every_door_renders_as_its_own_mark_not_a_fallback():
         text = E.ascii_map([rec], "map_city00_00o.dat", cols=4, rows=2)
         assert marks[name] in text, f"{name} did not render as {marks[name]}: {text!r}"
         assert "D" not in text
+
+
+def test_the_real_disc_labels_places_with_the_executables_own_registry():
+    import pathlib as _p
+    from gbox import gcdisc
+    disc = _p.Path(r"D:\gBox\cache\mods\436e0bb84d5337d1\pso_city_npc_moved"
+                   r"\Phantasy Star Online Episode I & II Plus (USA).iso")
+    if not disc.is_file():
+        pytest.skip("the disc is not on this machine")
+    d = gcdisc.GCDisc(str(disc))
+    rows = E.placements(d, "map_city00_00o.dat")["records"]
+    doors = [r for r in rows if r["family"] == "door"]
+    assert len(doors) == 4
+    assert sorted(r["class"] for r in doors) == ["TObjCityDoor_Guild", "TObjCityDoor_Med",
+                                                 "TObjCityDoor_Shop", "TObjCityDoor_Warp"]
+    assert all(r["class"].startswith("TObj") or r["class"] == "TObjCamera" or r["family"] != "unknown"
+               for r in rows if r["class_index"] in (0x40, 0x44, 0x46, 0x47, 0x48, 0x49))

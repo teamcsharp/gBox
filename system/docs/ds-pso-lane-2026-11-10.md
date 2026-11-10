@@ -3046,3 +3046,26 @@ with the setdata/editor/offset/areas suites: **46 passed**.
 
 The reconciliation's next item is the editor page: it must import `pso_classes` (plus these two helpers) instead of the
 duplicated module when it is rebased onto current main.
+
+## Round 66 (2026-11-10, later still) — the editor page rebased onto main and `pso_classes` (reconciliation item 2)
+
+Working locally; no lilspark, no live session.
+
+The page now lives on top of current main instead of the old tree, with no duplicate registry module:
+
+* `pso_editor.placements` labels through **`pso_classes`**: `class_labeller(disc)` loads `PsoV3.dol` once, keeps the
+  registry on the disc object, and returns `(name, family)` per `kind`; a disc without an executable (every synthetic
+  test disc) falls back to `class_0xNN`/`unknown` instead of inventing a name or raising.
+* `pso_editor_api` imports `pso_classes` (the doc line says so), and `server.py` gained the one registration line on
+  current main.
+* the page, its API and the build endpoint are unchanged otherwise (sets, placements, SVG preview, preview, build).
+
+**Checked on the owned disc:** `map_city00_00o.dat` lists 28 placements with families `{effects: 7, prop: 11, unknown:
+6, door: 4}`, the four door classes named (`TObjCityDoor_Guild/Med/Shop/Warp`), the SVG preview and `/pso/editor` both
+200 - the same result the old branch produced, now through main's own module.
+
+Tests: `test_pso_editor.py` (17, including a new real-disc case that the four city doors come out named with family
+`door`), `test_pso_editor_api.py` (14), `test_pso_classes.py` (10), setdata and offset - **54 passed**.
+
+This branch stacks `ds-pso-classes-family-20261110` (main + the ported `family`/`label`/vtable census), so it is the
+complete P6b unit: registry helpers, backend, page, build endpoint and the swap-fit gate belong on this line.

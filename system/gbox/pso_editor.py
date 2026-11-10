@@ -14,6 +14,7 @@ edits it cannot verify.
 """
 from __future__ import annotations
 
+from . import pso_classes as CLS
 from . import pso_map_write as W
 from . import pso_setdata as P
 
@@ -40,6 +41,46 @@ def kind_of(name: str) -> str | None:
     if low.endswith("o.dat") or low.endswith("d.dat"):
         return "object"
     return None
+
+
+def class_labeller(disc):
+    """A ``kind -> (name, family)`` callable backed by the disc's own executable (cached on the disc object).
+
+    The class registry lives in `PsoV3.dol`, which is a 5 MB read; the first call loads it once and keeps it on the disc
+    object, so labelling a set's placements costs nothing after that. A disc without an executable (a synthetic test
+    disc) gets the ``class_0xNN``/``unknown`` fallback rather than an error, because the set data itself is still
+    readable.
+    """
+    cached = getattr(disc, "_pso_class_table", None)
+    if cached is None:
+        dol = None
+        try:
+            dol = disc.read("PsoV3.dol")
+        except Exception:                       # noqa: BLE001 - a disc without the executable is not an error here
+            dol = None
+        try:
+            table = CLS.registry(dol) if dol else {}
+            cached = (dol, table)
+        except Exception:                       # noqa: BLE001 - an unreadable registry falls back the same way
+            cached = (dol, {})
+        try:
+            setattr(disc, "_pso_class_table", cached)
+        except Exception:                       # noqa: BLE001 - a read-only disc object is fine
+            pass
+    dol, table = cached
+
+    def label(kind: int) -> tuple:
+        index = int(kind) & 0xFF
+        name = table.get(index)
+        if name and dol:
+            try:
+                family = CLS.family_of_name(name)
+            except Exception:                   # noqa: BLE001
+                family = "object"
+            return name, family
+        return (name or f"class_{index:#04x}"), "unknown"
+
+    return label
 
 
 class EditError(ValueError):
@@ -70,8 +111,9 @@ def placements(disc, set_name: str) -> dict:
     rows = []
     for rec in recs:
         cls = P.kind_class(rec["kind"])
+        name, family = class_labeller(disc)(cls)
         rows.append({"index": int(rec["index"]), "kind": int(rec["kind"]), "class_index": cls,
-                     "class": CLASS_NAMES.get(cls, f"class{cls}"),
+                     "class": name, "family": family,
                      "x": round(float(rec["x"]), 3), "y": round(float(rec["y"]), 3), "z": round(float(rec["z"]), 3),
                      "angle": round(float(rec["angle"]), 3)})
     return {"set": set_name, "where": where, "count": len(rows), "records": rows}
