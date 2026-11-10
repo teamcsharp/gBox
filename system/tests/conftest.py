@@ -79,6 +79,20 @@ def _private_enemy_knowledge(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _private_re5_doors(tmp_path_factory, monkeypatch):
+    """Tests never write the real RE5 Switch door memory (re5_switch.DOOR_FILE: the doors, windows and ledges each stage
+    showed, which the bot walks to when nobody is left to fight) nor its log (DOOR_LOG): a test's synthetic door would
+    land in the live memory of whatever checkout runs the tests (the Spark's share) and be walked to there. A test that
+    wants particular ones points them itself."""
+    import sys
+    mod = sys.modules.get("gbox.mercs.titles.re5_switch")
+    if mod is not None and hasattr(mod, "DOOR_FILE"):
+        root = tmp_path_factory.mktemp("re5_doors")
+        monkeypatch.setattr(mod, "DOOR_FILE", root / "door_spots.json")
+        monkeypatch.setattr(mod, "DOOR_LOG", root / "re5-switch-doors.jsonl")
+
+
+@pytest.fixture(autouse=True)
 def _no_system_drive_rule(monkeypatch):
     """A worker refuses game data on a Windows system drive (gbox/storage_policy.py); tests keep their temporary
     folders wherever pytest puts them (C: on a Windows box), so the rule only applies where a test asks for it

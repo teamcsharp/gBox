@@ -43,6 +43,8 @@ UNIT_SHOWN, UNIT_BTN, UNIT_MODE, UNIT_MASK, UNIT_PROGRESS, UNIT_TARGET = 0x08, 0
 BTN_OWNER, BTN_ON, BTN_AVAIL, BTN_MUTED, BTN_NEW = 0x08, 0x10, 0x12, 0x14, 0x15
 BTN_PLAYER, BTN_KIND, BTN_MODE, BTN_PRIORITY, BTN_KEY, BTN_LABEL, BTN_COUNT = 0x18, 0x1C, 0x20, 0x24, 0x28, 0x2C, 0x30
 BTN_PLAYERS, BTN_TARGET = 0x40, 0x48
+AREA_POS = 0x30                          # a stage object's button target (its cAreaHit): +0x30 its position (static
+                                         # notes above; read by re5_switch.prompt_owner only within reach of him)
 KIND_ENEMY, KIND_STAGE, KIND_PLAYER, KIND_AREA = 0, 1, 2, 3   # kind 0: a Majini's (Break free); 1: a stage object's
                                          # (the hourglass, crates); 2: his own actions (Pick up, Resuscitate, Place, the
                                          # ledges); 3: area pickups (ammo, treasure: the target a cAreaHit)
