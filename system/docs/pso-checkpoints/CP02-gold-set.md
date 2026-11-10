@@ -1,4 +1,4 @@
-# CP02 gold set — partial (pipeline built and measured on the 14B; the 32B run waits on the pull)
+# CP02 gold set — done (both models measured; neither is a namer)
 
 Session identity: DeepSeek    Branch: ds-pso-cp02-gold-set-20261110    Commits: this branch
 Goal: 1 (decrypt / P2b)
@@ -9,51 +9,59 @@ Goal: 1 (decrypt / P2b)
 record and it has 30 addresses — recorded rather than padded). All 30 were exported from the Ghidra project
 `D:\gBox\ghidra-pso\PSO` (program `/pso_v3.elf`) with pyghidra, each function's decompiled C.
 **Names are stripped address-free**: the function's own symbol becomes `this_function`, every callee becomes
-`callee_1`, `callee_2`… in order of appearance (a first version renamed them `sub_<address>`; verified now that **no
-prompt contains any address or `FUN_` name for all 30**).
-
-Output: `D:\gBox\pso-ds\llm\decompiles.json` (30 entries) via `system/tools/export_decompiles.py`.
+`callee_1`, `callee_2`… in order of appearance. Verified: **no prompt contains an address or a `FUN_` name** for any of
+the 30. Output: `D:\gBox\pso-ds\llm\decompiles.json` (`system/tools/export_decompiles.py`).
 
 ## The asker/scorer
 
 `gbox/pso_llm.py`: `GOLD` (address → proven name, role, source), `prompt_for`, `ask` (Ollama `/api/generate`, JSON
 format, temperature 0, 16k context), `score_answer` (exact name / same role / wrong), `run` (writes
-`D:\gBox\pso-ds\llm\gold34-<model>.json` with per-function answers, verdicts, seconds, and the summary).
-Placeholder roles ("guarded routine", the thunks) are in the set but **excluded from the role rate** (25 of 30 are
-scoreable). A dead server is recorded per function, never raised.
+`D:\gBox\pso-ds\llm\gold34-<model>.json`). Placeholder roles ("guarded routine", the thunks) stay in the set but are
+**excluded from the role rate** (25 of 30 scoreable). A dead server is recorded per function, never raised.
+Tests: `tests/test_pso_llm.py` **7 passed**.
 
-Tests: `tests/test_pso_llm.py` (7) — the gold set's shape, exact/role/wrong scoring, no address in the prompt, a run
-writing honest counts, and a dead server recorded. **7 passed.**
+## The two scores (full 30, `temperature 0`)
 
-## First measurement: `qwen2.5-coder:14b`, 6 functions (a validation subset)
+| model | size | name exact | role hits | wrong | role rate | seconds/function | total |
+|---|---|---|---|---|---|---|---|
+| `qwen2.5-coder:32b` | 20.3 GB | 0 | 1 | 29 | **0.04** (1/25) | **23.50** | 705 s |
+| `qwen2.5-coder:14b` | 9.0 GB | 0 | 1 | 29 | **0.04** (1/25) | **2.73** | 82 s |
 
-| address | proven | verdict | the model's answer |
-|---|---|---|---|
-| `8000c040` | entry | wrong | `PROCESS_GAME_STATE` — "handles game state processing" |
-| `8000f998` | BEGIN_TRAVEL | **role** | `SET_FLAG` — "sets a flag at a specific memory address" |
-| `8001e5c8` | primitive | wrong | `FETCH_VALUE` |
-| `800791bc` | floor-height query | wrong | `PROCESS_COLLISIONS` |
-| `8007a448` | floor-query helper | wrong | `HANDLE_INPUT_AND_PROCESS` |
-| `80102ac0` | inventory/equip helper | wrong | `CALL_CALEE_1` |
+**Both are far below the guide's ~50 % bar.** The one hit is the same function for both (`8000f998`, BEGIN_TRAVEL — the
+two-instruction flag write is readable from its code alone). Neither model names a single function exactly.
 
-Summary: 0 exact names, 1 role hit of 6 (**0.167**), 5 wrong, **3.93 s/function** (first call 14.7 s including load;
-the rest 1.3–2.7 s). The 14B's answers are plausible-from-the-code but not the proven roles — well below the guide's
-~50 % bar, so on this evidence it is a *summariser/candidate-list* model, not a namer.
+## Five example answers (two right-ish, three wrong)
 
-## Still open
+| address | proven | 14B answer | 32B answer | verdict |
+|---|---|---|---|---|
+| `8000f998` | BEGIN_TRAVEL — sets the area-load request flag | `SET_FLAG` — "sets a flag at a specific memory address" | `SET_FLAG` — "sets a flag at an offset from a base address" | **role** (both) |
+| `80103748` | F_DELETE — object delete | `HANDLE_EVENT` — "handles an event by calling various functions" | `PROCESS_PARAM_AND_CALL` | wrong (both) |
+| `801b8310` | F_INVENTORY — inventory | `CHECK_AND_CALL` — "checks a condition and calls another function" | `CHECK_AND_CALL` | wrong (both) |
+| `801bab1c` | WARP — executes the party area transition | `HANDLE_INPUT` | `CHECK_AND_PROCESS` | wrong (both) |
+| `80228540` | SET_TARGET — stores the travel destination | `SET_TARGET`-style store named as a setter but scored wrong (the C shows the write; the *destination* meaning is not in it) | similar | wrong (both) |
 
-- `qwen2.5-coder:32b` is still downloading (26.9 GB on `D:` at the time of writing; the model is about 20 GB on top of
-  the 14B's 8.4 GB). When it lands: the full 30 × 2 run, the two scores, the chosen model and five example answers go
-  into this file and `gold34-<model>.json` for each.
-- The scaffold and the 14B subset are committed here so the measurement is not lost if the session ends.
+## The decision
 
-## Tests
+The guide says below about 50 % on roles: *keep the model only for summaries and candidate lists; no name it proposes
+enters `pso_ram.py` without a decompile or live proof.* That is the decision, recorded:
 
-`test_pso_llm.py` 7 passed. No other suites touched. CP0 baseline unchanged (45 failed / 1,329 passed / 132 skipped).
+- **Chosen model: `qwen2.5-coder:14b`** — the same role rate as the 32B, **8.6× faster** per function (2.73 s vs
+  23.50 s) and 11 GB smaller, which leaves room for Dolphin beside it on the 3090.
+- **Neither is used to name anything.** They are used for summaries, candidate lists and cross-checks (CP3), with the
+  rule that a name reaches `pso_ram.py` only after a decompile or live proof.
+
+## What this means for CP3
+
+CP3's bulk labelling now has a measured ceiling: at 4 % role accuracy the labels are not evidence, they are leads for
+the RE session to check. That is still useful (the pipeline in `gbox/pso_llm.py` can label thousands of functions
+unattended at about 2.7 s each on the 14B), and CP3's evidence file will say exactly that rather than implying
+accuracy. If a stronger local model arrives later, `run(model)` re-scores the same gold set in 82 s.
 
 ## Needs
 
-- the 32B pull to finish (no operator action);
-- then the full run, which is 30 × about 4 s ≈ 2 min per model plus load.
+- nothing from the operator; the pulls are done and the server is configured;
+- the 32B is kept on `D:` (20.3 GB) as the second data point, or can be removed; the `ollama ps` keep-alive is 24 h.
 
-Next: finish the pull, run both models over all 30, score, pick the model, and continue to CP3 with the winner.
+Tests: `test_pso_llm.py` 7 passed; CP0 baseline unchanged (45 failed / 1,329 passed / 132 skipped).
+
+Next: CP3's labelling pipeline with the 14B, and the evidence states the 4 % ceiling plainly.
