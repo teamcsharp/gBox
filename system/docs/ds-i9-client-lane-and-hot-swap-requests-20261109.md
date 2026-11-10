@@ -718,3 +718,31 @@ toolchain is complete and dispatchable, and the two-frame hot-swap evidence is s
 the automated input into RE6's menus is unreliable for the specific prompt/menu states a fresh save produces. The next
 step is to observe the fresh-save menu flow with a read-only loop (no keys) and then replay exactly the observed
 sequence, or to add a virtual gamepad to the i9 worker.
+
+## Round 29 status (2026-11-09, ~21:25 CST): the missing `alert_ok` state is handled; the input path is proven
+
+* The fresh-save flow's blocker was the **`alert_ok` dialog** - the first boot shows "This game has an autosave feature.
+  Do not quit the game when the saving icon is displayed." with an A/OK button. No driver handled `alert_ok`, so it
+  either pressed B (no effect) or sat there. `drive_fast.py` now presses A on `alert_ok` and backs out of settings
+  menus; with that, the drive proceeded through the dialog and into the game.
+* The run reached **gameplay** (a "Look around (B)" prompt on a dark scene) - so posted key input does work once the
+  right screen states are handled; the earlier hangs were unhandled dialogs, not an input failure. The route taken was
+  the campaign (PLAY GAME), not Mercenaries, because the fresh save's main menu differs from the old save's (no
+  CONTINUE at the top, so the fixed "down x3" landed on a different item).
+* Next: observe the fresh-save main menu read-only (`observe.py`, already written) to map its items, then drive
+  main menu -> EXTRA CONTENT -> Mercenaries -> stage -> character -> round with the corrected per-state handling.
+
+## Round 30 status (2026-11-09, ~21:40 CST): the title reports `title_locked`; the unlock did not apply on these sessions
+
+* A new screen state appeared: **`title_locked`** - the title screen with the menu closed. Pressing A there does not advance
+  it (the game stayed black at 13 FPS), so it is the *locked* title, i.e. the save's unlock flag is not set.
+* The worker log shows the unlock watcher for the round-29 session ended **`session_ended` (0 writes)** - it never got a
+  title state to write the flag in - and the current session logged no unlock line at all. The save (`SAVEDATA`,
+  28,752 bytes) was recreated by the campaign run and carries flag 0.
+* So the sequence that works is sensitive to *when* the save exists: the unlock watcher applies the flag at the title of
+  a session whose save it can see, but a recreated save (or a session that ends early) leaves the title locked and the
+  menu unreachable.
+
+Next: run the unlock explicitly against a live session (`re6_switch_unlock.watch` over the debug stub) to confirm it
+writes the flag and the title unlocks from `title_locked`, and add `title_locked` to the driver and to the watcher's
+state handling so a recreated save cannot leave the title locked.
