@@ -23,10 +23,12 @@ Layout facts (derived in the analysis stage, ``re4ps2_model``):
     The tags are CNT (id 1) and the last vertex tag of a part is REF (id 6); the payload
     is always inline and contiguous, ``qwc`` quadwords per tag.
 
-The skin index on each vertex selects a matrix in the VU1 palette derived from the weight
-table; resolving that palette needs the VU1 microprogram (.DVP.overlay), which is the next
-step.  Here the raw skin index is preserved as a ``_SKINID`` attribute and the mesh is
-exported un-skinned (positions + flat normals) alongside the bone hierarchy.
+The skin index on each vertex selects a weight-table entry in its mesh part; that entry is
+a palette slot (byte0/4) plus two blend weights (hypothesis, see _skin_palette), which the VU1 microprogram
+expands into a skinning matrix per entry.  Here the palette is exposed directly as glTF
+``JOINTS_0``/``WEIGHTS_0`` (and a ``skins`` array with identity inverse-bind matrices, so the
+mesh renders in its bind pose).  Resolving the exact inverse-bind matrix math to drive
+retargeting still needs the VU1 microprogram (.DVP.overlay), which is the next step.
 """
 from __future__ import annotations
 
@@ -186,8 +188,9 @@ def bin_mesh(b: bytes) -> dict:
     return out
 
 
-def _flat_normals(parts: list[dict], scale: float) -> tuple[list[float], list[float], list[int]]:
-    """Triangle-list positions (scaled) and per-vertex flat normals, plus raw skin ids."""
+def _flat_geometry(parts: list[dict], scale: float) -> tuple[list[float], list[float], list[int]]:
+    """Triangle-list positions (scaled), per-vertex flat normals and raw skin ids, in the
+    order parts emit their vertices (so skin ids line up with _skin_vertices)."""
     pos, nrm, skin = [], [], []
     for part in parts:
         v = part["vertices"]
@@ -208,6 +211,47 @@ def _flat_normals(parts: list[dict], scale: float) -> tuple[list[float], list[fl
     return pos, nrm, skin
 
 
+def _skin_palette(part: dict) -> list[tuple[tuple[int, int, int, int], tuple[float, float, float, float]]]:
+    """Return the per-vertex skin lookup for a mesh part.
+
+    Each weight-table entry is ``{bones: [b0,b1,b2,b3], weights: [w0,w1,w2,w3]}`` where
+    bone ``0`` is the root reference (rigid accumulation) and the four weights blend the
+    four bone matrices.  A vertex's ``skin`` channel is the entry index; ``-1`` (0xFFFF)
+    is the rigid bind pose.  This is the palette the VU1 microprogram expands into a
+    matrix per entry; here we expose it as glTF JOINTS_0/WEIGHTS_0 directly.
+    """
+    table = []
+    for e in part["skin"]:
+        # Observed on owned Leon (pl00): byte 0 of each entry is a multiple of 4 (0..40) and
+        # bytes 1-3 are always 0, i.e. byte0/4 is a palette SLOT (not a bone id), and only
+        # weights[0:2] are non-zero (sum 1).  HYPOTHESIS (unverified, needs VU1 microcode /
+        # get_frame): the pair blends consecutive palette slots slot and slot+1, and the slot
+        # maps through the object's 16-byte bone_list.  Joints here are palette slots.
+        slot = e["bones"][0] // 4
+        table.append(((slot, slot + 1, 0, 0), (e["weights"][0], e["weights"][1], 0.0, 0.0)))
+    return table
+
+
+def _skin_vertices(parts: list[dict], skin_ids: list[int]) -> tuple[list[int], list[float]]:
+    """Expand per-vertex skin ids (running across parts) to JOINTS_0 (u16 x4) and
+    WEIGHTS_0 (f32 x4).  A skin id is the index into that part's weight-table entry;
+    -1 resolves to the rigid root bind (joint 0, weight 1)."""
+    joints, weights = [], []
+    palette, cursor = [], 0
+    for part in parts:
+        palette = _skin_palette(part)
+        for _ in part["vertices"]:
+            si = skin_ids[cursor]
+            cursor += 1
+            if si < 0 or si >= len(palette):
+                bones, w = (0, 0, 0, 0), (1.0, 0.0, 0.0, 0.0)
+            else:
+                bones, w = palette[si]
+            joints += list(bones)
+            weights += list(w)
+    return joints, weights
+
+
 # ---------------------------------------------------------------- GLB export
 
 def _glb(json_obj: dict, buffers: list[bytes]) -> bytes:
@@ -226,9 +270,11 @@ def _glb(json_obj: dict, buffers: list[bytes]) -> bytes:
 def to_glb(bin_bytes: bytes, tpl_bytes: bytes | None = None) -> bytes:
     """Export a BIN (+ optional TPL) to a glTF 2.0 binary (GLB).
 
-    Skeleton bones become a node hierarchy (TRS from the parent-relative translation);
-    every object's triangles become one static mesh (positions, flat normals) with the raw
-    skin id kept as a _SKINID attribute.
+    Skeleton bones become a node hierarchy (TRS from the parent-relative translation).
+    Every object's triangles become one static mesh (positions, flat normals).  The skin
+    channel is resolved through each part's weight table into glTF ``JOINTS_0`` / ``WEIGHTS_0``
+    and a ``skins`` array (identity inverse-bind matrices, so the mesh renders in its bind
+    pose and the weights are preserved for downstream rigging).
     """
     m = bin_mesh(bin_bytes)
     nodes, children = [], []
@@ -247,10 +293,14 @@ def to_glb(bin_bytes: bytes, tpl_bytes: bytes | None = None) -> bytes:
             nodes[i]["children"] = ch
     scene_nodes = list(roots)
 
-    pos = []; nrm = []; skin = []; scale = 1.0 / 16.0
+    scale = 1.0 / 16.0
+    pos = []; nrm = []; skin_ids = []
+    parts = []
     for obj in m["objects"]:
-        p, n, s = _flat_normals(obj["parts"], scale)
-        pos += p; nrm += n; skin += s
+        p, n, s = _flat_geometry(obj["parts"], scale)
+        pos += p; nrm += n; skin_ids += s
+        parts.extend(obj["parts"])
+    joints, weights = _skin_vertices(parts, skin_ids)
 
     buffers, accessors, views = [], [], []
     def add_accessor(comps, ctype, arr):
@@ -259,23 +309,37 @@ def to_glb(bin_bytes: bytes, tpl_bytes: bytes | None = None) -> bytes:
         buffers.append(raw)
         views.append({"buffer": 0, "byteOffset": off, "byteLength": len(raw)})
         accessors.append({"bufferView": len(views) - 1, "componentType": {"f": 5126, "h": 5122, "H": 5123}[ctype],
-                          "count": len(arr) // comps, "type": {1: "SCALAR", 3: "VEC3"}[comps],
+                          "count": len(arr) // comps, "type": {1: "SCALAR", 3: "VEC3", 4: "VEC4"}[comps],
                           "min": [min(arr[i::comps]) for i in range(comps)],
                           "max": [max(arr[i::comps]) for i in range(comps)]})
 
     prims = []
+    skins = []
     if pos:
         add_accessor(3, "f", pos)
         add_accessor(3, "f", nrm)
-        add_accessor(1, "h", skin)
-        prims = [{"attributes": {"POSITION": 0, "NORMAL": 1, "_SKINID": 2}}]
+        add_accessor(4, "H", joints)
+        add_accessor(4, "f", weights)
+        prims = [{"attributes": {"POSITION": 0, "NORMAL": 1, "JOINTS_0": 2, "WEIGHTS_0": 3}}]
+        # identity inverse-bind matrix (bind pose == exported positions)
+        ibm = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0] * len(m["bones"])
+        raw = struct.pack(f"<{len(ibm)}f", *ibm)
+        off = len(b"".join(buffers))
+        buffers.append(raw)
+        views.append({"buffer": 0, "byteOffset": off, "byteLength": len(raw)})
+        ibm_acc = len(accessors)
+        accessors.append({"bufferView": len(views) - 1, "componentType": 5126,
+                          "count": len(m["bones"]), "type": "MAT4",
+                          "min": ibm[:16], "max": ibm[:16]})
+        skins = [{"inverseBindMatrices": ibm_acc, "joints": list(range(len(m["bones"])))}]
 
     meshes = [{"primitives": prims}] if prims else []
     if meshes:                                   # a mesh must be instanced by a scene node
-        nodes.append({"name": "leon_mesh", "mesh": 0})
+        nodes.append({"name": "leon_mesh", "mesh": 0, "skin": 0})
         scene_nodes.append(len(nodes) - 1)
     gltf = {"asset": {"version": "2.0"}, "scenes": [{"nodes": scene_nodes}],
-            "nodes": nodes, "meshes": meshes, "accessors": accessors, "bufferViews": views,
+            "nodes": nodes, "meshes": meshes, "skins": skins,
+            "accessors": accessors, "bufferViews": views,
             "buffers": [{"byteLength": sum(len(x) for x in buffers)}]}
     return _glb(gltf, buffers)
 
@@ -327,8 +391,8 @@ def extract_run(ctx, game: dict, e: dict, work) -> dict:
         files.append(str(p))
     return {"files": files, "tool": "gbox.re4ps2_reader", "source_files": [f"{e['key']}.dat"],
             "notes": "PS2-native BIN mesh (VU1 V4-16 stream, 1/16 fixed-point positions) + TPL C4/C8 "
-                     "textures -> GLB with skeleton + flat normals + raw _SKINID. UV / normal / skin-matrix "
-                     "resolution needs the VU1 microprogram (next step)."}
+                     "textures -> GLB with skeleton + flat normals + JOINTS_0/WEIGHTS_0 skins. UV / "
+                     "inverse-bind matrix math still needs the VU1 microprogram (next step)."}
 
 
 if __name__ == "__main__":

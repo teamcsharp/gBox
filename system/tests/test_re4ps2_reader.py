@@ -78,6 +78,24 @@ def test_bin_mesh_partition_and_glb():
     mesh_node = next(i for i, n in enumerate(g["nodes"]) if "mesh" in n)
     assert mesh_node in g["scenes"][0]["nodes"]           # mesh is actually in the scene
     assert g["meshes"][0]["primitives"][0]["attributes"]["POSITION"] == 0
+    # skinning: JOINTS_0/WEIGHTS_0 present, a skins array with identity inverse-bind
+    attrs = g["meshes"][0]["primitives"][0]["attributes"]
+    assert attrs["JOINTS_0"] == 2 and attrs["WEIGHTS_0"] == 3
+    assert len(g["skins"]) == 1 and g["skins"][0]["joints"] == [0, 1]
+    ibm = g["accessors"][g["skins"][0]["inverseBindMatrices"]]
+    assert ibm["count"] == 2 and ibm["type"] == "MAT4"
+
+
+def test_skin_vertices_root_bind():
+    parts = [{"skin": [{"bones": [0, 8, 0, 0], "weights": [0.5, 0.5, 0.0, 0.0]}], "vertices": [(0, 0, 0, -1)]}]
+    joints, weights = r._skin_vertices(parts, [-1])
+    assert joints == [0, 0, 0, 0] and weights == [1.0, 0.0, 0.0, 0.0]
+    # a real skin id selects the palette entry
+    joints, weights = r._skin_vertices(parts, [0])
+    assert joints == [0, 1, 0, 0] and weights == [0.5, 0.5, 0.0, 0.0]   # slot 0 (+ slot 1)
+    parts[0]["skin"][0]["bones"] = [8, 0, 0, 0]
+    joints, _ = r._skin_vertices(parts, [0])
+    assert joints == [2, 3, 0, 0]                                       # byte0/4 = palette slot
 
 
 def test_rgb565_linear():
