@@ -158,13 +158,31 @@ def test_fire_rate_divides_the_frames_between_shots_down_to_the_gate_floor(ad):
         D.FIRE_GAP_S = gap
 
 
-def test_infinite_ammo_sets_the_games_own_infinite_capacity(ad):
+def _held_gun(ad, iid=0x24, levels=0x2000, loaded=0, empty=True):
+    """The item manager's equipped item: a gun of the fake weapon table, its magazine as given."""
+    from gbox.mercs.titles import re4_weapons as W
+    item = 0x5D60000000
+    ad.put(BASE + W.ITEM_MGR + W.M_EQUIPPED, struct.pack("<QH", item, iid) + bytes(6))
+    ad.put(item, struct.pack("<HHBBHHBBBB", iid, 1, 1, 0, levels, (loaded << 3) | int(empty), 0, 0, 0, 1))
+    ad.put(BASE + W.GAME_OBJ + W.G_EMPTY, b"\x01")
+    return W, item
+
+
+def test_infinite_ammo_keeps_the_magazine_full_and_never_writes_the_capacity_table(ad):
+    """Live 2026-11-10: the capacity table's infinite value (0x8000) came out as an EMPTY gun from the round's start
+    (the magazine is capacity << 19 in a 32-bit word). Now the gun in hand is refilled to its capacity instead."""
     W = _weapon_tables(ad)
-    M.run(ad, "infinite_ammo", on=True, snap=snap(ad))
-    caps = struct.unpack("<7H", ad.read_memory(BASE + W.WEAPON_TBL + 8, 14))
-    assert caps == (W.CAP_INFINITE,) * 7
-    M.run(ad, "infinite_ammo", on=False, snap=snap(ad))
-    assert struct.unpack("<7H", ad.read_memory(BASE + W.WEAPON_TBL + 8, 14)) == (6,) * 7
+    W, item = _held_gun(ad)
+    table = ad.read_memory(BASE + W.WEAPON_TBL, W.WEAPON_N * W.WEAPON_SZ)
+    out = M.run(ad, "infinite_ammo", on=True, snap=snap(ad))
+    assert out["refilled"] == 1
+    it = W.decode_item(ad.read_memory(item, W.ITEM_SZ))
+    assert it["loaded"] == 6 and not it["empty"] and ad.read_memory(BASE + W.GAME_OBJ + W.G_EMPTY, 1) == b"\x00"
+    assert ad.read_memory(BASE + W.WEAPON_TBL, W.WEAPON_N * W.WEAPON_SZ) == table, "the table is never touched"
+    ad.write_memory(item + 8, struct.pack("<H", 2 << 3))                  # two shots left
+    assert M.maintain(ad, snap(ad))["mag_refills"] == 1
+    assert W.decode_item(ad.read_memory(item, W.ITEM_SZ))["loaded"] == 6
+    assert "mag_refills" not in M.maintain(ad, snap(ad)), "full: nothing written"
 
 
 def test_unlimited_life_puts_the_life_back_at_its_maximum(ad):
@@ -197,7 +215,33 @@ def test_low_life_turns_and_runs_from_the_nearest():
          "enemies": [{"pos": (0.0, 0.0, 1500.0), "hp": 400, "ptr": 9}]}
     act = b.tick(s, now=1.0)
     assert act["hold"] == set(D.QUICK_TURN) and b.doing == "retreat" and b.stats["low_life_runs"] == 1
-    assert b.tick(s, now=1.5)["hold"] == {"lup", D.RUN_BTN}, "the run holds LOW_LIFE_RUN_S"
+    s["player"]["rot"] = 3.14159                                          # turned round: the run to the goal
+    assert {"lup", D.RUN_BTN} <= b.tick(s, now=1.5)["hold"], "the run holds LOW_LIFE_RUN_S"
+
+
+class _Walls:
+    """A stage mesh whose open floor is only the lines within `open_deg` of +x (everything else a wall)."""
+    def __init__(self, open_deg=None):
+        self.open_deg = open_deg
+
+    def clear_segment(self, a, b):
+        import math
+        if self.open_deg is None:
+            return False
+        h = math.degrees(math.atan2(b[0] - a[0], b[2] - a[2]))
+        return abs(h - 90.0) <= self.open_deg
+
+
+def test_the_escape_runs_along_open_floor_not_into_the_wall():
+    """Live 2026-11-10: "just walking into walls in RE4" - the low-life run had gone straight away, into a wall."""
+    import math
+    b = D.Bot(stats={}, director=False)
+    p = {"pos": (0.0, 0.0, 0.0), "rot": 0.0, "hp": 300, "hp_max": 1680, "ptr": 1}
+    live = b._live(p, [{"pos": (0.0, 0.0, 1500.0), "hp": 400, "ptr": 9}])        # straight away is -z: walled
+    goal = b._escape_goal(p, live, {"nav": _Walls(open_deg=20)})
+    assert goal is not None and abs(math.degrees(math.atan2(goal[0], goal[2])) - 90.0) <= 20.0
+    assert b.stats["escape_lines_walled"] >= 1
+    assert b._escape_goal(p, live, {"nav": _Walls(None)}) is None and b.stats["escapes_walled_in"] == 1
 
 
 def test_a_new_boot_keeps_the_operators_settings_but_not_the_counts(ad):
@@ -207,7 +251,30 @@ def test_a_new_boot_keeps_the_operators_settings_but_not_the_counts(ad):
     s["module_base"] = BASE + 0x100000
     M.maintain(ad, s)
     st = M.ORIG[id(ad)]
-    assert st["one_hit"] is True and st["base"] == BASE + 0x100000 and "capped_total" not in st or st["capped_total"] >= 0
+    assert st["one_hit"] is True and st["boot"].startswith(hex(BASE + 0x100000))
+    assert st.get("capped_total", 0) <= 3, "the counts start again on the new boot"
+
+
+def test_a_new_emulator_process_is_a_new_boot_at_the_same_address(ad):
+    """Eden loads RE4 at the same address every boot: the base alone made every later boot "already applied"."""
+    class P:
+        pid = 100
+    ad.proc = P()
+    first = M._boot(ad, BASE)
+    ad.proc = type("P2", (), {"pid": 200})()
+    assert M._boot(ad, BASE) != first
+
+
+def test_a_collected_adapters_state_is_never_handed_to_a_new_one(ad):
+    M.run(ad, "one_hit", on=True, snap=snap(ad))
+    st = M._state(ad)
+    st["pre_round_boot"] = "stale"
+
+    class Other:
+        pass
+    other = Other()
+    M.ORIG[id(other)] = st                                           # as if the old adapter's id came back
+    assert "pre_round_boot" not in M._state(other)
 
 
 def test_the_live_sidebar_lists_re4s_rows():
@@ -309,7 +376,8 @@ def test_pre_round_puts_the_saved_settings_into_the_boot_once(ad, tmp_path, monk
         M.ORIG.clear()
         monkeypatch.setattr(D, "module_base", lambda m: BASE)
         out = M.pre_round(ad)
-        assert out["fire_tables"] == 2
-        assert M.pre_round(ad) == {}, "once a boot"
+        assert out["fire_tables"] == 2 and out["boot"].startswith(hex(BASE))
+        assert M.pre_round(ad)["skipped"] == "already put into this boot"
+        assert M.status(ad)["pre_round"]["fire_tables"] == 2
     finally:
         D.FIRE_GAP_S = gap

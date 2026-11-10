@@ -97,7 +97,8 @@ def test_a_mob_takes_the_ganado_on_the_guns_line_not_the_nearest():
 def test_a_swarm_at_arms_length_is_escaped_with_the_quick_turn():
     b = bot()
     act = b.tick(snap([((100.0 * math.sin(a), 0.0, 100.0 * math.cos(a)), 400) for a in (0.0, 2.0, 4.0)]), now=1.0)
-    assert act["hold"] == set(D.QUICK_TURN) and b.stats["escapes"] == 1
+    assert b.stats["escapes"] == 1 and b.doing == "escape"
+    assert act["hold"] == set(D.QUICK_TURN) or {"lup", D.RUN_BTN} <= act["hold"], "the quick turn, or the run out"
 
 
 def test_dead_ganados_are_neither_targets_nor_obstacles():

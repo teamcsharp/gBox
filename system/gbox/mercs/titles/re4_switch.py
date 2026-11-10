@@ -992,6 +992,15 @@ MELEE = True
 # Low life (PLAYER_LIFE): under LOW_LIFE of his maximum with a Ganado within LOW_LIFE_MM he turns and runs (the
 # quick turn, then B + up) for LOW_LIFE_RUN_S rather than trade another hit.
 LOW_LIFE, LOW_LIFE_MM, LOW_LIFE_RUN_S = 0.35, 3000.0, 1.2
+# Every escape (low life, a heavy, a swarm) runs to a point ESCAPE_MM away along OPEN FLOOR (operator 2026-11-10: "just
+# walking into walls in RE4" - the low-life retreat had run him into a wall, blind, B + up after the quick turn):
+# the away line (each Ganado within ESCAPE_FROM_MM pushing by 1/d^2), then ESCAPE_TRIES_DEG off it, the first whose
+# segment the stage mesh calls clear (nav.clear_segment) and whose end is not within ESCAPE_CLEAR_MM of a Ganado.
+# The run goes there by _approach (the mesh walker), the quick turn first when it lies behind him (ESCAPE_QUICK_RAD).
+# Walled in on every line: no escape - he fights. Counters: escape_lines_walled, escapes_walled_in.
+ESCAPE_MM, ESCAPE_FROM_MM, ESCAPE_CLEAR_MM, ESCAPE_ARRIVED_MM = 3000.0, 4500.0, 1200.0, 700.0
+ESCAPE_TRIES_DEG = (0, 35, -35, 70, -70, 105, -105, 140, -140)
+ESCAPE_QUICK_RAD = 2.2
 # Heavies (the chainsaw Ganados, the Garrador, the Gatling man: a maximum health of HEAVY_HP or more; ordinary Ganados
 # read 400, one 3500 on 2026-11-10): they kill from full life in one blow (live 23:21, HUNK / Base: Unlimited life
 # had undone 26 hits, then one took him from 1560 to 0), so one inside HEAVY_KEEP_MM is run from - the quick turn,
@@ -1275,17 +1284,22 @@ class Bot:
             self.doing, self.why = "backoff", "standing near his own explosive"
             near = min(live, key=lambda t: t[0]) if live else None
             return {"hold": {"lup", TURN["right" if near and near[1] > 0 else "left"]}}
-        low = self._low_life(p, live, now)
+        low = self._low_life(p, live, now, snap)
         if low is not None:
             return low
-        heavy = self._heavy_keep(live, now)
+        heavy = self._heavy_keep(live, now, p, snap)
         if heavy is not None:
             return heavy
+        act = self._escaping(p, snap, now, "swarm")
+        if act is not None:
+            return act
         swarm = [t for t in live if t[0] <= SWARM_CM]
         if len(swarm) >= SWARM_N:
-            self.stats["escapes"] += 1
-            self.doing, self.why = "escape", f"{len(swarm)} Ganados at arm's length: the quick turn and away"
-            return {"hold": set(QUICK_TURN)}
+            act = self._escape(p, live, snap, now, "swarm", LOW_LIFE_RUN_S)
+            if act is not None:
+                self.stats["escapes"] += 1
+                self.doing, self.why = "escape", f"{len(swarm)} Ganados at arm's length: away along open floor"
+                return act
         melee = self._melee(live, now)
         if melee is not None:
             return melee
@@ -1351,38 +1365,100 @@ class Bot:
             return {"hold": {AIM_BTN}, "tap": RELOAD_BTN}
         return self._locate(p, live, now, cmd, snap)
 
-    def _heavy_keep(self, live, now) -> dict | None:
-        """HEAVY_*: a heavy within HEAVY_KEEP_MM - turn away and run, HEAVY_RUN_S at a time."""
-        run = self.__dict__.get("_heavy_run")
-        if run and now < run["until"]:
-            return {"hold": {"lup", RUN_BTN}}
+    def _escape_goal(self, p, live, snap):
+        """A point ESCAPE_MM away from the Ganados near him along open floor (see ESCAPE_*), or None when every line
+        is walled. Without a stage mesh: straight away."""
+        px, py, pz = p["pos"]
+        vx = vz = 0.0
+        for d, _err, e in live:
+            if d > ESCAPE_FROM_MM:
+                continue
+            dx, dz = px - e["pos"][0], pz - e["pos"][2]
+            dd = max(math.hypot(dx, dz), 300.0)
+            vx, vz = vx + dx / (dd * dd), vz + dz / (dd * dd)
+        away = heading(vx, vz) if (vx or vz) else wrap((p.get("rot") or 0.0) + math.pi)
+        nav = snap.get("nav")
+        seg = getattr(nav, "clear_segment", None) if nav is not None else None
+        for deg in ESCAPE_TRIES_DEG:
+            h = away + math.radians(deg)
+            goal = (px + ESCAPE_MM * math.sin(h), py, pz + ESCAPE_MM * math.cos(h))
+            if any(self._flat(goal, e["pos"]) < ESCAPE_CLEAR_MM for _d, _e, e in live):
+                continue                                 # running into another one
+            if callable(seg):
+                try:
+                    if not seg(tuple(p["pos"]), goal):
+                        self.stats["escape_lines_walled"] = self.stats.get("escape_lines_walled", 0) + 1
+                        continue                         # a wall, a drop or a fence that way
+                except Exception:                        # noqa: BLE001 - a mesh error: that line is not trusted
+                    continue
+            return goal
+        self.stats["escapes_walled_in"] = self.stats.get("escapes_walled_in", 0) + 1
+        return None
+
+    def _run_to(self, p, goal, snap) -> dict:
+        """The run to an escape goal: the quick turn when it lies behind him, else _approach (the mesh walker) with B."""
+        err = wrap(heading(goal[0] - p["pos"][0], goal[2] - p["pos"][2]) - (p.get("rot") or 0.0))
+        if abs(err) > ESCAPE_QUICK_RAD:
+            return {"hold": set(QUICK_TURN)}
+        keys, _how = self._approach(p, goal, err, snap, run=True)
+        return {"hold": set(keys) | {"lup", RUN_BTN}}
+
+    def _escape(self, p, live, snap, now, kind: str, secs: float) -> dict | None:
+        """An escape of this kind under way (its goal, until when), or a new one; None when walled in or arrived."""
+        run = self.__dict__.get("_run_" + kind)
+        if run and now < run["until"] and self._flat(p["pos"], run["goal"]) > ESCAPE_ARRIVED_MM:
+            return self._run_to(p, run["goal"], snap)
+        goal = self._escape_goal(p, live, snap)
+        if goal is None:
+            self.__dict__.pop("_run_" + kind, None)
+            return None
+        self.__dict__["_run_" + kind] = {"until": now + secs, "goal": goal}
+        return self._run_to(p, goal, snap)
+
+    def _escaping(self, p, snap, now, kind: str) -> dict | None:
+        """The run of this kind still under way (before its until, not arrived), else None."""
+        run = self.__dict__.get("_run_" + kind)
+        if run and now < run["until"] and self._flat(p["pos"], run["goal"]) > ESCAPE_ARRIVED_MM:
+            return self._run_to(p, run["goal"], snap)
+        return None
+
+    def _heavy_keep(self, live, now, p=None, snap=None) -> dict | None:
+        """HEAVY_*: a heavy within HEAVY_KEEP_MM - away along open floor (_escape), HEAVY_RUN_S at a time."""
+        snap = snap or {}
+        if p is not None:
+            act = self._escaping(p, snap, now, "heavy")
+            if act is not None:
+                return act
         near = [t for t in live if t[0] <= HEAVY_KEEP_MM and (t[2].get("hp_max") or 0) >= HEAVY_HP]
         if not near:
             return None
         d, err, e = min(near, key=lambda t: t[0])
-        self._heavy_run = {"until": now + HEAVY_RUN_S}
+        act = self._escape(p, live, snap, now, "heavy", HEAVY_RUN_S) if p is not None else \
+            ({"hold": set(QUICK_TURN)} if abs(err) < 1.6 else {"hold": {"lup", RUN_BTN}})
+        if act is None:
+            return None                                  # walled in: he fights it
         self.stats["heavy_escapes"] = self.stats.get("heavy_escapes", 0) + 1
         self.doing, self.why = "evade", f"a heavy ({e.get('hp_max')} health) {d / 1000:.1f} m off: away, then shoot"
-        return {"hold": set(QUICK_TURN)} if abs(err) < 1.6 else {"hold": {"lup", RUN_BTN}}
+        return act
 
-    def _low_life(self, p, live, now) -> dict | None:
-        """LOW_LIFE: the quick turn then a run away from the nearest Ganado, LOW_LIFE_RUN_S at a time."""
+    def _low_life(self, p, live, now, snap=None) -> dict | None:
+        """LOW_LIFE: away from the Ganados along open floor (_escape), LOW_LIFE_RUN_S at a time."""
+        snap = snap or {}
         hp, top = p.get("hp"), p.get("hp_max")
-        run = self.__dict__.get("_low_run")
-        if run and now < run["until"]:
-            return {"hold": {"lup", RUN_BTN}}
+        act = self._escaping(p, snap, now, "low")
+        if act is not None:
+            return act
         if not isinstance(hp, int) or not isinstance(top, int) or top <= 0 or hp <= 0 or hp > top * LOW_LIFE:
             return None
         near = [t for t in live if t[0] <= LOW_LIFE_MM]
         if not near:
             return None
-        self._low_run = {"until": now + LOW_LIFE_RUN_S}
+        act = self._escape(p, live, snap, now, "low", LOW_LIFE_RUN_S)
+        if act is None:
+            return None                                  # walled in on every line: he fights
         self.stats["low_life_runs"] = self.stats.get("low_life_runs", 0) + 1
-        self.doing, self.why = "retreat", f"life {hp}/{top}: away from {len(near)} near"
-        d, err, _e = min(near, key=lambda t: t[0])
-        if abs(err) < 1.6:                               # facing him: the quick turn first
-            return {"hold": set(QUICK_TURN)}
-        return {"hold": {"lup", RUN_BTN}}
+        self.doing, self.why = "retreat", f"life {hp}/{top}: away from {len(near)} near, along open floor"
+        return act
 
     def _melee(self, live, now) -> dict | None:
         """The melee follow-up (MELEE_*): in to a Ganado just hit, then Y at the prompt; None when there is none."""

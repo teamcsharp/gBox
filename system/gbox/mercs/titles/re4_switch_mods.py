@@ -30,6 +30,7 @@ import math
 import struct
 import threading
 import time
+import weakref
 from pathlib import Path
 
 from . import re4_switch as D
@@ -97,10 +98,25 @@ def _save(st: dict) -> None:
 
 
 def _state(ad) -> dict:
+    """This adapter's state: the saved settings and what was put into its boot. Keyed by id(ad) and checked against
+    the adapter itself, since a new session's adapter can be given a collected one's id."""
     st = ORIG.get(id(ad))
-    if st is None:
+    owner = st.get("_owner") if st is not None else None
+    if st is None or (owner is not None and owner() is not ad):
         st = ORIG[id(ad)] = _load_saved()
+        try:
+            st["_owner"] = weakref.ref(ad)
+        except TypeError:
+            pass
     return st
+
+
+def _boot(ad, base) -> str:
+    """This boot's identity: the module base AND the emulator process (Eden loads RE4 at the same address every boot,
+    so the base alone said "already applied" to every later boot of a worker's life)."""
+    proc = getattr(ad, "proc", None)
+    return f"{base:#x}/{getattr(proc, 'pid', None)}/{getattr(ad, 'restarts', None)}" if isinstance(base, int) \
+        else f"{base}/{getattr(proc, 'pid', None)}"
 
 
 def _num(value, lo: float, hi: float, name: str) -> float:
@@ -226,7 +242,7 @@ def weapon_power(ad, multiplier, snap: dict | None = None) -> dict:
     _save(st)
     base = (snap or {}).get("module_base")
     rows = _apply_power(ad, base, st) if isinstance(base, int) else 0
-    st.pop("fp_applied_base", None) if not rows else None
+    st.pop("fp_applied_boot", None) if not rows else None
     return {"weapon_power_x": st["weapon_power"], "verified": True, "rows": rows,
             "note": "every weapon's firepower table x this (RAM; a relaunch restores the game's)"}
 
@@ -314,19 +330,37 @@ def fire_rate(ad, multiplier, snap: dict | None = None) -> dict:
             "note": "every weapon's frames between shots / this (never under the shot gate's 3-frame floor)"}
 
 
-def _apply_ammo(ad, base: int, st: dict) -> int:
-    """Infinite ammo: every weapon row's capacity entries 0x8000 (use_ammo never consumes; re4_weapons.CAP_INFINITE),
-    the boot's own back when off. Returns the rows written."""
-    raw = _table(ad, base, st, "weapons", W.WEAPON_TBL, W.WEAPON_N * W.WEAPON_SZ, "B")
-    if raw is None:
+def _keep_mag(ad, base: int, st: dict) -> int:
+    """Infinite ammo: the equipped gun's magazine kept full - item+8 = its capacity at its capacity level << 3, the
+    empty bit and the game state's magazine-empty byte cleared - every snapshot, the way unlimited life keeps his life.
+
+    Not the capacity table's infinite value (0x8000, re4_weapons.CAP_INFINITE), which the first live run (2026-11-10,
+    Leon "EMPTY" from the round's start) showed cannot be used: the magazine is sized as capacity << 19 in a 32-bit
+    word (the loadout code's ORR w8, w8, w0, LSL #19, and the reload's), so 0x8000 comes out as 0 rounds."""
+    rd = lambda a, n: bytes(ad.read_memory(a, n))                         # noqa: E731
+    try:
+        held = W.Reader(rd, base).equipped()
+        if held is None or not held.get("addr"):
+            return 0
+        rows = st.get("weapon_rows")
+        if rows is None:
+            rows = st["weapon_rows"] = W.decode_weapon_table(rd(base + W.WEAPON_TBL, W.WEAPON_N * W.WEAPON_SZ))
+        row = rows.get(held["id"])
+        if row is None:
+            return 0                                     # not a gun (a grenade, the knife)
+        caps = row["capacity"]
+        cap = caps[min(held["levels"]["capacity"], len(caps) - 1)] or max(caps)
+        if cap <= 0 or cap >= W.CAP_INFINITE:
+            return 0
+        cap = min(cap, 0x1FFF)
+        if held["loaded"] >= cap and not held["empty"]:
+            return 0
+        raw = struct.unpack("<H", rd(held["addr"] + 8, 2))[0]
+        ad.write_memory(held["addr"] + 8, struct.pack("<H", (cap << 3) | (raw & 0b110)))
+        ad.write_memory(base + W.GAME_OBJ + W.G_EMPTY, b"\x00")
+    except (ValueError, OSError, RuntimeError, struct.error, KeyError, IndexError):
         return 0
-    blob = bytearray(bytes(raw))
-    if st.get("infinite_ammo"):
-        for k in range(W.WEAPON_N):
-            o = k * W.WEAPON_SZ + 8
-            caps = struct.unpack_from("<7H", blob, o)
-            struct.pack_into("<7H", blob, o, *[(W.CAP_INFINITE if c else 0) for c in caps])
-    return W.WEAPON_N if _write_table(ad, base, W.WEAPON_TBL, "B", list(blob)) else 0
+    return 1
 
 
 def infinite_ammo(ad, on: bool, snap: dict | None = None) -> dict:
@@ -334,9 +368,9 @@ def infinite_ammo(ad, on: bool, snap: dict | None = None) -> dict:
     st["infinite_ammo"] = bool(on)
     _save(st)
     base = (snap or {}).get("module_base")
-    n = _apply_ammo(ad, base, st) if isinstance(base, int) else 0
-    return {"infinite_ammo": bool(on), "verified": True, "rows": n,
-            "note": "every weapon's magazine never empties (the game's own infinite-capacity value)"}
+    n = _keep_mag(ad, base, st) if on and isinstance(base, int) else 0
+    return {"infinite_ammo": bool(on), "verified": True, "refilled": n,
+            "note": "the gun in his hand is kept full every snapshot (its magazine never runs dry)"}
 
 
 def _give_weapon(ad, base: int, st: dict, rng) -> dict | None:
@@ -561,33 +595,63 @@ def pre_round(ad, m=None) -> dict:
     """On the menus before a round (re4switch_bot calls it once a boot): the saved settings put into this boot - the
     static tables (fire rate, ammo, firepower) and the Mercenaries loadouts (a random draw, or the chosen weapon) -
     so the round the walk is about to start is built with them."""
-    base = D.module_base(m if m is not None else Mem(ad))
+    mem = m if m is not None else Mem(ad)
+    base = D.module_base(mem)
     if base is None:
-        return {}
+        # The runner calls this once a boot, on the first menu it reads: RE4's module may not be readable yet. A
+        # background retry puts the settings in as soon as it is (the menus take far longer than that to a round).
+        _retry_pre_round(ad, mem)
+        return {"skipped": "RE4's module not readable yet: retrying in the background"}
     out: dict = {}
     with _LOCK:
         st = _state(ad)
-        if st.get("pre_round_base") == base:
-            return {}
-        st["pre_round_base"] = base
+        boot = _boot(ad, base)
+        if st.get("pre_round_boot") == boot:
+            return {"skipped": "already put into this boot", "boot": boot}
+        st["pre_round_boot"] = out["boot"] = boot
         if st.get("weapon_power", 1.0) != 1.0 or st.get("max_level"):
             out["power_rows"] = _apply_power(ad, base, st)
-            st["fp_applied_base"] = base
+            st["fp_applied_boot"] = boot
         if st.get("fire_rate", 1.0) != 1.0:
             out["fire_tables"] = _apply_fire_rate(ad, base, st)
-        if st.get("infinite_ammo"):
-            out["ammo_rows"] = _apply_ammo(ad, base, st)
-        st["rf_applied_base"] = base
+        st["rf_applied_boot"] = boot
         if st.get("random_weapon") or st.get("loadout_weapon"):
             import random as _random
             fixed = st.get("loadout_weapon")
             draws = _draw_loadouts(_random.Random(), fixed) if st.get("random_weapon") else \
                 {ch: [fixed if s.get("equipped") else None for s in slots] for ch, slots in W.LOADOUT_SLOTS.items()}
             done = _patch_loadout(ad, base, draws)
-            st["loadout_drawn"] = base
+            st["loadout_drawn"] = boot
             st["loadouts"] = {W.CHARACTERS.get(ch, ch): [W.name(i) for i in ids] for ch, ids in done.items()}
             out["loadouts"] = len(done)
+        st["pre_round_result"] = dict(out, at=round(time.time()))
     return out
+
+
+def _retry_pre_round(ad, mem, limit_s: float = 60.0) -> None:
+    """pre_round again once a second until RE4's module is readable (at most limit_s); one retry per adapter."""
+    st = _state(ad)
+    if st.get("pre_round_retrying"):
+        return
+    st["pre_round_retrying"] = True
+
+    def run():
+        end = time.monotonic() + limit_s
+        try:
+            while time.monotonic() < end:
+                time.sleep(1.0)
+                try:
+                    if D.module_base(mem) is not None:
+                        pre_round(ad, mem)
+                        return
+                except Exception as exc:                     # noqa: BLE001 - a retry never takes the worker down
+                    st["pre_round_result"] = {"error": f"{type(exc).__name__}: {exc}"[:160]}
+                    return
+            st["pre_round_result"] = {"skipped": f"RE4's module never readable in {limit_s:.0f} s"}
+        finally:
+            st["pre_round_retrying"] = False
+
+    threading.Thread(target=run, name="re4-pre-round", daemon=True).start()
 
 
 def maintain(ad, snap: dict | None = None) -> dict:
@@ -597,15 +661,16 @@ def maintain(ad, snap: dict | None = None) -> dict:
     out: dict = {}
     with _LOCK:
         st = _state(ad)
-        if st.get("base") is None:
-            st["base"] = snap["module_base"]
-        elif st["base"] != snap["module_base"]:          # a new boot: the operator's settings stay, the counts go
-            keep = {k: st[k] for k in SAVED_KEYS + ("fire_gap_orig",) if k in st}
-            if st.get("pre_round_base") == snap["module_base"]:  # what pre_round already put into this boot
-                keep.update({k: st[k] for k in ("pre_round_base", "loadouts", "loadout_drawn", "fp_applied_base",
-                                                 "rf_applied_base") if k in st})
+        boot = _boot(ad, snap["module_base"])
+        if st.get("boot") is None:
+            st["boot"] = boot
+        elif st["boot"] != boot:                         # a new boot: the operator's settings stay, the counts go
+            keep = {k: st[k] for k in SAVED_KEYS + ("fire_gap_orig", "_owner", "weapon_rows") if k in st}
+            if st.get("pre_round_boot") == boot:         # what pre_round already put into this boot
+                keep.update({k: st[k] for k in ("pre_round_boot", "pre_round_result", "loadouts", "loadout_drawn",
+                                                 "fp_applied_boot", "rf_applied_boot") if k in st})
             st.clear()
-            st.update(keep, base=snap["module_base"])
+            st.update(keep, boot=boot)
         frac = 0.0 if st.get("one_hit") else st.get("enemy_health")
         if frac is not None and frac < 1.0:
             n = _cap_health(ad, snap.get("enemies"), frac)
@@ -616,13 +681,17 @@ def maintain(ad, snap: dict | None = None) -> dict:
             st["life_kept"] = st.get("life_kept", 0) + n
             if n:
                 out["life_kept"] = n
-        if (st.get("weapon_power", 1.0) != 1.0 or st.get("max_level")) and not st.get("fp_applied_base") == snap["module_base"]:
+        if (st.get("weapon_power", 1.0) != 1.0 or st.get("max_level")) and st.get("fp_applied_boot") != boot:
             out["power_rows"] = _apply_power(ad, snap["module_base"], st)   # once a boot (the table is static data)
-            st["fp_applied_base"] = snap["module_base"]
-        if (st.get("fire_rate", 1.0) != 1.0 or st.get("infinite_ammo")) and st.get("rf_applied_base") != snap["module_base"]:
-            out["fire_tables"] = _apply_fire_rate(ad, snap["module_base"], st) if st.get("fire_rate", 1.0) != 1.0 else 0
-            out["ammo_rows"] = _apply_ammo(ad, snap["module_base"], st) if st.get("infinite_ammo") else 0
-            st["rf_applied_base"] = snap["module_base"]
+            st["fp_applied_boot"] = boot
+        if st.get("fire_rate", 1.0) != 1.0 and st.get("rf_applied_boot") != boot:
+            out["fire_tables"] = _apply_fire_rate(ad, snap["module_base"], st)
+            st["rf_applied_boot"] = boot
+        if st.get("infinite_ammo"):
+            n = _keep_mag(ad, snap["module_base"], st)
+            st["mag_refills"] = st.get("mag_refills", 0) + n
+            if n:
+                out["mag_refills"] = n
         rnd = snap.get("round_key") or snap["module_base"]
         # The loadouts are code: pre_round patches them on the menus, before the boot's first round runs that code.
         # Never here, mid-round: the emulator's JIT may hold the function compiled already, and a later round could
@@ -673,6 +742,7 @@ def status(ad, snap: dict | None = None) -> dict:
            "loadouts": st.get("loadouts"), "loadout_weapon": st.get("loadout_weapon"),
            "weapon_power_x": st.get("weapon_power", 1.0), "max_level": bool(st.get("max_level")),
            "aim_lock": bool(st.get("aim_lock")), "aim_writes": st.get("aim_writes", 0),
+           "mag_refills": st.get("mag_refills", 0), "pre_round": st.get("pre_round_result"),
            "capabilities": {
                "enemy_health": {"available": True}, "one_hit": {"available": True},
                "kill_time": {"available": True, "clock_found": bool((snap or {}).get("clock_addr")),
@@ -714,17 +784,17 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, snap: dict | N
             return weapon_power(ad, 1.0 if multiplier is None else multiplier, snap)
         if op == "max_level":
             r = max_level(ad, on, snap)
-            _state(ad).pop("fp_applied_base", None)
+            _state(ad).pop("fp_applied_boot", None)
             return r
         if op == "aim_lock":
             return aim_lock(ad, on)
         if op == "infinite_ammo":
             r = infinite_ammo(ad, on, snap)
-            _state(ad).pop("rf_applied_base", None)
+            _state(ad).pop("rf_applied_boot", None)
             return r
         if op == "fire_rate":
             r = fire_rate(ad, 1.0 if multiplier is None else multiplier, snap)
-            _state(ad).pop("rf_applied_base", None)
+            _state(ad).pop("rf_applied_boot", None)
             return r
         if op == "random_weapon":
             return random_weapon(ad, on, snap)
