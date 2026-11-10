@@ -64,24 +64,43 @@ Full per-entry detail (texture index/name/format/dims, per-mesh group/material i
 
 ## Six Mercenaries roster slots (static evidence)
 
-| slot | character | pl id | evidence | confidence |
-|---|---|---|---|---|
-| 1 | Chris | pl00 | base body `uPl00ChrisNormal.arc` + ArmorA/B/F, Cos1-4, Ep1, Plain | high (static) |
-| 2 | Sheva | pl01 | base body `uPl01ShebaNormal.arc` (archive spelling "Sheba") + ArmorA/B/F, Cos1-4, Plain | high (static) |
-| 3 | Josh | pl04 | base body `uPl04Josh.arc` + Cos1, Cos2 | medium |
-| 4 | Excella | pl05 | base body `uPl05ExcellaNormal.arc` | high (static) |
-| 5 | Barry | pl06 | base body `uPl06BarryNormal.arc` | high (static) |
-| 6 | Rebecca | pl07 | base body `uPl07RebeccaNormal.arc` | high (static) |
+Ticket slots: Chris BSAA / Safari / STARS; Sheva BSAA / Clubbinn / Tribal.
+Static evidence: each costume archive carries its own internal model namespace
+(`pawn\\pl\\plNN\\model\\...` entry names absent from the base body archive), so
+costume archives are distinguishable per costume; the in-game costume label is not
+stored in the archive content and is settled by the live roster menu.
 
-Jill (pl02) and Wesker (pl03) have only Cos (costume) archives, no base body; Irving (pl86) is story-only; the 9 `uPlXXEff.arc` are effect/texture support archives. Slot order is by pl id, not confirmed menu order. **Live verification (Mercenaries roster menu, idle i9-NUC/Spark session at 2% audio) is pending** — medium confidence until then.
+| slot | name | candidate archive | internal model ns | evidence | confidence |
+|---|---|---|---|---|---|
+| 1 | Chris BSAA | `uPl00ChrisNormal.arc` | pl00 | ticket standard: body MOD idx 97 `pawn\\pl\\pl00\\model\\pl0000`; pl00 base body (130 bones / 162 meshes / 123 mats / 17 tx) | high |
+| 2 | Chris STARS | `uPl00ChrisPlain.arc` | pl03 ns + pl00 body | "Plain" uniform (white STARS suit); only Chris costume archive with 37 unique pl03-ns entries | medium (name-based) |
+| 3 | Chris Safari | one of `uPl00ChrisCos1` (pl10), `uPl00ChrisCos2` (pl11), `uPl00ChrisCos3` (pl20), `uPl00ChrisCos4` (pl22) | pl10/11/20/22 | four distinct internal model namespaces with separate texture sets; no in-archive label | low (live menu needed) |
+| 4 | Sheva BSAA | `uPl01ShebaNormal.arc` | pl01 | pl01 base body (archive filename spells "Sheba"); 123 bones / 163 meshes / 125 mats | high |
+| 5 | Sheva Clubbinn | one of `uPl01ShebaCos1` (pl12 face + pl0d), `uPl01ShebaCos2` (pl13) | pl12/13/0d | distinct namespaces per costume; no in-archive label | low (live menu needed) |
+| 6 | Sheva Tribal | remaining Sheva costume archive | - | see slot 5 | low (live menu needed) |
+
+Notes: `uPl00ChrisEp1.arc` carries a pl04 (Josh) model set - episode-related, not a
+Merc slot. The six roster characters with base bodies (Chris pl00, Sheva pl01,
+Josh pl04, Excella pl05, Barry pl06, Rebecca pl07) are story-roster evidence, not the
+six Merc slot names above; Jill (pl02) and Wesker (pl03) have only costume archives;
+Irving (pl86) is story-only; the nine `uPlXXEff.arc` are effect/texture support.
 
 ## Not determined
 
 - Mercenaries menu slot order / exact roster (needs one idle live session).
 - `uPlXXEff.arc` have no `pl0000` body MOD (effect support archives).
 
+## Local verification (run 2026-11-09)
+
+- `gbox.re5_char_swap.catalogue(romfs)` live: `characters=41, enemies=139`; all 41 character entries are `uPl*.arc`.
+- Disk cross-check vs this JSON (size + sha256): `uPl00ChrisNormal.arc`, `uPl01ShebaNormal.arc`, `uPl86Irving.arc` - all 3 match.
+- Entry-namespace diff probe via `gbox.mt_arc.parse`: Chris Cos1->pl10, Cos2->pl11, Cos3->pl20, Cos4->pl22, Ep1->pl04, Plain->pl03 (37 unique entries); Sheva Cos1->pl12(+pl0d), Cos2->pl13, Plain->pl0d; Armor A/B/F share the base-body namespace (only delta: 1 sound entry).
+- Body MOD fields from `gbox.mt_model.parse_mod`; texture entries from `gbox.mt_arc.parse` + `gbox.re6_switch_tex.from_arc_entry`.
+- No files under `system/gbox` or tests changed; no binaries, textures, or images added.
+
 ## Checkpoint
 
-- Files: `system/docs/research/re5-switch-player-archives.json` (41 records), `re5-switch-player-archives.md` (this file), phase-1 `re5-switch-player-archives-catalogue.json`.
-- No files under system/gbox or tests changed; no binaries/textures/images added. Pending remote jobs: none (local-only extraction).
-- Next acceptance step: live Mercenaries roster check on an idle i9-NUC/Spark session, then close request (keep in_progress until then).
+- Phase-1 catalogue: `system/docs/research/re5-switch-player-archives-catalogue.json` (filename/size/sha256 for all 41 `uPl*.arc`; marked incomplete at phase 1).
+- This run (2026-11-09): live catalogue check 41 char / 139 enemy; disk sha256 cross-check 3/3 match; entry-namespace probe backing the six-slot confidence table; six-slot table corrected to the ticket's named Merc slots; no gbox/tests changes.
+- Pending job IDs: none (no remote/game-session jobs started).
+- Follow-up (optional, not required for this read-and-report deliverable): confirm slot labels Safari / STARS / Clubbinn / Tribal with a live Merc roster menu when the operator is idle. Deliverables are complete and locally verified; per ticket rules no session job was sent while in play.
