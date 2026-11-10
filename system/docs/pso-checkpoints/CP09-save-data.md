@@ -101,3 +101,27 @@ Needs: CP4's launch path (the i9 worker's `launch_game` claim) for the accept te
 * **Branch hygiene re-checked against the new main:** all **36** `ds-pso-*` branches still exit 0 from
   `git merge-tree --write-tree origin/main <branch>` after main advanced by 12 commits (the grenade-checkpoints merge),
   so CP0's "every branch merges clean" property still holds.
+
+## Round 50: PRS and a repeating XOR are both ruled out; the decode candidates are named
+
+Three cheap hypotheses tested against the real card before more decompiling:
+
+1. **PRS compression** (the game's standard compression, `gbox.ninja.prs_decompress`): fails with an `IndexError` on the
+   character and system payloads at starts `0x00`, `0x40` and `0x100` - so it is **not** a plain PRS stream.
+2. **A repeating-key XOR**: the body's most common 2-byte patterns are `0000` (5,414 occurrences), `ffff` (82), `f7ff`
+   (46), `98ab` (46). XOR with each of the top pairs (`9934`, `9955`, `3499`, `5534`) leaves **0 zero bytes and about 40 %
+   printable** - no better than chance, so **not** a simple repeating XOR either.
+3. **The body is structured, not uniform**: 5,414 zero 2-byte words and 2,707 zero 4-byte words, plus a 10,828-byte zero
+   run at `0x135B4` (which is the *tail* of the 90,112-byte file). Whatever the encoding is, the zero regions survive it.
+
+The character-save path **`FUN_801fd21c`** (1,096 bytes) was decompiled in full and has **no XOR and no byte loop**; it
+validates, calls `FUN_801fcd74` (184 B) several times, and its likely decode/commit calls are **`FUN_80200560` (304 B)**
+and **`FUN_80200778` (368 B)**, with `FUN_80200a44(1)` after them. Those are the next two functions to read, and the
+whole decompile is kept in `docs/research/pso-character-save-path.txt`.
+
+**Status of accept item 4: still open, but narrowed.** The encoding is not PRS and not a repeating XOR; it is applied by
+a routine the save path calls (`80200560`/`80200778` neighbourhood) or by the loader that decompresses the card image.
+The live byte-flip accept test remains the only way to prove "cipher" versus "packed" for certain.
+
+Note: CP4's gates were checked again this round (worker `idle_seconds = 44.9`, CPU 54 %) - the operator was at the
+machine, so no launch was attempted.
