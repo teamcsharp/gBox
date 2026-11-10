@@ -269,7 +269,7 @@ def _prioritized_handoff(data, request) -> bool:
     """A dated agent handoff explicitly selected by request, not just by its game."""
     handoff = (request.get('context') or {}).get('handoff')
     if (request.get('author') != 'agent' or not isinstance(handoff, str)
-            or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', handoff)):
+            or not re.fullmatch(r'\d{4}-\d{2}-\d{2}(-[a-z]+)?', handoff)):   # a date, or a date and its part of day
         return False
     selected = data.get('priority') or []
     return request['id'] in selected or str(request.get('number')) in selected
@@ -726,10 +726,13 @@ def add_triage_priority(request_ids, *, limit=200) -> list[str]:
 
 def set_priority(ids) -> list[str]:
     """Operator priority: game ids and/or request ids (or numbers) worked first in their lane; saved in the queue data."""
-    data = _read()
-    data['priority'] = [str(x).strip() for x in ids if str(x).strip()]
-    _save(data)
-    return data['priority']
+    # under the queue's lock, as every other writer: unlocked, a dispatcher's save from its older read put the old list
+    # (and its dropped items) back - 2026-11-10 the evening tickets fell off the list twice within minutes
+    with delivery.locked('work-queue'):
+        data = _read()
+        data['priority'] = [str(x).strip() for x in ids if str(x).strip()]
+        _save(data)
+        return data['priority']
 
 
 def get_priority() -> list[str]:

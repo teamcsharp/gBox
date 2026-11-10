@@ -71,3 +71,89 @@ normal RE6 block, B1/B2 can continue; details are in the lane log's 15:40 reques
 - **RE5's automatic barrage stays off**, as your branch set it. The flash cap it was waiting for is now live, so turning it back on (on the gate) is your next RE5 step, on a branch.
 - **Acceptance reads.** The coordinating Claude session may be offline when the restart lands. Ask the operator for the two status reads and the one RE5 flash, or leave the exact read-only calls here for the next session.
 - **Item 3** (the RE6 launcher capture) is not done yet.
+
+## i9 follow-up, 2026-11-10 16:40 CST - checkpoint D is on a branch, and the restart window
+
+**Checkpoint D is ready: branch `ds-grenade-re5-scatter-cap-20261110` @ `1bd0daed`** (cut from main `53cc8962`).
+RE5's automatic barrage is back on **under the one flash clock** the flash-cap work brought:
+
+- an all-flash barrage is refused while `FLASH_MIN_GAP_S` is closed (the ring's own reason, `flash_gap_skips` counted);
+- a mixed draw (once checkpoint C verifies hand/incendiary) leaves the flash out of the barrage inside the gap instead
+  of refusing - `scatter_kinds()` on both titles is the one place that list comes from, and a test pins
+  `SCATTER_FLASH_ONLY == (scatter_kinds() == ("flash",))` so C cannot forget it;
+- a confirmed flash round stamps `native_flash_confirmed_at` - the bot's own rules then wait the minute; a confirmed
+  **operator click** on the scatter op stamps it too (the ring already did);
+- `re5_switch.SCATTER = True` (D2). `kinds=` narrowing is validated in both native controllers before any native work.
+- tests: focused **80 passed**; broad (the CP0 list plus flash-window / aim-book / re6-bomb-mind / re5 autogrenade /
+  RE4 cave verifier) **247 passed, 0 failed**. No known-red file is touched.
+
+**The ask.** Merge D **before the armed restart fires, if it has not yet** - then the single restart loads checkpoint 0
+*and* D (`interventions.py` carries the operator-click stamp, so D cannot skip it). If the restart has already run,
+merge D and schedule one more restart in a gap. The live acceptance for D is one RE5 barrage receipt after that merge
+(detonated == requested, flash rounds >= 400 cm, self-damage 0, frames, kill delta) and a block whose confirmed
+flashes are all >= `FLASH_MIN_GAP_S` apart.
+
+**Checkpoint 0's acceptance is still open on my side**: the two status reads (RE5 and RE6) and one RE5 flash after the
+restart. I can take the two read-only status reads from the i9 myself the moment the new service is up
+(`GET /api/sessions/{sid}/interventions` via 10.89.1.246, the pre-restart baseline is captured); the **one RE5 flash
+still needs the operator/RE session** (or a named session + window, then I may POST that one intervention). No write
+of any kind has gone to lilspark.
+
+**Status note, 16:47 CST.** The armed restart has not landed yet: GET /api/mercmode still shows the same RE6 No
+Mercy session (78012a3fd3b146ba-f28ad0a196164cfb, started 15:56) in playing with mercmode_rounds_played = 1 for
+about 45 minutes, so the block has not reached its end. If it is stuck, one restart in a gap would clear it and load
+checkpoint 0 (+ D, if merged first) in one go; the read-only check above is all I can see from the i9.
+
+## i9 follow-up 2, 2026-11-10 16:50 CST - E3's read-only .bss watch (and the state of the two pending items)
+
+**E3 static half is done, on branch `ds-grenade-re4-bss-20261110` @ `2ac050db`** (from main `f1363f65`; no merge or
+restart is needed for it). New `scripts/verify_re4_bss.py` + `tests/test_re4_bss.py` (10): it collects every static
+reference into RE4's `.bss`, finds the unreferenced 4 KiB pages and vets a chosen one. On the operator's image:
+**10,285 static references**, **4,381 free pages**, and a **3.4 MB unreferenced stretch at `0x1681000..0x19C0300`**.
+Statically vetted candidates: `0x1700000`, `0x1681000` (large stretch), `0x1CB2000`, `0x1CB9000`, `0x1CBA000`,
+`0x1CBB000`, `0x1CBC000` (tail).
+
+**The ask (read-only, no game change):** during one RE4 Mercenaries round on lilspark, read these pages at **three
+stage loads** - round start, mid-round after a restart, and the next stage:
+
+    addresses: 0x1CB9000, 0x1CBA000, 0x1CBB000, 0x1CBC000, 0x1700000   (16 bytes each; a full 4 KiB page is better)
+
+All zero on all three reads = that page becomes the harness's private storage (E3 done); any nonzero byte rules it
+out. A register-indexed or run-time pointer into a page is invisible to the static scan, which is why the watch is the
+second half. If no page passes, the fallback is RE4's own allocator (not identified yet) - I will say so in the lane
+log.
+
+**State of the two pending items (unchanged as of 16:50):**
+- **D branch `ds-grenade-re5-scatter-cap-20261110` @ `1bd0daed` is still unmerged**, and the armed restart has still
+  not fired: `GET /api/mercmode` shows the same RE6 No Mercy session from 15:56 in `playing` with one round played.
+  If both are merged before one gap restart, a single restart loads checkpoint 0 and D together.
+- **CP0 acceptance** (two status reads + one RE5 flash) waits on that restart; I can take the reads read-only from
+  the i9, the flash needs the operator/RE session (or a named session + window).
+
+## i9 follow-up 3, 2026-11-10 17:02 CST - checkpoint 0's RE6 read is in; two asks for the coming RE4 / RE5 blocks
+
+**The restart landed with D merged** (`e317ff6d` / `eae1bb86`; new worker id `8cf47f44...` at ~16:54). The stale RE6
+session is gone. **Checkpoint 0's RE6 acceptance read is done** - session `8cf47f441c5041fa-20b2f78a64564e4d`
+(RE6 No Mercy, Jake):
+
+    available=True, capabilities = flash_now, equip_primary, grenade_ring, grenade_scatter, magnum_quick4,
+                                     set_infinite_ammo
+    flash       available=True       (the RE6 stale-base "no living player" bug is gone on the fresh controller)
+    hand        available=False      "... not yet verified on this build (uWp1091 is known; the compiled spawn image
+                                      pins the flash's class)"
+    incendiary  available=False      same, for uWp1093
+
+**Two asks, both read-only and both fitting the next blocks.** The MercMode queue after the current RE6 block is
+`re4 x5, re5 x5, re4 x5, re6 x5`:
+
+1. **E3's zero watch, during the next RE4 block** (the first `re4 x5`). Read `0x1CB9000`, `0x1CBA000`, `0x1CBB000`,
+   `0x1CBC000`, `0x1700000` at **three stage loads** of one round (round start, mid-round after a restart, next
+   stage); all zero on all three = that page becomes the harness's private storage. 16 bytes each is enough, a full
+   4 KiB page is ideal.
+2. **The one RE5 flash, during the `re5 x5` block after it.** Either the operator's PiP click or a named session +
+   window so I may POST that one intervention from the i9. In the same block I will take the **RE5 interventions read**
+   (the second checkpoint-0 acceptance read) and, for checkpoint D's live acceptance, the telemetry's
+   `scatters_fired` / `scatter_rounds` / `scatter_kills` and the confirmed-flash times (they must be at least
+   `FLASH_MIN_GAP_S` apart).
+
+No restart is needed for either ask; both are reads (plus, for the flash, whatever the operator normally clicks).
