@@ -68,6 +68,14 @@ FLOOR_ITEM_RECORD = 36
 
 COLLISION_ROOTS = (0x805D4E68, 0x805D6000, 0x805D6014, 0x805D5650)
 
+# The verified native stage-flag array (reverse-engineered 2026-11-02; see gbox.pso_coop_gates).
+# get/set/clear(group, index) address ONE MSB-first bit array: 18 groups (one per floor 0..17) x
+# 32 bytes, at STAGE_FLAG_BASE + group*32. The group index is the current floor (STAGE_FLAG_GROUP_PTR
+# == FLOOR), and each forward gate carries its own flag index at object +0xC8 (low 16 bits).
+STAGE_FLAG_BASE = 0x80515CC8
+STAGE_GROUP_SIZE = 32
+STAGE_FLAG_GROUPS = 18
+
 # Code addresses (entry points; the guards in docs/research/pso-gc-executable.md prove each one).
 UPDATE_PLAYER = 0x801BB330
 OBJECT_CREATE = 0x801057A8
@@ -299,6 +307,52 @@ def floor_items(reader) -> list[dict]:
 def collision_roots(reader) -> tuple[int, ...]:
     """The four collision root pointers the native geometry provider walks."""
     return tuple(reader.u32(a) for a in COLLISION_ROOTS)
+
+
+def stage_flag_locus(group: int, index: int):
+    """Byte address + OR mask for stage flag ``index`` in floor ``group`` (MSB-first bit array).
+
+    Mirrors ``gbox.pso_coop_gates.stage_flag_locus`` so a read stays build-exact; returns None when
+    either argument is outside the verified range (0..17 floors, 0..255 flags).
+    """
+    if type(group) is not int or type(index) is not int:
+        return None
+    if not (0 <= group < STAGE_FLAG_GROUPS and 0 <= index <= 255):
+        return None
+    return STAGE_FLAG_BASE + group * STAGE_GROUP_SIZE + index // 8, 0x80 >> (index % 8)
+
+
+def decode_stage_flags(group: bytes) -> list[int]:
+    """The set-bit indices of a 32-byte MSB-first stage-flag group, ascending.
+
+    Pure bit decode (no RAM read): a byte's flags run index 8*byte .. 8*byte+7 with the high bit
+    (0x80) at the low index of the byte, matching the native accessor's ``0x80 >> index%8``.
+    """
+    if not isinstance(group, (bytes, bytearray)) or len(group) != STAGE_GROUP_SIZE:
+        raise RamError(f"stage-flag group must be {STAGE_GROUP_SIZE} bytes, got "
+                       f"{len(group) if hasattr(group, '__len__') else type(group).__name__}")
+    out = []
+    for byte_index, byte in enumerate(group):
+        for bit in range(8):
+            if byte & (0x80 >> bit):
+                out.append(byte_index * 8 + bit)
+    return out
+
+
+def stage_flags(reader) -> dict:
+    """The current floor's native stage-flag group, read-only.
+
+    Reads the 32-byte group at ``STAGE_FLAG_BASE + floor*32`` (the group index == the current floor)
+    and decodes the set MSB-first bit indices. These are the forward-progress flags every switch/
+    panel and energy barrier consults; a set bit means that gate's requirement is already satisfied,
+    so the bot can see natively "which forward flags this zone holds vs. still needs". The flags are
+    reported, not authored: nothing here proves room-clear or passability by itself.
+    """
+    fid = floor(reader)
+    if not 0 <= fid < STAGE_FLAG_GROUPS:
+        raise RamError(f"floor id {fid} outside 0..{STAGE_FLAG_GROUPS - 1}")
+    group = reader.read(STAGE_FLAG_BASE + fid * STAGE_GROUP_SIZE, STAGE_GROUP_SIZE)
+    return {"floor": fid, "set_indices": decode_stage_flags(group), "group_hex": group.hex()}
 
 
 def snapshot(reader) -> dict:
