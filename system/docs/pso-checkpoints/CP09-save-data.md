@@ -85,3 +85,19 @@ Forest 1" would live) from the payload, and prove or disprove a checksum by a by
 one live session away.
 
 Needs: CP4's launch path (the i9 worker's `launch_game` claim) for the accept test; nothing else.
+
+## Round 49: the save module's anchor, and where the codec is not
+
+* **The save module is now anchored by its own strings.** Searching the defined string data for
+  `CHARACTER_FILE` / `SYSTEM_FILE` / `GUILDCARD_FILE` / `PSO_CHARACTER` / `PSO_SYSTEM` and taking their code references
+  gives **35 functions**; the two largest character-save paths are **`FUN_801fd21c` (1,096 B)** and
+  **`FUN_801fce6c` (940 B)**, with `FUN_801fc6a4` (436 B) and the small per-file helpers
+  (`801fbb1c`, `801fbbdc`, `801fd990`, `801fd9cc`, `801fda4c`, …) beside them. Decompiles kept in
+  `docs/research/pso-save-module-decompiles.txt`.
+* **The codec is not in the card API or these paths' first two hops.** A 2-hop sweep of the six `CARD*` functions found
+  only card status codes (`0xffffff83`, `0xffffff05`, …) and status bit masks, and the save paths themselves contain a
+  single shift (`<< 0xd`) and no XOR or key constant. So the encoding is applied by a generic file-read/write path the
+  save module calls - the next hop to chase - or by the loader that decompresses the card image before it is parsed.
+* **Branch hygiene re-checked against the new main:** all **36** `ds-pso-*` branches still exit 0 from
+  `git merge-tree --write-tree origin/main <branch>` after main advanced by 12 commits (the grenade-checkpoints merge),
+  so CP0's "every branch merges clean" property still holds.
