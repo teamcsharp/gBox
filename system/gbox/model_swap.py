@@ -1,4 +1,4 @@
-"""Swap whole models between MT Framework .arc archives - the reusable half of the lab's model-swap.
+﻿"""Swap whole models between MT Framework .arc archives - the reusable half of the lab's model-swap.
 
 Two measured rules hold this together:
 
@@ -72,7 +72,8 @@ def model_paths(data: bytes) -> list[str]:
     return paths
 
 
-def swap_models(slot: bytes, donor: bytes, *, textures: bool = True, geometry: bool = False) -> dict:
+def swap_models(slot: bytes, donor: bytes, *, textures: bool = True, geometry: bool = False,
+                 keep_tag: bool = True) -> dict:
     """The slot archive wearing the donor's model(s), with the textures those models name.
 
     `geometry` brings the donor's `MOD` mesh as well. It is OFF by default because a MOD does not travel safely between
@@ -96,8 +97,8 @@ def swap_models(slot: bytes, donor: bytes, *, textures: bool = True, geometry: b
         for slot_i, donor_i in zip(slot_models, donor_models):
             target_entry, donor_entry = slot_arc.entries[slot_i], donor_arc.entries[donor_i]
             # The low 24 bits describe the inflated payload length. Keep the target's
-            # resource flags and the donor's encoded length; copy its stream verbatim.
-            tag = (target_entry.tag & 0xFF000000) | (donor_entry.tag & 0x00FFFFFF)
+            # The low 24 bits describe the inflated payload length; keep =False hands the donor tag over verbatim.
+            tag = ((target_entry.tag & 0xFF000000) | (donor_entry.tag & 0x00FFFFFF)) if keep_tag else donor_entry.tag
             data = mt_arc.replace_at(data, slot_i, donor_entry.data, tag=tag)
             meshes.append(slot_arc.entries[slot_i].name)
             swapped += 1
