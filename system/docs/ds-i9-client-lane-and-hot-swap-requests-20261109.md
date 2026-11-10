@@ -746,3 +746,17 @@ sequence, or to add a virtual gamepad to the i9 worker.
 Next: run the unlock explicitly against a live session (`re6_switch_unlock.watch` over the debug stub) to confirm it
 writes the flag and the title unlocks from `title_locked`, and add `title_locked` to the driver and to the watcher's
 state handling so a recreated save cannot leave the title locked.
+
+## Round 31 status (2026-11-09, ~22:00 CST): the unlock verifies live and the flow reaches a Mercenaries stage
+
+* **The unlock is real and verified live**: a single pass over the debug stub with `rows = gbox.yuzu_runtime.guest_rows`
+  gives `module_base 0x80004000`, state `title`, `system_info 0x210ca400e8`, **`unlock_flags [17, 17]`** (bit 0 set,
+  both copies) and **`title_menu_open = 1`**; `apply()` needs no writes. The earlier "booting" was my probe class
+  lacking `rows` (`module_base` scans `m.rows`, not `_guest()`), not a game problem.
+* **The screen states are now all handled** in `drive_fast.py`: `title`, `press_any_button`, `title_locked`, `alert_ok`,
+  settings menus, `select_stage`, `select_player`, the continue prompt (right+A = NO) and `loading`.
+* With those, the drive reaches the **Mercenaries stage**: after declining the CONTINUE? prompt the game loads Urban
+  Chaos - the street with the neon signs renders at 9 FPS (frame 149.99 ms). `title_locked` is a transitional title
+  state, not a locked game.
+* So the full route `title -> main -> play/extra -> mercs -> stage -> character -> NO -> stage load` works with posted
+  keys; the two-frame hot-swap test can now run on it.
