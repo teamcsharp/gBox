@@ -150,3 +150,18 @@ def test_a_sole_survivor_walled_off_is_approached_not_reaimed_at_the_wall():
     # once wall-blocked as the only enemy, it is not re-fed to the aim gate: no wall re-aim, no loop
     assert b.stats["wall_aim_s"] <= 0.5                  # only the initial drop counted, not the repeated 3 s
     assert b.target is None or b.doing in ("walk", "locate", "no_foes")
+
+
+def test_a_target_walled_off_again_is_blocked_longer_each_time():
+    # Wall-aim cluster: the fixed 3 s block expired with the Majini still behind geometry and the gun
+    # re-aimed at the same wall all round. Each repeat on the same target doubles the block, capped.
+    b, clock = bot()
+    clock[0] = 0.0
+    spans = []
+    for _ in range(6):
+        b._wall_block(10, clock[0])
+        spans.append(b.blocked[10] - clock[0])
+        clock[0] = b.blocked[10] + 0.1
+    assert spans == pytest.approx([3.0, 6.0, 12.0, 24.0, 24.0, 24.0])
+    b._wall_block(11, clock[0])
+    assert b.blocked[11] - clock[0] == pytest.approx(3.0)              # another target starts at the base block

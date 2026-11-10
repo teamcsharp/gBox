@@ -516,6 +516,7 @@ PITCH_SETTLE = False                     # off at 15:45 with SKY_GUARD (the 14:5
 #  * crowd_max: the most within 4 m at once in the round; ex_<fault>: the first EXAMPLES of each in the round, readable.
 # long_shot_kills: a Majini fired on past LONG_KILL_R found dead within LONG_KILL_S.
 CONFIRMED_FIRE, LONG_KILL_R, LONG_KILL_S = True, 1500.0, 3.0
+WALL_BLOCK_MAX_S = 24.0   # a target walled off again after a block expired is left twice as long each time (3, 6, 12, 24 s)
 WALL_SLACK, WALL_DROP_S, WALL_BLOCK_S, FROZEN_TICKS = 10.0, 0.3, 3.0, 3   # (operator 18:58: "Every time the bot points
                                          # a gun at a wall, I cry": dropped after 0.3 s for 3 s; wall_aim_s the seconds
                                          # the gun's ray ended on geometry short of the target, target 0)
@@ -2469,7 +2470,7 @@ class Bot:
                     if wall is None or wall[0] != key:
                         r["wall"] = (key, now)
                     elif now - wall[1] >= WALL_DROP_S:
-                        self.blocked[key] = now + WALL_BLOCK_S
+                        self._wall_block(key, now)
                         self.stats["wall_blocks"] += 1
                         r["wall"] = None               # another nearby threat on the next tick, gun still raised
                 else:
@@ -3699,6 +3700,7 @@ class Bot:
         self._bonus_seen_round = False
         self._walls, self._wall_hist, self._wall_push, self._wall_rec = [], [], None, None
         self._wall_guard = None
+        self._wall_strikes = {}
         self._errs, self._band_round = [], {}
         self._sweep_st, self._reloc, self._dwell, self._clears, self._dwells = None, None, None, [], []
         self._trail, self._dead_ends = [], []
@@ -4904,6 +4906,16 @@ class Bot:
         return {"hold": ()}
 
 
+    def _wall_block(self, key, now) -> None:
+        # Wall-aim cluster: the 3 s block expired with the Majini still behind geometry, so the gun re-aimed at the
+        # same wall every ~3 s all round. Each repeat on the same target doubles the block (cap WALL_BLOCK_MAX_S).
+        strikes = getattr(self, "_wall_strikes", None)
+        if strikes is None:
+            strikes = self._wall_strikes = {}
+        n = strikes.get(key, 0)
+        strikes[key] = n + 1
+        self.blocked[key] = now + min(WALL_BLOCK_S * (2 ** n), WALL_BLOCK_MAX_S)
+
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
         px, py, pz = p["pos"]
         self._goal_dy = None                             # (set again by the bonus run / the pursuit this tick)
@@ -5221,7 +5233,7 @@ class Bot:
             self._wall_since = self._wall_since or now   # the dot short of him on geometry
             if now - self._wall_since >= WALL_DROP_S:
                 key0 = tgt.get("ptr", tgt.get("slot"))
-                self.blocked[key0] = now + WALL_BLOCK_S  # leave him a moment: another one
+                self._wall_block(key0, now)              # leave him a moment (longer each repeat): another one
                 self.stats["wall_blocks"] += 1
                 self._example("wall_block", p, now, f"target {dist / 100:.1f} m behind geometry at "
                                                     f"{ray_len / 100:.1f} m")
