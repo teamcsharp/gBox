@@ -697,6 +697,7 @@ WALL_SLACK, WALL_DROP_S, WALL_BLOCK_S, FROZEN_TICKS = 10.0, 0.3, 3.0, 3   # (ope
                                          # a gun at a wall, I cry": dropped after 0.3 s for 3 s; wall_aim_s the seconds
                                          # the gun's ray ended on geometry short of the target, target 0)
 BEHIND_R, AWAY_ERR, AWAY_S, EXAMPLES = 300.0, math.radians(45), 0.3, 3
+BEHIND_FIX_S = 0.8                           # a confirmed shot ahead is given this long while one stands close behind
 FAULT_KINDS = ("wall_shot", "wall_block", "frozen_dot", "behind_threat", "aim_away", "sky", "target_giveup")
 # The close-range pitch (the 15:26 turn's pitch_up_last: targets 0.8-2.2 m wanting -23 to -38 deg with the laser at
 # +21 to +28 deg - "ray 50.0 m", the laser's limit: the sky - and the aim +56 / +57 deg just before raises, the guard's
@@ -3795,13 +3796,17 @@ class Bot:
         e = min(near, key=flat)
         aim = heading(dot[0] - origin[0], dot[2] - origin[2])
         off = abs(wrap(heading(e["pos"][0] - origin[0], e["pos"][2] - origin[2]) - aim))
-        if off <= AWAY_ERR or confirmed:
+        # (operator critique #5666, "Flawed": behind_threat_s 172 s - a confirmed shot at a far Majini kept the gun
+        # there for the round while one 1-3 m BEHIND him closed in unanswered; a confirmed shot no longer excuses a
+        # grab-range Majini behind him past BEHIND_FIX_S)
+        rear = flat(e) <= BEHIND_R and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) > math.pi / 2
+        if off <= AWAY_ERR or (confirmed and not rear):
             self._away_since = None
             return None
         dt = min(now - self._away_since, LOOK_STEP_MAX_S) if self._away_since is not None else 0.0
         self.stats["aim_away_s"] = round(self.stats["aim_away_s"] + dt, 2)
         self._away_since = self._away_since or now
-        if now - self._away_since < AWAY_S:
+        if now - self._away_since < (BEHIND_FIX_S if confirmed else AWAY_S):
             self._away_t = now
             return None
         self.stats["aim_away_fixes"] += 1
