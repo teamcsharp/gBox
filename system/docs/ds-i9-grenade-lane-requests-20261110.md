@@ -104,3 +104,28 @@ Mercy session (78012a3fd3b146ba-f28ad0a196164cfb, started 15:56) in playing with
 about 45 minutes, so the block has not reached its end. If it is stuck, one restart in a gap would clear it and load
 checkpoint 0 (+ D, if merged first) in one go; the read-only check above is all I can see from the i9.
 
+## i9 follow-up 2, 2026-11-10 16:50 CST - E3's read-only .bss watch (and the state of the two pending items)
+
+**E3 static half is done, on branch `ds-grenade-re4-bss-20261110` @ `2ac050db`** (from main `f1363f65`; no merge or
+restart is needed for it). New `scripts/verify_re4_bss.py` + `tests/test_re4_bss.py` (10): it collects every static
+reference into RE4's `.bss`, finds the unreferenced 4 KiB pages and vets a chosen one. On the operator's image:
+**10,285 static references**, **4,381 free pages**, and a **3.4 MB unreferenced stretch at `0x1681000..0x19C0300`**.
+Statically vetted candidates: `0x1700000`, `0x1681000` (large stretch), `0x1CB2000`, `0x1CB9000`, `0x1CBA000`,
+`0x1CBB000`, `0x1CBC000` (tail).
+
+**The ask (read-only, no game change):** during one RE4 Mercenaries round on lilspark, read these pages at **three
+stage loads** - round start, mid-round after a restart, and the next stage:
+
+    addresses: 0x1CB9000, 0x1CBA000, 0x1CBB000, 0x1CBC000, 0x1700000   (16 bytes each; a full 4 KiB page is better)
+
+All zero on all three reads = that page becomes the harness's private storage (E3 done); any nonzero byte rules it
+out. A register-indexed or run-time pointer into a page is invisible to the static scan, which is why the watch is the
+second half. If no page passes, the fallback is RE4's own allocator (not identified yet) - I will say so in the lane
+log.
+
+**State of the two pending items (unchanged as of 16:50):**
+- **D branch `ds-grenade-re5-scatter-cap-20261110` @ `1bd0daed` is still unmerged**, and the armed restart has still
+  not fired: `GET /api/mercmode` shows the same RE6 No Mercy session from 15:56 in `playing` with one round played.
+  If both are merged before one gap restart, a single restart loads checkpoint 0 and D together.
+- **CP0 acceptance** (two status reads + one RE5 flash) waits on that restart; I can take the reads read-only from
+  the i9, the flash needs the operator/RE session (or a named session + window).
