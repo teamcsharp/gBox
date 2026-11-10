@@ -19,11 +19,11 @@ Roles resolved against the 23-role reference set. Heights are local source units
 |---|---|---|---|---|---|---|---|---|
 | sa1_sonic | 15 | 74 | all (16/16 prims) | 1001 | undetermined (n=16) | 10.0828 | 587bf36e97587da9 |  |
 | sonic | 15 | 62 | all (4/4 prims) | 1369 | undetermined (n=4) | 10.8055 | 5dd7cc07f3116a8f |  |
-| s3k_sonic | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
-| sk_sonic | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
-| sonic1_shadow | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
-| sonic2_sonic | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
-| sonic2_tails | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
+| s3k_sonic | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
+| sk_sonic | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
+| sonic1_shadow | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
+| sonic2_sonic | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
+| sonic2_tails | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
 
 ### super_sonic (2 entries)
 
@@ -50,7 +50,7 @@ Roles resolved against the 23-role reference set. Heights are local source units
 |---|---|---|---|---|---|---|---|---|
 | sa1_tails | 15 | 69 | all (14/14 prims) | 997 | undetermined (n=14) | 9.4043 | 2497f8bee301e5d9 |  |
 | sa2_tails | 15 | 62 | all (3/3 prims) | 1180 | undetermined (n=3) | 8.4022 | fc4b6d2a61ba93aa |  |
-| s3k_tails | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
+| s3k_tails | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
 
 ### knuckles (4 entries)
 
@@ -58,8 +58,8 @@ Roles resolved against the 23-role reference set. Heights are local source units
 |---|---|---|---|---|---|---|---|---|
 | sa1_knuckles | 15 | 74 | all (13/13 prims) | 981 | undetermined (n=12) | 10.9715 | 55d7cf95a43e50a9 |  |
 | sa2_knuckles | 15 | 62 | all (3/3 prims) | 1241 | undetermined (n=3) | 10.6396 | dae6438d36ace21a |  |
-| s3k_knuckles | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
-| sk_knuckles | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
+| s3k_knuckles | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
+| sk_knuckles | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
 
 ### amy (2 entries)
 
@@ -115,15 +115,15 @@ Roles resolved against the 23-role reference set. Heights are local source units
 | sm64ds_mario | 16 | 17 | none (0/3 prims) | 452 | undetermined (n=3) | 18.7759 | ea509bdf870190e7 |  |
 | mario | 15 | 20 | all (11/11 prims) | 752 | undetermined (n=5) | 600.0059 | 701635400b9c9616 | DUP |
 | mario_66062703301f4969 | 15 | 20 | all (11/11 prims) | 752 | undetermined (n=5) | 600.0059 | 701635400b9c9616 | DUP |
-| smb3_mario | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
-| tetris_ds_ct_mario3 | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
+| smb3_mario | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
+| tetris_ds_ct_mario3 | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
 
 ### super_mario (2 entries)
 
 | slug | roles/23 | joints | normals | tris | largest tex | height (u) | sha256:16 | notes |
 |---|---|---|---|---|---|---|---|---|
-| tetris_ds_super_mario | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
-| tetris_ds_super_mario3 | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
+| tetris_ds_super_mario | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
+| tetris_ds_super_mario3 | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
 
 ### luigi (3 entries)
 
@@ -165,7 +165,7 @@ Roles resolved against the 23-role reference set. Heights are local source units
 | yoshi_hd | 18 | 25 | all (9/9 prims) | 8407 | undetermined (n=2) | 2.375 | d13740668711d650 |  |
 | sm64_yoshi | 18 | 25 | all (7/7 prims) | 676 | undetermined (n=2) | 2.3217 | 42411cb11053a0d9 |  |
 | sm64ds_yoshi | 16 | 20 | none (0/3 prims) | 428 | undetermined (n=3) | 19.9471 | 6202bfb4885213cf |  |
-| tetris_ds_yoshieye | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
+| tetris_ds_yoshieye | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
 
 ### toad (3 entries)
 
@@ -207,27 +207,13 @@ Roles resolved against the 23-role reference set. Heights are local source units
 |---|---|---|---|---|---|---|---|---|
 | sa2_cyclone | 15 | 33 | all (16/16 prims) | 1724 | undetermined (n=16) | 23.5172 | 958b568cfc874227 |  |
 | sprite_photo_b7aecee966090bfa_0e0cf249d7 | 0 | 20 | all (10/10 prims) | 752 | undetermined (n=4) | 600.0059 | 614a5b0f2d4c6e12 |  |
-| smb3_all_tiles | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
-| sprite_photo_49b6a2f65aca26a2_ad2d4ec25f | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
-| sprite_photo_938e4ca5b120e344_e36151c201 | None | None | None | None | None | None |  | UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p |
+| smb3_all_tiles | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
+| sprite_photo_49b6a2f65aca26a2_ad2d4ec25f | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
+| sprite_photo_938e4ca5b120e344_e36151c201 | None | None | None | None | None | None |  | 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable|
 
 ## Data quality flags
 
 - Duplicates (identical sha256): `701635400b9c9616…` → mario / mario_66062703301f4969
 - Model-pack / non-source-game flags: `bowser_hd`, `luigi_hd`, `mario_hd`, `peach_hd`, `toad_hd`, `wario_hd`, `yoshi_hd`
 - meta.stats mismatch vs measured: none — all measured entries match their meta stats
-- Measurement failures (16): `s3k_knuckles` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p; `s3k_sonic` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p; `s3k_tails` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p; `sk_knuckles` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p; `sk_sonic` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p; `smb3_all_tiles` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p; `smb3_mario` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p; `sonic1_shadow` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p; `sonic2_sonic` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p; `sonic2_tails` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p; `sprite_photo_49b6a2f65aca26a2_ad2d4ec25f` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p; `sprite_photo_938e4ca5b120e344_e36151c201` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p; `tetris_ds_ct_mario3` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p; `tetris_ds_super_mario` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p; `tetris_ds_super_mario3` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p; `tetris_ds_yoshieye` — UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p
-- Scale anomalies: entries with height > 100 local units (e.g. `mario` / `mario_66062703301f4969` at 600.0, `sm64ds_dorrie` at 163.4) come from non-SSB pipelines — re-scale before any swap.
-
-## Key findings
-
-1. **SSB Melee family is the strongest Mario-side donor block**: `melee_mario/luigi/peach/bowser/yoshi/gigabowser/drmario` — 18/23 roles, 61–114 joints, 100% vertex normals, ~5–6k tris, consistent ~1.5 local-unit height. Humanoid topology compatible with a Mercs rig bind.
-2. **`_hd` reworks** (`mario_hd`, `luigi_hd`, `peach_hd`, `bowser_hd`, `toad_hd`, `wario_hd`): 18/23 roles, ~20k tris, all normals — higher-poly alternates for the same characters.
-3. **Sonic side**: `sa1_*`/`sa2_*` (gbox.sa1_chars/gbox.sa2_chars + gbox.ninja exports) measured fine with full geometry; `s3k_*`/`sk_*`/`sonic1_*`/`sonic2_*` entries failed GLB measurement with the repo parser — see measurement failures; `sprite_photo_*` and `tetris_ds_*`/`smb3_mario` are sprite/face assets, not 3D donors.
-4. Dedupe before use: `mario` ≡ `mario_66062703301f4969` (same sha256).
-
-## Next acceptance step
-
-Operator selects top donors per Mercs character from the shortlist (recommendation: Melee family for Mario humanoids; `sa2_shadow`-class export for Sonic humanoids, with the s3k/sk GLB parser failure fixed first for the s3k block). Then cast_swap recipes (launch:false) with change_id + writer dependencies, then live acceptance on an idle i9-NUC/Spark test session at 2% audio.
-
-_Generated 2026-11-09T20:19:16Z; re-aggregated 2026-11-09T22:47:08Z. Raw evidence: `donor-audit-sonic-mario-2026-11-09.json` (full per-entry measurements, sha256, role lists)._
+- Measurement "failures" (16) — all are 2D sprite sheets with no GLB (meta kind=sprites, PNG model), so no 3D columns exist: `s3k_knuckles` — 2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable

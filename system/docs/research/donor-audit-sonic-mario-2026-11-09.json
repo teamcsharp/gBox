@@ -6665,7 +6665,7 @@
    ],
    "name": "Knuckles (Sonic 3 & Knuckles)",
    "game_title": "Sonic & Knuckles + Sonic the Hedgehog 3 (World)",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:sonic",
     "name:knuckle"
@@ -6679,7 +6679,7 @@
    ],
    "name": "Sonic (Sonic 3 & Knuckles)",
    "game_title": "Sonic & Knuckles + Sonic the Hedgehog 3 (World)",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:sonic",
     "name:knuckle"
@@ -6693,7 +6693,7 @@
    ],
    "name": "Tails (Sonic 3 & Knuckles)",
    "game_title": "Sonic & Knuckles + Sonic the Hedgehog 3 (World)",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:sonic",
     "name:tails",
@@ -8407,7 +8407,7 @@
    ],
    "name": "Knuckles (Sonic & Knuckles)",
    "game_title": "Sonic & Knuckles (World)",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:sonic",
     "name:knuckle"
@@ -8421,7 +8421,7 @@
    ],
    "name": "Sonic (Sonic & Knuckles)",
    "game_title": "Sonic & Knuckles (World)",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:sonic",
     "name:knuckle"
@@ -11081,7 +11081,7 @@
    ],
    "name": "Every sprite and tile (Super Mario Bros. 3)",
    "game_title": "Super Mario Bros. 3",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:mario"
    ],
@@ -11094,7 +11094,7 @@
    ],
    "name": "Mario (Super Mario Bros. 3)",
    "game_title": "Super Mario Bros. 3",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:mario"
    ],
@@ -11192,7 +11192,7 @@
    ],
    "name": "Shadow (Shadow In Sonic 1)",
    "game_title": "Shadow In Sonic 1",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:sonic",
     "name:shadow"
@@ -11206,7 +11206,7 @@
    ],
    "name": "Sonic (Sonic the Hedgehog 2)",
    "game_title": "Sonic the Hedgehog 2 (World)",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:sonic"
    ],
@@ -11219,7 +11219,7 @@
    ],
    "name": "Tails (Sonic the Hedgehog 2)",
    "game_title": "Sonic the Hedgehog 2 (World)",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:sonic",
     "name:tails"
@@ -11233,7 +11233,7 @@
    ],
    "name": "Photo face \u2014 Mario Bros.",
    "game_title": "Super Mario Bros.",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:mario"
    ],
@@ -11246,7 +11246,7 @@
    ],
    "name": "Photo face \u2014 Sonic 2",
    "game_title": "Sonic the Hedgehog 2",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:sonic"
    ],
@@ -11340,7 +11340,7 @@
    ],
    "name": "Tetris DS sprites: ct_mario3",
    "game_title": "Tetris DS (USA)",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:mario"
    ],
@@ -11353,7 +11353,7 @@
    ],
    "name": "Tetris DS sprites: super_mario",
    "game_title": "Tetris DS (USA)",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:mario"
    ],
@@ -11366,7 +11366,7 @@
    ],
    "name": "Tetris DS sprites: super_mario3",
    "game_title": "Tetris DS (USA)",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:mario"
    ],
@@ -11379,7 +11379,7 @@
    ],
    "name": "Tetris DS sprites: yoshieye",
    "game_title": "Tetris DS (USA)",
-   "error": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code point not in range(0x110000)",
+   "error": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be",
    "basis": [
     "name:yoshi"
    ],
@@ -11840,7 +11840,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    },
    {
     "slug": "tetris_ds_ct_mario3",
@@ -11851,7 +11851,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    }
   ],
   "dr_mario": [
@@ -11980,7 +11980,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    }
   ],
   "knuckles": [
@@ -12015,7 +12015,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    },
    {
     "slug": "sk_knuckles",
@@ -12026,7 +12026,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    }
   ],
   "sonic": [
@@ -12061,7 +12061,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    },
    {
     "slug": "sk_sonic",
@@ -12072,7 +12072,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    },
    {
     "slug": "sonic1_shadow",
@@ -12083,7 +12083,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    },
    {
     "slug": "sonic2_sonic",
@@ -12094,7 +12094,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    },
    {
     "slug": "sonic2_tails",
@@ -12105,7 +12105,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    }
   ],
   "tails": [
@@ -12140,7 +12140,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    }
   ],
   "amy": [
@@ -12273,7 +12273,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    },
    {
     "slug": "sprite_photo_49b6a2f65aca26a2_ad2d4ec25f",
@@ -12284,7 +12284,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    },
    {
     "slug": "sprite_photo_938e4ca5b120e344_e36151c201",
@@ -12295,7 +12295,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    }
   ],
   "eggman": [
@@ -12469,7 +12469,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    },
    {
     "slug": "tetris_ds_super_mario3",
@@ -12480,7 +12480,7 @@
     "largest_tex": null,
     "height": null,
     "sha16": "",
-    "err": "UnicodeDecodeError: 'utf-32-be' codec can't decode bytes in position 4-7: code p"
+    "err": "2D sprite sheet (meta kind=sprites, model file is a PNG, no GLB exists): no mesh/rig; 3D columns not applicable. Original parser error (feeding a PNG to the glTF loader): UnicodeDecodeError utf-32-be"
    }
   ]
  },
@@ -12489,5 +12489,6 @@
   "tier1_ranked": 68,
   "tier2_review": 17
  },
- "reaggregated_utc": "2026-11-09T22:47:08Z"
+ "reaggregated_utc": "2026-11-09T22:47:08Z",
+ "measurement_errors_note": "All 16 'measurement_errors' are 2D sprite entries (kind=sprites, PNG model, no GLB); not parser bugs on 3D assets."
 }
