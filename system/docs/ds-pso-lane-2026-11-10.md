@@ -161,6 +161,9 @@ pass except the one pre-existing `test_pso_enemy` failure in §3.
 
 ## Round 2 (2026-11-10, later) — P1 started live: the boot-screen id is RAM-readable
 
+> **Superseded in part by round 3.** The byte is real and its transitions are real, but it is a **coarse mode**, not a
+> screen id: it reads `1` on the title main menu *and* on SELECT CHARACTER. Read round 3 before relying on it.
+
 The blocker of record is that the campaign "never leaves the title on its own: it does not press Start at PRESS START
 ... with the screen read from RAM (the menu state bytes), not from frames". This round found the menu state byte and
 drove the first press from it, in a live session.
@@ -242,12 +245,78 @@ not walked. The cursor variable inside a menu is not identified, only the screen
 accepted: the accept test is three cold launches reaching Forest 1 with both players, and this round reached the
 title main menu from PRESS START by a RAM-decided press, reproducibly.
 
+## Round 3 (2026-11-10, later still) — the offline branch walked; the "screen id" corrected; the pad precondition
+
+Round 2 shipped `0x80516303` as PSO's "boot-screen id" (3 PRESS START, 1 main menu, 9 ONLINE submenu). **That
+interpretation was wrong** and is now corrected. The walk itself went much further than round 2, though: with input
+working, real presses reached the offline character screen.
+
+### The walk, live, by real presses
+
+Session `dbc5ff9be4ca416c-c91e5802a9844b37` on the i9-NUC (Dolphin 2609, Vulkan, `GPOE8P`), virtual pad bound:
+
+```
+PRESS START  ->  title main menu  ->  OFFLINE GAME  ->  SELECT GAME MODE  ->  SELECT CHARACTER
+                 (ONLINE / OFFLINE /   (SINGLE MODE /      (SLOT A, four
+                  OPTIONS / WEBSITE)    MULTI MODE)          "NO DATA" slots)
+```
+
+Frames (labels only; no decision uses them): `p1b-02-after-start.jpg` (main menu, ONLINE GAME highlighted),
+`p1b-03-offline.jpg` (SELECT GAME MODE, SINGLE MODE highlighted, "B Cancel / A Confirm"),
+`p1b-04-single.jpg` (SELECT CHARACTER, SLOT A). Back out with `B` returned to each previous screen. This is further
+than the campaign has ever driven PSO from a cold boot, and it is the branch P1 needs (offline → character → Pioneer 2).
+
+### The correction: `0x80516303` is a coarse mode, not a screen id
+
+| value | screens it was read on |
+|---|---|
+| 0 | the title (attract / PRESS START) |
+| 1 | **the title main menu AND SELECT CHARACTER** |
+| 9 | SELECT GAME MODE |
+| 22 | a cancel out of SELECT GAME MODE |
+
+`1` on two different screens is the whole point: the byte changes when the screen changes, so it is a useful
+*transition* signal, but **a walk must never use it to decide which screen is up**. Round 2's four values were real
+observations; the "screen id" reading of them was not.
+
+### What a walk needs instead, and the failure that showed the way
+
+A screen signature built from the bytes that actually move between two known screens — never a window picked by eye.
+Tried the eye first: a fixed 1 KiB window (`0x80516000`, `0x80516200`, `0x80514500`) scored **0.99 similarity between
+all four screens**, because those windows are almost entirely zero. The diff-derived approach is in the module
+(`stable` → `stable_diff` → `signature` → `similarity`), all tested, with `signature()` refusing any byte that is not
+constant while it is taken.
+
+### The precondition that made round 2 look like a walk and round 3 start dead
+
+The virtual pad is what makes presses land without focus. Bound, Dolphin's `User/Config/GCPadNew.ini` carries
+`Options/Always Connected = True` and `Device = XInput/<slot>/Gamepad`. **Unbound**, the adapter silently falls back to
+the keyboard (`_setup_vpad()` returns `None` when `VGamepad()` cannot take an XInput slot), `win_send_keys` reports
+`{"sent": 0}` while the window is minimised, and every press is dropped — a game that looks alive and ignores you.
+Three stale `Xbox 360 Controller for Windows` devices from earlier sessions were the cause; restarting the worker
+released them and the next launch bound a pad. `pso_menu_walk.verify_pad_binding()` checks the ini, and the rule is now
+in the module docstring: **check the pad binding before trusting a walk.**
+
+Two more operational facts worth keeping:
+
+- A launch as an agent on a Windows worker is admitted through `background_testing.admission_reason`, which needs
+  `idle_seconds >= 300`, and **the worker's idle clock resets on gBox's own pad input** — so a relaunch right after a
+  walking session waits five minutes. Plan the walk as one session.
+- Dolphin launches minimised (`si.wShowWindow = 7`) and `remote_desktop.window_still` returns `None` for a minimised
+  window. `ShowWindow(SW_RESTORE)` first makes capture work. A zero page in RAM is not a broken reader: `0x80000000`
+  reads `GPOE8P` and `0x8000C000` the DOL's first instruction even when every game global is still zero.
+
+### Not done
+
+No RAM discriminator for the screen yet (the signature API exists and is tested; it needs one live diff pass per
+screen boundary), so the walk still needs a frame or a scripted sequence to know where it is. Pioneer 2, the Hunter's
+Guild and Forest 1 are not reached. P1 remains in progress.
+
 ## 7. Next
 
-1. P1: the offline branch. From the main menu, identify the cursor variable (constancy-filtered diff across a
-   `ddown` press, with the menu held open), then OFFLINE GAME -> the character/file screens -> Pioneer 2 -> the
-   Hunter's Guild telepipe -> Forest 1, asserting every transition from `gbox.pso_menu_walk.screen` and never from a
-   frame.
-2. Fix or characterise the input stall above before trusting any walk: a press that lands and a press that silently
-   does not look identical from RAM alone unless the walk checks the expected screen change.
+1. P1: a RAM screen discriminator. Take one live diff per screen boundary (title/main menu, main menu/SELECT
+   GAME MODE, SELECT GAME MODE/SELECT CHARACTER) and store each as a `signature()`; then the walk can assert
+   where it is with no frame. Verify it in a second boot before calling it proven.
+2. Then the rest of the offline branch: SELECT CHARACTER (a character exists on the memory card) -> Pioneer 2 ->
+   Hunter's Guild -> the telepipe -> Forest 1, both players.
 3. Then P6a's in-game proof (the moved object seen in Forest 1) and P6b (the editor page).

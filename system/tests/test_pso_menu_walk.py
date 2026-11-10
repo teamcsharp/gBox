@@ -1,4 +1,7 @@
-"""gbox.pso_menu_walk: the boot-screen id and the first P1 step, on synthetic memory."""
+"""gbox.pso_menu_walk: the RAM probe, its false positives, and the pad precondition.
+
+No emulator: a synthetic memory image proves the constancy filter, the diff, the signature and the pad check.
+"""
 import pytest
 
 from gbox import pso_menu_walk as M
@@ -6,8 +9,12 @@ from gbox import pso_ram as R
 
 
 class Mem:
-    def __init__(self):
+    """read_memory over a 24 MiB image, with optional bytes that change on every read (animated UI)."""
+
+    def __init__(self, animated=()):
         self.data = bytearray(R.RAM_END - R.RAM_START)
+        self.animated = list(animated)
+        self.reads = 0
 
     def poke(self, address, blob):
         off = address - R.RAM_START
@@ -17,76 +24,86 @@ class Mem:
         off = address - R.RAM_START
         if off < 0 or off + length > len(self.data):
             return None
-        return bytes(self.data[off:off + length])
+        blob = bytearray(self.data[off:off + length])
+        self.reads += 1
+        for a in self.animated:
+            k = a - address
+            if 0 <= k < length:
+                blob[k] = (self.reads * 7) & 0xFF
+        return bytes(blob)
 
 
-def game(screen, phase=0):
-    m = Mem()
-    m.poke(M.BOOT_SCREEN, bytes([screen]))
-    m.poke(M.BOOT_SCREEN_MIRROR, bytes([screen]))
-    m.poke(R.PHASE, bytes([phase]))
-    return m
-
-
-def test_the_proven_screen_ids_are_named():
-    assert M.PRESS_START == 3 and M.MAIN_MENU == 1 and M.ONLINE_SUBMENU == 9
-    assert M.BOOT_SCREEN == 0x80516303 and M.BOOT_SCREEN_MIRROR == 0x805145F7
-    assert M.screen_name(3) == "press_start" and M.screen_name(1) == "main_menu"
-    assert M.screen_name(9) == "online_submenu"
-    assert M.screen_name(77) == "unknown(77)"
+def test_the_mode_byte_is_documented_as_not_a_screen_id():
+    assert M.MODE_BYTE == 0x80516303 and M.MODE_BYTE_MIRROR == 0x805145F7
+    # the same value appears on two different screens: that is the documented fact, not a bug
+    assert len(M.MODES_SEEN[1]) == 2 and "SELECT CHARACTER" in M.MODES_SEEN[1]
+    assert M.MODES_SEEN[9] == ("SELECT GAME MODE",)
+    assert M.OFFLINE_PATH[2] == "OFFLINE GAME" and M.OFFLINE_PATH[-1] == "SELECT CHARACTER"
     assert M.MAIN_MENU_ITEMS[1] == "OFFLINE GAME"
 
 
-def test_screen_reads_the_id_and_refuses_a_torn_read():
-    assert M.screen(R.Reader(game(3))) == 3
-    assert M.screen(R.Reader(game(1))) == 1
-    m = game(3)
-    m.poke(M.BOOT_SCREEN_MIRROR, bytes([1]))
+def test_stable_keeps_a_constant_byte_and_drops_an_animated_one():
+    m = Mem(animated=[0x804E0010])
+    m.poke(0x804E0010, b"\x01")
+    m.poke(0x804E0020, b"\x05")
+    values, constancy = M.stable(M.Counting(m), [(0x804E0000, 0x40)], samples=3, gap=0.0, sleep=lambda _s: None)
+    assert constancy[0x10] == 0                       # animated: dropped
+    assert constancy[0x20] == 1 and values[0x20] == 5  # constant: kept
+    assert len(values) == 0x40
+
+
+def test_stable_diff_reports_only_the_bytes_that_track_the_state():
+    m = Mem(animated=[0x804E0010])
+    m.poke(0x804E0020, b"\x00")
+    a = M.stable(M.Counting(m), [(0x804E0000, 0x40)], samples=3, gap=0.0, sleep=lambda _s: None)
+    m.poke(0x804E0020, b"\x02")
+    b = M.stable(M.Counting(m), [(0x804E0000, 0x40)], samples=3, gap=0.0, sleep=lambda _s: None)
+    assert M.stable_diff(a, b, [(0x804E0000, 0x40)]) == [(0x804E0020, 0, 2)]
+
+
+def test_stable_rejects_a_short_read():
+    class Short:
+        def read_memory(self, address, length):
+            return b"\x00" * (length - 1)
+
     with pytest.raises(M.MenuError):
-        M.screen(R.Reader(m))
+        M.stable(Short(), [(0x804E0000, 8)], samples=2, gap=0.0, sleep=lambda _s: None)
 
 
-def test_describe_separates_press_start_from_the_menu():
-    a = M.describe(R.Reader(game(3)))
-    assert a == {"screen": 3, "name": "press_start", "phase": 0, "at_press_start": True, "in_main_menu": False}
-    b = M.describe(R.Reader(game(1, phase=0)))
-    assert b["at_press_start"] is False and b["in_main_menu"] is True
+def test_signature_drops_volatile_addresses_and_similarity_compares_them():
+    m = Mem(animated=[0x80516200])
+    m.poke(0x80516200, b"\x01")
+    m.poke(0x80516201, b"\x02")
+    m.poke(0x80516202, b"\x03")
+    addrs = [0x80516200, 0x80516201, 0x80516202]
+    s1 = M.signature(M.Counting(m), addrs, samples=3, gap=0.0, sleep=lambda _s: None)
+    assert s1["dropped"] == 1 and s1["count"] == 2       # the animated one is not in the vector
+    assert M.similarity(s1, s1) == 1.0
+
+    m2 = Mem(animated=[0x80516200])
+    m2.poke(0x80516200, b"\x01")
+    m2.poke(0x80516201, b"\x99")                          # one kept byte differs
+    m2.poke(0x80516202, b"\x03")
+    s2 = M.signature(M.Counting(m2), addrs, samples=3, gap=0.0, sleep=lambda _s: None)
+    assert M.similarity(s1, s2) == pytest.approx(0.5)
+    assert len(s1["sha256"]) == 64
 
 
-def test_press_start_walks_from_press_start_to_the_menu():
-    m = game(3)
-    presses = []
-
-    def press(key):
-        presses.append(key)
-        m.poke(M.BOOT_SCREEN, bytes([1]))              # the game reacts to START
-        m.poke(M.BOOT_SCREEN_MIRROR, bytes([1]))
-
-    out = M.press_start(R.Reader(m), press, settle=0.0, wait=1.0, sleep=lambda _s: None)
-    assert out["ok"] is True and out["screen"] == 1 and out["from_press_start"] is True
-    assert presses == ["start"]                        # exactly one press, not a spam
-    assert out["trace"][0] == 3 and out["trace"][-1] == 1
+def test_verify_pad_binding_accepts_a_virtual_pad_and_rejects_the_keyboard(tmp_path):
+    cfg = tmp_path / "User" / "Config"
+    cfg.mkdir(parents=True)
+    ini = cfg / "GCPadNew.ini"
+    ini.write_text("[GCPad1]\nOptions/Always Connected = True\nDevice = XInput/2/Gamepad\nButtons/A = `Button A`\n")
+    ok = M.verify_pad_binding(tmp_path / "User")
+    assert ok["bound"] is True and ok["device"] == "XInput/2/Gamepad"
+    ini.write_text("[GCPad1]\nDevice = XInput/0/Gamepad\nButtons/A = `Button A` | `DInput/0/Keyboard Mouse:X`\n")
+    bad = M.verify_pad_binding(tmp_path / "User")
+    assert bad["bound"] is False and "keyboard" in bad["why"]
+    assert M.verify_pad_binding(tmp_path / "nope")["bound"] is False
 
 
-def test_press_start_is_a_no_op_when_already_in_the_menu():
-    m = game(1)
-    out = M.press_start(R.Reader(m), lambda k: pytest.fail("pressed in the menu"), settle=0.0, sleep=lambda _s: None)
-    assert out["ok"] is True and out["from_press_start"] is False
-
-
-def test_press_start_refuses_to_press_start_on_an_unknown_screen():
-    m = game(9)
-    with pytest.raises(M.MenuError):
-        M.press_start(R.Reader(m), lambda k: pytest.fail("pressed blind"), settle=0.0, sleep=lambda _s: None)
-
-
-def test_press_start_reports_failure_when_the_press_does_nothing():
-    m = game(3)
-    presses = []
-
-    def press(key):
-        presses.append(key)
-
-    out = M.press_start(R.Reader(m), press, tries=3, settle=0.0, wait=0.05, sleep=lambda _s: None)
-    assert out["ok"] is False and out["screen"] == 3
-    assert presses == ["start", "start", "start"]
+def test_counting_reports_what_it_read():
+    m = Mem()
+    w = M.Counting(m)
+    w.read_memory(0x804E0000, 16)
+    assert w.calls == 1 and w.bytes_read == 16

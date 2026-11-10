@@ -1,123 +1,173 @@
-"""P1: PSO's boot menus, read from RAM (never from frames).
+"""P1: what PSO's boot screens look like in RAM, the probe that looks for it, and the pad precondition.
 
-The guide's P1 asks for the title -> PRESS START -> the offline menus walk "with the screen read from RAM (the menu
-state bytes), not from frames". This module is that state: the boot screen id, proven live on the owned disc.
+Status after round 3: **the boot screens are walked, but RAM does not yet identify them.**
 
-The screen id
--------------
-``0x80516303`` is a **u8 boot-screen id**, and ``0x805145F7`` carries the same value (a mirror; both were equal in
-every sample, so either can be read and both are exposed). Values proven in a live i9-NUC session
-(``7246f3becd6f47b7-ac1aab64c26240b9``, Dolphin 2609, PSO Episode I & II Plus ``GPOE8P``):
+What the round proved live
+--------------------------
+With a virtual pad bound, real presses walked this session:
 
-======  ==========================================================================
- ``3``   **PRESS START** - the title screen. This is the state the campaign never left.
- ``1``   the title main menu (ONLINE GAME / OFFLINE GAME / OPTIONS / WEBSITE)
- ``9``   the ONLINE GAME submenu (the "Online Game" / "Options" tab pair)
- ``0``   transient: unset, or a fade between screens
- ``4``   the title with its menu closed (the attract/title presentation)
-======  ==========================================================================
+    PRESS START -> title main menu -> OFFLINE GAME -> SELECT GAME MODE -> SELECT CHARACTER
 
-The proof is a reproducible transition, not a guess: at ``3`` a ``start`` press takes the id to ``1`` (three times in
-a row), and at ``1`` the menu stays up until something is confirmed. Confirming ONLINE GAME (``start``/``a`` on the
-highlighted item) took it to ``9``; cancelling from there (``b``) reached ``3``.
+and back out with ``B``. Frames confirm each screen; the walk is in the round doc.
 
-What this does **not** say: ``0x80516303`` was found by a constancy-filtered whole-RAM diff across a START press (an
-animated byte looked like a cursor once and was a logo counter), then confirmed by driving transitions and reading
-the result back. The old ROM's ``PHASE`` byte at ``0x804FE120`` does **not** distinguish the title from the menus -
-it read 0 in both - which is why the screen id is the variable P1 needs.
+``0x80516303`` is **not a screen id.** It is a coarse mode/counter that takes small values and is reused: it read
+``1`` at the title main menu *and* ``1`` at SELECT CHARACTER, ``9`` at SELECT GAME MODE, ``22`` after a cancel, and
+``0`` at the title. It is still a useful transition signal -- it changes when the screen changes -- but a walk must
+never use it to decide *which* screen is up.
 
-The walk
---------
-:func:`press_start` is the first step: read the screen, and if it is PRESS START, press START and wait for the main
-menu. It takes the read and press functions as arguments so it is testable without an emulator, and it reports what
-it saw rather than claiming success.
+What a walk needs instead, and what this module provides
+-------------------------------------------------------
+A screen signature built from the bytes that actually move between two known screens, and only those:
+:func:`stable` + :func:`stable_diff` find them (constancy filtering is what removes animated UI data -- a plain
+before/after diff is dominated by it, and ``0x80506274`` looked exactly like a cursor and is a logo counter that
+oscillates on its own). :func:`signature` turns a diff's addresses into a comparable vector, and :func:`similarity`
+compares two.
+
+A first attempt at a fixed window (``0x80516000``/``0x80516200``/``0x80514500``, 1 KiB) scored **0.99 similarity between
+all four screens** -- the windows were almost entirely zero, so they carried no information. The lesson is in the code:
+derive the address set from a live diff, do not pick a window by eye.
+
+The precondition that made a walk look dead
+-------------------------------------------
+The virtual pad is what makes presses land without focus. When a launch binds one, Dolphin's
+``User/Config/GCPadNew.ini`` contains ``Options/Always Connected = True`` and ``Device = XInput/<slot>/Gamepad``. When
+it does not -- three stale ViGEm pads from earlier sessions were still registered and ``_setup_vpad()`` returns
+``None`` silently -- the adapter falls back to the keyboard, ``win_send_keys`` reports ``sent: 0`` while the window is
+minimised, and every press is silently dropped. :func:`verify_pad_binding` is the check; run it before any walk.
 """
 from __future__ import annotations
 
+import hashlib
 import time
 
-from .pso_ram import PHASE, Reader, RamError
+# A coarse mode/counter, NOT a screen id (see the module docstring). Kept because its transitions are useful.
+MODE_BYTE = 0x80516303
+MODE_BYTE_MIRROR = 0x805145F7
 
-# The boot-screen id (u8) and its mirror.
-BOOT_SCREEN = 0x80516303
-BOOT_SCREEN_MIRROR = 0x805145F7
-
-PRESS_START = 3          # the title screen
-MAIN_MENU = 1            # ONLINE GAME / OFFLINE GAME / OPTIONS / WEBSITE
-ONLINE_SUBMENU = 9       # the "Online Game" / "Options" tab pair
-TRANSIENT = 0            # unset / mid-fade
-TITLE_CLOSED = 4         # the title with the menu closed
-
-SCREEN_NAMES = {
-    TRANSIENT: "transient",
-    MAIN_MENU: "main_menu",
-    PRESS_START: "press_start",
-    TITLE_CLOSED: "title",
-    ONLINE_SUBMENU: "online_submenu",
+# Values observed live, with the screen that was up. The same value appears on different screens: that is the point.
+MODES_SEEN = {
+    0: ("title",),
+    1: ("title main menu", "SELECT CHARACTER"),
+    9: ("SELECT GAME MODE",),
+    22: ("after a cancel from SELECT GAME MODE",),
 }
 
-# The title main menu's items, in the order the screen shows them (top to bottom). The cursor index itself is not
-# identified yet; this is the order a cursor walks, and it is what the offline walk will index.
+# The title main menu's items, in the order the screen shows them.
 MAIN_MENU_ITEMS = ("ONLINE GAME", "OFFLINE GAME", "OPTIONS", "WEBSITE")
+
+# The offline branch as walked live in round 3.
+OFFLINE_PATH = ("PRESS START", "main menu", "OFFLINE GAME", "SELECT GAME MODE", "SELECT CHARACTER")
+
+# Where the adapter writes the pad binding, relative to Dolphin's User folder.
+PAD_INI = "Config/GCPadNew.ini"
+VPAD_MARKER = "Options/Always Connected = True"
 
 
 class MenuError(RuntimeError):
     pass
 
 
-def screen(reader: Reader) -> int:
-    """The boot-screen id. Raises when the two bytes disagree, which means the read is not the state we think."""
-    a = reader.u8(BOOT_SCREEN)
-    b = reader.u8(BOOT_SCREEN_MIRROR)
-    if a != b:
-        raise MenuError(f"boot screen id {a} and its mirror {b} disagree; refusing to act on a torn read")
-    return a
+# ------------------------------------------------------------------------------------------------ the probe
+
+class Counting:
+    """A ``read_memory``-shaped wrapper that counts its calls, so a walk can bound what it costs."""
+
+    def __init__(self, memory):
+        self.memory = memory
+        self.bytes_read = 0
+        self.calls = 0
+
+    def read_memory(self, address, length):
+        blob = self.memory.read_memory(address, length)
+        self.calls += 1
+        self.bytes_read += len(blob or b"")
+        return blob
 
 
-def screen_name(value: int) -> str:
-    return SCREEN_NAMES.get(value, f"unknown({value})")
+def stable(read, windows, samples: int = 4, gap: float = 0.05, sleep=time.sleep, chunk: int = 1 << 20):
+    """(values, constancy) for every byte of ``windows``, keeping only bytes identical in all ``samples`` reads.
 
-
-def describe(reader: Reader) -> dict:
-    """A small status record for telemetry and the round docs."""
-    value = screen(reader)
-    return {"screen": value, "name": screen_name(value), "phase": reader.u8(PHASE),
-            "at_press_start": value == PRESS_START, "in_main_menu": value == MAIN_MENU}
-
-
-def press_start(reader: Reader, press, *, watcher=None, tries: int = 6, settle: float = 0.6,
-                wait: float = 8.0, sleep=time.sleep) -> dict:
-    """From PRESS START to the title main menu, by real presses, reporting what is on screen.
-
-    ``press`` takes pad key names (``press("start")``). ``watcher`` is an optional zero-argument callable run
-    between attempts (the live driver's frame grab). Returns a dict with the observed trace; ``ok`` is True only
-    when the screen really reached the main menu.
+    ``windows`` is ``[(base, size), ...]``; ``constancy[i]`` is 1 when byte ``i`` never changed, which is what removes
+    animated UI data from the comparison.
     """
-    trace = []
-    for _ in range(tries):
-        value = screen(reader)
-        trace.append(value)
-        if value == MAIN_MENU:
-            return {"ok": True, "from_press_start": trace[0] == PRESS_START, "screen": value,
-                    "name": screen_name(value), "trace": trace}
-        if value != PRESS_START:
-            # Some other screen: PRESS START is not what is up, so pressing START could confirm something.
-            raise MenuError(f"expected PRESS START ({PRESS_START}), the screen reads {value} "
-                            f"({screen_name(value)}); refusing to press START blind")
-        press("start")
-        deadline = time.monotonic() + wait
-        moved = False
-        while time.monotonic() < deadline:
-            sleep(settle)
-            if watcher is not None:
-                watcher()
-            now = screen(reader)
-            if now != value:
-                trace.append(now)
-                moved = True
-                break
-        if not moved:
-            trace.append(value)
-    final = screen(reader)
-    return {"ok": final == MAIN_MENU, "from_press_start": trace[:1] == [PRESS_START],
-            "screen": final, "name": screen_name(final), "trace": trace}
+    flats = []
+    for s in range(samples):
+        if s:
+            sleep(gap)
+        buf = bytearray()
+        for base, size in windows:
+            off = 0
+            while off < size:
+                n = min(chunk, size - off)
+                blob = read.read_memory(base + off, n)
+                if len(blob) != n:
+                    raise MenuError(f"short read at {base + off:#x}: {len(blob)} of {n}")
+                buf += blob
+                off += n
+        flats.append(bytes(buf))
+    constancy = bytearray(b"\x01") * len(flats[0])
+    for flat in flats[1:]:
+        if len(flat) != len(constancy):
+            raise MenuError("the windows changed size between samples")
+        for i in range(len(flat)):
+            if constancy[i] and flat[i] != flats[0][i]:
+                constancy[i] = 0
+    return list(flats[0]), list(constancy)
+
+
+def stable_diff(a, b, windows) -> list[tuple[int, int, int]]:
+    """[(address, value in a, value in b)] for bytes constant in BOTH states and different between them."""
+    (va, ca), (vb, cb) = a, b
+    out, i = [], 0
+    for base, size in windows:
+        for k in range(size):
+            j = i + k
+            if ca[j] and cb[j] and va[j] != vb[j]:
+                out.append((base + k, va[j], vb[j]))
+        i += size
+    return out
+
+
+def signature(read, addresses, samples: int = 3, gap: float = 0.04, sleep=time.sleep) -> dict:
+    """A screen signature over ``addresses`` (a diff's addresses), refusing any byte that is not constant.
+
+    Bytes that vary while the signature is taken are dropped from the vector (and counted), so an animated address
+    cannot make two identical screens look different.
+    """
+    addrs = sorted(set(int(a) for a in addresses))
+    rows = []
+    for s in range(samples):
+        if s:
+            sleep(gap)
+        rows.append({a: read.read_memory(a, 1)[0] for a in addrs})
+    keep = [a for a in addrs if all(r[a] == rows[0][a] for r in rows)]
+    vector = bytes(rows[0][a] for a in keep)
+    return {"addresses": keep, "vector": vector.hex(), "dropped": len(addrs) - len(keep),
+            "sha256": hashlib.sha256(vector).hexdigest(), "count": len(keep)}
+
+
+def similarity(a: dict, b: dict) -> float:
+    """Fraction of bytes that agree over the addresses both signatures kept."""
+    common = sorted(set(a["addresses"]) & set(b["addresses"]))
+    if not common:
+        return 0.0
+    va = bytes.fromhex(a["vector"])
+    vb = bytes.fromhex(b["vector"])
+    ia = {x: va[i] for i, x in enumerate(a["addresses"])}
+    ib = {x: vb[i] for i, x in enumerate(b["addresses"])}
+    return sum(1 for x in common if ia[x] == ib[x]) / len(common)
+
+
+def verify_pad_binding(user_dir) -> dict:
+    """Does this Dolphin ``User`` folder bind Player 1 to a virtual pad? The precondition for focus-free presses."""
+    from pathlib import Path
+    p = Path(user_dir) / PAD_INI
+    if not p.is_file():
+        return {"bound": False, "why": f"{p} is missing"}
+    text = p.read_text(errors="replace")
+    device = next((line.split("=", 1)[1].strip() for line in text.splitlines()
+                   if line.startswith("Device =")), "")
+    bound = bool(device.startswith("XInput/") and VPAD_MARKER in text)
+    return {"bound": bound, "device": device,
+            "why": "" if bound else "Player 1 is on the keyboard: presses need window focus and are dropped when "
+                                    "Dolphin is minimised"}
