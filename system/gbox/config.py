@@ -155,22 +155,26 @@ class BroadcastConfig(BaseModel):
     the program (what is on air), one feed per PC and one per session, as MJPEG and H.264 (MPEG-TS, HLS)."""
     enabled: bool = True
     fps: int = 30                     # MJPEG frames a second, constant (?fps=1..60 per viewer); a quiet source is repeated
-    ts_fps: int = 30                  # H.264 frame rate (MPEG-TS and HLS)
+    ts_fps: int = 60                  # H.264 frame rate (MPEG-TS and HLS); at most 60
     size: str = "1280x720"            # H.264 canvas: every source is fitted inside it (letterbox/pillarbox)
-    video_kbps: int = 2500            # H.264 bitrate (constant)
-    encoder: str = "libx264"          # libx264 (ultrafast) | h264_nvenc; measured on the Spark: about the same CPU
+    video_kbps: int = 8000            # H.264 bitrate (constant)
+    encoder: str = "auto"             # auto: h264_nvenc when it passes ring_record's test encode on this node, else
+                                      # libx264 (ultrafast) | h264_nvenc | libx264; the status reports the one in use
+    direct_capture: bool = True       # Linux: a feed showing a session of this machine encodes that session's own X
+                                      # display (x11grab -> H.264, no JPEG in between); everything else: the JPEG path
+    direct_nice: int = 0              # niceness of the direct-capture ffmpeg (Linux); `nice` is the JPEG path's
     audio: str = "auto"               # auto: a Spark session's own PipeWire stream goes into the H.264 feeds | off
     audio_kbps: int = 128
     hls_segment_s: int = 1            # HLS segment length (latency is about three of them)
     hls_window_segments: int = Field(default=12, ge=6, le=60)
-    hls_retained_segments: int = Field(default=12, ge=2, le=120)
+    hls_retained_segments: int = Field(default=20, ge=2, le=120)   # kept on disk past the list for delayed readers
     hold_s: float = 8.0               # a silent source keeps its last frame this long, then the slate (that frame dimmed)
     end_hold_s: float = 2.0           # an ended session's last frame stays this long before the program moves on
     watch_ttl_s: float = 900.0        # the operator's "watching" report counts this long after their app last said so
     linger_s: float = 20.0            # an H.264 encoder nobody reads stops after this (MJPEG costs nothing when unwatched)
-    max_encoders: int = 3             # H.264 encoders at once (each ~25% of one Spark core at 720p30)
+    max_encoders: int = 3             # H.264 encoders at once (the JPEG path: ~25% of one Spark core at 720p30)
     auto_agents: bool = True          # auto may put an agent's or a bot's session on air when no operator game runs
-    nice: int = 10                    # ffmpeg niceness (Linux)
+    nice: int = 10                    # the JPEG-path ffmpeg's niceness (Linux)
     lan_url: str = ""                 # the URLs /api/broadcast/feeds hands out; default: public_url
     tailnet_url: str = ""             # e.g. "http://lilspark.tail1fec29.ts.net:8765" (the Spark's tailnet name)
     # Pine Box's names for the PCs (its gboxstream DEVICES) also name the per-PC feeds: /api/broadcast/pc/spark1.mjpg
@@ -480,6 +484,8 @@ granted_permissions = ["read", "execute", "stage", "network"]   # add memory_wri
 
 # [broadcast]                     # gameplay feeds for Pine Box / OBS / VLC (docs/broadcast.md)
 # fps = 30                        # MJPEG frames a second (constant); H.264: ts_fps, size, video_kbps, encoder
+# ts_fps = 60                     # H.264: 1280x720 at 60 fps, 8000 kbit/s, encoder = "auto" (NVENC when it works)
+# direct_capture = true           # a Spark session's H.264 feed is its own display, captured straight into the encoder
 # tailnet_url = "http://lilspark.tail1fec29.ts.net:8765"   # shown beside the LAN URLs in /api/broadcast/feeds
 
 # [[libraries]]

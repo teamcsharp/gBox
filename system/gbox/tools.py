@@ -1086,6 +1086,9 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
                              capture_source='native-back-buffer')
                 detail['boot_frame_sha256'] = sha256(frame[1])
     lap("emulator_start_s")                                   # the adapter returns once the content runs (first frames)
+    _disp = getattr(ad, "display", None)
+    if getattr(_disp, "name", None) and detail.get("display") == _disp.name and getattr(_disp, "w", None):
+        detail["display_size"] = [int(_disp.w), int(_disp.h)]   # the broadcast's direct capture grabs exactly this
     detail['process_created'] = _native_process_created(ad, detail.get('pid'))
     timings["total_s"] = round(time.monotonic() - t_start, 3)
     detail["timings"] = timings                               # #1506: where a launch's time went, per stage
