@@ -808,11 +808,47 @@ def test_dj_queue_same_game_next_sends_the_selection_without_relaunching():
     assert M.settings(store,w['name'])['queue']==[]
 
 
-def test_dj_queue_other_game_next_rotates_after_this_round_regardless_of_rounds_per_title():
+def round_ends(saver,run,job,now,n,dt=200,**witness):
+    """n more boundaries, each a full round (dt seconds apart, past ROUND_MIN_S): their rotate_requested flags."""
+    out=[]
+    for _ in range(n):
+        now[0]+=dt
+        S.telemetry_put(run['session_id'],{'running':True,'stats':{}},now=now[0])
+        rid=f'{int(now[0]):032x}'
+        out.append(saver.round_boundary(boundary(run,now[0],**witness)|{'round_id':rid},job,now[0])['rotate_requested'])
+    return out
+
+
+def test_dj_queue_other_game_next_waits_for_rounds_per_title():
+    # operator 2026-11-10: "unless these launches have purposes, i want to see at least 5 matches per title" - a queued
+    # round of another title no longer switches after one round
     store,w,saver,calls,now,tick,run,job=playing()
     other='re5' if run['mercmode']['title']=='re4' else 're4'
     M.configure(store,w['name'],{'rounds_per_title':5,'queue':[{'title':other}]})
-    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is True
+    assert round_ends(saver,run,job,now,5)==[False,False,False,False,True]
+    assert store.get(S.STATE,w['name'])['mercmode_rounds_played']==5
+
+
+def test_dj_queue_other_game_next_with_one_round_per_title_still_rotates_after_this_round():
+    store,w,saver,calls,now,tick,run,job=playing()
+    other='re5' if run['mercmode']['title']=='re4' else 're4'
+    M.configure(store,w['name'],{'rounds_per_title':1,'queue':[{'title':other}]})
+    assert round_ends(saver,run,job,now,1)==[True]
+
+
+def test_a_quick_death_never_consumes_a_queued_round_of_the_same_title():
+    store,w,saver,calls,now,tick,run,job=playing()
+    title=run['mercmode']['title']
+    pick={'title':title,'character':'Ada','stage':1} if title=='re4' else {'title':title,'mode':'reunion','character':'Josh','stage':3}
+    M.configure(store,w['name'],{'rounds_per_title':5,'queue':[pick]})
+    t0=run.get('playing_since') or run['started']
+    now[0]=t0+30
+    S.telemetry_put(run['session_id'],{'running':True,'stats':{}},now=now[0])
+    body=boundary(run,now[0],screen='dead',hp=0,tally_ready=False,timer=60)|{'round_id':'d'*32}
+    assert saver.round_boundary(body,job,now[0])['rotate_requested'] is False
+    assert len(M.settings(store,w['name'])['queue'])==1                # still queued: a retry is not one of its rounds
+    assert round_ends(saver,run,job,now,1)==[False]
+    assert M.settings(store,w['name'])['queue']==[]                   # the full round took it
 
 
 def test_re4_menu_layer_honours_a_requested_round_once_then_returns_to_random():

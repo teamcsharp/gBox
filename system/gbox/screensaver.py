@@ -1542,6 +1542,20 @@ class Screensaver:
             skin_rotate = bool(cfg['enabled'] and cfg.get('skin_swap') == 'random' and not alternatives
                                and not run.get('mercmode_pinned') and playable(run['mercmode']['title']))
             rotate = rotate or skin_rotate
+            # At least rounds_per_title rounds in a title before the queue takes MercMode elsewhere (operator 2026-11-10:
+            # "unless these launches have purposes, i want to see at least 5 matches per title"): a queued round of
+            # another title, or of another build, waits until this title has played its rounds; a quick death (a retry,
+            # not a round) never consumes a queued round, so five queued rounds are five matches.
+            done = played >= cfg['rounds_per_title']
+            here = run['mercmode']['title']
+            run_mod = run.get('mod') or (self.store.get('session', run['session_id']) or {}).get('mod')
+            if head and not done and (head['title'] != here or (
+                    head.get('mod') and not mercmode.same_build(cfg, head['mod'], run_mod, run))):
+                head = None
+            if quick and head and head['title'] == here:
+                head = None
+            if ahead and not done and ahead.get('title') != here:
+                ahead = None
             mod_rotate = bool(head and head.get('mod') and head['title'] == run['mercmode']['title']
                               and playable(head['title']))
             if mod_rotate and not skin_rotate and mercmode.same_build(
