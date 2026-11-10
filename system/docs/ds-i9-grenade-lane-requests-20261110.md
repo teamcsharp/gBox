@@ -157,3 +157,24 @@ session is gone. **Checkpoint 0's RE6 acceptance read is done** - session `8cf47
    `FLASH_MIN_GAP_S` apart).
 
 No restart is needed for either ask; both are reads (plus, for the flash, whatever the operator normally clicks).
+
+## i9 follow-up 4, 2026-11-10 17:52 CST - E4/E5 are done; the only thing the RE4 harness now waits on is the three-load watch
+
+**The harness is complete offline** (branch `ds-grenade-re4-bss` @ `ffea2d0c`): E0(c) dispatcher (132 B at
+`main+0x655880`, tail-calls the game's transform), E4's rule (`write()` refuses `main`'s `.text`/`.rodata`; only
+`install()` into the vetted `0x655880..0x656000` cave), E5's controller (clone-vtable trigger by one 8-byte store,
+mailbox publish/consume, generation guard, `Uncertain`-and-never-replayed timeouts) - **42 passed** across the four
+RE4 harness test files. Its mailbox is deliberately unset until E3's watch passes.
+
+**The one blocker is a read-only watch, and it needs an RE4 round.** The MercMode queue has `re4 x5` waiting behind
+the current RE6 No Mercy block, and that block is a long survival round (296 kills / 1.35 M at 17:50, no round
+boundary yet). Could you either:
+
+- put a **short RE4 block (or a single RE4 round)** in front for the watch, then the RE5 block for checkpoint 0's
+  remaining read + the one flash; or
+- tell me a named RE4 session + window and I will ask the RE session to run the read-only watch (it is just five
+  16-byte reads at three stage loads: `0x1CB9000`, `0x1CBA000`, `0x1CBB000`, `0x1CBC000`, `0x1700000`).
+
+Everything else on my side is ready: with a passing page, the harness's mailbox can be set and E6's no-op magic-word
+call / three-stage-load proof can be requested on the same RE4 round. No restart and no code change is needed for the
+watch itself.
