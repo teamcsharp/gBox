@@ -1,0 +1,1254 @@
+{
+ "request": "199a6bd0a15e4335 (#9386)",
+ "method": "static: capstone AArch64 over decrypted main.bin (~/gBox_alt/switch/work/re4-nsp/main.bin); file offset = module vaddr + 0x100 for text/rodata/data",
+ "global_chain": {
+  "got_slot": "module+0xb25d78 (the 'game state' global of re4-switch-ram.md)",
+  "step1": "p1 = *(u64*)(module+0xb25d78)  -> module+0xb1ae08 (a pointer variable in .data/.bss; per re4-parity.md this reads 0x3ca871ee08 with base 0x3CA7C04000)",
+  "step2": "pG = *(u64*)p1   (instructions: 'adrp x22,#0xb25000; ldr x22,[x22,#0xd78]; ldr x21,[x22]' at 0xfdc4-0xfdd0)",
+  "count": "5731 adrp+ldr sites load this GOT slot (scan of text)",
+  "runtime_value": "not determined (never read at runtime; MercMode is playing)"
+ },
+ "camera_object": {
+  "source_object": "CamCtrl at GOT slot 0xb25e30 (module vaddr 0xfdd4); its camera block at CamCtrl+0x88 (0xfe14 add x1,x19,#0x88)",
+  "render_copy": "memcpy(pG+0xa8, CamCtrl+0x88, 0xf8) at 0xfe10-0xfe20 (callee 0x653c90) every frame in function 0xfdc4, guarded by (pG[0x5091]&1) and !(pG[0x87]&0x10)",
+  "size_bytes": 248,
+  "GC_layout": "CAMERA at pG+0x74 in GC; Switch is +0x34 (pG+0xa8)",
+  "layout_check": "GC offsets +0x34 reproduce 4 independent measured Switch offsets: block 0xa8, ProjMat 0x10c, Fovy 0x168, Look 0x178"
+ },
+ "fields": [
+  {
+   "field": "Camera.mat (4x3 matrix)",
+   "pG_offset": "0xa8",
+   "type": "Mtx 48B",
+   "evidence": "0xfe10 add x20,x23,#0xa8 = destination of memcpy(pG+0xa8, CamCtrl+0x88, 0xf8)",
+   "status": "measured (instruction)",
+   "note": "start of the 0xf8-byte camera block"
+  },
+  {
+   "field": "Camera.v_mat",
+   "pG_offset": "0xd8",
+   "type": "Mtx 48B",
+   "evidence": "GC layout: block+0x30",
+   "status": "layout-derived",
+   "note": ""
+  },
+  {
+   "field": "Camera.ProjMat (Mtx44)",
+   "pG_offset": "0x10c",
+   "type": "float[16]",
+   "evidence": "0xfeac/0xfec4 add x0,x21,#0x10c passed to the perspective builder at 0xff10 (x21=pG)",
+   "status": "measured (instruction)",
+   "note": ""
+  },
+  {
+   "field": "Camera.Campos",
+   "pG_offset": "0x14c",
+   "type": "Vec f32[3]",
+   "evidence": "block+0xa4 per GC CAMERA.param layout; block start and ProjMat/Fovy offsets measured, so it sits immediately after the 64-byte ProjMat",
+   "status": "layout-derived",
+   "note": "camera position"
+  },
+  {
+   "field": "Camera.Target",
+   "pG_offset": "0x158",
+   "type": "Vec f32[3]",
+   "evidence": "block+0xb0 (GC layout)",
+   "status": "layout-derived",
+   "note": "look-at point"
+  },
+  {
+   "field": "Camera.Roll",
+   "pG_offset": "0x164",
+   "type": "f32",
+   "evidence": "block+0xbc (GC layout)",
+   "status": "layout-derived",
+   "note": ""
+  },
+  {
+   "field": "Camera.Fovy",
+   "pG_offset": "0x168",
+   "type": "f32",
+   "evidence": "0xfe90 ldr s0,[x21,#0x168]; 0xfec0 same; first float arg of the perspective builder",
+   "status": "measured (instruction)",
+   "note": "degrees (table default 45.0)"
+  },
+  {
+   "field": "Camera.Up",
+   "pG_offset": "0x16c",
+   "type": "Vec f32[3]",
+   "evidence": "getter 0xff70: x0=CamCtrl-camera, ldr [x0,#0xc4] (=0x16c-0xa8)",
+   "status": "measured (instruction)",
+   "note": "getter reads block+0xc4 / +0xcc"
+  },
+  {
+   "field": "Camera.Look",
+   "pG_offset": "0x178",
+   "type": "Vec f32[3]",
+   "evidence": "getter 0xff90: ldr [x0,#0xd0]/[#0xd8] (block+0xd0 = pG+0x178)",
+   "status": "measured (instruction)",
+   "note": ""
+  },
+  {
+   "field": "Camera.Right",
+   "pG_offset": "0x184",
+   "type": "Vec f32[3]",
+   "evidence": "block+0xdc (GC layout)",
+   "status": "layout-derived",
+   "note": ""
+  },
+  {
+   "field": "Camera.Distance",
+   "pG_offset": "0x19c",
+   "type": "f32",
+   "evidence": "block+0xf4 (GC layout); getter at 0xffb0..0xffc8 reads block+0xd0/0xd4/0xd8 only",
+   "status": "layout-derived",
+   "note": "|Campos-Target| as stored by the engine; the Switch store instruction was NOT located"
+  }
+ ],
+ "distance_computation": {
+  "camera_to_target": "sqrt(sum((Campos-Target)^2)) ; or read Camera.Distance at pG+0x19c",
+  "camera_to_player": "d = |Campos - PlayerPos|; Campos at pG+0x14c (3 x f32). Player position is the already-known heap triple (re4-switch-ram.md); units/axes of Campos vs that triple: not determined (needs one live read of pG+0x14c beside the player triple).",
+  "wall_collapse": "Pull-in has no dedicated field: cameraHitCheck moves the camera point nearer the target (GC cam_qfps.cpp hitCheck), so a shrinking |Campos-Target| (or Distance) compared with the nominal table value signals a wall press.",
+  "nominal_distance": "rows in ready_table_rows (campos0->target) from the .data tables; the effective pull-in = nominal - live."
+ },
+ "ready_table": {
+  "desc": "QFPS_OFFSET g_readyOfs[16][2][3] (shoulder-camera offsets, 0x2C bytes each: campos[2], target, roll, fovy), found by exact float match of GC values (-527,600,-680 / -265,1280,-350 / -220,4080,1100) at module vaddr 0xae2ab0; copies at 0xae3710/0xae3818/0xae3920 are tables 12/13/14 (stride 0x108)",
+  "rows_obtained": "parsed from main.bin at 0xae2ab0 + ((k*2+lr)*3+site)*0x2C, f32 LE; all-zero rows skipped; distances computed with math.dist",
+  "units_frame": "not determined: these are player-space offsets; units (mm vs cm) and axis frame need a live Campos/player comparison"
+ },
+ "ready_table_rows": [
+  {
+   "table": 0,
+   "lr": 0,
+   "site": 0,
+   "vaddr": "0xae2ab0",
+   "campos0": [
+    -527.0,
+    600.0,
+    -680.0
+   ],
+   "campos1": [
+    -250.0,
+    1500.0,
+    -350.0
+   ],
+   "target": [
+    -220.0,
+    4080.0,
+    1100.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 3920.8,
+   "dist_campos1_target": 2959.7
+  },
+  {
+   "table": 0,
+   "lr": 0,
+   "site": 1,
+   "vaddr": "0xae2adc",
+   "campos0": [
+    -470.0,
+    1715.0,
+    -615.0
+   ],
+   "campos1": [
+    -260.0,
+    1630.0,
+    -125.0
+   ],
+   "target": [
+    -200.0,
+    1345.0,
+    1525.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2188.5,
+   "dist_campos1_target": 1675.5
+  },
+  {
+   "table": 0,
+   "lr": 0,
+   "site": 2,
+   "vaddr": "0xae2b08",
+   "campos0": [
+    -393.0,
+    2058.0,
+    -5.0
+   ],
+   "campos1": [
+    -200.0,
+    1550.0,
+    220.0
+   ],
+   "target": [
+    -179.0,
+    365.0,
+    943.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 1952.1,
+   "dist_campos1_target": 1388.3
+  },
+  {
+   "table": 1,
+   "lr": 0,
+   "site": 0,
+   "vaddr": "0xae2bb8",
+   "campos0": [
+    -470.0,
+    250.0,
+    -700.0
+   ],
+   "campos1": [
+    -265.0,
+    1280.0,
+    -350.0
+   ],
+   "target": [
+    -385.0,
+    3500.0,
+    800.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 3580.5,
+   "dist_campos1_target": 2503.1
+  },
+  {
+   "table": 1,
+   "lr": 0,
+   "site": 1,
+   "vaddr": "0xae2be4",
+   "campos0": [
+    -560.0,
+    1618.0,
+    -1140.0
+   ],
+   "campos1": [
+    -260.0,
+    1630.0,
+    -130.0
+   ],
+   "target": [
+    -370.0,
+    1338.0,
+    1285.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2448.5,
+   "dist_campos1_target": 1449.0
+  },
+  {
+   "table": 1,
+   "lr": 0,
+   "site": 2,
+   "vaddr": "0xae2c10",
+   "campos0": [
+    -563.0,
+    2339.0,
+    -254.0
+   ],
+   "campos1": [
+    -200.0,
+    1550.0,
+    220.0
+   ],
+   "target": [
+    -205.0,
+    381.0,
+    1010.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2357.9,
+   "dist_campos1_target": 1410.9
+  },
+  {
+   "table": 2,
+   "lr": 0,
+   "site": 0,
+   "vaddr": "0xae2cc0",
+   "campos0": [
+    -400.0,
+    600.0,
+    -2600.0
+   ],
+   "campos1": [
+    -265.0,
+    1280.0,
+    -350.0
+   ],
+   "target": [
+    0.0,
+    2770.0,
+    1380.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 4550.7,
+   "dist_campos1_target": 2298.5
+  },
+  {
+   "table": 2,
+   "lr": 0,
+   "site": 1,
+   "vaddr": "0xae2cec",
+   "campos0": [
+    -400.0,
+    2300.0,
+    -2760.0
+   ],
+   "campos1": [
+    -260.0,
+    1630.0,
+    -130.0
+   ],
+   "target": [
+    0.0,
+    1210.0,
+    1410.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 4328.6,
+   "dist_campos1_target": 1617.3
+  },
+  {
+   "table": 2,
+   "lr": 0,
+   "site": 2,
+   "vaddr": "0xae2d18",
+   "campos0": [
+    -400.0,
+    2800.0,
+    -1300.0
+   ],
+   "campos1": [
+    -200.0,
+    1550.0,
+    220.0
+   ],
+   "target": [
+    0.0,
+    500.0,
+    1500.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 3645.5,
+   "dist_campos1_target": 1667.6
+  },
+  {
+   "table": 3,
+   "lr": 0,
+   "site": 0,
+   "vaddr": "0xae2dc8",
+   "campos0": [
+    -527.0,
+    867.0,
+    -681.0
+   ],
+   "campos1": [
+    -350.0,
+    1500.0,
+    -350.0
+   ],
+   "target": [
+    -163.0,
+    3200.0,
+    800.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2787.2,
+   "dist_campos1_target": 2060.9
+  },
+  {
+   "table": 3,
+   "lr": 0,
+   "site": 1,
+   "vaddr": "0xae2df4",
+   "campos0": [
+    -700.0,
+    1800.0,
+    -1000.0
+   ],
+   "campos1": [
+    -260.0,
+    1630.0,
+    -130.0
+   ],
+   "target": [
+    -65.0,
+    1440.0,
+    1480.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2585.2,
+   "dist_campos1_target": 1632.9
+  },
+  {
+   "table": 3,
+   "lr": 0,
+   "site": 2,
+   "vaddr": "0xae2e20",
+   "campos0": [
+    -393.0,
+    2058.0,
+    -5.0
+   ],
+   "campos1": [
+    -200.0,
+    1550.0,
+    220.0
+   ],
+   "target": [
+    -179.0,
+    365.0,
+    943.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 1952.1,
+   "dist_campos1_target": 1388.3
+  },
+  {
+   "table": 4,
+   "lr": 0,
+   "site": 0,
+   "vaddr": "0xae2ed0",
+   "campos0": [
+    -800.0,
+    330.0,
+    -1185.0
+   ],
+   "campos1": [
+    -265.0,
+    1280.0,
+    -350.0
+   ],
+   "target": [
+    -275.0,
+    3290.0,
+    1140.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 3800.4,
+   "dist_campos1_target": 2502.1
+  },
+  {
+   "table": 4,
+   "lr": 0,
+   "site": 1,
+   "vaddr": "0xae2efc",
+   "campos0": [
+    -635.0,
+    1710.0,
+    -1455.0
+   ],
+   "campos1": [
+    -260.0,
+    1630.0,
+    -130.0
+   ],
+   "target": [
+    -155.0,
+    1510.0,
+    1530.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 3030.0,
+   "dist_campos1_target": 1667.6
+  },
+  {
+   "table": 4,
+   "lr": 0,
+   "site": 2,
+   "vaddr": "0xae2f28",
+   "campos0": [
+    -648.0,
+    2360.0,
+    -905.0
+   ],
+   "campos1": [
+    -200.0,
+    1550.0,
+    220.0
+   ],
+   "target": [
+    -189.0,
+    495.0,
+    1160.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2820.1,
+   "dist_campos1_target": 1413.1
+  },
+  {
+   "table": 5,
+   "lr": 0,
+   "site": 0,
+   "vaddr": "0xae2fd8",
+   "campos0": [
+    -408.0,
+    660.0,
+    -538.0
+   ],
+   "campos1": [
+    -292.0,
+    1171.0,
+    -257.0
+   ],
+   "target": [
+    -187.0,
+    3952.0,
+    1323.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 3788.1,
+   "dist_campos1_target": 3200.2
+  },
+  {
+   "table": 5,
+   "lr": 0,
+   "site": 1,
+   "vaddr": "0xae3004",
+   "campos0": [
+    -460.0,
+    1500.0,
+    -900.0
+   ],
+   "campos1": [
+    -216.0,
+    1478.0,
+    -148.0
+   ],
+   "target": [
+    -150.0,
+    1380.0,
+    1500.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2422.9,
+   "dist_campos1_target": 1652.2
+  },
+  {
+   "table": 5,
+   "lr": 0,
+   "site": 2,
+   "vaddr": "0xae3030",
+   "campos0": [
+    -231.0,
+    2100.0,
+    -50.0
+   ],
+   "campos1": [
+    -174.0,
+    1456.0,
+    197.0
+   ],
+   "target": [
+    -392.0,
+    322.0,
+    867.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2007.0,
+   "dist_campos1_target": 1335.1
+  },
+  {
+   "table": 6,
+   "lr": 0,
+   "site": 0,
+   "vaddr": "0xae30e0",
+   "campos0": [
+    -408.0,
+    660.0,
+    -538.0
+   ],
+   "campos1": [
+    -292.0,
+    1171.0,
+    -257.0
+   ],
+   "target": [
+    -187.0,
+    3952.0,
+    1323.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 3788.1,
+   "dist_campos1_target": 3200.2
+  },
+  {
+   "table": 6,
+   "lr": 0,
+   "site": 1,
+   "vaddr": "0xae310c",
+   "campos0": [
+    -460.0,
+    1500.0,
+    -900.0
+   ],
+   "campos1": [
+    -216.0,
+    1478.0,
+    -148.0
+   ],
+   "target": [
+    -150.0,
+    1380.0,
+    1500.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2422.9,
+   "dist_campos1_target": 1652.2
+  },
+  {
+   "table": 6,
+   "lr": 0,
+   "site": 2,
+   "vaddr": "0xae3138",
+   "campos0": [
+    -231.0,
+    2100.0,
+    -50.0
+   ],
+   "campos1": [
+    -174.0,
+    1456.0,
+    197.0
+   ],
+   "target": [
+    -392.0,
+    322.0,
+    867.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2007.0,
+   "dist_campos1_target": 1335.1
+  },
+  {
+   "table": 7,
+   "lr": 0,
+   "site": 0,
+   "vaddr": "0xae31e8",
+   "campos0": [
+    -408.0,
+    660.0,
+    -538.0
+   ],
+   "campos1": [
+    -292.0,
+    1171.0,
+    -257.0
+   ],
+   "target": [
+    -187.0,
+    3952.0,
+    1323.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 3788.1,
+   "dist_campos1_target": 3200.2
+  },
+  {
+   "table": 7,
+   "lr": 0,
+   "site": 1,
+   "vaddr": "0xae3214",
+   "campos0": [
+    -460.0,
+    1500.0,
+    -900.0
+   ],
+   "campos1": [
+    -216.0,
+    1478.0,
+    -148.0
+   ],
+   "target": [
+    -150.0,
+    1380.0,
+    1500.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2422.9,
+   "dist_campos1_target": 1652.2
+  },
+  {
+   "table": 7,
+   "lr": 0,
+   "site": 2,
+   "vaddr": "0xae3240",
+   "campos0": [
+    -231.0,
+    2100.0,
+    -50.0
+   ],
+   "campos1": [
+    -174.0,
+    1456.0,
+    197.0
+   ],
+   "target": [
+    -392.0,
+    322.0,
+    867.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2007.0,
+   "dist_campos1_target": 1335.1
+  },
+  {
+   "table": 8,
+   "lr": 0,
+   "site": 0,
+   "vaddr": "0xae32f0",
+   "campos0": [
+    -408.0,
+    660.0,
+    -838.0
+   ],
+   "campos1": [
+    -292.0,
+    1171.0,
+    -257.0
+   ],
+   "target": [
+    -187.0,
+    3952.0,
+    1323.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 3944.1,
+   "dist_campos1_target": 3200.2
+  },
+  {
+   "table": 8,
+   "lr": 0,
+   "site": 1,
+   "vaddr": "0xae331c",
+   "campos0": [
+    -460.0,
+    1600.0,
+    -900.0
+   ],
+   "campos1": [
+    -216.0,
+    1478.0,
+    -148.0
+   ],
+   "target": [
+    -150.0,
+    1480.0,
+    1500.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2422.9,
+   "dist_campos1_target": 1649.3
+  },
+  {
+   "table": 8,
+   "lr": 0,
+   "site": 2,
+   "vaddr": "0xae3348",
+   "campos0": [
+    -231.0,
+    2100.0,
+    -50.0
+   ],
+   "campos1": [
+    -174.0,
+    1456.0,
+    197.0
+   ],
+   "target": [
+    -392.0,
+    322.0,
+    867.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2007.0,
+   "dist_campos1_target": 1335.1
+  },
+  {
+   "table": 9,
+   "lr": 0,
+   "site": 0,
+   "vaddr": "0xae33f8",
+   "campos0": [
+    -595.0,
+    428.0,
+    -1021.0
+   ],
+   "campos1": [
+    -26.0,
+    1562.0,
+    -320.0
+   ],
+   "target": [
+    -223.0,
+    4065.0,
+    1122.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 4237.8,
+   "dist_campos1_target": 2895.4
+  },
+  {
+   "table": 9,
+   "lr": 0,
+   "site": 1,
+   "vaddr": "0xae3424",
+   "campos0": [
+    -630.0,
+    1850.0,
+    -1018.0
+   ],
+   "campos1": [
+    -260.0,
+    1630.0,
+    -128.0
+   ],
+   "target": [
+    -67.0,
+    1340.0,
+    1483.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2613.8,
+   "dist_campos1_target": 1648.2
+  },
+  {
+   "table": 9,
+   "lr": 0,
+   "site": 2,
+   "vaddr": "0xae3450",
+   "campos0": [
+    -547.0,
+    2757.0,
+    -637.0
+   ],
+   "campos1": [
+    -401.0,
+    1557.0,
+    -320.0
+   ],
+   "target": [
+    -184.0,
+    370.0,
+    966.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2898.1,
+   "dist_campos1_target": 1763.5
+  },
+  {
+   "table": 10,
+   "lr": 0,
+   "site": 0,
+   "vaddr": "0xae3500",
+   "campos0": [
+    -353.0,
+    1045.0,
+    -918.0
+   ],
+   "campos1": [
+    -129.0,
+    1425.0,
+    -312.0
+   ],
+   "target": [
+    264.0,
+    2917.0,
+    2420.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 3876.5,
+   "dist_campos1_target": 3137.6
+  },
+  {
+   "table": 10,
+   "lr": 0,
+   "site": 1,
+   "vaddr": "0xae352c",
+   "campos0": [
+    -348.0,
+    1590.0,
+    -1400.0
+   ],
+   "campos1": [
+    -221.0,
+    1612.0,
+    -320.0
+   ],
+   "target": [
+    -13.0,
+    1061.0,
+    1514.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2980.5,
+   "dist_campos1_target": 1926.2
+  },
+  {
+   "table": 10,
+   "lr": 0,
+   "site": 2,
+   "vaddr": "0xae3558",
+   "campos0": [
+    -391.0,
+    2467.0,
+    -732.0
+   ],
+   "campos1": [
+    -80.0,
+    1720.0,
+    -50.0
+   ],
+   "target": [
+    -158.0,
+    450.0,
+    1065.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2711.4,
+   "dist_campos1_target": 1691.8
+  },
+  {
+   "table": 11,
+   "lr": 0,
+   "site": 0,
+   "vaddr": "0xae3608",
+   "campos0": [
+    228.0,
+    990.0,
+    -1000.0
+   ],
+   "campos1": [
+    136.0,
+    1302.0,
+    -248.0
+   ],
+   "target": [
+    364.0,
+    2027.0,
+    2722.0
+   ],
+   "roll": 0.0,
+   "fovy": 50.0,
+   "dist_campos0_target": 3866.2,
+   "dist_campos1_target": 3065.7
+  },
+  {
+   "table": 11,
+   "lr": 0,
+   "site": 1,
+   "vaddr": "0xae3634",
+   "campos0": [
+    240.0,
+    1605.0,
+    -1152.0
+   ],
+   "campos1": [
+    166.0,
+    1718.0,
+    -320.0
+   ],
+   "target": [
+    290.0,
+    943.0,
+    1458.0
+   ],
+   "roll": 0.0,
+   "fovy": 50.0,
+   "dist_campos0_target": 2693.1,
+   "dist_campos1_target": 1943.5
+  },
+  {
+   "table": 11,
+   "lr": 0,
+   "site": 2,
+   "vaddr": "0xae3660",
+   "campos0": [
+    205.0,
+    2443.0,
+    -632.0
+   ],
+   "campos1": [
+    235.0,
+    1720.0,
+    -17.0
+   ],
+   "target": [
+    350.0,
+    427.0,
+    1175.0
+   ],
+   "roll": 0.0,
+   "fovy": 50.0,
+   "dist_campos0_target": 2711.2,
+   "dist_campos1_target": 1762.4
+  },
+  {
+   "table": 12,
+   "lr": 0,
+   "site": 0,
+   "vaddr": "0xae3710",
+   "campos0": [
+    -527.0,
+    600.0,
+    -680.0
+   ],
+   "campos1": [
+    -265.0,
+    1280.0,
+    -350.0
+   ],
+   "target": [
+    -220.0,
+    4080.0,
+    1100.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 3920.8,
+   "dist_campos1_target": 3153.5
+  },
+  {
+   "table": 12,
+   "lr": 0,
+   "site": 1,
+   "vaddr": "0xae373c",
+   "campos0": [
+    -530.0,
+    1765.0,
+    -590.0
+   ],
+   "campos1": [
+    -260.0,
+    1630.0,
+    -130.0
+   ],
+   "target": [
+    -65.0,
+    1340.0,
+    1480.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2163.7,
+   "dist_campos1_target": 1647.5
+  },
+  {
+   "table": 12,
+   "lr": 0,
+   "site": 2,
+   "vaddr": "0xae3768",
+   "campos0": [
+    -393.0,
+    2058.0,
+    -5.0
+   ],
+   "campos1": [
+    -200.0,
+    1550.0,
+    220.0
+   ],
+   "target": [
+    -179.0,
+    365.0,
+    943.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 1952.1,
+   "dist_campos1_target": 1388.3
+  },
+  {
+   "table": 13,
+   "lr": 0,
+   "site": 0,
+   "vaddr": "0xae3818",
+   "campos0": [
+    -527.0,
+    600.0,
+    -680.0
+   ],
+   "campos1": [
+    -265.0,
+    1280.0,
+    -350.0
+   ],
+   "target": [
+    -220.0,
+    4080.0,
+    1100.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 3920.8,
+   "dist_campos1_target": 3153.5
+  },
+  {
+   "table": 13,
+   "lr": 0,
+   "site": 1,
+   "vaddr": "0xae3844",
+   "campos0": [
+    -530.0,
+    1765.0,
+    -590.0
+   ],
+   "campos1": [
+    -260.0,
+    1630.0,
+    -130.0
+   ],
+   "target": [
+    -65.0,
+    1340.0,
+    1480.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2163.7,
+   "dist_campos1_target": 1647.5
+  },
+  {
+   "table": 13,
+   "lr": 0,
+   "site": 2,
+   "vaddr": "0xae3870",
+   "campos0": [
+    -393.0,
+    2058.0,
+    -5.0
+   ],
+   "campos1": [
+    -200.0,
+    1550.0,
+    220.0
+   ],
+   "target": [
+    -179.0,
+    365.0,
+    943.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 1952.1,
+   "dist_campos1_target": 1388.3
+  },
+  {
+   "table": 14,
+   "lr": 0,
+   "site": 0,
+   "vaddr": "0xae3920",
+   "campos0": [
+    -527.0,
+    600.0,
+    -680.0
+   ],
+   "campos1": [
+    -265.0,
+    1280.0,
+    -350.0
+   ],
+   "target": [
+    -220.0,
+    4080.0,
+    1100.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 3920.8,
+   "dist_campos1_target": 3153.5
+  },
+  {
+   "table": 14,
+   "lr": 0,
+   "site": 1,
+   "vaddr": "0xae394c",
+   "campos0": [
+    -530.0,
+    1765.0,
+    -590.0
+   ],
+   "campos1": [
+    -260.0,
+    1630.0,
+    -130.0
+   ],
+   "target": [
+    -65.0,
+    1340.0,
+    1480.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 2163.7,
+   "dist_campos1_target": 1647.5
+  },
+  {
+   "table": 14,
+   "lr": 0,
+   "site": 2,
+   "vaddr": "0xae3978",
+   "campos0": [
+    -393.0,
+    2058.0,
+    -5.0
+   ],
+   "campos1": [
+    -200.0,
+    1550.0,
+    220.0
+   ],
+   "target": [
+    -179.0,
+    365.0,
+    943.0
+   ],
+   "roll": 0.0,
+   "fovy": 45.0,
+   "dist_campos0_target": 1952.1,
+   "dist_campos1_target": 1388.3
+  }
+ ],
+ "not_determined": [
+  "pG runtime value",
+  "store instruction for Distance (0x19c)",
+  "Campos/Target units vs player mm",
+  "which table row is active for the Leon shoulder camera",
+  "Campos/Target/Roll/Up/Right offsets are layout-derived, not seen in a Switch instruction (only block, ProjMat, Fovy, Up/Look getters are)"
+ ],
+ "next_check": "one read-only runtime dump of pG+0xa8..0x1a0 (0xf8 bytes) with the player triple; expect Fovy ~45-60 at +0x168 and |Campos-Target| == f32 at +0x19c"
+}
