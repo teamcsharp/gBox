@@ -10,11 +10,16 @@ walls and the checker their metre span), the measurement dataclass and the trian
   per-mode set beside each: `s120NSoft.arc` (THE MERCENARIES: `Attack_Control_*` up to 150 kills) and `s121NSoft.arc`
   (NO MERCY: up to 300). The two Soft archives of one stage carry the same stage NAV (`soft\\stage\\s12xN\\s12xN`,
   identical sizes), the enemy layouts (`s12xN_emNN`), items, cameras and the FSM; the geometry is shared. The stage
-  select's names are not in these archives; one is measured: the live nav mesh `s1218` (2005 vertices, 3434 triangles)
-  was read during Mining the Depths (re6_switch's NavMesh note) and the host's learned stage book for `s1218` holds the
-  same counts - so `s1208.arc` is **Mining the Depths**. Its content agrees (an undersea facility: the sky dome is
-  `kaityuu` / `kaimennaka` - undersea, the sea surface from below - with sharks, a manta and fish schools).
-* **The scene.** Every piece is under `data\\stage\\sNNNN\\scr\\` (`scr00` and `scr01`): bone-less MOD v `0xD3` with
+  select's names are not in these archives. **Measured 2026-11-10** (`STAGE_NAMES`): the host's learned stage books
+  (`mercs/learned/01002A000CD48000/stages/s121N.json`: the nav `soft\\stage\\s121N\\s121N` and the bonus positions)
+  against the round maps the bot files under each stage name (`mercs/round_maps/01002A000CD48000/<name>/`: every
+  bonus it saw, `pos` = x, z, y): each name's bonuses are exactly one book's (202-397 hits each, 10 stray on one), and
+  each pairing agrees with that set's enemy census (Urban Chaos = the zombie set s1212, Rail Yard = the J'avo set s1210).
+  The earlier reading "s1208 = Mining the Depths" (from a NavMesh note) was wrong: **s1208 is Creature Workshop** (the
+  undersea facility its content shows) and Mining the Depths is s1203.
+* **The scene.** The pieces are under `data\\stage\\sNNNN\\scr\\` (`scr00`, `scr01`); four archives also place 1-4
+  albedos under a campaign stage's folder (`data\\stage\\s0204\\scr\\` in s1200 and s1205, `s0302` in s1201, `s0500`
+  in s1202, `s0703` in s1207), which `scene_scopes` adds beside the stage's own: bone-less MOD v `0xD3` with
   an MRL v36 of the same name. Measured on s1208 (21 MOD, 117 materials): 116 materials bind an albedo through
   `re6_switch_tex.texture_set_materials` (`tAlbedoMap`; one, `XfB_W_0__m00_167`, carries the command with texture
   index 0 - unbound) and all sample the primary UV (`FUVAlbedoMap` -> `FUVPrimary`). `mtf_mrl.inspect_bindings`
@@ -23,7 +28,12 @@ walls and the checker their metre span), the measurement dataclass and the trian
   normal it sits at +12 with `w = -1` (agreement with the geometric face normal 99.97-100 %), the tangent at +16 and the
   albedo UV (half2) at +20 - RE5's layout. `0x37607D20` (24 bytes, the most common here: 248 meshes) and `0x36D0D7A7`
   (20 bytes) carry no signed-byte normal and their only UV at +16 (`0x37607D20` has an RGBA8 colour at +20); for them the
-  geometric face normal decides up / side / down, with the winding the measured formats agree on.
+  geometric face normal decides up / side / down, with the winding the measured formats agree on. The other nine
+  stages add five formats (measured 2026-11-10 over all ten archives, the same test: unit length and face agreement of
+  an s8 normal at every 4-byte slot, a finite half2 in range with spread): `0x2FC0B663` (36 bytes, 338 meshes: normal
+  +12 at 99.3 %, tangent +16, UV +20), `0x287029D8` (24, 11: normal +12 at 99.9 %, UV +20), `0x35E0A437` (36, 1: normal
+  +12, UV +20), `0x3870A4D1` (24, 327: no s8 normal, UV +16 - `0x37607D20`'s layout) and `0x3C004EA1` (28, 2: no
+  normal, UV +16).
 * **The albedos** are `0x2B`: BC3 holding Y'CbCr + opacity (`re6_switch_tex`, handover section 0.1), written through
   `re6_switch_tex.replace_albedo`; each keeps its native dimensions, mip count, TEX header and size, and its native
   **opacity** (the colour block's green). The `0x14` `_NUKI` cut-out albedos (5 on s1208) are a format no writer here
@@ -54,8 +64,15 @@ TITLE_ID = '01002A000CD48000'
 ARCHIVE_DIR = 'nativeNXx64/arc/NX'
 MERCS_STAGES = tuple(f's120{n}' for n in range(10))          # the geometry archives
 MERCS_SETS = {code: (f'{code}Soft', f's121{code[-1]}Soft') for code in MERCS_STAGES}   # (Mercenaries, No Mercy)
-#: The stage select's names, where measured (see the module text); the others are listed as unmeasured.
-STAGE_NAMES = {'s1208': 'Mining the Depths'}
+#: The stage select's names by geometry archive (measured 2026-11-10, see the module text).
+STAGE_NAMES = {'s1200': 'Rail Yard', 's1201': 'Requiem for War', 's1202': 'Urban Chaos', 's1203': 'Mining the Depths',
+               's1204': 'High Seas Fortress', 's1205': 'The Catacombs', 's1206': 'Steel Beast',
+               's1207': 'Rooftop Mission', 's1208': 'Creature Workshop', 's1209': 'Liquid Fire'}
+#: The geometry archive of each stage-select index (gbox.mercs.titles.re6_switch.STAGES' order, MercMode's `stage`).
+SELECT_ORDER = ('s1202', 's1206', 's1203', 's1200', 's1204', 's1205', 's1201', 's1209', 's1207', 's1208')
+#: What a stage keeps natively beside the grids, for the receipt's live check (where measured).
+STAGE_LOOKS = {'s1208': 'the undersea dome a flat pale tone; the sharks, the manta and the fish schools (the _NUKI '
+                        'cut-outs) still in their own textures'}
 ALBEDO_FORMAT = 0x2B
 #: Measured component offsets of the RE6 stage (bone-less) vertex formats: float3 position at 0; `normal` None means the
 #: format carries no signed-byte normal (the geometric face normal is used).
@@ -68,6 +85,12 @@ STAGE_LAYOUT = {
     0x2C207F5E: {'normal': 12, 'uv': 20},                      # 28: uv2 +24
     0x341068B6: {'normal': 12, 'uv': 20},                      # 36: light-map uv +24, colour +28, uv2 +32
     0x2AE06DB8: {'normal': 12, 'uv': 20},                      # 32: light-map uv +24
+    # measured 2026-11-10 on the other nine stages (module text)
+    0x2FC0B663: {'normal': 12, 'uv': 20},                      # 36: tangent +16 (338 meshes)
+    0x287029D8: {'normal': 12, 'uv': 20},                      # 24: tangent +16 (11)
+    0x35E0A437: {'normal': 12, 'uv': 20},                      # 36 (1)
+    0x3870A4D1: {'normal': None, 'uv': 16},                    # 24: 0x37607D20's layout (327)
+    0x3C004EA1: {'normal': None, 'uv': 16},                    # 28 (2)
 }
 FLOOR_WORDS = R5.FLOOR_WORDS + ('tuuro', 'kowareasiba')       # (tuuro: a passage)
 WALL_WORDS = R5.WALL_WORDS + ('hasira', 'madowaku')            # (hasira: a pillar; madowaku: a window frame)
@@ -95,7 +118,28 @@ def stage_scope(stage: str) -> str:
     return f'data\\stage\\{stage}\\scr\\'
 
 
-def stage_models(arc: mt_arc.Arc, scope: str) -> list[tuple[str, int, int]]:
+def scene_scopes(arc: mt_arc.Arc, stage: str) -> tuple[str, ...]:
+    """The stage's own scene folder first, then every other `data\\stage\\<code>\\scr\\` folder the archive carries
+    (a campaign stage's pieces placed in this one); only the stage's own when it has no entry of its own."""
+    own = stage_scope(stage)
+    found = sorted({'\\'.join(e.name.split('\\')[:4]) + '\\' for e in arc.entries
+                    if e.name.startswith('data\\stage\\') and e.name.split('\\')[3:4] == ['scr']})
+    if own not in found:
+        return (own,)
+    return (own, *(s for s in found if s != own))
+
+
+ALBEDO_NAME = re.compile(r'_BM(?:$|[-_])')
+
+
+def is_albedo_name(name: str) -> bool:
+    """A base-map name: `_BM` at the end or followed by `-` / `_` - s1202 binds `s0023_BM-ground02`, s1207
+    `om1309_BM_04`, s1201 `s1201_ten_BM_HQ` (measured 2026-11-10: 37 such 0x2B albedos the plain `_BM` rule left as
+    photographs). The format check (0x2B only) still decides what is written."""
+    return bool(ALBEDO_NAME.search(name.rsplit('\\', 1)[-1]))
+
+
+def stage_models(arc: mt_arc.Arc, scope: str | tuple[str, ...]) -> list[tuple[str, int, int]]:
     """(name, MOD entry index, MRL entry index) for every scene piece in `scope` that has both."""
     kinds: dict[str, dict[bytes, int]] = {}
     for index, entry in enumerate(arc.entries):
@@ -171,7 +215,7 @@ def albedo_surfaces(arc: mt_arc.Arc, scope: str) -> dict[str, R5.Surface]:
     """Every `0x2B` `_BM` TEX in `scope`, keyed by its full path, before any geometry is charged to it."""
     out: dict[str, R5.Surface] = {}
     for index, entry in enumerate(arc.entries):
-        if not entry.name.startswith(scope) or not entry.name.endswith('_BM'):
+        if not entry.name.startswith(scope) or not is_albedo_name(entry.name):
             continue
         raw = _raw(entry)
         if raw[:4] != b'TEX\0':
@@ -332,10 +376,10 @@ def build(archive: bytes, *, stage: str = 's1208', overrides: dict[str, str] | N
     arc = mt_arc.parse(archive)
     if mt_arc.build(arc) != archive:
         raise GreyboxError('the archive does not rebuild byte-identically; refusing to write on top of it')
-    scope = stage_scope(stage)
-    surfaces, notes = measure(arc, scope)
-    if not surfaces:
-        raise GreyboxError(f'no 0x2B albedo under {scope}')
+    scopes = scene_scopes(arc, stage)
+    surfaces, notes = measure(arc, scopes)
+    if not any(name.startswith(scopes[0]) for name in surfaces):
+        raise GreyboxError(f'no 0x2B albedo under {scopes[0]}')
     rows = plan(surfaces, notes['sky_textures'], overrides)
     changed = []
     for row in rows:
@@ -359,8 +403,10 @@ def build(archive: bytes, *, stage: str = 's1208', overrides: dict[str, str] | N
     counts: dict[str, int] = {}
     for row in rows:
         counts[row['variant']] = counts.get(row['variant'], 0) + 1
+    look = STAGE_LOOKS.get(stage)
     receipt = {
         'title_id': TITLE_ID, 'stage': stage, 'stage_name': STAGE_NAMES.get(stage, 'not measured'),
+        'stage_select_index': SELECT_ORDER.index(stage) if stage in SELECT_ORDER else None, 'scopes': list(scopes),
         'archive': f'{stage}.arc', 'route': 're6_stage_greybox.build', 'chroma': chroma,
         'source_sha256': hashlib.sha256(archive).hexdigest(), 'written_sha256': hashlib.sha256(written).hexdigest(),
         'bytes': len(written), 'source_bytes': len(archive), 'entries': len(final.entries),
@@ -371,9 +417,10 @@ def build(archive: bytes, *, stage: str = 's1208', overrides: dict[str, str] | N
         'live_verified': False, 'gameplay_verified': False,
         'what_must_be_seen': ['the stage drawn in grey and blue grid tiles with metre labels under the native '
                               'lighting', 'floors blue with the pixel size and a metre tag, walls grey with the metre '
-                              'label, pipes, rails and clutter checkered', 'the undersea dome a flat pale tone',
-                              'the sharks, the manta and the fish schools (the _NUKI cut-outs) still in their own '
-                              'textures', 'enemies and players unchanged'] if chroma else
+                              'label, pipes, rails and clutter checkered', 'a sky dome a flat pale tone',
+                              *([look] if look else []),
+                              'the 0x14 _NUKI cut-outs (foliage, fences, grilles) still in their own textures',
+                              'enemies and players unchanged'] if chroma else
                              ['the same, in greyscale: every grid line and label in luma, no colour'],
         'failure_signs': ['black screen or hang at stage load: a TEX the game rejects (bisect by variant)',
                           'the grids right but in odd colours (teal / pink / orange): the Y\'CbCr chroma model is off - '
@@ -401,7 +448,7 @@ def verify(original: bytes, candidate: bytes, receipt: dict | None = None) -> di
         if a.data == b.data:
             continue
         changed.append(index)
-        if not a.name.endswith('_BM'):
+        if not is_albedo_name(a.name):
             raise GreyboxError(f'entry {index} {a.name} is not an albedo but changed')
         raw_a, raw_b = _raw(a), _raw(b)
         if b.data != _wrap(raw_b):
@@ -458,10 +505,10 @@ def render_stage(candidate: bytes, png: Path, *, stage: str = 's1208', size: int
     from PIL import Image
 
     arc = mt_arc.parse(candidate)
-    scope = stage_scope(stage)
+    scope = scene_scopes(arc, stage)
     textures: dict[str, np.ndarray] = {}
     for entry in arc.entries:
-        if entry.name.startswith(scope) and entry.name.endswith('_BM'):
+        if entry.name.startswith(scope) and is_albedo_name(entry.name):
             try:
                 textures[entry.name] = _decoded(_raw(entry), 256)
             except T.TexError:
@@ -536,6 +583,53 @@ def write_overlay(out_dir: Path, archive_name: str, data: bytes, receipt: dict) 
     return path
 
 
+def build_all(inputs: Path, out: Path, *, stages=SELECT_ORDER, chroma: bool = True, preview: bool = True,
+              rebuild_check: bool = False, log=print) -> dict:
+    """Every stage archive of `stages` found in `inputs` through `build` and `verify`, written under
+    `out/romfs/nativeNXx64/arc/NX/`, with one receipt.json: per stage the name, select index, counts and textures, and
+    `files` = {RomFS path: {sha256, bytes, source_sha256}} (what `switch_mods op=blueprint` takes, by `from`).
+    `rebuild_check` builds each stage twice and refuses a difference. Nothing is launched. Returns the receipt."""
+    inputs, out = Path(inputs), Path(out)
+    files: dict[str, dict] = {}
+    rows: dict[str, dict] = {}
+    for stage in stages:
+        src = inputs / f'{stage}.arc'
+        if not src.is_file():
+            rows[stage] = {'skipped': f'{src} not present'}
+            continue
+        archive = src.read_bytes()
+        log(f'{stage} ({STAGE_NAMES.get(stage, "?")}): measuring and writing')
+        written, receipt = build(archive, stage=stage, chroma=chroma)
+        checked = verify(archive, written, receipt)
+        if rebuild_check and build(archive, stage=stage, chroma=chroma)[0] != written:
+            raise GreyboxError(f'{stage}: two builds in one process differ; the writer is not deterministic')
+        folder = out / 'romfs' / Path(ARCHIVE_DIR)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f'{stage}.arc').write_bytes(written)
+        row = {k: receipt[k] for k in ('stage_name', 'stage_select_index', 'scopes', 'source_sha256', 'written_sha256',
+                                       'bytes', 'source_bytes', 'entries', 'unchanged_entries', 'variants')}
+        row |= {'changed_entries': len(receipt['changed_entries']), 'verify': checked,
+                'rebuild_identical': True if rebuild_check else 'not run',
+                'measurement': {k: v for k, v in receipt['measurement'].items() if k != 'mrl_unparsed'}
+                | {'mrl_unparsed': len(receipt['measurement']['mrl_unparsed'])},
+                'textures': [{k: r.get(k) for k in ('name', 'variant', 'rule', 'cells', 'label', 'corner',
+                                                     'payload_sha256')} for r in receipt['textures']]}
+        if preview:
+            contact_sheet(written, receipt['textures'], out / f'{stage}-textures.png')
+            row['previews'] = [f'{stage}-textures.png']
+        rows[stage] = row
+        files[f'romfs/{ARCHIVE_DIR}/{stage}.arc'] = {'sha256': receipt['written_sha256'], 'bytes': len(written),
+                                                     'source_sha256': receipt['source_sha256'], 'kind': 'stage'}
+    if not files:
+        raise GreyboxError(f'no stage archive of {list(stages)} in {inputs}')
+    receipt = {'title_id': TITLE_ID, 'route': 're6_stage_greybox.build_all', 'chroma': chroma, 'files': files,
+               'bytes': sum(f['bytes'] for f in files.values()), 'stages': rows, 'live_verified': False,
+               'acceptance': 'experimental; offline structural checks only (verify per stage)'}
+    out.mkdir(parents=True, exist_ok=True)
+    (out / 'receipt.json').write_text(json.dumps(receipt, indent=1), encoding='utf-8')
+    return receipt
+
+
 def main(argv=None) -> int:
     import argparse
 
@@ -551,14 +645,27 @@ def main(argv=None) -> int:
     b.add_argument('--override', action='append', default=[], help='basename=variant (floor|wall|other|sky)')
     b.add_argument('--luma', action='store_true', help='greyscale grids (the neutral colour block): no chroma model')
     b.add_argument('--no-preview', action='store_true')
+    a = sub.add_parser('build-all', help='write the greybox of every stage archive found in a folder (one overlay)')
+    a.add_argument('inputs', help='the folder holding s1200.arc .. s1209.arc (nativeNXx64/arc/NX of the RomFS)')
+    a.add_argument('--out', required=True)
+    a.add_argument('--stages', nargs='*', help='geometry codes (default: all ten, in the stage select order)')
+    a.add_argument('--luma', action='store_true')
+    a.add_argument('--no-preview', action='store_true')
     v = sub.add_parser('verify', help='check a written stage overlay against its original')
     v.add_argument('--original', required=True)
     v.add_argument('--candidate', required=True)
     v.add_argument('--receipt')
     args = parser.parse_args(argv)
+    if args.command == 'build-all':
+        receipt = build_all(Path(args.inputs), Path(args.out), stages=args.stages or SELECT_ORDER,
+                            chroma=not args.luma, preview=not args.no_preview)
+        print(json.dumps({'files': len(receipt['files']), 'bytes': receipt['bytes'],
+                          'stages': {s: {k: r.get(k) for k in ('stage_name', 'variants', 'changed_entries', 'skipped')}
+                                     for s, r in receipt['stages'].items()}}, indent=1))
+        return 0
     if args.command == 'survey':
         arc = mt_arc.parse(Path(args.archive).read_bytes())
-        surfaces, notes = measure(arc, stage_scope(args.stage))
+        surfaces, notes = measure(arc, scene_scopes(arc, args.stage))
         print(json.dumps({'measurement': notes, 'textures': plan(surfaces, notes['sky_textures'])}, indent=1))
         return 0
     if args.command == 'build':
