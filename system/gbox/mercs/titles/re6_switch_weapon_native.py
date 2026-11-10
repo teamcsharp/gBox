@@ -14,6 +14,11 @@ def choices(ctl):
     index, active, _ = R.inventory_state(ctl, player)
     rows = []
     for item, name in WEAPON_NAMES.items():
+        if not 1 <= item <= 255:
+            # Item 0 (Hand-To-Hand) is not a weapon the control plane can name: its claim check takes items 1..255
+            # only, so one row 0 turned every claim into a 422 and the worker's status went stale for the whole round
+            # (live 2026-11-10: available false, "no living player in an active Mercenaries round" while it played).
+            continue
         kind = 0x100 + item
         loaded = kind in guns
         supported = kind in E.GUNS

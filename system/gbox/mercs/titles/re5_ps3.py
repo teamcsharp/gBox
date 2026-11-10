@@ -189,7 +189,36 @@ HARD_REFUSALS = ("dispatch nearby exposed threat first", "clock expires before p
 LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S = 400.0, 40.0, 0.25
 
 
-RANK_SCORES = (("SS", 90000), ("S", 60000), ("A", 40000), ("B", 20000), ("C", 10000), ("D", 0))   # Reunion solo
+def fire_family(eq) -> str | None:
+    """The fire pattern's family of a weapon row ({"type": 1, "item": id}, the bot's eq), via re5_weapons."""
+    if not isinstance(eq, dict) or eq.get("type") != 1:
+        return None
+    w = re5_weapons.WEAPONS.get(eq.get("item"))
+    return w.family if w is not None else None
+
+
+def combat_profile():
+    """RE5 PS3 described for the universal core (gbox.mercs.core.combat.TitleProfile; the operator 2026-11-10: "I want
+    it able to work with even the ps3, and gamecube versions"). Descriptive: this edition's fight is re5_combat.Combat
+    and nothing in it consults the profile yet - the core's drivers can drive it (tests/test_mercs_fire_pattern.py).
+    Its fire pattern is the one the core copies: R1 held for every hitscan gun once the rapid-fire package is verified,
+    the game repeating it (fire_rate x80, the magnums' firing layers x8); measured magnum bursts 4.2 - 6.2 shots a
+    second (median), 11.1 - 12.5 (p90), the quickest gaps 0.08 - 0.10 s (gbox.mercs.core.fire_pattern.PS3_MAGNUM)."""
+    from ..core import combat
+    return combat.TitleProfile(
+        title="re5_ps3", title_id="BLUS30491", units_per_cm=1.0, aim_model="laser_ray",
+        sticks="Type D (PS3): the left stick moves, the right stick turns (rleft = larger heading; ~150 deg/s) and, "
+               "the gun up, aims (~30 deg/s, rup = up); L1 readies the gun, L1 + R1 fires (held: the game repeats)",
+        aim_btn="l1", fire_btn="r1", turn_sign=1, raise_s=0.3, raise_tol=TURN_TOL, fire_tol_min=AIM_TOL,
+        engage_cm=ENGAGE, level_dy_cm=LEVEL_DY, max_dy_cm=MAX_DY, page_key="cross",
+        specials=("finisher", "quick_turn", "mines", "eggs", "bow"),
+        fire_pattern=False, fire_style="hold", fire_tick_s=0.05, fire_cap_hz=12.5,
+        fire_cap_note="measured: the magnums' burst rate p90 11.1 - 12.5 shots/s (round maps BLUS30491); the "
+                      "package: fire_rate x80 + the magnum firing layers x8",
+        family=fire_family)
+
+
+RANK_SCORES =(("SS", 90000), ("S", 60000), ("A", 40000), ("B", 20000), ("C", 10000), ("D", 0))   # Reunion solo
                                        # (docs/mercenaries_re5_meta.md 1.1); the rank is score alone, same every stage
 
 

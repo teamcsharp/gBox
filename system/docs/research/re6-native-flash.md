@@ -149,6 +149,36 @@ grab handlers; door/fence navigation; sustained stream/input stability validatio
 Tickets 5972, 6102–6104, 6106–6107 remain open until their full live acceptance.
 6105 is the already-completed run analysis and must not be reopened.
 
+## Grenade ring: the thrown classes (2026-11-10, branch re6-bomb-mind)
+
+The ring that shipped is main's (`Controller.grenade_ring` / `grenade_ring_now`, the DeepSeek lane,
+docs/ds-grenade-ring-lane-2026-11-10.md). It uses the verified `spawn` / `detonate` pair ten times and
+moves each flash to its ring point (+0x60) between the two calls. That is the same method as the RE5 ring,
+which has a live receipt.
+
+A second implementation was written on this branch (b4acbe68) and dropped in the merge with main. It used two
+new images, `spawn_at` and `detonate_at` (below), that took the grenade class as a parameter. Those images were
+never installed live, and keeping two rings was not wanted. Its findings are kept here for the hand and
+incendiary rings that come next.
+
+**Classes, statically confirmed.** uWpBomb's setup (vtable slot 6, `main+0xF84FF4`) stores
+`(DTI id >> 8) & 0xFFFF` into `+0x3864` as the item kind. The static initialiser sets the ids from
+`0x07011100` (`main+0x13DB84`): uWp1091 `+0x201`, uWp1093 `+0x301`, uWp1095 `+0x401`,
+uWp1097 `+0x501`. So **uWp1091 = hand (0x113), uWp1093 = incendiary (0x114), uWp1095 = flash (0x115),
+uWp1097 = remote bomb (0x116)**. The even classes (uWp1090/1092/1094/1096) carry the same kinds as
+`+0x200..0x500`. The four thrown vtables differ only in getDTI, and the remote bomb's
+slots 6/16. uWp1091 `0x284B788`, uWp1093 `0x284B328`, uWp1095 `0x284AEB8`, uWp1097 `0x284AA58`.
+
+**The dropped images (not on main; the sources are in b4acbe68).** Both were designed for the zero padding after
+`detonate` (`main+0x18F2AA8..0x18F3000`).
+- `spawn_at` (`main+0x18F2AC0`, 304 B) is spawn.c for any one of the three thrown classes, placed at a chosen
+  point. It refuses any other DTI before allocating.
+- `detonate_at` (`main+0x18F2C00`, 320 B) is detonate.c for that class. It sets the ring point's x/z again on the
+  game thread just before the request, and returns 2 for a grenade that is already exploding.
+
+**Next step for hand and incendiary rings:** rebuild a spawn image that is not pinned to the flash DTI. Then get a
+live receipt with frames that shows the explosions, the blast radius against the self-clearance, and any self-damage.
+
 ## Later production and LAN validation
 
 After PR1594/1595, 20 production API clicks confirmed 20 RE6 effects in1391.1ms,

@@ -2,8 +2,8 @@
 
 One test per cause measured on the 2026-11-10 pools (re4_switch_models, the comment above `proportional_fit`):
 absolute cross-section scales, an uncapped hip segment, off-role skin carried by the stretch, the floor taken from the
-lowest vertex, the rotation (not a cause), non-humanoid donors; then the gate's thresholds, the reject list, and the
-pools drawing only passing donors.
+lowest vertex, the rotation (not a cause), non-humanoid donors; then the gate's thresholds and the pools drawing only
+passing donors and leaving out gbox.donor_rejects.
 """
 import json
 
@@ -362,24 +362,6 @@ def test_author_body_with_the_gate_refuses_a_failing_donor_and_records_a_passing
         M.author_body(target, archive, _prop("pistol"), gate=M.FIT_GATE)
 
 
-# ---------------------------------------------------------------------------------------- the reject list
-
-def test_donor_rejects_reads_the_list_and_scopes_it(tmp_path):
-    assert M.donor_rejects(tmp_path / "absent.json") == {}
-    path = tmp_path / "donor_rejects.json"
-    path.write_text(json.dumps({"rejects": {"giant": "oversized on RE5", "re6_only": {"reason": "x", "titles": ["re6"]},
-                                            "ours": {"reason": "flat", "titles": [M.TITLE_ID]}, "_note": "comment"}}))
-    assert M.donor_rejects(path) == {"giant": "donor reject list: oversized on RE5",
-                                     "ours": "donor reject list: flat"}
-    path.write_text(json.dumps({"rejects": ["a", {"slug": "b", "reason": "r", "games": ["re4"]}]}))
-    assert set(M.donor_rejects(path)) == {"a", "b"}
-    path.write_text(json.dumps(["c"]))
-    assert set(M.donor_rejects(path)) == {"c"}
-    path.write_text("{not json")
-    with pytest.raises(M.ModelError, match="cannot be read"):
-        M.donor_rejects(path)
-
-
 # ------------------------------------------------------------------------------------- the pools use the gate
 
 def _donor_row(slug, franchise):
@@ -406,23 +388,22 @@ def test_cast_pool_writes_only_passing_donors_and_skips_the_reject_list(tmp_path
     good = {f"good{i}": humanoid([1.0, 100.0, 39.37, 1000.0, 2.5, 10.0][i]) for i in range(6)}
     bad = {"pistol": _prop("pistol"), "car": _prop("car"), "short_arms": short_arms()}
     _library(monkeypatch, good | bad)
-    rejects = tmp_path / "donor_rejects.json"
-    rejects.write_text(json.dumps({"rejects": {"good5": "seen broken on RE5"}}))
+    rejects = {"good5": "operator: out of proportion"}               # gbox.donor_rejects.rejected("re4") shape
     rows = [_donor_row(slug, f"F{slug}") for slug in sorted(good | bad)]
     receipt = M.cast_pool(em, img, tmp_path / "lib", rows, "seed-1", tmp_path / "out", rejects=rejects)
     assert set(receipt["assignment"].values()) <= {f"good{i}" for i in range(5)}
     assert len(set(receipt["assignment"].values())) == 5
     aside = receipt["plan"]["set_aside"]
-    assert aside["good5"].startswith("donor reject list")
+    assert aside["good5"] == "operator: out of proportion"
     assert all(row["fit"]["gate"]["pass"] and row["fit"]["gate"]["enforced"] for row in receipt["slots"].values())
-    assert receipt["plan"]["fit_method"] == "proportional" and receipt["plan"]["reject_list"]["entries"] == 1
+    assert receipt["plan"]["fit_method"] == "proportional" and receipt["plan"]["donor_rejects"] == 1
     for slug in ("pistol", "car", "short_arms"):
         assert slug not in receipt["assignment"].values()
     gated = {slug: reason for slug, reason in aside.items() if slug in bad}
     assert gated and all("fit gate:" in reason for reason in gated.values())      # dealt, measured, set aside
-    with pytest.raises(M.ModelError, match="reject list"):
-        M.cast_pool(em, img, tmp_path / "lib", rows, "seed-1", tmp_path / "out2", rejects=rejects,
-                    assignment={"leon": "good5"})
+    pinned = M.cast_pool(em, img, tmp_path / "lib", rows, "seed-1", tmp_path / "out2", rejects=rejects,
+                         assignment={"leon": "good5"})                 # a fit fix is checked on the same donor
+    assert pinned["plan"]["rejected_but_pinned"] == ["good5"] and pinned["slots"]["leon"]["fit"]["gate"]["pass"]
 
 
 def test_enemy_pool_checks_every_donor_on_its_own_body(tmp_path, monkeypatch):
@@ -434,11 +415,13 @@ def test_enemy_pool_checks_every_donor_on_its_own_body(tmp_path, monkeypatch):
                "flat_chest": humanoid(1.0, chest=(0, 0.98, 0.0))}
     _library(monkeypatch, records)
     rows = [_donor_row(slug, f"F{slug}") for slug in sorted(records)]
-    receipt = E.enemy_pool(em, img, tmp_path / "lib", rows, "seed-2", tmp_path / "out", classes=("emzz",))
+    receipt = E.enemy_pool(em, img, tmp_path / "lib", rows, "seed-2", tmp_path / "out", classes=("emzz",),
+                           rejects={})
     assert "pistol" not in receipt["assignment"].values() and len(receipt["assignment"]) == 2
     groups = receipt["classes"]["emzz"]["groups"]
     assert all(g["fit"]["gate"]["pass"] and g["fit"]["gate"]["enforced"] for g in groups)
     out = tmp_path / "out2"
     pinned = {"emzz:1": "pistol", "emzz:4": "good_a"}
     with pytest.raises(E.EnemyError, match="emzz:1 <- pistol: fit gate"):
-        E.enemy_pool(em, img, tmp_path / "lib", rows, "seed-2", out, classes=("emzz",), assignment=pinned)
+        E.enemy_pool(em, img, tmp_path / "lib", rows, "seed-2", out, classes=("emzz",), assignment=pinned,
+                     rejects={})

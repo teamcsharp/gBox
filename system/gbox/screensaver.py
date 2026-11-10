@@ -36,7 +36,7 @@ import threading
 import time
 from typing import Literal
 
-from pydantic import BaseModel, StrictBool
+from pydantic import BaseModel, Field, StrictBool
 
 SETTING = "autoplay_screensaver"
 STATE = "autoplay_screensaver_run"          # worker name -> current run
@@ -535,9 +535,14 @@ class Screensaver:
             # plain build and not the companion yet (switch_mods op=blueprint not run for it): the plain build plays,
             # the run records the fallback so the boundary does not restart into the same miss every round
             plain = mercmode.plain_mod(build['name'])
-            if plain != build['name'] and self.builds:
-                known = {str(b.get('name') or '') for b in self.builds(g['game_id'])}
-                if known and build['name'] not in known and plain in known:
+            if plain != build['name']:
+                # a donor-swap variant (gbox.donor_swap) has a companion only when its source build had one; the job
+                # said which, so a variant written seconds ago does not wait for the build index to know it
+                from . import donor_swap
+                made = donor_swap.variant(self.store, g['game_id'], plain)
+                known = {str(b.get('name') or '') for b in self.builds(g['game_id'])} if self.builds else set()
+                if (made is not None and not made.get('blueprint')) or (
+                        known and build['name'] not in known and plain in known):
                     self.store.audit(ACTOR, 'mercmode.blueprint_missing', w['name'],
                                      {'wanted': build['name'], 'playing': plain, 'game_id': g['game_id']})
                     build = {'name': plain, 'blueprint_fallback': True}
@@ -1532,7 +1537,14 @@ class Screensaver:
             ahead = self.store.get(mercmode.NEXT, run['worker']) if cfg['enabled'] and not run.get('mercmode_pinned') else None
             playable = lambda title: worker is not None and any(
                 r['playable'] and r['title'] == title for r in mercmode.inventory(self.store, worker, cfg))
-            if ahead and ahead.get('queued') and playable(ahead.get('title')):
+            # A purpose round (the operator's donor swap, gbox.donor_swap) of this title plays at this boundary: it
+            # is not held for rounds_per_title, a quick death or a pick made ahead (operator 2026-11-10: "unless these
+            # launches have purposes, i want to see at least 5 matches per title").
+            purpose = bool(head and head.get('purpose') and head['title'] == run['mercmode']['title']
+                           and playable(head['title']))
+            # the build a queue entry names may have been superseded by a donor-swap variant: compare what plays now
+            builds = mercmode.build_resolver(self.store, run['game_id'])
+            if ahead and ahead.get('queued') and playable(ahead.get('title')) and not purpose:
                 # The first queued round was already consumed into NEXT by _prelaunch. Its followers must not
                 # replace that promise (or be applied to this game's menus before the promised round plays).
                 head = None
@@ -1549,17 +1561,17 @@ class Screensaver:
             done = played >= cfg['rounds_per_title']
             here = run['mercmode']['title']
             run_mod = run.get('mod') or (self.store.get('session', run['session_id']) or {}).get('mod')
-            if head and not done and (head['title'] != here or (
-                    head.get('mod') and not mercmode.same_build(cfg, head['mod'], run_mod, run))):
+            if head and not done and not purpose and (head['title'] != here or (
+                    head.get('mod') and not mercmode.same_build(cfg, builds(head['mod']), run_mod, run))):
                 head = None
-            if quick and head and head['title'] == here:
+            if quick and head and head['title'] == here and not purpose:
                 head = None
             if ahead and not done and ahead.get('title') != here:
                 ahead = None
             mod_rotate = bool(head and head.get('mod') and head['title'] == run['mercmode']['title']
                               and playable(head['title']))
             if mod_rotate and not skin_rotate and mercmode.same_build(
-                    cfg, head['mod'], run.get('mod') or (self.store.get('session', run['session_id']) or {}).get('mod'), run):
+                    cfg, builds(head['mod']), run.get('mod') or (self.store.get('session', run['session_id']) or {}).get('mod'), run):
                 # The queued build is the one this session booted with (a repeating playlist of one build): LayeredFS
                 # has nothing new to load, so the title is not restarted - the running bot takes the entry's character
                 # and stage at its menus, as for any same-game queue entry. Restarting it anyway cost a ~50 s boot
@@ -1635,10 +1647,38 @@ class Screensaver:
             self.store.put(STATE,run['worker'],run | {'mercmode_round_ids':ids,'autoplay_job':parent_job['id'],
                 'mercmode_rounds':count,'mercmode_quick_deaths':quick_deaths,'mercmode_rounds_played':played,
                 'mercmode_last_round':receipt,'mercmode_rotate_requested':rotate,
-                'mercmode_skin_rotate':bool(rotate and skin_rotate),'mercmode_mod_rotate':bool(rotate and mod_rotate)})
+                'mercmode_skin_rotate':bool(rotate and skin_rotate),'mercmode_mod_rotate':bool(rotate and mod_rotate),
+                **({'mercmode_purpose':head.get('purpose')} if rotate and mod_rotate and purpose else {})})
         if rotate:
             self.nudge('native round boundary: the next title is ready')      # park and swap now, not at the next tick
         return {'saved': True, 'rotate_requested': rotate}
+
+    def donor_swap(self, sid, *, enemy=None, request_id=None, actor='operator', note='', now=None):
+        """The operator's "this character's model is broken: swap it" for the MercMode round of `sid`
+        (gbox.donor_swap): the donor goes on the reject list and a variant build is written on the playing PC by a
+        job; nothing here waits for it. Raises ValueError (a 409 for the API) when the round is not a donor build."""
+        from . import donor_swap
+        from .server import JobRequest
+        now = time.time() if now is None else now
+        with self.lock:
+            run = self._by_session(sid)
+            if not run or not run.get('mercmode'):
+                raise ValueError('That session is not a MercMode round on this control plane')
+            if run.get('handover') or run.get('stop_requested'):
+                raise ValueError('That round is being handed over or stopped: swap on the next one')
+            telemetry = telemetry_get(sid, now)
+
+            def submit(spec):
+                job = self.submit(JobRequest(tool=spec['tool'], input=spec['input'], agent_use=False,
+                                             require_worker=spec['require_worker']),
+                                  actor=ACTOR, origin={'via': 'MercMode donor swap', 'session_id': sid})
+                return {'id': _jid(job)}
+            record = donor_swap.request(self.store, host=run['worker'], worker_id=run['worker_id'], run=run,
+                                        telemetry=telemetry, submit=submit, actor=str(actor), enemy=enemy,
+                                        request_id=request_id, note=note, now=now,
+                                        known_builds=[str(b.get("name") or "") for b in (self.builds(run["game_id"]) if self.builds else [])])
+        self._status_cache = (0.0, None)
+        return record
 
     def pcs(self, cfg: dict, now: float | None = None) -> list[dict]:
         """Each PC, and why the screensaver would not start a game there now (reason None: it may at its next tick).
@@ -1702,6 +1742,7 @@ class Screensaver:
         """One row per PC (its current registration, not every stale id a restart left behind) and one read of the
         session table for all of them (the desktop's 8 s request limit was exceeded: 4-11 s on lilspark)."""
         from . import mercmode
+        from . import donor_swap
         sessions = mercmode.session_rows(self.store)    # the 3 fields inventory() needs, not the 4.9 MB archive
         aliases = mercmode.alias_snapshot(self.store)
         running = self.store.running_sessions()
@@ -1745,7 +1786,10 @@ class Screensaver:
                 'warm':[{'title':t,'state':r.get('state'),'session_id':r.get('session_id'),'at':r.get('at'),
                          'prepare_job':r.get('prepare_job'),'prepared':r.get('prepared'),'prepare_failed':r.get('prepare_failed')}
                         for t,r in sorted(pool.items())] if pool or not live else list(live.get('warm') or []),
-                'next':self.store.get(mercmode.NEXT,w['name']) or live.get('next')})
+                'next':self.store.get(mercmode.NEXT,w['name']) or live.get('next'),
+                # the operator's donor swap: queued -> building -> ready (plays next round) -> playing, or failed
+                'donor_swap':donor_swap.status(self.store,w['name'],running_mod=(own_run or {}).get('mod'),
+                    running_title=((own_run or {}).get('mercmode') or {}).get('title')) or None})
         from .mercs.research_profiles import coverage, VERSION
         for h in hosts:
             sid = (h['current_run'] or {}).get('session_id')
@@ -1823,6 +1867,12 @@ class MercModeBoundary(BaseModel):
     stage: str | int | None = None
     character: str | None = None
     witness: dict
+
+
+class DonorSwapIn(BaseModel):
+    request_id: str | None = Field(default=None, max_length=64)   # a repeated click returns the same record
+    enemy: str | None = Field(default=None, max_length=80)        # also an enemy class (or one enemy donor) of the build
+    note: str = Field(default='', max_length=200)
 
 
 class DirectiveIn(BaseModel):
@@ -2108,6 +2158,30 @@ def install(app, store, config, auth, submit, workers, archive):
     @app.get("/api/autoplay/telemetry/{sid}")
     def autoplay_telemetry_get(sid: str, actor=Depends(auth)):
         return telemetry_get(sid)
+
+    @app.get("/api/sessions/{sid}/donor-swap")
+    def donor_swap_get(sid: str, actor=Depends(auth)):
+        """The newest donor swap of the PC that plays `sid` (gbox.donor_swap.status), the donors of the round's build
+        that are on the reject list now (what a swap would take out) and the list's counts."""
+        from . import donor_rejects, donor_swap
+        run = saver._by_session(sid) or {}
+        host = run.get('worker') or next((w.get('name') for w in workers() if sid.startswith(str(w.get('id')) + '-')), '')
+        doc = donor_rejects.load()
+        return {'session_id': sid, 'host': host, 'build': run.get('mod'),
+                'swap': donor_swap.status(store, host, running_mod=run.get('mod')) if host else {},
+                'build_rejects': donor_swap.build_rejects(run.get('mod'), doc=doc),
+                'rejects': donor_rejects.summary(doc=doc)}
+
+    @app.post("/api/sessions/{sid}/donor-swap")
+    def donor_swap_post(sid: str, body: DonorSwapIn, actor=Depends(auth)):
+        """The operator's "this character's model is broken: swap it": the round's donor goes on the reject list and
+        the round's build without it plays from the next round boundary (a variant written by a job on that PC)."""
+        try:
+            record = saver.donor_swap(sid, enemy=body.enemy or None, request_id=body.request_id, actor=str(actor),
+                                      note=body.note)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)[:400]) from None
+        return {'session_id': sid, 'swap': record}
 
     @app.get("/api/sessions/{sid}/directive")
     def directive_get(sid: str, actor=Depends(auth)):

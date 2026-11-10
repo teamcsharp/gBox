@@ -14,7 +14,8 @@ other parts and the animations use.
   `proportional_fit` (sized by the donor's own skeleton; the fixed-scale `fit` stays for old builds).
 * `fit_report` / `check_library_donor` measure a fitted donor against the native character and `FIT_GATE` says
   whether it may be written (height, depth, floor, width, segment stretch, geometry far from the bones, humanoid);
-  `cast_pool` and the enemy pool write only donors that pass, and leave out `donor_rejects` (the cross-title list).
+  `cast_pool` and the enemy pool write only donors that pass, and leave out `gbox.donor_rejects` (the
+  cross-title list).
 """
 from __future__ import annotations
 
@@ -1059,41 +1060,6 @@ def check_library_donor(library: Path, slug: str, target: str, em_dir: Path, *, 
     return {"slug": slug, "target": target, "donor": record.get("donor")} | report
 
 
-def donor_rejects(path: Path | None = None, *, title: str = TITLE_ID, game_id: str = GAME_ID) -> dict[str, str]:
-    """{slug: reason} from the cross-title donor reject list (`gbox-data/mercs/donor_rejects.json`) that apply to
-    this title; {} when there is no such file. Read shapes: {"rejects": {slug: reason | {...}}} or
-    {"rejects": [slug | {"slug", "reason", "titles"}]}, a bare {slug: ...} map or a bare list. An entry that names
-    titles (`titles` / `title` / `games` / `game_ids`) applies only to those (title id, game id, "re4", "re4_switch",
-    "all" or "*"); an entry that names none applies everywhere."""
-    path = Path(path) if path else REJECTS
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ModelError(f"{path}: the donor reject list cannot be read: {exc}") from exc
-    rows = data.get("rejects", data) if isinstance(data, dict) else data
-    items = rows.items() if isinstance(rows, dict) else ((None, row) for row in rows or [])
-    ours = {title.lower(), game_id.lower(), "re4", "re4_switch", "re4-switch", "all", "*"}
-    out = {}
-    for key, row in items:
-        entry = row if isinstance(row, dict) else {"reason": row} if key is not None else {"slug": row}
-        slug = str(entry.get("slug") or key or "")
-        if not slug or slug.startswith("_"):
-            continue
-        scope = []
-        for name in ("titles", "title", "games", "game_ids", "game_id"):
-            value = entry.get(name)
-            scope += [value] if isinstance(value, str) else list(value or [])
-        if scope and not ours & {str(s).lower() for s in scope}:
-            continue
-        out[slug] = f"donor reject list: {entry.get('reason') or 'rejected'}"
-    return out
-
-
-REJECTS = Path(__file__).resolve().parents[1] / "gbox-data" / "mercs" / "donor_rejects.json"
-
-
 def donor_surface(body: A.HdBin, donor: dict, *, image: int, scales: dict[str, float] = SCALES,
                   role_bones: dict[str, int] = ROLE_BONES, method: str = "proportional", native: dict | None = None,
                   gate: dict | None = None) -> tuple[A.HdBin, dict, int]:
@@ -1242,7 +1208,7 @@ def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, se
               games: list[str] | None = None, exclude: dict[str, str] | None = None,
               atlas_size=(1024, 1024), max_vertices: int = 12000, name: str | None = None,
               assignment: dict[str, str] | None = None, opaque_atlas: bool = True, method: str = "proportional",
-              gate: dict | None = FIT_GATE, rejects: Path | None = None) -> dict:
+              gate: dict | None = FIT_GATE, rejects: dict[str, str] | None = None) -> dict:
     """Deal library donors to the Mercenaries player slots from a seed (`re5_donor_pool.plan`, the RE5 rule) and
     write one overlay: every dealt pack and its grown archive under `out/romfs/bio4/...`, plus `receipt.json`.
 
@@ -1253,27 +1219,26 @@ def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, se
     a pool is rebuilt with the same donors. `opaque_atlas` uploads each atlas through `finish_atlas`.
 
     Every donor is fitted by `method` and must pass `gate` (`FIT_GATE`; None writes whatever fits) on its slot, or it
-    is set aside with the gate's reasons and the next one is dealt. The cross-title reject list (`donor_rejects`,
-    `rejects` or gbox-data/mercs/donor_rejects.json) is left out before the deal.
+    is set aside with the gate's reasons and the next one is dealt.
+    `rejects` ({slug: reason}, default: RE4's entries of gbox.donor_rejects, the donors out of proportion on the
+    native rig) are never dealt; a pinned assignment still rebuilds them (a fit fix is verified on the same donors)
+    and the receipt names them under `rejected_but_pinned`.
     """
-    from . import re5_donor_pool
+    from . import donor_rejects, re5_donor_pool
 
     em_dir, imagepack_dir, library, out = Path(em_dir), Path(imagepack_dir), Path(library), Path(out)
     if (out / "receipt.json").exists():
         raise ModelError(f"{out} already holds an overlay; candidates are never overwritten")
-    listed = donor_rejects(rejects)
-    refused: dict[str, str] = dict(exclude or {}) | {k: v for k, v in listed.items() if k not in (exclude or {})}
+    listed = donor_rejects.rejected("re4") if rejects is None else dict(rejects)
+    pinned = dict(assignment) if assignment else None
+    refused: dict[str, str] = dict(exclude or {}) | ({} if pinned else listed)
     pool = list(donors)
     by_slug = {d.slug: d for d in pool}
     slot_names = list(assignment) if assignment else list(slots)
-    pinned = dict(assignment) if assignment else None
     if pinned:
         unknown = [f"{slot} <- {slug}" for slot, slug in pinned.items() if slot not in CAST or slug not in by_slug]
         if unknown:
             raise ModelError(f"the pinned assignment names slots or donors this survey does not have: {unknown}")
-        listed_pins = sorted(slug for slug in pinned.values() if slug in listed)
-        if listed_pins:
-            raise ModelError(f"the pinned assignment names donors on the reject list: {listed_pins}")
     while True:
         assignment = pinned or re5_donor_pool.plan(seed, slot_names, pool, history=history, avoid_last=avoid_last,
                                                    games=games, exclude=set(refused))
@@ -1324,7 +1289,8 @@ def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, se
                         "pool_size": len(pool), "max_vertices": max_vertices, "set_aside": dict(refused),
                         "pinned_assignment": bool(pinned), "opaque_atlas": opaque_atlas,
                         "fit_method": method, "fit_gate": _jsonable(gate) if gate else None,
-                        "reject_list": {"path": str(Path(rejects) if rejects else REJECTS), "entries": len(listed)},
+                        "donor_rejects": len(listed),
+                        "rejected_but_pinned": sorted(s for s in (pinned or {}).values() if s in listed),
                         "rule": "re5_donor_pool.plan: a donor at most once, recently used donors last, franchises in turn"},
                "assignment": assignment, "slots": rows,
                "role_bones": {"hip": ROLE_BONES["hip"], "note": "hip on bone 0 (the root), as the published Leon "
@@ -1385,6 +1351,14 @@ def write_overlay(root: Path, files: dict[str, bytes], receipt: dict, sources: d
     return receipt
 
 
+def _listed(path: Path | None) -> dict[str, str] | None:
+    """RE4's rejects from another gbox.donor_rejects file (None: the default file, read by the pool itself)."""
+    if path is None:
+        return None
+    from . import donor_rejects
+    return donor_rejects.rejected("re4", override=path)
+
+
 def main(argv=None) -> int:
     import argparse
 
@@ -1423,7 +1397,7 @@ def main(argv=None) -> int:
         command.add_argument("--fit", choices=("proportional", "legacy"), default="proportional",
                              help="legacy = the fixed-SCALES fit of the pools before 2026-11-10")
     pool.add_argument("--no-gate", action="store_true", help="write donors whatever FIT_GATE says (not for MercMode)")
-    pool.add_argument("--rejects", type=Path, help="the cross-title donor reject list (default gbox-data/mercs/...)")
+    pool.add_argument("--rejects", type=Path, help="another gbox.donor_rejects file (default gbox-data/mercs/...)")
     report = sub.add_parser("fit-report", help="fit library donors onto a pack and print the gate's verdict")
     report.add_argument("--em", type=Path, required=True)
     report.add_argument("--library", type=Path, required=True)
@@ -1464,7 +1438,8 @@ def main(argv=None) -> int:
                            avoid_last=args.avoid_last, games=[g for g in args.games.split(",") if g] or None,
                            exclude={s: "left out by the caller" for s in args.exclude.split(",") if s},
                            max_vertices=args.max_vertices, assignment=pinned, opaque_atlas=not args.atlas_as_built,
-                           method=args.fit, gate=None if args.no_gate else FIT_GATE, rejects=args.rejects)
+                           method=args.fit, gate=None if args.no_gate else FIT_GATE,
+                           rejects=_listed(args.rejects))
         print(json.dumps({"out": str(args.out), "assignment": result["assignment"], "files": result["files"]}, indent=2))
         return 0
     target = (args.em / f"{args.target}.udas").read_bytes()

@@ -38,6 +38,9 @@ title's own units (RE4's world is in mm):
   (g) the raise / aim discipline  stand_engaged (the fight meets the never-stand rule), AimStick (the stick that
                  moves the aim with the gun up, learned), open_step (a step along open floor).
   (h) WallPress  pressed against a wall: remembered, turned away from, never walked into again.
+  (i) the fire pattern  gbox.mercs.core.fire_pattern: the PS3 magnum's rapid repeat (the title's trigger at its
+                 fastest accepted cadence) and scatter (shot after shot across his body, earned by an effect, and the
+                 hop to a neighbour on the gun's line); fire_spec / fire_driver / fire_cadence, the profile's fire_*.
 
 Nothing here reads or writes the game, and nothing here presses a key: a bot maps each verdict onto its own sticks.
 """
@@ -51,6 +54,7 @@ from pathlib import Path
 from typing import Callable
 
 from .. import threat_memory
+from . import fire_pattern                 # (i): the PS3 magnum's rapid repeat and scatter (imports nothing from here)
 
 try:                                     # per title and enemy class a name and a tier (branch enemy-identity); until
     from .. import enemy_identity as _identity   # it lands every title's own fallback tier stands (identity_tier)
@@ -78,9 +82,30 @@ FIRE_SLACK_CM = 60.0                     # a ray ending this much short of him e
 HUMAN = Body(160.0, 110.0, 45.0, 145.0, 36.0)
 KIND_BODIES = {
     "human": HUMAN,
-    "crawler": Body(45.0, 30.0, 0.0, 55.0, 60.0),    # lickers, crawlers: on all fours at his feet
-    "dog": Body(75.0, 55.0, 15.0, 80.0, 50.0),       # dogs
+    "crawler": Body(45.0, 30.0, 0.0, 55.0, 60.0),    # lickers, crawlers: on all fours at his feet (an estimate)
+    "dog": Body(75.0, 55.0, 15.0, 80.0, 50.0),       # dogs (an estimate)
 }
+# #9344 (docs/research/mercs-enemy-aim-heights.md: the RE5 / RE6 Switch class models' skeletons in their bind pose; the
+# rows re-measured from the RomFS 2026-11-10 agree to the 0.1 cm): every human-layout class stands within a head's
+# radius (HEAD_R_CM) of HUMAN's head (Majini 165, J'avo / zombies 160-162, Napad 171, Shrieker 178 cm), so HUMAN stays
+# their body (its chest is the aim point on the body, 110 cm, not the 129-132 cm spine bone the doc names chest; its
+# radius the 36 cm that hits, not the joints' 13-17 cm half spread). The big ones get their own measured body
+# (measured(): re5_switch.MEASURED, re6_switch.MEASURED). The crawlers and dogs (RE5 uEm32 / uEm0b / uEm30, RE6
+# uEm5700, the mutations) are "not determined" there - no human skeleton to read, a bind pose only (RE5's crawler mesh
+# reaches 27.7 cm below its feet: not the pose it crawls in) - so "crawler" and "dog" stay the estimates above.
+
+
+def measured(head: float, chest: float, knee: float, shoulder: float, r: float, floor_r: float = HUMAN.r) -> Body:
+    """A body from #9344's skeleton measures (cm above his feet). r there is half the joints' spread - the joints sit
+    inside the flesh (the human: 17 cm against the 36 cm body that hits) - so the body's radius is never under floor_r
+    (the title's standing radius)."""
+    return Body(float(head), float(chest), float(knee), float(shoulder), max(float(r), float(floor_r)))
+
+
+def differs(b: Body, standing: Body = HUMAN, tol: float = HEAD_R_CM) -> bool:
+    """Whether a measured body stands meaningfully apart from the title's standing one: its head more than a head's
+    radius higher or lower (aimed as a man, the shot would miss it), or its radius more than half again as wide."""
+    return abs(b.head - standing.head) > tol or b.r > 1.5 * standing.r
 
 
 def scaled(b: Body, k: float) -> Body:
@@ -294,6 +319,16 @@ class TitleProfile:
     throw_max_cm: float = 1200.0             # ... and within the throw's range
     flash_r_cm: float = 400.0                # a wind-up or a grab threat this near: the flash
     throw_kill_s: float = 3.0                # kills this soon after a throw are its kills
+    # (i) the fire pattern (gbox.mercs.core.fire_pattern: the PS3 magnum's rapid repeat and scatter, every title)
+    fire_pattern: bool = False               # the title's FIRE_PATTERN switch (off: every shot at the chest, as before)
+    fire_style: str = "hold"                 # "hold": the game repeats a held trigger; "edge": a fresh press a shot
+                                             # (down a tick, up a tick); "tap": down + up in one batch (the engine's)
+    fire_gap_s: float = 0.0                  # never a press sooner than this after the last (the title's own floor)
+    fire_tick_s: float = 0.05                # the bot's decision tick
+    fire_cap_hz: float = 0.0                 # the most shots a second the game takes from a single-shot gun with the
+                                             # title's mods (0: not known)
+    fire_cap_note: str = ""                  # where fire_cap_hz comes from: measured / static analysis / not measured
+    family: Callable | None = None           # the title's gun in hand -> its fire_pattern family (None: not read)
 
     def cm(self, v: float) -> float:
         return float(v) / self.units_per_cm
@@ -315,12 +350,33 @@ class TitleProfile:
 
 
 TITLES = {"re4_switch": "gbox.mercs.titles.re4_switch", "re5_switch": "gbox.mercs.titles.re5_switch",
-          "re6_switch": "gbox.mercs.titles.re6_switch"}
+          "re6_switch": "gbox.mercs.titles.re6_switch",
+          # the other editions (the operator 2026-11-10: "I want it able to work with even the ps3, and gamecube
+          # versions"): their profiles describe them for the core; their own fights do not consult them yet
+          "re5_ps3": "gbox.mercs.titles.re5_ps3", "re6_ps3": "gbox.mercs.titles.re6_ps3",
+          "re4_gc": "gbox.mercs.titles.re4_gc"}
 
 
 def profile(title: str) -> TitleProfile:
     """The title's profile as its module builds it now (its live constants)."""
     return importlib.import_module(TITLES[title]).combat_profile()
+
+
+# --- (i) the fire pattern -------------------------------------------------------------------------------------------------
+def fire_spec(prof: TitleProfile, family) -> fire_pattern.FireSpec | None:
+    """The fire pattern's spec for this family on this title: None with the title's FIRE_PATTERN off (prof.fire_pattern)
+    or for a family that has none (the automatics, launchers, bows)."""
+    return fire_pattern.spec(family) if prof.fire_pattern else None
+
+
+def fire_driver(prof: TitleProfile, stats: dict | None = None, prefix: str = "fire_pattern"):
+    """The fire pattern's driver for the title's aim model (fire_pattern.TankDriver / LaserDriver / CameraDriver)."""
+    return fire_pattern.driver(prof, stats, prefix)
+
+
+def fire_cadence(prof: TitleProfile) -> float:
+    """The presses (shots) a second the title's trigger style reaches at its tick and floor, under its known cap."""
+    return fire_pattern.cadence_hz(prof.fire_style, prof.fire_tick_s, prof.fire_gap_s, prof.fire_cap_hz)
 
 
 # --- (b) not in control -------------------------------------------------------------------------------------------------

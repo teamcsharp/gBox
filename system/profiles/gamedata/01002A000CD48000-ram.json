@@ -89,7 +89,7 @@
         {
           "multiplier": 5,
           "magnum": 5,
-          "throw": 5
+          "throw": 10
         }
       ],
       [
@@ -123,7 +123,7 @@
       [
         "magnum_speed",
         {
-          "multiplier": 3
+          "multiplier": 20
         }
       ]
     ],

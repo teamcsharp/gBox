@@ -1140,15 +1140,18 @@ def cast(romfs: Path, library: Path, assignment: dict[str, str], out: Path, *, p
 
 def pool_cast(romfs: Path, library: Path, donors: list[Donor], seed, out: Path, *, slots: list[str] | None = None,
               history: list | tuple = (), avoid_last: int = 3, games: list[str] | None = None,
-              exclude: dict[str, str] | None = None) -> dict:
+              exclude: dict[str, str] | None = None, rejects: dict[str, str] | None = None) -> dict:
     """Deal donors to the slots from a seed (`re5_donor_pool.plan`) and write that overlay.
 
     A donor a slot refuses (its surface does not fit that slot's atlas, say) is set aside and the plan is dealt again
     from the same seed without it, so the outcome still follows from the seed, the donors, the history and `exclude`
     alone. `exclude` maps donors the caller leaves out to the reason; they are listed in the receipt with the rest.
+    `rejects` (default: RE5's entries of gbox.donor_rejects, the donors out of proportion on the native rig or that
+    the operator swapped out) are left out the same way, so the next donor of the deal takes their slot.
     """
+    from . import donor_rejects
     slots = list(slots or SLOTS)
-    refused: dict[str, str] = dict(exclude or {})
+    refused: dict[str, str] = dict(exclude or {}) | (donor_rejects.rejected('re5') if rejects is None else dict(rejects))
     while True:
         assignment = re5_donor_pool.plan(seed, slots, donors, history=history, avoid_last=avoid_last, games=games,
                                          exclude=set(refused))

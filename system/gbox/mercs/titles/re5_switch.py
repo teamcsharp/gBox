@@ -48,6 +48,7 @@ from . import re5_specials                 # the characters' special moves in pl
 from .. import qte                         # universal QTE handling: the vision grab-fallback when the RAM read tears
 from .. import threat_memory               # who hurt him and what they did first, learned per class (THREAT_FILE)
 from ..core import combat                  # the universal fight (UNIVERSAL_CORE): at import, for the hot reload
+from ..core import respond                 # the doctrine's answer to a threat (RESPOND): at import, for the hot reload
 
 TITLE_ID = "010018100CD46000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/010018100CD46000-ram.json
@@ -500,17 +501,33 @@ HEAD_H, HEAD_R, KNEE_H, SHOULDER_H, BODY_R, CHEST_H = 160.0, 22.0, 45.0, 145.0, 
 Body = combat.Body                       # (head chest knee shoulder r), the same fields as before
 HUMAN = Body(HEAD_H, CHEST_H, KNEE_H, SHOULDER_H, BODY_R)
 LOW_BODIES = {
-    "uEm32": combat.KIND_BODIES["crawler"],   # the Experimental Facility's crawlers (27 cm at the bind pose)
-    "uEm0b": combat.KIND_BODIES["dog"],       # the dogs (86 cm, four legs)
+    "uEm32": combat.KIND_BODIES["crawler"],   # Licker beta (#9344: not determined - mesh top 27 cm at the bind pose)
+    "uEm0b": combat.KIND_BODIES["dog"],       # Bui Kichwa (#9344: not determined - four-legged, mesh top 86.5 cm)
+}
+# Measured bodies (#9344, docs/research/mercs-enemy-aim-heights.md: the class model's skeleton in its bind pose, cm
+# above the feet; re-measured from the RomFS 2026-11-10, the same to 0.1 cm). Only the classes that stand apart from a
+# Majini (combat.differs: the head more than a head's radius off): the Reaper (head 257.5, spine 205.5, knees 108.8,
+# upper arms 233.3; the joints' half spread 29 cm, so the radius stays BODY_R: combat.measured). Every other measured
+# class is a Majini's skeleton (head 164.7-165, spine 131-132, knees 53-57.5 cm) and keeps HUMAN - the Giant Majini
+# (uEm24) too: its model is a Majini's, 195.7 cm, so its "nearly 3 m" in game is a scale the snapshot does not read
+# yet. The crawlers and dogs are not determined (a bind pose only): LOW_BODIES' estimates stand. Off: as before.
+MEASURED_BODIES = True
+MEASURED = {
+    "uEm34": combat.measured(257.5, 205.5, 108.8, 233.3, 29.0, BODY_R),     # Reaper
 }
 
 
+def body_classes() -> dict:
+    """The classes with a body of their own: LOW_BODIES, and MEASURED with MEASURED_BODIES."""
+    return {**LOW_BODIES, **MEASURED} if MEASURED_BODIES else LOW_BODIES
+
+
 def body(e) -> Body:
-    """The body profile of this enemy's class (LOW_BODIES; through combat.BodyTable with UNIVERSAL_CORE), else a
+    """The body profile of this enemy's class (body_classes(); through combat.BodyTable with UNIVERSAL_CORE), else a
     standing Majini's."""
     if UNIVERSAL_CORE:
-        return combat.BodyTable(default=HUMAN, classes=LOW_BODIES).body(e)
-    return LOW_BODIES.get((e or {}).get("class"), HUMAN)
+        return combat.BodyTable(default=HUMAN, classes=body_classes()).body(e)
+    return body_classes().get((e or {}).get("class"), HUMAN)
 FIRE_SLACK = 60.0                        # a ray ending this much short of him ends on something in front of him
 STEER_RAY_CM = 50.0                      # a shorter ray (the dot at the muzzle) carries too little direction to steer by
 
@@ -849,6 +866,44 @@ THROWS = True
 THROW_GAP_S, THROW_PACK_N, THROW_FLASH_R, THROW_BLAST_PAD = 5.0, 3, 400.0, 100.0
 THROW_EQUIP_S, THROW_MAX_S, THROW_SETTLE_S = 2.0, 3.0, 0.5
 THROW_ITEMS = {"hand": 0x06, "fire": 0x07, "flash": 0x08}    # WP06 / WP07 / WP08 (THROWN)
+# The fire pattern (gbox.mercs.core.fire_pattern; the operator 2026-11-10: "the bot fired the magnum with a nice scatter
+# and a very rapid repeat and i want that across all these titles"). The rapid repeat is RE5's own and stays: ZR held
+# while the laser is on a body (_trigger), the game repeating it at re5_switch_mods.fire_rate's time scale in the shot
+# motion (FIRE_MAX 5x: the M92F measured 8.7 shots/s at x4 and 15.3 at x8 - x5 itself not counted; a magnum's shot motion
+# was never checked to be MOTION_SHOT, so whether the time scale reaches the magnums is not known). What the pattern
+# adds is the PS3's scatter: the old rule steered only with the laser OFF him (once on, the aim stood still and every
+# repeat hit one spot); with FIRE_PATTERN a pattern gun (re5_weapons family magnum / handgun / shotgun / rifle) on him
+# is steered, between shot motions only (the stick waits in MOTION_SHOT as before), onto the next point of the scatter
+# across his body (combat.LaserDriver: R2 points, inside the body the hit test uses, his aim height kept - a special's
+# site gets the lateral scatter only). The scatter steps on every shot motion that begins (else every 1 / step_hz of the
+# held trigger); it is earned (an enemy's health falling or a kill within earn_s), never on a long shot (LONG_R, the
+# settle rule's), a confirmed shot at another Majini, or within min_cm. The hop is RE5's own CONFIRMED_FIRE: the dot
+# drifting onto a neighbour makes him the shot. Off: as before. Stats fire_pattern_*, fire_pattern_steer_ticks,
+# fire_pattern_motion_waits (ticks the shot motion kept the stick still).
+FIRE_PATTERN = True
+
+
+def fire_family(snap) -> str | None:
+    """The fire pattern's family of the gun in his hand (the inventory's in-hand weapon, re5_weapons.WEAPONS)."""
+    from . import re5_weapons as _w
+    gun = next((s for s in (snap or {}).get("inventory") or () if s.get("hand") and s.get("type") == 1), None)
+    w = _w.WEAPONS.get(gun.get("item")) if gun else None
+    return w.family if w is not None else None
+
+
+# The doctrine's answer to a threat (gbox.mercs.core.respond; the operator 2026-11-10: "the secret to all adversarial
+# combat situations is either flashbang, drop a mine, or fire the weapon upon them until there's no longer a threat"):
+# hurt in the last 1.5 s, or a Majini within 2.5 m closing / winding up / of a class that hurt him (its learned reach),
+# and his own decision answered nothing - the native flash (no item screen; several near, a wind-up, a grab, low
+# health), the mine controller asked for a plant now (two or more converging, none within MINE_FOE_CLEAR_CM: its own
+# clearance and retreat), else the fight on the threats alone (_goal_decide: no detour, its wall gates kept). Measured
+# either way: threat_ticks, threat_answered_flash / _mine / _fire, threat_unanswered, hurt_while_idle (round_counters).
+# Off: measured only is respond.ENFORCE; RESPOND False: neither.
+RESPOND = True
+RESPOND_BUSY = frozenset({"held", "heal", "prompt", "dead", "native_equip", "rearm", "backoff",
+                          "quick_turn"})              # (the quick turn's ticks are one move: never cut by a fight)
+RESPOND_AIM = frozenset({"aim", "raise", "reraise", "turn", "reload", "restale"})
+RESPOND_ATTACK = frozenset({"fire", "melee", "sweep"})
 
 
 def combat_profile() -> combat.TitleProfile:
@@ -865,7 +920,7 @@ def combat_profile() -> combat.TitleProfile:
                "ZL raise, ZR held (the game repeats it); the RAM aim lock where it holds",
         aim_btn="zl", fire_btn="zr", turn_sign=1, raise_s=READY_S, raise_tol=BODY_AIM_TOL, fire_tol_min=AIM_TOL,
         engage_cm=ENGAGE_R, level_dy_cm=LEVEL_DY, max_dy_cm=MAX_DY,
-        bodies=combat.BodyTable(default=HUMAN, classes=LOW_BODIES), head_r_cm=HEAD_R, fire_slack_cm=FIRE_SLACK,
+        bodies=combat.BodyTable(default=HUMAN, classes=body_classes()), head_r_cm=HEAD_R, fire_slack_cm=FIRE_SLACK,
         specials=("character_specials", "quick_turn", "dynamite", "mines", "rampage", "flash"),
         threat_file=THREAT_FILE, windup_r_cm=WINDUP_R, grudge_r_cm=GRUDGE_R, lethal_keep_x=LETHAL_KEEP_X,
         lethal_backoff_max_s=LETHAL_BACKOFF_MAX_S,
@@ -875,7 +930,11 @@ def combat_profile() -> combat.TitleProfile:
         tier=combat.identity_tier(TITLE_ID, fallback=combat.hp_tier(boss_hp=_d.BOSS_HP_MIN)),
         page_key=FROZEN_KEY, frozen_cm=FROZEN_CM, frozen_rad=FROZEN_RAD, no_effect_s=FROZEN_FIRE_S,
         no_effect_shots=FROZEN_FIRE_SHOTS, no_effect_trigger_s=FROZEN_TRIGGER_S, page_tap_s=FROZEN_TAP_S,
-        page_max_s=FROZEN_PAGE_MAX_S, page_clear_cm=FROZEN_CLEAR_R)
+        page_max_s=FROZEN_PAGE_MAX_S, page_clear_cm=FROZEN_CLEAR_R,
+        fire_pattern=FIRE_PATTERN, fire_style="hold", fire_tick_s=1.0 / 30.0, fire_cap_hz=0.0,
+        fire_cap_note="measured (M92F, ZR held): 2.7 shots/s at x1, 8.7 x4, 15.3 x8, 24.7 x80 (re5_switch_mods); the "
+                      "live cap FIRE_MAX 5x not counted; the magnums' shot motion not checked",
+        family=fire_family)
 # Dynamite Majini (operator: "dynamite Majini - see them, keep away, shoot the dynamite"). A Majini carrying a lit
 # stick of dynamite is a threat of its own: the fuse is already burning, so the blast is coming whether or not his
 # own attack flag is up. Three behaviors, in the wind-up's pattern:
@@ -5255,6 +5314,44 @@ class Bot:
         self.fire_down, self.fire_at = True, now
         return {"zr"}
 
+    def _fp_steer(self, p, tgt, chest, origin, dot, snap, motion, now) -> set:
+        """FIRE_PATTERN: the laser on him with a pattern gun - the stick toward the scatter's next point on his body
+        (combat.LaserDriver), between shot motions only; the scatter steps as a shot motion begins (else every
+        1 / step_hz of the held trigger). A pattern error never costs the tick (fire_pattern_error): no stick."""
+        try:
+            prof = combat_profile()
+            fam = prof.family(snap) if prof.family is not None else None
+            sp = combat.fire_spec(prof, fam)
+            if sp is None:
+                return set()
+            drv = self.__dict__.get("_fp_driver")
+            if drv is None:
+                drv = self._fp_driver = combat.fire_driver(prof, self.stats)
+            kills = snap.get("kills")
+            drv.observe(now, snap.get("enemies"), kills=kills if isinstance(kills, int) else None)
+            key = tgt.get("ptr", tgt.get("slot"))
+            entered = motion == MOTION_SHOT and self.__dict__.get("_fp_motion") != MOTION_SHOT
+            self._fp_motion = motion
+            if entered:                                      # a shot left: its point in the stats, the next point
+                drv.point(prof, fam, tgt, p["pos"], chest, now, shot=True)
+                drv.fired(now, key, fam)
+            else:
+                drv.fp.hold_tick(now, True, sp, key, fam)
+            if motion == MOTION_SHOT:                        # the shot plays at fire_rate's time scale: no stick
+                self.stats["fire_pattern_motion_waits"] = self.stats.get("fire_pattern_motion_waits", 0) + 1
+                return set()
+            pt = drv.point(prof, fam, tgt, p["pos"], chest, now)
+            if math.dist(pt, chest) < 1.0:
+                return set()
+            ye, pe = ray_error(origin, dot, pt)
+            keys = self._yaw(ye) | self._pitch(pe)
+            if keys:
+                self.stats["fire_pattern_steer_ticks"] = self.stats.get("fire_pattern_steer_ticks", 0) + 1
+            return keys
+        except Exception as exc:                             # noqa: BLE001 - the pattern never costs the tick
+            self.stats["fire_pattern_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            return set()
+
     def _round_start(self, snap, now) -> None:
         """The first tick alive of a round: the engine's marker, once (a marker changed again on a replay made the
         engine close the replay's fresh evidence at once: "ended" rows at 119.9 s in the first MercMode turn); after a
@@ -5644,6 +5741,7 @@ class Bot:
         self._defer_trigger = bool(snap.get('aim_cam') and spec
                                    and spec.family in re5_target_feedback.GUN_FAMILIES)
         act = self._tick(snap, now)
+        act = self._respond(snap, act, now)              # under threat: a flash, a mine or fire - never nothing
         self._defer_trigger = False
         act = re5_target_feedback.apply(self, snap, act, now)
         act = re5_target_feedback.keep_active(self, snap, act, now)
@@ -5677,7 +5775,67 @@ class Bot:
                 self._wm_tick(snap, act, now)                # the per-family ledger (stats wm_*)
             except Exception as exc:                         # noqa: BLE001 - accounting never stops the bot
                 self.stats["wm_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        self._respond_settle(act)                            # what he finally did, counted (threat_* / hurt_while_idle)
         return act
+
+    # --- the doctrine's answer to a threat (RESPOND above: gbox.mercs.core.respond) ----------------------------------
+    def _respond(self, snap, act, now) -> dict:
+        """core.respond on this tick's decision: the native flash, the mine asked for, or the fight on the threats."""
+        p = snap.get("player") or {}
+        if (not RESPOND or snap.get("mercenaries_phase") != PHASE_PLAYING or not p.get("pos")
+                or (p.get("hp") or 0) <= 0 or self.stats.get("operator_control")):
+            return act
+        try:
+            r = self.__dict__.get("_resp")
+            if r is None:
+                r = self._resp = respond.Responder(self.stats, respond.Rules(mine_min_cm=MINE_FOE_CLEAR_CM))
+            px, py, pz = p["pos"]
+            live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")
+                    and abs(e["pos"][1] - py) <= MAX_DY]
+            flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+
+            def fire(e, pool):
+                key = e.get("ptr", e.get("slot"))
+                if self.target != key:
+                    self._set_target(key, now)
+                    self.target_at = now
+                return self._goal_decide(p, pool, flat, e, flat(e), snap, now)   # the fight on them alone
+
+            def mine(why):
+                m = self.mines
+                if m is None or not m.enabled or m.state != "idle" or m.stack(snap.get("inventory")) is None:
+                    return False
+                m.urge(now)
+                return True
+
+            def classify(a, doing):
+                st = self.__dict__.get("_uc_throw")
+                if st is not None:
+                    return "flash" if getattr(st.get("plan"), "kind", None) == "flash" else "fire"
+                if self._grenade_inflight or time.time() - (self.stats.get("native_flash_confirmed_at") or 0) <= 1.0:
+                    return "flash"                           # a native flash going off (the bot's or the operator's)
+                if str(self.why).startswith("the operator's"):
+                    return "busy"                            # the operator's mark on the map: it overrides
+                return ""
+            kit = respond.Kit(
+                fire=fire, mine=mine if self.mines is not None else None,
+                flash=lambda why: self._native_flash(snap, now, "the doctrine: " + why, "threat_flashes"),
+                clear=lambda e: not self._walled_off(p, e, now), classify=classify, busy=RESPOND_BUSY,
+                attack=RESPOND_ATTACK, aim=RESPOND_AIM, mine_doings=frozenset({"mine"}),
+                flash_doings=frozenset({"flashbang"}))
+            mem = respond.Memory(self._tm, winding=self._winding, default_reach_cm=WINDUP_R)
+            return r.respond(combat_profile(), now, p, live, act, kit, self.doing, mem)
+        except Exception as exc:                             # noqa: BLE001 - the doctrine never costs the tick
+            self.stats["threat_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            return act
+
+    def _respond_settle(self, act) -> None:
+        r = self.__dict__.get("_resp")
+        if r is not None:
+            try:
+                r.settle(act, self.doing)
+            except Exception as exc:                         # noqa: BLE001
+                self.stats["threat_error"] = f"{type(exc).__name__}: {exc}"[:160]
 
     def _critical_flash(self, snap, now) -> None:
         """CRIT_FLASH above: one native flash when he is held in a crowd, low in a crowd, or in his own bomb's blast with
@@ -7428,6 +7586,8 @@ class Bot:
         if not on and not settling and math.dist(origin, dot) >= min(STEER_RAY_CM, 0.5 * math.dist(origin, chest)):
             keys |= self._yaw(yaw_err, windows[0]) | self._pitch_settled(pitch_err, windows[1], now)   # steer only off him: a raised fire rate paces the
                                                                   # aim with the shot (re5_switch_mods)
+        elif FIRE_PATTERN and on and not long_shot and not confirmed:
+            keys |= self._fp_steer(p, tgt, chest, origin, dot, snap, motion, now)   # on him: across his body (the scatter)
         if dist < CLOSE_PITCH_R and keys & {"rup", "rdown"}:
             keys -= {"rup", "rdown"}                     # up close: the yaw only (by the laser) ...
             self.stats["close_pitch_skips"] += 1
@@ -7886,7 +8046,7 @@ class RE5Switch(Driver):
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
                       "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS \
         + THREAT_COUNTERS + CRIT_FLASH_COUNTERS + GIVEUP_COUNTERS \
-        + AIM_COUNTERS + MEASURE_COUNTERS + tuple("t_" + d for d in DOINGS) + re5_specials.COUNTERS
+        + AIM_COUNTERS + MEASURE_COUNTERS + tuple("t_" + d for d in DOINGS) + re5_specials.COUNTERS + respond.COUNTERS
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock

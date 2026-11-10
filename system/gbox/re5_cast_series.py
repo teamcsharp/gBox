@@ -328,14 +328,19 @@ def build_one(build: Build, *, romfs: Path, archives_dir: Path, library: Path, o
 def build_series(seed, *, survey_path: Path, enemy_survey_path: Path | None, romfs: Path, archives_dir: Path,
                  library: Path, out: Path, count: int, tables: dict[str, str] | None = None,
                  exclude: set[str] | frozenset = frozenset(), previews: bool = True, progress=None,
-                 singles: bool = False) -> dict:
+                 singles: bool = False, rejects: dict[str, str] | None = None) -> dict:
     """Plan the series and write its first `count` builds; return the manifest (also written to <out>/manifest.json).
 
     `enemy_survey_path` is the enemy go/no-go (`re5_enemy_cast.survey`) over the shared survey's donors; without it
     every donor is tried as an enemy and refusals are found while building. `exclude` leaves donors out by slug.
+    `rejects` ({slug: reason}, default: RE5's entries of gbox.donor_rejects) are left out of every role before the
+    series is dealt: a donor out of proportion on the rig, or one the operator swapped out, is never dealt again.
     """
+    from . import donor_rejects
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
+    rejects = donor_rejects.rejected('re5') if rejects is None else dict(rejects)
+    exclude = frozenset(exclude) | frozenset(rejects)
     donors, windings = load_pool(survey_path)
     donors = [donor for donor in donors if donor.slug not in exclude]
     by_slug = {donor.slug: donor for donor in donors}
@@ -447,7 +452,8 @@ def main(argv=None) -> int:
     parser.add_argument('--plan-only', action='store_true', help='print the plan, write nothing')
     args = parser.parse_args(argv)
     tables = dict(text.split('=', 1) for text in args.table) or None
-    exclude = frozenset(slug for slug in args.exclude.split(',') if slug)
+    from . import donor_rejects
+    exclude = frozenset(slug for slug in args.exclude.split(',') if slug) | frozenset(donor_rejects.rejected('re5'))
     try:
         if args.plan_only:
             donors, _ = load_pool(Path(args.survey))

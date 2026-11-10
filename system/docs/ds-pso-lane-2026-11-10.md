@@ -593,11 +593,470 @@ bound to the slot that reports activity, not to slot 0.** Two candidate fixes fo
 
 Nothing was pressed on the operator's behalf after they handed control back beyond this cold-boot attempt.
 
+## Round 9 (2026-11-10) — the pad binding fixed, and a cold boot from the disc to Pioneer 2 by gBox's own presses
+
+Round 8's run died because Dolphin read `XInput/0`, a phantom virtual pad that reports exactly zeros forever, while the
+operator's controller was on slot 1 and gBox's own virtual pad did not exist. This round fixed the binding and then
+**cold-booted the disc into Pioneer 2 with gBox's presses**, asserting every step from RAM.
+
+### What the probe showed
+
+A virtual pad **can** be created and Windows sees it: `VGamepad()` reported slot 2 and the sentinel trigger appeared at
+slot 2 while `0` stayed all-zero and `1` showed the operator's resting controller (`lx -160, ly 1387`). So the failure
+was never ViGEm -- it was the launch choosing a slot nothing reports on.
+
+### `gbox/pad_bind.py` (+5 tests) and the adapter
+
+The fallback path (no virtual pad) now binds the pad that **actually reports** instead of trusting `XInput/0`:
+
+* `alive(state)` decides what "a real device" is by **any non-zero field**, not by XInput's deadzone. The operator's
+  stick drifts below that deadzone, and a phantom is *exactly* zero in every field, including forever.
+* `choose_slot(pads, created=...)` prefers gBox's own pad when it exists (it may be idle and about to be used), else the
+  lowest live slot, else None (leave the INI untouched).
+* `bind_device` / `bind_note` rewrite GCPad1's `Device` line once and record why in a comment.
+
+`DolphinWinAdapter._argv` calls it on the no-vpad path, so a machine with a phantom in slot 0 gets a working pad.
+
+### The relay: your pad reaches the game through gBox's pad
+
+The two configurations are mutually exclusive -- Dolphin reads one device. With the **virtual pad** bound the bot can
+press (the keyboard path cannot: `win_send_keys` returns `sent: 0` because Windows refuses `SetForegroundWindow` from a
+background process, which is why that path silently drops everything). So the operator's own controller is now
+**relayed**: `padstate.watch_xinput` already diffs their pad every 1/30 s, and with `padstate.RELAY[sid]` set (the worker
+sets it when the adapter has a virtual pad) each change is also posted to the session's input queue, which the worker
+sends to that pad. Their presses reach the game *and* the chord still fires from the physical pad directly.
+
+### The cold boot, live
+
+Session `066193032ad04374-b89e4b8bbbe64952`, `GCPadNew.ini` = `Options/Always Connected = True` +
+`Device = XInput/0/Gamepad` (gBox's pad, slot 0 -- the phantom was freed by the worker restarts):
+
+```
+mode 0 (attract) -> one START press -> mode 1 (title menu)        presses land
+walk: offline_game, single_mode, slot_a  -> mode walked 1/0/1
+SELECT CHARACTER: BQF  Type HUmar  ID ORAN  (the character from round 4, still on the card)
+A on the row -> "Wrote to Memory Card A" -> Pioneer 2, Principal Tyrell
+```
+
+RAM at the end: `TObjPlayer hp 40/40 at (0, -2015) room 41`, `FLOOR 0` (Pioneer 2), `episode 1`, **29 entities**
+(`in_field` = `{in_town: true, player: {...}, entities: 29}`).
+
+That is P1's boot-to-town leg done end to end by gBox's presses: attract skipped, title menu, offline branch, character
+select with the saved character, memory-card write, Pioneer 2. It is **not** P1's accept test yet -- that needs Forest 1
+and both players, three cold launches.
+
+### Still open
+
+* The walk's step list still assumes the *creation* branch (`accept_new` presses `dup`+A). With a character on the card
+  the correct step is a bare A on the row; the module should check the card (a `TObjPlayer`-less SELECT CHARACTER with a
+  saved slot cannot be told from RAM yet) or simply try A and fall back to create.
+* Forest 1: from Pioneer 2 the route is the Hunter's Guild door (`TObjCityDoor_Guild` at `185, 173` room 10, read from
+  the entity list) and then the teleporter; the walker needs to get through the room transitions.
+
+## Round 10 (2026-11-10) — the town leg did not happen: a looping conversation and an unproven movement failure
+
+The plan was Pioneer 2 -> the Hunter's Guild -> Forest 1. It did not get there, and the more useful result is a
+correction: an earlier draft of this round claimed "the analog stick does not reach PSO". **That is not proven.**
+
+### What happened
+
+After the cold boot in round 9 the character stands in front of Principal Tyrell, whose tutorial conversation is many
+pages long. Then:
+
+1. Pressing A repeatedly advances it, but **every A pressed after the last line restarts the conversation** -- the
+   character is still standing in front of him, so A talks again. A loop of A presses therefore never exits, and the
+   game stays in dialogue, where movement is locked.
+2. All of this round's movement tests (stick up/down/left/right for a second each, keyboard `up`, D-pad `down`) ran
+   during that dialogue and reported the player at `(0.0, -2015.0) room 41` every time. **A locked game cannot move, so
+   none of those results says anything about the stick.**
+3. Five `b` presses and one more walk changed nothing either, so B does not close this conversation.
+
+The frames say it plainly: `p1v-00-state.jpg`, `p1w-01-cdown.jpg`, `p1x-keyboard.jpg` all show the same speech bubble,
+"Go talk to my secretary. Irene will help you." -- the last line of the conversation, still up.
+
+### What *is* proven, and what is not
+
+| claim | status |
+|---|---|
+| Buttons reach PSO through the current binding (A advances dialogue, START opens the in-game menu) | **proven** |
+| XInput shows no change in any slot while the worker holds a stick through `/input` | **proven** (12 samples over 1.5 s, one distinct state) |
+| Therefore the worker's stick write never reaches a pad | **not proven** -- the pad it would write to is the one whose buttons do work, so either the vpad is not the path in use, or the stick branch is not reached |
+| The analog stick does not work in PSO | **not proven** -- every test of it was run with movement locked |
+| Movement works at all right now | **unknown** -- it has not been tested outside the dialogue |
+
+### What this means for the next round
+
+The order of work changes. Fix the **dialogue trap** first, because until the character is free every movement result is
+noise:
+
+1. Find a RAM signal for "a conversation is open" (candidates: `control_mode` at actor+`0x324`, `action_state` at
+   `+0x326`, `hit_records` at `+0xA8` -- sample them during the conversation and after it) so a driver can know when to
+   stop pressing A. Without it, any interactive step is a guess.
+2. Then measure movement once, properly: hold a direction for two seconds with the character free and read the
+   position. Only then call the stick broken or working.
+3. Then the town leg: `TObjCityDoor_Guild` at (185, 173) room 10, then `TObjCityDoor_Warp` at (254, 25), then Forest 1.
+
+`gbox.pso_entities` still reads all 29 Pioneer 2 objects live, so the route itself is already available; what is missing
+is a way to know the party is free to walk.
+
+### Method note (the same lesson twice)
+
+This is round 3's mistake in a different place: round 3 nearly shipped a byte as a "screen id" because it changed when
+the screen changed, and this round nearly shipped "the stick is broken" because the character did not move while the
+game was in a conversation. Both were measurements of the *wrong state*. A negative result needs the same evidence bar as
+a positive one, and "nothing happened" is the easiest result to misread.
+
+## Round 11 (2026-11-10) — the conversation signal found, and the relay that was starving the bot
+
+### The signal round 10 said was missing: `mode 5` / `17` is a conversation
+
+Watching `0x80516303` while Principal Tyrell's tutorial ran gives the missing "a conversation is open" signal:
+
+| mode | meaning |
+|---|---|
+| **5** | a conversation page is up |
+| **17** | a conversation page just advanced (it alternates with 5 as A is pressed) |
+| 0 / 4 | the title / attract |
+| 1 | a menu (main menu **and** SELECT CHARACTER) |
+| 9 | SELECT GAME MODE |
+
+The actor fields do **not** move during the conversation (`control_mode` 1, `action_state` 1, `hit_records` 1 the whole
+time), so the boot-mode byte is the only usable signal -- which is why round 10's movement tests were meaningless: the
+mode was 5/17 throughout and movement is locked there. A driver can now press A *while* the mode is 5/17 and stop the
+moment it is not, instead of guessing how many pages a conversation has.
+
+### The bug that probably caused the input stall: the relay starved the bot
+
+Round 10 ended with the game ignoring every press (A and START both did nothing while the render and RAM stayed
+healthy) -- the third appearance of this stall. The likely cause is the relay added in round 9: it forwarded *every*
+change of the operator's physical pad to the session's input queue, and their pad's sticks **drift** (`lx -160,
+ly 1387` at rest, changing packet by packet). A continuous flood of operator-sourced input makes `pad_takeover` treat
+the operator as playing, and a playing bot yields the pad -- so gBox's own presses wait forever.
+
+`padstate` now relays **buttons always, sticks only past a real deflection** (`RELAY_STICK = 0.3`, the same threshold
+the watcher uses for `moved`). Whether that fully explains the stall is **not proven** -- a fresh session after the
+change accepted input for the whole boot sequence, but the previous session had also just been restarted and started
+healthy. The falsifiable test for the next round: drive ~100 presses in one session and check that input still lands.
+
+### The boot sequence is state-dependent, and the script is not
+
+With input working, `gbox.pso_boot_walk.walk` ran its six steps and ended **without a player**, with the mode
+oscillating `1 -> 0 -> 1 -> 1 -> 0 -> 1`. The same `ddown`+A at the main menu produced SELECT GAME MODE (mode 9) in
+round 4 and the title (mode 0) here. The menu remembers its cursor, so the same key sequence lands on a different item
+depending on history -- a fixed press list cannot be right for both.
+
+So the walk needs to *see* each screen before choosing the next press. The mode byte alone cannot do that (1 is two
+different screens). What the round did establish is what to build: a frame-per-step driver that captures the screen at
+each step (the round's frames are 110-123 KB JPEGs and readable), labels it, and records the press that moved it --
+turning the walk into an evidence-backed sequence instead of my memory of round 4.
+
+### Not done
+
+Pioneer 2 -> Forest 1 did not happen in this round either. The pieces are all present (the route through
+`TObjCityDoor_Guild` at 185,173, the walker, the conversation signal); what is missing is a boot sequence that copes
+with a remembered cursor.
+
+## Round 12 (2026-11-10) — the virtual pad was flaky, not broken; and two more tests that measured the wrong thing
+
+### The real defect this round: `_setup_vpad` sometimes returns None
+
+A launch right after a `stop_game` produced `GCPadNew.ini` with **no** `Options/Always Connected` and
+`Device = XInput/1/Gamepad` -- the no-vpad fallback. In that session gBox cannot press at all: its only other path is
+`win_send_keys`, which Windows refuses from a background process. ViGEm releases the previous session's pad
+asynchronously, so the next launch's pad creation fails.
+
+`DolphinWinAdapter._setup_vpad` now retries pad creation **three times** with a short backoff before falling back, and
+says how many attempts it made. Verified: the next launch wrote `Options/Always Connected = True` +
+`Device = XInput/0/Gamepad`, and gBox's presses moved the title menu's cursor.
+
+### The stick is not broken, and two of this round's "tests" were invalid
+
+Tracing the write end to end settled it:
+
+* `vpad_win` calls `pad.left_joystick(x_value=_clamp(lx), y_value=_clamp(ly))` with **ints** +/-32767. `vgamepad`
+  rejects floats (`TypeError: 'float' object cannot be interpreted as an integer`) and accepts ints, so the call is
+  right -- my first hypothesis (wrong units) was wrong.
+* A pad written that way **does** show up in XInput: `ints +/-32767 -> {lx: 32767, ly: 32767}`. So a stick write
+  reaches the OS.
+
+Two tests from earlier this turn were therefore measuring the wrong thing:
+
+1. **The title menu responds to the D-pad, not the stick.** `ddown` moved the highlight from ONLINE GAME to OFFLINE
+   GAME; a 1.5 s hold of the *stick* `down` moved nothing. That is menu behaviour, not a stick failure.
+2. **The XInput probe that "proved" the stick never reaches a pad** ran in the session whose `_setup_vpad` had returned
+   None -- there was no virtual pad to write to. It proved the *fallback* session has no pad, nothing more.
+
+So the analog stick's behaviour in the field is still **unmeasured**. The one clean way to measure it is in-game with
+the character free, which is exactly where every attempt has failed because the game spends that time in Principal
+Tyrell's conversation.
+
+### The boot-mode byte is coarser than the lane doc said
+
+Newly observed values, all from this round's frames and reads:
+
+| mode | screens seen with it |
+|---|---|
+| 0 | the attract, **the title main menu** (after a cursor move), **SELECT CHARACTER** |
+| 1 | the title main menu (on entry), the SELECT CHARACTER confirm prompt |
+| 4 | the title with the menu closed |
+| 5 / 17 | a conversation |
+| 9 | SELECT GAME MODE |
+
+So `mode` cannot name a screen. Round 11's "5/17 is a conversation" still holds (nothing else has produced those
+values), but the walk cannot be driven by the byte alone.
+
+### What did advance
+
+The character-select path is now known exactly, from frames: at SELECT CHARACTER press **A** (opens
+`Confirm / Cancel / Recreate`), then **A** again (Confirm) -- the character loads from the card and the game enters
+Pioneer 2. That is what round 9's cold boot did by hand, and it is three presses with two visible confirmations, so it
+can be scripted with a frame check at each step.
+
+## Round 13 (2026-11-10) — the boot to Pioneer 2 is now six verified presses, and the intro scene is the wall
+
+### The path, press by press, each one checked against a frame
+
+Every step below was driven by gBox's own virtual pad and confirmed by a captured frame and a RAM read:
+
+| # | press | screen it reached |
+|---|---|---|
+| 1 | START (at PRESS START) | the title main menu (mode **1**) |
+| 2 | `ddown` + A | **SELECT GAME MODE** (mode **9**) -- the cursor starts on ONLINE GAME |
+| 3 | A | **SELECT CHARACTER** (mode 1), BQF / HUmar / ORAN on the card |
+| 4 | A | the **Confirm / Cancel / Recreate** prompt, Confirm highlighted |
+| 5 | A | **SELECT EPISODE** (mode 1), EPISODE 1 highlighted |
+| 6 | A | the warp, then **Pioneer 2**: mode **5**, player at `(0.0, -2015.0)` room 41, 29 entities |
+
+`gbox.pso_boot_walk.BOOT_STEPS` now carries exactly this list (it previously carried my memory of round 4, which had a
+`dup` step and no confirm or episode step). Step 2 is the only one with an unambiguous RAM checkpoint -- mode 9 appears
+nowhere else -- so it asserts `mode == 9` and the rest are judged by the arrival, because mode 1 is the main menu,
+SELECT CHARACTER and SELECT EPISODE alike.
+
+### The wall: the intro scene loops and nothing exits it
+
+In Pioneer 2 the game is in Principal Tyrell's episode-1 intro, mode **5** continuously. Measured, once each, with the
+mode watched after every action:
+
+| action | result |
+|---|---|
+| A, 50 presses at 1 s | cycles four lines forever (below), mode stays 5 |
+| B, X, Y | mode stays 5 |
+| START | consumed by the scene, mode stays 5 |
+| wait 4 s with no input | mode stays 5 |
+| stick `down` 1.5 s and 5 s | position unchanged |
+| D-pad `ddown`, `dleft`, `dup` 1.5 s | position unchanged |
+| stick held **together with** A | position unchanged |
+
+The four lines it cycles through: *"Are you BQF, the Hunter?"*, *"Go talk to my secretary. Irene will help you."*,
+*"We have a bad situation... We need to act quickly."*, *"I didn't say anything."* -- so A advances a page, and once the
+scene has run out A re-opens it, because the character is standing in front of the Principal.
+
+So **the character cannot be moved while the scene is up, and the scene cannot be left by pressing anything tested**.
+That combination is what has defeated every movement measurement since round 10, and it means the field leg needs a way
+past this specific scene rather than another movement test.
+
+### Next: get past the scene
+
+Candidates, in order of promise:
+
+1. The scene is scripted per area entry, so it may key off a **flag in the player or area structure** that a write can
+   clear (P2b's `pso_ram` map has `room`, `floor`, `episode`; a "first visit" flag is the likely neighbour).
+2. The scene may be **cancelled by the talk prompt's own Cancel** path -- the Confirm/Cancel widget seen at character
+   select is the same widget family, and the dialog might accept `B` *only on its last page*, which a driver cannot
+   detect without a frame check.
+3. A **second player** (co-op) would be outside the scene's single-player framing; P1 needs player 2 anyway.
+
+What is *not* on that list: more movement tests in this room. Eight of them have now failed for the same reason, and
+none of them measured the stick.
+
+## Round 14 (2026-11-10) — the write path opened, the scene survived it, and `gbox.pso_write` is the keeper
+
+The round set out to end Principal Tyrell's intro scene by moving the player out of talk range. The move worked; the
+scene did not care. The lasting result is the write path itself, now a tested module.
+
+### Writes have a door, and it is a job
+
+`POST /api/sessions/{sid}/rpc` with `op=write_memory` is refused:
+
+```
+read-only, reset, pause/resume and debug_* ops only; edits go through the write_memory job
+```
+
+The job takes `{session_id, address, hex_bytes}`, returns `{verified, via, rollback_hex}` and **is gated on five minutes
+without operator input** -- the same admission rule as launching, reset by every pad press. A write issued after a
+movement test sits `queued` with `admission_wait.reason = "Waiting for five minutes without operator input."`
+
+Both behaviours are now in `gbox/pso_write.py` (+6 tests): submit, wait out the gate, require `verified`, read the bytes
+back, and keep the rollback. Pointers into the live actor: position is three big-endian floats at `actor+0x38`, room is a
+`u16` at `actor+0x28`.
+
+### What the writes proved
+
+| experiment | result |
+|---|---|
+| teleport the player 300 units (`z -2015 -> -1700`) | **succeeded**, `verified: true, via: process memory`; the character stayed there |
+| did the scene end? | **no** -- mode stayed 5, the dialogue stayed on Principal Tyrell |
+| hold the stick 6 s with an A press in the middle, sampling position every 0.25 s | **no sample moved** -- there is no free window between the four conversation lines |
+| write the room id (`41 -> 10`) to force an area reload | acknowledged, then **immediately overwritten** -- the room is derived from the area state, not authoritative |
+| `floor_spawn` / `boss_warp` in the PSO tooling | item spawning and a boss teleport, **not** a field warp |
+
+So the scene is not proximity-driven, not cancelable by any input tried, and not in the fields a write can reach. The
+four lines it cycles (*"Are you BQF, the Hunter?"*, *"Go talk to my secretary..."*, *"We have a bad situation..."*,
+*"I didn't say anything."*) are four separate conversations in the real game, each ending with the character free -- here
+A re-opens the next one immediately, and the character never gets control.
+
+### Why this matters beyond the scene
+
+P6a (map writer) and P7a (player-model writer) both need live writes, and both need *verified* writes with a rollback.
+`gbox.pso_write` is that, and it encodes the two traps: the RPC refusal and the five-minute gate. Nothing in this round
+touched game memory without a recorded rollback.
+
+### Next
+
+1. The scene's state has to be found in the executive/script structures, not in the actor. The mode alternates 5/17 while
+   a page advances, so something *does* change per page -- a constancy-window diff across one A press, with the write job
+   as the probe, is the way in.
+2. Or sidestep it entirely: bring in **player 2**. The scene is single-player framing, P1 needs two players anyway, and a
+   second pad plus a second card slot is ordinary co-op setup.
+
+## Round 15 (2026-11-10) — MULTI MODE is the way past the scene, and it needs a second controller
+
+### MULTI MODE is the door P1 has been looking for
+
+`SELECT GAME MODE` offers SINGLE MODE and MULTI MODE. MULTI MODE selects **two characters from a card at once** -- the
+frame shows `SLOT A` with the main character list beside a `TEMP CHARACTERS` list -- and prints, plainly:
+
+> **Requires at least 2 Controllers.**
+
+That is the offline co-op mode, it is the two-player criterion P1 has to meet anyway, and it is the one mode whose
+character select does **not** start with the single-player story intro that has blocked every field attempt.
+
+### What was wired for it
+
+`DolphinWinAdapter._argv` now gives every PSO launch (`gecko_id` starting `GPO`) a **two-pad** `GCPadNew.ini`, built by
+`pso_coop_setup.pad_ini`:
+
+* `[GCPad1]` keeps whatever the launch decided -- `Always Connected = True` with the virtual pad, or the pad that reports
+  input when there is no virtual pad;
+* `[GCPad2]` is the keyboard device P2 is driven through: `D`/`R`/`M`/`Y` for A/B/X/Y, `SPACE` for Start, `NUMPAD8/2/4/6`
+  for the main stick and `NUMPAD7/9/1/3` for the D-pad -- a scheme chosen so P2's keys never collide with P1's.
+
+`tests/test_pso_coop_pads.py` (4 tests) pins the structure: one heading per pad, exactly one `Always Connected` in
+GCPad1, the keyboard device and key names in GCPad2, and the builder being pure text.
+
+### Two dead ends, measured rather than assumed
+
+1. **The four addresses that advanced by one per page are tick counters.** `0x805D71A2`, `0x805D7542`, `0x805D75A2` and
+   `0x805D772E` read `60 -> 61 -> 62` across three pages, which looked exactly like a page index. Watching them for four
+   minutes with no input at all showed them climb `66 -> 68 -> 71 -> ... -> 124`, about **1.2 per second**: they are a
+   clock, and the "+1 per page" was the ~1.4 s between page presses. The four write jobs queued against them were never
+   admitted (the five-minute gate) and the session was stopped instead of letting them land blind.
+2. **`pso_coop` through the HTTP launch route does not set up a buddy card.** `POST /api/games/{gid}/launch` with
+   `{"pso_coop": true}` returned a session whose `diag.pso_coop` was `null`, and the written INI had only `[GCPad1]`.
+   The flag exists on the launch tool (`pso_coop: bool = False`), so the route is dropping it -- worth a look, but the
+   INI change above makes the second controller available without it.
+
+### Not yet verified
+
+Whether MULTI MODE actually opens with the second pad, and whether player 2 spawns in Pioneer 2 free of the intro scene.
+That is the first thing the next round does; the INI change needs a fresh launch to take effect, and the live launch this
+round still wrote a single-pad INI because the flag was reading `game`, which is not in `_argv`'s scope -- that bug is
+fixed (the disc id is computed there already) but not yet observed working.
+
+## Round 16 (2026-11-10) — MULTI MODE needs a device in the console's port 2, not just a second pad
+
+MULTI MODE still refused ("Requires at least 2 Controllers.") with two pads configured and both marked
+`Always Connected`. The missing piece is not in the pad bindings at all: **Dolphin's `Dolphin.ini` has no serial-interface
+device table**, so the emulated console has nothing plugged into port 2 no matter how many pads are bound.
+
+### `pso_coop_setup.si_devices`
+
+`Dolphin.ini` in the i9-NUC profile had no `[Core]` section and no `SIDevice*` keys at all. `si_devices(ini, count=2)`
+now writes `SIDevice0 = 6` and `SIDevice1 = 6` (6 = standard controller), creating `[Core]` if absent, replacing wrong
+values, and keeping every other key and section untouched -- Dolphin's file, not ours, so the edit is as small as
+possible.
+
+`DolphinWinAdapter._argv` applies it whenever the launch is PSO (`gecko_id` starting `GPO`), next to the two-pad
+`GCPadNew.ini`. `tests/test_pso_coop_pads.py` now has 7 tests: the two-pad INI structure, `Always Connected` on **both**
+pads, P2's keyboard scheme, and `si_devices` for the empty file, the file with other keys, and the file with a wrong
+value.
+
+### Two patching mistakes, both mine, both the same shape
+
+The adapter code has two `_argv` implementations (Linux and Windows) with near-identical text. Twice this round a
+`str.replace(old, new, 1)` hit the Linux one first:
+
+* the `si_devices` call landed twice in the Linux block (a duplicated statement) and not at all in the Windows one,
+  which is why the first retest still wrote no `SIDevice*` keys;
+* an earlier round's two-pad block was in fact applied to **both** adapters, so the Windows one briefly had two copies
+  of the same block.
+
+Both are cleaned up by hand now, and the state is verified: `pad_ini(vpad_ini` and `si_devices(current, 2)` appear once
+per adapter, `gbox.adapters` imports, and 25 pad-related tests pass. The lesson is mechanical: in this file, anchor
+edits on surrounding context, never on a single similar line, and check the occurrence count before and after.
+
+### Not yet observed working
+
+Whether MULTI MODE opens with the SI device table in place. The code is in and unit-tested, but the last live launch
+that actually wrote `SIDevice*` has not been run -- the previous retest ran before the wiring bug was fixed. That is the
+first thing the next round does, and it is a single launch plus one frame.
+
+Everything else about this round's hypothesis is measured: two pads with `Always Connected`, both devices present, and
+the game still refused, so the pad configuration was never the blocker.
+
+## Round 17 (2026-11-10) — MULTI MODE opens, and player 1 is in
+
+The missing piece was exactly what round 16 predicted: Dolphin's serial-interface device table. With
+`SIDevice0 = 6` and `SIDevice1 = 6` written at launch (and both pads configured), the game stopped refusing:
+
+```
+SELECT GAME MODE      ddown + A   ->  MULTI MODE
+                                      "Please select Player 1's character."      <-- opened
+A, A                                ->  PLAYER1 marked on BQF
+                                      "Please select Player 2's character."      <-- P1 accepted
+```
+
+The two frames are `pf0-multi.jpg` (the "Please select Player 1's character" screen with `MAIN CHARACTER` BQF and the
+green `TEMP CHARACTERS` list) and `pf1-p2.jpg` (`PLAYER1` stamped over BQF, and the prompt now asking for Player 2).
+
+**This is the first time the two-controller branch has opened**, after three rounds of pad configuration that were all
+necessary but not sufficient: `[GCPad2]` (the pad) -> `Options/Always Connected` on it (the *input* connected) ->
+`SIDevice1 = 6` (the *console* seeing it). Each layer gave a distinct, observable refusal or silence.
+
+### What is in the module
+
+`gbox.pso_boot_walk.MULTI_STEPS` now carries the verified five-press path to "select Player 1", with the same rule as the
+single-player list: only `offline_game` has an unambiguous checkpoint (`mode == 9`), and the rest are judged by what the
+screen shows. One test pins the shape, including the single `ddown` that moves SINGLE MODE -> MULTI MODE.
+
+### Where the game is now, and what it needs
+
+The session is parked on **"Please select Player 2's character."** with all three `TEMP CHARACTERS` slots empty. PSO's
+offline multiplayer uses *temporary* characters for players 2 and up, so P2 cannot borrow BQF from the card: the next
+step is the character creator for a temp character, which is the same flow round 4 walked for P1 -- race, class,
+appearance, then a name typed on the on-screen keyboard, then the section ID.
+
+That typing is the expensive part and it is why this round stops here rather than mid-creator: round 4 established the
+grid technique (clamp the cursor to a known cell with `ddown`x12 + `dleft`x20, then walk; a letter's column is its
+alphabet index + 2) and got the name **BQF** when DSH was intended, so the mapping needs one careful check before it is
+used for a character that has to be identified later.
+
+### Budget note
+
+This round spent most of its steps on the launch-gate cycle: every launch needs five minutes without operator input, and
+that clock is reset by the very presses a launch is being tested with. Each verify-a-launch round therefore costs about
+ten minutes of wall clock for two or three frames of evidence. Worth knowing when planning the remaining P1 work.
+
 ## 7. Next
 
-1. Bind Dolphin to the XInput slot that reports activity. _setup_vpad wrote XInput/0 while slot 0 is a phantom
-   virtual pad at exactly zero and the operator's controller is slot 1, so the game and watch_xinput both see nothing.
-   Either free slot 0 (the XBOX Synthetic Gamepad Bus device is in Error state and is the likely provider; disabling it
-   needs elevation) or make the adapter bind the active slot when its own pad cannot take one.
-2. Then re-run gbox.pso_boot_walk.walk cold three times to answer P1's accept test (Forest 1, both players, no warp).
-3. Then P6a's in-game proof, P6b, P7a, and the recorded demo -> route fixture.
+1. Create **player 2's temporary character** in MULTI MODE (the game is parked on "Please select Player 2's
+   character."). P2 cannot borrow BQF from the card; the creator is the same flow round 4 walked, with the name
+   typed on the on-screen keyboard. Check the keyboard mapping first: round 4 produced **BQF** when **DSH** was
+   intended, so the column offset needs one verification before a character that must be identified later is made.
+2. Then the field leg: Pioneer 2 -> the Hunter's Guild door (185,173 room 10) -> the teleporter (254,25) -> Forest 1,
+   with both players, and the movement measurement that has been impossible from inside the single-player intro.
+3. Then the three cold launches, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
+
+Three layers were needed for two controllers and each gave a different symptom: `[GCPad2]` in GCPadNew.ini (no pad
+at all), `Options/Always Connected` on it (input bound but not connected), and `SIDevice1 = 6` in Dolphin.ini (the
+console finally sees it). Only the third made MULTI MODE open.

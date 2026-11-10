@@ -24,6 +24,14 @@ CODE = (
     (0x18F2880, "spawn", 256, "5c5f9f0dca7ddbb01f1b7b1200ed99ffd49fa45db09e43c2bd6588b1ad97ae91"),
     (0x18F29C0, "detonate", 232, "c7d90bc2a61aeaa6d617864b993278fabbd08230c02e6a4aa0c668d45c4fb941"),
 )
+# The remote bomb dropped already placed (operator 2026-11-10 ~07:05: "I want the bot able to just instant drop them
+# without even doing the animation ... The remote mines should just fall onto the ground and be armed and ready for
+# detonation by the bot flipping the ram byte flag at will"): spawn_bomb.c - the native allocation of the placed bomb
+# (uWp1097), its owner, the point, the detonator's flag (player u32 +0x5A18 bit 0x2000) set on the game thread, then its
+# own placed action (24, cWpAction_wp_act_setting). Installed into the zero padding after `detonate` on the first drop.
+SPAWN_BOMB = (0x18F2AC0, "spawn_bomb", 232, "1de55b539fc610c1b5fe4ed3caac0d4c4500978f70767eabbde6e15a287506fd")
+BOMB_VTABLE, BOMB_SETTING = 0x284AA58, "cWpAction_wp_act_setting"
+P_FLAGS_ARMED_BYTE, ARMED_BIT = 0x5A19, 0x20
 VT, TEMP, UPDATE, DISPATCH = 0x2858318, 0x25A3100, 0xF8CE10, 0x18F2780
 VT_ENTRIES = (0xF8C640, 0xF8C6D0, 0xF8C790, 0x1C1270, 0xF8C7A0, 0xF8C7B0,
               0xF8C7C0, 0xF8CB50, 0xF8CD60, UPDATE, 0xF8D070)
@@ -31,12 +39,19 @@ _CREATE_LOCK = threading.Lock()
 
 # Grenade ring (operator 2026-10-31): ten grenades spawned in a ring around the player that bloom outward and
 # detonate. Only "flash" reuses the live-verified flash spawn + explosion transition (docs/research/
-# re6-native-flash.md); a hand or incendiary grenade is a different native item class whose DTI is not known on this
-# build, so those kinds are refused with a reason and never substituted.
+# re6-native-flash.md); a hand or incendiary grenade is a different native item class, so those kinds are refused
+# with a reason and never substituted. The classes are known statically (branch re6-bomb-mind, 2026-11-10: uWpBomb's
+# set-up main+0xF84FF4 stores (DTI id >> 8) & 0xFFFF into +0x3864, the ids from 0x07011100 + 0x201 / 0x301 / 0x401 /
+# 0x501): uWp1091 the hand grenade (0x113, DTI main+0x2951490, vtable main+0x284B788), uWp1093 the incendiary (0x114,
+# DTI main+0x29514C8, vtable main+0x284B328), uWp1095 the flash (0x115, DTI main+0x2951500), uWp1097 the placed remote
+# bomb (0x116) - all on uWpBomb's own throw / explosion code. What is missing for them is a spawn image not pinned to
+# the flash DTI (spawn.c links FLASH_DTI) and a live receipt.
 RING_VERIFIED_KINDS = ("flash",)
 RING_KIND_REFUSED = {
-    "hand": "a hand-grenade ring is not yet verified on this build (its item class/DTI is unconfirmed)",
-    "incendiary": "an incendiary-grenade ring is not yet verified on this build (its item class/DTI is unconfirmed)",
+    "hand": "a hand-grenade ring is not yet verified on this build (uWp1091 is known; the compiled spawn image pins "
+            "the flash's class)",
+    "incendiary": "an incendiary-grenade ring is not yet verified on this build (uWp1093 is known; the compiled spawn "
+                  "image pins the flash's class)",
 }
 RING_KINDS = RING_VERIFIED_KINDS + tuple(RING_KIND_REFUSED)
 RING_COUNT_DEFAULT, RING_COUNT_MAX = 10, 16
@@ -48,11 +63,48 @@ RING_RIPPLE_MS_DEFAULT, RING_RIPPLE_MS_MAX = 40.0, 400.0
 # The spawned flash's live world transform: spawn.c copies the player's +0x60 x/y and +0x68 z there. Relocating it
 # before the explosion places the blast on the ring - the one step the live-verified single flash does not exercise.
 RING_UNIT_POS = 0x60
+# The scatter barrage (grenade_scatter): the ring's verified step along a cone toward the threats. Its kinds are the
+# verified ones only - the flash; the grenade launcher's rounds (and the hand / incendiary classes' spawn) are not
+# identified / verified on this build, so "random" draws from this tuple.
+SCATTER_KINDS = RING_VERIFIED_KINDS
+SCATTER_COUNT_DEFAULT, SCATTER_COUNT_MAX = 8, 16
+SCATTER_SPREAD_DEG, SCATTER_MIN_CM, SCATTER_MAX_CM = 30.0, 300.0, 1500.0
+SCATTER_GAP_MS = (100.0, 200.0)
+SCATTER_CHEST_CM = 120.0
 
 
 def ring_defaults():
     return {"count": RING_COUNT_DEFAULT, "radius_cm": RING_RADIUS_DEFAULT_CM, "inner_cm": RING_INNER_DEFAULT_CM,
             "ripple_ms": RING_RIPPLE_MS_DEFAULT, "expand": True}
+
+
+def verify_build(image: bytes) -> dict:
+    """Check a decompressed `main` image (hactool `--uncompressed`, its 0x100 header still in front) against the
+    pinned build: the module signature and the three code caves this controller installs into.
+
+    Every address in that output is 0x100 higher than its virtual address (gbox.nso_elf), so the image offset is
+    ``vaddr + 0x100``. Returns the facts; raises nothing, so a wrong image is reported instead of trusted.
+    """
+    shift = 0x100
+    out = {"image_bytes": len(image) if image else 0, "build_signature": False, "caves": {}, "ok": False}
+    if not isinstance(image, (bytes, bytearray)) or len(image) < shift + R.SIG_OFF + len(R.SIGNATURE):
+        return {**out, "reason": "image is shorter than the signature's address"}
+    out["build_signature"] = bytes(image[shift + R.SIG_OFF:shift + R.SIG_OFF + len(R.SIGNATURE)]) == R.SIGNATURE
+    ok = out["build_signature"]
+    for off, name, size, digest in CODE + (SPAWN_BOMB,):     # (the instant bomb drop's cave too, 2026-11-10)
+        data = IMAGES[name]
+        at = shift + off
+        before = bytes(image[at:at + size])
+        usable = len(before) == size and (before == data or not any(before))
+        out["caves"][name] = {"vaddr": hex(off), "size": size,
+                              "image_bytes_match": before == data, "pristine_padding": not any(before),
+                              "installable": usable,
+                              "image_sha256": hashlib.sha256(data).hexdigest()}
+        ok = ok and usable
+    out["ok"] = ok
+    out["reason"] = "" if ok else ("this image is not the pinned RE6 build" if not out["build_signature"]
+                                   else "a code cave is neither pristine padding nor this controller's own image")
+    return out
 
 
 class Unavailable(RuntimeError):
@@ -378,6 +430,8 @@ class Controller:
     def current_weapon(self):
         player, _ = self.ready()
         index, item, _ = R.inventory_state(self, player)
+        if not item or not 1 <= item <= 255:                 # Hand-To-Hand (0): no weapon the claim can carry
+            return None
         return item if any(slot == index and 0 <= slot < R.WEAPON_INDEXES and (kind & 255) == item
                            for kind, slot in R.inventory_guns(self, player).items()) else None
 
@@ -549,6 +603,214 @@ class Controller:
                 self.failed, self.recoverable = True, True
             receipt["reason"] = abort or "the ring did not complete"
             return {"state": "failed" if detonated == 0 else "uncertain", "verified": False, **receipt}
+
+    def grenade_scatter(self, kind="random", *, count=None, toward=None, spread_deg=None, min_cm=None, max_cm=None,
+                        gap_ms=None, safe_cm=None, rng=None):
+        """A scatter barrage (operator 2026-11-10 ~07:00: "spray a scatter shot of grenades from his postion at threats
+        at will ... a rapid barrage of random grenades ... without equipping it on his character ... sprayed like a
+        scatterhsot whenever the going gets tough"): `count` rounds, each a native grenade set off at a random point
+        of a cone from him toward the threats (`toward`: [(x, z)], else the living ones on his floor within max_cm,
+        else his facing) - SCATTER_SPREAD_DEG either side, near to far, about chest height - SCATTER_GAP_MS apart.
+        Each round is the ring's verified step (spawn, moved onto its point, the explosion transition): nothing is
+        equipped and his gun stays in his hand. kind "random" draws each round from SCATTER_KINDS (only the verified
+        ones: the flash today; the launcher's rounds are not identified); an explosive kind keeps every point past
+        safe_cm (his learned reach). A partial barrage is uncertain and never replayed."""
+        import random as _random
+        kind = (kind or "random").lower()
+        if kind != "random" and kind not in RING_KINDS:
+            raise Unavailable(f"unknown grenade kind {kind!r}")
+        if kind != "random" and kind not in SCATTER_KINDS:
+            raise Unavailable(RING_KIND_REFUSED.get(kind, "grenade kind not verified"))
+        rng = rng or _random.Random()
+        count = max(1, min(int(SCATTER_COUNT_DEFAULT if count is None else count), SCATTER_COUNT_MAX))
+        spread = math.radians(float(SCATTER_SPREAD_DEG if spread_deg is None else spread_deg))
+        lo = max(RING_SELF_CLEAR_CM, float(SCATTER_MIN_CM if min_cm is None else min_cm))
+        hi = max(lo, min(float(SCATTER_MAX_CM if max_cm is None else max_cm), RING_RADIUS_MAX_CM))
+        gap = gap_ms or SCATTER_GAP_MS
+        with self.lock:
+            self.ready()
+            self.sp = self.q(self.base + R.S_PLAYER)
+            player = self.q(self.sp + R.P_FIRST) if R.ptr_ok(self.sp) else 0
+            gm = R.game_man(self, self.base)
+            if not R.ptr_ok(player) or not gm or self.w(gm + R.GM_PHASE) != R.PHASE_PLAYING:
+                raise Unavailable("no living player in an active Mercenaries round")
+            if struct.unpack("<h", self.rd(player + R.P_HP, 2))[0] <= 0:
+                raise Unavailable("player is not alive")
+            self.player = player
+            self.generation = self.w(self.player + 0x1308)
+            self.manager = self.player + 0x13A8
+            self.check()
+            if 0x115 not in R.inventory_items(self, self.player):
+                raise Unavailable("flash resources are not loaded for this character")
+            px, py, pz = struct.unpack("<3f", self.rd(self.player + R.P_POS, 12))
+            points = [(float(x), float(z)) for x, z in (toward or ())]
+            if points:
+                cx, cz = sum(p[0] for p in points) / len(points), sum(p[1] for p in points) / len(points)
+                axis = R.heading(cx - px, cz - pz)
+                far = max(math.hypot(x - px, z - pz) for x, z in points)
+                hi = max(lo, min(hi, far + 200.0))
+            else:
+                q = struct.unpack("<4f", self.rd(self.player + R.P_ROT, 16))
+                axis = R.heading_of(q)
+            hp_before = struct.unpack("<h", self.rd(self.player + R.P_HP, 2))[0]
+            started = time.monotonic()
+            rounds, abort, attached = [], None, False
+            try:
+                attached = True
+                self.attach()
+                for i in range(count):
+                    self.check()
+                    this = rng.choice(SCATTER_KINDS) if kind == "random" else kind
+                    near = lo if this == "flash" else max(lo, float(safe_cm or 0.0))
+                    d = near + (max(near, hi) - near) * (i + rng.random()) / count   # near to far, each a step out
+                    ang = axis + rng.uniform(-spread, spread)
+                    x, z = px + d * math.sin(ang), pz + d * math.cos(ang)
+                    try:
+                        row = self._ring_one(x, py + SCATTER_CHEST_CM, z, i)
+                    except (Unavailable, AllocationLost) as exc:
+                        abort = str(exc)
+                        break
+                    rounds.append({**row, "kind": this, "dist_cm": round(d, 1)})
+                    if i + 1 < count:
+                        time.sleep(rng.uniform(*gap) / 1000.0)
+            except Exception:
+                self.failed = True
+                self.recoverable = True
+                raise
+            finally:
+                if attached:
+                    self.detach_completed()
+            try:
+                hp_after = struct.unpack("<h", self.rd(self.player + R.P_HP, 2))[0]
+            except (OSError, struct.error):
+                hp_after = None
+            receipt = {"op": "grenade_scatter", "kind": kind, "requested": count, "detonated": len(rounds),
+                       "axis_deg": round(math.degrees(axis), 1), "spread_deg": round(math.degrees(spread), 1),
+                       "near_cm": round(lo, 1), "far_cm": round(hi, 1), "rounds": rounds,
+                       "hp_before": hp_before, "hp_after": hp_after,
+                       "self_damage": (hp_before - hp_after) if isinstance(hp_after, int) else None,
+                       "player_generation": self.generation,
+                       "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+            if len(rounds) == count and abort is None:
+                return {"state": "confirmed", "verified": True, "effect": "native_flash_scatter", **receipt}
+            if abort is not None:
+                self.failed, self.recoverable = True, True
+            receipt["reason"] = abort or "the barrage did not complete"
+            return {"state": "failed" if not rounds else "uncertain", "verified": False, **receipt}
+
+    def _ensure_image(self, image):
+        """One more pinned image into the zero padding (install() refuses anything else), the process stopped for it
+        only the first time; its bytes checked against the pinned digest first."""
+        at, name, size, digest = image
+        data = IMAGES[name]
+        if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+            raise Unavailable(f"native {name} asset checksum mismatch")
+        if self.rd(self.base + at, size) != data:
+            self.stopped(lambda: self.install(self.base + at, data))
+        if self.rd(self.base + at, size) != data:
+            raise Unavailable(f"native {name} installation unconfirmed")
+
+    def drop_bomb(self, at=None, *, wait_s=0.5):
+        """A remote bomb dropped at `at` (x, y, z; default his feet) already lying placed and armed - no throw, no
+        animation, no remote in his hand (spawn_bomb.c). Verified: the unit is a uWp1097 owned by him, its action the
+        placed one (cWpAction_wp_act_setting) within wait_s, and his detonator flag set. One call = one bomb, never
+        replayed. -> {state, verified, op: bomb_drop, unit, generation, pos, armed, elapsed_ms}."""
+        with self.lock:
+            self.ready()
+            if process_identity(self.pid) != self.identity:
+                raise Unavailable("emulator process changed")
+            self.sp = self.q(self.base + R.S_PLAYER)
+            player = self.q(self.sp + R.P_FIRST) if R.ptr_ok(self.sp) else 0
+            gm = R.game_man(self, self.base)
+            if not R.ptr_ok(player) or not gm or self.w(gm + R.GM_PHASE) != R.PHASE_PLAYING:
+                raise Unavailable("no living player in an active Mercenaries round")
+            if struct.unpack("<h", self.rd(player + R.P_HP, 2))[0] <= 0:
+                raise Unavailable("player is not alive")
+            self.player = player
+            self.generation = self.w(self.player + 0x1308)
+            self.manager = self.player + 0x13A8
+            self.check()
+            _idx, _item, bomb = R.inventory_state(self, self.player)
+            if bomb is None:
+                raise Unavailable("remote bomb resources are not loaded for this character")
+            x, y, z = at if at is not None else struct.unpack("<3f", self.rd(self.player + R.P_POS, 12))
+            started, attached = time.monotonic(), False
+            try:
+                attached = True
+                self.attach()
+                self._ensure_image(SPAWN_BOMB)
+                bits = [struct.unpack("<I", struct.pack("<f", float(v)))[0] for v in (x, y, z)]
+                unit = self.call(SPAWN_BOMB[0], self.player, *bits)
+                if not R.ptr_ok(unit):
+                    raise Unavailable("native remote bomb allocation refused")
+                born = self.w(unit + 0x1308)
+
+                def placed():
+                    if self.q(unit) != self.base + BOMB_VTABLE or self.q(unit + 0x1300) != self.player:
+                        raise AllocationLost(f"remote bomb allocation changed: unit={unit:#x}")
+                    return R.unit_action(self, unit) == BOMB_SETTING
+                until = time.monotonic() + wait_s
+                while not placed():
+                    if time.monotonic() >= until:
+                        raise Uncertain("the dropped bomb's placed action did not show; not replayed")
+                    time.sleep(0.005)
+                armed = bool(self.rd(self.player + P_FLAGS_ARMED_BYTE, 1)[0] & ARMED_BIT)
+                if not armed:
+                    raise Uncertain("the detonator flag did not read back set after the drop")
+                return {"state": "confirmed", "verified": True, "op": "bomb_drop", "unit": unit, "generation": born,
+                        "pos": [round(v, 1) for v in (x, y, z)], "armed": True, "player_generation": self.generation,
+                        "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+            except Exception:
+                self.failed, self.recoverable = True, True
+                raise
+            finally:
+                if attached:
+                    self.detach_completed()
+
+
+def grenade_scatter_now(ad, kind="random", **kw) -> dict:
+    """The scatter barrage on the session's one native controller (the bot's rule, the PiP's grenade_scatter). Never
+    raises: a refusal is a receipt with its reason."""
+    started = time.monotonic()
+    try:
+        with _CREATE_LOCK:
+            ctl = getattr(ad, "_re6_native_flash", None)
+            if ctl is None:
+                ctl = Controller(ad)
+                ad._re6_native_flash = ctl
+        return ctl.grenade_scatter(kind, **kw)
+    except Uncertain as exc:
+        state, reason = "uncertain", exc
+    except (Unavailable, ValueError, TypeError, OSError) as exc:
+        state, reason = "unavailable", exc
+    except Exception as exc:                                  # noqa: BLE001
+        state, reason = "failed", exc
+    return {"op": "grenade_scatter", "state": state, "verified": False, "kind": kind, "detonated": 0,
+            "reason": (str(reason) or type(reason).__name__)[:300],
+            "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+
+
+def bomb_drop_now(ad, at=None) -> dict:
+    """The bot's / the PiP's instant remote-bomb drop on the session's one native controller. Never raises: a refusal
+    is a receipt with its reason (state unavailable / uncertain / failed)."""
+    started = time.monotonic()
+    try:
+        with _CREATE_LOCK:
+            ctl = getattr(ad, "_re6_native_flash", None)
+            if ctl is None:
+                ctl = Controller(ad)
+                ad._re6_native_flash = ctl
+        if not ctl.recover_completed_call() and ctl.failed:
+            raise Unavailable("native controller awaits recovery after an uncertain operation")
+        return ctl.drop_bomb(at)
+    except Uncertain as exc:
+        state, reason = "uncertain", exc
+    except (Unavailable, ValueError, TypeError, OSError) as exc:
+        state, reason = "unavailable", exc
+    except Exception as exc:                                  # noqa: BLE001 - the bot never dies on a native receipt
+        state, reason = "failed", exc
+    return {"op": "bomb_drop", "state": state, "verified": False, "reason": (str(reason) or type(reason).__name__)[:300],
+            "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
 
 
 def flash_now(ad):

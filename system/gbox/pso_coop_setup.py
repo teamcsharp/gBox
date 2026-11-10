@@ -44,7 +44,11 @@ def pad_ini(base: str, windows=False) -> str:
               "Triggers/L-Analog": "l", "Triggers/R-Analog": "r",
               "D-Pad/Up": "dup", "D-Pad/Down": "ddown",
               "D-Pad/Left": "dleft", "D-Pad/Right": "dright"}
-    return base.rstrip() + "\n\n[GCPad2]\nDevice = " + device + "\n" + "".join(
+    # Dolphin only presents a pad to the emulated console when it is "always connected" or its device is actively
+    # detected. PSO's MULTI MODE asks the console how many controllers are plugged in, so GCPad2 needs the same
+    # Always Connected flag GCPad1 gets -- without it the game still says "Requires at least 2 Controllers." with a
+    # perfectly valid second pad configured (i9-NUC 2026-11-10).
+    return base.rstrip() + "\n\n[GCPad2]\nOptions/Always Connected = True\nDevice = " + device + "\n" + "".join(
         f"{field} = `{keys[key].upper()}`\n" for field, key in fields.items())
 
 
@@ -172,3 +176,46 @@ def set_speed(ad, multiplier, press):
             ad._autoplay_speed_changing = False
         return {"requested": multiplier, "input_delivered": True, "achieved_verified": False,
                 "note": "Requested emulation rate; achieved speed and campaign completion are not verified."}
+
+
+# Dolphin's emulated serial interface only presents a controller to the console when the slot has a device type.
+# GCPadNew.ini only binds inputs; without these, port 2 is empty and PSO's MULTI MODE keeps saying
+# "Requires at least 2 Controllers." no matter how many pads are configured (i9-NUC 2026-11-10).
+SI_STANDARD_CONTROLLER = 6
+
+
+def si_devices(ini: str, count: int = 2) -> str:
+    """Ensure `Dolphin.ini` puts a standard controller in the first `count` serial-interface slots.
+
+    Keeps every other key and every other section, adds `[Core]` if it is missing, and never writes a value the file
+    already has right -- the file is Dolphin's, not ours, so this is the smallest possible edit.
+    """
+    import re
+    lines = ini.splitlines()
+    want = {f"SIDevice{i}": str(SI_STANDARD_CONTROLLER) for i in range(count)}
+    found = {}
+    core_at = None
+    section = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1]
+            if section == "Core" and core_at is None:
+                core_at = i
+            continue
+        if section == "Core" and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in want:
+                found[key] = i
+    for key, value in want.items():
+        if key in found:
+            lines[found[key]] = f"{key} = {value}"
+        else:
+            if core_at is None:
+                lines.append("[Core]")
+                core_at = len(lines) - 1
+            lines.insert(core_at + 1, f"{key} = {value}")
+            # keep the recorded index valid for the keys still to come
+            found = {k: (v + 1 if v > core_at else v) for k, v in found.items()}
+            core_at += 1
+    return "\n".join(lines) + "\n"

@@ -95,3 +95,34 @@ def own_screen(snap: dict) -> str:
 
 
 DRIVER = RE4GC
+
+# The GameCube's weapon classes (re_games / re4_merc_bot: the GC item ids) -> the fire pattern's families, the way
+# re4_gc_native.Controller.weapon_choices names them ("magnum" the Broken Butterfly, Killer7 and Hand Cannon).
+FIRE_FAMILY_BY_KIND = {"magnum": "magnum", "shotgun": "shotgun", "rifle": "rifle", "gun": "handgun", "rocket": None}
+
+
+def combat_profile():
+    """RE4 GameCube described for the universal core (gbox.mercs.core.combat.TitleProfile; the operator 2026-11-10: "I
+    want it able to work with even the ps3, and gamecube versions"). Descriptive: this edition's fight is
+    re4_merc_bot.Bot and nothing in it consults the profile yet - the core's tank driver can drive it
+    (tests/test_mercs_fire_pattern.py). The world is the Switch edition's (mm), the aim the same tank aim (R held, the
+    stick fine-turns it, no pitch), the trigger A: pressed a 50 ms tick down, then up, every PRESS_GAP (about 10 a
+    second), or held where the round gun auto-repeats at the x80 class interval (re4_merc_bot.TRIGGER_PRIOR, live
+    2026-10-26: the shotgun and the rifle repeat only on presses, 3.1 - 4.6 shots a second; the Hand Cannon held
+    fires nothing)."""
+    from ..core import combat
+    from ... import re4_merc_bot as B
+    mm = 10.0
+    return combat.TitleProfile(
+        title="re4_gc", title_id="G4BE08", units_per_cm=mm, aim_model="tank_heading",
+        sticks="tank: the stick turns the body; R held raises the gun, left / right fine-turn the aim (no pitch); "
+               "A fires (pressed; held only where the class auto-repeats)",
+        aim_btn="r", fire_btn="a", turn_sign=1, raise_tol=B.TURN_TOL, fire_tol_min=B.FIRE_TOL,
+        engage_cm=B.ENGAGE / mm, level_dy_cm=250.0, max_dy_cm=250.0,
+        bodies=combat.BodyTable(default=combat.HUMAN._replace(r=B.BODY_HALF_W / mm)),
+        specials=("melee_follow_up", "knife", "time_bonus_route"),
+        fire_pattern=False, fire_style="edge", fire_gap_s=B.PRESS_GAP, fire_tick_s=0.05, fire_cap_hz=0.0,
+        fire_cap_note="presses ~10/s by design (PRESS_HOLD 0.04 / PRESS_GAP 0.09 at the 20 Hz loop); measured live "
+                      "2026-10-26 (TRIGGER_PRIOR): presses 11.2 - 12.2/s gave the shotgun 3.4 - 4.6 and the rifle 3.1 "
+                      "shots/s; the magnums' per-class rate not measured",
+        family=lambda kind: FIRE_FAMILY_BY_KIND.get(kind, "handgun") if isinstance(kind, str) else "handgun")

@@ -361,6 +361,51 @@ What the run showed:
 The frames are in docs/evidence/re6-switch-driver/ (real frames from this session and the measurement sessions,
 cropped to the game's window).
 
+## The remote bomb's detonator, as a hook (2026-11-10, static, main 061D2A06CD700785E987C42CE2D72231)
+
+The grenades and the remote bomb are one family: uWpBomb (DTI main+0x2953028, vtable main+0x2857790) and its
+subclasses uWp1091 (hand, 0x113), uWp1093 (incendiary, 0x114), uWp1095 (flash, 0x115) and uWp1097 (the placed remote
+bomb, 0x116; DTI main+0x2951538, vtable main+0x284AA58; its model is wp1096's). uWpBomb's properties: mTimer f32
++0x3A20 (counts up), mFxDir +0x3A80, mReqOld +0x3A90, mSeWait +0x3A94; the class statics mTimerMiss main+0x2857B70,
+mTimerFire main+0x2857B74, mForceTime main+0x2857B78; +0x3864 the item kind. The weapon actions come from the table
+main+0x2825700 (0x10 a row: param, DTI): 7 throw, 10 bomb (the explosion), 22 kill, 24 setting. A unit's action
+manager is at +0x13A8 (vfunc +0x30 the request; the current action +0x13F0).
+
+- A thrown grenade runs cWpAction_wp_act_throw, whose move (main+0x1134A70) calls uWpBomb's slot 123 (main+0xF852F0):
+  the fuse (mTimer >= mTimerFire + uWpBomb +0x3A40) or the contact checks request action 10; damage taken requests it
+  too when +0x3A44 is set.
+- The placed remote bomb runs cWpAction_wp_act_setting. Its move (main+0x112FF30) asks every frame whether the owner
+  (+0x1300) is a uPlayer (DTI main+0x291FD58) whose byte +0x5A19 has bit 0x20 (bit 0x2000 of the u32 +0x5A18) set. If
+  not, it requests action 10 on itself (main+0x11302C4).
+- cPlAction_pl_act_grenade_remocon_action (the remote's player action; modes from its flags +0x20 bits 8-11, the jump
+  table main+0x2188F34) sets that bit at the throw (mode 1, main+0x108AB7C). It clears the bit at the detonation
+  press (mode 8, main+0x108ADF8) and when a mode-8 action ends (main+0x108B270).
+
+**The hook** (`re6_switch_mods.detonate`, the bot's BOMB_MIND) clears that bit, writing that byte alone. Every bomb of
+his that is lying placed then goes off on its next frame through the game's own action 10. Nothing is pressed and the
+remote is not needed in his hand. The detonator is per player, so one bomb cannot go off alone. `settle_remote` puts
+the bomb slot's mode +0xC back to 0 if it stays 1 after a hook blast with nothing armed or placed. That 0 is the
+game's own value after a press; whether the game leaves the 1 behind is not measured yet.
+
+**The instant drop** (`spawn_bomb.c`, main+0x18F2AC0, 232 B) puts a remote bomb down at a chosen point without a throw
+and without the remote in his hand. It does the same native allocation as the flash spawn, with the uWp1097 DTI, sets
+the owner to him, and sets bit 0x2000 of his u32 +0x5A18 (the throw's own flag) on the game thread. It then requests the
+bomb's placed action, 24. `Controller.drop_bomb` verifies the class, the owner, the placed action and the flag. The bot
+drops instead of throwing, and the flag hook sets the bomb off with the gun still in his hand. The live checks still
+open are whether the dropped bomb settles on the floor and whether its blast counts his kills.
+
+**The scatter barrage** (`Controller.grenade_scatter`) is the ring's verified step, aimed along a cone from him toward
+the threats instead of round a circle. Each round spawns, moves onto its point and explodes, 0.1-0.2 s apart, near to far,
+at chest height. Only the flash is verified, so "random" draws only flashes. The grenade launcher's rounds are not
+identified.
+
+**Live, 2026-11-10 (Eden, lilspark, session 0254df67bf934b6d-1e2777bc67954d28, read only):** the bot never put a bomb
+out. Every native gun request was answered by the game re-equipping the selected item about 0.11 s later, with a
+second action 38 (weapon_change) whose +0x5440 was 12 again. That item was the remote bomb or the flash. The bot's
+own counters showed it: item_gun_backs 594, and 11 kills in 3 minutes. The writer is one of the item-select paths
+(main+0xB29210 and its command queue at player +0x41E0 / +0x4220; main+0xBBFDE8). It is not identified yet, and the
+hook's live proof waits for a bomb out.
+
 ## What an RE6 Switch driver still needs
 
 1. **A game-side fire rate.** Found: the weapon table's seconds between shots (the Ghidra map above).
