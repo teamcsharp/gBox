@@ -375,7 +375,7 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
                 models[j] = ninja.cnk_model_lists(P, N, T, 1, mat, tiny_fl, tex_fl, strip_fl, e=e, base=vbase, keep_vlist=keep)
             elif nd["model"]:
                 c_r = struct.unpack_from(e + "4f", data, nd["model"] + 8)
-                models[j] = (keep + struct.pack("<I", 0xFF) if keep else b"", empty_pl, list(c_r[:3]), c_r[3])
+                models[j] = (keep + struct.pack(e + "I", 0xFF) if keep else b"", empty_pl, list(c_r[:3]), c_r[3])
         nn = [dict(nd) for nd in nodes]
         for j in geo:
             nn[j]["flags"] &= ~0x8
