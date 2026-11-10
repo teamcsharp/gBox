@@ -1545,6 +1545,9 @@ ENGAGED_DOINGS = frozenset({"turn", "aim", "fire", "hold"})
 # position is. Stats walls_pressed, unwalls, walls_refused, walls_boxed_in.
 WALL_PRESS_S, WALL_PRESS_MM, WALL_KEEP_S, WALL_R_MM, WALL_CONE = 0.6, 150.0, 60.0, 1500.0, 0.7
 UNWALL_MM, UNWALL_S, CONTROL_S = 2500.0, 1.6, 5.0
+# Tank controls: a pure sideways stick only swivels him on the spot (#9560). Off his facing by up to UNWALL_ARC_RAD the
+# unwall step turns AND walks forward - an arc along the wall tangent - instead of a turn with no forward.
+UNWALL_ARC_RAD, UNWALL_ARC_MM = 1.75, 700.0
 SLIDE_TRIES_DEG = (45, -45, 90, -90, 135, -135, 180)             # a refused walk: along the wall, nearest first
 # The room's real map (#9342, docs/research/re4-switch-mercs-collision.md, checked against the RomFS and live RAM
 # positions: gbox.re4_switch_room_map; the operator's top RE4 complaint, 2026-11-10: he walks into walls and pins the
@@ -2921,7 +2924,7 @@ class Bot:
             un = d.get("_uc_unwall")
             if un is not None and (now >= un["until"] or self._flat(p["pos"], un["goal"]) <= ESCAPE_ARRIVED_MM):
                 un = d["_uc_unwall"] = None
-            out = {"hold": self._unwall_keys(p, un["goal"])} if un is not None else act
+            out = {"hold": self._unwall_keys(p, un["goal"], snap)} if un is not None else act
             hold = set(out.get("hold") or ())
             pushing = "lup" in hold
             in_control = now - (d.get("_uc_control_at") or -1e9) <= CONTROL_S
@@ -2962,19 +2965,32 @@ class Bot:
             d["_uc_unwall"] = {"until": now + UNWALL_S, "goal": goal, "why": why}
             d.setdefault("_fz", {"pos": None, "rot": None, "tap": -1e9, "on": False})["stepped"] = now
             self.doing, self.why = "unwall", why
-            return {"hold": self._unwall_keys(p, goal)}
+            return {"hold": self._unwall_keys(p, goal, snap)}
         except Exception as exc:                             # noqa: BLE001 - the core never costs the tick
             self._core_error(exc)
             return act
 
-    def _unwall_keys(self, p, goal) -> set:
+    def _arc_clear(self, p, snap) -> bool:
+        """UNWALL_ARC_RAD: the floor right ahead of his facing is open on the room map (a step of UNWALL_ARC_MM, his
+        body's brush) - then the unwall turn may walk too. Without a map (or on a doubt) it does not."""
+        try:
+            rm, rot, pos = self._room_map(snap), p.get("rot"), p.get("pos")
+            if rm is None or not isinstance(rot, (int, float)) or not pos:
+                return False
+            end = (pos[0] + UNWALL_ARC_MM * math.sin(rot), pos[1], pos[2] + UNWALL_ARC_MM * math.cos(rot))
+            return rm.walk_block(tuple(pos), end, end_r=0.0, body_r=ROOM_BRUSH_MM) is None
+        except Exception:                                    # noqa: BLE001
+            return False
+
+    def _unwall_keys(self, p, goal, snap=None) -> set:
         """Toward an open-floor goal: the quick turn when it lies behind him, a turn on the spot while it is more than
         STEP_TURN_RAD off, then the walk onto it."""
         err = wrap(heading(goal[0] - p["pos"][0], goal[2] - p["pos"][2]) - (p.get("rot") or 0.0))
         if abs(err) > ESCAPE_QUICK_RAD:
             return set(QUICK_TURN)
         if abs(err) > STEP_TURN_RAD:
-            return self._turn(err)
+            arc = abs(err) <= UNWALL_ARC_RAD and snap is not None and self._arc_clear(p, snap)
+            return self._turn(err) | ({"lup"} if arc else set())
         return {"lup"} | (self._turn(err) if abs(err) > self.TURN_TOL else set())
 
     def _never_stand(self, p, act, snap, now) -> dict:

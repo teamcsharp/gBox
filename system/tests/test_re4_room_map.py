@@ -203,7 +203,8 @@ def test_he_goes_round_a_wall_the_room_map_knows_never_into_it_nor_shooting_it(m
     play(b, game, 10.0)
     assert b.stats.get("room_map_steps_refused", 0) >= 1 and b.stats["room_map"] == "r400"
     assert sum(game.pushed) == 0, "never against it"
-    assert game.pos[2] > 1000.0 and game.shots and all(game.shots), "round its end, every shot on a clear line"
+    assert game.shots and all(game.shots), "round its end, every shot on a clear line"
+    assert game.enemies[0]["hp"] == 0, "he got round the wall and killed it (the arc walks, it does not swivel)"
     monkeypatch.setattr(D, "ROOM_MAP", False)
     blind = Walk(rm, [(0.0, 0.0, 3000.0)])
     play(D.Bot(stats={}, director=False), blind, 10.0)
