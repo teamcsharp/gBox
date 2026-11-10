@@ -195,8 +195,14 @@ class NJ:
         if o < 0:
             raise ValueError("no NJCM chunk")
         self.e = ">" if be else "<"
-        size = struct.unpack_from(self.e + "I", data, o + 4)[0]
-        self.d = data[o + 8:o + 8 + size]
+        # The NJCM chunk size is little-endian on BOTH platforms: the GameCube packs keep the Dreamcast chunk
+        # framing and only the node/vertex payload became big-endian. Reading it with self.e read 0xB0520000
+        # as the size of a GC body and survived purely because the slice clamped at EOF, so a chunk that is
+        # not the last thing in its buffer (a BML entry, a copy after a POF0) would over-read into its
+        # neighbour. gbox.pso_gc.njcm_payload has always read it correctly.
+        size = struct.unpack_from("<I", data, o + 4)[0]
+        end = min(len(data), o + 8 + size)
+        self.d = data[o + 8:end]
         self.bones: list[dict] = []
         self.vbuf: dict[int, dict] = {}                         # global vertex cache: index -> {pos, nrm, joints}
         self.tris: dict[int, list] = {}                         # texture id -> [(i0, uv0), (i1, uv1), (i2, uv2)] lists

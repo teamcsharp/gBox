@@ -47,10 +47,14 @@ def pack(fmt, points, normals, uvs):
     for p, n, uv in zip(points, normals, uvs):
         record = bytearray(stride)
         struct.pack_into('<3f', record, 0, *p)
-        if fmt == PLAIN:                                        # no s8 normal: packed junk at +12, UV at +16, colour
+        if G.STAGE_LAYOUT[fmt]['normal'] is None:              # no s8 normal: packed junk at +12, UV at +16, colour
             struct.pack_into('<I', record, 12, 0xDFDFDFDF)
             struct.pack_into('<2e', record, 16, *uv)
             record[20:24] = bytes((200, 200, 200, 255))
+        elif fmt not in (LIT, VERTEX):                          # the 2026-11-10 formats: normal +12, tangent +16, UV +20
+            struct.pack_into('<4b', record, 12, *(max(-127, min(127, round(c * 127))) for c in n), -1)
+            struct.pack_into('<4b', record, 16, 127, 0, 0, 127)
+            struct.pack_into('<2e', record, 20, *uv)
         else:
             struct.pack_into('<4b', record, 12, *(max(-127, min(127, round(c * 127))) for c in n), -1)
             struct.pack_into('<4b', record, 16, 127, 0, 0, 127)
@@ -151,9 +155,10 @@ def quad(x0, x1, y0, y1, z0, z1, axis_normal, uv_scale, up=True):
     return {'points': points, 'normals': [normal] * 4, 'uvs': uvs, 'strips': [[0, 1, 2, 3]]}
 
 
-def stage_arc(*, floor_tile_cm=400.0, wall_tile_cm=200.0, opacity=255):
+def stage_arc(*, floor_tile_cm=400.0, wall_tile_cm=200.0, opacity=255, extra=()):
     """(archive, names): a floor on the lit format, a wall on the vertex-lit one (alpha-tested), a floor on the
-    no-normal format, a sky piece, a _NUKI cut-out, a normal map and an untouched layout."""
+    no-normal format, a sky piece, a _NUKI cut-out, a normal map and an untouched layout; `extra` appends
+    (name, payload) entries."""
     floor = quad(0, 1600, 0, 0, 0, 800, 'y', 1.0 / floor_tile_cm) | {'fmt': LIT, 'material': 0, 'lod': 1}
     wall = quad(0, 600, 0, 300, 0, 0, 'z', 1.0 / wall_tile_cm) | {'fmt': VERTEX, 'material': 1, 'lod': 1}
     deck = quad(0, 500, 50, 50, 1000, 1500, 'y', 1.0 / 250.0) | {'fmt': PLAIN, 'material': 2, 'lod': 1}
@@ -174,7 +179,7 @@ def stage_arc(*, floor_tile_cm=400.0, wall_tile_cm=200.0, opacity=255):
                 (SCOPE + 'x_yuka_NM', nuki()),
                 ('soft\\stage\\s1208\\s1208_em00', b'XFS\0kept'),
                 (SCOPE + 'piece', piece_mrl), (SCOPE + 'piece', piece),
-                (SCOPE + 'sky', sky_mrl), (SCOPE + 'sky', sky)]
+                (SCOPE + 'sky', sky_mrl), (SCOPE + 'sky', sky), *extra]
     entries = [mt_arc.Entry(name=name, hash=0x241F5DEB, tag=0x40000000 | len(data), size=0, offset=0,
                             data=zlib.compress(data, 6)) for name, data in contents]
     return mt_arc.build(mt_arc.Arc(7, entries)), [name for name, _ in contents]
@@ -190,9 +195,24 @@ def test_the_measured_layouts_give_positions_normals_and_the_albedo_uv():
     assert np.allclose(lit[1][0], (0, 1, 0), atol=0.01) and np.allclose(lit[2][3], (4, 4), atol=0.01)
     assert np.allclose(plain[1], 0) and np.allclose(plain[2][3], (4, 4), atol=0.01)   # UV at +16, no normal
     assert np.allclose(plain[0], lit[0]) and lit[3].shape == (2, 3)
-    unknown = mt_model.parse_mod(stage_mod([quad(0, 1, 0, 0, 0, 1, 'y', 1) | {'fmt': 0x3870A4D1, 'material': 0}],
-                                           ('m',)) if mt_model.fvf_stride(0x3870A4D1) == 24 else None)
-    assert G.mesh_geometry(unknown, 0) is None                 # not measured: skipped, never guessed
+
+
+def test_a_format_that_is_not_measured_is_skipped_never_guessed(monkeypatch):
+    model = mt_model.parse_mod(stage_mod([quad(0, 1, 0, 0, 0, 1, 'y', 1) | {'fmt': PLAIN, 'material': 0}], ('m',)))
+    monkeypatch.setattr(G, 'STAGE_LAYOUT', {k: v for k, v in G.STAGE_LAYOUT.items() if k != PLAIN})
+    assert G.mesh_geometry(model, 0) is None
+
+
+@pytest.mark.parametrize('fmt, normal', [(0x2FC0B663, True), (0x287029D8, True), (0x3870A4D1, False),
+                                         (0x3C004EA1, False)])
+def test_the_formats_measured_on_the_other_nine_stages(fmt, normal):
+    """2026-11-10: 0x2FC0B663 / 0x287029D8 carry the s8 normal at +12 and the UV at +20; 0x3870A4D1 / 0x3C004EA1 no
+    normal and the UV at +16 (the geometric face normal decides)."""
+    model = mt_model.parse_mod(stage_mod([quad(0, 400, 0, 0, 0, 400, 'y', 0.01) | {'fmt': fmt, 'material': 0}], ('m',)))
+    positions, normals, uvs, triangles = G.mesh_geometry(model, 0)
+    assert np.allclose(uvs[3], (4, 4), atol=0.01) and triangles.shape == (2, 3)
+    assert np.allclose(normals[0], (0, 1, 0), atol=0.01) if normal else np.allclose(normals, 0)
+    assert G.STAGE_LAYOUT[0x35E0A437] == {'normal': 12, 'uv': 20}
 
 
 def test_the_re6_mrl_resolves_each_material_albedo_and_its_alpha_test():
@@ -280,4 +300,57 @@ def test_build_refuses_a_bad_code_and_a_scope_without_albedos():
         G.build(archive, stage='s400')
     with pytest.raises(G.GreyboxError):
         G.build(archive, stage='s1209')
-    assert G.MERCS_SETS['s1208'] == ('s1208Soft', 's1218Soft') and G.STAGE_NAMES['s1208'] == 'Mining the Depths'
+    assert G.MERCS_SETS['s1208'] == ('s1208Soft', 's1218Soft') and G.STAGE_NAMES['s1208'] == 'Creature Workshop'
+
+
+# --- the ten stages -------------------------------------------------------------------------------------------------
+
+def test_the_stage_table_names_every_geometry_archive_in_the_bots_select_order():
+    from gbox.mercs.titles import re6_switch
+    assert sorted(G.SELECT_ORDER) == sorted(G.MERCS_STAGES) == sorted(G.STAGE_NAMES)
+    assert [G.STAGE_NAMES[code] for code in G.SELECT_ORDER] == list(re6_switch.STAGES)
+    assert G.SELECT_ORDER[2] == 's1203' and G.STAGE_NAMES['s1203'] == 'Mining the Depths'
+
+
+def test_a_campaign_stages_pieces_beside_the_stages_own_are_written_too():
+    extra_scope = 'data\\stage\\s0204\\scr\\scr00\\'
+    archive, _names = stage_arc(extra=[(extra_scope + 'x_kanban_BM', albedo(32, 32))])
+    arc = mt_arc.parse(archive)
+    assert G.scene_scopes(arc, 's1208') == ('data\\stage\\s1208\\scr\\', 'data\\stage\\s0204\\scr\\')
+    assert G.scene_scopes(arc, 's1203') == ('data\\stage\\s1203\\scr\\',)        # no own folder: nothing borrowed
+    written, receipt = G.build(archive, stage='s1208')
+    after = mt_arc.parse(written)
+    assert G._raw(after.find(extra_scope + 'x_kanban_BM')) != G._raw(arc.find(extra_scope + 'x_kanban_BM'))
+    assert receipt['scopes'] == list(G.scene_scopes(arc, 's1208')) and receipt['stage_select_index'] == 9
+    assert G.verify(archive, written, receipt)['changed'] == receipt['changed_entries']
+    with pytest.raises(G.GreyboxError):
+        G.build(archive, stage='s1203')                       # the campaign folder alone is not a stage
+
+
+def test_suffixed_base_maps_are_albedos_and_get_their_grid():
+    assert all(G.is_albedo_name(SCOPE + n) for n in ('x_BM', 's0023_BM-ground02', 'om1309_BM_04', 's1201_ten_BM_HQ'))
+    assert not any(G.is_albedo_name(SCOPE + n) for n in ('x_NM', 'x_BMX', 'x_MM', 'x_bm'))
+    archive, _names = stage_arc(extra=[(SCOPE + 's0023_BM-ground02', albedo(32, 32)),
+                                       (SCOPE + 'om1309_BM_04', albedo(32, 32))])
+    written, receipt = G.build(archive, stage='s1208')
+    names = {r['name'].rsplit('\\', 1)[-1] for r in receipt['textures']}
+    assert {'s0023_BM-ground02', 'om1309_BM_04'} <= names
+    assert G.verify(archive, written, receipt)['changed'] == receipt['changed_entries']
+
+
+def test_build_all_writes_each_present_stage_with_one_receipt(tmp_path):
+    archive, _names = stage_arc()
+    inputs = tmp_path / 'NX'
+    inputs.mkdir()
+    (inputs / 's1208.arc').write_bytes(archive)
+    receipt = G.build_all(inputs, tmp_path / 'out', stages=('s1203', 's1208'), preview=False, rebuild_check=True,
+                          log=lambda *_: None)
+    path = 'romfs/nativeNXx64/arc/NX/s1208.arc'
+    written = (tmp_path / 'out' / path).read_bytes()
+    assert list(receipt['files']) == [path] and receipt['files'][path]['sha256'] == hashlib.sha256(written).hexdigest()
+    assert receipt['stages']['s1203'] == {'skipped': f'{inputs / "s1203.arc"} not present'}
+    assert receipt['stages']['s1208']['stage_name'] == 'Creature Workshop'
+    assert receipt['stages']['s1208']['rebuild_identical'] is True and receipt['live_verified'] is False
+    assert (tmp_path / 'out' / 'receipt.json').is_file()
+    with pytest.raises(G.GreyboxError):
+        G.build_all(inputs, tmp_path / 'none', stages=('s1203',), preview=False, log=lambda *_: None)

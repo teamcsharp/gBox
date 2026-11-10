@@ -52,9 +52,10 @@ class GCDisc:
         return self._r(off, end)
 
 
-def dol_to_elf(dol: bytes) -> bytes:
+def dol_to_elf(dol: bytes, gekko: bool = False) -> bytes:
     """GameCube DOL -> ELF32 big-endian PowerPC (one PT_LOAD per text/data section + bss), so Ghidra imports it
-    with correct addresses and entry point."""
+    with correct addresses and entry point. gekko=True rewrites the paired-single instructions
+    (depair) so the stock Ghidra PowerPC language sees plain lfs/stfs instead of opcode-4 noise."""
     offs, addrs, sizes = (struct.unpack_from(">18I", dol, o) for o in (0x00, 0x48, 0x90))
     bss_addr, bss_size, entry = struct.unpack_from(">3I", dol, 0xD8)
     segs = [(offs[i], addrs[i], sizes[i], 5 if i < 7 else 6) for i in range(18) if sizes[i]]   # 5 = R+X, 6 = R+W
@@ -62,8 +63,9 @@ def dol_to_elf(dol: bytes) -> bytes:
     data_off = 52 + 32 * phnum
     body, ph = bytearray(), bytearray()
     for (o, va, n, flags) in segs:
+        data = depair(dol[o:o + n]) if gekko and flags == 5 else dol[o:o + n]
         ph += struct.pack(">8I", 1, data_off + len(body), va, va, n, n, flags, 32)
-        body += dol[o:o + n]
+        body += data
     if bss_size:
         ph += struct.pack(">8I", 1, data_off + len(body), bss_addr, bss_addr, 0, bss_size, 6, 32)
     ehdr = b"ELF" + bytes([1, 2, 1, 0]) + bytes(8) + struct.pack(">HHIIIIIHHHHHH", 2, 20, 1, entry, 52, 0, 0, 52, 32, phnum, 40, 0, 0)

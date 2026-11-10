@@ -103,6 +103,15 @@ governor have no RE6 counterpart beyond what was there (the remote bomb, `re6_sw
 
 ## 3. The greybox (`gbox/re6_stage_greybox.py`)
 
+> **Correction, 2026-11-10 (branch `re6-greybox-stages`).** `s1208` is **Creature Workshop** (stage 9), not Mining the
+> Depths: the learned stage books' bonus positions (`s121N.json`) equal, exactly, the bonuses the bot recorded in the
+> round maps filed under each stage name, and each pair agrees with the set's enemy census. Mining the Depths is
+> `s1203` (stage 2). The full table is `re6_stage_greybox.STAGE_NAMES` / `SELECT_ORDER` (select order:
+> s1202, s1206, s1203, s1200, s1204, s1205, s1201, s1209, s1207, s1208). The NavMesh note "s1218 / Mining the Depths"
+> in `re6_switch.py` carries the same mislabel. The writer now covers all ten archives (`build_all`), five more
+> vertex formats and the suffixed base maps (`_BM-…`, `_BM_NN`, `_BM_HQ`); every boot instruction below that says
+> "Mining the Depths (stage 2)" for `s1208` means stage 9.
+
 ### 3.1 Which archives are the Mercenaries stages (measured on the host's RomFS)
 
 `nativeNXx64/arc/NX/s1200.arc` .. `s1209.arc` are the ten stages' geometry. Each has two per-mode sets:

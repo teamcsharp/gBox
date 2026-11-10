@@ -172,7 +172,9 @@ def test_overrides_and_previews(tmp_path):
         G.build(room, archive, overrides={0: "lava"})
     G.contact_sheet(written, receipt["textures"], tmp_path / "sheet.png")
     report = G.render_stage(room, written, tmp_path / "view.png", size=64)
-    assert (tmp_path / "sheet.png").exists() and (tmp_path / "view.png").exists() and report["triangles"] == 8
+    assert (tmp_path / "sheet.png").exists() and (tmp_path / "view.png").exists()
+    assert report["triangles"] + report["culled"] == 8 and report["culled"] > 0
+    assert G.render_stage(room, written, tmp_path / "all.png", size=64, cull=False)["triangles"] == 8
 
 
 def test_command_line_survey_and_build(tmp_path, capsys):
@@ -191,6 +193,93 @@ def test_command_line_survey_and_build(tmp_path, capsys):
     assert len(out) == saved["bytes"] and saved["live_verified"] is False
     with pytest.raises(G.GreyboxError, match="never overwritten"):
         G.main(["build", str(room), str(archive), "--out", str(tmp_path / "out"), "--no-preview"])
+
+
+# --- the room's objects (ETM) and every stage at once ---------------------------------------------------------------------
+
+def make_prop_room():
+    """make_room plus the measured object layout: an ITM table, and an ETM slot holding a door ([BIN][TPL] with an
+    opacity image, then a piece BIN that has no table), a crate whose table names a scene entry, and a lamp whose
+    table names an entry the item table also names."""
+    _pack, dat = A.pack_slots(make_room())
+    slots = list(dat.slots)
+    door = quad_model([(-650, 0, 0), (650, 0, 0), (650, 2300, 0), (-650, 2300, 0)], diffuse=0, opacity=1, texture_count=2)
+    piece = quad_model([(0, 0, 0), (300, 0, 0), (300, 300, 0), (0, 300, 0)], diffuse=0, texture_count=2)
+    crate = quad_model([(0, 0, 0), (0, 0, 600), (600, 0, 600), (600, 0, 0)], diffuse=0, texture_count=1)
+    lamp = quad_model([(0, 0, 0), (100, 0, 0), (100, 400, 0), (0, 400, 0)], diffuse=0, texture_count=1)
+    table = lambda *entries: A.Tpl([A.TplImage(16, 16, 0x0E, PACK_ID, e) for e in entries]).slot()
+    etm = (bytes(64) + door + table(4, 5) + piece + crate + table(1) + lamp + table(6))
+    slots += [("ITM", bytes(32) + table(6)), ("EFF", table(7)), ("ETM", etm)]
+    return make_udas(make_dat(slots))
+
+
+def make_prop_archive():
+    pack = A.ImagePack.parse(make_archive())
+    for size in (32, 16, 16, 16):                              # 4 door albedo, 5 door opacity, 6 item, 7 effect
+        pack.append(A.encode_dds(gradient(size, size), fourcc="DXT3"))
+    return pack.build()
+
+
+def test_room_props_groups_each_object_with_its_tables_and_its_pieces():
+    groups, notes = G.room_props(make_prop_room())
+    assert [len(g.models) for g in groups] == [2, 1, 1] and [len(g.tables) for g in groups] == [1, 1, 1]
+    assert [[i.index for i in g.tables[0].images] for g in groups] == [[4, 5], [1], [6]]
+    assert notes["models"] == 4 and notes["tables"] == 3 and notes["etm_slots"] == [10]
+    named = G.named_entries(make_prop_room(), PACK_ID)
+    assert named["ITM"] == {6} and named["EFF"] == {7} and named["SMD"] == {0, 1, 2} and named["ETM"] == {1, 4, 5, 6}
+
+
+def test_measure_props_keeps_scene_item_and_opacity_entries_out_and_spans_in_model_space():
+    room, archive = make_prop_room(), A.ImagePack.parse(make_prop_archive())
+    surfaces, notes = G.measure_props(room, archive, G.room_scene(room))
+    assert set(surfaces) == {4, 5}                             # 1 is the scene's, 6 the item table's
+    assert notes["prop_entries_shared_with_scene"] == 1 and notes["prop_entries_shared_with_items_or_effects"] == 1
+    door, mask = surfaces[4], surfaces[5]
+    assert door.roles == {"diffuse"} and door.owner == "ETM" and door.shares()["side"] == pytest.approx(1.0)
+    assert door.tile_u_cm == pytest.approx(130.0, rel=0.05) and door.tile_v_cm == pytest.approx(230.0, rel=0.05)
+    assert mask.roles == {"opacity"}
+    rows = G.plan_props(surfaces)
+    assert [(r["entry"], r["variant"], r["label"]) for r in rows] == [(4, "prop", "PROP"), (5, "keep", "PROP")]
+    assert rows[0]["owner"] == "ETM" and rows[0]["image"] == -1
+
+
+def test_build_draws_props_orange_and_leaves_items_effects_and_opacity_native():
+    from PIL import Image
+
+    room, archive = make_prop_room(), make_prop_archive()
+    written, receipt = G.build(room, archive, stage="Village")
+    before, after = A.ImagePack.parse(archive), A.ImagePack.parse(written)
+    assert receipt["changed_entries"] == [0, 1, 4] and receipt["variants"]["prop"] == 1 and receipt["props"]
+    for k in (2, 3, 5, 6, 7):
+        assert after.entries[k] == before.entries[k]
+    door = np.asarray(Image.open(io.BytesIO(after.entries[4][1])).convert("RGB"), np.int32).reshape(-1, 3).mean(0)
+    assert door[0] > door[2] + 40                              # the RE5 prop orange
+    assert G.verify(archive, written, receipt)["changed"] == [0, 1, 4]
+    plain, plain_receipt = G.build(room, archive, props=False)
+    assert plain_receipt["changed_entries"] == [0, 1] and A.ImagePack.parse(plain).entries[4] == before.entries[4]
+
+
+def test_build_all_writes_every_stage_into_one_overlay(tmp_path):
+    bio4 = tmp_path / "bio4"
+    (bio4 / "st4").mkdir(parents=True)
+    (bio4 / "imagepackhd").mkdir()
+    (bio4 / "st4" / "r400.udas").write_bytes(make_prop_room())
+    (bio4 / "imagepackhd" / "44000400.pack.fen").write_bytes(make_prop_archive())
+    receipt = G.build_all(bio4, tmp_path / "out", stages=("Village",), previews=False)
+    written = tmp_path / "out" / "romfs" / "bio4" / "imagepackhd" / "44000400.pack.fen"
+    assert receipt["files"] == [{"path": "romfs/bio4/imagepackhd/44000400.pack.fen", "bytes": written.stat().st_size,
+                                 "sha256": G.hashlib.sha256(written.read_bytes()).hexdigest(),
+                                 "source_bytes": len(make_prop_archive()),
+                                 "source_sha256": G.hashlib.sha256(make_prop_archive()).hexdigest(), "stage": "Village"}]
+    assert receipt["stages"]["Village"]["variants"]["prop"] == 1 and receipt["live_verified"] is False
+    stage = json.loads((tmp_path / "out" / "stages" / "Village.json").read_text(encoding="utf-8"))
+    assert stage["verified"]["sha256"] == receipt["files"][0]["sha256"]
+    with pytest.raises(G.GreyboxError, match="never overwritten"):
+        G.build_all(bio4, tmp_path / "out", stages=("Village",))
+    with pytest.raises(G.GreyboxError, match="not Mercenaries stages"):
+        G.build_all(bio4, tmp_path / "other", stages=("Lab",))
+    assert G.main(["build-all", str(bio4), "--out", str(tmp_path / "cli"), "--stages", "Village", "--no-preview"]) == 0
+    assert (tmp_path / "cli" / "romfs" / "bio4" / "imagepackhd" / "44000400.pack.fen").read_bytes() == written.read_bytes()
 
 
 def test_rigid_scene_model_with_no_weight_sets_parses_and_rebuilds():
