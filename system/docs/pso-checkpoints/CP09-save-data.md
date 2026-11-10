@@ -179,3 +179,53 @@ next decompile target, and it is named.
 
 Record 0 is also the one that differs in appearance (its head is a repeating `99 34 / 99 55 / 9d 56` pattern, while records
 1-6 are flat high-entropy) - consistent with record 0 being a *header/slot-0 special* block rather than a character.
+
+## Round 53: the codec is found - a byte permutation plus a 56-word subtractive PRNG ring
+
+The round-52 target (the file-layer calls inside `FUN_80200560`) resolves it. Decompiled from `PsoV3.dol`:
+
+**`FUN_8007c0cc(state, buf, size)`** - the word cipher:
+
+```c
+uVar1 = size + 3;
+for (i = 0; i < (uVar1 >> 2); i++) {
+    iVar2 = FUN_8007c3e0(state);            // next key word from the ring
+    *(int *)(buf + 4*i) = iVar2 - *(int *)(buf + 4*i);   // buf[i] = key - buf[i]
+}
+```
+
+**`FUN_8007c3e0(state)`** - the key stream: `*state` is a cursor; it returns `state[cursor + 2]`, advances the
+cursor, and when the cursor passes `0x37` it calls `FUN_8007c438(state)` and resets the cursor to 1. So the keystream is a
+**56-word (0x38) ring** in the state struct.
+
+**`FUN_8007c48c(state, seed)`** - the seed initialisation: stores the seed at `state[0x38]` and `state[0x39]`, then walks the
+ring at a stride of `0x15` (mod `0x37`) filling `state[1..0x37]` with the subtractive recurrence `a(k+1) = seed - a(k)`
+starting from `a(0) = 1`, then runs **four** `FUN_8007c438(state)` warm-up rounds and sets the cursor to `0x37`.
+
+**`FUN_8007c438(state)`** - one ring regeneration step: 25 iterations of
+`state[i+4+4] = state[i+4+4] - state[i+4+0x80]` (a lag of 0x80 bytes = 31 words), followed by more of the same shape
+past `iVar1 = 100`.
+
+**`FUN_8007c134(state, src, dst, size)`** - the byte permutation: for each 256-byte block it copies `src[256k + j]` to
+`dst[256k + table[j]]` using the **256-byte table at `0x80500498`**. This is a de-interleave, not a cipher of its own.
+
+So PSO's save body is protected by **a 256-byte permutation table plus a subtractive 32-bit stream cipher** (the
+keystream from a lagged-subtraction ring seeded by `FUN_8007c48c`). That is exactly the shape community save editors
+describe, and it is now pinned to addresses in this build:
+
+| piece | address | role |
+|---|---|---|
+| word cipher | `0x8007C0CC` | `buf[i] = key_i - buf[i]` |
+| key stream | `0x8007C3E0` | cursor into the 56-word ring |
+| seed init | `0x8007C48C` | recurrence `a(k+1) = seed - a(k)`, four warm-up rounds |
+| ring step | `0x8007C438` | 25-term subtraction with a 31-word lag, then more |
+| byte permutation | `0x8007C134` | table at `0x80500498` |
+| seed source | `_DAT_8051391C` / `FUN_80202984` | set in `FUN_80200560` |
+
+**What is left to prove it end to end:** implement the ring and the permutation in Python (`gbox/pso_save.py`), decode a
+real record with the right seed source, and show the plaintext is structured (a decoded record 0 should become
+zero/fixed-field data instead of 99.9 % entropy). That is the next step, and it has a file-level test: the same decode
+applied to `PSO_SYSTEM` and `PSO_CHARACTER` must both produce plainer output, while a byte flip in the ciphertext must
+still decode (the cipher is key-driven, not self-verifying).
+
+Decompiles kept in `docs/research/pso-save-cipher.txt`.
