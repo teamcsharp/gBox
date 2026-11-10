@@ -396,17 +396,112 @@ def _give_weapon(ad, base: int, st: dict, rng) -> dict | None:
     loaded = 99 if cap in (0, W.CAP_INFINITE) else min(cap, 0x1FFF)
     item = held["addr"]
     try:
-        ad.write_memory(item, struct.pack("<H", iid))
-        ad.write_memory(item + 6, struct.pack("<HH", lv["packed"], loaded << 3))
-        ad.write_memory(base + W.ITEM_MGR + W.M_EQUIPPED_ID, struct.pack("<H", iid))
-        ad.write_memory(g + W.G_CLASS, bytes([row["class"], row["variant"], 0, lv["firepower"], lv["firing_speed"],
-                                             lv["capacity"]]))
-        ad.write_memory(g + W.G_RELOAD, bytes([lv["reload"]]))
+        _write_hand(ad, base, item, g, iid, row, lv["packed"], loaded, (lv["firepower"], lv["firing_speed"],
+                                                                        lv["capacity"]), lv["reload"])
         back = W.decode_item(rd(item, W.ITEM_SZ), item)
     except (ValueError, OSError, RuntimeError, struct.error):
         return None
     return {"id": iid, "name": W.name(iid), "was": held["name"], "loaded": back["loaded"],
             "verified": back["id"] == iid}
+
+
+def _write_hand(ad, base: int, item: int, g: int, iid: int, row: dict, packed: int, loaded: int, nibbles: tuple,
+                reload: int) -> None:
+    """The in-hand swap's writes (the random weapon's, and the bot's grenades): the held item's id, its levels and
+    rounds, the item manager's held id, the game state's class / variant / level nibbles and its reload nibble."""
+    ad.write_memory(item, struct.pack("<H", iid))
+    ad.write_memory(item + 6, struct.pack("<HH", packed, loaded << 3))
+    ad.write_memory(base + W.ITEM_MGR + W.M_EQUIPPED_ID, struct.pack("<H", iid))
+    ad.write_memory(g + W.G_CLASS, bytes([row["class"], row["variant"], 0, *nibbles]))
+    ad.write_memory(g + W.G_RELOAD, bytes([reload]))
+
+
+# The bot's grenades (re4_switch.THROWS): re4_switch.HAND_REQUEST asks for an item in his hand (a hand / incendiary / flash
+# grenade), then None for the gun back; HAND_STATE is the answer. The swap is _give_weapon's (_write_hand) on the held
+# item, after the hand's own bytes are kept (the held item's 14 bytes, the item manager's held pointer and id, the game
+# state's class bytes and reload) - written back, and read back, for the gun. A request older than HAND_FRESH_S (a bot
+# gone mid-throw) is the gun back. A new boot drops what was kept (maintain: the state's counts go), never writing an
+# old boot's bytes. NOT seen live yet: re4_switch.THROWS stays off until a watched round.
+HAND_FRESH_S = 5.0
+HAND_CLASS_N = W.G_CAPACITY - W.G_CLASS + 1             # class, variant, the byte between, firepower, speed, capacity
+
+
+def _hand_save(ad, base: int) -> dict | None:
+    rd = lambda a, n: bytes(ad.read_memory(a, n))                         # noqa: E731
+    r = W.Reader(rd, base)
+    held, g = r.equipped(), r.game_obj()
+    if held is None or g != base + W.GAME_OBJ:
+        return None
+    mgr = base + W.ITEM_MGR
+    return {"item": held["addr"], "item_bytes": rd(held["addr"], W.ITEM_SZ), "was": held["id"], "g": g,
+            "mgr": rd(mgr + W.M_EQUIPPED, W.M_EQUIPPED_ID + 2 - W.M_EQUIPPED), "cls": rd(g + W.G_CLASS, HAND_CLASS_N),
+            "reload": rd(g + W.G_RELOAD, 1)}
+
+
+def _hand_hold(ad, base: int, iid: int, saved: dict) -> bool:
+    rd = lambda a, n: bytes(ad.read_memory(a, n))                         # noqa: E731
+    rows = W.decode_weapon_table(rd(base + W.WEAPON_TBL, W.WEAPON_N * W.WEAPON_SZ))
+    row = rows.get(iid)
+    if row is None:
+        raise ValueError(f"no weapon row for {W.name(iid)}")
+    _write_hand(ad, base, saved["item"], saved["g"], iid, row, 0, 1, (0, 0, 0), 0)
+    return W.decode_item(rd(saved["item"], W.ITEM_SZ), saved["item"])["id"] == iid
+
+
+def _hand_restore(ad, base: int, saved: dict) -> bool:
+    ad.write_memory(saved["item"], saved["item_bytes"])
+    ad.write_memory(base + W.ITEM_MGR + W.M_EQUIPPED, saved["mgr"])
+    ad.write_memory(saved["g"] + W.G_CLASS, saved["cls"])
+    ad.write_memory(saved["g"] + W.G_RELOAD, saved["reload"])
+    return bytes(ad.read_memory(saved["item"], W.ITEM_SZ)) == saved["item_bytes"]
+
+
+def _hand(ad, snap: dict) -> int:
+    """re4_switch.HAND_REQUEST on this snapshot (see above): the writes made (0 / 1); HAND_STATE says what is in hand."""
+    req, ans = D.HAND_REQUEST, D.HAND_STATE
+    base, seq = snap.get("module_base"), req.get("seq")
+    if seq is None or not isinstance(base, int):
+        return 0
+    st = _state(ad)
+    fresh = isinstance(req.get("at"), (int, float)) and time.monotonic() - req["at"] <= HAND_FRESH_S
+    want = req.get("item") if fresh else None
+    saved = st.get("hand_saved")
+    errors = (ValueError, OSError, RuntimeError, struct.error, KeyError)
+    if want is None:
+        if saved is None:
+            if ans.get("seq") != seq:
+                ans.update(seq=seq, item=None, verified=True, error="")
+            return 0
+        try:
+            ok, err = _hand_restore(ad, base, saved), ""
+        except errors as exc:
+            ok, err = False, f"{type(exc).__name__}: {exc}"[:120]
+        st.pop("hand_saved", None)
+        st["hand_restores"] = st.get("hand_restores", 0) + 1
+        ans.update(seq=seq, item=None, verified=ok, error=err or ("" if ok else "the gun's bytes did not read back"))
+        return 1
+    if ans.get("seq") == seq:
+        return 0
+    try:
+        if saved is None:
+            saved = _hand_save(ad, base)
+            if saved is None:
+                ans.update(seq=seq, item=None, verified=False, error="nothing in his hand to swap")
+                return 0
+            st["hand_saved"] = saved
+        ok, err = _hand_hold(ad, base, int(want), saved), ""
+    except errors as exc:
+        ok, err = False, f"{type(exc).__name__}: {exc}"[:120]
+    if not ok and st.get("hand_saved") is not None:      # a swap that did not take: the gun's bytes straight back
+        try:
+            _hand_restore(ad, base, st["hand_saved"])
+        except errors:
+            pass
+        st.pop("hand_saved", None)
+    st["hand_swaps"] = st.get("hand_swaps", 0) + 1
+    ans.update(seq=seq, item=int(want) if ok else None, verified=bool(ok),
+               error=err or ("" if ok else "the item did not read back"))
+    return 1
 
 
 def _patch_loadout(ad, base: int, picks: dict) -> dict:
@@ -679,6 +774,9 @@ def maintain(ad, snap: dict | None = None) -> dict:
                                                  "fp_applied_boot", "rf_applied_boot") if k in st})
             st.clear()
             st.update(keep, boot=boot)
+        n = _hand(ad, snap)                              # the bot's grenade in hand / the gun back (re4_switch.THROWS)
+        if n:
+            out["hand_writes"] = n
         frac = 0.0 if st.get("one_hit") else st.get("enemy_health")
         if frac is not None and frac < 1.0:
             n = _cap_health(ad, snap.get("enemies"), frac)
