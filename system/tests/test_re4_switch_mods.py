@@ -130,9 +130,41 @@ def test_time_per_kill_from_the_census(ad):
     assert struct.unpack("<f", ad.read_memory(CLOCK, 4))[0] == 98.0
 
 
-def test_ammo_says_it_is_not_mapped(ad):
-    out = M.run(ad, "infinite_ammo", snap=snap(ad))
-    assert out["verified"] is False and "not mapped" in out["reason"]
+def _weapon_tables(ad):
+    from gbox.mercs.titles import re4_weapons as W
+    fr = []
+    for c in range(W.N_CLASSES):
+        fr += [14.0, 12.0, 10.0, 10.0, 10.0] if c == 2 else [21.0, 21.0, 21.0, 21.0, 21.0]
+    ad.put(BASE + W.FIRE_RATE_TBL, struct.pack("<%df" % len(fr), *fr))
+    ad.put(BASE + W.RIFLE_FIRE_TBL, struct.pack("<10f", *([20.0] * 10)))
+    rows = b"".join(struct.pack("<HBBBBH7H", 0x29 if k == 0 else 0x23 + k, 0, 5, 0, 0, 0x1A, 6, 6, 6, 6, 6, 6, 6)
+                    for k in range(W.WEAPON_N))
+    ad.put(BASE + W.WEAPON_TBL, rows)
+    return W
+
+
+def test_fire_rate_divides_the_frames_between_shots_down_to_the_gate_floor(ad):
+    W = _weapon_tables(ad)
+    gap = D.FIRE_GAP_S
+    try:
+        out = M.run(ad, "fire_rate", 20, snap=snap(ad))
+        assert out["verified"] and out["tables"] == 2 and D.FIRE_GAP_S == max(M.FIRE_GAP_MIN_S, gap / 20)
+        row = struct.unpack("<5f", ad.read_memory(BASE + W.FIRE_RATE_TBL + 2 * 20, 20))
+        assert row == (W.RAPID_FIRE_FLOOR,) * 5, "14 frames / 20 is under the gate: the floor"
+        M.run(ad, "fire_rate", 1, snap=snap(ad))
+        assert struct.unpack("<5f", ad.read_memory(BASE + W.FIRE_RATE_TBL + 2 * 20, 20))[0] == 14.0
+        assert D.FIRE_GAP_S == gap
+    finally:
+        D.FIRE_GAP_S = gap
+
+
+def test_infinite_ammo_sets_the_games_own_infinite_capacity(ad):
+    W = _weapon_tables(ad)
+    M.run(ad, "infinite_ammo", on=True, snap=snap(ad))
+    caps = struct.unpack("<7H", ad.read_memory(BASE + W.WEAPON_TBL + 8, 14))
+    assert caps == (W.CAP_INFINITE,) * 7
+    M.run(ad, "infinite_ammo", on=False, snap=snap(ad))
+    assert struct.unpack("<7H", ad.read_memory(BASE + W.WEAPON_TBL + 8, 14)) == (6,) * 7
 
 
 def test_unlimited_life_puts_the_life_back_at_its_maximum(ad):

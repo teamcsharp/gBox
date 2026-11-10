@@ -39,6 +39,9 @@ MODS = {
         ("weapon_power", "Weapon power \u00d7", "weapon_power_x", (1, 20, 1)),
         ("max_level", "Every weapon at max level", "max_level", None),
         ("aim_lock", "RAM aim lock", "aim_lock", None),
+        ("fire_rate", "Fire rate \u00d7", "fire_rate_x", (1, 20, 1)),
+        ("infinite_ammo", "Infinite ammo", "infinite_ammo", None),
+        ("random_weapon", "Random max-level campaign weapon each round", "random_weapon", None),
     ],
     "re6": [
         ("infinite_ammo", "Infinite ammo", "infinite_ammo", None),

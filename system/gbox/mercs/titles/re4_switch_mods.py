@@ -31,6 +31,7 @@ import threading
 import time
 
 from . import re4_switch as D
+from . import re4_weapons as W
 
 GAME = "010099A00BC1E000"
 ENEMY_HEALTH_MIN = 0.05
@@ -49,6 +50,9 @@ FIREPOWER_ROWS = {"punisher": (0xAF0EA8, 0.9), "handgun": (0xAF0EC4, 1.0), "red9
                   "riot_gun": (0xAF1228, 5.0)}
 ROW_N, POWER_MAX_X = 7, 20.0
 AIM_FRESH_S = 0.35                     # an aim request (re4_switch.AIM_REQUEST) older than this is not written
+FIRE_RATE_MAX_X = 20.0
+FIRE_GAP_MIN_S = 0.05                  # the fight's trigger taps never closer than this (re4_switch.FIRE_GAP_S)
+RIFLE_TIMER_FLOOR = 1.0                # the scoped rifles' shot timer (frames) never under one frame
 
 ORIG: dict = {}                         # id(adapter) -> this boot's settings
 _LOCK = threading.RLock()
@@ -224,6 +228,122 @@ def _aim(ad, snap: dict) -> int:
     return 1 if abs(back - req["yaw"]) < 1e-3 else 0
 
 
+# --- fire rate, infinite ammo, a random max-level campaign weapon (re4_weapons: the static analysis) ------------
+def _table(ad, base: int, st: dict, key: str, off: int, n: int, fmt: str):
+    """A table's boot-original values (read once a boot, kept), or None when it cannot be read."""
+    orig = st.setdefault("tbl_orig", {})
+    if key not in orig:
+        size = struct.calcsize("<" + fmt) * n
+        try:
+            orig[key] = struct.unpack("<" + fmt * n, bytes(ad.read_memory(base + off, size)))
+        except (ValueError, OSError, struct.error):
+            return None
+    return orig[key]
+
+
+def _write_table(ad, base: int, off: int, fmt: str, values) -> bool:
+    data = struct.pack("<" + fmt * len(values), *values)
+    try:
+        ad.write_memory(base + off, data)
+        return bytes(ad.read_memory(base + off, len(data))) == data
+    except (ValueError, OSError, RuntimeError, struct.error):
+        return False
+
+
+def _apply_fire_rate(ad, base: int, st: dict) -> int:
+    """Every class's frames between shots (re4_weapons.FIRE_RATE_TBL) / fire_rate, never under the gate's floor; the
+    scoped rifles' timer too; the fight's trigger taps paced to match. Returns the tables written."""
+    mult = float(st.get("fire_rate", 1.0))
+    n = 0
+    fr = _table(ad, base, st, "fire", W.FIRE_RATE_TBL, W.N_CLASSES * W.FIRE_RATE_COLS, "f")
+    if fr is not None:
+        want = [W.rapid_fire_value(v, mult) if v > 0 else v for v in fr] if mult > 1 else list(fr)
+        n += _write_table(ad, base, W.FIRE_RATE_TBL, "f", want)
+    rifle = _table(ad, base, st, "rifle", W.RIFLE_FIRE_TBL, 2 * W.FIRE_RATE_COLS, "f")
+    if rifle is not None:
+        want = [max(RIFLE_TIMER_FLOOR, v / mult) if v > 0 else v for v in rifle] if mult > 1 else list(rifle)
+        n += _write_table(ad, base, W.RIFLE_FIRE_TBL, "f", want)
+    gap0 = st.setdefault("fire_gap_orig", D.FIRE_GAP_S)
+    D.FIRE_GAP_S = max(FIRE_GAP_MIN_S, gap0 / mult)
+    return n
+
+
+def fire_rate(ad, multiplier, snap: dict | None = None) -> dict:
+    st = _state(ad)
+    st["fire_rate"] = _num(multiplier, 1.0, FIRE_RATE_MAX_X, "fire_rate")
+    base = (snap or {}).get("module_base")
+    n = _apply_fire_rate(ad, base, st) if isinstance(base, int) else 0
+    return {"fire_rate_x": st["fire_rate"], "verified": True, "tables": n, "trigger_gap_s": round(D.FIRE_GAP_S, 3),
+            "note": "every weapon's frames between shots / this (never under the shot gate's 3-frame floor)"}
+
+
+def _apply_ammo(ad, base: int, st: dict) -> int:
+    """Infinite ammo: every weapon row's capacity entries 0x8000 (use_ammo never consumes; re4_weapons.CAP_INFINITE),
+    the boot's own back when off. Returns the rows written."""
+    raw = _table(ad, base, st, "weapons", W.WEAPON_TBL, W.WEAPON_N * W.WEAPON_SZ, "B")
+    if raw is None:
+        return 0
+    blob = bytearray(bytes(raw))
+    if st.get("infinite_ammo"):
+        for k in range(W.WEAPON_N):
+            o = k * W.WEAPON_SZ + 8
+            caps = struct.unpack_from("<7H", blob, o)
+            struct.pack_into("<7H", blob, o, *[(W.CAP_INFINITE if c else 0) for c in caps])
+    return W.WEAPON_N if _write_table(ad, base, W.WEAPON_TBL, "B", list(blob)) else 0
+
+
+def infinite_ammo(ad, on: bool, snap: dict | None = None) -> dict:
+    st = _state(ad)
+    st["infinite_ammo"] = bool(on)
+    base = (snap or {}).get("module_base")
+    n = _apply_ammo(ad, base, st) if isinstance(base, int) else 0
+    return {"infinite_ammo": bool(on), "verified": True, "rows": n,
+            "note": "every weapon's magazine never empties (the game's own infinite-capacity value)"}
+
+
+def _give_weapon(ad, base: int, st: dict, rng) -> dict | None:
+    """A random high-powered campaign weapon (re4_weapons.HIGH_POWER) at max level, full, into the equipped slot:
+    the item's id, levels and rounds, the item manager's held id, the game state's class / variant / level nibbles."""
+    rd = lambda a, n: bytes(ad.read_memory(a, n))                         # noqa: E731
+    r = W.Reader(rd, base)
+    try:
+        held = r.equipped()
+        rows = W.decode_weapon_table(rd(base + W.WEAPON_TBL, W.WEAPON_N * W.WEAPON_SZ))
+        g = r.game_obj()
+    except (ValueError, OSError, struct.error):
+        return None
+    if held is None or g != base + W.GAME_OBJ:
+        return None
+    picks = [i for i in W.HIGH_POWER if i in rows and W.max_levels(i) is not None and i != held["id"]]
+    if not picks:
+        return None
+    iid = rng.choice(picks)
+    row, lv = rows[iid], W.max_levels(iid)
+    cap = row["capacity"][lv["capacity"]] or max(row["capacity"])
+    loaded = 99 if cap in (0, W.CAP_INFINITE) else min(cap, 0x1FFF)
+    item = held["addr"]
+    try:
+        ad.write_memory(item, struct.pack("<H", iid))
+        ad.write_memory(item + 6, struct.pack("<HH", lv["packed"], loaded << 3))
+        ad.write_memory(base + W.ITEM_MGR + W.M_EQUIPPED_ID, struct.pack("<H", iid))
+        ad.write_memory(g + W.G_CLASS, bytes([row["class"], row["variant"], 0, lv["firepower"], lv["firing_speed"],
+                                             lv["capacity"]]))
+        ad.write_memory(g + W.G_RELOAD, bytes([lv["reload"]]))
+        back = W.decode_item(rd(item, W.ITEM_SZ), item)
+    except (ValueError, OSError, RuntimeError, struct.error):
+        return None
+    return {"id": iid, "name": W.name(iid), "was": held["name"], "loaded": back["loaded"],
+            "verified": back["id"] == iid}
+
+
+def random_weapon(ad, on: bool, snap: dict | None = None) -> dict:
+    st = _state(ad)
+    st["random_weapon"] = bool(on)
+    st.pop("weapon_given_round", None)                 # a fresh pick on the next snapshot of a round
+    return {"random_weapon": bool(on), "verified": True,
+            "note": "a random max-level high-powered campaign weapon put in his hand each round"}
+
+
 def one_hit(ad, on: bool, snap: dict | None = None) -> dict:
     st = _state(ad)
     st["one_hit"] = bool(on)
@@ -327,7 +447,8 @@ def maintain(ad, snap: dict | None = None) -> dict:
             st["base"] = snap["module_base"]
         elif st["base"] != snap["module_base"]:          # a new boot: the operator's settings stay, the counts go
             keep = {k: st[k] for k in ("enemy_health", "one_hit", "kill_time", "unlimited_health", "weapon_power",
-                                      "max_level", "aim_lock") if k in st}
+                                      "max_level", "aim_lock", "fire_rate", "infinite_ammo", "random_weapon",
+                                      "fire_gap_orig") if k in st}
             st.clear()
             st.update(keep, base=snap["module_base"])
         frac = 0.0 if st.get("one_hit") else st.get("enemy_health")
@@ -343,6 +464,18 @@ def maintain(ad, snap: dict | None = None) -> dict:
         if (st.get("weapon_power", 1.0) != 1.0 or st.get("max_level")) and not st.get("fp_applied_base") == snap["module_base"]:
             out["power_rows"] = _apply_power(ad, snap["module_base"], st)   # once a boot (the table is static data)
             st["fp_applied_base"] = snap["module_base"]
+        if (st.get("fire_rate", 1.0) != 1.0 or st.get("infinite_ammo")) and st.get("rf_applied_base") != snap["module_base"]:
+            out["fire_tables"] = _apply_fire_rate(ad, snap["module_base"], st) if st.get("fire_rate", 1.0) != 1.0 else 0
+            out["ammo_rows"] = _apply_ammo(ad, snap["module_base"], st) if st.get("infinite_ammo") else 0
+            st["rf_applied_base"] = snap["module_base"]
+        rnd = snap.get("round_key") or snap["module_base"]
+        if st.get("random_weapon") and snap.get("player") and st.get("weapon_given_round") != rnd:
+            import random as _random
+            given = _give_weapon(ad, snap["module_base"], st, _random.Random())
+            if given is not None:
+                st["weapon_given_round"] = rnd
+                st["weapon_given"] = given
+                out["weapon_given"] = 1
         if st.get("aim_lock"):
             n = _aim(ad, snap)
             st["aim_writes"] = st.get("aim_writes", 0) + n
@@ -371,14 +504,16 @@ def status(ad, snap: dict | None = None) -> dict:
            "kill_time_added": round(st.get("kill_time_added", 0.0), 1), "capped_total": st.get("capped_total", 0),
            "clock_holds": st.get("clock_holds"),
            "unlimited_health": bool(st.get("unlimited_health")), "life_kept": st.get("life_kept", 0),
-           "infinite_ammo": None, "weapon_power_x": st.get("weapon_power", 1.0), "max_level": bool(st.get("max_level")),
+           "infinite_ammo": bool(st.get("infinite_ammo")), "fire_rate_x": st.get("fire_rate", 1.0),
+           "random_weapon": bool(st.get("random_weapon")), "weapon_given": st.get("weapon_given"),
+           "weapon_power_x": st.get("weapon_power", 1.0), "max_level": bool(st.get("max_level")),
            "aim_lock": bool(st.get("aim_lock")), "aim_writes": st.get("aim_writes", 0),
            "capabilities": {
                "enemy_health": {"available": True}, "one_hit": {"available": True},
                "kill_time": {"available": True, "clock_found": bool((snap or {}).get("clock_addr")),
                              "note": "adds time once the driver has found the round clock"},
                "unlimited_health": {"available": True},
-               "infinite_ammo": {"available": False, "reason": "the RE4 Switch inventory is not mapped yet"}}}
+               "infinite_ammo": {"available": True}}}
     if snap:
         found = _clock(ad, snap)
         out["clock"] = {"addr": hex(found[0]), "value": round(found[1], 2)} if found else None
@@ -419,7 +554,15 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, snap: dict | N
         if op == "aim_lock":
             return aim_lock(ad, on)
         if op == "infinite_ammo":
-            return {"verified": False, "reason": status(ad)["capabilities"][op]["reason"]}
+            r = infinite_ammo(ad, on, snap)
+            _state(ad).pop("rf_applied_base", None)
+            return r
+        if op == "fire_rate":
+            r = fire_rate(ad, 1.0 if multiplier is None else multiplier, snap)
+            _state(ad).pop("rf_applied_base", None)
+            return r
+        if op == "random_weapon":
+            return random_weapon(ad, on, snap)
         if op == "revert_all":
             st = _state(ad)
             for k in ("enemy_health", "one_hit", "kill_time", "unlimited_health"):
