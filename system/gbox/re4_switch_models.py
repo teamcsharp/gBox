@@ -515,8 +515,10 @@ def fit(vertices: list[dict], joints: dict, parents: dict, role_nodes: dict[str,
 
 #: A part is drawn at most this many times longer along its segment than across it (and at most that much shorter).
 STRETCH_LIMIT = 1.6
-#: A donor head stands at most this many times as high above its joint as the native head (Mario, chibi heads).
-HEAD_LIMIT = 1.35
+#: A donor head (p98 of its vertices) stands at most this many times as high above its joint as the native head: 2.0
+#: keeps the top under about 1.1x the native, inside the gate's 1.2; at 1.35 hats and necks shrank normal heads to
+#: 0.6x (2026-11-10, recovery-re4-fit-v2). Chibi heads are held by HEAD_SIZE_LIMIT.
+HEAD_LIMIT = 2.0
 #: The native head's rise above bone 4 when no native head is at hand: 187-204 mm on the five cast packs.
 NATIVE_HEAD_UP = 190.0
 #: ... and its size (the larger of its width p2..p98 and depth p5..p95): 159-271 mm on the cast, 163-235 on Ganados.
@@ -626,7 +628,9 @@ def proportional_fit(vertices: list[dict], joints: dict, parents: dict, role_nod
     torso, _rotation, torso_cross = segment("spine", "hip", "head")
     place["hip"] = place["chest"] = (torso, J["hip"], N["hip"])
     head_rows = dominant == ROLES.index("head")
-    rise = float(points[head_rows, 1].max() - J["head"][1]) if head_rows.any() else 0.0
+    # p98, not the top vertex: a feather, an antenna or a crown point must not shrink the whole head (Zack, the
+    # Kokiri boy); the gate's height check still holds the very top.
+    rise = float(np.percentile(points[head_rows, 1], 98) - J["head"][1]) if head_rows.any() else 0.0
     across = (max(_percentile_span(points[head_rows, 0], 2, 98), _percentile_span(points[head_rows, 2], 5, 95))
               if head_rows.sum() > 2 else 0.0)
     head_scale, head_capped = torso_cross, []

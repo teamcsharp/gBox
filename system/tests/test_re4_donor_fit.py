@@ -239,13 +239,29 @@ def test_the_rotation_keeps_the_depth_axis():
 
 def test_a_chibi_head_is_capped_to_the_native_head():
     donor = humanoid(1.0, head_scale=3.0)
-    legacy_top = fitted(donor, "proportional")[0][:, 1].max()
-    _p, _n, _i, rep = fitted(donor)
-    assert rep["head"]["capped"] and legacy_top <= NATIVE["top"] * 1.2
+    positions, _n, _i, rep = fitted(donor)
+    assert "size" in rep["head"]["capped"] and positions[:, 1].max() <= NATIVE["top"] * 1.2
+    uncapped = M.proportional_fit(donor["vertices"], donor["joints"], donor["parents"], donor["role_nodes"], BONES,
+                                  head_up=None, head_size=None)[0]
+    assert uncapped[:, 1].max() > NATIVE["top"] * 1.2               # what the cap prevents
     verdict = report(donor)
     assert verdict["pass"], verdict["reasons"]
     head = verdict["metrics"]["parts"]["head"]
     assert max(head["width"], head["depth"]) <= M.HEAD_SIZE_LIMIT * M._head_size(NATIVE) + 1
+
+
+def test_a_thin_spike_on_the_head_does_not_shrink_the_head():
+    """A feather, antenna or crown point (a few vertices far above the head) is not a big head (DOA Zack's 0.61)."""
+    donor = humanoid(1.0)
+    head = NODE["head"]
+    rng = np.random.default_rng(4)
+    shell = rng.normal(size=(300, 3))
+    shell = np.array([0, 1.66, 0]) + 0.11 * shell / np.linalg.norm(shell, axis=1)[:, None]   # a 300-vertex head
+    points = [tuple(p) for p in shell] + [(0.0, 2.05 + 0.01 * k, 0.0) for k in range(3)]     # and a 3-vertex spike
+    donor["vertices"] += [{"position": tuple(map(float, p)), "normal": (0.0, 0.0, 1.0), "uv": (0.5, 0.5),
+                           "source_joints": (head,), "source_weights": (1.0,)} for p in points]
+    _p, _n, _i, rep = fitted(donor)
+    assert rep["head"]["capped"] == [] and rep["head"]["scale"] == pytest.approx(rep["segments"]["spine"]["cross"])
 
 
 # -------------------------------------------------------------------------- cause 5: non-humanoid donors
