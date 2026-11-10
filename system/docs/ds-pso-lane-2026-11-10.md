@@ -1691,17 +1691,69 @@ and is the decoder this lane has been using for the area textures -- the note fr
 Honest status: P7a is **not** done, but it is no longer blocked on a mystery -- it is three known pieces away (GVR decode
 in the player build, the palette branch, and then writing the swapped model back).
 
+## Round 32 (2026-11-10) — P7a's model build runs end to end on the GameCube disc
+
+`pso_player.build(disc, cls="C", head=0, colour=0, out_dir=..., name="DSH", section_id=7)` now **succeeds** against
+`GPOE8P` and returns a real manifest:
+
+```
+Manifest "DSH"
+  meshes      7
+  materials   (written)
+  textures    7 PNGs under p7a/textures/
+  skeleton    (present)
+  unit_scale  0.1
+```
+
+That is the first time this lane has produced a player model from this disc, and it closes the P7a blocker that has been
+open since round 1 ("`pso_player`/`pso_enemy` read a `PSO/` dir that does not exist on this disc").
+
+### The three fixes, in the order they were needed
+
+1. **Path spelling** (round 30): `PSO/PLABDY00.NJ` -> `plAbdy00.nj`, via `pso_gc_paths`.
+2. **Byte order** (round 31): the GC NJCM node payload is big-endian while the chunk size is not; `njcm_is_big_endian`
+   probes one field to tell which.
+3. **Texture format** (this round): the character AFS holds **GVR** chunks (`GBIX` + `GVRT`), and the build was calling
+   `ninja.pvr_decode` -- the Dreamcast PVR decoder -- which raised `no PVRT chunk`. `decode_texture_entry` routes on the
+   magic: `GBIX`/`GVRT` to `pso_gc.gvr_decode`, anything else to `pvr_decode`, so a Dreamcast rip still works.
+
+A fourth, smaller one fell out: `ninja.png` slices a **flat RGBA byte buffer**, and `gvr_decode` returns a numpy
+`(h, w, 4)` array, which raised `ufunc 'add' did not contain a loop with signature (S1, uint8)`. `.tobytes()` fixes it.
+
+### The palette worry was unfounded for player textures
+
+The round-1 note said `gvr_decode`'s `flags & 8` palette branch raises on this disc's CI textures. Before touching that
+code, all **286** entries in `plCtex.afs` were decoded: `ok 286, fail 0`. So the bug (if it still exists) is confined to
+the *area* textures this lane hit in round 1, not to the character textures P7a needs. No special case was added --
+guessing would have been the wrong move when a one-line experiment settles it.
+
+### Tests (+6)
+
+`tests/test_pso_player_textures.py` pins the routing: `GBIX` and `GVRT` entries go to the GVR decoder, a PVR entry still
+goes to the Dreamcast one, and for all three magics the returned buffer is something `ninja.png` accepts (checked by the
+PNG signature). The decoders are monkeypatched, so the tests need neither the disc nor numpy image work.
+
+### What P7a still needs
+
+The build produces the model; **writing it back into the disc is not done**. `pso_player`'s swap path
+(`ninja_swap`/`build`) still has to be run and its BML rebuilt, then the disc booted to see the swapped character in
+game -- the same shape as P6a, which built an object-moved disc and had it boot to the Sonic Team splash.
+
+P1's guild counter also remains open as the only route to a field arrival by real presses.
+
 ## 7. Next
 
-1. **P7a's texture step:** the player build wants `PVRT` (Dreamcast) and this disc has **GVR**. Switch that path to
-   `pso_gc.gvr_decode` and fix its `flags & 8` palette branch, which raises on all 42 CI textures on `GPOE8P` -- that
-   is the one known bug left between the model parse (working) and a built model.
-2. **P1's guild counter:** still the only route to a field arrival by real presses. Route in is walked:
-   (102,105) -> (33,-34) -> (-84,27) -> (-223,-24); the counter needs the character in front of the keeper, not
-   across it.
-3. Then the quest warp, P1's accept test (three cold launches, both players), P6a's in-game proof, P6b, P7a's hot
-   swap and the demo -> route fixture.
+1. **P7a's write-back:** the model builds (7 meshes, 7 textures); now run the swap path against a disc and see the
+   changed character in game. Same shape as P6a: rebuild the BML, write the image, boot, look. The BML entry
+   alignment (0x800 for `pl<X>nj.bml`) and `ninja_swap` are the pieces involved.
+2. **P6a's in-game proof** is still owed: the object-moved disc booted to the Sonic Team splash, which proves the
+   image is valid but not that the moved object is where it should be.
+3. **P1's guild counter** remains the only route to a field arrival by real presses. Route in is walked:
+   (102,105) -> (33,-34) -> (-84,27) -> (-223,-24); the counter needs the character in front of the keeper.
+4. Then P1's accept test (three cold launches, both players), P6b (editor page), P7b (hot swap) and the demo ->
+   route fixture.
 
-Progress on P7a this round is measurable: the failure went from "file not found" to "the model parsed and the
-textures are the wrong format". GC NJCM node payloads are big-endian (the chunk size field is not), detected by one
-field probe that has its own tests.
+P7a milestone: `pso_player.build` now runs end to end on `GPOE8P` -- a manifest with 7 meshes, materials, a skeleton
+and 7 decoded GVR textures. Three format differences were fixed to get there: Dreamcast path spelling, big-endian
+NJCM payloads, and GVR-vs-PVR textures. All 286 character textures decode, so the round-1 palette bug does not bite
+player models.
