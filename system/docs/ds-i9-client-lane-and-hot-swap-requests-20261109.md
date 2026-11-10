@@ -1175,3 +1175,21 @@ The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned b
 * So the binding must be resolved through the MOD's own material table (material -> texture index/name), not through the
   arc's entry list in any order tried. The next step is to parse that table inside the inflated MOD: the strings and the
   structures around them are the map.
+
+## Round 61 status (2026-11-10, ~04:20 CST): the MOD material table is a fixed-record name list; the binding is by order
+
+* Parsed the inflated MOD header and material area for `uPl02ChrisAsia.arc` (1,449,880 bytes, `MOD\0`):
+  - header at +0: `MOD\0`, then u16 fields `0x00d3`, `0x0024`, `0x00aa`, `0x000c`, then offsets/sizes
+    (`0x0000b16f`, `0x00012e2a`, `0x0000badb`, `0x001214fc`) and counts (`0x1c`, `0xa4`, `0x1704`, `0x1a84`).
+  - **12 material records of 0x80 bytes each** starting at `0x1a84`: `pl_nuki`, `pl_skin1`, `pl_skin`,
+    `pl_base8`, `pl_skin2`, `pl_base`, `pl_base5`, `pl_skin3`, `pl_base2`, `pl_base6`, `pl_base7`, `pl_base1`.
+    Each record holds only the null-terminated name; the remaining bytes are zero, so **no texture name or index is
+    stored in the material record itself**.
+* That means the material -> texture binding is positional: material i resolves to the i-th texture the engine
+  collected for the unit. Which explains why every name/prefix strategy failed and why in-place replacement still
+  failed - the *order* the cast textures must appear in the enemy arc is the order the player's engine collects them,
+  which is not the uPlTex arc order (that starts with an `_NM` map).
+* 77 tests pass / 3 skipped across the Switch readers, extractors, materializer, ARC validator, tool and mods suites
+  (the 3 skips are the keyed NCA cases that need `prod.keys`).
+* Next for this thread: find the engine's texture collection order (likely entry order filtered by texture tag, but
+  grouped BM/NM/MM per material) and lay the cast maps out in that order; the MOD itself cannot name them.
