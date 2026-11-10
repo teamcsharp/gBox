@@ -486,6 +486,23 @@ _NOT_LASER: dict = {}                    # main base -> the effects line's other
 # A Majini's body for the shot (the PS3 combat layer's measures, gbox/mercs/titles/re5_combat.py; the same models): a
 # head sphere HEAD_H above his feet, HEAD_R wide; a body capsule from KNEE_H to SHOULDER_H, BODY_R wide; aimed at CHEST_H.
 HEAD_H, HEAD_R, KNEE_H, SHOULDER_H, BODY_R, CHEST_H = 160.0, 22.0, 45.0, 145.0, 36.0, 110.0
+# Low bodies (operator 2026-11-10: "there are certain enemies like lickers that are lower than normal, so they have to
+# actually aim at them ... point the gun at the enemy who's crouching in on the ground ... He's shooting directly in
+# front of him at air"): every aim height and hit test took a Majini's standing body (chest 110 cm), so a crawler at
+# his feet was aimed 80 cm over its back and a dot on it did not count. A class in LOW_BODIES is aimed at and
+# hit-tested with its own heights above its feet (cm): head, chest (the aim), knee..shoulder (the body), radius.
+from collections import namedtuple as _namedtuple
+Body = _namedtuple("Body", "head chest knee shoulder r")
+HUMAN = Body(HEAD_H, CHEST_H, KNEE_H, SHOULDER_H, BODY_R)
+LOW_BODIES = {
+    "uEm32": Body(45.0, 30.0, 0.0, 55.0, 60.0),   # the Experimental Facility's crawlers (27 cm at the bind pose)
+    "uEm0b": Body(75.0, 55.0, 15.0, 80.0, 50.0),  # the dogs (86 cm, four legs)
+}
+
+
+def body(e) -> Body:
+    """The body profile of this enemy's class (LOW_BODIES), else a standing Majini's."""
+    return LOW_BODIES.get((e or {}).get("class"), HUMAN)
 FIRE_SLACK = 60.0                        # a ray ending this much short of him ends on something in front of him
 STEER_RAY_CM = 50.0                      # a shorter ray (the dot at the muzzle) carries too little direction to steer by
 
@@ -2287,30 +2304,33 @@ def ray_error(origin, dot, target) -> tuple[float, float]:
     return wrap(want_yaw - have_yaw), want_pitch - have_pitch
 
 
-def dot_on(dot, foot) -> str | None:
-    """Where the laser dot sits on a Majini standing at foot: "head", "body", else None (short of him, past, beside)."""
+def dot_on(dot, foot, prof: Body | None = None) -> str | None:
+    """Where the laser dot sits on an enemy standing at foot: "head", "body", else None (short of him, past, beside);
+    prof: his class's body (body(e)), a standing Majini's when None."""
+    b = prof or HUMAN
     dx, dy, dz = dot[0] - foot[0], dot[1] - foot[1], dot[2] - foot[2]
-    if math.sqrt(dx * dx + (dy - HEAD_H) ** 2 + dz * dz) <= HEAD_R:
+    if math.sqrt(dx * dx + (dy - b.head) ** 2 + dz * dz) <= HEAD_R:
         return "head"
-    if math.hypot(dx, dz) <= BODY_R and KNEE_H - 10 <= dy <= SHOULDER_H + 20:
+    if math.hypot(dx, dz) <= b.r and b.knee - 10 <= dy <= b.shoulder + 20:
         return "body"
     return None
 
 
-def through(origin, dot, foot) -> bool:
+def through(origin, dot, foot, prof: Body | None = None) -> bool:
     """Whether the ray origin -> dot runs to him: it reaches his chest's distance (less FIRE_SLACK) and passes inside his
     head or body on the way, or ends inside his body's angular width of his chest (close up the body is wide)."""
-    chest = (foot[0], foot[1] + CHEST_H, foot[2])
+    b = prof or HUMAN
+    chest = (foot[0], foot[1] + b.chest, foot[2])
     want, have = math.dist(origin, chest), math.dist(origin, dot)
     if want < 1.0 or have < 1.0 or have < want - FIRE_SLACK:
         return False
     d = tuple((dot[k] - origin[k]) / have for k in range(3))
     cos = sum((chest[k] - origin[k]) * d[k] for k in range(3)) / want
-    if math.acos(max(-1.0, min(1.0, cos))) <= math.atan2(BODY_R, want):
+    if math.acos(max(-1.0, min(1.0, cos))) <= math.atan2(b.r, want):
         return True
-    for h in (HEAD_H, CHEST_H, KNEE_H + 30):
+    for h in (b.head, b.chest, b.knee + min(30.0, (b.shoulder - b.knee) / 2)):
         along = sum((foot[k] + (h if k == 1 else 0.0) - origin[k]) * d[k] for k in range(3))
-        if 0.0 < along <= have and dot_on(tuple(origin[k] + along * d[k] for k in range(3)), foot) is not None:
+        if 0.0 < along <= have and dot_on(tuple(origin[k] + along * d[k] for k in range(3)), foot, b) is not None:
             return True
     return False
 
@@ -2517,11 +2537,20 @@ class Bot:
         0.8 m away that is 29 deg, where the body turn used to wait for 12)."""
         return max(BODY_AIM_TOL, math.atan2(BODY_R * RAISE_WIDTH, max(dist, 1.0)))
 
+    @staticmethod
+    def _low_h(tgt):
+        """A low body's aim height (LOW_BODIES), else None (the guards keep their own rule)."""
+        b = body(tgt)
+        return b.chest if b is not HUMAN else None
+
     def _aim_h(self, tgt, dist, now) -> float:
         """The height on him to aim at: downed/kneeling motions the real body height (the operator 2026-10-28
         04:5x: \"doesn't aim at them after they fall\"); K's learned aim for his class at this distance and weapon
         (sure), else CHEST_H; kept inside his body (KNEE_H .. HEAD_H). Within GRAB_THREAT_R (a grab or a lunge:
         the Switch reads no enemy state) always CHEST_H, the bot's own rule."""
+        low = body(tgt)
+        if low is not HUMAN:
+            return low.chest                                 # a low body (a crawler, a dog): its own height, near or far
         if dist < GRAB_THREAT_R:
             return CHEST_H                                   # at grabbing / lunging range: the old rule, whatever K says
         if self._dynamite_lit(tgt):
@@ -2939,15 +2968,15 @@ class Bot:
         return None, None
 
     @staticmethod
-    def _crowd_hit(origin, dot, foot, spread=False):
+    def _crowd_hit(origin, dot, foot, spread=False, prof=None):
         """A live shot reaches a body; only a shotgun gets its full 3-D spread cone."""
-        if dot_on(dot, foot):
+        if dot_on(dot, foot, prof):
             return True
-        chest = (foot[0], foot[1] + CHEST_H, foot[2])
+        chest = (foot[0], foot[1] + (prof or HUMAN).chest, foot[2])
         reach, distance = math.dist(origin, dot), math.dist(origin, chest)
         if reach < 1.0 or distance < 1.0 or reach < distance - WALL_SLACK:
             return False                            # the laser stopped on geometry before him
-        if through(origin, dot, foot):
+        if through(origin, dot, foot, prof):
             return True
         if not spread:
             return False
@@ -3092,7 +3121,7 @@ class Bot:
             yaw_err, pitch_err = ray_error(origin, dot, chest)
             ray_len = math.dist(origin, dot)
             aim_off = abs(yaw_err)
-            where = dot_on(dot, tgt["pos"])
+            where = dot_on(dot, tgt["pos"], body(tgt))
             self._aimctx = {"target": key, "dist": dist, "bearing": body_err, "yaw_err": yaw_err, "where": where,
                             "laserless": False, "weapon": weapon, "origin": origin, "dot": dot, "py": py,
                             "class": tgt.get("class"), "foot": tuple(tgt["pos"]), "hp_max": tgt.get("hp_max"),
@@ -3100,7 +3129,7 @@ class Bot:
                             "gate": "rampage" + (f": dot on {where}" if where else "")}
             if crowd:
                 spread = self._rampage_gun([held] if held else [])[1] == "shotgun"
-                on = ready and any(self._crowd_hit(origin, dot, e["pos"], spread) for e in ring)
+                on = ready and any(self._crowd_hit(origin, dot, e["pos"], spread, body(e)) for e in ring)
                 blocked = (ready and not on and ray_len >= POINT_BLANK_RAY
                            and ray_len < math.dist(origin, chest) - FIRE_SLACK
                            and abs(yaw_err) <= CROWD_CONE and abs(pitch_err) <= CROWD_CONE)
@@ -3123,7 +3152,7 @@ class Bot:
                 if dist >= CLOSE_PITCH_R and ray_len >= STEER_RAY_CM:
                     keys |= self._pitch(pitch_err)
                 on = bool(where) or abs(yaw_err) <= CROWD_CONE or any(
-                    dot_on(dot, e["pos"]) or through(origin, dot, e["pos"]) for e in ring)
+                    dot_on(dot, e["pos"], body(e)) or through(origin, dot, e["pos"], body(e)) for e in ring)
         else:
             if crowd:
                 r["wall"] = None                        # missing aim evidence does not extend a wall observation
@@ -3132,10 +3161,10 @@ class Bot:
             keys |= self._yaw(body_err)
             on = not crowd and abs(body_err) <= CROWD_CONE and p.get("motion") in MOTION_AIM
         ap = p.get("aim_pitch")
-        want_pitch = math.atan2(tgt["pos"][1] + CHEST_H - py - MUZZLE_H, max(dist, 1.0))
+        want_pitch = math.atan2(tgt["pos"][1] + body(tgt).chest - py - MUZZLE_H, max(dist, 1.0))
         if not crowd and dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist):
             on = True                                    # point blank in front: on him
-        if self._cam_down(p, tgt["pos"], dist, now):     # the gun at their feet (CAM_DOWN_GUARD): up to the chest first,
+        if self._cam_down(p, tgt["pos"], dist, now, self._low_h(tgt)):     # the gun at their feet (CAM_DOWN_GUARD): up to the chest first,
             on = False                                   # no shotgun blast into the floor among them
             keys = (keys - {"rdown"}) | self._pitch(want_pitch + ap)
             if not crowd:
@@ -3371,7 +3400,7 @@ class Bot:
         hit = None
         if lz.get("up") and lz.get("from") and lz.get("at"):
             origin, dot = tuple(lz["from"]), tuple(lz["at"])
-            hit = next((e for e in ring if dot_on(dot, e["pos"]) or through(origin, dot, e["pos"])), None)
+            hit = next((e for e in ring if dot_on(dot, e["pos"], body(e)) or through(origin, dot, e["pos"], body(e))), None)
         if hit is None and (lz.get("up") or p.get("motion") in MOTION_AIM):   # point blank in front: on him
             hit = next((e for e in sorted(ring, key=flat) if flat(e) <= POINT_BLANK_R
                         and abs(bear(e)) <= self.raise_tol(flat(e))), None)
@@ -3382,7 +3411,7 @@ class Bot:
                 self._set_target(key, now)
                 self.target_at = now
             self._aimctx = {"target": key, "dist": flat(tgt), "bearing": bear(tgt), "yaw_err": bear(tgt),
-                            "where": dot_on(tuple(lz["at"]), tgt["pos"]) if hit is not None else None,
+                            "where": dot_on(tuple(lz["at"]), tgt["pos"], body(tgt)) if hit is not None else None,
                             "laserless": not lz.get("up"), "weapon": weapon, "class": tgt.get("class"),
                             "foot": tuple(tgt["pos"]), "hp_max": tgt.get("hp_max"), "shooter": tuple(p["pos"]),
                             "item": held.get("item") if held else None, "py": py,
@@ -3908,7 +3937,7 @@ class Bot:
     def _pitch_to(p, e) -> float:
         """The aim's pitch (absolute, radians) from his muzzle to this Majini's chest."""
         d = math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
-        return abs(math.atan2(e["pos"][1] + CHEST_H - (p["pos"][1] + MUZZLE_H), max(d, 1.0)))
+        return abs(math.atan2(e["pos"][1] + body(e).chest - (p["pos"][1] + MUZZLE_H), max(d, 1.0)))
 
     def _calm_sticks(self, act, snap, now) -> dict:
         """The right stick shaped (CALM): no reversal within CALM_REVERSE_S, the gun-down turn held to CALM_TURN_DEG_S
@@ -6419,7 +6448,7 @@ class Bot:
             px, py, pz = p["pos"]
             if math.dist(ray["from"], (px, py + MUZZLE_H, pz)) < 200.0 and any(
                     (e.get("hp") or 0) > 0 and e.get("pos") and abs(e["pos"][1] - py) <= LEVEL_DY
-                    and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= THREAT_CAP_R and dot_on(ray["at"], e["pos"])
+                    and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= THREAT_CAP_R and dot_on(ray["at"], e["pos"], body(e))
                     for e in snap.get("enemies") or ()):
                 return False                                 # the step opened a shot: the gun comes up (keep_active ends it)
         return True
@@ -6611,7 +6640,7 @@ class Bot:
         blast = True
         if ray is not None:
             o, dot = ray
-            on_body = any(dot_on(dot, e["pos"]) or through(o, dot, e["pos"]) for e in level)
+            on_body = any(dot_on(dot, e["pos"], body(e)) or through(o, dot, e["pos"], body(e)) for e in level)
             aligned = on_body or math.dist(dot, aim) <= W.SPLASH_IMPACT_R
             blast = not spec.blast_cm or W.clearance(snap, dot, spec.blast_cm)
             ctx.update(laserless=False, origin=o, dot=dot, yaw_err=yaw_err, pitch_err=pitch_err)
@@ -6987,7 +7016,7 @@ class Bot:
                                                 f"ray {math.dist(origin, dot) / 100:.1f} m")
             self._gun_down()
             return {"hold": ()}
-        on_e = next((e for e in live if dot_on(dot, e["pos"])
+        on_e = next((e for e in live if dot_on(dot, e["pos"], body(e))
                      and not (self._threat_now and flat(e) > THREAT_CAP_R)), None)   # threat first: none far off
         other = on_e.get("ptr", on_e.get("slot")) if on_e is not None and on_e is not tgt else None
         self.dot_other = (other, self.dot_other[1] + 1 if other is not None and other == self.dot_other[0] else
@@ -7049,8 +7078,8 @@ class Bot:
             aim_h = self._aim_h(tgt, dist, now)
             chest = (foot[0], foot[1] + aim_h, foot[2])
             yaw_err, pitch_err = ray_error(origin, dot, chest)
-        where = dot_on(dot, foot)
-        on = where is not None or point_blank or through(origin, dot, foot)
+        where = dot_on(dot, foot, body(tgt))
+        on = where is not None or point_blank or through(origin, dot, foot, body(tgt))
         self._ap_now = p.get("aim_pitch")
         self._pitch_up(origin, dot, chest, tgt, dist, now)
         if self._threat_now and dist > THREAT_CAP_R:
@@ -7059,7 +7088,7 @@ class Bot:
             self.stats["far_picks_while_crowded"] += 1       # (target 0: the pool above is the near ones)
         ray_len, chest_len = math.dist(origin, dot), math.dist(origin, chest)
         dot_e = next((e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")
-                      and dot_on(dot, e["pos"]) and not (self._crowded and flat(e) > NEAR_FOCUS_R)), None)
+                      and dot_on(dot, e["pos"], body(e)) and not (self._crowded and flat(e) > NEAR_FOCUS_R)), None)
         if on and where is None and not point_blank and ray_len < chest_len - WALL_SLACK and dot_e is None:
             on = False                                   # the ray ends on something short of him: no shot
             if self._wall_since is None:
@@ -7088,7 +7117,7 @@ class Bot:
         if CONFIRMED_FIRE and not on and dot_e is not None and dot_e is not tgt \
                 and not any(flat(e) < GRAB_THREAT_R and e is not dot_e for e in live):
             tgt, foot = dot_e, dot_e["pos"]              # the dot on a living Majini: the shot, whoever he is
-            where, on, confirmed = dot_on(dot, foot), True, True
+            where, on, confirmed = dot_on(dot, foot, body(tgt)), True, True
             dist = flat(tgt)
             body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
             self.stats["confirmed_shots"] += 1
@@ -7110,13 +7139,13 @@ class Bot:
             if CROWD_FIRE and near <= RAMPAGE_R:         # one within 5 m: the aim turns to him, the gun stays up
                 e = next((x for x in live if x.get("ptr", x.get("slot")) == self.target), None)
                 if e is not None:
-                    err = ray_error(origin, dot, (e["pos"][0], e["pos"][1] + CHEST_H, e["pos"][2]))[0]
+                    err = ray_error(origin, dot, (e["pos"][0], e["pos"][1] + body(e).chest, e["pos"][2]))[0]
                     self.aim_since = self.aim_since or now
                     self.doing = "aim"
                     return {"hold": tuple(sorted({"zl"} | (self._yaw(err) if motion != MOTION_SHOT else set())))}
             return fix
         if piece(SMOOTH_DOT) and not on and other is not None and self.target != other:
-            other_where = dot_on(dot, on_e["pos"])           # the dot on another Majini, not yet the target: shoot him
+            other_where = dot_on(dot, on_e["pos"], body(on_e))           # the dot on another Majini, not yet the target: shoot him
             if other_where is not None:                      # now (the trigger), the aim kept where it is (no swing)
                 tgt, foot, where, on = on_e, on_e["pos"], other_where, True
                 dist = flat(tgt)
@@ -7172,8 +7201,8 @@ class Bot:
             self.stats["drops_mid_burst"] += 1
             self._pull_end(now)
             self.fire_down = False                           # (ZR stays down: the next pull is on the new one)
-        cam_up = self._cam_up(p, foot, dist, now)       # the aim's own pitch up at one on his level: down, no sky shot
-        cam_down = not cam_up and self._cam_down(p, foot, dist, now)   # ... at his feet: up, no shot into the floor
+        cam_up = self._cam_up(p, foot, dist, now, self._low_h(tgt))       # the aim's own pitch up at one on his level: down, no sky shot
+        cam_down = not cam_up and self._cam_down(p, foot, dist, now, self._low_h(tgt))   # ... at his feet: up, no shot into the floor
         if (cam_up or cam_down) and on and where is None and not confirmed:
             on = False
             self.doing = "aim"
@@ -7207,12 +7236,13 @@ class Bot:
                              f"keys {','.join(sorted(keys))}")
         return {"hold": tuple(sorted(keys))}
 
-    def _cam_down(self, p, foot, dist, now) -> bool:
+    def _cam_down(self, p, foot, dist, now, h=None) -> bool:
         """The aim's own pitch (P_AIM_PITCH, + = down) more than CAM_DOWN_MAX below his chest's elevation while aimed at a
         Majini on his level within THREAT_CAP_R (CAM_DOWN_GUARD above). Pressed up CAM_CHECK_S and it went further down
         instead: off for the round."""
         c, ap = self._camd, p.get("aim_pitch")
-        aim_h = self._special("aim_h_at", foot, now) or CHEST_H   # (a special's thigh shot: the thighs, not the chest)
+        aim_h = h if h is not None else (self._special("aim_h_at", foot, now) or CHEST_H)   # (a low body's own; a
+                                                         # special's thigh shot: the thighs, not the chest)
         want_down = -math.atan2(foot[1] + aim_h - p["pos"][1] - MUZZLE_H, max(dist, 1.0))   # + = his chest below
         if not CAM_DOWN_GUARD or c["off"] or ap is None or ap <= want_down + CAM_DOWN_MAX or dist > THREAT_CAP_R                 or abs(foot[1] - p["pos"][1]) > LEVEL_DY:
             c["since"], c["on"] = None, False
@@ -7231,11 +7261,12 @@ class Bot:
             c["since"], c["ap0"] = now, ap
         return True
 
-    def _cam_up(self, p, foot, dist, now) -> bool:
+    def _cam_up(self, p, foot, dist, now, h=None) -> bool:
         """The aim's own pitch (P_AIM_PITCH) more than CAM_UP_MAX up while aimed at a Majini on his level within
         THREAT_CAP_R (CAM_GUARD above). Pressed down CAM_CHECK_S and it went up instead: off for the round."""
         c, ap = self._cam, p.get("aim_pitch")
-        aim_h = self._special("aim_h_at", foot, now) or CHEST_H   # (a special's head shot: his head's elevation)
+        aim_h = h if h is not None else (self._special("aim_h_at", foot, now) or CHEST_H)   # (a low body's own; a
+                                                         # special's head shot: his head's elevation)
         want_up = math.atan2(foot[1] + aim_h - p["pos"][1] - MUZZLE_H, max(dist, 1.0))   # his chest's elevation
         if not CAM_GUARD or c["off"] or ap is None or -ap <= max(want_up, 0.0) + CAM_UP_MAX or dist > THREAT_CAP_R                 or abs(foot[1] - p["pos"][1]) > LEVEL_DY:
             c["down_since"], c["on"] = None, False
@@ -7343,7 +7374,7 @@ class Bot:
         for e in live:
             if flat(e) > ENGAGE_R:
                 continue
-            err = abs(ray_error(origin, dot, (e["pos"][0], e["pos"][1] + CHEST_H, e["pos"][2]))[0])
+            err = abs(ray_error(origin, dot, (e["pos"][0], e["pos"][1] + body(e).chest, e["pos"][2]))[0])
             if err < best_err:
                 best, best_err = e, err
         return best
@@ -7373,20 +7404,21 @@ class Bot:
         origin, dot, foot = ctx.get('origin'), ctx.get('dot'), ctx.get('foot')
         valid_ray = bool(not ctx.get('laserless') and origin and dot and foot
                          and all(math.isfinite(v) for v in (*origin, *dot, *foot)))
-        body = bool(valid_ray and self._crowd_hit(origin, dot, foot, False))
-        endpoint = ('target' if valid_ray and dot_on(dot, foot) else self._behind(ctx)) if valid_ray else 'off'
-        contact = ctx.get('contact_kind') or ('body endpoint' if endpoint == 'target' else 'body segment' if body else 'unverified')
+        prof = body({"class": ctx.get("class")})
+        hit_body = bool(valid_ray and self._crowd_hit(origin, dot, foot, False, prof))
+        endpoint = ('target' if valid_ray and dot_on(dot, foot, prof) else self._behind(ctx)) if valid_ray else 'off'
+        contact = ctx.get('contact_kind') or ('body endpoint' if endpoint == 'target' else 'body segment' if hit_body else 'unverified')
         entry = self.look.record_shot(ctx.get("weapon"), ctx.get("gate"), target,
                                       aim_err_deg=-math.degrees(ctx.get("yaw_err") or 0.0),
-                                      dot_on='target' if body else endpoint or 'off')
+                                      dot_on='target' if hit_body else endpoint or 'off')
         entry.update(measurement='trigger_pull', contact=contact,
                      ray_observed=bool(valid_ray and ctx.get('ray_observed', True)), ray_endpoint=endpoint,
                      pitch_err_deg=round(math.degrees(ctx['pitch_err']), 2) if ctx.get('pitch_err') is not None else None,
                      damage_evidence='no target HP decrease observed')
         self._pulls.append({"entry": entry, "start": now, "end": None, "drops": 0, "hp_delta": 0,
                             "target": ctx.get("target"), "where": ctx.get("where"),
-                            "laserless": bool(ctx.get("laserless")), "body_contact": body,
-                            "behind": self._behind(ctx) if body else '',
+                            "laserless": bool(ctx.get("laserless")), "body_contact": hit_body,
+                            "behind": self._behind(ctx) if hit_body else '',
                             "k": {k: ctx.get(k) for k in ("class", "dist", "item", "dot", "foot", "shooter", "hp_max")}})
         del self._pulls[:-4]                                 # (a pull resolves within HIT_S of its end)
 

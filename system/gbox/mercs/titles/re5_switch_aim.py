@@ -198,7 +198,7 @@ def keep_active(bot, snap, act, now):
             and ray.get('up') and origin and dot
             and all(math.isfinite(v) for v in (*origin, *dot))
             and math.dist(origin, (px, py + R.MUZZLE_H, pz)) < 200
-            and any(R.dot_on(dot, e['pos']) for e in crowd)):
+            and any(R.dot_on(dot, e['pos'], R.body(e)) for e in crowd)):
         bot._aim_wait = None  # movement opened a shot: let the raise settle and fire
         return act
     if state['until'] is not None and now >= state['until']:
@@ -265,7 +265,7 @@ def visible_target(snap):
                   and abs(e['pos'][1]-py) <= R.LEVEL_DY
                   and math.hypot(e['pos'][0]-px, e['pos'][2]-pz) <= R.THREAT_CAP_R
                   and abs(R.wrap(R.heading(e['pos'][0]-px, e['pos'][2]-pz)-cam['heading'])) <= R.CROWD_FRONT
-                  and R.dot_on(dot, e['pos'])]
+                  and R.dot_on(dot, e['pos'], R.body(e))]
     return min(candidates, key=lambda e: math.dist(origin, e['pos']), default=None)
 
 
@@ -367,7 +367,7 @@ def apply(bot, snap, act, now):
     # aim inside POINT_BLANK_YAW / _PITCH of him and the ray not stopped short on geometry (it ends on another body or
     # runs on past him) - is contact: the spread does the rest at that range.
     short = bool(valid_ray and math.dist(origin, dot) < math.dist(origin, chest) - R.WALL_SLACK
-                 and not any(R.dot_on(dot, e['pos']) for e in candidates))
+                 and not any(R.dot_on(dot, e['pos'], R.body(e)) for e in candidates))
     point_blank = bool(valid_ray and not body_contact and not spread_contact and spec.family == 'shotgun'
                        and dist <= SHOTGUN_POINT_BLANK_CM and not short
                        and abs(yaw_error) <= POINT_BLANK_YAW and abs(pitch_error) <= POINT_BLANK_PITCH)
