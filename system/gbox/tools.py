@@ -3228,6 +3228,7 @@ def _ended(run):
 
 
 BLACK_LUMA, BLACK_FOR = 6.0, 45.0      # mean grey (0..255) of a black frame; how long only black means the game is gone
+BLACK_LOADING_FOR = 180.0              # ... while the playbook's own screen reader says "loading" (a slow stage load)
 RELAUNCH_WAIT = 300
 
 
@@ -3292,7 +3293,10 @@ def _black_watch(run, d, ad, clock=time.time, sleep=time.sleep):
                 continue
             if b:
                 since = now if since is None else since
-                if now - since >= BLACK_FOR:
+                # a stage the playbook sees loading may take longer (2026-11-10: RE4 Switch's greybox Castle / Base /
+                # Waterworld took 90-104 s behind "Loading..." on black, and BLACK_FOR cut every one at ~50 s)
+                loading = (run.get("live") or {}).get("screen") == "loading"
+                if now - since >= (BLACK_LOADING_FOR if loading else BLACK_FOR):
                     run["bad_end"] = "black"
                     d.stopped = True
                     return
