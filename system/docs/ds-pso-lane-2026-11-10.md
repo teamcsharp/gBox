@@ -1835,14 +1835,51 @@ to the host's joint roles before writing it in.
 2. P6a's in-game proof is still owed (the moved object has never been seen in a field).
 3. P1's guild counter remains the only route to a field arrival by real presses.
 
+## Round 35 (2026-11-10) — where a naive model swap stops working: one donor deforms, another crashes
+
+Round 34 proved the swap reaches the game. This round asked how far a swap can go **without rigging**, by trying a donor from
+the same family as the host instead of a robot.
+
+| host | donor | result |
+|---|---|---|
+| HUmar (`plAbdy00.nj`, 21,308 B) | **HUcast** (`plCbdy00.nj`, 24,732 B) | the character-select viewport fills with giant polygons -- the mesh renders, bound wrong |
+| HUmar | **HUnewearl** (`plBbdy00.nj`, 28,724 B) | **Dolphin: "Invalid read from 0x00000008, PC = 0x8028f508. The game probably would have crashed on real hardware."** (`qa0-hunewearl.jpg`) |
+
+So a same-family humanoid is *not* safer than a robot. The HUcast body at least drew; the HUnewearl body makes the game
+dereference a bad pointer while it walks the model -- and the two differ in more than shape: the joint layout the mesh is
+written against is part of the file, and a mesh built for another class's skeleton does not just look wrong, it can be
+unsafe.
+
+That is the boundary this lane needed to find. It also says what the editor must **not** offer: "pick any model from the
+collection and drop it in" is not a file copy, it is a **retarget** -- which is exactly what `pso_player.build_swap`'s
+`body_roles` / `target_from_nj` / `ninja_swap` are for, and why that path wants a rigging tool.
+
+### A concrete P2b target fell out
+
+`0x8028f508` is not in the 34-name `known_functions` map (both candidates checked). The function at that address reads
+`0x8` as a pointer during model handling, so it is the natural next decompilation target: it is where a mismatched mesh
+turns into a hardware-level invalid read, and identifying it would let a writer *validate* a swap before writing a build
+rather than discovering it by booting.
+
+### Practical note for the lane
+
+Every model build from here should be booted at least to the character select before being reported, because the failure
+mode is a *crash dialog in the emulator*, not a wrong-looking model. The build pipeline can see none of it.
+
+### Still open
+
+* Rigging: `build_swap` with the joint-role mapping, so the swap is correct rather than merely visible.
+* P6a's in-game object proof, P1's guild counter, P6b (editor page), and the demo -> route fixture.
+
 ## 7. Next
 
-1. **Rig the swap.** The character hot swap is real and visible: the game renders the donor mesh (the preview fills
-   with polygons instead of a posed character). It deforms because a raw swap puts a HUcast mesh on a HUmar skeleton --
-   `pso_player.build_swap` (`body_roles`, `target_from_nj`, `ninja_swap`) is the rigging pass that binds it first.
-2. **Two hard-won facts for any future model mod:** the launch `mod` is a **query parameter**
-   (`POST /api/games/{gid}/launch?node=<worker>&mod=<build>`), not a JSON body field; and the game reads the character
-   parts **loose at the disc root** (`plAbdy00.nj`), not the copies inside `plAnj.bml` -- a pack-only swap is invisible.
-3. **P6a's in-game proof** is still owed (the moved object has never been seen in a field), and **P1's guild counter**
-   remains the only route to a field arrival by real presses.
-4. Then P1's accept test, P6b (editor page) and the demo -> route fixture.
+1. **Rig the swap** (`pso_player.build_swap`: `body_roles` -> `target_from_nj` -> `ninja_swap`) so a donor mesh is
+   bound to the host skeleton before write-back. Round 35 showed why: a HUcast body renders deformed, and a HUnewearl
+   body makes the game read an invalid pointer at PC `0x8028f508` -- a same-family donor is not safer.
+2. **P2b target:** `0x8028f508` is not among the 34 named functions; it is the code that dereferences model data and
+   turns a mismatched mesh into a crash. Identifying it would let a writer validate a swap before building.
+3. **P6a's in-game proof** (the moved object has never been seen in a field) and **P1's guild counter** (the only
+   route to a field arrival by real presses) both remain open, then P6b (editor page) and the demo -> route fixture.
+
+Rule for this lane from now on: any model build is booted at least to the character select before being reported.
+The failure mode is an emulator crash dialog, which no part of the build pipeline can see.
