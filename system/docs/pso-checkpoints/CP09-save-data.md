@@ -320,3 +320,45 @@ save-load and then decode offline).
 
 Attempt scripts kept: `docs/research/pso-save-cipher-exact-ring.py` (round 55 ring) and the round-56 full pipeline with the
 64-combination sweep in the same folder.
+
+## Round 70: the seed's source function found - a 24-way per-slot initialiser
+
+Searching the code for the store that sets the pointer behind the seed (`[r13-0x4694]`) finds **24 `stw r3,-0x4694(r13)`
+instructions**, all in one function: **`FUN_802019f8`** (3,748 bytes, Ghidra's `getFunctionContaining(0x80201aec)`), i.e.
+
+```
+0x80201aec, 0x80201b3c, 0x80201be4, 0x80201c6c, 0x80201cd4, 0x80201d7c, 0x80201dc4,
+0x80201e6c, 0x80201f14, 0x80201f7c, ... (24 total)
+```
+
+Its head explains the seed:
+
+```c
+*(u32 *)(unaff_r13 - 0x468c) = 0;
+*(u32 *)(unaff_r13 - 0x4658) = 0;
+FUN_801fcc18(0x805137d8);
+FUN_80202c3c(0x805137f8);
+uVar1 = FUN_8037aacc();                                  // a 4-byte value (RTC/tick-like)
+FUN_8039dc9c(unaff_r13 - 18000, uVar1, 4);               // -> [r13-0x4650]
+FUN_801e2bd4(0x80513904);
+FUN_801e2b24(0x80513904, &local_18);
+switch (local_18 % 0x18) {                               // 24 branches
+default: ... uVar1 = FUN_801fc900(); ...                 // per-branch setup
+```
+
+So the picture is:
+
+* **`FUN_802019f8` is the save-slot initialiser**: it zeroes two state words, initialises two structures
+  (`0x805137d8`, `0x805137f8`), samples a 4-byte value from `FUN_8037aacc()` into `[r13-0x4650]`, reads a selector from
+  `0x80513904` and **switches on `local_18 % 24`**, and each branch stores its descriptor pointer at `[r13-0x4694]`;
+* **the descriptor is runtime state** (each branch builds its pointer through the card/file setup, e.g. `FUN_801fc900`),
+  which is why the seed at `+0x118` could not be found in the file: it is a field of the **currently selected save slot's
+  descriptor**, chosen by `local_18 % 24` at load time;
+* **24 slots/contexts** is a new structural number for the save system (PSO's four characters x areas/file kinds, or the
+  card's file contexts).
+
+**What this changes for CP9's last step:** the live read becomes a two-step, both now named: read `[0x80585F6C]` (the
+descriptor) and then its `+0x118` - or, equivalently, read `local_18 % 24` from `0x80513904`'s structure and the
+corresponding descriptor. The offline side of CP9 is now as far as it can go without a session.
+
+Decompile kept in `docs/research/pso-save-slot-initialiser.txt`.
