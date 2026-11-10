@@ -252,3 +252,23 @@ def inventory(path) -> dict:
         r["kind"] = kinds.get(r["path"].rsplit(".", 1)[-1], "other")
     return {"platform": "saturn", "executable": EXECUTABLE, "files": rows,
             "executable_sha256": next(r["sha256"] for r in rows if r["path"] == EXECUTABLE)}
+
+
+# --- analysis-stage probe (hypothesis from header statistics over all 12 *.CHR members) ---
+# IP.BIN/0MAIN.BIN: SH-2 big-endian, load/entry base 0x06010000 (0MAIN.BIN literal pool refs
+# 0x06010030 / 0x060FFC00). Decoder not yet located (linear capstone SH2 scan is too noisy; needs Ghidra).
+MAIN_BASE = 0x06010000
+CHR_MODE_BITS = {0x80: "bit7", 0x40: "bit6", 0x20: "bit5", 0x04: "bit2"}
+
+
+def chr_header(data: bytes) -> dict:
+    """Parse the 10-byte *.CHR header: 01, mode, u16be a, u16be b, u8 width (+pad), u8 height.
+    Width/height are inferred (values 160x224, 160x240, 16x16, 104x8 ... fit Saturn bitmap sizes);
+    mode/a/b semantics are unproven."""
+    if len(data) < 10 or data[0] != 1:
+        raise ValueError("not a Tetris Plus CHR bank (magic 0x01 expected)")
+    return {"mode": data[1],
+            "mode_bits": [n for m, n in CHR_MODE_BITS.items() if data[1] & m],
+            "a": struct.unpack(">H", data[2:4])[0], "b": struct.unpack(">H", data[4:6])[0],
+            "width": data[6], "height": data[8], "pad_ok": data[7] == 0,
+            "payload_offset": 9}

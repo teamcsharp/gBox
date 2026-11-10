@@ -59,3 +59,21 @@ def test_real_disc_matches_recorded_manifest():
     assert inv.saturn_header(p).startswith(inv.SATURN_HEADER)
     got = {r["path"]: [r["lba"], r["size"], r["sha256"]] for r in inv.inventory(p)["files"]}
     assert got == {k: list(v) for k, v in inv.MEMBERS.items()}
+
+
+def test_chr_header_synthetic():
+    h = inv.chr_header(bytes.fromhex("0104 8c00 0000 a000 e018".replace(" ", "")))
+    assert (h["mode"], h["width"], h["height"], h["pad_ok"]) == (4, 160, 224, True)
+    assert inv.chr_header(bytes.fromhex("0184000000001000 10cc".replace(" ", "")))["width"] == 16
+    with pytest.raises(ValueError):
+        inv.chr_header(b"\x02" * 12)
+
+
+@pytest.mark.skipif(not os.environ.get("TETRIS_PLUS_SATURN_BIN"), reason="owned disc image not provided")
+def test_real_disc_chr_headers():
+    p = Path(os.environ["TETRIS_PLUS_SATURN_BIN"])
+    with open(p, "rb") as fh:
+        for nm, (lba, sz, _h) in inv.MEMBERS.items():
+            if nm.endswith(".CHR"):
+                h = inv.chr_header(inv.read_extent(fh, lba, 16))
+                assert h["pad_ok"] and 8 <= h["width"] <= 160 and 8 <= h["height"] <= 240, nm
