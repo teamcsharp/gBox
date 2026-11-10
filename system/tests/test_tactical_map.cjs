@@ -326,3 +326,12 @@ test('browser map holds rotation on hover, zooms and pans, clicks a bonus withou
     await evaluate(`ctl.stop()`);
   });
 });
+
+test('an RE4 Switch frame in mm on the floor built from the room collision says so', () => {
+  const st = { ...STAGE, key: '010099A00BC1E000.nav3.00000001', units: 'mm', name: 'Village', source: 'room_collision' };
+  const f = { ...FRAME, title: '010099A00BC1E000', stage: st.key, units: 'mm',
+    plan: { route: [[0, 0, 0], [1000, 0, 0]], route_source: 'room_collision', route_requires_prompt: true } };
+  assert.match(T.geometryText(f, st), /^Village: Walkable floor and boundaries: 3 triangles/);
+  assert.match(T.geometryText(f, st), /room's collision: crossings take the action button/);
+  assert.match(T.geometryText({ ...f, plan: { ...f.plan, route_requires_prompt: false } }, st), /follows the floor built from the room's collision$/);
+});

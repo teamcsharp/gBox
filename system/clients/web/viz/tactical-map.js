@@ -110,6 +110,9 @@
     }
     if (f.plan?.route_source === "native_navmesh") text += f.plan.route_requires_prompt
       ? ". Native route: crossings require the game's prompt" : ". Route follows the native floor mesh";
+    if (f.plan?.route_source === "room_collision") text += f.plan.route_requires_prompt
+      ? ". Route on the floor built from the room's collision: crossings take the action button"
+      : ". Route follows the floor built from the room's collision";
     return text;
   }
 

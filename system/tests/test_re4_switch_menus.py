@@ -156,8 +156,8 @@ def test_the_measured_constants_are_present():
 def test_the_brain_turns_with_the_stick_not_the_item_dpad():
     bot = D.Bot(stats={})
     snap = {"player": {"pos": (0.0, 0.0, 0.0), "rot": 0.0},
-            "enemies": [{"pos": (500.0, 0.0, 0.0), "hp": 100, "ptr": 1}]}
-    assert bot.tick(snap)["hold"] == {"lright"}
+            "enemies": [{"pos": (5000.0, 0.0, 0.0), "hp": 100, "ptr": 1}]}
+    assert bot.tick(snap)["hold"] == {"lleft"}, "the left stick, never the d-pad (+x is a left turn: GameCube sign)"
 
 
 # ---------------------------------------------------------------- straying into the story save list

@@ -543,3 +543,160 @@ life and **clock add / set** needs the clock, neither found; the combo window an
 
 Tests: `test_re4switch_bot.py` (20), `test_re4_switch_menus.py` (40), `test_re4_switch_brain.py` (3),
 `test_re4_switch_fight.py` (24), `test_re4_switch_anchors.py` (19), `test_mercmode.py` (+4).
+
+## 8. The stage floor mesh, the live map and the routing (2026-11-10, branch `wt-re4-map-20261110`)
+
+(Section 7 is the fight branch's, `wt-re4-fight-20261109`.) The ask: RE4 Switch on the live map with the bot able to
+map, route, fight and defend. RE4 keeps no navigation mesh in RAM the way RE5 does; each room carries its own
+collision. This pass decodes it offline into the mesh `re5_nav.NavMesh` takes, serves it to the tactical map, and
+gives the bot RE5's walker and the operator's map marks. **Nothing here has run in a live round**: no launch, no input,
+no API write. Inputs: the read-only copies of the launched 1.0.2 RomFS in
+`C:\_tools\gBox\.scratch-merc-recovery\re4\inputs\` (`st4/r400 r402 r403 r404.udas`, `etc/omake01.esl omake02.esl`;
+r400 sha256 `6d573d3e...`, the file section 3 measured; all six files' sha256 equal the host's
+`~/gBox_alt/switch/romfs/010099A00BC1E000/bio4/` copies, checked over `ssh spark` read-only on 2026-11-10: r402
+`1ce8367e...`, r403 `42bda316...`, r404 `113d0cba...`, omake01 `7e74dcfc...`, omake02 `4699f8cb...`).
+
+### 8.1 The collision on the Switch (measured)
+
+| slot | what | Switch layout | against the GameCube (`re4_navmap`, `profiles/gamedata/re4_r4xx_navmap.json`) |
+|---|---|---|---|
+| DAT 1 `SAT` | the player's collision | the GameCube SAT with every field little-endian: `80 01 79 ff`, `u32 body (8)`; body `u16 0x20, u16 #verts, u16 #normals, u16 #edges, u16, u16 #tris, 4 x u16`; f32 vertices, f32 unit normals, f32 edge vectors (3 per triangle), 20-byte triangles `u16 v0 v1 v2 normal e0 e1 e2 pad, u16 attr-hi, u16 attr-lo` (attr = hi << 16 \| lo, the GameCube's), then the tree (not read) | byte-swapped (`re4_switch_nav.sat_to_gc`), r400 / r403 / r404 give the GameCube's 1,259 / 1,134 / 878 vertices and 1,290 / 1,502 / 975 triangles, **all 1,031 / 1,055 / 765 wall segments equal to the 0.1 mm** and the **whole grid equal** (layers, heights, states, reach). r402: 1,395 / 1,277 against 1,393 / 1,275 (two more triangles; its walls and grid states differ) |
+| DAT 14 `EAT` | the enemies' collision | the same layout (r400: 1,827 vertices, 2,020 triangles, out to 90 m) | not used: the bot walks the player's |
+| DAT 15 `AEV` | event zones | 0xF0-byte entries (GameCube 0x9C): `+0x0C y, +0x10 height, +0x18 four (x, z)`, `+0x39 type, +0x3A index, +0x3C trigger`, type data from `+0x70` (a ladder: `x y z facing`, `+0x80 s8 rungs`) | converted (`events_to_gc`): the GameCube's events, except one area zone in r403 (AEV[34], moved) |
+| `ITA` | items | 0xB8-byte entries: the same zone, `+0x70 x y z`, `+0x94 u16 item, flag, amount` (r400 ITA[0]: 0x73 Time Bonus, 90 s, flag 60) | the GameCube's events |
+| `etc/omake0N.esl` | spawns | the GameCube list little-endian | r400: one spawn moved (-3130, 70, 21500; GameCube 18150, 70, -6900); the rest identical |
+
+So the GameCube navmap's floor rules (`re4_navmap.build_stage`: SAT floors ny >= 0.7 on a 200 mm grid in storeys,
+walls / ceilings / no headroom block, `VAULT_BITS` fences and sills are jump-overs, AEV ladders, the playable area =
+there and back from a central spawn) run unchanged on the Switch files. World units are the GameCube's **mm**.
+
+### 8.2 The mesh (`gbox/re4_switch_nav.py` builds it, `gbox/mercs/titles/re4_nav.py` serves it)
+
+Walkable cells (free or near a wall, in the playable area) are merged into rectangles of one plane (at most 16 cells a
+side, heights within 30 mm of a plane); a rectangle's polygon keeps its corners and every point where what lies across
+its side changes, so neighbours share whole edges (re5_nav's links need shared vertex indices; a check over the four
+meshes finds no vertex inside a rim edge at its height and no edge in more than two triangles); four-point polygons
+split in two, larger ones fan from the centre. Vertex heights are the SAT floor under the point nearest the cells'
+height. Links are rebuilt from shared edges at load. The **crossings** are explicit links between triangles that share
+no edge, each with its own approach / portal / landing (edge code `3 * (k + 1) + u's nearest edge`): a `vault` across
+a fence or sill strip (one per rectangle pair, both ways where the grid allows; down through a window one way) and a
+`ladder` (AEV type 0x10, up and down: the GameCube navmap's reading; the way down is not seen in game). All carry
+`verified: false`. The SAT's steep triangles (|ny| < 0.7) are kept as wall segments for line of sight.
+
+`re4_nav.Mesh` is `re5_nav.NavMesh`'s interface in mm (points, tris, links, centre, steep, sig, find, member,
+floor_segment, route, route_length, retreat, route_avoiding_hazards, recovery_points, boundary_context) over an inner
+NavMesh in **cm**, so every RE5 threshold means the same distance on RE4's floor. Its route is RE5's A* (a crossing
+costs its length + 2 m for a vault, 3 m + the rise for a ladder) with the crossings handed out as `re5_nav.Traversal`
+(landing, `.approach`, `.portal`); the funnel's clearance is kept **only from the walkable rim** (on a mesh this fine,
+shrinking every portal pinned the path to each short one: 104 waypoints a route); left / right is taken about each
+portal's middle (re5_nav's `_edge` measures from the centroid, which flips on fan slivers: routes cut through houses);
+corners within 80 mm of their neighbours' line are dropped (at most half the clearance; 100 random r400 routes at 350 mm
+kept every 50 mm sample on the floor). Plus `floor_y(x, z, near_y)` and `clear_segment(a, b)`: the shot from 1.45 m
+over his feet to 1.2 m over the target's against the walls (invisible blockers, attr 0x400, are passed, as most rays
+pass them; floors and ceilings are not tested).
+
+| stage | room | points | triangles | crossings (vault / ladder) | walkable | bounds x / z / y (mm) | file | route, 80 random pairs |
+|---|---|---|---|---|---|---|---|---|
+| Village | r400 | 7,279 | 11,520 | 176 (174 / 2) | 1,824 m2 | -29,200..30,200 / -22,000..34,400 / 0..9,000 | 177 KB | 17 ms median, 54 p90, 81 max |
+| Castle | r402 | 2,632 | 4,093 | 0 | 1,274 m2 | -14,400..26,200 / -70,200..-16,800 / 3,064..14,313 | 81 KB | 14 / 28 / 36 ms |
+| Base | r403 | 6,816 | 10,590 | 18 (0 / 18: 9 ladders) | 1,724 m2 | 28,000..87,600 / -18,000..41,600 / 3,826..20,536 | 151 KB | 25 / 61 / 88 ms |
+| Waterworld | r404 | 4,170 | 6,765 | 16 (0 / 16: 8 ladders) | 2,059 m2 | -24,400..30,400 / -66,000..-14,800 / 0..11,999 | 97 KB | 13 / 43 / 60 ms |
+
+Each mesh is one piece (the largest component holds 99.98-100 % of its triangles), loads in 0.1-0.3 s, and its area
+equals the grid's walkable cells x 0.04 m2 exactly. r403's AEV lists 10 ladders; one has no walkable floor at an end in
+the grid and is left out. A file is zlib+base64 int32 points and triangles plus plain crossings, walls, ladders and
+hourglasses (`gbox/data/re4_switch_nav/r4xx.json`, 505 KB for the four); `re4_switch_nav build` remakes them in ~30 s.
+
+**Against the drawn floor** (`re4_switch_nav verify`: 4,000 triangle centres a stage, the placed SMD scene's up-facing
+triangles within +-400 mm, d = drawn - collision):
+
+| stage | a drawn floor within 400 mm | of those, within 50 mm | d p5 / median / p95 (mm) |
+|---|---|---|---|
+| Waterworld | 98.6 % | 97.2 % | -15 / 0 / 0 |
+| Base | 85.9 % | 70.6 % | -193 / -6 / 80 |
+| Castle | 63.6 % | 94.9 % | -35 / -19 / -2 |
+| Village | **17.0 %** | 34.5 % | -335 / 0 / 321 |
+
+Where the scene draws the floor the collision floor lies on it (Waterworld, Castle: within a few cm). The Village's
+ground is mostly not drawn by the placed HD scene models at the collision's height (its up-facing drawn triangles there
+are props, roofs and a sky shell 100 m up; four rotation orders gave the same 14-16 % cover), so the Village check is
+**inconclusive**, not a mismatch: its collision is the GameCube's to the 0.1 mm. Previews (CPU, not the game; not in
+Git): `build --png` draws a top-down view per stage - floor shaded by height, the rim white, SAT walls red (fences
+amber), jump-overs magenta, ladders cyan, four sample routes green.
+
+### 8.3 The live map
+
+| piece | change |
+|---|---|
+| `gbox/mercs/tactical.py` | `UNITS["010099A00BC1E000"] = "mm"` (it fell back to cm); a mesh's `geometry_source` (`room_collision`) names the frame's geometry and the stage payload's `source`; a mesh's own `climbs` (RE4's AEV ladders) replace the steep-triangle guess; `route_source: room_collision` is kept in the plan |
+| `gbox/mercs/titles/re4_nav.py` | `nav_for(snap)` / `attach(snap)`: the stage's mesh by `snap["room"]` (0x04RR or "r4RR"), a stage name or a Select Stage index when the driver has one, **else by the player's position on a stage's floor** (within 600 mm; sticky: another stage only after 5 frames off the current one; two stages' floors under him: the one more Ganados stand on) |
+| `re4_switch.py` | `RE4Switch.snapshot` attaches it (the engine path); `Bot` is decorated (`@re4_walk.attach`): `snap["nav"]` before each tick on a snapshot read from the game (one with `module_base`; a synthetic test snapshot keeps what it carries), `plan()` for the map (phase, note, the target by its **slot**, the walker's route), the map-goal fields |
+| `re4switch_bot.py` | `play(tactical=)`: `tools._start_playbook` passes the worker's sink when play names it; the screen once a second between rounds, `re4_walk.publish(pub, snap, bot, "playing")` per tick in a round |
+| `clients/web/viz/tactical-map.js` | the geometry line names the room-collision route |
+
+A frame from a synthetic RE4 snapshot (`test_re4_walk.py`): units mm, geometry `room_collision`, the player's pos /
+facing / hp, enemies by slot (dead ones dropped), the clock, the route, the goal round. The Village's stage payload is
+370 KB (the control plane takes 4 MB), sent once per stage on `need_stage`.
+
+### 8.4 The routing and the controls (`gbox/mercs/titles/re4_walk.py`)
+
+`Walker(stats)`; `observe(snap, now)` (the decorator does it each tick); `approach(goal) -> keys` - the RE5 Switch
+walker's rules in mm: the mesh's route with 350 mm rim clearance, replanned every 1 s or when the goal leaves its 2 m
+square; a waypoint passed within 1.2 m only once the next is on open floor (within 0.45 m regardless); within 3 m the
+straight line unless the mesh says it is not open floor; a crossing walked to its approach, then pushed through the
+portal with **Y pulsed** (0.35 s down / up) until he is past the portal (level) or nearer the landing's height (a
+ladder); 4 s there without crossing and it is refused for 120 s (`route(avoid=)`) and another way planned (no other
+way: a mark closes as unavailable); 3 s asked without 0.8 m of ground and he steps 1.2 s along open floor; 3 stalls at
+one waypoint refuse it. `guard(act)` (turns him off a wall within 1.5 m of his facing) and `never_stand(act)` are there
+for the bot's own moves.
+
+Controls (Capcom's Switch manual, section 1.1 of `mercenaries-character-specials.md`): tank steering - straight on
+within 14 deg (`lup`, `b` past 6 m), an arc to 50 deg (`lup` + turn, `b` only to 30 deg), past 150 deg the 180 turn
+`ldown` + `b` (at most once a second), else a turn on the spot; Y at crossings. **Turn sign**: an error > 0 (the goal
+at a larger heading, `atan2(dx, dz)`) turns **left** (`lleft`) - the convention tactical.VIEW records as measured on
+RE5 and the GameCube RE4, and `re4_merc_bot`'s. The first-cut fight turns **right** for an error > 0 ("not verified");
+`re4_walk.TURN_POSITIVE` (or `Walker(turn_positive=)`) flips the walker in one place once `U_YAW` is read.
+
+### 8.5 The operator's marks
+
+`map_goals.Goals` with RE4's distances (`re4_walk.Goals`: a spot is reached within 2 m; map_goals' 200 is RE5's cm).
+`receive_map_goal` / `map_goal_plan` on the bot (capabilities `enemy`, `point`); ahead of the bot's own play each tick:
+a marked enemy within 15 m on his level (1.5 m) with a clear shot line -> the bot's own tick on a snapshot holding only
+him; farther, on another level or walled off -> the walk by the mesh at a run; anyone within 6 m on his level or 2 m
+on any on the way -> the bot's own tick on those first. A marked spot: the walk (the floor's height there from the
+mesh), fighting only what is within 2 m. Expired, completed, or no usable exit -> his own play.
+
+### 8.6 What the fight branch must agree to, and what to check live
+
+* **Units.** The collision, the meshes and the map are **mm** (the GameCube's; the Switch SAT is its byte-swap). The
+  snapshot's positions must be the game's own floats. Section 7.5's contract says "cm" and the fight's constants are
+  `_CM` (engage 1,200, run 800, swarm 200): if the position reads as on the GameCube, those are 1.2 m, 0.8 m and 0.2 m.
+  Check: on the Village plaza the player's position lies on the floor (`re4_nav.load('r400').member(pos)` is not None,
+  y near 0).
+* **Merging this branch with the fight branch**: keep `@re4_walk.attach` on the fight's `Bot` (its `tick(snap, now=)`
+  and `self.walker = None` fit), `re4_nav.attach` in `RE4Switch.snapshot`, and in `re4switch_bot.play` the `tactical`
+  parameter, `pub = re4_walk.publisher(tactical)`, `re4_walk.publish(pub, snap, bot, "playing")` right after
+  `keys.apply(bot.tick(...))`, `re4_walk.publish(pub, None, None, where)` on the menus and `pub.close()` at the end.
+  The fight's `_line_of_sight_ok` already prefers `nav.clear_segment`.
+* Live, in order: (1) `snap["nav"]` is the round's stage (`nav.describe()`), picked within a second of the round;
+  (2) the map shows the stage, the player on its floor, Ganados by slot; (3) the route line follows the floor and the
+  bot follows the route (stats `mesh_routes`, `mesh_route_ticks`, `walk_how`); (4) the turn sign: a goal on his left is
+  turned to with `lleft`; (5) at a fence the prompt appears and Y takes it (`mesh_links_taken` rises;
+  `mesh_links_refused` / `mesh_refused_last` name the ones that did not); a ladder up and down on Base or Waterworld;
+  (6) a double-click on the map walks him there and closes "completed" within 2 m; a click on a Ganado walks to and
+  fights him until he is down; (7) no shot through a house wall (`clear_segment`).
+
+**Run**: the converters, the GameCube pipeline and the comparison on the four rooms; the four meshes built, loaded,
+routed (420 random routes) and checked against the drawn scene and for T-junctions; previews drawn; the tests.
+**Inferred**: that the Switch engine walks the SAT as the GameCube did (the file is the same); that the player can take
+the crossings; the turn sign; the units of the RAM position. **Not done**: anything live; the Village's drawn ground.
+
+Reproduce, from `system` with the inputs of section 6:
+
+    & $py -m gbox.re4_switch_nav build --st4 $in\st4 --etc $in\etc --png <dir>   # -> gbox/data/re4_switch_nav/r4xx.json
+    & $py -m gbox.re4_switch_nav verify --st4 $in\st4                            # the drawn-floor table above
+
+Tests: `system/tests/test_re4_switch_nav.py` (17: the Switch layouts, the builder on the synthetic stage of
+`tests/re4_nav_fixture.py`, routes, crossings, units, line of sight, the picker, the four committed files),
+`test_re4_walk.py` (15: steering, the door, the fence with Y, a refused crossing, never-stand, the guard, the marks
+through the decorated bot, plan, the tracker and the publisher), `test_tactical_map.cjs` (+1).

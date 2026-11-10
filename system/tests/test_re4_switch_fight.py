@@ -1,7 +1,7 @@
 """The RE4 Switch fight on synthetic snapshots: the doctrine's rules as keys (gbox.mercs.core.doctrine).
 
-Distances are the game's centimetres; the player faces rot (0 = +z, + toward +x); an error > 0 turns right (the first
-cut's contract, unverified against a live facing read).
+Distances are written in centimetres and scaled to the game's millimetres by snap(); the player faces rot (0 = +z, + toward +x); an error > 0 turns LEFT (the GameCube RE4 / RE5
+convention; the first cut had it the other way round).
 """
 import math
 
@@ -10,9 +10,14 @@ import pytest
 from gbox.mercs.titles import re4_switch as D
 
 
+# The tests are written in centimetres; the game is in millimetres (D.MM_PER_CM): snap() scales every position.
+def mm(p):
+    return tuple(v * D.MM_PER_CM for v in p)
+
+
 def snap(enemies=(), pos=(0.0, 0.0, 0.0), rot=0.0, hp=1000, **extra):
-    return {"player": {"pos": pos, "rot": rot, "hp": hp, "ptr": 1},
-            "enemies": [{"pos": p, "hp": h, "ptr": 100 + i} for i, (p, h) in enumerate(enemies)], **extra}
+    return {"player": {"pos": mm(pos), "rot": rot, "hp": hp, "ptr": 1},
+            "enemies": [{"pos": mm(p), "hp": h, "ptr": 100 + i} for i, (p, h) in enumerate(enemies)], **extra}
 
 
 def bot():
@@ -44,13 +49,13 @@ def test_taps_are_paced_so_each_one_is_a_new_press():
 
 def test_a_ganado_well_off_the_gun_is_turned_to_with_the_gun_down():
     act = bot().tick(snap([((500.0, 0.0, 0.0), 400)]), now=1.0)
-    assert act["hold"] == {D.TURN["right"]} and not act.get("tap")
+    assert act["hold"] == {D.TURN["left"]} and not act.get("tap")
 
 
 def test_a_small_error_fine_turns_with_the_gun_up():
     err = (D.RAISE_TOL + D.Bot.TURN_TOL) / 2
     act = bot().tick(snap([((500.0 * math.sin(err), 0.0, 500.0 * math.cos(err)), 400)]), now=1.0)
-    assert act["hold"] == {D.AIM_BTN, D.AIM_TURN["right"]} and not act.get("tap"), "the right stick aims (manual)"
+    assert act["hold"] == {D.AIM_BTN, D.AIM_TURN["left"]} and not act.get("tap"), "the right stick aims (manual)"
 
 
 def test_no_blind_fire_past_the_range_gate_he_walks_there_instead():
@@ -62,7 +67,9 @@ def test_no_blind_fire_past_the_range_gate_he_walks_there_instead():
 
 def test_locate_turns_toward_the_nearest_ganado_by_the_map_while_walking():
     act = bot().tick(snap([((-1300.0, 0.0, 0.0), 400), ((0.0, 0.0, -5000.0), 400)]), now=1.0)
-    assert act["hold"] == {"lup", D.TURN["left"], D.RUN_BTN}, "13 m to his left: turn left, run (past RUN_CM)"
+    assert act["hold"] == {D.TURN["right"]}, "13 m off square to his right: tank controls turn him on the spot first"
+    arc = bot().tick(snap([((-500.0, 0.0, 1200.0), 400)]), now=1.0)
+    assert arc["hold"] == {"lup", D.TURN["right"], D.RUN_BTN}, "13 m off 23 degrees right: run on a gentle arc"
     ahead = bot().tick(snap([((0.0, 0.0, 1250.0), 400)]), now=1.0)
     assert ahead["hold"] == {"lup", D.RUN_BTN}, "12.5 m straight ahead (past the 12 m engage range): run, no turn"
 
@@ -95,7 +102,7 @@ def test_a_swarm_at_arms_length_is_escaped_with_the_quick_turn():
 
 def test_dead_ganados_are_neither_targets_nor_obstacles():
     act = bot().tick(snap([((0.0, 0.0, 300.0), 0), ((500.0, 0.0, 0.0), 400)]), now=1.0)
-    assert act["hold"] == {D.TURN["right"]}, "the dead one in front is skipped"
+    assert act["hold"] == {D.TURN["left"]}, "the dead one in front is skipped"
 
 
 def test_kills_are_counted_from_the_census_and_the_combo_falls_due():
@@ -127,8 +134,8 @@ def test_when_the_combo_is_owed_the_quickest_kill_is_taken():
 def test_never_stand_a_turn_that_does_not_move_him_becomes_a_step():
     b = bot()
     s = snap([((500.0, 0.0, 0.0), 400)])                             # always turning, never moving
-    assert b.tick(s, now=0.0)["hold"] == {D.TURN["right"]}
-    assert b.tick(s, now=D.STAND_MAX_S - 0.1)["hold"] == {D.TURN["right"]}
+    assert b.tick(s, now=0.0)["hold"] == {D.TURN["left"]}
+    assert b.tick(s, now=D.STAND_MAX_S - 0.1)["hold"] == {D.TURN["left"]}
     step = b.tick(s, now=D.STAND_MAX_S + 0.1)
     assert "lup" in step["hold"] and b.stats["stand_breaks"] == 1 and b.doing == "step"
     assert b.tick(s, now=D.STAND_MAX_S + 0.3)["hold"] == step["hold"], "the step runs to its end"
@@ -205,7 +212,7 @@ class Mesh:
     def floor_segment(self, start, goal):
         return self.clear
 
-    def route(self, start, goal):
+    def route(self, start, goal, **_):
         return self.waypoints
 
 
@@ -218,23 +225,26 @@ def test_no_shot_across_a_wall_the_stage_mesh_names():
 
 
 def test_the_run_to_a_ganado_follows_the_mesh_route():
-    """Straight ahead is a wall: the route's first waypoint is off to his left, so he turns left while he runs."""
-    route = [(0.0, 0.0, 0.0), (-900.0, 0.0, 300.0), ("link",), (0.0, 0.0, 3000.0)]
+    """Straight ahead is a wall: the route's first waypoint is off to his right, so he turns right while he runs."""
+    route = [mm(q) for q in ((0.0, 0.0, 0.0), (-300.0, 0.0, 600.0), (0.0, 0.0, 3000.0))]
     act = bot().tick(snap([((0.0, 0.0, 3000.0), 400)], nav=Mesh(waypoints=route)), now=1.0)
-    assert act["hold"] == {"lup", D.TURN["left"], D.RUN_BTN}
+    assert act["hold"] == {"lup", D.TURN["right"], D.RUN_BTN}
 
 
 def test_an_attached_walker_steers_the_run():
-    class Walker:
+    from gbox.mercs.titles import re4_walk
+
+    class Walker(re4_walk.Walker):
         def __init__(self):
+            super().__init__()
             self.goals = []
 
-        def approach(self, goal):
+        def approach(self, goal, **_):
             self.goals.append(goal)
             return ("lup", "lright")
 
     b = bot()
     b.walker = Walker()
     act = b.tick(snap([((0.0, 0.0, 3000.0), 400)]), now=1.0)
-    assert act["hold"] == {"lup", "lright", D.RUN_BTN} and b.walker.goals == [(0.0, 0.0, 3000.0)]
+    assert act["hold"] == {"lup", "lright"} and b.walker.goals == [mm((0.0, 0.0, 3000.0))], "the walker's keys"
     assert "walker" in b.why

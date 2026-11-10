@@ -36,6 +36,7 @@ import struct
 import time
 
 from ..driver import Driver
+from . import re4_nav, re4_walk                    # the stage mesh (room collision), the walker and the map's marks
 from . import re4_switch_screens as screens
 
 TITLE_ID = "010099A00BC1E000"
@@ -815,7 +816,7 @@ def warm_probe(m) -> dict:
 class RE4Switch(Driver):
     map_id = MAP_ID
     solo_p1 = True                              # The Mercenaries on Switch is played solo on P1 here
-    units_per_m = 100.0                         # cm (doctrine.view)
+    units_per_m = 1000.0                        # mm, measured (doctrine.view, the atlas): see MM_PER_CM below
     round_counters = ("shots", "hits", "turns", "backoffs", "holds", "dying", "escapes", "locates", "stand_breaks",
                       "crowd_picks", "kills_seen")
 
@@ -824,7 +825,7 @@ class RE4Switch(Driver):
         self.stats: dict | None = None
 
     def snapshot(self, m) -> dict:
-        return snapshot(m)
+        return re4_nav.attach(snapshot(m))             # snap["nav"]: the stage's floor mesh (the tactical map's too)
 
     def screen(self, m, snap: dict | None) -> str:
         snap = self.snapshot(m) if snap is None else snap
@@ -849,34 +850,40 @@ class RE4Switch(Driver):
 # once it is mapped (snap["nav"] / snap["obstacles"], mirroring re5_switch_native_nav / gbox.mercs.obstacle_map);
 # until then it cannot confirm a clear shot, so the bot fires only inside ENGAGE_RANGE_CM and when tightly aligned
 # (a conservative default that limits long-range blind fire through geometry).
-ENGAGE_RANGE_CM = 1200.0                 # do not blind-fire past ~12 m before the line-of-sight gate is wired (tune live)
-MINE_CLEAR_CM = 250.0                    # keep at least this far from an own hazard (parity with re5_switch_mines)
+# UNITS (2026-11-10, measured): RE4 Switch's world is in MILLIMETRES - the room collision is the GameCube SAT to 0.1 mm
+# (re4_switch_nav) and a live player position read x 50,689 on Village (50 m, not 500). The names below keep their
+# historical _CM suffix; their values are the same distances in the game's mm (x MM_PER_CM). Before this the fight
+# took every Ganado for 10x farther than he was: live it never fired (0 shots over 8 rounds) and walked into them.
+MM_PER_CM = 10.0
+ENGAGE_RANGE_CM = 1200.0 * MM_PER_CM                 # do not blind-fire past ~12 m before the line-of-sight gate is wired (tune live)
+MINE_CLEAR_CM = 250.0 * MM_PER_CM                    # keep at least this far from an own hazard (parity with re5_switch_mines)
 
 # The fight (gbox.mercs.core.doctrine: never idle, shoot on sight, the combo every 2-5 s, crowds, locate by the map).
 # RE4 is tank-controlled and stands still while it aims: the gun comes up only once the body is within RAISE_TOL of the
 # target (the right stick then fine-turns the aim, the trigger is tapped inside TURN_TOL once the gun has been up
 # AIM_READY_S), and every tick without a shot moves him: a step on open ground when he has stood STAND_MAX_S, the walk
-# to the nearest Ganado by the map when none is in range. Distances are the game's units (cm, the map's units_per_m
-# 100). The turn direction (an error > 0 turns right) is the first cut's contract and is NOT verified against a live
-# facing read (U_YAW is pending).
+# to the nearest Ganado by the map when none is in range. Distances are the game's units (mm, units_per_m 1000: the
+# constants are written in cm x MM_PER_CM). An error > 0 turns LEFT (the GameCube convention re4_walk steers by; a
+# live facing read, U_YAW, would confirm it: re4_walk.TURN_POSITIVE flips the walk in one place).
 RAISE_TOL = 0.35                         # rad: the body this close to the target, the gun comes up
 AIM_READY_S = 0.25                       # the gun up this long before the first tap (a tap as it rises is not a shot)
 RUN_BTN = "b"                            # held with the stick up: a run (the manual: B + left stick up)
-RUN_CM = 800.0                           # locating a Ganado farther than this: run, not walk
+RUN_CM = 800.0 * MM_PER_CM                           # locating a Ganado farther than this: run, not walk
 QUICK_TURN = ("ldown", RUN_BTN)          # the 180 turn (the manual: B + left stick down), the escape from a crowd
 RELOAD_SHOTS = 8                         # shots since the last reload: reload (ZL + B) at the next quiet moment (no
                                          # ammo read yet; a reload on a full magazine costs a moment and nothing else)
-RELOAD_CLEAR_CM = 350.0                  # ... quiet = nobody this near (doctrine IMPEDE_M)
-CROWD_N, CROWD_CM = 4, 600.0             # a mob (doctrine CROWD_N / CROWD_M)
+RELOAD_CLEAR_CM = 350.0 * MM_PER_CM                  # ... quiet = nobody this near (doctrine IMPEDE_M)
+CROWD_N, CROWD_CM = 4, 600.0 * MM_PER_CM             # a mob (doctrine CROWD_N / CROWD_M)
 CROWD_CONE = 0.6                         # rad: in a mob, the Ganado nearest the gun's line within this is the target
-SWARM_N, SWARM_CM = 3, 200.0             # this many this close: turn and go (he cannot shoot three at arm's length)
-STAND_MAX_S, STAND_MOVE_CM, STAND_STEP_S = 1.5, 40.0, 0.8   # never stand: no metre in 1.5 s and no shot -> a step
+SWARM_N, SWARM_CM = 3, 200.0 * MM_PER_CM             # this many this close: turn and go (he cannot shoot three at arm's length)
+STAND_MAX_S, STAND_MOVE_CM, STAND_STEP_S = 1.5, 40.0 * MM_PER_CM, 0.8   # never stand: no metre in 1.5 s and no shot -> a step
 SWEEP_S = 3.0                            # nobody on the map: walk, turning this long one way, then the other
 KILL_PACE_S = 3.0                        # doctrine.KILL_PACE_S: from this long after a kill the next one is owed
 COMBO_WINDOW_S = 5.0                     # doctrine.COMBO_MAX_S: a kill later than this after the last one breaks the combo
 FIRE_GAP_S = 0.25                        # between trigger taps (a tap is down + up: the engine never holds the trigger)
 
 
+@re4_walk.attach                       # .walker (approach(goal) -> stick keys), snap["nav"], the map's marks, plan()
 class Bot:
     """One decision per tick from the snapshot (re5_switch.Bot's shape: tick(snap) -> {"hold": keys, "tap": key}).
 
@@ -1023,19 +1030,21 @@ class Bot:
             lined = [t for t in crowd if abs(t[1]) <= CROWD_CONE]
             if lined:
                 self.stats["crowd_picks"] += 1
-                self.why = f"crowd fire: {len(crowd)} within {CROWD_CM / 100:.0f} m, the one on the gun's line"
+                self.why = f"crowd fire: {len(crowd)} within {CROWD_CM / 1000:.0f} m, the one on the gun's line"
                 return min(lined, key=lambda t: abs(t[1]))
         if self.combo_owed(now) is not None:
             self.why = "the combo is owed: the quickest kill"
-            return min(near, key=lambda t: (t[2].get("hp") or 0) * 0.5 + t[0] + 300.0 * abs(t[1]))
+            return min(near, key=lambda t: ((t[2].get("hp") or 0) * 0.5 + 300.0 * abs(t[1])) * MM_PER_CM + t[0])
         self.why = "the nearest Ganado"
         return min(near, key=lambda t: t[0])
 
     def _turn(self, err: float) -> set:
-        return {TURN["right"] if err > 0 else TURN["left"]}
+        # an error > 0 turns LEFT: the GameCube RE4 / RE5 convention (measured there; the Switch world is the GameCube's
+        # data - re4_switch_nav), the one re4_walk uses. The first cut had it the other way round, unverified.
+        return {TURN["left"] if err > 0 else TURN["right"]}
 
     def _aim_turn(self, err: float) -> set:
-        return {AIM_TURN["right"] if err > 0 else AIM_TURN["left"]}
+        return {AIM_TURN["left"] if err > 0 else AIM_TURN["right"]}
 
     def _command(self, now):
         if self.reader is None:
@@ -1063,7 +1072,7 @@ class Bot:
         if self.director is not None:
             try:
                 from ..core import doctrine
-                self.director.observe(doctrine.view(snap), act, time.time())
+                self.director.observe(doctrine.view(snap, RE4Switch), act, time.time())
             except Exception:                            # noqa: BLE001 - measuring never costs the tick
                 pass
         self.stats["doing"], self.stats["why"] = self.doing, self.why
@@ -1076,7 +1085,7 @@ class Bot:
             self.stats["backoffs"] += 1
             self.doing, self.why = "backoff", "standing near his own explosive"
             near = min(live, key=lambda t: t[0]) if live else None
-            return {"hold": {"lup", TURN["left" if near and near[1] > 0 else "right"]}}
+            return {"hold": {"lup", TURN["right" if near and near[1] > 0 else "left"]}}
         swarm = [t for t in live if t[0] <= SWARM_CM]
         if len(swarm) >= SWARM_N:
             self.stats["escapes"] += 1
@@ -1120,14 +1129,14 @@ class Bot:
             return {"hold": {AIM_BTN}, "tap": RELOAD_BTN}
         return self._locate(p, live, now, cmd, snap)
 
-    def _approach(self, p, goal, err, snap) -> tuple:
+    def _approach(self, p, goal, err, snap, run: bool = False) -> tuple:
         """(stick keys, how) toward goal: the mesh walker when one is attached (Bot.walker.approach(goal) -> keys, the
         RE4 room-collision walker), else the first waypoint of the stage mesh's route (snap["nav"].route), else
         straight at it."""
         walker = self.walker
         if walker is not None:
             try:
-                keys = set(walker.approach(tuple(goal)) or ())
+                keys = set(walker.approach(tuple(goal), run=run) or ())
                 if keys:
                     return keys, "the mesh walker"
             except Exception:                                # noqa: BLE001 - a walker error falls back to the line
@@ -1139,25 +1148,26 @@ class Bot:
                 pts = route(tuple(p["pos"]), tuple(goal)) or []
                 wp = next((q for q in pts if isinstance(q, (tuple, list)) and len(q) >= 3
                            and all(isinstance(v, (int, float)) for v in q[:3])      # a waypoint, not a link
-                           and self._flat(p["pos"], q) > 60.0), None)
+                           and self._flat(p["pos"], q) > 60.0 * MM_PER_CM), None)
                 if wp is not None:
                     werr = wrap(heading(wp[0] - p["pos"][0], wp[2] - p["pos"][2]) - (p.get("rot") or 0.0))
-                    return {"lup"} | (self._turn(werr) if abs(werr) > self.TURN_TOL else set()), "the stage mesh"
+                    keys = {"lup"} | (self._turn(werr) if abs(werr) > self.TURN_TOL else set())
+                    return keys | ({RUN_BTN} if run else set()), "the stage mesh"
             except Exception:                                # noqa: BLE001
                 self.stats["route_errors"] = self.stats.get("route_errors", 0) + 1
-        return {"lup"} | (self._turn(err) if abs(err) > self.TURN_TOL else set()), "the map"
+        keys = {"lup"} | (self._turn(err) if abs(err) > self.TURN_TOL else set())
+        return keys | ({RUN_BTN} if run else set()), "the map"
 
     def _locate(self, p, live, now, cmd=None, snap=None) -> dict:
         """Nobody in range: the nearest Ganado by the map, walked to (run past RUN_CM); nobody known: the sweep."""
         if live:
             dist, err, e = min(live, key=lambda t: t[0])
             self.stats["locates"] += 1
-            self.stats["locate_m"] = round(dist / 100.0, 1)
+            self.stats["locate_m"] = round(dist / 1000.0, 1)
             self.doing = "locate"
-            keys, how = self._approach(p, e["pos"], err, snap or {})
-            self.why = f"locating: the nearest Ganado {dist / 100:.0f} m off by {how}" + (f" ({cmd})" if cmd else "")
-            if dist > RUN_CM or self.combo_owed(now) is not None:
-                keys.add(RUN_BTN)
+            run = dist > RUN_CM or self.combo_owed(now) is not None
+            keys, how = self._approach(p, e["pos"], err, snap or {}, run)
+            self.why = f"locating: the nearest Ganado {dist / 1000:.0f} m off by {how}" + (f" ({cmd})" if cmd else "")
             return {"hold": keys}
         if self._sweep_at is None or now - self._sweep_at >= SWEEP_S:
             self._sweep_at, self._sweep_dir = now, -self._sweep_dir
