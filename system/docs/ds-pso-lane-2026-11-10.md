@@ -2553,15 +2553,61 @@ host-side issue, not a game one.
 only unwalked lead in the city, and the map now makes it cheap to see where anything else might be: an area can be drawn
 before deciding to walk it.
 
+## Round 52 (2026-11-10) — the `.evt` event table gets a first-pass decode
+
+The lane has never found the thing that makes a door transition. Placement records put objects in the world, and whether a
+placed door warps is decided elsewhere; the `event` archive's `.evt` entries are the only files named for events, so this
+round decoded their framing.
+
+### `gbox/pso_evt.py` (+6 tests)
+
+`map_forest01_00.evt`, measured:
+
+```
+0000  8c 01 00 00  10 00 00 00  13 00 00 00  00 00 00 00     16-byte header: 396, 16, 19, 0
+0010  6f 00 00 00  00 00 01 00  0b 00 01 00  32 00 00 00  00 00 00 00
+0024  57 04 00 00  00 00 01 00  0b 00 02 00  32 00 00 00  06 00 00 00
+0038  58 04 00 00  00 00 01 00  0b 00 03 00  32 00 00 00  0c 00 00 00
+004c  59 04 00 00  00 00 01 00  0b 00 04 00  32 00 00 00  12 00 00 00
+```
+
+**16-byte header + 20-byte records + a 4-byte footer** (500 = 16 + 24*20 + 4). A record decodes as
+``{id, flags, page, opcode, arg, value, offset}``, and the records come in **groups that share an opcode**: the first group is
+`0x6f, 0x457, 0x458, 0x459` with opcode `0x0b`, arguments 1..4, value 50 everywhere, and the trailing word stepping
+0, 6, 12, 18. The next group starts lower again (`0x65, 0x3f3, 0x3f4`, opcode `0x0a`, value 60, offset 25).
+
+That is a **script table**: event ids, an opcode per group, an argument, and a stepping offset. The field names are honest
+guesses and the opcode meanings are unknown -- but the framing, the header values, the group structure and the stride of the
+trailing word are measured, and the tests pin exactly those numbers from the file rather than numbers that make the parser
+look right.
+
+### A misleading message, corrected
+
+`pso_setdata.record_count` refused a non-68-byte file with "an *e.dat event table or a corrupt file". `e.dat` is the
+**enemy spawn table** (the archive entries pair up: `map_forest01_00_offe.dat` beside `map_forest01_00_off.evt`), and the
+event scripts are the `.evt` files. The message now says so, in the order a reader would try them. It cost me a detour this
+round; it should not cost the next person one.
+
+### Why this matters for P1
+
+If the transition that carries a party off Pioneer 2 is a script opcode, it is in a `.evt` file, in a group. The next step is
+to find which group, which means finding the opcode whose argument names a **destination** -- and `pso_evt.summary()` plus
+the group structure makes that a search over ~143 files rather than a guess. That is the executable-free lever P1 has been
+missing.
+
+### State
+
+`main` clean; 30 tests green across `pso_evt`, `pso_setdata` and `pso_editor`. Session still live but input-blocked from
+round 51 (P1 in room 20).
+
 ## 7. Next
 
-1. **Draw before walking.** `python -m gbox.pso_editor <disc> map <set>` renders an area in world coordinates with the
-   doors, spawns and pedestal lettered -- cheap to run, and it makes the next walk a decision instead of a search.
-2. **The `x=0` corridor is real for at least 130 units** south of the lobby (walked to (-11,-79), passing the
-   `TObject` at (0,-60)); continuing it is the last unwalked lead in the city.
-3. **A field area's offset**, so P6a's in-game proof can be repeated on a floor; only `city00` is measured.
-4. **P6b's page** is pure UI over `python -m gbox.pso_editor` (sets / list --world / map / move / delete / build), and
-   **P7a's rigging** is the other large item.
+1. **Find the transition opcode in the `.evt` scripts.** `gbox.pso_evt` decodes the framing (16-byte header, 20-byte
+   records, 4-byte footer, records grouped by opcode); the next step is to sweep all 143 event files and find the opcode
+   whose argument names a destination area. That is the executable-free lever for P1's field leg.
+2. **The `x=0` corridor**, still unwalked past (-11,-79).
+3. **A field area's offset** so P6a's in-game proof repeats on a floor; only `city00` is measured.
+4. **P6b's page** (pure UI over `python -m gbox.pso_editor`) and **P7a's rigging**.
 
-Watch for the host-side input guard: `win_send_keys` raises (`adapters.py:656`) when the emulator window is not
-foreground, which has now interrupted three rounds mid-walk. It is not a game problem.
+Corrected this round: `e.dat` is the **enemy spawn table** and `.evt` is the **event script** -- `pso_setdata`'s refusal
+message said the opposite and cost a detour. The `_offe.dat` / `_off.evt` pairing is the evidence.
