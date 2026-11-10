@@ -17,6 +17,12 @@
       body:body===undefined?undefined:JSON.stringify(body)});
     const out=await response.json();if(!response.ok)throw Error(out.detail||`HTTP ${response.status}`);return out;
   };
+  // An enemy portrait for the map (the bearer token cannot ride on an <img>): fetched once, kept as a blob URL.
+  const image=async path=>{
+    const response=await fetch(path,{credentials:'same-origin',signal:AbortSignal.timeout(8000),
+      headers:token?{Authorization:'Bearer '+token}:{}});
+    return response.ok?root.URL.createObjectURL(await response.blob()):null;
+  };
   async function refresh(){
     if(busy||dead)return;busy=true;
     try{
@@ -28,7 +34,7 @@
       if(!map||sid!==live.session_id){
         sid=live.session_id;map?.stop();root.GBoxTacticalMap.detach();actions?.dispose();
         mapHost.innerHTML=root.GBoxTacticalMap.html(sid);
-        map=root.GBoxTacticalMap.mount(mapHost.ownerDocument,{sid,api});
+        map=root.GBoxTacticalMap.mount(mapHost.ownerDocument,{sid,api,image});
         actions=root.GBoxStreamInterventions.mount(doc.getElementById('actions'),{sid:()=>sid,api});
       }
       doc.getElementById('title').textContent=live.title||'Live Mercenaries map';

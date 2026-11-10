@@ -17,6 +17,13 @@ function placement(value,displays=[]){
   }
   return {x,y,width:w,height:h};
 }
+const PORTRAIT_MAX=512*1024;
+// The one image path a viewer may read: an enemy type's portrait.
+function imagePath(value){
+  if(typeof value!=='string'||!/^\/api\/mercs\/enemies\/[A-Za-z0-9]{4,24}\/[A-Za-z0-9_.-]{1,40}\.png$/.test(value)||value.includes('..'))
+    throw Error('Unsupported viewer image.');
+  return value;
+}
 function request(value,ownedJobs){
   if(!value||typeof value.path!=='string'||value.path.length>4096||!value.path.startsWith('/api/')||value.path.includes('\\'))throw Error('Unsupported viewer request.');
   const u=new URL(value.path,'http://viewer.invalid');
@@ -24,6 +31,7 @@ function request(value,ownedJobs){
       ||[...u.searchParams.keys()].some(k=>/token|authorization/i.test(k)))throw Error('Unsupported viewer request.');
   const method=String(value.method||(value.body===undefined?'GET':'POST')).toUpperCase(),p=u.pathname;
   const read=/^\/api\/mercs\/reviewer\/(catalog|runs|round|live)$/.test(p)||p==='/api/sessions'||p==='/api/mercmode'
+    ||/^\/api\/mercs\/enemies\/[A-Za-z0-9]{4,24}$/.test(p)
     ||/^\/api\/autoplay\/tactical\/(?:stage\/)?[A-Za-z0-9_:%.-]{1,180}$/.test(p);
   const job=/^\/api\/jobs\/((?:[0-9a-f]{16}|[0-9a-f]{32}))$/.exec(p);
   if(method==='GET'&&value.body===undefined&&(read||p==='/api/jobs'||job&&ownedJobs.has(job[1])))return {path:u.pathname+u.search,method};
@@ -94,6 +102,18 @@ module.exports=function({BrowserWindow,ipcMain,getOpeningScope,getToken,fetch:fe
     if(q.method==='GET'&&q.path.split('?')[0]==='/api/jobs'&&Array.isArray(value))return value.map(j=>({id:j.id,tool:j.tool,state:j.state,input:{session_id:j.input?.session_id}}));
     return value;
   }
+  // An enemy portrait for the live map (GET /api/mercs/enemies/{title}/{class}.png - the model render or the live
+  // crop) as a data URL: <img> cannot carry the bearer token. Only that path, only PNG / JPEG, at most PORTRAIT_MAX.
+  async function image(row,path){const q=imagePath(path),server=row.scope.origin,credential=await getToken(server);
+    if(!credential)throw Error('This server is reconnecting.');
+    const r=await fetcher(server+q,{method:'GET',redirect:'error',headers:{authorization:'Bearer '+credential},signal:AbortSignal.timeout(15000)});
+    if(!r.ok)return null;
+    const type=String(r.headers?.get?.('content-type')||'').split(';')[0].trim();
+    if(!['image/png','image/jpeg'].includes(type))return null;
+    const bytes=Buffer.from(await r.arrayBuffer());
+    return bytes.length&&bytes.length<=PORTRAIT_MAX?`data:${type};base64,${bytes.toString('base64')}`:null;
+  }
+  ipcMain.handle('mercs-window:image',(event,value)=>image(rowOf(event),value));
   ipcMain.handle('mercs-window:open',(event,value)=>open(getOpeningScope(event,value)));
   ipcMain.handle('mercs-window:info',event=>{const r=rowOf(event);return {...r.scope,top:r.win.isAlwaysOnTop()};});
   ipcMain.handle('mercs-window:api',(event,value)=>api(rowOf(event),value));
@@ -102,3 +122,4 @@ module.exports=function({BrowserWindow,ipcMain,getOpeningScope,getToken,fetch:fe
     close(){for(const r of windows.values())if(!r.win.isDestroyed())r.win.close();},windows};
 };
 module.exports.origin=origin;module.exports.scope=scope;module.exports.placement=placement;module.exports.request=request;
+module.exports.imagePath=imagePath;
