@@ -29,7 +29,10 @@ Check every live fact against the system before you rely on it.
 - **Tests.** No new failures. Known red on main:
   - 11 RE5 Switch files (bonus / giveup / rampage / smooth / threat);
   - 3 RE6 (2 `test_re6_magnum_quick4`, 1 sniper in `test_re56_weapon_controls`);
-  - the 4 in `test_pso_steering_evidence.py`. Those 4 are yours: they came with the PSO lane's push to main.
+  - the 4 in `test_pso_steering_evidence.py`. They broke with the 11-02 co-op steering commits (`6d465b8a` ..
+    `6b95cb75`), not with your lane. One is a real bug: `_observe_boss` writes telemetry outside any guard
+    (`pso_coop.py` around line 2844), so a telemetry failure aborts the tick. Fix that one. See
+    `DEEPSEEK-PSO-PROGRESS-2026-11-10.md`.
 
 ## 1. What changed today (live on lilspark unless marked)
 
