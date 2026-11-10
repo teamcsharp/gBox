@@ -44,6 +44,7 @@ from pathlib import Path
 from ..bot_look import BotLook, make_target
 from ..driver import Driver
 from . import re5_switch_aim, re5_switch_prompt
+from . import re5_specials                 # the characters' special moves in play (stun -> finisher, Wesker's dash)
 from .. import qte                         # universal QTE handling: the vision grab-fallback when the RAM read tears
 
 TITLE_ID = "010018100CD46000"
@@ -96,6 +97,11 @@ E_COUNT, E_ARRAY, E_POS, E_HP = 0x38, 0x48, 0x60, 0x1EB8
 # the walk in), 85-87 / 30 / 12 / 2 none. The flag: 45 % (64 of 209 ticks set) against 4 % clear.
 E_MOTION, E_ACT, E_ATTACKING = 0x8F8, 0xA23, 0x40
 WINDUP_MOTIONS = frozenset({80, 81, 60, 91})
+# His heading, for the ones within WINDUP_READ_R (re5_specials: standing behind him for a rear melee): the rotation
+# quaternion at the player's own offset (P_ROT; the same base class as the motion byte). UNVERIFIED on enemies, so a
+# read is used only when the four floats make a unit quaternion (within E_ROT_NORM); otherwise "rot" is left out and
+# the specials assume he faces the player.
+E_ROT, E_ROT_NORM = 0x70, 0.02
 # Downed / kneeling motions (the enemy motion byte +0x8F8): the aim tracks the real body height.
 # Live 2026-10-27: 85-87 / 30 / 12 / 2 none (undocumented); the operator 2026-10-28 04:5x: the bot
 # "doesn't aim at them after they fall ... holds the trigger until they get back up".  These are the
@@ -1608,16 +1614,24 @@ def snapshot(m) -> dict:
                     hp, hp_max = struct.unpack("<hh", m.rd(e + E_HP, 4))
                 except (ValueError, OSError):
                     continue
-                act = None                               # his motion and action flags, near him only
+                act = rot = None                         # his motion, action flags and heading, near him only
                 if ppos is not None and hp > 0 and math.hypot(pos[0] - ppos[0], pos[2] - ppos[2]) <= WINDUP_READ_R:
                     try:
                         raw = m.rd(e + E_MOTION, E_ACT - E_MOTION + 1)
                         act = (raw[0], raw[E_ACT - E_MOTION])
                     except (ValueError, OSError):
                         act = None
-                snap["enemies"].append({"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max,
-                                        "class": enemy_class(m, e), "motion": act[0] if act else None,
-                                        "act": act[1] if act else None})
+                    try:
+                        q = struct.unpack("<4f", m.rd(e + E_ROT, 16))
+                        if all(math.isfinite(v) for v in q) and abs(sum(v * v for v in q) - 1.0) <= E_ROT_NORM:
+                            rot = heading_of(q)
+                    except (ValueError, OSError, struct.error):
+                        rot = None
+                row = {"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max, "class": enemy_class(m, e),
+                       "motion": act[0] if act else None, "act": act[1] if act else None}
+                if rot is not None:
+                    row["rot"] = rot
+                snap["enemies"].append(row)
     gs = game_sys(m, base)
     if ptr_ok(gs):
         raw = m.rd(gs + GS_PHASE, GS_SCORE + 4 - GS_PHASE)
@@ -2352,6 +2366,9 @@ class Bot:
             return CHEST_H                                   # at grabbing / lunging range: the old rule, whatever K says
         if self._dynamite_lit(tgt):
             return DYNAMITE_AIM_H                            # the lit stick in his raised hand: the shot detonates it
+        site = self._special("site_h", tgt, now)             # a special's stagger shot: his head or his thighs
+        if site is not None:
+            return site
         motion = tgt.get("motion")
         if motion in DOWNED_MOTIONS:
             return DOWNED_AIM_H                              # on the ground: the aim at the body, not the air
@@ -4173,6 +4190,7 @@ class Bot:
             self.mines.new_round(now)
         if self.__dict__.get("_map_goals") is not None:
             self._map_goals.reset()                          # a new round: the last one's marks are gone
+        self._special("new_round", now)                      # a special left over from the last round ends
         self._stage_learning(self._stage_now())
 
     def _stage_now(self) -> str | None:
@@ -4237,6 +4255,25 @@ class Bot:
             self._pull_end(self._now)
         self.aim_since, self.fire_down, self.ray_key, self.trigger_since = None, False, None, None
         self._raise_t = None
+
+    # --- the characters' special moves (re5_specials) ----------------------------------------------------------------
+    def _specials(self):
+        """The special-move layer, made on first use. A bot built before the layer existed, or one holding a layer of a
+        class a reload replaced, gets a fresh one: nothing relies on __init__ (hot reload)."""
+        sp = self.__dict__.get("_sp_layer")
+        if not isinstance(sp, re5_specials.Specials):
+            sp = self._sp_layer = re5_specials.Specials(self.stats)
+        return sp
+
+    def _special(self, what: str, *args):
+        """re5_specials.Specials.<what>(self, *args); None on any error (the specials never stop the bot)."""
+        try:
+            return getattr(self._specials(), what)(self, *args)
+        except Exception as exc:                             # noqa: BLE001 - a special never costs a tick
+            stats = self.__dict__.get("stats")
+            if isinstance(stats, dict):
+                stats["specials_error"] = f"{what} {type(exc).__name__}: {exc}"[:160]
+            return None
 
     # --- survival ----------------------------------------------------------------------------------------------------
     def _heal(self, p, snap, live, flat, now) -> dict | None:
@@ -4493,6 +4530,7 @@ class Bot:
         act = self._governor(act, snap, now)
         act = self._shot_tail(act, snap, now)
         act = self._native_equipment(act, snap)
+        act = self._special("post", act, snap, now) or act  # the stagger shot's site, the specials line in the why
         self.stats.update(combat_action=self.doing, combat_reason=self.why,
                           combat_hold=','.join(act.get('hold') or ()))
         from . import re5_switch_wall
@@ -4722,6 +4760,7 @@ class Bot:
                 self.fighter.observe(snap, now)              # its shot / hit / kill accounting, every tick
             except Exception as exc:                         # noqa: BLE001 - accounting never stops the bot
                 self.stats["brain_error"] = f"observe {type(exc).__name__}: {exc}"[:160]
+        self._special("observe", snap, now)                  # the special under way: its stagger, its kill, its gates
         if (p.get("hp") or 0) <= 0:
             self.doing, self.why = "dead", "Continue?"
             self._gun_down()
@@ -4795,7 +4834,11 @@ class Bot:
             if now - self._hit_at > 0.5:                 # his health fell (a hit, a blast; a squeeze counts once)
                 self.stats["hits_taken"] += 1
             self._hit_at = now
-        act = self._prompt(p, snap, now)                 # the game's own prompt: taken the moment it shows
+        act = self._special("defer", snap, now)          # (REAR_DEFER_S, off: a front melee held while he gets behind)
+        if act is None:
+            act = self._prompt(p, snap, now)             # the game's own prompt: taken the moment it shows
+            if act is not None:
+                self._special("pressed", snap, now)      # a melee prompt: the character's move (re5_specials)
         if act is not None:
             self._gun_down()
             return act
@@ -5818,6 +5861,9 @@ class Bot:
         act = self._dynamite_tick(p, live, flat, now)     # a lit dynamite Majini close: back out of the blast first
         if act is not None:
             return act
+        act = self._special("drive", p, snap, now)       # a special moving him (re5_specials): in for the prompt on a
+        if act is not None:                              # staggered Majini, onto a floored one, Wesker's dash, the
+            return act                                   # step away from a boss - ahead of the crowd fire's gun
         act = self._quick_behind(p, live, flat, now)    # one close behind: the quick turn (stick back + B)
         if act is not None:
             return act
@@ -5887,6 +5933,9 @@ class Bot:
             self.stats["close_in_ticks"] = self.stats.get("close_in_ticks", 0) + 1
             self._gun_down()
             return {"hold": ("lup", "b") + self._approach(p, foot, now, link=True)}
+        act = self._special("consider", p, snap, tgt, now)  # a special on him: the stagger shot's site (_aim_h), the dash
+        if act is not None:
+            return act
         act = self._mastery(p, live, flat, tgt, snap, now)  # the weapon in hand has no laser: its own controller
         if act is not None:
             return act
@@ -6228,7 +6277,8 @@ class Bot:
         Majini on his level within THREAT_CAP_R (CAM_DOWN_GUARD above). Pressed up CAM_CHECK_S and it went further down
         instead: off for the round."""
         c, ap = self._camd, p.get("aim_pitch")
-        want_down = -math.atan2(foot[1] + CHEST_H - p["pos"][1] - MUZZLE_H, max(dist, 1.0))   # + = his chest below
+        aim_h = self._special("aim_h_at", foot, now) or CHEST_H   # (a special's thigh shot: the thighs, not the chest)
+        want_down = -math.atan2(foot[1] + aim_h - p["pos"][1] - MUZZLE_H, max(dist, 1.0))   # + = his chest below
         if not CAM_DOWN_GUARD or c["off"] or ap is None or ap <= want_down + CAM_DOWN_MAX or dist > THREAT_CAP_R                 or abs(foot[1] - p["pos"][1]) > LEVEL_DY:
             c["since"], c["on"] = None, False
             return False
@@ -6250,7 +6300,8 @@ class Bot:
         """The aim's own pitch (P_AIM_PITCH) more than CAM_UP_MAX up while aimed at a Majini on his level within
         THREAT_CAP_R (CAM_GUARD above). Pressed down CAM_CHECK_S and it went up instead: off for the round."""
         c, ap = self._cam, p.get("aim_pitch")
-        want_up = math.atan2(foot[1] + CHEST_H - p["pos"][1] - MUZZLE_H, max(dist, 1.0))   # his chest's elevation
+        aim_h = self._special("aim_h_at", foot, now) or CHEST_H   # (a special's head shot: his head's elevation)
+        want_up = math.atan2(foot[1] + aim_h - p["pos"][1] - MUZZLE_H, max(dist, 1.0))   # his chest's elevation
         if not CAM_GUARD or c["off"] or ap is None or -ap <= max(want_up, 0.0) + CAM_UP_MAX or dist > THREAT_CAP_R                 or abs(foot[1] - p["pos"][1]) > LEVEL_DY:
             c["down_since"], c["on"] = None, False
             return False
@@ -6650,7 +6701,7 @@ class RE5Switch(Driver):
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
                       "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS \
         + THREAT_COUNTERS + CRIT_FLASH_COUNTERS \
-        + AIM_COUNTERS + MEASURE_COUNTERS + tuple("t_" + d for d in DOINGS)
+        + AIM_COUNTERS + MEASURE_COUNTERS + tuple("t_" + d for d in DOINGS) + re5_specials.COUNTERS
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
