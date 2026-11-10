@@ -1871,15 +1871,68 @@ mode is a *crash dialog in the emulator*, not a wrong-looking model. The build p
 * Rigging: `build_swap` with the joint-role mapping, so the swap is correct rather than merely visible.
 * P6a's in-game object proof, P1's guild counter, P6b (editor page), and the demo -> route fixture.
 
+## Round 36 (2026-11-10) — the rule that predicts which raw model swaps render and which crash
+
+Round 35 left a fact with no explanation: a HUcast body on a HUmar skeleton renders (wrong), a HUnewearl body crashes the
+game. This round found the discriminator by measuring the three bodies on the disc instead of guessing.
+
+### The measurement
+
+| body | bones | vertices | texture buckets |
+|---|---|---|---|
+| HUmar (`plAbdy00.nj`) | 64 | 269 | 5 |
+| HUcast (`plCbdy00.nj`) | 64 | 311 | **5** |
+| HUnewearl (`plBbdy00.nj`) | 64 | 356 | **8** |
+
+Every class has the **same 64-bone skeleton and the same parent chain** -- so bone count, the obvious suspect, is not the
+discriminator at all. My first hypothesis (round 35's "the donor's joint layout differs") was **wrong**, and the test that
+asserted it failed loudly enough to catch me: `assert 64 != 64`.
+
+What differs is the **texture/material table** the mesh references (`nj.tris` keys):
+
+* donor with the same 5 buckets -> the mesh binds and **renders**, deformed by its own proportions (**HUcast**);
+* donor with 8 buckets -> the renderer looks up a material the host character does not have -> **invalid read at
+  `PC 0x8028f508`** (**HUnewearl**).
+
+So the crash is a *material table* mismatch, not a skeleton mismatch. That is a much more useful statement: it can be
+checked before building.
+
+### `gbox/pso_swapfit.py` (+7 tests)
+
+* `signature_nj(nj)` -> `{bones, vertices, buckets}` from a parsed body;
+* `compare(host, donor)` -> **REFUSE** when the buckets differ (the crash case), **SAFE but flagged `deforms`** when the
+  buckets match and only the vertex count differs (the render-deformed case), **SAFE** when everything matches;
+* `report(...)` prints the numbers and the verdict for a build log.
+
+The test suite includes a **real-disc** case that reproduces both observed outcomes: `compare(HUmar, HUcast)` is safe and
+flagged `deforms`, `compare(HUmar, HUnewearl)` is refused -- exactly what the emulator did in round 35.
+
+### Why this matters for the editor
+
+The guide's goal is "the character can be hot swapped with any of the models from the collection". This round says that
+sentence has a *precondition* the pipeline can now enforce: a model whose material table does not match the host will
+crash, and a model whose proportions differ will deform. Both are checkable from the files, and neither was checkable
+before -- round 33's build looked perfect and round 34's boot looked fine until the character select drew polygons.
+
+### Not done
+
+Rigging (`build_swap` / `ninja_swap`) is still the path to a *correct* swap, and it is a substantial GC adaptation:
+`build_swap` parses the body as little-endian, writes PVR textures (`ninja.pvr_like`) and looks files up as
+`PSO/PL...` -- all Dreamcast assumptions, three of which this lane has already solved elsewhere
+(`pso_gc_paths`, `njcm_is_big_endian`, `decode_texture_entry`) but not yet wired together into that function.
+
 ## 7. Next
 
-1. **Rig the swap** (`pso_player.build_swap`: `body_roles` -> `target_from_nj` -> `ninja_swap`) so a donor mesh is
-   bound to the host skeleton before write-back. Round 35 showed why: a HUcast body renders deformed, and a HUnewearl
-   body makes the game read an invalid pointer at PC `0x8028f508` -- a same-family donor is not safer.
-2. **P2b target:** `0x8028f508` is not among the 34 named functions; it is the code that dereferences model data and
-   turns a mismatched mesh into a crash. Identifying it would let a writer validate a swap before building.
+1. **Check before building.** `gbox.pso_swapfit.compare(host, donor)` refuses a donor whose texture buckets do not
+   match the host (the crash case) and flags one that will render deformed (vertex count differs). Every character
+   build should pass through it -- round 33's build looked perfect and round 34's boot looked fine until the
+   character select drew polygons.
+2. **Rigging is the path to a correct swap**, and it is a GC adaptation of `build_swap`: it parses the body
+   little-endian, writes PVR textures and looks files up as `PSO/PL...`. The three pieces are already solved in
+   isolation (`pso_gc_paths`, `njcm_is_big_endian`, `decode_texture_entry`) and need wiring into that function.
 3. **P6a's in-game proof** (the moved object has never been seen in a field) and **P1's guild counter** (the only
-   route to a field arrival by real presses) both remain open, then P6b (editor page) and the demo -> route fixture.
+   route to a field arrival by real presses) remain open, then P6b (editor page) and the demo -> route fixture.
 
-Rule for this lane from now on: any model build is booted at least to the character select before being reported.
-The failure mode is an emulator crash dialog, which no part of the build pipeline can see.
+Measured this round and worth remembering: all nine classes share a **64-bone skeleton**, so bone count never
+distinguishes them; what matters for a raw mesh swap is the **texture/material bucket table**. HUcast has 5 buckets
+like a HUmar (renders, deformed); HUnewearl has 8 (crashes at PC 0x8028f508).
