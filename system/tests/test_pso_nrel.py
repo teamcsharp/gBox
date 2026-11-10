@@ -30,9 +30,9 @@ def test_the_triangle_count_is_within_the_collision_footprint_order(disc):
     nrel = disc.read("Scene/map_aancient01_00n.rel")
     crel = disc.read("Scene/map_aancient01_00c.rel")
     summary = N.describe(nrel, crel)
-    assert summary["triangles"] == 12896
+    assert summary["triangles"] == 38355          # strip model: n-2 triangles per run
     assert summary["collision_triangles"] == 11549
-    assert 1.0 <= summary["ratio"] <= 1.2          # render mesh slightly denser than collision, as expected
+    assert 3.0 <= summary["ratio"] <= 3.6          # render strips ~3.3x the collision mesh
 
 
 def test_a_synthetic_index_array_is_counted(disc):
@@ -41,7 +41,7 @@ def test_a_synthetic_index_array_is_counted(disc):
     data = b"\xff\xff" * 8 + payload + b"\xff\xff" * (N.MIN_RUN + 8)
     runs = N.index_runs(data, max_index=1112, min_run=3)
     assert runs and sum(len(r["values"]) for r in runs) == 9
-    assert N.triangles(data, min_run=3) == 3
+    assert N.triangles(data, min_run=3) == 7   # one strip of 9 vertices = 7 triangles
 
 
 def test_a_run_with_values_above_the_bound_is_not_index_data():

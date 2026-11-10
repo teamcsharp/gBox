@@ -197,3 +197,27 @@ point decoding (all coordinates in range, no degenerate repeats).
 **What remains for a full mesh:** the *correspondence* - which index run belongs to which vertex array (the file holds
 several of each, and the pairs must be matched, probably by each run's position relative to its array). That is a
 per-record pairing problem, not a decoding one.
+
+## Round 73: the index runs are triangle STRIPS - the count is 38,355, not 12,896 (correcting round 63)
+
+The round-63 triple reading was a coincidence. An adjacency test settles it: inside a run, consecutive *rolling* triples
+(`v[k..k+2]` and `v[k+1..k+3]`) share two vertices in **8,652 of 8,896 cases = 97.3 %** - the defining property of a
+**triangle strip**, not of independent triples.
+
+So a run of *n* index values is **n - 2 triangles**, and the room's render mesh is
+
+| reading | triangles | against `c.rel` (11,549) |
+|---|---|---|
+| independent triples (round 63) | 12,896 | 1.12x |
+| **triangle strips (this round)** | **38,355** | **3.32x** |
+
+**3.32x is the coherent number:** the collision mesh is roughly a third of the render mesh, which is what a simplified
+collision hull looks like. The 1.12x of round 63 was an artefact of dividing by three.
+
+`gbox/pso_nrel.py`'s `triangles()` now returns `sum(max(0, len(values) - 2))` per run, with the 97.3 % measurement in its
+docstring; `describe()` reports the strip count. Tests updated (`38,355`, ratio window 3.0-3.6, and a synthetic 9-value run
+= 7 triangles): **8 passed**.
+
+What this leaves: the index runs' *pairing* with a vertex array (the 1,041-vertex array at `0x90078` bounds every index,
+so it is the shared pool for this room) and the strip restart convention (whether `0xFFFF` restarts occur inside runs -
+the scan's runs never contain one, so a run is one strip).
