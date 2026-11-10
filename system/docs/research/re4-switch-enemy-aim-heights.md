@@ -15,7 +15,7 @@ Units cm above the feet. Source: `~/gBox_alt/switch/romfs/010099A00BC1E000/bio4/
 | Zealot / Ganado (em1c) | em1c.udas | 165.0 | 136.0 | 150.8 | 57.5 | 17.2 | 161.6-185.3 | upright |
 | J.J. | em1d.udas | 165.0 | 136.0 | 150.8 | 57.5 | 17.2 | 164.1-185.3 | upright |
 | Ganado soldier / Super Salvador (em20) | em20.udas | 165.0 | 136.0 | 150.8 | 57.5 | 17.2 | 164.1-185.3 | upright |
-| Garrador | em1c.udas | 151.5 | 116.9 | not determined | not determined | not determined | 185.4 | upright |
+| Garrador | em1c.udas | 151.5 | 116.9 | n/a (non-humanoid) | n/a (non-humanoid) | not determined | 185.4 | four-limbed crawler |
 | Colmillos (dog) | em28.udas | 67.6 | 48.9 | 51.1 | 21.1 | 7.5 | 74.3 | four-legged |
 
 ## Per-pack body BINs (measured)
@@ -31,8 +31,8 @@ Units cm above the feet. Source: `~/gBox_alt/switch/romfs/010099A00BC1E000/bio4/
 
 * **Which body BIN each enemy type uses** (Salvador, Bella, Super Salvador, Zealot leader, militia): the type byte's meaning is code in `main`; read the spawn code or the in-game model id. It does not change the aim row inside a pack (one skeleton).
 * **Runtime scale** of giants (Super Salvador, Garrador, El Gigante): the bind pose is Ganado-sized (about 185 cm); a scale in ESL/code would multiply every column.
-* **Garrador** (em1c 640, own tree): head and chest are bone readings; shoulder has two candidate chains, knee/radius cannot be read (no leg chain). Idle animation frame 0 would settle it.
+* **Garrador** (em1c 640, own 31-bone tree, fully read): non-humanoid. A spine chain 0->9 rises y 4.0->146.3 (mm 40->1463); at its top bone 10 = head (151.5), with siblings 11/12 the two raised blade-arms (end nubs y 163.9-164.0). Four limb chains splay out (x to +-52.0, z to -60.9/+46.9), so the creature crawls on four limbs. shoulder/knee/radius are category errors; use head 151.5 and chest 116.9.
 * **Colmillos** (em28): the mesh bottom is y=-16.1, so the table adds 16.1 to every raw y; the ground origin is not read. Radius is half the shoulder width only.
-* **Posture in play**: bind pose is a T-pose; crouch/hunch/idle need the animation slots. Plaga (slot 629) is not an aim target of its own. El Gigante, Novistadores, Regenerador etc. are not in these packs' Mercenaries spawns, so no row.
+* **Posture in play**: on-disk posture is bind pose only. The packs carry no `.anm`/`.mot`; the animation format is **FCV** (clip header = frame count u16 + node count u8 + type u8 + 2 bytes/node + bone-id/node, then the keyframe payload), whose per-frame transforms are not decoded here — so idle/crouch/attack poses are not recoverable without reverse-engineering FCV keyframes (out of scope for aim heights). Bind pose is a T-pose for the humanoid Ganados, a four-limb fold for the Garrador. Plaga (slot 629) is not an aim target of its own. El Gigante, Novistadores, Regenerador etc. are not in these packs' Mercenaries spawns, so no row.
 
 Colmillos detail: head bone 4 raw y 51.5, chest bone 3 32.8, shoulder bones 5/8 35.0, knee bones 13/16 5.0; all + 16.1.
