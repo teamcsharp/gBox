@@ -42,6 +42,7 @@ import time
 
 from ..driver import Driver
 from ..core import combat                          # the universal fight (UNIVERSAL_CORE): at import, for the hot reload
+from ..core import respond                         # the doctrine's answer to a threat (RESPOND): at import, too
 from . import re4_nav, re4_walk                    # the stage mesh (room collision), the walker and the map's marks
 from . import re4_switch_screens as screens
 
@@ -1169,7 +1170,7 @@ class RE4Switch(Driver):
     solo_p1 = True                              # The Mercenaries on Switch is played solo on P1 here
     units_per_m = 1000.0                        # mm, measured (doctrine.view, the atlas): see MM_PER_CM below
     round_counters = ("shots", "hits", "turns", "backoffs", "holds", "dying", "escapes", "locates", "stand_breaks",
-                      "crowd_picks", "kills_seen")
+                      "crowd_picks", "kills_seen") + respond.COUNTERS
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
@@ -1354,6 +1355,18 @@ THROW_HAND_S, THROW_RAISE_S, THROW_SETTLE_S, THROW_MAX_S = 1.0, 0.4, 0.8, 3.0
 THROW_ITEMS = {"hand": 0x01, "fire": 0x02, "flash": 0x0E}     # re4_weapons.NAMES: hand / incendiary / flash grenade
 HAND_REQUEST: dict = {}       # the bot's ask of re4_switch_mods: {"item": an item id, or None = the gun back, "seq", "at"}
 HAND_STATE: dict = {}         # its answer: {"seq", "item" (in hand now, None = the gun), "verified", "error"}
+# The doctrine's answer to a threat (gbox.mercs.core.respond; the operator 2026-11-10: "the secret to all adversarial
+# combat situations is either flashbang, drop a mine, or fire the weapon upon them until there's no longer a threat";
+# live the same day, Leon / Base: "unwall: walled in on every side" for seconds at a time, doctrine_idle_s 80 of 199 s):
+# hurt in the last 1.5 s, or a Ganado within 2500 mm closing / of a class that hurt him (its learned reach, combat.Threats),
+# and his own decision answered nothing - RE4 Switch has no flash (THROWS off: the in-hand grenade swap is unproven
+# live) and Mercenaries here has no mines, so the answer is fire: _fight on the threats alone with no run-off (the
+# low-life retreat, the heavy's keep-away and the swarm escape stand down while it fires; the sight gate and the flank
+# keep every wall shot out). threat_lacks_flash / threat_lacks_mine count the ticks a flash or a mine was wanted.
+RESPOND = True
+RESPOND_BUSY = frozenset({"frozen", "dead", "wait", "intro", "grabbed", "held", "case", "results", "backoff"})
+RESPOND_AIM = frozenset({"turn", "aim", "hold", "reload"})
+RESPOND_ATTACK = frozenset({"fire", "melee"})
 # Body profiles: enemy class -> a combat.KIND_BODIES name or a combat.Body (cm). Every Ganado is one class (villager,
 # zealot and soldier alike, a heavy too), so his is the default; a class of another shape joins the census first.
 BODY_CLASSES: dict = {}
@@ -1739,6 +1752,7 @@ class Bot:
             self.stats["doing"], self.stats["why"] = self.doing, self.why
             return frozen
         act = self._fight(p, snap, now)
+        act = self._respond(p, snap, act, now)          # under threat: fire at it (no flash, no mines here) - never nothing
         act = self._never_stand(p, act, snap, now)
         if UNIVERSAL_CORE:
             act = self._idle_core(p, act, snap, now)   # the gun up at one in range without a shot: round him
@@ -1751,8 +1765,38 @@ class Bot:
                 self.director.observe(doctrine.view(snap, RE4Switch), act, time.time())
             except Exception:                            # noqa: BLE001 - measuring never costs the tick
                 pass
+        r = self.__dict__.get("_resp")
+        if r is not None:
+            try:
+                r.settle(act, self.doing)                # what he finally did, counted (threat_* / hurt_while_idle)
+            except Exception as exc:                     # noqa: BLE001
+                self.stats["threat_error"] = f"{type(exc).__name__}: {exc}"[:160]
         self.stats["doing"], self.stats["why"] = self.doing, self.why
         return act
+
+    def _respond(self, p, snap, act, now) -> dict:
+        """core.respond (RESPOND above) on this tick's decision: the fight on the threats when it answered nothing."""
+        if not RESPOND or not UNIVERSAL_CORE or (p.get("hp") or 0) <= 0:
+            return act
+        try:
+            r = self.__dict__.get("_resp")
+            if r is None:
+                r = self._resp = respond.Responder(self.stats)
+
+            def fire(e, pool):
+                self._doctrine_fire = e.get("ptr")
+                try:
+                    return self._fight(p, dict(snap, enemies=pool), now)
+                finally:
+                    self._doctrine_fire = None
+            kit = respond.Kit(fire=fire, flash=None, mine=None, clear=lambda e: self._line_of_sight_ok(p, e, snap),
+                              busy=RESPOND_BUSY, attack=RESPOND_ATTACK, aim=RESPOND_AIM)
+            prof = self._profile()
+            return r.respond(prof, now, p, snap.get("enemies") or (), act, kit, self.doing,
+                             respond.Memory(self._uc("threats"), prof))
+        except Exception as exc:                         # noqa: BLE001 - the doctrine never costs the tick
+            self.stats["threat_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            return act
 
     def _fight(self, p, snap, now) -> dict:
         # Step off an own hazard first (no mine standing), even before facing the target.
@@ -1767,21 +1811,22 @@ class Bot:
             act = self._throw_core(p, live, snap, now)       # a grenade at the pack (THROWS), his escape run or not
             if act is not None:
                 return act
-        low = self._low_life(p, live, now, snap)
+        doctrine = self.__dict__.get("_doctrine_fire") is not None   # core.respond: he fires at the threat, no run-off
+        low = None if doctrine else self._low_life(p, live, now, snap)
         if low is not None:
             return low
-        heavy = self._heavy_keep(live, now, p, snap)
+        heavy = None if doctrine else self._heavy_keep(live, now, p, snap)
         if heavy is not None:
             return heavy
         if UNIVERSAL_CORE:
             act = self._lethal_out(p, live, snap, now)    # a learned attack his shots do not stop: out of its reach
             if act is not None:
                 return act
-        act = self._escaping(p, snap, now, "swarm")
+        act = None if doctrine else self._escaping(p, snap, now, "swarm")
         if act is not None:
             return act
         swarm = [t for t in live if t[0] <= SWARM_CM]
-        if len(swarm) >= SWARM_N:
+        if len(swarm) >= SWARM_N and not doctrine:
             act = self._escape(p, live, snap, now, "swarm", LOW_LIFE_RUN_S)
             if act is not None:
                 self.stats["escapes"] += 1

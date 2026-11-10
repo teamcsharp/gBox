@@ -48,6 +48,7 @@ from . import re5_specials                 # the characters' special moves in pl
 from .. import qte                         # universal QTE handling: the vision grab-fallback when the RAM read tears
 from .. import threat_memory               # who hurt him and what they did first, learned per class (THREAT_FILE)
 from ..core import combat                  # the universal fight (UNIVERSAL_CORE): at import, for the hot reload
+from ..core import respond                 # the doctrine's answer to a threat (RESPOND): at import, for the hot reload
 
 TITLE_ID = "010018100CD46000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/010018100CD46000-ram.json
@@ -872,6 +873,21 @@ def fire_family(snap) -> str | None:
     gun = next((s for s in (snap or {}).get("inventory") or () if s.get("hand") and s.get("type") == 1), None)
     w = _w.WEAPONS.get(gun.get("item")) if gun else None
     return w.family if w is not None else None
+
+
+# The doctrine's answer to a threat (gbox.mercs.core.respond; the operator 2026-11-10: "the secret to all adversarial
+# combat situations is either flashbang, drop a mine, or fire the weapon upon them until there's no longer a threat"):
+# hurt in the last 1.5 s, or a Majini within 2.5 m closing / winding up / of a class that hurt him (its learned reach),
+# and his own decision answered nothing - the native flash (no item screen; several near, a wind-up, a grab, low
+# health), the mine controller asked for a plant now (two or more converging, none within MINE_FOE_CLEAR_CM: its own
+# clearance and retreat), else the fight on the threats alone (_goal_decide: no detour, its wall gates kept). Measured
+# either way: threat_ticks, threat_answered_flash / _mine / _fire, threat_unanswered, hurt_while_idle (round_counters).
+# Off: measured only is respond.ENFORCE; RESPOND False: neither.
+RESPOND = True
+RESPOND_BUSY = frozenset({"held", "heal", "prompt", "dead", "native_equip", "rearm", "backoff",
+                          "quick_turn"})              # (the quick turn's ticks are one move: never cut by a fight)
+RESPOND_AIM = frozenset({"aim", "raise", "reraise", "turn", "reload", "restale"})
+RESPOND_ATTACK = frozenset({"fire", "melee", "sweep"})
 
 
 def combat_profile() -> combat.TitleProfile:
@@ -5709,6 +5725,7 @@ class Bot:
         self._defer_trigger = bool(snap.get('aim_cam') and spec
                                    and spec.family in re5_target_feedback.GUN_FAMILIES)
         act = self._tick(snap, now)
+        act = self._respond(snap, act, now)              # under threat: a flash, a mine or fire - never nothing
         self._defer_trigger = False
         act = re5_target_feedback.apply(self, snap, act, now)
         act = re5_target_feedback.keep_active(self, snap, act, now)
@@ -5742,7 +5759,67 @@ class Bot:
                 self._wm_tick(snap, act, now)                # the per-family ledger (stats wm_*)
             except Exception as exc:                         # noqa: BLE001 - accounting never stops the bot
                 self.stats["wm_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        self._respond_settle(act)                            # what he finally did, counted (threat_* / hurt_while_idle)
         return act
+
+    # --- the doctrine's answer to a threat (RESPOND above: gbox.mercs.core.respond) ----------------------------------
+    def _respond(self, snap, act, now) -> dict:
+        """core.respond on this tick's decision: the native flash, the mine asked for, or the fight on the threats."""
+        p = snap.get("player") or {}
+        if (not RESPOND or snap.get("mercenaries_phase") != PHASE_PLAYING or not p.get("pos")
+                or (p.get("hp") or 0) <= 0 or self.stats.get("operator_control")):
+            return act
+        try:
+            r = self.__dict__.get("_resp")
+            if r is None:
+                r = self._resp = respond.Responder(self.stats, respond.Rules(mine_min_cm=MINE_FOE_CLEAR_CM))
+            px, py, pz = p["pos"]
+            live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")
+                    and abs(e["pos"][1] - py) <= MAX_DY]
+            flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+
+            def fire(e, pool):
+                key = e.get("ptr", e.get("slot"))
+                if self.target != key:
+                    self._set_target(key, now)
+                    self.target_at = now
+                return self._goal_decide(p, pool, flat, e, flat(e), snap, now)   # the fight on them alone
+
+            def mine(why):
+                m = self.mines
+                if m is None or not m.enabled or m.state != "idle" or m.stack(snap.get("inventory")) is None:
+                    return False
+                m.urge(now)
+                return True
+
+            def classify(a, doing):
+                st = self.__dict__.get("_uc_throw")
+                if st is not None:
+                    return "flash" if getattr(st.get("plan"), "kind", None) == "flash" else "fire"
+                if self._grenade_inflight or time.time() - (self.stats.get("native_flash_confirmed_at") or 0) <= 1.0:
+                    return "flash"                           # a native flash going off (the bot's or the operator's)
+                if str(self.why).startswith("the operator's"):
+                    return "busy"                            # the operator's mark on the map: it overrides
+                return ""
+            kit = respond.Kit(
+                fire=fire, mine=mine if self.mines is not None else None,
+                flash=lambda why: self._native_flash(snap, now, "the doctrine: " + why, "threat_flashes"),
+                clear=lambda e: not self._walled_off(p, e, now), classify=classify, busy=RESPOND_BUSY,
+                attack=RESPOND_ATTACK, aim=RESPOND_AIM, mine_doings=frozenset({"mine"}),
+                flash_doings=frozenset({"flashbang"}))
+            mem = respond.Memory(self._tm, winding=self._winding, default_reach_cm=WINDUP_R)
+            return r.respond(combat_profile(), now, p, live, act, kit, self.doing, mem)
+        except Exception as exc:                             # noqa: BLE001 - the doctrine never costs the tick
+            self.stats["threat_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            return act
+
+    def _respond_settle(self, act) -> None:
+        r = self.__dict__.get("_resp")
+        if r is not None:
+            try:
+                r.settle(act, self.doing)
+            except Exception as exc:                         # noqa: BLE001
+                self.stats["threat_error"] = f"{type(exc).__name__}: {exc}"[:160]
 
     def _critical_flash(self, snap, now) -> None:
         """CRIT_FLASH above: one native flash when he is held in a crowd, low in a crowd, or in his own bomb's blast with
@@ -7953,7 +8030,7 @@ class RE5Switch(Driver):
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
                       "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS \
         + THREAT_COUNTERS + CRIT_FLASH_COUNTERS + GIVEUP_COUNTERS \
-        + AIM_COUNTERS + MEASURE_COUNTERS + tuple("t_" + d for d in DOINGS) + re5_specials.COUNTERS
+        + AIM_COUNTERS + MEASURE_COUNTERS + tuple("t_" + d for d in DOINGS) + re5_specials.COUNTERS + respond.COUNTERS
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock

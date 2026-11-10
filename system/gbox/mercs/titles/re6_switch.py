@@ -27,6 +27,7 @@ import json
 import math
 import random
 import struct
+import threading
 import time
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from .. import tuning                      # learned per-stage constants (gbox/m
 from ..driver import Driver
 from .. import menu_speed                  # learned menu cadence: the Navigator's cursor knobs, measured
 from ..core import combat                  # the universal fight (UNIVERSAL_CORE): at import, for the hot reload
+from ..core import respond                 # the doctrine's answer to a threat (RESPOND): at import, for the hot reload
 
 TITLE_ID = "01002A000CD48000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/01002A000CD48000-ram.json
@@ -1979,6 +1981,18 @@ COMBO_PACE, COMBO_BONUS_WAIT, BONUS_CLOCK_LOW_S = True, True, 120.0
 # (ZL held) or a tap, and he steps STAND_STEP_S along open floor (the mesh's, STAND_PROBE_CM ahead; toward the route's
 # next point when he has one). stats stand_breaks.
 NEVER_STAND, STAND_MAX_S, STAND_MOVE_CM, STAND_STEP_S, STAND_PROBE_CM = True, 3.0, 80.0, 1.2, 250.0
+# The doctrine's answer to a threat (gbox.mercs.core.respond; the operator 2026-11-10: "the secret to all adversarial
+# combat situations is either flashbang, drop a mine, or fire the weapon upon them until there's no longer a threat"):
+# hurt in the last 1.5 s, or a zombie within 2.5 m closing / winding up / of a class that hurt him (its learned reach,
+# combat.Threats), and his own decision answered nothing - the native flash (re6_switch_native, the operator's
+# flash_now: no item screen; several near, a wind-up, a grab, low health), the remote bomb due (_mine_now: two or more
+# converging, the bomb rule's own room and reach), else the fight on the threats alone (_decide on them, its wall gates
+# kept). Measured either way: threat_ticks, threat_answered_flash / _mine / _fire, threat_unanswered, hurt_while_idle.
+RESPOND = True
+RESPOND_BUSY = frozenset({"held", "prompt", "dead", "tablet", "down",
+                          "quick_turn"})              # (the quick turn's ticks are one move: never cut by a fight)
+RESPOND_AIM = frozenset({"aim", "raise", "turn", "reload"})
+RESPOND_ATTACK = frozenset({"fire", "crowd", "melee", "quick_shot"})
 STAND_BUSY = frozenset({"held", "tablet", "reload", "dead", "prompt", "quick_turn", "quick_shot", "nade", "melee"})
 STAND_BUSY_ACTS = frozenset({"bomb_place", "bomb_det", "bomb_det_hold", "bomb_det_block", "bomb_face",
                              "bomb_walk", "bomb_escape"})   # (the walk off his own bomb has its own side steps)
@@ -3048,6 +3062,7 @@ class Bot:
                 self.stats["native_equip_kind"] = result.get("kind", -1)
                 self.stats["native_equip_index"] = result.get("index", -1)
         out = self._tick(snap, now)
+        out = self._respond(snap, out, now)                        # under threat: a flash, a bomb or fire - never nothing
         if UNIVERSAL_CORE:
             out = self._idle_core(snap, out, now)                  # the gun up without a shot: in at him as he aims
         from . import re6_switch_wall
@@ -3073,7 +3088,103 @@ class Bot:
             self._look_tick(snap, now)
         except Exception as exc:                             # noqa: BLE001 - the look never costs the round a tick
             self.stats["look_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        r = self.__dict__.get("_resp")
+        if r is not None:
+            try:
+                r.settle(out, self.doing)                    # what he finally did, counted (threat_* / hurt_while_idle)
+            except Exception as exc:                         # noqa: BLE001
+                self.stats["threat_error"] = f"{type(exc).__name__}: {exc}"[:160]
         return out
+
+    # --- the doctrine's answer to a threat (RESPOND below: gbox.mercs.core.respond) ----------------------------------
+    def _respond(self, snap, out, now) -> dict:
+        """core.respond on this tick's decision: the native flash, the remote bomb due, or the fight on the threats."""
+        p = snap.get("player") or {}
+        if (not RESPOND or snap.get("mercenaries_phase") != PHASE_PLAYING or not p.get("pos")
+                or (p.get("hp") or 0) <= 0 or self.stats.get("operator_control")):
+            return out
+        try:
+            r = self.__dict__.get("_resp")
+            if r is None:
+                r = self._resp = respond.Responder(self.stats, respond.Rules(flash_gap_s=FLASH_GAP_S))
+            prof = self._profile()
+            px, py, pz = p["pos"]
+            live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")
+                    and abs(e["pos"][1] - py) <= MAX_DY]
+            flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+            mesh = snap.get("navmesh")
+
+            def fire(e, pool):
+                key = e.get("ptr", e.get("slot"))
+                if self.target != key:
+                    self.target, self.target_at = key, now
+                return self._decide(p, pool, flat, e, flat(e), snap, now)   # the fight on them alone
+
+            def mine(why):
+                if self.bomb_phase is not None or (p.get("bomb") or {}).get("out"):
+                    return False
+                ok = "the doctrine: " + why
+                return self._mine_now(p, now, ok) == ok
+
+            def clear(e):
+                if mesh is None or not hasattr(mesh, "clear"):
+                    return None
+                return mesh.clear(p["pos"], e["pos"]) is not False
+
+            def classify(a, doing):
+                if self.__dict__.get("_resp_flash_inflight") or \
+                        time.time() - (self.stats.get("native_flash_confirmed_at") or 0) <= 1.0:
+                    return "flash"                           # a native flash going off (the bot's or the operator's)
+                if doing == "nade":
+                    return "flash" if (self.nade or {}).get("kind") == "flash" else "fire"
+                if str(self.why).startswith("the operator's"):
+                    return "busy"                            # the operator's mark on the map: it overrides
+                return ""
+            kit = respond.Kit(fire=fire, mine=mine if BOMBS else None,
+                              flash=self._respond_flash if self.__dict__.get("_doctrine_m") is not None else None,
+                              clear=clear, classify=classify, busy=RESPOND_BUSY, attack=RESPOND_ATTACK,
+                              aim=RESPOND_AIM, mine_doings=frozenset({"bomb"}))
+            mem = respond.Memory(self._uc("threats"), prof) if UNIVERSAL_CORE else None
+            return r.respond(prof, now, p, live, out, kit, self.doing, mem)
+        except Exception as exc:                             # noqa: BLE001 - the doctrine never costs the tick
+            self.stats["threat_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            return out
+
+    def _respond_flash(self, why) -> bool:
+        """The native flash at his position (re6_switch_native, the operator's flash_now: no item screen, no input),
+        asked on a thread like RE5's; confirmed, native_flash_confirmed_at starts the fever's follow-through
+        (_emergency_flashbang). Refused twice running (a character without the flash resources): off for this life."""
+        d = self.__dict__
+        m = d.get("_doctrine_m")
+        ad = getattr(m, "adapter", None)
+        if ad is None or getattr(m, "mercs_no_modifications", False) or d.get("_resp_flash_inflight"):
+            return False
+        player = (getattr(self, "_snap", None) or {}).get("player") or {}
+        off = d.get("_resp_flash_off")
+        if off is not None and off == player.get("ptr"):
+            return False
+        d["_resp_flash_inflight"] = True
+        stats = self.stats
+
+        def run():
+            try:
+                from ..interventions import native_controller
+                res = native_controller(ad).flash()
+                if isinstance(res, dict) and res.get("state") == "confirmed":
+                    stats["threat_flashes"] = stats.get("threat_flashes", 0) + 1
+                    stats["native_flash_confirmed_at"] = time.time()
+                    d["_resp_flash_fails"] = 0
+                else:
+                    raise RuntimeError(str((res or {}).get("reason") or (res or {}).get("state") or "unconfirmed"))
+            except Exception as exc:                         # noqa: BLE001 - never stall or crash the bot
+                d["_resp_flash_fails"] = d.get("_resp_flash_fails", 0) + 1
+                stats["threat_flash_error"] = f"{type(exc).__name__}: {exc}"[:120]
+                if d["_resp_flash_fails"] >= 2:
+                    d["_resp_flash_off"] = player.get("ptr")
+            finally:
+                d["_resp_flash_inflight"] = False
+        threading.Thread(target=run, daemon=True, name="re6-bot-doctrine-flash").start()
+        return True
 
     def _remote_unsafe(self, snap) -> bool:
         """The remote in his hand with its bomb out and him inside the learned reach + margin (ZR would set it off)."""
@@ -6619,7 +6730,7 @@ class RE6Switch(Driver):
                       "taunts_seen",
                       "pursuit_stuck",
                       "grenade_kills", "combo_breaks", "combo_pushes", "unsafe_trigger_blocks", "tablet_dying_presses",
-                      "held_item_throws", "item_gun_backs", "tablet_dying_taken", "bonuses_taken", "bonuses_missed", "bonus_skips", "bonus_shots")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
+                      "held_item_throws", "item_gun_backs", "tablet_dying_taken", "bonuses_taken", "bonuses_missed", "bonus_skips", "bonus_shots")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS) + respond.COUNTERS
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
@@ -6743,8 +6854,10 @@ class RE6Switch(Driver):
             learn_dir = L.ROOT.parent / "learned" / MAP_ID
         from .re6_switch_equip import Controller
         from ..round_controls import for_memory
-        return Bot(stats=stats, clock=clock, learn_dir=learn_dir, ram=aim_writer(m), equip=Controller(m, stats),
-                   round_control=for_memory(m))
+        bot = Bot(stats=stats, clock=clock, learn_dir=learn_dir, ram=aim_writer(m), equip=Controller(m, stats),
+                  round_control=for_memory(m))
+        bot._doctrine_m = m                                      # the session: the doctrine's native flash (RESPOND)
+        return bot
 
     def prompt_keys(self, button) -> list:
         return [tuple(str(button).split("+"))]

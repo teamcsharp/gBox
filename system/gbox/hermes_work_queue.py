@@ -536,8 +536,56 @@ def prune(data, jobs, active, *, now, clock=time.monotonic):
     return removed
 
 
+def _doctrine_cause(item):
+    """(title, cause) of a verified damage cause batch that is the bot's threat response (gbox.mercs.damage_clusters
+    DOCTRINE_CAUSES: one cause for Hermes per title), else None."""
+    from .mercs import damage_clusters as C
+    if item.get('damage_cluster_verified') is not True or item.get('signature') not in C.DOCTRINE_CAUSES:
+        return None
+    return (C.title_of(item.get('game_id')) or item.get('game_id'), C.DOCTRINE_TICKET)
+
+
+def _doctrine_owners(data, by_id) -> dict:
+    """(title, cause) -> the queue key of the one ticket that is worked for it: the oldest open one (tickets filed
+    before the dedup are several per title; their runs all count against that one)."""
+    best = {}
+    for key, item in data['items'].items():
+        cause = _doctrine_cause(item)
+        if cause is None or by_id.get(item.get('request_id'), {}).get('status') not in ('open', 'in_progress'):
+            continue
+        rank = (item.get('created') or 0, key)
+        if cause not in best or rank < best[cause][0]:
+            best[cause] = (rank, key)
+    return {cause: v[1] for cause, v in best.items()}
+
+
+def cause_hold(key, item, request, data, owners) -> str:
+    """Why a damage cause batch or player-damage batch is not dispatched now ('' when it may be): a second ticket of the
+    same threat-response cause for its title (owners: _doctrine_owners), or CAUSE_NO_PROGRESS_MAX runs without progress
+    (the same report re-run 23-46 times, 2026-11-10). The operator naming the ticket on the priority list (its id or
+    number, not its game) lifts the hold."""
+    if not (item.get('damage_cluster_verified') is True or item.get('damage_batch_verified') is True
+            or request.get('source') in ('mercs_damage_cluster', 'player_damage')):
+        return ''
+    listed = {str(x) for x in data.get('priority') or ()}
+    if str(item.get('request_id')) in listed or (item.get('number') is not None and str(item['number']) in listed):
+        return ''
+    cause = _doctrine_cause(item)
+    owner = owners.get(cause) if cause is not None else None
+    if owner is not None and owner != key:
+        number = (data['items'].get(owner) or {}).get('number')
+        return (f"the same cause as #{number or owner}: the threat response (flash / mine / fire) is one ticket per "
+                "title, measured per round by the doctrine stats (round_threat_unanswered, round_hurt_while_idle)")
+    runs = item.get('no_progress_runs') or 0
+    if runs >= CAUSE_NO_PROGRESS_MAX:
+        return (f"{runs} runs without progress: not dispatched again until the operator lists it (its cause stays "
+                "measured: the damage cluster, and for the threat response the doctrine stats per round)")
+    return ''
+
+
 def candidates(data, requests, native, owned, on_main, *, now, verified=None):
     by_id = {r['id']: r for r in requests}
+    owners = _doctrine_owners(data, by_id)
     busy_requests = set(owned) | {j.get('parent_request_id') for j in native}
     busy_games = {(j.get('input') or {}).get('game_id') or
                   ((j.get('input') or {}).get('game') or {}).get('game_id') for j in native}
@@ -592,6 +640,9 @@ def candidates(data, requests, native, owned, on_main, *, now, verified=None):
                 and (item.get('damage_cluster_verified') is not True
                      or not _verified(verified, requested_damage_cluster, req)):
             continue
+        item['cause_hold'] = cause_hold(key, item, req, data, owners)
+        if item['cause_hold']:
+            continue                            # one ticket per cause per title; none re-run past its no-progress cap
         if item.get('lane') == 'inbox' and is_live_coaching(req):
             continue                                       # live coaching: the agents' inbox hook, never Hermes
         from . import hermes_result_review
@@ -690,6 +741,9 @@ PAID_NO_PROGRESS_MAX = 3         # a ticket that did not advance its checkpoint 
                                  # 11 no-progress runs, #1813 22 / 21, #1915 25 / 25 were still dispatched to Kimi / Z.AI every 6 h)
 ANALYSIS_PER_GAME = 12           # read-only verified round analyses running at once for one game (candidates)
 DAMAGE_CLUSTERS_PER_GAME = 3     # damage cause batches (gbox.mercs.damage_clusters) worked at once for one game
+CAUSE_NO_PROGRESS_MAX = 3        # a damage cause / player-damage batch that ran this many times without progress is not
+                                 # dispatched again on any node (cause_hold; 2026-11-10: batches at 23-46 runs, 11-34 of
+                                 # them without progress, re-run on sparkDeux's report lane and the local nodes)
 DAMAGE_CLUSTER_SPARK2_FIRST_S = 3600   # a new cause batch waits this long for sparkDeux before a paid node may take it
 
 

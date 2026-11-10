@@ -78,6 +78,13 @@ METRICS = {
     # enemy_knowledge line names the top classes' learned aim, range, shots to kill and danger
     'enemy_knowledge': ('enemy_db_shots', 'enemy_db_hits', 'enemy_db_kills', 'enemy_db_damage', 'enemy_db_classes_seen',
                         'enemy_db_classes', 'enemy_db_samples', 'enemy_db_learned'),
+    # the doctrine's answer to a threat (gbox.mercs.core.respond, every Switch driver's round_counters): the ticks under
+    # threat and what answered them - a flash, a mine, fire, or nothing (target 0) - and the hits taken while none of
+    # the three ran. The damage cause batches of the threat response point here (damage_clusters.DOCTRINE_CAUSES).
+    'doctrine': ('round_threat_ticks', 'round_threat_answered_flash', 'round_threat_answered_mine',
+                 'round_threat_answered_fire', 'round_threat_unanswered', 'round_hurt_while_idle',
+                 'round_threat_forced_fire', 'round_threat_learned_ticks', 'round_threat_hits',
+                 'round_threat_lacks_flash', 'round_threat_lacks_mine'),
 }
 ENEMY_SUMMARY_MAX = 600
 # The operator's report policy: an RE round is investigated only when the player was killed, hurt, or fired a
@@ -475,7 +482,10 @@ class Reports:
                             "AND json_extract(body,'$.status')='open' AND json_extract(body,'$.title') LIKE ? "
                             "ORDER BY COALESCE(json_extract(body,'$.created'),0) ASC",
                             (f"Mercenaries {report['title']} %",)).fetchall()
-                        for stale_id, raw in old[-(len(old) - ANALYSIS_QUEUE_CAP + 1):] if len(old) >= ANALYSIS_QUEUE_CAP else []:
+                        # (oldest first: the oldest go. The slice from the end closed the newest ones and kept the
+                        # two oldest open for good, so every round's ticket was superseded by the next round before
+                        # Hermes reached it while the same two old ones were worked again and again.)
+                        for stale_id, raw in old[:len(old) - ANALYSIS_QUEUE_CAP + 1] if len(old) >= ANALYSIS_QUEUE_CAP else []:
                             stale = json.loads(raw)
                             stale['status'] = 'done'
                             stale['completed'] = now
