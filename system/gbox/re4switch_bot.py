@@ -515,7 +515,10 @@ def _game(m, stats: dict) -> dict | None:
         stats["game_phase"] = None
         return None
     stats.update(game_phase=gs.get("phase"), in_control=gs.get("in_control"), game_clock=gs.get("clock"),
-                 clock_running=gs.get("clock_running"), game_kills=gs.get("kills"), game_score=gs.get("score"))
+                 clock_running=gs.get("clock_running"), game_step=gs.get("game_step"))
+    if gs.get("phase") in driver.ROUND_PHASES:
+        # the game's own counters (MercSysWk, measured live): MercMode's progress rule and now_playing read these
+        stats.update(kills=gs.get("kills"), score=gs.get("score"), combo=gs.get("combo"))
     return gs
 
 

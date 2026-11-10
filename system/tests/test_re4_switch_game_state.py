@@ -77,7 +77,9 @@ def test_a_grab_the_death_camera_and_the_results_are_not_in_control():
 def test_outside_the_mercenaries_or_between_rounds_no_round_runs():
     assert decode(MENU)["phase"] == "none"
     assert decode(dict(PLAYING, system=0x804))["phase"] == "none", "the Mercenaries flag off: not this mode's round"
-    assert decode(dict(PLAYING, main=0))["phase"] == "none"
+    assert decode(dict(PLAYING, main=0, frame=0.0))["phase"] == "none", "after the results, before the soft reset"
+    closing = decode(dict(PLAYING, main=0, frame=3599.45))
+    assert closing["phase"] == "intro" and closing["intro_step"] == 2, "the intro's closing frame (live 04:45:46)"
 
 
 def test_a_round_byte_left_behind_by_a_soft_reset_is_no_round():
@@ -100,11 +102,12 @@ class Mem:
         self.ranges = {}
         self.put(BASE + D.SIG_OFF, D.SIGNATURE)
         self.put(BASE + D.PG_PTR_VAR, struct.pack("<Q", PG))
-        head = bytearray(D.PG_STOP + 4 - D.PG_SYSTEM)
-        struct.pack_into("<I", head, 0, st["system"])
-        struct.pack_into("<f", head, D.PG_SPEED - D.PG_SYSTEM, 0.5)
-        struct.pack_into("<I", head, D.PG_STOP - D.PG_SYSTEM, st["stop"])
-        self.put(PG + D.PG_SYSTEM, bytes(head))
+        head = bytearray(D.PG_STOP + 4 - D.PG_STEP)
+        head[0] = 3                                      # Rno0: the room's main loop
+        struct.pack_into("<I", head, D.PG_SYSTEM - D.PG_STEP, st["system"])
+        struct.pack_into("<f", head, D.PG_SPEED - D.PG_STEP, 0.5)
+        struct.pack_into("<I", head, D.PG_STOP - D.PG_STEP, st["stop"])
+        self.put(PG + D.PG_STEP, bytes(head))
         self.put(PG + D.PG_STATUS, struct.pack("<4I", *st["status"]))
         self.put(BASE + D.MERC_WORK, merc_bytes(st, kills=kills))
         self.put(BASE + D.COUNTDOWN, cd_bytes(st))
@@ -120,11 +123,12 @@ class Mem:
 
 
 def test_game_state_reads_the_session_and_the_snapshot_takes_the_hud_clock():
-    m = Mem(PLAYING)
+    m = Mem(PLAYING, kills=6)
     g = D.game_state(m)
-    assert g["phase"] == "playing" and g["clock"] == round(3582.5 / 30.0, 2)
+    assert g["phase"] == "playing" and g["clock"] == round(3582.5 / 30.0, 2) and g["game_step"] == 3
     snap = D.snapshot(m, now=0.0)
     assert snap["game"]["phase"] == "playing" and snap["clock_source"] == "countdown"
+    assert snap["kills"] == 6, "the game's own kill count, not the census"
     assert snap["timer"] == g["clock"] and snap["clock_addr"] == BASE + D.COUNTDOWN
     assert not hasattr(m, "re4_clock"), "ClockFinder is not run while the game's clock can be read"
     assert D.own_screen(snap) == "playing"
@@ -308,9 +312,9 @@ def test_a_named_menu_wins_over_a_round_that_is_not_live(monkeypatch, tmp_path):
     assert stats["last_disagreement"]["frame"] == "title"
 
 
-def _live_rows():
+def _live_rows(name="re4sw_state_live.json"):
     from pathlib import Path
-    data = json.loads((Path(__file__).parent / "fixtures" / "re4sw_state_live.json").read_text())
+    data = json.loads((Path(__file__).parent / "fixtures" / name).read_text())
     return data["rows"]
 
 
@@ -339,6 +343,32 @@ def test_the_live_incident_replayed_the_old_bot_fired_at_the_intro_the_new_one_p
     during_intro = [r["key"] for batch, i in zip(ad.sent, ad.at) if i in intro_ticks for r in batch if r.get("down")]
     assert "zr" not in during_intro and "zl" not in during_intro and during_intro.count("a") >= 3
     assert stats["rounds"] == 1 and stats["game_phase"] == "dead" and stats["screen"] == "dead"
+
+
+def test_the_second_live_turn_the_death_screen_and_the_continue(monkeypatch, tmp_path):
+    """fixtures/re4sw_state_live_2.json (session 5a68e96bfd1447a2-c3fd254371db4887): a round with six kills by the
+    game's count, the death, You Are Dead -> Continue, the stage again. The old bot fired 10 shots at the death screen
+    ("crowd fire: 4 within 6 m"); the intro's closing frame (run byte down, round not up yet) is still the intro."""
+    rows = _live_rows("re4sw_state_live_2.json")
+    states = [_live_state(r) for r in rows]
+    games = [decode(s, kills=r["merc"]["kill"], score=r["merc"]["score"]) for s, r in zip(states, rows)]
+    phases = [g["phase"] for g in games]
+    seq = [p for i, p in enumerate(phases) if i == 0 or phases[i - 1] != p]
+    assert seq[:6] == ["none", "intro", "playing", "dead", "none", "intro"] and seq[-1] == "dead", seq
+    dead = [i for i, p in enumerate(phases) if p == "dead"]
+    old_shots = [rows[i]["old_bot"]["shots"] for i in dead if rows[i]["old_bot"]["shots"] is not None]
+    assert max(old_shots) - min(old_shots) >= 10, "the old bot fired at the death screen"
+    assert max(g["kills"] for g in games) == 6 and {r["step"] for r in rows if phases[rows.index(r)] != "none"} == {3}
+    closing = [i for i, r in enumerate(rows) if r["merc"]["start"][:2] == [0, 2] and r["merc"]["main"][0] == 0
+               and r["cd"]["state"] == 1]
+    assert closing and all(phases[i] == "intro" for i in closing), "the intro's closing frame is not 'none'"
+    ticks = [s for s in states for _ in range(6)]
+    frames = [r["frame"] or "unknown" for r in rows for _ in range(6)]
+    ad, stats, _ = _run(monkeypatch, tmp_path, ticks, frames)
+    dead_ticks = {6 * i + k for i in dead for k in range(6)}
+    fired = [r["key"] for batch, i in zip(ad.sent, ad.at) if i in dead_ticks for r in batch if r.get("down")]
+    assert "zr" not in fired and "zl" not in fired, fired
+    assert stats["rounds"] == 2, "the Continue's intro is the next round"
 
 
 def test_without_ram_state_the_frame_fallback_still_runs(monkeypatch, tmp_path):

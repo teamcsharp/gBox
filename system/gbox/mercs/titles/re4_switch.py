@@ -188,6 +188,9 @@ MERC_SCORE: int | None = None
 # the death - STA_DIEDEMO (Status_flg[0] 0x00100000) on, Stop_flg 0x80400100 again, the clock's state 0.
 PG_PTR_VAR = 0xB1AE08                   # data: u64 -> pG (re4_weapons.GAME_PTR_VAR)
 PG_OBJ = 0x1274338                      # pG itself (re4_weapons.GAME_OBJ)
+PG_STEP = 0x28                          # u8 Rno0, the game task's step (game_func_tbl): live 0 at the menus, 2 while the
+                                        # stage's room is set up, 3 in the room (the intro, the round, the death);
+                                        # reported (game_step), not decided on: its other values are not seen yet
 PG_SYSTEM = 0x78                        # u32 System_flg: SYS_MERCENARIES while The Mercenaries is the game
 PG_SPEED = 0xA4                         # f32 the frame step (every motion and the clock advance by it each frame)
 PG_STOP = 0x1A8                         # u32 Stop_flg
@@ -255,6 +258,11 @@ def decode_state(system: int, stop: int, status, merc: bytes, countdown: bytes, 
         phase = ("case" if flags["case"] else
                  "held" if flags["event"] or flags["suspend"] or flags["key_stop"] or flags["pl_stop"] else
                  "grabbed" if flags["grabbed"] else "playing")
+    elif start_step == 2 and alive and frame > 0:
+        # the intro's last frames: its run byte is down (step 2), the round's not up yet (the event ending, "mission
+        # start"): live 2026-11-10 04:45:46 one sample read start 0/2, round 0, the clock just started (3599.45). After
+        # the results (the clock at 0, the card save before the soft reset) the same bytes are no round
+        phase = "intro"
     else:
         phase = "none"
     out = {"phase": phase, "in_control": phase == "playing", "why": PHASE_WHY[phase],
@@ -262,7 +270,7 @@ def decode_state(system: int, stop: int, status, merc: bytes, countdown: bytes, 
            # the clock's own state: alive, not paused (STA_SUSPEND / SPF_PL), not stopped by the open case
            "clock_running": (alive and not cd_state & CD_PAUSE and not flags["case"]
                              and phase in ("playing", "grabbed", "held")),
-           "clock_state": cd_state, "intro_step": start_step if start_run else None,
+           "clock_state": cd_state, "intro_step": start_step if phase == "intro" else None,
            "result_step": res_step if res_run else None, "mercenaries": mercs,
            "kills": struct.unpack_from("<i", merc, MW_KILL)[0], "score": struct.unpack_from("<I", merc, MW_SCORE)[0],
            "combo": struct.unpack_from("<i", merc, MW_COMBO)[0], "mode": struct.unpack_from("<i", merc, MW_MODE)[0],
@@ -282,18 +290,20 @@ def game_state(m, base: int | None = None) -> dict | None:
         pg = u64(m, base + PG_PTR_VAR)
         if not ptr_ok(pg):
             return None
-        head = bytes(m.rd(pg + PG_SYSTEM, PG_STOP + 4 - PG_SYSTEM))
+        head = bytes(m.rd(pg + PG_STEP, PG_STOP + 4 - PG_STEP))
         status = struct.unpack("<4I", bytes(m.rd(pg + PG_STATUS, 16)))
         merc = bytes(m.rd(base + MERC_WORK, MERC_WORK_SIZE))
         cd = bytes(m.rd(base + COUNTDOWN, COUNTDOWN_SIZE))
     except (ValueError, OSError, struct.error, TypeError):
         return None
-    if len(head) < PG_STOP + 4 - PG_SYSTEM or len(merc) < MERC_WORK_SIZE or len(cd) < COUNTDOWN_SIZE:
+    if len(head) < PG_STOP + 4 - PG_STEP or len(merc) < MERC_WORK_SIZE or len(cd) < COUNTDOWN_SIZE:
         return None
-    system = struct.unpack_from("<I", head, 0)[0]
-    speed = struct.unpack_from("<f", head, PG_SPEED - PG_SYSTEM)[0]
-    stop = struct.unpack_from("<I", head, PG_STOP - PG_SYSTEM)[0]
-    return decode_state(system, stop, status, merc, cd, speed if math.isfinite(speed) else None)
+    system = struct.unpack_from("<I", head, PG_SYSTEM - PG_STEP)[0]
+    speed = struct.unpack_from("<f", head, PG_SPEED - PG_STEP)[0]
+    stop = struct.unpack_from("<I", head, PG_STOP - PG_STEP)[0]
+    out = decode_state(system, stop, status, merc, cd, speed if math.isfinite(speed) else None)
+    out["game_step"] = head[0]
+    return out
 
 # Rows the walk steers to (re4_switch_screens reads them from the frame). The cursor opens on LOAD, and a confirm there
 # loads a story save, so the walk only ever confirms on the row it has read as its target.
@@ -754,6 +764,11 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
                                      PHASE_OVER if game["phase"] == "results" else
                                      PHASE_PLAYING if game["phase"] in ROUND_PHASES else None)
         snap["score"], snap["combo"] = game["score"], game["combo"]
+        if 0 <= game["kills"] <= MERC_KILLS_MAX:
+            # the game's own kill count (MercSysWk + MW_KILL): live 2026-11-10 04:46-04:47 it read 1, 2, 3, 4 with
+            # the score 300, 600, 920, 1220, back to 0 at the Continue's new intro, then 1 .. 6 while the census
+            # counted 5 (a Ganado freed between two census reads is missed)
+            snap["kills"] = game["kills"]
     else:
         clock = _finder(m, "re4_clock", ClockFinder)
         if search or clock.addr is not None:
@@ -1335,13 +1350,15 @@ class Bot:
         return min(live, key=lambda t: t[0])[1] if live else None
 
     def _count_kills(self, snap, now) -> None:
-        """Kills: the game's own counter when it is measured (MERC_KILLS), else a census unit whose health fell to 0."""
+        """Kills: the game's own counter when it is read (MercSysWk + MW_KILL), else a census unit whose health fell to
+        0. The census still counts the hits either way (a health that fell: the melee follow-up's window)."""
         kills = snap.get("kills")
-        if isinstance(kills, int) and not isinstance(kills, bool):
-            if kills > self.stats.get("kills_seen", 0):
-                self._kill_at = now
+        game_count = isinstance(kills, int) and not isinstance(kills, bool)
+        if game_count:
+            if kills > self.__dict__.get("_game_kills", 0):
+                self._kill_at = now                      # (a new round's count starts again from 0)
+            self._game_kills = kills
             self.stats["kills_seen"], self.stats["kills_source"] = kills, "game"
-            return
         seen = {}
         for e in snap.get("enemies") or ():
             key = e.get("ptr")
@@ -1353,13 +1370,15 @@ class Bot:
                 self.stats["hits"] += 1
                 self._hit_at[key] = now
             if was > 0 and hp <= 0:
-                self.stats["kills_seen"] += 1
-                self._kill_at = now
+                if not game_count:
+                    self.stats["kills_seen"] += 1
+                    self._kill_at = now
                 if now - self._melee_at.get(key, -1e9) <= MELEE_WINDOW_S:
                     self.stats["melee_kills"] += 1          # he went down inside a melee's window
             seen[key] = hp
         self._hp = seen
-        self.stats["kills_source"] = "census"
+        if not game_count:
+            self.stats["kills_source"] = "census"
 
     def combo_owed(self, now) -> float | None:
         """Seconds since the last kill when the next one is owed (KILL_PACE_S), None while the combo is fresh."""
@@ -1741,7 +1760,8 @@ class Bot:
         self.doing = {"none": "wait", "dead": "dead"}.get(phase, phase)
         self.why = PHASE_WHY.get(phase, phase)
         if phase == "intro" and game.get("intro_step") not in (None, 1):
-            self.why = "the round's intro (the camera): waiting for its card"
+            self.why = ("the intro is closing: the round starts" if game.get("intro_step") == 2 else
+                        "the round's intro (the camera): waiting for its card")
         self.stats["not_in_control_ticks"] = self.stats.get("not_in_control_ticks", 0) + 1
         key, every = self.NOT_IN_CONTROL_KEYS.get(phase, (None, 0.0))
         if phase == "intro" and game.get("intro_step") not in (None, 1):

@@ -37,7 +37,8 @@ offsets; add `re4_switch.module_base()`.
 | intro run / step | MercSysWk + 0xD4 / + 0xD5 | MercSysMoveStart (0x2A7290): `[+0xD4] = 1`, switch on +0xD5, step 1 = SceMesSet (waits for the message to close) | 1 / 1 through the card, 0 / 2 after it |
 | round run | MercSysWk + 0xD9 | MercSysMoveMain (0x2A6DE0): set to 1 only after MercSysMoveStart returns; 0 when the clock reaches 0 | 0 in the intro, 1 from the first live frame |
 | results run / step | MercSysWk + 0xE0 / + 0xE1 | MercSysResultMove (0x2A95D0): `[+0xE0] = 1`, switch on +0xE1 | (no round ran out yet: death after 20 s) |
-| score / combo / kills | MercSysWk + 0x28 / + 0x2C / + 0x48 | MercSysSetPoint: score += base points, combo + 1, `[+0x48] += 1` | 0 / 0 / 0 (no kill in that round): **to confirm** against a kill |
+| score / combo / kills | MercSysWk + 0x28 / + 0x2C / + 0x48 | MercSysSetPoint: score += base points, combo + 1, `[+0x48] += 1` | session `...-c3fd254371db4887`: kills 1, 2, 3, 4 with score 300, 600, 920, 1220 (the HUD's score), back to 0 at the Continue's new intro, then 1 .. 6 while the census counted 5 |
+| game step (Rno0) | pG + 0x28 (u8) | GLOBAL_WK order (Rno0..Rno3, then DblBufIdx, which cycles 0/1/2 at +0x2C) | 0 at the menus, 2 while the stage's room is set up, 3 in the intro, the round and the death; reported only |
 | the HUD clock | CountDown = Cckpt (0x1132F10) + 0xB0: state u32 (1 alive, 8 paused), frames left f32 at +8 | initTime (0x20AF0): (m*60+s)*100+c, x3/10 frames into +8/+0xC; MercSysMoveMain reads +0xB0 bit 0 and +0xB8 > 0 | intro: state 9, 3600.0 (2:00) held; round: state 1, falling **30.06 a wall second** over 20 s; death: state 0 |
 
 ## The phases (`re4_switch.decode_state`)
@@ -53,9 +54,15 @@ the results' end) clears pG from Rno0 on and re-makes the cockpit (decomp `syste
 the intro and round run bytes count only with the CountDown alive (it is started before the intro's run byte is set);
 the death clears the clock but sets STA_DIEDEMO, which the reset clears too.
 
-The probe's 53 samples replayed through `decode_state`: none (load) -> intro x 10 s (the old bot fired 10 shots there)
--> playing at 04:18:48 (clock 119.42, running) -> grabbed / playing x 3 -> dead at 04:19:09. Every frame from the
-intro on read `playing`.
+The probe's 53 samples replayed through `decode_state` (`tests/fixtures/re4sw_state_live.json`): none (load) ->
+intro x 10 s (the old bot fired 10 shots there) -> playing at 04:18:48 (clock 119.42, running) -> grabbed / playing x
+3 -> dead at 04:19:09. Every frame from the intro on read `playing`.
+
+The second turn (`tests/fixtures/re4sw_state_live_2.json`, session `5a68e96bfd1447a2-c3fd254371db4887`, 04:45-04:47):
+menus (none) -> intro -> one sample with the intro's run byte down and the round's not up yet (start 0/2, round 0,
+the clock just started at 3599.45: still `intro`) -> playing (6 kills) -> dead (STA_DIEDEMO; at You Are Dead /
+Continue, Stop_flg 0xFFFFFFBF: all but SPF_ID_SYSTEM; the frame named `dead_continue`) -> the Continue's reload (none,
+Rno0 2) -> intro -> playing -> dead. The old bot fired 10 more shots at the death screen ("crowd fire").
 
 ## What uses them
 
@@ -73,7 +80,7 @@ intro on read `playing`.
 
 ## Still open
 
-* kills / score / combo: statically proven, not yet seen moving (the live round had no kill); `snap["kills"]` stays
-  the census until a round confirms `MercSysWk + 0x48` against kills.
-* the results phase and what MercSysWk / the CountDown read at the title after a round (stale-field rule above).
+* the results phase live (no round has run its clock out yet: every RE4 turn so far ended in a death) and what the
+  fields read at the title after a soft reset (the stale-field rule above is from the decomp).
+* the pause / option screen (GameCube Rno0 6) is not seen on Switch yet.
 * `has_hud` false positives on bright sky (the disagreement log will show where).
