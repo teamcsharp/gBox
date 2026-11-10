@@ -400,6 +400,10 @@ ROUND_WEAPON_TRIES = 3                 # gives tried per round before it is repo
 # what a random weapon may replace in his hand: a gun with a max-level row, or a loadout's own equipped weapon
 # (Krauser's bow) - never a grenade the bot holds (THROWS) or the knife
 SWAPPABLE = frozenset(W.MAX_LEVELS) | frozenset(lo["equips"] for lo in W.MERC_LOADOUTS.values())
+# The magnums come up often (operator 2026-11-10: "the scatter works if they have a magnum and 20x firerate. Its boring
+# with the pistol"): a random draw is one of them MAGNUM_SHARE of the time (3 of the 15 HIGH_POWER otherwise: 1 in 5).
+MAGNUMS = frozenset({0x29, 0x2A, 0x37})        # Broken Butterfly, Killer7, Handcannon
+MAGNUM_SHARE = 0.5
 
 
 def _code_patch_refusal(ad) -> str | None:
@@ -438,7 +442,8 @@ def _give_weapon(ad, base: int, st: dict, rng, fixed: int | None = None, exclude
         picks = [i for i in pool if i not in exclude] or pool
     if not picks:
         return {"verified": False, "was": held["name"], "reason": "no weapon row to give"}
-    iid = rng.choice(picks)
+    magnums = [i for i in picks if i in MAGNUMS]
+    iid = rng.choice(magnums if fixed is None and magnums and rng.random() < MAGNUM_SHARE else picks)
     row, lv = rows[iid], W.max_levels(iid)
     cap = row["capacity"][lv["capacity"]] or max(row["capacity"])
     loaded = 99 if cap in (0, W.CAP_INFINITE) else min(cap, 0x1FFF)

@@ -1214,6 +1214,10 @@ RUSH_R = 250.0
 # crash the bot. On by default; the GRENADES sidebar knob turns it off. (Once a hand/incendiary ring is verified live,
 # this can throw those instead.)
 GRENADES = True
+# One flash a minute at most, from every rule that asks for one (operator 2026-11-10: "have the bot only flashbanging
+# the enemies in RE5 once a minute max. They are doing it too much"): the crowd burst below, the critical flash, the
+# mine flashes and the doctrine's all stamp _grenade_last, and _native_flash / the burst wait FLASH_MIN_GAP_S after it.
+FLASH_MIN_GAP_S = 60.0                  # the sidebar's FLASH_MIN_GAP_S slider (bot_logic) changes it live
 GRENADE_EVERY_S = 3.0
 GRENADE_CROWD_N, GRENADE_CROWD_R = 4, 450.0
 # The flash in an emergency (operator 2026-11-09, of his bombs: "Then flashbanging and running away and getting
@@ -6012,6 +6016,9 @@ class Bot:
         time). -> whether it was asked. stats[counter] counts the confirmed ones."""
         p = snap.get("player") or {}
         ad = getattr(getattr(self, "_m", None), "adapter", None)
+        if now - self._grenade_last < FLASH_MIN_GAP_S:
+            self.stats["flash_gap_skips"] = self.stats.get("flash_gap_skips", 0) + 1
+            return False                                     # one flash a minute, whichever rule asks (FLASH_MIN_GAP_S)
         if (self._grenade_inflight or ad is None or getattr(self._m, "mercs_no_modifications", False)
                 or (p.get("hp") or 0) <= 0 or self.stats.get("operator_control")
                 or snap.get("mercenaries_phase") != PHASE_PLAYING):
@@ -6078,7 +6085,7 @@ class Bot:
             return
         if self._grenade_inflight:
             return
-        if now - self._grenade_last < GRENADE_EVERY_S:
+        if now - self._grenade_last < max(GRENADE_EVERY_S, FLASH_MIN_GAP_S):   # the minute (the sidebar's slider)
             return
         if self.stats.get("operator_control") or snap.get("mercenaries_phase") != PHASE_PLAYING:
             blocked('not autonomous live combat')

@@ -1476,10 +1476,13 @@ BODY_CLASSES: dict = {}
 # The family of the gun in hand: the game state's equipped class (re4_weapons.G_CLASS, read in snapshot as
 # snap["weapon_class"]; the byte the random weapon writes) through CLASS_FAMILY; an unread class is FIRE_DEFAULT_FAMILY.
 # Off: every shot at his chest, as before (one constant). Stats fire_pattern_*.
+# The magnums only (operator 2026-11-10: "the scatter works if they have a magnum and 20x firerate. Its boring with the
+# pistol"; and "the bot aims terribly, their laser goes awry weirdly"): handguns keep every shot on the body (no
+# family), the magnums / shotguns / rifles keep their pattern; an unread class has none.
 FIRE_PATTERN = True
 FIRE_CAP_HZ = 10.0                       # static: FR 3.0 frames at 30 Hz (the shot gate's floor), not counted live
-FIRE_DEFAULT_FAMILY = "handgun"
-CLASS_FAMILY = {0x01: "handgun", 0x02: "handgun", 0x03: "handgun", 0x04: "handgun", 0x11: "handgun",
+FIRE_DEFAULT_FAMILY = None
+CLASS_FAMILY = {0x01: None, 0x02: None, 0x03: None, 0x04: None, 0x11: None,   # handguns: no scatter
                 0x05: "magnum", 0x06: "magnum", 0x0F: "magnum",      # Broken Butterfly, Killer7, Handcannon
                 0x07: "shotgun", 0x08: "shotgun", 0x21: "shotgun",   # Shotgun, Striker, Riot Gun
                 0x09: "rifle", 0x0A: "rifle",
