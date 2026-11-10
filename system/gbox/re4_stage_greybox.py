@@ -21,6 +21,20 @@ is kept (cut-out fences and foliage). Floor / wall / other is decided by the geo
 names - from the area shares of up-, side- and down-facing world-space triangles that sample the texture, and the
 grid has one cell per metre of the span one UV tile covers (the UV-to-world Jacobian; positions are millimetres, 1
 unit = 1 mm, Leon stands 1,837 high). Opacity maps and entries no scene material binds stay native.
+
+**The room's objects** (`room_props`, measured 2026-11-10 on the four rooms): DAT slot 10 `ETM` holds the doors,
+barrels, crates, ladders and shutters the room places - Village / Castle / Base / Waterworld 22 / 12 / 13 / 11 HD
+BINs and 15 / 9 / 10 / 7 texture tables. Each object is a BIN followed by the tables it draws with (one or more
+TPLs naming the room archive: a barrel has three skins); a BIN with no table after it - the barrel's broken pieces -
+draws with the table before it (inferred from the order; the pairing only steers the span measurement). The tables
+name 19 / 10 / 12 / 7 entries, none of them named by the SMD or by an item or effect table; their albedos get the RE5
+prop look: the orange checker (`re5_stage_greybox` variant `prop`) labelled PROP, one cell per metre of the tile span
+measured in model space; an entry they bind only as an opacity map stays native (3 Village, 2 Base). Left native:
+the `ITM` item models, the `EFF` effect sheets, and the animated room models in loose BIN slots (locks, the Village's
+impaled corpse, a bottle, the Base's mounted gatling and its stand) - set pieces, not scenery.
+
+`build_all` writes every Mercenaries stage into one overlay (`romfs/bio4/imagepackhd/440004XX.pack.fen` each) with a
+receipt whose `files` list is the manifest `switch_mods op=write` / `op=blueprint` take.
 """
 from __future__ import annotations
 
@@ -42,6 +56,9 @@ TITLE_ID = "010099A00BC1E000"
 GAME_ID = "270a15eb98dab4d7"
 IMAGE_DIR = "bio4/imagepackhd"
 SMD_SLOT, SMX_SLOT = 4, 5
+PROP_SLOT_EXT = "ETM"                       # the room's object models (doors, barrels, crates, ladders)
+NATIVE_TABLE_OWNERS = ("ITM", "EFF")        # items and effect sheets: their entries are never rewritten
+PROP_LABEL = "PROP"
 INSTANCE_AT, INSTANCE_BYTES = 0x40, 0x48
 GC_TPL_MAGIC = 0x0020AF30
 MM_PER_CM = 10.0
@@ -68,7 +85,10 @@ class Instance:
 
     def matrix(self) -> np.ndarray:
         """Scale, then rotate about x, y, z in that order (an assumption: most instances rotate about y only, which
-        every order agrees on; the receipt counts the others)."""
+        every order agrees on; the receipt counts the others). Checked 2026-11-10 on the tilted instances (94 in the
+        Village, 137 in the Base): of the twelve orders and signs this one leaves the largest share of triangle area
+        within 5 degrees of level or upright in the Village (0.484) and is 0.011 short of its own inverse in the Base
+        (0.516 vs 0.527); no order makes either room clearly more axis-aligned, so it stays."""
         sx, sy, sz = self.scale
         rx, ry, rz = self.rotation
         cx, sxn = math.cos(rx), math.sin(rx)
@@ -180,6 +200,7 @@ class Surface:
     tile_v_cm: float | None = None
     tile_u_quartiles: tuple | None = None
     tile_v_quartiles: tuple | None = None
+    owner: str = "SMD"                             # which part of the room draws it: SMD (the scene) or ETM (objects)
     _u: list = field(default_factory=list, repr=False)
     _v: list = field(default_factory=list, repr=False)
     _w: list = field(default_factory=list, repr=False)
@@ -201,7 +222,7 @@ class Surface:
             setattr(self, f"tile_{axis}_quartiles", (q[0], q[2]))
 
     def report(self) -> dict:
-        return {"entry": self.entry, "image": self.image, "width": self.width, "height": self.height,
+        return {"entry": self.entry, "image": self.image, "owner": self.owner, "width": self.width, "height": self.height,
                 "fourcc": self.fourcc, "mips": self.mipmaps, "nominal": list(self.nominal), "roles": sorted(self.roles),
                 "materials": self.materials, "instances": self.instances, "triangles": self.triangles,
                 "area_m2": round(self.area_cm2 / 1e4, 2), "shares": {k: round(v, 3) for k, v in self.shares().items()},
@@ -341,6 +362,158 @@ def plan(surfaces: dict[int, Surface], overrides: dict[int, str] | None = None) 
     return rows
 
 
+# --- the room's objects (ETM) ---------------------------------------------------------------------------------------------
+
+@dataclass
+class PropGroup:
+    """One object of the room's ETM slot: its models (the intact one first, then pieces that have no table of their
+    own) and the texture tables that follow the first model."""
+    slot: int
+    offsets: list[int]
+    models: list[A.HdBin]
+    tables: list[A.Tpl]
+
+
+def _marks(payload: bytes) -> list[tuple[int, str]]:
+    """(offset, 'BIN' | 'TPL') of every HD model header and texture table on a 32-byte boundary of a slot."""
+    out = []
+    for at in range(0, len(payload) - 15, 32):
+        if at + A.BIN_HEAD <= len(payload) and struct.unpack_from("<Q", payload, at)[0] == A.BIN_HEAD \
+                and struct.unpack_from("<I", payload, at + 0x5C)[0] in (0x20010801, 0x20030818):
+            out.append((at, "BIN"))
+        elif struct.unpack_from("<I", payload, at)[0] == A.TPL_MAGIC:
+            out.append((at, "TPL"))
+    return out
+
+
+def room_props(udas: bytes) -> tuple[list[PropGroup], dict]:
+    """The room's object models: every HD BIN of its ETM slot(s) with the tables after it ([BIN][TPL...] starts an
+    object; a BIN followed by another BIN joins the object before it). Returns (groups, notes)."""
+    _pack, dat = A.pack_slots(udas)
+    groups: list[PropGroup] = []
+    notes = {"etm_slots": [], "models": 0, "tables": 0, "unparsed_models": 0, "unparsed_tables": 0,
+             "models_without_table": 0}
+    for index, (ext, payload) in enumerate(dat.slots):
+        if ext != PROP_SLOT_EXT:
+            continue
+        notes["etm_slots"].append(index)
+        marks = _marks(payload)
+        current: PropGroup | None = None
+        for k, (at, kind) in enumerate(marks):
+            end = marks[k + 1][0] if k + 1 < len(marks) else len(payload)
+            following = marks[k + 1][1] if k + 1 < len(marks) else None
+            if kind == "TPL":
+                try:
+                    table = A.Tpl.parse(payload[at:end])
+                except A.AssetError:
+                    notes["unparsed_tables"] += 1
+                    continue
+                if current is not None:
+                    current.tables.append(table)
+                    notes["tables"] += 1
+                continue
+            try:
+                model = A.HdBin.parse(payload[at:end])
+            except A.AssetError:
+                notes["unparsed_models"] += 1
+                continue
+            notes["models"] += 1
+            if following == "TPL" or current is None:
+                current = PropGroup(index, [at], [model], [])
+                groups.append(current)
+            else:
+                current.offsets.append(at)
+                current.models.append(model)
+        notes["models_without_table"] += sum(len(g.models) for g in groups if g.slot == index and not g.tables)
+    return groups, notes
+
+
+def named_entries(udas: bytes, pack_id: int) -> dict[str, set[int]]:
+    """{slot extension: entries of archive `pack_id` its texture tables name}, over every slot of the room pack."""
+    _pack, dat = A.pack_slots(udas)
+    out: dict[str, set[int]] = collections.defaultdict(set)
+    for ext, payload in dat.slots:
+        for at, kind in _marks(payload):
+            if kind != "TPL":
+                continue
+            try:
+                table = A.Tpl.parse(payload[at:])
+            except A.AssetError:
+                continue
+            out[ext].update(image.index for image in table.images if image.pack_id == pack_id)
+    return dict(out)
+
+
+def measure_props(udas: bytes, archive: A.ImagePack, scene: Scene) -> tuple[dict[int, Surface], dict]:
+    """One Surface per archive entry the room's objects bind and the scene does not, measured in model space (the
+    objects are placed by event data this writer does not read; their own frame is upright, 1 unit = 1 mm). Entries
+    an item or effect table also names are left out: those stay native."""
+    groups, notes = room_props(udas)
+    infos = archive.textures()
+    scene_entries = {image.index for image in scene.tpl.images}
+    owners = named_entries(udas, archive.pack_id)
+    native = set().union(*(owners.get(ext, set()) for ext in NATIVE_TABLE_OWNERS))
+    surfaces: dict[int, Surface] = {}
+    notes |= {"prop_triangles": 0, "prop_entries_shared_with_scene": 0, "prop_entries_shared_with_items_or_effects": 0}
+    for group in groups:
+        for table in group.tables:
+            for k, image in enumerate(table.images):
+                if image.pack_id != archive.pack_id or image.index >= len(infos):
+                    continue
+                if image.index in scene_entries:
+                    notes["prop_entries_shared_with_scene"] += 1
+                    continue
+                if image.index in native:
+                    notes["prop_entries_shared_with_items_or_effects"] += 1
+                    continue
+                if image.index not in surfaces:
+                    info = infos[image.index]
+                    surfaces[image.index] = Surface(image.index, -1, info["width"], info["height"], info["fourcc"],
+                                                    info["mipmaps"], (image.width, image.height), owner="ETM")
+            for model in group.models:
+                if model.texture_count != len(table.images):
+                    continue                                 # another object's table: not measured against this one
+                world = model.positions().astype(np.float64) / MM_PER_CM
+                uvs = model.uvs().astype(np.float64)
+                for material, faces in zip(model.materials(), A.triangles(model.materials())):
+                    for slot, role in ((12, "diffuse"), (13, "bump"), (14, "opacity"), (15, "specular"), (23, "custom")):
+                        k = material.header[slot]
+                        if k == 0xFF or k >= len(table.images):
+                            continue
+                        surface = surfaces.get(table.images[k].index)
+                        if surface is None:
+                            continue
+                        surface.roles.add(role)
+                        if role == "diffuse" and len(faces):
+                            surface.materials += 1
+                            surface.instances += 1
+                            notes["prop_triangles"] += len(faces)
+                            _charge(surface, world, uvs, faces)
+    for surface in surfaces.values():
+        surface.settle()
+    notes["prop_entries"] = len(surfaces)
+    return surfaces, notes
+
+
+def plan_props(surfaces: dict[int, Surface], overrides: dict[int, str] | None = None) -> list[dict]:
+    """The prop rows: every object albedo as the orange `prop` checker labelled PROP with the tile span in the corner
+    (the RE5 prop rule); an entry the objects bind only as an opacity or bump map stays native."""
+    rows = []
+    for entry in sorted(surfaces):
+        surface = surfaces[entry]
+        variant, rule = ("prop", "room object (ETM) albedo") if "diffuse" in surface.roles else \
+            ("keep", "not a diffuse" if surface.roles else "unbound")
+        if overrides and entry in overrides:
+            variant, rule = overrides[entry], "override"
+            if variant not in R5.VARIANTS and variant != "keep":
+                raise GreyboxError(f"override {variant!r} for entry {entry} is not a variant")
+        cells_u, cells_v = R5.grid_cells(surface.tile_u_cm), R5.grid_cells(surface.tile_v_cm)
+        u, v = R5.span_label(surface.tile_u_cm), R5.span_label(surface.tile_v_cm)
+        rows.append({"variant": variant, "rule": rule, "cells": [cells_u, cells_v], "label": PROP_LABEL,
+                     "corner": u if cells_u == cells_v else f"{u} x {v}", **surface.report()})
+    return rows
+
+
 # --- the textures --------------------------------------------------------------------------------------------------------
 
 def decode_dds(dds: bytes) -> np.ndarray:
@@ -369,9 +542,10 @@ def greybox_entry(native: bytes, variant: str, cells_u: int, cells_v: int, label
 
 
 def build(room: bytes, archive: bytes, *, stage: str = "", overrides: dict[int, str] | None = None,
-          progress=lambda *_: None) -> tuple[bytes, dict]:
-    """The room's texture archive with every scene albedo drawn as a greybox grid; returns (archive bytes, receipt).
-    The room pack is read for the measurement and never written."""
+          props: bool = True, progress=lambda *_: None) -> tuple[bytes, dict]:
+    """The room's texture archive with every scene albedo drawn as a greybox grid and (with `props`) every object
+    albedo as the orange prop checker; returns (archive bytes, receipt). The room pack is read for the measurement
+    and never written."""
     scene = room_scene(room)
     pack = A.ImagePack.parse(archive)
     if pack.build() != archive:
@@ -380,6 +554,10 @@ def build(room: bytes, archive: bytes, *, stage: str = "", overrides: dict[int, 
         raise GreyboxError(f"the room names {scene.archive()}, the archive is {pack.pack_id:08x}")
     surfaces, notes = measure(scene, pack)
     rows = plan(surfaces, overrides)
+    if props:
+        prop_surfaces, prop_notes = measure_props(room, pack, scene)
+        notes |= prop_notes
+        rows += plan_props(prop_surfaces, overrides)
     changed = []
     for row in rows:
         if row["variant"] == "keep":
@@ -409,15 +587,19 @@ def build(room: bytes, archive: bytes, *, stage: str = "", overrides: dict[int, 
         "written_sha256": hashlib.sha256(written).hexdigest(), "bytes": len(written), "entries": len(final.entries),
         "changed_entries": sorted(changed), "unchanged_entries": len(untouched), "variants": counts,
         "measurement": notes, "textures": rows,
+        "props": props,
         "kept_native": ["the room pack (geometry, collision, lights, effects, items, enemy lists, animations)",
-                        "every archive entry the scene does not bind as a diffuse (opacity maps, item and effect "
-                        "textures, the entries other TPLs of the room name)", "the alpha channel of every albedo",
+                        "every archive entry the scene" + (" and the room's objects (ETM)" if props else "") +
+                        " do not bind as a diffuse (opacity maps, the item (ITM) and effect (EFF) textures, the "
+                        "animated set pieces in loose BIN slots)", "the alpha channel of every albedo",
                         "each DDS header, fourcc, size and mip count"],
         "live_verified": False, "gameplay_verified": False,
         "what_must_be_seen": ["the whole stage drawn in grey and blue grid tiles with metre labels, lit as before (the "
                               "lighting is the room's own)", "floors blue with the pixel size and a metre tag, walls "
                               "grey with the metre label, props and mixed pieces checkered",
                               "fences, foliage and wires still cut out (native alpha)",
+                              "doors, barrels, crates and ladders in the orange prop checker labelled PROP" if props
+                              else "doors, barrels, crates and ladders unchanged (props off)",
                               "Ganados, the player, items and effects unchanged"],
         "failure_signs": ["black screen or hang at stage load: a DDS the game rejects (bisect by variant; every entry "
                           "keeps its native header, size and mip count)",
@@ -475,8 +657,11 @@ def contact_sheet(candidate: bytes, rows: list[dict], png: Path, *, thumb: int =
 
 
 def render_stage(room: bytes, candidate: bytes, png: Path, *, size: int = 1024, yaw_deg: float = 30.0,
-                 pitch_deg: float = 55.0, max_triangles: int = 1_500_000, percentile: float = 1.0) -> dict:
-    """An orthographic CPU view of the placed scene textured with the candidate's entries (flat shade; not the game)."""
+                 pitch_deg: float = 55.0, max_triangles: int = 1_500_000, percentile: float = 1.0,
+                 cull: bool = True) -> dict:
+    """An orthographic CPU view of the placed scene textured with the candidate's entries (flat shade; not the game).
+    `cull` skips triangles facing away from the view, so a sky dome or a room shell seen from outside does not cover
+    the stage (the winding is the measured one: the face normal agrees with the stored normals)."""
     from PIL import Image
 
     scene = room_scene(room)
@@ -516,7 +701,7 @@ def render_stage(room: bytes, candidate: bytes, png: Path, *, size: int = 1024, 
     scale = (size - 8) / span
     canvas = np.full((size, size, 3), 24, np.uint8)
     zbuf = np.full((size, size), np.inf)
-    drawn = 0
+    drawn = culled = 0
     for positions, uvs, faces, texture in pieces:
         screen = np.empty((len(positions), 2))
         screen[:, 0] = (positions[:, 0] - low[0]) * scale + 4
@@ -531,11 +716,15 @@ def render_stage(room: bytes, candidate: bytes, png: Path, *, size: int = 1024, 
             if length == 0:
                 continue
             n = n / length
+            if cull and n[2] < 0:
+                culled += 1
+                continue
             shade = 0.55 + 0.45 * max(0.0, float(n[1]) * 0.6 + float(n[2]) * 0.8)
             R5._rasterise(canvas, zbuf, screen[tri], depth[tri], uvs[tri], np.clip(texture * shade, 0, 255).astype(np.uint8))
             drawn += 1
     Image.fromarray(canvas, "RGB").save(png)
-    return {"png": str(png), "triangles": drawn, "view": f"orthographic, yaw {yaw_deg}, pitch {pitch_deg}",
+    return {"png": str(png), "triangles": drawn, "culled": culled,
+            "view": f"orthographic, yaw {yaw_deg}, pitch {pitch_deg}" + (", back faces culled" if cull else ""),
             "shows": "the candidate's entries on the placed HD scene models with a flat directional shade; not the game"}
 
 
@@ -548,6 +737,65 @@ def write_overlay(out_dir: Path, archive_name: str, data: bytes, receipt: dict) 
     path.write_bytes(data)
     (Path(out_dir) / "receipt.json").write_text(json.dumps(receipt, indent=1) + "\n", encoding="utf-8")
     return path
+
+
+def build_all(bio4: Path, out: Path, *, stages=tuple(STAGES), props: bool = True, previews: bool = True,
+              overrides: dict[str, dict[int, str]] | None = None, progress=lambda *_: None) -> dict:
+    """Every Mercenaries stage's greybox in one overlay: `out/romfs/bio4/imagepackhd/440004XX.pack.fen` per stage,
+    `out/stages/<stage>.json` (each stage's full receipt), previews under `out/previews/`, and `out/receipt.json`
+    whose `files` list (path, bytes, sha256, source) is the manifest `switch_mods op=write` and `op=blueprint` take.
+    `bio4` is a RomFS `bio4/` folder (st4/ and imagepackhd/); nothing there is written. Each stage is verified
+    against its source archive before the next is built. Refuses to write over an existing overlay."""
+    bio4, out = Path(bio4), Path(out)
+    if (out / "receipt.json").exists():
+        raise GreyboxError(f"{out} already holds an overlay; candidates are never overwritten")
+    unknown = [stage for stage in stages if stage not in STAGES]
+    if unknown:
+        raise GreyboxError(f"not Mercenaries stages: {unknown} (known: {sorted(STAGES)})")
+    (out / "stages").mkdir(parents=True, exist_ok=True)
+    files, summary = [], {}
+    for stage in stages:
+        room_name, archive_name = STAGES[stage]
+        room = (bio4 / "st4" / f"{room_name}.udas").read_bytes()
+        archive = (bio4 / "imagepackhd" / archive_name).read_bytes()
+        progress(stage, "build")
+        written, receipt = build(room, archive, stage=stage, props=props,
+                                 overrides=(overrides or {}).get(stage))
+        checked = verify(archive, written, receipt)
+        folder = out / "romfs" / Path(IMAGE_DIR)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / archive_name).write_bytes(written)
+        row = {"path": f"romfs/{IMAGE_DIR}/{archive_name}", "bytes": len(written), "sha256": receipt["written_sha256"],
+               "source_bytes": len(archive), "source_sha256": receipt["source_sha256"], "stage": stage}
+        files.append(row)
+        receipt["files"] = [row]
+        receipt["verified"] = {k: v for k, v in checked.items() if k != "changed"}
+        if previews:
+            (out / "previews").mkdir(exist_ok=True)
+            sheet = out / "previews" / f"{stage}-textures.png"
+            contact_sheet(written, receipt["textures"], sheet)
+            receipt["previews"] = [{"png": str(sheet), "shows": "every written entry, mip 0"},
+                                   render_stage(room, written, out / "previews" / f"{stage}-stage-view.png")]
+        (out / "stages" / f"{stage}.json").write_text(json.dumps(receipt, indent=1) + "\n", encoding="utf-8")
+        summary[stage] = {"room": room_name, "archive": archive_name, "room_sha256": receipt["room_sha256"],
+                          "variants": receipt["variants"], "changed_entries": len(receipt["changed_entries"]),
+                          "entries": receipt["entries"], "bytes": len(written), "sha256": receipt["written_sha256"],
+                          "triangles": receipt["measurement"]["triangles"],
+                          "prop_triangles": receipt["measurement"].get("prop_triangles", 0),
+                          "instances_skipped": receipt["measurement"]["instances_skipped"]}
+    receipt = {"title_id": TITLE_ID, "game_id": GAME_ID, "route": "re4_stage_greybox.build_all", "props": props,
+               "stages": summary, "files": files, "live_verified": False, "gameplay_verified": False,
+               "what_must_be_seen": ["each Mercenaries stage (Village, Castle, Base, Waterworld) drawn in grey and "
+                                     "blue metre grids, lit as before; doors, barrels, crates and ladders in the "
+                                     "orange PROP checker" if props else "each stage in grey and blue grids",
+                                     "cut-outs (fences, foliage, railings) still cut out",
+                                     "Ganados, the player, items and effects unchanged"],
+               "failure_signs": ["black screen or hang at one stage's load: that stage's archive (bisect by file)",
+                                 "photo textures left on a surface: a table this writer does not read",
+                                 "solid slabs where fences were: alpha not kept"],
+               "acceptance": "experimental; offline structural checks only"}
+    (out / "receipt.json").write_text(json.dumps(receipt, indent=1) + "\n", encoding="utf-8")
+    return receipt
 
 
 def main(argv=None) -> int:
@@ -563,8 +811,15 @@ def main(argv=None) -> int:
     b.add_argument("archive", type=Path)
     b.add_argument("--stage", default="")
     b.add_argument("--out", type=Path, required=True)
-    b.add_argument("--override", action="append", default=[], help="entry=variant (floor|wall|other|sky|keep)")
+    b.add_argument("--override", action="append", default=[], help="entry=variant (floor|wall|other|sky|prop|keep)")
     b.add_argument("--no-preview", action="store_true")
+    b.add_argument("--no-props", action="store_true", help="leave the room's objects (ETM) native")
+    a = sub.add_parser("build-all", help="every Mercenaries stage's greybox in one overlay")
+    a.add_argument("bio4", type=Path, help="a RomFS bio4/ folder (st4/ and imagepackhd/)")
+    a.add_argument("--out", type=Path, required=True)
+    a.add_argument("--stages", default=",".join(STAGES))
+    a.add_argument("--no-props", action="store_true")
+    a.add_argument("--no-preview", action="store_true")
     v = sub.add_parser("verify")
     v.add_argument("--original", type=Path, required=True)
     v.add_argument("--candidate", type=Path, required=True)
@@ -581,6 +836,7 @@ def main(argv=None) -> int:
         overrides = {int(k): v for k, v in (item.split("=", 1) for item in args.override)}
         room, archive = args.room.read_bytes(), args.archive.read_bytes()
         written, receipt = build(room, archive, stage=args.stage, overrides=overrides or None,
+                                 props=not args.no_props,
                                  progress=lambda entry, variant: print(f"  {variant:5} entry {entry}"))
         receipt["files"] = [{"path": f"romfs/{IMAGE_DIR}/{receipt['archive']}", "bytes": len(written),
                              "sha256": receipt["written_sha256"], "source_bytes": len(archive),
@@ -594,6 +850,12 @@ def main(argv=None) -> int:
             (args.out / "receipt.json").write_text(json.dumps(receipt, indent=1) + "\n", encoding="utf-8")
         print(json.dumps({"written": str(path), "sha256": receipt["written_sha256"], "bytes": receipt["bytes"],
                           "variants": receipt["variants"], "changed_entries": len(receipt["changed_entries"])}, indent=1))
+        return 0
+    if args.command == "build-all":
+        result = build_all(args.bio4, args.out, stages=tuple(x for x in args.stages.split(",") if x),
+                           props=not args.no_props, previews=not args.no_preview,
+                           progress=lambda stage, what: print(f"{what} {stage}", flush=True))
+        print(json.dumps({"out": str(args.out), "stages": result["stages"], "files": result["files"]}, indent=1))
         return 0
     receipt = json.loads(args.receipt.read_text(encoding="utf-8")) if args.receipt else None
     print(json.dumps(verify(args.original.read_bytes(), args.candidate.read_bytes(), receipt), indent=1))

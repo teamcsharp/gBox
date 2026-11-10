@@ -199,3 +199,32 @@ def test_known_table_is_consistent_and_names_the_mercenaries_packs():
         assert not set(known["bodies"]) & set(known["heads"]) & set(known["hands"])
     assert E.ENEMY_ROLE_BONES["hip"] == 17 and {k: v for k, v in E.ENEMY_ROLE_BONES.items() if k != "hip"} == \
         {k: v for k, v in M.ROLE_BONES.items() if k != "hip"}
+
+
+def test_build_class_uploads_opaque_atlases_without_black_by_default():
+    from PIL import Image
+    import io
+
+    from tests.test_re4_switch_models import cut_out_atlas
+
+    udas, archive = ganado_pack(), make_pack(PACK_ID).build()
+    donor, _names = donor_record()
+    donor["atlas"] = cut_out_atlas(32)
+    _out, grown, receipt = E.build_class(udas, archive, [donor], pack="em16", known=None)
+    for entry in (2, 3):
+        decoded = np.asarray(Image.open(io.BytesIO(A.ImagePack.parse(grown).entries[entry][1])).convert("RGBA"), np.int32)
+        assert (decoded[..., 3] == 255).all() and decoded[..., :3].sum(2).min() > 0
+    assert receipt["groups"][0]["atlas"]["finish"]["filled_share"] > 0.4
+    _out, raw, plain = E.build_class(udas, archive, [donor], pack="em16", known=None, opaque_atlas=False)
+    decoded = np.asarray(Image.open(io.BytesIO(A.ImagePack.parse(raw).entries[2][1])).convert("RGBA"), np.int32)
+    assert decoded[..., 3].min() == 0 and plain["groups"][0]["atlas"]["finish"] is None
+
+
+def test_enemy_pool_refuses_a_pinned_assignment_that_does_not_fit(tmp_path):
+    (tmp_path / "em").mkdir()
+    (tmp_path / "img").mkdir()
+    (tmp_path / "em" / "emzz.udas").write_bytes(ganado_pack())
+    (tmp_path / "img" / "00000016.pack.fen").write_bytes(make_pack(PACK_ID).build())
+    with pytest.raises(E.EnemyError, match="pinned assignment does not fit"):
+        E.enemy_pool(tmp_path / "em", tmp_path / "img", tmp_path, [], "seed", tmp_path / "out", classes=("emzz",),
+                     assignment={"emzz:1": "nobody"})
