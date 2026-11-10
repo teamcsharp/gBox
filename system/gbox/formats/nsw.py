@@ -370,3 +370,78 @@ def read_exefs_member(read_at, nca_offset: int, keys: dict, name: str) -> bytes:
     sec = nca_sections(h)[0]
     f = next(x for x in list_exefs(read_at, nca_offset, keys) if x["name"] == name)
     return read_nca_section(read_at, nca_offset, h, keys, sec, f["offset"], f["size"])
+
+
+# --- RomFS (IVFC) walker for key-area-crypto NCA sections ---
+
+def parse_romfs_tables(dir_meta: bytes, file_meta: bytes) -> List[dict]:
+    """Walk RomFS directory/file metadata tables; returns [{path, offset, size}] (offset relative to RomFS data area)."""
+    out: List[dict] = []
+    seen = set()
+
+    def walk(doff: int, prefix: str) -> None:
+        if doff == 0xFFFFFFFF or doff in seen or doff + 24 > len(dir_meta):
+            return
+        seen.add(doff)
+        _par, sib, child_dir, child_file, _hash, nlen = struct.unpack_from("<IIIIII", dir_meta, doff)
+        name = dir_meta[doff + 24:doff + 24 + nlen].decode("utf-8", "replace")
+        here = prefix if doff == 0 else prefix + name + "/"
+        fo = child_file
+        while fo != 0xFFFFFFFF and fo + 32 <= len(file_meta):
+            _p, fsib, off, size, _h, fnl = struct.unpack_from("<IIQQII", file_meta, fo)
+            out.append({"path": here + file_meta[fo + 32:fo + 32 + fnl].decode("utf-8", "replace"), "offset": off, "size": size})
+            fo = fsib
+        walk(child_dir, here)
+        walk(sib, prefix)
+
+    walk(0, "/")
+    return out
+
+
+def list_romfs(read_at, nca_offset: int, keys: dict, section_index: int = 1) -> dict:
+    """List files of a RomFS section (fs_type 0, IVFC hash_type 3). Returns {data_start, files:[{path, offset, size}]};
+    file offset is section-relative (readable with read_nca_section)."""
+    h = decrypt_nca_header(read_at, nca_offset, keys["header_key"])
+    sec = next((s for s in nca_sections(h) if s["index"] == section_index), None)
+    if sec is None:
+        raise ValueError("no section %d" % section_index)
+    fh = h[0x400 + section_index * 0x200:0x600 + section_index * 0x200]
+    if fh[2] != 0 or fh[8:12] != b"IVFC":
+        raise ValueError("section %d is not RomFS/IVFC" % section_index)
+    nlev = struct.unpack_from("<I", fh, 0x14)[0]
+    lo, _ls = struct.unpack_from("<QQ", fh, 0x18 + (nlev - 2) * 24)  # last level = data (levels listed excl. master hash)
+    hdr = read_nca_section(read_at, nca_offset, h, keys, sec, lo, 0x50)
+    dho, dhs, dmo, dms, fho, fhs, fmo, fms, dao = struct.unpack_from("<9Q", hdr, 8)
+    dir_meta = read_nca_section(read_at, nca_offset, h, keys, sec, lo + dmo, dms)
+    file_meta = read_nca_section(read_at, nca_offset, h, keys, sec, lo + fmo, fms)
+    files = parse_romfs_tables(dir_meta, file_meta)
+    for f in files:
+        f["offset"] += lo + dao
+    return {"data_start": lo + dao, "files": files}
+
+
+def read_romfs_file(read_at, nca_offset: int, keys: dict, entry: dict, section_index: int = 1) -> bytes:
+    """Read one list_romfs() file entry (decrypted, still zstd-compressed for *.zs)."""
+    h = decrypt_nca_header(read_at, nca_offset, keys["header_key"])
+    sec = next(s for s in nca_sections(h) if s["index"] == section_index)
+    return read_nca_section(read_at, nca_offset, h, keys, sec, entry["offset"], entry["size"])
+
+
+def sarc_members(data: bytes) -> List[dict]:
+    """Parse a SARC archive (little-endian) into [{name, offset, size}]; offsets absolute within `data`."""
+    if data[:4] != b"SARC":
+        raise ValueError("not SARC")
+    hdr_sz, bom, _fsz, data_off = struct.unpack_from("<HHII", data, 4)
+    if bom != 0xFEFF:
+        raise ValueError("big-endian SARC unsupported")
+    cnt = struct.unpack_from("<H", data, 0x14 + 6)[0]
+    sfat = 0x14
+    sfnt = sfat + 12 + cnt * 16
+    names_off = sfnt + 8
+    out = []
+    for i in range(cnt):
+        _hash, attr, s, e = struct.unpack_from("<IIII", data, sfat + 12 + i * 16)
+        no = (attr & 0xFFFFFF) * 4 if (attr >> 24) & 1 else 0
+        n = data[names_off + no:data.index(b"\0", names_off + no)].decode() if (attr >> 24) & 1 else ""
+        out.append({"name": n, "offset": data_off + s, "size": e - s})
+    return out
