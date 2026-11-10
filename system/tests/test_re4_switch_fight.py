@@ -393,3 +393,28 @@ def test_a_clock_that_falls_faster_than_time_is_dropped():
     c.observe(m, 0, 3.0)
     m.v = 120.0                                                # a bonus adds time: kept
     assert c.observe(m, 0, 4.0) == 120.0
+
+
+def test_any_characters_unit_through_the_player_pointer_is_the_player():
+    """Live 2026-11-10 21:46: Ada's class is not Leon's; the pointer's unit is the player while its vtable is a unit
+    class (PLAYER_VTABLE_RANGE) that is no Ganado's and no set object's."""
+    import struct
+    base = 0x3CA7C04000
+    unit_at = 0x5D50010000
+
+    class M:
+        def __init__(self, cls):
+            self.cls = cls
+
+        def rd(self, a, n):
+            if a == base + D.S_PLAYER or a == base + D.S_PLAYER_2:
+                return struct.pack("<Q", unit_at)
+            raw = bytearray(n)
+            struct.pack_into("<Q", raw, 0, base + self.cls)
+            struct.pack_into("<3f", raw, D.U_POS, 1000.0, 0.0, 2000.0)
+            return bytes(raw)
+
+    ada = D.player_unit(M(0xB0F000), base)
+    assert ada is not None and ada["class"] == 0xB0F000 and D.SEEN_PLAYER_CLASSES.get(0xB0F000)
+    assert D.player_unit(M(D.ENEMY_CLASSES[0]), base) is None, "a Ganado's unit is never the player"
+    assert D.player_unit(M(0x123450), base) is None, "a vtable outside the unit classes is not a unit"

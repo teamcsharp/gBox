@@ -116,6 +116,13 @@ PLAYER_CLASS: int | None = 0xB09A60
 # whose +0xa4 moved between two reads 1.5 s apart (x 50,689 -> 50,769) - the live player. 0xb09a60 is the class the
 # death screen showed. Either class is the player when the bss pointer leads to it.
 PLAYER_CLASSES: tuple = (0xB0C0A0, 0xB09A60)
+# 2026-11-10 21:46 (session 88a92225892b4c4f-b143533715b54c62, the DJ's pick Ada / Base): the player was not read at
+# all - those two classes are Leon's. Every Mercenaries character is its own class, so the unit the player pointer
+# leads to is the player whatever its class, while its vtable is a class vtable of the unit range (module offsets
+# PLAYER_VTABLE_RANGE, which holds every unit class measured: Ganados 0xAE7050, set objects 0xAED318-0xAEE5E0, Leon
+# 0xB09A60 / 0xB0C0A0) and not a Ganado's or a set object's. The class is reported (player_class) and kept.
+PLAYER_VTABLE_RANGE = (0xAC0000, 0xB40000)
+SEEN_PLAYER_CLASSES: dict = {}                  # class offset -> times read through the player pointer
 
 
 def player_classes() -> tuple:
@@ -531,10 +538,18 @@ def player_unit(m, base: int) -> dict | None:
         if not ptr_ok(p):
             continue
         u = read_unit(m, p)
+        if u is None or "pos" not in u:
+            continue
         classes = player_classes()
-        cls = next((c for c in classes if u is not None and u["vtable"] == base + c), None)
-        if cls is not None and "pos" in u:
+        cls = next((c for c in classes if u["vtable"] == base + c), None)
+        if cls is None:
+            off = u["vtable"] - base
+            lo, hi = PLAYER_VTABLE_RANGE
+            if lo <= off < hi and off not in ENEMY_CLASSES and off not in SET_OBJECT_CLASSES and off % 8 == 0:
+                cls = off                               # another character's class, through the player pointer
+        if cls is not None:
             u["class"] = cls
+            SEEN_PLAYER_CLASSES[cls] = SEEN_PLAYER_CLASSES.get(cls, 0) + 1
             return u
     return None
 
