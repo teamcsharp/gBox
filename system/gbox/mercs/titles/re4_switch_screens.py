@@ -149,19 +149,45 @@ class Reader:
     frame is that dialog, and it is cancelled - never confirmed.
     """
     INTRO_MAX_PRESSES = 12
+    # Select Player / Select Stage steering (MercMode's DJ pick, re4_switch.request): the references are the default
+    # cursor (Leon, the Village), so once the walk has moved the cursor the picture matches no reference and reads as
+    # unknown. While a steer is open, that unknown is the same select screen with `moved` presses in; it closes on the
+    # confirm, on another named screen, or after STEER_MAX_MOVES (a picture that never comes back is not a select).
+    STEER_SCREENS = ("select_player", "select_stage")
+    STEER_KEYS = ("dleft", "dright", "dup", "ddown")
+    STEER_MAX_MOVES = 6
 
     def __init__(self):
         self.stage_picked = self.armed = False
         self.intro_presses = 0
         self.last_menu: tuple[str, int] | None = None
         self.story_armed = False
+        self.steer: str | None = None
+        self.steer_moves = 0
 
     def press_went_in(self, where: str, key: str) -> None:
         if where == "round_intro" and key == "a":
             self.intro_presses += 1
+        if where in self.STEER_SCREENS:
+            if key in self.STEER_KEYS:
+                if self.steer != where:
+                    self.steer, self.steer_moves = where, 0
+                self.steer_moves += 1
+            elif key == "a":
+                self.steer, self.steer_moves = None, 0          # confirmed: the next screen is read afresh
+
+    def _steered(self, scr: dict) -> dict:
+        """A select screen with its cursor moved by this walk (see STEER_SCREENS), else scr unchanged."""
+        where = scr["where"]
+        if self.steer is None:
+            return scr
+        if where not in ("unknown", self.steer) or self.steer_moves > self.STEER_MAX_MOVES:
+            self.steer, self.steer_moves = None, 0              # another screen came up: the steer is over
+            return scr
+        return {"where": self.steer, "moved": self.steer_moves, "steering": True}
 
     def read(self, png: bytes) -> dict:
-        scr = classify(png)
+        scr = self._steered(classify(png))
         where = scr["where"]
         if where == "select_stage":
             self.stage_picked = True

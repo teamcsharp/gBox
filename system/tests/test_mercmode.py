@@ -1830,3 +1830,66 @@ def test_dj_queue_takes_the_switch_no_mercy_roster_when_re5_means_switch():
     plan=ss_ledger.plan_queue({},build='re5_stock',probes=2)       # an empty board: every character a probe
     cfg=M.configure(store,w['name'],{'queue':plan,'repeat_queue':True})
     assert len(cfg['queue'])==len(plan)==M.QUEUE_MAX and all(e['mod']=='re5_stock' for e in cfg['queue'])
+
+def test_an_re4_switch_pick_rides_the_launch_not_the_gamecube_select_tool():
+    """re4-parity.md section 4 #8: selection_job('re4') sent every DJ pick to re_mods mercs_select, which writes the
+    GameCube build's menu work area and refused the Switch session - the character and stage never reached the game.
+    The Switch edition takes its pick from the launch (re4switch_bot steers the selects to it)."""
+    from gbox import re_switch
+    pick = {'title': 're4', 'mode': 'mercenaries', 'character': 'Ada', 'stage': 3, 'stage_name': 'Waterworld'}
+    assert M.selection_job('re4', 'w1-s', pick, re_switch.RE4_TITLE_ID) is None
+    tool, inp = M.selection_job('re4', 'w1-s', pick, 'G4BE08')
+    assert tool == 're_mods' and inp['op'] == 'mercs_select' and inp['character'] == 'Ada'
+    assert M.selection_job('re4', 'w1-s', pick)[0] == 're_mods'            # no edition named: the native one, as before
+    assert M.selection_job('re5', 'w1-s', pick | {'title': 're5'})[0] == 're5_mods'
+
+
+def _re4_switch_run(store, w):
+    from gbox import re_switch
+    run = store.get(S.STATE, w['name'])
+    run['mercmode'] = dict(run['mercmode'], title='re4', map_id=re_switch.RE4_TITLE_ID)
+    store.put(S.STATE, w['name'], run)
+    return run
+
+
+def test_re4_switch_results_count_on_the_clock_witness():
+    """RE4 Switch's native terminal reader is its round clock (re4_switch.ClockFinder): until the player unit is mapped,
+    a results boundary names the clock (seen counting, then 0) in place of the player."""
+    store, w, saver, calls, now, tick, run, job = playing()
+    run = _re4_switch_run(store, w)
+    body = boundary(run, now[0], player_verified=False, clock_verified=True, game_routine=None, room=None)
+    assert M.accept_boundary(store, run, body, parent_job=job, now=now[0])['map_id'] == '010099A00BC1E000'
+    with pytest.raises(ValueError):                                         # the clock never seen counting
+        M.accept_boundary(store, run, boundary(run, now[0], player_verified=False, clock_verified=False)
+                          | {'round_id': 'b' * 32}, parent_job=job, now=now[0])
+    with pytest.raises(ValueError):                                         # a death still needs the player's health
+        M.accept_boundary(store, run, boundary(run, now[0], player_verified=False, clock_verified=True,
+                                               screen='dead', hp=0) | {'round_id': 'c' * 32},
+                          parent_job=job, now=now[0])
+    with pytest.raises(ValueError):                                         # the results need the clock at 0
+        M.accept_boundary(store, run, boundary(run, now[0], player_verified=False, clock_verified=True, timer=12.5)
+                          | {'round_id': 'd' * 32}, parent_job=job, now=now[0])
+
+
+def test_the_clock_witness_is_re4_switch_only():
+    from gbox import re_switch
+    store, w, saver, calls, now, tick, run, job = playing()
+    run = store.get(S.STATE, w['name'])
+    run['mercmode'] = dict(run['mercmode'], title='re5', map_id=re_switch.RE5_TITLE_ID)
+    store.put(S.STATE, w['name'], run)
+    with pytest.raises(ValueError):
+        M.accept_boundary(store, run, boundary(run, now[0], player_verified=False, clock_verified=True),
+                          parent_job=job, now=now[0])
+
+
+def test_the_re4_switch_playbook_boundary_shape_is_accepted():
+    """The body gbox.re4switch_bot posts at the results (its own builder), checked by the control plane's fence."""
+    from gbox import re4switch_bot as B
+    store, w, saver, calls, now, tick, run, job = playing()
+    run = _re4_switch_run(store, w)
+    rnd = B.Round(now[0] - 130)
+    rnd.clock_counting = True
+    body = B._boundary(rnd, {'screen': 'results', 'tally_ready': True, 'timer': 0}, {'clock_addr': 0x3CA8E78710},
+                       {'kills_seen': 12, 'kills_source': 'census'}, now[0]) | {'session_id': run['session_id']}
+    got = M.accept_boundary(store, run, body, parent_job=job, now=now[0])
+    assert got['witness']['clock_addr'] == '0x3ca8e78710' and got['character'] == 'Leon'

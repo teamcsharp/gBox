@@ -27,7 +27,9 @@ def test_firing_taps_the_trigger_while_aiming():
     bot, snap = _bot()
     # face the enemy using the module own heading convention, so no turn is needed
     snap["player"]["rot"] = re4_switch.heading(5.0, 0.0)
-    act = bot.tick(snap)
+    first = bot.tick(snap, now=10.0)                      # the gun comes up first: no tap as it rises (AIM_READY_S)
+    assert first.get("tap") is None and re4_switch.AIM_BTN in set(first.get("hold") or ()), first
+    act = bot.tick(snap, now=10.0 + re4_switch.AIM_READY_S)
     assert act.get("tap") == re4_switch.FIRE_BTN, act
     assert re4_switch.AIM_BTN in set(act.get("hold") or ()), act
     assert re4_switch.FIRE_BTN not in set(act.get("hold") or ()), act
