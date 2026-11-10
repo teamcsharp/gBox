@@ -71,3 +71,27 @@ a route exists should be treated as unproven until it is walked.
 4. **P7a rigging** — `build_swap` adapted for GC (big-endian body, GVR textures, flat names), gated by `pso_swapfit.compare`
    so a donor that would crash is refused before a build exists.
 5. Then P3-P5, which need P1.
+
+## Addendum: rounds 58-60 (the last three)
+
+Two findings that change what the next session should do first, and one lead retired.
+
+**The city has a GUILD room and fifteen unread sets.** The executable's string table names the city's music tracks --
+`SHOP.adx`, `GUILD.adx`, `MEDICAL.adx`, `city.adx` at `0x80443654` -- and its labels -- "ITEM STORE", "HUNTER GUILD",
+"CHECK ROOM", "JUDGMENT" at `0x8044c10f`. Its areas are named `map_lobby_01..10` (at `0x8044adfc`). On the disc that is
+fifteen placement sets, `SET/map_lobby_01o.dat` .. `_10o.dat` plus colour and soccer variants, **none of which this lane had
+opened** -- every map it built used `map_city00_00o.dat` alone. They hold a door class the city's own set never uses,
+`TObjDoorKey` (12-13 per set), beside `TObjEvtCollision` and `TObjEnvSound*`.
+
+**Those sets are per-room local spaces, so do not map them with the city00 offset.** `map_city00_00o.dat` spans local
+x -562..132, z -2021..42; `SET/map_lobby_01o.dat` spans x -277..273, z -317..240, and the two share no record. The offset
+`(+228,+291)` is a property of city00 only. **Solve a lobby set's offset per room**: enter the room, read its entities, and
+solve it from a record that must be one of them -- the same method the co-op spawn points used for city00.
+
+**Retired:** the "east of the lobby" reading (round 58) came from applying city00's offset to a lobby set. It means nothing.
+
+**Where that leaves P1.** The gate is still code -- no city event script exists -- but the room inventory is data that has
+only just been found. The order I would try: solve one lobby set's offset, name its `TObjDoorKey` doors in world coordinates,
+then walk to whichever of them is not a place already known.
+
+**Tests at close: 138 green** across eighteen PSO modules (`test_pso_*`, `test_pad_bind`), verified at round 60.

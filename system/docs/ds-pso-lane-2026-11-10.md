@@ -2911,15 +2911,68 @@ None of that is affected by the coordinate-space correction -- only the specific
 
 `main` clean, tests green. One round left in the objective's window.
 
+## Round 60 (2026-11-10) — close: what is proven, what is not, and where the next session starts
+
+Final round of the objective's window. This one is verification and a statement of state, not a new experiment.
+
+### Verification at close
+
+**138 tests green** across eighteen PSO modules (`test_pso_evt`, `test_pso_dol`, `test_pso_classes`, `test_pso_editor`,
+`test_pso_swapfit`, `test_pso_kbwalk`, `test_pso_greedy`, `test_pso_push_through`, `test_pso_pad2`, `test_pso_explore`,
+`test_pso_write`, `test_pso_coop_pads`, `test_pso_player_textures`, `test_pad_bind`, `test_pso_boot_walk`,
+`test_pso_gc_paths`, `test_pso_setdata`, `test_pso_map_write`). `main` is clean and pushed; `origin/main` matches.
+
+### What is proven, with its evidence
+
+| claim | evidence |
+|---|---|
+| the disc's formats decode, byte-exactly | placement sets (141 loose + 144 archive), GSL/AFS/BML/PRS/NJCM/GVR round trips |
+| `PsoV3.dol`'s addresses map, base `0x8000c000` | matches the Ghidra export's `image_base` (25,981 functions) |
+| the object-class registry is calibrated | Shop/Guild/Warp/Med at 0x46..0x49, confirmed **twice**: by position (round 46) and by the record's `kind` word (round 56) |
+| the `.evt` event scripts frame as 16 + n*20 + 4 | **143 of 143** files parse cleanly |
+| the map writer's edit is live in the game | `TObjCityDoor_Guild` reads **(235.0, 173.0)** after `pso_guilddoor_moved` moved it from (185,173) |
+| the local→world offset is `(+228,+291)` for city00 | 10 of 28 records land on live entities at distance 0.0 |
+| a raw model swap is unsafe unless the material table matches | HUcast body renders deformed; HUnewearl body crashes at `PC 0x8028f508`; `pso_swapfit` predicts which |
+
+### What is not proven, and should not be claimed
+
+* **P1's field leg.** No route from Pioneer 2 to a floor was found. The intro conversation cannot be exited by any input, and
+  no city event script exists, so the transition is decided in code. Twenty rounds of walking produced a complete map of the
+  city and no floor.
+* **P3-P5.** Not started; they need P1.
+* **P6b's page.** The backend, CLI and ASCII map exist; the page does not.
+* **P7a's rigging.** Models build; a correct swap does not.
+* **The `.evt` opcodes.** Framing yes, semantics no.
+
+### Two methodological lessons this lane earned
+
+1. **Never identify a record by its distance to an entity.** Two leads died that way: the seven `0x40` records read as shop
+   counters (they are `TObjCamera`) and the `x=0` objects read as corridor markers (they are flying cars). Match class ids or
+   controllers.
+2. **Check which coordinate space a set lives in before mapping it.** The "east of the lobby" lead (round 58) came from
+   applying city00's offset to a per-room lobby set; it was retired offline in round 59 before it cost a live session.
+
+### Where the next session starts
+
+`docs/PSO-HANDOFF-2026-11-10.md` carries the addendum with the newest findings: the city's **GUILD room** (`GUILD.adx`,
+"HUNTER GUILD" label, areas `map_lobby_01..10`), **fifteen lobby placement sets** this lane never opened, the `TObjDoorKey`
+door class they contain, and the instruction to **solve their offsets per room** rather than reusing city00's. That is the
+first thing to do, and it is data work, not walking.
+
 ## 7. Next
 
-1. **Solve the lobby sets' per-room offsets.** `SET/map_lobby_XXo.dat` are per-room overlays with their own local origin
-   (city00 spans x -562..132; lobby_01 spans -277..273; no shared records). The method that worked for city00 works
-   here: enter the room, read its entities, solve the offset from a record that must be one of them.
-2. **The GUILD room exists** -- `GUILD.adx` beside `SHOP.adx`/`MEDICAL.adx`/`city.adx`, the label "HUNTER GUILD" at
-   0x8044c10f, and areas named `map_lobby_01..10` at 0x8044adfc. It has never been entered.
-3. **P1's gate is still code**, and the room inventory above is the data worth exhausting first.
-4. **P6b's page** (pure UI over the CLI) and **P7a's rigging** remain.
+The hand-off brief (`docs/PSO-HANDOFF-2026-11-10.md`) carries the full state and its rounds 58-60 addendum. In order:
 
-Retired in round 59: the "east of the lobby" lead. The lobby sets are per-room local spaces; mapping them with city00's
-offset produced coordinates that mean nothing. Check the space before planning a walk.
+1. **Open the fifteen lobby sets and solve their offsets per room.** `SET/map_lobby_01o.dat` .. `_10o.dat` were never
+   read; they hold `TObjDoorKey` doors and their own local origin (do **not** reuse city00's `(+228,+291)`). Enter a room,
+   read its entities, solve the offset from a record that must be one of them.
+2. **Find the GUILD room.** The executable names it (`GUILD.adx` at 0x80443654, "HUNTER GUILD" at 0x8044c10f) and the
+   areas are `map_lobby_01..10`; it has never been entered.
+3. **P1's gate is code** -- no city event script exists -- so if the room inventory does not produce it, the lever is an
+   executable search with `pso_dol` + `pso_classes` + the 25,981-function Ghidra export.
+4. **P6b's page** (pure UI over `python -m gbox.pso_editor`) and **P7a's rigging** (GC `build_swap`, gated by
+   `pso_swapfit.compare`) are the items that do not need P1. Then P3-P5, which do.
+
+At close: **138 tests green**, `main` clean and pushed. Not proven and not claimed: P1's field leg, P3-P5, P6b's page,
+P7a's rigging, the `.evt` opcode semantics. Two lessons earned the hard way are in the brief -- never identify a record
+by its distance to an entity, and check which coordinate space a set lives in before mapping it.
