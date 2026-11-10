@@ -230,3 +230,68 @@ def test_the_second_appearance_of_the_save_list_is_named_as_the_story_list():
         assert S.rmse(thumb, ref) > S.STORY_MAX, f"too close to {name}"
     assert S.rmse(thumb, r["logo_ref"], r["logo_mask"]) > S.LOGO_MAX
     assert S.classify(png_of(from_thumb(thumb)))["where"] == "story"
+
+# ---------------------------------------------------------------- MercMode's DJ pick on the selects
+
+def test_a_dj_pick_is_taken_by_name_or_index_and_refused_when_unknown():
+    D.begin_run()
+    assert D.request("Krauser", "Base") == {"character": "Krauser", "stage": "Base", "player_index": 2, "stage_index": 2}
+    assert D.SELECTION == {"player": 2, "stage": 2}
+    assert D.request(4, 3)["character"] == "Wesker"
+    with pytest.raises(ValueError):
+        D.request("Chris")
+    with pytest.raises(ValueError):
+        D.request(None, 7)
+    D.begin_run()
+    assert D.SELECTION == {"player": None, "stage": None}, "a new walk without a pick confirms the defaults"
+
+
+def test_a_walk_takes_the_launch_selection():
+    D.begin_run(selection={"title": "re4", "mode": "mercenaries", "character": "Ada", "stage": 3,
+                           "stage_name": "Waterworld"})
+    assert D.SELECTION == {"player": 1, "stage": 3}
+    D.begin_run(selection={"title": "re4", "character": "HUNK", "stage": None, "stage_name": "Castle"})
+    assert D.SELECTION == {"player": 3, "stage": 1}
+    D.begin_run()
+
+
+@pytest.mark.parametrize("stage,moves", [(0, ()), (1, ("dright",)), (2, ("ddown",)), (3, ("dright", "ddown"))])
+def test_the_stage_grid_is_walked_to_the_picked_cell_then_confirmed(stage, moves):
+    D.begin_run(selection={"character": None, "stage": stage})
+    keys = [D.step({"where": "select_stage", "moved": n}, now=1000.0) for n in range(len(moves))]
+    assert tuple(keys) == moves
+    assert D.step({"where": "select_stage", "moved": len(moves)}, now=1000.0) == "a"
+    D.begin_run()
+
+
+def test_the_select_player_cursor_steps_right_once_per_portrait():
+    D.begin_run(selection={"character": "Wesker", "stage": 0})
+    assert [D.step({"where": "select_player", "moved": n}, now=1000.0) for n in range(4)] == ["dright"] * 4
+    assert D.step({"where": "select_player", "moved": 4}, now=1000.0) == "a"
+    assert D.press_gap({"where": "select_player", "moved": 2}) == D.STEER_GAP_S
+    assert D.press_gap({"where": "select_player", "moved": 4}) == D.CONFIRM_GAP_S["select_player"]
+    D.begin_run()
+    assert D.step({"where": "select_player"}, now=2000.0) == "a", "no pick: Leon, the default portrait, is confirmed"
+
+
+def test_the_reader_keeps_a_steered_select_screen_named(monkeypatch):
+    """The references are the default cursor: once the walk moved it the picture reads unknown, and the reader must
+    still call it the select screen (with the moves counted), or the walk would stop on it."""
+    r = S.Reader()
+    monkeypatch.setattr(S, "classify", lambda _png: {"where": "select_player"})
+    assert r.read(b"")["where"] == "select_player"
+    r.press_went_in("select_player", "dright")
+    monkeypatch.setattr(S, "classify", lambda _png: {"where": "unknown"})
+    scr = r.read(b"")
+    assert scr == {"where": "select_player", "moved": 1, "steering": True}
+    r.press_went_in("select_player", "dright")
+    assert r.read(b"")["moved"] == 2
+    r.press_went_in("select_player", "a")                    # confirmed: the next unknown is not the select any more
+    assert r.read(b"")["where"] == "unknown"
+
+
+def test_a_steer_ends_when_another_screen_comes_up(monkeypatch):
+    r = S.Reader()
+    r.press_went_in("select_stage", "ddown")
+    monkeypatch.setattr(S, "classify", lambda _png: {"where": "loading"})
+    assert r.read(b"")["where"] == "loading" and r.steer is None

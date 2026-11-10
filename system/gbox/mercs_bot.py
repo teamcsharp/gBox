@@ -576,6 +576,16 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
             stats['queued_selection'] = f"{took['character']} / {took['stage']}"
         except (ValueError, OSError) as exc:
             stats['queued_selection_error'] = str(exc)[:160]
+    if isinstance(pick, dict) and pick.get('title') == 're4' and prof['map_id'] == '010099A00BC1E000':
+        # RE4 Switch: the walk steers Select Player / Select Stage to the pick (re4_switch.request; begin_run above
+        # cleared the last one). The same pick re4switch_bot takes while this title plays through its own playbook.
+        try:
+            from .mercs.titles import re4_switch
+            stage = pick.get('stage') if pick.get('stage') is not None else pick.get('stage_name')
+            took = re4_switch.request(pick.get('character'), stage)
+            stats['queued_selection'] = f"{took['character']} / {took['stage']}"
+        except ValueError as exc:
+            stats['queued_selection_error'] = str(exc)[:160]
     runtime, base_driver = None, None
     if session_id and ad is not None and prof['map_id'] in ('BLUS30491', 'BH6'):
         from .mercs.session_runtime import SessionRuntime

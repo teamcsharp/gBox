@@ -11,11 +11,14 @@ single-core, NCE: a guest address is the host address) / CitronLinuxAdapter.
 Runs on Citron NEO d3df71e55 only (SWITCH_CITRON_TITLES). Eden cannot run it: single-core hangs the guest and
 multi-core crashes with 0xE401. The guest RAM layout is the GAME's, so an offset measured in one session holds for all.
 
-STATUS 2026-11-06:
-- MEASURED: module_base (signature), round entry, the keymap, and the walk from the title to a live round, which reads
-  the capture frame (gbox.mercs.titles.re4_switch_screens) and was proven 5 boots out of 5.
-- PENDING: the player, enemy and clock anchors below. Until they are measured snapshot() returns the empty round shape
-  and the map's mercs.ready stays false, so MercMode keeps RE4 out of the rotation.
+STATUS 2026-11-09 (docs/research/re4-parity.md section 7):
+- MEASURED: module_base (signature; the same 0x3CA7C04000 on every lilspark boot read), round entry, the keymap, the
+  walk from the title to a live round (the capture frame, gbox.mercs.titles.re4_switch_screens), the bss row layout and
+  the heap windows (BSS_ROWS, HEAP_WINDOWS), and that the main menu holds no float that falls like a round clock.
+- FOUND LIVE, NOT FIXED: the round clock (ClockFinder re-finds it each boot by its fall against wall time, hints first).
+- PENDING: the player and Ganado classes and their position / facing offsets (PLAYER_CLASS, ENEMY_CLASSES, U_POS, U_YAW)
+  and the kill / combo / score fields (MERC_*): tools/probes/re4sw_round_probe.py measures them in one live round.
+  Until they are set snapshot() reads the clock only, the playbook fights from the frame, and mercs.ready stays false.
 
 Known from RE4 itself (gbox.re4_menus / gbox.re4_merc_bot, GameCube), shared with the Switch port:
 - 5 characters: Leon, Ada, Krauser, HUNK, Wesker (Select Player, portraits left to right)
@@ -44,38 +47,65 @@ MAP_ID = TITLE_ID                       # profiles/gamedata/010099A00BC1E000-ram
 BUILD_ID = "82C2A04A21D3E0B850F273D4149C9003"     # the dumped main-*.nso name
 MAIN_NSO_SHA256 = "98ca897f07b2c864a0cabfb9dd8ca46a54b88c565ba629da3b7a4b6a57a57441"
 SIG_OFF = 0x100000                      # deep in the image, away from the load stubs at vaddr 0
+KNOWN_BASES = (0x3CA7C04000,)           # where main loaded on every lilspark boot read (2026-11-05, 2026-11-09): one
+                                        # signature read confirms it before module_base() scans the arena
 SIGNATURE = bytes.fromhex(
     "fd7b07a9fdc30191355100b0b5c646f9a90240f928514439f30300aa88080035"
     "285544391f0d007121080054285100b008bd46f9080140f98a018a5208696a38")
 
 # ---------------------------------------------------------------------------
-# Live-measured constants still PENDING (docs/research/re4-switch-ram.md).
+# Where the round lives in memory (docs/research/re4-parity.md section 7, docs/research/re4-switch-ram.md).
 # ---------------------------------------------------------------------------
-# Static manager anchors (offsets from module_base). On the RE4 engine these are the global work area (pG), the
-# player pointer, the enemy manager (EmMgr: base / count / stride) and the Mercenaries game struct (clock / combo /
-# score / kills). The GameCube build's absolute addresses (gbox.re4_merc_bot: P_GLOBAL, P_PLAYER, EMMGR, MERC) and
-# field offsets are the starting hypotheses for the scan; the Switch port's are measured fresh.
-S_PGLOBAL = None                        # pending -> pG work area (room, Leon's health)
-S_PLAYER = None                         # pending -> Leon's object pointer (slot, or a pG field)
-S_EMMGR = None                          # pending -> EmMgr (+0 base, +4 count, +8 stride) of the cEm enemy table
-S_MERC = None                           # pending -> the Mercenaries game struct (clock, combo, score, kills, phase)
-S_TITLE_TASK = None                     # pending -> the scheduler's title.cpp task (its TW work area holds the menu cursors)
+# Measured 2026-11-09 on lilspark (Citron d3df71e55, NCE, direct addressing), read-only through the job API:
+# * main loads at 0x3CA7C04000 on every boot seen (2026-11-05 and 2026-11-09: the signature read back exact at
+#   base + SIG_OFF), so module offsets ARE fixed addresses on this host; module_base() still re-finds it.
+# * the module's data + bss (ELF: data 0xae2000 + 0x4a738, bss 0xb2c738 + 0x11938c8, so it ends at 0x1cc0000) is
+#   readable on every 64 KiB page of 0xb00000..0x1cc0000 at the main menu; Citron maps it as the eleven host rows of
+#   BSS_ROWS (an adapter read must stay inside one; /proc/<pid>/mem reads straight across them). A whole-span dump
+#   through the job API takes 3.9 s (2.6 s between the first and last row read).
+# * the guest heap the units live in (2026-11-05: Leon's position copy at 0x5d559cafe0, unit objects at 0x5d55a77ad0)
+#   is readable in HEAP_WINDOWS (64 MiB probe steps); the bss holds 1,289 pointers into it at the main menu.
+S_PGLOBAL = S_PLAYER = S_EMMGR = S_MERC = S_TITLE_TASK = None   # no pointer anchor is used (see the finders below)
+DATA_OFF, BSS_OFF, BSS_END = 0xAE2000, 0xB2C738, 0x1CC0000
+BSS_ROWS = ((0xB00000, 0x77D000), (0x127D000, 0x3000), (0x1280000, 0x6000), (0x1286000, 0x100000),
+            (0x1386000, 0x5000), (0x138B000, 0x100000), (0x148B000, 0x6000), (0x1491000, 0x100000),
+            (0x1591000, 0x625000), (0x1BB6000, 0x100000), (0x1CB6000, 0xA000))
+HEAP_WINDOWS = ((0x5D2C000000, 0x5DAC000000), (0x5DB0000000, 0x5DBC000000), (0x5DC4000000, 0x5DEC000000))
 
-# Field offsets inside pG / player / enemy / merc (pending; GameCube values in the comments as the scan's hypotheses).
-PG_ROOM = None                          # pending (GC pG+0x4FA8 u16 room: 0x04RR = a Mercenaries stage)
-PG_HP = None                            # pending (GC pG+0x4FB0 s16 Leon's health)
-P_POS = None                            # pending (GC player+0x94 3*f32 x,y,z)
-P_ROT = None                            # pending (GC player+0xA4 f32 facing)
-P_HP = None                             # pending (may live in pG rather than the object)
-E_POS = None                            # pending (GC enemy+0x94 3*f32)
-E_HP = None                             # pending (GC enemy+0x320 s16 health, +0x322 s16 max)
-E_FLAGS = None                          # pending (GC enemy+0x00 alive/active bitfield; a dead slot is skipped)
-MERC_TIMER = None                       # pending (GC a dword of frames; seconds = frames / fps)
-MERC_FPS = 60.0                         # Switch runs at 60; the clock decrements once a game frame (verify on the scan)
-MERC_COMBO = None                       # pending (GC merc+0x28)
-MERC_KILLS = None                       # pending
-MERC_SCORE = None                       # pending
-MERC_PHASE = None                       # pending (0 intro / 1 playing / 3 over, if the port keeps RE5's scheme; else derive)
+# The round clock: an f32 countdown in seconds that opens at 120.0, stored as a cluster of copies 0x30 apart in the bss
+# (2026-11-05: 0x3ca8e78710, ...8b90, ...8bc0 ... = module + CLOCK_HINTS; the drop matched wall time, 118.445 -> 107.337
+# over 11.1 s). The base has not moved since, so the hints are tried first, but nothing is taken on trust: ClockFinder
+# keeps only a float that FELL BY THE WALL TIME between two reads, anywhere in the bss. Recorded bytes from the main
+# menu (tests/fixtures/re4sw_bss_menu.json) hold no such float, so a menu cannot pass for a round.
+CLOCK_HINTS = (0x1274710, 0x1274B90, 0x1274BC0, 0x1274BF0, 0x1274C20, 0x1274C50, 0x1274C80, 0x1274CB0)
+CLOCK_LO, CLOCK_HI = 2.0, 121.0         # what a round's clock reads when it is found (it opens at 120.0)
+CLOCK_RATE = (0.6, 1.4)                 # clock seconds per wall second (emulation between 60 % and 140 %)
+CLOCK_DT = (0.8, 8.0)                   # the two reads this far apart (a shorter gap cannot tell 1.0 from 0.6)
+CLOCK_STALE_S = 4.0                     # a found clock that has not moved this long is re-checked (a pause holds it)
+
+# The units. Code-derived offsets (Ghidra, re4-switch-ram.md "twentieth pass"): FUN_004cd1c0, the damage routine, does
+# hp = *(ushort *)(unit + 0x3c2) - damage(type = *(byte *)(unit + 0x3ce)) and zeroes it at death. The 2026-11-05 class
+# census (objects whose first word is a module vtable, read at +0x3c2) is where the Ganados are expected; the player
+# class, the position / facing offsets and which class is a Ganado are NOT measured (re4sw_round_probe.py measures
+# them in one live round). Until PLAYER_CLASS, ENEMY_CLASSES and U_POS are set the snapshot reads no player and no
+# enemies, the playbook keeps its frame-only cadence, and the map's mercs.ready stays false.
+U_ID, U_HP, U_TYPE = 0x110, 0x3C2, 0x3CE
+UNIT_CLASS_LEADS = (0xAED3B0, 0xAE8B10, 0xAED470, 0xAEE5E0)    # census: 26 / 12 / 12 / 8 objects, +0x3c2 = 1000
+MARKER_CLASS = 0xAE7050                 # NOT units: spawn markers (five, never moved, position at +0x4d0)
+PLAYER_CLASS: int | None = None         # PENDING: the player's class (module offset of its vtable)
+ENEMY_CLASSES: tuple = ()               # PENDING: the Ganado classes
+U_POS: int | None = None                # PENDING: f32 x, y, z (cm) inside a unit
+U_YAW: int | None = None                # PENDING: f32 facing (rad, 0 = +z, + toward +x) inside a unit
+U_HP_MAX: int | None = None             # PENDING: u16 max health (None: the first health read stands in)
+UNIT_HP_MAX = 30000                     # a health above this is not a health (a freed or foreign object)
+UNIT_SCAN_CHUNK = 1 << 24               # 16 MiB per read while the census scans the heap
+UNIT_RESCAN_S = 4.0                     # new spawns: the census looks again this often, inside the pool it found
+
+# Mercenaries counters as module offsets (PENDING: the probe lists the candidates). Until they are measured the bot
+# counts kills itself from the census (a unit whose health falls to 0) and says so (kills_source "census").
+MERC_KILLS: int | None = None
+MERC_COMBO: int | None = None
+MERC_SCORE: int | None = None
 
 # Rows the walk steers to (re4_switch_screens reads them from the frame). The cursor opens on LOAD, and a confirm there
 # loads a story save, so the walk only ever confirms on the row it has read as its target.
@@ -97,12 +127,58 @@ PHASE_INTRO, PHASE_PLAYING, PHASE_OVER = 0, 1, 3
 CHARACTERS = ("Leon", "Ada", "Krauser", "HUNK", "Wesker")       # Select Player portraits, left to right
 STAGES = ("Village", "Castle", "Base", "Waterworld")            # Select Stage, a 2x2 grid
 PLAYER_TARGET, STAGE_TARGET = 0, 0                              # Leon, Village: the selects' first entries
+# The 2x2 Select Stage grid, as the GameCube build lays it out (re4_menus: "0 the Village, up / down 2, left / right
+# 1"): Village top left, Castle top right, Base bottom left, Waterworld bottom right. That the Switch port keeps this
+# layout, and that the Select Player cursor steps one portrait per d-pad right press from Leon without skipping, are
+# INFERRED (no live frame of a moved cursor yet): the first DJ round with a non-default pick must be checked on screen.
+STAGE_MOVES = {0: (), 1: ("dright",), 2: ("ddown",), 3: ("dright", "ddown")}
+STEER_GAP_S = 1.0                       # between two cursor moves on a select screen (open loop: one move per gap)
 
-# Default controls hypothesis for the first cut (RE4 remaster, Switch pad). The scan confirms them live before the
-# brain fires; until then the brain only turns (CONTROLS_READY False), so a scan session never wastes ammo blind.
+# MercMode's DJ pick for the next selects (request()): player / stage indexes, None = the default entry (Leon, Village).
+SELECTION: dict = {"player": None, "stage": None}
+
+
+def request(character=None, stage=None) -> dict:
+    """The next Select Player / Select Stage picks (MercMode's DJ queue, `game.launch.mercmode.selection`): a character
+    by name or index, a stage by index or name; None keeps the default entry. Returns the names it will steer to."""
+    player = None
+    if character is not None:
+        player = character if isinstance(character, int) and not isinstance(character, bool) else next(
+            (i for i, n in enumerate(CHARACTERS) if n.casefold() == str(character).casefold()), None)
+        if player is None or not 0 <= player < len(CHARACTERS):
+            raise ValueError(f"RE4 has no character {character!r} (one of {', '.join(CHARACTERS)})")
+    where = None
+    if stage is not None:
+        where = stage if isinstance(stage, int) and not isinstance(stage, bool) else next(
+            (i for i, n in enumerate(STAGES) if n.casefold() == str(stage).casefold()), None)
+        if where is None or not 0 <= where < len(STAGES):
+            raise ValueError(f"RE4 has no stage {stage!r} (0-{len(STAGES) - 1}: {', '.join(STAGES)})")
+    SELECTION.update(player=player, stage=where)
+    return {"character": CHARACTERS[player or 0], "stage": STAGES[where or 0],
+            "player_index": player or 0, "stage_index": where or 0}
+
+
+def selection_moves(where: str) -> tuple:
+    """The cursor moves from the default entry to the requested one on a select screen (() = confirm the default)."""
+    if where == "select_player":
+        return ("dright",) * int(SELECTION.get("player") or 0)
+    if where == "select_stage":
+        return STAGE_MOVES[int(SELECTION.get("stage") or 0)]
+    return ()
+
+# The Switch default controls, from Capcom's official RE4 Switch manual (pages 6-7, 10; docs/research/
+# mercenaries-character-specials.md 1.1, source S37): ready weapon ZL (aim with the right stick while it is held), fire
+# ZL + ZR, reload ZL + B, knife L (+ ZR), action Y (every melee prompt: "(Y) KICK"), run B + stick up, 180 turn B +
+# stick down, R "Give orders" - in Mercenaries Krauser's Plaga arm, NOT reload (the first cut had RELOAD_BTN = "r").
 CONTROLS_READY = True                            # live-confirmed 2026-11-04 on lilspark/Citron (in-round send_input)
-AIM_BTN, FIRE_BTN, RELOAD_BTN = "zl", "zr", "r"  # zl = aim (held, pops the red laser), zr = fire, a = menu confirm
+AIM_BTN, FIRE_BTN = "zl", "zr"                   # zl held = the gun up (the red laser), zr tapped = a shot; a = menu confirm
+RELOAD_BTN = "b"                                 # with AIM_BTN held: ZL + B is the reload (B alone with the stick runs)
+RELOAD_KEYS = (AIM_BTN, RELOAD_BTN)
+ACTION_BTN = "y"                                 # the melee prompts ("(Y) KICK"), doors, pickups
+KNIFE_BTN = "l"                                  # L readies the knife, L + ZR slashes
+SPECIAL_BTN = "r"                                # "Give orders": Krauser's arm in Mercenaries
 TURN = {"left": "lleft", "right": "lright"}      # RE4 is tank-controlled: the left stick turns. The d-pad is item select
+AIM_TURN = {"left": "rleft", "right": "rright"}  # with the gun up the RIGHT stick moves the aim (the manual; not yet live)
 
 DPAD = {"up": "dup", "down": "ddown", "left": "dleft", "right": "dright"}
 
@@ -138,10 +214,15 @@ def module_base(m) -> int | None:
     """main's load address this boot: cached on m, re-checked by one signature read. None until SIGNATURE is measured."""
     if SIGNATURE is None or SIG_OFF is None:
         return None
-    base = getattr(m, "module_base", None)
-    if isinstance(base, int):
+    cached = getattr(m, "module_base", None)
+    for base in ((cached,) if isinstance(cached, int) else ()) + KNOWN_BASES:
         try:
             if bytes(m.rd(base + SIG_OFF, len(SIGNATURE))) == SIGNATURE:
+                if base != cached:
+                    try:
+                        m.module_base = base
+                    except AttributeError:
+                        pass
                 return base
         except (ValueError, OSError):
             pass
@@ -200,95 +281,237 @@ _EMPTY = {"player": None, "enemies": [], "timer": None, "timer_start": None, "sc
           "combo": None, "combo_timer": None, "max_combo": None, "mercenaries_phase": None}
 
 
-def snapshot(m) -> dict:
-    """The round from RAM: the empty shape until the anchors below are measured (every read guarded).
+def read_rows(m, base: int, rows=BSS_ROWS) -> list:
+    """[(address, bytes)] of the module's data + bss, one read per measured host row (a row that fails is left out)."""
+    out = []
+    for off, n in rows:
+        try:
+            out.append((base + off, bytes(m.rd(base + off, n))))
+        except (ValueError, OSError):
+            continue
+    return out
 
-    When the constants are filled this reads, like re5_switch.snapshot:
-      player  : {ptr, pos (x,y,z cm), rot (facing rad), hp, hp_max}
-      enemies : [{slot, ptr, pos, hp, hp_max}]  (the EmMgr cEm table, live slots only)
-      merc    : timer (s), combo, kills, score, mercenaries_phase
+
+def _np():
+    import numpy
+    return numpy
+
+
+def clock_candidates(before: list, after: list, dt: float) -> list:
+    """[(address, before, after)] of every f32 that read CLOCK_LO..CLOCK_HI in `before` and had fallen by dt x CLOCK_RATE
+    in `after` (both [(address, bytes)] reads of the same rows, `dt` wall seconds apart)."""
+    np = _np()
+    lo, hi = dt * CLOCK_RATE[0], dt * CLOCK_RATE[1]
+    after_at = {a: d for a, d in after}
+    out = []
+    for a, d0 in before:
+        d1 = after_at.get(a)
+        if d1 is None or len(d1) != len(d0):
+            continue
+        n = len(d0) // 4 * 4
+        f0 = np.frombuffer(d0[:n], dtype="<f4")
+        f1 = np.frombuffer(d1[:n], dtype="<f4")
+        with np.errstate(all="ignore"):
+            drop = f0 - f1
+            ok = np.isfinite(f0) & np.isfinite(f1) & (f0 >= CLOCK_LO) & (f0 <= CLOCK_HI) & (drop >= lo) & (drop <= hi)
+        out += [(a + 4 * int(i), float(f0[i]), float(f1[i])) for i in np.nonzero(ok)[0]]
+    return out
+
+
+def pick_clock(cands: list) -> int | None:
+    """The clock among the survivors: the copy nearest the survivors' median reading (the cluster's copies agree within
+    a few ms; a stray countdown elsewhere does not), the lowest address on a tie."""
+    if not cands:
+        return None
+    vals = sorted(c[2] for c in cands)
+    mid = vals[len(vals) // 2]
+    return min(cands, key=lambda c: (round(abs(c[2] - mid), 2), c[0]))[0]
+
+
+class ClockFinder:
+    """The round clock, found and then followed (one per boot, kept on m.re4_clock). observe() reads the bss every call
+    until a clock is found (two reads CLOCK_DT apart, see clock_candidates), then one f32 a call. A found clock that
+    stops moving for CLOCK_STALE_S is searched for again the same way (a pause also holds it, so that costs nothing)."""
+
+    def __init__(self):
+        self.addr: int | None = None
+        self.sample = None                      # (wall time, rows) of the first read of a search
+        self.last: tuple | None = None          # (wall time, value) of the last change
+        self.found_at = None
+        self.searches = 0
+
+    def observe(self, m, base: int, now: float) -> float | None:
+        if self.addr is not None:
+            try:
+                v = struct.unpack("<f", bytes(m.rd(self.addr, 4)))[0]
+            except (ValueError, OSError, struct.error):
+                v = None
+            if v is None or not math.isfinite(v) or not -1.0 <= v <= CLOCK_MAX_S:
+                self.addr = self.last = None                # gone: search again
+                return None
+            if self.last is None or v != self.last[1]:
+                self.last = (now, v)
+            elif now - self.last[0] >= CLOCK_STALE_S and v > 0:
+                self.addr, self.sample, self.last = None, None, None   # held: confirm it again from the next call
+            return round(max(v, 0.0), 2)
+        if self.sample is None or now - self.sample[0] > CLOCK_DT[1]:
+            self.sample = (now, self._rows(m, base))
+            self.searches += 1
+            return None
+        dt = now - self.sample[0]
+        if dt < CLOCK_DT[0]:
+            return None
+        rows = self._rows(m, base)
+        addr = pick_clock(clock_candidates(self.sample[1], rows, dt))
+        self.sample = (now, rows)
+        if addr is None:
+            return None
+        self.addr, self.found_at = addr, now
+        return self.observe(m, base, now)
+
+    @staticmethod
+    def _rows(m, base):
+        return read_rows(m, base, tuple((off, 4) for off in CLOCK_HINTS)) + read_rows(m, base)
+
+
+def unit_addresses(chunks: list, vtables: dict) -> dict:
+    """{class offset: [object addresses]} of the 8-aligned words in `chunks` ([(address, bytes)]) that equal one of
+    `vtables` ({absolute vtable address: class offset}): a C++ object starts with its vtable pointer."""
+    np = _np()
+    out: dict = {off: [] for off in vtables.values()}
+    keys = np.array(sorted(vtables), dtype="<u8")
+    for a, d in chunks:
+        lead = (-a) % 8
+        n = (len(d) - lead) // 8 * 8
+        if n <= 0:
+            continue
+        q = np.frombuffer(d[lead:lead + n], dtype="<u8")
+        for i in np.nonzero(np.isin(q, keys))[0]:
+            out[vtables[int(q[i])]].append(a + lead + 8 * int(i))
+    return out
+
+
+def read_unit(m, addr: int) -> dict | None:
+    """One unit's fields (only the configured offsets), None when a read fails or its position is not a position."""
+    try:
+        raw = bytes(m.rd(addr, max(U_TYPE + 1, (U_POS or 0) + 12, (U_YAW or 0) + 4, (U_HP_MAX or 0) + 2)))
+    except (ValueError, OSError):
+        return None
+    out = {"ptr": addr, "vtable": struct.unpack_from("<Q", raw, 0)[0], "hp": struct.unpack_from("<H", raw, U_HP)[0],
+           "type": raw[U_TYPE], "id": struct.unpack_from("<I", raw, U_ID)[0]}
+    if U_HP_MAX is not None:
+        out["hp_max"] = struct.unpack_from("<H", raw, U_HP_MAX)[0]
+    if U_POS is not None:
+        pos = struct.unpack_from("<3f", raw, U_POS)
+        if not all(math.isfinite(v) and abs(v) < 1e6 for v in pos):
+            return None
+        out["pos"] = pos
+    if U_YAW is not None:
+        yaw = struct.unpack_from("<f", raw, U_YAW)[0]
+        out["rot"] = wrap(yaw) if math.isfinite(yaw) else None
+    return out
+
+
+class UnitCensus:
+    """The units of the configured classes (PLAYER_CLASS, ENEMY_CLASSES), found by their vtable word in the heap and
+    then read in place (one per boot, kept on m.re4_units). The first scan covers HEAP_WINDOWS; later scans (every
+    UNIT_RESCAN_S, for new spawns) only the pool the first one found (+- POOL_MARGIN), so a round costs one full scan."""
+
+    POOL_MARGIN = 1 << 22
+
+    def __init__(self):
+        self.units: dict = {}                   # address -> class offset
+        self.pool: tuple | None = None
+        self.scanned_at = None
+        self.scans = 0
+
+    @staticmethod
+    def classes() -> tuple:
+        return tuple(c for c in ((PLAYER_CLASS,) + tuple(ENEMY_CLASSES)) if c is not None)
+
+    def refresh(self, m, base: int, now: float) -> None:
+        if not self.classes() or (self.scanned_at is not None and now - self.scanned_at < UNIT_RESCAN_S):
+            return
+        self.scanned_at = now
+        vt = {base + c: c for c in self.classes()}
+        found: dict = {}
+        for lo, hi in ([self.pool] if self.pool else list(HEAP_WINDOWS)):
+            for a in range(lo, hi, UNIT_SCAN_CHUNK):
+                try:
+                    chunk = [(a, bytes(m.rd(a, min(UNIT_SCAN_CHUNK, hi - a))))]
+                except (ValueError, OSError):
+                    continue
+                for cls, addrs in unit_addresses(chunk, vt).items():
+                    found.update((x, cls) for x in addrs)
+        self.scans += 1
+        if found:
+            self.units = found
+            if self.pool is None:
+                self.pool = (max(min(found) - self.POOL_MARGIN, 0), max(found) + self.POOL_MARGIN)
+
+    def read(self, m, base: int) -> tuple:
+        """(player unit or None, [enemy units]), one read each, deduplicated by id + health + type (the arena shows
+        some objects through two mappings, 2026-11-05)."""
+        player, enemies, seen = None, [], set()
+        for addr, cls in sorted(self.units.items()):
+            u = read_unit(m, addr)
+            if u is None or u["vtable"] != base + cls or u["hp"] > UNIT_HP_MAX or "pos" not in u:
+                continue
+            key = (u["id"], u["hp"], u["type"], cls)
+            if key in seen:
+                continue
+            seen.add(key)
+            u["class"] = cls
+            if cls == PLAYER_CLASS and player is None:
+                player = u
+            elif cls in ENEMY_CLASSES:
+                enemies.append(u)
+        return player, enemies
+
+
+def _finder(m, name, kind):
+    obj = getattr(m, name, None)
+    if not isinstance(obj, kind):
+        obj = kind()
+        try:
+            setattr(m, name, obj)
+        except AttributeError:
+            pass
+    return obj
+
+
+def snapshot(m, now: float | None = None, search: bool = True) -> dict:
+    """The round from RAM in re5_switch.snapshot's shape, reading only what has been measured (every read guarded):
+      timer   : the clock (ClockFinder), seconds; clock_addr says where it was found
+      player  : {ptr, pos (x, y, z cm), rot (rad), hp, hp_max, class} once PLAYER_CLASS and U_POS are set
+      enemies : [{ptr, pos, rot, hp, hp_max, class, id}] of ENEMY_CLASSES (the census)
+      kills / combo / score : the MERC_* fields once measured (None until then: the bot counts kills from the census)
+    search=False (the menus' screen(), a warm probe) reads a clock and units found before but scans for neither.
     """
-    snap: dict = dict(_EMPTY)
+    now = time.monotonic() if now is None else now
+    snap: dict = dict(_EMPTY, enemies=[])
     base = module_base(m)
     if base is None:
         return snap
     snap["module_base"] = base
-
-    # --- player ---
-    if S_PLAYER is not None and None not in (P_POS, P_ROT):
-        p = _anchor(m, base, S_PLAYER)
-        if ptr_ok(p):
+    clock = _finder(m, "re4_clock", ClockFinder)
+    if search or clock.addr is not None:
+        snap["timer"] = clock.observe(m, base, now)
+    snap["clock_addr"] = clock.addr
+    census = _finder(m, "re4_units", UnitCensus)
+    if census.classes() and U_POS is not None:
+        if search:
+            census.refresh(m, base, now)
+        player, enemies = census.read(m, base)
+        if player is not None:
+            player.setdefault("hp_max", None)
+            player.setdefault("rot", None)
+            snap["player"] = player
+        snap["enemies"] = [dict(e, hp_max=e.get("hp_max")) for e in enemies]
+    for key, off in (("kills", MERC_KILLS), ("combo", MERC_COMBO), ("score", MERC_SCORE)):
+        if off is not None:
             try:
-                pos = struct.unpack("<3f", m.rd(p + P_POS, 12))
-                rot = struct.unpack("<f", m.rd(p + P_ROT, 4))[0]
-                hp = hp_max = None
-                if P_HP is not None:
-                    hp, hp_max = struct.unpack("<hh", m.rd(p + P_HP, 4))
-                elif None not in (S_PGLOBAL, PG_HP):
-                    pg = _anchor(m, base, S_PGLOBAL)
-                    hp = struct.unpack("<h", m.rd(pg + PG_HP, 2))[0] if ptr_ok(pg) else None
-                if all(math.isfinite(v) for v in pos) and math.isfinite(rot):
-                    snap["player"] = {"ptr": p, "pos": pos, "rot": wrap(rot), "hp": hp, "hp_max": hp_max}
-            except (ValueError, OSError, struct.error):
-                snap["player"] = None
-
-    # --- room (pG), for the screen classifier ---
-    if None not in (S_PGLOBAL, PG_ROOM):
-        pg = _anchor(m, base, S_PGLOBAL)
-        if ptr_ok(pg):
-            try:
-                snap["room"] = struct.unpack("<H", m.rd(pg + PG_ROOM, 2))[0]
-            except (ValueError, OSError, struct.error):
-                pass
-
-    # --- enemies (EmMgr table) ---
-    if S_EMMGR is not None and None not in (E_POS, E_HP):
-        em = _anchor(m, base, S_EMMGR)
-        if ptr_ok(em):
-            try:
-                tbl, n, stride = struct.unpack("<QII", m.rd(em, 16))
-            except (ValueError, OSError, struct.error):
-                tbl = n = stride = 0
-            if ptr_ok(tbl) and 0 < n <= MAX_ENEMIES and 0x100 <= stride < 0x4000:
-                try:
-                    d = m.rd(tbl, n * stride)
-                except (ValueError, OSError):
-                    d = b""
-                need = max(E_POS + 12, E_HP + 4, (E_FLAGS + 4) if E_FLAGS is not None else 0)
-                for k in range(n):
-                    o = k * stride
-                    if o + need > len(d):
-                        break
-                    if E_FLAGS is not None:
-                        try:
-                            if not (struct.unpack_from("<I", d, o + E_FLAGS)[0] & 0x1):
-                                continue
-                        except struct.error:
-                            continue
-                    try:
-                        pos = struct.unpack_from("<3f", d, o + E_POS)
-                        hp, hp_max = struct.unpack_from("<hh", d, o + E_HP)
-                    except struct.error:
-                        continue
-                    if not all(math.isfinite(v) for v in pos):
-                        continue
-                    snap["enemies"].append({"slot": k, "ptr": tbl + o, "pos": pos, "hp": hp, "hp_max": hp_max})
-
-    # --- Mercenaries counters ---
-    if S_MERC is not None:
-        mg = _anchor(m, base, S_MERC)
-        if ptr_ok(mg):
-            try:
-                if MERC_TIMER is not None:
-                    snap["timer"] = round(u32(m, mg + MERC_TIMER) / MERC_FPS, 2)
-                if MERC_COMBO is not None:
-                    snap["combo"] = u32(m, mg + MERC_COMBO)
-                if MERC_KILLS is not None:
-                    snap["kills"] = u32(m, mg + MERC_KILLS)
-                if MERC_SCORE is not None:
-                    snap["score"] = u32(m, mg + MERC_SCORE)
-                if MERC_PHASE is not None:
-                    snap["mercenaries_phase"] = struct.unpack("<i", m.rd(mg + MERC_PHASE, 4))[0]
+                snap[key] = struct.unpack("<I", bytes(m.rd(base + off, 4)))[0]
             except (ValueError, OSError, struct.error):
                 pass
     return snap
@@ -341,11 +564,17 @@ _story_presses = 0
 _story_last = float("-inf")          # a fresh walk may cancel straight away
 
 
-def begin_run(**_turn) -> None:
-    """A new walk (mercs_bot.play): no confirm is outstanding, and the story-list recovery starts fresh."""
+def begin_run(selection=None, **_turn) -> None:
+    """A new walk (mercs_bot.play, re4switch_bot.play): no confirm is outstanding, the story-list recovery starts
+    fresh, and the DJ's pick (a MercMode selection dict: character, stage / stage_name) is what the selects steer to;
+    without one they confirm the default entries."""
     global _story_presses, _story_last
     _confirmed.clear()
     _story_presses, _story_last = 0, float("-inf")
+    SELECTION.update(player=None, stage=None)
+    if isinstance(selection, dict):
+        stage = selection.get("stage")
+        request(selection.get("character"), stage if stage is not None else selection.get("stage_name"))
 
 
 def _recover_story(now: float | None = None) -> str | None:
@@ -369,7 +598,7 @@ def _reader(m) -> screens.Reader:
 def screen(m, merc=None) -> dict:
     """Where RE4 is, for the menus loop (gbox.mercs_bot). The round's own RAM fields win once they are measured; until
     then, and on every menu, the capture frame. A frame that cannot be taken names nothing, so nothing is pressed."""
-    snap = merc if isinstance(merc, dict) else snapshot(m)
+    snap = merc if isinstance(merc, dict) else snapshot(m, search=False)
     where = own_screen(snap)
     if where in ("playing", "dead", "results", "story"):
         return {"where": where, "cursor": None, "target": None}
@@ -402,9 +631,24 @@ def step(scr: dict, now: float | None = None) -> str | None:
         if cur == tgt:
             return _confirm(where)
         return DPAD["down"] if cur < tgt else DPAD["up"]
-    if where in ("title", "mercs_title", "select_player", "select_stage", "round_intro"):
-        return _confirm(where)                              # these match the reference, so the default entry is up
+    if where in ("select_player", "select_stage"):
+        # the DJ's pick: move from the default entry first (the reader counts the moves in: scr["moved"]), then confirm
+        moves, done = selection_moves(where), int(scr.get("moved") or 0)
+        if done < len(moves):
+            return moves[done]
+        return _confirm(where, now)
+    if where in ("title", "mercs_title", "round_intro"):
+        return _confirm(where, now)                         # these match the reference, so the default entry is up
     return None
+
+
+def press_gap(scr: dict) -> float:
+    """How long the walk waits after the last press before the next one on this screen: a select screen's cursor move
+    (the DJ's pick, still owed) goes in every STEER_GAP_S, every other press keeps its screen's confirm gap."""
+    where = scr.get("where")
+    if where in ("select_player", "select_stage") and int(scr.get("moved") or 0) < len(selection_moves(where)):
+        return STEER_GAP_S
+    return CONFIRM_GAP_S.get(where, 3.0)
 
 
 def wandered(scr: dict) -> str | None:
@@ -426,7 +670,7 @@ def pressed(scr: dict, key: str, now: float | None = None) -> None:
     if key == STORY_RECOVER_KEY and scr.get("where") in ("story", "story_prompt"):
         _story_presses += 1
     reader = scr.get("reader")
-    if reader is not None:
+    if callable(getattr(reader, "press_went_in", None)):
         reader.press_went_in(scr.get("where"), key)
 
 
@@ -448,7 +692,9 @@ def warm_probe(m) -> dict:
 class RE4Switch(Driver):
     map_id = MAP_ID
     solo_p1 = True                              # The Mercenaries on Switch is played solo on P1 here
-    round_counters = ("shots", "hits", "turns", "backoffs", "holds", "dying", "escapes")
+    units_per_m = 100.0                         # cm (doctrine.view)
+    round_counters = ("shots", "hits", "turns", "backoffs", "holds", "dying", "escapes", "locates", "stand_breaks",
+                      "crowd_picks", "kills_seen")
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
@@ -463,7 +709,7 @@ class RE4Switch(Driver):
 
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
         self.stats = stats
-        return Bot(stats=stats, clock=clock)
+        return Bot(stats=stats, clock=clock, director=False)    # the engine runs the round's doctrine itself
 
     def prompt_keys(self, button) -> list:
         return [tuple(str(button).split("+"))]
@@ -483,30 +729,122 @@ class RE4Switch(Driver):
 ENGAGE_RANGE_CM = 1200.0                 # do not blind-fire past ~12 m before the line-of-sight gate is wired (tune live)
 MINE_CLEAR_CM = 250.0                    # keep at least this far from an own hazard (parity with re5_switch_mines)
 
+# The fight (gbox.mercs.core.doctrine: never idle, shoot on sight, the combo every 2-5 s, crowds, locate by the map).
+# RE4 is tank-controlled and stands still while it aims: the gun comes up only once the body is within RAISE_TOL of the
+# target (the right stick then fine-turns the aim, the trigger is tapped inside TURN_TOL once the gun has been up
+# AIM_READY_S), and every tick without a shot moves him: a step on open ground when he has stood STAND_MAX_S, the walk
+# to the nearest Ganado by the map when none is in range. Distances are the game's units (cm, the map's units_per_m
+# 100). The turn direction (an error > 0 turns right) is the first cut's contract and is NOT verified against a live
+# facing read (U_YAW is pending).
+RAISE_TOL = 0.35                         # rad: the body this close to the target, the gun comes up
+AIM_READY_S = 0.25                       # the gun up this long before the first tap (a tap as it rises is not a shot)
+RUN_BTN = "b"                            # held with the stick up: a run (the manual: B + left stick up)
+RUN_CM = 800.0                           # locating a Ganado farther than this: run, not walk
+QUICK_TURN = ("ldown", RUN_BTN)          # the 180 turn (the manual: B + left stick down), the escape from a crowd
+RELOAD_SHOTS = 8                         # shots since the last reload: reload (ZL + B) at the next quiet moment (no
+                                         # ammo read yet; a reload on a full magazine costs a moment and nothing else)
+RELOAD_CLEAR_CM = 350.0                  # ... quiet = nobody this near (doctrine IMPEDE_M)
+CROWD_N, CROWD_CM = 4, 600.0             # a mob (doctrine CROWD_N / CROWD_M)
+CROWD_CONE = 0.6                         # rad: in a mob, the Ganado nearest the gun's line within this is the target
+SWARM_N, SWARM_CM = 3, 200.0             # this many this close: turn and go (he cannot shoot three at arm's length)
+STAND_MAX_S, STAND_MOVE_CM, STAND_STEP_S = 1.5, 40.0, 0.8   # never stand: no metre in 1.5 s and no shot -> a step
+SWEEP_S = 3.0                            # nobody on the map: walk, turning this long one way, then the other
+KILL_PACE_S = 3.0                        # doctrine.KILL_PACE_S: from this long after a kill the next one is owed
+COMBO_WINDOW_S = 5.0                     # doctrine.COMBO_MAX_S: a kill later than this after the last one breaks the combo
+FIRE_GAP_S = 0.25                        # between trigger taps (a tap is down + up: the engine never holds the trigger)
+
 
 class Bot:
-    """One decision per tick from the snapshot. FIRST CUT (mirrors re5 / re6 at a high level): face the nearest living
-    Ganado, raise the gun and fire - but every shot passes the operator's fire-gates (_may_fire): controls confirmed,
-    in range, a clear line of sight (no wall shots), and not standing on an own hazard (no mine standing). Fires only
-    once the controls are confirmed live (CONTROLS_READY); until then it only turns, so a scan session never wastes
-    ammo blind. Combo routing, time-bonus hunting and the richer re5/re6 behaviour come after the first live round."""
+    """One decision per tick from the snapshot (re5_switch.Bot's shape: tick(snap) -> {"hold": keys, "tap": key}).
+
+    In order: an own hazard underfoot -> step off it; a swarm at arm's length -> the quick turn and away; a target in
+    range (the nearest; in a mob the one nearest the gun's line; the quickest kill once the combo is owed) -> turn, raise,
+    fire through the operator's fire gates; no target in range -> locate the nearest Ganado by the map and walk / run to
+    him; nobody known -> sweep the level. The never-stand rule then turns any tick that neither shoots nor moves into a
+    step. stats carries what it did (shots, turns, locates, stand_breaks, crowd_picks, combo_owed_s, kills_seen ...)
+    and the doctrine's measures (gbox.mercs.core.doctrine.Director, with its commands read back through
+    doctrine.Reader: "hunt" / "explore" walk to the map's Ganado, "fight" / "score" fire first)."""
 
     TURN_TOL = 0.12                                      # rad: close enough to fire
+    COUNTERS = ("shots", "hits", "turns", "backoffs", "holds", "dying", "escapes", "locates", "stand_breaks",
+                "crowd_picks", "sweeps", "kills_seen", "raises", "combo_breaks", "reloads")
 
-    def __init__(self, stats: dict | None = None, clock=time.monotonic):
+    def __init__(self, stats: dict | None = None, clock=time.monotonic, director=True):
         self.stats = stats if stats is not None else {}
         self.clock = clock
-        for k in ("shots", "hits", "turns", "backoffs", "holds", "dying", "escapes"):
+        for k in self.COUNTERS:
             self.stats.setdefault(k, 0)
         self.target = None
+        self.doing, self.why = "idle", ""
+        self._hp: dict = {}                              # enemy ptr -> last health (kills from the census)
+        self._kill_at = None
+        self._last_fire = -1e9
+        self._aim_since = None                           # the gun up since (AIM_BTN held), None while it is down
+        self._since_reload = 0                           # shots since the last reload
+        self._stand = {"pos": None, "at": None, "until": -1e9, "keys": ()}
+        self._sweep_at, self._sweep_dir = None, 1
+        self.director = self.reader = None
+        if director:
+            try:
+                from ..core import doctrine
+                self.director, self.reader = doctrine.Director(self.stats), doctrine.Reader()
+            except Exception:                            # noqa: BLE001 - the doctrine never stops a fight
+                self.director = self.reader = None
+
+    # --- what he sees ---
+    @staticmethod
+    def _flat(p, q) -> float:
+        return math.hypot(q[0] - p[0], q[2] - p[2])
+
+    def _live(self, p, enemies) -> list:
+        """[(distance, bearing error, enemy)] of the living Ganados with a position."""
+        rot = p.get("rot") or 0.0
+        out = []
+        for e in enemies:
+            if (e.get("hp") or 0) <= 0 or not e.get("pos"):
+                continue
+            d = self._flat(p["pos"], e["pos"])
+            err = wrap(heading(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) - rot)
+            out.append((d, err, e))
+        return out
 
     @staticmethod
     def _nearest(p, enemies):
+        """The nearest living Ganado (kept for the first cut's callers)."""
         px, _, pz = p["pos"]
         live = [(math.hypot(e["pos"][0] - px, e["pos"][2] - pz), e)
-                for e in enemies if (e.get("hp") or 0) > 0]
+                for e in enemies if (e.get("hp") or 0) > 0 and e.get("pos")]
         return min(live, key=lambda t: t[0])[1] if live else None
 
+    def _count_kills(self, snap, now) -> None:
+        """Kills: the game's own counter when it is measured (MERC_KILLS), else a census unit whose health fell to 0."""
+        kills = snap.get("kills")
+        if isinstance(kills, int) and not isinstance(kills, bool):
+            if kills > self.stats.get("kills_seen", 0):
+                self._kill_at = now
+            self.stats["kills_seen"], self.stats["kills_source"] = kills, "game"
+            return
+        seen = {}
+        for e in snap.get("enemies") or ():
+            key = e.get("ptr")
+            if key is None:
+                continue
+            hp = e.get("hp") or 0
+            if self._hp.get(key, 0) > 0 and hp <= 0:
+                self.stats["kills_seen"] += 1
+                self._kill_at = now
+            seen[key] = hp
+        self._hp = seen
+        self.stats["kills_source"] = "census"
+
+    def combo_owed(self, now) -> float | None:
+        """Seconds since the last kill when the next one is owed (KILL_PACE_S), None while the combo is fresh."""
+        if self._kill_at is None:
+            return None
+        since = now - self._kill_at
+        return since if since >= KILL_PACE_S else None
+
+    # --- the operator's fire gates ---
     @staticmethod
     def _line_of_sight_ok(p, e, snap) -> bool:
         """No wall shots: a clear ray from Leon to the target. Uses the stage's obstacle / navmesh data when it is
@@ -515,7 +853,12 @@ class Bot:
         nav, obstacles = snap.get("nav"), snap.get("obstacles")
         if nav is None and obstacles is None:
             return True                                     # no geometry yet: range limit does the gating
-        # TODO(live): ray test Leon.pos -> target.pos against the mapped obstacles / navmesh (re5 aim-geometry parity).
+        seg = getattr(nav, "clear_segment", None)
+        if callable(seg):
+            try:
+                return bool(seg(tuple(p["pos"]), tuple(e["pos"])))
+            except Exception:                               # noqa: BLE001 - a mesh error never fires blind
+                return False
         return True
 
     @staticmethod
@@ -542,31 +885,154 @@ class Bot:
             return False
         return True
 
-    def tick(self, snap: dict):
+    # --- the choice ---
+    def _choose(self, live, now):
+        """(distance, error, enemy) to fight, or None: the quickest kill once the combo is owed, the one nearest the
+        gun's line in a mob, else the nearest. Only Ganados inside ENGAGE_RANGE_CM are candidates."""
+        near = [t for t in live if t[0] <= ENGAGE_RANGE_CM]
+        if not near:
+            return None
+        crowd = [t for t in near if t[0] <= CROWD_CM]
+        if len(crowd) >= CROWD_N:
+            lined = [t for t in crowd if abs(t[1]) <= CROWD_CONE]
+            if lined:
+                self.stats["crowd_picks"] += 1
+                self.why = f"crowd fire: {len(crowd)} within {CROWD_CM / 100:.0f} m, the one on the gun's line"
+                return min(lined, key=lambda t: abs(t[1]))
+        if self.combo_owed(now) is not None:
+            self.why = "the combo is owed: the quickest kill"
+            return min(near, key=lambda t: (t[2].get("hp") or 0) * 0.5 + t[0] + 300.0 * abs(t[1]))
+        self.why = "the nearest Ganado"
+        return min(near, key=lambda t: t[0])
+
+    def _turn(self, err: float) -> set:
+        return {TURN["right"] if err > 0 else TURN["left"]}
+
+    def _aim_turn(self, err: float) -> set:
+        return {AIM_TURN["right"] if err > 0 else AIM_TURN["left"]}
+
+    def _command(self, now):
+        if self.reader is None:
+            return None
+        try:
+            cmd, _fresh = self.reader.current(self.stats, time.time())
+        except Exception:                                # noqa: BLE001
+            return None
+        return cmd
+
+    # --- the tick ---
+    def tick(self, snap: dict, now: float | None = None) -> dict:
+        now = self.clock() if now is None else now
         p = snap.get("player")
         if not p or p.get("pos") is None:
+            self.doing, self.why = "idle", "no player in RAM"
             return {}
-        e = self._nearest(p, snap.get("enemies") or [])
-        if e is None:
-            return {}
-        px, _, pz = p["pos"]
-        ex, _, ez = e["pos"]
-        dist = math.hypot(ex - px, ez - pz)
-        err = wrap(heading(ex - px, ez - pz) - p.get("rot", 0.0))
-        self.target = e.get("ptr")
+        self._count_kills(snap, now)
+        owed = self.combo_owed(now)
+        self.stats["combo_owed_s"] = round(owed, 1) if owed is not None else None
+        act = self._fight(p, snap, now)
+        act = self._never_stand(p, act, snap, now)
+        up = AIM_BTN in set(act.get("hold") or ())
+        self._aim_since = (self._aim_since if self._aim_since is not None else now) if up else None
+        if self.director is not None:
+            try:
+                from ..core import doctrine
+                self.director.observe(doctrine.view(snap), act, time.time())
+            except Exception:                            # noqa: BLE001 - measuring never costs the tick
+                pass
+        self.stats["doing"], self.stats["why"] = self.doing, self.why
+        return act
+
+    def _fight(self, p, snap, now) -> dict:
         # Step off an own hazard first (no mine standing), even before facing the target.
+        live = self._live(p, snap.get("enemies") or [])
         if self._near_own_hazard(p, snap):
-            self.stats["backoffs"] = self.stats.get("backoffs", 0) + 1
-            return {"hold": {TURN["left" if err > 0 else "right"]}}   # turn away and move off
-        if abs(err) > self.TURN_TOL:
-            self.stats["turns"] = self.stats.get("turns", 0) + 1
-            return {"hold": {TURN["right"] if err > 0 else TURN["left"]}}
-        if not self._may_fire(p, e, dist, snap):
-            return {"hold": set()}                           # aligned but a fire-gate blocks it: hold fire, keep aim
-        self.stats["shots"] = self.stats.get("shots", 0) + 1
-        # aim held, trigger TAPPED: the engine sends a tap as down+up before the hold, so the shot fires and the aim
-        # key stays down. Holding both (the first cut) never released the trigger, so a round fired once and stuck.
-        return {"hold": {AIM_BTN}, "tap": FIRE_BTN}
+            self.stats["backoffs"] += 1
+            self.doing, self.why = "backoff", "standing near his own explosive"
+            near = min(live, key=lambda t: t[0]) if live else None
+            return {"hold": {"lup", TURN["left" if near and near[1] > 0 else "right"]}}
+        swarm = [t for t in live if t[0] <= SWARM_CM]
+        if len(swarm) >= SWARM_N:
+            self.stats["escapes"] += 1
+            self.doing, self.why = "escape", f"{len(swarm)} Ganados at arm's length: the quick turn and away"
+            return {"hold": set(QUICK_TURN)}
+        cmd = self._command(now)
+        pick = self._choose(live, now)                   # a command never stops a shot at one in range (RE5 HUNT_R)
+        if pick is not None:
+            dist, err, e = pick
+            self.target = e.get("ptr")
+            if abs(err) > RAISE_TOL:
+                self.stats["turns"] += 1
+                self.doing = "turn"
+                return {"hold": self._turn(err)}
+            if not self._may_fire(p, e, dist, snap):
+                self.stats["holds"] += 1
+                self.doing, self.why = "hold", "aligned, but a fire gate blocks the shot"
+                return {"hold": {AIM_BTN}}                   # aim kept, no shot
+            if abs(err) > self.TURN_TOL:
+                self.stats["raises"] += 1
+                self.doing = "aim"
+                return {"hold": {AIM_BTN} | self._aim_turn(err)}   # the gun up, the right stick fine-turns the aim
+            ready = self._aim_since is not None and now - self._aim_since >= AIM_READY_S
+            if not ready or now - self._last_fire < FIRE_GAP_S:
+                self.doing = "aim"
+                return {"hold": {AIM_BTN}}
+            self._last_fire = now
+            self._since_reload += 1
+            self.stats["shots"] += 1
+            self.doing = "fire"
+            # aim held, trigger TAPPED: the engine sends a tap as down+up before the hold, so the shot fires and the aim
+            # key stays down. Holding both (the first cut) never released the trigger, so a round fired once and stuck.
+            return {"hold": {AIM_BTN}, "tap": FIRE_BTN}
+        self.target = None
+        if self._since_reload >= RELOAD_SHOTS and not any(t[0] <= RELOAD_CLEAR_CM for t in live):
+            # a quiet moment after a magazine's worth of shots: ZL + B (the aim first, then B, in this one batch:
+            # re4switch_bot.Keys sends the holds before the tap)
+            self._since_reload = 0
+            self.stats["reloads"] += 1
+            self.doing, self.why = "reload", f"{RELOAD_SHOTS} shots since the last reload and nobody near"
+            return {"hold": {AIM_BTN}, "tap": RELOAD_BTN}
+        return self._locate(p, live, now, cmd)
+
+    def _locate(self, p, live, now, cmd=None) -> dict:
+        """Nobody in range: the nearest Ganado by the map, walked to (run past RUN_CM); nobody known: the sweep."""
+        if live:
+            dist, err, e = min(live, key=lambda t: t[0])
+            self.stats["locates"] += 1
+            self.stats["locate_m"] = round(dist / 100.0, 1)
+            self.doing = "locate"
+            self.why = f"locating: the nearest Ganado {dist / 100:.0f} m off by the map" + (f" ({cmd})" if cmd else "")
+            keys = {"lup"} | (self._turn(err) if abs(err) > self.TURN_TOL else set())
+            if dist > RUN_CM or self.combo_owed(now) is not None:
+                keys.add(RUN_BTN)
+            return {"hold": keys}
+        if self._sweep_at is None or now - self._sweep_at >= SWEEP_S:
+            self._sweep_at, self._sweep_dir = now, -self._sweep_dir
+            self.stats["sweeps"] += 1
+        self.doing, self.why = "sweep", "no Ganado on the map: exploring"
+        return {"hold": {"lup", TURN["right" if self._sweep_dir > 0 else "left"]}}
+
+    def _never_stand(self, p, act, snap, now) -> dict:
+        """The doctrine's floor: a tick that neither fires nor moves him for STAND_MAX_S becomes a STAND_STEP_S step
+        forward with a turn (the way changes each time). Aiming and firing are not standing."""
+        st, pos = self._stand, p["pos"]
+        hold = set(act.get("hold") or ())
+        if act.get("tap") or AIM_BTN in hold:
+            st.update(pos=tuple(pos), at=now, until=-1e9)
+            return act
+        if now < st["until"]:
+            return dict(act, hold=set(st["keys"]))
+        if st["pos"] is None or st["at"] is None or self._flat(st["pos"], pos) > STAND_MOVE_CM:
+            st.update(pos=tuple(pos), at=now)
+            return act
+        if now - st["at"] < STAND_MAX_S:
+            return act
+        st["n"] = st.get("n", 0) + 1
+        keys = {"lup", TURN["left" if st["n"] % 2 else "right"]}
+        st.update(pos=tuple(pos), at=now, until=now + STAND_STEP_S, keys=tuple(keys))
+        self.stats["stand_breaks"] += 1
+        self.doing, self.why = "step", f"stood {STAND_MAX_S:.1f} s: a step (he never stands)"
+        return dict(act, hold=keys)
 
     def prompt_ok(self, button, snap, now):
         return False
