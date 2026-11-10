@@ -228,8 +228,41 @@ class Display:
         _kill_tree(self.proc)
 
 
+GRAB_SHARE_S = 0.05                      # callers asking for the same picture this close together share one grab
+_GRABS: dict = {}
+_GRAB_LOCK = threading.Lock()
+
+
+def _x11_grab_inprocess(disp: str, region: list[int] | None) -> bytes | None:
+    """The frame by Pillow's own X11 grab (XCB): no process started. 2026-11-10 on lilspark: 7 ms grab + 58 ms PNG at
+    compress_level 1 on one core, where each `ffmpeg -frames:v 1` ran 240-887% CPU and five a second took ~10 cores
+    (measured by the Pine Box session). None when the display refuses the connection (an X auth difference): ffmpeg then."""
+    try:
+        import io
+        from PIL import ImageGrab
+        bbox = (region[0], region[1], region[0] + region[2], region[1] + region[3]) if region else None
+        im = ImageGrab.grab(bbox=bbox, xdisplay=disp)
+        buf = io.BytesIO()
+        im.save(buf, "PNG", compress_level=1)
+        return buf.getvalue()
+    except Exception:                                   # noqa: BLE001 - the ffmpeg path stays the fallback
+        return None
+
+
 def grab_png(display: str | None, region: list[int] | None = None) -> bytes:
-    """One frame: x11grab on linux (display), gdigrab desktop on windows."""
+    """One frame: x11grab on linux (display), gdigrab desktop on windows. On linux Pillow's in-process X11 grab first
+    (no ffmpeg per frame), and callers within GRAB_SHARE_S of each other for the same picture share one grab."""
+    if HOST_OS != "windows":
+        disp = display or os.environ.get("DISPLAY", ":0")
+        key = (disp, tuple(region) if region else None)
+        with _GRAB_LOCK:
+            hit = _GRABS.get(key)
+            if hit is not None and time.monotonic() - hit[0] < GRAB_SHARE_S:
+                return hit[1]
+            data = _x11_grab_inprocess(disp, region)
+            if data is not None:
+                _GRABS[key] = (time.monotonic(), data)
+                return data
     out = Path(tempfile.mkdtemp()) / "frame.png"
     if HOST_OS == "windows":
         src = ["-f", "gdigrab"]
@@ -245,7 +278,8 @@ def grab_png(display: str | None, region: list[int] | None = None) -> bytes:
             src += ["-video_size", f"{w}x{h}", "-i", f"{disp}+{x},{y}"]
         else:
             src += ["-i", disp]
-    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", *src, "-frames:v", "1", str(out)], check=True, timeout=30)
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-threads", "1", "-y", *src, "-frames:v", "1", str(out)], check=True,
+                   timeout=30)
     data = out.read_bytes()
     shutil.rmtree(out.parent, ignore_errors=True)
     return data

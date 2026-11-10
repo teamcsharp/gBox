@@ -57,7 +57,7 @@ IDLE_TICKS_BEFORE_ACTION = 2
 # a select screen's steering count) now restarts the stall clock, at most CURSOR_PROGRESS_MAX times per named screen: a
 # cursor that keeps moving without the screen ever changing is still a stall.
 CURSOR_PROGRESS_MAX = 12
-MENU_POLL_S = 0.05                      # the menus are read this often (re4_switch.Pace, learned per screen, says
+MENU_POLL_S = 0.1                       # the menus are read this often (re4_switch.Pace, learned per screen, says
                                         # when a press may go in; 0.2 until 2026-11-10: "never ... slowly")
 UNKNOWN_ROUND_S = 6.0                   # WITHOUT RAM only: after a stage pick, an unnamed picture this long is taken for
                                         # the round (no black, no HUD); with the game's state read nothing is guessed
