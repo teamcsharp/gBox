@@ -28,3 +28,7 @@ Limiting fields are the same for all: frame (+0x93C) vs firing speed[level] + of
 
 ## Not determined
 - stock table values from the executable; rifle class id; writer of [action+0x48]; magnum motion/layers.
+
+## Milestone 2: stock firing-speed table (static, from the constructor)
+The table is not zero in the program, only in the file image: init entry `0x3d280` (DT_INIT_ARRAY, 1112 entries) registers `sParameter::WEAPON_LEVEL_STRUCT` (0x210 bytes/record from `main+0x1D13B28`) and stores defaults. Emulating it (unicorn, calls skipped) gives, at record+0x58, the level-0 firing speed per weapon id; levels 1-13 stay 1.0 in the constructor (data files may overwrite them: not determined). Examples: id 2 = 26.0 (matches the live M92F note), id 1 = 50, id 3/9/19/21 = 6, id 4/12/22/23/37-39 = 73, id 5 = 104, id 6-8 = 63, id 0xF/0x14 = 999, id 0x1C/0x20 = 900. Full list in the JSON (`milestone2`). Method script: `re5-switch-fire-rate-ctor-emu.py.txt`.
+Still open: interval-offset table (`main+0x1D08680`) stock values, id->name map, writer of `[action+0x48]`, magnum motion layers.
