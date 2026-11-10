@@ -312,3 +312,104 @@ def greedy_walk(read_pos, hold, target, *, keys=KEYS, tolerance=7.0, max_steps=4
             log("every key failed to move the character")
             return {"ok": False, "why": "stuck: no key moved the character", "steps": trail, "end": read_pos()}
     return {"ok": False, "why": f"gave up after {max_steps} steps", "steps": trail, "end": read_pos()}
+# --- the steering model (2026-11-10) ------------------------------------------------------------------------------
+# PSO's keyboard bindings do not strafe: `left`/`right` TURN the character (and the camera), `up`/`down` move along
+# the facing. A walker therefore points and advances, and it must re-measure the facing from what the last press
+# actually did, because a turn overshoots and a wall can stop a leg. Tests: test_pso_steer.py.
+
+STEER_PROBE_S = 0.25            # a forward probe: a nudge long enough to measure a direction
+STEER_TURN_S = 0.5              # the left hold that measures the turn rate
+STEER_MIN_SPEED = 0.5           # world units per second below which the forward binding is dead
+STEER_MIN_TURN = 0.15           # rad/s below which a left/right hold is not a turn
+
+
+def _signed_angle(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """The angle from facing `a` to `b` in radians, positive toward `left`."""
+    dot = max(-1.0, min(1.0, a[0] * b[0] + a[1] * b[1]))
+    cross = a[0] * b[1] - a[1] * b[0]
+    return math.atan2(cross, dot)
+
+
+def _forward_probe(read_pos, hold, seconds: float) -> dict:
+    """Hold `up` for `seconds`: the displacement's direction is the facing, its length over time the speed."""
+    before = read_pos()
+    if before is None:
+        raise RuntimeError("the player disappeared while steering")
+    hold("up", seconds)
+    after = read_pos()
+    if after is None:
+        raise RuntimeError("the player disappeared while steering")
+    dx, dz = after[0] - before[0], after[1] - before[1]
+    return {"facing": _norm(dx, dz), "speed": math.hypot(dx, dz) / max(seconds, 1e-6),
+            "moved": math.hypot(dx, dz), "pos": (after[0], after[1])}
+
+
+def steer_calibrate(read_pos, hold, *, probe_s: float = STEER_PROBE_S, turn_s: float = STEER_TURN_S) -> dict:
+    """Measure the steering model: forward speed, the facing, and the turn rate of a left hold.
+
+    Returns {speed, turn_rate, facing, probe_s, turn_s}. Raises RuntimeError when the forward binding is dead or a
+    left/right hold does not rotate the character - the tests pin both refusals, so a caller never walks blind.
+    """
+    first = _forward_probe(read_pos, hold, probe_s)
+    if first["speed"] < STEER_MIN_SPEED:
+        raise RuntimeError("the forward binding is dead: nothing moved when `up` was held")
+    hold("left", turn_s)
+    second = _forward_probe(read_pos, hold, probe_s)
+    turn_rate = _signed_angle(first["facing"], second["facing"]) / max(turn_s, 1e-6)
+    if abs(turn_rate) < STEER_MIN_TURN:
+        raise RuntimeError("a left/right hold does not turn the character: this is not the steering model")
+    return {"speed": second["speed"] if second["speed"] >= STEER_MIN_SPEED else first["speed"],
+            "turn_rate": turn_rate, "facing": second["facing"], "probe_s": probe_s, "turn_s": turn_s,
+            "source": first["pos"]}
+
+
+def steer_walk(read_pos, hold, target, *, tolerance: float = 7.0, max_steps: int = 25,
+               max_leg_s: float = 0.4, turn_threshold: float = 0.12, cal: dict | None = None) -> dict:
+    """Point at the target and advance, re-measuring the facing after every press (the steering model).
+
+    `left`/`right` turn toward the bearing to `target`, `up` advances by the remaining distance (capped at
+    `max_leg_s`), and the next facing comes from the travel itself, so a turn overshoot or a blocked leg is corrected
+    on the next step instead of pushed through. Returns {ok, end, steps, distance, facing, speed, turn_rate, trail}.
+    """
+    cal = cal or steer_calibrate(read_pos, hold)
+    speed = max(float(cal["speed"]), STEER_MIN_SPEED)
+    turn_rate = float(cal["turn_rate"])
+    facing = tuple(cal["facing"])
+    pos = read_pos()
+    if pos is None:
+        raise RuntimeError("steer_walk needs a live player position")
+    trail = []
+    for step in range(max_steps):
+        pos = (pos[0], pos[1])
+        remaining = distance(pos, target)
+        if remaining <= tolerance:
+            return {"ok": True, "end": pos, "steps": step, "distance": round(remaining, 1), "facing": facing,
+                    "speed": round(speed, 1), "turn_rate": round(turn_rate, 2), "trail": trail}
+        bearing = _norm(target[0] - pos[0], target[1] - pos[1])
+        delta = _signed_angle(facing, bearing)
+        if abs(delta) > turn_threshold:
+            key = "left" if delta > 0 else "right"
+            seconds = min(abs(delta) / max(abs(turn_rate), 1e-3), 3.0)
+            hold(key, seconds)
+            probe = _forward_probe(read_pos, hold, min(STEER_PROBE_S, max_leg_s))
+            facing = probe["facing"] if probe["moved"] > 0.5 else facing
+            pos = probe["pos"]
+            trail.append({"step": step, "turn": key, "turn_s": round(seconds, 2), "pos": _round2(pos)})
+            continue
+        leg = min(remaining / speed, max_leg_s)
+        before = read_pos()
+        hold("up", leg)
+        after = read_pos()
+        if after is not None and before is not None:
+            moved = _norm(after[0] - before[0], after[1] - before[1])
+            if moved != (0.0, 0.0):
+                facing = moved                       # the facing the press actually produced
+            pos = (after[0], after[1])
+        trail.append({"step": step, "forward_s": round(leg, 2), "pos": _round2(pos)})
+    return {"ok": False, "why": f"gave up after {max_steps} steps", "end": _round2(pos), "trail": trail,
+            "facing": facing, "speed": round(speed, 1), "turn_rate": round(turn_rate, 2),
+            "distance": round(distance(pos, target), 1)}
+
+
+def _round2(pos) -> tuple[float, float]:
+    return (round(pos[0], 1), round(pos[1], 1))
