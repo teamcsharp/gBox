@@ -582,3 +582,25 @@ tolerates trailing bytes, which this one does not.
 Two candidate paths for the next attempt: (a) find/construct two donor assets of exactly the same length for the
 in-place swap, or (b) make the hot-reload test on a file whose loader is table-driven (a texture/audio unit where the
 game reads by the table's sizes), verified with a frame difference.
+
+## Round 21 status (2026-11-09, ~19:25 CST): the roster bisect narrows; a working build was recreated
+
+Bisect results this round (each a fresh launch + RAM-driven walk):
+
+| Build (update ExeFS + …) | Files | Result |
+| --- | --- | --- |
+| single arc (`uPl00HeadLeonUsa.arc`) | 1 | **round runs** (round 17 evidence) |
+| non-body roster (all but the 9 body arcs) | 36 | hangs at `loading` |
+| heads only (9 `*Head*` arcs, no AcHead) | 9 | passes character select, reaches "Save successful", then **deadlocks** (0 FPS, frame nan — not a focus pause: `pauseWhenInBackground=false` already) |
+| full roster | 45 | `Unmapped ReadBlock @ 0x0 / 0x4` during load |
+| update ExeFS only | 0 | **round runs** (round 16 evidence) |
+
+So the bodies are not the only bad group: at least one of the other eight head donors breaks the save/load path too,
+while the Leon head donor alone is fine. Next: bisect the heads in pairs (Leon+Helena, then add Chris/Piers/Jake/
+Sherry/Ada) to find each bad donor — the single-arc mechanism is proven, so this is pure arbitration.
+
+Operational notes: the file `recovery-re6-update-v131072-20261109` (the first update-only build) had been removed from
+the worker cache and one donor file was missing from `recovery-re6-update-roster-v1`, so builds are not permanent —
+the working update-only build was recreated as `recovery-re6-update-only-20261109b`. Any test that depends on a build
+must recreate it or use the current one. `Yuzu`'s `pauseWhenInBackground` is already false, so a 0 FPS screen means the
+game deadlocked, not that the emulator paused.
