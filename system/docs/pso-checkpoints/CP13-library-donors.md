@@ -60,3 +60,35 @@ ends.
 
 That correction is the round's real result: it stops the next session from chasing a defect that the evidence never showed,
 and it narrows Cloud to "one of 18 lists, found by instrumenting the parser".
+
+## Round 86: Cloud narrowed to two lists, with the parser itself as the measuring instrument
+
+The round-85 correction named the next step ("instrument `NJ._polys` itself"). That is now done
+(`docs/research/pso-cp13-cloud-per-node.py`), and the result is unambiguous:
+
+| body | node 0 (`plist 0xd18`) | node 39 | the other 16 non-empty lists |
+|---|---|---|---|
+| **Daisy** (clean) | **ok**, 0 texture buckets | ok | ok |
+| **Cloud** | **FAILS**: `unpack_from ... 133472 (buffer 50460)` | **FAILS**: `... 64202` | **ok** - 16 lists parse (nodes 2, 4, 5, 8, 13, 14, 17, 25, 26, 28, 29, 34, 41, 42, 47, 56) |
+
+So Cloud's defect is confined to **the root's list and one other node's list**, and in both cases the walk leaves the payload
+after these chunk reads:
+
+```
+node 0:  0xd18 0xFF00 (null)  -> 0xd1c 0x0000 (null) -> 0xd1e 0x0d34 (0x34) -> 0xd22 0x1314 (type 0x14, size 0x4022)
+         ... jump to 0x8d6a (type 0x2e) ... then out of the 0xc51c payload at 0x20960
+node 39: 0x7b06/0x7b08 (nulls) -> 0x7b0a 0x20 -> 0x7b0e 0x30 ... out of the payload at 0xfaca
+```
+
+**What is *not* yet established - and deliberately not guessed this round:** whether the root's `plist` is genuinely a polygon
+list in Cloud's body or points into the model/pointer region. Two facts argue for the latter: the same offset in Daisy walks
+to an end chunk without trouble, and the values at `0xd22` (Cloud `0x1314`, Daisy `0x243c`) are exactly the *next node's
+polygon-list pointer* - i.e. this region looks like a pointer/model table, not a chunk stream. The round-85 lesson applies
+again: a walker that starts where a pointer happens to point proves nothing until it is shown that the pointer addresses a
+list. The next step is to compare the **model structs** of node 0 in both bodies word by word (vlist/plist/centre/radius) and
+to dump the bytes at each node's model, rather than at its `plist` target.
+
+The instrument is committed and reusable for any donor: `python pso-cp13-cloud-per-node.py <body.nj>`.
+
+**Unchanged this round:** Daisy remains a clean end-to-end donor (gate SAFE, 788 triangles, coherent render); Cloud remains the
+one donor whose body does not parse, now localised to two lists.
