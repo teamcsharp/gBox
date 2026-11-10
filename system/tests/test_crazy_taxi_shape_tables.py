@@ -86,3 +86,17 @@ def test_plyrA_name_table_maps_onto_polDC0_bank():
     idx = [names.index(n) for n in plyr]
     assert idx == list(range(1110, 1164))
     assert names[1136] == "MP_YH_plyrA_koshi.shp"
+
+
+def test_driver_pose_callers():
+    import sys; sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from gbox import crazy_taxi as ct
+    d = _dol()
+    assert ct.DRIVER_POSE_FN == 0x8005cd18
+    calls = ct.driver_pose_callers_from_dol(d)
+    assert [c["call"] for c in calls] == [0x8004c96c, 0x8004c9c4, 0x8004ca7c, 0x80050370, 0x800568d4,
+                                         0x80056938, 0x8006a808, 0x8006d4a0, 0x8007684c]
+    by = {c["call"]: c for c in calls}
+    assert by[0x8004c96c]["variant"] == 22 and by[0x8004c96c]["r3_global"] == 0x801fefa0
+    assert by[0x8004c9c4]["variant"] == 36 and by[0x8004c9c4]["r3_global"] == 0x801ff0c0
+    assert by[0x8007684c]["variant"] == 21 and by[0x8007684c]["r3_global"] == 0x801ff0d8

@@ -652,7 +652,7 @@ def driver_rig_from_dol(dol: bytes, span: tuple[int, int] = DRIVER_DRAW_VA) -> l
     return out
 
 
-DRIVER_POSE_FN = 0x8005cd1c      # (r3=pose/motion block, r4=variant, f1=time); owns r25/r26 of the draw span
+DRIVER_POSE_FN = 0x8005cd18      # true entry (stwu r1 at cd18; mflr at cd1c) (r3=pose/motion block, r4=variant, f1=time); owns r25/r26 of the draw span
 DRIVER_SLOT_PTRS_VA = 0x801ddc70  # u32[variant] -> 16 x u32 registry idx (r25 = table[r4])
 
 
@@ -667,6 +667,49 @@ def driver_slot_tables_from_dol(dol: bytes, count: int = 54) -> list[list[int]]:
         if q is None:
             break
         out.append(list(struct.unpack_from(">16I", dol, q)))
+    return out
+
+
+def driver_pose_callers_from_dol(dol: bytes, target: int = DRIVER_POSE_FN) -> list[dict]:
+    """Direct `bl DRIVER_POSE_FN` callers in .text. Per call site: containing fn, r4 variant when set by `li`
+    in the preceding 8 insns, and the global (lis hi + lwz disp) that supplies r3. r3 globals are runtime-filled
+    (zero in the DOL), so the motion-block loader is still unproven."""
+    hdr_off = struct.unpack_from(">18I", dol, 0); hdr_va = struct.unpack_from(">18I", dol, 0x48)
+    hdr_sz = struct.unpack_from(">18I", dol, 0x90)
+    out = []
+    for i in range(7):
+        o0, va0, sz = hdr_off[i], hdr_va[i], hdr_sz[i]
+        for k in range(0, sz - 3, 4):
+            x = struct.unpack_from(">I", dol, o0 + k)[0]
+            if x >> 26 != 18 or not x & 1 or x & 2:
+                continue
+            disp = x & 0x3FFFFFC
+            disp -= 0x4000000 if disp & 0x2000000 else 0
+            va = va0 + k
+            if va + disp != target:
+                continue
+            fn = None
+            for j in range(0, 1024):
+                if k - 4 * j < 0:
+                    break
+                if struct.unpack_from(">I", dol, o0 + k - 4 * j)[0] >> 16 == 0x9421:
+                    fn = va - 4 * j
+                    break
+            site = {"call": va, "fn": fn, "variant": None, "r3_global": None}
+            lis = {}
+            for j in range(8, 0, -1):
+                if k - 4 * j < 0:
+                    continue
+                y = struct.unpack_from(">I", dol, o0 + k - 4 * j)[0]
+                op, rd, ra, im = y >> 26, (y >> 21) & 31, (y >> 16) & 31, y & 0xFFFF
+                sim = im - 0x10000 if im & 0x8000 else im
+                if op == 15:
+                    lis[rd] = im << 16
+                elif op == 14 and rd == 4 and ra == 0:
+                    site["variant"] = sim
+                elif op == 32 and rd == 3 and ra in lis:
+                    site["r3_global"] = (lis[ra] + sim) & 0xFFFFFFFF
+            out.append(site)
     return out
 
 
