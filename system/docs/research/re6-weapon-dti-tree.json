@@ -1,0 +1,1838 @@
+{
+ "build": "main-061D2A06CD700785E987C42CE2D72231",
+ "source": "static emulation of DTI static-init 0x13c000-0x145000",
+ "entries": [
+  {
+   "name": "uSoundTrigger::cTriggerGroupManager",
+   "dti": "0x2950550",
+   "parent": "uSoundZoneBase::cGroupManager",
+   "size": "0x18",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uSoundTrigger",
+   "dti": "0x2950588",
+   "parent": "uSoundZoneBase",
+   "size": "0x50",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cSoundTriggerLayoutInfo",
+   "dti": "0x29505c0",
+   "parent": "cSoundLayoutInfo",
+   "size": "0x20",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cSoundTriggerListener",
+   "dti": "0x29505f8",
+   "parent": "cSoundZoneListener",
+   "size": "0x10",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "nSoundZoneBase::cSoundZoneContents",
+   "dti": "0x2950650",
+   "parent": null,
+   "size": "0xa",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cSoundZoneListener",
+   "dti": "0x2950688",
+   "parent": null,
+   "size": "0x10",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cSoundLayoutInfo",
+   "dti": "0x29506c0",
+   "parent": null,
+   "size": "0x6",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uSoundZoneBase::cGroupManager",
+   "dti": "0x29506f8",
+   "parent": null,
+   "size": "0x14",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uSoundZoneBase",
+   "dti": "0x2950730",
+   "parent": null,
+   "size": "0x3c",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWeapon",
+   "dti": "0x2950788",
+   "parent": null,
+   "size": "0xe1c",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uPlWeapon",
+   "dti": "0x29507e0",
+   "parent": "uWeapon",
+   "size": "0xe28",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpKnife",
+   "dti": "0x2950818",
+   "parent": "uPlWeapon",
+   "size": "0xe34",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpStunRod",
+   "dti": "0x2950850",
+   "parent": "uWpKnife",
+   "size": "0xe38",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpGun",
+   "dti": "0x2950888",
+   "parent": "uPlWeapon",
+   "size": "0x1348",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpShotGun",
+   "dti": "0x29508c0",
+   "parent": "uPlWeapon",
+   "size": "0x55f4",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpHandGunx2",
+   "dti": "0x29508f8",
+   "parent": "uPlWeapon",
+   "size": "0x186c",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpMachine",
+   "dti": "0x2950930",
+   "parent": "uPlWeapon",
+   "size": "0x27c8",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpAssaultRifle",
+   "dti": "0x2950968",
+   "parent": "uPlWeapon",
+   "size": "0x27c8",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpLauncher",
+   "dti": "0x29509a0",
+   "parent": "uPlWeapon",
+   "size": "0xe28",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpSniperRifle",
+   "dti": "0x29509d8",
+   "parent": "uPlWeapon",
+   "size": "0xe28",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpBow",
+   "dti": "0x2950a10",
+   "parent": "uPlWeapon",
+   "size": "0xe2c",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpGunEmp",
+   "dti": "0x2950a48",
+   "parent": "uPlWeapon",
+   "size": "0xe58",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpGunEmpRide",
+   "dti": "0x2950a80",
+   "parent": "uWpGunEmp",
+   "size": "0xf48",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpGunEmpJeep",
+   "dti": "0x2950ab8",
+   "parent": "uWpGunEmp",
+   "size": "0xf60",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpLuggage",
+   "dti": "0x2950af0",
+   "parent": "uPlWeapon",
+   "size": "0xe28",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpGadget",
+   "dti": "0x2950b28",
+   "parent": "uWpLuggage",
+   "size": "0xe28",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpShell",
+   "dti": "0x2950b60",
+   "parent": "uWeapon",
+   "size": "0xe58",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpShellLauncher",
+   "dti": "0x2950b98",
+   "parent": "uWpShell",
+   "size": "0xe5c",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpShellBowgun",
+   "dti": "0x2950bd0",
+   "parent": "uWpShell",
+   "size": "0xe78",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpSimpleSmWep",
+   "dti": "0x2950c08",
+   "parent": "uPlWeapon",
+   "size": "0xe38",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpShellHoming",
+   "dti": "0x2950c40",
+   "parent": "uWpShell",
+   "size": "0xe64",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpBlade",
+   "dti": "0x2950c78",
+   "parent": "uWpThrow",
+   "size": "0xeb0",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpTurret",
+   "dti": "0x2950cb0",
+   "parent": "uWpSimpleSmWep",
+   "size": "0xe38",
+   "id": "0x7012100",
+   "weapon_item": "0x121"
+  },
+  {
+   "name": "uWp1350",
+   "dti": "0x2950ce8",
+   "parent": "uWpSimpleSmWep",
+   "size": "0xf80",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWp1352",
+   "dti": "0x2950d20",
+   "parent": "uWpSimpleSmWep",
+   "size": "0xe38",
+   "id": "0x7012300",
+   "weapon_item": "0x123"
+  },
+  {
+   "name": "uWp1359",
+   "dti": "0x2950d58",
+   "parent": "uWpSimpleSmWep",
+   "size": "0xe38",
+   "id": "0x7012400",
+   "weapon_item": "0x124"
+  },
+  {
+   "name": "uWp1357",
+   "dti": "0x2950d90",
+   "parent": "uWpSimpleSmWep",
+   "size": "0xe38",
+   "id": "0x7012500",
+   "weapon_item": "0x125"
+  },
+  {
+   "name": "uWpShellRifle",
+   "dti": "0x2950dc8",
+   "parent": "uWpShell",
+   "size": "0xe5c",
+   "id": "0x7013800",
+   "weapon_item": "0x138"
+  },
+  {
+   "name": "uWp0000",
+   "dti": "0x2950e00",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWp1010",
+   "dti": "0x2950e38",
+   "parent": "uWpGun",
+   "size": "0x1348",
+   "id": "0x7010100",
+   "weapon_item": "0x101"
+  },
+  {
+   "name": "uWp1011",
+   "dti": "0x2950e70",
+   "parent": "uWpGun",
+   "size": "0x1348",
+   "id": "0x7010200",
+   "weapon_item": "0x102"
+  },
+  {
+   "name": "uWp1012",
+   "dti": "0x2950ea8",
+   "parent": "uWpHandGunx2",
+   "size": "0x186c",
+   "id": "0x7010300",
+   "weapon_item": "0x103"
+  },
+  {
+   "name": "uWp1020",
+   "dti": "0x2950ee0",
+   "parent": "uWpShotGun",
+   "size": "0x55f4",
+   "id": "0x7010400",
+   "weapon_item": "0x104"
+  },
+  {
+   "name": "uWp1021",
+   "dti": "0x2950f18",
+   "parent": "uWpShotGun",
+   "size": "0x55f4",
+   "id": "0x7010500",
+   "weapon_item": "0x105"
+  },
+  {
+   "name": "uWp1022",
+   "dti": "0x2950f50",
+   "parent": "uWpShotGun",
+   "size": "0x55f4",
+   "id": "0x7010600",
+   "weapon_item": "0x106"
+  },
+  {
+   "name": "uWp1030",
+   "dti": "0x2950f88",
+   "parent": "uWpGun",
+   "size": "0x1348",
+   "id": "0x7010700",
+   "weapon_item": "0x107"
+  },
+  {
+   "name": "uWp1031",
+   "dti": "0x2950fc0",
+   "parent": "uWpGun",
+   "size": "0x1348",
+   "id": "0x7010800",
+   "weapon_item": "0x108"
+  },
+  {
+   "name": "uWp1040",
+   "dti": "0x2950ff8",
+   "parent": "uWpSniperRifle",
+   "size": "0xe2c",
+   "id": "0x7010900",
+   "weapon_item": "0x109"
+  },
+  {
+   "name": "uWp1041",
+   "dti": "0x2951030",
+   "parent": "uWpSniperRifle",
+   "size": "0xe28",
+   "id": "0x7010a00",
+   "weapon_item": "0x10a"
+  },
+  {
+   "name": "uWp1050",
+   "dti": "0x2951068",
+   "parent": "uWpSniperRifle",
+   "size": "0xe28",
+   "id": "0x7010b00",
+   "weapon_item": "0x10b"
+  },
+  {
+   "name": "uWp1051",
+   "dti": "0x29510a0",
+   "parent": "uWpGun",
+   "size": "0x135c",
+   "id": "0x7012600",
+   "weapon_item": "0x126"
+  },
+  {
+   "name": "uWp1060",
+   "dti": "0x29510d8",
+   "parent": "uWpMachine",
+   "size": "0x27c8",
+   "id": "0x7010c00",
+   "weapon_item": "0x10c"
+  },
+  {
+   "name": "uWp1061",
+   "dti": "0x2951110",
+   "parent": "uWpMachine",
+   "size": "0x27c8",
+   "id": "0x7010d00",
+   "weapon_item": "0x10d"
+  },
+  {
+   "name": "uWp1062",
+   "dti": "0x2951148",
+   "parent": "uWpMachine",
+   "size": "0x27c8",
+   "id": "0x7010e00",
+   "weapon_item": "0x10e"
+  },
+  {
+   "name": "uWp1063",
+   "dti": "0x2951180",
+   "parent": "uWpMachine",
+   "size": "0x27c8",
+   "id": "0x7012800",
+   "weapon_item": "0x128"
+  },
+  {
+   "name": "uWp1070",
+   "dti": "0x29511b8",
+   "parent": "uWpAssaultRifle",
+   "size": "0x27c8",
+   "id": "0x7010f00",
+   "weapon_item": "0x10f"
+  },
+  {
+   "name": "uWp1071",
+   "dti": "0x29511f0",
+   "parent": "uWpAssaultRifle",
+   "size": "0x27c8",
+   "id": "0x7011000",
+   "weapon_item": "0x110"
+  },
+  {
+   "name": "uWp1072",
+   "dti": "0x2951228",
+   "parent": "uWpAssaultRifle",
+   "size": "0x27cc",
+   "id": "0x7011100",
+   "weapon_item": "0x111"
+  },
+  {
+   "name": "uWp1080",
+   "dti": "0x2951260",
+   "parent": "uWpLauncher",
+   "size": "0xe28",
+   "id": "0x7011200",
+   "weapon_item": "0x112"
+  },
+  {
+   "name": "uWp1090",
+   "dti": "0x2951298",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": "0x7011300",
+   "weapon_item": "0x113"
+  },
+  {
+   "name": "uWp1092",
+   "dti": "0x29512d0",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": "0x7011400",
+   "weapon_item": "0x114"
+  },
+  {
+   "name": "uWp1094",
+   "dti": "0x2951308",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": "0x7011500",
+   "weapon_item": "0x115"
+  },
+  {
+   "name": "uWp1096",
+   "dti": "0x2951340",
+   "parent": "uPlWeapon",
+   "size": "0xe2c",
+   "id": "0x7011600",
+   "weapon_item": "0x116"
+  },
+  {
+   "name": "uWp1100",
+   "dti": "0x2951378",
+   "parent": "uWpBow",
+   "size": "0xe2c",
+   "id": "0x7011700",
+   "weapon_item": "0x117"
+  },
+  {
+   "name": "uWp1110",
+   "dti": "0x29513b0",
+   "parent": "uWpKnife",
+   "size": "0xe34",
+   "id": "0x7011800",
+   "weapon_item": "0x118"
+  },
+  {
+   "name": "uWp1111",
+   "dti": "0x29513e8",
+   "parent": "uWpKnife",
+   "size": "0xe34",
+   "id": "0x7011900",
+   "weapon_item": "0x119"
+  },
+  {
+   "name": "uWp1112",
+   "dti": "0x2951420",
+   "parent": "uWpStunRod",
+   "size": "0xe38",
+   "id": "0x7011a00",
+   "weapon_item": "0x11a"
+  },
+  {
+   "name": "uWp1120",
+   "dti": "0x2951458",
+   "parent": "uWpLauncher",
+   "size": "0xe2c",
+   "id": "0x7011b00",
+   "weapon_item": "0x11b"
+  },
+  {
+   "name": "uWp1091",
+   "dti": "0x2951490",
+   "parent": "uWpBomb",
+   "size": "0xeac",
+   "id": "0x7011301",
+   "weapon_item": "0x113"
+  },
+  {
+   "name": "uWp1093",
+   "dti": "0x29514c8",
+   "parent": "uWpBomb",
+   "size": "0xeac",
+   "id": "0x7011401",
+   "weapon_item": "0x114"
+  },
+  {
+   "name": "uWp1095",
+   "dti": "0x2951500",
+   "parent": "uWpBomb",
+   "size": "0xeac",
+   "id": "0x7011501",
+   "weapon_item": "0x115"
+  },
+  {
+   "name": "uWp1097",
+   "dti": "0x2951538",
+   "parent": "uWpBomb",
+   "size": "0xeac",
+   "id": "0x7011601",
+   "weapon_item": "0x116"
+  },
+  {
+   "name": "uWp1130",
+   "dti": "0x2951570",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": "0x7012700",
+   "weapon_item": "0x127"
+  },
+  {
+   "name": "uWp1150",
+   "dti": "0x29515a8",
+   "parent": "uWpGunEmpJeep",
+   "size": "0xf60",
+   "id": "0x7011c00",
+   "weapon_item": "0x11c"
+  },
+  {
+   "name": "uWp1151",
+   "dti": "0x29515e0",
+   "parent": "uWpGunEmpRide",
+   "size": "0xf48",
+   "id": "0x7011e00",
+   "weapon_item": "0x11e"
+  },
+  {
+   "name": "uWp1152",
+   "dti": "0x2951618",
+   "parent": "uWpGunEmpRide",
+   "size": "0xf48",
+   "id": "0x7011e01",
+   "weapon_item": "0x11e"
+  },
+  {
+   "name": "uWp1153",
+   "dti": "0x2951650",
+   "parent": "uWpGunEmpRide",
+   "size": "0xf48",
+   "id": "0x7011e02",
+   "weapon_item": "0x11e"
+  },
+  {
+   "name": "uWp1160",
+   "dti": "0x2951688",
+   "parent": "uWpLuggage",
+   "size": "0xe28",
+   "id": "0x7011d00",
+   "weapon_item": "0x11d"
+  },
+  {
+   "name": "uWp1161",
+   "dti": "0x29516c0",
+   "parent": "uWpGadget",
+   "size": "0xe28",
+   "id": "0x7011f00",
+   "weapon_item": "0x11f"
+  },
+  {
+   "name": "uWp1163",
+   "dti": "0x29516f8",
+   "parent": "uWpGadget",
+   "size": "0xe28",
+   "id": "0x7011f01",
+   "weapon_item": "0x11f"
+  },
+  {
+   "name": "uWp1165",
+   "dti": "0x2951730",
+   "parent": "uWpGadget",
+   "size": "0xe28",
+   "id": "0x7011f02",
+   "weapon_item": "0x11f"
+  },
+  {
+   "name": "uWp1167",
+   "dti": "0x2951768",
+   "parent": "uWpGadget",
+   "size": "0xe28",
+   "id": "0x7011f03",
+   "weapon_item": "0x11f"
+  },
+  {
+   "name": "uWp1173",
+   "dti": "0x29517a0",
+   "parent": "uWpLuggage",
+   "size": "0xe28",
+   "id": "0x7012000",
+   "weapon_item": "0x120"
+  },
+  {
+   "name": "uWp1200",
+   "dti": "0x29517d8",
+   "parent": "uWpThrow",
+   "size": "0x41f0",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWp1201",
+   "dti": "0x2951810",
+   "parent": "uWeapon",
+   "size": "0xe30",
+   "id": "0x7015100",
+   "weapon_item": "0x151"
+  },
+  {
+   "name": "uWp1202",
+   "dti": "0x2951848",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": "0x7015200",
+   "weapon_item": "0x152"
+  },
+  {
+   "name": "uWp1203",
+   "dti": "0x2951880",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": "0x7015300",
+   "weapon_item": "0x153"
+  },
+  {
+   "name": "uWp1204",
+   "dti": "0x29518b8",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": "0x7015400",
+   "weapon_item": "0x154"
+  },
+  {
+   "name": "uWp1205",
+   "dti": "0x29518f0",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": "0x7015500",
+   "weapon_item": "0x155"
+  },
+  {
+   "name": "uWp1206",
+   "dti": "0x2951928",
+   "parent": "uWpKnife",
+   "size": "0xe34",
+   "id": "0x7015600",
+   "weapon_item": "0x156"
+  },
+  {
+   "name": "uWp1207",
+   "dti": "0x2951960",
+   "parent": "uWpKnife",
+   "size": "0xe34",
+   "id": "0x7015700",
+   "weapon_item": "0x157"
+  },
+  {
+   "name": "uWp1208",
+   "dti": "0x2951998",
+   "parent": "uWpKnife",
+   "size": "0xe34",
+   "id": "0x7015800",
+   "weapon_item": "0x158"
+  },
+  {
+   "name": "uWp1209",
+   "dti": "0x29519d0",
+   "parent": "uWpThrow",
+   "size": "0xeb0",
+   "id": "0x7015900",
+   "weapon_item": "0x159"
+  },
+  {
+   "name": "uWp1210",
+   "dti": "0x2951a08",
+   "parent": "uWpThrow",
+   "size": "0xeb0",
+   "id": "0x7015a00",
+   "weapon_item": "0x15a"
+  },
+  {
+   "name": "uWp1212",
+   "dti": "0x2951a40",
+   "parent": "uWpThrow",
+   "size": "0xeb0",
+   "id": "0x7015b00",
+   "weapon_item": "0x15b"
+  },
+  {
+   "name": "uWp1213",
+   "dti": "0x2951a78",
+   "parent": "uWpThrow",
+   "size": "0xeb0",
+   "id": "0x7015d00",
+   "weapon_item": "0x15d"
+  },
+  {
+   "name": "uWp1214",
+   "dti": "0x2951ab0",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": "0x7015e00",
+   "weapon_item": "0x15e"
+  },
+  {
+   "name": "uWp1215",
+   "dti": "0x2951ae8",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": "0x7015f00",
+   "weapon_item": "0x15f"
+  },
+  {
+   "name": "uWp1216",
+   "dti": "0x2951b20",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": "0x7016000",
+   "weapon_item": "0x160"
+  },
+  {
+   "name": "uWp1217",
+   "dti": "0x2951b58",
+   "parent": "uWeapon",
+   "size": "0xe24",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWp1218",
+   "dti": "0x2951b90",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": "0x7016200",
+   "weapon_item": "0x162"
+  },
+  {
+   "name": "uWp1219",
+   "dti": "0x2951bc8",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": "0x7016300",
+   "weapon_item": "0x163"
+  },
+  {
+   "name": "uWp1220",
+   "dti": "0x2951c00",
+   "parent": "uWpThrow",
+   "size": "0xeb0",
+   "id": "0x7016400",
+   "weapon_item": "0x164"
+  },
+  {
+   "name": "uWp1221",
+   "dti": "0x2951c38",
+   "parent": "uWpBlade",
+   "size": "0xeb0",
+   "id": "0x7016500",
+   "weapon_item": "0x165"
+  },
+  {
+   "name": "uWp1222",
+   "dti": "0x2951c70",
+   "parent": "uWpThrow",
+   "size": "0xeb0",
+   "id": "0x7016a00",
+   "weapon_item": "0x16a"
+  },
+  {
+   "name": "uWp1223",
+   "dti": "0x2951ca8",
+   "parent": "uWp1244",
+   "size": "0xebc",
+   "id": "0x7016600",
+   "weapon_item": "0x166"
+  },
+  {
+   "name": "uWp1244",
+   "dti": "0x2951ce0",
+   "parent": "uWpThrow",
+   "size": "0xeb8",
+   "id": "0x701b700",
+   "weapon_item": "0x1b7"
+  },
+  {
+   "name": "uWp1224",
+   "dti": "0x2951d18",
+   "parent": "uWpThrow",
+   "size": "0xeb0",
+   "id": "0x7016f00",
+   "weapon_item": "0x16f"
+  },
+  {
+   "name": "uWp1225",
+   "dti": "0x2951d50",
+   "parent": "uWpThrow",
+   "size": "0xeb0",
+   "id": "0x701b000",
+   "weapon_item": "0x1b0"
+  },
+  {
+   "name": "uWp1226",
+   "dti": "0x2951d88",
+   "parent": "uWp1220",
+   "size": "0xeb0",
+   "id": "0x7016b00",
+   "weapon_item": "0x16b"
+  },
+  {
+   "name": "uWp1227",
+   "dti": "0x2951dc0",
+   "parent": "uWpThrow",
+   "size": "0xeb0",
+   "id": "0x701b100",
+   "weapon_item": "0x1b1"
+  },
+  {
+   "name": "uWp1228",
+   "dti": "0x2951df8",
+   "parent": "uWpBlade",
+   "size": "0xeb0",
+   "id": "0x7016d00",
+   "weapon_item": "0x16d"
+  },
+  {
+   "name": "uWp1229",
+   "dti": "0x2951e30",
+   "parent": "uWpThrow",
+   "size": "0xeb0",
+   "id": "0x701b300",
+   "weapon_item": "0x1b3"
+  },
+  {
+   "name": "uWp1230",
+   "dti": "0x2951e68",
+   "parent": "uWpThrow",
+   "size": "0xeb4",
+   "id": "0x7016800",
+   "weapon_item": "0x168"
+  },
+  {
+   "name": "uWp1231",
+   "dti": "0x2951ea0",
+   "parent": "uWp1220",
+   "size": "0xeb0",
+   "id": "0x7016900",
+   "weapon_item": "0x169"
+  },
+  {
+   "name": "uWp1232",
+   "dti": "0x2951ed8",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": "0x7016700",
+   "weapon_item": "0x167"
+  },
+  {
+   "name": "uWp1239",
+   "dti": "0x2951f10",
+   "parent": "uWpBlade",
+   "size": "0xeb0",
+   "id": "0x701b200",
+   "weapon_item": "0x1b2"
+  },
+  {
+   "name": "uWp1240",
+   "dti": "0x2951f48",
+   "parent": "uWp1230",
+   "size": "0xeb4",
+   "id": "0x7016c00",
+   "weapon_item": "0x16c"
+  },
+  {
+   "name": "uWp1241",
+   "dti": "0x2951f80",
+   "parent": "uWpBlade",
+   "size": "0xeb0",
+   "id": "0x7016e00",
+   "weapon_item": "0x16e"
+  },
+  {
+   "name": "uWp1245",
+   "dti": "0x2951fb8",
+   "parent": "uWpBlade",
+   "size": "0xeb0",
+   "id": "0x701b500",
+   "weapon_item": "0x1b5"
+  },
+  {
+   "name": "uWp1246",
+   "dti": "0x2951ff0",
+   "parent": "uWpShellBowgun",
+   "size": "0xe78",
+   "id": "0x701b600",
+   "weapon_item": "0x1b6"
+  },
+  {
+   "name": "uWp1300",
+   "dti": "0x2952028",
+   "parent": "uWpShellBowgun",
+   "size": "0xe78",
+   "id": "0x7013100",
+   "weapon_item": "0x131"
+  },
+  {
+   "name": "uWp1301",
+   "dti": "0x2952060",
+   "parent": "uWpShellBowgun",
+   "size": "0xe7c",
+   "id": "0x7013200",
+   "weapon_item": "0x132"
+  },
+  {
+   "name": "uWp1302",
+   "dti": "0x2952098",
+   "parent": "uWpShellLauncher",
+   "size": "0xe5c",
+   "id": "0x7013300",
+   "weapon_item": "0x133"
+  },
+  {
+   "name": "uWp1303",
+   "dti": "0x29520d0",
+   "parent": "uWpShellLauncher",
+   "size": "0xe5c",
+   "id": "0x7013400",
+   "weapon_item": "0x134"
+  },
+  {
+   "name": "uWp1304",
+   "dti": "0x2952108",
+   "parent": "uWpShellLauncher",
+   "size": "0xe5c",
+   "id": "0x7013500",
+   "weapon_item": "0x135"
+  },
+  {
+   "name": "uWp1305",
+   "dti": "0x2952140",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7013600",
+   "weapon_item": "0x136"
+  },
+  {
+   "name": "uWp1307",
+   "dti": "0x2952178",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7017000",
+   "weapon_item": "0x170"
+  },
+  {
+   "name": "uWp1308",
+   "dti": "0x29521b0",
+   "parent": "uWpShellRifle",
+   "size": "0xe5c",
+   "id": "0x7017100",
+   "weapon_item": "0x171"
+  },
+  {
+   "name": "uWp1309",
+   "dti": "0x29521e8",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWp1313",
+   "dti": "0x2952220",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7017600",
+   "weapon_item": "0x176"
+  },
+  {
+   "name": "uWp1315",
+   "dti": "0x2952258",
+   "parent": "uWpShell",
+   "size": "0xe5c",
+   "id": "0x7017700",
+   "weapon_item": "0x177"
+  },
+  {
+   "name": "uWp1316",
+   "dti": "0x2952290",
+   "parent": "uWpShell",
+   "size": "0xe5c",
+   "id": "0x7017800",
+   "weapon_item": "0x178"
+  },
+  {
+   "name": "uWp1317",
+   "dti": "0x29522c8",
+   "parent": "uWpBomb",
+   "size": "0xeac",
+   "id": "0x7018200",
+   "weapon_item": "0x182"
+  },
+  {
+   "name": "uWp1318",
+   "dti": "0x2952300",
+   "parent": "uWpBomb",
+   "size": "0xeac",
+   "id": "0x7017900",
+   "weapon_item": "0x179"
+  },
+  {
+   "name": "uWp1319",
+   "dti": "0x2952338",
+   "parent": "uWpBomb",
+   "size": "0xeac",
+   "id": "0x7017a00",
+   "weapon_item": "0x17a"
+  },
+  {
+   "name": "uWp1320",
+   "dti": "0x2952370",
+   "parent": "uWpShell",
+   "size": "0xe5c",
+   "id": "0x7013700",
+   "weapon_item": "0x137"
+  },
+  {
+   "name": "uWp1321",
+   "dti": "0x29523a8",
+   "parent": "uWpShell",
+   "size": "0xe64",
+   "id": "0x7017b00",
+   "weapon_item": "0x17b"
+  },
+  {
+   "name": "uWp1322",
+   "dti": "0x29523e0",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7013900",
+   "weapon_item": "0x139"
+  },
+  {
+   "name": "uWp1353",
+   "dti": "0x2952418",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7013c00",
+   "weapon_item": "0x13c"
+  },
+  {
+   "name": "uWp1358",
+   "dti": "0x2952450",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7013e00",
+   "weapon_item": "0x13e"
+  },
+  {
+   "name": "uWp1360",
+   "dti": "0x2952488",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7013d00",
+   "weapon_item": "0x13d"
+  },
+  {
+   "name": "uWp1323",
+   "dti": "0x29524c0",
+   "parent": "uWpShell",
+   "size": "0xe5c",
+   "id": "0x7017c00",
+   "weapon_item": "0x17c"
+  },
+  {
+   "name": "uWp1324",
+   "dti": "0x29524f8",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7017e00",
+   "weapon_item": "0x17e"
+  },
+  {
+   "name": "uWp1327",
+   "dti": "0x2952530",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWp1328",
+   "dti": "0x2952568",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7018400",
+   "weapon_item": "0x184"
+  },
+  {
+   "name": "uWp1330",
+   "dti": "0x29525a0",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7017d00",
+   "weapon_item": "0x17d"
+  },
+  {
+   "name": "uWp1331",
+   "dti": "0x29525d8",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7018500",
+   "weapon_item": "0x185"
+  },
+  {
+   "name": "uWp1332",
+   "dti": "0x2952610",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7018100",
+   "weapon_item": "0x181"
+  },
+  {
+   "name": "uWp1333",
+   "dti": "0x2952648",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7013a00",
+   "weapon_item": "0x13a"
+  },
+  {
+   "name": "uWp1334",
+   "dti": "0x2952680",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7018600",
+   "weapon_item": "0x186"
+  },
+  {
+   "name": "uWp1335",
+   "dti": "0x29526b8",
+   "parent": "uWpShell",
+   "size": "0xe5c",
+   "id": "0x7018700",
+   "weapon_item": "0x187"
+  },
+  {
+   "name": "uWp1339",
+   "dti": "0x29526f0",
+   "parent": "uWpShell",
+   "size": "0xe68",
+   "id": "0x7018b00",
+   "weapon_item": "0x18b"
+  },
+  {
+   "name": "uWp1341",
+   "dti": "0x2952728",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7018d00",
+   "weapon_item": "0x18d"
+  },
+  {
+   "name": "uWp1342",
+   "dti": "0x2952760",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7018e00",
+   "weapon_item": "0x18e"
+  },
+  {
+   "name": "uWp1343",
+   "dti": "0x2952798",
+   "parent": "uWpShell",
+   "size": "0xe5c",
+   "id": "0x7018f00",
+   "weapon_item": "0x18f"
+  },
+  {
+   "name": "uWp1344",
+   "dti": "0x29527d0",
+   "parent": "uWeapon",
+   "size": "0xe1c",
+   "id": "0x701a900",
+   "weapon_item": "0x1a9"
+  },
+  {
+   "name": "uWp1345",
+   "dti": "0x2952808",
+   "parent": "uWpBomb",
+   "size": "0xeac",
+   "id": "0x7019000",
+   "weapon_item": "0x190"
+  },
+  {
+   "name": "uWp1346",
+   "dti": "0x2952840",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7019100",
+   "weapon_item": "0x191"
+  },
+  {
+   "name": "uWp1347",
+   "dti": "0x2952878",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7019200",
+   "weapon_item": "0x192"
+  },
+  {
+   "name": "uWp1348",
+   "dti": "0x29528b0",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7019300",
+   "weapon_item": "0x193"
+  },
+  {
+   "name": "uWp1349",
+   "dti": "0x29528e8",
+   "parent": "uWp1343",
+   "size": "0xe5c",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWp1351",
+   "dti": "0x2952920",
+   "parent": "uWpShellHoming",
+   "size": "0xef4",
+   "id": "0x7013b00",
+   "weapon_item": "0x13b"
+  },
+  {
+   "name": "uWp1354",
+   "dti": "0x2952958",
+   "parent": "uWp1343",
+   "size": "0xe5c",
+   "id": "0x7019500",
+   "weapon_item": "0x195"
+  },
+  {
+   "name": "uWp1355",
+   "dti": "0x2952990",
+   "parent": "uWpShell",
+   "size": "0xe5c",
+   "id": "0x7019600",
+   "weapon_item": "0x196"
+  },
+  {
+   "name": "uWp1356",
+   "dti": "0x29529c8",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7019700",
+   "weapon_item": "0x197"
+  },
+  {
+   "name": "uWp1361",
+   "dti": "0x2952a00",
+   "parent": "uWpShellHoming",
+   "size": "0xe68",
+   "id": "0x7019900",
+   "weapon_item": "0x199"
+  },
+  {
+   "name": "uWp1362",
+   "dti": "0x2952a38",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7019a00",
+   "weapon_item": "0x19a"
+  },
+  {
+   "name": "uWp1363",
+   "dti": "0x2952a70",
+   "parent": "uWpShellHoming",
+   "size": "0xe68",
+   "id": "0x7019800",
+   "weapon_item": "0x198"
+  },
+  {
+   "name": "uWp1364",
+   "dti": "0x2952aa8",
+   "parent": "uWpThrow",
+   "size": "0xeb0",
+   "id": "0x7019b00",
+   "weapon_item": "0x19b"
+  },
+  {
+   "name": "uWp1365",
+   "dti": "0x2952ae0",
+   "parent": "uWpShell",
+   "size": "0xe5c",
+   "id": "0x7019c00",
+   "weapon_item": "0x19c"
+  },
+  {
+   "name": "uWp1366",
+   "dti": "0x2952b18",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7019d00",
+   "weapon_item": "0x19d"
+  },
+  {
+   "name": "uWp1378",
+   "dti": "0x2952b50",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x701a400",
+   "weapon_item": "0x1a4"
+  },
+  {
+   "name": "uWp1367",
+   "dti": "0x2952b88",
+   "parent": "uWp1343",
+   "size": "0xe5c",
+   "id": "0x7019e00",
+   "weapon_item": "0x19e"
+  },
+  {
+   "name": "uWp1368",
+   "dti": "0x2952bc0",
+   "parent": "uWpShell",
+   "size": "0xe9c",
+   "id": "0x7013f00",
+   "weapon_item": "0x13f"
+  },
+  {
+   "name": "uWp1369",
+   "dti": "0x2952bf8",
+   "parent": "uWpShell",
+   "size": "0xe68",
+   "id": "0x7014000",
+   "weapon_item": "0x140"
+  },
+  {
+   "name": "uWp1370",
+   "dti": "0x2952c30",
+   "parent": "uWpShell",
+   "size": "0xe5c",
+   "id": "0x7019f00",
+   "weapon_item": "0x19f"
+  },
+  {
+   "name": "uWp1371",
+   "dti": "0x2952c68",
+   "parent": "uWpShell",
+   "size": "0xe5c",
+   "id": "0x701a000",
+   "weapon_item": "0x1a0"
+  },
+  {
+   "name": "uWp1379",
+   "dti": "0x2952ca0",
+   "parent": "uWp1371",
+   "size": "0xe5c",
+   "id": "0x701a200",
+   "weapon_item": "0x1a2"
+  },
+  {
+   "name": "uWp1380",
+   "dti": "0x2952cd8",
+   "parent": "uWpShell",
+   "size": "0xe60",
+   "id": "0x701a300",
+   "weapon_item": "0x1a3"
+  },
+  {
+   "name": "uWp1374",
+   "dti": "0x2952d10",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x701a500",
+   "weapon_item": "0x1a5"
+  },
+  {
+   "name": "uWp1385",
+   "dti": "0x2952d48",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x701a700",
+   "weapon_item": "0x1a7"
+  },
+  {
+   "name": "uWp1377",
+   "dti": "0x2952d80",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x701a600",
+   "weapon_item": "0x1a6"
+  },
+  {
+   "name": "uWp1372",
+   "dti": "0x2952db8",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7014100",
+   "weapon_item": "0x141"
+  },
+  {
+   "name": "uWp1373",
+   "dti": "0x2952df0",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x701a100",
+   "weapon_item": "0x1a1"
+  },
+  {
+   "name": "uWp1375",
+   "dti": "0x2952e28",
+   "parent": "uWpShell",
+   "size": "0xe58",
+   "id": "0x7013a01",
+   "weapon_item": "0x13a"
+  },
+  {
+   "name": "uWp1383",
+   "dti": "0x2952e60",
+   "parent": "uWp1223",
+   "size": "0xebc",
+   "id": "0x701b900",
+   "weapon_item": "0x1b9"
+  },
+  {
+   "name": "uWp1381",
+   "dti": "0x2952e98",
+   "parent": "uWp1343",
+   "size": "0xe5c",
+   "id": "0x701ba00",
+   "weapon_item": "0x1ba"
+  },
+  {
+   "name": "uWp1384",
+   "dti": "0x2952ed0",
+   "parent": "uWp1343",
+   "size": "0xe5c",
+   "id": "0x701bb00",
+   "weapon_item": "0x1bb"
+  },
+  {
+   "name": "uWp1386",
+   "dti": "0x2952f08",
+   "parent": "uWp1313",
+   "size": "0xe58",
+   "id": "0x701a800",
+   "weapon_item": "0x1a8"
+  },
+  {
+   "name": "uWp1387",
+   "dti": "0x2952f40",
+   "parent": "uWpBomb",
+   "size": "0xeac",
+   "id": "0x701bc00",
+   "weapon_item": "0x1bc"
+  },
+  {
+   "name": "uWp1350::cPreLockInfo",
+   "dti": "0x2952f80",
+   "parent": null,
+   "size": "0x6",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uLaserSight_enemy",
+   "dti": "0x2952fd0",
+   "parent": null,
+   "size": "0x168",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpBomb",
+   "dti": "0x2953028",
+   "parent": "uWeapon",
+   "size": "0xeac",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uWpThrow",
+   "dti": "0x2953060",
+   "parent": "uWpBomb",
+   "size": "0xeb0",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "uZombieIntel",
+   "dti": "0x29530b8",
+   "parent": null,
+   "size": "0x1dc",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAct_SpecialWalkCtrl",
+   "dti": "0x2953110",
+   "parent": "cAction",
+   "size": "0xf0",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAction",
+   "dti": "0x2953170",
+   "parent": null,
+   "size": "0xc",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cEventAct",
+   "dti": "0x29531a8",
+   "parent": "cAction",
+   "size": "0xe",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cActionManager",
+   "dti": "0x29531e0",
+   "parent": null,
+   "size": "0x1e",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cActionButton",
+   "dti": "0x2953238",
+   "parent": null,
+   "size": "0x30",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcAISubsystem",
+   "dti": "0x2953290",
+   "parent": null,
+   "size": "0x18e",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcAISubsystem::BehaviorCommand",
+   "dti": "0x29532c8",
+   "parent": null,
+   "size": "0x14",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcAISubsystem::ActionCommandIdle",
+   "dti": "0x2953300",
+   "parent": null,
+   "size": "0x28",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcAISubsystem::ActionCommandMove",
+   "dti": "0x2953338",
+   "parent": null,
+   "size": "0x3c",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcAISubsystem::ActionCommandLadder",
+   "dti": "0x2953370",
+   "parent": null,
+   "size": "0x12",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcAISubsystem::ActionCommandDoor",
+   "dti": "0x29533a8",
+   "parent": null,
+   "size": "0x10",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcAISubsystem::ActionCommandJump",
+   "dti": "0x29533e0",
+   "parent": null,
+   "size": "0x1c",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcAISubsystem::ActionCommandShoot",
+   "dti": "0x2953418",
+   "parent": null,
+   "size": "0x16",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcAISubsystem::ActionCommandBlow",
+   "dti": "0x2953450",
+   "parent": null,
+   "size": "0x12",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcAISubsystem::ActionCommandIntoCover",
+   "dti": "0x2953488",
+   "parent": null,
+   "size": "0x14",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler",
+   "dti": "0x29534c0",
+   "parent": null,
+   "size": "0x30c",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::MsgLandscape",
+   "dti": "0x29534f8",
+   "parent": null,
+   "size": "0x6",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::MsgFSMOrderID",
+   "dti": "0x2953530",
+   "parent": null,
+   "size": "0x4",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::MsgOrderGotoPos",
+   "dti": "0x2953568",
+   "parent": null,
+   "size": "0x10",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::MsgGotoArrivalEvent",
+   "dti": "0x29535a0",
+   "parent": null,
+   "size": "0x20",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::MsgGotoArrival",
+   "dti": "0x29535d8",
+   "parent": null,
+   "size": "0x4",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::MsgBodyStatus",
+   "dti": "0x2953610",
+   "parent": null,
+   "size": "0x6",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::MsgStrategyPoint",
+   "dti": "0x2953648",
+   "parent": null,
+   "size": "0xc",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::MsgActionDir",
+   "dti": "0x2953680",
+   "parent": null,
+   "size": "0x4",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::MsgSetTargetModelWithNearest",
+   "dti": "0x29536b8",
+   "parent": null,
+   "size": "0x4",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::MsgBehaviorWait",
+   "dti": "0x29536f0",
+   "parent": null,
+   "size": "0x4",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::Msg_mTargetModelProp",
+   "dti": "0x2953728",
+   "parent": null,
+   "size": "0x20",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::ListenerFor_mTargetModelProp",
+   "dti": "0x2953760",
+   "parent": null,
+   "size": "0x4",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::Msg_mFollowTargetModelProp",
+   "dti": "0x2953798",
+   "parent": null,
+   "size": "0x20",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::ListenerFor_mFollowTargetModelProp",
+   "dti": "0x29537d0",
+   "parent": null,
+   "size": "0x4",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::Msg_mFollowStartRadProp",
+   "dti": "0x2953808",
+   "parent": null,
+   "size": "0x20",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::ListenerFor_mFollowStartRadProp",
+   "dti": "0x2953840",
+   "parent": null,
+   "size": "0x4",
+   "id": null,
+   "weapon_item": null
+  },
+  {
+   "name": "cAINpcInternalStateHandler::Msg_mFollowEndRadProp",
+   "dti": "0x2953878",
+   "parent": null,
+   "size": "0x20",
+   "id": null,
+   "weapon_item": null
+  }
+ ]
+}
