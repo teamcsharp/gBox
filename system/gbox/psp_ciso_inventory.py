@@ -58,6 +58,24 @@ def sfo(b):
         r[k] = struct.unpack('<I', v[:4])[0] if fmt == 0x404 else v.rstrip(b'\0').decode('utf8', 'replace')
     return r
 
+def read_members(c, path):
+    """Walk the ISO9660 tree; returns [(member, lba, size), ...]."""
+    pvd = c.read(16 * 2048, 2048)
+    assert pvd[1:6] == b'CD001', 'no PVD'
+    root = pvd[156:190]
+    el, = struct.unpack('<I', root[2:6]); sz, = struct.unpack('<I', root[10:14])
+    files = []
+    walk(c, el, sz, '', files)
+    return files
+
+def read_member(c, path, member, size=None):
+    files = read_members(c, path)
+    up = member.upper()
+    for full, el, sz in files:
+        if full.upper() == up:
+            return c.read(el * 2048, size or sz)
+    raise KeyError(member)
+
 def main(path, outp):
     c = Ciso(path)
     pvd = c.read(16 * 2048, 2048)
