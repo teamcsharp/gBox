@@ -2054,16 +2054,64 @@ party together by moving P1 and letting P2 follow the same waypoints at a shorte
 `pso-gc-pioneer2-rooms.md` gained the boundary-zone section and a table of every guild candidate with its status, so the
 next round does not re-walk what is already settled.
 
+## Round 40 (2026-11-10) — P6b's backend: an editorial layer over the map writer
+
+The guild hunt has eaten a dozen rounds, so this one built the piece that does not depend on it: **P6b's editor backend**.
+
+`gbox.pso_map_write` already does the hard part -- 68-byte placement records, the three set archives, a build that
+produces a bootable image. What an editor page was missing is the *editorial* shape, now in `gbox/pso_editor.py` (+8
+tests):
+
+| function | what it gives a page |
+|---|---|
+| `sets(disc)` | every editable set -- **574 on this disc** -- as `{name, kind, where}` |
+| `kind_of(name)` | which kind a set holds, from its name: `...o.dat`/`...d.dat` objects, `...e.dat` enemies, `....evt` events |
+| `placements(disc, set)` | the set's records as rows: `index, kind, class_index, class, x, y, z, angle` |
+| `edit(op, set, **fields)` | one normalised writer op, refusing a missing field by name |
+| `edits(*ops)` | a validated list, ready for the writer |
+| `preview(disc, ops)` | applies the edits **in memory** and reports the files touched and the writer's expectations |
+| `build(...)` | delegates to `pso_map_write.build` |
+
+Live against the disc: `sets()` found 574 editable sets, and `placements()` listed `map_ancient01_00ad.dat`'s **226
+records** with their kinds (item x3 at the first indices, and so on) -- so a page can show an area's layout today.
+
+### Two things the tests caught
+
+* my first `sets()` filter was `endswith("d.dat")`, which silently dropped every `...o.dat` object set -- the very sets
+  an editor is most likely to want. The suffix *is* the kind, and `kind_of` now says so in one place, with a test that
+  names all four spellings.
+* `placements()` originally read a `kind_category`/`cls` field that `pso_setdata.records` does not produce; the records
+  carry `kind` (word 0) plus `x/y/z` floats, and the class index comes from `pso_setdata.kind_class`. Fixed before it
+  could mislead a UI.
+
+### Where P1 is
+
+P1 stands in room 40 in front of the **red-cross medical door**; the `TObjCityDoor_Med` at `(194,-93)` did lead out of the
+lobby (reached from `(222,65)` via `(203,-32)`), so **two of room 10's four doors are now walked**:
+
+* `TObjCityDoor_Warp` `(254,25)` -> room 40,
+* `TObjCityDoor_Med` `(194,-93)` -> room 40 (the medical exterior -- the frame shows the red-cross door),
+* `TObjCityDoor_Guild` `(185,173)` -- inert,
+* `TObjCityDoor_Shop` `(-165,148)` -- not yet walked.
+
+Room 40 is therefore the hospital *and* the teleporter room, which is why both doors lead there.
+
+### Next
+
+1. The guild is not behind any walked door yet; `TObjCityDoor_Shop` `(-165,148)` is the last room-10 door untested.
+2. P6b can now be a page: list a set's placements, edit one, preview, build. The remaining work is UI, not format.
+3. P1's field leg, P6a's in-game proof and P7a's rigging stay open.
+
 ## 7. Next
 
-1. **Reach `TObjCityDoor_Med` at (194,-93) in room 10** by approaching it from outside the boundary band
-   (95-142, 50-152) rather than from `(142,152)` -- skimming the band flips the room under the walker. Then do the
-   same for `TObjCityDoor_Shop` at (-165,148); one of them is the guild.
-2. **Route on player 1.** P2 could not converge over four legs inside `(240-310, 180-220)` while P1 walked the same
-   city with the same walker; treat P2 as short-move-only until its control path is understood.
-3. Then bring the party together, take the quest, and let its warp carry the party to Forest 1 -- P1's accept test,
-   then P6a's in-game proof, P6b's editor page, P7a's rigging and the demo -> route fixture.
+1. **P6b is now a UI job, not a format job.** `gbox.pso_editor` lists the disc's 574 editable sets, a set's records,
+   normalises an edit, previews it in memory and delegates the build. A page over those four calls is the remaining
+   work.
+2. **The last untested room-10 door** is `TObjCityDoor_Shop` at (-165,148). `Warp` and `Med` both lead to room 40
+   (the hospital and the teleporter room share it); `Guild` at (185,173) is inert.
+3. **P1's field leg, P6a's in-game proof and P7a's rigging** remain open; the field leg still needs the guild's quest
+   warp, and every other route to a floor has been ruled out.
 
-New this round: the lobby/room-20 boundary is a **band**, not a line -- the room id flips either way while the
-character is inside (95-142, 50-152) -- and room 30 borders room 20 around (-169,46). Both are in
-`docs/research/pso-gc-pioneer2-rooms.md`, together with the status of every guild candidate.
+Landed this round: `gbox/pso_editor.py` (+8 tests) -- `sets`, `kind_of`, `placements`, `edit`, `edits`, `preview`,
+`build`. Verified live: 574 sets discovered, 226 records listed for `map_ancient01_00ad.dat` with kinds and
+coordinates.
