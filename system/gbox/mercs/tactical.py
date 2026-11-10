@@ -40,7 +40,7 @@ import time
 import zlib
 from urllib.parse import quote
 
-from . import enemy_kinds
+from . import enemy_identity, enemy_kinds
 
 FORMAT = 1
 MAX_HZ = 10.0                     # frames a second at most while a round runs
@@ -60,6 +60,7 @@ CLIMB_SLOPE, CLIMB_JOIN = 2.5, 0.8        # wide, is a ladder or a drop (RE5's n
 ROUTE_EVERY_S = 1.0               # the fallback's route lengths on the navmesh at most this often (A* is ~ms)
 ROUTE_TRIES = 3                   # ...for this many of the nearest bonuses in a straight line
 MAX_ROUTE, MAX_FLAGS, MAX_NOTE = 64, 8, 80
+TIER_RANK = {t: i for i, t in enumerate(enemy_identity.TIERS)}   # the legend lists bosses first
 
 
 def units_for(title: str) -> str:
@@ -395,7 +396,7 @@ def portrait_hint(aim, classes: dict) -> dict | None:
     dist = aim.get("dist")
     if not isinstance(dist, (int, float)) or not PORTRAIT_DIST[0] <= dist <= PORTRAIT_DIST[1]:
         return None
-    cls = aim.get("class") or classes.get(aim.get("target"))
+    cls = classes.get(aim.get("target")) or aim.get("class")   # the frame's key first (RE4: the identity key)
     if not enemy_kinds.valid_class(cls):
         return None
     return {"class": cls, "dist": round(float(dist))}
@@ -550,9 +551,12 @@ class Tracker:
                 continue                                    # the dead, and the crows (1 health)
             eid = _id(e.get("slot", e.get("id")))
             row = {"id": eid, "pos": pos}
-            cls = e.get("class")
-            if enemy_kinds.valid_class(cls):                # what it is (gbox/mercs/enemy_kinds.py): the map's legend
-                row.update(cls=cls, kind=enemy_kinds.name(self.title, cls))
+            who = enemy_identity.resolve(self.title, e)     # who it is (gbox/mercs/enemy_identity.py): the key the
+            cls = who.get("cls")                            # bot reads (RE4: from its type byte and health), its name,
+            if enemy_kinds.valid_class(cls):                # tier and how sure the name is - the map's labels, legend
+                label = who["name"] if who["confirmed"] or not who["known"] else who["name"] + "?"   # and sidebar
+                row.update(cls=cls, kind=label, name=label, tier=who["tier"], level=who["level"],
+                           weight=who["weight"])
                 classes[e.get("ptr", eid)] = classes[eid] = cls
             if enemy_kinds.threat(hp_max):
                 row["threat"] = enemy_kinds.threat(hp_max)
@@ -591,13 +595,19 @@ class Tracker:
         kinds: dict = {}
         for row in out["enemies"]:
             if row.get("cls"):
-                k = kinds.setdefault(row["cls"], {"name": row["kind"], "count": 0})
+                base = enemy_identity.identity(self.title, row["cls"])   # the legend names the type, not a variant
+                name = row["kind"] if base is None else base["name"] + ("" if base["confirmed"] else "?")
+                k = kinds.setdefault(row["cls"], {"name": name, "count": 0, "tier": row.get("tier", "normal"),
+                                                  "level": row.get("level", "unconfirmed")})
                 k["count"] += 1
                 if row.get("threat"):
                     k["threat"] = row["threat"]
+                if TIER_RANK.get(row.get("tier"), 9) < TIER_RANK.get(k["tier"], 9):
+                    k["tier"] = row["tier"]                  # a variant that is a heavier tier (Torch Majini)
         if kinds:
-            out["kinds"] = kinds
-        hint = portrait_hint((raw_plan or {}).get("aim"), classes)
+            out["kinds"] = dict(sorted(kinds.items(), key=lambda kv: (TIER_RANK.get(kv[1]["tier"], 9),
+                                                                      -kv[1]["count"])))
+        hint =portrait_hint((raw_plan or {}).get("aim"), classes)
         if hint:
             out["portrait"] = hint
         out["bonuses"] = [dict(b, taken=False) for b in standing.values()] + \

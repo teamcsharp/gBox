@@ -36,16 +36,30 @@ def snap(enemies):
 
 
 def test_frames_carry_each_enemys_type_threat_and_the_legend_counts():
+    # operator 2026-11-10 (the live legend read "uEm20 x1 high threat" and two "Majini" rows): every row and the
+    # legend carry enemy_identity's name and tier; an unknown class keeps its class name, tiered by its health
     tr = T.Tracker(RE5)
     f = tr.frame(snap([{"slot": 0, "ptr": 0x10, "pos": (100.0, 0.0, 0.0), "hp": 700, "hp_max": 700, "class": "uEm10"},
                        {"slot": 1, "ptr": 0x20, "pos": (300.0, 0.0, 0.0), "hp": 700, "hp_max": 700, "class": "uEm10"},
-                       {"slot": 2, "ptr": 0x30, "pos": (900.0, 0.0, 0.0), "hp": 4000, "hp_max": 4000, "class": "uEm23"}]),
+                       {"slot": 2, "ptr": 0x30, "pos": (900.0, 0.0, 0.0), "hp": 4000, "hp_max": 4000, "class": "uEm23"},
+                       {"slot": 3, "ptr": 0x40, "pos": (500.0, 0.0, 0.0), "hp": 700, "hp_max": 700, "class": "uEm11"},
+                       {"slot": 4, "ptr": 0x50, "pos": (600.0, 0.0, 0.0), "hp": 900, "hp_max": 900, "class": "uEm99"}]),
                  {}, "playing", now=1.0)
     rows = {r["id"]: r for r in f["enemies"]}
-    assert rows[0]["cls"] == "uEm10" and rows[0]["kind"] == "Majini" and rows[0]["threat"] == "low"
-    assert rows[2]["kind"] == "uEm23" and rows[2]["threat"] == "high"
-    assert f["kinds"] == {"uEm10": {"name": "Majini", "count": 2, "threat": "low"},
-                          "uEm23": {"name": "uEm23", "count": 1, "threat": "high"}}
+    assert rows[0]["cls"] == "uEm10" and rows[0]["kind"] == rows[0]["name"] == "Majini" and rows[0]["threat"] == "low"
+    assert rows[0]["tier"] == "normal" and rows[0]["level"] == "verified"
+    assert rows[2]["name"] == "Gatling Gun Majini (yellow)" and rows[2]["tier"] == "boss" and rows[2]["weight"] == 3.0
+    assert rows[2]["threat"] == "high"
+    assert rows[3]["name"] == "Majini (female)"                    # uEm10 and uEm11 no longer read alike
+    assert rows[4]["name"] == "uEm99" and rows[4]["tier"] == "normal"
+    assert f["kinds"] == {"uEm23": {"name": "Gatling Gun Majini", "count": 1, "threat": "high", "tier": "boss",
+                                    "level": "matched"},
+                          "uEm10": {"name": "Majini", "count": 2, "threat": "low", "tier": "normal", "level": "verified"},
+                          "uEm11": {"name": "Majini (female)", "count": 1, "threat": "low", "tier": "normal",
+                                    "level": "verified"},
+                          "uEm99": {"name": "uEm99", "count": 1, "threat": "low", "tier": "normal",
+                                    "level": "unconfirmed"}}
+    assert list(f["kinds"])[0] == "uEm23"                           # bosses lead the legend
     assert "portrait" not in f                                      # no aim: no portrait moment
 
 

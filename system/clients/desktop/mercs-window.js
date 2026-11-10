@@ -41,6 +41,7 @@
     const titles=new Map();let mapSid=null,mapKind=null,liveChoices=[];   // session titles, the mounted renderer, latest live rows
     const extra=[];                                                       // extra concurrent panes [{sid,kind,map,...}]
     const api=(path,body,method)=>bridge.api(path,body,method);
+    const image=typeof bridge.image==='function'?path=>bridge.image(path):undefined;   // enemy portraits (data URLs)
     const message=value=>{$('status').textContent=value||'';};
     const renderers={mercs:tactical,pso,generic};
     function sessionRow(sid){return sid?{session_id:sid,title:titles.get(sid)||''}:null;}
@@ -60,7 +61,7 @@
         :kind==='pso'?'Live PSO map - both players, motion trails, the MOVING/STUCK banner and the run plan. Double-click an open spot to send P1; click a gate to open it; Resume autonomous when idle.'
         :'Hover to hold the map; wheel to zoom; drag to pan. Click a bonus or recovery item to request collection.';
       if(!sid||!rend)return;
-      $('map').innerHTML=rend.html(sid);map=rend.mount(doc,{sid,api});
+      $('map').innerHTML=rend.html(sid);map=rend.mount(doc,{sid,api,image});
     }
     // ---- concurrent extra panes: watch several titles' maps AT ONCE (e.g. a Mercs round + psoTime) ----
     // Pane 0 is the existing #map/#sessions above (keeps the rotation-follow). Each extra pane picks its
@@ -87,7 +88,7 @@
       pane.note.textContent=kind==='pso'?'PSO map — live. Double-click to send P1; click a gate to open it.'
         :kind==='mercs'?'Tactical map — live. Click a bonus or recovery item to request collection.'
         :'Generic top-down view — positions + motion.';
-      pane.host.innerHTML=rend.html(sid);pane.map=rend.mount(doc,{sid,api});
+      pane.host.innerHTML=rend.html(sid);pane.map=rend.mount(doc,{sid,api,image});
     }
     function addPane(sid){
       const wrap=doc.createElement('div');wrap.className='pane';

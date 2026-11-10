@@ -1,0 +1,1301 @@
+{
+"title": "010018100CD46000",
+"title_name": "Resident Evil 5",
+"tiers": {
+"boss": 3.0,
+"dangerous": 2.0,
+"normal": 1.0,
+"harmless": 0.0
+},
+"enemies": [
+{
+"cls": "uEm22",
+"name": "Chainsaw Majini",
+"aliases": [
+"Chainsaw Man"
+],
+"tier": "boss",
+"danger": "One chainsaw hit kills outright, whatever your health.",
+"weak_point": "head",
+"tactics": [
+"Grenade or flash to stun, head shots, then melee - only once the saw has stopped (it fakes stuns)",
+"A rocket launcher or magnum ends it fastest",
+"It jumps to the upper level: the stairs are no refuge",
+"Keep a long escape line and never let it close"
+],
+"hp": {
+"red": 7000,
+"blue": 15000
+},
+"stages": [
+"Ship Deck"
+],
+"level": "matched",
+"confirmed": true,
+"evidence": "Ship Deck's set list 7 = the guide's 7 chainsaw drops; live maximum 7000 / 15000 (the guide's red 7000, blue 13500-15000)",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/chainsaw-majini",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html",
+"https://steamcommunity.com/sharedfiles/filedetails/?id=1224696225"
+],
+"variants": [
+{
+"name": "Chainsaw Majini (red)",
+"hp_max": 7000
+},
+{
+"name": "Chainsaw Majini (blue)",
+"hp_max": 15000
+},
+{
+"name": "Chainsaw Majini (blue)",
+"hp_max": 13500
+}
+],
+"ram_class": true,
+"kind": "heavy",
+"weight": 3.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm22.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm20",
+"name": "Executioner Majini",
+"aliases": [
+"Executioner",
+"Axe Man"
+],
+"tier": "boss",
+"danger": "A giant axe whose swing takes most of your health; it shrugs off normal hits.",
+"weak_point": "head (extra damage); stun it, then melee",
+"tactics": [
+"Stun it - flash grenade, an explosive barrel, head shots - then finish with a magnum or melee",
+"Never stand in front of the overhead swing: circle and keep range",
+"Proximity mines on its path",
+"Public Assembly: only one is alive at a time (kills 20, 50, 70); the bus is a safe spot"
+],
+"hp": {
+"Public Assembly": 8000,
+"Prison": 15000
+},
+"stages": [
+"Public Assembly",
+"Prison"
+],
+"level": "verified",
+"confirmed": true,
+"evidence": "a live frame identified uEm20 in Public Assembly as the executioner (re5-enemy-cast.md); set lists 3 (Public Assembly) and 2 (Prison) = the guide's; live maximum 8000 / 15000 = the guide's",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/executioner",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html",
+"https://steamcommunity.com/sharedfiles/filedetails/?id=1224696225"
+],
+"variants": [
+{
+"name": "Executioner Majini",
+"hp_max": 8000
+},
+{
+"name": "Executioner Majini (Prison)",
+"hp_max": 15000
+}
+],
+"ram_class": true,
+"kind": "heavy",
+"weight": 3.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm20.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm26",
+"name": "Executioner Majini (red)",
+"aliases": [
+"Red Executioner"
+],
+"tier": "boss",
+"danger": "The Prison's red Executioner: the same axe, far more health.",
+"weak_point": "head; the pink zone on its back",
+"tactics": [
+"Stun it, then a magnum or melee",
+"Shoot the pink zone on its back",
+"Mines on its path; never in front of the swing",
+"Prison: one at the start, then at kills 50 and 120"
+],
+"hp": 20000,
+"stages": [
+"Prison"
+],
+"level": "matched",
+"confirmed": true,
+"evidence": "Prison's set list 3 = the guide's 3 red Executioners; live maximum 20000; the live crop shows the red figure",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/executioner",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html",
+"https://steamcommunity.com/sharedfiles/filedetails/?id=1224696225"
+],
+"variants": [],
+"ram_class": true,
+"kind": "heavy",
+"weight": 3.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm26.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm23",
+"name": "Gatling Gun Majini",
+"aliases": [
+"Gatling Majini"
+],
+"tier": "boss",
+"danger": "Constant gatling fire shreds your health at any range once it has a line on you.",
+"weak_point": "head (a stun); the backpack is bulletproof",
+"tactics": [
+"Break line of sight, use cover, keep moving",
+"Magnum head shot, then melee while it is stunned",
+"Proximity mines - it shrugs off incendiary and electric rounds",
+"Missile Area: kills 20, 60 (yellow) and 90 (red)"
+],
+"hp": {
+"yellow": 4000,
+"red": 6000
+},
+"stages": [
+"Missile Area"
+],
+"level": "matched",
+"confirmed": true,
+"evidence": "Missile Area's set list 3 = the guide's 3 (two yellow, one red); live maximum 4000 / 6000",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/gatling-gun-majini",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html",
+"https://steamcommunity.com/sharedfiles/filedetails/?id=1224696225"
+],
+"variants": [
+{
+"name": "Gatling Gun Majini (yellow)",
+"hp_max": 4000
+},
+{
+"name": "Gatling Gun Majini (red)",
+"hp_max": 6000
+}
+],
+"ram_class": true,
+"kind": "heavy",
+"weight": 3.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm23.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm24",
+"name": "Giant Majini",
+"aliases": [
+"Giant"
+],
+"tier": "boss",
+"danger": "Nearly 3 m tall with a spiked mace; its shout calls the others.",
+"weak_point": "torso and legs (the mask is invulnerable)",
+"tactics": [
+"Shoot the legs or torso until it kneels, then melee",
+"Shotgun or magnum from range",
+"Fire hurts it"
+],
+"hp": 4000,
+"stages": [
+"Village",
+"Ancient Ruins"
+],
+"level": "matched",
+"confirmed": true,
+"evidence": "set lists Village 4 and Ancient Ruins 5 = the guide's Giants; live maximum 4000",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/giant-majini",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html"
+],
+"variants": [],
+"ram_class": true,
+"kind": "heavy",
+"weight": 3.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm24.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm92",
+"name": "Jill Valentine (enemy)",
+"aliases": [],
+"tier": "boss",
+"danger": "Mind-controlled Jill: fast acrobatic melee and gunfire.",
+"weak_point": "the device on her chest",
+"tactics": [
+"Restrain her, then hit the device on her chest",
+"Do not trade fire with her body"
+],
+"hp": null,
+"stages": [
+"Public Assembly (another mode)"
+],
+"level": "unconfirmed",
+"confirmed": false,
+"evidence": "its model (em9200, rendered) is a blonde woman in a black suit; one placement in a Public Assembly set",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/jill-valentine-enemy"
+],
+"variants": [],
+"ram_class": true,
+"kind": "boss",
+"weight": 3.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm92.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm34",
+"name": "Reaper",
+"aliases": [],
+"tier": "boss",
+"danger": "Its scythe grab can kill outright; it spits acid and its shell deflects bullets.",
+"weak_point": "the pale sacs on its belly (and back)",
+"tactics": [
+"Wait until it rears up, then shoot the belly sac",
+"A flash grenade stuns it",
+"Stay at range: it can strike while dying",
+"The Mines: kills 30, 70 and 90"
+],
+"hp": 1500,
+"stages": [
+"The Mines"
+],
+"level": "matched",
+"confirmed": true,
+"evidence": "The Mines' set list 3 = the guide's 3 Reapers; live maximum 1500",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/reaper",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html",
+"https://steamcommunity.com/sharedfiles/filedetails/?id=1224696225"
+],
+"variants": [],
+"ram_class": true,
+"kind": "heavy",
+"weight": 3.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm34.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm30",
+"name": "Adjule",
+"aliases": [],
+"tier": "dangerous",
+"danger": "A Plaga dog: fast lunges, worst in tight spaces.",
+"weak_point": "its split head",
+"tactics": [
+"Shotgun as it leaps",
+"Fight it in open ground"
+],
+"hp": null,
+"stages": [
+"The Mines (Reunion)"
+],
+"level": "inferred",
+"confirmed": false,
+"evidence": "its model (em3000, rendered) is a black dog with bone spikes; placed only by The Mines' Reunion set (13)",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/adjule"
+],
+"variants": [],
+"ram_class": true,
+"kind": "animal",
+"weight": 2.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm30.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm13",
+"name": "Big Man Majini",
+"aliases": [
+"Big Man"
+],
+"tier": "dangerous",
+"danger": "Huge strength, punches and grabs; gets straight back up and cannot be knocked down while his arms are up.",
+"weak_point": "head and legs (no armour); melee while he kneels",
+"tactics": [
+"Keep your distance: shotgun or magnum",
+"Stagger him with a leg or head shot, then melee while he kneels",
+"Never trade blows while his arms are raised"
+],
+"hp": 4000,
+"stages": [
+"The Mines",
+"Prison"
+],
+"level": "matched",
+"confirmed": true,
+"evidence": "Prison's set list has 14 = the guide's 14 Big Men; The Mines 7 (the guide's 2 + 3 by region, one in the upper tunnel, more waiting); live maximum 4000 = the guide's",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/big-man-majini",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html"
+],
+"variants": [],
+"ram_class": true,
+"spawns": "by region (The Mines: A 2, B 3, +1 upper tunnel); Prison 14 through the round",
+"kind": "majini",
+"weight": 2.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm13.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm0d",
+"name": "Cephalo",
+"aliases": [
+"Cephalo Plaga"
+],
+"tier": "dangerous",
+"danger": "A Majini's head bursts into a whipping Plaga with long reach and more power than its host.",
+"weak_point": "light (a flash grenade kills it)",
+"tactics": [
+"Flash grenade",
+"Shotgun at close range",
+"Avoid head criticals where they hatch (Missile Area, Ship Deck late in the round)"
+],
+"hp": 600,
+"stages": [
+"Prison",
+"Public Assembly"
+],
+"level": "inferred",
+"confirmed": false,
+"evidence": "seen live only on town-Majini stages (Prison, Public Assembly), maximum 600; its model (em0d00, rendered) is a whip-tentacle Plaga; not in the set lists (it hatches from a host)",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/cephalo",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html"
+],
+"variants": [],
+"ram_class": true,
+"kind": "plaga",
+"weight": 2.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm0d.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm0e",
+"name": "Duvalia",
+"aliases": [],
+"tier": "dangerous",
+"danger": "A Plaga with an armoured shell that opens at close range and swallows you.",
+"weak_point": "the parasite while the shell is open; light",
+"tactics": [
+"Flash grenade",
+"Shoot it while the shell is open",
+"Keep your distance"
+],
+"hp": 600,
+"stages": [
+"Ancient Ruins",
+"Experimental Facility"
+],
+"level": "inferred",
+"confirmed": false,
+"evidence": "its model (em0e00, rendered) is a great fleshy petal mass - the Duvalia's open shell; seen live in the Experimental Facility at 600 (the guide gives Ancient Ruins hosts, ~7000 with the host)",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/duvalia",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html"
+],
+"variants": [],
+"ram_class": true,
+"kind": "plaga",
+"weight": 2.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm0e.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm0c",
+"name": "Kipepeo",
+"aliases": [],
+"tier": "dangerous",
+"danger": "A flying Plaga whose tail whip hits very hard.",
+"weak_point": "light (a flash grenade)",
+"tactics": [
+"Flash grenade",
+"Shotgun or machine gun while it hovers slowly"
+],
+"hp": 1000,
+"stages": [
+"Village"
+],
+"level": "matched",
+"confirmed": true,
+"evidence": "seen live only in the Village (the guide's only Kipepeo stage, 0-6 a round), maximum 1000 = the guide's, and its model (em0c00, rendered) is a winged flyer; not in the set lists (they hatch)",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/kipepeo",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html"
+],
+"variants": [],
+"ram_class": true,
+"kind": "plaga",
+"weight": 2.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm0c.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm32",
+"name": "Licker β",
+"aliases": [
+"Licker Beta",
+"Licker"
+],
+"tier": "dangerous",
+"danger": "Climbs walls and ceilings, pounces in packs and lashes with a long tongue.",
+"weak_point": "its heart, once it is flipped over",
+"tactics": [
+"Head shot to flip it, then stomp or stab the exposed heart",
+"Group them and grenade from range",
+"Never stand inside tongue reach - they hunt by sound"
+],
+"hp": 900,
+"stages": [
+"Experimental Facility"
+],
+"level": "verified",
+"confirmed": true,
+"evidence": "named live (enemy_kinds); set list 72 = the guide's 30 + 42 by region; live maximum 900",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/licker-beta",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html"
+],
+"variants": [],
+"ram_class": true,
+"kind": "bow",
+"weight": 2.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm32.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm21",
+"name": "Agitator Majini",
+"aliases": [
+"Megaphone Majini"
+],
+"tier": "normal",
+"danger": "The tougher megaphone Majini who rouses the crowd; no extra attack of his own.",
+"weak_point": "head",
+"tactics": [
+"Head shots, then melee",
+"He has twice a Majini's health: a shotgun or magnum shot first"
+],
+"hp": 1400,
+"stages": [
+"Public Assembly"
+],
+"level": "matched",
+"confirmed": true,
+"evidence": "one per Public Assembly round in its set list, live maximum 1400 = the guide's Agitator (1400), and its model (em2100, rendered) is the Agitator's sunglasses and dark shirt; the bot lists the class among the dynamite carriers (re5_switch.DYNAMITE_CLASSES)",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/agitator-majini",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html"
+],
+"variants": [],
+"ram_class": true,
+"kind": "majini",
+"weight": 1.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm21.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm14",
+"name": "Base Majini",
+"aliases": [
+"Rocket Launcher Majini",
+"Armored Majini",
+"Stun-rod Majini"
+],
+"tier": "normal",
+"danger": "Armed soldiers in squads: handguns, grenades, stun rods and rocket launchers; armour and shields soak shots.",
+"weak_point": "the unarmoured head and face",
+"tactics": [
+"Aim at exposed parts - armour deflects",
+"Kill the rocket-launcher soldiers on sight (kills 10-80)",
+"Strafe sideways when one aims a rocket"
+],
+"hp": 800,
+"stages": [
+"Experimental Facility"
+],
+"level": "matched",
+"confirmed": true,
+"evidence": "the Experimental Facility's set list 77 = the guide's 60 by region + 9 rocket soldiers + 8 at the start; live maximum 800 (the guide's Base Majini)",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/base-majini",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html"
+],
+"variants": [],
+"ram_class": true,
+"kind": "majini",
+"notes": "the rocket-launcher variant (1000 health) is the stage's heavy, nine of them by kill count",
+"weight": 1.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm14.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm0b",
+"name": "Bui Kichwa",
+"aliases": [],
+"tier": "normal",
+"danger": "Small spider-like Plagas in packs that leap and cling.",
+"weak_point": "any hit",
+"tactics": [
+"One bullet or a stomp",
+"A flash grenade clears a group",
+"Keep moving so they cannot cling"
+],
+"hp": 200,
+"stages": [
+"Village"
+],
+"level": "matched",
+"confirmed": true,
+"evidence": "the Village set list 26 = the guide's 10 + 16 Bui Kichwa; live maximum 200 = the guide's; the live crop shows a many-legged crawler (the bot's LOW_BODIES note calls it a dog)",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/bui-kichwa",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html"
+],
+"variants": [],
+"ram_class": true,
+"kind": "plaga",
+"weight": 1.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm0b.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm10",
+"name": "Majini",
+"aliases": [
+"Town Majini",
+"Kijuju Majini",
+"Dynamite Majini",
+"Bowgun Majini"
+],
+"tier": "normal",
+"danger": "Comes in crowds; one holds you while the others swing, and the throwers (dynamite, bottles, crossbows) hit from range.",
+"weak_point": "head (stagger) or a knee",
+"tactics": [
+"Head or knee shot to stagger, then melee (+5 s)",
+"Shoot a lit dynamite stick in his hand: it takes out the group",
+"A clump: grenade or an explosive barrel",
+"Head criticals can hatch a Cephalo - a knee shot and melee avoids it"
+],
+"hp": 800,
+"stages": [
+"Public Assembly",
+"The Mines",
+"Missile Area",
+"Ship Deck",
+"Prison"
+],
+"level": "verified",
+"confirmed": true,
+"evidence": "named live (gbox/mercs/enemy_kinds.py); live maximum 800, the guide's male Majini; the bulk of every town stage's set list (Public Assembly 121, Prison 130 ...)",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/town-majini",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html"
+],
+"variants": [],
+"ram_class": true,
+"kind": "majini",
+"weight": 1.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm10.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm11",
+"name": "Majini (female)",
+"aliases": [
+"Town Majini",
+"Female Majini"
+],
+"tier": "normal",
+"danger": "The town women: fast grabs in a crowd; some carry bottles to throw.",
+"weak_point": "head or a knee",
+"tactics": [
+"Stagger with a head or knee shot, then melee",
+"The red- and green-dress women at the start hatch a Cephalo half the time: kill them cleanly"
+],
+"hp": 700,
+"stages": [
+"Public Assembly"
+],
+"level": "verified",
+"confirmed": true,
+"evidence": "named live (enemy_kinds); live maximum 700 (the guide's women); Public Assembly's set list 24",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/town-majini",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html"
+],
+"variants": [],
+"ram_class": true,
+"kind": "majini",
+"weight": 1.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm11.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm12",
+"name": "Wetlands Majini",
+"aliases": [
+"Ndipaya Majini",
+"Torch Majini",
+"Shield Majini"
+],
+"tier": "normal",
+"danger": "Long jumps and high endurance; spears and explosive arrows from range, shield bearers block shots.",
+"weak_point": "head; the legs around a shield",
+"tactics": [
+"Head shot, then melee",
+"Kill the explosive-arrow archers first",
+"A shield bearer: shoot his legs or wait for the shield to drop",
+"Torch Majini (1500): shotgun or magnum, a flash ready for its Plaga"
+],
+"hp": 700,
+"stages": [
+"Village",
+"Ancient Ruins"
+],
+"level": "matched",
+"confirmed": true,
+"evidence": "the Village (125) and Ancient Ruins (144) set lists' bulk class, the only two stages the guide gives Wetlands Majini; live maximum 700 / 900 / 600 (the guide's 670-700, 900 at the Village start, 620 archers)",
+"sources": [
+"https://www.evilresource.com/resident-evil-5/enemies/wetlands-majini",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html"
+],
+"variants": [
+{
+"name": "Torch Majini",
+"hp_max": 1500,
+"tier": "dangerous"
+}
+],
+"ram_class": true,
+"kind": "majini",
+"weight": 1.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm12.png",
+"portrait_source": "model"
+},
+{
+"cls": "uEm62",
+"name": "Chicken",
+"aliases": [
+"Critter",
+"Crow"
+],
+"tier": "harmless",
+"danger": "Harmless.",
+"weak_point": "any hit",
+"tactics": [
+"Never a target while anything else lives"
+],
+"hp": 1,
+"stages": [
+"every stage"
+],
+"level": "matched",
+"confirmed": true,
+"evidence": "its model (em6200, rendered) is a chicken; health 1; one in every stage's set list and two in The Mines = the guide's chickens",
+"sources": [
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html",
+"https://steamcommunity.com/sharedfiles/filedetails/?id=1224696225"
+],
+"variants": [],
+"ram_class": true,
+"kind": "animal",
+"weight": 0.0,
+"portrait": "/api/mercs/enemies/010018100CD46000/uEm62.png",
+"portrait_source": "model"
+}
+],
+"stages": [
+{
+"stage": "Public Assembly",
+"code": "s400",
+"start_s": 510,
+"kills": 150,
+"time_bonuses": [
+[
+60,
+"the middle building"
+]
+],
+"items": [
+"two flash grenades in the east building"
+],
+"notes": "one Executioner alive at a time; the red- and green-dress women at the start hatch a Cephalo half the time",
+"heavies": [
+{
+"kills": 20,
+"cls": "uEm20",
+"name": "Executioner Majini",
+"tier": "boss",
+"where": "SW fence"
+},
+{
+"kills": 50,
+"cls": "uEm20",
+"name": "Executioner Majini",
+"tier": "boss",
+"where": "east fence behind the platform"
+},
+{
+"kills": 70,
+"cls": "uEm20",
+"name": "Executioner Majini",
+"tier": "boss",
+"where": "NW fence"
+}
+]
+},
+{
+"stage": "The Mines",
+"code": "s401",
+"start_s": 480,
+"kills": 150,
+"time_bonuses": [
+[
+30,
+"by the bottom tunnel's combo chest (south)"
+],
+[
+60,
+"the middle"
+],
+[
+30,
+"a dead-end tunnel"
+]
+],
+"notes": "Big Men by region (A 2, B 3, +1 in the upper tunnel); two chickens",
+"heavies": [
+{
+"kills": 30,
+"cls": "uEm34",
+"name": "Reaper",
+"tier": "boss",
+"where": "SW high platform at the back of the bottom tunnel"
+},
+{
+"kills": 70,
+"cls": "uEm34",
+"name": "Reaper",
+"tier": "boss",
+"where": "east platform, middle of the bottom tunnel"
+},
+{
+"kills": 90,
+"cls": "uEm34",
+"name": "Reaper",
+"tier": "boss",
+"where": "high NE platform"
+}
+]
+},
+{
+"stage": "Village",
+"code": "s402",
+"start_s": 540,
+"kills": 150,
+"time_bonuses": [
+[
+30,
+"east high wall"
+],
+[
+30,
+"east high wall"
+],
+[
+60,
+"the south building"
+]
+],
+"notes": "Bui Kichwa A 10 / B 16; 0-6 Kipepeo at random; the bridge splits the regions",
+"heavies": [
+{
+"kills": 20,
+"cls": "uEm24",
+"name": "Giant Majini",
+"tier": "boss",
+"where": "east high wall by the 30 s statues"
+},
+{
+"kills": 40,
+"cls": "uEm24",
+"name": "Giant Majini",
+"tier": "boss",
+"where": "SE front gate"
+},
+{
+"kills": 60,
+"cls": "uEm24",
+"name": "Giant Majini",
+"tier": "boss",
+"where": "east hill wall, opposite the combo chest"
+},
+{
+"kills": 70,
+"cls": "uEm24",
+"name": "Giant Majini",
+"tier": "boss",
+"where": null
+}
+]
+},
+{
+"stage": "Ancient Ruins",
+"code": "s403",
+"start_s": 630,
+"kills": 150,
+"time_bonuses": [
+[
+90,
+"SW, with a combo bonus"
+],
+[
+30,
+"east tunnel"
+],
+[
+30,
+"behind the SE wall"
+],
+[
+90,
+"the staircase"
+]
+],
+"notes": "Duvalia hosts: the explosive archer below the 90 s stairs and the west / east Wetlands Majini at kills 1-20",
+"heavies": [
+{
+"kills": 0,
+"cls": "uEm24",
+"name": "Giant Majini",
+"tier": "boss",
+"where": "SW near the 90 s statue"
+},
+{
+"kills": 10,
+"cls": "uEm24",
+"name": "Giant Majini",
+"tier": "boss",
+"where": null
+},
+{
+"kills": 40,
+"cls": "uEm24",
+"name": "Giant Majini",
+"tier": "boss",
+"where": null
+},
+{
+"kills": 60,
+"cls": "uEm24",
+"name": "Giant Majini",
+"tier": "boss",
+"where": null
+},
+{
+"kills": 70,
+"cls": "uEm24",
+"name": "Giant Majini",
+"tier": "boss",
+"where": null
+},
+{
+"kills": 0,
+"cls": "uEm12",
+"name": "Wetlands Majini",
+"tier": "normal",
+"where": "Torch Majini, east tunnel"
+},
+{
+"kills": 10,
+"cls": "uEm12",
+"name": "Wetlands Majini",
+"tier": "normal",
+"where": "Torch Majini"
+},
+{
+"kills": 40,
+"cls": "uEm12",
+"name": "Wetlands Majini",
+"tier": "normal",
+"where": "Torch Majini"
+},
+{
+"kills": 60,
+"cls": "uEm12",
+"name": "Wetlands Majini",
+"tier": "normal",
+"where": "Torch Majini"
+},
+{
+"kills": 70,
+"cls": "uEm12",
+"name": "Wetlands Majini",
+"tier": "normal",
+"where": "Torch Majini"
+},
+{
+"kills": 80,
+"cls": "uEm12",
+"name": "Wetlands Majini",
+"tier": "normal",
+"where": "Torch Majini"
+},
+{
+"kills": 90,
+"cls": "uEm12",
+"name": "Wetlands Majini",
+"tier": "normal",
+"where": "Torch Majini"
+}
+]
+},
+{
+"stage": "Experimental Facility",
+"code": "s404",
+"start_s": 540,
+"kills": 150,
+"time_bonuses": [
+[
+90,
+"the bottom floor"
+],
+[
+60,
+"the floor-1 platform"
+]
+],
+"notes": "Licker β A 30 / B 42; the high area is good for combos",
+"heavies": [
+{
+"kills": 10,
+"cls": "uEm14",
+"name": "Base Majini",
+"tier": "normal",
+"where": "Rocket Launcher Majini"
+},
+{
+"kills": 30,
+"cls": "uEm14",
+"name": "Base Majini",
+"tier": "normal",
+"where": "Rocket Launcher Majini"
+},
+{
+"kills": 40,
+"cls": "uEm14",
+"name": "Base Majini",
+"tier": "normal",
+"where": "Rocket Launcher Majini"
+},
+{
+"kills": 60,
+"cls": "uEm14",
+"name": "Base Majini",
+"tier": "normal",
+"where": "Rocket Launcher Majini"
+},
+{
+"kills": 60,
+"cls": "uEm14",
+"name": "Base Majini",
+"tier": "normal",
+"where": "Rocket Launcher Majini"
+},
+{
+"kills": 70,
+"cls": "uEm14",
+"name": "Base Majini",
+"tier": "normal",
+"where": "Rocket Launcher Majini"
+},
+{
+"kills": 70,
+"cls": "uEm14",
+"name": "Base Majini",
+"tier": "normal",
+"where": "Rocket Launcher Majini"
+},
+{
+"kills": 80,
+"cls": "uEm14",
+"name": "Base Majini",
+"tier": "normal",
+"where": "Rocket Launcher Majini"
+},
+{
+"kills": 80,
+"cls": "uEm14",
+"name": "Base Majini",
+"tier": "normal",
+"where": "Rocket Launcher Majini"
+}
+]
+},
+{
+"stage": "Missile Area",
+"code": "s405",
+"start_s": 660,
+"kills": 150,
+"time_bonuses": [
+[
+30,
+"the middle platform"
+],
+[
+30,
+"the south walkway"
+],
+[
+90,
+"the 3rd floor"
+]
+],
+"notes": "head criticals hatch Cephalos here: avoid head hits",
+"heavies": [
+{
+"kills": 20,
+"cls": "uEm23",
+"name": "Gatling Gun Majini",
+"tier": "boss",
+"where": "yellow, the ledge above the north tall ladder"
+},
+{
+"kills": 60,
+"cls": "uEm23",
+"name": "Gatling Gun Majini",
+"tier": "boss",
+"where": "yellow, the central shaft doorway"
+},
+{
+"kills": 90,
+"cls": "uEm23",
+"name": "Gatling Gun Majini",
+"tier": "boss",
+"where": "red, the top-floor office ceiling"
+}
+]
+},
+{
+"stage": "Ship Deck",
+"code": "s406",
+"start_s": 690,
+"kills": 150,
+"time_bonuses": [
+[
+60,
+"the far north"
+],
+[
+90,
+"the alcove"
+]
+],
+"notes": "west-side Majini late in the round hatch Cephalos unless killed outright or blown up",
+"heavies": [
+{
+"kills": 0,
+"cls": "uEm22",
+"name": "Chainsaw Majini",
+"tier": "boss",
+"where": "blue, from the crane"
+},
+{
+"kills": 20,
+"cls": "uEm22",
+"name": "Chainsaw Majini",
+"tier": "boss",
+"where": "red, from the crane"
+},
+{
+"kills": 20,
+"cls": "uEm22",
+"name": "Chainsaw Majini",
+"tier": "boss",
+"where": "blue, from the crane"
+},
+{
+"kills": 30,
+"cls": "uEm22",
+"name": "Chainsaw Majini",
+"tier": "boss",
+"where": "red"
+},
+{
+"kills": 40,
+"cls": "uEm22",
+"name": "Chainsaw Majini",
+"tier": "boss",
+"where": "red"
+},
+{
+"kills": 50,
+"cls": "uEm22",
+"name": "Chainsaw Majini",
+"tier": "boss",
+"where": "red"
+},
+{
+"kills": 50,
+"cls": "uEm22",
+"name": "Chainsaw Majini",
+"tier": "boss",
+"where": "blue"
+}
+]
+},
+{
+"stage": "Prison",
+"code": "s407",
+"start_s": 600,
+"kills": 150,
+"time_bonuses": [
+[
+60,
+"the top"
+],
+[
+30,
+"the cell corridor"
+]
+],
+"notes": "14 Big Men through the round; grenades open shortcuts through some walls",
+"heavies": [
+{
+"kills": 0,
+"cls": "uEm26",
+"name": "Executioner Majini (red)",
+"tier": "boss",
+"where": "red, B1"
+},
+{
+"kills": null,
+"cls": "uEm20",
+"name": "Executioner Majini",
+"tier": "boss",
+"where": "after the first red dies, above the top combo chest"
+},
+{
+"kills": 50,
+"cls": "uEm26",
+"name": "Executioner Majini (red)",
+"tier": "boss",
+"where": "red, above the bottom stair corridor"
+},
+{
+"kills": 90,
+"cls": "uEm20",
+"name": "Executioner Majini",
+"tier": "boss",
+"where": null
+},
+{
+"kills": 120,
+"cls": "uEm26",
+"name": "Executioner Majini (red)",
+"tier": "boss",
+"where": "red"
+}
+]
+}
+],
+"rules": {
+"combo_window_s": 10.0,
+"melee_kill_bonus_s": 5,
+"time_statues_s": [
+30,
+60,
+90
+],
+"combo_bonus_s": 30,
+"combo_bonus_points": 1000,
+"all_kills_points_per_second": 1000,
+"solo_level": 6,
+"duo_level": 8,
+"combo_points": [
+[
+2,
+20,
+500
+],
+[
+3,
+50,
+1000
+],
+[
+4,
+100,
+1500
+],
+[
+5,
+200,
+2000
+],
+[
+6,
+250,
+2500
+],
+[
+7,
+300,
+3000
+],
+[
+8,
+350,
+3500
+],
+[
+9,
+400,
+4000
+],
+[
+10,
+500,
+4500
+],
+[
+20,
+600,
+5000
+],
+[
+30,
+700,
+5500
+],
+[
+40,
+850,
+6000
+],
+[
+50,
+1000,
+7000
+]
+],
+"sources": [
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html",
+"https://steamcommunity.com/sharedfiles/filedetails/?id=1224696225"
+]
+},
+"sources": {
+"https://www.evilresource.com/resident-evil-5/enemies": "enemy names and what they do (fetched 2026-11-10)",
+"https://www.evilresource.com/resident-evil-6/enemies": "enemy names and what they do (fetched 2026-11-10)",
+"https://www.evilresource.com/resident-evil-4/enemies": "enemy names and what they do (fetched 2026-11-10)",
+"https://residentevil5zone.blogspot.com/2010/11/resident-evil-5-mercenaries-info.html": "RE5 Mercenaries health, spawns by kill count, time bonuses, combo table - cites the official guide",
+"https://steamcommunity.com/sharedfiles/filedetails/?id=1224696225": "RE5 Mercenaries rules, boss tactics, per-character notes",
+"https://www.neoseeker.com/resident-evil-5/faqs/241725-mercenaries-stat.html": "RE5 Mercenaries stats FAQ (operator's link) - refused the fetch, HTTP 403, 2026-11-10"
+},
+"call_sites": "gbox/mercs/titles/re5_switch.py Bot._choose (the threat-first pick) and Bot._threat_d (divide the threat distance by weight(RE5, e['class']) so a boss at 8 m outranks a Majini at 3 m only past THREAT_NEAR_R)"
+}
