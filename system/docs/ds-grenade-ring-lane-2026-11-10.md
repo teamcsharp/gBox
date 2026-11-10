@@ -309,6 +309,126 @@ passed**.
 **Deploy needs**: the title module hot-reloads, but the new `classes.py` and `tools/` are new files and the worker
 imports them - a `gbox.service` restart at a gap (already asked above) covers it.
 
+## Step: RE5's grenade classes, derived from the game's own initialiser (2026-11-10, branch `ds-re5-classes-20261110`)
+
+Hand-off lane B item 3: "Find RE5 Switch's grenade item classes the way #9437 found RE6's: walk the MtDTI static
+initialiser. The tool is `system/gbox/mercs/re6_dti_emu.py`; point it at RE5's main NSO."
+
+**The image.** `python -m gbox.switch_extract exefs` on the share's `Resident Evil 5.nsp` (program NCA
+`15af72f2…`) + `hactool -t nso --uncompressed` gives `main.bin`, build **`EBFFDB223149A725A93CD9B60979F6AA`** - the
+pinned build `re5_switch.SIGNATURE`/`docs/research/re5-native-flash.md` describe. `.text` 0..0x118F000,
+`.rodata` ..0x1A92000, `.rwdata` ..0x1CE5000, `.bss` ..0x26A6000.
+
+**The initialiser.** One long straight-line MtDTI registration block at `main+0x84800..0x84Fxx`: per class it builds
+the object in `x0` (`adrp`/`add` into `.bss`), the name string in `x1`, the parent DTI in `x2`, the size in `w3` and
+the id in `w4` (`0x07010000 + 0x100 * class`), then calls `main+0xBD28D0`. The grenade family shares the parent
+**`uWpBomb` at `main+0x1D71180`**, and its members come out in order:
+
+| kind | class | DTI (main+) | item (id >> 8) | size |
+|---|---|---|---|---|
+| hand | uWp06 | **0x1D714C8** | 0x106 | 0x28D0 |
+| incendiary | uWp07 | **0x1D71500** | 0x107 | 0x28D0 |
+| flash | uWp08 | **0x1D71538** | 0x108 | 0x28E0 |
+
+**The cross-check that makes it trustworthy:** uWp08's DTI is `0x1D71538` - exactly the DTI the *live-verified*
+native flash already spawns with (`native/re5_ebffdb22/build.sh --defsym=FLASH_DTI=0x1d71538`,
+`docs/research/re5-native-flash.md`). The class number is the item, one-based, matching RE6's pattern (uWp1091/93/95/97
+= items 0x113/114/115/116) and the item table's hand 0x106 / incendiary 0x107 / flash 0x108. The same run also
+derives the rest of the table (uWp00..uWp63, uWpShell, uWpShellCommon) with sizes - useful for the launcher rounds
+asked for later.
+
+**What is checked in.** `gbox/mercs/native/re5_ebffdb22/classes.py`: the pinned table, and `derive(image)` - a small
+ARM64 emulator for the registration block (w/x register aliasing, adrp/add/mov/movk/bl) - and `verify(image)`, which
+compares the pinned table with what the image's own initialiser builds, including the uWp08 cross-check.
+`tools/verify_re5_classes.py <main.bin>` runs it. Against the operator's image: **PASS**, no mismatches, the whole
+uWp table printed for the record.
+
+**Tests** (`tests/test_re5_class_table.py`, 4): the pinned table; a *synthetic* registration block built in the
+game's shape derives the same rows; a moved DTI is reported rather than trusted; the uWp08 cross-check is enforced.
+(3 of the 4 need no image at all; capstone is the research dependency, imported only inside `derive`.)
+
+**Ready for the next step, measured now:** RE5's `spawn` image builds the DTI in **x1** at words 12-13
+(`adrp x1` + `add x1, #0x538`) - the same two instructions as RE6's, so two NOPs make it a parameter. Its `explode`
+image builds `FLASH_VT` in **x4** at words 4-5, so there the *caller's x4* is already the class vtable: NOP the pair
+and the wrapper checks the class it was handed. That is the parameterised pair for RE5, in new zero padding vetted
+the same way as RE6's; then the controller kinds and the live receipts (RE5's `grenade_scatter` does not exist yet -
+package 6 on RE5 is hand-off item 4 - so a small explicit probe op or the scatter op is the receipt route).
+
+## Step: RE5's spawn/explode become class parameters (2026-11-10, branch `ds-re5-classes-pair-20261110`)
+
+Hand-off lane B item 3, second half: the RE5 wrappers now take the class, so hand (uWp06) and incendiary (uWp07)
+grenades can use the same live-verified spawn/explode pair as the flash (uWp08). No compiler: every change is the
+replacement of a pinned instruction in the verified blob, with the source words asserted first.
+
+| image | word(s) | was | now | argument |
+|---|---|---|---|---|
+| `spawn` (432 B @ `0x118E820`) | 12-13 | `adrp x1` + `add x1, #0x538` (FLASH_DTI) | `orr x1, xzr, x2` + `nop` | class DTI in **x2** (3rd call arg; x1 already carries the generation) |
+| `explode` (248 B @ `0x118E9D0`) | 4-5 | `adrp x4` + `add x4, #0xf58` (FLASH_VT) | `nop` + `nop` | class vtable in **x4** (the allocation's own, read after initialisation) |
+| | 47 | `movz w3, #0x108` (the flash item) | `orr w3, wzr, w5` | item id in **w5** |
+| | 55 | `bl 0x820E50` (the flash update) | `blr x6` | update in **x6**: `0x820E50` for the flash (verified), **`0x806B80`** for the other uWpBomb classes (the bomb base update the flash's own update calls - the one choice here that the live receipt has to confirm) |
+
+**Where they install - in place, because there is nowhere else.** RE5's `.text` tail is one zero run
+`0x118E5B0..0x118F000`, and the four shipped images already fill it (`call`, `spawn`, `explode`, `weapons` end at
+`0x118EFFC`); there is no second padding cave as there was on RE6. So the pair replaces the two shipped images at the
+same addresses and sizes with their own new pinned digests (`spawn_class` `c288f03f…`, `explode_class`
+`c6137b3d…`); the originals keep their pins in `code.py` as the record. `install()` refuses a cave that holds other
+bytes, so **an emulator already running the old pair refuses rather than being corrupted**; every new session gets
+the parameterised pair. The RE session should re-verify the flash live after this deploys.
+
+**Controller** (`re5_switch_native.py`): the flash passes its verified DTI `0x1D71538`, its vtable is read from the
+allocation and checked against `main+0x1C5EF58`, item `0x108`, update `0x820E50`. Hand/incendiary pass their DTI
+(`0x1D714C8` / `0x1D71500`), the vtable the allocation carries, their item (`0x106` / `0x107`) and `0x806B80`.
+`grenade_ring` takes `allow_unverified` and `grenade_kinds()` still advertises **flash only** -
+`RING_IMPLEMENTED_KINDS` names all three.
+
+**Tests** (`tests/test_re5_class_pair.py`, 11): the four replaced words and nothing else changed; a tampered source
+image refused instead of patched; the update-offset table; hand vs flash argument pass-through on a fake emulator
+(including a vtable the table does not carry, so the wrapper is proven to take the allocation's own); the flash's
+verified values and its class check; unverified/unknown refusals; the advertised kinds. The RE5 ring and native
+suites' fakes were updated for the pair, and the affected set (RE5 native/ring/class pair/class table, interventions,
+worker, grenade status/rule, re5 mods, engine) is **149 passed**.
+
+**Still open on this item:** the live receipts for hand and incendiary. The route is the same explicit-kind probe
+RE6 got, and RE5 has no `grenade_scatter` yet (next item 4), so the clean order is: land the RE5 barrage with the
+explicit-kind probe (one more step), then fire `kind=hand` and `kind=incendiary` on an RE5 Mercenaries round and
+record receipt + frames + self_damage. Until then `grenade_status` keeps advertising flash only, which is honest.
+
+## Step: RE5's scatter barrage - hand-off item 4 (2026-11-10, branch `ds-re5-scatter-20261110`)
+
+Operator 2026-11-10 ~07:00: "i want the bot able to spray a scatter shot of grenades from his postion at threats at
+will ... a rapid barrage of random grenades from the grenade launcher without equipping it on his character ... sprayed
+like a scatterhsot whenever the going gets tough". RE6 got it this morning (the other lane); this is RE5's.
+
+**`re5_switch_native.Controller.grenade_scatter(kind="random", count, toward, spread_deg, min_cm, max_cm, gap_ms,
+safe_cm, rng)`** - the same contract and receipt shape as RE6's: `count` rounds, each the ring's verified native step
+(spawn, moved onto its point, the explosion transition), so nothing is equipped and the gun stays in his hand. The cone
+follows `toward` ([(x, z)] of the threats, averaged) or his facing when there is none; rounds run near to far within
+`SCATTER_SPREAD_DEG` (±30°), about chest height (+120 cm), 100-200 ms apart. `kind="random"` draws from
+`SCATTER_KINDS` - the verified kinds only, the flash today; an explicit implemented class (hand/incendiary) is the
+**receipt probe** (`probe: true` in the receipt). An explosive kind keeps every point past `safe_cm` (his learned
+blast reach) plus a 1 cm epsilon so the sin/cos placement cannot land a hair inside it. A partial barrage is
+uncertain and never replayed; the receipt carries every round's position, class vtable, distance, and hp/self-damage.
+
+**The automated rule already existed** (`gbox/mercs/grenade_ring.py`, the other lane's): when the ring's own decision
+says no, it runs `decide_scatter` (surrounded, hurt within 3 s with a threat close, a boss/dangerous class within
+reach, or a pack not thinning; never within 6 s of a ring) and fires through `fire_scatter`, keeping
+`scatters_fired`, `scatter_rounds`, `scatter_kills` (a kill window), `scatter_failures` and `scatter_decision`. This
+step only adds RE5 to `SCATTER_TITLES` and gives the title its knobs: `SCATTER`, `SCATTER_EVERY_S`, `SCATTER_N` in
+`re5_switch.py`, plus the three rows in the PiP's bot-logic sidebar ("Grenade scatter barrage (auto)", "Seconds
+between barrages", "Rounds in a barrage"). The intervention op `grenade_scatter` is advertised for RE5 automatically
+because `interventions.context()` adds the capability when the controller has the method.
+
+**Tests** (`tests/test_re5_scatter.py`, 7): a random barrage is a flash cone from near to far at chest height, every
+round through the verified wrappers; the probe carries the hand class's DTI/vtable/item and marks `probe`; an
+explosive probe never lands inside the learned reach; a partial barrage is uncertain and recoverable; an unknown kind
+is refused before any native call; the rule lists RE5 and reads its knobs; the shared hook returns a step for RE5 and
+none for a PS3 session. Affected suites (RE5 scatter/class pair/class table/ring/native/mods, interventions, worker,
+grenade rule/status, engine, bot logic): **169 passed**.
+
+**Receipts this unblocks:** with the explicit-class probe, an RE5 Mercenaries round can now fire
+`grenade_scatter {"kind": "hand"}` and `{"kind": "incendiary"}` - the same request shape as RE6's - which is the live
+receipt item 3 still owes. Both this branch and `ds-re5-classes-pair-20261110` must be deployed for it (the title
+module hot-reloads; `interventions.py` already carries the op from the RE6 lane).
 ## Round 50 (2026-11-10, later session) — RE6 launcher rounds: the tables pinned, and why they cannot ride the bomb wrapper
 
 Hand-off lane B item 2 ("find the shell spawn path, put real launcher rounds into `grenade_scatter`'s random kinds").

@@ -41,7 +41,7 @@ def controller():
     put(ctl.heap + 0x680, struct.pack('<4Q', ctl.original, ctl.base + N.UPDATE, ctl.player, ctl.generation))
     put(ctl.heap + 0x6A8, struct.pack('<I', 3))
     for off, name, _, _ in N.CODE:
-        put(ctl.base + off, N.IMAGES[name])
+        put(ctl.base + off, N.CLASSES.image_bytes(name))
     return ctl
 
 
@@ -51,7 +51,7 @@ def test_assets_and_all_ten_character_method_tables_are_pinned():
     ends = []
     for off, name, size, digest in N.CODE:
         assert 0x118E5B0 <= off < off + size <= 0x118F000
-        data = N.IMAGES[name]
+        data = N.CLASSES.image_bytes(name)
         assert len(data) == size and hashlib.sha256(data).hexdigest() == digest
         ends.append((off, off + size))
     assert all(a[1] <= b[0] for a, b in zip(ends, ends[1:]))
@@ -144,8 +144,10 @@ def test_flash_requires_native_effect_flag_and_always_restores_class_table(explo
             ctl.flash()
         assert ctl.failed and ctl.recoverable
         assert ctl.recover_completed_call()  # a new click is allowed; this one is never retried
-    assert calls == [(0x118E820, (ctl.player, ctl.generation)),
-                     (0x118E9D0, (unit, born, ctl.player, ctl.generation))]
+    flash = N.CLASSES.CLASSES['flash']
+    assert calls == [(0x118E820, (ctl.player, ctl.generation, flash.dti)),
+                     (0x118E9D0, (unit, born, ctl.player, ctl.generation, ctl.base + N.CLASSES.FLASH_VT,
+                                  flash.item, ctl.base + N.CLASSES.FLASH_UPDATE_OFF))]
     assert ctl.q(ctl.player) == ctl.original
     # The only player write is the temporary virtual dispatch pointer.
     assert all(not ctl.player < at < ctl.player + 0x5000 for at, _ in ctl.writes)
