@@ -31,7 +31,9 @@ The map file: profiles/gamedata/010099A00BC1E000-ram.json.
 """
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 import struct
 import time
 
@@ -907,6 +909,13 @@ TURN_SIGN = 1                            # 1: an error > 0 turns left (the GameC
 # scene that waits for a button (an intro text, a death camera) or a Ganado's grab: A tapped every FROZEN_TAP_S (it
 # continues the text and is the grab's shake-off mash) until he moves. Aiming and firing never step, so never count.
 FROZEN = True
+# No clear shot (live 2026-11-10 21:06, Castle: 415 holds, every one the sight gate, 0 kills, a death - he stood
+# aiming at a wall while they came): once the sight gate has held the shot SIGHT_HOLD_S he flanks - FLANK_S of the
+# walk to the target by the mesh, the gun down - and tries again. Every block is logged (SIGHT_LOG, the wall, where
+# the shot met it) so the gate can be judged on real positions.
+SIGHT_HOLD_S, FLANK_S = 0.6, 1.5
+SIGHT_LOG = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re4-sight-blocks.jsonl"
+SIGHT_LOG_EVERY_S = 1.0
 FROZEN_MM, FROZEN_RAD, FROZEN_TAP_S, FROZEN_KEY = 30.0, 0.01, 0.2, "a"
 TURN_LEARN, TURN_LEARN_N = True, 16
 MELEE_MM, MELEE_REACH_MM, MELEE_CLEAR_MM = 2500.0, 1400.0, 2000.0
@@ -928,7 +937,7 @@ class Bot:
     TURN_TOL = 0.12                                      # rad: close enough to fire
     COUNTERS = ("shots", "hits", "turns", "backoffs", "holds", "dying", "escapes", "locates", "stand_breaks",
                 "crowd_picks", "sweeps", "kills_seen", "raises", "combo_breaks", "reloads", "melee_tries",
-                "melee_taps", "melee_kills", "frozen_taps", "frozen_spells")
+                "melee_taps", "melee_kills", "frozen_taps", "frozen_spells", "flanks")
 
     def __init__(self, stats: dict | None = None, clock=time.monotonic, director=True):
         self.stats = stats if stats is not None else {}
@@ -1051,6 +1060,7 @@ class Bot:
         gate = ("controls" if not CONTROLS_READY else "range" if dist > ENGAGE_RANGE_CM
                 else "sight" if not self._line_of_sight_ok(p, e, snap) else "hazard" if self._near_own_hazard(p, snap)
                 else None)
+        self._gate = gate
         if gate is not None:
             key = "hold_" + gate
             self.stats[key] = self.stats.get(key, 0) + 1
@@ -1160,6 +1170,11 @@ class Bot:
         if pick is not None:
             dist, err, e = pick
             self.target = e.get("ptr")
+            fl = self.__dict__.get("_flank")
+            if fl and fl["key"] == self.target and now < fl["until"]:
+                keys, how = self._approach(p, e["pos"], err, snap, run=False)
+                self.doing, self.why = "flank", f"no clear shot: round it by {how}"
+                return {"hold": keys}
             if abs(err) > RAISE_TOL:
                 self.stats["turns"] += 1
                 self._learn_turn(self.target, err, now)
@@ -1167,6 +1182,10 @@ class Bot:
                 return {"hold": self._turn(err)}
             if not self._may_fire(p, e, dist, snap):
                 self.stats["holds"] += 1
+                if self.__dict__.get("_gate") == "sight":
+                    flank = self._sight_blocked(p, e, err, snap, now)
+                    if flank is not None:
+                        return flank
                 self.doing, self.why = "hold", "aligned, but a fire gate blocks the shot"
                 return {"hold": {AIM_BTN}}                   # aim kept, no shot
             if abs(err) > self.TURN_TOL:
@@ -1241,6 +1260,50 @@ class Bot:
             self.stats["frozen_taps"] = self.stats.get("frozen_taps", 0) + 1
             return {"hold": set(), "tap": FROZEN_KEY}
         return {"hold": set()}
+
+    def _sight_blocked(self, p, e, err, snap, now) -> dict | None:
+        """The sight gate held this shot: logged (SIGHT_LOG), and past SIGHT_HOLD_S a FLANK_S flank begins."""
+        key = e.get("ptr")
+        sh = self.__dict__.get("_sight_hold")
+        if not sh or sh["key"] != key or now - sh["last"] > 1.0:
+            sh = self._sight_hold = {"key": key, "since": now, "last": now, "logged": -1e9}
+        sh["last"] = now
+        if now - sh["logged"] >= SIGHT_LOG_EVERY_S:
+            sh["logged"] = now
+            self._log_block(p, e, snap)
+        if now - sh["since"] < SIGHT_HOLD_S:
+            return None
+        self._flank = {"key": key, "until": now + FLANK_S}
+        self._sight_hold = None
+        self.stats["flanks"] = self.stats.get("flanks", 0) + 1
+        keys, how = self._approach(p, e["pos"], err, snap, run=False)
+        self.doing, self.why = "flank", f"no clear shot: round it by {how}"
+        return {"hold": keys}
+
+    def _log_block(self, p, e, snap) -> None:
+        """One sight block: the stats' last one and a line in SIGHT_LOG (the wall, where the shot met it)."""
+        nav = snap.get("nav")
+        hit = None
+        try:
+            bw = getattr(nav, "blocking_wall", None)
+            hit = bw(tuple(p["pos"]), tuple(e["pos"])) if callable(bw) else None
+        except Exception:                                # noqa: BLE001
+            hit = None
+        row = {"t": round(time.time(), 2), "room": getattr(nav, "room", None),
+               "player": [round(v) for v in p["pos"]], "target": [round(v) for v in e["pos"]],
+               "d_m": round(self._flat(p["pos"], e["pos"]) / 1000.0, 2),
+               "dy": round(e["pos"][1] - p["pos"][1])}
+        if isinstance(hit, tuple) and len(hit) == 3 and isinstance(hit[0], tuple):
+            (x0, z0, x1, z1, lo, hi, attr), t, y = hit
+            row.update(wall=[round(x0), round(z0), round(x1), round(z1)], lo=round(lo), hi=round(hi), attr=attr,
+                       at=round(t, 3), shot_y=round(y))
+        self.stats["sight_block_last"] = row
+        try:
+            SIGHT_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with SIGHT_LOG.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row) + "\n")
+        except OSError:
+            pass
 
     def _approach(self, p, goal, err, snap, run: bool = False) -> tuple:
         """(stick keys, how) toward goal: the mesh walker when one is attached (Bot.walker.approach(goal) -> keys, the

@@ -383,15 +383,17 @@ class Mesh:
                 out.update(self._wall_grid.get((gx, gz), ()))
         return out
 
-    def clear_segment(self, a, b, *, eye: float = EYE_MM, chest: float = CHEST_MM) -> bool:
-        """Whether a shot from a (his feet; the gun at eye above them) to b (the target's feet; his chest at chest above)
-        meets none of the room's walls (the SAT's steep triangles as their footprint and height span; invisible
-        blockers, which most rays pass, are left out). Floors and ceilings are not tested."""
+    def blocking_wall(self, a, b, *, eye: float = EYE_MM, chest: float = CHEST_MM):
+        """The first wall a shot from a (his feet; the gun at eye above them) to b (the target's feet; his chest at chest
+        above) meets: (wall row (x0, z0, x1, z1, lo, hi, attr), t along the shot 0..1, the shot's height there), or None
+        when it meets none (the SAT's steep triangles as their footprint and height span; invisible blockers, which most
+        rays pass, are left out; floors and ceilings are not tested). An end that is not a position: ("bad end", 0, 0)."""
         if not (_ok(a) and _ok(b)):
-            return False
+            return ("bad end", 0.0, 0.0)
         ax, ay, az = a[0], a[1] + eye, a[2]
         bx, by, bz = b[0], b[1] + chest, b[2]
         rx, rz = bx - ax, bz - az
+        best = None
         for k in self._walls_near(a, b):
             x0, z0, x1, z1, lo, hi, attr = self.walls[k][:7]
             if attr & BLOCKER_BIT:
@@ -405,9 +407,13 @@ class Mesh:
             u = (qx * rz - qz * rx) / den
             if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
                 y = ay + t * (by - ay)
-                if lo <= y <= hi:
-                    return False
-        return True
+                if lo <= y <= hi and (best is None or t < best[1]):
+                    best = (tuple(self.walls[k][:7]), t, y)
+        return best
+
+    def clear_segment(self, a, b, *, eye: float = EYE_MM, chest: float = CHEST_MM) -> bool:
+        """Whether a shot from a to b meets none of the room's walls (blocking_wall is None)."""
+        return self.blocking_wall(a, b, eye=eye, chest=chest) is None
 
     def describe(self) -> dict:
         return {"room": self.room, "stage": self.stage_name, "points": len(self.points), "tris": len(self.tris),

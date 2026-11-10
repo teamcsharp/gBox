@@ -212,16 +212,38 @@ class Mesh:
     def floor_segment(self, start, goal):
         return self.clear
 
+    def blocking_wall(self, start, goal):
+        return None if self.clear else ((0.0, 0.0, 1000.0, 0.0, 0.0, 3000.0, 0), 0.5, 1300.0)
+
     def route(self, start, goal, **_):
         return self.waypoints
 
 
-def test_no_shot_across_a_wall_the_stage_mesh_names():
+def test_no_shot_across_a_wall_the_stage_mesh_names(tmp_path, monkeypatch):
+    monkeypatch.setattr(D, "SIGHT_LOG", tmp_path / "blocks.jsonl")
     b = bot()
     s = snap([((0.0, 0.0, 500.0), 400)], nav=Mesh(clear=False))
     b.tick(s, now=1.0)
     act = b.tick(s, now=1.0 + D.AIM_READY_S)
     assert act.get("tap") is None and b.doing == "hold" and b.stats["holds"] >= 1
+    assert b.stats["sight_block_last"]["wall"] == [0, 0, 1000, 0] and (tmp_path / "blocks.jsonl").exists()
+
+
+def test_a_held_shot_becomes_a_flank_then_a_try_again(tmp_path, monkeypatch):
+    """Live 2026-11-10 21:06: 415 holds and a death. Past SIGHT_HOLD_S the gun comes down and he walks round."""
+    monkeypatch.setattr(D, "SIGHT_LOG", tmp_path / "blocks.jsonl")
+    b = bot()
+    s = snap([((0.0, 0.0, 500.0), 400)], nav=Mesh(clear=False, waypoints=[mm((-200.0, 0.0, 300.0))]))
+    t = 1.0
+    for _ in range(20):
+        act = b.tick(s, now=t)
+        if b.doing == "flank":
+            break
+        t += 0.1
+    assert b.doing == "flank" and "lup" in act["hold"] and D.AIM_BTN not in act["hold"] and b.stats["flanks"] == 1
+    assert b.tick(s, now=t + D.FLANK_S / 2)["hold"] & {"lup"}, "the flank runs FLANK_S"
+    b.tick(s, now=t + D.FLANK_S + 0.1)
+    assert b.doing in ("hold", "aim", "turn"), "then the shot is tried again"
 
 
 def test_the_run_to_a_ganado_follows_the_mesh_route():
