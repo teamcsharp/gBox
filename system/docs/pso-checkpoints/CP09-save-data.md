@@ -260,3 +260,33 @@ C is not reliable enough for a subtractive ring.
 What this round does establish: the cipher cannot be reproduced from the decompiled C alone, the negative result is
 recorded rather than hand-waved, and the acceptance test for the next attempt is objective (a decoded record must lose its
 ~99.6 % entropy).
+
+## Round 55: the ring is now transcribed exactly; the byte table is runtime-built (.bss), which is the missing piece
+
+**Assembly transcriptions (exact):**
+
+* `FUN_8007c48c` (the seed init): `state[0x38] = state[0x39] = seed`; then 54 iterations of
+  `idx = (21*k) mod 55; state[idx+1] = a; a = s - a; s = old a` - the assembly shows `subf r7,r7,r4` followed by
+  `lwzx r4,r31,r0`, so the "seed" operand of the recurrence is the **previously written value**, not the original seed:
+  `a_{k+1} = s_k - a_k`, `s_{k+1} = a_k`, with `a_0 = 1`, `s_0 = seed`. Then four `FUN_8007c438` rounds and `state[0] = 0x37`.
+* `FUN_8007c438` (the ring step): 24 x `state[k+1] -= state[k+0x20]` (k = 1..24), then 31 x
+  `state[k+1] -= state[k-0x17]` (k = 25..55) - confirmed instruction by instruction (`add r6,r3,r4`, `lwz`/`subf`/`stw`).
+* With the corrected recurrence the word cipher still produces **unstructured output** for every seed tried
+  (`0`, `1`, the entry time `0x3285d13d`, its complement): 0.00 zero bytes, 0.37 printable.
+
+**Why: the byte table is not static.** `0x80500498` - the table `FUN_8007c134` permutes with - lies **between the end of the
+`.data` section (`0x804805E0 + 0x7DA40 = 0x80500020`) and the next section (`0x805D7D00`)**, i.e. in **`.bss`**: it is
+filled at run time, so no offline read of the executable can produce it, and my earlier attempt to read it as file data
+landed on float values because the offset was wrong.
+
+A **static** 256-byte permutation table does exist at file `0x4E9A5C` (VA `0x804F595C`), and it is the only 256-byte
+permutation window in the image; the natural reading is that the `.bss` table is generated from it at start-up (possibly
+seeded by the same value that seeds the ring).
+
+**The next step is therefore specific:** find the code that writes `0x80500498` (Ghidra references / the .bss
+initialisation in `FUN_80200560`'s state struct at `0x8051381C`) and transcribe *that* generator; with it plus the ring
+(now exact), the decode should reproduce. The acceptance test stays objective: a decoded record must lose its ~99.6 %
+entropy.
+
+Attempt scripts kept: `docs/research/pso-save-cipher-attempt.py` (round 54) and this round's exact-ring version in the same
+folder.
