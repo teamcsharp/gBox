@@ -219,3 +219,37 @@ snapshot case), so no new failures come from this lane.
 5. **Deployment**: the title modules hot-reload on the Spark (`gbox_autodeploy.sh`, 15 min); `interventions.py` and
    the new modules need a `gbox.service` restart - **RE session: please restart it at a gap** so the honest status
    and the RE6 ring reach the live sessions.
+
+## Live verification of the honest status (2026-11-10 07:34, after the Spark restart)
+
+The Spark's gBox restarted (worker `3353e106cb7c47bd`) with this lane's main code, and an RE6 No Mercy round was
+live. `GET /api/sessions/3353e106cb7c47bd-ae42844f9e324aae/interventions` returned **all three kinds, each with its
+own verdict**:
+
+    flash        unavailable  "no living player in an active Mercenaries round"
+    hand         unavailable  "a hand-grenade ring is not yet verified on this build (its item class/DTI is unconfirmed)"
+    incendiary   unavailable  "an incendiary-grenade ring is not yet verified on this build (its item class/DTI is unconfirmed)"
+
+That is package 1's acceptance on a live title: before this lane the same session answered `capabilities: []` with
+one generic string and no per-kind rows at all (the old answer is quoted above).
+
+### The RE6 detection bug, measured
+
+The same round's controller cannot act, but the RAM says it should. Read through the session RPC at the module base
+the title's own mods status reported (`0x3ca83da000`, signature verified at `+0x2151000`):
+
+    S_PLAYER  -> 0x5d32ba20f0   player -> 0x5d63f1a0f0   generation 6
+    S_GAMEMAN -> 0x5d34af20f0   phase 1 (playing), mode 2 (No Mercy), kills 90
+    player hp 900 / 900          position (-3035.5, 500.1, 4822.4)
+
+Every condition `re6_switch_native.Controller.ready()` tests is satisfied, so those exact checks verdict **"ready"** -
+yet the worker's own `ready()` raises "no living player in an active Mercenaries round" at the same time (the status
+kept that reason while the player read above was taken). Same adapter, same addresses: the worker's controller is
+not looking at this session's `main`, and the likeliest cause is a **stale cached base/controller**
+(`ad._re6_native_flash` left from an earlier boot) whose `self.base` points at an older image whose `S_GAMEMAN` slot
+is zero - exactly the branch that produces this message. Instrumenting it needs a worker code change plus a Spark
+deploy, so:
+
+- RE6 grenades are the `re6-bomb-mind` lane's from the operator's 07:07 update; this evidence goes with them;
+- the *status* half is fixed and live (above);
+- the detection fix is **not** claimed, and the honest per-kind reasons hide nothing until it lands.
