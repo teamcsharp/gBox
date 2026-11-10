@@ -977,3 +977,19 @@ So the mercmode chain is now complete on the client side: `switch_romfs_material
 * Next: make the driver's entry deterministic - read `screen()` and act per state *including* the options/controls
   screens (B out), instead of relying on a key sequence; then capture 5 frames over 60 s while never pressing after the
   prompt is declined.
+
+## Round 46 status (2026-11-10, ~00:55 CST): the in-motion comparison frame - swapped enemies are the white ones
+
+* The snapshot-driven driver works: `drive_play.py` reads `re6_switch.snapshot()` for gameplay (`timer > 0`) instead of
+  the screen name, declined the CONTINUE? prompt once, and captured six frames over the round without pressing anything
+  past the start.
+* **`r46-shot5.jpg` is the decisive comparison**: timer `01'27"20`, the player (Leon, textured) in the foreground, a
+  **normal zombie woman directly in front of him - fully textured** (green shirt, blood, dark skirt), and **two white /
+  checkered humanoid figures in the doorway behind - the swapped enemies** (Chris's model inside `uEm5200.arc`, with
+  `keep_tag=False` and the 61 `pl0200` maps attached).
+* So the model swap is visibly working (the cast mesh stands where the enemy was) and the **unmodified** enemies render
+  correctly; only the swapped ones lack their textures. The `uPlTex` maps are in the arc (verified offline) but the
+  swapped model's materials do not resolve them - a material/texture-namespace question inside the MRL, not a build or
+  launch problem.
+* The build for this run: `recovery-re6-em5200-tagtest-r44` (update ExeFS + `uEm5200` <- Chris model, `keep_tag=False`,
+  61 maps, 27,000,067 bytes).
