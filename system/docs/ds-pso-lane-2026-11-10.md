@@ -919,16 +919,60 @@ touched game memory without a recorded rollback.
 2. Or sidestep it entirely: bring in **player 2**. The scene is single-player framing, P1 needs two players anyway, and a
    second pad plus a second card slot is ordinary co-op setup.
 
+## Round 15 (2026-11-10) — MULTI MODE is the way past the scene, and it needs a second controller
+
+### MULTI MODE is the door P1 has been looking for
+
+`SELECT GAME MODE` offers SINGLE MODE and MULTI MODE. MULTI MODE selects **two characters from a card at once** -- the
+frame shows `SLOT A` with the main character list beside a `TEMP CHARACTERS` list -- and prints, plainly:
+
+> **Requires at least 2 Controllers.**
+
+That is the offline co-op mode, it is the two-player criterion P1 has to meet anyway, and it is the one mode whose
+character select does **not** start with the single-player story intro that has blocked every field attempt.
+
+### What was wired for it
+
+`DolphinWinAdapter._argv` now gives every PSO launch (`gecko_id` starting `GPO`) a **two-pad** `GCPadNew.ini`, built by
+`pso_coop_setup.pad_ini`:
+
+* `[GCPad1]` keeps whatever the launch decided -- `Always Connected = True` with the virtual pad, or the pad that reports
+  input when there is no virtual pad;
+* `[GCPad2]` is the keyboard device P2 is driven through: `D`/`R`/`M`/`Y` for A/B/X/Y, `SPACE` for Start, `NUMPAD8/2/4/6`
+  for the main stick and `NUMPAD7/9/1/3` for the D-pad -- a scheme chosen so P2's keys never collide with P1's.
+
+`tests/test_pso_coop_pads.py` (4 tests) pins the structure: one heading per pad, exactly one `Always Connected` in
+GCPad1, the keyboard device and key names in GCPad2, and the builder being pure text.
+
+### Two dead ends, measured rather than assumed
+
+1. **The four addresses that advanced by one per page are tick counters.** `0x805D71A2`, `0x805D7542`, `0x805D75A2` and
+   `0x805D772E` read `60 -> 61 -> 62` across three pages, which looked exactly like a page index. Watching them for four
+   minutes with no input at all showed them climb `66 -> 68 -> 71 -> ... -> 124`, about **1.2 per second**: they are a
+   clock, and the "+1 per page" was the ~1.4 s between page presses. The four write jobs queued against them were never
+   admitted (the five-minute gate) and the session was stopped instead of letting them land blind.
+2. **`pso_coop` through the HTTP launch route does not set up a buddy card.** `POST /api/games/{gid}/launch` with
+   `{"pso_coop": true}` returned a session whose `diag.pso_coop` was `null`, and the written INI had only `[GCPad1]`.
+   The flag exists on the launch tool (`pso_coop: bool = False`), so the route is dropping it -- worth a look, but the
+   INI change above makes the second controller available without it.
+
+### Not yet verified
+
+Whether MULTI MODE actually opens with the second pad, and whether player 2 spawns in Pioneer 2 free of the intro scene.
+That is the first thing the next round does; the INI change needs a fresh launch to take effect, and the live launch this
+round still wrote a single-pad INI because the flag was reading `game`, which is not in `_argv`'s scope -- that bug is
+fixed (the disc id is computed there already) but not yet observed working.
+
 ## 7. Next
 
-1. Find the cutscene state in the executive/script structures, not in the actor: teleporting the player 300 units
-   and writing the room id both left the scene up, and no input cancels it. The mode alternates 5/17 per page, so a
-   constancy-window diff across one A press is the way in, with the audited write job as the probe.
-2. Or sidestep it: bring in **player 2** (a second virtual pad and a second card slot). The scene is single-player
-   framing, and P1 needs two players anyway.
-3. Then the field: measure movement with the character free, and walk Pioneer 2 -> the Hunter's Guild door (185,173
-   room 10) -> the teleporter (254,25) -> Forest 1, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
+1. Verify MULTI MODE opens with the second pad and that player 2 spawns in Pioneer 2 without the single-player
+   intro scene -- that is the shortest route past the scene, and P1's two-player criterion asks for it anyway.
+2. Then the field: measure movement with the characters free, and walk Pioneer 2 -> the Hunter's Guild door
+   (185,173 room 10) -> the teleporter (254,25) -> Forest 1, then P6a's in-game proof, P6b, P7a and the
+   demo -> route fixture.
+3. The queue holds four write jobs that were never admitted; they were issued against a stopped session and
+   must be treated as abandoned.
 
-Landed this round: `gbox/pso_write.py` (+6 tests) -- the audited write path with the five-minute job gate, a
-required acknowledgement, a read-back check and rollback. Constraints worth remembering: the session RPC is
-read-only for memory, every write is a job, and a job right after pad input waits five minutes.
+Dead ends recorded this round: the four addresses that advanced by one per page are **tick counters** (they kept
+incrementing ~1.2/s with no input), and `pso_coop` through the HTTP launch route does not set up a buddy card
+(`diag.pso_coop` was null, only one pad was written).
