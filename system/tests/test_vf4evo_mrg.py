@@ -100,3 +100,64 @@ def test_gz_member_roundtrip_and_mrg_offsets():
     assert out == body
     info = m.parse_mrg_offsets(out)
     assert info["offsets"] == [16, 20] and info["sizes"] == [4, len(body) - 20]
+
+
+def _tex2_blob():
+    pal = bytes([10, 20, 30, 0x80]) * 16
+    px4 = bytes([0x10] * 8)  # 4x4? use w=4,h=4 -> 8 bytes
+    entry = struct.pack("<I", 0) + pal + px4 + b"\0" * 4  # 8 + 64 + 8
+    off = 8 + 8
+    return b"TEX2" + struct.pack("<I", 0x80000001) + struct.pack("<HHI", 4, 4, off) + entry
+
+
+def test_parse_tex2_size_rule_and_decode():
+    t = m.parse_tex2(_tex2_blob(), decode=True)[0]
+    assert (t["w"], t["h"], t["bpp"], t["size_matches"]) == (4, 4, 4, True)
+    assert t["rgba"][:4] == bytes([10, 20, 30, 255])  # alpha 0x80 -> 255
+    assert t["rgba"][4:8] == bytes([10, 20, 30, 255])
+    assert len(t["rgba"]) == 4 * 4 * 4
+
+
+def test_parse_lnk0_meshes_and_names():
+    base = 0x50
+    gmb = b"GMB1" + struct.pack("<3I", 0x100, 3, 0x1C) + struct.pack("<2I", 0x40, 0x80)
+    gmb = gmb.ljust(0x100, b"\0")
+    d = b"LNK0" + struct.pack("<3I", 8, 0, 0) + struct.pack("<I", base)
+    d = d.ljust(base, b"\0") + gmb
+    names = [b"o_arm", b"o_face", b"t_kao_00_1"]
+    strs, offs, cur = b"", [], 8 + 4 * 3
+    for n in names:
+        offs.append(cur + len(strs)); strs += n + b"\0"
+    d += b"STR1" + struct.pack("<I", 3) + struct.pack("<3I", *offs) + strs
+    p = m.parse_lnk0(d)
+    assert p["mesh_count"] == 3 and p["names"] == ["o_arm", "o_face", "t_kao_00_1"]
+    assert [x["off"] for x in p["meshes"]] == [base + 0x1C, base + 0x40, base + 0x80]
+
+
+def test_parse_mrg_lst_bins_and_kind():
+    sub0 = b"mrg.lst \r\na.bin\r\nb.bin\r\n_\r\nCH_X.mrg \r\n\0\0"
+    assert m.parse_mrg_lst_bins(sub0) == ["a.bin", "b.bin"]
+    assert m.mrg_subfile_kind(sub0) == "mrg.lst"
+    assert m.mrg_subfile_kind(b"LNK0xxxx") == "LNK0"
+    assert m.mrg_subfile_kind(b"TEX2xxxx") == "TEX2"
+
+
+ISO = "/home/ehm_eckx/gBox_alt/gbox-cache/ps2/0b29e35386444551/disc.iso"
+
+
+@pytest.mark.skipif(not os.path.exists(ISO), reason="owned disc image not present")
+def test_real_ch_aki_subfiles():
+    import mmap
+    with open(ISO, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+        for ho, us, name, go in m.iter_gz_members(mm):
+            if name == "CH_AKI.mrg":
+                body = m.inflate_gz_member(mm, go, us)
+                break
+    subs = m.split_mrg(body)
+    assert [m.mrg_subfile_kind(s) for s in subs][:8] == [
+        "mrg.lst", "LNK0", "TEX2", "LNK0", "TEX2", "LNK0", "LNK0", "TEX2"]
+    assert m.parse_mrg_lst_bins(subs[0])[:3] == ["a.bin", "b.bin", "c.bin"]
+    lnk = m.parse_lnk0(subs[1])
+    assert lnk["mesh_count"] == 25 and lnk["names"][0] == "o_arm" and lnk["names"][-1] == "t_kao_03_1"
+    tex = m.parse_tex2(subs[2])
+    assert len(tex) == 27 and all(t["size_matches"] for t in tex[:26])

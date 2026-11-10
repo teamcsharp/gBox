@@ -228,3 +228,98 @@ def parse_mrg_offsets(body: bytes) -> dict:
         raise ValueError("offsets not ascending/in range")
     sizes = [(offs[i + 1] if i + 1 < n else len(body)) - o for i, o in enumerate(offs)]
     return {"count": n, "offsets": offs, "sizes": sizes}
+
+
+# ---------------------------------------------------------------------------
+# Reader stage (request #1319): sub-file formats inside decoded CH_<id>.mrg.
+# Evidence: CH_AKI.mrg (sha256 of body f3283b4b..., identical in both
+# vf4files.cvm copies), 11 sub-files.  Sub-file 0 is an "mrg.lst" text list
+# naming a.bin,b.bin,... for sub-files 1..N-1 (letters skip h,i,l).  Field
+# meanings below are measured; anything marked HYPOTHESIS is unproven.
+# ---------------------------------------------------------------------------
+
+
+def split_mrg(body: bytes) -> list:
+    info = parse_mrg_offsets(body)
+    return [body[o:o + s] for o, s in zip(info["offsets"], info["sizes"])]
+
+
+def mrg_subfile_kind(sub: bytes) -> str:
+    magic = sub[:4]
+    if magic == b"LNK0":
+        return "LNK0"
+    if magic == b"TEX2":
+        return "TEX2"
+    if sub.startswith(b"mrg.lst"):
+        return "mrg.lst"
+    return "table"  # name/bone/motion tables: u32 offset-table led, unparsed
+
+
+def parse_tex2(d: bytes, decode: bool = False) -> list:
+    """TEX2: 'TEX2', u32 (0x80000000|count), count x (u16 w, u16 h, u32 off),
+    then textures.  Entry = u32 type (0 -> 4bpp/16-colour, 1 -> 8bpp/256-colour),
+    RGBA8 palette (alpha 0x80 == opaque), linear pixels (no GS swizzle, no CSM1
+    palette swap: neighbour-pixel difference 2.4 vs 8.4 swapped vs 60.8
+    shuffled), 4 bytes pad.  entry size == 8 + palette + w*h*bpp/8 (all 27 of
+    CH_AKI sub-file 1 verified); the last entry may carry trailing bytes."""
+    if d[:4] != b"TEX2":
+        raise ValueError("not TEX2")
+    n = struct.unpack_from("<I", d, 4)[0] & 0xFFFF
+    ents = [struct.unpack_from("<HHI", d, 8 + 8 * i) for i in range(n)]
+    offs = [e[2] for e in ents] + [len(d)]
+    out = []
+    for i, (w, h, o) in enumerate(ents):
+        typ = struct.unpack_from("<I", d, o)[0]
+        bpp = 8 if typ == 1 else 4
+        pal_n = 256 if bpp == 8 else 16
+        need = 8 + pal_n * 4 + w * h * bpp // 8
+        e = {"w": w, "h": h, "type": typ, "bpp": bpp, "offset": o,
+             "size": offs[i + 1] - o, "size_matches": offs[i + 1] - o == need}
+        if decode:
+            pal = d[o + 4:o + 4 + pal_n * 4]
+            px = d[o + 4 + pal_n * 4:o + 4 + pal_n * 4 + w * h * bpp // 8]
+            if bpp == 4:
+                px = bytes(v for x in px for v in (x & 15, x >> 4))
+            cols = [(pal[k], pal[k + 1], pal[k + 2], min(255, pal[k + 3] * 2))
+                    for k in range(0, len(pal), 4)]
+            e["rgba"] = b"".join(bytes(cols[i]) for i in px)
+        out.append(e)
+    return out
+
+
+def parse_lnk0(d: bytes) -> dict:
+    """LNK0 container: header u32 magic, ver 8, dir at 0x10 = 0x50 (GMB1 off)
+    + other chunk offsets.  GMB1 @0x50: 'GMB1', u32 size, u32 count N, u32
+    0x70 (first mesh), then N-1 ascending mesh offsets relative to 0x50.
+    STR1 chunk: 'STR1', u32 count, count u32 name offsets (relative to the
+    STR1 tag), NUL strings -- names of the N meshes in order (o_arm, o_body_a,
+    o_face, t_kao_00_1, ...).  Mesh header: u32 0x54 then 4 section offsets
+    (HYPOTHESIS: vertex/index streams) and float bbox data."""
+    if d[:4] != b"LNK0":
+        raise ValueError("not LNK0")
+    base = struct.unpack_from("<I", d, 0x10)[0]
+    if d[base:base + 4] != b"GMB1":
+        raise ValueError("no GMB1 chunk")
+    size, count, first = struct.unpack_from("<3I", d, base + 4)
+    offs = [first] + list(struct.unpack_from(f"<{count - 1}I", d, base + 0x10))
+    if any(b <= a for a, b in zip(offs, offs[1:])):
+        raise ValueError("mesh offsets not ascending")
+    names = []
+    s = d.find(b"STR1", base + size)
+    if s >= 0:
+        n = struct.unpack_from("<I", d, s + 4)[0]
+        for k in range(n):
+            o = struct.unpack_from("<I", d, s + 8 + 4 * k)[0]
+            names.append(d[s + o:d.index(b"\0", s + o)].decode("latin1"))
+    ends = offs[1:] + [size]
+    return {"base": base, "gmb_size": size, "mesh_count": count,
+            "meshes": [{"off": base + a, "size": b - a,
+                        "name": names[i] if i < len(names) else None}
+                       for i, (a, b) in enumerate(zip(offs, ends))],
+            "names": names}
+
+
+def parse_mrg_lst_bins(sub0: bytes) -> list:
+    """Names listed in sub-file 0 ('mrg.lst' text), e.g. ['a.bin', ..., 'm.bin']."""
+    txt = sub0.split(b"\0", 1)[0].decode("latin1")
+    return [l.strip() for l in txt.splitlines() if l.strip().endswith(".bin")]
