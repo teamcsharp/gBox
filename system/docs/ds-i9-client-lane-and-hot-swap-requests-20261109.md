@@ -1144,3 +1144,65 @@ The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned b
   the village. Both are mechanical once chosen.
 * The technical claim this lane needed - the RE4 overlay applies and the game runs under it - is already proven (rounds
   50 and 55: title at 60 FPS, NEW GAME starts, cutscenes play with `recovery-re4-sonic-on-leon-v1` applied).
+
+## Round 59 status (2026-11-10, ~03:35 CST): a third texture hypothesis tested (unit-prefixed names) - inconclusive frame
+
+* Checked the tag vocabulary first: the cast maps (`uPlTex0200_0`) and the enemy arc share the same texture tags
+  (`0x40055e3c`, `0x40015e38`, `0x40003434`, `0x4000b438`, ...), so "the appended entries carry the wrong tag" is out.
+* Third hypothesis: the enemy unit builds its texture table from entries **under its own path prefix**. Built
+  `recovery-re6-prefixed-r59`: Chris's model in `uEm5200` plus his 61 maps **renamed to
+  `data\chara\em\em5200\model\<basename>`** with the hashes/tags/data kept (27,000,067 bytes).
+* The build launched and a round ran (`01'27"51` in `r59-shot5.jpg`). The frame shows a **fully textured zombie** right
+  beside the player - but that zombie is the original green-shirt model, not Chris's, so the frame neither confirms nor
+  refutes the swapped enemy. A wider camera angle (or the character-select preview) is needed to see the Chris-model
+  enemy specifically.
+* Three texture hypotheses have now been tried and each produced an untextured swapped enemy (append by name, replace
+  slots in place, rename under the unit prefix). The next productive step is to parse the swapped **MRL's material
+  table** (not the arc's entries) and see which texture identifiers it binds - `model_swap` already locates the MRL, so
+  the table format is the remaining unknown.
+
+## Round 60 status (2026-11-10, ~04:05 CST): the MOD payload explains the gap; a fourth hypothesis failed
+
+* **The model entry is a zlib-compressed `MOD`**, not an MRL: `uPl02ChrisAsia.arc`'s 664,064-byte model entry starts with
+  `78 9c` and inflates to **1,449,880 bytes** beginning `MOD\0`. Its strings are **material names**, not texture paths:
+  `pl_skin`, `pl_skin1`, `pl_skin2`, `pl_skin3`, `pl_base`, `pl_base1` ... `pl_base8`, `pl_nuki`.
+* The cast texture arc names its maps by **part**, not by material: `pl0200_01Body_BM/NM/MM`, `pl0200_02Armor_*`,
+  `pl0200_07Hand_*`, ... So the MOD's materials (`pl_skin`, `pl_base1`) and the arc's texture entries
+  (`pl0200_01Body_BM`) are different namespaces, which is why every name/prefix strategy failed.
+* Fourth hypothesis tested: replace the enemy arc's 70 texture slots with the cast maps **in uPlTex arc order** (not
+  sorted by kind), 18,768,123 bytes, `recovery-re6-arcorder-r60`. The round ran (`01'26"60`) and the doorway shows
+  **two white/checkered swapped enemies plus one original dark-clothed one** - the swapped ones are still untextured.
+* So the binding must be resolved through the MOD's own material table (material -> texture index/name), not through the
+  arc's entry list in any order tried. The next step is to parse that table inside the inflated MOD: the strings and the
+  structures around them are the map.
+
+## Round 61 status (2026-11-10, ~04:20 CST): the MOD material table is a fixed-record name list; the binding is by order
+
+* Parsed the inflated MOD header and material area for `uPl02ChrisAsia.arc` (1,449,880 bytes, `MOD\0`):
+  - header at +0: `MOD\0`, then u16 fields `0x00d3`, `0x0024`, `0x00aa`, `0x000c`, then offsets/sizes
+    (`0x0000b16f`, `0x00012e2a`, `0x0000badb`, `0x001214fc`) and counts (`0x1c`, `0xa4`, `0x1704`, `0x1a84`).
+  - **12 material records of 0x80 bytes each** starting at `0x1a84`: `pl_nuki`, `pl_skin1`, `pl_skin`,
+    `pl_base8`, `pl_skin2`, `pl_base`, `pl_base5`, `pl_skin3`, `pl_base2`, `pl_base6`, `pl_base7`, `pl_base1`.
+    Each record holds only the null-terminated name; the remaining bytes are zero, so **no texture name or index is
+    stored in the material record itself**.
+* That means the material -> texture binding is positional: material i resolves to the i-th texture the engine
+  collected for the unit. Which explains why every name/prefix strategy failed and why in-place replacement still
+  failed - the *order* the cast textures must appear in the enemy arc is the order the player's engine collects them,
+  which is not the uPlTex arc order (that starts with an `_NM` map).
+* 77 tests pass / 3 skipped across the Switch readers, extractors, materializer, ARC validator, tool and mods suites
+  (the 3 skips are the keyed NCA cases that need `prod.keys`).
+* Next for this thread: find the engine's texture collection order (likely entry order filtered by texture tag, but
+  grouped BM/NM/MM per material) and lay the cast maps out in that order; the MOD itself cannot name them.
+
+## Round 62 status (2026-11-10, ~04:30 CST): the material names have no texture entries anywhere - the binding is a unit asset-list matter
+
+* Searched all 41 materialised `uPlTex*.arc` archives for entries whose basename starts `pl_skin`, `pl_base` or
+  `pl_nuki` (the 12 MOD material names): **zero hits**. The materials are not named after any texture the arc carries.
+* Combined with round 61 (the material records hold only names, no texture references), the conclusion is that the
+  engine binds a unit's materials to the textures of the unit's **asset list** - for a player character that list
+  includes the character's `uPlTex####_N` arcs; for an enemy unit (`uEm5200`) it includes the enemy's own maps. An enemy
+  wearing a player model therefore has no route to the player's maps through arc edits alone: the unit's asset list must
+  be changed (a unit/asset-definition edit, not a texture or model edit).
+* That closes the enemy-texture investigation with a concrete, documented blocker rather than an open-ended hunt. The
+  model swap itself works (cast meshes, skeletons and animations in enemies); only the material->texture resolution is
+  out of reach through the arc.
