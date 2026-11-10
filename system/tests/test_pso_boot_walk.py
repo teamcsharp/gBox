@@ -142,3 +142,12 @@ def test_the_verified_path_arrives_with_six_presses():
     assert out["ok"] is True and out["arrived"] is True
     assert len(g.presses) == 6
     assert g.presses[0] == ("start",) and g.presses[1] == ("ddown", "a")
+
+
+def test_the_multi_mode_path_is_the_two_controller_branch():
+    """MULTI MODE skips the single-player intro that nothing can exit; its presses were verified against frames."""
+    assert [s[0] for s in W.MULTI_STEPS] == ["press_start", "offline_game", "multi_mode",
+                                            "confirm_player1", "accept_player1"]
+    assert W.MULTI_STEPS[1][2] == "game_mode_select"        # the one provable checkpoint, same as the single path
+    assert W.MULTI_STEPS[2][1] == ("ddown", "a")            # SINGLE -> MULTI is one move down
+    assert W.MULTI_STEPS[0][1] == ("start",)

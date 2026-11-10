@@ -1004,16 +1004,59 @@ first thing the next round does, and it is a single launch plus one frame.
 Everything else about this round's hypothesis is measured: two pads with `Always Connected`, both devices present, and
 the game still refused, so the pad configuration was never the blocker.
 
+## Round 17 (2026-11-10) — MULTI MODE opens, and player 1 is in
+
+The missing piece was exactly what round 16 predicted: Dolphin's serial-interface device table. With
+`SIDevice0 = 6` and `SIDevice1 = 6` written at launch (and both pads configured), the game stopped refusing:
+
+```
+SELECT GAME MODE      ddown + A   ->  MULTI MODE
+                                      "Please select Player 1's character."      <-- opened
+A, A                                ->  PLAYER1 marked on BQF
+                                      "Please select Player 2's character."      <-- P1 accepted
+```
+
+The two frames are `pf0-multi.jpg` (the "Please select Player 1's character" screen with `MAIN CHARACTER` BQF and the
+green `TEMP CHARACTERS` list) and `pf1-p2.jpg` (`PLAYER1` stamped over BQF, and the prompt now asking for Player 2).
+
+**This is the first time the two-controller branch has opened**, after three rounds of pad configuration that were all
+necessary but not sufficient: `[GCPad2]` (the pad) -> `Options/Always Connected` on it (the *input* connected) ->
+`SIDevice1 = 6` (the *console* seeing it). Each layer gave a distinct, observable refusal or silence.
+
+### What is in the module
+
+`gbox.pso_boot_walk.MULTI_STEPS` now carries the verified five-press path to "select Player 1", with the same rule as the
+single-player list: only `offline_game` has an unambiguous checkpoint (`mode == 9`), and the rest are judged by what the
+screen shows. One test pins the shape, including the single `ddown` that moves SINGLE MODE -> MULTI MODE.
+
+### Where the game is now, and what it needs
+
+The session is parked on **"Please select Player 2's character."** with all three `TEMP CHARACTERS` slots empty. PSO's
+offline multiplayer uses *temporary* characters for players 2 and up, so P2 cannot borrow BQF from the card: the next
+step is the character creator for a temp character, which is the same flow round 4 walked for P1 -- race, class,
+appearance, then a name typed on the on-screen keyboard, then the section ID.
+
+That typing is the expensive part and it is why this round stops here rather than mid-creator: round 4 established the
+grid technique (clamp the cursor to a known cell with `ddown`x12 + `dleft`x20, then walk; a letter's column is its
+alphabet index + 2) and got the name **BQF** when DSH was intended, so the mapping needs one careful check before it is
+used for a character that has to be identified later.
+
+### Budget note
+
+This round spent most of its steps on the launch-gate cycle: every launch needs five minutes without operator input, and
+that clock is reset by the very presses a launch is being tested with. Each verify-a-launch round therefore costs about
+ten minutes of wall clock for two or three frames of evidence. Worth knowing when planning the remaining P1 work.
+
 ## 7. Next
 
-1. One launch, one frame: does MULTI MODE open now that `Dolphin.ini` has `SIDevice0/1 = 6`? The code is in and
-   unit-tested; this is the first launch that will actually write it.
-2. If it opens: two characters (P1 from SLOT A, P2 from the TEMP CHARACTERS list), then Pioneer 2 and the field leg
-   -- the Hunter's Guild door (185,173 room 10), the teleporter (254,25), Forest 1 -- and the movement measurement
-   that has been impossible from inside the single-player intro scene.
-3. If it still refuses, the next suspects are Dolphin's SI device types other than 6, or the game requiring two
-   *distinct physical* devices; the P2 keyboard pad would then need to be a real virtual pad instead.
+1. Create **player 2's temporary character** in MULTI MODE (the game is parked on "Please select Player 2's
+   character."). P2 cannot borrow BQF from the card; the creator is the same flow round 4 walked, with the name
+   typed on the on-screen keyboard. Check the keyboard mapping first: round 4 produced **BQF** when **DSH** was
+   intended, so the column offset needs one verification before a character that must be identified later is made.
+2. Then the field leg: Pioneer 2 -> the Hunter's Guild door (185,173 room 10) -> the teleporter (254,25) -> Forest 1,
+   with both players, and the movement measurement that has been impossible from inside the single-player intro.
+3. Then the three cold launches, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
 
-Method note for this file: `adapters.py` has two near-identical `_argv` implementations. Two edits this round hit
-the Linux one first and left the Windows path unchanged (one duplicated a statement, one changed nothing visible).
-Anchor edits on surrounding context and check the occurrence count before and after.
+Three layers were needed for two controllers and each gave a different symptom: `[GCPad2]` in GCPadNew.ini (no pad
+at all), `Options/Always Connected` on it (input bound but not connected), and `SIDevice1 = 6` in Dolphin.ini (the
+console finally sees it). Only the third made MULTI MODE open.
