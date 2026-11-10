@@ -13,13 +13,15 @@ heavy, and wants it available from the PiP button on every title.
 
 ## What exists today (check each line on main before relying on it)
 
+**Switch only** (operator 2026-11-10: "we should only be focusing on switch versions. The ps3 and gamecube versions no
+longer matter. I only want the switch version of RE4/5/6"). Do no work on RE5 PS3, RE6 PS3, RE4 GameCube or RE4 Wii;
+read their code only as a reference.
+
 | Title | Ring | Where |
 |---|---|---|
 | RE5 Switch (010018100CD46000) | flash only, verified live; hand and incendiary are refused "until verified" | `gbox/mercs/titles/re5_switch_native.py` (`Controller.grenade_ring`, `grenade_ring_now`) |
-| RE4 GameCube | yes | `gbox/mercs/titles/re4_gc_native.py` (`grenade_ring`) |
-| RE4 Switch (010099A00BC1E000) | none | |
+| RE4 Switch (010099A00BC1E000) | none (the GameCube edition's `gbox/mercs/titles/re4_gc_native.py` `grenade_ring` is a reference only) | |
 | RE6 Switch (01002A000CD48000) | none (another lane may land it: look for `grenade_ring` in `re6_switch*` on main first) | |
-| RE5 PS3, RE6 PS3, RE4 Wii | unknown: report what exists | |
 
 The plumbing is already there and is the same for every title:
 - The request: `POST /api/sessions/{sid}/interventions` with `{"op": "grenade_ring", "request_id": <new UUID>,
