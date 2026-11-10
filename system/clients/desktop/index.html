@@ -1345,9 +1345,11 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
   #compact-controls .coach { display:flex; align-items:center; gap:5px; min-width:0; }
   #compact-controls .coach-in { width:100%; min-width:0; height:23px; box-sizing:border-box; border:1px solid #666;
     border-radius:4px; background:#18181d; color:#fff; padding:2px 6px; font:11px system-ui; -webkit-app-region:no-drag; }
-  #compact-controls .coach-st { max-width:100px; flex:0 1 auto; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:10px; }
+  #compact-controls .coach-st { max-width:180px; flex:0 1 auto; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:10px; }
   #compact-controls .coach-st:empty { display:none; }
-  #compact-controls .coach-st[data-state=error] { color:#ffadad; }
+  #compact-controls .coach-st[data-state=error] { color:#ffadad; font-weight:600; }
+  #compact-controls .coach-st[data-state=queued], #compact-controls .coach-st[data-state=draft] { color:#ffd166; cursor:pointer; }
+  #compact-controls .coach-send { width:24px; height:23px; padding:0; }
   @media(max-width:420px) { #compact-controls>.compact-title { display:none; } #compact-controls .coach-st { max-width:75px; } }
   #compact-controls button { flex:0 0 auto; -webkit-app-region:no-drag; border:1px solid #666; border-radius:3px; background:#18181d; color:#fff; cursor:pointer; }
 </style>
@@ -3884,7 +3886,10 @@ let clientUpdateState = { pending: false, restart: false };
 const botLogicSidebar = GBoxBotLogicSidebar.create({ current: () => compactCurrentSid(),
   api: async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw new Error(r.error || 'request failed'); return r.data; } });
 const compactCoach = GBoxCompactCoach.create({ coach:GBoxAutoplayCoach,
-  api:async(path,body) => { const r=await gbox.api(path,body); if(!r.ok) throw new Error(r.error || 'Coaching request failed'); return r.data; },
+  // notSent (main.js): the request never left this PC, so the coach's outbox sends the same submission again
+  api:async(path,body) => { const r=await gbox.api(path,body); if(!r.ok) throw Object.assign(new Error(r.error || 'Coaching request failed'), {notSent:r.notSent===true}); return r.data; },
+  // the bar may be hidden when a critique fails, waits for a retry or lands late: say it where it is always seen
+  notify:(text,view) => toast(view?.state === 'done' ? text : `Critique: ${text}`),
   show:visible => compactHover(visible), focusApp:() => gbox.appFocus?.(),
   gateInput:focused => { document.querySelector('#wv')?.executeJavaScript(`window.gboxPadTextCapture?.(${!!focused})`).catch(() => {}); }
 });
@@ -4026,14 +4031,22 @@ const compactController = GBoxCompactGame.create({
       // handling the situation is flawed and to place a report for it. Sometimes they are running in a corner. Sometimes
       // they are failing to deal with a threat"): a coaching report with the moment captured, and the bot told to change
       // course at once (the explore command: off the wall / corner by another way, the goal dropped)
+      // 2026-11-10: the report goes through the critique box's own filing (a submission ID, the outbox's retries, its
+      // status) and names the button, so the implementation request reads it as the operator's verdict on this moment
+      // (the frame, the RAM and the bot's telemetry are captured with it by the server), not as a game mechanic
+      const FLAWED = "Flawed handling (the operator pressed ⚠ Flawed in the gBox PiP at this moment): the bot is handling it wrong - running into a wall or corner, or failing to deal with a threat. Use this moment's frame, RAM and the bot's telemetry (doing / why) to find the decision it made and fix that decision.";
       controls.querySelector('[data-flawed]').onclick = async () => {
         const sid = COMPACT.sid;
         if (!sid) { toast('No game in the PiP to report.'); return; }
         const at = encodeURIComponent(sid);
+        const filed = compactCoach.report(FLAWED);
         const [note, cmd] = await Promise.all([
-          gbox.api(`/api/sessions/${at}/coach`, { text: 'Flawed handling (PiP button): the way the bot is handling this moment is wrong - running into a wall or corner, or failing to deal with a threat. Investigate this moment and fix it ASAP or the run will never win.' }),
+          filed ? filed.then(out => out ? {ok:true, data:out} : {ok:false, queued:true}, error => ({ok:false, queued:!!error?.queued, error:error?.message}))
+                : gbox.api(`/api/sessions/${at}/coach`, { text: FLAWED }),
           gbox.api(`/api/sessions/${at}/directive`, { command: 'explore' })]);
-        toast(note?.ok ? `Report filed with this moment${cmd?.ok ? '; the bot is changing course' : ''}.` : `Report not filed: ${note?.error || 'unknown error'}`);
+        toast(note?.ok ? `Report filed with this moment${cmd?.ok ? '; the bot is changing course' : ''}.`
+          : note?.queued ? `Report not sent yet - it will be retried${cmd?.ok ? '; the bot is changing course' : ''}.`
+          : `Report not filed: ${note?.error || 'unknown error'}`);
       };
       // Direct per-tap native actions; the game is the feedback, never a toast.
       controls.interventions = GBoxStreamInterventions.create({api:async (path,body) => {

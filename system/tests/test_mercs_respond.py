@@ -308,7 +308,7 @@ def test_re6_without_the_session_a_crowd_is_fired_at_and_the_missing_flash_count
     assert act == FIRE and b.stats["threat_lacks_flash"] >= 1
 
 
-def test_re6_with_the_session_a_crowd_gets_the_native_flash_and_its_fever(monkeypatch):
+def test_re6_with_the_session_a_surround_gets_the_native_flash_and_its_fever(monkeypatch):
     b, asked = r6_bot(monkeypatch)
 
     class Ctl:
@@ -327,11 +327,38 @@ def test_re6_with_the_session_a_crowd_gets_the_native_flash_and_its_fever(monkey
     monkeypatch.setattr(R6.threading, "Thread", Now)
     b._doctrine_m = type("M", (), {"adapter": object(), "mercs_no_modifications": False})()
     b.doing = "walk"
-    crowd = [foe(0, 0.0, 200.0), foe(1, 150.0, 100.0), foe(2, -150.0, 150.0)]
+    crowd = [foe(0, 0.0, 200.0), foe(1, 150.0, 100.0), foe(2, -150.0, 150.0), foe(3, 100.0, -150.0)]   # 4 within 3 m
     b._respond(r6_snap(crowd), dict(WALK), 0.0)
     b._respond(r6_snap(crowd, hp=900), dict(WALK), 0.1)
     assert ("native_flash",) in asked and b.stats["threat_flashes"] == 1
     assert b.stats.get("native_flash_confirmed_at"), "the receipt _emergency_flashbang turns into the fever"
+    assert b.stats["flash_reason_last"] == "respond: surrounded"
+    asked.clear()
+    b._respond(r6_snap(crowd, hp=800), dict(WALK), 5.1)       # within the minute (FLASH_MIN_GAP_S): fire instead
+    assert ("native_flash",) not in asked, "the doctrine's own gap is the live minute too"
+
+
+def test_re6_three_near_are_no_tight_situation_so_the_doctrine_fires(monkeypatch):
+    b, asked = r6_bot(monkeypatch)
+
+    class Ctl:
+        def flash(self):
+            asked.append(("native_flash",))
+            return {"state": "confirmed"}
+    from gbox.mercs import interventions
+    monkeypatch.setattr(interventions, "native_controller", lambda ad: Ctl())
+    monkeypatch.setattr(R6.threading, "Thread", lambda target, daemon=None, name=None: type("T", (), {"start": lambda s: target()})())
+    b._doctrine_m = type("M", (), {"adapter": object(), "mercs_no_modifications": False})()
+    b.doing = "walk"
+    crowd = [foe(0, 0.0, 200.0), foe(1, 150.0, 100.0), foe(2, -150.0, 150.0)]
+    b._respond(r6_snap(crowd), dict(WALK), 0.0)
+    act = b._respond(r6_snap(crowd, hp=900), dict(WALK), 0.1)
+    assert ("native_flash",) not in asked and act == FIRE and b.stats["flash_untight_skips"] >= 1
+    big = [foe(i, 50.0 * i, 100.0, hp=5000) for i in range(5)]  # heavies: a flash does not stop them
+    for e in big:
+        e["hp_max"] = 5000
+    b._respond(r6_snap(big, hp=800), dict(WALK), 0.2)
+    assert ("native_flash",) not in asked
 
 
 def test_re6_converging_zombies_make_the_remote_bomb_due(monkeypatch):

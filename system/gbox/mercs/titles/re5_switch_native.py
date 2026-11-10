@@ -14,6 +14,7 @@ import threading
 import time
 
 from . import re5_switch as R, re6_switch_native as N
+from ..native.re5_ebffdb22 import classes as CLASSES
 from ..native.re5_ebffdb22.code import IMAGES
 from ..native.re5_ebffdb22.vtables import BASE_ENTRIES, PLAYER_TABLES
 
@@ -22,10 +23,28 @@ process_identity = N.process_identity
 TEMP, UPDATE, DISPATCH = 0x1A91900, 0x799210, 0x118E740
 CODE = (
     (0x118E600, "call", 540, "a29a07b303da4b53b108e63626e7eda4e95b549dbd2d817b4693e2f036d62443"),
+    # The spawn/explode pair is the parameterised class pair (native/re5_ebffdb22/classes.py): the flash DTI and
+    # vtable/item/update are passed by the controller, so hand and incendiary grenades can use the same verified
+    # wrappers. Same addresses and sizes; only the class constants changed (see the lane log for the receipt plan).
+    (0x118E820, "spawn_class", CLASSES.SPAWN_CLASS[2], CLASSES.SPAWN_CLASS[3]),
+    (0x118E9D0, "explode_class", CLASSES.EXPLODE_CLASS[2], CLASSES.EXPLODE_CLASS[3]),
+    (0x118EAC8, "weapons", 1316, "a432bf2ef38b0091cc6431cff91be8300fc501383c72b330cb65b8ce6e639d9f"),
+)
+# The pair the lane shipped and live-verified before 2026-11-10, when the flash DTI and vtable were compiled in. An
+# emulator that ran that code holds these exact bytes at the pair's addresses, and those bytes are executed code:
+# install() refuses to overwrite them (and must). So the controller reads the pair *before* it installs anything and
+# keeps to whichever pair the emulator already holds - the pre-class one gets the old call shape (which is the shape
+# its installed image expects) and nothing else.
+PRE_CLASS_CODE = (
+    (0x118E600, "call", 540, "a29a07b303da4b53b108e63626e7eda4e95b549dbd2d817b4693e2f036d62443"),
     (0x118E820, "spawn", 432, "3829ed6d9998c556747b70d773ab7ac56c4b28c23a486d37d77da4e5931a0a21"),
     (0x118E9D0, "explode", 248, "f034000c3b1f9b97571f4d850854463b49c2132fd46a566a5a5ad2ac31a9b890"),
     (0x118EAC8, "weapons", 1316, "a432bf2ef38b0091cc6431cff91be8300fc501383c72b330cb65b8ce6e639d9f"),
 )
+PAIR_AT = (0x118E820, 0x118E9D0)                 # (spawn, explode) - the two executed-code addresses
+PRE_CLASS_REASON = "this emulator runs the pre-class pair; the next emulator gets it"
+UNKNOWN_PAIR_REASON = ("this emulator's spawn/explode pair is neither the pre-class pair nor empty; "
+                       "nothing is installed")
 _CREATE_LOCK = threading.Lock()
 
 # Grenade ring (operator 2026-10-31): a ring of grenades that bloom out from the player and detonate.
@@ -33,9 +52,15 @@ _CREATE_LOCK = threading.Lock()
 # shippable kind. The others are refused with a clear reason and never silently substituted - their
 # projectile classes and explosions have not been verified on this build.
 RING_VERIFIED_KINDS = ("flash",)
+# Implemented but not yet verified live: the parameterised pair takes the class (its DTI and item from the game's own
+# initialiser, its vtable from the allocation, its update function from the class family). They are reachable only
+# with `allow_unverified` - a receipt probe - until each has one; the queue and the PiP see the verified kinds only.
+RING_IMPLEMENTED_KINDS = ("flash",) + tuple(CLASSES.CLASSES)
 RING_KIND_REFUSED = {
-    "hand": "a hand-grenade ring is not yet verified on this build (its projectile class and explosion are unconfirmed)",
-    "incendiary": "an incendiary-grenade ring is not yet verified on this build (its projectile class and explosion are unconfirmed)",
+    "hand": "a hand-grenade ring is built on the parameterised spawn (uWp06, DTI main+0x1D714C8) but has no live "
+            "receipt yet",
+    "incendiary": "an incendiary-grenade ring is built on the parameterised spawn (uWp07, DTI main+0x1D71500) but has "
+                  "no live receipt yet",
 }
 RING_KINDS = RING_VERIFIED_KINDS + tuple(RING_KIND_REFUSED)
 RING_COUNT_DEFAULT, RING_COUNT_MAX = 10, 16
@@ -44,11 +69,26 @@ RING_COUNT_DEFAULT, RING_COUNT_MAX = 10, 16
 # they are verified. SELF_CLEAR_CM is the smallest final radius the op will accept.
 RING_RADIUS_DEFAULT_CM, RING_RADIUS_MIN_CM, RING_RADIUS_MAX_CM = 600.0, 250.0, 2500.0
 RING_INNER_DEFAULT_CM, RING_SELF_CLEAR_CM = 150.0, 250.0
+# The smallest radius an *explosive* kind (hand, incendiary) may be ringed at: the flash's 250 cm floor and
+# 150 cm default inner ring are inside a grenade's blast, and the first receipt would have been a self-damage one.
+RING_EXPLOSIVE_CLEAR_CM = 600.0
 RING_RIPPLE_MS_DEFAULT, RING_RIPPLE_MS_MAX = 40.0, 400.0
 # The spawned flash unit's world transform: spawn.c copies the player's +0x60 position to the unit's live
 # transform (+0x60, x/y/z floats) and its home copy (+0x2680). Relocating both before the explode places
 # the blast on the ring. This RAM relocation is the one step NOT exercised by the live-verified flash.
 RING_UNIT_POS, RING_UNIT_HOME = R.P_POS, 0x2680
+
+# The scatter barrage (operator 2026-11-10 ~07:00): the ring's verified step along a cone toward the threats. The
+# verified kind is the flash; an explicit implemented class (hand/incendiary) is the receipt probe, never "random".
+SCATTER_KINDS = RING_VERIFIED_KINDS
+SCATTER_COUNT_DEFAULT, SCATTER_COUNT_MAX = 8, 16
+SCATTER_SPREAD_DEG = 30.0
+SCATTER_MIN_CM, SCATTER_MAX_CM = 300.0, 1500.0
+SCATTER_GAP_MS = (100.0, 200.0)
+SCATTER_CHEST_CM = 120.0
+# One centimetre past the learned reach: the placement is computed with sin/cos, and float rounding must never put an
+# explosive round a hair inside it.
+SCATTER_SAFE_CM = 1.0
 
 
 def ring_defaults():
@@ -56,10 +96,64 @@ def ring_defaults():
             "ripple_ms": RING_RIPPLE_MS_DEFAULT, "expand": True}
 
 
-def ring_kind_options():
-    """The UI chooser's rows: flash preselected and enabled; the others disabled with their reason."""
-    return [{"kind": k, "available": k in RING_VERIFIED_KINDS,
-             "reason": RING_KIND_REFUSED.get(k, "")} for k in RING_KINDS]
+def ring_kind_options(*, pre_class=False):
+    """The UI chooser's rows: flash preselected and enabled; the others disabled with their reason.
+
+    On an emulator that still holds the pre-class pair the flash works (old call shape) but the class kinds cannot be
+    installed until that emulator restarts, and the row says exactly that.
+    """
+    rows = []
+    for kind in RING_KINDS:
+        if kind in RING_VERIFIED_KINDS:
+            rows.append({"kind": kind, "available": True, "reason": ""})
+        elif pre_class:
+            rows.append({"kind": kind, "available": False, "reason": PRE_CLASS_REASON})
+        else:
+            rows.append({"kind": kind, "available": False, "reason": RING_KIND_REFUSED.get(kind, "")})
+    return rows
+
+
+def detect_pair(ctl):
+    """Which spawn/explode pair `ctl` currently holds: 'pre_class', 'class', or None for unrecognised bytes.
+
+    'class' includes the all-zero cave, the one state into which attach() installs the class pair. A half-installed
+    pair (one address written, the other still zero) is *not* either pair and is refused rather than guessed at.
+    """
+    spawn = ctl.rd(ctl.base + PAIR_AT[0], len(IMAGES["spawn"]))
+    explode = ctl.rd(ctl.base + PAIR_AT[1], len(IMAGES["explode"]))
+    if spawn == CLASSES.SPAWN_CLASS_BYTES and explode == CLASSES.EXPLODE_CLASS_BYTES:
+        return "class"
+    if not any(spawn) and not any(explode):
+        return "class"
+    if spawn == IMAGES["spawn"] and explode == IMAGES["explode"]:
+        return "pre_class"
+    return None
+
+
+def code_for(profile):
+    """The install table for a pair profile (the old table for the old pair, the class table otherwise)."""
+    return PRE_CLASS_CODE if profile == "pre_class" else CODE
+
+
+def image_for(name, profile):
+    """The pinned image `name` for a pair profile."""
+    return IMAGES[name] if profile == "pre_class" else CLASSES.image_bytes(name)
+
+
+FLASH_PLACE_MIN_CM_DEFAULT = 400.0
+
+
+def flash_place_min_cm():
+    """The nearest a flash round may be placed from him: the title's own floor (aim-book adds 400 cm) or 400 cm.
+
+    The operator (2026-11-10): "never let the bot get stunned by their own flash grenades". The scatter's old 300 cm
+    near field is inside a flash's own effect; a title value below 400 is clamped, a wider one is honoured.
+    """
+    value = getattr(R, "FLASH_PLACE_MIN_CM", None)
+    try:
+        return max(FLASH_PLACE_MIN_CM_DEFAULT, float(value)) if value is not None else FLASH_PLACE_MIN_CM_DEFAULT
+    except (TypeError, ValueError):
+        return FLASH_PLACE_MIN_CM_DEFAULT
 
 
 def table_bytes(base, vt):
@@ -100,6 +194,44 @@ class Controller(N.Controller):
             if self.q(self.sp + R.P_FIRST) != self.player or self.q(self.player + 0x1A00) != self.generation:
                 raise Unavailable("player allocation changed")
 
+    def pair(self):
+        """The spawn/explode pair this emulator holds, detected once; raises when it is unrecognised.
+
+        Read before attach() installs anything: install() may only write zero bytes, so the pair that is already
+        there decides the whole session's call shape (and whether the class kinds can exist at all).
+        """
+        profile = getattr(self, "pair_profile", None)
+        if profile:
+            return profile
+        profile = detect_pair(self)
+        if profile is None:
+            raise Unavailable(UNKNOWN_PAIR_REASON)
+        self.pair_profile = profile
+        return profile
+
+    def _require_kind(self, kind):
+        """Refuse a non-flash kind on an emulator whose pair is still the old flash-only one, before any native call."""
+        if kind != "flash" and self.pair() == "pre_class":
+            raise Unavailable(PRE_CLASS_REASON)
+
+    def _spawn(self, kind):
+        """Spawn one native grenade unit of `kind` through the pair this emulator holds -> (unit, born)."""
+        if self.pair() == "pre_class":
+            unit = self.call(0x118E820, self.player, self.generation)
+        else:
+            unit = self.call(0x118E820, self.player, self.generation, CLASSES.CLASSES[kind].dti)
+        if not R.ptr_ok(unit):
+            raise Unavailable(f"native {kind} allocation refused")
+        return unit, self.q(unit + 0x1A00)
+
+    def _detonate(self, unit, born, kind, carried):
+        """The explosion transition: the old four arguments, or the class pair's vtable/item/update."""
+        if self.pair() == "pre_class":
+            return self.call(0x118E9D0, unit, born, self.player, self.generation)
+        spec = CLASSES.CLASSES[kind]
+        update = self.base + (CLASSES.FLASH_UPDATE_OFF if kind == "flash" else CLASSES.BOMB_UPDATE_OFF)
+        return self.call(0x118E9D0, unit, born, self.player, self.generation, carried, spec.item, update)
+
     def ready(self):
         self.check_build()
         if getattr(self.ad, "paused", False):
@@ -128,12 +260,13 @@ class Controller(N.Controller):
             raise Unavailable("private native mailbox identity changed")
 
     def attach(self):
+        profile = self.pair()                       # before anything is installed: the pair already there decides it
         entries = table_bytes(self.base, self.original)
         if self.rd(self.original, len(entries)) != entries or self.q(self.player) != self.original:
             raise Unavailable("player vtable is modified or unsupported")
         assets = []
-        for off, name, size, digest in CODE:
-            data = IMAGES[name]
+        for off, name, size, digest in code_for(profile):
+            data = image_for(name, profile)
             if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
                 raise Unavailable("native hook asset checksum mismatch")
             assets.append((self.base + off, data))
@@ -236,17 +369,17 @@ class Controller(N.Controller):
             try:
                 self.attach()
                 attached_at = time.monotonic()
-                unit = self.call(0x118E820, self.player, self.generation)
+                unit, born = self._spawn("flash")
                 spawned_at = time.monotonic()
-                if not R.ptr_ok(unit):
-                    raise Unavailable("native flash allocation refused")
-                born = self.q(unit + 0x1A00)
                 def initialized():
                     self.projectile(unit, born)
                     return self.w(unit + 0x1B28) == 29 and self.rd(unit + 0x1B88, 1) == b"\x01"
                 self.wait(initialized)
                 initialized_at = time.monotonic()
-                if self.call(0x118E9D0, unit, born, self.player, self.generation) != 1:
+                carried = self.q(unit)
+                if carried != self.base + CLASSES.FLASH_VT:
+                    raise Uncertain(f"native flash allocation is not the verified class: {carried:#x}")
+                if self._detonate(unit, born, "flash", carried) != 1:
                     raise Unavailable("native flash resources or owner are unavailable")
                 self.projectile(unit, born)
                 if self.rd(unit + 0x28A0, 1) != b"\x01":
@@ -265,61 +398,108 @@ class Controller(N.Controller):
             finally:
                 self.detach_completed()
 
+    def flash_at(self, x, y, z):
+        """One flash ON THE CROWD (re5_switch.FLASH_PLACE): the verified flash with the unit's live transform and home
+        copy moved to (x, y, z) before the blast - the ring's own step (_ring_one), one grenade, never at his feet. The
+        point is refused closer than RING_SELF_CLEAR_CM to him. -> the confirmed receipt, with the point and his
+        distance from it."""
+        self.ready()
+        with self.lock:
+            player, generation = self.ready()
+            self.sp = self.q(self.base + R.S_PLAYER)
+            self.player, self.generation = player, generation
+            self.original = self.q(player)
+            self.check()
+            px, py, pz = struct.unpack("<3f", self.rd(self.player + R.P_POS, 12))
+            if not all(math.isfinite(v) for v in (x, y, z)):
+                raise Unavailable("the flash's point is not a point")
+            off = math.hypot(x - px, z - pz)
+            if off < RING_SELF_CLEAR_CM:
+                raise Unavailable(f"the flash's point is {off:.0f} cm from him: never at his feet")
+            started = time.monotonic()
+            try:
+                self.attach()
+                one = self._ring_one(float(x), float(y), float(z), 0)
+            except Exception:
+                self.failed = True
+                self.recoverable = True
+                raise
+            finally:
+                self.detach_completed()
+            return {"state": "confirmed", "verified": True, "op": "flash_at", "effect": "native_flash_explosion",
+                    "player_generation": self.generation, "projectile_generation": one["projectile_generation"],
+                    "pos": one["pos"], "from_player_cm": round(off, 1),
+                    "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+
     def ring_capable(self):
         return True
 
     def grenade_kinds(self):
         """The ring's kinds as this build can honestly fire them (gbox.mercs.grenade_status reads this)."""
-        return ring_kind_options()
+        try:
+            profile = self.pair()
+        except Unavailable as exc:
+            return [{"kind": kind, "available": False, "reason": str(exc)} for kind in RING_KINDS]
+        return ring_kind_options(pre_class=(profile == "pre_class"))
 
-    def _ring_one(self, x, y, z, index):
-        """One flash spawned, relocated to (x, y, z), and detonated - the verified flash with a position write.
+    def _ring_one(self, x, y, z, index, kind="flash"):
+        """One grenade of `kind` spawned, relocated to (x, y, z), and detonated.
 
-        Returns the per-grenade record. Raises on any allocation loss, refusal or missing explosion flag so the
-        ring aborts with a partial receipt rather than replaying a request.
+        The spawn/explode pair is the parameterised class pair: the class DTI (from the game's own initialiser), the
+        vtable the allocation carries, its item id and its update function (the flash's own for a flash, the bomb
+        base for the other uWpBomb classes) are all passed in. On an emulator that still holds the old flash-only
+        pair, only the flash can be fired and it keeps the old call shape. Returns the per-grenade record. Raises on
+        any allocation loss, refusal or missing explosion flag so the ring aborts with a partial receipt rather than
+        replaying a request.
         """
-        unit = self.call(0x118E820, self.player, self.generation)
-        if not R.ptr_ok(unit):
-            raise Unavailable("native flash allocation refused")
-        born = self.q(unit + 0x1A00)
+        self._require_kind(kind)
+        unit, born = self._spawn(kind)
 
         def initialized():
             self.projectile(unit, born)
             return self.w(unit + 0x1B28) == 29 and self.rd(unit + 0x1B88, 1) == b"\x01"
         self.wait(initialized)
         self.projectile(unit, born)
+        carried = self.q(unit)                      # the class this allocation actually carries
+        if kind == "flash" and carried != self.base + CLASSES.FLASH_VT:
+            raise Uncertain(f"native flash allocation is not the verified class: {carried:#x}")
         # Relocate the live transform and its home copy onto the ring before the blast. Keep y (the floor).
         pos = struct.pack("<3f", x, y, z)
         self.write(unit + RING_UNIT_POS, pos)
         self.write(unit + RING_UNIT_HOME, pos)
-        if self.call(0x118E9D0, unit, born, self.player, self.generation) != 1:
-            raise Unavailable("native flash resources or owner are unavailable")
+        if self._detonate(unit, born, kind, carried) != 1:
+            raise Unavailable(f"native {kind} resources or owner are unavailable")
         self.projectile(unit, born)
         if self.rd(unit + 0x28A0, 1) != b"\x01":
-            raise Uncertain("native flash effect did not publish its explosion flag")
-        return {"index": index, "projectile_generation": born, "pos": [round(x, 1), round(y, 1), round(z, 1)]}
+            raise Uncertain(f"native {kind} effect did not publish its explosion flag")
+        return {"index": index, "kind": kind, "projectile_generation": born,
+                "pos": [round(x, 1), round(y, 1), round(z, 1)], "class_vtable": hex(carried)}
 
-    def grenade_ring(self, kind="flash", *, count=None, radius_cm=None, inner_cm=None, ripple_ms=None, expand=None):
+    def grenade_ring(self, kind="flash", *, count=None, radius_cm=None, inner_cm=None, ripple_ms=None, expand=None,
+                     allow_unverified=False):
         """Spawn `count` grenades in a ring around the player and detonate them in a quick ripple.
 
-        Only kind="flash" is verified and reuses the live flash spawn/explode. The ring grows outward from the
-        player (expand) to a final radius_cm (default 10 grenades, ~6 m). Self-damage is read back and reported;
-        flashes do not take the player's health, and the ring is kept at least RING_SELF_CLEAR_CM out regardless.
-        The receipt is confirmed only if every requested grenade published its explosion; a partial result is
-        reported as uncertain and never replayed.
+        kind="flash" is the live-verified path; "hand" and "incendiary" are built on the parameterised class pair and
+        are reachable only with `allow_unverified` (a research probe taking their first live receipt) until each has
+        one - the queue and the PiP see the verified kinds only. The ring grows outward from the player (expand) to a
+        final radius_cm (default 10 grenades, ~6 m). Self-damage is read back and reported; the ring is kept at least
+        RING_SELF_CLEAR_CM out regardless. The receipt is confirmed only if every requested grenade published its
+        explosion; a partial result is reported as uncertain and never replayed.
         """
         kind = (kind or "flash").lower()
         if kind not in RING_KINDS:
             raise Unavailable(f"unknown grenade kind {kind!r}")
-        if kind not in RING_VERIFIED_KINDS:
+        if kind not in RING_VERIFIED_KINDS and not allow_unverified:
             raise Unavailable(RING_KIND_REFUSED.get(kind, "grenade kind not verified"))
+        self._require_kind(kind)
         d = ring_defaults()
         count = d["count"] if count is None else int(count)
         count = max(1, min(count, RING_COUNT_MAX))
+        floor_cm = RING_SELF_CLEAR_CM if kind == "flash" else RING_EXPLOSIVE_CLEAR_CM
         radius_cm = d["radius_cm"] if radius_cm is None else float(radius_cm)
-        radius_cm = max(RING_SELF_CLEAR_CM, min(radius_cm, RING_RADIUS_MAX_CM))
+        radius_cm = max(floor_cm, min(radius_cm, RING_RADIUS_MAX_CM))
         inner_cm = d["inner_cm"] if inner_cm is None else float(inner_cm)
-        inner_cm = max(0.0, min(inner_cm, radius_cm))
+        inner_cm = max(floor_cm if kind != "flash" else 0.0, min(inner_cm, radius_cm))
         ripple_ms = d["ripple_ms"] if ripple_ms is None else float(ripple_ms)
         ripple_ms = max(0.0, min(ripple_ms, RING_RIPPLE_MS_MAX))
         expand = d["expand"] if expand is None else bool(expand)
@@ -344,7 +524,7 @@ class Controller(N.Controller):
                     r = radius_cm if not expand or count == 1 else inner_cm + (radius_cm - inner_cm) * i / (count - 1)
                     gx, gz = px + r * math.cos(angle), pz + r * math.sin(angle)
                     try:
-                        grenades.append(self._ring_one(gx, py, gz, i))
+                        grenades.append(self._ring_one(gx, py, gz, i, kind))
                     except (Unavailable, AllocationLost) as exc:
                         abort = str(exc)
                         break
@@ -369,13 +549,127 @@ class Controller(N.Controller):
                        "self_damage": self_damage, "grenades": grenades,
                        "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
             if full:
-                return {"state": "confirmed", "verified": True, "effect": "native_flash_ring", **receipt}
+                effect = "native_flash_ring" if kind == "flash" else f"native_{kind}_ring"
+                return {"state": "confirmed", "verified": True, "effect": effect, **receipt}
             # Partial or empty: not replayed. A failure that detonated nothing is failed; anything partial is
             # uncertain so the operator can click again without a stuck controller.
             if abort is not None:
                 self.failed, self.recoverable = True, True
             receipt["reason"] = abort or "the ring did not complete"
             return {"state": "failed" if detonated == 0 else "uncertain", "verified": False, **receipt}
+
+    def grenade_scatter(self, kind="random", *, count=None, toward=None, spread_deg=None, min_cm=None, max_cm=None,
+                        gap_ms=None, safe_cm=None, rng=None, kinds=None):
+        """A scatter barrage: `count` grenades set off at points of a cone from him toward the threats.
+
+        The operator (2026-11-10 ~07:00): "i want the bot able to spray a scatter shot of grenades from his postion at
+        threats at will ... a rapid barrage of random grenades ... without equipping it on his character ... sprayed
+        like a scatterhsot whenever the going gets tough". Each round is the ring's verified step (spawn, moved onto
+        its point, the explosion transition), so nothing is equipped and his gun stays in his hand. `toward` is
+        [(x, z)] of the threats; without it the cone follows his facing. Rounds run near to far, SCATTER_SPREAD_DEG
+        either side, about chest height, SCATTER_GAP_MS apart. kind "random" draws each round from SCATTER_KINDS
+        (only the verified ones: the flash today); `kinds` narrows that draw for one barrage (the rule's flash cap
+        leaves the flash out of a mixed draw inside the minute, checkpoint D), and every kind must be in
+        SCATTER_KINDS; an explicit implemented class (hand/incendiary) is the receipt probe and marks the receipt
+        `probe`. An explosive kind keeps every point past safe_cm (his learned reach) and the ring's 600 cm floor; a
+        flash keeps FLASH_PLACE_MIN_CM (400 cm) from him. A partial barrage is uncertain and never replayed.
+        """
+        import random as _random
+        kind = (kind or "random").lower()
+        if kind != "random" and kind not in RING_KINDS:
+            raise Unavailable(f"unknown grenade kind {kind!r}")
+        if kind != "random" and kind not in RING_IMPLEMENTED_KINDS:
+            raise Unavailable(RING_KIND_REFUSED.get(kind, "grenade kind not verified"))
+        if kinds is not None:
+            if kind != "random":
+                raise Unavailable("a barrage of one explicit kind cannot also narrow its draw")
+            kinds = tuple(str(k).lower() for k in kinds)
+            if not kinds or any(k not in SCATTER_KINDS for k in kinds):
+                raise Unavailable(f"this build's barrage cannot draw {kinds!r} (verified: {SCATTER_KINDS})")
+        draw = (kinds or SCATTER_KINDS) if kind == "random" else (kind,)
+        for planned in draw:
+            self._require_kind(planned)
+        rng = rng or _random.Random()
+        count = max(1, min(int(SCATTER_COUNT_DEFAULT if count is None else count), SCATTER_COUNT_MAX))
+        spread = math.radians(float(SCATTER_SPREAD_DEG if spread_deg is None else spread_deg))
+        lo = max(RING_SELF_CLEAR_CM, float(SCATTER_MIN_CM if min_cm is None else min_cm))
+        hi = max(lo, min(float(SCATTER_MAX_CM if max_cm is None else max_cm), RING_RADIUS_MAX_CM))
+        gap = gap_ms or SCATTER_GAP_MS
+        # (checkpoint 0.2/0.3) No round may land inside its own blast: the flash keeps FLASH_PLACE_MIN_CM from him,
+        # an explosive kind keeps the ring's 600 cm floor and, past it, his learned reach plus one centimetre.
+        flash_floor = max(lo, flash_place_min_cm())
+        explosive_floor = max(lo, RING_EXPLOSIVE_CLEAR_CM, float(safe_cm or 0.0) + SCATTER_SAFE_CM)
+        floors = {"flash": round(flash_floor, 1), "explosive": round(explosive_floor, 1)}
+        floor_cm = min(flash_floor if k == "flash" else explosive_floor for k in draw)
+        probe = kind != "random" and kind not in RING_VERIFIED_KINDS
+        self.ready()
+        with self.lock:
+            player, generation = self.ready()
+            self.sp = self.q(self.base + R.S_PLAYER)
+            self.player, self.generation = player, generation
+            self.original = self.q(player)
+            self.check()
+            px, py, pz = struct.unpack("<3f", self.rd(self.player + R.P_POS, 12))
+            points = [(float(x), float(z)) for x, z in (toward or ())]
+            if points:
+                cx, cz = sum(p[0] for p in points) / len(points), sum(p[1] for p in points) / len(points)
+                axis = R.heading(cx - px, cz - pz)
+                far = max(math.hypot(x - px, z - pz) for x, z in points)
+                hi = max(lo, min(hi, far + 200.0))
+            else:
+                q = struct.unpack("<4f", self.rd(self.player + R.P_ROT, 16))
+                axis = R.heading_of(q)
+            hp_before = struct.unpack("<h", self.rd(self.player + R.P_HP, 2))[0]
+            started = time.monotonic()
+            rounds, abort = [], None
+            try:
+                self.attach()
+                for i in range(count):
+                    self.check()
+                    this = rng.choice(draw) if kind == "random" else kind
+                    # + SCATTER_SAFE_CM: the point is built with sin/cos, so the *measured* distance must stay past
+                    # the floor the receipt reports, not exactly on it.
+                    near = (flash_floor if this == "flash" else explosive_floor) + SCATTER_SAFE_CM
+                    if hi < near:
+                        hi = near                       # the far bound follows the floor: placement and receipt agree
+                    d = near + (hi - near) * (i + rng.random()) / count     # near to far, a step out
+                    ang = axis + rng.uniform(-spread, spread)
+                    x, z = px + d * math.sin(ang), pz + d * math.cos(ang)
+                    try:
+                        row = self._ring_one(x, py + SCATTER_CHEST_CM, z, i, this)
+                    except (Unavailable, AllocationLost) as exc:
+                        abort = str(exc)
+                        break
+                    rounds.append({**row, "kind": this, "dist_cm": round(d, 1)})
+                    if i + 1 < count:
+                        time.sleep(rng.uniform(*gap) / 1000.0)
+            except Exception:
+                self.failed = True
+                self.recoverable = True
+                raise
+            finally:
+                self.detach_completed()
+            try:
+                hp_after = struct.unpack("<h", self.rd(self.player + R.P_HP, 2))[0]
+            except (OSError, struct.error):
+                hp_after = None
+            receipt = {"op": "grenade_scatter", "kind": kind, "requested": count, "detonated": len(rounds),
+                       "kinds": sorted({r["kind"] for r in rounds}),
+                       **({"probe": True} if probe else {}),
+                       "axis_deg": round(math.degrees(axis), 1), "spread_deg": round(math.degrees(spread), 1),
+                       "near_cm": round(floor_cm, 1), "far_cm": round(hi, 1), "floor_cm": round(floor_cm, 1),
+                       "floors_cm": floors, "rounds": rounds,
+                       "hp_before": hp_before, "hp_after": hp_after,
+                       "self_damage": (hp_before - hp_after) if isinstance(hp_after, int) else None,
+                       "player_generation": self.generation,
+                       "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+            if len(rounds) == count and abort is None:
+                effect = "native_flash_scatter" if kind == "random" else f"native_{kind}_scatter"
+                return {"state": "confirmed", "verified": True, "effect": effect, **receipt}
+            if abort is not None:
+                self.failed, self.recoverable = True, True
+            receipt["reason"] = abort or "the barrage did not complete"
+            return {"state": "failed" if not rounds else "uncertain", "verified": False, **receipt}
 
     def current_weapon(self):
         player, _ = self.ready()

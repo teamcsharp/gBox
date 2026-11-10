@@ -18,3 +18,30 @@ earlier vtable work). Weapon item id = (dti id >> 8) & 0xFFFF; bomb variants add
 
 The launcher weapon objects are 0xE28 bytes (no extra fields over uPlWeapon) so a grenade-launcher uWp1080 can be
 swapped by slot id alone; the round objects are uWpShellLauncher subclasses. Not verified at runtime.
+
+## The launcher rounds cannot ride the bomb detonation wrapper (measured 2026-11-10)
+
+Our own detonation wrapper (`gbox/mercs/native/re6_061d2a06/code.py`, image at `main+0x18F29C0`) was written for a
+thrown bomb and its disassembly shows why parameterising the class is not enough for a launcher round:
+
+```
+word 30  ldr  x0, [x19, #0x13F0]        ; the unit's action object
+word 31  cbz  x0, refuse
+word 32  ldr  x1, [x0]
+word 33  adrp x0, #0x288c000
+word 34  add  x0, x0, #0x9a0
+word 35  cmp  x1, x0                    ; must be the bomb action class
+word 36  b.ne refuse
+...
+word 52  ldr  x1, [x1]
+word 53  adrp x0, #0x288c000
+word 54  add  x0, x0, #0x868            ; the explosion class the wrapper reports
+word 55  cmp  x1, x0
+```
+
+A `uWpShellLauncher` round (uWp1302/1303/1304, items 0x133-0x135, DTIs `0x2952098/0x29520d0/0x2952108`) carries the
+launcher's action object, not the bomb's, so the wrapper returns 0 - a clean refusal, not a crash, but also not an
+explosion. The round is a **projectile the weapon spawns with a velocity**, so the right path is the launcher's own
+fire/explode, not this wrapper. `gbox/mercs/native/re6_061d2a06/classes.py` now pins the shell, launcher and shell-family
+DTIs/items/sizes (`SHELLS`, `SHELL_FAMILY`, `LAUNCHERS`, `LAUNCHER_ROUNDS`, `shell_for_item`, `shell_rounds`) and the
+test cross-checks every row against this file's JSON, so the addresses are ready when that path is built.

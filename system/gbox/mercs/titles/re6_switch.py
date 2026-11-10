@@ -22,6 +22,7 @@ Measured live on the Spark (docs/research/re6-switch-ram.md; this driver's own m
 """
 from __future__ import annotations
 
+import dataclasses
 import heapq
 import json
 import math
@@ -37,6 +38,8 @@ from .. import menu_speed                  # learned menu cadence: the Navigator
 from ..core import menu_pace               # the title screens' at-once confirm (title_hints)
 from ..core import combat                  # the universal fight (UNIVERSAL_CORE): at import, for the hot reload
 from ..core import respond                 # the doctrine's answer to a threat (RESPOND): at import, for the hot reload
+from ..core import aim_book                # the per-shot truth and the learning on every miss (AIM_BOOK)
+from ..core import flash_window            # the one flash clock and the tight-situation rule (FLASH_MIN_GAP_S, FLASH_TIGHT)
 
 TITLE_ID = "01002A000CD48000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/01002A000CD48000-ram.json
@@ -63,9 +66,15 @@ GET_DTI_SLOT, DTI_NAME = 5, 0x8
 # never fires it; RING_N is the crowd inside a few metres that counts as surrounded; RING_EVERY_S is the cooldown.
 RING, RING_N, RING_EVERY_S, RING_KIND = True, 4, 20.0, "flash"
 # The scatter barrage's rule (gbox.mercs.grenade_ring.decide_scatter, operator 2026-11-10 ~07:00: "spray a scatter shot
-# of grenades from his postion at threats at will ... whenever the going gets tough"): SCATTER off, a barrage at most
-# every SCATTER_EVERY_S, SCATTER_N rounds (re6_switch_native.grenade_scatter; the PiP's bot-logic sidebar sets them).
+# of grenades from his postion at threats at will ... whenever the going gets tough"): a barrage at most every
+# SCATTER_EVERY_S, SCATTER_N rounds (re6_switch_native.grenade_scatter; the PiP's bot-logic sidebar sets them).
 SCATTER, SCATTER_EVERY_S, SCATTER_N = True, 12.0, 8
+
+
+def scatter_kinds() -> tuple:
+    """The kinds a random barrage can draw: the native controller's verified set (the flash today; A/C extend it)."""
+    from . import re6_switch_native as native
+    return tuple(native.SCATTER_KINDS)
 
 UNIT_LINES, LINE_STRIDE, UNIT_NEXT, N_LINES = 0x268, 0x30, 0x20, 32
 UI_LINES = (0, 1, 18, 19)               # the interface units' lines (title / dialogs, the extras' backdrop, menus / HUD)
@@ -2047,6 +2056,12 @@ GOAL_LOCATE = 1.0
 # A command never presses a key itself: the hold, the heal, the prompts and the bombs' rules still decide every press.
 HUNT_R = 1200.0
 MINE_DUE_S, MINE_CMD_GAP_S = 12.0, 10.0
+# 2026-11-10 (the operator: "make sure that when I use one of the quick commands ... it's able to take those commands into
+# consideration"): repetitive, missing and rush were said ("acting: ...") and did nothing here.
+#   repetitive  the target he kept at set aside CMD_DROP_S and the wall escape: another target, another way (RE5's);
+#   rush        the hunt (in among them) with the remote bomb due, as RE5's flash-and-rush;
+#   missing     said: the aim lock puts the laser on him before each shot, there is no learned offset to reset.
+CMD_DROP_S = 15.0
 # The combo clock (operator 2026-11-09: "dispatch a foe every 3 seconds and never fail at it ... Have the bot
 # understanding the combo and the amount of time left in it at all times and manage it"): sGameMan +0x4094 the combo,
 # +0x409C its window's seconds left (measured: about 15 s left after a kill, docs/research/re6-switch-ram.md). The full
@@ -2106,6 +2121,30 @@ NADE_UP_FROM = 11                       # from a gun, the wheel's up reaches the
 FLASH_N, FLASH_R, NADE_CLEAR_R = 3, 500.0, 200.0   # (3 flashed on every horde: MercMode 15:38-15:51, 30 flashes and
 FLASH_GAP_S = 5.0                       # 115 fever kicks in 12 min, kills a minute down a fifth; 17:42: 4+ within 5 m;
                                         # 21:0x: "Have them throw flashbangs all the time" - 3 within 5 m, 1.5 s apart)
+# One flash a minute, and only when he needs it (the operator 2026-11-10 14:30: "RE6 flashes far too often; at most one
+# flash per minute; the RE6 bot is not proactive enough at shooting"; then: "flashes should only come in tight situations
+# where the bot actually needs help. Some enemies can't be beaten by a flash and must be killed with weapons. Constant
+# flashes are distracting and disorienting for viewers"). Live 3 rounds before: threat_flashes 156, rings 34, scatter
+# barrages 59 (472 flash rounds), the wheel's 22 + its flurry; threat_answered_flash 3792 against _fire 1459; t_nade 331 s
+# against t_fire 9.3 s; 96 shots against 243 throws. Now every automatic flash - the doctrine's native flash, the wheel's,
+# the flurry, a flash in hand, the cluster burst's fallback, the ring, the scatter while it fires flashes only - asks one
+# gate (core.flash_window.FlashGate): the last flash from any source at least FLASH_MIN_GAP_S ago (the sidebar's slider,
+# wall clock; the operator's own emergency click is never held but holds the next), and with FLASH_TIGHT a tight reason
+# (core.flash_window.tight): a hold on him, a wind-up in reach with no clear way out, FLASH_TIGHT_N within FLASH_TIGHT_R
+# with no clear way out, or his health at FLASH_TIGHT_LOW or under and falling. The big ones (BIG_HP up, a boss / dangerous
+# tier) never count toward a flash: weapons for them. Stats flash_gap_skips, flash_untight_skips, flash_skip_<path>,
+# flash_reason_last, flash_reasons, flash_paths.
+FLASH_MIN_GAP_S = 60.0
+FLASH_TIGHT = True
+FLASH_TIGHT_N, FLASH_TIGHT_R, FLASH_TIGHT_LOW = 4, 300.0, 0.35
+# Fire first (the same request): a new grenade cycle (the wheel, the gun down for seconds) is not started while a
+# flashable target stands in clear sight within FIRE_FIRST_R on his level - the gun answers him (the magnum / shotgun
+# range, up close); grenades go to groups beyond it ("hand grenades on groups at a safe distance"). A cycle still on the wheel (not yet in hand) is called off the same way, and
+# the doctrine counts a grenade cycle as no answer then (it fires instead). Stats nade_fire_first_skips / _aborts.
+FIRE_FIRST = True
+FIRE_FIRST_R = 400.0
+FLASH_IMMUNE_HP = 1500                  # this much maximum health or a boss tier: a flash does not stop him - weapons
+SCATTER_FLASH_ONLY = True               # re6_switch_native.SCATTER_KINDS is ("flash",): every barrage is flashes
 # The push-through (operator 21:0x: "If they're overwhelmed, have them just throw flashbangs in order to just disarm and
 # get out of the situation ... use shotguns to force them out of the way, and use flashbangs to disarm them and work
 # their way through with melee"): overwhelmed - OVER_N within OVER_R, one winding up a grab or blow within FLASH_R, or
@@ -2238,6 +2277,14 @@ NADE_REPEAT_AIM_S, NADE_REPEAT_THROW_S, NADE_REPEAT_RELEASE_S = 0.05, 0.15, 0.12
 # With nobody like that a grenade in his hand goes back by the hook; it is never thrown ahead at nothing. stats
 # nade_void_skips (targets refused), nade_ground_aims (ticks the aim was steered onto the ground).
 NADE_FLOOR_DY = 100.0
+# Where it lands, not only who it is thrown at (operator 2026-11-10 14:45, RE6: "I need it to actually aim the grenades at
+# the ground instead of throwing them in lava"): the target's feet on a walkable triangle of the stage's nav mesh - inside
+# it, at the floor's height there (_floor_at; lava, a pit or the void are not on the zombies' mesh, and NavMesh.locate's
+# nearest-triangle fallback is not floor) - and the aim point, the group's centre, on floor too, with NADE_LAND_SLACK short
+# and long of it on his line (a throw lands a little off) and the floor running there from him. A centre over the lava
+# gives way to the feet of the one nearest it that pass; none: no throw (_nade_landing). stats nade_landing_moves (the
+# aim moved off the centre onto floor), nade_landing_skips (nowhere among them to land it).
+NADE_LAND_SLACK = 150.0
 # Ledge / sniper / rocket threat awareness (operator 2026-11-03: "full awareness of enemy locations in 3D, including
 # enemies UP HIGH, on LEDGES, and at DISTANCE ... any zombie pointing a LASER SIGHT (sniper), or a rocket/sniper threat,
 # becomes a PRIORITY TARGET"). windup() already flags a ranged action within RANGED_R; LEDGE_RANGED_R extends that for
@@ -2477,6 +2524,25 @@ FIRE_PATTERN = True
 FIRE_CAP_HZ = 10.0                      # the bot's own: a press every second 20 Hz tick (the game's own rate not counted)
 FIRE_FAMILY = {1: "handgun", 2: "handgun", 3: "handgun", 40: "handgun", 4: "shotgun", 5: "shotgun", 6: "shotgun",
                16: "shotgun", 7: "magnum", 8: "magnum", 9: "rifle", 10: "rifle", 11: "rifle"}
+
+
+# The aim book (gbox.mercs.core.aim_book; the operator 2026-11-10: "I want it improving and learning across these titles
+# so they all get better"): every press on a zombie is a shot record (the lock's / the sticks' point, the laser's line when
+# it is up, the game's answer in his health within aim_book.HIT_S), every resolved one teaches the book
+# (learned/01002A000CD48000/aim_book.json, its sub-cells in learned/_universal with RE4's and RE5's), and the book's
+# correction - the body point, the lead, the angular correction, RE5's and RE4's lessons as the prior until RE6's own
+# evidence grows - is added to the point the lock and the sticks go for (_aim_book_offset, beside the fire pattern's
+# scatter). AIM_BOOK off: no records, no correction.
+AIM_BOOK = True
+AIM_LEAD_PRIOR_S = 0.08
+
+
+def aim_family(p) -> str:
+    """The aim book's family of the gun in his hand: every gun has one (the automatics too)."""
+    wid = (p or {}).get("weapon_id")
+    if not isinstance(wid, int) or isinstance(wid, bool):
+        return "gun"
+    return "automatic" if wid in AUTO_IDS else FIRE_FAMILY.get(wid, "other")
 
 
 def fire_family(p) -> str | None:
@@ -3242,14 +3308,19 @@ class Bot:
             return out
         try:
             r = self.__dict__.get("_resp")
+            gap = max(FLASH_GAP_S, FLASH_MIN_GAP_S)          # the live constants, not the ones the Rules were made with
             if r is None:
-                r = self._resp = respond.Responder(self.stats, respond.Rules(flash_gap_s=FLASH_GAP_S))
+                r = self._resp = respond.Responder(self.stats, respond.Rules(flash_gap_s=gap))
+            elif r.rules.flash_gap_s != gap:
+                r.rules = dataclasses.replace(r.rules, flash_gap_s=gap)
             prof = self._profile()
             px, py, pz = p["pos"]
             live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")
                     and abs(e["pos"][1] - py) <= MAX_DY]
             flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
             mesh = snap.get("navmesh")
+            ff = self._fire_first(p, live, flat, now) if FIRE_FIRST else None
+            self._resp_snap = snap                           # (the doctrine's flash reads its tight reason off it)
 
             def fire(e, pool):
                 key = e.get("ptr", e.get("slot"))
@@ -3273,7 +3344,9 @@ class Bot:
                         time.time() - (self.stats.get("native_flash_confirmed_at") or 0) <= 1.0:
                     return "flash"                           # a native flash going off (the bot's or the operator's)
                 if doing == "nade":
-                    return "flash" if (self.nade or {}).get("kind") == "flash" else "fire"
+                    if (self.nade or {}).get("kind") == "flash":
+                        return "flash"
+                    return "" if ff is not None else "fire"  # fire first: a grenade cycle is no answer to one in sight
                 if str(self.why).startswith("the operator's"):
                     return "busy"                            # the operator's mark on the map: it overrides
                 return ""
@@ -3287,6 +3360,72 @@ class Bot:
             self.stats["threat_error"] = f"{type(exc).__name__}: {exc}"[:160]
             return out
 
+    # --- the flash gate (FLASH_MIN_GAP_S / FLASH_TIGHT: core.flash_window) and fire first (FIRE_FIRST) ---------------
+    def _flash_gate(self):
+        g = self.__dict__.get("_fgate")
+        if g is None:
+            g = self._fgate = flash_window.FlashGate(self.stats, gap_s=lambda: FLASH_MIN_GAP_S,
+                                                     need_reason=lambda: FLASH_TIGHT)
+        return g
+
+    def _flash_immune(self, e) -> bool:
+        """A flash does not stop him: FLASH_IMMUNE_HP of maximum health or more, or a boss tier."""
+        if (e.get("hp_max") or 0) >= FLASH_IMMUNE_HP:
+            return True
+        try:
+            prof = self._profile()
+            return bool(prof.tier) and prof.tier(e) == "boss"
+        except Exception:                                    # noqa: BLE001
+            return False
+
+    def _escape_clear(self, p, live, snap) -> bool | None:
+        """A clear way out: the push heading's line PUSH_CHECK_R long on the nav mesh, nobody within 150 cm of its end
+        (None: no mesh to say)."""
+        mesh = (snap or {}).get("navmesh")
+        if mesh is None or not hasattr(mesh, "clear") or not p.get("pos"):
+            return None
+        try:
+            h = self._push_heading(p, live, snap)
+            px, py, pz = p["pos"]
+            end = (px + PUSH_CHECK_R * math.sin(h), py, pz + PUSH_CHECK_R * math.cos(h))
+            if mesh.clear(p["pos"], end) is False:
+                return False
+            return all(math.hypot(e["pos"][0] - end[0], e["pos"][2] - end[2]) >= 150.0 for e in live)
+        except Exception:                                    # noqa: BLE001
+            return None
+
+    def _flash_reason(self, p, live, snap, now) -> str | None:
+        """core.flash_window.tight on this tick: grabbed / windup / surrounded / low_falling, or None."""
+        if not p or not p.get("pos"):
+            return None
+        me = p["pos"]
+        rows = [{"pos": e["pos"], "immune": self._flash_immune(e), "windup": windup(e, me) == "melee", "reach": MELEE_R * 2}
+                for e in live if (e.get("hp") or 0) > 0 and e.get("pos") and abs(e["pos"][1] - me[1]) <= MAX_DY]
+        hp, top = p.get("hp"), p.get("hp_max")
+        frac = hp / top if isinstance(hp, (int, float)) and isinstance(top, (int, float)) and top > 0 else None
+        fell = min((now - t for t, h, _d in getattr(self, "hp_hist", ()) or ()
+                    if isinstance(h, (int, float)) and isinstance(hp, (int, float)) and h > hp), default=None)
+        held = bool(self.__dict__.get("in_hold")) or self.doing == "held"
+        return flash_window.tight(me, rows, held, frac, fell, self._escape_clear(p, live, snap),
+                                  FLASH_TIGHT_N, FLASH_TIGHT_R, FLASH_TIGHT_LOW)
+
+    def _flash_ok(self, path, snap, now) -> tuple:
+        """(allowed, reason) of an automatic flash by path: the gate's minute and, FLASH_TIGHT, a tight reason."""
+        p = (snap or {}).get("player") or {}
+        live = [e for e in (snap or {}).get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")]
+        reason = self._flash_reason(p, live, snap, now)
+        self._flash_reason_now = reason
+        return self._flash_gate().allow(path, reason), reason
+
+    def _fire_first(self, p, vis, flat, now):
+        """FIRE_FIRST: the nearest flashable one in clear sight within FIRE_FIRST_R on his level, or None."""
+        if not p.get("pos"):
+            return None
+        py = p["pos"][1]
+        near = [e for e in vis or () if (e.get("hp") or 0) > 0 and e.get("pos") and flat(e) <= FIRE_FIRST_R
+                and abs(e["pos"][1] - py) <= MAX_DY and not self.is_blocked(e, now)]
+        return min(near, key=flat, default=None)
+
     def _respond_flash(self, why) -> bool:
         """The native flash at his position (re6_switch_native, the operator's flash_now: no item screen, no input),
         asked on a thread like RE5's; confirmed, native_flash_confirmed_at starts the fever's follow-through
@@ -3296,10 +3435,15 @@ class Bot:
         ad = getattr(m, "adapter", None)
         if ad is None or getattr(m, "mercs_no_modifications", False) or d.get("_resp_flash_inflight"):
             return False
-        player = (getattr(self, "_snap", None) or {}).get("player") or {}
+        snap = d.get("_resp_snap") or getattr(self, "_snap", None) or {}
+        player = snap.get("player") or {}
         off = d.get("_resp_flash_off")
         if off is not None and off == player.get("ptr"):
             return False
+        ok, reason = self._flash_ok("respond", snap, self.clock())
+        if not ok:
+            return False                                     # on its gap / no tight reason: the doctrine fires instead
+        self._flash_gate().stamp("respond", reason)
         d["_resp_flash_inflight"] = True
         stats = self.stats
 
@@ -3525,6 +3669,7 @@ class Bot:
         self.hp_hist = [h for h in self.hp_hist if now - h[0] <= HP_HIST_S] + [(now, p.get("hp"), self.doing)]
         self._round_start(snap, now)
         self._score_hits(snap, now)
+        self._aim_tick(snap, now)                            # the aim book: the open shots resolved and learned (AIM_BOOK)
         if UNIVERSAL_CORE:
             self._core_tick(p, snap, now)                        # the profile of this tick, who hurt him (combat.Threats)
         cooldown = p.get('fire_cooldown_s')
@@ -3787,6 +3932,21 @@ class Bot:
                                                                     "can be, then out of its reach")
         elif cmd == "mine_trail" and self.bomb_phase is None and not (p.get("bomb") or {}).get("out"):
             self.stats["directive_status"] = self._mine_now(p, now, "mine trail: the next bomb due, then on")
+        elif cmd == "repetitive" and fresh:                  # CMD_DROP_S above
+            if self.target is not None:
+                self.blocked[self.target] = now + CMD_DROP_S
+                self._block_reason[self.target] = "operator_repetitive"
+                self.target = None
+            self.wall_escape = (now + WALL_ESCAPE_S, self._open_heading(p, live))
+            self.stats["directive_status"] = f"dropped the target he kept at for {CMD_DROP_S:.0f} s; another way"
+        elif cmd == "rush" and fresh:
+            self.stats["directive_status"] = "rush: in among them (the hunt); " + self._mine_now(
+                p, now, "the remote bomb due at the next moment it can be")
+        elif cmd == "missing" and fresh:
+            self.stats["directive_status"] = ("the aim lock puts the laser on him before every shot: no learned offset "
+                                              "to reset")
+        if cmd == "rush":
+            return "hunt"
         return cmd if cmd in ("fight", "hunt", "score") else None
 
     def _mine_now(self, p, now, ok: str) -> str:
@@ -4494,8 +4654,11 @@ class Bot:
             back = self._stick(self._open_heading(p, live, self.hazard), yaw)
         elif self.survival and near_e is not None:              # low health: away from the nearest as he fires
             back = self._stick(self._open_heading(p, live, (near_e["pos"][0], near_e["pos"][2])), yaw)
-        self._locked = (self._lock(p, tgt, snap, now,                                   # the lock from the raise on
-                                   scatter=self._fp_offset(p, tgt, now) if FIRE_PATTERN else None),
+        scatter = self._fp_offset(p, tgt, now) if FIRE_PATTERN else None
+        ab_off = self._aim_book_offset(p, tgt, None, now)                     # the aim book's correction (AIM_BOOK)
+        if ab_off is not None:
+            scatter = tuple((scatter or (0.0, 0.0, 0.0))[k] + ab_off[k] for k in range(3))
+        self._locked = (self._lock(p, tgt, snap, now, scatter=scatter),         # the lock from the raise on
                         tgt.get("ptr", tgt.get("slot")))
         if p.get("ammo") == 0:
             self._trigger(False, now)
@@ -4569,6 +4732,9 @@ class Bot:
         yaw_err, pitch_err = ray_error(origin, dot, chest)
         aim_at = on_e or tgt
         fp_off = self._fp_offset(p, aim_at, now) if FIRE_PATTERN else None   # the scatter across him (FIRE_PATTERN)
+        ab_off = self._aim_book_offset(p, aim_at, origin, now)              # the aim book's correction (AIM_BOOK)
+        if ab_off is not None:
+            fp_off = tuple((fp_off or (0.0, 0.0, 0.0))[k] + ab_off[k] for k in range(3))
         done, done_id = getattr(self, "_locked", (False, None))
         locked = done if done_id == aim_at.get("ptr", aim_at.get("slot")) else self._lock(p, aim_at, self._snap, now,
                                                                                           scatter=fp_off)
@@ -4627,6 +4793,8 @@ class Bot:
             if self.fire_track is None or self.fire_track[0] != tid:
                 self.fire_track = [tid, now, on_e.get("hp") or 0, now]
             self.fire_track[3] = now
+        if trig:
+            self._aim_book_shot(p, on_e or tgt, origin, dot, source, on, now)   # the press's record (AIM_BOOK)
         if trig and locked:
             self._aimed_shot(on_e or tgt, now)
         if trig and fp_off is not None:
@@ -4910,6 +5078,52 @@ class Bot:
             self.sweep_n[tid] = 0
         self.target = tid
         return best
+
+    # --- the aim book (AIM_BOOK: gbox.mercs.core.aim_book) ---
+    def _aim_core(self):
+        c = self.__dict__.get("_aim_book_core")
+        if c is None:
+            c = self._aim_book_core = aim_book.AimCore(combat_profile(), self.stats, lead_prior_s=AIM_LEAD_PRIOR_S)
+        return c
+
+    def _aim_tick(self, snap, now) -> None:
+        if AIM_BOOK:
+            kills = snap.get("kills")
+            self._aim_core().tick(now, snap.get("enemies") or (), kills if type(kills) is int else None)
+
+    def _aim_book_offset(self, p, e, origin, now):
+        """The book's correction as an offset (cm) from aim_point - the body point, the lead, the angular correction -
+        or None (AIM_BOOK off, no plan). Kept for the press's record."""
+        if not AIM_BOOK or not e or not p.get("pos"):
+            return None
+        try:
+            plan = self._aim_core().plan(e, origin or p["pos"], aim_family(p), now, body=body(e))
+            if plan is None:
+                return None
+            self._ab_plan = (e.get("ptr", e.get("slot")), plan)
+            base = aim_point(e, p["pos"])
+            if abs(base[1] - plan.chest[1]) > 1.0:          # off his floor: aim_point's own height kept - the lead and
+                lead = (plan.vel[0] * plan.corr.lead_s, 0.0, plan.vel[2] * plan.corr.lead_s)   # the angular part only
+                return tuple(plan.point[k] - plan.point0[k] + lead[k] for k in range(3))
+            return tuple(plan.point[k] - plan.chest[k] for k in range(3))
+        except Exception as exc:                          # noqa: BLE001 - the book never costs the aim
+            self.stats["aimbook_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            return None
+
+    def _aim_book_shot(self, p, e, origin, dot, source, on, now) -> None:
+        if not AIM_BOOK or not e:
+            return
+        try:
+            got = self.__dict__.get("_ab_plan")
+            key = e.get("ptr", e.get("slot"))
+            plan = got[1] if got and got[0] == key else self._aim_core().plan(e, origin or p["pos"], aim_family(p), now,
+                                                                              body=body(e))
+            laser = source == "laser"
+            self._aim_core().shot(now, e, plan, origin=origin if laser else None, at=dot if laser else None,
+                                  contact=bool(on) if laser else None, los=False if self.is_blocked(e, now) else
+                                  (True if laser else None), family=aim_family(p), body=body(e))
+        except Exception as exc:                          # noqa: BLE001
+            self.stats["aimbook_error"] = f"{type(exc).__name__}: {exc}"[:160]
 
     def _aimed_shot(self, tgt, now) -> None:
         tid = tgt.get("ptr", tgt.get("slot"))
@@ -5506,6 +5720,7 @@ class Bot:
         n = self.nade
         eq = p.get("equipped")
         px, _, pz = p["pos"]
+        ff = self._fire_first(p, vis, flat, now) if FIRE_FIRST else None   # one in clear sight near: the gun first
         if n is None:
             if p.get('ammo') == 0 and any(n > 0 for n in (p.get('gun_ammo') or {}).values()):
                 return None                                # establish a loaded gun before an optional item cycle
@@ -5513,7 +5728,9 @@ class Bot:
                 return None                            # an automatic item request cannot displace a locked gun
             nades = p.get("nades") or {}
             group, kind = None, None
-            burst = self._burst_begin(p, vis, live, flat, now)   # the surround cluster-bomb burst (its own cooldown)
+            burst = None
+            if ff is None or self._flash_reason(p, live, snap, now) == "surrounded":
+                burst = self._burst_begin(p, vis, live, flat, now)   # the surround cluster-bomb burst (its own cooldown)
             if burst is not None:
                 kind, group = burst
             elif (not (NADES or FLASH) or now - self.nade_last < NADE_ANY_GAP_S or not vis
@@ -5529,7 +5746,8 @@ class Bot:
                 close3 = sum(1 for e in vis if flat(e) <= FLASH_NEAR_R)
                 if ((len(near) >= FLASH_N or winding >= 1 or close3 >= FLASH_NEAR_N or self._overwhelmed(p, live, flat, now))
                         and (nades.get(NADE_TYPES["flash"]) or (0, 0))[1] > 0 and now - self.flash_last >= FLASH_GAP_S
-                        and now >= self.fever_until):                # (not again on the stunned ones of its own fever)
+                        and now >= self.fever_until                  # (not again on the stunned ones of its own fever)
+                        and self._flash_ok("wheel", snap, now)[0]):  # one a minute, a tight reason (FLASH_TIGHT)
                     group, kind = near or [min(vis, key=flat)], "flash"   # (vis: on his ground only)
                 elif now - self.nade_last < NADE_GAP_S:
                     return None
@@ -5551,18 +5769,26 @@ class Bot:
                                 break
             if group is None:
                 return None
-            cx = sum(e["pos"][0] for e in group) / len(group)
-            cz = sum(e["pos"][2] for e in group) / len(group)
-            cy = min(e["pos"][1] for e in group)                 # their feet: the ground the throw is pitched at
+            if ff is not None and kind != "flash" and burst is None:
+                self.stats["nade_fire_first_skips"] = self.stats.get("nade_fire_first_skips", 0) + 1
+                return None                                  # fire first: one in clear sight within FIRE_FIRST_R
+            spot = self._nade_landing(p, group, snap)            # on walkable floor among them, never the lava
+            if spot is None:
+                if self._gburst is not None:
+                    self._burst_end(now)
+                return None
+            cx, cy, cz = spot                                    # their feet: the ground the throw is pitched at
             self.nade = n = {"kind": kind, "index": nades[NADE_TYPES[kind]][0], "phase": "equip", "at": now - NADE_STEP_S,
                              "steps": 0, "to": (cx, cz), "to_y": cy, "since": now, "seen": [eq], "back_key": "right",
                              "gun": eq if isinstance(eq, int) and eq < WEAPON_INDEXES else None, "pos0": (px, pz),
-                             "burst": 1}
+                             "burst": 1, "reason": self.__dict__.get("_flash_reason_now")}
         if n["seen"][-1] != eq:
             n["seen"].append(eq)
         if (n["kind"] != "flash" and n["phase"] == "equip" and eq != n["index"] and self._gburst is None
-                and any(flat(e) < MELEE_R for e in live)):      # one on him before it is in hand: the fight instead
-            self.stats["nade_aborts"] += 1                      # (the cluster-bomb burst lobs into the near crowd on purpose)
+                and (any(flat(e) < MELEE_R for e in live) or ff is not None)):   # one on him / in sight near before it
+            self.stats["nade_aborts"] += 1                      # is in hand: the fight instead (the cluster-bomb burst
+            if ff is not None:                                  # lobs into the near crowd on purpose)
+                self.stats["nade_fire_first_aborts"] = self.stats.get("nade_fire_first_aborts", 0) + 1
             n.update(phase="back", at=now - NADE_STEP_S, steps=0)
         if n["phase"] == "equip":
             if eq == n["index"]:
@@ -5610,6 +5836,7 @@ class Bot:
             kinds = self.stats.setdefault("throws_by_kind", {})
             kinds[n["kind"]] = kinds.get(n["kind"], 0) + 1
             if n["kind"] == "flash":
+                self._flash_gate().stamp("wheel" if n.get("burst", 1) == 1 else "flurry", n.get("reason"))
                 if NADES:                                        # the fever only with the full grenade set
                     self.fever_until = now + FEVER_S + 0.6
                     me = p["pos"]                                # the flashed ones: in among them; another closing ends it
@@ -5632,9 +5859,9 @@ class Bot:
                 self._gburst["left"] -= 1
                 self.stats["re6_last_burst_grenades"] = self._gburst["thrown"]
                 mass = [e for e in vis if flat(e) <= BURST_SURROUND_R] or vis   # (on his ground only)
-                if mass:
-                    n["to"] = (sum(e["pos"][0] for e in mass) / len(mass),
-                               sum(e["pos"][2] for e in mass) / len(mass))
+                spot = self._nade_landing(p, mass, snap) if mass else None      # (never retargeted into the lava)
+                if spot is not None:
+                    n["to"], n["to_y"] = (spot[0], spot[2]), spot[1]
             return self._go("nade", "nade_" + n["kind"], {"hold": ("zl", "zr")}, f"the {n['kind']} grenade thrown")
         if n["phase"] == "throw":
             self._nade_ground(p, live, snap, now, n)
@@ -5662,7 +5889,9 @@ class Bot:
             if self._gburst is not None:                         # the burst is done (count reached, time, or out of grenades)
                 self._burst_end(now)
             if (n["kind"] == "flash" and now - n["since"] < FLASH_BURST_S and eq == n["index"]
-                    and sum(1 for e in live if flat(e) <= FLASH_BURST_R) >= FLASH_BURST_N):
+                    and sum(1 for e in live if flat(e) <= FLASH_BURST_R) >= FLASH_BURST_N
+                    and self._flash_ok("flurry", snap, now)[0]):   # (the gap holds it: one flash a minute)
+                n["burst"] = n.get("burst", 1) + 1
                 n.update(phase="aim", at=now - NADE_AIM_S + FLASH_BURST_AIM_S)   # the flurry: another one at once
                 self.stats["flash_burst_throws"] = self.stats.get("flash_burst_throws", 0) + 1
                 return self._go("nade", "nade_flash", {"hold": ("zl",)}, "the flurry: another flash")
@@ -5712,6 +5941,10 @@ class Bot:
             self.stats["item_gun_backs"] = self.stats.get("item_gun_backs", 0) + 1
             return self._go("nade", "gun_back", self._equip_keys(p, self._gun_index(p)), f"an item in hand (slot {eq}): equipping the gun")
         px, _, pz = p["pos"]
+        if kind == "flash" and not self._flash_ok("held", snap, now)[0]:
+            self.stats["item_gun_backs"] = self.stats.get("item_gun_backs", 0) + 1   # one a minute, when he needs it:
+            return self._go("nade", "gun_back", self._equip_keys(p, self._gun_index(p)),   # put away, the gun back
+                            "a flash grenade in hand, no flash due: the gun back")
         ground = [e for e in live if self._nade_ground_ok(p, e, snap, now)]   # never into the void (NADE_FLOOR_DY)
         far = [e for e in ground if flat(e) >= HELD_MIN_R]
         if kind == "flash" and ground:
@@ -5725,12 +5958,16 @@ class Bot:
             self.stats["item_gun_backs"] = self.stats.get("item_gun_backs", 0) + 1      # at nothing (2026-11-10)
             return self._go("nade", "gun_back", self._equip_keys(p, self._gun_index(p)),
                             f"a {kind} grenade in hand, nobody on his ground: the gun back")
-        cx = sum(e["pos"][0] for e in group) / len(group)
-        cz = sum(e["pos"][2] for e in group) / len(group)
+        spot = self._nade_landing(p, group, snap)                # where it lands: walkable floor, never the lava
+        if spot is None:
+            self.stats["item_gun_backs"] = self.stats.get("item_gun_backs", 0) + 1
+            return self._go("nade", "gun_back", self._equip_keys(p, self._gun_index(p)),
+                            f"a {kind} grenade in hand, no floor among them to land it on: the gun back")
+        cx, _cy, cz = spot
         self.stats["held_item_throws"] = self.stats.get("held_item_throws", 0) + 1
         self.nade = {"kind": kind, "index": eq, "phase": "face", "at": now, "steps": 0, "to": (cx, cz), "since": now,
-                     "seen": [eq], "back_key": "right", "gun": None, "to_y": min(e["pos"][1] for e in group),
-                     "burst": 1}
+                     "seen": [eq], "back_key": "right", "gun": None, "to_y": spot[1],
+                     "burst": 1, "reason": self.__dict__.get("_flash_reason_now")}
         cam = snap.get("camera")
         vis = [e for e in live if not self.is_blocked(e, now)]
         out = self._nade(p, vis, live, flat, cam["yaw"] if cam else p["rot"], snap, now)
@@ -5797,13 +6034,75 @@ class Bot:
             return hit[2]
         try:
             k = mesh.locate(at)
-            ok = k is not None and abs(mesh.C[k][1] - at[1]) <= NADE_FLOOR_DY and mesh.clear(me, at) is not False
+            ok = (k is not None and abs(mesh.C[k][1] - at[1]) <= NADE_FLOOR_DY and self._floor_at(mesh, at) is not False
+                  and mesh.clear(me, at) is not False)       # (_floor_at: standing on the mesh, not over lava by it)
         except Exception:                                    # noqa: BLE001 - a mesh fault is the floor test alone
             ok = True
         if len(cache) > 256:
             cache.clear()
         cache[tid] = (now, tuple(at), ok)
         return ok
+
+    @staticmethod
+    def _floor_at(mesh, pt, dy: float = NADE_FLOOR_DY) -> bool | None:
+        """True: pt stands on a walkable triangle of the nav mesh (inside it, within dy of the floor's height there);
+        False: no triangle under it - lava, a pit, the void, off the stage; None: this mesh cannot say (no grid)."""
+        grid, verts, tris = getattr(mesh, "grid", None), getattr(mesh, "V", None), getattr(mesh, "T", None)
+        inside = getattr(mesh, "_inside", None)
+        if not isinstance(grid, dict) or verts is None or tris is None or inside is None:
+            return None
+        x, y, z = pt
+        for k in grid.get((int(x // NAV_CELL), int(z // NAV_CELL)), ()):
+            if not inside(k, x, z):
+                continue
+            (ax, ay, az), (bx, by, bz), (cx, cy, cz) = (verts[v][:3] for v in tris[k])
+            det = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz)
+            if abs(det) < 1e-9:
+                h = (ay + by + cy) / 3.0
+            else:                                            # the floor's height under pt (barycentric)
+                wa = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / det
+                wb = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / det
+                h = wa * ay + wb * by + (1.0 - wa - wb) * cy
+            if abs(h - y) <= dy:
+                return True
+        return False
+
+    def _nade_landing(self, p, group, snap) -> tuple | None:
+        """Where this grenade may go (NADE_LAND_SLACK above): the group's centre at their feet when it, the points
+        NADE_LAND_SLACK short and long of it on his line, and the floor from him to it are walkable; else the feet of
+        the one in the group nearest that centre that pass; None: nowhere among them to land it - no throw. Without a
+        mesh the centre (the floor test on each target still holds); a mesh fault is no refusal (as _nade_ground_ok)."""
+        cx = sum(e["pos"][0] for e in group) / len(group)
+        cz = sum(e["pos"][2] for e in group) / len(group)
+        centre = (cx, min(e["pos"][1] for e in group), cz)
+        mesh = snap.get("navmesh") or getattr(self, "_mesh", None)
+        if mesh is None:
+            return centre
+        me = p["pos"]
+
+        def lands(pt) -> bool:
+            try:
+                if self._floor_at(mesh, pt) is False:
+                    return False
+                dx, dz = pt[0] - me[0], pt[2] - me[2]
+                d = math.hypot(dx, dz)
+                if d > 1.0:
+                    for slack in (-NADE_LAND_SLACK, NADE_LAND_SLACK):   # a little short and a little long of it
+                        k = max(0.0, (d + slack) / d)
+                        if self._floor_at(mesh, (me[0] + dx * k, pt[1], me[2] + dz * k)) is False:
+                            return False
+                return mesh.clear(me, pt) is not False
+            except Exception:                                # noqa: BLE001 - a mesh fault: the floor tests alone
+                return True
+        feet = sorted(group, key=lambda e: math.hypot(e["pos"][0] - cx, e["pos"][2] - cz))
+        for i, pt in enumerate([centre] + [tuple(e["pos"]) for e in feet]):
+            if lands(pt):
+                if i:
+                    self.stats["nade_landing_moves"] = self.stats.get("nade_landing_moves", 0) + 1
+                return pt
+        self.stats["nade_landing_skips"] = self.stats.get("nade_landing_skips", 0) + 1
+        self.stats["nade_void_skips"] = self.stats.get("nade_void_skips", 0) + 1
+        return None
 
     def _nade_aim_keys(self, p, n, snap) -> tuple:
         """The right stick while the grenade is readied: the camera's line (mCameraPos -> mTargetPos) onto the ground
@@ -5830,7 +6129,8 @@ class Bot:
         if ((p.get("nades") or {}).get(NADE_TYPES[n["kind"]]) or (0, 0))[1] <= 0:
             return None
         far = [e for e in vis if NADE_MIN_R <= flat(e) <= NADE_MAX_R]
-        return min(far, key=flat) if far else None
+        snap = getattr(self, "_snap", None) or {}
+        return next((e for e in sorted(far, key=flat) if self._nade_landing(p, [e], snap) is not None), None)
 
     def _nade_moved(self, p, now) -> bool:
         """Has he moved on since the last throw cycle - NADE_MOVE_CM from where it stood, or NADE_MOVE_WAIT_S since?"""
@@ -5866,7 +6166,10 @@ class Bot:
         if len(ring) < BURST_SURROUND_N:
             return None
         nades = p.get("nades") or {}
-        kind = next((k for k in ("frag", "fire", "flash") if (nades.get(NADE_TYPES[k]) or (0, 0))[1] > 0), None)
+        kind = next((k for k in ("frag", "fire") if (nades.get(NADE_TYPES[k]) or (0, 0))[1] > 0), None)
+        if kind is None and (nades.get(NADE_TYPES["flash"]) or (0, 0))[1] > 0 \
+                and self._flash_ok("burst", getattr(self, "_snap", None) or {}, now)[0]:
+            kind = "flash"                                       # flashes only through the gate (FLASH_MIN_GAP_S)
         if kind is None:                                         # no grenade in the wheel: nothing to lob
             return None
         group = [e for e in vis if flat(e) <= BURST_SURROUND_R]   # (vis: on his ground only - never into the void)
@@ -6550,7 +6853,9 @@ class Bot:
             return None
         near = min((flat(e) for e in live), default=math.inf)
         crowd = sum(1 for e in live if flat(e) < CC_BACK_R)
-        flashed = now - self.flash_last <= DROP_FLASH_S or ((p.get("nades") or {}).get(NADE_TYPES["flash"]) or (0, 0))[1] <= 0
+        flashed = (now - self.flash_last <= DROP_FLASH_S or ((p.get("nades") or {}).get(NADE_TYPES["flash"]) or (0, 0))[1] <= 0
+                   or self._flash_gate().on_gap()                   # (no flash due: the drop does not wait for one)
+                   or (FLASH_TIGHT and self._flash_reason(p, live, getattr(self, "_snap", None) or {}, now) is None))
         self.bomb_drop = (BOMB_DROP and (crowd >= BOMB_DROP_N or self._overwhelmed(p, live, flat, now))
                           and flashed and not (hp_max and hp < DROP_MIN_HP * hp_max))   # the flash, then at his feet
         if due and near < BOMB_ROOM_R and not (hp_max and hp < DROP_MIN_HP * hp_max):

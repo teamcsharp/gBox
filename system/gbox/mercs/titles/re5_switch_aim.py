@@ -319,6 +319,9 @@ def apply(bot, snap, act, now):
     dist = math.hypot(foot[0] - px, foot[2] - pz)
     aim_h = bot._aim_h(target, dist, now)
     chest = (foot[0], foot[1] + aim_h, foot[2])
+    book = getattr(bot, '_aim_book_point', None)       # the aim book's point on him (re5_switch AIM_BOOK)
+    if callable(book):
+        chest = book(target, chest, aim_h, (px, py + R.MUZZLE_H, pz), now)
     want_pitch = math.atan2(chest[1] - py - R.MUZZLE_H, max(dist, 1.0))
     yaw_error = R.wrap(R.heading(foot[0] - px, foot[2] - pz) - cam['heading'])
     pitch_error = want_pitch - cam['pitch']
@@ -361,6 +364,12 @@ def apply(bot, snap, act, now):
     # The write above is an intention. Only this snapshot's actual aim can
     # authorize fire; it must be observed aligned on a later sample.
     body_contact = bool(valid_ray and bot._crowd_hit(origin, dot, foot, False))
+    # The aim book's gate (re5_switch AIM_BOOK_GATE): a line that only grazes him - through his knees or over his head,
+    # the close-range misses of 2026-11-10 - is no contact; the laser's dot on him always is.
+    gate = getattr(bot, '_aim_book_contact', None)
+    if body_contact and callable(gate) and not R.dot_on(dot, foot, R.body(target))             and gate(target, origin, dot) is False:
+        body_contact = False
+        bot.stats['aimbook_gate_edge_holds'] = bot.stats.get('aimbook_gate_edge_holds', 0) + 1
     spread_contact = bool(valid_ray and not body_contact and spec.family == 'shotgun'
                           and bot._crowd_hit(origin, dot, foot, True))
     # Weapon mastery (operator 2026-11-09): a shotgun point blank into the crowd - within SHOTGUN_POINT_BLANK_CM, the
@@ -368,6 +377,7 @@ def apply(bot, snap, act, now):
     # runs on past him) - is contact: the spread does the rest at that range.
     short = bool(valid_ray and math.dist(origin, dot) < math.dist(origin, chest) - R.WALL_SLACK
                  and not any(R.dot_on(dot, e['pos'], R.body(e)) for e in candidates))
+    bot._ab_los = (target.get('ptr', target.get('slot')), (not short) if valid_ray else None)   # the aim book's line of sight
     point_blank = bool(valid_ray and not body_contact and not spread_contact and spec.family == 'shotgun'
                        and dist <= SHOTGUN_POINT_BLANK_CM and not short
                        and abs(yaw_error) <= POINT_BLANK_YAW and abs(pitch_error) <= POINT_BLANK_PITCH)
