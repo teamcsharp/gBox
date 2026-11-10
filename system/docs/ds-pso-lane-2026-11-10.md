@@ -2505,16 +2505,63 @@ is the only lever that does not involve wandering.
 `main` clean; research doc carries the object map. Session live in MULTI MODE co-op, P1 at `(-314, -185)` in room 20
 (the southwest street), P2 in the lobby.
 
+## Round 51 (2026-11-10) — the editor can draw an area, and the corridor is real for 130 units
+
+### `map`: an area as a text grid
+
+The guild search has cost many rounds of walking, so the editor now draws a set:
+
+```
+python -m gbox.pso_editor <disc> map map_city00_00o.dat --cols 64 --rows 18
+```
+
+```
+map_city00_00o.dat: x -334..360, z -1730..333   ('*' spawn, 'T' pedestal, doors W/M/G/S, 'o' object)
+                                               o
+         o o   o  o                                T
+               S                               G          o
+                                                     W  ***    o
+o      o                      o                M
+ o o  o
+                                                 o
+```
+
+North (+z) is at the top, positions are **world** coordinates (the offset applies when the set has one), and the letters are
+the doors by name: `W` Warp, `M` Med, `G` Guild, `S` Shop; `*` a spawn, `T` the class-87 object at the lobby's centre, `o`
+anything else. The isolated `o` at the bottom is the `TObject` at `(0, -1730)`.
+
+The first version drew the **Warp door as a generic `D`**: `door_name()` returns `"Warp"` with a capital W and my mark table
+was keyed on `"warp"`. The fix came with a regression test that draws each of the four doors and asserts its own letter
+appears and no fallback does -- so the same silent case mismatch cannot come back.
+
+### The `x=0` corridor, walked for 130 units
+
+Player 1 was in room 20 at `(-38, 50)` and walked south along the axis:
+
+```
+(0, 57) -> (-39, 6) -> (-22, -58) -> (-11, -79)
+```
+
+It passes the `TObject` the map puts at `(0, -60)` -- so that object is on a walkable line, and the corridor is real for at
+least 130 units south of the lobby's south wall. The session then hit the input guard (`adapters.py:656` raises when the
+emulator window is not foreground) and stopped, which is the same focus problem that has interrupted several rounds; it is a
+host-side issue, not a game one.
+
+### State
+
+`main` clean; 16 editor tests green. Session live but input-blocked (P1 at `(-11,-79)` in room 20). The corridor remains the
+only unwalked lead in the city, and the map now makes it cheap to see where anything else might be: an area can be drawn
+before deciding to walk it.
+
 ## 7. Next
 
-1. **Walk the `x=0` corridor south to `(0, -1730)`** -- two `TObject`s sit on the flag's central axis at `(0,-60)` and
-   `(0,-1730)`, and the single-player office is at `(0,-2015)`. It is the only line in the city that points somewhere
-   unwalked.
-2. **The guild is not in `map_city00_00o.dat`.** All 28 records are accounted for (map in the research doc) and none is
-   a counter; the next lever is the executable's transition table, not more wandering.
-3. **A field area's offset** so P6a's in-game proof can be repeated on a floor; only `city00` is measured.
-4. **P6b's page** (pure UI over `python -m gbox.pso_editor`) and **P7a's rigging** remain.
+1. **Draw before walking.** `python -m gbox.pso_editor <disc> map <set>` renders an area in world coordinates with the
+   doors, spawns and pedestal lettered -- cheap to run, and it makes the next walk a decision instead of a search.
+2. **The `x=0` corridor is real for at least 130 units** south of the lobby (walked to (-11,-79), passing the
+   `TObject` at (0,-60)); continuing it is the last unwalked lead in the city.
+3. **A field area's offset**, so P6a's in-game proof can be repeated on a floor; only `city00` is measured.
+4. **P6b's page** is pure UI over `python -m gbox.pso_editor` (sets / list --world / map / move / delete / build), and
+   **P7a's rigging** is the other large item.
 
-Known-good southwest route from round 50: room 20 -> (-91,17) -> room 30 at (-167,41) -> (-263,-59) -> (-297,-91) ->
-(-334,-122). The four class-65 objects there are street furniture (no entities), and record 27 (class 87) at world
-(228,291) is the lobby's teleporter pedestal -- the only object of its class in the set.
+Watch for the host-side input guard: `win_send_keys` raises (`adapters.py:656`) when the emulator window is not
+foreground, which has now interrupted three rounds mid-walk. It is not a game problem.
