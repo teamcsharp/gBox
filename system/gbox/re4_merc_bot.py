@@ -224,6 +224,7 @@ SMALL_BODY = (0.0, 450.0, 150.0)                 # a small animal (a chicken), h
 SMALL_HP = 20                                    # (operator 2026-10-24: Leon missed "people he knocked down, people who
                                                  # fell down, chickens" - every shot went at head height over them)
 BODY_HALF_W = 180.0                              # ... and to either side of his middle
+PITCH_STUCK_ERR = 0.2                            # radians: stuck at the game's pitch limit this far from the wanted height = not on him
 PITCH_RATE = 1.0                                 # radians a second the stick moves the aim pitch (learned as he plays;
                                                  # the routine ramps the stick over 7 frames: ~2.4 a second held)
 AIM_R1, AIM_READY_R2 = 6, (1, 2)                 # Leon's routine 00 06 01 .. = aiming, 00 06 02 .. = firing: the pose
@@ -1503,7 +1504,9 @@ class Bot:
             self.pitch_push = (now, cur, key)
         elif now - self.pitch_push[0] > PITCH_LIMIT_S and abs(cur - self.pitch_push[1]) < 0.01:
             self.pitch_key, self.pitch_seen = None, (now, cur, None)
-            return set(), True                        # pushing moves nothing: the game's limit, as close as it gets
+            # pushing moves nothing: the game's limit, as close as it gets - but a limit far from the wanted height
+            # is the aim stuck looking down / up (request #3880: "looking down ... while dispatching the foes"): no shot
+            return set(), abs(err) < PITCH_STUCK_ERR
         if abs(err) < PITCH_FINE and self.pitch_key is not None:
             key = None                                # close: pulse the stick (a tick on, a tick off), no overshoot
         self.pitch_key, self.pitch_seen = key, (now, cur, key)

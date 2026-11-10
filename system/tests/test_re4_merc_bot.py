@@ -1750,3 +1750,17 @@ def test_while_the_operator_has_the_pad_leon_holds_nothing_and_learns_nothing():
     assert (len(bot.learned.blocked) if bot.learned else 0) == walls and bot.goal is None
     bot.stats["operator_control"] = False
     assert bot.tick(B.snapshot(m)) != {"hold": set()}                     # the Ganado ahead: the bot plays again
+
+
+def test_a_standing_ganado_is_not_shot_with_the_aim_stuck_far_below_him_request_3880():
+    m = world([((0.0, 0.0, 600.0), True)])                                # close, standing: the head is well above the gun's pitch
+    bot = B.Bot(m, clock=lambda: 0.0, nav=False)
+    facing(m, 0.0)
+    tgt = B.snapshot(m)["enemies"][0]
+    set_pitch(m, -0.5)                                                    # stuck looking down at the game's limit
+    bot.r_since = -1.0
+    p = B.snapshot(m)["player"]
+    bot._aim_height(p, 1500.0, 600.0, 0.0)
+    bot.pitch_push = (-1.0, p["pitch"], bot.pitch_push[2])               # pushing moved nothing for 1 s
+    keys, level = bot._aim_height(B.snapshot(m)["player"], 1500.0, 600.0, 0.5)
+    assert level is False and not keys
