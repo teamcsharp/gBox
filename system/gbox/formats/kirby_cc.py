@@ -43,6 +43,48 @@ def bundle_header(blob: bytes) -> dict | None:
             "table_hypothesis_ok": kind == 6 and count <= 0xFFFF and len(blob) == size + 4 * count + 4}
 
 
+def parse_bundle(blob: bytes) -> dict | None:
+    """Structurally parse a kind-6 character bundle (analysis stage; proven on 72/72 kby*/dede* bundles of the owned ROM).
+
+    Layout (little-endian, offsets from member start)::
+
+        0   u32 kind=6, u32 count, u32 size            (size == offset of the offset table)
+        12  chunks: u16 len, ``len`` bytes, optional 0xFFFF terminator   (tile/palette-like payload, NOT decoded)
+        ..  ``count`` x 16-byte blocks (identical across frames in kbynml_0000_bnd; field meaning unknown)
+        ..  ``count`` x 12-byte directory records (block_offset, 12, cumulative value) -- middle word is 12 in 71/72
+        size  u32[count] offsets of the directory records, then u32 0
+
+    Returns None when the structural invariants do not hold; never reads out of range. Payload semantics
+    (sprite/OAM/palette decoding) are still unproven, so this is not a writer-grade reader.
+    """
+    h = bundle_header(blob)
+    if h is None or h["kind"] != 6 or not h["table_hypothesis_ok"]:
+        return None
+    count, size = h["count"], h["size"]
+    table = struct.unpack_from(f"<{count + 1}I", blob, size)
+    if table[-1] != 0 or count == 0:
+        return None
+    records = []
+    for off in table[:-1]:
+        if off + 12 > size:
+            return None
+        records.append(struct.unpack_from("<3I", blob, off))
+    if any(r[0] < 12 or r[0] + 16 > size for r in records):
+        return None
+    block_start = min(r[0] for r in records)
+    chunks, pos = [], 12
+    while pos + 2 <= block_start:
+        n = struct.unpack_from("<H", blob, pos)[0]
+        chunks.append((pos + 2, n))
+        pos += 2 + n
+        if pos < block_start and blob[pos:pos + 2] == b"\xff\xff":
+            pos += 2
+    if pos != block_start:
+        return None
+    return {**h, "offset_table": list(table[:-1]), "records": records, "block_start": block_start,
+            "blocks": [blob[r[0]:r[0] + 16] for r in records], "chunks": chunks}
+
+
 def inventory(data: bytes) -> dict:
     rom = NitroROM(data)
     ident = identify(rom)
