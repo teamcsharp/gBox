@@ -3284,16 +3284,25 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         used: set[int] = set()
 
         def make():
-            try:
-                vp = vpad_win.VGamepad()
-            except Exception as e:                           # noqa: BLE001 - no driver/pad: keyboard path
-                self._p(50, f"virtual pad unavailable, keyboard input used: {e}")
-                return None
-            if vp.slot is None or vp.slot in used:
+            # ViGEm releases the previous session's pad asynchronously, so a launch right after a stop can fail to
+            # create one (the i9-NUC 2026-11-10: `_setup_vpad` returned None, the INI fell back to the keyboard, and
+            # every gBox press was silently dropped for the whole session). Retry briefly before giving up.
+            last = None
+            for attempt in range(3):
+                try:
+                    vp = vpad_win.VGamepad()
+                except Exception as e:                       # noqa: BLE001 - no driver/pad: keyboard path
+                    last = e
+                    time.sleep(0.4 + 0.4 * attempt)
+                    continue
+                if vp.slot is not None and vp.slot not in used:
+                    used.add(vp.slot)
+                    return vp
+                last = f"slot {vp.slot!r} unusable"
                 vp.close()
-                return None
-            used.add(vp.slot)
-            return vp
+                time.sleep(0.4 + 0.4 * attempt)
+            self._p(50, f"virtual pad unavailable after 3 tries, keyboard input used: {last}")
+            return None
 
         vp1 = make()
         if vp1 is None:

@@ -756,17 +756,72 @@ Pioneer 2 -> Forest 1 did not happen in this round either. The pieces are all pr
 `TObjCityDoor_Guild` at 185,173, the walker, the conversation signal); what is missing is a boot sequence that copes
 with a remembered cursor.
 
+## Round 12 (2026-11-10) — the virtual pad was flaky, not broken; and two more tests that measured the wrong thing
+
+### The real defect this round: `_setup_vpad` sometimes returns None
+
+A launch right after a `stop_game` produced `GCPadNew.ini` with **no** `Options/Always Connected` and
+`Device = XInput/1/Gamepad` -- the no-vpad fallback. In that session gBox cannot press at all: its only other path is
+`win_send_keys`, which Windows refuses from a background process. ViGEm releases the previous session's pad
+asynchronously, so the next launch's pad creation fails.
+
+`DolphinWinAdapter._setup_vpad` now retries pad creation **three times** with a short backoff before falling back, and
+says how many attempts it made. Verified: the next launch wrote `Options/Always Connected = True` +
+`Device = XInput/0/Gamepad`, and gBox's presses moved the title menu's cursor.
+
+### The stick is not broken, and two of this round's "tests" were invalid
+
+Tracing the write end to end settled it:
+
+* `vpad_win` calls `pad.left_joystick(x_value=_clamp(lx), y_value=_clamp(ly))` with **ints** +/-32767. `vgamepad`
+  rejects floats (`TypeError: 'float' object cannot be interpreted as an integer`) and accepts ints, so the call is
+  right -- my first hypothesis (wrong units) was wrong.
+* A pad written that way **does** show up in XInput: `ints +/-32767 -> {lx: 32767, ly: 32767}`. So a stick write
+  reaches the OS.
+
+Two tests from earlier this turn were therefore measuring the wrong thing:
+
+1. **The title menu responds to the D-pad, not the stick.** `ddown` moved the highlight from ONLINE GAME to OFFLINE
+   GAME; a 1.5 s hold of the *stick* `down` moved nothing. That is menu behaviour, not a stick failure.
+2. **The XInput probe that "proved" the stick never reaches a pad** ran in the session whose `_setup_vpad` had returned
+   None -- there was no virtual pad to write to. It proved the *fallback* session has no pad, nothing more.
+
+So the analog stick's behaviour in the field is still **unmeasured**. The one clean way to measure it is in-game with
+the character free, which is exactly where every attempt has failed because the game spends that time in Principal
+Tyrell's conversation.
+
+### The boot-mode byte is coarser than the lane doc said
+
+Newly observed values, all from this round's frames and reads:
+
+| mode | screens seen with it |
+|---|---|
+| 0 | the attract, **the title main menu** (after a cursor move), **SELECT CHARACTER** |
+| 1 | the title main menu (on entry), the SELECT CHARACTER confirm prompt |
+| 4 | the title with the menu closed |
+| 5 / 17 | a conversation |
+| 9 | SELECT GAME MODE |
+
+So `mode` cannot name a screen. Round 11's "5/17 is a conversation" still holds (nothing else has produced those
+values), but the walk cannot be driven by the byte alone.
+
+### What did advance
+
+The character-select path is now known exactly, from frames: at SELECT CHARACTER press **A** (opens
+`Confirm / Cancel / Recreate`), then **A** again (Confirm) -- the character loads from the card and the game enters
+Pioneer 2. That is what round 9's cold boot did by hand, and it is three presses with two visible confirmations, so it
+can be scripted with a frame check at each step.
+
 ## 7. Next
 
-1. A **frame-per-step boot driver**: capture the screen at each step, label it, and record the press that moved it.
-   The menu remembers its cursor, so a fixed press list is wrong depending on history (the same `ddown`+A gave
-   SELECT GAME MODE in round 4 and the title here). The mode byte cannot name a screen (1 = main menu and SELECT
-   CHARACTER), so the frames are the only per-step evidence available.
-2. Use the conversation signal (`mode 5/17`) to press through conversations exactly, then measure movement with the
-   character free - the measurement round 10 could not make.
+1. Measure the analog stick **in the field**, with the character free: that is the only setting where the question
+   has meaning, and every attempt so far has landed inside Principal Tyrell's conversation. The route there is now
+   known press by press (SELECT CHARACTER -> A -> A, then the warp into Pioneer 2).
+2. Script the character-select path with a frame check at each step (A opens Confirm/Cancel/Recreate, A confirms),
+   since `mode` cannot name a screen (0 = attract, main menu and SELECT CHARACTER; 1 = main menu and a prompt).
 3. Then Pioneer 2 -> the Hunter's Guild door (185,173 room 10) -> the teleporter (254,25) -> Forest 1, then the
    three cold launches with both players, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
 
-Open item to falsify: the relay throttle (`RELAY_STICK = 0.3`, buttons always, sticks only past a real deflection)
-is intended to stop the operator's stick drift from starving the bot's presses. Drive ~100 presses in one session
-and check that input still lands.
+Closed this round: `_setup_vpad` retries pad creation (a launch straight after a stop could leave the session with
+no virtual pad, and therefore with no way to press at all). Erased this round: "the stick is broken" -- the write
+reaches XInput, and the title menu simply uses the D-pad.
