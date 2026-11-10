@@ -80,6 +80,22 @@ SCATTER_COUNT_DEFAULT, SCATTER_COUNT_MAX = 8, 16
 SCATTER_SPREAD_DEG, SCATTER_MIN_CM, SCATTER_MAX_CM = 30.0, 300.0, 1500.0
 SCATTER_GAP_MS = (100.0, 200.0)
 SCATTER_CHEST_CM = 120.0
+# One centimetre past the learned reach: the placement is computed with sin/cos, and float rounding must never put an
+# explosive round a hair inside it (checkpoint 0.2).
+SCATTER_SAFE_CM = 1.0
+
+
+def flash_place_min_cm():
+    """The nearest a flash round may be placed from him: the title's own floor (aim-book) or 400 cm (checkpoint 0.3).
+
+    The operator (2026-11-10): "never let the bot get stunned by their own flash grenades". The scatter's old 300 cm
+    near field is inside a flash's own effect; a title value below 400 is clamped, a wider one is honoured.
+    """
+    value = getattr(R, "FLASH_PLACE_MIN_CM", None)
+    try:
+        return max(400.0, float(value)) if value is not None else 400.0
+    except (TypeError, ValueError):
+        return 400.0
 
 
 def ring_defaults():
@@ -651,7 +667,8 @@ class Controller:
         Each round is the ring's verified step (spawn, moved onto its point, the explosion transition): nothing is
         equipped and his gun stays in his hand. kind "random" draws each round from SCATTER_KINDS (only the verified
         ones: the flash today; the launcher's rounds are not identified); an explosive kind keeps every point past
-        safe_cm (his learned reach). A partial barrage is uncertain and never replayed."""
+        safe_cm (his learned reach) and the ring's 600 cm floor, the flash keeps FLASH_PLACE_MIN_CM (400 cm) from him.
+        A partial barrage is uncertain and never replayed."""
         import random as _random
         kind = (kind or "random").lower()
         if kind != "random" and kind not in RING_KINDS:
@@ -664,6 +681,13 @@ class Controller:
         lo = max(RING_SELF_CLEAR_CM, float(SCATTER_MIN_CM if min_cm is None else min_cm))
         hi = max(lo, min(float(SCATTER_MAX_CM if max_cm is None else max_cm), RING_RADIUS_MAX_CM))
         gap = gap_ms or SCATTER_GAP_MS
+        # (checkpoint 0.2/0.3) No round may land inside its own blast: the flash keeps FLASH_PLACE_MIN_CM from him,
+        # an explosive kind keeps the ring's 600 cm floor and, past it, his learned reach plus one centimetre.
+        flash_floor = max(lo, flash_place_min_cm())
+        explosive_floor = max(lo, RING_EXPLOSIVE_CLEAR_CM, float(safe_cm or 0.0) + SCATTER_SAFE_CM)
+        floors = {"flash": round(flash_floor, 1), "explosive": round(explosive_floor, 1)}
+        planned = SCATTER_KINDS if kind == "random" else (kind,)
+        floor_cm = min(flash_floor if k == "flash" else explosive_floor for k in planned)
         with self.lock:
             self.ready()
             self.sp = self.q(self.base + R.S_PLAYER)
@@ -703,8 +727,12 @@ class Controller:
                 for i in range(count):
                     self.check()
                     this = rng.choice(SCATTER_KINDS) if kind == "random" else kind
-                    near = lo if this == "flash" else max(lo, float(safe_cm or 0.0))
-                    d = near + (max(near, hi) - near) * (i + rng.random()) / count   # near to far, each a step out
+                    # + SCATTER_SAFE_CM: the point is built with sin/cos, so the *measured* distance must stay past
+                    # the floor the receipt reports, not exactly on it.
+                    near = (flash_floor if this == "flash" else explosive_floor) + SCATTER_SAFE_CM
+                    if hi < near:
+                        hi = near                       # the far bound follows the floor: placement and receipt agree
+                    d = near + (hi - near) * (i + rng.random()) / count   # near to far, each a step out
                     ang = axis + rng.uniform(-spread, spread)
                     x, z = px + d * math.sin(ang), pz + d * math.cos(ang)
                     try:
@@ -730,7 +758,8 @@ class Controller:
                        "kinds": sorted({r["kind"] for r in rounds}),
                        **({"probe": True} if kind not in RING_VERIFIED_KINDS and kind != "random" else {}),
                        "axis_deg": round(math.degrees(axis), 1), "spread_deg": round(math.degrees(spread), 1),
-                       "near_cm": round(lo, 1), "far_cm": round(hi, 1), "rounds": rounds,
+                       "near_cm": round(floor_cm, 1), "far_cm": round(hi, 1), "floor_cm": round(floor_cm, 1),
+                       "floors_cm": floors, "rounds": rounds,
                        "hp_before": hp_before, "hp_after": hp_after,
                        "self_damage": (hp_before - hp_after) if isinstance(hp_after, int) else None,
                        "player_generation": self.generation,

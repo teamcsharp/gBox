@@ -45,7 +45,7 @@ def test_a_random_barrage_is_a_flash_cone_from_near_to_far_at_chest_height():
     assert len(placed) == 5
     assert all(y == pytest.approx(P1[1] + N.SCATTER_CHEST_CM, abs=0.01) for _x, y, _z in placed)
     dists = [math.hypot(x - P1[0], z - P1[2]) for x, _y, z in placed]
-    assert min(dists) >= N.RING_SELF_CLEAR_CM
+    assert min(dists) >= N.flash_place_min_cm() == 400.0             # checkpoint 0.3: a flash under 4 m can stun him
     assert dists == sorted(dists)                                    # near to far
     assert all(d <= result["far_cm"] + 300.0 for d in dists)
     # every round goes through the verified wrappers with the flash's own DTI
@@ -88,6 +88,28 @@ def test_an_unknown_kind_is_refused_before_any_native_call():
     assert ctl.calls == []
 
 
+# --- checkpoint 0.2 / 0.3: no round lands inside its own blast --------------------------------------------------------
+
+def test_a_flash_barrage_never_places_a_round_under_400_cm():
+    """The operator: "never let the bot get stunned by their own flash grenades" - even with the threat at 120 cm."""
+    ctl = ring_controller()
+    result = ctl.grenade_scatter("random", count=4, toward=[(P1[0] + 120.0, P1[2])], rng=random.Random(9))
+    assert result["state"] == "confirmed" and result["kinds"] == ["flash"]
+    dists = [math.hypot(x - P1[0], z - P1[2]) for x, _y, z in placements(ctl).values()]
+    assert min(dists) >= N.flash_place_min_cm() == 400.0
+    assert result["floor_cm"] == 400.0 and result["floors_cm"]["flash"] == 400.0
+
+
+def test_an_explosive_barrage_keeps_the_600_cm_ring_floor_without_a_learned_reach():
+    """Checkpoint 0.2: the hand/incendiary probe used to be placed at 300 cm - inside its own blast."""
+    ctl = ring_controller(unit_vtable=HAND_VT)
+    result = ctl.grenade_scatter("hand", count=3, toward=[(P1[0] + 200.0, P1[2])], rng=random.Random(4))
+    assert result["state"] == "confirmed" and result["kinds"] == ["hand"]
+    dists = [math.hypot(x - P1[0], z - P1[2]) for x, _y, z in placements(ctl).values()]
+    assert min(dists) >= N.RING_EXPLOSIVE_CLEAR_CM == 600.0
+    assert result["floor_cm"] == 600.0 and result["floors_cm"]["explosive"] == 600.0
+
+
 def test_the_rule_runs_on_re5_and_reads_its_own_knobs():
     assert "010018100CD46000" in RULE.SCATTER_TITLES
 
@@ -103,3 +125,12 @@ def test_the_shared_hook_offers_re5_a_step():
     step = RULE.control(None, {"map_id": "010018100CD46000", "menus": "gbox.mercs.titles.re5_switch"})
     assert callable(step)
     assert RULE.control(None, {"map_id": "BLUS30491"}) is None          # no PS3 barrage: the rule is Switch work
+
+
+def test_the_re5_automatic_barrage_is_off_until_checkpoint_d_but_the_op_stays():
+    """Checkpoint 0.4: the automatic barrage would be a flash cone outside the operator's one-a-minute cap."""
+    from gbox.mercs.titles import re5_switch as R5
+    assert R5.SCATTER is False
+    assert RULE.scatter_policy(R5)["enabled"] is False
+    assert "010018100CD46000" in RULE.SCATTER_TITLES                    # checkpoint D turns it on again
+    assert callable(getattr(N.Controller, "grenade_scatter", None))     # the probe route and the operator's button
