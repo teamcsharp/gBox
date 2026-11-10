@@ -47,3 +47,22 @@ def test_a_synthetic_index_array_is_counted(disc):
 def test_a_run_with_values_above_the_bound_is_not_index_data():
     data = b"\xff\xff" * 100
     assert N.index_runs(data) == []
+
+
+def test_the_structural_round_trip_reproduces_the_file_byte_for_byte(disc):
+    """Every region is re-emitted from its parsed form: indices from u16 values, floats from floats, raw as-is."""
+    data = disc.read("Scene/map_aancient01_00n.rel")
+    rebuilt, totals = N.roundtrip(data)
+    assert rebuilt == data
+    assert sum(totals.values()) == len(data)
+    assert totals["indices"] > 40000 and totals["floats"] > 100000   # the measured split, roughly 3:7
+
+
+def test_the_region_kinds_are_contiguous_and_cover_the_file(disc):
+    data = disc.read("Scene/map_aancient01_00n.rel")
+    regs = N.regions(data)
+    assert regs[0]["offset"] == 0
+    assert all(a["offset"] + a["length"] == b["offset"] for a, b in zip(regs, regs[1:]))
+    assert regs[-1]["offset"] + regs[-1]["length"] == len(data)
+    kinds = {r["kind"] for r in regs}
+    assert kinds <= {"indices", "floats", "raw"}

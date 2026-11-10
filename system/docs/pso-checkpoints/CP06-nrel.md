@@ -143,3 +143,28 @@ out-of-range words rejecting a run.
 **What CP6.2 still lacks:** a *round trip* on a real file (the module reads, it does not yet re-emit geometry) and the
 vertex arrays themselves turned into positions (the float arrays at `0x3834`/`0x858` are located but not decoded into
 points). The triangle count half is now measured and tested.
+
+## Round 64: the structural round trip - byte-identical, and what the region split says
+
+`gbox/pso_nrel.py` now splits the file into measured region kinds and re-emits each from its **parsed** form:
+
+* `regions(data)` -> contiguous `{kind, offset, length}` covering every byte, with kinds decided by the same tests the
+  decoder uses: **indices** (u16 runs below the vertex count), **floats** (runs of finite room-scale float words), **raw**
+  (everything else);
+* `roundtrip(data)` -> re-emits indices from u16 values, floats from floats, raw as-is, and returns the per-kind byte
+  totals.
+
+**On `Scene/map_aancient01_00n.rel` the rebuild is byte-identical** (`rebuilt == data`, asserted), the regions are
+contiguous and sum to the file length, and the split is roughly 48.6 KB of index data to >100 KB of float data with the rest
+raw. Getting there required one real fix: the float scanner stepped *over* index-run starts at 4-byte granularity, so runs
+that began inside a float region were misclassified as floats; the scanner now stops at a run start, which raised the index
+total from 1.8 KB to 48.6 KB.
+
+Tests: `tests/test_pso_nrel.py` **6 passed** - the real counts (167 runs / 38,689 values / 12,896 triangles vs 11,549
+collision triangles at 1.12x), the synthetic run, out-of-range rejection, the **byte-identical round trip**, and the
+contiguity/coverage of the regions.
+
+**CP6.2's accept now reads:** a decoder with a round trip on one real file ✓ (byte-identical, on the GameCube
+`map_aancient01_00n.rel`, since Forest 1's own `n.rel` is Dreamcast-side per CP7.3) and the triangle count compared against
+`c.rel`'s footprint ✓ (12,896 vs 11,549). What is still not done is turning the float regions into **named vertices** - the
+positions are located and round-tripped, not yet interpreted into a mesh with a vertex/index correspondence.
