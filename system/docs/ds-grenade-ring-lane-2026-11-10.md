@@ -608,3 +608,69 @@ and the two updated tests); this log and the request below are the commits on to
   `detonated`, `hp_before` / `hp_after`), and the doctrine `crit_flashes` / `mine_flashes` (or the PiP flash receipt)
   showing the flash confirmed after the deploy
 - headers: `x-gbox-actor: agent`; the token is `system/gbox-data/api_token` - never print it
+
+## Round 52 (2026-11-10 15:30 CST) - checkpoint B1's first pass: the guide's scan does not exist on the pinned image, and the class records it does have are named
+
+Working offline on the i9 against the operator's own update image (`.tmp/re6exefs-update/main.bin`, extracted from
+`Resident Evil 6 [01002A000CD48800][v131072].nsp`; `re6_switch_native.verify_build` on it: **ok**, build
+`061D2A06CD700785E987C42CE2D72231`, all five code caves pristine). Every number below is a capstone scan over that
+file (`mem = file offset - 0x100`, the whole `main` down to its `.text` tail at `0x18F2630`, `skipdata` on so no
+region is skipped).
+
+**What checkpoint B1 says to look for:** "scan for `adrp x1` + `add x1` resolving to a shell DTI (`0x2952098`,
+`0x29520D0`, `0x2952108`), followed by `bl 0x3BCF90`".
+
+**What the image actually has:**
+
+1. **No shell DTI is ever built into `x1`.** Zero sites in 6,539,660 instructions. The only code that materialises
+   the three shell DTIs is the MtDTI static initialiser itself - `0x140A34` uWp1302, `0x140AAC` uWp1303, `0x140B2C`
+   uWp1304 - and it builds them in `x8` (the whole grenade/launcher family is built there; the same is true of
+   FLASH_DTI, so `x1` there is our own compiled `spawn.c`'s link-time symbol, not the game's call shape).
+2. **`bl 0x3BCF90` has zero call sites.** `0x3BCF90` is a two-instruction veneer:
+   `0x3bcf90  and w4, w4, #1` / `0x3bcf94  b #0x359270`. The constructor body is **`0x359270`**.
+3. **No address in `0x3BC000..0x3BE000` is materialised as a constant either** (zero `adrp`/`add` pairs), so the game
+   does not reach it through a function-pointer table built from the constructor's own range.
+
+So the launcher's fire is not a `CREATE_ITEM(allocator, shell_dti, ...)` site that scan can see. The class records do
+give a new, checked lead, though:
+
+**Each grenade/launcher class has a class-info record whose entry `+0x68` is a getter returning its DTI.** Found by
+searching for a pointer to each getter and reading the 0x98 bytes before it (entries are `(0x403, fn, runtime_ptr)`,
+0x18 apart):
+
+| class | record | DTI getter | class-specific fns at +0x08 / +0x20 / +0x38 / +0x50 / +0x68 / +0x80 |
+|---|---|---|---|
+| uWp1302 | `0x1FD3BB0` | `0xF5A620` | 0xF5A580 / 0xF44750 / 0x2FD6E0 / 0xF44760 / **0xF5A620** / 0xF5A630 |
+| uWp1303 | `0x1FD2E30` | `0xF5A360` | 0xF5A2C0 / 0xF44750 / 0x2FD6E0 / 0xF44760 / **0xF5A360** / 0xF59EE0 |
+| uWp1304 | `0x1FD20B0` | `0xF59ED0` | 0xF59E30 / 0xF44750 / 0x2FD6E0 / 0xF44760 / **0xF59ED0** / 0xF59EE0 |
+| uWpBomb | `0x2001FD8` | `0xF6EEA0` | 0xF6EDD0 / 0xF84C30 / 0x2FD6E0 / 0xF84C40 / **0xF6EEA0** / 0xF6EEB0 |
+| flash | `0x2002CB0` | `0xF6F110` | 0xF6F040 / 0xF84C30 / 0x2FD6E0 / 0xF84C40 / **0xF6F110** / 0xF84F80 |
+| incendiary | `0x20039B8` | `0xF6F2A0` | 0xF6F1D0 / 0xF84C30 / 0x2FD6E0 / 0xF84C40 / **0xF6F2A0** / 0xF84F80 |
+| hand | `0x2004690` | `0xF6F430` | 0xF6F360 / 0xF84C30 / 0x2FD6E0 / 0xF84C40 / **0xF6F430** / 0xF84F80 |
+| uWp1080 | `0x200CC28` | `0xF71980` | 0xF71930 / 0xF3D1B0 / 0x2FD6E0 / 0xF64230 / **0xF71980** / 0xF3D1E0 |
+
+The uWp1080-specific bodies read: `0xF71930` calls `0xF3D090`, then re-dispatches through the class registry at
+`0x296C48` slot `0x68` with the new object in `x1` (the uWp1080 constructor path); `0xF64230` walks the owner at
+`+0x3884`/`+0x3888` allocating nodes of `0x60` bytes with `0x115CBB0` and storing the strings `"mMode"` / `"mType"` -
+a property-bag/descriptor builder, not a shot; `0xF3D1E0` is a per-frame update over the owner's weapon state at
+`+0x1300`. `0x2FD6E0` (shared by every record) is a two-word predicate (`[...+0x14] & 7`, true for 1..2).
+
+**Nothing here is the fire yet.** The next step for B1 is the weapon's action object: the uWp1080 class does not hold
+the shell spawn itself, so the shot must be an action class's transition (the same place the live flash's
+`cWpAction_wp_act_throw` transition was found), and the record above gives its class registry slot. That is where the
+next scan goes. Nothing in the repo changed for B, and nothing is claimed about the launcher.
+
+## REQUEST 15:30 CST - a read-only copy of the RE4 Switch base content on the i9 (checkpoint E1 / F1 are blocked on it)
+
+- needs: the RE4 Switch **base** content for title `010099A00BC1E000` copied onto the i9 (read-only), either the base
+  NSP or the extracted `main` (+ its `main-*.nso` name/build id). A path under `D:\gBox\cache\` is enough; say where.
+- why: only the **update 1.0.2 NSP** is on this box
+  (`D:\gBox\cache\270a15eb98dab4d7\Resident Evil 4 [UPDATE 1.0.2] [010099a00bc1e000].nsp`). It has no `.tik` member,
+  so `python -m gbox.switch_extract exefs` answers "no ticket in the container: a title key cannot be derived";
+  there is no base NSP on the i9's drives, and JAYBUILTFINALE's shares are not reachable from the i9.
+- what it unblocks: E1 (the `.text` tail's zero run and the no-reference proof), E2 (the player unit's vtable slot),
+  and F1 (`re4_switch_blasts.verify(main_bin)` against the real image, `docs/research/re4-switch-grenade-flash.md`).
+  The build to compare is `82C2A04A21D3E0B850F273D4149C9003`, NSO sha256
+  `98ca897f07b2c864a0cabfb9dd8ca46a54b88c565ba629da3b7a4b6a57a57441`.
+- meanwhile: E0(c) needs no decision - capstone 5.0.7 and unicorn 2.1.4 are both installed on this box - so the
+  hand-encoded harness can start as soon as the image gives the cave and the trigger addresses.
