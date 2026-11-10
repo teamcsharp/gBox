@@ -2778,15 +2778,50 @@ with two independent confirmations -- which is what an object-level search of th
 
 `main` clean; 5 registry tests green, 4 of them on the real disc.
 
+## Round 57 (2026-11-10) — consolidation: the hand-off brief brought up to date
+
+With a few rounds left and no single experiment that would close P1, this round spent its budget making the state of the lane
+correct rather than longer. `docs/PSO-HANDOFF-2026-11-10.md` was rewritten at round 57.
+
+### What changed in it
+
+* **P6a is marked done and proven** (the round-44 brief still said "proof incomplete"): `TObjCityDoor_Guild` reads
+  (235,173) in RAM after the writer moved it.
+* **P6b** is now "backend + CLI + ASCII map", not "backend done, no page".
+* **Two of the brief's own next-steps were wrong** and are now retracted: the `x=0` "corridor" lead (those objects are
+  flying cars) and the reading of the seven `0x40` records as shop counters (they are cameras). Both came from identifying a
+  record by its distance to an entity, which this lane should stop doing.
+* **P2b** gained the DOL address map and the class registry, both with the evidence that makes them checkable.
+* **P2** now records the `.evt` scripts as "framed but not semantically decoded", rather than implying the format work is
+  finished.
+
+### The one claim worth reading twice
+
+P1's gate is **code, not data**. The 143 event scripts cover 28 field and boss areas and not the city; the city's four doors
+are placed identically and behave differently. So there is nothing on the disc that a better route, a better walker or a
+better placement edit could reach. That closes ~20 rounds of searching and should stop the next session from repeating
+it -- and it means P1's next move is an executable search (the tools for which now exist) or a RAM quest-state probe.
+
+### Verification
+
+**121 PSO tests green** at this revision, run immediately before this commit. `main` is clean and pushed.
+
+### State of the live side
+
+The last session is stopped. No worker beyond the i9's own was ever touched. The mods, the helper scripts and every trap the
+brief lists (the `mod` query parameter, the five-minute gate, the foreground requirement for keyboard input) are recorded
+there so a new session starts from a working setup instead of rediscovering them.
+
 ## 7. Next
 
-1. **Widen the class lookup to the other two name arrays** the sweep found -- `0x4f2f08` (13 names from
-   `TObjQuestColBase`) and `0x4f3254` (22 names from `TObject`). The two ids this table cannot name are `0x41` (the
-   southwest objects) and `0x57` (the lobby pedestal).
-2. **P1's gate is the executable's quest logic.** The class id is now a confirmed fact with two independent
-   confirmations (position in round 46, kind word in round 56), which is what an object-level search needs.
-3. **P6b's page** (pure UI over `python -m gbox.pso_editor`) and **P7a's rigging** are the items that do not need P1.
+The hand-off brief (`docs/PSO-HANDOFF-2026-11-10.md`, rewritten at round 57) carries the full list. In order:
 
-Confirmed in round 56: a placement record's `kind` low byte is the class id (Guild 0x47, Warp 0x48, Med 0x49,
-Shop 0x46 -- the same four classes position identified). `set_id` / `group_id` are masked values and resolve to
-nonsense if fed to the lookup; do not use them for class.
+1. **P1 via the executable.** `pso_dol` (address map), `pso_classes` (named class ids) and the 25,981-function Ghidra
+   export exist; search for code touching a `TObjCityDoor_Guild` instance or the quest-state block, not for "the guild".
+2. **Finish the `.evt` decode** -- framing is solid (143/143), opcodes are not; field room transitions live there.
+3. **P6b's page** (pure UI over the CLI) and **P7a's rigging** (`build_swap` adapted for GC, gated by `pso_swapfit`).
+4. Then P3-P5, which need P1.
+
+Standing rules: only the i9's own gBox (`10.89.1.43:8765`, `x-gbox-actor: agent`), never lilspark; restore the emulator
+window before driving; and do not identify a placement record by its distance to an entity -- two of this lane's leads
+died that way (cameras read as shopkeepers, traffic read as corridor markers).
