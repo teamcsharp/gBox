@@ -1,0 +1,3554 @@
+{
+ "RE5": {
+  "uEm10": {
+   "name": "Majini",
+   "status": "measured",
+   "model": "pawn/em/em10/model/em1000",
+   "arc": "uEm10.arc",
+   "head": 165.0,
+   "chest": 132.0,
+   "knee": 57.5,
+   "shoulder": 150.8,
+   "radius": 17.2,
+   "height": 187.3,
+   "bones": {
+    "head": {
+     "bone": 81,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 15,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 80) is 156.0 cm"
+    },
+    "knee": {
+     "bones": [
+      4,
+      9
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      17,
+      50
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 34.4,
+     "hip_width": 18.4,
+     "hip_bones": [
+      2,
+      7
+     ],
+     "shoulder_bones": [
+      17,
+      50
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 185.6,
+   "mesh_min_y": -1.7
+  },
+  "uEm11": {
+   "name": "Majini (female)",
+   "status": "measured",
+   "model": "pawn/em/em11/model/em1100",
+   "arc": "uEm11.arc",
+   "head": 164.7,
+   "chest": 131.2,
+   "knee": 57.5,
+   "shoulder": 150.7,
+   "radius": 13.0,
+   "height": 185.3,
+   "bones": {
+    "head": {
+     "bone": 78,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 16,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 77) is 155.6 cm"
+    },
+    "knee": {
+     "bones": [
+      6,
+      12
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      48,
+      18
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 25.9,
+     "hip_width": 18.4,
+     "hip_bones": [
+      5,
+      10
+     ],
+     "shoulder_bones": [
+      48,
+      18
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 183.6,
+   "mesh_min_y": -1.8
+  },
+  "uEm12": {
+   "name": "Wetlands Majini",
+   "status": "measured",
+   "model": "pawn/em/em12/model/em1200",
+   "arc": "uEm12.arc",
+   "head": 165.0,
+   "chest": 132.0,
+   "knee": 57.5,
+   "shoulder": 150.8,
+   "radius": 17.2,
+   "height": 185.1,
+   "bones": {
+    "head": {
+     "bone": 75,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 15,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 74) is 156.0 cm"
+    },
+    "knee": {
+     "bones": [
+      4,
+      9
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      17,
+      47
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 34.4,
+     "hip_width": 18.4,
+     "hip_bones": [
+      2,
+      7
+     ],
+     "shoulder_bones": [
+      17,
+      47
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 185.1,
+   "mesh_min_y": -0.0
+  },
+  "uEm13": {
+   "name": "Big Man Majini",
+   "status": "measured",
+   "model": "pawn/em/em13/model/em1300",
+   "arc": "uEm13.arc",
+   "head": 165.0,
+   "chest": 132.0,
+   "knee": 53.3,
+   "shoulder": 150.8,
+   "radius": 17.2,
+   "height": 184.4,
+   "bones": {
+    "head": {
+     "bone": 82,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 16,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 81) is 156.0 cm"
+    },
+    "knee": {
+     "bones": [
+      5,
+      10
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      18,
+      51
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 34.4,
+     "hip_width": 21.0,
+     "hip_bones": [
+      3,
+      8
+     ],
+     "shoulder_bones": [
+      18,
+      51
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 184.3,
+   "mesh_min_y": -0.1
+  },
+  "uEm14": {
+   "name": "Base Majini",
+   "status": "measured",
+   "model": "pawn/em/em14/model/em1400",
+   "arc": "uEm14.arc",
+   "head": 165.0,
+   "chest": 132.0,
+   "knee": 57.5,
+   "shoulder": 150.8,
+   "radius": 17.2,
+   "height": 186.8,
+   "bones": {
+    "head": {
+     "bone": 75,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 15,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 74) is 156.0 cm"
+    },
+    "knee": {
+     "bones": [
+      4,
+      9
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      17,
+      47
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 34.4,
+     "hip_width": 18.4,
+     "hip_bones": [
+      2,
+      7
+     ],
+     "shoulder_bones": [
+      17,
+      47
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 186.4,
+   "mesh_min_y": -0.4
+  },
+  "uEm20": {
+   "name": "Executioner Majini",
+   "status": "measured",
+   "model": "pawn/em/em20/model/em2000",
+   "arc": "uEm20.arc",
+   "head": 165.0,
+   "chest": 132.0,
+   "knee": 57.5,
+   "shoulder": 150.8,
+   "radius": 17.2,
+   "height": 188.3,
+   "bones": {
+    "head": {
+     "bone": 112,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 51,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 111) is 156.0 cm"
+    },
+    "knee": {
+     "bones": [
+      33,
+      38
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      53,
+      84
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 34.4,
+     "hip_width": 18.4,
+     "hip_bones": [
+      31,
+      36
+     ],
+     "shoulder_bones": [
+      53,
+      84
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 188.2,
+   "mesh_min_y": -0.0
+  },
+  "uEm21": {
+   "name": "Agitator Majini",
+   "status": "measured",
+   "model": "pawn/em/em10/model/em2100",
+   "arc": "uEm21.arc",
+   "head": 165.0,
+   "chest": 132.0,
+   "knee": 57.5,
+   "shoulder": 150.8,
+   "radius": 17.2,
+   "height": 186.2,
+   "bones": {
+    "head": {
+     "bone": 81,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 15,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 80) is 156.0 cm"
+    },
+    "knee": {
+     "bones": [
+      4,
+      9
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      17,
+      50
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 34.4,
+     "hip_width": 18.4,
+     "hip_bones": [
+      2,
+      7
+     ],
+     "shoulder_bones": [
+      17,
+      50
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 184.5,
+   "mesh_min_y": -1.7
+  },
+  "uEm22": {
+   "name": "Chainsaw Majini",
+   "status": "measured",
+   "model": "pawn/em/em22/model/em2200",
+   "arc": "uEm22.arc",
+   "head": 165.0,
+   "chest": 132.0,
+   "knee": 57.5,
+   "shoulder": 150.8,
+   "radius": 17.2,
+   "height": 185.3,
+   "bones": {
+    "head": {
+     "bone": 81,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 20,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 80) is 156.0 cm"
+    },
+    "knee": {
+     "bones": [
+      5,
+      10
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      22,
+      53
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 34.4,
+     "hip_width": 18.4,
+     "hip_bones": [
+      3,
+      8
+     ],
+     "shoulder_bones": [
+      22,
+      53
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 185.4,
+   "mesh_min_y": 0.1
+  },
+  "uEm23": {
+   "name": "Gatling Gun Majini",
+   "status": "measured",
+   "model": "pawn/em/em23/model/em2300",
+   "arc": "uEm23.arc",
+   "head": 165.0,
+   "chest": 132.0,
+   "knee": 57.5,
+   "shoulder": 150.8,
+   "radius": 17.2,
+   "height": 186.6,
+   "bones": {
+    "head": {
+     "bone": 65,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 3,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 64) is 156.0 cm"
+    },
+    "knee": {
+     "bones": [
+      83,
+      88
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      5,
+      36
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 34.4,
+     "hip_width": 20.4,
+     "hip_bones": [
+      81,
+      86
+     ],
+     "shoulder_bones": [
+      5,
+      36
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 186.2,
+   "mesh_min_y": -0.4
+  },
+  "uEm24": {
+   "name": "Giant Majini",
+   "status": "measured",
+   "model": "pawn/em/em24/model/em2400",
+   "arc": "uEm24.arc",
+   "head": 165.0,
+   "chest": 132.0,
+   "knee": 57.5,
+   "shoulder": 150.8,
+   "radius": 17.2,
+   "height": 195.7,
+   "bones": {
+    "head": {
+     "bone": 82,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 22,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 81) is 156.0 cm"
+    },
+    "knee": {
+     "bones": [
+      5,
+      10
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      24,
+      54
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 34.4,
+     "hip_width": 18.4,
+     "hip_bones": [
+      3,
+      8
+     ],
+     "shoulder_bones": [
+      24,
+      54
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 195.7,
+   "mesh_min_y": -0.0,
+   "note": "mesh top is 30.7 cm above the head bone (other geometry above the head)"
+  },
+  "uEm26": {
+   "name": "Executioner Majini (red)",
+   "status": "measured",
+   "model": "pawn/em/em26/model/em2600",
+   "arc": "uEm26.arc",
+   "head": 165.0,
+   "chest": 132.0,
+   "knee": 57.5,
+   "shoulder": 150.8,
+   "radius": 17.2,
+   "height": 187.0,
+   "bones": {
+    "head": {
+     "bone": 112,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 51,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 111) is 156.0 cm"
+    },
+    "knee": {
+     "bones": [
+      33,
+      38
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      53,
+      84
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 34.4,
+     "hip_width": 18.4,
+     "hip_bones": [
+      31,
+      36
+     ],
+     "shoulder_bones": [
+      53,
+      84
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 186.9,
+   "mesh_min_y": -0.1
+  },
+  "uEm32": {
+   "name": "Licker \u03b2",
+   "status": "not determined",
+   "model": "pawn/em/em32/model/em3200",
+   "arc": "uEm32.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 54.8,
+   "bones": "not determined",
+   "posture": "crawling",
+   "posture_basis": "mesh top only 27 cm above the origin, 311 cm wide",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 27.2,
+   "mesh_min_y": -27.7,
+   "mesh_extent_cm": {
+    "x": [
+     -155.3,
+     155.3
+    ],
+    "y": [
+     -27.7,
+     27.2
+    ],
+    "z": [
+     -39.7,
+     112.5
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": -12.2,
+    "p50": -2.8,
+    "p90": 12.3
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 6,
+     "x": 0.0,
+     "y_above_feet": 2.0,
+     "z": 89.9
+    },
+    {
+     "bone": 8,
+     "x": 4.5,
+     "y_above_feet": -5.0,
+     "z": 48.8
+    },
+    {
+     "bone": 14,
+     "x": 95.0,
+     "y_above_feet": -4.3,
+     "z": 42.3
+    },
+    {
+     "bone": 17,
+     "x": 131.0,
+     "y_above_feet": -3.5,
+     "z": 41.1
+    },
+    {
+     "bone": 20,
+     "x": 137.7,
+     "y_above_feet": -3.5,
+     "z": 48.7
+    },
+    {
+     "bone": 23,
+     "x": 135.0,
+     "y_above_feet": -3.5,
+     "z": 57.0
+    },
+    {
+     "bone": 24,
+     "x": 88.9,
+     "y_above_feet": -6.8,
+     "z": 53.0
+    },
+    {
+     "bone": 25,
+     "x": 80.0,
+     "y_above_feet": -5.0,
+     "z": 49.0
+    },
+    {
+     "bone": 26,
+     "x": 47.0,
+     "y_above_feet": -5.0,
+     "z": 49.0
+    },
+    {
+     "bone": 27,
+     "x": 16.5,
+     "y_above_feet": -5.0,
+     "z": 49.0
+    },
+    {
+     "bone": 29,
+     "x": -4.5,
+     "y_above_feet": -5.0,
+     "z": 48.8
+    },
+    {
+     "bone": 35,
+     "x": -95.0,
+     "y_above_feet": -4.3,
+     "z": 42.3
+    },
+    {
+     "bone": 38,
+     "x": -131.0,
+     "y_above_feet": -3.5,
+     "z": 41.1
+    },
+    {
+     "bone": 41,
+     "x": -137.7,
+     "y_above_feet": -3.5,
+     "z": 48.7
+    },
+    {
+     "bone": 44,
+     "x": -135.0,
+     "y_above_feet": -3.5,
+     "z": 57.0
+    },
+    {
+     "bone": 45,
+     "x": -88.9,
+     "y_above_feet": -6.8,
+     "z": 53.0
+    },
+    {
+     "bone": 46,
+     "x": -80.0,
+     "y_above_feet": -5.0,
+     "z": 49.0
+    },
+    {
+     "bone": 47,
+     "x": -47.0,
+     "y_above_feet": -5.0,
+     "z": 49.0
+    },
+    {
+     "bone": 48,
+     "x": -16.5,
+     "y_above_feet": -5.0,
+     "z": 49.0
+    },
+    {
+     "bone": 51,
+     "x": -13.6,
+     "y_above_feet": -2.4,
+     "z": -26.0
+    },
+    {
+     "bone": 52,
+     "x": 13.6,
+     "y_above_feet": -2.4,
+     "z": -26.0
+    },
+    {
+     "bone": 54,
+     "x": -58.1,
+     "y_above_feet": -2.4,
+     "z": -26.0
+    },
+    {
+     "bone": 59,
+     "x": -109.6,
+     "y_above_feet": 2.8,
+     "z": -9.9
+    },
+    {
+     "bone": 63,
+     "x": -109.9,
+     "y_above_feet": -2.7,
+     "z": 13.0
+    },
+    {
+     "bone": 67,
+     "x": -105.1,
+     "y_above_feet": -2.4,
+     "z": -26.0
+    },
+    {
+     "bone": 69,
+     "x": 58.1,
+     "y_above_feet": -2.4,
+     "z": -26.0
+    },
+    {
+     "bone": 74,
+     "x": 109.6,
+     "y_above_feet": 2.8,
+     "z": -9.9
+    },
+    {
+     "bone": 78,
+     "x": 109.9,
+     "y_above_feet": -2.7,
+     "z": 13.0
+    },
+    {
+     "bone": 82,
+     "x": 105.1,
+     "y_above_feet": -2.4,
+     "z": -26.0
+    }
+   ],
+   "highest_bone": {
+    "bone": 3,
+    "y_above_feet": 4.2
+   },
+   "bones_total": 83,
+   "vertices": 6855,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm34": {
+   "name": "Reaper",
+   "status": "measured",
+   "model": "pawn/em/em34/model/em3400",
+   "arc": "uEm34.arc",
+   "head": 257.5,
+   "chest": 205.5,
+   "knee": 108.8,
+   "shoulder": 233.3,
+   "radius": 29.0,
+   "height": 437.0,
+   "bones": {
+    "head": {
+     "bone": 32,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 16,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 31) is 256.7 cm"
+    },
+    "knee": {
+     "bones": [
+      9,
+      4
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      26,
+      20
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 58.1,
+     "hip_width": 33.7,
+     "hip_bones": [
+      8,
+      3
+     ],
+     "shoulder_bones": [
+      26,
+      20
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 436.3,
+   "mesh_min_y": -0.6,
+   "note": "mesh top is 178.8 cm above the head bone (other geometry above the head)"
+  },
+  "uEm0b": {
+   "name": "Bui Kichwa",
+   "status": "not determined",
+   "model": "pawn/em/em0b/model/em0b00",
+   "arc": "uEm0b.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 96.5,
+   "bones": "not determined",
+   "posture": "four-legged",
+   "posture_basis": "10 leaf bones within -8..12 cm of the origin plane (feet) and mesh top 87 cm",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 86.5,
+   "mesh_min_y": -10.0,
+   "mesh_extent_cm": {
+    "x": [
+     -14.9,
+     14.9
+    ],
+    "y": [
+     -10.0,
+     86.5
+    ],
+    "z": [
+     -79.9,
+     19.4
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": -1.7,
+    "p50": 36.0,
+    "p90": 76.8
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 10,
+     "x": 0.0,
+     "y_above_feet": 0.0,
+     "z": -61.5
+    },
+    {
+     "bone": 11,
+     "x": 0.0,
+     "y_above_feet": 5.7,
+     "z": -9.7
+    },
+    {
+     "bone": 12,
+     "x": 8.2,
+     "y_above_feet": 5.7,
+     "z": -17.1
+    },
+    {
+     "bone": 13,
+     "x": -4.6,
+     "y_above_feet": -2.5,
+     "z": -16.9
+    },
+    {
+     "bone": 16,
+     "x": 0.0,
+     "y_above_feet": 4.2,
+     "z": 11.7
+    },
+    {
+     "bone": 17,
+     "x": -0.3,
+     "y_above_feet": -4.3,
+     "z": 12.0
+    },
+    {
+     "bone": 18,
+     "x": 4.0,
+     "y_above_feet": -0.5,
+     "z": 12.0
+    },
+    {
+     "bone": 19,
+     "x": -3.8,
+     "y_above_feet": 0.5,
+     "z": 11.5
+    },
+    {
+     "bone": 68,
+     "x": -5.0,
+     "y_above_feet": 6.8,
+     "z": 14.2
+    },
+    {
+     "bone": 69,
+     "x": 5.0,
+     "y_above_feet": 6.8,
+     "z": 14.2
+    }
+   ],
+   "highest_bone": {
+    "bone": 40,
+    "y_above_feet": 72.0
+   },
+   "bones_total": 70,
+   "vertices": 10850,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm0c": {
+   "name": "Kipepeo",
+   "status": "not determined",
+   "model": "pawn/em/em0c/model/em0c00",
+   "arc": "uEm0c.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 145.3,
+   "bones": "not determined",
+   "posture": "not determined",
+   "posture_basis": "2 leaf bones near the origin plane; shape not a standing biped, 4-legger or crawler by the stated rules",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 43.2,
+   "mesh_min_y": -102.1,
+   "mesh_extent_cm": {
+    "x": [
+     -156.4,
+     156.4
+    ],
+    "y": [
+     -102.1,
+     43.2
+    ],
+    "z": [
+     -17.9,
+     11.4
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": -74.5,
+    "p50": 16.5,
+    "p90": 30.5
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 21,
+     "x": -47.7,
+     "y_above_feet": 11.9,
+     "z": 4.3
+    },
+    {
+     "bone": 27,
+     "x": 47.7,
+     "y_above_feet": 11.9,
+     "z": 4.3
+    }
+   ],
+   "highest_bone": {
+    "bone": 6,
+    "y_above_feet": 30.4
+   },
+   "bones_total": 45,
+   "vertices": 4970,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm0d": {
+   "name": "Cephalo",
+   "status": "not determined",
+   "model": "pawn/em/em0d/model/em0d00",
+   "arc": "uEm0d.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 328.4,
+   "bones": "not determined",
+   "posture": "not determined",
+   "posture_basis": "0 leaf bones near the origin plane; shape not a standing biped, 4-legger or crawler by the stated rules",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 337.2,
+   "mesh_min_y": 8.8,
+   "mesh_extent_cm": {
+    "x": [
+     -78.2,
+     78.1
+    ],
+    "y": [
+     8.8,
+     337.2
+    ],
+    "z": [
+     -42.4,
+     23.1
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": 43.5,
+    "p50": 121.4,
+    "p90": 307.2
+   },
+   "ground_contact_leaf_bones": [],
+   "highest_bone": {
+    "bone": 16,
+    "y_above_feet": 257.5
+   },
+   "bones_total": 41,
+   "vertices": 11937,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm0e": {
+   "name": "Duvalia",
+   "status": "not determined",
+   "model": "pawn/em/em0e/model/em0e00",
+   "arc": "uEm0e.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 114.6,
+   "bones": "not determined",
+   "posture": "not determined",
+   "posture_basis": "1 leaf bones near the origin plane; shape not a standing biped, 4-legger or crawler by the stated rules",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 98.0,
+   "mesh_min_y": -16.6,
+   "mesh_extent_cm": {
+    "x": [
+     -33.9,
+     152.7
+    ],
+    "y": [
+     -16.6,
+     98.0
+    ],
+    "z": [
+     -137.8,
+     28.1
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": -4.6,
+    "p50": 17.3,
+    "p90": 72.2
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 35,
+     "x": 135.8,
+     "y_above_feet": 2.6,
+     "z": -124.0
+    }
+   ],
+   "highest_bone": {
+    "bone": 18,
+    "y_above_feet": 84.3
+   },
+   "bones_total": 36,
+   "vertices": 17344,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm62": {
+   "name": "Chicken",
+   "status": "not determined",
+   "model": "pawn/em/em62/model/em6200",
+   "arc": "uEm62.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 54.6,
+   "bones": "not determined",
+   "posture": "not determined",
+   "posture_basis": "2 leaf bones near the origin plane; shape not a standing biped, 4-legger or crawler by the stated rules",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 49.7,
+   "mesh_min_y": -4.9,
+   "mesh_extent_cm": {
+    "x": [
+     -48.0,
+     48.0
+    ],
+    "y": [
+     -4.9,
+     49.7
+    ],
+    "z": [
+     -24.4,
+     29.0
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": -2.6,
+    "p50": 28.6,
+    "p90": 44.5
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 16,
+     "x": -4.3,
+     "y_above_feet": 1.5,
+     "z": 0.0
+    },
+    {
+     "bone": 19,
+     "x": 4.3,
+     "y_above_feet": 1.5,
+     "z": 0.0
+    }
+   ],
+   "highest_bone": {
+    "bone": 8,
+    "y_above_feet": 44.0
+   },
+   "bones_total": 20,
+   "vertices": 8028,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm30": {
+   "name": "Adjule",
+   "status": "not determined",
+   "model": "pawn/em/em30/model/em3000",
+   "arc": "uEm30.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 124.2,
+   "bones": "not determined",
+   "posture": "four-legged",
+   "posture_basis": "4 leaf bones within -8..12 cm of the origin plane (feet) and mesh top 119 cm",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 119.0,
+   "mesh_min_y": -5.2,
+   "mesh_extent_cm": {
+    "x": [
+     -18.7,
+     18.7
+    ],
+    "y": [
+     -5.2,
+     119.0
+    ],
+    "z": [
+     -50.0,
+     98.9
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": -0.6,
+    "p50": 84.3,
+    "p90": 112.7
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 9,
+     "x": -10.4,
+     "y_above_feet": 3.2,
+     "z": 51.0
+    },
+    {
+     "bone": 15,
+     "x": 10.4,
+     "y_above_feet": 3.2,
+     "z": 51.0
+    },
+    {
+     "bone": 81,
+     "x": -8.6,
+     "y_above_feet": 0.7,
+     "z": -20.6
+    },
+    {
+     "bone": 85,
+     "x": 8.6,
+     "y_above_feet": 0.7,
+     "z": -20.6
+    }
+   ],
+   "highest_bone": {
+    "bone": 65,
+    "y_above_feet": 117.0
+   },
+   "bones_total": 90,
+   "vertices": 21388,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm92": {
+   "name": "Jill Valentine (enemy)",
+   "status": "measured",
+   "model": "pawn/em/em92/model/em9200",
+   "arc": "uEm92.arc",
+   "head": 164.7,
+   "chest": 131.2,
+   "knee": 57.5,
+   "shoulder": 150.7,
+   "radius": 13.0,
+   "height": 184.6,
+   "bones": {
+    "head": {
+     "bone": 82,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 18,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 81) is 155.6 cm"
+    },
+    "knee": {
+     "bones": [
+      6,
+      12
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      49,
+      20
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 25.9,
+     "hip_width": 18.4,
+     "hip_bones": [
+      5,
+      10
+     ],
+     "shoulder_bones": [
+      49,
+      20
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 182.8,
+   "mesh_min_y": -1.8
+  }
+ },
+ "RE6": {
+  "uEm1000": {
+   "name": "J'avo",
+   "status": "measured",
+   "model": "data/chara/em/em1000/model/em1000",
+   "arc": "uEm1000.arc",
+   "head": 162.1,
+   "chest": 129.1,
+   "knee": 54.6,
+   "shoulder": 147.9,
+   "radius": 16.5,
+   "height": 180.7,
+   "bones": {
+    "head": {
+     "bone": 4,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 2,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 3) is 153.1 cm"
+    },
+    "knee": {
+     "bones": [
+      24,
+      20
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      7,
+      13
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 33.0,
+     "hip_width": 19.4,
+     "hip_bones": [
+      23,
+      19
+     ],
+     "shoulder_bones": [
+      7,
+      13
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 180.5,
+   "mesh_min_y": -0.2
+  },
+  "uEm1200": {
+   "name": "J'avo (Lanshiang)",
+   "status": "measured",
+   "model": "data/chara/em/em1200/model/em1200",
+   "arc": "uEm1200.arc",
+   "head": 162.1,
+   "chest": 129.1,
+   "knee": 54.6,
+   "shoulder": 147.9,
+   "radius": 16.5,
+   "height": 182.6,
+   "bones": {
+    "head": {
+     "bone": 25,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 11,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 24) is 153.1 cm"
+    },
+    "knee": {
+     "bones": [
+      7,
+      3
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      13,
+      19
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 33.0,
+     "hip_width": 19.4,
+     "hip_bones": [
+      6,
+      2
+     ],
+     "shoulder_bones": [
+      13,
+      19
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 182.5,
+   "mesh_min_y": -0.1
+  },
+  "uEm1370": {
+   "name": "J'avo mutant (uEm1370)",
+   "status": "measured",
+   "model": "data/chara/em/em1370/model/em1370",
+   "arc": "uEm1370.arc",
+   "head": 162.1,
+   "chest": 129.1,
+   "knee": 54.6,
+   "shoulder": 147.9,
+   "radius": 16.5,
+   "height": 187.0,
+   "bones": {
+    "head": {
+     "bone": 4,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 2,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 3) is 153.1 cm"
+    },
+    "knee": {
+     "bones": [
+      29,
+      33
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      8,
+      16
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 33.0,
+     "hip_width": 19.4,
+     "hip_bones": [
+      28,
+      32
+     ],
+     "shoulder_bones": [
+      8,
+      16
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 181.8,
+   "mesh_min_y": -5.2
+  },
+  "uEm1400": {
+   "name": "J'avo (Neo-Umbrella)",
+   "status": "measured",
+   "model": "data/chara/em/em1400/model/em1400",
+   "arc": "uEm1400.arc",
+   "head": 162.1,
+   "chest": 129.1,
+   "knee": 54.6,
+   "shoulder": 147.9,
+   "radius": 16.5,
+   "height": 182.4,
+   "bones": {
+    "head": {
+     "bone": 13,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 11,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 12) is 153.1 cm"
+    },
+    "knee": {
+     "bones": [
+      3,
+      7
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      18,
+      24
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 33.0,
+     "hip_width": 19.4,
+     "hip_bones": [
+      2,
+      6
+     ],
+     "shoulder_bones": [
+      18,
+      24
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 182.4,
+   "mesh_min_y": 0.0
+  },
+  "uEm2010": {
+   "name": "J'avo mutation (head)",
+   "status": "not determined",
+   "model": "data/chara/em/em2010/model/em2010",
+   "arc": "uEm2010.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 124.3,
+   "bones": "not determined",
+   "posture": "not determined",
+   "posture_basis": "2 leaf bones near the origin plane; shape not a standing biped, 4-legger or crawler by the stated rules",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 221.2,
+   "mesh_min_y": 97.0,
+   "mesh_extent_cm": {
+    "x": [
+     -60.6,
+     59.4
+    ],
+    "y": [
+     97.0,
+     221.2
+    ],
+    "z": [
+     -24.9,
+     28.0
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": 124.1,
+    "p50": 149.4,
+    "p90": 199.3
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 5,
+     "x": 9.7,
+     "y_above_feet": 0.0,
+     "z": 12.3
+    },
+    {
+     "bone": 9,
+     "x": -9.7,
+     "y_above_feet": 0.0,
+     "z": 12.3
+    }
+   ],
+   "highest_bone": {
+    "bone": 19,
+    "y_above_feet": 169.4
+   },
+   "bones_total": 42,
+   "vertices": 7132,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm2030": {
+   "name": "J'avo mutation (head)",
+   "status": "not determined",
+   "model": "data/chara/em/em2030/model/em2030",
+   "arc": "uEm2030.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 71.9,
+   "bones": "not determined",
+   "posture": "not determined",
+   "posture_basis": "1 leaf bones near the origin plane; shape not a standing biped, 4-legger or crawler by the stated rules",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 71.5,
+   "mesh_min_y": -0.4,
+   "mesh_extent_cm": {
+    "x": [
+     -74.3,
+     74.3
+    ],
+    "y": [
+     -0.4,
+     71.5
+    ],
+    "z": [
+     -48.0,
+     77.9
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": 17.5,
+    "p50": 44.9,
+    "p90": 60.2
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 1,
+     "x": 0.0,
+     "y_above_feet": 0.8,
+     "z": 25.2
+    }
+   ],
+   "highest_bone": {
+    "bone": 24,
+    "y_above_feet": 60.2
+   },
+   "bones_total": 27,
+   "vertices": 6062,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm2100": {
+   "name": "J'avo mutation (arm)",
+   "status": "not determined",
+   "model": "data/chara/em/em2100/model/em2100",
+   "arc": "uEm2100.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 69.9,
+   "bones": "not determined",
+   "posture": "not determined",
+   "posture_basis": "0 leaf bones near the origin plane; shape not a standing biped, 4-legger or crawler by the stated rules",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 63.3,
+   "mesh_min_y": -6.6,
+   "mesh_extent_cm": {
+    "x": [
+     -254.5,
+     254.5
+    ],
+    "y": [
+     -6.6,
+     63.3
+    ],
+    "z": [
+     -17.8,
+     11.6
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": 18.7,
+    "p50": 37.0,
+    "p90": 52.6
+   },
+   "ground_contact_leaf_bones": [],
+   "highest_bone": {
+    "bone": 9,
+    "y_above_feet": 51.5
+   },
+   "bones_total": 16,
+   "vertices": 13652,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm2120": {
+   "name": "J'avo mutation (arm)",
+   "status": "not determined",
+   "model": "data/chara/em/em2120/model/em2120",
+   "arc": "uEm2120.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 59.3,
+   "bones": "not determined",
+   "posture": "not determined",
+   "posture_basis": "0 leaf bones near the origin plane; shape not a standing biped, 4-legger or crawler by the stated rules",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 70.4,
+   "mesh_min_y": 11.1,
+   "mesh_extent_cm": {
+    "x": [
+     -406.7,
+     406.7
+    ],
+    "y": [
+     11.1,
+     70.4
+    ],
+    "z": [
+     -35.4,
+     25.5
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": 26.2,
+    "p50": 38.4,
+    "p90": 48.8
+   },
+   "ground_contact_leaf_bones": [],
+   "highest_bone": {
+    "bone": 33,
+    "y_above_feet": 51.5
+   },
+   "bones_total": 63,
+   "vertices": 14479,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm2140": {
+   "name": "J'avo mutation (arm)",
+   "status": "not determined",
+   "model": "data/chara/em/em2140/model/em2140",
+   "arc": "uEm2140.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 61.7,
+   "bones": "not determined",
+   "posture": "not determined",
+   "posture_basis": "0 leaf bones near the origin plane; shape not a standing biped, 4-legger or crawler by the stated rules",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 53.6,
+   "mesh_min_y": -8.1,
+   "mesh_extent_cm": {
+    "x": [
+     -154.5,
+     154.5
+    ],
+    "y": [
+     -8.1,
+     53.6
+    ],
+    "z": [
+     -49.1,
+     68.8
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": 19.1,
+    "p50": 34.0,
+    "p90": 43.6
+   },
+   "ground_contact_leaf_bones": [],
+   "highest_bone": {
+    "bone": 36,
+    "y_above_feet": 51.5
+   },
+   "bones_total": 37,
+   "vertices": 16741,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm2200": {
+   "name": "J'avo mutation (legs)",
+   "status": "not determined",
+   "model": "data/chara/em/em2200/model/em2200",
+   "arc": "uEm2200.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 178.5,
+   "bones": "not determined",
+   "posture": "crawling",
+   "posture_basis": "mesh top only 23 cm above the origin, 330 cm wide",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 22.8,
+   "mesh_min_y": -155.7,
+   "mesh_extent_cm": {
+    "x": [
+     -165.0,
+     165.0
+    ],
+    "y": [
+     -155.7,
+     22.8
+    ],
+    "z": [
+     -44.9,
+     28.2
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": -110.7,
+    "p50": -13.1,
+    "p90": 5.3
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 11,
+     "x": -118.9,
+     "y_above_feet": 3.8,
+     "z": -8.4
+    },
+    {
+     "bone": 15,
+     "x": -119.9,
+     "y_above_feet": -5.8,
+     "z": -8.3
+    },
+    {
+     "bone": 23,
+     "x": 118.9,
+     "y_above_feet": 3.8,
+     "z": -8.4
+    },
+    {
+     "bone": 27,
+     "x": 119.9,
+     "y_above_feet": -5.8,
+     "z": -8.3
+    }
+   ],
+   "highest_bone": {
+    "bone": 2,
+    "y_above_feet": 18.5
+   },
+   "bones_total": 32,
+   "vertices": 9436,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm2210": {
+   "name": "J'avo mutation (legs)",
+   "status": "not determined",
+   "model": "data/chara/em/em2210/model/em2210",
+   "arc": "uEm2210.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 307.1,
+   "bones": "not determined",
+   "posture": "not determined",
+   "posture_basis": "0 leaf bones near the origin plane; shape not a standing biped, 4-legger or crawler by the stated rules",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 151.4,
+   "mesh_min_y": -155.7,
+   "mesh_extent_cm": {
+    "x": [
+     -187.9,
+     187.3
+    ],
+    "y": [
+     -155.7,
+     151.4
+    ],
+    "z": [
+     -177.2,
+     28.2
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": -142.9,
+    "p50": -91.8,
+    "p90": 34.6
+   },
+   "ground_contact_leaf_bones": [],
+   "highest_bone": {
+    "bone": 13,
+    "y_above_feet": 71.7
+   },
+   "bones_total": 43,
+   "vertices": 18356,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm2230": {
+   "name": "J'avo mutation (legs)",
+   "status": "not determined",
+   "model": "data/chara/em/em2230/model/em2230",
+   "arc": "uEm2230.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 135.2,
+   "bones": "not determined",
+   "posture": "not determined",
+   "posture_basis": "2 leaf bones near the origin plane; shape not a standing biped, 4-legger or crawler by the stated rules",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 133.6,
+   "mesh_min_y": -1.5,
+   "mesh_extent_cm": {
+    "x": [
+     -39.9,
+     35.4
+    ],
+    "y": [
+     -1.5,
+     133.6
+    ],
+    "z": [
+     -19.6,
+     22.8
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": 3.0,
+    "p50": 51.8,
+    "p90": 95.8
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 5,
+     "x": 9.7,
+     "y_above_feet": -0.0,
+     "z": 12.3
+    },
+    {
+     "bone": 9,
+     "x": -9.7,
+     "y_above_feet": -0.0,
+     "z": 12.3
+    }
+   ],
+   "highest_bone": {
+    "bone": 11,
+    "y_above_feet": 129.1
+   },
+   "bones_total": 12,
+   "vertices": 8254,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm2300": {
+   "name": "Chrysalid",
+   "status": "not determined",
+   "model": "data/chara/em/em2300/model/em2300",
+   "arc": "uEm2300.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 137.4,
+   "bones": "not determined",
+   "posture": "not determined",
+   "posture_basis": "0 leaf bones near the origin plane; shape not a standing biped, 4-legger or crawler by the stated rules",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 198.9,
+   "mesh_min_y": 61.6,
+   "mesh_extent_cm": {
+    "x": [
+     -49.1,
+     53.6
+    ],
+    "y": [
+     61.6,
+     198.9
+    ],
+    "z": [
+     -55.5,
+     56.3
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": 96.8,
+    "p50": 137.3,
+    "p90": 161.2
+   },
+   "ground_contact_leaf_bones": [],
+   "highest_bone": {
+    "bone": 13,
+    "y_above_feet": 173.2
+   },
+   "bones_total": 17,
+   "vertices": 10255,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm3000": {
+   "name": "Strelats",
+   "status": "not determined",
+   "model": "data/chara/em/em3000/model/em3000",
+   "arc": "uEm3000.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 229.7,
+   "bones": "not determined",
+   "posture": "not determined",
+   "posture_basis": "2 leaf bones near the origin plane; shape not a standing biped, 4-legger or crawler by the stated rules",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 224.1,
+   "mesh_min_y": -5.5,
+   "mesh_extent_cm": {
+    "x": [
+     -160.8,
+     160.8
+    ],
+    "y": [
+     -5.5,
+     224.1
+    ],
+    "z": [
+     -162.8,
+     71.3
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": 4.3,
+    "p50": 115.0,
+    "p90": 186.1
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 72,
+     "x": 56.7,
+     "y_above_feet": 3.6,
+     "z": -4.5
+    },
+    {
+     "bone": 82,
+     "x": -55.7,
+     "y_above_feet": 2.6,
+     "z": -6.0
+    }
+   ],
+   "highest_bone": {
+    "bone": 26,
+    "y_above_feet": 195.6
+   },
+   "bones_total": 83,
+   "vertices": 40023,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm3100": {
+   "name": "Mesets",
+   "status": "not determined",
+   "model": "data/chara/em/em3100/model/em3100",
+   "arc": "uEm3100.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 145.4,
+   "bones": "not determined",
+   "posture": "four-legged",
+   "posture_basis": "8 leaf bones within -8..12 cm of the origin plane (feet) and mesh top 127 cm",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 127.1,
+   "mesh_min_y": -18.3,
+   "mesh_extent_cm": {
+    "x": [
+     -228.5,
+     228.5
+    ],
+    "y": [
+     -18.3,
+     127.1
+    ],
+    "z": [
+     -94.3,
+     104.9
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": 2.0,
+    "p50": 95.6,
+    "p90": 114.0
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 45,
+     "x": -11.5,
+     "y_above_feet": 5.6,
+     "z": 0.1
+    },
+    {
+     "bone": 48,
+     "x": -7.1,
+     "y_above_feet": 2.6,
+     "z": -19.5
+    },
+    {
+     "bone": 50,
+     "x": -11.6,
+     "y_above_feet": 2.5,
+     "z": -21.8
+    },
+    {
+     "bone": 52,
+     "x": -16.7,
+     "y_above_feet": 2.5,
+     "z": -18.3
+    },
+    {
+     "bone": 56,
+     "x": 11.5,
+     "y_above_feet": 5.6,
+     "z": 0.1
+    },
+    {
+     "bone": 59,
+     "x": 7.1,
+     "y_above_feet": 2.6,
+     "z": -19.5
+    },
+    {
+     "bone": 61,
+     "x": 11.6,
+     "y_above_feet": 2.5,
+     "z": -21.8
+    },
+    {
+     "bone": 63,
+     "x": 16.7,
+     "y_above_feet": 2.5,
+     "z": -18.3
+    }
+   ],
+   "highest_bone": {
+    "bone": 31,
+    "y_above_feet": 112.5
+   },
+   "bones_total": 64,
+   "vertices": 13495,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm3200": {
+   "name": "Napad",
+   "status": "measured",
+   "model": "data/chara/em/em3200/model/em3200",
+   "arc": "uEm3200.arc",
+   "head": 171.2,
+   "chest": 122.0,
+   "knee": 46.6,
+   "shoulder": 148.8,
+   "radius": 36.0,
+   "height": 219.0,
+   "bones": {
+    "head": {
+     "bone": 22,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 2,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 21) is 165.1 cm"
+    },
+    "knee": {
+     "bones": [
+      32,
+      36
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      4,
+      11
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 72.0,
+     "hip_width": 29.2,
+     "hip_bones": [
+      31,
+      35
+     ],
+     "shoulder_bones": [
+      4,
+      11
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 219.7,
+   "mesh_min_y": 0.8,
+   "note": "mesh top is 48.5 cm above the head bone (other geometry above the head)"
+  },
+  "uEm3300": {
+   "name": "Gnezdo",
+   "status": "not determined",
+   "model": "data/chara/em/em3300/model/em3300",
+   "arc": "uEm3300.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 4.3,
+   "bones": "not determined",
+   "posture": "not determined",
+   "posture_basis": "2 leaf bones near the origin plane; shape not a standing biped, 4-legger or crawler by the stated rules",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 3.4,
+   "mesh_min_y": -0.9,
+   "mesh_extent_cm": {
+    "x": [
+     -1.0,
+     0.8
+    ],
+    "y": [
+     -0.9,
+     3.4
+    ],
+    "z": [
+     -2.3,
+     2.2
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": -0.9,
+    "p50": 0.3,
+    "p90": 3.4
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 9,
+     "x": -9.7,
+     "y_above_feet": 0.0,
+     "z": 12.3
+    },
+    {
+     "bone": 13,
+     "x": 9.7,
+     "y_above_feet": 0.0,
+     "z": 12.3
+    }
+   ],
+   "highest_bone": {
+    "bone": 5,
+    "y_above_feet": 162.1
+   },
+   "bones_total": 23,
+   "vertices": 3,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm3301": {
+   "name": "J'avo mutant (em1370 body)",
+   "status": "not determined",
+   "model": null,
+   "arc": null,
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": "not determined",
+   "bones": "not determined",
+   "posture": "not determined",
+   "idle_pose_head": "bind pose only",
+   "why_not_determined": "no MOD named em3301 in uEm3301.arc; settled by reading the class's other MOD/arc"
+  },
+  "uEm3320": {
+   "name": "Gnezdo (core)",
+   "status": "not determined",
+   "model": "data/chara/em/em3300/model/em3320",
+   "arc": "uEm3320.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 56.9,
+   "bones": "not determined",
+   "posture": "crawling",
+   "posture_basis": "mesh top only 13 cm above the origin, 52 cm wide",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 12.8,
+   "mesh_min_y": -44.2,
+   "mesh_extent_cm": {
+    "x": [
+     -20.0,
+     20.0
+    ],
+    "y": [
+     -44.2,
+     12.8
+    ],
+    "z": [
+     -26.4,
+     25.4
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": -26.3,
+    "p50": -3.0,
+    "p90": 5.5
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 1,
+     "x": -0.8,
+     "y_above_feet": 0.0,
+     "z": 2.3
+    },
+    {
+     "bone": 3,
+     "x": 6.6,
+     "y_above_feet": 2.6,
+     "z": 3.2
+    },
+    {
+     "bone": 5,
+     "x": -6.6,
+     "y_above_feet": 2.6,
+     "z": 3.2
+    },
+    {
+     "bone": 11,
+     "x": 0.0,
+     "y_above_feet": 1.2,
+     "z": 2.2
+    },
+    {
+     "bone": 12,
+     "x": 0.8,
+     "y_above_feet": 0.0,
+     "z": 2.3
+    }
+   ],
+   "highest_bone": {
+    "bone": 3,
+    "y_above_feet": 2.6
+   },
+   "bones_total": 13,
+   "vertices": 8716,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm4100": {
+   "name": "Lepotitsa",
+   "status": "measured",
+   "model": "data/chara/em/em4100/model/em4100",
+   "arc": "uEm4100.arc",
+   "head": 162.1,
+   "chest": 129.1,
+   "knee": 54.6,
+   "shoulder": 147.9,
+   "radius": 16.5,
+   "height": 181.1,
+   "bones": {
+    "head": {
+     "bone": 4,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 2,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 3) is 153.1 cm"
+    },
+    "knee": {
+     "bones": [
+      83,
+      87
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      19,
+      40
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 33.0,
+     "hip_width": 19.4,
+     "hip_bones": [
+      82,
+      86
+     ],
+     "shoulder_bones": [
+      19,
+      40
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 180.8,
+   "mesh_min_y": -0.3
+  },
+  "uEm4300": {
+   "name": "Ubistvo",
+   "status": "measured",
+   "model": "data/chara/em/em4300/model/em4300",
+   "arc": "uEm4300.arc",
+   "head": 169.1,
+   "chest": 136.1,
+   "knee": 62.7,
+   "shoulder": 154.9,
+   "radius": 16.5,
+   "height": 195.5,
+   "bones": {
+    "head": {
+     "bone": 43,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 13,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 42) is 160.1 cm"
+    },
+    "knee": {
+     "bones": [
+      8,
+      4
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      15,
+      23
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 33.0,
+     "hip_width": 19.4,
+     "hip_bones": [
+      7,
+      2
+     ],
+     "shoulder_bones": [
+      15,
+      23
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 195.5,
+   "mesh_min_y": -0.1
+  },
+  "uEm4700": {
+   "name": "Rasklapanje",
+   "status": "measured",
+   "model": "data/chara/em/em4700/model/em4700",
+   "arc": "uEm4700.arc",
+   "head": 202.5,
+   "chest": 163.0,
+   "knee": 62.1,
+   "shoulder": 174.2,
+   "radius": 18.0,
+   "height": 225.4,
+   "bones": {
+    "head": {
+     "bone": 47,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 2,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 46) is 183.1 cm"
+    },
+    "knee": {
+     "bones": [
+      75,
+      80
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      26,
+      4
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 36.1,
+     "hip_width": 22.9,
+     "hip_bones": [
+      73,
+      78
+     ],
+     "shoulder_bones": [
+      26,
+      4
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 225.3,
+   "mesh_min_y": -0.1
+  },
+  "uEm4701": {
+   "name": "Rasklapanje (torso)",
+   "status": "not determined",
+   "model": "data/chara/em/em4700/model/em4701",
+   "arc": "uEm4701.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 94.8,
+   "bones": "not determined",
+   "posture": "not determined",
+   "posture_basis": "0 leaf bones near the origin plane; shape not a standing biped, 4-legger or crawler by the stated rules",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 225.3,
+   "mesh_min_y": 130.5,
+   "mesh_extent_cm": {
+    "x": [
+     -141.4,
+     141.4
+    ],
+    "y": [
+     130.5,
+     225.3
+    ],
+    "z": [
+     -21.6,
+     137.6
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": 148.2,
+    "p50": 177.5,
+    "p90": 209.8
+   },
+   "ground_contact_leaf_bones": [],
+   "highest_bone": {
+    "bone": 64,
+    "y_above_feet": 210.8
+   },
+   "bones_total": 72,
+   "vertices": 14377,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm4710": {
+   "name": "Rasklapanje (hand)",
+   "status": "not determined",
+   "model": "data/chara/em/em4700/model/em4710",
+   "arc": "uEm4710.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 16.0,
+   "bones": "not determined",
+   "posture": "crawling",
+   "posture_basis": "mesh top only 9 cm above the origin, 90 cm wide",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 8.7,
+   "mesh_min_y": -7.3,
+   "mesh_extent_cm": {
+    "x": [
+     -8.7,
+     10.0
+    ],
+    "y": [
+     -7.3,
+     8.7
+    ],
+    "z": [
+     -29.4,
+     60.1
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": -4.8,
+    "p50": -1.2,
+    "p90": 4.6
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 6,
+     "x": 0.0,
+     "y_above_feet": 0.0,
+     "z": -30.0
+    },
+    {
+     "bone": 10,
+     "x": 4.7,
+     "y_above_feet": -0.7,
+     "z": 54.4
+    },
+    {
+     "bone": 13,
+     "x": 1.5,
+     "y_above_feet": -0.8,
+     "z": 54.4
+    },
+    {
+     "bone": 17,
+     "x": -1.0,
+     "y_above_feet": -1.3,
+     "z": 53.6
+    },
+    {
+     "bone": 20,
+     "x": -3.6,
+     "y_above_feet": -1.7,
+     "z": 51.1
+    },
+    {
+     "bone": 23,
+     "x": 6.0,
+     "y_above_feet": -4.8,
+     "z": 40.2
+    },
+    {
+     "bone": 24,
+     "x": -0.0,
+     "y_above_feet": -0.7,
+     "z": 25.4
+    }
+   ],
+   "highest_bone": {
+    "bone": 0,
+    "y_above_feet": 0.0
+   },
+   "bones_total": 25,
+   "vertices": 4471,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm4800": {
+   "name": "Ogroman",
+   "status": "measured",
+   "model": "data/chara/em/em4800/model/em4800",
+   "arc": "uEm4800.arc",
+   "head": 962.5,
+   "chest": 687.8,
+   "knee": 297.0,
+   "shoulder": 855.0,
+   "radius": 174.7,
+   "height": 1105.7,
+   "bones": {
+    "head": {
+     "bone": 64,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 16,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 63) is 918.8 cm"
+    },
+    "knee": {
+     "bones": [
+      3,
+      8
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      19,
+      42
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 349.3,
+     "hip_width": 240.0,
+     "hip_bones": [
+      2,
+      7
+     ],
+     "shoulder_bones": [
+      19,
+      42
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 1102.5,
+   "mesh_min_y": -3.2
+  },
+  "uEm5000": {
+   "name": "Zombie (Mining the Depths)",
+   "status": "measured",
+   "model": "data/chara/em/em5000/model/em5000",
+   "arc": "uEm5000.arc",
+   "head": 162.1,
+   "chest": 129.1,
+   "knee": 54.6,
+   "shoulder": 147.9,
+   "radius": 16.5,
+   "height": 182.2,
+   "bones": {
+    "head": {
+     "bone": 4,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 2,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 3) is 153.1 cm"
+    },
+    "knee": {
+     "bones": [
+      18,
+      22
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      12,
+      7
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 33.0,
+     "hip_width": 19.4,
+     "hip_bones": [
+      17,
+      21
+     ],
+     "shoulder_bones": [
+      12,
+      7
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 181.9,
+   "mesh_min_y": -0.2
+  },
+  "uEm5050": {
+   "name": "Zombie (miner)",
+   "status": "measured",
+   "model": "data/chara/em/em5050/model/em5050",
+   "arc": "uEm5050.arc",
+   "head": 162.1,
+   "chest": 129.1,
+   "knee": 54.6,
+   "shoulder": 147.9,
+   "radius": 16.5,
+   "height": 183.5,
+   "bones": {
+    "head": {
+     "bone": 4,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 2,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 3) is 153.1 cm"
+    },
+    "knee": {
+     "bones": [
+      23,
+      19
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      13,
+      8
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 33.0,
+     "hip_width": 19.4,
+     "hip_bones": [
+      22,
+      18
+     ],
+     "shoulder_bones": [
+      13,
+      8
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 183.0,
+   "mesh_min_y": -0.4
+  },
+  "uEm5060": {
+   "name": "Zombie (miner)",
+   "status": "measured",
+   "model": "data/chara/em/em5060/model/em5060",
+   "arc": "uEm5060.arc",
+   "head": 162.1,
+   "chest": 129.1,
+   "knee": 54.6,
+   "shoulder": 147.9,
+   "radius": 16.5,
+   "height": 183.5,
+   "bones": {
+    "head": {
+     "bone": 4,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 2,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 3) is 153.1 cm"
+    },
+    "knee": {
+     "bones": [
+      23,
+      19
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      13,
+      8
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 33.0,
+     "hip_width": 19.4,
+     "hip_bones": [
+      22,
+      18
+     ],
+     "shoulder_bones": [
+      13,
+      8
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 183.0,
+   "mesh_min_y": -0.4
+  },
+  "uEm5181": {
+   "name": "Zombie (police)",
+   "status": "measured",
+   "model": "data/chara/em/em5181/model/em5181",
+   "arc": "uEm5181.arc",
+   "head": 162.1,
+   "chest": 129.1,
+   "knee": 54.6,
+   "shoulder": 147.9,
+   "radius": 16.5,
+   "height": 183.9,
+   "bones": {
+    "head": {
+     "bone": 4,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 2,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 3) is 153.1 cm"
+    },
+    "knee": {
+     "bones": [
+      20,
+      24
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      9,
+      15
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 33.0,
+     "hip_width": 19.4,
+     "hip_bones": [
+      19,
+      23
+     ],
+     "shoulder_bones": [
+      9,
+      15
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 183.7,
+   "mesh_min_y": -0.2
+  },
+  "uEm5191": {
+   "name": "Zombie (firefighter)",
+   "status": "measured",
+   "model": "data/chara/em/em5191/model/em5191",
+   "arc": "uEm5191.arc",
+   "head": 162.1,
+   "chest": 129.1,
+   "knee": 54.6,
+   "shoulder": 147.9,
+   "radius": 16.5,
+   "height": 184.1,
+   "bones": {
+    "head": {
+     "bone": 4,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 2,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 3) is 153.1 cm"
+    },
+    "knee": {
+     "bones": [
+      20,
+      24
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      9,
+      15
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 33.0,
+     "hip_width": 19.4,
+     "hip_bones": [
+      19,
+      23
+     ],
+     "shoulder_bones": [
+      9,
+      15
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 183.9,
+   "mesh_min_y": -0.2
+  },
+  "uEm5200": {
+   "name": "Zombie",
+   "status": "measured",
+   "model": "data/chara/em/em5200/model/em5200",
+   "arc": "uEm5200.arc",
+   "head": 162.1,
+   "chest": 129.1,
+   "knee": 54.6,
+   "shoulder": 147.9,
+   "radius": 16.5,
+   "height": 183.3,
+   "bones": {
+    "head": {
+     "bone": 4,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 2,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 3) is 153.1 cm"
+    },
+    "knee": {
+     "bones": [
+      18,
+      22
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      12,
+      7
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 33.0,
+     "hip_width": 19.4,
+     "hip_bones": [
+      17,
+      21
+     ],
+     "shoulder_bones": [
+      12,
+      7
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 182.0,
+   "mesh_min_y": -1.3
+  },
+  "uEm5210": {
+   "name": "Zombie",
+   "status": "measured",
+   "model": "data/chara/em/em5210/model/em5210",
+   "arc": "uEm5210.arc",
+   "head": 160.1,
+   "chest": 129.1,
+   "knee": 54.6,
+   "shoulder": 147.9,
+   "radius": 15.3,
+   "height": 178.8,
+   "bones": {
+    "head": {
+     "bone": 13,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 11,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 12) is 153.1 cm"
+    },
+    "knee": {
+     "bones": [
+      7,
+      3
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      16,
+      22
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 30.6,
+     "hip_width": 18.6,
+     "hip_bones": [
+      6,
+      2
+     ],
+     "shoulder_bones": [
+      16,
+      22
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 178.1,
+   "mesh_min_y": -0.7
+  },
+  "uEm5400": {
+   "name": "Zombie (The Catacombs)",
+   "status": "measured",
+   "model": "data/chara/em/em5400/model/em5400",
+   "arc": "uEm5400.arc",
+   "head": 162.1,
+   "chest": 129.1,
+   "knee": 54.6,
+   "shoulder": 147.9,
+   "radius": 16.5,
+   "height": 179.5,
+   "bones": {
+    "head": {
+     "bone": 4,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 2,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 3) is 153.1 cm"
+    },
+    "knee": {
+     "bones": [
+      18,
+      22
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      7,
+      12
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 33.0,
+     "hip_width": 19.4,
+     "hip_bones": [
+      17,
+      21
+     ],
+     "shoulder_bones": [
+      7,
+      12
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 179.5,
+   "mesh_min_y": -0.1
+  },
+  "uEm5500": {
+   "name": "Zombie special (uEm5500)",
+   "status": "measured",
+   "model": "data/chara/em/em5500/model/em5500",
+   "arc": "uEm5500.arc",
+   "head": 178.3,
+   "chest": 129.1,
+   "knee": 54.6,
+   "shoulder": 147.9,
+   "radius": 16.5,
+   "height": 189.4,
+   "bones": {
+    "head": {
+     "bone": 20,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 11,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 19) is 178.3 cm"
+    },
+    "knee": {
+     "bones": [
+      3,
+      7
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      24,
+      29
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 33.0,
+     "hip_width": 19.4,
+     "hip_bones": [
+      2,
+      6
+     ],
+     "shoulder_bones": [
+      24,
+      29
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 189.2,
+   "mesh_min_y": -0.2
+  },
+  "uEm5600": {
+   "name": "Whopper",
+   "status": "measured",
+   "model": "data/chara/em/em5600/model/em5600",
+   "arc": "uEm5600.arc",
+   "head": 161.9,
+   "chest": 128.9,
+   "knee": 44.6,
+   "shoulder": 147.7,
+   "radius": 22.5,
+   "height": 181.9,
+   "bones": {
+    "head": {
+     "bone": 4,
+     "anim_id": 4
+    },
+    "chest": {
+     "bone": 2,
+     "anim_id": 2,
+     "note": "spine bone; neck base (anim 3, bone 3) is 152.9 cm"
+    },
+    "knee": {
+     "bones": [
+      29,
+      33
+     ],
+     "anim_ids": [
+      17,
+      21
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      12,
+      21
+     ],
+     "anim_ids": [
+      6,
+      11
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 45.0,
+     "hip_width": 25.4,
+     "hip_bones": [
+      28,
+      32
+     ],
+     "shoulder_bones": [
+      12,
+      21
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "human skeleton layout validated; bind pose only",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 181.1,
+   "mesh_min_y": -0.8
+  },
+  "uEm5700": {
+   "name": "Zombie Dog",
+   "status": "not determined",
+   "model": "data/chara/em/em5700/model/em5700",
+   "arc": "uEm5700.arc",
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 124.1,
+   "bones": "not determined",
+   "posture": "four-legged",
+   "posture_basis": "4 leaf bones within -8..12 cm of the origin plane (feet) and mesh top 119 cm",
+   "idle_pose_head": "bind pose only",
+   "mesh_top_y": 119.0,
+   "mesh_min_y": -5.1,
+   "mesh_extent_cm": {
+    "x": [
+     -16.7,
+     15.3
+    ],
+    "y": [
+     -5.1,
+     119.0
+    ],
+    "z": [
+     -50.0,
+     92.4
+    ]
+   },
+   "mesh_y_percentiles_above_feet": {
+    "p10": 1.0,
+    "p50": 78.6,
+    "p90": 111.6
+   },
+   "ground_contact_leaf_bones": [
+    {
+     "bone": 9,
+     "x": -10.4,
+     "y_above_feet": 3.2,
+     "z": 51.0
+    },
+    {
+     "bone": 15,
+     "x": 10.4,
+     "y_above_feet": 3.2,
+     "z": 51.0
+    },
+    {
+     "bone": 33,
+     "x": -8.6,
+     "y_above_feet": 0.7,
+     "z": -20.6
+    },
+    {
+     "bone": 37,
+     "x": 8.6,
+     "y_above_feet": 0.7,
+     "z": -20.6
+    }
+   ],
+   "highest_bone": {
+    "bone": 20,
+    "y_above_feet": 117.0
+   },
+   "bones_total": 41,
+   "vertices": 19898,
+   "why_not_determined": "The MOD skeleton carries no bone names, only per-model animation ids whose meaning is class specific (the human ids 2/3/4/6/11/16/17/20/21 do not fit this layout by the validation in the method). Would be settled by this class's hit-zone records (HIT/OBJA entry in the RE5 arc, XFS entry in the RE6 arc, bone-attached spheres) or a motion-labelled rig; not read in this milestone."
+  },
+  "uEm9906": {
+   "name": "Parachute",
+   "status": "not determined",
+   "model": null,
+   "arc": null,
+   "head": "not determined",
+   "chest": "not determined",
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": "not determined",
+   "bones": "not determined",
+   "posture": "not determined",
+   "idle_pose_head": "bind pose only",
+   "why_not_determined": "no MOD named em9906 in uEm9906.arc; settled by reading the class's other MOD/arc"
+  }
+ }
+}
