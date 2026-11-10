@@ -48,3 +48,33 @@ Tests: none changed (analysis only); CP0 baseline unchanged (45 failed / 1,329 p
 
 Needs: the CP8 data decision (DC image extraction vs a GameCube-shaped restatement) before the decoder's round trip can
 name its file.
+
+## Round 58: the directory measured - a tagged index, and the fmt2 block's header fields
+
+Reading `Scene/map_aancient01_00n.rel` (704,448 bytes) as big-endian words:
+
+**The index.** The first bytes are a table of **0x18-byte entries** whose first half-word is a **tag**; the first nine are
+`0x15, 0x16, 0x17, 0x19, 0x1a, 0x1b, 0x10, 0x10, 0x10` (offsets `0x00, 0x18, 0x30, 0x48, 0x60, 0x78, 0x90, 0xa8, 0xc0`), and
+from `0xd8` the entries carry a **flags word** (`0x1000001`, `0x200000`) and a **file offset** in the same entry
+(`0x1d234`, `0x1fea4`, `0x4ce4`, `0x9cf54`, `0x114f4`, `0x44444` at `0xd8, 0xf0, 0x108, 0x120, 0x138, 0x168`). The offsets are
+plausible sub-resource positions in the file, so the header is an **index of tagged sub-resources**, not a section table of
+equal-size records.
+
+**The `fmt2` block** at `0x3404`: the tag is preceded by a small preamble (`0x7a8` at `0x33f0`, `0xb` at `0x33f8`,
+`0x90000` at `0x3400`) and followed by
+
+```
+fmt2 | 0xbf | 0xd7 | 0x4416 | 0x858 | 0x3834 | 0 | 0xaa160 | 0 | 0xaa168 | 0 | 0xaa174 | ...
+```
+
+i.e. **a literal tag, then two counts (`0xbf` = 191, `0xd7` = 215), a size-like `0x4416` (17,430), two offsets
+(`0x858`, `0x3834`) and three pointers/offsets in an ascending run (`0xaa160`, `0xaa168`, `0xaa174`)**, which is
+consistent with a model header: two lists (191 / 215 entries), a table of `0x4416` bytes and vertex/index data addressed by
+the ascending offsets.
+
+**Where CP6.2's accept stands:** the container's index is characterised (tagged 0x18-byte entries with flags + file
+offsets) and the `fmt2` header's field layout is read off a real file, but the **geometry decoder is still not written**,
+so there is no round trip or triangle count yet. The next step is to follow an index entry's offset (e.g. `0x1d234` or
+`0x9cf54`) and identify the model data it addresses, then use the `fmt2` header's counts to bound the vertex/index arrays.
+
+Tests: none changed (analysis only); CP0 baseline unchanged (45 failed / 1,329 passed / 132 skipped).
