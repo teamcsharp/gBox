@@ -154,3 +154,22 @@ Two things fall out of that table:
 No walked edge leads to a room the lane has not already seen (10, 20, 30, 40), and none of those contains a counter that
 answers `A`. The guild is therefore behind something not yet walked -- the most likely candidates being the central
 dome's large doorways that were walked *past* rather than *into*, and room 30's own far side.
+
+## The room-local -> world offset, solved (2026-11-26, request #7502)
+
+The P6a hand-off blocker ("placement records are room-local, entities report world positions") is measured now, with the
+six-pairwise-distances method it proposed. The four room-10 door entities above (Guild `(185,173)`, Warp `(254,25)`,
+Med `(194,-93)`, Shop `(-165,148)`) match records **17, 18, 20, 21** of `map_city00_00o.dat` with a best-subset error of
+**0.67** units (the next candidate quadruple is at 14.0 -- unambiguous), and one constant translation explains all four
+pairs:
+
+* **room-local -> world offset: (+228.13, +291.25)** (max per-door deviation 0.45 -- live-read noise).
+* assignment: Guild = record 20 (`kind 0x2000047`), Warp = 21 (`0x2000048`), Med = 17 (`0x2000049`), Shop = 18
+  (`0x2000046`) -- so the city door kinds are `0x2000046..0x2000049`, consecutive in the object table.
+* the same four records exist with identical kinds in the `map_city00_00o_c1.dat` and `map_city00_00o_d.dat` layout
+  variants, so the offset applies to all three city object sets.
+
+Solver: `gbox/pso_room_offset.py` (`room_offset(disc, "map_city00_00o.dat")`), tests `tests/test_pso_room_offset.py`
+(4 synthetic + 2 on-disc, all green on the local GPOE8P image). What this unlocks: a `pso_map_write` edit can now move a
+placement in *world* terms (record = world - offset), which is the missing link for the P6a in-game proof -- move a door
+or NPC by a visible amount, boot, and see it.
