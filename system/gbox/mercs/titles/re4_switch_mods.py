@@ -273,7 +273,8 @@ def aim_lock(ad, on: bool) -> dict:
 
 
 def _aim(ad, snap: dict) -> int:
-    """The bot's aim request (re4_switch.AIM_REQUEST) written to the player's facing (unit + U_YAW), read back."""
+    """The bot's aim request (re4_switch.AIM_REQUEST) written to the player's facing (unit + U_YAW), read back. A
+    request with steady (the gun up: re4_switch.AIM_RAM) also holds the gun itself (_steady)."""
     req = D.AIM_REQUEST
     p = (snap or {}).get("player") or {}
     if not req or req.get("ptr") != p.get("ptr") or time.monotonic() - req.get("at", -1e9) > AIM_FRESH_S:
@@ -284,7 +285,68 @@ def _aim(ad, snap: dict) -> int:
         back = struct.unpack("<f", bytes(ad.read_memory(addr, 4)))[0]
     except (ValueError, OSError, RuntimeError, struct.error):
         return 0
+    if req.get("steady") and getattr(D, "AIM_RAM", False):
+        _steady(ad, snap, req)
     return 1 if abs(back - req["yaw"]) < 1e-3 else 0
+
+
+# The steady aim (re4_switch AIM_RAM; the operator 2026-11-10: "I want the aim impeccable"): data writes only, each one
+# re-read just before it (the chain player -> weapon control -> weapon object must still be the snapshot's) and read back:
+#   * the sway's four bounds (weapon object + 0x3E0 .. +0x3EC) to 0: no random walk, no recoil kick (PlWepLockRand then
+#     clamps the aim onto its centre every frame);
+#   * the waist twist (unit + 0x524) and its centre (weapon control + 0x2C) to 0: the aim's yaw IS his facing, which the
+#     facing write above puts on the target;
+#   * the centre pitch (weapon control + 0x28) to the request's pitch (blend x pi/2, clamped to STEADY_PITCH_MAX): the
+#     aim's pitch follows it.
+# A weapon object read back with its sway restored (a new weapon's init) is zeroed again on the next snapshot. The
+# counts go to the state (aim_ram_writes / aim_sway_zeroed / aim_ram_refused) and out through maintain().
+STEADY_PITCH_MAX = 1.45
+STEADY_EPS = 1e-4
+
+
+def _steady(ad, snap: dict, req: dict) -> int:
+    aim = (snap or {}).get("aim") or {}
+    p = (snap or {}).get("player") or {}
+    st = _state(ad)
+    wep, obj = aim.get("wep"), aim.get("obj")
+    if not isinstance(wep, int) or not isinstance(obj, int) or req.get("wep") not in (None, wep):
+        st["aim_ram_refused"] = st.get("aim_ram_refused", 0) + 1
+        return 0
+    n = 0
+    try:
+        if struct.unpack("<Q", bytes(ad.read_memory(p["ptr"] + D.PL_WEP, 8)))[0] != wep \
+                or struct.unpack("<Q", bytes(ad.read_memory(wep + D.WEP_OBJ, 8)))[0] != obj:
+            st["aim_ram_refused"] = st.get("aim_ram_refused", 0) + 1
+            return 0
+        sway = struct.unpack("<4f", bytes(ad.read_memory(obj + D.OBJ_SWAY, 16)))
+        if not all(math.isfinite(v) and 0.0 <= v <= D.SWAY_SANE for v in sway):
+            st["aim_ram_refused"] = st.get("aim_ram_refused", 0) + 1
+            return 0
+        if any(v > STEADY_EPS for v in sway):
+            ad.write_memory(obj + D.OBJ_SWAY, struct.pack("<4f", 0.0, 0.0, 0.0, 0.0))
+            if all(v == 0.0 for v in struct.unpack("<4f", bytes(ad.read_memory(obj + D.OBJ_SWAY, 16)))):
+                st["aim_sway_zeroed"] = st.get("aim_sway_zeroed", 0) + 1
+                st["aim_sway_was"] = [round(v, 4) for v in sway]
+                n += 1
+        writes = [(p["ptr"] + D.PL_WAIST_YAW, 0.0), (wep + D.WEP_CENTER_Y, 0.0)]
+        pitch = req.get("pitch")
+        if isinstance(pitch, (int, float)) and math.isfinite(pitch):
+            writes.append((wep + D.WEP_PITCH, max(-STEADY_PITCH_MAX, min(STEADY_PITCH_MAX, float(pitch)))))
+        for addr, want in writes:
+            now = struct.unpack("<f", bytes(ad.read_memory(addr, 4)))[0]
+            if not math.isfinite(now) or abs(now) > D.PITCH_SANE:
+                st["aim_ram_refused"] = st.get("aim_ram_refused", 0) + 1
+                continue
+            if abs(now - want) <= STEADY_EPS:
+                continue
+            ad.write_memory(addr, struct.pack("<f", want))
+            if abs(struct.unpack("<f", bytes(ad.read_memory(addr, 4)))[0] - want) <= 1e-4:
+                n += 1
+    except (ValueError, OSError, RuntimeError, struct.error, KeyError, TypeError) as exc:
+        st["aim_ram_error"] = f"{type(exc).__name__}: {exc}"[:120]
+        return n
+    st["aim_ram_writes"] = st.get("aim_ram_writes", 0) + n
+    return n
 
 
 # --- fire rate, infinite ammo, a random max-level campaign weapon (re4_weapons: the static analysis) ------------
@@ -962,10 +1024,15 @@ def maintain(ad, snap: dict | None = None) -> dict:
             if given is not None and given.get("verified"):
                 out["weapon_given"] = 1
         if st.get("aim_lock"):
+            ram0, sway0 = st.get("aim_ram_writes", 0), st.get("aim_sway_zeroed", 0)
             n = _aim(ad, snap)
             st["aim_writes"] = st.get("aim_writes", 0) + n
             if n:
                 out["aim_writes"] = n
+            if st.get("aim_ram_writes", 0) > ram0:              # the steady aim's writes (_steady)
+                out["aim_ram_writes"] = st["aim_ram_writes"] - ram0
+            if st.get("aim_sway_zeroed", 0) > sway0:
+                out["aim_sway_zeroed"] = st["aim_sway_zeroed"] - sway0
         new = _kills_of(snap, st)
         kt = st.get("kill_time") or {}
         if new and kt.get("on") and kt.get("seconds", 0) > 0:
@@ -995,6 +1062,8 @@ def status(ad, snap: dict | None = None) -> dict:
            "loadouts": st.get("loadouts"), "loadout_weapon": st.get("loadout_weapon"),
            "weapon_power_x": st.get("weapon_power", 1.0), "max_level": bool(st.get("max_level")),
            "aim_lock": bool(st.get("aim_lock")), "aim_writes": st.get("aim_writes", 0),
+           "aim_ram_writes": st.get("aim_ram_writes", 0), "aim_sway_zeroed": st.get("aim_sway_zeroed", 0),
+           "aim_sway_was": st.get("aim_sway_was"), "aim_ram_refused": st.get("aim_ram_refused", 0),
            "mag_refills": st.get("mag_refills", 0), "pre_round": st.get("pre_round_result"),
            "capabilities": {
                "enemy_health": {"available": True}, "one_hit": {"available": True},

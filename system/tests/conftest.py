@@ -79,6 +79,23 @@ def _private_enemy_knowledge(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _private_aim_book(tmp_path_factory, monkeypatch):
+    """Tests never write the real aim books (gbox.mercs.core.aim_book.DATA: gbox-data/mercs/learned/<title>/aim_book.json
+    and the universal one every title's bot learns from): a bot test's synthetic shots would land in the live lessons of
+    whatever checkout runs the tests. Every test gets its own; RE4's aim request starts empty."""
+    try:
+        from gbox.mercs.core import aim_book
+    except Exception:                                        # noqa: BLE001 - a checkout without it
+        return
+    monkeypatch.setattr(aim_book, "DATA", tmp_path_factory.mktemp("aim_book"))
+    try:
+        from gbox.mercs.titles import re4_switch
+        monkeypatch.setattr(re4_switch, "AIM_REQUEST", {})
+    except Exception:                                        # noqa: BLE001
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _private_re4_mods(tmp_path_factory, monkeypatch):
     """Tests never read or write the real RE4 Switch mods settings (re4_switch_mods.SETTINGS_FILE: the operator's saved
     sidebar choices, which every new session loads); each test starts from none."""

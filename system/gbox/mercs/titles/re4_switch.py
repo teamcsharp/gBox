@@ -43,6 +43,7 @@ import time
 from ..driver import Driver
 from ..core import combat                          # the universal fight (UNIVERSAL_CORE): at import, for the hot reload
 from ..core import respond                         # the doctrine's answer to a threat (RESPOND): at import, too
+from ..core import aim_book                        # the per-shot truth and the learning on every miss (AIM_BOOK)
 from . import re4_nav, re4_walk                    # the stage mesh (room collision), the walker and the map's marks
 from . import re4_room_map                         # the room's real map (#9342): walls / floor for walks and shots
 from . import re4_switch_screens as screens
@@ -327,6 +328,104 @@ def camera_state(m, base: int | None = None) -> dict | None:
         return decode_camera(bytes(m.rd(pg + CAM_BLOCK, CAM_SIZE)))
     except (ValueError, OSError, struct.error, TypeError):
         return None
+
+
+# The gun's own aim (the operator 2026-11-10: "the bot aims terribly, their laser goes awry weirdly ... If the bot has
+# access to the ram and hex info of the game, I want the aim impeccable"). Static, from main.bin (82C2A04A...) against the
+# GameCube decompilation (pl_wep.cpp PlWepLockCtrl / PlWepLockRand, objWep.cpp drawLaserSight, em_sub.cpp
+# GetWepTargetPos), every offset seen in a Switch instruction; not yet read in a live round (aim_state checks each read):
+#   * PlWepLockCtrl (0x33DF80, the aim each frame while he aims): the aim's yaw is his facing (unit + 0xB4, U_YAW) plus the
+#     waist twist m_Fwork0 (unit + 0x524: `str s1, [x19, #0x524]`; the stick moves it first, inside the weapon's cone of
+#     at most 12 deg, then turns him); its pitch the blend m3r (module + 0x1265A08: now, target, rate - GOT 0xB27D00),
+#     -1 down .. +1 up;
+#   * PlWepLockRand (0x33EC50): the SWAY - the laser's random walk about its centre. pl->Wep (unit + 0x938) is the
+#     weapon control: +0x28 the centre pitch (blend x pi/2), +0x2C the centre waist yaw, +0x38 the weapon object, whose
+#     +0x3E0 .. +0x3EC (bureX, bureY, bureSpeedX, bureSpeedY: setAbility's 5.73 / 2.86 / 0.2864 / 0.2864 deg by default)
+#     bound the walk (+-5.7 deg in pitch AND yaw: the clamp uses the pitch range for both) and its step a frame; a shot
+#     kicks the aim to a fresh random point inside it (the recoil). With all four at 0 the walk adds nothing and the clamp
+#     holds the aim exactly on its centre: no sway, no kick - the aim is where the centre is put;
+#   * drawLaserSight (0x2E8744, each frame the laser is drawn): GetWepTargetPos(&lpos, &lcross, 0, pG->weapon_no
+#     [pG + 0x5034], &m_SightEm, &attr) - lpos / lcross are its statics (module + 0x1265314 / + 0x1265320: the muzzle,
+#     moved 50 cm along the line, and where the line meets the stage or a body), m_SightEm (weapon object + 0x418) the
+#     enemy whose hit capsules the line meets first (emLineAtCk2), nearer than any wall: the game's own "the laser is on
+#     him". The handgun's bullet goes down the same line (wep02_r3_fire00: the muzzle along -X with +-200 mm spread at
+#     50 m, 0.23 deg).
+# AIM_RAM off: the snapshot reads none of it and the fight is as before (the rollback, one constant).
+AIM_RAM = True
+PL_WEP, PL_WAIST_YAW = 0x938, 0x524
+WEP_PITCH, WEP_CENTER_Y, WEP_OBJ = 0x28, 0x2C, 0x38
+OBJ_SWAY, OBJ_ITEM, OBJ_STAT, OBJ_SIGHT_EM = 0x3E0, 0x400, 0x402, 0x418
+LASER_STATIC = 0x1265310                 # u8 donfire; Vec lpos at +4; Vec lcross at +0x10
+M3R = 0x1265A08
+SWAY_SANE, WAIST_SANE, PITCH_SANE = 0.5, 0.35, 1.58     # rad: a read past these is not the field
+LASER_NEAR_MM = (300.0, 3000.0)          # the ray's origin this near his position (ground) / this high over his feet
+LASER_MIN_MM = 400.0                     # a ray shorter than this (a wall at the muzzle) is no line
+
+
+def decode_aim(wep_raw: bytes, obj_raw: bytes, waist_raw: bytes, laser_raw: bytes, m3r_raw: bytes | None,
+               wep: int, obj: int) -> dict | None:
+    """The gun's aim from its raw fields (see AIM_RAM), or None when they are not the fields (a value out of its range).
+    Pure: the tests feed it bytes. wep_raw from wep + 0x28 (0x18 bytes), obj_raw from obj + OBJ_SWAY (0x40), waist_raw
+    the unit's + PL_WAIST_YAW (4), laser_raw LASER_STATIC (0x1C), m3r_raw M3R (12)."""
+    try:
+        pitch, center = struct.unpack_from("<2f", wep_raw, 0)
+        obj_ptr = struct.unpack_from("<Q", wep_raw, WEP_OBJ - WEP_PITCH)[0]
+        sway = struct.unpack_from("<4f", obj_raw, 0)
+        item = struct.unpack_from("<H", obj_raw, OBJ_ITEM - OBJ_SWAY)[0]
+        stat = obj_raw[OBJ_STAT - OBJ_SWAY]
+        sight = struct.unpack_from("<Q", obj_raw, OBJ_SIGHT_EM - OBJ_SWAY)[0]
+        waist = struct.unpack_from("<f", waist_raw, 0)[0]
+        donfire = laser_raw[0]
+        lpos, lcross = struct.unpack_from("<3f", laser_raw, 4), struct.unpack_from("<3f", laser_raw, 0x10)
+        m3r = struct.unpack_from("<3f", m3r_raw, 0) if m3r_raw else None
+    except (struct.error, IndexError, TypeError):
+        return None
+    vals = (pitch, center, waist) + sway + lpos + lcross
+    if obj_ptr != obj or not all(math.isfinite(v) for v in vals) or abs(pitch) > PITCH_SANE \
+            or abs(center) > WAIST_SANE or abs(waist) > WAIST_SANE or not all(0.0 <= s <= SWAY_SANE for s in sway) \
+            or (sight and not ptr_ok(sight)) or item > 0x400 or any(abs(v) > 1e7 for v in lpos + lcross):
+        return None
+    out = {"wep": wep, "obj": obj, "pitch": pitch, "center": center, "waist": waist, "sway": sway, "item": item,
+           "stat": stat, "sight": sight or None, "lpos": lpos, "lcross": lcross, "donfire": donfire}
+    if m3r is not None and all(math.isfinite(v) for v in m3r) and abs(m3r[0]) <= 1.01:
+        out["m3r"] = m3r[0]
+    return out
+
+
+def aim_state(m, base: int, player: int) -> dict | None:
+    """decode_aim of the player's weapon control, weapon object, waist, the laser's statics and m3r (five reads), or
+    None when a pointer or a value is not what the layout says."""
+    try:
+        wep = u64(m, player + PL_WEP)
+        if not ptr_ok(wep):
+            return None
+        wep_raw = bytes(m.rd(wep + WEP_PITCH, 0x18))
+        obj = struct.unpack_from("<Q", wep_raw, WEP_OBJ - WEP_PITCH)[0]
+        if not ptr_ok(obj):
+            return None
+        obj_raw = bytes(m.rd(obj + OBJ_SWAY, 0x40))
+        waist_raw = bytes(m.rd(player + PL_WAIST_YAW, 4))
+        laser_raw = bytes(m.rd(base + LASER_STATIC, 0x1C))
+        try:
+            m3r_raw = bytes(m.rd(base + M3R, 12))
+        except (ValueError, OSError):
+            m3r_raw = None
+    except (ValueError, OSError, struct.error, TypeError):
+        return None
+    return decode_aim(wep_raw, obj_raw, waist_raw, laser_raw, m3r_raw, wep, obj)
+
+
+def laser_of(aim: dict | None, player: dict | None) -> dict | None:
+    """The laser line {from, at, up} when the aim's statics are a line from his gun (its origin beside him, at a
+    gun's height, the line long enough), else None. up: the weapon object stands ready / firing (r_no_0 1 / 2)."""
+    if not aim or not player or not player.get("pos"):
+        return None
+    lp, lc, pos = aim["lpos"], aim["lcross"], player["pos"]
+    if math.hypot(lp[0] - pos[0], lp[2] - pos[2]) > LASER_NEAR_MM[1] or not LASER_NEAR_MM[0] <= lp[1] - pos[1] <= 2600.0:
+        return None
+    if math.dist(lp, lc) < LASER_MIN_MM:
+        return None
+    return {"from": lp, "at": lc, "up": aim.get("stat") in (1, 2), "source": "ram"}
 
 
 def game_state(m, base: int | None = None) -> dict | None:
@@ -813,7 +912,7 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
                                      PHASE_OVER if game["phase"] == "results" else
                                      PHASE_PLAYING if game["phase"] in ROUND_PHASES else None)
         snap["score"], snap["combo"] = game["score"], game["combo"]
-        if FIRE_PATTERN:                                 # the equipped class (the fire pattern's family): one byte
+        if FIRE_PATTERN or AIM_BOOK:                     # the equipped class (the fire pattern's / aim book's family)
             try:
                 from . import re4_weapons as _w
                 snap["weapon_class"] = bytes(m.rd(base + _w.GAME_OBJ + _w.G_CLASS, 1))[0]
@@ -841,6 +940,13 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
             player.setdefault("hp_max", None)
             player.setdefault("rot", None)
             snap["player"] = player
+            if AIM_RAM and isinstance(player.get("ptr"), int):   # the gun's own aim and laser line (AIM_RAM)
+                aim = aim_state(m, base, player["ptr"])
+                if aim is not None:
+                    snap["aim"] = aim
+                    laser = laser_of(aim, player)
+                    if laser is not None:
+                        snap["laser"] = laser
         snap["enemies"] = [dict(e, hp_max=e.get("hp_max")) for e in enemies]
     if CAMERA_READ:                                      # the camera (#9386): where it is, how far from him
         cam = camera_state(m, base)
@@ -1491,6 +1597,34 @@ CLASS_FAMILY = {0x01: None, 0x02: None, 0x03: None, 0x04: None, 0x11: None,   # 
 FIRE_HOP_WHYS = ("crowd fire", "the combo is owed", "the nearest Ganado")   # _choose's REST picks
 
 
+# The aim book (gbox.mercs.core.aim_book; the operator 2026-11-10: "Every missed shot should train the bot to how they
+# need to adjust their fire ... learning across these titles so they all get better"): every tap is a shot record - the
+# point meant on him (his chest moved by the book's body point and lead), the line the gun really had (the laser's
+# statics read from RAM, AIM_RAM; else his facing plus the waist twist), the game's answer (his health within
+# aim_book.HIT_S) - and every resolved one teaches the book (learned/010099A00BC1E000/aim_book.json, its sub-cells in
+# learned/_universal/aim_book.json for RE5 / RE6). AIM_BOOK off: no records, no corrections.
+AIM_BOOK = True
+AIM_LEAD_PRIOR_S = 0.10                  # snapshot -> the lock's write on the next one -> the game's frame: about 2 ticks
+# The steady aim with the RAM aim (AIM_RAM, the aim lock on: re4_switch_mods._steady): the facing and the centre pitch
+# written onto the book's point through the laser's own line (closed loop: the line's yaw / pitch error each tick, the
+# pitch at AIM_PITCH_GAIN of it), the sway and the waist twist zeroed, no right-stick taps; the trigger only while the
+# game's own sight (the weapon object's m_SightEm) names a living Ganado - the one on the line is the one shot. Gun up
+# without a sight AIM_SIGHT_STALL_S: the old body-angle gate fires (aim_ram_sight_fallbacks), so a sight that never
+# reads cannot hold the fire forever. GUN_H_MM: the gun's height while the line is not read yet (the open-loop pitch).
+AIM_PITCH_GAIN, AIM_SIGHT_STALL_S, GUN_H_MM, AIM_LOCK_LIVE_S = 0.8, 1.5, 1450.0, 1.0
+AIM_FAMILY = {0x01: "handgun", 0x02: "handgun", 0x03: "handgun", 0x04: "handgun", 0x11: "handgun",
+              0x05: "magnum", 0x06: "magnum", 0x0F: "magnum", 0x07: "shotgun", 0x08: "shotgun", 0x21: "shotgun",
+              0x09: "rifle", 0x0A: "rifle", 0x0B: "automatic", 0x0C: "automatic"}
+
+
+def aim_family(snap) -> str:
+    """The aim book's family of the gun in his hand: every gun has one (the fire pattern's leaves the handguns out)."""
+    cls = (snap or {}).get("weapon_class")
+    if not isinstance(cls, int) or isinstance(cls, bool):
+        return "gun"
+    return AIM_FAMILY.get(cls, "other")
+
+
 def fire_family(snap) -> str | None:
     """The fire pattern's family of the gun in his hand (snap["weapon_class"]), FIRE_DEFAULT_FAMILY when unread."""
     cls = (snap or {}).get("weapon_class")
@@ -1779,6 +1913,142 @@ class Bot:
         except Exception as exc:                         # noqa: BLE001
             self.stats["fire_pattern_error"] = f"{type(exc).__name__}: {exc}"[:160]
 
+    def _tap(self, e, dist, err, snap, now) -> dict:
+        """The shot: ZR tapped with the aim held (the engine sends a tap as down + up before the hold, so the shot fires
+        and the aim key stays down; holding both, the first cut, never released the trigger and a round fired once)."""
+        self._last_fire = now
+        if FIRE_PATTERN:
+            self._fp_fired(e, dist, err, snap, now)
+        self._since_reload += 1
+        self.stats["shots"] += 1
+        n = self.stats["shots"]
+        self.stats["fire_err_deg"] = round((self.stats.get("fire_err_deg") or 0.0) * (n - 1) / n
+                                         + math.degrees(abs(err)) / n, 2)   # the mean bearing error at a shot
+        self.doing = "fire"
+        return {"hold": {AIM_BTN}, "tap": FIRE_BTN}
+
+    # --- the aim book and the steady aim (AIM_BOOK, AIM_RAM: gbox.mercs.core.aim_book) ---
+    def _aim_core(self):
+        c = self.__dict__.get("_aim_book_core")
+        if c is None:
+            c = self._aim_book_core = aim_book.AimCore(combat_profile(), self.stats, lead_prior_s=AIM_LEAD_PRIOR_S)
+        return c
+
+    def _aim_tick(self, snap, now) -> None:
+        if AIM_BOOK:
+            kills = snap.get("kills")
+            self._aim_core().tick(now, snap.get("enemies") or (), kills if isinstance(kills, int) else None)
+            st = self.stats                              # the round's two numbers by their plain names, on RE4
+            st["hit_rate"], st["aim_err_deg"] = st.get("aimbook_hit_rate"), st.get("aimbook_err_deg")
+
+    def _gun_origin(self, p, snap):
+        """The line's origin: the laser's own (RAM) while it is up, else his position GUN_H_MM up (mm)."""
+        laser = snap.get("laser")
+        if laser is not None and laser.get("up"):
+            return tuple(laser["from"]), True
+        x, y, z = p["pos"]
+        return (x, y + GUN_H_MM, z), False
+
+    def _aim_plan(self, p, e, snap, now, fp_off=0.0):
+        origin, _fresh = self._gun_origin(p, snap)
+        return self._aim_core().plan(e, origin, aim_family(snap), now), origin
+
+    def _aim_shot(self, p, e, snap, now, plan=None, actual=None, contact=None) -> None:
+        """The tap's record (aim_book.Ledger): the plan meant, the laser's line when it is up, else `actual` angles."""
+        if not AIM_BOOK:
+            return
+        try:
+            if plan is None:
+                plan, _o = self._aim_plan(p, e, snap, now)
+            origin, fresh = self._gun_origin(p, snap)
+            laser = snap.get("laser") if fresh else None
+            gate = self.__dict__.get("_gate")
+            los = None if gate == "controls" else gate is None
+            extra = {}
+            cam = snap.get("camera")
+            if cam and plan is not None:                 # the camera's own line (Campos -> Target), for the log
+                cy, cp = aim_book.angles(cam["pos"], cam["target"])
+                wy, wp = aim_book.angles(cam["pos"], plan.point0)
+                extra["cam"] = [round(math.degrees(cy), 2), round(math.degrees(cp), 2),
+                                round(math.degrees(wrap(cy - wy)), 2), round(math.degrees(cp - wp), 2)]
+            aim = snap.get("aim")
+            if aim:
+                extra["gun"] = {"pitch": round(aim["pitch"], 4), "waist": round(aim["waist"], 4),
+                                "sight": aim.get("sight") == e.get("ptr"), "swayed": any(v > 0 for v in aim["sway"])}
+            self._aim_core().shot(now, e, plan, origin=origin, at=laser["at"] if laser else None,
+                                  contact=contact, los=los, actual=None if laser else actual, family=aim_family(snap),
+                                  extra=extra)
+        except Exception as exc:                         # noqa: BLE001 - the book never costs the shot
+            self.stats["aimbook_error"] = f"{type(exc).__name__}: {exc}"[:160]
+
+    def _lock_live(self, now) -> bool:
+        """Whether the aim lock writes the requests (re4_switch_mods' count, stats mods_aim_writes, rose lately)."""
+        n = self.stats.get("mods_aim_writes") or 0
+        last = self.__dict__.get("_lock_seen") or (0, -1e9)
+        if n > last[0]:
+            self._lock_seen = last = (n, now)
+        return now - last[1] <= AIM_LOCK_LIVE_S
+
+    def _ram_aim(self, p, live, e, dist, err, fp_off, snap, now) -> dict | None:
+        """AIM_RAM: the steady aim (see AIM_PITCH_GAIN). None: the old path aims and fires this tick (no aim read, the
+        lock not writing, the core's error)."""
+        aim, laser = snap.get("aim"), snap.get("laser")
+        if not aim or p.get("ptr") is None or p.get("rot") is None or not self._lock_live(now):
+            return None
+        try:
+            plan, origin = self._aim_plan(p, e, snap, now)
+            if plan is None:
+                return None
+            pt = plan.point
+            up = self._aim_since is not None and now - self._aim_since >= AIM_READY_S
+            fresh = bool(up and laser is not None and laser.get("up"))
+            rot = p.get("rot") or 0.0
+            if fresh:
+                lp, lc = laser["from"], laser["at"]
+                want_y, want_p = aim_book.angles(lp, pt)
+                have_y, have_p = aim_book.angles(lp, lc)
+                yaw = wrap(rot + wrap(want_y - have_y))
+                pitch = aim["pitch"] + AIM_PITCH_GAIN * (want_p - have_p)
+            else:
+                yaw = heading(pt[0] - p["pos"][0], pt[2] - p["pos"][2])
+                pitch = math.atan2(pt[1] - origin[1], max(math.hypot(pt[0] - origin[0], pt[2] - origin[2]), 1.0))
+            AIM_REQUEST.update(ptr=p["ptr"], yaw=wrap(yaw + fp_off), pitch=pitch, steady=True, wep=aim.get("wep"),
+                               at=time.monotonic())
+            self.stats["aim_ram"] = "line" if fresh else "rising"
+            if not fresh:
+                self._ram_since = None
+                self.doing, self.why = "aim", "the steady aim: the gun comes up onto the book's point"
+                return {"hold": {AIM_BTN}}
+            alive = {t[2].get("ptr"): t[2] for t in live if t[2].get("ptr") is not None}
+            sight = aim.get("sight")
+            on = alive.get(sight)
+            if on is None:
+                since = self.__dict__.get("_ram_since")
+                if since is None:
+                    since = self._ram_since = now
+                self.stats["aim_ram_holds"] = self.stats.get("aim_ram_holds", 0) + 1
+                if now - since >= AIM_SIGHT_STALL_S:
+                    self.stats["aim_ram_sight_fallbacks"] = self.stats.get("aim_ram_sight_fallbacks", 0) + 1
+                    return None                          # the old gate fires: a sight that never reads holds nothing
+                self.doing, self.why = "aim", "the steady aim: the line is not on a Ganado yet"
+                return {"hold": {AIM_BTN}}
+            self._ram_since = None
+            if now - self._last_fire < FIRE_GAP_S:
+                self.doing = "aim"
+                return {"hold": {AIM_BTN}}
+            if on is not e:                              # the line names another one: he is the shot
+                self.stats["aim_ram_sight_switches"] = self.stats.get("aim_ram_sight_switches", 0) + 1
+                dist, err, e = next(t for t in live if t[2] is on)
+                self.target = e.get("ptr")
+                plan, _o = self._aim_plan(p, e, snap, now)
+            self.stats["aim_ram_shots"] = self.stats.get("aim_ram_shots", 0) + 1
+            self._aim_shot(p, e, snap, now, plan=plan, contact=True)
+            self.why = "the steady aim: the game's sight is on him"
+            return self._tap(e, dist, err, snap, now)
+        except Exception as exc:                         # noqa: BLE001 - the RAM aim never costs the fight
+            self.stats["aim_ram_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            return None
+
     def _turn(self, err: float) -> set:
         # an error > 0 turns LEFT with TURN_SIGN 1: the GameCube RE4 / RE5 convention (the Switch world is the
         # GameCube's data - re4_switch_nav), the one re4_walk uses; _learn_turn checks it on every turn tick.
@@ -1838,6 +2108,7 @@ class Bot:
             self.doing, self.why = "idle", "no player in RAM"
             return {}
         self._count_kills(snap, now)
+        self._aim_tick(snap, now)                     # the aim book: the open shots resolved by the census (AIM_BOOK)
         if UNIVERSAL_CORE:
             self._core_tick(p, snap, now)             # the profile of this tick, who hurt him (combat.Threats)
             self._pose_tick(p, now)                   # moved or turned since the last tick: in control (AimStick)
@@ -1942,7 +2213,8 @@ class Bot:
                 dist, err, e, fp_off = self._fp_aim(p, live, dist, err, e, snap, now)
             self.target = e.get("ptr")
             if p.get("ptr") is not None and p.get("rot") is not None:
-                AIM_REQUEST.update(ptr=p["ptr"], yaw=wrap((p.get("rot") or 0.0) + err + fp_off), at=time.monotonic())
+                AIM_REQUEST.update(ptr=p["ptr"], yaw=wrap((p.get("rot") or 0.0) + err + fp_off), at=time.monotonic(),
+                                   pitch=None, steady=False)    # (the steady aim's own, _ram_aim, once the gun is up)
             if self.__dict__.get("_pick_blocked"):
                 fl = self.__dict__.get("_flank")
                 if not fl or fl["key"] != self.target or now >= fl["until"]:
@@ -1970,6 +2242,10 @@ class Bot:
                         return flank
                 self.doing, self.why = "hold", "aligned, but a fire gate blocks the shot"
                 return {"hold": {AIM_BTN}}                   # aim kept, no shot
+            if AIM_RAM:                                      # the steady aim through the gun's own line (AIM_RAM)
+                act = self._ram_aim(p, live, e, dist, err, fp_off, snap, now)
+                if act is not None:
+                    return act
             half = FIRE_HALF_WIDTH_MM
             if UNIVERSAL_CORE:                           # the body profile: his class's own half width (mm)
                 try:
@@ -1992,18 +2268,11 @@ class Bot:
             if not ready or now - self._last_fire < FIRE_GAP_S:
                 self.doing = "aim"
                 return {"hold": {AIM_BTN}}
-            self._last_fire = now
-            if FIRE_PATTERN:
-                self._fp_fired(e, dist, err, snap, now)
-            self._since_reload += 1
-            self.stats["shots"] += 1
-            n = self.stats["shots"]
-            self.stats["fire_err_deg"] = round((self.stats.get("fire_err_deg") or 0.0) * (n - 1) / n
-                                             + math.degrees(abs(err)) / n, 2)   # the mean bearing error at a shot
-            self.doing = "fire"
-            # aim held, trigger TAPPED: the engine sends a tap as down+up before the hold, so the shot fires and the aim
-            # key stays down. Holding both (the first cut) never released the trigger, so a round fired once and stuck.
-            return {"hold": {AIM_BTN}, "tap": FIRE_BTN}
+            if AIM_BOOK:                                     # the shot's record: his facing (+ the waist) as the line
+                aim = snap.get("aim") or {}
+                self._aim_shot(p, e, snap, now, plan=None, actual=(wrap((p.get("rot") or 0.0) + (aim.get("waist") or 0.0)),
+                                                                   None))
+            return self._tap(e, dist, err, snap, now)
         self.target = None
         if self._since_reload >= RELOAD_SHOTS and not any(t[0] <= RELOAD_CLEAR_CM for t in live):
             # a quiet moment after a magazine's worth of shots: ZL + B (the aim first, then B, in this one batch:
@@ -2765,6 +3034,12 @@ class Bot:
         if t is not None:
             try:
                 t.save()                                 # who hurt him, for the next round (THREAT_FILE)
+            except Exception:                            # noqa: BLE001
+                pass
+        c = self.__dict__.get("_aim_book_core")
+        if c is not None:
+            try:
+                c.save()                                 # the aim book's lessons (AIM_BOOK)
             except Exception:                            # noqa: BLE001
                 pass
 
