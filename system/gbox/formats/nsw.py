@@ -310,3 +310,63 @@ def list_exefs(read_at, nca_offset: int, keys: dict) -> List[dict]:
         o, sz, no = struct.unpack_from("<QQI", head, 16 + i * 24)
         out.append({"name": names[no:names.index(b"\0", no)].decode(), "offset": doff + pool + strsz + o, "size": sz})
     return out
+
+
+def lz4_block_decompress(src: bytes, out_size: int) -> bytes:
+    """Pure-python LZ4 block decoder (no frame header), as used by NSO segments."""
+    out = bytearray()
+    i, n = 0, len(src)
+    while i < n:
+        tok = src[i]; i += 1
+        lit = tok >> 4
+        if lit == 15:
+            while True:
+                b = src[i]; i += 1; lit += b
+                if b != 255:
+                    break
+        out += src[i:i + lit]; i += lit
+        if i >= n:
+            break
+        off = src[i] | (src[i + 1] << 8); i += 2
+        if off == 0 or off > len(out):
+            raise ValueError("bad LZ4 match offset")
+        ml = tok & 15
+        if ml == 15:
+            while True:
+                b = src[i]; i += 1; ml += b
+                if b != 255:
+                    break
+        ml += 4
+        s = len(out) - off
+        for k in range(ml):
+            out.append(out[s + k])
+    if len(out) != out_size:
+        raise ValueError("LZ4 size mismatch %d != %d" % (len(out), out_size))
+    return bytes(out)
+
+
+def parse_nso(data: bytes) -> dict:
+    """Decompress an NSO0 image: returns segments {text,ro,data} (bytes + memory offset) and bss size.
+    Verifies each segment against the SHA-256 in the header when the hash flag is set."""
+    import hashlib
+    if data[:4] != b"NSO0":
+        raise ValueError("not NSO0")
+    flags = struct.unpack_from("<I", data, 0xC)[0]
+    segs = {}
+    for idx, name in enumerate(("text", "ro", "data")):
+        foff, moff, dsz = struct.unpack_from("<III", data, 0x10 + idx * 0x10)
+        csz = struct.unpack_from("<I", data, 0x60 + idx * 4)[0]
+        raw = data[foff:foff + (csz if flags & (1 << idx) else dsz)]
+        seg = lz4_block_decompress(raw, dsz) if flags & (1 << idx) else raw
+        if flags & (1 << (3 + idx)):
+            if hashlib.sha256(seg).digest() != data[0xA0 + idx * 0x20:0xC0 + idx * 0x20]:
+                raise ValueError("%s segment hash mismatch" % name)
+        segs[name] = {"mem_offset": moff, "size": dsz, "data": seg}
+    return {"segments": segs, "bss_size": struct.unpack_from("<I", data, 0x3C)[0], "build_id": data[0x40:0x60].hex()}
+
+
+def read_exefs_member(read_at, nca_offset: int, keys: dict, name: str) -> bytes:
+    h = decrypt_nca_header(read_at, nca_offset, keys["header_key"])
+    sec = nca_sections(h)[0]
+    f = next(x for x in list_exefs(read_at, nca_offset, keys) if x["name"] == name)
+    return read_nca_section(read_at, nca_offset, h, keys, sec, f["offset"], f["size"])

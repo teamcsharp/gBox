@@ -100,3 +100,27 @@ def test_real_program_nca_exefs():
         sec = nsw.nca_sections(h)[0]
         assert rd  # NSO magic proves CTR key/counter correct
         assert nsw.read_nca_section(rd, e.offset, h, keys, sec, files["main"]["offset"], 4) == b"NSO0"
+
+
+def test_lz4_block_roundtrip_vector():
+    # token 0x5? literal "abcde"; then match offset 5 len 4+... hand-built: lit=5 'abcde', match off=5 ml=4 -> 'abcdeabcd', last seq lit 1 'Z'
+    src = bytes([0x50]) + b"abcde" + bytes([5, 0]) + bytes([0x10]) + b"Z"
+    assert nsw.lz4_block_decompress(src, 10) == b"abcdeabcdZ"
+
+
+@pytest.mark.skipif(not (os.path.exists(REAL) and os.path.exists(KEYS)), reason="owned XCI/prod.keys not present")
+def test_real_main_nso_segments():
+    keys = nsw.load_keys(KEYS)
+    info = nsw.list_xci(REAL)
+    e = next(x for x in info.hfs0["secure"] if x.name == "bd68bf29c8500e9c88ca844e1a6f77e8.nca")
+    with open(REAL, "rb") as fh:
+        def rd(o, n):
+            fh.seek(o)
+            return fh.read(n)
+        main = nsw.read_exefs_member(rd, e.offset, keys, "main")
+    nso = nsw.parse_nso(main)  # raises on segment SHA-256 mismatch
+    assert set(nso["segments"]) == {"text", "ro", "data"}
+    assert nso["segments"]["text"]["size"] == 35723872 and nso["segments"]["ro"]["mem_offset"] == 0x2212000
+    assert struct.unpack_from("<I", main, 0xC)[0] == 0x3F  # all segments compressed + hash-checked
+    import hashlib
+    assert hashlib.sha256(nso["segments"]["text"]["data"]).hexdigest() == "9c9b45d8e7a58706ca59e7244b3aebac2325ef98faa205e007974eeeb2f758e9"
