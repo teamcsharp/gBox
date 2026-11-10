@@ -99,3 +99,12 @@ def test_owned_iso_bnd3_flve_sample():
                     assert hd["index_bits"] == 16 and hd["bone_count"] <= 4096
                     flves += 1
         assert bnds >= 20 and flves >= 20
+
+
+@pytest.mark.skipif(not os.path.exists(ISO_PATH), reason="owned ISO absent")
+def test_owned_iso_census_bounded():
+    from gbox import acv_census as C
+    r = C.census(ISO_PATH, limit=2000, stride=1)
+    assert r["stats"]["records"] == 2000
+    assert r["stats"].get("bnd3", 0) > 0
+    assert all(isinstance(n, str) and c > 0 for n, c in r["ext"])
