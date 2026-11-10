@@ -16,7 +16,7 @@ SHIFT = 0x100
 
 
 def _load_tool():
-    path = Path(__file__).resolve().parents[1] / "tools" / "verify_re4_caves.py"
+    path = Path(__file__).resolve().parents[1] / "scripts" / "verify_re4_caves.py"
     spec = importlib.util.spec_from_file_location("verify_re4_caves", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

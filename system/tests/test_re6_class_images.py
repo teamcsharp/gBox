@@ -250,7 +250,7 @@ def test_the_default_barrage_stays_on_the_verified_kind_and_is_not_a_probe():
 def _load_tool():
     import importlib.util
     from pathlib import Path
-    path = Path(N.__file__).resolve().parents[3] / "tools" / "verify_re6_classes.py"
+    path = Path(N.__file__).resolve().parents[3] / "scripts" / "verify_re6_classes.py"
     spec = importlib.util.spec_from_file_location("verify_re6_classes", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

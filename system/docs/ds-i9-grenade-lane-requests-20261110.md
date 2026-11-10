@@ -36,7 +36,7 @@ restart) and the optional item 3 (a read-only RE6 launcher capture).
 home share, so I copied it read-only to `D:\gBox\cache\re4-base\main.bin` (11,716,664 bytes; the raw NSO as
 `main.nso`). It is the right build: the 64-byte signature at `main+0x100000` matches, and
 `re4_switch_blasts.verify` passes on it. F1 is done, and E1's cave is found and vetted at `main+0x655880` (1920 bytes,
-64-byte aligned, all zero, no branch/literal references) with the new `tools/verify_re4_caves.py` and its 10 tests.
+64-byte aligned, all zero, no branch/literal references) with the new `scripts/verify_re4_caves.py` and its 10 tests.
 One honest note: the documented `MAIN_NSO_SHA256` (`98ca897f...`) is Citron's 30,146,816-byte `dump_nso` form; this
 expanded image hashes differently because its header was rewritten and .bss padding is absent, so the signature and
 the blast anchors are the identification. The old request text follows for the record: the i9 had only the ticketless

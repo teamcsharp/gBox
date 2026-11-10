@@ -68,7 +68,7 @@ merge of `ds-grenade-ring-20261110`. Every later step is on an unmerged branch, 
 | RE6 status bug (stale base) | fixed per the hand-off (`re6-bomb-mind`) | main | hand-off section 1; no live RE6 session at 13:55 to re-read |
 | Bot's own ring rule (pkg 5) | live on main | `grenade_ring.py` | RE5/RE6 `RING=True`, every 20 s, kind flash |
 | RE6 scatter barrage, flash only | live on main (RE session's lane) | `re6-bomb-mind` | `SCATTER=True`, every 12 s, 8 rounds |
-| **A** RE6 hand + incendiary | **static done**, live open | `ds-re6-bomb-classes-20261110` `1ec0bfe9` | class pair derived from the pinned images (two words each); caves `0x18F2BC0`/`0x18F2CC0` PASS `tools/verify_re6_classes.py` |
+| **A** RE6 hand + incendiary | **static done**, live open | `ds-re6-bomb-classes-20261110` `1ec0bfe9` | class pair derived from the pinned images (two words each); caves `0x18F2BC0`/`0x18F2CC0` PASS `scripts/verify_re6_classes.py` |
 | A' RE6 explosive ring floor | static done | `ds-re6-ring-explosive-floor-20261110` `2a0ff081` (stacked on B) | `RING_EXPLOSIVE_CLEAR_CM = 600` in `grenade_ring` only (see checkpoint 0.2) |
 | **B** RE6 launcher rounds | **tables pinned, blocked** | `ds-re6-launcher-shells-20261110` `226c985b` | uWp1302-1304 / items 0x133-0x135 pinned; the detonate wrapper refuses a shell (action object vs `0x288C9A0`) |
 | **C** RE5 hand + incendiary | **static done**, live open | `ds-re5-classes-20261110` `ac5b396f`, `ds-re5-classes-pair-20261110` `7dc50b31` | uWp06 hand `+0x1D714C8`, uWp07 incendiary `+0x1D71500`, uWp08 flash `+0x1D71538` (matches the live flash); pair **installed in place** (see checkpoint 0.1) |
@@ -243,7 +243,7 @@ bomb wrapper cannot explode a shell, because a shell carries the launcher's acti
       shell's action class in place of `0x288C9A0`.
 - **B3 The images.**
   - Put them in new zero padding **after `0x18F2DA8`**, the end of the class caves, on a 64-byte line.
-  - Vet them with the checks in `tools/verify_re6_classes.py`, pin their digests, and write tests on a fake emulator,
+  - Vet them with the checks in `scripts/verify_re6_classes.py`, pin their digests, and write tests on a fake emulator,
     as in `test_re6_class_images.py`.
   - Caution: `build.sh` links `spawn_bomb`'s `.rodata` at `0x18F2BC0`. It is empty today: the image is 232 bytes and
     ends at `0x18F2BA8`. Never rebuild `spawn_bomb` with constants while the class caves sit there.
@@ -361,7 +361,7 @@ address equal to host address. Its positions are in **millimetres**.
   - Find the `.text` tail's zero run. Choose the cave on a fresh 64-byte line (better, a 4 KiB page start) that holds
     no executed instruction.
   - Prove that no B / BL / ADR / ADRP+ADD target and no 64-bit literal points into it. Port the scanner to
-    `tools/verify_re4_caves.py` and write a test.
+    `scripts/verify_re4_caves.py` and write a test.
 - **E2 The trigger, by data.** RE5 already works this way: `re5_switch_native.Controller.attach` installs a clone of
   the player object's vtable (at `TEMP`) whose `+0x60` slot is the dispatcher, then stores the clone's address into
   the player object. That one store is the whole trigger.

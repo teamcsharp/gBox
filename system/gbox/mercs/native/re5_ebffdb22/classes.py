@@ -10,7 +10,7 @@ MtDTI registration sequence, `main+0x848xx..0x84xxx`: for each class it sets the
 Read out of the operator's own image (build `EBFFDB22…`, verified): the class number *is* the item: uWp06 hand
 (item 0x106), uWp07 incendiary (0x107), uWp08 flash (0x108) - and uWp08 lands exactly on the documented flash DTI,
 which is what makes the whole block trustworthy. `derive()` re-runs that registration sequence with a tiny ARM64
-emulator so the table can be checked against any copy of the image (`tools/verify_re5_classes.py`).
+emulator so the table can be checked against any copy of the image (`scripts/verify_re5_classes.py`).
 
 Only the DTIs are needed by the controller: the detonation wrapper takes the class vtable the allocated unit
 actually carries, exactly as RE6's parameterised pair does, so no per-class vtable is trusted from a table.

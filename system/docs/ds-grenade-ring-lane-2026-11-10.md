@@ -272,7 +272,7 @@ so `Controller.call` can hand both values. The derived images are pinned with th
 (`spawn_class` 256 B @ `543749d9…`, `detonate_class` 232 B @ `9ba12497…`) and the originals keep theirs.
 
 **Where they install.** Two caves the repository has not used: `main+0x18F2BC0` and `main+0x18F2CC0`, inside the
-same never-executed padding tail as the four shipped images. `tools/verify_re6_classes.py` checks them against the
+same never-executed padding tail as the four shipped images. `scripts/verify_re6_classes.py` checks them against the
 operator's own `main.bin`: `.text` is one zero run from `0x18F2630` to its end, both ranges are all zero, and no
 B/BL/ADR/ADRP+ADD target and no 64-bit literal in `.text`/`.rodata` points into them. Run against the extracted
 update image (build `061D2A06…`): **PASS** for both new caves, and the same check passes for the four shipped ones.
@@ -340,7 +340,7 @@ asked for later.
 **What is checked in.** `gbox/mercs/native/re5_ebffdb22/classes.py`: the pinned table, and `derive(image)` - a small
 ARM64 emulator for the registration block (w/x register aliasing, adrp/add/mov/movk/bl) - and `verify(image)`, which
 compares the pinned table with what the image's own initialiser builds, including the uWp08 cross-check.
-`tools/verify_re5_classes.py <main.bin>` runs it. Against the operator's image: **PASS**, no mismatches, the whole
+`scripts/verify_re5_classes.py <main.bin>` runs it. Against the operator's image: **PASS**, no mismatches, the whole
 uWp table printed for the record.
 
 **Tests** (`tests/test_re5_class_table.py`, 4): the pinned table; a *synthetic* registration block built in the
@@ -500,7 +500,7 @@ earlier code).
 
 | # | branch | commit | what it does | tests measured |
 |---|---|---|---|---|
-| 1 | `ds-re6-bomb-classes-20261110` | `1ec0bfe9` | RE6 hand + incendiary: the class becomes a spawn/detonate parameter (two instructions replaced in the pinned images; new caves vetted by `tools/verify_re6_classes.py`, PASS on the operator's image); ring kinds, explicit-kind barrage probe | 166 passed (RE6 ring/native/classes/interventions/engine) |
+| 1 | `ds-re6-bomb-classes-20261110` | `1ec0bfe9` | RE6 hand + incendiary: the class becomes a spawn/detonate parameter (two instructions replaced in the pinned images; new caves vetted by `scripts/verify_re6_classes.py`, PASS on the operator's image); ring kinds, explicit-kind barrage probe | 166 passed (RE6 ring/native/classes/interventions/engine) |
 | 2a | `ds-re6-launcher-shells-20261110` -> 1 | `226c985b` | launcher/round tables pinned (uWp1302-1304, items 0x133-0x135, DTIs 0x2952098/d0/0x2952108; launchers uWp1080 0x112, uWp1120 0x11B) cross-checked against the research JSON; **and the measured reason a round cannot ride the bomb wrapper** (action-object check 0x288C9A0) | 126 passed |
 | 2b | `ds-re6-ring-explosive-floor-20261110` -> 2a | `2a0ff081` | explosive kinds get a 600 cm ring floor (the flash's 150/250 near field was inside a grenade's blast); clamp reported in the receipt | 25 passed (RE6 class images) |
 | 3 | `ds-re5-classes-20261110` | `ac5b396f` | RE5 class table derived from the game's own MtDTI initialiser and verified: uWp06 hand `+0x1D714C8`, uWp07 incendiary `+0x1D71500`, uWp08 flash `+0x1D71538` (the last matches the live-verified flash DTI) | 53 passed |
@@ -747,7 +747,7 @@ image: all three blast anchors (`0x2E48B0` hand, `0x2E4AA0` simple, `0x2E4E50` f
 `AREA_ATTACK` call targets and the 6000/15000 radii all check out. Evidence: the empty problem list above; the
 research doc is `docs/research/re4-switch-grenade-flash.md` (request #9436).
 
-**E1's cave.** New tool `tools/verify_re4_caves.py` (see its docstring for the exact contract) reads the layout from
+**E1's cave.** New tool `scripts/verify_re4_caves.py` (see its docstring for the exact contract) reads the layout from
 the image's own NSO header, takes the first 64-byte line after the declared `.text`, and proves:
 
 - cave **`main+0x655880`**, size **0x780 (1920 bytes)**, ends at the RX page boundary `0x656000`;
