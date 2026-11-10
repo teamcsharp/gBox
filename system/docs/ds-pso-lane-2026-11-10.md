@@ -154,6 +154,10 @@ pass except the one pre-existing `test_pso_enemy` failure in §3.
    and layout without a live load, and would explain Forest 2 resolving to both `forest02` and `aforest02`.
 5. **No live session this round.** Everything above is offline decode plus the binary. P1 and every accept test that
    needs Dolphin are round 2+.
+6. **Two owned `GPOE8P` executables.** The base Plus disc's `PsoV3.dol` is 5,233,088 bytes (sha256 `1f80fb82...`,
+   the build every address in this round belongs to); the Return To Ragol V1.0.3 mod's is 5,236,992 bytes
+   (`60fa7646...`). `pso_ragol_unlock.OWNED_EXECUTABLE_SIZE = 5236992` is correct for its own build, not a
+   typo - checked against the owned ISO. Address work for Return To Ragol has to be re-derived.
 
 ## 7. Next
 

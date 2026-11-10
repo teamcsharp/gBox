@@ -25,6 +25,15 @@ iwanagaD.dol  3938432  sha256 511f7e4fc4563947b7368bebe5f135565981f38c23cf425596
 That digest is already pinned in the tree as `gbox/pso_gc_live.py:DOL_SHA256`, which is the independent confirmation
 that the addresses the repo drives live belong to this file and not to the stub.
 
+**Two owned `GPOE8P` executables exist and they are not the same size**, so neither a size nor a hash alone
+names a build. The operator also owns the Return To Ragol V1.0.3 mod (catalogue `5b5792e27be59f59`, same serial
+`GPOE8P`), whose `PsoV3.dol` is **5,236,992 bytes, sha256
+`60fa76460510de212c817500119ee560bb415cbf7b1c32a8f4911c2e93ead3a5`**. Everything in this document - every
+address, every guard, the Ghidra program - is the **base Plus disc's** `1f80fb82...` executable.
+`gbox/pso_ragol_unlock.py`'s `OWNED_EXECUTABLE_SIZE = 5236992` is therefore correct for its own build, not a
+typo; a Return To Ragol session would need the addresses re-derived, which is why that module stays
+`pending_research`.
+
 `PsoV3.dol` sections (DOL header at `0x00 / 0x48 / 0x90` = file offsets, addresses, sizes; bss and entry at `0xD8`):
 
 | # | kind | address | size | file offset |

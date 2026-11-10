@@ -48,8 +48,8 @@ d.files['PsoV3.dol'], len(d.dol())           # (1450489440, 5233088), 213952
 
 ## 1. The disc image and its FST
 
-The GC header fields `gbox` actually consumes are exactly three words, parsed big-endian
-(`system/gbox/gcdisc.py:17-25`, shared with the fingerprinters via `system/gbox/formats/gcfst.py:13-17`):
+The GC header fields `gbox` consumes (all big-endian; `system/gbox/gcdisc.py:17-25`, shared with the fingerprinters
+via `system/gbox/formats/gcfst.py:13-17`):
 
 | offset | size | field |
 |---|---|---|
@@ -79,10 +79,10 @@ Measured:
 | 1 | `00000000 0c99bc44 00000fe0` | `abeniji_fe_obj001_niji.bml`, off 211,401,796, size 4,064 |
 | 277 | `010017b4 00000000 000003c3` | dir `browser`, parent 0, next 963 |
 
-The walk is a stack of `(prefix, end_index)`; a directory's `C` pops it (`gcfst.py:27-38`). 45 subdirectories, the
-deepest paths are three levels (`Quest/...`, `browser/sound/...`). `parse_fst` yields 3,510 rows, and `d.files`
-holds 3,510 keys — no duplicate paths, so the dict does not silently drop a file.
-
+The walk is a stack of `(prefix, end_index)`; a directory's `C` pops it (`gcfst.py:27-38`). 45 subdirectories,
+depth spread: 1,519 files at the root, 1,355 one level down, 96 two, 395 three, 46 four, 99 five (deepest:
+`browser/isao/mainte/svrimg/chg1/chg_back.png`). `parse_fst` yields 3,510 rows and `d.files` holds 3,510 keys — no
+duplicate paths, so the dict does not silently drop a file.
 Downstream, `GCDisc.dol()` (`gcdisc.py:46-52`) recomputes the DOL extent from its 18 section size words;
 `dol_to_elf` (`gcdisc.py:55-70`), `rel_link` (`gcdisc.py:98-134`) and `depair` (`gcdisc.py:137-152`) are the
 DOL/REL-to-Ghidra path for `PsoV3.dol` and the 649 `.rel` files. Those are code containers, not disc containers,
@@ -130,9 +130,9 @@ including raw ones: block 0 stored-hash `8629add0` = table, inflated-hash `aa4cc
 Two divergences worth recording, neither exercised by this image:
 
 * `gcz.py:107-111` always calls `zlib.decompress`, so an implied zero block would raise; `pso_inventory.py:108-110`
-  has the `end == prev → zero block` branch (documented at `pso_inventory.py:23-25`). 0 instances here, so reading
+  has the `end == prev → zero block` branch (documented at `pso_inventory.py:24-25`). 0 instances here, so reading
   every block succeeds.
-* `pso_inventory.py:17-19` describes the record table as `{u32 cumulative end, u32 flags}` pairs at 0x28 while
+* `pso_inventory.py:17-21` describes the record table as `{u32 cumulative end, u32 flags}` pairs at 0x28 while
   `gcz.py` uses a 0x20-based u64 pointer array plus a separate u32 hash array. Both agree because the offsets fit in
   32 bits: the low word of each u64 is the offset, the high word is the raw flag (`pso_inventory.py:92-94`).
 
@@ -161,7 +161,7 @@ is consumed **LSB first** (`ctrl & 1; ctrl >>= 1` — `lz.py:358-366`):
 
 Bit costs (from the encoder, `lz.py:394-487`): 9 bits literal, 12 bits short reference, 18 bits long 3..9,
 26 bits long 10..256. The terminator is the long form with `a = 0x0000`, i.e. distance 8,192 — out of range, which
-is why `prs_decompress` can test `offset == ~0x1FFF` and stop (`lz.py:378-380`). `prs_compress` ends with
+is why `prs_decompress` can test `offset == ~0x1FFF` and stop (`lz.py:377-379`). `prs_compress` ends with
 `bit(0), bit(1), b"\0\0"` (`lz.py:485-486`).
 
 **What is PSO-GC-specific: nothing.** These are stock Sega PRS streams: LSB-first flags, no size prefix, terminated
@@ -195,7 +195,7 @@ non-random bytes. Whole-disc census of the extension:
 |---|---|
 | `.prs` files / bytes | 53 / 4,305,207 |
 | streams decoding with `prs_decompress` | 52 (all 52 end with the `00 00` terminator) |
-| decoded head | 47 × `GVMH`; the other 5 are tables: `ItemPMT`, `ItemRTT`(GVMH), `AdDrawLineTask`, `ItemMagEdit`, `switcher`, `symbolchatcolli` |
+| decoded head | 47 × `GVMH`; the other 5 decode to tables: `ItemPMT`, `AdDrawLineTask`, `ItemMagEdit`, `switcher`, `symbolchatcolli` |
 | not PRS | `ChatSensor.prs`, 61 B (`00 00 00 80 E3 6B ... 35 21 54 3A`): no valid terminator, decoder raises |
 
 The LSB-first order is visible in the bytes: `sega_logo.prs` starts `7F 47 56 4D 48 ...`. `0x7F` = seven 1-bits then
@@ -217,7 +217,7 @@ Magic-less: the whole file is a table of 0x30-byte entries followed by the paylo
 
 | offset | size | field |
 |---|---|---|
-| 0x00 | 0x20 | name, NUL-padded (longest name on the disc is 31 chars, so every entry is terminated) |
+| 0x00 | 0x20 | name, NUL-padded (longest GSL name is 31 chars, so every entry is terminated) |
 | 0x20 | u32 BE | offset in **0x800 sectors** → byte offset = value × 0x800 |
 | 0x24 | u32 BE | size |
 | 0x28 | 8 | zero |
@@ -237,7 +237,7 @@ set_object 1,683,456 → True). It rewrites `offset = pos // 0x800` and `size` f
 trailing bytes when `replace` is empty (`pso_gc.py:99-107`), which is why the round-trip closes.
 
 `gsl_forest01.gsl` contents (first entries): `map_forest_e.bin`, `map_forest_f.bin`, `map_forest_g.bin`,
-`map_forest_j.bin`, `map_forest_s.bin`, `fe_obj_doa_kanban.bml`, then `bm_fe_obj_komo.bml`,
+`map_forest_j.bin`, `map_forest_s.bin`, `fe_obj_doa_kanban.bml`, `fe_obj_door.gvm`, `bm_fe_obj_komo.bml`,
 `bm_o_abe_butterfly.bml`, `abeno_fs_obj001_fosuno.bml`, ... The enemy packs live only here: `bm_ene_bm1_shark_a.bml`
 is entry 31 of `gsl_aversus02.gsl` at 1,466,368, 229,728 B (see §6).
 
@@ -263,7 +263,7 @@ Sega AFS, little-endian table (`pso_player.py:33-35`; the GC table is documented
 | ... | — | zero padding to EOF |
 
 The 33 AFS-magic files are the 32 `*.afs` plus `sound.bin` (measured by a 4-byte head census over all 3,510 files;
-the other 3,417 have other magics: 343 `GVMH`, 321 `PNG`, 198 `NJCM`, 101 `GJTL`, ...). `sound.bin` is the only AFS
+the other 3,477 have other magics: 343 `GVMH`, 321 `PNG`, 198 `NJCM`, 101 `GJTL`, ...). `sound.bin` is the only AFS
 archive without the extension. `PlyLevelTbl.cpt` is **not** AFS — see §7.
 
 | archive | size | entries | TOC bytes | first (off, size) | last end | tail | name table |
@@ -278,12 +278,12 @@ archive without the extension. `PlyLevelTbl.cpt` is **not** AFS — see §7.
 The 29 player/`slbgm` banks start their data at 524,288 (`0x80000`) and end flush at a 0x800 boundary after the last
 entry's padding (`plAtex`: 691 × 2048 = 1,415,168); the three `Item*` archives start at 4,096 (`0x1000`) and carry the
 name table. Name tables verified field by field: record count == entry count, names in **entry order**
-(`player.proj/512`, `player.pool/1668`, `player.sdir/2452`, `player.samp/2368` for `sound.bin`), and the trailing
-u32 equals the TOC size for every record in all four archives. The 12 bytes between name and size are not a constant
-whole: `ItemModel` uses `C1 07 07 00 05 00 03 00 06 00 16 00` / `...10 00`, `sound.bin` uses
-`D2 07 07 00 05 00 0F 00 26 00 06 00` etc. (5 distinct blocks in ItemModel, 38 in sound.bin). Read as 6 u16 LE they
-look like a date/time (`0x07D2`=2002, 7, 5, 15, 38, 6 for sound.bin), but that reading is **unproven**; only the
-record size (0x30), the order and the size word are proven.
+(`player.proj/512`, `player.pool/1668`, `player.sdir/2452`, `player.samp/503872` for `sound.bin`), and the trailing
+u32 equals the TOC size for every record in all four archives. The 12 bytes between name and size are not constant:
+the first 8 are fixed per archive (`sound.bin` `D2 07 07 00 05 00 0F 00`, `ItemModel` `C1 07 07 00 05 00 03 00`) and
+the last two u16 vary per record (`sound.bin`: `26 00 06 00` / `27 00 1E 00` / `23 00 32 00`, 38 distinct blocks in
+that archive; 5 in `ItemModel`, 41 in `ItemKT`). Read as 6 u16 LE the block looks like a time (`0x07D2`=2002, 7, 5,
+15, 38, 6), but that reading is **unproven**; only the record size (0x30), the order and the size word are proven.
 
 `plAtex.afs`'s first three TOC pairs are `(524288, 8224)`, `(534528, 8224)`, `(544768, 8224)`; its size histogram is
 544 × 34, 2,080 × 42, 8,224 × 60, 32,800 × 1 — so the "137 entries of 8,224-byte GVRs" note at
@@ -300,6 +300,7 @@ GVRT size field (u32 LE @+4) = 8,200 = 8 + 8,192;  w,h = 128 x 128 (u16 BE);  fm
 for every entry of `plAtex` and `plUtex`).
 
 ```python
+import struct
 from gbox.pso_player import afs
 a = d.read("plAtex.afs"); n = struct.unpack_from("<I", a, 4)[0]
 toc = [struct.unpack_from("<II", a, 8 + 8 * i) for i in range(n)]
@@ -333,7 +334,7 @@ Entry (`0x40` bytes at `0x40 + 0x40·i`), fields at `+0x20` read as `>5I` by `bm
 | 0x28 | u32 BE | `dsize` | decompressed payload bytes (0 = payload stored raw) |
 | 0x2C | u32 BE | `cgvm` | stored texture-archive bytes (0 = no texture) |
 | 0x30 | u32 BE | `dgvm` | decompressed texture bytes |
-| 0x34 | 12 | zero | 0 in every entry of all 298 parseable packs |
+| 0x34 | 12 | zero | 0 in all 9,648 entries of the 1,812 big-endian packs |
 
 Body: for each entry in order, `csize` bytes of PRS, zero pad to the pack's alignment, then (if `cgvm`) `cgvm` bytes
 of PRS and pad. Alignment is 0x20 for 276 packs and 0x800 for 22 (`bml_align`, `pso_player.py:210-223`, picks the one
@@ -365,14 +366,15 @@ whose laid-out entries end at the file end).
 Σ csize 63,233, Σ cgvm 164,216, laid-out end 229,728 = file size (tail 0), `bml_build(d,{})` **identical**; every
 texture archive inflates to exactly 73,920 B and starts `GVMH`.
 
-Disc-wide census over the 1,813 packs / 9,648 entries:
+Disc-wide census over the 1,812 packs that parse big-endian / 9,648 entries (the little-endian pack's 42 entries are
+not counted here):
 
 | quantity | value |
 |---|---|
 | entries whose PRS payload inflates to exactly `dsize` | 9,631 |
 | entries with `csize == dsize` (the "stored raw" convention used by `pso_gc.py:124` / `pso_enemy.py:195`) | **0** |
 | texture-carrying entries | 2,624, all `cgvm != dgvm`, all inflate to `dgvm` |
-| `bml_build(data, {})` byte-identical | 298 of 299 loose packs (all 1,514 GSL packs checked earlier: identical) |
+| `bml_build(data, {})` byte-identical | 298 of 299 loose packs; 1,514 of 1,514 packs inside GSL archives |
 | exceptions | `bm_technic.bml` (17 entries) and `fe_obj_hira_kage.bml` — see below |
 
 Two real exceptions, both worth knowing before writing a pack:
@@ -388,11 +390,12 @@ Two real exceptions, both worth knowing before writing a pack:
   big-endian and one is a Dreamcast-layout pack.
 
 ```python
+import struct
 from gbox.pso_player import bml_files, bml_build, bml_start, bml_align
 from gbox.formats.lz import prs_decompress
 b = d.read("plAnj.bml")
 n = struct.unpack_from(">I", b, 4)[0]
-n, bml_align(b, ">"), bml_start(n), b[:0x10].hex()   # 13, 0x800, 2048, '00000000 0000000d 50010000 00000000'
+n, bml_align(b, ">"), bml_start(n), b[:0x10].hex()   # 13, 0x800, 2048, '000000000000000d5001000000000000'
 e = bml_files(b, ">")[0]
 e["name"].split(b"\0")[0], e["fields"], len(prs_decompress(e["raw"]))   # b'plAbdy00.nj', [16226,0,21308,0,0], 21308
 bml_build(b, {}, None, ">") == b                     # True
@@ -401,8 +404,8 @@ bml_build(b, {}, None, ">") == b                     # True
 ## 7. Open items (explicitly unproven) and traps
 
 * **BML `f1`** (word at entry +0x24): not read by any module in the repo. 0 is the most common value (904 entries in
-  loose packs), the shark pack uses 0x1B/0x36/0x51, GSL packs add 27, 30, 31, 32, 135, ... 122 distinct over loose
-  packs. Meaning **unproven**.
+  loose packs), the shark pack uses 0x1B/0x36/0x51, GSL packs add 27, 30, 31, 32, 135, ... 122 distinct values over
+  loose packs, 87 over GSL packs. Meaning **unproven**.
 * **AFS 12-byte record field**: record layout, order and size word are proven; the date/time reading of the 12 bytes
   is **unproven**.
 * **`bm_technic.bml`'s header word 0** and its raw-payload convention: measured, not explained.
@@ -416,5 +419,6 @@ bml_build(b, {}, None, ">") == b                     # True
   proven against real data.
 * **`pso_ragol_unlock.py:31`'s 5,236,992-byte `PsoV3.dol`** does not match this image's 5,233,088 B.
 * Do not regress the two proven writer invariants: `gsl_build(data, {}) == data` (51/51) and
-  `bml_build(data, {}, None, ">") == data` (298/299 + 1,514/1,514). Both depend on keeping the original alignment
-  (`0x800` / 0x20 vs 0x800) and, for GSL, the original table area and zero tail.
+  `bml_build(data, {}, None, ">") == data` (298/299 loose + 1,514/1,514 in GSL). Both depend on keeping the original
+  alignment (0x800 for every GSL archive, 0x800 for 22 BML packs, 0x20 for 276) and, for GSL, the original table area
+  and zero tail.
