@@ -21,6 +21,7 @@ from gbox.doa5lr_char_dat_writer import (  # noqa: E402
     container_sha256,
     encode_noop,
     replace_entry_in_container,
+    swap_section,
 )
 
 SAMPLE18 = "/home/ehm_eckx/gBox_alt/gbox-cache/research/doa5lr_samples_2450/char_entry_0018.payload.bin"
@@ -105,3 +106,45 @@ def test_size_mismatch_rejected_before_write():
         pass
     # source untouched
     assert container_sha256(LINK) == CONTAINER_SHA
+
+
+DONOR = 1166
+DONOR_SHA = "61977de982a92e52b9a19ce933918fb5b5e69cfc18ca9528ae4355a7221e8dc3"
+
+
+@pytest.mark.skipif(not os.path.exists(LINK), reason="owned PS3 source not mounted")
+def test_swap_section1_donor1166_container_roundtrip():
+    from gbox import doa5lr_chcm_extract as chcm
+
+    tgt = _load(SAMPLE18)
+    dinfo, donor = chcm.extract_entry(DONOR, LINK, INDEX)
+    assert dinfo["sha256"] == DONOR_SHA
+    out = swap_section(tgt, donor, 1)
+    ti, di, oi = (doa5lr_char_dat.parse_char_dat(b) for b in (tgt, donor, out))
+    assert len(out) == ENTRY_SIZE
+    assert (ti["sections"][1]["start"], ti["sections"][1]["end"]) == (47936, 47968)
+    assert (di["sections"][1]["start"], di["sections"][1]["end"]) == (49280, 49312)
+    assert out[47936:47968] == donor[49280:49312]
+    assert out[47936:47968] != tgt[47936:47968]
+    assert out[:47936] == tgt[:47936] and out[47968:] == tgt[47968:]
+    assert hashlib.sha256(out).hexdigest() != ENTRY_SHA
+    assert oi["sections"] == ti["sections"]
+
+    os.makedirs(SCRATCH, exist_ok=True)
+    work = os.path.join(SCRATCH, "chara_common.swap.copy")
+    shutil.copy2(LINK, work)
+    try:
+        rcp = replace_entry_in_container(LINK, TARGET, out, output_path=work)
+        assert rcp["row"]["size"] == ENTRY_SIZE
+        assert rcp["container_sha256"] != CONTAINER_SHA
+        assert rcp["entry_sha256_after"] == hashlib.sha256(out).hexdigest()
+        assert container_sha256(LINK) == CONTAINER_SHA
+    finally:
+        if os.path.exists(work):
+            os.unlink(work)
+
+
+def test_swap_section_size_mismatch_rejected():
+    tgt = _load(SAMPLE18)
+    with pytest.raises(WriterError):
+        swap_section(tgt, _load(SAMPLE940), 0)

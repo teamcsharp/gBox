@@ -32,6 +32,8 @@ __all__ = [
     "encode_noop",
     "replace_entry_in_container",
     "container_sha256",
+    "swap_section",
+    "scan_section_donors",
 ]
 
 HEADER_END = 0xB4
@@ -168,3 +170,58 @@ def replace_entry_in_container(
         "container_sha256": sha,
         "container_path": target,
     }
+
+
+def _section_sizes(info: dict) -> list:
+    return [sec["end"] - sec["start"] for sec in info["sections"]]
+
+
+def swap_section(target_payload: bytes, donor_payload: bytes, section_index: int) -> bytes:
+    """Return ``target_payload`` with section ``section_index`` replaced by the
+    same-index donor section bytes.  Section sizes must match exactly so the
+    payload length, pointer tables and every other section stay unchanged.
+    """
+    t = parse_char_dat(target_payload)
+    d = parse_char_dat(donor_payload)
+    if not 0 <= section_index < len(t["sections"]):
+        raise WriterError("target has no section %d" % section_index)
+    if section_index >= len(d["sections"]):
+        raise WriterError("donor has no section %d" % section_index)
+    ts, te = t["sections"][section_index]["start"], t["sections"][section_index]["end"]
+    ds, de = d["sections"][section_index]["start"], d["sections"][section_index]["end"]
+    if te - ts != de - ds:
+        raise WriterError(
+            "section %d size mismatch: target %d, donor %d" % (section_index, te - ts, de - ds)
+        )
+    out = bytearray(target_payload)
+    out[ts:te] = donor_payload[ds:de]
+    res = bytes(out)
+    r = parse_char_dat(res)
+    if len(res) != len(target_payload) or _section_sizes(r) != _section_sizes(t):
+        raise WriterError("swapped payload no longer matches target layout")
+    return res
+
+
+def scan_section_donors(container_path: str, target_index: int) -> list:
+    """List CHCM entries (other than the target) that parse as ``char_dat`` and
+    have >=1 section with the same size as the target's same-index section.
+    Returns dicts: index, size, matching_sections (list of section indices).
+    """
+    _info, target = chcm.extract_entry(target_index, container_path, container_path[:-4] + ".bin")
+    tsizes = _section_sizes(parse_char_dat(target))
+    entries = chcm.parse_entries(container_path)
+    found = []
+    with open(container_path, "rb") as fh:
+        for i, (size, _dup, _zero, offset) in enumerate(entries):
+            if i == target_index or size < 0xB4:
+                continue
+            fh.seek(offset)
+            data = fh.read(size)
+            try:
+                sizes = _section_sizes(parse_char_dat(data))
+            except Exception:
+                continue
+            m = [k for k, v in enumerate(sizes) if k < len(tsizes) and v == tsizes[k]]
+            if m:
+                found.append({"index": i, "size": size, "matching_sections": m})
+    return found
