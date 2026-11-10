@@ -139,3 +139,33 @@ def test_decode_ci4_blobs_and_png():
 def test_build_mtl_maps_texture_file():
     mtl = tr.build_mtl(_synthetic_geometry(), {7: "texset_7.png"})
     assert "map_Kd texset_7.png" in mtl
+
+
+def test_decode_ci4_ia_blobs():
+    hdr = b"\0" * 16
+    fmt = bytes([3, 1, 1, 1, 255, 0, 0, 0])  # CI4_IA, 2x2
+    pal = hdr + b"".join(((i << 4 | i) * 0x101).to_bytes(2, "big") for i in range(16))
+    bm = hdr + bytes([0x0F, 0xF0])
+    d = tr.decode_texset_blobs(fmt, bm, pal)
+    assert d["format"] == "CI4_IA"
+    px = [tuple(d["rgba"][i:i + 4]) for i in range(0, 16, 4)]
+    assert px == [(0, 0, 0, 0), (255, 255, 255, 255), (255, 255, 255, 255), (0, 0, 0, 0)]
+
+
+def test_decode_mm16_level0_only():
+    hdr = (1).to_bytes(4, "big") + (16).to_bytes(4, "big") + b"\0" * 8
+    fmt = bytes([4, 3, 1, 1, 255, 0, 0, 0])
+    lvl0 = b"".join(c.to_bytes(2, "big") for c in [0xF801, 0x07C1, 0x003F, 0x0000])
+    bm = hdr + lvl0 + b"\xAA" * 6  # trailing mip levels ignored
+    d = tr.decode_texset_blobs(fmt, bm, b"\0" * 8)
+    assert (d["width"], d["height"]) == (2, 2)
+    px = [tuple(d["rgba"][i:i + 4]) for i in range(0, 16, 4)]
+    assert px == [(255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 255), (0, 0, 0, 0)]
+
+
+def test_decode_animated_frame_table_uses_frame0():
+    fmt = bytes([1, 0, 1, 1, 255, 0, 0, 0])
+    pal = b"\0" * 16 + b"".join(c.to_bytes(2, "big") for c in [0xF801, 0x07C1] + [0] * 14)
+    bm = (2).to_bytes(4, "big") + (12).to_bytes(4, "big") + (14).to_bytes(4, "big") + bytes([0x01, 0x10]) + bytes([0x11, 0x11])
+    d = tr.decode_texset_blobs(fmt, bm, pal)
+    assert tuple(d["rgba"][0:4]) == (255, 0, 0, 255)

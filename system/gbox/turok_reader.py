@@ -160,6 +160,8 @@ def summarize(res: dict, inv: dict, index: int, source_sha256: str) -> dict:
 # Texture-set format codes (see gbox.turok_inventory.TEXTURE_FORMATS)
 _FMT_CI8 = 0
 _FMT_CI4 = 1
+_FMT_CI4_IA = 3
+_FMT_MM16 = 4
 
 # Sub-blob header is [u32 type=1, u32 ?, u32 size, u32 0] — 16 bytes.
 _SUB_BLOB_HDR = 16
@@ -183,6 +185,22 @@ def _palette_from_blob(pal_blob: bytes, n_entries: int) -> list[tuple[int, int, 
     return out
 
 
+def _first_bitmap_frame(bm_blob: bytes, npix: int, code: int) -> bytes:
+    """Strip the bitmap blob header; animated sets ([count, offsets...]) yield frame 0."""
+    if len(bm_blob) <= _SUB_BLOB_HDR:
+        return bm_blob
+    first = struct.unpack_from(">I", bm_blob, 0)[0]
+    if first == 1:
+        return bm_blob[_SUB_BLOB_HDR:]
+    # frame table: u32 count then u32 offsets relative to the blob start
+    n_frames = first
+    if 1 < n_frames < 4096 and len(bm_blob) >= 8:
+        off0 = struct.unpack_from(">I", bm_blob, 4)[0]
+        if 0 < off0 < len(bm_blob):
+            return bm_blob[off0:]
+    return bm_blob[_SUB_BLOB_HDR:]
+
+
 def decode_texset_blobs(fmt_blob: bytes, bm_blob: bytes, pal_blob: bytes,
                         fmt_code: int | None = None) -> dict:
     """Decode one texture set's format/bitmap/palette blobs into RGBA pixels.
@@ -199,7 +217,7 @@ def decode_texset_blobs(fmt_blob: bytes, bm_blob: bytes, pal_blob: bytes,
     w = 1 << ws
     h = 1 << hs
     pal_blob_d = pal_blob[_SUB_BLOB_HDR:] if len(pal_blob) > _SUB_BLOB_HDR else pal_blob
-    bm_blob_d = bm_blob[_SUB_BLOB_HDR:] if len(bm_blob) > _SUB_BLOB_HDR else bm_blob
+    bm_blob_d = _first_bitmap_frame(bm_blob, w * h, code)
 
     if code == _FMT_CI8:
         n_pal = 256
@@ -209,9 +227,16 @@ def decode_texset_blobs(fmt_blob: bytes, bm_blob: bytes, pal_blob: bytes,
         rgba = bytearray()
         for i in idx:
             rgba.extend(palette[i])
-    elif code == _FMT_CI4:
+    elif code in (_FMT_CI4, _FMT_CI4_IA):
         n_pal = 16
-        palette = _palette_from_blob(pal_blob_d, n_pal)
+        if code == _FMT_CI4_IA:
+            # IA16 palette entries: high byte intensity, low byte alpha
+            palette = []
+            for i in range(n_pal):
+                v = struct.unpack_from(">H", pal_blob_d, i * 2)[0]
+                palette.append((v >> 8, v >> 8, v >> 8, v & 0xFF))
+        else:
+            palette = _palette_from_blob(pal_blob_d, n_pal)
         # 4-bit indices, two per byte (high nibble first)
         pixels = w * h
         rgba = bytearray()
@@ -219,6 +244,13 @@ def decode_texset_blobs(fmt_blob: bytes, bm_blob: bytes, pal_blob: bytes,
             byte = bm_blob_d[i >> 1]
             nibble = (byte >> 4) if (i & 1) == 0 else (byte & 0x0F)
             rgba.extend(palette[nibble])
+        palette = palette
+    elif code == _FMT_MM16:
+        # mip-mapped RGBA5551: level 0 (w*h big-endian u16) comes first
+        palette = []
+        rgba = bytearray()
+        for i in range(w * h):
+            rgba.extend(_rgba5551(struct.unpack_from(">H", bm_blob_d, i * 2)[0]))
     else:
         raise ValueError(f"unhandled texture set format code {code}")
     return {
@@ -267,7 +299,7 @@ def export_texset_pngs(rom: bytes, inv: dict, out_dir: Path, texset_ids: list[in
     for tid in texset_ids:
         try:
             d = decode_texset(rom, tid)
-        except ValueError:  # IA / mip-mapped formats not decoded yet
+        except ValueError:  # unknown format codes are skipped
             continue
         name = f"texset_{tid}.png"
         (out_dir / name).write_bytes(png_bytes(d["width"], d["height"], d["rgba"]))
