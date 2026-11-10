@@ -250,6 +250,40 @@ def character_stat_records(exe: bytes) -> list[dict]:
     return out
 
 
+COSTUME_TABLE_VA = 0x8C1931FC
+COSTUME_BLOCK_HEADER_PTRS = 13
+
+
+def costume_block_table(exe: bytes) -> list[int]:
+    """Pointer table at 0x8c1931fc, one P0 pointer per costume block.
+
+    Entries run until the first non-pointer word (the 0 terminator at
+    0x8c1933a8); b1 of a slot record (1..45) selects into it. Returns VAs.
+    """
+    base = _va_to_off(COSTUME_TABLE_VA)
+    out = []
+    for i in range(256):
+        (ptr,) = struct.unpack_from("<I", exe, base + 4 * i)
+        if (ptr >> 24) != 0x0C:
+            break
+        out.append(p0_to_va(ptr))
+    return out
+
+
+def costume_block_header(exe: bytes, va: int) -> list[int]:
+    """The 13 leading P0 pointers of a costume block, as VAs.
+
+    EVIDENCE: hdr[0] is a shared ``rts; nop`` stub (0x8c0e4af8) and other
+    entries target SH-4 code/state tables in the executable image, i.e. these
+    blocks (and stat-record ptr_0x14/0x18) are per-character fight-script /
+    callback data, NOT UPLMDL/WPLMOT indices. The model/motion mapping lives
+    in the AFS loader callers (HYPOTHESIS: indexed by slot/costume id).
+    """
+    off = _va_to_off(va)
+    return [p0_to_va(x) for x in
+            struct.unpack_from("<%dI" % COSTUME_BLOCK_HEADER_PTRS, exe, off)]
+
+
 def stream_table(exe: bytes, count: int = 80) -> list[dict]:
     """8-byte {u16 group, u16 entry, u8 flags[4]} stream/sound table."""
     base = _va_to_off(STREAM_TABLE_VA)

@@ -18,6 +18,8 @@ from gbox.pj_analysis import (
     afs_descriptors,
     character_pointer_table,
     character_table,
+    costume_block_header,
+    costume_block_table,
     CHAR_SLOT_COUNT,
     character_slots,
     character_stat_records,
@@ -237,3 +239,16 @@ def test_real_loader_tables_40_slots_stats_and_stream_table():
     assert st[0]["group"] == 0xFFFF
     assert [r["entry"] for r in st[1:52]] == list(range(51))
     assert {r["group"] for r in st[1:52]} == {0}
+
+
+@pytest.mark.skipif(not (CACHE / "1ST_READ.BIN").exists(),
+                    reason="staged 1ST_READ.BIN not present")
+def test_real_costume_block_table_and_header():
+    exe = (CACHE / "1ST_READ.BIN").read_bytes()
+    tbl = costume_block_table(exe)
+    assert len(tbl) >= 45
+    assert all(0x8C010000 <= v < 0x8C010000 + len(exe) for v in tbl)
+    hdr = costume_block_header(exe, tbl[0])
+    assert len(hdr) == 13
+    assert hdr[0] == 0x8C0E4AF8  # shared rts stub
+    # stat-record ptr_0x18 targets are code-pointer tables, not model indices
