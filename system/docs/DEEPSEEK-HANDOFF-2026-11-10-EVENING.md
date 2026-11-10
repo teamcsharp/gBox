@@ -39,6 +39,20 @@ Build it on a branch, `i9-service-node-20261110`, from main. The design to imple
 - **Tests.** Readiness transitions (GPU unplugged, gBox closed, toggle off), routing and fallback, result attachment.
 - **Deliverable.** The branch plus `system/docs/i9-service-node.md`. That doc covers: the services found, the config lines, the central-server change, and whether gBox.service on the Spark needs a restart. The PM merges and restarts; you don't.
 
+## 1b. A heavy local LLM on the 3090, serving gBox at high concurrency (the operator, 2026-11-10 ~16:20)
+
+> "I do want to be able to utilize the system that's being set up on the I9 as a harness where we're able to have G Box execute tasks on it locally using the power of the thirty ninety in full where we're able to pull a model that's able to have it handle important substantive work and do even more intimate breakdown and analysis without qualms or issue because its fully local. I want it pulling the most powerful effective and pertinent to our goals LLM and using it heavy duty with high concurrence (if possible) to handle tasks as a heavy high end kiosk able to be deployed as a hardcore system."
+
+DeepSeek-the-API stays with your own harness; Hermes no longer uses the deepseek node. This section is about a LOCAL model on the i9.
+
+- **Choose the model, by measurement.** Pick the strongest model that fits the 3090's 24 GB with room for many concurrent requests. Our work is code changes in a large Python repo, AArch64 / PowerPC / x86 disassembly reading, binary formats, and tool use. Write the comparison into `system/docs/i9-service-node.md`:
+  - candidates: an MoE coder (30B-class with ~3B active, Q4 / AWQ); a dense 27-32B at Q4; a reasoning model; an unrestricted variant where the work needs it ("without qualms": no refusals on reverse engineering and decryption of games we own; lilspark logged `content_policy_blocked` refusals today);
+  - for each: VRAM use, tokens / s at 1, 4, 8 and 16 concurrent requests, context length, and a short gBox task sample (fix a failing test; explain a decompiled function).
+- **Serve it.** Use an OpenAI-compatible server with continuous batching. vLLM is preferred for concurrency; otherwise llama.cpp server with `--parallel N`. Expose it on the i9's LAN address, and make it start with the kiosk.
+- **Register it with gBox as a Hermes local node**, the way lilspark2 is: the node pool `/api/hermes/local/nodes`, capacity set from the concurrency you measured. Gate it on the service-node readiness from section 1, so no eGPU means no node.
+- **Give it the substantive work**: analysis, decryption and breakdown tasks routed by section 1, the Hermes tickets that need code reasoning, and your own lanes.
+- **Report back** the model chosen, the measurements, the node capacity, and the config / start lines.
+
 ## 2. Bot work that runs on the i9 (no lilspark)
 
 - The Mercs bots are `system/gbox/mercs/core/*` and `system/gbox/mercs/titles/re{4,5,6}_switch.py`.
