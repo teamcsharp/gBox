@@ -1,0 +1,166 @@
+{
+ "request": "c1271e2ede514f4e (#9420)",
+ "status": "partial milestone 2 - static; stock firing-speed table recovered by emulating the constructor; not live-verified",
+ "source": {
+  "executable": "~/gBox_alt/scratch/agent/switch/re5/main-EBFFDB223149A725A93CD9B60979F6AA.nso (lilspark, not in git)",
+  "image": "the file is the loaded image behind a 0x100-byte header: main+X = file offset 0x100+X (checked: AArch64 code decodes sanely at main+0x96E2C8)",
+  "parser": "throwaway python3 + capstone AArch64 (outside system/gbox); every address below was decoded from the bytes"
+ },
+ "found": {
+  "fire_action_rearm": {
+   "main": "0x96E2C8-0x96E340",
+   "function_start": "0x96CD30 (prologue sub sp,sp,#0x50)",
+   "instructions": [
+    "0x96E2CC ldr w8,[x22] (x22=slot+8 weapon word); and #0xff00 ==0x100 -> player weapon; w8<0x150",
+    "0x96E2E8 ldrb w9,[x20,#0x25] upgrade level of the slot",
+    "0x96E2F0-0x96E300 s0 = *(float*)(main+0x1D13B28 + id*0x210 + level*4 + 0x58)  firing speed (id>=0x150: 0.0)",
+    "0x96E310-0x96E320 s1 = *(float*)(main+0x1D08680 + id*0x140 + 0x90)  interval offset",
+    "0x96E324-0x96E32C s1 = *(float*)([x25]+0x93C)  shot-motion frame (x25 holds sPlayer::mpInstance, main+0x1CF1C98)",
+    "0x96E330 fcmp frame,(firing_speed+offset); b.lt skip; else 0x96E338 strb 1,[player+0x37B0] (trigger re-arm)"
+   ],
+   "rule": "re-arm trigger when shot-motion frame >= firing_speed[level] + interval_offset; no fps constant is involved"
+  },
+  "action_timer": {
+   "main": "0x96E344-0x96E368",
+   "reading": "[x19+0x48] -= *(float*)(*(main+0x1CF08A0)+0x34) * player+0x1A08 ; the frame delta times the player's time scale. Another timer of the same action; what sets +0x48 not determined"
+  }
+ },
+ "ps3_to_switch": {
+  "fire_timer_60_to_4800": {
+   "switch": "no fps constant in the fire action; the pace is frame delta (global main+0x1CF08A0 -> +0x34) x player time scale (+0x1A08), which is what the mod writes",
+   "status": "equivalent is the time scale, not a table"
+  },
+  "firing_speed_table": {
+   "switch": "main+0x1D13B28 + id*0x210 + level*4 + 0x58 (f32, 14 levels)",
+   "read_from": "0x96E2F0-0x96E300",
+   "stock_values": "not determined statically: the table is zero in the file image (filled at runtime; its constructor was not located). Live earlier: M92F 26 frames per docs note"
+  },
+  "interval_offset": {
+   "switch": "main+0x1D08680 + id*0x140 + 0x90 (f32)",
+   "read_from": "0x96E310-0x96E320",
+   "stock_values": "-10 handguns, +5 machine guns, -2 shotguns, -5 magnums per docs/research/re5-switch-ram.md (live read, not from this executable)"
+  },
+  "firing_animation_layers": {
+   "switch": "candidate: 3 layer structs in the player at +0x900,+0xA60,+0xBC0 (stride 0x160); the frame at +0x3C of the first is the +0x93C the fire action reads",
+   "status": "not determined: no writer of +0x93C found by direct str scan (only layer-relative forms); whether the magnums set motion 29 not determined. Would be settled by a live read of the three layers during a magnum shot, or by decoding the layer update (the function that adds the delta into layer+0x3C)"
+  }
+ },
+ "why_5x": {
+  "measured_in_repo": "re5_switch_mods.py line 80 FIRE_MAX=5.0 and fire_rate() line 223 k=min(k,FIRE_MAX): the 5x is the operator's loadout cap in the mod (2026-10-28), not a game limit. SNIPER_FIRE_X=30 already exceeds it.",
+  "game_side": "live docs: x2 4.7, x4 8.7, x8 15.3, x32 16.7, x80 24.7 shots/s. The re-arm check runs once per fire-action update and sets one trigger byte, so at most one shot per update; the ceiling is inferred (not verified) to be the update rate (Citron 40-60 fps; a shot also needs the motion to restart at frame 0)"
+ },
+ "per_class": {
+  "handgun(class 2)": {
+   "limiting_fields": [
+    "frame(+0x93C) >= firing_speed[level]+interval_offset",
+    "motion/time scale (+0x1A08) via frame advance"
+   ],
+   "stock_values": "not determined (table filled at runtime)",
+   "write_effects": "lowering firing_speed or offset (main+0x1D13B28.. +0x58, main+0x1D08680.. +0x90) re-arms earlier; time scale shortens the whole motion"
+  },
+  "magnum(class 7)": {
+   "limiting_fields": [
+    "frame(+0x93C) >= firing_speed[level]+interval_offset",
+    "motion/time scale (+0x1A08) via frame advance"
+   ],
+   "stock_values": "not determined (table filled at runtime)",
+   "write_effects": "lowering firing_speed or offset (main+0x1D13B28.. +0x58, main+0x1D08680.. +0x90) re-arms earlier; time scale shortens the whole motion"
+  },
+  "shotgun(class 5)": {
+   "limiting_fields": [
+    "frame(+0x93C) >= firing_speed[level]+interval_offset",
+    "motion/time scale (+0x1A08) via frame advance"
+   ],
+   "stock_values": "not determined (table filled at runtime)",
+   "write_effects": "lowering firing_speed or offset (main+0x1D13B28.. +0x58, main+0x1D08680.. +0x90) re-arms earlier; time scale shortens the whole motion"
+  },
+  "machine gun(class 4)": {
+   "limiting_fields": [
+    "frame(+0x93C) >= firing_speed[level]+interval_offset",
+    "motion/time scale (+0x1A08) via frame advance"
+   ],
+   "stock_values": "not determined (table filled at runtime)",
+   "write_effects": "lowering firing_speed or offset (main+0x1D13B28.. +0x58, main+0x1D08680.. +0x90) re-arms earlier; time scale shortens the whole motion"
+  },
+  "rifle(class not determined)": {
+   "limiting_fields": [
+    "frame(+0x93C) >= firing_speed[level]+interval_offset",
+    "motion/time scale (+0x1A08) via frame advance"
+   ],
+   "stock_values": "not determined (table filled at runtime)",
+   "write_effects": "lowering firing_speed or offset (main+0x1D13B28.. +0x58, main+0x1D08680.. +0x90) re-arms earlier; time scale shortens the whole motion"
+  }
+ },
+ "not_determined": [
+  "stock table values from the executable (constructor not found; tables are zero in the image)",
+  "whether magnums use motion 29 or an own layer set",
+  "rifle class id",
+  "what writes [action+0x48]"
+ ],
+ "milestone2": {
+  "method": "DT_INIT_ARRAY (0x1ce1fb0, 0x22c0 bytes, 1112 entries, RELATIVE relocs resolved) -> only entry 0x3d280 (ends ret 0x48740) touches main+0x1D13xxx. It registers sParameter::WEAPON_LEVEL_STRUCT (0x210 B/record, base main+0x1D13A80 header, records from +0x1D13B28), with LEVEL_PARAM_F/LEVEL_PARAM_S members, and stores the defaults. Emulated with unicorn (aarch64, calls skipped, 3 bl), dumped the table. Script: re5-switch-fire-rate-ctor-emu.py.txt",
+  "record_layout": "per record (0x210): +0x18..+0x4C 14 f32 (e.g. id2 damage-like ramp), +0x50 vptr, +0x58..+0x8C 14 f32 = firing speed by level (read by 0x96E2F0), +0x90 vptr, +0x98.. next array (id2: 1.0,0.9,0.8,0.7)",
+  "stock_firing_speed_level0_by_weapon_id": {
+   "0x1": 50.0,
+   "0x2": 26.0,
+   "0x3": 6.0,
+   "0x4": 73.0,
+   "0x5": 104.0,
+   "0x6": 63.0,
+   "0x7": 63.0,
+   "0x8": 63.0,
+   "0x9": 6.0,
+   "0xa": 97.0,
+   "0xb": 45.0,
+   "0xc": 73.0,
+   "0xd": 70.0,
+   "0xe": 50.0,
+   "0xf": 999.0,
+   "0x10": 26.0,
+   "0x11": 26.0,
+   "0x12": 26.0,
+   "0x13": 6.0,
+   "0x14": 999.0,
+   "0x15": 6.0,
+   "0x16": 73.0,
+   "0x17": 73.0,
+   "0x18": 26.0,
+   "0x19": 54.0,
+   "0x1a": 47.0,
+   "0x1b": 71.0,
+   "0x1c": 900.0,
+   "0x1d": 6.0,
+   "0x1e": 6.0,
+   "0x1f": 26.0,
+   "0x20": 900.0,
+   "0x21": 6.0,
+   "0x22": 64.0,
+   "0x23": 50.0,
+   "0x24": 30.0,
+   "0x25": 73.0,
+   "0x26": 73.0,
+   "0x27": 73.0,
+   "0x28": 26.0,
+   "0x29": 26.0,
+   "0x2a": 6.0,
+   "0x2b": 6.0,
+   "0x2c": 90.0,
+   "0x2d": 6.0,
+   "0x2e": 6.0,
+   "0x2f": 6.0,
+   "0x31": 90.0,
+   "0x34": 70.0,
+   "0x35": 70.0,
+   "0x36": 63.0,
+   "0x38": 70.0
+  },
+  "levels_1_to_13": "1.0 default in the constructor for every id (not overwritten in the constructor); whether data files overwrite them at load is not determined",
+  "check": "id 0x2 level0 = 26.0 matches the earlier live note (M92F 26 frames); id 0xF/0x14 = 999 and 0x1C/0x20 = 900 are the non-repeating / special entries",
+  "still_not_determined": [
+   "interval-offset table main+0x1D08680 stock values (no init function touches it; likely filled by another loader)",
+   "weapon-id to name map",
+   "writer of [action+0x48]",
+   "magnum motion layers"
+  ]
+ }
+}

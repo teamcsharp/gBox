@@ -1,0 +1,42 @@
+import os,struct,sys,pickle
+from unicorn import *
+from unicorn.arm64_const import *
+E=os.path.expanduser("~/gBox/system/gbox-data/analysis/switch/re5/re5_switch_main_EBFFDB22.elf")
+D=open(E,'rb').read()
+SEG=[(0x0,0x10000,0x118e5b0),(0x118f000,0x119f000,0x9028b4),(0x1a92000,0x1aa2000,0x252270)]
+uc=Uc(UC_ARCH_ARM64,UC_MODE_ARM)
+BASE=0x10000000
+uc.mem_map(BASE,0x2800000)
+for v,o,s in SEG: uc.mem_write(BASE+v,D[o:o+s])
+uc.mem_map(0x70000000,0x100000); sp=0x70080000
+uc.reg_write(UC_ARM64_REG_SP,sp)
+# FPU enable
+uc.reg_write(UC_ARM64_REG_CPACR_EL1,0x300000)
+LO,HI=0x1D08000,0x1D1B000
+writes=[]
+def on_code(u,addr,size,ud):
+    w=struct.unpack('<I',u.mem_read(addr,4))[0]
+    if (w&0xFC000000)==0x94000000 or (w&0xFFFFFC1F)==0xD63F0000:
+        u.reg_write(UC_ARM64_REG_PC,addr+4)  # skip call
+        ud[0]+=1
+cnt=[0]
+uc.hook_add(UC_HOOK_CODE,on_code,cnt)
+def on_mem(u,t,addr,size,val,ud):
+    a=addr-BASE
+    if LO<=a<HI: writes.append((a,size,val))
+uc.hook_add(UC_HOOK_MEM_WRITE,on_mem)
+start=int(sys.argv[1],16)
+uc.reg_write(UC_ARM64_REG_X30,BASE+0x7ffff0)
+uc.mem_map(BASE+0x2800000,0x1000) if False else None
+try:
+    uc.emu_start(BASE+start,BASE+0x7ffff0,count=int(sys.argv[2]) if len(sys.argv)>2 else 2000000)
+except UcError as e:
+    print('err',e,hex(uc.reg_read(UC_ARM64_REG_PC)-BASE))
+print('calls skipped',cnt[0],'writes',len(writes),'pc',hex(uc.reg_read(UC_ARM64_REG_PC)-BASE))
+mem={}
+for a,s,v in writes:
+    mem[a]=(s,v)
+pickle.dump((writes,),open('writes.pkl','wb'))
+# dump final memory of region
+reg=bytes(uc.mem_read(BASE+LO,HI-LO))
+open('region.bin','wb').write(reg)
