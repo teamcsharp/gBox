@@ -23,6 +23,27 @@ Three kinds of statement are kept apart below: **measured** (run on the real fil
 | Overlays (not in Git) | `C:\_tools\gBox\.scratch-merc-recovery\assets\re4\re4-enemy-pool-01\`, `re4-cast-pool-01\`, `re4-stage-greybox-v1\`, each `romfs\bio4\...` + `receipt.json` |
 | Inputs (not in Git) | `.scratch-merc-recovery\re4\inputs\{em,etc,imagepackhd,st4}\` copied read-only from the host; the donor library `.scratch-merc-recovery\cast\inputs\library\` (1,483 entries) and its survey `cast\library-survey.json` (650 usable) |
 
+## 0. Status, 2026-11-10 01:45 UTC (newest; read first)
+
+What is on main and on lilspark's share now (hashes checked equal on the share):
+
+| Part | State | Where |
+|---|---|---|
+| Decryption | **measured**: the 1.0.2 NSP's RomFS fully decrypted on lilspark, 5,275 files | `~/gBox_alt/switch/romfs/010099A00BC1E000/bio4/` (section "Decryption state") |
+| Units | **measured**: the world is in **millimetres** (player x 50,689 on Village); the fight's distances are the cm values x `MM_PER_CM`, the driver's `units_per_m` is 1000 | `re4_switch.py` (merge `9e5c066f`) |
+| Turn sign | GameCube convention: a bearing error > 0 turns LEFT (the walker's `TURN_POSITIVE`); **inferred** from the GameCube data the Switch shares, to be confirmed by the next live round's turns | `re4_switch.Bot._turn`, `re4_walk.TURN_POSITIVE` |
+| Player / Ganados | **live, earlier**: player class 0xB0C0A0 through the bss pointer module+0x113B398; Ganados class 0xAE7050, health +0x3C2 / max +0x3C4 | `re4_switch.py` (`3929192c`) |
+| Map + walker | room collision of the four stages (`gbox/data/re4_switch_nav/r400-r404.json`), the tank-control walker, the operator's enemy / point marks, the tactical publisher | merge `9e5c066f` (section 8) |
+| Live mods | **new, unverified live**: One-hit kills, Enemy health x (0.05-1), Time added per kill, add / set time on the clock the driver finds; life and ammo answer "not mapped yet" | `re4_switch_mods.py` (`31751ba5`), sidebar rows in `merc_live_controls.py` |
+| Bot dials | fire range, gun-up tolerance, tap gap, reload shots, crowd / swarm, run distance, never-stand seconds, kill pace, melee on/off and reach | `bot_logic.KNOBS["re4"]` |
+| Melee | **new, unverified live**: a Ganado just hit within 2.5 m in front, nobody else at arm's reach: in to 1.4 m, Y at the prompt (section "specials" 2.1 / 6.1 of `mercenaries-character-specials.md`) | `re4_switch.Bot._melee` (`81d3103a`) |
+| Rotation | MercMode lilspark queue: RE4 stock and RE4 `recovery-re4-remap-all-20261110` are entries 0 and 1 | MercMode settings |
+
+Still to measure in a live round (the probe `scripts/re4sw_round_probe.py`, run on the Spark itself): the HUD clock's
+master copy (whether a write holds: `re4_switch_mods.status().clock_holds`), the kill / combo / score counters, the
+player's life (not his unit's +0x3C2 on Switch), ammo. Before the first round on the new code, the RE4 bot fired 0
+shots in 8 rounds because every Ganado read 10x farther than he was; the next round says whether that is fixed.
+
 ## 1. Enemies: the roster, the Ganado pack layout, the writer, `re4-enemy-pool-01`
 
 ### 1.1 Which packs each Mercenaries stage spawns (measured)
