@@ -986,6 +986,11 @@ MELEE = True
 # Low life (PLAYER_LIFE): under LOW_LIFE of his maximum with a Ganado within LOW_LIFE_MM he turns and runs (the
 # quick turn, then B + up) for LOW_LIFE_RUN_S rather than trade another hit.
 LOW_LIFE, LOW_LIFE_MM, LOW_LIFE_RUN_S = 0.35, 3000.0, 1.2
+# Heavies (the chainsaw Ganados, the Garrador, the Gatling man: a maximum health of HEAVY_HP or more; ordinary Ganados
+# read 400, one 3500 on 2026-11-10): they kill from full life in one blow (live 23:21, HUNK / Base: Unlimited life
+# had undone 26 hits, then one took him from 1560 to 0), so one inside HEAVY_KEEP_MM is run from - the quick turn,
+# then B + up for HEAVY_RUN_S - and shot from beyond it.
+HEAVY_HP, HEAVY_KEEP_MM, HEAVY_RUN_S = 2000, 3500.0, 1.0
 # The turn sign, checked live by the fight itself (2026-11-10: the stock round turned 4,365 ticks for 19 raises, the
 # shape of a turn that runs away from its target): every turn tick compares the bearing error with the last one on
 # the same Ganado; TURN_LEARN_N samples with the error growing at least 3x as often as it shrinks (+4) flip
@@ -1267,6 +1272,9 @@ class Bot:
         low = self._low_life(p, live, now)
         if low is not None:
             return low
+        heavy = self._heavy_keep(live, now)
+        if heavy is not None:
+            return heavy
         swarm = [t for t in live if t[0] <= SWARM_CM]
         if len(swarm) >= SWARM_N:
             self.stats["escapes"] += 1
@@ -1334,6 +1342,20 @@ class Bot:
             self.doing, self.why = "reload", f"{RELOAD_SHOTS} shots since the last reload and nobody near"
             return {"hold": {AIM_BTN}, "tap": RELOAD_BTN}
         return self._locate(p, live, now, cmd, snap)
+
+    def _heavy_keep(self, live, now) -> dict | None:
+        """HEAVY_*: a heavy within HEAVY_KEEP_MM - turn away and run, HEAVY_RUN_S at a time."""
+        run = self.__dict__.get("_heavy_run")
+        if run and now < run["until"]:
+            return {"hold": {"lup", RUN_BTN}}
+        near = [t for t in live if t[0] <= HEAVY_KEEP_MM and (t[2].get("hp_max") or 0) >= HEAVY_HP]
+        if not near:
+            return None
+        d, err, e = min(near, key=lambda t: t[0])
+        self._heavy_run = {"until": now + HEAVY_RUN_S}
+        self.stats["heavy_escapes"] = self.stats.get("heavy_escapes", 0) + 1
+        self.doing, self.why = "evade", f"a heavy ({e.get('hp_max')} health) {d / 1000:.1f} m off: away, then shoot"
+        return {"hold": set(QUICK_TURN)} if abs(err) < 1.6 else {"hold": {"lup", RUN_BTN}}
 
     def _low_life(self, p, live, now) -> dict | None:
         """LOW_LIFE: the quick turn then a run away from the nearest Ganado, LOW_LIFE_RUN_S at a time."""

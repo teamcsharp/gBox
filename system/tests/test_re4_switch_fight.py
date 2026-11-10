@@ -468,3 +468,18 @@ def test_the_games_kill_count_is_mapped():
     """Measured on two live rounds 2026-11-10: module + 0x12010c4 counts the round's kills (the census misses a melee
     kill whose unit is freed between reads)."""
     assert D.MERC_KILLS == 0x12010C4 and 0x12010C4 in D.KILL_CANDIDATES
+
+
+
+def test_a_heavy_at_arms_length_is_run_from_not_fought():
+    """Live 2026-11-10 23:21: Unlimited life undid 26 hits, then one blow took him from 1560 to 0 - a heavy's."""
+    b = bot()
+    s = snap([((0.0, 0.0, 200.0), 3500)])
+    s["enemies"][0]["hp_max"] = 3500
+    act = b.tick(s, now=1.0)
+    assert act["hold"] == set(D.QUICK_TURN) and b.doing == "evade" and b.stats["heavy_escapes"] == 1
+    far = snap([((0.0, 0.0, 800.0), 3500)])
+    far["enemies"][0]["hp_max"] = 3500
+    b2 = bot()
+    b2.tick(far, now=1.0)
+    assert b2.doing != "evade", "beyond HEAVY_KEEP_MM he is a target"
