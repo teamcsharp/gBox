@@ -90,3 +90,32 @@ origin/ds-pso-tree-endian-20261110 -- system/gbox/ninja.py system/gbox/pso_playe
 carry the reader either; the fix belongs here.
 
 Tests: none changed (the diagnosis is from a real build attempt with the real Blender path recorded above).
+
+## Round 80: the endianness fixed - the build now reads the whole GameCube host body
+
+The round-79 blocker is fixed on this branch, in three places that each assumed little-endian GameCube data:
+
+1. **`build_swap`'s own body parse**: `e = ">" if body_file[:4] == b"NJCM" else "<"` (the container header itself stays
+   little-endian, as `ninja` documents), then `ninja.tree_nodes(data, 0, e)`, `ninja.NJ(body_file, be=be)`,
+   `ninja.chunk_list_len(..., e)`, and `e`-prefixed reads for the model pointer, the chunk word/size, the material, the
+   texture flags, the vertex list pointer and the node model centres.
+2. **`body_roles`** re-parses the same tree (it verifies the class's role map against its own body), so it got the same
+   `e`/`be` treatment.
+3. **`bml_files(bml)` -> `bml_files(bml, e)`**: the BML entry count and its five-word headers are big-endian on the GameCube;
+   read little-endian the count is garbage, which overran the table (`struct.error ... offset 34848, buffer 34816`).
+
+Also fixed: `bml_sec`/`nj_sec` were computed from `disc.files[path][1]`, a **GDRom-only** `(offset, size)` table that a
+`GCDisc` does not have (`KeyError: 'PSO/PLCNJ.BML'`). They now use the part sizes directly
+(`len(pso_gc_paths.read_part(disc, mpath))`), which is what the sector counts mean anyway.
+
+**Where the build now stops:** `ninja_swap.fit` -> `sm64_swap.load_rig(Path(model), src_roles)` -> `_gltf_load`, i.e. the
+**donor must be a rigged GLB/glTF**, not a Ninja file. The `.nj` in `D:\gBox\pso-ds\p7b\` is a *game* file
+(`plAbdy00.nj`, 28,724 B, next to `plAnj.bml`), not a library donor; there is no `.glb`/`.gltf` anywhere under
+`D:\gBox\pso-ds`. The donor seam is the character library (`characters.library_root` / `re5_donor_pool`), which is CP13's
+subject as well.
+
+**Tests:** the PSO suites around the touched code all pass - `test_pso_swapfit.py` + `test_pso_classes.py` **12 passed**,
+`test_pso_gc_swap.py` + `test_pso_player_textures.py` + `test_pso_player_equipment.py` **36 passed**.
+
+**Next step, precise:** build (or find) a rigged GLB donor, run `build_swap` with the roles from `model_roles(path)`, gate
+with `pso_swapfit.compare`, export the swapped body's geometry and render it with the proven headless Blender path.
