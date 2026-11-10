@@ -384,3 +384,13 @@ $survey = "C:\_tools\gBox\.scratch-merc-recovery\cast\library-survey.json"
 Tests: from the repo root, `PYTHONPATH="system;system/tests"`, `-m pytest -q -p no:cacheprovider --disable-warnings
 system/tests/test_re4_switch_assets.py system/tests/test_re4_switch_models.py system/tests/test_re4_switch_enemies.py
 system/tests/test_re4_stage_greybox.py`.
+
+## Decryption state (2026-11-10 00:25 UTC, measured)
+
+RE4 Switch is fully decrypted on lilspark. The library's `Resident Evil 4 [UPDATE 1.0.2] [010099a00bc1e000].nsp` is not
+a delta: it holds one 12,974,144,512-byte program NCA (`97920e35d665773caf9c075e3e0a53e8.nca`), a control NCA and the
+CNMT. That program NCA is byte-for-byte the `~/gBox_alt/switch/work/game-010099A00BC1E000-12974144512.nca` the RomFS
+was extracted from on 2026-11-05 (SHA-256 of 16 MiB slices at offsets 0, 6,487,072,256 and 12,957,367,296 identical:
+`6814eca0…`, `f4950afc…`, `c8025671…`). So `~/gBox_alt/switch/romfs/010099A00BC1E000/bio4/` (5,275 files, 13 GB) is the
+launched image's own RomFS; there is no BKTR patch layer for RE4 as there is for RE6. `gbox.switch_extract` cannot open
+this NSP ("no ticket in the container"): its NCA uses the key area, not a title key.
