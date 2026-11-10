@@ -2143,13 +2143,60 @@ behind something not yet walked. The remaining candidates, in order of likelihoo
 `pso-gc-pioneer2-rooms.md` now carries the graph above plus the "walking back out is not symmetric" note, so the next
 round starts from the map rather than from a guess.
 
+## Round 42 (2026-11-10) — P6a's in-game proof attempted, and the coordinate space that explains it
+
+The plan was the best shortcut in the lane: P6a's in-game proof does not actually need Forest 1, because Pioneer 2's
+entities all load at once -- the entity table after a lobby boot contains rooms 10, 20, 30, 40 and 41 objects. So move a
+city placement, boot the modded disc into co-op, and read the object's position out of RAM. No field, no quest, no guild.
+
+### What happened
+
+```
+built   pso_city_npc_moved   (map_city00d.dat record 3, x -120.1 -> -70.1)
+launch  ?mod=pso_city_npc_moved     -> detail.mod reported, Dolphin ran that ISO
+boot    MULTI MODE, both characters, into the lobby
+read    TObjNpcConnoisseur at (-121.3, 254.8)   -- unchanged
+```
+
+The image **built and booted and played** with a modified placement set, which is worth having on its own. But the object I
+aimed at did not move, and this round found out why rather than guessing: **no placement record anywhere on the disc sits
+at the NPC's world position.** Searching every one of the 574 sets for a record within 6 units of `(-121, 255)` returns
+zero hits. And the city sets' coordinates are plainly not world coordinates:
+
+```
+map_city00_00o.dat  record 0  (-16.3,   3.0,  -579.5)
+                    record 1  (-393.1, 10.0,  -13.0)
+                    record 3  (-430.2, 10.0,  -24.5)
+```
+
+Those are small, room-local values; the entity table reports world positions (the lobby pad is at `(233, 274)`, the plaza
+NPC at `(-121, 255)`). Record 3 of `map_city00d.dat` merely *looked* like the NPC because its coordinates happened to sit
+near a world position -- a coincidence I would have shipped as a failed mod without checking.
+
+### What this changes for P6a and P6b
+
+* A moved placement cannot be verified by reading an entity's world position unless the **room-local to world offset** for
+  that room is known. That offset is a per-room constant and has not been measured yet.
+* The editor's listing (`pso_editor.placements`) is still correct and useful -- it reports the records as the writer reads
+  them -- but a page must not *label* a record with a world position, and a preview must not promise "the door will be
+  here" without that offset.
+* The honest next step is to measure the offset for one room: move a record by a known delta, load the room, and see which
+  entity moved by that delta. The mod that was just built is the perfect probe, and it only needs an entity-vs-record
+  comparison per candidate record rather than a guess.
+
+### Still open
+
+P1's field leg (guild unfound), P6a's in-game proof (needs the offset), P6b's page (UI over a backend that works), P7a's
+rigging.
+
 ## 7. Next
 
-1. **The guild is behind something not yet walked.** Rooms 10, 20, 30 and 40 are mapped (graph in the research doc)
-   and none has a counter that answers `A`. The two candidates left are the central dome's **large doorways walked
-   past rather than into** -- a doorway needs the character to pass *through* the opening -- and **room 30's far
-   side**, entered at (-169,46) and never explored beyond its entrance.
-2. **Leave room 40 by (200,60)**, not by the Med door it was entered through: walking back to those coordinates
-   leaves the character in room 40.
-3. **P6b's page** is now a UI job: `gbox.pso_editor` lists the disc's 574 editable sets, a set's records, normalises an
-   edit, previews it in memory and builds. **P6a's in-game proof** and **P7a's rigging** stay open behind the field.
+1. **Measure the room-local to world offset.** Placement records are room-local (`map_city00_00o.dat` holds (-16,-580),
+   (-393,-13)) while the entity table reports world positions (the lobby pad at (233,274)), and **no record anywhere
+   sits at a city NPC's world position**. Move one record by a known delta, load its room, and find which entity moved
+   by that delta -- the `pso_city_npc_moved` build is already the right probe.
+2. **P6b's page** must not label a record with a world position until (1) is known; the listing itself is correct.
+3. **P1's field leg** (guild unfound), **P6a's in-game proof** (blocked on (1)) and **P7a's rigging** remain open.
+
+Landed this round: a modded disc with a changed placement set **builds, boots and plays** (`pso_city_npc_moved`), and
+the reason its target did not move is measured rather than guessed -- the coordinate spaces differ.
