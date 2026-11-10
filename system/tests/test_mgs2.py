@@ -449,3 +449,21 @@ def test_owned_disc_archives_and_snake(tmp_path):
     r = M.extract_bytes(kms, [pack], tmp_path / "snake.glb", "snake")
     assert r["verified"] and len(r["roles"]) == 18 and 1.7 < r["height_m"] < 2.1 and not r["missing_textures"]
     d.close()
+
+
+@pytest.mark.skipif(_owned() is None, reason="the owned MGS2 disc is not reachable")
+def test_owned_elf_probe_matches_documented_loaders():
+    import hashlib
+    d = inv.Disc(_owned())
+    elf = d.read("SLUS_205.54")
+    d.close()
+    assert hashlib.sha256(elf).hexdigest() == "77de3383cb257a573e631f63fc373eb5eeb1090f9659ea37bb29e129814da2d5"
+    r = inv.elf_probe(elf)
+    assert r["entry"] == 0x100010 and r["mgs2_path_fmt"]
+    assert r["load"][0]["vaddr"] == 0x100000 and r["load"][0]["filesz"] == 0xB5140
+    f = r["functions"]
+    assert f["stage_toc_loader"]["head"].startswith("c0ffbd27")      # addiu sp, sp, -0x40
+    assert f["stage_state_machine"]["head"].startswith("e0ffbd27")   # addiu sp, sp, -0x20
+    assert f["name_hash"]["head"].startswith("00008690")             # lbu a2, 0(a0): first byte of the name
+    with pytest.raises(inv.FormatError):
+        inv.elf_probe(elf[:100])

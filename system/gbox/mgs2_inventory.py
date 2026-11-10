@@ -507,6 +507,35 @@ def stage_files(arch: StageArchive, st: Stage, typ: int | None = None) -> list[d
     return rows
 
 
+def elf_probe(elf: bytes) -> dict:
+    """Bounded static probe of SLUS_205.54: MIPS32 LE ELF (EE, e_machine 8), PT_LOAD at 0x100000, entry, and the bytes
+    of the loader routines the docstring names. Checks vaddr -> file offset; used as the Ghidra import oracle
+    (language MIPS:LE:32:default, base 0x100000)."""
+    if elf[:4] != b"\x7fELF" or elf[4] != 1 or elf[5] != 1:
+        raise FormatError("not a 32-bit little-endian ELF")
+    machine, = struct.unpack_from("<H", elf, 18)
+    entry, phoff = struct.unpack_from("<II", elf, 24)
+    phentsize, phnum = struct.unpack_from("<HH", elf, 42)
+    if machine != 8 or phoff + phnum * phentsize > len(elf):
+        raise FormatError("not a MIPS ELF / truncated program headers")
+    loads = []
+    for i in range(phnum):
+        t, off, va, _pa, fs, ms, _fl, _al = struct.unpack_from("<8I", elf, phoff + i * phentsize)
+        if t == 1 and off + fs <= len(elf):
+            loads.append((va, off, fs, ms))
+
+    def at(va: int, n: int = 16) -> bytes:
+        for v, off, fs, _ms in loads:
+            if v <= va and va + n <= v + fs:
+                return elf[off + va - v: off + va - v + n]
+        raise FormatError(f"vaddr 0x{va:x} is not file-backed")
+    funcs = {"stage_toc_loader": 0x100FA8, "page_cipher_seed": 0x1007A8, "stage_state_machine": 0x101448,
+             "name_hash": 0x1424C8}
+    return {"entry": entry, "load": [{"vaddr": v, "offset": o, "filesz": f, "memsz": m} for v, o, f, m in loads],
+            "functions": {k: {"vaddr": v, "head": at(v).hex()} for k, v in funcs.items()},
+            "mgs2_path_fmt": elf.find(b"cdrom0:\\MGS2\\%s;1\0") >= 0}
+
+
 def inventory(path, stages=None) -> dict:
     disc = Disc(path)
     ident = identify(disc)
