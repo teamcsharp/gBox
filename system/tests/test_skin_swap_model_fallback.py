@@ -28,3 +28,31 @@ def test_swap_arc_still_refuses_re6_style_names():
     assert skin_swap.body_group({}) is None
     with pytest.raises(mt_arc.ArcError):
         mt_arc.parse(b"not an archive")
+
+def test_seed_from_base_copies_exefs_and_romfs(tmp_path, monkeypatch):
+    from gbox import switch_mods
+    base = tmp_path / "bases" / "base-build"
+    (base / "exefs").mkdir(parents=True)
+    (base / "exefs" / "main").write_bytes(b"MAIN")
+    (base / "romfs" / "nativeNXx64").mkdir(parents=True)
+    (base / "romfs" / "nativeNXx64" / "a.arc").write_bytes(b"ARC")
+    (base / ".gbox-mod.json").write_text("{}")
+    monkeypatch.setattr(switch_mods, "build_dir", lambda cfg, gid, name: base)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    copied = skin_swap._seed_from_base(object(), "115f9cdbba115432", dest, "base-build")
+    assert copied == 2
+    assert (dest / "exefs" / "main").read_bytes() == b"MAIN"
+    assert (dest / "romfs" / "nativeNXx64" / "a.arc").read_bytes() == b"ARC"
+    assert not (dest / ".gbox-mod.json").exists()          # the new build keeps its own marker
+
+
+def test_seed_from_base_is_a_noop_without_a_base(tmp_path):
+    assert skin_swap._seed_from_base(object(), "115f9cdbba115432", tmp_path, "") == 0
+    assert skin_swap._seed_from_base(object(), "115f9cdbba115432", tmp_path, "no-such-build") == 0
+
+def test_seed_from_base_is_a_noop_without_a_base(tmp_path, monkeypatch):
+    from gbox import switch_mods
+    monkeypatch.setattr(switch_mods, "build_dir", lambda cfg, gid, name: tmp_path / "missing")
+    assert skin_swap._seed_from_base(object(), "115f9cdbba115432", tmp_path, "") == 0
+    assert skin_swap._seed_from_base(object(), "115f9cdbba115432", tmp_path, "no-such-build") == 0
