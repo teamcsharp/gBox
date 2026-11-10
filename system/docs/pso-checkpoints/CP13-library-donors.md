@@ -92,3 +92,40 @@ The instrument is committed and reusable for any donor: `python pso-cp13-cloud-p
 
 **Unchanged this round:** Daisy remains a clean end-to-end donor (gate SAFE, 788 triangles, coherent render); Cloud remains the
 one donor whose body does not parse, now localised to two lists.
+
+## Round 87: the Cloud defect found and fixed - the empty polygon list was written little-endian
+
+The round-86 probe localised the failure to node 0's and node 39's lists. Reading `write_tree`'s model layout showed what
+those lists should be, and the bytes showed what they were:
+
+```
+model struct = {u32 vlist, u32 plist, f32 centre x3, f32 radius}        (write_tree, 24 bytes)
+node 0: vlist 0x0, plist 0xd18      ->  the node has NO geometry, so plist is the empty list
+at 0xd18 in BOTH bodies:  ff 00        <- 0x00 0xFF in LITTLE-endian
+```
+
+`build_swap` built that empty list as
+
+```python
+empty_pl = struct.pack("<HH", 0xFF, 0)      # hard-coded little-endian
+```
+
+so in a big-endian GameCube body the end-of-list marker `0x00 0xFF` was read as the **null chunk `0xFF00`** and the parser
+walked past the end of the list into the model's centre/radius floats. Whether that then crashed depended on those floats'
+low bytes: **Daisy's 0x3C is not a chunk type, so its list stopped gracefully (which is why Daisy appeared clean);
+Cloud's 0x14 is a material chunk, so the parser read a bogus size (0x4022) and ran off the payload.** The bug was present in
+every built GC body and Daisy had simply been lucky.
+
+**The fix** is one line - `struct.pack(e + "HH", 0xFF, 0)` - and with it:
+
+| donor | triangles | scale | gate | body | parse |
+|---|---|---|---|---|---|
+| Daisy | 788 | 1.3466 | SAFE, subset | 44,424 B, 582 vertices | ok |
+| **Cloud** | **857** | 1.1249 | **SAFE, subset** | 50,608 B, 792 vertices | **ok** |
+
+Cloud's body now renders (`D:\gBox\pso-ds\renders\cp13-cloud.png`, Cycles 64 samples 900x900, 3090 only): a coherent
+armoured figure with its great sword, bounds x -3.89..4.46 / y -18.04..3.56 / z -0.10..23.75.
+
+**Branch note:** this branch was **rebased onto `ds-pso-cp12-rigged-swap-20261110`**, because the swap path needs CP12's
+endianness fixes (readers, writers, BML and the gate); CP13's commits only add evidence, a script and the donor builds, so the
+rebase was clean. The branch therefore stacks on CP12 and must be reviewed after it.
