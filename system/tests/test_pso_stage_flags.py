@@ -105,3 +105,34 @@ def test_stage_flags_reports_but_never_authors():
     assert out["set_indices"] == [0]
     # the reader API is read-only: no write_memory path is exposed or used.
     assert not hasattr(r, "write_memory")
+
+
+def test_stage_flags_matches_forward_gate_flag_indices():
+    # Build-exactness check: the flags a gate consults (flag_index on the entity,
+    # from object +0xC8) must land in the SAME MSB-first bit positions that
+    # stage_flags decodes from the floor's native flag group. If the native
+    # accessor sets bit `idx` when a gate is satisfied, then reading the group
+    # and decoding it with our accessor's OWN math (0x80 >> idx%8) must surface
+    # exactly that idx. This ties the RAM reader to the verified 0x80229220
+    # barrier accessor without needing an emulator.
+    from gbox.pso_coop_gates import stage_flag_locus as gates_locus
+
+    m = live(floor=4)
+    r = R.Reader(m)
+
+    # Simulate the native set() routine having satisfied a handful of forward
+    # gates in floor 4: write each flag's byte+mask using the gates' own locus,
+    # exactly as the accessor's `or` would.
+    satisfied = [3, 17, 128, 200, 255]
+    g = bytearray(32)
+    for idx in satisfied:
+        addr, mask = gates_locus(4, idx)
+        g[addr - group_addr(4)] |= mask
+    m.poke(group_addr(4), bytes(g))
+
+    # Our reader must decode the very same indices the set() routine authored.
+    assert R.stage_flags(r)["set_indices"] == satisfied
+
+    # And the two locus computations are byte-identical (no parallel drift).
+    for idx in range(256):
+        assert R.stage_flag_locus(4, idx) == gates_locus(4, idx)
