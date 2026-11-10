@@ -69,3 +69,46 @@ def test_the_real_event_table_matches_the_measured_framing():
     assert [r["arg"] for r in group] == [1, 2, 3, 4]
     assert [r["offset"] for r in group] == [0, 6, 12, 18]
     assert [r["value"] for r in group] == [50, 50, 50, 50]
+
+
+@pytest.mark.skipif(not DISC.is_file(), reason="the disc is not on this machine")
+def test_every_event_file_on_the_disc_parses_with_this_framing():
+    """All of them, not a sample: if the 16 + n*20 + 4 framing is right, every file should frame cleanly.
+
+    This is also where the state of the *city* is recorded: there is no city event script at all. The event archive holds
+    143 files covering 28 field and boss areas, and none for Pioneer 2 -- so no placement or script on the disc is what
+    carries a party from the city to a floor.
+    """
+    from gbox import gcdisc, pso_map_write as W
+
+    d = gcdisc.GCDisc(str(DISC))
+    entries = sorted(W.set_archive_files(d, "event"))
+    assert len(entries) == 143
+    assert not [e for e in entries if "city" in e or "lobby" in e or "pioneer" in e]
+    bad = []
+    for name in entries:
+        data, _ = W.read_set(d, name)
+        try:
+            recs = EV.records(data)
+        except Exception as exc:                       # noqa: BLE001
+            bad.append((name, str(exc)[:60]))
+            continue
+        if not recs or EV.summary(data)["trailing_bytes"] >= EV.RECORD_SIZE:
+            bad.append((name, "no records or a whole trailing record"))
+    assert bad == [], bad[:4]
+
+
+@pytest.mark.skipif(not DISC.is_file(), reason="the disc is not on this machine")
+def test_the_event_archive_covers_fields_and_bosses_only():
+    from gbox import gcdisc, pso_map_write as W
+
+    d = gcdisc.GCDisc(str(DISC))
+    names = sorted(W.set_archive_files(d, "event"))
+    areas = set()
+    for name in names:
+        stem = name.rsplit(".", 1)[0]                       # map_forest01_00_00 or map_boss01
+        stem = stem[len("map_"):] if stem.startswith("map_") else stem
+        areas.add(stem.split("_")[0])                       # forest01 / boss01
+    for area in ("forest", "cave", "ruins", "jungle", "seabed", "machine", "space", "ancient"):
+        assert any(a.startswith(area) for a in areas), f"{area} has no event script: {sorted(areas)}"
+    assert any(a.startswith("boss") for a in areas)

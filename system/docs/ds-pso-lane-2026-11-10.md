@@ -2600,14 +2600,54 @@ missing.
 `main` clean; 30 tests green across `pso_evt`, `pso_setdata` and `pso_editor`. Session still live but input-blocked from
 round 51 (P1 in room 20).
 
+## Round 53 (2026-11-10) — 143/143 event scripts decode, and the city has none
+
+### The framing is right for every event file on the disc
+
+The decode from round 52 was measured on one file. This round ran it over the archive:
+
+* **143 event files, 143 framed cleanly** (16-byte header + n×20-byte records + a 4-byte footer, with no file leaving a
+  whole trailing record). A framing that survives every file is a framing worth building on.
+
+### The finding that changes P1
+
+**There is no city event script.** The archive covers **28 areas** -- `forest01..02`, `cave01..03`, `ruins01..02`,
+`jungle01..05`, `seabed01..02`, `machine01..02`, `space01..02`, `ancient01..03` and seven `boss0*` files -- and **not one
+entry for Pioneer 2**, the lobby or the city.
+
+That closes the line of reasoning I had been following for several rounds. I had hoped the door transitions would turn out to
+be an opcode in an event script, which would have given an editable lever for P1's field leg. They are not, because **there
+is no city script to hold them**:
+
+* the city's doors work or do not work according to something *other than* a placement record (rounds 49-50: `Warp`
+  transitions, `Guild`/`Shop`/`Med` do not, all placed identically), and
+* there is no script on the disc that a city door could be reading.
+
+So the gate between Pioneer 2 and a floor is **not in any file this lane can edit**. It is in the executable -- the quest
+system and the menu that offers a teleport -- or it is hardcoded door logic. That is why no amount of walking, mapping or
+placement editing ever produced a field arrival, and it re-scopes P1 honestly: **P1 needs the executable or a quest-state
+manipulation, not a better route.**
+
+### What the archive does give
+
+The event scripts are all on the *field* side, which means the field's own transitions (a room-to-room warp, a boss gate, a
+quest trigger) are scripted there. Once a party can reach a floor, this decode is the thing that will open the area's
+structure -- and `pso_evt.records()` plus `summary()` is the tool for it, now validated across the whole archive.
+
+### Tests
+
+`test_pso_evt` grew two whole-archive tests: every file frames cleanly, and the archive covers every field family plus the
+boss scripts while containing **no** city entry. 8 tests in that file, all green.
+
 ## 7. Next
 
-1. **Find the transition opcode in the `.evt` scripts.** `gbox.pso_evt` decodes the framing (16-byte header, 20-byte
-   records, 4-byte footer, records grouped by opcode); the next step is to sweep all 143 event files and find the opcode
-   whose argument names a destination area. That is the executable-free lever for P1's field leg.
-2. **The `x=0` corridor**, still unwalked past (-11,-79).
-3. **A field area's offset** so P6a's in-game proof repeats on a floor; only `city00` is measured.
-4. **P6b's page** (pure UI over `python -m gbox.pso_editor`) and **P7a's rigging**.
+1. **P1's gate is in the executable, not in a file.** There is no city event script (143 event files cover 28 field and
+   boss areas only), so no placement or script on the disc can carry a party from Pioneer 2 to a floor. The quest system
+   and the teleport menu are the lever: find the quest state in RAM and set it, or find the code path and jump into it.
+2. **The event decode is field-side and validated** (143/143 files frame cleanly). It is what will open an area's
+   structure once a floor is reachable.
+3. **A field area's offset** so P6a's proof repeats on a floor -- needs a floor, so it follows (1).
+4. **P6b's page** (pure UI over `python -m gbox.pso_editor`) and **P7a's rigging** are the items that do not need P1.
 
-Corrected this round: `e.dat` is the **enemy spawn table** and `.evt` is the **event script** -- `pso_setdata`'s refusal
-message said the opposite and cost a detour. The `_offe.dat` / `_off.evt` pairing is the evidence.
+This round closed a hope honestly: the city's door behaviour is not scripted anywhere on the disc, which is why rounds
+42-53 could not find a route by walking, mapping or editing placements.
