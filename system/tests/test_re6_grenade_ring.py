@@ -164,3 +164,10 @@ def test_ring_needs_a_living_player_and_flash_resources(monkeypatch):
     with pytest.raises(N.Unavailable, match="resources"):
         ctl.grenade_ring("flash")
     assert ctl.spawns == []
+
+def test_a_first_grenade_refusal_is_a_failed_ring_with_no_spawn():
+    ctl = ring_controller(spawn_fail_at=0)
+    result = ctl.grenade_ring("flash")
+    assert result["state"] == "failed" and result["detonated"] == 0 and result["requested"] == 10
+    assert "refused" in result["reason"]
+    assert ctl.failed and ctl.recoverable
