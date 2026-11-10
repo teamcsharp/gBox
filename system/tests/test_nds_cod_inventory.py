@@ -54,3 +54,55 @@ def test_owned_rom():
     f = fs["Models/american.nsbmd"]
     p = m.bmd0_probe(d[f["off"]:f["off"] + f["size"]])
     assert set(p["sections"]) == {"MDL0", "TEX0"}
+
+
+def _mdl0_of(d, path):
+    from gbox import nds_cod_inventory as m
+    fs = {f["path"]: f for f in m.nds_files(d)}
+    f = fs[path]
+    b = d[f["off"]:f["off"] + f["size"]]
+    p = m.bmd0_probe(b)
+    return b[p["sections"]["MDL0"]["off"]:]
+
+
+def test_mdl0_rejects_garbage():
+    with pytest.raises(ValueError):
+        m.mdl0_parse(b"MDL0" + b"\x00" * 200)
+
+
+@pytest.mark.skipif(not os.path.exists(ROM), reason="owned ROM absent")
+def test_mdl0_american():
+    d = open(ROM, "rb").read()
+    M = _mdl0_of(d, "Models/american.nsbmd")
+    info = m.mdl0_parse(M)
+    assert info["names"] == ["american", "american_lod1", "american_lod2"]
+    assert info["n_lods"] == 3 and info["table"][0] == info["table"][4]
+    bones = m.mdl0_bones(M, info)
+    assert len(bones) == 17
+    assert bones[0] == "world_root" and "Obj_UpperTorso" in bones
+
+
+@pytest.mark.skipif(not os.path.exists(ROM), reason="owned ROM absent")
+def test_mdl0_mp_american_and_sweep():
+    d = open(ROM, "rb").read()
+    M = _mdl0_of(d, "Models/mp_american.nsbmd")
+    info = m.mdl0_parse(M)
+    assert info["names"] == ["mp_american"] and info["n_lods"] == 1
+    bones = m.mdl0_bones(M, info)
+    assert len(bones) == 22 and "Bip01_Pelvis" in bones
+    ok = 0
+    for f in m.nds_files(d):
+        if not f["path"].endswith(".nsbmd"):
+            continue
+        b = d[f["off"]:f["off"] + f["size"]]
+        if b[:4] != b"BMD0":
+            continue  # BDL0 variant handled separately
+        try:
+            p = m.bmd0_probe(b)
+            if "MDL0" not in p["sections"]:
+                continue
+            m.mdl0_parse(b[p["sections"]["MDL0"]["off"]:])
+            ok += 1
+        except ValueError:
+            pass
+    assert ok >= 500
