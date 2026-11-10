@@ -256,7 +256,9 @@ def read_bin_entry(path: str | Path, offset: int, limit: int | None = 8) -> byte
         buf = f.read(min(payload_len, CHUNK_SIZE + 4))
         out = bytearray()
         p = 0
-        while p < len(buf) and len(out) < size and (limit is None or len(out) < limit):
+        while len(out) < size and (limit is None or len(out) < limit):
+            if p >= len(buf) and len(buf) >= payload_len:
+                break
             if p + 4 > len(buf):
                 need = p + 4 - len(buf)
                 extra = f.read(min(need, payload_len - len(buf)))
@@ -272,6 +274,7 @@ def read_bin_entry(path: str | Path, offset: int, limit: int | None = 8) -> byte
                 if not extra:
                     break
                 buf += extra
+                p -= 4  # re-read the size prefix on the next pass
                 continue
             try:
                 chunk = zlib.decompress(buf[p:p + zsize])
@@ -279,8 +282,6 @@ def read_bin_entry(path: str | Path, offset: int, limit: int | None = 8) -> byte
                 raise ValueError(f"zlib error at {path}:{offset:#x}: {exc}")
             p += zsize
             out += chunk
-            if len(chunk) < CHUNK_SIZE:
-                break
         return bytes(out[:limit]) if limit is not None else bytes(out)
 
 
