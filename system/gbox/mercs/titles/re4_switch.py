@@ -1574,6 +1574,21 @@ CAM_COLLAPSE_X, CAM_COLLAPSE_S, CAM_SETTLE_S = 0.6, 0.15, 1.0
 # back). Each swap is a fresh grenade (no count to spend: infinite by construction); RE4 has no animation-speed mod to
 # reuse, so the throw plays at the game's speed. NOT seen live yet: whether the game throws a grenade put in the hand
 # this way - so off until a watched round turns it on (the sidebar's bot-logic knob THROWS, or here).
+# The grenade ring and the scatter barrage (checkpoints F/G): the native harness's own blasts (flash 4000 mm floor,
+# hand 7000, the barrage mixed). Both automatic paths are OFF until a live receipt per kind; the ops stay available
+# for clicks/probes. Distances here are millimetres; the shared rule works in cm and the controller converts at its
+# boundary (`re4_switch_native`), so the knobs keep the shared names.
+RING, RING_N, RING_EVERY_S, RING_KIND = False, 4, 20.0, "flash"
+SCATTER, SCATTER_EVERY_S, SCATTER_N = False, 12.0, 8
+SCATTER_FLASH_ONLY = False            # flash and hand are built: the flash cap narrows the draw, never refuses it
+
+
+def scatter_kinds() -> tuple:
+    """The kinds a random barrage can draw: the RE4 harness's built blasts (flash, hand; incendiary is G3)."""
+    from . import re4_switch_native as native
+    return tuple(native.SCATTER_KINDS)
+
+
 THROWS = False
 THROW_GAP_S, THROW_PACK_N, THROW_PACK_MM, THROW_FLASH_MM = 5.0, 3, 3000.0, 4000.0
 THROW_MIN_MM, THROW_MAX_MM = 6000.0, 12000.0

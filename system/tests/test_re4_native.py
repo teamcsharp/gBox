@@ -335,3 +335,66 @@ def test_a_failed_blast_makes_the_ring_uncertain_and_stops(monkeypatch):
     ctl = _ring_controller(monkeypatch, fail_at=3)
     result = ctl.grenade_ring("flash", count=5, radius_cm=900.0, inner_cm=400.0)
     assert result["state"] == "uncertain" and result["detonated"] == 2 and "timed out" in result["reason"]
+
+
+# ---- G4: the barrage -------------------------------------------------------------------------------------------------
+
+def _scatter_controller(monkeypatch, **kw):
+    monkeypatch.setattr(N.time, "sleep", lambda s: None)
+    ctl = fake_controller(monkeypatch, **kw)
+    ctl.attach()
+    return ctl
+
+
+def test_a_random_barrage_uses_both_blasts_and_their_floors(monkeypatch):
+    ctl = _scatter_controller(monkeypatch)
+    result = ctl.grenade_scatter("random", count=6, toward=[(5000.0, 0.0)], kinds=("flash", "hand"),
+                                 rng=__import__("random").Random(1))
+    assert result["state"] == "confirmed" and result["detonated"] == 6
+    assert set(result["kinds"]) == {"flash", "hand"}
+    assert result["floors_cm"] == {"flash": 400.0, "hand": 700.0}
+    for row in result["rounds"]:
+        assert row["dist_cm"] >= (400.0 if row["kind"] == "flash" else 700.0)
+        assert row["from_player_cm"] >= (400.0 if row["kind"] == "flash" else 700.0)
+    targets = {struct.unpack("<Q", d)[0] for at, d in ctl.writes if at == MAILBOX + CODE.MAILBOX["target"]}
+    assert targets == {BASE + N.FLASH_BLAST, BASE + N.HAND_BLAST}
+    assert result["hp_before"] == 1000 and result["self_damage"] == 0
+
+
+def test_an_explicit_hand_barrage_uses_the_hand_blast_and_7000(monkeypatch):
+    ctl = _scatter_controller(monkeypatch)
+    result = ctl.grenade_scatter("hand", count=3, toward=[(6000.0, 1000.0)])
+    assert result["state"] == "confirmed" and result["kinds"] == ["hand"]
+    assert all(r["kind"] == "hand" and r["dist_cm"] >= 700.0 for r in result["rounds"])
+    targets = {struct.unpack("<Q", d)[0] for at, d in ctl.writes if at == MAILBOX + CODE.MAILBOX["target"]}
+    assert targets == {BASE + N.HAND_BLAST}
+
+
+def test_the_barrage_respects_the_learned_reach_converted_from_cm(monkeypatch):
+    ctl = _scatter_controller(monkeypatch)
+    result = ctl.grenade_scatter("random", count=4, toward=[(4000.0, 0.0)], safe_cm=1000.0,
+                                 rng=__import__("random").Random(3))
+    assert result["floors_cm"] == {"flash": 1000.0, "hand": 1000.0}
+    assert all(r["dist_cm"] >= 1000.0 for r in result["rounds"])
+
+
+def test_a_narrowed_draw_uses_only_the_given_kind(monkeypatch):
+    ctl = _scatter_controller(monkeypatch)
+    result = ctl.grenade_scatter("random", count=3, toward=[(5000.0, 0.0)], kinds=("flash",))
+    assert result["kinds"] == ["flash"] and all(r["kind"] == "flash" for r in result["rounds"])
+
+
+def test_the_incendiary_barrage_is_refused_before_any_call(monkeypatch):
+    ctl = _scatter_controller(monkeypatch)
+    before = len(ctl.writes)
+    with pytest.raises(N.Unavailable, match="not identified"):
+        ctl.grenade_scatter("incendiary")
+    with pytest.raises(N.Unavailable, match="cannot draw"):
+        ctl.grenade_scatter("random", kinds=("nuke",))
+    assert len(ctl.writes) == before
+
+
+def test_a_partial_barrage_is_uncertain_never_confirmed(monkeypatch):
+    ctl = _scatter_controller(monkeypatch, fail_at=2)
+    result = ctl.grenade_scatter("random", count=4, toward=[(5000.0, 0.0)], kinds=("flash",))
+    assert result["state"] == "uncertain" and result["detonated"] == 1 and result["reason"]

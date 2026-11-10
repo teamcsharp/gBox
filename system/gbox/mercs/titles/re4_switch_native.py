@@ -57,6 +57,15 @@ HAND_MIN_MM = 7000.0
 RING_COUNT_DEFAULT, RING_COUNT_MAX = 10, 16
 RING_RADIUS_MM_DEFAULT, RING_INNER_MM_DEFAULT = 9000.0, 4000.0
 RING_RIPPLE_MS_DEFAULT = 40.0
+#: The barrage (checkpoint G4): the ring's step at random points in a cone toward the threats. Its kinds are the two
+#: blasts identified on this build; the shared rule speaks cm, so `safe_cm` is converted at this boundary while the
+#: `toward` points are the title's own raw (mm) positions.
+SCATTER_KINDS = ("flash", "hand")
+SCATTER_COUNT_DEFAULT, SCATTER_COUNT_MAX = 8, 16
+SCATTER_SPREAD_DEG = 30.0
+SCATTER_MIN_MM, SCATTER_MAX_MM = 4000.0, 15000.0
+SCATTER_GAP_MS = (100.0, 200.0)
+SCATTER_SAFE_MM = 10.0                  # one cm past the learned reach, in mm
 #: The proven private page (set after E3's three-load watch passes; None means the harness cannot attach).
 MAILBOX_AT: int | None = None
 
@@ -312,6 +321,88 @@ class Controller(N.Controller):
         if len(rounds) == count and abort is None:
             return {"state": "confirmed", "effect": f"native_{kind}_ring", **receipt}
         receipt["reason"] = abort or "the ring did not complete"
+        return {"state": "failed" if not rounds else "uncertain", **receipt}
+
+    def grenade_scatter(self, kind="random", *, count=None, toward=None, spread_deg=None, min_cm=None, max_cm=None,
+                        gap_ms=None, safe_cm=None, rng=None, kinds=None):
+        """A barrage of native blasts in a cone toward the threats (checkpoint G4), same contract as RE5/RE6.
+
+        `toward` are the title's own raw (x, z) positions (RE4 millimetres, straight from its snapshot); `safe_cm`
+        is the shared rule's learned blast reach in cm and is converted here with `re4_switch.MM_PER_CM`. kind
+        "random" draws each round from SCATTER_KINDS (flash, hand); `kinds` narrows that draw (the rule's flash cap
+        leaves the flash out of a mixed barrage inside the minute). Every round keeps its own floor (flash 4000 mm,
+        hand 7000 mm) and the learned reach plus one cm. A partial barrage is `uncertain` and is never replayed.
+        """
+        import random as _random
+        if not self.attached():
+            raise Unavailable("the harness is not attached to the player")
+        kind = (kind or "random").lower()
+        if kind == "incendiary":
+            raise Unavailable("the incendiary blast is not identified on this build yet (checkpoint G3)")
+        if kind != "random" and kind not in SCATTER_KINDS:
+            raise Unavailable(f"unknown or unbuilt grenade kind {kind!r}")
+        if kinds is not None:
+            if kind != "random":
+                raise Unavailable("a barrage of one explicit kind cannot also narrow its draw")
+            kinds = tuple(str(k).lower() for k in kinds)
+            if not kinds or any(k not in SCATTER_KINDS for k in kinds):
+                raise Unavailable(f"this build's barrage cannot draw {kinds!r} (built: {SCATTER_KINDS})")
+        draw = tuple(kinds) if kind == "random" and kinds else (SCATTER_KINDS if kind == "random" else (kind,))
+        rng = rng or _random.Random()
+        count = max(1, min(int(SCATTER_COUNT_DEFAULT if count is None else count), SCATTER_COUNT_MAX))
+        spread = math.radians(float(SCATTER_SPREAD_DEG if spread_deg is None else spread_deg))
+        safe_mm = max(0.0, float(safe_cm or 0.0) * R.MM_PER_CM)
+        lo = max(SCATTER_MIN_MM, float(min_cm) * R.MM_PER_CM if min_cm is not None else 0.0)
+        hi = max(lo, min(float(SCATTER_MAX_MM if max_cm is None else max_cm * R.MM_PER_CM), RING_RADIUS_MM_DEFAULT * 2))
+        gap = gap_ms or SCATTER_GAP_MS
+        floors = {"flash": max(FLASH_MIN_MM, safe_mm), "hand": max(HAND_MIN_MM, safe_mm)}
+        px, py, pz = self.player_position()
+        points = [(float(x), float(z)) for x, z in (toward or ())]
+        if points:                                   # a cone toward the threats' weighted centre
+            cx = sum(p[0] for p in points) / len(points)
+            cz = sum(p[1] for p in points) / len(points)
+            axis = math.atan2(cx - px, cz - pz)
+            far = max(math.hypot(x - px, z - pz) for x, z in points)
+            hi = max(lo, min(hi, far + 200.0 * R.MM_PER_CM))
+        else:                                        # no threats: along his facing
+            axis = struct.unpack("<f", self.rd(self.player + R.U_YAW, 4))[0]
+        life_before = self.player_life()
+        started = time.monotonic()
+        rounds, abort = [], None
+        for index in range(count):
+            this = rng.choice(draw) if kind == "random" else kind
+            floor_mm = floors[this]
+            near = floor_mm + SCATTER_SAFE_MM
+            if hi < near:
+                hi = near
+            d = near + (hi - near) * (index + rng.random()) / count
+            ang = axis + rng.uniform(-spread, spread)
+            x, z = px + d * math.sin(ang), pz + d * math.cos(ang)
+            try:
+                row = self._blast_at(FLASH_BLAST if this == "flash" else HAND_BLAST, this, x, py, z, floor_mm)
+            except (Unavailable, Uncertain, AllocationLost) as exc:
+                abort = str(exc)
+                break
+            rounds.append({**row, "kind": this, "dist_cm": round(d / R.MM_PER_CM, 1)})
+            if index + 1 < count:
+                time.sleep(rng.uniform(*gap) / 1000.0)
+        life_after = self.player_life()
+        planned = draw if kind == "random" else (kind,)
+        floor_cm = min(floors[k] for k in planned) / R.MM_PER_CM
+        receipt = {"op": "grenade_scatter", "kind": kind, "requested": count, "detonated": len(rounds),
+                   "kinds": sorted({r["kind"] for r in rounds}),
+                   "axis_deg": round(math.degrees(axis), 1), "spread_deg": round(math.degrees(spread), 1),
+                   "near_cm": round(floor_cm, 1), "far_cm": round(hi / R.MM_PER_CM, 1),
+                   "floor_cm": round(floor_cm, 1),
+                   "floors_cm": {k: round(v / R.MM_PER_CM, 1) for k, v in floors.items()},
+                   "rounds": rounds, "hp_before": life_before, "hp_after": life_after,
+                   "self_damage": (life_before - life_after) if isinstance(life_before, int) and
+                   isinstance(life_after, int) else None,
+                   "verified": False, "player_generation": self.player_id,
+                   "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+        if len(rounds) == count and abort is None:
+            return {"state": "confirmed", "effect": f"native_{kind}_scatter", **receipt}
+        receipt["reason"] = abort or "the barrage did not complete"
         return {"state": "failed" if not rounds else "uncertain", **receipt}
 
     def flash(self):

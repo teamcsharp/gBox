@@ -165,6 +165,10 @@ KNOBS["re4"] = [                                 # gbox.mercs.titles.re4_switch 
     ("THROW_GAP_S", "Seconds between grenade throws", "Specials", "float", 1, 30, 0.5, ""),
     ("KILL_PACE_S", "Combo: a kill owed after (s)", "Goals", "float", 1.0, 5.0, 0.5,
      "past this since the last kill he takes the quickest one and runs"),
+    ("SCATTER", "Grenade scatter barrage (auto)", "Crowd control", "bool", 0, 1, 1,
+     "a cone of native flash/hand blasts at the threats when surrounded, hurt with them close, a boss/dangerous class in reach, or a pack not thinning"),
+    ("SCATTER_EVERY_S", "Seconds between barrages", "Crowd control", "float", 3, 120, 1, "the cooldown"),
+    ("SCATTER_N", "Rounds in a barrage", "Crowd control", "int", 3, 16, 1, ""),
 ]
 MODULES = {"re5": "gbox.mercs.titles.re5_switch", "re6": "gbox.mercs.titles.re6_switch",
            "re4": "gbox.mercs.titles.re4_switch"}

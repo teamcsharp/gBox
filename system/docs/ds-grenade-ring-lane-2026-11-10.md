@@ -1023,3 +1023,32 @@ With the other RE4 harness files and the status module: **73 passed**.
 **Still to do for G:** G4 (add the title to `SCATTER_TITLES` and the scatter knobs to `re4_switch.py`, cm/mm at the
 controller boundary, the barrage op) and the live receipts per kind - both need F's live receipt first, which needs
 E3's watch and the branch deploy.
+
+## Round 64 (2026-11-10 18:55 CST) - G4 offline: the RE4 barrage, its knobs, its PiP rows and the shared rule's step
+
+**The controller's barrage.** `Controller.grenade_scatter(kind="random", count, toward, ..., safe_cm, rng, kinds)` on
+the RE4 harness, same contract shape as RE5/RE6:
+
+- kinds **flash** (`main+0x2E4E50`) and **hand** (`main+0x2E48B0`); `"random"` draws both; `kinds=` narrows one
+  barrage (the shared flash cap); incendiary refused ("not identified yet", G3).
+- units at the boundary: `toward` are the title's own raw (x, z) **millimetres** (straight from its snapshot), while
+  `safe_cm` (the rule's learned reach) is converted with `MM_PER_CM`; each round keeps its own floor - flash
+  **4000 mm**, hand **7000 mm** - and the learned reach plus one cm. The cone's axis comes from the threats' centre
+  (else his facing), the far bound is the threats' reach + 2 m, points run near to far 100-200 ms apart.
+- receipt: `detonated == requested`, `kinds`, `rounds[].kind/dist_cm/from_player_cm`, `near_cm/far_cm/floor_cm/
+  floors_cm`, `hp_before/after` from his own life field, `self_damage`, `elapsed_ms`, `verified: false`; a partial
+  barrage is `uncertain` and never replayed.
+
+**The title and the rule (G4).** `re4_switch.py` carries `RING`/`RING_N`/`RING_EVERY_S`/`RING_KIND` and
+`SCATTER`/`SCATTER_EVERY_S`/`SCATTER_N`, both automatic paths **off** until a live receipt per kind (the ops stay
+available for clicks/probes), `SCATTER_FLASH_ONLY = False` (flash and hand are both built, so the cap narrows the draw
+rather than refusing it) and `scatter_kinds()` -> `("flash", "hand")`; `bot_logic.KNOBS["re4"]` gained the three
+SCATTER rows; `grenade_ring.SCATTER_TITLES` now includes `010099A00BC1E000`, so the shared rule offers RE4 its step
+and the policy reads the title's kinds.
+
+**Tests.** 6 new barrage tests in `test_re4_native.py` (30 there): a random barrage uses both blasts and both floors,
+an explicit hand barrage uses only the hand blast at 7000 mm or more, `safe_cm` becomes the 1000 cm floor, a narrowed
+draw uses one kind, the incendiary and an unknown draw are refused before any write, a failed round leaves the barrage
+`uncertain`; and `tests/test_re4_scatter_wiring.py` (4): the title is built-but-off with both kinds, the rule offers
+RE4 its step and not a PS3 title, the policy reads the knobs/kinds, and the PiP rows exist. With the earlier RE4
+harness and shared-rule files: the focused set is **53 passed**; the broad run is in the same round's log below.
