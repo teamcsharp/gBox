@@ -362,3 +362,33 @@ descriptor) and then its `+0x118` - or, equivalently, read `local_18 % 24` from 
 corresponding descriptor. The offline side of CP9 is now as far as it can go without a session.
 
 Decompile kept in `docs/research/pso-save-slot-initialiser.txt`.
+
+## Round 94: the cipher is code now, not a research dump - and it round-trips
+
+The round-70 note ended with "the offline side of CP9 is now as far as it can go without a session". That was true of the
+*save data*, but not of the *cipher*: everything known lived in `docs/research/pso-save-cipher-full.py`, which is not
+reviewable, testable code. This round promoted it to **`gbox/pso_save_cipher.py`**:
+
+| function | the assembly fact it encodes |
+|---|---|
+| `ring_step(state)` | 24 x `state[k+1] -= state[k+0x20]` (k 1..24), then 31 x `state[k+1] -= state[k-0x17]` (k 25..55) |
+| `seed_ring(seed)` | `state[0x38]=state[0x39]=seed`, 0x36 x `idx=(0x15 i)%0x37`, then four ring rounds, cursor 0x37 |
+| `next_key(state)` | cursor++ / wrap through `ring_step` / `state[cursor+1]` |
+| `rand(state, n)` | `((n & 0xffff) * (key >> 16)) >> 16` |
+| `build_perm(state)` | Fisher-Yates over 0..255, returning the inverse table `B` |
+| `permute` / `unpermute` | `dst[256k + B[j]] = src[256k + j]` and its inverse |
+| `word_cipher(data, state)` | `buf[i] = key_i - buf[i]`, which is its own inverse |
+| `decode` / `encode` | permute then word cipher, and the exact inverse order |
+
+`tests/test_pso_save_cipher.py` **11 passed**: the ring's determinism and cursor, the keystream's reproducibility and seed
+dependence, the permutation invariant (`sorted(perm) == 0..255`), `permute`/`unpermute` inversion including a trailing partial
+block, the word cipher's involution, `encode -> decode` round trips for **five seeds** (0, 1, 0x12345678, 0xDEADBEEF,
+0xFFFFFFFF), and a wrong seed not round-tripping.
+
+**One correction to an assumption of mine:** `state[0x38]`/`[0x39]` hold the seed only *before* the four warm-up rounds - they
+sit inside the 55-word window, so `ring_step` changes them (the first version of my test asserted otherwise and failed). The
+test now asserts that the seed reaches the ring, which is the property that matters.
+
+**What this buys the live step:** CP9's remaining step is "read the seed, decode `PSO_CHARACTER`, byte-flip accept test". The
+seed read yields an integer, and `pso_save_cipher.decode(body, seed)` is now a reviewed, tested call - the live work is a
+single read plus that call, not a script archaeology exercise.
