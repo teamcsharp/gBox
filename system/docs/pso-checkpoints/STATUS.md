@@ -76,3 +76,18 @@ disc, not a regression.
 pushes to the same name), so `git checkout <branch>` can give an old tree - the first pass reported "no test files found" for
 CP6.2 for exactly that reason. Always verify against `origin/<branch>` (this is also why every piece of evidence names a tip
 hash rather than a branch name alone).
+
+## Round 92: two more checkpoint branches, and one more verified
+
+| checkpoint | branch | tip | evidence | state |
+|---|---|---|---|---|
+| CP10 P6a field proof | `ds-pso-cp10-forest1-20261110` | `033b6ca6` | `CP10-p6a-forest1.md` | **offline half done** - both pre-built Forest 1 mods decoded: `pso_objmove_forest01_r5` moves `map_forest01d.dat`'s **record 5 of 150** by **+120.0** in x, and `pso_objmove_forest01_l0_r60` moves `map_forest01_00o.dat`'s **record 60 of 109** by **+150.0** in x and **+6.0** in y; the mod names match the records the diff found. The live step only has to confirm the entity sits at the written position (needs CP4's state and CP5's warp) |
+| CP5 Forest 1 warp | `ds-pso-floor-warp-20261110` (older, unmerged) | `0442a9fe` | `CP05-forest1-dev.md` (to be written by the live run) | **code ready and verified offline** - `pso_mods` `op=floor_warp target=<n>` calls the worker's native travel helper; this round ran its suites from the pushed tip: **24 passed** (`test_pso_floor_warp` 4 + `test_pso_mods` 20). The steps themselves (boot the lobby state, warp to floor 1, save the state) are live-only, and the guide's fallback is `boss_warp` |
+
+**Why CP5 and CP10 are still open:** both call a **live** native path (`floor_warp` -> the travel helper; the object move is
+read from actor memory), so neither can finish without an operator-absent window. Their offline halves are now as complete as
+they can be: CP5's code is verified by tests, and CP10's expected before/after positions are measured from the mod images
+themselves.
+
+**That leaves exactly three things for the programme:** the window (CP4, CP5, CP9-seed, CP10 confirmation, CP12's frame, CP13,
+CP16, CP17-19), the CP8 data decision, and the merge review (CP12 before CP13; sixteen branches total with CP10 now).
