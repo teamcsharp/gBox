@@ -78,3 +78,47 @@ def geometry_summary(raw: bytes) -> list[dict]:
 def load_tmc(path: str) -> bytes:
     with open(path, "rb") as f:
         return kt_decompress(f.read())
+
+
+# --- static loader probe (DOA5A.exe, PE32 i386, base 0x400000) ----------------------------------
+CHUNK_TAGS = ("HieLay", "LHeader", "VtxLay", "IdxLay", "BnOfsMtx", "GlblMtx", "MHeader", "MdlInfo",
+              "MtrCol", "MdlGeo", "NodeLay", "GeoDecl")
+
+
+def _pe_sections(b: bytes):
+    pe = struct.unpack_from("<I", b, 0x3C)[0]
+    ns, oh = struct.unpack_from("<H", b, pe + 6)[0], struct.unpack_from("<H", b, pe + 20)[0]
+    base = struct.unpack_from("<I", b, pe + 52)[0]
+    out = []
+    for i in range(ns):
+        o = pe + 24 + oh + i * 40
+        vs, va, rs, ro = struct.unpack_from("<IIII", b, o + 8)
+        out.append((b[o:o + 8].rstrip(b"\0").decode(), base + va, min(vs, rs) if rs else vs, ro))
+    return out
+
+
+def exe_chunk_tag_xrefs(exe: bytes) -> dict[str, dict]:
+    """Static (no Ghidra) proof of the TMC chunk-tag loader: for every KT chunk tag string in the exe, its VA
+    and the VAs of every 4-byte absolute pointer to it (push imm32 / table slot).  Pure byte scan."""
+    secs = _pe_sections(exe)
+
+    def va_of(off):
+        for _, va, size, ro in secs:
+            if ro <= off < ro + size:
+                return va + off - ro
+
+    res = {}
+    for tag in CHUNK_TAGS:
+        needle = tag.encode() + b"\0"
+        i = exe.find(needle)
+        while i >= 0 and (va_of(i) or 1) % 4:  # the tag table strings are 4-byte aligned
+            i = exe.find(needle, i + 1)
+        if i < 0:
+            continue
+        sva = va_of(i)
+        pat, refs, j = struct.pack("<I", sva), [], exe.find(struct.pack("<I", sva))
+        while j >= 0:
+            refs.append(va_of(j))
+            j = exe.find(pat, j + 1)
+        res[tag] = {"va": sva, "refs": [r for r in refs if r]}
+    return res

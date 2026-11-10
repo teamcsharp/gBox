@@ -35,3 +35,21 @@ def test_indices_in_range_and_body_symmetric(raw):
     body = s[8]
     assert body["bbox_min"][0] == pytest.approx(-body["bbox_max"][0])
     assert body["bbox_max"][0] == pytest.approx(0.3344783, abs=1e-6)
+
+
+EXE = ROOT / "DOA5A.exe"
+
+
+@pytest.mark.skipif(not EXE.exists(), reason="DOA5A.exe not mounted")
+def test_exe_chunk_tag_xrefs_pinned():
+    import hashlib
+    from gbox.doa5a_geometry import exe_chunk_tag_xrefs
+    b = EXE.read_bytes()
+    assert hashlib.sha256(b).hexdigest().startswith("1fb55933c8d4")
+    x = exe_chunk_tag_xrefs(b)
+    assert {k: v["va"] for k, v in x.items() if k in ("HieLay", "VtxLay", "IdxLay", "MdlGeo", "NodeLay")} == {
+        "HieLay": 0xC30CC0, "VtxLay": 0xC30CD4, "IdxLay": 0xC30CDC, "MdlGeo": 0xC30D14, "NodeLay": 0xC30F30}
+    assert x["VtxLay"]["refs"] == [0xA97558, 0xA976AB]
+    assert x["IdxLay"]["refs"] == [0xA975C8, 0xA976B2]
+    assert x["MdlGeo"]["refs"] == [0xA9769D] and x["NodeLay"]["refs"] == [0xA9EB88]
+    assert x["GeoDecl"]["refs"] == [0xAA0C15]
