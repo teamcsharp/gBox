@@ -215,7 +215,10 @@ def _unpack_2(src: _Source, target: int) -> bytes:
 
 
 def decode_rnc(blob: bytes) -> bytes:
-    if len(blob) < 18 or blob[:3] != b"RNC":
+    # "RNX" is the Forsaken 64 (N64) tag for code-overlay blocks; the loader
+    # (UPK_ExpandMem, z64 0xa090) routes RNX\x01 through the same method-1
+    # path as RNC\x01, so only the magic differs.
+    if len(blob) < 18 or blob[:3] not in (b"RNC", b"RNX"):
         raise ValueError("no RNC magic")
     method = blob[3]
     if method not in (1, 2):

@@ -359,3 +359,27 @@ def test_index_names_real_modules():
             if name.startswith(("formats.", "assimilate", "pattern")):
                 continue
             importlib.import_module(f"gbox.{name}")
+
+
+def test_rnx_magic_accepted_and_rom_decode():
+    """Forsaken 64: RNX\x01 blocks decode through the RNC method-1 path."""
+    import os
+    import re
+    import struct
+    import pytest
+    from gbox.formats import rnc
+    with pytest.raises(ValueError, match="subchunk"):
+        rnc.decode_rnc(b"RNX\x01" + struct.pack(">IIHH", 16, 4, 0, 0) + bytes(2) + bytes(4))
+    rom = os.environ.get("GBOX_FORSAKEN_Z64")
+    if not rom or not os.path.exists(rom):
+        pytest.skip("GBOX_FORSAKEN_Z64 not set")
+    d = open(rom, "rb").read()
+    n = 0
+    for m in re.finditer(rb"RN[CX]\x01", d):
+        o = m.start()
+        pl = struct.unpack_from(">I", d, o + 8)[0]
+        if pl > 0x10000:
+            continue
+        assert len(rnc.decode_rnc(d[o:o + 18 + pl])) == struct.unpack_from(">I", d, o + 4)[0]
+        n += 1
+    assert n == 1182
