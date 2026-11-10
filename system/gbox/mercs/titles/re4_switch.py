@@ -630,7 +630,7 @@ def step(scr: dict, now: float | None = None) -> str | None:
         if not isinstance(cur, int) or not isinstance(tgt, int):
             return None
         if cur == tgt:
-            return _confirm(where)
+            return _confirm(where, now)
         return DPAD["down"] if cur < tgt else DPAD["up"]
     if where in ("select_player", "select_stage"):
         # the DJ's pick: move from the default entry first (the reader counts the moves in: scr["moved"]), then confirm
@@ -641,6 +641,62 @@ def step(scr: dict, now: float | None = None) -> str | None:
     if where in ("title", "mercs_title", "round_intro"):
         return _confirm(where, now)                         # these match the reference, so the default entry is up
     return None
+
+
+# The walk's pace (re4switch_bot), closed on the frame. Measured 2026-11-09/10: at one press per 3.0 s the main menu
+# alone took 12 s (LOAD -> EXTRAS is four steps), which is what put the walk inside the old stall escape's 12 s. A move
+# now goes in every MOVE_GAP_S once the last one has shown on the read cursor (MOVE_RETRY_S without it: again); a
+# confirm waits until its screen has been named SETTLE_S (a press during the fade-in is dropped) and, on a cursor
+# menu, until two reads in a row agree the cursor is on the target. CONFIRM_GAP_S above still keeps a second confirm
+# off a screen that is fading out (the double A that lands on LOAD).
+MOVE_GAP_S, MOVE_RETRY_S = 0.8, 2.0
+SETTLE_S, CONFIRM_AFTER_S = 1.0, 0.8
+CURSOR_MENUS = ("main_menu", "extras_menu")
+
+
+def next_is_move(scr: dict) -> bool:
+    """Whether step(scr) would move a cursor (rather than confirm, cancel or wait)."""
+    where = scr.get("where")
+    if where in CURSOR_MENUS:
+        cur, tgt = scr.get("cursor"), scr.get("target")
+        return isinstance(cur, int) and isinstance(tgt, int) and cur != tgt
+    if where in ("select_player", "select_stage"):
+        return int(scr.get("moved") or 0) < len(selection_moves(where))
+    return False
+
+
+class Pace:
+    """When the walk's next press may go in (see MOVE_GAP_S): observe() every read, ready() before step(), pressed()
+    after a press."""
+
+    def __init__(self):
+        self.where, self.since = None, None
+        self.last_press = float("-inf")
+        self.moved_from = None                  # the cursor a move left from, until a read shows it elsewhere
+        self.on_target = 0                      # reads in a row with the cursor on the target
+
+    def observe(self, scr: dict, now: float) -> None:
+        where = scr.get("where")
+        if where != self.where:
+            self.where, self.since, self.moved_from, self.on_target = where, now, None, 0
+        if where in CURSOR_MENUS:
+            cur = scr.get("cursor")
+            self.on_target = self.on_target + 1 if isinstance(cur, int) and cur == scr.get("target") else 0
+            if self.moved_from is not None and cur != self.moved_from:
+                self.moved_from = None          # the last move showed
+
+    def ready(self, scr: dict, now: float) -> bool:
+        if next_is_move(scr):
+            if now - self.last_press < MOVE_GAP_S:
+                return False
+            return self.moved_from is None or now - self.last_press >= MOVE_RETRY_S
+        if self.since is None or now - self.since < SETTLE_S or now - self.last_press < CONFIRM_AFTER_S:
+            return False
+        return scr.get("where") not in CURSOR_MENUS or self.on_target >= 2
+
+    def pressed(self, scr: dict, key: str, now: float) -> None:
+        self.last_press = now
+        self.moved_from = scr.get("cursor") if key in DPAD.values() and scr.get("where") in CURSOR_MENUS else None
 
 
 def press_gap(scr: dict) -> float:
