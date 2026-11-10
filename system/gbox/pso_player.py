@@ -372,18 +372,18 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
             keep = keep_vl(nd)
             if j in geo:
                 P, N, T = geo[j]
-                models[j] = ninja.cnk_model_lists(P, N, T, 1, mat, tiny_fl, tex_fl, strip_fl, base=vbase, keep_vlist=keep)
+                models[j] = ninja.cnk_model_lists(P, N, T, 1, mat, tiny_fl, tex_fl, strip_fl, e=e, base=vbase, keep_vlist=keep)
             elif nd["model"]:
                 c_r = struct.unpack_from(e + "4f", data, nd["model"] + 8)
                 models[j] = (keep + struct.pack("<I", 0xFF) if keep else b"", empty_pl, list(c_r[:3]), c_r[3])
         nn = [dict(nd) for nd in nodes]
         for j in geo:
             nn[j]["flags"] &= ~0x8
-        d2, _root, ptrs = ninja.write_tree(nn, models, 0)
+        d2, _root, ptrs = ninja.write_tree(nn, models, 0, e=e)
         f = nj_file(d2, ptrs)
         if len(f) > 64 * 2048:                               # patch_gdi moves it after the last file if it grew
             raise ValueError(f"{bpath}: {len(f)} bytes")
-        b2 = bml_build(bml, {f"pl{cls.lower()}bdy00.nj": f} | {n: speck_nj() for n in extras_bml})
+        b2 = bml_build(bml, {f"pl{cls.lower()}bdy00.nj": f} | {n: speck_nj() for n in extras_bml}, e=e)
         if len(b2) > 64 * 2048:
             raise ValueError(f"{mpath}: {len(b2)} bytes")
         return f, b2

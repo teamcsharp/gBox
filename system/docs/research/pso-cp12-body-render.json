@@ -1,0 +1,23 @@
+{
+ "model": "D:\\gBox\\pso-ds\\renders\\cp12-body.obj",
+ "out": "D:\\gBox\\pso-ds\\renders\\cp12-body.png",
+ "meshes": 1,
+ "triangles": 658,
+ "bounds": [
+  [
+   -1.7408490180969238,
+   -1.5220385789871216,
+   18.57659912109375
+  ],
+  [
+   1.7179629802703857,
+   1.9713516235351562,
+   22.585695266723633
+  ]
+ ],
+ "devices_enabled": [
+  "NVIDIA GeForce RTX 3090"
+ ],
+ "engine": "CYCLES",
+ "samples": 64
+}

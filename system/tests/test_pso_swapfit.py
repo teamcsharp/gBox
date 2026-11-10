@@ -15,7 +15,7 @@ HUNEWEARL = {"bones": 64, "vertices": 356, "buckets": [0, 1, 2, 3, 4, 5, 6, 7]}
 def test_a_donor_with_more_materials_is_refused():
     """This is the crash: the renderer looks up a material the host does not have."""
     out = F.compare(HUMAR, HUNEWEARL)
-    assert out["safe"] is False and "texture buckets differ" in out["why"]
+    assert out["safe"] is False and "the donor references texture buckets the host does not have" in out["why"]
 
 
 def test_a_donor_with_the_same_materials_but_other_proportions_is_allowed_but_flagged():
@@ -55,3 +55,12 @@ def test_the_real_bodies_predict_both_round_35_outcomes():
     assert F.compare(sigs["A"], sigs["C"])["safe"] is True, "HUcast must be the render-but-deform case"
     assert F.compare(sigs["A"], sigs["B"])["safe"] is False, "HUnewearl must be the refused case"
     assert len(sigs["A"]["buckets"]) == 5 and len(sigs["B"]["buckets"]) == 8
+
+
+def test_a_donor_that_uses_a_subset_of_the_host_materials_is_safe():
+    """A built GC swap emits the fitted mesh in one host material: fewer buckets, all of them the host's own."""
+    host = {"bones": 64, "buckets": [0, 1, 2, 3, 4], "vertices": 311}
+    donor = {"bones": 64, "buckets": [1], "vertices": 666}
+    result = F.compare(host, donor)
+    assert result["safe"] is True and result.get("subset") is True
+    assert result.get("deforms") is True                 # different vertex count: the gate's own wording

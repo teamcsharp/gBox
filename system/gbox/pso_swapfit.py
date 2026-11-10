@@ -39,11 +39,15 @@ def compare(host: dict, donor: dict) -> dict:
     """Will a byte-level copy of ``donor`` over ``host`` be structurally valid?"""
     if not host.get("bones") or not donor.get("bones"):
         return {"safe": False, "why": "one of the bodies has no bones", "host": host, "donor": donor}
-    if host["buckets"] != donor["buckets"]:
+    # Only a bucket the host lacks is the crash case (round 35): a donor that uses a *subset* of the host's materials - which
+    # is what a built GameCube swap emits, since the writer places the fitted mesh in one material - renders on the host's
+    # own material set.
+    missing = sorted(set(donor["buckets"]) - set(host["buckets"]))
+    if missing:
         return {"safe": False,
-                "why": (f"texture buckets differ: host {host['buckets']}, donor {donor['buckets']} -- the donor mesh "
-                        f"references materials the host character does not have, which is the crash case (round 35)"),
-                "host": host, "donor": donor}
+                "why": (f"the donor references texture buckets the host does not have: {missing} "
+                        f"(host {host['buckets']}, donor {donor['buckets']}) -- that is the crash case (round 35)"),
+                "host": host, "donor": donor, "missing_buckets": missing}
     if host["bones"] != donor["bones"]:
         return {"safe": False,
                 "why": f"bone count differs: host {host['bones']}, donor {donor['bones']}",
@@ -53,8 +57,10 @@ def compare(host: dict, donor: dict) -> dict:
                 "why": (f"same bones and materials, but {donor['vertices']} vertices against the host's "
                         f"{host['vertices']}: a copy renders with the donor's proportions on the host's skeleton "
                         f"(the deformed case, round 35)"),
-                "host": host, "donor": donor, "deforms": True}
-    return {"safe": True, "why": "bones, materials and vertex count all match", "host": host, "donor": donor}
+                "host": host, "donor": donor, "deforms": True,
+                "subset": set(donor["buckets"]) != set(host["buckets"])}
+    return {"safe": True, "why": "bones, materials and vertex count all match", "host": host, "donor": donor,
+            "subset": set(donor["buckets"]) != set(host["buckets"])}
 
 
 def report(host_sig: dict, donor_sig: dict, *, host_name: str = "host", donor_name: str = "donor") -> str:

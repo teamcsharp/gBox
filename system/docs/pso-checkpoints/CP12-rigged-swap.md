@@ -119,3 +119,57 @@ subject as well.
 
 **Next step, precise:** build (or find) a rigged GLB donor, run `build_swap` with the roles from `model_roles(path)`, gate
 with `pso_swapfit.compare`, export the swapped body's geometry and render it with the proven headless Blender path.
+
+## Round 81: the first real rigged swap built - gate SAFE, candidate renders clean, **the game body renders exploded**
+
+**The build works end to end now.** With the library donor **Chrom** (`D:\gBox\cache\characters\chrom_ssbu\chrom_ssbu.glb`,
+6.6 MB, 18 donor roles) and Blender 4.5.10:
+
+```
+[ 20] Fitting chrom to the HUcast body (64 nodes)
+[ 40] Decimating chrom to 900 triangles (Blender)
+[ 85] Writing the atlas into 286 class textures
+BUILD OK rigged=D:\gBox\pso-ds\cp12-work\rigged.gltf files=3
+```
+
+report: `source_triangles 18872 -> triangles 875` (budget 900), `scale 1.1219`, `normals_flipped 1`,
+`limb_stretch {l_upper 0.87, r_upper 0.84, l_thigh 1.23, r_thigh 1.24, ...}`, all 18 roles used. The three files are
+`PSO/PLCBDY00.NJ` (49,172 B), `PSO/PLCNJ.BML` and `PSO/PLCTEX.AFS`.
+
+**Two more endianness gaps were behind it** (both fixed on this branch):
+
+* `ninja.cnk_model_lists(..., e=)` and `ninja.write_tree(..., e=)` take the endianness but `build_swap` omitted it, so the
+  built body was **little-endian** and could not even be re-parsed (`struct.error ... offset 851968`);
+* `bml_build(...)` in `encode()` likewise needed `e=e` (the BML header fields are big-endian on the GameCube).
+
+**The gate, corrected and passing:** `pso_swapfit.compare` demanded **exact** bucket-list equality, which no built GC swap
+can satisfy (the writer places the fitted mesh in one host material). The crash it guards is a donor referencing a bucket
+the host *lacks*, so the rule is now `set(donor) - set(host)` must be empty, with `subset: True` recorded. Re-gated:
+
+```
+SAFE: True | why: same bones and materials, but 666 vertices against the host's 311: a copy renders with the donor's
+proportions on the host's skeleton (the deformed case) ... subset: True
+```
+
+`tests/test_pso_swapfit.py` **8 passed** (the refusal case still refused, plus a new subset case).
+
+**The renders (both on the 3090 only, Cycles, 64 samples, 900x900):**
+
+| artifact | what it shows | verdict |
+|---|---|---|
+| `D:\gBox\pso-ds\renders\cp12-chrom-hucast.png` | the **rigged candidate** (`rigged.gltf`, 2 meshes, 18,952 tris): a coherent Chrom with sword and cape, correct proportions, no exploded polygons | **clean** |
+| `D:\gBox\pso-ds\renders\cp12-body.png` | the **built game body** (`out/PSO_PLCBDY00.NJ` parsed with `ninja.NJ(be=True)` -> OBJ: 64 bones, 355 vertices, 875 triangles, bucket [1]) | **EXPLODED** - a heap of stray triangles |
+
+**So CP12's accept is currently half met and precisely blocked:** the swap-fit gate says safe, the rigged candidate renders
+cleanly, but the *game-body writer* still produces broken geometry - the accept's "renders without exploded polygons" is
+**not** satisfied for the built body. The measured symptom: the body's vertices occupy only `z 18.58..22.59` (a small
+cluster) while the rigged candidate spans `-11.7..22.6`, i.e. the new polygon list addresses the wrong vertex-cache slots.
+The likely cause is the **index base**: `cnk_model_lists(..., base=vbase)` biases the strip indices to the first vertex
+cache slot, but each node also keeps the host's original vertex chunks (`keep_vlist`), so the bias must account for that
+prefix. That is the next fix, and it is testable offline with the same OBJ -> Blender path.
+
+**Honest state of the three accept lines:** gate safe ✓, candidate render ✓, **game body render ✗ (exploded)**, boot-to-
+character-select still needs the CP4 window.
+
+Tests: `test_pso_swapfit.py` 8 passed; `test_pso_gc_swap.py` + player texture/equipment suites 36 passed (before the writer
+change; the writer change is exercised by the build above).
