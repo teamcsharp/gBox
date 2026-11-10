@@ -798,3 +798,24 @@ pressed B, which does nothing there.
   `gbox/mt_arc.py`/`swap_arc` does not find a body skin group in these RE6 body arcs. That parser is the next piece:
   RE6's arc group layout differs from RE5's and needs its own group-naming (the module comments already note RE6 head
   arcs' largest group is the hair).
+
+## Round 34 status (2026-11-09, ~22:50 CST): the RE6 arc map naming is the open question
+
+Investigated why `skin_swap.random_swap_build` cannot build a RE6 swap (`a character has no body skin group to
+swap`). `material_groups()` groups entries whose basename ends `_BM` / `_MM` / `_NM` under `\model\`, and
+`body_group()` then picks a group with a BM map.
+
+* **Enemy arcs work with that rule**: `uEm5200.arc` (319 entries) has names like
+  `data\chara\em\em5000\model\em5000_00_Polo_BM` / `_MM` / `_NM`, so groups exist.
+* **Player body arcs do not**: `uPl00LeonUsa.arc` (113 entries) has only **four** `\model\` entries and every one is
+  named `...\model\pl0000` - sizes 99, 389103, 514, 50 with tags `0x40000190`, `0x400c3230`, `0x400007ac`,
+  `0x40000050`. The map kind is not in the name (the basename is the resource hash), so no BM/MM/NM group can be
+  derived from the names, and the builder refuses.
+
+So the next step is an MTF type pass for RE6 player arcs: derive the map kind from the entry tag/hash (the enemy arcs
+show BM and NM sharing a tag while MM differs, e.g. `0x40055e3c` for BM/NM vs `0x4002b43c`/`0x40003434` for MM), or
+from the material resource's texture references, then feed `swap_arc(..., group=..., donor_group_name=...)` explicitly
+(the parameters exist for exactly this case).
+
+Delivered this round: **`switch_decrypt` op `arc-list`** - an ARC's entries with name/size/hash/tag through
+`gbox.mt_arc`; verified on `uEm5200.arc` (319 entries). Tests: 6 pass in the tool suite.
