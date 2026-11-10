@@ -862,3 +862,16 @@ Delivered this round: **`switch_decrypt` op `arc-list`** - an ARC's entries with
 So the mercmode chain is now complete on the client side: `switch_romfs_materialize` (arcs from the container) ->
 `random_swap_build(base_build=<update build>)` (a launch-ready swap) -> the normal launch path. The `skin_swap` /
 `default_mods` parameters select it.
+
+## Round 38 status (2026-11-09, ~23:15 CST): the RE6 cast/enemy swap builds on the i9; its launch needs the build job to finish first
+
+* **`skin_swap.cast_swap_build` works on the i9** with the materialised arcs: `castswap-verify-r38` was built with
+  **six enemy arcs wearing cast models** - `uEm5200` <- chris, `uEm5210` <- leon, `uEm1000` <- ada, `uEm2100` <- carla,
+  `uEm2210` <- jake, `uEm2300` <- helper - and the player `piers` wearing **majini clothes** (groups
+  `pl0300_01shirts`, `em5000_m_body`, retagged). That is exactly the operator's "characters replaced as zombies ... and
+  wearing majini clothes" requirement, built entirely from the game's own arcs on this client.
+* **Launch still needs the build registered through `switch_mods`.** A hand-copied variant (`castswap-verify-r38` with
+  the ExeFS pasted in) has `"files": []` in `.gbox-mod.json`, so the launcher has nothing to link and the job sits
+  "running" with no emulator process. The properly registered build (`switch_mods op=write` with the 5 ExeFS files and
+  the 7 arcs) was submitted, but its job was still queued when the launch job ran (admission), so the launched build did
+  not exist yet and the same stall followed. Next step: wait for the build job to reach `succeeded`, then launch it.
