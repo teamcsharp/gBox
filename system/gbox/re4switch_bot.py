@@ -143,7 +143,9 @@ class Round:
             self.last_timer = timer
             self.zero_since = (self.zero_since or now) if timer <= 0 else None
         p = snap.get("player")
-        if isinstance(p, dict) and p.get("pos") is not None and p.get("hp") is not None and p["hp"] > 0:
+        # the player unit read through the bss pointer and checked by its class (re4_switch.player_unit); his life is
+        # not in that unit on Switch, so a position is the evidence (a health, when one is read, must be above 0)
+        if isinstance(p, dict) and p.get("pos") is not None and (p.get("hp") is None or p["hp"] > 0):
             self.player_seen = True
 
     def clock_ran_out(self, now: float) -> bool:
@@ -218,6 +220,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
     ticks = 0
     in_round = False
     rnd: Round | None = None
+    last_snap: dict | None = None
     pace = driver.Pace()
     unknown_since = None
     seen_menu, prev_where = False, None             # title_returns: the title again after a menu (an idle return or
@@ -280,6 +283,10 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                 stats["title_returns"] = stats.get("title_returns", 0) + (prev_where != "title")
             if where == "dead_continue" and prev_where != "dead_continue":
                 stats["deaths"] = stats.get("deaths", 0) + 1     # the walk answers Continue: Yes (re4_switch.step)
+                if rnd is not None and rnd.posted is None and rnd.player_seen:
+                    # the round's end, witnessed by the game's own death screen (mercmode.accept_boundary)
+                    _post(rnd, {"screen": "dead", "death_screen": True, "hp": None}, last_snap or {}, stats,
+                          clock(), round_boundary, keys)
             seen_menu = seen_menu or where in driver.CURSOR_MENUS
             prev_where = where
             # moves on a short cadence once the last one showed; a confirm once its screen has settled (and, on a
@@ -327,6 +334,8 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             rnd.hud_seen = True
 
         snap = _snapshot(m, stats) if m is not None else None
+        if snap is not None:
+            last_snap = snap
         if snap is not None:
             _maintain_mods(ad, snap, stats)
         if rnd is not None and snap is not None:
@@ -393,6 +402,11 @@ def _report(rnd: Round, snap: dict, stats: dict, now: float, round_boundary, key
     end = rnd.terminal(snap, now)
     if end is None:
         return
+    _post(rnd, end, snap, stats, now, round_boundary, keys)
+
+
+def _post(rnd: Round, end: dict, snap: dict, stats: dict, now: float, round_boundary, keys: Keys) -> None:
+    """Post this round's end once (its RAM / screen witness) to MercMode."""
     body = _boundary(rnd, end, snap, stats, now)
     rnd.posted = body
     stats["last_boundary"] = {k: body[k] for k in ("round_id", "stage", "character")} | {"screen": end["screen"]}

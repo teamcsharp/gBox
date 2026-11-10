@@ -449,3 +449,29 @@ def test_the_walk_survives_the_title_coming_back(monkeypatch):
     if game.screen != "extras_menu":
         assert stats.get("title_returns", 0) >= 1, "a title return is counted where the panel can see it"
     assert "b" not in [k for _, _, k in game.log]
+
+
+def test_the_games_death_screen_posts_the_death_boundary(monkeypatch):
+    """2026-11-10: the player's life is not in his unit on Switch, so no RE4 death ever counted and MercMode cut every
+    RE4 turn at 10 minutes. The game's own You Are Dead / Continue screen is the death's witness."""
+    posted = []
+    monkeypatch.setattr(B.screens, "Reader", lambda: Reader(["playing"] * 4 + ["dead_continue"] * 6 + ["playing"] * 190))
+    snaps = FakeRound([100.0 - i for i in range(200)])
+
+    def no_hp(m):
+        s = snaps(m)
+        s["player"] = dict(s["player"], hp=None)
+        return s
+    monkeypatch.setattr(B.driver, "snapshot", no_hp)
+    adapter = Adapter([b"frame"] * 400)
+    ticks = {"n": 0}
+
+    def clock():
+        ticks["n"] += 1
+        return 1_000_000.0 + ticks["n"] * 0.5
+    stats = {}
+    B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: ticks["n"] > 300, sleep=lambda s: None,
+           stats=stats, clock=clock, m=object(), round_boundary=lambda body, st: posted.append(body) or True)
+    assert stats["deaths"] >= 1 and len(posted) == 1
+    w = posted[0]["witness"]
+    assert w["screen"] == "dead" and w["death_screen"] is True and w["player_verified"] is True

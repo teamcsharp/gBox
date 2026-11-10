@@ -1871,6 +1871,25 @@ def test_re4_switch_results_count_on_the_clock_witness():
                           | {'round_id': 'd' * 32}, parent_job=job, now=now[0])
 
 
+def test_re4_switch_death_counts_on_the_games_death_screen():
+    """RE4 Switch: the player's life is not in his unit, so its death is witnessed by the game's own death screen."""
+    from gbox import re_switch
+    store, w, saver, calls, now, tick, run, job = playing()
+    run = _re4_switch_run(store, w)
+    body = boundary(run, now[0], screen='dead', death_screen=True, hp=None, game_routine=None, room=None)
+    assert M.accept_boundary(store, run, body, parent_job=job, now=now[0])['witness']['death_screen'] is True
+    with pytest.raises(ValueError):                                         # the player unit never seen
+        M.accept_boundary(store, run, boundary(run, now[0], screen='dead', death_screen=True, hp=None,
+                                               player_verified=False) | {'round_id': 'e' * 32},
+                          parent_job=job, now=now[0])
+    run5 = store.get(S.STATE, w['name'])
+    run5['mercmode'] = dict(run5['mercmode'], title='re5', map_id=re_switch.RE5_TITLE_ID)
+    store.put(S.STATE, w['name'], run5)
+    with pytest.raises(ValueError):                                         # RE4 Switch only
+        M.accept_boundary(store, run5, boundary(run5, now[0], screen='dead', death_screen=True, hp=None)
+                          | {'round_id': 'f' * 32}, parent_job=job, now=now[0])
+
+
 def test_the_clock_witness_is_re4_switch_only():
     from gbox import re_switch
     store, w, saver, calls, now, tick, run, job = playing()

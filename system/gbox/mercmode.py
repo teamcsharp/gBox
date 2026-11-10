@@ -1192,6 +1192,11 @@ def accept_boundary(store, run, body, *, parent_job, now=None):
     from .re_switch import RE4_TITLE_ID
     clock_witness = expected_map == RE4_TITLE_ID and terminal == 'results' and isinstance(witness, dict) \
         and witness.get('clock_verified') is True
+    # ... and its death is the game's own "You Are Dead / Continue" screen (re4_switch_screens names it from the frame;
+    # 2026-11-10: the player's life on Switch is not in his unit, so no RE4 Switch death could ever count and every RE4
+    # turn ran into the 10-minute no-progress cut). Only that edition, only a death, only with the player unit seen.
+    death_screen = expected_map == RE4_TITLE_ID and terminal == 'dead' and isinstance(witness, dict) \
+        and witness.get('death_screen') is True
     if body.get('map_id') != expected_map or body.get('role') not in roles \
             or body.get('source') != 'native_terminal_reader' or not isinstance(witness, dict) \
             or witness.get('playing_observed') is not True \
@@ -1211,7 +1216,9 @@ def accept_boundary(store, run, body, *, parent_job, now=None):
                 or isinstance(witness.get('kills'), (int, float)) and witness['kills'] >= 150 or native_done):
             raise ValueError('The native result tally is not complete')
     elif terminal == 'dead':
-        if not isinstance(witness.get('hp'), (int, float)) or not math.isfinite(witness['hp']) or witness['hp'] > 0:
+        if death_screen and witness.get('player_verified') is True:
+            pass                                          # RE4 Switch: the game's own death screen (above)
+        elif not isinstance(witness.get('hp'), (int, float)) or not math.isfinite(witness['hp']) or witness['hp'] > 0:
             raise ValueError('Death needs the actual player health, not a missing player')
     else:
         raise ValueError('Menus, interrupted rounds and role changes cannot rotate MercMode')
