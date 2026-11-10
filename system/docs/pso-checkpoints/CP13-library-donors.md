@@ -167,3 +167,17 @@ body whose node handed the parser a "plausible" chunk header after a mis-termina
 
 **CP13's remaining work is unchanged and live-only:** the per-boot donor pick at character select and the hot swap, both in a
 CP4 window. The offline half now covers three donors end to end.
+
+## Round 88 addendum: the endianness sweep finished - the head stand-in was little-endian as well
+
+With the two end-marker bugs fixed, a sweep of `pso_player.py` for remaining hard-coded little-endian writes found one more
+real one: **`speck_nj`**, the one-node placeholder written over the class **head / hair / cap** parts, built its node tree,
+its `trs` and its container with the default little-endian. A GameCube swap therefore carried little-endian head stand-ins
+that the game would read as garbage (an invisible or exploded head, and possibly the crash dialog).
+
+Fixed: `speck_nj(e="<")`, with the `trs` pack and the `write_tree` call following `e`, and **both** call sites inside
+`build_swap` passing the container endianness. The other two little-endian writes that remain are platform-invariant by
+design: the `NJCM` container size and the `POF0` header length are little-endian on both Dreamcast and GameCube (`ninja`
+documents this explicitly).
+
+Suites: `test_pso_body_endian.py` + `test_pso_gc_swap.py` + `test_pso_swapfit.py` = **22 passed**.
