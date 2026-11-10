@@ -181,3 +181,29 @@ design: the `NJCM` container size and the `POF0` header length are little-endian
 documents this explicitly).
 
 Suites: `test_pso_body_endian.py` + `test_pso_gc_swap.py` + `test_pso_swapfit.py` = **22 passed**.
+
+## Round 89: a real gap found while verifying the fix - the head/hair/cap stand-ins are never written on the GameCube
+
+Verifying the `speck_nj` fix end to end turned up something better: the stand-ins are **not written at all** for a GameCube
+swap. `build_swap`'s loop is Dreamcast-shaped:
+
+```python
+for hp in disc.files:
+    if hp.startswith(f"PSO/PL{cls}") and hp[7:10] in ("HED", "HAI", "CAP") and hp.endswith(".NJ"):
+        files[hp] = speck_nj(e)
+```
+
+On a `GCDisc` there is no `PSO/` directory and the parts are flat, lower-case and **indexed** - measured this round:
+**186** parts match hed/hai/cap, e.g. `plAhai00.nj`, `plAcap06.nj` - so the condition never matches and `files` gets no head
+entries. The consequences:
+
+* a GameCube swap **keeps the class's own head, hair and caps** (the donor's body on the host's head at character select -
+  the accept frame would show exactly that mismatch);
+* the `speck_nj(e)` fix is still correct and needed for any caller that does write those parts, and for the Dreamcast path.
+
+**Not fixed this round, deliberately:** writing the stand-ins changes which files the mod ships (`plAhed*/hai*/cap*` for the
+class), and nobody has yet verified that the game accepts those replacements on the GameCube - the safer order is to see the
+swap at character select first (CP12's live frame), then decide. The exact change is small and named: replace the loop with a
+`pso_gc_paths` lookup over the class's `plA<hed|hai|cap><NN>.nj` names when `disc` is a GC disc.
+
+Daisy rebuilt identically after the `speck_nj` change (788 triangles, SAFE), so the fix is a no-op for the current outputs.
