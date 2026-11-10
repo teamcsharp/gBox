@@ -125,3 +125,29 @@ The live byte-flip accept test remains the only way to prove "cipher" versus "pa
 
 Note: CP4's gates were checked again this round (worker `idle_seconds = 44.9`, CPU 54 %) - the operator was at the
 machine, so no launch was attempted.
+
+## Round 51: the copy path does not decode - the record size is 0x2798, and the "cipher" hypothesis weakens
+
+Decompiling the two candidates from round 50:
+
+* **`FUN_80200560`** (304 B) allocates two ~71 KB buffers (`0x1156c` = 71,020 bytes), takes two card handles
+  (`FUN_801fc900`), and moves data through a state struct at `0x8051381c` with the **file layer**'s
+  `FUN_8007c0cc` / `8007c134` / `8007c264` / `8007c378` / `8007c48c` calls;
+* **`FUN_80200690`** (232 B) then copies the buffer **record by record at a stride of `0x9e6` words = `0x2798` bytes**
+  (10,136 bytes), until `0x454b` words = **71,020 bytes**, i.e. **7 records**, calling **`FUN_801fdfb8`** once per record;
+* **`FUN_801fdfb8`** (88 B) is a **plain structure copy**: `FUN_8013a650`, `FUN_801fe010(dst+0x41c, src+0x41c)`, then the
+  three words at `+0x278c/+0x2790/+0x2794`. **No XOR, no shift, no table lookup.**
+
+So the bytes that sit on the card are copied into RAM *as they are* by this path: the character save's record size is
+**`0x2798` (10,136 bytes)**, and the 71,020-byte area holds **7 records**. That weakens the "cipher" hypothesis and
+favours "the save stores the game's own packed structs" - in which case the earlier "gibberish" was packed data, not
+ciphertext, and the missing `BQF` string means the name is in a slot/encoding I have not located (PSO GC stores the
+character name in its own text encoding, not ASCII).
+
+**What is still solid:** the card path, the block map, the file sizes, the record stride, and that the payloads are not
+plain ASCII. **What changed:** the encoding is *not* applied by the file copy path, so if a decode exists it happens
+later (when a slot is parsed) or there is none. Decompiles kept in `docs/research/pso-save-copy-path.txt`.
+
+Next: read the slot parser that consumes a record (`FUN_801fe010` and the three words at `+0x278c..+0x2794`), and locate
+the character-name field by walking a record against the known character data (class/level/position fields are
+recognisable in RAM).
