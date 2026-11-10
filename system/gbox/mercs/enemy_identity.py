@@ -287,81 +287,111 @@ def _zombie(cls, name, stages, evidence, level="unconfirmed", tier="normal", dan
 
 _MUTATION = ("A J'avo mutated where it was hurt: the new limb is its weapon and its weak point.",
              "the mutated part")
+# RE6 settled from the game files by #9343 (docs/research/re6-switch-enemy-identities.md, checked 2026-11-10 against
+# the RomFS on lilspark: every archive entry it cites is in that class's archive, uEm3300.arc and uEm3301.arc are
+# byte-identical, and Msg_eng.arc's mes_file_eng holds each cited string at the cited index): "verified" where the
+# class archive spells the name (juavo, zonbie, parachute); "matched" where the game's own creature name (that file's
+# creature list, strings #6297-#6362) is tied to the class by class-specific entries (motions, sounds, textures). The
+# four it leaves not determined (uEm2010, uEm2230, uEm3320, uEm4100) keep their old rows. Tiers are not in the files:
+# they stay the table's own judgement.
+_M9343 = "#9343: "
+_MSG = "Msg_eng.arc mes_file_eng string "
 _RE6 = [
     _javo("uEm1000", "J'avo", ("Rail Yard", "Requiem for War", "High Seas Fortress", "Steel Beast",
                                "Creature Workshop", "Liquid Fire"),
           "named live (enemy_kinds); the J'avo sets' bulk (Rail Yard 506 No Mercy placements)", level="verified"),
-    _javo("uEm1200", "J'avo (Lanshiang)", ("Requiem for War", "Steel Beast"),
-          "the bulk of Requiem for War (298) and Steel Beast (286), with uEm1000; the live crop shows a J'avo in a "
-          "red and black outfit"),
-    _e("uEm1370", "J'avo mutant (uEm1370)", "dangerous",
-       "Not identified: a J'avo-family body with a great hooded, winged head.", "head", _JAVO_KILL,
-       stages=("Liquid Fire",), level="unconfirmed",
-       evidence="its model (em1370, rendered) is a hooded, winged figure; Liquid Fire's set: 3 placements",
-       sources=(ER6 + "javo",), kind="mutation"),
-    _javo("uEm1400", "J'avo (Neo-Umbrella)", ("Creature Workshop", "Liquid Fire"),
-          "the bulk of Creature Workshop (284) and Liquid Fire (321); the writer's body survey reads it as a "
-          "humanoid J'avo (re6-parity.md)", level="inferred"),
+    _javo("uEm1200", "J'avo", ("Requiem for War", "Steel Beast"),
+          _M9343 + "uEm1200.arc carries em1200_juavo_mask_break (the romanised name) and the jvupper / jveye / "
+          "jvpants textures; the bulk of Requiem for War (298) and Steel Beast (286); the old '(Lanshiang)' "
+          "qualifier is not determined (stage placement only)", level="verified"),
+    _e("uEm1370", "Chrysalid", "dangerous",
+       "A J'avo's cocoon (the pupa stage); left alone it hatches into a heavy B.O.W. (Strelats, Napad, Gnezdo).",
+       "the shell (lots of ammo)", ["Destroy it before it hatches", "Explosives on the shell"],
+       aliases=("Kokon",), stages=("Liquid Fire",), level="matched",
+       evidence=_M9343 + "uEm1370.arc's em1370_mayu ('cocoon') textures and its kneedown_after_pupa / hukurami "
+       "('swelling') cues; " + _MSG + "#6297 'Chrysalid', #6911 'Hatching Chrysalids'; uEm3000 / 3100 / 3200 / 3300 "
+       "each embed its em1370 pupa body. Liquid Fire's set: 3", sources=(ER6 + "chrysalid",), kind="mutation"),
+    _javo("uEm1400", "J'avo", ("Creature Workshop", "Liquid Fire"),
+          _M9343 + "uEm1400.arc carries em1400_juavo_mask_break (the romanised name); the bulk of Creature Workshop "
+          "(284) and Liquid Fire (321); the old '(Neo-Umbrella)' qualifier is not determined", level="verified"),
     _e("uEm2010", "J'avo mutation (head)", "dangerous", *_MUTATION, ["Shoot the mutated head", "Back off its reach"],
        aliases=("Glava",), level="unconfirmed", evidence="spawns only after a J'avo is hurt (no set list places it); "
        "the 20xx family read as the head mutations by its numbering", kind="mutation", sources=(ER6 + "javo",)),
-    _e("uEm2030", "J'avo mutation (head)", "dangerous", *_MUTATION, ["Shoot the mutated head", "Back off its reach"],
-       aliases=("Glava",), level="unconfirmed", evidence="as uEm2010", kind="mutation", sources=(ER6 + "javo",)),
-    _e("uEm2100", "J'avo mutation (arm)", "dangerous", *_MUTATION,
-       ["Stay out of the arm's reach", "Shoot past a shield arm to the head or legs"],
-       aliases=("Ruka",), hp=1000, level="unconfirmed", evidence="spawns only after a J'avo is hurt; maximum 1000 "
-       "in MercMode's census (re6_switch BIG_HP note); the 21xx family read as arms by its numbering",
+    _e("uEm2030", "Glava-Dim", "dangerous", *_MUTATION, ["Shoot the mutated head", "Back off its reach"],
+       aliases=("Glava", "J'avo mutation (head)"), level="matched",
+       evidence=_M9343 + "uEm2030.arc's em2030_smoke_attack and mutation_a / b cues ('Dim' = smoke); " + _MSG +
+       "#6301 'Glava-Dim', the kill medal #4895 'Kill 30 Glava-Dims.'", kind="mutation", sources=(ER6 + "javo",)),
+    _e("uEm2100", "Ruka-Srp", "dangerous", *_MUTATION, ["Stay out of the sickle arm's reach"],
+       aliases=("Ruka", "J'avo mutation (arm)"), hp=1000, level="matched",
+       evidence=_M9343 + "uEm2100.arc's em1000_gkama motion ('kama' = sickle, as Serbian 'srp') and its arm attack "
+       "cues; " + _MSG + "#6302 'Ruka-Srp'; maximum 1000 in MercMode's census (re6_switch BIG_HP note)",
        kind="mutation", sources=(ER6 + "javo",)),
-    _e("uEm2120", "J'avo mutation (arm)", "dangerous", *_MUTATION, ["Stay out of the arm's reach"],
-       aliases=("Ruka",), level="unconfirmed", evidence="as uEm2100", kind="mutation", sources=(ER6 + "javo",)),
-    _e("uEm2140", "J'avo mutation (arm)", "dangerous", *_MUTATION, ["Stay out of the arm's reach"],
-       aliases=("Ruka",), level="unconfirmed", evidence="as uEm2100", kind="mutation", sources=(ER6 + "javo",)),
-    _e("uEm2200", "J'avo mutation (legs)", "dangerous", *_MUTATION,
-       ["Counter or shotgun it as it lands", "Shoot a flyer down before it dives"], aliases=("Noga",),
-       level="unconfirmed", evidence="spawns only after a J'avo is hurt; the 22xx family read as legs by its "
-       "numbering", kind="mutation", sources=(ER6 + "javo",)),
-    _e("uEm2210", "J'avo mutation (legs)", "dangerous", *_MUTATION, ["Counter or shotgun it as it lands"],
-       aliases=("Noga",), hp=1000, level="unconfirmed", evidence="as uEm2200; maximum 1000 in MercMode's census",
+    _e("uEm2120", "Ruka-Khvatanje", "dangerous", *_MUTATION, ["Stay out of the arm's reach: it grabs"],
+       aliases=("Ruka", "J'avo mutation (arm)"), level="matched",
+       evidence=_M9343 + "uEm2120.arc's punch / grab and ground-impact motions; " + _MSG + "#6303 'Ruka-Khvatanje' "
+       "('grabbing'), by elimination among the three arm names (Srp uEm2100, Bedem uEm2140)",
        kind="mutation", sources=(ER6 + "javo",)),
+    _e("uEm2140", "Ruka-Bedem", "dangerous", *_MUTATION,
+       ["Shoot past the shield arm to the head or legs", "Stay out of the arm's reach"],
+       aliases=("Ruka", "J'avo mutation (arm)"), level="matched",
+       evidence=_M9343 + "uEm2140.arc's em2140_21_shield textures and its guard_on cue; " + _MSG + "#6304 "
+       "'Ruka-Bedem' ('rampart')", kind="mutation", sources=(ER6 + "javo",)),
+    _e("uEm2200", "Noga-Trchanje", "dangerous", *_MUTATION, ["Counter or shotgun it as it runs in"],
+       aliases=("Noga", "J'avo mutation (legs)"), level="matched",
+       evidence=_M9343 + "uEm2200.arc's run motion (the only leg class with one) beside a prejump cue; " + _MSG +
+       "#6305 'Noga-Trchanje' ('running') - the weakest of #9343's matches", kind="mutation",
+       sources=(ER6 + "javo",)),
+    _e("uEm2210", "Noga-Let", "dangerous", *_MUTATION, ["Shoot it down before it dives", "Counter it as it lands"],
+       aliases=("Noga", "J'avo mutation (legs)"), hp=1000, level="matched",
+       evidence=_M9343 + "uEm2210.arc's wingborn / wingmove motions and a bodycatch grab; " + _MSG + "#6306 "
+       "'Noga-Let' ('flight'); maximum 1000 in MercMode's census", kind="mutation", sources=(ER6 + "javo",)),
     _e("uEm2230", "J'avo mutation (legs)", "dangerous", *_MUTATION, ["Counter or shotgun it as it lands"],
-       aliases=("Noga",), level="unconfirmed", evidence="as uEm2200", kind="mutation", sources=(ER6 + "javo",)),
-    _e("uEm2300", "Chrysalid", "dangerous",
-       "A downed J'avo's cocoon; left alone it hatches into a heavy B.O.W.", "the shell (lots of ammo)",
-       ["Destroy it before it hatches", "Explosives on the shell"], aliases=("Telo", "Kokon"), hp=1000,
-       level="inferred", evidence="its model (em2300, rendered) is a cocoon; spawns only after a J'avo falls; "
-       "maximum 1000 in MercMode's census", kind="mutation", sources=(ER6 + "chrysalid",)),
+       aliases=("Noga",), level="unconfirmed", evidence="as uEm2200 (#9343: a leg mutation; Skakanje or Oklop not "
+       "determined)", kind="mutation", sources=(ER6 + "javo",)),
+    _e("uEm2300", "Telo-Eksplozija", "dangerous",
+       "A J'avo whose body mutated into a bomb: it bursts.", "the swollen body, from range",
+       ["Kill it at range", "Never let it reach you"], aliases=("Telo",), hp=1000, level="matched",
+       evidence=_M9343 + "uEm2300.arc's em2300_00_bomb01 / maku ('membrane') textures and its em2300_exp explosion "
+       "entries; " + _MSG + "#6309 'Telo-Eksplozija' ('explosion'). It was 'Chrysalid' here: the cocoon evidence is "
+       "uEm1370's. Maximum 1000 in MercMode's census", kind="mutation", sources=(ER6 + "javo",)),
     _e("uEm3000", "Strelats", "dangerous",
        "Fires a spray of needles from its neck fins at long range; the fins steam just before it shoots.",
        "head; close the distance", ["Dodge when the fins steam", "Chase it down so it cannot shoot",
                                     "Close in with a shotgun or melee"],
-       aliases=("Strelat",), stages=("Mining the Depths", "The Catacombs"), level="unconfirmed",
-       evidence="its model (em3000, rendered) is a bulky body with a spined back; placed on Mining the Depths (3) "
-       "and The Catacombs (2); the guides list Strelats among the hidden bosses", sources=(ER6 + "strelat",),
-       kind="bow"),
+       aliases=("Strelat",), stages=("Mining the Depths", "The Catacombs"), level="matched",
+       evidence=_M9343 + "uEm3000.arc's needle-shot cues (NIIDLE1, large_needle_shot) and the embedded em1370 pupa "
+       "body; " + _MSG + "#6312 'Strelats', #5799 'Mutated into a Strelats.', the tip #7073. Placed on Mining the "
+       "Depths (3) and The Catacombs (2)", sources=(ER6 + "strelat",), kind="bow"),
     _e("uEm3100", "Mesets", "dangerous",
        "A winged B.O.W. that circles, then dives; the dive cannot be countered.", "any hit while it flies",
        ["Shoot it down before it dives", "Dodge the dive"], aliases=("Meset",), stages=("Liquid Fire",),
-       level="unconfirmed", evidence="Liquid Fire's set: 6; the live crop shows a spiked, winged shape",
-       sources=(ER6 + "meset",), kind="bow"),
+       level="matched", evidence=_M9343 + "uEm3100.arc's glide, hovering, hit-ceiling and pupaborn cues; " + _MSG +
+       "#6313 'Mesets', #5800 'Played as Mesets.'; Liquid Fire's set: 6", sources=(ER6 + "meset",), kind="bow"),
     _e("uEm3200", "Napad", "boss",
        "An armoured charger whose punch grabs and slams you; normal fire barely marks it.",
-       "its back, once the armour plates break",
+       "inside the shell on its back, once the armour plates break",
        ["Sidestep or counter the charge", "Break the plates off its back, then shoot the flesh", "Explosives"],
        stages=("Rail Yard", "Urban Chaos", "High Seas Fortress", "Steel Beast", "Rooftop Mission",
-               "Creature Workshop", "Liquid Fire"), level="unconfirmed",
-       evidence="placed in seven sets, 3-6 each (Steel Beast 20); the guides name Napad Urban Chaos's hidden boss "
-       "and a Napad pack on another stage", sources=(ER6 + "napad",), kind="bow"),
+               "Creature Workshop", "Liquid Fire"), level="matched",
+       evidence=_M9343 + "uEm3200.arc's shell impact, charge, palm strike and neck-hang grab cues; " + _MSG +
+       "#6314 'Napad', the tips #7072 'A Napad's weak point is inside the shell on its back.' and #7101, #5801 "
+       "'Mutated into a Napad.'. Placed in seven sets, 3-6 each (Steel Beast 20)", sources=(ER6 + "napad",),
+       kind="bow"),
     _e("uEm3300", "Gnezdo", "boss",
        "A core hidden inside a wasp swarm; it shows only after the swarm takes enough damage.",
        "the core, once the swarm disperses",
        ["Break the swarm with fire, explosives or a shotgun", "Then shoot the core before it re-forms"],
-       stages=("Requiem for War", "High Seas Fortress", "Steel Beast"), level="inferred",
-       evidence="exactly one in three sets - the guides give Gnezdo as a hidden boss on three stages - and its "
-       "archive's model is a one-triangle placeholder (a swarm drawn by effects); uEm3320 seen live beside it",
+       stages=("Requiem for War", "High Seas Fortress", "Steel Beast"), level="matched",
+       evidence=_M9343 + "uEm3300.arc's swarm / bee loop / player-bitten cues; " + _MSG + "#6315 'Gnezdo' ('nest'), "
+       "#5802 'Mutated into a Gnezdo.'; exactly one in three sets; its model is a placeholder point (a swarm "
+       "drawn by effects); uEm3320 seen live beside it", sources=(ER6 + "gnezdo",), kind="bow"),
+    _e("uEm3301", "Gnezdo", "boss",
+       "A core hidden inside a wasp swarm; it shows only after the swarm takes enough damage.",
+       "the core, once the swarm disperses",
+       ["Break the swarm with fire, explosives or a shotgun", "Then shoot the core before it re-forms"],
+       level="matched", evidence=_M9343 + "uEm3301.arc is byte-identical to uEm3300.arc (the same SHA-1, "
+       "b323d181...): the same enemy. It was 'J'avo mutant (em1370 body)' here, from the embedded pupa model only",
        sources=(ER6 + "gnezdo",), kind="bow"),
-    _e("uEm3301", "J'avo mutant (em1370 body)", "dangerous", "The uEm1370 body, numbered with the Gnezdo.", "head",
-       _JAVO_KILL, level="unconfirmed", evidence="seen live only; its archive's model is em1370 (the hooded, "
-       "winged figure of uEm1370)", sources=(ER6 + "javo",), kind="mutation"),
     _e("uEm3320", "Gnezdo (core)", "boss", "The Gnezdo's core, out of its swarm.", "the core itself",
        ["Shoot it before the swarm re-forms"], level="unconfirmed",
        evidence="seen live only; numbered beside uEm3300; its model (em3320, rendered) is a ragged winged body",
@@ -377,59 +407,73 @@ _RE6 = [
        "Its chainsaw arm kills outright however it connects.", "head; keep it at range",
        ["Never let it close in - it is easy to sidestep", "Explosives and heavy weapons from range",
         "Kite it in a loop"],
-       stages=("Rail Yard", "Rooftop Mission", "Creature Workshop"), level="unconfirmed",
-       evidence="placed in three sets (Rooftop Mission 5 - the guides' three Ubistvo there)",
-       sources=(ER6 + "ubistvo",), kind="bow"),
+       stages=("Rail Yard", "Rooftop Mission", "Creature Workshop"), level="matched",
+       evidence=_M9343 + "uEm4300.arc's chainsaw loop and stab cues; " + _MSG + "#6318 'Ubistvo' ('murder'), the "
+       "event title #6773 'Ubistvo on the Attack'. Placed in three sets (Rooftop Mission 5 - the guides' three "
+       "Ubistvo there)", sources=(ER6 + "ubistvo",), kind="bow"),
     _e("uEm4700", "Rasklapanje", "dangerous",
        "Its only attack is a grab; shot apart, its pieces keep crawling at you.",
        "practically unkillable by gunfire; a stage hazard (lava) ends it",
        ["Do not spend ammo on it - keep moving", "Mash free of the grab (a partner knocks it off)",
         "Push or shoot it into the lava where the stage allows"],
-       stages=("Liquid Fire",), level="inferred",
-       evidence="Liquid Fire's set: 3; one archive family holds a whole body (em4700), an upper body (em4701) and "
-       "a crawling hand (em4710) - a creature that splits; the guides put Rasklapanje on the lava stage",
+       stages=("Liquid Fire",), level="matched",
+       evidence=_M9343 + "uEm4700.arc's recombine, rip-arm and arm-throw voice cues; " + _MSG + "#6319 "
+       "'Rasklapanje' ('disassembly'), #5794 'Played as a Rasklapanje.'. Liquid Fire's set: 3; one archive family "
+       "holds a whole body (em4700), an upper body (em4701) and a crawling hand (em4710)",
        sources=(ER6 + "rasklapanje",), kind="bow"),
     _e("uEm4701", "Rasklapanje (torso)", "dangerous", "A Rasklapanje's upper body, still crawling.", "a hazard",
-       ["Keep moving"], level="inferred", evidence="its model (em4701) is the em4700 body's upper half",
-       sources=(ER6 + "rasklapanje",), kind="bow"),
+       ["Keep moving"], level="matched", evidence=_M9343 + "uEm4701.arc shares 220 entries with uEm4700.arc (the "
+       "same voice cues); its model is the em4700 body's upper half", sources=(ER6 + "rasklapanje",), kind="bow"),
     _e("uEm4710", "Rasklapanje (hand)", "normal", "A crawling Rasklapanje hand.", "any hit", ["Keep moving"],
-       level="inferred", evidence="its model (em4710) is a crawling hand of the em4700 family",
-       sources=(ER6 + "rasklapanje",), kind="bow"),
+       level="matched", evidence=_M9343 + "its model (em4710) is a crawling hand of the em4700 family (the same "
+       "texture entries)", sources=(ER6 + "rasklapanje",), kind="bow"),
     _e("uEm4800", "Ogroman", "boss",
        "A giant that swipes and stomps; every attack is avoidable from range.", "the exposed weak spot on its back",
        ["Keep far away", "Break its plates, then pour heavy fire or explosives into the weak spot"],
-       stages=("Requiem for War",), level="unconfirmed",
-       evidence="Requiem for War's set: 3 - the guides' stage with two Ogroman; its archive is the largest of the "
-       "Mercenaries classes", sources=(ER6 + "ogroman",), kind="bow"),
-    _zombie("uEm5000", "Zombie (Mining the Depths)", ("Mining the Depths", "Rooftop Mission"),
-            "the bulk of Mining the Depths (159) - by the set lists only"),
-    _zombie("uEm5050", "Zombie (miner)", ("Urban Chaos", "Rooftop Mission"),
-            "its model (em5050, rendered) wears a headlamp", level="inferred"),
-    _zombie("uEm5060", "Zombie (miner)", ("Mining the Depths",), "its model (em5060, rendered) wears a headlamp",
-            level="inferred"),
-    _zombie("uEm5181", "Zombie (police)", ("Urban Chaos",), "its model (em5181, rendered) wears a police cap",
-            level="inferred"),
-    _zombie("uEm5191", "Zombie (firefighter)", ("Urban Chaos", "Mining the Depths", "Rooftop Mission"),
-            "its model (em5191, rendered) wears a yellow fire helmet and coat", level="inferred"),
+       stages=("Requiem for War",), level="matched",
+       evidence=_M9343 + "uEm4800.arc's child models em4801 / em4802 and core textures, the largest enemy model "
+       "(11 m); " + _MSG + "#6362 'Ogroman' ('huge'), #5974 'Sent a Ogroman over ...'. Requiem for War's set: 3 - "
+       "the guides' stage with two Ogroman", sources=(ER6 + "ogroman",), kind="bow"),
+    _zombie("uEm5000", "Zombie", ("Mining the Depths", "Rooftop Mission"),
+            _M9343 + "the verified zombies' 25-bone skeleton, civilian clothing textures; " + _MSG + "#6330 "
+            "'Zombie'; the bulk of Mining the Depths (159)", level="matched"),
+    _zombie("uEm5050", "Zombie", ("Urban Chaos", "Rooftop Mission"),
+            _M9343 + "armour and helmet textures; " + _MSG + "#6330 'Zombie' (#6351 'Zombie - Helmet'); its model "
+            "(em5050, rendered) wears a headlamp - the old 'miner' label rests on no entry", level="matched"),
+    _zombie("uEm5060", "Zombie", ("Mining the Depths",),
+            _M9343 + "armour and helmet textures; " + _MSG + "#6330 'Zombie'; its model (em5060, rendered) wears a "
+            "headlamp - the old 'miner' label rests on no entry", level="matched"),
+    _zombie("uEm5181", "Zombie", ("Urban Chaos",),
+            _M9343 + "cap and pouch textures; " + _MSG + "#6330 'Zombie'; its model (em5181, rendered) wears a "
+            "police cap - the old 'police' label rests on no entry", level="matched"),
+    _zombie("uEm5191", "Zombie", ("Urban Chaos", "Mining the Depths", "Rooftop Mission"),
+            _M9343 + "helmet and glove textures; " + _MSG + "#6330 'Zombie'; its model (em5191, rendered) wears a "
+            "yellow fire helmet and coat - the old 'firefighter' label rests on no entry", level="matched"),
     _zombie("uEm5200", "Zombie", ("Urban Chaos", "Rooftop Mission"), "named live (enemy_kinds)", level="verified"),
     _zombie("uEm5210", "Zombie", ("Urban Chaos", "Requiem for War", "Creature Workshop"),
             "named live (enemy_kinds)", level="verified"),
-    _zombie("uEm5400", "Zombie (The Catacombs)", ("The Catacombs",), "the bulk of The Catacombs (307)"),
-    _zombie("uEm5500", "Zombie special (uEm5500)", ("Mining the Depths",), "set list only (7)", tier="dangerous",
-            danger="Not identified: a zombie-stage special, seven a No Mercy round."),
+    _zombie("uEm5400", "Zombie", ("The Catacombs",),
+            _M9343 + "uEm5400.arc carries wp1240_zonbie_eat_dynamite (the romanised name; " + _MSG + "#6350 "
+            "'Zombie - Dynamite'); the bulk of The Catacombs (307)", level="verified"),
+    _zombie("uEm5500", "Shrieker", ("Mining the Depths",),
+            _M9343 + "uEm5500.arc's scream cues and its em5000_shr ('shr') motion; " + _MSG + "#6357 'Shrieker', the "
+            "tip #7056 'A Shrieker's weak point is its throat.'; set list only (7)", level="matched",
+            tier="dangerous", danger="A zombie whose scream calls the others and staggers you.",
+            aliases=("Zombie special (uEm5500)",)),
     _zombie("uEm5600", "Whopper", ("Urban Chaos", "The Catacombs", "Rooftop Mission"),
-            "its model (em5600, rendered) is a huge, fat zombie; placed on three zombie stages (Rooftop Mission 14 - "
-            "the guides' 'many Whoppers')", level="inferred", tier="dangerous",
+            _M9343 + "uEm5600.arc's bone-break, eat and large-impact cues; " + _MSG + "#6358 'Whopper', the tip #7057 "
+            "'A Whopper can't hurt you if it can't use its legs.'; its model (em5600, rendered) is a huge, fat "
+            "zombie; placed on three zombie stages (Rooftop Mission 14)", level="matched", tier="dangerous",
             danger="A super-sized zombie: hits hard, barely flinches at counters, blocks escape routes.",
             aliases=("Super-sized zombie",)),
-    _e("uEm5700", "Zombie Dog", "normal", "Very fast and hard to hit; it pounces.", "any hit - it dies fast",
-       ["Shoot or counter it mid-pounce", "A shotgun's spread"], stages=("Urban Chaos", "Mining the Depths",
-                                                                          "Rooftop Mission"),
-       level="inferred", evidence="its model (em5700, rendered) is a dog; 18-52 in three zombie sets",
-       sources=(ER6 + "zombie-dog",), kind="animal"),
+    _e("uEm5700", "Zombie Dog C", "normal", "Very fast and hard to hit; it pounces.", "any hit - it dies fast",
+       ["Shoot or counter it mid-pounce", "A shotgun's spread"], aliases=("Zombie Dog",),
+       stages=("Urban Chaos", "Mining the Depths", "Rooftop Mission"), level="matched",
+       evidence=_M9343 + "uEm5700.arc's bark, bite and growl cues; " + _MSG + "#6360 'Zombie Dog C'; its model "
+       "(em5700, rendered) is a dog; 18-52 in three zombie sets", sources=(ER6 + "zombie-dog",), kind="animal"),
     _e("uEm9906", "Parachute", "harmless", "Not an enemy: a dropped parachute.", "-",
-       ["Never a target"], level="inferred", evidence="its archive's model is sm5051, a parachute canopy",
-       kind="object"),
+       ["Never a target"], level="verified", evidence=_M9343 + "uEm9906.arc carries sm5051_Parachute (the name); its "
+       "model is sm5051, a parachute canopy", kind="object"),
 ]
 
 # --- Resident Evil 4 (Switch 010099A00BC1E000; the GameCube's G4BE08 reads em/type keys) --------------------------------
@@ -441,7 +485,8 @@ _RE4 = [
        ["Head or knee shot, then kick or suplex", "Shoot a lit dynamite stick in a hand: it blows up the group",
         "Fight at chokepoints; shotgun the crowds"],
        aliases=("Ganado", "Villager"), hp="1200-1800", stages=("Village",), level="matched",
-       evidence=_RE4_ESL + "the Village's em16 types 3, 4, 11 and 12 at 1200-1800 health (124 placements)",
+       evidence=_RE4_ESL + "the Village's em16 types 3, 4, 11 and 12 at 1200-1800 health: 118 placements (124 "
+       "with the six 6500-health chainsaws of types 11 and 12; #9345)",
        sources=(ER4 + "village-ganado",), kind="ganado", ram_class=False),
     _e("salvador", "Dr. Salvador", "boss",
        "A chainsaw that kills outright up close; far tougher than a Ganado.", "head",
@@ -467,7 +512,8 @@ _RE4 = [
        ["Kill the crossbow zealots first", "Shotgun or grenade a shield, or shoot around it",
         "Stay out of scythe reach"],
        aliases=("Castle Ganado", "Cultist"), hp="400-1000", stages=("Castle",), level="matched",
-       evidence=_RE4_ESL + "the Castle's em1c types 7 and 9 at 400-1000 health (110 placements)",
+       evidence=_RE4_ESL + "the Castle's em1c types 7 and 9 at 400-1000 health: 112 placements (87 of type 7, 25 "
+       "of type 9; 114 with the two leaders; #9345)",
        sources=(ER4 + "castle-ganado",), kind="ganado", ram_class=False),
     _e("zealot_leader", "Zealot leader", "dangerous",
        "A robed leader, much tougher than the others.", "head", ["Focus heavy fire on him; a Plaga may follow"],
@@ -492,8 +538,9 @@ _RE4 = [
        ["Kill the rocket soldiers before they fire", "Break shields with a shotgun or grenade",
         "Stagger, then melee"],
        aliases=("Militia", "Soldier Ganado"), hp="400-1000", stages=("Base", "Waterworld"), level="matched",
-       evidence=_RE4_ESL + "em1d (Base) and em20 (Waterworld) types 14-21 at 400-1000 health; the live census "
-       "read ordinary Ganados at 400", sources=(ER4 + "soldier-ganado",), kind="ganado", ram_class=False),
+       evidence=_RE4_ESL + "em1d (Base) and em20 (Waterworld) types 14-21 at 400-1000 health, 133 and 79 "
+       "placements (#9345); the live census read ordinary Ganados at 400 (Base 2026-11-10: 400, 600, 800, 1000)",
+       sources=(ER4 + "soldier-ganado",), kind="ganado", ram_class=False),
     _e("jj", "J.J.", "boss",
        "A gatling gun that fires only with a line of sight, after a short spin-up.", "head",
        ["Break line of sight", "Hit him with the strongest weapon during the spin-up", "Grenades"],
@@ -649,6 +696,57 @@ def weight(title_id, cls, hp_max=None) -> float:
 _RE4_KEY = re.compile(r"^em(?P<em>[0-9a-f]{2})\.(?P<type>[0-9a-f]{2})(?:\.hp(?P<hp>\d+))?$")
 RE4_STAGE_TYPES = {"Village": {3, 4, 11, 12, 0, 1}, "Castle": {7, 9, 10, 13}, "Base": {2, *range(14, 22)},
                    "Waterworld": set(range(14, 23))}
+# Each stage's set list as (type, maximum health) -> identity: #9345 (docs/research/re4-switch-mercs-spawns.md / .json,
+# checked 2026-11-10 against the RomFS's etc/omake01.esl and omake02.esl - the same sha256, every (stage, pack, type,
+# health, count) row equal). The list has no wave or kill-count field (placements are positional).
+_RE4_ROWS = {
+    "Village": {"ganado": {3: (1300, 1400, 1500, 1600, 1700, 1800), 4: (1400, 1600, 1700, 1800),
+                           11: (1200, 1400, 1600, 1700, 1800), 12: (1400, 1500, 1600, 1700, 1800)},
+                "salvador": {11: (6500,)}, "bella": {12: (6500,)}, "colmillos": {0: (1000,), 1: (1000,)}},
+    "Castle": {"zealot": {7: (400, 500, 600, 700, 800, 900, 1000), 9: (600, 700, 800, 900, 1000)},
+               "zealot_leader": {9: (2200, 2500)}, "garrador": {10: (2500, 2600)}, "garrador_armored": {13: (3000,)}},
+    "Base": {"jj": {2: (2000, 3000)}, "militia": {t: (400, 600, 800, 1000) for t in range(14, 22)}},
+    "Waterworld": {"militia": {14: (400, 600, 800, 1000), 15: (400, 600, 1000), 16: (400, 600, 800),
+                               17: (400, 600, 800), 18: (400, 800, 1000), 19: (400, 600, 800, 1000),
+                               20: (400, 600, 800), 21: (400, 600)},
+                   "super_salvador": {22: (3500, 5000)}},
+}
+RE4_SET_LISTS = {stage: {(t, hp): key for key, types in rows.items() for t, hps in types.items() for hp in hps}
+                 for stage, rows in _RE4_ROWS.items()}
+# The Switch census's "type" (unit + 0x3CE) is NOT the set list's type: #9345's static scan of main finds only two
+# direct writers of that byte (an AI state switch storing 0x16, a reset storing 0) and a 45-entry jump table indexed by
+# it - a state code, not the list's type - and live it reads 0 on every Ganado (tests/fixtures/re4sw_units_live.json:
+# a 3500-health one too; the live map of 2026-11-10 named Base's 1000-health soldiers Colmillos through it). A census
+# unit is named by its maximum health within its stage's list instead (re4_unit_key); its type byte only settles a
+# tie, and only when it is a row of that list with that health (0 never: it is the reset value).
+
+
+def _re4_stage(stage) -> str | None:
+    if not stage:
+        return None
+    s = str(stage).strip().lower()
+    rooms = {"r400": "Village", "r402": "Castle", "r403": "Base", "r404": "Waterworld"}
+    return next((k for k in RE4_SET_LISTS if k.lower() == s), None) or rooms.get(s)
+
+
+def re4_unit_key(hp_max, stage=None, etype=None) -> str | None:
+    """A Switch census unit's identity: the set-list identities with that maximum health in its stage (every stage
+    when unknown) - the one there is, else the one its type byte names among them (a list row with that health; 0 is
+    never one), else None (its health tiers it: HP_TIERS)."""
+    hp = _num(hp_max)
+    if hp is None:
+        return None
+    st = _re4_stage(stage)
+    lists = [RE4_SET_LISTS[st]] if st else list(RE4_SET_LISTS.values())
+    rows = [(t, key) for rows_ in lists for (t, h), key in rows_.items() if h == hp]
+    keys = {key for _t, key in rows}
+    if len(keys) == 1:
+        return keys.pop()
+    if isinstance(etype, int) and not isinstance(etype, bool) and etype:
+        named = {key for t, key in rows if t == etype}
+        if len(named) == 1:
+            return named.pop()
+    return None
 
 
 def re4_key(etype, hp_max, em=None) -> str | None:
@@ -681,9 +779,10 @@ def re4_key(etype, hp_max, em=None) -> str | None:
     return None
 
 
-def class_of(title, enemy: dict) -> str | None:
-    """The table key of a snapshot / frame enemy: RE4 from its type byte and health (or a GameCube class key
-    "em16.0b.hp6500"), RE5 / RE6 its RAM class name."""
+def class_of(title, enemy: dict, stage=None) -> str | None:
+    """The table key of a snapshot / frame enemy: RE4 from a GameCube class key ("em16.0b.hp6500"), a Switch census
+    unit (its RAM class a vtable number) from its maximum health in its stage's set list (re4_unit_key; stage, or the
+    row's own "stage"), else from a set list's type byte and health (re4_key); RE5 / RE6 its RAM class name."""
     if not isinstance(enemy, dict):
         return None
     t = canonical(title)
@@ -697,6 +796,9 @@ def class_of(title, enemy: dict) -> str | None:
                 if m:
                     return re4_key(int(m["type"], 16), int(m["hp"]) if m["hp"] else enemy.get("hp_max"),
                                    "em" + m["em"])
+        cls = enemy.get("class")
+        if isinstance(cls, int) and not isinstance(cls, bool):          # the Switch census (re4_switch.read_unit)
+            return re4_unit_key(enemy.get("hp_max"), stage or enemy.get("stage"), enemy.get("type"))
         return re4_key(enemy.get("type"), enemy.get("hp_max"))
     for k in ("cls", "class_id", "class"):
         v = enemy.get(k)
@@ -707,8 +809,9 @@ def class_of(title, enemy: dict) -> str | None:
 
 def resolve(title, enemy: dict, stage: str | None = None) -> dict:
     """What the map and the bots need of one enemy row: {cls, name, tier, weight, level, confirmed, known}; a class
-    outside the table keeps its class as its name and is tiered by its health (tier_source "health")."""
-    cls = class_of(title, enemy)
+    outside the table keeps its class as its name and is tiered by its health (tier_source "health"). stage: RE4's
+    stage (its set list names a census unit by its health)."""
+    cls = class_of(title, enemy, stage)
     hp_max = (enemy or {}).get("hp_max") if isinstance(enemy, dict) else None
     entry = identity(title, cls)
     if entry is None:
