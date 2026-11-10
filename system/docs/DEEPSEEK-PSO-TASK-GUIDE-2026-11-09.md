@@ -9,7 +9,70 @@ then take the packages in order; each has an acceptance test.
 
 ---
 
-## 0b. PM note, 2026-11-10 01:30 UTC: stop RE6 now, hand it over, start PSO (read this first)
+## 0c. PM note, 2026-11-10 ~09:00 UTC: PSO only, decryption and breakdown first (read this first; it replaces 0a and 0b)
+
+**RE6 is no longer yours, in any part.** Thank you for the handover (`HANDOVER-i9-re6-2026-11-10.md`). The RE session
+has taken it over on lilspark and it plays again:
+
+- The cause of the crashes was the version. Since 11-05, lilspark ran RE6 from a local cache folder that held only
+  the base NSP. The 1.0.2 update (`[01002A000CD48800][v131072]`) is now copied beside it, so Eden applies it.
+- RE6 is back in the MercMode rotation. A round played Mining the Depths: 195 kills, 1 death, `recovery-re6-update-exefs-20261110`.
+- The bot fixes are on main (`46dc0750`): the stuck native equip, standing through grenade throws, and remote bombs
+  (placed every 10 s, 20x throw speed, detonated with one enemy on them).
+
+Do not start, stop or build anything RE (RE4/RE5/RE6) from now on. If you find a bug in your Switch decryption
+modules (`switch_nca`, `switch_bktr`, `switch_patch`, `switch_extract`, `switch_decrypt`, `switch_arc`), write it in
+your lane doc; do not fix RE code paths.
+
+**Your task, in the operator's words of 2026-11-10: "analyzing, breaking down, and fully decrypting PSO".** That
+means, for Phantasy Star Online Episode I & II (GameCube), these two things, in this order:
+
+1. **The disc, fully decoded:** §4 P2.
+2. **The executable, fully mapped:** P2b below.
+
+Then P1 (boot to the field by itself), which P2b makes much easier, and P3-P6 as written.
+
+**What is already there and what is not (checked on main 2026-11-10):**
+- Not on main: no `docs/research/pso-gc-*.md`. The spark2 tickets #9182-#9184 (the disc's formats, the containers
+  and compression, the map geometry and enemy sets) produced nothing on main. Check their state in the inbox; if
+  they are not done, P2 is wholly yours. Do not wait for them.
+- Not on main: no PSO lane doc of yours and no PSO code commit since 11-09.
+- Present: the code base §2 lists (`gbox/pso_*.py`, `psomap.py`, `psoitems.py`, `psotext.py`, `pso_rom_export.py`)
+  and the extract jobs (`extract_pso_model`, `extract_pso_area`).
+- Present: the player RAM in §2 (slot table `0x8050EA10`).
+- Hermes now has 64 lanes: lilspark2 (local) 32, plus three paid nodes (Claude 16, DeepSeek 24, Z.AI 16). You may
+  file Hermes tickets for bulk, independent pieces, such as one format's round-trip tests or one area's catalogue.
+  Give each ticket an acceptance test, and review what comes back before it goes on main.
+
+### P2b. Map the executable (new; do it beside P2)
+The GameCube executable (`main.dol` on the disc) in Ghidra:
+
+- the DOL loaded at its section addresses;
+- the SDK / runtime libraries identified;
+- then the game's own functions named, for every system the bot and the mods touch:
+  - the game phase and its state machine: title, PRESS START, menus, Pioneer 2, field, boss, death;
+  - the menu cursor and selection bytes (P1 needs these);
+  - the floor/area load and the warp;
+  - the player and enemy objects (layouts, HP, position, AI state, the attack wind-ups);
+  - items and the inventory, the mag;
+  - the map loader (what reads `*.rel` / `*.dat` / `*.evt`, and with which layouts);
+  - the boss part counters;
+  - anything encrypted or checksummed on disc or in save data (name the cipher and its key source).
+
+Output:
+- `docs/research/pso-gc-executable.md`: every address with what it is and how it was proven (a decompiled function,
+  a live RAM watch with the session id);
+- a Ghidra project or exported symbol file on the i9's `D:` (never in git);
+- `gbox/pso_ram.py`: the addresses as named constants with readers, with tests on synthetic memory.
+
+Accept on: P1's menu walk using only RAM-read state from this map, and the map loader's file layouts matching P2's
+decoders.
+
+**Order and pace:** P2 and P2b in parallel, then P1, P3-P6. Append each round to `docs/ds-pso-lane-2026-11-10.md`
+on main: what you decoded, the commits, the evidence, what is next. The first round doc is due after your first
+package step, not at the end.
+
+## 0b. PM note, 2026-11-10 01:30 UTC: stop RE6 now, hand it over, start PSO (superseded by 0c)
 
 Rounds 16-21 are good findings and are on main (`5812b22b` .. `259b45eb`): an RE6 round runs on the update-only
 ExeFS build, a single arc swap plays, the 45-arc roster does not, and the heads-only build deadlocks after the save.
