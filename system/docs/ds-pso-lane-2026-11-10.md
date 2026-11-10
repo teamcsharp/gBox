@@ -2959,20 +2959,57 @@ Final round of the objective's window. This one is verification and a statement 
 door class they contain, and the instruction to **solve their offsets per room** rather than reusing city00's. That is the
 first thing to do, and it is data work, not walking.
 
+## Round 61 (2026-11-10) — the per-room offset becomes a function
+
+The last round's hand-off said the next session should "solve a lobby set's offset per room". This round turns that
+instruction into something callable, so it is a tool rather than a chore.
+
+### `gbox/pso_offset.py` (+5 tests)
+
+```python
+solve(records, entities, tolerance=6.0, min_fraction=0.25) -> {offset, matched, total, fraction}
+score(records, entities, offset, tolerance=6.0) -> int
+```
+
+It tries every `(record, entity)` pair as a candidate translation, scores each by how many records land on an entity under
+it, and returns the best -- stopping early on a perfect match. It **raises** rather than returning a poor answer when the
+best candidate explains less than `min_fraction` of the records, because a wrong offset silently makes every coordinate in
+that room meaningless.
+
+### The self-check that makes it trustworthy
+
+Run blind against `city00`'s 28 records and the ten entity positions rounds 46-49 established, it returns
+**(228.005, 291.001)** with **10 of 28 records matched** at a half-unit tolerance -- i.e. it rediscovers the constant that
+was originally measured by hand from the co-op spawn points and later proven by moving a door in game. The hundredth-of-a-unit
+difference is the solver reading the record's own float rather than the round number, which is a better estimate than the one
+I had been using.
+
+That is the useful property: the method that took three rounds to get right for city00 is now one call for any room, and the
+test asserts it reproduces the known answer before it is trusted on an unknown one.
+
+### Where this leaves the lane
+
+Every remaining P1 item is now either a tool call or a walk:
+
+1. enter a lobby room, read the entity table;
+2. `pso_offset.solve(<that room's set>, <entities>)` -> the room's offset;
+3. `pso_editor.world_position()` / the `map` command -> its `TObjDoorKey` doors in world coordinates;
+4. walk to the one that is not a place already known.
+
+Tests at this revision: **143 green** (138 + the 5 added here). `main` clean and pushed.
+
 ## 7. Next
 
-The hand-off brief (`docs/PSO-HANDOFF-2026-11-10.md`) carries the full state and its rounds 58-60 addendum. In order:
+Every remaining P1 item is now a tool call or a walk:
 
-1. **Open the fifteen lobby sets and solve their offsets per room.** `SET/map_lobby_01o.dat` .. `_10o.dat` were never
-   read; they hold `TObjDoorKey` doors and their own local origin (do **not** reuse city00's `(+228,+291)`). Enter a room,
-   read its entities, solve the offset from a record that must be one of them.
-2. **Find the GUILD room.** The executable names it (`GUILD.adx` at 0x80443654, "HUNTER GUILD" at 0x8044c10f) and the
-   areas are `map_lobby_01..10`; it has never been entered.
-3. **P1's gate is code** -- no city event script exists -- so if the room inventory does not produce it, the lever is an
-   executable search with `pso_dol` + `pso_classes` + the 25,981-function Ghidra export.
-4. **P6b's page** (pure UI over `python -m gbox.pso_editor`) and **P7a's rigging** (GC `build_swap`, gated by
-   `pso_swapfit.compare`) are the items that do not need P1. Then P3-P5, which do.
+1. enter a lobby room, read the entity table (the party must be in it);
+2. `pso_offset.solve(<that room's set>, <entities>)` -> the room's local->world offset (it rediscovers city00's
+   (+228,+291) blind, so it can be trusted before it is used on an unknown room);
+3. `pso_editor.placements` / `python -m gbox.pso_editor <disc> map <set>` -> that room's `TObjDoorKey` doors in world
+   coordinates;
+4. walk to whichever door is not already a known place. The GUILD room the executable names (`GUILD.adx`,
+   "HUNTER GUILD", areas `map_lobby_01..10`) has never been entered.
 
-At close: **138 tests green**, `main` clean and pushed. Not proven and not claimed: P1's field leg, P3-P5, P6b's page,
-P7a's rigging, the `.evt` opcode semantics. Two lessons earned the hard way are in the brief -- never identify a record
-by its distance to an entity, and check which coordinate space a set lives in before mapping it.
+Then: **P6b's page** (pure UI over the CLI) and **P7a's rigging** (GC `build_swap`, gated by `pso_swapfit.compare`), and
+P3-P5 behind P1. At close: 143 tests green, `main` clean and pushed; P1's field leg, P3-P5, P6b's page, P7a's rigging and
+the `.evt` opcode semantics are **not** proven and not claimed.
