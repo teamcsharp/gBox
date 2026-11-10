@@ -194,3 +194,47 @@ def test_the_reload_goes_in_with_the_aim_down_first():
     sent = []
     B.Keys(sent.append).apply({"hold": {D.AIM_BTN}, "tap": D.RELOAD_BTN})
     assert sent == [[{"key": "zl", "down": True}, {"key": "b", "down": True}, {"key": "b", "down": False}]]
+
+
+class Mesh:
+    """re5_nav.NavMesh's two calls the fight uses: floor_segment (line of sight) and route (the run to a Ganado)."""
+
+    def __init__(self, clear=True, waypoints=None):
+        self.clear, self.waypoints = clear, waypoints
+
+    def floor_segment(self, start, goal):
+        return self.clear
+
+    def route(self, start, goal):
+        return self.waypoints
+
+
+def test_no_shot_across_a_wall_the_stage_mesh_names():
+    b = bot()
+    s = snap([((0.0, 0.0, 500.0), 400)], nav=Mesh(clear=False))
+    b.tick(s, now=1.0)
+    act = b.tick(s, now=1.0 + D.AIM_READY_S)
+    assert act.get("tap") is None and b.doing == "hold" and b.stats["holds"] >= 1
+
+
+def test_the_run_to_a_ganado_follows_the_mesh_route():
+    """Straight ahead is a wall: the route's first waypoint is off to his left, so he turns left while he runs."""
+    route = [(0.0, 0.0, 0.0), (-900.0, 0.0, 300.0), ("link",), (0.0, 0.0, 3000.0)]
+    act = bot().tick(snap([((0.0, 0.0, 3000.0), 400)], nav=Mesh(waypoints=route)), now=1.0)
+    assert act["hold"] == {"lup", D.TURN["left"], D.RUN_BTN}
+
+
+def test_an_attached_walker_steers_the_run():
+    class Walker:
+        def __init__(self):
+            self.goals = []
+
+        def approach(self, goal):
+            self.goals.append(goal)
+            return ("lup", "lright")
+
+    b = bot()
+    b.walker = Walker()
+    act = b.tick(snap([((0.0, 0.0, 3000.0), 400)]), now=1.0)
+    assert act["hold"] == {"lup", "lright", D.RUN_BTN} and b.walker.goals == [(0.0, 0.0, 3000.0)]
+    assert "walker" in b.why

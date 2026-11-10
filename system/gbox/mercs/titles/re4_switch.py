@@ -465,6 +465,7 @@ class UnitCensus:
             if cls == PLAYER_CLASS and player is None:
                 player = u
             elif cls in ENEMY_CLASSES:
+                u["slot"] = len(enemies)                 # the census order (address order), as re5_switch's slot
                 enemies.append(u)
         return player, enemies
 
@@ -783,6 +784,7 @@ class Bot:
         self._since_reload = 0                           # shots since the last reload
         self._stand = {"pos": None, "at": None, "until": -1e9, "keys": ()}
         self._sweep_at, self._sweep_dir = None, 1
+        self.walker = None                               # a mesh walker (approach(goal) -> stick keys), when attached
         self.director = self.reader = None
         if director:
             try:
@@ -853,7 +855,9 @@ class Bot:
         nav, obstacles = snap.get("nav"), snap.get("obstacles")
         if nav is None and obstacles is None:
             return True                                     # no geometry yet: range limit does the gating
-        seg = getattr(nav, "clear_segment", None)
+        # a ray test when the geometry has one; else the stage mesh's floor line (re5_nav.NavMesh.floor_segment, which
+        # the RE4 room-collision mesh is built to): no linked floor between them is a wall, a drop or a fence
+        seg = getattr(nav, "clear_segment", None) or getattr(nav, "floor_segment", None)
         if callable(seg):
             try:
                 return bool(seg(tuple(p["pos"]), tuple(e["pos"])))
@@ -992,17 +996,44 @@ class Bot:
             self.stats["reloads"] += 1
             self.doing, self.why = "reload", f"{RELOAD_SHOTS} shots since the last reload and nobody near"
             return {"hold": {AIM_BTN}, "tap": RELOAD_BTN}
-        return self._locate(p, live, now, cmd)
+        return self._locate(p, live, now, cmd, snap)
 
-    def _locate(self, p, live, now, cmd=None) -> dict:
+    def _approach(self, p, goal, err, snap) -> tuple:
+        """(stick keys, how) toward goal: the mesh walker when one is attached (Bot.walker.approach(goal) -> keys, the
+        RE4 room-collision walker), else the first waypoint of the stage mesh's route (snap["nav"].route), else
+        straight at it."""
+        walker = self.walker
+        if walker is not None:
+            try:
+                keys = set(walker.approach(tuple(goal)) or ())
+                if keys:
+                    return keys, "the mesh walker"
+            except Exception:                                # noqa: BLE001 - a walker error falls back to the line
+                self.stats["walker_errors"] = self.stats.get("walker_errors", 0) + 1
+        nav = snap.get("nav")
+        route = getattr(nav, "route", None)
+        if callable(route):
+            try:
+                pts = route(tuple(p["pos"]), tuple(goal)) or []
+                wp = next((q for q in pts if isinstance(q, (tuple, list)) and len(q) >= 3
+                           and all(isinstance(v, (int, float)) for v in q[:3])      # a waypoint, not a link
+                           and self._flat(p["pos"], q) > 60.0), None)
+                if wp is not None:
+                    werr = wrap(heading(wp[0] - p["pos"][0], wp[2] - p["pos"][2]) - (p.get("rot") or 0.0))
+                    return {"lup"} | (self._turn(werr) if abs(werr) > self.TURN_TOL else set()), "the stage mesh"
+            except Exception:                                # noqa: BLE001
+                self.stats["route_errors"] = self.stats.get("route_errors", 0) + 1
+        return {"lup"} | (self._turn(err) if abs(err) > self.TURN_TOL else set()), "the map"
+
+    def _locate(self, p, live, now, cmd=None, snap=None) -> dict:
         """Nobody in range: the nearest Ganado by the map, walked to (run past RUN_CM); nobody known: the sweep."""
         if live:
             dist, err, e = min(live, key=lambda t: t[0])
             self.stats["locates"] += 1
             self.stats["locate_m"] = round(dist / 100.0, 1)
             self.doing = "locate"
-            self.why = f"locating: the nearest Ganado {dist / 100:.0f} m off by the map" + (f" ({cmd})" if cmd else "")
-            keys = {"lup"} | (self._turn(err) if abs(err) > self.TURN_TOL else set())
+            keys, how = self._approach(p, e["pos"], err, snap or {})
+            self.why = f"locating: the nearest Ganado {dist / 100:.0f} m off by {how}" + (f" ({cmd})" if cmd else "")
             if dist > RUN_CM or self.combo_owed(now) is not None:
                 keys.add(RUN_BTN)
             return {"hold": keys}

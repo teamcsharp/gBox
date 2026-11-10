@@ -193,6 +193,11 @@ def test_the_snapshot_reads_the_player_and_the_ganados_once_mapped(mapped):
     assert snap["player"]["pos"] == pytest.approx((-3668.2, 40.9, 6021.7), abs=0.01)
     assert snap["player"]["hp"] == 1000 and snap["player"]["rot"] == pytest.approx(0.5)
     assert sorted((e["id"], e["hp"]) for e in snap["enemies"]) == [(2, 400), (3, 0)]
+    # the shape the RE4 map / mesh walker plugs into (re5_switch's): player pos/rot/hp/hp_max, enemies slot/ptr/pos/hp
+    assert {"pos", "rot", "hp", "hp_max"} <= set(snap["player"])
+    assert [e["slot"] for e in snap["enemies"]] == [0, 1]
+    assert all({"slot", "ptr", "pos", "hp", "hp_max"} <= set(e) for e in snap["enemies"])
+    assert {"timer", "kills", "combo", "combo_timer"} <= set(snap)
     assert m.re4_units.pool is not None and m.re4_units.scans == 1
 
 
