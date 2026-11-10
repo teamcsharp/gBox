@@ -138,3 +138,45 @@ def test_owned_stage_probe_noop_roundtrip():
     assert r["kms"]["sha256"] == "112c2782773ebe645e30134079c3cf334b22bc8c51089f39adb42eca28012a85"
     assert r["texpack"]["size"] == 16640 and r["texpack"]["hash"] == "0x61165e"
     assert r["page_roundtrip"] and r["stage_rebuild_fits_span"] and r["rebuilt_pages_decode_equal"]
+
+
+def test_native_name_hash_matches_the_engine_and_the_existing_oracle():
+    """FUN_001408b8 (Ghidra, owned ELF) is the same hash the inventory module uses for stage/asset names."""
+    for n in ("init", "r_tnk0", "select", "w00a", "n_title"):
+        assert sol.native_name_hash(n) == inv.name_hash(n)
+
+
+def test_loader_addresses_in_owned_elf_text():
+    """The ELF (when present in the task workspace) holds the stage.dat name at the Ghidra-recorded address and
+    the file-name table row points at it."""
+    import pytest
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "elf", sol.ELF)
+    if not os.path.exists(path):
+        pytest.skip("owned ELF not extracted in this checkout")
+    b = open(path, "rb").read()
+    assert len(b) == sol.ELF_SIZE
+    off = lambda va: va - 0x100000 + 0x80
+    a = sol.LOADER_ADDRS
+    assert b[off(a["stage_dat_name"]):off(a["stage_dat_name"]) + 10] == b"stage.dat\x00"
+    assert struct.unpack_from("<I", b, off(a["file_name_table"]))[0] == a["stage_dat_name"]
+
+
+def test_owned_slot_write_probe_noop_and_changed_model():
+    """Writer probe, owned build: soldier_tanker slot model 0x613791 in w00a: no-op and changed same-size write both
+    rebuild inside the stage span and decode back; only the model bytes change."""
+    import pytest
+    from gbox import mgs2_inventory as inv
+    src = sol.source_path()
+    if not src.exists():
+        pytest.skip("owned ISO not mounted")
+    d = inv.Disc(str(src))
+    try:
+        r = sol.slot_write_probe(d)
+    finally:
+        d.close()
+    assert r["size"] == 55648 and r["orig_human_roles"] == 18
+    assert r["orig_sha256"] == "df9570742f740bb20edb634681f952e3c09a347cdf02ed8b3b8b9dc602ddbc9a"
+    assert all(r["noop"].values())
+    c = r["changed"]
+    assert c["fits"] and c["page_equal"] and c["others_untouched"] and c["len_same"] and c["model_identical"]
+    assert c["verify"]["ok"] and c["verify"]["triangles"] == 21

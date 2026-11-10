@@ -597,7 +597,7 @@ def build_disc(src_iso: Path, out_iso: Path | None, jobs: list[dict], progress=l
     from . import fit_events as FE
     disc = inv.Disc(src_iso)
     ident = inv.identify(disc)
-    if not ident["exact_build"]:
+    if not ident["supported_build"]:
         raise SwapError(f"{ident['boot']}: the writer is built on {inv.SERIAL} only")
     idx = M.Index(disc)
     reports, changes = [], {}                              # changes[(fn, stage)][(type, hash)] = bytes
@@ -777,7 +777,8 @@ def build_disc(src_iso: Path, out_iso: Path | None, jobs: list[dict], progress=l
                         data[f[2]:f[2] + f[3]] = nb_
                 pages[kk] = bytes(data)
         try:
-            blob = inv.rebuild_stage(st, a.key, pages, raw)
+            blob = inv.rebuild_stage(st, a.key, pages, raw,
+                                  orig=a.disc.sectors(a.lba + st.sector, st.sectors))
         except inv.FormatError as x:
             for rep in reports:
                 for m in rep["models"]:
@@ -806,7 +807,7 @@ def build_disc(src_iso: Path, out_iso: Path | None, jobs: list[dict], progress=l
     progress(95, "Reading the written stages back from the image")
     back = inv.Disc(out_iso)
     try:
-        bidx = {fn: inv.StageArchive(back, fn) for fn in inv.STAGE_FILES}
+        bidx = {fn: inv.StageArchive(back, fn) for fn in inv.disc_stage_files(back)}
         for _off, _blob, fn, stage in patches:
             st = bidx[fn].stage(stage)
             for (t, h), want in changes[(fn, stage)].items():
@@ -897,7 +898,7 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
 
 
 def needs(game: dict) -> dict:
-    return {"have": "Metal Gear Solid 2: Substance (USA) PS2 DVD (SLUS-20554) as the catalog CHD or an ISO",
+    return {"have": "Metal Gear Solid 2: Substance (USA) PS2 DVD (SLUS-20554) or Sons of Liberty (USA, SLUS-201.44 v1.01) as the catalog CHD or an ISO",
             "game_ids": sorted(GAME_IDS)}
 
 

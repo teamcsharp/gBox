@@ -41,11 +41,15 @@ import os
 from pathlib import Path
 
 GAME_ID = "cb7aae71edb10cd3"
-GAME_IDS = {GAME_ID: "Metal Gear Solid 2: Substance (USA) - the PS2 DVD SLUS-20554 (HyperSpin CHD filed under Microsoft XBOX)"}
+SOL_GAME_ID = "3fc2fad561187055"      # Metal Gear Solid 2: Sons of Liberty (USA) PS2 DVD, SLUS-201.44 v1.01 (STAGE.DAT only)
+GAME_IDS = {GAME_ID: "Metal Gear Solid 2: Substance (USA) - the PS2 DVD SLUS-20554 (HyperSpin CHD filed under Microsoft XBOX)",
+            SOL_GAME_ID: "Metal Gear Solid 2: Sons of Liberty (USA) - the PS2 DVD SLUS-201.44 v1.01"}
 TITLE = "Metal Gear Solid 2: Substance (USA)"
 SERIAL = "SLUS-20554"
 ELF = "SLUS_205.54"
 ELF_SIZE = 852772
+SOL_ELF = "SLUS_201.44"             # the Sons of Liberty (USA, v1.01) build: same STAGE format, key 0x3bb323d9, no STAGE2.DAT
+SOL_ELF_SHA256 = "4a3e1042d9fbeaf3d0f7031d5be9e4ca364c3f1333bdd28ff7033ed16c4dcdd1"
 ELF_SHA256 = "77de3383cb257a573e631f63fc373eb5eeb1090f9659ea37bb29e129814da2d5"
 CHD_SHA1 = "5a69cb8b2d0354d80651ba4bfa7c859722994a70"
 TOTAL_SECTORS = 3142944
@@ -311,7 +315,14 @@ def identify(disc: Disc) -> dict:
     out["platform"] = "ps2"
     out["exact_build"] = bool(boot == ELF and out["elf_sha256"] == ELF_SHA256 and
                               all(n in disc.files for n in STAGE_FILES))
+    out["sol_build"] = bool(boot == SOL_ELF and out["elf_sha256"] == SOL_ELF_SHA256 and "MGS2/STAGE.DAT" in disc.files)
+    out["supported_build"] = out["exact_build"] or out["sol_build"]
     return out
+
+
+def disc_stage_files(disc: "Disc") -> tuple:
+    """The stage archives this disc carries (Substance: STAGE.DAT + STAGE2.DAT; Sons of Liberty: STAGE.DAT only)."""
+    return tuple(n for n in STAGE_FILES if n in disc.files)
 
 
 # ---------------------------------------------------------------- STAGE.DAT
@@ -447,9 +458,13 @@ def encode_stage_header(rows: list[tuple[int, int]], key: int, name: str) -> byt
 
 
 def rebuild_stage(st: Stage, key: int, page_data: dict[int, bytes], old_raw: dict[int, bytes],
-                  files: dict[int, list] | None = None, seed: int | None = None) -> bytes:
+                  files: dict[int, list] | None = None, seed: int | None = None,
+                  orig: bytes | None = None) -> bytes:
     """A stage's new stored bytes: pages in page_data are re-encoded (their file tables from `files` when given),
-    the others are kept byte for byte (old_raw). Raises when the result is longer than the stage's span."""
+    the others are kept byte for byte (old_raw) with their original row. With `orig` (the stage's original stored
+    bytes) every byte outside the header and the written pages -- inter-page padding, the unreferenced tail of the
+    span -- is kept too, so a stage with nothing changed rebuilds byte-identical. Raises when the result is longer
+    than the stage's span."""
     rows = list(st.rows)
     blobs = []
     coff = 0
@@ -468,16 +483,31 @@ def rebuild_stage(st: Stage, key: int, page_data: dict[int, bytes], old_raw: dic
                     rows[pi + 1 + j] = ((f[0] << 24) | f[1], f[2])
         else:
             raw = old_raw[k]
-        rows[p.rows[1]] = ((0x7E << 24) | len(raw), coff)
+        if k in page_data or orig is None:
+            rows[p.rows[1]] = ((0x7E << 24) | len(raw), coff)
+        else:
+            rows[p.rows[1]] = (rows[p.rows[1]][0], coff)    # unchanged page: keep its stored size field
         blobs.append((coff, raw))
         coff += (len(raw) + SECTOR - 1) // SECTOR * SECTOR
     head = encode_stage_header(rows, key, st.name)
+    if orig is not None and len(orig) >= len(head):
+        # keep the original header's padding after the rows (it is not zero on the disc)
+        plain_old = Cipher.for_stage(key, st.name).run(bytes(orig[:len(head)]))
+        used = 4 + 8 * len(rows)
+        plain_new = Cipher.for_stage(key, st.name).run(head)
+        head = Cipher.for_stage(key, st.name).run(plain_new[:used] + plain_old[used:])
     body = bytearray(coff)
     for o, raw in blobs:
         body[o:o + len(raw)] = raw
     out = head + bytes(body)
     if len(out) > st.sectors * SECTOR:
         raise FormatError(f"{st.name}: rebuilt stage is {len(out)} bytes, its span is {st.sectors * SECTOR}")
+    if orig is not None and len(orig) >= st.sectors * SECTOR:
+        keep = bytearray(orig[:st.sectors * SECTOR])
+        keep[:len(head)] = head
+        for o, raw in blobs:
+            keep[len(head) + o:len(head) + o + len(raw)] = raw
+        return bytes(keep)
     return out + b"\0" * (st.sectors * SECTOR - len(out))
 
 

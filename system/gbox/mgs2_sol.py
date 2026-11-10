@@ -263,6 +263,37 @@ def probe_stage(disc, name: str = "r_tnk0", stage_key: int = STAGE_KEY) -> dict:
     }
 
 
+# --- Ghidra analysis of the OWNED ELF (SLUS_201.44, MIPS R5900 LE, load delta 0xFFF80) -------------------
+# Addresses below were read from a headless Ghidra decompile of THIS ELF (adapters/ghidra/DecompAt.java);
+# they are NOT the Substance (SLUS_205.54) addresses.
+LOADER_ADDRS = {
+    "file_name_table": 0x17F408,    # 12-byte rows {name_ptr, sector, ?}; row 0 -> "stage.dat" @ 0x1AFA98
+    "stage_dat_name": 0x1AFA98,
+    "boot_init": 0x100508,          # calls name-table setup, then the STAGE TOC loader
+    "toc_loader": 0x100E40,         # reads the STAGE.DAT header, decrypts it, builds the 12-byte TOC at 0x1B6AE8
+    "toc_lookup": 0x100F88,         # linear scan of the TOC by name hash (compare = 0x16FB38), returns the sector
+    "stage_open": 0x101460,         # open a stage by name: lookup, read pages, start the page state machine
+    "page_state_machine": 0x1011C0, # per-chunk callback: decrypt page header + rows, sets row cursor
+    "row_walker": 0x1010B8,         # walks rows; (word2 & 0xFF000000) == 0x7E000000 marks a compressed page
+    "page_inflate": 0x100780,       # decrypts 0x20000-byte chunks then inflates (zlib "1.1.3" stream)
+    "cipher": 0x100688,             # the word cipher (uses R5900 MMI, Ghidra cannot decode it)
+    "name_hash": 0x1408B8,          # 24-bit rotate-5 additive hash of the asset/stage name
+}
+# Ghidra read these key-derivation constants out of the page callback (0x1011C0):
+PAGE_KEY_MUL = 0x81
+PAGE_KEY_ADD = -0x5876DA27 & 0xFFFFFFFF
+PAGE_KEY2_ADD = 0x7A88FB59
+PAGE_ROW_COMPRESSED_TAG = 0x7E000000
+
+
+def native_name_hash(name: str) -> int:
+    """FUN_001408b8 of SLUS_201.44: h = ((h<<5 | h>>19) + c) & 0xFFFFFF per byte; 0 is mapped to 1."""
+    h = 0
+    for c in name.encode("ascii"):
+        h = (((h << 5) | (h >> 19)) + c) & 0xFFFFFF
+    return h or 1
+
+
 def main(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description="MGS2 Sons of Liberty (owned SLUS-201.44) inventory")
@@ -285,3 +316,58 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def slot_write_probe(disc, stage: str = "w00a", model_hash: int = 0x613791, stage_key: int = STAGE_KEY) -> dict:
+    """Writer probe on the OWNED build: one native slot model (default: Tanker soldier 'gbs_def', slot
+    soldier_tanker) in one stage. (1) a no-op write of the same bytes rebuilds a stage whose pages decode to the
+    original plain pages; (2) a size-preserving CHANGED model (mgs2_swap.degenerate_kms, i.e. the slot hidden) is
+    written into the page, the stage is rebuilt inside its span and re-decoded, and the new model parses while every
+    other byte of the page is untouched. Reads only; nothing is written to the disc."""
+    import hashlib
+    from . import mgs2_swap as S
+    from . import mgs2_models as M
+    arch = inv.StageArchive(disc)
+    if arch.key != stage_key:
+        raise inv.FormatError(f"STAGE key {arch.key:#x} != {stage_key:#x}")
+    st = arch.stage(stage)
+    hit = None
+    for k, p in enumerate(st.pages):
+        for f in p.files:
+            if f[0] == KMS_TYPE and f[1] == model_hash:
+                hit = (k, f)
+    if hit is None:
+        raise inv.FormatError(f"{stage}: kms {model_hash:#x} not found")
+    k, f = hit
+    plain = {i: arch.page(st, i) for i in range(len(st.pages))}
+    old_raw = {i: arch.page_raw(st, i) for i in range(len(st.pages))}
+    orig = plain[k][f[2]:f[2] + f[3]]
+
+    def rebuild_and_decode(newmodel: bytes) -> dict:
+        data = bytearray(plain[k])
+        data[f[2]:f[2] + f[3]] = newmodel
+        blob = inv.rebuild_stage(st, stage_key, {k: bytes(data)}, old_raw)
+        head_plain = inv.Cipher.for_stage(stage_key, stage).run(blob[:st.header_bytes + (-st.header_bytes % SECTOR)])
+        rows2 = [struct.unpack_from("<2I", head_plain, 4 + 8 * i)
+                 for i in range(struct.unpack_from("<I", head_plain, 0)[0])]
+        w, off = rows2[st.pages[k].rows[1]]
+        got = inv.decode_page(blob[st.data_sector * SECTOR + off:st.data_sector * SECTOR + off + (w & 0xFFFFFF)],
+                              len(data))
+        return {"fits": len(blob) <= st.sectors * SECTOR, "blob_bytes": len(blob), "page_equal": got == bytes(data),
+                "model_in_rebuilt": got[f[2]:f[2] + f[3]], "others_untouched": got[:f[2]] == plain[k][:f[2]]
+                and got[f[2] + f[3]:] == plain[k][f[2] + f[3]:]}
+
+    noop = rebuild_and_decode(orig)
+    new = S.degenerate_kms(orig)
+    new = new + b"\0" * (len(orig) - len(new))          # same-size in-place write, as the swap writer does
+    chg = rebuild_and_decode(new)
+    kp = M.parse_kms(orig)
+    return {
+        "stage": stage, "page": k, "model": f"{model_hash:#x}", "offset": f[2], "size": f[3],
+        "orig_sha256": hashlib.sha256(orig).hexdigest(), "orig_bones": len(kp["parents"]),
+        "orig_triangles": M.triangles(kp), "orig_human_roles": len(M.roles_of(kp["parents"], kp["world"])),
+        "noop": {"fits": noop["fits"], "page_equal": noop["page_equal"], "model_identical": noop["model_in_rebuilt"] == orig},
+        "changed": {"fits": chg["fits"], "page_equal": chg["page_equal"], "others_untouched": chg["others_untouched"],
+                    "len_same": len(new) == len(orig), "new_sha256": hashlib.sha256(new).hexdigest(),
+                    "model_identical": chg["model_in_rebuilt"] == new, "verify": S.verify_kms(chg["model_in_rebuilt"])},
+    }
