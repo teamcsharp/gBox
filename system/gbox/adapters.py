@@ -2718,6 +2718,10 @@ D-Pad/Right = `H`
         if getattr(self, "_pso_two_pads", False):
             from . import pso_coop_setup
             vpad_ini = pso_coop_setup.pad_ini(vpad_ini, windows=True)
+            # ... and the console has to see a controller in port 2, which is Dolphin.ini's SI device table.
+            dolphin_ini = user / "Config" / "Dolphin.ini"
+            current = dolphin_ini.read_text() if dolphin_ini.is_file() else ""
+            dolphin_ini.write_text(pso_coop_setup.si_devices(current, 2))
         (user / "Config" / "GCPadNew.ini").write_text(vpad_ini)
         (user / "Config" / "Hotkeys.ini").write_text('[Hotkeys]\nDevice = XInput2/0/Virtual core pointer\n'
             'Emulation Speed/Disable Emulation Speed Limit = `Tab`\n'
@@ -3092,13 +3096,12 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
             # pad on slot 1, every press dropped). Bind a pad that actually reports instead.
             from . import pad_bind
             vpad_ini = pad_bind.bind_note(vpad_ini, pad_bind.choose_slot(pad_bind.probe_pads()))
-        # PSO's offline MULTI MODE refuses to open without a second controller ("Requires at least 2 Controllers"), and
-        # the two-player criterion is part of what this lane has to prove, so every PSO launch gets the second pad that
-        # `pso_coop_setup` already knows how to build: GCPad1 keeps whatever this launch decided (virtual pad, or the
-        # pad that reports), and GCPad2 is the keyboard device P2 is driven through.
-        if getattr(self, "_pso_two_pads", False):
-            from . import pso_coop_setup
+        if self._pso_two_pads:
+            # MULTI MODE needs two controllers: GCPad2 for the input, and a device in the console's port 2.
             vpad_ini = pso_coop_setup.pad_ini(vpad_ini, windows=True)
+            dolphin_ini = user / "Config" / "Dolphin.ini"
+            current = dolphin_ini.read_text() if dolphin_ini.is_file() else ""
+            dolphin_ini.write_text(pso_coop_setup.si_devices(current, 2))
         (user / "Config" / "GCPadNew.ini").write_text(vpad_ini)
         self.lane = self._claim_lane()
         (user / "Config" / "Hotkeys.ini").write_text(self.hotkeys_ini(self.lane))   # read once, when this Dolphin starts

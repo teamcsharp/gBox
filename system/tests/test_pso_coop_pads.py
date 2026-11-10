@@ -22,7 +22,6 @@ def test_the_second_pad_is_the_keyboard_device():
     ini = P.pad_ini(adapters.DolphinWinAdapter.PAD_INI_WIN, windows=True)
     second = ini.split("[GCPad2]")[1]
     assert "Device = DInput/0/Keyboard Mouse" in second
-    # PAD2_WIN's scheme: D/R/M/Y for A/B/X/Y and the numpad for the D-pad, so P2's keys never collide with P1's
     # PAD2_WIN's scheme: D/R/M/Y for A/B/X/Y, SPACE for Start, numpad for the sticks and D-pad -- chosen so P2's
     # keys never collide with P1's (P1 keeps the arrow keys and X/Z/S/A/E/RETURN).
     for field, key in (("Buttons/A", "D"), ("Buttons/B", "R"), ("Buttons/Start", "SPACE"),
@@ -30,8 +29,27 @@ def test_the_second_pad_is_the_keyboard_device():
         assert f"{field} = `{key}`" in second, f"{field} should bind `{key}`"
 
 
-def test_the_second_pad_only_costs_nothing_when_unused():
-    """The builder is pure text, so the same base always yields the same two-pad INI."""
-    a = P.pad_ini(adapters.DolphinWinAdapter.PAD_INI_WIN, windows=True)
-    b = P.pad_ini(adapters.DolphinWinAdapter.PAD_INI_WIN, windows=True)
-    assert a == b and a.startswith("[GCPad1]")
+def test_both_pads_are_marked_always_connected():
+    """MULTI MODE counts controllers at the console: a configured but not-connected P2 is still a refusal."""
+    ini = P.pad_ini(adapters.DolphinWinAdapter.PAD_INI_WIN, windows=True)
+    first, second = ini.split("[GCPad2]")
+    assert "Options/Always Connected = True" in first
+    assert "Options/Always Connected = True" in second
+
+
+def test_the_console_gets_a_controller_in_port_two():
+    """`Dolphin.ini`'s SI table is what the emulated console reads; the pads' own INI is only the input binding."""
+    out = P.si_devices("", 2)
+    assert "[Core]" in out and "SIDevice0 = 6" in out and "SIDevice1 = 6" in out
+
+
+def test_si_devices_keeps_every_other_key_and_section():
+    base = "[Core]\nSIDevice0 = 6\nFastDiscSpeed = True\n[Other]\nx = 1\n"
+    out = P.si_devices(base, 2)
+    assert "FastDiscSpeed = True" in out and "[Other]" in out and "x = 1" in out
+    assert out.count("SIDevice0 = 6") == 1 and out.count("SIDevice1 = 6") == 1
+
+
+def test_si_devices_replaces_a_wrong_value():
+    assert "SIDevice1 = 6" in P.si_devices("[Core]\nSIDevice1 = 0\n", 2)
+    assert "SIDevice1 = 0" not in P.si_devices("[Core]\nSIDevice1 = 0\n", 2)

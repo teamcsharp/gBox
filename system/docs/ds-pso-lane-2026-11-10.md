@@ -963,16 +963,57 @@ That is the first thing the next round does; the INI change needs a fresh launch
 round still wrote a single-pad INI because the flag was reading `game`, which is not in `_argv`'s scope -- that bug is
 fixed (the disc id is computed there already) but not yet observed working.
 
+## Round 16 (2026-11-10) — MULTI MODE needs a device in the console's port 2, not just a second pad
+
+MULTI MODE still refused ("Requires at least 2 Controllers.") with two pads configured and both marked
+`Always Connected`. The missing piece is not in the pad bindings at all: **Dolphin's `Dolphin.ini` has no serial-interface
+device table**, so the emulated console has nothing plugged into port 2 no matter how many pads are bound.
+
+### `pso_coop_setup.si_devices`
+
+`Dolphin.ini` in the i9-NUC profile had no `[Core]` section and no `SIDevice*` keys at all. `si_devices(ini, count=2)`
+now writes `SIDevice0 = 6` and `SIDevice1 = 6` (6 = standard controller), creating `[Core]` if absent, replacing wrong
+values, and keeping every other key and section untouched -- Dolphin's file, not ours, so the edit is as small as
+possible.
+
+`DolphinWinAdapter._argv` applies it whenever the launch is PSO (`gecko_id` starting `GPO`), next to the two-pad
+`GCPadNew.ini`. `tests/test_pso_coop_pads.py` now has 7 tests: the two-pad INI structure, `Always Connected` on **both**
+pads, P2's keyboard scheme, and `si_devices` for the empty file, the file with other keys, and the file with a wrong
+value.
+
+### Two patching mistakes, both mine, both the same shape
+
+The adapter code has two `_argv` implementations (Linux and Windows) with near-identical text. Twice this round a
+`str.replace(old, new, 1)` hit the Linux one first:
+
+* the `si_devices` call landed twice in the Linux block (a duplicated statement) and not at all in the Windows one,
+  which is why the first retest still wrote no `SIDevice*` keys;
+* an earlier round's two-pad block was in fact applied to **both** adapters, so the Windows one briefly had two copies
+  of the same block.
+
+Both are cleaned up by hand now, and the state is verified: `pad_ini(vpad_ini` and `si_devices(current, 2)` appear once
+per adapter, `gbox.adapters` imports, and 25 pad-related tests pass. The lesson is mechanical: in this file, anchor
+edits on surrounding context, never on a single similar line, and check the occurrence count before and after.
+
+### Not yet observed working
+
+Whether MULTI MODE opens with the SI device table in place. The code is in and unit-tested, but the last live launch
+that actually wrote `SIDevice*` has not been run -- the previous retest ran before the wiring bug was fixed. That is the
+first thing the next round does, and it is a single launch plus one frame.
+
+Everything else about this round's hypothesis is measured: two pads with `Always Connected`, both devices present, and
+the game still refused, so the pad configuration was never the blocker.
+
 ## 7. Next
 
-1. Verify MULTI MODE opens with the second pad and that player 2 spawns in Pioneer 2 without the single-player
-   intro scene -- that is the shortest route past the scene, and P1's two-player criterion asks for it anyway.
-2. Then the field: measure movement with the characters free, and walk Pioneer 2 -> the Hunter's Guild door
-   (185,173 room 10) -> the teleporter (254,25) -> Forest 1, then P6a's in-game proof, P6b, P7a and the
-   demo -> route fixture.
-3. The queue holds four write jobs that were never admitted; they were issued against a stopped session and
-   must be treated as abandoned.
+1. One launch, one frame: does MULTI MODE open now that `Dolphin.ini` has `SIDevice0/1 = 6`? The code is in and
+   unit-tested; this is the first launch that will actually write it.
+2. If it opens: two characters (P1 from SLOT A, P2 from the TEMP CHARACTERS list), then Pioneer 2 and the field leg
+   -- the Hunter's Guild door (185,173 room 10), the teleporter (254,25), Forest 1 -- and the movement measurement
+   that has been impossible from inside the single-player intro scene.
+3. If it still refuses, the next suspects are Dolphin's SI device types other than 6, or the game requiring two
+   *distinct physical* devices; the P2 keyboard pad would then need to be a real virtual pad instead.
 
-Dead ends recorded this round: the four addresses that advanced by one per page are **tick counters** (they kept
-incrementing ~1.2/s with no input), and `pso_coop` through the HTTP launch route does not set up a buddy card
-(`diag.pso_coop` was null, only one pad was written).
+Method note for this file: `adapters.py` has two near-identical `_argv` implementations. Two edits this round hit
+the Linux one first and left the Windows path unchanged (one duplicated a statement, one changed nothing visible).
+Anchor edits on surrounding context and check the occurrence count before and after.
