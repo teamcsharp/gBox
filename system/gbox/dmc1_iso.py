@@ -30,15 +30,18 @@ Player container format (.PLD):
     then 215 u32 offsets relative to child6 start (table ends at 0x360; entry 0
     points at the table itself).  Verified on the real image: all 215 offsets
     < child6 size; even-indexed entries (108) strictly increasing; odd-indexed
-    entries (107) repeat (shared sections).  Every entry begins with byte pair
-    `3e 00`; the first odd entry (0x6c0) continues `1f ff` then an ascending
-    byte run (`80 01 02 03 04 05 06 07 08 09 0a 0b ...`), and the first even
-    section (0x2888) continues `22 22 00 00 00 00` then u32s 0x40/0x80/0xc0.
-    The header is NOT a PS2 GS GIF tag: brute-force over all bit-field
-    placements of NLOOP/EOP/PRE/PRIM/FLG/NREG finds no assignment decoding the
-    palette entries to (PRIM=2, FLG=1, NREG=8) and the 0x2888 geometry to
-    (NREG=2, NLOOP=0x2222), so the earlier 'GS GIF tag + CSM1 palette'
-    classification is withdrawn pending a pinned header layout.
+    entries (107) repeat (shared sections).  Pinned section header layout
+    (hex census 2026-11-09): 8-byte LE u64 ``lo`` with nloop = lo & 0xFFFF
+    and prim = (lo >> 47) & 0xF (data sections carry prim in
+    {0, 2, 6, 8, 10, 12, 14}; all 107 palette sections carry prim == 4;
+    EOP/PRE/FLG/NREG observed zero everywhere), then
+    four LE u32 register words, reg = word & 0xFFFF, value = word >> 16.
+    Data sections carry bare register ids (0x2888: 0x40 XYZ2 / 0x80 RGBAQ /
+    0xc0 FOG / 0x100) or packed (value << 16 | reg) pairs (0xa1c4: all value
+    0x40); palette sections carry an ascending byte run 0x04..0x13, (index,
+    size) byte pairs and a trailing u32.  The earlier 'GS GIF tag + CSM1
+    palette' classification was refuted (no bit-field placement decodes
+    both parity classes) and is withdrawn; see child6_section_header().
 
     Child0 (228,144 B) begins 13 20 03 01 e0 78 03 00 01 00 be 00 40 01 00 00;
     header is {u32 span/flags 0x1032013, u32 size 0x378e0 (227552 = body size)}
@@ -123,10 +126,10 @@ def parse_pld_children(f, lba: int, size: int) -> tuple[int, list[tuple[int, int
     at offset 32 as (offset, size) u32 pairs. The offset is relative to the child
     start within the container, and size is the child length.
     
-    Child0 (mesh) structure: 16-byte entries with offset/size pairs pointing to
-    child6 (texture bulk). Child6 starts with d7 00 00 00 magic, followed by
-    offset/size pairs pointing to texture sections. Each texture section starts
-    with GS packet header (0x80).
+    Child0 (mesh) structure: 16-byte entries with offset/size pairs pointing
+    to child6 (section bulk). Child6 starts with d7 00 00 00 magic (count
+    215), followed by a 215-entry section offset table; each section starts
+    with the pinned header decoded by child6_section_header().
     """
     f.seek(lba * SECTOR)
     head = f.read(160)  # Enough for 32 child entries (standard or variant)
@@ -165,59 +168,76 @@ def parse_child_table(blob: bytes) -> list[int]:
     return offs
 
 
-def _gif_tag(blob: bytes, off: int) -> dict:
-    """Decode a 128-bit PS2 GS GIF tag at ``off`` (little-endian).
+# Pinned prim census over all 215 sections of PL00/PL05 child6 (owned USA
+# ISO, hex census 2026-11-09): even (data) sections carry prim in
+# {0, 2, 6, 8, 10, 12, 14} (GS primitive opcodes; 0x2888 decodes to
+# POINT/nloop 62), odd (palette) sections all carry prim == 4 (107/107).
+_DATA_PRIMS = (0, 2, 6, 8, 10, 12, 14)
 
-    The on-disk layout is one little-endian u64 ``lo`` followed by a 12-byte
-    register descriptor (regs[0] is the lowest descriptor byte).  Bit layout
-    of ``lo`` (GS2 spec): NLOOP(0:15), EOP(15), PRE(46), PRIM(47:50),
-    FLG(58:60), NREG(60:64).  Verified against PL00 child6 bytes: the first
-    palette stream (0x6c0) decodes to NREG=8, NLOOP=3, FLG=1, PRIM=2 (LIST,
-    TEXCLD) with descriptor 3e001fff800102030405060708090a0b; a geometry
-    stream (0x2888) decodes to NREG=2 (XYZ2 0x40 + RGBAQ 0x80) with
-    NLOOP=0x2222.
+
+def child6_section_header(blob: bytes, off: int) -> dict:
+    """Decode one pinned child6 section header at ``off``.
+
+    Pinned layout (verified on PL00/PL05 child6 of the owned USA ISO,
+    2026-11-09 hex census; the earlier 'GS GIF tag + CSM1 palette'
+    classification is withdrawn -- no bit-field placement decodes both
+    parity classes as GS uploads):
+
+      8-byte lo (LE u64):  nloop = lo & 0xFFFF (section element count;
+          entry 0 points at the table itself and carries nloop = 215 =
+          the table count).  prim = (lo >> 47) & 0xF: data sections
+          (even table index) carry prim in {0, 2, 6, 8, 10, 12, 14};
+          palette sections (odd table index) all carry prim == 4.
+          EOP/PRE/FLG/NREG bit positions observed zero in all 215 sections.
+      4 post-header u32 words (LE), reg = word & 0xFFFF, value = word >> 16:
+        data    -> bare register ids (0x2888: 0x40 XYZ2, 0x80 RGBAQ,
+                   0xc0 FOG, 0x100) or packed (value << 16 | reg) pairs
+                   (0xa1c4: 0x400040/0x400080/0x4000c0/0x400100, all
+                   value 0x40)
+        palette -> ascending byte run 0x04..0x13 followed by (index, size)
+                   byte pairs and a trailing u32; the four words decode
+                   as reg = (value << 16) | run-byte, i.e. carry no
+                   meaningful register ids.
+
+    Returns {"off", "nloop", "prim", "kind", "regs"} where kind is
+    "palette" (prim == 4), "data" (prim in _DATA_PRIMS) or "unknown",
+    and regs is the [(reg, value)] list of the four post-header words.
     """
+    if off < 0 or off + 24 > len(blob):
+        raise ValueError("child6 section header truncated at %x" % off)
     (lo,) = struct.unpack_from("<Q", blob, off)
-    if off + 16 > len(blob):
-        raise ValueError("gif tag truncated at %x" % off)
-    desc = blob[off + 8 : off + 16]
+    words = struct.unpack_from("<4I", blob, off + 8)
     nloop = lo & 0xFFFF
-    eop = (lo >> 15) & 1
-    pre = (lo >> 46) & 1
-    prim = (lo >> 47) & 7
-    flg = (lo >> 58) & 3
-    nreg = (lo >> 60) & 0xF
-    regs = tuple(desc[i] for i in range(8))
+    prim = (lo >> 47) & 0xF
+    if prim == 4:
+        kind = "palette"
+    elif prim in _DATA_PRIMS:
+        kind = "data"
+    else:
+        kind = "unknown"
     return {
+        "off": off,
         "nloop": nloop,
-        "eop": eop,
-        "pre": pre,
         "prim": prim,
-        "flg": flg,
-        "nreg": nreg,
-        "regs": regs,
+        "kind": kind,
+        "regs": [(w & 0xFFFF, w >> 16) for w in words],
     }
 
 
-# GS register 0x40 == XYZ2 (untextured vertex), 0x80 == RGBAQ (colour/ST).
-# A geometry stream packs XYZ2+RGBAQ; a palette upload carries FRAME(0x3e)/
-# SCISSOR(0x1f) + texture/CLUT descriptors.
-_GEOM_REGS = {0x40: "XYZ2", 0x80: "RGBAQ", 0x01: "PRIM", 0x14: "TEX0"}
-
-
 def parse_child6_table(blob) -> list[dict]:
-    """Decode child6 (GS command stream) into interleaved section records.
+    """Decode child6 (section-offset table) into interleaved section records.
 
     child6 layout (verified on PL00/PL05, 1,042,640 B):
         u32 count (0xd7 = 215), then 215 u32 offsets into the blob.
     The offsets interleave two streams (entry 0 points at the table itself):
-        even index -> geometry/data GIF tag (offsets strictly increasing)
-        odd  index -> palette GIF tag   (offset repeats == shared palettes)
+        even index -> data section (prim in {0, 2, 6, 8, 10, 12, 14},
+                       offsets strictly increasing, spatially packed)
+        odd  index  -> palette section (prim == 4;
+                       offsets repeat == shared palettes)
 
-    Each record is the _gif_tag fields plus {"off", "kind"}; "kind" is
-    "palette" for a LIST+TEXCLD upload (PRIM=2, FLG=1, NREG=8), "data" for
-    geometry/data streams, "unknown" otherwise.  Returns records in table
-    order; raises ValueError on malformed input.
+    Each record is the child6_section_header fields plus the pinned
+    kind; returns records in table order; raises ValueError on
+    malformed input.
     """
     n = struct.unpack_from("<I", blob, 0)[0]
     if n == 0 or 4 + 4 * n > len(blob):
@@ -225,23 +245,13 @@ def parse_child6_table(blob) -> list[dict]:
     offs = list(struct.unpack_from("<%dI" % n, blob, 4))
     if len(offs) != n:
         raise ValueError("short child6 table")
-    if any(o + 16 > len(blob) for o in offs):
+    if any(o + 24 > len(blob) for o in offs):
         raise ValueError("child6 offset beyond blob")
     evens = offs[0::2]
-    # Geometry stream is spatially packed: strictly increasing offsets.
+    # Data stream is spatially packed: strictly increasing offsets.
     if evens != sorted(evens):
         raise ValueError("child6 data offsets not strictly increasing")
-    out = []
-    for i, o in enumerate(offs):
-        tag = _gif_tag(blob, o)
-        if tag["prim"] == 2 and tag["flg"] == 1 and tag["nreg"] == 8:
-            kind = "palette"
-        elif tag["nreg"] in (0, 1, 2):
-            kind = "data"
-        else:
-            kind = "unknown"
-        out.append({**tag, "off": o, "kind": kind})
-    return out
+    return [child6_section_header(blob, o) for o in offs]
 
 
 def decode_child6_sections(blob) -> dict:

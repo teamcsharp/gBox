@@ -162,3 +162,37 @@ def test_decode_child6_sections_real():
     assert 0x6C0 in off_set and 0x2888 in off_set
     assert s["unique_palettes"] <= 51  # every odd offset maps to <= 51 sections
     assert all(r["off"] < len(blob) for r in s["sections"])
+    assert s["data"] == 108 and s["palette"] == 107
+
+
+@pytest.mark.skipif(not RAW.exists(), reason="raw image not extracted")
+def test_child6_header_pinned_real():
+    """Pinned child6 section header layout on the real owned image.
+
+    Hex census 2026-11-09: 8-byte LE u64 lo (nloop = lo & 0xFFFF,
+    prim = (lo >> 47) & 0xF) + four LE u32 register words, reg = word &
+    0xFFFF, value = word >> 16.  Even sections prim == 0 (data, bare or
+    packed register words); odd sections prim == 4 (palette).
+    """
+    from gbox.dmc1_iso import child6_section_header, parse_child6_table
+    with open(RAW, "rb") as f:
+        n, ch = parse_pld_children(f, 1043291, 1547616)
+        f.seek((1043291 * 2048) + ch[6][0])
+        blob = f.read(ch[6][1])
+    # 0x2888: first data section, bare register ids XYZ2/RGBAQ/FOG/0x100
+    h = child6_section_header(blob, 0x2888)
+    assert (h["prim"], h["kind"]) == (0, "data")
+    assert h["nloop"] == 0x3E  # 62, first of the pinned nloop census
+    assert h["regs"] == [(0x40, 0), (0x80, 0), (0xC0, 0), (0x100, 0)]
+    # 0xa1c4: packed (value << 16 | reg) words, all value 0x40
+    h2 = child6_section_header(blob, 0xA1C4)
+    assert h2["kind"] == "data"
+    assert h2["regs"] == [(0x40, 0x40), (0x80, 0x40), (0xC0, 0x40), (0x100, 0x40)]
+    # parity classes across all 215 sections (hex census 2026-11-09):
+    # even = data with prim in {0,2,6,8,10,12,14}; odd = palette, all prim 4
+    recs = parse_child6_table(blob)
+    assert len(recs) == 215
+    assert all(r["kind"] == "data" for r in recs[0::2])
+    assert all(r["prim"] in (0, 2, 6, 8, 10, 12, 14) for r in recs[0::2])
+    assert all(r["prim"] == 4 and r["kind"] == "palette" for r in recs[1::2])
+    assert recs[0]["nloop"] == 215  # entry 0 = table itself
