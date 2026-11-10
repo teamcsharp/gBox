@@ -6,7 +6,10 @@ Byte order: RCF index big-endian, P3D chunks little-endian.
 RCF layout (observed): 0x00 magic[32]; 0x20 version; toc at 0x800:
   u32 count, u32 name_off, u32 name_size, u32 ?; entries at 0x810 of
   (u32 name_hash, u32 offset, u32 size) big-endian, sorted by hash.
-Name->entry pairing is NOT yet verified (hash algorithm unidentified).
+Name hash (verified 171/171 unique on char.rcf): h=0; for each byte c of
+the name: h = (h*31 + toupper(c) + 32) mod 2^32 (case-insensitive, '\\' kept).
+Name table at name_off: u32 LE count, u32 LE 0, then per name u32 LE len
+(incl NUL), name, NUL, 4 extra bytes (timestamp-like).
 """
 import gzip, re, struct, zlib
 
@@ -69,3 +72,34 @@ def p3d_chunk_counts(blob):
             o += sz
     walk(12, len(blob), 0)
     return acc
+
+
+def rcf_name_hash(name):
+    """Radical RCF filename hash: case-insensitive base-31, +32 per byte."""
+    h = 0
+    for c in name.encode("latin1").upper():
+        h = (h * 31 + c + 32) & 0xFFFFFFFF
+    return h
+
+
+def parse_rcf_names(data):
+    """Return [name] from the RCF name table (length-prefixed, LE)."""
+    n, name_off, _sz = struct.unpack(">III", data[0x800:0x80c])
+    cnt = struct.unpack("<I", data[name_off:name_off + 4])[0]
+    p = name_off + 8; out = []
+    for _ in range(cnt):
+        ln = struct.unpack("<I", data[p:p + 4])[0]
+        out.append(data[p + 4:p + 3 + ln].decode("latin1")); p += 4 + ln + 4
+    return out
+
+
+def rcf_members(data):
+    """Return {name: (offset, size)} pairing names to entries by hash."""
+    ents, _ = parse_rcf(data)
+    by_hash = {h: (o, s) for h, o, s in ents}
+    out = {}
+    for nm in parse_rcf_names(data):
+        h = rcf_name_hash(nm)
+        if h not in by_hash: raise ValueError("unpaired name " + nm)
+        out[nm] = by_hash[h]
+    return out
