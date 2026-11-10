@@ -108,14 +108,26 @@ title:
 `mercs-universal-core` has not landed), so the rule lives in its own module with no title-specific logic; when that
 core lands, `decide()` is the function to move onto it.
 
+## Commits
+
+- `be21ba0` on `ds-grenade-ring-20261110`: the whole lane (status, RE6 ring, bot rule, JS, tests).
+- `38740baa` on main: the merge of that branch. Its one conflict was `system/gbox/mercs/enemy_identity.py`, added by
+  the enemy-identity lane at the same time; resolved **in favour of that lane's module** - the ring's rule calls
+  `enemy_identity.tier(title, class, hp_max)` for boss/dangerous instead of keeping its own table, so one enemy
+  identity feeds the tactical map, the bots and this rule.
+- `369495c0` on main: Switch-only gating (the operator's 2026-11-10 update), this lane log, and a clicked ring
+  counted in `rings_deployed`/`ring_kills` like the bot's own.
+
 ## Tests
 
 New: `tests/test_mercs_grenade_status.py` (19), `tests/test_re6_grenade_ring.py` (9),
-`tests/test_mercs_grenade_ring.py` (12), worker/status cases in `tests/test_intervention_worker.py` and
+`tests/test_mercs_grenade_ring.py` (13), worker/status cases in `tests/test_intervention_worker.py` and
 `tests/test_merc_interventions.py`, and the chooser case in `tests/stream-interventions.test.cjs` (21 JS tests pass).
 
-No new failures against main: the RE4/RE5/RE6 suites run the same 3 failures on the base commit as on this branch
-(`test_re6_magnum_quick4.py`'s three, the known RE6 failures); everything else in the compared files passes.
+On the merged tree, the engine/interventions/native/RE5-RE6-mod/enemy-identity group is **174 passed, 1 skipped**;
+the RE4-RE6 title group is **146 passed, 3 failed** - the same three `test_re6_magnum_quick4.py` failures the
+pristine `origin/main` commit shows in the same files (an `mcp` client import problem and a `primary_weapon`
+snapshot case), so no new failures come from this lane.
 
 ## Still missing, and why
 
