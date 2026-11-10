@@ -233,3 +233,19 @@ def test_the_publisher_posts_frames_sends_the_stage_and_hands_the_mark_to_the_bo
 def test_the_rotation_playbook_takes_the_tactical_sink():
     assert "tactical" in inspect.signature(re4switch_bot.play).parameters
     assert W.publisher(None) is None and W.publish(None, {}, None) is None
+
+
+
+def test_a_crossing_taken_or_refused_is_logged(tmp_path, monkeypatch):
+    """Operator 2026-11-10: doors and windows need a key press; the walk logs each crossing it takes or gives up on."""
+    import json as _json
+    from gbox.mercs.titles import re4_walk as W
+
+    class Q(tuple):
+        portal = (1000.0, 0.0, 2000.0)
+        approach = (900.0, 0.0, 1900.0)
+    monkeypatch.setattr(W, "CROSSING_LOG", tmp_path / "x.jsonl")
+    w = W.Walker({})
+    w._log_crossing("taken", Q((1100.0, 0.0, 2100.0)))
+    row = _json.loads((tmp_path / "x.jsonl").read_text().splitlines()[0])
+    assert row["event"] == "taken" and row["portal"] == [1000, 0, 2000] and row["key"] == W.ACTION

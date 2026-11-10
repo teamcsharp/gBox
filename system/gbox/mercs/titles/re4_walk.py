@@ -38,8 +38,10 @@ them too.
 from __future__ import annotations
 
 import functools
+import json
 import math
 import time
+from pathlib import Path
 
 from .. import map_goals
 from .. import tactical as T
@@ -66,6 +68,10 @@ ACTION_PULSE_S = 0.35                                # Y down this long, up this
 # --- the operator's marks (mm; re5_switch MAP_GOALS x 10) ---
 GOAL_FIRE_MM, GOAL_THREAT_MM, GOAL_FIGHT_MM, GOAL_ARRIVE_MM = 15000.0, 2000.0, 6000.0, 2000.0
 ROUTE_SOURCE = "room_collision"
+# Every crossing taken or given up on (operator 2026-11-10: "have the bot log and internalize ... a keystroke may be
+# needed to open a door or climb through a window"): the doors, windows and ladders come from the room's event data
+# (re4_switch_nav), the key is ACTION (Y), and this log is what the walk did with each.
+CROSSING_LOG = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re4-crossings.jsonl"
 MAX_ROUTE = 64
 
 
@@ -169,6 +175,19 @@ class Walker:
         self._link["key"] = None
         self.stats["mesh_refused_last"] = f"{why} at {point[0]:.0f},{point[1]:.0f},{point[2]:.0f}"[:120]
 
+    def _log_crossing(self, event: str, q) -> None:
+        """A door / window / ladder crossing (the room's own event data) taken or given up on, one line in
+        CROSSING_LOG: the stage, the portal, the action key the walk pulses at it, how long it took."""
+        try:
+            row = {"t": round(time.time(), 2), "event": event, "room": getattr(self.mesh, "room", None),
+                   "portal": [round(v) for v in q.portal], "landing": [round(v) for v in q[:3]],
+                   "key": ACTION, "tried_s": round(self.now - self._link.get("since", self.now), 2)}
+            CROSSING_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with CROSSING_LOG.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row) + chr(10))
+        except Exception:                                  # noqa: BLE001 - a log never costs a tick
+            pass
+
     # --- the route ---
     def _waypoint(self, goal):
         """The next point (x, z) of the mesh's route to goal, or None (no mesh, an end off it, no route). At a
@@ -222,6 +241,7 @@ class Walker:
                     else past > LINK_PAST_MM
                 if landed:
                     self._count("mesh_links_taken")
+                    self._log_crossing("taken", q)
                     self._link["key"] = None
                     pts.pop(0)
                     continue
@@ -233,6 +253,7 @@ class Walker:
                     if self.now - self._link["since"] > LINK_TRY_S:
                         self.refuse(tuple(q.portal), "a crossing that never let him through")
                         self._count("mesh_links_refused")
+                        self._log_crossing("refused", q)
                         return None
                     self.at_link = True
                     self._count("mesh_route_ticks")
