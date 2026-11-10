@@ -53,6 +53,26 @@ BOOT_STEPS = (
     ("episode_one", ("a",), "in_town"),
 )
 
+# Offline MULTI MODE: the two-controller branch, verified press by press against frames (2026-11-10). It exists because
+# the single-player branch always starts with Principal Tyrell's episode-1 intro, which nothing can exit (see the lane
+# doc), while MULTI MODE goes straight to two character selections and then to Pioneer 2.
+#
+#   1 START at PRESS START     -> the title main menu
+#   2 ddown + A                -> SELECT GAME MODE (mode 9)
+#   3 ddown + A                -> MULTI MODE character select: "Please select Player 1's character."
+#   4 A                        -> the Confirm / Cancel prompt, Confirm highlighted
+#   5 A                        -> Player 1 chosen: "Please select Player 2's character."
+#
+# It needs Dolphin to present a controller in the console's port 2 (see `pso_coop_setup.si_devices`): without that the
+# game answers "Requires at least 2 Controllers." and never reaches the selection at all.
+MULTI_STEPS = (
+    ("press_start", ("start",), "left_title"),
+    ("offline_game", ("ddown", "a"), "game_mode_select"),
+    ("multi_mode", ("ddown", "a"), None),
+    ("confirm_player1", ("a",), None),
+    ("accept_player1", ("a",), None),
+)
+
 TITLE_MODES = (0, 4, 22)
 TITLE_MENU = 1                                   # the title main menu (ONLINE / OFFLINE / OPTIONS / WEBSITE)
 GAME_MODE_SELECT = 9
