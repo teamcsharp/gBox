@@ -16,6 +16,7 @@ config the page does not own.
 from __future__ import annotations
 
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -40,8 +41,17 @@ class PreviewIn(BaseModel):
     ops: list[dict]
 
 
-def disc_for(config):
-    """The PSO GameCube disc the editor works on: `PSO_GC_ISO`, the cache's own copy, or a built mod image."""
+class BuildIn(BaseModel):
+    name: str
+    ops: list[dict]
+
+
+GAME_ID = "436e0bb84d5337d1"   # Phantasy Star Online Episode I & II Plus (USA)
+MOD_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,40}")
+
+
+def rom_for(config) -> Path:
+    """The PSO GameCube image the editor works on: `PSO_GC_ISO`, the cache's own copy, or a built mod image."""
     cache = Path(config.cache)
     candidates = []
     env = os.environ.get("PSO_GC_ISO")
@@ -54,7 +64,7 @@ def disc_for(config):
         candidates += sorted(mods.glob("*/*.iso"))
     for path in candidates:
         if path.is_file():
-            return pso_gc.open_disc(path)
+            return path
     raise HTTPException(503, "no PSO GameCube disc image found (set PSO_GC_ISO or the cache's gc image)")
 
 
@@ -112,7 +122,8 @@ def routes(app, config, auth):
     def disc():
         with guard:
             if "disc" not in opened:
-                opened["disc"] = disc_for(config)
+                opened["rom"] = rom_for(config)
+                opened["disc"] = pso_gc.open_disc(opened["rom"])
             return opened["disc"]
 
     @app.get("/pso/editor")
@@ -147,6 +158,25 @@ def routes(app, config, auth):
             row["world"] = pso_editor.world_position(row, name)
         wanted = {part.strip() for part in families.split(",") if part.strip()} if families else None
         return HTMLResponse(svg_of(data, width=max(240, min(int(width), 2048)), families=wanted, world=world))
+
+    @app.post("/api/pso/editor/build")
+    def build(body: BuildIn, actor=Depends(auth)):
+        """Apply the edits and build a mod image (a real disc build: minutes, run off the event loop)."""
+        name = body.name.strip().lower()
+        if not MOD_NAME.fullmatch(name):
+            raise HTTPException(400, "mod name must be lowercase letters, digits, '.', '_' or '-', up to 41 chars")
+        try:
+            ops = pso_editor.edits(*body.ops)
+        except pso_editor.EditError as exc:
+            raise HTTPException(400, str(exc)) from None
+        disc()                                          # resolve (and cache) the rom path first
+        try:
+            out = pso_editor.build(config, GAME_ID, opened["rom"], name, ops)
+        except Exception as exc:                         # noqa: BLE001 - a failed build is a 400 with the reason
+            raise HTTPException(400, f"build failed: {exc}") from None
+        image = out.get("image")
+        return {"ok": True, "name": name, "image": None if image is None else str(image),
+                "verification": out.get("verification"), "edits": out.get("edits")}
 
     @app.post("/api/pso/editor/preview")
     def preview(body: PreviewIn, actor=Depends(auth)):

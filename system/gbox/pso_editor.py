@@ -14,6 +14,8 @@ edits it cannot verify.
 """
 from __future__ import annotations
 
+import pathlib
+
 from . import pso_class_registry as REG
 from . import pso_map_write as W
 from . import pso_setdata as P

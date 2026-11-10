@@ -18,7 +18,9 @@ def client(monkeypatch, rows=None, world=None, ops_ok=True):
          "angle": 0.0},
         {"index": 1, "kind": 0x02, "class": "TOSensor", "family": "sensor", "x": -20.0, "y": 1.0, "z": 40.0,
          "angle": 0.0}]
-    monkeypatch.setattr(API, "disc_for", lambda config: object())
+    monkeypatch.setattr(API, "disc_for", None) if False else None
+    monkeypatch.setattr(API, "rom_for", lambda config: __import__("pathlib").Path("disc.iso"))
+    monkeypatch.setattr(API.pso_gc, "open_disc", lambda path: object())
 
     class Editor:
         EditError = REAL_EDIT_ERROR
@@ -39,13 +41,20 @@ def client(monkeypatch, rows=None, world=None, ops_ok=True):
 
         @staticmethod
         def edits(*ops):
-            if not ops_ok:
+            if not ops_ok or not ops:
                 raise REAL_EDIT_ERROR("no edits given")
             return list(ops)
 
         @staticmethod
         def preview(disc, ops):
             return {"ok": True, "files": ["map_city00_00o.dat"], "edits": len(ops), "changes": {}, "expect": {}}
+
+        @staticmethod
+        def build(cfg, game_id, rom, name, ops):
+            if name == "boom":
+                raise RuntimeError("the writer refused this image")
+            return {"image": f"/cache/mods/{game_id}/{name}/disc.iso", "edits": list(ops),
+                    "verification": {"ok": True, "checked": len(ops)}}
 
     monkeypatch.setattr(API, "pso_editor", Editor)
     app = FastAPI()
@@ -122,3 +131,30 @@ def test_the_svg_scales_and_flips_z_so_up_is_up():
 def test_a_set_with_no_placements_says_so():
     svg = API.svg_of({"set": "empty", "count": 0, "records": []})
     assert "no placements" in svg
+
+
+def test_build_applies_the_edits_and_reports_the_verification(monkeypatch):
+    res = client(monkeypatch).post("/api/pso/editor/build",
+                                   json={"name": "pso_t1", "ops": [{"op": "move", "set": "map_city00_00o.dat",
+                                                                    "index": 1, "x": 1.0, "y": 2.0, "z": 3.0}]})
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["ok"] is True and data["name"] == "pso_t1" and data["image"].endswith("pso_t1/disc.iso")
+    assert data["verification"]["ok"] is True and len(data["edits"]) == 1
+
+
+def test_build_refuses_a_bad_mod_name(monkeypatch):
+    res = client(monkeypatch).post("/api/pso/editor/build", json={"name": "Bad Name!", "ops": []})
+    assert res.status_code == 400 and "mod name" in res.text
+
+
+def test_build_refuses_an_empty_edit_set(monkeypatch):
+    res = client(monkeypatch).post("/api/pso/editor/build", json={"name": "pso_t1", "ops": []})
+    assert res.status_code == 400 and "no edits" in res.text
+
+
+def test_a_failed_build_is_a_400_with_the_reason(monkeypatch):
+    res = client(monkeypatch).post("/api/pso/editor/build",
+                                   json={"name": "boom", "ops": [{"op": "move", "set": "map_city00_00o.dat",
+                                                                  "index": 1, "x": 1.0, "y": 2.0, "z": 3.0}]})
+    assert res.status_code == 400 and "the writer refused" in res.text
