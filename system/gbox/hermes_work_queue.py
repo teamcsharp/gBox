@@ -498,8 +498,10 @@ def reconcile(data, jobs, latest, active, *, now, closed=frozenset()):
         advanced = item.get('checkpoint_at', 0) >= item.get('last_dispatched', 0)
         failures = 0 if advanced else item.get('no_progress_runs', 0) + 1
         item['no_progress_runs'] = failures
-        # Make room for other titles; repeated reading/error runs back off instead of spinning.
-        delay = min(6 * 3600, 300 * 2 ** min(failures - 1, 6)) if failures else 60
+        # Make room for other titles; repeated reading/error runs back off instead of spinning. Up to a day (6 h until
+        # 2026-11-10: tickets at 100-178 attempts came back every 6 h forever and took half the dispatches of 3 hours -
+        # 273 of 518 had run 10+ times already - from tickets that could finish).
+        delay = min(NO_PROGRESS_MAX_DELAY_S, 300 * 2 ** min(failures - 1, 9)) if failures else 60
         item['retry_at'] = max(item.get('retry_at', 0), now + delay)
 
 
@@ -681,6 +683,7 @@ def choose(options, data):
 
 EMULATOR_STAGES = ('runtime',)   # favorite stages whose agents start emulators (replacement testing in a game)
 PRIORITY_PER_GAME = 12           # runs sharing one game when the operator prioritized the requests (candidates; RE6 has ~15 tickets)
+NO_PROGRESS_MAX_DELAY_S = 24 * 3600   # the longest a no-progress ticket waits before it is tried again
 PAID_NO_PROGRESS_MAX = 3         # a ticket that did not advance its checkpoint in this many runs never goes to a paid
                                  # (priority-only) node again: the local nodes and the review keep it (operator 2026-10-26:
                                  # "Make sure that kimi isn't being burnt on requests that are failing" - #1440 at 62 attempts /
@@ -1063,6 +1066,11 @@ def tick(*, now=None):
                 # the paid node never balances lanes: with 23 inbox runs against 2 favorites the balance offered it only
                 # favorites, and its list filter below then emptied the choice (2026-10-26: Kimi / Z.AI idle for hours)
                 choices = list(node_options)
+            paid = bool(node and getattr(hermes_pool.node_settings().get(node['name']), 'upstream_key_env', ''))
+            if paid and not priority_only:
+                # a paid node working the whole backlog still never takes a ticket that keeps failing (2026-11-10: with
+                # priority_only off, Claude was given GoldenEye's 123rd run and RE6's 108th)
+                choices = [v for v in choices if (v[1].get('no_progress_runs') or 0) < PAID_NO_PROGRESS_MAX]
             if node and node.get('primary'):
                 narrow = [v for v in node_options if hermes_local.dispatch_size(v[1], by_id.get(v[1].get('request_id')))['size'] == 'small']
                 choices = narrow or (choices if node.get('allow_large_tasks') else [])

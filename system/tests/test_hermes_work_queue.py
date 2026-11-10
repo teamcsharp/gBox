@@ -284,6 +284,17 @@ def test_completed_occurrence_backoff_and_idempotence(env):
     assert item['no_progress_runs'] == 1 and item['retry_at'] == 500
 
 
+def test_a_ticket_that_keeps_failing_backs_off_up_to_a_day(env):
+    """2026-11-10: tickets at 100-178 attempts came back every 6 h forever (273 of 518 dispatches in 3 h had run 10+
+    times). The backoff now doubles up to NO_PROGRESS_MAX_DELAY_S (24 h)."""
+    q.sync(env, {'count': 1, 'items': [favorite()]}, [], now=10)
+    item = env['items']['favorite:' + G]
+    item.update(job_id='job', dispatch_state='queued', last_dispatched=100, no_progress_runs=12)
+    run = {'id': 'run12', 'started_at': '1970-01-01T00:01:40+00:00', 'status': 'completed'}
+    q.reconcile(env, [{'id': 'job', 'enabled': False}], {'job': run}, set(), now=200)
+    assert item['no_progress_runs'] == 13 and item['retry_at'] == 200 + q.NO_PROGRESS_MAX_DELAY_S == 200 + 24 * 3600
+
+
 def test_run_hermes_refused_to_start_is_not_a_failed_attempt_or_a_review(env, monkeypatch):
     # 2026-10-24: after a Hermes update every DeepSeek run was "[blocked_config:silent] ... Unknown provider"; they
     # counted as no-progress runs and then waited on reviews of runs that never executed
