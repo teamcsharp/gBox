@@ -2102,16 +2102,54 @@ Room 40 is therefore the hospital *and* the teleporter room, which is why both d
 2. P6b can now be a page: list a set's placements, edit one, preview, build. The remaining work is UI, not format.
 3. P1's field leg, P6a's in-game proof and P7a's rigging stay open.
 
+## Round 41 (2026-11-10) — the city's room graph, walked
+
+This round went looking for the last untested door and came back with the **shape of the city** instead, which is the
+thing that has made every route attempt expensive.
+
+### Every walked edge
+
+| edge | crossing | direction walked |
+|---|---|---|
+| room 10 <-> room 20 | the band around `(95-142, 50-152)` | both ways |
+| room 10 -> room 40 | `TObjCityDoor_Warp` `(254,25)` | in |
+| room 10 -> room 40 | `TObjCityDoor_Med` `(194,-93)` | in, arriving at about `(203,-32)` |
+| room 20 -> room 40 | about `(200,-94)` | in (the same door from room 20's side) |
+| room 40 -> room 20 | about `(167,60)` | out |
+| room 20 <-> room 30 | about `(-169,46)` | in and back |
+
+### Two things that changed my model of the city
+
+1. **Room 40 is a hub, not a room you visit once.** It is reachable from room 10 two ways (Warp and Med) and from room 20
+   at about `(200,-94)`, and it exits into room 20 at `(167,60)`. It holds both the medical exterior (the red-cross door,
+   `qf0-meddoor.jpg`) and the round teleporter structure -- so "Warp" and "Med" are two entrances to one place, not two
+   destinations.
+2. **Leaving room 40 is not symmetric with entering it.** Walking to the `Med` door's coordinates *from inside* room 40
+   leaves the character in room 40 (`(192,-90)`); walking to `(200,60)` crosses into room 20. A route has to leave by an
+   exit it can actually leave by, not by the door it came in through -- which is exactly the mistake that made several
+   earlier rounds look like the walker had failed.
+
+### Honest state of the guild search
+
+No walked edge leads anywhere new, and **none of rooms 10, 20, 30, 40 contains a counter that answers `A`**. The guild is
+behind something not yet walked. The remaining candidates, in order of likelihood:
+
+* the central dome's **large doorways walked past rather than into** (the doorways need the character to walk *through*
+   the opening, and several passes went beside them);
+* **room 30's far side** (the shop floor, entered at `(-169,46)` and never explored beyond its entrance).
+
+### Research doc
+
+`pso-gc-pioneer2-rooms.md` now carries the graph above plus the "walking back out is not symmetric" note, so the next
+round starts from the map rather than from a guess.
+
 ## 7. Next
 
-1. **P6b is now a UI job, not a format job.** `gbox.pso_editor` lists the disc's 574 editable sets, a set's records,
-   normalises an edit, previews it in memory and delegates the build. A page over those four calls is the remaining
-   work.
-2. **The last untested room-10 door** is `TObjCityDoor_Shop` at (-165,148). `Warp` and `Med` both lead to room 40
-   (the hospital and the teleporter room share it); `Guild` at (185,173) is inert.
-3. **P1's field leg, P6a's in-game proof and P7a's rigging** remain open; the field leg still needs the guild's quest
-   warp, and every other route to a floor has been ruled out.
-
-Landed this round: `gbox/pso_editor.py` (+8 tests) -- `sets`, `kind_of`, `placements`, `edit`, `edits`, `preview`,
-`build`. Verified live: 574 sets discovered, 226 records listed for `map_ancient01_00ad.dat` with kinds and
-coordinates.
+1. **The guild is behind something not yet walked.** Rooms 10, 20, 30 and 40 are mapped (graph in the research doc)
+   and none has a counter that answers `A`. The two candidates left are the central dome's **large doorways walked
+   past rather than into** -- a doorway needs the character to pass *through* the opening -- and **room 30's far
+   side**, entered at (-169,46) and never explored beyond its entrance.
+2. **Leave room 40 by (200,60)**, not by the Med door it was entered through: walking back to those coordinates
+   leaves the character in room 40.
+3. **P6b's page** is now a UI job: `gbox.pso_editor` lists the disc's 574 editable sets, a set's records, normalises an
+   edit, previews it in memory and builds. **P6a's in-game proof** and **P7a's rigging** stay open behind the field.
