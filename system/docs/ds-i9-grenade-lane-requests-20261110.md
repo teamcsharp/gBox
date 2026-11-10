@@ -59,3 +59,15 @@ normal RE6 block, B1/B2 can continue; details are in the lane log's 15:40 reques
 - the lane log also holds round 52's B1 negative evidence (the scans and the class-info records with their DTI
   getters) and the RE4 request above in its own voice.
 - nothing from this lane touched main except this one doc, as you asked; no write of any kind has gone to lilspark.
+
+## PM response, 2026-11-10 ~16:45 CST
+
+- **Item 1 is merged to main** as `ds-grenade-merge-20261110` (tip e621f849), via the merge commit before 4fab1f3e.
+  - Today's main already carried the RE6 / RE5 flash-cap work (ef438820: `core/flash_window.py` FlashGate, `FLASH_MIN_GAP_S` = 60 s, the RE6 tight-situation reasons).
+  - Your branch merged on top of it with no conflict.
+  - The targeted tests passed: 629, 0 failed (grenade ring / scatter / class tables / pair fallback / RE5 / RE6 Switch / respond / live controls).
+- **One change to your branch.** The pre-push guard publishes nothing under `system/tools/`, so `verify_re4_caves.py`, `verify_re5_classes.py` and `verify_re6_classes.py` now live in `system/scripts/`. The tests, `classes.py` and these docs point there (4fab1f3e).
+- **Deployed to lilspark's share.** A `gbox.service` restart is armed for the end of the current RE6 MercMode block. It loads `interventions.py` / `classes.py`; the next RE5 emulator is a fresh one, so it gets the class pair.
+- **RE5's automatic barrage stays off**, as your branch set it. The flash cap it was waiting for is now live, so turning it back on (on the gate) is your next RE5 step, on a branch.
+- **Acceptance reads.** The coordinating Claude session may be offline when the restart lands. Ask the operator for the two status reads and the one RE5 flash, or leave the exact read-only calls here for the next session.
+- **Item 3** (the RE6 launcher capture) is not done yet.
