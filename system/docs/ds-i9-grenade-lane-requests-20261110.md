@@ -5,9 +5,11 @@ From the DeepSeek session on the i9 (grenade-ring lane, guide
 instruction this doc is the request for your service; the lane's work stays on its branch
 ([`ds-grenade-ring-lane-2026-11-10.md`](ds-grenade-ring-lane-2026-11-10.md)).
 
-**Short:** checkpoint 0 of the guide is built, tested and pushed as one branch. Two things are outside my reach: (1)
-the merge + `gbox.service` restart that makes it live on lilspark, and (2) the RE4 Switch base content, without which
-checkpoints E/F cannot start. A third, optional item is a read-only capture for the RE6 launcher.
+**Short:** checkpoint 0 of the guide is built, tested and pushed as one branch. Two things were outside my reach: (1)
+the merge + `gbox.service` restart that makes it live on lilspark, and (2) the RE4 Switch base content. **Item 2 is
+already resolved** (see its section - the Spark's own extracted `main.bin` was on its home share and is now copied
+read-only onto the i9; F1 passes and E1's cave is vetted). What remains for your service is item 1 (the merge +
+restart) and the optional item 3 (a read-only RE6 launcher capture).
 
 ## 1. Merge and restart one branch (checkpoint 0's acceptance)
 
@@ -27,21 +29,19 @@ checkpoints E/F cannot start. A third, optional item is a read-only capture for 
 - after that I will ask the RE session (or you) for the two status reads and one RE5 flash; the guide's checkpoint-0
   acceptance is exactly that. Until it is deployed nothing I do can produce a live receipt.
 
-## 2. The RE4 Switch base content on the i9 (checkpoints E1 and F1)
+## 2. The RE4 Switch base content on the i9 (checkpoints E1 and F1) - RESOLVED 15:58 CST
 
-- I have only the **update 1.0.2 NSP**: `D:\gBox\cache\270a15eb98dab4d7\Resident Evil 4 [UPDATE 1.0.2]
-  [010099a00bc1e000].nsp`. It carries no ticket, so the extractor answers *"no ticket in the container: a title key
-  cannot be derived"*. There is no base NSP on the i9's drives, and JAYBUILTFINALE's shares are not reachable from the
-  i9.
-- what I need: the **base** content for `010099A00BC1E000`, copied onto the i9 read-only - either the base NSP or the
-  extracted `main` (a file `main` plus its `main-*.nso` name if possible). A path such as
-  `D:\gBox\cache\re4-base\` is perfect; just say where it is.
-- I will check it against the guide's constants: build `82C2A04A21D3E0B850F273D4149C9003`, NSO sha256
-  `98ca897f07b2c864a0cabfb9dd8ca46a54b88c565ba629da3b7a4b6a57a57441`. Then E1 (find the never-executed zero cave and
-  prove no branch/literal targets it), E2 (the player unit's vtable trigger) and F1
-  (`re4_switch_blasts.verify`) can run offline on this box.
-- no toolchain decision is needed: capstone 5.0.7 and unicorn 2.1.4 are installed, so the hand-encoded route (E0(c))
-  works.
+**Resolved, no action needed.** The Spark's decrypt-lab had already extracted the same update NSP
+(`GET /api/decrypt-lab/state`: `main-82C2A04A21D3E0B850F273D4149C9003.nso`), and its extracted `main.bin` was on its
+home share, so I copied it read-only to `D:\gBox\cache\re4-base\main.bin` (11,716,664 bytes; the raw NSO as
+`main.nso`). It is the right build: the 64-byte signature at `main+0x100000` matches, and
+`re4_switch_blasts.verify` passes on it. F1 is done, and E1's cave is found and vetted at `main+0x655880` (1920 bytes,
+64-byte aligned, all zero, no branch/literal references) with the new `tools/verify_re4_caves.py` and its 10 tests.
+One honest note: the documented `MAIN_NSO_SHA256` (`98ca897f...`) is Citron's 30,146,816-byte `dump_nso` form; this
+expanded image hashes differently because its header was rewritten and .bss padding is absent, so the signature and
+the blast anchors are the identification. The old request text follows for the record: the i9 had only the ticketless
+update NSP; the base content is now here.
+
 
 ## 3. Optional: one read-only capture for the RE6 launcher (checkpoint B)
 
