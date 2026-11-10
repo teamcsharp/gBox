@@ -1554,7 +1554,7 @@ WM_STATS = ("shots", "hits", "kills", "hand_s", "range_s", "range_shots", "trigg
 PS3_BRAIN = False
 BRAIN_COUNTERS = ("misses", "headshots", "miss_short", "miss_past", "miss_beside", "miss_moved", "threat_blasts",
                   "laser_rejected", "front_first", "blocked_switches")
-AIM_COUNTERS = ("pulls_hit", "pulls_dot_miss", "pulls_ray_miss", "pulls_blind", "pulls_short", "pulls_slipped",
+AIM_COUNTERS = ("pulls_hit", "pulls_dot_miss", "pulls_ray_miss", "pulls_blind", "shots_without_target", "pulls_short", "pulls_slipped",
                 "drops_mid_burst", "first_pull_n", "first_pull_s", "t_turn_foe_front")
 # Aim measured (the coordinator 19:06: "Measure aim: aim_err_deg at each shot (mean/p90), first-shot latency after
 # acquiring, hit rate by band. Before/after per turn"): each pull's aim error (the yaw from the aim to his chest as it
@@ -8266,6 +8266,8 @@ class Bot:
         hit_body = bool(valid_ray and self._crowd_hit(origin, dot, foot, False, prof))
         endpoint = ('target' if valid_ray and dot_on(dot, foot, prof) else self._behind(ctx)) if valid_ray else 'off'
         contact = ctx.get('contact_kind') or ('body endpoint' if endpoint == 'target' else 'body segment' if hit_body else 'unverified')
+        if not (endpoint == 'target' or hit_body):          # a pull with no body under the laser: counted, target 0
+            self.stats["shots_without_target"] += 1
         entry = self.look.record_shot(ctx.get("weapon"), ctx.get("gate"), target,
                                       aim_err_deg=-math.degrees(ctx.get("yaw_err") or 0.0),
                                       dot_on='target' if hit_body else endpoint or 'off')

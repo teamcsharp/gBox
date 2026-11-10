@@ -291,3 +291,18 @@ def test_a_health_loss_is_blamed_and_the_majini_are_observed_ten_times_a_second(
     clock[0] = 1.0
     b.tick(s)
     assert [c[1][4] for c in k_calls if c[0] == "damage"] == ["grab"]
+
+
+def test_pull_without_body_under_laser_counts_shots_without_target(k_calls):
+    b, _ = bot()
+    foe = at(490, 0)
+    b._aimctx = {'target': 10, 'dist': 490, 'origin': MUZZLE, 'dot': (150, 110, 1000), 'foot': foe, 'where': None}
+    b._pull_start(1.)
+    b._pull_end(1.1)
+    b._aimctx = {'target': 10, 'dist': 490, 'origin': MUZZLE, 'dot': chest(foe), 'foot': foe, 'where': 'body'}
+    b._pull_start(1.2)
+    b._pull_end(1.3)
+    assert b.stats['shots_without_target'] == 1
+    b._aimctx = {'target': 10, 'dist': 490, 'laserless': True}
+    b._pull_start(1.4)
+    assert b.stats['shots_without_target'] == 2
