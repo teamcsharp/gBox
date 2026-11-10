@@ -1716,6 +1716,10 @@ DEDICATED = [
     ("re4_ps2", lambda t, p: "resident evil 4" in t and p == "ps2",
      lambda: __import__("gbox.re4ps2_reader", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.re4ps2_reader", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # RE4 (2023 Switch port, 010099A00BC1E000): bio4/em/*.udas HD BIN + TPL + imagepackhd -> skinned GLB (gbox/re4_switch_reader)
+    ("re4_switch", lambda t, p: "resident evil 4" in t and p == "switch",
+     lambda: __import__("gbox.re4_switch_reader", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.re4_switch_reader", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("nomercy", lambda t, p: "no mercy" in t and p == "n64", lambda: __import__("gbox.aki_wrestling", fromlist=["x"]).roster_entries(),
      lambda ctx, game, e, work: __import__("gbox.aki_wrestling", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("smackdown2", lambda t, p: "smackdown! 2" in t and p == "psx", lambda: __import__("gbox.yukes_sd", fromlist=["x"]).roster_entries(),
