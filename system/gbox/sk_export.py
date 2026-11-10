@@ -291,7 +291,6 @@ def export_sstage_sonic(rom: bytes, out_png: str | Path | None = None,
                             frame_img.putpixel((px, py), c)
                 img.paste(frame_img, (0, y_off))
                 y_off += f["height"] + 2
-                break  # Only write first frame for now (sheet = one frame)
             img.save(pp)
             result["png_path"] = str(pp)
 
