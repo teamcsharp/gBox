@@ -1130,6 +1130,33 @@ def build_resolver(store, game_id):
     return lambda mod: donor_swap.resolve(store, game_id, mod)
 
 
+FAIL_STRIKES = 2          # consecutive launch failures of one title on a host before it rests
+FAIL_REST_S = 15 * 60     # how long a title that keeps failing to launch is skipped (while another title can play)
+LAUNCH_FAILURE_MARKS = ('launch failed', 'launch rejected', 'launch invalid', 'launch cancelled', 'launch timed out',
+                        'warm launch')
+
+
+def failing_titles(store, host, now=None):
+    """Titles whose last FAIL_STRIKES finished runs on `host` all failed to launch, the newest within FAIL_REST_S.
+    Without this the rotation re-picked the same title (Merc3D on the i9: its Citra boot failing) every tick, so the
+    PiP never got to show a title that worked. A title's successful run clears its strikes."""
+    now = time.time() if now is None else now
+    by_title = {}
+    for row in sorted(store.all('autoplay_screensaver_log'), key=lambda r: r.get('ended') or 0):
+        title = (row.get('mercmode') or {}).get('title')
+        if not title or row.get('worker') != host:
+            continue
+        why = str(row.get('why') or '').lower()
+        by_title.setdefault(title, []).append((row.get('ended') or 0,
+                                               any(why.startswith(m) or ': ' + m in why for m in LAUNCH_FAILURE_MARKS)))
+    out = set()
+    for title, runs in by_title.items():
+        last = runs[-FAIL_STRIKES:]
+        if len(last) == FAIL_STRIKES and all(bad for _, bad in last) and now - last[-1][0] < FAIL_REST_S:
+            out.add(title)
+    return out
+
+
 def choose(store, worker, rng, cfg=None):
     cfg = cfg or settings(store, worker['name'])
     rows = inventory(store, worker, cfg)
@@ -1149,6 +1176,8 @@ def choose(store, worker, rng, cfg=None):
                                                                  '_queue_pending': True},
                                                   build_resolver(store, queued['game_id'])))
     pool = [r for r in rows if r['playable'] and r['title'] in cfg['titles']]
+    resting = failing_titles(store, worker['name'])
+    pool = [r for r in pool if r['title'] not in resting] or pool     # all failing: still try, never idle the PiP
     history = store.get(HISTORY, worker['name']) or {}
     fresh = [r for r in pool if r['game_id'] != history.get('last_game_id')] or pool
     if not fresh:
