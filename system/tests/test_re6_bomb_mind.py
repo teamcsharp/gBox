@@ -272,7 +272,9 @@ def test_with_the_hook_bound_no_dpad_key_ever_leaves_the_bot():
 
 
 def test_a_grenade_at_one_in_range_and_thrown_on_the_move_away_from_the_pursuers(monkeypatch):
+    # (the throw's mechanics with fire-first off: since 2026-11-10 14:30 the gun answers the one at 3 m first, below)
     monkeypatch.setattr(R, "NADES", True)
+    monkeypatch.setattr(R, "FIRE_FIRST", False)
     foes = ((0.0, 0.0, 300.0, 700), (0.0, 0.0, 700.0, 700))                   # one on his heels, one in range
     clock = [0.0]
     bridge = NativeBridge()
@@ -289,6 +291,21 @@ def test_a_grenade_at_one_in_range_and_thrown_on_the_move_away_from_the_pursuers
     assert thrown and all("ldown" in a["hold"] for a in thrown)               # backing away from the one at 3 m
     assert bot.stats["nade_flee_throws"] == 1 and bot.stats["frags"] >= 1   # (the in-hand burst may add more)
     assert all(not ({a.get("tap")} | set(a.get("hold") or ())) & R.DPAD_KEYS for a in acts)
+
+
+def test_fire_first_no_grenade_cycle_at_one_in_clear_sight_up_close(monkeypatch):
+    """The operator 2026-11-10 14:30: "the RE6 bot is not proactive enough at shooting" (t_nade 331 s against t_fire 9 s):
+    with one in clear sight within FIRE_FIRST_R no grenade cycle starts - the gun answers him."""
+    monkeypatch.setattr(R, "NADES", True)
+    foes = ((0.0, 0.0, 300.0, 700), (0.0, 0.0, 700.0, 700))
+    clock = [0.0]
+    bot = R.Bot(stats={}, clock=lambda: clock[0], equip=NativeBridge())
+    snap = R.snapshot(round_guest(enemies=foes, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot.melee_at = bot.qshot_at = 100.0
+    snap["player"].update(equipped=0, nades={0x113: (9, 5)}, guns={0x107: 0}, gun_ammo={0: 7})
+    run(bot, snap, clock, 6)
+    assert bot.nade is None and bot.stats.get("nade_fire_first_skips", 0) >= 1
 
 
 # --- the coached moment (request 5482, note 7) ---------------------------------------------------------------------
@@ -320,7 +337,21 @@ def test_coach_5482_7_the_pack_gets_the_ring_and_the_grenades_never_the_pillar(m
     monkeypatch.setattr(R, "FLASH", True)
     fx, snap = coach_snapshot()
     decision = GR.decide(snap, {"bomb_safe_cm": 700}, 500.0, GR.policy(R), title=R.TITLE_ID)
+    # since 2026-11-10 14:3x a flash ring only for a tight surround, and never for the big ones (a flash does not stop
+    # them: "Some enemies can't be beaten by a flash and must be killed with weapons")
+    assert not decision["fire"] and "not tight" in decision["reason"]
+    open_gate = dict(GR.policy(R), flash_tight_n=None, flash_gap_s=None)
+    decision = GR.decide(snap, {"bomb_safe_cm": 700}, 500.0, open_gate, title=R.TITLE_ID)
     assert decision["fire"] and "dangerous" in decision["reason"] and decision["radius_cm"] >= 700 + 250
+    # fire first (2026-11-10 14:30): a J'avo stands 2.4 m off in the clear - the gun answers him, no grenade cycle yet
+    clock = [500.0]
+    bot = R.Bot(stats={}, clock=lambda: clock[0], equip=NativeBridge())
+    bot._round_started = 400.0
+    bot.held = lambda p, now: False
+    run(bot, snap, clock, 3)
+    assert bot.nade is None and bot.stats.get("nade_fire_first_skips", 0) >= 1
+    # the grenade's own handling of the pack (fire-first off): at them, by the hook, never the pillar
+    monkeypatch.setattr(R, "FIRE_FIRST", False)
     clock = [500.0]
     bridge = NativeBridge()
     bot = R.Bot(stats={}, clock=lambda: clock[0], equip=bridge)

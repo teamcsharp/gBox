@@ -265,6 +265,39 @@ class Controller(N.Controller):
             finally:
                 self.detach_completed()
 
+    def flash_at(self, x, y, z):
+        """One flash ON THE CROWD (re5_switch.FLASH_PLACE): the verified flash with the unit's live transform and home
+        copy moved to (x, y, z) before the blast - the ring's own step (_ring_one), one grenade, never at his feet. The
+        point is refused closer than RING_SELF_CLEAR_CM to him. -> the confirmed receipt, with the point and his
+        distance from it."""
+        self.ready()
+        with self.lock:
+            player, generation = self.ready()
+            self.sp = self.q(self.base + R.S_PLAYER)
+            self.player, self.generation = player, generation
+            self.original = self.q(player)
+            self.check()
+            px, py, pz = struct.unpack("<3f", self.rd(self.player + R.P_POS, 12))
+            if not all(math.isfinite(v) for v in (x, y, z)):
+                raise Unavailable("the flash's point is not a point")
+            off = math.hypot(x - px, z - pz)
+            if off < RING_SELF_CLEAR_CM:
+                raise Unavailable(f"the flash's point is {off:.0f} cm from him: never at his feet")
+            started = time.monotonic()
+            try:
+                self.attach()
+                one = self._ring_one(float(x), float(y), float(z), 0)
+            except Exception:
+                self.failed = True
+                self.recoverable = True
+                raise
+            finally:
+                self.detach_completed()
+            return {"state": "confirmed", "verified": True, "op": "flash_at", "effect": "native_flash_explosion",
+                    "player_generation": self.generation, "projectile_generation": one["projectile_generation"],
+                    "pos": one["pos"], "from_player_cm": round(off, 1),
+                    "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+
     def ring_capable(self):
         return True
 
