@@ -117,6 +117,16 @@ def _fresh_caches(tmp_path, monkeypatch):
     R._COVERAGE["data"] = None
 
 
+@pytest.fixture
+def old_flash_policy(monkeypatch):
+    """The flash mechanics (the wheel, the fever, the flurry, a frag beside them) with the gate open: before 2026-11-10
+    14:30 a crowd was flashed every FLASH_GAP_S; since then one flash a minute, in a tight situation only, the gun first
+    at one in sight (FLASH_MIN_GAP_S, FLASH_TIGHT, FIRE_FIRST - the gate's own tests are in test_mercs_flash_window)."""
+    monkeypatch.setattr(R, "FLASH_MIN_GAP_S", 0.0)
+    monkeypatch.setattr(R, "FLASH_TIGHT", False)
+    monkeypatch.setattr(R, "FIRE_FIRST", False)
+
+
 def throws(acts):
     """Acts with ZL and ZR held: the throw (since 2026-11-10 it may carry the flee's stick keys: thrown on the move)."""
     return [a for a in acts if {"zl", "zr"} <= set(a.get("hold") or ())]
@@ -788,7 +798,7 @@ def test_no_bomb_readied_with_two_within_three_metres():
     assert bot.bomb_phase is None and bot.stats["bombs_placed"] == 0
 
 
-def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypatch):
+def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypatch, old_flash_policy):
     monkeypatch.setattr(R, "NADES", True)                                    # (off in play until the wheel is measured)
     monkeypatch.setattr(R, "FLASH_BURST_S", 0.0)                             # one flash here (the flurry: its own test)
     near = ((0.0, 0.0, 300.0, 700), (100.0, 0.0, 350.0, 700), (-100.0, 0.0, 380.0, 700),
@@ -819,7 +829,7 @@ def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypat
     assert all("zl" not in a.get("hold", ()) for a in acts)                   # kicks, no quick shots
 
 
-def test_the_throw_is_held_and_flashes_come_in_a_flurry_while_they_crowd_him(monkeypatch):
+def test_the_throw_is_held_and_flashes_come_in_a_flurry_while_they_crowd_him(monkeypatch, old_flash_policy):
     """Operator 2026-10-28: "They still lift the grenade for use but never throw it" / "spamming a flurry of flash
     grenades": ZL + ZR held NADE_THROW_S (not one tick), and another flash at once while FLASH_N stay close."""
     monkeypatch.setattr(R, "NADES", True)
@@ -993,7 +1003,7 @@ def test_a_grenade_lifted_outside_a_throw_is_thrown_at_the_best_cluster_four_met
     assert all(a.get("tap") != "right" for a in acts[:acts.index(throws(acts)[0])])   # never put away first
 
 
-def test_a_frag_starts_with_one_near_him_when_the_cluster_is_clear_of_its_blast(monkeypatch):
+def test_a_frag_starts_with_one_near_him_when_the_cluster_is_clear_of_its_blast(monkeypatch, old_flash_policy):
     monkeypatch.setattr(R, "NADES", True)
     foes = ((0.0, 0.0, 250.0, 700),                                           # one 2.5 m off (no NADE_START_R refusal)
             (0.0, 0.0, 750.0, 700), (120.0, 0.0, 800.0, 700), (-120.0, 0.0, 780.0, 700))
@@ -1500,7 +1510,7 @@ def test_point_blank_crowd_gets_aimed_fire_and_a_lone_one_the_quick_shot():
     assert {"hold": ("zl", "zr")} in acts and bot.stats["quick_shots"] >= 1
 
 
-def test_the_flash_alone_with_five_close_and_no_fever_or_grenades(monkeypatch):
+def test_the_flash_alone_with_five_close_and_no_fever_or_grenades(monkeypatch, old_flash_policy):
     monkeypatch.setattr(R, "NADES", False)
     monkeypatch.setattr(R, "FLASH", True)
     near = ((0.0, 0.0, 300.0, 700), (100.0, 0.0, 350.0, 700), (-100.0, 0.0, 380.0, 700),
@@ -1791,7 +1801,7 @@ def flash_now(bot, snap, clock):
     run(bot, snap, clock, int(R.NADE_STEP_S / 0.05) + 3)
 
 
-def test_four_within_five_metres_get_the_flash_and_the_fever_ends_when_an_unflashed_one_closes(monkeypatch):
+def test_four_within_five_metres_get_the_flash_and_the_fever_ends_when_an_unflashed_one_closes(monkeypatch, old_flash_policy):
     monkeypatch.setattr(R, "NADES", True)
     four = ((0.0, 0.0, 450.0, 700), (150.0, 0.0, 430.0, 700), (-150.0, 0.0, 470.0, 700), (60.0, 0.0, 480.0, 700))
     bot, clock, snap = brain(round_guest(enemies=four, cam_yaw=0.0))
@@ -1984,7 +1994,7 @@ def test_the_one_winding_up_is_stopped_first_and_counted():
     assert bot.stats["hits_after_windup"] == 1
 
 
-def test_two_winding_up_get_the_flash(monkeypatch):
+def test_two_winding_up_get_the_flash(monkeypatch, old_flash_policy):
     monkeypatch.setattr(R, "NADES", True)
     two = ((0.0, 0.0, 400.0, 700), (150.0, 0.0, 420.0, 700))
     bot, clock, snap = brain(round_guest(enemies=two, cam_yaw=0.0))
@@ -3530,7 +3540,7 @@ def test_the_warm_pool_finds_the_re6_reader_from_the_catalog_game():
     assert reader is R.warm_probe
 
 
-def test_overwhelmed_he_flashes_even_with_one_at_arms_length_and_time_overwhelmed_is_counted(monkeypatch):
+def test_overwhelmed_he_flashes_even_with_one_at_arms_length_and_time_overwhelmed_is_counted(monkeypatch, old_flash_policy):
     monkeypatch.setattr(R, "NADES", True)
     on_him = ((0.0, 0.0, 100.0, 700), (150.0, 0.0, 200.0, 700), (-150.0, 0.0, 220.0, 700))   # three within 3 m
     bot, clock, snap = brain(round_guest(enemies=on_him, cam_yaw=0.0))
@@ -3544,7 +3554,7 @@ def test_overwhelmed_he_flashes_even_with_one_at_arms_length_and_time_overwhelme
     assert bot.push is not None and abs(R.wrap(bot.push["h"] - math.pi)) <= math.radians(60)   # the way out: behind
 
 
-def test_his_health_falling_with_two_close_gets_the_flash(monkeypatch):
+def test_his_health_falling_with_two_close_gets_the_flash(monkeypatch, old_flash_policy):
     monkeypatch.setattr(R, "NADES", True)
     two = ((0.0, 0.0, 200.0, 700), (150.0, 0.0, 180.0, 700))
     bot, clock, snap = brain(round_guest(enemies=two, cam_yaw=0.0))
@@ -3578,7 +3588,7 @@ def test_a_push_through_counts_once_he_is_out_of_the_crowd():
     assert bot.stats["pushthroughs"] == 1 and bot.push is None
 
 
-def test_overwhelmed_right_after_a_flash_the_remote_bomb_goes_down_at_his_feet(monkeypatch):
+def test_overwhelmed_right_after_a_flash_the_remote_bomb_goes_down_at_his_feet(monkeypatch, old_flash_policy):
     monkeypatch.setattr(R, "BOMB_DROP", True)
     on_him = ((0.0, 0.0, 150.0, 700), (150.0, 0.0, 200.0, 700), (-150.0, 0.0, 220.0, 700))
     bot, clock, snap = brain(round_guest(enemies=on_him, cam_yaw=0.0))
