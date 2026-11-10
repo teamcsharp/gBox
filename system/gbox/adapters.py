@@ -155,6 +155,21 @@ def _win_terminate_tree(proc: subprocess.Popen) -> None:
             k32.CloseHandle(ctypes.c_void_p(h))
 
 
+def _close_bounded(fn, seconds: float) -> bool:
+    """Run a close() on a daemon thread and wait at most `seconds`; a close stuck on a dead peer never blocks Stop."""
+    t = threading.Thread(target=lambda: _quiet(fn), daemon=True, name="adapter-close")
+    t.start()
+    t.join(seconds)
+    return not t.is_alive()
+
+
+def _quiet(fn):
+    try:
+        fn()
+    except Exception:  # noqa: BLE001 - the emulator is already gone
+        pass
+
+
 def _kill_tree(proc: subprocess.Popen | None):
     """Kill the emulator's own process tree now (#1504): TerminateProcess on the emulator gBox started and on the
     processes it started (taskkill /T /F on its PID as the fallback), SIGTERM on Linux; nothing else is touched."""
@@ -2118,13 +2133,16 @@ class StandaloneAdapter(Adapter):
             return ""
 
     def stop_game(self) -> dict:
-        if self.stream:
-            self.stream.close()
-        if self.dbg:
-            self.dbg.close()
-        _kill_tree(self.proc)                   # flatpak run --die-with-parent takes the sandbox down with it
-        if self.display:
-            self.display.close()
+        # Kill the emulator FIRST. An emulator blocked on a modal dialog (Dolphin's 'Invalid read' warning) never answers
+        # its debugger socket, so closing the debugger before the kill hung Stop behind the dialog (#2856).
+        try:
+            _kill_tree(self.proc)               # flatpak run --die-with-parent takes the sandbox down with it
+        finally:
+            for part in (self.stream, self.dbg):
+                if part:
+                    _close_bounded(part.close, 3.0)
+            if self.display:
+                self.display.close()
         return {"returncode": self.proc.poll() if self.proc else None}
 
     def query_runtime(self) -> dict:
