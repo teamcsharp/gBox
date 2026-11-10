@@ -159,3 +159,24 @@ def test_loader_addresses_in_owned_elf_text():
     a = sol.LOADER_ADDRS
     assert b[off(a["stage_dat_name"]):off(a["stage_dat_name"]) + 10] == b"stage.dat\x00"
     assert struct.unpack_from("<I", b, off(a["file_name_table"]))[0] == a["stage_dat_name"]
+
+
+def test_owned_slot_write_probe_noop_and_changed_model():
+    """Writer probe, owned build: soldier_tanker slot model 0x613791 in w00a: no-op and changed same-size write both
+    rebuild inside the stage span and decode back; only the model bytes change."""
+    import pytest
+    from gbox import mgs2_inventory as inv
+    src = sol.source_path()
+    if not src.exists():
+        pytest.skip("owned ISO not mounted")
+    d = inv.Disc(str(src))
+    try:
+        r = sol.slot_write_probe(d)
+    finally:
+        d.close()
+    assert r["size"] == 55648 and r["orig_human_roles"] == 18
+    assert r["orig_sha256"] == "df9570742f740bb20edb634681f952e3c09a347cdf02ed8b3b8b9dc602ddbc9a"
+    assert all(r["noop"].values())
+    c = r["changed"]
+    assert c["fits"] and c["page_equal"] and c["others_untouched"] and c["len_same"] and c["model_identical"]
+    assert c["verify"]["ok"] and c["verify"]["triangles"] == 21
