@@ -15,7 +15,10 @@ STATUS 2026-11-09 (docs/research/re4-parity.md section 7):
 - MEASURED: module_base (signature; the same 0x3CA7C04000 on every lilspark boot read), round entry, the keymap, the
   walk from the title to a live round (the capture frame, gbox.mercs.titles.re4_switch_screens), the bss row layout and
   the heap windows (BSS_ROWS, HEAP_WINDOWS), and that the main menu holds no float that falls like a round clock.
-- FOUND LIVE, NOT FIXED: the round clock (ClockFinder re-finds it each boot by its fall against wall time, hints first).
+- MEASURED 2026-11-10: where the game is (game_state: intro / in control / grabbed / held / case / death camera /
+  results, from MercSysWk, pG's Status_flg / Stop_flg and the HUD's CountDown) and the round clock itself (CountDown,
+  module + 0x1132FC0: docs/research/re4-switch-game-state.md). ClockFinder (below) is the fallback when they cannot be
+  read: what it found were pG matrix-palette floats, not the clock.
 - PENDING: the player and Ganado classes and their position / facing offsets (PLAYER_CLASS, ENEMY_CLASSES, U_POS, U_YAW)
   and the kill / combo / score fields (MERC_*): scripts/re4sw_round_probe.py measures them in one live round.
   Until they are set snapshot() reads the clock only, the playbook fights from the frame, and mercs.ready stays false.
@@ -165,6 +168,126 @@ MERC_KILLS_MAX = 2000
 KILL_CANDIDATES: tuple = (0x12010C4, 0x120118C, 0x12014AC, 0x12013E4)
 MERC_COMBO: int | None = None
 MERC_SCORE: int | None = None
+
+# ---------------------------------------------------------------------------
+# Where the game is, from its own state (docs/research/re4-switch-game-state.md). Found 2026-11-10 by static analysis of
+# main against the GameCube decompilation (adonis-singh/re4: global.h GLOBAL_WK / STA_* / SPF_*, mercenaries.cpp,
+# cockpit.cpp CountDown) and confirmed live on lilspark (session 5a68e96bfd1447a2-780e877d92ec4151, Krauser on
+# Waterworld: the intro card, the round, the death).
+# * pG (the game's global work, re4_weapons.GAME_OBJ): SceEventStart (0x4A1B60) sets Status_flg [+0x5090] 0x1000
+#   (STA_EVENT) and [+0x5094] 0x10000000 (STA_SUSPEND), masks the pad (KeyStop: Stop_flg [+0x1A8] SPF_KEY) and sets
+#   SPF_ACTBTN | SPF_SCE_AT there; the flag words count their bits from the top (MSB first), as on the GameCube.
+# * MercSysWk (0x124F690): MercSysMoveStart (0x2A7290) runs the intro with startSt [+0xD4] = 1, its step [+0xD5] (1:
+#   the "Eliminate as many Ganados ..." card, which waits for A: SceMesSet); MercSysMoveMain (0x2A6DE0) sets mainSt
+#   [+0xD9] = 1 only after the intro returns; MercSysResultMove (0x2A95D0) runs the results with rsltSt [+0xE0] = 1.
+# * the HUD clock: CountDown (Cckpt 0x1132F10 + 0xB0): state u32 (1 alive, 8 paused: STA_SUSPEND or SPF_PL), frames
+#   left f32 at +8 (initTime 0x20AF0: 2:00 = 3600.0), less pG's frame step [+0xA4] (0.5 at 60 fps) per game frame
+#   unless paused or the case is open (CountDown::move 0x200C0). Live: 30.06 a wall second over 20 s of a round.
+# Live, in order: the intro card - startSt 1/1, STA_EVENT and STA_SUSPEND on, Stop_flg 0x80400100, the clock 3600.0
+# alive + paused (state 9); the round - startSt 0/2, mainSt 1, both flags off, Stop_flg 0, the clock running (state 1);
+# the death - STA_DIEDEMO (Status_flg[0] 0x00100000) on, Stop_flg 0x80400100 again, the clock's state 0.
+PG_PTR_VAR = 0xB1AE08                   # data: u64 -> pG (re4_weapons.GAME_PTR_VAR)
+PG_OBJ = 0x1274338                      # pG itself (re4_weapons.GAME_OBJ)
+PG_SYSTEM = 0x78                        # u32 System_flg: SYS_MERCENARIES while The Mercenaries is the game
+PG_SPEED = 0xA4                         # f32 the frame step (every motion and the clock advance by it each frame)
+PG_STOP = 0x1A8                         # u32 Stop_flg
+PG_STATUS = 0x5090                      # u32 Status_flg[4]
+SYS_MERCENARIES = 0x40000000            # SYS_OMAKE_ETC_GAME (MercSysSetPoint 0x2AB320 tests it)
+SPF_KEY, SPF_PL = 0x80000000, 0x10000000    # the pad masked (KeyStop); the player stopped (CountDown pauses on it)
+STA_EVENT = (0, 0x00001000)             # (word, bit): an event runs (the round intro, the results, a scripted scene)
+STA_SUSPEND = (1, 0x10000000)           # the world suspended (CountDown pauses)
+STA_DIEDEMO = (0, 0x00100000)           # the death camera (MercSysMoveMain stops checking the clock's end)
+STA_SUB_SCRN = (0, 0x00040000)          # the attache case / sub screen (CountDown does not count)
+STA_PL_CATCHED = (1, 0x00008000)        # a Ganado holds him (em10's grabs set it; the mash, PlGacha, frees him): live
+                                        # 2026-11-10 it was on at the samples his life fell 2400 -> 2112, 1458 -> 1255
+MERC_WORK, MERC_WORK_SIZE = 0x124F690, 0xF0   # MercSysWk (MercSysInitRoom 0x2A6B10 clears +0x28 .. +0xF0)
+MW_SCORE, MW_COMBO, MW_KILL = 0x28, 0x2C, 0x48     # MercSysSetPoint: score += base points, combo + 1, kill + 1
+MW_MODE, MW_STAGE = 0x6C, 0x70                     # 0 Leon, 1 Ada, 2 Krauser, 3 HUNK, 4 Wesker; 0..3 Village..Waterworld
+MW_START, MW_MAIN, MW_RESULT = 0xD4, 0xD9, 0xE0    # [run, step] of the intro, [run] of the round, [run, step] results
+COUNTDOWN, COUNTDOWN_SIZE = 0x1132FC0, 0x10
+CD_ALIVE, CD_PAUSE, CD_FRAME, CD_FPS = 0x1, 0x8, 0x8, 30.0
+# phase: none (no round's scenario task: menus, a load) | intro (the round's intro: the card waits for A) | playing (in
+# control, the clock running) | grabbed (a Ganado holds him: the mash) | held (in the round but not in control: an
+# event, a prompt, the world suspended, the pad masked) | case (the attache case is open) | dead (the death camera) |
+# results (the round's results sequence)
+ROUND_PHASES = ("intro", "playing", "grabbed", "held", "case", "dead", "results")
+PHASE_WHY = {"none": "no round running", "intro": "the round's intro card: A", "playing": "in control, the clock runs",
+             "grabbed": "a Ganado has him: A (the shake-off)",
+             "held": "the game holds the player (an event or a prompt): A", "case": "the attache case is open: B",
+             "dead": "the death camera: A answers its Continue (Yes)", "results": "the round's results: A"}
+# what each phase puts on the telemetry's `screen` (MercMode now_playing, the progress rule) and the tactical map
+PHASE_SCREEN = {"none": None, "intro": "intro", "playing": "playing", "grabbed": "playing", "held": "held",
+                "case": "case", "dead": "dead", "results": "results"}
+
+
+def _flag(status, flag) -> bool:
+    word, bit = flag
+    return bool(status[word] & bit)
+
+
+def decode_state(system: int, stop: int, status, merc: bytes, countdown: bytes, speed: float | None = None) -> dict:
+    """The game's own state from its raw fields (see PG_* / MW_* / CD_*): {phase, in_control, clock, clock_running,
+    intro_step, result_step, kills, score, combo, mode, stage, flags, why}. Pure: the tests feed it bytes."""
+    mercs = bool(system & SYS_MERCENARIES)
+    start_run, start_step = merc[MW_START], merc[MW_START + 1]
+    main_run = merc[MW_MAIN]
+    res_run, res_step = merc[MW_RESULT], merc[MW_RESULT + 1]
+    cd_state = struct.unpack_from("<I", countdown, 0)[0]
+    frame = struct.unpack_from("<f", countdown, CD_FRAME)[0]
+    flags = {"event": _flag(status, STA_EVENT), "suspend": _flag(status, STA_SUSPEND),
+             "die": _flag(status, STA_DIEDEMO), "case": _flag(status, STA_SUB_SCRN),
+             "grabbed": _flag(status, STA_PL_CATCHED),
+             "key_stop": bool(stop & SPF_KEY), "pl_stop": bool(stop & SPF_PL)}
+    if not mercs:
+        phase = "none"
+    elif res_run:
+        phase = "results"
+    elif start_run:
+        phase = "intro"
+    elif main_run:
+        phase = ("dead" if flags["die"] else "case" if flags["case"] else
+                 "held" if flags["event"] or flags["suspend"] or flags["key_stop"] or flags["pl_stop"] else
+                 "grabbed" if flags["grabbed"] else "playing")
+    else:
+        phase = "none"
+    alive = bool(cd_state & CD_ALIVE) and math.isfinite(frame) and -1.0 <= frame <= CLOCK_MAX_S * CD_FPS
+    out = {"phase": phase, "in_control": phase == "playing", "why": PHASE_WHY[phase],
+           "clock": round(max(frame, 0.0) / CD_FPS, 2) if alive else None,
+           # the clock's own state: alive, not paused (STA_SUSPEND / SPF_PL), not stopped by the open case
+           "clock_running": (alive and not cd_state & CD_PAUSE and not flags["case"]
+                             and phase in ("playing", "grabbed", "held")),
+           "clock_state": cd_state, "intro_step": start_step if start_run else None,
+           "result_step": res_step if res_run else None, "mercenaries": mercs,
+           "kills": struct.unpack_from("<i", merc, MW_KILL)[0], "score": struct.unpack_from("<I", merc, MW_SCORE)[0],
+           "combo": struct.unpack_from("<i", merc, MW_COMBO)[0], "mode": struct.unpack_from("<i", merc, MW_MODE)[0],
+           "stage": struct.unpack_from("<i", merc, MW_STAGE)[0], "flags": flags}
+    if speed is not None:
+        out["frame_step"] = round(speed, 3)
+    return out
+
+
+def game_state(m, base: int | None = None) -> dict | None:
+    """decode_state() read from the session (a few small reads), or None when the fields cannot be read (no module, a
+    pG pointer that is not one): the callers then fall back to the frame."""
+    base = module_base(m) if base is None else base
+    if base is None:
+        return None
+    try:
+        pg = u64(m, base + PG_PTR_VAR)
+        if not ptr_ok(pg):
+            return None
+        head = bytes(m.rd(pg + PG_SYSTEM, PG_STOP + 4 - PG_SYSTEM))
+        status = struct.unpack("<4I", bytes(m.rd(pg + PG_STATUS, 16)))
+        merc = bytes(m.rd(base + MERC_WORK, MERC_WORK_SIZE))
+        cd = bytes(m.rd(base + COUNTDOWN, COUNTDOWN_SIZE))
+    except (ValueError, OSError, struct.error, TypeError):
+        return None
+    if len(head) < PG_STOP + 4 - PG_SYSTEM or len(merc) < MERC_WORK_SIZE or len(cd) < COUNTDOWN_SIZE:
+        return None
+    system = struct.unpack_from("<I", head, 0)[0]
+    speed = struct.unpack_from("<f", head, PG_SPEED - PG_SYSTEM)[0]
+    stop = struct.unpack_from("<I", head, PG_STOP - PG_SYSTEM)[0]
+    return decode_state(system, stop, status, merc, cd, speed if math.isfinite(speed) else None)
 
 # Rows the walk steers to (re4_switch_screens reads them from the frame). The cursor opens on LOAD, and a confirm there
 # loads a story save, so the walk only ever confirms on the row it has read as its target.
@@ -615,10 +738,21 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
     if base is None:
         return snap
     snap["module_base"] = base
-    clock = _finder(m, "re4_clock", ClockFinder)
-    if search or clock.addr is not None:
-        snap["timer"] = clock.observe(m, base, now)
-    snap["clock_addr"] = clock.addr
+    game = game_state(m, base)
+    if game is not None:
+        # the game's own state and its HUD clock (CountDown): ClockFinder's heuristic (any bss float that falls at
+        # wall rate) found matrix-palette floats in pG (the "copies 0x30 apart" were Mtx rows) and read erratically
+        snap["game"] = game
+        snap["timer"], snap["clock_addr"], snap["clock_source"] = game["clock"], base + COUNTDOWN, "countdown"
+        snap["mercenaries_phase"] = (PHASE_INTRO if game["phase"] == "intro" else
+                                     PHASE_OVER if game["phase"] == "results" else
+                                     PHASE_PLAYING if game["phase"] in ROUND_PHASES else None)
+        snap["score"], snap["combo"] = game["score"], game["combo"]
+    else:
+        clock = _finder(m, "re4_clock", ClockFinder)
+        if search or clock.addr is not None:
+            snap["timer"] = clock.observe(m, base, now)
+        snap["clock_addr"], snap["clock_source"] = clock.addr, "clock_finder"
     census = _finder(m, "re4_units", UnitCensus)
     if census.classes() and U_POS is not None:
         if search:
@@ -653,7 +787,16 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
 
 def own_screen(snap: dict) -> str:
     """playing / dead / results / story / loading from the round's own fields (mirrors re4_gc.own_screen, with the
-    merc phase when the port exposes one). Conservative: unknown stays "loading", so the walk reads the frame instead."""
+    merc phase when the port exposes one). Conservative: unknown stays "loading", so the walk reads the frame instead.
+    With the game's own state (snap["game"], game_state) its phase decides: in control is "playing", the intro, a hold
+    and the open case are "paused" (in the round, not in control: the Bot pages them), the death camera "dead", the
+    results "results"; no round running falls through to the frame."""
+    game = snap.get("game")
+    if isinstance(game, dict) and game.get("phase") in ROUND_PHASES:
+        return {"playing": "playing", "grabbed": "playing", "dead": "dead",
+                "results": "results"}.get(game["phase"], "paused")
+    if isinstance(game, dict) and game.get("phase") == "none":
+        return "loading"
     p = snap.get("player")
     room, phase = snap.get("room"), snap.get("mercenaries_phase")
     if phase == PHASE_OVER:
@@ -1335,6 +1478,11 @@ class Bot:
     # --- the tick ---
     def tick(self, snap: dict, now: float | None = None) -> dict:
         now = self.clock() if now is None else now
+        game = snap.get("game")
+        if isinstance(game, dict) and not game.get("in_control"):
+            act = self._not_in_control(game, now)       # never a shot, never "fire", at a screen that takes no aim
+            self.stats["doing"], self.stats["why"] = self.doing, self.why
+            return act
         p = snap.get("player")
         if not p or p.get("pos") is None:
             self.doing, self.why = "idle", "no player in RAM"
@@ -1344,7 +1492,7 @@ class Bot:
             self.stats["kill_candidates"] = " ".join(f"{k}={v}" for k, v in snap["kill_candidates"].items())
         owed = self.combo_owed(now)
         self.stats["combo_owed_s"] = round(owed, 1) if owed is not None else None
-        frozen = self._frozen(p, now)
+        frozen = self._frozen(p, now, ram_state=isinstance(game, dict))
         if frozen is not None:
             self.stats["doing"], self.stats["why"] = self.doing, self.why
             return frozen
@@ -1571,8 +1719,40 @@ class Bot:
             return {"hold": set(), "tap": ACTION_BTN}
         return {"hold": set()}
 
-    def _frozen(self, p, now) -> dict | None:
-        """A tap of FROZEN_KEY while he is not in control (FROZEN_*), else None."""
+    # Not in control, read from the game's own state (snap["game"], game_state): what each phase presses, how often
+    NOT_IN_CONTROL_KEYS = {"intro": ("a", 0.5), "grabbed": ("a", 0.12), "held": ("a", 0.6), "case": ("b", 1.0),
+                           "dead": ("a", 1.5), "results": ("a", 1.0)}
+
+    def _not_in_control(self, game: dict, now: float) -> dict:
+        """The round's screen when the game says he is not in control (game_state): the intro card and a hold are paged
+        with A, a grab is mashed with A, the open case closed with B, the death screen's Continue (its cursor opens on
+        Yes, as the walk answers it) and the results paged with A; no round running gets nothing (the walk reads the
+        menus from the frame). Never a shot: the trigger and the aim are let go, the aim lock's request is withdrawn."""
+        phase = game.get("phase") or "none"
+        self.target = None
+        self._aim_since = None
+        AIM_REQUEST.clear()
+        self.doing = {"none": "wait", "dead": "dead"}.get(phase, phase)
+        self.why = PHASE_WHY.get(phase, phase)
+        if phase == "intro" and game.get("intro_step") not in (None, 1):
+            self.why = "the round's intro (the camera): waiting for its card"
+        self.stats["not_in_control_ticks"] = self.stats.get("not_in_control_ticks", 0) + 1
+        key, every = self.NOT_IN_CONTROL_KEYS.get(phase, (None, 0.0))
+        if phase == "intro" and game.get("intro_step") not in (None, 1):
+            key = None                                   # the camera move: A only once the card is up
+        if key is None:
+            return {"hold": set()}
+        last = self.__dict__.setdefault("_nic_tap", {})
+        if now - last.get(phase, -1e9) < every:
+            return {"hold": set()}
+        last[phase] = now
+        self.stats[phase + "_taps"] = self.stats.get(phase + "_taps", 0) + 1
+        return {"hold": set(), "tap": key}
+
+    def _frozen(self, p, now, ram_state: bool = False) -> dict | None:
+        """A tap of FROZEN_KEY while he is not in control (FROZEN_*), else None. With the game's own state read
+        (ram_state: tick() has already handled every phase that is not in control) the firing rule stays off: it was
+        the stopgap for a fight that could not see the intro card."""
         fz = self.__dict__.setdefault("_fz", {"pos": None, "rot": None, "tap": -1e9, "on": False})
         pos, rot = tuple(p["pos"]), p.get("rot")
         moved = (fz["pos"] is None or self._flat(fz["pos"], pos) > FROZEN_MM
@@ -1587,7 +1767,8 @@ class Bot:
         # the step rule above never armed. FROZEN_FIRE_SHOTS shots over FROZEN_FIRE_S without moving and without one
         # hit since he last moved is not a fight either.
         last_hit = max(self._hit_at.values(), default=-1e9) if isinstance(getattr(self, "_hit_at", None), dict) else -1e9
-        fire_stuck = (FROZEN and now - fz.get("at", now) >= FROZEN_FIRE_S and last_hit < fz.get("at", -1e9)
+        fire_stuck = (FROZEN and not ram_state and now - fz.get("at", now) >= FROZEN_FIRE_S
+                      and last_hit < fz.get("at", -1e9)
                       and shots - fz.get("shots0", shots) >= FROZEN_FIRE_SHOTS)
         if not FROZEN or not fire_stuck and (stepped is None or stepped < fz.get("at", -1e9)
                                              or now - stepped < STAND_STEP_S):
