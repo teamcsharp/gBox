@@ -28,7 +28,8 @@ crossed, so the fastest handgun-style fire is FR 3.0 (10 shots/s at 30 Hz). A ca
 
 ## The game state (bss, `GAME_OBJ` = 0x1274338; the pointer variable 0xB1AE08 holds its address)
 
-+0x78 mode flags (bit 30 = The Mercenaries), +0xA4 f32 frame step (*inferred*), +0x5028 / +0x502A life / maximum
++0x78 mode flags (bit 30 = The Mercenaries), +0xA4 f32 frame step (**live** 0.5 at 60 fps; the round clock falls by
+it, `re4-switch-game-state.md`), +0x1A8 Stop_flg, +0x5090 Status_flg[4], +0x5028 / +0x502A life / maximum
 (**live**), +0x5034 the equipped weapon's class, +0x5035 variant, +0x5036 magazine empty, +0x5037 firepower nibble,
 +0x5038 firing-speed nibble, +0x5039 capacity nibble, +0x503C character (0 Leon, 1 Ashley, 2 Ada, 3 HUNK, 4 Krauser,
 5 Wesker), +0x503E reload nibble.

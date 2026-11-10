@@ -116,6 +116,19 @@ def test_a_clock_its_master_rewrites_is_reported_as_not_holding(ad):
     assert M.status(ad)["clock_holds"] is False
 
 
+def test_the_huds_countdown_is_written_in_its_own_frames_never_over_its_state(ad):
+    """The snapshot's clock is now the game's CountDown (clock_source "countdown": state u32 at the address, frames at
+    30 a second at +8). A write in seconds onto the state word would kill the clock; the time goes into the frames."""
+    cd = BASE + D.COUNTDOWN
+    ad.put(cd, struct.pack("<IbbbxffI", 1, 1, 30, 0, 2700.0, 2700.0, 0))   # 1:30 running
+    s = dict(snap(ad), clock_addr=cd, clock_source="countdown")
+    out = M.run(ad, "add_time", seconds=30, snap=s)
+    assert out["verified"] and out["before"] == 90.0 and out["after"] == 120.0
+    assert struct.unpack("<I", ad.read_memory(cd, 4))[0] == 1, "the clock's state word is untouched"
+    assert struct.unpack("<f", ad.read_memory(cd + D.CD_FRAME, 4))[0] == 3600.0
+    assert M.status(ad, s)["clock"]["value"] == 120.0
+
+
 def test_no_clock_no_time_ops(ad):
     out = M.run(ad, "add_time", seconds=30, snap=snap(ad, clock=False))
     assert out["verified"] is False and "clock" in out["reason"]
