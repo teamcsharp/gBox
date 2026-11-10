@@ -2402,7 +2402,7 @@ sessionsView.after = (sid, mode) => {
     console.log("GBOX:" + JSON.stringify({ ev: "gamefocus", sid }));
   } }) || null;
   TMAP.ctl = window.GBoxTacticalMap?.mount(document, { sid, api,
-    portrait: (title, cls) => `/api/mercs/portraits/${encodeURIComponent(title)}/${encodeURIComponent(cls)}.jpg?${tq()}` }) || null;  // a Mercenaries round from above (shows with frames)
+    portrait: (title, cls) => `/api/mercs/enemies/${encodeURIComponent(title)}/${encodeURIComponent(cls)}.png?${tq()}` }) || null;  // a Mercenaries round from above (shows with frames); portraits from the model archives, else the live crop
   PSOMAP.ctl = window.GBoxPsoMap?.mount(document, { sid, api }) || null;      // the PSO level top-down from RAM, click to command (shows with frames)
   RAMI.ctl = window.GBoxRamInspector?.mount(head, { sid, api,                // the game's RAM by name, events, hex, search
     url: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}` }) || null;
