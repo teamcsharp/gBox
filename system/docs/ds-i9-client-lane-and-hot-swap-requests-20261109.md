@@ -1160,3 +1160,18 @@ The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned b
   slots in place, rename under the unit prefix). The next productive step is to parse the swapped **MRL's material
   table** (not the arc's entries) and see which texture identifiers it binds - `model_swap` already locates the MRL, so
   the table format is the remaining unknown.
+
+## Round 60 status (2026-11-10, ~04:05 CST): the MOD payload explains the gap; a fourth hypothesis failed
+
+* **The model entry is a zlib-compressed `MOD`**, not an MRL: `uPl02ChrisAsia.arc`'s 664,064-byte model entry starts with
+  `78 9c` and inflates to **1,449,880 bytes** beginning `MOD\0`. Its strings are **material names**, not texture paths:
+  `pl_skin`, `pl_skin1`, `pl_skin2`, `pl_skin3`, `pl_base`, `pl_base1` ... `pl_base8`, `pl_nuki`.
+* The cast texture arc names its maps by **part**, not by material: `pl0200_01Body_BM/NM/MM`, `pl0200_02Armor_*`,
+  `pl0200_07Hand_*`, ... So the MOD's materials (`pl_skin`, `pl_base1`) and the arc's texture entries
+  (`pl0200_01Body_BM`) are different namespaces, which is why every name/prefix strategy failed.
+* Fourth hypothesis tested: replace the enemy arc's 70 texture slots with the cast maps **in uPlTex arc order** (not
+  sorted by kind), 18,768,123 bytes, `recovery-re6-arcorder-r60`. The round ran (`01'26"60`) and the doorway shows
+  **two white/checkered swapped enemies plus one original dark-clothed one** - the swapped ones are still untextured.
+* So the binding must be resolved through the MOD's own material table (material -> texture index/name), not through the
+  arc's entry list in any order tried. The next step is to parse that table inside the inflated MOD: the strings and the
+  structures around them are the map.
