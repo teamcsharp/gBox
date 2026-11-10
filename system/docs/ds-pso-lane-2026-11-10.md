@@ -1418,16 +1418,64 @@ P1 (BQF) in room 10 at `(217.1, 207.7)`; P2 (3P) in room 20 at the plaza. Co-op 
 3. `pso_explore.probe` should use `greedy_walk` (it currently takes any `walk_to`; pass the greedy one), otherwise its
    grid results are noise.
 
+## Round 26 (2026-11-10) — the walker crossed a room boundary, and the party is together at the pad
+
+### A whole-city walk, with a door crossed on the way
+
+P2 was brought from `(-19.7, -5.4)` in the **market street (room 20)** all the way to the **lobby teleporter (room 10)**
+at `(230.2, 271.1)` -- about 300 units and one room transition -- using nothing but `greedy_walk`:
+
+```
+P2 start (-19.7, -5.4) room 20
+  leg 1 to door: stuck at (29.2, -19.0) room 20
+    push through: stuck at (38.6, 57.1) room 20
+  leg 2 to door: stuck at (91.1, 24.0) room 20
+    push through: stuck at (162.1, 164.8) room 10     <-- the door was crossed
+  leg 1..4 to pad: progressing through the lobby
+  leg 5 to pad: arrived at (230.2, 271.1) room 10
+```
+
+Two things that had not happened before:
+
+1. **A room transition by walking**, driven by the controller rather than accidentally: the "push through" step keeps
+   walking *past* the doorway coordinate when the walk reports stuck, and that is what crossed `(185,173)` from room 20
+   into room 10.
+2. **A ~300-unit route with obstacles** completed by the greedy walker, which reports `stuck` and is restarted rather
+   than grinding. Earlier calibrating walkers could not manage 60 units.
+
+Both players now stand at the same teleporter in room 10: P1 (BQF) at `(227.7, 262.7)`, P2 (3P) at `(236.2, 257.9)`.
+
+### The teleporter still does not answer, and "both players" is now ruled out as the cause
+
+With both players beside/on the pads and `A` pressed on **both** pads, no destination menu appeared and the mode byte
+stayed in the town family (`po5-pads.jpg`: both views show the purple portal pedestal, no UI). So:
+
+* the trigger is not proximity (tested at eight positions in room 40 in round 23),
+* not `A` on the pad,
+* not a precise approach (round 24, 2.5-unit tolerance),
+* and not "both players present" -- the hypothesis this round set out to test.
+
+What that leaves: the pad may require the party to be **exactly** on it (a 5-unit tolerance landed beside the raised
+platform, not on it, and the walker reports the platform's rim as `stuck`), or the city teleporter is simply not how an
+offline multiplayer party reaches the surface and the **Hunter's Guild quest** is the route.
+
+### Method note
+
+`walklib.py` (not in git) now gives both players a uniform `(read_pos, hold)` pair plus `walk()` and `press()`, so
+two-player scripts are short: P1 presses go through the virtual pad, P2's through the keyboard, and movement for both goes
+through `win_send_keys` with the window foreground. The `stuck -> keep walking past the target` idiom is what makes doors
+work, and it should be folded into `greedy_walk` as an option rather than living in every driver script.
+
 ## 7. Next
 
-1. **Cross** the guild doorway rather than reaching it: rounds 21-22 changed room by walking over (185,173), and
-   round 25 did not, twice. The difference is the line and the momentum -- approach along the axis the crossing
-   happened on, and keep walking for a second past the coordinate.
-2. Then the guild reception in room 20, a quest, and the quest's own warp to the surface -- still real presses, so
-   it satisfies P1's acceptance instead of dodging it.
-3. `pso_explore.probe` must be given `greedy_walk` as its `walk_to`, otherwise its grid results are noise (round 25's
-   16-point probe used the older, unreliable walker).
+1. Fold the **`stuck -> push past the target`** idiom into `greedy_walk` (an option such as `push_through=True`):
+   it is what crossed `(185,173)` between rooms 20 and 10, and it currently lives in every driver script instead.
+2. Try the **Hunter's Guild quest** route: the guild has no door entity of its own, so probe the market street
+   (room 20) and the lobby (room 10) for its archway with `pso_explore.probe` **given `greedy_walk`**, then talk to
+   the receptionist and accept a quest. The quest's own warp to the surface is real presses and satisfies P1.
+3. Ruled out for the city teleporter: proximity (8 positions in room 40), `A` on the pad, a precise approach
+   (2.5 units), and both players present (both beside the pads with `A` on both).
 
-Movement is now solved and tested: `gbox.pso_kbwalk.greedy_walk` re-measures each key's last world effect instead of
-modelling the camera, and arrived within 4 units on its first live run. Both earlier models failed for the same
-reason -- PSO's camera follows the character, so any one-time calibration goes stale (16 movement tests).
+Progress that is proven and reusable: a 300-unit two-room route walked by `greedy_walk` with a door crossed under
+its own control; both players co-located in the lobby at `(227.7,262.7)` and `(236.2,257.9)`; `walklib.py` gives
+any two-player script a uniform mover.
