@@ -1193,3 +1193,16 @@ The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned b
   (the 3 skips are the keyed NCA cases that need `prod.keys`).
 * Next for this thread: find the engine's texture collection order (likely entry order filtered by texture tag, but
   grouped BM/NM/MM per material) and lay the cast maps out in that order; the MOD itself cannot name them.
+
+## Round 62 status (2026-11-10, ~04:30 CST): the material names have no texture entries anywhere - the binding is a unit asset-list matter
+
+* Searched all 41 materialised `uPlTex*.arc` archives for entries whose basename starts `pl_skin`, `pl_base` or
+  `pl_nuki` (the 12 MOD material names): **zero hits**. The materials are not named after any texture the arc carries.
+* Combined with round 61 (the material records hold only names, no texture references), the conclusion is that the
+  engine binds a unit's materials to the textures of the unit's **asset list** - for a player character that list
+  includes the character's `uPlTex####_N` arcs; for an enemy unit (`uEm5200`) it includes the enemy's own maps. An enemy
+  wearing a player model therefore has no route to the player's maps through arc edits alone: the unit's asset list must
+  be changed (a unit/asset-definition edit, not a texture or model edit).
+* That closes the enemy-texture investigation with a concrete, documented blocker rather than an open-ended hunt. The
+  model swap itself works (cast meshes, skeletons and animations in enemies); only the material->texture resolution is
+  out of reach through the arc.
