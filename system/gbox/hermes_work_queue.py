@@ -136,6 +136,14 @@ def is_live_coaching(request) -> bool:
     return request.get('source') == 'coach' or (request.get('context') or {}).get('coaching') is True
 
 
+def coaching_change(request) -> bool:
+    """An operator critique's implementation request (gbox/bots.py ensure_request: source "coach_change", the operator's
+    child of the game's coaching ticket). Operator-first, and a code change in a worktree: no game is held for it."""
+    context = request.get('context') or {}
+    return (request.get('source') == 'coach_change' and context.get('coaching_change') is True
+            and request.get('author') == 'operator' and bool(request.get('parent_request_id')))
+
+
 def requested_player_damage(request) -> bool:
     """Only this standing operator request's server-persisted run batch admits generated damage reports."""
     context = request.get('context') or {}
@@ -381,13 +389,16 @@ def sync(data, favorites, requests, *, now, verified=None):
         item = data['items'].setdefault('inbox:' + request['id'], {
             'lane': 'inbox', 'request_id': request['id'], 'attempts': 0, 'last_dispatched': 0,
             'created': request.get('created', now)})
+        coached = coaching_change(request)          # an operator critique of a live bot (operator 2026-11-10)
         item.update(number=request.get('number'), title=request.get('title'), repair=repair,
+                    coaching_change=coached,
                     extraction_engineering=context.get('extraction_engineering') is True,
                     unlock_work=unlock_work,
                     favorite_unlock_work=bool(context.get('favorite_default')),
                     session_observer=bool(context.get('session_observer')),
                     launch_failure=bool(context.get('launch_failure')),
-                    operator_requested=bool(context.get('replacement_requested') or damage_report or damage_cluster),
+                    operator_requested=bool(context.get('replacement_requested') or damage_report or damage_cluster
+                                            or coached),
                     read_only=context.get('read_only') is True,
                     round_analysis_verified=round_analysis,
                     required_inference_node=context.get('required_inference_node'),
@@ -583,7 +594,66 @@ def cause_hold(key, item, request, data, owners) -> str:
     return ''
 
 
-def candidates(data, requests, native, owned, on_main, *, now, verified=None):
+def _host_exclusions() -> frozenset:
+    """The platforms this machine's own gBox worker never runs (its registration's excluded_platforms: Hermes runs on
+    the Spark, where its agents' sandboxes, builds and emulators run). An unreachable or odd answer excludes nothing."""
+    from . import platform_exclusion
+    try:
+        workers = _api('/api/workers')
+    except Exception:                                # noqa: BLE001 - the rest of tick() fails loudly on its own calls
+        return frozenset()
+    return platform_exclusion.host_exclusions(workers if isinstance(workers, list) else [])
+
+
+def _fill_platforms(data) -> None:
+    """Give each game item its catalog platform: a favorite carries its own (sync); an inbox ticket's game (or an old
+    windows_native row, which may be an original Xbox game) is looked up once and kept with the game id it is for."""
+    from . import platform_exclusion
+    for item in data['items'].values():
+        gid = item.get('game_id')
+        if not isinstance(gid, str) or not ID.fullmatch(gid):
+            continue
+        own = platform_exclusion.normalize(item.get('platform'))
+        if item.get('lane') == 'favorite' and own and own != 'windows_native':
+            continue
+        if item.get('platform_game') == gid and isinstance(item.get('game_platform'), str):
+            continue
+        try:
+            entry = _api('/api/catalog/' + gid)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                continue                             # unknown now: looked up again next tick
+            entry = {}
+        except Exception:                            # noqa: BLE001
+            continue
+        item.update(game_platform=platform_exclusion.game_platform(entry if isinstance(entry, dict) else {}),
+                    platform_game=gid)
+
+
+def item_platform(item) -> str:
+    """The catalog platform of an item's game ('' when unknown)."""
+    from . import platform_exclusion
+    if item.get('game_id') and item.get('platform_game') == item.get('game_id') \
+            and isinstance(item.get('game_platform'), str):
+        return item['game_platform']
+    return platform_exclusion.normalize(item.get('platform'))
+
+
+def platform_hold(item, excluded) -> str:
+    """Why this item is not dispatched here: its game's platform is one this machine never runs ('' = none)."""
+    if not excluded:
+        return ''
+    from . import platform_exclusion
+    plat = item_platform(item)
+    if not plat or plat not in excluded:
+        return ''
+    import platform as _platform
+    return 'skipped: ' + platform_exclusion.message(_platform.node(), {plat}, excluded)
+
+
+def candidates(data, requests, native, owned, on_main, *, now, verified=None, excluded=frozenset()):
+    """excluded: the platforms this machine never runs (_host_exclusions): their items are held (platform_hold), not
+    dispatched to fail."""
     by_id = {r['id']: r for r in requests}
     owners = _doctrine_owners(data, by_id)
     busy_requests = set(owned) | {j.get('parent_request_id') for j in native}
@@ -613,6 +683,12 @@ def candidates(data, requests, native, owned, on_main, *, now, verified=None):
                         for i in data['items'].values() if i.get('unlock_work'))
     for key, item in data['items'].items():
         rid = item.get('request_id')
+        # excluded_platforms (gbox/platform_exclusion.py; operator 2026-11-10: no PS3 / Xbox work on the Spark): the
+        # game's platform is one this machine never runs, so the item waits with its reason instead of failing a run
+        if hold := platform_hold(item, excluded):
+            item['platform_hold'] = hold
+            continue
+        item.pop('platform_hold', None)
         shared = (item.get('lane') == 'inbox' and rid in priority and not launches_emulator(item)
                   and item.get('game_id') not in native_games
                   and running.count(item.get('game_id')) < PRIORITY_PER_GAME)
@@ -628,6 +704,13 @@ def candidates(data, requests, native, owned, on_main, *, now, verified=None):
             # MercMode session that keeps that game busy (DAMAGE_CLUSTERS_PER_GAME).
             shared = _verified(verified, requested_damage_cluster, by_id.get(rid, {})) \
                 and clusters_running.count(item.get('game_id')) < DAMAGE_CLUSTERS_PER_GAME
+        if item.get('coaching_change') and coaching_change(by_id.get(rid, {})):
+            # An operator critique is bot code + unit tests in its worktree: MercMode playing that game, or the game's
+            # other tickets running, never hold it (2026-11-10: RE6's 7 critiques waited behind both for days);
+            # COACHING_PER_GAME of them at once per game.
+            shared = sum(1 for i in data['items'].values() if i.get('coaching_change') and i.get('game_id') ==
+                         item.get('game_id') and (i.get('dispatch_state') in ('queued', 'uncertain')
+                                                  or i.get('request_id') in owned)) < COACHING_PER_GAME
         if (rid and rid in busy_requests or item.get('retry_at', 0) > now
                 or item.get('game_id') and item['game_id'] in busy_games and not shared
                 or item.get('request_uncertain') or item.get('dispatch_state') in ('queued', 'uncertain')):
@@ -683,6 +766,10 @@ def priority_rank(item, data) -> int:
     for key in (item.get('game_id'), item.get('request_id'), str(item.get('number') or '')):
         if key and key in order:
             return order.index(key)
+    if item.get('coaching_change'):
+        # an operator critique of a live bot (operator 2026-11-10: "make sure that these become reports that get sent
+        # through to Hermes that becomes changes"): right after the operator's own list, before triage and the backlog
+        return len(order) - 0.5
     for key in (item.get('request_id'), str(item.get('number') or '')):
         if key and key in triage:
             return len(order) + triage.index(key)
@@ -744,6 +831,7 @@ PAID_NO_PROGRESS_MAX = 3         # a ticket that did not advance its checkpoint 
                                  # 11 no-progress runs, #1813 22 / 21, #1915 25 / 25 were still dispatched to Kimi / Z.AI every 6 h)
 ANALYSIS_PER_GAME = 12           # read-only verified round analyses running at once for one game (candidates)
 DAMAGE_CLUSTERS_PER_GAME = 3     # damage cause batches (gbox.mercs.damage_clusters) worked at once for one game
+COACHING_PER_GAME = 3            # operator critiques (coaching_change) worked at once for one game, beside its MercMode
 CAUSE_NO_PROGRESS_MAX = 3        # a damage cause / player-damage batch that ran this many times without progress is not
                                  # dispatched again on any node (cause_hold; 2026-11-10: batches at 23-46 runs, 11-34 of
                                  # them without progress, re-run on sparkDeux's report lane and the local nodes)
@@ -796,6 +884,28 @@ def operator_gate(options, playing, throttled=None, *, pooled=False):
     return kept, None if pooled else 1, report
 
 
+def coaching_prompt(item) -> str:
+    """The run's brief for an operator critique (coaching_change): the bot's files for its game, where the evidence is,
+    and the one deliverable. The generic inbox brief (inspection_builds cast_swap recipes) sent the 2026-11-10 runs
+    into character-build tooling; one read gbox/mercs_bot.py for 200 calls and posted nothing."""
+    from . import bots
+    gid = item.get('game_id') or ''
+    return ('THIS IS AN OPERATOR CRITIQUE OF A LIVE MERCENARIES BOT (gbox/coaching.py -> gbox/bots.py). The request '
+            'body holds the operator\'s words, the bot\'s state at that moment and the evidence links; "PiP", '
+            '"⚠ Flawed" and the quick commands are the operator\'s buttons in the gBox app, not game mechanics. '
+            + bots.files_text(gid, item.get('title')).replace('\n', ' ') + ' '
+            'Evidence: GET /api/sessions/<session_id>/coach/<message_id> (from the request context) lists each '
+            'capture with its sha256; GET /api/artifacts/<sha256> downloads it (coach-N-report-moment.json holds the '
+            'bot telemetry - doing, why, directive - and the tactical frame). Read the named Bot code first, then '
+            'the moment; do not survey the repository. Make ONE bounded change there that makes the bot do what the '
+            'operator asked, add a focused unit test from the moment\'s fields, run the title\'s tests, publish a '
+            'draft PR (publish_task_changes), reply on the request with the PR and the expected effect, and POST '
+            f'/api/autoplay/bots/{gid}/changes/<coaching_change_id> state=applied with the pr. If you cannot '
+            'finish, reply on the request with what you found (files, functions, the failing check) before you '
+            'stop: never end the run without a reply. Do not launch, stop, restart or swap games, MercMode or '
+            'gBox; the live bot measures the change after a deploy. ')
+
+
 def _prompt(item, playing=None):
     rid = item['request_id']
     header = (f"Assigned queue task: request #{item['number']} ({rid}) [lane {item['lane']}]. Work ONLY this request; "
@@ -834,6 +944,8 @@ def _prompt(item, playing=None):
             'Do static analysis and implement bounded reusable support; if fresh runtime proof is unavailable, '
             'leave the request pending with the precise missing evidence. Yield when any operator activity begins. '
             'Do not turn this into character replacement work. ') + mode._handoff()
+    if item.get('coaching_change'):
+        return header + coaching_prompt(item) + mode._handoff()
     header += ('For game-build changes, keep supplying reviewed native inspection plans through the '
                'inspection_builds tool: op=plan for request revisions and reports, then implement the change and '
                'op=publish a launch:false cast_swap recipe with change_id, relevant writer dependencies, '
@@ -1080,7 +1192,10 @@ def tick(*, now=None):
             data['unlock_admission'] = _api('/api/custom-build-unlocks/dispatch-admission')
         except Exception:
             data['unlock_admission'] = {'allowed': False}  # unrelated queue work remains eligible
-        options = candidates(data, requests, native, owned, _on_main(), now=now, verified=verified)
+        excluded = _host_exclusions()                  # this machine's excluded_platforms: their games are held
+        if excluded:
+            _fill_platforms(data)
+        options = candidates(data, requests, native, owned, _on_main(), now=now, verified=verified, excluded=excluded)
         _save(data)  # Preserve review holds/guidance even when there are no free slots.
         # Both gates apply and the stricter wins: the operator's game on the Spark defers emulator-launching items
         # and caps unpooled dispatch at 1 (docs/stream-stability.md); the local route allows only small tasks, one
@@ -1161,7 +1276,12 @@ def tick(*, now=None):
                                                       or i.get('damage_cluster_verified') is True) and i.get('game_id') in games)
                 running = sum(i.get('game_id') == game and i.get('dispatch_state') in ('queued', 'uncertain')
                               for i in data['items'].values())
+                # operator critiques keep their own COACHING_PER_GAME beside whatever else the game runs
+                coached = sum(i.get('coaching_change') is True and i.get('game_id') == game
+                              and i.get('dispatch_state') in ('queued', 'uncertain') for i in data['items'].values()) \
+                    + bool(item.get('coaching_change'))
                 options = [v for v in options if v[1].get('game_id') != game
+                           or v[1].get('coaching_change') is True and coached < COACHING_PER_GAME
                            or shared(item) and shared(v[1]) and running + 1 < PRIORITY_PER_GAME]
             _ensure_request(data, item, requests)
             name = PREFIX + ('favorite ' + item['game_id'] if item['lane'] == 'favorite' else 'inbox ' + item['request_id'])

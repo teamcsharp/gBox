@@ -52,7 +52,9 @@ def snapshot(store, worker, *, online, now=None):
     state = 'offline' if not online else 'gaming' if not B.allowed(worker,B.excluded(store)) else (
             'operator' if any(not s['agent_owned'] for s in sessions) else 'working' if active else (
             'testing' if sessions else 'waiting' if reason else 'ready'))
-    return {'worker':{k:worker.get(k) for k in ('id','name','os','resources','idle_seconds','active_jobs')},
+    # excluded_platforms: what this PC never runs (gbox/platform_exclusion.py), so the display and agents can see it
+    return {'worker':{k:worker.get(k) for k in ('id','name','os','resources','idle_seconds','active_jobs')}
+                     | {'excluded_platforms':list(worker.get('excluded_platforms') or [])},
             'online':online,'mode':state,'background_testing':B.allowed(worker,B.excluded(store)),
             'budget_percent':policy['budget_percent'],'hard_throttle':False,
             'admission':{'allowed':reason is None,'reason':reason},'active':active,'eligible_queue':queue[:10],

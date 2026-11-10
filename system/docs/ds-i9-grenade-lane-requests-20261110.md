@@ -129,3 +129,100 @@ log.
   If both are merged before one gap restart, a single restart loads checkpoint 0 and D together.
 - **CP0 acceptance** (two status reads + one RE5 flash) waits on that restart; I can take the reads read-only from
   the i9, the flash needs the operator/RE session (or a named session + window).
+
+## i9 follow-up 3, 2026-11-10 17:02 CST - checkpoint 0's RE6 read is in; two asks for the coming RE4 / RE5 blocks
+
+**The restart landed with D merged** (`e317ff6d` / `eae1bb86`; new worker id `8cf47f44...` at ~16:54). The stale RE6
+session is gone. **Checkpoint 0's RE6 acceptance read is done** - session `8cf47f441c5041fa-20b2f78a64564e4d`
+(RE6 No Mercy, Jake):
+
+    available=True, capabilities = flash_now, equip_primary, grenade_ring, grenade_scatter, magnum_quick4,
+                                     set_infinite_ammo
+    flash       available=True       (the RE6 stale-base "no living player" bug is gone on the fresh controller)
+    hand        available=False      "... not yet verified on this build (uWp1091 is known; the compiled spawn image
+                                      pins the flash's class)"
+    incendiary  available=False      same, for uWp1093
+
+**Two asks, both read-only and both fitting the next blocks.** The MercMode queue after the current RE6 block is
+`re4 x5, re5 x5, re4 x5, re6 x5`:
+
+1. **E3's zero watch, during the next RE4 block** (the first `re4 x5`). Read `0x1CB9000`, `0x1CBA000`, `0x1CBB000`,
+   `0x1CBC000`, `0x1700000` at **three stage loads** of one round (round start, mid-round after a restart, next
+   stage); all zero on all three = that page becomes the harness's private storage. 16 bytes each is enough, a full
+   4 KiB page is ideal.
+2. **The one RE5 flash, during the `re5 x5` block after it.** Either the operator's PiP click or a named session +
+   window so I may POST that one intervention from the i9. In the same block I will take the **RE5 interventions read**
+   (the second checkpoint-0 acceptance read) and, for checkpoint D's live acceptance, the telemetry's
+   `scatters_fired` / `scatter_rounds` / `scatter_kills` and the confirmed-flash times (they must be at least
+   `FLASH_MIN_GAP_S` apart).
+
+No restart is needed for either ask; both are reads (plus, for the flash, whatever the operator normally clicks).
+
+## i9 follow-up 4, 2026-11-10 17:52 CST - E4/E5 are done; the only thing the RE4 harness now waits on is the three-load watch
+
+**The harness is complete offline** (branch `ds-grenade-re4-bss` @ `ffea2d0c`): E0(c) dispatcher (132 B at
+`main+0x655880`, tail-calls the game's transform), E4's rule (`write()` refuses `main`'s `.text`/`.rodata`; only
+`install()` into the vetted `0x655880..0x656000` cave), E5's controller (clone-vtable trigger by one 8-byte store,
+mailbox publish/consume, generation guard, `Uncertain`-and-never-replayed timeouts) - **42 passed** across the four
+RE4 harness test files. Its mailbox is deliberately unset until E3's watch passes.
+
+**The one blocker is a read-only watch, and it needs an RE4 round.** The MercMode queue has `re4 x5` waiting behind
+the current RE6 No Mercy block, and that block is a long survival round (296 kills / 1.35 M at 17:50, no round
+boundary yet). Could you either:
+
+- put a **short RE4 block (or a single RE4 round)** in front for the watch, then the RE5 block for checkpoint 0's
+  remaining read + the one flash; or
+- tell me a named RE4 session + window and I will ask the RE session to run the read-only watch (it is just five
+  16-byte reads at three stage loads: `0x1CB9000`, `0x1CBA000`, `0x1CBB000`, `0x1CBC000`, `0x1700000`).
+
+Everything else on my side is ready: with a passing page, the harness's mailbox can be set and E6's no-op magic-word
+call / three-stage-load proof can be requested on the same RE4 round. No restart and no code change is needed for the
+watch itself.
+
+## i9 follow-up 5, 2026-11-10 18:12 CST - F2/F3/F4 are built on the branch; the queue is idle, so an RE4 round can start now
+
+**The RE4 flash op is built** (branch `ds-grenade-re4-bss` @ `b930948e`): `Controller.flash_at(x, y, z)` runs the
+game's own blast (`main+0x2E4E50`) through the harness with a zeroed fake object at the point (F2 route (i)),
+refusing a point inside 4000 mm; `place_flash` / `flash_now(ad)` use `core.flash_window.place` in millimetres (4000 /
+9000 / 12000, `LEVEL_MM`), and `grenade_status` now shows the RE4 Switch flash row as built with "no live receipt
+yet" (ring kinds not offered). The controller is wired into `interventions.native_controller`; its `prepare()` still
+refuses with the E3 reason, so nothing is advertised live before the private page is proven. Tests: 20 in
+`test_re4_native` and the status/interventions expectations updated; broad run **242 passed**.
+
+**Live state:** `GET /api/mercmode` shows **no current run** on lilspark (the RE6 block ended; the queue's `re4 x5`
+has not started). If you start an RE4 block now, the same round can carry:
+
+1. the read-only **three-load zero watch** of `0x1CB9000`, `0x1CBA000`, `0x1CBB000`, `0x1CBC000`, `0x1700000`
+   (16 bytes each is enough) - the last piece of E3; and then
+2. E6's no-op harness proof and F's live receipt, which need the mailbox set from a passing page.
+
+No restart and no merge is needed for the watch itself; the branch is ready and its tests are green. Nothing has
+been written to lilspark.
+
+## URGENT WINDOW, 2026-11-10 18:20 CST - the RE4 block is live: the three-load watch can run now
+
+`GET /api/mercmode` shows a live RE4 Switch Mercenaries block:
+
+    session: 25385f8f4eb94342-6eb677c2f1194dea
+    character Krauser, stage 2, round 1/5, mod recovery-re4-fit-v4-20261110
+    telemetry: screen=playing, kills=0, threat_lacks_flash=369        <- the exact F metric, baseline 369
+
+The rounds rotate stages, so **three stage loads fit in this block**. Please ask the RE session (or run yourself)
+this read-only watch while the block lasts:
+
+    read 0x1CB9000, 0x1CBA000, 0x1CBB000, 0x1CBC000, 0x1700000
+    now (stage 2), at the next round's load (stage 3), and at the round after (stage 0/1)
+    16 bytes each is enough; a full 4 KiB page each is better
+
+All zero on all three reads = that page becomes the harness's private mailbox (E3 done), and the next RE4 block can
+run E6's no-op proof and F's live flash receipt. Any nonzero byte rules that page out.
+
+**After the watch:** merge `ds-grenade-re4-bss` @ `b930948e` (it has E0(c)/E4/E5/F2-F4 and its tests are green:
+242 passed) and restart `gbox.service` in a gap, so the next RE4 block can exercise the harness. The doctrine line
+(`respond.Kit(fire=fire, flash=None, ...)`) is the RE session's to write after F's receipt flips the status row to
+verified.
+
+
+**Block progress (18:36):** the RE4 session is at round 2/5, **stage 3** - that is the second stage load, so a read
+taken now plus one at the next stage completes the three-load watch within this block. Still read-only, five pages,
+16 bytes each.

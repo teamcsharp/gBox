@@ -12,6 +12,8 @@ import sqlite3
 import time
 import uuid
 
+from . import platform_exclusion
+
 SETTING = 'mercmode'
 HISTORY = 'mercmode_history'
 PREPARATION = 'mercmode_preparation'
@@ -998,7 +1000,10 @@ def inventory(store, worker, cfg=None, sessions=None, aliases=None):
         games = [g for gid in spec['game_ids'] if (g := store.catalog_get(gid))
                  and g.get('platform') == spec['platform']]
         tools = worker.get('tools')
-        reason = spec.get('reason', '')
+        # this PC's excluded_platforms (gbox/platform_exclusion.py; operator 2026-11-10: no PS3 / Xbox work on the
+        # Spark) makes the edition it would play unavailable here, first: the rotation, the DJ queue and a dispatch
+        # skip it on this PC; the same title stays playable on a PC that runs that platform
+        reason = platform_exclusion.worker_reason(worker, spec['platform']) or spec.get('reason', '')
         # A Switch edition keeps its explanation in `notes` (gbox.re_switch.preferred_spec: RE4's is
         # `'playable': False` with RE4_REASON in `notes`). Reading only `reason` left the panel listing an unplayable
         # title with no words at all - observed 2026-11-07: RE4 on lilspark read playable=false with reason "".

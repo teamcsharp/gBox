@@ -5915,6 +5915,8 @@ class SteamAdapter(Adapter):
 def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None = None) -> Adapter:
     """Pick the adapter for a catalog entry on THIS node. debug=True prefers an emulator with a full CPU debugger."""
     plat = game["platform"]
+    from .platform_exclusion import refuse_game     # this node's excluded_platforms: never a PS3 / Xbox game on the Spark
+    refuse_game(config, game)
     if (game.get("launch") or {}).get("kind") == "native_port":     # a PC port built from the game's decomp
         from . import native_ports
         return native_ports.adapter(game, config)

@@ -109,10 +109,11 @@ def writer_ok(game: dict) -> bool:
 class Builder:
     """The background half: one roulette cast build at a time (see the module docstring)."""
 
-    def __init__(self, store, submit, builds, candidates, rng: random.Random | None = None, clock=time.time):
+    def __init__(self, store, submit, builds, candidates, rng: random.Random | None = None, clock=time.time, skip=None):
         # submit(JobRequest-like dict) -> job; builds(game_id) -> [build]; candidates() -> [{game_id, title, favorite}]
+        # skip(catalog entry) -> why no build node may build for it (the Linux nodes' excluded_platforms), or None
         self.store, self.submit, self.builds, self.candidates = store, submit, builds, candidates
-        self.rng, self.clock = rng or random.Random(), clock
+        self.rng, self.clock, self.skip = rng or random.Random(), clock, skip
         self.last_submit = 0.0
         self._targets: list[dict] = []
         self._targets_at = 0.0
@@ -143,7 +144,9 @@ class Builder:
             out = []
             for c in self.candidates():
                 game = self.store.catalog_get(c["game_id"])
-                if game and writer_ok(game):
+                # a platform every build node excludes (operator 2026-11-10: no PS3 / Xbox work on the Spark) is no
+                # target: it is skipped, never queued to fail
+                if game and writer_ok(game) and not (self.skip and self.skip(game)):
                     out.append(c | {"title": game.get("title") or c.get("title") or c["game_id"]})
             self._targets, self._targets_at = out, now
         return self._targets

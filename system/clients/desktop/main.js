@@ -279,13 +279,17 @@ async function api(p, body, method) {
     return data;
   });
 }
+// notSent: the request never left this PC (no route, no credential, no connection made), so a caller holding a
+// submission ID may send it again; a timeout or a dropped answer stays ambiguous (coach outbox: autoplay-coach.js)
+const NEVER_CONNECTED = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT']);
+const unsent = message => Object.assign(Error(message), { notSent: true });
 async function apiRaw(p, body, method) {               // method: PATCH / PUT / DELETE when asked, else POST with a body
   const authority=settings().apiUrl;
-  if(connection&&!connection.ready(authority))throw Error(connection.snapshot().mode==='local'
+  if(connection&&!connection.ready(authority))throw unsent(connection.snapshot().mode==='local'
     ? 'This PC\'s gBox is starting or reconnecting. Your game was not changed.'
     : 'Remote gBox is offline. This PC\'s local library remains available.');
   const t = connection?await connection.token(authority):await token();
-  if(!t)throw Error('Waiting for this connection\'s API credential. No request was sent.');
+  if(!t)throw unsent('Waiting for this connection\'s API credential. No request was sent.');
   method = /^(GET|POST|PUT|PATCH|DELETE)$/.test(String(method || "").toUpperCase()) ? String(method).toUpperCase() : (body ? "POST" : "GET");
   const cacheKey=authority+p,known = method === "GET" && !body && ETAGS.get(cacheKey);
   const r = await fetch(authority + p, {
@@ -294,7 +298,7 @@ async function apiRaw(p, body, method) {               // method: PATCH / PUT / 
     // long polls get 35 s; asset listings 20 s (the control plane may still be indexing a slow HDD); the rest 8 s
     signal: AbortSignal.timeout(coachTransport.timeoutMs(p, method) || (p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000
       : p.startsWith("/api/asset-groups") || p.startsWith("/api/assets?") || p.startsWith("/api/mercmode") ? 20000 : 8000)),
-  });
+  }).catch(error => { if (NEVER_CONNECTED.has(error?.cause?.code)) error.notSent = true; throw error; });
   if (r.status === 304 && known) return known.data;
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   const data = await r.json(), etag = method === "GET" && r.headers.get("etag");
@@ -417,7 +421,7 @@ function pickHoldReleaseAll(why) {
 }
 ipcMain.handle("api", async (_e, p, body, method) => { const authority=settings().apiUrl;
   try { pickHoldTrack(p, body); return { ok: true, authority, data: await api(p, body, method) }; }
-  catch (e) { return { ok: false, authority, error: e.message }; } });
+  catch (e) { return { ok: false, authority, error: e.message, ...(e.notSent ? { notSent: true } : {}) }; } });
 // This PC's own scheduler, whichever library the window uses (operator 2026-10-27, i9-NUC: "replace the stream in the pip
 // with the mercenaries 3d playing as an instance in the pip window"): the PiP reads this PC's own MercMode / autoplay run
 // from its local control plane and shows that game's own window instead of another PC's stream. One read-only GET.

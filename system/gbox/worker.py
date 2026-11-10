@@ -54,7 +54,8 @@ def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
                 'mercmode_prepare', 'mercmode_stalemate_cut', 'mercmode_coop_ratio', 'mercmode_dispatch',
                 'mercmode_cast_swap', 'mercmode_skin_swap', 'mercmode_default_mods', 'mercmode_repeat_queue',
                 'mercmode_blueprint_look'] + (["idle_telemetry", "desktop_stream", "desktop_game_crop", "session_stills", "two_percent_audio"] if HOST_OS == "windows" else [])
-    info = WorkerInfo(name=name, os=HOST_OS, tools=ok, unavailable=bad, idle_seconds=user_idle_seconds(), features=features)
+    info = WorkerInfo(name=name, os=HOST_OS, tools=ok, unavailable=bad, idle_seconds=user_idle_seconds(), features=features,
+                      excluded_platforms=config.excluded_platforms_for(name))
     from .ollama_assist import inventory
     info.ollama = inventory()
     if wid:
@@ -69,7 +70,8 @@ def _quiet_agent_job(job: dict) -> bool:
 
 
 def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: httpx.Client,
-             active: set, active_agent: set, quiet_sessions: set, outbox: ResultOutbox):
+             active: set, active_agent: set, quiet_sessions: set, outbox: ResultOutbox, excluded=None, name: str = ''):
+    """excluded: this worker's excluded platforms (run(): its registration's list; None: read from config)."""
     ctx = Ctx(config, job_id=job["id"], worker=wid)
     ctx.parent_request_id = job.get("parent_request_id")
     ctx.agent_use = bool(job.get("agent_use"))
@@ -80,7 +82,14 @@ def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: 
     # job, and an agent job's callbacks count as automation (never swapping the operator's game; stream-stability.md)
     ctx.server, ctx.headers = server, h | {"x-gbox-parent-job": job["id"]}
     res = {"job_id": job["id"], "ok": True}
-    if _quiet_agent_job(job) and HOST_OS == "windows":
+    from . import platform_exclusion
+    refused = platform_exclusion.local_reason(config.excluded_platforms_for(name or None) if excluded is None else excluded,
+                                              job, _builtin.SESSIONS, name)
+    if refused:
+        # defense in depth: the control plane routes no such job here (server._claim); one that arrives anyway (an
+        # older control plane, a stale registration) is refused before anything is staged, copied or started
+        res.update(ok=False, error=refused)
+    if res["ok"] and _quiet_agent_job(job) and HOST_OS == "windows":
         from .audio_volume import keep_pc_at_two_percent
         if not deps.install_for("pycaw"):
             res.update(ok=False, error="Cannot keep this PC at 2% volume: pycaw is unavailable")
@@ -405,7 +414,8 @@ def run(server: str, token: str, config: Config, name: str | None = None,
             active.add(job["id"])
             if _quiet_agent_job(job):
                 active_agent.add(job["id"])
-            threading.Thread(target=_run_job, args=(job, config, info.id, server, h, c, active, active_agent, quiet_sessions, outbox), daemon=True).start()
+            threading.Thread(target=_run_job, args=(job, config, info.id, server, h, c, active, active_agent, quiet_sessions, outbox),
+                             kwargs={"excluded": info.excluded_platforms, "name": name}, daemon=True).start()
         if client_control and stop.is_set():
             # Let the desktop capture close its owned encoder before the parent
             # observes process exit. No emulator or job is force-terminated.
