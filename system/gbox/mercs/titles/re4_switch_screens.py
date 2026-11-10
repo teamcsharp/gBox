@@ -138,6 +138,29 @@ def is_dead_continue(rgb, gray) -> bool:
     return rule >= 0.9 and text >= 0.05 and red >= 0.03
 
 
+# The story save list's two prompts (measured 2026-11-10 on lilspark, 960x540, the share of pixels over 150):
+# "Cancel loading? Yes / No" stacks its options mid-left over an empty panel (title 0.030, Yes 0.022, No 0.024,
+# the cursor 0.19 beside the row it is on, the one-line options row 0.000); "Load data? Yes > No" puts them on one
+# line lower down (title 0.029, options 0.041, the stacked rows 0.000). B on the first is No, which drops back to the
+# list - whose B opens it again: a loop the walk sat in for 10 minutes. Its way out is Yes (up, then A).
+PROMPT_BOXES = {"cancel_title": (375, 200, 590, 235), "cancel_yes": (410, 280, 470, 310),
+                "cancel_no": (410, 315, 470, 348), "cur_yes": (385, 283, 408, 307), "cur_no": (385, 318, 408, 343),
+                "load_title": (405, 330, 560, 365), "load_opts": (445, 405, 590, 440)}
+PROMPT_TEXT = 150.0
+
+
+def prompt_kind(gray) -> dict | None:
+    """{"prompt": "cancel", "cursor": "yes" | "no" | None} for Cancel loading?, {"prompt": "load"} for Load
+    data?, else None (gray: the frame's luma at 960x540)."""
+    f = {k: float((gray[y0:y1, x0:x1] > PROMPT_TEXT).mean()) for k, (x0, y0, x1, y1) in PROMPT_BOXES.items()}
+    if f["cancel_title"] > 0.015 and f["cancel_yes"] > 0.01 and f["cancel_no"] > 0.01 and f["load_opts"] < 0.01:
+        cur = "yes" if f["cur_yes"] > 0.1 else "no" if f["cur_no"] > 0.1 else None
+        return {"prompt": "cancel", "cursor": cur}
+    if f["load_title"] > 0.015 and f["load_opts"] > 0.02 and f["cancel_yes"] < 0.005:
+        return {"prompt": "load"}
+    return None
+
+
 def classify(png: bytes) -> dict:
     """One frame, no memory: {"where": title | main_menu | extras_menu | mercs_title | select_player | select_stage |
     dead_continue | loading | playing | story | menu | unknown, "cursor": row on a menu}."""
@@ -154,6 +177,9 @@ def classify(png: bytes) -> dict:
     if rmse(thumb, r["logo_ref"], r["logo_mask"]) <= LOGO_MAX:
         at = menu_cursor(red_row(rgb))
         return {"where": at[0], "cursor": at[1]} if at else {"where": "menu"}
+    kind = prompt_kind(gray)
+    if kind is not None:
+        return {"where": "story_prompt", **kind}
     for name in STORY:
         if name in r["refs"] and rmse(thumb, r["refs"][name]) <= STORY_MAX:
             return {"where": "story", "story": name}
@@ -232,7 +258,7 @@ class Reader:
         if where == "story":
             self.story_armed = True
         elif where in ("story_prompt",) or (where == "unknown" and self.story_armed):
-            scr = {"where": "story_prompt"}
+            scr = scr if where == "story_prompt" else {"where": "story_prompt"}   # a named prompt keeps its kind
         elif where not in ("unknown", "menu"):
             self.story_armed = False
         if scr["where"] == "menu":                           # no row read yet this run: nothing to act on

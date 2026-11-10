@@ -360,3 +360,43 @@ def test_continue_is_answered_yes_and_the_stage_intro_is_armed_again():
     r = S.Reader()
     r.press_went_in("dead_continue", "a")
     assert r.stage_picked is True and r.intro_presses == 0
+
+
+
+def _prompt_frame(boxes):
+    import numpy as np
+    g = np.full((540, 960), 30.0)
+    for x0, y0, x1, y1 in boxes:
+        g[y0:y1, x0:x0 + max(2, (x1 - x0) // 10)] = 220.0          # a few bright columns: text
+    return g
+
+
+def test_the_two_save_list_prompts_are_told_apart():
+    """Measured 2026-11-10: "Cancel loading?" stacks Yes / No with the cursor beside one; "Load data?" puts them on one
+    line lower down. The first is left by Yes (up, then A); the second is cancelled (B) and never loads."""
+    B = S.PROMPT_BOXES
+    cancel_no = _prompt_frame([B["cancel_title"], B["cancel_yes"], B["cancel_no"], (385, 318, 408, 343)])
+    cancel_no[318:343, 385:408] = 220.0
+    assert S.prompt_kind(cancel_no) == {"prompt": "cancel", "cursor": "no"}
+    cancel_yes = _prompt_frame([B["cancel_title"], B["cancel_yes"], B["cancel_no"]])
+    cancel_yes[283:307, 385:408] = 220.0
+    assert S.prompt_kind(cancel_yes) == {"prompt": "cancel", "cursor": "yes"}
+    load = _prompt_frame([B["load_title"], B["load_opts"]])
+    assert S.prompt_kind(load) == {"prompt": "load"}
+    assert S.prompt_kind(_prompt_frame([])) is None
+
+
+def test_cancel_loading_is_answered_yes_and_load_data_is_cancelled():
+    D.begin_run()
+    now = 100.0
+    assert D.step({"where": "story_prompt", "prompt": "cancel", "cursor": "no"}, now) == D.STORY_UP_KEY
+    assert D.step({"where": "story_prompt", "prompt": "cancel", "cursor": "yes"}, now + 0.1) is None, "paced"
+    assert D.step({"where": "story_prompt", "prompt": "cancel", "cursor": "yes"}, now + 1.0) == "a"
+    assert D.step({"where": "story_prompt", "prompt": "load"}, now + 4.0) == D.STORY_RECOVER_KEY
+    assert D.step({"where": "story_prompt"}, now + 8.0) == D.STORY_RECOVER_KEY, "an unread prompt is still cancelled"
+
+
+def test_a_named_prompt_keeps_its_kind_through_the_reader(monkeypatch):
+    r = S.Reader()
+    monkeypatch.setattr(S, "classify", lambda _png: {"where": "story_prompt", "prompt": "cancel", "cursor": "no"})
+    assert r.read(b"") == {"where": "story_prompt", "prompt": "cancel", "cursor": "no"}

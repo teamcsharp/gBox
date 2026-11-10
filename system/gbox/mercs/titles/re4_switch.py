@@ -631,8 +631,10 @@ _confirmed: dict[str, float] = {}
 # is still perfectly able to reach THE MERCENARIES once the menu is back. The budget keeps a title that genuinely
 # refuses to leave the list from being cancelled at forever.
 STORY_RECOVER_KEY = "b"
+STORY_UP_KEY = "dup"                 # Cancel loading?'s cursor up to Yes
 STORY_RECOVER_MAX = 4
 STORY_GAP_S = 2.0
+STORY_ANSWER_GAP_S = 0.8
 _story_presses = 0
 _story_last = float("-inf")          # a fresh walk may cancel straight away
 
@@ -648,6 +650,16 @@ def begin_run(selection=None, **_turn) -> None:
     if isinstance(selection, dict):
         stage = selection.get("stage")
         request(selection.get("character"), stage if stage is not None else selection.get("stage_name"))
+
+
+def _story_answer(key: str, now: float | None = None) -> str | None:
+    """The Cancel loading? answer (up, then A on Yes), paced like the cancels; not counted against their budget."""
+    global _story_last
+    now = time.monotonic() if now is None else now
+    if now - _story_last < STORY_ANSWER_GAP_S:
+        return None
+    _story_last = now
+    return key
 
 
 def _recover_story(now: float | None = None) -> str | None:
@@ -695,6 +707,10 @@ def _confirm(where: str, now: float | None = None) -> str | None:
 def step(scr: dict, now: float | None = None) -> str | None:
     """One press toward the next round, or None to wait. Never a press on a screen no frame has named."""
     where = scr.get("where")
+    if where == "story_prompt" and scr.get("prompt") == "cancel":
+        # "Cancel loading? Yes / No": B is No, back to the list, whose B opens this again (live 2026-11-10: ten
+        # minutes in that loop). Yes leaves LOAD: up to it, then A (re4_switch_screens.prompt_kind reads the cursor)
+        return _story_answer("a" if scr.get("cursor") == "yes" else STORY_UP_KEY, now)
     if where in ("story", "story_prompt"):                  # the story save list and its confirm: cancel, never confirm
         return _recover_story(now)
     if where in ("main_menu", "extras_menu"):
