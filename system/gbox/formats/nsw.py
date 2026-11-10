@@ -228,3 +228,85 @@ def summarize(info: XciInfo) -> dict:
                          for e in v] for k, v in info.hfs0.items()},
             "ncas": info.ncas,
             "warnings": info.warnings}
+
+
+# --- NCA3 header decrypt + ExeFS (PFS0) reader (needs the owner's prod.keys; keys are never stored here) ---
+
+def load_keys(path: str) -> dict:
+    keys = {}
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if "=" in line:
+                k, v = line.split("=", 1)
+                try:
+                    keys[k.strip()] = bytes.fromhex(v.strip())
+                except ValueError:
+                    pass
+    return keys
+
+
+def decrypt_nca_header(read_at: Callable[[int, int], bytes], nca_offset: int, header_key: bytes) -> bytes:
+    """AES-128-XTS decrypt the 0xC00-byte NCA header; 0x200 sectors, tweak = big-endian sector number, sector 0 = NCA start."""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    raw = _read_at(read_at, nca_offset, 0xC00)
+    out = b""
+    for i in range(6):
+        c = Cipher(algorithms.AES(header_key), modes.XTS(i.to_bytes(16, "big"))).decryptor()
+        out += c.update(raw[i * 0x200:(i + 1) * 0x200])
+    if out[0x200:0x204] != NCA3_MAGIC:
+        raise ValueError("NCA header did not decrypt to NCA3 (wrong header_key or not an NCA3)")
+    return out
+
+
+def nca_sections(h: bytes) -> List[dict]:
+    secs = []
+    for i in range(4):
+        s, e = struct.unpack_from("<II", h, 0x240 + i * 16)
+        if e <= s:
+            continue
+        fh = h[0x400 + i * 0x200:0x600 + i * 0x200]
+        secs.append({"index": i, "start": s * 0x200, "end": e * 0x200, "fs_type": fh[2], "hash_type": fh[3],
+                     "enc_type": fh[4], "ctr": fh[0x140:0x148]})
+    return secs
+
+
+def read_nca_section(read_at, nca_offset: int, h: bytes, keys: dict, sec: dict, rel: int, size: int) -> bytes:
+    """Read `size` bytes at section-relative `rel`, decrypting AES-CTR (enc_type 3) with the key-area CTR key (key-area rights only)."""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    off = sec["start"] + rel
+    data = _read_at(read_at, nca_offset + off, size)
+    if sec["enc_type"] == 1:
+        return data
+    if sec["enc_type"] != 3:
+        raise ValueError("unsupported section encryption %d" % sec["enc_type"])
+    if h[0x230:0x240] != bytes(16):
+        raise ValueError("rights_id set: titlekey crypto not implemented here")
+    gen = max(h[0x206], h[0x220]); gen = gen - 1 if gen > 0 else 0
+    kek = keys["key_area_key_application_%02x" % gen]
+    ka = Cipher(algorithms.AES(kek), modes.ECB()).decryptor().update(h[0x300:0x340])
+    ctr_key = ka[0x10 * 2:0x10 * 3]
+    base = off & ~0xF
+    pad = off - base
+    iv = sec["ctr"][::-1] + (base >> 4).to_bytes(8, "big")
+    d = Cipher(algorithms.AES(ctr_key), modes.CTR(iv)).decryptor()
+    return d.update(b"\0" * pad + data)[pad:]
+
+
+def list_exefs(read_at, nca_offset: int, keys: dict) -> List[dict]:
+    """ExeFS PFS0 members (name, section-relative offset, size) of a Program NCA whose first section is HierarchicalSha256 PFS0."""
+    h = decrypt_nca_header(read_at, nca_offset, keys["header_key"])
+    sec = nca_sections(h)[0]
+    fh = h[0x400:0x600]
+    bs, lc = struct.unpack_from("<II", fh, 0x28)
+    doff, dsz = struct.unpack_from("<QQ", fh, 0x30 + (lc - 1) * 16)
+    head = read_nca_section(read_at, nca_offset, h, keys, sec, doff, 0x4000)
+    if head[:4] != b"PFS0":
+        raise ValueError("section 0 data layer is not PFS0")
+    cnt, strsz = struct.unpack_from("<II", head, 4)
+    pool = 16 + cnt * 24
+    names = head[pool:pool + strsz]
+    out = []
+    for i in range(cnt):
+        o, sz, no = struct.unpack_from("<QQI", head, 16 + i * 24)
+        out.append({"name": names[no:names.index(b"\0", no)].decode(), "offset": doff + pool + strsz + o, "size": sz})
+    return out

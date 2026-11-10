@@ -80,3 +80,23 @@ def test_real_owned_card():
     names = [e.name for e in info.hfs0["secure"]]
     assert len(names) == 12
     assert "bd68bf29c8500e9c88ca844e1a6f77e8.nca" in names
+
+
+KEYS = "/home/ehm_eckx/gBox_alt/switch/prod.keys"
+
+
+@pytest.mark.skipif(not (os.path.exists(REAL) and os.path.exists(KEYS)), reason="owned XCI/prod.keys not present")
+def test_real_program_nca_exefs():
+    keys = nsw.load_keys(KEYS)
+    info = nsw.list_xci(REAL)
+    e = next(x for x in info.hfs0["secure"] if x.name == "bd68bf29c8500e9c88ca844e1a6f77e8.nca")
+    with open(REAL, "rb") as fh:
+        def rd(o, n):
+            fh.seek(o)
+            return fh.read(n)
+        files = {f["name"]: f for f in nsw.list_exefs(rd, e.offset, keys)}
+        assert {"main", "main.npdm"} <= set(files)
+        h = nsw.decrypt_nca_header(rd, e.offset, keys["header_key"])
+        sec = nsw.nca_sections(h)[0]
+        assert rd  # NSO magic proves CTR key/counter correct
+        assert nsw.read_nca_section(rd, e.offset, h, keys, sec, files["main"]["offset"], 4) == b"NSO0"
