@@ -196,3 +196,26 @@ def test_child6_header_pinned_real():
     assert all(r["prim"] in (0, 2, 6, 8, 10, 12, 14) for r in recs[0::2])
     assert all(r["prim"] == 4 and r["kind"] == "palette" for r in recs[1::2])
     assert recs[0]["nloop"] == 215  # entry 0 = table itself
+
+
+@pytest.mark.skipif(not RAW.exists(), reason="raw image not extracted")
+def test_child6_mesh_section_real():
+    """prim==4 sections: block table partitions n vertices (owned ISO)."""
+    from gbox.dmc1_iso import (parse_child6_table, parse_child6_mesh_section,
+                               mesh_section_conforms)
+    with open(RAW, "rb") as f:
+        n, ch = parse_pld_children(f, 1043291, 1547616)
+        f.seek((1043291 * 2048) + ch[6][0])
+        blob = f.read(ch[6][1])
+    recs = parse_child6_table(blob)
+    allo = sorted({r["off"] for r in recs} | {len(blob)})
+    nxt = dict(zip(allo, allo[1:]))
+    pals = sorted({r["off"] for r in recs if r["kind"] == "palette"})
+    assert len(pals) == 51
+    ms = {o: parse_child6_mesh_section(blob[o:nxt[o]]) for o in pals}
+    m0 = ms[0x6C0]
+    assert m0["n"] == 62 and len(m0["blocks"]) == 31 and m0["end"] == 8648
+    assert m0["blocks"][22]["off"] == 0xA4 or any(b["off"] == 0xA4 for b in m0["blocks"])
+    b = next(b for b in m0["blocks"] if b["off"] == 0xA4)
+    assert b["k"] == 13 and b["bounds"][:4] == [9, 14, 19, 24] and b["bounds"][-1] == 61
+    assert sum(mesh_section_conforms(m) for m in ms.values()) >= 49

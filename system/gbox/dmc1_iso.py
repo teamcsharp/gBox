@@ -275,6 +275,47 @@ def decode_child6_sections(blob) -> dict:
     }
 
 
+def parse_child6_mesh_section(sec: bytes) -> dict:
+    """Decode one prim==4 child6 section (the per-mesh vertex payload).
+
+    Pinned on the owned USA ISO (PL00 child6, 2026-11-10 census; replaces
+    the withdrawn 'palette' reading for the payload semantics):
+      u16 n (vertex count, == nloop), u16 flags, a 0x20-byte preamble,
+      then u32 block offsets from 0x24 until the lowest offset is reached
+      (31 or 29 blocks + one trailing sentinel == len(sec)).
+      Each block = u32 k, (k-1) strictly increasing u16 partition
+      boundaries whose last value is n-1, then float vertex attributes.
+    Returns {"n", "flags", "blocks": [{"off", "k", "bounds"}], "end"}.
+    """
+    n, flags = struct.unpack_from("<2H", sec, 0)
+    offs, q, lo = [], 0x24, len(sec)
+    while q + 4 <= lo:
+        v = struct.unpack_from("<I", sec, q)[0]
+        offs.append(v)
+        lo = min(lo, v)
+        q += 4
+    blocks = []
+    end = None
+    for v in offs:
+        if v >= len(sec) - 3:
+            end = v
+            continue
+        k = struct.unpack_from("<I", sec, v)[0]
+        if not 2 <= k <= 1024 or v + 4 + 2 * (k - 1) > len(sec):
+            blocks.append({"off": v, "k": k, "bounds": None})
+            continue
+        b = list(struct.unpack_from("<%dH" % (k - 1), sec, v + 4))
+        blocks.append({"off": v, "k": k, "bounds": b})
+    return {"n": n, "flags": flags, "blocks": blocks, "end": end}
+
+
+def mesh_section_conforms(m: dict) -> bool:
+    """True when every block partitions the n vertices (last bound == n-1)."""
+    return bool(m["blocks"]) and all(
+        b["bounds"] and b["bounds"] == sorted(set(b["bounds"]))
+        and b["bounds"][-1] == m["n"] - 1 for b in m["blocks"])
+
+
 def stream_sha256(f, lba: int, size: int) -> str:
     f.seek(lba * SECTOR)
     h = hashlib.sha256()
