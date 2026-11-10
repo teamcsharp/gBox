@@ -384,3 +384,110 @@ $survey = "C:\_tools\gBox\.scratch-merc-recovery\cast\library-survey.json"
 Tests: from the repo root, `PYTHONPATH="system;system/tests"`, `-m pytest -q -p no:cacheprovider --disable-warnings
 system/tests/test_re4_switch_assets.py system/tests/test_re4_switch_models.py system/tests/test_re4_switch_enemies.py
 system/tests/test_re4_stage_greybox.py`.
+
+## 7. The fight, the round clock and the rotation (2026-11-09, branch `wt-re4-fight-20261109`)
+
+The ask: the RE4 Switch bot plays Mercenaries rounds as well as the RE5 Switch bot - fights, keeps the combo, never
+stands, finds enemies by the map - and reports round boundaries so MercMode rotates. Same three kinds of statement as
+above: **measured** (this pass, live or on recorded bytes), **live, earlier** (cited), **inferred**.
+
+### 7.1 What was measured, and why the in-round fields were not
+
+One live RE4 session this pass: `ae02be4bd9974915-03aacc170e184c15` on lilspark (Citron, launched by MercMode,
+`agent_owned: true`), up 17:17:43 local to its no-progress cut about ten minutes later. Everything was read-only:
+`GET /ram/hex`, `read_memory` jobs (actor `agent`), `frame.jpg`. No input, write, launch or stop.
+
+| what | how | result |
+|---|---|---|
+| module base | 64 bytes at `0x3CA7C04000 + 0x100000` | the signature, exact: **base `0x3CA7C04000`**, the same as 2026-11-05. Module offsets are fixed addresses on this host (`re4_switch.KNOWN_BASES`; `module_base()` still checks and re-finds) |
+| bss layout | 4 KiB reads every 64 KiB over `0xb00000..0x1cd0000`, then `read_memory` jobs bisected to the row edges | every page readable; Citron maps it as **11 host rows** (`re4_switch.BSS_ROWS`: cuts at `0x127d000 0x1280000 0x1286000 0x1386000 0x138b000 0x148b000 0x1491000 0x1591000 0x1bb6000 0x1cb6000`). An adapter read must stay inside one row (the 18.4 MB single read failed "not mapped"); a whole dump is 11 parallel jobs, **3.9 s**, 2.6 s between the first and last row |
+| heap windows | 4 KiB reads every 64 MiB from `0x5c00000000` | readable `0x5d2c000000-0x5dac000000`, `0x5db0000000-0x5dbc000000`, `0x5dc4000000-0x5dec000000` (`HEAP_WINDOWS`); the 2026-11-05 player and unit addresses (`0x5d559cafe0`, `0x5d55a77ad0`) lie in the first |
+| pointers into the heap | the main-menu bss dump | 1,289 qwords (801 into `0x5d34xxxxxx`, 61 into `0x5d55xxxxxx`) |
+| the score routine's game state | `module + 0xb25d78` | `0x3ca871ee08` at the menus: a pointer back into main's data (`module + 0xb1ae08`), as the 2026-11-05 pass read in a round |
+| no clock at the menus | two full bss dumps 2-3 min apart (title, main menu) | **0** f32 in 2..121 that fell by a wall-rate amount, for any gap 0.8-8 s; a menu timer at `module + 0x113dcf8` moved 30.02 -> 30.00. Slices kept as `tests/fixtures/re4sw_bss_menu.json` |
+| **why there was no round** | frames 1 s apart, classified by `re4_switch_screens` | the main-menu walk went cursor 1 -> 5 in 11 s, then `unknown` -> **title** -> main menu cursor 1 again, three times (17:27:58-17:28:27 and before). `re4switch_bot`'s stall escape fires 12 s after the last *named-screen* change; a cursor move never reset it, LOAD -> EXTRAS is four steps at the walk's 3 s gap, and its first press is `b`, which on the main menu is "back to the title". The playbook could not reach a round on any boot; fixed in 7.2 |
+| the same, after the 00:03 UTC service restart | session `47420892ccbd4f6c-b43422ca5fb64631` (2026-11-10, worker `47420892ccbd4f6c`), frames 1 s apart | the identical loop **five times in 100 s** (18:11:14-18:12:52 local): cursor 1 -> 5, `unknown`, `title`, every ~19 s. The deployed code does not carry the fix, so every RE4 turn ends at its no-progress cut |
+
+So the in-round fields - the clock's address this boot, the player, the Ganados, kills / combo / score - were **not
+measured**: no round was reachable without sending input, which this pass does not do. They are built to measure
+themselves (the clock) or to be measured by one probe run (the rest), 7.4.
+
+### 7.2 What the code does now
+
+| piece | file | behaviour | evidence |
+|---|---|---|---|
+| walk: the escape | `re4switch_bot.py` | a cursor move (or a select screen's steering step) on the same named screen restarts the stall clock, at most `CURSOR_PROGRESS_MAX = 12` times per screen | the live loop above, replayed in `test_the_main_menu_walk_reaches_extras_without_the_escape_backing_it_out`; a cursor that never settles still escapes |
+| walk: the HUD | `re4switch_bot.py` | a frame the classifier names `playing` (the HUD) is in the round; before, it went to the menu branch where `step()` returns nothing, so the cadence ran only on frames it could *not* read | tests |
+| DJ pick | `re4_switch.py` (`request`, `SELECTION`, `selection_moves`, `step`, `press_gap`), `re4_switch_screens.py` (`Reader` steering), `re4switch_bot.py` (`selection_of`) | the launch's `game.launch.mercmode.selection` is steered to: `dright` x portrait index on Select Player, `STAGE_MOVES` on the 2x2 stage grid (Village 0 TL, Castle 1 TR, Base 2 BL, Waterworld 3 BR), one move per `STEER_GAP_S = 1.0`, then confirm. The reader keeps the moved (now unmatched) picture named as the select screen with `moved` counted, until the confirm or another screen | **inferred**: the grid and one portrait per press are the GameCube layout (`re4_menus`); no frame of a moved cursor exists yet |
+| `selection_job` | `mercmode.py`, `screensaver.py` (passes `pick['map_id']`) | RE4 Switch -> `None` (the pick rides the launch, as RE6 Switch's does); GameCube RE4 unchanged (`re_mods mercs_select`) | `test_an_re4_switch_pick_rides_the_launch_not_the_gamecube_select_tool` |
+| the round clock | `re4_switch.py` `ClockFinder`, `clock_candidates`, `pick_clock` | per boot: two reads of the bss (hints `CLOCK_HINTS` = the 2026-11-05 cluster `module + 0x1274710`, stride 0x30, read first, then every row) >= 0.8 s apart; keeps an f32 that read 2..121 and **fell by 0.6-1.4 x the wall time**; the cluster's copy nearest the median, lowest address on a tie; then one f32 a read. A value that holds 4 s is re-confirmed by its fall (a pause); a non-finite read starts the search again | synthetic cluster tests; recorded menu bytes give 0 candidates |
+| units | `re4_switch.py` `UnitCensus`, `unit_addresses`, `read_unit` | the objects of `PLAYER_CLASS` / `ENEMY_CLASSES` by their vtable word (`module + class`) in `HEAP_WINDOWS` (16 MiB reads, numpy), re-scanned every 4 s inside the pool the first scan found; health `u16 +0x3c2`, type `+0x3ce` (code-derived), id `+0x110`, position `U_POS`, facing `U_YAW`; duplicates (two mappings) collapsed by id + health + type | synthetic heap tests. **PENDING**: the class and offset constants are `None` |
+| snapshot | `re4_switch.snapshot(m, now, search)` | re5_switch's shape: `timer`, `clock_addr`, `player`, `enemies`, `kills/combo/score` (from `MERC_*`, pending); `search=False` from the menus' `screen()` | tests |
+| the fight | `re4_switch.Bot` | per tick, in order: own hazard underfoot -> step off; 3 Ganados within 2 m -> the quick turn (`ldown` + `b`) and away; a target inside the 12 m engage range (the nearest; in a mob of 4 within 6 m the one nearest the gun's line; once a kill is owed the quickest kill) -> turn with the left stick and the gun down past 0.35 rad, raise (`zl`) and fine-turn with the **right** stick inside it, tap `zr` inside 0.12 rad once the gun has been up 0.25 s, every >= 0.25 s, through the operator's gates (range; line of sight = the stage mesh's `floor_segment` when `snap["nav"]` exists; no own hazard); after 8 shots and nobody within 3.5 m -> reload (`zl` + `b`); nobody in range -> run to the nearest Ganado (`lup` + `b`, steered by an attached mesh walker, else the mesh's `route`, else straight); nobody known -> sweep (walk, turning 3 s each way). Never stand: 1.5 s without 40 cm of ground and without aiming -> a 0.8 s step with a turn. Kills: the game's counter once mapped, else census units whose health fell to 0; the combo is owed 3 s after a kill (doctrine `KILL_PACE_S`). The doctrine `Director` measures every tick and its commands come back through `doctrine.Reader` | `test_re4_switch_fight.py` (24), `test_re4_switch_brain.py` |
+| the playbook's fight | `re4switch_bot.py` | in a round, with the player in RAM: `Bot.tick` through `Keys` (a held key down once, up when let go; a tap down + up); the frame every 5th tick. Without the player: the blunt cadence as before, its action press now Y (the manual's action button; it was A), `stats["fight"] = "frame"` | `test_with_the_player_in_ram_the_bot_fights_through_holds_and_taps` |
+| round boundaries | `re4switch_bot.py` (`round_boundary` param, `Round`, `_boundary`, `_report`), `mercmode.accept_boundary` | `tools._start_playbook` now passes `round_boundary` (play's signature names it). One boundary per round id: **results** when the clock was seen counting, read >= 60 s at some point, then read 0 for 1 s with at least that many seconds / 1.4 of wall time between (`tally_ready`, `timer: 0`, `clock_high`; a short countdown taken by mistake cannot end a round), **dead** when the player was read alive and then at 0 health. The witness carries `clock_verified`, `player_verified`, `kills`/`kills_source`, `clock_addr`, `hud_seen`; character and stage are the *requested* ones (`character_source: requested`). `accept_boundary` takes `clock_verified` in place of `player_verified` for **RE4 Switch results only** (a death still needs the player's health) | `test_re4_switch_results_count_on_the_clock_witness`, `test_the_clock_witness_is_re4_switch_only`, `test_the_re4_switch_playbook_boundary_shape_is_accepted`, playbook boundary tests |
+| mercs_bot | `mercs_bot.py` | an RE4 Switch pick goes to `re4_switch.request` too, for when the engine path takes the title (`mercs.ready` stays false) | - |
+| the probe | `tools/probes/re4sw_round_probe.py` | one live round, read-only: waits for the HUD, two bss dumps -> the clock (the driver's own finder); `memory_search` for each class lead's vtable word in a heap window, each object read twice -> moving f32 triples (U_POS votes), health; bss dumps every ~4 s -> monotonic small-step u32 / u16 (kills, combo, score shapes). Refuses a session not `agent_owned` | smoke-tested on synthetic dumps only |
+
+Controls (Capcom's official RE4 Switch manual, `docs/research/mercenaries-character-specials.md` 1.1 on main, source
+S37; not yet exercised by this bot live): ready weapon ZL, aiming with the right stick while it is held; fire ZL + ZR;
+**reload ZL + B** (the first cut had `RELOAD_BTN = "r"`, but R is "Give orders" - Krauser's Plaga arm in Mercenaries;
+now `SPECIAL_BTN`); knife L + ZR; action Y (every melee prompt, "(Y) KICK"); run B + stick up; 180 turn B + stick down.
+Inferred and flagged in the code: that an error > 0 turns right (the first cut's contract; no live facing read exists);
+the stage grid layout and one portrait per cursor press.
+
+### 7.3 Control plane vs worker
+
+| needs | files |
+|---|---|
+| **gbox.service restart** (control plane) | `gbox/mercmode.py` (`selection_job`, `accept_boundary`), `gbox/screensaver.py` (the `selection_job` call) |
+| **the worker's bot code** (lilspark's worker: a bot reload covers only modules loaded at worker start - memory note *hot reload traps*; a restart is the safe way, and on lilspark it is the same `gbox.service`) | `gbox/re4switch_bot.py`, `gbox/mercs/titles/re4_switch.py`, `gbox/mercs/titles/re4_switch_screens.py`, `gbox/mercs_bot.py` |
+| nothing | `profiles/gamedata/010099A00BC1E000-ram.json` (a note; `mercs.ready` stays false), the probe, tests, this doc |
+
+Without the worker files deployed, every RE4 turn keeps looping on the main menu until its no-progress cut.
+
+### 7.4 What you must verify live, in order
+
+1. **The walk reaches a round** (deploy first). Frames: title -> main menu (cursor steps down to EXTRAS) -> EXTRAS ->
+   THE MERCENARIES -> Select Player -> Select Stage -> loading -> the round. No `b` on the main menu
+   (`stats.stall_steps` stays 0). Failure looks like today's loop.
+2. **The clock**: within ~2 s of the clock starting, `stats.timer` follows the HUD clock and `stats.clock_addr` is set
+   (expect near `0x3ca8e78710`). Failure: `timer` stays `None` (no float fell by the wall time: emulation far off
+   100 %, or the clock is not in the bss this build - widen `CLOCK_RATE`, or the probe's candidates say where).
+3. **The boundary**: at the round's end (clock 0) `stats.last_boundary` and `stats.boundaries_posted == 1`, then
+   `mercmode_rotate_requested` when the turn's rounds are done; MercMode's log shows the round counted (not a
+   no-progress cut). Failure: `mercmode_boundary_error` names the refusal.
+4. **The probe** in that round (`python system/tools/probes/re4sw_round_probe.py --out <dir>`, the bot walking): from
+   `report.json` set `PLAYER_CLASS` (the class with one object that moves as he walks), `ENEMY_CLASSES` (objects that
+   move and lose health at `+0x3c2`), `U_POS` (the top position vote), and the `MERC_*` counters (kills step by 1 per
+   kill, score by the kill score); then find `U_YAW` (a float that turns with `lleft`/`lright`) - the 2026-11-05
+   sin/cos pairs were the camera's. Check the turn sign: `err > 0` must turn him toward the target.
+5. **The fight**: `stats.fight == "ram"`, shots and kills_seen climbing, `doctrine_idle_s` near 0, `stand_breaks`
+   small, no long-range fire through walls (12 m gate).
+6. **A DJ pick**: queue Ada / Castle; frames on Select Player and Select Stage show the cursor on Ada and the Castle
+   cell before the confirm. Failure: Leon / Village (steps not taken), the wrong portrait (one press is not one
+   portrait, or a locked character is skipped) - adjust `selection_moves`.
+7. Then `mercs.ready` (two boots at 20 Hz), and `perception` in `re_switch.preferred_spec` can drop "screen-only".
+
+### 7.5 The snapshot contract (for the RE4 map, the mesh walker and live mods)
+
+`re4_switch.snapshot(m)` returns re5_switch's shape, so the tactical map and the RE4 room-collision mesh walker (branch
+`wt-re4-map-20261110`) plug in unchanged: `player = {"pos": (x, y, z) cm, "rot": rad (0 = +z, + toward +x), "hp",
+"hp_max", "ptr", "class", "id"}`, `enemies = [{"slot", "ptr", "pos", "rot", "hp", "hp_max", "class", "id"}]`, `timer`,
+`clock_addr`, `kills`, `combo`, `combo_timer`, `score`, `module_base`. `room` is not read (no room id is measured on
+this build); the map fills `snap["nav"]`, which the fight uses for line of sight (`floor_segment`) and the run
+(`route`), and `Bot.walker` (`approach(goal) -> stick keys`) takes over the run when attached.
+
+### 7.6 Fields for live mods ("RE4 dynamically adjusted on the fly")
+
+| field | where | state | what a mod could do |
+|---|---|---|---|
+| the round clock | f32 seconds, module + ~`0x1274710` (2026-11-05 cluster, copies every 0x30; found per boot by `ClockFinder`, `stats.clock_addr`) | found live 2026-11-05; the finder is offline-tested; **not read this pass** (no round) | freeze / add / cut time (write every copy of the cluster, read back) |
+| unit health | `u16` at unit + `0x3c2` (code: the damage routine writes it) | offset from code; **which unit is the player, which are Ganados: pending** (`PLAYER_CLASS`, `ENEMY_CLASSES`) | player god mode / heal, enemy one-shot or armour |
+| unit type | `u8` at unit + `0x3ce` (the damage table's index) | from code | enemy kind swaps (risky: the type picks the damage row) |
+| the game state | pointer at module + `0xb25d78` -> main's data (`0x3ca871ee08` this boot); fields `+0x5037` difficulty, `+0x503c` mode (score x10/x5/x2), `+0x84f0`, `+0x984` (decompiled score routine) | pointer read live; fields from code, not read | difficulty / score-multiplier mods |
+| kills, combo, combo window, score | `MERC_*` | **pending** (the probe lists monotonic small-step counters) | combo-window extension, score boosts |
+| ammo | - | **not looked for** | infinite ammo |
+
+Tests: `test_re4switch_bot.py` (20), `test_re4_switch_menus.py` (40), `test_re4_switch_brain.py` (3),
+`test_re4_switch_fight.py` (24), `test_re4_switch_anchors.py` (19), `test_mercmode.py` (+4).
