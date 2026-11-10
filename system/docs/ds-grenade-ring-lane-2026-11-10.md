@@ -674,3 +674,46 @@ next scan goes. Nothing in the repo changed for B, and nothing is claimed about 
   `98ca897f07b2c864a0cabfb9dd8ca46a54b88c565ba629da3b7a4b6a57a57441`.
 - meanwhile: E0(c) needs no decision - capstone 5.0.7 and unicorn 2.1.4 are both installed on this box - so the
   hand-encoded harness can start as soon as the image gives the cave and the trigger addresses.
+
+## Round 53 (2026-11-10 15:40 CST) - the integration branch re-checked on today's main
+
+`origin/main` moved from `54b2a78e` to `2564c0a1` (menu pace, all three Switch titles' at-once PRESS ANY BUTTON, RE4
+Switch doorway navigation, the ComfyUI render freeze, `scripts/bot_trace.py`). The integration branch is merged with it
+(`374c4aed`, no conflicts - this lane's only edit in a touched file is RE5's `SCATTER` line, and main's work is in
+other regions) and the full checkpoint-0 list re-run on the merged tree:
+
+    test_re6_class_images, test_re5_class_pair, test_re5_class_table, test_re5_scatter, test_re6_grenade_ring,
+    test_re5_grenade_ring, test_mercs_grenade_status, test_mercs_grenade_ring, test_re6_native_build,
+    test_merc_interventions, test_intervention_worker, test_re5_switch_native, test_bot_logic,
+    test_re5_switch_ss_campaign, test_mercs_engine, test_re6_grenade_scatter, test_re5_pair_fallback
+
+**219 passed, 0 failed** (90 s). Nothing in the merge changes the grenade behavior; the branch is still the single
+merge-and-deploy unit requested at 14:32, now on top of today's main, so the RE session's merge in one gap stays
+conflict-free. The request stands: merge `ds-grenade-merge-20261110` (code `5068b945`; the merges and docs sit on top),
+restart `gbox.service` in the same gap, read the two statuses, fire one RE5 flash.
+
+Branch tip after this round: this commit; the code commit is unchanged at `5068b945`.
+
+## REQUEST 15:40 CST - checkpoint B's fallback: one read-only capture during an RE6 round that carries the grenade launcher
+
+Static analysis is stuck at the same place the guide's fallback anticipates. The launcher's shell spawn is not the
+`CREATE_ITEM(allocator, shell_dti, ...)` site the B1 scan describes (`docs` entry of round 52): on the pinned image
+(update `061D2A06...`, verified) no shell DTI is ever built in `x1`, `0x3BCF90` is only our own compiled spawn's
+link-time veneer (`and w4,w4,#1; b 0x359270`), and the class-info records give the classes and their DTI getters but
+not the shot. What is needed is the shell object created by a real shot.
+
+- needs: **one read-only capture during an RE6 round whose character carries the grenade launcher** (item `0x112`,
+  in loadouts `0x1004` / `0x0206`; the arsenal swap can put it in his hands, or the RE session picks the character).
+  The RE6 block is fine; no probe is fired, nothing is written.
+- when: right after **one real shot** from the launcher (or its first impact), capture:
+  1. the new unit pointer the shot created (walk the player's `+0x1300` manager / the projectile list, or the class
+     registry entry for `uWp1302`/`uWp1303`/`uWp1304` - the head of the new unit's object);
+  2. that unit's `+0x00` class vtable, `+0x1300` owner, `+0x1308` generation, `+0x13F0` action object and its
+     class (`re6_switch.unit_action` gives the name), and `+0x60` transform (position);
+  3. the velocity / direction fields around `+0x3920` (uWp1080 stores `0x4116CBE4` there for the bomb, so the shell's
+     own fields are likely nearby) - 0x60-0x80 bytes from `+0x3880` to `+0x3940`;
+  4. the action class the unit switches to at impact (a second read after the hit), which is what B2 needs.
+- record: the unit pointer, class vtable, action class names before/after impact, and the raw hex of the two ranges
+  above. A `read_memory` dump of `unit+0x0..0x140` and `unit+0x3880..0x3960` is enough.
+- if no character in the RE6 block carries the launcher for a whole block, a read-only capture on the player object of
+  any round that does is equally useful; the goal is the shell object's shape, not the kill.
