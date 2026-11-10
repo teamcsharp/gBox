@@ -160,3 +160,42 @@ driver (`pso_boot.py`) reads state correctly and presses through the relay; only
 **The session was stopped** (job `3f0dea8b822d4e75`, `succeeded`, `ended: true`), `/api/sessions` is empty, and the i9 is
 clean. One fix was made to the driver on the way: `Reader.read()` did not exist, so `pso_ram.player()` crashed - the
 checked-out tool now carries it (`pso_ram`'s reader protocol).
+
+## Round 66: why the presses were dropped, at the instruction level
+
+The injection path is `adapters.win_send_keys` -> `SendInput` (scan codes from a `_SCAN` table, pad-button names from
+`PAD_KEYS[player]`), and it is gated by `_win_input_in_front(user32, root, hidden_ok)`:
+
+```python
+def _win_input_in_front(user32, root, hidden_ok):
+    foreground = user32.GetForegroundWindow()
+    if not foreground:          # locked screen: never send there
+        return False
+    if root and foreground == root:
+        return True
+    if not hidden_ok:
+        return False            # pad input must never type into another app
+    return True                 # hidden_ok: Dolphin's global F13-F15 hotkeys, focus-free
+```
+
+So **pad input is delivered only while the game's top-level (`root`) window is the foreground window**, checked at delivery
+time; `win_bring_to_front(pid)` raises exactly that root (`_pid_window(pid)` -> `GetAncestor(h, 2)`) and it returned `True`
+in round 65. The relay is **asynchronous** (`POST /input` answers `{"queued": 1}` and the worker's input thread sends the
+keys afterwards), so the window has to still be foreground *when the worker delivers*, not merely when the request was
+accepted. In round 65 each of my commands raised the window and returned; the subsequent PowerShell/agent activity (and the
+console window itself) plausibly took the foreground back before delivery, so the keys were dropped by that check - which
+also explains why both the `agent` and `autoplay` actors behaved identically.
+
+**Two concrete next attempts, both offline-defined:**
+
+1. **One process, one focus**: a single script that calls `win_bring_to_front(<dolphin pid>)`, asserts
+   `GetForegroundWindow() == root`, then presses and polls `pso_boot_walk.state` in a loop, **with no other window
+   activity in between** (no shell commands, no editor). The walk's own `press` -> `sleep(settle)` loop fits this shape as
+   long as it runs from one long-lived process.
+2. **The focus-free lane**: `hidden_ok=True` accepts input while another app is foreground, and the comment says it exists
+   for **Dolphin's global hotkeys (F13-F15 chords, `HotkeysRequireFocus=False`, `BackgroundInput=True`)**. If the worker's
+   Dolphin build has those chords bound to the pad, a walk driven by them needs no foreground at all - the
+   `pso_coop`/`adapters` code path for that is `remote_input` followed by `win_send_keys(..., hidden_ok)`.
+
+The driver and the RAM checkpoints are proven; only this delivery condition remains. The i9 is clean (no session), and the
+next launch should also carry a `pad` spec so `PAD_KEYS` has a map to use.
