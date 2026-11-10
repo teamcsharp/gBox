@@ -658,6 +658,8 @@ def build_disc(src_iso: Path, out_iso: Path | None, jobs: list[dict], progress=l
                                             ko = M.parse_kms(idx.read(fn, stage, inv.T_KMS, f_[1], page_cache))
                                         except M.FormatError:
                                             continue
+                                        if ko["tex"] != pk_h:          # another pack: same texture hashes, other pixels
+                                            continue
                                         tx = _textures(ko)
                                         if f_[1] not in replaced:      # a model that stays: its textures stay
                                             others |= tx

@@ -49,10 +49,10 @@ def test_donor_fits_soldier_tanker_slot_dry_run(tmp_path):
     main = [m for m in models if m["model"] == "613791"]
     built = [m for m in main if m["status"] == "built"]
     failed = [m for m in main if m["status"] == "failed"]
-    assert len(built) == 51 and all(m["size"] <= m["cap"] and m["triangles"] == 1049 for m in built)
-    # one stage pack (d036p03) has no free 8-bit page region for the donor atlas: reported, left untouched
-    assert [m["stage"] for m in failed] == ["MGS2/STAGE.DAT:d036p03"]
-    assert "no free 8-bit page region" in failed[0]["reason"]
+    # d036p03 once failed ("no free 8-bit page region"): textures of models in OTHER packs share hashes, not pixels
+    assert len(built) == 52 and not failed
+    assert all(m["size"] <= m["cap"] and m["triangles"] == 1049 for m in built)
+    assert "MGS2/STAGE.DAT:d036p03" in [m["stage"] for m in built]
     assert rep["image"] is None
 
 
