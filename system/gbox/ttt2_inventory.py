@@ -140,22 +140,65 @@ class Xdvdfs:
         return files
 
 
+def parse_pack_table(blob: bytes, file_size: int) -> list[tuple[int, int]]:
+    """Decode a plaintext 0x0FF512ED pack's 8-byte big-endian ``(offset, size)``
+    record table.
+
+    Verified on the owned disc (data000/002/003/007/028): the table is a simple
+    list of ``(offset, size)`` entries that terminates at the FIRST record whose
+    ``offset`` is zero or whose ``offset + size`` falls outside the file.  The byte
+    immediately after the table is a ``?? 08 20`` sub-header marker (not a record),
+    and the member data region (min record offset) always starts beyond the table.
+
+    The record count is NOT ``field2 & 0xFFFF`` (data000 has ``0x0822`` but only 16
+    records); records overlap and are unsorted, consistent with a hash-indexed
+    Namco table whose index key lives in analysis-stage work.
+    """
+    if len(blob) < 16:
+        raise ValueError("pack header too short")
+    records = []
+    i = 16
+    while i + 8 <= len(blob):
+        a, b = struct.unpack_from(">II", blob, i)
+        if a == 0 or b == 0 or a >= file_size or a + b > file_size:
+            break
+        records.append((a, b))
+        i += 8
+    return records
+
+
+def pack_table_end(blob: bytes, file_size: int) -> int:
+    """Offset just past the pack table (16 + 8*len(records))."""
+    return 16 + 8 * len(parse_pack_table(blob, file_size))
+
+
+def pack_data_marker(blob: bytes, file_size: int) -> bytes:
+    """The 4 bytes immediately after the terminated table (sub-header marker).
+
+    Measured on the disc this is consistently ``?? ?? 08 20`` for plaintext packs
+    (``0a18 0820``, ``1f82 0820``, ``3550 0820``, ``36ea 0820``, ``42e6 0820``,
+    one ``3be2 0420``) -- i.e. a big-endian sub-header whose low byte is usually
+    ``08`` and whose final byte is ``20``.  For scrambled packs (data004/005/050/
+    053) the table yields zero records so the marker reads as raw table noise and
+    is not meaningful.  Used to cross-check that the terminator landed on data.
+    """
+    end = pack_table_end(blob, file_size)
+    if end + 4 > len(blob):
+        return b""
+    return blob[end:end + 4]
+
+
 def pack_header(blob: bytes, file_size: int) -> dict:
-    """First-pass 0x0FF512ED header read (big-endian); entry terminator is TBD."""
+    """0x0FF512ED header read (big-endian) + self-terminating record table."""
     if len(blob) < 16:
         raise ValueError("pack header too short")
     magic, version, f1, f2 = struct.unpack_from(">IIII", blob, 0)
     if magic != PACK_MAGIC:
         raise ValueError(f"not a Namco pack: magic 0x{magic:08x}")
-    records = []
-    for i in range(16, len(blob) - 7, 8):
-        a, b = struct.unpack_from(">II", blob, i)
-        # Records whose range leaves the file mark the end of the table.
-        if a == 0 or b == 0 or a + b > file_size or a >= file_size:
-            break
-        records.append((a, b))
+    records = parse_pack_table(blob, file_size)
     return {"magic": magic, "version": version, "field1": f1, "field2": f2,
-            "records": records}
+            "records": records, "table_end": pack_table_end(blob, file_size),
+            "data_marker": pack_data_marker(blob, file_size)}
 
 
 def parse_nrfo(blob: bytes) -> list[tuple[int, int]]:

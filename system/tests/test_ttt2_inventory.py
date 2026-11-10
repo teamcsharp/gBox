@@ -10,7 +10,9 @@ import struct
 
 import pytest
 
-from gbox.ttt2_inventory import PACK_MAGIC, XDVDFS_MAGIC, Xdvdfs, classify_root_file, pack_header, pack_table_scrambled, parse_nrfo
+from gbox.ttt2_inventory import (PACK_MAGIC, XDVDFS_MAGIC, Xdvdfs, classify_root_file,
+                                 pack_data_marker, pack_header, pack_table_end,
+                                 pack_table_scrambled, parse_nrfo, parse_pack_table)
 
 
 def _pack(magic=PACK_MAGIC, version=0x01000000, f1=0, f2=0, records=()):
@@ -112,3 +114,32 @@ def test_pack_table_scrambled_heuristic():
     assert not pack_table_scrambled(plain)
     noisy = _pack() + bytes([0xFF, 0xEE, 0xDD, 0xCC]) * 600
     assert pack_table_scrambled(noisy)
+
+
+def test_parse_pack_table_self_terminates():
+    size = 1_000_000
+    blob = _pack(records=[(1000, 500), (2000, 300), (999_000, 999_000)])
+    assert parse_pack_table(blob, size) == [(1000, 500), (2000, 300)]
+    assert pack_table_end(blob, size) == 16 + 8 * 2
+
+
+def test_parse_pack_table_rejects_zero_offset_and_zero_size():
+    size = 1_000_000
+    assert parse_pack_table(_pack(records=[(1000, 500), (0, 0)]), size) == [(1000, 500)]
+    assert parse_pack_table(_pack(records=[(1000, 500), (2000, 0)]), size) == [(1000, 500)]
+
+
+def test_pack_data_marker_is_read_after_table():
+    size = 1_000_000
+    records = [(1000, 500), (2000, 300)]
+    blob = _pack(records=records) + b"\x0a\x18\x08\x20" + b"\x00" * 100
+    assert pack_data_marker(blob, size) == b"\x0a\x18\x08\x20"
+
+
+def test_pack_header_carries_table_end_and_marker():
+    size = 1_000_000
+    blob = _pack(records=[(1000, 500), (2000, 300)]) + b"\x1f\x82\x08\x20"
+    info = pack_header(blob, size)
+    assert info["records"] == [(1000, 500), (2000, 300)]
+    assert info["table_end"] == 16 + 16
+    assert info["data_marker"] == b"\x1f\x82\x08\x20"
