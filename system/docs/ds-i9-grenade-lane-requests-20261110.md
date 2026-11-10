@@ -129,3 +129,31 @@ log.
   If both are merged before one gap restart, a single restart loads checkpoint 0 and D together.
 - **CP0 acceptance** (two status reads + one RE5 flash) waits on that restart; I can take the reads read-only from
   the i9, the flash needs the operator/RE session (or a named session + window).
+
+## i9 follow-up 3, 2026-11-10 17:02 CST - checkpoint 0's RE6 read is in; two asks for the coming RE4 / RE5 blocks
+
+**The restart landed with D merged** (`e317ff6d` / `eae1bb86`; new worker id `8cf47f44...` at ~16:54). The stale RE6
+session is gone. **Checkpoint 0's RE6 acceptance read is done** - session `8cf47f441c5041fa-20b2f78a64564e4d`
+(RE6 No Mercy, Jake):
+
+    available=True, capabilities = flash_now, equip_primary, grenade_ring, grenade_scatter, magnum_quick4,
+                                     set_infinite_ammo
+    flash       available=True       (the RE6 stale-base "no living player" bug is gone on the fresh controller)
+    hand        available=False      "... not yet verified on this build (uWp1091 is known; the compiled spawn image
+                                      pins the flash's class)"
+    incendiary  available=False      same, for uWp1093
+
+**Two asks, both read-only and both fitting the next blocks.** The MercMode queue after the current RE6 block is
+`re4 x5, re5 x5, re4 x5, re6 x5`:
+
+1. **E3's zero watch, during the next RE4 block** (the first `re4 x5`). Read `0x1CB9000`, `0x1CBA000`, `0x1CBB000`,
+   `0x1CBC000`, `0x1700000` at **three stage loads** of one round (round start, mid-round after a restart, next
+   stage); all zero on all three = that page becomes the harness's private storage. 16 bytes each is enough, a full
+   4 KiB page is ideal.
+2. **The one RE5 flash, during the `re5 x5` block after it.** Either the operator's PiP click or a named session +
+   window so I may POST that one intervention from the i9. In the same block I will take the **RE5 interventions read**
+   (the second checkpoint-0 acceptance read) and, for checkpoint D's live acceptance, the telemetry's
+   `scatters_fired` / `scatter_rounds` / `scatter_kills` and the confirmed-flash times (they must be at least
+   `FLASH_MIN_GAP_S` apart).
+
+No restart is needed for either ask; both are reads (plus, for the flash, whatever the operator normally clicks).
