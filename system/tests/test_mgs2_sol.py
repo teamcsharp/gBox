@@ -138,3 +138,24 @@ def test_owned_stage_probe_noop_roundtrip():
     assert r["kms"]["sha256"] == "112c2782773ebe645e30134079c3cf334b22bc8c51089f39adb42eca28012a85"
     assert r["texpack"]["size"] == 16640 and r["texpack"]["hash"] == "0x61165e"
     assert r["page_roundtrip"] and r["stage_rebuild_fits_span"] and r["rebuilt_pages_decode_equal"]
+
+
+def test_native_name_hash_matches_the_engine_and_the_existing_oracle():
+    """FUN_001408b8 (Ghidra, owned ELF) is the same hash the inventory module uses for stage/asset names."""
+    for n in ("init", "r_tnk0", "select", "w00a", "n_title"):
+        assert sol.native_name_hash(n) == inv.name_hash(n)
+
+
+def test_loader_addresses_in_owned_elf_text():
+    """The ELF (when present in the task workspace) holds the stage.dat name at the Ghidra-recorded address and
+    the file-name table row points at it."""
+    import pytest
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "elf", sol.ELF)
+    if not os.path.exists(path):
+        pytest.skip("owned ELF not extracted in this checkout")
+    b = open(path, "rb").read()
+    assert len(b) == sol.ELF_SIZE
+    off = lambda va: va - 0x100000 + 0x80
+    a = sol.LOADER_ADDRS
+    assert b[off(a["stage_dat_name"]):off(a["stage_dat_name"]) + 10] == b"stage.dat\x00"
+    assert struct.unpack_from("<I", b, off(a["file_name_table"]))[0] == a["stage_dat_name"]

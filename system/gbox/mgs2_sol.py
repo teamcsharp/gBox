@@ -263,6 +263,37 @@ def probe_stage(disc, name: str = "r_tnk0", stage_key: int = STAGE_KEY) -> dict:
     }
 
 
+# --- Ghidra analysis of the OWNED ELF (SLUS_201.44, MIPS R5900 LE, load delta 0xFFF80) -------------------
+# Addresses below were read from a headless Ghidra decompile of THIS ELF (adapters/ghidra/DecompAt.java);
+# they are NOT the Substance (SLUS_205.54) addresses.
+LOADER_ADDRS = {
+    "file_name_table": 0x17F408,    # 12-byte rows {name_ptr, sector, ?}; row 0 -> "stage.dat" @ 0x1AFA98
+    "stage_dat_name": 0x1AFA98,
+    "boot_init": 0x100508,          # calls name-table setup, then the STAGE TOC loader
+    "toc_loader": 0x100E40,         # reads the STAGE.DAT header, decrypts it, builds the 12-byte TOC at 0x1B6AE8
+    "toc_lookup": 0x100F88,         # linear scan of the TOC by name hash (compare = 0x16FB38), returns the sector
+    "stage_open": 0x101460,         # open a stage by name: lookup, read pages, start the page state machine
+    "page_state_machine": 0x1011C0, # per-chunk callback: decrypt page header + rows, sets row cursor
+    "row_walker": 0x1010B8,         # walks rows; (word2 & 0xFF000000) == 0x7E000000 marks a compressed page
+    "page_inflate": 0x100780,       # decrypts 0x20000-byte chunks then inflates (zlib "1.1.3" stream)
+    "cipher": 0x100688,             # the word cipher (uses R5900 MMI, Ghidra cannot decode it)
+    "name_hash": 0x1408B8,          # 24-bit rotate-5 additive hash of the asset/stage name
+}
+# Ghidra read these key-derivation constants out of the page callback (0x1011C0):
+PAGE_KEY_MUL = 0x81
+PAGE_KEY_ADD = -0x5876DA27 & 0xFFFFFFFF
+PAGE_KEY2_ADD = 0x7A88FB59
+PAGE_ROW_COMPRESSED_TAG = 0x7E000000
+
+
+def native_name_hash(name: str) -> int:
+    """FUN_001408b8 of SLUS_201.44: h = ((h<<5 | h>>19) + c) & 0xFFFFFF per byte; 0 is mapped to 1."""
+    h = 0
+    for c in name.encode("ascii"):
+        h = (((h << 5) | (h >> 19)) + c) & 0xFFFFFF
+    return h or 1
+
+
 def main(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description="MGS2 Sons of Liberty (owned SLUS-201.44) inventory")
