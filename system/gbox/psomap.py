@@ -15,24 +15,40 @@ def rel_root(data: bytes, be: bool = True) -> int:
     return struct.unpack_from(e + "I", data, len(data) - 0x10)[0]
 
 
-def collision(data: bytes, be: bool = True) -> list[tuple]:
-    """[(v0, v1, v2, flags, normal)] in world coordinates. be=True: GameCube layout; be=False: Dreamcast layout."""
+def collision(data: bytes, be: bool = True, strict: bool = False) -> list[tuple]:
+    """[(v0, v1, v2, flags, normal)] in world coordinates. be=True: GameCube layout; be=False: Dreamcast layout.
+
+    `strict=False` skips a table entry whose mesh header or vertex/face arrays fall outside the
+    buffer instead of raising. Two GameCube files do that on the retail disc (`map_boss01swc.rel` is
+    the short one): their traversal table points at a record that is not a mesh, and a partial read
+    would otherwise abort a whole area's catalogue. Use `strict=True` when a short read must fail.
+    """
     if not be:
         return collision_dc(data)
     e = ">" if be else "<"
+    if len(data) < 0x24:
+        return []
     ro = struct.unpack_from(e + "I", data, len(data) - 0x20)[0]
     o = struct.unpack_from(e + "I", data, rel_root(data, be))[0]
     tris = []
-    while o + 0x18 <= ro:
+    while o + 0x18 <= min(ro, len(data)):
         p = struct.unpack_from(e + "I", data, o)[0]
         if p == 0:
             break
+        if not 0 < p <= len(data) - 16:
+            if strict:
+                raise ValueError(f"collision mesh pointer {p:#x} outside the {len(data)}-byte file")
+            break
         nv, vp, nf, fp = struct.unpack_from(e + "4I", data, p)
-        V = [struct.unpack_from(e + "3f", data, vp + 12 * i) for i in range(nv)]
-        for i in range(nf):
-            a, b, c, fl = struct.unpack_from(e + "4H", data, fp + 36 * i)
-            n = struct.unpack_from(e + "3f", data, fp + 36 * i + 8)
-            tris.append((V[a], V[b], V[c], fl, n))
+        if strict and not (vp + 12 * nv <= len(data) and fp + 36 * nf <= len(data)):
+            raise ValueError(f"collision mesh at {p:#x}: {nv} verts / {nf} faces overrun the file")
+        if 0 < nv <= 0x4000 and 0 < nf <= 0x20000 and vp + 12 * nv <= len(data) and fp + 36 * nf <= len(data):
+            V = [struct.unpack_from(e + "3f", data, vp + 12 * i) for i in range(nv)]
+            for i in range(nf):
+                a, b, c, fl = struct.unpack_from(e + "4H", data, fp + 36 * i)
+                n = struct.unpack_from(e + "3f", data, fp + 36 * i + 8)
+                if a < nv and b < nv and c < nv:
+                    tris.append((V[a], V[b], V[c], fl, n))
         o += 0x18
     return tris
 
@@ -173,27 +189,46 @@ def to_obj(tris, path):
 
 
 def _selftest():
-    # one quad floor (2 tris) + a wall strip: floor cells inside, wall cells along x=20
+    """Two synthetic files, one per layout: a quad floor plus a wall strip must give 4 triangles and
+    floor cells inside with wall cells along x=20. (The Dreamcast face is 68 bytes with its vertices
+    inline; the GameCube face is 36 bytes indexing a per-mesh vertex array. They are not the same
+    record, so they need separate fixtures - the earlier single fixture could never pass both.)"""
     V = [(0, 0, 0), (40, 0, 0), (40, 0, 40), (0, 0, 40), (20, 0, 0), (20, 30, 0), (20, 30, 40), (20, 0, 40)]
-    def rel(V, faces, be=True):
-        e = ">" if be else "<"
-        vb = b"".join(struct.pack(e + "3f", *v) for v in V)
-        fb = b"".join(struct.pack(e + "4H", *f[:3], f[3]) + struct.pack(e + "3f", *f[4]) + b"\0" * 16 for f in faces)
-        mesh = struct.pack(e + "4I", len(V), 0, len(faces), len(vb))
+    faces = [(0, 1, 2, 1, (0, 1, 0)), (0, 2, 3, 1, (0, 1, 0)), (4, 5, 6, 1, (1, 0, 0)), (4, 6, 7, 1, (1, 0, 0))]
+
+    def rel_gc():
+        vb = b"".join(struct.pack(">3f", *v) for v in V)
+        fb = b"".join(struct.pack(">4H", *f[:3], f[3]) + struct.pack(">3f", *f[4]) + b"\0" * 16 for f in faces)
+        mesh = struct.pack(">4I", len(V), 0, len(faces), len(vb))
         mesh_off = len(vb) + len(fb)
         table_off = mesh_off + 16
-        table = struct.pack(e + "I4fI", mesh_off, 0, 0, 0, 100, 0) + b"\0" * 0x18
+        table = struct.pack(">I4fI", mesh_off, 0, 0, 0, 100, 0) + b"\0" * 0x18
         body = vb + fb + mesh + table
         root_off = len(body)
-        body += struct.pack(e + "I", table_off)
+        body += struct.pack(">I", table_off)
         relocs_off = len(body)
-        return body + struct.pack(e + "5I", relocs_off, 0, 0, 0, root_off) + b"\0" * 12
-    faces = [(0, 1, 2, 1, (0, 1, 0)), (0, 2, 3, 1, (0, 1, 0)), (4, 5, 6, 1, (1, 0, 0)), (4, 6, 7, 1, (1, 0, 0))]
-    for be in (True, False):
-        tris = collision(rel(V, faces, be), be)
-        assert len(tris) == 4
+        return body + struct.pack(">5I", relocs_off, 0, 0, 0, root_off) + b"\0" * 12
+
+    def rel_dc():
+        fb = b"".join(struct.pack("<16fI", *f[0], *f[1], *f[2], *f[4], 0.0, 0.0, 0.0, 1.0, f[3])
+                      for f in [(V[f[0]], V[f[1]], V[f[2]], f[3], f[4]) for f in faces])
+        mesh = struct.pack("<2I", len(faces), 0)
+        mesh_off = len(fb)
+        table_off = mesh_off + 8
+        table = struct.pack("<I4fI", mesh_off, 0, 0, 0, 100, 0) + b"\0" * 0x18
+        body = fb + mesh + table
+        root_off = len(body)
+        body += struct.pack("<I", table_off)
+        relocs_off = len(body)
+        return body + struct.pack("<5I", relocs_off, 0, 0, 0, root_off) + b"\0" * 12
+
+    for data, be in ((rel_gc(), True), (rel_dc(), False)):
+        tris = collision(data, be)
+        assert len(tris) == 4, (be, len(tris))
         fl, wl = walkable_cells(tris, 10)
         assert (0, 0) in fl and (3, 3) in fl and (2, 1) in wl and (0, 0) not in wl, (sorted(fl), sorted(wl))
+    # a file whose traversal table points at a non-mesh must not raise: it yields what it can
+    assert collision(b"\0" * 4 + struct.pack(">II", 0xFFFF, 0) + b"\0" * 20) == []
     print("psomap selftest ok")
 
 
