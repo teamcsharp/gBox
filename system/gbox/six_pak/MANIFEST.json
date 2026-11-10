@@ -1,0 +1,51 @@
+{
+  "game_id": "73c0f182facee148",
+  "title": "6-Pak",
+  "platform": "genesis (Mega Drive, cartridge image in zip)",
+  "container": {
+    "path": "/mnt/gbox/hyperspin/Arcade/collections/Sega Nomad/roms/6-Pak (USA).zip",
+    "kind": "zip",
+    "container_sha256": "d4d147aaeca7e27b1fffa9108e082ef63199a923feab0ce7d27af9c9829b45b8",
+    "member": "6-Pak (USA).md",
+    "member_size": 3145728,
+    "member_sha256": "121f7c8be8a4ba1d22d96494835a25973baaacd9ad3f54c1887c4512f994b82e"
+  },
+  "layout": {
+    "banks": 6,
+    "bank_size": 524288,
+    "offset_base": "absolute cart offsets; each game is a complete 512KB Mega Drive ROM image at k*0x80000",
+    "byte_order": "big-endian 68000 (Mega Drive); 'SEGA' ASCII at bank+0x100 in native order (no byteswap)",
+    "notes": "Bank checksum words retain stock values (e.g. Sonic bank header cksum 0x264A = stock Sonic 1 REV00) but full-bank word sums differ => Sega applied bank-switch/menu patches inside the game banks. Columns bank at 0x80000 is headerless (no SEGA magic); identified by strings ('FLASH COLUMNS', 'SCORE JEWELS LEVEL')."
+  },
+  "banks": [
+    {"offset": "0x000000", "game": "Mega Games 6in1 U (menu/launcher)", "serial": "GM MK-1717 -00", "header": "SEGA GENESIS", "bank_sha256": "f7916795bba15f30-partial-prefix-of-zeroed-cksum-copy (see probe for live values)"},
+    {"offset": "0x080000", "game": "Columns", "serial": null, "header": "none"},
+    {"offset": "0x100000", "game": "Golden Axe", "serial": "GM 00054018-01", "header": "SEGA MEGA DRIVE"},
+    {"offset": "0x180000", "game": "Streets of Rage", "serial": "MK 00001019-01", "header": "SEGA MEGA DRIVE"},
+    {"offset": "0x200000", "game": "The Revenge of Shinobi", "serial": "GM 00001105-03", "header": "SEGA MEGA DRIVE"},
+    {"offset": "0x280000", "game": "Sonic the Hedgehog (REV00, JUE)", "serial": "GM 00001009-00", "header": "SEGA MEGA DRIVE", "bank_sha256": "3cddcc2c2365d57fd99065994fdd1b9aad062a680347b6f561080c697452b7bf"}
+  ],
+  "counted_assets_vs_guesses": {
+    "counted": "6 banks x 512KB verified from bytes; 7 Nemesis art streams in the Sonic bank byte-verified against documented clean Sonic 1 REV00 offsets (Sonic Retro SCHG)",
+    "filename_guesses": "none"
+  },
+  "native_target_asset": {
+    "primary": "sonic_intro_patterns",
+    "cart_offset": "0x29F27A",
+    "bank": "0x280000",
+    "bank_offset": "0x1F27A",
+    "format": "Nemesis-compressed 4bpp Mega Drive pattern art (525 tiles per Sonic Retro SCHG)",
+    "role": "Sonic character sprites (title-screen intro Sonic) - candidate for donor swap in writer stage",
+    "verified_bytes": "82 0d 80 04 04 14 05 24 (Nemesis stream signature 0x80/0x82 start + 0x8004 code table marker)"
+  },
+  "assimilation_fingerprint": {
+    "job_id": "d034f05f9cd643fb",
+    "receipt_id": "49e3d302670b4d9b",
+    "result_sha256": "d67e65e7b9feff8839ec4865c4d29be0da7b0498f87b6e2c4a7b279a4aee3f43",
+    "summary": "[disc] engine guesses CRI 0.41 / Ninja 0.36 (both wrong for a Genesis cart; it is first-party Sega 68000 code). 'PLAY container (JGR)' claim is a misidentification. Nearest title JGR 0.118 - not usable as reader.",
+    "correction": "Platform confirmed genesis/.md from actual bytes; treat fingerprint engine claims as unverified"
+  },
+  "launch_prereqs": "genesis_plus_gx core; catalog path genesis/genesis_plus_gx/hyperspin; roster empty; collection unsupported",
+  "pending_jobs": [],
+  "source_of_record": "owned zip above; originals preserved untouched"
+}
