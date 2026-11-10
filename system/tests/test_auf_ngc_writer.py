@@ -148,3 +148,37 @@ def test_owned_dm1_bondcombat_slot_takes_uwb_thug(tmp_path):
     with pytest.raises(ValueError):
         W.swap_models(pkg, [(head, "models/actors/actorheads/griffin_head_l.gcm")])
     assert hashlib.sha256(out).hexdigest() == "7e9e72489cb7f192378b7184e0006887489c455c9a8cf1a0acec8723c78f2561"
+
+
+def _m6_2(tmp_path):
+    from gbox import au_inventory
+    au_inventory.extract(GCZ, ["m6_2.ngc"], str(tmp_path))
+    return (tmp_path / "m6_2.ngc").read_bytes()
+
+
+JACKAL_BODY = "models/actors/jackal/jackal_body_h.gcm"
+
+
+@pytest.mark.skipif(not os.path.exists(GCZ), reason="owned AUF GCZ not cached")
+def test_owned_m6_2_jackal_body_noop_roundtrip_and_donor_gate(tmp_path):
+    """Request #1442 target slot model:jackal_body (maps/m6_2.ngc, GW7E69 v1.01)."""
+    data = _m6_2(tmp_path)
+    assert hashlib.sha256(data).hexdigest() == \
+        "642977fc2cdf375523929bfe34ad9f565b5b7eda11f557586478fce40b5e7310"
+    pkg = auf_ngc.NgcPackage(data)
+    assert W.write_package(pkg) == data                       # no-op roundtrip is byte-identical
+    assert W.check_package(data)["problems"] == []
+    g = pkg.read(JACKAL_BODY)
+    assert len(g) == 25168
+    assert hashlib.sha256(g).hexdigest().startswith("a111771c")
+    assert len(auf_ngc.skeleton(g)) == 36
+    # Finding: no other actor .gcm in this level has a bone-hash set inside the jackal skeleton
+    # (nearest donors miss 3 bones), so the strict in-level donor gate refuses every candidate.
+    # A changed-donor swap here needs either a retarget (drop/remap the missing bones) or a
+    # relaxed gate proven against the slot's .gca animations.
+    others = [r.name for r in pkg.resources()
+              if r.name.startswith("models/actors/") and r.name.endswith(".gcm") and r.name != JACKAL_BODY]
+    assert others
+    for donor in others:
+        with pytest.raises(ValueError):
+            W.swap_models(pkg, [(JACKAL_BODY, donor)])
