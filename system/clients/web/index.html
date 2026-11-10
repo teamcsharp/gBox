@@ -1554,8 +1554,11 @@ library.after = () => {
       if (a === "reset") { CAR.order = []; CAR.hidden = []; }
       carSave(); m.style.display = "none"; rerender();
     };
-    const close = () => { m.style.display = "none"; removeEventListener("click", close); };
-    setTimeout(() => addEventListener("click", close), 0);
+    // closes on a click anywhere else, on focus leaving the page (a click on the docked native game never reaches it) and Escape
+    const away = ev => { if (ev.type === "mousedown" && m.contains(ev.target)) return; close(); };
+    const esc = ev => { if (ev.key === "Escape") close(); };
+    function close() { m.style.display = "none"; for (const t of ["click", "mousedown", "blur"]) removeEventListener(t, away, t === "mousedown"); removeEventListener("keydown", esc); }
+    setTimeout(() => { addEventListener("click", away); addEventListener("mousedown", away, true); addEventListener("blur", away); addEventListener("keydown", esc); }, 0);
   };
   document.querySelectorAll(".car-btn").forEach(b => {                 // hover the arrows to auto-scroll the console strip
     let t = null;
