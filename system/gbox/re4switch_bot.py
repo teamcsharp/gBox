@@ -37,6 +37,7 @@ import json
 import time
 import uuid
 
+from .mercs.core import menu_pace
 from .mercs.titles import re4_switch as driver
 from .mercs.titles import re4_switch_screens as screens
 from .mercs.titles import re4_walk
@@ -270,6 +271,26 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
     rnd: Round | None = None
     last_snap: dict | None = None
     pace = driver.Pace()
+    # the walk's clock (gbox.mercs.core.menu_pace.Clock): the boot from the session's launch (the game dict's
+    # _launched_at, tools.launch_game) or this start, every round's end to the next round's first tick. Wall time of
+    # its own (the launch is a wall time), so the run's clock() is read exactly as often as before.
+    walk = menu_pace.Clock(driver.pace_table(), wall=time.time, pace=driver.pace_summary)
+    walk.begin("boot", launched_at=(game or {}).get("_launched_at"), up_at=(game or {}).get("_up_at"))
+    walk_stats_at = float("-inf")
+
+    def walk_stats(force: bool = False) -> None:
+        nonlocal walk_stats_at
+        if force or time.monotonic() - walk_stats_at >= 0.5:
+            walk_stats_at = time.monotonic()
+            stats.update(walk.stats())
+
+    def round_started() -> None:
+        walk.round_start()
+        walk_stats(True)
+
+    def round_ended() -> None:
+        walk.round_end()
+        walk_stats(True)
     unknown_since = None
     seen_menu, prev_where = False, None             # title_returns: the title again after a menu (an idle return or
                                                     # a back press), the stat that tells a walk loop on the live panel
@@ -305,7 +326,10 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             if not in_round or (phase == "intro" and last_phase not in (None, "intro")):
                 # a round's scenario task runs (its intro, or a round already under way when the bot came in): the
                 # round starts here, and no entry press is guessed - the Bot pages the intro while the game says so
+                if in_round:
+                    round_ended()                            # a replay's intro (Continue: Yes) without a menu between
                 in_round, rnd = True, Round(clock())
+                round_started()
                 stats["rounds"] += 1
                 stats["stage_seen"] = True
                 stats.setdefault("walk_s", round(clock() - started, 1))
@@ -336,6 +360,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             off_round += 1                                   # ROUND_END_TICKS reads in a row end it (one torn read
             if off_round >= ROUND_END_TICKS:                 # never splits a round in two)
                 in_round = False
+                round_ended()
         last_phase = phase
         if gs is not None and where in ("playing", "round_intro"):
             where = "unknown"                                # no round runs: the HUD test or the reader's intro guess
@@ -386,11 +411,14 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
         if where not in ("unknown", "playing"):
             if in_round:
                 keys.release()
+                round_ended()
             in_round = False
             target = (driver.EXTRAS_ROW if where == "main_menu"
                       else driver.MERCENARIES_ROW if where == "extras_menu" else None)
             scr = {**screen, "target": target, "reader": reader}
             pace.observe(scr, clock())
+            walk.screen(where)
+            walk_stats()
             if where == "title" and seen_menu:
                 stats["title_returns"] = stats.get("title_returns", 0) + (prev_where != "title")
             if where == "dead_continue" and prev_where != "dead_continue":
@@ -409,7 +437,11 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                 if key:
                     _press(send, key, sleep=sleep)
                     driver.pressed(scr, key, clock())
+                    missed = pace.misses
                     pace.pressed(scr, key, clock())
+                    walk.press(where, key)
+                    if pace.misses > missed:
+                        walk.miss(where)                      # the game dropped the last one (pressed again)
                     stats["presses"] += 1
                     stats["menu_presses"] = stats.get("menu_presses", 0) + 1
                     last_step = clock()
@@ -417,6 +449,8 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             continue
 
         # --- unknown / the HUD: in the stage (the classifier cannot read a live round's picture, only its HUD)
+        if not in_round:
+            walk.screen(where or "unknown")                  # a load or a fade on the walk's timeline
         if not stats["stage_seen"] and where != "playing":
             sleep(0.4)
             continue                       # a screen nobody can classify before a stage: do not press into the dark
@@ -441,6 +475,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             stats["rounds"] += 1
             stats.setdefault("walk_s", round(clock() - started, 1))     # the boot's walk to its first round
             rnd = Round(clock())
+            round_started()
             if where != "playing":                           # the HUD is up: the clock already runs, no entry presses
                 for _ in range(ROUND_ENTRY_PRESSES):
                     if stopped():

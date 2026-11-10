@@ -1044,55 +1044,57 @@ CURSOR_MENUS = ("main_menu", "extras_menu")
 # showed on the cursor (or a select screen's step counted) shortens its move gap; a confirm pressed again on the same
 # screen, or a move re-sent because it never showed, lengthens them x PACE_SLOW. Never under the floors (a frame or
 # two of the 30 fps read) and never over the hand-set values above (the old walk is the worst case).
+# The table itself is the shared one (gbox.mercs.core.menu_pace.Table): this module keeps its file, knobs and state, so
+# the learned file (screens -> settle / confirm_after / move_gap, taken / missed) reads and writes exactly as before,
+# and the walk's clock (re4switch_bot: menu_s, the walks, the bests) shares the same file.
 PACE_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "learned" / "010099A00BC1E000" / "menu_pace.json"
 PACE_KNOBS = {"settle": (SETTLE_S, 0.06), "confirm_after": (CONFIRM_AFTER_S, 0.10), "move_gap": (MOVE_GAP_S, 0.08)}
 PACE_FAST, PACE_SLOW, PACE_TAKEN_S, PACE_SAVE_S = 0.75, 1.5, 3.0, 2.0
 PACE_SELECT_MOVE_FLOOR = 0.30            # the select screens' moves are open loop (counted as sent, not as seen)
+PACE_NAMES = {"settle": "settle", "confirm_after": "confirm", "move_gap": "move"}   # the panel's menu_pace line
 _PACE: dict = {"screens": None, "dirty": False, "saved": float("-inf")}
 
 
+def _pace_floor(where, knob: str, floor: float) -> float:
+    if knob == "move_gap" and where in ("select_player", "select_stage"):
+        return max(floor, PACE_SELECT_MOVE_FLOOR)        # open loop there: a dropped move picks the wrong entry
+    return floor
+
+
+def pace_table():
+    """This title's learned menu pace (PACE_FILE / _PACE, read at each call: tests point both elsewhere)."""
+    from ..core import menu_pace
+    return menu_pace.Table(PACE_FILE, PACE_KNOBS, state=_PACE, floor=_pace_floor, fast=PACE_FAST, slow=PACE_SLOW,
+                           save_s=PACE_SAVE_S)
+
+
 def _pace_screens() -> dict:
-    if _PACE["screens"] is None:
-        try:
-            data = json.loads(PACE_FILE.read_text(encoding="utf-8"))
-            _PACE["screens"] = data.get("screens", {}) if isinstance(data, dict) else {}
-        except (OSError, ValueError):
-            _PACE["screens"] = {}
-    return _PACE["screens"]
+    return pace_table().screens()
 
 
 def pace_value(where, knob: str) -> float:
     """This screen's learned wait (PACE_KNOBS), the hand-set value until it has learned one."""
-    default, floor = PACE_KNOBS[knob]
-    if knob == "move_gap" and where in ("select_player", "select_stage"):
-        floor = max(floor, PACE_SELECT_MOVE_FLOOR)       # open loop there: a dropped move picks the wrong entry
-    v = (_pace_screens().get(str(where)) or {}).get(knob)
-    return default if not isinstance(v, (int, float)) else max(floor, min(default, float(v)))
+    return pace_table().value(where, knob)
 
 
 def _pace_learn(where, knobs, faster: bool, now: float) -> None:
-    row = _pace_screens().setdefault(str(where), {})
-    for k in knobs:
-        default, floor = PACE_KNOBS[k]
-        row[k] = round(max(floor, min(default, pace_value(where, k) * (PACE_FAST if faster else PACE_SLOW))), 4)
-    row["taken" if faster else "missed"] = row.get("taken" if faster else "missed", 0) + 1
-    _PACE["dirty"] = True
-    pace_save(now)
+    pace_table().learn(where, knobs, faster, now)
 
 
 def pace_save(now: float | None = None, force: bool = False) -> None:
     """The learned pace to PACE_FILE (at most every PACE_SAVE_S unless forced)."""
-    now = time.monotonic() if now is None else now
-    if not _PACE["dirty"] or (not force and now - _PACE["saved"] < PACE_SAVE_S):
-        return
-    try:
-        PACE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = PACE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"screens": _pace_screens()}, indent=1, sort_keys=True), encoding="utf-8")
-        tmp.replace(PACE_FILE)
-        _PACE["dirty"], _PACE["saved"] = False, now
-    except OSError:
-        pass
+    pace_table().save(now, force)
+
+
+def pace_summary() -> str:
+    """The learned waits, one line per screen (the run's menu_pace stat)."""
+    return pace_table().summary(PACE_NAMES)
+
+
+def menu_status() -> dict:
+    """The sidebar's menus line (gbox.mercs.bot_logic.status): the kept walks, round to round and from the launch."""
+    from ..core import menu_pace
+    return menu_pace.status(PACE_FILE)
 
 
 def next_is_move(scr: dict) -> bool:
@@ -1118,6 +1120,7 @@ class Pace:
         self.confirm = None                     # (screen, when) of the last confirm, until the next screen is named
         self.move = None                        # (screen, when, the select screen's step count) of the last move
         self.steps = None                       # (screen, its step count) at the last read
+        self.misses = 0                         # presses the game dropped (re-sent / confirmed again): the walk's clock
 
     def observe(self, scr: dict, now: float) -> None:
         where = scr.get("where")
@@ -1158,8 +1161,10 @@ class Pace:
         move = key in DPAD.values()
         if move and self.move and self.move[0] == where and self.moved_from is not None:
             _pace_learn(where, ("move_gap",), False, now)   # sent again: the last one never showed - slower here
+            self.misses += 1
         if not move and key in ("a", "plus") and self.confirm and self.confirm[0] == where:
             _pace_learn(where, ("settle", "confirm_after"), False, now)   # a second confirm: the first was not taken
+            self.misses += 1
         self.last_press = now
         self.moved_from = scr.get("cursor") if move and where in CURSOR_MENUS else None
         if move:
@@ -1336,6 +1341,19 @@ FROZEN = True
 # walk to the target by the mesh, the gun down - and tries again. Every block is logged (SIGHT_LOG, the wall, where
 # the shot met it) so the gate can be judged on real positions.
 SIGHT_HOLD_S, FLANK_S = 0.6, 1.5
+# The flank's end (live 2026-11-10, Castle r402: 22.6 s of 60 flanking, "no clear shot: round it by the mesh walker"
+# the commonest reason - the whole route walked to a Ganado in the doorway when one step showed him). FLANK_LOS: a
+# flank ends the tick the shot is open from where he stands; until then it walks to the nearest point along the mesh's
+# route to the target from which the shot is clear (FLANK_SAMPLE_MM samples, FLANK_LOOK_MM at most, the route's first
+# crossing at most), stops there and fires. Stats flank_los_opens, flank_los_goals. Off: the whole route to him.
+FLANK_LOS = True
+FLANK_SAMPLE_MM, FLANK_LOOK_MM, FLANK_ARRIVE_MM, FLANK_GOAL_S = 300.0, 12000.0, 400.0, 1.0
+# No turning off a pack he is winning against (the same trace: a grudge pick, "he hurt him this round (2 hits), 4.5 m
+# off", turned him from the Ganados at the doorway). PACK_KEEP: the scorer's grudge or the combo's quickest kill takes
+# over from the target he is firing at (a shot within PACK_KEEP_S) only within the gun's swing (AIM_KEEP_RAD), or when
+# he is hurt (his life fell within PACK_HURT_S) or swarmed (SWARM_N within SWARM_CM). Stats pack_keeps.
+PACK_KEEP = True
+PACK_KEEP_S, PACK_HURT_S = 1.5, 2.0
 SIGHT_LOG = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re4-sight-blocks.jsonl"
 SIGHT_LOG_EVERY_S = 1.0
 WALK_LOG = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re4-walk-presses.jsonl"
@@ -1418,6 +1436,16 @@ ROOM_MAP = True
 ROOM_PROBE_MM, ROOM_PROBE_RUN_MM = 800.0, 1300.0
 ROOM_BRUSH_MM = 200.0     # the probe's own body half width: closer than this to a wall it is refused (his collision
                           # radius is not measured; the lines he picks keep re4_room_map.BRUSH_R_MM, 300 mm, of margin)
+# The mesh's own route legs pass (live 2026-11-10, Castle r402, the operator: "why does the bot meander and move at
+# walls so weird?": the route went through the arena's west doorway, 1.38 m wide, and the probe refused the step at its
+# jamb - "brushes a wall 16061,-28649-16103,-27186 (94 mm)" - so he slid up and down the wall beside the opening for
+# 10 s, the walls he had pressed there refusing it for a minute more). ROOM_LEGS: a tick whose walk is the mesh
+# walker's own route leg (its steer, toward a waypoint the mesh's floor reaches straight from him: re4_walk.Walker.leg)
+# is left to the mesh - neither the room map's probe nor a remembered press refuses it (stats room_map_route_legs). The
+# room map still guards every free step: the never-stand step, the escapes, the way off a wall, a melee approach, the
+# sweep, the walker's straight line - and the line of sight. A doorway narrower than the margins allow gets margins
+# scaled to its width (core.room_map.GAP_MARGIN_X).
+ROOM_LEGS = True
 # The camera collapsed (the operator's screenshot 2026-11-10: Krauser and Leon pinned, the camera inside a wall; the
 # camera read from RAM: camera_state, #9386). The engine pulls the camera in against geometry, so while the stick walks
 # him (in control, the gun down CAM_SETTLE_S - the aim's own zoom-in is no wall) a camera-to-player distance
@@ -1719,7 +1747,7 @@ class Bot:
         if UNIVERSAL_CORE and p is not None:
             got = self._threat_pick(p, near)             # the scorer's first tiers: a wind-up, then a grudge
             if got is not None:
-                return got
+                return self._keep_pack(p, live, near, got, now, "the grudge")
         crowd = [t for t in near if t[0] <= CROWD_CM]
         if len(crowd) >= CROWD_N:
             lined = [t for t in crowd if abs(t[1]) <= CROWD_CONE]
@@ -1729,9 +1757,36 @@ class Bot:
                 return min(lined, key=lambda t: abs(t[1]))
         if self.combo_owed(now) is not None:
             self.why = "the combo is owed: the quickest kill"
-            return min(near, key=lambda t: ((t[2].get("hp") or 0) * 0.5 + 300.0 * abs(t[1])) * MM_PER_CM + t[0])
+            got = min(near, key=lambda t: ((t[2].get("hp") or 0) * 0.5 + 300.0 * abs(t[1])) * MM_PER_CM + t[0])
+            return self._keep_pack(p, live, near, got, now, "the combo's pick") if p is not None else got
         self.why = "the nearest Ganado"
         return min(near, key=lambda t: t[0])
+
+    def _keep_pack(self, p, live, near, got, now, kind: str):
+        """PACK_KEEP: the pick of the scorer (a grudge) or of the doctrine (the combo's quickest kill) replaces the
+        target he is firing at (a shot within PACK_KEEP_S, still in range on a clear line) only within the gun's swing
+        (AIM_KEEP_RAD), or when he is hurt (his life fell within PACK_HURT_S) or swarmed (SWARM_N within SWARM_CM);
+        otherwise he stays on the pack he is winning against. stats pack_keeps."""
+        d = self.__dict__
+        hp = p.get("hp")
+        if isinstance(hp, (int, float)) and not isinstance(hp, bool):
+            last = d.get("_pk_hp")
+            if isinstance(last, (int, float)) and hp < last:
+                d["_pk_hurt_at"] = now
+            d["_pk_hp"] = hp
+        cur = next((t for t in near if t[2].get("ptr") == self.target), None) if self.target is not None else None
+        if not PACK_KEEP or cur is None or got is cur or abs(got[1]) <= AIM_KEEP_RAD:
+            return got
+        if now - self._last_fire > PACK_KEEP_S:
+            return got                                   # not firing at it now: no pack to stay on
+        hurt = now - (d.get("_pk_hurt_at") or -1e9) <= PACK_HURT_S
+        swarmed = sum(1 for t in live if t[0] <= SWARM_CM) >= SWARM_N
+        if hurt or swarmed:
+            return got
+        pack = sum(1 for t in near if self._flat(t[2]["pos"], cur[2]["pos"]) <= CROWD_CM)
+        self.stats["pack_keeps"] = self.stats.get("pack_keeps", 0) + 1
+        self.why = f"on the pack he is firing at ({pack} there): {kind} waits"
+        return cur
 
     # --- the fire pattern (FIRE_PATTERN: gbox.mercs.core.fire_pattern, the tank driver) ---
     def _fp(self):
@@ -1951,9 +2006,9 @@ class Bot:
                 self._flank = {"key": self.target, "until": now + FLANK_S}
             fl = self.__dict__.get("_flank")
             if fl and fl["key"] == self.target and now < fl["until"]:
-                keys, how = self._approach(p, e["pos"], err, snap, run=False)
-                self.doing, self.why = "flank", f"no clear shot: round it by {how}"
-                return {"hold": keys}
+                act = self._flank_step(p, e, err, snap, now)
+                if act is not None:
+                    return act                           # (None: the shot is open from here - the gun up, below)
             cone = RAISE_TOL
             if UNIVERSAL_CORE and self._aim_since is not None and self._aim_stick().usable():
                 cone = max(RAISE_TOL, AIM_KEEP_RAD)      # the gun up: the aim stick turns him, the gun stays up
@@ -2238,9 +2293,68 @@ class Bot:
         self._flank = {"key": key, "until": now + FLANK_S}
         self._sight_hold = None
         self.stats["flanks"] = self.stats.get("flanks", 0) + 1
+        return self._flank_step(p, e, err, snap, now)
+
+    def _flank_step(self, p, e, err, snap, now) -> dict | None:
+        """One tick of a flank (no clear shot at e). FLANK_LOS: over as soon as the shot is open from where he stands
+        (None: the fight raises the gun), else toward the nearest point along the mesh's route to e from which it is
+        (_flank_goal) - he stops there and fires, he does not walk the route to e. Off: toward e himself."""
+        if FLANK_LOS and self._line_of_sight_ok(p, e, snap):
+            self._flank = None
+            self.stats["flank_los_opens"] = self.stats.get("flank_los_opens", 0) + 1
+            return None
+        goal = self._flank_goal(p, e, snap, now) if FLANK_LOS else tuple(e["pos"])
+        if goal is not None and goal != tuple(e["pos"]):
+            gerr = wrap(heading(goal[0] - p["pos"][0], goal[2] - p["pos"][2]) - (p.get("rot") or 0.0))
+            keys, how = self._approach(p, goal, gerr, snap, run=False)
+            self.stats["flank_los_goals"] = self.stats.get("flank_los_goals", 0) + 1
+            self.doing, self.why = "flank", (f"no clear shot: to the spot {self._flat(p['pos'], goal) / 1000:.1f} m on "
+                                             f"where it opens, by {how}")
+            return {"hold": keys}
         keys, how = self._approach(p, e["pos"], err, snap, run=False)
         self.doing, self.why = "flank", f"no clear shot: round it by {how}"
         return {"hold": keys}
+
+    def _flank_goal(self, p, e, snap, now):
+        """The nearest point along the mesh's route from him to e (FLANK_SAMPLE_MM apart, FLANK_LOOK_MM at most, to
+        the route's first crossing) from which the shot to e is clear (_line_of_sight_ok), kept FLANK_GOAL_S for the
+        same e; e's own position when none is (or no route). Within FLANK_ARRIVE_MM of it already: e's position."""
+        key = (e.get("ptr"), round(e["pos"][0] / 500.0), round(e["pos"][2] / 500.0))
+        c = self.__dict__.get("_flank_goal_c")
+        if not (c and c["key"] == key and now - c["at"] < FLANK_GOAL_S):
+            goal = tuple(e["pos"])
+            route = getattr(snap.get("nav"), "route", None)
+            try:
+                pts = route(tuple(p["pos"]), tuple(e["pos"]), clearance=re4_walk.CLEARANCE_MM) if callable(route) else None
+            except Exception:                            # noqa: BLE001 - a mesh error: straight at him
+                pts = None
+            poly = [tuple(p["pos"])]
+            for q in pts or ():
+                if hasattr(q, "approach"):
+                    poly.append(tuple(q.approach))       # (a crossing: the samples stop at its foot)
+                    break
+                if isinstance(q, (tuple, list)) and len(q) >= 3:
+                    poly.append(tuple(q[:3]))
+            walked, found = 0.0, None
+            for a, b in zip(poly, poly[1:]):
+                L = self._flat(a, b)
+                n = max(1, int(math.ceil(L / FLANK_SAMPLE_MM)))
+                for i in range(1, n + 1):
+                    walked += L / n
+                    q = tuple(a[k] + (b[k] - a[k]) * i / n for k in range(3))
+                    if walked > FLANK_LOOK_MM:
+                        break
+                    if self._line_of_sight_ok({"pos": q}, e, snap):
+                        found = q
+                        break
+                if found is not None or walked > FLANK_LOOK_MM:
+                    break
+            goal = found or goal
+            self._flank_goal_c = c = {"key": key, "at": now, "goal": goal}
+        goal = c["goal"]
+        if goal != tuple(e["pos"]) and self._flat(p["pos"], goal) <= FLANK_ARRIVE_MM:
+            return tuple(e["pos"])                       # at the spot and still no shot (he moved): on toward him
+        return goal
 
     def _log_block(self, p, e, snap) -> None:
         """One sight block: the stats' last one and a line in SIGHT_LOG (the wall, where the shot met it)."""
@@ -2372,6 +2486,25 @@ class Bot:
             return False
         return clear
 
+    def _route_leg(self, act, p=None) -> bool:
+        """ROOM_LEGS: this tick's action is the mesh walker's own route leg (re4_walk.Walker.leg: the route's steer,
+        not a backstop step, toward a waypoint the mesh's floor reaches in a straight line from him), unchanged, with
+        his facing within re4_walk.FOLLOW_TOL of the leg (an arc still swinging round toward it is the route-turn's)."""
+        w = getattr(self, "walker", None)
+        leg = getattr(w, "leg", None) if w is not None else None
+        if not ROOM_LEGS or not isinstance(leg, dict) or leg.get("at") != getattr(w, "now", None) or not leg.get("open"):
+            return False
+        moves = {"lup", "ldown", TURN["left"], TURN["right"]}
+        mine = set(act.get("hold") or ()) & moves
+        if not mine or mine != set(leg.get("keys") or ()) & moves:
+            return False
+        if p is not None and isinstance(p.get("rot"), (int, float)) and p.get("pos") and leg.get("to"):
+            to = leg["to"]
+            off = wrap(heading(to[0] - p["pos"][0], to[1] - p["pos"][2]) - p["rot"])
+            if abs(off) > re4_walk.FOLLOW_TOL:
+                return False
+        return True
+
     def _room_ahead(self, p, act, snap):
         """ROOM_MAP's probe on a walking tick: None (the way ahead is open, or a crossing the walker is taking), the
         reason the step is refused (a wall or the floor's edge within ROOM_PROBE_MM of his facing), or - when the mesh
@@ -2380,6 +2513,9 @@ class Bot:
         rm, rot, pos = self._room_map(snap), p.get("rot"), p.get("pos")
         if rm is None or not isinstance(rot, (int, float)) or not pos:
             return None
+        if self._route_leg(act, p):
+            self.stats["room_map_route_legs"] = self.stats.get("room_map_route_legs", 0) + 1
+            return None                                      # ROOM_LEGS: the mesh's own route through the opening
         w = getattr(self, "walker", None)
         steered = w is not None and getattr(w, "wp", None) is not None and w.wp[2] == getattr(w, "now", None)
         if steered and getattr(w, "at_link", False):
@@ -2436,7 +2572,8 @@ class Bot:
                 walls.remember(now, pos_cm, rot or 0.0)      # the camera pulled into a wall: a press (CAMERA_COLLAPSE)
                 self.stats["walls_pressed"] = self.stats.get("walls_pressed", 0) + 1
                 pressed = True
-            refused = not pressed and un is None and pushing and walls.blocked(now, pos_cm, rot)
+            refused = (not pressed and un is None and pushing and walls.blocked(now, pos_cm, rot)
+                       and not self._route_leg(out, p))      # (ROOM_LEGS: a press near a doorway never shuts it)
             ahead = None
             if not (pressed or refused) and un is None and pushing and ROOM_MAP:
                 ahead = self._room_ahead(p, out, snap)        # a wall / the floor's edge on the room map ahead

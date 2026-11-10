@@ -264,11 +264,14 @@ def test_stop_while_launching_cancels_a_queued_launch_or_closes_it_once_it_is_up
     M.configure(store, w['name'], {'enabled': False})
     sid = 'w1-' + launch['id']
     store.put('session', sid, {'session_id': sid, 'game_id': launch['input']['game']['game_id'], 'state': 'running'})
-    tick(1)                                          # up: no next title is preloaded for a game being stopped
-    assert [c['tool'] for c in calls] == ['launch_game']
+    # up: a MercMode run is taken in the tick its session is up (no START_GRACE wait), so the stop goes out in that
+    # same tick - with no autoplay and no next title preloaded for a game being stopped
     tick(1)
-    assert calls[-1]['input'] == {'session_id': sid, 'op': 'stop_game', 'args': {}} and len(calls) == 2
+    assert [c['tool'] for c in calls] == ['launch_game', 'session_op']
+    assert calls[-1]['input'] == {'session_id': sid, 'op': 'stop_game', 'args': {}}
     assert store.get(S.STATE, w['name']) is None
+    tick(1)
+    assert len(calls) == 2                           # stopped once, never again
 
 
 def test_switch_ends_this_turn_now_and_the_chosen_title_plays_next():

@@ -384,7 +384,10 @@ class Screensaver:
             # it BootHung; RE6, booting in the render's gaps, was fine.)
             warming = any(r.get('state') == 'prelaunch'
                           for r in (mercmode.warm_pool(self.store, node) or {}).values())
-            comfy.sync(game_active(run) or warming)
+            # Paused only while ComfyUI has work (comfy_coordinator: an idle ComfyUI stays awake during play, operator
+            # 2026-11-10 via Pine Box); the run's title / phase go into its published state for Pine's PiP menu.
+            comfy.sync(game_active(run) or warming,
+                       {"title": (run or {}).get("title"), "phase": (run or {}).get("phase"), "warming": warming})
         except Exception as e:                               # noqa: BLE001 - a comfy hiccup must never stop the schedule
             print(f"comfy-coordinator: tick sync failed: {type(e).__name__}: {e}", flush=True)
 
@@ -685,7 +688,13 @@ class Screensaver:
                 mercmode.link_rotation(self.store,run,sess,now)
             self.store.put("slabel", sess["session_id"], {"owner": "agent", "task": f"autoplay screensaver: {run['title']}"})
             jumped = _jumped(sess)                       # booted into gameplay: autoplay starts in this tick
-            run |= {"phase": "starting", "session_id": sess["session_id"], "up": now - START_GRACE if jumped else now,
+            # A MercMode title's bot drives its own boot from the game's state (gbox.mercs_bot.Boot waits out an unnamed
+            # boot for BOOT_LOST_S, RE4 Switch's walk presses only on a named screen), so it starts in this tick too:
+            # START_GRACE and the next 30 s tick left every MercMode boot on its title screen for 30 s with no bot
+            # (lilspark 2026-11-10, every run: launch done -> autoplay job 30 s later; operator: "absolutely
+            # unacceptable and boring to sit on title screens").
+            at_once = jumped or bool(run.get('mercmode'))
+            run |= {"phase": "starting", "session_id": sess["session_id"], "up": now - START_GRACE if at_once else now,
                     **({"jumped": True} if jumped else {})}
             self.store.put(STATE, w["name"], run)
             if run.get('mercmode') and not run.get('mercmode_rotate_requested') and not run.get('stop_requested'):
@@ -693,7 +702,7 @@ class Screensaver:
                 # restart has the pool warm again before the first round ends; operator 2026-10-26)
                 self._prelaunch(w, run, mercmode.settings(self.store, w['name']), now)
                 run = self.store.get(STATE, w["name"]) or run
-            if not jumped:
+            if not at_once:
                 return f"launching {run['title']}"
             phase = "starting"
         sid = run.get("session_id")
@@ -1978,7 +1987,13 @@ def install(app, store, config, auth, submit, workers, archive):
     saver.config = config
     if getattr(config, "comfy_pause_on_play", False):
         from .comfy_coordinator import ComfyCoordinator
-        saver.comfy = ComfyCoordinator(getattr(config, "texture_comfy_url", ""), True)
+        from pathlib import Path
+        from .comfy_coordinator import STATE_FILE
+        # its state for Pine Box (paused / pid / since / why / the game), and the watcher that reads ComfyUI's queue
+        # every few seconds while a game plays, so a render asked for mid-round pauses at once, off the scheduler tick
+        saver.comfy = ComfyCoordinator(getattr(config, "texture_comfy_url", ""), True,
+                                       state_path=Path(config.data_dir) / STATE_FILE)
+        saver.comfy.start()
     app.state.autoplay_screensaver = saver
     from . import roulette
     from .server import JobRequest

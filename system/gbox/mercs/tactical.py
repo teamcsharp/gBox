@@ -379,7 +379,48 @@ def _clean_plan(raw: dict, enemies: dict, bonuses: dict) -> dict:
         out["enemy_flags"] = flags
     if raw.get("note"):
         out["note"] = str(raw["note"])[:MAX_NOTE]
+    ctl = raw.get("controls")
+    if isinstance(ctl, dict):                             # what the bot pressed this tick (controls())
+        out["keys"] = sorted({str(k)[:12] for k in (ctl.get("keys") or ())[:16] if k})
+        if ctl.get("tap"):
+            out["tap"] = str(ctl["tap"])[:12]
+        st = ctl.get("stick")
+        if isinstance(st, dict):
+            clean = {}
+            for side in ("left", "right"):
+                s = st.get(side)
+                if isinstance(s, dict) and _n(s.get("deg"), 1) is not None and _n(s.get("mag"), 2) is not None:
+                    clean[side] = {"deg": _n(s["deg"], 1), "mag": _n(s["mag"], 2)}
+            if isinstance(st.get("aim"), bool):
+                clean["aim"] = st["aim"]
+            if st.get("aim_stick"):
+                clean["aim_stick"] = str(st["aim_stick"])[:8]
+            out["stick"] = clean
     return out
+
+
+# The pad's digital sticks (the bots' key names): l/r + up/down/left/right.
+STICK_KEYS = {"left": ("lup", "ldown", "lleft", "lright"), "right": ("rup", "rdown", "rleft", "rright")}
+
+
+def controls(act, aim_btn: str = "zl", aim_stick: str | None = None) -> dict:
+    """One tick's output as the tactical plan carries it (plan.controls -> plan.keys / tap / stick): the held keys, the
+    tapped key, each stick as an angle in his own frame (0 straight up / forward, +90 his left, 180 back) and a
+    magnitude (1 for a held direction, 0 none), whether the gun is up (aim_btn held), and the stick that moves the aim
+    (the bot's learned one). Title-agnostic: keys by the bots' names."""
+    act = act if isinstance(act, dict) else {}
+    hold = sorted({str(k) for k in (act.get("hold") or ()) if k})
+    tap = act.get("tap")
+    stick = {}
+    for side, (up, down, left, right) in STICK_KEYS.items():
+        y = (up in hold or tap == up) - (down in hold or tap == down)
+        x = (left in hold or tap == left) - (right in hold or tap == right)
+        stick[side] = {"deg": round(math.degrees(math.atan2(x, y)), 1) if (x or y) else 0.0,
+                       "mag": 1.0 if (x or y) else 0.0}
+    stick["aim"] = aim_btn in hold
+    if aim_stick:
+        stick["aim_stick"] = str(aim_stick)
+    return {"keys": hold, "tap": str(tap) if tap else None, "stick": stick}
 
 
 # --- the frame -------------------------------------------------------------------------------------------------------

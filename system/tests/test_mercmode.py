@@ -47,6 +47,24 @@ def playing():
     return store,w,saver,calls,now,tick,run,job
 
 
+def test_a_mercmode_boot_gets_its_bot_in_the_tick_its_session_is_up():
+    # operator 2026-11-10: "absolutely unacceptable and boring to sit on title screens". On lilspark every MercMode boot
+    # sat 30 s on its title with no bot (launch done -> START_GRACE -> the next 30 s tick -> the autoplay job): the
+    # title's bot drives its own boot from the game's state, so it starts the moment the session is up
+    store,w,saver,calls,now,tick=rig()
+    M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
+    tick();gid=calls[0]['input']['game']['game_id'];sid='w1-'+calls[0]['id']
+    tick(1)
+    assert not [c for c in calls if c['tool']=='autoplay'], "nothing to drive before the game is up"
+    store.put('session',sid,{'session_id':sid,'game_id':gid,'state':'running'})
+    tick(1)
+    bots=[c for c in calls if c['tool']=='autoplay']
+    assert len(bots)==1 and bots[0]['input']['session_id']==sid and bots[0]['input']['screensaver'] is True
+    assert store.get(S.STATE,w['name'])['phase']=='playing'
+    tick(S.START_GRACE)
+    assert len([c for c in calls if c['tool']=='autoplay'])==1, "started once"
+
+
 def boundary(run,now,**witness):
     return {'session_id':run['session_id'],'round_id':'a'*32,'at':now,
             'map_id':run['mercmode']['map_id'],'role':'solo_p1','source':'native_terminal_reader',
@@ -953,8 +971,11 @@ def test_next_title_preloads_paused_beside_the_playing_one_as_soon_as_it_is_up()
     assert not preloads(calls)                                               # nothing until this title's session is up
     tick(1)
     pre=preloads(calls)[-1];run=store.get(S.STATE,w['name'])
-    assert run['phase']=='starting' and run['mercmode_prelaunch']['job']==pre['id']   # booted beside it, before autoplay even started
-    assert not [c for c in calls if c['tool']=='autoplay']
+    # booted beside it the moment it is up - and its bot starts in that same tick (no START_GRACE on a MercMode boot:
+    # the bot drives the boot itself), the preload submitted first
+    assert run['mercmode_prelaunch']['job']==pre['id'] and run['phase']=='playing'
+    bots=[c for c in calls if c['tool']=='autoplay']
+    assert len(bots)==1 and calls.index(pre)<calls.index(bots[0])
     assert pre['actor']==S.ACTOR and pre['agent_use']
     assert pre['input']['warm'] is True and pre['input']['keep_sessions']==[sid]   # never closes this game
     assert pre['input']['game']['game_id']!=run['game_id']

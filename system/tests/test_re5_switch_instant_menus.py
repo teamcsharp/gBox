@@ -353,6 +353,9 @@ def test_the_navigator_takes_a_screens_learned_waits_but_never_longer_ones():
     plain.tick(slow)
     now[0] += MB.Navigator.STABLE_S
     assert plain.tick(slow) == "a" and now[0] - t0 == pytest.approx(MB.Navigator.STABLE_S + MB.Navigator.HOLD_S)
+    # right after a press the screen it brings is read at once (PRESSED_POLL_S), then at the fixed POLL_S again
+    assert plain.poll_s({"where": "loading"}, MB.POLL_S) == MB.PRESSED_POLL_S
+    plain.last_at -= MB.PRESSED_FOR_S
     assert plain.poll_s({"where": "loading"}, MB.POLL_S) == MB.POLL_S
     dpad = MB.Navigator(sent.append, lambda s: "dright", sleep=tick, clock=lambda: now[0])
     sel = {"where": "select_stage", "cursor": 0, "target": 6, "settle_s": 0.05, "retry_s": 0.2, "dir_hold_s": 0.06}
