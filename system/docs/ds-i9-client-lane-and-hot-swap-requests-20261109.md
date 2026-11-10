@@ -543,3 +543,19 @@ so no launch tests were possible).
 
 Remaining for the live-swap objective: roster arbitration, then the hot-reload acceptance test (`op=hotswap`, two
 frames of one session, no restart) on a working round.
+
+## Round 19 status (2026-11-09, ~19:15 CST): donor validation as a dispatched op; the hot-reload base build is prepared
+
+1. **`switch_decrypt` op `arc-compare`** (`1834973f`): compares a RomFS `ARC` with a donor file through
+   `gbox.switch_arc` (`path=` the arc, `donor=` the file) and returns `same_paths`, entry counts and the per-entry size
+   ratios. Verified on the RE6 head arc (`uPl00HeadLeonUsa.arc` vs the roster donor: same paths, 4 entries, worst ratio
+   0.092). So reskin donors can be screened as a normal gBox job, no launch needed; one more test (6 in the suite).
+2. **Hot-reload base build prepared locally**: `recovery-re6-hotswap-20261109` (the update's five ExeFS files + the
+   Leon head donor **padded to 4 MiB**) now exists in the worker's cache (`D:\gBox\cache\mods\...`). The padding gives
+   `switch_mods.hotswap` room to swap in another donor head in place, same length, at a round boundary — the PM's hot
+   reload definition (same path/size, next round shows the new content, two frames of one session, no restart).
+   The plan once admission opens: run a round with this build (frame 1), at the RESULTS screen hotswap in the Helena
+   head donor (1.5 MiB < 4 MiB), then start the next round in the same session and capture frame 2.
+3. **Admission stayed closed all round** ("Waiting for five minutes without operator input", the operator is using the
+   PC), so no launch tests were possible; the roster bisect and the hot-reload run remain queued. The manifest check
+   confirmed the roster's artifact sizes are the ones shipped (no local corruption).
