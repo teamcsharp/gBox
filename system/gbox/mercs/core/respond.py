@@ -51,7 +51,8 @@ ANSWERS = ("flash", "mine", "fire")
 COUNTERS = ("threat_ticks", "threat_answered_flash", "threat_answered_mine", "threat_answered_fire",
             "threat_unanswered", "hurt_while_idle", "threat_forced_fire", "threat_learned_ticks", "threat_hits",
             "hurt_while_busy", "threat_busy", "threat_flash_asks", "threat_mine_asks", "threat_lacks_flash",
-            "threat_lacks_mine", "threat_flash_refused", "threat_mine_refused")
+            "threat_lacks_mine", "threat_flash_refused", "threat_mine_refused", "surround_events",
+            "crowd_ticks")
 ENFORCE = True                    # False: measured only (the stats above), the title's own action always stands
 
 
@@ -76,6 +77,10 @@ class Rules:
     hurt_weight: int = 2
     idle_lookback_s: float = 0.6
     tick_gap_s: float = 0.5
+    crowd_n: int = 3                  # a crowd: this many on his level within crowd_r_cm is a threat before any closes
+    crowd_r_cm: float = 600.0
+    ring_spread_deg: float = 180.0    # a ring: 3+ within ring_r_cm whose bearings spread over this much (no gap this wide)
+    ring_r_cm: float = 700.0     # (the rows end at threat_memory.REACH_MAX_CM)
 
 
 @dataclass
@@ -189,6 +194,7 @@ class Responder:
         self.t = None
         self.answers: deque = deque(maxlen=32)     # (t, answer) of the settled ticks
         self.pending = None                # this tick's verdict, until settle()
+        self._ringed = False
         for k in COUNTERS:
             self.stats.setdefault(k, 0)
 
@@ -217,6 +223,20 @@ class Responder:
             h.popleft()
         t0, d0 = h[0]
         return (d0 - d) / (now - t0) if now - t0 >= 0.15 else 0.0
+
+    def _crowd(self, rows, me, prof) -> tuple:
+        """(crowd, ring): crowd_n or more within crowd_r_cm; ring: crowd_n or more within ring_r_cm whose bearings leave no
+        gap of ring_spread_deg or more (they are on all sides, not in front)."""
+        r = self.rules
+        near = [x for x in rows if x["d"] <= r.ring_r_cm]
+        crowd = sum(1 for x in rows if x["d"] <= r.crowd_r_cm) >= r.crowd_n
+        ring = False
+        if len(near) >= r.crowd_n:
+            ang = sorted(math.degrees(math.atan2(*(lambda q: (q[0] - me[0], q[2] - me[2]))(prof.pos_cm(x["e"]["pos"]))))
+                         % 360.0 for x in near)
+            gaps = [b - a for a, b in zip(ang, ang[1:])] + [ang[0] + 360.0 - ang[-1]]
+            ring = (360.0 - max(gaps)) > r.ring_spread_deg
+        return crowd, ring
 
     # --- the verdict ---------------------------------------------------------------------------------------------------
     def assess(self, prof, now: float, player, enemies, memory: Memory | None = None, clear=None) -> Threat | None:
@@ -270,6 +290,15 @@ class Responder:
         for k in [k for k in self._track if k not in seen]:
             del self._track[k]
         hurt = now - self.hurt_at <= r.hurt_s
+        crowd_now, ring_now = self._crowd(rows, me, prof)
+        if ring_now and not self._ringed:
+            self._count("surround_events")
+        self._ringed = ring_now
+        if crowd_now or ring_now:                          # proactive: a crowd / ring is a threat before it closes
+            self._count("crowd_ticks")
+            for x in rows:
+                if x["d"] <= (r.ring_r_cm if ring_now else r.crowd_r_cm):
+                    x["threat"] = True
         hot = [x for x in rows if x["threat"]]
         if hurt and rows and not hot:
             hot = [min(rows, key=lambda x: x["d"])]            # hurt: the nearest one is the threat
@@ -290,7 +319,7 @@ class Responder:
         crowd = sum((r.hurt_weight if x["learned"] else 1) for x in rows if x["d"] <= r.flash_r_cm)
         converging = sum(1 for x in rows if x["d"] <= r.converge_r_cm and x["closing"] >= r.closing_cm_s)
         return {"rows": rows, "hot": hot, "hurt": hurt, "hurt_now": hurt_now, "low": low, "crowd": crowd,
-                "converging": converging, "nearest_cm": min(x["d"] for x in rows),
+                "converging": converging, "crowd_n": sum(1 for x in rows if x["d"] <= r.ring_r_cm if crowd_now or ring_now), "nearest_cm": min(x["d"] for x in rows),
                 "learned": any(x["learned"] for x in hot)}
 
     def choose(self, prof, threat: Threat) -> tuple:
@@ -306,6 +335,8 @@ class Responder:
             return "flash", f"one at arm's length ({threat['nearest_cm'] / 100:.1f} m)"
         if threat["low"]:
             return "flash", "his health low with a threat on him"
+        if threat["crowd_n"] >= r.crowd_n and threat["nearest_cm"] >= r.mine_min_cm and not threat["converging"] >= r.converge_n:
+            return "mine", f"a crowd of {threat['crowd_n']} {threat['nearest_cm'] / 100:.1f} m off, past the blast reach"
         if threat["converging"] >= r.converge_n and threat["nearest_cm"] >= r.mine_min_cm:
             return "mine", f"{threat['converging']} converging, the nearest {threat['nearest_cm'] / 100:.1f} m off"
         return "fire", "fire until the threat is gone"
