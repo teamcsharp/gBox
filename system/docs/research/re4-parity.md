@@ -399,7 +399,7 @@ One live RE4 session this pass: `ae02be4bd9974915-03aacc170e184c15` on lilspark 
 
 | what | how | result |
 |---|---|---|
-| module base | 64 bytes at `0x3CA7C04000 + 0x100000` | the signature, exact: **base `0x3CA7C04000`**, the same as 2026-11-05. Module offsets are fixed addresses on this host (`re4_switch.KNOWN_BASES`; `module_base()` still checks and re-finds) |
+| module base | 64 bytes at `0x3CA7C04000 + 0x100000` | the signature, exact: **base `0x3CA7C04000`**, the same as 2026-11-05, and again on 2026-11-10 after the service restart (session `47420892ccbd4f6c-b43422ca5fb64631`, with `module + 0xb25d78` again `0x3ca871ee08`). Module offsets are fixed addresses on this host (`re4_switch.KNOWN_BASES`; `module_base()` still checks and re-finds) |
 | bss layout | 4 KiB reads every 64 KiB over `0xb00000..0x1cd0000`, then `read_memory` jobs bisected to the row edges | every page readable; Citron maps it as **11 host rows** (`re4_switch.BSS_ROWS`: cuts at `0x127d000 0x1280000 0x1286000 0x1386000 0x138b000 0x148b000 0x1491000 0x1591000 0x1bb6000 0x1cb6000`). An adapter read must stay inside one row (the 18.4 MB single read failed "not mapped"); a whole dump is 11 parallel jobs, **3.9 s**, 2.6 s between the first and last row |
 | heap windows | 4 KiB reads every 64 MiB from `0x5c00000000` | readable `0x5d2c000000-0x5dac000000`, `0x5db0000000-0x5dbc000000`, `0x5dc4000000-0x5dec000000` (`HEAP_WINDOWS`); the 2026-11-05 player and unit addresses (`0x5d559cafe0`, `0x5d55a77ad0`) lie in the first |
 | pointers into the heap | the main-menu bss dump | 1,289 qwords (801 into `0x5d34xxxxxx`, 61 into `0x5d55xxxxxx`) |
