@@ -93,6 +93,7 @@ class WmbBatch:
     prim: int
     indices: list
     bone_set: list
+    material: int = 0   # u16 at batch+6 (proved: 0..12 == the 13 material records)
 
 
 @dataclass
@@ -126,9 +127,47 @@ def parse_meshes(buf: bytes) -> list:
                 raise ValueError("index out of range in mesh %d" % i)
             nb, = struct.unpack_from("<I", buf, b0 + 0x40)
             bs = list(buf[b0 + 0x44:b0 + 0x44 + nb])
-            batches.append(WmbBatch(grp, vs, ve, prim, idx, bs))
+            mat, = struct.unpack_from("<H", buf, b0 + 6)
+            batches.append(WmbBatch(grp, vs, ve, prim, idx, bs, mat))
         meshes.append(WmbMesh(name, batches))
     return meshes
+
+
+@dataclass
+class WmbMaterial:
+    index: int
+    texture_ids: list   # u32 hashes found in the record, in order (first = base colour, HYPOTHESIS)
+    size: int
+
+
+def parse_materials(buf: bytes, wta_ids=()) -> list:
+    """Material records: 0x44 u32 count, 0x48 u32 offset table, 0x4c u32 record base; record = u32 index, then u32 texture hashes (ids from the .wta id table or the
+    global shared hashes listed at header 0x74 as (type,id) pairs), then float params.
+    Record sizes (104/180/44/196) come from consecutive offsets; the last ends at 0x7c."""
+    n, otab, base = struct.unpack_from("<III", buf, 0x44)
+    tail = struct.unpack_from("<I", buf, 0x7c)[0]
+    known = set(wta_ids)
+    tpos = struct.unpack_from("<I", buf, 0x74)[0]
+    # (slot-type, id) pairs at 0x74; ids shared with materials even when absent from the wta
+    while tpos + 8 <= len(buf):
+        typ, hid = struct.unpack_from("<II", buf, tpos)
+        if typ > 100 or hid < 0x1000:
+            break
+        known.add(hid)
+        tpos += 8
+    offs = list(struct.unpack_from("<%dI" % n, buf, otab))
+    out = []
+    for i, o in enumerate(offs):
+        end = offs[i + 1] if i + 1 < n else tail
+        words = struct.unpack_from("<%dI" % ((end - o) // 4), buf, base + o)
+        ids = []
+        for x in words[1:]:
+            if x in known:
+                ids.append(x)
+            elif ids:
+                break
+        out.append(WmbMaterial(words[0], ids, end - o))
+    return out
 
 
 def export_obj(w: Wmb, meshes: list) -> str:
