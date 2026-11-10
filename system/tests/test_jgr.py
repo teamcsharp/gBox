@@ -822,3 +822,21 @@ def test_single_root_writer_cache_builds_a_new_identity_and_keeps_old_files(cach
     assert case.calls["build"][0]["identity"]["schema"] == jgr.CACHE_VERSION
     assert before == {p.name: p.read_bytes() for p in folder.iterdir()}
     assert result["runtime_verified"] is False
+
+
+def test_entry_room_stops_at_afs_filename_directory():
+    import struct
+    from gbox import jgr
+    count, table = 2, 8 + 16
+    first, second, dir_off = 0x40, 0x80, 0xC0
+    buf = bytearray(0x140)
+    buf[:4] = jgr.AFS_MAGIC
+    struct.pack_into("<I", buf, 4, count)
+    struct.pack_into("<IIII", buf, 8, first, 0x30, second, 0x30)
+    struct.pack_into("<II", buf, first - 8, dir_off, 48 * count)   # directory pointer just before the data
+    buf[dir_off:dir_off + 4] = b"KEEP"
+    data = bytes(buf)
+    assert jgr.entry_room(data, first) == second - first
+    assert jgr.entry_room(data, second) == dir_off - second       # not len(data) - second
+    out = jgr.replace_entries(data, {second: data[second:second + 0x30]})
+    assert out == data

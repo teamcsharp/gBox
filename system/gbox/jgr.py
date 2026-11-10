@@ -973,9 +973,16 @@ def validate_cached_mod(directory, identity: dict, meta: dict) -> dict:
 
 def entry_room(data: bytes, off: int) -> int:
     """Bytes an AFS entry may grow to without moving the next entry (its size + the padding before the next one)."""
-    _, offsets, _ = afs_entries(data)
+    count, offsets, _ = afs_entries(data)
     later = [o for o in offsets if o > off]
-    return (min(later) if later else len(data)) - off
+    # the CRI filename directory (pointer at min(offsets)-8) sits after the last entry: never overwrite it
+    at = min(offsets) - 8 if offsets else 0
+    if later or at < 8 + 8 * count or at + 8 > len(data):
+        bound = min(later) if later else len(data)
+    else:
+        d_off, d_size = struct.unpack_from("<II", data, at)
+        bound = d_off if off < d_off <= len(data) and d_size >= 48 * count else len(data)
+    return bound - off
 
 
 def replace_entries(data: bytes, new: dict[int, bytes]) -> bytes:
