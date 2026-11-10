@@ -283,6 +283,52 @@ def decode_state(system: int, stop: int, status, merc: bytes, countdown: bytes, 
     return out
 
 
+# The camera (#9386, docs/research/re4-switch-camera-ram.md, static from main.bin; its instructions checked in main.bin
+# and the chain read live): pG + 0xA8 is the 0xF8-byte render copy of the camera (memcpy from CamCtrl + 0x88 every
+# frame), the GameCube CAMERA struct moved by +0x34: Campos 0x14C and Target 0x158 (layout-derived), Fovy 0x168 (an
+# instruction reads it), Look 0x178 (a getter reads it), the stored Distance 0x19C (layout-derived).
+CAM_BLOCK, CAM_SIZE = 0xA8, 0xF8
+CAM_POS, CAM_TARGET, CAM_FOVY, CAM_LOOK, CAM_DIST = 0x14C, 0x158, 0x168, 0x178, 0x19C
+CAMERA_READ = True
+# Read live 2026-11-10 (a menu scene, no player in RAM): pG = module + 0x1274338 through module + 0xB1AE08 (the doc's
+# chain, game_state's own pointer), Campos (0, 1000, 2000), Target (0, 0, 0), Fovy 50.0, the stored Distance 2236.07 =
+# |Campos - Target|: the layout holds. Campos beside his position in a round is not read yet, so the camera-to-player
+# distance is taken as his only while it is a camera's (CAM_PLAYER_MAX_MM); past it the camera's own |Campos - Target|
+# stands in (snap camera_dist_source "target").
+CAM_PLAYER_MAX_MM = 8000.0
+
+
+def decode_camera(raw: bytes) -> dict | None:
+    """The camera block's fields (camera_state's read of pG + CAM_BLOCK), or None when they are not a camera (a
+    position not finite or past 1e6 mm, a field of view outside 1 .. 179 degrees)."""
+    if len(raw) < CAM_SIZE:
+        return None
+
+    def f(off, n=3):
+        return struct.unpack_from(f"<{n}f", raw, off - CAM_BLOCK)
+    pos, target, look = f(CAM_POS), f(CAM_TARGET), f(CAM_LOOK)
+    fovy, dist = f(CAM_FOVY, 1)[0], f(CAM_DIST, 1)[0]
+    vals = pos + target + look + (fovy, dist)
+    if not all(math.isfinite(v) and abs(v) < 1e6 for v in vals) or not 1.0 < fovy < 179.0:
+        return None
+    return {"pos": pos, "target": target, "look": look, "fovy": fovy, "dist": dist,
+            "target_dist": math.dist(pos, target)}
+
+
+def camera_state(m, base: int | None = None) -> dict | None:
+    """decode_camera of pG + CAM_BLOCK (one read), or None."""
+    base = module_base(m) if base is None else base
+    if base is None:
+        return None
+    try:
+        pg = u64(m, base + PG_PTR_VAR)
+        if not ptr_ok(pg):
+            return None
+        return decode_camera(bytes(m.rd(pg + CAM_BLOCK, CAM_SIZE)))
+    except (ValueError, OSError, struct.error, TypeError):
+        return None
+
+
 def game_state(m, base: int | None = None) -> dict | None:
     """decode_state() read from the session (a few small reads), or None when the fields cannot be read (no module, a
     pG pointer that is not one): the callers then fall back to the frame."""
@@ -796,6 +842,16 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
             player.setdefault("rot", None)
             snap["player"] = player
         snap["enemies"] = [dict(e, hp_max=e.get("hp_max")) for e in enemies]
+    if CAMERA_READ:                                      # the camera (#9386): where it is, how far from him
+        cam = camera_state(m, base)
+        if cam is not None:
+            snap["camera"] = cam
+            pos = (snap.get("player") or {}).get("pos")
+            d = math.dist(cam["pos"], pos) if pos is not None else None
+            if d is not None and d <= CAM_PLAYER_MAX_MM:
+                snap["camera_dist_mm"], snap["camera_dist_source"] = round(d, 1), "player"
+            elif pos is not None:                        # (Campos not in his frame: the camera's own distance)
+                snap["camera_dist_mm"], snap["camera_dist_source"] = round(cam["target_dist"], 1), "target"
     if KILL_CANDIDATES:
         cand = {}
         for off in KILL_CANDIDATES:
@@ -1362,6 +1418,14 @@ ROOM_MAP = True
 ROOM_PROBE_MM, ROOM_PROBE_RUN_MM = 800.0, 1300.0
 ROOM_BRUSH_MM = 200.0     # the probe's own body half width: closer than this to a wall it is refused (his collision
                           # radius is not measured; the lines he picks keep re4_room_map.BRUSH_R_MM, 300 mm, of margin)
+# The camera collapsed (the operator's screenshot 2026-11-10: Krauser and Leon pinned, the camera inside a wall; the
+# camera read from RAM: camera_state, #9386). The engine pulls the camera in against geometry, so while the stick walks
+# him (in control, the gun down CAM_SETTLE_S - the aim's own zoom-in is no wall) a camera-to-player distance
+# (snap["camera_dist_mm"]) under CAM_COLLAPSE_X of its running median for CAM_COLLAPSE_S is a wall press for WallPress
+# above (combat.CameraCollapse): remembered at his facing and turned away from at once - the room map's walk test keeps
+# the way off it clear of the wall behind him too. Stats camera_dist_mm, camera_collapses. Off: as before.
+CAMERA_COLLAPSE = True
+CAM_COLLAPSE_X, CAM_COLLAPSE_S, CAM_SETTLE_S = 0.6, 0.15, 1.0
 # The throw (combat.ThrowPolicy, THROWS; the operator 2026-11-10: grenades at the enemies all the time, also while he
 # flees): a hand / incendiary grenade at a pack (THROW_PACK_N within THROW_PACK_MM of one another, its centre between
 # THROW_MIN_MM - outside his own blast - and THROW_MAX_MM) or at a heavy; a flash at a Ganado at arm's length; at most
@@ -2258,6 +2322,22 @@ class Bot:
             self._aim_stick().control(now)
             self._uc_control_at = now
 
+    def _camera_collapsed(self, snap, now, pushing: bool) -> bool:
+        """CAMERA_COLLAPSE above: this tick's camera-to-player distance through combat.CameraCollapse; True on the tick
+        a collapse is found. Not within CAM_SETTLE_S of the gun being up (its own zoom). stats camera_dist_mm."""
+        dist = snap.get("camera_dist_mm")
+        if not isinstance(dist, (int, float)) or isinstance(dist, bool):
+            return False
+        self.stats["camera_dist_mm"] = dist
+        d = self.__dict__
+        cc, source = d.get("_uc_cam"), snap.get("camera_dist_source") or "player"
+        if cc is None or d.get("_uc_cam_source") != source:  # (another distance: a median of its own)
+            cc = d["_uc_cam"] = combat.CameraCollapse(self.stats, CAM_COLLAPSE_X, CAM_COLLAPSE_S)
+            d["_uc_cam_source"] = source
+            self.stats["camera_dist_source"] = source
+        settling = now - (d.get("_uc_cam_aim_at") or -1e9) < CAM_SETTLE_S
+        return cc.observe(now, dist, pushing and not settling)
+
     # --- the room's real map (ROOM_MAP: titles.re4_room_map) ---
     def _room_map(self, snap):
         """This snapshot's room map (ROOM_MAP), else None; stats room_map names the room in use."""
@@ -2333,6 +2413,8 @@ class Bot:
             if AIM_BTN in hold or act.get("tap"):            # the fight: the gun up, a shot, a press - no walk
                 walls.observe(now, (0.0, 0.0, 0.0), None, False)
                 d["_uc_unwall"] = None
+                if AIM_BTN in hold:
+                    d["_uc_cam_aim_at"] = now                # (the aim zooms the camera in: no collapse for a while)
                 return act
             w = getattr(self, "walker", None)
             if w is not None and hasattr(w, "guard"):
@@ -2347,6 +2429,10 @@ class Bot:
             pushing = "lup" in hold
             in_control = now - (d.get("_uc_control_at") or -1e9) <= CONTROL_S
             pressed = walls.observe(now, pos_cm, rot, pushing, in_control)
+            if CAMERA_COLLAPSE and self._camera_collapsed(snap, now, pushing and in_control) and not pressed:
+                walls.remember(now, pos_cm, rot or 0.0)      # the camera pulled into a wall: a press (CAMERA_COLLAPSE)
+                self.stats["walls_pressed"] = self.stats.get("walls_pressed", 0) + 1
+                pressed = True
             refused = not pressed and un is None and pushing and walls.blocked(now, pos_cm, rot)
             ahead = None
             if not (pressed or refused) and un is None and pushing and ROOM_MAP:
