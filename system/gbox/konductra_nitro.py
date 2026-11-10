@@ -120,3 +120,81 @@ def tiles_used(cells: list[dict]) -> list[int]:
             for k in range((w // 8) * (h // 8)):
                 used.add(o["tile"] + k)
     return sorted(used)
+
+
+# ------------------------------------------------- stage 2/3: render + tile writer
+def tile_pixels(ncgr: dict, idx: int) -> list[list[int]]:
+    """8x8 palette indices of one 4bpp tile (low nibble = left pixel)."""
+    t = ncgr["tile_bytes"]
+    raw = ncgr["pixel_data"][idx * t:(idx + 1) * t]
+    if ncgr["bpp"] == 4:
+        px = [v for b in raw for v in (b & 15, b >> 4)]
+    else:
+        px = list(raw)
+    return [px[r * 8:(r + 1) * 8] for r in range(8)]
+
+
+def render_oam(ncgr: dict, colors: list[int], oam: dict):
+    """Render one OAM to (w, h, rows of RGBA) using the 2D (sheet-width) tile map.
+
+    Resolved on the owned build: sball 16x16 cells at tiles 724/726/728/730 only
+    tile up consistently when each tile row advances by tiles_w (32), not by
+    the 1D mapping (those cells would overlap).
+    """
+    w, h = oam["dims"]
+    tw = ncgr["tiles_w"]
+    bank = oam["palette"] * 16
+    rows = []
+    for py in range(h):
+        row = []
+        for px in range(w):
+            t = oam["tile"] + (py // 8) * tw + px // 8
+            ci = tile_pixels(ncgr, t)[py % 8][px % 8]
+            if ci == 0:
+                row.append((0, 0, 0, 0))
+            else:
+                row.append(rgb555(colors[bank + ci]) + (255,))
+        rows.append(row)
+    return w, h, rows
+
+
+def write_png(path: str, w: int, h: int, rows, scale: int = 1) -> None:
+    import zlib
+    raw = b""
+    for row in rows:
+        line = b"".join(bytes(p) * scale for p in row)
+        raw += (b"\x00" + line) * scale
+
+    def chunk(t, d):
+        c = struct.pack(">I", len(d)) + t + d
+        return c + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w * scale, h * scale, 8, 6, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+def oam_tile_indices(oam: dict, tiles_w: int) -> list[int]:
+    w, h = oam["dims"]
+    return [oam["tile"] + r * tiles_w + c for r in range(h // 8) for c in range(w // 8)]
+
+
+def replace_tiles(data: bytes, tile_map: dict[int, bytes]) -> bytes:
+    """Return NCGR bytes with whole tiles replaced in place (same size; no pointers move)."""
+    g = parse_ncgr(data)
+    blk = blocks(data)[b"RAHC"]
+    th, tw, depth, _p, flags, size, off = struct.unpack_from("<HHIIIII", blk, 8)
+    base = data.index(blk) + 8 + off
+    out = bytearray(data)
+    tb = g["tile_bytes"]
+    for idx, new in tile_map.items():
+        if len(new) != tb or not 0 <= idx < g["tile_count"]:
+            raise ValueError(f"tile {idx}: bad size/index")
+        out[base + idx * tb:base + (idx + 1) * tb] = new
+    return bytes(out)
+
+
+def patch_rom_file(rom: bytes, start: int, old_len: int, new: bytes) -> bytes:
+    """Same-size in-place file swap inside an NDS image (FAT unchanged)."""
+    if len(new) != old_len:
+        raise ValueError("size change unsupported (FAT/offset rewrite not implemented)")
+    return rom[:start] + new + rom[start + old_len:]
