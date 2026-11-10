@@ -1564,15 +1564,34 @@ def ray_error(origin, toward, target) -> tuple[float, float]:
 # stands like a man, so the table is empty and every body is the standing zombie's below; a low class (RE5's lickers and
 # dogs were aimed 80 cm over their backs until theirs went in) is one row here.
 BODY_CLASSES: dict = {}
+# Measured bodies (#9344, docs/research/mercs-enemy-aim-heights.md: the class model's skeleton in its bind pose, cm
+# above the feet; re-measured from the RomFS 2026-11-10, the same to 0.1 cm). Only the classes that stand apart from a
+# zombie (combat.differs: the head more than a head's radius off): the Ogroman (head 962.5, spine 687.8, knees 297,
+# upper arms 855, the joints' half spread 174.7 cm) and the Rasklapanje (head 202.5, spine 163, knees 62.1, upper arms
+# 174.2; its 18 cm half spread under BODY_R, so BODY_R: combat.measured). Every other measured class stands like a
+# zombie (head 160-178, spine 122-136 cm: J'avo, the zombies, Napad, Ubistvo, Shrieker, Whopper, Lepotitsa ...) and
+# keeps the standing body. The dogs, the mutations, Strelats, Mesets, the Gnezdo and the Chrysalid are not determined
+# (no human skeleton; a bind pose only): no row. MEASURED_BODIES off: as before.
+MEASURED_BODIES = True
+MEASURED = {
+    "uEm4800": combat.measured(962.5, 687.8, 297.0, 855.0, 174.7, BODY_R),  # Ogroman
+    "uEm4700": combat.measured(202.5, 163.0, 62.1, 174.2, 18.0, BODY_R),    # Rasklapanje
+}
+
+
+def body_classes() -> dict:
+    """The classes with a body of their own: BODY_CLASSES, and MEASURED with MEASURED_BODIES."""
+    return {**BODY_CLASSES, **MEASURED} if MEASURED_BODIES else BODY_CLASSES
 
 
 def body(e) -> combat.Body:
-    """His class's body for the aim and the hit test (BODY_CLASSES through combat.BodyTable), else a standing zombie's
-    (HEAD_H .. BODY_R below)."""
+    """His class's body for the aim and the hit test (body_classes() through combat.BodyTable), else a standing
+    zombie's (HEAD_H .. BODY_R below)."""
     human = combat.Body(HEAD_H, CHEST_H, KNEE_H, SHOULDER_H, BODY_R)
-    if not UNIVERSAL_CORE or not BODY_CLASSES:
+    classes = body_classes()
+    if not UNIVERSAL_CORE or not classes:
         return human
-    return combat.BodyTable(default=human, classes=BODY_CLASSES).body(e)
+    return combat.BodyTable(default=human, classes=classes).body(e)
 
 
 def dot_on(dot, foot, prof=None) -> str | None:
@@ -2394,7 +2413,7 @@ def combat_profile() -> combat.TitleProfile:
                "geometry fire without either",
         aim_btn="zl", fire_btn="zr", turn_sign=1, raise_s=READY_S, raise_tol=FRONT_CONE, fire_tol_min=LONGSHOT_FIRE_ERR,
         engage_cm=ENGAGE_R, level_dy_cm=AIM_DY, max_dy_cm=MAX_DY,
-        bodies=combat.BodyTable(default=combat.Body(HEAD_H, CHEST_H, KNEE_H, SHOULDER_H, BODY_R), classes=BODY_CLASSES),
+        bodies=combat.BodyTable(default=combat.Body(HEAD_H, CHEST_H, KNEE_H, SHOULDER_H, BODY_R), classes=body_classes()),
         head_r_cm=HEAD_R, fire_slack_cm=FIRE_SLACK,
         specials=("quick_shot", "kick", "quick_attack", "hit_quick_shots", "remote_bomb", "grenade_burst", "taunt"),
         threat_file=THREAT_FILE, windup_r_cm=WINDUP_R, grudge_r_cm=GRUDGE_R, lethal_keep_x=LETHAL_KEEP_X,

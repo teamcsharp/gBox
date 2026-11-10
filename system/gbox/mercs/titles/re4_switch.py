@@ -44,6 +44,7 @@ from ..driver import Driver
 from ..core import combat                          # the universal fight (UNIVERSAL_CORE): at import, for the hot reload
 from ..core import respond                         # the doctrine's answer to a threat (RESPOND): at import, too
 from . import re4_nav, re4_walk                    # the stage mesh (room collision), the walker and the map's marks
+from . import re4_room_map                         # the room's real map (#9342): walls / floor for walks and shots
 from . import re4_switch_screens as screens
 
 TITLE_ID = "010099A00BC1E000"
@@ -1203,7 +1204,8 @@ class RE4Switch(Driver):
 # until then it cannot confirm a clear shot, so the bot fires only inside ENGAGE_RANGE_CM and when tightly aligned
 # (a conservative default that limits long-range blind fire through geometry).
 # UNITS (2026-11-10, measured): RE4 Switch's world is in MILLIMETRES - the room collision is the GameCube SAT to 0.1 mm
-# (re4_switch_nav) and a live player position read x 50,689 on Village (50 m, not 500). The names below keep their
+# (re4_switch_nav) and a live player position read x 50,689 (50 m, not 500; a Base position: only r403's collision,
+# x 27,704 .. 88,786, holds it - #9342 - though it was noted on Village). The names below keep their
 # historical _CM suffix; their values are the same distances in the game's mm (x MM_PER_CM). Before this the fight
 # took every Ganado for 10x farther than he was: live it never fired (0 shots over 8 rounds) and walked into them.
 MM_PER_CM = 10.0
@@ -1338,6 +1340,28 @@ ENGAGED_DOINGS = frozenset({"turn", "aim", "fire", "hold"})
 WALL_PRESS_S, WALL_PRESS_MM, WALL_KEEP_S, WALL_R_MM, WALL_CONE = 0.6, 150.0, 60.0, 1500.0, 0.7
 UNWALL_MM, UNWALL_S, CONTROL_S = 2500.0, 1.6, 5.0
 SLIDE_TRIES_DEG = (45, -45, 90, -90, 135, -135, 180)             # a refused walk: along the wall, nearest first
+# The room's real map (#9342, docs/research/re4-switch-mercs-collision.md, checked against the RomFS and live RAM
+# positions: gbox.re4_switch_room_map; the operator's top RE4 complaint, 2026-11-10: he walks into walls and pins the
+# camera). WallPress above learns a wall only once he is pressed against it; the room map knows them first. ROOM_MAP:
+#   * every walk line the bot picks itself - an escape (_escape_goal), a never-stand step (combat.open_step), the way
+#     off a wall (WallPress.away) - must be walk-clear on the room map too (titles.re4_room_map.walk_block): floor all
+#     the way, no wall within his body's height crossed (the invisible blockers too, which the shot line passes), not
+#     ending within re4_room_map.BODY_R_MM of one. The stage mesh's shot-line test (nav.clear_segment) stays;
+#   * every tick that walks him (the left stick up, the gun down), whatever made it, probes ROOM_PROBE_MM along his
+#     facing (ROOM_PROBE_RUN_MM running): a wall (crossed, or closed in on nearer than ROOM_BRUSH_MM - a corner, a
+#     shallow angle) or the floor's edge there and that step is refused - along the wall
+#     instead (WallPress.away, SLIDE_TRIES_DEG), or, when the mesh walker's route steers this tick and the line to its
+#     point is clear, a turn on the spot toward that point; a crossing the walker is taking (a jump-over, a ladder) is
+#     left to it;
+#   * the line of sight with no stage mesh attached (snap["nav"] None) is the room map's: its walls at the shot's own
+#     height, blockers passing (with the mesh, its exact triangle test stands: it stops a shot through every #9342
+#     wall but the ones with an opening in them).
+# Stats room_map (the room), room_map_walks_refused, room_map_steps_refused, room_map_route_turns, room_map_boxed_in,
+# room_map_refused_last. Off: as before (the rollback).
+ROOM_MAP = True
+ROOM_PROBE_MM, ROOM_PROBE_RUN_MM = 800.0, 1300.0
+ROOM_BRUSH_MM = 200.0     # the probe's own body half width: closer than this to a wall it is refused (his collision
+                          # radius is not measured; the lines he picks keep re4_room_map.BRUSH_R_MM, 300 mm, of margin)
 # The throw (combat.ThrowPolicy, THROWS; the operator 2026-11-10: grenades at the enemies all the time, also while he
 # flees): a hand / incendiary grenade at a pack (THROW_PACK_N within THROW_PACK_MM of one another, its centre between
 # THROW_MIN_MM - outside his own blast - and THROW_MAX_MM) or at a heavy; a flash at a Ganado at arm's length; at most
@@ -1562,7 +1586,13 @@ class Bot:
         falls back to the ENGAGE_RANGE_CM limit. Returns True = cleared to fire on sight grounds."""
         nav, obstacles = snap.get("nav"), snap.get("obstacles")
         if nav is None and obstacles is None:
-            return True                                     # no geometry yet: range limit does the gating
+            rm = re4_room_map.for_snap(snap) if ROOM_MAP else None
+            if rm is None:
+                return True                                 # no geometry yet: range limit does the gating
+            try:                                            # the room map's walls at the shot's height (ROOM_MAP)
+                return rm.sight_clear(tuple(p["pos"]), tuple(e["pos"]))
+            except Exception:                               # noqa: BLE001 - a map error never fires blind
+                return False
         # a ray test when the geometry has one; else the stage mesh's floor line (re5_nav.NavMesh.floor_segment, which
         # the RE4 room-collision mesh is built to): no linked floor between them is a wall, a drop or a fence
         seg = getattr(nav, "clear_segment", None) or getattr(nav, "floor_segment", None)
@@ -1607,7 +1637,8 @@ class Bot:
         near = [t for t in live if t[0] <= ENGAGE_RANGE_CM]
         if not near:
             return None
-        if p is not None and snap is not None and (snap.get("nav") is not None or snap.get("obstacles") is not None):
+        if p is not None and snap is not None and (snap.get("nav") is not None or snap.get("obstacles") is not None
+                                                   or self._room_map(snap) is not None):
             clear = [t for t in near if self._line_of_sight_ok(p, t[2], snap)]
             if clear:
                 if len(clear) < len(near):
@@ -1928,8 +1959,7 @@ class Bot:
             dd = max(math.hypot(dx, dz), 300.0)
             vx, vz = vx + dx / (dd * dd), vz + dz / (dd * dd)
         away = heading(vx, vz) if (vx or vz) else wrap((p.get("rot") or 0.0) + math.pi)
-        nav = snap.get("nav")
-        seg = getattr(nav, "clear_segment", None) if nav is not None else None
+        seg = self._walk_test(snap)                      # the shot line's walls, and the room map's (ROOM_MAP)
         for deg in ESCAPE_TRIES_DEG:
             h = away + math.radians(deg)
             goal = (px + ESCAPE_MM * math.sin(h), py, pz + ESCAPE_MM * math.cos(h))
@@ -2151,6 +2181,8 @@ class Bot:
         hit = None
         try:
             bw = getattr(nav, "blocking_wall", None)
+            if not callable(bw) and nav is None:
+                bw = getattr(self._room_map(snap), "sight_block", None)   # ROOM_MAP: the room map's wall
             hit = bw(tuple(p["pos"]), tuple(e["pos"])) if callable(bw) else None
         except Exception:                                # noqa: BLE001
             hit = None
@@ -2226,8 +2258,69 @@ class Bot:
             self._aim_stick().control(now)
             self._uc_control_at = now
 
+    # --- the room's real map (ROOM_MAP: titles.re4_room_map) ---
+    def _room_map(self, snap):
+        """This snapshot's room map (ROOM_MAP), else None; stats room_map names the room in use."""
+        if not ROOM_MAP:
+            return None
+        rm = re4_room_map.for_snap(snap)
+        if rm is not None:
+            self.stats["room_map"] = rm.room
+        return rm
+
+    def _walk_test(self, snap):
+        """The test for a walk line the bot picks itself, (a, b) mm -> bool, or None with no geometry at all: the
+        stage mesh's shot line (nav.clear_segment, as before) and, with ROOM_MAP, the room map's walk_block."""
+        nav = snap.get("nav")
+        seg = getattr(nav, "clear_segment", None) if nav is not None else None
+        seg = seg if callable(seg) else None
+        rm = self._room_map(snap)
+        if rm is None:
+            return seg
+
+        def clear(a, b) -> bool:
+            if seg is not None and not seg(tuple(a), tuple(b)):
+                return False
+            why = rm.walk_block(tuple(a), tuple(b))
+            if why is None:
+                return True
+            self.stats["room_map_walks_refused"] = self.stats.get("room_map_walks_refused", 0) + 1
+            self.stats["room_map_refused_last"] = why[:120]
+            return False
+        return clear
+
+    def _room_ahead(self, p, act, snap):
+        """ROOM_MAP's probe on a walking tick: None (the way ahead is open, or a crossing the walker is taking), the
+        reason the step is refused (a wall or the floor's edge within ROOM_PROBE_MM of his facing), or - when the mesh
+        walker's route steers this tick and the line to its point is clear - that route's action: a turn on the spot
+        toward its point while it lies past re4_walk.FOLLOW_TOL (room_map_route_turns), else None (the route goes on)."""
+        rm, rot, pos = self._room_map(snap), p.get("rot"), p.get("pos")
+        if rm is None or not isinstance(rot, (int, float)) or not pos:
+            return None
+        w = getattr(self, "walker", None)
+        steered = w is not None and getattr(w, "wp", None) is not None and w.wp[2] == getattr(w, "now", None)
+        if steered and getattr(w, "at_link", False):
+            return None                                      # a jump-over / a ladder: through it is the way
+        hold = set(act.get("hold") or ())
+        reach = ROOM_PROBE_RUN_MM if RUN_BTN in hold else ROOM_PROBE_MM
+        end = (pos[0] + reach * math.sin(rot), pos[1], pos[2] + reach * math.cos(rot))
+        why = rm.walk_block(tuple(pos), end, end_r=0.0, body_r=ROOM_BRUSH_MM)
+        if why is None:
+            return None
+        if steered:
+            wp = (w.wp[0], pos[1], w.wp[1])
+            if rm.walk_block(tuple(pos), wp, end_r=0.0, body_r=0.0) is None:   # (the route keeps its own clearance)
+                err = wrap(heading(wp[0] - pos[0], wp[2] - pos[2]) - rot)
+                if abs(err) <= re4_walk.FOLLOW_TOL:
+                    return None                              # the route's point lies short of the wall: on to it
+                self.stats["room_map_route_turns"] = self.stats.get("room_map_route_turns", 0) + 1
+                self.doing, self.why = "turn", "the room map: a wall ahead, turning to the route's way round"
+                return dict(act, hold=(hold - {"lup", RUN_BTN, TURN["left"], TURN["right"]}) | self._turn(err))
+        return why
+
     def _wall_core(self, p, act, snap, now) -> dict:
-        """WALL_* above: the action's walk checked against the walls he has pressed, and pressing a new one."""
+        """WALL_* above: the action's walk checked against the walls he has pressed, and pressing a new one; with
+        ROOM_MAP the room map's walls ahead of him too (_room_ahead)."""
         d = self.__dict__
         try:
             walls = d.get("_uc_walls")
@@ -2255,23 +2348,33 @@ class Bot:
             in_control = now - (d.get("_uc_control_at") or -1e9) <= CONTROL_S
             pressed = walls.observe(now, pos_cm, rot, pushing, in_control)
             refused = not pressed and un is None and pushing and walls.blocked(now, pos_cm, rot)
-            if not (pressed or refused):
+            ahead = None
+            if not (pressed or refused) and un is None and pushing and ROOM_MAP:
+                ahead = self._room_ahead(p, out, snap)        # a wall / the floor's edge on the room map ahead
+                if isinstance(ahead, dict):
+                    return ahead                             # the route's own way: a turn toward its point
+            if not (pressed or refused or ahead):
                 if un is not None:
                     self.doing, self.why = "unwall", un["why"]
                 return out
-            nav = snap.get("nav")
-            seg = getattr(nav, "clear_segment", None) if nav is not None else None
-            clear = (lambda a, b: bool(seg(tuple(v * k for v in a), tuple(v * k for v in b)))) if callable(seg) else None
+            seg = self._walk_test(snap)                      # the shot line's walls, and the room map's (ROOM_MAP)
+            clear = (lambda a, b: bool(seg(tuple(v * k for v in a), tuple(v * k for v in b)))) if seg else None
             goal_cm = walls.away(now, pos_cm, rot or 0.0, clear, UNWALL_MM / MM_PER_CM,
                                  None if pressed else SLIDE_TRIES_DEG)
-            self.stats["walls_refused" if refused else "unwalls"] += 1
+            if ahead:
+                self.stats["room_map_steps_refused"] = self.stats.get("room_map_steps_refused", 0) + 1
+                self.stats["room_map_refused_last"] = ahead[:120]
+            else:
+                self.stats["walls_refused" if refused else "unwalls"] += 1
             if goal_cm is None:
-                self.stats["walls_boxed_in"] += 1
+                self.stats["room_map_boxed_in" if ahead else "walls_boxed_in"] = \
+                    self.stats.get("room_map_boxed_in" if ahead else "walls_boxed_in", 0) + 1
                 self.doing, self.why = "unwall", "walled in on every side: not walking into it"
                 return dict(out, hold=hold - {"lup", RUN_BTN})
             goal = tuple(v * k for v in goal_cm)
             why = ("pressed against a wall: turning away onto open floor" if pressed else
-                   "a wall he pressed before lies that way: along it instead")
+                   "a wall he pressed before lies that way: along it instead" if refused else
+                   "the room map: a wall ahead, along it instead")
             d["_uc_unwall"] = {"until": now + UNWALL_S, "goal": goal, "why": why}
             d.setdefault("_fz", {"pos": None, "rot": None, "tap": -1e9, "on": False})["stepped"] = now
             self.doing, self.why = "unwall", why
@@ -2347,8 +2450,7 @@ class Bot:
         if now - st["at"] < STAND_MAX_S:
             return act
         st["n"] = st.get("n", 0) + 1
-        nav = snap.get("nav")
-        seg = getattr(nav, "clear_segment", None) if nav is not None else None
+        seg = self._walk_test(snap)                      # the shot line's walls, and the room map's (ROOM_MAP)
         goal, keys = None, ()
         if callable(seg):
             foes = [e["pos"] for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")]

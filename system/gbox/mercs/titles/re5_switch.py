@@ -501,17 +501,33 @@ HEAD_H, HEAD_R, KNEE_H, SHOULDER_H, BODY_R, CHEST_H = 160.0, 22.0, 45.0, 145.0, 
 Body = combat.Body                       # (head chest knee shoulder r), the same fields as before
 HUMAN = Body(HEAD_H, CHEST_H, KNEE_H, SHOULDER_H, BODY_R)
 LOW_BODIES = {
-    "uEm32": combat.KIND_BODIES["crawler"],   # the Experimental Facility's crawlers (27 cm at the bind pose)
-    "uEm0b": combat.KIND_BODIES["dog"],       # the dogs (86 cm, four legs)
+    "uEm32": combat.KIND_BODIES["crawler"],   # Licker beta (#9344: not determined - mesh top 27 cm at the bind pose)
+    "uEm0b": combat.KIND_BODIES["dog"],       # Bui Kichwa (#9344: not determined - four-legged, mesh top 86.5 cm)
+}
+# Measured bodies (#9344, docs/research/mercs-enemy-aim-heights.md: the class model's skeleton in its bind pose, cm
+# above the feet; re-measured from the RomFS 2026-11-10, the same to 0.1 cm). Only the classes that stand apart from a
+# Majini (combat.differs: the head more than a head's radius off): the Reaper (head 257.5, spine 205.5, knees 108.8,
+# upper arms 233.3; the joints' half spread 29 cm, so the radius stays BODY_R: combat.measured). Every other measured
+# class is a Majini's skeleton (head 164.7-165, spine 131-132, knees 53-57.5 cm) and keeps HUMAN - the Giant Majini
+# (uEm24) too: its model is a Majini's, 195.7 cm, so its "nearly 3 m" in game is a scale the snapshot does not read
+# yet. The crawlers and dogs are not determined (a bind pose only): LOW_BODIES' estimates stand. Off: as before.
+MEASURED_BODIES = True
+MEASURED = {
+    "uEm34": combat.measured(257.5, 205.5, 108.8, 233.3, 29.0, BODY_R),     # Reaper
 }
 
 
+def body_classes() -> dict:
+    """The classes with a body of their own: LOW_BODIES, and MEASURED with MEASURED_BODIES."""
+    return {**LOW_BODIES, **MEASURED} if MEASURED_BODIES else LOW_BODIES
+
+
 def body(e) -> Body:
-    """The body profile of this enemy's class (LOW_BODIES; through combat.BodyTable with UNIVERSAL_CORE), else a
+    """The body profile of this enemy's class (body_classes(); through combat.BodyTable with UNIVERSAL_CORE), else a
     standing Majini's."""
     if UNIVERSAL_CORE:
-        return combat.BodyTable(default=HUMAN, classes=LOW_BODIES).body(e)
-    return LOW_BODIES.get((e or {}).get("class"), HUMAN)
+        return combat.BodyTable(default=HUMAN, classes=body_classes()).body(e)
+    return body_classes().get((e or {}).get("class"), HUMAN)
 FIRE_SLACK = 60.0                        # a ray ending this much short of him ends on something in front of him
 STEER_RAY_CM = 50.0                      # a shorter ray (the dot at the muzzle) carries too little direction to steer by
 
@@ -904,7 +920,7 @@ def combat_profile() -> combat.TitleProfile:
                "ZL raise, ZR held (the game repeats it); the RAM aim lock where it holds",
         aim_btn="zl", fire_btn="zr", turn_sign=1, raise_s=READY_S, raise_tol=BODY_AIM_TOL, fire_tol_min=AIM_TOL,
         engage_cm=ENGAGE_R, level_dy_cm=LEVEL_DY, max_dy_cm=MAX_DY,
-        bodies=combat.BodyTable(default=HUMAN, classes=LOW_BODIES), head_r_cm=HEAD_R, fire_slack_cm=FIRE_SLACK,
+        bodies=combat.BodyTable(default=HUMAN, classes=body_classes()), head_r_cm=HEAD_R, fire_slack_cm=FIRE_SLACK,
         specials=("character_specials", "quick_turn", "dynamite", "mines", "rampage", "flash"),
         threat_file=THREAT_FILE, windup_r_cm=WINDUP_R, grudge_r_cm=GRUDGE_R, lethal_keep_x=LETHAL_KEEP_X,
         lethal_backoff_max_s=LETHAL_BACKOFF_MAX_S,

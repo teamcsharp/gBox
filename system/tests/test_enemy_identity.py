@@ -109,7 +109,8 @@ def test_aliases_and_the_stage_table():
 
 def test_enemy_kinds_names_only_what_is_confirmed():
     assert K.name(RE5, "uEm20") == "Executioner Majini" and K.name(RE5, "uEm11") == "Majini (female)"
-    assert K.name(RE6, "uEm3200") == "uEm3200"                        # Napad is not confirmed yet: its class
+    assert K.name(RE6, "uEm4100") == "uEm4100"                        # Lepotitsa is not confirmed: its class
+    assert K.name(RE6, "uEm3200") == "Napad"                          # matched by the game files (#9343)
     assert K.name(RE6, "uEm1000") == "J'avo"
 
 
@@ -127,11 +128,15 @@ def test_every_title_publishes_cls_name_and_tier():
     assert (rows[0]["cls"], rows[0]["name"], rows[0]["tier"]) == ("salvador", "Dr. Salvador", "boss")
     assert (rows[1]["cls"], rows[1]["name"], rows[1]["tier"]) == ("ganado", "Ganado (villager)", "normal")
     assert list(f["kinds"]) == ["salvador", "ganado"]
+    f6 = T.Tracker(RE6).frame(_snap([{"slot": 0, "ptr": 0x30, "class": "uEm3320", "hp": 900, "hp_max": 900,
+                                      "pos": (300.0, 0, 0)}]), {}, "playing", now=1.0)
+    row = f6["enemies"][0]
+    assert row["name"] == "Gnezdo (core)?" and row["tier"] == "boss" and row["level"] == "unconfirmed"   # "?": not
+    assert f6["kinds"]["uEm3320"]["name"] == "Gnezdo (core)?"                                         # confirmed
     f6 = T.Tracker(RE6).frame(_snap([{"slot": 0, "ptr": 0x30, "class": "uEm4300", "hp": 900, "hp_max": 900,
                                       "pos": (300.0, 0, 0)}]), {}, "playing", now=1.0)
     row = f6["enemies"][0]
-    assert row["name"] == "Ubistvo?" and row["tier"] == "boss" and row["level"] == "unconfirmed"   # "?": not confirmed
-    assert f6["kinds"]["uEm4300"]["name"] == "Ubistvo?"
+    assert row["name"] == "Ubistvo" and row["tier"] == "boss" and row["level"] == "matched"   # #9343: matched
 
 
 def test_the_portrait_hint_uses_the_frames_key():
