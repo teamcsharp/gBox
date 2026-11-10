@@ -17,11 +17,15 @@ from contextlib import contextmanager
 KIND = "merc_interventions"
 MAX_PENDING, KEEP, TTL, FRESH = 64, 128, 10.0, 3.0
 TERMINAL = {"confirmed", "failed", "unavailable", "expired", "uncertain"}
-OPERATIONS = {"flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "set_infinite_ammo"}
+OPERATIONS = {"flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "grenade_scatter", "set_infinite_ammo"}
 # The grenade-ring button's selectable types. "flash" is the default and the only one verified; the others
 # are refused by the native controller with a reason (never silently substituted). A longer TTL covers the
 # ten spawn/explode pairs the ring runs (each is the verified flash).
 GRENADE_RING_KINDS = ("flash", "hand", "incendiary")
+# The scatter barrage (RE6 Switch, 2026-11-10): a random kind a round ("random", the default) or one named; the native
+# controller refuses an unverified one with its reason. Its TTL is the ring's.
+GRENADE_SCATTER_KINDS = ("random",) + GRENADE_RING_KINDS
+TIMED_OPS = ("grenade_ring", "grenade_scatter")
 GRENADE_RING_TTL = 25.0
 
 _WAKE_LOCK = threading.Lock()
@@ -69,7 +73,7 @@ class Queue:
                 before = json.dumps(doc, separators=(",", ":"))
                 now = self.clock()
                 for r in doc["rows"]:
-                    ttl = GRENADE_RING_TTL if r["op"] == "grenade_ring" else TTL
+                    ttl = GRENADE_RING_TTL if r["op"] in TIMED_OPS else TTL
                     if r["state"] == "queued" and r["expires"] <= now:
                         r.update(state="expired", reason="request expired before execution")
                         self._remember(sid, r)
@@ -106,6 +110,11 @@ class Queue:
             kind = args.setdefault('kind', 'flash')
             if set(args) != {'kind'} or kind not in GRENADE_RING_KINDS:
                 raise ValueError('invalid grenade ring arguments')
+        elif op == 'grenade_scatter':
+            args = dict(args)
+            kind = args.setdefault('kind', 'random')
+            if set(args) != {'kind'} or kind not in GRENADE_SCATTER_KINDS:
+                raise ValueError('invalid grenade scatter arguments')
         elif not isinstance(args, dict) or (op in ('flash_now', 'magnum_quick4') and args) or (op == 'equip_primary' and
                 (set(args) != {'item'} or type(args['item']) is not int or not 1 <= args['item'] <= 255)):
             raise ValueError('invalid intervention arguments')
@@ -138,7 +147,7 @@ class Queue:
                 raise ValueError('this grenade kind is unavailable for this session')
             if sum(r["state"] in ("queued", "claimed") for r in d["rows"]) >= MAX_PENDING:
                 raise ValueError("intervention queue is full")
-            ttl = GRENADE_RING_TTL if op == "grenade_ring" else TTL
+            ttl = GRENADE_RING_TTL if op in TIMED_OPS else TTL
             row = {"id": request_id, "op": op, "args": dict(args), "source": source, "at": now, "expires": now + ttl,
                    "epoch": d["epoch"], "state": "queued"}
             d["rows"].append(row)
@@ -393,6 +402,8 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
             caps = ["flash_now"] + (["equip_primary"] if choices else [])
             if getattr(ctl, 'grenade_ring', None) is not None:
                 caps.append("grenade_ring")
+            if getattr(ctl, 'grenade_scatter', None) is not None:
+                caps.append("grenade_scatter")
             if Q.available(ctl) and not stats.get('operator_control'):
                 caps.append(Q.OP)
             current = getattr(ctl, 'current_weapon', None)
@@ -514,6 +525,18 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                         stats["ring_pending"] = {"at": time.time(),
                                                                  "kills": kills if isinstance(kills, int) else None}
                                         stats["native_flash_confirmed_at"] = time.time()
+                                elif row['op'] == 'grenade_scatter':
+                                    result = ctl.grenade_scatter(row['args'].get('kind', 'random'))
+                                    if stats is not None:
+                                        if result.get('state') == 'confirmed':
+                                            stats["scatters_fired"] = stats.get("scatters_fired", 0) + 1
+                                            stats["scatter_rounds"] = stats.get("scatter_rounds", 0) + int(
+                                                result.get("detonated") or 0)
+                                            kills = stats.get("kills")
+                                            stats["scatter_pending"] = {"at": time.time(),
+                                                                        "kills": kills if isinstance(kills, int) else None}
+                                        else:
+                                            stats["scatter_failures"] = stats.get("scatter_failures", 0) + 1
                                 else:
                                     result = ctl.flash()
                                     if stats is not None:

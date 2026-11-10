@@ -154,7 +154,7 @@ def test_profile_keeps_tuning_mods_and_enables_target_gated_grenade_policy():
     ops=dict(profile['mercs']['playing_ops'])
     for name in ('infinite_ammo','infinite_grenades','auto_qte','auto_qte_ram'):
         assert ops[name]=={'on':True}
-    assert ops['fire_rate']=={'multiplier':5,'magnum':5,'throw':5}
+    assert ops['fire_rate']=={'multiplier':5,'magnum':5,'throw':10}   # (2026-11-10 06:45: the throws 2x faster)
     assert ops['bot_options']=={'nades':True,'flash':True,'bomb_drop':False,'aim_lock':True}
 
 

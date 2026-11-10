@@ -128,6 +128,8 @@ FIRE_ORIGINAL = (10.0, 0.5, 0.6, 0.5, 1.2, 0.8, 0.6, 0.8, 1.2, 10.0, 0.7, 2.25, 
 FIRE_SKIP = frozenset({0x13, 0x14, 0x15, 0x16, 0x2F})   # the grenades and the remote bomb: thrown, never sped up
 FIRE_GUN_MAX = 5.0                                       # a longer interval is the knife's or a melee weapon's
 MAGNUM_RECORDS = frozenset({0x07, 0x08})                 # the magnums' records (0x107 / 0x108): fire_rate magnum=
+THROW_FIRE_MAX = 10.0                                    # fire_rate throw='s cap (operator 2026-11-10 06:45: "5x grenades
+                                                         # 2x faster": the 2.0 s between two throws / 10 = 0.2 s, was / 5)
 THROW_RECORDS = frozenset({0x13, 0x14, 0x15})            # the hand, incendiary and flash grenades' (fire_rate throw=;
                                                          # not the remote bomb's): their 2.0 s, the throw's own wait
 # down_fire (operator 16:22: "I want the fire rate tripled and them becoming even more lethal when grounded so they can
@@ -842,11 +844,14 @@ def unlock_stages(g: RE6Switch, on: bool = True) -> dict:
                     "stages start from its next look, and the game's own next save keeps them"}
 
 
-def auto_qte(g: RE6Switch, on: bool = True) -> dict:
+def auto_qte(g: RE6Switch, on: bool = True, user: bool = False) -> dict:
     """The game's own automatic action button (QTEs and grabs resolve with nothing pressed): cSystemInfo
-    mTempData.mExOptAutoActBtn in both copies set to 1 (off: 0), that field only, read back."""
+    mTempData.mExOptAutoActBtn in both copies set to 1 (off: 0), that field only, read back. user: the operator's op
+    (an off from him is kept: ensure_qte leaves it)."""
     res = _info_bits(g, AUTO_QTE, 0, value=1 if on else 0)
     g.state["auto_qte"] = bool(on)
+    if user:
+        g.state["qte_user_off"] = not on
     return {"auto_qte": bool(on), **res,
             "note": "the game's own automatic action button: every QTE site tests the option (nonzero = automatic)"}
 
@@ -986,14 +991,53 @@ def struggle_units(g: RE6Switch, index: int = 0) -> list[dict]:
     return out
 
 
+QTE_RAM_ANY = True          # (2026-11-10: "ram lock that and solve it instantly") every active unit, held or not
+QTE_CHECK_S = 5.0           # ensure_qte looks again this often while a round plays (a save load can reset the option)
+QTE_RETRY_S = 1.0           # ... and this often while the option has not read back yet (no cSystemInfo before the load)
+
+
+def ensure_qte(ad, snap=None, clock=time.monotonic) -> dict:
+    """The QTEs solved by RAM by default (operator 2026-11-10 06:45): the game's own automatic action button (auto_qte:
+    both cSystemInfo copies at 1, read back) and the RAM escape (auto_qte_ram) on, every QTE_CHECK_S while a round plays.
+    An operator who switched either off on this boot keeps it off. -> {auto_qte, auto_qte_ram, verified, reason}."""
+    with _LOCK:
+        st = ORIG.setdefault(id(ad), {})
+        now = clock()
+        since = now - st.get("qte_checked_at", -1e9)
+        if since < QTE_CHECK_S and st.get("qte_ok"):
+            return {"verified": True, "auto_qte": True, "auto_qte_ram": bool(st.get("auto_qte_ram")), "cached": True}
+        if since < QTE_RETRY_S and not st.get("qte_ok"):     # (not read back yet: again at most every QTE_RETRY_S)
+            return {"verified": False, "auto_qte": bool(st.get("auto_qte")), "auto_qte_ram": bool(st.get("auto_qte_ram")),
+                    "reason": st.get("qte_reason", "not read back yet"), "cached": True}
+        st["qte_checked_at"] = now
+        try:
+            g = RE6Switch(ad)
+        except (RuntimeError, ValueError, OSError) as exc:
+            return {"verified": False, "reason": str(exc)[:160]}
+        if g.state.get("qte_user_off"):
+            return {"verified": True, "auto_qte": bool(g.state.get("auto_qte")), "auto_qte_ram":
+                    bool(g.state.get("auto_qte_ram")), "reason": "switched off by the operator this boot"}
+        prev = g.state.get("auto_qte")
+        res = auto_qte(g, True)
+        g.state["auto_qte_ram"] = True                       # (the RAM escape needs no option: on at once)
+        ok = bool(res.get("verified"))
+        if not ok:                                           # not read back (no cSystemInfo yet): not claimed on
+            g.state["auto_qte"] = prev
+        g.state["qte_ok"] = ok
+        g.state["qte_reason"] = "" if ok else str(res.get("reason") or "the option did not read back")[:160]
+        return {"verified": ok, "auto_qte": ok, "auto_qte_ram": True, "after": res.get("after"),
+                "reason": "" if ok else str(res.get("reason") or "the option did not read back")[:160]}
+
+
 def _complete_struggle(ad, g: RE6Switch, player: int) -> int:
-    """While a zombie holds him (action 8 / 9 / 25): each live struggle unit given the game's own escape - a chance
-    button's rolled outcome set to 0 (free at once) once the roll is done, a mash button's progress up to its target."""
+    """Each live struggle unit given the game's own escape - a chance button's rolled outcome set to 0 (free at once)
+    once the roll is done, a mash button's progress up to its target - while a zombie holds him (action 8 / 9 / 25),
+    and with QTE_RAM_ANY any active unit (a finisher's, a climb's: the grant the game gives a completed press)."""
     try:
         state = ad.read_memory(player + R.P_STATE, 1)[0]
     except (ValueError, OSError):
         return 0
-    if state not in R.HELD_STATES:
+    if state not in R.HELD_STATES and not QTE_RAM_ANY:
         return 0
     n = 0
     for x in struggle_units(g):
@@ -1338,7 +1382,7 @@ def fire_rate(g: RE6Switch, mult, magnum=None, throw=None) -> dict:
         raise ValueError("fire_rate multiplier / magnum / throw: 1..80 (1 = the game's)")
     k = min(k, FIRE_MAX)                                     # the operator's cap per weapon (2026-10-28: 5x): clamped
     magnum = min(magnum, MAGNUM_FIRE_X) if magnum is not None else None   # the magnums get their own cap (rapid-fire)
-    throw = min(throw, FIRE_MAX) if throw is not None else None
+    throw = min(throw, max(THROW_FIRE_MAX, FIRE_MAX)) if throw is not None else None   # the grenades' own cap (2x)
     recs = fire_records(g)
     if recs is None:
         return {"fire_rate_x": g.state.get("fire_rate", 1.0), "verified": False, "writes": 0,
@@ -1468,11 +1512,13 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
         if op == "set_time":
             return set_time(g, _extra.get("seconds"))
         if op == "auto_qte_ram":
+            if not on:                                       # the operator's off is kept (ensure_qte leaves it)
+                g.state["qte_user_off"] = True
             return auto_qte_ram(g, bool(on))
         if op == "unlock_stages":
             return unlock_stages(g, bool(on))
         if op == "auto_qte":
-            return auto_qte(g, bool(on))
+            return auto_qte(g, bool(on), user=True)
         if op == "merc_loadout":
             return merc_loadout(g, bool(on), rocket=_extra.get("rocket", True) not in (False, "keep", "off"),
                                 thrown=_extra.get("thrown", THROWN_MAX), seed=_extra.get("seed"),
@@ -1511,6 +1557,13 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
         if op in ("detonate", "detonate_bombs", "remote_detonate", "bomb_detonate", "mind_detonate"):
             unit = _extra.get("unit")
             return detonate(ad, unit=int(unit, 0) if isinstance(unit, str) else unit, wait_s=0.3)
+        if op in ("bomb_drop", "drop_bomb", "instant_bomb", "mine_drop"):
+            # the instant drop: a remote bomb down at his feet already placed and armed, nothing in his hand
+            from .re6_switch_native import bomb_drop_now
+            out = bomb_drop_now(ad, _extra.get("at"))
+            if out.get("verified"):
+                g.state["bombs_dropped"] = g.state.get("bombs_dropped", 0) + 1
+            return out
         if op in ("bomb_mind", "mind_bombs"):
             R.BOMB_MIND = bool(on)
             return {"verified": True, "bomb_mind": R.BOMB_MIND,
@@ -1530,4 +1583,4 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
                     "merc_loadout": merc_loadout(g, False)}
         raise ValueError(f"re6_switch_mods: unknown op {op!r} (status, infinite_ammo, infinite_tablets, "
                          "infinite_stamina, infinite_grenades, unlock_characters, unlock_stages, auto_qte, auto_qte_ram, "
-                         "kill_time, add_time, set_time, fire_rate, merc_loadout, detonate, bomb_mind, revert_all)")
+                         "kill_time, add_time, set_time, fire_rate, merc_loadout, detonate, bomb_drop, bomb_mind, revert_all)")

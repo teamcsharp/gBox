@@ -966,8 +966,9 @@ def test_a_grenade_in_hand_is_thrown_with_one_close_and_a_throw_is_called_off_on
     snap["player"]["equipped"] = 9                                            # the frag in hand ...
     snap["enemies"].append(dict(snap["enemies"][0], pos=(0.0, 0.0, 100.0), ptr=0x7777, slot=9))   # ... one at arm's length
     acts = run(bot, snap, clock, int((R.NADE_FACE_S + R.NADE_AIM_S) / 0.05) + 4)
-    assert throws(acts) and bot.stats["frags"] == 1                       # thrown at the cluster, not put away
-    assert bot.stats["nade_aborts"] == 0 and bot.stats["throws_by_kind"] == {"frag": 1}
+    assert throws(acts) and bot.stats["frags"] >= 1                       # thrown at the cluster, not put away
+    # (2026-11-10: the frag stays in hand and goes again - the in-hand burst, NADE_BURST_N)
+    assert bot.stats["nade_aborts"] == 0 and set(bot.stats["throws_by_kind"]) == {"frag"}
     assert bot.stats["unsafe_trigger_blocks"] == 0
     bot2, clock2, snap2 = brain(round_guest(enemies=cluster, cam_yaw=0.0))  # not in hand yet: called off for the fight
     bot2.held = lambda p, now: False
@@ -986,9 +987,9 @@ def test_a_grenade_lifted_outside_a_throw_is_thrown_at_the_best_cluster_four_met
     bot.held = lambda p, now: False
     snap["player"].update(equipped=10, nades={0x113: (9, 5), 0x114: (10, 3)})   # the incendiary in his hand, no throw
     acts = run(bot, snap, clock, int((R.NADE_FACE_S + R.NADE_AIM_S) / 0.05) + 4)
-    assert bot.stats["held_item_throws"] == 1 and bot.stats["fires"] == 1
+    assert bot.stats["held_item_throws"] == 1 and bot.stats["fires"] >= 1   # (the in-hand burst may add more)
     assert throws(acts) and bot.stats["unsafe_trigger_blocks"] == 0
-    assert bot.stats["throws_by_kind"] == {"fire": 1}
+    assert set(bot.stats["throws_by_kind"]) == {"fire"}
     assert all(a.get("tap") != "right" for a in acts[:acts.index(throws(acts)[0])])   # never put away first
 
 
@@ -3044,7 +3045,13 @@ def test_auto_qte_ram_frees_a_grab_at_once_only_while_he_is_held(mods):
     assert ad.writes == [(u + mods.UNIT_OUTCOME, struct.pack("<I", 0))]                         # that u32 only
     assert mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])["writes"] == 0              # once a grab
     assert mods.run(ad, "status")["struggles_completed"] == 1
-    for kw in ({"state": 0}, {"active": 0}, {"new": 1}, {"outcome": 0}, {"outcome": 9}):
+    g0, u0 = struggle_guest(state=0)                         # not held: solved too since 2026-11-10 (QTE_RAM_ANY:
+    ad0 = Adapter(g0)                                        # "ram lock that and solve it instantly")
+    mods.ORIG.clear()
+    mods.run(ad0, "qte_ram", on=True)
+    mods.maintain(ad0, R.snapshot(g0), clock=lambda: clock[0])
+    assert ad0.writes == [(u0 + mods.UNIT_OUTCOME, struct.pack("<I", 0))] and mods.QTE_RAM_ANY
+    for kw in ({"active": 0}, {"new": 1}, {"outcome": 0}, {"outcome": 9}):
         g2, u2 = struggle_guest(**kw)                       # free / no live unit / not rolled yet / free already / odd
         ad2 = Adapter(g2)
         mods.ORIG.clear()
