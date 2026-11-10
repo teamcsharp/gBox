@@ -56,3 +56,11 @@ def test_seed_from_base_is_a_noop_without_a_base(tmp_path, monkeypatch):
     monkeypatch.setattr(switch_mods, "build_dir", lambda cfg, gid, name: tmp_path / "missing")
     assert skin_swap._seed_from_base(object(), "115f9cdbba115432", tmp_path, "") == 0
     assert skin_swap._seed_from_base(object(), "115f9cdbba115432", tmp_path, "no-such-build") == 0
+
+def test_character_code_reads_the_model_path():
+    from gbox import mt_arc
+    arc = mt_arc.Arc(version=7, entries=[mt_arc.Entry(name="data\\chara\\pl\\pl0200\\model\\pl0200",
+                                                     hash=0x241F5DEB, tag=0x40055E3C, size=4, offset=0, data=b"MOD0")])
+    blob = mt_arc.build(arc)
+    assert skin_swap._character_code(blob) == "0200"
+    assert skin_swap._character_code(b"not an arc") is None

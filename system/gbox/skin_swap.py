@@ -200,6 +200,54 @@ PLAYER_AS_MAJINI = {
 }
 
 
+def _character_code(arc_bytes: bytes) -> str | None:
+    """The pl0XXX character code a donor body arc's model belongs to (`pl0200` for Chris)."""
+    try:
+        arc = mt_arc.parse(arc_bytes)
+    except mt_arc.ArcError:
+        return None
+    for entry in arc.entries:
+        found = re.search(r"pl(0\d{3})", entry.name)
+        if found:
+            return found.group(1)
+    return None
+
+
+def _attach_donor_textures(patched: bytes, donor_arc: Path, root: Path, *, log=None) -> tuple[bytes, list[str]]:
+    """Add the donor character's texture maps (from `uPlTex<code>_*.arc`) to the slot archive.
+
+    RE6 keeps character body textures outside the body arcs (41 `uPlTex####_N.arc` archives, 218 MB); an enemy wearing a
+    cast model otherwise renders white because its materials name maps the enemy arc does not carry.
+    """
+    try:
+        donor_bytes = donor_arc.read_bytes()
+    except OSError:
+        return patched, []
+    code = _character_code(donor_bytes)
+    if not code:
+        return patched, []
+    arc = mt_arc.parse(patched)
+    present = {e.name for e in arc.entries}
+    added: list[str] = []
+    for tex_path in sorted(root.rglob(f"uPlTex{code}_*.arc")):
+        try:
+            tex_arc = mt_arc.parse(tex_path.read_bytes())
+        except mt_arc.ArcError:
+            continue
+        for entry in tex_arc.entries:
+            base = entry.name.rsplit("\\", 1)[-1]
+            if not base.startswith(f"pl{code}") or entry.name in present:
+                continue
+            arc.entries.append(mt_arc.Entry(name=entry.name, hash=entry.hash, tag=entry.tag,
+                                            size=entry.size, offset=0, data=entry.data))
+            present.add(entry.name)
+            added.append(entry.name)
+    if not added:
+        return patched, []
+    if log:
+        log("textures_attached", donor=code, added=len(added))
+    return mt_arc.build(arc), added
+
 def cast_swap_build(config, game_id: str, title_id: str, rng, *, name: str | None = None,
                     title: str = "", log=None) -> dict | None:
     """Build the inverted-cast overlay: the zombies wear cast characters' whole models, the player wears majini clothes.
@@ -246,9 +294,10 @@ def cast_swap_build(config, game_id: str, title_id: str, rng, *, name: str | Non
             if log:
                 log("cast_swap_failed", zombie=zombie_arc, error=str(exc)[:160])
             continue
-        patched[zombie_arc] = out["data"]
+        with_tex, added = _attach_donor_textures(out["data"], root / arcs[donor_name], root, log=log)
+        patched[zombie_arc] = with_tex
         report["zombies"][zombie_arc] = {"as": donor_name, "meshes": out["meshes"],
-                                         "textures": len(out["textures"])}
+                                         "textures": len(added)}
     if majini and (root / majini).is_file() and (root / arcs[player]).is_file():
         try:
             # follow_tag: the majini's maps are a different size from the player's, so the tag travels with the donor
@@ -357,3 +406,5 @@ def random_swap_build(config, game_id: str, title_id: str, rng, *, name: str | N
         log("skin_swap_built", build=build, slot=slot, donor=donor_entry, bytes=len(patched))
     return {"build": build, "slot": slot, "donor": donor_entry, "target": target, "source": donor,
             "at": time.time()}
+
+
