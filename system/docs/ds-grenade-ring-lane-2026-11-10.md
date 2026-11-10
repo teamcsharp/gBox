@@ -888,3 +888,39 @@ stage loads); both asks are in the PM doc on main.
 
 **D's live acceptance** is also the RE5 block: one barrage receipt (if fired as an intervention) or the telemetry's
 `scatters_fired`/`scatter_rounds`/`scatter_kills` plus the confirmed-flash times at least `FLASH_MIN_GAP_S` apart.
+
+## Round 60 (2026-11-10 17:20 CST) - E0(c) done: the RE4 dispatcher is assembled, pinned and runs under unicorn
+
+The only guest-side code the RE4 harness needs is the dispatcher behind the player object's cloned vtable slot.
+It is now a real, tested image. Keystone 0.9.2 turned out to be installed on the i9, so instead of hand-encoding
+words the source is a normal ARM64 assembly file, assembled at the cave address, checked by capstone and executed by
+unicorn; the runtime never imports keystone - the bytes are pinned in `code.py`.
+
+**New: `gbox/mercs/native/re4_82c2a04a/`**
+
+- `dispatch.S` - the dispatcher (132 bytes, sha256 `2a6e9911...`), assembled at `main+0x655880`. It saves the
+  callee-saved registers, reads the mailbox pointer from the clone (`ldr x20, [x19]; ldr x20, [x20, #0x100]`),
+  bumps the mailbox `ticks` every entry (E6's live proof the slot fires per frame), performs one request when
+  `state == 1` (`blank target = done`, 7 args from `+0x10`, result to `+0x48`, `state = 3`), and **tail-calls
+  `main+0x2B6420`** (the unit transform virtual) with the unit in `x0` every time - so the game is unaffected while
+  the harness is attached, and a missing mailbox is safe.
+- `code.py` - the pinned image plus the one contract for the rest of the harness: `CAVE_AT 0x655880`,
+  `CAVE_END 0x656000`, `ORIGINAL_TRANSFORM 0x2B6420`, `SLOT_TRANSFORM 0x20`, clone at `CLONE_AT = 0x655A00`
+  (32 copied vtable entries = 0x100 bytes + the mailbox pointer at +0x100 = `CLONE_SIZE 0x108`), mailbox layout
+  (`state +0x00`, `target +0x08`, `args +0x10..+0x40`, `result +0x48`, `generation +0x50`, `ticks +0x58`,
+  `MAILBOX_SIZE 0x80`), and the state codes.
+- `build_dispatch.py` - reproduces the image from `dispatch.S` with keystone, checks size/sha256/pinned bytes,
+  disassembles with capstone and asserts the tail call resolves to `main+0x2B6420`; exit 0/1. Run:
+  `python -m gbox.mercs.native.re4_82c2a04a.build_dispatch` -> **PASS** (132 bytes, tail 0x2b6420).
+- `tests/test_re4_dispatcher.py` (10) - the pinned image reproduces from source (keystone, skipped if absent); every
+  word decodes and the tail call lands on the original; the cave, clone alignment and fit are checked; and under
+  **unicorn** on a synthetic map: an idle entry ticks and runs the original with the unit, a request calls the target
+  with its seven arguments and stores the result (`7+8+9 = 24`), `state` goes requested -> done, a blank target
+  completes without a call, a NULL mailbox still runs the original, the callee-saved registers survive (x19-x22,
+  x28), and two requests run in sequence. All pass.
+
+**Next**, and the only thing E3 still blocks: the controller (E4's write rule: refuse any write into `.text`/
+`.rodata` except `install()` into the cave; E5's fake-emulator tests: install refuses nonzero bytes and a cave with a
+reference into it, attach writes only the vtable pointer, a publish is consumed once under the generation guard, a
+timeout is `Uncertain` and never replayed). It can be written now with a configurable mailbox; the default page must
+wait for E3's three-load zero watch (requested) so no live build ever points at storage the game may use.
