@@ -193,9 +193,12 @@ string search for `map_forest01_00o.dat` in the DOL finds nothing while the arch
    - The Episode 2 table is the same table with the `a`-prefixed areas for floors 0-14 and identical floors 15+
      (which is why Forest 2 resolves to `forest02` or `aforest02`: it is floor 2 in either table).
    - `FUN_802077CC(0..0x11, out)` copies three words per row from an 18 x 12-byte **.bss** table at `0x80513920`,
-     initialised by `FUN_80207C60` from a static 18 x 8-byte source at `0x8044B894` (each row's first word defaults
-     to `-1`). That second table is a per-floor three-word record, not the map names; its meaning is the remaining
-     question, and the static source at `0x8044B894` is where to read it.
+     and `FUN_80207798(floor, a, b, c)` **writes** the same row. It is **not** map data: `FUN_802078A4` walks the
+     rows, and for each live row (`word0 >= 0`) recomputes words 1 and 2 as
+     `(table[word0].param * k * (rng() - bias))` through `FUN_8039C880` - a per-floor randomised **environment
+     parameter** block (seeded once by `FUN_80207C60`, which copies index/param pairs from `0x8044B894` and defaults
+     `word0` to `-1`), not the floor -> map binding. The floor -> map/layout names are `FUN_80207E88`'s tables
+     (`0x804C8FC0` / `0x804C9270`), which are decoded and pinned in `gbox/pso_floor_map.py`.
    - `gbox/pso_floor_map.py` pins both map-name tables, exposes `floor_names` / `area_for_floor` /
      `layouts_for_floor` / `layout_name` / `area_id`, and `derive()` re-reads the table from a `PsoV3.dol`
      (`tools/verify_pso_floors.py`). It verifies against the owned disc (both tables, 36 floors each), and floors
