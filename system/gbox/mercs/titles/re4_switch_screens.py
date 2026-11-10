@@ -177,6 +177,8 @@ def classify(png: bytes) -> dict:
     if rmse(thumb, r["logo_ref"], r["logo_mask"]) <= LOGO_MAX:
         at = menu_cursor(red_row(rgb))
         return {"where": at[0], "cursor": at[1]} if at else {"where": "menu"}
+    # the save list's prompts only once no reference screen matched (live 2026-11-10 21:42: Select Player's plate
+    # and portraits light the Load data? boxes; read first, the walk cancelled out of the character select)
     kind = prompt_kind(gray)
     if kind is not None:
         return {"where": "story_prompt", **kind}
@@ -257,6 +259,8 @@ class Reader:
         # the story save list, and the unnamed confirm drawn over it: both are cancelled, never confirmed
         if where == "story":
             self.story_armed = True
+        elif where == "story_prompt" and scr.get("prompt") == "load" and not self.story_armed:
+            scr = {"where": "unknown"}           # Load data? only ever follows the list: anything else is not it
         elif where in ("story_prompt",) or (where == "unknown" and self.story_armed):
             scr = scr if where == "story_prompt" else {"where": "story_prompt"}   # a named prompt keeps its kind
         elif where not in ("unknown", "menu"):

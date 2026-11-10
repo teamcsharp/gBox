@@ -400,3 +400,15 @@ def test_a_named_prompt_keeps_its_kind_through_the_reader(monkeypatch):
     r = S.Reader()
     monkeypatch.setattr(S, "classify", lambda _png: {"where": "story_prompt", "prompt": "cancel", "cursor": "no"})
     assert r.read(b"") == {"where": "story_prompt", "prompt": "cancel", "cursor": "no"}
+
+
+def test_a_load_prompt_reading_without_the_list_before_it_is_not_the_prompt(monkeypatch):
+    """Live 2026-11-10 21:42: Select Player lit the Load data? boxes and the walk cancelled out of it. Load data? only
+    ever follows the save list."""
+    r = S.Reader()
+    monkeypatch.setattr(S, "classify", lambda _png: {"where": "story_prompt", "prompt": "load"})
+    assert r.read(b"")["where"] == "unknown"
+    monkeypatch.setattr(S, "classify", lambda _png: {"where": "story", "story": "story_load_list"})
+    r.read(b"")
+    monkeypatch.setattr(S, "classify", lambda _png: {"where": "story_prompt", "prompt": "load"})
+    assert r.read(b"") == {"where": "story_prompt", "prompt": "load"}
