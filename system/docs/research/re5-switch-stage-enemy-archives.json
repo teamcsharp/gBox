@@ -1,0 +1,66 @@
+{
+  "title": "RE5 Switch Mercenaries stage -> enemy archive mapping",
+  "generated_by": "gbox-hermes-tasks request 9074 (local RomFS inspection)",
+  "archive_dir": "nativeNXx64/ImgNX/Archive",
+  "stage_count": {
+    "total_s4xx_arc": 8,
+    "per_stage": {
+      "s400.arc": 590,
+      "s401.arc": 356,
+      "s402.arc": 458,
+      "s403.arc": 450,
+      "s404.arc": 322,
+      "s405.arc": 663,
+      "s406.arc": 646,
+      "s407.arc": 506
+    }
+  },
+  "Public Assembly": [
+    {
+      "archive": "s400-s407.arc (exact s### not determined)",
+      "evidence": "Live enemy-set census verified on i9-NUC 2026-11-08 (Mercenaries Public Assembly): uEm10 (majority), uEm11, uEm20, uEm21, uEm62. Stage-ID mapping not established from RomFS file evidence; Mercenaries stage archives do not embed pawn/em enemy tables or soft/merce scripts, so s### cannot be tied to this display name from the archives alone."
+    }
+  ],
+  "The Mines": [
+    {
+      "archive": "not determined (one of s400-s407.arc)",
+      "evidence": "No per-stage enemy archive determined: s4xx Mercenaries stage archives (s400.arc=590 entries, s401.arc=356 entries, s402.arc=458 entries, s403.arc=450 entries, s404.arc=322 entries, s405.arc=663 entries, s406.arc=646 entries, s407.arc=506 entries) contain no pawn/em/emNN/model embedded enemy pawn data and no soft/merce script entries (verified s400.arc: 0, s401.arc: 0, s402.arc: 0, s403.arc: 0, s404.arc: 0, s405.arc: 0, s406.arc: 0, s407.arc: 0). Enemy sets for this stage would need the display-name -> s### mapping plus soft/merce EmSet script inspection (or a live census) to settle."
+    }
+  ],
+  "Village": [
+    {
+      "archive": "not determined (one of s400-s407.arc)",
+      "evidence": "No per-stage enemy archive determined: s4xx Mercenaries stage archives (s400.arc=590 entries, s401.arc=356 entries, s402.arc=458 entries, s403.arc=450 entries, s404.arc=322 entries, s405.arc=663 entries, s406.arc=646 entries, s407.arc=506 entries) contain no pawn/em/emNN/model embedded enemy pawn data and no soft/merce script entries (verified s400.arc: 0, s401.arc: 0, s402.arc: 0, s403.arc: 0, s404.arc: 0, s405.arc: 0, s406.arc: 0, s407.arc: 0). Enemy sets for this stage would need the display-name -> s### mapping plus soft/merce EmSet script inspection (or a live census) to settle."
+    }
+  ],
+  "Ancient Ruins": [
+    {
+      "archive": "not determined (one of s400-s407.arc)",
+      "evidence": "No per-stage enemy archive determined: s4xx Mercenaries stage archives (s400.arc=590 entries, s401.arc=356 entries, s402.arc=458 entries, s403.arc=450 entries, s404.arc=322 entries, s405.arc=663 entries, s406.arc=646 entries, s407.arc=506 entries) contain no pawn/em/emNN/model embedded enemy pawn data and no soft/merce script entries (verified s400.arc: 0, s401.arc: 0, s402.arc: 0, s403.arc: 0, s404.arc: 0, s405.arc: 0, s406.arc: 0, s407.arc: 0). Enemy sets for this stage would need the display-name -> s### mapping plus soft/merce EmSet script inspection (or a live census) to settle."
+    }
+  ],
+  "Experimental Facility": [
+    {
+      "archive": "not determined (one of s400-s407.arc)",
+      "evidence": "No per-stage enemy archive determined: s4xx Mercenaries stage archives (s400.arc=590 entries, s401.arc=356 entries, s402.arc=458 entries, s403.arc=450 entries, s404.arc=322 entries, s405.arc=663 entries, s406.arc=646 entries, s407.arc=506 entries) contain no pawn/em/emNN/model embedded enemy pawn data and no soft/merce script entries (verified s400.arc: 0, s401.arc: 0, s402.arc: 0, s403.arc: 0, s404.arc: 0, s405.arc: 0, s406.arc: 0, s407.arc: 0). Enemy sets for this stage would need the display-name -> s### mapping plus soft/merce EmSet script inspection (or a live census) to settle."
+    }
+  ],
+  "Missile Area": [
+    {
+      "archive": "not determined (one of s400-s407.arc)",
+      "evidence": "No per-stage enemy archive determined: s4xx Mercenaries stage archives (s400.arc=590 entries, s401.arc=356 entries, s402.arc=458 entries, s403.arc=450 entries, s404.arc=322 entries, s405.arc=663 entries, s406.arc=646 entries, s407.arc=506 entries) contain no pawn/em/emNN/model embedded enemy pawn data and no soft/merce script entries (verified s400.arc: 0, s401.arc: 0, s402.arc: 0, s403.arc: 0, s404.arc: 0, s405.arc: 0, s406.arc: 0, s407.arc: 0). Enemy sets for this stage would need the display-name -> s### mapping plus soft/merce EmSet script inspection (or a live census) to settle."
+    }
+  ],
+  "Ship Deck": [
+    {
+      "archive": "not determined (one of s400-s407.arc)",
+      "evidence": "No per-stage enemy archive determined: s4xx Mercenaries stage archives (s400.arc=590 entries, s401.arc=356 entries, s402.arc=458 entries, s403.arc=450 entries, s404.arc=322 entries, s405.arc=663 entries, s406.arc=646 entries, s407.arc=506 entries) contain no pawn/em/emNN/model embedded enemy pawn data and no soft/merce script entries (verified s400.arc: 0, s401.arc: 0, s402.arc: 0, s403.arc: 0, s404.arc: 0, s405.arc: 0, s406.arc: 0, s407.arc: 0). Enemy sets for this stage would need the display-name -> s### mapping plus soft/merce EmSet script inspection (or a live census) to settle."
+    }
+  ],
+  "Prison": [
+    {
+      "archive": "not determined (one of s400-s407.arc)",
+      "evidence": "No per-stage enemy archive determined: s4xx Mercenaries stage archives (s400.arc=590 entries, s401.arc=356 entries, s402.arc=458 entries, s403.arc=450 entries, s404.arc=322 entries, s405.arc=663 entries, s406.arc=646 entries, s407.arc=506 entries) contain no pawn/em/emNN/model embedded enemy pawn data and no soft/merce script entries (verified s400.arc: 0, s401.arc: 0, s402.arc: 0, s403.arc: 0, s404.arc: 0, s405.arc: 0, s406.arc: 0, s407.arc: 0). Enemy sets for this stage would need the display-name -> s### mapping plus soft/merce EmSet script inspection (or a live census) to settle."
+    }
+  ]
+}
