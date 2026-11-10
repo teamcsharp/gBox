@@ -40,6 +40,9 @@ DEFAULTS = {
 }
 HISTORY_MAX_S = 20.0
 HISTORY_ROUNDS = 32
+# Switch only (operator 2026-11-10: "we should only be focusing on switch versions"): the rule runs on the three
+# Switch Mercenaries titles. A PS3/GameCube/Wii session keeps whatever its own bot already did.
+RING_TITLES = frozenset({"010018100CD46000", "01002A000CD48000", "010099A00BC1E000"})
 
 # (started, count) samples per round for the "not thinning" test, keyed by the round's evidence id.
 _HISTORY: dict = {}
@@ -235,7 +238,12 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
 
 
 def control(ad, prof, *, ring=None):
-    """The engine's one-line hook: build the per-round step that decides, fires and keeps the stats."""
+    """The engine's one-line hook: build the per-round step that decides, fires and keeps the stats.
+
+    None for a session whose title is not one of the Switch Mercenaries ids: the rule is Switch work (2026-11-10).
+    """
+    if str((prof or {}).get("map_id") or "") not in RING_TITLES:
+        return None
     title_mod = None
     try:
         title_mod = importlib.import_module((prof or {}).get("menus") or "")

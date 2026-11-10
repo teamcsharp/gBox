@@ -161,12 +161,20 @@ def test_the_engine_hook_fires_once_and_reports_the_receipt():
     assert again["fire"] is False and "cooldown" in live["ring_decision"]
     # a held input that cannot be released blocks the ring instead of firing over it
     live2 = stats()
-    blocked = GR.control(None, {}, ring=ring).__call__(snap(crowd), live2, 100.0, lambda keys: False)
+    blocked = GR.control(None, {"map_id": "01002A000CD48000"}, ring=ring).__call__(snap(crowd), live2, 100.0, lambda keys: False)
     assert blocked["fire"] is False and "keys did not release" in blocked["reason"]
 
 
 def test_the_hook_is_quiet_when_nothing_is_happening():
     live = stats()
-    step = GR.control(None, {}, ring=FakeRing())
+    step = GR.control(None, {"map_id": "010018100CD46000"}, ring=FakeRing())
     out = step(snap([]), live, 100.0, lambda keys: True)
     assert out["fire"] is False and "nothing worth a ring" in live["ring_decision"]
+
+
+def test_the_rule_is_switch_only():
+    # the operator retired the PS3/GameCube/Wii editions (2026-11-10): their sessions get no auto ring
+    assert GR.control(None, {"map_id": "BLUS30491"}) is None
+    assert GR.control(None, {"map_id": "G4BE08"}) is None
+    assert GR.control(None, {}) is None
+    assert callable(GR.control(None, {"map_id": "010099A00BC1E000"}))
