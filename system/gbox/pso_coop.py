@@ -867,6 +867,8 @@ DEATH_REFRESH_S = 4.0         # re-read the death log at most this often (cheap,
 # was the waiting_for_buddy deadlock root). These bound the follow/defend swarm.
 SWARM_FOLLOW_RADIUS = 45.0    # a follower beyond this of the leader closes the gap (geometry-free)
 SWARM_DEFEND_RADIUS = 90.0    # a follower engages any enemy within this of the leader (attack-dog)
+SWARM_ORBIT_RADIUS = 26.0    # an idle follower circles the leader on this ring (attack-dog, never standing still)
+SWARM_ORBIT_RATE = 0.9       # rad/s the orbit point advances around the leader (~7 s a lap)
 SWARM_SPREAD = 14.0           # keep at least this off the leader so followers do not stack on him
 BACKTRACK_RADIUS = 45.0       # P1 won't re-pick the door it just entered through when another exit exists
 DOOR_RETRAVERSE_COOLDOWN_S = 30.0  # hold a just-crossed door shut so P1 explores the NEW room's forward
@@ -1856,6 +1858,13 @@ class Controller:
             off = (px + (px - leader["x"] or SWARM_SPREAD), pz + (pz - leader["z"]))
             commands.append((slot, movement_keys(player, off), .12))
             steering[slot] = (player, off, "swarm_spread")
+        else:
+            # In the follow band with no threat: circle P1 instead of standing still. The
+            # waypoint rides a ring around the leader, so it also trails him while he leads.
+            ang = (now * SWARM_ORBIT_RATE + slot * 2.0) % (2 * math.pi)
+            wp = (leader["x"] + SWARM_ORBIT_RADIUS * math.cos(ang), leader["z"] + SWARM_ORBIT_RADIUS * math.sin(ang))
+            commands.append((slot, movement_keys(player, wp), .20))
+            steering[slot] = (player, wp, "swarm_orbit")
 
     def _force_log(self, room, reason):
         stats = getattr(self.inputs, 'stats', None)

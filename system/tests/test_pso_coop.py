@@ -1,3 +1,4 @@
+import math
 import copy
 import struct
 from types import SimpleNamespace
@@ -797,6 +798,12 @@ def test_publish_surface_writes_the_map_file_and_records_it_in_the_crystal(tmp_p
     assert ctrl.knowledge.recall(fp)["surface"]["cell_count"] == 3            # summary folded into the crystal
 
 
+def steer_of(ctrl, st):
+    s = {}
+    ctrl.swarm_follow(st, 2, st["players"][2], 100., [], C.FALLBACK, [], {}, s, {})
+    return s[2][2]
+
+
 def test_swarm_follower_closes_defends_and_never_navigates(tmp_path):
     """P2+ are pure swarm-followers: close the gap to P1 when far, hold in the
     follow band, engage any enemy near P1 - and never feed field nav / wall
@@ -809,7 +816,14 @@ def test_swarm_follower_closes_defends_and_never_navigates(tmp_path):
     band = _coop_room([], p1=(0., 0.), p2=(0., -25.))
     cmds = []
     ctrl.swarm_follow(band, 2, band["players"][2], 100., [], C.FALLBACK, cmds, {}, {}, {})
-    assert cmds == []                                                       # in the band: holds station
+    assert cmds and cmds[0][0] == 2 and steer_of(ctrl, band) == "swarm_orbit"   # in the band: circles P1, never stands
+    ring = []
+    for t in (0., 1., 2., 3.):
+        c, st = [], {}
+        ctrl.swarm_follow(band, 2, band["players"][2], t, [], C.FALLBACK, c, {}, st, {})
+        ring.append(st[2][1])
+    assert len({(round(x), round(z)) for x, z in ring}) > 1                 # the waypoint moves around the leader
+    assert all(abs(math.hypot(x, z) - C.SWARM_ORBIT_RADIUS) < 1e-6 for x, z in ring)
     near = _coop_room([], p1=(0., 0.), p2=(0., 5.))
     enemy = {"kind": "enemy", "class": "TObjEneMoja", "ptr": "80DEAD00", "room": 10,
              "x": 0., "z": 9., "hp": 100, "hp_max": 100}
