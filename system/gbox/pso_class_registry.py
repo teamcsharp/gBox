@@ -97,6 +97,67 @@ CLASS_NAMES = (
 )
 
 
+#: the classes whose vtable carries their identity in its first word: {class index: vtable address}.
+#
+# A class's vtable begins with a pointer to its **registry slot** (`TABLE_ADDRESS + index*4`), then `0x00010000`, two
+# zero words, the method pointers and two data pointers (see `0x804b4280` for class 6 and `0x804b4308` for class 8).
+# A whole-DOL scan for such headers finds only **38 of the 148 named classes** - the executable instantiates fewer than
+# a third of its class names as C++ objects, and the whole `TObj*Warp*` family (24 classes, including the city pad's
+# `TObjCityMainWarp` `0x5c` and `TObjCityAreaWarp` `0x5d`) is *not* among them: PSO dispatches those objects by class
+# id somewhere else, which is why looking for a pad vtable was the wrong tree (docs/research/pso-travel-and-gate.md).
+VTABLES = {
+    6: 0x804B4280, 8: 0x804B4308, 10: 0x804B4358, 12: 0x804B43A8, 14: 0x804B43F8, 26: 0x804B483C,
+    28: 0x804B4AE8, 29: 0x804B4B00, 30: 0x804B4B18, 34: 0x804B4EC4, 46: 0x804B53D8, 47: 0x804B5410,
+    86: 0x804B5EB8, 87: 0x804B5ED0, 88: 0x804B5F9C, 89: 0x804B5FB8, 90: 0x804B5FD4, 98: 0x804B620C,
+    99: 0x804B6230, 100: 0x804B624C, 104: 0x804B6350, 105: 0x804B6374, 106: 0x804B6394, 107: 0x804B63B4,
+    116: 0x804B70AC, 118: 0x804B713C, 119: 0x804B7160, 128: 0x804B7884, 130: 0x804B7928, 140: 0x804B7C68,
+    141: 0x804B7C80, 142: 0x804B7C98, 152: 0x804B7EE0, 166: 0x804B856C, 192: 0x804B8D78, 194: 0x804B8F68,
+    196: 0x804B8FE8, 197: 0x804B9000,
+}
+
+
+def vtable(index: int):
+    """The class's vtable address, or None when this build does not instantiate it as a C++ object."""
+    return VTABLES.get(index)
+
+
+def instantiated():
+    """The class indexes that have a vtable (the ones this executable actually builds as objects)."""
+    return sorted(VTABLES)
+
+
+def derive_vtables(dol: bytes) -> dict:
+    """Re-read the census from an image -> {class index: [vtable addresses]}, or raise RegistryError."""
+    offs, addrs, sizes = (struct.unpack_from(">18I", dol, o) for o in (0x00, 0x48, 0x90))
+    text_addr = addrs[1]
+    found = {}
+    for i in range(18):
+        if not sizes[i] or addrs[i] == text_addr:
+            continue
+        blob = dol[offs[i]:offs[i] + sizes[i]]
+        for p in range(0, len(blob) - 3, 4):
+            word = struct.unpack_from(">I", blob, p)[0]
+            if TABLE_ADDRESS <= word < TABLE_ADDRESS + SLOTS * 4:
+                found.setdefault((word - TABLE_ADDRESS) // 4, []).append(addrs[i] + p)
+    return {slot: sorted(where) for slot, where in sorted(found.items())}
+
+
+def verify_vtables(dol: bytes) -> dict:
+    """Compare the pinned census with an image's -> {ok, mismatches}."""
+    derived = derive_vtables(dol)
+    mismatches = []
+    for index, want in VTABLES.items():
+        got = derived.get(index)
+        if not got:
+            mismatches.append({"class": index, "why": "no vtable header in the image"})
+        elif got[0] != want:
+            mismatches.append({"class": index, "pinned": hex(want), "image": hex(got[0])})
+    extra = [index for index in derived if index not in VTABLES]
+    if extra:
+        mismatches.append({"why": f"{len(extra)} vtable(s) the pinned census does not know", "classes": extra})
+    return {"ok": not mismatches, "mismatches": mismatches}
+
+
 def name(index: int):
     """The class name for a class index, or None for an empty slot / out-of-range index."""
     if not isinstance(index, int) or not 0 <= index < SLOTS:

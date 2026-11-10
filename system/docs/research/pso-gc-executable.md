@@ -166,6 +166,25 @@ Also present: `gsl_set_object.gsl` / `gsl_set_enemy.gsl` / `gsl_set_event.gsl` (
 It does **not** name any individual `*o.dat` / `*e.dat`; those names are assembled at run time, which is why a
 string search for `map_forest01_00o.dat` in the DOL finds nothing while the archive is referenced directly.
 
+## 5c. The class-vtable census (and why the placement classes are not C++ objects)
+
+A class's vtable, where one exists, begins with a pointer to its **registry slot** (`0x805D3138 + index*4`), then
+`0x00010000`, two zero words, its method pointers and two data pointers - e.g. `0x804B4280` for class 6, `0x804B4308`
+for class 8. A whole-DOL scan for such headers finds **38 classes** (`gbox/pso_class_registry.VTABLES`, verified against
+the disc), and they are all in `0x804B4200`-`0x804B9000`.
+
+**The load-bearing detail:** every one of those 38 slots is a slot the 148-name table leaves **empty**. So the
+executable's C++ objects are *engine* classes whose names are not in the placement-class table, and **none of the named
+`TObj*` placement classes is a C++ object with a vtable** - not the doors, not the sensors, not the switches, not the
+whole `TObj*Warp*` family. PSO's placements are plain structs dispatched by class id through a table that is still not
+located; a vtable hunt is the wrong tree for every one of them. (Checked and rejected on the way: the two big
+code-pointer arrays at `0x804C4010` and `0x804FC8F8` are *not* per-class method tables - their entries land inside an
+event-message `switch` dispatcher and a text/glyph routine.)
+
+The next step for the placement-class loader is therefore by *behaviour*: find the code that reads a placement's `kind`
+and see what it installs, and check `pso_ram`'s actor layout for a code-pointer field (a live actor dump settles which
+field).
+
 ## 6. Encrypted or checksummed
 
 - **On the disc:** the only cipher is PSO's own v2 stream cipher over a PRS stream, used by `.pr2` / `.pr3` (the text
