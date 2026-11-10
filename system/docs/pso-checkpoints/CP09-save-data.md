@@ -229,3 +229,34 @@ applied to `PSO_SYSTEM` and `PSO_CHARACTER` must both produce plainer output, wh
 still decode (the cipher is key-driven, not self-verifying).
 
 Decompiles kept in `docs/research/pso-save-cipher.txt`.
+
+## Round 54: first implementation of the cipher does not reproduce it - and why
+
+Implemented the ring, the keystream and the word cipher in Python and tried twelve (recurrence variant x seed) combinations
+against the real `PSO_CHARACTER` body (seeds: `0`, `1`, the directory entry's time `0x3285d13d`, and its complement;
+recurrences: `a(k+1) = seed - a(k)`, `a(k+1) = a(k) - seed`, and a constant-seed form):
+
+| variant / seed | zero bytes | printable |
+|---|---|---|
+| `seed_minus` / any | 0.00 | 0.37-0.38 |
+| `a_minus_seed` / any | 0.00 | 0.37-0.38 |
+| `const_s` / any | 0.00 | 0.37-0.38 |
+
+**None produces structured output** (a correct decode should make most of a character record zero/fixed-field data). So the
+round-53 structure is right in shape but my transcription of at least one of the three small routines is wrong - the
+decompiled C is ambiguous exactly where it matters:
+
+* `FUN_8007c48c`'s recurrence: the decompile reassigns `param_2 = param_1[iVar1 + 1]` inside the loop, which makes the
+  recurrence `a = a - a = 0` if read literally - so the loop's real operand order is lost in the C;
+* `FUN_8007c3e0`'s returned index (`state[state[0] + 1]` after the cursor update) and `FUN_8007c438`'s two index ranges
+  (`state[k+1] -= state[k+0x20]`, then `state[k+1] -= state[k-0x17]`) are transcription-sensitive;
+* the byte table is **not** at `0x80500498` as read by file offset: that address yields float data (`3f 80 00 00` = 1.0f),
+  so `DAT_80500498` in the decompiled `FUN_8007c134` is either a different symbol or the table lives at another offset.
+
+**Next step is exact, not exploratory:** transcribe the **assembly** of the three small routines
+(`FUN_8007c48c` 148 B, `FUN_8007c438` 84 B, `FUN_8007c3e0` 88 B) and of `FUN_8007c134`'s table load, then reimplement. The
+C is not reliable enough for a subtractive ring.
+
+What this round does establish: the cipher cannot be reproduced from the decompiled C alone, the negative result is
+recorded rather than hand-waved, and the acceptance test for the next attempt is objective (a decoded record must lose its
+~99.6 % entropy).
