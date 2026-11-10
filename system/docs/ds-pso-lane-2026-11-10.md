@@ -2246,16 +2246,44 @@ restores the window.
 2. With the set resident, compare the record's neighbours against the entity table to derive the room-local offset from a
    real correspondence rather than a coincidence.
 
+## Round 44 (2026-11-10) — hand-off
+
+The operator handed this lane to a project manager, so this round is a state freeze rather than a new experiment.
+`docs/PSO-HANDOFF-2026-11-10.md` is the brief: per-package status with its evidence, the three blockers, the live
+environment (server, worker, sessions, mods, helper scripts), the launch-gate and `mod`-query-parameter traps, and a
+prioritised next-step list.
+
+### What it says, briefly
+
+* **Done and tested:** the disc decode and catalogue (P2), the executable map where P1/P3-P5 needed it (P2b), the map
+  writer (P6a) and the editorial layer over it (P6b's backend), the player-model build (P7a), and the swap-fit rule that
+  predicts which raw model swaps render and which crash (P7b).
+* **Blocked:** P1's field leg. Boot to Pioneer 2 is six frame-verified presses; two-player co-op is reproducible; movement
+  is reproducible; **no route to the surface has been found**, because the single-player intro cannot be exited and the
+  guild counter has not been located. P3-P5 and both remaining proofs sit behind it.
+* **Unproven:** P6a's moved object has never been *seen* in game (the writer is byte-correct and its disc boots). The
+  missing measurement is the room-local to world offset for a room, and the brief gives the method -- match the four room-10
+  door entities' six pairwise distances against a set's records, which a translation preserves.
+
+### Tests at hand-off
+
+100 passing across the PSO modules (`test_pso_*`, `test_pad_bind`), verified immediately before this commit.
+
+### Nothing half-applied
+
+The working tree was clean, `main` matched `origin/main`, and every PSO change from this session is merged. The live
+sessions, the built mods and the untracked helper scripts are all named in the hand-off brief so the next session can
+pick them up or discard them deliberately.
+
 ## 7. Next
 
-1. **Load the room that owns `map_city00d.dat`, then rerun the RAM scanner** (it is validated: the player's own
-   coordinates appear 4x each as big-endian floats). From the lobby the placement set is **not** resident, which is
-   why round 42's mod could not be confirmed live.
-2. With the set resident, compare a record's neighbours against the entity table to derive the **room-local to world
-   offset** from a real correspondence instead of a coincidence.
-3. **Restore the Dolphin window before driving**: `win_send_keys` raises (`adapters.py:622`) when it is not
-   foreground, and a session parked behind the round-35 crash dialog is stuck until it is.
-4. **P1's field leg**, **P6b's page** (UI over a working backend) and **P7a's rigging** remain open.
+The hand-off brief (`docs/PSO-HANDOFF-2026-11-10.md`) carries the prioritised list. In order:
 
-P6a status after this round: writer round-trips, a placement-moved disc builds/boots/plays, and the two verification
-attempts have each ruled out a method (world-position matching, memory scan from the lobby) rather than the feature.
+1. **P1's field leg** -- walk *through* the central dome's large doorways (around (157,102) in room 20), explore room 30
+   beyond (-236,18), and look for the quest/teleport code path in the executable. One of these unlocks P3-P5, P6a's
+   proof and P7b's proof at once.
+2. **The room-local to world offset**, by matching the four room-10 door entities' pairwise distances against a
+   placement set -- translations preserve distances, so the match identifies the set and the offset in one step.
+3. **P6b's page** as UI over `gbox.pso_editor` (its backend is finished and tested).
+4. **P7a's rigging** -- `build_swap` adapted for GC (big-endian body, GVR textures, flat names), gated by
+   `pso_swapfit.compare`.
