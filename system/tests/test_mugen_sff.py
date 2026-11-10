@@ -61,3 +61,43 @@ def test_inventory(tmp_path):
     inv = m.inventory(str(tmp_path))
     assert inv["roster_count"] == 1 and inv["characters"][0]["sff_images"] == 1 and inv["characters"][0]["error"] is None
     assert len(inv["engine_sha256"]) == 64
+
+
+def _rle_pcx(w, h, rows, pal):
+    hdr = bytearray(128)
+    hdr[0], hdr[1], hdr[2], hdr[3] = 0x0A, 5, 1, 8
+    struct.pack_into("<HHHH", hdr, 4, 0, 0, w - 1, h - 1)
+    hdr[65] = 1
+    struct.pack_into("<H", hdr, 66, w)
+    body = b"".join(bytes([0xC0 | w, r]) for r in rows)  # each row = one run of w pixels
+    return bytes(hdr) + body + b"\x0c" + pal
+
+
+def test_decode_pcx_and_png_roundtrip():
+    import zlib
+    pal = bytes(range(256)) * 3
+    pcx = _rle_pcx(3, 2, [5, 7], pal)  # two rows, each a run of w pixels
+    w, h, px, p = m.decode_pcx(pcx)
+    assert (w, h) == (3, 2) and px == bytes([5, 5, 5, 7, 7, 7]) and p == pal
+    png = m.indexed_to_png(w, h, px, p)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    i = png.index(b"IDAT")
+    ln = struct.unpack(">I", png[i - 4:i])[0]
+    assert zlib.decompress(png[i + 4:i + 4 + ln]) == b"\x00\x05\x05\x05\x00\x07\x07\x07"
+
+
+def test_decode_pcx_rejects_truncated():
+    pcx = _rle_pcx(4, 4, [1, 1, 1, 1], b"")
+    with pytest.raises(m.MugenError):
+        m.decode_pcx(pcx[:132])
+
+
+def test_linked_and_shared_palette():
+    pal = bytes(range(256)) * 3
+    a = _rle_pcx(2, 1, [3], pal)
+    b = _rle_pcx(2, 1, [4], b"")
+    d = _sff([(0, 0, a, 0), (0, 1, b, 0), (0, 2, None, 1)])
+    parsed = m.parse_sff1(d)
+    w, h, px, p, ax = m.sprite_pixels(d, parsed, 1)
+    assert px == bytes([4, 4]) and p == pal
+    assert m.sprite_pixels(d, parsed, 2)[2] == bytes([4, 4])

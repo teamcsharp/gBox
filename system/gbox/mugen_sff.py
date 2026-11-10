@@ -185,3 +185,77 @@ def inventory(root, hash_exe=True):
             rec["error"] = str(ex)
     return {"engine_exe": exe, "engine_sha256": sha256_file(exe) if (exe and hash_exe) else None,
             "roster_count": len(chars), "characters": chars}
+
+
+# ---------------------------------------------------------------- PCX decode / export (read-only)
+
+def decode_pcx(pcx: bytes):
+    """Decode an 8bpp single-plane RLE PCX -> (width, height, indices bytes, palette 768B|None). Bounded and strict."""
+    if len(pcx) < 128 or pcx[0] != 0x0A or pcx[2] != 1 or pcx[3] != 8 or pcx[65] != 1:
+        raise MugenError("unsupported PCX (need 8bpp, 1 plane, RLE)")
+    xmin, ymin, xmax, ymax = struct.unpack_from("<HHHH", pcx, 4)
+    w, h = xmax - xmin + 1, ymax - ymin + 1
+    stride = struct.unpack_from("<H", pcx, 66)[0]
+    if not (0 < w <= 4096 and 0 < h <= 4096) or stride < w:
+        raise MugenError("PCX dimensions out of range")
+    pal = pcx[-768:] if len(pcx) >= 897 and pcx[-769] == 0x0C else None
+    end = len(pcx) - (769 if pal else 0)
+    out, i, need = bytearray(), 128, stride * h
+    while len(out) < need:
+        if i >= end:
+            raise MugenError("PCX RLE data truncated")
+        b = pcx[i]
+        i += 1
+        if b >= 0xC0:
+            if i >= end:
+                raise MugenError("PCX RLE data truncated")
+            out += bytes([pcx[i]]) * (b & 0x3F)
+            i += 1
+        else:
+            out.append(b)
+    if len(out) != need:
+        raise MugenError("PCX RLE run overflows image")
+    rows = b"".join(bytes(out[y * stride:y * stride + w]) for y in range(h))
+    return w, h, rows, pal
+
+
+def sprite_pixels(data: bytes, parsed: dict, index: int, _depth=0):
+    """Resolve linked sprites and same_palette; return (w, h, indices, palette768, axis)."""
+    sp = parsed["sprites"]
+    s = sp[index]
+    if s["kind"] == "linked":
+        if _depth > 8:
+            raise MugenError("link chain too deep")
+        w, h, px, pal, _ = sprite_pixels(data, parsed, s["linked"], _depth + 1)
+        return w, h, px, pal, s["axis"]
+    if s["kind"] != "pcx":
+        raise MugenError("sprite %d is not a PCX" % index)
+    w, h, px, pal = decode_pcx(data[s["offset"]:s["offset"] + s["size"]])
+    if pal is None:
+        j = index - 1
+        while j >= 0 and pal is None:  # same_palette: inherit from the nearest earlier sprite with one
+            if sp[j]["kind"] == "pcx" and "palette_offset" in sp[j]:
+                pal = data[sp[j]["palette_offset"]:sp[j]["palette_offset"] + 768]
+            j -= 1
+    return w, h, px, pal, s["axis"]
+
+
+def indexed_to_png(w, h, px: bytes, pal: bytes) -> bytes:
+    """Minimal PNG writer (palette type 3; index 0 transparent, as MUGEN treats it)."""
+    import zlib
+
+    def chunk(t, d):
+        c = struct.pack(">I", len(d)) + t + d
+        return c + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+
+    raw = b"".join(b"\x00" + px[y * w:(y + 1) * w] for y in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 3, 0, 0, 0))
+            + chunk(b"PLTE", pal[:768].ljust(768, b"\0")) + chunk(b"tRNS", b"\x00")
+            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+def export_sprite_png(data: bytes, parsed: dict, index: int) -> bytes:
+    w, h, px, pal, _ = sprite_pixels(data, parsed, index)
+    if pal is None:
+        raise MugenError("sprite %d has no palette" % index)
+    return indexed_to_png(w, h, px, pal)
