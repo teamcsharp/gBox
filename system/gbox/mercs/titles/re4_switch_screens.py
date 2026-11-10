@@ -147,11 +147,17 @@ PROMPT_BOXES = {"cancel_title": (375, 200, 590, 235), "cancel_yes": (410, 280, 4
                 "cancel_no": (410, 315, 470, 348), "cur_yes": (385, 283, 408, 307), "cur_no": (385, 318, 408, 343),
                 "load_title": (405, 330, 560, 365), "load_opts": (445, 405, 590, 440)}
 PROMPT_TEXT = 150.0
+# both prompts sit on a dark overlay (2026-11-10: these boxes average 16-23 around them; Select Player's plate,
+# portraits and case read 41-66 there and lit the Load data? text boxes): no dark surround, no prompt
+PROMPT_DARK_BOXES = ((620, 395, 900, 445), (600, 330, 900, 365), (300, 470, 700, 520))
+PROMPT_DARK_MAX = 35.0
 
 
 def prompt_kind(gray) -> dict | None:
     """{"prompt": "cancel", "cursor": "yes" | "no" | None} for Cancel loading?, {"prompt": "load"} for Load
     data?, else None (gray: the frame's luma at 960x540)."""
+    if any(float(gray[y0:y1, x0:x1].mean()) > PROMPT_DARK_MAX for x0, y0, x1, y1 in PROMPT_DARK_BOXES):
+        return None
     f = {k: float((gray[y0:y1, x0:x1] > PROMPT_TEXT).mean()) for k, (x0, y0, x1, y1) in PROMPT_BOXES.items()}
     if f["cancel_title"] > 0.015 and f["cancel_yes"] > 0.01 and f["cancel_no"] > 0.01 and f["load_opts"] < 0.01:
         cur = "yes" if f["cur_yes"] > 0.1 else "no" if f["cur_no"] > 0.1 else None
@@ -241,7 +247,10 @@ class Reader:
         return {"where": self.steer, "moved": self.steer_moves, "steering": True}
 
     def read(self, png: bytes) -> dict:
-        scr = self._steered(classify(png))
+        raw = classify(png)
+        if raw.get("where") == "story_prompt" and raw.get("prompt") == "load" and not self.story_armed:
+            raw = {"where": "unknown"}           # Load data? only ever follows the list (before the steering)
+        scr = self._steered(raw)
         where = scr["where"]
         if where == "select_stage":
             self.stage_picked = True
@@ -259,8 +268,6 @@ class Reader:
         # the story save list, and the unnamed confirm drawn over it: both are cancelled, never confirmed
         if where == "story":
             self.story_armed = True
-        elif where == "story_prompt" and scr.get("prompt") == "load" and not self.story_armed:
-            scr = {"where": "unknown"}           # Load data? only ever follows the list: anything else is not it
         elif where in ("story_prompt",) or (where == "unknown" and self.story_armed):
             scr = scr if where == "story_prompt" else {"where": "story_prompt"}   # a named prompt keeps its kind
         elif where not in ("unknown", "menu"):
