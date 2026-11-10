@@ -619,3 +619,24 @@ game deadlocked, not that the emulator paused.
      Helena's head is unstable rather than strictly fatal — it must be excluded.
 3. That single bad donor explains the 36-file non-body hang as well (Helena's head was in it). The 45-file roster may
    also involve the body group, which is the next test: the full roster **minus the Helena files** (41 arcs).
+
+## Round 23 status (2026-11-09, ~20:20 CST): the body donors load and play; the 41-arc hang is in hands/accessories
+
+| Build (update ExeFS + …) | Result |
+| --- | --- |
+| 7 heads (no Helena) | runs a full round (RESULTS evidence, round 22) |
+| **9 body arcs** | **loads and plays**: stage select -> "Time Bonus" tip -> LOADING -> live round, timer 01'31"33, 000/150, enemies in the street |
+| 41 arcs (whole roster minus the 4 Helena head/accessory files) | hangs at `loading` |
+| 45 arcs | crashes |
+
+Two findings:
+
+1. The **body donors are loadable** — the first body-swap build to reach gameplay. But the player model renders as a
+   **broken, distorted mesh** (a giant malformed shape in the foreground), which matches their ~0.09-0.48 resource
+   ratios: they are re-encoded donor arcs whose skeleton/skinning does not fit this build. So the reskin works at the
+   engine level and needs correct donor bodies for a good look.
+2. Since the 7-head set and the 9-body set both run, the 41-arc hang must come from a **hand or accessory** donor (8
+   hands + 8 AcHeads remain untested). That is the next bisect: hands alone, then AcHeads alone.
+
+Note: the continue/save prompt appears on every build with a saved state; declining it (right + A) is now part of the
+drive, and the bodies-only run needed that decline before it could reach the stage select.
