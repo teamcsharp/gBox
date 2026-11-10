@@ -717,6 +717,21 @@ document.addEventListener("contextmenu", e => {
       <button data-a="stop" style="color:var(--bad)">Stop</button><div class="mut tmst"></div></div>`;
   el.style.left = Math.min(innerWidth - 330, e.clientX) + "px"; el.style.right = "auto"; el.classList.add("on"); TRAY.open = true; trayFit();
 });
+// right-click a tray notification: Close removes that entry from the tray (the build or session it mentions is untouched)
+document.addEventListener("contextmenu", e => {
+  const n = e.target.closest("#traypop .tnote[data-id]"); if (!n) return; e.preventDefault(); e.stopPropagation();
+  let m = $("#tnmenu"); if (!m) { m = document.createElement("div"); m.id = "tnmenu"; m.setAttribute("role", "menu"); document.body.append(m);
+    m.style.cssText = "position:fixed;z-index:100;background:var(--bg,#16171c);border:1px solid var(--line,#333);border-radius:8px;padding:4px;box-shadow:0 10px 30px #000a;min-width:140px;font-size:13px"; }
+  m.innerHTML = '<button class="act" data-close style="width:100%;text-align:left">✕ Close</button>';
+  m.style.left = e.clientX + "px"; m.style.top = e.clientY + "px"; m.style.display = "block"; fitMenu(m, e.clientX, e.clientY);
+  m.querySelector("[data-close]").onclick = async () => {
+    m.style.display = "none";
+    try { await api(`/api/notify/${encodeURIComponent(n.dataset.id)}/dismiss`, {}); n.remove();
+      TRAY.notes = TRAY.notes.filter(y => y.id !== n.dataset.id); } catch {}
+    trayTick();
+  };
+}, true);
+document.addEventListener("mousedown", e => { const m = $("#tnmenu"); if (m && !m.contains(e.target)) m.style.display = "none"; });
 document.addEventListener("click", async e => {
   const mb = e.target.closest(".tmenu button");
   if (mb) {

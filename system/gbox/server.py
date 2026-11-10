@@ -898,6 +898,13 @@ def create_app(config: Config) -> FastAPI:
         store.put("notify", nid, n | {"read": True})
         return {"ok": True}
 
+    @app.post("/api/notify/{nid}/dismiss")
+    def notify_dismiss(nid: str, actor=Depends(auth)):
+        """Close a tray entry (right-click -> Close): removes the notification only, never the build or session."""
+        store.get("notify", nid) or _404()
+        store.delete("notify", nid)
+        return {"ok": True}
+
     class LabelIn(BaseModel):
         label: str = ""                     # shown on the session's tray icon
         owner: str = "you"                  # you | agent: agents' test sessions are shown dimmed

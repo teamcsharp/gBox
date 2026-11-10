@@ -334,3 +334,14 @@ def test_a_renamed_build_shows_its_official_name_in_the_tray(tmp_path):
         assert store.get("notify", n["id"])["items"][0]["mod_title"] == "Sonic Adventure: cast as Sonic Heroes"
         c.patch(f"/api/builds/{GID}/cast_g1_sonic", headers=h, json={"display_name": ""})
         assert notes(c, h)[0]["title"] == "Sonic Adventure: cast as Sonic Heroes is ready"
+
+
+def test_a_tray_entry_can_be_closed(tmp_path):
+    """Right-click -> Close: POST /api/notify/{id}/dismiss removes only that entry."""
+    cfg, app, store, h = plane(tmp_path)
+    with TestClient(app) as c:
+        a = c.post("/api/notify", headers=h, json={"title": "A", "kind": "ready"}).json()["id"]
+        b = c.post("/api/notify", headers=h, json={"title": "B", "kind": "ready"}).json()["id"]
+        assert c.post(f"/api/notify/{a}/dismiss", headers=h).json()["ok"]
+        assert [x["id"] for x in c.get("/api/notify", headers=h).json()] == [b]
+        assert c.post(f"/api/notify/{a}/dismiss", headers=h).status_code == 404
