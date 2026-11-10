@@ -57,6 +57,27 @@ a reader bug.
 * the character save begins with its ASCII header;
 * a 2 MiB card is accepted by `read()`.
 
+## The payload is ciphered or packed - measured (step 4's first half)
+
+Comparing the three PSO saves on the card:
+
+| save | header (plain) | body |
+|---|---|---|
+| `PSO_SYSTEM` (3 blocks) | `PSO EPISODE I & II Plus` + `SYSTEM_FILE ` | no printable run of 6+ bytes at all |
+| `PSO_CHARACTER` (11 blocks) | ... + `CHARACTER_FILE ` | 116 printable runs of 6+, all gibberish (`pBRWYPA`, `6+4QJ;=`); no `BQF`, no `HUmar`/`HUcast`/`FOnewearl`, no `Forest`, no `Level` anywhere |
+| `PSO_GUILDCARD` (10 blocks) | ... + `GUILDCARD_FILE ` | same: 93 gibberish runs |
+
+So the **header is plaintext and the payload after `0x40` is not**: a plaintext character save would contain the
+character's name and class somewhere, and the name `BQF` appears nowhere in the file. The body also holds a
+**10,828-byte run of zeros at `0x135B4`**, which a pure XOR stream cipher would not produce over a zeroed plaintext
+region - so the encoding could be a cipher, a packed/compressed format, or both per section.
+
+**The six CARD functions are glue, not the codec:** decompiled them all (`801fbb7c` 96 B, `801fc564` 116 B, `801fd94c`
+68 B, `801fe8a8` 144 B, `801fe938` 152 B, `802008e8` 176 B, kept in `docs/research/pso-card-decompiles.txt`) and none
+contains a XOR, a rotation or a 4-byte constant - they call out to the codec. So naming the encoding means following their
+callees, or flipping one payload byte under a live jump state and watching the game accept or reject it (the latter
+distinguishes a cipher from a packed format, and neither is possible in this round).
+
 ## Next (needs the live window)
 
 Decode `PSO_CHARACTER`'s per-character record layout (name, class, level, position, flags - where "BQF has entered
