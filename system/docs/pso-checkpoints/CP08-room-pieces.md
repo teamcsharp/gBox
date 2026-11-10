@@ -49,3 +49,29 @@ not been decoded yet - that is CP6.2's "vertices not yet interpreted" remainder,
 - no live session is required either way.
 
 Tests: none changed.
+
+## Round 76: CP8's accept, done in its GameCube form - every room's footprint and origin read from its `r.rel`
+
+Option 2 from round 71 was taken, and it works better than expected. Each GameCube `Scene/map_<area>_<room>r.rel` opens
+with **four 3-float points** - the room's footprint corners:
+
+```
+Scene/map_aancient01_00r.rel   (-100, 0, -150) (-100, 0, 150) (100, 0, -150) (100, 0, 150)   -> 200 x 300, origin (0,0,0)
+Scene/map_aancient01_03r.rel   (-75, 0, -20)  (-55, 0, -20)  (-55, 0, 20)   (-75, 0, 20)    ->  20 x  40, origin (-65,0,0)
+Scene/map_aancient01_04r.rel   (150, 0, 55)   (175, 0, 55)   (175, 0, 95)   (150, 0, 95)    ->  25 x  40, origin (162.5,0,75)
+```
+
+**New `gbox/pso_rooms.py`:** `room_quad(data)` -> `{corners, origin, size, min, max, y, flat, slope}` and
+`rooms(names, read)` -> `[{name, origin, size}]`.
+
+The measurement that mattered: a flatness check was wrong. **12 of the 141 real `r.rel` files are *sloped*** - `map_boss05r.rel`
+spans y 1.23..7.00, `map_jungle03_00r.rel` spans -40..15, `map_darkfalz00r.rel` 4..5 - so a non-flat quad is data, and the
+reader now records `flat`/`slope` instead of refusing it. (A footprint with zero x or z extent *is* refused.)
+
+**Tests:** `tests/test_pso_rooms.py` **5 passed** - the axis-aligned footprint, the sloped-quad case, the zero-area refusal,
+the truncation refusal, and the real disc (141 rooms parsed, the measured `00`/`04` values, and exactly **12** sloped rooms).
+
+**CP8's accept, restated on this data:** *"a reader that lists the rooms with their origins"* - done for the GameCube areas
+(141 rooms, origins and sizes measured). *"a test that a known door entity lands on a section boundary"* - not yet: that
+needs the area's placement set joined to these rectangles, which is a small follow-up on this branch (the entities come from
+`pso_setdata`'s records and the join is a point-in-rectangle test).
