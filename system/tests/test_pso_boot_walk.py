@@ -70,7 +70,6 @@ def test_a_walk_that_stalls_before_the_town_is_named():
 
 
 def test_in_field_reports_town_and_field_from_floor_alone():
-    town = W.Model if False else None
     g = Model()
     assert W.in_field(g.state)["in_town"] is True and W.in_field(g.state)["in_field"] is False
     g.at = Model.SCREENS.index("field")
@@ -83,3 +82,40 @@ def test_the_checkpoints_name_what_ram_can_prove():
                                            "accept_new", "episode_one"]
     assert W.BOOT_STEPS[0][2] == "left_title"
     assert W.BOOT_STEPS[-1][2] == "in_town"
+
+
+def test_the_attract_skip_presses_start_until_the_menu_appears():
+    class Attract(Model):
+        MODES = dict(Model.MODES, title=0, main_menu=1)
+
+        def __init__(self):
+            super().__init__()
+            self.at = 0                      # mode 0 = attract
+            self.left = 3                    # three START presses before the menu shows
+
+        def press(self, keys):
+            self.presses.append(tuple(keys))
+            if self.left > 0:
+                self.left -= 1
+                return                       # still the attract: START skips the movie but does not open a menu
+            self.at = 1
+
+    g = Attract()
+    out = W.reach_title(g.state, g.press, settle=0.0, sleep=lambda _s: None)
+    assert out["ok"] is True and out["presses"] == 4 and out["state"]["mode"] == 1
+
+
+def test_the_attract_skip_gives_up_and_says_how_long_it_tried():
+    class Stuck(Model):
+        MODES = dict(Model.MODES, title=0)
+
+        def __init__(self):
+            super().__init__()
+            self.at = 0
+
+        def press(self, keys):
+            self.presses.append(tuple(keys))
+
+    g = Stuck()
+    out = W.reach_title(g.state, g.press, tries=5, settle=0.0, sleep=lambda _s: None)
+    assert out["ok"] is False and out["presses"] == 5 and "attract" in out["why"]

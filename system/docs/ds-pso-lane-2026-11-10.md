@@ -542,10 +542,62 @@ Input tests still pass (78 passed, 1 skipped, including `test_pso_controls`, `te
 Control was handed back to the bot. The recorder (`D:\gBox\pso-ds\pso_demo_rec.py`) is still running and captures
 all four XInput slots plus the RAM state, so operator play from here on is still training data.
 
+## Round 8 (2026-11-10) — the cold-boot walk as a script, and the pad binding that stops it running
+
+### `gbox/pso_boot_walk.py` (+7 tests)
+
+The guide's P1 turned into a module: a deterministic press script from the title to Pioneer 2, with checkpoints taken
+only where RAM can actually prove something (round 3 established that `0x80516303` is a coarse mode, not a screen id,
+so a walk must not pretend the byte names a menu):
+
+| step | keys | checkpoint |
+|---|---|---|
+| `press_start` | START | the mode leaves the attract family, or a player appears |
+| `offline_game` | `ddown`, A | none (the cursor move is not observable) |
+| `single_mode` | A | the mode is no longer SELECT GAME MODE (9) |
+| `slot_a` | A | ditto |
+| `accept_new` | `dup`, A | none (answers "create a new Character?" when it appears) |
+| `episode_one` | A | **FLOOR 0 with a player** = Pioneer 2 |
+
+`walk()` stops the moment a player exists in Pioneer 2, reports every step's state, and never retries a step that did
+nothing -- it names it. `reach_title()` handles the one honest exception: the attract movie and the PRESS START title
+both read mode `0`, and START is the right button in both, so it presses START up to a bound to skip the movie and says
+how many presses it took. `in_field()` is the accept-evidence reader (floor / in_town / in_field / entities).
+
+Tests model the boot screen by screen, including: a title that does not advance (one press, then a named failure), an
+A that does nothing on SELECT GAME MODE, the attract needing several START presses, and starting the walk after the
+title press.
+
+### The live run failed, and the reason is the pad binding again
+
+Cold launch on the restarted worker: session `68d6f3754e7e495a-904a3dfc34324503`. `reach_title` worked -- one START
+press took the mode `0 -> 1`, the title menu. Then `walk()` ran its five steps and **the mode never left `1`**: the
+presses were not reaching the game.
+
+`GCPadNew.ini` again binds `XInput/0/Gamepad`, and the slots are the same as before the restart:
+
+```
+slot 0  buttons 0x0  lx 0      ly 0        <- the phantom virtual pad, exactly zero forever
+slot 1  buttons 0x0  lx -160   ly 1387     <- the operator's real controller
+```
+
+So `_setup_vpad` did not put a working pad in slot 0 this launch either, and Dolphin is reading the phantom. This is
+now the single blocker for P1's live accept test (and for the operator's own chord to be useful): **Dolphin must be
+bound to the slot that reports activity, not to slot 0.** Two candidate fixes for next round:
+
+1. `DolphinWinAdapter._setup_vpad` should bind `XInput/<slot of the pad that reports activity>` when its own virtual
+   pad cannot take a slot, instead of writing a slot the game will not see.
+2. Or free slot 0 first: the phantom is a leftover ViGEm pad. `XBOX Synthetic Gamepad Bus` in the device list is in
+   **Error** state and is the likely provider; disabling it (needs elevation) should let the real pad renumber to 0
+   and make both the game and `watch_xinput` work without further changes.
+
+Nothing was pressed on the operator's behalf after they handed control back beyond this cold-boot attempt.
+
 ## 7. Next
 
-1. Fix `padstate.watch_xinput` to auto-detect the active XInput slot (it watches slot 0 only, and the
-   operator's controller enumerates on slot 1 because a leftover virtual pad holds slot 0).
-2. Turn the recorded demo (`demos/<session>.jsonl`) into a route fixture for `gbox.pso_move` - waypoints per
-   area - with a test on the captured JSONL, so the operator's walk is replayed rather than re-derived.
-3. Player 2, the three cold launches, then P6a's in-game proof, P6b and P7a.
+1. Bind Dolphin to the XInput slot that reports activity. _setup_vpad wrote XInput/0 while slot 0 is a phantom
+   virtual pad at exactly zero and the operator's controller is slot 1, so the game and watch_xinput both see nothing.
+   Either free slot 0 (the XBOX Synthetic Gamepad Bus device is in Error state and is the likely provider; disabling it
+   needs elevation) or make the adapter bind the active slot when its own pad cannot take one.
+2. Then re-run gbox.pso_boot_walk.walk cold three times to answer P1's accept test (Forest 1, both players, no warp).
+3. Then P6a's in-game proof, P6b, P7a, and the recorded demo -> route fixture.
