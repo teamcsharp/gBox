@@ -253,3 +253,48 @@ deploy, so:
 - RE6 grenades are the `re6-bomb-mind` lane's from the operator's 07:07 update; this evidence goes with them;
 - the *status* half is fixed and live (above);
 - the detection fix is **not** claimed, and the honest per-kind reasons hide nothing until it lands.
+
+## Step: RE5's grenade classes, derived from the game's own initialiser (2026-11-10, branch `ds-re5-classes-20261110`)
+
+Hand-off lane B item 3: "Find RE5 Switch's grenade item classes the way #9437 found RE6's: walk the MtDTI static
+initialiser. The tool is `system/gbox/mercs/re6_dti_emu.py`; point it at RE5's main NSO."
+
+**The image.** `python -m gbox.switch_extract exefs` on the share's `Resident Evil 5.nsp` (program NCA
+`15af72f2…`) + `hactool -t nso --uncompressed` gives `main.bin`, build **`EBFFDB223149A725A93CD9B60979F6AA`** - the
+pinned build `re5_switch.SIGNATURE`/`docs/research/re5-native-flash.md` describe. `.text` 0..0x118F000,
+`.rodata` ..0x1A92000, `.rwdata` ..0x1CE5000, `.bss` ..0x26A6000.
+
+**The initialiser.** One long straight-line MtDTI registration block at `main+0x84800..0x84Fxx`: per class it builds
+the object in `x0` (`adrp`/`add` into `.bss`), the name string in `x1`, the parent DTI in `x2`, the size in `w3` and
+the id in `w4` (`0x07010000 + 0x100 * class`), then calls `main+0xBD28D0`. The grenade family shares the parent
+**`uWpBomb` at `main+0x1D71180`**, and its members come out in order:
+
+| kind | class | DTI (main+) | item (id >> 8) | size |
+|---|---|---|---|---|
+| hand | uWp06 | **0x1D714C8** | 0x106 | 0x28D0 |
+| incendiary | uWp07 | **0x1D71500** | 0x107 | 0x28D0 |
+| flash | uWp08 | **0x1D71538** | 0x108 | 0x28E0 |
+
+**The cross-check that makes it trustworthy:** uWp08's DTI is `0x1D71538` - exactly the DTI the *live-verified*
+native flash already spawns with (`native/re5_ebffdb22/build.sh --defsym=FLASH_DTI=0x1d71538`,
+`docs/research/re5-native-flash.md`). The class number is the item, one-based, matching RE6's pattern (uWp1091/93/95/97
+= items 0x113/114/115/116) and the item table's hand 0x106 / incendiary 0x107 / flash 0x108. The same run also
+derives the rest of the table (uWp00..uWp63, uWpShell, uWpShellCommon) with sizes - useful for the launcher rounds
+asked for later.
+
+**What is checked in.** `gbox/mercs/native/re5_ebffdb22/classes.py`: the pinned table, and `derive(image)` - a small
+ARM64 emulator for the registration block (w/x register aliasing, adrp/add/mov/movk/bl) - and `verify(image)`, which
+compares the pinned table with what the image's own initialiser builds, including the uWp08 cross-check.
+`tools/verify_re5_classes.py <main.bin>` runs it. Against the operator's image: **PASS**, no mismatches, the whole
+uWp table printed for the record.
+
+**Tests** (`tests/test_re5_class_table.py`, 4): the pinned table; a *synthetic* registration block built in the
+game's shape derives the same rows; a moved DTI is reported rather than trusted; the uWp08 cross-check is enforced.
+(3 of the 4 need no image at all; capstone is the research dependency, imported only inside `derive`.)
+
+**Ready for the next step, measured now:** RE5's `spawn` image builds the DTI in **x1** at words 12-13
+(`adrp x1` + `add x1, #0x538`) - the same two instructions as RE6's, so two NOPs make it a parameter. Its `explode`
+image builds `FLASH_VT` in **x4** at words 4-5, so there the *caller's x4* is already the class vtable: NOP the pair
+and the wrapper checks the class it was handed. That is the parameterised pair for RE5, in new zero padding vetted
+the same way as RE6's; then the controller kinds and the live receipts (RE5's `grenade_scatter` does not exist yet -
+package 6 on RE5 is hand-off item 4 - so a small explicit probe op or the scatter op is the receipt route).
