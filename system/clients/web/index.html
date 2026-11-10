@@ -704,6 +704,33 @@ document.addEventListener("mousedown", e => { const m = $("#issuemenu"); if (m &
 // a click on the docked native game window never reaches this page: closing on focus loss covers it (#1423)
 addEventListener("blur", () => { const m = $("#issuemenu"); if (m) m.style.display = "none"; $("#gmenu")?.classList.remove("on"); });
 // right-click a session icon: open / bring it to this PC / stop / mark it mine or an agent's
+// "Prod bot" asks the control plane to recover this session's autobot now (POST /api/sessions/{sid}/autoplay/ensure
+// with prod:true, gbox/bot_control.py) — the same recovery the desktop app's game menu offers. Throttled per session.
+const PROD_BOT = { at: new Map(), following: null };
+async function webProdBot(sid) {
+  if (typeof sid !== "string" || !sid.includes("-")) return;
+  if (Date.now() - (PROD_BOT.at.get(sid) || 0) < 15000) {
+    TOASTS.push({ text: "The bot recovery was already requested. Give it a moment to finish.", ms: 5000 }); return;
+  }
+  PROD_BOT.at.set(sid, Date.now());
+  try {
+    const job = await api(`/api/sessions/${encodeURIComponent(sid)}/autoplay/ensure`, { reason: "Prod", prod: true });
+    if (!job?.id) return;
+    if (PROD_BOT.following === job.id) return;
+    PROD_BOT.following = job.id;
+    (async () => {
+      try {
+        let j = job;
+        while (/queued|running/.test(j.state)) { await new Promise(r => setTimeout(r, 1200)); j = await api("/api/jobs/" + j.id); }
+        const out = j.output || {};
+        TOASTS.push({ text: out.action ? "🤖 " + (out.message || "Autobot checked.") : (j.error ? "⚠ Autobot: " + j.error : "🤖 Autobot checked."), ms: 7000 });
+      } catch (e) { TOASTS.push({ text: "⚠ Autobot: " + String(e.message || e), ms: 9000 }); }
+      finally { if (PROD_BOT.following === job.id) PROD_BOT.following = null; }
+    })();
+  } catch (e) {
+    TOASTS.push({ text: "⚠ Autobot: " + String(e.message || e), ms: 8000 });
+  }
+}
 document.addEventListener("contextmenu", e => {
   const c = e.target.closest(".tchip"); if (!c) return; e.preventDefault();
   const sid = c.dataset.sid, agent = (TRAY.labels?.[sid] || {}).owner === "agent";
@@ -713,6 +740,7 @@ document.addEventListener("contextmenu", e => {
   el.innerHTML = `<div class="tmenu" data-sid="${esc(sid)}">
       <button data-a="open">Open</button>
       ${moves.map(t => `<button data-a="move" data-to="${esc(t.to)}" data-label="${esc(t.label)}">${esc(t.label)} <span class="mut">(${esc(t.hint)})</span></button>`).join("")}
+      <button data-a="prod">🤖 Prod bot (recover this session)</button>
       <button data-a="${agent ? "mine" : "agent"}">${agent ? "Mark as mine" : "Mark as an agent's test"}</button>
       <button data-a="stop" style="color:var(--bad)">Stop</button><div class="mut tmst"></div></div>`;
   el.style.left = Math.min(innerWidth - 330, e.clientX) + "px"; el.style.right = "auto"; el.classList.add("on"); TRAY.open = true; trayFit();
@@ -725,6 +753,7 @@ document.addEventListener("click", async e => {
     else if (a === "move") { TRAY.open = false; $("#traypop").classList.remove("on"); $("#traypop").style.left = "";
       moveSession(sid, mb.dataset.to, mb.dataset.label); return; }
     else if (a === "stop") { if (!confirm("Stop this game? Unsaved progress is lost.")) return; await sop(sid, "stop_game"); }
+    else if (a === "prod") { TRAY.open = false; $("#traypop").classList.remove("on"); $("#traypop").style.left = ""; webProdBot(sid); return; }
     else { await api(`/api/sessions/${encodeURIComponent(sid)}/label`, { owner: a === "mine" ? "you" : "agent", label: "" }).catch(() => {}); }
     TRAY.open = false; $("#traypop").classList.remove("on"); $("#traypop").style.left = ""; trayTick(); return;
   }
