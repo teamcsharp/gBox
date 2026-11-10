@@ -3878,3 +3878,26 @@ def test_ranged_break_in_decide_turns_to_fight_ranged_enemy():
         f"expected doing='turn' (ranged_break), got {bot.doing}: out={out}"
     assert bot.why.startswith("just took ranged damage"), \
         f"expected ranged_break reason, got: {bot.why}"
+
+
+def test_a_qte_prompt_is_pressed_among_the_flashed_crowd():
+    """#5483 (\"if you are flashbanging the enemy then attack them with QTE while they are stunned\"): moment 39dd82788393413c
+    had 37 flashes, 113 prompts seen and 8 taken - the crowd guard deferred every press with 3+ within CC_CROWD_R, the
+    stunned ones included. Flashed ones no longer count; free ones still defer."""
+    bot = R.Bot.__new__(R.Bot)
+    bot.stats, bot.wiggle, bot.nade, bot.down = {}, 0, None, False
+    bot.tablet_at, bot.fever_until, bot.flashed = -1e9, 10.0, {1, 2, 3, 4}
+    bot._go = lambda doing, act, out, why: {"act": act, **out}
+    bot._gun_down = lambda: None
+    bot._prompt_pressed = lambda key, now: None
+    q = {"key": "x", "ab": 1, "type": 7}
+    bot.prompt_live = {(1, 7): {"at": -1e9, "q": q}}
+    bot._prompt_shown = [q]
+    p = {"pos": (0.0, 0.0, 0.0), "hp": 800, "hp_max": 900, "equipped": 0}
+    enemies = [{"ptr": i, "hp": 100, "pos": (100.0 * i, 0.0, 0.0)} for i in (1, 2, 3, 4)]
+    snap = {"enemies": enemies}
+    assert bot._prompt(p, snap, 10.5)["act"] == "prompt_x"                  # in the fever's window: pressed
+    assert bot._prompt(p, snap, 20.0) is None                               # window over, same crowd: deferred
+    enemies[0]["action"] = "DmgFlash"; enemies[1]["action"] = "Piyori"
+    enemies[2]["action"] = "DmgFlash"
+    assert bot._prompt(p, snap, 20.0)["act"] == "prompt_x"                  # their own stun action: pressed

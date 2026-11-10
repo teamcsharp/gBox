@@ -2112,6 +2112,7 @@ NADE_WHEEL_N = 6                        # stats nade_wheel: the last throws' whe
 # grenade's own; otherwise the D-pad's right brings the gun back first (stats unsafe_trigger_blocks).
 THROW_ACTS = ("bomb_place", "bomb_det", "nade_frag", "nade_fire", "nade_flash")
 NADE_KILLS_S = 3.0
+FLASH_QTE_TAIL_S = 1.0                  # a QTE prompt is still taken among the flashed ones this long after the fever
 FEVER_S, FEVER_R = 2.5, 500.0           # the fever: kicks at arm's length, quick shots at the rest, at crowd control's pace
 COMBO_LOW_S = 3.0
 # The whole stage's zombies (operator 15:25: "make him aware of the locations of any and all enemies in the level, so
@@ -4715,6 +4716,13 @@ class Bot:
                 self.stats["prompt_presses"] = n
             live["at"] = now
 
+    def _is_stunned(self, e, window: bool) -> bool:
+        """A flashed enemy: its own stun action (DmgFlash / Piyori), or, inside the flash's fever window, one of the
+        flashed set."""
+        if any(tag in str(e.get("action") or "") for tag in ("DmgFlash", "Piyori")):
+            return True
+        return bool(window and e.get("ptr", e.get("slot")) in self.flashed)
+
     def _prompt(self, p, snap, now) -> dict | None:
         """A shown prompt's button, pressed at once and again every PROMPT_REPEAT_S while it stays. None: no prompt to
         take this tick. A flanking crowd (4+ within CC_CROWD_R) defers the press: lowering the gun to take a prompt
@@ -4736,9 +4744,13 @@ class Bot:
                     or (key != 'stick' and now - live["at"] < PROMPT_REPEAT_S)):
                 continue
             # crowd guard: 4+ live enemies on his level within CC_CROWD_R → defer the press (gun stays up)
+            # (operator #5483: "if you are flashbanging the enemy then attack them with QTE while they are stunned" -
+            # the stunned ones are the QTE finishers' targets, so they never defer the press: only the free ones count)
+            stun_window = now < self.fever_until + FLASH_QTE_TAIL_S
             n = sum(1 for e in (snap.get("enemies") or ()) if (e.get("hp") or 0) > 0
                     and abs(e["pos"][1] - p["pos"][1]) <= MAX_DY
-                    and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CC_CROWD_R)
+                    and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CC_CROWD_R
+                    and not self._is_stunned(e, stun_window))
             if n >= CC_BACK_N and not heal:
                 continue
             if heal:
