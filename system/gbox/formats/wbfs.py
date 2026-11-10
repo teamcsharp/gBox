@@ -35,7 +35,7 @@ PARTITION_HEADER_DATA_SZ = 0x2BC     # data size >> 2
 CLUSTER_SIZE = 0x8000
 CLUSTER_HASH_SIZE = 0x400            # encrypted SHA-1 block (H0/H1/H2) at cluster start
 CLUSTER_DATA_OFF = 0x400             # encrypted user data starts here
-CLUSTER_IV_OFF = 0x3D0               # IV for user data = decrypted hash block[0x3D0:0x3E0]
+CLUSTER_IV_OFF = 0x3D0               # IV for user data = ENCRYPTED hash block[0x3D0:0x3E0]
 CLUSTER_DATA_SIZE = 0x7C00           # user data size
 
 
@@ -159,15 +159,14 @@ class WBFS:
     def cluster_data(self, part_offset: int, cluster: int) -> bytes:
         """The decrypted 0x7C00 user data of one cluster of a partition.
 
-        The 0x400 hash block is AES-CBC (title key, zero IV); its plaintext[0x3D0:0x3E0]
+        The 0x400 hash block is AES-CBC (title key, zero IV); its ciphertext[0x3D0:0x3E0]
         is the IV for the 0x7C00 user data.
         """
         ticket = self.read(part_offset, PARTITION_TICKET_SIZE)
         title_key = self._decrypt_title_key(ticket)
         data_off, _ = self._partition_geometry(part_offset)
         raw = self.read(part_offset + data_off + cluster * CLUSTER_SIZE, CLUSTER_SIZE)
-        hash_block = self._aes(title_key, b"\x00" * 16, raw[:CLUSTER_HASH_SIZE])
-        iv = hash_block[CLUSTER_IV_OFF:CLUSTER_IV_OFF + 16]
+        iv = raw[CLUSTER_IV_OFF:CLUSTER_IV_OFF + 16]   # IV is the *encrypted* hash-block bytes (Wii spec)
         return self._aes(title_key, iv, raw[CLUSTER_DATA_OFF:CLUSTER_DATA_OFF + CLUSTER_DATA_SIZE])
 
     def partition_clusters(self, part_offset: int):
@@ -189,46 +188,45 @@ class WBFS:
                 break
         return bytes(out[:min(data_sz, len(out))])
 
-    def partition_fst(self, part_offset: int) -> list[dict]:
-        """[(path, offset, size)] for every file in a partition's FST.
-
-        The FST lives at the (unencrypted) disc-header FST offset (disc header fields at
-        virtual-ISO 0x420/0x424/0x428), relative to the partition start; only the encrypted
-        clusters it spans are decrypted. Offsets in the entries are relative to the
-        data-area start (cluster c's user data sits at c*0x8000 + 0x400 within the
-        partition); read them with partition_file().
-        """
-        from .gcfst import parse_fst
-
-        fst_off, fst_size = struct.unpack(">II", self.read(0x424, 8))
-        c0, c1 = (fst_off + CLUSTER_DATA_OFF) // CLUSTER_SIZE, (fst_off + fst_size - 1) // CLUSTER_SIZE
-        fst = b"".join(self.cluster_data(part_offset, c) for c in range(c0, c1 + 1))
-        intra = fst_off - c0 * CLUSTER_SIZE
-        return [{"path": p, "offset": a, "size": b} for p, a, b, _e in
-                parse_fst(fst[intra:intra + fst_size], fst_off)]
-
-    def partition_file(self, part_offset: int, path: str) -> bytes:
-        """The decrypted bytes of a single file in a partition, identified by FST path.
-
-        Only the clusters the file spans are decrypted.
-        """
-        entry = next((e for e in self.partition_fst(part_offset) if e["path"] == path), None)
-        if entry is None:
-            raise KeyError(f"{path} not in partition FST")
-        n = entry["size"]
+    def partition_read(self, part_offset: int, off: int, n: int) -> bytes:
+        """n bytes at logical (decrypted, hash-stripped) data-area offset `off`: cluster = off // 0x7C00."""
         out = bytearray()
-        pos = 0
-        c = entry["offset"] // CLUSTER_SIZE
-        intra = entry["offset"] % CLUSTER_SIZE
-        while pos < n:
+        c, intra = divmod(off, CLUSTER_DATA_SIZE)
+        while len(out) < n:
             d = self.cluster_data(part_offset, c)
-            take = min(len(d) - intra, n - pos)
-            out += d[intra:intra + take]
-            pos += take
+            out += d[intra:intra + n - len(out)]
             c += 1
             intra = 0
         return bytes(out)
 
+    def partition_boot(self, part_offset: int) -> dict:
+        """Partition boot.bin fields (logical offsets, stored >>2 at 0x420/0x424/0x428 of the decrypted data)."""
+        h = self.partition_read(part_offset, 0, 0x440)
+        dol, fst_off, fst_sz = struct.unpack_from(">III", h, 0x420)
+        return {"game_id": h[:6].decode("ascii", "replace"), "dol_offset": dol << 2,
+                "fst_offset": fst_off << 2, "fst_size": fst_sz << 2}
+
+    def partition_fst(self, part_offset: int) -> list[dict]:
+        """[{path, offset, size}] for every file; offsets are logical data-area bytes (entry value << 2)."""
+        from .gcfst import parse_fst
+
+        b = self.partition_boot(part_offset)
+        fst = self.partition_read(part_offset, b["fst_offset"], b["fst_size"])
+        return [{"path": p, "offset": a << 2, "size": sz}
+                for p, a, sz, _e in parse_fst(fst, b["fst_offset"])]
+
+    def partition_file(self, part_offset: int, path: str) -> bytes:
+        """Decrypted bytes of one FST file."""
+        entry = next((e for e in self.partition_fst(part_offset) if e["path"] == path), None)
+        if entry is None:
+            raise KeyError(f"{path} not in partition FST")
+        return self.partition_read(part_offset, entry["offset"], entry["size"])
+
     def main_dol(self, part_offset: int) -> bytes:
-        """The decrypted main.dol executable (FST path from the disc-header copy at 0x420)."""
-        return self.partition_file(part_offset, "main.dol")
+        """main.dol: located by boot.bin dol offset (it is not an FST entry); size from the DOL header."""
+        d = self.partition_boot(part_offset)["dol_offset"]
+        h = self.partition_read(part_offset, d, 0x100)
+        offs = struct.unpack_from(">18I", h, 0)
+        sizes = struct.unpack_from(">18I", h, 0x90)
+        end = max((o + z for o, z in zip(offs, sizes) if o), default=0x100)
+        return self.partition_read(part_offset, d, end)

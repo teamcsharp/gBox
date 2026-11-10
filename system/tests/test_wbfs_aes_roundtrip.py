@@ -65,25 +65,32 @@ DATA_OFF = 0x10000               # byte offset of data area within partition (cl
 struct.pack_into(">I", PART_HDR, 0x2B8 - PARTITION_TICKET_SIZE, DATA_OFF >> 2)
 struct.pack_into(">I", PART_HDR, 0x2BC - PARTITION_TICKET_SIZE, DATA_SZ >> 2)
 
-# Disc header copy (at hd_sector 1): game id, magic, dol/fst offsets
+# Disc/boot header: game id, magic, dol/fst offsets
 DISC_HDR = bytearray(0x440)
 DISC_HDR[0:6] = b"R3OJ01"
 struct.pack_into(">I", DISC_HDR, 0x18, WII_MAGIC)
 DISC_HDR[0x20:0x60] = b"Metroid: Other M" + b"\x00" * (0x60 - 0x20 - len("Metroid: Other M"))
-DOL_OFF = CLUSTER_SIZE                    # main.dol: data-area-relative (cluster 1, user start)
-FST_OFF = 2 * CLUSTER_SIZE                # FST: data-area-relative (cluster 2, user start)
+# Logical (decrypted, hash-stripped) offsets: cluster c user data starts at c * CLUSTER_DATA_SIZE.
+DOL_OFF = CLUSTER_DATA_SIZE               # main.dol: cluster 1 user start
+FST_OFF = 2 * CLUSTER_DATA_SIZE           # FST: cluster 2 user start
 FST_SZ = 0x100
-struct.pack_into(">I", DISC_HDR, 0x420, DOL_OFF)
-struct.pack_into(">I", DISC_HDR, 0x424, FST_OFF)
-struct.pack_into(">I", DISC_HDR, 0x428, FST_SZ)
+# Wii: boot.bin offsets are stored >>2 (in the decrypted partition data, cluster 0).
+struct.pack_into(">I", DISC_HDR, 0x420, DOL_OFF >> 2)
+struct.pack_into(">I", DISC_HDR, 0x424, FST_OFF >> 2)
+struct.pack_into(">I", DISC_HDR, 0x428, FST_SZ >> 2)
 
 # main.dol content (known bytes, 64 bytes)
-DOL = bytes(range(64))
+# a minimal valid DOL: 0x100 header, one text section (file offset 0x100, 0x40 bytes) -> total 0x140
+DOL = bytearray(0x140)
+struct.pack_into('>I', DOL, 0, 0x100)
+struct.pack_into('>I', DOL, 0x90, 0x40)
+DOL[0x100:] = bytes(range(0x40))
+DOL = bytes(DOL)
 
 # FST: 12-byte entries; root (next=2) + one file "main.dol"; name table at n*12 = 24
 FST = bytearray(FST_SZ)
 struct.pack_into(">B3sII", FST, 0, 0x00, b"\x00\x00\x00", 0, 2)                 # root: next index 2
-struct.pack_into(">B3sII", FST, 12, 0x00, b"\x00\x00\x00", DOL_OFF, len(DOL))
+struct.pack_into(">B3sII", FST, 12, 0x00, b"\x00\x00\x00", DOL_OFF >> 2, len(DOL))
 FST[24:24 + 9] = b"main.dol\x00"
 
 # ---------------------------------------------------------------------------
@@ -95,18 +102,18 @@ def encrypt_cluster(user_plain: bytes) -> bytes:
     assert len(user_plain) == CLUSTER_DATA_SIZE
     # Hash block plaintext: H0/H1/H2 SHA-1s (we don't verify them, so zeros are fine)
     hash_plain = bytearray(CLUSTER_HASH_SIZE)
-    # IV for user data = hash_plain[0x3D0:0x3E0]
-    iv = bytes(range(0xA0, 0xB0))
-    hash_plain[CLUSTER_IV_OFF:CLUSTER_IV_OFF + 16] = iv
     hash_enc = AES.new(TITLE_KEY, AES.MODE_CBC, b"\x00" * 16).encrypt(bytes(hash_plain))
+    # IV for user data = the *encrypted* hash block bytes [0x3D0:0x3E0] (Wii spec)
+    iv = hash_enc[CLUSTER_IV_OFF:CLUSTER_IV_OFF + 16]
     data_enc = AES.new(TITLE_KEY, AES.MODE_CBC, iv).encrypt(user_plain)
     return hash_enc + data_enc
 
 # Build plaintext data area (3 clusters)
 data_area = bytearray(DATA_SZ)
-# Cluster 0: zeros (unused)
+# Cluster 0: boot.bin (game id, dol/fst offsets)
+data_area[CLUSTER_DATA_OFF:CLUSTER_DATA_OFF + 0x440] = DISC_HDR
 # Cluster 1: main.dol
-data_area[CLUSTER_SIZE + CLUSTER_DATA_OFF:CLUSTER_SIZE + CLUSTER_DATA_OFF + len(DOL)] = DOL
+data_area[CLUSTER_SIZE + CLUSTER_DATA_OFF:CLUSTER_SIZE + CLUSTER_DATA_OFF + len(DOL)] = DOL  # logical offset CLUSTER_DATA_SIZE
 # Cluster 2: FST
 data_area[2 * CLUSTER_SIZE + CLUSTER_DATA_OFF:2 * CLUSTER_SIZE + CLUSTER_DATA_OFF + len(FST)] = FST
 
