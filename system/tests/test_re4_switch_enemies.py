@@ -158,9 +158,18 @@ def test_build_class_names_the_donor_a_body_refuses():
     udas, archive = ganado_pack(), make_pack(PACK_ID).build()
     donor, _names = donor_record()
     broken = dict(donor) | {"donor": {"slug": "flat_rig"}}
-    broken["joints"] = dict(donor["joints"]) | {donor["role_nodes"]["chest"]: donor["joints"][donor["role_nodes"]["hip"]]}
+    nodes = donor["role_nodes"]
+    broken["joints"] = dict(donor["joints"]) | {nodes["l_fore"]: donor["joints"][nodes["l_upper"]]}
     with pytest.raises(E.EnemyError, match="em16 body 1 <- flat_rig"):
         E.build_class(udas, archive, [broken], pack="em16", known=None)
+    with pytest.raises(E.EnemyError, match="em16 body 1 <- flat_rig: retarget segment has zero length"):
+        E.build_class(udas, archive, [broken], pack="em16", known=None, method="legacy")
+    # a chest joint on the hip (RE2 GC HUNK, JGR Rival Ntank) is no longer a refusal: the torso is one part
+    on_hip = dict(donor) | {"donor": {"slug": "low_chest"}}
+    on_hip["joints"] = dict(donor["joints"]) | {nodes["chest"]: donor["joints"][nodes["hip"]]}
+    E.build_class(udas, archive, [on_hip], pack="em16", known=None)
+    with pytest.raises(E.EnemyError, match="em16 body 1 <- low_chest"):
+        E.build_class(udas, archive, [on_hip], pack="em16", known=None, method="legacy")
 
 
 def esl(entries):

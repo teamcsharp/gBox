@@ -10,7 +10,12 @@ The parts are skinned to one skeleton by bone id, so a body can only be exchange
 other parts and the animations use.
 
 * `native_body_swap` puts another pack's body in a pack's body slot, bytes untouched, and rebuilds the container.
-* `author_body` writes a donor mesh (a skinned .glb) onto the pack's own skeleton in its own bind pose.
+* `author_body` writes a donor mesh (a skinned .glb) onto the pack's own skeleton in its own bind pose, fitted by
+  `proportional_fit` (sized by the donor's own skeleton; the fixed-scale `fit` stays for old builds).
+* `fit_report` / `check_library_donor` measure a fitted donor against the native character and `FIT_GATE` says
+  whether it may be written (height, depth, floor, width, segment stretch, geometry far from the bones, humanoid);
+  `cast_pool` and the enemy pool write only donors that pass, and leave out `gbox.donor_rejects` (the
+  cross-title list).
 """
 from __future__ import annotations
 
@@ -481,17 +486,605 @@ def fit(vertices: list[dict], joints: dict, parents: dict, role_nodes: dict[str,
     return np.asarray(positions), np.asarray(normals), influences, report
 
 
+# ------------------------------------------------------------------------------------------- the proportional fit
+
+# Why `fit` above draws giants, explosions and cardboard (measured 2026-11-10 on the 19 donors of
+# re4-cast-pool-01 / re4-enemy-pool-01; docs/research/re4-parity.md section 0d):
+#
+# 1. SCALES are absolute (model mm per donor unit) and were tuned on SA1 Sonic, whose unit is about 10 cm. The library
+#    is in every unit: metres (Def Jam, SoulCalibur, MGS2, GTA, Stranglehold, DOA, Smash: 1.4-3.0 units tall),
+#    about 10 cm (JGR, SM64DS, PSO: 18-22), about 2 cm (007 AUF: 96) and FF7 field units (about 1,000). The limbs
+#    take the native length whatever the unit, but every cross-section, the head, the hands and the feet take
+#    100-150 x the donor's size: a metre donor is drawn 5-9 cm deep (Razor, Proof, Toni, Hawk Hana, Golden Kane),
+#    an AUF donor 3 m deep, an FF7 field donor 80 m wide.
+# 2. The hip segment is the donor's hip->chest vector. Rigs whose chest joint sits at or under the hip (RE2 GC
+#    HUNK: 0.02 units below, JGR Rival Ntank, SoulCalibur's waist-level "spine") make it 1-7% of the spine long and
+#    turned 90-160 degrees from the native one, and nothing caps the stretch: the hip part is drawn 10-16x longer
+#    than the body's own scale (HUNK 2.96 m tall, Ntank 4.25 m) or upside down.
+# 3. Skin on joints that are no role (tails, capes, weapons, the Lizardman's shield) takes the role's transform,
+#    stretch included, so an uncapped stretch carries it far from the body (the Lizardman's tail 0.8 m under the
+#    floor); the floor was the lowest vertex anywhere, not the soles.
+# 4. The rotation onto the native joints is not what flattens: it keeps the donor's +z within 20 degrees on every
+#    role of every donor whose spine points up (|R z . z| >= 0.94); only the inverted hip segments turn it.
+#
+# `proportional_fit` sizes everything from the donor's own skeleton: one unit per donor (the median native/donor
+# length ratio of the spine and the eight limb segments), each part at most STRETCH_LIMIT longer along its segment
+# than across it, the torso as one part from hip to head (so a short or inverted hip->chest vector does not matter),
+# the head at most HEAD_LIMIT times the native head's rise above its joint, the soles (the lowest foot vertices, not
+# the lowest vertex) on y 0. The native bind joints still do not move. `fit_report` then measures the result against
+# the native pack and `FIT_GATE` says whether it may be written.
+
+#: A part is drawn at most this many times longer along its segment than across it (and at most that much shorter).
+STRETCH_LIMIT = 1.6
+#: A donor head (p98 of its vertices) stands at most this many times as high above its joint as the native head: 2.0
+#: keeps the top under about 1.1x the native, inside the gate's 1.2; at 1.35 hats and necks shrank normal heads to
+#: 0.6x (2026-11-10, recovery-re4-fit-v2). Chibi heads are held by HEAD_SIZE_LIMIT.
+HEAD_LIMIT = 2.0
+#: The native head's rise above bone 4 when no native head is at hand: 187-204 mm on the five cast packs.
+NATIVE_HEAD_UP = 190.0
+#: ... and its size (the larger of its width p2..p98 and depth p5..p95): 159-271 mm on the cast, 163-235 on Ganados.
+NATIVE_HEAD_SIZE = 180.0
+#: A donor head is at most this many times as wide or deep as the native head (cartoon heads, quills, hoods).
+HEAD_SIZE_LIMIT = 1.6
+ROLES = tuple(ROLE_BONES)
+PART_OF_ROLE = {"hip": "torso", "chest": "torso", "head": "head",
+                **{f"{s}_{p}": "arm" for s in "rl" for p in ("upper", "fore", "hand")},
+                **{f"{s}_{p}": "leg" for s in "rl" for p in ("thigh", "shin", "foot")}}
+LIMB_SEGMENTS = ("r_upper", "r_fore", "l_upper", "l_fore", "r_thigh", "r_shin", "l_thigh", "l_shin")
+#: Native skeleton ids 0..25 by body part (the shared tree; ids 26+ walk up their parents to one of these).
+NATIVE_PART = {**{b: "torso" for b in (0, 1, 2, 3, 17)}, 4: "head", **{b: "arm" for b in range(5, 17)},
+               **{b: "leg" for b in range(18, 26)}}
+
+
+def _skin(vertices: list[dict], parents: dict, role_nodes: dict[str, int]) -> tuple[np.ndarray, np.ndarray]:
+    """(V x 15 role weights, per-vertex weight carried by joints that are no role). A joint that is no role rides the
+    nearest role above it; one with no role above it (a scene root) rides the hip."""
+    by_node = {node: role for role, node in role_nodes.items()}
+    memo: dict[int, tuple[str, int]] = {}
+
+    def walk(joint: int) -> tuple[str, int]:
+        if joint in memo:
+            return memo[joint]
+        node, seen, hops = joint, set(), 0
+        found = None
+        while found is None:
+            if node in by_node:
+                found = (by_node[node], hops)
+            elif node in seen or node not in parents:
+                found = ("hip", -1)
+            else:
+                seen.add(node)
+                node, hops = parents[node], hops + 1
+        memo[joint] = found
+        return found
+
+    column = {role: i for i, role in enumerate(ROLES)}
+    weights = np.zeros((len(vertices), len(ROLES)))
+    off = np.zeros(len(vertices))
+    for k, vertex in enumerate(vertices):
+        for joint, weight in zip(vertex["source_joints"], vertex["source_weights"]):
+            if weight <= 0:
+                continue
+            role, hops = walk(int(joint))
+            weights[k, column[role]] += float(weight)
+            if hops:
+                off[k] += float(weight)
+    return weights, off
+
+
+def proportional_fit(vertices: list[dict], joints: dict, parents: dict, role_nodes: dict[str, int],
+                     bones: dict[int, np.ndarray], *, role_bones: dict[str, int] = ROLE_BONES,
+                     head_up: float | None = NATIVE_HEAD_UP, limit: float = STRETCH_LIMIT,
+                     head_limit: float = HEAD_LIMIT, head_size: float | None = NATIVE_HEAD_SIZE,
+                     head_size_limit: float = HEAD_SIZE_LIMIT) -> tuple[np.ndarray, np.ndarray, list, dict]:
+    """Donor vertices on the native bind skeleton, sized by the donor's own skeleton: (positions, normals,
+    per-vertex (bone, weight), report). The same output as `fit`; the rules are in the comment above.
+
+    * unit: the median of native/donor length over the spine (hip->head) and the eight limb segments, so a donor in
+      metres, inches or FF7 field units is drawn at the size its skeleton says;
+    * each segment keeps the native length (no bind joint moves) and takes the unit across it, raised or lowered just
+      enough that it is never more than `limit` times longer than wide or wide than long;
+    * the torso is one part from the hip joint to the head joint (hip and chest skin keep their own native bones);
+    * the head stays upright at the torso's cross-section, capped so its rise above the head joint is at most
+      `head_limit` x `head_up` (the native head's rise) and its width or depth at most `head_size_limit` x
+      `head_size` (the native head's larger one); hands follow their forearm at its cross-section;
+    * each foot stays upright, the shin's cross-section across, scaled upward so its sole (its own lowest vertex)
+      lands on y 0 under the native ankle; when that would stretch it beyond `limit`, the ankle anchor moves instead.
+    """
+    from .mtf_retarget import _aim_rotation
+
+    points = np.asarray([v["position"] for v in vertices], float)
+    normals = np.asarray([v["normal"] for v in vertices], float)
+    weights, off = _skin(vertices, parents, role_nodes)
+    total = weights.sum(1)
+    if not len(points) or (total <= 0).any() or not np.isfinite(points).all():
+        raise ModelError("a donor vertex has no usable joint influence")
+    dominant = weights.argmax(1)
+    J = {role: np.asarray(joints[role_nodes[role]], float) for role in ROLES}
+    N = {role: np.asarray(bones[role_bones[role]], float) for role in ROLES}
+    tall = float(np.ptp(points[:, 1])) or 1.0
+    spans = [("hip", "head")] + [(a, SEGMENTS[a]) for a in LIMB_SEGMENTS]
+    for a, b in spans:
+        if float(np.linalg.norm(J[b] - J[a])) < 1e-4 * tall:
+            raise ModelError(f"retarget segment has zero length: the donor's {a} and {b} joints share one position")
+    ratios = {f"{a}-{b}": float(np.linalg.norm(N[b] - N[a]) / np.linalg.norm(J[b] - J[a])) for a, b in spans}
+    unit = float(np.median(list(ratios.values())))
+    segments: dict[str, dict] = {}
+
+    def segment(name: str, a: str, b: str, end=None):
+        source = J[b] - J[a]
+        target = (N[b] if end is None else end) - N[a]
+        rotation = _aim_rotation(source, target)
+        along = float(np.linalg.norm(target) / np.linalg.norm(source))
+        cross = float(min(max(unit, along / limit), along * limit))
+        axis = source / np.linalg.norm(source)
+        cosine = float(source @ target / np.linalg.norm(source) / max(np.linalg.norm(target), 1e-12))
+        segments[name] = {"along": round(along, 4), "cross": round(cross, 4), "stretch": round(along / unit, 4),
+                          "anisotropy": round(along / cross, 4), "cross_moved": bool(abs(cross - unit) > 1e-9 * unit),
+                          "turn_deg": round(float(np.degrees(np.arccos(np.clip(cosine, -1, 1)))), 2),
+                          "depth_kept": round(abs(float((rotation @ np.array([0.0, 0.0, 1.0]))[2])), 4)}
+        return rotation @ (np.eye(3) * cross + (along - cross) * np.outer(axis, axis)), rotation, cross
+
+    place: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    torso, _rotation, torso_cross = segment("spine", "hip", "head")
+    place["hip"] = place["chest"] = (torso, J["hip"], N["hip"])
+    head_rows = dominant == ROLES.index("head")
+    # p98, not the top vertex: a feather, an antenna or a crown point must not shrink the whole head (Zack, the
+    # Kokiri boy); the gate's height check still holds the very top.
+    rise = float(np.percentile(points[head_rows, 1], 98) - J["head"][1]) if head_rows.any() else 0.0
+    across = (max(_percentile_span(points[head_rows, 0], 2, 98), _percentile_span(points[head_rows, 2], 5, 95))
+              if head_rows.sum() > 2 else 0.0)
+    head_scale, head_capped = torso_cross, []
+    if head_up and rise > 0 and head_scale * rise > head_limit * head_up:
+        head_scale = head_limit * float(head_up) / rise
+        head_capped.append("rise")
+    if head_size and across > 0 and head_scale * across > head_size_limit * head_size:
+        head_scale = head_size_limit * float(head_size) / across
+        head_capped.append("size")
+    place["head"] = (np.eye(3) * head_scale, J["head"], N["head"])
+    for side in "rl":
+        upper, fore, hand = f"{side}_upper", f"{side}_fore", f"{side}_hand"
+        place[upper] = (segment(upper, upper, fore)[0], J[upper], N[upper])
+        linear, rotation, cross = segment(fore, fore, hand)
+        place[fore] = (linear, J[fore], N[fore])
+        place[hand] = (rotation * cross, J[hand], N[hand])
+    feet = {}
+    for side in "rl":
+        thigh, shin, foot = f"{side}_thigh", f"{side}_shin", f"{side}_foot"
+        rows = dominant == ROLES.index(foot)
+        if not rows.any():
+            rows = weights[:, ROLES.index(foot)] > 0
+        sole = float(points[rows, 1].min()) if rows.any() else float(J[foot][1])
+        drop = float(J[foot][1]) - sole
+        _linear, _rotation, shin_cross = segment(shin, shin, foot)
+        ankle = float(N[foot][1])
+        wanted = ankle / drop if drop > 1e-6 * tall else shin_cross
+        lift = float(min(max(wanted, shin_cross / limit), shin_cross * limit))
+        at = np.array([N[foot][0], lift * max(drop, 0.0), N[foot][2]])
+        place[shin] = (segment(shin, shin, foot, end=at)[0], J[shin], N[shin])
+        shin_cross = segments[shin]["cross"]
+        place[thigh] = (segment(thigh, thigh, shin)[0], J[thigh], N[thigh])
+        place[foot] = (np.diag([shin_cross, lift, shin_cross]), np.array([J[foot][0], sole, J[foot][2]]),
+                       np.array([N[foot][0], 0.0, N[foot][2]]))
+        feet[foot] = {"sole_donor_y": round(sole, 6), "ankle_over_sole_donor": round(drop, 6),
+                      "vertical_scale": round(lift, 4), "wanted_vertical_scale": round(wanted, 4),
+                      "anchor_height": round(float(at[1]), 2), "native_ankle": round(ankle, 2),
+                      "anchor_moved": bool(abs(at[1] - ankle) > 0.5)}
+    moved, turned = np.zeros_like(points), np.zeros_like(normals)
+    for i, role in enumerate(ROLES):
+        w = weights[:, i]
+        if not w.any():
+            continue
+        linear, origin, anchor = place[role]
+        moved += w[:, None] * ((points - origin) @ linear.T + anchor)
+        turned += w[:, None] * (normals @ np.linalg.inv(linear))
+    positions = moved / total[:, None]
+    length = np.linalg.norm(turned, axis=1)
+    normals_out = np.where(length[:, None] > 1e-9, turned / np.maximum(length, 1e-12)[:, None], [0.0, 1.0, 0.0])
+    bone_of = [role_bones[role] for role in ROLES]
+    influences = []
+    for row in weights:
+        merged: dict[int, float] = {}
+        for i in np.flatnonzero(row > 0):
+            merged[bone_of[i]] = merged.get(bone_of[i], 0.0) + float(row[i])
+        influences.append(sorted(merged.items()))
+    report = {"method": "proportional: one donor unit (median native/donor length of the spine and limbs), every "
+                        f"part at most {limit:g}x longer than wide or wide than long, torso as one part hip->head, "
+                        "head capped, soles on y 0; native bind joints not moved",
+              "unit_mm_per_donor_unit": round(unit, 4), "unit_ratios": {k: round(v, 4) for k, v in ratios.items()},
+              "stretch_limit": limit, "segments": segments,
+              "head": {"scale": round(float(head_scale), 4), "capped": head_capped, "donor_rise": round(rise, 6),
+                       "native_rise": head_up, "head_limit": head_limit, "donor_size": round(across, 6),
+                       "native_size": head_size, "head_size_limit": head_size_limit},
+              "feet": feet, "donor_floor": float(points[:, 1].min()),
+              "foot_anchor_height": {s: feet[s]["anchor_height"] for s in ("r_foot", "l_foot")},
+              "off_role_weight_share": round(float(off.sum() / total.sum()), 4),
+              "roles": {role: {"donor_node": int(role_nodes[role]), "bone": role_bones[role]} for role in ROLES},
+              "_dominant": dominant}
+    return positions, normals_out, influences, report
+
+
+# --------------------------------------------------------------------------------------------- the fit gate
+
+#: What a fitted donor must measure to be written (2026-11-10). Justified from the five cast packs and the Ganado
+#: bodies (`native_envelope`) and the good donors of the earlier pools, in docs/research/re4-parity.md section 0d.
+FIT_GATE = {
+    "height_ratio": (0.85, 1.20),     # fitted top / the native character's top (cast 1,763-1,855 mm)
+    "min_depth_mm": 150.0,            # z extent (p2..p98) of the figure: natives 330-470, the flat donors 45-76
+    "min_torso_depth_mm": 90.0,       # z extent (p5..p95) of the torso: natives 208-412
+    "floor_mm": 50.0,                 # the lowest vertex at most this far under the floor (natives: 1.2 mm)
+    "sole_mm": 5.0,                   # each sole within this of y 0
+    "stretch": (1 / 1.7, 1.7),        # a segment's native/donor length over the donor unit
+    "anisotropy": STRETCH_LIMIT + 1e-6,    # a segment's length stretch over its cross-section stretch
+    "span_ratio": 1.35,               # x extent (p0.5..p99.5) over the native skeleton's T-pose span
+    "depth_ratio": 3.0,               # z extent (p2..p98) over the native's
+    "head_size_ratio": 1.8,           # the head's larger extent (width, depth) over the native head's
+    "far_mm": 300.0, "far_share": 0.08,    # vertices farther than far_mm from every native role bone segment
+    # a humanoid: these on the donor itself, before any fit
+    "min_limb_skin": 0.01,            # each arm and each leg carries at least this share of the vertices
+    "min_leg_share": 0.30,            # thigh+shin+foot-to-sole length / standing height of the skeleton
+    "min_arm_share": 0.15,            # upper arm + forearm length / standing height of the skeleton
+    "min_skeleton_share": 0.45,       # head joint over the soles / the mesh height
+    "max_spine_tilt_deg": 45.0,       # hip->head line from upright (all fours, a vehicle, a prop lying down)
+    "max_leg_tilt_deg": 50.0,         # thigh->foot line from straight down
+    "max_depth_over_height": 1.75,    # mesh z extent / mesh height (a vehicle or a long prop)
+}
+
+
+def native_envelope(models: list[A.HdBin], skeleton: A.HdBin | None = None, *,
+                    role_bones: dict[str, int] = ROLE_BONES) -> dict:
+    """What the native character measures: the drawn pieces `models` (body, extra body parts, head pieces; not the
+    far head or the hands) on the skeleton of `skeleton` (default the first model). Top, floor, height, x and z
+    extents, per part width/depth/height, the head's rise above bone 4 and the share of vertices far from the role
+    bones - the same numbers `fitted_metrics` gives a donor."""
+    skeleton = skeleton or models[0]
+    parents = {ident: parent for ident, parent, _t in skeleton.bones()}
+    bones = skeleton.bone_world()
+    absent = [role for role, bone in role_bones.items() if bone not in bones]
+    if absent:
+        raise ModelError(f"the body skeleton has no bone for {absent}")
+
+    def part(bone: int) -> str:
+        seen = set()
+        while bone not in NATIVE_PART:
+            if bone in seen or bone not in parents:
+                return "torso"
+            seen.add(bone)
+            bone = parents[bone]
+        return NATIVE_PART[bone]
+
+    points, parts = [], []
+    for model in models:
+        sets = model.weights()
+        if not model.vertex_count:
+            continue
+        strongest = [max(entry, key=lambda bw: bw[1])[0] for entry in sets] or [0]
+        names = [part(b) for b in strongest]
+        points.append(model.positions().astype(float))
+        parts += [names[i] if i < len(names) else "torso" for i in model.weight_index()]
+    points = np.concatenate(points)
+    head_bone = float(bones[role_bones["head"]][1])
+    head_up = float(points[:, 1].max()) - head_bone
+    out = shape_metrics(points, np.asarray(parts), bones, role_bones=role_bones,
+                        head_up=head_up if head_up >= 50 else NATIVE_HEAD_UP)
+    if head_up < 50:                       # a headless body alone: the character's top is its head bone + a head
+        head_up = NATIVE_HEAD_UP
+        out["top"] = round(head_bone + head_up, 1)
+        out["head_assumed"] = True
+    return out | {"head_up": round(head_up, 1)}
+
+
+def _percentile_span(values: np.ndarray, low: float, high: float) -> float:
+    return float(np.percentile(values, high) - np.percentile(values, low)) if len(values) else 0.0
+
+
+def skeleton_segments(bones: dict, role_bones: dict[str, int] = ROLE_BONES, head_up: float = NATIVE_HEAD_UP):
+    """The native role bones as line segments a body is drawn around: spine to the head top, shoulders, arms to a
+    hand's length past the wrist, hips, legs, and each sole from under the ankle toward the toes."""
+    b = {role: np.asarray(bones[bone], float) for role, bone in role_bones.items()}
+    out = [(b["hip"], b["chest"]), (b["chest"], b["head"]), (b["head"], b["head"] + [0.0, head_up, 0.0])]
+    for s in "rl":
+        out += [(b["chest"], b[f"{s}_upper"]), (b[f"{s}_upper"], b[f"{s}_fore"]), (b[f"{s}_fore"], b[f"{s}_hand"]),
+                (b[f"{s}_hand"], b[f"{s}_hand"] + 0.7 * (b[f"{s}_hand"] - b[f"{s}_fore"])),
+                (b["hip"], b[f"{s}_thigh"]), (b[f"{s}_thigh"], b[f"{s}_shin"]), (b[f"{s}_shin"], b[f"{s}_foot"]),
+                (b[f"{s}_foot"] * [1, 0, 1], b[f"{s}_foot"] * [1, 0, 1] + [0.0, 0.0, 200.0])]
+    return out
+
+
+def skeleton_distance(points: np.ndarray, segments) -> np.ndarray:
+    """Each point's distance to the nearest of `segments`."""
+    best = np.full(len(points), np.inf)
+    for a, b in segments:
+        d = b - a
+        t = np.clip(((points - a) @ d) / max(float(d @ d), 1e-12), 0.0, 1.0)
+        best = np.minimum(best, np.linalg.norm(points - (a + t[:, None] * d), axis=1))
+    return best
+
+
+def shape_metrics(points: np.ndarray, parts: np.ndarray, bones: dict, *, role_bones: dict[str, int] = ROLE_BONES,
+                  head_up: float = NATIVE_HEAD_UP, far_mm: float = FIT_GATE["far_mm"]) -> dict:
+    """Top, floor, height, extents, per part (torso, head, arm, leg) width/depth/height and the far share."""
+    points = np.asarray(points, float)
+    segments = skeleton_segments(bones, role_bones, head_up)
+    far = skeleton_distance(points, segments)
+    ends = np.asarray([p for pair in segments for p in pair])
+    out = {"top": round(float(points[:, 1].max()), 1), "floor": round(float(points[:, 1].min()), 1),
+           "height": round(float(np.ptp(points[:, 1])), 1),
+           "span_x": round(_percentile_span(points[:, 0], 0.5, 99.5), 1),
+           "skeleton_span_x": round(float(np.ptp(ends[:, 0])), 1),
+           "depth_z": round(_percentile_span(points[:, 2], 2, 98), 1),
+           "bbox": [points.min(0).round(1).tolist(), points.max(0).round(1).tolist()],
+           "far_share": round(float((far > far_mm).mean()), 4), "far_max_mm": round(float(far.max()), 1),
+           "parts": {}}
+    for name in ("torso", "head", "arm", "leg"):
+        rows = points[parts == name]
+        if len(rows):
+            out["parts"][name] = {"vertices": int(len(rows)), "width": round(_percentile_span(rows[:, 0], 2, 98), 1),
+                                  "depth": round(_percentile_span(rows[:, 2], 5, 95), 1),
+                                  "height": round(_percentile_span(rows[:, 1], 2, 98), 1)}
+    return out
+
+
+def donor_shape(donor: dict) -> dict:
+    """Unit-free measurements of a donor record before any fit, for the humanoid test: the skin each limb carries,
+    limb and spine lengths over the skeleton's standing height, the skeleton's share of the mesh height, the mesh's
+    depth and width over its height, and the skin on joints that are no role."""
+    vertices = donor["vertices"]
+    points = np.asarray([v["position"] for v in vertices], float)
+    weights, off = _skin(vertices, donor["parents"], donor["role_nodes"])
+    dominant = np.asarray(ROLES)[weights.argmax(1)]
+    J = {role: np.asarray(donor["joints"][donor["role_nodes"][role]], float) for role in ROLES}
+    tall = float(np.ptp(points[:, 1])) or 1e-12
+    feet = [points[dominant == f, 1].min() for f in ("r_foot", "l_foot") if (dominant == f).any()]
+    sole = float(min(feet)) if feet else float(points[:, 1].min())
+    stand = float(J["head"][1] - sole) or 1e-12
+
+    def chain(*roles):
+        return float(sum(np.linalg.norm(J[b] - J[a]) for a, b in zip(roles, roles[1:])))
+
+    legs = np.mean([chain(f"{s}_thigh", f"{s}_shin", f"{s}_foot") + float(J[f"{s}_foot"][1] - sole) for s in "rl"])
+    arms = np.mean([chain(f"{s}_upper", f"{s}_fore", f"{s}_hand") for s in "rl"])
+    skin = {f"{s}_{limb}": round(float(np.isin(dominant, [f"{s}_{p}" for p in parts]).mean()), 4)
+            for s in "rl" for limb, parts in (("arm", ("upper", "fore", "hand")), ("leg", ("thigh", "shin", "foot")))}
+    return {"vertices": len(points), "mesh_height": tall,
+            "mesh_extent": [round(float(v), 6) for v in np.ptp(points, 0)],
+            "limb_skin": skin, "leg_share": round(float(legs / stand), 4), "arm_share": round(float(arms / stand), 4),
+            "spine_share": round(chain("hip", "head") / stand, 4), "skeleton_share": round(stand / tall, 4),
+            "joint_depth_share": round(float(np.ptp([J[r][2] for r in ROLES]) / stand), 4),
+            "spine_tilt_deg": round(_tilt(J["head"] - J["hip"], up=True), 2),
+            "leg_tilt_deg": round(max(_tilt(J[f"{s}_foot"] - J[f"{s}_thigh"], up=False) for s in "rl"), 2),
+            "depth_over_height": round(float(np.ptp(points[:, 2]) / tall), 4),
+            "width_over_height": round(float(np.ptp(points[:, 0]) / tall), 4),
+            "off_role_weight_share": round(float(off.sum() / max(weights.sum(), 1e-12)), 4)}
+
+
+def _tilt(vector, *, up: bool) -> float:
+    """Degrees between `vector` and +y (`up`) or -y."""
+    v = np.asarray(vector, float)
+    length = float(np.linalg.norm(v))
+    if length < 1e-12:
+        return 180.0
+    return float(np.degrees(np.arccos(np.clip((v[1] if up else -v[1]) / length, -1.0, 1.0))))
+
+
+def humanoid_reasons(shape: dict, gate: dict = FIT_GATE) -> list[str]:
+    """Why a donor is not a humanoid body (a prop, a weapon, a vehicle, a creature on all fours): [] when it is."""
+    out = []
+    thin = {limb: share for limb, share in shape["limb_skin"].items() if share < gate["min_limb_skin"]}
+    if thin:
+        out.append("not a humanoid: almost no skin on " + ", ".join(f"{k} ({v:.1%})" for k, v in sorted(thin.items())))
+    if shape["leg_share"] < gate["min_leg_share"]:
+        out.append(f"not a humanoid: legs {shape['leg_share']:.2f} of the standing height (< {gate['min_leg_share']})")
+    if shape["arm_share"] < gate["min_arm_share"]:
+        out.append(f"not a humanoid: arms {shape['arm_share']:.2f} of the standing height (< {gate['min_arm_share']})")
+    if shape["skeleton_share"] < gate["min_skeleton_share"]:
+        out.append(f"not a humanoid: the skeleton spans {shape['skeleton_share']:.2f} of the mesh height "
+                   f"(< {gate['min_skeleton_share']}); the surface is mostly not on the body")
+    if shape["spine_tilt_deg"] > gate["max_spine_tilt_deg"]:
+        out.append(f"not a humanoid: the hip->head line leans {shape['spine_tilt_deg']:.0f} degrees from upright "
+                   f"(> {gate['max_spine_tilt_deg']}); a body on all fours, a vehicle or a prop")
+    if shape["leg_tilt_deg"] > gate["max_leg_tilt_deg"]:
+        out.append(f"not a humanoid: a thigh->foot line leans {shape['leg_tilt_deg']:.0f} degrees from straight down "
+                   f"(> {gate['max_leg_tilt_deg']})")
+    if shape["depth_over_height"] > gate["max_depth_over_height"]:
+        out.append(f"not a humanoid: the mesh is {shape['depth_over_height']:.2f}x as deep as it is tall "
+                   f"(> {gate['max_depth_over_height']}); it lies along z like a vehicle or a long prop")
+    return out
+
+
+def fitted_metrics(positions: np.ndarray, report: dict, bones: dict, *, role_bones: dict[str, int] = ROLE_BONES,
+                   head_up: float = NATIVE_HEAD_UP) -> dict:
+    """`shape_metrics` of a fitted donor (parts by each vertex's strongest role) plus each sole's height."""
+    dominant = report.get("_dominant")
+    if dominant is None:
+        raise ModelError("the fit report carries no per-vertex roles")
+    names = np.asarray([PART_OF_ROLE[ROLES[i]] for i in range(len(ROLES))])[dominant]
+    out = shape_metrics(positions, names, bones, role_bones=role_bones, head_up=head_up)
+    soles = {}
+    for foot in ("r_foot", "l_foot"):
+        rows = dominant == ROLES.index(foot)
+        soles[foot] = round(float(positions[rows, 1].min()), 2) if rows.any() else None
+    return out | {"soles": soles}
+
+
+def judge(metrics: dict, native: dict, fit_report: dict, shape: dict | None = None, gate: dict = FIT_GATE) -> dict:
+    """The gate's verdict on a fitted donor: {"pass", "reasons", "measured"}. Every threshold is in `gate`."""
+    reasons = list(humanoid_reasons(shape, gate)) if shape else []
+    lo, hi = gate["height_ratio"]
+    ratio = metrics["top"] / max(native["top"], 1e-9)
+    if not lo <= ratio <= hi:
+        reasons.append(f"height {metrics['top']:.0f} mm is {ratio:.2f}x the native {native['top']:.0f} "
+                       f"(allowed {lo}-{hi})")
+    if metrics["depth_z"] < gate["min_depth_mm"]:
+        reasons.append(f"flat: {metrics['depth_z']:.0f} mm deep (< {gate['min_depth_mm']:.0f})")
+    torso = metrics["parts"].get("torso", {}).get("depth", 0.0)
+    if torso < gate["min_torso_depth_mm"]:
+        reasons.append(f"flat torso: {torso:.0f} mm deep (< {gate['min_torso_depth_mm']:.0f})")
+    if metrics["floor"] < -gate["floor_mm"]:
+        reasons.append(f"under the floor: lowest vertex at {metrics['floor']:.0f} mm (< -{gate['floor_mm']:.0f})")
+    for foot, y in (metrics.get("soles") or {}).items():
+        if y is None or abs(y) > gate["sole_mm"]:
+            reasons.append(f"{foot} sole at {y} mm, not on the floor (+-{gate['sole_mm']:.0f})")
+    span = metrics["span_x"] / max(native["skeleton_span_x"], 1e-9)
+    if span > gate["span_ratio"]:
+        reasons.append(f"wide: {metrics['span_x']:.0f} mm across, {span:.2f}x the native skeleton's "
+                       f"{native['skeleton_span_x']:.0f} (> {gate['span_ratio']})")
+    deep = metrics["depth_z"] / max(native["depth_z"], 1e-9)
+    if deep > gate["depth_ratio"]:
+        reasons.append(f"deep: {metrics['depth_z']:.0f} mm front to back, {deep:.2f}x the native "
+                       f"{native['depth_z']:.0f} (> {gate['depth_ratio']}): a tail, cape or prop behind or ahead")
+    head = metrics["parts"].get("head")
+    if head:
+        size, native_size = max(head["width"], head["depth"]), _head_size(native)
+        if size > gate["head_size_ratio"] * native_size:
+            reasons.append(f"head {size:.0f} mm across, {size / native_size:.2f}x the native {native_size:.0f} "
+                           f"(> {gate['head_size_ratio']})")
+    if metrics["far_share"] > gate["far_share"]:
+        reasons.append(f"{metrics['far_share']:.1%} of the vertices lie over {gate['far_mm']:.0f} mm from every "
+                       f"native bone (> {gate['far_share']:.0%}): props, capes, tails or weapons dominate")
+    s_lo, s_hi = gate["stretch"]
+    for name, row in (fit_report.get("segments") or {}).items():
+        if not s_lo <= row["stretch"] <= s_hi:
+            reasons.append(f"segment {name} drawn {row['stretch']:.2f}x its own proportion (allowed "
+                           f"{s_lo:.2f}-{s_hi:.2f})")
+        if not 1 / gate["anisotropy"] <= row["anisotropy"] <= gate["anisotropy"]:
+            reasons.append(f"segment {name} {row['anisotropy']:.2f}x longer than wide")
+    measured = {"height_ratio": round(ratio, 3), "span_ratio": round(span, 3), "depth_ratio": round(deep, 3),
+                "depth_mm": metrics["depth_z"],
+                "torso_depth_mm": torso, "floor_mm": metrics["floor"], "soles_mm": metrics.get("soles"),
+                "far_share": metrics["far_share"],
+                "max_stretch": max((r["stretch"] for r in (fit_report.get("segments") or {}).values()), default=None),
+                "min_stretch": min((r["stretch"] for r in (fit_report.get("segments") or {}).values()), default=None)}
+    return {"pass": not reasons, "reasons": reasons, "measured": measured}
+
+
+def _segments_of_legacy(donor: dict, bones: dict, role_bones: dict[str, int], scales: dict[str, float]) -> dict:
+    """The per-segment stretch the legacy `fit` applies, in the proportional fit's terms (for its fit report)."""
+    J = {role: np.asarray(donor["joints"][donor["role_nodes"][role]], float) for role in ROLES}
+    N = {role: np.asarray(bones[role_bones[role]], float) for role in ROLES}
+    spans = [("hip", "head")] + [(a, SEGMENTS[a]) for a in LIMB_SEGMENTS]
+    lengths = {f"{a}-{b}": (float(np.linalg.norm(N[b] - N[a])), float(np.linalg.norm(J[b] - J[a]))) for a, b in spans}
+    unit = float(np.median([n / d for n, d in lengths.values() if d > 0] or [1.0]))
+    out = {}
+    for start, end in SEGMENTS.items():
+        n, d = float(np.linalg.norm(N[end] - N[start])), float(np.linalg.norm(J[end] - J[start]))
+        along = n / d if d > 0 else float("inf")
+        cross = float(scales[ROLE_FAMILY.get(start, "limb")])
+        out[start] = {"along": round(along, 4), "cross": cross, "stretch": round(along / unit, 4),
+                      "anisotropy": round(along / cross, 4)}
+    return out
+
+
+def fit_report(donor: dict, body: A.HdBin, *, native: dict | None = None, role_bones: dict[str, int] = ROLE_BONES,
+               method: str = "proportional", gate: dict = FIT_GATE, scales: dict[str, float] = SCALES) -> dict:
+    """Fit `donor` (a `load_donor` / `library_donor` record) onto `body`'s skeleton and measure the result against
+    the native character (`native_envelope`; without it, `body` alone): {"pass", "reasons", "measured", "metrics",
+    "native", "donor_shape", "fit", "thresholds"}. Nothing is written. The cross-title swap control and the pools
+    call this before they write a donor; `check_library_donor` is the same from a library slug and a pack name."""
+    bones = body.bone_world()
+    absent = [role for role, bone in role_bones.items() if bone not in bones]
+    if absent:
+        raise ModelError(f"the body skeleton has no bone for {absent}")
+    native = native or native_envelope([body], role_bones=role_bones)
+    head_up = float(native.get("head_up") or NATIVE_HEAD_UP)
+    shape = donor_shape(donor)
+    try:
+        positions, _normals, _influences, report = _fit(donor, bones, role_bones=role_bones, method=method,
+                                                        native=native, scales=scales)
+    except (ModelError, ValueError) as exc:
+        return {"pass": False, "reasons": [f"the fit refuses the rig: {exc}"], "measured": {}, "metrics": {},
+                "native": native, "donor_shape": shape, "fit": {"method": method}, "thresholds": _jsonable(gate)}
+    metrics = fitted_metrics(positions, report, bones, role_bones=role_bones, head_up=head_up)
+    verdict = judge(metrics, native, report, shape, gate)
+    return verdict | {"metrics": metrics, "native": native, "donor_shape": shape,
+                      "fit": {k: v for k, v in report.items() if not k.startswith("_")}, "thresholds": _jsonable(gate)}
+
+
+def _jsonable(gate: dict) -> dict:
+    return {k: list(v) if isinstance(v, tuple) else v for k, v in gate.items()}
+
+
+def _head_size(native: dict) -> float:
+    """The native head's larger extent (width p2..p98, depth p5..p95), or `NATIVE_HEAD_SIZE` with no head drawn."""
+    head = (native.get("parts") or {}).get("head")
+    return float(max(head["width"], head["depth"])) if head and not native.get("head_assumed") else NATIVE_HEAD_SIZE
+
+
+def _fit(donor: dict, bones: dict, *, role_bones: dict[str, int], method: str, native: dict,
+         scales: dict[str, float] = SCALES):
+    """`proportional_fit` or the legacy `fit` (method "legacy"), with the per-vertex roles in the report."""
+    if method == "proportional":
+        return proportional_fit(donor["vertices"], donor["joints"], donor["parents"], donor["role_nodes"], bones,
+                                role_bones=role_bones, head_up=float(native.get("head_up") or NATIVE_HEAD_UP),
+                                head_size=_head_size(native))
+    if method != "legacy":
+        raise ModelError(f"unknown fit method {method!r} (proportional | legacy)")
+    positions, normals, influences, report = fit(donor["vertices"], donor["joints"], donor["parents"],
+                                                 donor["role_nodes"], bones, scales=scales, role_bones=role_bones)
+    weights, off = _skin(donor["vertices"], donor["parents"], donor["role_nodes"])
+    report["_dominant"] = weights.argmax(1)
+    report["segments"] = _segments_of_legacy(donor, bones, role_bones, scales)
+    report["off_role_weight_share"] = round(float(off.sum() / max(weights.sum(), 1e-12)), 4)
+    return positions, normals, influences, report
+
+
+def pack_native(dat: A.Dat, layout: PackLayout) -> tuple[A.HdBin, dict]:
+    """A player pack's body and its `native_envelope` (body, extra body parts and head pieces, no far head)."""
+    body, _table = _body(dat, layout)
+    models = [body]
+    for slot in (*layout.parts, *layout.heads):
+        if slot != FAR_HEAD and slot < len(dat.slots) and dat.slots[slot][0] == "BIN":
+            models.append(A.HdBin.parse(dat.slots[slot][1]))
+    return body, native_envelope(models, body)
+
+
+def check_library_donor(library: Path, slug: str, target: str, em_dir: Path, *, roles: dict[str, str] | None = None,
+                        atlas_size=(256, 256), method: str = "proportional", gate: dict = FIT_GATE) -> dict:
+    """`fit_report` of library entry `slug` on `target`: a cast key or pack ("leon", "pl08") or a Ganado body
+    ("em16:453"), read from `em_dir`. For the swap control: call it before writing a donor anywhere on RE4."""
+    record = library_donor(library, slug, roles=roles, atlas_size=atlas_size)
+    if ":" in target:
+        from . import re4_switch_enemies as E
+        pack, body_slot = target.split(":")
+        udas = (Path(em_dir) / f"{pack}.udas").read_bytes()
+        layout = E.measure_class(udas, pack)
+        _pack, dat = A.pack_slots(udas)
+        body, native = E.body_native(dat, layout, int(body_slot))
+        role_bones = E.ENEMY_ROLE_BONES
+    else:
+        pack = CAST[target]["pack"] if target in CAST else target
+        _pack, dat = A.pack_slots((Path(em_dir) / f"{pack}.udas").read_bytes())
+        body, native = pack_native(dat, LAYOUTS[pack])
+        role_bones = ROLE_BONES
+    report = fit_report(record, body, native=native, role_bones=role_bones, method=method, gate=gate)
+    return {"slug": slug, "target": target, "donor": record.get("donor")} | report
+
+
 def donor_surface(body: A.HdBin, donor: dict, *, image: int, scales: dict[str, float] = SCALES,
-                  role_bones: dict[str, int] = ROLE_BONES) -> tuple[A.HdBin, dict, int]:
+                  role_bones: dict[str, int] = ROLE_BONES, method: str = "proportional", native: dict | None = None,
+                  gate: dict | None = None) -> tuple[A.HdBin, dict, int]:
     """The donor fitted onto `body`'s skeleton and written as one material naming table image `image`:
-    (model, fit report, weight percent step). Shared by the player and the enemy writers."""
+    (model, fit report, weight percent step). Shared by the player and the enemy writers.
+
+    `method` "proportional" (default) is `proportional_fit`; "legacy" is `fit` with `scales` (the pools before
+    2026-11-10). The fit report always carries the gate's measurements (`fit_report["gate"]`, against `native` or the
+    body alone); with `gate` given, a donor the gate refuses raises ModelError("fit gate: ...") before anything is
+    encoded."""
     bones = body.bone_world()
     absent = [role for role, bone in role_bones.items() if bone not in bones]
     if absent:
         raise ModelError(f"the body skeleton has no bone for {absent}")
     vertices, faces = donor["vertices"], donor["faces"]
-    positions, normals, influences, fit_report = fit(vertices, donor["joints"], donor["parents"], donor["role_nodes"],
-                                                     bones, scales=scales, role_bones=role_bones)
+    native = native or native_envelope([body], role_bones=role_bones)
+    head_up = float(native.get("head_up") or NATIVE_HEAD_UP)
+    positions, normals, influences, fit_report = _fit(donor, bones, role_bones=role_bones, method=method,
+                                                      native=native, scales=scales)
+    metrics = fitted_metrics(positions, fit_report, bones, role_bones=role_bones, head_up=head_up)
+    verdict = judge(metrics, native, fit_report, donor_shape(donor), gate or FIT_GATE)
+    fit_report.pop("_dominant", None)
+    fit_report["gate"] = verdict | {"metrics": metrics, "native": native, "enforced": gate is not None}
+    if gate is not None and not verdict["pass"]:
+        raise ModelError("fit gate: " + "; ".join(verdict["reasons"]))
     sets, index, step = A.weight_table(influences)
     order, runs = A.soup([np.asarray(faces, np.int64)])
     native = body.materials()
@@ -509,8 +1102,8 @@ def donor_surface(body: A.HdBin, donor: dict, *, image: int, scales: dict[str, f
 
 def author_body(target: bytes, archive: bytes, donor: dict, *, image: int | None = None, shrink: float = 0.1,
                 scales: dict[str, float] = SCALES, layout: PackLayout | None = None,
-                role_bones: dict[str, int] = ROLE_BONES, opaque_atlas: bool = False
-                ) -> tuple[bytes, tuple[str, bytes], dict]:
+                role_bones: dict[str, int] = ROLE_BONES, opaque_atlas: bool = False, method: str = "proportional",
+                gate: dict | None = None) -> tuple[bytes, tuple[str, bytes], dict]:
     """A donor body on `target`'s skeleton: (pack bytes, (archive file name, archive bytes), receipt).
 
     The donor surface replaces the body mesh (`layout.body`, slot 0) as one material drawn with the donor's atlas,
@@ -518,7 +1111,9 @@ def author_body(target: bytes, archive: bytes, donor: dict, *, image: int | None
     image only the body uses). The native head pieces, hands and other body parts the layout names are shrunk to
     `shrink` of their size where they stand, because the donor brings its own head and hands in the body mesh.
     Without a layout the pack is Leon's (the published candidates' layout). `opaque_atlas` uploads the atlas through
-    `finish_atlas` (no black texels, alpha 255); off by default so the published candidates rebuild to their hashes.
+    `finish_atlas` (no black texels, alpha 255); off by default so the published candidates rebuild to their hashes
+    (with `method="legacy"`: the candidates before 2026-11-10 were fitted by `fit`). `gate` (e.g. `FIT_GATE`) refuses
+    a donor whose fitted shape fails it; the receipt's fit carries the gate's measurements either way.
     """
     layout = layout or LAYOUTS["pl08"]
     image = layout.image if image is None else image
@@ -526,7 +1121,9 @@ def author_body(target: bytes, archive: bytes, donor: dict, *, image: int | None
     body, table = _body(dat, layout)
     if not 0 <= image < len(table.images):
         raise ModelError(f"the body table has {len(table.images)} images; {image} is not one of them")
-    built, fit_report, step = donor_surface(body, donor, image=image, scales=scales, role_bones=role_bones)
+    _body_again, native = pack_native(dat, layout)
+    built, fit_report, step = donor_surface(body, donor, image=image, scales=scales, role_bones=role_bones,
+                                            method=method, native=native, gate=gate)
     pixels, finish = donor_atlas(donor, opaque=opaque_atlas)
     images = A.ImagePack.parse(archive)
     if images.pack_id != table.images[image].pack_id:
@@ -583,8 +1180,9 @@ def author_body(target: bytes, archive: bytes, donor: dict, *, image: int | None
 
 CAST_EXPECTATION = {
     "what_must_be_seen": [
-        "Leon's slot first: the round's player is the dealt library character, about 2 m tall with Leon's limb "
-        "lengths, standing on the ground, no Leon head or hands, knife and sheath floating at his hip",
+        "Leon's slot first: the round's player is the dealt library character at a person's size (the fit gate "
+        "held it to 0.85-1.2x Leon's 1,837 mm, at least 15 cm deep, soles on the floor), Leon's limb lengths, no Leon "
+        "head or hands, knife and sheath floating at his hip; the camera sees past it as past Leon",
         "the character moves with Leon's animations (walk, aim, knife swing); the camera and the laser sight are "
         "where Leon's were",
         "another slot only once the Select Player walk steers to it (today the walk confirms the default, Leon): "
@@ -599,6 +1197,8 @@ CAST_EXPECTATION = {
         "native torso, legs or strap drawn through the donor (Krauser, Wesker): a hidden part slot the game draws "
         "from another table than measured",
         "hang at stage load: the rebuilt container of that pack (bisect by removing one pack file)",
+        "a giant, a flat card or a figure under the floor: the fit gate's offline measure disagrees with the game "
+        "(compare the slot's fit.gate.metrics in the receipt; the bind-pose numbers are what was checked)",
     ],
 }
 
@@ -607,8 +1207,8 @@ def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, se
               slots: tuple = tuple(CAST), history: list | tuple = (), avoid_last: int = 3,
               games: list[str] | None = None, exclude: dict[str, str] | None = None,
               atlas_size=(1024, 1024), max_vertices: int = 12000, name: str | None = None,
-              assignment: dict[str, str] | None = None, opaque_atlas: bool = True,
-              rejects: dict[str, str] | None = None) -> dict:
+              assignment: dict[str, str] | None = None, opaque_atlas: bool = True, method: str = "proportional",
+              gate: dict | None = FIT_GATE, rejects: dict[str, str] | None = None) -> dict:
     """Deal library donors to the Mercenaries player slots from a seed (`re5_donor_pool.plan`, the RE5 rule) and
     write one overlay: every dealt pack and its grown archive under `out/romfs/bio4/...`, plus `receipt.json`.
 
@@ -617,6 +1217,9 @@ def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, se
     outcome follows from the seed, the donors, the history and `exclude` alone (as `re5_cast_writer.pool_cast`).
     `assignment` pins the deal ({slot: slug}, an earlier receipt's): nothing is dealt and a refusal is an error, so
     a pool is rebuilt with the same donors. `opaque_atlas` uploads each atlas through `finish_atlas`.
+
+    Every donor is fitted by `method` and must pass `gate` (`FIT_GATE`; None writes whatever fits) on its slot, or it
+    is set aside with the gate's reasons and the next one is dealt.
     `rejects` ({slug: reason}, default: RE4's entries of gbox.donor_rejects, the donors out of proportion on the
     native rig) are never dealt; a pinned assignment still rebuilds them (a fit fix is verified on the same donors)
     and the receipt names them under `rejected_but_pinned`.
@@ -655,7 +1258,8 @@ def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, se
                 archive_name = A.Tpl.parse(dat.slots[layout.table][1]).images[layout.image].archive()
                 archive = (imagepack_dir / archive_name).read_bytes()
                 pack_out, (written_name, written), receipt = author_body(target, archive, record, layout=layout,
-                                                                         opaque_atlas=opaque_atlas)
+                                                                         opaque_atlas=opaque_atlas, method=method,
+                                                                         gate=gate)
                 if written_name != archive_name:
                     raise ModelError("the writer grew another archive than the one that was read")
             except (ModelError, A.AssetError, ValueError, OSError) as exc:
@@ -684,6 +1288,7 @@ def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, se
                         "history": [dict(row) if isinstance(row, dict) else list(row) for row in history],
                         "pool_size": len(pool), "max_vertices": max_vertices, "set_aside": dict(refused),
                         "pinned_assignment": bool(pinned), "opaque_atlas": opaque_atlas,
+                        "fit_method": method, "fit_gate": _jsonable(gate) if gate else None,
                         "donor_rejects": len(listed),
                         "rejected_but_pinned": sorted(s for s in (pinned or {}).values() if s in listed),
                         "rule": "re5_donor_pool.plan: a donor at most once, recently used donors last, franchises in turn"},
@@ -746,6 +1351,14 @@ def write_overlay(root: Path, files: dict[str, bytes], receipt: dict, sources: d
     return receipt
 
 
+def _listed(path: Path | None) -> dict[str, str] | None:
+    """RE4's rejects from another gbox.donor_rejects file (None: the default file, read by the pool itself)."""
+    if path is None:
+        return None
+    from . import donor_rejects
+    return donor_rejects.rejected("re4", override=path)
+
+
 def main(argv=None) -> int:
     import argparse
 
@@ -780,6 +1393,18 @@ def main(argv=None) -> int:
     pool.add_argument("--assignment", type=Path, help="an earlier receipt.json: rebuild with its donors (no deal)")
     pool.add_argument("--atlas-as-built", action="store_true",
                       help="upload each atlas as mtf_materials built it (the pools before 2026-11-10)")
+    for command in (author, pool):
+        command.add_argument("--fit", choices=("proportional", "legacy"), default="proportional",
+                             help="legacy = the fixed-SCALES fit of the pools before 2026-11-10")
+    pool.add_argument("--no-gate", action="store_true", help="write donors whatever FIT_GATE says (not for MercMode)")
+    pool.add_argument("--rejects", type=Path, help="another gbox.donor_rejects file (default gbox-data/mercs/...)")
+    report = sub.add_parser("fit-report", help="fit library donors onto a pack and print the gate's verdict")
+    report.add_argument("--em", type=Path, required=True)
+    report.add_argument("--library", type=Path, required=True)
+    report.add_argument("--target", default="leon", help="a cast key or plXX, or a Ganado body emXX:slot")
+    report.add_argument("--fit", choices=("proportional", "legacy"), default="proportional")
+    report.add_argument("--full", action="store_true", help="print every measurement, not only the verdict")
+    report.add_argument("slugs", nargs="+")
     sub.add_parser("layouts", help="print the measured per-character slot layouts")
     fin = sub.add_parser("refinish", help="put the donor atlases a built overlay appended through finish_atlas")
     fin.add_argument("--stock", type=Path, required=True, help="the stock RomFS bio4/ folder")
@@ -791,6 +1416,14 @@ def main(argv=None) -> int:
     if args.command == "layouts":
         print(json.dumps({name: layout.__dict__ for name, layout in LAYOUTS.items()}, indent=2, default=list))
         return 0
+    if args.command == "fit-report":
+        failed = 0
+        for slug in args.slugs:
+            row = check_library_donor(args.library, slug, args.target, args.em, method=args.fit)
+            failed += not row["pass"]
+            keep = row if args.full else {k: row[k] for k in ("slug", "target", "pass", "reasons", "measured")}
+            print(json.dumps(keep, default=str))
+        return 1 if failed else 0
     if args.command == "refinish":
         result = refinish_overlay(args.stock, args.build, args.out)
         print(json.dumps({"out": str(args.out), "files": result["files"]}, indent=2))
@@ -804,7 +1437,9 @@ def main(argv=None) -> int:
         result = cast_pool(args.em, args.imagepack, args.library, donors, args.seed, args.out, history=history,
                            avoid_last=args.avoid_last, games=[g for g in args.games.split(",") if g] or None,
                            exclude={s: "left out by the caller" for s in args.exclude.split(",") if s},
-                           max_vertices=args.max_vertices, assignment=pinned, opaque_atlas=not args.atlas_as_built)
+                           max_vertices=args.max_vertices, assignment=pinned, opaque_atlas=not args.atlas_as_built,
+                           method=args.fit, gate=None if args.no_gate else FIT_GATE,
+                           rejects=_listed(args.rejects))
         print(json.dumps({"out": str(args.out), "assignment": result["assignment"], "files": result["files"]}, indent=2))
         return 0
     target = (args.em / f"{args.target}.udas").read_bytes()
@@ -827,7 +1462,7 @@ def main(argv=None) -> int:
             record, source_hash = load_donor(args.source), sha256(args.source.read_bytes())
         else:
             raise ModelError("author needs --source or --library with --slug")
-        out, (written_name, written), receipt = author_body(target, archive, record, layout=layout)
+        out, (written_name, written), receipt = author_body(target, archive, record, layout=layout, method=args.fit)
         if written_name != archive_name:
             raise ModelError("the writer grew another archive than the one that was read")
         files = {f"{PACK_DIR}/{args.target}.udas": out, f"{IMAGE_DIR}/{written_name}": written}
