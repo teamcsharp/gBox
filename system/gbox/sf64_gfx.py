@@ -21,6 +21,7 @@ G_SETOTHERMODE_H, G_SETOTHERMODE_L, G_ENDDL = 0xBA, 0xB9, 0xB8
 G_SETGEOMETRYMODE, G_CLEARGEOMETRYMODE = 0xB7, 0xB6
 G_LINE3D, G_RDPHALF_1, G_TRI2, G_BRANCH_Z = 0xB5, 0xB4, 0xB1, 0xB0
 G_SETTIMG, G_SETTILE, G_LOADBLOCK = 0xFD, 0xF5, 0xF3
+G_SETTILESIZE, G_LOADTLUT = 0xF2, 0xF0
 
 VTX_SIZE = 16
 VERTEX_BUFFER = 32  # F3DEX 1.x rsp vertex cache (64 on DX variants; indices guarded)
@@ -73,6 +74,19 @@ def walk_dl(seg, off, max_cmds=20000, _depth=0, _state=None):
             fmt, siz = (w0 >> 21) & 7, (w0 >> 19) & 3
             st["timg"] = w1
             st["timgs"].append({"addr": w1, "fmt": fmt, "siz": siz})
+        elif op == G_LOADTLUT:
+            if st["timgs"]:
+                st["timgs"][-1]["tlut"] = ((w1 >> 14) & 0x3FF) + 1
+        elif op == G_SETTILESIZE:
+            if (w1 >> 24) & 7 == 0 and st["timgs"]:
+                uls, ult = (w0 >> 12) & 0xFFF, w0 & 0xFFF
+                lrs, lrt = (w1 >> 12) & 0xFFF, w1 & 0xFFF
+                st["timgs"][-1]["w"] = ((lrs - uls) >> 2) + 1
+                st["timgs"][-1]["h"] = ((lrt - ult) >> 2) + 1
+        elif op == G_SETTILE:
+            if (w1 >> 24) & 7 == 0 and st["timgs"]:
+                t = st["timgs"][-1]
+                t["tile_fmt"], t["tile_siz"] = (w0 >> 21) & 7, (w0 >> 19) & 3
         elif op == G_DL:
             slot, o = an.segmented_parts(w1)
             if slot == 3 and _depth < 8:
@@ -84,7 +98,7 @@ def walk_dl(seg, off, max_cmds=20000, _depth=0, _state=None):
         elif op in (G_MTX, G_MOVEMEM, G_POPMTX, G_MOVEWORD, G_TEXTURE,
                     G_SETOTHERMODE_H, G_SETOTHERMODE_L, G_SETGEOMETRYMODE,
                     G_CLEARGEOMETRYMODE, G_CULLDL, G_RDPHALF_1, G_BRANCH_Z, G_LINE3D,
-                    G_SETTILE, G_LOADBLOCK, 0xE6, 0xE7, 0xE8, 0xE9, 0xF2, 0xF0,
+                    G_LOADBLOCK, 0xE6, 0xE7, 0xE8, 0xE9,
                     0xFC, 0xFB, 0xFA, 0xF8, 0xFF, 0xFE, 0xFD, 0x00):
             pass
         else:
@@ -174,12 +188,130 @@ def limb_world(limbs):
     return world
 
 
-def export_arwing_obj(rom, path):
+FMT_RGBA, FMT_YUV, FMT_CI, FMT_IA, FMT_I = 0, 1, 2, 3, 4
+SIZ_BITS = {0: 4, 1: 8, 2: 16, 3: 32}
+
+
+def rgba16(hi, lo):
+    """N64 RGBA5551 (big-endian halfword) -> (r, g, b, a) 8-bit."""
+    v = (hi << 8) | lo
+    c = lambda x: (x << 3) | (x >> 2)
+    return (c((v >> 11) & 31), c((v >> 6) & 31), c((v >> 1) & 31), 255 if v & 1 else 0)
+
+
+def decode_tlut(data, count):
+    if count * 2 > len(data):
+        raise ValueError("TLUT %d entries exceeds %d bytes" % (count, len(data)))
+    return [rgba16(data[2 * i], data[2 * i + 1]) for i in range(count)]
+
+
+def decode_texture(data, fmt, siz, w, h, tlut=None):
+    """Decode an N64 texture (row-major, no TMEM word swizzle: SF64 assets are
+    stored linear and loaded with LOADBLOCK dxt) to a list of RGBA rows.
+    Bounded: width/height/payload size are validated before reading."""
+    if not (0 < w <= 256 and 0 < h <= 256):
+        raise ValueError("bad texture size %dx%d" % (w, h))
+    bits = SIZ_BITS[siz]
+    need = (w * h * bits + 7) // 8
+    if need > len(data):
+        raise ValueError("texture needs %d bytes, have %d" % (need, len(data)))
+    px = []
+    for i in range(w * h):
+        if bits == 16:
+            hi, lo = data[2 * i], data[2 * i + 1]
+            if fmt == FMT_RGBA:
+                px.append(rgba16(hi, lo))
+            elif fmt == FMT_IA:
+                px.append((hi, hi, hi, lo))
+            else:
+                raise ValueError("unsupported 16-bit fmt %d" % fmt)
+        elif bits == 8:
+            b = data[i]
+            if fmt == FMT_I:
+                px.append((b, b, b, 255))
+            elif fmt == FMT_IA:
+                iv = (b >> 4) * 17
+                px.append((iv, iv, iv, (b & 15) * 17))
+            elif fmt == FMT_CI:
+                if tlut is None or b >= len(tlut):
+                    raise ValueError("CI8 index %d without TLUT" % b)
+                px.append(tlut[b])
+            else:
+                raise ValueError("unsupported 8-bit fmt %d" % fmt)
+        elif bits == 4:
+            b = data[i // 2]
+            n = (b >> 4) if i % 2 == 0 else (b & 15)
+            if fmt == FMT_I:
+                px.append((n * 17,) * 3 + (255,))
+            elif fmt == FMT_IA:
+                iv = (n >> 1) * 255 // 7
+                px.append((iv, iv, iv, 255 if n & 1 else 0))
+            elif fmt == FMT_CI:
+                if tlut is None or n >= len(tlut):
+                    raise ValueError("CI4 index %d without TLUT" % n)
+                px.append(tlut[n])
+            else:
+                raise ValueError("unsupported 4-bit fmt %d" % fmt)
+        else:
+            raise ValueError("unsupported 32-bit texture")
+    return [px[r * w:(r + 1) * w] for r in range(h)]
+
+
+def write_png(path, rows):
+    """Minimal RGBA PNG writer (stdlib zlib)."""
+    import zlib
+    h, w = len(rows), len(rows[0])
+    raw = b"".join(b"\x00" + bytes(c for p in r for c in p) for r in rows)
+    def chunk(t, d):
+        c = struct.pack(">I", len(d)) + t + d
+        return c + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+    with open(path, "wb") as fh:
+        fh.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+                 + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def export_textures(seg, timgs, outdir):
+    """Decode every SETTIMG texture with a known size from the ast_arwing
+    segment (slot 3) to PNG; return a list of receipts (skips are explicit)."""
+    import os
+    os.makedirs(outdir, exist_ok=True)
+    tl = [t for t in timgs if t.get("tlut")]
+    res, seen = [], set()
+    for t in timgs:
+        slot, o = an.segmented_parts(t["addr"])
+        if t.get("tlut") or "w" not in t or (t["addr"], t["w"], t["h"]) in seen:
+            continue
+        seen.add((t["addr"], t["w"], t["h"]))
+        rec = {"addr": t["addr"], "fmt": t.get("tile_fmt", t["fmt"]),
+               "siz": t.get("tile_siz", t["siz"]), "w": t["w"], "h": t["h"]}
+        if slot != 3:
+            rec["skipped"] = "external segment"
+            res.append(rec)
+            continue
+        try:
+            pal = None
+            if rec["fmt"] == FMT_CI:
+                ts = [x for x in tl if an.segmented_parts(x["addr"])[0] == 3]
+                if ts:
+                    po = an.segmented_parts(ts[0]["addr"])[1]
+                    pal = decode_tlut(seg[po:], ts[0]["tlut"])
+            rows = decode_texture(seg[o:], rec["fmt"], rec["siz"], t["w"], t["h"], pal)
+            name = "tex_%06x_%dx%d.png" % (o, t["w"], t["h"])
+            write_png(os.path.join(outdir, name), rows)
+            rec["png"] = name
+        except (ValueError, IndexError) as e:
+            rec["skipped"] = str(e)
+        res.append(rec)
+    return res
+
+
+def export_arwing_obj(rom, path, tex_dir=None):
     """Export the Arwing rest-pose mesh as an OBJ (one object per limb)."""
     seg = an.file_bytes(rom, "ast_arwing")
     skel = an.ARWING["skeleton"][1]
     limbs = walk_skeleton(seg, skel)
     world = limb_world(limbs)
+    all_timgs = []
     out, nv, summary = ["# Star Fox 64 Arwing rest pose, ast_arwing skeleton @%#x" % skel], 0, []
     for l, (r, t) in zip(limbs, world):
         if not l["dList"]:
@@ -200,11 +332,15 @@ def export_arwing_obj(rom, path):
         for f, _t in m["faces"]:
             out.append("f " + " ".join("%d/%d" % (nv + i + 1, nv + i + 1) for i in f))
         nv += len(m["verts"])
+        all_timgs.extend(m["timgs"])
         summary.append({"limb": l["index"], "dl": o, "verts": len(m["verts"]),
                         "faces": len(m["faces"]), "unknown_ops": m["unknown"]})
     with open(path, "w") as fh:
         fh.write("\n".join(out) + "\n")
-    return {"limbs": len(limbs), "meshes": summary, "total_verts": nv}
+    res = {"limbs": len(limbs), "meshes": summary, "total_verts": nv}
+    if tex_dir:
+        res["textures"] = export_textures(seg, all_timgs, tex_dir)
+    return res
 
 
 def main(argv=None):
@@ -213,7 +349,7 @@ def main(argv=None):
     argv = argv or sys.argv[1:]
     from gbox import sf64_inventory as inv
     rom = inv.load_rom(argv[0])
-    print(json.dumps(export_arwing_obj(rom, argv[1]), indent=1))
+    print(json.dumps(export_arwing_obj(rom, argv[1], argv[2] if len(argv) > 2 else None), indent=1))
 
 
 if __name__ == "__main__":
