@@ -559,3 +559,26 @@ frames of one session, no restart) on a working round.
 3. **Admission stayed closed all round** ("Waiting for five minutes without operator input", the operator is using the
    PC), so no launch tests were possible; the roster bisect and the hot-reload run remain queued. The manifest check
    confirmed the roster's artifact sizes are the ones shipped (no local corruption).
+
+## Round 20 status (2026-11-09, ~19:00 CST): a padded arc is rejected; the hot-reload needs an exact-size pair
+
+Ran the prepared hot-reload test (`recovery-re6-hotswap-20261109`: the update ExeFS + the Leon head donor padded to
+4 MiB) with admission open:
+
+* the game booted to the title, the character select was reached, and then the **CONTINUE? YES/NO** prompt appeared
+  (a continue state exists from the earlier rounds);
+* the A press (YES) led to a black screen and `HW.Memory <Error> Unmapped ReadBlock @ 0x0000000200000000` — the load
+  died on a bogus pointer;
+* the same donor arc **unpadded** (0x10b88) ran a full round in the single-arc test, so the 4 MiB padding is the
+  difference. **The ROMFS/LayeredFS arc loader is size-sensitive**: a padded arc is not just ignored past its table, it
+  breaks the load.
+
+Consequence for the hot-reload acceptance test (PM's "same path/size/padded" definition): padding is **not** acceptable
+on this title/emulator combination — the in-place swap must keep the file's **exact byte size**, which means a pair of
+donors with identical lengths, or a same-size edit inside one arc (e.g. a texture resource of equal length). The
+`switch_mods.hotswap` refusal of *longer* payloads stands; its padding of *shorter* ones is only safe when the game
+tolerates trailing bytes, which this one does not.
+
+Two candidate paths for the next attempt: (a) find/construct two donor assets of exactly the same length for the
+in-place swap, or (b) make the hot-reload test on a file whose loader is table-driven (a texture/audio unit where the
+game reads by the table's sizes), verified with a frame difference.
