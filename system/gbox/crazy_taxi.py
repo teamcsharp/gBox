@@ -652,6 +652,24 @@ def driver_rig_from_dol(dol: bytes, span: tuple[int, int] = DRIVER_DRAW_VA) -> l
     return out
 
 
+DRIVER_POSE_FN = 0x8005cd1c      # (r3=pose/motion block, r4=variant, f1=time); owns r25/r26 of the draw span
+DRIVER_SLOT_PTRS_VA = 0x801ddc70  # u32[variant] -> 16 x u32 registry idx (r25 = table[r4])
+
+
+def driver_slot_tables_from_dol(dol: bytes, count: int = 54) -> list[list[int]]:
+    """Per-variant shape-slot tables read by 0x8005cd1c: r25 = *(0x801ddc70 + 4*variant).
+    Words are registry indices later drawn via 0x8008dd08 (byte offset 0x10 = kata, 0xc = ude ...)."""
+    out = []
+    for v in range(count):
+        o = dol_va_to_offset(dol, DRIVER_SLOT_PTRS_VA + 4 * v)
+        p = struct.unpack_from(">I", dol, o)[0]
+        q = dol_va_to_offset(dol, p)
+        if q is None:
+            break
+        out.append(list(struct.unpack_from(">16I", dol, q)))
+    return out
+
+
 @dataclass
 class Motion:
     offset: int                 # byte offset of the motion in motDC.bin

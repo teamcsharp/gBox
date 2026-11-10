@@ -1,5 +1,6 @@
 """Driver skeleton is code-driven in main.dol (GCTE51): translate constants, pose-array words and shape slots."""
 import os
+import struct
 import sys
 
 import pytest
@@ -42,3 +43,18 @@ def test_variant_parts_drawn_by_index():
     assert 0x471 + i == 0x472  # registry index == table position + 0x471
     o = ct.dol_va_to_offset(d, 0x8005d234)
     assert struct.unpack_from(">I", d, o)[0] == 0x38600472  # li r3,0x472 (atamaB) in the car-type switch
+
+
+def test_driver_slot_tables_owner_0x8005cd1c():
+    d = _dol()
+    # prologue: mr r26,r3 ; mr r31,r4 ; lwzx r25,(0x801ddc70),r31*4
+    o = ct.dol_va_to_offset(d, ct.DRIVER_POSE_FN)
+    w = struct.unpack_from(">12I", d, o)
+    assert w[0] == 0x7c0802a6 and 0x7c7a1b78 in struct.unpack_from(">20I", d, o)  # mflr; mr r26,r3
+    t = ct.driver_slot_tables_from_dol(d)
+    assert len(t) == 54 and all(len(r) == 16 for r in t)
+    assert t[0][1:4] == [0x462, 0x463, 0x464] and t[1][1] == 0x471 and t[2][1] == 0x4a7
+    # variant tables are laid out 0x40 apart
+    p0 = struct.unpack_from(">I", d, ct.dol_va_to_offset(d, ct.DRIVER_SLOT_PTRS_VA))[0]
+    p1 = struct.unpack_from(">I", d, ct.dol_va_to_offset(d, ct.DRIVER_SLOT_PTRS_VA + 4))[0]
+    assert p1 - p0 == 0x40
