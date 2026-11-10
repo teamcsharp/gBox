@@ -2860,17 +2860,66 @@ not use.
 `pso_classes.registry` now reads ids to `0x100` instead of `0x60`, because the lobby sets use `0x80..0x8c` -- exactly the ids
 the narrow window could not name. 21 tests green across the registry and the editor.
 
+## Round 59 (2026-11-10) — the east-of-lobby lead is retired, before it cost a session
+
+Round 58 ended with a promising reading: the `TObjDoorKey` records of `SET/map_lobby_01o.dat`, mapped with the city00 offset,
+landed at worlds like (398,127) and (430,184) -- east of anywhere this lane has walked. The obvious next move was a live
+session to walk east. This round checked the assumption behind it first, offline.
+
+### The check
+
+If the lobby sets shared city00's coordinate space, they would carry the same spawn records at the same local coordinates --
+city00's spawns are at local `(1,-37)` and `(3,-24)`, which is exactly what calibrated the offset. They do not:
+
+```
+SET/map_lobby_01o.dat id-0 records:  (0,135)  (-20,145)  (20,145)  (0,165)
+shared with a city00 spawn coordinate: 0
+```
+
+And the bounds of the two sets are different spaces entirely:
+
+| set | local x | local z |
+|---|---|---|
+| `map_city00_00o.dat` | -562 .. 132 | -2021 .. 42 |
+| `SET/map_lobby_01o.dat` | -277 .. 273 | -317 .. 240 |
+
+So the lobby sets are **per-room local spaces**, and adding city00's offset to them is meaningless. The "(398,127) is east of
+the lobby" reading was an artefact of mixing two spaces -- the same class of mistake round 42 caught with the city's own
+records.
+
+### The distinction that matters for the next session
+
+Two different kinds of set live in the city:
+
+* **`map_city00_*`** -- one big space covering the whole city, with the offset `(+228,+291)` measured and proven (round 49's
+  door proof used it);
+* **`SET/map_lobby_XXo.dat`** -- per-room overlays (doors, collision, ambient sound) with **their own local origin**, which
+  must be solved per room: enter the room, read its entities, and solve the offset the same way the spawn points solved
+  city00's.
+
+That is a clean method rather than a guess, and it is the first thing a session should do with the fifteen lobby sets.
+
+### What is still true from round 58
+
+* the city has a **GUILD room** with its own music (`GUILD.adx`) and a "HUNTER GUILD" label in the string table;
+* its areas are named `map_lobby_01..10`;
+* fifteen lobby sets exist and hold a door class (`TObjDoorKey`) that the city's own set never uses.
+
+None of that is affected by the coordinate-space correction -- only the specific "walk east" plan is.
+
+### State
+
+`main` clean, tests green. One round left in the objective's window.
+
 ## 7. Next
 
-1. **Open the lobby sets properly.** `SET/map_lobby_01o.dat` .. `_10o.dat` (plus colour and soccer variants) were never
-   read until round 58. They carry `TObjDoorKey`, `TObjEvtCollision`, `TObjEnvSound*` -- room furniture and doors -- and
-   their coordinates, read with the `city00` offset, land **east of anywhere this lane has walked** ((398,127),
-   (430,184), (378,352)). Either they use a different origin or the city extends east; both are decidable.
-2. **The city has a GUILD room** with its own music (`GUILD.adx` beside `SHOP.adx`, `MEDICAL.adx`, `city.adx`) and a
-   "HUNTER GUILD" label in the string table. It is a room, and it has never been entered.
-3. **P1's gate is still code**, but the room inventory above is data worth exhausting before another executable search.
-4. **P6b's page** (pure UI over the CLI) and **P7a's rigging** remain the items that do not need P1.
+1. **Solve the lobby sets' per-room offsets.** `SET/map_lobby_XXo.dat` are per-room overlays with their own local origin
+   (city00 spans x -562..132; lobby_01 spans -277..273; no shared records). The method that worked for city00 works
+   here: enter the room, read its entities, solve the offset from a record that must be one of them.
+2. **The GUILD room exists** -- `GUILD.adx` beside `SHOP.adx`/`MEDICAL.adx`/`city.adx`, the label "HUNTER GUILD" at
+   0x8044c10f, and areas named `map_lobby_01..10` at 0x8044adfc. It has never been entered.
+3. **P1's gate is still code**, and the room inventory above is the data worth exhausting first.
+4. **P6b's page** (pure UI over the CLI) and **P7a's rigging** remain.
 
-Evidence for (2): the executable's string table at 0x80443654 lists the city's music tracks (SHOP/GUILD/MEDICAL/city)
-and at 0x8044c10f the city's labels (ITEM STORE / HUNTER GUILD / CHECK ROOM / JUDGMENT). Area names are `map_lobby_01..10`
-at 0x8044adfc.
+Retired in round 59: the "east of the lobby" lead. The lobby sets are per-room local spaces; mapping them with city00's
+offset produced coordinates that mean nothing. Check the space before planning a walk.
