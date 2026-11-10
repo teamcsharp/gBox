@@ -790,6 +790,8 @@ WEDGE_ESCAPE_REACH = 45.0     # first strafe/back-off detour (18 was too small t
 WEDGE_ESCAPE_GROW = 35.0      # each successive wedged phase widens the detour by this
 WEDGE_ESCAPE_MAX = 180.0      # cap the detour so an escape never flings a buddy across the whole area
 FALLBACK_STUCK_S = 15.0       # operator fail-safe threshold: a room with no forward progress
+FORCE_UNLOCK_HARD_S = 120.0   # operator 2026-11-10 (#7459): struggling at a switch/door this long with no new room -> flip the
+                              # stage flag regardless of live enemies, and re-arm the one-shot every this many seconds
 FORCE_DOOR_DIST = 60.0        # P1 this close to the forward door it can't cross -> force-open that door
 FORCE_DOOR_RETRY_S = 20.0     # re-arm a specific door's force-open this often (in case a flag was contested)
 COORD_DRIVE_AFTER_S = 3.0     # (B) after this long unable to A* past a forward door in a cleared room, drive straight at it
@@ -1124,6 +1126,7 @@ class Controller:
         self.forward_kind = {}      # slot -> 'press' | 'approach_switch' | 'walk_through'
         self.room_dwell = {}    # P1 dwell tracking for the stuck-room fail-safe telemetry
         self.forced_rooms = set()   # (episode,floor,room,geometry) already force-unlocked this run
+        self._hard_forced = {}      # forced-room key -> when the 2-minute hard unlock last fired (re-arm clock)
         self._forced_doors = {}     # gkey -> until: a SPECIFIC forward door force-opened (per-door, not per-room)
         self._adj_fires = 0         # how many times force_adjacent_door engaged (flat telemetry)
         self._adj_last = {}         # last force_adjacent_door result {room, gkey, written, flags} (flat telemetry)
@@ -3116,11 +3119,26 @@ class Controller:
         if not p1 or p1.get('hp', 0) <= 0:
             return
         room = p1.get('room')
-        if any(e.get('kind') == 'enemy' and e.get('hp', 0) > 0 and e.get('room') == room
-               for e in state.get('entities', ())):
-            return
         rec = self.room_dwell.get('_cur')
         dwell = now - rec['since'] if rec else 0.
+        hard = dwell >= FORCE_UNLOCK_HARD_S
+        if not hard and any(e.get('kind') == 'enemy' and e.get('hp', 0) > 0 and e.get('room') == room
+                            for e in state.get('entities', ())):
+            return
+        if hard:
+            # Two minutes with no new room: the switch/door is beaten by flipping its flag, enemies or not, and the
+            # per-room one-shot is re-armed (the game may have cleared the flag, or the first pass wrote nothing).
+            key = (state.get('episode'), state.get('floor'), room, state.get('geometry_identity'))
+            last = self._hard_forced.get(key)
+            if last is not None and now - last < FORCE_UNLOCK_HARD_S:
+                return
+            self.forced_rooms.discard(key)
+            if self.force_forward_unlock(state, 1, p1, now) is not None:
+                self._hard_forced[key] = now
+                stats = getattr(self.inputs, 'stats', None)
+                if isinstance(stats, dict):
+                    stats['forced_unlock_hard'] = {'room': room, 'dwell_s': round(dwell, 1)}
+            return
         if self._recalled_flags(state, p1) is not None or dwell >= FALLBACK_STUCK_S:
             self.force_forward_unlock(state, 1, p1, now)
 

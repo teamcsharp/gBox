@@ -1002,7 +1002,7 @@ def test_room_clear_gate_is_never_force_unlocked_with_enemies_present(monkeypatc
     st = _coop_room(_room10_flag_entities())
     st["entities"].append({"kind": "enemy", "class": "TObjEneMoja", "room": 10, "x": 0., "z": 10., "hp": 50})
     ctrl.room_dwell["_cur"] = {"key": (1, 1, 10), "since": 0., "anchor": (0., 0.)}
-    ctrl.maybe_force_unlock(st, now=10_000.)           # long past the timer, but a live enemy is here
+    ctrl.maybe_force_unlock(st, now=C.FORCE_UNLOCK_HARD_S - 5)   # past the 15 s timer, under the 2-min hard deadline, live enemy here
     assert writes == []
 
 
@@ -1882,3 +1882,24 @@ def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     moved = state(floor=1)
     moved["players"][1]["room"] = 11
     assert C.apply_master_build_tick(ad, moved, stats) is False and len(calls) == 2
+
+
+def test_hard_unlock_after_two_minutes_ignores_enemies_and_rearms(monkeypatch, tmp_path):
+    import gbox.pso_coop_gates as G
+    monkeypatch.setattr(G, "stage_flag_code_ok", lambda read: True)
+    ad, writes, mem = _flag_ad(floor=1)
+    ctrl = _controller(tmp_path, ad=ad)
+    st = _coop_room(_room10_flag_entities())
+    st["entities"].append({"kind": "enemy", "class": "TObjEneMoja", "room": 10, "x": 0., "z": 10., "hp": 50})
+    ctrl.room_dwell["_cur"] = {"nvisited": 0, "since": 0.}
+    ctrl.maybe_force_unlock(st, now=C.FORCE_UNLOCK_HARD_S - 1)      # under 2 min, enemy alive: nothing
+    assert writes == []
+    ctrl.maybe_force_unlock(st, now=C.FORCE_UNLOCK_HARD_S + 1)      # 2 min: flags flipped despite the enemy
+    assert mem[0x80515CE8] == 0x03 and mem[0x80515CE9] == 0x20
+    assert ctrl.inputs.stats["forced_unlock_hard"]["room"] == 10
+    n = len(writes)
+    mem[0x80515CE8] = 0                                              # the game cleared the flag
+    ctrl.maybe_force_unlock(st, now=C.FORCE_UNLOCK_HARD_S + 5)       # inside the re-arm window: no write
+    assert len(writes) == n
+    ctrl.maybe_force_unlock(st, now=2 * C.FORCE_UNLOCK_HARD_S + 2)   # re-armed
+    assert mem[0x80515CE8] == 0x03
