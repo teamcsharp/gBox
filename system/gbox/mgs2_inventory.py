@@ -40,7 +40,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 GAME_ID = "cb7aae71edb10cd3"
-GAME_IDS = {GAME_ID: "Metal Gear Solid 2: Substance (USA) - the PS2 DVD SLUS-20554 (HyperSpin CHD filed under Microsoft XBOX)"}
+SOL_GAME_ID = "3fc2fad561187055"      # Metal Gear Solid 2: Sons of Liberty (USA) PS2 DVD, SLUS-201.44 v1.01 (STAGE.DAT only)
+GAME_IDS = {GAME_ID: "Metal Gear Solid 2: Substance (USA) - the PS2 DVD SLUS-20554 (HyperSpin CHD filed under Microsoft XBOX)",
+            SOL_GAME_ID: "Metal Gear Solid 2: Sons of Liberty (USA) - the PS2 DVD SLUS-201.44 v1.01"}
 TITLE = "Metal Gear Solid 2: Substance (USA)"
 SERIAL = "SLUS-20554"
 ELF = "SLUS_205.54"

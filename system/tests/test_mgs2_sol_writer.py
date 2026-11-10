@@ -54,3 +54,12 @@ def test_donor_fits_soldier_tanker_slot_dry_run(tmp_path):
     assert [m["stage"] for m in failed] == ["MGS2/STAGE.DAT:d036p03"]
     assert "no free 8-bit page region" in failed[0]["reason"]
     assert rep["image"] is None
+
+
+def test_sol_game_id_routes_to_writer():
+    """The ordinary replacement request (characters op=use/match) must reach mgs2_swap for the Sons of Liberty game id."""
+    from gbox import char_coverage as CC, mgs2_inventory as inv, mgs2_swap as S
+    assert inv.SOL_GAME_ID == "3fc2fad561187055" and inv.SOL_GAME_ID in S.GAME_IDS and inv.GAME_ID in S.GAME_IDS
+    w = CC.writer_for({"game_id": inv.SOL_GAME_ID, "title": "Metal Gear Solid 2 - Sons of Liberty (USA)", "platform": "ps2"})
+    assert w and w["writer"] == "gbox.mgs2_swap" and w["routed"] is True
+    assert "soldiers" in w["slots"] and S.is_slot("soldier_tanker")

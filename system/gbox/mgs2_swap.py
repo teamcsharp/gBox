@@ -897,7 +897,7 @@ def build_cast(cfg, game: dict, pairs: list[tuple[str, dict]], name: str, progre
 
 
 def needs(game: dict) -> dict:
-    return {"have": "Metal Gear Solid 2: Substance (USA) PS2 DVD (SLUS-20554) as the catalog CHD or an ISO",
+    return {"have": "Metal Gear Solid 2: Substance (USA) PS2 DVD (SLUS-20554) or Sons of Liberty (USA, SLUS-201.44 v1.01) as the catalog CHD or an ISO",
             "game_ids": sorted(GAME_IDS)}
 
 
