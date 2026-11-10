@@ -6352,7 +6352,8 @@ def create_app(config: Config) -> FastAPI:
                         JobRequest(tool=tool, input=inp, parent_request_id=rid), actor,
                         {"via": "autoplay coach", "request_id": rid}).model_dump(mode="json"),
                     moment_provider=lambda sid: coaching_evidence.cached(
-                        sid, live, getattr(app.state, "tactical_map", None), screensaver.TELEMETRY, ram_inspector))
+                        sid, live, getattr(app.state, "tactical_map", None), screensaver.TELEMETRY, ram_inspector),
+                    rig_root=Path(config.data_dir))
     from . import player_damage
     player_damage.routes(app, store, auth,
         create_request=lambda body, actor: req_create(RequestIn(**body), actor),

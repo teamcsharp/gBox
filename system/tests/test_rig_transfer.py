@@ -63,3 +63,14 @@ def test_limb_scale_applies():
     rt.apply_correction(f, {"action": "shrink_limb", "part": ["l_arm"]})
     p = rt.apply_fixes({"l_upper_arm": (0, 0, 0), "l_hand": (10, 0, 0)}, f)
     assert abs(p["l_hand"][0] - 9.0) < 1e-9
+
+
+def test_coach_reply_uses_session_donor(tmp_path):
+    sess = {"game_id": "re4", "build_manifest": {"donor": "re5_chris", "slot": "leon"}}
+    r = rt.coach_reply(tmp_path, sess, "his head is shoved down and the arms are stretched")
+    assert (r["donor"], r["target"]) == ("re5_chris", "leon") and r["rebuild"]
+    fx = rt.load_fixes(tmp_path, "re5_chris", "leon")
+    assert fx["joint_offsets"]["head"][2] > 0 and fx["scales"]["l_arm"] < 1
+    assert "re5_chris -> leon" in r["reply"]
+    assert rt.coach_reply(tmp_path, sess, "nice dodge") is None
+    assert rt.coach_reply(tmp_path, {"game_id": "re4"}, "normals inverted") is None

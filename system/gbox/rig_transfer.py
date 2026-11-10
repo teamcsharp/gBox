@@ -253,3 +253,34 @@ def critique_to_fixes(root: Path, donor: str, target: str, note: str) -> dict:
         apply_correction(fixes, r, note)
     p = save_fixes(root, fixes)
     return {"applied": reqs, "rebuild": True, "path": str(p), "fixes": fixes}
+
+
+# ---- coach-note hook -------------------------------------------------------------------------------------
+def session_donor_target(session: dict) -> tuple[str, str] | None:
+    """(donor, target) named by a session's build manifest, or None when it names none.
+    Accepts session['build_manifest'] / ['manifest'] / the session itself with donor + slot/target keys."""
+    for m in (session.get("build_manifest"), session.get("manifest"), session):
+        if not isinstance(m, dict):
+            continue
+        donor = m.get("donor") or m.get("donor_slug")
+        target = m.get("target") or m.get("slot") or m.get("game_id") or session.get("game_id")
+        if donor and target:
+            return str(donor), str(target)
+    return None
+
+
+def coach_reply(root: Path, session: dict, note: str) -> dict | None:
+    """Coach-note entry point: None when the note names no rig problem or the session names no donor; otherwise
+    {donor, target, applied, rebuild, path, reply} with the reply text for the note."""
+    if not parse_critique(note):
+        return None
+    dt = session_donor_target(session)
+    if not dt:
+        return None
+    res = critique_to_fixes(root, dt[0], dt[1], note)
+    acts = ", ".join(r["action"] + (f"({'/'.join(r['part'])})" if r.get("part") else "") for r in res["applied"])
+    res |= {"donor": dt[0], "target": dt[1],
+            "reply": f"Rig correction for {dt[0]} -> {dt[1]}: {acts}. Saved to rig_fixes; a rebuild is queued for the "
+                     f"next round (before/after renders follow with the rebuild)."}
+    res.pop("fixes", None)
+    return res

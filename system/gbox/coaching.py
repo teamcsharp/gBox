@@ -577,7 +577,7 @@ def _request_of(store, game_id: str, mid: str) -> str | None:
     return rid if rid and _message(store.get("request", rid), mid) else None
 
 
-def routes(app, store, auth, create_request, submit, moment_provider=None):
+def routes(app, store, auth, create_request, submit, moment_provider=None, rig_root=None):
     """create_request(body, actor) -> request (server.req_create); submit(tool, input, request_id, actor) -> job dict."""
     from . import bots
     bots.routes(app, store, auth)
@@ -610,6 +610,14 @@ def routes(app, store, auth, create_request, submit, moment_provider=None):
         command = directives.match(text)                    # "fight!", "go to the next time bonus": acted on at once too
         if command and not out.get("deduplicated"):
             out["directive"] = directives.post(sid, command, now=received_at, source="chat")
+        if rig_root is not None and not out.get("deduplicated"):
+            try:                                            # a named rig problem -> rig_fixes for the slot's donor
+                from . import rig_transfer
+                rig = rig_transfer.coach_reply(rig_root, store.get("session", sid) or {}, text)
+                if rig:
+                    out["rig_fix"] = rig
+            except Exception as e:                          # never block the note on the rig hook
+                out["rig_fix_error"] = str(e)[:200]
         if not out.get("deduplicated") and any(c.get("state") == "pending" for c in out["captures"].values()):
             _spawn(watch, store, out["request_id"], out["message_id"])
         return out
