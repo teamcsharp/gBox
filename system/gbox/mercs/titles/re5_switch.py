@@ -713,6 +713,54 @@ DOOR_GO_S, DOOR_REACH_R, DOOR_FIGHT_R, DOOR_RETRY_S, DOOR_SPOTS_KEPT = 12.0, 120
 # him at a wall). The round's own stage now names them, in a new namespace: the old entries are left unread.
 STAGE_KEY = "{}#round"
 DOOR_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "learned" / "010018100CD46000" / "door_spots.json"
+# Doors and windows (operator 2026-11-10: "in RE, the bot should know tapping on the key allows them to kick open the
+# door thus being able to go through it and pressing it opens the door. The bot needs to be able to identify and open
+# and traverse through doors to complete the level ... The button presses to open doors and climb windows should be
+# part of the intel gathered in the map and internalized and used by the bot"). Live that night (Prison, No Mercy,
+# Sheva, 00:08 UTC): "(Y) Open" up at a door for over 10 s and never pressed; kills 390 of 400 for 136 s and climbing,
+# every one left in the census a crow. Its prompt was typed "other" (_prompt_type): "traverse" is only his own kind 2
+# action with a ledge's label (TRAVERSE_LABELS) or a plain press:y, and a door's button is a stage object's (kind 0 / 1,
+# owned by the door) or a kind 2 one tapped (the kick); "other" is pressed only with an enemy within PROMPT_CLEAR_R (the
+# finisher rule) and nobody was near (the crows, kept in the census by CROWS_LAST_RESORT, were up on the roofs). Now:
+#   * door (_door_kind): a face button pressed, released or tapped that is no Majini's, no hourglass, pickup, Place or
+#     item chest (NOT_DOOR_LABELS, NOT_DOOR_CLASSES) nor kind 3's area pickup, and - his own kind 2 action - not beside a
+#     Majini (that one is his melee: the finisher rule as before); the owner's class (DOOR_CLASSES, read with the prompt)
+#     or a label learned as a door (DOOR_FILE DOOR_LABELS_KEY: one that took him through) names it whatever its kind.
+#     Taken at once, the button down one tick and up the next (a fresh press each time: the double tap kicks a door
+#     open) until it goes - unless a Majini (never a crow) on his level stands within DOOR_GRAB_R or winds up within
+#     DOOR_HOLD_R (about to hit him): the fight first, the door the moment that is over (door_holds). Pressed
+#     DOOR_PRESS_MAX_S without going: let be, and the spot counts a miss (door_giveups).
+#   * through: once a door's prompt goes he runs on DOOR_THROUGH_S the way he faced it (not a ledge's: the game moves
+#     him), the fight first with a Majini within DOOR_FIGHT_R; a door or ledge taken is through when within DOOR_WATCH_S
+#     he is DOOR_PAST_CM past the object's own position (the button's target, its cAreaHit) along that heading,
+#     DOOR_THROUGH_CM on from where he pressed it (no position read), or on another level (LEVEL_DY): doors_through.
+#   * remembered (the DOOR_FILE spots, extended): each door / window / ledge spot keeps the heading he faced, its type,
+#     label, button (token, keys), kind, mode and owner class, how often it was seen / taken / through / missed and where
+#     it took him; every sighting, hold, take and outcome is a JSON line in DOOR_LOG (the newest: stats door_trace), the
+#     prompts left "other" too (seen_other: their label, kind and owner class, to name the doors not yet known).
+#   * explored (DOOR_EXPLORE, Bot._explore): nobody to fight - no living Majini in the census (crows never count), or no
+#     kill for DOOR_EXPLORE_S with none of them reachable (given up, or no mesh route to their floor) - the time bonuses
+#     first, then he runs (by the mesh) to the nearest remembered door / window / ledge not tried within DOOR_RETRY_S (one
+#     tried within DOOR_FRESH_S costs DOOR_FRESH_CM more; DOOR_MISSES_MAX misses and never through: not again), steps onto
+#     its spot, faces the way he faced it when its prompt showed and takes the prompt; no prompt within DOOR_ARRIVE_S (a
+#     door already open) he walks on through; then the next. Never while the operator's mark is in force (MAP_GOALS).
+#     Counters door_explores, door_explore_arrivals, door_explore_misses.
+DOOR_PROMPTS, DOOR_GRAB_R, DOOR_HOLD_R, DOOR_PRESS_MAX_S = True, 120.0, 250.0, 4.0
+DOOR_THROUGH_S, DOOR_WATCH_S, DOOR_PAST_CM, DOOR_THROUGH_CM = 2.0, 4.0, 60.0, 150.0
+DOOR_EXPLORE, DOOR_EXPLORE_S, DOOR_EXPLORE_GO_S, DOOR_ARRIVE_S, DOOR_SPOT_CM = True, 20.0, 30.0, 1.0, 50.0
+DOOR_FRESH_S, DOOR_FRESH_CM, DOOR_MISSES_MAX, DOOR_SEEN_GAP_S, DOOR_TARGET_R = 120.0, 2000.0, 3, 5.0, 1000.0
+FACE_KEYS = frozenset({"y", "x", "a", "b"})
+DOOR_CLASSES = {"uOm100c": "door", "uOm1103": "window"}   # re5-stage-greybox.md: om_door100C, om_window1103
+NOT_DOOR_CLASSES = frozenset({"uOm088a", "uOm0100"})      # the item chest (takarabako), the hourglass (sunadokei)
+CHEST_LABELS = frozenset({256})                          # the item chest's (uOm088a, the start's box: kind 0 press:y)
+NOT_DOOR_LABELS = frozenset({re5_switch_prompt.LABEL_TIME_BONUS, re5_switch_prompt.LABEL_PICKUP,
+                             re5_switch_prompt.LABEL_PLACE, re5_switch_prompt.LABEL_RESUSCITATE,
+                             re5_switch_prompt.LABEL_BREAK_FREE}) | CHEST_LABELS
+DOOR_LABELS = frozenset()                                # door / window labels measured live (none yet: learned instead)
+DOOR_LABELS_KEY = "#labels"                              # DOOR_FILE: the labels learned as doors (never a stage's key)
+DOOR_LOG = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re5-switch-doors.jsonl"
+DOOR_COUNTERS = ("doors_taken", "doors_through", "door_holds", "door_giveups", "door_explores",
+                 "door_explore_arrivals", "door_explore_misses")
 SHOT_TAIL_S = 0.15                     # Bot._shot_tail: no stick in the boosted shot motion nor this long after it
 SHOT_TAIL_KEYS = frozenset({"lup", "ldown", "lleft", "lright", "rleft", "rright", "rup", "rdown"})
 # The quick turn back (operator 20:25: "you can do a quick turn by holding down and pressing B. Thats how you turn around
@@ -775,8 +823,9 @@ GOV_COUNTERS = ("gov_drops",)
 #           start's box, uOm088a, is a kind 0 press:y too)
 #   dying   Resuscitate (label 55): always            bonus   the hourglass (label 112): always
 #   pickup  Pick up (label 1): skipped; the operator uses unlimited ammo and items
-#   traverse  a stage spot's action (TRAVERSE_LABELS, or another of his own press:y): only on the way to a statue or a
-#           pursued Majini off his level (no blind Y: #1370's presses wait for the prompt now); each spot logged
+#   traverse  a stage spot's action (TRAVERSE_LABELS, or another of his own press:y): always (2026-10-28; no blind Y:
+#           #1370's presses wait for the prompt now); each spot logged and remembered (DOOR_FILE)
+#   door    a door's or a window's (DOOR_PROMPTS above): at once, unless a Majini is about to hit him
 #   (never the bomb's Place, label 100: the mines module's; never kind 3's area pickups: ammo is infinite)
 # The press by the prompt's mode: press / release / mash - the keys one tick, let go the next (a fresh press each
 # time); wiggle - the left stick left / right by turns; rotate - the left stick round; the axes - back and forth.
@@ -784,10 +833,11 @@ GOV_COUNTERS = ("gov_drops",)
 # prompt_presses, prompt_latency_s (the mean seconds from shown to the first press), ledge_jumps (traverse prompts
 # taken), level_changes (his height changing by LEVEL_DY within LEVEL_CHANGE_S of one); stats traverse_spots: the
 # last spots (label @ x, y, z).
-PROMPT_CLEAR_R = 250.0                    # Bot._prompt_wanted: a door / ledge prompt waits while one is this near
+PROMPT_CLEAR_R = 250.0                    # Bot._prompt_wanted: an "other" prompt is taken with a Majini this near (his
+                                          # finisher); his own action this near one is his melee, not a door
 PROMPTS, PICKUP_CLEAR_R, MINE_CLEAR_R, PROMPT_TAKE_S, LEVEL_CHANGE_S = True, 250.0, 250.0, 3.0, 3.0
-PROMPT_TYPES = ("enemy", "dying", "bonus", "pickup", "traverse", "other")
-PROMPT_COUNTERS = ("prompts_seen", "prompts_taken", "prompt_presses", "ledge_jumps", "level_changes")     + tuple("prompts_seen_" + t for t in PROMPT_TYPES)
+PROMPT_TYPES = ("enemy", "dying", "bonus", "pickup", "traverse", "door", "other")
+PROMPT_COUNTERS = ("prompts_seen", "prompts_taken", "prompt_presses", "ledge_jumps", "level_changes")     + tuple("prompts_seen_" + t for t in PROMPT_TYPES) + DOOR_COUNTERS
 ROTATE = (("lup",), ("lup", "lleft"), ("lleft",), ("lleft", "ldown"), ("ldown",), ("ldown", "lright"), ("lright",),
           ("lright", "lup"))
 # The turret sweep (operator 17:38: "with as many threats that they have around them within a five meter circle, they
@@ -1620,7 +1670,10 @@ def snapshot(m) -> dict:
             snap["aim_cam"] = re5_switch_aim.aim_state(m, base, p)
             if PROMPTS and prompt_table_ok(m, base):     # the game's own prompt (re5_switch_prompt): None when none
                 # RAM first; a grab the reader missed (a torn read) is caught by vision while he is held (qte.grab_fallback)
-                snap["prompt"] = re5_switch_prompt.selected_prompt(m, base, p, index or 0) or qte.grab_fallback(MAP_ID, m, snap)
+                pr = re5_switch_prompt.selected_prompt(m, base, p, index or 0)
+                if pr is not None:
+                    prompt_owner(m, pr, snap["player"]["pos"])   # its owner's class, a stage object's position (doors)
+                snap["prompt"] = pr or qte.grab_fallback(MAP_ID, m, snap)
                 snap["prompt_read"] = True
             if any(s["id"] == MINE_ITEM for s in snap["inventory"]):   # the bombs on the ground (re5_switch_mines)
                 # uWp0a also represents the inventory's own mine stack. Its
@@ -1691,6 +1744,24 @@ def snapshot(m) -> dict:
     from . import re5_switch_native_nav
     snap["nav"] = re5_switch_native_nav.get_navmesh(m, base)
     return snap
+
+
+def prompt_owner(m, pr: dict, ppos) -> None:
+    """The shown prompt's owner class (pr owner_class: a door, a window - DOOR_CLASSES; the item chest) and, for a stage
+    object's button, its target's position (pr target_pos: the cAreaHit +0x30, re5_switch_prompt.AREA_POS - kept only
+    when finite and within DOOR_TARGET_R of him, else None). Never raises."""
+    owner, target = pr.get("owner"), pr.get("target")
+    pr["owner_class"] = enemy_class(m, owner) if ptr_ok(owner) else None
+    pr["target_pos"] = None
+    if not ptr_ok(target) or pr.get("kind") == re5_switch_prompt.KIND_PLAYER or not ppos:
+        return
+    try:
+        pos = struct.unpack("<3f", m.rd(target + re5_switch_prompt.AREA_POS, 12))
+    except (ValueError, OSError, OverflowError, struct.error):
+        return
+    if all(math.isfinite(v) for v in pos) and math.hypot(pos[0] - ppos[0], pos[2] - ppos[2]) <= DOOR_TARGET_R \
+            and abs(pos[1] - ppos[1]) <= DOOR_TARGET_R:
+        pr["target_pos"] = pos
 
 
 _PROMPT_TABLE: dict = {}                 # main base -> its key table is this reader's (re5_switch_prompt.table_ok)
@@ -2225,6 +2296,12 @@ def through(origin, dot, foot) -> bool:
         if 0.0 < along <= have and dot_on(tuple(origin[k] + along * d[k] for k in range(3)), foot) is not None:
             return True
     return False
+
+
+def _spot_ok(s_) -> bool:
+    """A remembered door / ledge row (DOOR_FILE) usable as a place: a list starting with three numbers."""
+    return isinstance(s_, list) and len(s_) >= 3 \
+        and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in s_[:3])
 
 
 def is_crow(e) -> bool:
@@ -3821,7 +3898,52 @@ class Bot:
             return "pickup"
         if kind == re5_switch_prompt.KIND_PLAYER and label != re5_switch_prompt.LABEL_PLACE                 and (label in re5_switch_prompt.TRAVERSE_LABELS or pr.get("token") == "press:y"):
             return "traverse"
+        if self._door_kind(pr, snap) is not None:
+            return "door"                                # a door's or a window's (DOOR_PROMPTS above)
         return "other"
+
+    def _door_kind(self, pr, snap) -> str | None:
+        """What a prompt opens when it is a door's or a window's (DOOR_PROMPTS above): "door" / "window" (the owner's
+        class, a learned label's own name), None when it is not one."""
+        keys = tuple(pr.get("keys") or ())
+        label, kind, cls = pr.get("label"), pr.get("kind"), pr.get("owner_class")
+        if not DOOR_PROMPTS or pr.get("mode") not in (1, 2, 3, 4, 5) or len(keys) != 1 or keys[0] not in FACE_KEYS:
+            return None                                  # (a stick QTE, a chord, a shoulder button: never a door's)
+        if label in NOT_DOOR_LABELS or cls in NOT_DOOR_CLASSES:
+            return None
+        if cls in DOOR_CLASSES:
+            return DOOR_CLASSES[cls]
+        learned = self._door_labels().get(str(label))
+        learned = learned if isinstance(learned, dict) else {}
+        if label in DOOR_LABELS or (learned.get("through") or 0) > 0:
+            return learned.get("what") or "door"
+        if kind == re5_switch_prompt.KIND_AREA:
+            return None                                  # an area pickup (ammo, treasure: ammo is infinite)
+        if kind == re5_switch_prompt.KIND_PLAYER:
+            p = snap.get("player") or {}
+            if p.get("pos") and self._majini_near(p, snap, PROMPT_CLEAR_R) is not None:
+                return None                              # his own action beside a Majini: his melee (the finisher rule)
+            return "door"
+        if kind in (re5_switch_prompt.KIND_ENEMY, re5_switch_prompt.KIND_STAGE):
+            return "door"                                # a stage object's button (its owner no Majini: _prompt_type)
+        return None
+
+    def _majini_near(self, p, snap, r, need=None):
+        """The nearest living Majini (never a crow) on his level within r cm (and need(e), when given), else None."""
+        px, py, pz = p["pos"]
+        best, best_d = None, math.inf
+        for e in snap.get("enemies") or ():
+            if (e.get("hp") or 0) <= 0 or is_crow(e) or not e.get("pos") or abs(e["pos"][1] - py) > LEVEL_DY:
+                continue
+            d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+            if d <= r and d < best_d and (need is None or need(e)):
+                best, best_d = e, d
+        return best
+
+    def _door_threat(self, p, snap):
+        """The Majini a door's prompt waits for: one within DOOR_GRAB_R, or winding up within DOOR_HOLD_R, on his level
+        (about to hit him); never a crow. None: the door now."""
+        return self._majini_near(p, snap, DOOR_GRAB_R) or self._majini_near(p, snap, DOOR_HOLD_R, self._winding)
 
     def _prompt_wanted(self, kind, p, snap) -> bool:
         if kind in ("enemy", "dying", "bonus"):
@@ -3833,12 +3955,12 @@ class Bot:
             # 2026-10-28: "they need to handle and resolve any QTE events that ever pop up. So if an enemy says that they
             # need to be kicked, they need to press Y and do that event. No matter what automatically, always.")
             return True
+        if kind == "door":                              # a door / window: at once, unless one is about to hit him
+            return self._door_threat(p, snap) is None
         if kind == "other":                             # any other prompt with a Majini at arm's length: his finisher
             pr = snap.get("prompt") or {}
-            px, py, pz = p["pos"]
-            return pr.get("label") != re5_switch_prompt.LABEL_PLACE and any(
-                (e.get("hp") or 0) > 0 and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= PROMPT_CLEAR_R
-                and abs(e["pos"][1] - py) <= LEVEL_DY for e in snap.get("enemies") or ())
+            return pr.get("label") != re5_switch_prompt.LABEL_PLACE \
+                and self._majini_near(p, snap, PROMPT_CLEAR_R) is not None   # (a crow is no finisher's)
         return False
 
     def _prompt(self, p, snap, now):
@@ -3853,30 +3975,60 @@ class Bot:
                 self._level_watch = None
             elif now > lw[1]:
                 self._level_watch = None
+        self._door_safe(self._door_watch_tick, p, now)   # the last door / ledge taken: through it? (DOOR_* above)
         if st is not None and (pr is None or pr.get("button") != st["button"] or pr.get("label") != st["label"]):
             if st["presses"] and now - st["first"] <= PROMPT_TAKE_S:
                 self.stats["prompts_taken"] += 1         # pressed, and gone (or another in its place)
                 if st["type"] == "traverse":
                     self.stats["ledge_jumps"] += 1
+                if st["type"] in ("traverse", "door"):
+                    self._door_safe(self._door_taken, st, p, now)   # remembered taken, watched for the way through
             self._pr = st = None
         if pr is None:
             return None
         if st is None:
             kind = self._prompt_type(pr, snap)
             st = self._pr = {"button": pr.get("button"), "label": pr.get("label"), "type": kind, "since": now,
-                             "first": None, "presses": 0, "phase": 0}
+                             "first": None, "presses": 0, "phase": 0, "pos": tuple(p["pos"]),
+                             "rot": p.get("rot") or 0.0}
             self.stats["prompts_seen"] += 1
-            self.stats["prompts_seen_" + kind] += 1
-            if kind == "traverse":                       # the stage's spot: logged (the ledges learned later)
+            k = "prompts_seen_" + kind
+            self.stats[k] = self.stats.get(k, 0) + 1     # (a bot from before a hot reload lacks a new type's counter)
+            if kind in ("traverse", "door"):             # the stage's spot: logged and remembered (DOOR_FILE)
                 x, y, z = p["pos"]
+                tag = "door:" if kind == "door" else ""
                 spots = [s_ for s_ in (self.stats.get("traverse_spots") or "").split(" | ") if s_]
-                spots = (spots + [f"{pr.get('label')}@{x:.0f},{y:.0f},{z:.0f}"])[-8:]
+                spots = (spots + [f"{tag}{pr.get('label')}@{x:.0f},{y:.0f},{z:.0f}"])[-8:]
                 self.stats["traverse_spots"] = " | ".join(spots)
-                self._remember_door(x, y, z, pr.get("label"))
+                st["what"] = (self._door_kind(pr, snap) or "door") if kind == "door" else "traverse"
+                st["at"] = self._prompt_at(pr, p)
+                st["kind"], st["owner_class"] = pr.get("kind"), pr.get("owner_class")
+                st["spot"] = self._door_safe(self._door_seen, pr, st, p, now)
+            elif kind == "other":
+                self._door_safe(self._other_seen, pr, p, now)   # not named: logged, so a door not yet known shows
         if not self._prompt_wanted(st["type"], p, snap):
+            if st["type"] == "door" and not st.get("held"):
+                st["held"] = True                        # a Majini about to hit him: the fight first, then the door
+                self.stats["door_holds"] = self.stats.get("door_holds", 0) + 1
+                e = self._door_threat(p, snap) or {}
+                self._door_log("held", p, label=st["label"], what=st.get("what"), token=pr.get("token"),
+                               majini=e.get("ptr", e.get("slot")), motion=e.get("motion"),
+                               majini_m=round(math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) / 100,
+                                              1) if e.get("pos") else None)
+            return None
+        if st["type"] == "door" and st["first"] is not None and now - st["first"] > DOOR_PRESS_MAX_S:
+            if not st.get("gave_up"):                    # pressed this long and still up: not a way he can open
+                st["gave_up"] = True
+                self.stats["door_giveups"] = self.stats.get("door_giveups", 0) + 1
+                if st.get("spot") is not None:
+                    self.__dict__.setdefault("_door_tried", {})[st["spot"]] = now
+                meta = self._door_note(st.get("spot"), misses=1)
+                self._door_log("gave_up", p, label=st["label"], what=st.get("what"), token=pr.get("token"),
+                               presses=st["presses"], misses=meta.get("misses"))
             return None
         if st["first"] is None:
             st["first"] = now
+            st["press_pos"], st["press_rot"] = tuple(p["pos"]), p.get("rot") or 0.0
             self._pr_lat.append(now - st["since"])
             del self._pr_lat[:-50]
             self.stats["prompt_latency_s"] = round(sum(self._pr_lat) / len(self._pr_lat), 3)
@@ -3892,6 +4044,9 @@ class Bot:
             self.in_hold = True
         self.doing = "held" if st["type"] in ("enemy", "dying") else "prompt"
         self.why = f"prompt {st['type']}: {token} (label {pr.get('label')})"
+        if st["type"] == "door":
+            self.why = f"prompt {st.get('what') or 'door'}: {token} (label {pr.get('label')}" \
+                       + (f", {pr['owner_class']}" if pr.get("owner_class") else "") + ") - open it, then through"
         if token == "mash:wiggle":
             return {"hold": WIGGLE[st["phase"] % len(WIGGLE)]}
         if token == "stick:rotate":
@@ -3969,40 +4124,321 @@ class Bot:
         self._pick_door(p, now)                          # a remembered door / ledge to head for once he is off the wall
 
     # --- doors, exits, ledges remembered per stage (DOOR_* above) ------------------------------------------------------
+    # A spot is [x, y, z, label] (the old rows) or [x, y, z, label, {its intel}]: type (door / traverse), what (door /
+    # window / traverse), label, token, keys, kind, mode, owner_class, face (the heading he faced when it showed, rad),
+    # at (the object's own position, when read), seen / taken / through / stayed / misses, to (where it took him), and
+    # the first_seen / last_seen / last_taken / last_through stamps (UTC).
     def _door_spots(self) -> list:
         import json
         stage = STAGE_KEY.format(self._stage_now() or "unknown")      # the round's own stage (_stage_now)
         if getattr(self, "_doors_stage", None) != stage:
             self._doors_stage = stage
             try:
-                self._doors = list((json.loads(DOOR_FILE.read_text(encoding="utf-8")) or {}).get(stage) or [])
-            except (OSError, ValueError, AttributeError):
-                self._doors = []
+                data = json.loads(DOOR_FILE.read_text(encoding="utf-8")) or {}
+                self._doors = list(data.get(stage) or [])
+                lbl = data.get(DOOR_LABELS_KEY)                         # the labels learned as doors (any stage)
+                self._door_lbl = dict(lbl) if isinstance(lbl, dict) else {}
+            except (OSError, ValueError, AttributeError, TypeError):
+                self._doors, self._door_lbl = [], {}
         return self._doors
 
-    def _remember_door(self, x, y, z, label) -> None:
+    def _door_labels(self) -> dict:
+        """The labels learned as doors (DOOR_FILE DOOR_LABELS_KEY: str(label) -> {through, taken, what, classes,
+        kinds}), loaded with the stage's spots (a bot from before a hot reload reads them once here)."""
+        self._door_spots()
+        lbl = self.__dict__.get("_door_lbl")
+        if not isinstance(lbl, dict):
+            import json
+            try:
+                lbl = (json.loads(DOOR_FILE.read_text(encoding="utf-8")) or {}).get(DOOR_LABELS_KEY)
+            except (OSError, ValueError, AttributeError, TypeError):
+                lbl = None
+            lbl = self._door_lbl = dict(lbl) if isinstance(lbl, dict) else {}
+        return lbl
+
+    def _door_save(self) -> None:
+        """The stage's spots and the learned labels written back to DOOR_FILE (other stages' rows kept); never raises."""
         import json
         try:
-            spots = self._door_spots()
-            if any(math.hypot(x - s_[0], z - s_[2]) < 100.0 and abs(y - s_[1]) < 150.0 for s_ in spots):
-                return
-            spots.append([round(x), round(y), round(z), label])
-            del spots[:-DOOR_SPOTS_KEPT]
             try:
                 data = json.loads(DOOR_FILE.read_text(encoding="utf-8")) or {}
             except (OSError, ValueError):
                 data = {}
-            data[self._doors_stage] = spots
+            if not isinstance(data, dict):
+                data = {}
+            data[self._doors_stage] = self._doors
+            lbl = self.__dict__.get("_door_lbl")
+            if lbl:
+                old = data.get(DOOR_LABELS_KEY)
+                data[DOOR_LABELS_KEY] = {**(old if isinstance(old, dict) else {}), **lbl}
             DOOR_FILE.parent.mkdir(parents=True, exist_ok=True)
             DOOR_FILE.write_text(json.dumps(data), encoding="utf-8")
-            self.stats["doors_known"] = len(spots)
+            self.stats["doors_known"] = len(self._doors)
         except Exception:                                # noqa: BLE001 - the memory never stops a tick
             pass
+
+    def _door_find(self, x, y, z, label=None):
+        """The remembered spot this one is (within 1 m, 1.5 m up or down; another label there is another spot)."""
+        for s_ in self._door_spots():
+            if not _spot_ok(s_):
+                continue
+            if math.hypot(x - s_[0], z - s_[2]) < 100.0 and abs(y - s_[1]) < 150.0 \
+                    and (label is None or len(s_) < 4 or s_[3] is None or s_[3] == label):
+                return s_
+        return None
+
+    def _door_get(self, key):
+        return next((s_ for s_ in self._door_spots() if isinstance(s_, list) and tuple(s_[:3]) == key), None) \
+            if key is not None else None
+
+    def _remember_door(self, x, y, z, label, info=None):
+        """A door / ledge prompt's spot kept for the stage (DOOR_FILE), with its intel when given (seen once more);
+        -> the spot's key (x, y, z), None on any problem. Never raises."""
+        try:
+            spots = self._door_spots()
+            hit = self._door_find(x, y, z, label)
+            stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            if hit is not None:
+                if info is None:
+                    return tuple(hit[:3])
+                while len(hit) < 4:
+                    hit.append(None)
+                if hit[3] is None:
+                    hit[3] = label
+                if len(hit) < 5 or not isinstance(hit[4], dict):
+                    hit[4:] = [{"first_seen": stamp}]
+                meta = hit[4]
+                meta.update({k: v for k, v in info.items() if v is not None})   # the latest shape of it
+                meta["seen"] = (meta.get("seen") or 0) + 1
+                meta["last_seen"] = stamp
+                self._door_save()
+                return tuple(hit[:3])
+            row = [round(x), round(y), round(z), label]
+            if info is not None:
+                row.append({**{k: v for k, v in info.items() if v is not None}, "seen": 1, "taken": 0, "through": 0,
+                            "first_seen": stamp, "last_seen": stamp})
+            spots.append(row)
+            del spots[:-DOOR_SPOTS_KEPT]
+            self._door_save()
+            return tuple(row[:3])
+        except Exception:                                # noqa: BLE001 - the memory never stops a tick
+            return None
+
+    def _door_note(self, key, set_=None, **inc) -> dict:
+        """The remembered spot's intel: counters raised by inc, fields set; written back. -> its intel ({} if none)."""
+        try:
+            spot = self._door_get(key)
+            if spot is None:
+                return {}
+            while len(spot) < 4:
+                spot.append(None)
+            if len(spot) < 5 or not isinstance(spot[4], dict):
+                spot[4:] = [{}]
+            meta = spot[4]
+            for k, v in inc.items():
+                if v:
+                    meta[k] = (meta.get(k) or 0) + v
+            if set_:
+                meta.update(set_)
+            self._door_save()
+            return meta
+        except Exception:                                # noqa: BLE001 - the memory never stops a tick
+            return {}
+
+    def _door_learn(self, label, what, cls, kind) -> None:
+        """A door label that took him through (past the object, or to another level): a door's wherever it shows."""
+        if label is None:
+            return
+        try:
+            labels = self._door_labels()
+            row = labels.get(str(label))
+            if not isinstance(row, dict):
+                row = labels[str(label)] = {"through": 0}
+            row["through"] = (row.get("through") or 0) + 1
+            row["what"] = what or row.get("what") or "door"
+            for k, v in (("classes", cls), ("kinds", kind)):
+                if v is not None and v not in row.setdefault(k, []):
+                    row[k].append(v)
+            self._door_save()
+        except Exception:                                # noqa: BLE001 - the memory never stops a tick
+            pass
+
+    def _door_log(self, event, p=None, **row) -> None:
+        """DOOR_LOG: one JSON line - a door / window / ledge seen, held, taken, through, an exploration step; the newest
+        is stats door_trace. Never raises."""
+        try:
+            import json as _json
+            t = time.time()
+            pos = (p or {}).get("pos")
+            line = {"t": round(t, 2), "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t)), "event": event,
+                    "stage": self._stage_now(), "player": [round(v) for v in pos] if pos else None,
+                    "heading_deg": round(math.degrees((p or {}).get("rot") or 0.0)) if pos else None,
+                    "kills": self.__dict__.get("_kills_prev"), **row}
+            text = _json.dumps(line, default=str)
+            self.stats["door_trace"] = text[:400]
+            DOOR_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with DOOR_LOG.open("a", encoding="utf-8") as fh:
+                fh.write(text + "\n")
+        except Exception:                                # noqa: BLE001 - a log never costs a tick
+            pass
+
+    @staticmethod
+    def _prompt_at(pr, p):
+        """The prompt's object position (snap prompt target_pos: re5_switch.prompt_owner), when read near him."""
+        at = pr.get("target_pos")
+        if not isinstance(at, (list, tuple)) or len(at) != 3 \
+                or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in at):
+            return None
+        if math.hypot(at[0] - p["pos"][0], at[2] - p["pos"][2]) > DOOR_TARGET_R:
+            return None
+        return tuple(float(v) for v in at)
+
+    def _door_seen(self, pr, st, p, now):
+        """A door / window / ledge prompt shows: remembered (the spot, its button) and logged - a flicker of the same
+        one within DOOR_SEEN_GAP_S only finds its spot. -> the spot's key."""
+        x, y, z = p["pos"]
+        label = pr.get("label")
+        gap = self.__dict__.setdefault("_door_seen_at", {})
+        tkey = (label, round(x / 100.0), round(y / 150.0), round(z / 100.0))
+        if now - gap.get(tkey, -1e9) < DOOR_SEEN_GAP_S:
+            hit = self._door_find(x, y, z, label)
+            return tuple(hit[:3]) if hit is not None else None
+        if len(gap) > 256:
+            gap.clear()
+        gap[tkey] = now
+        info = {"type": st["type"], "what": st.get("what"), "label": label, "token": pr.get("token"),
+                "keys": list(pr.get("keys") or ()), "kind": pr.get("kind"), "mode": pr.get("mode"),
+                "owner_class": pr.get("owner_class"), "face": round(p.get("rot") or 0.0, 3),
+                "at": [round(v) for v in st["at"]] if st.get("at") else None}
+        key = self._remember_door(x, y, z, label, info)
+        spot = self._door_get(key) or []
+        meta = spot[4] if len(spot) > 4 and isinstance(spot[4], dict) else {}
+        self._door_log("seen", p, type=st["type"], what=st.get("what"), label=label, token=pr.get("token"),
+                       keys=info["keys"], kind=pr.get("kind"), mode=pr.get("mode"), owner_class=pr.get("owner_class"),
+                       at=info["at"], spot=list(key) if key else None, seen=meta.get("seen"), taken=meta.get("taken"),
+                       through=meta.get("through"))
+        return key
+
+    def _other_seen(self, pr, p, now) -> None:
+        """A prompt typed "other" (none of the known kinds): one log line per label, kind and owner class every 30 s, so
+        a door still unnamed shows in DOOR_LOG with what it is."""
+        seen = self.__dict__.setdefault("_other_logged", {})
+        key = (pr.get("label"), pr.get("kind"), pr.get("owner_class"))
+        if now - seen.get(key, -1e9) < 30.0:
+            return
+        if len(seen) > 64:
+            seen.clear()
+        seen[key] = now
+        self._door_log("seen_other", p, label=pr.get("label"), kind=pr.get("kind"), mode=pr.get("mode"),
+                       token=pr.get("token"), owner_class=pr.get("owner_class"),
+                       at=[round(v) for v in self._prompt_at(pr, p)] if self._prompt_at(pr, p) else None)
+
+    def _door_taken(self, st, p, now) -> None:
+        """A door / ledge prompt pressed and gone: remembered taken, the way through watched (DOOR_WATCH_S) and, for a
+        door, walked (DOOR_THROUGH_S); an exploration's door done."""
+        key = st.get("spot")
+        if key is not None:
+            self.__dict__.setdefault("_door_tried", {})[key] = now   # (not straight back to it: DOOR_RETRY_S)
+        if st["type"] == "door":
+            self.stats["doors_taken"] = self.stats.get("doors_taken", 0) + 1
+        frm = st.get("press_pos") or st.get("pos") or tuple(p["pos"])
+        rot = st.get("press_rot", st.get("rot", p.get("rot") or 0.0))
+        meta = self._door_note(key, set_={"last_taken": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, taken=1)
+        first = st.get("first")
+        self._door_log("taken", p, type=st["type"], what=st.get("what"), label=st.get("label"),
+                       presses=st.get("presses"), latency_s=round(first - st["since"], 2) if first is not None else None,
+                       spot=list(key) if key else None, taken=meta.get("taken"))
+        self._door_watch = {"spot": key, "type": st["type"], "what": st.get("what"), "label": st.get("label"),
+                            "kind": st.get("kind"), "owner_class": st.get("owner_class"), "from": tuple(frm),
+                            "rot": rot, "at": st.get("at"), "until": now + DOOR_WATCH_S, "how": "prompt"}
+        if st["type"] == "door" and not self._goal_in_force():
+            self._door_after = {"until": now + DOOR_THROUGH_S, "rot": rot, "what": st.get("what") or "door",
+                                "label": st.get("label")}
+        self._explore_st = None                          # an exploration's door taken: the next one after this
+
+    def _door_watch_tick(self, p, now) -> None:
+        """The door / ledge just taken (or walked through, an open one): through - past the object's own position along
+        the heading he took it on, on that far from where he pressed it (no position read), or another level - or he
+        stayed (DOOR_WATCH_S). Remembered and logged either way."""
+        w = self.__dict__.get("_door_watch")
+        if not w:
+            return
+        if not isinstance(w.get("rot"), (int, float)) or not _spot_ok(list(w.get("from") or ())):
+            self._door_watch = None                      # (never a broken watch every tick)
+            return
+        w["at"] = tuple(w["at"]) if w.get("at") is not None and _spot_ok(list(w["at"])) else None
+        x, y, z = p["pos"]
+        fx, fy, fz = w["from"]
+        sx, sz = math.sin(w["rot"]), math.cos(w["rot"])
+        how = None
+        if abs(y - fy) > LEVEL_DY:
+            how = "level"
+        elif w.get("at") is not None:
+            ax, _ay, az = w["at"]
+            past, side = (x - ax) * sx + (z - az) * sz, (x - ax) * sz - (z - az) * sx
+            if past >= DOOR_PAST_CM and abs(side) <= DOOR_THROUGH_CM:
+                how = "past"
+        elif (x - fx) * sx + (z - fz) * sz >= DOOR_THROUGH_CM:
+            how = "moved"
+        if how is not None:
+            self._door_watch = self.__dict__["_door_after"] = None     # through: the walk on ends, his play goes on
+            if w["type"] == "door" or w.get("how") == "walk":
+                self.stats["doors_through"] = self.stats.get("doors_through", 0) + 1
+            stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            meta = self._door_note(w.get("spot"), set_={"to": [round(x), round(y), round(z)], "last_through": stamp},
+                                   through=1)
+            if w["type"] == "door" and how in ("level", "past"):
+                self._door_learn(w.get("label"), w.get("what"), w.get("owner_class"), w.get("kind"))
+            self._door_log("through", p, type=w["type"], what=w.get("what"), label=w.get("label"), how=how,
+                           by=w.get("how"), moved_cm=round(math.hypot(x - fx, z - fz)), dy_cm=round(y - fy),
+                           spot=list(w["spot"]) if w.get("spot") else None, through=meta.get("through"))
+            return
+        if now > w["until"]:
+            self._door_watch = None
+            walked = w.get("how") == "walk"
+            if walked:
+                self.stats["door_explore_misses"] = self.stats.get("door_explore_misses", 0) + 1
+            meta = self._door_note(w.get("spot"), stayed=1, misses=1 if walked else 0)
+            self._door_log("stayed", p, type=w["type"], what=w.get("what"), label=w.get("label"), by=w.get("how"),
+                           moved_cm=round(math.hypot(x - fx, z - fz)), spot=list(w["spot"]) if w.get("spot") else None,
+                           misses=meta.get("misses"))
+
+    def _door_safe(self, fn, *args):
+        """fn(*args), or None on any error (stats door_error): the doors' memory and walks never cost a tick."""
+        try:
+            return fn(*args)
+        except Exception as exc:                         # noqa: BLE001
+            self.stats["door_error"] = f"{getattr(fn, '__name__', fn)} {type(exc).__name__}: {exc}"[:160]
+            return None
+
+    def _goal_in_force(self) -> bool:
+        """The operator's mark on the map is in force (MAP_GOALS): the door walks and the exploration wait for it."""
+        g = self.__dict__.get("_map_goals")
+        goal = getattr(g, "goal", None) if g is not None else None
+        if not MAP_GOALS or not goal:
+            return False
+        from ..map_goals import TERMINAL
+        return goal.get("state") not in TERMINAL
+
+    def _door_through(self, p, near_m, now) -> dict | None:
+        """A door just opened: on through it, at a run the way he faced it, for DOOR_THROUGH_S (the fight first with a
+        Majini within DOOR_FIGHT_R; never against the operator's mark)."""
+        a = self.__dict__.get("_door_after")
+        if not a:
+            return None
+        if now > a["until"] or near_m <= DOOR_FIGHT_R or self._goal_in_force() \
+                or p.get("motion") in MOTION_HELD or p.get("hp") == DYING_HP:
+            self._door_after = None
+            return None
+        self._gun_down()
+        self.doing = "prompt"                            # (part of taking it: no wall recovery, no step aside meanwhile)
+        self.why = f"through the {a['what']} he just opened (label {a['label']})"
+        return {"hold": RUN + self._turn(wrap(a["rot"] - (p.get("rot") or 0.0)), 0.2)}
 
     def _pick_door(self, p, now) -> None:
         px, py, pz = p["pos"]
         tried = self.__dict__.setdefault("_door_tried", {})
-        cands = [s_ for s_ in self._door_spots() if math.hypot(s_[0] - px, s_[2] - pz) > DOOR_REACH_R
+        cands = [s_ for s_ in self._door_spots() if _spot_ok(s_) and math.hypot(s_[0] - px, s_[2] - pz) > DOOR_REACH_R
                  and abs(s_[1] - py) < 300.0 and tried.get(tuple(s_[:3]), -1e9) < now - DOOR_RETRY_S]
         if not cands:
             return
@@ -4015,10 +4451,10 @@ class Bot:
         g = getattr(self, "_door_goal", None)
         if g is None:
             return None
-        if now > g[1]:
+        if now > g[1] or self._goal_in_force():          # (the operator's mark drives: its route takes the doors)
             self._door_goal = None
             return None
-        if near <= DOOR_FIGHT_R:                         # a Majini close: the fight first
+        if near <= DOOR_FIGHT_R:                         # a Majini close (never a crow: Bot._tick): the fight first
             return None
         px, _py, pz = p["pos"]
         s_ = g[0]
@@ -4032,6 +4468,147 @@ class Bot:
         if abs(err) > 0.6:
             return {"hold": self._turn(err, 0.2)}
         return {"hold": ("lup",) + self._turn(err, 0.2)}
+
+    # --- exploring by the doors he knows (DOOR_EXPLORE above) -------------------------------------------------------
+    def _explore(self, p, flat, snap, now) -> dict | None:
+        """DOOR_EXPLORE above: with nobody to fight, the doors / windows / ledges seen on this stage, one after another.
+        None when there is somebody to fight (or not yet known), no door left to go to, or the operator's mark is in
+        force: his play as before."""
+        if not DOOR_EXPLORE or self._goal_in_force():
+            self._explore_st = None
+            return None
+        px, py, pz = p["pos"]
+        census = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos") and not is_crow(e)]
+        kw = self.__dict__.setdefault("_explore_kills", {"kills": None, "at": now})
+        k = snap.get("kills")
+        if type(k) is int and k != kw["kills"]:
+            kw["kills"], kw["at"] = k, now
+        if census:
+            if now - kw["at"] < DOOR_EXPLORE_S \
+                    or any(flat(e) <= DOOR_FIGHT_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in census):
+                self._explore_st = None
+                return None
+            for e in census:
+                if not self._given_up(e.get("ptr", e.get("slot")), now) and self._reach(p, e, now)[0] is not False:
+                    self._explore_st = None
+                    return None                          # one he can get to (or not asked yet): the fight's, the locate's
+            reason = f"no kill for {now - kw['at']:.0f} s, none of the {len(census)} Majini reachable"
+        else:
+            crows = self.stats.get("crows_alive") or 0
+            reason = "no Majini alive" + (f" (the {crows} crows do not count)" if crows else "")
+        st = self.__dict__.get("_explore_st")
+        if st is not None:
+            gap = now - st.get("tick", now)
+            if gap > 1.0:                                # another rule had him meanwhile (a heal, a bomb, the mark):
+                st["until"] += gap                       # its clocks wait, no miss for the pause
+                st["phase_at"] += gap
+            st["tick"] = now
+            if now > st["until"]:
+                self._explore_miss(st, p, now, "the way there took too long")
+                st = None
+        if st is None:
+            st = self._explore_pick(p, now)
+            if st is None:
+                return None                              # no door left untried: his play as before
+            self._explore_st = st
+            self.stats["door_explores"] = self.stats.get("door_explores", 0) + 1
+            self._door_log("explore", p, reason=reason, type=st["type"], what=st["what"], label=st["label"],
+                           token=st["token"], spot=list(st["key"]),
+                           dist_m=round(math.hypot(st["pos"][0] - px, st["pos"][2] - pz) / 100.0, 1))
+        if not census and BONUS and snap.get("bonuses"):
+            act = self._go_bonus(p, [], flat, dict(snap, enemies=[]), now)   # the statues first: nobody to fight
+            if act is not None:
+                st["until"] = now + DOOR_EXPLORE_GO_S        # (the door waits for the statue)
+                return act
+        return self._explore_step(st, p, reason, now)
+
+    def _explore_pick(self, p, now) -> dict | None:
+        """The nearest remembered spot not tried within DOOR_RETRY_S (one tried within DOOR_FRESH_S costs DOOR_FRESH_CM
+        more; DOOR_MISSES_MAX misses and never through: left out), marked tried; None when there is none."""
+        px, py, pz = p["pos"]
+        tried = self.__dict__.setdefault("_door_tried", {})
+        best = None
+        for s_ in self._door_spots():
+            if not _spot_ok(s_):
+                continue
+            key = tuple(s_[:3])
+            meta = s_[4] if len(s_) > 4 and isinstance(s_[4], dict) else {}
+            last = tried.get(key, -1e9)
+            if now - last < DOOR_RETRY_S or ((meta.get("misses") or 0) >= DOOR_MISSES_MAX and not meta.get("through")):
+                continue
+            cost = math.hypot(s_[0] - px, s_[2] - pz) + PURSUE_DY_W * abs(s_[1] - py) \
+                + (DOOR_FRESH_CM if now - last < DOOR_FRESH_S else 0.0)
+            if best is None or cost < best[0]:
+                best = (cost, s_, key, meta)
+        if best is None:
+            return None
+        _cost, s_, key, meta = best
+        tried[key] = now
+        kind = meta.get("type") or "traverse"
+        at, face = meta.get("at"), meta.get("face")
+        return {"key": key, "pos": (float(s_[0]), float(s_[1]), float(s_[2])), "label": s_[3] if len(s_) > 3 else None,
+                "type": kind, "what": meta.get("what") or ("door" if kind == "door" else "way"),
+                "token": meta.get("token"), "face": face if isinstance(face, (int, float)) else None,
+                "at": tuple(at) if isinstance(at, list) and _spot_ok(at) else None, "since": now,
+                "until": now + DOOR_EXPLORE_GO_S, "phase": "go", "phase_at": now, "tick": now}
+
+    def _explore_miss(self, st, p, now, why) -> None:
+        self.stats["door_explore_misses"] = self.stats.get("door_explore_misses", 0) + 1
+        meta = self._door_note(st["key"], misses=1)
+        self._door_log("explore_miss", p, why=why, label=st["label"], what=st["what"], spot=list(st["key"]),
+                       misses=meta.get("misses"))
+        self._explore_st = None
+
+    def _explore_step(self, st, p, reason, now) -> dict | None:
+        """The exploration's door, a phase at a time: there by the mesh at a run (go), onto its spot (near), the way he
+        faced it when its prompt showed (face), its prompt awaited (wait: the prompt rule takes it), and with none (a
+        door already open) on through it (push: the watch says whether it went through)."""
+        px, py, pz = p["pos"]
+        sx, sy, sz = st["pos"]
+        rot = p.get("rot") or 0.0
+        d = math.hypot(sx - px, sz - pz)
+        what = f"{st['what']} (label {st['label']}" + (f", {st['token']}" if st.get("token") else "") + ")"
+        face = st.get("face")
+        if st["phase"] == "go":
+            if d > DOOR_REACH_R or abs(sy - py) > LEVEL_DY:
+                self._gun_down()
+                self.doing, self.why = "walk", f"exploring - {reason}: to the {what} seen here before, {d / 100:.1f} m off"
+                return {"hold": RUN + self._approach(p, st["pos"], now, link=True)}
+            st["phase"], st["phase_at"] = "near", now
+            self.stats["door_explore_arrivals"] = self.stats.get("door_explore_arrivals", 0) + 1
+            self._door_log("explore_arrived", p, label=st["label"], what=st["what"], spot=list(st["key"]),
+                           took_s=round(now - st["since"], 1))
+        if st["phase"] == "near":
+            if d > DOOR_SPOT_CM and now - st["phase_at"] < 1.0:
+                err = wrap(heading(sx - px, sz - pz) - rot)
+                self.doing, self.why = "walk", f"exploring: onto the spot of the {what}"
+                return {"hold": (("lup",) if abs(err) <= 0.6 else ()) + self._turn(err, 0.2)}
+            st["phase"], st["phase_at"] = "face", now
+        if st["phase"] == "face":
+            err = wrap(face - rot) if isinstance(face, (int, float)) else 0.0
+            if abs(err) > 0.3 and now - st["phase_at"] < 1.0:
+                self.doing, self.why = "turn", f"exploring: facing the {what} the way its prompt showed"
+                return {"hold": self._turn(err, 0.2)}
+            st["phase"], st["phase_at"] = "wait", now
+        if st["phase"] == "wait":
+            if now - st["phase_at"] < DOOR_ARRIVE_S:
+                self.doing, self.why = "walk", f"exploring: at the {what}, its prompt awaited"
+                return {"hold": ()}
+            st["phase"], st["phase_at"] = "push", now
+            heading_in = face if isinstance(face, (int, float)) else rot
+            self._door_watch = {"spot": st["key"], "type": st["type"], "what": st["what"], "label": st["label"],
+                                "kind": None, "owner_class": None, "from": tuple(p["pos"]), "rot": heading_in,
+                                "at": tuple(st["at"]) if st.get("at") else None, "until": now + DOOR_WATCH_S,
+                                "how": "walk"}
+            self._door_log("explore_no_prompt", p, label=st["label"], what=st["what"], spot=list(st["key"]))
+        if st["phase"] == "push":
+            if now - st["phase_at"] < DOOR_THROUGH_S:
+                err = wrap(face - rot) if isinstance(face, (int, float)) else 0.0
+                self._gun_down()
+                self.doing, self.why = "walk", f"exploring: no prompt at the {what} - on through it (open already?)"
+                return {"hold": RUN + self._turn(err, 0.2)}
+            self._explore_st = None                      # done: the watch tells whether it went through; the next one
+        return None
 
     def _wall_gov(self, act, snap, now) -> dict:
         from . import re5_switch_wall
@@ -4211,8 +4788,8 @@ class Bot:
         heading (walking on only when it is within 45 deg). stats mesh_steers, mesh_blocked."""
         hold, mesh, p = act.get("hold"), snap.get("nav"), snap.get("player") or {}
         if (mesh is None or not hold or "lup" not in hold or "zl" in hold or not p.get("pos")
-                or not hasattr(mesh, "floor_segment")):
-            return act
+                or not hasattr(mesh, "floor_segment") or self.doing in ("prompt", "held")):
+            return act                                   # (a prompt's own stick - a QTE's, a door's way through - stays)
         pos, rot = tuple(p["pos"]), p.get("rot") or 0.0
 
         def clear(h):
@@ -4424,6 +5001,8 @@ class Bot:
         self._wu, self._windup_e = {}, None
         self._dyn, self._dynamite_e = {}, None
         self._noshot, self._giveup, self._giveup_n, self._reach_c, self._off_run = {}, {}, {}, {}, None
+        self._door_after, self._door_watch, self._explore_st = None, None, None   # (DOOR_* above: this round's own)
+        self._explore_kills = {"kills": None, "at": now}
         if self.mines is not None:
             self.mines.new_round(now)
         if self.__dict__.get("_map_goals") is not None:
@@ -5095,7 +5674,10 @@ class Bot:
         flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         near_e = min(live, key=flat, default=None)
         near = flat(near_e) if near_e is not None else math.inf
-        door = self._door_walk(p, near, now)             # stuck: to a door / ledge seen on this stage before
+        near_m = min((flat(e) for e in live if not is_crow(e)), default=math.inf)   # (crows never hold a door)
+        door = self._door_safe(self._door_through, p, near_m, now)   # a door just opened: on through it
+        if door is None:
+            door = self._door_walk(p, near_m, now)       # stuck: to a door / ledge seen on this stage before
         if door is not None:
             return door
         motion = p.get("motion")                         # None: no motion byte (the health / stick heuristics)
@@ -5627,10 +6209,11 @@ class Bot:
             block[key] = now + LOCATE_BLOCK_S                # no route to this one: the next nearest meanwhile
             self.stats["locate_unreachable"] = self.stats.get("locate_unreachable", 0) + 1
         if abs(dy) > LEVEL_DY:                             # another floor: a way up or down he has seen here
-            spots = [s_ for s_ in self._door_spots() if abs(s_[1] - py) < 150.0 and flat(s_) > DOOR_REACH_R]
+            spots = [s_ for s_ in self._door_spots() if _spot_ok(s_) and abs(s_[1] - py) < 150.0
+                     and flat(s_) > DOOR_REACH_R]
             if spots:
                 best = min(spots, key=lambda q: flat(q) + math.hypot(q[0] - tx, q[2] - tz))
-                goal, how = (best[0], best[1], best[2]), f"by the {best[3] or 'way'} he knows here"
+                goal, how = (best[0], best[1], best[2]), f"by the {(best[3] if len(best) > 3 else None) or 'way'} he knows here"
         self._goal_dy = dy
         self.doing = "walk"
         self.why = (f"locating: the nearest Majini {d / 100:.0f} m off"
@@ -6082,6 +6665,10 @@ class Bot:
                 near_e = min(live, key=flat, default=None)
                 near = flat(near_e) if near_e is not None else math.inf
         self._fault_tick(p, live, flat, snap, now)
+        if own:
+            act = self._door_safe(self._explore, p, flat, snap, now)   # nobody to fight: the doors seen here
+            if act is not None:
+                return act
         if not live:
             act = self._go_bonus(p, live, flat, snap, now)
             if act is not None:
