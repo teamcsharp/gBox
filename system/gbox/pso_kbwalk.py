@@ -41,20 +41,42 @@ def calibrate(read_pos, hold, *, seconds=0.7, keys=KEYS) -> dict:
         raise RuntimeError("calibrate needs a live player position")
     out = {}
     total = 0.0
+    measured = 0
     for key in keys:
-        before = read_pos()
-        if before is None:
-            raise RuntimeError("the player disappeared during calibration")
-        hold(key, seconds)
-        after = read_pos()
-        if after is None:
-            raise RuntimeError("the player disappeared during calibration")
-        dx, dz = after[0] - before[0], after[1] - before[1]
-        total += math.hypot(dx, dz)
+        dx, dz, speed = _measure(key, hold, read_pos, seconds)
+        if speed < 0.5:
+            # Pressed against a wall, a key reads as dead even though its binding is fine: measure the opposite and
+            # negate it, which is what the geometry actually is (i9-NUC: `left` calibrated to (0,0,0) against the
+            # plaza railing and the walker then reported "no key points at the target").
+            opposite = OPPOSITE.get(key)
+            if opposite:
+                odx, odz, ospeed = _measure(opposite, hold, read_pos, seconds)
+                if ospeed >= 0.5:
+                    dx, dz, speed = -odx, -odz, ospeed
+        total += speed * seconds
+        measured += 1
         ux, uz = _norm(dx, dz)
-        out[key] = (ux, uz, math.hypot(dx, dz) / max(seconds, 1e-6))
-    out["scale"] = total / max(len(keys) * seconds, 1e-6)
+        out[key] = (ux, uz, speed)
+    out["scale"] = total / max(measured * seconds, 1e-6)
+    out["source"] = origin
     return out
+
+
+OPPOSITE = {"up": "down", "down": "up", "left": "right", "right": "left"}
+
+
+def _measure(key, hold, read_pos, seconds) -> tuple[float, float, float]:
+    """Hold one key and return (dx, dz, world units per second)."""
+    before = read_pos()
+    if before is None:
+        raise RuntimeError("the player disappeared during calibration")
+    hold(key, seconds)
+    after = read_pos()
+    if after is None:
+        raise RuntimeError("the player disappeared during calibration")
+    dx, dz = after[0] - before[0], after[1] - before[1]
+    return dx, dz, math.hypot(dx, dz) / max(seconds, 1e-6)
+
 
 
 def best_key(cal: dict, dx: float, dz: float) -> tuple[str | None, float]:
@@ -109,6 +131,8 @@ def walk_to(read_pos, hold, target, *, cal=None, tolerance=8.0, max_steps=40,
     cal = cal or calibrate(read_pos, hold)
     start = read_pos()
     trail = []
+    stuck = 0
+    recalibrations = 0
     for i in range(max_steps):
         pos = read_pos()
         if pos is None:
@@ -129,6 +153,14 @@ def walk_to(read_pos, hold, target, *, cal=None, tolerance=8.0, max_steps=40,
             # a wall, a counter or a railing: step sideways before pushing again, and give up after a few tries
             stuck += 1
             trail[-1]["stuck"] = stuck
+            if stuck == 2 and recalibrations < 2:
+                # learn the axes again from where the character actually is: the camera turns with the character, so a
+                # calibration taken a leg ago can be pointing the wrong way
+                cal = calibrate(read_pos, hold)
+                recalibrations += 1
+                trail[-1]["recalibrated"] = recalibrations
+                stuck = 0
+                continue
             if stuck > 3:
                 return {"ok": False, "why": f"stuck at {tuple(round(v, 1) for v in pos)}; a wall is in the way",
                         "steps": trail, "start": start, "end": pos}
@@ -143,3 +175,22 @@ def walk_to(read_pos, hold, target, *, cal=None, tolerance=8.0, max_steps=40,
 
 def distance(a, b) -> float:
     return math.hypot(b[0] - a[0], b[1] - a[1])
+
+
+def walk_path(read_pos, hold, waypoints, *, tolerance=8.0, log=None) -> dict:
+    """Walk through ``waypoints`` in order, recalibrating between legs.
+
+    The Pioneer 2 lobby is not an open field: its four doors are all in room 10 but the plaza railing sits between them,
+    so one straight line stops halfway (round 20 walked 33 units and stalled on it). A route is a list of points the
+    character has actually been seen to reach, and each leg is an ordinary closed-loop walk.
+    """
+    log = log or (lambda _m: None)
+    legs = []
+    for i, point in enumerate(waypoints):
+        cal = calibrate(read_pos, hold)
+        leg = walk_to(read_pos, hold, point, cal=cal, tolerance=tolerance)
+        legs.append({"to": point, "ok": leg["ok"], "why": leg["why"], "end": leg["end"]})
+        log(f"leg {i + 1} -> {point}: {'ok' if leg['ok'] else leg['why']}")
+        if not leg["ok"]:
+            return {"ok": False, "why": f"leg {i + 1}: {leg['why']}", "legs": legs}
+    return {"ok": True, "why": "arrived", "legs": legs}

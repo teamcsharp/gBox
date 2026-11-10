@@ -1195,16 +1195,71 @@ goes stale as soon as the character changes facing.
    door).
 3. Then the guild door -> the quest counter -> the teleporter -> Forest 1, with both players.
 
+## Round 21 (2026-11-10) — the hardened walker arrived at the guild door, and walked straight through a different one
+
+### `gbox.pso_kbwalk` hardened (+3 tests, 10 total)
+
+Two weaknesses from round 20, both fixed and both tested:
+
+* **Wall-poisoned calibration.** Pressed against the plaza railing, `left` produced no movement and calibrated to
+  `(0, 0, 0)`. `calibrate` now measures the **opposite** key when one reads dead and negates it -- the axis is real, only
+  that direction is blocked. A test presses against a railing and asserts the axis and its speed come out right.
+* **Stale basis.** The camera turns with the character, so a calibration taken a leg ago can point the wrong way.
+  `walk_to` now **recalibrates** after two consecutive no-movement steps, before it gives up (two recalibrations max),
+  and still sidesteps once between attempts.
+* **`walk_path`** walks a list of waypoints, recalibrating between legs -- the lobby is not an open field, so a route is a
+  list of points rather than one straight line.
+
+### Live: it arrived
+
+```
+start (208.6, 124.8)   target (185.0, 173.0)   [TObjCityDoor_Guild, read from the live entity table]
+cal: up (-0.65,-0.76) 34.3 u/s    down (0.66,0.75) 32.2    left (-0.83,0.56) 33.6    right (0.58,-0.81) 33.3
+walk: True arrived  end (180.8, 166.8)  steps 12
+```
+
+Twelve steps, 30 units, and the walker reported arrival within its 8-unit tolerance -- the first time in this lane that a
+character has been steered to a named object by a closed loop reading its own RAM position.
+
+### Then it walked through the wrong door, which is itself the finding
+
+Closing the last 8 units sent P1 through a doorway: **the room changed from 10 to 20 with no button press**, and he came
+out in the Pioneer 2 plaza among NPCs (`pk1-room20.jpg`) while P2 stayed in the lobby (`room 10`, the bottom half of the
+split screen).
+
+Two consequences for the route:
+
+1. **Room transitions are triggered by walking into a door**, not by pressing A, so a walker must *expect* the room id to
+   change underneath it and stop treating the current coordinates as valid.
+2. **Entity coordinates are per-room.** The guild door's `(185, 173)` is a room-10 coordinate; after the transition the
+   character was at `(101.9, 118.8)` in room 20 and those numbers mean nothing there. A route has to be re-read after
+   every transition -- which is exactly what `walk_path`'s per-leg recalibration does for the axes, and what it does not
+   yet do for the geometry.
+
+### State
+
+Co-op session live. P1 (BQF) in **room 20**, the Pioneer 2 plaza, at `(101.9, 118.8)`; P2 (3P) in **room 10** by the
+teleporter at `(233.8, 274.5)`. Both healthy, no cutscene, movement working through the keyboard.
+
+### Next
+
+1. Bring P1 back through the door into room 10 (the transition works both ways) and keep the party together -- PSO co-op
+   expects both players in the same room for area changes.
+2. Give `walk_path` a **room-aware** wrapper: re-read the door list from the entity table after every transition and stall
+   the route if the room is not the one the waypoint belongs to.
+3. Then the guild counter (talk to the receptionist), the quest, and the teleporter to Forest 1.
+
 ## 7. Next
 
-1. Harden `gbox.pso_kbwalk` for the real lobby: calibrate away from walls (a blocked key reads zero -- retry it and
-   its opposite and negate), and recalibrate when a walk stalls, because the camera turns with the character and the
-   camera-relative basis goes stale.
-2. Use **waypoints**, not a straight line: the Pioneer 2 lobby's four doors are all in room 10 and the space between
-   them is not open -- P1 walked 33 units and stopped at the plaza railing.
-3. Then the guild door -> the quest counter -> the teleporter -> Forest 1 with both players, then P1's accept test
-   (three cold launches), then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
+1. Keep the co-op party together: P1 is in room 20 (the plaza) and P2 in room 10 (the lobby), because P1 walked
+   through a door that P2 did not. PSO co-op expects both players in the same room for area changes, so the route
+   has to move both characters: P1 back through the door, then both to the guild counter.
+2. Make `walk_path` **room-aware**: walking into a door changes the room id with no button press, and entity
+   coordinates are per-room (`TObjCityDoor_Guild` at 185,173 is a room-10 coordinate and means nothing in room 20).
+   A route must re-read the entity table after a transition and refuse waypoints that belong to another room.
+3. Then the guild counter (talk to the receptionist), the quest, and the teleporter to Forest 1, then P1's accept
+   test (three cold launches), then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
 
-State: co-op session live in Pioneer 2, room 10, both players free -- P1 (BQF) at (215.0, 164.4) on the plaza, P2
-(3P) at (233.8, 274.5) by the teleporter. The single-player intro scene is bypassed entirely by MULTI MODE, and
-movement works only through the keyboard (`win_send_keys`, window foreground).
+Verified this round: `gbox.pso_kbwalk` calibrates around a blocked direction (opposite + negate), recalibrates on a
+stall, and walks waypoints (+3 tests, 10 total). Live, it steered player 1 for 12 steps and 30 units to the Hunter's
+Guild door's coordinates and reported arrival -- the first closed-loop navigation of a named object in this lane.

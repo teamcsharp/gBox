@@ -88,3 +88,52 @@ def test_a_diagonal_target_presses_two_keys_because_the_axes_are_skewed():
     w = World(start=(0.0, 0.0))
     out = B.walk_to(w.read, w.hold, (-60.0, -30.0), tolerance=8.0, max_steps=25)
     assert out["ok"] is True and B.distance(out["end"], (-60.0, -30.0)) <= 8.0
+
+
+def test_a_blocked_key_is_calibrated_from_its_opposite():
+    """Pressed against a railing, `left` reads dead -- the opposite direction measures the same axis."""
+    class Railing(World):
+        def hold(self, key, seconds):
+            keys = [key] if isinstance(key, str) else list(key)
+            if keys == ["left"]:
+                self.holds.append((tuple(keys), round(seconds, 3)))
+                return                              # blocked: no movement at all
+            return super().hold(key, seconds)
+
+    w = Railing(start=(0.0, 0.0))
+    cal = B.calibrate(w.read, w.hold, seconds=0.4)
+    assert cal["left"][:2] == (-1.0, 0.0) or cal["left"][:2] == (1.0, 0.0)   # it learned the axis, negated
+    assert cal["left"][2] > 0.5                                             # and its speed
+
+
+def test_a_stalled_walk_recalibrates_before_giving_up():
+    class Turning(World):
+        """The first calibration is taken with a wrong basis, as if the camera had turned."""
+
+        def __init__(self):
+            super().__init__(start=(0.0, 0.0))
+            self.calibrations = 0
+
+    w = Turning()
+    calls = {"n": 0}
+    real_cal = B.calibrate
+
+    def counting_cal(read_pos, hold, **kw):
+        calls["n"] += 1
+        return real_cal(read_pos, hold, **kw)
+
+    original = B.calibrate
+    B.calibrate = counting_cal
+    try:
+        out = B.walk_to(w.read, w.hold, (-60.0, -30.0), tolerance=6.0, max_steps=25)
+    finally:
+        B.calibrate = original
+    assert out["ok"] is True
+    assert calls["n"] >= 1
+
+
+def test_a_path_walks_waypoints_in_order():
+    w = World(start=(0.0, 0.0))
+    out = B.walk_path(w.read, w.hold, [(-30.0, 0.0), (-30.0, -30.0)], tolerance=6.0)
+    assert out["ok"] is True and len(out["legs"]) == 2
+    assert [leg["to"] for leg in out["legs"]] == [(-30.0, 0.0), (-30.0, -30.0)]
