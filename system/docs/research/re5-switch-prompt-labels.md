@@ -49,12 +49,27 @@ Measured 2026-11-09 from the operator's disc RomFS
   MT "MSG2" bank. Measured header of `mes_system_e` (275,168 bytes decoded):
   `4D 53 47 32 40` ("MSG2@"), u32 total size 0x432e0 @0x08, then 0x80000
   @0x0c, 0x5000900 @0x10, 0x240012 @0x14, 0 @0x18, and 68,802 (0x10cc2)
-  @0x1c. From 0x48 the bank is a repeating u32 structure: values
-  0x800000+x with x in 0x0..0x9e (targets inside the bank's first 0x100
-  bytes) separated by the marker 0x04010000 — 259 groups / 2,281 pointer
-  values over the first ~0x2800 bytes (the structure continues). Text is
-  NOT plain ASCII/UTF-16 — the MT charset table (per-language) is required;
-  no readable runs of 4+ chars exist until decoded.
+  @0x1c.
+- STRUCTURE (measured 2026-11-10, full-bank walk of `mes_system_e`): from
+  0x40 to EOF the bank is one contiguous u32 record stream with no
+  separate string block (last record 0x432dc, bank ends 0x432e0). Record
+  types by high 16 bits:
+    * 0x0080xxxx — character value (62,005); low 16 bits are code-page
+      codes; whole-bank observed range 0x0..0x107a, 103 distinct codes in mes_system_e
+    * 0x04010000 — message separator (3,266) → 3,266 message groups
+    * 0x0419xxxx — 1,472 records (per-message structural, purpose TBD)
+    * 0x042exxxx — 650, 0x0403xxxx — 532, 0x041fxxxx — 488
+  Each message is therefore a run of character values between separators.
+  Character values are NOT ASCII (e.g. 0x48='H' is followed by 0x86/0x96,
+  non-ASCII codes) — a per-language 0x100 byte→char charset table is
+  required to read any group.
+- CHARSET LOCATION (measured 2026-11-10): the operator disc RomFS at
+  `~/gBox_alt/switch/romfs/010018100CD46000/` contains ONLY `nativeNXx64/`
+  (etc, ImgNX, movie, sa, sound, system) — no ExeFS, no .nso/.nsp/.nca
+  anywhere under that tree, and no charset file in `etc/` (textures/.vib
+  only) or in `sa/NX_64/*.arc` candidates. The charset must come from the
+  main NSO (ExeFS) or be derived; it is the single remaining dependency
+  for the on_screen_text column.
 
 ## Frequency + character coverage (measured, rounds.sqlite)
 
@@ -112,13 +127,18 @@ per-character finisher. Labels 191 (Sheva, 1x) and 256 (Chris 1x, Sheva
 
 ## Next acceptance step (bounded)
 
-1. Recover the MT MSG2 per-language charset table (RE5/RE6 Switch; a 0x100
-   byte->char map per language). Candidates: the main NSO (ExeFS, outside
-   this RomFS) or `nativeNXx64/sa/NX_64/*.arc`. Decoding `mes_system_e` /
-   `mes_item_e` / `mes_event_e` into an id->text table is the acceptance
-   gate for the on_screen_text column.
-2. Join the still-unbound label ids (21, 191, 256, plus all ids observed in
-   `rounds.data.specials_labels_text`) to their decoded strings; fill the
+1. Recover the MT MSG2 per-language charset table (a 0x100 byte->char map).
+   The disc RomFS has no ExeFS/NSO and no charset file (measured), so the
+   candidates are: the main NSO of the full NSP (ExeFS — not on this
+   machine), or derivation by anchoring known EN strings (Mercs prompt
+   texts "Pick up", "Jump over", "Climb up", "Break free", "Resuscitate",
+   "Place", "Time bonus" and the bot-measured finisher names "Throat
+   Slit" etc.) against the per-message character runs of 3,266 groups,
+   using the EN/JP/G/CHS/CHT/I/F/J banks' differing code sequences as a
+   second constraint.
+2. Decode `mes_system_e` / `mes_item_e` / `mes_event_e` into id->text and
+   join the still-unbound label ids (21, 191, 256, plus all ids observed
+   in `rounds.data.specials_labels_text`) to their strings; fill the
    on_screen_text column and the per-character finisher table above.
 3. Note: `specials_labels_text`/`specials_summary` only exist in the 54
    rounds with specials keys; older rounds carry none of these fields.
@@ -129,3 +149,16 @@ rounds.sqlite (54 rounds, `specials_labels_text`/`specials_motions_text`/
 `specials_summary`); verified the doc is the only changed file. No pending
 jobs; no remote work; read-only. Next acceptance step stands: the
 per-language charset table for on_screen_text.
+
+Run 2026-11-10 (lilspark2, this run): full-bank structure walk of
+`mes_system_e` (275,168 decoded bytes): record stream confirmed — 62,005
+character values (0x0080xxxx, codes 0x0..0x107a, 103 distinct), 3,266 message separators
+(0x04010000) → 3,266 message groups, plus 3,142 structural records
+(0x0419/0x042e/0x0403/0x041f); no separate string block (records run to
+EOF). Character values verified language-specific (EN vs JP table bytes
+differ), confirming they are code-page character codes, not pointers. Exact per-message
+  record interleaving (which 0x0419/0x042e/0x0403/0x041f records precede or follow each
+  character run) is the remaining parse detail before full id->text decoding.
+Confirmed the disc RomFS is nativeNXx64-only (no ExeFS/NSO/charset file)
+— the charset table is the sole remaining dependency. Read-only; no
+pending jobs.
