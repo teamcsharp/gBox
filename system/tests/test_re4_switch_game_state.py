@@ -308,6 +308,39 @@ def test_a_named_menu_wins_over_a_round_that_is_not_live(monkeypatch, tmp_path):
     assert stats["last_disagreement"]["frame"] == "title"
 
 
+def _live_rows():
+    from pathlib import Path
+    data = json.loads((Path(__file__).parent / "fixtures" / "re4sw_state_live.json").read_text())
+    return data["rows"]
+
+
+def _live_state(r) -> dict:
+    m = r["merc"]
+    st = dict(system=int(r["sys"], 16), stop=int(r["stop"], 16), status=tuple(int(x, 16) for x in r["sta"]),
+              start=tuple(m["start"][:2]), main=m["main"][0], result=tuple(m["rslt"][:2]), cd_state=r["cd"]["state"],
+              frame=r["cd"]["frame"])
+    return st
+
+
+def test_the_live_incident_replayed_the_old_bot_fired_at_the_intro_the_new_one_pages_it(monkeypatch, tmp_path):
+    """The live samples (fixtures/re4sw_state_live.json, session 5a68e96bfd1447a2-780e877d92ec4151): the old bot had
+    fired 10 shots by the end of the intro, while every frame from the intro on read "playing". Replayed through the
+    new state and runner: intro until 04:18:48, then the round, grabs, the death; no trigger before control."""
+    rows = _live_rows()
+    phases = [decode(_live_state(r))["phase"] for r in rows]
+    assert phases[0] == "none" and "intro" in phases and phases[-1] == "dead"
+    first_live = phases.index("playing")
+    assert all(p == "intro" for p in phases[phases.index("intro"):first_live])
+    assert rows[first_live - 1]["old_bot"]["shots"] == 10, "the old bot fired 10 shots during the intro"
+    states = [_live_state(r) for r in rows for _ in range(10)]          # ten runner ticks per live sample
+    frames = [r["frame"] or "unknown" for r in rows for _ in range(10)]
+    ad, stats, _ = _run(monkeypatch, tmp_path, states, frames)
+    intro_ticks = range(10 * phases.index("intro"), 10 * first_live)
+    during_intro = [r["key"] for batch, i in zip(ad.sent, ad.at) if i in intro_ticks for r in batch if r.get("down")]
+    assert "zr" not in during_intro and "zl" not in during_intro and during_intro.count("a") >= 3
+    assert stats["rounds"] == 1 and stats["game_phase"] == "dead" and stats["screen"] == "dead"
+
+
 def test_without_ram_state_the_frame_fallback_still_runs(monkeypatch, tmp_path):
     states = [None] * 60
     frames = ["select_stage"] + ["unknown"] * 400
