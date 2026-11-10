@@ -657,3 +657,17 @@ the AcHeads pass — or the 34-arc roster without the bad AcHead.
 
 Practical note: the hands-only build is the first swap that both runs and looks correct, so it is the current best
 "reskin" candidate for the mercmode parameter work; the body donors need correct assets before they can be shipped.
+
+## Round 25 status (2026-11-09, ~20:35 CST): the AcHead group is the 41-arc hang; its bisect needs the RAM-driven nav
+
+* **9 AcHead arcs alone -> hangs at `loading`** (0 FPS, `LOADING...` on screen, no crash log line). With heads (7) and
+  hands (18) and bodies (9) each running alone, the AcHead group is confirmed as the source of the 41-arc hang.
+* A Leon-AcHead-only build (2 files) was driven with a **fixed key sequence** and drifted into the **Survivors** lobby
+  (CREATE GAME / NETWORK SELECTION / ... / START GAME) instead of the Mercenaries flow - the fixed sequence is not
+  reliable when the menu state differs (the continue state changes the entry path). Inconclusive; the RAM-driven
+  `screen()` navigation is the reliable way and must be used for the next AcHead bisect.
+* Inventory so far: heads 7 run, hands 18 run **and render cleanly**, bodies 9 run (broken mesh), AcHeads 9 hang,
+  Helena head 1 unstable. A shippable clean roster is therefore heads + hands + bodies (34 arcs) today.
+
+Next: RAM-driven AcHead bisect (Leon, then Chris/Piers/Jake/Sherry/Ada, then the Asia duplicates), then the 34-arc
+clean roster as the shipped reskin build, then the hot-reload acceptance test on it.
