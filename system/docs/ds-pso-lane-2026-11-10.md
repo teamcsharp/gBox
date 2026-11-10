@@ -3043,3 +3043,17 @@ refuses them with a message rather than emitting something the game would misrea
 `build_swap` where `pvr_like` is called today, (b) the big-endian node-tree write (`ninja.write_tree(..., e=">")`
 already takes the endianness, as does `tree_nodes`), and (c) the flat GC file names - then a swapped body build can be
 checked by `pso_swapfit.compare` before a boot.
+
+### Round 60b (same session) — CMPR, the format class textures actually use
+
+The RGBA8 writer proved the container; the class textures are mostly block-compressed, so the writer gained **CMPR**
+(mt=14): 8x8 tiles of four 2x2 4x4 DXT1-style sub-blocks, with the endpoint pair ordered so c0 > c1 (the decoder
+only builds the 4-colour palette in that case) and the 16 2-bit indices packed from the top of the word, exactly the
+inverse of the decoder's fmt-14 branch.
+
+Verified: a flat 8x8 texture of RGB565-exact colours round-trips **bit-identically** in CMPR; a gradient stays within
+block-compression bounds; and the disc's first GVM texture round-trips in CMPR with **mean absolute error 0.1** (max 6)
+and identical alpha, next to an exact RGBA8 round trip. Tests: 	est_gvr_write.py **11 passed**.
+
+With CMPR in place, uild_swap can replace a class texture in its own format and size (the pvr_like call's job), so
+the texture half of A8 is complete: the remaining wiring is the call site, the big-endian tree write and the flat names.
