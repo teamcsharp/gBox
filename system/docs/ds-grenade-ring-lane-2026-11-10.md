@@ -479,3 +479,16 @@ cannot diverge on the safety margin.
 **Still blocked on the live side:** the receipts for hand/incendiary (RE6 and RE5) need the branches deployed on
 lilspark and one round fired per kind; the probes and the exact request are in the sections above. Until then
 `grenade_status` advertises the flash only, which is what "no silent substitution" means here.
+
+## Round 51b (2026-11-10, later session) — the RE5 ring gets the same explosive floor
+
+The RE5 ring carried the identical flash-sized near field (RING_SELF_CLEAR_CM = 250, default inner 150) that the new
+explosive kinds inherit; a default hand ring would have detonated its first grenades 150 cm from the player.
+
+**Fixed on this branch (ds-re5-ring-explosive-floor-20261110):** RING_EXPLOSIVE_CLEAR_CM = 600.0 is the floor for
+both the outer radius and the inner ring when the kind is not the flash; the clamp is in the receipt (
+adius_cm,
+inner_cm), the flash path is untouched. Tests: default hand ring >= 600 cm; an incendiary ring asked for 300/100 is
+raised to 600 and says so; flash keeps 150/250. RE5 class-pair/ring/native suites: **44 passed**.
+
+Same rule as RE6 (ds-re6-ring-explosive-floor-20261110), so the two titles cannot diverge on the safety margin.
