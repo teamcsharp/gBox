@@ -95,3 +95,34 @@ town family, so the character is across the counter rather than in front of the 
 So **the Hunter's Guild is not at the west end**. What is left to try: the two room-10 doors never walked
 (`TObjCityDoor_Med` at `(194,-93)`, `TObjCityDoor_Shop` at `(-165,148)`) and whatever the central dome's large doorways
 lead to.
+
+## The lobby / room-20 transition is a zone, not a line
+
+Round 39 walked the boundary from both sides in one session and found that it is not a threshold to hit but a **band the
+room id flips inside**:
+
+```
+room 20 (95,55) -> (115,105) -> (140,150)   became room 10 at (142,152)
+room 10 (142,152) -> (180,40)               became room 20 again at (93,51)
+room 20 (105,136)                            stuck inside the band, room 20
+```
+
+So the crossing lives somewhere around **(95-142, 50-152)** and either room can be the current one while the character is
+inside it. Two consequences for a route:
+
+* a waypoint that skims the band will flip the room under the walker, which is exactly what happened twice this round;
+* getting to a *specific* room means approaching it from well outside the band, not from a nearby waypoint.
+
+Adjacency found the same way: walking from `(-149,12)` toward `(-20,60)` entered **room 30** at about `(-169,46)` and came
+back to room 20 -- so room 30 (the shop floor) borders room 20 on that side, not room 10.
+
+## Where the guild search stands
+
+| candidate | status |
+|---|---|
+| `TObjCityDoor_Guild` (185,173) in room 10 | **inert**: four approaches arrived on it, `A` included |
+| `TObjCityDoor_Warp` (254,25) in room 10 | works -- leads to room 40 (the teleporter room / hospital) |
+| `TObjCityDoor_Med` (194,-93) in room 10 | **not yet reached**: every attempt skims the boundary band and flips into room 20 |
+| `TObjCityDoor_Shop` (-165,148) in room 10 | not yet reached |
+| the central dome's large doorways in room 20 | not yet walked |
+| the west-end counter + cloakroom NPC (-267,-24) | no dialogue from the front; it is the shopping district |
