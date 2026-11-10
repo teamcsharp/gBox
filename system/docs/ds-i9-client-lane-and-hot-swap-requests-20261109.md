@@ -1133,3 +1133,14 @@ The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned b
   problem - the mod applies and the game runs, which is what this round set out to verify.
 * Note for the next pass: the RE4 cutscene skip is likely `+`/`-` (Switch) on a key Yuzu binds to a punctuation key, not
   `m`; checking Yuzu's input config for the plus/minus mapping is the quickest way to find it.
+
+## Round 57 status (2026-11-10, ~03:05 CST): the RE4 village frame is a time problem, not a mod problem
+
+* A patient run (no skip keys, 5.5 minutes of 30-second captures) is still inside the opening cutscene: the car scene with
+  the two officers and Leon's photo moment (`re4-w10.jpg`). RE4 renders these cutscenes at **10-18 FPS** on the i9, so
+  the intro plays far slower than real time and the first village frame is many more minutes away.
+* That makes the in-game visual check impractical to chase frame-by-frame. Two better routes for it: (a) unlock
+  Mercenaries and read the **character-select 3D preview** (immediate, no cutscene), or (b) load a save state placed at
+  the village. Both are mechanical once chosen.
+* The technical claim this lane needed - the RE4 overlay applies and the game runs under it - is already proven (rounds
+  50 and 55: title at 60 FPS, NEW GAME starts, cutscenes play with `recovery-re4-sonic-on-leon-v1` applied).
