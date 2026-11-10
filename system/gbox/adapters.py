@@ -3065,6 +3065,24 @@ class MameAdapter(StandaloneAdapter):
 DEBUG_ADAPTERS = {"gamecube": DolphinAdapter, "wii": DolphinAdapter, "gba": MgbaAdapter, "psx": DuckStationAdapter, "arcade": MameAdapter}
 
 
+def yuzu_boot_seconds(boot_timeout_s=None) -> int:
+    """Seconds Yuzu may take to open its window: launch_game boot_timeout_s (the retry remedy) or 60."""
+    try:
+        return max(10, int(float(boot_timeout_s))) if boot_timeout_s else 60
+    except (TypeError, ValueError):
+        return 60
+
+
+def yuzu_log_tail(log, lines: int = 12) -> str:
+    """The last lines of yuzu_log.txt as an error suffix, so a failed boot is not an empty report."""
+    try:
+        text = Path(log).read_text(encoding="utf-8", errors="replace")
+    except (OSError, TypeError):
+        return " (no yuzu log was written)"
+    tail = [l for l in text.splitlines() if l.strip()][-lines:]
+    return "\nyuzu log tail:\n" + "\n".join(tail) if tail else " (yuzu log is empty)"
+
+
 class YuzuAdapter(Adapter):
     """Launch the operator's portable Yuzu and Switch ROM directly on the Windows worker."""
     name = "yuzu"
@@ -3134,15 +3152,18 @@ class YuzuAdapter(Adapter):
             self.proc = subprocess.Popen([str(exe), "-g", rom], cwd=exe.parent, startupinfo=capture_start(), env=env)
         keep_offscreen(self.proc.pid)
         self.log = exe.parent / 'user' / 'log' / 'yuzu_log.txt'
-        for _ in range(60):
+        boot_s = yuzu_boot_seconds(getattr(self, "boot_timeout_s", None))
+        for _ in range(boot_s):
             if self.proc.poll() is not None:
-                raise RuntimeError(f"Yuzu exited before opening the game (code {self.proc.returncode})")
+                raise RuntimeError(f"Yuzu exited before opening the game (code {self.proc.returncode})"
+                                   + yuzu_log_tail(self.log))
             if _pid_window(self.proc.pid):
                 break
             time.sleep(1)
         else:
+            tail = yuzu_log_tail(self.log)      # read before stop_game: the evidence must reach the report
             self.stop_game()
-            raise RuntimeError("Yuzu did not open a game window within 60 seconds")
+            raise RuntimeError(f"Yuzu did not open a game window within {boot_s} seconds" + tail)
         if self.debug:
             try:
                 from .debug import GdbDebugger
