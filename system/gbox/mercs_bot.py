@@ -715,7 +715,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     walk = menu_clock(menus, prof, ad)
     walk.begin("prepare" if prepare else "boot", launched_at=(game or {}).get("_launched_at"),
                up_at=(game or {}).get("_up_at"))
-    walk_at = {"stats": float("-inf"), "misses": boot.nav.misses}
+    # (a human / co-op round's Boot never navigates and may carry no Navigator: its misses read as 0)
+    walk_at = {"stats": float("-inf"), "misses": getattr(getattr(boot, "nav", None), "misses", 0)}
     pub = tactical_publisher(tactical, prof)
     damage_outbox = None
     if callable(getattr(tactical, "damage", None)):
