@@ -49,3 +49,50 @@ def parse_gvr_header(blob: bytes) -> dict:
         raise ValueError("not GBIX/GVRT")
     w, h = struct.unpack_from(">HH", blob, 0x1C)
     return {"gbix": struct.unpack_from(">I", blob, 8)[0], "data_format": blob[0x1B], "width": w, "height": h}
+
+
+def build_body_manifest(nj_bytes: bytes, afs_entries: list[bytes], name: str, out_dir, source: dict | None = None,
+                        tex_base: int = 0):
+    """Reader stage: a textured, skinned uap.Manifest of one player .nj (e.g. plAbdy00.nj).
+
+    ASSUMPTION (partial, not yet proven in game): NJ texture id ``t`` -> ``plAtex.afs`` entry ``tex_base + t``.  The
+    Ep3 disc has no NJTL name list in these files, so the mapping is positional until the DOL table is read.
+    Writes ``textures/tex<entry>.png`` under *out_dir*; returns (manifest, {texid: afs entry index}).
+    """
+    from pathlib import Path
+    from . import ninja, pso_gc
+
+    nj = load_nj(nj_bytes)
+    out = Path(out_dir)
+    (out / "textures").mkdir(parents=True, exist_ok=True)
+    tex_files: list[str | None] = [None] * (max(nj.tris) + 1 if nj.tris else 0)
+    used: dict[int, int] = {}
+    for tid in sorted(nj.tris):
+        i = tex_base + tid
+        if i >= len(afs_entries):
+            continue
+        rel = f"textures/tex{i:03d}.png"
+        (out / rel).write_bytes(pso_gc.png_bytes(pso_gc.gvr_decode(afs_entries[i])))
+        tex_files[tid] = rel
+        used[tid] = i
+    src = {"game": "Phantasy Star Online Episode III - C.A.R.D. Revolution (USA) (GC)", "game_id": "5b5ecb4c36a13584",
+           "extraction_method": "gbox.pso3_analysis", "texture_mapping": "positional (unverified)"}
+    src.update(source or {})
+    return ninja.to_manifest(nj, name, src, tex_files), used
+
+
+def export_body_glb(nj_bytes: bytes, afs_entries: list[bytes], name: str, out_dir, source: dict | None = None):
+    """Write manifest.json + textures + <name>.glb; returns (glb path, texid map, uap.validate problems)."""
+    from pathlib import Path
+    from . import uap
+
+    out = Path(out_dir)
+    m, used = build_body_manifest(nj_bytes, afs_entries, name, out, source)
+    import hashlib
+    m.unit_scale_m = 0.1
+    m.provenance = [{"step": "gbox.pso3_analysis.export_body_glb", "model_sha256": hashlib.sha256(nj_bytes).hexdigest(),
+                     "afs_entries": len(afs_entries), "texture_mapping": "positional texid -> plAtex.afs entry (unverified)"}]
+    (out / "manifest.json").write_text(m.model_dump_json())
+    glb = out / f"{name}.glb"
+    glb.write_bytes(uap.to_glb(m, out))
+    return glb, used, uap.validate(m, out)

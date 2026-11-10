@@ -61,3 +61,21 @@ def test_njcm_body_errors():
         an.njcm_body(b"XXXX0000")
     with pytest.raises(ValueError):
         an.njcm_body(b"NJCM" + struct.pack("<I", 99) + b"\0" * 4)
+
+
+def test_export_body_glb(tmp_path):
+    from gbox import pso3_analysis as an
+    if not GCZ.is_file():
+        pytest.skip("owned source not reachable")
+    with inv.GCZ(str(GCZ)) as g:
+        fo, fs = struct.unpack(">II", g.read(0x424, 8))
+        files = {p.split("/", 2)[-1]: (o, s) for p, o, s in inv.FST(g.read(fo, fs)).walk()}
+        d = g.read(*files["plAbdy00.nj"])
+        o, _ = files["plAtex.afs"]
+        ents = [g.read(o + a, n) for a, n in inv.parse_afs_toc(g.read(o, 0x4000))]
+    glb, used, problems = an.export_body_glb(d, ents, "pso3_plAbdy00", tmp_path)
+    assert used == {0: 0, 1: 1, 2: 2, 3: 3, 4: 4}
+    assert problems == []
+    b = glb.read_bytes()
+    assert b[:4] == b"glTF" and len(b) > 100_000
+    assert len(list((tmp_path / "textures").glob("*.png"))) == 5
