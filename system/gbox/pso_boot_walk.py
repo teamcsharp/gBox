@@ -1,31 +1,29 @@
 """P1: the cold-boot walk from the disc to Pioneer 2, as a deterministic press script with RAM checkpoints.
 
-What this is
-------------
-The guide's P1 is "Title -> PRESS START -> the offline menus -> character select -> Pioneer 2 ... by real presses on
-the virtual pads, with the screen read from RAM (the menu state bytes), not from frames". This module is that walk.
+The guide's P1 is "Title -> PRESS START -> the offline menus -> character select -> Pioneer 2 ... by real presses on the
+virtual pads, with the screen read from RAM (the menu state bytes), not from frames". This module is that walk.
 
 What RAM can and cannot say
 ---------------------------
 ``0x80516303`` is **not** a screen id (round 3 corrected that): it is a coarse mode that reads ``1`` on both the title
-main menu and SELECT CHARACTER, ``9`` on SELECT GAME MODE, ``0``/``22``/``4`` on the title. So the walk is a
-**deterministic press sequence** whose checkpoints are the states RAM *can* prove:
+main menu and SELECT CHARACTER, ``9`` on SELECT GAME MODE and ``0``/``22``/``4`` on the title. So the walk is a
+**deterministic press sequence** whose checkpoints are only the states RAM can prove:
 
-============================  ==========================================================
-checkpoint                    proven by
-============================  ==========================================================
-``press_start``               the mode leaves the title family (``0``/``4``/``22``) and no player exists
-``character_select_ok``       a player object appears in the slot table (the boot is past every menu)
-``in_town``                   ``FLOOR 0`` (Pioneer 2) with a player
-``in_field``                  ``FLOOR != 0`` (``1`` is Forest 1)
-============================  ==========================================================
+===========================  =========================================================
+checkpoint                   proven by
+===========================  =========================================================
+``left_title``               the mode leaves the attract family, or a player appears
+``past_game_mode``           the mode is no longer SELECT GAME MODE (``9``)
+``in_town``                  ``FLOOR 0`` (Pioneer 2) **with a player**
+===========================  =========================================================
 
 Between the checkpoints the sequence is fixed because it was walked by hand on this build (round 4): START at PRESS
-START, then ``ddown``+A for OFFLINE GAME, A for SINGLE MODE, A on the first slot (create or select), then A for the
-episode. The walk **reports** the state after every step and never claims to know which menu it is on -- it asserts only
-what is provable, and a step that leaves the state unchanged is reported as a failure rather than retried blindly.
+START, ``ddown``+A for OFFLINE GAME, A for SINGLE MODE, A on the first slot, then A for the episode. The walk reports
+the state after every step and never claims to know which menu it is on; a step that leaves the state unchanged is
+reported as a failure, not retried blindly.
 
-Nothing here reads a frame, and nothing presses unless the state justifies it.
+The attract movie and the PRESS START title both read mode ``0``, so :func:`reach_title` presses START up to a bound to
+skip the movie -- START is the right button in both cases, which is what makes that bounded retry honest.
 """
 from __future__ import annotations
 
@@ -34,7 +32,7 @@ import time
 from . import pso_entities as entities_mod
 from . import pso_ram
 
-# The press script: (name, keys, the checkpoint that must hold after it, or None).
+# The press script: (name, keys, the checkpoint that must hold after it).
 BOOT_STEPS = (
     ("press_start", ("start",), "left_title"),
     ("offline_game", ("ddown", "a"), None),
@@ -45,6 +43,7 @@ BOOT_STEPS = (
 )
 
 TITLE_MODES = (0, 4, 22)
+TITLE_MENU = 1                                   # the title main menu (ONLINE / OFFLINE / OPTIONS / WEBSITE)
 GAME_MODE_SELECT = 9
 
 
@@ -55,14 +54,14 @@ def state(reader) -> dict:
     except Exception:                                   # noqa: BLE001 - a table read must not kill a walk
         items = []
     player = pso_ram.player(reader, 0)
-    return {"mode": pso_ram.boot_screen(reader) if hasattr(pso_ram, "boot_screen") else reader.u8(pso_ram.BOOT_SCREEN),
+    return {"mode": reader.u8(pso_ram.BOOT_SCREEN),
             "floor": pso_ram.floor(reader), "episode": pso_ram.episode(reader),
             "player": None if player is None else {"x": player["x"], "z": player["z"], "room": player["room"]},
             "entities": len(items)}
 
 
 def _check(name: str, before: dict, after: dict) -> tuple[bool, str]:
-    """Did the checkpoint hold? Returns (ok, why) -- the reason is for the round doc, not for a retry."""
+    """Did the checkpoint hold? Returns (ok, why)."""
     if name == "left_title":
         ok = after["mode"] not in TITLE_MODES or after["player"] is not None
         return ok, "" if ok else f"still on the title (mode {after['mode']})"
@@ -78,16 +77,45 @@ def _check(name: str, before: dict, after: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def walk(read_state, press, *, settle=1.6, sleep=time.sleep, log=None) -> dict:
-    """Run the boot script. ``press(keys)`` takes a tuple of pad key names; ``read_state()`` returns :func:`state`.
+def reach_title(read_state, press, *, tries=12, settle=2.0, sleep=time.sleep, log=None) -> dict:
+    """Press START through the attract movie until the title menu appears (bounded).
 
-    Returns {"ok", "arrived", "steps": [...], "why"}. ``arrived`` is True only when a player exists in Pioneer 2.
+    The attract loop and the PRESS START title both read mode ``0``, but START is the right button in both, so this is
+    a justified retry rather than a blind one. Stops as soon as the mode leaves the attract or a menu appears.
+    """
+    log = log or (lambda _m: None)
+    pressed = 0
+    s = read_state()
+    while pressed < tries:
+        if s["mode"] == TITLE_MENU or s["player"] is not None:
+            return {"ok": True, "presses": pressed, "state": s}
+        press(("start",))
+        pressed += 1
+        sleep(settle)
+        s = read_state()
+        log(f"attract skip {pressed}: mode={s['mode']}")
+        if s["mode"] != 0:
+            return {"ok": True, "presses": pressed, "state": s}
+    return {"ok": False, "presses": pressed, "state": s,
+            "why": f"still in the attract after {pressed} START presses"}
+
+
+def walk(read_state, press, *, settle=1.6, sleep=time.sleep, log=None, start_at="press_start") -> dict:
+    """Run the boot script from ``start_at``. ``press`` takes a tuple of pad key names.
+
+    Returns {"ok", "arrived", "why", "steps"}; ``arrived`` is True only when a player exists in Pioneer 2.
     """
     log = log or (lambda _m: None)
     steps = []
     before = read_state()
     steps.append({"step": "start", "state": before})
+    started = start_at == "press_start"
     for name, keys, checkpoint in BOOT_STEPS:
+        if not started:
+            if name == start_at:
+                started = True
+            else:
+                continue
         press(keys)
         sleep(settle)
         after = read_state()
@@ -99,7 +127,6 @@ def walk(read_state, press, *, settle=1.6, sleep=time.sleep, log=None) -> dict:
         if not ok:
             return {"ok": False, "arrived": False, "why": f"{name}: {why}", "steps": steps}
         if after["player"] is not None and after["floor"] == 0:
-            # the boot is done: the menus are behind us and Pioneer 2 is loaded
             steps[-1]["arrived"] = True
             return {"ok": True, "arrived": True, "why": "", "steps": steps}
     final = read_state()
