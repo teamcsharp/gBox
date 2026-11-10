@@ -64,3 +64,60 @@ def test_a_donor_that_uses_a_subset_of_the_host_materials_is_safe():
     result = F.compare(host, donor)
     assert result["safe"] is True and result.get("subset") is True
     assert result.get("deforms") is True                 # different vertex count: the gate's own wording
+# ---- CP7.1: the +0x8 field the crash address reads --------------------------------------------------------------------------
+
+def _nj_bytes(centres):
+    """A minimal NJCM with one model per centre tuple: 52-byte nodes and 24-byte model headers, big-endian."""
+    import struct as _s
+    nodes = len(centres)
+    node_block = bytearray(52 * nodes)
+    model_block = bytearray()
+    model_base = 52 * nodes
+    for i, centre in enumerate(centres):
+        off = 52 * i
+        mo = model_base + len(model_block)
+        _s.pack_into(">II", node_block, off, 0x07, mo)
+        child = 52 * (i + 1) if i + 1 < nodes else 0          # child/sibling are byte offsets, not indices
+        _s.pack_into(">II", node_block, off + 44, child, 0)
+        model_block += _s.pack(">II4f", 0, 0, *centre)
+    payload = bytes(node_block) + bytes(model_block)
+    return b"NJCM" + _s.pack("<I", len(payload)) + payload
+
+
+def test_the_signature_carries_the_model_list_and_its_centres():
+    from gbox import ninja
+    nj = ninja.NJ(_nj_bytes([(1.0, 2.0, 3.0, 4.0)]), be=True)
+    sig = F.signature_nj(nj)
+    assert sig["models"] == 1 and sig["centre_ok"] is True
+
+
+def test_a_non_finite_centre_is_refused_with_the_0x8028f508_reason():
+    from gbox import ninja
+    bad = ninja.NJ(_nj_bytes([(float("nan"), 0.0, 0.0, 1.0)]), be=True)
+    good = ninja.NJ(_nj_bytes([(0.0, 0.0, 0.0, 1.0)]), be=True)
+    verdict = F.compare(F.signature_nj(good), F.signature_nj(bad))
+    assert verdict["safe"] is False and "0x8028f508" in verdict["why"]
+
+
+def test_a_different_model_list_length_is_refused():
+    from gbox import ninja
+    host = F.signature_nj(ninja.NJ(_nj_bytes([(0.0, 0.0, 0.0, 1.0)]), be=True))
+    donor = F.signature_nj(ninja.NJ(_nj_bytes([(0.0, 0.0, 0.0, 1.0), (1.0, 1.0, 1.0, 2.0)]), be=True))
+    verdict = F.compare(host, donor)
+    assert verdict["safe"] is False and "model list" in verdict["why"]
+
+
+def test_the_real_bodies_have_the_measured_model_lists():
+    import pathlib as _p
+    from gbox import gcdisc, ninja, pso_gc_paths
+    disc = _p.Path(r"D:\\gBox\\cache\\mods\\436e0bb84d5337d1\\pso_city_npc_moved"
+                   r"\\Phantasy Star Online Episode I & II Plus (USA).iso")
+    if not disc.is_file():
+        pytest.skip("the disc is not on this machine")
+    d = gcdisc.GCDisc(str(disc))
+    for letter in ("A", "B", "C"):
+        body = pso_gc_paths.read_part(d, pso_gc_paths.gc_path(f"PSO/PL{letter}BDY00.NJ"))
+        sig = F.signature_nj(ninja.NJ(body, be=True))
+        # measured: HUmar 18 model nodes, HUnewearl 20, HUcast 18 - the list the transform walk indexes
+        assert sig["models"] == {"A": 18, "B": 20, "C": 18}[letter], letter
+        assert sig["centre_ok"] is True, letter

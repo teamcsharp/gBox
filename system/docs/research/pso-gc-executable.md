@@ -217,3 +217,55 @@ def at(va, n):
             return dol[offs[i] + va - addrs[i]: offs[i] + va - addrs[i] + n]
 print(at(0x801BB330, 16).hex(), at(0x801057A8, 16).hex())
 ```
+
+## 9. CP7.1: `0x8028f508`, the read that crashes a bad donor
+
+The HUnewearl-donor crash reported PC `0x8028f508` (round 35). That address is **not** a function entry: it is at
+`+0x268` inside `FUN_8028f2a0` (file `0x8028f2a0`, **1,024 bytes**, body `[8028f2a0, 8028f69f]`), so whatever the emulator
+reported was the faulting instruction, not a symbol. Disassembled from the same project:
+
+```
+8028f4e0  lwz r6,0x4(r3)          ; entry->[+4] = the destination structure
+8028f4e4  cmplwi r6,0x0
+8028f4e8  beq 0x8028f588          ; no destination: skip
+8028f4ec  lwz r3,0x18(r30)        ; a source pointer ...
+8028f4f0  lwz r4,0x14(r30)        ; ... and a second
+8028f4f4  lwz r3,0x0(r3)
+8028f4f8  lwz r5,0x0(r4)
+8028f4fc  lwz r4,0x4(r3)          ; [obj + 4] -> the structure whose +8 is read
+8028f500  lwz r3,0x1c(r30)
+8028f504  lfs f1,0x8(r30)
+8028f508  lfs f0,0x8(r4)          ; <-- the faulting read: the first float of that structure
+```
+
+The decompiled shape is a per-frame **pose composer** over a 5-entry table (`iVar4 = 5`, entries 8 bytes apart):
+each entry has `{flags, ptr}`; `ptr[+4]` is a structure whose `+8 / +0xc / +0x10` (a vec3) is read from three sources and
+written back as a weighted sum:
+
+```c
+*(float *)(iVar3 + 8)   = _DAT_8051d274 * *(float *)(iVar6 + 8)
+                        + _DAT_8051d26c * *(float *)(iVar2 + 8) + _DAT_8051d270 * *(float *)(iVar1 + 8);
+*(float *)(iVar3 + 0xc) = ... same with the +0xc fields ...
+*(float *)(iVar3 + 0x10)= ... same with the +0x10 fields ...
+```
+
+So **the field at +0x8 is the X component of a model/pose vector** whose Y and Z are at +0xc and +0x10, reached through
+`[[entry+0x18]] + 4`; the crash is that chain being null/invalid for a donor whose model list does not fit the host's.
+
+### What that buys, in code
+
+`gbox/pso_swapfit.py` now reads exactly that field from the file: `model_centres(nj)` walks the NJCM payload and returns
+each node model's four floats at `model+8` (centre X/Y/Z and radius - the same vec3 the walk uses), and
+`signature_nj` carries:
+
+* `models`: the number of nodes with a model - the list length the 5-entry walk indexes. Measured: **HUmar 18,
+  HUnewearl 20, HUcast 18** (the bodies share the 64-bone skeleton, so the model list is the discriminating count);
+* `centre_ok`: every one of those vectors is finite.
+
+`compare()` refuses a donor when either side's `centre_ok` is false (with the `0x8028f508` reason) or when the model list
+lengths differ. That is the file-level check the CP7 accept asked for, and it is what `body_swap` and the editor page's
+swap-fit gate now use.
+
+Tests: `tests/test_pso_swapfit.py` **11 passed** - the four round-35 signatures, the `+0x8` refusal (a synthetic body with
+a NaN centre), a model-list mismatch (chained nodes, child/sibling as byte offsets), and the three real bodies' measured
+model counts.
