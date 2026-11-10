@@ -282,3 +282,90 @@ def test_cast_names_five_packs_and_says_which_is_inferred():
     assert {name: entry["pack"] for name, entry in M.CAST.items()} == {
         "leon": "pl08", "hunk": "pl06", "krauser": "pl0a", "wesker": "pl0d", "ada": "pl0b"}
     assert M.CAST["ada"]["evidence"].startswith("inferred")
+
+
+# ------------------------------------------------------------------------------------------- the atlas the game draws
+
+def cut_out_atlas(size=64):
+    """A donor atlas as mtf_materials builds it: an opaque chart on the left, RGBA 0 elsewhere, a cut-out hole in it."""
+    atlas = np.zeros((size, size, 4), np.uint8)
+    atlas[:, : size // 2] = (200, 40, 40, 255)
+    atlas[size // 4, size // 8] = (0, 0, 0, 0)
+    return atlas
+
+
+def test_finish_atlas_bleeds_colour_into_cut_outs_and_empty_space_and_is_opaque():
+    atlas = cut_out_atlas(16)
+    uvs = np.array([[2.5 / 16, 4.5 / 16], [4.5 / 16, 4.5 / 16], [12 / 16, 12 / 16]])
+    out, report = M.finish_atlas(atlas, uvs)
+    assert out.dtype == np.uint8 and out.shape == atlas.shape and (out[..., 3] == 255).all()
+    assert (np.abs(out[..., :3].astype(int) - (200, 40, 40)).max(2) <= 1).all()      # no black texel left
+    assert report["texels_filled"] == 16 * 8 + 1 and report["vertices_on_cut_out_texels"] == round(2 / 3, 4)
+    two = np.zeros((8, 8, 4), np.uint8)
+    two[:, 0] = (255, 0, 0, 255)
+    two[:, 7] = (0, 0, 255, 255)
+    mixed, _ = M.finish_atlas(two)
+    assert (mixed[:, 0, :3] == (255, 0, 0)).all() and (mixed[:, 7, :3] == (0, 0, 255)).all()
+    assert (mixed[..., :3].astype(int).sum(2) > 0).all()
+    grey, _ = M.finish_atlas(np.zeros((4, 4, 4), np.uint8))
+    assert (grey[..., :3] == 128).all() and (grey[..., 3] == 255).all()
+    same, none = M.donor_atlas({"atlas": atlas}, opaque=False)
+    assert none is None and np.array_equal(same, atlas)
+    with pytest.raises(M.ModelError, match="RGBA"):
+        M.finish_atlas(np.zeros((4, 4, 3), np.uint8))
+
+
+def test_author_body_uploads_the_finished_atlas_when_asked():
+    from PIL import Image
+
+    target, archive = player_pack(seed=3), make_pack(PACK_ID).build()
+    donor, _names = donor_record()
+    donor["atlas"] = cut_out_atlas()
+    _out, (_name, grown), receipt = M.author_body(target, archive, donor, opaque_atlas=True)
+    decoded = np.asarray(Image.open(io.BytesIO(A.ImagePack.parse(grown).entries[2][1])).convert("RGBA"), np.int32)
+    assert (decoded[..., 3] == 255).all() and decoded[..., :3].sum(2).min() > 0
+    assert receipt["texture"]["atlas_finish"]["vertices_on_cut_out_texels"] == 0.0
+    _out, (_name, raw), plain = M.author_body(target, archive, donor)
+    decoded = np.asarray(Image.open(io.BytesIO(A.ImagePack.parse(raw).entries[2][1])).convert("RGBA"), np.int32)
+    assert decoded[..., 3].min() == 0 and "atlas_finish" not in plain["texture"]
+
+
+def test_refinish_archive_rewrites_only_the_appended_atlases(tmp_path):
+    from PIL import Image
+
+    target, stock = player_pack(seed=3), make_pack(PACK_ID).build()
+    donor, _names = donor_record()
+    donor["atlas"] = cut_out_atlas()
+    out, (name, grown), _receipt = M.author_body(target, stock, donor)
+    written, report = M.refinish_archive(grown, stock, {"pl08.udas": out})
+    before, after = A.ImagePack.parse(grown), A.ImagePack.parse(written)
+    assert len(after.entries) == len(before.entries) == 3
+    assert after.entries[:2] == before.entries[:2] and after.entries[2][0] == before.entries[2][0]
+    assert len(after.entries[2][1]) == len(before.entries[2][1]) and after.entries[2][1] != before.entries[2][1]
+    decoded = np.asarray(Image.open(io.BytesIO(after.entries[2][1])).convert("RGBA"), np.int32)
+    assert (decoded[..., 3] == 255).all() and decoded[..., :3].sum(2).min() > 0
+    row = report["refinished"][0]
+    assert row["entry"] == 2 and row["drawn_by_vertices"] == 3 * len(donor["faces"]) and row["mips"] == 7
+    assert report["stock_entries"] == 2 and report["sha256"] == M.sha256(written)
+    with pytest.raises(M.ModelError, match="not the stock archive"):
+        M.refinish_archive(grown, make_pack(PACK_ID, sizes=((8, 8),)).build())
+    # the overlay form: archives with appended entries refinished, a greybox-like one (nothing appended) skipped
+    stock_dir, build_dir = tmp_path / "stock", tmp_path / "build"
+    for folder in (stock_dir / "imagepackhd", build_dir / "imagepackhd", build_dir / "em"):
+        folder.mkdir(parents=True)
+    (stock_dir / "imagepackhd" / name).write_bytes(stock)
+    (build_dir / "imagepackhd" / name).write_bytes(grown)
+    (build_dir / "em" / "pl08.udas").write_bytes(out)
+    (stock_dir / "imagepackhd" / "44000400.pack.fen").write_bytes(stock)
+    (build_dir / "imagepackhd" / "44000400.pack.fen").write_bytes(stock)
+    saved = M.refinish_overlay(stock_dir, build_dir, tmp_path / "out")
+    assert [f["path"] for f in saved["files"]] == [f"romfs/bio4/imagepackhd/{name}"]
+    assert (tmp_path / "out" / "romfs" / "bio4" / "imagepackhd" / name).read_bytes() == written
+    assert saved["files"][0]["source_sha256"] == M.sha256(grown)
+    with pytest.raises(M.ModelError, match="never overwritten"):
+        M.refinish_overlay(stock_dir, build_dir, tmp_path / "out")
+
+
+def test_cast_pool_refuses_a_pinned_assignment_it_cannot_honour(tmp_path):
+    with pytest.raises(M.ModelError, match="pinned assignment"):
+        M.cast_pool(tmp_path, tmp_path, tmp_path, [], "seed", tmp_path / "out", assignment={"leon": "nobody"})

@@ -10,6 +10,11 @@ publisher (gbox.mercs.tactical) sends a stage again when a frame's reply says ne
     GET  /api/autoplay/tactical/stage/{key}    that stage, or 404
     GET  /api/mercs/portraits/{title}          the title's enemy portraits: {"portraits": {class: {name, at, dist}}}
     GET  /api/mercs/portraits/{title}/{cls}.jpg  one portrait (the legend's picture), or 404
+    GET  /api/mercs/enemies/{title}            every enemy type (gbox/mercs/enemy_identity.py: name, tier, danger, weak
+                                               point, tactics, health, stages, how sure, sources) with a portrait URL,
+                                               the stage table (heavies by kill count) and the rules (enemy_listing)
+    GET  /api/mercs/enemies/{title}/{cls}.png  the type's portrait: rendered from its model archive
+                                               (gbox/mercs/enemy_portraits.py), else the live crop (JPEG), else 404
 Frames come at most 10 a second per session and are a few KB; a stage is up to a few hundred KB, once per stage.
 
 Enemy portraits (operator 2026-10-29: "show them in the merc live map and run reviewer with profile pictures as a
@@ -275,12 +280,57 @@ def crop_portrait(jpeg: bytes, dist: float) -> bytes | None:
         return None
 
 
-def install(app, auth, frame_of=None, portraits_root=None) -> Store:
-    """frame_of(sid) -> the session's newest JPEG (the portraits' source); portraits_root: where they are kept."""
+def enemy_listing(title: str, models=None, portraits=None) -> dict:
+    """GET /api/mercs/enemies/{title}: every enemy type of the title (gbox/mercs/enemy_identity.py) with its portrait
+    URL - the model render (gbox/mercs/enemy_portraits.py) when there is one, else the live crop, else none - and the
+    title's stage table (the heavies by kill count) and rules where known."""
+    from .mercs import enemy_identity as EI
+    t = EI.canonical(title)
+    rendered = models.index(t) if models is not None else {}
+    cropped = portraits.index(t) if portraits is not None else {}
+    rows = []
+    for entry in EI.listing(t):
+        row = dict(entry, weight=EI.TIER_WEIGHT[entry["tier"]])
+        cls = entry["cls"]
+        if cls in rendered or cls in cropped:
+            row["portrait"] = f"/api/mercs/enemies/{t}/{cls}.png"
+            row["portrait_source"] = "model" if cls in rendered else "frame"
+        rows.append(row)
+    return {"title": t, "title_name": EI.TITLE_NAMES.get(t, t), "tiers": dict(EI.TIER_WEIGHT),
+            "enemies": rows, "stages": [EI.stage_info(t, s) for s in EI.stages_of(t)],
+            "rules": EI.RULES.get(t), "sources": dict(EI.SOURCES), "call_sites": EI.CALL_SITES.get(t)}
+
+
+def install(app, auth, frame_of=None, portraits_root=None, model_portraits_root=None) -> Store:
+    """frame_of(sid) -> the session's newest JPEG (the portraits' source); portraits_root: where they are kept;
+    model_portraits_root: the portraits rendered from the model archives (gbox/mercs/enemy_portraits.py)."""
     store = Store()
     app.state.tactical_map = store
     portraits = Portraits(portraits_root) if portraits_root is not None else None
     app.state.enemy_portraits = portraits
+    from .mercs.enemy_portraits import Store as ModelPortraits
+    models = ModelPortraits(model_portraits_root) if model_portraits_root is not None else None
+
+    @app.get("/api/mercs/enemies/{title}")
+    async def enemy_identities(title: str, actor=Depends(auth)):
+        from .mercs import enemy_kinds
+        if not enemy_kinds.valid_title(title):
+            raise HTTPException(422, "bad title")
+        return enemy_listing(title, models, portraits)
+
+    @app.get("/api/mercs/enemies/{title}/{name}")
+    async def enemy_identity_portrait(title: str, name: str, actor=Depends(auth)):
+        """The type's portrait: the model render (PNG), else the live crop (JPEG), else 404."""
+        from fastapi.responses import Response
+        from .mercs import enemy_identity as EI
+        t, cls = EI.canonical(title), name.removesuffix(".png").removesuffix(".jpg")
+        path = models.path(t, cls) if models is not None else None
+        if path is not None and path.is_file():
+            return Response(path.read_bytes(), media_type="image/png", headers={"cache-control": "max-age=300"})
+        path = portraits.path(t, cls) if portraits is not None else None
+        if path is not None and path.is_file():
+            return Response(path.read_bytes(), media_type="image/jpeg", headers={"cache-control": "max-age=60"})
+        raise HTTPException(404, "no portrait for this enemy type yet")
 
     async def body_of(request: Request, limit: int):
         raw = await request.body()

@@ -21,7 +21,15 @@ TITLE_RE = re.compile(r"[A-Za-z0-9]{4,24}")
 
 
 def name(title: str | None, cls: str | None) -> str:
-    """The type's verified name, else its class name ("unknown" without one)."""
+    """The type's confirmed name (gbox/mercs/enemy_identity.py: verified or matched by the game's own data; else
+    NAMES), else its class name ("unknown" without one)."""
+    try:
+        from . import enemy_identity
+        entry = enemy_identity.identity(title, cls)
+        if entry is not None and entry["confirmed"]:
+            return entry["name"]
+    except ImportError:                                     # (a worker holding no identity table yet)
+        pass
     return NAMES.get(str(title or ""), {}).get(str(cls or "")) or (str(cls) if cls else "unknown")
 
 

@@ -1,4 +1,4 @@
-﻿"""Built-in typed tools. Each declares permissions, availability check, and an independent validator."""
+"""Built-in typed tools. Each declares permissions, availability check, and an independent validator."""
 import functools
 import gzip
 import os
@@ -1659,7 +1659,14 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
     threading.Thread(target=inputs, daemon=True).start()
     if sys.platform == "win32":                                  # mirror the operator's own pad to the controller glyph
         from . import padstate
-        padstate.CHORD[sid] = lambda: autoplay_chord(sid, ctx)    # hold Select/View + press A: autoplay on/off
+        from . import pso_quick
+        from .pso_controls import is_pso as _is_pso
+        if _is_pso(SESSIONS[sid][1]):
+            # PSO: Select + L1 + R1 randomizes the character's equipment while playing (pso_quick.chord_action).
+            padstate.set_chord(sid, {"select", "l", "r"})
+            padstate.CHORD[sid] = lambda: pso_quick.chord_action(sid, ad, ctx)
+        else:
+            padstate.CHORD[sid] = lambda: autoplay_chord(sid, ctx)   # hold Select/View + press A: autoplay on/off
         padstate.ANCHOR[sid] = lambda at: _save_anchor(sid, ad, ctx, at)  # replay waits for these screens
         threading.Thread(target=padstate.watch_xinput, args=(server, headers, sid, lambda: sid in SESSIONS), daemon=True).start()
     with httpx.Client(base_url=server, headers=headers, timeout=10) as c:
@@ -3160,7 +3167,7 @@ def _telemetry_blocks(live: dict) -> dict:
     return out
 
 
-def _telemetry(run, ctx, title: str = "") -> None:
+def _telemetry(run, ctx, title: str = "", game=None) -> None:
     """While the run plays, post what it is doing every 5 s (mode, mission, live stats) for the watch panel."""
     if ctx is None:
         return
@@ -3199,7 +3206,7 @@ def _telemetry(run, ctx, title: str = "") -> None:
         threading.Thread(target=interventions.worker_loop, daemon=True, name=f"interventions-{run['sid']}",
                          args=(run["sid"], ctx.server, _ap_headers(ctx), ad, lambda: run.get("live"),
                                lambda: not run.get("reaped") and not run.get("reloading") and
-                               run.get("thread") is not None and run["thread"].is_alive())).start()
+                               run.get("thread") is not None and run["thread"].is_alive(), game)).start()
 
 
 def _ended(run):
@@ -3519,7 +3526,7 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
     _black_watch(run, d, ad)                                   # only black on screen: get the game back
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
-    _telemetry(run, ctx, (g or {}).get("title") or "")
+    _telemetry(run, ctx, (g or {}).get("title") or "", g)
     return {"started": run["mission"], "mode": "playbook", "objective": (pb.__doc__ or name).strip().splitlines()[0]}
 
 
@@ -3661,7 +3668,7 @@ def _prepare_round(inp: AutoplayIn, ctx: Ctx) -> dict:
     _takeover(run, d, sid, since)                                # the player's pad ends the walk (took_over: no pause)
     run["thread"] = threading.Thread(target=go, daemon=True, name=f"autoplay-prepare-{sid}")
     run["thread"].start()
-    _telemetry(run, ctx, (g or {}).get("title") or "")
+    _telemetry(run, ctx, (g or {}).get("title") or "", g)
     run["thread"].join(PREPARE_WAIT_S)
     return {"started": run["mission"], "mode": "prepare", **rp.snapshot(),
             **({"selection": dict(inp.selection)} if inp.selection else {})}
@@ -3955,7 +3962,7 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
     _black_watch(run, d, ad)                                   # only black on screen: get the game back
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
-    _telemetry(run, ctx, g.get("title") or "")
+    _telemetry(run, ctx, g.get("title") or "", g)
     return {"started": run["mission"], "mode": inp.mode, "objective": objective}
 
 

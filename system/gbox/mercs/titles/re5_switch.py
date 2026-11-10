@@ -47,6 +47,7 @@ from . import re5_switch_aim, re5_switch_prompt
 from . import re5_specials                 # the characters' special moves in play (stun -> finisher, Wesker's dash)
 from .. import qte                         # universal QTE handling: the vision grab-fallback when the RAM read tears
 from .. import threat_memory               # who hurt him and what they did first, learned per class (THREAT_FILE)
+from ..core import combat                  # the universal fight (UNIVERSAL_CORE): at import, for the hot reload
 
 TITLE_ID = "010018100CD46000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/010018100CD46000-ram.json
@@ -59,6 +60,9 @@ MAIN_GAMESYS = 0x584E0
 GS_PHASE, GS_TIMER, GS_START, GS_KILLS = 0x944, 0x948, 0x94C, 0x96C
 GS_COMBO_ON, GS_COMBO, GS_MAX_COMBO, GS_COMBO_T, GS_SCORE = 0x970, 0x974, 0x978, 0x97C, 0x990
 PHASE_INTRO, PHASE_PLAYING, PHASE_OVER = 0, 1, 3
+# The grenade ring's auto-deploy rule (gbox.mercs.grenade_ring): settable from the PiP's bot-logic sidebar. RING off
+# never fires it; RING_N is the crowd inside a few metres that counts as surrounded; RING_EVERY_S is the cooldown.
+RING, RING_N, RING_EVERY_S, RING_KIND = True, 4, 20.0, "flash"
 # The results' rank (static analysis of main, 2026-11-09; gbox/mercs/ss_ledger.py RANKS): the round's end walks the
 # score down a threshold row of main+0x17C1B7C - the third row (SS 400,000 ... C 30,000) when +0xA76 (No Mercy) is set
 # - and stores the rank index at +0x994 (0 SS, 1 S, 2 A, 3 B, 4 C, 5 D) and the exchange points at +0x998. Read at the
@@ -491,17 +495,21 @@ HEAD_H, HEAD_R, KNEE_H, SHOULDER_H, BODY_R, CHEST_H = 160.0, 22.0, 45.0, 145.0, 
 # front of him at air"): every aim height and hit test took a Majini's standing body (chest 110 cm), so a crawler at
 # his feet was aimed 80 cm over its back and a dot on it did not count. A class in LOW_BODIES is aimed at and
 # hit-tested with its own heights above its feet (cm): head, chest (the aim), knee..shoulder (the body), radius.
-from collections import namedtuple as _namedtuple
-Body = _namedtuple("Body", "head chest knee shoulder r")
+# The bodies are the universal core's (gbox.mercs.core.combat.KIND_BODIES: a crawler is a crawler and a dog a dog in
+# every title; RE5's measures are where those kinds came from), so a body measured here aims RE4 and RE6 too.
+Body = combat.Body                       # (head chest knee shoulder r), the same fields as before
 HUMAN = Body(HEAD_H, CHEST_H, KNEE_H, SHOULDER_H, BODY_R)
 LOW_BODIES = {
-    "uEm32": Body(45.0, 30.0, 0.0, 55.0, 60.0),   # the Experimental Facility's crawlers (27 cm at the bind pose)
-    "uEm0b": Body(75.0, 55.0, 15.0, 80.0, 50.0),  # the dogs (86 cm, four legs)
+    "uEm32": combat.KIND_BODIES["crawler"],   # the Experimental Facility's crawlers (27 cm at the bind pose)
+    "uEm0b": combat.KIND_BODIES["dog"],       # the dogs (86 cm, four legs)
 }
 
 
 def body(e) -> Body:
-    """The body profile of this enemy's class (LOW_BODIES), else a standing Majini's."""
+    """The body profile of this enemy's class (LOW_BODIES; through combat.BodyTable with UNIVERSAL_CORE), else a
+    standing Majini's."""
+    if UNIVERSAL_CORE:
+        return combat.BodyTable(default=HUMAN, classes=LOW_BODIES).body(e)
     return LOW_BODIES.get((e or {}).get("class"), HUMAN)
 FIRE_SLACK = 60.0                        # a ray ending this much short of him ends on something in front of him
 STEER_RAY_CM = 50.0                      # a shorter ray (the dot at the muzzle) carries too little direction to steer by
@@ -812,6 +820,62 @@ WINDUP_COUNTERS = ("windup_seen", "windup_interrupts", "hits_after_windup", "win
 THREAT_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re5-switch-threats.json"
 LETHAL_KEEP_X, LETHAL_BACKOFF_MAX_S, GRUDGE_R = 1.15, 1.8, 1000.0
 TM_COUNTERS = ("lethal_backoffs", "grudge_picks", "tm_hits_attributed", "tm_hits_unattributed", "tm_lethal_starts")
+# The universal core (gbox.mercs.core.combat; the operator 2026-11-10: "the same aimbot I am critiquing in RE4 to
+# improve across 5 and 6"). RE5 is where most of the shared fight came from (the body profiles, threat memory, the
+# stalled-aim reposition of re5_switch_aim.keep_active); with UNIVERSAL_CORE on it takes what it lacked:
+#   * the not-in-control detector (combat.NotInControl, FROZEN): RE4's fix for the intro card that took 620 shots -
+#     FROZEN_FIRE_SHOTS pulls (or FROZEN_TRIGGER_S of the trigger held) over FROZEN_FIRE_S, unmoved (his position, his
+#     heading, the aim's pitch and the laser's line all still), with no hit, no Majini's health falling and no kill:
+#     A every FROZEN_TAP_S, a spell at most FROZEN_PAGE_MAX_S, never with a Majini within FROZEN_CLEAR_R (a grab is
+#     the held branch's);
+#   * bosses and dangerous foes first (combat.identity_tier: gbox.mercs.enemy_identity once it lands, beside the
+#     doctrine's BOSS_HP_MIN): after the lit dynamite and the wind-ups, before the grudge, never at the cost of one at
+#     arm's length (GRAB_THREAT_R) - _tier_pick in _choose;
+#   * the bodies through the shared table (body() above: combat.BodyTable, the same rows).
+# Off: as before (the rollback).
+UNIVERSAL_CORE = True
+FROZEN, FROZEN_KEY, FROZEN_FIRE_S, FROZEN_FIRE_SHOTS, FROZEN_TRIGGER_S = True, "a", 5.0, 8, 4.0
+FROZEN_CM, FROZEN_RAD, FROZEN_TAP_S, FROZEN_PAGE_MAX_S, FROZEN_CLEAR_R = 3.0, 0.01, 0.2, 4.0, 150.0
+# The throw (combat.ThrowPolicy, THROWS; the operator 2026-11-10: grenades at the enemies all the time, also while he
+# flees): a hand / incendiary grenade at a pack (THROW_PACK_N within the crowd's radius, re5_weapons.CROWD_AIM_R) whose
+# centre lies outside the grenade's own blast (re5_weapons MASTERY "thrown" blast_cm + THROW_BLAST_PAD) and inside its
+# reach, or at a boss / dangerous one; a flash at a wind-up or a grab within THROW_FLASH_R; at most every THROW_GAP_S,
+# his escape run or not (a throw back at the pursuers). Only the title's own path: the grenade's D-pad slot (QUICK,
+# made the native attach by _native_equipment - no item screen), _mastery's throw controller (the crowd's centre, the
+# arc, the blast standoff, ZL + ZR), then _gun_back (the gun's slot). No new memory write: infinite grenades are the
+# infinite_ammo mod's (every gun and grenade); the throw plays at the game's own speed (no grenade motion is scaled -
+# re5_weapons.RATE_MOTIONS knows none). Stats grenade_throws, grenade_kills, throws_while_fleeing, throw_aborts.
+THROWS = True
+THROW_GAP_S, THROW_PACK_N, THROW_FLASH_R, THROW_BLAST_PAD = 5.0, 3, 400.0, 100.0
+THROW_EQUIP_S, THROW_MAX_S, THROW_SETTLE_S = 2.0, 3.0, 0.5
+THROW_ITEMS = {"hand": 0x06, "fire": 0x07, "flash": 0x08}    # WP06 / WP07 / WP08 (THROWN)
+
+
+def combat_profile() -> combat.TitleProfile:
+    """RE5 Switch's calibration of the universal fight, from the live constants (a knob turned is in the next one)."""
+    from ..core import doctrine as _d
+    from . import re5_weapons as _w
+    thrown = _w.MASTERY["thrown"]
+    return combat.TitleProfile(
+        throw_kinds=tuple(THROW_ITEMS) if THROWS else (), throw_gap_s=THROW_GAP_S, pack_n=THROW_PACK_N,
+        pack_r_cm=_w.CROWD_AIM_R, throw_min_cm=thrown.blast_cm + THROW_BLAST_PAD, throw_max_cm=thrown.max_cm,
+        flash_r_cm=THROW_FLASH_R,
+        title="re5_switch", title_id=TITLE_ID, units_per_cm=1.0, aim_model="laser_ray",
+        sticks="Type D: the right stick turns the body fast (gun down) and moves the aim slowly (gun up, ~36-42 deg/s); "
+               "ZL raise, ZR held (the game repeats it); the RAM aim lock where it holds",
+        aim_btn="zl", fire_btn="zr", turn_sign=1, raise_s=READY_S, raise_tol=BODY_AIM_TOL, fire_tol_min=AIM_TOL,
+        engage_cm=ENGAGE_R, level_dy_cm=LEVEL_DY, max_dy_cm=MAX_DY,
+        bodies=combat.BodyTable(default=HUMAN, classes=LOW_BODIES), head_r_cm=HEAD_R, fire_slack_cm=FIRE_SLACK,
+        specials=("character_specials", "quick_turn", "dynamite", "mines", "rampage", "flash"),
+        threat_file=THREAT_FILE, windup_r_cm=WINDUP_R, grudge_r_cm=GRUDGE_R, lethal_keep_x=LETHAL_KEEP_X,
+        lethal_backoff_max_s=LETHAL_BACKOFF_MAX_S,
+        attacking=lambda e: bool((e.get("act") or 0) & E_ATTACKING),
+        windup=lambda e: e.get("motion") in WINDUP_MOTIONS or bool((e.get("act") or 0) & E_ATTACKING),
+        turn_w=1.0, level_w=LEVEL_COST, keep_x=KEEP_TARGET, grab_r_cm=GRAB_THREAT_R,
+        tier=combat.identity_tier(TITLE_ID, fallback=combat.hp_tier(boss_hp=_d.BOSS_HP_MIN)),
+        page_key=FROZEN_KEY, frozen_cm=FROZEN_CM, frozen_rad=FROZEN_RAD, no_effect_s=FROZEN_FIRE_S,
+        no_effect_shots=FROZEN_FIRE_SHOTS, no_effect_trigger_s=FROZEN_TRIGGER_S, page_tap_s=FROZEN_TAP_S,
+        page_max_s=FROZEN_PAGE_MAX_S, page_clear_cm=FROZEN_CLEAR_R)
 # Dynamite Majini (operator: "dynamite Majini - see them, keep away, shoot the dynamite"). A Majini carrying a lit
 # stick of dynamite is a threat of its own: the fuse is already burning, so the blast is coming whether or not his
 # own attack flag is up. Three behaviors, in the wind-up's pattern:
@@ -3670,6 +3734,150 @@ class Bot:
         flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         return any(abs(e["pos"][1] - py) <= LEVEL_DY and flat(e) <= HOLD_R for e in live)
 
+    # --- the universal core (UNIVERSAL_CORE: gbox.mercs.core.combat) ------------------------------------------------
+    def _core_error(self, exc) -> None:
+        self.stats["universal_core_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        self.stats["universal_core_errors"] = self.stats.get("universal_core_errors", 0) + 1
+
+    def _tier_pick(self, p, live, cur, now):
+        """The universal scorer's boss / dangerous band over these (combat.priority with combat_profile().tier): a boss
+        or a dangerous Majini in reach on his level is the next target - unless another stands at arm's length
+        (GRAB_THREAT_R): then that one. None: RE5's own choice goes on (the dynamite and the wind-ups came first)."""
+        try:
+            prof = combat_profile()
+            cands = combat.candidates(prof, p, live)
+            for c in cands:
+                c["windup"], c["grudge"] = False, 0          # (the wind-ups are _windup_tick's, the grudge comes next)
+            got = combat.priority(prof, cands)
+        except Exception as exc:                             # noqa: BLE001 - the core never costs the choice
+            self._core_error(exc)
+            return None
+        if got is None:
+            return None
+        c, kind, why = got
+        e = c["e"]
+        if e is not cur:
+            self.stats[kind + "_picks"] = self.stats.get(kind + "_picks", 0) + 1
+            self.target_at = now
+        self.stats["core_pick"] = f"{kind}: {why}"[:160]
+        self._set_target(e.get("ptr", e.get("slot")), now)
+        return e
+
+    def _throw_core(self, p, snap, live, flat, now) -> dict | None:
+        """THROWS above: this tick's step of a grenade throw (combat.ThrowPolicy decides; the title's own path does it):
+        equip (the grenade's D-pad slot, the native attach), throw (_mastery's controller with the grenade in hand),
+        the follow-through (THROW_SETTLE_S), then None - and _gun_back puts the gun back. None: no throw now."""
+        d = self.__dict__
+        pol = d.get("_uc_throws")
+        if pol is None:
+            pol = d["_uc_throws"] = combat.ThrowPolicy(self.stats)
+        try:
+            prof = combat_profile()
+            pol.observe(prof, now, snap.get("kills"))
+            inv = snap.get("inventory") or ()
+            held = next((s for s in inv if s.get("hand")), None)
+            st = d.get("_uc_throw")
+            fleeing = self.escape is not None and now < self.escape[1]
+            if st is None:
+                if (self.mines is not None and self.mines.state != "idle") or self.stats.get("operator_control") \
+                        or snap.get("mercenaries_phase") not in (None, PHASE_PLAYING):
+                    return None
+                infinite = getattr(self, "_infinite_ammo", False) is True
+                rows = {}
+                for kind, item in THROW_ITEMS.items():
+                    row = next((s for s in inv if s.get("type") == 1 and s.get("item") == item
+                                and (infinite or (s.get("rounds") or 0) > 0)), None)
+                    if row is not None:
+                        rows[kind] = row
+                plan = pol.decide(prof, now, p, live, set(rows), fleeing=fleeing)
+                if plan is None:
+                    return None
+                row = rows[plan.kind]
+                pol.started(now)
+                st = d["_uc_throw"] = {"plan": plan, "item": row["item"], "grid": row.get("grid"), "id": row.get("id"),
+                                       "phase": "equip", "since": now, "tap_at": -1e9, "shots0": None}
+            plan = st["plan"]
+            if st["phase"] == "equip":
+                if held is not None and held.get("item") == st["item"]:
+                    st.update(phase="throw", since=now, shots0=self.stats.get("shots", 0) or 0)
+                elif now - st["since"] > THROW_EQUIP_S:
+                    return self._throw_abort("the grenade never came to hand")
+                else:
+                    self._gun_down()
+                    self.doing, self.why = "rearm", f"a {plan.kind} grenade to hand: {plan.why}"
+                    if st["grid"] in QUICK:
+                        if now - st["tap_at"] >= GUN_BACK_GAP_S:
+                            st["tap_at"] = now
+                            return {"tap": QUICK[st["grid"]]}
+                        return {"hold": ()}
+                    if self.native_equip is not None and st["id"] is not None:
+                        self.native_equip.select(st["grid"], st["id"])
+                        return {"hold": ()}
+                    return self._throw_abort("the grenade on no D-pad slot and no native attach")
+            if st["phase"] == "throw":
+                shots = self.stats.get("shots", 0) or 0
+                if shots > st["shots0"] or held is None or held.get("item") != st["item"]:
+                    if shots <= st["shots0"]:
+                        return self._throw_abort("the grenade left his hand without a throw")
+                    pol.thrown(now, plan.fleeing, snap.get("kills"))
+                    st.update(phase="settle", since=now)
+                elif now - st["since"] > THROW_MAX_S:
+                    return self._throw_abort("no throw within THROW_MAX_S")
+                else:
+                    key = plan.target.get("ptr", plan.target.get("slot"))
+                    tgt = next((e for e in live if e.get("ptr", e.get("slot")) == key), None) \
+                        or min(live, key=flat, default=None)
+                    act = self._mastery(p, live, flat, tgt, snap, now) if tgt is not None else None
+                    if act is None:
+                        return self._throw_abort("no one left to throw at")
+                    self.why = f"grenade ({plan.why}): {self.why}"
+                    return act
+            if st["phase"] == "settle":
+                if now - st["since"] < THROW_SETTLE_S:
+                    self._wm_release(now)
+                    self.doing, self.why = "rearm", f"the {plan.kind} grenade thrown: the follow-through"
+                    return {"hold": ()}
+                d["_uc_throw"] = None                         # done: _gun_back brings the gun back
+                return None
+        except Exception as exc:                             # noqa: BLE001 - the core never costs the tick
+            self._core_error(exc)
+            d["_uc_throw"] = None
+        return None
+
+    def _throw_abort(self, why: str):
+        self.__dict__["_uc_throw"] = None
+        self.stats["throw_aborts"] = self.stats.get("throw_aborts", 0) + 1
+        self.stats["throw_abort_last"] = why[:120]
+        return None
+
+    def _frozen_core(self, p, snap, near, now) -> dict | None:
+        """combat.NotInControl (FROZEN above): A every FROZEN_TAP_S while his shots do nothing and nothing moves him."""
+        d = self.__dict__
+        try:
+            nic = d.get("_uc_nic")
+            if nic is None:
+                nic = d["_uc_nic"] = combat.NotInControl(self.stats, prefix="frozen")
+            hits = self.stats.get("hits", 0) or 0
+            last = d.get("_uc_hits")
+            if last is None or hits > last[0]:
+                last = d["_uc_hits"] = (hits, now if last is not None else -1e9)   # (a scored hit: an effect)
+            lz = snap.get("laser") or {}
+            ray = (heading(lz["at"][0] - lz["from"][0], lz["at"][2] - lz["from"][2])
+                   if lz.get("up") and lz.get("from") and lz.get("at") else None)
+            page = nic.check(combat_profile(), now, p["pos"], (p.get("rot"), p.get("aim_pitch"), ray),
+                             shots=self.stats.get("shots", 0) or 0, last_hit_at=last[1],
+                             trigger_s=self.stats.get("trigger_s") or 0.0, enemies=snap.get("enemies") or (),
+                             kills=snap.get("kills"), nearest_cm=near)
+        except Exception as exc:                             # noqa: BLE001 - the core never costs the tick
+            self._core_error(exc)
+            return None
+        if page is None:
+            return None
+        self._gun_down()
+        self.doing, self.why = "prompt", (f"not in control ({page.cause}: his shots do nothing and nothing moves him): "
+                                          f"{FROZEN_KEY}")
+        return {"tap": page.tap} if page.tap else {"hold": ()}
+
     def _choose(self, p, live, now):
         """The Majini to fight. A target this close is not flipped to one behind him (the rear target's flip): one this
         near behind is the quick turn's / the turn's, not the aim's. One he can shoot without turning (inside raise_tol,
@@ -3709,6 +3917,10 @@ class Bot:
                 self.target_at = now
             self._set_target(wu.get("ptr", wu.get("slot")), now)
             return wu
+        if UNIVERSAL_CORE:
+            tiered = self._tier_pick(p, live, cur, now)      # a boss / dangerous one in reach (never one at arm's length
+            if tiered is not None:                           # left for him)
+                return tiered
         gr = self._grudge_e
         if gr is not None and any(e is gr for e in live):   # the one that hurt him this round: resolved next
             if gr is not cur:
@@ -5820,6 +6032,10 @@ class Bot:
             self.doing, self.why = "reload", "the gun reloads"
             self.aim_since = now                             # reloading: the gun comes back up by itself
             return {"hold": ("zl",)}
+        if UNIVERSAL_CORE and FROZEN:
+            paged = self._frozen_core(p, snap, near, now)   # his shots do nothing and nothing moves him: A
+            if paged is not None:
+                return paged
         if self.mines is not None:
             if snap.get("mine_settings"):
                 self.mines.configure(snap["mine_settings"])      # the operator's `mines` op (re5_switch_mods.mines)
@@ -5846,8 +6062,10 @@ class Bot:
                 self.doing, self.why = "mine", str(self.stats.get("mine_status") or "")
                 act = self._mine_route(p, act, now)
             else:
-                act = self._escape(p, live, flat, now)
-                if act is not None:
+                throwing = UNIVERSAL_CORE and THROWS and (act := self._throw_core(p, snap, live, flat, now)) is not None
+                if throwing:
+                    pass                                     # a grenade at the pack (its own doing / why), escape or not
+                elif (act := self._escape(p, live, flat, now)) is not None:
                     self.doing, self.why = "escape", f"{self.round_escapes} this round"
                 elif (act := self._gun_back(snap, now)) is not None:
                     self._gun_down()
@@ -5856,7 +6074,7 @@ class Bot:
                     act = self._fight(live, snap, now)
                 else:
                     act = self._decide(p, live, flat, near_e, near, snap, now)
-                if self._windup_e is not None:
+                if self._windup_e is not None and not throwing:
                     # a Majini winding up within reach (its lunge lands WINDUP_HIT_S later): the shot keeps flying at the air.
                     # The trigger releases, the wind-up is the target, and the next tick's fight re-fires on it.
                     if self.fire_down:

@@ -1,9 +1,9 @@
 """RE4 (Switch) Mercenaries playbook: get to a round from the screen, start it, fight it from RAM, report its end.
 
-This title has a verified **round entry** - three A presses once the stage draws - and a frame classifier for its menus
-(`re4_switch_screens`). The round itself is read from RAM by the driver (`re4_switch.snapshot`): the round clock is
-found live by `re4_switch.ClockFinder` (a float in the module's bss that falls by the wall time), and the player and the
-Ganados come from the unit census once their class and offsets are measured (`re4_switch.PLAYER_CLASS` / `U_POS`).
+This title has a frame classifier for its menus (`re4_switch_screens`). The round itself is read from RAM by the driver
+(`re4_switch.snapshot`): the game's own state and its HUD clock (`re4_switch.game_state`, the CountDown; ClockFinder's
+search only when that cannot be read), the player and the Ganados from the unit census (`re4_switch.PLAYER_CLASS` /
+`U_POS`).
 
 What it does, and what it says it does:
 
@@ -14,11 +14,24 @@ What it does, and what it says it does:
 * in a round without the player in RAM: the blunt frame-only cadence (advance, sweep the aim, fire) - `stats["fight"]`
   says which one ran;
 * at the round's end it posts a MercMode round boundary (`round_boundary`, tools._start_playbook) with a RAM witness:
-  the clock read 0 after it was seen counting (results), or the player's health read 0 (death). Nothing is claimed from
+  the game's results sequence after the round was seen live, or the clock read 0 after it was seen counting (results),
+  or the player's health read 0 (death). Nothing is claimed from
   the frame alone: without the clock the round ends by MercMode's no-progress cut, and `stats` says why.
 
-The one thing it must get right is not mistaking a menu for a round: the classifier is the same one the driver uses, and
-`unknown` only counts as in-round after a stage screen has been seen (`re4_switch`'s own rule).
+The one thing it must get right is where the game is. With the session's RAM (always, on Citron) that comes from the
+game's own state (`re4_switch.game_state`: the Mercenaries scenario task's intro / round / results runs, pG's event,
+suspend, death-camera and case flags, the pad mask, and the HUD's CountDown): a round is live only while the game says
+the player is in control and its clock runs, the intro card is paged with A by the Bot until it is, and the telemetry's
+`screen`, the tactical map and MercMode's now_playing say the same phase. The frame classifier stays the menus' reader and
+the cross-check: a disagreement (RAM says X, the frame says Y) is logged to STATE_LOG. A named reference menu (title,
+the menus, the selects) or the death screen still wins over a RAM round that is not live (stale fields after a reset).
+Without RAM the old frame rules run: `unknown` only counts as in-round after a stage screen has been seen, after
+UNKNOWN_ROUND_S (the fallback's guess, never used while the game's state can be read).
+
+2026-11-10 (Krauser on Waterworld, live): the intro card "Eliminate as many Ganados ..." held the round for minutes
+while the runner took the unnamed picture for the round after 6 s, the Bot fired at the Ganados the round had already
+placed in RAM ("crowd fire", 620 shots, 0 hits) and the map's clock was a matrix float ClockFinder had picked. The same
+intro read as "playing" on the frame (the HUD test fires on Waterworld's horizon) and the Bot fired during it again.
 """
 import json
 import time
@@ -46,7 +59,17 @@ IDLE_TICKS_BEFORE_ACTION = 2
 CURSOR_PROGRESS_MAX = 12
 MENU_POLL_S = 0.05                      # the menus are read this often (re4_switch.Pace, learned per screen, says
                                         # when a press may go in; 0.2 until 2026-11-10: "never ... slowly")
-UNKNOWN_ROUND_S = 6.0                   # after a stage pick, an unnamed picture this long is the round (no black, no HUD)
+UNKNOWN_ROUND_S = 6.0                   # WITHOUT RAM only: after a stage pick, an unnamed picture this long is taken for
+                                        # the round (no black, no HUD); with the game's state read nothing is guessed
+# Frames that cannot say whether a round runs (a gameplay picture has no reference; the HUD test also fires on the intro
+# and on Waterworld's horizon; the reader's round_intro is a guess from the load's black): the game's state decides
+FRAME_UNSURE = (None, "unknown", "playing", "loading", "round_intro", "menu")
+# Named, measured screens that win over a RAM round that is not live (the fields can be stale after a reset)
+FRAME_MENUS = ("title", "main_menu", "extras_menu", "mercs_title", "select_player", "select_stage", "dead_continue",
+               "story", "story_prompt")
+STATE_LOG = driver.WALK_LOG.with_name("re4-state-disagreements.jsonl")
+STATE_LOG_EVERY_S = 5.0                 # one row per (RAM phase, frame screen) pair at most this often
+ROUND_END_TICKS = 3                     # the game's state reads no round this many ticks in a row: the round is over
 FIGHT_TICK_S = 0.05                     # the RAM fight's loop
 FRAME_EVERY = 5                         # ... which classifies a frame every this many ticks (the menus coming back)
 TALLY_S = 1.0                           # the clock at 0 this long: the round is over (its results are up)
@@ -140,9 +163,17 @@ class Round:
         self.zero_since = None
         self.player_seen = False
         self.hud_seen = False
+        self.live_seen = False                  # the game said in control with its clock running (game_state)
+        self.phases: list = []                  # the game's phases in the order seen
         self.posted = None
 
     def observe(self, snap: dict, now: float) -> None:
+        game = snap.get("game")
+        if isinstance(game, dict):
+            if not self.phases or self.phases[-1] != game.get("phase"):
+                self.phases.append(game.get("phase"))
+            if game.get("in_control") and game.get("clock_running"):
+                self.live_seen = True
         timer = snap.get("timer")
         if isinstance(timer, (int, float)) and not isinstance(timer, bool):
             if self.last_timer is not None and 0 < timer < self.last_timer:
@@ -170,8 +201,16 @@ class Round:
         if self.posted is not None:
             return None
         p = snap.get("player") or {}
+        game = snap.get("game")
+        if isinstance(game, dict) and self.live_seen and game.get("phase") == "results":
+            # the game's own results sequence (MercSysResultMove) after a round seen live: the clock ran out
+            return {"screen": "results", "tally_ready": True, "timer": 0, "state_source": "ram",
+                    "clock_left": game.get("clock"), "phases": list(self.phases)}
         if self.player_seen and p.get("hp") is not None and p["hp"] <= 0:
-            return {"screen": "dead", "hp": p["hp"]}
+            out = {"screen": "dead", "hp": p["hp"]}
+            if isinstance(game, dict):
+                out.update(state_source="ram", death_camera=game.get("phase") == "dead", phases=list(self.phases))
+            return out
         if self.clock_ran_out(now):
             return {"screen": "results", "tally_ready": True, "timer": 0, "clock_high": round(self.high[0], 2)}
         return None
@@ -236,13 +275,16 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                                                     # a back press), the stat that tells a walk loop on the live panel
 
     screen = {"where": None}
+    last_phase, off_round = None, 0
+    checker = CrossCheck(stats, clock)
     while not stopped():
         if max_seconds is not None and clock() - started > max_seconds:
             break
         ticks += 1
         # the RAM fight reads the frame every FRAME_EVERY ticks only (the round's own state is in RAM; the frame is
         # there to see the menus come back), everything else every tick
-        if not (in_round and stats.get("fight") == "ram" and ticks % FRAME_EVERY):
+        fresh = not (in_round and stats.get("fight") == "ram" and ticks % FRAME_EVERY)
+        if fresh:
             try:
                 frame = ad.get_frame()
             except Exception:                                # noqa: BLE001 - a missing frame is not a screen
@@ -250,7 +292,54 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                 continue
             screen = reader.read(frame)
         where = screen.get("where")
-        stats["screen"] = where
+        # --- where the game is, from its own state (re4_switch.game_state), the frame as the cross-check
+        gs = _game(m, stats) if m is not None else None
+        phase = gs.get("phase") if gs else None
+        live = bool(gs) and phase in ("playing", "grabbed") and bool(gs.get("clock_running"))
+        ram_round = bool(gs) and phase in driver.ROUND_PHASES and (live or where in FRAME_UNSURE)
+        if fresh:
+            checker.check(gs, where)
+        stats["frame_screen"], stats["state_source"] = where, "ram" if gs is not None else "frame"
+        if ram_round:
+            stats["screen"] = driver.PHASE_SCREEN.get(phase) or phase
+            if not in_round or (phase == "intro" and last_phase not in (None, "intro")):
+                # a round's scenario task runs (its intro, or a round already under way when the bot came in): the
+                # round starts here, and no entry press is guessed - the Bot pages the intro while the game says so
+                in_round, rnd = True, Round(clock())
+                stats["rounds"] += 1
+                stats["stage_seen"] = True
+                stats.setdefault("walk_s", round(clock() - started, 1))
+            last_phase = phase
+            last_action = clock()                            # a round is progress: the menus' stall clock waits
+            snap = _snapshot(m, stats)
+            if snap is not None:
+                snap.setdefault("game", gs)                  # (a snapshot whose own state read failed: this tick's)
+                last_snap = snap
+                _maintain_mods(ad, snap, stats)
+                if rnd is not None:
+                    rnd.observe(snap, clock())
+                    if live and where == "playing":
+                        rnd.hud_seen = True
+                    _report(rnd, snap, stats, clock(), round_boundary, keys)
+            if bot is not None and snap is not None:
+                stats["fight"] = "ram"
+                keys.apply(bot.tick(snap, now=clock()))
+                re4_walk.publish(pub, snap, bot, stats["screen"])
+            else:
+                keys.release()
+                re4_walk.publish(pub, None, None, stats["screen"])
+            off_round = 0
+            sleep(FIGHT_TICK_S)
+            continue
+        if in_round and gs is not None:
+            keys.release()                                   # the game says the round is over (or a menu is named):
+            off_round += 1                                   # ROUND_END_TICKS reads in a row end it (one torn read
+            if off_round >= ROUND_END_TICKS:                 # never splits a round in two)
+                in_round = False
+        last_phase = phase
+        if gs is not None and where in ("playing", "round_intro"):
+            where = "unknown"                                # no round runs: the HUD test or the reader's intro guess
+        stats["screen"] = where                              # is a load, a fade or the intro's camera, not play
         if where != "playing" or not in_round:
             re4_walk.publish(pub, None, None, where or "unknown")
         sig = (where, screen.get("cursor"), screen.get("moved"))
@@ -331,6 +420,13 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
         if not stats["stage_seen"] and where != "playing":
             sleep(0.4)
             continue                       # a screen nobody can classify before a stage: do not press into the dark
+        if gs is not None:
+            # the game's state is read and no round runs: an unnamed picture is the stage's load, a fade or a screen
+            # the reader does not know - never a round, however long it lasts, and nothing is pressed into it
+            unknown_since = None
+            stats["waits_no_round"] = stats.get("waits_no_round", 0) + 1
+            sleep(MENU_POLL_S)
+            continue
         unknown_since = (unknown_since or clock()) if where == "unknown" else None
         if not in_round and where == "unknown" \
                 and getattr(reader, "intro_presses", 0) < getattr(reader, "INTRO_MAX_PRESSES", 0) \
@@ -405,6 +501,74 @@ def _maintain_mods(ad, snap: dict, stats: dict) -> None:
         return
     for k, v in (done or {}).items():
         stats["mods_" + k] = stats.get("mods_" + k, 0) + v
+
+
+def _game(m, stats: dict) -> dict | None:
+    """The game's own state (re4_switch.game_state), or None when it cannot be read (then the frame rules run). Its
+    phase, control, clock and the game's own counters go to stats for the watch panel."""
+    try:
+        gs = driver.game_state(m)
+    except Exception as exc:                                 # noqa: BLE001 - a reader's error: the frame decides
+        stats["game_state_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        return None
+    if not isinstance(gs, dict):
+        stats["game_phase"] = None
+        return None
+    stats.update(game_phase=gs.get("phase"), in_control=gs.get("in_control"), game_clock=gs.get("clock"),
+                 clock_running=gs.get("clock_running"), game_step=gs.get("game_step"))
+    if gs.get("phase") in driver.ROUND_PHASES:
+        # the game's own counters (MercSysWk, measured live): MercMode's progress rule and now_playing read these
+        stats.update(kills=gs.get("kills"), score=gs.get("score"), combo=gs.get("combo"))
+    return gs
+
+
+class CrossCheck:
+    """The frame against the game's own state, every read: a disagreement (RAM says X, the frame says Y) is counted
+    (stats state_disagreements, last_disagreement) and logged to STATE_LOG, one row per pair every STATE_LOG_EVERY_S, so
+    the classifier and the state can be audited against each other."""
+
+    def __init__(self, stats: dict, clock):
+        self.stats, self.clock = stats, clock
+        self.logged: dict = {}
+
+    @staticmethod
+    def disagrees(gs: dict, where) -> str | None:
+        phase = gs.get("phase")
+        if where == "playing" and phase not in ("playing", "grabbed", "held", "case"):
+            return f"the frame reads the HUD, the game says {phase}"
+        if where in FRAME_MENUS and where != "dead_continue" and phase in driver.ROUND_PHASES:
+            return f"the frame names {where}, the game runs a round ({phase})"
+        if where == "dead_continue" and phase in ("playing", "grabbed", "intro"):
+            return f"the frame names the death screen, the game says {phase}"
+        if where == "loading" and phase in ("playing", "grabbed"):
+            return "a black frame while the game says in control"
+        if where == "round_intro" and phase not in ("intro", None):
+            return f"the reader guesses the intro, the game says {phase}"
+        return None
+
+    def check(self, gs, where) -> str | None:
+        if not isinstance(gs, dict):
+            return None
+        why = self.disagrees(gs, where)
+        if why is None:
+            return None
+        self.stats["state_disagreements"] = self.stats.get("state_disagreements", 0) + 1
+        now = self.clock()
+        pair = (gs.get("phase"), where)
+        if now - self.logged.get(pair, float("-inf")) < STATE_LOG_EVERY_S:
+            return why
+        self.logged[pair] = now
+        row = {"t": round(time.time(), 2), "ram": gs.get("phase"), "frame": where, "why": why,
+               "in_control": gs.get("in_control"), "clock": gs.get("clock"), "clock_running": gs.get("clock_running"),
+               "intro_step": gs.get("intro_step"), "flags": gs.get("flags")}
+        self.stats["last_disagreement"] = {k: row[k] for k in ("ram", "frame", "why")}
+        try:
+            STATE_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with STATE_LOG.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row) + chr(10))
+        except OSError:
+            pass
+        return why
 
 
 def _snapshot(m, stats: dict) -> dict | None:

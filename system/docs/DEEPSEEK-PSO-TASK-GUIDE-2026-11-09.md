@@ -9,7 +9,75 @@ then take the packages in order; each has an acceptance test.
 
 ---
 
-## 0c. PM note, 2026-11-10 ~09:00 UTC: PSO only, decryption and breakdown first (read this first; it replaces 0a and 0b)
+## 0d. PM note, 2026-11-10 ~10:20 UTC: the operator's three goals, how to work on the i9, full speed (read this first)
+
+The operator, 2026-11-10: "I want that game fully decrypted and able to be given this same treatment and have it
+decrypted enough that levels can be expanded and layouts changed in a custom editor and the character can be hot
+swapped with any of the models from the collection. I need it going full blast on that."
+
+"This same treatment" means what the Resident Evil titles have in MercMode: an autobot that plays, live mods, and
+the cast swapped with characters from gBox's character library.
+
+The three goals, each with a test the operator can see:
+
+1. **Decrypted and broken down.** This is §4 P2 (every disc format decoded, with byte-identical round trips) and P2b
+   (the executable mapped). "Decrypted" here mostly means decoded: PRS compression, the GSL / AFS / BML containers,
+   the NJ / XJ models, the XVM / GVM textures, the map files. Name anything that is genuinely encrypted or checksummed
+   (the save data, a network blob) and how it is keyed.
+2. **A custom level editor: layouts changed and levels expanded.**
+   - **P6a.** The map writer: the area's geometry and collision (`map_*_n.rel` / `c.rel`), the object and enemy sets
+     (`*.dat`), the events (`*.evt`), written back from an edited model with round-trip tests.
+   - **P6b.** The editor itself, as a page of the gBox desktop client following the live map's look (`system/clients`).
+     It shows a top-down view of an area's floor and walls from its collision. Objects, enemies, doors, switches and
+     teleporters are draggable markers that can be added and deleted. Its save writes the map files, builds the disc
+     and launches it in Dolphin on the i9.
+   - **P6c.** Expansion: rooms added by reusing the area's own room pieces (geometry and collision placed and joined),
+     with the bot's navigation graph (P3) rebuilt from the edited map.
+   - Accept on: an edited Forest 1 (objects moved, a room added) that boots, and that the bot walks through to the next
+     area.
+3. **Characters hot-swapped with any model from the collection.**
+   - **P7a.** A PSO player-model writer that retargets a library donor onto the PSO player skeleton: the same donors
+     and donor seam the RE5 cast writer uses (`gbox/re5_donor_pool.py`, `re5_cast_writer.py`, the character library
+     the extract jobs feed). Start with one class's body and a T-posed donor.
+   - **P7b.** The swap, in two steps:
+     - first per boot: a build with the donor in the class's model file;
+     - then hot: find where PSO keeps the loaded player model in RAM (P2b) and whether an area change reloads it from
+       disc. Then make "pick a donor in the gBox app; it appears at the next area load without restarting Dolphin"
+       work, by rewriting the loaded model or by switching the file the next load reads.
+   - Accept on: two different library donors played in one session, swapped without a Dolphin restart, with frames.
+
+**Working locally on the i9 (your machine).**
+- **Your checkout.** gBox's worker on the i9-NUC runs its own checkout, `C:\_tools\gBox`. Fast-forward it to
+  `origin/main` yourself (`git -C C:\_tools\gBox fetch` / `merge --ff-only`); nobody else can reach that disk. Work
+  in your own git worktree on a branch.
+- **Data.** PSO Episode I & II (GameCube) is in the gBox library. Its extracted files, your Ghidra project and all
+  builds and caches go on `D:`, never `C:`, never in git.
+- **Builds.** gBox already writes modified PSO builds that Dolphin boots (`pso_face_build`, the `extract_pso_*` jobs).
+  Reuse that build path for the editor's maps and the swapped models rather than inventing a new disc rebuilder.
+- **Play and test** in Dolphin through the i9 worker. The co-op bot and the ViGEm virtual pads are already there: one
+  pad per player, and presses land without window focus (`adapters.DolphinWinAdapter._setup_vpad`).
+- **Deploy-gated routes:** `x-gbox-actor: deploy` with `system/gbox-data/api_token`.
+  - Bot reload: `POST /api/workers/i9-NUC/bot-reload`.
+  - Fast-forward the worker's checkout: `POST /api/workers/i9-NUC/update-repo`, when it is registered.
+- **Known traps** (§2 and the memory of 11-03/04):
+  - only one gBox worker stack may run on the i9; two gamepad watchers fight the pad;
+  - `pso_survival` / `pso_master_build` / `pso_boss_strategy` / `pso_speed` reload only when `pso_coop` reloads;
+  - a dead autobot looks like a standing character: check telemetry `age_s` and `bot.running`.
+- Never stop a session whose launch actor is `operator`.
+
+**Full speed.**
+- Use the i9's cores, fast disk and GPUs for decoding, building and Ghidra.
+- Hermes is fully available: 28 lanes (lilspark2 plus the paid DeepSeek / Claude / Z.AI nodes, which work the
+  operator's priority list). For bulk, independent pieces (one format's decoder and round-trip tests, one area's file
+  catalogue, one boss's RAM fields), file Hermes tickets with an acceptance test and ask for them on the priority list.
+  Review what comes back before it goes on main.
+- Keep your own lane on the hard, serial parts: the executable map, the map writer, the editor, the model writer.
+
+**Order.** P2 + P2b together, then P1 (boot to the field by itself), then P6a / P7a as soon as their formats are
+decoded, then P6b / P7b, then P3-P5. A round doc entry per step in `docs/ds-pso-lane-2026-11-10.md`: what, the
+commits, the evidence, what is next.
+
+## 0c. PM note, 2026-11-10 ~09:00 UTC: PSO only, decryption and breakdown first (superseded by 0d where they differ)
 
 **RE6 is no longer yours, in any part.** Thank you for the handover (`HANDOVER-i9-re6-2026-11-10.md`). The RE session
 has taken it over on lilspark and it plays again:

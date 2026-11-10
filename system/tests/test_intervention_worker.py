@@ -99,3 +99,58 @@ def test_ammo_write_is_fenced_to_claimed_life_and_reports_readback(monkeypatch, 
     I.worker_loop('sid', 'http://fixture', {}, ad, lambda: {}, lambda: running[0])
     assert calls == ([True] if change == 'none' else [])
     assert results[0]['result']['state'] == ('confirmed' if change == 'none' else 'unavailable')
+
+
+def _claim_handler(captured, running):
+    import json
+
+    def handler(request):
+        body = json.loads(request.content)
+        if request.url.path.endswith('/claim'):
+            captured.append(body)
+            running[0] = False
+            return httpx.Response(200, json={'requests': []})
+        return httpx.Response(200, json={})
+    return handler
+
+
+def _run_worker(monkeypatch, ctl, game, error=None):
+    captured, running = [], [True]
+
+    def controller(_):
+        if error is not None:
+            raise error
+        return ctl
+    monkeypatch.setattr(I, 'native_controller', controller)
+    handler = _claim_handler(captured, running)
+    original = httpx.Client
+    monkeypatch.setattr(httpx, 'Client', lambda **kw: original(**kw, transport=httpx.MockTransport(handler)))
+    I.worker_loop('sid', 'http://fixture', {}, SimpleNamespace(), lambda: {}, lambda: running[0], game)
+    return captured[0]
+
+
+def test_a_title_without_a_native_controller_still_names_every_grenade_kind(monkeypatch):
+    body = _run_worker(monkeypatch, None, {'game_id': '270a15eb98dab4d7'},
+                       error=RuntimeError('re4_gc_native: not GameCube'))
+    assert body['capabilities'] == []
+    rows = {r['kind']: r for r in body['options']['grenade_kinds']}
+    assert set(rows) == {'flash', 'hand', 'incendiary'}
+    assert all(r['available'] is False for r in rows.values())
+    assert 'not built for RE4 Switch' in rows['flash']['reason']
+
+
+def test_the_worker_publishes_the_controller_rows_and_the_moment_s_reason(monkeypatch):
+    ctl = SimpleNamespace(pid=9, identity=(9, 1),
+                          ready=lambda: (_ for _ in ()).throw(RuntimeError('no living player in an active round')),
+                          grenade_ring=lambda kind: {'state': 'confirmed'},
+                          grenade_kinds=lambda: [{'kind': 'flash', 'available': True},
+                                                 {'kind': 'incendiary', 'available': False,
+                                                  'reason': 'incendiary refused'}])
+    body = _run_worker(monkeypatch, ctl, {'game_id': '115f9cdbba115432'})
+    assert body['capabilities'] == []                       # not ready: a click cannot queue
+    children = {r['kind']: r for r in body['options']['grenade_kinds']}
+    assert children['flash']['available'] is False
+    assert 'no living player' in children['flash']['reason']
+    assert children['hand']['available'] is False             # the title's own unverified reason survives
+    assert children['incendiary']['reason'] == 'incendiary refused'
+

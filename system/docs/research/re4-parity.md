@@ -23,7 +23,73 @@ Three kinds of statement are kept apart below: **measured** (run on the real fil
 | Overlays (not in Git) | `C:\_tools\gBox\.scratch-merc-recovery\assets\re4\re4-enemy-pool-01\`, `re4-cast-pool-01\`, `re4-stage-greybox-v1\`, each `romfs\bio4\...` + `receipt.json` |
 | Inputs (not in Git) | `.scratch-merc-recovery\re4\inputs\{em,etc,imagepackhd,st4}\` copied read-only from the host; the donor library `.scratch-merc-recovery\cast\inputs\library\` (1,483 entries) and its survey `cast\library-survey.json` (650 usable) |
 
-## 0b. Live results, 2026-11-10 05:05-06:25 UTC (newest; read first)
+## 0c. Every stage greyboxed, the donor atlases fixed (2026-11-10, branch `re4-greybox-all-stages`; nothing booted)
+
+Built and checked offline on lilspark (`~/gBox_alt/scratch/re4-greybox-all/`, branch code in `code/`, the share
+untouched), written through `switch_mods` (job API, actor agent):
+
+| build | what | files / bytes |
+|---|---|---|
+| `recovery-re4-remap-all-grey-20261110` | remap-all's nine packs byte for byte + its nine pool archives refinished (below) + the four stage greyboxes | 22 / 105,718,169 |
+| `recovery-re4-remap-all-20261110-blueprint` | `switch_mods op=blueprint` of remap-all with the four greyboxes: what MercMode's `blueprint_look` plays for the queue's RE4 entries (its pool atlases are still remap-all's) | 22 / 105,697,706 |
+
+**Stages** (`re4_stage_greybox.build_all`; `verify` passed on each; the Village scene entries are byte-identical to
+main's code on the Spark, and to v1 apart from label glyphs - Pillow 12.3 there, 13.0 on JAYBUILTFINALE):
+
+| stage | room / archive | rewritten (floor / wall / other / prop) | kept | bytes | sha256 |
+|---|---|---|---|---|---|
+| Village | r400 / `44000400` | 109 (26 / 56 / 11 / 16) | 25 | 7,689,879 | `3113528e3e21...` |
+| Castle | r402 / `44000402` | 62 (8 / 27 / 17 / 10) | 7 | 3,661,454 | `45d149a48d12...` |
+| Base | r403 / `44000403` | 55 (6 / 27 / 12 / 10) | 9 | 4,379,076 | `34633b63ee0f...` |
+| Waterworld | r404 / `44000404` | 39 (8 / 17 / 7 / 7) | 3 | 3,479,971 | `8dfbe9e4ba8f...` |
+
+New since v1: the room's objects. Slot 10 `ETM` of every room holds the doors, barrels (three skins each), crates,
+ladders and shutters as HD BINs each followed by its tables (22 / 12 / 13 / 11 BINs); their albedos (19 / 10 / 12 / 7
+entries, none shared with the scene, items or effects) are now the RE5 prop look, the orange checker labelled PROP.
+Kept native on purpose: `ITM` items, `EFF` effects, and the animated loose BIN slots (locks, the Village's impaled
+corpse, a bottle, the Base's gatling and its stand - rendered and looked at). The rotation order of tilted instances
+was measured (`Instance.matrix`): x-y-z stays. The CPU preview now culls back faces, so the Castle's backdrop shell no
+longer covers the stage; the previews are in `out-all2/previews/` on the Spark.
+
+**The enemy texture binding** (the i9 note's open item is RE6's MRL binding; for RE4 it was answered offline). The
+binding is as the writer assumes: every native BIN of the four Ganado packs has its own table in the next slot (no
+LOD or shared-table model draws a body's table), the body tables name entries the grown archives hold, and the
+appended DXT5 entries carry exactly the stock DXT5 header (flags, caps, pitch rule) on a 128-byte boundary. What was
+wrong is the pixels. Every stock body colour map is opaque (alpha 238-255 on all 48 body images), and RE4 draws a
+cut-out through a separate opacity map (material byte 14 on a GX I4 image, flag 4 or 7: em16 461/612/629, em1c
+523/531/545/626), never through the colour map's alpha. The donor material is plain, so the game draws every texel's
+colour - and `mtf_materials.build_atlas` leaves RGBA 0 (black) in 53-97% of each atlas and under every source
+cut-out. The remap-all donors sample such texels at up to 32.5% of their vertices (Golden Kane pistol 1 on em1d body
+579: hair and brow cards; Snake em16 476 4.3%, Kasumi em1c 543 4.3%, Proof 1.2%, HUcast 1.1%), and the box-filtered
+mips darken every chart edge with distance. The fix: `re4_switch_models.finish_atlas` bleeds the nearest opaque colour
+into every texel under alpha 128 and writes alpha 255 (the default of `build_class` and `cast_pool`;
+`--atlas-as-built` keeps the old bytes); `refinish_archive` / CLI `refinish` applies it to an already built overlay's
+appended entries (same size, format, mips and wrapper; stock entries untouched). The 19 atlases of the new build were
+made that way, so its packs are the bytes that already boot and fight. A rebuild of both pools on the Spark with the
+pinned donors reproduced 14 of the 18 published files; `em16.udas`, `pl0d.udas`, `00000016` and `0000001c` differ
+(numpy / Pillow on aarch64), which is why the refinish route was taken. `enemy_pool` and `cast_pool` now take
+`assignment` (`--assignment <receipt.json>`) to rebuild a pool with the same donors.
+
+**What a first boot of the grey build must show**: each stage in blue floor and grey wall grids with metre labels,
+doors / barrels / crates / ladders in orange PROP; fences and foliage still cut out; the dealt donors on the Ganados
+and on the player with no black patches and no dark outlines at 10-20 m. **The frame that decides cut-outs**: a Base
+round (em1d), close on the donor with hair cards (Golden Kane pistol 1, body 579), from
+`GET /api/sessions/<sid>/frame.jpg` on lilspark. Hair drawn as solid brown cards is this fix working as designed (the
+plain material ignores alpha); real strands need the opacity-map route (a second material with flag 4 and byte 14 on
+an I4 image). **Failure signs**: a hang at one stage's load (bisect by the four `4400040X` files), a photo left on a
+surface (a table this writer does not read), Ganados in stock cloth (the remap-all packs did not load).
+
+```bash
+cd ~/gBox_alt/scratch/re4-greybox-all; PY=~/gBox/system/.venv-linux-aarch64/bin/python; B=~/gBox_alt/switch/romfs/010099A00BC1E000/bio4
+PYTHONPATH=$PWD/code $PY -m gbox.re4_stage_greybox build-all $B --out out-all2
+PYTHONPATH=$PWD/code $PY -m gbox.re4_switch_models refinish --stock $B --out refinish \
+    --build ~/gBox_alt/gbox-cache/mods/270a15eb98dab4d7/recovery-re4-remap-all-20261110/romfs/bio4
+PYTHONPATH=$PWD/code $PY -m gbox.re4_switch_enemies pool --em $B/em --imagepack $B/imagepackhd --etc $B/etc \
+    --library ~/gBox_alt/gbox-cache/characters --survey library-survey.json --seed 20261109-01 \
+    --assignment enemy-pool-01.receipt.json --out enemy-fixed
+```
+
+## 0b. Live results, 2026-11-10 05:05-06:25 UTC
 
 | What | Result |
 |---|---|
@@ -403,7 +469,7 @@ overlays built with their receipts; `sonic-on-leon-v1` rebuilt to its published 
 tests. **Read-only on the host**: directory listings, file copies (274 MB), lilspark's MercMode settings from the
 store. **Inferred**: type byte -> body slot; the BIN -> TPL binding by equal image count; the instance's model index
 as HD-model file order; the rotation order; Ada's pack; the names J.J. / Garrador / dogs for the odd models.
-**Not done**: no boot; the character table in `main`; the greybox of r402-r404 (one command each); CPU previews of the
+**Not done**: no boot; the character table in `main`; the greybox of r402-r404 (done 2026-11-10, section 0c); CPU previews of the
 enemy and cast pools (the RE5 writers have them; the RE4 ones render only the greybox); publishing the overlays as
 artifacts and the `switch_mods` builds (the main session's queue does that); a second cast pool with the RE5 pools as
 history. **Where the format did not block**: nothing here stopped on an undecoded structure; regions A-C of the SMD

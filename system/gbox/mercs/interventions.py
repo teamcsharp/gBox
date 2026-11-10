@@ -218,6 +218,7 @@ class Queue:
 
 def install(app, store, auth):
     from fastapi import Depends, HTTPException
+    from . import grenade_status
     queue = Queue(store)
 
     def live(sid):
@@ -225,9 +226,30 @@ def install(app, store, auth):
         if not s or s.get("state") != "running":
             raise HTTPException(409, "session is not running")
 
+    def present(sid, out):
+        """The status a viewer sees, with the grenade kinds named even before a worker claims.
+
+        A title with no ring, or one whose worker has not connected yet, must still say what it can do per kind
+        ("the grenade ring is not built for RE4 Switch yet") instead of leaving the PiP's chooser with only a
+        generic "worker not connected". Read-only: nothing is stored, the worker's own rows always win.
+        """
+        if (out.get('options') or {}).get('grenade_kinds'):
+            return out
+        try:
+            rows = grenade_status.rows(store.get('session', sid) or {}, None)
+        except Exception:                                 # noqa: BLE001 - a status page never fails on the table
+            rows = None
+        if rows:
+            options = dict(out.get('options') or {})
+            options.setdefault('weapons', [])
+            options.setdefault('current_weapon', None)
+            options['grenade_kinds'] = rows
+            out['options'] = options
+        return out
+
     @app.get("/api/sessions/{sid}/interventions")
     def status(sid: str, actor=Depends(auth)):
-        return queue.status(sid)
+        return present(sid, queue.status(sid))
 
     @app.post("/api/sessions/{sid}/interventions")
     def post(sid: str, body: dict, actor=Depends(auth)):
@@ -322,15 +344,16 @@ def native_controller(ad):
     raise re6_switch_native.Unavailable("; ".join(dict.fromkeys(reasons)))
 
 
-def worker_loop(sid, server, headers, ad, stats_of, alive):
+def worker_loop(sid, server, headers, ad, stats_of, alive, game=None):
     """Independent of video/input/UI requests; serialized native mailbox owner."""
     with wake_on_post(sid) as event:
-        _worker_loop(sid, server, headers, ad, stats_of, alive, event)
+        _worker_loop(sid, server, headers, ad, stats_of, alive, event, game)
 
 
-def _worker_loop(sid, server, headers, ad, stats_of, alive, event):
+def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
     import httpx
     from .titles import re6_switch_native as N, re6_magnum_quick4 as Q
+    from . import grenade_status
     ctl, unsupported = None, ""
     try:
         ctl = native_controller(ad)
@@ -339,9 +362,24 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event):
 
     catalogue = {}
 
+    def kinds(full=True, reason=""):
+        """The three grenade kinds as this session can honestly fire them (see gbox.mercs.grenade_status).
+
+        Published with every claim, including when no native controller exists, so the PiP's menu says "not built
+        for this title" / "no living player" per kind instead of greying everything out with one reason."""
+        try:
+            return grenade_status.rows(game, ctl, reason)
+        except Exception:                                 # noqa: BLE001 - a status read never breaks the worker
+            return None
+
     def context(full=True):
         if ctl is None:
-            return {"epoch": "unsupported", "capabilities": [], "reason": unsupported}
+            out = {"epoch": "unsupported", "capabilities": [], "reason": unsupported}
+            if full:
+                rows = kinds(reason=unsupported)
+                if rows:
+                    out["options"] = {"weapons": [], "current_weapon": None, "grenade_kinds": rows}
+            return out
         try:
             prepare = getattr(ctl, "prepare", None)
             if full and prepare is not None:
@@ -359,13 +397,13 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event):
                 caps.append(Q.OP)
             current = getattr(ctl, 'current_weapon', None)
             ammo_status = getattr(ctl, 'ammo_status', None)
-            grenade_kinds = getattr(ctl, 'grenade_kinds', None)
             if catalogue.get('epoch') != epoch or time.monotonic() - catalogue.get('at', 0) >= 1:
                 catalogue.update(epoch=epoch, at=time.monotonic(),
                     options={'weapons': choices() if choices else [],
                              'current_weapon': current() if current else None})
-                if grenade_kinds:
-                    catalogue['options']['grenade_kinds'] = grenade_kinds()
+                rows = kinds()
+                if rows:
+                    catalogue['options']['grenade_kinds'] = rows
                 if ammo_status:
                     try:
                         catalogue['options']['infinite_ammo'] = ammo_status()
@@ -380,11 +418,14 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event):
                 caps.append('set_infinite_ammo')
             return {"epoch": epoch, "capabilities": caps,
                     "options": catalogue['options'], "reason": ""}
-        except (OSError, ValueError, RuntimeError) as exc:
-            return {"epoch": "unavailable", "capabilities": [], "reason": str(exc)[:300]}
+        except Exception as exc:                          # noqa: BLE001 - a status read answers, never dies
+            reason = str(exc)[:300]
+            return {"epoch": "unavailable", "capabilities": [], "reason": reason,
+                    **({'options': {'weapons': [], 'current_weapon': None, 'grenade_kinds': rows}}
+                       if full and (rows := kinds(reason=reason)) else {})}
 
     # Keep completion receipts across transient HTTP failures, never game calls.
-    receipts = []
+    receipts, faults = [], 0
     with httpx.Client(base_url=server, headers=headers, timeout=2) as client:
         def flush():
             if receipts:
@@ -410,6 +451,7 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event):
                     response = client.post(f"/api/sessions/{sid}/interventions/claim", json={
                         "epoch": "refused", "capabilities": [], "reason": f"worker report refused: {detail}"})
                 if response.status_code == 200:
+                    faults = 0
                     rows = response.json().get("requests", [])
                     had_requests = bool(rows)
                     for row in rows:
@@ -463,7 +505,14 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event):
                                 elif row['op'] == 'grenade_ring':
                                     result = ctl.grenade_ring(row['args'].get('kind', 'flash'))
                                     if stats is not None and result.get('state') == 'confirmed':
+                                        # The same counters the bot's own rule keeps (gbox.mercs.grenade_ring):
+                                        # a ring fired by a click is deployed like any other, and its kills are
+                                        # attributed inside the same window by the engine's per-tick observer.
                                         stats["grenade_rings"] = stats.get("grenade_rings", 0) + 1
+                                        stats["rings_deployed"] = stats.get("rings_deployed", 0) + 1
+                                        kills = stats.get("kills")
+                                        stats["ring_pending"] = {"at": time.time(),
+                                                                 "kills": kills if isinstance(kills, int) else None}
                                         stats["native_flash_confirmed_at"] = time.time()
                                 else:
                                     result = ctl.flash()
@@ -476,7 +525,13 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event):
                                     result.update(op=Q.OP, requested=4, completed=0, presses=0, verified=False)
                         receipts.append((row["id"], {"claim": row["claim"], "result": result}))
                 flush()
-            except (httpx.HTTPError, ValueError, OSError):
-                pass
+            except Exception as exc:                      # noqa: BLE001 - the status loop outlives any one claim
+                # A worker that dies here leaves the PiP saying "worker not connected" for the rest of the round,
+                # so no single fault (a module's own exception type, a malformed claim, a torn read) ends the loop.
+                # A fault that never clears is a defect, not a transient one: it surfaces instead of spinning.
+                faults += 1
+                if faults > 100:
+                    raise
+                time.sleep(min(.5, .02 * faults))
             if not had_requests:
                 event.wait(.05 if ctl else 1.0)

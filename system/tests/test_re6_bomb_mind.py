@@ -291,81 +291,6 @@ def test_a_grenade_at_one_in_range_and_thrown_on_the_move_away_from_the_pursuers
     assert all(not ({a.get("tap")} | set(a.get("hold") or ())) & R.DPAD_KEYS for a in acts)
 
 
-class FakeRing:
-    def __init__(self):
-        self.started, self.result = [], None
-
-    def ready(self, stats=None):
-        return True
-
-    def busy(self):
-        return False
-
-    def start(self, kinds):
-        self.started.append(list(kinds))
-        return True
-
-    def poll(self):
-        res, self.result = self.result, None
-        return res
-
-
-def ring_bot(enemies, kills=10):
-    clock = [100.0]
-    ring = FakeRing()
-    bot = R.Bot(stats={}, clock=lambda: clock[0], equip=NativeBridge(), ring=ring)
-    bot._round_started = 0.0
-    snap = R.snapshot(round_guest(enemies=enemies))
-    snap["kills"] = kills
-    snap["player"].update(equipped=0, guns={0x107: 0}, gun_ammo={0: 7})
-    bot.held = lambda p, now: False
-    return bot, ring, clock, snap
-
-
-def test_surrounded_he_deploys_the_ring_at_most_every_gap_and_counts_its_kills():
-    ring5 = tuple((300.0 * math.sin(a), 0.0, 300.0 * math.cos(a), 700) for a in (0, 1.2, 2.4, 3.6, 4.8))
-    bot, ring, clock, snap = ring_bot(ring5)
-    run(bot, snap, clock, 1)
-    assert ring.started == [["flash"]]                                        # hand / incendiary: inside his reach
-    assert "surrounded" in bot.stats["ring_last"]["why"]
-    run(bot, snap, clock, 10)
-    assert len(ring.started) == 1                                             # RING_GAP_S
-    ring.result = {"state": "confirmed", "kind": "flash", "spawned": 10, "detonated": 10, "elapsed_ms": 600.0}
-    run(bot, snap, clock, 1)
-    assert bot.stats["rings_deployed"] == 1
-    snap["kills"] = 16
-    clock[0] += R.RING_KILLS_S
-    run(bot, snap, clock, 1)
-    assert bot.stats["ring_kills"] == 6
-    clock[0] += R.RING_GAP_S
-    run(bot, snap, clock, 1)
-    assert len(ring.started) == 2
-
-
-def test_a_heavy_or_a_crowd_the_gun_is_not_clearing_gets_the_ring():
-    bot, ring, clock, snap = ring_bot(((0.0, 0.0, 600.0, 1500),))
-    snap["enemies"][0]["hp_max"] = 1500                                       # a 1500-health class 6 m off
-    run(bot, snap, clock, 1)
-    assert ring.started and "heavy" in bot.stats["ring_last"]["why"]
-    four = tuple((100.0 * i, 0.0, 500.0, 700) for i in range(4))
-    bot, ring, clock, snap = ring_bot(four)
-    run(bot, snap, clock, 1)
-    assert ring.started == []                                                 # kills are coming: not yet
-    clock[0] += R.RING_STALL_S + 0.1
-    run(bot, snap, clock, 1)
-    assert ring.started and "no kill" in bot.stats["ring_last"]["why"]
-
-
-def test_a_failed_ring_is_counted_and_never_blocks_the_fight():
-    ring5 = tuple((300.0 * math.sin(a), 0.0, 300.0 * math.cos(a), 700) for a in (0, 1.2, 2.4, 3.6, 4.8))
-    bot, ring, clock, snap = ring_bot(ring5)
-    run(bot, snap, clock, 1)
-    ring.result = {"state": "unavailable", "reason": "native flash currently requires Linux Switch NCE"}
-    out = run(bot, snap, clock, 1)[0]
-    assert bot.stats["ring_failures"] == 1 and bot.stats["rings_deployed"] == 0
-    assert out is not None and bot.doing != "ring"
-
-
 # --- the coached moment (request 5482, note 7) ---------------------------------------------------------------------
 
 def coach_snapshot():
@@ -387,27 +312,28 @@ def coach_snapshot():
 
 def test_coach_5482_7_the_pack_gets_the_ring_and_the_grenades_never_the_pillar(monkeypatch):
     """Operator 04:13: "Flawed handling ... running into a wall or corner, or failing to deal with a threat" - he faced
-    a pillar on his left with his arm raised while a pack of J'avo and two 1500-health uEm1370 came from the right at
-    4-6 m. Now: the ring goes out at once (a heavy within RING_HEAVY_R), the grenades go at the pack by the hook (no
-    item wheel), and nothing turns him to his left (the pillar's side, where nobody is)."""
+    a pillar on his left with his arm raised while a pack of J'avo, two 1500-health uEm1370 and a uEm3000 came from
+    the right at 4-6.5 m. Now: the ring's rule (gbox.mercs.grenade_ring) fires for the dangerous ones within its
+    danger_cm, the grenades go at the pack by the hook (no item wheel), and nothing turns him to his left."""
+    from gbox.mercs import grenade_ring as GR
     monkeypatch.setattr(R, "NADES", True)
     monkeypatch.setattr(R, "FLASH", True)
     fx, snap = coach_snapshot()
+    decision = GR.decide(snap, {"bomb_safe_cm": 700}, 500.0, GR.policy(R), title=R.TITLE_ID)
+    assert decision["fire"] and "dangerous" in decision["reason"] and decision["radius_cm"] >= 700 + 250
     clock = [500.0]
-    bridge, ring = NativeBridge(), FakeRing()
-    bot = R.Bot(stats={}, clock=lambda: clock[0], equip=bridge, ring=ring)
+    bridge = NativeBridge()
+    bot = R.Bot(stats={}, clock=lambda: clock[0], equip=bridge)
     bot._round_started = 400.0
     bot.held = lambda p, now: False
     yaw = fx["player"]["facing"]
     acts = run(bot, snap, clock, 3)
-    assert ring.started and ("heavy" in bot.stats["ring_last"]["why"] or "surrounded" in bot.stats["ring_last"]["why"])
     assert bot.nade is not None                                               # a grenade at them at once
     tx, tz = bot.nade["to"]
     rel = R.wrap(R.heading(tx, tz) - yaw)
     assert -math.radians(150) <= rel <= math.radians(20)                     # at the pack (ahead / to his right)
     assert set(bridge.targets) <= {9, 10, 11}                                 # equipped by the hook ...
-    nade = bot.nade["index"]
-    snap["player"]["equipped"] = nade
+    snap["player"]["equipped"] = bot.nade["index"]
     acts += run(bot, snap, clock, int((R.NADE_FACE_S + R.NADE_AIM_S + R.NADE_THROW_S + 0.4) / 0.05))
     assert any({"zl", "zr"} <= set(a.get("hold") or ()) for a in acts)        # ... and thrown
     assert all(not ({a.get("tap")} | set(a.get("hold") or ())) & R.DPAD_KEYS for a in acts)   # never the wheel

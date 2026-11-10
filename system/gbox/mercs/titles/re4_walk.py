@@ -611,6 +611,9 @@ def attach(cls):
                 re4_nav.attach(snap)                       # the stage mesh, before the fight reads it (a snapshot read
                                                            # from the game: synthetic ones keep the nav they carry)
             walker_of(self).observe(snap or {}, now)
+            game = (snap or {}).get("game") if isinstance(snap, dict) else None
+            if isinstance(game, dict) and not game.get("in_control"):
+                return tick(self, snap, *args, **kw)       # not in control (re4_switch.game_state): the mark waits
             act = operator_goal_act(self, snap or {}, now, lambda s: tick(self, s, *args, **kw))
             return tick(self, snap, *args, **kw) if act is None else act
         wrapped._re4_walk = True

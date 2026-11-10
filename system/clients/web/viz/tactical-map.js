@@ -31,6 +31,7 @@
   const NEAR_FIT_M = 25;                        // follow fits the nearest bonus in when it is this near; further, an arrow
   const VIEW = { x: -1, z: 1 };                 // +z up, +x left: the right-handed world seen from above
   const stages = new Map();                     // stage key -> stage (the page's life: a stage never changes)
+  const INFOS = new Map();                      // title -> {info: GET /api/mercs/enemies/{title}, at} (the page's life)
 
   // ---- words (pure) ----
   // Each enemy type its own colour (gbox/mercs/enemy_kinds.py: the RAM class), the same on every map and in the reviewer
@@ -40,7 +41,16 @@
     let h = 0; for (const ch of String(cls)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
     return KIND_COLORS[h % KIND_COLORS.length];
   }
-  const enemyName = e => (e && e.kind) || "Majini";
+  const enemyName = e => (e && (e.name || e.kind)) || "Majini";
+  // Who each one is (gbox/mercs/enemy_identity.py: the frame's rows carry cls, name, tier, level): bosses and dangerous
+  // ones drawn larger with a ring, their names and portraits always on the map; the normal ones named where room allows
+  const TIERS = { boss: { label: "boss", scale: 1.75, ring: "#ffb000", rank: 0 },
+                  dangerous: { label: "dangerous", scale: 1.3, ring: "#ff6a3d", rank: 1 },
+                  normal: { label: "normal", scale: 1, ring: null, rank: 2 },
+                  harmless: { label: "harmless", scale: 0.7, ring: null, rank: 3 } };
+  const tierOf = x => (x && TIERS[x.tier]) ? x.tier : "normal";
+  const tierRank = x => TIERS[tierOf(x)].rank;
+  const unsure = x => x && x.level && !["verified", "matched"].includes(x.level);
   function phaseLabel(p) {
     if (!p) return "";
     const k = String(p).toLowerCase().replace(/[\s-]+/g, "_");
@@ -225,9 +235,11 @@
       const [x, y] = project(v, e.pos[0], e.pos[2]), fl = e.flags || [];
       const words = fl.map(k => ({ no_los: "out of sight", attacking: "attacking", blocking: "in the way", target: "the bot's target" }[k] || k));
       if (e.visibility) words.push(({ clear: "clear shot measured", blocked: "cover measured", unknown: "shot path untested" })[e.visibility] || "shot path untested");
-      out.push({ kind: "enemy", id: e.id, x, y, flags: fl, level: lv(e.pos), r: Math.max(4.5, 35 * v.scale * perM(units) / 100),
-                 cls: e.cls, name: e.kind, threat: e.threat, color: kindColor(e.cls),
-                 tip: [`${enemyName(e)} ${e.id ?? ""}`.trim(), e.threat ? `${e.threat} threat` : "",
+      const tier = tierOf(e);
+      out.push({ kind: "enemy", id: e.id, x, y, flags: fl, level: lv(e.pos),
+                 r: Math.max(4.5, 35 * v.scale * perM(units) / 100) * TIERS[tier].scale,
+                 cls: e.cls, name: enemyName(e), tier, sure: !unsure(e), threat: e.threat, color: kindColor(e.cls),
+                 tip: [`${enemyName(e)} ${e.id ?? ""}`.trim(), e.tier ? TIERS[tier].label : e.threat ? `${e.threat} threat` : "",
                        e.hp != null ? `${e.hp}${e.hp_max ? "/" + e.hp_max : ""} health` : "", away(e.pos),
                        lv(e.pos) !== "same" ? lv(e.pos) : "", ...words].filter(Boolean).join(" · ") });
     }
@@ -422,9 +434,16 @@
         for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { ctx.moveTo(m.x + dx * (r - 4), m.y + dy * (r - 4)); ctx.lineTo(m.x + dx * (r + 3), m.y + dy * (r + 3)); }
         ctx.stroke();
       }
+      const ring = TIERS[m.tier || "normal"].ring;
+      if (ring) {                                     // the tier: one ring dangerous, two rings boss
+        ctx.lineWidth = 2; ctx.strokeStyle = ring;
+        ctx.beginPath(); ctx.arc(m.x, m.y, m.r + 2.5, 0, 2 * Math.PI); ctx.stroke();
+        if (m.tier === "boss") { ctx.beginPath(); ctx.arc(m.x, m.y, m.r + 5.5, 0, 2 * Math.PI); ctx.stroke(); }
+      }
       ctx.globalAlpha = 1;
       caret(ctx, m, t);
     }
+    enemyLabels(ctx, ms, v, t, s.face);
     for (const m of ms) {
       if (m.kind === "target") {
         ctx.lineWidth = 1.5; ctx.strokeStyle = t.ink; ctx.beginPath();
@@ -449,6 +468,41 @@
     scaleBar(ctx, v, units, t);
     ctx.restore();
     return ms;
+  }
+
+  // Each enemy's name beside its mark - bosses first, then dangerous, then the rest - skipping a label that would
+  // cover one already placed; bosses and dangerous ones also show their portrait (face(cls): a loaded image or null)
+  // in a disc above the mark. Returns the labels placed (tests).
+  function enemyLabels(ctx, ms, v, t, face) {
+    const placed = [], out = [];
+    const enemies = ms.filter(m => m.kind === "enemy").sort((a, b) => TIERS[a.tier || "normal"].rank - TIERS[b.tier || "normal"].rank);
+    const free = (x0, y0, x1, y1) => !placed.some(b => x0 < b[2] && x1 > b[0] && y0 < b[3] && y1 > b[1]);
+    for (const m of enemies) {
+      const big = m.tier === "boss" || m.tier === "dangerous", text = String(m.name || "");
+      if (!text) continue;
+      ctx.font = `${big ? 700 : 500} ${big ? 11 : 10}px system-ui, -apple-system, 'Segoe UI', sans-serif`;
+      const tw = (ctx.measureText ? ctx.measureText(text).width : text.length * 6) || text.length * 6;
+      let x = m.x + m.r + 6 + tw > v.w - 2 ? m.x - m.r - 6 - tw : m.x + m.r + 6, y = m.y;
+      const img = big && face ? face(m.cls) : null, d = 26;
+      if (img) {                                       // the portrait disc, above the mark
+        const cx = m.x, cy = m.y - m.r - d / 2 - 4;
+        if (free(cx - d / 2, cy - d / 2, cx + d / 2, cy + d / 2)) {
+          ctx.save(); ctx.beginPath(); ctx.arc(cx, cy, d / 2, 0, 2 * Math.PI); ctx.closePath();
+          ctx.lineWidth = 4; ctx.strokeStyle = t.halo; ctx.stroke(); ctx.clip();
+          try { ctx.drawImage(img, cx - d / 2, cy - d / 2, d, d); } catch {}
+          ctx.restore();
+          ctx.lineWidth = 2; ctx.strokeStyle = TIERS[m.tier].ring || t.ink;
+          ctx.beginPath(); ctx.arc(cx, cy, d / 2, 0, 2 * Math.PI); ctx.stroke();
+          placed.push([cx - d / 2, cy - d / 2, cx + d / 2, cy + d / 2]);
+        }
+      }
+      if (!free(x - 1, y - 7, x + tw + 1, y + 7)) continue;
+      ctx.textBaseline = "middle"; ctx.lineWidth = 3; ctx.strokeStyle = t.halo; ctx.strokeText(text, x, y);
+      ctx.fillStyle = t.ink; ctx.fillText(text, x, y);
+      placed.push([x - 1, y - 7, x + tw + 1, y + 7]);
+      out.push({ id: m.id, text, x, y });
+    }
+    return out;
   }
 
   // a round length in metres about a quarter of the map wide, bottom left
@@ -547,11 +601,35 @@
     .tmap .tm-kind{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
     .tmap .tm-kind img,.tmap .tm-kind .tm-face{width:30px;height:30px;border-radius:50%;object-fit:cover;flex:none;border:2px solid var(--kc)}
     .tmap .tm-kind .tm-face{display:inline-grid;place-items:center;background:var(--kc);color:#fff;font:700 11px system-ui}
-    .tmap .tm-kind small{color:var(--mut)}`;
+    .tmap .tm-kind small{color:var(--mut)}
+    .tmap .tm-split{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start}
+    .tmap .tm-split>.tm-stage{flex:3 1 360px;min-width:0}
+    .tmap .tm-roster{flex:1 1 230px;min-width:210px;max-height:640px;overflow:auto;display:flex;flex-direction:column;gap:6px}
+    .tmap .tm-roster:empty{display:none}
+    .tmap .tm-roster h4{margin:2px 0;font-size:12px}
+    .tmap .tm-next{padding:5px 8px;border-radius:6px;border:1px solid #ffb000;line-height:1.35}
+    .tmap .tm-card{border:1px solid var(--line);border-left:4px solid var(--tc,var(--line));border-radius:8px;background:var(--card)}
+    .tmap .tm-card>summary{display:flex;align-items:center;gap:8px;padding:5px 7px;cursor:pointer;list-style:none}
+    .tmap .tm-card>summary::-webkit-details-marker{display:none}
+    .tmap .tm-card img,.tmap .tm-card .tm-face{width:44px;height:44px;border-radius:8px;object-fit:cover;flex:none;border:2px solid var(--kc)}
+    .tmap .tm-card .tm-face{display:inline-grid;place-items:center;background:var(--kc);color:#fff;font:700 13px system-ui}
+    .tmap .tm-who{display:flex;flex-direction:column;gap:1px;min-width:0}
+    .tmap .tm-who b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .tmap .tm-tier{display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:0 6px;
+      border-radius:999px;border:1px solid var(--tc,var(--line));color:var(--tc,var(--mut))}
+    .tmap .tm-notes{padding:0 9px 8px;line-height:1.4}
+    .tmap .tm-notes p{margin:3px 0}
+    .tmap .tm-notes ul{margin:2px 0 4px 16px;padding:0}
+    .tmap .tm-notes small,.tmap .tm-who small{color:var(--mut)}
+    .tmap .tm-tip.tm-rich{white-space:normal;max-width:260px;display:flex;gap:6px;align-items:center}
+    .tmap .tm-tip img{width:52px;height:52px;border-radius:6px;object-fit:cover;flex:none}`;
+  const TIER_COLOR = { boss: "#ffb000", dangerous: "#ff6a3d", normal: "var(--mut)", harmless: "var(--mut)" };
 
   const ICON = {
     player: `<svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 1l4.5 9.5L6 8 1.5 10.5z" fill="var(--tm-player)"/></svg>`,
     enemy: `<svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4" fill="var(--tm-enemy)"/></svg>`,
+    dangerous: `<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="4.2" fill="var(--tm-enemy)"/><circle cx="8" cy="8" r="6.4" fill="none" stroke="#ff6a3d" stroke-width="1.6"/></svg>`,
+    boss: `<svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="4.6" fill="var(--tm-enemy)"/><circle cx="9" cy="9" r="6.4" fill="none" stroke="#ffb000" stroke-width="1.4"/><circle cx="9" cy="9" r="8.2" fill="none" stroke="#ffb000" stroke-width="1.2"/></svg>`,
     hidden: `<svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="3.6" fill="none" stroke="var(--tm-enemy)" stroke-width="1.6"/></svg>`,
     attack: `<svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="3.2" fill="var(--tm-enemy)"/><circle cx="7" cy="7" r="5.8" fill="none" stroke="var(--tm-enemy)" stroke-width="1.4"/></svg>`,
     time: `<svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 1h7L6 6l3.5 5h-7L6 6z" fill="var(--tm-bonus)" stroke="var(--tm-ink)" stroke-width=".6"/></svg>`,
@@ -576,11 +654,13 @@
       `<button class="act" type="button" data-tm-heading aria-pressed="false" title="Turn the map with the player: his facing is up">Heading up</button>` +
       `<button class="act" type="button" data-tm-zoom="out" aria-label="Zoom out" title="Zoom out">−</button>` +
       `<button class="act" type="button" data-tm-zoom="in" aria-label="Zoom in" title="Zoom in">+</button></div>` +
-      `<div class="tm-stage"><canvas role="img" tabindex="0" style="touch-action:none;cursor:grab" aria-label="Top-down map of the round"></canvas><div class="tm-status" data-tm="status"></div>` +
+      `<div class="tm-split"><div class="tm-stage"><canvas role="img" tabindex="0" style="touch-action:none;cursor:grab" aria-label="Top-down map of the round"></canvas><div class="tm-status" data-tm="status"></div>` +
       `<div class="tm-tip" data-tm="tip" hidden></div></div>` +
+      `<aside class="tm-roster" data-tm="roster" aria-label="Enemy types on the stage"></aside></div>` +
       `<div class="mut" data-tm="interaction">Hover to hold the view. Wheel to zoom; drag to pan. Follow resumes tracking. Click an enemy to send the bot after it; double-click a spot to send him there.</div>` +
       `<div class="tm-bar" data-tm="goal-box" hidden><span data-tm="goal" role="status" aria-live="polite"></span><button type="button" class="act" data-tm="cancel-goal">Cancel goal</button></div>` +
-      `<div class="tm-legend" aria-label="Legend"><span>${ICON.player}Player</span><span>${ICON.enemy}Majini</span>` +
+      `<div class="tm-legend" aria-label="Legend"><span>${ICON.player}Player</span><span>${ICON.enemy}enemy (Majini, J'avo, Ganado)</span>` +
+      `<span>${ICON.dangerous}dangerous</span><span>${ICON.boss}boss</span>` +
       `<span>${ICON.hidden}out of sight</span><span>${ICON.attack}attacking</span><span>${ICON.time}time bonus</span>` +
       `<span>${ICON.combo}combo bonus</span><span>${ICON.route}route</span><span>${ICON.stand}stand spot</span>` +
       `<span>${ICON.climb}ladder / drop</span></div>` +
@@ -603,15 +683,78 @@
   let current = null;
   // The legend of the enemy types on the map (frame.kinds): each with its portrait (gbox/tactical_map.py: captured from
   // the game while the bot's laser sat on one) or its initials until one is captured, its colour, count and threat.
+  // Names and tiers come from gbox/mercs/enemy_identity.py (frame.kinds: {cls: {name, count, tier, level, threat}}):
+  // bosses first, then by count; "?" ends a name the game's data has not confirmed yet.
+  const sortKinds = kinds => Object.entries(kinds || {}).sort((a, b) => tierRank(a[1]) - tierRank(b[1]) || (b[1].count || 0) - (a[1].count || 0));
+  const initials = name => String(name || "?").replace(/[^A-Za-z0-9' ]/g, "").split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join("").toUpperCase() || "?";
+  function facePic(src, name, cls) {
+    const ini = initials(name);
+    return src ? `<img alt="" src="${ESC(src)}" data-face="${ESC(ini)}">`
+               : `<span class="tm-face" aria-hidden="true">${ESC(ini)}</span>`;
+  }
+  function tierBadge(k) {
+    const tier = k && k.tier ? tierOf(k) : null;
+    if (!tier) return k && k.threat ? ` <small>${ESC(k.threat)} threat</small>` : "";
+    return ` <small class="tm-tier" style="--tc:${TIER_COLOR[tier]}">${TIERS[tier].label}</small>`;
+  }
   function kindsHtml(f, portrait) {
-    const kinds = Object.entries((f && f.kinds) || {}).sort((a, b) => (b[1].count || 0) - (a[1].count || 0));
-    return kinds.map(([cls, k]) => {
+    return sortKinds(f && f.kinds).map(([cls, k]) => {
       const c = kindColor(cls), name = k.name || cls, src = portrait ? portrait(f.title, cls) : "";
-      const face = `<span class="tm-face" aria-hidden="true">${ESC(name.slice(0, 2).toUpperCase())}</span>`;
-      const pic = src ? `<img alt="" src="${ESC(src)}" data-face="${ESC(name.slice(0, 2).toUpperCase())}">` : face;
-      return `<span class="tm-kind" style="--kc:${c}" title="${ESC(cls)}">${pic}<span>${ESC(name)} ×${k.count || 0}` +
-        (k.threat ? ` <small>${ESC(k.threat)} threat</small>` : "") + `</span></span>`;
+      return `<span class="tm-kind" style="--kc:${c}" title="${ESC(cls)}">${facePic(src, name, cls)}<span>${ESC(name)} ×${k.count || 0}` +
+        tierBadge(k) + `</span></span>`;
     }).join("");
+  }
+  // The heavy a stage sends next (the identity listing's stage table: heavies by kill count), from the round's kills.
+  function nextHeavy(info, stageName, kills) {
+    if (!info || kills == null || !stageName) return null;
+    const want = String(stageName).toLowerCase().replace(/_/g, " ").trim();
+    const row = (info.stages || []).find(s => s && [s.stage, s.code].some(x => String(x || "").toLowerCase() === want));
+    const later = (row?.heavies || []).filter(h => h.kills != null && h.kills >= kills).sort((a, b) => a.kills - b.kills);
+    return later.length ? { ...later[0], in_kills: later[0].kills - kills, stage: row.stage } : null;
+  }
+  // One enemy type's card: portrait, name, tier, the live count and health, and (opened) what it does, its weak point,
+  // how to kill it, where it appears, how sure the name is and the sources.
+  function cardHtml(cls, entry, live, src, open) {
+    const name = live?.name || entry?.name || cls, tier = tierOf(live?.tier ? live : entry || {}), c = kindColor(cls);
+    const hp = live?.hp != null ? `HP ${live.hp}${live.hp_max ? "/" + live.hp_max : ""}` : entry?.hp != null
+      ? `HP ${typeof entry.hp === "object" ? Object.entries(entry.hp).map(([k, v]) => `${v} (${k})`).join(", ") : entry.hp}` : "";
+    const head = `<summary>${facePic(src, name, cls)}<span class="tm-who"><b>${ESC(name)}${live ? ` ×${live.count}` : ""}</b>` +
+      `<span>${tierBadge({ tier })}${hp ? ` <small>${ESC(hp)}</small>` : ""}</span></span></summary>`;
+    if (!entry) return `<details class="tm-card" data-cls="${ESC(cls)}" style="--kc:${c};--tc:${TIER_COLOR[tier]}"${open ? " open" : ""}>${head}` +
+      `<div class="tm-notes"><small>Not in the identity table yet (${ESC(cls)}).</small></div></details>`;
+    const links = (entry.sources || []).map(u => { let host = u; try { host = new URL(u).hostname.replace(/^www\./, ""); } catch {}
+      return `<a href="${ESC(u)}" target="_blank" rel="noopener noreferrer">${ESC(host)}</a>`; }).join(" · ");
+    const sure = { verified: "seen and named live", matched: "matched by the game's own data", inferred: "inferred",
+                   unconfirmed: "not confirmed" }[entry.level] || entry.level;
+    return `<details class="tm-card" data-cls="${ESC(cls)}" style="--kc:${c};--tc:${TIER_COLOR[tier]}"${open ? " open" : ""}>${head}` +
+      `<div class="tm-notes"><p>${ESC(entry.danger)}</p><p><b>Weak point:</b> ${ESC(entry.weak_point)}</p>` +
+      (entry.tactics?.length ? `<b>How to kill it:</b><ul>${entry.tactics.map(x => `<li>${ESC(x)}</li>`).join("")}</ul>` : "") +
+      (entry.stages?.length ? `<p><small>Appears: ${ESC(entry.stages.join(", "))}${entry.spawns ? " · " + ESC(entry.spawns) : ""}</small></p>` : "") +
+      `<p><small>${ESC(cls)} · ${ESC(sure)}${entry.evidence ? ": " + ESC(entry.evidence) : ""}</small></p>` +
+      (links ? `<p><small>Sources: ${links}</small></p>` : "") + `</div></details>`;
+  }
+  // The sidebar: the next heavy, the types on the map now (live count and health), and every type of the title.
+  function rosterHtml(f, info, portrait, stageName, opened = new Set()) {
+    if (!f || !f.title || (!f.kinds && !info)) return "";
+    const byCls = new Map((info?.enemies || []).map(e => [e.cls, e]));
+    const live = {};
+    for (const e of f.enemies || []) {
+      if (!e.cls) continue;
+      const k = live[e.cls] || (live[e.cls] = { count: 0, name: (f.kinds?.[e.cls] || {}).name || e.name, tier: e.tier });
+      k.count++;
+      if (k.count === 1) { k.hp = e.hp; k.hp_max = e.hp_max; } else { k.hp = null; k.hp_max = Math.max(k.hp_max || 0, e.hp_max || 0) || null; }
+      if (tierRank(e) < tierRank(k)) k.tier = e.tier;
+    }
+    const nh = nextHeavy(info, stageName, f.clock?.kills);
+    const src = cls => (portrait ? portrait(f.title, cls) : "");
+    const here = sortKinds(live).map(([cls, k]) => cardHtml(cls, byCls.get(cls), k, src(cls), opened.has(cls))).join("");
+    const all = (info?.enemies || []).map(e => cardHtml(e.cls, e, null, e.portrait ? src(e.cls) : "", opened.has("all:" + e.cls))
+      .replace(`data-cls="${ESC(e.cls)}"`, `data-cls="all:${ESC(e.cls)}"`)).join("");
+    return (nh ? `<div class="tm-next" role="status"><b>Next heavy:</b> ${ESC(nh.name)} at kill ${nh.kills}` +
+                 `${nh.in_kills ? ` (in ${nh.in_kills})` : " (now)"}${nh.where ? " · " + ESC(nh.where) : ""}</div>` : "") +
+      (here ? `<h4>On the map now</h4>${here}` : "") +
+      (all ? `<details class="tm-all"${opened.has("all") ? " open" : ""} data-cls="all"><summary><b>Every enemy type</b> <small class="mut">` +
+             `(${info.enemies.length}, ${ESC(info.title_name || f.title)})</small></summary>${all}</details>` : "");
   }
   function mount(doc, { sid, api, ...opts }) {
     detach();
@@ -624,6 +767,45 @@
     let frame = null, stage = null, ms = [], radius = null, size = { w: 0, h: 0 }, stopped = false, lastSeq = null, stageError = false;
     let camera = null, held = null, manual = false, over = false, drag = null, goalBusy = false;
     const visible = () => !stopped && sect.isConnected && sect.open && !sect.hidden && doc.visibilityState !== "hidden";
+    // Portraits (GET /api/mercs/enemies/{title}/{cls}.png: the model render, else the live crop): opts.portrait(title,
+    // cls) gives a URL the page can load (the web client's token query); opts.image(path) fetches one (the desktop's
+    // bridge: a data URL) - asked once per type, the map redrawn when it comes.
+    const faces = new Map(), opened = new Set();
+    function portraitSrc(title, cls) {
+      if (!title || !cls) return "";
+      if (opts.portrait) return opts.portrait(title, cls) || "";
+      if (!opts.image) return "";
+      const key = title + "|" + cls;
+      let p = faces.get(key);
+      if (!p) {
+        p = { src: "" }; faces.set(key, p);
+        Promise.resolve(opts.image(`/api/mercs/enemies/${encodeURIComponent(title)}/${encodeURIComponent(cls)}.png`))
+          .then(u => { if (u && !stopped) { p.src = String(u); render(); } }).catch(() => {});
+      }
+      return p.src;
+    }
+    function faceImg(title, cls) {                    // the loaded picture for the canvas, or null
+      const src = portraitSrc(title, cls);
+      if (!src || !root.Image) return null;
+      let im = faces.get("img|" + src);
+      if (!im) {
+        im = new root.Image(); im.onload = () => { if (!stopped) render(); }; im.onerror = () => { im.failed = true; };
+        im.src = src; faces.set("img|" + src, im);
+      }
+      return im.complete && im.naturalWidth && !im.failed ? im : null;
+    }
+    function identityInfo(title) {                    // GET /api/mercs/enemies/{title}, once per title (page life)
+      if (!title) return null;
+      const have = INFOS.get(title);
+      if (have && (have.info || Date.now() - have.at < 30000)) return have.info;
+      INFOS.set(title, { info: have?.info || null, at: Date.now() });
+      Promise.resolve(api(`/api/mercs/enemies/${encodeURIComponent(title)}`))
+        .then(info => { if (info && Array.isArray(info.enemies)) { INFOS.set(title, { info, at: Date.now() }); if (!stopped) render(); } })
+        .catch(() => {});
+      return have?.info || null;
+    }
+    const noFace = box => box.querySelectorAll("img[data-face]").forEach(img => { img.onerror = () => {
+      const f = doc.createElement("span"); f.className = "tm-face"; f.textContent = img.dataset.face; img.replaceWith(f); }; });
 
     function fit() {
       const w = Math.round(stageEl.clientWidth) || 300;
@@ -647,16 +829,19 @@
         ? w.radius : radius + (w.radius - radius) * 0.35;
       lastSeq = frame?.seq;
       camera = { ...w, radius };
-      ms = draw(ctx, { frame, stage, view: viewOf(camera, size), theme: themeOf(box) });
+      ms = draw(ctx, { frame, stage, view: viewOf(camera, size), theme: themeOf(box), face: cls => faceImg(frame?.title, cls) });
       const h = hud(frame);
       $("clock").textContent = h.clock; $("phase").textContent = h.phase; $("combo").textContent = h.combo;
       $("score").textContent = h.score; $("status").textContent = h.status;
       $("geometry").textContent = geometryText(frame, stage, stageError);
-      const kinds = kindsHtml(frame, opts.portrait), kindsBox = $("kinds");
+      const kinds = kindsHtml(frame, portraitSrc), kindsBox = $("kinds");
       if (kindsBox && kindsBox.dataset.html !== kinds) {          // only when the types or counts change: no image flicker
-        kindsBox.dataset.html = kinds; kindsBox.innerHTML = kinds;
-        kindsBox.querySelectorAll("img[data-face]").forEach(img => { img.onerror = () => {
-          const f = doc.createElement("span"); f.className = "tm-face"; f.textContent = img.dataset.face; img.replaceWith(f); }; });
+        kindsBox.dataset.html = kinds; kindsBox.innerHTML = kinds; noFace(kindsBox);
+      }
+      const roster = rosterHtml(frame, identityInfo(frame?.title), portraitSrc, stage?.name, opened), rosterBox = $("roster");
+      if (rosterBox && rosterBox.dataset.html !== roster) {
+        const top = rosterBox.scrollTop;
+        rosterBox.dataset.html = roster; rosterBox.innerHTML = roster; noFace(rosterBox); rosterBox.scrollTop = top;
       }
       $("nearest").textContent = h.nearest ? `Nearest: ${h.nearest}` : "";
       $("target").textContent = [h.target && `Target: ${h.target}`, h.note].filter(Boolean).join(" · ");
@@ -693,6 +878,13 @@
       if (over && camera) held = { ...camera };
     });
     paintButtons();
+    const rosterEl = $("roster");                     // the cards keep the reader's open / closed choice across frames
+    if (rosterEl) rosterEl.addEventListener("toggle", e => {
+      const key = e.target?.dataset?.cls;
+      if (!key) return;
+      if (e.target.open) opened.add(key); else opened.delete(key);
+      rosterEl.dataset.html = "";                       // the next render takes the new state
+    }, true);
     function hit(e) {
       const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
       let best = null, bd = 16;
@@ -707,7 +899,10 @@
       const {best,r,x,y} = hit(e);
       tip.hidden = !best || !!drag?.moved;
       if (best) {
-        tip.textContent = best.tip;
+        const src = best.kind === "enemy" ? portraitSrc(frame?.title, best.cls) : "";
+        tip.classList.toggle("tm-rich", !!src);      // an enemy's portrait beside its details
+        if (src) tip.innerHTML = `<img alt="" src="${ESC(src)}"><span>${ESC(best.tip)}</span>`;
+        else tip.textContent = best.tip;
         const left = Math.min(Math.max(4, x + 12), Math.max(4, r.width - tip.offsetWidth - 4));
         tip.style.left = left + "px"; tip.style.top = Math.max(4, y - 30) + "px";
       }
@@ -855,7 +1050,7 @@
     const text = (s, x, y, size = 12) => `<text x="${x}" y="${y}" font-family="sans-serif" font-size="${size}" fill="#20232c">${ESC(s)}</text>`;
     const nearby = (f.enemies || []).map(e => ({ e, d: Math.hypot(...e.pos.map((x, i) => x - f.player.pos[i])) }))
       .sort((a, b) => a.d - b.d).slice(0, Math.min(12, Math.floor((height - 180) / 40)));
-    const sidebar = nearby.map(({ e, d }, i) => text(`Enemy ${e.id ?? '?'}: ${e.hp ?? '?'} HP · ${metres(d, f.units)}`, mapWidth + 14, 126 + i * 40)
+    const sidebar = nearby.map(({ e, d }, i) => text(`${e.name || 'Enemy'} ${e.id ?? '?'}${e.tier && e.tier !== 'normal' ? ` (${e.tier})` : ''}: ${e.hp ?? '?'} HP · ${metres(d, f.units)}`, mapWidth + 14, 126 + i * 40)
       + text(({ clear: 'Clear shot measured', blocked: 'Cover measured', unknown: 'Shot path untested' })[e.visibility] || 'Shot path untested', mapWidth + 14, 142 + i * 40, 11)).join('');
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`
       + `<title>Report moment tactical map</title><desc>${ESC(rendered.map(m => m.tip).filter(Boolean).join('\n'))}</desc>`
@@ -873,7 +1068,7 @@
   }
 
   const api = { html, mount, detach, create, hud, geometryText, want, viewOf, project, unproject, panView, zoomView, screenDir, marks, draw, phaseLabel, clockText,
-    kindColor, kindsHtml,
+    kindColor, kindsHtml, rosterHtml, cardHtml, nextHeavy, enemyLabels, TIERS,
                 metres, themeOf, renderSVG, VIEW, _stages: stages };
   if (typeof module === "object" && module.exports) module.exports = api;
   root.GBoxTacticalMap = api;

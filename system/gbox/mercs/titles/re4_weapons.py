@@ -51,7 +51,9 @@ GAME_PTR_VAR = 0xB1AE08         # data: u64 = module + GAME_OBJ (relocated; the 
 GAME_OBJ = 0x1274338            # bss
 G_FLAGS = 0x78                  # u32 mode flags: bit 30 = The Mercenaries (the loadout dispatcher 0x296CA0)
 MERCS_FLAG = 1 << 30
-G_FRAME_STEP = 0xA4             # f32: added to every motion frame x its speed each tick (1.0 = one 30 Hz frame; inferred)
+G_FRAME_STEP = 0xA4             # f32: added to every motion frame x its speed each tick (1.0 = one 30 Hz frame);
+                                # CountDown::move (0x200C0) takes it off the round clock: read 0.5 live (60 fps),
+                                # 2026-11-10 (re4_switch.PG_SPEED)
 G_MONEY = 0x501C                # u32 (inferred: GC layout +0x78, zeroed by the new-game routine)
 G_ROOM = 0x5020                 # u16 0xSSRR (inferred: GC layout +0x78)
 G_HP, G_HP_MAX = 0x5028, 0x502A # u16: = module + 0x1279360 (re4_switch.PLAYER_LIFE, measured live) - the +0x78 shift

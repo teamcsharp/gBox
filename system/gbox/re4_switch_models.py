@@ -199,6 +199,142 @@ def native_body_swap(target: bytes, donor: bytes, *, rewrite: bool = False) -> t
                  "skeleton": skeleton_report(body, donor_body), "live_verified": False}
 
 
+#: A texel at or above this alpha is drawn colour in the donor's own texture; below it the source meant a cut-out.
+OPAQUE_ALPHA = 128
+
+
+def _fill_from(rgb: np.ndarray, known: np.ndarray) -> np.ndarray:
+    """`rgb` with every texel outside `known` replaced by a blend of the nearest known texels (push-pull: a known-only
+    average down a 2x pyramid, then each unknown texel takes the finest level that covered it)."""
+    if known.all() or not known.any():
+        return rgb
+    h, w = known.shape
+    ph, pw = h + h % 2, w + w % 2
+    weight = np.zeros((ph, pw), np.float64)
+    weight[:h, :w] = known
+    colour = np.zeros((ph, pw, rgb.shape[2]), np.float64)
+    colour[:h, :w] = rgb * known[..., None]
+    total = weight.reshape(ph // 2, 2, pw // 2, 2).sum((1, 3))
+    summed = colour.reshape(ph // 2, 2, pw // 2, 2, -1).sum((1, 3))
+    coarse_known = total > 0
+    coarse = np.where(coarse_known[..., None], summed / np.maximum(total, 1e-12)[..., None], 0.0)
+    coarse = _fill_from(coarse, coarse_known)
+    up = np.repeat(np.repeat(coarse, 2, 0), 2, 1)[:h, :w]
+    return np.where(known[..., None], rgb, up)
+
+
+def finish_atlas(atlas: np.ndarray, uvs: np.ndarray | None = None, *, threshold: int = OPAQUE_ALPHA
+                 ) -> tuple[np.ndarray, dict]:
+    """A donor atlas as an RE4 colour map: opaque, with no black anywhere. Returns (RGBA uint8, report).
+
+    Why (measured 2026-11-10 on the stock Ganado and player packs): every stock body colour map is opaque (alpha
+    238-255 on all 48 body images of em16/em1c/em1d/em20), and an RE4 material draws a cut-out through a separate
+    opacity map (header byte 14, a GX I4 image, material flag 4 or 7 - em16 461/612/629, em1c 523/531/545/626, pl08
+    10), never through the colour map's alpha. The donor material is written plain (flag 0, no opacity map), so the
+    game draws the colour of every texel the donor samples. `mtf_materials.build_atlas` leaves its empty space and the
+    texels under a source cut-out RGBA (0, 0, 0, 0): black. The remap-all donors sampled such texels at up to 32% of
+    their vertices (Golden Kane pistol 1 on em1d body 579: hair and brow cards), and 53-97% of each atlas was empty, so
+    the box-filtered mips darken every chart edge with distance. Here every texel under `threshold` takes the colour
+    of the nearest opaque texels (`_fill_from`), and alpha is 255 everywhere, as on the stock maps. A cut-out is then
+    drawn as a solid card in the colour around it instead of a black one; true cut-outs need the opacity-map route.
+    """
+    pixels = np.asarray(atlas, np.uint8)
+    if pixels.ndim != 3 or pixels.shape[2] != 4:
+        raise ModelError("finish_atlas takes an RGBA atlas")
+    alpha = pixels[..., 3]
+    known = alpha >= threshold
+    report = {"rule": "colour bled from the nearest opaque texels into every texel under alpha "
+                      f"{threshold}; alpha 255 everywhere (the stock body maps are opaque; RE4 cut-outs use a "
+                      "separate opacity map)",
+              "texels": int(alpha.size), "texels_filled": int((~known).sum()),
+              "filled_share": round(float((~known).mean()), 4)}
+    if uvs is not None and len(uvs):
+        h, w = alpha.shape
+        uv = np.asarray(uvs, np.float64)
+        xs = np.clip((uv[:, 0] % 1.0 * w).astype(int), 0, w - 1)
+        ys = np.clip((uv[:, 1] % 1.0 * h).astype(int), 0, h - 1)
+        report["vertices_on_cut_out_texels"] = round(float((alpha[ys, xs] < threshold).mean()), 4)
+    if known.any():
+        rgb = _fill_from(pixels[..., :3].astype(np.float64), known)
+    else:                                             # nothing opaque: keep the colours, or a mid grey if all black
+        rgb = pixels[..., :3].astype(np.float64) if pixels[..., :3].any() else np.full(pixels.shape[:2] + (3,), 128.0)
+    out = np.empty_like(pixels)
+    out[..., :3] = np.clip(np.rint(rgb), 0, 255).astype(np.uint8)
+    out[..., 3] = 255
+    return out, report
+
+
+def donor_atlas(donor: dict, *, opaque: bool) -> tuple[np.ndarray, dict | None]:
+    """The pixels a writer uploads for `donor`: its atlas as built (`opaque` False, the published candidates' bytes)
+    or finished for RE4 (`finish_atlas`)."""
+    pixels = np.asarray(donor["atlas"], np.uint8)
+    if not opaque:
+        return pixels, None
+    uvs = np.asarray([v["uv"] for v in donor["vertices"]], float) if donor.get("vertices") else None
+    return finish_atlas(pixels, uvs)
+
+
+def entry_uvs(packs: dict[str, bytes], pack_id: int) -> dict[int, np.ndarray]:
+    """{archive entry: the UVs of every model that draws it}, over `packs` ({name: .udas bytes}): a BIN draws the
+    entries its diffuse bytes pick from the TPL in the next slot (the binding measured on the player and Ganado
+    packs)."""
+    out: dict[int, list] = {}
+    for udas in packs.values():
+        _pack, dat = A.pack_slots(udas)
+        for index, (ext, payload) in enumerate(dat.slots[:-1]):
+            if ext != "BIN" or dat.slots[index + 1][0] != "TPL":
+                continue
+            model, table = A.HdBin.parse(payload), A.Tpl.parse(dat.slots[index + 1][1])
+            uvs = model.uvs()
+            start = 0
+            for material in model.materials():
+                count = material.vertex_count
+                k = material.diffuse
+                if k != 0xFF and k < len(table.images) and table.images[k].pack_id == pack_id:
+                    out.setdefault(table.images[k].index, []).append(uvs[start:start + count])
+                start += count
+    return {entry: np.concatenate(parts) for entry, parts in out.items()}
+
+
+def refinish_archive(archive: bytes, stock: bytes, packs: dict[str, bytes] | None = None) -> tuple[bytes, dict]:
+    """`archive` (a pool's grown `.pack.fen`) with every entry it appended to `stock` - the donor atlases - put
+    through `finish_atlas`: decoded, made opaque without black texels, encoded again at the same size, format and mip
+    count. The stock entries (wrapper and DDS; `ImagePack.append` re-pads the last one) stay byte for byte, and
+    every entry keeps its size and wrapper, so the packs built against the archive (their
+    tables, the donor UVs) still fit it. `packs` (the build's .udas files) name the models that draw each entry, for
+    the receipt. Returns (bytes, report)."""
+    from PIL import Image
+    import io
+
+    grown, base = A.ImagePack.parse(archive), A.ImagePack.parse(stock)
+    if grown.pack_id != base.pack_id or len(grown.entries) < len(base.entries) \
+            or any(a[:2] != b[:2] for a, b in zip(base.entries, grown.entries)):
+        raise ModelError("the archive is not the stock archive with entries appended")
+    uvs = entry_uvs(packs or {}, grown.pack_id)
+    rows = []
+    for index in range(len(base.entries), len(grown.entries)):
+        wrapper, dds, tail = grown.entries[index]
+        info = A.dds_info(dds)
+        if info["fourcc"] not in A.DXT_BLOCK_BYTES:
+            raise ModelError(f"entry {index} is {info['fourcc']}, not a DXT the writers append")
+        pixels = np.asarray(Image.open(io.BytesIO(dds)).convert("RGBA"), np.uint8)
+        finished, report = finish_atlas(pixels, uvs.get(index))
+        out = A.encode_dds(finished, mipmaps=max(1, info["mipmaps"]), fourcc=info["fourcc"])
+        if len(out) != len(dds):
+            raise ModelError(f"entry {index}: re-encoded {len(out)} bytes, the entry holds {len(dds)}")
+        grown.entries[index] = (wrapper, out, tail)
+        rows.append({"entry": index, "width": info["width"], "height": info["height"], "fourcc": info["fourcc"],
+                     "mips": info["mipmaps"], "drawn_by_vertices": int(len(uvs[index])) if index in uvs else 0,
+                     "before_sha256": sha256(dds), "after_sha256": sha256(out), **report})
+    written = grown.build()
+    again = A.ImagePack.parse(written)
+    if again.build() != written or any(a[:2] != b[:2] for a, b in zip(base.entries, again.entries)):
+        raise ModelError("the refinished archive does not round-trip with its stock entries intact")
+    return written, {"archive": f"{grown.pack_id:08x}.pack.fen", "stock_entries": len(base.entries),
+                     "entries": len(again.entries), "refinished": rows,
+                     "source_sha256": sha256(archive), "sha256": sha256(written), "bytes": len(written)}
+
+
 def shrink_part(payload: bytes, factor: float, centre=None) -> bytes:
     """A part model with its vertices pulled toward `centre` (default: its own centroid); topology untouched.
 
@@ -373,14 +509,16 @@ def donor_surface(body: A.HdBin, donor: dict, *, image: int, scales: dict[str, f
 
 def author_body(target: bytes, archive: bytes, donor: dict, *, image: int | None = None, shrink: float = 0.1,
                 scales: dict[str, float] = SCALES, layout: PackLayout | None = None,
-                role_bones: dict[str, int] = ROLE_BONES) -> tuple[bytes, tuple[str, bytes], dict]:
+                role_bones: dict[str, int] = ROLE_BONES, opaque_atlas: bool = False
+                ) -> tuple[bytes, tuple[str, bytes], dict]:
     """A donor body on `target`'s skeleton: (pack bytes, (archive file name, archive bytes), receipt).
 
     The donor surface replaces the body mesh (`layout.body`, slot 0) as one material drawn with the donor's atlas,
     which is appended to the pack's own archive and named by table image `image` (the layout's measured choice: an
     image only the body uses). The native head pieces, hands and other body parts the layout names are shrunk to
     `shrink` of their size where they stand, because the donor brings its own head and hands in the body mesh.
-    Without a layout the pack is Leon's (the published candidates' layout).
+    Without a layout the pack is Leon's (the published candidates' layout). `opaque_atlas` uploads the atlas through
+    `finish_atlas` (no black texels, alpha 255); off by default so the published candidates rebuild to their hashes.
     """
     layout = layout or LAYOUTS["pl08"]
     image = layout.image if image is None else image
@@ -389,7 +527,7 @@ def author_body(target: bytes, archive: bytes, donor: dict, *, image: int | None
     if not 0 <= image < len(table.images):
         raise ModelError(f"the body table has {len(table.images)} images; {image} is not one of them")
     built, fit_report, step = donor_surface(body, donor, image=image, scales=scales, role_bones=role_bones)
-    pixels = np.asarray(donor["atlas"], np.uint8)
+    pixels, finish = donor_atlas(donor, opaque=opaque_atlas)
     images = A.ImagePack.parse(archive)
     if images.pack_id != table.images[image].pack_id:
         raise ModelError("the archive is not the one the body's texture table names")
@@ -431,7 +569,8 @@ def author_body(target: bytes, archive: bytes, donor: dict, *, image: int | None
                         "bbox": fit_report["bbox"],
                         "skeleton_bytes_identical": check.sections["bones"] == body.sections["bones"]},
                "texture": {"archive": name, "entry": entry, "table_image": image, "width": int(pixels.shape[1]),
-                           "height": int(pixels.shape[0]), "format": "DXT5", "entries": len(images.entries)},
+                           "height": int(pixels.shape[0]), "format": "DXT5", "entries": len(images.entries)}
+               | ({"atlas_finish": finish} if finish else {}),
                "parts_shrunk": {str(k): v for k, v in sorted(hidden.items())}, "shrink": shrink,
                "slots_replaced": changed, "other_slots_byte_identical": len(after) - len(changed),
                "live_verified": False}
@@ -467,13 +606,16 @@ CAST_EXPECTATION = {
 def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, seed, out: Path, *,
               slots: tuple = tuple(CAST), history: list | tuple = (), avoid_last: int = 3,
               games: list[str] | None = None, exclude: dict[str, str] | None = None,
-              atlas_size=(1024, 1024), max_vertices: int = 12000, name: str | None = None) -> dict:
+              atlas_size=(1024, 1024), max_vertices: int = 12000, name: str | None = None,
+              assignment: dict[str, str] | None = None, opaque_atlas: bool = True) -> dict:
     """Deal library donors to the Mercenaries player slots from a seed (`re5_donor_pool.plan`, the RE5 rule) and
     write one overlay: every dealt pack and its grown archive under `out/romfs/bio4/...`, plus `receipt.json`.
 
     `donors` are `re5_donor_pool.Donor` rows (a survey); donors above `max_vertices` are left out before the deal.
     A donor the writer refuses on its slot is set aside and the plan is dealt again from the same seed, so the
     outcome follows from the seed, the donors, the history and `exclude` alone (as `re5_cast_writer.pool_cast`).
+    `assignment` pins the deal ({slot: slug}, an earlier receipt's): nothing is dealt and a refusal is an error, so
+    a pool is rebuilt with the same donors. `opaque_atlas` uploads each atlas through `finish_atlas`.
     """
     from . import re5_donor_pool
 
@@ -483,10 +625,15 @@ def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, se
     refused: dict[str, str] = dict(exclude or {})
     pool = list(donors)
     by_slug = {d.slug: d for d in pool}
-    slot_names = list(slots)
+    slot_names = list(assignment) if assignment else list(slots)
+    pinned = dict(assignment) if assignment else None
+    if pinned:
+        unknown = [f"{slot} <- {slug}" for slot, slug in pinned.items() if slot not in CAST or slug not in by_slug]
+        if unknown:
+            raise ModelError(f"the pinned assignment names slots or donors this survey does not have: {unknown}")
     while True:
-        assignment = re5_donor_pool.plan(seed, slot_names, pool, history=history, avoid_last=avoid_last, games=games,
-                                         exclude=set(refused))
+        assignment = pinned or re5_donor_pool.plan(seed, slot_names, pool, history=history, avoid_last=avoid_last,
+                                                   games=games, exclude=set(refused))
         built, files, sources, rows = {}, {}, {}, {}
         failed = None
         for slot, slug in assignment.items():
@@ -502,7 +649,8 @@ def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, se
                 _pack, dat = A.pack_slots(target)
                 archive_name = A.Tpl.parse(dat.slots[layout.table][1]).images[layout.image].archive()
                 archive = (imagepack_dir / archive_name).read_bytes()
-                pack_out, (written_name, written), receipt = author_body(target, archive, record, layout=layout)
+                pack_out, (written_name, written), receipt = author_body(target, archive, record, layout=layout,
+                                                                         opaque_atlas=opaque_atlas)
                 if written_name != archive_name:
                     raise ModelError("the writer grew another archive than the one that was read")
             except (ModelError, A.AssetError, ValueError, OSError) as exc:
@@ -522,7 +670,7 @@ def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, se
         if failed is None:
             break
         slug, reason = failed
-        if slug in refused:
+        if pinned or slug in refused:
             raise ModelError(reason)
         refused[slug] = reason
         print(f"set aside: {reason}", flush=True)
@@ -530,6 +678,7 @@ def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, se
                "plan": {"seed": seed, "slots": slot_names, "games": games, "avoid_last": avoid_last,
                         "history": [dict(row) if isinstance(row, dict) else list(row) for row in history],
                         "pool_size": len(pool), "max_vertices": max_vertices, "set_aside": dict(refused),
+                        "pinned_assignment": bool(pinned), "opaque_atlas": opaque_atlas,
                         "rule": "re5_donor_pool.plan: a donor at most once, recently used donors last, franchises in turn"},
                "assignment": assignment, "slots": rows,
                "role_bones": {"hip": ROLE_BONES["hip"], "note": "hip on bone 0 (the root), as the published Leon "
@@ -537,6 +686,35 @@ def cast_pool(em_dir: Path, imagepack_dir: Path, library: Path, donors: list, se
                "roster_note": "The queue names characters by re4_menus.PLAYERS; the RE4 Switch walk today confirms "
                               "Select Player on its default (Leon), so only Leon's pack is drawn until the walk "
                               "steers to a portrait (re4_switch.step).",
+               **CAST_EXPECTATION, "acceptance": "experimental; offline structural checks only"}
+    return write_overlay(out, files, receipt, sources)
+
+
+def refinish_overlay(stock_bio4: Path, build_bio4: Path, out: Path) -> dict:
+    """Every archive of a built overlay (`build_bio4/imagepackhd/*.pack.fen`) that holds appended donor atlases,
+    refinished (`refinish_archive`) into `out/romfs/bio4/imagepackhd/` with a receipt; the overlay's packs are read
+    (for the UVs) and not copied - they stay byte for byte what was built and booted."""
+    stock_bio4, build_bio4, out = Path(stock_bio4), Path(build_bio4), Path(out)
+    if (out / "receipt.json").exists():
+        raise ModelError(f"{out} already holds an overlay; candidates are never overwritten")
+    packs = {path.name: path.read_bytes() for path in sorted((build_bio4 / "em").glob("*.udas"))}
+    files, sources, rows = {}, {}, {}
+    for path in sorted((build_bio4 / "imagepackhd").glob("*.pack.fen")):
+        stock_path = stock_bio4 / "imagepackhd" / path.name
+        if not stock_path.is_file():
+            continue
+        data, stock = path.read_bytes(), stock_path.read_bytes()
+        if len(A.ImagePack.parse(data).entries) <= len(A.ImagePack.parse(stock).entries):
+            continue                                       # nothing appended (a greybox archive): not a pool's
+        written, report = refinish_archive(data, stock, packs)
+        files[f"{IMAGE_DIR}/{path.name}"] = written
+        sources[f"{IMAGE_DIR}/{path.name}"] = data
+        rows[path.name] = report
+    if not files:
+        raise ModelError(f"{build_bio4} holds no archive with appended entries")
+    receipt = {"recipe": "re4_switch_models.refinish_overlay", "build": str(build_bio4), "archives": rows,
+               "note": "source_* in files is the built overlay's archive; only the appended donor atlases changed "
+                       "(finish_atlas: opaque, no black texels); the packs that name them are unchanged",
                **CAST_EXPECTATION, "acceptance": "experimental; offline structural checks only"}
     return write_overlay(out, files, receipt, sources)
 
@@ -592,22 +770,34 @@ def main(argv=None) -> int:
     pool.add_argument("--games", default="", help="comma-separated game titles or franchises to keep")
     pool.add_argument("--exclude", default="", help="comma-separated donor slugs to leave out")
     pool.add_argument("--max-vertices", type=int, default=12000)
+    pool.add_argument("--assignment", type=Path, help="an earlier receipt.json: rebuild with its donors (no deal)")
+    pool.add_argument("--atlas-as-built", action="store_true",
+                      help="upload each atlas as mtf_materials built it (the pools before 2026-11-10)")
     sub.add_parser("layouts", help="print the measured per-character slot layouts")
+    fin = sub.add_parser("refinish", help="put the donor atlases a built overlay appended through finish_atlas")
+    fin.add_argument("--stock", type=Path, required=True, help="the stock RomFS bio4/ folder")
+    fin.add_argument("--build", type=Path, required=True, help="the overlay's romfs/bio4/ folder (read only)")
+    fin.add_argument("--out", type=Path, required=True)
     for command in (swap, author):
         command.add_argument("--expect", default="", help="what a live round must show; stored in the receipt")
     args = parser.parse_args(argv)
     if args.command == "layouts":
         print(json.dumps({name: layout.__dict__ for name, layout in LAYOUTS.items()}, indent=2, default=list))
         return 0
+    if args.command == "refinish":
+        result = refinish_overlay(args.stock, args.build, args.out)
+        print(json.dumps({"out": str(args.out), "files": result["files"]}, indent=2))
+        return 0
     if args.command == "cast-pool":
         from . import re5_donor_pool
         donors = re5_donor_pool.donors_of(json.loads(args.survey.read_text(encoding="utf-8")))
         history = [json.loads(Path(name).read_text(encoding="utf-8"))["assignment"]
                    for name in args.history.split(",") if name]
+        pinned = json.loads(args.assignment.read_text(encoding="utf-8"))["assignment"] if args.assignment else None
         result = cast_pool(args.em, args.imagepack, args.library, donors, args.seed, args.out, history=history,
                            avoid_last=args.avoid_last, games=[g for g in args.games.split(",") if g] or None,
                            exclude={s: "left out by the caller" for s in args.exclude.split(",") if s},
-                           max_vertices=args.max_vertices)
+                           max_vertices=args.max_vertices, assignment=pinned, opaque_atlas=not args.atlas_as_built)
         print(json.dumps({"out": str(args.out), "assignment": result["assignment"], "files": result["files"]}, indent=2))
         return 0
     target = (args.em / f"{args.target}.udas").read_bytes()
