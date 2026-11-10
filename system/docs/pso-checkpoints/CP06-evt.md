@@ -93,3 +93,20 @@ name is built at run time, like the `.rel` names, so there is no string referenc
 known event number's use.
 
 Tests: none changed; CP0 baseline unchanged.
+
+## Round 75: two dead ends for the interpreter, recorded so they are not repeated
+
+**Dead end 1: the `+0x84` field is not a hook.** The round-68 finding (the debug overlay prints "EVT NO : %d" from
+`*(u32 *)(object + 0x84)`) suggested scanning the code for loads of that field. The scan (`lwz rD, 0x84(rA)`:
+`(word & 0xFC000000) == 0x80000000 and (word & 0xFFFF) == 0x0084`) finds **506 instructions** across the image - `0x84` is a
+common structure offset, so the field cannot be used to locate the event code.
+
+**Dead end 2: the `.evt` name leaves no string to follow.** Like the `.rel` names, an event set's file name is composed at run
+time from the area name; the only event-related strings are the debug overlay's `"EVT NO : %d"` and the set loaders'
+`o.dat` / `e.dat` / `ad.dat` suffixes (which belong to the placement/enemy sets, not the scripts).
+
+**What is left for the opcodes, and it is live:** break on a known event number's use (the object field `+0x84` of a door
+whose event is known, e.g. the city's Warp door), or trace the `.evt` file being opened during a load. Both need a session;
+both are recorded in `CP07-*.md` as the reason the interpreter is live-dependent.
+
+Tests: none changed.
