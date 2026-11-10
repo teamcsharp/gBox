@@ -118,6 +118,21 @@ core lands, `decide()` is the function to move onto it.
 - `369495c0` on main: Switch-only gating (the operator's 2026-11-10 update), this lane log, and a clicked ring
   counted in `rings_deployed`/`ring_kills` like the bot's own.
 
+## What the PiP showed before this lane (the observed problem)
+
+Captured live from the deployed server on 2026-11-10, one interventions `GET` per title while a MercMode round
+played (receipts under `.tmp/evidence/` on the Windows box, sessions named):
+
+- **RE6 Switch** `5a68e96bfd1447a2-261245764a5f48be`, 04:54: `available: false`, `capabilities: []`, reason
+  `no living player in an active Mercenaries round` - every button greyed out with one string, while the run's own
+  stats said `mercenaries_phase: 1` with 101 kills. This is the doc's known bug; see "Still missing".
+- **RE5 Switch** `cbbcdba729dd4c66-fb4707a29b574df9`, 05:06: `available: true`, caps
+  `flash_now/equip_primary/grenade_ring/set_infinite_ammo`, **no `options.grenade_kinds` at all** - the chooser fell
+  back to its built-in text ("Hand-grenade ring not yet verified on this build.") rather than the worker's own truth.
+- **RE4 Switch** `0254df67bf934b6d-451c1ac27e79452c`, 05:09: `available: false`, reason `worker not connected`, then
+  a minute later the joined module refusals - the status was either blind (dead worker) or a paragraph of internals,
+  never "the ring is not built for this title".
+
 ## Tests
 
 New: `tests/test_mercs_grenade_status.py` (19), `tests/test_re6_grenade_ring.py` (9),
