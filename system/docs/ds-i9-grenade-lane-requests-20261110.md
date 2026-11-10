@@ -178,3 +178,23 @@ boundary yet). Could you either:
 Everything else on my side is ready: with a passing page, the harness's mailbox can be set and E6's no-op magic-word
 call / three-stage-load proof can be requested on the same RE4 round. No restart and no code change is needed for the
 watch itself.
+
+## i9 follow-up 5, 2026-11-10 18:12 CST - F2/F3/F4 are built on the branch; the queue is idle, so an RE4 round can start now
+
+**The RE4 flash op is built** (branch `ds-grenade-re4-bss` @ `b930948e`): `Controller.flash_at(x, y, z)` runs the
+game's own blast (`main+0x2E4E50`) through the harness with a zeroed fake object at the point (F2 route (i)),
+refusing a point inside 4000 mm; `place_flash` / `flash_now(ad)` use `core.flash_window.place` in millimetres (4000 /
+9000 / 12000, `LEVEL_MM`), and `grenade_status` now shows the RE4 Switch flash row as built with "no live receipt
+yet" (ring kinds not offered). The controller is wired into `interventions.native_controller`; its `prepare()` still
+refuses with the E3 reason, so nothing is advertised live before the private page is proven. Tests: 20 in
+`test_re4_native` and the status/interventions expectations updated; broad run **242 passed**.
+
+**Live state:** `GET /api/mercmode` shows **no current run** on lilspark (the RE6 block ended; the queue's `re4 x5`
+has not started). If you start an RE4 block now, the same round can carry:
+
+1. the read-only **three-load zero watch** of `0x1CB9000`, `0x1CBA000`, `0x1CBB000`, `0x1CBC000`, `0x1700000`
+   (16 bytes each is enough) - the last piece of E3; and then
+2. E6's no-op harness proof and F's live receipt, which need the mailbox set from a passing page.
+
+No restart and no merge is needed for the watch itself; the branch is ready and its tests are green. Nothing has
+been written to lilspark.
