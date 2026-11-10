@@ -614,3 +614,128 @@ on, in RE4 / RE6.
    a turn of numbers; read RE4's Ganado state for learned wind-ups; fill `BODY_CLASSES` as classes
    are measured; act on the idle guard's "engage" verdict in RE4 / RE6.
 4. The round reports compare titles by the shared stats names above.
+
+## 10. The fire pattern: the PS3 magnum's rapid repeat and scatter on every title (2026-11-10)
+
+Branch `mercs-fire-pattern`. The operator, 2026-11-10: "if the agent is universal, I want it able to
+work with even the ps3, and gamecube versions. The ps3 mercenary work was some of my favorite because
+the bot fired the magnum with a nice scatter and a very rapid repeat and i want that across all these
+titles." Code: `gbox/mercs/core/fire_pattern.py`, used from `combat.py` (component (i)); tests:
+`tests/test_mercs_fire_pattern.py` (synthetic).
+
+### 10.1 What the RE5 PS3 bot did (measured)
+
+The source is the code that ran plus the PS3 round maps on the Spark
+(`gbox-data/mercs/round_maps/BLUS30491`, 382 rounds 2026-10-26 .. 11-06, 820 magnum shot records,
+read-only).
+* **The trigger was held, never tapped.** `re5_ps3.Bot` hands the fight to `re5_combat.Combat`
+  (`ENABLED = True`). Its `_decide` sets `trig.mode = "hold"` for every hitscan family
+  (`re5_weapons.DIRECT`), and with the rapid-fire package verified it presses `{"r1"} if fire`
+  (`PS3IO.rapid_fire`: the fire action's FPS constant 0x0169E098 at least 120 and the weapon's
+  interval offset +0x90 at 0). `re5_ps3`'s own `TAP_ON, TAP_OFF = 1, 2` (a tick down, two up: 6.7
+  presses a second at 20 Hz) is the fallback aim loop. It did not run.
+* **The game made the repeat.** `re5_mods_tool.fire_rate` x80 sets the timer to 4800 fps, divides
+  the firing-speed table by 80 and zeroes the offset. `re5_fire_animation` plays the magnums' three
+  firing motion layers (0x51D / 0x51E / 0x51C) at x8 (`MAX_MULTIPLIER`), which cuts the recovery
+  animation.
+* **The cadence** (consecutive shots under 0.4 s apart count as one burst), for the Lightning Hawk,
+  M29 and M500:
+
+  | | Lightning Hawk | M29 | M500 |
+  |---|---|---|---|
+  | in-burst gap, median | 0.22 s | 0.24 s | 0.22 s |
+  | in-burst gap, p10 | 0.10 s | 0.09 s | 0.08 s |
+  | burst rate, median | 4.3 shots/s | 4.2 shots/s | 6.2 shots/s |
+  | burst rate, p90 | 11.1 shots/s | 11.1 shots/s | 12.5 shots/s |
+  | burst length, p90 / max | 6 / 7 | 4 / 7 | 3 / 4 |
+
+  The median burst is 2 shots for all three.
+* **The scatter** was the aim still slewing while R1 stayed down. `re5_engage.window` is his half
+  width plus 15 cm, the stick waits inside 35 % of it, and "threat: blasting" inside 5 m fires on
+  the window, not the dot (54 - 63 % of the magnum shots). Each repeat therefore left from another
+  point of the sweep:
+  * the yaw error at the shot was median 2.0 - 4.2 deg, p90 11.6 - 18.4 deg;
+  * the pitch error was median 1.5 - 2.3 deg;
+  * on one target the aim point moved median 1.7 - 9.5 cm a shot, p90 34 - 59 cm;
+  * 4 - 7 % of consecutive in-burst shots went to another Majini (the dot drifting onto him);
+  * hits were 34 - 53 % of the shots (Barry's handgun: 75 %).
+
+  Nothing random: a fast held repeat over a moving aim.
+* RE6 PS3 never had a fight (`re6_ps3.py`: menus only, no live address), so the pattern the operator
+  remembers is RE5 PS3's.
+
+### 10.2 The shared pattern
+
+* `FireSpec` per family (`SPECS`): magnum, handgun, shotgun and rifle. The automatics, launchers and
+  bows get none, since they hold and the game repeats already.
+* `Trigger`: the rapid repeat in the title's style, never sooner than the title's floor:
+  * `hold`: the game repeats a held trigger;
+  * `edge`: down a tick, up a tick;
+  * `tap`: down and up in one batch.
+* `cadence_hz` / `combat.fire_cadence(prof)`: the rate a style reaches at the title's tick and floor.
+* **The scatter.** Shot k's point on his body comes from R2, the plastic number's low-discrepancy
+  sequence: successive points sit far apart and never clump.
+  * k = 0 is the chest. The rest spread laterally up to `scatter_w` of his radius (magnum 0.6) and
+    vertically between `scatter_lo` and `scatter_hi` of the knee-to-head span.
+  * Every point is inside `combat.dot_on`'s body, tested for 400 points on the human, crawler and
+    dog bodies.
+  * For a human-sized magnum target: lateral -21 .. +15 cm, height 100 .. 150 cm, median step 34 cm a
+    shot. |yaw| is median 2.2 deg at 3 m and 1.3 deg at 5 m, against the PS3's 2.0 - 4.2 deg at
+    2.7 - 4.2 m (synthetic).
+* **The scatter is earned.** It applies only within `earn_s` (2 s) of an effect: an enemy's health
+  falling or the kill count rising. Without one, every shot goes to the chest, so an intro card or a
+  wall sees no scatter, and `combat.NotInControl` and the titles' no-effect rules see the same
+  unmoving aim as before.
+* **The hop.** After `hop_every` shots on one living target (magnum 3), the next shot goes to a
+  neighbour already within `hop_cone` (6 deg) of the line and within 2.5 m of him, on his level. It
+  is never taken away from a priority pick (`locked`).
+* **Drivers by aim model**, which the PS3 / GC titles share with the Switch ones:
+  * `TankDriver` (tank_heading): a yaw offset. The fire gate stays the body's half-angle on the
+    bearing error.
+  * `LaserDriver` (laser_ray): the point to steer the laser onto, keeping the title's aim height. A
+    special's site gets the lateral scatter only.
+  * `CameraDriver` (laser_camera_geometry): the offset added to the aim point.
+* `TitleProfile` gained `fire_pattern`, `fire_style`, `fire_gap_s`, `fire_tick_s`, `fire_cap_hz`,
+  `fire_cap_note` and `family`.
+
+### 10.3 Per title (each behind `FIRE_PATTERN = True`; off is the old path, one constant)
+
+| | cadence (the rapid repeat) | scatter | hop | limit |
+|---|---|---|---|---|
+| **RE4 Switch** | unchanged: ZR tapped every `FIRE_GAP_S` (0.05 s at the live fire_rate 20x, so 20 taps a second) | the facing goes to the bearing plus the yaw offset, via `AIM_REQUEST` (the aim lock, on live, writes it every snapshot); the stick steers to it when off tolerance | `_fp_aim`: REST picks only (`FIRE_HOP_WHYS`), the neighbour in range and in the clear | the shot gate's FR 3.0 floor at 30 Hz is **10 shots/s** (static, `re4_weapons`; not counted live). The magnum classes' own FR rows are not read. Family from `snap["weapon_class"]` (`re4_weapons.G_CLASS`, one guarded byte, static offset); unread means handgun. No pitch, so lateral scatter only. |
+| **RE5 Switch** | unchanged: ZR held, the game repeating it at `fire_rate`'s time scale (FIRE_MAX 5x) | **new**: on him, the stick steers the laser across his body (the old rule steered only off him, so every repeat hit one spot), between shot motions only | RE5's own CONFIRMED_FIRE (the dot on a neighbour shoots him) | the M92F measured 2.7 shots/s held at x1, 8.7 at x4, 15.3 at x8; **x5 not counted**. Whether a magnum's shot motion is MOTION_SHOT 29 (so that the time scale reaches it) was never checked. The stick cannot move in MOTION_SHOT, so how often the aim can move between held repeats is unmeasured: see `fire_pattern_steer_ticks` / `_motion_waits`. |
+| **RE6 Switch** | unchanged: ZR a tick down, a tick up under the native cooldown, so **10 presses/s** at the 20 Hz tick (the bot's ceiling) | the lock's aim point moves by the offset every press (`_lock(scatter=)`, the guards unchanged); the sticks do the same without the lock. A redirect over LOCK_SETTLE holds the trigger one tick, which is the edge's up tick (synthetic: 15 presses with the pattern, 15 without) | RE6's own lock sweep (SWEEP_SHOTS 3, then the next one) | the magnums' interval 0.8 / 1.2 s / MAGNUM_FIRE_X 24 allows 30 / 20 a second and the recoil runs at MAGNUM_SPEED_X 6 (static); the game's shots a second were not counted. The down fight (lying down) stays unscattered. |
+
+### 10.4 PS3 and GameCube
+
+`re5_ps3`, `re6_ps3` and `re4_gc` now have a `combat_profile()` (also in `combat.TITLES`), with
+`fire_pattern=False`. They are descriptive: their own fights do not consult them, and their live
+behaviour is unchanged. The core's drivers drive them on synthetic state:
+* the tank driver on `re4_gc`, in mm (`BODY_HALF_W` 180);
+* the laser driver on `re5_ps3`;
+* the camera driver on `re6_ps3`.
+
+What a live adapter still needs:
+* **RE5 PS3** (`re5_combat.Combat._decide`): add `LaserDriver.point` to `aim_at` before the
+  `ray_error` steering. The held R1 and the package are already the pattern's rapid repeat.
+* **RE4 GC** (`re4_merc_bot.Bot`): add the `TankDriver` offset to the error `_aim_turn` steers by,
+  keeping `fire_tol` on the bearing. `_pull` is already `edge` at PRESS_GAP 0.09 (about 10 presses a
+  second), or hold where `TriggerBook` measured an auto-repeat. The Hand Cannon held fires nothing
+  (TRIGGER_PRIOR).
+* **RE6 PS3**: a snapshot first (sPlayer's instance, the enemy list, the camera, the laser). None
+  is measured; then the RE6 Switch binding applies.
+
+### 10.5 Watch live (stats, per title)
+
+* `fire_pattern_family`: the gun's family. RE4's comes from the class byte, so check it names the
+  random weapon.
+* `fire_pattern_scattered` / `_centred` / `_unearned` / `_hops` / `_shots`. For RE5, `_shots` also
+  counts the time steps of a held trigger.
+* `fire_pattern_error`: should stay absent.
+* RE4: `fire_err_deg` grows by the scatter. It is the mean bearing error at a tap, about 1 - 2 deg at
+  5 m. The hit rate (hits / shots) should not fall.
+* RE5: `fire_pattern_steer_ticks` against `fire_pattern_motion_waits`. If the aim rarely moves, the
+  shot motion holds the stick. `drops_mid_burst` should not rise.
+* RE6: `shots` per second should not fall. `lock_ray_misses`, `lock_fallbacks` and `lock_limited`
+  should not rise.
+* `frozen_*`: unchanged on intro cards (the scatter is earned).
