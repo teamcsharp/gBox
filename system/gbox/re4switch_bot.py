@@ -20,6 +20,7 @@ What it does, and what it says it does:
 The one thing it must get right is not mistaking a menu for a round: the classifier is the same one the driver uses, and
 `unknown` only counts as in-round after a stage screen has been seen (`re4_switch`'s own rule).
 """
+import json
 import time
 import uuid
 
@@ -71,6 +72,13 @@ def setup(ad) -> dict:
 
 
 def _press(send, key: str, hold_s: float = 0.08, sleep=time.sleep) -> None:
+    try:                                                    # every press of the walk, whoever made it (driver.WALK_LOG)
+        import inspect
+        caller = inspect.stack()[1].lineno
+        with driver.WALK_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"t": round(time.time(), 2), "runner_press": key, "line": caller}) + chr(10))
+    except Exception:                                        # noqa: BLE001 - a log never costs a press
+        pass
     send([{"key": key, "down": True}])
     sleep(hold_s)
     send([{"key": key, "down": False}])
