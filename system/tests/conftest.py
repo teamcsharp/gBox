@@ -107,6 +107,19 @@ def _private_re5_doors(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _private_re4_menu_pace(tmp_path_factory, monkeypatch):
+    """Tests never read or write the real learned RE4 menu pace (re4_switch.PACE_FILE): each starts from the hand-set
+    waits, so one test's learned speed never times another's walk, and none lands in the live file."""
+    try:
+        from gbox.mercs.titles import re4_switch
+    except Exception:                                        # noqa: BLE001 - a checkout without it
+        return
+    if hasattr(re4_switch, "PACE_FILE"):
+        monkeypatch.setattr(re4_switch, "PACE_FILE", tmp_path_factory.mktemp("re4_pace") / "menu_pace.json")
+        monkeypatch.setattr(re4_switch, "_PACE", {"screens": None, "dirty": False, "saved": float("-inf")})
+
+
+@pytest.fixture(autouse=True)
 def _private_re5_threats(tmp_path_factory, monkeypatch):
     """Tests never read or write the real learned threats (re5_switch.THREAT_FILE: who hurt the bot, per enemy class,
     which a new session loads): a test's synthetic hits would teach the live bot. Imported here, so a test that first

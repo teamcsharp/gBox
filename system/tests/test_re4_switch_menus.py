@@ -424,3 +424,37 @@ def test_after_yes_no_save_list_press_until_the_main_menu_settles():
     assert D.step({"where": "story_prompt", "prompt": "cancel", "cursor": "yes"}, now) == "a"
     assert D.step({"where": "story_prompt", "prompt": "cancel", "cursor": "yes"}, now + 1.0) is None
     assert D.step({"where": "story"}, now + 2.0) is None
+
+
+
+def test_the_menu_pace_learns_faster_with_every_taken_press_and_slower_on_a_miss():
+    """Operator 2026-11-10: "navigating them faster and faster and faster each and every time ... I never want to see
+    the bot slowly navigating through menus". A confirm the game took (the next screen named) shortens that screen's
+    waits; a confirm pressed again on the same screen lengthens them; the learned values persist (PACE_FILE)."""
+    import json as _json
+    title = {"where": "title"}
+    t0 = 100.0
+    for k in range(6):                                       # six boots: title confirmed, the next screen came
+        pace = D.Pace()
+        pace.observe(title, t0)
+        assert pace.ready(title, t0 + D.pace_value("title", "settle") + 0.01)
+        pace.pressed(title, "a", t0 + 1.0)
+        pace.observe({"where": "main_menu", "cursor": 0, "target": 4}, t0 + 1.5)
+        t0 += 100.0
+    fast = D.pace_value("title", "settle")
+    assert fast < D.SETTLE_S * 0.25 and fast >= D.PACE_KNOBS["settle"][1]
+    D.pace_save(force=True)
+    saved = _json.loads(D.PACE_FILE.read_text(encoding="utf-8"))["screens"]["title"]
+    assert saved["taken"] == 6 and saved["settle"] == round(fast, 4)
+    pace = D.Pace()
+    pace.observe(title, t0)
+    pace.pressed(title, "a", t0 + 0.2)
+    pace.pressed(title, "a", t0 + 5.0)                      # the same screen again: the first was not taken
+    assert D.pace_value("title", "settle") > fast
+
+
+def test_a_select_screens_open_loop_moves_never_go_under_their_floor():
+    for k in range(30):
+        D._pace_learn("select_stage", ("move_gap",), True, 1000.0 + k)
+    assert D.pace_value("select_stage", "move_gap") == D.PACE_SELECT_MOVE_FLOOR
+    assert D.pace_value("main_menu", "move_gap") == D.MOVE_GAP_S, "an unlearned screen keeps the hand-set wait"

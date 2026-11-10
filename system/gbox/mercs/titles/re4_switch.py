@@ -808,6 +808,62 @@ def step(scr: dict, now: float | None = None) -> str | None:
 MOVE_GAP_S, MOVE_RETRY_S = 0.8, 2.0
 SETTLE_S, CONFIRM_AFTER_S = 1.0, 0.8
 CURSOR_MENUS = ("main_menu", "extras_menu")
+# Learned pace (operator 2026-11-10: "I need the bot learning the menu system and navigating them faster and faster
+# and faster each and every time ... I never want to see the bot slowly navigating through menus"): the three waits
+# above are learned per screen from the walk itself and kept across boots (PACE_FILE). A confirm the game took (the
+# next screen named within PACE_TAKEN_S) shortens that screen's settle and confirm waits x PACE_FAST; a move that
+# showed on the cursor (or a select screen's step counted) shortens its move gap; a confirm pressed again on the same
+# screen, or a move re-sent because it never showed, lengthens them x PACE_SLOW. Never under the floors (a frame or
+# two of the 30 fps read) and never over the hand-set values above (the old walk is the worst case).
+PACE_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "learned" / "010099A00BC1E000" / "menu_pace.json"
+PACE_KNOBS = {"settle": (SETTLE_S, 0.06), "confirm_after": (CONFIRM_AFTER_S, 0.10), "move_gap": (MOVE_GAP_S, 0.08)}
+PACE_FAST, PACE_SLOW, PACE_TAKEN_S, PACE_SAVE_S = 0.75, 1.5, 3.0, 2.0
+PACE_SELECT_MOVE_FLOOR = 0.30            # the select screens' moves are open loop (counted as sent, not as seen)
+_PACE: dict = {"screens": None, "dirty": False, "saved": float("-inf")}
+
+
+def _pace_screens() -> dict:
+    if _PACE["screens"] is None:
+        try:
+            data = json.loads(PACE_FILE.read_text(encoding="utf-8"))
+            _PACE["screens"] = data.get("screens", {}) if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            _PACE["screens"] = {}
+    return _PACE["screens"]
+
+
+def pace_value(where, knob: str) -> float:
+    """This screen's learned wait (PACE_KNOBS), the hand-set value until it has learned one."""
+    default, floor = PACE_KNOBS[knob]
+    if knob == "move_gap" and where in ("select_player", "select_stage"):
+        floor = max(floor, PACE_SELECT_MOVE_FLOOR)       # open loop there: a dropped move picks the wrong entry
+    v = (_pace_screens().get(str(where)) or {}).get(knob)
+    return default if not isinstance(v, (int, float)) else max(floor, min(default, float(v)))
+
+
+def _pace_learn(where, knobs, faster: bool, now: float) -> None:
+    row = _pace_screens().setdefault(str(where), {})
+    for k in knobs:
+        default, floor = PACE_KNOBS[k]
+        row[k] = round(max(floor, min(default, pace_value(where, k) * (PACE_FAST if faster else PACE_SLOW))), 4)
+    row["taken" if faster else "missed"] = row.get("taken" if faster else "missed", 0) + 1
+    _PACE["dirty"] = True
+    pace_save(now)
+
+
+def pace_save(now: float | None = None, force: bool = False) -> None:
+    """The learned pace to PACE_FILE (at most every PACE_SAVE_S unless forced)."""
+    now = time.monotonic() if now is None else now
+    if not _PACE["dirty"] or (not force and now - _PACE["saved"] < PACE_SAVE_S):
+        return
+    try:
+        PACE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = PACE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"screens": _pace_screens()}, indent=1, sort_keys=True), encoding="utf-8")
+        tmp.replace(PACE_FILE)
+        _PACE["dirty"], _PACE["saved"] = False, now
+    except OSError:
+        pass
 
 
 def next_is_move(scr: dict) -> bool:
@@ -830,29 +886,57 @@ class Pace:
         self.last_press = float("-inf")
         self.moved_from = None                  # the cursor a move left from, until a read shows it elsewhere
         self.on_target = 0                      # reads in a row with the cursor on the target
+        self.confirm = None                     # (screen, when) of the last confirm, until the next screen is named
+        self.move = None                        # (screen, when, the select screen's step count) of the last move
+        self.steps = None                       # (screen, its step count) at the last read
 
     def observe(self, scr: dict, now: float) -> None:
         where = scr.get("where")
         if where != self.where:
+            if self.confirm and self.confirm[0] == self.where and now - self.confirm[1] <= PACE_TAKEN_S:
+                _pace_learn(self.confirm[0], ("settle", "confirm_after"), True, now)   # taken: that screen faster
+            self.confirm = None
             self.where, self.since, self.moved_from, self.on_target = where, now, None, 0
         if where in CURSOR_MENUS:
             cur = scr.get("cursor")
             self.on_target = self.on_target + 1 if isinstance(cur, int) and cur == scr.get("target") else 0
             if self.moved_from is not None and cur != self.moved_from:
                 self.moved_from = None          # the last move showed
+                if self.move and self.move[0] == where:
+                    _pace_learn(where, ("move_gap",), True, now)
+                    self.move = None
+        steps = int(scr.get("moved") or 0)
+        if where in ("select_player", "select_stage"):
+            if self.steps and self.steps[0] == where and steps > self.steps[1] and self.move and self.move[0] == where:
+                _pace_learn(where, ("move_gap",), True, now)                        # a select step counted
+                self.move = None
+            self.steps = (where, steps)
 
     def ready(self, scr: dict, now: float) -> bool:
+        where = scr.get("where")
         if next_is_move(scr):
-            if now - self.last_press < MOVE_GAP_S:
+            gap = pace_value(where, "move_gap")
+            if now - self.last_press < gap:
                 return False
-            return self.moved_from is None or now - self.last_press >= MOVE_RETRY_S
-        if self.since is None or now - self.since < SETTLE_S or now - self.last_press < CONFIRM_AFTER_S:
+            return self.moved_from is None or now - self.last_press >= max(0.35, gap * MOVE_RETRY_S / MOVE_GAP_S)
+        if self.since is None or now - self.since < pace_value(where, "settle") \
+                or now - self.last_press < pace_value(where, "confirm_after"):
             return False
-        return scr.get("where") not in CURSOR_MENUS or self.on_target >= 2
+        return where not in CURSOR_MENUS or self.on_target >= 2
 
     def pressed(self, scr: dict, key: str, now: float) -> None:
+        where = scr.get("where")
+        move = key in DPAD.values()
+        if move and self.move and self.move[0] == where and self.moved_from is not None:
+            _pace_learn(where, ("move_gap",), False, now)   # sent again: the last one never showed - slower here
+        if not move and key in ("a", "plus") and self.confirm and self.confirm[0] == where:
+            _pace_learn(where, ("settle", "confirm_after"), False, now)   # a second confirm: the first was not taken
         self.last_press = now
-        self.moved_from = scr.get("cursor") if key in DPAD.values() and scr.get("where") in CURSOR_MENUS else None
+        self.moved_from = scr.get("cursor") if move and where in CURSOR_MENUS else None
+        if move:
+            self.move = (where, now)
+        elif key in ("a", "plus"):
+            self.confirm = (where, now)
 
 
 def press_gap(scr: dict) -> float:

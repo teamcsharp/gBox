@@ -172,6 +172,7 @@ def test_the_main_menu_walk_reaches_extras_without_the_escape_backing_it_out(mon
         script += [{"where": "extras_menu", "cursor": row}] * 3
     reader = Scripted(script)
     monkeypatch.setattr(B.screens, "Reader", lambda: reader)
+    monkeypatch.setattr(B, "MENU_POLL_S", 0.2)          # the scripted reads are timed for the 0.2 s poll (1 s a read)
     adapter = Adapter([b"frame"] * 80)
     t = [1000.0]                                         # time moves when the playbook sleeps (about 1 s a read)
 
