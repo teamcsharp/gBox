@@ -1,10 +1,23 @@
+import os
 import socket
+import sys
 import threading
 import time
 
 import httpx
 import pytest
 import uvicorn
+
+# The suite's test modules import each other by bare top-level name (204 sibling imports, e.g.
+# `from test_pso_gc_adventure import memory`), so `tests/` itself must be importable. pytest's
+# rootdir does not put the `tests` directory on sys.path on its own; without this, a plain
+# `pytest tests/test_pso_campaign.py` (as the publish validator runs it) fails the very first
+# import with ModuleNotFoundError. Put this directory at the head of sys.path before any test
+# module can be collected.
+_SYS_PATH_KEY = "_gbox_tests_dir_on_path"
+if _SYS_PATH_KEY not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, _SYS_PATH_KEY)
 
 from gbox import uap, worker
 from gbox.config import Config
