@@ -337,3 +337,40 @@ worker, grenade status/rule, re5 mods, engine) is **149 passed**.
 RE6 got, and RE5 has no `grenade_scatter` yet (next item 4), so the clean order is: land the RE5 barrage with the
 explicit-kind probe (one more step), then fire `kind=hand` and `kind=incendiary` on an RE5 Mercenaries round and
 record receipt + frames + self_damage. Until then `grenade_status` keeps advertising flash only, which is honest.
+
+## Step: RE5's scatter barrage - hand-off item 4 (2026-11-10, branch `ds-re5-scatter-20261110`)
+
+Operator 2026-11-10 ~07:00: "i want the bot able to spray a scatter shot of grenades from his postion at threats at
+will ... a rapid barrage of random grenades from the grenade launcher without equipping it on his character ... sprayed
+like a scatterhsot whenever the going gets tough". RE6 got it this morning (the other lane); this is RE5's.
+
+**`re5_switch_native.Controller.grenade_scatter(kind="random", count, toward, spread_deg, min_cm, max_cm, gap_ms,
+safe_cm, rng)`** - the same contract and receipt shape as RE6's: `count` rounds, each the ring's verified native step
+(spawn, moved onto its point, the explosion transition), so nothing is equipped and the gun stays in his hand. The cone
+follows `toward` ([(x, z)] of the threats, averaged) or his facing when there is none; rounds run near to far within
+`SCATTER_SPREAD_DEG` (±30°), about chest height (+120 cm), 100-200 ms apart. `kind="random"` draws from
+`SCATTER_KINDS` - the verified kinds only, the flash today; an explicit implemented class (hand/incendiary) is the
+**receipt probe** (`probe: true` in the receipt). An explosive kind keeps every point past `safe_cm` (his learned
+blast reach) plus a 1 cm epsilon so the sin/cos placement cannot land a hair inside it. A partial barrage is
+uncertain and never replayed; the receipt carries every round's position, class vtable, distance, and hp/self-damage.
+
+**The automated rule already existed** (`gbox/mercs/grenade_ring.py`, the other lane's): when the ring's own decision
+says no, it runs `decide_scatter` (surrounded, hurt within 3 s with a threat close, a boss/dangerous class within
+reach, or a pack not thinning; never within 6 s of a ring) and fires through `fire_scatter`, keeping
+`scatters_fired`, `scatter_rounds`, `scatter_kills` (a kill window), `scatter_failures` and `scatter_decision`. This
+step only adds RE5 to `SCATTER_TITLES` and gives the title its knobs: `SCATTER`, `SCATTER_EVERY_S`, `SCATTER_N` in
+`re5_switch.py`, plus the three rows in the PiP's bot-logic sidebar ("Grenade scatter barrage (auto)", "Seconds
+between barrages", "Rounds in a barrage"). The intervention op `grenade_scatter` is advertised for RE5 automatically
+because `interventions.context()` adds the capability when the controller has the method.
+
+**Tests** (`tests/test_re5_scatter.py`, 7): a random barrage is a flash cone from near to far at chest height, every
+round through the verified wrappers; the probe carries the hand class's DTI/vtable/item and marks `probe`; an
+explosive probe never lands inside the learned reach; a partial barrage is uncertain and recoverable; an unknown kind
+is refused before any native call; the rule lists RE5 and reads its knobs; the shared hook returns a step for RE5 and
+none for a PS3 session. Affected suites (RE5 scatter/class pair/class table/ring/native/mods, interventions, worker,
+grenade rule/status, engine, bot logic): **169 passed**.
+
+**Receipts this unblocks:** with the explicit-class probe, an RE5 Mercenaries round can now fire
+`grenade_scatter {"kind": "hand"}` and `{"kind": "incendiary"}` - the same request shape as RE6's - which is the live
+receipt item 3 still owes. Both this branch and `ds-re5-classes-pair-20261110` must be deployed for it (the title
+module hot-reloads; `interventions.py` already carries the op from the RE6 lane).
