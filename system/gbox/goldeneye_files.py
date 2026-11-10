@@ -58,6 +58,34 @@ NODE_SIZE = 0x18
 TEXTURE_RECORD_SIZE = 12
 
 
+USA_Z64_SHA256 = "2cdcec8a9f0cb6e36337f3ee39d8ad105dc8afa6ba1c02d466e8f5b771f9a162"
+
+
+@dataclass(frozen=True)
+class BuildProfile:
+    """Per-build data-segment layout, keyed by normalised z64 sha256."""
+    name: str
+    sha256: str
+    data_seg_rom: int
+    data_seg_size: int
+    data_vram: int
+    file_table_vram: int
+    body_table_vram: int
+    g_textures_data_off: int = 0x22C30
+    images_rom_start: int = 0x8F7840
+
+
+PAL_PROFILE = BuildProfile("PAL", PAL_Z64_SHA256, DATA_SEG_ROM, DATA_SEG_SIZE,
+                           DATA_VRAM, FILE_TABLE_VRAM, BODY_TABLE_VRAM)
+# USA: rarezip data segment at ROM 0x21990 inflates to 0x3C550 bytes, linked at
+# 0x80020D90 (file table data+0x252C4: 727 entries; body table data+0x1D080: 80).
+# (ROM 0x86B000 is an ordinary file block, not the data segment.)
+USA_PROFILE = BuildProfile("USA", USA_Z64_SHA256, 0x21990, 0x3C550, 0x80020D90,
+                           0x80020D90 + 0x252C4, 0x80020D90 + 0x1D080,
+                           g_textures_data_off=0x28570, images_rom_start=0x8F7DF0)
+PROFILES = {p.sha256: p for p in (PAL_PROFILE, USA_PROFILE)}
+
+
 class GoldenEyeFormatError(ValueError):
     pass
 
@@ -122,6 +150,7 @@ class ModelHeader:
 class GoldenEyeROM:
     rom: bytes
     data: bytes = field(repr=False, default=b"")
+    profile: BuildProfile = PAL_PROFILE
 
     @classmethod
     def load(cls, path: str | Path) -> "GoldenEyeROM":
@@ -135,15 +164,17 @@ class GoldenEyeROM:
 
     @classmethod
     def from_bytes(cls, rom: bytes) -> "GoldenEyeROM":
-        data, _ = rarezip_inflate(rom, DATA_SEG_ROM)
-        if len(data) != DATA_SEG_SIZE:
+        prof = PROFILES.get(hashlib.sha256(rom).hexdigest(), PAL_PROFILE)
+        data, _ = rarezip_inflate(rom, prof.data_seg_rom)
+        if len(data) != prof.data_seg_size:
             raise GoldenEyeFormatError(
-                f"data segment inflated to 0x{len(data):X}, expected 0x{DATA_SEG_SIZE:X} (not the PAL build?)")
-        return cls(rom=rom, data=data)
+                f"data segment inflated to 0x{len(data):X}, expected 0x{prof.data_seg_size:X} "
+                f"({prof.name} profile; unknown or modified build?)")
+        return cls(rom=rom, data=data, profile=prof)
 
     # -- address helpers -------------------------------------------------
     def d_off(self, vram: int) -> int:
-        off = vram - DATA_VRAM
+        off = vram - self.profile.data_vram
         if not 0 <= off < len(self.data):
             raise GoldenEyeFormatError(f"VRAM 0x{vram:08X} outside data segment")
         return off
@@ -153,7 +184,7 @@ class GoldenEyeROM:
 
     # -- tables ----------------------------------------------------------
     def file_table(self) -> list[FileEntry]:
-        base = self.d_off(FILE_TABLE_VRAM)
+        base = self.d_off(self.profile.file_table_vram)
         raw = []
         k = base
         while k + FILE_TABLE_STRIDE <= len(self.data):
@@ -184,7 +215,7 @@ class GoldenEyeROM:
 
     def body_table(self) -> list[BodyEntry]:
         out = []
-        k = self.d_off(BODY_TABLE_VRAM)
+        k = self.d_off(self.profile.body_table_vram)
         while k + BODY_TABLE_STRIDE <= len(self.data):
             hdr, name_ptr, scale, pov, male, head, _pad = struct.unpack_from(">IIffBBH", self.data, k)
             try:
@@ -309,8 +340,10 @@ def find_lui_addiu_xrefs(rom: bytes, target: int, start: int = 0x1000, end: int 
 def find_code_xrefs(rom: bytes, target: int) -> list[dict]:
     """lui/lo xrefs to ``target`` in the uncompressed boot and game code, with the
     enclosing function's ROM start (nearest preceding ``addiu sp,sp,-N``)."""
-    _, used = rarezip_inflate(rom, DATA_SEG_ROM)
-    ranges = [(0x1000, DATA_SEG_ROM), ((DATA_SEG_ROM + used + 3) & ~3, CODE_SCAN_END)]
+    prof = PROFILES.get(hashlib.sha256(rom).hexdigest(), PAL_PROFILE)
+    seg = prof.data_seg_rom
+    _, used = rarezip_inflate(rom, seg)
+    ranges = [(0x1000, seg), ((seg + used + 3) & ~3, CODE_SCAN_END)]
     out = []
     for start, end in ranges:
         for hit in find_lui_addiu_xrefs(rom, target, start, end):
@@ -334,17 +367,18 @@ def manifest(ge: GoldenEyeROM, body: str = "CsuitbondZ") -> dict:
     bodies = ge.body_table()
     chr_files = [f for f in files if f.name.startswith("C")]
     xrefs = {
-        "file_table": find_code_xrefs(ge.rom, FILE_TABLE_VRAM),
-        "body_table": find_code_xrefs(ge.rom, BODY_TABLE_VRAM),
+        "file_table": find_code_xrefs(ge.rom, ge.profile.file_table_vram),
+        "body_table": find_code_xrefs(ge.rom, ge.profile.body_table_vram),
     }
     return {
         "rom_sha256": hashlib.sha256(ge.rom).hexdigest(),
-        "data_segment": {"rom": DATA_SEG_ROM, "size": len(ge.data), "vram": DATA_VRAM,
+        "data_segment": {"build": ge.profile.name, "rom": ge.profile.data_seg_rom, "size": len(ge.data),
+                         "vram": ge.profile.data_vram,
                          "sha256": hashlib.sha256(ge.data).hexdigest()},
-        "file_table": {"vram": FILE_TABLE_VRAM, "entries": len(files), "last": files[-1].name},
+        "file_table": {"vram": ge.profile.file_table_vram, "entries": len(files), "last": files[-1].name},
         "character_files": [{"index": f.index, "name": f.name, "rom": f.rom_offset, "size": f.rom_size}
                             for f in chr_files],
-        "body_table": {"vram": BODY_TABLE_VRAM, "entries": len(bodies),
+        "body_table": {"vram": ge.profile.body_table_vram, "entries": len(bodies),
                        "bodies": [{"index": b.index, "file": b.filename, "header": hex(b.header_vram),
                                    "pov": round(b.pov, 4), "is_head": b.is_head} for b in bodies]},
         "code_xrefs_rom": xrefs,

@@ -607,7 +607,7 @@ def g_textures(ge: GoldenEyeROM) -> list[int]:
     0xffff dataoffset terminator (not included).
     """
     sizes: list[int] = []
-    p = G_TEXTURES_DATA_OFF
+    p = ge.profile.g_textures_data_off
     while True:
         w0 = (ge.data[p] << 24) | (ge.data[p + 1] << 16) | (ge.data[p + 2] << 8) | ge.data[p + 3]
         d = w0 & 0xFFFFFF
@@ -625,10 +625,11 @@ def image_offsets(sizes: list[int]) -> list[int]:
     return image_entries_accumulate(sizes)
 
 
-def image_rom_span(sizes: list[int], index: int) -> tuple[int, int]:
+def image_rom_span(sizes: list[int], index: int,
+                   images_rom_start: int = IMAGES_ROM_START) -> tuple[int, int]:
     """(rom_offset, size) of image ``index`` in the images segment."""
     off = image_offsets(sizes)
-    return IMAGES_ROM_START + off[index], sizes[index]
+    return images_rom_start + off[index], sizes[index]
 
 
 # G_IM_FMT_* style TEXFORMAT (image.h) -> decode metadata, cross-checked against
@@ -753,7 +754,7 @@ def decode_model_texture(ge: GoldenEyeROM, texture_id: int) -> dict:
     sizes = g_textures(ge)
     if not 0 <= texture_id < len(sizes):
         raise KeyError(texture_id)
-    off, size = image_rom_span(sizes, texture_id)
+    off, size = image_rom_span(sizes, texture_id, ge.profile.images_rom_start)
     explicit, is_zlib, lod = image_payload_header(ge.rom, off)
     result = inflate_image_pixels(ge.rom, off, size, is_zlib)
     base = {"texture_id": texture_id, "rom_offset": off, "size": size,
