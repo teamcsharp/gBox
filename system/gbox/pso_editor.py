@@ -168,7 +168,9 @@ def _mark_for(record: dict) -> str:
     door = door_name(record["kind"])
     if door:
         return MARK[door]          # every name door_name returns has a mark
-    cls = CLASS_NAMES.get(record.get("class_index", -1))
+    # `pso_class_registry.CLASS_NAMES` is a *tuple* of 240 slots (mostly None), so the accessor is `name()`, not a dict
+    # lookup: the bare name raised NameError and, once qualified, `.get` on a tuple raised AttributeError.
+    cls = REG.name(record.get("class_index", -1))
     if cls == "player":
         return "*"
     if record.get("class_index") == 87:          # the lobby's teleporter pedestal
