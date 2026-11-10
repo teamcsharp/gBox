@@ -202,6 +202,14 @@ def swap_section(target_payload: bytes, donor_payload: bytes, section_index: int
     return res
 
 
+def swap_sections(target_payload: bytes, donor_payload: bytes, section_indices) -> bytes:
+    """Apply ``swap_section`` for each index in order (all sizes must match)."""
+    out = target_payload
+    for k in section_indices:
+        out = swap_section(out, donor_payload, k)
+    return out
+
+
 def scan_section_donors(container_path: str, target_index: int) -> list:
     """List CHCM entries (other than the target) that parse as ``char_dat`` and
     have >=1 section with the same size as the target's same-index section.

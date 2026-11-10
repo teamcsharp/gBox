@@ -189,3 +189,39 @@ def test_span_replace_entry0058_noop_and_changed():
     finally:
         if os.path.exists(work):
             os.unlink(work)
+
+
+@pytest.mark.skipif(not os.path.exists(LINK), reason="owned PS3 source not mounted")
+def test_multi_section_donor_swap_into_slot0018_via_span_writer():
+    """Donor entry 104 sections 1-4 -> target slot 0018 on a scratch container copy."""
+    from gbox import doa5lr_chcm_extract as chcm
+    from gbox.doa5lr_char_dat_writer import replace_entry_span_in_container, swap_sections
+
+    tinfo, tgt = chcm.extract_entry(TARGET, LINK, INDEX)
+    assert tinfo["sha256"] == ENTRY_SHA
+    dinfo, donor = chcm.extract_entry(104, LINK, INDEX)
+    secs = [1, 2, 3, 4]
+    out = swap_sections(tgt, donor, secs)
+    ti, di, oi = (doa5lr_char_dat.parse_char_dat(b) for b in (tgt, donor, out))
+    assert len(out) == ENTRY_SIZE and oi["sections"] == ti["sections"]
+    for k in secs:
+        a, b = ti["sections"][k]["start"], ti["sections"][k]["end"]
+        c, d = di["sections"][k]["start"], di["sections"][k]["end"]
+        assert out[a:b] == donor[c:d]
+    assert out[: ti["sections"][1]["start"]] == tgt[: ti["sections"][1]["start"]]
+    assert hashlib.sha256(out).hexdigest() != ENTRY_SHA
+
+    os.makedirs(SCRATCH, exist_ok=True)
+    work = os.path.join(SCRATCH, "chara_common.multi.copy")
+    shutil.copy2(LINK, work)
+    try:
+        r = replace_entry_span_in_container(LINK, TARGET, out, work)
+        assert r["container_sha256"] != CONTAINER_SHA
+        _i, back = chcm.extract_entry(TARGET, work, INDEX)
+        assert back == out
+        for j in (17, 19):  # neighbours untouched
+            assert chcm.extract_entry(j, work, INDEX)[1] == chcm.extract_entry(j, LINK, INDEX)[1]
+        assert container_sha256(LINK) == CONTAINER_SHA
+    finally:
+        if os.path.exists(work):
+            os.unlink(work)
