@@ -387,6 +387,18 @@ remote is not needed in his hand. The detonator is per player, so one bomb canno
 the bomb slot's mode +0xC back to 0 if it stays 1 after a hook blast with nothing armed or placed. That 0 is the
 game's own value after a press; whether the game leaves the 1 behind is not measured yet.
 
+**The instant drop** (`spawn_bomb.c`, main+0x18F2AC0, 232 B) puts a remote bomb down at a chosen point without a throw
+and without the remote in his hand. It does the same native allocation as the flash spawn, with the uWp1097 DTI, sets
+the owner to him, and sets bit 0x2000 of his u32 +0x5A18 (the throw's own flag) on the game thread. It then requests the
+bomb's placed action, 24. `Controller.drop_bomb` verifies the class, the owner, the placed action and the flag. The bot
+drops instead of throwing, and the flag hook sets the bomb off with the gun still in his hand. The live checks still
+open are whether the dropped bomb settles on the floor and whether its blast counts his kills.
+
+**The scatter barrage** (`Controller.grenade_scatter`) is the ring's verified step, aimed along a cone from him toward
+the threats instead of round a circle. Each round spawns, moves onto its point and explodes, 0.1-0.2 s apart, near to far,
+at chest height. Only the flash is verified, so "random" draws only flashes. The grenade launcher's rounds are not
+identified.
+
 **Live, 2026-11-10 (Eden, lilspark, session 0254df67bf934b6d-1e2777bc67954d28, read only):** the bot never put a bomb
 out. Every native gun request was answered by the game re-equipping the selected item about 0.11 s later, with a
 second action 38 (weapon_change) whose +0x5440 was 12 again. That item was the remote bomb or the flash. The bot's
