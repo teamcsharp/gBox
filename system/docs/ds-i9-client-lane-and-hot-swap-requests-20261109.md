@@ -935,3 +935,17 @@ So the mercmode chain is now complete on the client side: `switch_romfs_material
   those to the enemy arc under the same names *and* with the material's expected tag; or swap the enemy's MAT/material
   resources together with the model. `mt_arc` can list and replace entries; `model_swap` already knows the model
   payload, so the material table is the next parse target.
+
+## Round 43 status (2026-11-09, ~00:30 CST): the mercmode sidebar drives launch-ready swap builds
+
+* `skin_swap.cast_swap_build` gained **`base_build`** and seeds the new build from it (the same `_seed_from_base` used by
+  `random_swap_build`), so a cast/enemy swap built by the screensaver carries the title's own ExeFS.
+* `screensaver.py` now passes **`default_mods[title]`** as `base_build` to both `cast_swap_build` and
+  `random_swap_build` (the sidebar's per-title build, e.g. the update-ExeFS build for RE6). So the MercMode parameters
+  `skin_swap: random` / `cast_swap: on` produce builds that launch and open the unlocked menu with no manual compose
+  step - the chain is: sidebar -> builder -> launch-ready overlay.
+* 12 tests pass across `test_skin_swap_model_fallback.py` and `test_switch_romfs_materialize.py`; both modules import
+  clean after the fix to the earlier line-insertion mistake.
+* Still open on the visual side: the enemy models in a cast swap render untextured in motion (round 42) - the swapped
+  model's **material bindings** are the next parse target; the maps are present in the arc but not what the materials
+  resolve.
