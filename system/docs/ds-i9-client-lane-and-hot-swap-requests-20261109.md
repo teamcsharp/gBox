@@ -1096,3 +1096,16 @@ The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned b
 * So the operator's grenade ring is available where the native lane runs (RE5 Switch on Linux) and is not implementable
   on the i9's Windows/Yuzu path with the current mechanism; an i9 version would need a RAM-level grenade spawn (GDB
   stub writes) and RE6 addresses, which is a separate piece of work.
+
+## Round 54 status (2026-11-10, ~02:25 CST): measured - AES-NI is not the decrypting bottleneck; parallelism does not help
+
+* Added `gbox/switch_romfs_extract.py` (+3 tests): extract a RomFS tree with a worker pool, each worker opening its own
+  container handle (the Nca object is read-only for the key/section, so the pool is safe).
+* **Benchmark on the real 18.8 GB RE6 base container** (192 files, 24,566,573 bytes, page cache warm):
+  **sequential 0.10 s (~245 MB/s) vs 8 threads 0.30 s** - parallel is three times *slower*. The per-file open/seek
+  dominates and the AES-NI CTR path is already saturating the read side, so the "full power of the cpu" for this
+  workload is already in use, and GPU offload would not move it either.
+* The module docstring states that measurement rather than a hoped-for speedup, and `threads=` stays exposed so a cold
+  tier or a slow network share can be tested rather than assumed.
+* Consequence for the objective's "cpu / gpu / external gpu" phrase: the decrypting task is I/O and open-bound at
+  ~245 MB/s on this hardware; the useful scaling is across *containers* (dispatch more jobs), not inside one file.
