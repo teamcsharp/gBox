@@ -1249,17 +1249,63 @@ teleporter at `(233.8, 274.5)`. Both healthy, no cutscene, movement working thro
    the route if the room is not the one the waypoint belongs to.
 3. Then the guild counter (talk to the receptionist), the quest, and the teleporter to Forest 1.
 
+## Round 22 (2026-11-10) — Pioneer 2's rooms share one world, the doors map to rooms, and the route can now say where it is
+
+### The finding that changes how routes are built
+
+P1 was in room 20 (the plaza). Walking him back to **`(185, 173)`** -- the same coordinate that had taken him *out* of
+room 10 -- put him **back in room 10**:
+
+```
+start (101.9, 118.8) room 20
+walk to (185.0, 173.0) -> arrived (183.3, 175.3)  room 10
+```
+
+So Pioneer 2's sub-rooms **share one world space** and a doorway is a position, not a special exit object: the same
+coordinates work in both directions. That removes a whole class of "how do I get out of here" work -- a route is
+coordinates plus the room they belong to.
+
+### The doors, walked rather than guessed
+
+| door entity | coordinate | room it leads to |
+|---|---|---|
+| `TObjCityDoor_Guild` | (185, 173) | **20** -- the plaza (NPCs: cloakroom, connoisseur, soldiers) |
+| `TObjCityDoor_Warp` | (254, 25) | **40** -- **the teleporter room** (frame `pl3-room40.jpg`: the ringed pad is there) |
+
+and room 41 is the Principal's office (Expert/Governor/Secretary NPCs), room 30 the shop floor (merchants), room 10 the
+lobby where both players spawn.
+
+P1 reached the teleporter room by closed-loop walking (three legs, each recalibrating), which is the first multi-leg
+route the walker has run live.
+
+### `walk_path` is now room-aware (+2 tests, 12 total)
+
+* it records `room_before` / `room_after` per leg and marks a change as `transition` -- a door walked through is
+  **not** a stall, and round 21's failure mode (a route that keeps walking in the new room as if the old coordinates
+  still applied) is now visible in the report;
+* `expect_room` makes a route refuse to start in a room it was not written for, because entity coordinates are per-room.
+
+### What did not happen
+
+The teleporter pad **did not open a destination menu** from any of four positions inside room 40 (`(300,25)`,
+`(257,-40)`, `(210,25)`, `(257,90)`), and mode stayed in the town family throughout. So either the pad needs to be stepped
+on more precisely than an 8-unit tolerance allows, or multiplayer's teleporter requires both players present -- P2 was
+still in the lobby the whole time.
+
+P1's accept test therefore remains open, but the *navigation* problem is now solved and instrumented; what is left is
+finding the pad's trigger and getting the party together.
+
 ## 7. Next
 
-1. Keep the co-op party together: P1 is in room 20 (the plaza) and P2 in room 10 (the lobby), because P1 walked
-   through a door that P2 did not. PSO co-op expects both players in the same room for area changes, so the route
-   has to move both characters: P1 back through the door, then both to the guild counter.
-2. Make `walk_path` **room-aware**: walking into a door changes the room id with no button press, and entity
-   coordinates are per-room (`TObjCityDoor_Guild` at 185,173 is a room-10 coordinate and means nothing in room 20).
-   A route must re-read the entity table after a transition and refuse waypoints that belong to another room.
-3. Then the guild counter (talk to the receptionist), the quest, and the teleporter to Forest 1, then P1's accept
-   test (three cold launches), then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
+1. **Find the teleporter's trigger.** P1 stood at four positions in the teleporter room (room 40) and no destination
+   menu opened. Either the pad must be stepped on precisely (an 8-unit tolerance is coarse: try a 2-unit walk onto
+   the pad's centre) or multiplayer's teleporter needs both players present. Test the precise approach first -- it is
+   cheap -- then bring P2 through the `TObjCityDoor_Warp` door at (254,25).
+2. Then the destination list -> Forest 1, and P1's accept test (three cold launches, both players, no warp).
+3. Then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
 
-Verified this round: `gbox.pso_kbwalk` calibrates around a blocked direction (opposite + negate), recalibrates on a
-stall, and walks waypoints (+3 tests, 10 total). Live, it steered player 1 for 12 steps and 30 units to the Hunter's
-Guild door's coordinates and reported arrival -- the first closed-loop navigation of a named object in this lane.
+Route facts established this round: Pioneer 2's sub-rooms **share one world space** -- walking to (185,173) went
+room 10 -> 20, and walking back to the same coordinate returned 20 -> 10, with no button press. `TObjCityDoor_Guild`
+(185,173) leads to the plaza (room 20); `TObjCityDoor_Warp` (254,25) leads to the teleporter room (room 40); room 41
+is the Principal's office; room 30 the shops. `walk_path` now records room transitions per leg and refuses a route
+written for another room.
