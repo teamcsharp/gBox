@@ -66,8 +66,8 @@ def build(disc, cls: str = "C", head: int = 0, colour: int = 0, out_dir: Path | 
     # The GameCube disc stores these flat and lower-case (`plAbdy00.nj`); only a Dreamcast rip has `PSO/PL...`. The
     # translator picks whichever the disc actually has (gbox.pso_gc_paths), which is what made this function fail on
     # GPOE8P before (it asked for a `PSO/` directory the disc does not contain).
-    body_nj = ninja.NJ(pso_gc_paths.read_part(disc, f"PSO/PL{cls}BDY00.NJ"))
-    head_nj = ninja.NJ(pso_gc_paths.read_part(disc, f"PSO/PL{cls}HED{head:02d}.NJ"))
+    body_nj = pso_gc_paths.nj_part(disc, f"PSO/PL{cls}BDY00.NJ")
+    head_nj = pso_gc_paths.nj_part(disc, f"PSO/PL{cls}HED{head:02d}.NJ")
     mount = HEAD_MOUNT.get(cls, 59)
     mw = body_nj.bones[mount]["m"]
     # put the head's triangles into the body as extra texture ids (100 + id), moved to the mount, weighted to it
@@ -86,7 +86,7 @@ def build(disc, cls: str = "C", head: int = 0, colour: int = 0, out_dir: Path | 
     name = name or f"pso_{CLASSES['ABCDEFGHI'.index(cls)].lower()}_h{head}_c{colour}"
     tex_files: list[str | None] = [None] * 102
     if out_dir is not None:
-        ents = afs(disc.read(f"PSO/PL{cls}TEX.AFS"))
+        ents = afs(pso_gc_paths.read_part(disc, f"PSO/PL{cls}TEX.AFS"))
         if cls == "C":
             b_ids, h_ids = hucast_textures(colour, head, section_id)
         else:                                               # ponytail: other classes' AFS layouts not mapped yet
@@ -321,7 +321,7 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
                     o += 2
             if mat:
                 break
-    bml = disc.read(mpath)
+    bml = pso_gc_paths.read_part(disc, mpath)
     extras_bml = [n for n in (e["name"].split(b"\0")[0].decode("latin-1").lower() for e in bml_files(bml))
                   if n[3:6] in ("hed", "hai", "cap")]
     bml_sec = (disc.files[mpath][1] + 2047) // 2048
@@ -363,7 +363,7 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
     progress(20, f"Fitting {name} to the {CLASSES['ABCDEFGHI'.index(cls)]} body ({len(nodes)} nodes)")
     r = NS.fit(model, roles, tgt, work, name, PSO_BUDGETS, blender, encode, 128, scale, progress)
     body_nj, bml2 = r["data"]
-    afs_data = bytearray(disc.read(tpath))
+    afs_data = bytearray(pso_gc_paths.read_part(disc, tpath))
     n = struct.unpack_from("<I", afs_data, 4)[0]
     tab = [struct.unpack_from("<II", afs_data, 8 + 8 * i) for i in range(n)]
     progress(85, f"Writing the atlas into {n} class textures")

@@ -70,3 +70,53 @@ def class_parts(cls: str, head: int = 0) -> dict:
             "head": gc_path(f"PSO/PL{cls}HED{head:02d}.NJ"),
             "pack": gc_path(f"PSO/PL{cls}NJ.BML"),
             "textures": gc_path(f"PSO/PL{cls}TEX.AFS")}
+
+
+# --- NJCM byte order: the Dreamcast packs are little-endian, the GameCube ones are not --------------------------
+#
+# The chunk framing stays little-endian on both platforms (the size field is read `<I` everywhere), but the node/vertex
+# payload became **big-endian** on GameCube. `ninja.NJ` defaults to little-endian, which is right for a Dreamcast rip and
+# wrong here: on `plCbdy00.nj` the root model offset is `30 10 00 00`-style bytes and reading them little-endian gave
+# 0x30100000, a 806 MB offset into a 24 KB file.
+#
+# The probe below reads that one field both ways and believes whichever lands inside the chunk.
+
+import struct
+
+
+def njcm_payload(data: bytes) -> bytes:
+    """The NJCM chunk's payload (after the 8-byte magic+size framing)."""
+    o = data.find(b"NJCM")
+    if o < 0:
+        raise ValueError("no NJCM chunk")
+    size = struct.unpack_from("<I", data, o + 4)[0]
+    return data[o + 8:o + 8 + size]
+
+
+def njcm_is_big_endian(data: bytes) -> bool:
+    """True when an NJCM's node payload is big-endian, which is what every GameCube pack in this game uses."""
+    payload = njcm_payload(data)
+    if len(payload) < 8:
+        raise ValueError("NJCM payload too short to hold a root node")
+    model_be = struct.unpack_from(">I", payload, 4)[0]
+    model_le = struct.unpack_from("<I", payload, 4)[0]
+    in_range_be = 8 <= model_be < len(payload)
+    in_range_le = 8 <= model_le < len(payload)
+    if in_range_be and not in_range_le:
+        return True
+    if in_range_le and not in_range_be:
+        return False
+    return model_be < model_le          # both plausible: the smaller offset is the real one
+
+
+def nj(data: bytes, *, be: bool | None = None):
+    """Parse an NJCM with the right byte order, without the caller having to know which platform it came from."""
+    from . import ninja
+    if be is None:
+        be = njcm_is_big_endian(data)
+    return ninja.NJ(data, be=be)
+
+
+def nj_part(disc, path: str, *, be: bool | None = None):
+    """Read a character part from whichever name the disc has and parse it with the right byte order."""
+    return nj(read_part(disc, path), be=be)
