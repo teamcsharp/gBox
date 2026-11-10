@@ -904,3 +904,18 @@ So the mercmode chain is now complete on the client side: `switch_romfs_material
   arcs, ready for the swap builder.
 * Next: have `swap_models`/`cast_swap_build` resolve a cast model's material texture names against the `uPlTex` arcs and
   write them into the enemy arc, so swapped enemies render with the cast's real textures instead of white.
+
+## Round 41 status (2026-11-09, ~00:05 CST): swapped enemies now carry the cast's textures
+
+* **`skin_swap._attach_donor_textures`** (+ `_character_code`, 1 new test, 6 pass): after a cast model is swapped into an
+  enemy arc, the donor character's texture maps are appended from the `uPlTex<code>_*.arc` archives (the code comes from
+  the donor model path, e.g. `pl0200` -> `uPlTex0200_*`). The filter keeps only the maps named `pl<code>...` so the enemy
+  arc does not inherit other characters' parts.
+* Verified in the built overlay (`castswap-tex-r41c`, registered as `recovery-re6-castswap-tex-r41`):
+  `uEm5200` +61 maps (`pl0200_01Body_NM/BM/MM` among them), `uEm5210` +36, `uEm1000` +40, `uEm2100` +40, `uEm2210` +42;
+  `uEm2300` (helper) +0 because its model carries no `pl0XXX` code.
+* The build launches: at the CONTINUE? prompt the two background figures now render **with cast textures** instead of
+  the flat white of round 39 (`tx41-now.jpg`), and the round started with the mission intro
+  ("You'll have to hold out against the hostiles until we get there!", `tx41-live.jpg`).
+* Next: a gameplay frame with the enemies in view to confirm the maps apply in-motion, and the same carry-over for the
+  `random_swap_build` path (player swaps already render clean because the player's own texture arcs are loaded).
