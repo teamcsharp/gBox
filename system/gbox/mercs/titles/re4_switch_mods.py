@@ -13,7 +13,8 @@ sidebar (gbox/merc_live_controls.py, through the re5_mods tool) sets these ops:
                               dead), never a raise. Measured fields: re4_switch U_HP / U_HP_MAX (Ganados 400/400 and
                               3500/3500 read live 2026-11-10); the damage routine FUN_004cd1c0 subtracts from +0x3c2.
   one_hit on=true             the same with a floor of 1: every Ganado dies to the first hit
-  add_time seconds=N          the round clock (the f32 re4_switch.ClockFinder found: snap["clock_addr"]) moved by N
+  add_time seconds=N          the round clock (the HUD's CountDown, snap["clock_addr"] with clock_source "countdown":
+                              frames at 30 a second in its +8; ClockFinder's float, seconds, only as the fallback) moved by N
                               (-3600..3600), never under 1 s; written, read back, and confirmed on the next snapshot (a
                               clock whose master copy rewrites it is reported as not holding)
   set_time seconds=N          the clock set to 1..CLOCK_MAX_S
@@ -507,32 +508,39 @@ def one_hit(ad, on: bool, snap: dict | None = None) -> dict:
 
 
 # --- the clock ----------------------------------------------------------------------------------------------------
-def _clock(ad, snap: dict | None) -> tuple[int, float] | None:
+def _clock(ad, snap: dict | None) -> tuple[int, float, float] | None:
+    """(address of the clock's f32, seconds left, units per second) or None. The HUD's own clock (snap clock_source
+    "countdown": re4_switch.COUNTDOWN, the struct's address) keeps frames at 30 a second in its +8; ClockFinder's float
+    (the fallback) is seconds."""
     addr = (snap or {}).get("clock_addr")
     if not isinstance(addr, int):
         return None
+    scale = 1.0
+    if (snap or {}).get("clock_source") == "countdown":
+        addr, scale = addr + D.CD_FRAME, D.CD_FPS
     try:
-        v = struct.unpack("<f", bytes(ad.read_memory(addr, 4)))[0]
+        v = struct.unpack("<f", bytes(ad.read_memory(addr, 4)))[0] / scale
     except (ValueError, OSError, struct.error):
         return None
-    return (addr, v) if math.isfinite(v) and -1.0 <= v <= CLOCK_MAX_S else None
+    return (addr, v, scale) if math.isfinite(v) and -1.0 <= v <= CLOCK_MAX_S else None
 
 
-def _write_clock(ad, addr: int, value: float) -> float:
-    ad.write_memory(addr, struct.pack("<f", value))
-    return struct.unpack("<f", bytes(ad.read_memory(addr, 4)))[0]
+def _write_clock(ad, addr: int, value: float, scale: float = 1.0) -> float:
+    """The clock at `value` seconds (in its own units: x scale); the value read back, in seconds."""
+    ad.write_memory(addr, struct.pack("<f", value * scale))
+    return struct.unpack("<f", bytes(ad.read_memory(addr, 4)))[0] / scale
 
 
 def _clock_op(ad, snap, *, add=None, absolute=None) -> dict:
     found = _clock(ad, snap)
     if found is None:
-        return {"verified": False, "reason": "the round clock is not found yet (re4_switch.ClockFinder): a round must "
-                                              "be playing for a few seconds"}
-    addr, now = found
+        return {"verified": False, "reason": "the round clock is not read yet (re4_switch.game_state's CountDown): a "
+                                              "round must be playing"}
+    addr, now, scale = found
     want = (now + add) if absolute is None else absolute
     want = min(max(want, 1.0), CLOCK_MAX_S)
     try:
-        back = _write_clock(ad, addr, want)
+        back = _write_clock(ad, addr, want, scale)
     except (ValueError, OSError, RuntimeError, struct.error) as exc:
         return {"verified": False, "reason": f"clock write failed: {type(exc).__name__}: {exc}"[:160]}
     st = _state(ad)
@@ -720,7 +728,7 @@ def maintain(ad, snap: dict | None = None) -> dict:
             found = _clock(ad, snap)
             if found is not None and found[1] > 0:
                 try:
-                    _write_clock(ad, found[0], min(found[1] + new * kt["seconds"], CLOCK_MAX_S))
+                    _write_clock(ad, found[0], min(found[1] + new * kt["seconds"], CLOCK_MAX_S), found[2])
                     st["kill_time_added"] = st.get("kill_time_added", 0.0) + new * kt["seconds"]
                     out["kill_time_added"] = new * kt["seconds"]
                 except (ValueError, OSError, RuntimeError, struct.error) as exc:
