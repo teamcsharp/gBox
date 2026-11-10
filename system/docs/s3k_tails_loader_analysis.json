@@ -1,0 +1,312 @@
+{
+ "game_id": "ed2bef5be2826deb",
+ "source_sha256": "fba0677fde9f76df93f3e98d6310d8af68b9847bde16e253d73cd4dd8134ed23",
+ "character": "tails",
+ "tables": {
+  "dplc": 1351818,
+  "art_main": 3277024,
+  "art_extra": 1326336,
+  "mappings": 1347256,
+  "anim": 88752
+ },
+ "loader_routine": 89220,
+ "xrefs": {
+  "dplc": [
+   {
+    "ref_at": 89216,
+    "insn": {
+     "addr": 89214,
+     "bytes": "45f90014a08a",
+     "text": "lea.l $14a08a.l, a2"
+    }
+   }
+  ],
+  "art_main": [
+   {
+    "ref_at": 89238,
+    "insn": {
+     "addr": 89236,
+     "bytes": "2c3c003200e0",
+     "text": "move.l #$3200e0, d6"
+    }
+   }
+  ],
+  "art_extra": [
+   {
+    "ref_at": 89250,
+    "insn": {
+     "addr": 89248,
+     "bytes": "2c3c00143d00",
+     "text": "move.l #$143d00, d6"
+    }
+   }
+  ],
+  "mappings": [
+   {
+    "ref_at": 79592,
+    "insn": {
+     "addr": 79590,
+     "bytes": "217c00148eb8000c",
+     "text": "move.l #$148eb8, $c(a0)"
+    }
+   },
+   {
+    "ref_at": 309702,
+    "insn": null
+   },
+   {
+    "ref_at": 378808,
+    "insn": {
+     "addr": 378806,
+     "bytes": "217c00148eb8000c",
+     "text": "move.l #$148eb8, $c(a0)"
+    }
+   },
+   {
+    "ref_at": 383766,
+    "insn": {
+     "addr": 383764,
+     "bytes": "237c00148eb8000c",
+     "text": "move.l #$148eb8, $c(a1)"
+    }
+   }
+  ],
+  "anim": [
+   {
+    "ref_at": 88164,
+    "insn": {
+     "addr": 88162,
+     "bytes": "43f900015ab0",
+     "text": "lea.l $15ab0.l, a1"
+    }
+   }
+  ]
+ },
+ "loader_disasm": [
+  {
+   "addr": 89188,
+   "bytes": "d600",
+   "text": "add.b d0, d3"
+  },
+  {
+   "addr": 89190,
+   "bytes": "2c3c00336620",
+   "text": "move.l #$336620, d6"
+  },
+  {
+   "addr": 89196,
+   "bytes": "6038",
+   "text": "bra.b $15ca6"
+  },
+  {
+   "addr": 89198,
+   "bytes": "7000",
+   "text": "moveq #$0, d0"
+  },
+  {
+   "addr": 89200,
+   "bytes": "10280022",
+   "text": "move.b $22(a0), d0"
+  },
+  {
+   "addr": 89204,
+   "bytes": "b038f7de",
+   "text": "cmp.b $f7de.w, d0"
+  },
+  {
+   "addr": 89208,
+   "bytes": "6754",
+   "text": "beq.b $15cce"
+  },
+  {
+   "addr": 89210,
+   "bytes": "11c0f7de",
+   "text": "move.b d0, $f7de.w"
+  },
+  {
+   "addr": 89214,
+   "bytes": "45f90014a08a",
+   "text": "lea.l $14a08a.l, a2"
+  },
+  {
+   "addr": 89220,
+   "bytes": "d040",
+   "text": "add.w d0, d0"
+  },
+  {
+   "addr": 89222,
+   "bytes": "d4f20000",
+   "text": "adda.w (a2, d0.w), a2"
+  },
+  {
+   "addr": 89226,
+   "bytes": "3a1a",
+   "text": "move.w (a2)+, d5"
+  },
+  {
+   "addr": 89228,
+   "bytes": "5345",
+   "text": "subq.w #$1, d5"
+  },
+  {
+   "addr": 89230,
+   "bytes": "6b3e",
+   "text": "bmi.b $15cce"
+  },
+  {
+   "addr": 89232,
+   "bytes": "383cd400",
+   "text": "move.w #$d400, d4"
+  },
+  {
+   "addr": 89236,
+   "bytes": "2c3c003200e0",
+   "text": "move.l #$3200e0, d6"
+  },
+  {
+   "addr": 89242,
+   "bytes": "0c4001a2",
+   "text": "cmpi.w #$1a2, d0"
+  },
+  {
+   "addr": 89246,
+   "bytes": "6506",
+   "text": "bcs.b $15ca6"
+  },
+  {
+   "addr": 89248,
+   "bytes": "2c3c00143d00",
+   "text": "move.l #$143d00, d6"
+  },
+  {
+   "addr": 89254,
+   "bytes": "7200",
+   "text": "moveq #$0, d1"
+  },
+  {
+   "addr": 89256,
+   "bytes": "321a",
+   "text": "move.w (a2)+, d1"
+  },
+  {
+   "addr": 89258,
+   "bytes": "3601",
+   "text": "move.w d1, d3"
+  },
+  {
+   "addr": 89260,
+   "bytes": "e04b",
+   "text": "lsr.w #$8, d3"
+  },
+  {
+   "addr": 89262,
+   "bytes": "024300f0",
+   "text": "andi.w #$f0, d3"
+  },
+  {
+   "addr": 89266,
+   "bytes": "06430010",
+   "text": "addi.w #$10, d3"
+  },
+  {
+   "addr": 89270,
+   "bytes": "02410fff",
+   "text": "andi.w #$fff, d1"
+  },
+  {
+   "addr": 89274,
+   "bytes": "eb89",
+   "text": "lsl.l #$5, d1"
+  },
+  {
+   "addr": 89276,
+   "bytes": "d286",
+   "text": "add.l d6, d1"
+  },
+  {
+   "addr": 89278,
+   "bytes": "3404",
+   "text": "move.w d4, d2"
+  },
+  {
+   "addr": 89280,
+   "bytes": "d843",
+   "text": "add.w d3, d4"
+  },
+  {
+   "addr": 89282,
+   "bytes": "d843",
+   "text": "add.w d3, d4"
+  },
+  {
+   "addr": 89284,
+   "bytes": "4eb900001526",
+   "text": "jsr $1526.l"
+  },
+  {
+   "addr": 89290,
+   "bytes": "51cdffda",
+   "text": "dbra d5, $15ca6"
+  },
+  {
+   "addr": 89294,
+   "bytes": "4e75",
+   "text": "rts"
+  },
+  {
+   "addr": 89296,
+   "bytes": "43f900015f60",
+   "text": "lea.l $15f60.l, a1"
+  },
+  {
+   "addr": 89302,
+   "bytes": "7000",
+   "text": "moveq #$0, d0"
+  },
+  {
+   "addr": 89304,
+   "bytes": "10280020",
+   "text": "move.b $20(a0), d0"
+  },
+  {
+   "addr": 89308,
+   "bytes": "b0280021",
+   "text": "cmp.b $21(a0), d0"
+  },
+  {
+   "addr": 89312,
+   "bytes": "6716",
+   "text": "beq.b $15cf8"
+  },
+  {
+   "addr": 89314,
+   "bytes": "11400021",
+   "text": "move.b d0, $21(a0)"
+  },
+  {
+   "addr": 89318,
+   "bytes": "117c00000023",
+   "text": "move.b #$0, $23(a0)"
+  },
+  {
+   "addr": 89324,
+   "bytes": "117c00000024",
+   "text": "move.b #$0, $24(a0)"
+  }
+ ],
+ "dplc_frames": 251,
+ "max_tiles_per_frame": 24,
+ "max_pieces_per_frame": 4,
+ "bank_switch_frame": 209,
+ "main_bank_art_bytes_used": 91456,
+ "writer_constraints": {
+  "coupled": [
+   "art (4bpp 8x8, 32 B/tile)",
+   "DPLC (per-frame (first,count) runs)",
+   "mappings (pieces index VRAM tile = player art base + n)",
+   "palette line"
+  ],
+  "dma_budget_tiles_per_frame": 24,
+  "hypothesis": "a donor frame must fit mapping pieces + DPLC runs of the slot's frame; art bank switch at frame index bank_switch_frame (hypothesis: cmpi.w on frame*2)"
+ }
+}
