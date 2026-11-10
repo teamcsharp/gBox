@@ -78,3 +78,24 @@ so there is no round trip or triangle count yet. The next step is to follow an i
 `0x9cf54`) and identify the model data it addresses, then use the `fmt2` header's counts to bound the vertex/index arrays.
 
 Tests: none changed (analysis only); CP0 baseline unchanged (45 failed / 1,329 passed / 132 skipped).
+
+## Round 59: where the fmt2 offsets point - coordinate arrays and a name table
+
+Following the offsets the `fmt2` header carries, on `Scene/map_aancient01_00n.rel`:
+
+* **`0x3834`** (one of the two header offsets) starts float data: `0x3420`, `0x57`, then `45.66, 19.0, -13.5, 49.36, 21.52,
+  -13.5, ...` - a run of **three-float records with repeated Z**, i.e. **vertex/position data** (a model's point list).
+* **`0x858`** (the other header offset) also starts float data: `0x44` then `1300.0, 0.0, 575.0, 0.0, 0x3fff, 0.0, 54.54,
+  ...` - **bounding/coordinate values** (1300 and 575 are room-scale numbers).
+* **`0xaa160`** (the first of the ascending offsets) is **ASCII**: `floo`, `r`, `g032_k_r`, `ed`, `g128_kab`, `e_f`, ... -
+  a **name table** (room/object names such as `g032_k_red`), not geometry.
+
+The **index offsets** in the header (`0x1d234`, `0x1fea4`, `0x4ce4`, `0x9cf54`, `0x114f4`, `0x44444`) each point at a tiny
+`0x17`-tagged record: `{u32 tag = 0x17; u32 ptr = offset - 0x24; zeros}`, i.e. a **back-link node** whose pointer addresses a
+`0x24`-byte descriptor immediately before it. That is a linked list of `0x17` nodes, not geometry.
+
+**So the decoder's inputs are now identified:** two float arrays (positions at `0x3834`, bounds at `0x858`), a name table at
+`0xaa160`, and a chain of `0x17` back-link nodes for the descriptor list. What is not yet done is turning the position array
+into triangles and comparing the triangle count with `c.rel`'s footprint - the accept's remaining half.
+
+Tests: none changed; CP0 baseline unchanged (45 failed / 1,329 passed / 132 skipped).
