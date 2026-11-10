@@ -919,3 +919,19 @@ So the mercmode chain is now complete on the client side: `switch_romfs_material
   ("You'll have to hold out against the hostiles until we get there!", `tx41-live.jpg`).
 * Next: a gameplay frame with the enemies in view to confirm the maps apply in-motion, and the same carry-over for the
   `random_swap_build` path (player swaps already render clean because the player's own texture arcs are loaded).
+
+## Round 42 status (2026-11-09, ~00:10 CST): the attached maps do not reach the enemies in motion yet
+
+* Captured the textured cast-swap round **in motion** (`tx42-live2.jpg`): timer `01'08"03`, `000/150`, the player model
+  textured (cast body), HUD up - and **four enemies standing in front of the player still render as white/checkered
+  (untextured) models**.
+* So `_attach_donor_textures` puts the donor's maps into the enemy arc (verified offline: uEm5200 +61, etc.) but they are
+  not what the swapped model's materials bind at render time. The checker pattern is the engine's missing-material
+  placeholder, which points at the **material bindings**, not only the texture entries: the swapped MRL brings its own
+  material table, and those materials must be resolving texture names the enemy arc still does not provide in the form
+  the renderer looks them up (the entries were appended with the donor's own tag/format).
+* The continue-screen "textured figures" of round 41 were therefore misleading - they were not the enemy models.
+* Next: parse the swapped model's material table (in the MRL) to get the exact texture names/indices it binds, and add
+  those to the enemy arc under the same names *and* with the material's expected tag; or swap the enemy's MAT/material
+  resources together with the model. `mt_arc` can list and replace entries; `model_swap` already knows the model
+  payload, so the material table is the next parse target.
