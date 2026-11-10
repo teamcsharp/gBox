@@ -6,6 +6,7 @@ handed.
 """
 import hashlib
 import json
+import math
 import pathlib
 import struct
 import threading
@@ -91,7 +92,7 @@ def class_controller(unit_vtable=0x284B788, spawn_fail_at=None, position=(1000.0
     ctl.heap = 0x220000000
     ctl.lock = threading.RLock()
     ctl.failed = ctl.recoverable = False
-    ctl.mem, ctl.writes, ctl.calls, ctl.ensured = {}, [], [], []
+    ctl.mem, ctl.writes, ctl.calls, ctl.ensured, ctl.spawns = {}, [], [], [], []
     ctl.pid, ctl.identity = 4242, (4242, 7)           # flash() checks the process identity before anything else
     hp_box = {"v": 1000}
 
@@ -131,6 +132,7 @@ def class_controller(unit_vtable=0x284B788, spawn_fail_at=None, position=(1000.0
                 return 0
             unit = 0x230000000 + (n - 1) * 0x10000
             born = 5000 + n - 1
+            ctl.spawns.append(unit)
             put(unit, struct.pack("<Q", ctl.base + unit_vtable))
             put(unit + 0x1308, struct.pack("<I", born))
             put(unit + 0x1300, struct.pack("<Q", ctl.player))
@@ -309,3 +311,48 @@ def test_a_shell_is_not_advertised_as_a_ring_kind():
     # (0x288c9a0) refuses it, so it stays out of the ring's kinds until the launcher's own fire path is wired.
     assert set(C.SHELLS) & set(N.RING_IMPLEMENTED_KINDS) == set()
     assert set(C.SHELLS) & set(C.CLASSES) == set()
+
+
+# ---- an explosive ring keeps its distance -----------------------------------------------------------------------------------
+
+def _placed(ctl):
+    """{unit: (x, y, z)} from the position write each spawned unit received."""
+    out = {}
+    for at, data in ctl.writes:
+        for unit in ctl.spawns:
+            if at == unit + N.RING_UNIT_POS:
+                out[unit] = struct.unpack("<3f", data)
+    return out
+
+
+def _distances(ctl, origin):
+    return [math.hypot(x - origin[0], z - origin[2]) for x, _y, z in _placed(ctl).values()]
+
+
+def test_an_explosive_ring_never_places_a_grenade_inside_its_own_blast():
+    origin = (1000.0, 800.0, -2000.0)
+    ctl = class_controller(unit_vtable=C.CLASSES["hand"].vtable, position=origin)
+    result = ctl.grenade_ring("hand", allow_unverified=True, count=4)
+    assert result["state"] == "confirmed"
+    dists = _distances(ctl, origin)
+    assert len(dists) == 4 and min(dists) >= N.RING_EXPLOSIVE_CLEAR_CM
+    assert dists == sorted(dists)                                   # the ring still expands outward
+    assert result["inner_cm"] >= N.RING_EXPLOSIVE_CLEAR_CM
+
+
+def test_an_explosive_ring_asked_for_a_short_radius_is_raised_and_says_so():
+    ctl = class_controller(unit_vtable=C.CLASSES["incendiary"].vtable)
+    result = ctl.grenade_ring("incendiary", allow_unverified=True, count=2, radius_cm=300.0, inner_cm=100.0)
+    assert result["state"] == "confirmed"
+    assert result["radius_cm"] == N.RING_EXPLOSIVE_CLEAR_CM
+    assert result["inner_cm"] == N.RING_EXPLOSIVE_CLEAR_CM
+    assert min(_distances(ctl, (1000.0, 800.0, -2000.0))) >= N.RING_EXPLOSIVE_CLEAR_CM
+
+
+def test_the_flash_ring_keeps_its_verified_near_floor():
+    # the flash is harmless up close: the 150 cm inner radius and 250 cm floor are unchanged and still allowed
+    ctl = class_controller()
+    result = ctl.grenade_ring("flash", count=3, radius_cm=250.0, inner_cm=100.0)
+    assert result["state"] == "confirmed"
+    assert result["radius_cm"] == 250.0 and result["inner_cm"] == 100.0
+    assert min(_distances(ctl, (1000.0, 800.0, -2000.0))) >= 100.0

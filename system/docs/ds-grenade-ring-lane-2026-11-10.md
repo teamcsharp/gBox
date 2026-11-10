@@ -333,3 +333,29 @@ table and this module now agree; the barrage's random kinds stay flash-only unti
 
 Tests: `test_re6_class_images.py` (21) incl. the tree cross-check and the "not a ring kind" guard; the RE6/intervention
 set **126 passed**.
+
+## Round 51 (2026-11-10, later session) — an explosive ring keeps its distance (RE6, and the RE5 equivalent)
+
+Found while preparing the hand/incendiary receipts: the ring's distance guards were sized for the **verified flash** -
+`RING_SELF_CLEAR_CM = 250` and a default inner radius of `150` - and the new explosive kinds inherited them. A default
+hand ring would therefore have placed its first grenades 150 cm from the player, i.e. inside his own blast: the first
+receipt would have been a self-damage one, and the kind would have looked broken when the placement was the fault.
+
+**Fixed in `re6_switch_native` (branch `ds-re6-ring-explosive-floor-20261110`):**
+- `RING_EXPLOSIVE_CLEAR_CM = 600.0` - the smallest radius an explosive kind (hand, incendiary) may be ringed at.
+- `grenade_ring` uses it as the floor for both the outer radius and the inner ring when the kind is not the flash, so
+  no default (or short requested) explosive ring can place a grenade inside the blast; the clamp is reported in the
+  receipt (`radius_cm`, `inner_cm`), so nobody has to guess what the ring actually did.
+- The flash path is untouched: 150 cm inner and 250 cm floor still apply (it is harmless up close, and that is the
+  live-verified behaviour).
+
+**Tests** (`test_re6_class_images.py`, 25 in the file): a default hand ring places all four grenades at >= 600 cm and
+still expands outward; an incendiary ring asked for 300/100 cm is raised to 600 and the receipt says so; the flash ring
+keeps its 150/250 near field. The rest of the RE6/intervention set stays green.
+
+**The RE5 ring has the same shape and gets the same fix on `ds-re5-ring-explosive-floor-20261110`**, so the two titles
+cannot diverge on the safety margin.
+
+**Still blocked on the live side:** the receipts for hand/incendiary (RE6 and RE5) need the branches deployed on
+lilspark and one round fired per kind; the probes and the exact request are in the sections above. Until then
+`grenade_status` advertises the flash only, which is what "no silent substitution" means here.
