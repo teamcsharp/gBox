@@ -3,6 +3,7 @@
 No live game: the images are derived from the pinned, verified blobs and their replaced instructions checked word
 for word; the controller runs against a fake emulator that records every native call and the class it was handed.
 """
+import math
 import struct
 import threading
 
@@ -169,3 +170,46 @@ def test_only_the_verified_kind_is_advertised():
     assert rows["flash"]["available"] is True
     assert all(rows[k]["available"] is False and rows[k]["reason"] for k in ("hand", "incendiary"))
     assert set(N.RING_IMPLEMENTED_KINDS) == {"flash", "hand", "incendiary"}
+
+
+# ---- an explosive ring keeps its distance -----------------------------------------------------------------------------------
+
+def _placed(ctl):
+    """{unit: (x, y, z)} from the position write each spawned unit received."""
+    out = {}
+    for at, data in ctl.writes:
+        for unit in ctl.spawns:
+            if at == unit + N.RING_UNIT_POS:
+                out[unit] = struct.unpack("<3f", data)
+    return out
+
+
+def _near(ctl, origin):
+    return min(math.hypot(x - origin[0], z - origin[2]) for x, _y, z in _placed(ctl).values())
+
+
+def test_a_hand_ring_never_places_a_grenade_inside_its_own_blast():
+    origin = (1000.0, 800.0, -2000.0)
+    ctl = ring_controller(unit_vtable=HAND_VT, position=origin)
+    result = ctl.grenade_ring("hand", allow_unverified=True, count=4)
+    assert result["state"] == "confirmed"
+    assert len(_placed(ctl)) == 4
+    assert _near(ctl, origin) >= N.RING_EXPLOSIVE_CLEAR_CM
+    assert result["inner_cm"] >= N.RING_EXPLOSIVE_CLEAR_CM
+
+
+def test_an_incendiary_ring_asked_for_a_short_radius_is_raised_and_says_so():
+    ctl = ring_controller(unit_vtable=HAND_VT)
+    result = ctl.grenade_ring("incendiary", allow_unverified=True, count=2, radius_cm=300.0, inner_cm=100.0)
+    assert result["state"] == "confirmed"
+    assert result["radius_cm"] == N.RING_EXPLOSIVE_CLEAR_CM
+    assert result["inner_cm"] == N.RING_EXPLOSIVE_CLEAR_CM
+    assert _near(ctl, (1000.0, 800.0, -2000.0)) >= N.RING_EXPLOSIVE_CLEAR_CM
+
+
+def test_the_flash_ring_keeps_its_verified_near_floor():
+    ctl = ring_controller()
+    result = ctl.grenade_ring("flash", count=3, radius_cm=250.0, inner_cm=100.0)
+    assert result["state"] == "confirmed"
+    assert result["radius_cm"] == 250.0 and result["inner_cm"] == 100.0
+    assert _near(ctl, (1000.0, 800.0, -2000.0)) >= 100.0
