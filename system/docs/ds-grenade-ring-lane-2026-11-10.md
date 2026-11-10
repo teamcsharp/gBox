@@ -765,3 +765,57 @@ leaves no cave; truncated/foreign images are refused; the measured RE4 layout is
 
 **Next.** E2: the player unit's per-frame vtable slot (the `0xB09A60` / `0xB0C0A0` class tables are static, so the
 clone-vtable trigger can be designed against the image), then E3/E4/E5. The pinned cave is the one to install into.
+
+## Round 55 (2026-11-10 16:15 CST) - E2's slot found: the unit base-class transform virtual at vtable `+0x20`
+
+Working on the operator's own RE4 image (`D:\gBox\cache\re4-base\main.bin`, signature-verified in round 54). The
+question E2 asks: which slot of the player object's vtable does the unit manager call every frame?
+
+**The vtable tables.** The player classes carry their vtable at `+0`; the two measured Leon classes are
+`main+0xB09A60` and `main+0xB0C0A0` (23 entries each before the next structure; `re4_switch.PLAYER_CLASSES`). Every
+measured unit class in the game was compared - `0xAE7050` (Ganado), `0xAE8B10`, `0xAED318`, `0xAED3B0`, `0xAED470`
+(set objects), `0xAEDAD0`, `0xAEE5E0`, and both player classes:
+
+    slot  off   Ganado     set object  Leon A       Leon B
+     0   +0x00  0x08EBA0   0x00B2B0    0x00B2B0     0x00B2B0
+     1   +0x08  0x08EF90   0x1A8960…   0x322B20     0x3539C0
+     2   +0x10  0x00B290   0x00B290    0x317B50     0x317B50
+     3   +0x18  0x00B2A0   0x00B2A0    0x317D60     0x317D60
+     4   +0x20  0x2B6420   0x2B6420    0x2B6420     0x2B6420   <- the only base-class virtual all of them share
+     5   +0x28  0x08F470   0x1A81D0…   0x3222B0     0x353320
+     6   +0x30  0x08EFA0   0x08EB50    0x317240     0x317240
+
+**Slot +0x20 is `main+0x2B6420`, and its body is the unit transform sync.** It takes the unit in `x0` and:
+`add x20, x19, #0x48` (the target transform), then `+0xb0` rotation, `+0xa4` position, `+0xbc` scale, `+0x18` and a
+child chain at `+0x108` (it loops the child and syncs its `+0x48/+0xb0/+0xa4/+0xbc` too). Those are exactly the
+measured unit fields (`re4_switch.U_POS = 0xA4`, `U_YAW = 0xB4`, `U_SCALE = 0xBC`), and the renderer cannot draw a
+unit without its matrix. The slot is also the *only* implemented virtual shared by every one of those classes: the
+function pointer appears **304 times** in the image (one per unit class vtable) and is dispatched through
+`ldr xF, [xV, #0x20]; blr xF` at **739 sites in 128 functions**. Slot 2/3 (`0xB290`/`0xB2A0` for non-player classes)
+are tiny stubs or are overridden per family, so they are not the common per-frame call; slot +0x20 is.
+
+**The player classes' vtables are materialised in code at** `0x3C9730`, `0x3F4B9C` (three times), `0x3F4C1C`,
+`0x452768`, `0x483108`, `0x490A58`, `0x6469FC` (Leon A/B respectively), and their literal copies sit at
+`.rodata 0x67E380` / `0x683F48`. Both tables hold 23 functional entries (0..22) before zeros or the next structure
+(`0xB0C0A0` is followed by a string at index 23, `0xB09A60` by two zero words then another function table at 25); a
+32-entry (256-byte) copy of whatever table the live object carries is the safe clone length, because entries past the
+real end are byte-identical to memory the game never indexes as part of that vtable.
+
+**The E2 design, now with its slot:**
+
+1. read the player object through `S_PLAYER` then `S_PLAYER_2` (`re4_switch` already validates both; `S_PLAYER` may
+   read 0 on a live round - the doc records that), check `+0` is a vtable in `PLAYER_VTABLE_RANGE` and
+   `q(vt + 0x20) == base + 0x2B6420`;
+2. build the clone from the object's own 32 vtable entries (256 bytes), patch `+0x20` to the dispatcher's cave
+   address, install it into the vetted cave (`main+0x655880`, 1920 bytes - dispatcher plus 256-byte clone fits);
+3. one aligned 8-byte store of the clone address into `player+0` - the trigger; the restore writes the original
+   `vt` back. A crash leaves the object pointing at the cave clone, which is still readable, and the next attach
+   restores it.
+4. the dispatcher tail-calls `main+0x2B6420` after its own work, so the player's transform sync is not lost while the
+   harness is attached.
+
+The one remaining caveat is stated for E6: the tick count of the dispatcher on a live RE4 round is the final proof
+that this slot fires every frame. Nothing is claimed live yet; this is the static slot identification E2 asks for.
+
+**Next.** E0(c)'s hand-encoded dispatcher (movz/movk, mailbox poll, tail call; checked by capstone round trip and run
+under unicorn) and E3's private storage (RE4's allocator, or a proven-unused `.bss` range).
