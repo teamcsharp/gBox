@@ -1275,6 +1275,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/autoplay-coach.js"></script>
 <script src="compact-coach.js"></script>
 <script src="bot-logic-sidebar.js"></script>
+<script src="bot-strategy-panel.js"></script>
 <script src="client-refresh.js"></script>
 <script>
 // file:// cannot fetch the server directly; the authenticated desktop IPC is already bounded by the watchdog.
@@ -3841,6 +3842,7 @@ const VIEW = { mode: "auto", pip: null };                    // mode: auto (game
 let compactStreamUrl = '', compactTitle = '', compactHoverTimer = null, compactSession = null;
 let clientUpdateState = { pending: false, restart: false };
 const botLogicSidebar = GBoxBotLogicSidebar.create({ api: async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw new Error(r.error || 'request failed'); return r.data; } });
+const botStrategyPanel = GBoxBotStrategyPanel.create({ api: async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw new Error(r.error || 'request failed'); return r.data; } });
 const compactCoach = GBoxCompactCoach.create({ coach:GBoxAutoplayCoach,
   api:async(path,body) => { const r=await gbox.api(path,body); if(!r.ok) throw new Error(r.error || 'Coaching request failed'); return r.data; },
   show:visible => compactHover(visible), focusApp:() => gbox.appFocus?.(),
@@ -4387,7 +4389,7 @@ function pipMenu(x, y) {
                  ["pwrclick", `⌖ Right-click a character: character menu (${GBoxPickWhip.settings().rclick ? "on" : "off"})`],
                  ["pwpause", `⏸ Pause the game while picking (${GBoxPickWhip.settings().pause ? "on" : "off"})`],
                  ["ask", "❓ Ask a question…"], ["-"],
-                 ["mercs-map", "🗺 Mercenaries live map ↗"], ["mercs-review", "📊 Mercenaries run reviewer ↗"], ["mercmode", ""],
+                 ...(GBoxBotStrategyPanel.titleFor(EMB.title) ? [["bot-strategy", "🎯 Bot strategy: enable, reorder, weight…"]] : []), ["mercs-map", "🗺 Mercenaries live map ↗"], ["mercs-review", "📊 Mercenaries run reviewer ↗"], ["mercmode", ""],
                  ["fixgame", "⟳ Report & fix (relaunch this game)"],
                  // "⟳ Rebuild & relaunch <PC>": update that PC's code + packages, self-check, restart its worker and app (gbox/node_rebuild.py)
                  ...rebuildPcItems().map(p => [`rebuild:${p.name}`, esc(p.label)]), ["-"],
@@ -4585,6 +4587,7 @@ async function gameAction(a) {
     }catch(error){toast(error.message);}return;
   }
   try {
+    if(a==='bot-strategy')return await botStrategyPanel.open(GBoxBotStrategyPanel.titleFor(EMB.title));
     if(a==='mercs-map'||a==='mercs-review')return await openMercsWindow(a==='mercs-map'?'map':'reviewer');
     if (a.startsWith("bot:")) return botDemoInView(EMB.game, a.slice(4));   // "🤖 Bot demo on <PC>" for this game
     if (a.startsWith("rebuild:")) return rebuildNode(a.slice(8));           // "⟳ Rebuild & relaunch <PC>"
