@@ -39,6 +39,8 @@ KNOBS: dict[str, list[tuple]] = {
         ("RELOCATE", "Keep moving (relocate off crowds)", "Movement", "bool", 0, 1, 1, ""),
         ("RELOC_CROWD_N", "Crowd size that makes him move", "Movement", "int", 2, 10, 1, ""),
         ("WALL_GOV", "Wall governor (never push into walls)", "Movement", "bool", 0, 1, 1, ""),
+        ("ROOM_MAP", "Room map: never step into its walls", "Movement", "bool", 0, 1, 1,
+         "the stage's collision walls (#9360): a step toward one refused, steps along the floor, no shot through one"),
         ("QUICK_TURN", "Quick turn on one behind", "Movement", "bool", 0, 1, 1, "stick back + B"),
         ("BEHIND_R", "Behind-him threat range (cm)", "Movement", "float", 150, 600, 25, ""),
         ("HEADING_GOV_DEG_S", "Max turn speed (deg/s)", "Aim", "float", 60, 360, 10, "the camera never whips faster"),

@@ -45,6 +45,7 @@ from ..bot_look import BotLook, make_target
 from ..driver import Driver
 from . import re5_switch_aim, re5_switch_prompt
 from . import re5_specials                 # the characters' special moves in play (stun -> finisher, Wesker's dash)
+from . import re5_room_map                 # the stage's real map (#9360): walls / floor for walks and shots (ROOM_MAP)
 from .. import qte                         # universal QTE handling: the vision grab-fallback when the RAM read tears
 from .. import threat_memory               # who hurt him and what they did first, learned per class (THREAT_FILE)
 from ..core import combat                  # the universal fight (UNIVERSAL_CORE): at import, for the hot reload
@@ -1421,6 +1422,25 @@ STICK_8 = ((0, ("lup",)), (45, ("lleft", "lup")), (90, ("lleft",)), (135, ("ldow
            (-180, ("ldown",)), (-135, ("ldown", "lright")), (-90, ("lright",)), (-45, ("lright", "lup")))
 STAND_BUSY = frozenset({"held", "heal", "mine", "prompt", "dead", "flashbang", "native_equip", "quick_turn",
                         "reload", "rearm"})
+# The stage's real map (#9360: its Havok collision, checked against the bot's own live routes - gbox.re5_switch_room_map;
+# titles.re5_room_map). The nav mesh above is the game's AI floor; the collision's walls are what stops him. ROOM_MAP:
+#   * _room_guard, after the mesh guard, on every tick the left stick moves him (whatever made it, the gun down): the
+#     way ROOM_PROBE_CM ahead along the stick's own heading (ROOM_PROBE_RUN_CM with B) must cross no wall within his
+#     body's height, stay on the floor and close in on no wall nearer than ROOM_BRUSH_CM. Refused: on a tick the mesh's
+#     route steers with a clear line to its point, he goes on within MESH_FOLLOW_TOL of it, else the stick toward it;
+#     otherwise the stick toward the nearest of the eight directions clear on the room map and on the mesh (B only
+#     straight on; never a turn on the spot: NEVER_STAND above); none clear, no stick;
+#   * the never-stand step only along a way the room map clears too;
+#   * _walled_off (CLOSE_IN, the doctrine's clear(), the operator's mark): a wall of the room map on the shot's line,
+#     his gun MUZZLE_H up to the Majini's chest, walls him off too; the laserless heading's fire holds on one.
+# Experimental Facility has no map (#9360's s404 is not its collision). Stats room_map, room_map_steps_refused,
+# room_map_route_follows, room_map_boxed_in, room_map_refused_last, room_map_sight_blocks. Off: as before.
+ROOM_MAP = True
+ROOM_PROBE_CM, ROOM_PROBE_RUN_CM, ROOM_BRUSH_CM = 80.0, 130.0, 20.0
+# Combined with what he learns: a wall of the map his own step crosses (at most ROOM_LEARN_S and ROOM_LEARN_CM between
+# two ticks, on one level) is a door or a prop the collision still holds - walked through from then on, for walks and
+# shots (the tables already carry the 25 his live routes of 2026-11-10 crossed). Stats room_map_walls_passed.
+ROOM_LEARN_S, ROOM_LEARN_CM = 0.5, 150.0
 # The operator's hand on the map (2026-11-09): "If I click on an enemy on the map, I want the bot to navigate to
 # that enemy and dispatch [it] ... I want that enemy to be targeted and I want the bot to dispatch them ASAP no
 # matter what. Anywhere I double click on the map, I want the bot navigating to that area. And then if I just leave
@@ -5191,6 +5211,109 @@ class Bot:
         self.stats["mesh_blocked"] = self.stats.get("mesh_blocked", 0) + 1
         return dict(act, hold=tuple(k for k in hold if k != "lup"))
 
+    # --- the stage's real map (ROOM_MAP: titles.re5_room_map) ---
+    def _room_map(self, snap):
+        """This round's stage map (ROOM_MAP), else None; stats room_map names its collision archive."""
+        if not ROOM_MAP:
+            return None
+        sm = re5_room_map.for_snap(snap)
+        if sm is not None:
+            self.stats["room_map"] = f"{sm.room} {sm.stage}"
+        return sm
+
+    def _room_guard(self, act, snap) -> dict:
+        """ROOM_MAP above: the way ahead of the left stick on the stage's collision; refused, the route's way or the
+        nearest clear of the eight stick directions, never a turn on the spot."""
+        sm = self.__dict__.get("_sm")
+        hold, p = act.get("hold"), snap.get("player") or {}
+        if sm is not None and ROOM_MAP and p.get("pos"):
+            self._room_learn(sm, tuple(p["pos"]))
+        if (sm is None or not ROOM_MAP or not hold or "zl" in hold or not p.get("pos")
+                or self.doing in ("prompt", "held", "dead", "quick_turn")):
+            return act                                   # (a prompt's own stick - a QTE's, a door's way through - stays)
+        from . import re5_switch_wall
+        h = re5_switch_wall._travel_heading(p, hold)
+        if h is None:
+            return act
+        pos, rot = tuple(p["pos"]), p.get("rot") or 0.0
+        reach = ROOM_PROBE_RUN_CM if "b" in hold else ROOM_PROBE_CM
+
+        def probe(hh):
+            end = (pos[0] + reach * math.sin(hh), pos[1], pos[2] + reach * math.cos(hh))
+            return sm.walk_block(pos, end, end_r=0.0, body_r=ROOM_BRUSH_CM)
+        why = probe(h)
+        if why is None:
+            return act
+        moves = ("lup", "ldown", "lleft", "lright", "b", "rleft", "rright")
+        rest = tuple(k for k in hold if k not in moves)
+        wp = getattr(self, "_mesh_wp", None)
+        if MESH_FOLLOW and wp is not None and wp[2] == getattr(self, "_now", None) \
+                and sm.walk_block(pos, (wp[0], pos[1], wp[1]), end_r=0.0, body_r=0.0) is None:
+            to_wp = heading(wp[0] - pos[0], wp[1] - pos[2])
+            if abs(wrap(to_wp - h)) <= MESH_FOLLOW_TOL:
+                return act                               # the route's point lies short of the wall: on to it
+            err = wrap(to_wp - rot)
+            self.stats["room_map_route_follows"] = self.stats.get("room_map_route_follows", 0) + 1
+            self.doing, self.why = "walk", "the room map: a wall ahead, the route's way round"
+            return dict(act, hold=rest + self._stick_toward(err) + (("rleft",) if err > 0 else ("rright",)))
+        mesh = snap.get("nav")
+        meshed = mesh is not None and hasattr(mesh, "floor_segment")
+        want = wrap(h - rot)
+        for deg, _keys in sorted(STICK_8[:-4] + STICK_8[-3:], key=lambda o: abs(wrap(math.radians(o[0]) - want))):
+            rel = math.radians(deg)
+            if abs(wrap(rel - want)) < 1e-6:
+                continue                                 # the refused way itself
+            hh = rot + rel
+            if probe(hh) is not None:
+                continue
+            if meshed and not self._mesh_open(mesh, pos, pos[0] + MESH_PROBE_CM * math.sin(hh),
+                                              pos[2] + MESH_PROBE_CM * math.cos(hh)):
+                continue
+            self.stats["room_map_steps_refused"] = self.stats.get("room_map_steps_refused", 0) + 1
+            self.stats["room_map_refused_last"] = why[:120]
+            keys = rest + self._stick_toward(rel) + (("b",) if "b" in hold and abs(rel) <= math.radians(22.5) else ())
+            if abs(rel) > MESH_FOLLOW_TOL:
+                keys += ("rleft",) if rel > 0 else ("rright",)   # his facing follows the way he goes
+            self.doing, self.why = "walk", "the room map: a wall ahead, along it instead"
+            return dict(act, hold=keys)
+        self.stats["room_map_boxed_in"] = self.stats.get("room_map_boxed_in", 0) + 1
+        self.stats["room_map_refused_last"] = why[:120]
+        return dict(act, hold=rest + tuple(k for k in hold if k in ("rleft", "rright")))
+
+    def _room_learn(self, sm, pos) -> None:
+        """A step he just made (ROOM_LEARN_S / ROOM_LEARN_CM, one level) across a wall of the map: a door, a gate, a
+        prop the collision still holds - walked through from now on (the table's own walked-through walls are his live
+        routes' of 2026-11-10). stats room_map_walls_passed."""
+        now = getattr(self, "_now", None)
+        last = self.__dict__.get("_room_prev")
+        self._room_prev = (now, pos)
+        if last is None or now is None or last[0] is None or not 0 < now - last[0] <= ROOM_LEARN_S:
+            return
+        a = last[1]
+        d = math.hypot(pos[0] - a[0], pos[2] - a[2])
+        if not 5.0 <= d <= ROOM_LEARN_CM or abs(pos[1] - a[1]) > 30.0:
+            return
+        try:
+            hit = sm.rm.wall_crossed(tuple(v * re5_room_map.MM_PER_CM for v in a),
+                                     tuple(v * re5_room_map.MM_PER_CM for v in pos))
+            if hit is not None and sm.rm.walked_through(sm.rm.walls.index(hit[0])):
+                self.stats["room_map_walls_passed"] = self.stats.get("room_map_walls_passed", 0) + 1
+        except Exception:                                # noqa: BLE001 - the map never costs a tick
+            pass
+
+    def _room_sight_blocked(self, p, e) -> bool:
+        """ROOM_MAP: a wall of the stage's collision on the shot's line (his gun MUZZLE_H up, the Majini's chest)."""
+        sm = self.__dict__.get("_sm")
+        if sm is None or not ROOM_MAP or not p.get("pos") or not e.get("pos"):
+            return False
+        try:
+            hit = sm.sight_block(tuple(p["pos"]), tuple(e["pos"]), MUZZLE_H, body(e).chest)
+        except Exception:                                # noqa: BLE001 - the map never costs a tick
+            return False
+        if hit is not None:
+            self.stats["room_map_sight_blocks"] = self.stats.get("room_map_sight_blocks", 0) + 1
+        return hit is not None
+
     @staticmethod
     def _stick_toward(err: float) -> tuple:
         """The left stick toward a bearing in his own frame (radians, + = his left): the nearest of eight."""
@@ -5218,9 +5341,16 @@ class Bot:
         wp = getattr(self, "_mesh_wp", None)
         want = wrap(heading(wp[0] - pos[0], wp[1] - pos[2]) - rot) if wp is not None and now - wp[2] <= 1.0 else 0.0
 
+        sm = self.__dict__.get("_sm") if ROOM_MAP else None
+        meshed = mesh is not None and hasattr(mesh, "floor_segment")
+
         def open_floor(a: float) -> bool:
             h = rot + a
             end = (pos[0] + STAND_PROBE_CM * math.sin(h), pos[1], pos[2] + STAND_PROBE_CM * math.cos(h))
+            if sm is not None and not sm.walk_clear(tuple(pos), end):
+                return False                                 # (ROOM_MAP: a wall or the floor's edge that way)
+            if not meshed:
+                return True
             try:
                 if MESH_LOOKAHEAD:                           # (a ramp down through a door is open floor too)
                     return self._mesh_open(mesh, tuple(pos), end[0], end[2])
@@ -5228,7 +5358,7 @@ class Bot:
             except Exception:                                # noqa: BLE001 - the mesh never stops a decision
                 return False
         turns = sorted((math.radians(d) for d, _ in STICK_8 if d != -180), key=lambda a: abs(wrap(a - want)))
-        go = next((a for a in turns if mesh is not None and hasattr(mesh, "floor_segment") and open_floor(a)),
+        go = next((a for a in turns if (meshed or sm is not None) and open_floor(a)),
                   turns[st.get("n", 0) % len(turns)])        # (no mesh, or no floor found: another way each time)
         st["n"] = st.get("n", 0) + 1
         keys = self._stick_toward(go)
@@ -5740,12 +5870,14 @@ class Bot:
         spec = re5_weapons.WEAPONS.get(self._item)
         self._defer_trigger = bool(snap.get('aim_cam') and spec
                                    and spec.family in re5_target_feedback.GUN_FAMILIES)
+        self._sm = self._room_map(snap)                  # the stage's real map this tick (ROOM_MAP), else None
         act = self._tick(snap, now)
         act = self._respond(snap, act, now)              # under threat: a flash, a mine or fire - never nothing
         self._defer_trigger = False
         act = re5_target_feedback.apply(self, snap, act, now)
         act = re5_target_feedback.keep_active(self, snap, act, now)
         act = self._mesh_guard(act, snap)                # the way probed on the stage's own nav mesh before a wall
+        act = self._room_guard(act, snap)                # ... and on its real collision (ROOM_MAP)
         if WALL_GOV_GOAL or getattr(self, "_goal_drive", None) != now:
             # (the operator's mark: live 21:30 the trail recovery bounced him along the bus for minutes; the governor
             # now yields to the route - WALL_ROUTE_YIELD - so the mark drives with it: a blocked door is learned)
@@ -6440,19 +6572,25 @@ class Bot:
     def _walled_off(self, p, e, now) -> bool:
         """CLOSE_IN: whether the mesh says there is no open floor on the line between him and this Majini."""
         mesh = getattr(self, "_mesh", None)
-        if not CLOSE_IN or mesh is None or not hasattr(mesh, "floor_segment"):
+        meshed = mesh is not None and hasattr(mesh, "floor_segment")
+        roomed = ROOM_MAP and self.__dict__.get("_sm") is not None
+        if not CLOSE_IN or not (meshed or roomed):
             return False
         key = e.get("ptr", e.get("slot"))
         c = self.__dict__.setdefault("_walled", {"key": None, "at": -1e9, "off": False})
         if c["key"] != key or now - c["at"] >= CLOSE_IN_CHECK_S:
             c["key"], c["at"] = key, now
+            c["off"] = False
             try:
-                start, goal = tuple(p["pos"]), tuple(e["pos"])
-                on = mesh.find(start, floor_only=True) is not None and mesh.find(goal, floor_only=True) is not None
-                c["off"] = bool(on and not mesh.floor_segment(start, goal))
+                if meshed:
+                    start, goal = tuple(p["pos"]), tuple(e["pos"])
+                    on = mesh.find(start, floor_only=True) is not None and mesh.find(goal, floor_only=True) is not None
+                    c["off"] = bool(on and not mesh.floor_segment(start, goal))
             except Exception as exc:                         # noqa: BLE001 - the mesh never costs a tick
                 self.stats["nav_error"] = f"mesh segment {type(exc).__name__}: {exc}"[:120]
                 c["off"] = False
+            if not c["off"] and roomed:
+                c["off"] = self._room_sight_blocked(p, e)    # (ROOM_MAP: a wall on the shot's own line)
         return c["off"]
 
     def _mesh_avoid(self, mesh, now=None) -> list:
@@ -7339,7 +7477,7 @@ class Bot:
             self._aimctx = {"target": tgt.get("ptr", tgt.get("slot")), "dist": dist, "bearing": body_err,
                             "yaw_err": body_err, "where": None, "laserless": True, "weapon": weapon,
                             "gate": "laserless: the body's heading"}
-            fire = abs(body_err) <= AIM_TOL
+            fire = abs(body_err) <= AIM_TOL and not self._room_sight_blocked(p, tgt)   # (ROOM_MAP: no wall shot)
             self.doing, self.why = ("fire", "laserless heading") if fire else ("aim", "laserless heading")
             keys = {"zl"} | (self._trigger(True, now) if fire else self._yaw(body_err))
             return {"hold": tuple(sorted(keys))}
