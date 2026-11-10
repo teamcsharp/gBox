@@ -142,6 +142,36 @@ MERC_LOADOUTS = {
 }
 
 
+# The Mercenaries loadout's constants in its code (0x295070): MOVZ Wd, #imm16 instructions that hand the case its
+# weapons and their level words, found by decoding the function in the decrypted executable (2026-11-10). Each site:
+# (module offset, register, the build's own immediate). Rewriting an immediate before a round makes the game build
+# and equip that weapon itself - its model, its magazine, its levels - the way RE5's weapon override works.
+LOADOUT_SITES = {
+    0: {"weapons": ((0x2951D4, 0, 0x27), (0x2951E4, 0, 0x94)),           # Leon: Blacktail (equipped), Riot Gun
+        "levels": ((0x295278, 8, 0x2114), (0x2952F8, 8, 0x3204))},
+    2: {"weapons": ((0x2954A0, 0, 0x21), (0x2954C0, 0, 0x2F)),           # Ada: Punisher (equipped), semi-auto rifle
+        "levels": ((0x29530C, 8, 0x3126), None)},
+    4: {"weapons": ((0x295A78, 0, 0x52),),                               # Krauser: the bow (equipped)
+        "levels": (None,)},
+    5: {"weapons": ((0x295C68, 0, 0x23), (0x295C78, 0, 0x2A)),           # Wesker: Handgun (equipped), Killer7
+        "levels": ((0x295D8C, 8, 0x5226), (0x295F80, 8, 0x1101))},
+}
+
+
+def movz_w(rd: int, imm: int) -> int:
+    """The AArch64 word of MOVZ Wd, #imm16 (shift 0)."""
+    if not (0 <= rd < 31 and 0 <= imm <= 0xFFFF):
+        raise ValueError("movz w: register 0..30, immediate 0..0xffff")
+    return 0x52800000 | (imm << 5) | rd
+
+
+def movz_imm(word: int):
+    """(register, immediate) of a MOVZ Wd, #imm16 word, or None for any other instruction."""
+    if (word & 0xFFE00000) != 0x52800000:
+        return None
+    return word & 31, (word >> 5) & 0xFFFF
+
+
 def name(iid: int) -> str:
     return NAMES.get(iid, f"item 0x{iid:02X}")
 

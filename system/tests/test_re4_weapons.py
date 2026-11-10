@@ -44,3 +44,39 @@ def test_the_offsets_agree_with_the_live_measurements():
     assert W.GAME_OBJ + W.G_HP == D.PLAYER_LIFE
     for name, cls in (("handgun", 0x02), ("handcannon", 0x0F), ("riot_gun", 0x21), ("broken_butterfly", 0x05)):
         assert Mods.FIREPOWER_ROWS[name][0] == W.FIREPOWER_TBL + cls * 4 * W.FIREPOWER_COLS
+
+
+
+def test_movz_encodes_and_decodes():
+    word = W.movz_w(0, 0x27)
+    assert word == 0x528004E0 and W.movz_imm(word) == (0, 0x27)
+    assert W.movz_imm(0xD65F03C0) is None                    # ret is no movz
+
+
+def test_the_loadout_sites_are_rewritten_only_on_this_builds_instructions():
+    import random
+    base = 0x3CA7C04000
+
+    class Ad:
+        def __init__(self):
+            self.mem = {}
+            for sites in W.LOADOUT_SITES.values():
+                for site in sites["weapons"] + tuple(s for s in sites["levels"] if s):
+                    off, rd, imm = site
+                    self.mem[base + off] = struct.pack("<I", W.movz_w(rd, imm))
+
+        def read_memory(self, a, n):
+            return self.mem[a]
+
+        def write_memory(self, a, data):
+            self.mem[a] = bytes(data)
+
+    ad = Ad()
+    done = Mods._patch_loadout(ad, base, Mods._draw_loadouts(random.Random(1), fixed=0x29))
+    assert set(done) == set(W.LOADOUT_SITES) and all(ids[0] == 0x29 for ids in done.values())
+    leon_w = W.movz_imm(struct.unpack("<I", ad.mem[base + 0x2951D4])[0])
+    leon_l = W.movz_imm(struct.unpack("<I", ad.mem[base + 0x295278])[0])
+    assert leon_w == (0, 0x29) and leon_l == (8, W.max_levels(0x29)["packed"])
+    ad.mem[base + 0x2951D4] = struct.pack("<I", 0xD65F03C0)     # not a movz: another build
+    done = Mods._patch_loadout(ad, base, {0: [0x37, None]})
+    assert ad.mem[base + 0x2951D4] == struct.pack("<I", 0xD65F03C0) and 0x37 not in done.get(0, [])

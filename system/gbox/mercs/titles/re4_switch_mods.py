@@ -336,10 +336,79 @@ def _give_weapon(ad, base: int, st: dict, rng) -> dict | None:
             "verified": back["id"] == iid}
 
 
+def _patch_loadout(ad, base: int, picks: dict) -> dict:
+    """The Mercenaries loadout's weapon / level immediates rewritten (re4_weapons.LOADOUT_SITES): picks {character:
+    [weapon id per site]} (None keeps a site's own). Each site is checked against its original instruction (this
+    build) or the one written last before it is written; read back. Returns {character: [ids written]}."""
+    done: dict = {}
+    for ch, ids in picks.items():
+        sites = W.LOADOUT_SITES.get(ch)
+        if not sites:
+            continue
+        for k, (wsite, lsite) in enumerate(zip(sites["weapons"], sites["levels"])):
+            want = ids[k] if k < len(ids) else None
+            off, rd, orig = wsite
+            iid = orig if want is None else want
+            lv = W.max_levels(iid) if want is not None else None
+            writes = [(off, rd, orig, iid)]
+            if lsite is not None:
+                loff, lrd, lorig = lsite
+                writes.append((loff, lrd, lorig, lv["packed"] if lv else lorig))
+            ok = True
+            for o, r_, orig_imm, imm in writes:
+                try:
+                    cur = struct.unpack("<I", bytes(ad.read_memory(base + o, 4)))[0]
+                    got = W.movz_imm(cur)
+                    if got is None or got[0] != r_:
+                        ok = False                       # not this build's instruction: never patched
+                        break
+                    word = struct.pack("<I", W.movz_w(r_, imm))
+                    ad.write_memory(base + o, word)
+                    ok &= bytes(ad.read_memory(base + o, 4)) == word
+                except (ValueError, OSError, RuntimeError, struct.error):
+                    ok = False
+                    break
+            if ok:
+                done.setdefault(ch, []).append(iid)
+    return done
+
+
+def _draw_loadouts(rng, fixed: int | None = None) -> dict:
+    """{character: [weapon id per site]}: the fixed pick in the equipped slot, else random high-powered campaign
+    weapons (no repeat within a character)."""
+    out = {}
+    for ch, sites in W.LOADOUT_SITES.items():
+        pool = [i for i in W.HIGH_POWER if W.max_levels(i) is not None]
+        rng.shuffle(pool)
+        ids = pool[:len(sites["weapons"])]
+        if fixed is not None:
+            ids[0] = fixed
+        out[ch] = ids
+    return out
+
+
+def loadout_weapon(ad, weapon, snap: dict | None = None) -> dict:
+    """Every character's equipped gun from the next round: this campaign weapon at max level (RE5's weapon_override).
+    None / 0 puts the game's own loadouts back."""
+    st = _state(ad)
+    base = (snap or {}).get("module_base")
+    if not isinstance(base, int):
+        return {"verified": False, "reason": "RE4 is not in memory yet"}
+    iid = int(weapon) if weapon else None
+    if iid is not None and W.max_levels(iid) is None:
+        return {"verified": False, "reason": f"no max-level row for weapon {iid:#x} ({W.name(iid)})"}
+    picks = {ch: [iid] if iid is not None else [None, None] for ch in W.LOADOUT_SITES}
+    done = _patch_loadout(ad, base, picks)
+    st["loadout_weapon"] = iid
+    return {"verified": bool(done), "weapon": W.name(iid) if iid else "the game's own", "characters": len(done),
+            "note": "from the next round: every character starts with it, equipped, at max level"}
+
+
 def random_weapon(ad, on: bool, snap: dict | None = None) -> dict:
     st = _state(ad)
     st["random_weapon"] = bool(on)
     st.pop("weapon_given_round", None)                 # a fresh pick on the next snapshot of a round
+    st.pop("loadout_drawn", None)
     return {"random_weapon": bool(on), "verified": True,
             "note": "a random max-level high-powered campaign weapon put in his hand each round"}
 
@@ -469,13 +538,24 @@ def maintain(ad, snap: dict | None = None) -> dict:
             out["ammo_rows"] = _apply_ammo(ad, snap["module_base"], st) if st.get("infinite_ammo") else 0
             st["rf_applied_base"] = snap["module_base"]
         rnd = snap.get("round_key") or snap["module_base"]
-        if st.get("random_weapon") and snap.get("player") and st.get("weapon_given_round") != rnd:
+        if st.get("random_weapon") and st.get("loadout_drawn") != rnd:
             import random as _random
-            given = _give_weapon(ad, snap["module_base"], st, _random.Random())
-            if given is not None:
-                st["weapon_given_round"] = rnd
-                st["weapon_given"] = given
-                out["weapon_given"] = 1
+            done = _patch_loadout(ad, snap["module_base"], _draw_loadouts(_random.Random()))
+            st["loadout_drawn"] = rnd                   # the next round's loadouts (the game builds them)
+            st["loadouts"] = {W.CHARACTERS.get(ch, ch): [W.name(i) for i in ids] for ch, ids in done.items()}
+            out["loadouts_drawn"] = len(done)
+        if st.get("random_weapon") and snap.get("player") and st.get("weapon_given_round") != rnd:
+            st["weapon_given_round"] = rnd
+            try:
+                ch = bytes(ad.read_memory(snap["module_base"] + W.GAME_OBJ + W.G_CHARACTER, 1))[0]
+            except (ValueError, OSError):
+                ch = None
+            if ch is not None and ch not in W.LOADOUT_SITES:  # no loadout sites (HUNK): the in-hand swap
+                import random as _random
+                given = _give_weapon(ad, snap["module_base"], st, _random.Random())
+                if given is not None:
+                    st["weapon_given"] = given
+                    out["weapon_given"] = 1
         if st.get("aim_lock"):
             n = _aim(ad, snap)
             st["aim_writes"] = st.get("aim_writes", 0) + n
@@ -506,6 +586,7 @@ def status(ad, snap: dict | None = None) -> dict:
            "unlimited_health": bool(st.get("unlimited_health")), "life_kept": st.get("life_kept", 0),
            "infinite_ammo": bool(st.get("infinite_ammo")), "fire_rate_x": st.get("fire_rate", 1.0),
            "random_weapon": bool(st.get("random_weapon")), "weapon_given": st.get("weapon_given"),
+           "loadouts": st.get("loadouts"), "loadout_weapon": st.get("loadout_weapon"),
            "weapon_power_x": st.get("weapon_power", 1.0), "max_level": bool(st.get("max_level")),
            "aim_lock": bool(st.get("aim_lock")), "aim_writes": st.get("aim_writes", 0),
            "capabilities": {
@@ -563,6 +644,8 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, snap: dict | N
             return r
         if op == "random_weapon":
             return random_weapon(ad, on, snap)
+        if op == "loadout_weapon":
+            return loadout_weapon(ad, extra.get("weapon"), snap)
         if op == "revert_all":
             st = _state(ad)
             for k in ("enemy_health", "one_hit", "kill_time", "unlimited_health"):
