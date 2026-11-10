@@ -24,6 +24,7 @@ from .gdrom import GDRom
 from .mvc2_inventory import ROSTER
 
 GAME_ID = "02db6d37c0e20375"
+READER_VERSION = 2   # 2: registered collection path (kind sprites, reader_version in meta.extra); 1: standalone export only
 DAT_PATH = "PL{id:02X}_DAT.BIN"
 
 
@@ -206,7 +207,7 @@ def export_character(gdi: str | Path, cid: int, out_dir: str | Path,
 
     progress(90, "Wrote atlases + manifest + preview glb")
     return {
-        "files": [glb_path, json_path] + ([part_png] if parts else []) + ([sprite_png] if sprites else []),
+        "files": [f for f in (sprite_png or part_png, part_png if sprite_png else None, json_path, glb_path) if f],
         "manifest": manifest,
         "work": out,
     }
@@ -275,7 +276,7 @@ def roster() -> list[dict]:
         _, slug = _cid_name(cid)
         out.append({"key": f"{cid:02X}", "slug": slug, "name": name,
                     "aliases": [name, f"MVC2 {name}", f"PL{cid:02X}"],
-                    "kind": "character"})
+                    "kind": "sprites", "collect": True})
     return out
 
 
@@ -311,6 +312,12 @@ def extract_run(ctx, game: dict, e: dict, work) -> dict:
     return {
         "files": res["files"],
         "tool": "gbox.mvc2_chars",
+        "kind": "sprites", "roles": {},
+        "extra": {"picture": "2d", "mvc2_reader": READER_VERSION,
+                  "mvc2": {"reader": READER_VERSION, "cid": cid, "manifest": f"{res['manifest']['meta']['slug']}.json",
+                           "dat_sha256": res["manifest"]["meta"]["dat_sha256"],
+                           "n_parts": res["manifest"]["meta"]["n_parts"],
+                           "n_sprites": res["manifest"]["meta"]["n_sprites"]}},
         "source_files": [f"PL{cid:02X}_DAT.BIN"],
         "notes": "2D sprite fighter: parts atlas + sprite atlas + JSON manifest. "
                  "No rig/retarget map yet; native replacement is a follow-up DAT writer stage.",
