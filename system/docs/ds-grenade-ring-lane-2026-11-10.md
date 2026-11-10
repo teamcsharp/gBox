@@ -253,3 +253,109 @@ deploy, so:
 - RE6 grenades are the `re6-bomb-mind` lane's from the operator's 07:07 update; this evidence goes with them;
 - the *status* half is fixed and live (above);
 - the detection fix is **not** claimed, and the honest per-kind reasons hide nothing until it lands.
+
+## Step: RE6 hand and incendiary as a spawn/detonate parameter (2026-11-10, branch `ds-re6-bomb-classes-20261110`)
+
+Hand-off lane B item 1: "Make the class a parameter of the spawn, rebuild, and get a live receipt per kind ... Then
+let `grenade_status` advertise each kind."
+
+**No compiler needed, and no rebuild of the verified images.** `spawn.c` builds the class DTI in its *second*
+argument with exactly two instructions (`adrp x1, 0x2951000` / `add x1, x1, #0x500`), and `detonate.c` builds the
+unit's class vtable in `x0` with two (`adrp x0, 0x284a000` / `add x0, x0, #0xeb8`). `native/re6_061d2a06/classes.py`
+derives a parameterised pair from those pinned, verified blobs by replacing exactly those two instructions:
+
+    spawn_class(player, dti)                                      # two NOPs: x1 arrives from the caller
+    detonate_class(unit, player, generation, player_generation, class_vtable)   # mov x0, x4 + NOP
+
+The dispatcher already maps call argument *n* to `x<n>` (`call.S`: `ldp x0,x1,[x19,#0xc8]`, `ldp x4,x5,[x19,#0xe8]`),
+so `Controller.call` can hand both values. The derived images are pinned with their own digests
+(`spawn_class` 256 B @ `543749d9…`, `detonate_class` 232 B @ `9ba12497…`) and the originals keep theirs.
+
+**Where they install.** Two caves the repository has not used: `main+0x18F2BC0` and `main+0x18F2CC0`, inside the
+same never-executed padding tail as the four shipped images. `tools/verify_re6_classes.py` checks them against the
+operator's own `main.bin`: `.text` is one zero run from `0x18F2630` to its end, both ranges are all zero, and no
+B/BL/ADR/ADRP+ADD target and no 64-bit literal in `.text`/`.rodata` points into them. Run against the extracted
+update image (build `061D2A06…`): **PASS** for both new caves, and the same check passes for the four shipped ones.
+The originals are untouched and still what the flash and the bomb use; the class pair is installed on demand
+(`_ensure_image`, the `spawn_bomb` pattern) only when a hand or incendiary grenade is fired.
+
+**Controller.** `_ring_one(kind)` keeps the flash on the shipped pair and, for another class, spawns with its DTI and
+detonates with the vtable **the allocated unit actually carries** (`q(unit)`) - so the wrapper's check is "still the
+class we allocated", not "is a flash", and no per-class vtable table is trusted at run time. `grenade_ring` takes
+`allow_unverified`, and `grenade_kinds()` still advertises **flash only**: the classes exist, their receipts do not.
+
+**The receipt probe.** `grenade_scatter` already accepts an explicit kind and the queue does not gate that kind per
+session, so an explicit implemented class there is the deliberate probe: its receipt gains `kinds` and
+`probe: true`, and the default `random` barrage still draws from the verified kinds only. This is the request for
+the first receipt, once this branch is deployed and an RE6 No Mercy round is live:
+
+    POST /api/sessions/{sid}/interventions
+    {"op": "grenade_scatter", "request_id": "<new uuid>", "args": {"kind": "hand"}}
+
+and the same with `"incendiary"`. Record: the receipt (`state`, `detonated`, `rounds[].class_vtable`,
+`self_damage`), a frame before and after, and the round's counters. If the wrapper's action-class expectations do
+not hold for these classes, the receipt comes back `failed`/`uncertain` with its reason - that is the next thing to
+fix, not something to paper over.
+
+**Tests** (`tests/test_re6_class_images.py`, 19): the two patched instructions word for word and everything else
+unchanged; a tampered source image refused instead of patched; the pinned digests; the class table against the DTI
+tree; `image_bytes` routing; hand spawn/detonate arguments and the carried vtable on a fake emulator; the flash
+ring and the single flash op still on the shipped pair with their own resource guard; unverified kinds refused
+without the probe flag and unknown kinds refused before any native call; a class without loaded resources refused;
+and the cave scanner finding a hole, a branch into it and a non-zero byte. The affected suites (class images, ring,
+native build, RE6 mods/inventory, interventions/worker, grenade status/rule, RE5 ring/native, engine) are **166
+passed**.
+
+**Deploy needs**: the title module hot-reloads, but the new `classes.py` and `tools/` are new files and the worker
+imports them - a `gbox.service` restart at a gap (already asked above) covers it.
+
+## Round 50 (2026-11-10, later session) — RE6 launcher rounds: the tables pinned, and why they cannot ride the bomb wrapper
+
+Hand-off lane B item 2 ("find the shell spawn path, put real launcher rounds into `grenade_scatter`'s random kinds").
+
+**Pinned in code** (`native/re6_061d2a06/classes.py`, branch `ds-re6-launcher-shells-20261110`):
+`SHELLS` uWp1302/1303/1304 (items 0x133-0x135, DTIs `0x2952098`/`0x29520d0`/`0x2952108`, size 0xE5C, parent
+`uWpShellLauncher`), the `SHELL_FAMILY` chain (uWpShell `0x2950b60`, uWpShellLauncher `0x2950b98`, Bowgun, Homing,
+Rifle 0x138), the `LAUNCHERS` (uWp1080 Grenade Launcher item 0x112 `0x2951260`; uWp1120 Rocket Launcher 0x11B
+`0x2951458`) and `LAUNCHER_ROUNDS` (uWp1080 -> the three rounds). The test cross-checks every row against
+`docs/research/re6-weapon-dti-tree.json`, so the code and the research tree cannot drift.
+
+**The blocker, from our own wrapper's disassembly:** the detonate image checks the unit's **action object** against the
+bomb action class `0x288C9A0` (words 30-36) before it fires, and the final comparison is against `0x288C868`. A round
+carries the launcher's action, so the wrapper returns 0 - a clean refusal (no crash, no explosion). Parameterising the
+class cannot fix that: a shell is a **projectile the weapon spawns with a velocity**, so the barrage needs the
+launcher's own fire/explode path. That is the next step, and it is a live-iterated one (the fire function's arguments
+have to be observed on a running RE6 round).
+
+**No false advertising:** `grenade_scatter` still refuses shell kinds - a test asserts the shell names are in neither
+`RING_IMPLEMENTED_KINDS` nor the ring's `CLASSES`, so nothing can fire a round that cannot explode. `re6_dti_emu`'s
+table and this module now agree; the barrage's random kinds stay flash-only until a kind has a live receipt.
+
+Tests: `test_re6_class_images.py` (21) incl. the tree cross-check and the "not a ring kind" guard; the RE6/intervention
+set **126 passed**.
+
+## Round 51 (2026-11-10, later session) — an explosive ring keeps its distance (RE6, and the RE5 equivalent)
+
+Found while preparing the hand/incendiary receipts: the ring's distance guards were sized for the **verified flash** -
+`RING_SELF_CLEAR_CM = 250` and a default inner radius of `150` - and the new explosive kinds inherited them. A default
+hand ring would therefore have placed its first grenades 150 cm from the player, i.e. inside his own blast: the first
+receipt would have been a self-damage one, and the kind would have looked broken when the placement was the fault.
+
+**Fixed in `re6_switch_native` (branch `ds-re6-ring-explosive-floor-20261110`):**
+- `RING_EXPLOSIVE_CLEAR_CM = 600.0` - the smallest radius an explosive kind (hand, incendiary) may be ringed at.
+- `grenade_ring` uses it as the floor for both the outer radius and the inner ring when the kind is not the flash, so
+  no default (or short requested) explosive ring can place a grenade inside the blast; the clamp is reported in the
+  receipt (`radius_cm`, `inner_cm`), so nobody has to guess what the ring actually did.
+- The flash path is untouched: 150 cm inner and 250 cm floor still apply (it is harmless up close, and that is the
+  live-verified behaviour).
+
+**Tests** (`test_re6_class_images.py`, 25 in the file): a default hand ring places all four grenades at >= 600 cm and
+still expands outward; an incendiary ring asked for 300/100 cm is raised to 600 and the receipt says so; the flash ring
+keeps its 150/250 near field. The rest of the RE6/intervention set stays green.
+
+**The RE5 ring has the same shape and gets the same fix on `ds-re5-ring-explosive-floor-20261110`**, so the two titles
+cannot diverge on the safety margin.
+
+**Still blocked on the live side:** the receipts for hand/incendiary (RE6 and RE5) need the branches deployed on
+lilspark and one round fired per kind; the probes and the exact request are in the sections above. Until then
+`grenade_status` advertises the flash only, which is what "no silent substitution" means here.
