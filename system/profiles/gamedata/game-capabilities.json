@@ -1,11 +1,39 @@
 {
-  "version": 1,
   "games": {
     "1de2e7634f3161ff": {
-      "native_fighter_costumes": {
+      "mod_launch": {
+        "artifact_sha256": [
+          "75ca71e86207dc9f5fe09545cfc66592914478ca3f8bf038e4a868590f904580",
+          "c398d36b4db048e14d097fd1b9b908722949110b1e0e9e8c0b0871d96b2ba1a1",
+          "cd4fb44df092feb17b31e7b3680c9fc06bf2a5f5a9f26aa737b06b75b4562ff8",
+          "0026a87089b6efd11e563225e08f814c76673dd17bf980c8d101f80d3eeb9c31"
+        ],
+        "cases": [
+          {
+            "donor": "sa2_amy_rose",
+            "target": "KTE01",
+            "verified_attack_damage": 30
+          },
+          {
+            "donor": "GEN00",
+            "target": "LEI05",
+            "verified_attack_damage": 28
+          }
+        ],
+        "exclusions": [
+          "Universal donor/slot gameplay",
+          "stages",
+          "effects",
+          "unavailable source costumes"
+        ],
         "result": "passed",
-        "source_sha256": "27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1",
-        "source_identity": "Owned Dead or Alive 2 LE Japan native executable",
+        "runtime_verified": true,
+        "scope": "Amy -> Ein C1 and native GenFu -> Leifang C6 only",
+        "source_executable_unchanged": true,
+        "source_sha256": "27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1"
+      },
+      "native_fighter_costumes": {
+        "accessory_draws": 320,
         "artifact_sha256": [
           "ff4c9454a74406542ed75a97456489feecf472d64177349e3afe125f2b386e48",
           "5c5c585e0217121d0bb45613a57dec049a686b48266c20077847f3d37ecf5488",
@@ -89,47 +117,45 @@
           "c2fb88309fd6cef573984829820f69ba9ba671f1ce3793ba26840127b33b7263",
           "c07bbfc843345f809169f672300eb3df6982fbeb5ee5a04f572eb2be14414ca9"
         ],
-        "scope": "available_native_fighter_costumes_complete_neutral_source",
-        "expected": 79,
-        "verified": 79,
-        "inventory_authoritative": true,
-        "native_declared": 80,
-        "unavailable_native_sources": [
-          {
-            "stem": "BAY02",
-            "missing_sources": [
-              "bay02.chr"
-            ]
-          }
-        ],
-        "triangles": 653970,
-        "vertices": 475055,
-        "accessory_draws": 320,
         "chains": 114,
         "cloth_grids": 93,
-        "source_reports": [
-          "doa2-re/rig/native_bound_exports_verification.json",
-          "doa2-re/rig/native_bound_resource_inventory.json"
-        ],
         "exclusions": [
           "stages",
           "effects",
           "whole-game decomposition",
           "universal donor gameplay verification"
         ],
-        "runtime_verified": false
+        "expected": 79,
+        "inventory_authoritative": true,
+        "native_declared": 80,
+        "result": "passed",
+        "runtime_verified": false,
+        "scope": "available_native_fighter_costumes_complete_neutral_source",
+        "source_identity": "Owned Dead or Alive 2 LE Japan native executable",
+        "source_reports": [
+          "doa2-re/rig/native_bound_exports_verification.json",
+          "doa2-re/rig/native_bound_resource_inventory.json"
+        ],
+        "source_sha256": "27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1",
+        "triangles": 653970,
+        "unavailable_native_sources": [
+          {
+            "missing_sources": [
+              "bay02.chr"
+            ],
+            "stem": "BAY02"
+          }
+        ],
+        "verified": 79,
+        "vertices": 475055
       },
       "native_reimport": {
-        "result": "passed",
-        "source_sha256": "27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1",
         "artifact_sha256": [
           "75ca71e86207dc9f5fe09545cfc66592914478ca3f8bf038e4a868590f904580",
           "c398d36b4db048e14d097fd1b9b908722949110b1e0e9e8c0b0871d96b2ba1a1",
           "cd4fb44df092feb17b31e7b3680c9fc06bf2a5f5a9f26aa737b06b75b4562ff8",
           "0026a87089b6efd11e563225e08f814c76673dd17bf980c8d101f80d3eeb9c31"
         ],
-        "scope": "Amy -> Ein C1 and native GenFu -> Leifang C6 only",
-        "runtime_verified": true,
         "cases": [
           {
             "donor": "sa2_amy_rose",
@@ -148,39 +174,34 @@
           "effects",
           "unavailable source costumes"
         ],
-        "source_executable_unchanged": true
-      },
-      "mod_launch": {
         "result": "passed",
-        "source_sha256": "27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1",
-        "artifact_sha256": [
-          "75ca71e86207dc9f5fe09545cfc66592914478ca3f8bf038e4a868590f904580",
-          "c398d36b4db048e14d097fd1b9b908722949110b1e0e9e8c0b0871d96b2ba1a1",
-          "cd4fb44df092feb17b31e7b3680c9fc06bf2a5f5a9f26aa737b06b75b4562ff8",
-          "0026a87089b6efd11e563225e08f814c76673dd17bf980c8d101f80d3eeb9c31"
-        ],
-        "scope": "Amy -> Ein C1 and native GenFu -> Leifang C6 only",
         "runtime_verified": true,
-        "cases": [
-          {
-            "donor": "sa2_amy_rose",
-            "target": "KTE01",
-            "verified_attack_damage": 30
-          },
-          {
-            "donor": "GEN00",
-            "target": "LEI05",
-            "verified_attack_damage": 28
-          }
+        "scope": "Amy -> Ein C1 and native GenFu -> Leifang C6 only",
+        "source_executable_unchanged": true,
+        "source_sha256": "27a014aeda35983df749f7d575bbddbea3f1ffd1f7776194ef503108c20c97e1"
+      }
+    },
+    "a19b4e641b155364": {
+      "source_inventory": {
+        "artifact_sha256": [
+          "357be19aee6b1e9f8604dbbeb809bee0ae4d8922ada935504e052759980c7b3d",
+          "45223e5af52ae8316eb2a2183870fabf7ce4cb64a4f3be863ceb0ba1794b3d61"
         ],
-        "exclusions": [
-          "Universal donor/slot gameplay",
-          "stages",
-          "effects",
-          "unavailable source costumes"
-        ],
-        "source_executable_unchanged": true
+        "counts": {
+          "costumes": 44,
+          "distinct_costume_file_indices": 44,
+          "fighters": 11,
+          "file_table_entries": 280
+        },
+        "expected": 44,
+        "inventory_authoritative": true,
+        "note": "Dead Or Alive ++ (Japan) owned doapp.zip: 280 file-table entries decoded from the owned ZN-2 executable; 11 fighters x 4 costumes = 44 counted costume assets resolved to distinct file-table slots (no filename guesses).",
+        "result": "passed",
+        "scope": "full_source",
+        "source_sha256": "c40c7c4bb78cba4ffd58553c87b44dc6b6797d75dc509dce805fac911166c484",
+        "verified": 44
       }
     }
-  }
+  },
+  "version": 1
 }

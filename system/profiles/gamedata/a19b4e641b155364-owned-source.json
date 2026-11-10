@@ -1,0 +1,65 @@
+{
+  "archive_members": [
+    {
+      "base": "doapp-0.216",
+      "name": "doapp-0.216",
+      "sha256": "7615b973a3f98c2ba34585645b469834e1ea0c11bb0cee59ace9afccea3282cf",
+      "size": 4194304
+    },
+    {
+      "base": "doapp-1.217",
+      "name": "doapp-1.217",
+      "sha256": "e8a1bee3e16165f32b6e41444bf67649d720aa7ba570605d54b93fe1da9ea41d",
+      "size": 4194304
+    },
+    {
+      "base": "doapp-2.218",
+      "name": "doapp-2.218",
+      "sha256": "2f2f036fd0646b574e167758c5e64b861631469b28103d2fc1a8b220df301680",
+      "size": 4194304
+    },
+    {
+      "base": "doapp-3.219",
+      "name": "doapp-3.219",
+      "sha256": "fb6b24abfec79bce176ef36c9b6fa8032f1f86862bc53775532e293713b92803",
+      "size": 4194304
+    },
+    {
+      "base": "doapp-4.220",
+      "name": "doapp-4.220",
+      "sha256": "8393ba8e6f223650855d261f79d55ac03e4a6bb001b0fb93d5e5bcd8f72812e8",
+      "size": 4194304
+    },
+    {
+      "base": "doapp-5.221",
+      "name": "doapp-5.221",
+      "sha256": "3da776b08537597cb7fffd85f175fd12591f987a6d6d3d77d99b79abe127012b",
+      "size": 4194304
+    },
+    {
+      "base": "doapp119.bin",
+      "name": "doapp119.bin",
+      "sha256": "df47ff61e1836ced143cc1842c5bc512cf3d596e69188a98c1652efedc2e4475",
+      "size": 1048576
+    },
+    {
+      "base": "doapp120.bin",
+      "name": "doapp120.bin",
+      "sha256": "5af967e6006ef7ef312962ba6db2e4a98ea10f1128e63bc81f89e458e66bfb54",
+      "size": 1048576
+    },
+    {
+      "base": "mg05",
+      "name": "mg05",
+      "sha256": "6c2df1a06f89fb0955170b5e6003647b7df006925f6b39ac410b2a7165b30580",
+      "size": 8
+    }
+  ],
+  "bios_path": "/mnt/gbox/hyperspin/Arcade/collections/Mame/roms/coh1002m.zip",
+  "bios_sha256": "36c35f78a6a8978a2e734374445d145981205a1939b9cbb4a7aa1aefa1b4aaf8",
+  "game_id": "a19b4e641b155364",
+  "generated_at": "2026-10-22T15:21:15.441268+00:00",
+  "manifest_sha256": "357be19aee6b1e9f8604dbbeb809bee0ae4d8922ada935504e052759980c7b3d",
+  "source_path": "/mnt/gbox/hyperspin/Arcade/collections/Mame/roms/doapp.zip",
+  "source_sha256": "c40c7c4bb78cba4ffd58553c87b44dc6b6797d75dc509dce805fac911166c484"
+}

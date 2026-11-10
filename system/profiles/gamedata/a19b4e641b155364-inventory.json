@@ -1,0 +1,2705 @@
+{
+  "archive_members": [
+    {
+      "base": "doapp-0.216",
+      "name": "doapp-0.216",
+      "sha256": "7615b973a3f98c2ba34585645b469834e1ea0c11bb0cee59ace9afccea3282cf",
+      "size": 4194304
+    },
+    {
+      "base": "doapp-1.217",
+      "name": "doapp-1.217",
+      "sha256": "e8a1bee3e16165f32b6e41444bf67649d720aa7ba570605d54b93fe1da9ea41d",
+      "size": 4194304
+    },
+    {
+      "base": "doapp-2.218",
+      "name": "doapp-2.218",
+      "sha256": "2f2f036fd0646b574e167758c5e64b861631469b28103d2fc1a8b220df301680",
+      "size": 4194304
+    },
+    {
+      "base": "doapp-3.219",
+      "name": "doapp-3.219",
+      "sha256": "fb6b24abfec79bce176ef36c9b6fa8032f1f86862bc53775532e293713b92803",
+      "size": 4194304
+    },
+    {
+      "base": "doapp-4.220",
+      "name": "doapp-4.220",
+      "sha256": "8393ba8e6f223650855d261f79d55ac03e4a6bb001b0fb93d5e5bcd8f72812e8",
+      "size": 4194304
+    },
+    {
+      "base": "doapp-5.221",
+      "name": "doapp-5.221",
+      "sha256": "3da776b08537597cb7fffd85f175fd12591f987a6d6d3d77d99b79abe127012b",
+      "size": 4194304
+    },
+    {
+      "base": "doapp119.bin",
+      "name": "doapp119.bin",
+      "sha256": "df47ff61e1836ced143cc1842c5bc512cf3d596e69188a98c1652efedc2e4475",
+      "size": 1048576
+    },
+    {
+      "base": "doapp120.bin",
+      "name": "doapp120.bin",
+      "sha256": "5af967e6006ef7ef312962ba6db2e4a98ea10f1128e63bc81f89e458e66bfb54",
+      "size": 1048576
+    },
+    {
+      "base": "mg05",
+      "name": "mg05",
+      "sha256": "6c2df1a06f89fb0955170b5e6003647b7df006925f6b39ac410b2a7165b30580",
+      "size": 8
+    }
+  ],
+  "costume_slots": [
+    {
+      "costume_slot": 0,
+      "fighter": "ZACK",
+      "fighter_id": 0,
+      "file_index": 59
+    },
+    {
+      "costume_slot": 1,
+      "fighter": "ZACK",
+      "fighter_id": 0,
+      "file_index": 60
+    },
+    {
+      "costume_slot": 2,
+      "fighter": "ZACK",
+      "fighter_id": 0,
+      "file_index": 61
+    },
+    {
+      "costume_slot": 3,
+      "fighter": "ZACK",
+      "fighter_id": 0,
+      "file_index": 62
+    },
+    {
+      "costume_slot": 0,
+      "fighter": "TINA",
+      "fighter_id": 1,
+      "file_index": 49
+    },
+    {
+      "costume_slot": 1,
+      "fighter": "TINA",
+      "fighter_id": 1,
+      "file_index": 50
+    },
+    {
+      "costume_slot": 2,
+      "fighter": "TINA",
+      "fighter_id": 1,
+      "file_index": 51
+    },
+    {
+      "costume_slot": 3,
+      "fighter": "TINA",
+      "fighter_id": 1,
+      "file_index": 52
+    },
+    {
+      "costume_slot": 0,
+      "fighter": "JANN LEE",
+      "fighter_id": 2,
+      "file_index": 89
+    },
+    {
+      "costume_slot": 1,
+      "fighter": "JANN LEE",
+      "fighter_id": 2,
+      "file_index": 90
+    },
+    {
+      "costume_slot": 2,
+      "fighter": "JANN LEE",
+      "fighter_id": 2,
+      "file_index": 91
+    },
+    {
+      "costume_slot": 3,
+      "fighter": "JANN LEE",
+      "fighter_id": 2,
+      "file_index": 92
+    },
+    {
+      "costume_slot": 0,
+      "fighter": "HAYABUSA",
+      "fighter_id": 4,
+      "file_index": 87
+    },
+    {
+      "costume_slot": 1,
+      "fighter": "HAYABUSA",
+      "fighter_id": 4,
+      "file_index": 84
+    },
+    {
+      "costume_slot": 2,
+      "fighter": "HAYABUSA",
+      "fighter_id": 4,
+      "file_index": 85
+    },
+    {
+      "costume_slot": 3,
+      "fighter": "HAYABUSA",
+      "fighter_id": 4,
+      "file_index": 86
+    },
+    {
+      "costume_slot": 0,
+      "fighter": "KASUMI",
+      "fighter_id": 5,
+      "file_index": 79
+    },
+    {
+      "costume_slot": 1,
+      "fighter": "KASUMI",
+      "fighter_id": 5,
+      "file_index": 80
+    },
+    {
+      "costume_slot": 2,
+      "fighter": "KASUMI",
+      "fighter_id": 5,
+      "file_index": 81
+    },
+    {
+      "costume_slot": 3,
+      "fighter": "KASUMI",
+      "fighter_id": 5,
+      "file_index": 82
+    },
+    {
+      "costume_slot": 0,
+      "fighter": "GEN FU",
+      "fighter_id": 6,
+      "file_index": 74
+    },
+    {
+      "costume_slot": 1,
+      "fighter": "GEN FU",
+      "fighter_id": 6,
+      "file_index": 75
+    },
+    {
+      "costume_slot": 2,
+      "fighter": "GEN FU",
+      "fighter_id": 6,
+      "file_index": 76
+    },
+    {
+      "costume_slot": 3,
+      "fighter": "GEN FU",
+      "fighter_id": 6,
+      "file_index": 77
+    },
+    {
+      "costume_slot": 0,
+      "fighter": "BAYMAN",
+      "fighter_id": 8,
+      "file_index": 69
+    },
+    {
+      "costume_slot": 1,
+      "fighter": "BAYMAN",
+      "fighter_id": 8,
+      "file_index": 70
+    },
+    {
+      "costume_slot": 2,
+      "fighter": "BAYMAN",
+      "fighter_id": 8,
+      "file_index": 71
+    },
+    {
+      "costume_slot": 3,
+      "fighter": "BAYMAN",
+      "fighter_id": 8,
+      "file_index": 72
+    },
+    {
+      "costume_slot": 0,
+      "fighter": "BASS",
+      "fighter_id": 9,
+      "file_index": 94
+    },
+    {
+      "costume_slot": 1,
+      "fighter": "BASS",
+      "fighter_id": 9,
+      "file_index": 95
+    },
+    {
+      "costume_slot": 2,
+      "fighter": "BASS",
+      "fighter_id": 9,
+      "file_index": 96
+    },
+    {
+      "costume_slot": 3,
+      "fighter": "BASS",
+      "fighter_id": 9,
+      "file_index": 97
+    },
+    {
+      "costume_slot": 0,
+      "fighter": "RAIDOU",
+      "fighter_id": 11,
+      "file_index": 64
+    },
+    {
+      "costume_slot": 1,
+      "fighter": "RAIDOU",
+      "fighter_id": 11,
+      "file_index": 65
+    },
+    {
+      "costume_slot": 2,
+      "fighter": "RAIDOU",
+      "fighter_id": 11,
+      "file_index": 66
+    },
+    {
+      "costume_slot": 3,
+      "fighter": "RAIDOU",
+      "fighter_id": 11,
+      "file_index": 67
+    },
+    {
+      "costume_slot": 0,
+      "fighter": "LEI FANG",
+      "fighter_id": 12,
+      "file_index": 54
+    },
+    {
+      "costume_slot": 1,
+      "fighter": "LEI FANG",
+      "fighter_id": 12,
+      "file_index": 55
+    },
+    {
+      "costume_slot": 2,
+      "fighter": "LEI FANG",
+      "fighter_id": 12,
+      "file_index": 56
+    },
+    {
+      "costume_slot": 3,
+      "fighter": "LEI FANG",
+      "fighter_id": 12,
+      "file_index": 57
+    },
+    {
+      "costume_slot": 0,
+      "fighter": "AYANE",
+      "fighter_id": 13,
+      "file_index": 99
+    },
+    {
+      "costume_slot": 1,
+      "fighter": "AYANE",
+      "fighter_id": 13,
+      "file_index": 100
+    },
+    {
+      "costume_slot": 2,
+      "fighter": "AYANE",
+      "fighter_id": 13,
+      "file_index": 101
+    },
+    {
+      "costume_slot": 3,
+      "fighter": "AYANE",
+      "fighter_id": 13,
+      "file_index": 102
+    }
+  ],
+  "counts": {
+    "costumes": 44,
+    "distinct_costume_file_indices": 44,
+    "fighters": 11,
+    "file_table_entries": 280
+  },
+  "derived": {
+    "entry_point": "0x800107d8",
+    "fighters_match_snapshot": true,
+    "file_table_matches_snapshot": true
+  },
+  "fighters": [
+    {
+      "bank_c": 134,
+      "hidden_costume_file": 63,
+      "id": 0,
+      "model_room": [
+        103376,
+        102880,
+        98196,
+        97136
+      ],
+      "model_sizes": [
+        103376,
+        102880,
+        98196,
+        97136
+      ],
+      "models": [
+        59,
+        60,
+        61,
+        62
+      ],
+      "motion": 37,
+      "name": "ZACK",
+      "small_a": 12,
+      "small_b": 23,
+      "small_c": 48,
+      "tim_large": 275,
+      "tim_small": 243
+    },
+    {
+      "bank_c": 139,
+      "hidden_costume_file": 53,
+      "id": 1,
+      "model_room": [
+        113332,
+        112404,
+        97368,
+        96548
+      ],
+      "model_sizes": [
+        113332,
+        112404,
+        97368,
+        96548
+      ],
+      "models": [
+        49,
+        50,
+        51,
+        52
+      ],
+      "motion": 36,
+      "name": "TINA",
+      "small_a": 4,
+      "small_b": 15,
+      "small_c": 47,
+      "tim_large": 271,
+      "tim_small": 242
+    },
+    {
+      "bank_c": 137,
+      "hidden_costume_file": 93,
+      "id": 2,
+      "model_room": [
+        112568,
+        111284,
+        108680,
+        109852
+      ],
+      "model_sizes": [
+        112568,
+        111284,
+        108680,
+        109852
+      ],
+      "models": [
+        89,
+        90,
+        91,
+        92
+      ],
+      "motion": 31,
+      "name": "JANN LEE",
+      "small_a": 7,
+      "small_b": 18,
+      "small_c": 42,
+      "tim_large": 269,
+      "tim_small": 237
+    },
+    {
+      "bank_c": 135,
+      "hidden_costume_file": 88,
+      "id": 4,
+      "model_room": [
+        106384,
+        103332,
+        103332,
+        100488
+      ],
+      "model_sizes": [
+        106384,
+        103332,
+        103332,
+        100488
+      ],
+      "models": [
+        87,
+        84,
+        85,
+        86
+      ],
+      "motion": 35,
+      "name": "HAYABUSA",
+      "small_a": 11,
+      "small_b": 22,
+      "small_c": 46,
+      "tim_large": 273,
+      "tim_small": 241
+    },
+    {
+      "bank_c": 142,
+      "hidden_costume_file": 83,
+      "id": 5,
+      "model_room": [
+        121224,
+        119368,
+        120060,
+        121784
+      ],
+      "model_sizes": [
+        121224,
+        119368,
+        120060,
+        121784
+      ],
+      "models": [
+        79,
+        80,
+        81,
+        82
+      ],
+      "motion": 32,
+      "name": "KASUMI",
+      "small_a": 8,
+      "small_b": 19,
+      "small_c": 43,
+      "tim_large": 267,
+      "tim_small": 238
+    },
+    {
+      "bank_c": 138,
+      "hidden_costume_file": 78,
+      "id": 6,
+      "model_room": [
+        104780,
+        104780,
+        109944,
+        109840
+      ],
+      "model_sizes": [
+        104780,
+        104780,
+        109944,
+        109840
+      ],
+      "models": [
+        74,
+        75,
+        76,
+        77
+      ],
+      "motion": 30,
+      "name": "GEN FU",
+      "small_a": 6,
+      "small_b": 17,
+      "small_c": 41,
+      "tim_large": 276,
+      "tim_small": 236
+    },
+    {
+      "bank_c": 140,
+      "hidden_costume_file": 73,
+      "id": 8,
+      "model_room": [
+        105012,
+        105032,
+        106128,
+        106128
+      ],
+      "model_sizes": [
+        105012,
+        105032,
+        106128,
+        106128
+      ],
+      "models": [
+        69,
+        70,
+        71,
+        72
+      ],
+      "motion": 29,
+      "name": "BAYMAN",
+      "small_a": 5,
+      "small_b": 16,
+      "small_c": 40,
+      "tim_large": 272,
+      "tim_small": 235
+    },
+    {
+      "bank_c": 141,
+      "hidden_costume_file": 98,
+      "id": 9,
+      "model_room": [
+        136360,
+        98804,
+        99704,
+        99832
+      ],
+      "model_sizes": [
+        98804,
+        98804,
+        99704,
+        99832
+      ],
+      "models": [
+        94,
+        95,
+        96,
+        97
+      ],
+      "motion": 28,
+      "name": "BASS",
+      "small_a": 13,
+      "small_b": 24,
+      "small_c": 39,
+      "tim_large": 274,
+      "tim_small": 234
+    },
+    {
+      "bank_c": 144,
+      "hidden_costume_file": 68,
+      "id": 11,
+      "model_room": [
+        144240,
+        144240,
+        141128,
+        141128
+      ],
+      "model_sizes": [
+        144240,
+        144240,
+        141128,
+        141128
+      ],
+      "models": [
+        64,
+        65,
+        66,
+        67
+      ],
+      "motion": 34,
+      "name": "RAIDOU",
+      "small_a": 10,
+      "small_b": 21,
+      "small_c": 45,
+      "tim_large": 277,
+      "tim_small": 240
+    },
+    {
+      "bank_c": 136,
+      "hidden_costume_file": 58,
+      "id": 12,
+      "model_room": [
+        120096,
+        121632,
+        111244,
+        122996
+      ],
+      "model_sizes": [
+        120096,
+        121632,
+        111244,
+        122996
+      ],
+      "models": [
+        54,
+        55,
+        56,
+        57
+      ],
+      "motion": 33,
+      "name": "LEI FANG",
+      "small_a": 9,
+      "small_b": 20,
+      "small_c": 44,
+      "tim_large": 270,
+      "tim_small": 239
+    },
+    {
+      "bank_c": 143,
+      "hidden_costume_file": 103,
+      "id": 13,
+      "model_room": [
+        94376,
+        110480,
+        114984,
+        92412
+      ],
+      "model_sizes": [
+        94376,
+        110480,
+        114984,
+        92412
+      ],
+      "models": [
+        99,
+        100,
+        101,
+        102
+      ],
+      "motion": 27,
+      "name": "AYANE",
+      "small_a": 14,
+      "small_b": 25,
+      "small_c": 38,
+      "tim_large": 268,
+      "tim_small": 233
+    }
+  ],
+  "file_table": [
+    {
+      "head": "06000000010000000000000003000000",
+      "index": 0,
+      "offset": 655360,
+      "room": 592176,
+      "size": 592176
+    },
+    {
+      "head": "0a000000455849542026205341564500",
+      "index": 1,
+      "offset": 1247536,
+      "room": 75556,
+      "size": 75553
+    },
+    {
+      "head": "08000000000000000c08000048080000",
+      "index": 2,
+      "offset": 1323092,
+      "room": 19196,
+      "size": 0
+    },
+    {
+      "head": "08000000000000000c08000048080000",
+      "index": 3,
+      "offset": 1323092,
+      "room": 19196,
+      "size": 19194
+    },
+    {
+      "head": "80000000302e00002809000028120000",
+      "index": 4,
+      "offset": 1342288,
+      "room": 41564,
+      "size": 41564
+    },
+    {
+      "head": "80000000d42e0000d8090000b8110000",
+      "index": 5,
+      "offset": 1383852,
+      "room": 42464,
+      "size": 42462
+    },
+    {
+      "head": "80000000f82800004008000068100000",
+      "index": 6,
+      "offset": 1426316,
+      "room": 36016,
+      "size": 36016
+    },
+    {
+      "head": "800000001c2d0000b0080000d0120000",
+      "index": 7,
+      "offset": 1462332,
+      "room": 40168,
+      "size": 40168
+    },
+    {
+      "head": "80000000c42f0000600900005c130000",
+      "index": 8,
+      "offset": 1502500,
+      "room": 44152,
+      "size": 44152
+    },
+    {
+      "head": "800000001829000040080000f8100000",
+      "index": 9,
+      "offset": 1546652,
+      "room": 37992,
+      "size": 37992
+    },
+    {
+      "head": "80000000003000003009000054120000",
+      "index": 10,
+      "offset": 1584644,
+      "room": 41800,
+      "size": 41798
+    },
+    {
+      "head": "80000000943b000080090000c4130000",
+      "index": 11,
+      "offset": 1626444,
+      "room": 47584,
+      "size": 47584
+    },
+    {
+      "head": "80000000c03100009009000010170000",
+      "index": 12,
+      "offset": 1674028,
+      "room": 46224,
+      "size": 46222
+    },
+    {
+      "head": "80000000a82b00002009000024110000",
+      "index": 13,
+      "offset": 1720252,
+      "room": 39868,
+      "size": 39868
+    },
+    {
+      "head": "80000000f8350000e009000084170000",
+      "index": 14,
+      "offset": 1760120,
+      "room": 51748,
+      "size": 51748
+    },
+    {
+      "head": "7c000000000000000000000000000000",
+      "index": 15,
+      "offset": 1811868,
+      "room": 23912,
+      "size": 23912
+    },
+    {
+      "head": "7c000000000000000000000000000000",
+      "index": 16,
+      "offset": 1835780,
+      "room": 24896,
+      "size": 24894
+    },
+    {
+      "head": "7c000000000000000000000000000000",
+      "index": 17,
+      "offset": 1860676,
+      "room": 19236,
+      "size": 19236
+    },
+    {
+      "head": "7c000000000000000000000000000000",
+      "index": 18,
+      "offset": 1879912,
+      "room": 22788,
+      "size": 22788
+    },
+    {
+      "head": "7c000000000000000000000000000000",
+      "index": 19,
+      "offset": 1902700,
+      "room": 26332,
+      "size": 26332
+    },
+    {
+      "head": "7c000000000000000000000000000000",
+      "index": 20,
+      "offset": 1929032,
+      "room": 21912,
+      "size": 21912
+    },
+    {
+      "head": "7c000000000000000000000000000000",
+      "index": 21,
+      "offset": 1950944,
+      "room": 24008,
+      "size": 24006
+    },
+    {
+      "head": "7c000000000000000000000000000000",
+      "index": 22,
+      "offset": 1974952,
+      "room": 24872,
+      "size": 24872
+    },
+    {
+      "head": "7c000000000000000000000000000000",
+      "index": 23,
+      "offset": 1999824,
+      "room": 26148,
+      "size": 26146
+    },
+    {
+      "head": "7c000000000000000000000000000000",
+      "index": 24,
+      "offset": 2025972,
+      "room": 22904,
+      "size": 22904
+    },
+    {
+      "head": "7c000000000000000000000000000000",
+      "index": 25,
+      "offset": 2048876,
+      "room": 2145428,
+      "size": 30224
+    },
+    {
+      "head": "3805000088080000ec0b0000700f0000",
+      "index": 26,
+      "offset": 4194304,
+      "room": 232576,
+      "size": 232574
+    },
+    {
+      "head": "000c020c050c080c0b0c0d0c100c130c",
+      "index": 27,
+      "offset": 4426880,
+      "room": 358960,
+      "size": 358960
+    },
+    {
+      "head": "000c020c040c060c090c0b0c0d0c100c",
+      "index": 28,
+      "offset": 4785840,
+      "room": 369384,
+      "size": 369384
+    },
+    {
+      "head": "000c020c040c060c090c0b0c0d0c100c",
+      "index": 29,
+      "offset": 5155224,
+      "room": 410996,
+      "size": 410994
+    },
+    {
+      "head": "000c020c050c080c0b0c0e0c110c140c",
+      "index": 30,
+      "offset": 5566220,
+      "room": 247592,
+      "size": 247590
+    },
+    {
+      "head": "000c020c040c060c090c0b0c0d0c100c",
+      "index": 31,
+      "offset": 5813812,
+      "room": 314468,
+      "size": 314468
+    },
+    {
+      "head": "000c020c050c080c0b0c0d0c100c130c",
+      "index": 32,
+      "offset": 6128280,
+      "room": 330760,
+      "size": 330760
+    },
+    {
+      "head": "000c020c050c080c0b0c0e0c110c140c",
+      "index": 33,
+      "offset": 6459040,
+      "room": 271428,
+      "size": 271426
+    },
+    {
+      "head": "000c020c040c060c090c0b0c0d0c100c",
+      "index": 34,
+      "offset": 6730468,
+      "room": 362112,
+      "size": 362110
+    },
+    {
+      "head": "000c020c040c060c090c0b0c0d0c100c",
+      "index": 35,
+      "offset": 7092580,
+      "room": 348204,
+      "size": 348202
+    },
+    {
+      "head": "000c020c050c080c0b0c0d0c100c130c",
+      "index": 36,
+      "offset": 7440784,
+      "room": 386020,
+      "size": 386020
+    },
+    {
+      "head": "000c020c040c060c090c0b0c0d0c100c",
+      "index": 37,
+      "offset": 7826804,
+      "room": 301556,
+      "size": 301556
+    },
+    {
+      "head": "000c020c050c080c0b0c0d0c100c130c",
+      "index": 38,
+      "offset": 8128360,
+      "room": 14396,
+      "size": 14394
+    },
+    {
+      "head": "000c020c040c060c090c0b0c0d0c100c",
+      "index": 39,
+      "offset": 8142756,
+      "room": 16108,
+      "size": 16106
+    },
+    {
+      "head": "000c020c040c060c090c0b0c0d0c100c",
+      "index": 40,
+      "offset": 8158864,
+      "room": 11424,
+      "size": 11422
+    },
+    {
+      "head": "000c020c050c080c0b0c0e0c110c140c",
+      "index": 41,
+      "offset": 8170288,
+      "room": 14796,
+      "size": 14794
+    },
+    {
+      "head": "000c020c040c060c090c0b0c0d0c100c",
+      "index": 42,
+      "offset": 8185084,
+      "room": 15780,
+      "size": 15780
+    },
+    {
+      "head": "000c020c050c080c0b0c0d0c100c130c",
+      "index": 43,
+      "offset": 8200864,
+      "room": 14072,
+      "size": 14070
+    },
+    {
+      "head": "000c020c050c080c0b0c0e0c110c140c",
+      "index": 44,
+      "offset": 8214936,
+      "room": 24036,
+      "size": 24034
+    },
+    {
+      "head": "000c020c040c060c090c0b0c0d0c100c",
+      "index": 45,
+      "offset": 8238972,
+      "room": 12424,
+      "size": 12422
+    },
+    {
+      "head": "000c020c040c060c090c0b0c0d0c100c",
+      "index": 46,
+      "offset": 8251396,
+      "room": 11548,
+      "size": 11548
+    },
+    {
+      "head": "000c020c050c080c0b0c0d0c100c130c",
+      "index": 47,
+      "offset": 8262944,
+      "room": 18972,
+      "size": 18970
+    },
+    {
+      "head": "000c020c040c060c090c0b0c0d0c100c",
+      "index": 48,
+      "offset": 8281916,
+      "room": 106692,
+      "size": 21466
+    },
+    {
+      "head": "d87600003c000000ec01000002000000",
+      "index": 49,
+      "offset": 8388608,
+      "room": 113332,
+      "size": 113332
+    },
+    {
+      "head": "787600003c000000ec01000002000000",
+      "index": 50,
+      "offset": 8501940,
+      "room": 112404,
+      "size": 112404
+    },
+    {
+      "head": "cc7300003c0000000c02000002000000",
+      "index": 51,
+      "offset": 8614344,
+      "room": 97368,
+      "size": 97368
+    },
+    {
+      "head": "d87200003c0000000c02000002000000",
+      "index": 52,
+      "offset": 8711712,
+      "room": 96548,
+      "size": 96548
+    },
+    {
+      "head": "447400003c0000001c01000002000000",
+      "index": 53,
+      "offset": 8808260,
+      "room": 120096,
+      "size": 0
+    },
+    {
+      "head": "447400003c0000001c01000002000000",
+      "index": 54,
+      "offset": 8808260,
+      "room": 120096,
+      "size": 120096
+    },
+    {
+      "head": "447400003c0000001c01000002000000",
+      "index": 55,
+      "offset": 8928356,
+      "room": 121632,
+      "size": 121632
+    },
+    {
+      "head": "847100003c0000005c01000002000000",
+      "index": 56,
+      "offset": 9049988,
+      "room": 111244,
+      "size": 111244
+    },
+    {
+      "head": "507500003c0000003c01000002000000",
+      "index": 57,
+      "offset": 9161232,
+      "room": 122996,
+      "size": 122996
+    },
+    {
+      "head": "a4720000000000003c000000d0000000",
+      "index": 58,
+      "offset": 9284228,
+      "room": 103376,
+      "size": 0
+    },
+    {
+      "head": "a4720000000000003c000000d0000000",
+      "index": 59,
+      "offset": 9284228,
+      "room": 103376,
+      "size": 103376
+    },
+    {
+      "head": "74720000000000003c000000d0000000",
+      "index": 60,
+      "offset": 9387604,
+      "room": 102880,
+      "size": 102880
+    },
+    {
+      "head": "246b0000000000003c000000b6000000",
+      "index": 61,
+      "offset": 9490484,
+      "room": 98196,
+      "size": 98196
+    },
+    {
+      "head": "44690000000000003c000000d0000000",
+      "index": 62,
+      "offset": 9588680,
+      "room": 97136,
+      "size": 97136
+    },
+    {
+      "head": "b46e0000000000003c000000d0000000",
+      "index": 63,
+      "offset": 9685816,
+      "room": 144240,
+      "size": 0
+    },
+    {
+      "head": "b46e0000000000003c000000d0000000",
+      "index": 64,
+      "offset": 9685816,
+      "room": 144240,
+      "size": 144240
+    },
+    {
+      "head": "b46e0000000000003c000000d0000000",
+      "index": 65,
+      "offset": 9830056,
+      "room": 144240,
+      "size": 144240
+    },
+    {
+      "head": "c4720000000000003c000000d0000000",
+      "index": 66,
+      "offset": 9974296,
+      "room": 141128,
+      "size": 141128
+    },
+    {
+      "head": "c4720000000000003c000000d0000000",
+      "index": 67,
+      "offset": 10115424,
+      "room": 141128,
+      "size": 141128
+    },
+    {
+      "head": "20690000000000003c000000b6000000",
+      "index": 68,
+      "offset": 10256552,
+      "room": 105012,
+      "size": 0
+    },
+    {
+      "head": "20690000000000003c000000b6000000",
+      "index": 69,
+      "offset": 10256552,
+      "room": 105012,
+      "size": 105012
+    },
+    {
+      "head": "34690000000000003c000000b6000000",
+      "index": 70,
+      "offset": 10361564,
+      "room": 105032,
+      "size": 105032
+    },
+    {
+      "head": "ac680000000000003c000000b6000000",
+      "index": 71,
+      "offset": 10466596,
+      "room": 106128,
+      "size": 106128
+    },
+    {
+      "head": "ac680000000000003c000000b6000000",
+      "index": 72,
+      "offset": 10572724,
+      "room": 106128,
+      "size": 106128
+    },
+    {
+      "head": "70690000000000003c000000d0000000",
+      "index": 73,
+      "offset": 10678852,
+      "room": 104780,
+      "size": 0
+    },
+    {
+      "head": "70690000000000003c000000d0000000",
+      "index": 74,
+      "offset": 10678852,
+      "room": 104780,
+      "size": 104780
+    },
+    {
+      "head": "70690000000000003c000000d0000000",
+      "index": 75,
+      "offset": 10783632,
+      "room": 104780,
+      "size": 104780
+    },
+    {
+      "head": "dc6c0000000000003c000000d0000000",
+      "index": 76,
+      "offset": 10888412,
+      "room": 109944,
+      "size": 109944
+    },
+    {
+      "head": "746c0000000000003c000000d0000000",
+      "index": 77,
+      "offset": 10998356,
+      "room": 109840,
+      "size": 109840
+    },
+    {
+      "head": "947800003c000000fc01000002000000",
+      "index": 78,
+      "offset": 11108196,
+      "room": 121224,
+      "size": 0
+    },
+    {
+      "head": "947800003c000000fc01000002000000",
+      "index": 79,
+      "offset": 11108196,
+      "room": 121224,
+      "size": 121224
+    },
+    {
+      "head": "fc7100003c0000000c02000002000000",
+      "index": 80,
+      "offset": 11229420,
+      "room": 119368,
+      "size": 119368
+    },
+    {
+      "head": "e87900003c0000003c01000002000000",
+      "index": 81,
+      "offset": 11348788,
+      "room": 120060,
+      "size": 120060
+    },
+    {
+      "head": "147a00003c000000cc01000002000000",
+      "index": 82,
+      "offset": 11468848,
+      "room": 121784,
+      "size": 121784
+    },
+    {
+      "head": "3c750000000000003c000000d0000000",
+      "index": 83,
+      "offset": 11590632,
+      "room": 103332,
+      "size": 0
+    },
+    {
+      "head": "3c750000000000003c000000d0000000",
+      "index": 84,
+      "offset": 11590632,
+      "room": 103332,
+      "size": 103332
+    },
+    {
+      "head": "3c750000000000003c000000d0000000",
+      "index": 85,
+      "offset": 11693964,
+      "room": 103332,
+      "size": 103332
+    },
+    {
+      "head": "446e0000000000003c000000d0000000",
+      "index": 86,
+      "offset": 11797296,
+      "room": 100488,
+      "size": 100488
+    },
+    {
+      "head": "4c710000000000003c000000d0000000",
+      "index": 87,
+      "offset": 11897784,
+      "room": 106384,
+      "size": 106384
+    },
+    {
+      "head": "2c740000000000003c000000d0000000",
+      "index": 88,
+      "offset": 12004168,
+      "room": 112568,
+      "size": 0
+    },
+    {
+      "head": "2c740000000000003c000000d0000000",
+      "index": 89,
+      "offset": 12004168,
+      "room": 112568,
+      "size": 112568
+    },
+    {
+      "head": "7c770000000000003c000000d0000000",
+      "index": 90,
+      "offset": 12116736,
+      "room": 111284,
+      "size": 111284
+    },
+    {
+      "head": "f0710000000000003c000000b6000000",
+      "index": 91,
+      "offset": 12228020,
+      "room": 108680,
+      "size": 108680
+    },
+    {
+      "head": "78710000000000003c000000d0000000",
+      "index": 92,
+      "offset": 12336700,
+      "room": 109852,
+      "size": 109852
+    },
+    {
+      "head": "906a0000000000003c000000d0000000",
+      "index": 93,
+      "offset": 12446552,
+      "room": 136360,
+      "size": 0
+    },
+    {
+      "head": "906a0000000000003c000000d0000000",
+      "index": 94,
+      "offset": 12446552,
+      "room": 136360,
+      "size": 98804
+    },
+    {
+      "head": "906a0000000000003c000000d0000000",
+      "index": 95,
+      "offset": 12582912,
+      "room": 98804,
+      "size": 98804
+    },
+    {
+      "head": "74650000000000003c000000d0000000",
+      "index": 96,
+      "offset": 12681716,
+      "room": 99704,
+      "size": 99704
+    },
+    {
+      "head": "f4650000000000003c000000d0000000",
+      "index": 97,
+      "offset": 12781420,
+      "room": 99832,
+      "size": 99832
+    },
+    {
+      "head": "847900003c000000cc01000002000000",
+      "index": 98,
+      "offset": 12881252,
+      "room": 94376,
+      "size": 0
+    },
+    {
+      "head": "847900003c000000cc01000002000000",
+      "index": 99,
+      "offset": 12881252,
+      "room": 94376,
+      "size": 94376
+    },
+    {
+      "head": "cc7a00003c0000004c02000002000000",
+      "index": 100,
+      "offset": 12975628,
+      "room": 110480,
+      "size": 110480
+    },
+    {
+      "head": "3c7c00003c0000008c01000002000000",
+      "index": 101,
+      "offset": 13086108,
+      "room": 114984,
+      "size": 114984
+    },
+    {
+      "head": "f87500003c0000002c01000002000000",
+      "index": 102,
+      "offset": 13201092,
+      "room": 92412,
+      "size": 92412
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 103,
+      "offset": 13293504,
+      "room": 105300,
+      "size": 0
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 104,
+      "offset": 13293504,
+      "room": 105300,
+      "size": 105300
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 105,
+      "offset": 13398804,
+      "room": 105300,
+      "size": 105300
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 106,
+      "offset": 13504104,
+      "room": 200932,
+      "size": 200932
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 107,
+      "offset": 13705036,
+      "room": 204372,
+      "size": 204372
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 108,
+      "offset": 13909408,
+      "room": 104820,
+      "size": 104820
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 109,
+      "offset": 14014228,
+      "room": 104820,
+      "size": 104820
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 110,
+      "offset": 14119048,
+      "room": 105300,
+      "size": 105300
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 111,
+      "offset": 14224348,
+      "room": 104820,
+      "size": 104820
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 112,
+      "offset": 14329168,
+      "room": 204372,
+      "size": 204372
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 113,
+      "offset": 14533540,
+      "room": 112372,
+      "size": 112372
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 114,
+      "offset": 14645912,
+      "room": 109172,
+      "size": 109172
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 115,
+      "offset": 14755084,
+      "room": 104820,
+      "size": 104820
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 116,
+      "offset": 14859904,
+      "room": 105300,
+      "size": 105300
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 117,
+      "offset": 14965204,
+      "room": 204916,
+      "size": 204916
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 118,
+      "offset": 15170120,
+      "room": 216148,
+      "size": 216148
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 119,
+      "offset": 15386268,
+      "room": 204372,
+      "size": 204372
+    },
+    {
+      "head": "0c0000000c0200000c04000042000000",
+      "index": 120,
+      "offset": 15590640,
+      "room": 105780,
+      "size": 105780
+    },
+    {
+      "head": "080000002c1000007042415607000000",
+      "index": 121,
+      "offset": 15696420,
+      "room": 117776,
+      "size": 117776
+    },
+    {
+      "head": "080000002c0c00007042415607000000",
+      "index": 122,
+      "offset": 15814196,
+      "room": 58656,
+      "size": 58656
+    },
+    {
+      "head": "080000002c0e00007042415607000000",
+      "index": 123,
+      "offset": 15872852,
+      "room": 61168,
+      "size": 61168
+    },
+    {
+      "head": "080000002c0c00007042415607000000",
+      "index": 124,
+      "offset": 15934020,
+      "room": 47840,
+      "size": 47840
+    },
+    {
+      "head": "080000002c0e00007042415607000000",
+      "index": 125,
+      "offset": 15981860,
+      "room": 34512,
+      "size": 34512
+    },
+    {
+      "head": "080000002c0e00007042415607000000",
+      "index": 126,
+      "offset": 16016372,
+      "room": 50896,
+      "size": 50896
+    },
+    {
+      "head": "080000002c0c00007042415607000000",
+      "index": 127,
+      "offset": 16067268,
+      "room": 34560,
+      "size": 34560
+    },
+    {
+      "head": "080000002c0c00007042415607000000",
+      "index": 128,
+      "offset": 16101828,
+      "room": 23952,
+      "size": 23952
+    },
+    {
+      "head": "080000002c0c00007042415607000000",
+      "index": 129,
+      "offset": 16125780,
+      "room": 46704,
+      "size": 46704
+    },
+    {
+      "head": "080000002c0c00007042415607000000",
+      "index": 130,
+      "offset": 16172484,
+      "room": 36576,
+      "size": 36576
+    },
+    {
+      "head": "080000002c0e00007042415607000000",
+      "index": 131,
+      "offset": 16209060,
+      "room": 39728,
+      "size": 39728
+    },
+    {
+      "head": "080000002c0e00007042415607000000",
+      "index": 132,
+      "offset": 16248788,
+      "room": 46672,
+      "size": 46672
+    },
+    {
+      "head": "080000002c0c00007042415607000000",
+      "index": 133,
+      "offset": 16295460,
+      "room": 31376,
+      "size": 31376
+    },
+    {
+      "head": "480000006c0c0000c0580000e4640000",
+      "index": 134,
+      "offset": 16326836,
+      "room": 149808,
+      "size": 149808
+    },
+    {
+      "head": "40000000640c0000284f00004c5b0000",
+      "index": 135,
+      "offset": 16476644,
+      "room": 93456,
+      "size": 93456
+    },
+    {
+      "head": "40000000640c0000c85b0000ec670000",
+      "index": 136,
+      "offset": 16570100,
+      "room": 207116,
+      "size": 138480
+    },
+    {
+      "head": "480000006c0c0000e03f0000044c0000",
+      "index": 137,
+      "offset": 16777216,
+      "room": 131280,
+      "size": 131280
+    },
+    {
+      "head": "480000006c0c0000f035000014420000",
+      "index": 138,
+      "offset": 16908496,
+      "room": 182448,
+      "size": 182448
+    },
+    {
+      "head": "40000000640c0000584500007c510000",
+      "index": 139,
+      "offset": 17090944,
+      "room": 136160,
+      "size": 136160
+    },
+    {
+      "head": "480000006c0c000090410000b44d0000",
+      "index": 140,
+      "offset": 17227104,
+      "room": 108032,
+      "size": 108032
+    },
+    {
+      "head": "50000000740c0000584600007c520000",
+      "index": 141,
+      "offset": 17335136,
+      "room": 194992,
+      "size": 194992
+    },
+    {
+      "head": "680000008c0c0000404f0000645b0000",
+      "index": 142,
+      "offset": 17530128,
+      "room": 219104,
+      "size": 219104
+    },
+    {
+      "head": "60000000840c0000583200007c3e0000",
+      "index": 143,
+      "offset": 17749232,
+      "room": 191184,
+      "size": 191184
+    },
+    {
+      "head": "30000000540c0000085a00002c660000",
+      "index": 144,
+      "offset": 17940416,
+      "room": 115712,
+      "size": 115712
+    },
+    {
+      "head": "080000002c2600007042415607000000",
+      "index": 145,
+      "offset": 18056128,
+      "room": 208880,
+      "size": 208880
+    },
+    {
+      "head": "705145530000000101e0057b71020200",
+      "index": 146,
+      "offset": 18265008,
+      "room": 23584,
+      "size": 23584
+    },
+    {
+      "head": "080000002c2c00007042415607000000",
+      "index": 147,
+      "offset": 18288592,
+      "room": 211440,
+      "size": 211440
+    },
+    {
+      "head": "705145530000000101e0068a1b030281",
+      "index": 148,
+      "offset": 18500032,
+      "room": 32460,
+      "size": 32457
+    },
+    {
+      "head": "080000002c1a00007042415607000000",
+      "index": 149,
+      "offset": 18532492,
+      "room": 171312,
+      "size": 171312
+    },
+    {
+      "head": "705145530000000101e00a675a010202",
+      "index": 150,
+      "offset": 18703804,
+      "room": 26288,
+      "size": 26288
+    },
+    {
+      "head": "080000002c1e00007042415607000000",
+      "index": 151,
+      "offset": 18730092,
+      "room": 207344,
+      "size": 207344
+    },
+    {
+      "head": "705145530000000101e005d4d5040202",
+      "index": 152,
+      "offset": 18937436,
+      "room": 25316,
+      "size": 25316
+    },
+    {
+      "head": "080000002c2600007042415607000000",
+      "index": 153,
+      "offset": 18962752,
+      "room": 210416,
+      "size": 210416
+    },
+    {
+      "head": "705145530000000101e0062f9d01020a",
+      "index": 154,
+      "offset": 19173168,
+      "room": 26340,
+      "size": 26339
+    },
+    {
+      "head": "080000002c1e00007042415607000000",
+      "index": 155,
+      "offset": 19199508,
+      "room": 206528,
+      "size": 206528
+    },
+    {
+      "head": "705145530000000101e006bb58050381",
+      "index": 156,
+      "offset": 19406036,
+      "room": 44000,
+      "size": 43999
+    },
+    {
+      "head": "080000002c2600007042415607000000",
+      "index": 157,
+      "offset": 19450036,
+      "room": 200304,
+      "size": 200304
+    },
+    {
+      "head": "705145530000000101e005de67030232",
+      "index": 158,
+      "offset": 19650340,
+      "room": 39912,
+      "size": 39909
+    },
+    {
+      "head": "080000002c2000007042415607000000",
+      "index": 159,
+      "offset": 19690252,
+      "room": 207408,
+      "size": 207408
+    },
+    {
+      "head": "705145530000000101e00927c0040200",
+      "index": 160,
+      "offset": 19897660,
+      "room": 21876,
+      "size": 21876
+    },
+    {
+      "head": "080000002c2200007042415607000000",
+      "index": 161,
+      "offset": 19919536,
+      "room": 208096,
+      "size": 208096
+    },
+    {
+      "head": "705145530000000101e007a120040201",
+      "index": 162,
+      "offset": 20127632,
+      "room": 28584,
+      "size": 28582
+    },
+    {
+      "head": "080000002c2a00007042415607000000",
+      "index": 163,
+      "offset": 20156216,
+      "room": 202288,
+      "size": 202288
+    },
+    {
+      "head": "705145530000000101e0075300040202",
+      "index": 164,
+      "offset": 20358504,
+      "room": 22612,
+      "size": 22611
+    },
+    {
+      "head": "080000002c2800007042415607000000",
+      "index": 165,
+      "offset": 20381116,
+      "room": 205760,
+      "size": 205760
+    },
+    {
+      "head": "705145530000000101e006d511040200",
+      "index": 166,
+      "offset": 20586876,
+      "room": 22472,
+      "size": 22470
+    },
+    {
+      "head": "080000002c0c00007042415607000000",
+      "index": 167,
+      "offset": 20609348,
+      "room": 22560,
+      "size": 22560
+    },
+    {
+      "head": "705145530000000101e007a120040201",
+      "index": 168,
+      "offset": 20631908,
+      "room": 36,
+      "size": 34
+    },
+    {
+      "head": "080000002c2000007042415607000000",
+      "index": 169,
+      "offset": 20631944,
+      "room": 204784,
+      "size": 204784
+    },
+    {
+      "head": "705145530000000101e008a315040202",
+      "index": 170,
+      "offset": 20836728,
+      "room": 134792,
+      "size": 6657
+    },
+    {
+      "head": "080000002c2200007042415607000000",
+      "index": 171,
+      "offset": 20971520,
+      "room": 205328,
+      "size": 205328
+    },
+    {
+      "head": "705145530000000101e00aa54a01020a",
+      "index": 172,
+      "offset": 21176848,
+      "room": 7252,
+      "size": 7249
+    },
+    {
+      "head": "080000002c2800007042415607000000",
+      "index": 173,
+      "offset": 21184100,
+      "room": 201584,
+      "size": 201584
+    },
+    {
+      "head": "705145530000000101e006a25e020214",
+      "index": 174,
+      "offset": 21385684,
+      "room": 6440,
+      "size": 6437
+    },
+    {
+      "head": "080000002c1a00007042415607000000",
+      "index": 175,
+      "offset": 21392124,
+      "room": 196144,
+      "size": 196144
+    },
+    {
+      "head": "705145530000000101e00ac55a010264",
+      "index": 176,
+      "offset": 21588268,
+      "room": 8460,
+      "size": 8460
+    },
+    {
+      "head": "080000002c0c00007042415607000000",
+      "index": 177,
+      "offset": 21596728,
+      "room": 57440,
+      "size": 57440
+    },
+    {
+      "head": "10000000090000000c0200000000f701",
+      "index": 178,
+      "offset": 21654168,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000002f403",
+      "index": 179,
+      "offset": 21777592,
+      "room": 307260,
+      "size": 307260
+    },
+    {
+      "head": "1000000008000000ec0000001000e001",
+      "index": 180,
+      "offset": 22084852,
+      "room": 163396,
+      "size": 163396
+    },
+    {
+      "head": "b8000000b8000000b8000000043d0000",
+      "index": 181,
+      "offset": 22248248,
+      "room": 243596,
+      "size": 243596
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 182,
+      "offset": 22491844,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 183,
+      "offset": 22553348,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 184,
+      "offset": 22614852,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 185,
+      "offset": 22676356,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 186,
+      "offset": 22737860,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 187,
+      "offset": 22799364,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 188,
+      "offset": 22860868,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 189,
+      "offset": 22922372,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 190,
+      "offset": 22983876,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 191,
+      "offset": 23045380,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 192,
+      "offset": 23106884,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 193,
+      "offset": 23168388,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 194,
+      "offset": 23229892,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 195,
+      "offset": 23291396,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 196,
+      "offset": 23352900,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 197,
+      "offset": 23414404,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 198,
+      "offset": 23475908,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 199,
+      "offset": 23537412,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 200,
+      "offset": 23598916,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 201,
+      "offset": 23660420,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 202,
+      "offset": 23721924,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000080000002c0000007000e801",
+      "index": 203,
+      "offset": 23783428,
+      "room": 61504,
+      "size": 61504
+    },
+    {
+      "head": "10000000090000000c020000e000e101",
+      "index": 204,
+      "offset": 23844932,
+      "room": 37668,
+      "size": 37668
+    },
+    {
+      "head": "10000000080000002c0000003000eb01",
+      "index": 205,
+      "offset": 23882600,
+      "room": 7844,
+      "size": 7844
+    },
+    {
+      "head": "1000000008000000ac0000003000eb01",
+      "index": 206,
+      "offset": 23890444,
+      "room": 13356,
+      "size": 13356
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 207,
+      "offset": 23903800,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 208,
+      "offset": 24027224,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 209,
+      "offset": 24150648,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 210,
+      "offset": 24274072,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 211,
+      "offset": 24397496,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 212,
+      "offset": 24520920,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 213,
+      "offset": 24644344,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 214,
+      "offset": 24767768,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 215,
+      "offset": 24891192,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 216,
+      "offset": 25014616,
+      "room": 151208,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 217,
+      "offset": 25165824,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 218,
+      "offset": 25289248,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 219,
+      "offset": 25412672,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 220,
+      "offset": 25536096,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 221,
+      "offset": 25659520,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 222,
+      "offset": 25782944,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 223,
+      "offset": 25906368,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 224,
+      "offset": 26029792,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 225,
+      "offset": 26153216,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 226,
+      "offset": 26276640,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 227,
+      "offset": 26400064,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 228,
+      "offset": 26523488,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000090000000c0200000001fc03",
+      "index": 229,
+      "offset": 26646912,
+      "room": 123424,
+      "size": 123424
+    },
+    {
+      "head": "10000000080000002c0000003000eb01",
+      "index": 230,
+      "offset": 26770336,
+      "room": 1472,
+      "size": 1472
+    },
+    {
+      "head": "10000000080000002c0000003000eb01",
+      "index": 231,
+      "offset": 26771808,
+      "room": 856,
+      "size": 856
+    },
+    {
+      "head": "10000000080000008c0100000000e101",
+      "index": 232,
+      "offset": 26772664,
+      "room": 28064,
+      "size": 28064
+    },
+    {
+      "head": "10000000080000002c0000004003f403",
+      "index": 233,
+      "offset": 26800728,
+      "room": 1348,
+      "size": 1348
+    },
+    {
+      "head": "10000000080000002c0000004003f403",
+      "index": 234,
+      "offset": 26802076,
+      "room": 1348,
+      "size": 1348
+    },
+    {
+      "head": "10000000080000002c0000004003f403",
+      "index": 235,
+      "offset": 26803424,
+      "room": 1348,
+      "size": 1348
+    },
+    {
+      "head": "10000000080000002c0000004003f403",
+      "index": 236,
+      "offset": 26804772,
+      "room": 1348,
+      "size": 1348
+    },
+    {
+      "head": "10000000080000002c0000004003f403",
+      "index": 237,
+      "offset": 26806120,
+      "room": 1348,
+      "size": 1348
+    },
+    {
+      "head": "10000000080000002c0000004003f403",
+      "index": 238,
+      "offset": 26807468,
+      "room": 1348,
+      "size": 1348
+    },
+    {
+      "head": "10000000080000006c0000004003f403",
+      "index": 239,
+      "offset": 26808816,
+      "room": 1280,
+      "size": 1280
+    },
+    {
+      "head": "10000000080000002c0000004003f403",
+      "index": 240,
+      "offset": 26810096,
+      "room": 1348,
+      "size": 1348
+    },
+    {
+      "head": "10000000080000006c0000004003f403",
+      "index": 241,
+      "offset": 26811444,
+      "room": 1280,
+      "size": 1280
+    },
+    {
+      "head": "10000000080000006c0000004003f403",
+      "index": 242,
+      "offset": 26812724,
+      "room": 1280,
+      "size": 1280
+    },
+    {
+      "head": "10000000080000006c0000004003f403",
+      "index": 243,
+      "offset": 26814004,
+      "room": 1280,
+      "size": 1280
+    },
+    {
+      "head": "10000000080000002c0000004003fa03",
+      "index": 244,
+      "offset": 26815284,
+      "room": 448,
+      "size": 448
+    },
+    {
+      "head": "10000000080000002c0000008003f703",
+      "index": 245,
+      "offset": 26815732,
+      "room": 13380,
+      "size": 13380
+    },
+    {
+      "head": "10000000080000002c0000008003f703",
+      "index": 246,
+      "offset": 26829112,
+      "room": 7524,
+      "size": 7524
+    },
+    {
+      "head": "10000000080000002c0000003001ee01",
+      "index": 247,
+      "offset": 26836636,
+      "room": 3016,
+      "size": 3016
+    },
+    {
+      "head": "10000000090000000c0200000002ec03",
+      "index": 248,
+      "offset": 26839652,
+      "room": 569044,
+      "size": 569044
+    },
+    {
+      "head": "10000000090000000c0200000001e701",
+      "index": 249,
+      "offset": 27408696,
+      "room": 52452,
+      "size": 52452
+    },
+    {
+      "head": "10000000080000002c0000001001ee01",
+      "index": 250,
+      "offset": 27461148,
+      "room": 341868,
+      "size": 341868
+    },
+    {
+      "head": "10000000080000002c0000000001e101",
+      "index": 251,
+      "offset": 27803016,
+      "room": 232092,
+      "size": 232092
+    },
+    {
+      "head": "10000000080000002c0000008003f703",
+      "index": 252,
+      "offset": 28035108,
+      "room": 232092,
+      "size": 232092
+    },
+    {
+      "head": "10000000080000002c0000008003f703",
+      "index": 253,
+      "offset": 28267200,
+      "room": 40740,
+      "size": 40740
+    },
+    {
+      "head": "10000000080000002c0000008003f703",
+      "index": 254,
+      "offset": 28307940,
+      "room": 18420,
+      "size": 18420
+    },
+    {
+      "head": "10000000080000002c0000008003f703",
+      "index": 255,
+      "offset": 28326360,
+      "room": 124932,
+      "size": 124932
+    },
+    {
+      "head": "10000000080000002c0000008003f703",
+      "index": 256,
+      "offset": 28451292,
+      "room": 79316,
+      "size": 79316
+    },
+    {
+      "head": "10000000080000002c0000008003f703",
+      "index": 257,
+      "offset": 28530608,
+      "room": 23172,
+      "size": 23172
+    },
+    {
+      "head": "10000000080000002c0000008003f703",
+      "index": 258,
+      "offset": 28553780,
+      "room": 77092,
+      "size": 77092
+    },
+    {
+      "head": "10000000080000002c0000008003f703",
+      "index": 259,
+      "offset": 28630872,
+      "room": 47076,
+      "size": 47076
+    },
+    {
+      "head": "10000000080000002c0000008003f703",
+      "index": 260,
+      "offset": 28677948,
+      "room": 14692,
+      "size": 14692
+    },
+    {
+      "head": "10000000080000002c0000008003f903",
+      "index": 261,
+      "offset": 28692640,
+      "room": 14032,
+      "size": 14032
+    },
+    {
+      "head": "10000000080000002c0000008003f903",
+      "index": 262,
+      "offset": 28706672,
+      "room": 8600,
+      "size": 8600
+    },
+    {
+      "head": "10000000080000002c000000c003f503",
+      "index": 263,
+      "offset": 28715272,
+      "room": 7748,
+      "size": 7748
+    },
+    {
+      "head": "1000000008000000ac0000003000eb01",
+      "index": 264,
+      "offset": 28723020,
+      "room": 4800,
+      "size": 4800
+    },
+    {
+      "head": "1000000008000000ac0000003000eb01",
+      "index": 265,
+      "offset": 28727820,
+      "room": 6336,
+      "size": 6336
+    },
+    {
+      "head": "1000000008000000ac0000003000eb01",
+      "index": 266,
+      "offset": 28734156,
+      "room": 15552,
+      "size": 15552
+    },
+    {
+      "head": "10000000080000002c000000c0030003",
+      "index": 267,
+      "offset": 28749708,
+      "room": 38860,
+      "size": 38860
+    },
+    {
+      "head": "10000000080000002c000000c0030003",
+      "index": 268,
+      "offset": 28788568,
+      "room": 76412,
+      "size": 76412
+    },
+    {
+      "head": "10000000080000002c000000c0030003",
+      "index": 269,
+      "offset": 28864980,
+      "room": 46324,
+      "size": 46324
+    },
+    {
+      "head": "10000000080000002c000000c0030003",
+      "index": 270,
+      "offset": 28911304,
+      "room": 50748,
+      "size": 50748
+    },
+    {
+      "head": "10000000080000002c000000c0030003",
+      "index": 271,
+      "offset": 28962052,
+      "room": 29468,
+      "size": 29468
+    },
+    {
+      "head": "10000000080000002c000000c0030003",
+      "index": 272,
+      "offset": 28991520,
+      "room": 29972,
+      "size": 29972
+    },
+    {
+      "head": "10000000080000002c000000c0030003",
+      "index": 273,
+      "offset": 29021492,
+      "room": 45564,
+      "size": 45564
+    },
+    {
+      "head": "10000000080000002c000000c0030003",
+      "index": 274,
+      "offset": 29067056,
+      "room": 35520,
+      "size": 35520
+    },
+    {
+      "head": "10000000080000002c000000c0030003",
+      "index": 275,
+      "offset": 29102576,
+      "room": 16980,
+      "size": 16980
+    },
+    {
+      "head": "10000000080000002c000000c0030003",
+      "index": 276,
+      "offset": 29119556,
+      "room": 47236,
+      "size": 47236
+    },
+    {
+      "head": "10000000080000002c000000c0030003",
+      "index": 277,
+      "offset": 29166792,
+      "room": 64308,
+      "size": 64308
+    },
+    {
+      "head": "10000000080000002c0000004003fe03",
+      "index": 278,
+      "offset": 29231100,
+      "room": 9792,
+      "size": 9792
+    },
+    {
+      "head": "10000000080000002c0000008003f703",
+      "index": 279,
+      "offset": 29240892,
+      "room": 119236,
+      "size": 11620
+    }
+  ],
+  "game_id": "a19b4e641b155364",
+  "generated_at": "2026-10-22T15:21:15.441268+00:00",
+  "known": null,
+  "platform": {
+    "bankedroms_window": "0x1f000000 (8 MiB, bank byte at 0x1fb00006)",
+    "cpu": "Sony CXD8530CQ",
+    "driver": "zn2p",
+    "system": "Tecmo TPS (ZN-1 board, BIOS coh1002m)"
+  },
+  "program": {
+    "decoder": "gbox.zn_tps_boot (runs the TPS BIOS decode with the mg01/mg05 CAT702 pair)",
+    "encoded_span": [
+      0,
+      559232
+    ],
+    "entry_point": "0x800107d8",
+    "file_table_ram": "0x800515a4",
+    "known": true,
+    "overlay_ram": "0x80097e18",
+    "sha1": "614873868c77e64076730e3525c672f20363d654"
+  },
+  "source": {
+    "bios_path": "/mnt/gbox/hyperspin/Arcade/collections/Mame/roms/coh1002m.zip",
+    "bios_sha256": "36c35f78a6a8978a2e734374445d145981205a1939b9cbb4a7aa1aefa1b4aaf8",
+    "path": "/mnt/gbox/hyperspin/Arcade/collections/Mame/roms/doapp.zip",
+    "sha256": "c40c7c4bb78cba4ffd58553c87b44dc6b6797d75dc509dce805fac911166c484",
+    "size": 13762379
+  },
+  "title": "Dead Or Alive ++ (Japan)",
+  "workspace_copies": [
+    {
+      "name": "doapp-0.216",
+      "sha256": "7615b973a3f98c2ba34585645b469834e1ea0c11bb0cee59ace9afccea3282cf",
+      "size": 4194304
+    },
+    {
+      "name": "doapp-1.217",
+      "sha256": "e8a1bee3e16165f32b6e41444bf67649d720aa7ba570605d54b93fe1da9ea41d",
+      "size": 4194304
+    },
+    {
+      "name": "doapp-2.218",
+      "sha256": "2f2f036fd0646b574e167758c5e64b861631469b28103d2fc1a8b220df301680",
+      "size": 4194304
+    },
+    {
+      "name": "doapp-3.219",
+      "sha256": "fb6b24abfec79bce176ef36c9b6fa8032f1f86862bc53775532e293713b92803",
+      "size": 4194304
+    },
+    {
+      "name": "doapp-4.220",
+      "sha256": "8393ba8e6f223650855d261f79d55ac03e4a6bb001b0fb93d5e5bcd8f72812e8",
+      "size": 4194304
+    },
+    {
+      "name": "doapp-5.221",
+      "sha256": "3da776b08537597cb7fffd85f175fd12591f987a6d6d3d77d99b79abe127012b",
+      "size": 4194304
+    },
+    {
+      "name": "doapp119.bin",
+      "sha256": "df47ff61e1836ced143cc1842c5bc512cf3d596e69188a98c1652efedc2e4475",
+      "size": 1048576
+    },
+    {
+      "name": "doapp120.bin",
+      "sha256": "5af967e6006ef7ef312962ba6db2e4a98ea10f1128e63bc81f89e458e66bfb54",
+      "size": 1048576
+    },
+    {
+      "name": "mg05",
+      "sha256": "6c2df1a06f89fb0955170b5e6003647b7df006925f6b39ac410b2a7165b30580",
+      "size": 8
+    }
+  ]
+}
