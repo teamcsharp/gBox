@@ -54,3 +54,35 @@ def test_shape_loader_loop_0x800866fc():
     assert _w(d, 0x80086760) == 0x281e0646                       # cmplwi r30,0x646
     o = _off(d, 0x8012cc70); assert d[o:o + 7] == b"sShape\0"
     assert (0x80203d8c - 0x801ff67c) // 16 == 0x471 <= 0x646   # plyrA names are in the first loop
+
+
+def _bank():
+    """ct/polDC0.all of the owned disc: GBOX_CT_BANK, else streamed out of the GCZ."""
+    import hashlib, sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    import gbox.crazy_taxi as ct
+    p = os.environ.get("GBOX_CT_BANK", "")
+    if p and os.path.exists(p):
+        b = open(p, "rb").read()
+    else:
+        gcz = os.path.expanduser("~/gBox_alt/gbox-cache/bc02bb68790ce2e7/Crazy Taxi (USA).gcz")
+        if not os.path.exists(gcz):
+            pytest.skip("owned disc not present")
+        from gbox.gcdisc import GCDisc
+        b = GCDisc(gcz).read("ct/polDC0.all")
+    assert hashlib.sha256(b).hexdigest() == ct.BANK_SHA256
+    return ct, b
+
+
+def test_plyrA_name_table_maps_onto_polDC0_bank():
+    """All 54 MP_YH_plyrA_* names of the main.dol table 0x80203d8c resolve in polDC0.all, at the
+    contiguous bank positions 1110..1163 and in the table's own order (loader 0x80006c88 matches by
+    name, so the bank is the archive that carries driver A's rig)."""
+    ct, bank = _bank()
+    names = [n for n, _, _ in ct.read_bank(bank)]
+    assert len(names) == 1586
+    plyr = EV["tables"]["0x80203d8c"]["plyrA_names"]
+    assert len(plyr) == 54
+    idx = [names.index(n) for n in plyr]
+    assert idx == list(range(1110, 1164))
+    assert names[1136] == "MP_YH_plyrA_koshi.shp"
