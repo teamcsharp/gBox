@@ -53,3 +53,38 @@ def tree_census(root) -> dict:
         members += c["members"]
         classes.update(c["classes"])
     return {"parsed": ok, "failed": failed, "members": members, "classes": dict(classes)}
+
+
+# --- stage 2 probe: the 'raw02' member is a texture: 0x80-byte big-endian header + DXT5 blocks ---
+RAW02_HDR = 0x80
+
+
+def raw02_header(blob: bytes) -> dict:
+    """Header: 02 02 00 ff | BE size @4 | data offset @0x10 (=0x80) | BE size @0x14 | BE w,h @0x20.
+    Payload is DXT5/BC3 (1 byte/pixel); verified by decoding character_demo.narc members 26/27/33."""
+    if bytes(blob[:4]) != b"\x02\x02\x00\xff":
+        raise ValueError("not a raw02 texture")
+    size, off, size2 = int.from_bytes(blob[4:8], "big"), int.from_bytes(blob[0x10:0x14], "big"), \
+        int.from_bytes(blob[0x14:0x18], "big")
+    w, h = int.from_bytes(blob[0x20:0x22], "big"), int.from_bytes(blob[0x22:0x24], "big")
+    if off != RAW02_HDR or size != size2 or size != w * h or len(blob) != off + size:
+        raise ValueError(f"raw02 header inconsistent: size={size} off={off} {w}x{h} len={len(blob)}")
+    return {"width": w, "height": h, "data_offset": off, "size": size, "format": "dxt5",
+            "fmt_tag": bytes(blob[0x18:0x20]).hex()}
+
+
+def raw02_to_dds(blob: bytes) -> bytes:
+    import struct
+    hd = raw02_header(blob)
+    data = bytes(blob[hd["data_offset"]:])
+    head = (b"DDS " + struct.pack("<7I", 124, 0x81007, hd["height"], hd["width"], len(data), 0, 0)
+            + b"\0" * 44 + struct.pack("<2I4s5I", 32, 4, b"DXT5", 0, 0, 0, 0, 0)
+            + struct.pack("<5I", 0x1000, 0, 0, 0, 0))
+    return head + data
+
+
+def raw02_to_rgba(blob: bytes):
+    """Decode to a PIL RGBA image (needs Pillow)."""
+    import io
+    from PIL import Image
+    return Image.open(io.BytesIO(raw02_to_dds(blob))).convert("RGBA")
