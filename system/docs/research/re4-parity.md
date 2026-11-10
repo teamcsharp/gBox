@@ -93,8 +93,14 @@ had shrunk DOA Zack's head to 0.61, JGR Plug's to 0.68, RE2 PL00CH's to 0.88; fo
 history as the -01 pools: cast Alpine guard (Leon), Goji (HUNK), Voldo (Krauser; the Lizardman, Nightmare, Rock,
 Seung Mina and Taki set aside by the gate), Vincent field (Wesker), Razor (Ada); 14 Ganado bodies Zack, Plug, Cid
 field, HUnewearl / Nyne, Kokiri Boy, Edge Master, Claude / Meryl, Hawk Hana, PL00CH / Peach, Rig diver, Russian mob
-lieutenant. Receipts with every donor's fit report beside them (`recovery-re4-fit-v*-20261110.receipt.json`), offline
-renders in `renders/` (orthographic, not game frames). Not booted.
+lieutenant. `recovery-re4-fit-v4-20261110` (b1712331, main merged): v3's code with the 14 RE4 entries of
+`gbox.donor_rejects` left out (the audit's list, written at 07:34 from the -01 receipts, i.e. from the legacy fit;
+snapshot `hist/donor_rejects-snapshot-v4.json`): cast Alpine guard "painted text" (`auf_thug_alpine_inside_paint_*`,
+the listed guard's mesh in another library entry - the list is keyed by slug), Goji, Voldo, Aerith (Wesker), Redman
+(Ada); Ganados Ayane, Nuts, Aerith field, HUnewearl / Nyne, Kokiri Girl, Astaroth, Toni (Guardian Angels) / MGS2
+high-tech soldier, Mick Foley, PL00CH / Marth, Rig diver, Chopper pilot Lou. Receipts with every donor's fit report
+beside them (`recovery-re4-fit-v*-20261110.receipt.json`), offline renders in `renders/` (orthographic, not game
+frames). Not booted.
 
 ## 0c. Every stage greyboxed, the donor atlases fixed (2026-11-10, branch `re4-greybox-all-stages`; nothing booted)
 
