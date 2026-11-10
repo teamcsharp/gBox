@@ -1370,17 +1370,64 @@ Given the round count, the next move should be the guild: probe room 20 for its 
 and let the quest's own warp carry the party to Forest 1 -- which is still "real presses", so it satisfies P1's
 acceptance rather than dodging it.
 
+## Round 25 (2026-11-10) — the camera model was wrong twice, so the walker stopped modelling anything
+
+### A probe that failed usefully
+
+`pso_explore.probe` walked 16 grid points in room 10 looking for the guild's archway. Result: **no exit found**, and the
+visit log shows why -- targets were missed by *hundreds* of units (asked for `(71.8, 64.8)`, ended at `(323.9, 189.5)`).
+The probe was correct; the walker underneath it was not.
+
+### Why both walker models were wrong
+
+| model | assumption | why it failed |
+|---|---|---|
+| round 20-24 `walk_to` | each key is a fixed world direction | PSO's camera **follows the character**, so the mapping changes while he moves; calibration is stale within a second |
+| round 25 `steer_walk` | left/right **turn** the character | its turn error never converged live (right 1.94, right 1.23, ... then left 1.95, left 3.11, left 2.67 repeated) |
+
+Both are the same mistake in different clothes: a model of a camera that is not fixed.
+
+### `greedy_walk` (+4 tests) -- model nothing
+
+It keeps the **last observed world delta per key**, presses whichever key's most recent delta best points at the target,
+then replaces that estimate with what actually happened. A rotating camera is just a change in the estimates, absorbed on
+the next press. A blocked key's estimate becomes zero and loses trust automatically.
+
+**Live, first try:** `(157.0, 167.5)` -> `(188.1, 170.1)` for a target of `(185.0, 173.0)`, arriving 4.2 units out in a
+handful of steps. That is the most reliable walking this lane has had.
+
+### Negative results this round
+
+* The 16-point probe of room 10 found **no room transition**, so the guild archway is not within ±110 units of
+  `(182, 175)` at 55-unit spacing.
+* Walking *over* the guild door's coordinates again did **not** change the room: `(183.1, 198.6)` and `(189.4, 234.6)`
+  both stayed in room 10, even though the same coordinate produced room 20 in rounds 21-22. The doorway is a volume that
+  has to be crossed on a particular line, and standing on the coordinate is not enough.
+* The character then reported "stuck: no key moved" twice around `(213, 228)` -- a corner or a wall where all four keys
+  fail, which the greedy walker now names instead of grinding.
+
+### State
+
+P1 (BQF) in room 10 at `(217.1, 207.7)`; P2 (3P) in room 20 at the plaza. Co-op session live, both healthy.
+
+### Next
+
+1. The doorway has to be **crossed, not reached**: drive the character *through* the door along the line it was crossed on
+   in round 21 (approach from `+z` moving toward `-z`, then keep going for a second after the coordinate).
+2. Then the guild reception in room 20, a quest, and the quest's own warp to Forest 1 -- still real presses.
+3. `pso_explore.probe` should use `greedy_walk` (it currently takes any `walk_to`; pass the greedy one), otherwise its
+   grid results are noise.
+
 ## 7. Next
 
-1. **Probe room 20 for the guild's archway** with `gbox.pso_explore.probe` (grid, nearest first, stop at the first
-   room change) and take a quest from the receptionist. The quest's own warp to the surface is still real presses, so
-   it satisfies P1 rather than dodging it -- unlike `boss_warp`, which is a memory-driven area change and is excluded.
-2. Long routes need **proven waypoints**: P2's three-leg attempt to the warp door drifted to `(132.2, 152.1)` and
-   then into room 20. Build routes from points a leg has actually reached, not from a straight line plus
-   recalibration.
-3. Then P1's accept test (three cold launches to the field, both players, no warp), then P6a's in-game proof, P6b,
-   P7a and the demo -> route fixture.
+1. **Cross** the guild doorway rather than reaching it: rounds 21-22 changed room by walking over (185,173), and
+   round 25 did not, twice. The difference is the line and the momentum -- approach along the axis the crossing
+   happened on, and keep walking for a second past the coordinate.
+2. Then the guild reception in room 20, a quest, and the quest's own warp to the surface -- still real presses, so
+   it satisfies P1's acceptance instead of dodging it.
+3. `pso_explore.probe` must be given `greedy_walk` as its `walk_to`, otherwise its grid results are noise (round 25's
+   16-point probe used the older, unreliable walker).
 
-Negative results recorded: the teleporter pad is inert from its rim *and* its centre `(229.9, 0.7)`, with A tried on
-the rim; mode never leaves the town family, so it is not a footstep trigger. Movement, boot, co-op and closed-loop
-navigation to a named object are all proven and tested (20 movement tests).
+Movement is now solved and tested: `gbox.pso_kbwalk.greedy_walk` re-measures each key's last world effect instead of
+modelling the camera, and arrived within 4 units on its first live run. Both earlier models failed for the same
+reason -- PSO's camera follows the character, so any one-time calibration goes stale (16 movement tests).

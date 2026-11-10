@@ -211,3 +211,62 @@ def walk_path(read_pos, hold, waypoints, *, tolerance=8.0, log=None, room_of=Non
         if not leg["ok"]:
             return {"ok": False, "why": f"leg {i + 1}: {leg['why']}", "legs": legs}
     return {"ok": True, "why": "arrived", "legs": legs}
+
+
+# --- greedy walking: the controller that works with a camera that follows the character -------------------------
+#
+# Two fixed models were tried live and both failed (2026-11-10): treating each key as a constant world direction, and
+# treating left/right as turns. The reason is the same -- PSO's camera follows the character, so the mapping from key to
+# world direction changes while the character moves, and any calibration is stale within a second.
+#
+# `greedy_walk` models nothing. It keeps the LAST OBSERVED world delta for each key, presses whichever key's most recent
+# delta best points at the target, and replaces that estimate with what actually happened. A rotating camera is then just
+# a change in the estimates, absorbed on the next press.
+
+def greedy_walk(read_pos, hold, target, *, keys=KEYS, tolerance=7.0, max_steps=40, step=0.55, log=None) -> dict:
+    """Reach `target` by pressing one key at a time and re-measuring what each press did."""
+    log = log or (lambda _m: None)
+    effects = {}
+    trail = []
+    for key in keys:                                   # bootstrap: every key gets a measured effect
+        before = read_pos()
+        hold(key, step)
+        after = read_pos()
+        if before is None or after is None:
+            return {"ok": False, "why": "player disappeared", "steps": trail}
+        dx, dz = after[0] - before[0], after[1] - before[1]
+        if math.hypot(dx, dz) > 0.5:
+            effects[key] = (dx, dz)
+    if not effects:
+        return {"ok": False, "why": "no key moved the character", "steps": trail}
+    for _ in range(max_steps):
+        pos = read_pos()
+        if pos is None:
+            return {"ok": False, "why": "player disappeared", "steps": trail}
+        dx, dz = target[0] - pos[0], target[1] - pos[1]
+        remaining = math.hypot(dx, dz)
+        trail.append({"at": (round(pos[0], 1), round(pos[1], 1)), "remaining": round(remaining, 1)})
+        if remaining <= tolerance:
+            return {"ok": True, "why": "arrived", "steps": trail, "end": pos}
+        ux, uz = _norm(dx, dz)
+        order = sorted(effects.items(), key=lambda kv: -(kv[1][0] * ux + kv[1][1] * uz))
+        moved = False
+        for key, (ex, ez) in order:
+            if ex * ux + ez * uz <= 0 and len(order) > 1:
+                continue                               # this key last moved us away from the target
+            seconds = max(0.2, min(0.8, remaining / max(math.hypot(ex, ez) / max(step, 1e-6), 1.0)))
+            before = pos
+            hold(key, seconds)
+            after = read_pos()
+            if after is None:
+                return {"ok": False, "why": "player disappeared", "steps": trail}
+            ddx, ddz = after[0] - before[0], after[1] - before[1]
+            if math.hypot(ddx, ddz) > 0.5:
+                effects[key] = (ddx, ddz)
+                moved = True
+                break
+            effects[key] = (0.0, 0.0)                  # blocked just now: stop trusting it until it works
+        if not moved:
+            log("every key failed to move the character")
+            return {"ok": False, "why": "stuck: no key moved the character", "steps": trail, "end": read_pos()}
+    return {"ok": False, "why": f"gave up after {max_steps} steps", "steps": trail, "end": read_pos()}
