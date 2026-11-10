@@ -53,3 +53,20 @@ def test_exe_chunk_tag_xrefs_pinned():
     assert x["IdxLay"]["refs"] == [0xA975C8, 0xA976B2]
     assert x["MdlGeo"]["refs"] == [0xA9769D] and x["NodeLay"]["refs"] == [0xA9EB88]
     assert x["GeoDecl"]["refs"] == [0xAA0C15]
+
+
+def test_vertex_layout_and_strip(raw, tmp_path):
+    import numpy as np
+    from gbox.doa5a_geometry import export_obj, read_triangles, read_vertices
+    for g in read_geometry(raw):
+        v = read_vertices(raw, g)
+        ln = np.linalg.norm(v["normal"], axis=1)  # unit, or 0 on a few unused/padding vertices
+        assert (np.isclose(ln, 1.0, atol=1e-4) | np.isclose(ln, 0.0)).all()
+        assert (v["weights"].astype(int).sum(1) == 255).all()
+    body = read_geometry(raw)[8]
+    assert len(read_triangles(raw, body)) == 4314
+    assert read_vertices(raw, body)["bones"].max() == 64
+    out = tmp_path / "helena.obj"
+    r = export_obj(raw, str(out), names=("WGT_cos_hel000",))
+    assert r == {"objects": 1, "vertices": 4411, "triangles": 4314}
+    assert out.read_text().count("\nf ") == 4314 and (tmp_path / "helena.obj.weights.json").exists()

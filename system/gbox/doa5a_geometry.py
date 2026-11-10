@@ -10,7 +10,7 @@ Layout proven on HELENA_COS_001.tmc (decoded with doa5a_inventory.kt_decompress)
   Buffers are padded to 16 bytes.
 
 Field meanings beyond those used here (primitive type, vertex attribute order) are hypotheses.
-Loader xrefs in DOA5A.exe are still outstanding (Ghidra job failed earlier).
+Loader (Ghidra job 4b5ad51f15374e23): FUN_00a97670 validates MdlGeo/VtxLay/IdxLay/NodeLay chunks; chunk header u32 +0x14 = child count, +0x2c (VtxLay/IdxLay) / +0x20 (NodeLay) = relative offset table.
 """
 from __future__ import annotations
 
@@ -61,6 +61,68 @@ def read_indices(raw: bytes, g: dict) -> tuple[int, ...]:
 def read_positions(raw: bytes, g: dict) -> list[tuple[float, float, float]]:
     return [struct.unpack_from("<3f", raw, g["vtx_offset"] + n * g["stride"])
             for n in range(g["vertex_count"])]
+
+
+# Vertex layout (proved on HELENA_COS_001 for strides 56/60/64: normals unit length, u8 weights sum to 255 on
+# every vertex).  Offsets: 0 pos f32x3 | 12 normal f32x3 | 24 weights u8x4 | 28 bone idx u8x4 (local to the
+# geo's palette - palette ownership is NOT yet traced) | 32 tangent f32x3 | 44 tangent sign f32 | 48 uv0 f16x2 for
+# stride 56 (uv1 duplicates uv0).  Strides 60/64 carry extra attributes after 32 that are not decoded here.
+VTX_NORMAL, VTX_WEIGHTS, VTX_BONES, VTX_TANGENT, VTX_UV0 = 12, 24, 28, 32, 48
+
+
+def read_vertices(raw: bytes, g: dict) -> dict:
+    """Decode position/normal/skin weights/bone indices (all strides) and uv0 (stride 56 only)."""
+    import numpy as np
+    n, s, o = g["vertex_count"], g["stride"], g["vtx_offset"]
+    u8 = np.frombuffer(raw, dtype=np.uint8, count=n * s, offset=o).reshape(n, s)
+    f32 = np.frombuffer(raw, dtype="<f4", count=n * s // 4, offset=o).reshape(n, s // 4)
+    out = {"position": f32[:, 0:3].copy(), "normal": f32[:, 3:6].copy(),
+           "weights": u8[:, VTX_WEIGHTS:VTX_WEIGHTS + 4].copy(), "bones": u8[:, VTX_BONES:VTX_BONES + 4].copy()}
+    if s == 56:
+        f16 = np.frombuffer(raw, dtype="<f2", count=n * s // 2, offset=o).reshape(n, s // 2)
+        out["uv0"] = f16[:, 24:26].astype("f4")
+    return out
+
+
+def read_triangles(raw: bytes, g: dict) -> list[tuple[int, int, int]]:
+    """Index buffers are triangle strips joined by degenerate triangles (hypothesis backed by odd index
+    counts, 2965 repeated-index windows on the body, and sane edge lengths); degenerates are dropped."""
+    ix, tris = read_indices(raw, g), []
+    for i in range(len(ix) - 2):
+        a, b, c = ix[i:i + 3]
+        if a == b or b == c or a == c:
+            continue
+        tris.append((a, b, c) if i % 2 == 0 else (b, a, c))
+    return tris
+
+
+def export_obj(raw: bytes, path: str, names: tuple[str, ...] | None = None) -> dict:
+    """Write geos (all, or those named) as OBJ objects with normals/uv0; skin weights go in a .weights.json
+    sidecar ({object: [[(bone, weight255)...] per vertex]}). Returns counts."""
+    import json
+    lines, side, v0, nt = [], {}, 1, 0
+    for g in read_geometry(raw):
+        if names and g["name"] not in names:
+            continue
+        v, t = read_vertices(raw, g), read_triangles(raw, g)
+        lines.append(f"o {g['name']}")
+        lines += [f"v {x:.6f} {y:.6f} {z:.6f}" for x, y, z in v["position"]]
+        lines += [f"vn {x:.5f} {y:.5f} {z:.5f}" for x, y, z in v["normal"]]
+        has_uv = "uv0" in v
+        if has_uv:
+            lines += [f"vt {u:.5f} {1 - w:.5f}" for u, w in v["uv0"]]
+        for a, b, c in t:
+            lines.append("f " + " ".join(
+                f"{i + v0}/{i + v0}/{i + v0}" if has_uv else f"{i + v0}//{i + v0}" for i in (a, b, c)))
+        side[g["name"]] = [[(int(b), int(w)) for b, w in zip(bs, ws) if w]
+                           for bs, ws in zip(v["bones"], v["weights"])]
+        v0 += g["vertex_count"]
+        nt += len(t)
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    with open(path + ".weights.json", "w") as f:
+        json.dump(side, f)
+    return {"objects": len(side), "vertices": v0 - 1, "triangles": nt}
 
 
 def geometry_summary(raw: bytes) -> list[dict]:
