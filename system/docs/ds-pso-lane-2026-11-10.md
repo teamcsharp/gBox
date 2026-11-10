@@ -1962,16 +1962,65 @@ fresh in MULTI MODE.
 3. P7a's rigging pass: `build_swap` adapted for GC (big-endian body, GVR textures, flat file names), with
    `pso_swapfit.compare` gating every build.
 
+## Round 38 (2026-11-10) — a co-op route from the spawn, and the guild is not at the west end
+
+### The route from the lobby spawn, walked in one session
+
+Starting from where MULTI MODE spawns both players in the lobby `(229,254)`, player 1 walked the whole way to the west
+end:
+
+```
+(170,190) -> (120,120)   crosses into room 20, around (106,101)
+          -> (23,-34)    through the gap south of the terrace
+          -> (-77,29)
+          -> (-224,-26)  the west end
+```
+
+The first leg is the one that matters operationally: from the **spawn** the crossing is found by walking to `(170,190)`
+and then `(120,120)` -- earlier rounds crossed from `(203,190)` and `(91,24)` and I had no repeatable recipe from the
+spawn itself. Now there is one, and it took a single session rather than a relaunch per leg.
+
+### The west end is the shopping district, not the guild
+
+`qe1-sign.jpg` shows the shopfronts signed **GURHAL** / **LICENSED**; `qe2-expert.jpg` shows a night street with a
+white-coated NPC in front of a large lit entrance. The `TObjNpcCloakroomBase` NPC at `(-267,-24)` and the counter beside it
+do not answer `A`: the mode byte stays in the town family, which (from rounds 23-29) is what "no dialogue opened" looks
+like.
+
+So the guild's counter is still unfound, and the search narrows to three candidates, all named and cheap:
+
+* `TObjCityDoor_Med` at `(194,-93)` in room 10 -- never walked to,
+* `TObjCityDoor_Shop` at `(-165,148)` in room 10 -- never walked to,
+* the central dome's large doorways in room 20.
+
+### Research doc updated
+
+`docs/research/pso-gc-pioneer2-rooms.md` now carries a **Walked routes** table (which transition crosses at which
+coordinates, and how it was found) and a **What is at the west end** section. The point of that doc is that room ids are
+cheap to read and expensive to guess: every row in it came from a walk with the room id checked at each leg.
+
+### State
+
+Co-op session live: P1 (BQF) in room 20 at `(-149,12)`, P2 (3P) still in the lobby `(231,267)` -- split screen, which a
+quest will not be happy about. Both healthy.
+
+### Next
+
+1. Walk the two remaining room-10 doors (`Med` at `(194,-93)`, `Shop` at `(-165,148)`) and the dome's doorways; one of
+   them is the guild.
+2. Bring the party together before accepting anything: PSO co-op expects both players in the same area for a quest.
+3. Then the quest warp -> Forest 1, P1's accept test, P6a's in-game proof, P6b, P7a rigging, demo -> route fixture.
+
 ## 7. Next
 
-1. **MULTI MODE is now the only live route.** Single-player is a dead end on this disc: its opening conversation
-   locks movement and no input leaves it -- retested in round 37 with the keyboard walker (which does move
-   characters), 20 A presses, and movement attempts inside the mode-17 gaps, all negative. MULTI MODE loads both
-   players into the Pioneer 2 lobby with no cutscene.
-2. **The guild counter** is still the one thing between this lane and a field arrival by real presses: route in is
-   (102,105) -> (33,-34) -> (-84,27) -> (-223,-24), then walk around the counter and face the keeper.
-3. **P6a's in-game proof** and **P6b's editor page** sit behind that field arrival; **P7a's rigging** needs
-   `build_swap` adapted for GC (big-endian body, GVR textures, flat names), with `pso_swapfit.compare` gating builds.
+1. **Three door candidates left, all named:** `TObjCityDoor_Med` at (194,-93) and `TObjCityDoor_Shop` at (-165,148)
+   in room 10 (neither ever walked to), and the central dome's large doorways in room 20. One of them is the guild.
+2. **Keep the party together** before accepting a quest: P1 is in room 20 and P2 in the lobby, and PSO co-op expects
+   both players in the same area.
+3. Then the quest warp -> Forest 1, P1's accept test, P6a's in-game proof, P6b's editor page, P7a's rigging, and the
+   demo -> route fixture.
 
-Detection note: a stuck conversation looks like `mode 5` alternating with `17` and no player movement -- a driver can
-recognise it from RAM without a frame.
+Repeatable from the spawn now (round 38): lobby (229,254) -> (170,190) -> (120,120) crosses into room 20 at about
+(106,101); then (23,-34) -> (-77,29) -> (-224,-26) reaches the west end. `docs/research/pso-gc-pioneer2-rooms.md`
+carries the walked-routes table, and records that the west end is the **shopping district** (GURHAL / LICENSED
+shopfronts, a cloakroom NPC, a night street) with no answering counter -- the guild is elsewhere.

@@ -63,3 +63,35 @@ quest. Next round should test the "both players on the pad" case before concludi
 * A character can be steered with `win_send_keys` on the keyboard bindings only; the virtual pad's analog stick never
   reaches the game (round 19). The Dolphin window must be foreground.
 * Room transitions are visible in RAM as a `u16` change, so a route can prove where it is at every step.
+
+## Walked routes (measured, not guessed)
+
+The city is one large connected area; the `room` id changes at specific thresholds. Only four transitions have actually
+been walked, and each is a **position to cross with movement**, not a place to stand:
+
+| from | to | crossed at | how it was found |
+|---|---|---|---|
+| room 10 (lobby), from the spawn | room 20 | walking `(170,190) -> (120,120)`, crossing around `(106,101)` | greedy walker legs, room id read each leg |
+| room 20 | room 10 | walking to `(185,173)` from the west | round 22: the same coordinate working both ways |
+| room 10 | room 40 (teleporter room / hospital) | walking onto `(254,25)`, the `TObjCityDoor_Warp` coordinate | round 23 |
+| room 10 | -- | `TObjCityDoor_Guild` at `(185,173)` is **inert**: four approaches arrived on it, `A` included, no change | round 29 |
+
+A passable route to the west end of the city, every leg walked under control:
+
+```
+(170,190) -> (120,120)   crosses into room 20
+          -> (23,-34)    through the gap south of the terrace
+          -> (-77,29)
+          -> (-224,-26)  the west end
+```
+
+## What is at the west end
+
+The shopping district and the medical exterior: lit shopfronts signed **GURHAL** / **LICENSED**, a counter with a keeper
+behind it, the `TObjNpcCloakroomBase` NPC at `(-267,-24)`, and a night street with a white-coated NPC in front of a large
+lit entrance. Pressing `A` at the counter or at the cloakroom does **not** open a dialogue -- the mode byte stays in the
+town family, so the character is across the counter rather than in front of the keeper.
+
+So **the Hunter's Guild is not at the west end**. What is left to try: the two room-10 doors never walked
+(`TObjCityDoor_Med` at `(194,-93)`, `TObjCityDoor_Shop` at `(-165,148)`) and whatever the central dome's large doorways
+lead to.
