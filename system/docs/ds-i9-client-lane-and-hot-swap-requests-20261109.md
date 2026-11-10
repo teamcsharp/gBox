@@ -701,3 +701,20 @@ clean roster as the shipped reskin build, then the hot-reload acceptance test on
 * The hot-swap itself is staged: `.tmp/leon-body-game.arc` (1,626,591 bytes, the game's own Leon body via
   `switch_decrypt`) replaces the broken donor body at the RESULTS boundary of round 1, and round 2 in the same session
   shows the normal body - the two-frame acceptance evidence.
+
+## Round 28 status (2026-11-09, ~21:15 CST): the input path is the remaining obstacle for the two-frame run
+
+* An adaptive RAM-driven nav (`screen()` per step, B on unexpected menus, right+A on prompts) reached an `unknown`
+  state and the game **hung at 0 FPS** - answering the prompt/certain menus with posted key messages still kills it.
+  The same happened on the fixed sequence. So navigation via `PostMessage` keys is the fragile link, not the code.
+* The save was deleted but the game **recreated `SAVEDATA` (28 KB) on boot**, so the continue/prompt state returns on
+  the next launch. Deleting it per-run is not sufficient unless the new-save flow is driven correctly.
+* `YuzuAdapter.send_input` on Windows delivers pad buttons through `win_send_keys` (posted keys) unless a network
+  gamepad is present, so it does not solve this by itself; a virtual gamepad (ViGEm-style) or an in-game state write
+  would be the reliable input path.
+
+Where the lane stands: the swap builds and the 34-arc clean roster run rounds (RESULTS evidence), the decrypting
+toolchain is complete and dispatchable, and the two-frame hot-swap evidence is staged (`.tmp/leon-body-game.arc`), but
+the automated input into RE6's menus is unreliable for the specific prompt/menu states a fresh save produces. The next
+step is to observe the fresh-save menu flow with a read-only loop (no keys) and then replay exactly the observed
+sequence, or to add a virtual gamepad to the i9 worker.
