@@ -264,60 +264,68 @@ def dee_header(data: bytes) -> dict:
     return {"raw_len": raw_len, "comp_len": comp_len, "word": word}
 
 
-def dee_compress(raw: bytes, max_chain: int = 64) -> bytes:
-    """Greedy LZ77 encoder for the DEE stream (inverse of dee_decompress)."""
-    out = bytearray()
+def dee_compress(raw: bytes, max_chain: int = 256) -> bytes:
+    """Optimal-parse LZ77 encoder for the DEE stream (inverse of dee_decompress).
+
+    Literal = 1 flag bit + 8 bits, match = 1 flag bit + 16 bits (len 2..17,
+    dist 1..4096).  Cost is independent of match length/distance, so a
+    shortest-path DP over positions with the longest match per position gives
+    the minimum bit count (flag bytes are exactly ceil(items/8)).
+    """
     n = len(raw)
+    if n == 0:
+        return b""
     heads: dict = {}
-    i = 0
-    group = []  # up to 8 items: ("L", byte) / ("M", word)
-
-    def flush():
-        flags = 0
-        body = bytearray()
-        for k, (kind, v) in enumerate(group):
-            if kind == "L":
-                flags |= 1 << k
-                body.append(v)
-            else:
-                body += struct.pack("<H", v)
-        out.append(flags)
-        out.extend(body)
-        group.clear()
-
-    def index(pos):
-        if pos + 3 <= n:
-            heads.setdefault(raw[pos:pos + 3], []).append(pos)
-
-    while i < n:
+    INF = 1 << 60
+    cost = [INF] * (n + 1)
+    step = [None] * (n + 1)  # (prev_i, kind, length, dist)
+    cost[0] = 0
+    for i in range(n):
+        ci = cost[i]
+        # literal
+        if ci + 9 < cost[i + 1]:
+            cost[i + 1] = ci + 9
+            step[i + 1] = (i, "L", 1, 0)
         best_len = best_dist = 0
-        if i + _MIN_MATCH <= n:
-            cands = heads.get(raw[i:i + 3], ())
-            for c in reversed(cands[-max_chain:]):
+        if i + 2 <= n:
+            lim = min(_MAX_MATCH, n - i)
+            for c in reversed(heads.get(raw[i:i + 2], ())[-max_chain:]):
                 dist = i - c
                 if dist > _MAX_DIST:
                     break
                 length = 0
-                lim = min(_MAX_MATCH, n - i)
                 while length < lim and raw[c + length] == raw[i + length]:
                     length += 1
                 if length > best_len:
                     best_len, best_dist = length, dist
                     if length == lim:
                         break
-        if best_len >= _MIN_MATCH:
-            group.append(("M", (best_dist - 1) << 4 | (best_len - 2)))
-            for k in range(best_len):
-                index(i + k)
-            i += best_len
-        else:
-            group.append(("L", raw[i]))
-            index(i)
-            i += 1
-        if len(group) == 8:
-            flush()
-    if group:
-        flush()
+        for ln in range(2, best_len + 1):
+            if ci + 17 < cost[i + ln]:
+                cost[i + ln] = ci + 17
+                step[i + ln] = (i, "M", ln, best_dist)
+        if i + 2 <= n:
+            heads.setdefault(raw[i:i + 2], []).append(i)
+    items = []
+    j = n
+    while j > 0:
+        pi, kind, ln, dist = step[j]
+        items.append(("L", raw[pi]) if kind == "L" else ("M", (dist - 1) << 4 | (ln - 2)))
+        j = pi
+    items.reverse()
+    out = bytearray()
+    for g in range(0, len(items), 8):
+        grp = items[g:g + 8]
+        flags = 0
+        body = bytearray()
+        for k, (kind, v) in enumerate(grp):
+            if kind == "L":
+                flags |= 1 << k
+                body.append(v)
+            else:
+                body += struct.pack("<H", v)
+        out.append(flags)
+        out += body
     return bytes(out)
 
 

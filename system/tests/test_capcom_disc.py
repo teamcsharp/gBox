@@ -99,3 +99,19 @@ def test_real_image_noop_and_donor(tmp_path):
     # other files untouched
     a, b = RawBin(REAL, False), RawBin(out2, False)
     assert a.read("1943/43CARD.DEE") == b.read("1943/43CARD.DEE")
+
+
+def test_optimal_parse_roundtrip_and_overflow_file_fits():
+    import random
+    rnd = random.Random(7)
+    raw = bytes(rnd.choice(b"\x00\x11\x22\x33") for _ in range(5000)) + bytes(range(256))
+    assert dee.dee_decompress(b"\0" * 12 + dee.dee_compress(raw)) == raw
+    assert dee.dee_compress(b"") == b""
+    if not os.path.exists(REAL):
+        pytest.skip("owned image not present")
+    name = "1942/OBJECT1.DEE"
+    orig = RawBin(REAL, False).read(name)
+    packed = dee.dee_pack(dee.dee_unpack(orig))
+    assert dee.dee_unpack(packed) == dee.dee_unpack(orig)
+    # greedy parse produced 10650 > 10240-byte sector span; optimal parse fits
+    assert len(packed) <= -(-len(orig) // 2048) * 2048
