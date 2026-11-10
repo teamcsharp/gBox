@@ -21,6 +21,7 @@ import math
 import os
 import struct
 import threading
+import time
 
 from . import re4_switch as R, re6_switch_native as N
 from ..native.re4_82c2a04a import code as CODE
@@ -49,6 +50,13 @@ OBJECT_SIZE = 0x400
 SCRATCH_OFF = 0x100                    # the fake object, in the same proven page as the mailbox (E3)
 #: The operator's placement rule for a flash (checkpoint F3), in RE4's millimetres.
 FLASH_MIN_MM, FLASH_MAX_MM, FLASH_FROM_MM = 4000.0, 9000.0, 12000.0
+#: The hand grenade's own blast (checkpoint G2): same fake-object route, class 0x13, radius 6000 mm, floor 7000 mm.
+HAND_BLAST = 0x2E48B0
+HAND_MIN_MM = 7000.0
+#: The ring (checkpoint G1/G2): N blasts round him, the inner ring at the kind's floor.
+RING_COUNT_DEFAULT, RING_COUNT_MAX = 10, 16
+RING_RADIUS_MM_DEFAULT, RING_INNER_MM_DEFAULT = 9000.0, 4000.0
+RING_RIPPLE_MS_DEFAULT = 40.0
 #: The proven private page (set after E3's three-load watch passes; None means the harness cannot attach).
 MAILBOX_AT: int | None = None
 
@@ -217,6 +225,33 @@ class Controller(N.Controller):
     def player_position(self) -> tuple:
         return struct.unpack("<3f", self.rd(self.player + R.U_POS, 12))
 
+    def player_life(self):
+        """The player's own life field (module+`PLAYER_LIFE`, u16), or None when it reads outside `LIFE_SANE`."""
+        if not R.PLAYER_LIFE:
+            return None
+        try:
+            value = self.w(self.base + R.PLAYER_LIFE)
+        except (OSError, ValueError):
+            return None
+        return value if R.LIFE_SANE[0] <= value < R.LIFE_SANE[1] else None
+
+    def _blast_at(self, blast, kind, x, y, z, floor_mm):
+        """One blast through the mailbox: a zeroed object at the point, the game's own function, one call."""
+        if not self.attached():
+            raise Unavailable("the harness is not attached to the player")
+        px, py, pz = self.player_position()
+        from_mm = math.hypot(x - px, z - pz)
+        if from_mm < floor_mm:
+            raise Unavailable(f"a {kind} blast {from_mm / R.MM_PER_CM:.0f} cm from him is refused (the minimum is "
+                              f"{floor_mm / R.MM_PER_CM:.0f} cm)")
+        obj = bytearray(OBJECT_SIZE)
+        struct.pack_into("<3f", obj, FLASH_OBJECT_POS, x, y, z)
+        # +0x3CC is zero: the blast's ground/type check must not skip the effects
+        self.write(self.scratch, bytes(obj))
+        result = self.call(blast, self.scratch)
+        return {"pos": [round(v, 1) for v in (x, y, z)], "from_player_cm": round(from_mm / R.MM_PER_CM, 1),
+                "call_result": result}
+
     def flash_at(self, x, y, z):
         """Start the game's flash blast on the point (x, y, z - RE4's millimetres) through the harness.
 
@@ -225,22 +260,59 @@ class Controller(N.Controller):
         the native call returned on the game thread; `verified` stays False until a live effect receipt (the stun
         state of the Ganados in range, his own hp unchanged) is seen - that is F4's row in `grenade_status`.
         """
+        row = self._blast_at(FLASH_BLAST, "flash", x, y, z, FLASH_MIN_MM)
+        return {"state": "confirmed", "verified": False, "op": "flash_at", "effect": "native_flash_blast",
+                "player_generation": self.player_id, **row}
+
+    def grenade_ring(self, kind="flash", *, count=None, radius_cm=None, inner_cm=None, ripple_ms=None, expand=None):
+        """N blasts in a ring round him (checkpoint G1/G2): flash 4000 mm or more, hand grenade 7000 mm or more.
+
+        The points run outward from the inner ring to the outer radius on his floor; each is one native blast through
+        the harness (the same route as `flash_at`). A failed blast aborts the ring with a partial receipt - it is
+        never replayed. `state: confirmed` means every blast's call returned; a live receipt is still needed.
+        """
         if not self.attached():
             raise Unavailable("the harness is not attached to the player")
+        kind = (kind or "flash").lower()
+        if kind == "incendiary":
+            raise Unavailable("the incendiary blast is not identified on this build yet (checkpoint G3)")
+        if kind not in ("flash", "hand"):
+            raise Unavailable(f"unknown grenade kind {kind!r}")
+        blast, floor_mm = (FLASH_BLAST, FLASH_MIN_MM) if kind == "flash" else (HAND_BLAST, HAND_MIN_MM)
+        count = max(1, min(int(RING_COUNT_DEFAULT if count is None else count), RING_COUNT_MAX))
+        radius_mm = max(floor_mm, float(RING_RADIUS_MM_DEFAULT if radius_cm is None else radius_cm * R.MM_PER_CM))
+        inner_mm = max(floor_mm, float(RING_INNER_MM_DEFAULT if inner_cm is None else inner_cm * R.MM_PER_CM))
+        inner_mm = min(inner_mm, radius_mm)
+        gap = max(0.0, float(RING_RIPPLE_MS_DEFAULT if ripple_ms is None else ripple_ms)) / 1000.0
         px, py, pz = self.player_position()
-        from_mm = math.hypot(x - px, z - pz)
-        if from_mm < FLASH_MIN_MM:
-            raise Unavailable(f"a flash {from_mm / R.MM_PER_CM:.0f} cm from him is refused (never at his feet; "
-                              f"the minimum is {FLASH_MIN_MM / R.MM_PER_CM:.0f} cm)")
-        obj = bytearray(OBJECT_SIZE)
-        struct.pack_into("<3f", obj, FLASH_OBJECT_POS, x, y, z)
-        # +0x3CC is zero already: the blast's ground/type check must not skip the effects
-        self.write(self.scratch, bytes(obj))
-        result = self.call(FLASH_BLAST, self.scratch)
-        return {"state": "confirmed", "verified": False, "op": "flash_at", "effect": "native_flash_blast",
-                "pos": [round(v, 1) for v in (x, y, z)],
-                "from_player_cm": round(from_mm / R.MM_PER_CM, 1), "player_generation": self.player_id,
-                "call_result": result}
+        life_before = self.player_life()
+        started = time.monotonic()
+        rounds, abort = [], None
+        for index in range(count):
+            angle = 2.0 * math.pi * index / count
+            r = radius_mm if expand is False or count == 1 else inner_mm + (radius_mm - inner_mm) * index / (count - 1)
+            x, z = px + r * math.sin(angle), pz + r * math.cos(angle)
+            try:
+                rounds.append({**self._blast_at(blast, kind, x, py, z, floor_mm), "index": index,
+                               "radius_mm": round(r, 1)})
+            except (Unavailable, Uncertain, AllocationLost) as exc:
+                abort = str(exc)
+                break
+            if gap and index + 1 < count:
+                time.sleep(gap)
+        life_after = self.player_life()
+        receipt = {"op": "grenade_ring", "kind": kind, "requested": count, "detonated": len(rounds),
+                   "radius_cm": round(radius_mm / R.MM_PER_CM, 1), "radius_mm": round(radius_mm, 1),
+                   "inner_cm": round(inner_mm / R.MM_PER_CM, 1), "inner_mm": round(inner_mm, 1),
+                   "expand": expand is not False, "hp_before": life_before, "hp_after": life_after,
+                   "self_damage": (life_before - life_after) if isinstance(life_before, int) and
+                   isinstance(life_after, int) else None,
+                   "grenades": rounds, "verified": False, "player_generation": self.player_id,
+                   "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+        if len(rounds) == count and abort is None:
+            return {"state": "confirmed", "effect": f"native_{kind}_ring", **receipt}
+        receipt["reason"] = abort or "the ring did not complete"
+        return {"state": "failed" if not rounds else "uncertain", **receipt}
 
     def flash(self):
         """The intervention's `flash_now` op: the crowd point through this controller's own adapter."""

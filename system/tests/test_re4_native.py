@@ -30,7 +30,7 @@ def get(mem, at, n):
     return bytes(mem.get(at + i, 0) for i in range(n))
 
 
-def fake_controller(monkeypatch, *, mailbox=MAILBOX, complete=True):
+def fake_controller(monkeypatch, *, mailbox=MAILBOX, complete=True, fail_at=None):
     ctl = N.Controller.__new__(N.Controller)
     ctl.base, ctl.pid, ctl.identity = BASE, 4242, (4242, 7)
     ctl.mailbox, ctl.player, ctl.original, ctl.player_id = mailbox, None, None, None
@@ -65,6 +65,7 @@ def fake_controller(monkeypatch, *, mailbox=MAILBOX, complete=True):
     unit[0x3CE] = 0                                              # type
     put(mem, PLAYER, unit)
     put(mem, BASE + R.S_PLAYER, struct.pack("<Q", PLAYER))
+    put(mem, BASE + R.PLAYER_LIFE, struct.pack("<H", 1000))      # his own life field (u16)
     vt = bytearray(32 * 8)
     for slot in range(32):
         struct.pack_into("<Q", vt, slot * 8, BASE + 0x1234)
@@ -81,11 +82,16 @@ def fake_controller(monkeypatch, *, mailbox=MAILBOX, complete=True):
         put(mem, at, data)
     monkeypatch.setattr(NB.Controller, "install", fake_install, raising=False)
 
+    requests = {"n": 0}
+
     def wait(predicate, timeout=1.0):
         state = ctl.w(MAILBOX + CODE.MAILBOX["state"]) if ctl.mailbox else 0
         if not complete:
             raise N.Uncertain("native completion uncertain; request will not be replayed")
         if state == CODE.STATE["requested"]:
+            requests["n"] += 1
+            if fail_at is not None and requests["n"] == fail_at:
+                raise N.Uncertain(f"native request {fail_at} timed out; not replayed")
             target = ctl.q(MAILBOX + CODE.MAILBOX["target"])
             args = struct.unpack("<7Q", get(mem, MAILBOX + CODE.MAILBOX["args"], 56))
             result = target + sum(args)
@@ -235,7 +241,7 @@ def test_flash_at_writes_the_fake_object_and_publishes_the_blast_call(monkeypatc
 def test_flash_at_refuses_a_point_at_his_feet(monkeypatch):
     ctl = fake_controller(monkeypatch)
     ctl.attach()
-    with pytest.raises(N.Unavailable, match="never at his feet"):
+    with pytest.raises(N.Unavailable, match="minimum is 400 cm"):
         ctl.flash_at(1.0, 2.0, 3.0)
     assert not any(at == MAILBOX + N.SCRATCH_OFF for at, _data in ctl.writes)
 
@@ -285,3 +291,47 @@ def test_flash_now_refuses_when_nobody_is_near(monkeypatch):
                                                                  "enemies": []})
     receipt = N.flash_now(None)
     assert receipt["state"] == "unavailable" and "12 m" in receipt["reason"]
+
+
+# ---- G1/G2: the ring round him ---------------------------------------------------------------------------------------
+
+def _ring_controller(monkeypatch, **kw):
+    monkeypatch.setattr(N.time, "sleep", lambda s: None)
+    ctl = fake_controller(monkeypatch, **kw)
+    ctl.attach()
+    return ctl
+
+
+def test_a_flash_ring_places_every_blast_round_him_above_the_floor(monkeypatch):
+    ctl = _ring_controller(monkeypatch)
+    result = ctl.grenade_ring("flash", count=4, radius_cm=1000.0, inner_cm=100.0)
+    assert result["state"] == "confirmed" and result["detonated"] == 4
+    assert result["inner_mm"] == 4000.0 and result["radius_mm"] == 10000.0
+    assert result["hp_before"] == 1000 and result["self_damage"] == 0
+    targets = [w for w in ctl.writes if w[0] == MAILBOX + CODE.MAILBOX["target"]]
+    assert len(targets) == 4 and all(struct.unpack("<Q", d)[0] == BASE + N.FLASH_BLAST for _a, d in targets)
+    for row in result["grenades"]:
+        assert row["from_player_cm"] >= 400 and row["radius_mm"] >= 4000
+
+
+def test_a_hand_ring_uses_the_hand_blast_and_the_7000_floor(monkeypatch):
+    ctl = _ring_controller(monkeypatch)
+    result = ctl.grenade_ring("hand", count=2, radius_cm=800.0, inner_cm=100.0)
+    assert result["state"] == "confirmed" and result["inner_mm"] == 7000.0
+    targets = [w for w in ctl.writes if w[0] == MAILBOX + CODE.MAILBOX["target"]]
+    assert all(struct.unpack("<Q", d)[0] == BASE + N.HAND_BLAST for _a, d in targets)
+    assert all(r["from_player_cm"] >= 700 for r in result["grenades"])
+
+
+def test_the_incendiary_ring_is_refused_before_any_call(monkeypatch):
+    ctl = _ring_controller(monkeypatch)
+    before = len(ctl.writes)
+    with pytest.raises(N.Unavailable, match="not identified"):
+        ctl.grenade_ring("incendiary")
+    assert len(ctl.writes) == before
+
+
+def test_a_failed_blast_makes_the_ring_uncertain_and_stops(monkeypatch):
+    ctl = _ring_controller(monkeypatch, fail_at=3)
+    result = ctl.grenade_ring("flash", count=5, radius_cm=900.0, inner_cm=400.0)
+    assert result["state"] == "uncertain" and result["detonated"] == 2 and "timed out" in result["reason"]

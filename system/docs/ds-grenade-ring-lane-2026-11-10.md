@@ -994,3 +994,32 @@ bot logic and the mercs engine: **242 passed**.
 **do not wire the doctrine yet** - the harness has no proven mailbox page (E3's watch) and no live receipt. The one
 doctrine line is `re4_switch.py` around line 1890, `respond.Kit(fire=fire, flash=None, ...)`, and it is the RE
 session's to write after F4 flips the row to verified.
+
+## Round 63 (2026-11-10 18:35 CST) - G1/G2 offline: the flash ring and the hand-grenade ring on the RE4 harness
+
+Starting checkpoint G while the live RE4 block is up (it is still running: session `25385f8f4eb94342-6eb677c2f1194dea`,
+round 2/5 at stage 3 - the second stage load; the three-load watch ask is on main).
+
+**`Controller.grenade_ring(kind, count, radius_cm, inner_cm, ripple_ms, expand)`** on the RE4 harness, same contract
+shape as RE5/RE6 (the shared rule calls it with cm, the controller converts with `MM_PER_CM`):
+
+- **G1, the flash ring:** N `_blast_at` points on a circle round him, the inner ring at **4000 mm** or more (the
+  flash's own floor, enforced by `_blast_at` as well), radius default 9000 mm, count default 10 (max 16), a 40 ms
+  ripple; each point is one flash blast (`main+0x2E4E50`) through the mailbox, so the ring is N real effects.
+- **G2, the hand-grenade ring:** the same geometry with the hand grenade's blast (`main+0x2E48B0`, class 0x13, radius
+  6000 mm from the guide) and a **7000 mm** floor. The learned-blast-reach clamp stays the caller's (the rule's
+  radius/inner already carry it; the floor is enforced here too).
+- **G3, incendiary:** refused before any call - "the incendiary blast is not identified on this build yet".
+- The receipt: `detonated == requested`, `radius_cm/mm`, `inner_cm/mm`, per-point `from_player_cm`/`radius_mm`,
+  `hp_before/after` from the player's own life field (`module+PLAYER_LIFE`; `self_damage` 0 when unchanged),
+  `elapsed_ms`, `verified: false` until a live receipt. A failed blast aborts with a partial `uncertain` receipt and
+  is never replayed.
+
+**Tests:** 4 new in `tests/test_re4_native.py` (24 there): a 4-point flash ring places every blast at 4000-10000 mm
+and calls the flash blast four times, hp unchanged; a 2-point hand ring uses the hand blast at 7000 mm or more; the
+incendiary ring is refused before any write; a blast that times out leaves `uncertain` with the two that completed.
+With the other RE4 harness files and the status module: **73 passed**.
+
+**Still to do for G:** G4 (add the title to `SCATTER_TITLES` and the scatter knobs to `re4_switch.py`, cm/mm at the
+controller boundary, the barrage op) and the live receipts per kind - both need F's live receipt first, which needs
+E3's watch and the branch deploy.
