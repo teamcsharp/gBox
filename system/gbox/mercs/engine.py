@@ -145,6 +145,18 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             director.reset(clock())
         except Exception as exc:                     # noqa: BLE001
             stats["doctrine_error"] = f"{type(exc).__name__}: {exc}"[:160]
+    # The grenade ring's own rule (gbox.mercs.grenade_ring): fires it when surrounded, facing a boss/heavy or held by
+    # a crowd that is not thinning - never inside the learned blast reach, at most every RING_EVERY_S. One call per
+    # playing tick; a title with no native ring refuses in the controller and the round goes on.
+    ring_step = None
+    if not observe_only:
+        try:
+            ring_ad = getattr(m, "adapter", None)
+            if ring_ad is not None:
+                from . import grenade_ring
+                ring_step = grenade_ring.control(ring_ad, prof)
+        except Exception as exc:                     # noqa: BLE001
+            stats["grenade_ring_error"] = f"{type(exc).__name__}: {exc}"[:160]
     held: set = set()
     gone_since = lost_since = None
     hits_seen = stats.get("hits_taken", 0)
@@ -599,6 +611,15 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     stats["doctrine_error"] = f"{type(exc).__name__}: {exc}"[:160]
             vi = frame_fn.vi(m) if frame_fn is not None and hasattr(frame_fn, "vi") else None
             lat.observe(bot, snap, act, held, vi)
+            if ring_step is not None and where == "playing":   # the ring takes its own tick: keys released first
+                try:
+                    ring_out = ring_step(snap, stats, now, hold)
+                except Exception as exc:             # noqa: BLE001 - a ring never ends the round
+                    stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:200]
+                else:
+                    if ring_out.get("fired"):
+                        next_frame()
+                        continue
             if stats.get("hits_taken", 0) > hits_seen:   # what hit him, for the lessons
                 hits_seen = stats["hits_taken"]
                 log("hit_taken", player_r=list((snap.get("player") or {}).get("r") or ()),
