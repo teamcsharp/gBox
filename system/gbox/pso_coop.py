@@ -792,6 +792,8 @@ WEDGE_ESCAPE_MAX = 180.0      # cap the detour so an escape never flings a buddy
 FALLBACK_STUCK_S = 15.0       # operator fail-safe threshold: a room with no forward progress
 FORCE_DOOR_DIST = 60.0        # P1 this close to the forward door it can't cross -> force-open that door
 FORCE_DOOR_RETRY_S = 20.0     # re-arm a specific door's force-open this often (in case a flag was contested)
+ADVANCE_ADVICE = frozenset({'next_area', 'explore'})   # typed advice that means: finish the level, door by door
+ADVICE_ADVANCE_S = 60.0       # how long that advice lifts the forward-unlock dwell wait
 COORD_DRIVE_AFTER_S = 3.0     # (B) after this long unable to A* past a forward door in a cleared room, drive straight at it
 COORD_FORCE_DIST = 110.0      # (B) looser force-open range while coordinate-driving the committed door
 COORD_DRIVE_MAX_S = 40.0      # (B) abandon a single coordinate-drive commit after this (re-pick a forward door)
@@ -1171,6 +1173,8 @@ class Controller:
         self._directive = None      # the parsed, active operator directive (GOTO/PRESS/ATTACK)
         self._directive_mtime = 0.  # mtime of the directive file last read
         self._directive_done = None # id of a GOTO already reached (do not re-pursue)
+        self._advice_reader = None  # mercs.directives.Reader over the typed-advice stats (lazy)
+        self._advice_until = 0.     # monotonic-ish deadline of an 'advance through the doors' advice
         self._published = set()     # area fingerprints whose collision surface is already published
 
     def _steering_publish(self):
@@ -3104,6 +3108,26 @@ class Controller:
             stats["map_directive"] = {"op": "goto", "state": "navigating", "x": point[0], "z": point[1]}
         return point
 
+    def advice_advance(self, now):
+        """True while the operator's typed advice (coach box -> directives -> live stats) asks the buddies to
+        finish the level / go through the doors (next_area, explore). Read-only: it only lifts the dwell wait
+        in maybe_force_unlock; every guard there (cleared room, verified, two players) still applies."""
+        stats = getattr(self.inputs, "stats", None)
+        if not isinstance(stats, dict):
+            return False
+        from .mercs import directives
+        if self._advice_reader is None:
+            self._advice_reader = directives.Reader()
+        command, fresh = self._advice_reader.current(stats, now)
+        if command in ADVANCE_ADVICE:
+            if fresh:
+                self._advice_until = now + ADVICE_ADVANCE_S
+            stats["pso_advice"] = {"command": command, "state": "advancing"}
+        elif command is not None and fresh:
+            self._advice_until = 0.
+            stats["pso_advice"] = {"command": command, "state": "not-a-door-command"}
+        return now < self._advice_until
+
     def maybe_force_unlock(self, state, now):
         """Drive the fail-safe for P1's room: fire on a RECALLED template at once
         (we already know its flags), else only after FALLBACK_STUCK_S of no
@@ -3121,7 +3145,7 @@ class Controller:
             return
         rec = self.room_dwell.get('_cur')
         dwell = now - rec['since'] if rec else 0.
-        if self._recalled_flags(state, p1) is not None or dwell >= FALLBACK_STUCK_S:
+        if self.advice_advance(now) or self._recalled_flags(state, p1) is not None or dwell >= FALLBACK_STUCK_S:
             self.force_forward_unlock(state, 1, p1, now)
 
     def _forward_dwell_telemetry(self, state, now, engaged):
