@@ -55,3 +55,41 @@ parts where present). Columns:
 Run the same table on the source donors (`library_donor(...)['faces']` vs normals) to separate donor-inherited inversion from fit-introduced inversion;
 trace `det` of each role transform in `fit`; add the head-seat numbers. Proposed code change (needs lifting the no-code rule): add `winding` and `head_seat`
 checks to `FIT_GATE`/`fit_report` with pass/fix/reject, flipping a part's triangle order when >50% inward.
+
+## Milestone 2 (measured 2026-11-10 evening)
+
+### Wesker = pl0d (measured from `gbox/re4_switch_models.py` `PackLayout`/ROSTER, line 45 and 93)
+`PackLayout("pl0d")`: slot 0 = upper body + coat, slot 6 = legs (bones 17-25), slot 4 face, slot 7 glasses, slots 14/16/18/20 hands.
+So the operator-seen donor in Wesker's slot is pl0d of `recovery-re4-fit-v4-20261110`, and the part that was already flagged
+(pl0d slot 0: 61% stored normals inward, signed volume -1.08e8) **is the donor's torso/body**. This settles item 3 of milestone 1.
+
+### pl0d, every parseable slot (same parsers/columns as above, plus `geom_outward`)
+`geom_outward` = share of triangles whose geometric normal (b-a)x(c-a) has positive dot with (face centroid - slot vertex mean). Concave parts blur it;
+`signed_volume` is the more reliable sign for closed bodies. Slots that fail `HdBin.parse` (1, 3, 13, 22-49: GameCube-format or empty-header entries) are not meshes of this format and are not measured.
+
+| slot | role (PackLayout) | tris | winding_vs_stored | stored_inward | geom_outward | signed_volume |
+|---|---|---|---|---|---|---|
+| 0 | upper body + coat | 1095 | 1.000 | **0.61** | **0.39** | **-1.08e8** |
+| 2 | head | 2258 | 1.000 | 0.20 | 0.80 | +9.61e4 |
+| 4 | face | 770 | 1.000 | 0.17 | 0.85 | -4.58e4 (open mesh) |
+| 6 | legs (hidden part slot, y 449..563 in the overlay) | 1967 | 1.000 | 0.31 | 0.66 | -8.38e4 |
+| 7 | glasses | 118 | 0.992 | 0.00 | 0.97 | +5.39e4 |
+| 8 | (extra) | 2694 | 0.983 | 0.10 | 0.87 | +5.11e3 |
+| 14/16/18/20 | hand poses | 592 each | 0.998-1.000 | 0.34-0.35 | 0.60-0.61 | +567..+580 |
+
+### Transform determinant (item "negative-determinant transform in `fit`") - settled for `fit`
+`fit` builds `rotation @ (I*cross + (along-cross)*axis axis^T)` with `cross, along > 0` (SCALES positive, ratio of norms). `mtf_retarget._aim_rotation`
+= `frame(target) @ frame(source).T`, where each `frame` has columns (axis, across, forward=across x axis), which is left-handed (det -1), so the product is det +1.
+Measured: 2000 random (source, target) pairs plus three degenerate-direction cases -> det in [0.9999999999999991, 1.0000000000000009]. So **`fit` never
+mirrors**; a negative determinant is **not** the cause. Not checked: `proportional_fit` (line 575) uses the same `_aim_rotation`, and the glTF->native axis swap
+in `source_mesh`/`load_donor` (not traced).
+
+### Reading
+- Winding and stored normals agree (1.000) in slot 0, so if the body is inside-out both are: the inversion entered with the donor's faces + normals (or with the
+  glTF->RE4 handedness conversion), not with the fit's linear map. A winding-vs-normal consistency check cannot catch it; the signed-volume / centroid test does
+  (slot 0 trips both: >50% inward and negative volume).
+- Not determined: whether the *source* donor (glTF) was already inward (needs `library_donor(...)['faces']` vs `['vertices'][i]['normal']`, signed volume, for the
+  donor named in the cast table of build `ae6e9f3c63d24ba1`), and which of the 19 pool donors sits in pl0d. That separates donor-inherited from conversion-introduced.
+- Not determined: head seat (joint height / neck length) - needs the donor `joints` from `library_donor`.
+- Still excluded by the ticket rules: live-frame QA, renders, the code change (`winding`/`head_seat` in `FIT_GATE`/`fit_report`: flip part triangle order when
+  signed volume < 0 or >50% inward).
