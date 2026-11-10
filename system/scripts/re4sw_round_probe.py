@@ -33,7 +33,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # system/ (the script lives in system/scripts)
 from gbox.mercs.titles import re4_switch as D            # noqa: E402
 from gbox.mercs.titles import re4_switch_screens as S    # noqa: E402
 
