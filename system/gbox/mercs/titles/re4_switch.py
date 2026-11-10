@@ -1585,6 +1585,9 @@ ROOM_LEGS = True
 # 'ahead'; UNWALL_HOLD_S (0 = off: 0.8 made him overshoot a wall's end in test_re4_room_map) keeps an unwall for this long before arrival ends it (the walker and unwall
 # stop alternating tick by tick). WALK_METRICS merges core.walk_metrics' wm_* counters into the stats. Off: as before.
 ROOM_SCALED_PROBE, ROOM_PROBE_MIN_MM, UNWALL_HOLD_S, WALK_METRICS = True, 400.0, 0.0, True
+# UNWALL_ARC_RAD (#9527): an unwall goal off his facing by more than STEP_TURN_RAD but at most this is reached on an arc
+# (lup + the turn), the goal being a clear segment; beyond it a turn on the spot (tank controls). 0 = off.
+UNWALL_ARC_RAD = 0.9
 # The camera collapsed (the operator's screenshot 2026-11-10: Krauser and Leon pinned, the camera inside a wall; the
 # camera read from RAM: camera_state, #9386). The engine pulls the camera in against geometry, so while the stick walks
 # him (in control, the gun down CAM_SETTLE_S - the aim's own zoom-in is no wall) a camera-to-player distance
@@ -3011,6 +3014,8 @@ class Bot:
         if abs(err) > ESCAPE_QUICK_RAD:
             return set(QUICK_TURN)
         if abs(err) > STEP_TURN_RAD:
+            if abs(err) <= UNWALL_ARC_RAD:                   # #9527: an arc (forward + turn): a pure turn only swivels him
+                return {"lup"} | self._turn(err)
             return self._turn(err)
         return {"lup"} | (self._turn(err) if abs(err) > self.TURN_TOL else set())
 

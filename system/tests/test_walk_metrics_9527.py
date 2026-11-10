@@ -48,3 +48,14 @@ def test_probe_scales_to_the_room():
     assert RM.scaled_probe(big, p, 800.0) == 800.0
     assert RM.scaled_probe(small, p, 800.0) == 400.0 + 160.0    # 0.4 * 1400: the diagonal is the longest open run, in 200 mm steps
     assert RM.scaled_probe(_Box(500.0), p, 800.0) == 400.0     # never under the minimum
+
+
+def test_unwall_arcs_forward_instead_of_swivelling_in_place():
+    from gbox.mercs.titles import re4_switch as r
+    bot = r.Bot.__new__(r.Bot)
+    p = {"pos": (0.0, 0.0, 0.0), "rot": 0.0}
+    goal_side = (1000.0 * math.sin(0.85), 0.0, 1000.0 * math.cos(0.85))   # 0.85 rad off: beyond STEP_TURN_RAD
+    keys = bot._unwall_keys(p, goal_side)
+    assert "lup" in keys
+    goal_far = (1000.0 * math.sin(1.8), 0.0, 1000.0 * math.cos(1.8))    # beyond the arc: a turn on the spot
+    assert "lup" not in bot._unwall_keys(p, goal_far)
