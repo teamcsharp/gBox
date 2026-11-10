@@ -42,6 +42,7 @@ import math
 import time
 
 from .. import map_goals
+from .. import tactical as T
 from . import re4_nav
 
 # --- the walk (mm) ---------------------------------------------------------------------------------------------------
@@ -618,7 +619,6 @@ def publisher(sink):
     None without one. Frames in mm."""
     if sink is None:
         return None
-    from .. import tactical as T
     return T.Publisher(sink, MAP_ID, "mm")
 
 
