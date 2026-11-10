@@ -105,6 +105,20 @@ def _private_re5_doors(tmp_path_factory, monkeypatch):
         monkeypatch.setattr(mod, "DOOR_LOG", root / "re5-switch-doors.jsonl")
 
 
+
+@pytest.fixture(autouse=True)
+def _private_re5_threats(tmp_path_factory, monkeypatch):
+    """Tests never read or write the real learned threats (re5_switch.THREAT_FILE: who hurt the bot, per enemy class,
+    which a new session loads): a test's synthetic hits would teach the live bot. Imported here, so a test that first
+    imports the bot inside its body is covered too."""
+    try:
+        from gbox.mercs.titles import re5_switch
+    except Exception:                                        # noqa: BLE001 - a checkout without it
+        return
+    if hasattr(re5_switch, "THREAT_FILE"):
+        monkeypatch.setattr(re5_switch, "THREAT_FILE", tmp_path_factory.mktemp("re5_threats") / "re5-switch-threats.json")
+
+
 @pytest.fixture(autouse=True)
 def _no_system_drive_rule(monkeypatch):
     """A worker refuses game data on a Windows system drive (gbox/storage_policy.py); tests keep their temporary

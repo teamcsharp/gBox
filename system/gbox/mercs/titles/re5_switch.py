@@ -46,6 +46,7 @@ from ..driver import Driver
 from . import re5_switch_aim, re5_switch_prompt
 from . import re5_specials                 # the characters' special moves in play (stun -> finisher, Wesker's dash)
 from .. import qte                         # universal QTE handling: the vision grab-fallback when the RAM read tears
+from .. import threat_memory               # who hurt him and what they did first, learned per class (THREAT_FILE)
 
 TITLE_ID = "010018100CD46000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/010018100CD46000-ram.json
@@ -778,6 +779,22 @@ QUICK_BACK_S = 3.0
 # no attack landed within WINDUP_HIT_S), hits_after_windup (his health falling, or a grab, within WINDUP_HIT_S of one).
 WINDUP, WINDUP_R, WINDUP_READ_R, WINDUP_HIT_S = True, 300.0, 600.0, 1.2
 WINDUP_COUNTERS = ("windup_seen", "windup_interrupts", "hits_after_windup", "windup_picks")
+# Learning from who hurt him (operator 2026-11-10: "I am seeing the bot get hurt by the same threats over and over. He
+# should not be standing under a hammer who is charging up over and over in the same match"). The fixed WINDUP_MOTIONS
+# are the town Majini's; the Executioner's hammer, the chainsaw and the giants have their own motion bytes and a longer
+# reach, so they never counted as wind-ups. gbox.mercs.threat_memory puts every hit on the enemy that landed it and
+# learns, per enemy class, which of its motions came before hits and from how far (THREAT_FILE, kept across rounds and
+# sessions; a signature that hurt him once in a round is lethal for the rest of that round at once). Then:
+#   * a learned lethal motion is a wind-up (_winding), within the class's learned reach (_wind_r), so it is the target
+#     before any other - the shots that stop a Majini's lunge;
+#   * a class whose attack has landed THROUGH his shots (the hammer: shooting does not stop it) is stepped out of while
+#     the lethal motion runs within LETHAL_KEEP_X x its reach (lethal_backoffs), at most LETHAL_BACKOFF_MAX_S per
+#     wind-up (cornered: fight it), the gun down and the left stick away (_escape_keys) with B to run;
+#   * an enemy that hurt him this round is a grudge: within GRUDGE_R on his level it is the target after the wind-ups
+#     and the dynamite (grudge_picks) - resolved first, before it comes back.
+THREAT_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re5-switch-threats.json"
+LETHAL_KEEP_X, LETHAL_BACKOFF_MAX_S, GRUDGE_R = 1.15, 1.8, 1000.0
+TM_COUNTERS = ("lethal_backoffs", "grudge_picks", "tm_hits_attributed", "tm_hits_unattributed", "tm_lethal_starts")
 # Dynamite Majini (operator: "dynamite Majini - see them, keep away, shoot the dynamite"). A Majini carrying a lit
 # stick of dynamite is a threat of its own: the fuse is already burning, so the blast is coming whether or not his
 # own attack flag is up. Three behaviors, in the wind-up's pattern:
@@ -2385,6 +2402,10 @@ class Bot:
         self._learn_dir = learn_dir
         self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False   # did the writes hold (next frame)
         self._wu, self._windup_e, self._grab_at, self._was_held = {}, None, -1e9, False   # the wind-ups (WINDUP)
+        self._tm = threat_memory.ThreatMemory(THREAT_FILE, default_reach_cm=WINDUP_R)    # who hurt him (THREAT_FILE)
+        self._lethal_bo, self._grudge_e = None, None     # the learned back-off under way; the nearest grudge
+        for k in TM_COUNTERS:
+            self.stats.setdefault(k, 0)
         self._dyn, self._dynamite_e = {}, None             # the lit dynamite carriers, the nearest one (DYNAMITE)
         self._sky, self._pu_detail = False, None         # the sky guard on last tick; this tick's pitch-up details
         self._prate, self._pray, self._first_ray_at = None, None, None   # pitch rate (rad/s); last (pitch, len, t)
@@ -3000,6 +3021,10 @@ class Bot:
         elif wu is not None and wu is not cur:          # winding up: him first, at once
             tgt, r["retarget_at"] = wu, now
             self.stats["windup_picks"] += 1
+        elif wu is None and self._grudge_e is not None and self._grudge_e is not cur \
+                and any(e is self._grudge_e for e in candidates):   # the one that hurt him this round: next
+            tgt, r["retarget_at"] = self._grudge_e, now
+            self.stats["grudge_picks"] += 1
         elif cur is None or (flat(nearest) < GRAB_THREAT_R and flat(cur) >= GRAB_THREAT_R and nearest is not cur):
             if cur is None or now - r["retarget_at"] >= RAMPAGE_RETARGET_S:
                 tgt = nearest
@@ -3154,16 +3179,25 @@ class Bot:
         self.stats["aim"] = f"rampage d {dist:.0f} off {math.degrees(aim_off):+.1f} keys {','.join(sorted(keys))}"
         return {"hold": tuple(sorted(keys))}
 
-    @staticmethod
-    def _winding(e) -> bool:
-        """His own motion is a wind-up (WINDUP_MOTIONS) or his attack flag is up."""
-        return bool(WINDUP and (e.get("motion") in WINDUP_MOTIONS or (e.get("act") or 0) & E_ATTACKING))
+    def _winding(self, e) -> bool:
+        """His own motion is a wind-up (WINDUP_MOTIONS), his attack flag is up, or his motion is one his class has
+        been learned to hurt with (THREAT_FILE)."""
+        return bool(WINDUP and (e.get("motion") in WINDUP_MOTIONS or (e.get("act") or 0) & E_ATTACKING
+                                or self._tm.lethal(e)))
+
+    def _wind_r(self, e) -> float:
+        """How near a wind-up counts: WINDUP_R, or the reach his class has hurt him from (learned) when farther."""
+        return self._tm.reach(e.get("class"), WINDUP_R)
 
     def _windup_tick(self, p, live, flat, now):
-        """The wind-ups within WINDUP_R on his level: counted as they start, resolved WINDUP_HIT_S later (an attack landed
-        on him: hits_after_windup; else hurt by him meanwhile: windup_interrupts); the nearest one now, or None."""
+        """The wind-ups within reach (_wind_r) on his level: counted as they start, resolved WINDUP_HIT_S later (an attack
+        landed on him: hits_after_windup; else hurt by him meanwhile: windup_interrupts); the nearest one now, or None.
+        Also the nearest grudge (an enemy that hurt him this round) within GRUDGE_R: self._grudge_e."""
         py = p["pos"][1]
-        winding = [e for e in live if flat(e) <= WINDUP_R and abs(e["pos"][1] - py) <= LEVEL_DY and self._winding(e)]
+        winding = [e for e in live if flat(e) <= self._wind_r(e) and abs(e["pos"][1] - py) <= LEVEL_DY
+                   and self._winding(e)]
+        grudges = [e for e in live if self._tm.grudge(e) and flat(e) <= GRUDGE_R and abs(e["pos"][1] - py) <= LEVEL_DY]
+        self._grudge_e = min(grudges, key=flat) if grudges else None
         by = {e.get("ptr", e.get("slot")): e for e in live}
         for e in winding:
             k = e.get("ptr", e.get("slot"))
@@ -3224,6 +3258,31 @@ class Bot:
         self.doing, self.why = "backoff", (f"a lit dynamite Majini {flat(self._dynamite_e) / 100:.1f} m: "
                                            "backing out of the blast")
         return {"hold": ("ldown",) + self._turn(err, TURN_TOL)}
+
+    def _lethal_tick(self, p, live, flat, now):
+        """A learned lethal attack under way that his shots do not stop (threat_memory.unstoppable: it has landed
+        through them before), within LETHAL_KEEP_X x its class's reach: out of it - the gun down, the left stick away
+        (_escape_keys), B to run - for at most LETHAL_BACKOFF_MAX_S of one wind-up (then he fights it: cornered, or a
+        long charge). Returns the action or None."""
+        py = p["pos"][1]
+        hot = [e for e in live if abs(e["pos"][1] - py) <= LEVEL_DY and self._tm.lethal(e) and self._tm.unstoppable(e)
+               and flat(e) <= self._wind_r(e) * LETHAL_KEEP_X]
+        if not hot:
+            self._lethal_bo = None
+            return None
+        e = min(hot, key=flat)
+        k = (e.get("ptr", e.get("slot")), e.get("motion"))
+        if self._lethal_bo is None or self._lethal_bo[0] != k:
+            self._lethal_bo = (k, now)
+            self.stats["lethal_backoffs"] += 1
+        if now - self._lethal_bo[1] > LETHAL_BACKOFF_MAX_S:
+            return None
+        self._gun_down()
+        self.doing, self.why = "backoff", (f"{e.get('class')} motion {e.get('motion')} {flat(e) / 100:.1f} m: an attack "
+                                           f"that hurt him through his shots (learned, reach "
+                                           f"{self._wind_r(e) / 100:.1f} m): out of it")
+        keys = self._escape_keys(p, [e])
+        return {"hold": keys + (("b",) if "lup" in keys else ())}
 
     def _quick_behind(self, p, live, flat, now):
         """A Majini close behind him (the quick turn above): the turn's first step, or the trigger let go first."""
@@ -3621,6 +3680,13 @@ class Bot:
                 self.target_at = now
             self._set_target(wu.get("ptr", wu.get("slot")), now)
             return wu
+        gr = self._grudge_e
+        if gr is not None and any(e is gr for e in live):   # the one that hurt him this round: resolved next
+            if gr is not cur:
+                self.stats["grudge_picks"] += 1
+                self.target_at = now
+            self._set_target(gr.get("ptr", gr.get("slot")), now)
+            return gr
         nearest = min(live, key=flat)
         front = [e for e in live if flat(e) <= ENGAGE_R
                  and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= self.raise_tol(flat(e))]
@@ -4999,6 +5065,8 @@ class Bot:
         self._camd["off"] = False
         self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False
         self._wu, self._windup_e = {}, None
+        self._tm.new_round()                             # the grudges are this round's; the learned classes stay
+        self._lethal_bo, self._grudge_e = None, None
         self._dyn, self._dynamite_e = {}, None
         self._noshot, self._giveup, self._giveup_n, self._reach_c, self._off_run = {}, {}, {}, {}, None
         self._door_after, self._door_watch, self._explore_st = None, None, None   # (DOOR_* above: this round's own)
@@ -5647,10 +5715,19 @@ class Bot:
             if act is not None:
                 return act
         self._score_hits(snap, now)
+        if p.get("pos"):                                 # every living enemy's motion, for the hits to come (THREAT_FILE)
+            self._tm.observe(now, [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0], p["pos"],
+                             attacking=lambda e: (e.get("act") or 0) & E_ATTACKING)
         last, self._hp_track = self._hp_track, (p.get("ptr"), p.get("hp"))
         if last is not None and last[0] == p.get("ptr") and type(p.get("hp")) is int and type(last[1]) is int                 and p["hp"] < last[1]:
             if now - self._hit_at > 0.5:                 # his health fell (a hit, a blast; a squeeze counts once)
                 self.stats["hits_taken"] += 1
+                if p.get("pos"):
+                    rec = self._tm.hurt(now, p["pos"], last[1] - p["hp"])
+                    self.stats.update({k: v for k, v in self._tm.stats.items()})
+                    if rec is not None:
+                        self.stats["tm_last_hit"] = {k: rec.get(k) for k in ("class", "motions", "dist_cm", "through")}
+                        self.stats["threats"] = self._tm.summary()
             self._hit_at = now
         act = self._special("defer", snap, now)          # (REAR_DEFER_S, off: a front melee held while he gets behind)
         if act is None:
@@ -6704,6 +6781,9 @@ class Bot:
         self._crowded = crowded
         self._windup_tick(p, live, flat, now)
         act = self._dynamite_tick(p, live, flat, now)     # a lit dynamite Majini close: back out of the blast first
+        if act is not None:
+            return act
+        act = self._lethal_tick(p, live, flat, now)       # a learned attack his shots do not stop: out of its reach
         if act is not None:
             return act
         act = self._special("drive", p, snap, now)       # a special moving him (re5_specials): in for the prompt on a
