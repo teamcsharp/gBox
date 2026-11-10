@@ -128,3 +128,34 @@ def test_the_cli_requires_a_command():
     ap = E.build_parser()
     with pytest.raises(SystemExit):
         ap.parse_args(["disc.gcz"])
+
+
+def test_the_map_draws_doors_spawns_and_the_pedestal():
+    recs = [
+        {"index": 0, "kind": 0x02000048, "class_index": 72, "x": 26.0, "z": -266.0},    # Warp
+        {"index": 1, "kind": 0x02000047, "class_index": 71, "x": -43.0, "z": -118.0},   # Guild
+        {"index": 2, "kind": 0x02000000, "class_index": 0, "x": 1.0, "z": -37.0},       # spawn
+        {"index": 3, "kind": 0x02000057, "class_index": 87, "x": 0.0, "z": 0.0},        # pedestal
+    ]
+    text = E.ascii_map(recs, "map_city00_00o.dat", cols=20, rows=8)
+    assert "W" in text and "G" in text and "*" in text and "T" in text
+    assert text.count("\n") == 8
+    assert "('*' spawn" in text
+
+
+def test_the_map_marks_the_player_and_handles_an_empty_set():
+    text = E.ascii_map([{"index": 0, "kind": 0x02000000, "class_index": 0, "x": 1.0, "z": -37.0}],
+                       "map_city00_00o.dat", cols=10, rows=4, marks={"player": (229.0, 254.0)})
+    assert "P" in text and "*" in text
+    assert E.ascii_map([], "map_city00_00o.dat") == "(no records in map_city00_00o.dat)"
+
+
+def test_every_door_renders_as_its_own_mark_not_a_fallback():
+    """A case mismatch in the mark table once drew the Warp door as a generic 'D'; each door must own its letter."""
+    kinds = {"Warp": 0x02000048, "Guild": 0x02000047, "Shop": 0x02000046, "Med": 0x02000049}
+    marks = {"Warp": "W", "Guild": "G", "Shop": "S", "Med": "M"}
+    for name, kind in kinds.items():
+        rec = {"index": 0, "kind": kind, "class_index": 70, "x": 0.0, "z": 0.0}
+        text = E.ascii_map([rec], "map_city00_00o.dat", cols=4, rows=2)
+        assert marks[name] in text, f"{name} did not render as {marks[name]}: {text!r}"
+        assert "D" not in text

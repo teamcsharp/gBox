@@ -2466,11 +2466,550 @@ predict an outcome and then confirm it. That is the property the editor needs, a
 `main` carries the writer, the offset, the editor and its CLI. Session live in MULTI MODE co-op on the i9. The remaining
 open items are unchanged: P1's field leg, P6b's page (pure UI now), P7a's rigging, P3-P5.
 
+## Round 50 (2026-11-10) — room 10 becomes a map, and the one lead it produces is a corridor
+
+With the offset proven in game, this round read the lobby's placement set as a **map** rather than a list: 28 records, each
+converted to world coordinates and matched against the live entity table. The full table is in
+`docs/research/pso-gc-pioneer2-rooms.md`; the findings that matter:
+
+### What the map says
+
+* **Only one of the four doors works.** `0x48` (Warp) transitions to room 40. `0x47` (Guild), `0x46` (Shop) and `0x49`
+  (Med) are placed identically -- same record type, same table, coordinates now known exactly -- and do not transition.
+  A door record is not a portal; the transition is event-side.
+* **The four class-65 objects in the southwest are furniture.** They were the only unexplained cluster on the map
+  (world `(-334,-116)`, `(-320,-154)`, `(-258,-206)`, `(-294,-183)`), so I walked there: the street is real and lit, and
+  the entity table has **nothing** in it but the player. They are street fittings.
+* **Record 27 (`class 87`, world `(228, 291)`) is the only object of its class in the set and sits at the lobby's centre**
+  -- that is the teleporter pedestal, the thing the party stands on and which has never opened a menu.
+* **The interesting lead is `(0, -1730)`.** Two `TObject`s sit on the flag's central axis -- `(0, -60)` and
+  `(0, -1730)` -- and the single-player office is at `(0, -2015)`. That is a straight corridor south that has never been
+  walked to its end, and it is the only line in the city that points somewhere new.
+
+### The walk that produced it
+
+From the spawn, the party's next waypoint after room 20 turned out to be a wall at about `(-15, -45)`; the route through
+room 30 (entered at `(-169, 46)`) then out at `(-270, -60)` reached the southwest street, and the street runs on to
+`(-314, -185)`. That route is now a known-good path: **room 20 -> (-91, 17) -> room 30 at (-167, 41) -> (-263, -59) ->
+(-297, -91) -> (-334, -122)**, and it is the first time the west/southwest of the city has been walked at all.
+
+### So what is left for the guild
+
+Placement records are exhausted as a lead: the map accounts for every object in room 10, and none is a counter. The guild
+must be either an object in a set this lane has not identified as a room set, or reached by a transition whose event
+record names it. The corridor at `x=0` is the cheapest thing left to try, and after that the executable's transition table
+is the only lever that does not involve wandering.
+
+### State
+
+`main` clean; research doc carries the object map. Session live in MULTI MODE co-op, P1 at `(-314, -185)` in room 20
+(the southwest street), P2 in the lobby.
+
+## Round 51 (2026-11-10) — the editor can draw an area, and the corridor is real for 130 units
+
+### `map`: an area as a text grid
+
+The guild search has cost many rounds of walking, so the editor now draws a set:
+
+```
+python -m gbox.pso_editor <disc> map map_city00_00o.dat --cols 64 --rows 18
+```
+
+```
+map_city00_00o.dat: x -334..360, z -1730..333   ('*' spawn, 'T' pedestal, doors W/M/G/S, 'o' object)
+                                               o
+         o o   o  o                                T
+               S                               G          o
+                                                     W  ***    o
+o      o                      o                M
+ o o  o
+                                                 o
+```
+
+North (+z) is at the top, positions are **world** coordinates (the offset applies when the set has one), and the letters are
+the doors by name: `W` Warp, `M` Med, `G` Guild, `S` Shop; `*` a spawn, `T` the class-87 object at the lobby's centre, `o`
+anything else. The isolated `o` at the bottom is the `TObject` at `(0, -1730)`.
+
+The first version drew the **Warp door as a generic `D`**: `door_name()` returns `"Warp"` with a capital W and my mark table
+was keyed on `"warp"`. The fix came with a regression test that draws each of the four doors and asserts its own letter
+appears and no fallback does -- so the same silent case mismatch cannot come back.
+
+### The `x=0` corridor, walked for 130 units
+
+Player 1 was in room 20 at `(-38, 50)` and walked south along the axis:
+
+```
+(0, 57) -> (-39, 6) -> (-22, -58) -> (-11, -79)
+```
+
+It passes the `TObject` the map puts at `(0, -60)` -- so that object is on a walkable line, and the corridor is real for at
+least 130 units south of the lobby's south wall. The session then hit the input guard (`adapters.py:656` raises when the
+emulator window is not foreground) and stopped, which is the same focus problem that has interrupted several rounds; it is a
+host-side issue, not a game one.
+
+### State
+
+`main` clean; 16 editor tests green. Session live but input-blocked (P1 at `(-11,-79)` in room 20). The corridor remains the
+only unwalked lead in the city, and the map now makes it cheap to see where anything else might be: an area can be drawn
+before deciding to walk it.
+
+## Round 52 (2026-11-10) — the `.evt` event table gets a first-pass decode
+
+The lane has never found the thing that makes a door transition. Placement records put objects in the world, and whether a
+placed door warps is decided elsewhere; the `event` archive's `.evt` entries are the only files named for events, so this
+round decoded their framing.
+
+### `gbox/pso_evt.py` (+6 tests)
+
+`map_forest01_00.evt`, measured:
+
+```
+0000  8c 01 00 00  10 00 00 00  13 00 00 00  00 00 00 00     16-byte header: 396, 16, 19, 0
+0010  6f 00 00 00  00 00 01 00  0b 00 01 00  32 00 00 00  00 00 00 00
+0024  57 04 00 00  00 00 01 00  0b 00 02 00  32 00 00 00  06 00 00 00
+0038  58 04 00 00  00 00 01 00  0b 00 03 00  32 00 00 00  0c 00 00 00
+004c  59 04 00 00  00 00 01 00  0b 00 04 00  32 00 00 00  12 00 00 00
+```
+
+**16-byte header + 20-byte records + a 4-byte footer** (500 = 16 + 24*20 + 4). A record decodes as
+``{id, flags, page, opcode, arg, value, offset}``, and the records come in **groups that share an opcode**: the first group is
+`0x6f, 0x457, 0x458, 0x459` with opcode `0x0b`, arguments 1..4, value 50 everywhere, and the trailing word stepping
+0, 6, 12, 18. The next group starts lower again (`0x65, 0x3f3, 0x3f4`, opcode `0x0a`, value 60, offset 25).
+
+That is a **script table**: event ids, an opcode per group, an argument, and a stepping offset. The field names are honest
+guesses and the opcode meanings are unknown -- but the framing, the header values, the group structure and the stride of the
+trailing word are measured, and the tests pin exactly those numbers from the file rather than numbers that make the parser
+look right.
+
+### A misleading message, corrected
+
+`pso_setdata.record_count` refused a non-68-byte file with "an *e.dat event table or a corrupt file". `e.dat` is the
+**enemy spawn table** (the archive entries pair up: `map_forest01_00_offe.dat` beside `map_forest01_00_off.evt`), and the
+event scripts are the `.evt` files. The message now says so, in the order a reader would try them. It cost me a detour this
+round; it should not cost the next person one.
+
+### Why this matters for P1
+
+If the transition that carries a party off Pioneer 2 is a script opcode, it is in a `.evt` file, in a group. The next step is
+to find which group, which means finding the opcode whose argument names a **destination** -- and `pso_evt.summary()` plus
+the group structure makes that a search over ~143 files rather than a guess. That is the executable-free lever P1 has been
+missing.
+
+### State
+
+`main` clean; 30 tests green across `pso_evt`, `pso_setdata` and `pso_editor`. Session still live but input-blocked from
+round 51 (P1 in room 20).
+
+## Round 53 (2026-11-10) — 143/143 event scripts decode, and the city has none
+
+### The framing is right for every event file on the disc
+
+The decode from round 52 was measured on one file. This round ran it over the archive:
+
+* **143 event files, 143 framed cleanly** (16-byte header + n×20-byte records + a 4-byte footer, with no file leaving a
+  whole trailing record). A framing that survives every file is a framing worth building on.
+
+### The finding that changes P1
+
+**There is no city event script.** The archive covers **28 areas** -- `forest01..02`, `cave01..03`, `ruins01..02`,
+`jungle01..05`, `seabed01..02`, `machine01..02`, `space01..02`, `ancient01..03` and seven `boss0*` files -- and **not one
+entry for Pioneer 2**, the lobby or the city.
+
+That closes the line of reasoning I had been following for several rounds. I had hoped the door transitions would turn out to
+be an opcode in an event script, which would have given an editable lever for P1's field leg. They are not, because **there
+is no city script to hold them**:
+
+* the city's doors work or do not work according to something *other than* a placement record (rounds 49-50: `Warp`
+  transitions, `Guild`/`Shop`/`Med` do not, all placed identically), and
+* there is no script on the disc that a city door could be reading.
+
+So the gate between Pioneer 2 and a floor is **not in any file this lane can edit**. It is in the executable -- the quest
+system and the menu that offers a teleport -- or it is hardcoded door logic. That is why no amount of walking, mapping or
+placement editing ever produced a field arrival, and it re-scopes P1 honestly: **P1 needs the executable or a quest-state
+manipulation, not a better route.**
+
+### What the archive does give
+
+The event scripts are all on the *field* side, which means the field's own transitions (a room-to-room warp, a boss gate, a
+quest trigger) are scripted there. Once a party can reach a floor, this decode is the thing that will open the area's
+structure -- and `pso_evt.records()` plus `summary()` is the tool for it, now validated across the whole archive.
+
+### Tests
+
+`test_pso_evt` grew two whole-archive tests: every file frames cleanly, and the archive covers every field family plus the
+boss scripts while containing **no** city entry. 8 tests in that file, all green.
+
+## Round 54 (2026-11-10) — the executable's address map, and the class names inside it
+
+Round 53 established that P1's gate is in the executable, so this round built the tool to read it. `gbox/pso_dol.py` (+7
+tests) maps `PsoV3.dol`.
+
+### What the file actually is
+
+The standard GameCube DOL header is seven text and eleven data `(offset, address, size)` triples. **`PsoV3.dol` does not use
+it**, and the module records what is really there instead of pretending otherwise:
+
+```
+0000  00 00 01 00  00 00 26 20  00 00 00 00  00 00 00 00      code begins at file offset 0x100
+001c  00 42 6e 00  00 42 75 40  00 42 80 20  00 42 81 20      ascending file offsets
+0048  80 00 c0 00  80 00 f7 40                                 addresses
+```
+
+The important number is **`0x8000c000`** -- and it is exactly the `image_base` in `ghidra-pso-v3.json`, the export this lane
+already has with 25,981 function addresses. So the Ghidra map and the file agree on where the code lives, and an address
+from that export can be read in this file at `0x100 + (address - 0x8000c000)`. The mapping is flat because the file offers
+no section table; `is_flat()` says so rather than inventing one.
+
+### The class names are in there
+
+Finding strings and their addresses is the cheap substitute for a disassembler, and the first search pays off:
+
+| string | file offset |
+|---|---|
+| `TObjCityDoor` | `0x438140` |
+| `map_forest01` | `0x43eb04` |
+| `map_` | `0x43de60` |
+| `map_forest01_00o.dat` | **absent** -- names are assembled, not stored |
+
+So the executable holds the **object class names** that the placement records refer to by index. That is the missing half of
+the offset work from round 46: the records say `0x46`/`0x47`/`0x48`/`0x49` and the game has a registry of `TObj*` classes
+somewhere near that string table. Finding the table that points at `TObjCityDoor` would name every class index -- and then
+"the guild is behind a door of class N" becomes a statement about data rather than a guess about walking.
+
+Also worth recording: the file names are **built** (`map_` + `forest01` + `_00o.dat`), which is why searching the disc's
+executable for a full area file name finds nothing -- a small trap for the next session.
+
+### Where P1 stands after this
+
+The route to a floor now has to come out of the executable's quest logic. The pieces are: the 25,981-function Ghidra map,
+this address mapping, the class-name strings, and `find_pointers` for walking from a string to the table that holds it. The
+next step is mechanical -- point `find_pointers` at `0x8000c000 + 0x438140 - 0x100` and see what holds it.
+
+### State
+
+`main` clean; 7 DOL tests green.
+
+## Round 55 (2026-11-10) — the class registry, decoded (and two of my earlier readings were wrong)
+
+### `gbox/pso_classes.py` (+4 tests)
+
+The executable holds an array of object-class name pointers, and it is **self-calibrating**: find the string
+`TObjCityDoor_Shop`, find the pointer to it, and the array starts `0x46` entries (4 bytes each) before that pointer. That
+anchor is checkable, not assumed -- round 46 had already matched four placement records to the four city doors by position
+and got Shop/Guild/Warp/Med in the order `0x46..0x49`.
+
+The real registry, around the city classes:
+
+| slot | name | evidence |
+|---|---|---|
+| 0x40 | `TObjCamera` | -- |
+| 0x42 | `TObjChip` | -- |
+| 0x44 | `TObjCityAirCar_Ctrl` | a record at world (308,211) is this class |
+| 0x45 | `TObjCityAirCar_Car` | records at (360,26), (0,-60), (0,-1730) |
+| 0x46 | `TObjCityDoor_Shop` | matched at (-165,147.5) |
+| 0x47 | `TObjCityDoor_Guild` | matched at (185,173) -- does not transition |
+| 0x48 | `TObjCityDoor_Warp` | matched at (254,25) -- **does** transition |
+| 0x49 | `TObjCityDoor_Med` | matched at (193.5,-93.5) |
+| 0x4a | `TObjCityDoor_Lobby` | -- |
+| 0x4c-0x55 | `TObjCity_Season_*` | nine seasonal decorations |
+
+### What it corrects
+
+Applying the registry to every record of `map_city00_00o.dat` contradicted two things I had written down:
+
+* **The records near the shopkeepers are cameras, not the shopkeepers.** Rounds 48-50 described the seven `0x40` records as
+  "counters with the keepers behind them" because they landed 9-13 units from the NPC entities. They are `TObjCamera` --
+  fixed camera positions for the shop area that happen to sit behind the counters. The NPCs themselves are placed by
+  somebody else.
+* **The `x=0` "corridor markers" are flying cars.** Round 53 called the two `TObject`s at `(0,-60)` and `(0,-1730)` the most
+  promising unexplored line in the city. They are `TObjCityAirCar_Car`: traffic. The corridor is a road with a car parked on
+  it, and the "lead" I put at the top of the lane's next-steps list does not exist.
+* The four objects in the southwest cluster are an **empty slot** in the low range, as is record 27 (the lobby pedestal), so
+  their classes live above `0x60` or in another table -- the next thing to widen.
+
+### Honest note on the method
+
+The registry is congruent and the doors are exact, so the calibration is sound. What was *not* sound was inferring a
+record's identity from proximity to an entity: an object 10 units from an NPC is a camera, not the NPC. That inference ran
+through rounds 48-53 and this round retired it in two places. The lesson is the same one round 42 taught about coordinates:
+match by identity (class id, controller), not by nearness.
+
+### State
+
+`main` clean; 4 registry tests green. P1's gate is unchanged -- still the executable's quest logic -- but the class id space
+is now open, which is what an object-level search of the executable needs.
+
+## Round 56 (2026-11-10) — the class id field is confirmed, and the ids it cannot name
+
+### The field, confirmed by two independent methods
+
+Round 55 calibrated the registry on the four city doors (which round 46 had identified **by position**). This round checked
+the other direction: read the `kind` word of those four records and ask the registry what class it is.
+
+```
+record 20  kind 0x02000047 -> TObjCityDoor_Guild
+record 21  kind 0x02000048 -> TObjCityDoor_Warp
+record 17  kind 0x02000049 -> TObjCityDoor_Med
+record 18  kind 0x02000046 -> TObjCityDoor_Shop
+```
+
+Position and class id name the same four classes. The other words in the record do **not**: `set_id` and `group_id` are
+masked values (`0x00001400`, `0x00001440`) whose low byte is 0, so they resolve to slot 0 and mean nothing -- a reminder
+that a masked lookup will happily return the wrong class for any field you point it at.
+
+This is now a test: for each of the four doors, the kind's low byte equals the expected id **and** the registry's name equals
+the one position gave. Two methods agreeing is the strongest evidence this lane has produced about the record format.
+
+### The ids it cannot name
+
+`0x41` (the four southwest objects) and `0x57` (the lobby pedestal) are **zero slots** in this table. The registry is a
+sparse array -- about a third of the ids up to `0x60` are empty -- so those two classes are either named above `0x60` or in
+the second and third name arrays the sweep found (`0x4f2f08` with 13 names starting `TObjQuestColBase`, and `0x4f3254` with
+22 names starting `TObject`). Widening the lookup to those arrays is the next step, and it is a search with a known shape
+rather than a guess.
+
+### What this round did not do
+
+It did not find the guild, and it did not move P1's gate. What it did is turn the class id from an assumption into a fact
+with two independent confirmations -- which is what an object-level search of the executable will need, because searching
+25,981 functions for "the guild" is hopeless and searching for "code that touches a `TObjCityDoor_Guild` instance" is not.
+
+### State
+
+`main` clean; 5 registry tests green, 4 of them on the real disc.
+
+## Round 57 (2026-11-10) — consolidation: the hand-off brief brought up to date
+
+With a few rounds left and no single experiment that would close P1, this round spent its budget making the state of the lane
+correct rather than longer. `docs/PSO-HANDOFF-2026-11-10.md` was rewritten at round 57.
+
+### What changed in it
+
+* **P6a is marked done and proven** (the round-44 brief still said "proof incomplete"): `TObjCityDoor_Guild` reads
+  (235,173) in RAM after the writer moved it.
+* **P6b** is now "backend + CLI + ASCII map", not "backend done, no page".
+* **Two of the brief's own next-steps were wrong** and are now retracted: the `x=0` "corridor" lead (those objects are
+  flying cars) and the reading of the seven `0x40` records as shop counters (they are cameras). Both came from identifying a
+  record by its distance to an entity, which this lane should stop doing.
+* **P2b** gained the DOL address map and the class registry, both with the evidence that makes them checkable.
+* **P2** now records the `.evt` scripts as "framed but not semantically decoded", rather than implying the format work is
+  finished.
+
+### The one claim worth reading twice
+
+P1's gate is **code, not data**. The 143 event scripts cover 28 field and boss areas and not the city; the city's four doors
+are placed identically and behave differently. So there is nothing on the disc that a better route, a better walker or a
+better placement edit could reach. That closes ~20 rounds of searching and should stop the next session from repeating
+it -- and it means P1's next move is an executable search (the tools for which now exist) or a RAM quest-state probe.
+
+### Verification
+
+**121 PSO tests green** at this revision, run immediately before this commit. `main` is clean and pushed.
+
+### State of the live side
+
+The last session is stopped. No worker beyond the i9's own was ever touched. The mods, the helper scripts and every trap the
+brief lists (the `mod` query parameter, the five-minute gate, the foreground requirement for keyboard input) are recorded
+there so a new session starts from a working setup instead of rediscovering them.
+
+## Round 58 (2026-11-10) — the executable names the rooms, and the city is ten sets, not one
+
+This round followed the strings the binary carries, and they led somewhere the walking never did.
+
+### What the executable calls its places
+
+```
+0x80443654   ...SHOP.adx   GUILD.adx   MEDICAL.adx   soutoku.adx   city.adx...
+0x8044c10f   ...ITEM STORE   HUNTER GUILD   CHECK ROOM   JUDGMENT   TShopGenerator...
+0x8044adfc   ...map_darkfalz00  map_lobby_01  map_lobby_02  map_lobby_03...
+0x80446833   obj_citybeam.njm  bm_obj_lobby_warp.bml  TObjWarpLobby  "BEAM DISP ON"
+```
+
+So the city has a **GUILD room with its own music track** (`GUILD.adx` beside `SHOP.adx`, `MEDICAL.adx`, `city.adx`), and its
+areas are named `map_lobby_01..10`. Every map this lane built used **`map_city00_00o.dat`** -- one set -- while the disc also
+carries:
+
+```
+SET/map_lobby_01o.dat .. SET/map_lobby_10o.dat
+SET/map_lobby_{red,green,yellow}_be00o.dat
+SET/map_lobby_soccer01o.dat, _soccer02o.dat
+```
+
+Fifteen lobby sets, none of which had been opened.
+
+### What is in them
+
+Read with the class registry, `map_lobby_0Xo.dat` is a different kind of set from `city00`: doors of class **`TObjDoorKey`**
+(12-13 per set), `TObjEnvSound`, `TObjEnvSoundGlobal`, `TObjEvtCollision` -- room furniture, collision and sound, not the
+city's big set dressing. `map_lobby_01` through `_04` are **identical** in their door records, so these are variants of one
+layout (player count or season), not ten distinct rooms.
+
+### The lead
+
+Mapped with the `city00` offset, the `TObjDoorKey` records land at worlds like **(398,127), (430,184), (378,352)** and
+**(8,184)**. Three of those are **east of the easternmost point this lane has ever walked** (x=360). Either the lobby sets use
+a different origin than `city00` -- likely, since they are per-room sets -- or **there is a part of the city east of the lobby
+that has never been entered.** That is worth a walk, and the ASCII map makes it cheap to plan one.
+
+Caveat recorded honestly: the offset was measured for `city00` only, so "east of the lobby" is an *untested* reading. What is
+certain is that a whole family of sets went unexamined for fifty rounds, and it contains a door class the city's own set does
+not use.
+
+### Also this round
+
+`pso_classes.registry` now reads ids to `0x100` instead of `0x60`, because the lobby sets use `0x80..0x8c` -- exactly the ids
+the narrow window could not name. 21 tests green across the registry and the editor.
+
+## Round 59 (2026-11-10) — the east-of-lobby lead is retired, before it cost a session
+
+Round 58 ended with a promising reading: the `TObjDoorKey` records of `SET/map_lobby_01o.dat`, mapped with the city00 offset,
+landed at worlds like (398,127) and (430,184) -- east of anywhere this lane has walked. The obvious next move was a live
+session to walk east. This round checked the assumption behind it first, offline.
+
+### The check
+
+If the lobby sets shared city00's coordinate space, they would carry the same spawn records at the same local coordinates --
+city00's spawns are at local `(1,-37)` and `(3,-24)`, which is exactly what calibrated the offset. They do not:
+
+```
+SET/map_lobby_01o.dat id-0 records:  (0,135)  (-20,145)  (20,145)  (0,165)
+shared with a city00 spawn coordinate: 0
+```
+
+And the bounds of the two sets are different spaces entirely:
+
+| set | local x | local z |
+|---|---|---|
+| `map_city00_00o.dat` | -562 .. 132 | -2021 .. 42 |
+| `SET/map_lobby_01o.dat` | -277 .. 273 | -317 .. 240 |
+
+So the lobby sets are **per-room local spaces**, and adding city00's offset to them is meaningless. The "(398,127) is east of
+the lobby" reading was an artefact of mixing two spaces -- the same class of mistake round 42 caught with the city's own
+records.
+
+### The distinction that matters for the next session
+
+Two different kinds of set live in the city:
+
+* **`map_city00_*`** -- one big space covering the whole city, with the offset `(+228,+291)` measured and proven (round 49's
+  door proof used it);
+* **`SET/map_lobby_XXo.dat`** -- per-room overlays (doors, collision, ambient sound) with **their own local origin**, which
+  must be solved per room: enter the room, read its entities, and solve the offset the same way the spawn points solved
+  city00's.
+
+That is a clean method rather than a guess, and it is the first thing a session should do with the fifteen lobby sets.
+
+### What is still true from round 58
+
+* the city has a **GUILD room** with its own music (`GUILD.adx`) and a "HUNTER GUILD" label in the string table;
+* its areas are named `map_lobby_01..10`;
+* fifteen lobby sets exist and hold a door class (`TObjDoorKey`) that the city's own set never uses.
+
+None of that is affected by the coordinate-space correction -- only the specific "walk east" plan is.
+
+### State
+
+`main` clean, tests green. One round left in the objective's window.
+
+## Round 60 (2026-11-10) — close: what is proven, what is not, and where the next session starts
+
+Final round of the objective's window. This one is verification and a statement of state, not a new experiment.
+
+### Verification at close
+
+**138 tests green** across eighteen PSO modules (`test_pso_evt`, `test_pso_dol`, `test_pso_classes`, `test_pso_editor`,
+`test_pso_swapfit`, `test_pso_kbwalk`, `test_pso_greedy`, `test_pso_push_through`, `test_pso_pad2`, `test_pso_explore`,
+`test_pso_write`, `test_pso_coop_pads`, `test_pso_player_textures`, `test_pad_bind`, `test_pso_boot_walk`,
+`test_pso_gc_paths`, `test_pso_setdata`, `test_pso_map_write`). `main` is clean and pushed; `origin/main` matches.
+
+### What is proven, with its evidence
+
+| claim | evidence |
+|---|---|
+| the disc's formats decode, byte-exactly | placement sets (141 loose + 144 archive), GSL/AFS/BML/PRS/NJCM/GVR round trips |
+| `PsoV3.dol`'s addresses map, base `0x8000c000` | matches the Ghidra export's `image_base` (25,981 functions) |
+| the object-class registry is calibrated | Shop/Guild/Warp/Med at 0x46..0x49, confirmed **twice**: by position (round 46) and by the record's `kind` word (round 56) |
+| the `.evt` event scripts frame as 16 + n*20 + 4 | **143 of 143** files parse cleanly |
+| the map writer's edit is live in the game | `TObjCityDoor_Guild` reads **(235.0, 173.0)** after `pso_guilddoor_moved` moved it from (185,173) |
+| the local→world offset is `(+228,+291)` for city00 | 10 of 28 records land on live entities at distance 0.0 |
+| a raw model swap is unsafe unless the material table matches | HUcast body renders deformed; HUnewearl body crashes at `PC 0x8028f508`; `pso_swapfit` predicts which |
+
+### What is not proven, and should not be claimed
+
+* **P1's field leg.** No route from Pioneer 2 to a floor was found. The intro conversation cannot be exited by any input, and
+  no city event script exists, so the transition is decided in code. Twenty rounds of walking produced a complete map of the
+  city and no floor.
+* **P3-P5.** Not started; they need P1.
+* **P6b's page.** The backend, CLI and ASCII map exist; the page does not.
+* **P7a's rigging.** Models build; a correct swap does not.
+* **The `.evt` opcodes.** Framing yes, semantics no.
+
+### Two methodological lessons this lane earned
+
+1. **Never identify a record by its distance to an entity.** Two leads died that way: the seven `0x40` records read as shop
+   counters (they are `TObjCamera`) and the `x=0` objects read as corridor markers (they are flying cars). Match class ids or
+   controllers.
+2. **Check which coordinate space a set lives in before mapping it.** The "east of the lobby" lead (round 58) came from
+   applying city00's offset to a per-room lobby set; it was retired offline in round 59 before it cost a live session.
+
+### Where the next session starts
+
+`docs/PSO-HANDOFF-2026-11-10.md` carries the addendum with the newest findings: the city's **GUILD room** (`GUILD.adx`,
+"HUNTER GUILD" label, areas `map_lobby_01..10`), **fifteen lobby placement sets** this lane never opened, the `TObjDoorKey`
+door class they contain, and the instruction to **solve their offsets per room** rather than reusing city00's. That is the
+first thing to do, and it is data work, not walking.
+
+## Round 61 (2026-11-10) — the per-room offset becomes a function
+
+The last round's hand-off said the next session should "solve a lobby set's offset per room". This round turns that
+instruction into something callable, so it is a tool rather than a chore.
+
+### `gbox/pso_offset.py` (+5 tests)
+
+```python
+solve(records, entities, tolerance=6.0, min_fraction=0.25) -> {offset, matched, total, fraction}
+score(records, entities, offset, tolerance=6.0) -> int
+```
+
+It tries every `(record, entity)` pair as a candidate translation, scores each by how many records land on an entity under
+it, and returns the best -- stopping early on a perfect match. It **raises** rather than returning a poor answer when the
+best candidate explains less than `min_fraction` of the records, because a wrong offset silently makes every coordinate in
+that room meaningless.
+
+### The self-check that makes it trustworthy
+
+Run blind against `city00`'s 28 records and the ten entity positions rounds 46-49 established, it returns
+**(228.005, 291.001)** with **10 of 28 records matched** at a half-unit tolerance -- i.e. it rediscovers the constant that
+was originally measured by hand from the co-op spawn points and later proven by moving a door in game. The hundredth-of-a-unit
+difference is the solver reading the record's own float rather than the round number, which is a better estimate than the one
+I had been using.
+
+That is the useful property: the method that took three rounds to get right for city00 is now one call for any room, and the
+test asserts it reproduces the known answer before it is trusted on an unknown one.
+
+### Where this leaves the lane
+
+Every remaining P1 item is now either a tool call or a walk:
+
+1. enter a lobby room, read the entity table;
+2. `pso_offset.solve(<that room's set>, <entities>)` -> the room's offset;
+3. `pso_editor.world_position()` / the `map` command -> its `TObjDoorKey` doors in world coordinates;
+4. walk to the one that is not a place already known.
+
+Tests at this revision: **143 green** (138 + the 5 added here). `main` clean and pushed.
+
 ## 7. Next
 
-1. **P6a is closed.** The writer, the editor, its CLI and the in-game proof all exist; the offset that made the proof
-   possible is `(+228,+291)` for `city00`, and `pso_guilddoor_moved` is the build that demonstrates it.
-2. **Measure a field area's offset** so the same proof can be made there (only `city00` is measured).
-3. **P6b's page** is now pure UI over `python -m gbox.pso_editor` (sets / list --world / move / delete / build).
-4. **P1's field leg** and **P7a's rigging** are the remaining hard items; both are documented in
-   `docs/PSO-HANDOFF-2026-11-10.md` with their next steps.
+Every remaining P1 item is now a tool call or a walk:
+
+1. enter a lobby room, read the entity table (the party must be in it);
+2. `pso_offset.solve(<that room's set>, <entities>)` -> the room's local->world offset (it rediscovers city00's
+   (+228,+291) blind, so it can be trusted before it is used on an unknown room);
+3. `pso_editor.placements` / `python -m gbox.pso_editor <disc> map <set>` -> that room's `TObjDoorKey` doors in world
+   coordinates;
+4. walk to whichever door is not already a known place. The GUILD room the executable names (`GUILD.adx`,
+   "HUNTER GUILD", areas `map_lobby_01..10`) has never been entered.
+
+Then: **P6b's page** (pure UI over the CLI) and **P7a's rigging** (GC `build_swap`, gated by `pso_swapfit.compare`), and
+P3-P5 behind P1. At close: 143 tests green, `main` clean and pushed; P1's field leg, P3-P5, P6b's page, P7a's rigging and
+the `.evt` opcode semantics are **not** proven and not claimed.

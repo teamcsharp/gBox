@@ -27,6 +27,8 @@ KNOBS: dict[str, list[tuple]] = {
         ("MINES", "Drop mines while moving", "Crowd control", "bool", 0, 1, 1, ""),
         ("GRENADES", "Grenades (flash bursts on crowds)", "Crowd control", "bool", 0, 1, 1,
          "when Majini crowd him, a native flash burst, then crowd fire; bounded by a cooldown"),
+        ("FLASH_MIN_GAP_S", "Seconds between flashbangs", "Crowd control", "float", 10, 300, 5,
+         "one flash per this many seconds at most, whichever rule asks (operator 2026-11-10: once a minute or a slider)"),
         ("THROWS", "Grenades thrown at packs", "Crowd control", "bool", 0, 1, 1,
          "a hand / incendiary grenade at a pack or a boss, a flash at a wind-up, also while fleeing; the gun back after"),
         ("THROW_GAP_S", "Seconds between grenade throws", "Crowd control", "float", 1, 30, 0.5, ""),

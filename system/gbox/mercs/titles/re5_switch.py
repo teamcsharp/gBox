@@ -445,7 +445,7 @@ def player_target(m=None) -> int:
     return cycle().pick()[1]
 
 BOOT_KEY = "a"                           # a screen RAM can't name out of a round (PRESS ANY BUTTON, a notice)
-STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "alert": "a", "mercs_title": "a"}
+STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "alert": "a", "mercs_title": "a", "title": "a"}
 MENU_HANDOFF = ("results", "alert_ok", "alert_leaderboard", "alert", "select_stage", "select_player")
 CURSORED = {"main_menu": ("dup", "ddown"), "play_game": ("dup", "ddown"), "extra_content": ("dup", "ddown"),
             "dead": ("dleft", "dright"),
@@ -1219,8 +1219,8 @@ GRENADES = True
 # One flash a minute at most, from every rule that asks for one (operator 2026-11-10: "have the bot only flashbanging
 # the enemies in RE5 once a minute max. They are doing it too much"): the crowd burst below, the critical flash, the
 # mine flashes and the doctrine's all stamp _grenade_last, and _native_flash / the burst wait FLASH_MIN_GAP_S after it.
-FLASH_MIN_GAP_S = 60.0
-GRENADE_EVERY_S = FLASH_MIN_GAP_S
+FLASH_MIN_GAP_S = 60.0                  # the sidebar's FLASH_MIN_GAP_S slider (bot_logic) changes it live
+GRENADE_EVERY_S = 3.0
 GRENADE_CROWD_N, GRENADE_CROWD_R = 4, 450.0
 # Never stunned by his own flash (the operator 2026-11-10: "When the bot flashbangs, do not have the bot impacted by the
 # explosion. Skip making them stunned"; "never let the bot get stunned by their own flash grenades"). The native flash
@@ -2129,6 +2129,13 @@ def _screen(m, merc=None) -> dict:
         elif "uIdStartUp00" in ui:
             unit = ui["uIdStartUp00"]
             where, cursor, target = "main_menu", _i32(m, unit + MENU_CURSOR), MAIN_PLAY_GAME
+        elif "uIdTitle00" in ui and ptr_ok(u64(m, ui["uIdTitle00"] + TITLE_READY)):
+            # PRESS ANY BUTTON with its own state up (warm_probe's reading, uIdTitle00 +0x18): A at once (STEPS), not the
+            # Boot's BOOT_KEY every 3 s on an unnamed screen (operator 2026-11-10: "unacceptable ... to sit on title
+            # screens"). The state's pointer is the token: the press that takes it changes the screen's signature.
+            unit = ui["uIdTitle00"]
+            where = "title"
+            out["confirmation_token"] = ["title", unit, u64(m, unit + TITLE_READY)]
         elif snap.get("mercenaries_phase") == PHASE_OVER and not snap.get("player") and not ui.keys() - {"uIdAlert00"}:
             where = "loading"                               # between the results and the selects
     except (ValueError, OSError):
@@ -2300,6 +2307,8 @@ def _menu_seen(m, scr: dict) -> None:
     speed.seen(label, (label, scr.get("unit"), scr.get("cursor"), None if token is None else str(token)))
     if MENU_LEARN:
         scr.update(speed.hints(where))
+    from ..core import menu_pace as _pace
+    scr.update(_pace.title_hints(where))                    # PRESS ANY BUTTON: confirmed on its first read
     if where in JUMP_SCREENS and isinstance(scr.get("cursor"), int) and _JUMP.get("unit") != scr.get("unit"):
         speed.note_cursor(where, scr["cursor"])
 
@@ -2455,6 +2464,13 @@ def _jump_failed(speed, scr: dict, stats: dict | None, why: str) -> dict:
         stats["menu_jump_fails"] = stats.get("menu_jump_fails", 0) + 1
         stats["menu_jump_error"] = f"{scr.get('where')}: {why}"[:200]
     return scr
+
+
+def menu_pace_line() -> str:
+    """Each screen's learned waits on one line (gbox.mercs_bot.menu_clock: the run's menu_pace stat)."""
+    from .. import menu_speed
+    speed = _MENU.get("speed") or menu_speed.cached(MAP_ID)
+    return speed.pace_line() if speed is not None and callable(getattr(speed, "pace_line", None)) else ""
 
 
 def menu_status() -> dict:
@@ -6381,8 +6397,8 @@ class Bot:
             return
         if self._grenade_inflight:
             return
-        if now - self._grenade_last < GRENADE_EVERY_S or self._flashed_lately(now):
-            return
+        if now - self._grenade_last < max(GRENADE_EVERY_S, FLASH_MIN_GAP_S) or self._flashed_lately(now):
+            return                                           # the minute (the sidebar's slider), whoever flashed last
         if self.stats.get("operator_control") or snap.get("mercenaries_phase") != PHASE_PLAYING:
             blocked('not autonomous live combat')
             return

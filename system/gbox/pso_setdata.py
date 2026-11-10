@@ -104,8 +104,8 @@ class SetDataError(ValueError):
 def record_count(data: bytes) -> int:
     """Number of 68-byte records in a set file; raises when the file is not whole records."""
     if len(data) % RECORD_SIZE:
-        raise SetDataError(f"{len(data)} bytes is not a multiple of {RECORD_SIZE} (an *e.dat event "
-                           f"table or a corrupt file, not an area set)")
+        raise SetDataError(f"{len(data)} bytes is not a multiple of {RECORD_SIZE} (an *e.dat enemy spawn "
+                           f"table, an *.evt event script or a corrupt file -- not an area placement set)")
     return len(data) // RECORD_SIZE
 
 

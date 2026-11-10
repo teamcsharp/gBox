@@ -152,6 +152,58 @@ def door_name(kind: int) -> str | None:
     """The door a record's kind value names, if it is one of the lobby's four."""
     return DOOR_CLASSES.get(int(kind) & 0xFF)
 
+# --- a picture of an area --------------------------------------------------------------------------------------
+#
+# The guild search has cost many rounds of walking. A set rendered as a grid makes the shape of an area obvious at a glance
+# -- where the doors are, where the objects cluster, and where nobody has been -- and it costs nothing to produce.
+
+MARK = {"Warp": "W", "Guild": "G", "Shop": "S", "Med": "M"}   # keys must match door_name() exactly
+
+
+def _mark_for(record: dict) -> str:
+    door = door_name(record["kind"])
+    if door:
+        return MARK[door]          # every name door_name returns has a mark
+    cls = CLASS_NAMES.get(record.get("class_index", -1))
+    if cls == "player":
+        return "*"
+    if record.get("class_index") == 87:          # the lobby's teleporter pedestal
+        return "T"
+    return "o"
+
+
+def ascii_map(records: list[dict], set_name: str, cols: int = 60, rows: int = 26,
+              marks: dict | None = None) -> str:
+    """Render a set's placements as a text grid, in **world** coordinates when the offset is known.
+
+    ``marks`` maps a label to a world (x, z) to overlay (the player, a waypoint), shown as its first letter above the
+    objects. Cells without anything are blank, so clustering and gaps are both visible.
+    """
+    pts = []
+    for rec in records:
+        world = world_position(rec, set_name)
+        if world is None:
+            world = (float(rec["x"]), float(rec["z"]))
+        pts.append((world[0], world[1], _mark_for(rec)))
+    for label, (wx, wz) in (marks or {}).items():
+        pts.append((wx, wz, label[0].upper()))
+    if not pts:
+        return f"(no records in {set_name})"
+    xs = [p[0] for p in pts]
+    zs = [p[1] for p in pts]
+    x0, x1, z0, z1 = min(xs), max(xs), min(zs), max(zs)
+    span_x = max(x1 - x0, 1.0)
+    span_z = max(z1 - z0, 1.0)
+    grid = [[" "] * cols for _ in range(rows)]
+    for x, z, ch in pts:
+        # north (+z) at the top, like every map of a place the player has walked
+        cx = int((x - x0) / span_x * (cols - 1))
+        cz = rows - 1 - int((z - z0) / span_z * (rows - 1))
+        grid[cz][cx] = ch
+    head = f"{set_name}: x {x0:.0f}..{x1:.0f}, z {z0:.0f}..{z1:.0f}   ('*' spawn, 'T' pedestal, doors W/M/G/S, 'o' object)"
+    return "\n".join([head] + ["".join(row) for row in grid])
+
+
 # --- command line ----------------------------------------------------------------------------------------------
 #
 # The editorial layer is usable from a page, and equally from a shell, which is how most of this lane's verification
@@ -185,6 +237,11 @@ def build_parser():
     p_del = sub.add_parser("delete", help="delete one placement")
     p_del.add_argument("set")
     p_del.add_argument("index", type=int)
+
+    p_map = sub.add_parser("map", help="draw one set as a text map")
+    p_map.add_argument("set")
+    p_map.add_argument("--cols", type=int, default=60)
+    p_map.add_argument("--rows", type=int, default=26)
 
     p_build = sub.add_parser("build", help="build a disc image from ops (JSON on stdin)")
     p_build.add_argument("name")
@@ -235,6 +292,12 @@ def main(argv=None):
         out = preview(disc, [op])
         print(json.dumps(out, indent=1)[:2000])
         return out
+
+    if args.cmd == "map":
+        pl = placements(disc, args.set)
+        text = ascii_map(pl["records"], args.set, cols=args.cols, rows=args.rows)
+        print(text)
+        return {"set": args.set, "count": pl["count"], "map": text}
 
     if args.cmd == "build":
         from . import config

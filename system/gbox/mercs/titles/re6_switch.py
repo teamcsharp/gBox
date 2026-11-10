@@ -35,6 +35,7 @@ from pathlib import Path
 from .. import tuning                     # learned per-stage constants (gbox/mercs/tuning.py)
 from ..driver import Driver
 from .. import menu_speed                  # learned menu cadence: the Navigator's cursor knobs, measured
+from ..core import menu_pace               # the title screens' at-once confirm (title_hints)
 from ..core import combat                  # the universal fight (UNIVERSAL_CORE): at import, for the hot reload
 from ..core import respond                 # the doctrine's answer to a threat (RESPOND): at import, for the hot reload
 from ..core import aim_book                # the per-shot truth and the learning on every miss (AIM_BOOK)
@@ -1061,14 +1062,47 @@ def _speed_for(m) -> menu_speed.Speed:
     return _MENU_SPEED
 
 
+MENU_LEARN = True                       # the per-screen learned waits (gbox.mercs.menu_speed hints; off: the fixed ones)
+
+
 def screen(m, merc=None, now: float | None = None) -> dict:
     """The menus interface with the learned cadence folded in (gbox.mercs.menu_speed): the Navigator's NAV_CURSOR is
-    updated in place from every confirmed screen change, and the receipt carries `menu_speed`."""
+    updated in place from every confirmed screen change, and the receipt carries `menu_speed`. Every read is also the
+    per-screen learner's (as RE5 Switch's, docs/research/re5-instant-menus.md section 7): a change after a press
+    confirms it and shortens that screen's waits, a press RAM never showed lengthens them, and the screen dict carries
+    the screen's learned waits for the Navigator; PRESS ANY BUTTON and the open title are confirmed on their first read."""
     scr = _screen(m, merc=merc, now=now)
     speed = _speed_for(m)
     speed.observed(scr.get("where"), now)
     scr["menu_speed"] = speed.stats()
+    try:
+        where, token = scr.get("where"), scr.get("confirmation_token")
+        speed.seen(where, (where, None, scr.get("cursor"), scr.get("costume_cursor"),
+                           None if token is None else str(token)))
+        if MENU_LEARN:
+            scr.update(speed.hints(where))
+        scr.update(menu_pace.title_hints(where))
+    except Exception as exc:                # noqa: BLE001 - the timing never costs the walk a read
+        scr["menu_speed_error"] = f"{type(exc).__name__}: {exc}"[:160]
     return scr
+
+
+def menu_pace_line() -> str:
+    """Each screen's learned waits on one line (gbox.mercs_bot.menu_clock: the run's menu_pace stat)."""
+    return _MENU_SPEED.pace_line() if _MENU_SPEED is not None else ""
+
+
+def menu_status() -> dict:
+    """The sidebar's menus line (gbox.mercs.bot_logic.status): the walks gbox.mercs_bot timed for this title, round to
+    round and from the launch (learned/<title>/menu_pace.json)."""
+    return menu_pace.status(menu_pace.path_for(MAP_ID))
+
+
+def begin_run(session_id=None, job=None, prepare: bool = False, turn: bool = False, **_kw) -> None:
+    """gbox.mercs_bot.play's start of a menus walk: the learner (one per process, kept across sessions) times this
+    run's first walk as a boot - or a MercMode background preparation - not as the last session's round gap."""
+    if _MENU_SPEED is not None and callable(getattr(_MENU_SPEED, "begin_run", None)):
+        _MENU_SPEED.begin_run(prepare=bool(prepare))
 
 
 def _screen(m, merc=None, now: float | None = None) -> dict:
@@ -1324,6 +1358,10 @@ def wandered(scr: dict) -> str | None:
 def pressed(scr: dict, key: str) -> None:
     if _MENU_SPEED is not None:
         _MENU_SPEED.pressed(scr.get("where"))
+        try:                                # the screen's learner times this press (taken: the next read changes)
+            _MENU_SPEED.press(scr.get("where"), key)
+        except Exception:                   # noqa: BLE001 - timing never costs a press
+            pass
     return None
 
 
@@ -7324,6 +7362,16 @@ class RE6Switch(Driver):
         where = self._where(m, snap)
         if where == "playing":
             self._mods(m, self.snapshot(m) if snap is None else snap, True)
+        try:                                # the menus' timing (as RE5 Switch's _menu_clock): a round's end opens the
+            speed = _speed_for(m)           # next walk, the clock running closes it (menu_seconds, the trend, the best)
+            if where == "playing":
+                if speed.gameplay() is not None and self.stats is not None:
+                    self.stats.update(speed.stats_view())
+            elif where in ("dead", "results"):
+                speed.round_end()
+        except Exception as exc:            # noqa: BLE001 - timing never costs the round a tick
+            if self.stats is not None:
+                self.stats["menu_speed_error"] = f"{type(exc).__name__}: {exc}"[:160]
         return where
 
     def _where(self, m, snap) -> str:
