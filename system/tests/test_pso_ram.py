@@ -34,6 +34,9 @@ class Mem:
         return bytes(self.data[off:off + length])
 
 
+CLASS_NAME_PTR = 0x805DE000
+
+
 def live():
     m = Mem()
     m.poke(R.PHASE, b"\x09")
@@ -43,9 +46,14 @@ def live():
     p1, p2 = 0x80DA62A0, 0x80DA8830
     m.u32(R.PLAYER_SLOTS + 0, p1)
     m.u32(R.PLAYER_SLOTS + 4, p2)
-    for ptr, (x, y, z, hp, hp_max, room) in ((p1, (7.0, 0.0, -30.0, 120, 140, 10)),
-                                             (p2, (12.0, 0.5, -32.0, 99, 140, 11))):
-        m.cstr(ptr + R.OFF_CLASS, "TObjPlayer")
+    # +0x00 is a char* to the class name (proven live: 0x80DA62A0 holds 0x80446F20 -> "TObjPlayer").
+    # Each actor gets its own name string so a test can invalidate one without invalidating the other.
+    m.cstr(CLASS_NAME_PTR, "TObjPlayer")
+    m.cstr(CLASS_NAME_PTR + 0x20, "TObjPlayer")
+    for ptr, name_ptr, (x, y, z, hp, hp_max, room) in (
+            (p1, CLASS_NAME_PTR, (7.0, 0.0, -30.0, 120, 140, 10)),
+            (p2, CLASS_NAME_PTR + 0x20, (12.0, 0.5, -32.0, 99, 140, 11))):
+        m.u32(ptr + R.OFF_CLASS_POINTER, name_ptr)
         m.f32(ptr + R.OFF_X, x)
         m.f32(ptr + R.OFF_Y, y)
         m.f32(ptr + R.OFF_Z, z)
@@ -114,10 +122,20 @@ def test_player_slots_and_state():
 
 def test_a_stale_slot_is_not_reported_as_a_player():
     m = live()
-    m.cstr(0x80DA62A0 + R.OFF_CLASS, "TObjDoorKey")      # the pointer now names a different object
+    m.cstr(CLASS_NAME_PTR, "TObjDoorKey")     # the class name behind the pointer is a different object
     r = R.Reader(m)
     assert R.player(r, 0) is None
     assert set(R.players(r)) == {2}
+
+
+def test_player_class_follows_the_pointer_and_rejects_a_bad_one():
+    m = live()
+    r = R.Reader(m)
+    assert R.player_class(r, 0x80DA62A0) == "TObjPlayer"
+    m.u32(0x80DA62A0 + R.OFF_CLASS_POINTER, 0x1234)      # not in RAM
+    assert R.player_class(r, 0x80DA62A0) is None
+    m.u32(0x80DA62A0 + R.OFF_CLASS_POINTER, 0x805DE100)   # in RAM, but empty text
+    assert R.player_class(r, 0x80DA62A0) is None
 
 
 def test_reader_refuses_out_of_window_and_short_reads():

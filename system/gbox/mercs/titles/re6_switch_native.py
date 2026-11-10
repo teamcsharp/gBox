@@ -7,6 +7,7 @@ docs/research/re6-native-flash.md for evidence and the resource-loading limit.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 from pathlib import Path
 import signal
@@ -27,6 +28,31 @@ VT, TEMP, UPDATE, DISPATCH = 0x2858318, 0x25A3100, 0xF8CE10, 0x18F2780
 VT_ENTRIES = (0xF8C640, 0xF8C6D0, 0xF8C790, 0x1C1270, 0xF8C7A0, 0xF8C7B0,
               0xF8C7C0, 0xF8CB50, 0xF8CD60, UPDATE, 0xF8D070)
 _CREATE_LOCK = threading.Lock()
+
+# Grenade ring (operator 2026-10-31): ten grenades spawned in a ring around the player that bloom outward and
+# detonate. Only "flash" reuses the live-verified flash spawn + explosion transition (docs/research/
+# re6-native-flash.md); a hand or incendiary grenade is a different native item class whose DTI is not known on this
+# build, so those kinds are refused with a reason and never substituted.
+RING_VERIFIED_KINDS = ("flash",)
+RING_KIND_REFUSED = {
+    "hand": "a hand-grenade ring is not yet verified on this build (its item class/DTI is unconfirmed)",
+    "incendiary": "an incendiary-grenade ring is not yet verified on this build (its item class/DTI is unconfirmed)",
+}
+RING_KINDS = RING_VERIFIED_KINDS + tuple(RING_KIND_REFUSED)
+RING_COUNT_DEFAULT, RING_COUNT_MAX = 10, 16
+# Radii in RE6 world units (centimetres, as everywhere in the bot). A flash takes no health, and the ring is still
+# placed outward so the same geometry is safe for an explosive kind once one is verified.
+RING_RADIUS_DEFAULT_CM, RING_RADIUS_MIN_CM, RING_RADIUS_MAX_CM = 600.0, 250.0, 2500.0
+RING_INNER_DEFAULT_CM, RING_SELF_CLEAR_CM = 150.0, 250.0
+RING_RIPPLE_MS_DEFAULT, RING_RIPPLE_MS_MAX = 40.0, 400.0
+# The spawned flash's live world transform: spawn.c copies the player's +0x60 x/y and +0x68 z there. Relocating it
+# before the explosion places the blast on the ring - the one step the live-verified single flash does not exercise.
+RING_UNIT_POS = 0x60
+
+
+def ring_defaults():
+    return {"count": RING_COUNT_DEFAULT, "radius_cm": RING_RADIUS_DEFAULT_CM, "inner_cm": RING_INNER_DEFAULT_CM,
+            "ripple_ms": RING_RIPPLE_MS_DEFAULT, "expand": True}
 
 
 class Unavailable(RuntimeError):
@@ -411,6 +437,119 @@ class Controller:
                 if attached:
                     self.detach_completed()
 
+    def grenade_kinds(self):
+        """The ring's kinds as this build can honestly fire them (gbox.mercs.grenade_status reads this)."""
+        return [{"kind": kind, "available": kind in RING_VERIFIED_KINDS,
+                 "reason": "" if kind in RING_VERIFIED_KINDS else RING_KIND_REFUSED.get(kind, "not verified")}
+                for kind in RING_KINDS]
+
+    def _ring_one(self, x, y, z, index):
+        """One flash projectile spawned, relocated to (x, y, z) and detonated - the verified flash with a position write.
+
+        Raises AllocationLost/Unavailable on any allocation change, refusal or missing explosion transition so the
+        ring aborts with a partial receipt instead of replaying a request.
+        """
+        unit = self.call(0x18F2880, self.player)
+        if not R.ptr_ok(unit):
+            raise Unavailable("native flash allocation refused")
+        born = self.w(unit + 0x1308)
+
+        def initialized():
+            current_born, owner = self.w(unit + 0x1308), self.q(unit + 0x1300)
+            if current_born != born or owner != self.player:
+                raise AllocationLost(f"flash allocation changed before detonation: unit={unit:#x}, "
+                    f"generation={born}->{current_born}, owner={owner:#x}, player={self.player:#x}")
+            return R.unit_action(self, unit) == "cWpAction_wp_act_throw"
+        self.wait(initialized)
+        # Relocate the live transform onto the ring before the blast. Keep y (the floor height the spawn copied).
+        self.write(unit + RING_UNIT_POS, struct.pack("<3f", x, y, z))
+        if self.call(0x18F29C0, unit, self.player, born, self.generation) != 1:
+            raise Unavailable("native explosion transition not confirmed")
+        return {"index": index, "projectile_generation": born, "pos": [round(x, 1), round(y, 1), round(z, 1)]}
+
+    def grenade_ring(self, kind="flash", *, count=None, radius_cm=None, inner_cm=None, ripple_ms=None, expand=None):
+        """Spawn `count` grenades in a ring around the player and detonate them in a quick ripple.
+
+        Only kind="flash" reuses a live-verified native path (the flash spawn + explosion transition). The ring grows
+        outward from the player (expand) to a final radius_cm (default 10 grenades, ~6 m). The ring is kept at least
+        RING_SELF_CLEAR_CM out whatever the caller asks; health is read back and reported (a flash takes none). The
+        receipt is confirmed only if every requested grenade detonated; a partial ring is reported uncertain and is
+        never replayed.
+        """
+        kind = (kind or "flash").lower()
+        if kind not in RING_KINDS:
+            raise Unavailable(f"unknown grenade kind {kind!r}")
+        if kind not in RING_VERIFIED_KINDS:
+            raise Unavailable(RING_KIND_REFUSED.get(kind, "grenade kind not verified"))
+        d = ring_defaults()
+        count = d["count"] if count is None else int(count)
+        count = max(1, min(count, RING_COUNT_MAX))
+        radius_cm = d["radius_cm"] if radius_cm is None else float(radius_cm)
+        radius_cm = max(RING_SELF_CLEAR_CM, min(radius_cm, RING_RADIUS_MAX_CM))
+        inner_cm = d["inner_cm"] if inner_cm is None else float(inner_cm)
+        inner_cm = max(0.0, min(inner_cm, radius_cm))
+        ripple_ms = d["ripple_ms"] if ripple_ms is None else float(ripple_ms)
+        ripple_ms = max(0.0, min(ripple_ms, RING_RIPPLE_MS_MAX))
+        expand = d["expand"] if expand is None else bool(expand)
+        with self.lock:
+            self.ready()
+            self.sp = self.q(self.base + R.S_PLAYER)
+            player = self.q(self.sp + R.P_FIRST) if R.ptr_ok(self.sp) else 0
+            gm = R.game_man(self, self.base)
+            if not R.ptr_ok(player) or not gm or self.w(gm + R.GM_PHASE) != R.PHASE_PLAYING:
+                raise Unavailable("no living player in an active Mercenaries round")
+            if struct.unpack("<h", self.rd(player + R.P_HP, 2))[0] <= 0:
+                raise Unavailable("player is not alive")
+            self.player = player
+            self.generation = self.w(self.player + 0x1308)
+            self.manager = self.player + 0x13A8
+            self.check()
+            if 0x115 not in R.inventory_items(self, self.player):
+                raise Unavailable("flash resources are not loaded for this character")
+            hp_before = struct.unpack("<h", self.rd(self.player + R.P_HP, 2))[0]
+            started = time.monotonic()
+            grenades, abort, attached = [], None, False
+            try:
+                attached = True
+                self.attach()
+                for i in range(count):
+                    self.check()
+                    # Re-read his position each grenade: he keeps playing while the ring blooms.
+                    px, py, pz = struct.unpack("<3f", self.rd(self.player + R.P_POS, 12))
+                    angle = 2.0 * math.pi * i / count
+                    r = radius_cm if not expand or count == 1 else inner_cm + (radius_cm - inner_cm) * i / (count - 1)
+                    try:
+                        grenades.append(self._ring_one(px + r * math.cos(angle), py, pz + r * math.sin(angle), i))
+                    except (Unavailable, AllocationLost) as exc:
+                        abort = str(exc)
+                        break
+                    if ripple_ms and i + 1 < count:
+                        time.sleep(ripple_ms / 1000.0)
+            except Exception:
+                self.failed = True
+                self.recoverable = True
+                raise
+            finally:
+                if attached:
+                    self.detach_completed()
+            try:
+                hp_after = struct.unpack("<h", self.rd(self.player + R.P_HP, 2))[0]
+            except (OSError, struct.error):
+                hp_after = None
+            detonated = len(grenades)
+            self_damage = (hp_before - hp_after) if isinstance(hp_after, int) else None
+            receipt = {"op": "grenade_ring", "kind": kind, "requested": count, "detonated": detonated,
+                       "radius_cm": round(radius_cm, 1), "inner_cm": round(inner_cm, 1), "expand": expand,
+                       "player_generation": self.generation, "hp_before": hp_before, "hp_after": hp_after,
+                       "self_damage": self_damage, "grenades": grenades,
+                       "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+            if detonated == count and abort is None:
+                return {"state": "confirmed", "verified": True, "effect": "native_flash_ring", **receipt}
+            if abort is not None:
+                self.failed, self.recoverable = True, True
+            receipt["reason"] = abort or "the ring did not complete"
+            return {"state": "failed" if detonated == 0 else "uncertain", "verified": False, **receipt}
+
 
 def flash_now(ad):
     """One call = one native effect. Callers own durable request deduplication."""
@@ -420,3 +559,12 @@ def flash_now(ad):
             ctl = Controller(ad)
             ad._re6_native_flash = ctl
     return ctl.flash()
+
+
+def grenade_ring_now(ad, kind="flash", **kw):
+    with _CREATE_LOCK:
+        ctl = getattr(ad, "_re6_native_flash", None)
+        if ctl is None:
+            ctl = Controller(ad)
+            ad._re6_native_flash = ctl
+    return ctl.grenade_ring(kind, **kw)

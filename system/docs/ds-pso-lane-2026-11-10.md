@@ -321,11 +321,139 @@ entry, class, costume and section-ID screens — or the run has to start from a 
 That is a decision for the operator (a prepared save is far cheaper than automating PSO's name entry), and it is the
 first thing the next round needs settled.
 
+## Round 4 (2026-11-10) — a character created by pad, Pioneer 2 reached, and `pso_ram` fixed against a real player
+
+P1's blocker was that the memory card held no character, so the walk could not leave SELECT CHARACTER. This round
+created one with the virtual pad and walked into Pioneer 2.
+
+### The memory card really had no character
+
+Both cards on this machine (`Dolphin User/GC/MemoryCardA.USA.raw`, 16 MiB, and the gameplay-demo card) carry PSO
+directory entries — `PSO_SYSTEM`, `PSO_CHARACTER`, `PSO_GUILDCARD`, game code `GPOE`, company `8P` — but the
+`PSO_CHARACTER` entry's block pointer and size fields read zero, and the game itself showed four `NO DATA` rows.
+PSO's own verdict is the authority: there was no usable character. Creating one was the only way forward, so that is
+what this round did.
+
+### Character creation, all by virtual-pad presses
+
+```
+PRESS START -> main menu -> OFFLINE GAME -> SELECT GAME MODE (SINGLE MODE)
+  -> SELECT CHARACTER (SLOT A, NO DATA) -> "Want to create a new Character?" YES
+  -> CHARACTER SELECT (HUmar) -> FACE editor -> A opens CHARACTER CREATION
+  -> CHARACTER NAME (on-screen keyboard, typed "BQF") -> OK
+  -> TYPE HUmar / CHARACTER NAME BQF / SECTION ID ORAN -> A CONFIRM
+  -> SELECT EPISODE (EPISODE 1) -> Pioneer 2
+```
+
+Frames: `p1c-21-after-start.jpg` (the create prompt), `p1c-45-wait.jpg`..`p1c-57-wait.jpg` (the intro, then the class
+list), `p1e-03-a.jpg` (the CHARACTER CREATION menu), `p1f-00-name.jpg` (the keyboard), `p1g-99-ok.jpg` (name entered),
+`p1h-00-created.jpg` (the confirm summary), `p1h-02-wait.jpg` (SELECT EPISODE), `p1i-01-pioneer2.jpg` (**Pioneer 2**,
+Principal Tyrell: "Are you BQF, the Hunter? I'm Principal Tyrell.").
+
+The on-screen keyboard is a grid navigated with the d-pad. The technique that works: clamp the cursor to a known cell
+first (`ddown` ×12 then `dleft` ×20 lands on `BS`), then move row by row and column by column. My column mapping was
+**two cells off** and produced `BQF` where `DSH` was intended — harmless (the name is now BQF) but recorded so the
+next attempt is exact: target column + 2.
+
+### `pso_ram` was wrong about the class name, and the live player showed it
+
+`pso_ram.player()` read the class name as a string **at** `actor+0x00`. On this build `+0x00` is a **pointer**: the
+live P1 actor at `0x80DA62A0` holds `0x80446F20` there, and `0x80446F20` is the ASCII `TObjPlayer`. So every player
+read returned `None` — the module refused a real player because it was looking at the pointer instead of through it.
+
+Fixed: `OFF_CLASS_POINTER` with `player_class(reader, ptr)` following the pointer, refusing a pointer outside the RAM
+window or one that does not land on printable text (so a stale slot still cannot be reported as a player). Tests
+updated to put the name behind a pointer, with a new test for the bad-pointer and empty-text cases.
+
+**Live, through the fixed reader**, in Pioneer 2:
+
+```json
+{"1": {"cls": "TObjPlayer", "hp": 40, "hp_max": 40, "x": 0.0, "y": -5.4e-07, "z": -2015.0,
+       "room": 41, "control_mode": 1, "action_state": 1, "hit_records": 1}}
+```
+
+and `snapshot()` reports `floor 0 / Pioneer2 / episode 1`. The HUD in the frame agrees (HP 40/40, TP 29/29, Lv 1, name
+BQF), so the RAM map and the screen agree on a real player for the first time.
+
+### Where P1 now stands
+
+The walk reaches Pioneer 2 and the state reader sees the player. What is left for P1's accept test is the town-to-field
+leg — the Hunter's Guild counter, the quest/area choice, the telepipe/warp into Forest 1 — and then the same three
+cold launches with both players. The character now exists on the card, so a relaunch does not have to create one again.
+
+### Next
+
+1. Pioneer 2 -> the Hunter's Guild -> "Forest 1" -> the field, by pad, with `pso_ram` as the state reader.
+2. Player 2: the second controller and the second character (or the same card's second slot).
+3. Then P6a's in-game proof (the moved object seen in Forest 1) and P6b (the editor page).
+
+## Round 5 (2026-11-10) — walking on the player's own RAM position, and what was blocking input
+
+P1 needed the character to walk in Pioneer 2. Movement turned out to be the interesting part: buttons reached the game
+and the analog stick did not.
+
+### What the input paths actually do (measured, not assumed)
+
+| path | result |
+|---|---|
+| Virtual pad **buttons** | reach PSO **even with the Dolphin window minimised** — the START in-game menu opened while the window was iconic, which is exactly what `_setup_vpad` exists for |
+| Virtual pad **analog stick** (`left_joystick` full deflection) | **no effect**: neither the camera (C-stick) nor the character moved over several seconds of holding |
+| Keyboard path (`win_send_keys`, Dolphin focused) | **moves the character**: holding the down key took the player from `(-5.9, -1965.7)` to `(16.6, -1936.2)`, and right from there to `(33.4, -1968.3)`, read back from `pso_ram` |
+
+So in this session the pads' buttons get in and its sticks do not. I could not settle *why* (the ini binds
+`XInput/0/Gamepad` with `Always Connected`, `VGamepad` reports a free slot when created here, and XInput slot 0 read
+from my own process shows neutral even while the worker's pad is driving buttons) — that is recorded as an open
+question rather than papered over. **What matters for P1 is that a movement path exists and is measurable**, and the
+walker below works with whichever hold path moves.
+
+Two live traps, both of which look like "the game is ignoring me":
+
+- The **in-game START menu blocks movement**. A burst of walking that mysteriously does nothing is usually a menu.
+- A hold that produces no movement looks identical to a wall, a dropped pad or a stuck menu. The walker reports it
+  instead of pressing forever.
+
+### New module `gbox/pso_move.py` (+6 tests)
+
+Closed-loop walking on the player's own RAM position: hold a direction, read the position back, keep the axis that
+helped and drop the one that did not, stop on arrival, and give up after four holds with no progress with a reason.
+`direction_to` picks the dominant axis first; `distance` is planar (PSO's vertical axis is not what walking covers).
+All of it is injected (`position()`, `hold()`), so the tests run against a model game — including one where the
+"right" key also drifts in z, which the loop still closes because it re-reads instead of trusting a direction.
+
+### Live result
+
+```
+start   (36.8, -1961.5)          target (81.8, -2006.5)   distance 63.6
+hold 1  (29.8, -2001.5)  52.3    hold 3  (50.9, -2017.9)  33.0
+hold 2  (31.5, -2038.9)  59.9    hold 4  (52.9, -2008.2)  29.0
+hold 5..7 unchanged                      -> "no progress in 4 holds (a menu open, a wall, or no input)"
+```
+
+It moved the character **63.6 -> 29.0 world units** and then stopped at an obstacle, which is the behaviour the module
+promises. Better than the numbers: the aim point happened to be where **Irene**, the Principal's secretary, stands, and
+pressing A there started the mission briefing ("Well, let me brief you on your mission.") — the next step the Principal
+tells the player to take.
+
+### Where P1 stands
+
+PRESS START -> menus -> offline -> character creation -> Pioneer 2 is all by real presses, the character moves by
+closed loop on RAM feedback, and the walk reaches the person who hands out the first mission. What is left is the
+guild/mission choice and the telepipe into Forest 1, then the same with a second player.
+
+### Next
+
+1. Finish the Irene briefing, take the guild counter's mission, walk into the teleporter, and confirm `FLOOR` becomes
+   1 with the Forest collision loaded — that is P1's field arrival.
+2. Then the second player (second virtual pad, second character) and the three cold launches.
+3. Then P6a's in-game proof and P6b.
+
 ## 7. Next
 
-1. P1: a RAM screen discriminator. Take one live diff per screen boundary (title/main menu, main menu/SELECT
-   GAME MODE, SELECT GAME MODE/SELECT CHARACTER) and store each as a `signature()`; then the walk can assert
-   where it is with no frame. Verify it in a second boot before calling it proven.
-2. Then the rest of the offline branch: SELECT CHARACTER (a character exists on the memory card) -> Pioneer 2 ->
-   Hunter's Guild -> the telepipe -> Forest 1, both players.
-3. Then P6a's in-game proof (the moved object seen in Forest 1) and P6b (the editor page).
+1. P1: finish the Irene briefing, take the guild mission, walk into the teleporter, and confirm `FLOOR`
+   becomes 1 with the Forest collision loaded - that is the field arrival P1's accept test needs.
+2. Then player 2 (second virtual pad, second character) and the three cold launches.
+3. Then P6a's in-game proof (the moved object seen in Forest 1), P6b (the editor page) and P7a.
+
+Open question carried forward: a virtual pad's buttons reach PSO but its analog stick did not, in the
+2026-11-10 session `dbc5ff9be4ca416c-c91e5802a9844b37`; movement works through `win_send_keys` with the
+Dolphin window focused. Settle that before building anything that assumes focus-free walking.

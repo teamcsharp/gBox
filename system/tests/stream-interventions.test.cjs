@@ -152,6 +152,29 @@ test('ring types follow optional verified native choices and retain flash-only o
   assert.equal(ringKindOptions({...old,options:{grenade_kinds:[]}}).some(r=>r.available),false);
 });
 
+test('ring types show each kind\'s own verdict even when the worker cannot fire now',()=>{
+  // No living player: the backend still names all three kinds; the menu must say that, not "worker unavailable".
+  const idle={available:false,capabilities:[],reason:'no living player in an active Mercenaries round',options:{
+    grenade_kinds:[{kind:'flash',available:true,reason:''},
+      {kind:'hand',available:false,reason:'a hand-grenade ring is not yet verified on this build'},
+      {kind:'incendiary',available:false,reason:'an incendiary-grenade ring is not yet verified on this build'}]}};
+  const rows=ringKindOptions(idle);
+  assert.deepEqual(rows.map(r=>r.available),[false,false,false]);
+  assert.match(rows[0].reason,/no living player/);
+  assert.match(rows[1].reason,/not yet verified/);
+  // A title with no ring at all: the title's own reason reaches the chooser per kind.
+  const re4Switch={available:true,capabilities:[],options:{grenade_kinds:[
+    {kind:'flash',available:false,reason:'the grenade ring is not built for RE4 Switch yet'},
+    {kind:'hand',available:false,reason:'the grenade ring is not built for RE4 Switch yet'},
+    {kind:'incendiary',available:false,reason:'the grenade ring is not built for RE4 Switch yet'}]}};
+  assert.match(ringKindOptions(re4Switch)[0].reason,/not built for RE4 Switch/);
+  assert.equal(ringKindOptions(re4Switch).some(r=>r.available),false);
+  // A row that says available without the capability must not enable a click: nothing could execute it.
+  const stale={available:true,capabilities:[],options:{grenade_kinds:[{kind:'flash',available:true}]}};
+  assert.equal(ringKindOptions(stale)[0].available,false);
+  assert.match(ringKindOptions(stale)[0].reason,/not ready/);
+});
+
 function ringFixture(){
   const win={innerWidth:800,innerHeight:600,addEventListener(){},removeEventListener(){}};
   const doc={defaultView:win,addEventListener(){},removeEventListener(){}};

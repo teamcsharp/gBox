@@ -60,6 +60,9 @@ MAIN_GAMESYS = 0x584E0
 GS_PHASE, GS_TIMER, GS_START, GS_KILLS = 0x944, 0x948, 0x94C, 0x96C
 GS_COMBO_ON, GS_COMBO, GS_MAX_COMBO, GS_COMBO_T, GS_SCORE = 0x970, 0x974, 0x978, 0x97C, 0x990
 PHASE_INTRO, PHASE_PLAYING, PHASE_OVER = 0, 1, 3
+# The grenade ring's auto-deploy rule (gbox.mercs.grenade_ring): settable from the PiP's bot-logic sidebar. RING off
+# never fires it; RING_N is the crowd inside a few metres that counts as surrounded; RING_EVERY_S is the cooldown.
+RING, RING_N, RING_EVERY_S, RING_KIND = True, 4, 20.0, "flash"
 # The results' rank (static analysis of main, 2026-11-09; gbox/mercs/ss_ledger.py RANKS): the round's end walks the
 # score down a threshold row of main+0x17C1B7C - the third row (SS 400,000 ... C 30,000) when +0xA76 (No Mercy) is set
 # - and stores the rank index at +0x994 (0 SS, 1 S, 2 A, 3 B, 4 C, 5 D) and the exchange points at +0x998. Read at the

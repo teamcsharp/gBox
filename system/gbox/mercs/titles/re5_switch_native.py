@@ -268,6 +268,10 @@ class Controller(N.Controller):
     def ring_capable(self):
         return True
 
+    def grenade_kinds(self):
+        """The ring's kinds as this build can honestly fire them (gbox.mercs.grenade_status reads this)."""
+        return ring_kind_options()
+
     def _ring_one(self, x, y, z, index):
         """One flash spawned, relocated to (x, y, z), and detonated - the verified flash with a position write.
 

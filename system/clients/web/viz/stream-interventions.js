@@ -157,13 +157,27 @@
     {kind:'hand',label:'Hand',available:false,reason:'Hand-grenade ring not yet verified on this build.'},
     {kind:'incendiary',label:'Incendiary',available:false,reason:'Incendiary-grenade ring not yet verified on this build.'}];
   function ringKindLabel(kind){return (RING_KINDS.find(k=>k.kind===kind)||RING_KINDS[0]).label;}
+  // The status names every kind with its own verdict (gbox.mercs.grenade_status): built and verified / verified but
+  // not firing now (no round, no worker) / not built for this title. A row's reason is shown as-is; a kind the title
+  // does not list at all still appears, saying so, rather than silently disappearing from the chooser.
   function ringKindOptions(report){
     const rows=report?.options?.grenade_kinds;
-    const live=!report||(report.available===true&&report.capabilities?.includes('grenade_ring'));
+    const live=!report||report.available===true;
+    const caps=!report||report.capabilities?.includes('grenade_ring');
+    const workerReason=report?.reason||'The live worker is unavailable.';
     return RING_KINDS.map(base=>{
-      const row=Array.isArray(rows)?rows.find(r=>r?.kind===base.kind):base;
-      return {...base,available:!!live&&row?.available===true,
-        reason:!live?'The live worker is unavailable.':row?.reason||(row?.available===true?'':'This grenade type is not reported as available.')};
+      const row=Array.isArray(rows)?rows.find(r=>r?.kind===base.kind):null;
+      if(row){
+        const available=live&&caps&&row.available===true;
+        return {...base,available,reason:available?'':(row.reason||(!live?workerReason:
+          'The native grenade ring is not ready for this session.'))};
+      }
+      if(!Array.isArray(rows)){                       // an older worker: no per-kind rows, flash only
+        const available=live&&caps&&base.available===true;
+        return {...base,available,reason:available?'':workerReason};
+      }
+      return {...base,available:false,reason:base.kind==='flash'
+        ?'This session does not report a flash grenade ring.':`This title does not offer ${base.label.toLowerCase()} grenades.`};
     });
   }
   function readRingKind(storage,choices=RING_KINDS){

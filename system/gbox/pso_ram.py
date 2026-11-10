@@ -88,7 +88,10 @@ FENCE_DROP = 0x80154764
 FENCE_RAISE = 0x80154788
 
 # Actor field offsets.
-OFF_CLASS = 0x000
+# +0x00 is a char* -- a POINTER to the class-name string, not the string itself. Proven live 2026-11-10:
+# the P1 actor at 0x80DA62A0 holds 0x80446F20 there, and that address is the ASCII "TObjPlayer".
+OFF_CLASS_POINTER = 0x000
+OFF_CLASS = OFF_CLASS_POINTER            # kept for callers that named the old constant
 OFF_ROOM = 0x028
 OFF_X = 0x038
 OFF_Y = 0x03C
@@ -209,6 +212,28 @@ def player_slots(reader) -> list[int]:
     return list(struct.unpack(">4I", reader.read(PLAYER_SLOTS, 4 * PLAYER_SLOTS_COUNT)))
 
 
+def player_class(reader, ptr: int) -> str | None:
+    """The class name of an actor: ``+0x00`` is a ``char*`` to the name, not the name itself.
+
+    Proven on the owned build: the live P1 actor holds ``0x80446F20`` at ``+0x00`` and that address is the ASCII
+    ``TObjPlayer``. Returns None when the pointer is not a readable RAM address holding printable text, so a stale
+    slot can never be reported as a player.
+    """
+    try:
+        name_ptr = reader.u32(ptr + OFF_CLASS_POINTER)
+    except RamError:
+        return None
+    if not RAM_START <= name_ptr < RAM_END:
+        return None
+    try:
+        text = reader.cstring(name_ptr, 24)
+    except RamError:
+        return None
+    if not text or not text.isprintable():
+        return None
+    return text
+
+
 def player(reader, slot: int = 0) -> dict | None:
     """One player's live state, or None when the slot holds no actor.
 
@@ -221,7 +246,7 @@ def player(reader, slot: int = 0) -> dict | None:
     ptr = player_slots(reader)[slot]
     if ptr == 0:
         return None
-    cls = reader.cstring(ptr + OFF_CLASS, 16)
+    cls = player_class(reader, ptr)
     if cls != "TObjPlayer":
         return None
     x, y, z = reader.position(ptr)
