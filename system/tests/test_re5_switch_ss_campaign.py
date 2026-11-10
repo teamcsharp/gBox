@@ -139,14 +139,16 @@ def test_the_emergency_flash_when_held_or_low_in_a_crowd(monkeypatch):
     assert b.mines.flash_until == pytest.approx(1.0 + MN.FLASH_S)
     b._critical_flash(snap(motion=106, near=(10.0, 150.0)), 2.0)       # within CRIT_FLASH_GAP_S: no other
     assert len(calls) == 1
-    b._critical_flash(snap(hp=250, near=(100.0, 250.0)), 5.5)          # a quarter of his health, two within 3 m
+    b._critical_flash(snap(hp=250, near=(100.0, 250.0)), 5.5)          # within the minute's flash (FLASH_MIN_GAP_S): none
+    assert len(calls) == 1 and b.stats.get("flash_gap_skips", 0) >= 1
+    b._critical_flash(snap(hp=250, near=(100.0, 250.0)), 62.0)         # a quarter of his health, two within 3 m
     assert len(calls) == 2 and "health" in b.stats["crit_flash_reason"]
-    b._critical_flash(snap(hp=R.DYING_HP, near=(10.0, 100.0)), 20.0)   # dying: the controller refuses it
-    b._critical_flash(snap(hp=900, near=(100.0, 250.0)), 30.0)         # healthy and free: the fight's own business
-    b._critical_flash(snap(motion=106, near=(10.0,)), 40.0)            # held by one with nobody else near
-    assert len(calls) == 2 and b.stats["crit_flash_requests"] == 2
-    b.mines.close_in_blast_at = 50.0                                   # his bomb guard gave the run up just now
-    b._critical_flash(snap(hp=900, near=(200.0,)), 50.0)
+    b._critical_flash(snap(hp=R.DYING_HP, near=(10.0, 100.0)), 130.0)   # dying: the controller refuses it
+    b._critical_flash(snap(hp=900, near=(100.0, 250.0)), 140.0)         # healthy and free: the fight's own business
+    b._critical_flash(snap(motion=106, near=(10.0,)), 150.0)            # held by one with nobody else near
+    assert len(calls) == 2 and b.stats["crit_flash_requests"] == 3    # (5.5 s asked, the minute held it)
+    b.mines.close_in_blast_at = 160.0                                   # his bomb guard gave the run up just now
+    b._critical_flash(snap(hp=900, near=(200.0,)), 160.0)
     assert len(calls) == 3 and "bomb" in b.stats["crit_flash_reason"]
     for k in R.CRIT_FLASH_COUNTERS:
         assert k in R.RE5Switch.round_counters
