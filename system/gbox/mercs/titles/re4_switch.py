@@ -1403,6 +1403,28 @@ CROWD_CONE = 0.6                         # rad: in a mob, the Ganado nearest the
 SWARM_N, SWARM_CM = 3, 200.0 * MM_PER_CM             # this many this close: turn and go (he cannot shoot three at arm's length)
 STAND_MAX_S, STAND_MOVE_CM, STAND_STEP_S = 1.5, 40.0 * MM_PER_CM, 0.8   # never stand: no metre in 1.5 s and no shot -> a step
 SWEEP_S = 3.0                            # nobody on the map: walk, turning this long one way, then the other
+# The operator's quick commands (the PiP's ▾ menu and ⚠ Flawed, gbox.mercs.directives; operator 2026-11-10: "make sure
+# that when I use one of the quick commands for guidance to the bot, that it's able to take those commands into
+# consideration"). Before this the RE4 Switch bot read them only into its "why" line. Bot._operator_command:
+#   explore / next_area  the Ganado he kept at dropped for CMD_DROP_S, CMD_ROAM_S along open floor away from here (_escape)
+#   repetitive           the same drop and one such run: another target, another way
+#   fight / hunt / rush  the walk to the nearest Ganado becomes a run (CMD_RUN); a shot at one in range still comes first
+#   score                the quickest kill is the target (the combo's pick)
+#   missing              the aim's stick and the turn sign are measured again from scratch
+#   mine / mine_trail / flashbang  said (RE4 Mercenaries has no mines; no native flash on this build yet): he fights on
+CMD_ROAM_S, CMD_DROP_S = 4.0, 15.0
+CMD_RUN = ("fight", "hunt", "rush")
+CMD_SAYS = {"fight": " - no wait: runs at the nearest Ganado, fires at any in range",
+            "hunt": " - runs to the nearest Ganado by the map",
+            "rush": " - runs in at the nearest Ganado (the melee follow-up on)",
+            "score": " - the quickest kill first (the combo)",
+            "explore": " - off this spot along open floor, the Ganado he kept at dropped",
+            "next_area": " - off this spot along open floor, the Ganado he kept at dropped",
+            "repetitive": " - dropped the Ganado he kept at for 15 s, another way",
+            "missing": " - the aim's stick and turn sign measured again",
+            "mine": ": RE4 Mercenaries has no mines - fighting on",
+            "mine_trail": ": RE4 Mercenaries has no mines - fighting on",
+            "flashbang": ": no native flash on RE4 Switch yet - fighting on"}
 KILL_PACE_S = 3.0                        # doctrine.KILL_PACE_S: from this long after a kill the next one is owed
 COMBO_WINDOW_S = 5.0                     # doctrine.COMBO_MAX_S: a kill later than this after the last one breaks the combo
 FIRE_GAP_S = 0.25                        # between trigger taps (a tap is down + up: the engine never holds the trigger)
@@ -1870,6 +1892,10 @@ class Bot:
         near = [t for t in live if t[0] <= ENGAGE_RANGE_CM]
         if not near:
             return None
+        dropped = self.__dict__.get("_cmd_blocked") or {}  # the operator's repetitive / explore: not that one again yet
+        if dropped:
+            kept = [t for t in near if dropped.get(t[2].get("ptr"), -1e9) <= now]
+            near = kept or near                          # (only him in range: he is still fought, never stood at)
         if p is not None and snap is not None and (snap.get("nav") is not None or snap.get("obstacles") is not None
                                                    or self._room_map(snap) is not None):
             clear = [t for t in near if self._line_of_sight_ok(p, t[2], snap)]
@@ -1882,6 +1908,9 @@ class Bot:
                 self.stats["blocked_picks"] += 1
                 self.why = "every Ganado in range is behind a wall: round to the nearest"
                 return min(near, key=lambda t: t[0])
+        if self.__dict__.get("_cmd") == "score":         # the operator's "score": the quickest kill, as the combo's
+            self.why = "the operator's score: the quickest kill"
+            return min(near, key=lambda t: ((t[2].get("hp") or 0) * 0.5 + 300.0 * abs(t[1])) * MM_PER_CM + t[0])
         if UNIVERSAL_CORE and p is not None:
             got = self._threat_pick(p, near)             # the scorer's first tiers: a wind-up, then a grudge
             if got is not None:
@@ -2154,6 +2183,59 @@ class Bot:
             return None
         return cmd
 
+    # --- the operator's quick commands (CMD_* above) ---
+    def _operator_command(self, p, live, snap, now):
+        """(command, action now or None): the command in force (the operator's, else the doctrine's), and for the
+        operator's own a change of course: explore / next_area / repetitive drop the Ganado he kept at (CMD_DROP_S) and
+        run CMD_ROAM_S along open floor (_escape); missing measures the aim stick and the turn sign again; the standing
+        modes (fight / hunt / rush / score) go to _choose and _locate through self._cmd. Every one says what it did in
+        stats directive_status (the PiP shows it beside the box); a command never presses a key by itself."""
+        self._cmd = None
+        d = self.__dict__
+        roam = self._escaping(p, snap, now, "cmd")       # an operator's new way still under way (next_area: one-shot)
+        if self.reader is None:
+            return None, self._roaming(roam)
+        try:
+            cmd, fresh = self.reader.current(self.stats, time.time())
+        except Exception as exc:                         # noqa: BLE001 - a command never stops a tick
+            self.stats["directive_error"] = f"{type(exc).__name__}: {exc}"[:120]
+            return None, self._roaming(roam)
+        seq = self.stats.get("directive_seq")
+        mine = cmd is not None and cmd == self.stats.get("directive") and seq is not None and (
+            seq != d.get("_cmd_seq") or time.time() < float(self.stats.get("directive_until") or 0))
+        if not mine:                                     # none, or the doctrine's: the walk to the map's Ganado
+            if cmd is None:
+                self.stats.pop("directive_active", None)
+            return cmd, self._roaming(roam)
+        new = seq != d.get("_cmd_seq")
+        d["_cmd_seq"] = seq
+        self.stats["directive_active"] = cmd
+        self._cmd = cmd
+        if new:
+            self.stats["directive_status"] = "acting: " + cmd + CMD_SAYS.get(cmd, "")
+            self.stats["directive_taken"] = self.stats.get("directive_taken", 0) + 1
+            if cmd in ("explore", "next_area", "repetitive"):
+                blocked = d.setdefault("_cmd_blocked", {})
+                if self.target is not None:
+                    blocked[self.target] = now + CMD_DROP_S
+                self.target = None
+                d.pop("_flank", None)
+                d.pop("_run_cmd", None)
+                self._sweep_at = None
+                roam = self._escape(p, live, snap, now, "cmd", CMD_ROAM_S)
+                d["_roam_why"] = cmd
+            elif cmd == "missing":
+                d.pop("_uc_aim_stick", None)             # the aim's stick and the turn sign, measured again
+                d.pop("_turn_tally", None)
+        return cmd, self._roaming(roam)
+
+    def _roaming(self, act):
+        """The operator's new way (an escape run of kind "cmd") as this tick's action, said; None when there is none."""
+        if act is not None:
+            self.doing, self.why = "walk", (f"the operator's {self.__dict__.get('_roam_why') or 'command'}: off this "
+                                            "spot along open floor, another way")
+        return act
+
     # --- the tick ---
     def tick(self, snap: dict, now: float | None = None) -> dict:
         now = self.clock() if now is None else now
@@ -2263,7 +2345,10 @@ class Bot:
         melee = self._melee(live, now)
         if melee is not None:
             return melee
-        cmd = self._command(now)
+        cmd, roam = self._operator_command(p, live, snap, now)
+        if roam is not None and not doctrine:
+            return roam                                  # the operator's new way: off this spot first (a threat's
+                                                         # answer, core.respond, still fires)
         pick = self._choose(live, now, p, snap)          # a command never stops a shot at one in range (RE5 HUNT_R)
         if pick is not None:
             dist, err, e = pick
@@ -2692,7 +2777,7 @@ class Bot:
             self.stats["locates"] += 1
             self.stats["locate_m"] = round(dist / 1000.0, 1)
             self.doing = "locate"
-            run = dist > RUN_CM or self.combo_owed(now) is not None
+            run = dist > RUN_CM or self.combo_owed(now) is not None or self.__dict__.get("_cmd") in CMD_RUN
             keys, how = self._approach(p, e["pos"], err, snap or {}, run)
             self.why = f"locating: the nearest Ganado {dist / 1000:.0f} m off by {how}" + (f" ({cmd})" if cmd else "")
             return {"hold": keys}

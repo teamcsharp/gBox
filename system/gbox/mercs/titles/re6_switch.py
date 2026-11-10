@@ -2050,6 +2050,12 @@ GOAL_LOCATE = 1.0
 # A command never presses a key itself: the hold, the heal, the prompts and the bombs' rules still decide every press.
 HUNT_R = 1200.0
 MINE_DUE_S, MINE_CMD_GAP_S = 12.0, 10.0
+# 2026-11-10 (the operator: "make sure that when I use one of the quick commands ... it's able to take those commands into
+# consideration"): repetitive, missing and rush were said ("acting: ...") and did nothing here.
+#   repetitive  the target he kept at set aside CMD_DROP_S and the wall escape: another target, another way (RE5's);
+#   rush        the hunt (in among them) with the remote bomb due, as RE5's flash-and-rush;
+#   missing     said: the aim lock puts the laser on him before each shot, there is no learned offset to reset.
+CMD_DROP_S = 15.0
 # The combo clock (operator 2026-11-09: "dispatch a foe every 3 seconds and never fail at it ... Have the bot
 # understanding the combo and the amount of time left in it at all times and manage it"): sGameMan +0x4094 the combo,
 # +0x409C its window's seconds left (measured: about 15 s left after a kill, docs/research/re6-switch-ram.md). The full
@@ -3920,6 +3926,21 @@ class Bot:
                                                                     "can be, then out of its reach")
         elif cmd == "mine_trail" and self.bomb_phase is None and not (p.get("bomb") or {}).get("out"):
             self.stats["directive_status"] = self._mine_now(p, now, "mine trail: the next bomb due, then on")
+        elif cmd == "repetitive" and fresh:                  # CMD_DROP_S above
+            if self.target is not None:
+                self.blocked[self.target] = now + CMD_DROP_S
+                self._block_reason[self.target] = "operator_repetitive"
+                self.target = None
+            self.wall_escape = (now + WALL_ESCAPE_S, self._open_heading(p, live))
+            self.stats["directive_status"] = f"dropped the target he kept at for {CMD_DROP_S:.0f} s; another way"
+        elif cmd == "rush" and fresh:
+            self.stats["directive_status"] = "rush: in among them (the hunt); " + self._mine_now(
+                p, now, "the remote bomb due at the next moment it can be")
+        elif cmd == "missing" and fresh:
+            self.stats["directive_status"] = ("the aim lock puts the laser on him before every shot: no learned offset "
+                                              "to reset")
+        if cmd == "rush":
+            return "hunt"
         return cmd if cmd in ("fight", "hunt", "score") else None
 
     def _mine_now(self, p, now, ok: str) -> str:
