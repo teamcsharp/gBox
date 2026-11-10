@@ -149,6 +149,34 @@ grab handlers; door/fence navigation; sustained stream/input stability validatio
 Tickets 5972, 6102–6104, 6106–6107 remain open until their full live acceptance.
 6105 is the already-completed run analysis and must not be reopened.
 
+## Grenade ring (2026-11-10, branch re6-bomb-mind)
+
+Operator: the bot meets enemies best handled by spamming grenades, so the RE5 ring is ported.
+`Controller.grenade_ring(kind)` spawns ten grenades in a ring blooming from 1.5 m to 6 m round the
+player (one native spawn per game frame), then sets them off in the same order; `grenade_ring_now(ad,
+kind="hand", radius_cm=None)` is the bot's never-raising, deadline-bounded (2.5 s, max 2.9 s) entry on
+the session's shared controller. `grenade_kinds()` offers a kind only when it is verified and the
+character carries it (its resources are loaded).
+
+**Classes, statically confirmed.** uWpBomb's setup (vtable slot 6, `main+0xF84FF4`) stores
+`(DTI id >> 8) & 0xFFFF` into `+0x3864` as the item kind. The static initialiser sets the ids from
+`0x07011100` (`main+0x13DB84`): uWp1091 `+0x201`, uWp1093 `+0x301`, uWp1095 `+0x401`,
+uWp1097 `+0x501`. So **uWp1091 = hand (0x113), uWp1093 = incendiary (0x114), uWp1095 = flash (0x115),
+uWp1097 = remote bomb (0x116)**. The even classes (uWp1090/1092/1094/1096) carry the same kinds as
+`+0x200..0x500`. The four thrown vtables differ only in getDTI, and the remote bomb's
+slots 6/16. uWp1091 `0x284B788`, uWp1093 `0x284B328`, uWp1095 `0x284AEB8`, uWp1097 `0x284AA58`.
+
+**Images**, in the zero padding after `detonate` (`main+0x18F2AA8..0x18F3000`, the executable page's end),
+installed only by the first ring: `spawn_at` `main+0x18F2AC0`, 304 B, sha256 `aa3708c6…88ab8`. This is
+spawn.c for one of the three thrown classes, at a chosen point; any other DTI is refused before allocation.
+`detonate_at` `main+0x18F2C00`, 320 B, sha256 `854ec6d6…a739`. This is detonate.c for that class. It re-sets
+the ring point's x/z on the game thread before the request, and it returns 2 for a grenade already
+exploding. Both ABI tests run in `build.sh`.
+
+**Not yet live.** Only flash is offered. The hand and incendiary explosions, the blast radius against
+the 4 m self-clearance and self-damage still need a live receipt with frames. `allow_unverified=True`
+runs that trial. Then add the kind to `RING_VERIFIED_KINDS`.
+
 ## Later production and LAN validation
 
 After PR1594/1595, 20 production API clicks confirmed 20 RE6 effects in1391.1ms,

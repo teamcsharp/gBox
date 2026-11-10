@@ -236,9 +236,10 @@ CONVENIENCE = {
                           "op=set_infinite_ammo takes enabled=true|false and confirms the game's readback. "
                           "op=magnum_quick4 equips a loaded magnum and performs four observed quick shots on supported RE6 only; "
                           "an interrupted or unobserved action stops with a partial/uncertain receipt and is never replayed. "
-                          "op=grenade_ring (RE5 Switch) spawns ten grenades in a ring that blooms out from the player and detonates "
-                          "them; kind selects the grenade (flash, the default and the only verified type; hand and incendiary are "
-                          "refused with a reason until verified). Provide a new UUID request_id for each click; reuse that UUID only "
+                          "op=grenade_ring (RE5 and RE6 Switch) spawns ten grenades in a ring that blooms out from the player and "
+                          "detonates them; kind selects the grenade (flash, the default and the only verified type; hand and "
+                          "incendiary are refused with a reason until verified; RE6 lists each kind's availability in status "
+                          "options.grenade_kinds). Provide a new UUID request_id for each click; reuse that UUID only "
                           "when retrying that same request. "
                           "Queued does not mean detonated: poll status until confirmed or an explicit failure. "
                           "Unsupported title/build/resources are reported without substituting a grenade throw.",

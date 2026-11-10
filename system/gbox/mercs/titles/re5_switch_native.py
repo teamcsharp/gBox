@@ -268,6 +268,10 @@ class Controller(N.Controller):
     def ring_capable(self):
         return True
 
+    # The RE6 base class's ring chooser reads RE6's inventory offsets; RE5 publishes no per-session kind rows (its
+    # controller refuses the unverified kinds itself), exactly as before RE6 had a ring.
+    grenade_kinds = None
+
     def _ring_one(self, x, y, z, index):
         """One flash spawned, relocated to (x, y, z), and detonated - the verified flash with a position write.
 
