@@ -949,3 +949,15 @@ So the mercmode chain is now complete on the client side: `switch_romfs_material
 * Still open on the visual side: the enemy models in a cast swap render untextured in motion (round 42) - the swapped
   model's **material bindings** are the next parse target; the maps are present in the arc but not what the materials
   resolve.
+
+## Round 44 status (2026-11-10, ~00:20 CST): the donor tag variant loads and plays; visual check still pending
+
+* `model_swap.swap_models` gained **`keep_tag`** (default True = the previous merged-tag behaviour). With `keep_tag=False`
+  the donor's **full tag** replaces the target's merged one. Hypothesis: the white/checkered enemy models are a material
+  resolution problem tied to the tag the model entry carries.
+* Built a one-enemy experiment: `uEm5200.arc` <- Chris's model with `keep_tag=False` plus the 61 `pl0200` maps
+  (`_attach_donor_textures`), 27,000,067 bytes, in `recovery-re6-em5200-tagtest-r44` (update ExeFS included).
+* The build **launched and played a full round** (the driver reached a RESULTS screen for Urban Chaos with no crash and
+  no `Unmapped` line), so the donor tag plus the appended maps is a loadable configuration.
+* Not yet captured: a gameplay frame with that enemy in view to confirm the maps render. The round ended before the
+  capture (the driver pressed through it), so the next pass needs a frame grabbed during play.
