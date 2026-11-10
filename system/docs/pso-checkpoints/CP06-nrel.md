@@ -119,3 +119,27 @@ round adds is that **13,344 / 12 = 1,112** is the vertex-record count of the fir
 triangle count would be compared against.
 
 Tests: none changed; CP0 baseline unchanged.
+
+## Round 63: the primitive arrays found, and the triangle count vs c.rel's footprint
+
+Scanning for index arrays by their signature (u16 runs whose every value fits the vertex count of 1,112) finds **167 runs**
+of 64+ values, at regular strides (the most common gaps are **2,656 and 2,400 bytes**, with 2,560 next), i.e. one index
+list per object record. In total:
+
+* **38,689 index values** across the 167 runs;
+* read as triangle triples: **12,896 triangles** (`38,689 // 3`);
+* the collision companion `Scene/map_aancient01_00c.rel` is **461,984 bytes** = **11,549** 40-byte collision triangles.
+
+**The comparison is the accept's second half, and it lands in the sane direction:** 12,896 render triangles against 11,549
+collision triangles - the render mesh is **1.12x** denser, which is what a simplified collision mesh looks like.
+
+**New module `gbox/pso_nrel.py`:**
+`index_runs(data)` -> the runs (values included), `triangles(data)` -> `sum(len(values)//3)`,
+`collision_triangles(crel)` -> `len//40`, `describe(nrel, crel)` -> the one-block summary used above.
+Tests in `tests/test_pso_nrel.py` (**4 passed**): the real file's 167 runs / 38,689 values / 12,896 triangles and
+11,549 collision triangles with the 1.0-1.2 ratio window; a synthetic 9-value run (counted with `min_run=3`); and
+out-of-range words rejecting a run.
+
+**What CP6.2 still lacks:** a *round trip* on a real file (the module reads, it does not yet re-emit geometry) and the
+vertex arrays themselves turned into positions (the float arrays at `0x3834`/`0x858` are located but not decoded into
+points). The triangle count half is now measured and tested.
