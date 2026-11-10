@@ -523,3 +523,23 @@ character gameplay frames and then run the `op=hotswap` acceptance test (two fra
    (`switch_extract` can now read the exact base arc bytes for that).
 4. `switch_extract`/`switch_decrypt` make that bisect cheap to prepare offline: compare each donor arc's directory
    (entry count, resource types) against the base arc before launching.
+
+## Round 18 status (2026-11-09, ~18:50 CST): an offline ARC validator for the roster arbitration
+
+`gbox/switch_arc.py` + 4 tests: the RE6 `ARC` container parse (magic, version, the arc's own path at 0x08, entries at
+0x48 with 0x10 words + a 0x40 path, 0x50 bytes each) and `compare(game, donor)` — whether a donor keeps the game's entry
+paths and how the entry sizes compare (the size word is the fourth word of each entry).
+
+Applied to all 45 roster arcs against the game's own files: every donor keeps the **same entry paths** (structurally
+valid containers), but the resource payloads are re-encoded much smaller — worst ratios 0.07-0.48. The head donor used
+in the working single-arc test (`uPl00HeadLeonUsa.arc`) has 4 entries with the first three at 32768 / 32895 / 35117
+bytes where the game's third is 380626 (ratio 0.092) — so at least that one is a legitimate re-encode and the round it
+ran proves the mechanism.
+
+Why this matters: the 45-arc roster crashes on load while the single arc works, so the arbitration needs evidence per
+arc. `compare()` gives it without a launch: any donor whose paths differ, or whose entry sizes are out of range, is a
+suspect. The next round bisects the roster with this filter and a handful of launches (admission was closed this round,
+so no launch tests were possible).
+
+Remaining for the live-swap objective: roster arbitration, then the hot-reload acceptance test (`op=hotswap`, two
+frames of one session, no restart) on a working round.
