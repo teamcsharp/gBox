@@ -83,3 +83,20 @@ def test_elf_vf4evo_tables_finds_character_table():
         "ch_aki/CH_AKI.mrg_gz",
         "ch_sar/CH_SA2.mrg_gz",
     ]
+
+
+def test_gz_member_roundtrip_and_mrg_offsets():
+    import struct, zlib
+    from gbox import vf4evo_mrg as m
+    body = struct.pack("<3I", 2, 16, 20) + b"\x00" * 4 + b"ABCD" + b"EFGHIJ"
+    co = zlib.compressobj(9, zlib.DEFLATED, 31)
+    gz = co.compress(body) + co.flush()
+    gz = gz[:3] + b"\x08" + gz[4:]  # set FNAME flag
+    gz = gz[:10] + b"x.mrg\x00" + gz[10:]
+    raw = b"junk" * 5 + b"%d CH_X.mrg\n" % len(body) + gz
+    mem = list(m.iter_gz_members(raw))
+    assert len(mem) == 1 and mem[0][2] == "CH_X.mrg"
+    out = m.inflate_gz_member(raw, mem[0][3], mem[0][1])
+    assert out == body
+    info = m.parse_mrg_offsets(out)
+    assert info["offsets"] == [16, 20] and info["sizes"] == [4, len(body) - 20]

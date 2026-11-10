@@ -117,12 +117,17 @@ def classify_mrg(data: bytes) -> dict:
     # Raw vertex buffers observed on ATAM/FACE/JOHA/KAHA parts: 16-byte
     # stride, 3x float32 position + one u32 (bone weight / index / colour).
     if len(data) >= 16 and len(data) % 16 == 0:
-        try:
-            xs = struct.unpack_from("<3f", data, 0)
-            if all(-1e4 <= x <= 1e4 for x in xs):
-                return {"kind": "vertex_buffer", "stride": 16, "head": head}
-        except struct.error:
-            pass
+        # Require the first 16 vertices (not just one) to be plausible floats,
+        # otherwise ~17% of random blobs pass a single-vertex check.
+        n = min(16, len(data) // 16)
+        ok = True
+        for i in range(n):
+            xs = struct.unpack_from("<3f", data, i * 16)
+            if not all(abs(x) <= 1e4 for x in xs):  # NaN fails this too
+                ok = False
+                break
+        if ok and _shannon(data[:65536]) < 7.5:
+            return {"kind": "vertex_buffer", "stride": 16, "head": head}
     return {"kind": "opaque", "entropy_bits": round(_shannon(data[:65536]), 4), "head": head}
 
 
@@ -183,3 +188,43 @@ def elf_vf4evo_tables(elf: bytes) -> dict:
         "zlib_version_1_1_3": offsets(b"1.1.3"),
         "character_table_entries": chars,
     }
+
+
+# --- MRG_GZ container (resolved from zlut_check_header/read_gz_file in SLUS_000.00) ---
+# Each member is "<decimal usize> <name>\n" followed by a stock gzip stream
+# (1f 8b 08 08, FNAME flag, deflate).  zlut_inflate is plain zlib inflate
+# (inflateInit2(-15)) behind that header; no scrambling.  In vf4files.cvm the
+# member header sits 2042 bytes BEFORE (base + entry_lba*2048) for every one of
+# the 146 *.MRG_GZ entries (measured), so the entry start is not the payload.
+MRG_GZ_ENTRY_SKEW = -2042
+_GZ_MEMBER = re.compile(rb"(\d{1,10}) ([A-Za-z0-9_.]{1,64})\n(?=\x1f\x8b\x08\x08)")
+
+
+def iter_gz_members(raw: bytes, start: int = 0, end: int | None = None):
+    """Yield (header_offset, usize, name, gzip_offset) for each member."""
+    end = len(raw) if end is None else end
+    for m in _GZ_MEMBER.finditer(raw, start, end):
+        yield m.start(), int(m.group(1)), m.group(2).decode("ascii"), m.end()
+
+
+def inflate_gz_member(raw: bytes, gz_offset: int, usize: int) -> bytes:
+    """Inflate one member and verify the declared size and stream end."""
+    d = zlib.decompressobj(31)
+    out = d.decompress(raw[gz_offset:gz_offset + max(usize, 1) * 2 + 65536])
+    if not d.eof or len(out) != usize:
+        raise ValueError(f"gz member size/eof mismatch: {len(out)} != {usize}")
+    return out
+
+
+def parse_mrg_offsets(body: bytes) -> dict:
+    """Decoded .mrg body: u32 count, then count ascending u32 sub-file offsets."""
+    if len(body) < 8:
+        raise ValueError("too short")
+    n = struct.unpack_from("<I", body, 0)[0]
+    if not 0 < n <= 4096 or 4 + 4 * n > len(body):
+        raise ValueError("bad count")
+    offs = list(struct.unpack_from(f"<{n}I", body, 4))
+    if any(b < a for a, b in zip(offs, offs[1:])) or offs[-1] > len(body):
+        raise ValueError("offsets not ascending/in range")
+    sizes = [(offs[i + 1] if i + 1 < n else len(body)) - o for i, o in enumerate(offs)]
+    return {"count": n, "offsets": offs, "sizes": sizes}
