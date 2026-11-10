@@ -1,0 +1,168 @@
+{
+ "method": "lessons/<title>/runs/*.jsonl lines -> lessons[] entries; deduped by (title,id); outcome field as recorded; stage/survival_s/deaths from lesson.observed",
+ "raw_entries": 18380,
+ "unique": 1652,
+ "titles": {
+  "RE5 Switch": {
+   "outcomes": {
+    "died": 329,
+    "interrupted": 206,
+    "lost": 42,
+    "completed": 90,
+    "ended": 4
+   },
+   "died_share_of_unique": 0.49,
+   "survival_s_n": 0,
+   "survival_s_median": null,
+   "per_stage_died_total": {
+    "Public Assembly": [
+     46,
+     110
+    ],
+    "The Mines": [
+     44,
+     64
+    ],
+    "Ship Deck": [
+     43,
+     47
+    ],
+    "unknown": [
+     39,
+     181
+    ],
+    "Experimental Facility": [
+     39,
+     60
+    ],
+    "Missile Area": [
+     33,
+     54
+    ],
+    "Prison": [
+     31,
+     53
+    ],
+    "Village": [
+     30,
+     57
+    ],
+    "Ancient Ruins": [
+     24,
+     45
+    ]
+   },
+   "died_with_nonzero_enemy_db_summary": 315,
+   "died_with_census_list": 0,
+   "died_with_player_damage_events": 329
+  },
+  "RE5 PS3 (BLUS30491)": {
+   "outcomes": {
+    "completed": 113,
+    "interrupted": 48,
+    "died": 341,
+    "lost": 13
+   },
+   "died_share_of_unique": 0.662,
+   "survival_s_n": 0,
+   "survival_s_median": null,
+   "per_stage_died_total": {
+    "Experimental Facility": [
+     69,
+     83
+    ],
+    "Prison": [
+     54,
+     73
+    ],
+    "The Mines": [
+     44,
+     63
+    ],
+    "Ship Deck": [
+     42,
+     58
+    ],
+    "Missile Area": [
+     38,
+     62
+    ],
+    "Village": [
+     34,
+     54
+    ],
+    "Public Assembly": [
+     34,
+     73
+    ],
+    "Ancient Ruins": [
+     26,
+     49
+    ]
+   },
+   "died_with_nonzero_enemy_db_summary": 25,
+   "died_with_census_list": 0,
+   "died_with_player_damage_events": 341
+  },
+  "RE6 Switch": {
+   "outcomes": {
+    "died": 262,
+    "completed": 56,
+    "interrupted": 138,
+    "lost": 10
+   },
+   "died_share_of_unique": 0.562,
+   "survival_s_n": 205,
+   "survival_s_median": 2.7,
+   "per_stage_died_total": {
+    "unknown": [
+     54,
+     84
+    ],
+    "Rooftop Mission": [
+     52,
+     61
+    ],
+    "Mining the Depths": [
+     36,
+     40
+    ],
+    "Urban Chaos": [
+     24,
+     36
+    ],
+    "Rail Yard": [
+     22,
+     46
+    ],
+    "The Catacombs": [
+     20,
+     36
+    ],
+    "High Seas Fortress": [
+     15,
+     59
+    ],
+    "Creature Workshop": [
+     14,
+     34
+    ],
+    "Liquid Fire": [
+     9,
+     27
+    ],
+    "Requiem for War": [
+     9,
+     29
+    ],
+    "Steel Beast": [
+     7,
+     14
+    ]
+   },
+   "died_with_nonzero_enemy_db_summary": 245,
+   "died_with_census_list": 211,
+   "died_with_player_damage_events": 248
+  }
+ }
+}
