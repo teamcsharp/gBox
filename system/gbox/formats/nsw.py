@@ -445,3 +445,35 @@ def sarc_members(data: bytes) -> List[dict]:
         n = data[names_off + no:data.index(b"\0", names_off + no)].decode() if (attr >> 24) & 1 else ""
         out.append({"name": n, "offset": data_off + s, "size": e - s})
     return out
+
+
+def parse_bfres_header(data: bytes) -> dict:
+    """Parse the Switch BFRES (FRES) container header (little-endian, v9-style layout).
+
+    Offsets verified on the owned AC:NH NpcNmlAnt00 model: 0x08 version, 0x0C BOM(0xFEFF)+align shift,
+    0x10 name offset, 0x14 flags/block offset, 0x18 relocation-table offset, 0x1C file size,
+    0x28 first FMDL offset. Bounds-checked against len(data).
+    """
+    if len(data) < 0x30 or data[:8] != b"FRES    ":
+        raise ValueError("not a Switch BFRES")
+    ver = struct.unpack_from("<I", data, 8)[0]
+    bom, align_shift, addr_sz = struct.unpack_from("<HBB", data, 0x0C)
+    if bom != 0xFEFF:
+        raise ValueError("big-endian BFRES unsupported")
+    name_off, flags, block_off, rlt_off, fsize = struct.unpack_from("<IHHII", data, 0x10)
+    if fsize != len(data):
+        raise ValueError("BFRES size mismatch: header %d vs %d" % (fsize, len(data)))
+    if not (0 < name_off < fsize - 2) or not (0 < rlt_off <= fsize - 4):
+        raise ValueError("BFRES offsets out of range")
+    nlen = struct.unpack_from("<H", data, name_off - 2)[0]
+    if name_off + nlen > fsize:
+        raise ValueError("BFRES name out of range")
+    fmdl_off = struct.unpack_from("<Q", data, 0x28)[0]
+    if not (0 < fmdl_off <= fsize - 4) or data[fmdl_off:fmdl_off + 4] != b"FMDL":
+        raise ValueError("FMDL not at declared offset")
+    if data[rlt_off:rlt_off + 4] != b"_RLT":
+        raise ValueError("relocation table magic missing")
+    counts = {t.decode(): data.count(t) for t in (b"FMDL", b"FSKL", b"FMAT", b"FSHP", b"FVTX", b"BNTX")}
+    return {"version": ver, "align_shift": align_shift, "addr_size": addr_sz, "name": data[name_off:name_off + nlen].decode("ascii", "replace"),
+            "rlt_offset": rlt_off, "file_size": fsize, "fmdl_offset": fmdl_off, "magic_counts": counts,
+            "bntx_offset": data.find(b"BNTX")}

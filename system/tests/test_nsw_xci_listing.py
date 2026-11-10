@@ -194,3 +194,46 @@ def test_real_romfs_villager_model():
     m = nsw.sarc_members(sarc)
     assert [x["name"] for x in m] == ["output.bfres"]
     assert sarc[m[0]["offset"]:m[0]["offset"] + 4] == b"FRES"
+
+
+def test_bfres_header_synthetic_and_rejects():
+    b = bytearray(0x100)
+    b[:8] = b"FRES    "
+    struct.pack_into("<IHBB", b, 8, 0x00090000, 0xFEFF, 0x0C, 0)
+    struct.pack_into("<IHHII", b, 0x10, 0x82, 0, 0x80, 0xC0, 0x100)
+    struct.pack_into("<H", b, 0x80, 3)
+    b[0x82:0x85] = b"abc"
+    struct.pack_into("<Q", b, 0x28, 0x40)
+    b[0x40:0x44] = b"FMDL"
+    b[0xC0:0xC4] = b"_RLT"
+    h = nsw.parse_bfres_header(bytes(b))
+    assert h["name"] == "abc" and h["fmdl_offset"] == 0x40 and h["file_size"] == 0x100
+    with pytest.raises(ValueError):
+        nsw.parse_bfres_header(bytes(b[:0xF0]))
+    with pytest.raises(ValueError):
+        nsw.parse_bfres_header(b"XXXX" * 20)
+
+
+@pytest.mark.skipif(not (os.path.exists(REAL) and os.path.exists(KEYS)), reason="owned XCI/prod.keys not present")
+def test_real_villager_bfres_header():
+    import shutil, subprocess
+    if not shutil.which("zstd"):
+        pytest.skip("zstd CLI missing")
+    keys = nsw.load_keys(KEYS)
+    info = nsw.list_xci(REAL)
+    e = next(x for x in info.hfs0["secure"] if x.name == "bd68bf29c8500e9c88ca844e1a6f77e8.nca")
+    with open(REAL, "rb") as fh:
+        def rd(o, n):
+            fh.seek(o)
+            return fh.read(n)
+        r = nsw.list_romfs(rd, e.offset, keys)
+        ent = next(f for f in r["files"] if f["path"] == "/Model/NpcNmlAnt00.Nin_NX_NVN.zs")
+        blob = nsw.read_romfs_file(rd, e.offset, keys, ent)
+    sarc = subprocess.run(["zstd", "-dc"], input=blob, capture_output=True, check=True).stdout
+    m = nsw.sarc_members(sarc)[0]
+    bf = sarc[m["offset"]:m["offset"] + m["size"]]
+    h = nsw.parse_bfres_header(bf)
+    assert h["file_size"] == len(bf) == 3019456
+    assert h["name"] == "output" and h["fmdl_offset"] == 0xF0 and h["rlt_offset"] == 0x2E1000
+    assert h["magic_counts"]["FMDL"] == 1 and h["magic_counts"]["FSHP"] == 3 and h["magic_counts"]["FMAT"] == 3
+    assert h["bntx_offset"] == 0x33000
