@@ -139,6 +139,12 @@ per enemy family is therefore one fen archive each.
   em28 (no biped). Script: `~/gBox_alt/scratch-hermes/m9186.py`.
 - Corrections vs the first draft: pack sha256s for em1c/em1d/em20, bone counts for
   em1d/em20, removal of an invented `TYPE_SLOTS`, ESL count (omake00–09 exist).
+- Independent re-run on lilspark2 (2026-11-10, this run): `roster --etc
+  bio4/etc` reproduces 130/117/138/84 with identical per-type counts; ESL sha256
+  omake00/01/02 = `1ac1b5f0…9d02` / `7e74dcfc…c553` / `4699f8cb…6052` (match §1
+  pins); `measure --em bio4/em em16 em1c em1d em20 em28` confirms pack shas
+  `5b8026bf…` / `00bd13ea…` / `a6163270…` / `6f3ccb89…`, body-slot tables and
+  `000000XX.pack.fen` archives; em28 refused (no biped donor) as expected.
 
 ## 5. Next acceptance steps (out of scope this run)
 1. Live round on i9-NUC/Spark (idle, 2% audio) with the built re4-enemy-pool-01
