@@ -671,3 +671,18 @@ Practical note: the hands-only build is the first swap that both runs and looks 
 
 Next: RAM-driven AcHead bisect (Leon, then Chris/Piers/Jake/Sherry/Ada, then the Asia duplicates), then the 34-arc
 clean roster as the shipped reskin build, then the hot-reload acceptance test on it.
+
+## Round 26 status (2026-11-09, ~20:45 CST): the 34-arc clean roster runs; the hot-swap plan is ready
+
+* **`recovery-re6-clean34-20261109` (heads 7 + hands 18 + bodies 9 = 34 arcs) runs a full round**: the RESULTS screen
+  shows "Urban Chaos", "LEON S. KENNEDY", Kills 0 / Score 0 / Rank E. This is the shippable reskin build today.
+* For the hot-reload acceptance test the "same byte size" constraint is **not** actually required: the donor arcs are
+  valid `ARC` containers of different lengths and they load fine (the padding failure in round 20 came from bytes
+  *outside* an arc, not from a different valid file length). So a hot swap is: overwrite the file at the round boundary
+  with another **valid arc** of any length, and the next round reads it - no restart, same session.
+* Prepared for that test: the game's own Leon body arc was extracted via `switch_decrypt` (`romfs-get`,
+  1,626,591 bytes) into `.tmp/leon-body-game.arc`; the 34-arc build currently carries the donor body (which renders
+  broken), so swapping the game body in at the RESULTS boundary gives round 1 = broken body, round 2 = normal body -
+  an unmistakable two-frame comparison from one session.
+* Driver: the RAM-driven `drive_fast.py` now tracks that it has seen `select_player`, so the CONTINUE? prompt is
+  declined with right+A instead of being mistaken for a loading screen.
