@@ -104,6 +104,8 @@ def test_staging_and_builds_refuse_a_cache_on_the_system_drive(windows, tmp_path
     c = cfg(cache="C:/gbox-test-never-written/cache")
     with pytest.raises(SP.SystemDriveRefused, match="cache copy of game.iso"):
         catalog.stage_begin(src, "0123456789abcdef", c)
+    if os.name != "nt":                               # mod_dir() resolves "C:/..." into the cwd off Windows: keep the literal path
+        monkeypatch.setattr(filemods, "mod_dir", lambda cfg, gid, name: Path(cfg.cache) / "mods" / gid / name)
     with pytest.raises(SP.SystemDriveRefused, match="build b1"):
         filemods.build_image(c, "0123456789abcdef", src, "b1", {})
     with pytest.raises(SP.SystemDriveRefused, match="base copy"):
