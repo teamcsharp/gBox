@@ -187,3 +187,40 @@ Method: capstone over `main.bin` (mem = file offset - 0x100), bounded scans, no 
 * **`unit+0x3ce` writers**: only two direct `strb [x, #0x3ce]` sites exist in the whole text segment, `0x13a508` (stores 0x16 in an AI state switch) and `0x1b1900` (stores 0, state reset). Neither copies an ESL field. The byte is also the index of a 45-entry jump table at `0x13a448` (`byte-1 <= 0x2c`) and a state bitmask test at `0x1b189c`. **So `+0x3ce` may be a unit state/action code rather than the ESL type** - the "type byte" label in `re4-switch-ram.md` is not confirmed by this scan. The ESL->unit copy is not a direct `strb` at that offset; it likely goes through a struct copy or an indexed store. **Next step**: xref readers of `game+0x5484` (add `#0x484` after `0x5000` pages / `mov w, #0x5484` constants) to find the real parser, then read which entry fields it stores.
 * Not done: live census check of type vs list (requires the i9-NUC/Spark session).
 * **Readers of `game+0x5484`** (constant `mov w,#0x5484` / `add x,x,#0x484` scan; candidates, not yet read): mov at `0x1b214 0x1b2e0 0x1b450 0x1ccf2c 0x1cd3b8 0x1cdb04 0x1cdb94 0x1cdbd4 0x3ac9d8 0x3ac9ec 0x3af264 0x3e2578 0x43e36c 0x44f41c 0x455688 0x455800 0x457184 0x45e9d0 0x45f7c0 0x461124 0x461158 0x46dc8c 0x47ad34 0x47b888 0x47b8fc 0x47b9ec 0x47bae0 0x4e05e4`; add-form at `0x101e9c 0x2591f4 0x2c428c 0x2c5f84 0x2c91a0 0x2cad54 0x2cb04c 0x2cfc54 0x2d006c 0x3196c4 0x329ba0 0x35859c 0x45dfc4 0x45edf8 0x45fa58..0x45fac8 0x48550c 0x505da0 0x5809b0`. The enemy-spawn parser is most likely among `0x1b2xx`, `0x1cc/0x1cd`, `0x45f-0x461` and `0x47b`.
+
+## Findings: the spawn parser (resolved) and its ESL -> unit field map
+
+The candidate `0x1cc/0x1cd` cluster is the reader/parser; the spawn path is confirmed statically.
+
+* **ESL entries are 32 bytes** (`lsl #5`), indexed by a signed-byte slot index. The loaded block is at `game+0x5484`; `0x1cdb00`-region helper returns the entry pointer via `[x0+0x458]` select: `entry = game+0x5484 + slot*32`, with an `0xff` sentinel for "no slot". The selection byte is `game+0x5027` (`ldrsb`), so one byte selects the whole set.
+* **`unit+0x458` is the ESL slot index** (pointer back to the entry), NOT the type byte. Confirmed by the spawn caller `0x461110` (`strb w21, [x8, #0x458]` right after allocating), by the dedupe loops in `0x1ccf2c`/`0x1cda80` (both compare `[unit+0x458]` against a slot id), and by the reset helper at `0x45e9f4`/`0x45f80c` (`ldrb [unit+0x458]` -> clear the entry's active flag). `0xffffffff`/`0xff` is written back to `+0x458` by the parser itself (`0x1cda00`) as a temporary "unassigned" mark before the caller stores the real slot.
+* **The spawn parser is `0x1cd7b0`** (called from `0x461110` and `0x1cd3b8` with `x0 = entry_ptr`). It reads `[entry+1]` into a vtable selector, allocates via the entity manager (`[vtable+0x20]`/`[vtable+0x38]` calls into `adrp 0xb25000 + 0xe00`), and then copies these fields into the new unit (`x20`). The full map, confirmed statically:
+
+| ESL entry offset | unit field | meaning |
+|---|---|---|
+| `+0` | (flag; parser writes 7 back) | entry active/state flag |
+| `+1` (u8) | spawn-ctor selector `w21` -> `[vtable+0x38]` | **pack/em id** (primary body/behavior selector) |
+| `+2` (u8) | `unit+0x119` | **type byte** |
+| `+3` (u8) | `unit+0x445` | secondary variant byte (appearance subtype) |
+| `+4` (u32) | `unit+0x48c` | 4-byte field (unused off/zone) |
+| `+8` (u16) | `unit+0x3c2` and `unit+0x3c4` | **hp** (max and current) |
+| `+0xb` (u8) | `unit+0x494` | flags byte |
+| `+0xc` (s16) | `unit+0xa4` (x10) | spawn position X |
+| `+0xe` (s16) | `unit+0xa8` (x10) | spawn position Y |
+| `+0x10` (s16) | `unit+0xac` (x10) | spawn position Z |
+| `+0x12` (s16) | `unit+0xb0` (x1/5215) | rotation angle (fixed-point -> radians) |
+| `+0x14` (s16) | `unit+0xb4` (x1/5215) | rotation angle |
+| `+0x16` (s16) | `unit+0xb8` (x1/5215) | rotation angle |
+| `+0x1a` (u16) | `unit+0x490` (x1000) | respawn timer / appearance scale (the "small multiples of 5") |
+
+The position scale (x10) and angle scale (~1/5215, rodata `0x6e96b8`) and the `+0x1a` scale (x1000, rodata `0x6e8910`) are all read straight from rodata, so the units are fixed. `+0x18` (the room id used for stage grouping) is NOT copied to the unit; it is used by the reader/selection (`0x1ccf98`: `ldrh [entry+8] ; lsr #8` compares the high byte against `[game+0x5021]`, i.e. room vs the hp's high byte is a separator in the table layout).
+
+**Consequences for the ticket's open questions:**
+
+1. `unit+0x119` is the ESL **type** byte (`entry+2`), not `unit+0x3ce`.
+2. `unit+0x458` is the ESL **slot index** (back-pointer), giving direct identity access (type/hp/pack all 32 bytes away).
+3. `unit+0x3ce` is NOT written by the spawn parser at all; it is a unit state/action code (two writers: `0x13a508` -> 0x16, `0x1b1900` -> 0). The `re4-switch-ram.md` label "type byte at +0x3ce" is **wrong**.
+4. Pack/em id (`entry+1`) is the primary selector (picks the vtable spawn ctor); `type` (`entry+2`) and the `+3` subtype refine it. This explains the earlier observation that all four Village Ganados look alike: they share one pack (em16) and differ only by type (`entry+2`, 3/4/11/12) and hp, so the base body is identical.
+5. `unit+0x445` (from `entry+3`) is the appearance/variant selector — the field to vary if a distinct look per (type, hp) group is required.
+
+Still not done: a live Switch-unit census reading `+0x119`/`+0x458` (+ the 32-byte entry) to cross-check each list type/hp/pack against actual spawned units (needs the i9-NUC/Spark idle session).
