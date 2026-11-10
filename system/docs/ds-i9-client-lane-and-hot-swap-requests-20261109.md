@@ -1081,3 +1081,18 @@ The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned b
   session. The RE6 control inventory in `merc_live_controls.MODS["re6"]` is what such a run exposes.
 * Consequence for the grenade-ring request: on RE6 the ring still has no native mapping, but the *event channel* does
   work wherever a bot is running; the i9's manual sessions simply do not carry it.
+
+## Round 53 status (2026-11-10, ~02:10 CST): the bot runs on RE6/i9; native effects are Linux-only by design
+
+* **A bot run works on the i9**: `autoplay` (`op=start`, mission `fight`) on a live RE6 session started with the learned
+  policy - `{"mode":"learned","objective":"playing in your style: 146 moves learned from 16 recorded sessions"}`. So the
+  "guide the bot" half of the operator's request is live on this client.
+* With the bot running, the intervention channel reports its **actual** reason instead of a generic one:
+  `re6_switch_native: native flash currently requires Linux Switch NCE`, `re5_switch_native: ... Linux Switch NCE`,
+  `re4_gc_native: re_mods: Resident Evil 4 GameCube NTSC-U (G4BE08) or Wii PAL (RB4P08) so far`.
+* That is the definitive answer on the grenade ring / native flash for this client: those features are implemented
+  through **NX/NCE on a Linux node** (the Spark's lane), not through Yuzu on Windows. The i9 can host the bot, the
+  sessions and the whole build/decrypt lane, but not the native-effect interventions.
+* So the operator's grenade ring is available where the native lane runs (RE5 Switch on Linux) and is not implementable
+  on the i9's Windows/Yuzu path with the current mechanism; an i9 version would need a RAM-level grenade spawn (GDB
+  stub writes) and RE6 addresses, which is a separate piece of work.
