@@ -123,11 +123,53 @@ def locked(name):
 def _run(args, cwd, *, timeout=45, env=None):
     result = subprocess.run(args, cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout, env=env)
     if result.returncode:
+        if args[0] in ('git', 'gh'):
+            note_rate_limit(result.stderr + result.stdout)
         # Git may include an authenticated origin URL in an error. Do not return it.
         if args[0] in ('git', 'gh'):
             raise RuntimeError(f'{args[0]} {args[1]} failed (exit {result.returncode}); no publication claimed')
         raise RuntimeError(result.stdout[-2500:] + result.stderr[-1500:])
     return result.stdout.strip()
+
+
+RATE_LIMIT = re.compile(r'secondary rate limit|rate limit exceeded|abuse detection|HTTP 429|retry[- ]after|too many requests', re.I)
+RATE_COOLDOWN_S = 15 * 60
+RATE_COOLDOWN_MAX_S = 6 * 3600
+
+
+def note_rate_limit(text: str, now: float | None = None) -> dict | None:
+    """GitHub told us to slow down: record a cooldown (doubling on repeats, honouring Retry-After) so no
+    automated push or PR retries into the limit and gets the account flagged. Best effort; never raises."""
+    try:
+        if not RATE_LIMIT.search(text or ''):
+            return None
+        now = time.time() if now is None else now
+        path = state_dir() / 'github-cooldown.json'
+        try:
+            prior = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            prior = {}
+        strikes = int(prior.get('strikes', 0)) + 1 if now - float(prior.get('until', 0)) < 3600 else 1
+        wait = min(RATE_COOLDOWN_S * 2 ** (strikes - 1), RATE_COOLDOWN_MAX_S)
+        match = re.search(r'retry[- ]after:?\s*(\d{1,5})', text, re.I)
+        if match:
+            wait = max(wait, int(match[1]))
+        state = {'until': now + wait, 'strikes': strikes, 'noted_at': now}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state), encoding='utf-8')
+        return state
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def github_cooldown(now: float | None = None) -> dict | None:
+    """Active automatic cooldown after a GitHub rate-limit response, or None. Expires by itself."""
+    try:
+        state = json.loads((state_dir() / 'github-cooldown.json').read_text(encoding='utf-8'))
+        now = time.time() if now is None else now
+        return state if float(state['until']) > now else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def _record_path(request_id):
@@ -331,6 +373,14 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
             _run(['git', 'commit', '-m', title[:180]], root)
         if not _run(['git', 'log', 'origin/main..HEAD', '--format=%H'], root):
             raise RuntimeError('No task commit exists; no GitHub progress was claimed')
+        cooling = github_cooldown()
+        if cooling:
+            # Rate limited: keep the commit locally, touch GitHub nothing; a later publish pushes it.
+            workspace.update(commit=_run(['git', 'rev-parse', 'HEAD'], root), url=None, pr_number=None,
+                             pr_state='deferred', cooldown_until=cooling['until'], checks=checks, files=files,
+                             published_at=time.time())
+            record.write_text(json.dumps(workspace, indent=2))
+            return workspace
         _run(['git', 'push', '-u', 'origin', workspace['branch']], root, timeout=90)
         commit = _run(['git', 'rev-parse', 'HEAD'], root)
         from . import hermes_device_work

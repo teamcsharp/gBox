@@ -375,3 +375,22 @@ def test_node_test_entries_publish_and_syntax_check(tracked_repo, monkeypatch):
                               ['tests/test_value.py', 'system/tests/value.test.cjs'])
     assert 'system/tests/value.test.cjs' in result['files']
     assert '1 passed' in result['checks'][0]
+
+
+def test_rate_limit_response_sets_doubling_cooldown_and_defers_publish(tracked_repo):
+    from pathlib import Path
+    assert delivery.github_cooldown() is None
+    assert delivery.note_rate_limit('some other error') is None
+    first = delivery.note_rate_limit('You have exceeded a secondary rate limit', now=1000.0)
+    assert first['until'] == 1000.0 + delivery.RATE_COOLDOWN_S and first['strikes'] == 1
+    second = delivery.note_rate_limit('HTTP 429', now=1100.0)
+    assert second['strikes'] == 2 and second['until'] == 1100.0 + 2 * delivery.RATE_COOLDOWN_S
+    assert delivery.github_cooldown(now=1200.0) and delivery.github_cooldown(now=1100.0 + 3 * delivery.RATE_COOLDOWN_S) is None
+    assert delivery.note_rate_limit('retry-after: 99999', now=1.0)['until'] == 1.0 + 99999
+    delivery.note_rate_limit('secondary rate limit')  # real clock: active now
+    task = delivery.prepare('abcdef0123456789', 12)
+    (Path(task['workdir']) / 'gbox/value.py').write_text('VALUE = 2\n')
+    out = delivery.publish(task['request_id'], 'Fix value', ['system/gbox/value.py'], ['tests/test_value.py'])
+    assert out['pr_state'] == 'deferred' and out['pr_number'] is None and out['commit']
+    _, origin, git = tracked_repo
+    assert task['branch'] not in git('branch', '-a', cwd=origin)

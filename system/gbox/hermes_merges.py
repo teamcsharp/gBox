@@ -224,6 +224,8 @@ class Branches:
 
     def open_pull(self, branch, record, pending):
         """Open a draft PR for stranded commits; return {number, url}."""
+        if hermes_delivery.github_cooldown():
+            raise RuntimeError('GitHub rate-limit cooldown active; recovery PR deferred')
         title = f"Recover unmerged Hermes work for request #{record.get('number')}"
         body = (f"gBox request #{record.get('number')} ({record['request_id']}).\n\n"
                 f"These commits on `{branch}` were not on main and no open PR carried them "
