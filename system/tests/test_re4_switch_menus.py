@@ -394,7 +394,8 @@ def test_cancel_loading_is_answered_yes_and_load_data_is_cancelled():
     assert D.step({"where": "story_prompt", "prompt": "cancel", "cursor": "yes"}, now + 1.0) == "a"
     later = now + 1.0 + D.STORY_LEAVE_S + D.STORY_GAP_S + 0.1      # Yes, then the main menu settling
     assert D.step({"where": "story_prompt", "prompt": "load"}, later) == D.STORY_RECOVER_KEY
-    assert D.step({"where": "story_prompt"}, later + D.STORY_GAP_S + 0.1) == D.STORY_RECOVER_KEY, \n        "an unread prompt is still cancelled"
+    unread = D.step({"where": "story_prompt"}, later + D.STORY_GAP_S + 0.1)
+    assert unread == D.STORY_RECOVER_KEY, "an unread prompt is still cancelled"
 
 
 def test_a_named_prompt_keeps_its_kind_through_the_reader(monkeypatch):
