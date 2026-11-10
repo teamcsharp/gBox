@@ -1719,6 +1719,9 @@ DEDICATED = [
     ("re2gc", lambda t, p: t == "resident evil 2 (usa)" and p == "gamecube",
      lambda: __import__("gbox.re2gc_models", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.re2gc_models", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("re6_switch", lambda t, p: "resident evil 6" in t and p == "switch",
+     lambda: __import__("gbox.re6_switch_chars", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.re6_switch_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("mvc2", lambda t, p: "marvel vs. capcom 2" in t and p == "dreamcast",
      lambda: __import__("gbox.mvc2_chars", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.mvc2_chars", fromlist=["x"]).extract_run(ctx, game, e, work)),
@@ -1946,6 +1949,8 @@ def dedicated_entries(config, game, name, roster):
         return []
     if name == 're2gc' and game.get('game_id') != 'c6adbfa00c20aaf9':
         return []
+    if name == 're6_switch' and game.get('game_id') != '115f9cdbba115432':   # the PS3/360 editions are not MTF arcs
+        return []
     root = library_root(config)
     entries = []
     for entry in roster():
@@ -1970,7 +1975,8 @@ READER_VERSIONS = {"re5ps3": ("gbox.re5ps3_collection", "re5ps3_reader"), "re2gc
                    "crazy_taxi2": ("gbox.crazy_taxi2", "ct2_reader"),
                    "defjam_vendetta": ("gbox.defjam_vendetta", "djv_gc_reader"),
                    "mgs2": ("gbox.mgs2_models", "mgs2_reader"),
-                   "mvc2": ("gbox.mvc2_chars", "mvc2_reader")}
+                   "mvc2": ("gbox.mvc2_chars", "mvc2_reader"),
+                   "re6_switch": ("gbox.re6_switch_chars", "re6sw_reader")}
 
 
 def reader_version(extractor: str | None) -> int | None:
