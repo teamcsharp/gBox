@@ -383,3 +383,37 @@ def test_rnx_magic_accepted_and_rom_decode():
         assert len(rnc.decode_rnc(d[o:o + 18 + pl])) == struct.unpack_from(">I", d, o + 4)[0]
         n += 1
     assert n == 1182
+
+
+def _forsaken_block():
+    vtx = b""
+    for p in ((0, 0, 0), (10, 0, 0), (0, 10, 0)):
+        vtx += struct.pack(">hhhHhhBBBB", *p, 0, 0, 0, 1, 2, 3, 255)
+    dl_off = 8 + 4 + len(vtx)
+    dl_off = (dl_off + 7) & ~7
+    body = struct.pack(">II", dl_off, 1) + struct.pack(">I", dl_off + 4) + vtx
+    body += b"\0" * (dl_off - len(body))
+    body += struct.pack(">II", 0x04 << 24 | 3 << 10 | 47, 12)      # VTX n=3 @0x0c
+    body += struct.pack(">II", 0xB1000000 | 0x000204, 0)           # TRI2 (0,1,2)+degenerate skip
+    body += struct.pack(">II", 0xB8 << 24, 0)
+    return body
+
+
+def test_forsaken_dl_synthetic():
+    from gbox.formats.forsaken_dl import parse_model, to_obj
+    m = parse_model(_forsaken_block())
+    assert len(m.vertices) == 3 and m.triangles[0] == (0, 1, 2)
+    assert to_obj(m).count("\nf ") == len(m.triangles)
+
+
+def test_forsaken_dl_rom():
+    import os
+    from gbox.formats.forsaken_dl import parse_model
+    from gbox.formats.rnc import decode_rnc
+    rom = os.environ.get("GBOX_FORSAKEN_Z64")
+    if not rom:
+        pytest.skip("GBOX_FORSAKEN_Z64 not set")
+    data = open(rom, "rb").read()
+    blk = decode_rnc(data[0x3D379C:0x3D379C + 20000])
+    m = parse_model(blk)
+    assert (len(m.vertices), len(m.triangles)) == (293, 458)
