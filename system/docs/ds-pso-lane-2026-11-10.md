@@ -593,11 +593,125 @@ bound to the slot that reports activity, not to slot 0.** Two candidate fixes fo
 
 Nothing was pressed on the operator's behalf after they handed control back beyond this cold-boot attempt.
 
+## Round 9 (2026-11-10) — the pad binding fixed, and a cold boot from the disc to Pioneer 2 by gBox's own presses
+
+Round 8's run died because Dolphin read `XInput/0`, a phantom virtual pad that reports exactly zeros forever, while the
+operator's controller was on slot 1 and gBox's own virtual pad did not exist. This round fixed the binding and then
+**cold-booted the disc into Pioneer 2 with gBox's presses**, asserting every step from RAM.
+
+### What the probe showed
+
+A virtual pad **can** be created and Windows sees it: `VGamepad()` reported slot 2 and the sentinel trigger appeared at
+slot 2 while `0` stayed all-zero and `1` showed the operator's resting controller (`lx -160, ly 1387`). So the failure
+was never ViGEm -- it was the launch choosing a slot nothing reports on.
+
+### `gbox/pad_bind.py` (+5 tests) and the adapter
+
+The fallback path (no virtual pad) now binds the pad that **actually reports** instead of trusting `XInput/0`:
+
+* `alive(state)` decides what "a real device" is by **any non-zero field**, not by XInput's deadzone. The operator's
+  stick drifts below that deadzone, and a phantom is *exactly* zero in every field, including forever.
+* `choose_slot(pads, created=...)` prefers gBox's own pad when it exists (it may be idle and about to be used), else the
+  lowest live slot, else None (leave the INI untouched).
+* `bind_device` / `bind_note` rewrite GCPad1's `Device` line once and record why in a comment.
+
+`DolphinWinAdapter._argv` calls it on the no-vpad path, so a machine with a phantom in slot 0 gets a working pad.
+
+### The relay: your pad reaches the game through gBox's pad
+
+The two configurations are mutually exclusive -- Dolphin reads one device. With the **virtual pad** bound the bot can
+press (the keyboard path cannot: `win_send_keys` returns `sent: 0` because Windows refuses `SetForegroundWindow` from a
+background process, which is why that path silently drops everything). So the operator's own controller is now
+**relayed**: `padstate.watch_xinput` already diffs their pad every 1/30 s, and with `padstate.RELAY[sid]` set (the worker
+sets it when the adapter has a virtual pad) each change is also posted to the session's input queue, which the worker
+sends to that pad. Their presses reach the game *and* the chord still fires from the physical pad directly.
+
+### The cold boot, live
+
+Session `066193032ad04374-b89e4b8bbbe64952`, `GCPadNew.ini` = `Options/Always Connected = True` +
+`Device = XInput/0/Gamepad` (gBox's pad, slot 0 -- the phantom was freed by the worker restarts):
+
+```
+mode 0 (attract) -> one START press -> mode 1 (title menu)        presses land
+walk: offline_game, single_mode, slot_a  -> mode walked 1/0/1
+SELECT CHARACTER: BQF  Type HUmar  ID ORAN  (the character from round 4, still on the card)
+A on the row -> "Wrote to Memory Card A" -> Pioneer 2, Principal Tyrell
+```
+
+RAM at the end: `TObjPlayer hp 40/40 at (0, -2015) room 41`, `FLOOR 0` (Pioneer 2), `episode 1`, **29 entities**
+(`in_field` = `{in_town: true, player: {...}, entities: 29}`).
+
+That is P1's boot-to-town leg done end to end by gBox's presses: attract skipped, title menu, offline branch, character
+select with the saved character, memory-card write, Pioneer 2. It is **not** P1's accept test yet -- that needs Forest 1
+and both players, three cold launches.
+
+### Still open
+
+* The walk's step list still assumes the *creation* branch (`accept_new` presses `dup`+A). With a character on the card
+  the correct step is a bare A on the row; the module should check the card (a `TObjPlayer`-less SELECT CHARACTER with a
+  saved slot cannot be told from RAM yet) or simply try A and fall back to create.
+* Forest 1: from Pioneer 2 the route is the Hunter's Guild door (`TObjCityDoor_Guild` at `185, 173` room 10, read from
+  the entity list) and then the teleporter; the walker needs to get through the room transitions.
+
+## Round 10 (2026-11-10) — the town leg did not happen: a looping conversation and an unproven movement failure
+
+The plan was Pioneer 2 -> the Hunter's Guild -> Forest 1. It did not get there, and the more useful result is a
+correction: an earlier draft of this round claimed "the analog stick does not reach PSO". **That is not proven.**
+
+### What happened
+
+After the cold boot in round 9 the character stands in front of Principal Tyrell, whose tutorial conversation is many
+pages long. Then:
+
+1. Pressing A repeatedly advances it, but **every A pressed after the last line restarts the conversation** -- the
+   character is still standing in front of him, so A talks again. A loop of A presses therefore never exits, and the
+   game stays in dialogue, where movement is locked.
+2. All of this round's movement tests (stick up/down/left/right for a second each, keyboard `up`, D-pad `down`) ran
+   during that dialogue and reported the player at `(0.0, -2015.0) room 41` every time. **A locked game cannot move, so
+   none of those results says anything about the stick.**
+3. Five `b` presses and one more walk changed nothing either, so B does not close this conversation.
+
+The frames say it plainly: `p1v-00-state.jpg`, `p1w-01-cdown.jpg`, `p1x-keyboard.jpg` all show the same speech bubble,
+"Go talk to my secretary. Irene will help you." -- the last line of the conversation, still up.
+
+### What *is* proven, and what is not
+
+| claim | status |
+|---|---|
+| Buttons reach PSO through the current binding (A advances dialogue, START opens the in-game menu) | **proven** |
+| XInput shows no change in any slot while the worker holds a stick through `/input` | **proven** (12 samples over 1.5 s, one distinct state) |
+| Therefore the worker's stick write never reaches a pad | **not proven** -- the pad it would write to is the one whose buttons do work, so either the vpad is not the path in use, or the stick branch is not reached |
+| The analog stick does not work in PSO | **not proven** -- every test of it was run with movement locked |
+| Movement works at all right now | **unknown** -- it has not been tested outside the dialogue |
+
+### What this means for the next round
+
+The order of work changes. Fix the **dialogue trap** first, because until the character is free every movement result is
+noise:
+
+1. Find a RAM signal for "a conversation is open" (candidates: `control_mode` at actor+`0x324`, `action_state` at
+   `+0x326`, `hit_records` at `+0xA8` -- sample them during the conversation and after it) so a driver can know when to
+   stop pressing A. Without it, any interactive step is a guess.
+2. Then measure movement once, properly: hold a direction for two seconds with the character free and read the
+   position. Only then call the stick broken or working.
+3. Then the town leg: `TObjCityDoor_Guild` at (185, 173) room 10, then `TObjCityDoor_Warp` at (254, 25), then Forest 1.
+
+`gbox.pso_entities` still reads all 29 Pioneer 2 objects live, so the route itself is already available; what is missing
+is a way to know the party is free to walk.
+
+### Method note (the same lesson twice)
+
+This is round 3's mistake in a different place: round 3 nearly shipped a byte as a "screen id" because it changed when
+the screen changed, and this round nearly shipped "the stick is broken" because the character did not move while the
+game was in a conversation. Both were measurements of the *wrong state*. A negative result needs the same evidence bar as
+a positive one, and "nothing happened" is the easiest result to misread.
+
 ## 7. Next
 
-1. Bind Dolphin to the XInput slot that reports activity. _setup_vpad wrote XInput/0 while slot 0 is a phantom
-   virtual pad at exactly zero and the operator's controller is slot 1, so the game and watch_xinput both see nothing.
-   Either free slot 0 (the XBOX Synthetic Gamepad Bus device is in Error state and is the likely provider; disabling it
-   needs elevation) or make the adapter bind the active slot when its own pad cannot take one.
-2. Then re-run gbox.pso_boot_walk.walk cold three times to answer P1's accept test (Forest 1, both players, no warp).
-3. Then P6a's in-game proof, P6b, P7a, and the recorded demo -> route fixture.
+1. Find a RAM signal for "a conversation is open" (sample `control_mode` +0x324, `action_state` +0x326 and
+   `hit_records` +0xA8 during and after Principal Tyrell's conversation), so a driver knows when to stop pressing A.
+   Until the character is free, every movement measurement is noise - this round's were.
+2. Then measure movement once, properly: two seconds of a held direction with the character free, position read
+   back. Only then call the analog stick broken or working.
+3. Then Pioneer 2 -> the Hunter's Guild door (185,173 room 10) -> the teleporter (254,25) -> Forest 1, then the
+   three cold launches with both players, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
