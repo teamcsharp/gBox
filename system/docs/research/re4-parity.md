@@ -30,7 +30,7 @@ Measured on lilspark in MercMode's own turns (session ids are `88a92225892b4c4f-
 | What | Result |
 |---|---|
 | RE4 rounds counted by MercMode | yes: Wesker / Base (`693ef1de`), Krauser / Waterworld (`3ced7e9c`, 5 kills), HUNK / Castle (`77e03923`), Wesker / Waterworld (`7f135357`, 5 kills, `kills_source: game`) - deaths witnessed by the game's own death screen (`mercmode.accept_boundary`, RE4 Switch only) |
-| Kill counter | **mapped**: u32 module + `0x12010c4` (`MERC_KILLS`), matched the census on two rounds and caught a melee kill the census missed |
+| Kill counter | **retracted**: u32 module + `0x12010c4` tracked the census on two rounds, but on 2026-11-10 00:11 the HUD read 0 kills while it read 8 - not the kill count; the census counts until the HUD's number is matched in RAM |
 | Fight | Krauser / Waterworld (remap-all build): 3 min, 5 kills - 2 by the melee follow-up (2 Y taps, 2 kills), 166 shots / 11 hits, 95 swarm escapes, 2 flanks, 0 shots held at walls; the next round with the distance-based fire tolerance: 13 shots / 4 hits |
 | Turn sign | measured four times: error shrinking 24 / 32 / 79 / 44 times vs growing 7 / 9 / 23 / 14 - the GameCube sign holds, the live check never flipped it |
 | Any character | Leon, Ada, Krauser, HUNK, Wesker each read through the player pointer (Leon-only classes left Ada unread before `c6c1a4ad`) |

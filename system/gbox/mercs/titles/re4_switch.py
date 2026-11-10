@@ -150,7 +150,9 @@ UNIT_RESCAN_S = 4.0                     # new spawns: the census looks again thi
 # The round's kill count (u32, module + 0x12010c4), measured on two live rounds 2026-11-10: Krauser / Waterworld
 # read 0, 0, 1, 1, 5 ... 5 with five census kills; HUNK / Castle read 1 while the census saw none (a melee kill whose
 # unit was freed between two reads - the census misses those). Trusted up to MERC_KILLS_MAX; above it, the census.
-MERC_KILLS: int | None = 0x12010C4
+# RETRACTED 2026-11-10 00:12 (session afc80a255a2c4e4e-4a17d67f77b14e17): the HUD read 0 kills while 0x12010c4 read 8 -
+# it climbs with the fight but is not the kill count. Back to the census until the HUD's number is matched in RAM.
+MERC_KILLS: int | None = None
 MERC_KILLS_MAX = 2000
 # The round probe on the live Krauser / Waterworld round (2026-11-10 22:07, five kills): these u32 module offsets
 # stepped up with the fight - 0x12010c4 read 0, 0, 1, 1, 5 ... 5 (the round's kill count: the leading candidate for

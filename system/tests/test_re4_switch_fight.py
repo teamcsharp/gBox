@@ -464,10 +464,10 @@ def test_the_shot_waits_for_the_angle_the_ganado_covers():
 
 
 
-def test_the_games_kill_count_is_mapped():
+def test_the_kill_count_candidate_is_retracted():
     """Measured on two live rounds 2026-11-10: module + 0x12010c4 counts the round's kills (the census misses a melee
     kill whose unit is freed between reads)."""
-    assert D.MERC_KILLS == 0x12010C4 and 0x12010C4 in D.KILL_CANDIDATES
+    assert D.MERC_KILLS is None and 0x12010C4 in D.KILL_CANDIDATES, "retracted: the HUD read 0 while it read 8"
 
 
 
