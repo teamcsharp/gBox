@@ -1109,3 +1109,15 @@ The experiments are recorded here; `.tmp/align_tex.py` holds the index-aligned b
   tier or a slow network share can be tested rather than assumed.
 * Consequence for the objective's "cpu / gpu / external gpu" phrase: the decrypting task is I/O and open-bound at
   ~245 MB/s on this hardware; the useful scaling is across *containers* (dispatch more jobs), not inside one file.
+
+## Round 55 status (2026-11-10, ~02:35 CST): an RE4 swap build applies and the game runs its intro
+
+* Launched `recovery-re4-sonic-on-leon-v1-20261109` on the i9 (the build replaces `romfs/bio4/em/pl08.udas` - 1.6 MB - and
+  adds `romfs/bio4/imagepackhd/01000008.pack.fen`): the title screen renders at 60 FPS and a **NEW GAME starts**, with
+  the opening cutscene playing (`re4-play7.jpg`: Leon's close-up in the jeep).
+* So the RE4 overlay path works end to end on the i9 - the mod is applied by Yuzu, the game boots and runs. The
+  cutscene model is Leon's own (cutscenes use separate high-res assets from the in-game `pl08.udas`), so this frame
+  neither proves nor disproves the Sonic swap; the in-game model needs a gameplay frame (the village, after the intro),
+  which is a longer drive than this round allowed.
+* The three RE4 builds are: `recovery-re4-native-rewrite-v1` (`pl08.udas` 1.6 MB), `recovery-re4-native-swap-v1-control`
+  (`pl08.udas` 1.4 MB) and `recovery-re4-sonic-on-leon-v1` (`pl08.udas` + the texture pack, 4.6 MB).
