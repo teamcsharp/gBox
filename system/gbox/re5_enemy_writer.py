@@ -935,7 +935,8 @@ def _union_bounds(boxes: list[dict]) -> dict:
     return {'min': low, 'max': high, 'sphere': centre | {'r': radius}}
 
 
-def graft_pieces(native: mt_model.ModFile, pieces: list[tuple[mt_model.ModFile, list[int], int]]) -> tuple[bytes, dict]:
+def graft_pieces(native: mt_model.ModFile, pieces: list[tuple[mt_model.ModFile, list[int], int]], *,
+                 template: int | None = None) -> tuple[bytes, dict]:
     """Add each one-mesh donor of `pieces` (donor, option groups, material index) to `native` once per group of its
     own, and make every native record draw nothing.
 
@@ -945,6 +946,10 @@ def graft_pieces(native: mt_model.ModFile, pieces: list[tuple[mt_model.ModFile, 
     are appended once per group as a new record (LOD mask 0xFF, ids after the native ones), inserted behind the last
     native record of the same material so the table stays sorted by material as shipped. No group may be given to two
     donors: a spawn that selects it would draw both.
+
+    ``template`` names the native record whose opaque bytes the donor records start from; by default the first native
+    four-weight record (`_template`, RE5's shape). RE6's records carry other mesh types (0xFDF7, 0x1020), so its writer
+    passes the record its one-mesh donor was itself authored from (`re6_switch_enemies.template_mesh`).
     """
     header, records = native.header(), native.meshes()
     count, offsets = len(records), header['offsets']
@@ -972,7 +977,11 @@ def graft_pieces(native: mt_model.ModFile, pieces: list[tuple[mt_model.ModFile, 
     native_vertices = native.raw[offsets['vertex_buffer']:offsets['index_buffer']]
     if len(native_vertices) % 4:
         raise EnemyWriterError('vertex data must stay four-byte aligned')
-    template, faces = _template(records), header['face_count']
+    if template is None:
+        template = _template(records)
+    elif not 0 <= template < count:
+        raise EnemyWriterError(f'template record {template} is outside the native table')
+    faces = header['face_count']
     vertex_buffer, index_buffer = [native_vertices], [words.astype('<u2').tobytes()]
     vertex_at, face_at, serial = len(native_vertices), faces, 0
     added, reports, boxes, vertex_total, triangle_total = [], [], [], 0, 0

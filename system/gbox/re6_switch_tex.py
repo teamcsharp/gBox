@@ -368,8 +368,11 @@ BODY_MATERIAL_NAMES = ("pl_cloth", "pl_cloth1", "pl_base1", "pl_base2", "pl_skin
 TEXTURE_SLOTS = ("tAlbedoMap", "tNormalMap", "tSpecularMap", "tDetailNormalMap", "tDetailNormalMap2",
                  "tAlbedoBlendMap", "tAlbedoBlend2Map", "tNormalBlendMap", "tVtxDisplacement", "tVtxDispMask",
                  "tHairShiftMap", "tTransparencyMap", "tEnvMap", "tEmissionMap", "tSphereMap")
+#: `FColorMaskAlbedoMap`, `FTransparencyAlphaClip` and `FColorMaskTransparencyMap` are the enemy materials' functions
+#: (uEm1000 / uEm5400 MRLs; names from the title's AppShaderPackage.mfx, measured 2026-11-10).
 FUNCTION_NAMES = ("FAlbedo", "FAlbedoMap", "FAlbedoMap2", "FAlbedoMapModulate", "FAlbedo2MapModulate",
-                  "FBlendAlbedoMap", "FColorMaskAlbedoMapModulate", "FVertexDisplacement",
+                  "FBlendAlbedoMap", "FColorMaskAlbedoMapModulate", "FColorMaskAlbedoMap",
+                  "FTransparencyAlphaClip", "FColorMaskTransparencyMap", "FVertexDisplacement",
                   "FVertexDisplacementCurveU", "FVertexDisplacementCurveV", "FVertexDisplacementCurveUV",
                   "FVertexDisplacementDirU", "FTransparency", "FTransparencyAlpha", "FTransparencyMap",
                   "FTransparencyVolume", "FDiffuse", "FDiffuseVertexColorOcclusion", "FBump",
