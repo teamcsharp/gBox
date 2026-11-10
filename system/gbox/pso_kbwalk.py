@@ -312,3 +312,89 @@ def greedy_walk(read_pos, hold, target, *, keys=KEYS, tolerance=7.0, max_steps=4
             log("every key failed to move the character")
             return {"ok": False, "why": "stuck: no key moved the character", "steps": trail, "end": read_pos()}
     return {"ok": False, "why": f"gave up after {max_steps} steps", "steps": trail, "end": read_pos()}
+
+# --- steering model: PSO's left/right TURN the character, up/down move along the facing ------------------------------
+def _angle(dx: float, dz: float) -> float:
+    return math.atan2(dz, dx)
+
+
+def _wrap(a: float) -> float:
+    while a > math.pi:
+        a -= 2 * math.pi
+    while a < -math.pi:
+        a += 2 * math.pi
+    return a
+
+
+def _forward(read_pos, hold, seconds):
+    """Hold `up`; return (dx, dz, speed). A dead `up` against a wall is retried as `down` (negated)."""
+    p0 = read_pos()
+    hold("up", seconds)
+    p1 = read_pos()
+    dx, dz = p1[0] - p0[0], p1[1] - p0[1]
+    speed = math.hypot(dx, dz) / seconds
+    if speed < 0.5:
+        hold("down", seconds)
+        p2 = read_pos()
+        ex, ez = p2[0] - p1[0], p2[1] - p1[1]
+        s2 = math.hypot(ex, ez) / seconds
+        if s2 >= 0.5:
+            return -ex, -ez, s2
+    return dx, dz, speed
+
+
+def steer_calibrate(read_pos, hold, *, seconds=0.6, turn_seconds=0.4) -> dict:
+    """Measure forward speed, the current heading and the signed turn rate (rad/s of `left`, atan2(z, x) convention).
+
+    Raises RuntimeError when `up` does not move ("dead") or when `left` does not change the heading (the bindings are
+    not the steering model, so the caller must use the translate walker instead).
+    """
+    if read_pos() is None:
+        raise RuntimeError("steer_calibrate needs a live player position")
+    dx, dz, speed = _forward(read_pos, hold, seconds)
+    if speed < 0.5:
+        raise RuntimeError("forward binding is dead: holding up/down moved nothing")
+    h0 = _angle(dx, dz)
+    hold("left", turn_seconds)
+    dx2, dz2, speed2 = _forward(read_pos, hold, seconds)
+    if speed2 < 0.5:
+        raise RuntimeError("forward binding is dead after a turn")
+    h1 = _angle(dx2, dz2)
+    turned = _wrap(h1 - h0)
+    if abs(turned) < 0.05:
+        raise RuntimeError("left/right do not turn the character: not the steering model")
+    return {"speed": (speed + speed2) / 2, "turn_rate": turned / turn_seconds, "heading": h1}
+
+
+def steer_walk(read_pos, hold, target, *, cal=None, tolerance=7.0, max_steps=40, max_hold=0.8, log=None) -> dict:
+    """Walk to `target` by pointing (left/right) then advancing (up), re-measuring the heading from each advance."""
+    cal = cal or steer_calibrate(read_pos, hold)
+    speed, rate, heading = cal["speed"], cal["turn_rate"], cal["heading"]
+    steps = 0
+    pos = read_pos()
+    while steps < max_steps:
+        steps += 1
+        pos = read_pos()
+        dx, dz = target[0] - pos[0], target[1] - pos[1]
+        dist = math.hypot(dx, dz)
+        if dist <= tolerance:
+            return {"ok": True, "end": tuple(pos), "steps": steps - 1}
+        diff = _wrap(_angle(dx, dz) - heading)
+        if abs(diff) > 0.12:
+            secs = min(abs(diff) / abs(rate), 1.5)
+            hold("left" if diff * rate > 0 else "right", secs)
+            heading = _wrap(heading + math.copysign(abs(rate) * secs, diff))
+            if log:
+                log(f"turn {diff:+.2f} rad")
+            if abs(diff) > 0.6:
+                continue                      # large turn: re-check before moving
+        secs = max(0.1, min(dist / speed, max_hold))
+        p0 = read_pos()
+        hold("up", secs)
+        p1 = read_pos()
+        mx, mz = p1[0] - p0[0], p1[1] - p0[1]
+        if math.hypot(mx, mz) < 1.0:
+            return {"ok": False, "end": tuple(p1), "steps": steps, "reason": "blocked: forward moved nothing"}
+        heading = _angle(mx, mz)              # re-measure the facing from what actually happened
+    pos = read_pos()
+    return {"ok": distance(pos, target) <= tolerance, "end": tuple(pos), "steps": steps, "reason": "max_steps"}
