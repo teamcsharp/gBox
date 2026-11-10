@@ -72,12 +72,19 @@ test('allowlist permits measured viewer reads but refuses input, launch, foreign
     assert.throws(()=>create.request({path:p},new Set()),/Unsupported/);
 });
 
-test('map collection transport allows observed entity intents and cancellation, never coordinates or input',()=>{
+test('map goal transport allows observed entity intents, a bounded spot and cancellation, never input',()=>{
   const p='/api/autoplay/tactical/'+sid+'/goal',body={round:route,stage:'BLUS30491.nav1.abcd',kind:'bonus',id:123,seq:9};
   assert.deepEqual(create.request({path:p,body},new Set()),{path:p,method:'POST',body});
   assert.deepEqual(create.request({path:p,body:{cancel:true}},new Set()).body,{cancel:true});
-  for(const patch of [{pos:[0,0,0]},{round:'other'},{id:true},{kind:'enemy'},{seq:NaN}])
+  // operator 2026-11-10: a click on an enemy sends the bot after it (the desktop window refused it as a bad goal)
+  const enemy={...body,kind:'enemy',id:27};
+  assert.deepEqual(create.request({path:p,body:enemy},new Set()).body,enemy);
+  const spot={round:route,stage:'BLUS30491.nav1.abcd',kind:'point',x:-1234.5,z:880,seq:9};
+  assert.deepEqual(create.request({path:p,body:spot},new Set()).body,spot);
+  for(const patch of [{pos:[0,0,0]},{round:'other'},{id:true},{kind:'input'},{kind:'point'},{seq:NaN}])
     assert.throws(()=>create.request({path:p,body:{...body,...patch}},new Set()),/Invalid map/);
+  for(const patch of [{x:Infinity},{z:1e9},{x:'1'},{id:3},{kind:'enemy'}])
+    assert.throws(()=>create.request({path:p,body:{...spot,...patch}},new Set()),/Invalid map/);
 });
 
 test('replacement follows only authoritative same-game links to a listed live session',async()=>{

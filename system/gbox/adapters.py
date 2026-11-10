@@ -2711,6 +2711,17 @@ D-Pad/Right = `H`
         vpad_ini = self._setup_linux_vpad(self.PAD_INI)      # full GCPadNew.ini on focus-independent uinput pad(s), or None
         if vpad_ini is None:                                 # no virtual pad (not PSO, or /dev/uinput unavailable): keyboard INI
             vpad_ini = pso_coop_setup.pad_ini(self.PAD_INI) if self.coop_players == 2 else self.PAD_INI
+        # PSO's offline MULTI MODE refuses to open without a second controller ("Requires at least 2 Controllers"), and
+        # the two-player criterion is part of what this lane has to prove, so every PSO launch gets the second pad that
+        # `pso_coop_setup` already knows how to build: GCPad1 keeps whatever this launch decided (virtual pad, or the
+        # pad that reports), and GCPad2 is the keyboard device P2 is driven through.
+        if getattr(self, "_pso_two_pads", False):
+            from . import pso_coop_setup
+            vpad_ini = pso_coop_setup.pad_ini(vpad_ini, windows=True)
+            # ... and the console has to see a controller in port 2, which is Dolphin.ini's SI device table.
+            dolphin_ini = user / "Config" / "Dolphin.ini"
+            current = dolphin_ini.read_text() if dolphin_ini.is_file() else ""
+            dolphin_ini.write_text(pso_coop_setup.si_devices(current, 2))
         (user / "Config" / "GCPadNew.ini").write_text(vpad_ini)
         (user / "Config" / "Hotkeys.ini").write_text('[Hotkeys]\nDevice = XInput2/0/Virtual core pointer\n'
             'Emulation Speed/Disable Emulation Speed Limit = `Tab`\n'
@@ -3075,8 +3086,22 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         if not getattr(self, "gecko_id", None):              # _want_vpad's PSO gate (GPO*) needs the disc id; _gecko_setup
             self.gecko_id = self._disc_id(rom)               # (below) also sets it - compute it up front so the gate sees it
         vpad_ini = self._setup_vpad(self.PAD_INI_WIN)        # full GCPadNew.ini with P1 (+ co-op P2/P3) on virtual pads, or None
+        # PSO offline co-op needs a second controller (MULTI MODE refuses to open without one). The disc id is the
+        # same gate _want_vpad uses: GPO* is PSO Episode I & II.
+        self._pso_two_pads = str(getattr(self, 'gecko_id', '') or '').startswith('GPO')
         if vpad_ini is None:                                 # no virtual pad (not PSO/i9, or unavailable): keyboard INI
             vpad_ini = pso_coop_setup.pad_ini(self.PAD_INI_WIN, windows=True) if self.coop_players == 2 else self.PAD_INI_WIN
+            # The base INI names XInput/0. A leftover virtual pad can hold slot 0 reporting all zeros forever, and then
+            # the game -- and the operator's own controller -- see nothing (i9-NUC 2026-11-10: slot 0 phantom, the real
+            # pad on slot 1, every press dropped). Bind a pad that actually reports instead.
+            from . import pad_bind
+            vpad_ini = pad_bind.bind_note(vpad_ini, pad_bind.choose_slot(pad_bind.probe_pads()))
+        if self._pso_two_pads:
+            # MULTI MODE needs two controllers: GCPad2 for the input, and a device in the console's port 2.
+            vpad_ini = pso_coop_setup.pad_ini(vpad_ini, windows=True)
+            dolphin_ini = user / "Config" / "Dolphin.ini"
+            current = dolphin_ini.read_text() if dolphin_ini.is_file() else ""
+            dolphin_ini.write_text(pso_coop_setup.si_devices(current, 2))
         (user / "Config" / "GCPadNew.ini").write_text(vpad_ini)
         self.lane = self._claim_lane()
         (user / "Config" / "Hotkeys.ini").write_text(self.hotkeys_ini(self.lane))   # read once, when this Dolphin starts
@@ -3279,16 +3304,25 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         used: set[int] = set()
 
         def make():
-            try:
-                vp = vpad_win.VGamepad()
-            except Exception as e:                           # noqa: BLE001 - no driver/pad: keyboard path
-                self._p(50, f"virtual pad unavailable, keyboard input used: {e}")
-                return None
-            if vp.slot is None or vp.slot in used:
+            # ViGEm releases the previous session's pad asynchronously, so a launch right after a stop can fail to
+            # create one (the i9-NUC 2026-11-10: `_setup_vpad` returned None, the INI fell back to the keyboard, and
+            # every gBox press was silently dropped for the whole session). Retry briefly before giving up.
+            last = None
+            for attempt in range(3):
+                try:
+                    vp = vpad_win.VGamepad()
+                except Exception as e:                       # noqa: BLE001 - no driver/pad: keyboard path
+                    last = e
+                    time.sleep(0.4 + 0.4 * attempt)
+                    continue
+                if vp.slot is not None and vp.slot not in used:
+                    used.add(vp.slot)
+                    return vp
+                last = f"slot {vp.slot!r} unusable"
                 vp.close()
-                return None
-            used.add(vp.slot)
-            return vp
+                time.sleep(0.4 + 0.4 * attempt)
+            self._p(50, f"virtual pad unavailable after 3 tries, keyboard input used: {last}")
+            return None
 
         vp1 = make()
         if vp1 is None:

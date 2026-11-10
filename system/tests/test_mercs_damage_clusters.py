@@ -393,3 +393,44 @@ def test_only_the_deadliest_batches_of_each_game_go_on_the_priority_list(world, 
     assert priority[-1] == ([batches['ranged']], [batches['crowd_4_in_2m']])      # more HP lost ranks first
     runner.poll()
     assert len(priority) == 1                                      # unchanged: the queue lock is not taken again
+
+
+def test_the_threat_response_causes_of_a_title_are_one_ticket_pointing_at_the_doctrine_stats(world):
+    """damage_clusters.DOCTRINE_CAUSES: swarmed with the gun up and with it down (and the grabs, the faced melee) are
+    the bot's answer to a threat - one ticket for Hermes per title, the second batch linked to the first."""
+    store, runner, clock, deliver, made, priority = world
+    crowd = [(60, 0), (90, 100), (120, -100), (190, 180)]
+    for n in range(3):
+        deliver(crowd_event(n, 'run_000000001'))                                   # the gun up
+        deliver(event(eid=f'event_down{n:05d}', run='run_000000002', at=9_300.0 + n * 5.0, held=[],
+                      enemies=[enemy(d, a) for d, a in crowd]))                    # the gun down
+    runner.poll()
+    batches = [r for r in store.all('request') if r['source'] == C.SOURCE]
+    assert len(batches) == 1, 'one ticket per cause per title'
+    up = store.get(C.CLUSTER, C.cluster_id(RE5, 'crowd_4_in_2m'))
+    down = store.get(C.CLUSTER, C.cluster_id(RE5, 'crowd_gun_down'))
+    assert up['request_id'] == down['request_id'] == batches[0]['id']
+    owner, linked = (down, up) if up.get('linked_to') else (up, down)
+    assert linked['linked_to'] == owner['id'] and not owner.get('linked_to')
+    ticket = store.get('request', batches[0]['id'])
+    assert ticket['context']['doctrine_linked'] == [linked['id']]
+    assert any(m.get('id') == 'doctrine-link-' + linked['id'] for m in ticket['messages'])
+    assert 'round_threat_unanswered' in ticket['body'] and 'round_hurt_while_idle' in ticket['body']
+    assert 'gbox/mercs/core/respond.py' in ticket['body']
+    clock[0] += C.UPDATE_S + 1                                                     # a later pass: the link holds
+    runner.poll()
+    assert len([r for r in store.all('request') if r['source'] == C.SOURCE]) == 1
+    assert store.get(C.CLUSTER, linked['id'])['request_id'] == ticket['id']
+    assert sum(1 for m in store.get('request', ticket['id'])['messages']
+               if m.get('id') == 'doctrine-link-' + linked['id']) == 1, 'linked once, not every pass'
+
+
+def test_a_cause_outside_the_threat_response_keeps_its_own_ticket(world):
+    store, runner, clock, deliver, made, priority = world
+    for n in range(3):
+        deliver(crowd_event(n, 'run_000000001'))
+        deliver(event(eid=f'event_ranged{n:04d}', run='run_000000002', at=9_300.0 + n * 5.0, enemies=[enemy(900, 0)]))
+    runner.poll()
+    batches = {r['context']['signature'] for r in store.all('request') if r['source'] == C.SOURCE}
+    assert batches == {'crowd_4_in_2m', 'ranged'}
+    assert 'ranged' not in C.DOCTRINE_CAUSES

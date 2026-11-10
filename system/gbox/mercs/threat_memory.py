@@ -44,9 +44,14 @@ def _key(e):
 
 
 class ThreatMemory:
-    def __init__(self, path: Path | None = None, *, default_reach_cm: float = 300.0):
+    def __init__(self, path: Path | None = None, *, default_reach_cm: float = 300.0, held_needs_flag: bool = False):
         self.path = Path(path) if path else None
         self.default_reach = float(default_reach_cm)
+        # The motion the attacker is IN at the hit (not begun in the window) is counted as the attack's signature only
+        # with his attack flag up in the window, when held_needs_flag: otherwise a hit taken while he walks taught
+        # "walking" as lethal for the rest of the round (the universal core, gbox.mercs.core.combat, sets it; RE5
+        # Switch's own wiring keeps the first rule: a long charge begun before the window counts).
+        self.held_needs_flag = bool(held_needs_flag)
         self.data = self._load()
         self.hist: dict = {}          # enemy key -> deque of (t, motion, attacking, dist, hp)
         self.rows: dict = {}          # enemy key -> its row at the last observe
@@ -170,7 +175,8 @@ class ThreatMemory:
         h, e = self.hist[best], self.rows.get(best) or {}
         cls = e.get("class")
         win, motions = self._window(h, now)                            # the motions begun in the window ...
-        if win and win[-1][1] is not None and win[-1][1] not in motions:
+        if win and win[-1][1] is not None and win[-1][1] not in motions \
+                and (not self.held_needs_flag or any(x[2] for x in win)):
             motions.append(win[-1][1])                                 # ... and the one it is in (a long charge)
         hp_seen = [x[4] for x in win if isinstance(x[4], (int, float))]
         through = len(hp_seen) >= 2 and hp_seen[-1] < hp_seen[0]       # his shots hurt it during the wind-up

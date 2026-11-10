@@ -20,6 +20,12 @@ sidebar (gbox/merc_live_controls.py, through the re5_mods tool) sets these ops:
   set_time seconds=N          the clock set to 1..CLOCK_MAX_S
   kill_time on=true seconds=S +S on the clock for every new kill the census counts (a Ganado whose health fell to 0)
                               while a round is playing
+  random_weapon on=true       every round, once the game says it is live (playing, in control, clock running): a
+                              random max-level high-powered campaign weapon (re4_weapons.HIGH_POWER) written into
+                              the gun in his hand - the item, the item manager's held id, the game state's class /
+                              variant / levels - every byte read back, his own weapon put back if one does not hold
+  loadout_weapon weapon=id    the same with this weapon every round (0 = off). Data writes only: the loadout code
+                              patch is off (LOADOUT_CODE_PATCH; why: the block above _give_weapon)
 
 The player's life is not in his unit on Switch (re4_switch PLAYER_HP_IN_UNIT): unlimited health waits for that field
 (the round probe looks for it), and ammo for the inventory's; both answer "not mapped yet" until then.
@@ -374,39 +380,243 @@ def infinite_ammo(ad, on: bool, snap: dict | None = None) -> dict:
             "note": "the gun in his hand is kept full every snapshot (its magazine never runs dry)"}
 
 
-def _give_weapon(ad, base: int, st: dict, rng) -> dict | None:
-    """A random high-powered campaign weapon (re4_weapons.HIGH_POWER) at max level, full, into the equipped slot:
-    the item's id, levels and rounds, the item manager's held id, the game state's class / variant / level nibbles."""
+# --- the random weapon: in his hand once the round is live (data writes only) -------------------------------------
+# The Mercenaries loadout as CODE (_patch_loadout over re4_weapons.LOADOUT_SLOTS) is OFF. Every boot with it on hung
+# at the stage load (lilspark, 2026-11-10 08:05-09:49; the last one's Citron log ends on "Unhandled NCE prefetch
+# abort: pc=0x0" at the stage load, the game's thread gone), and it cannot be made safe from outside the emulator:
+#   - Citron / Eden run the guest natively (NCE) and the Spark's cores report CTR_EL0.DIC = 0: new instructions are
+#     seen only after an IC IVAU by the process itself. These writes go through /proc/<pid>/mem into a writable,
+#     non-executable alias of the code page, for which the kernel does no instruction-cache maintenance, so a core can
+#     run a slot's old words beside its new ones (a give without its searches) - the read-back reads data, not what
+#     the CPU executes;
+#   - the give (0x3578E0) leaves out an item the case has no room for (re4_weapons.case_layout): 26 of 156 Ada draws
+#     and 30 of 156 Wesker draws lost the semi-auto rifle, a grenade or the spray, and the code after the give reads
+#     the missing item through a null pointer (Citron skips the data abort and goes on with garbage).
+# Every word the patch writes was checked against the disassembly and decodes as intended: the code was right, the
+# route was not. So the drawn weapon goes into his hand by data writes once the game says the round is live
+# (_round_weapon), each write read back and the old bytes put back if any does not hold.
+LOADOUT_CODE_PATCH = False
+ROUND_WEAPON_TRIES = 3                 # gives tried per round before it is reported and left alone
+# what a random weapon may replace in his hand: a gun with a max-level row, or a loadout's own equipped weapon
+# (Krauser's bow) - never a grenade the bot holds (THROWS) or the knife
+SWAPPABLE = frozenset(W.MAX_LEVELS) | frozenset(lo["equips"] for lo in W.MERC_LOADOUTS.values())
+
+
+def _code_patch_refusal(ad) -> str | None:
+    """Why the loadout code patch is not written into this boot (None: it may be)."""
+    if not LOADOUT_CODE_PATCH:
+        return "off (LOADOUT_CODE_PATCH): the weapon goes in his hand once the round is live"
+    if getattr(ad, "use_nce", False) or getattr(ad, "cpu_backend", None) == "nce":
+        return "refused under NCE: no instruction-cache maintenance for code written from outside the emulator"
+    return None
+
+
+def _give_weapon(ad, base: int, st: dict, rng, fixed: int | None = None, exclude=()) -> dict | None:
+    """A random high-powered campaign weapon (re4_weapons.HIGH_POWER; `fixed` instead when given) at max level, full,
+    into the gun in his hand: the item's id, levels and rounds, the item manager's held id, the game state's class /
+    variant / level nibbles and reload. Every byte is read back; if any does not hold, the hand's old bytes go back.
+    None when the hand cannot be read."""
     rd = lambda a, n: bytes(ad.read_memory(a, n))                         # noqa: E731
     r = W.Reader(rd, base)
+    errors = (ValueError, OSError, RuntimeError, struct.error)
     try:
         held = r.equipped()
-        rows = W.decode_weapon_table(rd(base + W.WEAPON_TBL, W.WEAPON_N * W.WEAPON_SZ))
+        rows = st.get("weapon_rows")
+        if rows is None:
+            rows = st["weapon_rows"] = W.decode_weapon_table(rd(base + W.WEAPON_TBL, W.WEAPON_N * W.WEAPON_SZ))
         g = r.game_obj()
-    except (ValueError, OSError, struct.error):
+    except errors:
         return None
-    if held is None or g != base + W.GAME_OBJ:
+    if held is None or not held.get("addr") or g != base + W.GAME_OBJ:
         return None
-    picks = [i for i in W.HIGH_POWER if i in rows and W.max_levels(i) is not None and i != held["id"]]
+    if held["id"] not in SWAPPABLE:
+        return {"verified": False, "was": held["name"], "reason": f"{held['name']} in his hand is not a gun to swap"}
+    if fixed is not None:
+        picks = [fixed] if fixed in rows and W.max_levels(fixed) is not None else []
+    else:
+        pool = [i for i in W.HIGH_POWER if i in rows and W.max_levels(i) is not None and i != held["id"]]
+        picks = [i for i in pool if i not in exclude] or pool
     if not picks:
-        return None
+        return {"verified": False, "was": held["name"], "reason": "no weapon row to give"}
     iid = rng.choice(picks)
     row, lv = rows[iid], W.max_levels(iid)
     cap = row["capacity"][lv["capacity"]] or max(row["capacity"])
     loaded = 99 if cap in (0, W.CAP_INFINITE) else min(cap, 0x1FFF)
-    item = held["addr"]
+    item, mgr = held["addr"], base + W.ITEM_MGR
+    nibbles = (lv["firepower"], lv["firing_speed"], lv["capacity"])
     try:
-        ad.write_memory(item, struct.pack("<H", iid))
-        ad.write_memory(item + 6, struct.pack("<HH", lv["packed"], loaded << 3))
-        ad.write_memory(base + W.ITEM_MGR + W.M_EQUIPPED_ID, struct.pack("<H", iid))
-        ad.write_memory(g + W.G_CLASS, bytes([row["class"], row["variant"], 0, lv["firepower"], lv["firing_speed"],
-                                             lv["capacity"]]))
-        ad.write_memory(g + W.G_RELOAD, bytes([lv["reload"]]))
-        back = W.decode_item(rd(item, W.ITEM_SZ), item)
-    except (ValueError, OSError, RuntimeError, struct.error):
+        saved = {"item": rd(item, W.ITEM_SZ), "held": rd(mgr + W.M_EQUIPPED_ID, 2),
+                 "cls": rd(g + W.G_CLASS, HAND_CLASS_N), "reload": rd(g + W.G_RELOAD, 1)}
+    except errors:
         return None
-    return {"id": iid, "name": W.name(iid), "was": held["name"], "loaded": back["loaded"],
-            "verified": back["id"] == iid}
+    ok = False
+    try:
+        _write_hand(ad, base, item, g, iid, row, lv["packed"], loaded, nibbles, lv["reload"])
+        back = W.decode_item(rd(item, W.ITEM_SZ), item)
+        ok = (back["id"] == iid and back["levels_raw"] == lv["packed"] and back["loaded"] == loaded
+              and not back["empty"] and struct.unpack("<H", rd(mgr + W.M_EQUIPPED_ID, 2))[0] == iid
+              and rd(g + W.G_CLASS, HAND_CLASS_N) == bytes([row["class"], row["variant"], 0, *nibbles])
+              and rd(g + W.G_RELOAD, 1) == bytes([lv["reload"]]))
+    except errors:
+        ok = False
+    if not ok:
+        try:                                             # the hand as it was: never half a weapon
+            ad.write_memory(item, saved["item"])
+            ad.write_memory(mgr + W.M_EQUIPPED_ID, saved["held"])
+            ad.write_memory(g + W.G_CLASS, saved["cls"])
+            ad.write_memory(g + W.G_RELOAD, saved["reload"])
+        except errors:
+            pass
+        return {"id": iid, "name": W.name(iid), "was": held["name"], "verified": False,
+                "reason": "the swap did not read back: his own weapon put back"}
+    return {"id": iid, "name": W.name(iid), "was": held["name"], "loaded": loaded, "levels": lv["packed"],
+            "verified": True}
+
+
+def _round_weapon(ad, snap: dict, st: dict) -> dict | None:
+    """random_weapon / loadout_weapon for this snapshot: once a round, as soon as the game's own state says it is live
+    (playing, in control, its clock running, the player in RAM) - never on a load, an intro or a menu. A round is the
+    game's: a new intro (a boot's first, or the Continue after a death) starts one. Returns the give when one was
+    made."""
+    game = snap.get("game")
+    if not isinstance(game, dict):
+        return None                                     # no game state read: nothing is written
+    phase, last = game.get("phase"), st.get("rw_phase")
+    st["rw_phase"] = phase
+    if phase == "intro" and last != "intro":
+        st["rw_epoch"] = st.get("rw_epoch", 0) + 1
+    elif phase in D.ROUND_PHASES and phase != "intro" and "rw_epoch" not in st:
+        st["rw_epoch"] = 1                              # the bot came in on a round already under way
+    epoch = st.get("rw_epoch")
+    if epoch is None or st.get("rw_given_epoch") == epoch:
+        return None
+    if not (phase == "playing" and game.get("in_control") and game.get("clock_running")):
+        return None
+    if not isinstance((snap.get("player") or {}).get("ptr"), int) or st.get("hand_saved") is not None:
+        return None                                     # no player yet, or a grenade in his hand (after it)
+    base = snap["module_base"]
+    try:
+        ch = bytes(ad.read_memory(base + W.GAME_OBJ + W.G_CHARACTER, 1))[0]
+    except (ValueError, OSError, IndexError):
+        return None
+    if W.CHARACTERS.get(ch, ch) in (st.get("loadouts") or {}):
+        st["rw_given_epoch"] = epoch                    # the code patch built his loadout (LOADOUT_CODE_PATCH)
+        return None
+    tries = (st.get("rw_tries", 0) if st.get("rw_tries_epoch") == epoch else 0) + 1
+    st["rw_tries"], st["rw_tries_epoch"] = tries, epoch
+    import random as _random
+    last_id = (st.get("weapon_given") or {}).get("id")
+    given = _give_weapon(ad, base, st, _random.Random(), fixed=st.get("loadout_weapon") or None,
+                         exclude=() if last_id is None else (last_id,))
+    if given is None:
+        if tries >= ROUND_WEAPON_TRIES:
+            st["rw_given_epoch"] = epoch
+            st["weapon_given"] = {"verified": False, "round": epoch, "reason": "his hand could not be read"}
+        return None
+    given.update(round=epoch, character=W.CHARACTERS.get(ch, ch))
+    st["weapon_given"] = given
+    if given.get("verified") or tries >= ROUND_WEAPON_TRIES or ("reason" in given and "id" not in given):
+        st["rw_given_epoch"] = epoch                    # given, tried enough, or nothing in his hand to swap
+    return given
+
+
+def _write_hand(ad, base: int, item: int, g: int, iid: int, row: dict, packed: int, loaded: int, nibbles: tuple,
+                reload: int) -> None:
+    """The in-hand swap's writes (the random weapon's, and the bot's grenades): the held item's id, its levels and
+    rounds, the item manager's held id, the game state's class / variant / level nibbles and its reload nibble."""
+    ad.write_memory(item, struct.pack("<H", iid))
+    ad.write_memory(item + 6, struct.pack("<HH", packed, loaded << 3))
+    ad.write_memory(base + W.ITEM_MGR + W.M_EQUIPPED_ID, struct.pack("<H", iid))
+    ad.write_memory(g + W.G_CLASS, bytes([row["class"], row["variant"], 0, *nibbles]))
+    ad.write_memory(g + W.G_RELOAD, bytes([reload]))
+
+
+# The bot's grenades (re4_switch.THROWS): re4_switch.HAND_REQUEST asks for an item in his hand (a hand / incendiary / flash
+# grenade), then None for the gun back; HAND_STATE is the answer. The swap is _give_weapon's (_write_hand) on the held
+# item, after the hand's own bytes are kept (the held item's 14 bytes, the item manager's held pointer and id, the game
+# state's class bytes and reload) - written back, and read back, for the gun. A request older than HAND_FRESH_S (a bot
+# gone mid-throw) is the gun back. A new boot drops what was kept (maintain: the state's counts go), never writing an
+# old boot's bytes. NOT seen live yet: re4_switch.THROWS stays off until a watched round.
+HAND_FRESH_S = 5.0
+HAND_CLASS_N = W.G_CAPACITY - W.G_CLASS + 1             # class, variant, the byte between, firepower, speed, capacity
+
+
+def _hand_save(ad, base: int) -> dict | None:
+    rd = lambda a, n: bytes(ad.read_memory(a, n))                         # noqa: E731
+    r = W.Reader(rd, base)
+    held, g = r.equipped(), r.game_obj()
+    if held is None or g != base + W.GAME_OBJ:
+        return None
+    mgr = base + W.ITEM_MGR
+    return {"item": held["addr"], "item_bytes": rd(held["addr"], W.ITEM_SZ), "was": held["id"], "g": g,
+            "mgr": rd(mgr + W.M_EQUIPPED, W.M_EQUIPPED_ID + 2 - W.M_EQUIPPED), "cls": rd(g + W.G_CLASS, HAND_CLASS_N),
+            "reload": rd(g + W.G_RELOAD, 1)}
+
+
+def _hand_hold(ad, base: int, iid: int, saved: dict) -> bool:
+    rd = lambda a, n: bytes(ad.read_memory(a, n))                         # noqa: E731
+    rows = W.decode_weapon_table(rd(base + W.WEAPON_TBL, W.WEAPON_N * W.WEAPON_SZ))
+    row = rows.get(iid)
+    if row is None:
+        raise ValueError(f"no weapon row for {W.name(iid)}")
+    _write_hand(ad, base, saved["item"], saved["g"], iid, row, 0, 1, (0, 0, 0), 0)
+    return W.decode_item(rd(saved["item"], W.ITEM_SZ), saved["item"])["id"] == iid
+
+
+def _hand_restore(ad, base: int, saved: dict) -> bool:
+    ad.write_memory(saved["item"], saved["item_bytes"])
+    ad.write_memory(base + W.ITEM_MGR + W.M_EQUIPPED, saved["mgr"])
+    ad.write_memory(saved["g"] + W.G_CLASS, saved["cls"])
+    ad.write_memory(saved["g"] + W.G_RELOAD, saved["reload"])
+    return bytes(ad.read_memory(saved["item"], W.ITEM_SZ)) == saved["item_bytes"]
+
+
+def _hand(ad, snap: dict) -> int:
+    """re4_switch.HAND_REQUEST on this snapshot (see above): the writes made (0 / 1); HAND_STATE says what is in hand."""
+    req, ans = D.HAND_REQUEST, D.HAND_STATE
+    base, seq = snap.get("module_base"), req.get("seq")
+    if seq is None or not isinstance(base, int):
+        return 0
+    st = _state(ad)
+    fresh = isinstance(req.get("at"), (int, float)) and time.monotonic() - req["at"] <= HAND_FRESH_S
+    want = req.get("item") if fresh else None
+    saved = st.get("hand_saved")
+    errors = (ValueError, OSError, RuntimeError, struct.error, KeyError)
+    if want is None:
+        if saved is None:
+            if ans.get("seq") != seq:
+                ans.update(seq=seq, item=None, verified=True, error="")
+            return 0
+        try:
+            ok, err = _hand_restore(ad, base, saved), ""
+        except errors as exc:
+            ok, err = False, f"{type(exc).__name__}: {exc}"[:120]
+        st.pop("hand_saved", None)
+        st["hand_restores"] = st.get("hand_restores", 0) + 1
+        ans.update(seq=seq, item=None, verified=ok, error=err or ("" if ok else "the gun's bytes did not read back"))
+        return 1
+    if ans.get("seq") == seq:
+        return 0
+    try:
+        if saved is None:
+            saved = _hand_save(ad, base)
+            if saved is None:
+                ans.update(seq=seq, item=None, verified=False, error="nothing in his hand to swap")
+                return 0
+            st["hand_saved"] = saved
+        ok, err = _hand_hold(ad, base, int(want), saved), ""
+    except errors as exc:
+        ok, err = False, f"{type(exc).__name__}: {exc}"[:120]
+    if not ok and st.get("hand_saved") is not None:      # a swap that did not take: the gun's bytes straight back
+        try:
+            _hand_restore(ad, base, st["hand_saved"])
+        except errors:
+            pass
+        st.pop("hand_saved", None)
+    st["hand_swaps"] = st.get("hand_swaps", 0) + 1
+    ans.update(seq=seq, item=int(want) if ok else None, verified=bool(ok),
+               error=err or ("" if ok else "the item did not read back"))
+    return 1
 
 
 def _patch_loadout(ad, base: int, picks: dict) -> dict:
@@ -454,17 +664,38 @@ def _patch_loadout(ad, base: int, picks: dict) -> dict:
     return done
 
 
-def _draw_loadouts(rng, fixed: int | None = None) -> dict:
+def _fits(ch: int, ids) -> bool:
+    try:
+        return W.case_fits(W.merc_gives(ch, ids))
+    except ValueError:                                   # a weapon with no measured case shape: never given as code
+        return False
+
+
+def _fitting(draws: dict) -> dict:
+    """The draws with every character whose gives the case cannot hold put back to his own (None per slot)."""
+    return {ch: (ids if _fits(ch, ids) else [None] * len(ids)) for ch, ids in draws.items()}
+
+
+def _draw_loadouts(rng, fixed: int | None = None, tries: int = 64) -> dict:
     """{character: [weapon id per slot]}: the fixed pick in the equipped slot, else random high-powered campaign
-    weapons (no repeat within a character)."""
+    weapons (no repeat within a character) - only a draw whose every give fits the case (re4_weapons.case_fits: the
+    give leaves out what has no room, and the code after it then reads a null item). A character with no fitting draw
+    in `tries` keeps his own loadout (None per slot)."""
     out = {}
     for ch, slots in W.LOADOUT_SLOTS.items():
-        pool = [i for i in W.HIGH_POWER if W.max_levels(i) is not None]
-        rng.shuffle(pool)
-        ids = pool[:len(slots)]
-        if fixed is not None:
-            ids[[bool(s.get("equipped")) for s in slots].index(True)] = fixed
-        out[ch] = ids
+        out[ch] = [None] * len(slots)
+        for _ in range(tries):
+            pool = [i for i in W.HIGH_POWER if W.max_levels(i) is not None and i in W.ITEM_SHAPE]
+            rng.shuffle(pool)
+            ids = pool[:len(slots)]
+            if fixed is not None:
+                k = [bool(s.get("equipped")) for s in slots].index(True)
+                ids = [i for i in ids if i != fixed][:len(slots)]
+                ids.insert(k, fixed)
+                ids = ids[:len(slots)]
+            if _fits(ch, ids):
+                out[ch] = ids
+                break
     return out
 
 
@@ -472,13 +703,21 @@ def loadout_weapon(ad, weapon, snap: dict | None = None) -> dict:
     """Every character's equipped gun from the next round: this campaign weapon at max level (RE5's weapon_override).
     None / 0 puts the game's own loadouts back."""
     st = _state(ad)
-    base = (snap or {}).get("module_base")
-    if not isinstance(base, int):
-        return {"verified": False, "reason": "RE4 is not in memory yet"}
     iid = int(weapon) if weapon else None
     if iid is not None and W.max_levels(iid) is None:
         return {"verified": False, "reason": f"no max-level row for weapon {iid:#x} ({W.name(iid)})"}
-    picks = {ch: [iid if s.get("equipped") else None for s in slots] for ch, slots in W.LOADOUT_SLOTS.items()}
+    refused = _code_patch_refusal(ad)
+    if refused:
+        st["loadout_weapon"] = iid
+        _save(st)
+        st.pop("rw_given_epoch", None)                 # the round under way gets it too
+        return {"verified": True, "weapon": W.name(iid) if iid else "the game's own", "route": "in_hand",
+                "note": "every round: this weapon in his hand at max level as soon as the round is live (data writes, "
+                        "read back; no code is written)"}
+    base = (snap or {}).get("module_base")
+    if not isinstance(base, int):
+        return {"verified": False, "reason": "RE4 is not in memory yet"}
+    picks = _fitting({ch: [iid if s.get("equipped") else None for s in slots] for ch, slots in W.LOADOUT_SLOTS.items()})
     done = _patch_loadout(ad, base, picks)
     st["loadout_weapon"] = iid
     _save(st)
@@ -490,12 +729,12 @@ def random_weapon(ad, on: bool, snap: dict | None = None) -> dict:
     st = _state(ad)
     st["random_weapon"] = bool(on)
     _save(st)
-    st.pop("weapon_given_round", None)                 # a fresh pick on the next snapshot of a round
+    st.pop("rw_given_epoch", None)                     # a fresh pick on the next live snapshot of a round
     st.pop("loadout_drawn", None)
     return {"random_weapon": bool(on), "verified": True,
-            "note": "from the next boot: each character's own loadout slots get random max-level high-powered "
-                    "campaign weapons (built and equipped by the game); a character without a patchable slot gets "
-                    "one put in his hand at the round's start"}
+            "route": "in_hand" if _code_patch_refusal(ad) else "code_patch",
+            "note": "every round: a random max-level high-powered campaign weapon in his hand as soon as the round is "
+                    "live (data writes, read back; his own weapon put back if a write does not hold)"}
 
 
 def one_hit(ad, on: bool, snap: dict | None = None) -> dict:
@@ -601,8 +840,9 @@ def _kills_of(snap: dict, st: dict) -> int:
 
 def pre_round(ad, m=None) -> dict:
     """On the menus before a round (re4switch_bot calls it once a boot): the saved settings put into this boot - the
-    static tables (fire rate, ammo, firepower) and the Mercenaries loadouts (a random draw, or the chosen weapon) -
-    so the round the walk is about to start is built with them."""
+    static tables (fire rate, firepower) - so the round the walk is about to start is built with them. The random /
+    chosen weapon is NOT code here (LOADOUT_CODE_PATCH is off): maintain puts it in his hand once the round is live.
+    Only with the patch on (and not under NCE) are the Mercenaries loadouts rewritten, from case-fitting draws."""
     mem = m if m is not None else Mem(ad)
     base = D.module_base(mem)
     if base is None:
@@ -623,14 +863,21 @@ def pre_round(ad, m=None) -> dict:
         if st.get("fire_rate", 1.0) != 1.0:
             out["fire_tables"] = _apply_fire_rate(ad, base, st)
         st["rf_applied_boot"] = boot
-        if st.get("random_weapon") or st.get("loadout_weapon"):
+        refused = _code_patch_refusal(ad) if st.get("random_weapon") or st.get("loadout_weapon") else None
+        if refused:
+            st["loadouts"] = {}                         # nobody's loadout is code: _round_weapon gives in hand
+            out["loadout_route"], out["loadout_code"] = "in_hand", refused
+        elif st.get("random_weapon") or st.get("loadout_weapon"):
             import random as _random
             fixed = st.get("loadout_weapon")
             draws = _draw_loadouts(_random.Random(), fixed) if st.get("random_weapon") else \
                 {ch: [fixed if s.get("equipped") else None for s in slots] for ch, slots in W.LOADOUT_SLOTS.items()}
+            draws = _fitting(draws)
             done = _patch_loadout(ad, base, draws)
             st["loadout_drawn"] = boot
-            st["loadouts"] = {W.CHARACTERS.get(ch, ch): [W.name(i) for i in ids] for ch, ids in done.items()}
+            # only a character whose loadout was changed: one left stock gets the weapon in hand (_round_weapon)
+            st["loadouts"] = {W.CHARACTERS.get(ch, ch): [W.name(i) for i in ids] for ch, ids in done.items()
+                              if any(i is not None for i in draws.get(ch, ()))}
             out["loadouts"] = len(done)
         st["pre_round_result"] = dict(out, at=round(time.time()))
     return out
@@ -679,6 +926,9 @@ def maintain(ad, snap: dict | None = None) -> dict:
                                                  "fp_applied_boot", "rf_applied_boot") if k in st})
             st.clear()
             st.update(keep, boot=boot)
+        n = _hand(ad, snap)                              # the bot's grenade in hand / the gun back (re4_switch.THROWS)
+        if n:
+            out["hand_writes"] = n
         frac = 0.0 if st.get("one_hit") else st.get("enemy_health")
         if frac is not None and frac < 1.0:
             n = _cap_health(ad, snap.get("enemies"), frac)
@@ -700,23 +950,12 @@ def maintain(ad, snap: dict | None = None) -> dict:
             st["mag_refills"] = st.get("mag_refills", 0) + n
             if n:
                 out["mag_refills"] = n
-        rnd = snap.get("round_key") or snap["module_base"]
-        # The loadouts are code: pre_round patches them on the menus, before the boot's first round runs that code.
-        # Never here, mid-round: the emulator's JIT may hold the function compiled already, and a later round could
-        # run a mix of old and new blocks (a give without its search is a crash).
-        if st.get("random_weapon") and snap.get("player") and st.get("weapon_given_round") != rnd:
-            st["weapon_given_round"] = rnd
-            try:
-                ch = bytes(ad.read_memory(snap["module_base"] + W.GAME_OBJ + W.G_CHARACTER, 1))[0]
-            except (ValueError, OSError):
-                ch = None
-            if ch is not None and W.CHARACTERS.get(ch, ch) not in (st.get("loadouts") or {}):
-                # no loadout slot patched for him this boot (Krauser, or a patch refused): the in-hand swap
-                import random as _random
-                given = _give_weapon(ad, snap["module_base"], st, _random.Random())
-                if given is not None:
-                    st["weapon_given"] = given
-                    out["weapon_given"] = 1
+        # The random (or chosen) weapon: in his hand by data writes once the round is live, every round
+        # (_round_weapon). The loadout code patch is off (LOADOUT_CODE_PATCH: it hung every stage load).
+        if st.get("random_weapon") or st.get("loadout_weapon"):
+            given = _round_weapon(ad, snap, st)
+            if given is not None and given.get("verified"):
+                out["weapon_given"] = 1
         if st.get("aim_lock"):
             n = _aim(ad, snap)
             st["aim_writes"] = st.get("aim_writes", 0) + n
@@ -747,6 +986,7 @@ def status(ad, snap: dict | None = None) -> dict:
            "unlimited_health": bool(st.get("unlimited_health")), "life_kept": st.get("life_kept", 0),
            "infinite_ammo": bool(st.get("infinite_ammo")), "fire_rate_x": st.get("fire_rate", 1.0),
            "random_weapon": bool(st.get("random_weapon")), "weapon_given": st.get("weapon_given"),
+           "random_weapon_route": "in_hand" if _code_patch_refusal(ad) else "code_patch",
            "loadouts": st.get("loadouts"), "loadout_weapon": st.get("loadout_weapon"),
            "weapon_power_x": st.get("weapon_power", 1.0), "max_level": bool(st.get("max_level")),
            "aim_lock": bool(st.get("aim_lock")), "aim_writes": st.get("aim_writes", 0),

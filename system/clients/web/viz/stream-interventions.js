@@ -622,6 +622,48 @@
     return {close,update(){const next=selected(),changed=next!==bound;state.update();if(!active())close();if(changed&&active())state.refresh();},dispose(){dead=true;close();gesture.dispose();state.dispose();if(timer!==null)win.clearTimeout(timer);menuButton.removeEventListener('click',open);doc.removeEventListener('pointerdown',outside,true);doc.removeEventListener('keydown',key);doc.removeEventListener('keyup',key);win.removeEventListener('resize',position);}};
   }
 
+  // "This character's model is broken: swap it" (gbox.donor_swap). A LayeredFS build loads at boot, so the mesh
+  // cannot change mid-round: the click puts the round's donor on the reject list and the PC writes the build without
+  // it, which plays from the next round boundary. The button shows the honest state: queued, building, ready (plays
+  // next round), playing, or failed and why. One UUID per click; the request is never repeated by a poll.
+  const SWAP_TERMINAL=new Set(['ready','playing','played','failed']);
+  function swapText(swap){
+    if(!swap||!swap.state)return '';
+    const out=(swap.rejected||[]).map(r=>r.donor).join(', ');
+    if(swap.state==='failed')return 'Model swap failed: '+(swap.error||swap.message||'no reason given');
+    if(swap.state==='ready')return 'Swapped model plays next round'+(swap.message?': '+swap.message.replace(/^plays next round:\s*/,''):'');
+    if(swap.state==='playing')return 'Playing the swapped build '+(swap.variant||'');
+    return 'Model swap '+swap.state+(out?' ('+out+' out)':'')+'...';
+  }
+  function bindModelSwap(button,{api,sid,enabled=()=>true,uuid=()=>root.crypto.randomUUID(),schedule=(fn,ms)=>root.setTimeout(fn,ms),
+                                 cancel=id=>root.clearTimeout(id),status=null}={}){
+    let dead=false,timer=null,last='',busy=false,swap=null,bound=null;
+    const selected=()=>typeof sid==='function'?sid():sid;
+    function paint(){
+      button.textContent='Swap model';
+      button.title="This character's model is broken: swap it. The donor is never drawn again; the round's build "+
+        'without it plays from the next round.'+(last?'\n'+last:'');
+      button.setAttribute('aria-label',"This character's model is broken: swap it");
+      button.dataset.swapState=swap?.state||'';
+      button.disabled=busy||!!(swap&&!SWAP_TERMINAL.has(swap.state)&&swap.session_id===selected());
+      if(status&&last)status.textContent=last;
+    }
+    function accept(value){if(dead)return;swap=value||null;last=swapText(swap);paint();
+      if(swap&&!SWAP_TERMINAL.has(swap.state)&&!timer)timer=schedule(poll,4000);}
+    async function poll(){timer=null;const session=selected();if(dead||!session)return;
+      try{const out=await api(`/api/sessions/${encodeURIComponent(session)}/donor-swap`);if(!dead&&session===selected())accept(out?.swap);}
+      catch{if(!dead&&!timer)timer=schedule(poll,8000);}}
+    async function click(event){event?.preventDefault();event?.stopPropagation();const session=selected();
+      if(dead||busy||!session||!enabled())return;busy=true;last='Sending model swap...';paint();
+      try{const out=await api(`/api/sessions/${encodeURIComponent(session)}/donor-swap`,{request_id:uuid()});
+        if(!dead&&session===selected())accept(out?.swap);}
+      catch(error){if(!dead){last='Model swap refused: '+(error.message||String(error));paint();}}
+      finally{busy=false;if(!dead)paint();}}
+    function update(){const next=selected();if(next!==bound){bound=next;swap=null;last='';if(timer){cancel(timer);timer=null;}if(next)poll();}paint();}
+    button.addEventListener('click',click);update();
+    return {update,accept,poll,snapshot:()=>({swap,last}),dispose(){dead=true;if(timer)cancel(timer);button.removeEventListener('click',click);}};
+  }
+
   function mount(host, options) {
     const doc = host.ownerDocument, bar = doc.createElement('div'); bar.className = 'stream-interventions';
     bar.setAttribute('role','toolbar');bar.setAttribute('aria-label','Icon panel');
@@ -667,8 +709,10 @@
     const ringKind = doc.createElement('button'); ringKind.type='button'; ringKind.className='ring-kind';
     bar.insertBefore(ring,status); bar.insertBefore(ringKind,status);
     ringControl=bindRing(ring,{api:options.api,ring:client.grenadeRing,sid:selected,enabled:()=>!disposed,kindButton:ringKind});
-    return {dispose() {disposed=true;iconPanel.dispose();flashControl.dispose();weaponControl.dispose();ringControl.dispose();client.dispose();sidebar?.dispose();if(activeSidebar===sidebar)activeSidebar=null;bar.remove();}, client};
+    const swapButton = doc.createElement('button'); swapButton.type='button'; bar.insertBefore(swapButton,status);
+    const swapControl=bindModelSwap(swapButton,{api:options.api,sid:selected,enabled:()=>!disposed,status});
+    return {dispose() {disposed=true;iconPanel.dispose();flashControl.dispose();weaponControl.dispose();ringControl.dispose();swapControl.dispose();client.dispose();sidebar?.dispose();if(activeSidebar===sidebar)activeSidebar=null;bar.remove();}, client, swapControl};
   }
-  const out = {create,mount,bindFlash,bindWeapon,bindRing,bindIconPanel,bindReplayGesture,createRoundControls,stageWeights,roundReport,ammoView,createAmmoControl,sortedWeapons,RING_KINDS,ringKindLabel,readRingKind,ringKindOptions}; root.GBoxStreamInterventions=out;
+  const out = {create,mount,bindFlash,bindWeapon,bindRing,bindIconPanel,bindReplayGesture,createRoundControls,bindModelSwap,swapText,stageWeights,roundReport,ammoView,createAmmoControl,sortedWeapons,RING_KINDS,ringKindLabel,readRingKind,ringKindOptions}; root.GBoxStreamInterventions=out;
   if(typeof module==='object' && module.exports)module.exports=out;
 })(typeof globalThis==='object'?globalThis:this);

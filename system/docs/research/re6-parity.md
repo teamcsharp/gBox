@@ -267,6 +267,32 @@ group is hidden on a damage state); a hang at load (one class at a time); stretc
 One donor per class archive is the variety limit: every J'avo of a class is that one donor (RE5 used several body
 carriers per class; RE6's J'avo class has one body MOD).
 
+### 4.4 Update 2026-11-10: every humanoid class, group-aware (`re6_enemy_cast`, branch `re6-enemy-cast`)
+
+Superseded: the one-mesh `build_enemy` above put the donor in one group (3) and dropped the rest of the table. The
+class bodies are many groups (measured on lilspark's RomFS: `em1000` 298 records in 95 groups - torso skin, arms, legs,
+two heads, gas masks, 15 outfit pieces, `Dbody` / `Bugbody` / `Death` bodies, 5 `Shadow` meshes, body sections; the
+zombies 37-136 groups) and no table in the class archives says which a spawn shows (no `MTG` resource as RE5 has: the
+layouts carry `mModelType` / `mMontageNo` and the choice is in code). `re6_switch_enemies.build_class` now follows the
+RE5 writer: `re5_enemy_writer.graft_pieces` (given RE6's template record - RE6 records are mesh type 0xFDF7 / 0x1020,
+never RE5's 0xFFFF) keeps every native record with its index words collapsed and adds the keep-bind donor once per
+**carrier group**: each non-shadow group with 100+ LOD-0 vertices covering half of the chest band (0.62-0.75 of the
+height). The donor material is one of the class's own (opaque or alpha-clip / damage-map transparency, a plain,
+neutral or blood-overlay colour mask, diffuse >= 0.75, a `0x2B` albedo >= 256x256); its atlas goes in as Y'CbCr.
+MT keeps one resource per path and the zombie classes share their `em5000_*` albedos (uEm5000 and uEm5200 load
+together on Rooftop Mission), so a shared path is used only when every archive that can load beside it is dressed too,
+and each copy gets the same atlas (`re6_enemy_cast.Paths`, `share_atlases`, `consistency`).
+
+The census of all 20 sets, the gate per class and the fit report per donor are in the probe build's receipt
+(`recovery-re6-enemy-cast-01-20261110`, `.gbox-enemy-cast.json` in the build folder on lilspark): 13 classes dressed
+(J'avo 1000 / 1200 / 1400, zombies 5000 / 5050 / 5060 / 5181 / 5191 / 5200 / 5210 / 5400, Shrieker 5500, Ubistvo
+4300), 82-99 % of each No Mercy stage's placements; left native: the dogs (5700), Napad (3200), Whopper (5600, no
+usable material), Lepotitsa (4100, displaced body), Strelats, Mesets, Gnezdo, Chrysalid, Rasklapanje, Ogroman.
+Offline-verified only (`verify_class` from a fresh process, archive and MOD byte round trips); never booted. The
+branch's final code (`family_subs`) also counts a family's lettered sub-archives as loadable, so it leaves Ubistvo
+native (its only usable albedo is also in `uEm4301Pipe`); rebuilt with it, 11 of the 13 archives come out
+byte-identical and the Shrieker takes the donor Ubistvo had (the receipt's `reproduction`).
+
 ## 5. Boot order, and what each boot must show
 
 One change per boot, cheapest information first; every build goes to lilspark with `switch_mods op=write` (paths

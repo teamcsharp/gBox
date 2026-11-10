@@ -125,6 +125,26 @@ SIGNATURES = (
     ('other', 'other', 'no rule matched (the top fields are listed)'),
 )
 ORDER = [s[0] for s in SIGNATURES]
+# The causes that are the bot's answer to a threat (gbox.mercs.core.respond: a flash, a mine, or fire - never nothing;
+# the operator 2026-11-10: "that's gonna result in endless combat reports. And this bot is not learning"), with the
+# per-round doctrine stats that measure each. Measured 2026-11-10: their batches had run 23-46 times each, 11-34 of them
+# without progress ("swarmed (4+ within 2 m)" alone was two tickets per title, 36 attempts). All of them are one cause
+# for Hermes: one ticket per title (DOCTRINE_TICKET; the first batch due owns it, the others link to it), its body
+# pointing at those stats, worked at most hermes_work_queue.CAUSE_NO_PROGRESS_MAX runs without progress.
+DOCTRINE_TICKET = 'threat_response'
+DOCTRINE_CAUSES = {
+    'crowd_gun_down': ('round_hurt_while_idle', 'round_threat_unanswered'),
+    'crowd_4_in_2m': ('round_threat_answered_flash', 'round_threat_lacks_flash', 'round_threat_flash_refused'),
+    'faced_melee': ('round_threat_unanswered', 'round_hurt_while_idle'),
+    'grabbed_front': ('round_threat_answered_flash', 'round_hurt_while_idle'),
+    'grabbed_from_behind': ('round_threat_unanswered', 'round_hurt_while_idle'),
+    # the learning loop's round faults of the same cause (gbox.mercs.learning.FAULTS; live 2026-11-10 both in progress
+    # on RE5 beside the damage batches): enemies within 5 m left alive, the gun lowered with them within 5 m
+    'round:idle_among_foes': ('round_threat_unanswered', 'round_hurt_while_idle'),
+    'round:unaimed_in_5m': ('round_threat_unanswered', 'round_threat_answered_fire'),
+}
+DOCTRINE_STATS = ('round_threat_ticks', 'round_threat_answered_flash', 'round_threat_answered_mine',
+                  'round_threat_answered_fire', 'round_threat_unanswered', 'round_hurt_while_idle')
 ROUND_PREFIX = 'round:'                # round-fault clusters (gbox.mercs.learning.FAULTS) share the batch machinery
 LABELS = {s[0]: s[1] for s in SIGNATURES}
 RULES = {s[0]: s[2] for s in SIGNATURES}
@@ -832,6 +852,9 @@ class Clusters:
         if not due and not old.get('request_id'):
             self.store.put(CLUSTER, c['id'], doc)
             return doc
+        linked = self._doctrine_link(doc, old, now)
+        if linked is not None:
+            return linked
         rid = old.get('request_id') or request_id_for(c['id'])
         if self.store.get('request', rid) is None:
             req = self._create_request(doc, rid, now)
@@ -851,6 +874,54 @@ class Clusters:
         doc.update(request_id=rid, number=req.get('number'), status=req.get('status'))
         self.store.put(CLUSTER, c['id'], doc)
         return doc
+
+    def _doctrine_link(self, doc, old, now):
+        """DOCTRINE_CAUSES: a cause batch of the threat response joins the open ticket its title already has for it (one
+        ticket per title), instead of a request of its own. -> the cluster document (linked), or None (its own path:
+        not a doctrine cause, already the owner of a request, or no open doctrine ticket for its title yet)."""
+        sig = doc.get('signature')
+        if sig not in DOCTRINE_CAUSES:
+            return None
+        if old.get('linked_to'):
+            rid = old.get('request_id')
+            req = self.store.get('request', rid) if rid else None
+            if req is not None:
+                doc.update(request_id=rid, linked_to=old['linked_to'], number=req.get('number'),
+                           status=req.get('status'))
+                self.store.put(CLUSTER, doc['id'], doc)
+                return doc
+            return None
+        if old.get('request_id'):
+            return None                                     # it owns its own ticket (filed before the dedup)
+        title = title_of(doc['game_id'])
+        games = sorted({doc['game_id']} | {g for g, t in GAMES.items() if title is not None and t == title})
+        for gid in games:
+            for other in DOCTRINE_CAUSES:
+                cid = cluster_id(gid, other)
+                if cid == doc['id']:
+                    continue
+                owner = self.store.get(CLUSTER, cid) or {}
+                rid = owner.get('request_id')
+                if not rid or owner.get('linked_to'):
+                    continue
+                req = self.store.get('request', rid)
+                if req is None or req.get('status') not in ('open', 'in_progress'):
+                    continue
+                with self.store.lock:
+                    req = self.store.get('request', rid) or req
+                    req.setdefault('messages', []).append({
+                        'id': 'doctrine-link-' + doc['id'], 'author': 'agent', 'ts': now, 'attachments': [],
+                        'text': (f"Same cause for Hermes, linked here instead of a ticket of its own: {doc['label']} "
+                                 f"({doc.get('episodes', 0)} episodes, {doc.get('deaths', 0)} deaths in the last "
+                                 f"{WINDOW_S // 3600} h; damage cluster {doc['id']}). Its doctrine stats: "
+                                 + ', '.join(DOCTRINE_CAUSES[sig]) + '.')})
+                    ctx = req.setdefault('context', {})
+                    ctx['doctrine_linked'] = sorted(set(ctx.get('doctrine_linked') or ()) | {doc['id']})
+                    self.store.put('request', rid, req)
+                doc.update(request_id=rid, linked_to=cid, number=req.get('number'), status=req.get('status'))
+                self.store.put(CLUSTER, doc['id'], doc)
+                return doc
+        return None
 
     def _create_request(self, doc, rid, now):
         body = render(doc)
@@ -1091,6 +1162,15 @@ def render(doc):
                 f"{t['episodes_per_round']}/round, {t['deaths']} deaths" for t in turns[-8:])) + '.']
     lines += [f"Suspected bot decision: {doc['suspect']}.",
               'Code it implicates: ' + '; '.join(f"{c['file']} {c['function']}" for c in doc.get('code') or []) + '.']
+    if doc.get('signature') in DOCTRINE_CAUSES:
+        lines.append(
+            "The doctrine measures this cause (gbox/mercs/core/respond.py: under threat a flash, a mine, or fire - never "
+            "nothing). Read these per-round stats first (the round reports' metrics.doctrine, rounds.sqlite): "
+            + ', '.join(DOCTRINE_STATS) + "; for this cause above all " + ', '.join(DOCTRINE_CAUSES[doc['signature']])
+            + ". Rounds with round_threat_unanswered and round_hurt_while_idle at 0 took this damage while answering: "
+            "the change then belongs in the answer's choice or its thresholds (respond.Rules, the title's Kit), not in "
+            "another detour of the title's own decision. Every threat-response cause of this title is this one ticket; "
+            "it is worked at most 3 runs without progress (hermes_work_queue.CAUSE_NO_PROGRESS_MAX).")
     if rate is not None:
         lines.append(f"Metric: {'its value' if doc.get('kind') == 'round' else 'episodes of this cause'} per round, "
                      f"now {rate}. Target: {target} or less ({TARGET_DROP:.0%} lower) over the {EFFECT_ROUNDS} rounds "

@@ -183,8 +183,11 @@ def test_ordinary_weapon_cycle_waits_for_idle_native_context_and_actual_ammo_rea
     bot._weapon_switch(p, 4)
     assert bot._weapon_switch(p, 4.4) is None             # unresolved/free-state refusal cannot cause pad input
     bridge.ready = True
-    assert bot._weapon_switch(p, 4.5) == {'tap': 'right'}
-    assert bot._weapon_switch(p, 4.6) == {'hold': ()}      # releases edge; no repeated cycle before readback
+    # 2026-11-10 (operator: "I dont even want to see the item screen or weapon wheel"): no ordinary weapon-cycle press
+    # any more - the loaded gun goes through the native request, never the D-pad
+    for t in (4.5, 4.6):
+        out = bot._weapon_switch(p, t)
+        assert out is None or not ({out.get('tap')} | set(out.get('hold') or ())) & R.DPAD_KEYS
     p.update(equipped=1, ammo=30)
     assert bot._weapon_switch(p, 4.7) is None
     assert bot.stats['empty_weapon_cycles'] == 1
@@ -216,8 +219,10 @@ def test_native_ack_without_equipped_readback_eventually_uses_guarded_normal_inp
     bot._weapon_switch(p, 0)
     assert bot._weapon_switch(p, 4) == {'hold': ()}
     assert bot._weapon_switch(p, 5.6) is None
-    assert bot._weapon_switch(p, 5.7) == {'tap': 'right'}
-    assert bot._weapon_switch(p, 5.8) == {'hold': ()}
+    # 2026-11-10: no ordinary weapon-cycle press ("I dont even want to see ... the weapon wheel"): the hook again
+    for t in (5.7, 5.8):
+        out = bot._weapon_switch(p, t)
+        assert out is None or not ({out.get('tap')} | set(out.get('hold') or ())) & R.DPAD_KEYS
 
 
 def test_empty_locked_preference_yields_to_existing_loaded_gun():

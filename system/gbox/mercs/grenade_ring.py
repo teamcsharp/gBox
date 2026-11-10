@@ -26,6 +26,10 @@ DEFAULTS = {
     "enabled": True,
     "min_enemies": 4,              # a crowd this size inside near_cm is "surrounded"
     "near_cm": 400.0,              # "a few metres" around the player
+    # a boss / dangerous class counts this far out (coached moment, request 5482 note 7, 2026-11-10: two 1500-health
+    # uEm1370 and a uEm3000 coming at 5.5-6.5 m with a J'avo pack while he faced a pillar - "failing to deal with a
+    # threat"; inside near_cm alone the ring never went out)
+    "danger_cm": 800.0,
     "cooldown_s": 20.0,            # at most one ring this often
     "kind": "flash",               # flash is the verified kind on every title that has the ring
     "count": 10,
@@ -67,10 +71,12 @@ def policy(title_module=None, stats=None) -> dict:
         out["cooldown_s"] = max(1.0, min(float(out["cooldown_s"]), 600.0))
         out["radius_cm"] = max(0.0, min(float(out["radius_cm"]), float(out["max_radius_cm"])))
         out["near_cm"] = max(50.0, min(float(out["near_cm"]), 2000.0))
+        out["danger_cm"] = max(out["near_cm"], min(float(out["danger_cm"]), 2000.0))
         out["enabled"] = bool(out["enabled"])
         out["kind"] = str(out["kind"] or "flash")
     except (TypeError, ValueError):
-        out.update({k: DEFAULTS[k] for k in ("enabled", "min_enemies", "cooldown_s", "kind", "radius_cm")})
+        out.update({k: DEFAULTS[k] for k in ("enabled", "min_enemies", "cooldown_s", "kind", "radius_cm",
+                                             "near_cm", "danger_cm")})
     return out
 
 
@@ -169,7 +175,8 @@ def decide(snap: dict, stats: dict, now: float, policy_: dict | None = None, *, 
     near_rows = enemies_near(snap, float(policy_["near_cm"])) if pos else []
     near = len(near_rows)
     round_id = stats.get("round_evidence_id") or ""
-    risky = [row for row in near_rows if dangerous(row[1], title)]
+    danger_rows = enemies_near(snap, float(policy_.get("danger_cm", policy_["near_cm"]))) if pos else []
+    risky = [row for row in danger_rows if dangerous(row[1], title)]
     safe_cm = max(float(stats.get("bomb_safe_cm") or 0.0), float(policy_["min_safe_cm"]))
     radius = max(float(policy_["radius_cm"]), safe_cm + float(policy_["margin_cm"]))
     out = {"fire": False, "kind": policy_["kind"], "radius_cm": round(radius, 1), "near": near,
@@ -192,7 +199,8 @@ def decide(snap: dict, stats: dict, now: float, policy_: dict | None = None, *, 
     if isinstance(last, (int, float)) and now - last < float(policy_["cooldown_s"]):
         return {**out, "reason": f"{float(policy_['cooldown_s']) - (now - last):.1f} s of the ring cooldown left"}
     if risky:
-        return {**out, "fire": True, "reason": f"{len(risky)} boss/dangerous within {policy_['near_cm']:.0f} cm"}
+        return {**out, "fire": True,
+                "reason": f"{len(risky)} boss/dangerous within {policy_.get('danger_cm', policy_['near_cm']):.0f} cm"}
     if near >= int(policy_["min_enemies"]):
         return {**out, "fire": True, "reason": f"surrounded: {near} within {policy_['near_cm']:.0f} cm"}
     if _not_thinning(round_id, near, now, policy_):
@@ -257,6 +265,8 @@ def control(ad, prof, *, ring=None):
         decision = decide(snap, stats, now, policy_, title=title)
         stats["ring_decision"] = (decision["reason"] if not decision["fire"] else "fire: " + decision["reason"])[:200]
         if not decision["fire"]:
+            if title in SCATTER_TITLES:                      # no ring this tick: the scatter barrage's own rule
+                return scatter_step(snap, stats, now, hold)
             return decision
         if hold is not None and hold(set()) is False:
             return {**decision, "fire": False, "reason": "the bot's keys did not release before the ring"}
@@ -269,7 +279,146 @@ def control(ad, prof, *, ring=None):
         stats["ring_last_reason"] = decision["reason"][:200]
         return decision
 
+    def scatter_step(snap, stats, now, hold=None) -> dict:
+        sp = scatter_policy(title_mod, stats)
+        observe_scatter(stats, snap, now, sp)
+        decision = decide_scatter(snap, stats, now, sp, title=title)
+        stats["scatter_decision"] = (decision["reason"] if not decision["fire"] else "fire: " + decision["reason"])[:200]
+        if not decision["fire"]:
+            return decision
+        if hold is not None and hold(set()) is False:
+            return {**decision, "fire": False, "reason": "the bot's keys did not release before the barrage"}
+        try:
+            receipt = fire_scatter(ad, decision, stats, now, ring=ring)
+        except Exception as exc:                         # noqa: BLE001 - a barrage never ends the round
+            stats["scatter_error"] = f"{type(exc).__name__}: {exc}"[:200]
+            return {**decision, "fire": False, "reason": stats["scatter_error"]}
+        return {**decision, "fired": True, "receipt": receipt}
+
     return step
+
+
+# --- the scatter barrage (RE6 Switch, operator 2026-11-10 ~07:00) ----------------------------------------------------
+# "i want the bot able to spray a scatter shot of grenades from his postion at threats at will ... a rapid barrage of
+# random grenades ... without equipping it on his character ... whenever the going gets tough": re6_switch_native
+# .grenade_scatter (a cone of native grenades from him toward the threats, nothing equipped), fired when he is
+# surrounded, was hurt in the last hurt_s with a threat within near_cm, a boss / dangerous class is within reach_cm,
+# or a pack of min_pack within reach_cm is not thinning - at most every cooldown_s (the title's SCATTER_EVERY_S), never
+# its explosive kinds inside the learned reach (bomb_safe_cm goes to the controller). stats scatters_fired,
+# scatter_rounds, scatter_kills (inside kill_window_s after one), scatter_failures, scatter_decision.
+SCATTER_TITLES = frozenset({"01002A000CD48000"})
+SCATTER_DEFAULTS = {"enabled": True, "cooldown_s": 12.0, "count": 8, "near_cm": 500.0, "reach_cm": 1500.0,
+                    "floor_dy_cm": 150.0, "hurt_s": 3.0, "min_pack": 3, "surround_n": 4, "surround_cm": 400.0,
+                    "kill_window_s": 8.0, "toward_n": 6, "after_ring_s": 6.0}   # (no barrage right after a ring)
+
+
+def scatter_policy(title_module=None, stats=None) -> dict:
+    out = dict(SCATTER_DEFAULTS)
+    for source in (title_module, (stats or {}).get("scatter") if isinstance(stats, dict) else None):
+        if source is None:
+            continue
+        for key, name in (("enabled", "SCATTER"), ("cooldown_s", "SCATTER_EVERY_S"), ("count", "SCATTER_N")):
+            value = source.get(key) if isinstance(source, dict) else getattr(source, name, None)
+            if value is not None:
+                out[key] = value
+    try:
+        out["enabled"] = bool(out["enabled"])
+        out["cooldown_s"] = max(1.0, min(float(out["cooldown_s"]), 600.0))
+        out["count"] = max(1, min(int(out["count"]), 16))
+    except (TypeError, ValueError):
+        out.update({k: SCATTER_DEFAULTS[k] for k in ("enabled", "cooldown_s", "count")})
+    return out
+
+
+def observe_scatter(stats: dict, snap: dict, now: float, policy_: dict | None = None) -> None:
+    """Per tick: when his health last fell (the "hurt" trigger) and the kills inside the window after a barrage."""
+    policy_ = policy_ or scatter_policy(stats=stats)
+    player, _pos = _player(snap)
+    hp = (player or {}).get("hp")
+    if isinstance(hp, int):
+        prev = stats.get("scatter_hp_prev")
+        if isinstance(prev, int) and hp < prev:
+            stats["scatter_hurt_at"] = now
+        stats["scatter_hp_prev"] = hp
+    pending = stats.get("scatter_pending")
+    if isinstance(pending, dict):
+        if now - float(pending.get("at") or 0) > float(policy_["kill_window_s"]):
+            stats.pop("scatter_pending", None)
+        else:
+            kills = snap.get("kills") if isinstance(snap, dict) else None
+            if isinstance(kills, int) and isinstance(pending.get("kills"), int) and kills > pending["kills"]:
+                stats["scatter_kills"] = int(stats.get("scatter_kills", 0)) + (kills - pending["kills"])
+                pending["kills"] = kills
+
+
+def decide_scatter(snap: dict, stats: dict, now: float, policy_: dict | None = None, *, title: str | None = None) -> dict:
+    """Fire the barrage or not, with the reason (pure apart from the crowd history the ring's observe keeps)."""
+    policy_ = policy_ or scatter_policy(stats=stats)
+    player, pos = _player(snap)
+    out = {"fire": False, "count": int(policy_["count"]), "toward": [], "reason": "",
+           "safe_cm": float(stats.get("bomb_safe_cm") or 0.0)}
+    if not policy_["enabled"]:
+        return {**out, "reason": "the barrage is switched off (SCATTER)"}
+    if stats.get("operator_control") is True:
+        return {**out, "reason": "the operator has the pad"}
+    screen = stats.get("screen") or (snap or {}).get("screen")
+    if screen not in (None, "playing", "unknown"):
+        return {**out, "reason": f"the round is not being played ({screen})"}
+    if player is None:
+        return {**out, "reason": "no player in this snapshot"}
+    ring_last = stats.get("ring_last_at")
+    if isinstance(ring_last, (int, float)) and now - ring_last < float(policy_["after_ring_s"]):
+        return {**out, "reason": "a ring just went out"}
+    last = stats.get("scatter_last_at")
+    if isinstance(last, (int, float)) and now - last < float(policy_["cooldown_s"]):
+        return {**out, "reason": f"{float(policy_['cooldown_s']) - (now - last):.1f} s of the barrage cooldown left"}
+    rows = [(d, e) for d, e in enemies_near(snap, float(policy_["reach_cm"]))
+            if abs(float(e["pos"][1]) - pos[1]) <= float(policy_["floor_dy_cm"])]   # on his floor: never the void
+    if not rows:
+        return {**out, "reason": "no threat on his floor within reach"}
+    out["toward"] = [(float(e["pos"][0]), float(e["pos"][2])) for _d, e in rows[:int(policy_["toward_n"])]]
+    near = sum(1 for d, _e in rows if d <= float(policy_["near_cm"]))
+    surround = sum(1 for d, _e in rows if d <= float(policy_["surround_cm"]))
+    hurt = stats.get("scatter_hurt_at")
+    if surround >= int(policy_["surround_n"]):
+        return {**out, "fire": True, "reason": f"surrounded: {surround} within {policy_['surround_cm']:.0f} cm"}
+    if isinstance(hurt, (int, float)) and now - hurt <= float(policy_["hurt_s"]) and near:
+        return {**out, "fire": True,
+                "reason": f"hurt {now - hurt:.1f} s ago with {near} within {policy_['near_cm']:.0f} cm"}
+    risky = [e for _d, e in rows if dangerous(e, title)]
+    if risky:
+        return {**out, "fire": True, "reason": f"{len(risky)} boss/dangerous within {policy_['reach_cm']:.0f} cm"}
+    round_id = stats.get("round_evidence_id") or ""
+    if len(rows) >= int(policy_["min_pack"]) and _not_thinning(round_id, len(rows), now,
+                                                             {**DEFAULTS, "min_enemies": int(policy_["min_pack"]) + 2}):
+        return {**out, "fire": True, "reason": f"a pack of {len(rows)} is not thinning"}
+    return {**out, "reason": f"nothing tough: {len(rows)} within {policy_['reach_cm']:.0f} cm"}
+
+
+def fire_scatter(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
+    """The native barrage once, with the stats. Never raises for a game-side refusal."""
+    target = ring or controller(ad)
+    stats["scatter_last_at"] = now
+    if not callable(getattr(target, "grenade_scatter", None)):
+        stats["scatter_failures"] = int(stats.get("scatter_failures", 0)) + 1
+        stats["scatter_last_failure"] = "this title's native controller has no scatter barrage"
+        return {"state": "unavailable", "reason": stats["scatter_last_failure"]}
+    try:
+        receipt = target.grenade_scatter("random", count=decision.get("count"), toward=decision.get("toward") or None,
+                                         safe_cm=decision.get("safe_cm"))
+    except Exception as exc:                             # noqa: BLE001
+        stats["scatter_failures"] = int(stats.get("scatter_failures", 0)) + 1
+        stats["scatter_last_failure"] = f"{type(exc).__name__}: {exc}"[:200]
+        return {"state": "failed", "reason": stats["scatter_last_failure"]}
+    if isinstance(receipt, dict) and receipt.get("state") == "confirmed":
+        stats["scatters_fired"] = int(stats.get("scatters_fired", 0)) + 1
+        stats["scatter_rounds"] = int(stats.get("scatter_rounds", 0)) + int(receipt.get("detonated") or 0)
+        kills = stats.get("kills")
+        stats["scatter_pending"] = {"at": now, "kills": kills if isinstance(kills, int) else None}
+    else:
+        stats["scatter_failures"] = int(stats.get("scatter_failures", 0)) + 1
+        stats["scatter_last_failure"] = str((receipt or {}).get("reason") or "the barrage did not confirm")[:200]
+    return receipt if isinstance(receipt, dict) else {"state": "failed", "reason": "no receipt"}
 
 
 def reset() -> None:

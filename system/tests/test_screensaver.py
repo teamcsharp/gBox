@@ -54,6 +54,20 @@ def test_worker_reason_needs_opt_in_idle_and_a_free_pc():
     assert S.worker_reason(s, worker(now, name="lilspark", idle=None, os="linux"), cfg, [], now) is None
 
 
+def test_an_offline_analysis_job_never_holds_the_next_game_but_any_other_job_does():
+    # 2026-11-10 08:53: a Hermes ghidra_script on DOA5 kept lilspark's MercMode idle for minutes ("busy with jobs")
+    s, cfg, now = Store(), S.settings(Store()), 10_000
+    w = worker(now, name="lilspark", idle=None, os="linux") | {"active_jobs": 1}
+    s.put("job", "g", {"id": "g", "tool": "ghidra_script", "state": "running", "worker_id": "w1", "actor": "mcp"})
+    assert S.worker_reason(s, w, cfg, [], now) is None
+    s.put("job", "l", {"id": "l", "tool": "launch_game", "state": "running", "worker_id": "w1", "actor": "operator"})
+    assert S.worker_reason(s, w | {"active_jobs": 2}, cfg, [], now) == "busy with jobs"
+    s.put("job", "l", {"id": "l", "tool": "launch_game", "state": "succeeded", "worker_id": "w1"})
+    s.put("job", "r", {"id": "r", "tool": "rea_binary_overview", "state": "running", "require_worker": "w1"})
+    assert S.worker_reason(s, w | {"active_jobs": 2}, cfg, [], now) is None
+    assert S.worker_reason(s, w | {"active_jobs": 3}, cfg, [], now) == "busy with jobs"   # one the store does not show
+
+
 class Archive:
     def runs(self, limit=200):
         return RUNS

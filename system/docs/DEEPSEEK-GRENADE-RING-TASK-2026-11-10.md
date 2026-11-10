@@ -43,15 +43,32 @@ The plumbing is already there and is the same for every title:
    incendiary (RE4 item ids: 0x0E flash, 0x01 hand, 0x02 incendiary; see `gbox/mercs/titles/re4_weapons.py`). The
    decrypted executable and the RAM maps are described in `docs/research/re4-weapons-ram.md` and
    `docs/research/re4-parity.md`. Accept on: a live ring of each kind in a MercMode RE4 round.
-4. **RE6 Switch: the ring**, if no other lane has landed it by the time you get here.
+4. **RE6 Switch: owned by the RE session's lane** (branch `re6-bomb-mind`: the RE6 ring, the bomb hook and the RE6
+   barrage below). Do not work on RE6 grenades; keep main's RE6 ring as it is until that branch merges.
 5. **The bot deploys it by itself:**
    - when to fire: when surrounded (several enemies within a few metres), when facing a boss / dangerous class (a
      shared `gbox/mercs/enemy_identity.py` with tiers is being built), or when a crowd is not thinning;
    - never within the learned blast reach of himself;
    - at most every N seconds (tunable);
    - stats `rings_deployed`, `ring_kills`.
-   A shared combat core (`gbox/mercs/core/combat.py`, branch `mercs-universal-core`) is being built for RE4/RE5/RE6.
-   If it is on main, put the "when to ring" rule there once and give each title a one-line hook.
+   The shared combat core `gbox/mercs/core/combat.py` is on main (UNIVERSAL_CORE in each title): put the "when to
+   ring" rule there once and give each title a one-line hook.
+6. **The scatter barrage on RE4 and RE5 Switch** (operator 2026-11-10: "i want the bot able to spray a scatter shot of
+   grenades from his postion at threats at will. I want the bot able to randomly spray a rapid barrage of random
+   grenades from the grenade launcher without equipping it on his character. I want it sprayed like a scatterhsot
+   whenever the going gets tough"). Built on each title's ring spawn:
+   - N rounds spawned at his position (chest height), fired outward in a cone toward the threats, with a random
+     spread and a random kind per round. Use the grenade launcher's own rounds where identified (RE5: explosive /
+     acid / nitrogen / flame / flash / electric), else the hand / incendiary / flash grenades. Kinds are held to what
+     is verified live.
+   - Rapid: about 0.1-0.2 s apart. Nothing equipped, no inventory or item screen: his gun stays in hand.
+   - Never inside his learned blast reach.
+   - At will: an intervention op `grenade_scatter` beside `grenade_ring` (`gbox/mercs/interventions.py`,
+     `merc_live_controls.py`, the PiP menu).
+   - By himself "whenever the going gets tough": surrounded, hurt with threats close, a boss or dangerous class in
+     reach, or a pack not thinning, through the same core rule as the ring, with a cooldown knob.
+   - Stats `scatters_fired`, `scatter_rounds`, `scatter_kills`. Accept on: a live barrage on each title, with frames
+     and the kill delta.
 
 ## How to work
 
@@ -61,8 +78,10 @@ The plumbing is already there and is the same for every title:
 - Only in MercMode's own sessions: check `agent_owned` and that the launch actor is not `operator` before any write.
   Never stop, relaunch or reconfigure a session; never change MercMode settings or the queue.
 - Token in `system/gbox-data/api_token`, never printed; header `x-gbox-actor: agent`.
-- Work in a git worktree on a branch. Write tests on synthetic memory for every new function. Merge to main only when
-  the RE4/RE5/RE6 test files have no new failures (RE5 Switch has 11 known failures on main, RE6 3); push.
+- Work in a git worktree on a branch, and push the branch, not main (operator 2026-11-10: the grenade ring works in
+  a branch). The RE session reviews and merges it. Write tests on synthetic memory for every new function. The
+  RE4/RE5/RE6 test files must show no new failures (RE5 Switch has 11 known failures on main, RE6 3). Also fix the 4
+  failing tests in `system/tests/test_pso_steering_evidence.py` that the PSO lane pushed to main.
 - Hot reload: the title modules (`re4_switch`, `re5_switch`, `re6_switch`, their `*_native` / `*_mods`) reload in
   place when deployed to the Spark (`~/bin/gbox_autodeploy.sh` runs every 15 minutes). The interventions backend and
   the server need a gbox.service restart; ask the RE session (via this doc's lane log) to do it at a gap.

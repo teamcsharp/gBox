@@ -39,6 +39,20 @@ def test_black_watch_ends_the_run_after_black_for_long_enough():
     assert d.stopped and run["bad_end"] == "black" and now[0] >= T.BLACK_FOR
 
 
+def test_a_stage_the_playbook_sees_loading_gets_the_longer_black_window():
+    # 2026-11-10: RE4 Switch's greybox stages sat 90-104 s behind "Loading..." and BLACK_FOR cut each at ~50 s
+    now = [0.0]
+    d = SimpleNamespace(stopped=False)
+    run = {"sid": "w-1", "thread": None, "live": {"screen": "loading"}}
+    T._black_watch(run, d, SimpleNamespace(get_frame=lambda: png(1)), clock=lambda: now[0],
+                   sleep=lambda s: now.__setitem__(0, now[0] + s))
+    for _ in range(400):
+        if d.stopped:
+            break
+        time.sleep(0.01)
+    assert d.stopped and run["bad_end"] == "black" and now[0] >= T.BLACK_LOADING_FOR > T.BLACK_FOR
+
+
 def test_a_picture_resets_the_black_clock():
     now, frames = [0.0], iter([png(1)] * 6 + [png(80)] + [png(1)] * 4 + [png(80)] * 1000)
     d, run = SimpleNamespace(stopped=False), {"sid": "w-1", "thread": None}

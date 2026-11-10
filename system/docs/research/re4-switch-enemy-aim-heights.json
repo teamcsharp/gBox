@@ -1,0 +1,424 @@
+{
+ "RE4": {
+  "Ganado": {
+   "name": "Ganado (villager) and the em16 type variants",
+   "status": "measured (skeleton); type->body pairing inferred",
+   "pack": "em16.udas",
+   "pack_sha256": "5b8026bfe7cdf3769299f1ce00ba2650dd29f85713989ae77902c38e67e3bf97",
+   "body_slots": [
+    453,
+    457,
+    472,
+    476
+   ],
+   "head_slots": null,
+   "head": 165.0,
+   "chest": 136.0,
+   "knee": 57.5,
+   "shoulder": 150.8,
+   "radius": 17.2,
+   "height": {
+    "min": 161.6,
+    "max": 187.1,
+    "note": "max y of the head-piece BINs (cm above y=0 foot origin); body-only meshes top out at 160.4-164.8 (headless); wide-sleeve/weapon bodies reach 184.4-187.9"
+   },
+   "bones": {
+    "head": {
+     "bone": 4
+    },
+    "chest": {
+     "bone": 2,
+     "note": "spine bone; neck base (bone 3) is 156.0 cm"
+    },
+    "knee": {
+     "bones": [
+      19,
+      23
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      6,
+      12
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 34.4,
+     "hip_width": 18.4,
+     "shoulder_bones": [
+      6,
+      12
+     ],
+     "hip_bones": [
+      18,
+      22
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "bind pose (T-pose, arms along x); in-game idle/crouch not measured",
+   "scale": "not determined (bind-pose size; any runtime scale for giants is in code/ESL not read)",
+   "note": "em16 has 4 body BINs (453/457/472/476) and 4 type bytes; every body shares one skeleton so the row is identical whichever body a type uses"
+  },
+  "Salvador / Bella": {
+   "name": "Chainsaw Salvador / Bella Sisters (em16 pack types)",
+   "status": "measured (skeleton); type->body pairing not determined",
+   "pack": "em16.udas",
+   "pack_sha256": "5b8026bfe7cdf3769299f1ce00ba2650dd29f85713989ae77902c38e67e3bf97",
+   "body_slots": [
+    453,
+    457,
+    472,
+    476
+   ],
+   "head_slots": null,
+   "head": 165.0,
+   "chest": 136.0,
+   "knee": 57.5,
+   "shoulder": 150.8,
+   "radius": 17.2,
+   "height": {
+    "min": 161.6,
+    "max": 187.1,
+    "note": "max y of the head-piece BINs (cm above y=0 foot origin); body-only meshes top out at 160.4-164.8 (headless); wide-sleeve/weapon bodies reach 184.4-187.9"
+   },
+   "bones": {
+    "head": {
+     "bone": 4
+    },
+    "chest": {
+     "bone": 2,
+     "note": "spine bone; neck base (bone 3) is 156.0 cm"
+    },
+    "knee": {
+     "bones": [
+      19,
+      23
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      6,
+      12
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 34.4,
+     "hip_width": 18.4,
+     "shoulder_bones": [
+      6,
+      12
+     ],
+     "hip_bones": [
+      18,
+      22
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "bind pose (T-pose, arms along x); in-game idle/crouch not measured",
+   "scale": "not determined (bind-pose size; any runtime scale for giants is in code/ESL not read)",
+   "note": "pack and type id from enemy_identity.py rows; which body BIN they use is not read. All 4 em16 bodies give the same skeleton"
+  },
+  "Zealot / Ganado (em1c)": {
+   "name": "Zealot / hooded Ganado",
+   "status": "measured (skeleton); type->body pairing inferred",
+   "pack": "em1c.udas",
+   "pack_sha256": "00bd13eab74a0592de5e9ae17515dc54c1af14ac532dd56a485c5162ca81c768",
+   "body_slots": [
+    504,
+    537,
+    541,
+    543
+   ],
+   "head_slots": null,
+   "head": 165.0,
+   "chest": 136.0,
+   "knee": 57.5,
+   "shoulder": 150.8,
+   "radius": 17.2,
+   "height": {
+    "min": 161.6,
+    "max": 185.3,
+    "note": "max y of the head-piece BINs (cm above y=0 foot origin); body-only meshes top out at 160.4-164.8 (headless); wide-sleeve/weapon bodies reach 184.4-187.9"
+   },
+   "bones": {
+    "head": {
+     "bone": 4
+    },
+    "chest": {
+     "bone": 2,
+     "note": "spine bone; neck base (bone 3) is 156.0 cm"
+    },
+    "knee": {
+     "bones": [
+      19,
+      23
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      6,
+      12
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 34.4,
+     "hip_width": 18.4,
+     "shoulder_bones": [
+      6,
+      12
+     ],
+     "hip_bones": [
+      18,
+      22
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "bind pose (T-pose, arms along x); in-game idle/crouch not measured",
+   "scale": "not determined (bind-pose size; any runtime scale for giants is in code/ESL not read)",
+   "note": "bodies 541/543 have wide sleeves (x +-167.7) and mesh top 187.6-187.9"
+  },
+  "J.J.": {
+   "name": "J.J. (em1d)",
+   "status": "measured (skeleton); type->body pairing inferred",
+   "pack": "em1d.udas",
+   "pack_sha256": "a61632700f2f6006a2097d8dc55b60a3f7610872f0c2bd946552ef5868f1ae63",
+   "body_slots": [
+    551,
+    555,
+    579
+   ],
+   "head_slots": null,
+   "head": 165.0,
+   "chest": 136.0,
+   "knee": 57.5,
+   "shoulder": 150.8,
+   "radius": 17.2,
+   "height": {
+    "min": 164.1,
+    "max": 185.3,
+    "note": "max y of the head-piece BINs (cm above y=0 foot origin); body-only meshes top out at 160.4-164.8 (headless); wide-sleeve/weapon bodies reach 184.4-187.9"
+   },
+   "bones": {
+    "head": {
+     "bone": 4
+    },
+    "chest": {
+     "bone": 2,
+     "note": "spine bone; neck base (bone 3) is 156.0 cm"
+    },
+    "knee": {
+     "bones": [
+      19,
+      23
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      6,
+      12
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 34.4,
+     "hip_width": 18.4,
+     "shoulder_bones": [
+      6,
+      12
+     ],
+     "hip_bones": [
+      18,
+      22
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "bind pose (T-pose, arms along x); in-game idle/crouch not measured",
+   "scale": "not determined (bind-pose size; any runtime scale for giants is in code/ESL not read)",
+   "note": "body 551 (6,614 vertices, x -182.4) holds a weapon in its mesh, J.J. is inferred (re4-parity.md 1.2)"
+  },
+  "Ganado soldier / Super Salvador (em20)": {
+   "name": "Ganado soldier (em20)",
+   "status": "measured (skeleton); type->body pairing not determined",
+   "pack": "em20.udas",
+   "pack_sha256": "6f3ccb89b71ea532ad30965eb815c1e4f27720343675ec2eeef0fdfe9e82d255",
+   "body_slots": [
+    476,
+    555,
+    579
+   ],
+   "head_slots": null,
+   "head": 165.0,
+   "chest": 136.0,
+   "knee": 57.5,
+   "shoulder": 150.8,
+   "radius": 17.2,
+   "height": {
+    "min": 164.1,
+    "max": 185.3,
+    "note": "max y of the head-piece BINs (cm above y=0 foot origin); body-only meshes top out at 160.4-164.8 (headless); wide-sleeve/weapon bodies reach 184.4-187.9"
+   },
+   "bones": {
+    "head": {
+     "bone": 4
+    },
+    "chest": {
+     "bone": 2,
+     "note": "spine bone; neck base (bone 3) is 156.0 cm"
+    },
+    "knee": {
+     "bones": [
+      19,
+      23
+     ]
+    },
+    "shoulder": {
+     "bones": [
+      6,
+      12
+     ],
+     "note": "upper-arm joints, mean y"
+    },
+    "radius": {
+     "shoulder_width": 34.4,
+     "hip_width": 18.4,
+     "shoulder_bones": [
+      6,
+      12
+     ],
+     "hip_bones": [
+      18,
+      22
+     ]
+    }
+   },
+   "posture": "upright",
+   "posture_basis": "bind pose (T-pose, arms along x); in-game idle/crouch not measured",
+   "scale": "not determined (bind-pose size; any runtime scale for giants is in code/ESL not read)",
+   "note": "body 476 (4,747 vertices, 40 bones, top 187.1, x +-84.2) is the largest; giant/Super Salvador pairing not determined"
+  },
+  "Garrador": {
+   "name": "Garrador (em1c body slot 640, inferred)",
+   "status": "partial: own 31-bone tree, not Leon's",
+   "pack": "em1c.udas",
+   "pack_sha256": "00bd13eab74a0592de5e9ae17515dc54c1af14ac532dd56a485c5162ca81c768",
+   "body_slots": [
+    640
+   ],
+   "head": 151.5,
+   "chest": 116.9,
+   "knee": "not determined",
+   "shoulder": "not determined",
+   "radius": "not determined",
+   "height": 185.4,
+   "bones": {
+    "head": {
+     "bone": 10,
+     "note": "head/neck bone (bones 11,12 are its siblings at the same y, end nubs 28-30 at 163.9-164.0)"
+    },
+    "chest": {
+     "bone": 7,
+     "note": "spine bone where both arm chains attach (spine 1-9 runs y 0.4 -> 146.3); inferred"
+    },
+    "shoulder": {
+     "candidates": [
+      [
+       13,
+       19
+      ],
+      [
+       16,
+       22
+      ]
+     ],
+     "y": [
+      134.3,
+      140.2,
+      124.6,
+      123.4
+     ],
+     "note": "two arm chains per side in the skeleton; which is the shoulder cannot be settled from the bind pose"
+    },
+    "knee": {
+     "note": "no leg chain: lowest non-root bone y is 19.4 (bone 2)"
+    },
+    "radius": {
+     "note": "bind x extent -62.3..63.6, z -84.1..65.9 (arms forward in the bind pose); body radius not separable"
+    }
+   },
+   "posture": "upright in bind pose (spine straight up the y axis); in-game hunch not measured",
+   "posture_basis": "bind pose only",
+   "scale": "not determined",
+   "note": "what would settle: the Garrador's animation (em1c anm slots) frame 0 / idle, or the type->body table in code"
+  },
+  "Colmillos (dog)": {
+   "name": "Colmillos (em28 body slot 0)",
+   "status": "measured (own 19-bone four-legged tree)",
+   "pack": "em28.udas",
+   "pack_sha256": "27469636d8768d7757053b3079baf105d4b728b0874fd876f4590d7251f15a09",
+   "body_slots": [
+    0
+   ],
+   "head": 67.6,
+   "chest": 48.9,
+   "knee": 21.1,
+   "shoulder": 51.1,
+   "radius": 7.5,
+   "height": 74.3,
+   "bones": {
+    "head": {
+     "bone": 4,
+     "raw_y": 51.5
+    },
+    "chest": {
+     "bone": 3,
+     "raw_y": 32.8,
+     "note": "spine bone at the shoulder end (bone 2 y 24.9 is the lumbar)"
+    },
+    "knee": {
+     "bones": [
+      13,
+      16
+     ],
+     "raw_y": 5.0,
+     "note": "hind-leg joint below the hip (bones 12/15 y 25.3, 14/17 y -8.0)"
+    },
+    "shoulder": {
+     "bones": [
+      5,
+      8
+     ],
+     "raw_y": 35.0
+    },
+    "radius": {
+     "shoulder_width": 15.0,
+     "hip_width": 12.2,
+     "shoulder_bones": [
+      5,
+      8
+     ],
+     "hip_bones": [
+      12,
+      15
+     ],
+     "note": "half shoulder width; mesh x extent +-68 is wider (head/limbs in bind pose), so a hit radius may be larger"
+    }
+   },
+   "posture": "four-legged (spine along z: bones 0->4 z 0 -> 30.3)",
+   "posture_basis": "bind pose",
+   "floor_offset": "mesh bottom is y=-16.1 not 0, so all heights here are raw y + 16.1 (cm above the lowest vertex); the true foot-ground origin is not determined",
+   "scale": "not determined"
+  }
+ },
+ "_meta": {
+  "request": "9361",
+  "units": "cm above feet (mesh y=0 for humanoids); source bio4/em/*.udas; parser gbox.re4_switch_assets.pack_slots + HdBin.bone_world/positions; raw units mm /10",
+  "note": "Plaga parasite (slot 629 em16/em1d, 26 bones, mesh y -4.2..131.2) is attached to hosts, not an aim target: not determined"
+ }
+}

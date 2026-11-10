@@ -1659,7 +1659,16 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
     threading.Thread(target=inputs, daemon=True).start()
     if sys.platform == "win32":                                  # mirror the operator's own pad to the controller glyph
         from . import padstate
-        padstate.CHORD[sid] = lambda: autoplay_chord(sid, ctx)    # hold Select/View + press A: autoplay on/off
+        from . import pso_quick
+        from .pso_controls import is_pso as _is_pso
+        if _is_pso(SESSIONS[sid][1]):
+            # PSO: Select + L1 + R1 randomizes the character's equipment while playing (pso_quick.chord_action).
+            padstate.set_chord(sid, {"select", "l", "r"})
+            padstate.CHORD[sid] = lambda: pso_quick.chord_action(sid, ad, ctx)
+        else:
+            padstate.CHORD[sid] = lambda: autoplay_chord(sid, ctx)   # hold Select/View + press A: autoplay on/off
+        # When Dolphin reads gBox's own virtual pad, the operator's physical pad reaches the game only if we relay it.
+        padstate.RELAY[sid] = getattr(ad, "vpad", None) is not None
         padstate.ANCHOR[sid] = lambda at: _save_anchor(sid, ad, ctx, at)  # replay waits for these screens
         threading.Thread(target=padstate.watch_xinput, args=(server, headers, sid, lambda: sid in SESSIONS), daemon=True).start()
     with httpx.Client(base_url=server, headers=headers, timeout=10) as c:
@@ -3219,6 +3228,7 @@ def _ended(run):
 
 
 BLACK_LUMA, BLACK_FOR = 6.0, 45.0      # mean grey (0..255) of a black frame; how long only black means the game is gone
+BLACK_LOADING_FOR = 180.0              # ... while the playbook's own screen reader says "loading" (a slow stage load)
 RELAUNCH_WAIT = 300
 
 
@@ -3283,7 +3293,10 @@ def _black_watch(run, d, ad, clock=time.time, sleep=time.sleep):
                 continue
             if b:
                 since = now if since is None else since
-                if now - since >= BLACK_FOR:
+                # a stage the playbook sees loading may take longer (2026-11-10: RE4 Switch's greybox Castle / Base /
+                # Waterworld took 90-104 s behind "Loading..." on black, and BLACK_FOR cut every one at ~50 s)
+                loading = (run.get("live") or {}).get("screen") == "loading"
+                if now - since >= (BLACK_LOADING_FOR if loading else BLACK_FOR):
                     run["bad_end"] = "black"
                     d.stopped = True
                     return

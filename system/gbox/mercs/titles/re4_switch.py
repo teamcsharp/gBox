@@ -41,7 +41,10 @@ import struct
 import time
 
 from ..driver import Driver
+from ..core import combat                          # the universal fight (UNIVERSAL_CORE): at import, for the hot reload
+from ..core import respond                         # the doctrine's answer to a threat (RESPOND): at import, too
 from . import re4_nav, re4_walk                    # the stage mesh (room collision), the walker and the map's marks
+from . import re4_room_map                         # the room's real map (#9342): walls / floor for walks and shots
 from . import re4_switch_screens as screens
 
 TITLE_ID = "010099A00BC1E000"
@@ -278,6 +281,52 @@ def decode_state(system: int, stop: int, status, merc: bytes, countdown: bytes, 
     if speed is not None:
         out["frame_step"] = round(speed, 3)
     return out
+
+
+# The camera (#9386, docs/research/re4-switch-camera-ram.md, static from main.bin; its instructions checked in main.bin
+# and the chain read live): pG + 0xA8 is the 0xF8-byte render copy of the camera (memcpy from CamCtrl + 0x88 every
+# frame), the GameCube CAMERA struct moved by +0x34: Campos 0x14C and Target 0x158 (layout-derived), Fovy 0x168 (an
+# instruction reads it), Look 0x178 (a getter reads it), the stored Distance 0x19C (layout-derived).
+CAM_BLOCK, CAM_SIZE = 0xA8, 0xF8
+CAM_POS, CAM_TARGET, CAM_FOVY, CAM_LOOK, CAM_DIST = 0x14C, 0x158, 0x168, 0x178, 0x19C
+CAMERA_READ = True
+# Read live 2026-11-10 (a menu scene, no player in RAM): pG = module + 0x1274338 through module + 0xB1AE08 (the doc's
+# chain, game_state's own pointer), Campos (0, 1000, 2000), Target (0, 0, 0), Fovy 50.0, the stored Distance 2236.07 =
+# |Campos - Target|: the layout holds. Campos beside his position in a round is not read yet, so the camera-to-player
+# distance is taken as his only while it is a camera's (CAM_PLAYER_MAX_MM); past it the camera's own |Campos - Target|
+# stands in (snap camera_dist_source "target").
+CAM_PLAYER_MAX_MM = 8000.0
+
+
+def decode_camera(raw: bytes) -> dict | None:
+    """The camera block's fields (camera_state's read of pG + CAM_BLOCK), or None when they are not a camera (a
+    position not finite or past 1e6 mm, a field of view outside 1 .. 179 degrees)."""
+    if len(raw) < CAM_SIZE:
+        return None
+
+    def f(off, n=3):
+        return struct.unpack_from(f"<{n}f", raw, off - CAM_BLOCK)
+    pos, target, look = f(CAM_POS), f(CAM_TARGET), f(CAM_LOOK)
+    fovy, dist = f(CAM_FOVY, 1)[0], f(CAM_DIST, 1)[0]
+    vals = pos + target + look + (fovy, dist)
+    if not all(math.isfinite(v) and abs(v) < 1e6 for v in vals) or not 1.0 < fovy < 179.0:
+        return None
+    return {"pos": pos, "target": target, "look": look, "fovy": fovy, "dist": dist,
+            "target_dist": math.dist(pos, target)}
+
+
+def camera_state(m, base: int | None = None) -> dict | None:
+    """decode_camera of pG + CAM_BLOCK (one read), or None."""
+    base = module_base(m) if base is None else base
+    if base is None:
+        return None
+    try:
+        pg = u64(m, base + PG_PTR_VAR)
+        if not ptr_ok(pg):
+            return None
+        return decode_camera(bytes(m.rd(pg + CAM_BLOCK, CAM_SIZE)))
+    except (ValueError, OSError, struct.error, TypeError):
+        return None
 
 
 def game_state(m, base: int | None = None) -> dict | None:
@@ -764,6 +813,12 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
                                      PHASE_OVER if game["phase"] == "results" else
                                      PHASE_PLAYING if game["phase"] in ROUND_PHASES else None)
         snap["score"], snap["combo"] = game["score"], game["combo"]
+        if FIRE_PATTERN:                                 # the equipped class (the fire pattern's family): one byte
+            try:
+                from . import re4_weapons as _w
+                snap["weapon_class"] = bytes(m.rd(base + _w.GAME_OBJ + _w.G_CLASS, 1))[0]
+            except (ValueError, OSError, TypeError, IndexError, AttributeError):
+                pass
         if 0 <= game["kills"] <= MERC_KILLS_MAX:
             # the game's own kill count (MercSysWk + MW_KILL): live 2026-11-10 04:46-04:47 it read 1, 2, 3, 4 with
             # the score 300, 600, 920, 1220, back to 0 at the Continue's new intro, then 1 .. 6 while the census
@@ -787,6 +842,16 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
             player.setdefault("rot", None)
             snap["player"] = player
         snap["enemies"] = [dict(e, hp_max=e.get("hp_max")) for e in enemies]
+    if CAMERA_READ:                                      # the camera (#9386): where it is, how far from him
+        cam = camera_state(m, base)
+        if cam is not None:
+            snap["camera"] = cam
+            pos = (snap.get("player") or {}).get("pos")
+            d = math.dist(cam["pos"], pos) if pos is not None else None
+            if d is not None and d <= CAM_PLAYER_MAX_MM:
+                snap["camera_dist_mm"], snap["camera_dist_source"] = round(d, 1), "player"
+            elif pos is not None:                        # (Campos not in his frame: the camera's own distance)
+                snap["camera_dist_mm"], snap["camera_dist_source"] = round(cam["target_dist"], 1), "target"
     if KILL_CANDIDATES:
         cand = {}
         for off in KILL_CANDIDATES:
@@ -1162,7 +1227,7 @@ class RE4Switch(Driver):
     solo_p1 = True                              # The Mercenaries on Switch is played solo on P1 here
     units_per_m = 1000.0                        # mm, measured (doctrine.view, the atlas): see MM_PER_CM below
     round_counters = ("shots", "hits", "turns", "backoffs", "holds", "dying", "escapes", "locates", "stand_breaks",
-                      "crowd_picks", "kills_seen")
+                      "crowd_picks", "kills_seen") + respond.COUNTERS
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
@@ -1195,7 +1260,8 @@ class RE4Switch(Driver):
 # until then it cannot confirm a clear shot, so the bot fires only inside ENGAGE_RANGE_CM and when tightly aligned
 # (a conservative default that limits long-range blind fire through geometry).
 # UNITS (2026-11-10, measured): RE4 Switch's world is in MILLIMETRES - the room collision is the GameCube SAT to 0.1 mm
-# (re4_switch_nav) and a live player position read x 50,689 on Village (50 m, not 500). The names below keep their
+# (re4_switch_nav) and a live player position read x 50,689 (50 m, not 500; a Base position: only r403's collision,
+# x 27,704 .. 88,786, holds it - #9342 - though it was noted on Village). The names below keep their
 # historical _CM suffix; their values are the same distances in the game's mm (x MM_PER_CM). Before this the fight
 # took every Ganado for 10x farther than he was: live it never fired (0 shots over 8 rounds) and walked into them.
 MM_PER_CM = 10.0
@@ -1278,6 +1344,195 @@ FROZEN_FIRE_S, FROZEN_FIRE_SHOTS = 5.0, 8   # firing this long / this many shots
 TURN_LEARN, TURN_LEARN_N = True, 16
 MELEE_MM, MELEE_REACH_MM, MELEE_CLEAR_MM = 2500.0, 1400.0, 2000.0
 MELEE_WINDOW_S, MELEE_TAP_S, MELEE_CONE = 1.6, 0.3, 0.5
+# The universal core (gbox.mercs.core.combat; the operator 2026-11-10: "I want the same aimbot I am critiquing in RE4 to
+# improve across 5 and 6 ... I hate seeing the bot idle in RE4"): with UNIVERSAL_CORE on, the fight goes through the
+# shared components, each where RE4 had nothing of its own:
+#   * who hurt him (combat.Threats over gbox.mercs.threat_memory, THREAT_FILE): every fall of his life put on the
+#     Ganado that landed it; that one is a grudge for the round and the target before the crowd's / the combo's pick
+#     (_choose); a learned attack that has landed through his shots is run from along open floor (_lethal_out). The
+#     Switch census reads no Ganado motion yet, so the learned wind-ups wait for one (the reach and the grudges do not);
+#   * bosses and dangerous foes first (combat.identity_tier: gbox.mercs.enemy_identity once it lands, beside RE4's own
+#     read - a heavy, HEAVY_HP, is "dangerous"): in reach on his level, before the grudge, never at the cost of one
+#     at arm's length (SWARM_CM) - shot from beyond HEAVY_KEEP_MM, where _heavy_keep leaves him;
+#   * the body profiles (combat.BodyTable, BODY_CLASSES): the shot's tolerance from the target class's own width;
+#   * the not-in-control detector (combat.NotInControl): _frozen's two rules, a spell at most FROZEN_PAGE_MAX_S (paged
+#     that long without a move, A is not the remedy and the fight goes on);
+#   * the idle guard (combat.IdleGuard): the gun up IDLE_AIM_S at a Ganado in range without one shot (a gate that
+#     holds, an aim that does not close) - he rounds him (the flank) instead of standing there aiming.
+# Off: the fight as before (the rollback). A core error never costs the tick: the old path runs (universal_core_error).
+UNIVERSAL_CORE = True
+THREAT_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re4-switch-threats.json"
+THREAT_REACH_MM, GRUDGE_MM, LEVEL_MM = 3000.0, 10000.0, 2500.0   # (RE5's WINDUP_R / GRUDGE_R; doctrine LEVEL_M)
+LETHAL_KEEP_X, LETHAL_BACKOFF_MAX_S, LETHAL_RUN_S = 1.15, 1.8, 1.0
+FROZEN_PAGE_MAX_S = 4.0
+IDLE_AIM_S = 2.0
+# The raise / aim discipline (combat (g); live 2026-11-10 22:5x, Krauser / Base, the operator: "What is the bot doing
+# right now? It's like walking into the wall flickering": 18 stand breaks and 5 flanks in 70 s, fire -> turn -> fire, the
+# bow half-raised against a grid wall). RE4 cannot walk with the gun up, so every target switch past RAISE_TOL lowered
+# it for a tank turn, and the never-stand step - blind, a step forward with a turn - lowered it again and walked into
+# the wall. With UNIVERSAL_CORE:
+#   * with the gun up, a target within AIM_KEEP_RAD is turned to with the stick that moves the aim (combat.AimStick
+#     learns it live: the right stick first, as the manual says; held AIM_STICK_N ticks without his facing changing,
+#     the left stick; its sign from which way his facing goes) - the gun goes down only to turn past it;
+#   * a target in fire range with the shot not blocked meets the never-stand rule while he fires or his facing turns
+#     toward it (the kill clock is the anti-idle there): no step; STAND_TURN_RAD of facing is progress;
+#   * a step goes STAND_STEP_MM along open floor (combat.open_step on the stage mesh's clear_segment, not ending within
+#     ESCAPE_CLEAR_MM of a Ganado); walled in on every line, no step (steps_walled_in).
+AIM_KEEP_RAD, AIM_STICK_N, STAND_TURN_RAD, STAND_STEP_MM, STEP_TURN_RAD = 1.0, 10, 0.05, 2000.0, 0.8
+ENGAGED_DOINGS = frozenset({"turn", "aim", "fire", "hold"})
+# Pressed against a wall (combat.WallPress; live 2026-11-10, Krauser / Base on the greybox build, the camera inside a
+# wall and the bot not fighting - the operator: "the issue is more like this"). Every action that walks him (the left
+# stick up, the gun down) goes through _wall_core, whatever made it (the locate, the flank, a run, the sweep, a step):
+#   * WALL_PRESS_S of it with under WALL_PRESS_MM of ground while he is in control is a wall: remembered WALL_KEEP_S,
+#     and a walk from within WALL_R_MM of it within WALL_CONE of that heading is refused from then on (never the same
+#     wall again: he goes along it instead, the first open heading nearest the one he wanted);
+#   * pressed, he turns away (the quick turn when the open floor is behind him) and steps UNWALL_MM onto open floor -
+#     the first heading from straight back that is no remembered wall and that the stage mesh's clear_segment allows -
+#     for at most UNWALL_S; walled in on every side, he stops walking into it (walls_boxed_in);
+#   * the walker's mesh guard (re4_walk.Walker.guard: open floor within its probe ahead, else the nearest clear
+#     heading) covers the bot's own walks too.
+# The camera is not read on Switch, so its distance collapsing is no signal here; the stick against an unmoving
+# position is. Stats walls_pressed, unwalls, walls_refused, walls_boxed_in.
+WALL_PRESS_S, WALL_PRESS_MM, WALL_KEEP_S, WALL_R_MM, WALL_CONE = 0.6, 150.0, 60.0, 1500.0, 0.7
+UNWALL_MM, UNWALL_S, CONTROL_S = 2500.0, 1.6, 5.0
+SLIDE_TRIES_DEG = (45, -45, 90, -90, 135, -135, 180)             # a refused walk: along the wall, nearest first
+# The room's real map (#9342, docs/research/re4-switch-mercs-collision.md, checked against the RomFS and live RAM
+# positions: gbox.re4_switch_room_map; the operator's top RE4 complaint, 2026-11-10: he walks into walls and pins the
+# camera). WallPress above learns a wall only once he is pressed against it; the room map knows them first. ROOM_MAP:
+#   * every walk line the bot picks itself - an escape (_escape_goal), a never-stand step (combat.open_step), the way
+#     off a wall (WallPress.away) - must be walk-clear on the room map too (titles.re4_room_map.walk_block): floor all
+#     the way, no wall within his body's height crossed (the invisible blockers too, which the shot line passes), not
+#     ending within re4_room_map.BODY_R_MM of one. The stage mesh's shot-line test (nav.clear_segment) stays;
+#   * every tick that walks him (the left stick up, the gun down), whatever made it, probes ROOM_PROBE_MM along his
+#     facing (ROOM_PROBE_RUN_MM running): a wall (crossed, or closed in on nearer than ROOM_BRUSH_MM - a corner, a
+#     shallow angle) or the floor's edge there and that step is refused - along the wall
+#     instead (WallPress.away, SLIDE_TRIES_DEG), or, when the mesh walker's route steers this tick and the line to its
+#     point is clear, a turn on the spot toward that point; a crossing the walker is taking (a jump-over, a ladder) is
+#     left to it;
+#   * the line of sight with no stage mesh attached (snap["nav"] None) is the room map's: its walls at the shot's own
+#     height, blockers passing (with the mesh, its exact triangle test stands: it stops a shot through every #9342
+#     wall but the ones with an opening in them).
+# Stats room_map (the room), room_map_walks_refused, room_map_steps_refused, room_map_route_turns, room_map_boxed_in,
+# room_map_refused_last. Off: as before (the rollback).
+ROOM_MAP = True
+ROOM_PROBE_MM, ROOM_PROBE_RUN_MM = 800.0, 1300.0
+ROOM_BRUSH_MM = 200.0     # the probe's own body half width: closer than this to a wall it is refused (his collision
+                          # radius is not measured; the lines he picks keep re4_room_map.BRUSH_R_MM, 300 mm, of margin)
+# The camera collapsed (the operator's screenshot 2026-11-10: Krauser and Leon pinned, the camera inside a wall; the
+# camera read from RAM: camera_state, #9386). The engine pulls the camera in against geometry, so while the stick walks
+# him (in control, the gun down CAM_SETTLE_S - the aim's own zoom-in is no wall) a camera-to-player distance
+# (snap["camera_dist_mm"]) under CAM_COLLAPSE_X of its running median for CAM_COLLAPSE_S is a wall press for WallPress
+# above (combat.CameraCollapse): remembered at his facing and turned away from at once - the room map's walk test keeps
+# the way off it clear of the wall behind him too. Stats camera_dist_mm, camera_collapses. Off: as before.
+CAMERA_COLLAPSE = True
+CAM_COLLAPSE_X, CAM_COLLAPSE_S, CAM_SETTLE_S = 0.6, 0.15, 1.0
+# The throw (combat.ThrowPolicy, THROWS; the operator 2026-11-10: grenades at the enemies all the time, also while he
+# flees): a hand / incendiary grenade at a pack (THROW_PACK_N within THROW_PACK_MM of one another, its centre between
+# THROW_MIN_MM - outside his own blast - and THROW_MAX_MM) or at a heavy; a flash at a Ganado at arm's length; at most
+# every THROW_GAP_S, his escape run or not (a throw back at the pursuers). The title's own path: the in-hand item swap
+# re4_switch_mods already makes for the random weapon (_give_weapon's writes: the held item's id, the item manager's
+# held id, the game state's class bytes), asked through HAND_REQUEST and answered in HAND_STATE by maintain() on every
+# snapshot; then the manual's throw - the aim (ZL) and the fire (ZR) - and the hand's own bytes written back (the gun
+# back). Each swap is a fresh grenade (no count to spend: infinite by construction); RE4 has no animation-speed mod to
+# reuse, so the throw plays at the game's speed. NOT seen live yet: whether the game throws a grenade put in the hand
+# this way - so off until a watched round turns it on (the sidebar's bot-logic knob THROWS, or here).
+THROWS = False
+THROW_GAP_S, THROW_PACK_N, THROW_PACK_MM, THROW_FLASH_MM = 5.0, 3, 3000.0, 4000.0
+THROW_MIN_MM, THROW_MAX_MM = 6000.0, 12000.0
+THROW_HAND_S, THROW_RAISE_S, THROW_SETTLE_S, THROW_MAX_S = 1.0, 0.4, 0.8, 3.0
+THROW_ITEMS = {"hand": 0x01, "fire": 0x02, "flash": 0x0E}     # re4_weapons.NAMES: hand / incendiary / flash grenade
+HAND_REQUEST: dict = {}       # the bot's ask of re4_switch_mods: {"item": an item id, or None = the gun back, "seq", "at"}
+HAND_STATE: dict = {}         # its answer: {"seq", "item" (in hand now, None = the gun), "verified", "error"}
+# The doctrine's answer to a threat (gbox.mercs.core.respond; the operator 2026-11-10: "the secret to all adversarial
+# combat situations is either flashbang, drop a mine, or fire the weapon upon them until there's no longer a threat";
+# live the same day, Leon / Base: "unwall: walled in on every side" for seconds at a time, doctrine_idle_s 80 of 199 s):
+# hurt in the last 1.5 s, or a Ganado within 2500 mm closing / of a class that hurt him (its learned reach, combat.Threats),
+# and his own decision answered nothing - RE4 Switch has no flash (THROWS off: the in-hand grenade swap is unproven
+# live) and Mercenaries here has no mines, so the answer is fire: _fight on the threats alone with no run-off (the
+# low-life retreat, the heavy's keep-away and the swarm escape stand down while it fires; the sight gate and the flank
+# keep every wall shot out). threat_lacks_flash / threat_lacks_mine count the ticks a flash or a mine was wanted.
+RESPOND = True
+RESPOND_BUSY = frozenset({"frozen", "dead", "wait", "intro", "grabbed", "held", "case", "results", "backoff"})
+RESPOND_AIM = frozenset({"turn", "aim", "hold", "reload"})
+RESPOND_ATTACK = frozenset({"fire", "melee"})
+# Body profiles: enemy class -> a combat.KIND_BODIES name or a combat.Body (cm). Every Ganado is one class (villager,
+# zealot and soldier alike, a heavy too), so his is the default; a class of another shape joins the census first.
+BODY_CLASSES: dict = {}
+# The fire pattern (gbox.mercs.core.fire_pattern; the operator 2026-11-10: "the bot fired the magnum with a nice scatter
+# and a very rapid repeat and i want that across all these titles"). RE4's rapid repeat is already the bot's own: ZR
+# tapped every FIRE_GAP_S, which re4_switch_mods.fire_rate paces to 0.25 s / N (0.05 s, a tap every 20 Hz tick, at the
+# live 20x); the game takes at most FIRE_CAP_HZ (the shot gate waits for the firing motion to cross frame int(FR) - 2,
+# so FR 3.0 at 30 Hz frames is the floor - re4_weapons.RAPID_FIRE_FLOOR, static analysis, not counted live). What the
+# pattern adds is the scatter and the crowd hop, both through the aim RE4 already has:
+#   * the scatter: no pitch here (tank aim), so shot after shot the facing goes to his bearing plus a yaw offset across
+#     his body (combat.TankDriver: up to 0.6 of his half width for a magnum) - by AIM_REQUEST, which the aim lock
+#     (re4_switch_mods.aim_lock, on live) writes into his facing every snapshot; the fire gate stays the body's
+#     half-angle on the bearing error, so a scattered shot is one the gate allowed before. Earned: only within
+#     fire_pattern's earn_s of a hit or a kill - an intro card (no effect) keeps every shot on his chest, so the
+#     NotInControl fire rule sees the unmoving facing it did before;
+#   * the hop: after hop_every taps on one living Ganado, the next goes to one already inside the gun's line cone
+#     within 2.5 m of him, on his level and in the clear - only for the REST picks (FIRE_HOP_WHYS: the crowd's, the
+#     combo's, the nearest), never away from a wind-up, a boss / dangerous one or a grudge.
+# The family of the gun in hand: the game state's equipped class (re4_weapons.G_CLASS, read in snapshot as
+# snap["weapon_class"]; the byte the random weapon writes) through CLASS_FAMILY; an unread class is FIRE_DEFAULT_FAMILY.
+# Off: every shot at his chest, as before (one constant). Stats fire_pattern_*.
+FIRE_PATTERN = True
+FIRE_CAP_HZ = 10.0                       # static: FR 3.0 frames at 30 Hz (the shot gate's floor), not counted live
+FIRE_DEFAULT_FAMILY = "handgun"
+CLASS_FAMILY = {0x01: "handgun", 0x02: "handgun", 0x03: "handgun", 0x04: "handgun", 0x11: "handgun",
+                0x05: "magnum", 0x06: "magnum", 0x0F: "magnum",      # Broken Butterfly, Killer7, Handcannon
+                0x07: "shotgun", 0x08: "shotgun", 0x21: "shotgun",   # Shotgun, Striker, Riot Gun
+                0x09: "rifle", 0x0A: "rifle",
+                0x0B: None, 0x0C: None, 0x0D: None, 0x0E: None, 0x10: None, 0x1C: None, 0x2E: None}   # automatics,
+                                         # launchers, the knife, the bow, the P.R.L.: no pattern
+FIRE_HOP_WHYS = ("crowd fire", "the combo is owed", "the nearest Ganado")   # _choose's REST picks
+
+
+def fire_family(snap) -> str | None:
+    """The fire pattern's family of the gun in his hand (snap["weapon_class"]), FIRE_DEFAULT_FAMILY when unread."""
+    cls = (snap or {}).get("weapon_class")
+    if not isinstance(cls, int) or isinstance(cls, bool):
+        return FIRE_DEFAULT_FAMILY
+    return CLASS_FAMILY.get(cls, FIRE_DEFAULT_FAMILY)
+
+
+def threat_class(e) -> str | None:
+    """The class threat memory learns a RE4 enemy under: its unit class with its maximum health (every Ganado is one
+    vtable; a chainsaw man reads 3500 where a villager reads 400)."""
+    cls = (e or {}).get("class")
+    if cls is None:
+        return None
+    top = e.get("hp_max")
+    name = f"{cls:#x}" if isinstance(cls, int) and not isinstance(cls, bool) else str(cls)
+    return f"{name}:{top}" if isinstance(top, int) and not isinstance(top, bool) else name
+
+
+def combat_profile() -> combat.TitleProfile:
+    """RE4 Switch's calibration of the universal fight, from the live constants (a knob turned is in the next one)."""
+    return combat.TitleProfile(
+        title="re4_switch", title_id=TITLE_ID, units_per_cm=MM_PER_CM, aim_model="tank_heading",
+        sticks="tank: the left stick turns the body (TURN, TURN_SIGN); ZL held, the right stick fine-turns the aim "
+               "(AIM_TURN); ZR tapped",
+        aim_btn=AIM_BTN, fire_btn=FIRE_BTN, turn_sign=TURN_SIGN, raise_s=AIM_READY_S, raise_tol=RAISE_TOL,
+        fire_tol_min=FIRE_TOL_MIN, engage_cm=ENGAGE_RANGE_CM / MM_PER_CM, level_dy_cm=LEVEL_MM / MM_PER_CM,
+        max_dy_cm=LEVEL_MM / MM_PER_CM,
+        bodies=combat.BodyTable(default=combat.HUMAN._replace(r=FIRE_HALF_WIDTH_MM / MM_PER_CM), classes=BODY_CLASSES),
+        specials=("melee_follow_up", "quick_turn", "knife", "special_arm"),
+        threat_file=THREAT_FILE, windup_r_cm=THREAT_REACH_MM / MM_PER_CM, grudge_r_cm=GRUDGE_MM / MM_PER_CM,
+        lethal_keep_x=LETHAL_KEEP_X, lethal_backoff_max_s=LETHAL_BACKOFF_MAX_S,
+        class_key=threat_class, motion_key=lambda e: None, attacking=None, windup=None,
+        turn_w=1.0, level_w=0.0, keep_x=1.5, grab_r_cm=SWARM_CM / MM_PER_CM,
+        tier=combat.identity_tier(TITLE_ID, fallback=combat.hp_tier(dangerous_hp=HEAVY_HP)),   # a heavy: dangerous
+        page_key=FROZEN_KEY, frozen_cm=FROZEN_MM / MM_PER_CM, frozen_rad=FROZEN_RAD, no_effect_s=FROZEN_FIRE_S,
+        no_effect_shots=FROZEN_FIRE_SHOTS, step_s=STAND_STEP_S, page_tap_s=FROZEN_TAP_S, page_max_s=FROZEN_PAGE_MAX_S,
+        page_clear_cm=0.0, idle_aim_s=IDLE_AIM_S,
+        throw_kinds=tuple(THROW_ITEMS) if THROWS else (), throw_gap_s=THROW_GAP_S, pack_n=THROW_PACK_N,
+        pack_r_cm=THROW_PACK_MM / MM_PER_CM, throw_min_cm=THROW_MIN_MM / MM_PER_CM,
+        throw_max_cm=THROW_MAX_MM / MM_PER_CM, flash_r_cm=THROW_FLASH_MM / MM_PER_CM,
+        fire_pattern=FIRE_PATTERN, fire_style="tap", fire_gap_s=FIRE_GAP_S, fire_tick_s=0.05, fire_cap_hz=FIRE_CAP_HZ,
+        fire_cap_note="static: the shot gate's FR 3.0 floor at 30 Hz frames (re4_weapons); the bot taps every "
+                      "FIRE_GAP_S (0.05 s at fire_rate 20x); magnum classes' own rows not read",
+        family=fire_family)
 
 
 @re4_walk.attach                       # .walker (approach(goal) -> stick keys), snap["nav"], the map's marks, plan()
@@ -1395,7 +1650,13 @@ class Bot:
         falls back to the ENGAGE_RANGE_CM limit. Returns True = cleared to fire on sight grounds."""
         nav, obstacles = snap.get("nav"), snap.get("obstacles")
         if nav is None and obstacles is None:
-            return True                                     # no geometry yet: range limit does the gating
+            rm = re4_room_map.for_snap(snap) if ROOM_MAP else None
+            if rm is None:
+                return True                                 # no geometry yet: range limit does the gating
+            try:                                            # the room map's walls at the shot's height (ROOM_MAP)
+                return rm.sight_clear(tuple(p["pos"]), tuple(e["pos"]))
+            except Exception:                               # noqa: BLE001 - a map error never fires blind
+                return False
         # a ray test when the geometry has one; else the stage mesh's floor line (re5_nav.NavMesh.floor_segment, which
         # the RE4 room-collision mesh is built to): no linked floor between them is a wall, a drop or a fence
         seg = getattr(nav, "clear_segment", None) or getattr(nav, "floor_segment", None)
@@ -1440,7 +1701,8 @@ class Bot:
         near = [t for t in live if t[0] <= ENGAGE_RANGE_CM]
         if not near:
             return None
-        if p is not None and snap is not None and (snap.get("nav") is not None or snap.get("obstacles") is not None):
+        if p is not None and snap is not None and (snap.get("nav") is not None or snap.get("obstacles") is not None
+                                                   or self._room_map(snap) is not None):
             clear = [t for t in near if self._line_of_sight_ok(p, t[2], snap)]
             if clear:
                 if len(clear) < len(near):
@@ -1451,6 +1713,10 @@ class Bot:
                 self.stats["blocked_picks"] += 1
                 self.why = "every Ganado in range is behind a wall: round to the nearest"
                 return min(near, key=lambda t: t[0])
+        if UNIVERSAL_CORE and p is not None:
+            got = self._threat_pick(p, near)             # the scorer's first tiers: a wind-up, then a grudge
+            if got is not None:
+                return got
         crowd = [t for t in near if t[0] <= CROWD_CM]
         if len(crowd) >= CROWD_N:
             lined = [t for t in crowd if abs(t[1]) <= CROWD_CONE]
@@ -1464,13 +1730,69 @@ class Bot:
         self.why = "the nearest Ganado"
         return min(near, key=lambda t: t[0])
 
+    # --- the fire pattern (FIRE_PATTERN: gbox.mercs.core.fire_pattern, the tank driver) ---
+    def _fp(self):
+        d = self.__dict__.get("_fp_driver")
+        if d is None:
+            d = self._fp_driver = combat.fire_driver(combat_profile(), self.stats)
+        return d
+
+    def _fp_aim(self, p, live, dist, err, e, snap, now) -> tuple:
+        """(dist, err, enemy, the yaw offset) for this tick's shot: the hop to a neighbour on the gun's line after
+        hop_every taps on a REST pick, then the scatter's yaw offset on whoever it is. A pattern error never costs the
+        shot: the pick as it was, no offset (fire_pattern_error)."""
+        try:
+            prof, drv = self._profile(), self._fp()
+            fam = prof.family(snap) if prof.family is not None else None
+            if combat.fire_spec(prof, fam) is None:
+                return dist, err, e, 0.0
+            drv.observe(now, snap.get("enemies"), kills=snap.get("kills") if isinstance(snap.get("kills"), int) else None)
+            hits = self.__dict__.get("_hit_at")
+            drv.fp.effect(max(hits.values(), default=-1e9) if isinstance(hits, dict) else None)
+            drv.fp.effect(self.__dict__.get("_kill_at"))
+            rest = isinstance(self.why, str) and self.why.startswith(FIRE_HOP_WHYS)
+            nb = drv.hop(prof, fam, now, p["pos"], e, [t[2] for t in live], locked=not rest)
+            if nb is not None:
+                t = next((t for t in live if t[2] is nb and t[0] <= ENGAGE_RANGE_CM), None)
+                if t is not None and (snap.get("nav") is None and snap.get("obstacles") is None
+                                      or self._line_of_sight_ok(p, nb, snap)):
+                    dist, err, e = t
+                    self.why = f"fire pattern: the hop to the next one on the gun's line ({dist / 1000:.1f} m)"
+            steer, off = drv.aim(prof, fam, e, dist, err, now)
+            return dist, err, e, off
+        except Exception as exc:                         # noqa: BLE001 - the pattern never costs the shot
+            self.stats["fire_pattern_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            return dist, err, e, 0.0
+
+    def _fp_fired(self, e, dist, err, snap, now) -> None:
+        """A tap went out: the shot's point in the stats (scattered / centred / unearned), the scatter's next point."""
+        try:
+            prof, drv = self._profile(), self._fp()
+            fam = prof.family(snap) if prof.family is not None else None
+            if combat.fire_spec(prof, fam) is None:
+                return
+            drv.aim(prof, fam, e, dist, err, now, shot=True)
+            drv.fired(now, e.get("ptr"), fam)
+        except Exception as exc:                         # noqa: BLE001
+            self.stats["fire_pattern_error"] = f"{type(exc).__name__}: {exc}"[:160]
+
     def _turn(self, err: float) -> set:
         # an error > 0 turns LEFT with TURN_SIGN 1: the GameCube RE4 / RE5 convention (the Switch world is the
         # GameCube's data - re4_switch_nav), the one re4_walk uses; _learn_turn checks it on every turn tick.
         return {TURN["left"] if (err > 0) == (TURN_SIGN > 0) else TURN["right"]}
 
     def _aim_turn(self, err: float) -> set:
+        if UNIVERSAL_CORE:                               # the stick that moves the aim with the gun up (learned live)
+            s = self._aim_stick()
+            keys = TURN if s.stick == "left" else AIM_TURN
+            return {keys["left"] if (err > 0) == (TURN_SIGN * s.sign > 0) else keys["right"]}
         return {AIM_TURN["left"] if (err > 0) == (TURN_SIGN > 0) else AIM_TURN["right"]}
+
+    def _aim_stick(self) -> combat.AimStick:
+        s = self.__dict__.get("_uc_aim_stick")
+        if s is None:
+            s = self._uc_aim_stick = combat.AimStick(self.stats, ("right", "left"), n=AIM_STICK_N)
+        return s
 
     def _learn_turn(self, key, err: float, now: float) -> None:
         """The turn sign's live check (TURN_LEARN): does the error on the same Ganado shrink between turn ticks?"""
@@ -1513,6 +1835,9 @@ class Bot:
             self.doing, self.why = "idle", "no player in RAM"
             return {}
         self._count_kills(snap, now)
+        if UNIVERSAL_CORE:
+            self._core_tick(p, snap, now)             # the profile of this tick, who hurt him (combat.Threats)
+            self._pose_tick(p, now)                   # moved or turned since the last tick: in control (AimStick)
         if snap.get("kill_candidates"):                # the probe's counters beside the census (KILL_CANDIDATES)
             self.stats["kill_candidates"] = " ".join(f"{k}={v}" for k, v in snap["kill_candidates"].items())
         owed = self.combo_owed(now)
@@ -1522,7 +1847,11 @@ class Bot:
             self.stats["doing"], self.stats["why"] = self.doing, self.why
             return frozen
         act = self._fight(p, snap, now)
+        act = self._respond(p, snap, act, now)          # under threat: fire at it (no flash, no mines here) - never nothing
         act = self._never_stand(p, act, snap, now)
+        if UNIVERSAL_CORE:
+            act = self._idle_core(p, act, snap, now)   # the gun up at one in range without a shot: round him
+            act = self._wall_core(p, act, snap, now)   # never walking into a wall (pressed: away to open floor)
         up = AIM_BTN in set(act.get("hold") or ())
         self._aim_since = (self._aim_since if self._aim_since is not None else now) if up else None
         if self.director is not None:
@@ -1531,28 +1860,68 @@ class Bot:
                 self.director.observe(doctrine.view(snap, RE4Switch), act, time.time())
             except Exception:                            # noqa: BLE001 - measuring never costs the tick
                 pass
+        r = self.__dict__.get("_resp")
+        if r is not None:
+            try:
+                r.settle(act, self.doing)                # what he finally did, counted (threat_* / hurt_while_idle)
+            except Exception as exc:                     # noqa: BLE001
+                self.stats["threat_error"] = f"{type(exc).__name__}: {exc}"[:160]
         self.stats["doing"], self.stats["why"] = self.doing, self.why
         return act
+
+    def _respond(self, p, snap, act, now) -> dict:
+        """core.respond (RESPOND above) on this tick's decision: the fight on the threats when it answered nothing."""
+        if not RESPOND or not UNIVERSAL_CORE or (p.get("hp") or 0) <= 0:
+            return act
+        try:
+            r = self.__dict__.get("_resp")
+            if r is None:
+                r = self._resp = respond.Responder(self.stats)
+
+            def fire(e, pool):
+                self._doctrine_fire = e.get("ptr")
+                try:
+                    return self._fight(p, dict(snap, enemies=pool), now)
+                finally:
+                    self._doctrine_fire = None
+            kit = respond.Kit(fire=fire, flash=None, mine=None, clear=lambda e: self._line_of_sight_ok(p, e, snap),
+                              busy=RESPOND_BUSY, attack=RESPOND_ATTACK, aim=RESPOND_AIM)
+            prof = self._profile()
+            return r.respond(prof, now, p, snap.get("enemies") or (), act, kit, self.doing,
+                             respond.Memory(self._uc("threats"), prof))
+        except Exception as exc:                         # noqa: BLE001 - the doctrine never costs the tick
+            self.stats["threat_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            return act
 
     def _fight(self, p, snap, now) -> dict:
         # Step off an own hazard first (no mine standing), even before facing the target.
         live = self._live(p, snap.get("enemies") or [])
+        self._gate = None                                # (this tick's fire gate: _may_fire sets it when it runs)
         if self._near_own_hazard(p, snap):
             self.stats["backoffs"] += 1
             self.doing, self.why = "backoff", "standing near his own explosive"
             near = min(live, key=lambda t: t[0]) if live else None
             return {"hold": {"lup", TURN["right" if near and near[1] > 0 else "left"]}}
-        low = self._low_life(p, live, now, snap)
+        if UNIVERSAL_CORE:
+            act = self._throw_core(p, live, snap, now)       # a grenade at the pack (THROWS), his escape run or not
+            if act is not None:
+                return act
+        doctrine = self.__dict__.get("_doctrine_fire") is not None   # core.respond: he fires at the threat, no run-off
+        low = None if doctrine else self._low_life(p, live, now, snap)
         if low is not None:
             return low
-        heavy = self._heavy_keep(live, now, p, snap)
+        heavy = None if doctrine else self._heavy_keep(live, now, p, snap)
         if heavy is not None:
             return heavy
-        act = self._escaping(p, snap, now, "swarm")
+        if UNIVERSAL_CORE:
+            act = self._lethal_out(p, live, snap, now)    # a learned attack his shots do not stop: out of its reach
+            if act is not None:
+                return act
+        act = None if doctrine else self._escaping(p, snap, now, "swarm")
         if act is not None:
             return act
         swarm = [t for t in live if t[0] <= SWARM_CM]
-        if len(swarm) >= SWARM_N:
+        if len(swarm) >= SWARM_N and not doctrine:
             act = self._escape(p, live, snap, now, "swarm", LOW_LIFE_RUN_S)
             if act is not None:
                 self.stats["escapes"] += 1
@@ -1565,9 +1934,12 @@ class Bot:
         pick = self._choose(live, now, p, snap)          # a command never stops a shot at one in range (RE5 HUNT_R)
         if pick is not None:
             dist, err, e = pick
+            fp_off = 0.0                                 # the fire pattern's yaw offset across his body (FIRE_PATTERN)
+            if FIRE_PATTERN and not self.__dict__.get("_pick_blocked"):
+                dist, err, e, fp_off = self._fp_aim(p, live, dist, err, e, snap, now)
             self.target = e.get("ptr")
             if p.get("ptr") is not None and p.get("rot") is not None:
-                AIM_REQUEST.update(ptr=p["ptr"], yaw=wrap((p.get("rot") or 0.0) + err), at=time.monotonic())
+                AIM_REQUEST.update(ptr=p["ptr"], yaw=wrap((p.get("rot") or 0.0) + err + fp_off), at=time.monotonic())
             if self.__dict__.get("_pick_blocked"):
                 fl = self.__dict__.get("_flank")
                 if not fl or fl["key"] != self.target or now >= fl["until"]:
@@ -1579,7 +1951,10 @@ class Bot:
                 keys, how = self._approach(p, e["pos"], err, snap, run=False)
                 self.doing, self.why = "flank", f"no clear shot: round it by {how}"
                 return {"hold": keys}
-            if abs(err) > RAISE_TOL:
+            cone = RAISE_TOL
+            if UNIVERSAL_CORE and self._aim_since is not None and self._aim_stick().usable():
+                cone = max(RAISE_TOL, AIM_KEEP_RAD)      # the gun up: the aim stick turns him, the gun stays up
+            if abs(err) > cone:
                 self.stats["turns"] += 1
                 self._learn_turn(self.target, err, now)
                 self.doing = "turn"
@@ -1592,18 +1967,31 @@ class Bot:
                         return flank
                 self.doing, self.why = "hold", "aligned, but a fire gate blocks the shot"
                 return {"hold": {AIM_BTN}}                   # aim kept, no shot
-            tol = max(FIRE_TOL_MIN, min(self.TURN_TOL, math.atan2(FIRE_HALF_WIDTH_MM, max(dist, 1.0))))
+            half = FIRE_HALF_WIDTH_MM
+            if UNIVERSAL_CORE:                           # the body profile: his class's own half width (mm)
+                try:
+                    half = self._profile().body_units(e).r
+                except Exception as exc:                 # noqa: BLE001 - the core never costs the shot
+                    self._core_error(exc)
+            tol = max(FIRE_TOL_MIN, min(self.TURN_TOL, math.atan2(half, max(dist, 1.0))))
             if abs(err) > tol:
                 self.stats["raises"] += 1
                 self.doing = "aim"
+                aim_err = err + fp_off                       # toward this shot's point on him (0 offset: his bearing)
                 if abs(err) <= AIM_NUDGE:                    # close: a tap of the right stick, not a sweep past him
-                    return {"hold": {AIM_BTN}, "tap": next(iter(self._aim_turn(err)))}
-                return {"hold": {AIM_BTN} | self._aim_turn(err)}   # the gun up, the right stick turns the aim
+                    if UNIVERSAL_CORE:
+                        self._aim_stick().rest()
+                    return {"hold": {AIM_BTN}, "tap": next(iter(self._aim_turn(aim_err)))}
+                if UNIVERSAL_CORE and self._aim_since is not None:
+                    self._aim_stick().observe(now, p.get("rot"), 1 if aim_err > 0 else -1)   # does this stick move it?
+                return {"hold": {AIM_BTN} | self._aim_turn(aim_err)}   # the gun up, the right stick turns the aim
             ready = self._aim_since is not None and now - self._aim_since >= AIM_READY_S
             if not ready or now - self._last_fire < FIRE_GAP_S:
                 self.doing = "aim"
                 return {"hold": {AIM_BTN}}
             self._last_fire = now
+            if FIRE_PATTERN:
+                self._fp_fired(e, dist, err, snap, now)
             self._since_reload += 1
             self.stats["shots"] += 1
             n = self.stats["shots"]
@@ -1635,8 +2023,7 @@ class Bot:
             dd = max(math.hypot(dx, dz), 300.0)
             vx, vz = vx + dx / (dd * dd), vz + dz / (dd * dd)
         away = heading(vx, vz) if (vx or vz) else wrap((p.get("rot") or 0.0) + math.pi)
-        nav = snap.get("nav")
-        seg = getattr(nav, "clear_segment", None) if nav is not None else None
+        seg = self._walk_test(snap)                      # the shot line's walls, and the room map's (ROOM_MAP)
         for deg in ESCAPE_TRIES_DEG:
             h = away + math.radians(deg)
             goal = (px + ESCAPE_MM * math.sin(h), py, pz + ESCAPE_MM * math.cos(h))
@@ -1776,9 +2163,31 @@ class Bot:
         return {"hold": set(), "tap": key}
 
     def _frozen(self, p, now, ram_state: bool = False) -> dict | None:
-        """A tap of FROZEN_KEY while he is not in control (FROZEN_*), else None. With the game's own state read
-        (ram_state: tick() has already handled every phase that is not in control) the firing rule stays off: it was
-        the stopgap for a fight that could not see the intro card."""
+        """A tap of FROZEN_KEY while he is not in control (FROZEN_*), else None: through the shared detector
+        (combat.NotInControl) with UNIVERSAL_CORE, else the first version (_frozen_legacy). With the game's own state
+        read (ram_state: tick() has already handled every phase that is not in control) the shared detector and the
+        firing rule stay off: they were the stopgap for a fight that could not see the intro card."""
+        if UNIVERSAL_CORE and not ram_state:
+            if not FROZEN:
+                return None
+            try:
+                stepped = (self.__dict__.get("_fz") or {}).get("stepped")
+                hits = self.__dict__.get("_hit_at")
+                last_hit = max(hits.values(), default=-1e9) if isinstance(hits, dict) else -1e9
+                page = self._uc("nic").check(self._profile(), now, p["pos"], p.get("rot"),
+                                             shots=self.stats.get("shots", 0) or 0, last_hit_at=last_hit,
+                                             stepped_at=stepped)
+            except Exception as exc:                     # noqa: BLE001 - the core never costs the tick
+                self._core_error(exc)
+                return self._frozen_legacy(p, now, ram_state)
+            if page is None:
+                return None
+            self.doing, self.why = "frozen", f"not in control ({page.cause}: an intro, a death camera or a grab): A"
+            return {"hold": set(), "tap": page.tap} if page.tap else {"hold": set()}
+        return self._frozen_legacy(p, now, ram_state)
+
+    def _frozen_legacy(self, p, now, ram_state: bool = False) -> dict | None:
+        """_frozen before the universal core (UNIVERSAL_CORE off, or the game's own state read)."""
         fz = self.__dict__.setdefault("_fz", {"pos": None, "rot": None, "tap": -1e9, "on": False})
         pos, rot = tuple(p["pos"]), p.get("rot")
         moved = (fz["pos"] is None or self._flat(fz["pos"], pos) > FROZEN_MM
@@ -1836,6 +2245,8 @@ class Bot:
         hit = None
         try:
             bw = getattr(nav, "blocking_wall", None)
+            if not callable(bw) and nav is None:
+                bw = getattr(self._room_map(snap), "sight_block", None)   # ROOM_MAP: the room map's wall
             hit = bw(tuple(p["pos"]), tuple(e["pos"])) if callable(bw) else None
         except Exception:                                # noqa: BLE001
             hit = None
@@ -1901,9 +2312,183 @@ class Bot:
         self.doing, self.why = "sweep", "no Ganado on the map: exploring"
         return {"hold": {"lup", TURN["right" if self._sweep_dir > 0 else "left"]}}
 
+    def _pose_tick(self, p, now) -> None:
+        """His position or facing changed since the last tick (FROZEN_MM / FROZEN_RAD): he is in control."""
+        pos, rot = tuple(p["pos"]), p.get("rot")
+        last = self.__dict__.get("_uc_pose")
+        self._uc_pose = (pos, rot)
+        if last is not None and (self._flat(last[0], pos) > FROZEN_MM or (
+                rot is not None and last[1] is not None and abs(wrap(rot - last[1])) > FROZEN_RAD)):
+            self._aim_stick().control(now)
+            self._uc_control_at = now
+
+    def _camera_collapsed(self, snap, now, pushing: bool) -> bool:
+        """CAMERA_COLLAPSE above: this tick's camera-to-player distance through combat.CameraCollapse; True on the tick
+        a collapse is found. Not within CAM_SETTLE_S of the gun being up (its own zoom). stats camera_dist_mm."""
+        dist = snap.get("camera_dist_mm")
+        if not isinstance(dist, (int, float)) or isinstance(dist, bool):
+            return False
+        self.stats["camera_dist_mm"] = dist
+        d = self.__dict__
+        cc, source = d.get("_uc_cam"), snap.get("camera_dist_source") or "player"
+        if cc is None or d.get("_uc_cam_source") != source:  # (another distance: a median of its own)
+            cc = d["_uc_cam"] = combat.CameraCollapse(self.stats, CAM_COLLAPSE_X, CAM_COLLAPSE_S)
+            d["_uc_cam_source"] = source
+            self.stats["camera_dist_source"] = source
+        settling = now - (d.get("_uc_cam_aim_at") or -1e9) < CAM_SETTLE_S
+        return cc.observe(now, dist, pushing and not settling)
+
+    # --- the room's real map (ROOM_MAP: titles.re4_room_map) ---
+    def _room_map(self, snap):
+        """This snapshot's room map (ROOM_MAP), else None; stats room_map names the room in use."""
+        if not ROOM_MAP:
+            return None
+        rm = re4_room_map.for_snap(snap)
+        if rm is not None:
+            self.stats["room_map"] = rm.room
+        return rm
+
+    def _walk_test(self, snap):
+        """The test for a walk line the bot picks itself, (a, b) mm -> bool, or None with no geometry at all: the
+        stage mesh's shot line (nav.clear_segment, as before) and, with ROOM_MAP, the room map's walk_block."""
+        nav = snap.get("nav")
+        seg = getattr(nav, "clear_segment", None) if nav is not None else None
+        seg = seg if callable(seg) else None
+        rm = self._room_map(snap)
+        if rm is None:
+            return seg
+
+        def clear(a, b) -> bool:
+            if seg is not None and not seg(tuple(a), tuple(b)):
+                return False
+            why = rm.walk_block(tuple(a), tuple(b))
+            if why is None:
+                return True
+            self.stats["room_map_walks_refused"] = self.stats.get("room_map_walks_refused", 0) + 1
+            self.stats["room_map_refused_last"] = why[:120]
+            return False
+        return clear
+
+    def _room_ahead(self, p, act, snap):
+        """ROOM_MAP's probe on a walking tick: None (the way ahead is open, or a crossing the walker is taking), the
+        reason the step is refused (a wall or the floor's edge within ROOM_PROBE_MM of his facing), or - when the mesh
+        walker's route steers this tick and the line to its point is clear - that route's action: a turn on the spot
+        toward its point while it lies past re4_walk.FOLLOW_TOL (room_map_route_turns), else None (the route goes on)."""
+        rm, rot, pos = self._room_map(snap), p.get("rot"), p.get("pos")
+        if rm is None or not isinstance(rot, (int, float)) or not pos:
+            return None
+        w = getattr(self, "walker", None)
+        steered = w is not None and getattr(w, "wp", None) is not None and w.wp[2] == getattr(w, "now", None)
+        if steered and getattr(w, "at_link", False):
+            return None                                      # a jump-over / a ladder: through it is the way
+        hold = set(act.get("hold") or ())
+        reach = ROOM_PROBE_RUN_MM if RUN_BTN in hold else ROOM_PROBE_MM
+        end = (pos[0] + reach * math.sin(rot), pos[1], pos[2] + reach * math.cos(rot))
+        why = rm.walk_block(tuple(pos), end, end_r=0.0, body_r=ROOM_BRUSH_MM)
+        if why is None:
+            return None
+        if steered:
+            wp = (w.wp[0], pos[1], w.wp[1])
+            if rm.walk_block(tuple(pos), wp, end_r=0.0, body_r=0.0) is None:   # (the route keeps its own clearance)
+                err = wrap(heading(wp[0] - pos[0], wp[2] - pos[2]) - rot)
+                if abs(err) <= re4_walk.FOLLOW_TOL:
+                    return None                              # the route's point lies short of the wall: on to it
+                self.stats["room_map_route_turns"] = self.stats.get("room_map_route_turns", 0) + 1
+                self.doing, self.why = "turn", "the room map: a wall ahead, turning to the route's way round"
+                return dict(act, hold=(hold - {"lup", RUN_BTN, TURN["left"], TURN["right"]}) | self._turn(err))
+        return why
+
+    def _wall_core(self, p, act, snap, now) -> dict:
+        """WALL_* above: the action's walk checked against the walls he has pressed, and pressing a new one; with
+        ROOM_MAP the room map's walls ahead of him too (_room_ahead)."""
+        d = self.__dict__
+        try:
+            walls = d.get("_uc_walls")
+            if walls is None:
+                walls = d["_uc_walls"] = combat.WallPress(self.stats, WALL_PRESS_S, WALL_PRESS_MM / MM_PER_CM,
+                                                          WALL_KEEP_S, WALL_R_MM / MM_PER_CM, WALL_CONE)
+            for k in ("unwalls", "walls_refused", "walls_boxed_in"):
+                self.stats.setdefault(k, 0)
+            hold = set(act.get("hold") or ())
+            if AIM_BTN in hold or act.get("tap"):            # the fight: the gun up, a shot, a press - no walk
+                walls.observe(now, (0.0, 0.0, 0.0), None, False)
+                d["_uc_unwall"] = None
+                if AIM_BTN in hold:
+                    d["_uc_cam_aim_at"] = now                # (the aim zooms the camera in: no collapse for a while)
+                return act
+            w = getattr(self, "walker", None)
+            if w is not None and hasattr(w, "guard"):
+                act = w.guard(act)                           # the mesh's own probe ahead (a wall, a fence, a drop)
+            prof, k = self._profile(), MM_PER_CM
+            pos_cm, rot = prof.pos_cm(p["pos"]), p.get("rot")
+            un = d.get("_uc_unwall")
+            if un is not None and (now >= un["until"] or self._flat(p["pos"], un["goal"]) <= ESCAPE_ARRIVED_MM):
+                un = d["_uc_unwall"] = None
+            out = {"hold": self._unwall_keys(p, un["goal"])} if un is not None else act
+            hold = set(out.get("hold") or ())
+            pushing = "lup" in hold
+            in_control = now - (d.get("_uc_control_at") or -1e9) <= CONTROL_S
+            pressed = walls.observe(now, pos_cm, rot, pushing, in_control)
+            if CAMERA_COLLAPSE and self._camera_collapsed(snap, now, pushing and in_control) and not pressed:
+                walls.remember(now, pos_cm, rot or 0.0)      # the camera pulled into a wall: a press (CAMERA_COLLAPSE)
+                self.stats["walls_pressed"] = self.stats.get("walls_pressed", 0) + 1
+                pressed = True
+            refused = not pressed and un is None and pushing and walls.blocked(now, pos_cm, rot)
+            ahead = None
+            if not (pressed or refused) and un is None and pushing and ROOM_MAP:
+                ahead = self._room_ahead(p, out, snap)        # a wall / the floor's edge on the room map ahead
+                if isinstance(ahead, dict):
+                    return ahead                             # the route's own way: a turn toward its point
+            if not (pressed or refused or ahead):
+                if un is not None:
+                    self.doing, self.why = "unwall", un["why"]
+                return out
+            seg = self._walk_test(snap)                      # the shot line's walls, and the room map's (ROOM_MAP)
+            clear = (lambda a, b: bool(seg(tuple(v * k for v in a), tuple(v * k for v in b)))) if seg else None
+            goal_cm = walls.away(now, pos_cm, rot or 0.0, clear, UNWALL_MM / MM_PER_CM,
+                                 None if pressed else SLIDE_TRIES_DEG)
+            if ahead:
+                self.stats["room_map_steps_refused"] = self.stats.get("room_map_steps_refused", 0) + 1
+                self.stats["room_map_refused_last"] = ahead[:120]
+            else:
+                self.stats["walls_refused" if refused else "unwalls"] += 1
+            if goal_cm is None:
+                self.stats["room_map_boxed_in" if ahead else "walls_boxed_in"] = \
+                    self.stats.get("room_map_boxed_in" if ahead else "walls_boxed_in", 0) + 1
+                self.doing, self.why = "unwall", "walled in on every side: not walking into it"
+                return dict(out, hold=hold - {"lup", RUN_BTN})
+            goal = tuple(v * k for v in goal_cm)
+            why = ("pressed against a wall: turning away onto open floor" if pressed else
+                   "a wall he pressed before lies that way: along it instead" if refused else
+                   "the room map: a wall ahead, along it instead")
+            d["_uc_unwall"] = {"until": now + UNWALL_S, "goal": goal, "why": why}
+            d.setdefault("_fz", {"pos": None, "rot": None, "tap": -1e9, "on": False})["stepped"] = now
+            self.doing, self.why = "unwall", why
+            return {"hold": self._unwall_keys(p, goal)}
+        except Exception as exc:                             # noqa: BLE001 - the core never costs the tick
+            self._core_error(exc)
+            return act
+
+    def _unwall_keys(self, p, goal) -> set:
+        """Toward an open-floor goal: the quick turn when it lies behind him, a turn on the spot while it is more than
+        STEP_TURN_RAD off, then the walk onto it."""
+        err = wrap(heading(goal[0] - p["pos"][0], goal[2] - p["pos"][2]) - (p.get("rot") or 0.0))
+        if abs(err) > ESCAPE_QUICK_RAD:
+            return set(QUICK_TURN)
+        if abs(err) > STEP_TURN_RAD:
+            return self._turn(err)
+        return {"lup"} | (self._turn(err) if abs(err) > self.TURN_TOL else set())
+
     def _never_stand(self, p, act, snap, now) -> dict:
-        """The doctrine's floor: a tick that neither fires nor moves him for STAND_MAX_S becomes a STAND_STEP_S step
-        forward with a turn (the way changes each time). Aiming and firing are not standing."""
+        """The doctrine's floor: a tick that neither fires nor moves him for STAND_MAX_S becomes a STAND_STEP_S step.
+        With UNIVERSAL_CORE the shared rules (combat (g), AIM_KEEP_RAD above): the fight meets it while he fires at a
+        target in range or turns toward it, and the step goes along open floor (_never_stand_core); else the first
+        version: forward with a turn, the way changing each time. Aiming and firing are never standing."""
+        if UNIVERSAL_CORE:
+            try:
+                return self._never_stand_core(p, act, snap, now)
+            except Exception as exc:                     # noqa: BLE001 - the core never costs the tick
+                self._core_error(exc)
         st, pos = self._stand, p["pos"]
         hold = set(act.get("hold") or ())
         if act.get("tap") or AIM_BTN in hold:
@@ -1924,11 +2509,261 @@ class Bot:
         self.doing, self.why = "step", f"stood {STAND_MAX_S:.1f} s: a step (he never stands)"
         return dict(act, hold=keys)
 
+    def _never_stand_core(self, p, act, snap, now) -> dict:
+        """The never-stand rule by the shared discipline (combat.stand_engaged / combat.open_step): not standing while
+        the gun is up or a shot goes out, nor while a target in fire range with a clear shot is fired at or turned
+        toward (STAND_TURN_RAD of facing since the anchor); else STAND_MAX_S without STAND_MOVE_CM is a STAND_STEP_S
+        step to a point STAND_STEP_MM along open floor (the stage mesh's clear_segment), steered there tick by tick;
+        walled in on every line, no step. Without a mesh: the first version's step (forward, a turn each way)."""
+        st, pos, rot = self._stand, tuple(p["pos"]), p.get("rot")
+        hold = set(act.get("hold") or ())
+        if act.get("tap") or AIM_BTN in hold:
+            st.update(pos=pos, rot=rot, at=now, until=-1e9, goal=None)
+            return act
+        if now < st["until"]:
+            return dict(act, hold=self._step_keys(p, st))
+        if st["pos"] is None or st["at"] is None or self._flat(st["pos"], pos) > STAND_MOVE_CM:
+            st.update(pos=pos, rot=rot, at=now)
+            return act
+        turned = rot is not None and st.get("rot") is not None and abs(wrap(rot - st["rot"])) > STAND_TURN_RAD
+        blocked = bool(self.__dict__.get("_pick_blocked")) or self.__dict__.get("_gate") == "sight"
+        if combat.stand_engaged(self.target is not None and self.doing in ENGAGED_DOINGS, blocked,
+                                now - self._last_fire, turned, STAND_MAX_S):
+            if turned:
+                st.update(pos=pos, rot=rot, at=now)      # turning toward him is the fight going on
+            self.stats["stand_engaged"] = self.stats.get("stand_engaged", 0) + 1
+            return act
+        if now - st["at"] < STAND_MAX_S:
+            return act
+        st["n"] = st.get("n", 0) + 1
+        seg = self._walk_test(snap)                      # the shot line's walls, and the room map's (ROOM_MAP)
+        goal, keys = None, ()
+        if callable(seg):
+            foes = [e["pos"] for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")]
+            tries = (0, 45, -45, 90, -90, 135, -135, 180) if st["n"] % 2 else (0, -45, 45, -90, 90, -135, 135, 180)
+            goal = combat.open_step(pos, rot or 0.0, seg, STAND_STEP_MM, avoid=foes, avoid_r=ESCAPE_CLEAR_MM,
+                                    tries_deg=tries)
+            if goal is None:
+                self.stats["steps_walled_in"] = self.stats.get("steps_walled_in", 0) + 1
+                st.update(pos=pos, rot=rot, at=now)
+                return act
+        else:
+            keys = ("lup", TURN["left" if st["n"] % 2 else "right"])
+        st.update(pos=pos, rot=rot, at=now, until=now + STAND_STEP_S, keys=keys, goal=goal)
+        self.__dict__.setdefault("_fz", {"pos": None, "rot": None, "tap": -1e9, "on": False})["stepped"] = now
+        self.stats["stand_breaks"] += 1
+        self.doing, self.why = "step", (f"stood {STAND_MAX_S:.1f} s: a step "
+                                        + ("along open floor" if goal is not None else "(no stage mesh)"))
+        return dict(act, hold=self._step_keys(p, st))
+
+    def _step_keys(self, p, st) -> set:
+        """The step's keys this tick: toward its open-floor goal (a turn on the spot while it lies more than
+        STEP_TURN_RAD off his facing - never forward into what is in front), else the first version's fixed keys."""
+        goal = st.get("goal")
+        if goal is None:
+            return set(st.get("keys") or ())
+        err = wrap(heading(goal[0] - p["pos"][0], goal[2] - p["pos"][2]) - (p.get("rot") or 0.0))
+        if abs(err) > STEP_TURN_RAD:
+            return self._turn(err)
+        return {"lup"} | (self._turn(err) if abs(err) > self.TURN_TOL else set())
+
+    # --- the universal core (UNIVERSAL_CORE: gbox.mercs.core.combat) ---
+    def _uc(self, name: str):
+        """The core's pieces, made on first use (a bot the hot reload rebinds to this class never ran this version's
+        __init__): threats (combat.Threats on THREAT_FILE), nic (combat.NotInControl), idle (combat.IdleGuard)."""
+        d = self.__dict__
+        got = d.get("_uc_" + name)
+        if got is None:
+            if name == "threats":
+                got = combat.Threats(self._profile(), self.stats)
+            elif name == "nic":
+                got = combat.NotInControl(self.stats, prefix="frozen")
+            else:
+                got = combat.IdleGuard(self.stats)
+            d["_uc_" + name] = got
+        return got
+
+    def _profile(self) -> combat.TitleProfile:
+        """This tick's profile (made at the tick's start by _core_tick), else a fresh one."""
+        return self.__dict__.get("_uc_prof") or combat_profile()
+
+    def _core_error(self, exc) -> None:
+        self.stats["universal_core_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        self.stats["universal_core_errors"] = self.stats.get("universal_core_errors", 0) + 1
+
+    def _core_tick(self, p, snap, now) -> None:
+        """Every tick: the profile (the live constants), and who hurt him (the living Ganados, his life's falls)."""
+        try:
+            prof = self.__dict__["_uc_prof"] = combat_profile()
+            self._uc("threats").observe(now, p, snap.get("enemies") or (), prof)
+        except Exception as exc:                         # noqa: BLE001 - the core never costs the tick
+            self._core_error(exc)
+
+    def _threat_pick(self, p, near):
+        """(distance, error, enemy) of the scorer's first tiers among `near` (combat.Threats.priority: a wind-up within
+        its reach, else a grudge on his level), or None: RE4's own choice stands."""
+        try:
+            got = self._uc("threats").priority(p, [t[2] for t in near])
+        except Exception as exc:                         # noqa: BLE001
+            self._core_error(exc)
+            return None
+        if got is None:
+            return None
+        e, kind, why = got
+        pick = next((t for t in near if t[2] is e), None)
+        if pick is None:
+            return None
+        if e.get("ptr") != self.target:
+            self.stats[kind + "_picks"] = self.stats.get(kind + "_picks", 0) + 1
+        self.why = why
+        self.stats["core_pick"] = f"{kind}: {why}"[:160]
+        return pick
+
+    def _lethal_out(self, p, live, snap, now) -> dict | None:
+        """A learned attack that lands through his shots, under way within its reach (combat.Threats.step_out): away
+        along open floor (_escape), LETHAL_RUN_S at a time; walled in, he fights it."""
+        act = self._escaping(p, snap, now, "lethal")
+        if act is not None:
+            return act
+        try:
+            e = self._uc("threats").step_out(p, [t[2] for t in live], now)
+        except Exception as exc:                         # noqa: BLE001
+            self._core_error(exc)
+            return None
+        if e is None:
+            return None
+        act = self._escape(p, live, snap, now, "lethal", LETHAL_RUN_S)
+        if act is None:
+            return None
+        self.doing, self.why = "evade", (f"{threat_class(e)}: an attack that hurt him through his shots (learned): "
+                                         "out of its reach")
+        return act
+
+    @staticmethod
+    def _hand_ask(item) -> int:
+        """A new HAND_REQUEST (an item id to hold, or None: the gun back) for re4_switch_mods.maintain; its seq."""
+        seq = (HAND_REQUEST.get("seq") or 0) + 1
+        HAND_REQUEST.clear()
+        HAND_REQUEST.update(item=item, seq=seq, at=time.monotonic())
+        return seq
+
+    def _fleeing(self, now) -> bool:
+        """An escape run under way (low life, a heavy, a swarm, a learned attack)."""
+        return any((r := self.__dict__.get("_run_" + k)) and now < r["until"] for k in ("low", "heavy", "swarm", "lethal"))
+
+    def _throw_core(self, p, live, snap, now) -> dict | None:
+        """THROWS above: this tick's step of a throw (combat.ThrowPolicy decides): hand (the swap asked, HAND_STATE's
+        answer awaited), aim (the body to the pack's centre, ZL THROW_RAISE_S), the throw (ZR), the follow-through,
+        back (the gun's bytes written back). None: no throw now. With a Ganado at arm's length the throw is dropped
+        (the gun back first) - never a grenade at his own feet."""
+        d = self.__dict__
+        pol = d.get("_uc_throws")
+        if pol is None:
+            pol = d["_uc_throws"] = combat.ThrowPolicy(self.stats)
+        try:
+            prof = self._profile()
+            pol.observe(prof, now, self.stats.get("kills_seen"))
+            st = d.get("_uc_throw")
+            if st is None:
+                if not THROWS:
+                    return None
+                fleeing = self._fleeing(now)
+                plan = pol.decide(prof, now, p, [t[2] for t in live], set(THROW_ITEMS), fleeing=fleeing)
+                if plan is None:
+                    return None
+                pol.started(now)
+                st = d["_uc_throw"] = {"plan": plan, "phase": "hand", "since": now, "t0": now,
+                                       "seq": self._hand_ask(THROW_ITEMS[plan.kind]), "thrown": False}
+            plan, item = st["plan"], THROW_ITEMS[st["plan"].kind]
+            close = plan.kind != "flash" and any(t[0] <= prof.units(prof.grab_r_cm) for t in live)   # (the flash is
+            if st["phase"] in ("hand", "aim") and (close or now - st["t0"] > THROW_MAX_S):          # for that one)
+                self.stats["throw_aborts"] = self.stats.get("throw_aborts", 0) + 1
+                self.stats["throw_abort_last"] = "a Ganado at arm's length" if close else "no throw within THROW_MAX_S"
+                st.update(phase="back", since=now, seq=self._hand_ask(None))
+            if st["phase"] == "hand":
+                if HAND_STATE.get("seq") == st["seq"]:
+                    if HAND_STATE.get("verified") and HAND_STATE.get("item") == item:
+                        st.update(phase="aim", since=now)
+                    else:
+                        self.stats["throw_aborts"] = self.stats.get("throw_aborts", 0) + 1
+                        self.stats["throw_abort_last"] = f"the swap: {HAND_STATE.get('error') or 'not verified'}"[:120]
+                        st.update(phase="back", since=now, seq=self._hand_ask(None))
+                elif now - st["since"] > THROW_HAND_S:
+                    self.stats["throw_aborts"] = self.stats.get("throw_aborts", 0) + 1
+                    self.stats["throw_abort_last"] = "the swap never answered"
+                    st.update(phase="back", since=now, seq=self._hand_ask(None))
+                else:
+                    self.doing, self.why = "throw", f"the {plan.kind} grenade to hand: {plan.why}"
+                    return {"hold": set()}
+            if st["phase"] == "aim":
+                q = plan.point
+                err = wrap(heading(q[0] - p["pos"][0], q[2] - p["pos"][2]) - (p.get("rot") or 0.0))
+                if abs(err) > RAISE_TOL:
+                    st["since"] = now                        # the raise's clock from when he faces them
+                    self.doing, self.why = "turn", f"the {plan.kind} grenade: turning to {plan.why}"
+                    return {"hold": self._turn(err)}
+                if now - st["since"] < THROW_RAISE_S:
+                    self.doing, self.why = "aim", f"the {plan.kind} grenade up at {plan.why}"
+                    return {"hold": {AIM_BTN}}
+                pol.thrown(now, plan.fleeing, self.stats.get("kills_seen"))
+                st.update(phase="settle", since=now, thrown=True)
+                self.doing, self.why = "throw", f"the {plan.kind} grenade at {plan.why}"
+                return {"hold": {AIM_BTN}, "tap": FIRE_BTN}
+            if st["phase"] == "settle":
+                if now - st["since"] < THROW_SETTLE_S:
+                    self.doing, self.why = "throw", "the throw's follow-through"
+                    return {"hold": set()}
+                st.update(phase="back", since=now, seq=self._hand_ask(None))
+            if st["phase"] == "back":
+                if HAND_STATE.get("seq") == st["seq"] or now - st["since"] > THROW_HAND_S:
+                    if HAND_STATE.get("seq") != st["seq"]:
+                        self.stats["hand_restore_timeouts"] = self.stats.get("hand_restore_timeouts", 0) + 1
+                    d["_uc_throw"] = None
+                    return None
+                run = self._escaping(p, snap, now, "swarm") if close else None
+                self.doing, self.why = "throw", "the gun back in his hand"
+                return {"hold": set((run or {}).get("hold") or ()) - {AIM_BTN}}   # (never ZL with a grenade in hand)
+        except Exception as exc:                             # noqa: BLE001 - the core never costs the tick
+            self._core_error(exc)
+            if d.get("_uc_throw") is not None:
+                self._hand_ask(None)
+            d["_uc_throw"] = None
+        return None
+
+    def _idle_core(self, p, act, snap, now) -> dict:
+        """combat.IdleGuard on this tick's action: the gun up IDLE_AIM_S at the Ganado in range without a shot ->
+        FLANK_S of the walk round to him (the flank), the gun down."""
+        try:
+            hold = set(act.get("hold") or ())
+            tap = act.get("tap")
+            verdict = self._uc("idle").tick(self._profile(), now, threat=self.target is not None,
+                                            aiming=AIM_BTN in hold, fired=tap in (FIRE_BTN, ACTION_BTN, KNIFE_BTN),
+                                            moving=bool(hold & {"lup", "ldown", "lleft", "lright"}))
+        except Exception as exc:                         # noqa: BLE001
+            self._core_error(exc)
+            return act
+        if verdict != "move":
+            return act
+        e = next((x for x in snap.get("enemies") or () if x.get("ptr") == self.target and x.get("pos")), None)
+        if e is None:
+            return act
+        err = wrap(heading(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) - (p.get("rot") or 0.0))
+        self._flank = {"key": self.target, "until": now + FLANK_S}
+        self.stats["flanks"] = self.stats.get("flanks", 0) + 1
+        keys, how = self._approach(p, e["pos"], err, snap, run=False)
+        self.doing, self.why = "flank", f"the gun up {IDLE_AIM_S:.1f} s without a shot: round him by {how}"
+        return {"hold": keys}
+
     def prompt_ok(self, button, snap, now):
         return False
 
     def save(self):
-        pass
+        t = self.__dict__.get("_uc_threats")
+        if t is not None:
+            try:
+                t.save()                                 # who hurt him, for the next round (THREAT_FILE)
+            except Exception:                            # noqa: BLE001
+                pass
 
 
 def flip_turn_sign(bot=None) -> int:

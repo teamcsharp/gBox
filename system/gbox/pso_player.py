@@ -20,6 +20,7 @@ face +0x3C, head +0x3E, hair +0x40 (TObjPlayer + 0xC24 holds this block live on 
 """
 from __future__ import annotations
 
+from . import pso_gc_paths
 import struct
 from pathlib import Path
 
@@ -58,12 +59,33 @@ def _mat_dir(m, p):
     return [m[i][0] * p[0] + m[i][1] * p[1] + m[i][2] * p[2] for i in range(3)]
 
 
+
+
+def decode_texture_entry(entry: bytes):
+    """A texture from a character AFS -> (w, h, rgba).
+
+    The Dreamcast packs hold PVR textures and the GameCube packs hold GVR ones, and the two have nothing in common beyond
+    being images. The magic says which: a GVR chunk starts with `GBIX` (its global-index block) or `GVRT` (the texture
+    header), and everything else on this code path is PVR. `pso_gc.gvr_decode` handles every one of the 286 entries in
+    `plCtex.afs` on `GPOE8P`, including the CI ones, so no palette special case is needed here.
+    """
+    if entry[:4] in (b"GBIX", b"GVRT"):
+        from . import pso_gc
+        rgba = pso_gc.gvr_decode(entry)              # (h, w, 4) uint8
+        h, w = rgba.shape[:2]
+        return w, h, rgba.tobytes()                  # ninja.png wants a flat RGBA byte buffer
+    w, h, rgba, _fmt = ninja.pvr_decode(entry)
+    return w, h, rgba
+
 def build(disc, cls: str = "C", head: int = 0, colour: int = 0, out_dir: Path | None = None, name: str | None = None,
           section_id: int = 7):
     """-> uap.Manifest (textures written as PNGs under out_dir/textures). disc: a gbox.gdrom.GDRom."""
     cls = cls.upper()
-    body_nj = ninja.NJ(disc.read(f"PSO/PL{cls}BDY00.NJ"))
-    head_nj = ninja.NJ(disc.read(f"PSO/PL{cls}HED{head:02d}.NJ"))
+    # The GameCube disc stores these flat and lower-case (`plAbdy00.nj`); only a Dreamcast rip has `PSO/PL...`. The
+    # translator picks whichever the disc actually has (gbox.pso_gc_paths), which is what made this function fail on
+    # GPOE8P before (it asked for a `PSO/` directory the disc does not contain).
+    body_nj = pso_gc_paths.nj_part(disc, f"PSO/PL{cls}BDY00.NJ")
+    head_nj = pso_gc_paths.nj_part(disc, f"PSO/PL{cls}HED{head:02d}.NJ")
     mount = HEAD_MOUNT.get(cls, 59)
     mw = body_nj.bones[mount]["m"]
     # put the head's triangles into the body as extra texture ids (100 + id), moved to the mount, weighted to it
@@ -82,14 +104,14 @@ def build(disc, cls: str = "C", head: int = 0, colour: int = 0, out_dir: Path | 
     name = name or f"pso_{CLASSES['ABCDEFGHI'.index(cls)].lower()}_h{head}_c{colour}"
     tex_files: list[str | None] = [None] * 102
     if out_dir is not None:
-        ents = afs(disc.read(f"PSO/PL{cls}TEX.AFS"))
+        ents = afs(pso_gc_paths.read_part(disc, f"PSO/PL{cls}TEX.AFS"))
         if cls == "C":
             b_ids, h_ids = hucast_textures(colour, head, section_id)
         else:                                               # ponytail: other classes' AFS layouts not mapped yet
             b_ids, h_ids = list(range(5)), []
         (Path(out_dir) / "textures").mkdir(parents=True, exist_ok=True)
         for slot, idx in [(t, i) for t, i in enumerate(b_ids)] + [(100 + t, i) for t, i in enumerate(h_ids)]:
-            w, h, rgba, _ = ninja.pvr_decode(ents[idx])
+            w, h, rgba = decode_texture_entry(ents[idx])
             rel = f"textures/afs{idx:03d}.png"
             (Path(out_dir) / rel).write_bytes(ninja.png(w, h, rgba))
             tex_files[slot] = rel
@@ -289,7 +311,7 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
     if cls not in CLASS_ROLES:
         raise ValueError(f"unknown PSO class letter {cls!r} (A..I)")
     bpath, mpath, tpath = f"PSO/PL{cls}BDY00.NJ", f"PSO/PL{cls}NJ.BML", f"PSO/PL{cls}TEX.AFS"
-    body_file = disc.read(bpath)
+    body_file = pso_gc_paths.read_part(disc, bpath)
     data = body_file[8:8 + struct.unpack_from("<I", body_file, 4)[0]]
     nodes = ninja.tree_nodes(data, 0)
     nj = ninja.NJ(body_file)
@@ -317,7 +339,7 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
                     o += 2
             if mat:
                 break
-    bml = disc.read(mpath)
+    bml = pso_gc_paths.read_part(disc, mpath)
     extras_bml = [n for n in (e["name"].split(b"\0")[0].decode("latin-1").lower() for e in bml_files(bml))
                   if n[3:6] in ("hed", "hai", "cap")]
     bml_sec = (disc.files[mpath][1] + 2047) // 2048
@@ -359,7 +381,7 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
     progress(20, f"Fitting {name} to the {CLASSES['ABCDEFGHI'.index(cls)]} body ({len(nodes)} nodes)")
     r = NS.fit(model, roles, tgt, work, name, PSO_BUDGETS, blender, encode, 128, scale, progress)
     body_nj, bml2 = r["data"]
-    afs_data = bytearray(disc.read(tpath))
+    afs_data = bytearray(pso_gc_paths.read_part(disc, tpath))
     n = struct.unpack_from("<I", afs_data, 4)[0]
     tab = [struct.unpack_from("<II", afs_data, 8 + 8 * i) for i in range(n)]
     progress(85, f"Writing the atlas into {n} class textures")

@@ -80,9 +80,15 @@ def donor_check(meta: dict, *, tier: str = "full", library: Path | None = None) 
     return None
 
 
-def donor_pool(library: Path, *, tier: str = "full") -> list[dict]:
-    """Library entries that can be a body donor: skinned, the tier's roles on distinct joints, whatever the game."""
-    out = [meta for meta in C.list_all(Path(library)) if donor_check(meta, tier=tier) is None]
+def donor_pool(library: Path, *, tier: str = "full", rejects: dict[str, str] | None = None) -> list[dict]:
+    """Library entries that can be a body donor: skinned, the tier's roles on distinct joints, whatever the game,
+    and not on RE6's reject list (`rejects`, default gbox.donor_rejects: out of proportion on the native rig, or
+    swapped out by the operator), so every draw from this pool (plan, re6_switch_enemies.plan_pool, the gallery
+    skin's library donors) takes the next candidate instead."""
+    from . import donor_rejects
+    rejected = donor_rejects.rejected("re6") if rejects is None else dict(rejects)
+    out = [meta for meta in C.list_all(Path(library)) if donor_check(meta, tier=tier) is None
+           and meta.get("slug") not in rejected]
     out.sort(key=lambda meta: meta["slug"])
     if not out:
         raise CastError("no library character with a complete role rig is available as a donor")

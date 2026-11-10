@@ -119,6 +119,44 @@ def test_a_write_failing_part_way_puts_the_slot_back():
     assert ad.word(0x2951D4) == 0x528004E0 and ad.word(0x295254) == 0x71009D5F, "no give without its searches"
 
 
+def test_the_case_model_reproduces_the_live_hunk_case():
+    """Read live 2026-11-10 (HUNK, a stock round): the items' case places (+0xA / +0xB hold twice the centre) put the
+    Custom TMP at 0,0, the TMP ammo at 4,0, the three grenades at 6, 7, 8 and the spray at 9 of the top row."""
+    got = [(i, at[:2]) for i, at in W.case_layout(W.MERC_LOADOUTS[3]["items"])]
+    assert got == [(0x3E, (0, 0)), (0x20, (4, 0)), (0x01, (6, 0)), (0x01, (7, 0)), (0x01, (8, 0)), (0x05, (9, 0))]
+    live_centre_x2 = [(3, 1), (9, 0), (12, 1), (14, 1), (16, 1), (18, 1)]
+    for (iid, (c, r)), want in zip(got, live_centre_x2):
+        w, h = W.ITEM_SHAPE[iid]
+        assert (2 * c + w - 1, 2 * r + h - 1) == want
+
+
+def test_every_stock_loadout_fits_the_case():
+    for ch, lo in W.MERC_LOADOUTS.items():
+        assert W.case_fits(lo["items"]), W.CHARACTERS[ch]
+
+
+def test_a_give_with_no_room_is_left_out():
+    """The cause of a null item in the loadout code: Ada drawn a Chicago Typewriter and a Riot Gun has no room left for
+    her semi-auto rifle, which the code after the gives then searches for (0x29566C) and reads through a null."""
+    gives = W.merc_gives(2, [0x34, 0x94])
+    left_out = [W.name(i) for i, at in W.case_layout(gives) if at is None]
+    assert left_out == ["Rifle (semi-auto)"] and not W.case_fits(gives)
+    assert W.merc_gives(0, [0x94, 0x27])[:2] == [(0x94, 1), (0x27, 1)], "slots replaced at their stock places"
+
+
+def test_a_draw_never_leaves_an_item_out_of_the_case():
+    """Regression: no loadout draw (random or with a chosen weapon) is one the case cannot hold."""
+    import random
+    for seed in range(40):
+        for fixed in (None, 0x34):
+            draws = Mods._draw_loadouts(random.Random(seed), fixed=fixed)
+            for ch, ids in draws.items():
+                assert W.case_fits(W.merc_gives(ch, ids)), (seed, fixed, W.CHARACTERS[ch], ids)
+                assert len(ids) == len(W.LOADOUT_SLOTS[ch])
+                if fixed is not None and ids[0] is not None:
+                    assert ids[0] == fixed
+
+
 def test_only_slots_with_a_level_block_and_no_attachment_are_patched():
     """Ada's and Wesker's semi-auto rifles (the scope / the rifle code) and Krauser's bow (no level block) stay stock."""
     ids = {ch: [s["id"] for s in slots] for ch, slots in W.LOADOUT_SLOTS.items()}
