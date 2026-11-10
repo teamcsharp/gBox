@@ -43,6 +43,14 @@ def color_of(data: bytes) -> tuple[int, int, int]:
         return im.convert("RGB").resize((1, 1)).getpixel((0, 0))
 
 
+def fake_pick(nvenc: bool = True):
+    """ring_record.pick_encoder without ffmpeg: NVENC when this 'node' has it (and it is not configured away)."""
+    def pick(pref, ffmpeg):
+        enc = "h264_nvenc" if nvenc and pref != "libx264" else "libx264"
+        return {"encoder": enc, "requested": pref, "gpu": enc == "h264_nvenc", "note": f"{enc} (fake)"}
+    return pick
+
+
 # --- pure helpers ------------------------------------------------------------------------------------------------
 
 def test_jpeg_size_reads_the_frame_header_without_decoding():
@@ -241,7 +249,9 @@ def rig(tmp_path):
     logs = []
     hub = B.Hub(store, BroadcastConfig(), live={}, desktop_frames={}, desktop_watch={}, host="lilspark",
                 clock=clock.mono, wall=clock.wall, tmp_root=tmp_path / "enc", log=logs.append, autostart=False,
-                agent_owned=lambda sid: sid.endswith("-bot"))
+                agent_owned=lambda sid: sid.endswith("-bot"), pick_encoder=fake_pick(),
+                local_display=lambda display, hint: (tuple(hint) if hint else (1280, 720))
+                if display in (":90", ":91", ":92") else None)          # the Xvfb displays of this fake Spark
     store.put("worker", "spark", {"id": "spark", "name": "lilspark", "os": "linux", "last_seen": clock.w})
     store.put("worker", "jay", {"id": "jay", "name": "JAYBUILTFINALE", "os": "windows", "last_seen": clock.w})
 
@@ -475,7 +485,7 @@ class FakeProc:
         self.stdout.q.put(b"")
 
 
-def make_encoder(tmp_path, **settings):
+def make_encoder(tmp_path, nvenc: bool = False, direct=None, **settings):
     procs = []
 
     def popen(argv, **kw):
@@ -485,21 +495,22 @@ def make_encoder(tmp_path, **settings):
     feed = B.Feed("program", clock.mono)
     feed.mode, feed.last = "hold", jpg()
     enc = B.Encoder(feed, BroadcastConfig(audio="off", **settings), tmp_path / "enc", popen=popen, clock=clock.mono,
-                    log=lambda m: None, ffmpeg="ffmpeg")
+                    wall=clock.wall, log=lambda m: None, ffmpeg="ffmpeg", pick=fake_pick(nvenc), direct_for=direct)
     return enc, procs, clock
 
 
 def test_encoder_argv_tee_mpegts_and_hls(tmp_path):
-    enc, _, _ = make_encoder(tmp_path)
+    enc, _, _ = make_encoder(tmp_path)                      # a node without NVENC: "auto" is libx264
     a = enc.argv()
     joined = " ".join(a)
-    assert "-f mjpeg -framerate 30 -i pipe:0" in joined and "-c:v libx264" in joined and "-preset ultrafast" in joined
+    assert "-f mjpeg -framerate 60 -i pipe:0" in joined and "-c:v libx264" in joined and "-preset ultrafast" in joined
     assert "scale=1280:720:force_original_aspect_ratio=decrease" in joined and "pad=1280:720" in joined
-    assert "-g 30" in joined and "-bf 0" in joined and "-b:v 2500k" in joined
+    assert "-g 60" in joined and "-bf 0" in joined and "-b:v 8000k" in joined
     assert a[a.index("-f", a.index("-bf")) + 1] == "tee"
     assert a[-1].startswith("[f=mpegts:mpegts_flags=+pat_pmt_at_frames") and "]pipe:1|[f=hls:" in a[-1]
     assert a[-1].endswith("]index.m3u8") and "start_number=0" in a[-1] and "discont_start" not in a[-1]
-    assert 'hls_list_size=12' in a[-1] and 'hls_delete_threshold=12' in a[-1]
+    assert 'hls_list_size=12' in a[-1] and 'hls_delete_threshold=20' in a[-1] and "append_list" not in a[-1]
+    assert "-output_ts_offset" not in a
     if os.name == "posix" and shutil.which("nice"):
         assert a[:3] == ["nice", "-n", "10"]
     with_audio = " ".join(enc.argv(audio_fd=7, start_number=12))
@@ -507,9 +518,16 @@ def test_encoder_argv_tee_mpegts_and_hls(tmp_path):
     assert '-thread_queue_size 256 -f s16le' in with_audio
     assert "-f s16le -ar 48000 -ac 2 -i pipe:7" in with_audio and "-map 1:a" in with_audio and "-c:a aac" in with_audio
     assert "start_number=12" in with_audio and "discont_start" in with_audio
-    nv, _, _ = make_encoder(tmp_path, encoder="h264_nvenc", size="960x540", ts_fps=25, video_kbps=1800)
+    resumed = enc.argv(start_number=12, append=True, ts_offset=41.5)
+    assert "append_list" in resumed[-1] and "discont_start" not in resumed[-1], "a continued list marks its own cut"
+    assert resumed[resumed.index("-output_ts_offset") + 1] == "41.500", "the timeline goes on across restarts"
+    nv, _, _ = make_encoder(tmp_path, nvenc=True, encoder="h264_nvenc", size="960x540", ts_fps=25, video_kbps=1800)
     j = " ".join(nv.argv())
     assert "-c:v h264_nvenc" in j and "scale=960:540" in j and "-framerate 25" in j and "-b:v 1800k" in j
+    auto, _, _ = make_encoder(tmp_path, nvenc=True)
+    assert "-c:v h264_nvenc -preset p1 -tune ll -rc cbr" in " ".join(auto.argv()), "auto: NVENC where it works"
+    cpu, _, _ = make_encoder(tmp_path, nvenc=True, encoder="libx264")
+    assert "-c:v libx264" in " ".join(cpu.argv()) and cpu.status()["encoder"] == "libx264"
 
 
 def test_hls_window_and_recently_referenced_segment_grace_are_configured_together(tmp_path):
@@ -541,6 +559,223 @@ def test_encoder_feeds_pictures_and_restarts_a_dead_or_stuck_ffmpeg(tmp_path):
     assert enc.check(clock.t) == "scheduled" and procs[1].killed, "a stuck ffmpeg is killed"
     enc.stop()
     assert enc.closed and not enc.dir.exists()
+
+
+# --- direct capture: a Spark session's own display straight into the encoder -----------------------------------------
+
+def source(display=":90", sid="spark-a", size=(1280, 720)):
+    return {"display": display, "size": list(size), "sid": sid, "row": {"session_id": sid}}
+
+
+def test_settings_defaults_are_720p60_at_8_mbit_nvenc_where_it_works_and_direct_and_the_docs_say_so():
+    s = BroadcastConfig()
+    assert (s.ts_fps, s.size, s.video_kbps, s.encoder) == (60, "1280x720", 8000, "auto")
+    assert s.direct_capture is True and s.direct_nice == 0 and s.nice == 10
+    assert (s.hls_segment_s, s.hls_window_segments, s.hls_retained_segments) == (1, 12, 20)
+    assert B.MAX_FPS == 60 and B.clamp_fps(120, 30) == 60 and B.clamp_fps("x", 60) == 60
+    import re
+    import tomllib
+    doc = (Path(B.__file__).resolve().parents[1] / "docs" / "broadcast.md").read_text(encoding="utf-8")
+    documented = tomllib.loads(re.search(r"## Settings\s+```toml\n(.*?)```", doc, re.S).group(1))["broadcast"]
+    assert {"ts_fps", "video_kbps", "encoder", "direct_capture", "direct_nice", "hls_retained_segments"} <= set(documented)
+    for key, value in documented.items():
+        assert getattr(s, key) == value, f"docs/broadcast.md says {key} = {value!r}"
+
+
+def test_direct_argv_grabs_the_display_into_nvenc_with_no_jpeg_and_no_scaler(tmp_path):
+    enc, _, clock = make_encoder(tmp_path, nvenc=True)
+    a = enc.direct_argv(source())
+    j = " ".join(a)
+    assert "-f x11grab -draw_mouse 0 -framerate 60 -video_size 1280x720 -i :90" in j
+    assert f"-use_wallclock_as_timestamps 1 -itsoffset -{enc.t_ref} -f x11grab" in j and "-copyts" in a
+    assert "-c:v h264_nvenc -preset p1 -tune ll -rc cbr -b:v 8000k" in j and "-g 60 -bf 0" in j
+    assert "mjpeg" not in j and "pipe:0" not in a and "-vf" not in a, "no JPEG, no scaler at the canvas size"
+    assert "-nostdin" in a and a[a.index("-filter_threads") + 1] == "1" and a[a.index("-threads") + 1] == "1"
+    assert a[a.index("-f", a.index("-bf")) + 1] == "tee" and "]pipe:1|[f=hls:" in a[-1] and "start_number=0" in a[-1]
+    assert "nice" not in a[:6], "direct_nice = 0"
+    sound = " ".join(enc.direct_argv(source(), audio_fd=9, audio_at=clock.w + 0.25))
+    assert f"-itsoffset {clock.w + 0.25 - enc.t_ref:.6f} -f s16le -ar 48000 -ac 2 -i pipe:9" in sound, \
+        "the sound starts at its own wall-clock moment, on the picture's clock"
+    assert "-copyts -map 0:v -map 1:a" in sound and "-c:a aac" in sound
+    port = " ".join(enc.direct_argv(source(size=(960, 720))))
+    assert "-video_size 960x720" in port and "scale=1280:720:force_original_aspect_ratio=decrease" in port \
+        and "pad=1280:720" in port, "a display that is not the canvas is fitted into it"
+    cpu, _, _ = make_encoder(tmp_path, nvenc=False)
+    c = " ".join(cpu.direct_argv(source()))
+    assert "-c:v libx264 -preset ultrafast -tune zerolatency -threads 2 -pix_fmt yuv420p" in c and "-g 60" in c
+    if os.name == "posix" and shutil.which("nice"):
+        niced, _, _ = make_encoder(tmp_path, nvenc=True, direct_nice=5)
+        n = niced.direct_argv(source())
+        assert n[n.index("nice"):n.index("nice") + 3] == ["nice", "-n", "5"]
+
+
+def test_direct_capture_runs_and_falls_back_to_the_jpeg_path_when_it_does_not_start(tmp_path):
+    want = {"src": source()}
+    enc, procs, clock = make_encoder(tmp_path, nvenc=True, direct=lambda feed: (want["src"], "the session's display"))
+    enc.dir.mkdir(parents=True)
+    enc._spawn()
+    first = procs[0]
+    assert "x11grab" in first.argv and first.kw["stdin"] == subprocess.DEVNULL and enc.mode == "direct"
+    st = enc.status()
+    assert (st["mode"], st["display"], st["capture_size"], st["size"], st["fps"], st["encoder"], st["gpu"]) == \
+        ("direct", ":90", "1280x720", "1280x720", 60, "h264_nvenc", True) and not st["scaled"]
+    assert st["capture_session"] == "spark-a" and st["encoder_setting"] == "auto"
+    time.sleep(0.05)
+    assert enc.frames_in == 0 and first.stdin.getvalue() == b"", "nothing is written to a direct ffmpeg"
+    first.code = 1                                         # no X display, NVENC refused...: no output at all
+    first.stdout.q.put(b"")
+    assert enc.check(clock.t) == "scheduled"
+    assert "direct capture of :90 failed" in " ".join(enc.errors)
+    assert enc.check(clock.t + 1) == "restarted"
+    jpeg = procs[1]
+    assert "-f mjpeg" in " ".join(jpeg.argv) and "x11grab" not in jpeg.argv and jpeg.kw["stdin"] == subprocess.PIPE
+    st = enc.status()
+    assert st["mode"] == "jpeg" and st["display"] is None and "failed" in st["why"] and st["direct_blocked"]
+    clock.advance(5)
+    assert enc.follow(clock.t) is None and enc.mode == "jpeg", "not tried again at once"
+    clock.advance(B.DIRECT_RETRY_S[0])
+    assert enc.follow(clock.t) is None, "tried again after DIRECT_RETRY_S, once wanted for the debounce"
+    clock.advance(B.DIRECT_DEBOUNCE_S + 0.1)
+    assert enc.follow(clock.t) == "switched" and "x11grab" in procs[-1].argv and jpeg.killed
+    enc.stop()
+
+
+def test_a_switch_to_another_display_restarts_ffmpeg_after_a_debounce_and_the_hls_list_goes_on(tmp_path):
+    want = {"src": source(":90", "spark-a")}
+    enc, procs, clock = make_encoder(tmp_path, nvenc=True, direct=lambda feed: (want["src"], "own display"))
+    enc.dir.mkdir(parents=True)
+    enc._spawn()
+    assert procs[0].argv[procs[0].argv.index("-i") + 1] == ":90"
+    for n in range(3, 7):                                  # what the first ffmpeg wrote (it had slid past 0-2)
+        (enc.dir / f"seg_{n:05d}.ts").write_bytes(b"\x47" * 188)
+    (enc.dir / "seg_00007.ts.tmp").write_bytes(b"\x47")      # the segment it was writing when it was killed
+    (enc.dir / "index.m3u8").write_text("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:3\n"
+                                        + "".join(f"#EXTINF:1.000000,\nseg_{n:05d}.ts\n" for n in range(3, 7)))
+    want["src"] = source(":91", "spark-b")                 # the program moves to another Spark game
+    assert enc.follow(clock.t) is None, "debounce"
+    clock.advance(B.DIRECT_DEBOUNCE_S / 2)
+    assert enc.follow(clock.t) is None
+    clock.advance(B.DIRECT_DEBOUNCE_S / 2 + 0.01)
+    assert enc.follow(clock.t) == "switched"
+    new, switched = procs[1].argv, clock.t
+    assert procs[0].killed and new[new.index("-i") + 1] == ":91" and enc.switches == 1
+    assert "append_list" in new[-1] and "start_number=3" in new[-1] and "discont_start" not in new[-1]
+    assert all((enc.dir / f"seg_{n:05d}.ts").exists() for n in range(3, 7)), "a reader behind the edge loses nothing"
+    assert not (enc.dir / "seg_00007.ts.tmp").exists()
+    assert enc.status()["capture_session"] == "spark-b" and enc.status()["switches"] == 1
+    want["src"] = source(":90", "spark-a")                 # and straight back: held, a flapping source cannot loop
+    enc.follow(clock.t)
+    clock.advance(B.DIRECT_DEBOUNCE_S + 0.1)
+    assert enc.follow(clock.t) is None and len(procs) == 2
+    clock.t = switched + B.DIRECT_HOLD_S + 0.01
+    assert enc.follow(clock.t) == "switched" and len(procs) == 3
+    want["src"] = None                                     # a slate, a hold, a Windows game: the JPEG path
+    clock.advance(B.DIRECT_HOLD_S)
+    assert enc.follow(clock.t) is None
+    clock.advance(B.DIRECT_DEBOUNCE_S + 0.1)
+    assert enc.follow(clock.t) == "switched" and enc.mode == "jpeg" and "-f mjpeg" in " ".join(procs[3].argv)
+    assert "-output_ts_offset" in procs[3].argv, "the JPEG ffmpeg goes on along the same timeline"
+    enc.stop()
+
+
+def test_a_list_with_a_missing_segment_starts_a_new_numbered_list(tmp_path):
+    enc, procs, _ = make_encoder(tmp_path)
+    enc.dir.mkdir(parents=True)
+    (enc.dir / "seg_00004.ts").write_bytes(b"x")
+    (enc.dir / "index.m3u8").write_text("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:3\n#EXTINF:1.0,\nseg_00003.ts\n"
+                                        "#EXTINF:1.0,\nseg_00004.ts\n")
+    enc._spawn()
+    assert "start_number=5" in procs[0].argv[-1] and "discont_start" in procs[0].argv[-1]
+    assert "append_list" not in procs[0].argv[-1] and not any(enc.dir.iterdir())
+    enc.stop()
+
+
+def test_local_display_size_reads_the_session_report_then_xdpyinfo_once_and_never_a_desktop(tmp_path, monkeypatch):
+    monkeypatch.setenv("DISPLAY", ":1")
+    for name in ("X90", "X1", "X0"):
+        (tmp_path / name).write_text("")
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "screen #0:\n  dimensions:    960x720 pixels (253x190 mm)\n", "")
+    kw = dict(run=run, which=lambda name: "/usr/bin/" + name, sockets=tmp_path, host_os=lambda: "Linux")
+    B._DISPLAY_SIZES.clear()
+    assert B.local_display_size(":90", [1280, 720], **kw) == (1280, 720) and not calls, "the session's own report"
+    assert B.local_display_size(":90", None, **kw) == (960, 720)
+    assert B.local_display_size(":90.0", None, **kw) == (960, 720) and len(calls) == 1, "asked once per X server"
+    assert B.local_display_size(":91", None, **kw) is None, "not a display on this machine"
+    assert B.local_display_size(":1", None, **kw) is None, "this process's own desktop"
+    assert B.local_display_size(":0", None, **kw) is None and B.local_display_size("host:90", None, **kw) is None
+    assert B.local_display_size(":90", None, **(kw | {"host_os": lambda: "Windows"})) is None
+    B._DISPLAY_SIZES.clear()
+    assert B.local_display_size(":90", None, **(kw | {"which": lambda name: None})) == (1280, 720), "SESSION_SIZE"
+    B._DISPLAY_SIZES.clear()
+
+
+def test_hub_direct_source_is_a_live_session_display_on_this_machine_and_nothing_else(rig):
+    hub, store, clock, session, frame, tick, _ = rig
+    store.put("worker", "other", {"id": "other", "name": "spark2", "os": "linux", "last_seen": clock.w})
+    session("spark-a", "RE5", detail={"display": ":90", "pid": 77, "display_size": [1280, 720]})
+    session("spark-p", "GoldenEye", detail={"display": ":92", "display_size": [960, 720]})
+    session("spark-d", "Desktop", detail={"display": ":0"})
+    session("spark-x", "Gone", detail={"display": ":99"})
+    session("jay-w", "Windows game")
+    session("other-z", "Elsewhere", detail={"display": ":90"})
+    for sid in ("spark-a", "spark-p", "spark-d", "spark-x", "jay-w", "other-z"):
+        frame(sid, jpg())
+
+    def direct(sid):
+        f = hub.attach("session:" + sid)
+        tick()
+        assert f.mode == "live"
+        return hub._direct_for(f)
+    src, why = direct("spark-a")
+    assert (src["display"], src["size"], src["sid"]) == (":90", [1280, 720], "spark-a") and ":90" in why
+    assert direct("spark-p")[0]["size"] == [960, 720]
+    assert direct("spark-d") == (None, "the session has no display of its own"), "never a desktop"
+    assert direct("spark-x")[0] is None and "not on this machine" in direct("spark-x")[1]
+    assert direct("jay-w")[0] is None and "JAYBUILTFINALE" in direct("jay-w")[1]
+    assert direct("other-z")[0] is None and "spark2" in direct("other-z")[1], "a Linux game on another host"
+    f = hub.feeds["session:spark-a"]
+    clock.advance(hub.s.hold_s + 1)
+    tick()
+    assert f.mode == "slate" and hub._direct_for(f)[0] is None, "a slate is the JPEG path"
+    frame("spark-a", jpg())
+    tick()
+    hub.s = BroadcastConfig(direct_capture=False)
+    assert hub._direct_for(f) == (None, "direct capture is off ([broadcast] direct_capture = false)")
+
+
+def test_hub_program_switch_moves_the_direct_capture_to_the_new_game_display(rig):
+    hub, store, clock, session, frame, tick, logs = rig
+    procs = []
+    hub.popen = lambda argv, **kw: procs.append(FakeProc(argv, **kw)) or procs[-1]
+    hub.s = BroadcastConfig(audio="off")
+    session("spark-a", "RE5", detail={"display": ":90"})
+    session("spark-b", "RE6", detail={"display": ":91"})
+    frame("spark-a", jpg())
+    frame("spark-b", jpg())
+    hub.set_program("session", "spark-a")
+    hub.feed("program")
+    tick()
+    enc = hub.encoder("program")
+    try:
+        assert enc.mode == "direct" and procs[0].argv[procs[0].argv.index("-i") + 1] == ":90"
+        hub.set_program("session", "spark-b")
+        for _ in range(4):
+            clock.advance(0.4)
+            frame("spark-a", jpg())
+            frame("spark-b", jpg())
+            tick()
+        assert enc.switches == 1 and procs[0].killed and procs[-1].argv[procs[-1].argv.index("-i") + 1] == ":91"
+        (st,) = hub.status()["encoders"]
+        assert (st["mode"], st["display"], st["capture_session"], st["encoder"]) == \
+            ("direct", ":91", "spark-b", "h264_nvenc")
+        assert hub.status()["settings"]["direct_capture"] is True
+        assert any("switching from :90 to :91" in m for m in logs)
+    finally:
+        enc.stop()
 
 
 def test_late_ts_viewers_start_at_the_newest_gop_and_laggards_skip_to_the_next(tmp_path):
@@ -681,6 +916,11 @@ def test_retap_follows_the_feed_session(tmp_path):
     enc.feed.mode = "slate"
     enc.retap(clock.t + 0.2)
     assert enc.tap is None, "a slate has no sound"
+    enc.mode, enc.source = "direct", source(":90", "spark-a")   # direct: the sound of the display being captured,
+    enc.feed.sid, enc.feed.mode = "spark-b", "live"             # also in the moment before a switch restarts ffmpeg
+    enc.retap(clock.t + 0.25)
+    assert enc.tap.index == 11 and enc.tap_sid == "spark-a"
+    enc.mode, enc.source = "jpeg", None
     enc.feed.sid, enc.feed.mode = "spark-x", "live"
     enc.retap(clock.t + 0.3)
     assert enc.tap is None and enc.tap_checked == clock.t + 0.3
@@ -728,10 +968,47 @@ def test_audio_writer_keeps_time_with_silence_and_the_tap(tmp_path):
     assert b"\x05\x00" in got and b"\x00\x00\x00\x00" in got, "the tap's samples, padded with silence"
 
 
+def test_direct_sound_keeps_the_wall_clock_without_pictures_and_never_trails_the_picture(tmp_path):
+    enc, _, _ = make_encoder(tmp_path)
+    enc.clock = time.monotonic
+    pcm = []
+    tap = B.AudioTap(5, popen=lambda argv, **kw: pcm.append(PcmProc(argv, **kw)) or pcm[-1])
+    pcm[0].stdout.q.put(b"\x07\x00" * int(B.AUDIO_BYTES_S * 0.3 / 2))        # 0.3 s of sound piled up already
+    deadline = time.time() + 5
+    while tap.pending() < int(B.AUDIO_BYTES_S * 0.3) - 4 and time.time() < deadline:
+        time.sleep(0.01)
+    r, w = os.pipe()
+    sentinel = object()
+    enc.proc, enc.tap, enc.mode = sentinel, tap, "direct"
+    enc._reset_media(sentinel, time.monotonic())
+    got = bytearray()
+
+    def drain():
+        with os.fdopen(r, "rb", buffering=0) as f:
+            while chunk := f.read(65536):
+                got.extend(chunk)
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    writer = threading.Thread(target=enc._write_audio_wall, args=(sentinel, w), daemon=True)
+    writer.start()
+    time.sleep(0.5)                                        # no picture is written in direct mode: the clock paces it
+    enc.closed = True
+    writer.join(5)
+    reader.join(5)
+    tap.close()
+    seconds = len(got) / B.AUDIO_BYTES_S
+    assert 0.4 < seconds < 0.7 and len(got) % 4 == 0, seconds
+    assert b"\x07\x00" in got and b"\x00\x00\x00\x00" in got, "the tap's samples, then silence"
+    assert got.count(b"\x07") * 2 <= int(B.AUDIO_BYTES_S * (B.TAP_KEEP_S + 0.01)), "the backlog was cut, not played"
+    assert enc._media["audio_discarded_bytes"] >= int(B.AUDIO_BYTES_S * 0.2)
+    st = enc.status()
+    assert st["media_audio_s"] > 0.4 and abs(st["audio_lead_s"]) < 0.25
+
+
 def test_media_clock_is_per_process_and_does_not_advance_after_restart(tmp_path):
     enc,_,_=make_encoder(tmp_path)
     old,new=object(),object();enc.proc=old;enc._reset_media(old)
-    for _ in range(30):assert enc._accept_video(old)
+    for _ in range(enc.fps):assert enc._accept_video(old)
     assert enc.status()['media_video_s']==1
     enc.proc=new;enc._reset_media(new)
     assert not enc._accept_video(old)

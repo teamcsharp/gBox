@@ -13,8 +13,16 @@ each as
   .mjpg          MJPEG at a constant frame rate: the newest frame every tick, so a quiet source repeats its picture.
                  It never ends on a switch, a stall or a session end: the last frame holds, then a slate.
   .jpg           the newest picture
-  .ts            H.264 (+ AAC) in MPEG-TS over HTTP: one ffmpeg per watched feed, at nice 10, only while watched
+  .ts            H.264 (+ AAC) in MPEG-TS over HTTP: one ffmpeg per watched feed, only while watched
   /hls/index.m3u8  the same encode as HLS
+H.264 PATHS (the same tee, routes and viewers either way)
+  direct         the feed shows a live session of THIS machine (the Spark: control plane and worker are one service):
+                 ffmpeg grabs that session's own Xvfb display (x11grab, the ring recorder's capture) straight into
+                 h264_nvenc (libx264 when NVENC does not work here), 1280x720 at 60 fps, scaled only when the display
+                 is not the canvas. No JPEG anywhere in between. A switch to another display restarts ffmpeg (after a
+                 short debounce); the HLS list goes on with a discontinuity and .ts readers stay connected.
+  jpeg           everything else (Windows PCs, stills, crops, slates, a session on another host), and the fallback
+                 when a direct capture does not start: the feed's JPEGs, paced at ts_fps, decoded, scaled to the canvas.
 SOURCES (what the control plane already receives; nothing new runs on the PCs)
   spark_capture   a Spark session's x11grab stream (POST /api/sessions/{sid}/stream, up to 60 fps)
   windows_stream  a Windows session its worker streams (gdigrab: RPCS3, RocketLauncher)
@@ -45,11 +53,14 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from fastapi import Body, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
+
+from .session_display import SESSION_SIZE      # every Linux session display is this size unless its detail says so
 
 BOUNDARY = "gboxframe"
 MEDIA_MJPEG = f"multipart/x-mixed-replace; boundary={BOUNDARY}"
@@ -77,8 +88,18 @@ AUDIO_RATE, AUDIO_CH = 48000, 2
 AUDIO_BYTES_S = AUDIO_RATE * AUDIO_CH * 2
 AUDIO_BUFFER_S = 0.4         # captured sound kept ahead of the encoder; more is dropped (a late tap never adds delay)
 AUDIO_RECHECK_S = 3.0        # a session without a sound stream is looked at again this often (Dolphin opens it late)
+TAP_LATENCY_S = 0.12         # direct path: captured sound older than this is dropped down to TAP_KEEP_S (no lag build-up)
+TAP_KEEP_S = 0.04
+DIRECT_DEBOUNCE_S = 1.0      # a new direct-capture source must be wanted this long before ffmpeg restarts for it
+DIRECT_HOLD_S = 5.0          # and at most one such switch this often (a flapping source cannot restart ffmpeg in a loop)
+DIRECT_RETRY_S = (60.0, 600.0)   # a direct capture that died without output: the JPEG path this long (doubling), then again
+DIRECT_QUEUE = 32            # raw frames queued between the grab and the encoder (~0.5 s at 60 fps): a busy encoder
+                             # makes the grab wait instead of missing frames
+TS_REBASE_S = 72000.0        # the encoder's timeline restarts near 0 at a restart after this long (MPEG-TS wraps at 26.5 h)
+PRUNE_S = 10.0               # leftover HLS segments of a previous ffmpeg are swept this often
 SEGMENT_RE = re.compile(r"seg_(\d{5,})\.ts")
 SESSION_ID_RE = re.compile(r"[\w-]{1,100}")
+X11_SOCKETS = Path("/tmp/.X11-unix")
 
 
 # --- small pure helpers ------------------------------------------------------------------------------------------
@@ -571,6 +592,21 @@ class AudioTap:
             del self.buf[:n]
         return got
 
+    def pending(self) -> int:
+        """Bytes captured and not taken yet."""
+        with self.lock:
+            return len(self.buf)
+
+    def drop_to(self, keep: int) -> int:
+        """Drop the oldest captured sound down to `keep` bytes (the newest stay); returns the bytes dropped."""
+        with self.lock:
+            extra = len(self.buf) - max(0, keep)
+            extra -= extra % 4                                   # whole frames from the front: the samples stay aligned
+            if extra <= 0:
+                return 0
+            del self.buf[:extra]
+            return extra
+
     def alive(self) -> bool:
         return self.proc.poll() is None
 
@@ -579,6 +615,65 @@ class AudioTap:
             self.proc.kill()
         except Exception:                                        # noqa: BLE001
             pass
+
+
+# --- a session's own display: the direct-capture source --------------------------------------------------------------
+
+_DISPLAY_SIZES: dict[tuple[str, int], tuple[int, int]] = {}
+
+
+def session_display_number(display: Any) -> int | None:
+    """N of a session's private Xvfb display ":N" (adapters.Display: :90 and up), or None. Never the desktop's own
+    display (:0 or this process's $DISPLAY): only a game's own picture goes on air."""
+    m = re.fullmatch(r":(\d{1,4})(?:\.0)?", str(display or "").strip())
+    if not m or int(m.group(1)) == 0:
+        return None
+    own = re.fullmatch(r"[^:]*:(\d{1,4})(?:\.\d+)?", os.environ.get("DISPLAY", "").strip())
+    if own and int(own.group(1)) == int(m.group(1)):
+        return None
+    return int(m.group(1))
+
+
+def _size_of(value: Any) -> tuple[int, int] | None:
+    try:
+        w, h = (int(v) for v in value)
+    except (TypeError, ValueError):
+        return None
+    return (w, h) if 64 <= w <= 7680 and 64 <= h <= 4320 else None
+
+
+def local_display_size(display: str, hint: Any = None, *, run=subprocess.run, which=shutil.which,
+                       sockets: Path = X11_SOCKETS, host_os: Callable[[], str] = platform.system) -> tuple[int, int] | None:
+    """(w, h) of a session display that exists on THIS machine, else None. The size: the session's own report
+    (detail.display_size), else xdpyinfo (once per X server, keyed by its socket), else SESSION_SIZE."""
+    n = session_display_number(display)
+    if n is None or host_os() != "Linux":
+        return None
+    try:
+        ino = (sockets / f"X{n}").stat().st_ino
+    except OSError:
+        return None
+    size = _size_of(hint)
+    if size:
+        return size
+    key = (f":{n}", ino)
+    if key not in _DISPLAY_SIZES:
+        got = None
+        if which("xdpyinfo"):
+            try:
+                r = run(["xdpyinfo", "-display", f":{n}"], capture_output=True, text=True, timeout=3)
+                m = re.search(r"dimensions:\s+(\d+)x(\d+) pixels", r.stdout or "")
+                got = _size_of((m.group(1), m.group(2))) if m else None
+            except (OSError, subprocess.SubprocessError):
+                got = None
+        if len(_DISPLAY_SIZES) > 64:
+            _DISPLAY_SIZES.clear()
+        _DISPLAY_SIZES[key] = got or tuple(SESSION_SIZE)
+    return _DISPLAY_SIZES[key]
+
+
+def _source_key(source: dict | None):
+    return (source["display"], tuple(source["size"]), source.get("sid")) if source else None
 
 
 # --- H.264: one ffmpeg per watched feed -----------------------------------------------------------------------------
@@ -610,24 +705,55 @@ class Sub:
         self.q.put_nowait(piece)
 
 
+def _pick_encoder(pref: str, ffmpeg: list[str]) -> dict:
+    """ring_record's encoder check (NVENC listed and a 5-frame test encode passes; once per run and ffmpeg, shared with
+    the ring recorder in the same process)."""
+    from .ring_record import pick_encoder
+    return pick_encoder(pref, ffmpeg)
+
+
 class Encoder:
-    """ffmpeg: the feed's pictures (written at ts_fps by a pacing thread) -> scale/pad to the canvas -> H.264 (+ AAC)
-    -> tee: MPEG-TS on stdout (fanned out to viewers, each joining at a GOP) and HLS segments in its own folder.
-    Runs at nice 10, only while someone reads it; restarted with backoff if it dies or stops taking pictures; viewers
-    stay connected through a restart."""
+    """ffmpeg -> H.264 (+ AAC) -> tee: MPEG-TS on stdout (fanned out to viewers, each joining at a GOP) and HLS segments
+    in its own folder. Two ways in, one at a time, into the same tee:
+      direct  the feed's live session plays on this machine: ffmpeg grabs that session's own X display (x11grab) into
+              the encoder at the display's size, scaled only when it is not the canvas; no JPEG is decoded. Frames carry
+              the wall clock of their grab and the sound is paced by the wall clock from its own stamped start, so
+              picture and sound share one clock (no drift). nice `direct_nice` (0), on the fast cores like the stream.
+      jpeg    the feed's pictures, written at ts_fps by a pacing thread, scaled/padded to the canvas; the sound is paced
+              by the pictures written. nice `nice` (10). Every other source, and the fallback when direct fails.
+    Runs only while someone reads it; restarted with backoff if it dies or stops producing; restarted on the feed's new
+    direct source (or back on the JPEG path) after a debounce. Viewers stay connected through every restart, the HLS
+    list goes on with a discontinuity, and timestamps go on along the encoder's wall-clock timeline."""
     STALL_S = 10.0
     BACKOFF = (0.5, 10.0)
 
-    def __init__(self, feed: Feed, settings, root: Path, *, audio_for: Callable[[Feed], int | None] | None = None,
-                 popen=subprocess.Popen, clock: Callable[[], float] = time.monotonic, log: Callable[[str], None] = print,
-                 ffmpeg: str | None = None):
-        self.feed, self.s, self.clock, self.log = feed, settings, clock, log
+    def __init__(self, feed: Feed, settings, root: Path, *, audio_for: Callable[[Any], int | None] | None = None,
+                 direct_for: Callable[[Feed], tuple[dict | None, str]] | None = None,
+                 pick: Callable[[str, list[str]], dict] | None = None,
+                 popen=subprocess.Popen, clock: Callable[[], float] = time.monotonic,
+                 wall: Callable[[], float] = time.time, log: Callable[[str], None] = print, ffmpeg: str | None = None):
+        self.feed, self.s, self.clock, self.wall, self.log = feed, settings, clock, wall, log
         self.popen = popen
         self.ffmpeg = ffmpeg or ffmpeg_path()
         self.dir = root / re.sub(r"[^A-Za-z0-9_-]+", "_", feed.key)
-        self.fps = clamp_fps(settings.ts_fps, 30)
+        self.fps = clamp_fps(settings.ts_fps, MAX_FPS)
         self.size = parse_size(settings.size)
         self.audio_for = audio_for if str(settings.audio).lower() != "off" and os.name == "posix" else None
+        self.direct_for = direct_for if bool(getattr(settings, "direct_capture", True)) else None
+        self.pick = pick or _pick_encoder
+        self.spawn_lock = threading.RLock()                  # spawns, switches and supervision, one at a time
+        self.mode = "jpeg"
+        self.source: dict | None = None                       # the display being captured (direct mode)
+        self.want: dict | None = None                         # the direct source the feed asks for now (None: JPEG)
+        self.want_since = clock()
+        self.want_why = ""
+        self.switched_at = -1e9
+        self.switches = 0
+        self.blocked: dict[tuple, tuple[float, int, str]] = {}   # (display, sid) -> (JPEG until, failures, why)
+        self.codec: dict | None = None
+        self.nvenc_fails = 0
+        self.t_ref = int(wall()) - 1                          # timestamps are wall-clock seconds since this
+        self._pruned_at = -1e9
         self.lock = threading.Lock()
         self.subs: set[Sub] = set()
         self.gop: list[bytes] = []
@@ -647,21 +773,43 @@ class Encoder:
         self.next_segment = 0
         self._media = None
 
+    # the encoder ----------------------------------------------------------------------------------------------
+    def _codec(self) -> dict:
+        """The H.264 encoder in use: [broadcast] encoder, "auto" resolved by ring_record's check (h264_nvenc when this
+        ffmpeg lists it and a test encode passes on this node, else libx264), {"encoder", "requested", "gpu", "note"}."""
+        if self.codec is None:
+            pref = str(self.s.encoder or "auto").strip().lower()
+            pref = pref if pref in ("auto", "h264_nvenc", "libx264") else "auto"
+            try:
+                got = dict(self.pick(pref, [self.ffmpeg]))
+            except Exception as e:                               # noqa: BLE001 - no check: the CPU encoder, reported
+                got = {"encoder": "libx264", "requested": pref, "gpu": False,
+                       "note": f"libx264 (CPU): the encoder check failed ({type(e).__name__}: {e})"[:200]}
+            if got.get("encoder") not in ("h264_nvenc", "libx264"):
+                got = {"encoder": "libx264", "requested": pref, "gpu": False,
+                       "note": f"libx264 (CPU): {got.get('encoder')} is not an H.264 encoder"}
+            self.codec = got
+        return self.codec
+
+    def _prefix(self, direct: bool) -> list[str]:
+        level = int(getattr(self.s, "direct_nice", 0) if direct else self.s.nice)
+        return ["nice", "-n", str(level)] if os.name == "posix" and level and shutil.which("nice") else []
+
     # argv -----------------------------------------------------------------------------------------------------
-    def argv(self, audio_fd: int | None = None, start_number: int = 0) -> list[str]:
+    def argv(self, audio_fd: int | None = None, start_number: int = 0, *, append: bool = False,
+             ts_offset: float | None = None) -> list[str]:
+        """The JPEG path: the feed's pictures on stdin (mjpeg at ts_fps), scaled/padded to the canvas."""
         w, h = self.size
         kbps, fps = int(self.s.video_kbps), self.fps
-        nice = (["nice", "-n", str(int(self.s.nice))]
-                if os.name == "posix" and int(self.s.nice) and shutil.which("nice") else [])
-        a = [*nice, self.ffmpeg, "-hide_banner", "-loglevel", "error", "-threads", "1", "-thread_queue_size", "64",
-             "-f", "mjpeg", "-framerate", str(fps), "-i", "pipe:0"]
+        a = [*self._prefix(False), self.ffmpeg, "-hide_banner", "-loglevel", "error", "-threads", "1",
+             "-thread_queue_size", "64", "-f", "mjpeg", "-framerate", str(fps), "-i", "pipe:0"]
         if audio_fd is not None:
             a += ["-thread_queue_size", "256", "-f", "s16le", "-ar", str(AUDIO_RATE), "-ac", str(AUDIO_CH), "-i", f"pipe:{audio_fd}"]
         a += ["-map", "0:v"] + (["-map", "1:a"] if audio_fd is not None else [])
         a += ["-filter_threads", "1", "-vf",
               f"scale={w}:{h}:force_original_aspect_ratio=decrease:flags=bilinear,"
               f"pad={w}:{h}:-1:-1:color=black,format=yuv420p"]
-        if str(self.s.encoder) == "h264_nvenc":
+        if self._codec()["encoder"] == "h264_nvenc":
             a += ["-c:v", "h264_nvenc", "-preset", "p1", "-tune", "ll", "-rc", "cbr", "-b:v", f"{kbps}k"]
         else:
             a += ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-b:v", f"{kbps}k",
@@ -669,15 +817,48 @@ class Encoder:
         a += ["-g", str(fps), "-keyint_min", str(fps), "-sc_threshold", "0", "-bf", "0"]
         if audio_fd is not None:
             a += ["-c:a", "aac", "-b:a", f"{int(self.s.audio_kbps)}k", "-ar", str(AUDIO_RATE), "-ac", str(AUDIO_CH)]
+        if ts_offset is not None:                                # the encoder's timeline goes on across restarts
+            a += ["-output_ts_offset", f"{max(0.0, ts_offset):.3f}"]
+        return a + self._tee(start_number, append)
+
+    def direct_argv(self, source: dict, audio_fd: int | None = None, start_number: int = 0, *, append: bool = False,
+                    audio_at: float | None = None) -> list[str]:
+        """The direct path: x11grab of the session's own display (the ring recorder's capture) -> scale/pad only when the
+        display is not the canvas -> h264_nvenc (p1, ll, CBR, a GOP of one second, no B-frames) or libx264 -> the tee.
+        Timestamps: each frame's grab time (-use_wallclock_as_timestamps) and the sound's stamped start (audio_at), both
+        less t_ref and kept as they are (-copyts), so picture and sound run on the same clock."""
+        from .cpu_affinity import fast_argv
+        from .ring_record import encoder_args
+        sw, sh = (int(v) for v in source["size"])
+        w, h = self.size
+        kbps, fps = int(self.s.video_kbps), self.fps
+        a = [*self._prefix(True), self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-threads", "1",
+             "-thread_queue_size", str(DIRECT_QUEUE), "-use_wallclock_as_timestamps", "1", "-itsoffset", f"-{self.t_ref}",
+             "-f", "x11grab", "-draw_mouse", "0", "-framerate", str(fps), "-video_size", f"{sw}x{sh}",
+             "-i", str(source["display"])]
+        if audio_fd is not None:
+            at = self.wall() if audio_at is None else audio_at
+            a += ["-thread_queue_size", "256", "-itsoffset", f"{at - self.t_ref:.6f}",
+                  "-f", "s16le", "-ar", str(AUDIO_RATE), "-ac", str(AUDIO_CH), "-i", f"pipe:{audio_fd}"]
+        a += ["-copyts", "-map", "0:v"] + (["-map", "1:a"] if audio_fd is not None else []) + ["-filter_threads", "1"]
+        if (sw, sh) != (w, h):
+            a += ["-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease:flags=bilinear,pad={w}:{h}:-1:-1:color=black"]
+        a += encoder_args(self._codec()["encoder"], kbps, fps, gop=fps, live=True)
+        if audio_fd is not None:
+            a += ["-c:a", "aac", "-b:a", f"{int(self.s.audio_kbps)}k", "-ar", str(AUDIO_RATE), "-ac", str(AUDIO_CH)]
+        return fast_argv(a + self._tee(start_number, append))
+
+    def _tee(self, start_number: int, append: bool) -> list[str]:
         seg = max(1, int(self.s.hls_segment_s))
         window = max(6, min(60, int(self.s.hls_window_segments)))
         retained = max(2, min(120, int(self.s.hls_retained_segments)))
-        flags = "delete_segments+omit_endlist+independent_segments+temp_file" + ("+discont_start" if start_number else "")
-        a += ["-f", "tee",
-              f"[f=mpegts:mpegts_flags=+pat_pmt_at_frames:mpegts_start_pid={VIDEO_PID}]pipe:1|"
-              f"[f=hls:hls_time={seg}:hls_list_size={window}:hls_delete_threshold={retained}:hls_flags={flags}:start_number={start_number}"
-              f":hls_segment_filename=seg_%05d.ts]index.m3u8"]
-        return a
+        # append_list: a restart continues the list (same numbering, one discontinuity mark where the new ffmpeg starts)
+        flags = "delete_segments+omit_endlist+independent_segments+temp_file" + (
+            "+append_list" if append else "+discont_start" if start_number else "")
+        return ["-f", "tee",
+                f"[f=mpegts:mpegts_flags=+pat_pmt_at_frames:mpegts_start_pid={VIDEO_PID}]pipe:1|"
+                f"[f=hls:hls_time={seg}:hls_list_size={window}:hls_delete_threshold={retained}:hls_flags={flags}"
+                f":start_number={start_number}:hls_segment_filename=seg_%05d.ts]index.m3u8"]
 
     # lifecycle ------------------------------------------------------------------------------------------------
     def start(self):
@@ -687,6 +868,101 @@ class Encoder:
         threading.Thread(target=self._supervise, daemon=True, name=f"broadcast-enc-{self.feed.key}").start()
 
     def _spawn(self):
+        """Start ffmpeg on what the feed shows now: its session's own display when that is local (and its capture has
+        not just failed), else the JPEG path. A direct ffmpeg that cannot even be started falls back at once."""
+        with self.spawn_lock:
+            if self.closed:
+                return
+            now = self.clock()
+            source = self._direct_source(now)
+            try:
+                self._launch(source)
+            except OSError as e:
+                if source is None:
+                    raise
+                self._block(source, now, f"ffmpeg did not start: {e}")
+                self._launch(None)
+
+    def _direct_source(self, now: float) -> dict | None:
+        """The direct source the feed asks for now ({display, size, sid, row}), None for the JPEG path; kept in
+        self.want (with since when) and the reason in self.want_why."""
+        if self.direct_for is None:
+            want, why = None, "direct capture is off ([broadcast] direct_capture = false)"
+        else:
+            try:
+                want, why = self.direct_for(self.feed)
+            except Exception as e:                               # noqa: BLE001 - no answer: the JPEG path
+                want, why = None, f"direct capture check failed: {type(e).__name__}: {e}"[:200]
+        if want is not None:
+            until, _, failed = self.blocked.get((want["display"], want.get("sid")), (0.0, 0, ""))
+            if now < until:
+                want, why = None, (f"direct capture of {want['display']} failed ({failed}); "
+                                   f"the JPEG path, direct again in {until - now:.0f} s")
+        if _source_key(want) != _source_key(self.want):
+            self.want_since = now
+        self.want, self.want_why = want, why
+        return want
+
+    def _launch(self, source: dict | None):
+        wall = self.wall()
+        if wall - self.t_ref > TS_REBASE_S:                      # far from 0: the timeline starts again (a cut anyway)
+            self.t_ref = int(wall) - 1
+        start, append = self._hls_resume()
+        audio_r = audio_w = None
+        if self.audio_for is not None:
+            audio_r, audio_w = os.pipe()
+        audio_at, anchor = self.wall(), self.clock()             # the sound's first sample: this wall-clock moment
+        if source is not None:
+            argv = self.direct_argv(source, audio_r, start, append=append, audio_at=audio_at)
+        else:
+            argv = self.argv(audio_r, start, append=append, ts_offset=audio_at - self.t_ref)
+        try:
+            proc = self.popen(argv, stdin=subprocess.DEVNULL if source is not None else subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(self.dir),
+                              **({"pass_fds": (audio_r,)} if audio_r is not None else {}))
+        except BaseException:
+            if audio_w is not None:
+                os.close(audio_w)
+            raise
+        finally:
+            if audio_r is not None:
+                os.close(audio_r)
+        before = _source_key(self.source) if self.mode == "direct" else None
+        self.mode, self.source = ("direct", source) if source is not None else ("jpeg", None)
+        self.proc, self.last_write = proc, self.clock()
+        self._reset_media(proc, anchor)
+        self.state = "running"
+        if _source_key(source) != before:
+            codec = self._codec()
+            self.log(f"gBox broadcast: {self.feed.key} encoder: " + (
+                f"direct capture of {source['display']} ({source['size'][0]}x{source['size'][1]}, {codec['encoder']})"
+                if source is not None else f"the JPEG path ({codec['encoder']}): {self.want_why}"))
+        name = self.feed.key
+        if source is None:
+            threading.Thread(target=self._write_video, args=(proc,), daemon=True, name=f"broadcast-v-{name}").start()
+        threading.Thread(target=self._read_ts, args=(proc,), daemon=True, name=f"broadcast-ts-{name}").start()
+        threading.Thread(target=self._read_err, args=(proc,), daemon=True, name=f"broadcast-err-{name}").start()
+        if audio_w is not None:
+            writer = self._write_audio_wall if source is not None else self._write_audio
+            threading.Thread(target=writer, args=(proc, audio_w), daemon=True, name=f"broadcast-a-{name}").start()
+
+    def _hls_resume(self) -> tuple[int, bool]:
+        """(start_number, append) for the next ffmpeg. A list whose segments are all still here is continued
+        (append_list: the same numbering, one discontinuity mark where the new ffmpeg starts), so a reader seconds
+        behind the live edge loses nothing on a switch or a restart. Otherwise the folder is emptied and the numbering
+        goes on, marked as a cut (discont_start)."""
+        text = self.playlist() or ""
+        seq = re.search(r"#EXT-X-MEDIA-SEQUENCE:(\d+)", text)
+        listed = [(m.group(0), int(m.group(1))) for m in SEGMENT_RE.finditer(text)]
+        if seq and listed and all((self.dir / name).is_file() for name, _ in listed):
+            for old in self.dir.glob("*.tmp"):                   # what a killed ffmpeg was still writing
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+            self._prune_below(min(n for _, n in listed))
+            self.next_segment = max(self.next_segment, max(n for _, n in listed) + 1)
+            return int(seq.group(1)), True
         start = self.next_segment
         for old in self.dir.glob("*"):                           # a restart continues the numbering, marked as a cut
             m = SEGMENT_RE.fullmatch(old.name)
@@ -697,30 +973,27 @@ class Encoder:
             except OSError:
                 pass
         self.next_segment = start
-        audio_r = audio_w = None
-        if self.audio_for is not None:
-            audio_r, audio_w = os.pipe()
-        try:
-            proc = self.popen(self.argv(audio_r, start), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, cwd=str(self.dir),
-                              **({"pass_fds": (audio_r,)} if audio_r is not None else {}))
-        except BaseException:
-            if audio_w is not None:
-                os.close(audio_w)
-            raise
-        finally:
-            if audio_r is not None:
-                os.close(audio_r)
-        self.proc, self.last_write = proc, self.clock()
-        self._reset_media(proc)
-        self.state = "running"
-        name = self.feed.key
-        threading.Thread(target=self._write_video, args=(proc,), daemon=True, name=f"broadcast-v-{name}").start()
-        threading.Thread(target=self._read_ts, args=(proc,), daemon=True, name=f"broadcast-ts-{name}").start()
-        threading.Thread(target=self._read_err, args=(proc,), daemon=True, name=f"broadcast-err-{name}").start()
-        if audio_w is not None:
-            threading.Thread(target=self._write_audio, args=(proc, audio_w), daemon=True,
-                             name=f"broadcast-a-{name}").start()
+        return start, False
+
+    def _prune_below(self, first: int):
+        """Segments a previous ffmpeg kept for delayed readers and the current one does not know about: deleted once
+        they are further behind the list than hls_retained_segments (ffmpeg deletes its own)."""
+        floor = first - max(2, min(120, int(self.s.hls_retained_segments)))
+        for old in self.dir.glob("seg_*.ts"):
+            m = SEGMENT_RE.fullmatch(old.name)
+            if m and int(m.group(1)) < floor:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+
+    def _prune(self, now: float):
+        if now - self._pruned_at < PRUNE_S:
+            return
+        self._pruned_at = now
+        listed = [int(m.group(1)) for m in SEGMENT_RE.finditer(self.playlist() or "")]
+        if listed:
+            self._prune_below(min(listed))
 
     def _write_video(self, proc):
         """Constant frame rate against the monotonic clock: a frame every 1/fps (the newest picture, repeated while
@@ -745,10 +1018,11 @@ class Encoder:
                 self.late += 1
                 next_t = self.clock()
 
-    def _reset_media(self, proc):
+    def _reset_media(self, proc, anchor: float | None = None):
         with self.lock:
             self._media={'proc':proc,'video_frames':0,'audio_samples':0,'last_video_at':self.clock(),
-                         'last_audio_at':None,'last_output_at':None,'audio_discarded_bytes':0}
+                         'last_audio_at':None,'last_output_at':None,'audio_discarded_bytes':0,
+                         'output_bytes':0,'mode':self.mode,'anchor':self.clock() if anchor is None else anchor}
 
     def _accept_video(self, proc):
         """Advance only after the entire JPEG has entered this process's pipe."""
@@ -813,12 +1087,63 @@ class Encoder:
             except OSError:
                 pass
 
+    def _write_audio_wall(self, proc, fd: int):
+        """Direct path: PCM paced by the monotonic clock from the anchor whose wall-clock time the command line gave
+        the sound (-itsoffset), so sample n is due at anchor + n/48000: the clock x11grab's frames are stamped with.
+        Silence where the tap has nothing; captured sound piling up past TAP_LATENCY_S is cut to TAP_KEEP_S, so the
+        sound never trails the picture by more than that. A writer that was held up catches up on the same timeline."""
+        try:
+            out = os.fdopen(fd, "wb", buffering=0)
+        except OSError:
+            return
+        written = 0
+        late, keep = int(AUDIO_BYTES_S * TAP_LATENCY_S), int(AUDIO_BYTES_S * TAP_KEEP_S)
+        try:
+            while not self.closed and proc is self.proc:
+                with self.lock:
+                    media = self._media
+                    if media is None or media['proc'] is not proc:
+                        return
+                    anchor = media['anchor']
+                due = int((self.clock() - anchor) * AUDIO_RATE) - written
+                if due < AUDIO_RATE // 100:                      # write 10-20 ms at a time
+                    time.sleep(0.005)
+                    continue
+                need = min(AUDIO_RATE // 50, due)
+                tap = self.tap
+                dropped = tap.drop_to(keep) if tap is not None and tap.pending() > late else 0
+                data = tap.take(need * 4) if tap is not None else b""
+                if len(data) < need * 4:
+                    data += bytes(need * 4 - len(data))
+                view = memoryview(data)
+                while view:
+                    count = out.write(view)
+                    if not count:
+                        raise BrokenPipeError('PCM pipe made no progress')
+                    view = view[count:]
+                written += need
+                with self.lock:
+                    if self._media is not media or proc is not self.proc:
+                        return
+                    media['audio_samples'] = written
+                    media['last_audio_at'] = self.clock()
+                    media['audio_discarded_bytes'] += dropped
+        except (BrokenPipeError, OSError, ValueError, TypeError):
+            pass
+        finally:
+            try:
+                out.close()
+            except OSError:
+                pass
+
     def retap(self, now: float):
         """Hub tick: keep the sound on the session the feed shows (looked for again every few seconds while there is
-        none: Dolphin can open its stream after the picture starts)."""
+        none: Dolphin can open its stream after the picture starts). In direct mode: the session whose display is
+        being captured, which is the feed's own except for the debounce moment after a switch."""
         if self.audio_for is None or self.closed:
             return
-        sid = self.feed.sid if self.feed.mode in ("live", "hold") else None
+        src = self.source if self.mode == "direct" else None
+        sid = src.get("sid") if src else (self.feed.sid if self.feed.mode in ("live", "hold") else None)
         if sid != self.tap_sid:
             self._close_tap()
             self.tap_sid, self.tap_checked = sid, -1e9
@@ -826,7 +1151,9 @@ class Encoder:
             return
         self.tap_checked = now
         self._close_tap()
-        index = self.audio_for(self.feed)
+        shown = self.feed if not src or src.get("sid") == self.feed.sid else \
+            SimpleNamespace(key=self.feed.key, sid=sid, row=src.get("row"), mode="live")
+        index = self.audio_for(shown)
         if index is not None:
             try:
                 self.tap = AudioTap(index, popen=self.popen)
@@ -849,12 +1176,19 @@ class Encoder:
                 break
             self.bytes_out += len(data)
             with self.lock:
-                if self._media is not None and self._media['proc'] is proc:
-                    self._media['last_output_at']=self.clock()
+                media = self._media
+                if media is not None and media['proc'] is proc:
+                    media['last_output_at'] = now = self.clock()
+                    media['output_bytes'] += len(data)
+                    if media['mode'] == 'direct':                # its liveness: what it produces (nothing is written to it)
+                        self.last_write = now
+            if self.proc is not proc and self.proc is not None:  # replaced (a switch): its tail never interleaves
+                continue                                         # with the new ffmpeg's stream
             for piece, key in scan.feed(data):
                 self._deliver(piece, key)
-        for piece, key in scan.flush():
-            self._deliver(piece, key)
+        if self.proc is proc or self.proc is None:
+            for piece, key in scan.flush():
+                self._deliver(piece, key)
 
     def _deliver(self, piece: bytes, key: bool):
         with self.lock:
@@ -891,39 +1225,104 @@ class Encoder:
                 self.log(f"gBox broadcast: encoder {self.feed.key} supervisor error {type(e).__name__}: {e}")
 
     def check(self, now: float | None = None) -> str | None:
-        """One supervision step: restart a dead encoder, or one that stopped taking pictures (with backoff)."""
+        """One supervision step: restart a dead encoder, or one that stopped producing (with backoff). A direct capture
+        that ended without any output did not start: its display goes on the JPEG path for a while (DIRECT_RETRY_S),
+        and NVENC that failed so twice in a row gives way to libx264."""
         now = self.clock() if now is None else now
-        if self.closed:
-            return None
-        proc = self.proc
-        if proc is None:
-            if now >= self._next_spawn:
-                self.restarts += 1
-                self.log(f"gBox broadcast: restarting the {self.feed.key} encoder (restart {self.restarts})")
-                try:
-                    self._spawn()
-                except OSError as e:
-                    self.errors.append(f"ffmpeg did not start: {e}"[:200])
-                    self._next_spawn = now + self.BACKOFF[1]
-                    return "failed"
-                return "restarted"
-            return None
-        if proc.poll() is not None:
-            reason = f"ffmpeg exited ({proc.poll()})"
-        elif now - self.last_write >= self.STALL_S:
-            reason = f"ffmpeg took no picture for {now - self.last_write:.0f} s"
-            self._kill(proc)
-        else:
-            if self.frames_in:
-                self._fails = 0
-            return None
-        tail = " | ".join(list(self.errors)[-3:])
-        self.log(f"gBox broadcast: {self.feed.key} encoder: {reason}" + (f": {tail}" if tail else ""))
-        self.state, self.proc = "restarting", None
-        first, cap = self.BACKOFF
-        self._next_spawn = now + min(cap, first * 2 ** min(self._fails, 6))
-        self._fails += 1
-        return "scheduled"
+        with self.spawn_lock:
+            if self.closed:
+                return None
+            self._prune(now)
+            proc = self.proc
+            if proc is None:
+                if now >= self._next_spawn:
+                    self.restarts += 1
+                    self.log(f"gBox broadcast: restarting the {self.feed.key} encoder (restart {self.restarts})")
+                    try:
+                        self._spawn()
+                    except OSError as e:
+                        self.errors.append(f"ffmpeg did not start: {e}"[:200])
+                        self._next_spawn = now + self.BACKOFF[1]
+                        return "failed"
+                    return "restarted"
+                return None
+            out = self._output_bytes(proc)
+            if proc.poll() is not None:
+                reason = f"ffmpeg exited ({proc.poll()})"
+            elif now - self.last_write >= self.STALL_S:
+                what = "produced nothing" if self.mode == "direct" else "took no picture"
+                reason = f"ffmpeg {what} for {now - self.last_write:.0f} s"
+                self._kill(proc)
+            else:
+                if out if self.mode == "direct" else self.frames_in:
+                    self._fails = 0
+                return None
+            tail = " | ".join(list(self.errors)[-3:])
+            self.log(f"gBox broadcast: {self.feed.key} encoder: {reason}" + (f": {tail}" if tail else ""))
+            if not out:
+                if self.mode == "direct" and self.source is not None:
+                    self._block(self.source, now, reason + (f": {list(self.errors)[-1]}" if self.errors else ""))
+                if self._codec()["encoder"] == "h264_nvenc":
+                    self.nvenc_fails += 1
+                    if self.nvenc_fails >= 2:
+                        note = f"libx264 (CPU): h264_nvenc stopped twice without output ({reason})"
+                        self.codec = {"encoder": "libx264", "requested": self.codec.get("requested"), "gpu": False,
+                                      "note": note[:200]}
+                        self.errors.append(note[:300])
+                        self.log(f"gBox broadcast: {self.feed.key} encoder: {note}")
+            else:
+                self.nvenc_fails = 0
+            self.state, self.proc = "restarting", None
+            first, cap = self.BACKOFF
+            self._next_spawn = now + min(cap, first * 2 ** min(self._fails, 6))
+            self._fails += 1
+            return "scheduled"
+
+    def follow(self, now: float | None = None) -> str | None:
+        """Hub tick: the feed's direct source changed (another display, or none: a slate, a hold, a game elsewhere) and
+        stayed changed for DIRECT_DEBOUNCE_S, at most one switch every DIRECT_HOLD_S: restart ffmpeg on it now (no
+        backoff). "switched" when it did."""
+        now = self.clock() if now is None else now
+        with self.spawn_lock:
+            if self.closed:
+                return None
+            want = self._direct_source(now)
+            proc = self.proc
+            if proc is None or _source_key(want) == _source_key(self.source if self.mode == "direct" else None):
+                return None
+            if now - self.want_since < DIRECT_DEBOUNCE_S or now - self.switched_at < DIRECT_HOLD_S:
+                return None
+            old = self.source["display"] if self.mode == "direct" and self.source else "the JPEG path"
+            new = want["display"] if want else "the JPEG path"
+            self.log(f"gBox broadcast: {self.feed.key} encoder: switching from {old} to {new} ({self.want_why})")
+            self.switches += 1
+            self.switched_at = now
+            self.proc = None
+            self._reap(proc)
+            try:
+                self._spawn()
+            except OSError as e:
+                self.errors.append(f"ffmpeg did not start: {e}"[:200])
+                self.state, self._next_spawn = "restarting", now + self.BACKOFF[0]
+                return "failed"
+            return "switched"
+
+    def _block(self, source: dict, now: float, why: str):
+        key = (source["display"], source.get("sid"))
+        _, failures, _ = self.blocked.get(key, (0.0, 0, ""))
+        first, cap = DIRECT_RETRY_S
+        until = now + min(cap, first * 2 ** min(failures, 6))
+        if len(self.blocked) > 16:
+            self.blocked = {k: v for k, v in self.blocked.items() if v[0] > now}
+        self.blocked[key] = (until, failures + 1, why[:160])
+        msg = f"direct capture of {source['display']} failed: {why}; the JPEG path for {until - now:.0f} s"
+        self.errors.append(msg[:300])
+        self.log(f"gBox broadcast: {self.feed.key} encoder: {msg}")
+
+    def _output_bytes(self, proc) -> int:
+        with self.lock:
+            media = self._media
+            return media['output_bytes'] if media is not None and media['proc'] is proc else 0
 
     @staticmethod
     def _kill(proc):
@@ -932,9 +1331,25 @@ class Encoder:
         except Exception:                                        # noqa: BLE001
             pass
 
+    def _reap(self, proc):
+        """Kill an ffmpeg and wait for it, so the next one reads a playlist the old one no longer writes."""
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+        except Exception:                                        # noqa: BLE001
+            pass
+        self._kill(proc)
+        wait = getattr(proc, "wait", None)
+        if wait is not None:
+            try:
+                wait(timeout=2)
+            except Exception:                                    # noqa: BLE001
+                pass
+
     def stop(self):
-        self.closed, self.state = True, "stopped"
-        proc, self.proc = self.proc, None
+        with self.spawn_lock:
+            self.closed, self.state = True, "stopped"
+            proc, self.proc = self.proc, None
         if proc is not None:
             try:
                 proc.stdin.close()
@@ -986,8 +1401,16 @@ class Encoder:
         with self.lock:
             viewers = len(self.subs)
             media=dict(self._media or {})
-        video_s=media.get('video_frames',0)/self.fps
+        now = self.clock()
+        if media.get('mode') == 'direct':                        # x11grab keeps the wall clock: the timeline is elapsed time
+            video_s = max(0.0, now - media['anchor'])
+        else:
+            video_s = media.get('video_frames',0)/self.fps
         audio_s=media.get('audio_samples',0)/AUDIO_RATE
+        src = self.source if self.mode == "direct" else None
+        codec = self.codec or {}
+        blocked = {f"{d} ({sid})" if sid else d: round(until - now, 1)
+                   for (d, sid), (until, _, _) in self.blocked.items() if until > now}
         return {"feed": self.feed.key, "state": self.state, "pid": getattr(self.proc, "pid", None),
                 "ts_viewers": viewers, "hls_active": bool(self.hls_at) and self.clock() - self.hls_at < 30,
                 "frames_in": self.frames_in, "bytes_out": self.bytes_out, "late": self.late,
@@ -1000,7 +1423,15 @@ class Encoder:
                 "size": "%dx%d" % self.size, "fps": self.fps, "kbps": int(self.s.video_kbps),
                 "hls_window_segments": self.s.hls_window_segments,
                 "hls_retained_segments": self.s.hls_retained_segments,
-                "encoder": str(self.s.encoder)}
+                # the path in use: direct (the session's own display, grabbed into the encoder) or jpeg (the feed's JPEGs)
+                "mode": self.mode, "display": src["display"] if src else None,
+                "capture_size": "%dx%d" % tuple(src["size"]) if src else None,
+                "scaled": bool(src) and tuple(int(v) for v in src["size"]) != tuple(self.size),
+                "capture_session": src.get("sid") if src else None, "why": self.want_why,
+                "switches": self.switches, "direct_blocked": blocked,
+                "nice": int(getattr(self.s, "direct_nice", 0) if src else self.s.nice),
+                "encoder": codec.get("encoder") or str(self.s.encoder), "encoder_setting": str(self.s.encoder),
+                "encoder_note": codec.get("note"), "gpu": bool(codec.get("gpu"))}
 
 
 # --- the hub ---------------------------------------------------------------------------------------------------------
@@ -1014,9 +1445,13 @@ class Hub:
                  clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time,
                  popen=subprocess.Popen, tmp_root: Path | None = None, log: Callable[[str], None] = print,
                  agent_owned: Callable[[str], bool] | None = None,
-                 find_sink: Callable[[str], int | None] = sink_input_for, autostart: bool = True):
+                 find_sink: Callable[[str], int | None] = sink_input_for, autostart: bool = True,
+                 local_display: Callable[[str, Any], tuple[int, int] | None] = local_display_size,
+                 pick_encoder: Callable[[str, list[str]], dict] | None = None):
         self.store, self.s = store, settings
         self.autostart = autostart                             # tests drive tick() themselves
+        self.local_display = local_display                     # (display, detail.display_size) -> (w, h) if it is here
+        self.pick = pick_encoder
         self.live = live
         self.desktop_frames = desktop_frames if desktop_frames is not None else {}
         self.desktop_watch = desktop_watch if desktop_watch is not None else {}
@@ -1216,8 +1651,15 @@ class Hub:
                                    "watch one of those, or this feed's MJPEG")
             f = self.feed(key)
             f.encoders += 1
-            enc = Encoder(f, self.s, self.root, audio_for=self._sink_for, popen=self.popen, clock=self.clock, log=self.log)
+            enc = Encoder(f, self.s, self.root, audio_for=self._sink_for, direct_for=self._direct_for, pick=self.pick,
+                          popen=self.popen, clock=self.clock, wall=self.wall, log=self.log)
             self.encoders[key] = enc
+        thread = self.thread
+        if not f.resolved and thread is not None and thread.is_alive():
+            self.wake.set()                                    # a new feed: what it shows decides the first ffmpeg
+            end = time.monotonic() + 1.0
+            while not f.resolved and time.monotonic() < end:
+                time.sleep(0.02)
         try:
             enc.start()
         except BaseException:
@@ -1237,6 +1679,30 @@ class Hub:
         if row.get("os") != "linux" or slug(row.get("pc")) != self.host or not (display or pid):
             return None
         return self.find_sink(str(display or ""), pid=pid)
+
+    def _direct_for(self, feed: Feed) -> tuple[dict | None, str]:
+        """(the display the feed's H.264 can grab itself, why): its live session plays on this machine (the Spark's
+        control plane and worker are one service) on a private display that exists here. Never a desktop: only the
+        display a running session reports as its own. None for everything else (the JPEG path)."""
+        if not bool(getattr(self.s, "direct_capture", True)):
+            return None, "direct capture is off ([broadcast] direct_capture = false)"
+        row = feed.row
+        if not row or feed.mode != "live":
+            return None, f"no live game on this feed ({feed.mode})"
+        if row.get("os") != "linux" or slug(row.get("pc")) != self.host:
+            return None, f"{row.get('title') or 'the game'} plays on {row.get('pc') or 'another PC'}, not this machine"
+        detail = row.get("detail") or {}
+        display = str(detail.get("display") or "")
+        if session_display_number(display) is None:
+            return None, "the session has no display of its own"
+        try:
+            size = self.local_display(display, detail.get("display_size"))
+        except Exception as e:                                   # noqa: BLE001 - no answer: the JPEG path
+            return None, f"display {display}: {type(e).__name__}: {e}"[:200]
+        if not size:
+            return None, f"display {display} is not on this machine"
+        return ({"display": display, "size": [int(size[0]), int(size[1])], "sid": row["session_id"], "row": row},
+                f"{display}, the session's own display")
 
     def ensure_thread(self):
         with self.lock:
@@ -1284,8 +1750,12 @@ class Hub:
                         continue
             self._update(f, rows, now, wall)
         self._cut_desktops(feeds, wall)
-        for _, enc in encoders:
+        for key, enc in encoders:
             if not enc.closed:
+                try:
+                    enc.follow(now)                              # direct capture of what the feed shows now
+                except Exception as e:                           # noqa: BLE001 - the encoder's supervisor goes on
+                    self.log(f"gBox broadcast: {key} encoder: follow failed: {type(e).__name__}: {e}")
                 enc.retap(now)
         self.ticks += 1
         with self.lock:
@@ -1487,7 +1957,8 @@ class Hub:
         return {"program": self.program_status(), "feeds": feeds, "encoders": encoders,
                 "settings": {"fps": self.s.fps, "ts_fps": self.s.ts_fps, "size": self.s.size,
                              "video_kbps": self.s.video_kbps, "encoder": self.s.encoder, "audio": self.s.audio,
-                             "hold_s": self.s.hold_s, "max_encoders": self.s.max_encoders}}
+                             "direct_capture": self.s.direct_capture, "direct_nice": self.s.direct_nice,
+                             "nice": self.s.nice, "hold_s": self.s.hold_s, "max_encoders": self.s.max_encoders}}
 
     def close(self):
         self.stopping = True
@@ -1588,7 +2059,7 @@ def register(app, store, config, *, live: dict, desktop_frames: dict, desktop_wa
                             "hls": "application/vnd.apple.mpegurl"},
                 "mjpeg_fps": settings.fps,
                 "h264": {"size": settings.size, "fps": settings.ts_fps, "kbps": settings.video_kbps,
-                         "audio": settings.audio}}
+                         "audio": settings.audio, "direct_capture": settings.direct_capture}}
 
     @app.post("/api/broadcast/program")
     def broadcast_program(body: Any = Body(default=None), v: dict = Depends(viewer)):

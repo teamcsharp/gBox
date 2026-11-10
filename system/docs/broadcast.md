@@ -22,8 +22,8 @@ Each feed in four formats. Append the suffix to the path:
 |---|---|---|
 | `.mjpg` | MJPEG over HTTP (`multipart/x-mixed-replace; boundary=gboxframe`, each part with `Content-Length`) | A constant frame rate (default 30; `?fps=1..60`): the newest picture every tick, so a quiet source repeats its picture. Zero encoding cost: the frames the PCs already send pass through. The picture keeps the source's own size, so it changes size when the program switches between games. |
 | `.jpg` | One JPEG | The newest picture. Headers `x-gbox-session` and `x-gbox-state` (`live`, `hold`, `slate`). |
-| `.ts` | H.264 (+ AAC) in MPEG-TS over HTTP | 1280x720, 30 fps, 2.5 Mbit/s constant, 1 s GOP, every source fitted inside the canvas (letterbox or pillarbox), so the size never changes. A new reader starts on a keyframe at once (the newest GOP is kept for it). |
-| `/hls/index.m3u8` | HLS (the same H.264 encode) | 1 s segments, a list of 12 plus 12 recently referenced segments retained for delayed readers. Pine starts four segments behind the live edge; `.ts` and `.mjpg` add less server-side delay, plus the player's buffer. |
+| `.ts` | H.264 (+ AAC) in MPEG-TS over HTTP | 1280x720, 60 fps, 8 Mbit/s constant, 1 s GOP, no B-frames, every source fitted inside the canvas (letterbox or pillarbox), so the size never changes. A Spark game is its own display captured straight into the encoder ([the two paths](#the-two-h264-paths)). A new reader starts on a keyframe at once (the newest GOP is kept for it). |
+| `/hls/index.m3u8` | HLS (the same H.264 encode) | 1 s segments, a list of 12 plus 20 recently referenced segments retained for delayed readers. Pine starts four segments behind the live edge; `.ts` and `.mjpg` add less server-side delay, plus the player's buffer. |
 
 None of these responses ends while its reader stays: not on a program switch, not when a session ends, not when a
 source stalls. What it shows meanwhile:
@@ -35,10 +35,28 @@ source stalls. What it shows meanwhile:
 | A switch to a game whose picture has not come yet | The previous picture holds up to 4 s, then the slate. |
 | The session on air ends | Its last picture holds 2 s (`end_hold_s`), then the program moves on to the next game, or to the "No game on the air" slate. |
 
-The H.264 encoder (one ffmpeg per watched feed, `nice -n 10`) starts when the first `.ts` or HLS reader arrives and
-stops 20 s after the last one leaves (`linger_s`). At most 3 run at once (`max_encoders`); MJPEG has no limit because
-it encodes nothing. If ffmpeg dies or stops taking pictures for 10 s it is restarted with backoff, and `.ts` readers
-stay connected through the restart (the HLS list continues its numbering with a discontinuity mark).
+The H.264 encoder (one ffmpeg per watched feed) starts when the first `.ts` or HLS reader arrives and stops 20 s after
+the last one leaves (`linger_s`). At most 3 run at once (`max_encoders`); MJPEG has no limit because it encodes
+nothing. If ffmpeg dies or stops producing for 10 s it is restarted with backoff. `.ts` readers stay connected through
+every restart and switch, and the timestamps keep going up. The HLS list goes on: the same list and numbering, with a
+discontinuity mark where the new ffmpeg starts, so a reader behind the live edge loses no segment.
+
+### The two H.264 paths
+
+`GET /api/broadcast` shows each encoder's `mode`, `display`, `capture_size`, `fps`, the `encoder` in use and `why`.
+
+| Path | When | What ffmpeg does |
+|---|---|---|
+| `direct` | The feed shows a live game that plays on the Spark itself, on its own Xvfb display (the control plane and the lilspark worker are one service). `direct_capture = true`, Linux only. | Grabs that display (`x11grab -draw_mouse 0 -framerate 60 -video_size 1280x720 -i :90`, the ring recorder's capture) into `h264_nvenc` (`-preset p1 -tune ll -rc cbr`, `-g 60`, `-bf 0`). It scales only when the display is not the canvas (a 960x720 native port). No JPEG is made or decoded. `nice` = `direct_nice` (0), on the fast cores like the live stream. |
+| `jpeg` | Everything else: Windows PCs, stills, window crops, slates and holds, a game on another host. Also the fallback when a direct capture ends without any output. That display then stays on this path for 60 s, doubling up to 10 min. | Decodes the feed's pictures (the 960-wide live-view JPEGs for a Spark game), paced at `ts_fps`, scaled and padded to the canvas. `nice` = `nice` (10). |
+
+`encoder = "auto"` is ring_record's check, shared with the replay ring: `h264_nvenc` when this ffmpeg lists it and a
+test encode passes on the node, else libx264. NVENC that stops twice without output gives way to libx264 for that
+encoder. When the program switches to a game on another display, ffmpeg restarts on it. The new game must stay wanted
+for 1 s first, and at most one switch happens every 5 s, so a flapping source cannot restart ffmpeg in a loop. Sound in
+the direct path is paced by the wall clock. The frames carry the wall-clock time of their grab, and the sound carries
+the time of its first sample, so picture and sound stay on one clock without drift. Captured sound that piles up past
+120 ms is cut to 40 ms.
 
 ### Sources: what each PC gives
 
@@ -46,7 +64,7 @@ Only a game's own picture goes on air, never a PC's desktop or the gBox window.
 
 | Kind | PC | Where the picture comes from | Rate |
 |---|---|---|---|
-| `spark_capture` | the Spark | The session's own Xvfb display (x11grab), the same stream the gBox viewers show | up to 60 fps |
+| `spark_capture` | the Spark | The session's own Xvfb display (x11grab), the same stream the gBox viewers show (960 wide). The H.264 feeds grab the display themselves at its own size (the direct path). | up to 60 fps |
 | `windows_stream` | Windows | A session its worker streams (RPCS3, RocketLauncher: gdigrab) | up to 60 fps |
 | `desktop_crop` | Windows | A native game (Dolphin, RetroArch and the other local-window emulators): that PC's desktop stream (the Other PC view's source), cut once per frame to the game's own window. While a broadcast reader shows such a game, the broadcast keeps that PC's screen capture running, as an open Other PC view does. | 8 fps |
 | `stills` | Windows | The same game's window stills, when no crop is available | one every 4 s |
@@ -120,7 +138,7 @@ DELETE /api/broadcast/tokens/{id}   -> revoked at once
 | Route | Auth | Returns |
 |---|---|---|
 | `GET /api/broadcast/feeds` | view | `program` (what is on air, `mode` auto/session/pc, `why`, `state` live/hold/slate, the operator's last `watching` report, its URLs), `feeds` (every running session on every PC: `id`, `session_id`, `title`, `pc`, `os`, `kind`, `resolution` [w, h], `fps`, `last_frame_age_s`, `live`, `agent_owned`, `on_air`, `paths`, `lan`, `tailnet`, `pc_paths`), `pcs` (each PC: `online`, `aliases`, the session its feed shows now, URLs), `bases`, `formats`. URLs carry the token they were asked with. |
-| `GET /api/broadcast` | view | The program, the feeds being read (viewers, state), the H.264 encoders (pid, readers, frames, restarts, sound). |
+| `GET /api/broadcast` | view | The program, the feeds being read (viewers, state), the H.264 encoders (pid, readers, frames, restarts, sound, `mode` direct/jpeg, `display`, `capture_size`, `fps`, `encoder` in use, `why`, `switches`). |
 | `POST /api/broadcast/program` | control | See [Picking the program](#picking-the-program). |
 | `POST /api/broadcast/watching` | api_token (operator) | The app's report: `{"session_id": "<sid>" \| null}`. |
 | `GET/POST/DELETE /api/broadcast/tokens` | api_token (operator) | See above. |
@@ -196,28 +214,34 @@ shows JPEGs: `.mjpg`.
 [broadcast]
 enabled = true
 fps = 30               # MJPEG frames a second (each viewer may ask ?fps=1..60)
-ts_fps = 30            # H.264
+ts_fps = 60            # H.264 (at most 60)
 size = "1280x720"      # H.264 canvas
-video_kbps = 2500
-encoder = "libx264"    # libx264 (ultrafast, zerolatency) | h264_nvenc
+video_kbps = 8000
+encoder = "auto"       # auto (h264_nvenc where it works, else libx264) | h264_nvenc | libx264
+direct_capture = true  # a Spark game's H.264 is its own display, grabbed straight into the encoder (Linux)
+direct_nice = 0        # the direct-capture ffmpeg's niceness
 audio = "auto"         # auto | off
 audio_kbps = 128
 hls_segment_s = 1
 hls_window_segments = 12
-hls_retained_segments = 12
+hls_retained_segments = 20
 hold_s = 8.0           # a silent source's last frame holds this long, then the slate
 end_hold_s = 2.0       # an ended session's last frame holds this long, then the program moves on
 watch_ttl_s = 900.0    # the operator's "watching" report counts this long
 linger_s = 20.0        # an H.264 encoder nobody reads stops after this
 max_encoders = 3
 auto_agents = true     # auto may put an agent's or a bot's game on air when no operator game runs
-nice = 10
+nice = 10              # the JPEG path's ffmpeg
 lan_url = ""           # default: public_url
 tailnet_url = ""       # e.g. "http://100.74.95.59:8765"
 pc_aliases = { spark1 = "lilspark", jaybuilt = "JAYBUILTFINALE", i9nuc = "i9-NUC" }
 ```
 
 ## Cost on the Spark
+
+The direct path (2026-11-10) has not been measured as a broadcast yet. The replay ring runs the same capture into
+NVENC on the Spark at about 2.5% of a core. The figures below are the JPEG path at the old defaults (30 fps, libx264,
+2.5 Mbit/s). At 60 fps that path decodes and scales twice as many JPEGs.
 
 The Spark also runs Pine Box's own services (voice, pinelive, pinelink, ollama, whisper). Measured there on
 2026-10-20, over an 11-minute run with the load average at 32 to 38 on its 20 cores. Figures are percent of one core:
@@ -248,7 +272,8 @@ ffmpeg's mpjpeg reader stamps frames as 25 fps, because MJPEG over HTTP has no t
 ## The recording ring and the app's recording
 
 The broadcast does not use the background replay ring ([ring_recording.md](ring_recording.md)) or the desktop app's
-title-bar recording ([recording.md](recording.md)) as a source. Reasons:
+title-bar recording ([recording.md](recording.md)) as a source. The direct path borrows the ring's capture
+(x11grab of the session display) and its encoder check, but runs its own ffmpeg while a feed is read. Reasons:
 
 - The ring records only while the operator's controller is in use: autoplay, bots, agents' games and idle sessions
   have none.
@@ -278,4 +303,5 @@ afterwards (right-click the record icon, Replay) and played in Pine Box as a cli
 - `GBOX_LIVE_FFMPEG=1` adds a run of the real ffmpeg: MPEG-TS across a switch, HLS, both probed.
 - Live: `ffmpeg -i "http://127.0.0.1:8765/api/broadcast/program.ts?token=gbb_..." -c copy -t 60 out.ts`, switch the
   program meanwhile, then
-  `ffprobe -v error -select_streams v -show_entries frame=pts_time -of csv out.ts` (frames 33.3 ms apart).
+  `ffprobe -v error -select_streams v -show_entries frame=pts_time -of csv out.ts` (frames 16.7 ms apart at 60 fps).
+  `GET /api/broadcast` shows `"mode": "direct"` with the session's `display` while a Spark game is on air.
