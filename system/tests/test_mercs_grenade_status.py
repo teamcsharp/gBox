@@ -44,11 +44,13 @@ def test_an_unknown_session_gets_no_rows():
     assert G.identify(None, None) is None
 
 
-def test_re4_switch_is_honestly_not_built():
+def test_re4_switch_flash_is_built_but_not_yet_verified():
     rows = rows_by_kind({"game_id": "270a15eb98dab4d7"})
-    assert all(not r["available"] for r in rows.values())
-    assert all("not built for RE4 Switch" in r["reason"] for r in rows.values())
-    assert all(r["source"] == "title" for r in rows.values())
+    assert rows["flash"]["available"] is False and rows["flash"]["source"] == "title"
+    assert "built on the RE4 Switch native harness" in rows["flash"]["reason"]
+    assert "no live receipt" in rows["flash"]["reason"]
+    for kind in ("hand", "incendiary"):                       # the ring is not built on this title
+        assert rows[kind]["available"] is False and "does not offer" in rows[kind]["reason"]
 
 
 def test_re4_gc_uses_the_controllers_own_gate_and_names_the_missing_kind():
@@ -134,7 +136,7 @@ def test_ring_available_needs_a_ready_controller_and_a_live_kind():
     assert G.ring_available(game, ctl) is True
     assert G.ring_available(game, ctl, G.NO_PLAYER) is False
     assert G.ring_available(game, None) is False
-    assert G.ring_available({"game_id": "270a15eb98dab4d7"}, ctl) is False
+    assert G.ring_available({"game_id": "361337431d93bd1b"}, ctl) is False   # RE3: no ring at all
 
 
 def test_summary_speaks_for_the_button():

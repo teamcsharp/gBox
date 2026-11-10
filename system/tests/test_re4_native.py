@@ -3,6 +3,7 @@
 A fake guest builds the image's real layout - a player unit of class 0xB0C0A0 whose vtable slot +0x20 holds
 main+0x2B6420, a zero cave, and a mailbox - and a fake dispatcher consumes one published request. No game.
 """
+import math
 import struct
 import types
 
@@ -212,3 +213,75 @@ def test_ready_refuses_a_player_of_a_non_unit_class(monkeypatch):
     put(ctl.mem, PLAYER, struct.pack("<Q", BASE + 0x1000))
     with pytest.raises(N.Unavailable, match="no player unit"):
         ctl.ready()
+
+
+# ---- F2/F3: the flash op and where it goes off -----------------------------------------------------------------------
+
+def test_flash_at_writes_the_fake_object_and_publishes_the_blast_call(monkeypatch):
+    ctl = fake_controller(monkeypatch)
+    ctl.attach()
+    receipt = ctl.flash_at(1.0, 2.0, 5003.0)                      # 5000 mm from the player at (1, 2, 3)
+    assert receipt["state"] == "confirmed" and receipt["verified"] is False
+    assert receipt["pos"] == [1.0, 2.0, 5003.0] and receipt["from_player_cm"] == 500.0
+    scratch = MAILBOX + N.SCRATCH_OFF
+    written = next(data for at, data in ctl.writes if at == scratch)
+    assert struct.unpack_from("<3f", written, N.FLASH_OBJECT_POS) == (1.0, 2.0, 5003.0)
+    assert written[N.FLASH_OBJECT_TYPE_BYTE] == 0                  # not 0xD6: the effects are not skipped
+    assert ctl.q(MAILBOX + CODE.MAILBOX["target"]) == BASE + N.FLASH_BLAST
+    assert ctl.q(MAILBOX + CODE.MAILBOX["args"]) == scratch
+    assert ctl.w(MAILBOX + CODE.MAILBOX["state"]) == CODE.STATE["done"]
+
+
+def test_flash_at_refuses_a_point_at_his_feet(monkeypatch):
+    ctl = fake_controller(monkeypatch)
+    ctl.attach()
+    with pytest.raises(N.Unavailable, match="never at his feet"):
+        ctl.flash_at(1.0, 2.0, 3.0)
+    assert not any(at == MAILBOX + N.SCRATCH_OFF for at, _data in ctl.writes)
+
+
+def test_place_flash_pushes_the_point_out_to_the_minimum():
+    point = N.place_flash((0.0, 0.0, 0.0), [(1000.0, 0.0, 0.0)])
+    assert point is not None and math.hypot(point[0], point[2]) == pytest.approx(N.FLASH_MIN_MM)
+
+
+def test_place_flash_none_when_nobody_is_near():
+    assert N.place_flash((0.0, 0.0, 0.0), [(N.FLASH_FROM_MM + 1.0, 0.0, 0.0)]) is None
+    assert N.place_flash(None, [(1000.0, 0.0, 0.0)]) is None
+
+
+def test_place_flash_centre_and_radius_stay_in_the_operator_band():
+    point = N.place_flash((0.0, 0.0, 0.0), [(5000.0, 0.0, 0.0), (0.0, 0.0, 6000.0)])
+    assert point is not None
+    distance = math.hypot(point[0], point[2])
+    assert N.FLASH_MIN_MM - 1.0 <= distance <= N.FLASH_MAX_MM + 1.0
+    assert point[0] > 0.0 and point[2] > 0.0
+
+
+def test_flash_now_with_a_point(monkeypatch):
+    ctl = fake_controller(monkeypatch)
+    ctl.attach()
+    monkeypatch.setattr(N, "harness", lambda ad, mailbox=None: ctl)
+    receipt = N.flash_now(None, point=(1.0, 2.0, 5003.0))
+    assert receipt["state"] == "confirmed" and receipt["op"] == "flash_at"
+
+
+def test_flash_now_places_on_the_crowd(monkeypatch):
+    ctl = fake_controller(monkeypatch)
+    ctl.attach()
+    monkeypatch.setattr(N, "harness", lambda ad, mailbox=None: ctl)
+    monkeypatch.setattr(N.R, "snapshot", lambda m, search=True: {
+        "player": {"pos": (0.0, 0.0, 0.0)}, "enemies": [{"pos": (5000.0, 0.0, 0.0)}]})
+    receipt = N.flash_now(None)
+    assert receipt["state"] == "confirmed"
+    assert receipt["pos"][0] == pytest.approx(5000.0) and receipt["pos"][2] == pytest.approx(0.0)
+
+
+def test_flash_now_refuses_when_nobody_is_near(monkeypatch):
+    ctl = fake_controller(monkeypatch)
+    ctl.attach()
+    monkeypatch.setattr(N, "harness", lambda ad, mailbox=None: ctl)
+    monkeypatch.setattr(N.R, "snapshot", lambda m, search=True: {"player": {"pos": (0.0, 0.0, 0.0)},
+                                                                 "enemies": []})
+    receipt = N.flash_now(None)
+    assert receipt["state"] == "unavailable" and "12 m" in receipt["reason"]

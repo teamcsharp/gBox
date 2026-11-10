@@ -958,3 +958,39 @@ a changed generation is not trusted; an unattached call is refused. With the ear
 page, then **E6**: the RE session runs a no-op call on a live RE4 round (magic word through the mailbox), three stage
 loads with the harness attached, frames, and the Citron log - and the cave's presence in the HostMemory mapping (the
 controller's `install` already refuses "ambiguous guest backing file", and that answer would be the result).
+
+## Round 62 (2026-11-10 18:10 CST) - checkpoint F's op and placement are built: `flash_at`, `flash_now`, and the status row
+
+**F2, the op.** `Controller.flash_at(x, y, z)` (RE4 millimetres) now runs the game's own flash blast on the game
+thread through the harness, route (i) of the guide: a zeroed fake object at `mailbox+0x100` with the point at `+0xA4`
+and `+0x3CC` left zero (not 0xD6, so the ground/type check does not skip the effects), then `main+0x2E4E50` through
+the mailbox. It refuses a point closer than 4000 mm to him ("never at his feet"). The receipt is
+`{state: "confirmed", verified: false, op: "flash_at", effect: "native_flash_blast", pos, from_player_cm}` -
+confirmed means the native call returned, `verified` stays false until F4's live receipt (Ganados in range stunned,
+his hp unchanged, the bloom on frames).
+
+**F3, where it goes off.** `place_flash(player, enemies)` is `core.flash_window.place` (merged on main) in RE4's
+millimetres: min 4000, max 9000, from 12000, level `re4_switch.LEVEL_MM`; `None` when nobody is near. The module op
+`flash_now(ad, point=None)` computes that point from a memory shim over the adapter's snapshot and refuses
+(`state: unavailable`) when nobody is within 12 m; `Controller.flash()` is the intervention worker's entry.
+
+**F4, the status row.** `grenade_status`'s RE4 Switch entry is no longer "not built": the **flash row is built** -
+`Kind(False, "a flash is built on the RE4 Switch native harness (main+0x2E4E50 via one vtable store) but has no live
+receipt yet")` - with `controller="re4_switch_native"` (added to `_CONTROLLERS`); the ring kinds stay "does not
+offer". `interventions.native_controller` now includes the RE4 Switch module (attribute `_re4_switch_harness`); the
+controller's `prepare()` refuses with the E3 reason until the private page is proven, so nothing is advertised before
+that. The status/interventions tests are updated to the new contract (the flash row built, hand/incendiary not
+offered).
+
+**Tests.** 8 new flash/placement tests in `tests/test_re4_native.py` (20 there): the fake object is written with the
+point and a zero type byte, the published target is the flash blast and the first argument the object, the receipt
+carries the point and the distance; the at-his-feet refusal writes nothing; `place_flash` pushes to the 4000 mm floor,
+keeps within 4000..9000, returns None past 12 m; `flash_now` with a point, on the crowd, and refusing when nobody is
+near. A unicorn engine-disposal fixture was added after a Windows atexit crash in the dispatcher tests (the tests
+passed; the interpreter exit did not). Broad run of the RE4 harness, the grenade rule/scatter, interventions/worker,
+bot logic and the mercs engine: **242 passed**.
+
+**F5 to the RE session:** the RE4 flash op exists on `ds-grenade-re4-bss` (`Controller.flash_at` / `flash_now`), but
+**do not wire the doctrine yet** - the harness has no proven mailbox page (E3's watch) and no live receipt. The one
+doctrine line is `re4_switch.py` around line 1890, `respond.Kit(fire=fire, flash=None, ...)`, and it is the RE
+session's to write after F4 flips the row to verified.

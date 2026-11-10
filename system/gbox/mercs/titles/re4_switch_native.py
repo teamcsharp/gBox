@@ -17,6 +17,7 @@ Any write into `main`'s `.text`/`.rodata` is refused - only `install()` into the
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import struct
 import threading
@@ -37,6 +38,19 @@ DISPATCH = CODE.DISPATCH
 #: End of the read-only image (`main` .text + .rodata; the header's own rodata end). Writes below this are refused.
 CODE_END = 0xAE1BCC
 CALL_TIMEOUT_S = 1.0
+
+#: The flash blast (checkpoint F2 route (i)): `fn(obj)` reads the object's position at +0xA4 and starts the flash's
+#: effects/sound/area attack. A zeroed fake object with that position is enough; +0x3CC must not read 0xD6 (the
+#: ground/type check skips the effects then).
+FLASH_BLAST = 0x2E4E50
+FLASH_OBJECT_POS = 0xA4
+FLASH_OBJECT_TYPE_BYTE = 0x3CC
+OBJECT_SIZE = 0x400
+SCRATCH_OFF = 0x100                    # the fake object, in the same proven page as the mailbox (E3)
+#: The operator's placement rule for a flash (checkpoint F3), in RE4's millimetres.
+FLASH_MIN_MM, FLASH_MAX_MM, FLASH_FROM_MM = 4000.0, 9000.0, 12000.0
+#: The proven private page (set after E3's three-load watch passes; None means the harness cannot attach).
+MAILBOX_AT: int | None = None
 
 
 def verify_dispatch() -> bytes:
@@ -64,7 +78,7 @@ class Controller(N.Controller):
         self.base = R.module_base(self)
         if not self.base:
             raise Unavailable("unsupported RE4 executable")
-        self.mailbox = mailbox
+        self.mailbox = MAILBOX_AT if mailbox is None else mailbox
         self.player = None
         self.original = None
         self.player_id = None
@@ -97,6 +111,11 @@ class Controller(N.Controller):
         return super().install(at, data)
 
     # ---- the player and the trigger ------------------------------------------------------------------------------------
+
+    def prepare(self):
+        """The status path: no capability is advertised before the private page is proven (E3)."""
+        if self.mailbox is None:
+            raise Unavailable("no proven private storage for the RE4 harness (E3's three-load watch is pending)")
 
     def ready(self):
         self.check_build()
@@ -186,10 +205,100 @@ class Controller(N.Controller):
         """The dispatcher's entry counter (E6's live proof that the cloned slot fires every frame)."""
         return self.q(self.mailbox + MAILBOX["ticks"]) if self.mailbox is not None else 0
 
+    # ---- the flash (checkpoint F) --------------------------------------------------------------------------------------
+
+    @property
+    def scratch(self) -> int:
+        """The fake blast object, in the same proven page as the mailbox (the mailbox uses only its first 0x80)."""
+        if self.mailbox is None:
+            raise Unavailable("no harness mailbox")
+        return self.mailbox + SCRATCH_OFF
+
+    def player_position(self) -> tuple:
+        return struct.unpack("<3f", self.rd(self.player + R.U_POS, 12))
+
+    def flash_at(self, x, y, z):
+        """Start the game's flash blast on the point (x, y, z - RE4's millimetres) through the harness.
+
+        Route (i) of checkpoint F2: the game's own flash blast `main+0x2E4E50` with a zeroed fake object whose
+        position is the point; `+0x3CC` stays zero (not 0xD6, which would skip the effects). `state: confirmed` means
+        the native call returned on the game thread; `verified` stays False until a live effect receipt (the stun
+        state of the Ganados in range, his own hp unchanged) is seen - that is F4's row in `grenade_status`.
+        """
+        if not self.attached():
+            raise Unavailable("the harness is not attached to the player")
+        px, py, pz = self.player_position()
+        from_mm = math.hypot(x - px, z - pz)
+        if from_mm < FLASH_MIN_MM:
+            raise Unavailable(f"a flash {from_mm / R.MM_PER_CM:.0f} cm from him is refused (never at his feet; "
+                              f"the minimum is {FLASH_MIN_MM / R.MM_PER_CM:.0f} cm)")
+        obj = bytearray(OBJECT_SIZE)
+        struct.pack_into("<3f", obj, FLASH_OBJECT_POS, x, y, z)
+        # +0x3CC is zero already: the blast's ground/type check must not skip the effects
+        self.write(self.scratch, bytes(obj))
+        result = self.call(FLASH_BLAST, self.scratch)
+        return {"state": "confirmed", "verified": False, "op": "flash_at", "effect": "native_flash_blast",
+                "pos": [round(v, 1) for v in (x, y, z)],
+                "from_player_cm": round(from_mm / R.MM_PER_CM, 1), "player_generation": self.player_id,
+                "call_result": result}
+
+    def flash(self):
+        """The intervention's `flash_now` op: the crowd point through this controller's own adapter."""
+        return flash_now(self.ad, mailbox=self.mailbox)
+
+
+def place_flash(player, enemies, level_mm: float | None = None):
+    """The flash point on the crowd (checkpoint F3): `core.flash_window.place` in RE4's millimetres, or None.
+
+    The nearer ones weigh more, the point is pushed out to at least FLASH_MIN_MM from him and never past
+    FLASH_MAX_MM, on his floor; nobody within FLASH_FROM_MM: None (no flash is wanted).
+    """
+    from ..core import flash_window
+    if player is None:
+        return None
+    foes = [tuple(q) for q in enemies or () if q is not None]
+    return flash_window.place(tuple(player), foes, FLASH_MIN_MM, FLASH_MAX_MM, FLASH_FROM_MM,
+                              R.LEVEL_MM if level_mm is None else level_mm)
+
+
+class _Reader:
+    """The adapter as `re4_switch.snapshot` wants it (`m.rd` and attribute caching), for a worker that has no driver."""
+
+    def __init__(self, ad):
+        self._ad = ad
+
+    def rd(self, at, n):
+        return self._ad.read_memory(at, n)
+
+    def __getattr__(self, name):
+        return getattr(self._ad, name)
+
+
+def flash_now(ad, *, point=None, mailbox=None):
+    """The module op of checkpoint F2: flash at `point` (mm) or on the nearest crowd.
+
+    Needs the proven mailbox (E3) - `MAILBOX_AT` or the `mailbox` argument. Without a point it reads a snapshot
+    through the adapter, places the flash with `place_flash`, and refuses (state unavailable) when nobody is near.
+    """
+    ctl = harness(ad, mailbox=MAILBOX_AT if mailbox is None else mailbox)
+    if point is None:
+        try:
+            snap = R.snapshot(_Reader(ad), search=True)
+        except Exception as exc:                          # noqa: BLE001 - a worker without a snapshot cannot place
+            raise Unavailable(f"no crowd point for the flash: {type(exc).__name__}: {exc}") from None
+        foes = [e.get("pos") for e in snap.get("enemies") or () if e.get("pos")]
+        point = place_flash((snap.get("player") or {}).get("pos"), foes)
+        if point is None:
+            return {"state": "unavailable", "verified": False, "op": "flash_at",
+                    "reason": "nobody within 12 m on his level to flash"}
+    return ctl.flash_at(*point)
+
 
 def harness(ad, *, mailbox: int | None = None) -> Controller:
-    """The session's one controller, so the mailbox and the trigger are bound once per emulator."""
-    ctl = getattr(ad, "_re4_native_harness", None)
+    """The session's one controller (the same one `interventions.native_controller` caches), mailbox bound once."""
+    ctl = getattr(ad, "_re4_switch_harness", None)
     if ctl is None:
-        ctl = ad._re4_native_harness = Controller(ad, mailbox=mailbox)
+        ctl = ad._re4_switch_harness = Controller(ad, mailbox=mailbox)
+    elif mailbox is not None and ctl.mailbox is None:
+        ctl.mailbox = mailbox
     return ctl

@@ -5,12 +5,23 @@ object's cloned vtable at slot +0x20), reads the mailbox pointer from the clone,
 request and tail-calls the game's own transform every entry. These tests decode the pinned image, reproduce it from
 `dispatch.S` (keystone), and execute it on a synthetic memory map (unicorn) - no game.
 """
+import gc
 import struct
 
 import pytest
 
 from gbox.mercs.native.re4_82c2a04a import build_dispatch as B
 from gbox.mercs.native.re4_82c2a04a import code as C
+
+_ENGINES = []
+
+
+@pytest.fixture(autouse=True)
+def _dispose_engines():
+    """Free every unicorn engine inside the test, not at interpreter shutdown (a Windows exit crash otherwise)."""
+    yield
+    _ENGINES.clear()
+    gc.collect()
 
 # hand-encoded stubs for the unicorn map (checked by test_the_fake_stubs_are_what_they_claim)
 ORIGINAL_STUB = struct.pack("<3I", 0xF9001000, 0xD2800AA0, 0xD65F03C0)   # str x0,[x0,#0x20]; mov x0,#0x55; ret
@@ -83,6 +94,7 @@ def machine(mailbox=True):
     mu.mem_write(CLONE + C.CLONE_MAILBOX_OFF, struct.pack("<Q", MAILBOX if mailbox else 0))
     mu.reg_write(UC_ARM64_REG_SP, STACK + 0x8000)
     mu.reg_write(UC_ARM64_REG_LR, RETURN)
+    _ENGINES.append(mu)
     return mu
 
 
