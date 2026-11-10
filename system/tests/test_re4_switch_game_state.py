@@ -285,6 +285,12 @@ def test_the_games_results_post_the_results_boundary_after_a_live_round(monkeypa
     assert w["phases"][:3] == ["intro", "playing", "results"]
 
 
+def test_one_odd_read_does_not_split_a_round_and_a_continue_starts_the_next(monkeypatch, tmp_path):
+    states = [INTRO] * 10 + [PLAYING] * 20 + [MENU] + [PLAYING] * 20 + [DEAD] * 10 + [MENU] * 10 + [INTRO] * 10
+    _, stats, _ = _run(monkeypatch, tmp_path, states, ["unknown"] * 400)
+    assert stats["rounds"] == 2, "the death's Continue loads the stage again: its intro is the next round"
+
+
 def test_an_intro_never_seen_live_posts_no_results(monkeypatch, tmp_path):
     posted = []
     _run(monkeypatch, tmp_path, [INTRO] * 30 + [RESULTS] * 20, ["unknown"] * 400,

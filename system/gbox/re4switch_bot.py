@@ -69,6 +69,7 @@ FRAME_MENUS = ("title", "main_menu", "extras_menu", "mercs_title", "select_playe
                "story", "story_prompt")
 STATE_LOG = driver.WALK_LOG.with_name("re4-state-disagreements.jsonl")
 STATE_LOG_EVERY_S = 5.0                 # one row per (RAM phase, frame screen) pair at most this often
+ROUND_END_TICKS = 3                     # the game's state reads no round this many ticks in a row: the round is over
 FIGHT_TICK_S = 0.05                     # the RAM fight's loop
 FRAME_EVERY = 5                         # ... which classifies a frame every this many ticks (the menus coming back)
 TALLY_S = 1.0                           # the clock at 0 this long: the round is over (its results are up)
@@ -274,7 +275,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                                                     # a back press), the stat that tells a walk loop on the live panel
 
     screen = {"where": None}
-    last_phase = None
+    last_phase, off_round = None, 0
     checker = CrossCheck(stats, clock)
     while not stopped():
         if max_seconds is not None and clock() - started > max_seconds:
@@ -327,11 +328,14 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             else:
                 keys.release()
                 re4_walk.publish(pub, None, None, stats["screen"])
+            off_round = 0
             sleep(FIGHT_TICK_S)
             continue
         if in_round and gs is not None:
-            keys.release()                                   # the game says the round is over (or a menu is named)
-            in_round = False
+            keys.release()                                   # the game says the round is over (or a menu is named):
+            off_round += 1                                   # ROUND_END_TICKS reads in a row end it (one torn read
+            if off_round >= ROUND_END_TICKS:                 # never splits a round in two)
+                in_round = False
         last_phase = phase
         if gs is not None and where in ("playing", "round_intro"):
             where = "unknown"                                # no round runs: the HUD test or the reader's intro guess
