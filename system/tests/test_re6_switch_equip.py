@@ -81,6 +81,23 @@ def test_request_publishes_native_action_and_waits_for_native_hand(kind, index):
     assert len(writes) == n
 
 
+@pytest.mark.parametrize('kind,index', [(0x115, 11), (0x11b, 3)])
+def test_request_keeps_the_intels_equip_target_in_step(kind, index):
+    """Live 2026-11-10: a native gun request left the player's Intel (+0x59F0) targeting the old item, and its own
+    trigger put that item back 0.1 s later (16 bounces in 40 s). The request writes the Intel's target (+0x1274) as
+    the game's own path does (main+0xBBF048)."""
+    g, p, obj, writes = fixture(kind, index)
+    intel = g.obj('uPlIntel', 0x2000)
+    g.q(p + E.INTEL, intel)
+    g.i32(intel + E.INTEL_TARGET, 9)                                       # the old item's index
+    assert E.request(g, BASE, p, kind, now=1)['state'] == 'requested'
+    assert struct.unpack('<i', g.rd(intel + E.INTEL_TARGET, 4))[0] == index
+    assert writes[-1][0] == p + E.MANAGER + 0x30                             # still the publication last
+    g2, p2, _obj, writes2 = fixture(kind, index)                            # no Intel: nothing extra written
+    E.request(g2, BASE, p2, kind, now=1)
+    assert all(a != E.INTEL_TARGET for a, _ in writes2)
+
+
 @pytest.mark.parametrize('bad', ['signature', 'dead', 'owner', 'generation', 'busy', 'priority', 'empty', 'hand_lifecycle'])
 def test_missing_or_busy_native_witness_refuses_without_writes(bad):
     g, p, obj, writes = fixture()
