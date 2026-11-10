@@ -133,9 +133,33 @@ played (receipts under `.tmp/evidence/` on the Windows box, sessions named):
   a minute later the joined module refusals - the status was either blind (dead worker) or a paragraph of internals,
   never "the ring is not built for this title".
 
+## The RE6 native pair checked against the operator's own installation (2026-11-10, offline)
+
+The operator pointed this lane at the local RE6 Switch copy: `D:\gBox\cache\115f9cdbba115432\Resident Evil 6
+[01002A000CD48000].nsp` (base 1.0.0) plus `Resident Evil 6 [01002A000CD48800][v131072].nsp` (the update). No game
+was launched for this; it is file analysis only.
+
+1. `python -m gbox.switch_extract exefs <nsp> <program.nca> <out> --keys \\10.89.1.125\QuickSwap2\Emulation\_switch\prod.keys`
+   pulled `main` out of each program NCA; `hactool -t nso --uncompressed=main.bin main` (the repo's
+   `system/tools/bin/hactool.exe`) expanded the LZ4 sections.
+2. **The installed build is the pinned one.** The base NSP's `main` is build `2A797A895C35383B0C8052BC6E2B281B`;
+   the *update's* `main` is **`061D2A06CD700785E987C42CE2D72231`** - exactly `re6_switch.BUILD_ID`.
+3. **The ring's caves are still padding on it.** `re6_switch_native.verify_build(main.bin)` (new; a pure function
+   with tests in `tests/test_re6_native_build.py`) reports the pinned signature at virtual `0x2151000` and all three
+   install targets **pristine zero padding**: `0x18F2640` (call, 536 bytes), `0x18F2880` (spawn, 256), `0x18F29C0`
+   (detonate, 232), every one `installable: true`. The same check refuses the base 1.0.0 image by its signature.
+   Receipt: `.tmp/evidence/re6-build-verify.json` (local).
+
+So the RE6 ring's native pair is right for this installation; what it needs to *run* is an ARM64 Linux NCE host
+(the Spark), because the controller installs into the guest's HostMemory through `/proc` and memfd. This PC
+(Windows, yuzu/Dynarmic) cannot execute it by design - hence the local run was not used for the ring itself.
+
+How to repeat: extract the update's `main` as above and run
+`python -c "from gbox.mercs.titles import re6_switch_native as N; print(N.verify_build(open('main.bin','rb').read()))"`.
+
 ## Tests
 
-New: `tests/test_mercs_grenade_status.py` (19), `tests/test_re6_grenade_ring.py` (9),
+New: `tests/test_mercs_grenade_status.py` (19), `tests/test_re6_grenade_ring.py` (10), `tests/test_re6_native_build.py` (4),
 `tests/test_mercs_grenade_ring.py` (13), worker/status cases in `tests/test_intervention_worker.py` and
 `tests/test_merc_interventions.py`, and the chooser case in `tests/stream-interventions.test.cjs` (21 JS tests pass).
 
