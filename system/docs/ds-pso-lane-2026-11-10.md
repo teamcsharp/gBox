@@ -1513,17 +1513,67 @@ in round 26, so the door works in that direction; the lobby side of that corner 
 out of without waypoints. The route needs one intermediate point on the lobby side of the door rather than a straight
 line from the pad.
 
+## Round 28 (2026-11-10) — the door was never at the coordinate I thought, and the city is one big area
+
+### The crossing point was never `(185,173)`
+
+Round 26's successful room change was logged as "walked toward `(185,173)` and crossed", and rounds 21-27 all assumed the
+guild door *was* that coordinate. This round's log shows the crossing happened somewhere else entirely:
+
+```
+P1 (203.9, 190.9) room 10
+  -> (120.0, 100.0)  stuck at (105.1, 162.8) room 10
+  -> (91.0, 24.0)    stuck at (157.9, 102.9) room 20     <-- crossed between those two points
+```
+
+The lobby/market boundary is somewhere around **(105-158, 100-163)**, not at the door entity's coordinate. Every attempt
+to cross *at* `(185,173)` from the lobby side -- including with `overshoot` and `push_through` -- correctly did nothing,
+because there is no door there. That also explains why standing on that coordinate in round 25 changed rooms once by
+accident and never again.
+
+### `pso_explore.probe` now defaults to the walker that works
+
+Its `walk_to` default was the calibration-based `pso_kbwalk.walk_to`, which round 25 showed produces noise (16 points,
+none reached). The default is now `greedy_walk`, with a test that the probe runs end-to-end through its own default rather
+than raising on a mismatched signature.
+
+### The city is one connected area, not a set of rooms
+
+Walking around room 20 after crossing showed:
+
+* the **central dome** with a large red-cross door (the medical centre) and NPCs along the walls (`pq0-street.jpg`);
+* an **outdoor terrace** over the city with a railing, reached without any transition (`pq1-guildhall.jpg`).
+
+So "room 20" is a large area containing interiors *and* outdoor walkways, and the `room` id changes only at specific
+thresholds. The guild is somewhere in this area -- its marker is `TObjNpcCloakroomBase`, which the entity table places at
+`(-267, -24)` in room 20 -- but the straight line from the dome to that point is blocked at around `(102, 100-128)`, which
+is a wall, not a walker failure.
+
+### State
+
+Co-op session live. P1 (BQF) in room 20 on the terrace at `(102.2, 105.2)`; P2 (3P) in room 10 at the lobby pad
+`(233, 273)`. Both healthy.
+
+### Next
+
+1. Route around the wall: from `(102,105)` the cloakroom at `(-267,-24)` needs a waypoint on whichever axis is open --
+   probe with `pso_explore.probe` (now greedy-backed) and let the exits guide the way, rather than walking at the target
+   through a wall.
+2. At the cloakroom end, talk to the guild receptionist, take a quest, and let the quest warp the party to the surface.
+3. Then P1's accept test (three cold launches, both players, no warp), then P6a's in-game proof, P6b, P7a and the
+   demo -> route fixture.
+
 ## 7. Next
 
-1. **The Hunter's Guild quest is the route.** Every teleporter hypothesis is now ruled out (nine positions on the
-   room-40 pad, `A` on it, a 2.5-unit approach, both players present, and the lobby pedestal is decorative). The
-   guild's warp is menu-driven, so it satisfies P1's "real presses" requirement.
-2. Find the guild: probe room 10 and the market street (room 20) with `pso_explore.probe` **given `greedy_walk`**,
-   and give the lobby route a waypoint on the lobby side of the door at (185,173) -- a straight line from the pad
-   gets stuck in the corner around (215-254, 208-254).
-3. Then the quest, the surface, and P1's accept test (three cold launches with both players), then P6a's in-game
-   proof, P6b, P7a and the demo -> route fixture.
+1. **The guild is at the cloakroom end of the city.** `TObjNpcCloakroomBase` sits at `(-267,-24)` in room 20, and
+   P1 is on the terrace at `(102,105)` unable to go straight at it -- a wall, not a walker failure. Probe room 20
+   with `pso_explore.probe` (now greedy-backed) and follow the open axis instead of walking through the wall.
+2. At the guild, talk to the receptionist, take a quest, and let the quest warp the party to the surface -- menu
+   driven, so still real presses and still P1's requirement.
+3. Then P1's accept test (three cold launches with both players), then P6a's in-game proof, P6b, P7a and the
+   demo -> route fixture.
 
-`greedy_walk` now has `overshoot` (keep walking past a target you arrived at) and `push_through` (re-aim past a target
-you are stuck on) -- both tested, and both needed because a doorway is a volume that has to be crossed, not a point to
-stand on.
+Correction to earlier rounds: the lobby/market boundary is around (105-158, 100-163), **not** at the
+`TObjCityDoor_Guild` coordinate (185,173). Standing on that coordinate never crossed and was never going to. The
+city itself is one large connected area -- the central dome with its red-cross medical door, the market street and an
+outdoor terrace are all room 20 -- and the `room` id changes only at specific thresholds.
