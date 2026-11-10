@@ -1,4 +1,4 @@
-"""gbox.skin_swap's whole-model fallback: the path RE6 player arcs take (model payload, not BM/MM/NM map groups)."""
+﻿"""gbox.skin_swap's whole-model fallback: the path RE6 player arcs take (model payload, not BM/MM/NM map groups)."""
 import pytest
 
 from gbox import mt_arc, skin_swap
@@ -64,3 +64,11 @@ def test_character_code_reads_the_model_path():
     blob = mt_arc.build(arc)
     assert skin_swap._character_code(blob) == "0200"
     assert skin_swap._character_code(b"not an arc") is None
+
+def test_swap_models_exposes_the_keep_tag_option():
+    import inspect
+
+    from gbox import model_swap
+    sig = inspect.signature(model_swap.swap_models)
+    assert "keep_tag" in sig.parameters
+    assert sig.parameters["keep_tag"].default is True      # the merged-tag behaviour stays the default
