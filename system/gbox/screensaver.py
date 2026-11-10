@@ -218,6 +218,16 @@ def opted_in(store, worker: dict, cfg: dict) -> bool:
     return worker.get("name") in cfg["workers"]
 
 
+OFFLINE_TOOLS = frozenset({"ghidra_script", "ghidra_bridge", "analyze_binary", "ida", "decomp_pipeline", "decomp_me",
+                           "pick_ghidra", "kb_search"})
+
+
+def offline_job(job: dict) -> bool:
+    """A job that reads files only (an executable's analysis): it never needs the PC's game, display or pad."""
+    tool = str(job.get("tool") or "")
+    return tool in OFFLINE_TOOLS or tool.startswith("rea_")
+
+
 def worker_reason(store, worker: dict, cfg: dict, running: list[dict], now: float | None = None) -> str | None:
     """Why this PC may not start a screensaver game now (None = it may). MercMode the operator started on this PC from the
     app (gbox.mercmode.operator_dispatch) is their own action: no idle wait and no background-testing tick, but never over
@@ -235,7 +245,12 @@ def worker_reason(store, worker: dict, cfg: dict, running: list[dict], now: floa
         own = sum(1 for j in store.all('job') if j.get('actor') == ACTOR and j.get('require_worker') == worker['id']
                   and j.get('state') in ('queued', 'assigned', 'running')) \
             if warm or store.get(mercmode.NEXT, worker['name']) else 0
-        if worker['active_jobs'] > own:
+        # an offline analysis (Ghidra, a binary survey, a decompile) touches no game, display or pad: it never holds the
+        # next round (2026-11-10 08:53-08:57+: a Hermes ghidra_script on DOA5 kept lilspark's MercMode idle, no game on
+        # screen); the measured memory headroom below still guards the launch
+        offline = sum(1 for j in store.all('job') if j.get('state') in ('assigned', 'running')
+                      and worker['id'] in (j.get('worker_id'), j.get('require_worker')) and offline_job(j))
+        if worker['active_jobs'] > own + offline:
             return "busy with jobs"
     if any(s.get("session_id", "").startswith(worker["id"] + "-") and s.get("session_id") not in warm for s in running):
         return "a game is already running there"
