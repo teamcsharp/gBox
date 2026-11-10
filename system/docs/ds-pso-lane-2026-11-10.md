@@ -51,8 +51,14 @@ FST entries changed: none
 ```
 
 Five bytes differ in a 1.6 MB archive (X and Y floats; Z was unchanged so its bytes match), and no FST entry moved —
-the strongest form of "one object moved, nothing else touched". **What is not yet done is the in-game look**: that
-needs the P1 menu walk (§6), because there is no way to reach Forest 1 from a cold boot by hand in this automation.
+the strongest form of "one object moved, nothing else touched".
+
+**The built disc boots.** Dolphin 2609 (JIT64 SC, Direct3D 11, HLE) opens the rebuilt image and the game's boot chain
+(BIOS -> `main.dol` AppSwitcher -> `PsoV3.dol`) runs to PSO's "CREATED BY SONIC TEAM" splash, so the rebuilt FST and
+executable are valid and the edited archive is being read at boot with no error. Frame:
+`D:\gBox\pso-ds\frames\built-disc-t2.png` (kept on `D:`, not in git — it is a game asset). **What is not yet done is
+the in-game look at the moved object**: that needs the P1 menu walk (§6), because nothing reaches Forest 1 from a
+cold boot here yet.
 
 ## 2. What I fixed
 
