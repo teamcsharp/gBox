@@ -924,3 +924,37 @@ unicorn; the runtime never imports keystone - the bytes are pinned in `code.py`.
 reference into it, attach writes only the vtable pointer, a publish is consumed once under the generation guard, a
 timeout is `Uncertain` and never replayed). It can be written now with a configurable mailbox; the default page must
 wait for E3's three-load zero watch (requested) so no live build ever points at storage the game may use.
+
+## Round 61 (2026-11-10 17:45 CST) - E4/E5 done: the RE4 harness controller, its write rule and offline tests
+
+`gbox/mercs/titles/re4_switch_native.py` now holds the controller on top of the E0(c) dispatcher:
+
+- **The trigger by data (E2):** `attach()` reads the player unit through `S_PLAYER`/`S_PLAYER_2`
+  (`re4_switch.player_unit`), refuses any class outside `PLAYER_VTABLE_RANGE`, checks the vtable's slot `+0x20` is
+  `main+0x2B6420`, copies 32 entries into a clone, points the clone's slot at the cave dispatcher, installs dispatcher
+  + clone into the vetted cave, and performs **one aligned 8-byte store** into `player+0`. `detach()` puts the
+  original pointer back. A re-attach is a no-op; a player change while attached is detected by its id.
+- **E4, the code rule in code:** `write()` refuses any guest write into `main`'s `.text`/`.rodata`
+  (`base .. base+0xAE1BCC`, the header's rodata end) - so the vtable store, the mailbox and every other write can
+  only touch heap/`.bss`; `install()` is the only route into code and refuses any target outside the vetted cave
+  (`0x655880..0x656000`). The base class's memfd install still refuses nonzero bytes.
+- **The mailbox:** `call(off, *args)` publishes target + seven arguments + a generation, then the state word last
+  (one 4-byte write), and waits for the dispatcher's `done`; the result is `x0`, a generation mismatch is `Uncertain`,
+  and a timeout is `Uncertain` **without a replay** (the next call refuses while the mailbox is not idle/done).
+  `ticks()` reads the dispatcher's entry counter - E6's proof that the cloned slot fires every frame.
+- **The private storage stays unproven until E3's watch:** `mailbox` is a constructor argument (default `None`), and
+  `attach()` refuses with "no proven private storage ... (E3's three-load watch is pending)". No live build can point
+  the harness at a page the game might use.
+
+**Tests** (`tests/test_re4_native.py`, 12) on a fake guest with the real layout (player of class `0xB0C0A0`, vtable
+slot `+0x20` = `main+0x2B6420`, zero cave, mailbox): the write rule refuses code/rodata; install refuses outside the
+cave; attach installs exactly the dispatcher and the clone and writes **only** the vtable pointer; re-attach no-op;
+attach refuses without a mailbox, over a nonzero cave, with a changed transform slot, and for a non-unit player
+class; a call publishes once and reads the result; a timeout is `Uncertain` and the request is never re-published;
+a changed generation is not trusted; an unattached call is refused. With the earlier files: **42 passed** across
+`test_re4_caves`, `test_re4_bss`, `test_re4_dispatcher`, `test_re4_native`.
+
+**What is left of checkpoint E:** E3's read-only three-load zero watch (the five candidate pages) to pick the mailbox
+page, then **E6**: the RE session runs a no-op call on a live RE4 round (magic word through the mailbox), three stage
+loads with the harness attached, frames, and the Citron log - and the cave's presence in the HostMemory mapping (the
+controller's `install` already refuses "ambiguous guest backing file", and that answer would be the result).
