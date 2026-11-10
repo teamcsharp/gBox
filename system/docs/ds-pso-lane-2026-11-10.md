@@ -653,56 +653,65 @@ and both players, three cold launches.
 * Forest 1: from Pioneer 2 the route is the Hunter's Guild door (`TObjCityDoor_Guild` at `185, 173` room 10, read from
   the entity list) and then the teleporter; the walker needs to get through the room transitions.
 
-## Round 10 (2026-11-10) — the town leg is blocked by the analog stick, and the dialogue trap that hid it
+## Round 10 (2026-11-10) — the town leg did not happen: a looping conversation and an unproven movement failure
 
-The plan was Pioneer 2 -> the Hunter's Guild -> Forest 1. Two things stopped it, both found by measurement.
+The plan was Pioneer 2 -> the Hunter's Guild -> Forest 1. It did not get there, and the more useful result is a
+correction: an earlier draft of this round claimed "the analog stick does not reach PSO". **That is not proven.**
 
-### 1. The analog stick does not reach PSO, even with gBox's own pad bound
+### What happened
 
-Buttons reach the game (A advances dialogue, START opens the menu). Sticks do not: holding ``up``/``down``/``left``/
-``right`` for a second each left the player at ``(0.0, -2015.0) room 41`` every time, and the C-stick did not turn the
-camera either. The decisive check was reading XInput **while the worker was holding the stick**: the slot that gBox's
-pad occupies showed no change at all (`during hold, distinct states: 1`). So the stick never reaches the pad that
-Dolphin reads -- this is not a game-state problem and not a deadzone problem.
+After the cold boot in round 9 the character stands in front of Principal Tyrell, whose tutorial conversation is many
+pages long. Then:
 
-That also means round 5's "keyboard moves him" result was the *keyboard* path all along, and that path is now unusable
-(`win_send_keys` returns `sent: 0` because Windows refuses `SetForegroundWindow` from a background process). **Movement
-is therefore currently impossible for the bot**, which blocks the town-to-field leg, P3's traversal, and anything else
-that needs walking. It is the top item for the next round and it is a vpad/stick-write bug, not a RE question.
+1. Pressing A repeatedly advances it, but **every A pressed after the last line restarts the conversation** -- the
+   character is still standing in front of him, so A talks again. A loop of A presses therefore never exits, and the
+   game stays in dialogue, where movement is locked.
+2. All of this round's movement tests (stick up/down/left/right for a second each, keyboard `up`, D-pad `down`) ran
+   during that dialogue and reported the player at `(0.0, -2015.0) room 41` every time. **A locked game cannot move, so
+   none of those results says anything about the stick.**
+3. Five `b` presses and one more walk changed nothing either, so B does not close this conversation.
 
-Candidate causes to check, in order: whether ``DolphinWinAdapter.send_input`` is even taking the vpad branch (a press
-that advances dialogue proves *some* path works, and XInput showing nothing during a stick hold suggests that path is
-not the vpad); whether ``VGamepad._render`` is called at all for a stick-only batch (``apply`` only renders at the end
-when ``rows`` is non-empty, and ``up`` is in ``KEYS``); and whether the ini's ``Main Stick/*`` lines survived the
-fallback INI rewrite.
+The frames say it plainly: `p1v-00-state.jpg`, `p1w-01-cdown.jpg`, `p1x-keyboard.jpg` all show the same speech bubble,
+"Go talk to my secretary. Irene will help you." -- the last line of the conversation, still up.
 
-### 2. The Principal dialogue loops, which made the stick look like it was working
+### What *is* proven, and what is not
 
-Pressing A repeatedly at the end of Principal Tyrell's conversation **restarts** it: after the last line the game
-returns to free movement, and the next A re-talks to him from where the character stands. So a loop of A presses keeps
-the game in dialogue forever, and movement tests run during it are meaningless -- the first few stick tests in this
-round were run inside the dialogue and could not have failed for the right reason.
+| claim | status |
+|---|---|
+| Buttons reach PSO through the current binding (A advances dialogue, START opens the in-game menu) | **proven** |
+| XInput shows no change in any slot while the worker holds a stick through `/input` | **proven** (12 samples over 1.5 s, one distinct state) |
+| Therefore the worker's stick write never reaches a pad | **not proven** -- the pad it would write to is the one whose buttons do work, so either the vpad is not the path in use, or the stick branch is not reached |
+| The analog stick does not work in PSO | **not proven** -- every test of it was run with movement locked |
+| Movement works at all right now | **unknown** -- it has not been tested outside the dialogue |
 
-The lesson is the same shape as the walk's: a press with no observable effect must not be repeated. The boot script's
-step list is fine (it presses A once per step and lets the ``in_town`` checkpoint judge), but any interactive step
-outside it needs the same discipline.
+### What this means for the next round
 
-### What was verified this round
+The order of work changes. Fix the **dialogue trap** first, because until the character is free every movement result is
+noise:
 
-* Buttons reach PSO through the current binding (A advances dialogue, START opens the in-game menu).
-* The stick does not, measured at the XInput layer rather than inferred from the game.
-* `gbox.pso_entities` still reads all 29 Pioneer 2 objects live, including `TObjCityDoor_Guild` at (185, 173) room 10
-  and `TObjCityDoor_Warp` at (254, 25) room 10 -- the route the town leg needs is already available.
-* An attempt to add a `select_character` helper was reverted: RAM cannot distinguish "saved character" from "empty
-  slot" at SELECT CHARACTER (both read ``mode 1`` with no player), so it had no honest verification signal, and the
-  existing step list already covers both branches by pressing A and then answering the create prompt.
+1. Find a RAM signal for "a conversation is open" (candidates: `control_mode` at actor+`0x324`, `action_state` at
+   `+0x326`, `hit_records` at `+0xA8` -- sample them during the conversation and after it) so a driver can know when to
+   stop pressing A. Without it, any interactive step is a guess.
+2. Then measure movement once, properly: hold a direction for two seconds with the character free and read the
+   position. Only then call the stick broken or working.
+3. Then the town leg: `TObjCityDoor_Guild` at (185, 173) room 10, then `TObjCityDoor_Warp` at (254, 25), then Forest 1.
+
+`gbox.pso_entities` still reads all 29 Pioneer 2 objects live, so the route itself is already available; what is missing
+is a way to know the party is free to walk.
+
+### Method note (the same lesson twice)
+
+This is round 3's mistake in a different place: round 3 nearly shipped a byte as a "screen id" because it changed when
+the screen changed, and this round nearly shipped "the stick is broken" because the character did not move while the
+game was in a conversation. Both were measurements of the *wrong state*. A negative result needs the same evidence bar as
+a positive one, and "nothing happened" is the easiest result to misread.
 
 ## 7. Next
 
-1. **Movement.** Fix the virtual pad's analog stick: it is written into pad_win but never appears on the pad (XInput
-   shows no change during a hold), so the bot cannot walk at all. This blocks the town leg, P3 and every traversal
-   accept test. Buttons are fine, so the fix is in the stick path -- send_input taking the vpad branch, _render
-   running for a stick-only batch, or the INI's Main Stick/* lines.
-2. Then Pioneer 2 -> the Hunter's Guild door (185,173 room 10) -> the teleporter -> Forest 1, with gbox.pso_move
-   closing the loop on the player's RAM position.
-3. Then the three cold launches with both players, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
+1. Find a RAM signal for "a conversation is open" (sample `control_mode` +0x324, `action_state` +0x326 and
+   `hit_records` +0xA8 during and after Principal Tyrell's conversation), so a driver knows when to stop pressing A.
+   Until the character is free, every movement measurement is noise - this round's were.
+2. Then measure movement once, properly: two seconds of a held direction with the character free, position read
+   back. Only then call the analog stick broken or working.
+3. Then Pioneer 2 -> the Hunter's Guild door (185,173 room 10) -> the teleporter (254,25) -> Forest 1, then the
+   three cold launches with both players, then P6a's in-game proof, P6b, P7a and the demo -> route fixture.
