@@ -1472,7 +1472,7 @@ class Controller:
                 book['slots'].pop(slot, None)
                 # No gate/switch left: head for the area's exit warp/teleporter so
                 # P1 keeps progressing out of the level toward the boss (idle->exit).
-                warp = self._nearest_warp(state, room, px, pz)
+                warp = self._nearest_warp(state, room, px, pz, entry=entry)
                 if warp is not None:
                     self.forward_kind[slot] = 'walk_through'
                     if slot == 1 and isinstance(getattr(self.inputs, 'stats', None), dict):
@@ -1770,17 +1770,31 @@ class Controller:
             return rec["keys"], True
         return movement_keys(player, waypoint), False
 
-    def _nearest_warp(self, state, room, px, pz):
+    def _nearest_warp(self, state, room, px, pz, entry=None):
         """The nearest area warp/teleporter (the level exit), same room first then
         anywhere on the floor. Warps are not gate objects, so they are the
-        autonomous forward target once a room's gates are done."""
+        autonomous forward target once a room's gates are done.
+
+        A zone's teleporter pair is bidirectional: the pad P1 stepped OFF on
+        entering sits right behind him, so pure nearest-distance snaps back to the
+        pad he just came through instead of the forward one that advances the zone.
+        When a room OWNs at least two pads, drop the one within BACKTRACK_RADIUS of
+        `entry` (P1's entry position) and pick the forward pad first - never drop it
+        when it would strand a single-pad room."""
         finite = lambda e: all(type(e.get(k)) in (int, float) and math.isfinite(e[k]) for k in ('x', 'z'))
         warps = [e for e in state.get('entities', ())[:512]
                  if finite(e) and any(k in str(e.get('class', '')) for k in ('Warp', 'Teleport', 'GoalWarp'))]
         if not warps:
             return None
         same = [e for e in warps if e.get('room') == room]
-        return min(same or warps, key=lambda e: math.hypot(e['x'] - px, e['z'] - pz))
+        candidates = same or warps
+        if entry is not None and len(candidates) > 1:
+            ex, ez = entry
+            forward = [e for e in candidates
+                       if math.hypot(e['x'] - ex, e['z'] - ez) > BACKTRACK_RADIUS]
+            if forward:
+                candidates = forward
+        return min(candidates, key=lambda e: math.hypot(e['x'] - px, e['z'] - pz))
 
     def swarm_follow(self, state, slot, player, now, enemies, envelope, commands, moves, steering, attack_rows):
         """A non-leader (P2..P4): orbit and defend P1 - never navigates on its own.
