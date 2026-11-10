@@ -294,13 +294,17 @@ def nj_file(data: bytes, ptrs: list[int]) -> bytes:
     return b"NJCM" + struct.pack("<I", len(data)) + data + ninja.pof0(ptrs)
 
 
-def speck_nj() -> bytes:
-    """A one-node NJ with one zero-size triangle: a valid, invisible model (stands in for the class head)."""
+def speck_nj(e: str = "<") -> bytes:
+    """A one-node NJ with one zero-size triangle: a valid, invisible model (stands in for the class head).
+
+    `e` must match the body's container endianness: a GameCube swap is big-endian, and a little-endian placeholder written
+    over a head part is read as garbage by the game.
+    """
     import numpy as np
     vl, pl, c, r = ninja.cnk_model_lists(np.zeros((3, 3)), np.tile([0, 1.0, 0], (3, 1)), [((0, 1, 2), ((0, 0),) * 3)],
                                          0, b"")
-    nd = [{"flags": 0x17, "trs": struct.pack("<3f3i3f", 0, 0, 0, 0, 0, 0, 1, 1, 1), "child": None, "sibling": None}]
-    data, _root, ptrs = ninja.write_tree(nd, {0: (vl, pl, c, r)}, 0)
+    nd = [{"flags": 0x17, "trs": struct.pack(e + "3f3i3f", 0, 0, 0, 0, 0, 0, 1, 1, 1), "child": None, "sibling": None}]
+    data, _root, ptrs = ninja.write_tree(nd, {0: (vl, pl, c, r)}, 0, e)
     return nj_file(data, ptrs)
 
 
@@ -440,7 +444,7 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
         f = nj_file(d2, ptrs)
         if len(f) > 64 * 2048:                               # patch_gdi moves it after the last file if it grew
             raise ValueError(f"{bpath}: {len(f)} bytes")
-        b2 = bml_build(bml, {f"pl{cls.lower()}bdy00.nj": f} | {n: speck_nj() for n in extras_bml}, e=e)
+        b2 = bml_build(bml, {f"pl{cls.lower()}bdy00.nj": f} | {n: speck_nj(e) for n in extras_bml}, e=e)
         if len(b2) > 64 * 2048:
             raise ValueError(f"{mpath}: {len(b2)} bytes")
         return f, b2
@@ -463,7 +467,7 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
     files = {bpath: body_nj, mpath: bml2, tpath: bytes(afs_data)}
     for hp in disc.files:
         if hp.startswith(f"PSO/PL{cls}") and hp[7:10] in ("HED", "HAI", "CAP") and hp.endswith(".NJ"):
-            files[hp] = speck_nj()
+            files[hp] = speck_nj(e)
     rep = r["report"] | {"body_bytes": len(body_nj), "bml_bytes": len(bml2), "atlas": list(r["atlas"].size),
                          "textures_replaced": done}
     return {"files": files, "report": rep, "rigged": r["rigged"], "atlas": r["atlas"]}
