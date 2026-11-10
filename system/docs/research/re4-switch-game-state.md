@@ -48,6 +48,11 @@ event, a suspend, the pad masked or the player stopped inside the round: A) | `c
 (STA_DIEDEMO: A answers Continue) | `results` (rsltSt running: A). `clock` = frames / 30 while the CountDown is alive;
 `clock_running` = alive, not paused, the case closed.
 
+Stale fields: MercSysWk is cleared only by the next stage's MercSysInitRoom, while a soft reset (You Are Dead -> No,
+the results' end) clears pG from Rno0 on and re-makes the cockpit (decomp `systemRestartInit`, `Cckpt.gameInit`). So
+the intro and round run bytes count only with the CountDown alive (it is started before the intro's run byte is set);
+the death clears the clock but sets STA_DIEDEMO, which the reset clears too.
+
 The probe's 53 samples replayed through `decode_state`: none (load) -> intro x 10 s (the old bot fired 10 shots there)
 -> playing at 04:18:48 (clock 119.42, running) -> grabbed / playing x 3 -> dead at 04:19:09. Every frame from the
 intro on read `playing`.
