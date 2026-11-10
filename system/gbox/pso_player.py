@@ -308,8 +308,20 @@ def speck_nj(e: str = "<") -> bytes:
     return nj_file(data, ptrs)
 
 
+def gc_head_parts(names, cls: str) -> list[str]:
+    """The GameCube head/hair/cap parts of a class: `pl<C><hed|hai|cap><NN>.nj`, flat and lower-case.
+
+    The disc keeps no `PSO/` directory and names the parts `plChed00.nj` (class C has five heads and no hair - HUcast is an
+    android), so the Dreamcast-shaped loop in `build_swap` never matched them and a GameCube swap shipped the class's own
+    head. Sorted for a stable file order.
+    """
+    import re
+    pattern = re.compile(rf"pl{cls.upper()}(hed|hai|cap)\d+\.nj$", re.IGNORECASE)
+    return sorted(n for n in names if pattern.match(n))
+
+
 def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str = "C", blender: str | None = None,
-               progress=lambda p, m: None, scale: dict | None = None) -> dict:
+               progress=lambda p, m: None, scale: dict | None = None, replace_heads: bool = False) -> dict:
     """disc: a gbox.gdrom.GDRom. -> {files {disc path: bytes}, report, rigged, atlas}."""
     import numpy as np
     from . import ninja_swap as NS
@@ -410,6 +422,9 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
     files = {bpath: body_nj, mpath: bml2, tpath: bytes(afs_data)}
     for hp in disc.files:
         if hp.startswith(f"PSO/PL{cls}") and hp[7:10] in ("HED", "HAI", "CAP") and hp.endswith(".NJ"):
+            files[hp] = speck_nj(e)          # the Dreamcast naming
+    if replace_heads:                        # the GameCube naming (pl<C>hed00.nj ...), opt-in
+        for hp in gc_head_parts(list(disc.files), cls):
             files[hp] = speck_nj(e)
     rep = r["report"] | {"body_bytes": len(body_nj), "bml_bytes": len(bml2), "atlas": list(r["atlas"].size),
                          "textures_replaced": done}
