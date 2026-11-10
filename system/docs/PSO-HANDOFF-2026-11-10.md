@@ -11,7 +11,7 @@ blockers and the next steps.
 | **P2** decode every disc format + per-area catalogue under `docs/research/` | **done** | `docs/research/pso-gc-areas.md` (72 areas, 1,000 files, 784,070 triangles, 18,785 placements, 0 decode failures), `pso-gc-formats-{containers,models,textures,tables}.md`, `pso_setdata`/`pso_areas` with round-trip tests |
 | **P2b** executable mapped with `pso_ram.py` | **done for what P1/P3-P5 needed**; one open address | `docs/research/pso-gc-executable.md`, `gbox/pso_ram.py`; `0x8028f508` (the model-walk crash from round 35) is not yet identified |
 | **P1** boot to the field by real presses | **boot to town: done. Field: blocked** | six frame-verified presses to Pioneer 2 (`pso_boot_walk.BOOT_STEPS`); MULTI MODE two-player co-op; **no route to Forest 1 found** — see "P1 is the blocker" |
-| **P6a** map writer | **done, proof incomplete** | `gbox/pso_map_write.py` + round trips; `pso_editor.build`; a placement-moved disc **builds, boots and plays** (`pso_city_npc_moved`). The moved object has **not** been seen in game — see "P6a's proof" |
+| **P6a** map writer | **done and proven in game** | `gbox/pso_map_write.py` + round trips; `pso_editor` + CLI; a moved placement is read back from the running game: `TObjCityDoor_Guild` at **(235.0, 173.0)** after the writer moved it from (185,173) — see round 49 |
 | **P6b** editor page | **backend done, no page** | `gbox/pso_editor.py` (+8 tests): discovers 574 editable sets, lists records, normalises edits, previews, builds |
 | **P7a** player-model writer | **builds models; swap rigging not done** | `pso_player.build` runs end to end on this disc (7 meshes, skeleton, 7 GVR textures); `pso_gc_paths` + NJCM endianness fixed |
 | **P7b** hot swap | **visible, not correct** | a HUcast body inside a HUmar pack renders deformed; a HUnewearl body **crashes** at `PC 0x8028f508`. `gbox/pso_swapfit` predicts which (`pso_swapfit.compare`) |
@@ -40,21 +40,20 @@ way to the surface:
 3. Look for the guild in the executable: the quest/teleport code path would name the room id it requires. `0x8028f508`
    is already an open P2b address; the quest state machine is the other.
 
-## P6a's proof — the one thing standing between "writer" and "proven writer"
+## P6a's proof — done (round 49)
 
-The writer is correct at the byte level and its disc boots. It has not been *seen* to move an object, and two attempts
-have each ruled out a method rather than the feature:
+The missing measurement was the **room-local to world offset**, and it is `(+228, +291)` for the whole `city00` area. It was
+found from the two co-op spawn points (both records + the constant = the spawn positions) and validated exactly: **10 of
+`map_city00_00o.dat`'s 28 records land on live entities at distance 0.0** — all four lobby doors, both spawns and every
+`TObject` in the room. The door kinds came out of the same match: `0x46` Shop, `0x47` Guild, `0x48` Warp, `0x49` Med.
 
-* **world-position matching** — placement records are **room-local** and entities report **world** positions; no record on
-  the disc sits at any city entity's world position (searched all 574 sets);
-* **memory scan from the lobby** — the placement data is **not resident** as floats while in the lobby (scanner validated
-  against the player's own coordinates, 4 hits each).
+With that, the proof itself took one boot: `pso_guilddoor_moved` moves the Guild door record from world `(185,173)` to
+`(235,173)`, and the running game reports **`TObjCityDoor_Guild` at `(235.0, 173.0)`** while the other three doors are
+untouched. `pso_editor.world_position()` shows both coordinate spaces in the editor and its CLI (`list --world`).
 
-So the room-local → world offset per room is the missing measurement. The method I would use: take the four `room 10` door
-entities' world positions, compute their six pairwise distances, and find the placement set containing four records with the
-same six distances (a translation preserves them). The offset is then `entity - record` and must be one constant for all
-four. `qk0_offset.py` in `D:\gBox\pso-ds` is the first cut at it (aborted partway; the search space needs pruning — try
-the door-kind records only).
+Two methods were ruled out on the way, and are worth not repeating: **world-position matching** (no record sits at a city
+entity's world position — the spaces differ) and **memory scans from the lobby** (the placement data is not resident as
+floats there; the scanner itself was validated against the player's coordinates, 4 hits each).
 
 ## Live environment state (so nobody has to rediscover it)
 

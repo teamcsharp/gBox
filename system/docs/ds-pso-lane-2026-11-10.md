@@ -2412,17 +2412,65 @@ identifies unambiguously (a door, a spawn point, a launcher).
 record from world `(185,173)` to `(235,173)`) is still owed -- it needs one co-op lobby boot and one entity read, and I
 have not run it this round because the only live gBox this lane may touch is the i9's own.
 
+## Round 49 (2026-11-10) — **P6a is proven in game**: the writer's edit is live in the running game
+
+This is the milestone that P6a has been missing since round 42, and it took three pieces coming together: the placement
+writer (rounds 1 and 40), the room-local to world offset (round 46), and a boot on the i9's own gBox.
+
+### The build and the check
+
+`pso_guilddoor_moved` moves `map_city00_00o.dat` record 20 -- the `TObjCityDoor_Guild` -- from local `(-43,-118)` to
+`(7,-118)`. With the measured offset `(+228, +291)` that is world **`(185, 173)` -> `(235, 173)`**: fifty units east.
+
+The disc was launched on the i9's worker (`node=83202f53e9cd4aa5`, `mod=pso_guilddoor_moved`, actor `agent`), booted to
+MULTI MODE co-op, and the entity table read in the lobby:
+
+```
+entities: 30
+  TObjCityDoor_Med         world (   193.5,    -93.5) room 10
+  TObjCityDoor_Shop        world (  -165.0,    147.5) room 10
+  TObjCityDoor_Guild       world (   235.0,    173.0) room 10      <-- moved exactly
+  TObjCityDoor_Warp        world (   254.0,     25.0) room 10
+
+VERDICT: MOVED
+```
+
+**The Guild door is at `(235.0, 173.0)`** -- the value the writer wrote, read from the game's own entity table, with the
+other three doors untouched. There is no ambiguity in that number: 50 units is not a rounding error, and the offset that
+predicts it was measured independently in round 46 from the spawn points and the doors themselves.
+
+### So P6a is done
+
+| part | evidence |
+|---|---|
+| placement records round-trip byte-identically | `pso_setdata` tests (141 loose + 144 archive sets) |
+| the writer moves/adds/deletes in a set | `pso_map_write` + `pso_editor` (13 tests) |
+| a changed set builds a disc image | `filemods` change list, `gsl_set_object.gsl` patched in place |
+| the image boots and plays | this round, MULTI MODE co-op into the lobby |
+| **the moved object is where it was put** | **`TObjCityDoor_Guild` at `(235.0, 173.0)` in RAM** |
+
+What this also demonstrates, beyond the one door: the pipeline *placement -> world position* is understood well enough to
+predict an outcome and then confirm it. That is the property the editor needs, and it is the property that was missing.
+
+### Two lessons worth writing down
+
+* **The offset was the whole problem.** Three rounds (42, 43, 46) went into matching records to entities; the answer was a
+  translation, and once the two co-op spawn points implied it, ten of the set's 28 records landed at distance exactly 0.0.
+  The verification after that took one boot.
+* **A live proof needs a build, an input sequence and a read -- and nothing else competing for the machine.** The earlier
+  attempts failed on wedged windows, the attract loop, and a stray in-game menu; this one ran the whole sequence from
+  PRESS START in one script and got the answer first try.
+
+### State
+
+`main` carries the writer, the offset, the editor and its CLI. Session live in MULTI MODE co-op on the i9. The remaining
+open items are unchanged: P1's field leg, P6b's page (pure UI now), P7a's rigging, P3-P5.
+
 ## 7. Next
 
-1. **P6a's live confirmation** -- the `pso_guilddoor_moved` build moves the Guild door record from world (185,173) to
-   (235,173); boot it into MULTI MODE on the i9 and read `TObjCityDoor_Guild`'s position. One boot, one entity read.
-2. **Measure a field area's offset** the same way (a set whose records include something the entity table names
-   unambiguously). Only `city00` is measured, and it is area-wide: (+228,+291).
-3. **P6b's page**: `python -m gbox.pso_editor` now covers sets/list/move/delete/build, so a page is pure UI over an
-   interface that exists.
-4. **P1's field leg** and **P7a's rigging** are unchanged: the intro cannot be exited by input, the guild counter is
-   unfound, and `build_swap` still needs its GC adaptation.
-
-Two constraints on all live work from here: this lane touches **only the i9's own gBox** (`10.89.1.43:8765`,
-`x-gbox-actor: agent`) -- never lilspark, per the hard rule in the task guide -- and nothing may be launched or stopped
-on another machine.
+1. **P6a is closed.** The writer, the editor, its CLI and the in-game proof all exist; the offset that made the proof
+   possible is `(+228,+291)` for `city00`, and `pso_guilddoor_moved` is the build that demonstrates it.
+2. **Measure a field area's offset** so the same proof can be made there (only `city00` is measured).
+3. **P6b's page** is now pure UI over `python -m gbox.pso_editor` (sets / list --world / move / delete / build).
+4. **P1's field leg** and **P7a's rigging** are the remaining hard items; both are documented in
+   `docs/PSO-HANDOFF-2026-11-10.md` with their next steps.
