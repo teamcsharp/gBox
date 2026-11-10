@@ -860,3 +860,31 @@ only then may the controller use it. That watch is now the blocking piece of E3,
 
 Once one page passes, E4/E5 (the code rule and the offline tests) can build the controller's private storage on it
 without touching game state.
+
+## Round 59 (2026-11-10 17:00 CST) - the deploy landed: checkpoint 0's first live acceptance read (RE6)
+
+**The restart happened and it carried D.** The PM merged `ds-grenade-re5-scatter-cap-20261110` (`e317ff6d`, then
+`eae1bb86`), and the Spark's service restarted at ~16:54 under a new worker id (`8cf47f44...`, previously
+`78012a3f...`). So the one restart loaded checkpoint 0 **and** D; the old stuck RE6 session is gone.
+
+**Live read, RE6 No Mercy, session `8cf47f441c5041fa-20b2f78a64564e4d` (Jake, `up` 1794350098), 17:00:**
+
+    GET /api/sessions/8cf47f441c5041fa-20b2f78a64564e4d/interventions
+    available=True, reason=""
+    capabilities = flash_now, equip_primary, grenade_ring, grenade_scatter, magnum_quick4, set_infinite_ammo
+    flash       available=True   (the RE6 "no living player" stale-base bug is gone on the fresh controller)
+    hand        available=False  "a hand-grenade ring is not yet verified on this build (uWp1091 is known; the
+                                  compiled spawn image pins the flash's class)"
+    incendiary  available=False  "an incendiary-grenade ring is not yet verified on this build (uWp1093 is known; ...)"
+
+That is checkpoint 0's RE6 half: flash advertised, the two explosive kinds refused with their own no-receipt
+reasons (the wording is the merged RE6 class branch's; RE5's is the explicit "no live receipt yet"). The pre-restart
+baseline for comparison is in round 56 of the lane log (flash refused, capabilities empty).
+
+**Still open for checkpoint 0:** the RE5 status read and the one RE5 flash. The MercMode queue after the current RE6
+block is `re4 x5, re5 x5, ...`, so the RE5 window comes after the RE4 block - a read-only read from the i9 when it is
+up, and the flash needs the operator/RE session. **E3's zero watch** fits the same RE4 block (its five pages, three
+stage loads); both asks are in the PM doc on main.
+
+**D's live acceptance** is also the RE5 block: one barrage receipt (if fired as an intervention) or the telemetry's
+`scatters_fired`/`scatter_rounds`/`scatter_kills` plus the confirmed-flash times at least `FLASH_MIN_GAP_S` apart.
