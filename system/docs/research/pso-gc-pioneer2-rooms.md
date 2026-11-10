@@ -126,3 +126,31 @@ back to room 20 -- so room 30 (the shop floor) borders room 20 on that side, not
 | `TObjCityDoor_Shop` (-165,148) in room 10 | not yet reached |
 | the central dome's large doorways in room 20 | not yet walked |
 | the west-end counter + cloakroom NPC (-267,-24) | no dialogue from the front; it is the shopping district |
+
+## The city graph (walked, room by room)
+
+Every edge below was walked at least once, in the direction stated, with the room id read from RAM at each leg:
+
+| edge | crossing | direction walked |
+|---|---|---|
+| room 10 <-> room 20 | the band around `(95-142, 50-152)` | both ways |
+| room 10 -> room 40 | `TObjCityDoor_Warp` `(254,25)` | in |
+| room 10 -> room 40 | `TObjCityDoor_Med` `(194,-93)` | in, arriving at about `(203,-32)` |
+| room 20 -> room 40 | about `(200,-94)` | in (the same door seen from room 20's side) |
+| room 40 -> room 20 | about `(167,60)` | out |
+| room 20 <-> room 30 | about `(-169,46)` | in and back |
+
+Two things fall out of that table:
+
+* **room 40 is a hub**, reachable from room 10 two ways and from room 20 one way, and it exits into room 20. It contains
+  both the medical exterior (the red-cross door, `qf0-meddoor.jpg`) and the round teleporter structure, which is why the
+  "Warp" and "Med" doors both lead there -- they are not two rooms, they are two entrances to one.
+* **walking back out of room 40 is not symmetric.** Arriving at the `Med` door's coordinates from inside room 40 leaves
+  the character in room 40 (`(192,-90)`), while walking to `(200,60)` crosses into room 20. So a route must use the exit
+  it can actually leave by, not the door it came in through.
+
+### Not found yet
+
+No walked edge leads to a room the lane has not already seen (10, 20, 30, 40), and none of those contains a counter that
+answers `A`. The guild is therefore behind something not yet walked -- the most likely candidates being the central
+dome's large doorways that were walked *past* rather than *into*, and room 30's own far side.
