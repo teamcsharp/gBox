@@ -1868,9 +1868,10 @@ BOMBS = True
 BOMB_STAND_N, BOMB_STAND_R, BOMB_ROOM_R = 3, 1200.0, 400.0   # (4 at 6-12 m placed none in 150 s live 14:18: the
 BOMB_COMING_MIN_R = 500.0                                   # operator wants the mines; 3 at 5-12 m)
 BOMB_ON_R = 300.0
-BOMB_GAP_S = 30.0                       # a bomb at most this often
+BOMB_GAP_S = 10.0                       # a bomb at most this often (30 until 2026-11-10: the operator wants mines down
+                                        # and set off at will; the learned blast radius still decides where he stands)
 BOMB_AHEAD = 300.0                      # where it lands (live: 2.9 m ahead along the aim)
-BOMB_BLAST_R, BOMB_BLAST_N = 400.0, 2   # set off with this many zombies this near it ...
+BOMB_BLAST_R, BOMB_BLAST_N = 400.0, 1   # set off with this many zombies this near it (2 until 2026-11-10: at will) ...
 BOMB_SELF_R = 700.0                     # ... and him at least this far from it, never nearer: the floor of the rule
                                         # below (live 2026-10-27: set off from about 3 m, both blasts knocked Chris down)
 # The blast's reach, learned (operator 2026-10-27 12:10: "is still standing on top of mines. The bot needs to learn the
@@ -2054,6 +2055,11 @@ QUICK_ACTION_NAMES = frozenset({"cPlAction_pl_act_attack_ex", "cPlAction_pl_act_
                                 "cPlAction_pl_act_jake_hand_quick_attack"})   # his quick attacks (re6_switch_mods)
 SURROUND_N = 8
 NADE_N, NADE_MIN_R, NADE_MAX_R, NADE_CLUSTER_R = 3, 500.0, 1000.0, 300.0
+# Move between throws (operator 2026-11-10: "Why is the bot standing still" - a MercMode round had 300 s in throw cycles
+# against 5 s walking): after a throw cycle the next grenade or flash waits until he has moved NADE_MOVE_CM from where it
+# stood (or NADE_MOVE_WAIT_S passed); a melee wind-up near him or being overwhelmed still gets its flash at once.
+# stats nade_move_waits.
+NADE_MOVE_CM, NADE_MOVE_WAIT_S = 300.0, 8.0
 # The throw (operator 2026-10-28 04:3x: "They still lift the grenade for use but never throw it"): ZL + ZR held NADE_THROW_S
 # (one 50 ms tick was missed at Citron's frame pace: the grenade came up, the gun went back, nothing flew); a flash is
 # followed by another while FLASH_N are still within FLASH_R, for up to FLASH_BURST_S ("spamming a flurry of flash
@@ -4995,6 +5001,10 @@ class Bot:
                 kind, group = burst
             elif not (NADES or FLASH) or now - self.nade_last < FLASH_GAP_S or not vis or (p.get("bomb") or {}).get("out"):
                 return None
+            elif not self._nade_moved(p, now) and not self._overwhelmed(p, live, flat, now) \
+                    and not any(windup(e, p["pos"]) == "melee" for e in vis if flat(e) <= FLASH_R):
+                self.stats["nade_move_waits"] = self.stats.get("nade_move_waits", 0) + 1
+                return None                                  # moved on since the last throw first (NADE_MOVE_CM)
             else:
                 near = [e for e in vis if flat(e) <= FLASH_R]
                 winding = sum(1 for e in near if windup(e, p["pos"]) == "melee")
@@ -5027,7 +5037,7 @@ class Bot:
             cz = sum(e["pos"][2] for e in group) / len(group)
             self.nade = n = {"kind": kind, "index": nades[NADE_TYPES[kind]][0], "phase": "equip", "at": now - NADE_STEP_S,
                              "steps": 0, "to": (cx, cz), "since": now, "seen": [eq], "back_key": "right",
-                             "gun": eq if isinstance(eq, int) and eq < WEAPON_INDEXES else None}
+                             "gun": eq if isinstance(eq, int) and eq < WEAPON_INDEXES else None, "pos0": (px, pz)}
         if n["seen"][-1] != eq:
             n["seen"].append(eq)
         if (n["kind"] != "flash" and n["phase"] == "equip" and eq != n["index"] and self._gburst is None
@@ -5222,10 +5232,18 @@ class Bot:
                 left = [z for z in left if z not in group]
         return n
 
+    def _nade_moved(self, p, now) -> bool:
+        """Has he moved on since the last throw cycle - NADE_MOVE_CM from where it stood, or NADE_MOVE_WAIT_S since?"""
+        at = getattr(self, "_nade_end_pos", None)
+        if at is None or now - self.nade_last >= NADE_MOVE_WAIT_S:
+            return True
+        return math.hypot(p["pos"][0] - at[0], p["pos"][2] - at[1]) >= NADE_MOVE_CM
+
     def _nade_done(self, n, now) -> None:
         log = self.stats.setdefault("nade_wheel", [])
         log.append({"kind": n["kind"], "to": n["index"], "seen": n["seen"][-12:]})
         del log[:-NADE_WHEEL_N]
+        self._nade_end_pos = n.get("pos0")                   # the next throw only once he has moved on (NADE_MOVE_CM)
         self.nade, self.nade_last = None, now
         if self._gburst is not None:                             # the burst ended with this throw cycle: restore the speed
             self._burst_end(now)

@@ -1100,7 +1100,7 @@ def test_enemy_at_150deg_gets_quick_turn_not_crowd_control():
         f"enemy at 150 deg should get quick_turn not crowd control: act={bot.stats['act']}"
 
 
-def test_a_bomb_only_healthy_with_nobody_near_and_three_coming_at_most_every_thirty_seconds():
+def test_a_bomb_only_healthy_with_nobody_near_and_three_coming_at_most_every_bomb_gap():
     four = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700), (0.0, 0.0, 1100.0, 700))
     for kw, enemies in (({"hp": 900}, four[:2]),                                       # two coming: no
                         ({"hp": 600}, four),                                           # 67 % health: no
@@ -1112,10 +1112,10 @@ def test_a_bomb_only_healthy_with_nobody_near_and_three_coming_at_most_every_thi
         assert bot.bomb_phase is None and bot.stats["bombs_placed"] == 0, kw
     bot, clock, snap = brain(round_guest(enemies=four))
     snap["player"].update(equipped=0, bomb={"count": 5, "out": False})
-    bot.bomb_last = clock[0] - 20.0                                           # one 20 s ago: not yet
+    bot.bomb_last = clock[0] - R.BOMB_GAP_S + 5.0                             # 5 s short of the gap: not yet
     run(bot, snap, clock, 2)
     assert bot.bomb_phase is None
-    bot.bomb_last = clock[0] - R.BOMB_GAP_S - 1                               # 31 s ago: now
+    bot.bomb_last = clock[0] - R.BOMB_GAP_S - 1                               # past the gap: now
     run(bot, snap, clock, 1)
     assert bot.bomb_phase == "equip"
 
@@ -1999,7 +1999,10 @@ def test_grenades_spam_into_several_clusters_and_take_the_bombs_place_when_they_
     first = bot.stats["grenade_throws"]
     clock[0] += R.NADE_GAP_S
     run(bot, snap, clock, 2)
-    assert first == 1 and bot.nade is not None                                # straight into the next cluster
+    assert bot.nade is None and bot.stats["nade_move_waits"] >= 1             # where he threw from: not again yet
+    clock[0] += R.NADE_MOVE_WAIT_S
+    run(bot, snap, clock, 2)
+    assert first == 1 and bot.nade is not None                                # then into the next cluster
     assert R.Bot._clusters([e for e in snap["enemies"]], lambda e: math.hypot(e["pos"][0], e["pos"][2])) == 2
 
 
@@ -2021,6 +2024,69 @@ def test_throw_speed_runs_the_grenade_throw_twenty_times_faster(mods, monkeypatc
     g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_walk", 0x100))
     mods.maintain(ad, R.snapshot(g), clock=lambda: 10.0)
     assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 1.0 and mods.ORIG[id(ad)]["throw_fast"] == 1
+
+
+def test_bomb_speed_places_and_sets_off_the_remote_bomb_twenty_times_faster(mods, monkeypatch):
+    """Operator 2026-11-10: "place mines at 20x speed and ... detonate them by flipping the switch": the remote bomb's
+    (record 0x16) fire action - the throw and the detonation press - at BOMB_SPEED_X, with or without fire_rate."""
+    monkeypatch.setattr(R, "QA_FAST", False)
+    g = round_guest()
+    ad = Adapter(g)
+    weapon_table(g)
+    p = R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)
+    g.f32(p + mods.UNIT_DELTA, 1.0)
+    g.put(p + R.P_SLOTS + 8, bytes([1, 12]) + struct.pack("<H", 0x116))      # the remote bomb, in hand
+    g.i32(p + R.P_EQUIPPED, 12)
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_weapon_fire", 0x100))
+    mods.run(ad, "infinite_grenades", on=True)                                 # any mods state, no fire_rate
+    snap = R.snapshot(g)
+    assert snap["player"]["weapon_id"] == 0x16
+    mods.maintain(ad, snap, clock=lambda: 10.0)
+    assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == mods.BOMB_SPEED_X == 20.0
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_walk", 0x100))
+    mods.maintain(ad, R.snapshot(g), clock=lambda: 10.0)
+    assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 1.0 and mods.ORIG[id(ad)]["bomb_fast"] == 1
+
+
+def test_an_unconfirmed_equip_is_retried_after_a_while_not_refused_for_his_whole_life(monkeypatch):
+    """Live 2026-11-10: one unconfirmed native request had every later grenade and bomb refused for the rest of the
+    life (37 grenade cycles aborted, 7 of 7 bombs never out, the bot standing)."""
+    from gbox.mercs.titles import re6_switch_equip as E
+    calls, t = [], [100.0]
+    monkeypatch.setattr(E.time, "monotonic", lambda: t[0])
+    monkeypatch.setattr(E.R, "module_base", lambda m: BASE)
+
+    class Reads:
+        def __init__(self, m):
+            pass
+
+        def u32(self, a):
+            return 7                                                           # his life's generation
+    monkeypatch.setattr(E, "_Reads", Reads)
+
+    def request(memory, base, player, kind, expected_index=None):
+        calls.append(kind)
+        return {"state": "unconfirmed", "kind": kind}
+    monkeypatch.setattr(E, "request", request)
+    c = E.Controller(type("M", (), {})(), {})
+    player = {"ptr": 0x5000, "guns": {}, "nades": {0x113: (9, 5)}}
+    assert c.select(player, 9)["state"] == "unconfirmed" and calls == [0x113]
+    again = c.select(player, 9)
+    assert again["reason"] == "previous_request_unconfirmed" and calls == [0x113], "not hammered at once"
+    t[0] += E.FAILED_RETRY_S + 0.1
+    c.select(player, 9)
+    assert calls == [0x113, 0x113], "asked again after FAILED_RETRY_S"
+
+
+def test_after_a_throw_the_next_grenade_waits_until_he_has_moved_on():
+    """Operator 2026-11-10: "Why is the bot standing still" - 300 s in throw cycles against 5 s walking."""
+    bot, clock, snap = brain(round_guest())
+    p = {"pos": (0.0, 0.0, 0.0)}
+    bot.nade_last = clock[0] = 50.0
+    bot._nade_end_pos = (0.0, 0.0)
+    assert not bot._nade_moved(p, 51.0)
+    assert bot._nade_moved({"pos": (R.NADE_MOVE_CM + 1.0, 0.0, 0.0)}, 51.0)
+    assert bot._nade_moved(p, 50.0 + R.NADE_MOVE_WAIT_S)
 
 
 def test_idle_seconds_count_nothing_pressed_with_zombies_about():

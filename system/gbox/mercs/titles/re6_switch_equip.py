@@ -273,11 +273,15 @@ def request(memory, base, player, kind, *, now=None, expected_index=None):
                 "reason": str(exc) if isinstance(exc, _Stop) else "memory_error"}
 
 
+FAILED_RETRY_S = 8.0          # an unconfirmed request for an item is retried after this (never blocked for a whole life)
+
+
 class Controller:
     """Session-bound driver bridge. Refusal never falls back to wheel inputs."""
     def __init__(self, memory, stats):
         self.memory, self.stats = memory, stats
         self.failed = set()
+        self.failed_at = {}                                  # identity -> when it went unconfirmed (FAILED_RETRY_S)
 
     def record(self, result):
         self.stats['native_equip'] = result
@@ -306,7 +310,11 @@ class Controller:
         if ticket:
             result = poll(self.memory)
             if result.get('state') == 'unconfirmed':
-                self.failed.add((ticket['player'], ticket['generation'], ticket['kind']))
+                identity = (ticket['player'], ticket['generation'], ticket['kind'])
+                self.failed.add(identity)
+                if not hasattr(self, 'failed_at'):
+                    self.failed_at = {}
+                self.failed_at[identity] = time.monotonic()
             return self.record(result)
         return None
 
@@ -335,12 +343,20 @@ class Controller:
             base = R.module_base(self.memory)
             generation = _Reads(self.memory).u32(player.get('ptr', 0) + GENERATION)
             identity = (player.get('ptr'), generation, kind)
-            self.failed = {entry for entry in self.failed if entry[:2] == identity[:2]}
+            now = time.monotonic()
+            # An unconfirmed request blocks that item for FAILED_RETRY_S, not for the rest of his life: live 2026-11-10
+            # (RE6, Piers, Mining the Depths) one unconfirmed request had every later grenade and remote bomb refused
+            # "previous_request_unconfirmed" - 37 grenade cycles aborted, 7 of 7 bombs never out, the bot standing.
+            self.failed_at = {entry: at for entry, at in getattr(self, 'failed_at', {}).items()
+                              if entry[:2] == identity[:2] and now - at < FAILED_RETRY_S}
+            self.failed = set(self.failed_at)
             if identity in self.failed:
-                return self.record({'state': 'unconfirmed', 'kind': kind, 'reason': 'previous_request_unconfirmed'})
+                return self.record({'state': 'unconfirmed', 'kind': kind, 'reason': 'previous_request_unconfirmed',
+                                    'retry_in_s': round(FAILED_RETRY_S - (now - self.failed_at[identity]), 1)})
             result = request(self.memory, base, player.get('ptr'), kind, expected_index=index)
             if result.get('state') == 'unconfirmed':
                 self.failed.add(identity)
+                self.failed_at[identity] = now
         except (OSError, ValueError, RuntimeError, struct.error):
             result = {'state': 'deferred', 'reason': 'memory_error'}
         return self.record(result)

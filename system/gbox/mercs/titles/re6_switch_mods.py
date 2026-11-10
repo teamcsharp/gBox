@@ -139,6 +139,12 @@ MAGNUM_SPEED_X, MAGNUM_SPEED_MAX = 6.0, 6.0   # operator 2026-11-03 "little/no r
 # at THROW_SPEED_X while the throw runs (the gun's fire action with a grenade in hand: records THROW_RECORDS), as the
 # magnum's; status throw_fast counts them.
 THROW_SPEED_X, THROW_SPEED_MAX = 20.0, 20.0
+# bomb_speed (operator 2026-11-10: "the bot should be able to place mines at 20x speed and be able to detonate them by
+# flipping the switch"): the remote bomb's (record 0x16) fire action - the throw that places it and the press that sets
+# it off - at BOMB_SPEED_X, as the grenades' throw_speed; on whether or not fire_rate is set (the bot's own mines).
+# status bomb_fast counts them; the bomb_speed op sets the factor (1 = off).
+BOMB_RECORDS = frozenset({0x16})
+BOMB_SPEED_X, BOMB_SPEED_MAX = 20.0, 20.0
 MAGNUM_FIRE_ACTIONS = frozenset({"cPlAction_pl_act_weapon_fire"})
 FIRE_FLOOR = 0.004                                       # never 0: a semi-automatic's next press waits for the countdown
                                                          # to fall below its record's +0x20 (0 for most), so it must pass 0
@@ -345,6 +351,7 @@ class RE6Switch:
               "quick_attack_x": self.state.get("quick_attack", 1.0),
               "throw_speed_x": self.state.get("throw_speed", THROW_SPEED_X) if self.state.get("fire_rate") else self.state.get("throw_speed", 1.0),
               "magnum_speed_x": self.state.get("magnum_speed", MAGNUM_SPEED_X) if self.state.get("fire_rate") else 1.0,
+              "bomb_speed_x": self.state.get("bomb_speed", BOMB_SPEED_X), "bomb_fast": self.state.get("bomb_fast", 0),
               "down_fire_x": self.state.get("down_fire", DOWN_FIRE_X) if self.state.get("fire_rate") else 1.0,
               "next_weapon": hex(self.state["next_weapon"]) if self.state.get("next_weapon") else None,
               "live_weapon_sets": self.state.get("live_weapon_sets", 0)}
@@ -997,6 +1004,7 @@ def _keep_quick(ad, g: RE6Switch, player: int, st: dict, weapon=None) -> int:
     k = st.get("quick_attack") or 1.0
     mk = (st.get("magnum_speed", MAGNUM_SPEED_X) or 1.0) if st.get("fire_rate") else 1.0
     tk = (st.get("throw_speed", THROW_SPEED_X) or 1.0) if st.get("fire_rate") else 1.0
+    bk = st.get("bomb_speed", BOMB_SPEED_X) or 1.0
     try:
         act = R.u64(g.m, player + UNIT_ACTION)
         name = None
@@ -1014,13 +1022,16 @@ def _keep_quick(ad, g: RE6Switch, player: int, st: dict, weapon=None) -> int:
         st["quick_attacks"] = st.get("quick_attacks", 0) + 1
     magnum = mk > 1.0 and name in MAGNUM_FIRE_ACTIONS and weapon in MAGNUM_RECORDS
     throw = tk > 1.0 and name in MAGNUM_FIRE_ACTIONS and weapon in THROW_RECORDS
+    bomb = bk > 1.0 and name in MAGNUM_FIRE_ACTIONS and weapon in BOMB_RECORDS
     if magnum and not st.get("mag_in"):
         st["magnum_fast"] = st.get("magnum_fast", 0) + 1
     if throw and not st.get("throw_in"):
         st["throw_fast"] = st.get("throw_fast", 0) + 1
-    st["qa_in"], st["mag_in"], st["throw_in"] = quick, magnum, throw
-    want = k if quick else mk if magnum else tk if throw else 1.0
-    if abs(cur - want) < 1e-4 or not any(abs(cur - v) < 1e-4 for v in (1.0, k, mk, tk)):
+    if bomb and not st.get("bomb_in"):
+        st["bomb_fast"] = st.get("bomb_fast", 0) + 1
+    st["qa_in"], st["mag_in"], st["throw_in"], st["bomb_in"] = quick, magnum, throw, bomb
+    want = k if quick else mk if magnum else tk if throw else bk if bomb else 1.0
+    if abs(cur - want) < 1e-4 or not any(abs(cur - v) < 1e-4 for v in (1.0, k, mk, tk, bk)):
         return 0
     try:
         ad.write_memory(player + UNIT_DELTA, struct.pack("<f", want))   # read back by the adapter
@@ -1203,18 +1214,19 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
         mag_on = bool(st and st.get("fire_rate") and ((st.get("magnum_speed", MAGNUM_SPEED_X) or 1.0) > 1.0
                                                       or (st.get("throw_speed", THROW_SPEED_X) or 1.0) > 1.0
                                                       or st.get("mag_in") or st.get("throw_in")))
-        keeping = keeping or mag_on
+        bomb_on = st is not None and ((st.get("bomb_speed", BOMB_SPEED_X) or 1.0) > 1.0 or bool(st.get("bomb_in")))
+        keeping = keeping or mag_on or bomb_on
         if not keeping or not enabled:
             return out
         try:
             p = (snap or {}).get("player")
             now = clock()
             if p and ((st.get("kill_time") or {}).get("on") or st.get("auto_qte_ram")
-                      or (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in") or down_fire_on or mag_on):
+                      or (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in") or down_fire_on or mag_on or bomb_on):
                 g0 = RE6Switch(ad)
                 if down_fire_on:
                     out["writes"] += _keep_down_fire(ad, g0, p, st)
-                if (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in") or mag_on:
+                if (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in") or mag_on or bomb_on:
                     out["writes"] += _keep_quick(ad, g0, p["ptr"], st, p.get("weapon_id"))
                 if (st.get("kill_time") or {}).get("on"):
                     kt = _maintain_kill_time(ad, g0, st)
@@ -1317,6 +1329,13 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
                 raise ValueError("throw_speed multiplier: 1..%g (1 = off)" % THROW_SPEED_MAX)
             g.state["throw_speed"] = k
             return {"verified": True, "throw_speed_x": k}
+        if op == "bomb_speed":
+            k = float(1.0 if on is False else (multiplier if multiplier is not None else BOMB_SPEED_X))
+            if not 1.0 <= k <= BOMB_SPEED_MAX:
+                raise ValueError("bomb_speed multiplier: 1..%g (1 = off)" % BOMB_SPEED_MAX)
+            g.state["bomb_speed"] = k
+            return {"verified": True, "bomb_speed_x": k,
+                    "note": "the remote bomb's throw and its detonation press at this animation speed"}
         if op == "down_fire":
             return down_fire(g, 1.0 if on is False else multiplier)
         if op == "fire_rate":
