@@ -2360,21 +2360,69 @@ budget ran out (the `PRESS START` title needed a fresh sequence). The build exis
 record 20 from local `(-43,-118)` to `(7,-118)`, i.e. world `(185,173)` -> `(235,173)` -- and the check is a single entity
 read once the party is in the lobby.
 
+## Round 48 (2026-11-10) — the editor gets a command line, and the offset held outside the lobby
+
+Two small things this round, both offline: the editorial layer became usable from a shell, and the offset measured in round
+46 was tested against a different room.
+
+### `python -m gbox.pso_editor` (+2 tests, 13 in that file)
+
+The backend from round 40 now has a real command line, so P6b is usable without waiting for a page:
+
+```
+python -m gbox.pso_editor <disc> sets [--kind object|enemy|event]
+python -m gbox.pso_editor <disc> list <set> [--world] [--limit N]
+python -m gbox.pso_editor <disc> move <set> <index> <x> <y> <z>
+python -m gbox.pso_editor <disc> delete <set> <index>
+python -m gbox.pso_editor <disc> build <name>            # ops as JSON on stdin
+```
+
+`list --world` is the part that matters: it shows each record's stored (room-local) coordinates **and** its world position
+when the offset for that set is known, which is what a person recognises:
+
+```
+   4  player     local (    0.99,    0.00,   -37.00)  world (  229.00,   254.00)
+   5  player     local (    3.00,    0.00,   -24.00)  world (  231.00,   267.00)
+  20  class71    local (  -43.00,  -94.00,  -118.00)  world (  185.00,   173.00)
+```
+
+### The offset is area-wide, not lobby-only
+
+Three `class64` records of the same city set, mapped with the lobby's `(+228, +291)`, land near three of the four
+shop-floor NPCs:
+
+| record | local | world | nearest room-30 NPC | distance |
+|---|---|---|---|---|
+| 1 | (-393.1, -13.0) | (-165.1, 278.0) | `TObjNpcMaleMacho` (-165.3, 286.7) | **8.7** |
+| 3 | (-430.2, -24.5) | (-202.2, 266.5) | `TObjNpcFemaleMacho` (-209.0, 277.0) | **12.5** |
+| 2 | (-458.6, -51.3) | (-230.6, 239.7) | `TObjNpcMaleFat` (-241.0, 245.0) | **11.7** |
+
+Not zero like the lobby's doors -- and the residual is exactly what you would expect if the records are the **shop counters**
+and the NPCs stand *behind* them: three counters, three keepers, each a metre or two apart, all with the same translation.
+A least-squares fit over the whole set produces a meaningless offset and 400-unit residuals precisely because seven counters
+are being paired against five people -- which is why the direct mapping, not the fit, is the evidence.
+
+So the room-local to world offset is a property of the **area** (`city00`), and it is `(+228, +291)` throughout it. The next
+set to measure is a field area's, where the same technique needs a set whose records include something the entity table
+identifies unambiguously (a door, a spawn point, a launcher).
+
+### State
+
+`main` clean, 13 editor tests green. P6a's live confirmation (the `pso_guilddoor_moved` build, which moves the Guild door
+record from world `(185,173)` to `(235,173)`) is still owed -- it needs one co-op lobby boot and one entity read, and I
+have not run it this round because the only live gBox this lane may touch is the i9's own.
+
 ## 7. Next
 
-1. **P6a's in-game proof is now mechanical**: `pso_guilddoor_moved` moves `map_city00_00o.dat` record 20 (the Guild
-   door) from world (185,173) to (235,173) using the measured offset (+228,+291); boot it into MULTI MODE and the
-   `TObjCityDoor_Guild` entity must read (235,173). One entity read settles P6a.
-2. **Measure the offset for other areas** the same way (a set whose records include spawn points or several objects
-   with a consistent constant). Only `map_city00_00o.dat` is measured so far.
-3. **P1's field leg** is unchanged by this: the intro cannot be exited by input (rounds 37, 45) and the guild counter
-   has not been found; MULTI MODE plus the guild remains the only route, and the executable's quest/teleport path is
-   the next lever.
-4. **P6b's page** can now show world positions (`pso_editor.world_position`, `door_name`) -- UI over a finished
-   backend. **P7a's rigging** remains open.
+1. **P6a's live confirmation** -- the `pso_guilddoor_moved` build moves the Guild door record from world (185,173) to
+   (235,173); boot it into MULTI MODE on the i9 and read `TObjCityDoor_Guild`'s position. One boot, one entity read.
+2. **Measure a field area's offset** the same way (a set whose records include something the entity table names
+   unambiguously). Only `city00` is measured, and it is area-wide: (+228,+291).
+3. **P6b's page**: `python -m gbox.pso_editor` now covers sets/list/move/delete/build, so a page is pure UI over an
+   interface that exists.
+4. **P1's field leg** and **P7a's rigging** are unchanged: the intro cannot be exited by input, the guild counter is
+   unfound, and `build_swap` still needs its GC adaptation.
 
-Found this round: the room-local to world offset for the Pioneer 2 lobby is **(+228, +291)**, validated at distance
-0.0 on all four lobby doors, both co-op spawns and every `TObject` in the room (10 of 28 records; the next nearest is
-4.5 away). Door kinds: 0x46 Shop, 0x47 Guild, 0x48 Warp, 0x49 Med. Also learned that a `TObjCityDoor_*` record is a
-placed object, not necessarily a working portal -- the Guild door is placed exactly like the Warp door and only the
-latter transitions.
+Two constraints on all live work from here: this lane touches **only the i9's own gBox** (`10.89.1.43:8765`,
+`x-gbox-actor: agent`) -- never lilspark, per the hard rule in the task guide -- and nothing may be launched or stopped
+on another machine.

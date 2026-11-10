@@ -151,3 +151,101 @@ def world_position(record: dict, set_name: str) -> tuple[float, float] | None:
 def door_name(kind: int) -> str | None:
     """The door a record's kind value names, if it is one of the lobby's four."""
     return DOOR_CLASSES.get(int(kind) & 0xFF)
+
+# --- command line ----------------------------------------------------------------------------------------------
+#
+# The editorial layer is usable from a page, and equally from a shell, which is how most of this lane's verification
+# happens. `python -m gbox.pso_editor <disc> sets` lists the editable sets; `list <set>` shows its placements with both
+# the stored (room-local) and, where measured, the world position; `move`, `delete`, `add` and `build` take the same ops
+# the writer does.
+
+def build_parser():
+    import argparse
+
+    ap = argparse.ArgumentParser(prog="python -m gbox.pso_editor",
+                                 description="List and edit PSO area placement sets.")
+    ap.add_argument("disc", help="the disc image (.gcz / .iso / .gcm)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p_sets = sub.add_parser("sets", help="list every editable set")
+    p_sets.add_argument("--kind", choices=KINDS, default=None, help="only this kind")
+
+    p_list = sub.add_parser("list", help="list one set's placements")
+    p_list.add_argument("set")
+    p_list.add_argument("--limit", type=int, default=0, help="show at most this many records")
+    p_list.add_argument("--world", action="store_true", help="also show the world position when the offset is known")
+
+    p_move = sub.add_parser("move", help="move one placement")
+    p_move.add_argument("set")
+    p_move.add_argument("index", type=int)
+    p_move.add_argument("x", type=float)
+    p_move.add_argument("y", type=float)
+    p_move.add_argument("z", type=float)
+
+    p_del = sub.add_parser("delete", help="delete one placement")
+    p_del.add_argument("set")
+    p_del.add_argument("index", type=int)
+
+    p_build = sub.add_parser("build", help="build a disc image from ops (JSON on stdin)")
+    p_build.add_argument("name")
+    p_build.add_argument("--game-id", default="436e0bb84d5337d1")
+    return ap
+
+
+def main(argv=None):
+    """Run the editor from the command line. Returns the result dict so a caller can assert on it too."""
+    import json
+    import sys
+
+    from . import gcdisc
+
+    ap = build_parser()
+    args = ap.parse_args(argv)
+    disc = gcdisc.GCDisc(args.disc)
+
+    if args.cmd == "sets":
+        found = sets(disc)
+        if args.kind:
+            found = [s for s in found if s["kind"] == args.kind]
+        for s in found:
+            print(f"{s['kind']:7s} {s['where']:8s} {s['name']}")
+        print(f"{len(found)} set(s)")
+        return {"sets": found}
+
+    if args.cmd == "list":
+        pl = placements(disc, args.set)
+        rows = pl["records"][:args.limit] if args.limit else pl["records"]
+        for r in rows:
+            line = f"{r['index']:4d}  {r['class']:10s} local ({r['x']:8.2f}, {r['y']:7.2f}, {r['z']:8.2f})"
+            if args.world:
+                world = world_position(r, args.set)
+                line += "  world " + (f"({world[0]:8.2f}, {world[1]:8.2f})" if world else "unknown")
+            print(line)
+        print(f"{pl['count']} record(s) in {args.set} ({pl['where']})")
+        return {"set": args.set, "count": pl["count"], "records": rows}
+
+    if args.cmd == "move":
+        op = edit("move", args.set, index=args.index, x=args.x, y=args.y, z=args.z)
+        out = preview(disc, [op])
+        print(json.dumps(out, indent=1)[:2000])
+        return out
+
+    if args.cmd == "delete":
+        op = edit("delete", args.set, index=args.index)
+        out = preview(disc, [op])
+        print(json.dumps(out, indent=1)[:2000])
+        return out
+
+    if args.cmd == "build":
+        from . import config
+        ops = json.load(sys.stdin)
+        cfg = config.load(pathlib.Path("gbox.toml"))
+        out = build(cfg, args.game_id, pathlib.Path(args.disc), args.name, ops)
+        print(json.dumps(out, indent=1))
+        return out
+
+    raise EditError(f"unknown command {args.cmd!r}")
+
+
+if __name__ == "__main__":
+    main()

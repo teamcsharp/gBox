@@ -110,3 +110,21 @@ def test_the_door_class_indices_come_from_the_match():
     assert E.door_name(0x02000049) == "Med"
     assert E.door_name(0x02000046) == "Shop"
     assert E.door_name(0x02000040) is None
+
+
+def test_the_cli_parses_the_documented_commands():
+    ap = E.build_parser()
+    a = ap.parse_args(["disc.gcz", "sets", "--kind", "object"])
+    assert a.cmd == "sets" and a.kind == "object" and a.disc == "disc.gcz"
+    b = ap.parse_args(["disc.gcz", "list", "map_city00_00o.dat", "--world", "--limit", "5"])
+    assert (b.cmd, b.set, b.world, b.limit) == ("list", "map_city00_00o.dat", True, 5)
+    c = ap.parse_args(["disc.gcz", "move", "map_city00_00o.dat", "20", "7", "-118", "-118"])
+    assert (c.index, c.x, c.y, c.z) == (20, 7.0, -118.0, -118.0)
+    d = ap.parse_args(["disc.gcz", "build", "pso_edit"])
+    assert d.cmd == "build" and d.game_id == "436e0bb84d5337d1"
+
+
+def test_the_cli_requires_a_command():
+    ap = E.build_parser()
+    with pytest.raises(SystemExit):
+        ap.parse_args(["disc.gcz"])
