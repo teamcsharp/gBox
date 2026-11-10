@@ -309,7 +309,7 @@ def control(ad, prof, *, ring=None):
 SCATTER_TITLES = frozenset({"01002A000CD48000"})
 SCATTER_DEFAULTS = {"enabled": True, "cooldown_s": 12.0, "count": 8, "near_cm": 500.0, "reach_cm": 1500.0,
                     "floor_dy_cm": 150.0, "hurt_s": 3.0, "min_pack": 3, "surround_n": 4, "surround_cm": 400.0,
-                    "kill_window_s": 8.0, "toward_n": 6}
+                    "kill_window_s": 8.0, "toward_n": 6, "after_ring_s": 6.0}   # (no barrage right after a ring)
 
 
 def scatter_policy(title_module=None, stats=None) -> dict:
@@ -366,6 +366,9 @@ def decide_scatter(snap: dict, stats: dict, now: float, policy_: dict | None = N
         return {**out, "reason": f"the round is not being played ({screen})"}
     if player is None:
         return {**out, "reason": "no player in this snapshot"}
+    ring_last = stats.get("ring_last_at")
+    if isinstance(ring_last, (int, float)) and now - ring_last < float(policy_["after_ring_s"]):
+        return {**out, "reason": "a ring just went out"}
     last = stats.get("scatter_last_at")
     if isinstance(last, (int, float)) and now - last < float(policy_["cooldown_s"]):
         return {**out, "reason": f"{float(policy_['cooldown_s']) - (now - last):.1f} s of the barrage cooldown left"}
