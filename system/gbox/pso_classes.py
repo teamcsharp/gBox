@@ -65,8 +65,8 @@ def table_offset(dol: bytes) -> int:
     return hits[0]["offset"] - ANCHOR_SLOT * ENTRY_SIZE
 
 
-def registry(dol: bytes, slots: int = 0x60) -> dict[int, str | None]:
-    """``{class id: name}`` for the low ids -- enough to name every city class and the seasonal ones."""
+def registry(dol: bytes, slots: int = 0x100) -> dict[int, str | None]:
+    """``{class id: name}`` for ids 0..``slots``. The lobby sets use 0x80..0x8c, so the window must reach past 0x60."""
     base = D.header(dol)["image_base"]
     start = D.header(dol)["code_start"]
     table = table_offset(dol)

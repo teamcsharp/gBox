@@ -2812,16 +2812,65 @@ The last session is stopped. No worker beyond the i9's own was ever touched. The
 brief lists (the `mod` query parameter, the five-minute gate, the foreground requirement for keyboard input) are recorded
 there so a new session starts from a working setup instead of rediscovering them.
 
+## Round 58 (2026-11-10) — the executable names the rooms, and the city is ten sets, not one
+
+This round followed the strings the binary carries, and they led somewhere the walking never did.
+
+### What the executable calls its places
+
+```
+0x80443654   ...SHOP.adx   GUILD.adx   MEDICAL.adx   soutoku.adx   city.adx...
+0x8044c10f   ...ITEM STORE   HUNTER GUILD   CHECK ROOM   JUDGMENT   TShopGenerator...
+0x8044adfc   ...map_darkfalz00  map_lobby_01  map_lobby_02  map_lobby_03...
+0x80446833   obj_citybeam.njm  bm_obj_lobby_warp.bml  TObjWarpLobby  "BEAM DISP ON"
+```
+
+So the city has a **GUILD room with its own music track** (`GUILD.adx` beside `SHOP.adx`, `MEDICAL.adx`, `city.adx`), and its
+areas are named `map_lobby_01..10`. Every map this lane built used **`map_city00_00o.dat`** -- one set -- while the disc also
+carries:
+
+```
+SET/map_lobby_01o.dat .. SET/map_lobby_10o.dat
+SET/map_lobby_{red,green,yellow}_be00o.dat
+SET/map_lobby_soccer01o.dat, _soccer02o.dat
+```
+
+Fifteen lobby sets, none of which had been opened.
+
+### What is in them
+
+Read with the class registry, `map_lobby_0Xo.dat` is a different kind of set from `city00`: doors of class **`TObjDoorKey`**
+(12-13 per set), `TObjEnvSound`, `TObjEnvSoundGlobal`, `TObjEvtCollision` -- room furniture, collision and sound, not the
+city's big set dressing. `map_lobby_01` through `_04` are **identical** in their door records, so these are variants of one
+layout (player count or season), not ten distinct rooms.
+
+### The lead
+
+Mapped with the `city00` offset, the `TObjDoorKey` records land at worlds like **(398,127), (430,184), (378,352)** and
+**(8,184)**. Three of those are **east of the easternmost point this lane has ever walked** (x=360). Either the lobby sets use
+a different origin than `city00` -- likely, since they are per-room sets -- or **there is a part of the city east of the lobby
+that has never been entered.** That is worth a walk, and the ASCII map makes it cheap to plan one.
+
+Caveat recorded honestly: the offset was measured for `city00` only, so "east of the lobby" is an *untested* reading. What is
+certain is that a whole family of sets went unexamined for fifty rounds, and it contains a door class the city's own set does
+not use.
+
+### Also this round
+
+`pso_classes.registry` now reads ids to `0x100` instead of `0x60`, because the lobby sets use `0x80..0x8c` -- exactly the ids
+the narrow window could not name. 21 tests green across the registry and the editor.
+
 ## 7. Next
 
-The hand-off brief (`docs/PSO-HANDOFF-2026-11-10.md`, rewritten at round 57) carries the full list. In order:
+1. **Open the lobby sets properly.** `SET/map_lobby_01o.dat` .. `_10o.dat` (plus colour and soccer variants) were never
+   read until round 58. They carry `TObjDoorKey`, `TObjEvtCollision`, `TObjEnvSound*` -- room furniture and doors -- and
+   their coordinates, read with the `city00` offset, land **east of anywhere this lane has walked** ((398,127),
+   (430,184), (378,352)). Either they use a different origin or the city extends east; both are decidable.
+2. **The city has a GUILD room** with its own music (`GUILD.adx` beside `SHOP.adx`, `MEDICAL.adx`, `city.adx`) and a
+   "HUNTER GUILD" label in the string table. It is a room, and it has never been entered.
+3. **P1's gate is still code**, but the room inventory above is data worth exhausting before another executable search.
+4. **P6b's page** (pure UI over the CLI) and **P7a's rigging** remain the items that do not need P1.
 
-1. **P1 via the executable.** `pso_dol` (address map), `pso_classes` (named class ids) and the 25,981-function Ghidra
-   export exist; search for code touching a `TObjCityDoor_Guild` instance or the quest-state block, not for "the guild".
-2. **Finish the `.evt` decode** -- framing is solid (143/143), opcodes are not; field room transitions live there.
-3. **P6b's page** (pure UI over the CLI) and **P7a's rigging** (`build_swap` adapted for GC, gated by `pso_swapfit`).
-4. Then P3-P5, which need P1.
-
-Standing rules: only the i9's own gBox (`10.89.1.43:8765`, `x-gbox-actor: agent`), never lilspark; restore the emulator
-window before driving; and do not identify a placement record by its distance to an entity -- two of this lane's leads
-died that way (cameras read as shopkeepers, traffic read as corridor markers).
+Evidence for (2): the executable's string table at 0x80443654 lists the city's music tracks (SHOP/GUILD/MEDICAL/city)
+and at 0x8044c10f the city's labels (ITEM STORE / HUNTER GUILD / CHECK ROOM / JUDGMENT). Area names are `map_lobby_01..10`
+at 0x8044adfc.
