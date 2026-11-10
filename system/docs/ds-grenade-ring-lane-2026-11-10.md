@@ -253,3 +253,58 @@ deploy, so:
 - RE6 grenades are the `re6-bomb-mind` lane's from the operator's 07:07 update; this evidence goes with them;
 - the *status* half is fixed and live (above);
 - the detection fix is **not** claimed, and the honest per-kind reasons hide nothing until it lands.
+
+## Step: RE6 hand and incendiary as a spawn/detonate parameter (2026-11-10, branch `ds-re6-bomb-classes-20261110`)
+
+Hand-off lane B item 1: "Make the class a parameter of the spawn, rebuild, and get a live receipt per kind ... Then
+let `grenade_status` advertise each kind."
+
+**No compiler needed, and no rebuild of the verified images.** `spawn.c` builds the class DTI in its *second*
+argument with exactly two instructions (`adrp x1, 0x2951000` / `add x1, x1, #0x500`), and `detonate.c` builds the
+unit's class vtable in `x0` with two (`adrp x0, 0x284a000` / `add x0, x0, #0xeb8`). `native/re6_061d2a06/classes.py`
+derives a parameterised pair from those pinned, verified blobs by replacing exactly those two instructions:
+
+    spawn_class(player, dti)                                      # two NOPs: x1 arrives from the caller
+    detonate_class(unit, player, generation, player_generation, class_vtable)   # mov x0, x4 + NOP
+
+The dispatcher already maps call argument *n* to `x<n>` (`call.S`: `ldp x0,x1,[x19,#0xc8]`, `ldp x4,x5,[x19,#0xe8]`),
+so `Controller.call` can hand both values. The derived images are pinned with their own digests
+(`spawn_class` 256 B @ `543749d9…`, `detonate_class` 232 B @ `9ba12497…`) and the originals keep theirs.
+
+**Where they install.** Two caves the repository has not used: `main+0x18F2BC0` and `main+0x18F2CC0`, inside the
+same never-executed padding tail as the four shipped images. `tools/verify_re6_classes.py` checks them against the
+operator's own `main.bin`: `.text` is one zero run from `0x18F2630` to its end, both ranges are all zero, and no
+B/BL/ADR/ADRP+ADD target and no 64-bit literal in `.text`/`.rodata` points into them. Run against the extracted
+update image (build `061D2A06…`): **PASS** for both new caves, and the same check passes for the four shipped ones.
+The originals are untouched and still what the flash and the bomb use; the class pair is installed on demand
+(`_ensure_image`, the `spawn_bomb` pattern) only when a hand or incendiary grenade is fired.
+
+**Controller.** `_ring_one(kind)` keeps the flash on the shipped pair and, for another class, spawns with its DTI and
+detonates with the vtable **the allocated unit actually carries** (`q(unit)`) - so the wrapper's check is "still the
+class we allocated", not "is a flash", and no per-class vtable table is trusted at run time. `grenade_ring` takes
+`allow_unverified`, and `grenade_kinds()` still advertises **flash only**: the classes exist, their receipts do not.
+
+**The receipt probe.** `grenade_scatter` already accepts an explicit kind and the queue does not gate that kind per
+session, so an explicit implemented class there is the deliberate probe: its receipt gains `kinds` and
+`probe: true`, and the default `random` barrage still draws from the verified kinds only. This is the request for
+the first receipt, once this branch is deployed and an RE6 No Mercy round is live:
+
+    POST /api/sessions/{sid}/interventions
+    {"op": "grenade_scatter", "request_id": "<new uuid>", "args": {"kind": "hand"}}
+
+and the same with `"incendiary"`. Record: the receipt (`state`, `detonated`, `rounds[].class_vtable`,
+`self_damage`), a frame before and after, and the round's counters. If the wrapper's action-class expectations do
+not hold for these classes, the receipt comes back `failed`/`uncertain` with its reason - that is the next thing to
+fix, not something to paper over.
+
+**Tests** (`tests/test_re6_class_images.py`, 19): the two patched instructions word for word and everything else
+unchanged; a tampered source image refused instead of patched; the pinned digests; the class table against the DTI
+tree; `image_bytes` routing; hand spawn/detonate arguments and the carried vtable on a fake emulator; the flash
+ring and the single flash op still on the shipped pair with their own resource guard; unverified kinds refused
+without the probe flag and unknown kinds refused before any native call; a class without loaded resources refused;
+and the cave scanner finding a hole, a branch into it and a non-zero byte. The affected suites (class images, ring,
+native build, RE6 mods/inventory, interventions/worker, grenade status/rule, RE5 ring/native, engine) are **166
+passed**.
+
+**Deploy needs**: the title module hot-reloads, but the new `classes.py` and `tools/` are new files and the worker
+imports them - a `gbox.service` restart at a gap (already asked above) covers it.
