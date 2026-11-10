@@ -686,3 +686,18 @@ clean roster as the shipped reskin build, then the hot-reload acceptance test on
   an unmistakable two-frame comparison from one session.
 * Driver: the RAM-driven `drive_fast.py` now tracks that it has seen `select_player`, so the CONTINUE? prompt is
   declined with right+A instead of being mistaken for a loading screen.
+
+## Round 27 status (2026-11-09, ~21:05 CST): the continue save deadlocks a swapped build; the save is cleared
+
+* On the 34-arc build the game **deadlocks at the CONTINUE? prompt** (YES selected, 0 FPS) when the save holds a
+  continue state from a previous build: the right+A decline does not register and the emulator stops advancing. So a
+  long-lived save with an in-progress round is not compatible with a changed overlay; the continue data references the
+  build it was made with.
+* The RE6 save was backed up (`.tmp/re6-save-backup-20261109`, `SAVEDATA` 28,752 bytes) and then **removed**, so the
+  game starts fresh. The unlock watcher re-applies the save flag on load (`unlock-on-load`).
+* With the fresh save the fixed key sequence lands on the **SKILL SETTINGS** screen (0 skill points for a new save)
+  instead of the Mercenaries flow - the fixed nav is unreliable when the menu layout differs (new save vs old save).
+  The RAM-driven `screen()` navigation is the only reliable route and must be used for the two-frame hot-swap run.
+* The hot-swap itself is staged: `.tmp/leon-body-game.arc` (1,626,591 bytes, the game's own Leon body via
+  `switch_decrypt`) replaces the broken donor body at the RESULTS boundary of round 1, and round 2 in the same session
+  shows the normal body - the two-frame acceptance evidence.
