@@ -14,7 +14,7 @@ from urllib.parse import quote
 
 from fastapi import Request
 
-SWITCH = {"52d15709be0fda1a": "re5", "115f9cdbba115432": "re6"}
+SWITCH = {"52d15709be0fda1a": "re5", "115f9cdbba115432": "re6", "270a15eb98dab4d7": "re4"}
 # op, label, status path, optional (min, max, step). Match the desktop's live controls.
 MODS = {
     "re5": [
@@ -28,6 +28,12 @@ MODS = {
         ("bow_rate", "Bow fire rate ×", "bow_rate_x", (1, 20, 1)),
         ("bullet_damage", "Bullet damage", "bullet_damage_x", (0.1, 1000, 0.1)),
         ("turn_speed", "Turning and aiming speed", "turn_speed_x", (1, 10, 0.5)),
+        ("kill_time", "Time added per kill", "kill_time_on", None),
+    ],
+    # RE4 Switch (gbox.mercs.titles.re4_switch_mods): what is mapped so far - the Ganados' health and the clock
+    "re4": [
+        ("one_hit", "One-hit kills", "one_hit", None),
+        ("enemy_health", "Enemy health \u00d7", "enemy_health_x", (0.05, 1, 0.05)),
         ("kill_time", "Time added per kill", "kill_time_on", None),
     ],
     "re6": [

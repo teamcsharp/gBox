@@ -327,6 +327,8 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             rnd.hud_seen = True
 
         snap = _snapshot(m, stats) if m is not None else None
+        if snap is not None:
+            _maintain_mods(ad, snap, stats)
         if rnd is not None and snap is not None:
             rnd.observe(snap, clock())
             _report(rnd, snap, stats, clock(), round_boundary, keys)
@@ -359,6 +361,18 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             "boundaries_posted": stats["boundaries_posted"],
             "note": ("RAM fight: player, Ganados and the clock read from memory" if stats.get("fight") == "ram" else
                      "frame-only fight: the player and Ganados are not mapped in RAM yet (re4_switch.PLAYER_CLASS)")}
+
+
+def _maintain_mods(ad, snap: dict, stats: dict) -> None:
+    """The live sidebar's RE4 mods (re4_switch_mods.maintain: health caps, time per kill) on this snapshot."""
+    try:
+        from .mercs.titles import re4_switch_mods
+        done = re4_switch_mods.maintain(ad, snap)
+    except Exception as exc:                                 # noqa: BLE001 - a mod never costs the fight
+        stats["mods_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        return
+    for k, v in (done or {}).items():
+        stats["mods_" + k] = stats.get("mods_" + k, 0) + v
 
 
 def _snapshot(m, stats: dict) -> dict | None:

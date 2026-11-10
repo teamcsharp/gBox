@@ -109,7 +109,23 @@ KNOBS: dict[str, list[tuple]] = {
          "none in sight: to where the enemy map says they are, on any floor"),
     ],
 }
-MODULES = {"re5": "gbox.mercs.titles.re5_switch", "re6": "gbox.mercs.titles.re6_switch"}
+KNOBS["re4"] = [                                 # gbox.mercs.titles.re4_switch (its distances are mm)
+    ("ENGAGE_RANGE_CM", "Fire range (mm)", "Aim", "float", 3000, 30000, 500,
+     "a Ganado nearer than this is shot; farther ones are walked to"),
+    ("RAISE_TOL", "Gun up within (rad)", "Aim", "float", 0.1, 0.8, 0.05, "the body this close to the target"),
+    ("FIRE_GAP_S", "Seconds between trigger taps", "Aim", "float", 0.1, 1.0, 0.05, ""),
+    ("RELOAD_SHOTS", "Shots between reloads", "Aim", "int", 2, 20, 1, "reloaded at the next quiet moment"),
+    ("CROWD_N", "Crowd size (the gun's line first)", "Crowd control", "int", 2, 8, 1, ""),
+    ("CROWD_CM", "Crowd radius (mm)", "Crowd control", "float", 2000, 12000, 250, ""),
+    ("SWARM_N", "Swarm size that makes him turn and go", "Crowd control", "int", 2, 6, 1, ""),
+    ("SWARM_CM", "Swarm radius (mm)", "Crowd control", "float", 1000, 4000, 100, ""),
+    ("RUN_CM", "Run past this distance (mm)", "Movement", "float", 2000, 20000, 500, ""),
+    ("STAND_MAX_S", "Never stand: seconds before a step", "Movement", "float", 0.5, 4.0, 0.1, ""),
+    ("KILL_PACE_S", "Combo: a kill owed after (s)", "Goals", "float", 1.0, 5.0, 0.5,
+     "past this since the last kill he takes the quickest one and runs"),
+]
+MODULES = {"re5": "gbox.mercs.titles.re5_switch", "re6": "gbox.mercs.titles.re6_switch",
+           "re4": "gbox.mercs.titles.re4_switch"}
 # The sidebar's weapon dropdown (operator 2026-10-28: "a drop down here that lists every weapon in the game in order of
 # the most powerful to the least powerful and allow me to select any weapon from the list and that weapon is instantly
 # equipped"): each title's player weapons, most powerful first (launchers, magnums, shotguns, rifles, machine guns,
@@ -120,7 +136,7 @@ WEAPON_POWER = {
             0x12, 0x1E, 0x1F, 0x11, 0x10, 0x02),
     "re6": (27, 11, 8, 7, 18, 6, 5, 4, 16, 10, 9, 15, 17, 14, 23, 13, 3, 2, 1, 12, 26, 25, 24, 0),
 }
-MAP_IDS = {"010018100CD46000": "re5", "01002A000CD48000": "re6"}
+MAP_IDS = {"010018100CD46000": "re5", "01002A000CD48000": "re6", "010099A00BC1E000": "re4"}
 PATH = Path(__file__).resolve().parents[2] / "gbox-data" / "mercs" / "bot-logic.json"
 _lock = threading.Lock()
 
@@ -129,7 +145,7 @@ def _title(t) -> str:
     t = str(t or "").strip()
     t = MAP_IDS.get(t.upper(), t.lower())
     if t not in KNOBS:
-        raise ValueError(f"bot_logic: no live bot logic for {t!r} (re5 / re6 Switch)")
+        raise ValueError(f"bot_logic: no live bot logic for {t!r} (re4 / re5 / re6 Switch)")
     return t
 
 
@@ -245,6 +261,8 @@ def weapon_menu(ad, title, weapon=None) -> dict:
     next round. Reading the list never fails the settings (weapon_error says why it is empty)."""
     t = _title(title)
     out: dict = {}
+    if t not in WEAPON_POWER:                        # RE4 Switch: its inventory is not mapped yet
+        return {"weapons": [], "weapon_error": f"the {t} Switch weapons are not mapped yet"}
     if weapon is not None:
         wid = int(weapon)
         if wid not in WEAPON_POWER[t]:

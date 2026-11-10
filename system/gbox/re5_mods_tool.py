@@ -59,6 +59,9 @@ SWITCH_GAME_IDS, SWITCH_TITLE = {"52d15709be0fda1a"}, "010018100CD46000"
 # RE6 on Switch (Citron, title 01002A000CD48000): its own ops through gbox.mercs.titles.re6_switch_mods (the app's RE6
 # panel: the live weapon and its list, the infinite / speed mods, the bot's switches)
 RE6_SWITCH_GAME_IDS, RE6_SWITCH_TITLE = {"115f9cdbba115432"}, "01002A000CD48000"
+# RE4 on Switch (Eden / Citron, title 010099A00BC1E000): gbox.mercs.titles.re4_switch_mods (enemy health, one-hit
+# kills, the clock and time per kill; life and ammo answer "not mapped yet")
+RE4_SWITCH_GAME_IDS, RE4_SWITCH_TITLE = {"270a15eb98dab4d7"}, "010099A00BC1E000"
 
 
 def is_switch_re6(g) -> bool:
@@ -67,6 +70,14 @@ def is_switch_re6(g) -> bool:
         return False
     ids = {str(g.get(k) or "") for k in ("game_id", "title_id", "map_id")}
     return bool(ids & RE6_SWITCH_GAME_IDS) or RE6_SWITCH_TITLE in {i.upper() for i in ids}
+
+
+def is_switch_re4(g) -> bool:
+    """A session of RE4 on Switch (its game id, or its Switch title id)."""
+    if not isinstance(g, dict):
+        return False
+    ids = {str(g.get(k) or "") for k in ("game_id", "title_id", "map_id")}
+    return bool(ids & RE4_SWITCH_GAME_IDS) or RE4_SWITCH_TITLE in {i.upper() for i in ids}
 
 
 def is_switch_re5(g) -> bool:
@@ -1550,9 +1561,10 @@ def re5_mods(inp: RE5ModsIn, ctx):
     playbook applies the profile's package at round start."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
-    if (inp.op or "").strip().lower() in ("bot_logic", "live_controls") and (is_switch_re6(g) or is_switch_re5(g)):
+    if (inp.op or "").strip().lower() in ("bot_logic", "live_controls") and (is_switch_re6(g) or is_switch_re5(g)
+                                                                           or is_switch_re4(g)):
         from .mercs import bot_logic                     # the operator's live bot settings (the PiP's sidebar)
-        title = "re6" if is_switch_re6(g) else "re5"     # (and its weapon dropdown: weapon= equips that one)
+        title = "re6" if is_switch_re6(g) else "re4" if is_switch_re4(g) else "re5"   # (and its weapon dropdown)
         # Polling the live panel is a read; only changed behavior settings rewrite its saved file.
         logic = bot_logic.handle(title, inp.values, inp.reset) if inp.values or inp.reset else bot_logic.status(title)
         view = logic | bot_logic.weapon_menu(ad, title, inp.weapon)
@@ -1560,12 +1572,22 @@ def re5_mods(inp: RE5ModsIn, ctx):
             if title == "re6":
                 from .mercs.titles import re6_switch_mods as mods
                 status = mods.run(ad, "status")
+            elif title == "re4":
+                from .mercs.titles import re4_switch_mods as mods
+                status = mods.run(ad, "status").get("status", {})
             else:
                 from .mercs.titles import re5_switch_mods as mods
                 result = mods.tool_run(ad, "status")
                 status = result.get("status", result)
             return {"result": {"verified": True, "title": title, "view": view, "status": status}}
         return {"result": view}
+    if is_switch_re4(g):                                 # RE4 on Switch: its own ops
+        from .mercs.titles import re4_switch_mods as R4
+        result = R4.run(ad, inp.op, inp.multiplier, inp.on,
+                        **({"seconds": inp.seconds} if inp.seconds is not None else {}))
+        if result.get("verified") is True and (inp.op or "status") != "status":
+            result = {**result, "status": R4.run(ad, "status").get("status", {})}
+        return {"result": result}
     if is_switch_re6(g):                                 # RE6 on Switch: its own ops
         from .mercs.titles import re6_switch_mods as R6
         extra = {k: v for k, v in (("weapon", inp.weapon), ("seconds", inp.seconds), ("nades", inp.nades),
