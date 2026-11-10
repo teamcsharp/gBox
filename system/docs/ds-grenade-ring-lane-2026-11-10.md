@@ -1,8 +1,30 @@
 # DeepSeek grenade-ring lane — 2026-11-10
 
 Lane log for `system/docs/DEEPSEEK-GRENADE-RING-TASK-2026-11-10.md` (the operator: "i need the grenade deployment
-feature completed across all titles in full ... and all these titles"). Work branch `ds-grenade-ring-20261110`;
-every claim below is either a test in the repo or a receipt quoted with its session id.
+feature completed across all titles in full ... and all these titles"). Every claim below is either a test in the
+repo or a receipt quoted with its session id.
+
+## Status for the PM (2026-11-10, 07:0x)
+
+**Landed on main by this lane, pushable now:** the honest per-kind status, the RE6 Switch ring (code + tests), the
+bot's own when-to-ring rule with its stats and PiP knobs, the RE4 Switch/RE6 status wiring, and the offline check
+that the RE6 native pair matches the operator's installed build. Nothing in the lane changes a title bot's
+decisions outside the ring hook, and the ring is Switch-only per the operator's later update.
+
+- **Works and is proven:** RE5 Switch flash ring (live: 10/10 detonated, 1.05 s, no self-damage - receipt below);
+  per-kind status on every title (19 tests + the live before/after observations); RE6 ring geometry/partial
+  handling and the native caves against the real 061D2A06 image (10 + 4 tests); the bot rule (13 tests);
+  the PiP chooser (21 JS tests).
+- **Open, and why:** RE6's *live* ring receipt (needs the Spark while an RE6 No Mercy round is up - the local PC is
+  Windows/yuzu and the controller requires Linux ARM64 NCE by design); RE5 hand+incendiary (their item DTIs are
+  unconfirmed and the compiled spawn image pins the flash DTI at link time - needs RE + an ARM64 rebuild); the RE4
+  Switch ring (that title has no native call harness at all yet); and the RE6 status bug's root cause (needs the
+  ready() inputs read from a live RE6 round; the queue was on RE5 for the whole window).
+- **Needs one action from you:** a `gbox.service` restart at a gap on lilspark (and locally if the PC's node is to
+  show the new status). Title modules hot-reload, but `interventions.py`, `engine.py` and the two new modules only
+  load on restart - until then the PiP keeps the old one-string reason.
+- **Conflicts:** the only file two lanes both added is `gbox/mercs/enemy_identity.py`; this lane uses the other
+  lane's module (`tier(title, class, hp_max)`) and keeps no table of its own.
 
 ## What works now, per title and kind
 
@@ -110,13 +132,17 @@ core lands, `decide()` is the function to move onto it.
 
 ## Commits
 
-- `be21ba0` on `ds-grenade-ring-20261110`: the whole lane (status, RE6 ring, bot rule, JS, tests).
-- `38740baa` on main: the merge of that branch. Its one conflict was `system/gbox/mercs/enemy_identity.py`, added by
-  the enemy-identity lane at the same time; resolved **in favour of that lane's module** - the ring's rule calls
-  `enemy_identity.tier(title, class, hp_max)` for boss/dangerous instead of keeping its own table, so one enemy
-  identity feeds the tactical map, the bots and this rule.
-- `369495c0` on main: Switch-only gating (the operator's 2026-11-10 update), this lane log, and a clicked ring
-  counted in `rings_deployed`/`ring_kills` like the bot's own.
+- `be21ba0` (branch `ds-grenade-ring-20261110`): the whole lane (status, RE6 ring, bot rule, JS, tests).
+- `38740baa`: the merge with the then-current main. Its one conflict was
+  `system/gbox/mercs/enemy_identity.py`, added by the enemy-identity lane at the same time; resolved **in favour of
+  that lane's module** - the ring's rule calls `enemy_identity.tier(title, class, hp_max)` for boss/dangerous instead
+  of keeping its own table, so one enemy identity feeds the tactical map, the bots and this rule.
+- `369495c0`: Switch-only gating (the operator's 2026-11-10 update), this lane log, and a clicked ring counted in
+  `rings_deployed`/`ring_kills` like the bot's own.
+- `76d098fc`: the RE6 native-cave verifier and the local-installation check (below).
+- the commit this note rides on: the PM status block above, cherry-picked onto main together with `76d098fc`.
+
+The branch stays the place for the next round of work; main carries everything shipped so far.
 
 ## What the PiP showed before this lane (the observed problem)
 
