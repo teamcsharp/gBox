@@ -662,6 +662,9 @@ next scan goes. Nothing in the repo changed for B, and nothing is claimed about 
 
 ## REQUEST 15:30 CST - a read-only copy of the RE4 Switch base content on the i9 (checkpoint E1 / F1 are blocked on it)
 
+**RESOLVED 15:58, no action needed** (round 54: the Spark's decrypt-lab had already extracted the image and its
+`main.bin` was on the home share; copied read-only to `D:\gBox\cache\re4-base\main.bin`, F1 passes, E1's cave vetted).
+
 - needs: the RE4 Switch **base** content for title `010099A00BC1E000` copied onto the i9 (read-only), either the base
   NSP or the extracted `main` (+ its `main-*.nso` name/build id). A path under `D:\gBox\cache\` is enough; say where.
 - why: only the **update 1.0.2 NSP** is on this box
