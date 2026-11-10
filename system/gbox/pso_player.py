@@ -20,6 +20,7 @@ face +0x3C, head +0x3E, hair +0x40 (TObjPlayer + 0xC24 holds this block live on 
 """
 from __future__ import annotations
 
+from . import pso_gc_paths
 import struct
 from pathlib import Path
 
@@ -62,8 +63,11 @@ def build(disc, cls: str = "C", head: int = 0, colour: int = 0, out_dir: Path | 
           section_id: int = 7):
     """-> uap.Manifest (textures written as PNGs under out_dir/textures). disc: a gbox.gdrom.GDRom."""
     cls = cls.upper()
-    body_nj = ninja.NJ(disc.read(f"PSO/PL{cls}BDY00.NJ"))
-    head_nj = ninja.NJ(disc.read(f"PSO/PL{cls}HED{head:02d}.NJ"))
+    # The GameCube disc stores these flat and lower-case (`plAbdy00.nj`); only a Dreamcast rip has `PSO/PL...`. The
+    # translator picks whichever the disc actually has (gbox.pso_gc_paths), which is what made this function fail on
+    # GPOE8P before (it asked for a `PSO/` directory the disc does not contain).
+    body_nj = ninja.NJ(pso_gc_paths.read_part(disc, f"PSO/PL{cls}BDY00.NJ"))
+    head_nj = ninja.NJ(pso_gc_paths.read_part(disc, f"PSO/PL{cls}HED{head:02d}.NJ"))
     mount = HEAD_MOUNT.get(cls, 59)
     mw = body_nj.bones[mount]["m"]
     # put the head's triangles into the body as extra texture ids (100 + id), moved to the mount, weighted to it
@@ -289,7 +293,7 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
     if cls not in CLASS_ROLES:
         raise ValueError(f"unknown PSO class letter {cls!r} (A..I)")
     bpath, mpath, tpath = f"PSO/PL{cls}BDY00.NJ", f"PSO/PL{cls}NJ.BML", f"PSO/PL{cls}TEX.AFS"
-    body_file = disc.read(bpath)
+    body_file = pso_gc_paths.read_part(disc, bpath)
     data = body_file[8:8 + struct.unpack_from("<I", body_file, 4)[0]]
     nodes = ninja.tree_nodes(data, 0)
     nj = ninja.NJ(body_file)

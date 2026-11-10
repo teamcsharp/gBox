@@ -1611,13 +1611,56 @@ the guild's own counter has not been reached yet.
 * Interacting with a counter needs the character **in front of** the keeper, not across the counter from them -- so the
   next attempts should walk *around* a counter and face the keeper before pressing `A`.
 
+## Round 30 (2026-11-10) — P7a's blocker was a path spelling, and it is fixed
+
+The city hunt was taking round after round, so this round went at the one P7a blocker that was already understood: the
+player-model code asks for paths this disc does not have.
+
+### The bug
+
+`pso_player.build` and its swap path read character parts as `PSO/PL<C>BDY00.NJ`, `PSO/PL<C>HED<NN>.NJ`,
+`PSO/PL<C>NJ.BML` and `PSO/PL<C>TEX.AFS` -- the Dreamcast layout. The GameCube disc `GPOE8P` has **no `PSO/` directory
+at all**; the same parts are flat at the root, lower-case, with the class letter kept:
+
+| Dreamcast (what the code asked for) | GameCube (what the disc has) |
+|---|---|
+| `PSO/PLABDY00.NJ` | `plAbdy00.nj` |
+| `PSO/PLAHED03.NJ` | `plAhed03.nj` |
+| `PSO/PLANJ.BML` | `plAnj.bml` |
+| `PSO/PLATEX.AFS` | `plAtex.afs` |
+
+That is why every `pso_player` call on this disc raised: it was reaching for a directory that does not exist.
+
+### `gbox/pso_gc_paths.py` (+9 tests)
+
+* `gc_path` / `dc_path` translate between the two layouts, keeping the **class letter's case** (lower-casing the whole
+  name would not match `plAbdy00.nj`).
+* `read_part(disc, path)` tries the GameCube name first and falls back to the Dreamcast one, so the same code works on a
+  rip from either platform; a failure names **both** candidates.
+* `class_parts(cls, head)` returns the four names the model code needs.
+* One test checks against the **real disc catalogue** (3,510 files from the P2 pass) that `plCbdy00.nj`, `plCched00.nj`,
+  `plCnj.bml` and `plCtex.afs` are all actually present -- so the translation is verified against the disc, not against a
+  guess.
+
+`pso_player.build` and the swap path now read through `read_part`. `pso_player` imports clean and the translator's tests
+pass; the model build itself still needs a live disc to run end to end, which is the next step for P7a.
+
+### Still open from P1
+
+The city navigation stands where round 29 left it: the party is in room 20 near a shop counter, the guild door entity is
+inert, and the guild counter has not been reached. That remains the one thing between this lane and a field arrival by
+real presses.
+
 ## 7. Next
 
-1. **Find the guild inside room 20.** The `TObjCityDoor_Guild` entity at (185,173) is inert -- four approaches
-   arrived on it, `A` included, and the room never changed -- so the guild is not behind a labelled door. The west
-   end of the area is a shop row with the cloakroom NPC among the shops, so the guild counter is nearby and has to be
-   reached by walking *around* a counter and facing the keeper before pressing `A`.
-2. Use the walked route to get there: `(102,105)` terrace -> `(33,-34)` through the south wall gap -> `(-84,27)` ->
-   `(-223,-24)` -> `(-250,-44)`. That is 350 units and is the first long route completed under control.
-3. Then the quest and its warp to the surface, then P1's accept test (three cold launches, both players), then
-   P6a's in-game proof, P6b, P7a and the demo -> route fixture.
+1. **P7a end to end:** with `pso_gc_paths` in place, run `pso_player.build` against the disc and see how far the
+   model path gets -- the four part files now resolve, so the next failure (if any) is real model code, not a path.
+2. **P1's guild counter:** the party is in room 20 by the shop row; the guild door entity is inert and the counter
+   has to be reached by walking around it and facing the keeper. The route in is walked: (102,105) -> (33,-34) ->
+   (-84,27) -> (-223,-24).
+3. Then the quest and its warp to the surface, then P1's accept test (three cold launches, both players), then P6a's
+   in-game proof, P6b, P7a's hot swap and the demo -> route fixture.
+
+Fixed this round: the Dreamcast/GameCube character path spelling (`PSO/PLABDY00.NJ` vs `plAbdy00.nj`), which is why
+every `pso_player` call failed on this disc. `gbox/pso_gc_paths.py` (+9 tests, one of them checking the names against
+the real 3,510-file disc catalogue).
