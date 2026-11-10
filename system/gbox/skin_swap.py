@@ -123,6 +123,23 @@ def body_group(groups: dict) -> str | None:
     return max(pool, key=lambda g: pool[g]["BM"].size)
 
 
+def model_swap_arc(target: Path, donor: Path, *, log=None) -> tuple[bytes | None, str, str]:
+    """Whole-model fallback for titles whose arcs carry their skin as a model payload, not as BM/MM/NM map groups.
+
+    RE6 player arcs are the measured case: `uPl00LeonUsa.arc` holds four `\\model\\` entries all named `pl0000` and no
+    suffixed maps, so `swap_arc` cannot group them. `model_swap.swap_models` replaces the model payloads instead; a
+    Leon slot wearing Chris's model built from it ran a live round (2026-11-09).
+    """
+    from . import model_swap
+    try:
+        res = model_swap.swap_models(target.read_bytes(), donor.read_bytes())
+    except (mt_arc.ArcError, model_swap.SwapError) as exc:
+        if log:
+            log("model_swap_failed", error=str(exc)[:200])
+        return None, "", ""
+    return res["data"], "model", donor.stem
+
+
 def swap_arc(data: bytes, donor_data: bytes, *, follow_tag: bool = False,
              group: str | None = None, donor_group_name: str | None = None) -> tuple[bytes, str, str]:
     """The slot archive wearing the donor character's skin: its body group's base/mask/normal maps are replaced.
@@ -295,9 +312,11 @@ def random_swap_build(config, game_id: str, title_id: str, rng, *, name: str | N
     try:
         patched, slot, donor_entry = swap_arc(target_arc.read_bytes(), donor_arc.read_bytes())
     except mt_arc.ArcError as exc:
-        if log:
-            log("skin_swap_failed", error=str(exc)[:200])
-        return None
+        patched, slot, donor_entry = model_swap_arc(target_arc, donor_arc, log=log)
+        if patched is None:
+            if log:
+                log("skin_swap_failed", error=str(exc)[:200])
+            return None
     build = name or f"skin-{target}-as-{donor}"
     try:
         from . import switch_mods
