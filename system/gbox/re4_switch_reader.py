@@ -212,6 +212,7 @@ def load_pack(root: Path, key: str):
 def export_pack(root: Path, key: str, work: Path) -> dict:
     """Decode one pack: every non-empty BIN slot + the TPL that follows it (or the pack's first TPL)."""
     root, work = Path(root), Path(work)
+    work.mkdir(parents=True, exist_ok=True)
     _udas, dat = load_pack(root, key)
     bins, tpls = [], {}
     for i, (ext, payload) in enumerate(dat.slots):
