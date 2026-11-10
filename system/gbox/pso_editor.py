@@ -115,3 +115,39 @@ def preview(disc, ops: list[dict]) -> dict:
 def build(cfg, game_id: str, rom, name: str, ops: list[dict], progress=None) -> dict:
     """Build the edited disc image (delegates to `pso_map_write.build`)."""
     return W.build(cfg, game_id, rom, name, ops, progress=progress)
+
+# --- room-local -> world ---------------------------------------------------------------------------------------
+#
+# Placement records are stored in a **room-local** space; the entity table reports **world** positions. Measured for the
+# Pioneer 2 lobby (`map_city00_00o.dat`, i9-NUC 2026-11-10) by adding a constant to every record and checking which land on
+# a live entity: with (+228, +291) **10 of the set's 28 records land exactly (distance 0.0)** on entities the game has --
+# all four lobby doors (`TObjCityDoor_Guild/Shop/Warp/Med`), both co-op spawn points, and every `TObject` in the room.
+#
+# The door class indices fall out of that match, too: 0x46 Shop, 0x47 Guild, 0x48 Warp, 0x49 Med.
+AREA_OFFSETS = {
+    "map_city00_00o.dat": (228.0, 291.0),
+}
+
+DOOR_CLASSES = {0x46: "Shop", 0x47: "Guild", 0x48: "Warp", 0x49: "Med"}
+
+
+def offset_of(set_name: str) -> tuple[float, float] | None:
+    """The room-local -> world offset for a set, when it has been measured."""
+    return AREA_OFFSETS.get(set_name.replace("\\", "/").rsplit("/", 1)[-1].lower())
+
+
+def world_position(record: dict, set_name: str) -> tuple[float, float] | None:
+    """A record's position in world coordinates, or None when the set's offset is not known.
+
+    A page should show this next to the local values rather than instead of them: the local value is what the writer
+    edits, the world value is what a player would recognise.
+    """
+    off = offset_of(set_name)
+    if off is None:
+        return None
+    return (round(float(record["x"]) + off[0], 2), round(float(record["z"]) + off[1], 2))
+
+
+def door_name(kind: int) -> str | None:
+    """The door a record's kind value names, if it is one of the lobby's four."""
+    return DOOR_CLASSES.get(int(kind) & 0xFF)
