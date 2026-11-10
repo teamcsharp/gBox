@@ -2189,14 +2189,73 @@ near a world position -- a coincidence I would have shipped as a failed mod with
 P1's field leg (guild unfound), P6a's in-game proof (needs the offset), P6b's page (UI over a backend that works), P7a's
 rigging.
 
+## Round 43 (2026-11-10) — a validated RAM scanner, and the placement data that is not in memory
+
+Round 42 built `pso_city_npc_moved` (a placement moved +50 in x) and could not show the object moving, because placement
+records turned out to be room-local while entities report world positions. This round tried to answer a narrower, decidable
+question: **is the modified value in the running game's memory at all?**
+
+### The scanner works
+
+Before trusting a null result, the scanner was validated against values known to be resident. The player's own
+coordinates, as big-endian floats, appear **4 times each** in the heap:
+
+```
+player_x_be  4 hits      player_z_be  4 hits        (0x80300000 .. 0x80600000)
+```
+
+### The placement coordinates are not there
+
+Searching the same 3 MB for the moved and the original x of `map_city00d.dat` record 3, in both byte orders, and for the
+z value on its own:
+
+```
+moved_x_be 0   original_x_be 0   moved_x_le 0   original_x_le 0   z_be 0
+```
+
+So while the party stands in the lobby (room 10), **the city placement set is not resident as raw floats**. That is a
+bounded, useful negative:
+
+* the mod cannot be confirmed "live" by looking for its coordinate in memory from the lobby;
+* round 42's confusion is explained twice over -- the coordinates differ *and* the data is not even in the heap in that
+  state;
+* a verification has to load the room that owns the set, then find the object. Both halves of that are now well-defined
+  problems rather than a guess.
+
+### The input path stopped cooperating
+
+Two walk attempts in this round died inside `win_send_keys` (`adapters.py:622`) -- the keyboard path needs the Dolphin
+window foreground, and it was not (the crash dialog from round 35's HUnewearl test is the likely reason a window was left
+in front). Worth recording because it is a *runtime* failure that looks like a game problem from the outside: the walker
+raises rather than silently doing nothing, which is the right behaviour, but the session is then stuck until someone
+restores the window.
+
+### Where P6a stands
+
+| part | status |
+|---|---|
+| writer produces a changed placement set | **done** (round 1's round trip, this lane's `pso_editor`) |
+| a placement-moved disc builds, boots and plays | **done** (`pso_city_npc_moved`) |
+| the moved object is visible in game | **not done** -- needs the room-local to world offset, and the data loaded |
+| the modified value is in memory | **no**, from the lobby; retry with the owning room loaded |
+
+### Next
+
+1. Restore the Dolphin window (or relaunch), load the room that owns `map_city00d.dat`, and run the scanner there -- it is
+   validated and cheap.
+2. With the set resident, compare the record's neighbours against the entity table to derive the room-local offset from a
+   real correspondence rather than a coincidence.
+
 ## 7. Next
 
-1. **Measure the room-local to world offset.** Placement records are room-local (`map_city00_00o.dat` holds (-16,-580),
-   (-393,-13)) while the entity table reports world positions (the lobby pad at (233,274)), and **no record anywhere
-   sits at a city NPC's world position**. Move one record by a known delta, load its room, and find which entity moved
-   by that delta -- the `pso_city_npc_moved` build is already the right probe.
-2. **P6b's page** must not label a record with a world position until (1) is known; the listing itself is correct.
-3. **P1's field leg** (guild unfound), **P6a's in-game proof** (blocked on (1)) and **P7a's rigging** remain open.
+1. **Load the room that owns `map_city00d.dat`, then rerun the RAM scanner** (it is validated: the player's own
+   coordinates appear 4x each as big-endian floats). From the lobby the placement set is **not** resident, which is
+   why round 42's mod could not be confirmed live.
+2. With the set resident, compare a record's neighbours against the entity table to derive the **room-local to world
+   offset** from a real correspondence instead of a coincidence.
+3. **Restore the Dolphin window before driving**: `win_send_keys` raises (`adapters.py:622`) when it is not
+   foreground, and a session parked behind the round-35 crash dialog is stuck until it is.
+4. **P1's field leg**, **P6b's page** (UI over a working backend) and **P7a's rigging** remain open.
 
-Landed this round: a modded disc with a changed placement set **builds, boots and plays** (`pso_city_npc_moved`), and
-the reason its target did not move is measured rather than guessed -- the coordinate spaces differ.
+P6a status after this round: writer round-trips, a placement-moved disc builds/boots/plays, and the two verification
+attempts have each ruled out a method (world-position matching, memory scan from the lobby) rather than the feature.
