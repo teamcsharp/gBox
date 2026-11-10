@@ -199,3 +199,34 @@ also explains why both the `agent` and `autoplay` actors behaved identically.
 
 The driver and the RAM checkpoints are proven; only this delivery condition remains. The i9 is clean (no session), and the
 next launch should also carry a `pad` spec so `PAD_KEYS` has a map to use.
+
+## Round 67: a second, independent cause of the dropped presses - the D-pad names were never mapped
+
+While building the single-process driver, the pad-name mapping exposed a real bug:
+
+```python
+PAD_KEYS[1] has: a, b, down, l, l2, l3, ldown, left, lleft, lright, lup, r, r2, r3, right, select, start, up, x, y
+-- no ddown / dup / dleft / dright
+```
+
+`pso_boot_walk`'s `offline_game` step presses **`("ddown", "a")`** - the digital-pad vocabulary used by the walk scripts
+(`ddown`, `dup`, `dleft`, `dright`, and the C-stick `cdown`/`cup`/...) - while the injector only knew `down`/`up`/`left`/
+`right`. `win_send_keys` mapped `ev["key"]` through `PAD_KEYS`, found nothing, then `_SCAN.get("ddown")` -> `(0, 0)`, and
+**dropped the direction silently**: the game never saw it. That is an independent reason the round-65 walk failed at
+`offline_game` (the title menu never moved), on top of the focus-at-delivery timing.
+
+**Fixed in `gbox/adapters.py`:** a `PAD_ALIASES` table (`ddown`/`dup`/`dleft`/`dright` -> `down`/`up`/`left`/`right`, plus the
+C-stick names) is applied to every player's `PAD_KEYS` map at import, so both the HTTP relay and the direct injector now
+translate the walk scripts' names. Verified: `ddown -> Down (scan 80, ext)`, `dup -> Up (72)`, `dleft -> Left (75)`,
+`dright -> Right (77)`.
+
+**Tests:** `tests/test_pad_aliases.py` **5 passed** - the four aliases map for every player and have real scan codes, and a
+test that walks `pso_boot_walk.BOOT_STEPS` and asserts **every key a boot step presses has a scan code** (the general form of
+this bug: any step using an unmapped name would silently do nothing).
+
+**Also added:** `system/tools/pso_boot_local.py`, the single-process driver (raise the window, assert
+`GetForegroundWindow() == root`, inject with the same `SendInput`, poll RAM through the plane) that removes the async
+focus gap described in round 66. With the alias fix, the boot walk now has both halves: correct names and no delivery hop
+between focus and keys.
+
+The i9 has no session; the next live window is one command: `python system/tools/pso_boot_local.py --start-at press_start`.

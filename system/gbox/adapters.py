@@ -516,6 +516,17 @@ def _pid_window(pid: int):
     return max(found)[2] if found else None
 
 
+#: The digital-pad names the PSO walk scripts use (`pso_boot_walk`, `pso_kbwalk`) against the injector's own names.
+#: `PAD_KEYS` never carried them, so `win_send_keys` fell through to `_SCAN.get("ddown")` -> `(0, 0)` and silently dropped
+#: every D-pad press: `pso_boot_walk`'s `offline_game` step pressed `ddown`+`a` and the game never saw the direction.
+PAD_ALIASES = {"ddown": "down", "dup": "up", "dleft": "left", "dright": "right",
+               "cdown": "down", "cup": "up", "cleft": "left", "cright": "right"}
+for _player, _keys in PAD_KEYS.items():
+    for _alias, _target in PAD_ALIASES.items():
+        if _target in _keys:
+            _keys.setdefault(_alias, _keys[_target])
+
+
 def _win_input_in_front(user32, root, hidden_ok: bool) -> bool:
     foreground = user32.GetForegroundWindow()
     if not foreground:                                      # locked screen / secure desktop: never send there
