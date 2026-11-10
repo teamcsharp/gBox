@@ -685,7 +685,13 @@ class Screensaver:
                 mercmode.link_rotation(self.store,run,sess,now)
             self.store.put("slabel", sess["session_id"], {"owner": "agent", "task": f"autoplay screensaver: {run['title']}"})
             jumped = _jumped(sess)                       # booted into gameplay: autoplay starts in this tick
-            run |= {"phase": "starting", "session_id": sess["session_id"], "up": now - START_GRACE if jumped else now,
+            # A MercMode title's bot drives its own boot from the game's state (gbox.mercs_bot.Boot waits out an unnamed
+            # boot for BOOT_LOST_S, RE4 Switch's walk presses only on a named screen), so it starts in this tick too:
+            # START_GRACE and the next 30 s tick left every MercMode boot on its title screen for 30 s with no bot
+            # (lilspark 2026-11-10, every run: launch done -> autoplay job 30 s later; operator: "absolutely
+            # unacceptable and boring to sit on title screens").
+            at_once = jumped or bool(run.get('mercmode'))
+            run |= {"phase": "starting", "session_id": sess["session_id"], "up": now - START_GRACE if at_once else now,
                     **({"jumped": True} if jumped else {})}
             self.store.put(STATE, w["name"], run)
             if run.get('mercmode') and not run.get('mercmode_rotate_requested') and not run.get('stop_requested'):
@@ -693,7 +699,7 @@ class Screensaver:
                 # restart has the pool warm again before the first round ends; operator 2026-10-26)
                 self._prelaunch(w, run, mercmode.settings(self.store, w['name']), now)
                 run = self.store.get(STATE, w["name"]) or run
-            if not jumped:
+            if not at_once:
                 return f"launching {run['title']}"
             phase = "starting"
         sid = run.get("session_id")

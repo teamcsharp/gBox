@@ -51,6 +51,21 @@ def _fresh_menu_learners(monkeypatch):
         monkeypatch.setattr(r5, "_MENU", {"speed": None, "knob": True, "run": None, "stats_at": float("-inf")})
         monkeypatch.setattr(r5, "_JUMP", {})
         monkeypatch.setattr(r5, "_SEEN_CURSOR", {})
+    r6 = sys.modules.get("gbox.mercs.titles.re6_switch")
+    if r6 is not None and hasattr(r6, "_MENU_SPEED"):
+        monkeypatch.setattr(r6, "_MENU_SPEED", None)           # its per-screen learned waits: never another test's
+
+
+@pytest.fixture(autouse=True)
+def _private_menu_walks(tmp_path_factory, monkeypatch):
+    """Tests never read or write the real menu walk records (gbox.mercs.core.menu_pace: learned/<title>/menu_pace.json
+    under this checkout's gbox-data when no adapter names a data dir): a test's synthetic walk never becomes a title's
+    best or trend."""
+    try:
+        from gbox.mercs.core import menu_pace
+    except Exception:                                        # noqa: BLE001 - a checkout without it
+        return
+    monkeypatch.setattr(menu_pace, "LEARNED", tmp_path_factory.mktemp("menu_walks"))
 
 
 @pytest.fixture(autouse=True)

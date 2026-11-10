@@ -443,7 +443,7 @@ def player_target(m=None) -> int:
     return cycle().pick()[1]
 
 BOOT_KEY = "a"                           # a screen RAM can't name out of a round (PRESS ANY BUTTON, a notice)
-STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "alert": "a", "mercs_title": "a"}
+STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "alert": "a", "mercs_title": "a", "title": "a"}
 MENU_HANDOFF = ("results", "alert_ok", "alert_leaderboard", "alert", "select_stage", "select_player")
 CURSORED = {"main_menu": ("dup", "ddown"), "play_game": ("dup", "ddown"), "extra_content": ("dup", "ddown"),
             "dead": ("dleft", "dright"),
@@ -2091,6 +2091,13 @@ def _screen(m, merc=None) -> dict:
         elif "uIdStartUp00" in ui:
             unit = ui["uIdStartUp00"]
             where, cursor, target = "main_menu", _i32(m, unit + MENU_CURSOR), MAIN_PLAY_GAME
+        elif "uIdTitle00" in ui and ptr_ok(u64(m, ui["uIdTitle00"] + TITLE_READY)):
+            # PRESS ANY BUTTON with its own state up (warm_probe's reading, uIdTitle00 +0x18): A at once (STEPS), not the
+            # Boot's BOOT_KEY every 3 s on an unnamed screen (operator 2026-11-10: "unacceptable ... to sit on title
+            # screens"). The state's pointer is the token: the press that takes it changes the screen's signature.
+            unit = ui["uIdTitle00"]
+            where = "title"
+            out["confirmation_token"] = ["title", unit, u64(m, unit + TITLE_READY)]
         elif snap.get("mercenaries_phase") == PHASE_OVER and not snap.get("player") and not ui.keys() - {"uIdAlert00"}:
             where = "loading"                               # between the results and the selects
     except (ValueError, OSError):
@@ -2262,6 +2269,8 @@ def _menu_seen(m, scr: dict) -> None:
     speed.seen(label, (label, scr.get("unit"), scr.get("cursor"), None if token is None else str(token)))
     if MENU_LEARN:
         scr.update(speed.hints(where))
+    from ..core import menu_pace as _pace
+    scr.update(_pace.title_hints(where))                    # PRESS ANY BUTTON: confirmed on its first read
     if where in JUMP_SCREENS and isinstance(scr.get("cursor"), int) and _JUMP.get("unit") != scr.get("unit"):
         speed.note_cursor(where, scr["cursor"])
 
@@ -2417,6 +2426,13 @@ def _jump_failed(speed, scr: dict, stats: dict | None, why: str) -> dict:
         stats["menu_jump_fails"] = stats.get("menu_jump_fails", 0) + 1
         stats["menu_jump_error"] = f"{scr.get('where')}: {why}"[:200]
     return scr
+
+
+def menu_pace_line() -> str:
+    """Each screen's learned waits on one line (gbox.mercs_bot.menu_clock: the run's menu_pace stat)."""
+    from .. import menu_speed
+    speed = _MENU.get("speed") or menu_speed.cached(MAP_ID)
+    return speed.pace_line() if speed is not None and callable(getattr(speed, "pace_line", None)) else ""
 
 
 def menu_status() -> dict:

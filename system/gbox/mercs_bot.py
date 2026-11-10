@@ -39,6 +39,12 @@ LOADING_S = 420.0           # a named "loading" screen (NOW LOADING / saving: a 
                             # MENU_STUCK_S (120 s) ended the run and relaunched a game that was only loading (operator
                             # coaching note 13, RE5: "did the game freeze" on a NOW LOADING screen)
 POLL_S = 0.25               # how often the menus are read out of a round
+PRESSED_POLL_S, PRESSED_FOR_S = 0.05, 2.0   # ... and this often for a moment after a press: the screen it brings is
+                            # read (and pressed) as soon as it is up, not up to POLL_S later (operator 2026-11-10: "race
+                            # through these menu screens as fast as possible")
+BOOT_SCREENS = frozenset({"title", "press_any_button", "press_start", "title_locked"})   # the boot's own screens: naming
+                            # one is no sign the boot is over, so the unnamed stretch after it (the save loading) keeps
+                            # BOOT_LOST_S - which is what lets a title name its PRESS ANY BUTTON and confirm it at once
 BOOT_RAM_READ_S = 120.0     # unmapped RPCS3 guest pages before the first successful menu read
 BOOT_RAM_TRANSIENT = frozenset({errno.EIO,errno.EFAULT,errno.EAGAIN,errno.EINTR})
 
@@ -71,6 +77,7 @@ class Navigator:
         self.cursor = cursor if isinstance(cursor, dict) else {}
         self.cursor_only = False                            # the last change RAM showed moved only the cursor
         self.last_input_confirmed = False
+        self.misses = 0                                     # presses sent again because RAM never showed the last one
         # A title may also hand this screen's own learned waits in the screen dict (gbox.mercs.menu_speed hints:
         # settle_s after a new screen, step_s after a cursor move, retry_s for an unseen D-pad press, hold_s /
         # dir_hold_s, poll_s). Each is capped at the wait above, so a title without hints walks exactly as before.
@@ -103,6 +110,8 @@ class Navigator:
             return hint
         if self.cursor.get("poll_s") and scr.get("cursor") is not None and scr.get("target") is not None:
             return min(default, float(self.cursor["poll_s"]))
+        if self.clock() - self.last_at < PRESSED_FOR_S:
+            return min(default, PRESSED_POLL_S)             # a press just went in: its next screen is read at once
         return default
 
     def observe(self, scr: dict, now: float | None = None) -> None:
@@ -159,6 +168,8 @@ class Navigator:
             return None
         hold = self.DIR_HOLD_S if key.startswith("d") else self.HOLD_S
         hold = self._hint(scr, "dir_hold_s" if key.startswith("d") else "hold_s", hold) or hold
+        if self.last_key is not None:
+            self.misses += 1                                # the last press never showed in RAM: this one is its retry
         down_receipt = self.send([{"key": key, "down": True}])
         self.sleep(hold)
         up_receipt = self.send([{"key": key, "down": False}])
@@ -272,7 +283,9 @@ class Boot:
                 self.boot_pressed = self.clock()
                 self.stats["boot_presses"] = self.stats.get("boot_presses", 0) + 1
         else:
-            self.lost_since, self.named = None, True
+            self.lost_since = None
+            if scr.get("where") not in BOOT_SCREENS:
+                self.named = True                           # past the boot's own screens: the 30 s rule from here
         # A title that can move a whole menu segment in one burst (gbox.mercs.titles.re6_switch.fast_start) does the
         # next screen that way; the Navigator below presses only if the burst did not already change the screen.
         fast = getattr(self.menus, "fast_start", None)
@@ -513,6 +526,28 @@ def setup(ad) -> list[str]:
     return []                                               # play() applies the profile's ops: it knows the game
 
 
+def menu_clock(menus, prof: dict, ad, wall=time.time):
+    """The title's menu walk clock (gbox.mercs.core.menu_pace.Clock) over its learned/<map id>/menu_pace.json: the
+    menus module's own table when it keeps one (pace_table: RE4 Switch), else one for the walks alone under the
+    adapter's data dir. Its menu_pace line is the module's menu_pace_line() (RE5 / RE6 Switch: the Navigator's
+    per-screen learned waits, gbox.mercs.menu_speed) or pace_summary()."""
+    import os
+    from .mercs.core import menu_pace
+    table = None
+    make = getattr(menus, "pace_table", None)
+    if callable(make):
+        try:
+            table = make()
+        except Exception:                                   # noqa: BLE001 - no table of its own: the walks alone
+            table = None
+    if not isinstance(table, menu_pace.Table):
+        data_dir = getattr(getattr(ad, "config", None), "data_dir", None)
+        table = menu_pace.Table(menu_pace.path_for(prof["map_id"],
+                                                   data_dir if isinstance(data_dir, (str, os.PathLike)) else None))
+    pace = getattr(menus, "menu_pace_line", None) or getattr(menus, "pace_summary", None)
+    return menu_pace.Clock(table, wall=wall, pace=pace if callable(pace) else None)
+
+
 def tactical_publisher(sink, prof: dict):
     """The tactical map's publisher for this title (gbox.mercs.tactical) over the worker's sink, or None (no sink)."""
     if sink is None:
@@ -676,6 +711,11 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
         stats["navigation_log"] = str(local_lessons.path_for(prof["map_id"], run))
     stats.setdefault("rounds", 0)
     stats["profile"] = prof["map_id"]
+    # the walk's clock: wall time of its own (the launch is a wall time), so the run's clock() is read as often as before
+    walk = menu_clock(menus, prof, ad)
+    walk.begin("prepare" if prepare else "boot", launched_at=(game or {}).get("_launched_at"),
+               up_at=(game or {}).get("_up_at"))
+    walk_at = {"stats": float("-inf"), "misses": boot.nav.misses}
     pub = tactical_publisher(tactical, prof)
     damage_outbox = None
     if callable(getattr(tactical, "damage", None)):
@@ -788,6 +828,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
             if scr.get("where") == "playing" and prepare:
                 # MercMode prepare: the round is up - stop here with nothing pressed in it (the playing_ops and the
                 # engine belong to the autoplay that starts after the switch); the caller pauses the game at this frame
+                walk.round_start()
+                stats.update(walk.stats())
                 confirmed = control.confirmed_round() if control is not None and control.title == 're5' else None
                 if selection_receipt is not None and selection_receipt.get('already_played'):
                     stats['wandered'] = 'The requested round was already prepared or played in this session'
@@ -825,6 +867,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 if fresh:
                     stats["rounds"] += 1
                     fresh = False
+                    walk.round_start()                      # the walk's first in-round tick: menu_s and the timeline
+                    stats.update(walk.stats())
                 options = {"tactical": pub} if pub else {}
                 if runtime is not None:
                     options.update(session_runtime=runtime, observe_only=human_observation, driver=base_driver)
@@ -842,6 +886,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 out = E.play_round(prof, m, send, stopped, stats, lessons, **options)
                 if callable(getattr(boot, "round_played", None)):
                     boot.round_played()                     # the menus' clocks start again (not through the round)
+                walk.round_end()                            # the walk to the next round counts from here
+                stats.update(walk.stats())
                 if out == 'mercmode_boundary':
                     break                                   # native tally complete; scheduler owns sequential stop/launch
                 if out == "evidence_backpressure":
@@ -865,7 +911,16 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 sleep(POLL_S)
                 continue
             before_presses = stats.get("menu_presses", 0)
+            walk.screen(scr.get("where"))
             why = boot.tick(clock(), scr=scr)
+            if stats.get("menu_presses", 0) != before_presses:
+                walk.press(scr.get("where"), boot.nav.last_key)
+            if boot.nav.misses != walk_at["misses"]:
+                walk_at["misses"] = boot.nav.misses
+                walk.miss(scr.get("where"))                 # RAM never showed the last press: it went in again
+            if time.monotonic() - walk_at["stats"] >= 0.5:
+                walk_at["stats"] = time.monotonic()
+                stats.update(walk.stats())
             if prof["map_id"] == "BLUS30491" and lessons is not None and stats.get("menu_presses", 0) != before_presses:
                 pick = getattr(menus, "STAGE_PICK", None)
                 lessons({"kind": "navigation_menu", "screen": scr, "key": boot.nav.last_key,

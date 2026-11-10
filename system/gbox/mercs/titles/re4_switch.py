@@ -1044,55 +1044,57 @@ CURSOR_MENUS = ("main_menu", "extras_menu")
 # showed on the cursor (or a select screen's step counted) shortens its move gap; a confirm pressed again on the same
 # screen, or a move re-sent because it never showed, lengthens them x PACE_SLOW. Never under the floors (a frame or
 # two of the 30 fps read) and never over the hand-set values above (the old walk is the worst case).
+# The table itself is the shared one (gbox.mercs.core.menu_pace.Table): this module keeps its file, knobs and state, so
+# the learned file (screens -> settle / confirm_after / move_gap, taken / missed) reads and writes exactly as before,
+# and the walk's clock (re4switch_bot: menu_s, the walks, the bests) shares the same file.
 PACE_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "learned" / "010099A00BC1E000" / "menu_pace.json"
 PACE_KNOBS = {"settle": (SETTLE_S, 0.06), "confirm_after": (CONFIRM_AFTER_S, 0.10), "move_gap": (MOVE_GAP_S, 0.08)}
 PACE_FAST, PACE_SLOW, PACE_TAKEN_S, PACE_SAVE_S = 0.75, 1.5, 3.0, 2.0
 PACE_SELECT_MOVE_FLOOR = 0.30            # the select screens' moves are open loop (counted as sent, not as seen)
+PACE_NAMES = {"settle": "settle", "confirm_after": "confirm", "move_gap": "move"}   # the panel's menu_pace line
 _PACE: dict = {"screens": None, "dirty": False, "saved": float("-inf")}
 
 
+def _pace_floor(where, knob: str, floor: float) -> float:
+    if knob == "move_gap" and where in ("select_player", "select_stage"):
+        return max(floor, PACE_SELECT_MOVE_FLOOR)        # open loop there: a dropped move picks the wrong entry
+    return floor
+
+
+def pace_table():
+    """This title's learned menu pace (PACE_FILE / _PACE, read at each call: tests point both elsewhere)."""
+    from ..core import menu_pace
+    return menu_pace.Table(PACE_FILE, PACE_KNOBS, state=_PACE, floor=_pace_floor, fast=PACE_FAST, slow=PACE_SLOW,
+                           save_s=PACE_SAVE_S)
+
+
 def _pace_screens() -> dict:
-    if _PACE["screens"] is None:
-        try:
-            data = json.loads(PACE_FILE.read_text(encoding="utf-8"))
-            _PACE["screens"] = data.get("screens", {}) if isinstance(data, dict) else {}
-        except (OSError, ValueError):
-            _PACE["screens"] = {}
-    return _PACE["screens"]
+    return pace_table().screens()
 
 
 def pace_value(where, knob: str) -> float:
     """This screen's learned wait (PACE_KNOBS), the hand-set value until it has learned one."""
-    default, floor = PACE_KNOBS[knob]
-    if knob == "move_gap" and where in ("select_player", "select_stage"):
-        floor = max(floor, PACE_SELECT_MOVE_FLOOR)       # open loop there: a dropped move picks the wrong entry
-    v = (_pace_screens().get(str(where)) or {}).get(knob)
-    return default if not isinstance(v, (int, float)) else max(floor, min(default, float(v)))
+    return pace_table().value(where, knob)
 
 
 def _pace_learn(where, knobs, faster: bool, now: float) -> None:
-    row = _pace_screens().setdefault(str(where), {})
-    for k in knobs:
-        default, floor = PACE_KNOBS[k]
-        row[k] = round(max(floor, min(default, pace_value(where, k) * (PACE_FAST if faster else PACE_SLOW))), 4)
-    row["taken" if faster else "missed"] = row.get("taken" if faster else "missed", 0) + 1
-    _PACE["dirty"] = True
-    pace_save(now)
+    pace_table().learn(where, knobs, faster, now)
 
 
 def pace_save(now: float | None = None, force: bool = False) -> None:
     """The learned pace to PACE_FILE (at most every PACE_SAVE_S unless forced)."""
-    now = time.monotonic() if now is None else now
-    if not _PACE["dirty"] or (not force and now - _PACE["saved"] < PACE_SAVE_S):
-        return
-    try:
-        PACE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = PACE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"screens": _pace_screens()}, indent=1, sort_keys=True), encoding="utf-8")
-        tmp.replace(PACE_FILE)
-        _PACE["dirty"], _PACE["saved"] = False, now
-    except OSError:
-        pass
+    pace_table().save(now, force)
+
+
+def pace_summary() -> str:
+    """The learned waits, one line per screen (the run's menu_pace stat)."""
+    return pace_table().summary(PACE_NAMES)
+
+
+def menu_status() -> dict:
+    """The sidebar's menus line (gbox.mercs.bot_logic.status): the kept walks, round to round and from the launch."""
+    from ..core import menu_pace
+    return menu_pace.status(PACE_FILE)
 
 
 def next_is_move(scr: dict) -> bool:
@@ -1118,6 +1120,7 @@ class Pace:
         self.confirm = None                     # (screen, when) of the last confirm, until the next screen is named
         self.move = None                        # (screen, when, the select screen's step count) of the last move
         self.steps = None                       # (screen, its step count) at the last read
+        self.misses = 0                         # presses the game dropped (re-sent / confirmed again): the walk's clock
 
     def observe(self, scr: dict, now: float) -> None:
         where = scr.get("where")
@@ -1158,8 +1161,10 @@ class Pace:
         move = key in DPAD.values()
         if move and self.move and self.move[0] == where and self.moved_from is not None:
             _pace_learn(where, ("move_gap",), False, now)   # sent again: the last one never showed - slower here
+            self.misses += 1
         if not move and key in ("a", "plus") and self.confirm and self.confirm[0] == where:
             _pace_learn(where, ("settle", "confirm_after"), False, now)   # a second confirm: the first was not taken
+            self.misses += 1
         self.last_press = now
         self.moved_from = scr.get("cursor") if move and where in CURSOR_MENUS else None
         if move:
