@@ -259,3 +259,84 @@ def export_sprite_png(data: bytes, parsed: dict, index: int) -> bytes:
     if pal is None:
         raise MugenError("sprite %d has no palette" % index)
     return indexed_to_png(w, h, px, pal)
+
+
+def contact_sheet(data: bytes, parsed: dict, group: int, *, max_dim=2048, scale=1.0):
+    """Render every frame of one SFF group into an RGBA contact-sheet PNG + a frame manifest.
+
+    Returns (png_bytes, manifest:list[{index,image,w,h,axis,cell_x,cell_y}]).
+    Frames are laid out left-to-right, top-to-bottom; each is scaled by `scale` and the
+    whole sheet is capped so max(sheet_w, sheet_h) <= max_dim (scale is reduced if needed).
+    Index 0 in every frame's palette is treated as transparent (MUGEN convention).
+    """
+    import zlib, math
+
+    sp = parsed["sprites"]
+    frames = [s for s in sp if s["group"] == group]
+    frames.sort(key=lambda s: s["image"])
+    if not frames:
+        raise MugenError("group %d has no frames" % group)
+    cells = []  # (rpix, x0, y0, x1, y1, index, image, axis)
+    maxh = 0
+    for s in frames:
+        w, h, px, pal, axis = sprite_pixels(data, parsed, s["index"])
+        if pal is None:
+            raise MugenError("sprite %d has no palette" % s["index"])
+        rgba = bytearray(w * h * 4)
+        for i, idx in enumerate(px):
+            r, g, b = pal[idx * 3], pal[idx * 3 + 1], pal[idx * 3 + 2]
+            alpha = 0 if idx == 0 else 255
+            rgba[i * 4:i * 4 + 4] = bytes((r, g, b, alpha))
+        cells.append((rgba, w, h, s["index"], s["image"], axis))
+        maxh = max(maxh, h)
+    cols = math.ceil(math.sqrt(len(cells) * max(s["width"] for s in frames) / max(1, maxh)))
+    cols = max(1, cols)
+    # width of each column = widest frame in that column, using a simple fixed grid:
+    # simpler: uniform cell = max width x max height; scale down if needed.
+    maxw = max(w for _, w, h, *_ in cells)
+    cellw, cellh = maxw, maxh
+    sheet_w = cellw * cols
+    rows = math.ceil(len(cells) / cols)
+    sheet_h = cellh * rows
+    if max(sheet_w, sheet_h) > max_dim:
+        scale = min(scale, max_dim / max(sheet_w, sheet_h))
+    cellw_s = max(1, int(cellw * scale))
+    cellh_s = max(1, int(cellh * scale))
+    sheet_w_s = cellw_s * cols
+    sheet_h_s = cellh_s * rows
+    canvas = bytearray(sheet_w_s * sheet_h_s * 4)  # transparent black
+    manifest = []
+
+    def _blit(rgba, sw, sh, dx, dy):
+        # nearest-neighbour scale into canvas
+        if sw == cellw_s and sh == cellh_s:
+            src = rgba
+            for y in range(sh):
+                row = y * sw * 4
+                dst = (dy + y) * sheet_w_s * 4 + dx * 4
+                canvas[dst:dst + sw * 4] = src[row:row + sw * 4]
+            return
+        for y in range(cellh_s):
+            sy = min(sh - 1, int(y / scale)) if scale else 0
+            for x in range(cellw_s):
+                sx = min(sw - 1, int(x / scale)) if scale else 0
+                si = (sy * sw + sx) * 4
+                di = ((dy + y) * sheet_w_s + dx + x) * 4
+                canvas[di:di + 4] = rgba[si:si + 4]
+
+    for i, (rgba, w, h, idx, img, axis) in enumerate(cells):
+        cx = (i % cols) * cellw_s
+        cy = (i // cols) * cellh_s
+        _blit(rgba, w, h, cx, cy)
+        manifest.append({"index": idx, "image": img, "width": w, "height": h, "axis": list(axis),
+                         "cell_x": cx, "cell_y": cy, "cell_w": cellw_s, "cell_h": cellh_s})
+
+    def chunk(t, d):
+        c = struct.pack(">I", len(d)) + t + d
+        return c + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+
+    stride = sheet_w_s * 4
+    raw = b"".join(b"\x00" + bytes(canvas[y * stride:(y + 1) * stride]) for y in range(sheet_h_s))
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", sheet_w_s, sheet_h_s, 8, 6, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+    return png, manifest

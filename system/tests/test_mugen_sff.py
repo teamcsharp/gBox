@@ -101,3 +101,26 @@ def test_linked_and_shared_palette():
     w, h, px, p, ax = m.sprite_pixels(d, parsed, 1)
     assert px == bytes([4, 4]) and p == pal
     assert m.sprite_pixels(d, parsed, 2)[2] == bytes([4, 4])
+
+
+def test_contact_sheet_rgba():
+    pal = bytes(range(256)) * 3
+    a = _rle_pcx(2, 2, [3, 3], pal)          # image 0
+    b = _rle_pcx(2, 2, [4, 4], pal)          # image 1
+    d = _sff([(0, 0, a, 0), (0, 1, b, 0)])
+    parsed = m.parse_sff1(d)
+    import zlib
+    png, man = m.contact_sheet(d, parsed, 0, max_dim=64)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    i = png.index(b"IHDR")
+    w, h = struct.unpack(">II", png[i + 8:i + 16])
+    assert w > 0 and h > 0 and len(man) == 2
+    assert man[0]["image"] == 0 and man[1]["image"] == 1
+    # frame 0 (all index 3 -> white) vs frame 1 (all index 4 -> near-white): decode pixel check
+    i = png.index(b"IDAT")
+    ln = struct.unpack(">I", png[i - 4:i])[0]
+    raw = zlib.decompress(png[i + 4:i + 4 + ln])
+    # stride per row: filter byte + w*4
+    row0 = raw[1:][:w * 4]
+    # palette = bytes(range(256))*3, so index 3 -> R=pal[9]=9, G=pal[10]=10, B=pal[11]=11
+    assert row0[0:4] == bytes([9, 10, 11, 255])  # opaque frame-0 pixel
