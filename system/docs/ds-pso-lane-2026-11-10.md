@@ -387,11 +387,73 @@ cold launches with both players. The character now exists on the card, so a rela
 2. Player 2: the second controller and the second character (or the same card's second slot).
 3. Then P6a's in-game proof (the moved object seen in Forest 1) and P6b (the editor page).
 
+## Round 5 (2026-11-10) — walking on the player's own RAM position, and what was blocking input
+
+P1 needed the character to walk in Pioneer 2. Movement turned out to be the interesting part: buttons reached the game
+and the analog stick did not.
+
+### What the input paths actually do (measured, not assumed)
+
+| path | result |
+|---|---|
+| Virtual pad **buttons** | reach PSO **even with the Dolphin window minimised** — the START in-game menu opened while the window was iconic, which is exactly what `_setup_vpad` exists for |
+| Virtual pad **analog stick** (`left_joystick` full deflection) | **no effect**: neither the camera (C-stick) nor the character moved over several seconds of holding |
+| Keyboard path (`win_send_keys`, Dolphin focused) | **moves the character**: holding the down key took the player from `(-5.9, -1965.7)` to `(16.6, -1936.2)`, and right from there to `(33.4, -1968.3)`, read back from `pso_ram` |
+
+So in this session the pads' buttons get in and its sticks do not. I could not settle *why* (the ini binds
+`XInput/0/Gamepad` with `Always Connected`, `VGamepad` reports a free slot when created here, and XInput slot 0 read
+from my own process shows neutral even while the worker's pad is driving buttons) — that is recorded as an open
+question rather than papered over. **What matters for P1 is that a movement path exists and is measurable**, and the
+walker below works with whichever hold path moves.
+
+Two live traps, both of which look like "the game is ignoring me":
+
+- The **in-game START menu blocks movement**. A burst of walking that mysteriously does nothing is usually a menu.
+- A hold that produces no movement looks identical to a wall, a dropped pad or a stuck menu. The walker reports it
+  instead of pressing forever.
+
+### New module `gbox/pso_move.py` (+6 tests)
+
+Closed-loop walking on the player's own RAM position: hold a direction, read the position back, keep the axis that
+helped and drop the one that did not, stop on arrival, and give up after four holds with no progress with a reason.
+`direction_to` picks the dominant axis first; `distance` is planar (PSO's vertical axis is not what walking covers).
+All of it is injected (`position()`, `hold()`), so the tests run against a model game — including one where the
+"right" key also drifts in z, which the loop still closes because it re-reads instead of trusting a direction.
+
+### Live result
+
+```
+start   (36.8, -1961.5)          target (81.8, -2006.5)   distance 63.6
+hold 1  (29.8, -2001.5)  52.3    hold 3  (50.9, -2017.9)  33.0
+hold 2  (31.5, -2038.9)  59.9    hold 4  (52.9, -2008.2)  29.0
+hold 5..7 unchanged                      -> "no progress in 4 holds (a menu open, a wall, or no input)"
+```
+
+It moved the character **63.6 -> 29.0 world units** and then stopped at an obstacle, which is the behaviour the module
+promises. Better than the numbers: the aim point happened to be where **Irene**, the Principal's secretary, stands, and
+pressing A there started the mission briefing ("Well, let me brief you on your mission.") — the next step the Principal
+tells the player to take.
+
+### Where P1 stands
+
+PRESS START -> menus -> offline -> character creation -> Pioneer 2 is all by real presses, the character moves by
+closed loop on RAM feedback, and the walk reaches the person who hands out the first mission. What is left is the
+guild/mission choice and the telepipe into Forest 1, then the same with a second player.
+
+### Next
+
+1. Finish the Irene briefing, take the guild counter's mission, walk into the teleporter, and confirm `FLOOR` becomes
+   1 with the Forest collision loaded — that is P1's field arrival.
+2. Then the second player (second virtual pad, second character) and the three cold launches.
+3. Then P6a's in-game proof and P6b.
+
 ## 7. Next
 
-1. P1: Pioneer 2 -> the Hunter's Guild -> the area choice -> Forest 1, by virtual-pad presses, with
-   `gbox.pso_ram` as the state reader. The character (HUmar `BQF`, ORAN) now exists on the card, so a relaunch
-   does not have to create one again.
-2. Player 2: the second virtual pad and a second character, then the three cold launches P1's accept test asks
-   for.
-3. Then P6a's in-game proof (the moved object seen in Forest 1) and P6b (the editor page), then P7a.
+1. P1: finish the Irene briefing, take the guild mission, walk into the teleporter, and confirm `FLOOR`
+   becomes 1 with the Forest collision loaded - that is the field arrival P1's accept test needs.
+2. Then player 2 (second virtual pad, second character) and the three cold launches.
+3. Then P6a's in-game proof (the moved object seen in Forest 1), P6b (the editor page) and P7a.
+
+Open question carried forward: a virtual pad's buttons reach PSO but its analog stick did not, in the
+2026-11-10 session `dbc5ff9be4ca416c-c91e5802a9844b37`; movement works through `win_send_keys` with the
+Dolphin window focused. Settle that before building anything that assumes focus-free walking.
