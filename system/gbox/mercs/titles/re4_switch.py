@@ -851,6 +851,13 @@ def wandered(scr: dict) -> str | None:
 def pressed(scr: dict, key: str, now: float | None = None) -> None:
     """A menu press went in: starts that screen's confirm gap, and counts an intro page or a story-list cancel."""
     global _story_presses
+    try:                                                  # the walk's own press log (what it pressed, on what)
+        WALK_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with WALK_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"t": round(time.time(), 2), "where": scr.get("where"), "cursor": scr.get("cursor"),
+                                 "prompt": scr.get("prompt"), "target": scr.get("target"), "key": key}) + chr(10))
+    except OSError:
+        pass
     if key == "a" and scr.get("where") in CONFIRM_GAP_S:
         _confirmed[scr["where"]] = time.monotonic() if now is None else now
     if key == STORY_RECOVER_KEY and scr.get("where") in ("story", "story_prompt"):
@@ -973,6 +980,7 @@ FROZEN = True
 SIGHT_HOLD_S, FLANK_S = 0.6, 1.5
 SIGHT_LOG = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re4-sight-blocks.jsonl"
 SIGHT_LOG_EVERY_S = 1.0
+WALK_LOG = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "re4-walk-presses.jsonl"
 FROZEN_MM, FROZEN_RAD, FROZEN_TAP_S, FROZEN_KEY = 30.0, 0.01, 0.2, "a"
 TURN_LEARN, TURN_LEARN_N = True, 16
 MELEE_MM, MELEE_REACH_MM, MELEE_CLEAR_MM = 2500.0, 1400.0, 2000.0
