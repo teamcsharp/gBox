@@ -2639,15 +2639,67 @@ structure -- and `pso_evt.records()` plus `summary()` is the tool for it, now va
 `test_pso_evt` grew two whole-archive tests: every file frames cleanly, and the archive covers every field family plus the
 boss scripts while containing **no** city entry. 8 tests in that file, all green.
 
+## Round 54 (2026-11-10) — the executable's address map, and the class names inside it
+
+Round 53 established that P1's gate is in the executable, so this round built the tool to read it. `gbox/pso_dol.py` (+7
+tests) maps `PsoV3.dol`.
+
+### What the file actually is
+
+The standard GameCube DOL header is seven text and eleven data `(offset, address, size)` triples. **`PsoV3.dol` does not use
+it**, and the module records what is really there instead of pretending otherwise:
+
+```
+0000  00 00 01 00  00 00 26 20  00 00 00 00  00 00 00 00      code begins at file offset 0x100
+001c  00 42 6e 00  00 42 75 40  00 42 80 20  00 42 81 20      ascending file offsets
+0048  80 00 c0 00  80 00 f7 40                                 addresses
+```
+
+The important number is **`0x8000c000`** -- and it is exactly the `image_base` in `ghidra-pso-v3.json`, the export this lane
+already has with 25,981 function addresses. So the Ghidra map and the file agree on where the code lives, and an address
+from that export can be read in this file at `0x100 + (address - 0x8000c000)`. The mapping is flat because the file offers
+no section table; `is_flat()` says so rather than inventing one.
+
+### The class names are in there
+
+Finding strings and their addresses is the cheap substitute for a disassembler, and the first search pays off:
+
+| string | file offset |
+|---|---|
+| `TObjCityDoor` | `0x438140` |
+| `map_forest01` | `0x43eb04` |
+| `map_` | `0x43de60` |
+| `map_forest01_00o.dat` | **absent** -- names are assembled, not stored |
+
+So the executable holds the **object class names** that the placement records refer to by index. That is the missing half of
+the offset work from round 46: the records say `0x46`/`0x47`/`0x48`/`0x49` and the game has a registry of `TObj*` classes
+somewhere near that string table. Finding the table that points at `TObjCityDoor` would name every class index -- and then
+"the guild is behind a door of class N" becomes a statement about data rather than a guess about walking.
+
+Also worth recording: the file names are **built** (`map_` + `forest01` + `_00o.dat`), which is why searching the disc's
+executable for a full area file name finds nothing -- a small trap for the next session.
+
+### Where P1 stands after this
+
+The route to a floor now has to come out of the executable's quest logic. The pieces are: the 25,981-function Ghidra map,
+this address mapping, the class-name strings, and `find_pointers` for walking from a string to the table that holds it. The
+next step is mechanical -- point `find_pointers` at `0x8000c000 + 0x438140 - 0x100` and see what holds it.
+
+### State
+
+`main` clean; 7 DOL tests green.
+
 ## 7. Next
 
-1. **P1's gate is in the executable, not in a file.** There is no city event script (143 event files cover 28 field and
-   boss areas only), so no placement or script on the disc can carry a party from Pioneer 2 to a floor. The quest system
-   and the teleport menu are the lever: find the quest state in RAM and set it, or find the code path and jump into it.
-2. **The event decode is field-side and validated** (143/143 files frame cleanly). It is what will open an area's
-   structure once a floor is reachable.
-3. **A field area's offset** so P6a's proof repeats on a floor -- needs a floor, so it follows (1).
-4. **P6b's page** (pure UI over `python -m gbox.pso_editor`) and **P7a's rigging** are the items that do not need P1.
+1. **The class registry is one pointer away.** `TObjCityDoor` is a string at file 0x438140 (address 0x8000C000 +
+   (0x438140-0x100)); run `pso_dol.find_pointers` at that address and follow the table. That names every placement
+   class index -- the half of round 46's work that is still missing.
+2. **P1's gate needs the quest logic.** With `pso_dol` (flat map, base 0x8000c000 matching the Ghidra export) and the
+   class-name strings, the next lever is the quest/teleport path: find what reads the area table and what sets the quest
+   state.
+3. **P6b's page** (pure UI over `python -m gbox.pso_editor`) and **P7a's rigging** are the items that do not need P1.
 
-This round closed a hope honestly: the city's door behaviour is not scripted anywhere on the disc, which is why rounds
-42-53 could not find a route by walking, mapping or editing placements.
+Recorded this round: `PsoV3.dol` has **no standard section table** (code starts at 0x100, base 0x8000c000), the Ghidra
+export's `image_base` matches it, and the executable carries `TObj*` class names and `map_` fragments but **not** full
+area file names -- those are assembled, which is why searching for `map_forest01_00o.dat` in the executable finds
+nothing.
