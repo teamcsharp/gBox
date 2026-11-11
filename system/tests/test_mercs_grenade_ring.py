@@ -50,7 +50,11 @@ def test_surrounded_fires_and_an_ordinary_crowd_does_not():
     decision = GR.decide(snap(crowd), stats(), 100.0)
     assert decision["fire"] is True and "surrounded" in decision["reason"] and decision["near"] == 4
     thin = [enemy(100 + i * 50) for i in range(3)]
-    assert GR.decide(snap(thin), stats(), 100.0)["fire"] is False
+    ordinary = GR.decide(snap(thin), stats(), 100.0)
+    # not "surrounded" - but the operator's periodic rule (a ring at least every two minutes with a group on him)
+    # fires it; a ring just fired stops it
+    assert ordinary["fire"] is True and "periodic" in ordinary["reason"]
+    assert GR.decide(snap(thin), stats(ring_last_at=95.0), 100.0)["fire"] is False
 
 
 def test_a_boss_or_dangerous_class_alone_is_worth_the_ring():
@@ -92,9 +96,9 @@ def test_a_crowd_that_is_not_thinning_eventually_earns_the_ring():
         GR.observe(stats(), snap(crowd), now + t, GR.policy())
     decision = GR.decide(snap(crowd), stats(), now + 12, GR.policy())
     assert decision["fire"] is True and "not thinning" in decision["reason"]
-    # the same crowd gone and back does not count as pressure
+    # the same crowd gone and back does not count as pressure (a ring 20 s ago keeps the periodic rule out of it)
     GR.reset()
-    assert GR.decide(snap(crowd), stats(), now + 12, GR.policy())["fire"] is False
+    assert GR.decide(snap(crowd), stats(ring_last_at=now + 12 - 20), now + 12, GR.policy())["fire"] is False
 
 
 def test_policy_reads_the_title_module_constants_and_bounds_them():
@@ -178,3 +182,43 @@ def test_the_rule_is_switch_only():
     assert GR.control(None, {"map_id": "G4BE08"}) is None
     assert GR.control(None, {}) is None
     assert callable(GR.control(None, {"map_id": "010099A00BC1E000"}))
+
+def test_a_group_earns_a_random_ring_at_least_every_two_minutes():
+    """Operator 2026-11-11: "at least once every two minutes ... deploying a grenade ring around them in the middle of a
+    group of enemies", random ammunition type. The periodic rule fires on a group even when the crowd tests above do
+    not, once the two minutes have passed since the last ring."""
+    group = [enemy(100), enemy(160), enemy(220)]
+    decision = GR.decide(snap(group), stats(), 100.0)
+    assert decision["fire"] is True and decision["kind"] == "random"
+    assert "periodic" in decision["reason"] and decision["flash_ok"] is True
+    assert decision["near"] == 3
+    # inside the two minutes it does not fire on its own
+    assert GR.decide(snap(group), stats(ring_last_at=50.0), 100.0)["fire"] is False
+    # at exactly two minutes it does
+    assert GR.decide(snap(group), stats(ring_last_at=50.0), 170.0)["fire"] is True
+
+
+def test_the_periodic_ring_needs_a_group_and_honours_the_switch():
+    assert GR.decide(snap([enemy(100)]), stats(), 100.0)["fire"] is False
+    assert GR.decide(snap([enemy(100), enemy(160)]), stats(ring={"enabled": False}), 100.0)["fire"] is False
+
+
+class RandomRing(FakeRing):
+    def grenade_kinds(self):
+        return [{"kind": "flash", "available": True},
+                {"kind": "hand", "available": False, "reason": "not verified"},
+                {"kind": "incendiary", "available": False, "reason": "not verified"}]
+
+
+def test_fire_random_draws_an_available_kind():
+    ring = RandomRing()
+    receipt = GR.fire(None, {"kind": "random", "flash_ok": True, "count": 10}, stats(), 100.0, ring=ring)
+    assert ring.calls and ring.calls[0][0] == "flash"
+    assert receipt["state"] == "confirmed" and receipt["kind"] == "flash"
+
+
+def test_fire_random_never_uses_a_flash_the_gate_closed():
+    ring = RandomRing()
+    receipt = GR.fire(None, {"kind": "random", "flash_ok": False}, stats(), 100.0, ring=ring)
+    assert receipt["state"] == "refused" and ring.calls == []
+    assert "no grenade kind is available" in receipt["reason"]

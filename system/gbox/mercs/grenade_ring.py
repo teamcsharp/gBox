@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib
 import math
+import random
 import time
 
 from . import enemy_identity
@@ -27,6 +28,11 @@ DEFAULTS = {
     "enabled": True,
     "min_enemies": 4,              # a crowd this size inside near_cm is "surrounded"
     "near_cm": 400.0,              # "a few metres" around the player
+    # the operator 2026-11-11: "at least once every two minutes ... deploying a grenade ring around them in the middle
+    # of a group of enemies" - a ring is owed when this long has passed with a group on him, whatever the crowd tests
+    # above say; the kind is drawn from the controller's honestly available kinds ("random ammunition types")
+    "periodic_s": 120.0,
+    "periodic_min_enemies": 2,
     # a boss / dangerous class counts this far out (coached moment, request 5482 note 7, 2026-11-10: two 1500-health
     # uEm1370 and a uEm3000 coming at 5.5-6.5 m with a J'avo pack while he faced a pillar - "failing to deal with a
     # threat"; inside near_cm alone the ring never went out)
@@ -71,13 +77,16 @@ def policy(title_module=None, stats=None) -> dict:
         if source is None:
             continue
         for key, name in (("enabled", "RING"), ("min_enemies", "RING_N"), ("cooldown_s", "RING_EVERY_S"),
-                          ("kind", "RING_KIND"), ("radius_cm", "RING_RADIUS_CM")):
+                          ("kind", "RING_KIND"), ("radius_cm", "RING_RADIUS_CM"),
+                          ("periodic_s", "RING_PERIODIC_S")):
             value = source.get(key) if isinstance(source, dict) else getattr(source, name, None)
             if value is not None:
                 out[key] = value
     try:
         out["min_enemies"] = max(1, min(int(out["min_enemies"]), 32))
         out["cooldown_s"] = max(1.0, min(float(out["cooldown_s"]), 600.0))
+        out["periodic_s"] = max(0.0, min(float(out["periodic_s"]), 600.0))
+        out["periodic_min_enemies"] = max(1, min(int(out["periodic_min_enemies"]), 32))
         out["radius_cm"] = max(0.0, min(float(out["radius_cm"]), float(out["max_radius_cm"])))
         out["near_cm"] = max(50.0, min(float(out["near_cm"]), 2000.0))
         out["danger_cm"] = max(out["near_cm"], min(float(out["danger_cm"]), 2000.0))
@@ -85,7 +94,7 @@ def policy(title_module=None, stats=None) -> dict:
         out["kind"] = str(out["kind"] or "flash")
     except (TypeError, ValueError):
         out.update({k: DEFAULTS[k] for k in ("enabled", "min_enemies", "cooldown_s", "kind", "radius_cm",
-                                             "near_cm", "danger_cm")})
+                                             "near_cm", "danger_cm", "periodic_s", "periodic_min_enemies")})
     return out
 
 
@@ -274,6 +283,15 @@ def decide(snap: dict, stats: dict, now: float, policy_: dict | None = None, *, 
         return {**out, "fire": True, "reason": f"surrounded: {near} within {policy_['near_cm']:.0f} cm"}
     if _not_thinning(round_id, near, now, policy_):
         return {**out, "fire": True, "reason": f"a crowd of {near} is not thinning"}
+    # the operator 2026-11-11: at least one ring every two minutes while a group is on him, whatever the tests above
+    # said; the kind is drawn from the controller's honestly available kinds ("random ammunition types")
+    periodic = float(policy_.get("periodic_s") or 0.0)
+    if periodic > 0 and near >= int(policy_.get("periodic_min_enemies") or 2) and \
+            (not isinstance(last, (int, float)) or now - last >= periodic):
+        held = flash_held(snap, stats, policy_, title)
+        return {**out, "fire": True, "kind": "random", "flash_ok": held is None,
+                "reason": (f"periodic: one ring at least every {periodic:.0f} s with a group on him: "
+                           f"{near} within {policy_['near_cm']:.0f} cm")}
     return {**out, "reason": f"nothing worth a ring: {near} within {policy_['near_cm']:.0f} cm"}
 
 
@@ -283,10 +301,36 @@ def controller(ad):
     return interventions.native_controller(ad)
 
 
+KINDS = ("flash", "hand", "incendiary")
+
+
+def pick_kind(target, decision: dict) -> str | None:
+    """One of the controller's honestly available kinds, at random (the operator's random grenade type).
+
+    The controller's own `grenade_kinds()` is the source (never a title table): only `available: True` rows are in the
+    pool, and a flash whose one-a-minute gate the decision closed is removed. None: nothing may be fired.
+    """
+    try:
+        rows = target.grenade_kinds()
+    except Exception:                                    # noqa: BLE001 - a controller without the report offers none
+        rows = []
+    kinds = [row.get("kind") for row in rows or ()
+             if isinstance(row, dict) and row.get("kind") in KINDS and row.get("available") is True]
+    if decision.get("flash_ok") is False:
+        kinds = [kind for kind in kinds if kind != "flash"]
+    return random.choice(kinds) if kinds else None
+
+
 def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
     """Run the native ring once and keep the stats. Never raises for a game-side refusal; reports it."""
     target = ring or controller(ad)
     kind = decision.get("kind") or "flash"
+    if str(kind).lower() == "random":
+        kind = pick_kind(target, decision)
+        if kind is None:
+            stats["ring_error"] = ("no grenade kind is available for the ring (none verified on this build, or the "
+                                   "flash's one-a-minute gate is closed)")
+            return {"state": "refused", "reason": stats["ring_error"]}
     module = type(target).__module__.rsplit(".", 1)[-1]
     try:
         if module == "re4_gc_native":
