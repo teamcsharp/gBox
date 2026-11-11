@@ -317,3 +317,9 @@ Then send it the heavy analysis work.
   the menus, so it does not depend on the planner. Note: the i9 now has two worker registrations (the service and the
   desktop app's `desktop_local`), so launch jobs must resolve the current online worker id
   (`GET /api/workers`), not the one from an earlier session.
+﻿
+- 2026-11-10 20:1x: the coop campaign carried PSO past the menus on the i9: the frames run PRESS START -> title main menu ->
+  OFFLINE/MULTI MODE -> **character creation** (a HUmar preview on the platform - the two-controller launch uses its own
+  isolated memory card, so the buddies are created) -> **Pioneer 2** (the station over Ragol). The earlier single-player
+  campaign had stopped on its own error budget; the coop route's scripted MULTI walk plus creation is what gets through.
+  Next for the campaign: the Pioneer 2 descent and Forest 1, where the native combat driver takes over.
