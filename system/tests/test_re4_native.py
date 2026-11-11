@@ -409,3 +409,24 @@ def test_the_selftest_call_returns_zero_and_proves_the_path(monkeypatch):
     assert out["ticks"] >= 1
     targets = [struct.unpack("<Q", d)[0] for at, d in ctl.writes if at == MAILBOX + CODE.MAILBOX["target"]]
     assert targets[-1] == BASE + CODE.SELFTEST_AT
+
+
+# ---- E3: the page the watch proves -----------------------------------------------------------------------------------
+
+def test_choose_mailbox_needs_zero_at_every_load():
+    loads = [{"stage": 1, "pages": {"0x1cb9000": "00" * 16, "0x1700000": "00" * 16}},
+             {"stage": 2, "pages": {"0x1cb9000": "00" * 16, "0x1700000": "01" + "00" * 15}},
+             {"stage": 3, "pages": {"0x1cb9000": "00" * 16}}]
+    assert N.choose_mailbox(loads) == 0x1CB9000
+
+
+def test_choose_mailbox_none_when_a_page_is_missing_or_dirty():
+    assert N.choose_mailbox(None) is None and N.choose_mailbox([]) is None
+    assert N.choose_mailbox([{"pages": {"0x1cb9000": "00" * 16}},
+                             {"pages": {"0x1cb9000": "00" * 15 + "01"}}]) is None
+    assert N.choose_mailbox([{"pages": {"0x1cb9000": "00" * 16}}, {"pages": {}}]) is None
+
+
+def test_choose_mailbox_prefers_the_vetted_order():
+    loads = [{"pages": {"0x1cb9000": "00" * 16, "0x1cba000": "00" * 16}}]
+    assert N.choose_mailbox(loads) == 0x1CB9000
