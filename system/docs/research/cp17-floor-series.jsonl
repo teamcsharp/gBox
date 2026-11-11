@@ -1,0 +1,8 @@
+{"t": 1794434227.004, "event": "cp17_start", "floor": 1, "start": [211.3, -25.2], "exit": [133.0, -48.1], "legs": 2}
+{"t": 1794434258.033, "event": "cp17_leg", "leg": 1, "floor": 1, "arrived": false, "elapsed": 30.4, "travelled": 110}
+{"t": 1794434280.83, "event": "cp17_start", "floor": 1, "start": [200.4, -63.6]}
+{"t": 1794434343.44, "event": "cp17_leg", "leg": [135, -45], "arrived": false, "floor": 1, "travelled": 74}
+{"t": 1794434388.12, "event": "cp17_leg", "leg": [135, -45], "arrived": true, "floor": 1, "travelled": 239}
+{"t": 1794434391.73, "event": "cp17_leg", "leg": [135, -45], "arrived": true, "floor": 1, "travelled": 0}
+{"t": 1794434458.45, "event": "cp17_leg", "leg": [135, -45], "arrived": false, "floor": 1, "travelled": 136}
+{"t": 1794434458.59, "event": "cp17_failed", "floor": 1}
