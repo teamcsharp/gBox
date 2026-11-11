@@ -1338,3 +1338,26 @@ the worker's `re4_switch_native` module is fresh; the bot-module telemetry stays
 **Live state of the lane:** CP0 accepted 2/2; A3's mechanism merged; F/G/E6 code merged and tested; the open live
 items are the three-load watch (E3), the harness selftest/flash receipt (E6/F), D's positive barrage/flash evidence
 and C/A's kind probes - all waiting on a live block of the right title and the 05:00 restart for the harness module.
+
+## Round 77 (2026-11-11 00:45 CST) - a full live RE4 round ran; the watch still isn't loaded, and the reason is now clear
+
+**A whole RE4 round, observed.** Session `…871b9946` played a full Mercenaries round (screen loading -> playing,
+kills 0 -> 19, dead, loading) and its telemetry carried **no** `bss_watch`/`bss_watch_loads` at any point. So the
+running RE4 bot is still the old `re4_switch` module - the share may have the new file (the deploy copies files even
+when it defers activation), but `deploy-restart-pending` skipped the in-place reload and the operator's earlier manual
+reload predates the JSON-string fix.
+
+**The status path cannot help yet, and the reason is visible.** That session's interventions reason reads:
+
+    re4_gc_native: RE4 mods need game-memory access, which this session's emulator does not give gBox ... Relaunch
+    the game on the Spark (Dolphin) ... [ValueError: Switch address 0x80000000 is outside the guest arena ...]
+
+The reasons list only `re4_gc_native`, `re6_switch_native` and `re5_switch_native` - **not our
+`re4_switch_native`**: the deployed `interventions.native_controller` is the old version (its module list predates our
+merge). `gbox.mercs.interventions` is in `hot_reload.NOT_BOT` by design (durable routes, adapter-lifetime consumers),
+so it only changes with a **service restart** - the 05:00 restart. The F4 status row is live because
+`grenade_status` is a different, reloadable module.
+
+**Consequence for the plan:** E6/F (which need `native_controller` to build our controller) and the status-path watch
+are gated on the 05:00 restart, not on a bot reload; the telemetry watch is gated on the operator's post-fix bot
+reload. Both are external. The evidence gathered this round is in the lane log; the code side is ready.
