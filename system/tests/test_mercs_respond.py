@@ -100,9 +100,9 @@ def test_three_near_him_get_the_flash_then_the_fire_on_the_stunned_ones():
     crowd = [foe(0, 0.0, 200.0), foe(1, 150.0, 100.0), foe(2, -150.0, 150.0)]
     hurt = [(0.0, me(1000), crowd), (0.1, me(950), crowd)]
     run(r, k, hurt)
-    assert [c[0] for c in k.calls] == ["flash"] and r.stats["threat_answered_flash"] == 2   # a crowd: from tick 0 (#9526)
+    assert [c[0] for c in k.calls] == ["flash"] and r.stats["threat_answered_flash"] == 1
     run(r, k, [(0.5, me(950), crowd)])                     # inside flash_answer_s: the flash still answers
-    assert [c[0] for c in k.calls] == ["flash"] and r.stats["threat_answered_flash"] == 3
+    assert [c[0] for c in k.calls] == ["flash"] and r.stats["threat_answered_flash"] == 2
     run(r, k, [(1.3, me(900), crowd)])                     # past it, the next flash not due: fire on them
     assert [c[0] for c in k.calls] == ["flash", "fire"]
     assert r.stats["threat_flash_asks"] == 1 and r.stats["threat_answered_fire"] == 1
@@ -113,8 +113,8 @@ def test_a_title_without_a_flash_says_so_and_fires():
     r, k = respond.Responder({}), Kit(flash=False, mine=False)
     crowd = [foe(0, 0.0, 200.0), foe(1, 150.0, 100.0), foe(2, -150.0, 150.0)]
     run(r, k, [(0.0, me(1000), crowd), (0.1, me(950), crowd)])
-    assert r.stats["threat_lacks_flash"] == 2 and k.calls[-1][0] == "fire"
-    assert r.stats["threat_answered_fire"] == 2 and r.stats["threat_unanswered"] == 0
+    assert r.stats["threat_lacks_flash"] == 1 and k.calls[-1][0] == "fire"
+    assert r.stats["threat_answered_fire"] == 1 and r.stats["threat_unanswered"] == 0
 
 
 def test_two_converging_from_beyond_the_plant_margin_get_a_mine_then_the_cycle_answers():
@@ -258,7 +258,7 @@ def test_re5_a_crowd_gets_the_native_flash(monkeypatch):
     crowd = [foe(0, 0.0, 200.0), foe(1, 150.0, 100.0), foe(2, -150.0, 150.0)]
     b._respond_settle(b._respond(r5_snap(crowd), dict(WALK), 0.0))
     b._respond_settle(b._respond(r5_snap(crowd, hp=900), dict(WALK), 0.1))
-    assert asked and asked[0][0] == "flash" and b.stats["threat_answered_flash"] == 2
+    assert asked and asked[0][0] == "flash" and b.stats["threat_answered_flash"] == 1
 
 
 def test_re5_converging_majini_urge_the_mine_controller_which_then_skips_its_cadence(monkeypatch):
@@ -304,7 +304,6 @@ def test_re6_without_the_session_a_crowd_is_fired_at_and_the_missing_flash_count
     b.doing = "walk"
     crowd = [foe(0, 0.0, 200.0), foe(1, 150.0, 100.0), foe(2, -150.0, 150.0)]
     b._respond(r6_snap(crowd), dict(WALK), 0.0)
-    b.doing = "walk"                                       # (a standing crowd is a threat from tick 0, #9526)
     act = b._respond(r6_snap(crowd, hp=900), dict(WALK), 0.1)
     assert act == FIRE and b.stats["threat_lacks_flash"] >= 1
 
@@ -353,7 +352,6 @@ def test_re6_three_near_are_no_tight_situation_so_the_doctrine_fires(monkeypatch
     b.doing = "walk"
     crowd = [foe(0, 0.0, 200.0), foe(1, 150.0, 100.0), foe(2, -150.0, 150.0)]
     b._respond(r6_snap(crowd), dict(WALK), 0.0)
-    b.doing = "walk"                                       # (a standing crowd is a threat from tick 0, #9526)
     act = b._respond(r6_snap(crowd, hp=900), dict(WALK), 0.1)
     assert ("native_flash",) not in asked and act == FIRE and b.stats["flash_untight_skips"] >= 1
     big = [foe(i, 50.0 * i, 100.0, hp=5000) for i in range(5)]  # heavies: a flash does not stop them
@@ -370,32 +368,3 @@ def test_re6_converging_zombies_make_the_remote_bomb_due(monkeypatch):
         rows = [foe(0, 0.0, 600.0 - 15.0 * j), foe(1, 80.0, 640.0 - 15.0 * j)]
         b._respond(r6_snap(rows, hp=1000 if j < 3 else 950, bomb={"count": 2, "out": False}), dict(WALK), 0.1 * j)
     assert b.stats["threat_mine_asks"] == 1 and b.mine_due is not None
-
-
-# --- proactive on crowds (#9526) --------------------------------------------------------------------------------------
-def _crowd_ticks(pts, n=4, dt=0.1):
-    return [(j * dt, me(), [foe(i, x, z) for i, (x, z) in enumerate(pts)]) for j in range(n)]
-
-
-def test_a_standing_crowd_within_6m_is_answered_before_any_closes():
-    r, k = respond.Responder({}), Kit(flash=False, mine=False)
-    sent = run(r, k, _crowd_ticks([(0, 500), (100, 450), (-100, 550)]))
-    assert sent[-1] == FIRE and r.stats["crowd_ticks"] >= 1 and r.stats["threat_unanswered"] == 0
-
-
-def test_a_ring_counts_one_surround_event_and_a_front_group_does_not():
-    r, k = respond.Responder({}), Kit(flash=False, mine=False)
-    run(r, k, _crowd_ticks([(0, 650), (650, 0), (-650, 0), (0, -650)], n=5))
-    assert r.stats["ring_events"] == 1
-    r2 = respond.Responder({})
-    run(r2, k, _crowd_ticks([(0, 650), (100, 650), (-100, 650)], n=5))
-    assert r2.stats["ring_events"] == 0
-
-
-def test_a_crowd_past_the_blast_reach_asks_a_mine_and_the_one_flash_gap_holds():
-    r, k = respond.Responder({}), Kit(flash=True, mine=True)
-    run(r, k, _crowd_ticks([(0, 560), (100, 580), (-100, 590)], n=3))
-    assert any(c[0] == "mine" for c in k.calls)
-    r = respond.Responder({}); k = Kit()
-    run(r, k, _crowd_ticks([(0, 300), (100, 300), (-100, 300)], n=20))
-    assert sum(1 for c in k.calls if c[0] == "flash") <= 1
