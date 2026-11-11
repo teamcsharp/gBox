@@ -19,8 +19,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 TOKEN = open(r"C:\_tools\gBox\system\gbox-data\api_token").read().strip()
-API = "http://127.0.0.1:8765"
-SID = "e731ee594dde4a89-cae9dad929a34d17"
+API = "http://127.0.0.1:18765"
+SID = "78a8746f5b514450-e9867839b8b74d3d"
 PORT = 8801
 ROOMS = Path(r"D:\gBox\pso-ds\routes\forest1-rooms.json")
 GOTO = Path(r"D:\gBox\pso-ds\goto.json")
@@ -33,14 +33,14 @@ _cache = {"rooms": None, "rooms_mtime": 0.0}
 
 def _read(address, length):
     body = json.dumps({"op": "read_memory", "args": {"address": address, "length": length}}).encode()
-    for _ in range(2):
+    for _ in range(1):
         try:
             req = urllib.request.Request(f"{API}/api/sessions/{SID}/rpc", data=body, method="POST",
                                          headers={"authorization": "Bearer " + TOKEN, "x-gbox-actor": "agent",
                                                   "content-type": "application/json"})
-            return bytes.fromhex(json.loads(urllib.request.urlopen(req, timeout=8).read() or b'""'))
+            return bytes.fromhex(json.loads(urllib.request.urlopen(req, timeout=2.5).read() or b'""'))
         except Exception:                                        # noqa: BLE001
-            time.sleep(0.1)
+            time.sleep(0.05)
     return b""
 
 
@@ -60,17 +60,39 @@ def rooms():
         return {"rooms": [], "doors": []}
 
 
+def _u32(address):
+    blob = _read(address, 4)
+    return int.from_bytes(blob, "big") if len(blob) == 4 else 0
+
+
+def _u16(address):
+    blob = _read(address, 2)
+    return int.from_bytes(blob, "big") if len(blob) == 2 else None
+
+
+def _vec3(address):
+    blob = _read(address, 12)
+    return struct.unpack(">fff", blob) if len(blob) == 12 else None
+
+
 def state():
-    payload = {"t": time.time(), "floor": int.from_bytes(_read(FLOOR, 4), "big"),
-               "player": None, "hp": None, "doors": [], "enemies": []}
-    actor = int.from_bytes(_read(0x8050EA10, 4), "big")
+    payload = {"t": time.time(), "floor": _u32(FLOOR), "player": None, "hp": None, "doors": [], "enemies": []}
+    if payload["floor"] is None:
+        # no live session: answer immediately so the page still shows the cached map instead of hanging
+        payload["live"] = False
+        payload["why"] = "no running PSO session"
+        return payload
+    payload["live"] = True
+    actor = _u32(0x8050EA10)
     if actor:
-        blob = _read(actor + 0x38, 12)
-        if len(blob) == 12:
-            x, y, z = struct.unpack(">fff", blob)
+        point = _vec3(actor + 0x38)
+        if point:
+            x, y, z = point
             payload["player"] = {"x": round(x, 1), "y": round(y, 1), "z": round(z, 1)}
-        payload["hp"] = int.from_bytes(_read(actor + HP, 2), "big")
+        payload["hp"] = _u16(actor + HP)
     raw = _read(TABLE, MAX_ENTRIES * 4)
+    if len(raw) < MAX_ENTRIES * 4:
+        return payload
     for index in range(MAX_ENTRIES):
         pointer = int.from_bytes(raw[index * 4:index * 4 + 4], "big")
         if not (0x80000000 <= pointer < 0x81800000):
@@ -86,11 +108,11 @@ def state():
                 payload["doors"].append({"i": index, "class": name, "x": round(x, 1), "z": round(z, 1),
                                          "state": struct.unpack(">i", blob[0x18C:0x190])[0]})
         elif name.startswith("TObjEne"):
-            blob = _read(pointer + 0x38, 12)
-            if len(blob) == 12:
-                x, y, z = struct.unpack(">fff", blob)
-                payload["enemies"].append({"class": name, "x": round(x, 1), "z": round(z, 1),
-                                           "hp": int.from_bytes(_read(pointer + HP, 2), "big")})
+            point = _vec3(pointer + 0x38)
+            if point:
+                x, y, z = point
+                hp = _u16(pointer + HP)
+                payload["enemies"].append({"class": name, "x": round(x, 1), "z": round(z, 1), "hp": hp})
     return payload
 
 
@@ -213,7 +235,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/rooms":
             return self._send(200, json.dumps(rooms()))
         if self.path == "/api/state":
-            return self._send(200, json.dumps(state()))
+            try:
+                return self._send(200, json.dumps(state()))
+            except Exception as exc:                             # noqa: BLE001
+                return self._send(200, json.dumps({"error": str(exc)[:120]}))
         if self.path == "/api/minimap.png":
             try:
                 import io
