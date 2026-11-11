@@ -1160,3 +1160,21 @@ page out. Three tests. On main as `17766d37` (targeted gate 83 passed). When the
 bot reloads until the 05:00 restart); the operator-only `POST /api/workers/lilspark/bot-reload` is the shortcut (my
 `agent` actor is refused 403 by design). The queue now alternates `re4, re5, re6, ...`, so the first RE4 block after a
 reload records the loads; the 30-minute poll found none.
+
+## Round 69 (2026-11-10 20:45 CST) - G3's scanner is in; the watch still waits on the reload
+
+**G3 tooling.** `system/scripts/re4_blast_scan.py` (read-only, capstone) lists every `bl 0x33B770` (AREA_ATTACK) site
+with the effect ids, sound id, attack class and the float radius it loads, plus every rodata qword that points into
+the blast cluster `0x2E4000..0x2E6000` - the descriptor table the F1 verifier pins. On the operator image: **98
+area-attack sites**, **26 blast-cluster slots**, the three known blasts (`0x2E48B0` hand, `0x2E4AA0` simple,
+`0x2E4E50` flash) and **23 unclaimed slots** (0x67B2B8 -> 0x2E51F0, 0x67B360 -> 0x2E5200, 0x67B438 -> 0x2E5230,
+0x67B4C8 -> 0x2E4BA0, 0x67B4E0 -> 0x2E4DF0, 0x67B510 -> 0x2E5260, 0x67B5B8 -> 0x2E4FF0, ...). The three area-attack
+sites in the `0x2E4xxx` cluster are exactly the known ones (0x2E4A54, 0x2E4AF0, 0x2E4FA0), so the incendiary's blast
+is either one of those with a different object/type field or a spawn outside the cluster; the scanner's per-site ids
+give the discriminators (the flash's 0x3F/0x0C effects, sound 0x13, class 0x17, radius 15000; the hand's 0x1A/0x0D,
+sound 0x14, class 0x13, radius 6000). Three tests, one against the operator image. On main (`7a4952d8`).
+
+**The watch is still not loaded.** No operator bot reload yet; the running bot remains the old module, so the RE4
+telemetry has no `bss_watch_loads`. The queue now alternates `re4, re5, re6, ...`; the first RE4 block after the
+reload (or after 05:00) records the three loads, `choose_mailbox` turns them into the page, and `MAILBOX_AT` goes in.
+The operator-only call is in the hand-off log and the lane log's round 67.
