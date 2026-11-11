@@ -1,4 +1,6 @@
 """The E3 read-only `.bss` watch that rides the RE4 bot's snapshots (telemetry, 2026-11-10)."""
+import json
+
 from gbox.mercs.titles import re4_switch as R
 
 
@@ -42,7 +44,8 @@ def test_the_snapshot_stamps_the_watch_into_the_round_stats(monkeypatch):
     bot.stats = {}
     snap = bot.snapshot(mem)
     assert snap["game"]["stage"] == 2
-    watch = bot.stats["bss_watch"]
+    assert isinstance(bot.stats["bss_watch"], str)              # the telemetry publishes only scalar stats
+    watch = json.loads(bot.stats["bss_watch"])
     assert watch["stage"] == 2 and set(watch["pages"]) == {f"{off:#x}" for off in R.BSS_WATCH_PAGES}
     assert len(mem.reads) == len(R.BSS_WATCH_PAGES)
 
@@ -68,9 +71,10 @@ def test_each_stage_load_is_kept_and_only_the_last_three(monkeypatch):
     for n in (1, 1, 2, 3, 4):
         stage["n"] = n
         bot.snapshot(mem)
-    loads = bot.stats["bss_watch_loads"]
+    assert isinstance(bot.stats["bss_watch_loads"], str)
+    loads = json.loads(bot.stats["bss_watch_loads"])
     assert [row["stage"] for row in loads] == [2, 3, 4]     # the last three distinct stage loads
-    assert bot.stats["bss_watch"]["stage"] == 4
+    assert json.loads(bot.stats["bss_watch"])["stage"] == 4
 
 
 def test_a_menu_snapshot_is_not_a_stage_load(monkeypatch):
@@ -81,5 +85,5 @@ def test_a_menu_snapshot_is_not_a_stage_load(monkeypatch):
     bot = R.RE4Switch()
     bot.stats = {}
     bot.snapshot(mem)
-    assert bot.stats["bss_watch"]["stage"] is None
-    assert bot.stats["bss_watch_loads"] == []
+    assert json.loads(bot.stats["bss_watch"])["stage"] is None
+    assert "bss_watch_loads" not in bot.stats

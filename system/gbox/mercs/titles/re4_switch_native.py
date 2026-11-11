@@ -17,6 +17,7 @@ Any write into `main`'s `.text`/`.rodata` is refused - only `install()` into the
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import struct
@@ -77,6 +78,13 @@ def choose_mailbox(loads) -> int | None:
     present and all-zero in each load; a missing page or a single nonzero byte rules it out for good. The earlier
     pages in `CODE`'s candidate order win (the tail of the free stretch first, as the E3 scanner vetted them).
     """
+    if isinstance(loads, str):                            # the telemetry publishes the loads as a JSON string
+        try:
+            loads = json.loads(loads)
+        except ValueError:
+            return None
+    if isinstance(loads, dict):
+        loads = [loads]
     if not isinstance(loads, list) or not loads:
         return None
     clean = None

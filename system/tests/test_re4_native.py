@@ -3,6 +3,7 @@
 A fake guest builds the image's real layout - a player unit of class 0xB0C0A0 whose vtable slot +0x20 holds
 main+0x2B6420, a zero cave, and a mailbox - and a fake dispatcher consumes one published request. No game.
 """
+import json
 import math
 import struct
 import types
@@ -430,3 +431,9 @@ def test_choose_mailbox_none_when_a_page_is_missing_or_dirty():
 def test_choose_mailbox_prefers_the_vetted_order():
     loads = [{"pages": {"0x1cb9000": "00" * 16, "0x1cba000": "00" * 16}}]
     assert N.choose_mailbox(loads) == 0x1CB9000
+
+
+def test_choose_mailbox_accepts_the_published_json_string():
+    payload = json.dumps([{"stage": 1, "pages": {"0x1cbb000": "00" * 16}},
+                          {"stage": 2, "pages": {"0x1cbb000": "00" * 16}}])
+    assert N.choose_mailbox(payload) == 0x1CBB000
