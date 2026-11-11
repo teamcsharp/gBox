@@ -1682,3 +1682,24 @@ Also live this hour: RE6 flash ring 10/10 (round 84); RE5 flash ring verified (r
 builds and its status names the mailbox gate (round 87/88). Remaining: the RE4 flash/hand receipts (next RE4
 session, probe running), the RE5 automatic ring on the 2.5 s budget (next RE5 block), and the hand/incendiary spawn
 images for RE5/RE6 (parameterised spawn refused live on RE6, round 85).
+
+## Round 90 (2026-11-11 13:05 CST) - the E6 selftest is still uncertain; the RE5 13:03 block never reached a round
+
+**RE4 harness, post-restart session `dfb1f73ff9824c3c-2ce399badc1f4399`** (the one with all three fixes):
+`re4_harness_selftest` -> **uncertain** ("native completion uncertain; request will not be replayed"), `flash_now` ->
+None, the flash/hand/incendiary rings -> "the harness is not attached". So `prepare()` now passes and the capability is
+advertised (the mailbox/ready/check bugs are fixed), but the mailbox call never completes: the dispatcher/clone is
+installed and the player's slot stores the clone, yet the game never runs the clone's transform slot on the mailbox's
+schedule, so `state` never reaches `done` and every call retires uncertain. The E3 page (0x3ca9304000, the zero page
+of 0x1700000) is storage only - the missing piece is the *invocation* (which slot the game calls every frame for this
+unit, or a branch the dispatcher can hook). The next harness step is that invocation, not another mailbox page.
+Meanwhile the RE4 rings/flash are refused honestly (never a fake receipt).
+
+**RE5 at 13:03** (`f3cb7fd025ca4ac2-c5169de661d64125`): the session sat on the title screen 3+ minutes, never entered
+a round, and ended; the scheduler is back on the slate (13:04). The auto-ring watcher's error rows were the *12:43
+pre-fix* session (`dfb1f73f...-809651`), not the new worker - the `timeout` regression was fixed and deployed
+(97801b9d) but this block never got a round to test the 2.5 s budget. The next live RE5 block is the test.
+
+**The 13:03 restart** (worker `f3cb7fd025ca4ac2`) loaded main 97801b9d: the RE5 call timeout, the RE6 remote-mine
+native helpers (`drop_bomb_ring`, `bomb_ring_now`, `bomb_detonate_now`) and the `remote_mines` intervention op. The
+13:15 deploy carries the bow 40x (1dc41975); the bot modules hot-reload, so the next Krauser round gets 40 taps/s.

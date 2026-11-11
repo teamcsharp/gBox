@@ -642,3 +642,22 @@ Then send it the heavy analysis work.
     #9526 that 75054446 does not close it and #9720 is the code work; **#9720 is first in the Hermes queue**.
   - The RE4 round reports keep flowing through the new pipeline (21-85 gun downs/round, 12-19 kills), so the crowd/
     fire-first work has a live measurement on both titles.
+
+- 2026-11-11 13:05 (DeepSeek PM): **the operator's three new asks are in the build or the queue; two live gates stay open.**
+  - **RE6 remote mines** (`47e029c9`, activated by the 13:03 restart): a ring of four ejected from his body through the
+    instant spawn, no throw/animation; the flag detonation (no detonator in hand); the rule drops a ring ~22 s +/- 8 s
+    (jittered, mid-match) and detonates 3 rings / 75 s; the `remote_mines` op (ring|detonate) is in the worker for the
+    operator's own clicks. Next RE6 block: the mine_* stats + a live receipt.
+  - **RE4 Krauser bow** (`1dc41975`, deploys 13:15): the 20x cap -> 40x, the trigger floor 0.025 s and a 25 ms fight
+    tick while class 0x1C is in hand. Live data behind it: five Krauser rounds 12:56-12:59, 0 kills each, 0-10
+    aim.round_shots/round, 110/158 threat ticks unanswered at 12:58 - the bot holds with the bow; the deeper gate is
+    ticket #9744's aim acceptance.
+  - **Combo-loss reports + aim + grenade/mine rationale**: `#9744` (CODE-CHANGE, operator's words, the live baselines
+    and the acceptance) is **second in the Hermes queue** behind `#9720` (the crowd/combo doctrine); `#9526`'s docs-only
+    run stays rejected.
+  - **#9720 / #9744** are the two live code tickets; the queue priority is set (35563acd, c5590814 first).
+  - **RE4 harness E6** is still uncertain: the mailbox call never completes (the dispatcher's invocation, not the page,
+    is the missing piece); the rings/flash stay honestly refused until it does.
+  - **The RE5 13:03 block** never reached a round (title) and ended; the 2.5 s ring budget remains unverified live.
+  - The 13:00 deploy reloaded `grenade_ring` (the periodic 2-minute random-kind ring is live) and the deploy state is
+    clean; the goal stays active.
