@@ -454,3 +454,42 @@ the player stands on the new piece, the walker reaches it - need CP5's warp in a
 **Checkpoint coverage is now complete for every section of the document:** CP0-CP3 done, CP4/CP5/CP6.1 live-dependent, CP6.2 done,
 CP7 done, CP8 done in GC form, CP9 offline done, CP10 offline done, CP11 in main + a views test, CP12 2/3, CP13 offline done,
 **CP14 offline done**, CP15 done, CP16 measured negative, CP17 offline done.
+
+## Round 144: the live blocker on the i9 is the controller slots - read this before trying to drive PSO
+
+**Nothing in the checkpoint code is blocking the live work. The machine's XInput slots are.**
+
+```
+XInput 0..3: all "connected", none responds to presses (12 s watch, buttons and sticks: 0 changes)
+Get-PnpDevice: USB\VID_045E&PID_028E\01..04  "Xbox 360 Controller for Windows"  (4 OK ghosts, one spare \05 Unknown)
+               USB\VID_045E&PID_0B00          "Xbox One Controller"              (the operator's, connected, no slot)
+```
+
+Four ViGEm virtual pads outlived the processes that created them; XInput has exactly four slots, so the operator's physical
+controller cannot get one and Dolphin's `GCPad1 = XInput/0/Gamepad` reads a ghost. This is why, from ~19:50 on, **every** input path
+did nothing: this lane's `vpad_win` pads (`slot=None`), the worker relay (`{{"queued": n}}`), the GCPad1 keyboard fallback
+(`SendKeys` ENTER/X with the window verified foreground), and the operator's own controller.
+
+**Fix (elevated - the lane's shells are not admin):**
+
+```powershell
+foreach ($n in 1..4) {{ pnputil /remove-device "USB\VID_045E&PID_028E\0$n" }}
+```
+
+or Device Manager -> Show hidden devices -> uninstall those four (leave `PID_0B00`), or a reboot. A ready-to-run script is at
+`D:\gBox\pso-ds\fix-controllers.ps1`; run it from an elevated PowerShell and replug the controller. The plane's
+`python -m gbox.gamepads --watch` (PID 2468) manages virtual pads and can add a new ghost until the stale ones are cleared, so do the
+removal with that in mind.
+
+**Where the live work stands (verified this evening, before input broke):**
+
+| item | evidence |
+|---|---|
+| a real session ran PSO | session `3998f537...-b13f235d...`, launched 19:44:22 after the idle window, campaign `pso-episodes-1-2` started (`mode: playbook`) |
+| the agent pad **did** drive the game once | `{{'sent': 2, 'via': 'dolphin virtual pad (XInput slot 1)'}}` took the title menu -> OFFLINE -> intro -> a character in Forest 1 (`194845-step5.png`) |
+| **CP4's state exists and loads** | `session_op save_state` -> slot 1, 16,289,592 bytes, `verified: true`; installed as `runtime/jumpstates/436e0bb84d5337d1-stock.state`; loading it into the live session produced the Forest 1 character screen (`live-f1.png`) |
+| the mission's map and route | `rel_artifact` restored from the disc (round 132); all four waypoints are floor cells of the navmap the runner builds, route connected (round 134) |
+| two Dolphin windows confound hotkeys | the live session's PID comes from `session.detail.pid` (`52376`); a stale second instance was closed in round 141 - always target that PID |
+
+**So the first thing the next session should do is clear the ghost pads, not debug PSO.** After that, one F1 on the live session is in
+Forest 1, and the mission `pso-gc-forest1-first-wave` has all three of its preconditions met.
