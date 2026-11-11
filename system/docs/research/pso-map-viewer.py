@@ -12,9 +12,12 @@ which is gated by pso_operator so it never fights the operator.
 """
 import json
 import struct
+import subprocess
+import sys
 import threading
 import time
 import urllib.request
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -146,6 +149,10 @@ h3{margin:6px 0;color:#58a6ff;font-size:13px}
   <div><span class="k">pos</span> <b id="pos">-</b></div>
   <div><span class="k">target</span> <b id="target">none</b></div>
   <div id="roominfo" style="margin-top:6px;color:#8b949e">-</div>
+  <div style="margin-top:8px"><label class="k"><input type="checkbox" id="placemode"> place</label>
+    <span class="k">record</span> <input id="placerecord" value="3" size="4"
+      style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;width:48px">
+    <span class="k" id="placeresult"></span></div>
   <div><span class="k">doors</span> <b id="doors">-</b> <span class="k">enemies</span> <b id="enemies">-</b></div>
   <h3>live minimap</h3>
   <img id="mini" src="/api/minimap.png" alt="minimap">
@@ -242,6 +249,15 @@ document.getElementById('map').addEventListener('click', async ev=>{
   const rect=ev.target.getBoundingClientRect();
   const px=ev.clientX-rect.left, py=ev.clientY-rect.top;
   const wx=(px-ox)/scale, wz=(py-oz)/scale;
+  if(document.getElementById('placemode') && document.getElementById('placemode').checked){
+    const record=parseInt(document.getElementById('placerecord').value||'0',10);
+    const result=await (await fetch('/api/place',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({floor:viewFloor, record:record, x:Math.round(wx), y:0, z:Math.round(wz)})})).json();
+    document.getElementById('placeresult').textContent = result.ok
+      ? 'placed in room '+result.room+' ('+result.distance+' units)'
+      : 'refused: '+(result.why||'unknown');
+    return;
+  }
   let target={x:Math.round(wx), z:Math.round(wz)};
   if(rooms){
     let bestRoom={d:1e9, r:null};
@@ -275,6 +291,34 @@ tick();
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
+
+    def _place(self, payload):
+        """Validate a placement against the room graph, then append the record to an edited copy of the set file."""
+        import math
+        floor = int(payload.get("floor") or 1)
+        record = int(payload.get("record") or 0)
+        x, y, z = float(payload["x"]), float(payload.get("y") or 0.0), float(payload["z"])
+        graph = rooms(floor)
+        best = {"d": 1e9, "room": None}
+        for room in graph.get("rooms") or []:
+            for cell in room["cell_list"]:
+                distance = math.hypot(x - cell[0], z - cell[1])
+                if distance < best["d"]:
+                    best = {"d": distance, "room": room["room"]}
+        inside = best["d"] <= 7.5
+        if not inside:
+            return {"ok": False, "why": f"outside the walkable rooms (nearest room {best['room']} at "
+                                        f"{best['d']:.1f} units)", "room": best["room"], "distance": round(best["d"], 1)}
+        set_name = f"map_forest0{floor}d.dat"
+        script = str(Path(r"C:\_tools\gBox\.tmp\set_edit.py"))
+        try:
+            finished = subprocess.run([sys.executable, script, "add", set_name, str(record),
+                                       str(x), str(y), str(z)],
+                                      capture_output=True, text=True, timeout=60)
+        except Exception as exc:                                 # noqa: BLE001
+            return {"ok": False, "why": f"set_edit failed: {type(exc).__name__}: {str(exc)[:120]}"}
+        return {"ok": finished.returncode == 0, "room": best["room"], "distance": round(best["d"], 1),
+                "set": set_name, "record": record, "output": (finished.stdout or "").strip()[-400:]}
 
     def _send(self, code, body, content_type="application/json"):
         data = body if isinstance(body, bytes) else body.encode("utf-8")
@@ -340,6 +384,12 @@ class Handler(BaseHTTPRequestHandler):
             payload["t"] = time.time()
             GOTO.write_text(json.dumps(payload), encoding="utf-8")
             return self._send(200, json.dumps({"ok": True}))
+        if self.path == "/api/place":
+            try:
+                payload = json.loads(body)
+            except Exception:                                    # noqa: BLE001
+                payload = {}
+            return self._send(200, json.dumps(self._place(payload)))
         return self._send(404, "{}")
 
 
