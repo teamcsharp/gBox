@@ -1594,3 +1594,26 @@ RE6 kind.
 
 Next live probes: RE5 hand/incendiary on its next live round (uWp06/uWp07 documented in its status), and the RE4
 harness receipts once the mailbox page is chosen (the next RE4 block's three round-start loads).
+
+## Round 86 (2026-11-11 11:30 CST) - the bot's own RE5 ring fired, went uncertain, and took the session with it; the RE4 mailbox is committed
+
+**The automatic ring is live and fired by itself** (RE5 block, session `0569c82d21614288-a9dbaec9b1f54b5a`, 11:25):
+the round reached `screen=playing` (shots 3, kills 3) with the full controller (flash + ring + scatter), then within
+one poll the controller read `native controller awaits recovery after an uncertain operation (Uncertain: native
+completion uncertain; request will not be replayed)`, capabilities went empty, the game sat on `loading`, and the
+session ended at 11:22:25 by the scheduler's own stop. The frame of the last round: Krauser, 01'23"70 on the clock,
+score 0. **No intervention request existed** - this was `gbox.mercs.grenade_ring.policy`, the doctrine's when-to-ring
+rule, calling the controller from the worker.
+
+The controller did the safe thing (no replay, no further ops, `recoverable`), and the manual flash ring on RE5 is
+verified - but the automatic path ran into the native call's timeout under live bot timing (a 10-grenade ring issues
+ten sequential native calls plus the explosion transition), and that killed the block. This is the RE5 "awaits
+recovery" the night log saw twice, now with its cause. Before the automatic ring can be trusted it needs the ring's
+per-grenade call budget/readiness hardened on RE5 (the native module is `NOT_BOT`: a restart lands it), not a doctrine
+change.
+
+**RE4 mailbox chosen and committed** (`4d584d0e`): the first RE4 session after `cb956095` published three round-start
+loads (11:25-11:26, stage 0, session `0569c82d21614288-c655ae564d744afc`); `0x1700000` was all zero in every load
+(the other four carried data), so `choose_mailbox` = 0x1700000 and `MAILBOX_AT = 0x3ca7c04000 + 0x1700000 =
+0x3ca9304000`. The next RE4 session's controller builds with the page, the harness can attach, and the selftest /
+`flash_now` / `grenade_ring` flash + hand receipts are the next clicks.
