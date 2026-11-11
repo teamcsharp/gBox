@@ -73,8 +73,8 @@ def stats(**kw):
     return out
 
 
-def snap():
-    return {"player": {"ptr": 0x2000, "pos": [0.0, 0.0, 0.0], "hp": 900, "generation": 1}, "enemies": []}
+def snap(pos=(0.0, 0.0, 0.0)):
+    return {"player": {"ptr": 0x2000, "pos": list(pos), "hp": 900, "generation": 1}, "enemies": []}
 
 
 def test_the_rule_drops_a_ring_then_detonates_the_set_through_the_flag(monkeypatch):
@@ -100,11 +100,15 @@ def test_the_rule_drops_a_ring_then_detonates_the_set_through_the_flag(monkeypat
         live["mine_next_drop_at"] = at - 1
         assert step(snap(), live, at, lambda keys: True)["fire"] is True
     assert live["mine_rings_since_detonate"] == 3 and live["mine_bombs_since_detonate"] == 12
-    # the third ring makes the set due: the next tick detonates by the flag
-    done = step(snap(), live, 161.0, lambda keys: True)
+    # the player is still on the centre: the flag waits for the distance (operator 2026-11-11 17:50)
+    held = step(snap(), live, 160.5, lambda keys: True)
+    assert held["fire"] is False and "nearest lying ring" in held["reason"]
+    # 400 cm clear of the ring: the third ring makes the set due and the next tick detonates by the flag
+    done = step(snap((0.0, 0.0, 400.0)), live, 161.0, lambda keys: True)
     assert done["op"] == "bomb_detonate" and done["fired"] is True
     assert calls[-1] == ("detonate",)
     assert live["mine_rings_since_detonate"] == 0 and live["mine_flag_detonations"] == 1
+    assert live["mine_ring_centres"] == []
 
 
 def test_the_rule_never_fires_while_the_drivers_bomb_action_runs(monkeypatch):

@@ -31,7 +31,9 @@ DEFAULTS = {
     # the operator 2026-11-11: "at least once every two minutes ... deploying a grenade ring around them in the middle
     # of a group of enemies" - a ring is owed when this long has passed with a group on him, whatever the crowd tests
     # above say; the kind is drawn from the controller's honestly available kinds ("random ammunition types")
-    "periodic_s": 120.0,
+    # The operator 2026-11-11 17:50: "they need to be ejecting a ring of grenades or grenade launcher shots in a 360
+    # blast from their area every minute and a half at least" (it was every two minutes).
+    "periodic_s": 90.0,
     "periodic_min_enemies": 2,
     # a boss / dangerous class counts this far out (coached moment, request 5482 note 7, 2026-11-10: two 1500-health
     # uEm1370 and a uEm3000 coming at 5.5-6.5 m with a J'avo pack while he faced a pillar - "failing to deal with a

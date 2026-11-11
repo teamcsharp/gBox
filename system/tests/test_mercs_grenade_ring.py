@@ -191,19 +191,19 @@ def test_the_rule_is_switch_only():
     assert GR.control(None, {}) is None
     assert callable(GR.control(None, {"map_id": "010099A00BC1E000"}))
 
-def test_a_group_earns_a_random_ring_at_least_every_two_minutes():
-    """Operator 2026-11-11: "at least once every two minutes ... deploying a grenade ring around them in the middle of a
-    group of enemies", random ammunition type. The periodic rule fires on a group even when the crowd tests above do
-    not, once the two minutes have passed since the last ring."""
+def test_a_group_earns_a_random_ring_at_least_every_ninety_seconds():
+    """Operator 2026-11-11 17:50: "they need to be ejecting a ring of grenades or grenade launcher shots in a 360 blast
+    from their area every minute and a half at least", random ammunition type. The periodic rule fires on a group even
+    when the crowd tests above do not, once the ninety seconds have passed since the last ring."""
     group = [enemy(100), enemy(160), enemy(220)]
     decision = GR.decide(snap(group), stats(), 100.0)
     assert decision["fire"] is True and decision["kind"] == "random"
     assert "periodic" in decision["reason"] and decision["flash_ok"] is True
     assert decision["near"] == 3
-    # inside the two minutes it does not fire on its own
+    # inside the ninety seconds it does not fire on its own
     assert GR.decide(snap(group), stats(ring_last_at=50.0), 100.0)["fire"] is False
-    # at exactly two minutes it does
-    assert GR.decide(snap(group), stats(ring_last_at=50.0), 170.0)["fire"] is True
+    # past ninety seconds it does
+    assert GR.decide(snap(group), stats(ring_last_at=50.0), 141.0)["fire"] is True
 
 
 def test_the_periodic_ring_needs_a_group_and_honours_the_switch():
