@@ -333,13 +333,15 @@ def install(app, store, auth):
 
 def native_controller(ad):
     """One serialized native controller per adapter, shared by UI and MCP."""
-    from .titles import re5_switch_native, re6_switch_native, re4_gc_native, re4_switch_native
+    import importlib
+    from .titles import re6_switch_native
     reasons = []
-    for module, attribute in ((re4_switch_native, "_re4_switch_harness"),
-                              (re4_gc_native, "_re4_native_controls"),
-                              (re6_switch_native, "_re6_native_flash"),
-                              (re5_switch_native, "_re5_native_flash")):
+    for dotted, attribute in (("gbox.mercs.titles.re4_switch_native", "_re4_switch_harness"),
+                              ("gbox.mercs.titles.re4_gc_native", "_re4_native_controls"),
+                              ("gbox.mercs.titles.re6_switch_native", "_re6_native_flash"),
+                              ("gbox.mercs.titles.re5_switch_native", "_re5_native_flash")):
         try:
+            module = importlib.import_module(dotted)
             with module._CREATE_LOCK:
                 ctl = getattr(ad, attribute, None)
                 if ctl is None:
@@ -350,8 +352,9 @@ def native_controller(ad):
             # A module whose Controller rejects this adapter (re4_gc_native on an eden session raised a wrapped
             # ValueError from eden_memory: "Switch address 0x80000000 is outside the guest arena") must fall through to
             # the next module. The narrower tuple let that escape and killed the whole witness worker thread, which is
-            # why no native round boundary was ever posted for RE5 Switch (2026-11-05).
-            reasons.append(f"{module.__name__.rsplit('.', 1)[-1]}: {exc}")
+            # why no native round boundary was ever posted for RE5 Switch (2026-11-05). The import is inside the try as
+            # well: a test double that replaces a base class must not stop the search for the title's own controller.
+            reasons.append(f"{dotted.rsplit('.', 1)[-1]}: {exc}")
     raise re6_switch_native.Unavailable("; ".join(dict.fromkeys(reasons)))
 
 
