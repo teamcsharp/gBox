@@ -490,3 +490,12 @@ Then send it the heavy analysis work.
   exists), which is why it never matched the other two. `scripts/re4_blast_scan.py` now reports the class entries, a
   test pins the three, and `INCENDIARY_CANDIDATE` carries the evidence; the probe path (allow_unverified) already
   calls it. Live probe still owed; tests 43 passed.
+﻿
+- 2026-11-10 22:4x: live state while the broadcast fix deploys. The i9's local control plane answers again on 8765
+  (pid 28024, `-m gbox serve --worker`) after a bind race, but its worker record still shows **offline** on both
+  planes; the operator's **eight queued `file_mod` jobs** (the PSO modding/loading work) are held by "Human gameplay is
+  active on this PC; background compute is waiting" - the ownership gate, which `allow_while_active` does **not**
+  bypass (control play never yields the pad). So the modding waits for their session to end or needs a dedicated-PC
+  policy that covers ownership too. Broadcast: the program was `no game is running` a moment ago (RE5 round ended,
+  i9 feed gone) with the app still watching a PSO session; `/api/broadcast/program` refuses agents by design, so the
+  On air pin is the operator's switch until the server restart applies the desktop-view fix.
