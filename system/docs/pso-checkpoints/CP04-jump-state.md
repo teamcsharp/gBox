@@ -230,3 +230,38 @@ focus gap described in round 66. With the alias fix, the boot walk now has both 
 between focus and keys.
 
 The i9 has no session; the next live window is one command: `python system/tools/pso_boot_local.py --start-at press_start`.
+
+## Round 96: the window opened, the launch was admitted, and the input path is now a measured NO
+
+At 18:0x the operator's idle time reached **327 s** and the CPU dropped to 71 %, so a launch was queued and **admitted** -
+`job 1b349dbb3ee94db4`, `state=running`, `admission=` (empty), session **`83202f53e9cd4aa5-1b349dbb3ee94db4`**, emulator
+window `gBox Dolphin` pid **33928**.
+
+**What worked, live:** the session booted and RAM reads answered immediately -
+`{"mode": 0, "floor": 0, "episode": 1, "player": null, "entities": 0}` (the attract loop) - and the CP9 seed descriptor read
+`[0x80585F6C] = 0x0` at the title, exactly as expected (the descriptor is set by `FUN_802019f8` when a save slot is chosen, so
+a seed read needs the character select or later).
+
+**What did not work, and is now measured rather than suspected - input does not reach the game from an agent:**
+
+| path | attempts | result |
+|---|---|---|
+| local `SendInput` via the single-process driver, after `win_bring_to_front(33928)` | 1 | `focus lost before pressing` - the foreground is taken back before the press |
+| local `SendInput` **unfocused** (the "focus-free lane" hope) | 4 | `mode` stayed 0 - no reaction at all |
+| worker relay `POST /api/sessions/<sid>/input`, actor `agent` and `autoplay` | 6 | `{"queued": 1}` each time, `mode` stayed 0 |
+
+So all three input routes fail on one condition: `adapters._win_input_in_front` only lets pad input through when the game's
+top-level window is the **foreground** window (round 66's finding), and an agent-side process cannot hold the foreground while
+the harness window owns it; the worker's relay does not deliver either (same check, or the session has no pad binding). The
+game is not headless - it is docked in the app - but it does not receive keys while another window is in front.
+
+**What this means for CP4 and CP16:**
+
+* CP4's boot walk (and CP5/CP10/CP12's frame, which all need to press buttons) needs **one** of: the operator clicking the
+  game window once (the foreground then belongs to the game for the session), a worker op that activates the window and
+  injects in one step, or a launch that carries a **pad binding** so the relay has something to inject through.
+* CP16's own "if blocked" clause is now the honest state: the stick/relay path was measured and **does not deliver**, so the
+  keyboard walker stays, live only under rule 7. The test itself ("hold `up` for 2 s through the virtual pad") cannot run
+  until the pad path delivers at all.
+
+The session was stopped (`job 19fdf60d00a84bdc`, `ended: true`), `/api/sessions` is empty, and the i9 is clean.
