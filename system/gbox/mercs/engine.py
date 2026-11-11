@@ -287,6 +287,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         # A driver with no teamplay: the bot alone on P1, the score P1's own (Driver.solo_p1). round_reports and
         # MercMode adoption require this exact role; SessionRuntime records it for the titles that have teamplay.
         stats.update(team_role="solo_p1", scoring_scope="solo")
+    combo_step = None
     try:
         from . import lessons as lesson_store
         from .notebook import Notebook
@@ -295,6 +296,12 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         config = getattr(getattr(m,"adapter",None),"config",None)
         if config is not None and callable(getattr(config,"token",None)):
             notebook.configure_knowledge(config.public_url or "http://127.0.0.1:8765",config.token())
+            # Every combo lost files one follow report (gbox.mercs.combo_reports), rate-capped per round.
+            from . import combo_reports
+            combo_reports.configure(config.public_url or "http://127.0.0.1:8765", config.token(),
+                                    title=str(prof.get("map_id") or ""),
+                                    session_id=str(stats.get("source_session_id") or ""))
+            combo_step = combo_reports.observe
     except Exception as exc:
         stats["round_notebook_error"] = str(exc)[:200]
     if prof.get("map_id") == "BLUS30491":
@@ -614,6 +621,12 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 continue
             if trace is not None:
                 trace.observe(snap, bot, stats, now, act.get("hold", ()), "decision", act.get("tap"))
+            if combo_step is not None and where == "playing":
+                try:
+                    combo_step(stats, snap, now, doing=getattr(bot, "doing", None),
+                               why=getattr(bot, "why", None))
+                except Exception as exc:              # noqa: BLE001 - a follow report never ends the round
+                    stats["combo_report_error"] = f"{type(exc).__name__}: {exc}"[:200]
             if director is not None and where == "playing":
                 try:
                     director.observe(doctrine.view(snap, drv, title_mod), act, now)
