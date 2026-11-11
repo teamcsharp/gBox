@@ -523,3 +523,25 @@ machine can actually deliver to the game.
 its *own* pad and the INI names that slot), in which case the agent's pad must be created **first** or the walk must use the
 worker's slot. The driver logs the pad's slot and the walk log will show whether the press landed; `pso_boot_walk`'s first
 checkpoint (`mode` leaves 0) answers it immediately.
+
+## Round 104: a driver that does not care which pad the launch binds
+
+Round 103 showed the agent can hold slot 0; the worker may instead create its own pad (when `_setup_vpad` succeeds) and bind
+*that* slot, in which case the worker's `send_input` applies to its pad and the relay is the path that works. Rather than
+guess, the driver now probes both:
+
+```
+1. create the agent's pad (slot 0) early - harmless when the launch binds slot 0, ignored when it binds another
+2. read GCPad1's bound Device from GCPadNew.ini and log it (the last session's line is Device = XInput/0/Gamepad)
+3. probe: one START through the HTTP relay, read `mode`; if unchanged, one START through the agent's pad, read `mode`
+4. walk with whichever path changed the state; if neither did, stop before the walk and say so
+```
+
+`docs/research/pso-cp4-padwalk2.py` is that driver. Its log answers the whole question in three lines (pad slot, bound device,
+which probe landed), and `pso_boot_walk`'s first checkpoint confirms it again.
+
+**Why this is the right shape:** the two paths are mutually exclusive by construction - the worker only routes agent input to a
+pad when it has one, and the fallback INI only binds slot 0 when it has none - so auto-selecting between them covers both
+outcomes of `_setup_vpad` without knowing in advance which happened.
+
+**Window this round:** none (operator idle 49 s, CPU 76 %). The driver is staged for the next one.
