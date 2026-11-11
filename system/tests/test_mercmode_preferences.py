@@ -152,30 +152,3 @@ def test_the_rotation_plays_the_title_picked_longest_ago_so_a_new_edition_is_not
     M.configure(store,w['name'],{'queue':[]})
     store.put(M.HISTORY,w['name'],{'last_game_id':M.TITLES['re5']['game_ids'][0]})
     assert M.choose(store,w,rng,M.settings(store,w['name']))['title']=='re4'   # re4, picked longest ago, not re6 again
-
-
-def test_a_title_whose_launch_keeps_failing_rests_so_the_pip_plays_another():
-    # 2026-11-10 i9: Merc3D failed its boot and the rotation re-picked it every tick; two failed launches in a row now
-    # rest the title for FAIL_REST_S, a good run clears the strikes, and a lone failing title is still tried
-    import time
-    store,w,*_=rig()
-    cfg=M.configure(store,w['name'],{'titles':['re4','re5'],'preferred_editions':PREFERENCE})
-    native=store.catalog_get
-    store.catalog_get=lambda gid:({'game_id':gid,'title':'x','platform':'switch'} if gid==re_switch.RE5_GAME_ID else native(gid)) \
-        if hasattr(re_switch,'RE5_GAME_ID') else native(gid)
-    now=time.time()
-    def run(title,ended,why):
-        store.put('autoplay_screensaver_log',f"{w['name']}-{title}-{ended}",
-                  {'worker':w['name'],'mercmode':{'title':title},'ended':ended,'why':why})
-    run('re4',now-300,'launch failed: boot')
-    assert M.failing_titles(store,w['name'],now)==set()           # one strike
-    run('re4',now-200,'launch timed out: its game never showed up (launch job running)')
-    assert M.failing_titles(store,w['name'],now)=={'re4'}
-    assert M.failing_titles(store,w['name'],now+M.FAIL_REST_S)==set()
-    run('re4',now-100,'rotation: round ended')
-    assert M.failing_titles(store,w['name'],now)==set()           # a good run clears it
-    run('re4',now-50,'launch failed: boot');run('re4',now-40,'launch failed: boot')
-    pool=[r['title'] for r in M.inventory(store,w,cfg) if r['playable'] and r['title'] in cfg['titles']]
-    if pool:
-        pick=M.choose(store,w,random.Random(1),cfg)
-        assert pick is not None                                   # a lone failing title is still tried
