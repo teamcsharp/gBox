@@ -2611,6 +2611,9 @@ def create_app(config: Config) -> FastAPI:
     class TestingIn(BaseModel):
         available: bool | None = None
         budget_percent: int | None = Field(default=None, ge=10, le=90)
+        # the operator's designation: this PC may run agent work while they are using it (no five-minute idle wait;
+        # the CPU/GPU/memory budgets still apply). 2026-11-10: "play PSO on the i9 despite me being on the PC".
+        allow_while_active: bool | None = None
 
     @app.get("/api/testing/workers")
     def testing_workers(actor=Depends(auth)):
@@ -2641,15 +2644,20 @@ def create_app(config: Config) -> FastAPI:
     def testing_worker_set(wid: str, body: TestingIn, actor=Depends(auth)):
         from . import background_testing
         w = store.get("worker", _wid(wid)) or next((x for x in workers() if x.get("name") == wid), None) or _404()
-        if body.available is None and body.budget_percent is None:
-            raise HTTPException(422, 'Choose availability or a resource budget.')
+        if body.available is None and body.budget_percent is None and body.allow_while_active is None:
+            raise HTTPException(422, 'Choose availability, a resource budget or whether the agent may work while you use this PC.')
         with store.lock:
             if body.available is not None:
                 background_testing.set_available(store, w["name"], body.available)
-            if body.budget_percent is not None:
+            if body.budget_percent is not None or body.allow_while_active is not None:
                 setting = store.get('setting', background_testing.SETTING) or {}
                 policies = dict(setting.get('policies') or {})
-                policies[w['name']] = {'budget_percent': body.budget_percent}
+                row = dict(policies.get(w['name']) or {})
+                if body.budget_percent is not None:
+                    row['budget_percent'] = body.budget_percent
+                if body.allow_while_active is not None:
+                    row['allow_while_active'] = body.allow_while_active
+                policies[w['name']] = row
                 store.put('setting', background_testing.SETTING, setting | {'policies': policies})
         store.audit(actor, "worker.background_testing", w["id"], body.model_dump(exclude_none=True) | {'name': w['name']})
         return testing_workers(actor)

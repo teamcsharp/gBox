@@ -58,3 +58,43 @@ def test_routes_flag_workers_and_exclude_them_from_other_pc_testing(cfg):
     none = client.get("/api/workers/idle")
     assert none.status_code == 409 and "background testing" in none.json()["detail"]
     assert client.post("/api/testing/workers/nobody", json={"available": True}).status_code == 404
+
+
+def _busy_worker(now):
+    return {"id": "w1", "name": "i9-NUC", "os": "windows", "idle_seconds": 5,
+            "resources": {"sampled_at": now, "cpu_percent": 10, "memory_percent": 40,
+                          "memory_available_bytes": 8 * 1024 ** 3, "gpus": []}}
+
+
+def test_a_pc_the_operator_dedicated_skips_the_idle_wait_but_keeps_the_budgets():
+    """2026-11-10, the operator: "play PSO on the i9 despite me being on the PC" - a per-PC designation of the
+    background-testing policy, not a bypass of the CPU/GPU/memory budget."""
+    now = time.time()
+    s = FakeStore()
+    s.running_sessions = lambda: []
+    worker = _busy_worker(now)
+    assert background_testing.guarded_reason(s, worker, now=now) == "Waiting for five minutes without operator input."
+    s.put("setting", background_testing.SETTING, {"policies": {"i9-NUC": {"allow_while_active": True}}})
+    assert background_testing.policy(s, "i9-NUC")["allow_while_active"] is True
+    assert background_testing.guarded_reason(s, worker, now=now) is None
+    hot = _busy_worker(now) | {"resources": _busy_worker(now)["resources"] | {"cpu_percent": 95}}
+    assert "CPU is at 95%" in (background_testing.guarded_reason(s, hot, now=now) or ""), "the budget still applies"
+    assert background_testing.guarded_reason(s, worker, now=now, allow_active=False) == \
+        "Waiting for five minutes without operator input.", "an explicit False still forces the wait"
+
+
+def test_the_route_stores_the_designation_without_forgetting_the_budget(cfg):
+    app = create_app(cfg)
+    store = app.state.store
+    now = time.time()
+    store.put("worker", "w1", {"id": "w1", "name": "i9-NUC", "os": "windows", "last_seen": now,
+                               "tools": ["launch_game"], "unavailable": {}, "idle_seconds": 5, "active_jobs": 0})
+    client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
+    assert client.post("/api/testing/workers/i9-NUC", json={"budget_percent": 80}).status_code == 200
+    r = client.post("/api/testing/workers/i9-NUC", json={"allow_while_active": True})
+    assert r.status_code == 200, r.text
+    row = next(w for w in r.json()["workers"] if w["name"] == "i9-NUC")
+    assert row["allow_while_active"] is True and row["budget_percent"] == 80, "both parts of the policy kept"
+    off = client.post("/api/testing/workers/i9-NUC", json={"allow_while_active": False})
+    row = next(w for w in off.json()["workers"] if w["name"] == "i9-NUC")
+    assert row["allow_while_active"] is False and row["budget_percent"] == 80

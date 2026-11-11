@@ -11,9 +11,14 @@ IDLE_MIN_S = 300
 
 
 def policy(store, name, setting=None):
-    """`setting` is the stored SETTING document when the caller already read it (server.workers reads it once for all PCs)."""
+    """`setting` is the stored SETTING document when the caller already read it (server.workers reads it once for all PCs).
+
+    `allow_while_active` is the operator's designation of this PC as one the agent may use while they are on it (the
+    Tasks menu's "allow while I'm using this PC"): the five-minute operator-idle wait is skipped there, the CPU/GPU/memory
+    budgets still apply. The operator asked for the i9's PSO work to run while they work on that PC (2026-11-10)."""
     row = ((store.get('setting', SETTING) or {}) if setting is None else setting).get('policies', {}).get(name) or {}
-    return {'budget_percent': row.get('budget_percent', DEFAULT_BUDGET)}
+    return {'budget_percent': row.get('budget_percent', DEFAULT_BUDGET),
+            'allow_while_active': bool(row.get('allow_while_active', False))}
 
 
 def admission_reason(worker, excluded_names, budget_percent=DEFAULT_BUDGET, *, now=None, allow_active=False, require_gpu=True):
@@ -79,10 +84,11 @@ def requires_gpu(job):
     return job.get('tool') not in {'smb1_sprite_build','photo_sprite_build'}
 
 
-def guarded_reason(store, worker, *, now=None, allow_active=False, require_gpu=True, running=None, setting=None):
+def guarded_reason(store, worker, *, now=None, allow_active=None, require_gpu=True, running=None, setting=None):
     """Controller play may not update input-idle time. Ownership is authoritative.
     `running` (store.running_sessions()) and `setting` (the SETTING document) may be passed by a caller that checks
-    every PC at once (server.workers): the same answer from one read instead of three per worker."""
+    every PC at once (server.workers): the same answer from one read instead of three per worker.
+    allow_active None: the PC's own policy decides (the operator's "allow while I'm using this PC")."""
     from .operator_guard import operator_sessions
     owned = operator_sessions(store.running_sessions() if running is None else running, lambda sid: store.get('slabel', sid),
                               lambda jid: store.get('job', jid), [worker['id']])
@@ -90,7 +96,10 @@ def guarded_reason(store, worker, *, now=None, allow_active=False, require_gpu=T
     owned = [s for s in owned if not telemetry_get(s['session_id'], now=now).get('running')]
     if owned:
         return 'Human gameplay is active on this PC; background compute is waiting.'
-    return admission_reason(worker, excluded(store, setting=setting), policy(store, worker['name'], setting=setting)['budget_percent'],
+    pol = policy(store, worker['name'], setting=setting)
+    if allow_active is None:
+        allow_active = pol['allow_while_active']
+    return admission_reason(worker, excluded(store, setting=setting), pol['budget_percent'],
                             now=now, allow_active=allow_active, require_gpu=require_gpu)
 
 

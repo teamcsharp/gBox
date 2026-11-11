@@ -281,3 +281,6 @@ Then send it the heavy analysis work.
   the three-load evidence even with nobody polling), and the RE4 hand-grenade ring joins the status as a built /
   no-receipt row beside the flash (incendiary still not identified). Targeted gate 163 passed. Still waiting on the
   operator bot-reload (or the 05:00 restart) for the bot modules to load.
+- 2026-11-10 20:20: merged `ds-grenade-re4-bss-20261110` @ `3a6a2885` into main (`17766d37`) - `choose_mailbox()` turns
+  E3's telemetry evidence into one page: it intersects the all-zero pages across every recorded stage load and returns
+  the first in the vetted order, so the watch result becomes a one-line `MAILBOX_AT` commit. Targeted gate 83 passed.
