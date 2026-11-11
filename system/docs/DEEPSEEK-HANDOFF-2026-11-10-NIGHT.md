@@ -188,3 +188,8 @@ Then send it the heavy analysis work.
   summaries and candidate lists, and CP3's labels are leads, never evidence (82 rows, 1,621 functions/hour). Tests:
   `test_pso_llm.py` 7 passed. 26 newer `ds-pso-*` branches (CP4-17 and the swap/editor work) are open for the next
   check-ins.
+
+- 2026-11-10 19:22: gate note correction - the single 3103-test MercMode/RE run wedged on a blocking test after ~2.5 h
+  (pytest-timeout could not interrupt it); gates are run as prefix groups instead. So far: RE5 Switch 10 failed / 713
+  passed / 1 skipped = the known red list exactly; the targeted sets (201-383 tests) are green on the branch and on
+  main after each merge.
