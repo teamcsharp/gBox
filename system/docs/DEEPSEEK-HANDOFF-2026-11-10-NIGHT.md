@@ -262,3 +262,11 @@ Then send it the heavy analysis work.
   and a mission the operator stopped or took over is never restarted; a session another run owns is left alone.
   Regression tests: tests/test_autoplay_mission_restart.py (5) plus the autoplay recovery/handoff/resume suites (42
   passed).
+﻿
+- 2026-11-10 21:1x: **deployment check by hash** (a reusable check-in: the worker's `build_sources` in
+  `GET /api/workers` is a sha256 per gbox source file, so a fix's presence on the Spark is verifiable without ssh).
+  At 21:15: `gbox/mercs/titles/re4_switch_mods.py` **matches local** (the `int + dict` fix is live in the Spark's
+  checkout) and `gbox/mercs/titles/re4_switch.py` matches; `gbox/re4switch_bot.py` and `gbox/tools.py` are still
+  the previous versions (the mods-panel hardening and the mission watchdog await the next autodeploy). The screensaver
+  restarted autoplay itself (job `275ecddb83d2441a`, 21:07) after the failed mission, so the live session got a new
+  mission; the run's `result` still carries the old error until a mission ends.
