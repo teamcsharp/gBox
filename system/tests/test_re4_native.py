@@ -516,3 +516,15 @@ def test_the_committed_mailbox_is_the_three_load_page_in_main_s_known_base():
     the dispatcher at a page the game writes."""
     assert N.MAILBOX_AT == N.R.KNOWN_BASES[0] + 0x1700000
     assert N.MAILBOX_AT % 8 == 0
+
+
+def test_ready_returns_the_player_and_a_generation_for_the_worker_epoch(monkeypatch):
+    """interventions' worker unpacks `p, generation = ctl.ready()`; the RE4 controller returned the bare player, so
+    the first status read after the mailbox stopped `prepare()` refusing died on "cannot unpack non-iterable int
+    object" (live 2026-11-11 11:44). The generation is the player unit's id."""
+    ctl = fake_controller(monkeypatch)
+    monkeypatch.setattr(N.R, "player_unit", lambda m, b: {"ptr": PLAYER, "id": 7, "vtable": BASE + 0xB0C0A0})
+    ctl.check_build = lambda: None
+    player, generation = ctl.ready()
+    assert (player, generation) == (PLAYER, 7)
+    assert ctl.player == PLAYER and ctl.player_id == 7

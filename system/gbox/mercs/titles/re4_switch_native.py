@@ -192,6 +192,13 @@ class Controller(N.Controller):
                               f"pages now: {self.bss_watch_probe()}")
 
     def ready(self):
+        """(player, generation) - the pair `interventions`'s worker and status epoch unpack.
+
+        The RE6/RE5 controllers return that pair; this one returned the bare player, so the moment `prepare()` stopped
+        refusing (the mailbox committed) every status read and click died on "cannot unpack non-iterable int object"
+        (live 2026-11-11 11:44, session 0569c82d21614288-3c2b58fb55314015). The harness's generation is the player
+        unit's own id, which changes when the unit does.
+        """
         self.check_build()
         if getattr(self.ad, "paused", False):
             raise Unavailable("session is paused")
@@ -200,7 +207,7 @@ class Controller(N.Controller):
             unit = R.read_unit(self, self.player)
             if unit is None or unit.get("id") != self.player_id:
                 raise Unavailable("the player unit changed while the harness is attached")
-            return self.player
+            return self.player, self.player_id
         unit = R.player_unit(self, self.base)
         if unit is None or not R.ptr_ok(unit.get("ptr")):
             raise Unavailable("no player unit in a live Mercenaries round")
@@ -208,7 +215,7 @@ class Controller(N.Controller):
         if not (R.PLAYER_VTABLE_RANGE[0] <= cls < R.PLAYER_VTABLE_RANGE[1]) or cls % 8:
             raise Unavailable(f"the player's class {cls:#x} is not a unit class this harness supports")
         self.player, self.player_class, self.player_id = unit["ptr"], cls, unit.get("id")
-        return self.player
+        return self.player, self.player_id
 
     def attached(self) -> bool:
         return self.player is not None and self.original is not None and \
