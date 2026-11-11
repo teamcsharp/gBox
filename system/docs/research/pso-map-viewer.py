@@ -24,6 +24,7 @@ SID = "78a8746f5b514450-e9867839b8b74d3d"
 PORT = 8801
 ROOMS = Path(r"D:\gBox\pso-ds\routes\forest1-rooms.json")
 ROUTES = Path(r"D:\gBox\pso-ds\routes")
+OBJECTS = Path(r"D:\gBox\pso-ds\routes\set-objects-floors.json")
 GOTO = Path(r"D:\gBox\pso-ds\goto.json")
 DEMO = Path(r"D:\gBox\pso-ds\demo")
 TABLE, MAX_ENTRIES, HP = 0x8050D460, 256, 0x32C
@@ -245,6 +246,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
             return self._send(200, PAGE, "text/html; charset=utf-8")
+        if self.path == "/api/objects" or self.path.startswith("/api/objects?"):
+            floor = "1"
+            if "?" in self.path:
+                for part in self.path.split("?", 1)[1].split("&"):
+                    if part.startswith("floor="):
+                        floor = part.split("=", 1)[1]
+            try:
+                data = json.loads(OBJECTS.read_text(encoding="utf-8"))
+            except Exception:                                    # noqa: BLE001
+                data = {}
+            block = data.get(floor) or {}
+            return self._send(200, json.dumps({"floor": floor, "set": block.get("set"),
+                                               "objects": block.get("objects") or []}))
         if self.path == "/api/rooms" or self.path.startswith("/api/rooms?"):
             floor = 1
             if "?" in self.path:

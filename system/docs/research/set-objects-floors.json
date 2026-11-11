@@ -1,0 +1,2780 @@
+{
+ "1": {
+  "set": "map_forest01d.dat",
+  "objects": [
+   {
+    "record": 0,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 483.1,
+    "y": 16.2,
+    "z": 813.6
+   },
+   {
+    "record": 1,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 376.2,
+    "y": 16.2,
+    "z": 649.9
+   },
+   {
+    "record": 2,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 349.5,
+    "y": 16.2,
+    "z": 730.7
+   },
+   {
+    "record": 3,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 333.3,
+    "y": 16.2,
+    "z": 583.6
+   },
+   {
+    "record": 4,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 236.9,
+    "y": 16.2,
+    "z": 584.3
+   },
+   {
+    "record": 5,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": -24.7,
+    "y": 21.2,
+    "z": 724.3
+   },
+   {
+    "record": 6,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 733.6,
+    "y": 16.2,
+    "z": 516.0
+   },
+   {
+    "record": 7,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 700.2,
+    "y": 16.2,
+    "z": 99.7
+   },
+   {
+    "record": 8,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 521.1,
+    "y": 16.2,
+    "z": 260.6
+   },
+   {
+    "record": 9,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 1082.2,
+    "y": 10.7,
+    "z": 1030.4
+   },
+   {
+    "record": 10,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 947.9,
+    "y": 19.3,
+    "z": 1014.1
+   },
+   {
+    "record": 11,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 929.4,
+    "y": 10.7,
+    "z": 851.9
+   },
+   {
+    "record": 12,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 703.4,
+    "y": 31.1,
+    "z": 1026.0
+   },
+   {
+    "record": 13,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 806.9,
+    "y": 31.1,
+    "z": 654.2
+   },
+   {
+    "record": 14,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 582.1,
+    "y": 13.7,
+    "z": 679.7
+   },
+   {
+    "record": 15,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 585.3,
+    "y": 13.7,
+    "z": 869.7
+   },
+   {
+    "record": 16,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 777.9,
+    "y": 22.1,
+    "z": 528.5
+   },
+   {
+    "record": 17,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 795.1,
+    "y": 25.2,
+    "z": 1038.4
+   },
+   {
+    "record": 18,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 774.8,
+    "y": 31.5,
+    "z": 896.8
+   },
+   {
+    "record": 19,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 1051.3,
+    "y": 5.3,
+    "z": 905.8
+   },
+   {
+    "record": 20,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 765.9,
+    "y": 11.9,
+    "z": 367.4
+   },
+   {
+    "record": 21,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 636.6,
+    "y": 2.7,
+    "z": 163.3
+   },
+   {
+    "record": 22,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 755.7,
+    "y": 11.3,
+    "z": 166.1
+   },
+   {
+    "record": 23,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 679.9,
+    "y": 0.9,
+    "z": 61.0
+   },
+   {
+    "record": 24,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 857.7,
+    "y": 3.6,
+    "z": -41.5
+   },
+   {
+    "record": 25,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 1070.4,
+    "y": 7.4,
+    "z": -86.5
+   },
+   {
+    "record": 26,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 1011.0,
+    "y": 20.6,
+    "z": 144.3
+   },
+   {
+    "record": 27,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 977.9,
+    "y": 10.5,
+    "z": 32.0
+   },
+   {
+    "record": 28,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 966.7,
+    "y": 34.2,
+    "z": 416.8
+   },
+   {
+    "record": 29,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 1041.8,
+    "y": 33.7,
+    "z": 535.5
+   },
+   {
+    "record": 30,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 983.8,
+    "y": 35.5,
+    "z": 308.2
+   },
+   {
+    "record": 31,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 1077.8,
+    "y": 28.8,
+    "z": 458.5
+   },
+   {
+    "record": 32,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 576.3,
+    "y": -0.9,
+    "z": 456.7
+   },
+   {
+    "record": 33,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 652.8,
+    "y": -0.9,
+    "z": 507.6
+   },
+   {
+    "record": 34,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 530.8,
+    "y": -6.5,
+    "z": 379.9
+   },
+   {
+    "record": 35,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 440.8,
+    "y": -3.3,
+    "z": 228.1
+   },
+   {
+    "record": 36,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 374.6,
+    "y": 9.4,
+    "z": 135.8
+   },
+   {
+    "record": 37,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 273.0,
+    "y": 14.3,
+    "z": -33.4
+   },
+   {
+    "record": 38,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 199.3,
+    "y": -2.6,
+    "z": -128.7
+   },
+   {
+    "record": 39,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 141.1,
+    "y": 15.2,
+    "z": 111.7
+   },
+   {
+    "record": 40,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 192.2,
+    "y": 13.2,
+    "z": 153.0
+   },
+   {
+    "record": 41,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 254.2,
+    "y": 16.8,
+    "z": 142.1
+   },
+   {
+    "record": 42,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 61.0,
+    "y": 13.3,
+    "z": 66.2
+   },
+   {
+    "record": 43,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 32.8,
+    "y": 9.3,
+    "z": -28.5
+   },
+   {
+    "record": 44,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 30.8,
+    "y": 10.5,
+    "z": -4.5
+   },
+   {
+    "record": 45,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": -90.7,
+    "y": 4.4,
+    "z": -34.4
+   },
+   {
+    "record": 46,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": -35.6,
+    "y": 4.6,
+    "z": -150.9
+   },
+   {
+    "record": 47,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": -49.8,
+    "y": 20.5,
+    "z": 161.8
+   },
+   {
+    "record": 48,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 92.5,
+    "y": 22.2,
+    "z": 407.1
+   },
+   {
+    "record": 49,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": -103.5,
+    "y": 12.3,
+    "z": 608.1
+   },
+   {
+    "record": 50,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": -100.9,
+    "y": 21.3,
+    "z": 476.6
+   },
+   {
+    "record": 51,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 84.5,
+    "y": 5.8,
+    "z": 828.4
+   },
+   {
+    "record": 52,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 159.7,
+    "y": 16.6,
+    "z": 705.3
+   },
+   {
+    "record": 53,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 193.6,
+    "y": 11.5,
+    "z": 731.1
+   },
+   {
+    "record": 54,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 202.0,
+    "y": 25.1,
+    "z": 581.7
+   },
+   {
+    "record": 55,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 334.0,
+    "y": 24.2,
+    "z": 600.8
+   },
+   {
+    "record": 56,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 345.2,
+    "y": 21.1,
+    "z": 503.4
+   },
+   {
+    "record": 57,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 517.6,
+    "y": 35.7,
+    "z": 561.8
+   },
+   {
+    "record": 58,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 327.9,
+    "y": 35.5,
+    "z": 686.2
+   },
+   {
+    "record": 59,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 350.6,
+    "y": 19.1,
+    "z": 829.2
+   },
+   {
+    "record": 60,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 452.9,
+    "y": 10.6,
+    "z": 841.2
+   },
+   {
+    "record": 61,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": -378.4,
+    "y": 89.8,
+    "z": -144.2
+   },
+   {
+    "record": 62,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": -154.4,
+    "y": 70.0,
+    "z": -104.8
+   },
+   {
+    "record": 63,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": -396.4,
+    "y": 81.3,
+    "z": 202.4
+   },
+   {
+    "record": 64,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": -439.0,
+    "y": 80.5,
+    "z": 697.0
+   },
+   {
+    "record": 65,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": -253.1,
+    "y": 65.5,
+    "z": 441.2
+   },
+   {
+    "record": 66,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": -278.4,
+    "y": 72.4,
+    "z": 850.1
+   },
+   {
+    "record": 67,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 395.7,
+    "y": 58.3,
+    "z": 268.2
+   },
+   {
+    "record": 68,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": -2.5,
+    "y": 83.1,
+    "z": 900.6
+   },
+   {
+    "record": 69,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 257.6,
+    "y": 89.1,
+    "z": 923.6
+   },
+   {
+    "record": 70,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 246.5,
+    "y": 97.8,
+    "z": 657.4
+   },
+   {
+    "record": 71,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 473.9,
+    "y": 82.7,
+    "z": 659.9
+   },
+   {
+    "record": 72,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 560.4,
+    "y": 86.9,
+    "z": 842.4
+   },
+   {
+    "record": 73,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 592.8,
+    "y": 88.2,
+    "z": 903.3
+   },
+   {
+    "record": 74,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 532.7,
+    "y": 97.7,
+    "z": 1067.4
+   },
+   {
+    "record": 75,
+    "class_id": 34304,
+    "class": "TObjEnvSoundGlobal",
+    "x": 659.2,
+    "y": 50.2,
+    "z": 906.5
+   },
+   {
+    "record": 76,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 181.5,
+    "y": 83.8,
+    "z": 621.2
+   },
+   {
+    "record": 77,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 475.3,
+    "y": 99.6,
+    "z": 531.4
+   },
+   {
+    "record": 78,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 517.2,
+    "y": 107.0,
+    "z": 434.8
+   },
+   {
+    "record": 79,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 71.1,
+    "y": 54.5,
+    "z": 228.2
+   },
+   {
+    "record": 80,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 437.7,
+    "y": 67.7,
+    "z": 176.5
+   },
+   {
+    "record": 81,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 741.6,
+    "y": 59.8,
+    "z": -90.9
+   },
+   {
+    "record": 82,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 633.3,
+    "y": 77.6,
+    "z": 125.1
+   },
+   {
+    "record": 83,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 603.5,
+    "y": 83.4,
+    "z": 412.7
+   },
+   {
+    "record": 84,
+    "class_id": 34048,
+    "class": "TObjEnvSoundEx",
+    "x": 798.8,
+    "y": 115.0,
+    "z": 296.8
+   },
+   {
+    "record": 85,
+    "class_id": 34304,
+    "class": "TObjEnvSoundGlobal",
+    "x": 612.4,
+    "y": 67.5,
+    "z": 925.5
+   },
+   {
+    "record": 86,
+    "class_id": 34304,
+    "class": "TObjEnvSoundGlobal",
+    "x": 216.1,
+    "y": 67.5,
+    "z": 45.0
+   },
+   {
+    "record": 87,
+    "class_id": 34304,
+    "class": "TObjEnvSoundGlobal",
+    "x": 260.6,
+    "y": 86.5,
+    "z": -11.4
+   },
+   {
+    "record": 88,
+    "class_id": 34304,
+    "class": "TObjEnvSoundGlobal",
+    "x": 253.4,
+    "y": 41.5,
+    "z": 44.0
+   },
+   {
+    "record": 89,
+    "class_id": 34304,
+    "class": "TObjEnvSoundGlobal",
+    "x": -129.6,
+    "y": 49.8,
+    "z": -77.9
+   },
+   {
+    "record": 90,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -399.3,
+    "y": 113.1,
+    "z": 406.0
+   },
+   {
+    "record": 91,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -432.8,
+    "y": 113.1,
+    "z": 406.3
+   },
+   {
+    "record": 92,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -443.0,
+    "y": 113.1,
+    "z": 374.7
+   },
+   {
+    "record": 93,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -416.0,
+    "y": 113.1,
+    "z": 353.7
+   },
+   {
+    "record": 94,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -388.4,
+    "y": 113.1,
+    "z": 374.1
+   },
+   {
+    "record": 95,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 343.4,
+    "y": 8.3,
+    "z": 1049.1
+   },
+   {
+    "record": 96,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 198.7,
+    "y": 49.3,
+    "z": 974.3
+   },
+   {
+    "record": 97,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 217.0,
+    "y": 21.3,
+    "z": 1001.0
+   },
+   {
+    "record": 98,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 54.7,
+    "y": 50.7,
+    "z": 1049.7
+   },
+   {
+    "record": 99,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -60.0,
+    "y": 19.3,
+    "z": 861.3
+   },
+   {
+    "record": 100,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -529.8,
+    "y": 34.4,
+    "z": 134.8
+   },
+   {
+    "record": 101,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -282.6,
+    "y": 10.3,
+    "z": 158.1
+   },
+   {
+    "record": 102,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -208.0,
+    "y": 24.5,
+    "z": 129.3
+   },
+   {
+    "record": 103,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -3.4,
+    "y": 3.3,
+    "z": 481.8
+   },
+   {
+    "record": 104,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 306.8,
+    "y": 16.2,
+    "z": 94.2
+   },
+   {
+    "record": 105,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 408.0,
+    "y": 11.0,
+    "z": 27.1
+   },
+   {
+    "record": 106,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 326.7,
+    "y": 36.7,
+    "z": 343.6
+   },
+   {
+    "record": 107,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 268.2,
+    "y": 11.1,
+    "z": 958.0
+   },
+   {
+    "record": 108,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 261.6,
+    "y": 12.3,
+    "z": 945.4
+   },
+   {
+    "record": 109,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 434.6,
+    "y": 3.8,
+    "z": 894.5
+   },
+   {
+    "record": 110,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 432.3,
+    "y": 3.0,
+    "z": 905.3
+   },
+   {
+    "record": 111,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 151.8,
+    "y": 10.6,
+    "z": 392.9
+   },
+   {
+    "record": 112,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 153.9,
+    "y": 10.7,
+    "z": 365.8
+   },
+   {
+    "record": 113,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -26.1,
+    "y": -2.3,
+    "z": 122.4
+   },
+   {
+    "record": 114,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -9.3,
+    "y": -2.0,
+    "z": 95.1
+   },
+   {
+    "record": 115,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 445.4,
+    "y": 33.1,
+    "z": 442.8
+   },
+   {
+    "record": 116,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 430.1,
+    "y": 32.0,
+    "z": 468.5
+   },
+   {
+    "record": 117,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 299.3,
+    "y": 27.6,
+    "z": 393.3
+   },
+   {
+    "record": 118,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 290.9,
+    "y": 27.1,
+    "z": 417.2
+   },
+   {
+    "record": 119,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -481.2,
+    "y": 10.5,
+    "z": -79.6
+   },
+   {
+    "record": 120,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -439.1,
+    "y": 9.5,
+    "z": -116.5
+   },
+   {
+    "record": 121,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -453.9,
+    "y": 10.2,
+    "z": -94.9
+   },
+   {
+    "record": 122,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -376.4,
+    "y": 11.2,
+    "z": -97.9
+   },
+   {
+    "record": 123,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -331.9,
+    "y": 12.1,
+    "z": -40.1
+   },
+   {
+    "record": 124,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -327.9,
+    "y": 13.0,
+    "z": -6.6
+   },
+   {
+    "record": 125,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -334.7,
+    "y": 14.1,
+    "z": 26.4
+   },
+   {
+    "record": 126,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -227.5,
+    "y": 70.3,
+    "z": -116.0
+   },
+   {
+    "record": 127,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -194.3,
+    "y": 69.5,
+    "z": -83.6
+   },
+   {
+    "record": 128,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -175.2,
+    "y": 69.5,
+    "z": -68.5
+   },
+   {
+    "record": 129,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -171.8,
+    "y": 111.1,
+    "z": -171.1
+   },
+   {
+    "record": 130,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -149.0,
+    "y": 111.1,
+    "z": -140.8
+   },
+   {
+    "record": 131,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -74.7,
+    "y": 108.8,
+    "z": -144.7
+   },
+   {
+    "record": 132,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -53.5,
+    "y": 69.3,
+    "z": -135.3
+   },
+   {
+    "record": 133,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -68.4,
+    "y": 69.3,
+    "z": -89.3
+   },
+   {
+    "record": 134,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -12.7,
+    "y": 37.7,
+    "z": -70.5
+   },
+   {
+    "record": 135,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -19.9,
+    "y": 37.7,
+    "z": -35.9
+   },
+   {
+    "record": 136,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -95.2,
+    "y": 36.6,
+    "z": 43.6
+   },
+   {
+    "record": 137,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -136.2,
+    "y": 26.7,
+    "z": 51.6
+   },
+   {
+    "record": 138,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -265.3,
+    "y": 45.7,
+    "z": -92.6
+   },
+   {
+    "record": 139,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -247.0,
+    "y": 45.7,
+    "z": -66.0
+   },
+   {
+    "record": 140,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -225.0,
+    "y": 45.7,
+    "z": -31.8
+   },
+   {
+    "record": 141,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -207.6,
+    "y": 45.7,
+    "z": -1.7
+   },
+   {
+    "record": 142,
+    "class_id": 4352,
+    "class": "TOSwitchAttackSub",
+    "x": -520.0,
+    "y": 700.0,
+    "z": -500.0
+   },
+   {
+    "record": 143,
+    "class_id": 4352,
+    "class": "TOSwitchAttackSub",
+    "x": -400.0,
+    "y": 250.0,
+    "z": -100.0
+   },
+   {
+    "record": 144,
+    "class_id": 1536,
+    "class": "class 1536",
+    "x": 0.0,
+    "y": 0.0,
+    "z": 0.0
+   },
+   {
+    "record": 145,
+    "class_id": 1536,
+    "class": "class 1536",
+    "x": -487.4,
+    "y": 11.8,
+    "z": -917.7
+   },
+   {
+    "record": 146,
+    "class_id": 1536,
+    "class": "class 1536",
+    "x": -708.6,
+    "y": 11.5,
+    "z": -999.2
+   },
+   {
+    "record": 147,
+    "class_id": 1536,
+    "class": "class 1536",
+    "x": -229.6,
+    "y": 11.5,
+    "z": -646.4
+   },
+   {
+    "record": 148,
+    "class_id": 1536,
+    "class": "class 1536",
+    "x": 62.2,
+    "y": 11.5,
+    "z": -505.9
+   },
+   {
+    "record": 149,
+    "class_id": 1536,
+    "class": "class 1536",
+    "x": 49.0,
+    "y": 11.5,
+    "z": -54.4
+   }
+  ]
+ },
+ "2": {
+  "set": "map_forest02d.dat",
+  "objects": [
+   {
+    "record": 0,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": -53.6,
+    "y": 89.8,
+    "z": -36.2
+   },
+   {
+    "record": 1,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 102.1,
+    "y": 42.2,
+    "z": 145.0
+   },
+   {
+    "record": 2,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": -44.0,
+    "y": 48.0,
+    "z": 141.3
+   },
+   {
+    "record": 3,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 20.6,
+    "y": 48.0,
+    "z": 156.2
+   },
+   {
+    "record": 4,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 55.5,
+    "y": 39.3,
+    "z": 311.0
+   },
+   {
+    "record": 5,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 232.1,
+    "y": 37.6,
+    "z": -18.4
+   },
+   {
+    "record": 6,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 325.0,
+    "y": 28.9,
+    "z": 266.6
+   },
+   {
+    "record": 7,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 414.8,
+    "y": 23.2,
+    "z": 268.1
+   },
+   {
+    "record": 8,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 270.9,
+    "y": 34.3,
+    "z": 41.9
+   },
+   {
+    "record": 9,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 629.5,
+    "y": 12.6,
+    "z": 172.6
+   },
+   {
+    "record": 10,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 805.4,
+    "y": 5.2,
+    "z": 186.4
+   },
+   {
+    "record": 11,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 465.0,
+    "y": 18.7,
+    "z": 365.2
+   },
+   {
+    "record": 12,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 624.0,
+    "y": 14.3,
+    "z": 82.8
+   },
+   {
+    "record": 13,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 549.7,
+    "y": 14.7,
+    "z": 436.9
+   },
+   {
+    "record": 14,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 627.1,
+    "y": 10.7,
+    "z": 401.6
+   },
+   {
+    "record": 15,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 421.4,
+    "y": 18.3,
+    "z": 624.1
+   },
+   {
+    "record": 16,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 343.5,
+    "y": 18.3,
+    "z": 742.1
+   },
+   {
+    "record": 17,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 320.1,
+    "y": 18.3,
+    "z": 823.4
+   },
+   {
+    "record": 18,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 178.9,
+    "y": 25.0,
+    "z": 825.5
+   },
+   {
+    "record": 19,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 344.4,
+    "y": 19.7,
+    "z": 1041.1
+   },
+   {
+    "record": 20,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 292.7,
+    "y": 19.7,
+    "z": 1052.8
+   },
+   {
+    "record": 21,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 245.0,
+    "y": 19.7,
+    "z": 921.8
+   },
+   {
+    "record": 22,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 139.1,
+    "y": 18.9,
+    "z": 983.6
+   },
+   {
+    "record": 23,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 82.2,
+    "y": 18.9,
+    "z": 982.0
+   },
+   {
+    "record": 24,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 10.3,
+    "y": 20.6,
+    "z": 941.8
+   },
+   {
+    "record": 25,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": -84.7,
+    "y": 23.8,
+    "z": 831.0
+   },
+   {
+    "record": 26,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 417.2,
+    "y": 18.3,
+    "z": 540.3
+   },
+   {
+    "record": 27,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": -150.4,
+    "y": 38.6,
+    "z": 649.7
+   },
+   {
+    "record": 28,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": -110.0,
+    "y": 38.6,
+    "z": 557.1
+   },
+   {
+    "record": 29,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 17.2,
+    "y": 33.0,
+    "z": 522.2
+   },
+   {
+    "record": 30,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 160.5,
+    "y": 25.4,
+    "z": 523.1
+   },
+   {
+    "record": 31,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": -19.0,
+    "y": 33.0,
+    "z": 475.1
+   },
+   {
+    "record": 32,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": -89.7,
+    "y": 58.8,
+    "z": 376.3
+   },
+   {
+    "record": 33,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 622.9,
+    "y": 61.6,
+    "z": -19.8
+   },
+   {
+    "record": 34,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 831.3,
+    "y": 53.3,
+    "z": -98.5
+   },
+   {
+    "record": 35,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 883.9,
+    "y": 53.3,
+    "z": 167.6
+   },
+   {
+    "record": 36,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 1000.1,
+    "y": 53.3,
+    "z": 166.7
+   },
+   {
+    "record": 37,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 1020.9,
+    "y": 53.3,
+    "z": 267.8
+   },
+   {
+    "record": 38,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 1067.4,
+    "y": 53.3,
+    "z": 295.4
+   },
+   {
+    "record": 39,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 1097.3,
+    "y": 54.4,
+    "z": 599.9
+   },
+   {
+    "record": 40,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 1032.4,
+    "y": 54.4,
+    "z": 679.3
+   },
+   {
+    "record": 41,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 879.0,
+    "y": 54.4,
+    "z": 669.6
+   },
+   {
+    "record": 42,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 781.0,
+    "y": 54.4,
+    "z": 563.3
+   },
+   {
+    "record": 43,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 819.6,
+    "y": 4.3,
+    "z": 399.7
+   },
+   {
+    "record": 44,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 808.5,
+    "y": 4.5,
+    "z": 326.8
+   },
+   {
+    "record": 45,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 422.4,
+    "y": 22.1,
+    "z": 476.6
+   },
+   {
+    "record": 46,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 661.8,
+    "y": 22.1,
+    "z": 447.5
+   },
+   {
+    "record": 47,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 667.2,
+    "y": 22.1,
+    "z": 362.3
+   },
+   {
+    "record": 48,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 265.0,
+    "y": 22.4,
+    "z": 780.2
+   },
+   {
+    "record": 49,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 279.7,
+    "y": 23.6,
+    "z": 875.9
+   },
+   {
+    "record": 50,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 511.0,
+    "y": 20.2,
+    "z": 946.1
+   },
+   {
+    "record": 51,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 596.9,
+    "y": 20.2,
+    "z": 915.1
+   },
+   {
+    "record": 52,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 824.1,
+    "y": 28.5,
+    "z": 1038.4
+   },
+   {
+    "record": 53,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 643.6,
+    "y": 21.1,
+    "z": 847.0
+   },
+   {
+    "record": 54,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 687.4,
+    "y": 18.2,
+    "z": 791.3
+   },
+   {
+    "record": 55,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 758.7,
+    "y": 11.6,
+    "z": 696.1
+   },
+   {
+    "record": 56,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 967.7,
+    "y": 24.4,
+    "z": 1058.6
+   },
+   {
+    "record": 57,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 964.5,
+    "y": 61.2,
+    "z": 74.9
+   },
+   {
+    "record": 58,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 237.1,
+    "y": 25.4,
+    "z": 634.9
+   },
+   {
+    "record": 59,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 236.6,
+    "y": 25.4,
+    "z": 567.7
+   },
+   {
+    "record": 60,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 221.3,
+    "y": 29.4,
+    "z": 435.9
+   },
+   {
+    "record": 61,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 210.6,
+    "y": 31.9,
+    "z": 360.5
+   },
+   {
+    "record": 62,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 92.2,
+    "y": 30.4,
+    "z": 439.3
+   },
+   {
+    "record": 63,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 66.9,
+    "y": 25.4,
+    "z": 490.9
+   },
+   {
+    "record": 64,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 115.0,
+    "y": 25.4,
+    "z": 481.4
+   },
+   {
+    "record": 65,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 108.9,
+    "y": 25.4,
+    "z": 543.5
+   },
+   {
+    "record": 66,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 295.9,
+    "y": 39.9,
+    "z": 396.5
+   },
+   {
+    "record": 67,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 219.5,
+    "y": 29.4,
+    "z": 501.7
+   },
+   {
+    "record": 68,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 183.8,
+    "y": 25.4,
+    "z": 654.7
+   },
+   {
+    "record": 69,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 154.2,
+    "y": 31.9,
+    "z": 394.1
+   },
+   {
+    "record": 70,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 377.3,
+    "y": 26.4,
+    "z": 283.0
+   },
+   {
+    "record": 71,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 341.4,
+    "y": 28.3,
+    "z": -3.2
+   },
+   {
+    "record": 72,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 385.3,
+    "y": 28.3,
+    "z": 13.4
+   },
+   {
+    "record": 73,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 443.4,
+    "y": 28.3,
+    "z": 7.3
+   },
+   {
+    "record": 74,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 409.4,
+    "y": 28.3,
+    "z": -38.9
+   },
+   {
+    "record": 75,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 377.9,
+    "y": 28.3,
+    "z": -95.5
+   },
+   {
+    "record": 76,
+    "class_id": 1024,
+    "class": "TOSensorAncient01",
+    "x": 434.1,
+    "y": 28.3,
+    "z": -107.0
+   },
+   {
+    "record": 77,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -695.7,
+    "y": 76.6,
+    "z": -66.9
+   },
+   {
+    "record": 78,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -615.7,
+    "y": 51.9,
+    "z": -18.8
+   },
+   {
+    "record": 79,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 27.1,
+    "y": 12.1,
+    "z": 405.4
+   },
+   {
+    "record": 80,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -235.4,
+    "y": 21.3,
+    "z": 631.7
+   },
+   {
+    "record": 81,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -134.7,
+    "y": 21.6,
+    "z": 966.9
+   },
+   {
+    "record": 82,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -85.2,
+    "y": 21.6,
+    "z": 912.9
+   },
+   {
+    "record": 83,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 125.4,
+    "y": 7.4,
+    "z": 346.0
+   },
+   {
+    "record": 84,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -517.6,
+    "y": 21.2,
+    "z": 965.9
+   },
+   {
+    "record": 85,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -548.0,
+    "y": 21.2,
+    "z": 994.1
+   },
+   {
+    "record": 86,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -591.2,
+    "y": 21.2,
+    "z": 992.6
+   },
+   {
+    "record": 87,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -754.7,
+    "y": 23.9,
+    "z": 880.4
+   },
+   {
+    "record": 88,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -640.4,
+    "y": 36.3,
+    "z": 517.3
+   },
+   {
+    "record": 89,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -774.8,
+    "y": 45.8,
+    "z": 372.9
+   },
+   {
+    "record": 90,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -699.8,
+    "y": 45.8,
+    "z": 262.3
+   },
+   {
+    "record": 91,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -607.6,
+    "y": 40.9,
+    "z": 333.6
+   },
+   {
+    "record": 92,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -622.1,
+    "y": 46.3,
+    "z": 219.1
+   },
+   {
+    "record": 93,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -283.2,
+    "y": 12.6,
+    "z": -70.3
+   },
+   {
+    "record": 94,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -220.7,
+    "y": 12.6,
+    "z": -38.0
+   },
+   {
+    "record": 95,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -310.7,
+    "y": 14.5,
+    "z": 306.4
+   },
+   {
+    "record": 96,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -370.4,
+    "y": 14.5,
+    "z": 362.8
+   },
+   {
+    "record": 97,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -438.6,
+    "y": 14.5,
+    "z": 392.2
+   },
+   {
+    "record": 98,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -477.3,
+    "y": 14.5,
+    "z": 415.1
+   },
+   {
+    "record": 99,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -455.8,
+    "y": 14.5,
+    "z": 474.7
+   },
+   {
+    "record": 100,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -439.1,
+    "y": 14.5,
+    "z": 560.3
+   },
+   {
+    "record": 101,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -429.3,
+    "y": 14.5,
+    "z": 614.7
+   },
+   {
+    "record": 102,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -276.9,
+    "y": 30.6,
+    "z": 16.5
+   },
+   {
+    "record": 103,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -278.5,
+    "y": 28.9,
+    "z": 250.5
+   },
+   {
+    "record": 104,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -261.4,
+    "y": 28.5,
+    "z": 117.1
+   },
+   {
+    "record": 105,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -448.9,
+    "y": 18.7,
+    "z": 593.6
+   },
+   {
+    "record": 106,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -458.0,
+    "y": 18.7,
+    "z": 416.5
+   },
+   {
+    "record": 107,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": -333.8,
+    "y": 18.7,
+    "z": 326.3
+   },
+   {
+    "record": 108,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 155.0,
+    "y": 130.0,
+    "z": -40.0
+   },
+   {
+    "record": 109,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 175.0,
+    "y": 130.0,
+    "z": -60.0
+   },
+   {
+    "record": 110,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 195.0,
+    "y": 130.0,
+    "z": -80.0
+   },
+   {
+    "record": 111,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 215.0,
+    "y": 130.0,
+    "z": -100.0
+   },
+   {
+    "record": 112,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 135.0,
+    "y": 130.0,
+    "z": -60.0
+   },
+   {
+    "record": 113,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 115.0,
+    "y": 130.0,
+    "z": -80.0
+   },
+   {
+    "record": 114,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 95.0,
+    "y": 130.0,
+    "z": -100.0
+   },
+   {
+    "record": 115,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 240.0,
+    "y": 130.0,
+    "z": 157.0
+   },
+   {
+    "record": 116,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 290.0,
+    "y": 130.0,
+    "z": 157.0
+   },
+   {
+    "record": 117,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 340.0,
+    "y": 130.0,
+    "z": 157.0
+   },
+   {
+    "record": 118,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 390.0,
+    "y": 130.0,
+    "z": 157.0
+   },
+   {
+    "record": 119,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 440.0,
+    "y": 130.0,
+    "z": 157.0
+   },
+   {
+    "record": 120,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 240.0,
+    "y": 130.0,
+    "z": 107.0
+   },
+   {
+    "record": 121,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 240.0,
+    "y": 130.0,
+    "z": 57.0
+   },
+   {
+    "record": 122,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 240.0,
+    "y": 130.0,
+    "z": 7.0
+   },
+   {
+    "record": 123,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 240.0,
+    "y": 130.0,
+    "z": -43.0
+   },
+   {
+    "record": 124,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 240.0,
+    "y": 130.0,
+    "z": -93.0
+   },
+   {
+    "record": 125,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 355.0,
+    "y": 130.0,
+    "z": 344.0
+   },
+   {
+    "record": 126,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 375.0,
+    "y": 130.0,
+    "z": 364.0
+   },
+   {
+    "record": 127,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 395.0,
+    "y": 130.0,
+    "z": 384.0
+   },
+   {
+    "record": 128,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 395.0,
+    "y": 130.0,
+    "z": 304.0
+   },
+   {
+    "record": 129,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 375.0,
+    "y": 130.0,
+    "z": 324.0
+   },
+   {
+    "record": 130,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 355.0,
+    "y": 130.0,
+    "z": 450.0
+   },
+   {
+    "record": 131,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 375.0,
+    "y": 130.0,
+    "z": 470.0
+   },
+   {
+    "record": 132,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 395.0,
+    "y": 130.0,
+    "z": 490.0
+   },
+   {
+    "record": 133,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 415.0,
+    "y": 130.0,
+    "z": 510.0
+   },
+   {
+    "record": 134,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 435.0,
+    "y": 130.0,
+    "z": 530.0
+   },
+   {
+    "record": 135,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 375.0,
+    "y": 130.0,
+    "z": 430.0
+   },
+   {
+    "record": 136,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 395.0,
+    "y": 130.0,
+    "z": 410.0
+   },
+   {
+    "record": 137,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 318.3,
+    "y": 64.0,
+    "z": 53.6
+   },
+   {
+    "record": 138,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 318.3,
+    "y": 75.0,
+    "z": 53.6
+   },
+   {
+    "record": 139,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 318.3,
+    "y": 87.0,
+    "z": 53.6
+   },
+   {
+    "record": 140,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 344.6,
+    "y": 64.0,
+    "z": 80.1
+   },
+   {
+    "record": 141,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 344.6,
+    "y": 75.0,
+    "z": 80.1
+   },
+   {
+    "record": 142,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 344.6,
+    "y": 87.4,
+    "z": 80.1
+   },
+   {
+    "record": 143,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 330.6,
+    "y": 65.4,
+    "z": 54.9
+   },
+   {
+    "record": 144,
+    "class_id": 256,
+    "class": "TORockCaveBL03",
+    "x": 343.6,
+    "y": 74.1,
+    "z": 67.7
+   },
+   {
+    "record": 145,
+    "class_id": 1792,
+    "class": "TOSensorGeneral01",
+    "x": -473.4,
+    "y": 17.8,
+    "z": 381.2
+   },
+   {
+    "record": 146,
+    "class_id": 1792,
+    "class": "TOSensorGeneral01",
+    "x": -504.1,
+    "y": 17.8,
+    "z": 466.3
+   },
+   {
+    "record": 147,
+    "class_id": 1792,
+    "class": "TOSensorGeneral01",
+    "x": -509.5,
+    "y": 17.8,
+    "z": 575.9
+   },
+   {
+    "record": 148,
+    "class_id": 1792,
+    "class": "TOSensorGeneral01",
+    "x": -511.2,
+    "y": 17.8,
+    "z": 695.5
+   },
+   {
+    "record": 149,
+    "class_id": 1792,
+    "class": "TOSensorGeneral01",
+    "x": -552.8,
+    "y": 17.8,
+    "z": 835.3
+   },
+   {
+    "record": 150,
+    "class_id": 1792,
+    "class": "TOSensorGeneral01",
+    "x": -633.6,
+    "y": 17.8,
+    "z": 980.3
+   },
+   {
+    "record": 151,
+    "class_id": 1792,
+    "class": "TOSensorGeneral01",
+    "x": -810.2,
+    "y": 18.6,
+    "z": 984.0
+   },
+   {
+    "record": 152,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 301.3,
+    "y": 19.7,
+    "z": 715.6
+   },
+   {
+    "record": 153,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 610.2,
+    "y": 13.0,
+    "z": 148.8
+   },
+   {
+    "record": 154,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 984.2,
+    "y": 51.3,
+    "z": 129.3
+   },
+   {
+    "record": 155,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 610.2,
+    "y": 13.0,
+    "z": 148.8
+   },
+   {
+    "record": 156,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 66.3,
+    "y": 13.0,
+    "z": 638.9
+   },
+   {
+    "record": 157,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 61.1,
+    "y": 19.7,
+    "z": 974.9
+   },
+   {
+    "record": 158,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": -49.4,
+    "y": 38.6,
+    "z": 428.0
+   },
+   {
+    "record": 159,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 168.3,
+    "y": 64.8,
+    "z": -77.1
+   },
+   {
+    "record": 160,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 267.1,
+    "y": 34.7,
+    "z": 14.7
+   },
+   {
+    "record": 161,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 303.4,
+    "y": 32.0,
+    "z": 46.9
+   },
+   {
+    "record": 162,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 402.5,
+    "y": 32.0,
+    "z": 246.3
+   },
+   {
+    "record": 163,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 249.9,
+    "y": 33.3,
+    "z": 205.2
+   },
+   {
+    "record": 164,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 458.6,
+    "y": 33.3,
+    "z": 267.1
+   },
+   {
+    "record": 165,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 468.6,
+    "y": 17.5,
+    "z": 470.0
+   },
+   {
+    "record": 166,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 557.4,
+    "y": 14.8,
+    "z": 425.5
+   },
+   {
+    "record": 167,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 1029.5,
+    "y": 50.9,
+    "z": 321.0
+   },
+   {
+    "record": 168,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 801.3,
+    "y": 4.5,
+    "z": 351.4
+   },
+   {
+    "record": 169,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 835.3,
+    "y": 57.0,
+    "z": 580.6
+   },
+   {
+    "record": 170,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 727.9,
+    "y": 15.0,
+    "z": 758.0
+   },
+   {
+    "record": 171,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 181.7,
+    "y": 35.6,
+    "z": 258.8
+   },
+   {
+    "record": 172,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 43.8,
+    "y": 35.6,
+    "z": 214.2
+   },
+   {
+    "record": 173,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 65.1,
+    "y": 35.6,
+    "z": 416.3
+   },
+   {
+    "record": 174,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 37.4,
+    "y": 35.6,
+    "z": 445.5
+   },
+   {
+    "record": 175,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": -8.9,
+    "y": 35.6,
+    "z": 482.6
+   },
+   {
+    "record": 176,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 48.2,
+    "y": 31.7,
+    "z": 534.4
+   },
+   {
+    "record": 177,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 15.6,
+    "y": 19.7,
+    "z": 946.1
+   },
+   {
+    "record": 178,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 154.2,
+    "y": 19.7,
+    "z": 985.7
+   },
+   {
+    "record": 179,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 214.9,
+    "y": 18.5,
+    "z": 986.8
+   },
+   {
+    "record": 180,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 476.1,
+    "y": 19.8,
+    "z": 955.1
+   },
+   {
+    "record": 181,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 455.6,
+    "y": 19.8,
+    "z": 501.7
+   },
+   {
+    "record": 182,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 509.5,
+    "y": 20.4,
+    "z": 946.5
+   },
+   {
+    "record": 183,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 619.5,
+    "y": 20.0,
+    "z": 899.9
+   },
+   {
+    "record": 184,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 967.9,
+    "y": 20.0,
+    "z": 1036.3
+   },
+   {
+    "record": 185,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 287.5,
+    "y": 25.0,
+    "z": 490.6
+   },
+   {
+    "record": 186,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": -98.3,
+    "y": 34.7,
+    "z": 326.8
+   },
+   {
+    "record": 187,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 371.7,
+    "y": 7.1,
+    "z": 739.6
+   },
+   {
+    "record": 188,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 112.7,
+    "y": 70.6,
+    "z": -97.1
+   },
+   {
+    "record": 189,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 37.2,
+    "y": 45.2,
+    "z": 153.4
+   },
+   {
+    "record": 190,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 402.6,
+    "y": 32.0,
+    "z": -78.4
+   },
+   {
+    "record": 191,
+    "class_id": 5888,
+    "class": "TOSymbolchatColli",
+    "x": 107.4,
+    "y": 32.0,
+    "z": 516.6
+   },
+   {
+    "record": 192,
+    "class_id": 1536,
+    "class": "class 1536",
+    "x": -764.8,
+    "y": 24.0,
+    "z": -544.3
+   },
+   {
+    "record": 193,
+    "class_id": 1536,
+    "class": "class 1536",
+    "x": -201.1,
+    "y": 53.6,
+    "z": -908.3
+   },
+   {
+    "record": 194,
+    "class_id": 1536,
+    "class": "class 1536",
+    "x": -791.5,
+    "y": 109.1,
+    "z": -948.7
+   },
+   {
+    "record": 195,
+    "class_id": 1536,
+    "class": "class 1536",
+    "x": -463.3,
+    "y": 109.1,
+    "z": -53.6
+   }
+  ]
+ }
+}

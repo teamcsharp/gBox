@@ -1,0 +1,2646 @@
+{
+ "1": {
+  "set": "map_forest01d.dat",
+  "rooms": {
+   "6": {
+    "count": 59,
+    "classes": {
+     "TOSymbolchatColli": 6,
+     "TOSensorAncient01": 29,
+     "TObjEnvSoundEx": 12,
+     "TObjEnvSoundGlobal": 2,
+     "TORockCaveBL03": 10
+    },
+    "objects": [
+     {
+      "class": "TOSymbolchatColli",
+      "x": 483.1,
+      "z": 813.6,
+      "room": 6,
+      "distance": 215.0
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 376.2,
+      "z": 649.9,
+      "room": 6,
+      "distance": 84.9
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 349.5,
+      "z": 730.7,
+      "room": 6,
+      "distance": 165.8
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 333.3,
+      "z": 583.6,
+      "room": 6,
+      "distance": 18.7
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 236.9,
+      "z": 584.3,
+      "room": 6,
+      "distance": 26.5
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 733.6,
+      "z": 516.0,
+      "room": 6,
+      "distance": 128.6
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 1082.2,
+      "z": 1030.4,
+      "room": 6,
+      "distance": 673.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 947.9,
+      "z": 1014.1,
+      "room": 6,
+      "distance": 569.7
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 929.4,
+      "z": 851.9,
+      "room": 6,
+      "distance": 440.6
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 703.4,
+      "z": 1026.0,
+      "room": 6,
+      "distance": 453.4
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 806.9,
+      "z": 654.2,
+      "room": 6,
+      "distance": 229.9
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 582.1,
+      "z": 679.7,
+      "room": 6,
+      "distance": 88.3
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 585.3,
+      "z": 869.7,
+      "room": 6,
+      "distance": 269.4
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 777.9,
+      "z": 528.5,
+      "room": 6,
+      "distance": 173.4
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 795.1,
+      "z": 1038.4,
+      "room": 6,
+      "distance": 505.5
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 774.8,
+      "z": 896.8,
+      "room": 6,
+      "distance": 373.6
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 1051.3,
+      "z": 905.8,
+      "room": 6,
+      "distance": 569.5
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 765.9,
+      "z": 367.4,
+      "room": 6,
+      "distance": 178.6
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 966.7,
+      "z": 416.8,
+      "room": 6,
+      "distance": 362.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 1041.8,
+      "z": 535.5,
+      "room": 6,
+      "distance": 437.3
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 983.8,
+      "z": 308.2,
+      "room": 6,
+      "distance": 402.7
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 1077.8,
+      "z": 458.5,
+      "room": 6,
+      "distance": 472.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 576.3,
+      "z": 456.7,
+      "room": 6,
+      "distance": 2.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 652.8,
+      "z": 507.6,
+      "room": 6,
+      "distance": 47.9
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 530.8,
+      "z": 379.9,
+      "room": 6,
+      "distance": 6.6
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 84.5,
+      "z": 828.4,
+      "room": 6,
+      "distance": 312.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 159.7,
+      "z": 705.3,
+      "room": 6,
+      "distance": 168.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 193.6,
+      "z": 731.1,
+      "room": 6,
+      "distance": 176.0
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 202.0,
+      "z": 581.7,
+      "room": 6,
+      "distance": 42.4
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 334.0,
+      "z": 600.8,
+      "room": 6,
+      "distance": 35.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 345.2,
+      "z": 503.4,
+      "room": 6,
+      "distance": 36.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 517.6,
+      "z": 561.8,
+      "room": 6,
+      "distance": 4.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 327.9,
+      "z": 686.2,
+      "room": 6,
+      "distance": 119.2
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 350.6,
+      "z": 829.2,
+      "room": 6,
+      "distance": 262.5
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 452.9,
+      "z": 841.2,
+      "room": 6,
+      "distance": 248.3
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": -2.5,
+      "z": 900.6,
+      "room": 6,
+      "distance": 419.3
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 257.6,
+      "z": 923.6,
+      "room": 6,
+      "distance": 349.0
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 246.5,
+      "z": 657.4,
+      "room": 6,
+      "distance": 87.2
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 473.9,
+      "z": 659.9,
+      "room": 6,
+      "distance": 65.8
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 560.4,
+      "z": 842.4,
+      "room": 6,
+      "distance": 238.8
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 592.8,
+      "z": 903.3,
+      "room": 6,
+      "distance": 303.8
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 532.7,
+      "z": 1067.4,
+      "room": 6,
+      "distance": 462.4
+     },
+     {
+      "class": "TObjEnvSoundGlobal",
+      "x": 659.2,
+      "z": 906.5,
+      "room": 6,
+      "distance": 326.1
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 181.5,
+      "z": 621.2,
+      "room": 6,
+      "distance": 85.1
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 475.3,
+      "z": 531.4,
+      "room": 6,
+      "distance": 3.6
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 517.2,
+      "z": 434.8,
+      "room": 6,
+      "distance": 2.2
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 603.5,
+      "z": 412.7,
+      "room": 6,
+      "distance": 15.0
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 798.8,
+      "z": 296.8,
+      "room": 6,
+      "distance": 239.6
+     },
+     {
+      "class": "TObjEnvSoundGlobal",
+      "x": 612.4,
+      "z": 925.5,
+      "room": 6,
+      "distance": 329.7
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 343.4,
+      "z": 1049.1,
+      "room": 6,
+      "distance": 475.7
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 198.7,
+      "z": 974.3,
+      "room": 6,
+      "distance": 406.5
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 217.0,
+      "z": 1001.0,
+      "room": 6,
+      "distance": 429.9
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 54.7,
+      "z": 1049.7,
+      "room": 6,
+      "distance": 523.3
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 268.2,
+      "z": 958.0,
+      "room": 6,
+      "distance": 383.1
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 261.6,
+      "z": 945.4,
+      "room": 6,
+      "distance": 370.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 434.6,
+      "z": 894.5,
+      "room": 6,
+      "distance": 303.7
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 432.3,
+      "z": 905.3,
+      "room": 6,
+      "distance": 314.7
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 445.4,
+      "z": 442.8,
+      "room": 6,
+      "distance": 2.2
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 430.1,
+      "z": 468.5,
+      "room": 6,
+      "distance": 6.0
+     }
+    ]
+   },
+   "8": {
+    "count": 5,
+    "classes": {
+     "TOSymbolchatColli": 1,
+     "TOSensorAncient01": 2,
+     "TORockCaveBL03": 2
+    },
+    "objects": [
+     {
+      "class": "TOSymbolchatColli",
+      "x": -24.7,
+      "z": 724.3,
+      "room": 8,
+      "distance": 260.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": -103.5,
+      "z": 608.1,
+      "room": 8,
+      "distance": 148.2
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": -100.9,
+      "z": 476.6,
+      "room": 8,
+      "distance": 22.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -60.0,
+      "z": 861.3,
+      "room": 8,
+      "distance": 396.3
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -3.4,
+      "z": 481.8,
+      "room": 8,
+      "distance": 44.9
+     }
+    ]
+   },
+   "4": {
+    "count": 11,
+    "classes": {
+     "TOSymbolchatColli": 1,
+     "TOSensorAncient01": 7,
+     "TObjEnvSoundEx": 2,
+     "TORockCaveBL03": 1
+    },
+    "objects": [
+     {
+      "class": "TOSymbolchatColli",
+      "x": 700.2,
+      "z": 99.7,
+      "room": 4,
+      "distance": 123.5
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 636.6,
+      "z": 163.3,
+      "room": 4,
+      "distance": 129.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 755.7,
+      "z": 166.1,
+      "room": 4,
+      "distance": 207.4
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 679.9,
+      "z": 61.0,
+      "room": 4,
+      "distance": 88.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 857.7,
+      "z": -41.5,
+      "room": 4,
+      "distance": 242.7
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 1070.4,
+      "z": -86.5,
+      "room": 4,
+      "distance": 455.9
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 1011.0,
+      "z": 144.3,
+      "room": 4,
+      "distance": 429.2
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 977.9,
+      "z": 32.0,
+      "room": 4,
+      "distance": 369.0
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 741.6,
+      "z": -90.9,
+      "room": 4,
+      "distance": 129.2
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 633.3,
+      "z": 125.1,
+      "room": 4,
+      "distance": 93.5
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 408.0,
+      "z": 27.1,
+      "room": 4,
+      "distance": 49.0
+     }
+    ]
+   },
+   "1": {
+    "count": 15,
+    "classes": {
+     "TOSymbolchatColli": 1,
+     "TOSensorAncient01": 6,
+     "TObjEnvSoundEx": 3,
+     "TORockCaveBL03": 5
+    },
+    "objects": [
+     {
+      "class": "TOSymbolchatColli",
+      "x": 521.1,
+      "z": 260.6,
+      "room": 1,
+      "distance": 116.2
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 440.8,
+      "z": 228.1,
+      "room": 1,
+      "distance": 36.5
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 374.6,
+      "z": 135.8,
+      "room": 1,
+      "distance": 59.2
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 141.1,
+      "z": 111.7,
+      "room": 1,
+      "distance": 53.4
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 192.2,
+      "z": 153.0,
+      "room": 1,
+      "distance": 3.4
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 254.2,
+      "z": 142.1,
+      "room": 1,
+      "distance": 3.0
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 92.5,
+      "z": 407.1,
+      "room": 1,
+      "distance": 22.6
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 395.7,
+      "z": 268.2,
+      "room": 1,
+      "distance": 3.3
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 71.1,
+      "z": 228.2,
+      "room": 1,
+      "distance": 29.2
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": 437.7,
+      "z": 176.5,
+      "room": 1,
+      "distance": 55.9
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 326.7,
+      "z": 343.6,
+      "room": 1,
+      "distance": 2.2
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 151.8,
+      "z": 392.9,
+      "room": 1,
+      "distance": 3.8
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 153.9,
+      "z": 365.8,
+      "room": 1,
+      "distance": 1.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 299.3,
+      "z": 393.3,
+      "room": 1,
+      "distance": 4.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 290.9,
+      "z": 417.2,
+      "room": 1,
+      "distance": 12.9
+     }
+    ]
+   },
+   "0": {
+    "count": 12,
+    "classes": {
+     "TOSensorAncient01": 3,
+     "TObjEnvSoundGlobal": 3,
+     "TORockCaveBL03": 5,
+     "class 1536": 1
+    },
+    "objects": [
+     {
+      "class": "TOSensorAncient01",
+      "x": 273.0,
+      "z": -33.4,
+      "room": 0,
+      "distance": 2.6
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 199.3,
+      "z": -128.7,
+      "room": 0,
+      "distance": 5.7
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": -35.6,
+      "z": -150.9,
+      "room": 0,
+      "distance": 31.7
+     },
+     {
+      "class": "TObjEnvSoundGlobal",
+      "x": 216.1,
+      "z": 45.0,
+      "room": 0,
+      "distance": 18.9
+     },
+     {
+      "class": "TObjEnvSoundGlobal",
+      "x": 260.6,
+      "z": -11.4,
+      "room": 0,
+      "distance": 5.7
+     },
+     {
+      "class": "TObjEnvSoundGlobal",
+      "x": 253.4,
+      "z": 44.0,
+      "room": 0,
+      "distance": 1.9
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 306.8,
+      "z": 94.2,
+      "room": 0,
+      "distance": 42.8
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -171.8,
+      "z": -171.1,
+      "room": 0,
+      "distance": 107.8
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -149.0,
+      "z": -140.8,
+      "room": 0,
+      "distance": 112.1
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -74.7,
+      "z": -144.7,
+      "room": 0,
+      "distance": 63.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -53.5,
+      "z": -135.3,
+      "room": 0,
+      "distance": 55.3
+     },
+     {
+      "class": "class 1536",
+      "x": 62.2,
+      "z": -505.9,
+      "room": 0,
+      "distance": 137.7
+     }
+    ]
+   },
+   "5": {
+    "count": 20,
+    "classes": {
+     "TOSensorAncient01": 5,
+     "TObjEnvSoundEx": 1,
+     "TObjEnvSoundGlobal": 1,
+     "TORockCaveBL03": 11,
+     "class 1536": 2
+    },
+    "objects": [
+     {
+      "class": "TOSensorAncient01",
+      "x": 61.0,
+      "z": 66.2,
+      "room": 5,
+      "distance": 36.0
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 32.8,
+      "z": -28.5,
+      "room": 5,
+      "distance": 4.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 30.8,
+      "z": -4.5,
+      "room": 5,
+      "distance": 4.2
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": -90.7,
+      "z": -34.4,
+      "room": 5,
+      "distance": 18.3
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": -49.8,
+      "z": 161.8,
+      "room": 5,
+      "distance": 5.8
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": -154.4,
+      "z": -104.8,
+      "room": 5,
+      "distance": 107.7
+     },
+     {
+      "class": "TObjEnvSoundGlobal",
+      "x": -129.6,
+      "z": -77.9,
+      "room": 5,
+      "distance": 71.8
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -26.1,
+      "z": 122.4,
+      "room": 5,
+      "distance": 2.8
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -9.3,
+      "z": 95.1,
+      "room": 5,
+      "distance": 4.3
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -194.3,
+      "z": -83.6,
+      "room": 5,
+      "distance": 118.9
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -175.2,
+      "z": -68.5,
+      "room": 5,
+      "distance": 94.7
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -68.4,
+      "z": -89.3,
+      "room": 5,
+      "distance": 54.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -12.7,
+      "z": -70.5,
+      "room": 5,
+      "distance": 31.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -19.9,
+      "z": -35.9,
+      "room": 5,
+      "distance": 5.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -95.2,
+      "z": 43.6,
+      "room": 5,
+      "distance": 1.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -136.2,
+      "z": 51.6,
+      "room": 5,
+      "distance": 3.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -225.0,
+      "z": -31.8,
+      "room": 5,
+      "distance": 110.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -207.6,
+      "z": -1.7,
+      "room": 5,
+      "distance": 84.3
+     },
+     {
+      "class": "class 1536",
+      "x": 0.0,
+      "z": 0.0,
+      "room": 5,
+      "distance": 7.1
+     },
+     {
+      "class": "class 1536",
+      "x": 49.0,
+      "z": -54.4,
+      "room": 5,
+      "distance": 16.9
+     }
+    ]
+   },
+   "2": {
+    "count": 12,
+    "classes": {
+     "TObjEnvSoundEx": 1,
+     "TORockCaveBL03": 10,
+     "TOSwitchAttackSub": 1
+    },
+    "objects": [
+     {
+      "class": "TObjEnvSoundEx",
+      "x": -378.4,
+      "z": -144.2,
+      "room": 2,
+      "distance": 21.1
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -529.8,
+      "z": 134.8,
+      "room": 2,
+      "distance": 4.8
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -481.2,
+      "z": -79.6,
+      "room": 2,
+      "distance": 6.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -439.1,
+      "z": -116.5,
+      "room": 2,
+      "distance": 4.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -453.9,
+      "z": -94.9,
+      "room": 2,
+      "distance": 1.1
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -376.4,
+      "z": -97.9,
+      "room": 2,
+      "distance": 9.1
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -331.9,
+      "z": -40.1,
+      "room": 2,
+      "distance": 76.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -327.9,
+      "z": -6.6,
+      "room": 2,
+      "distance": 99.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -227.5,
+      "z": -116.0,
+      "room": 2,
+      "distance": 146.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -265.3,
+      "z": -92.6,
+      "room": 2,
+      "distance": 119.7
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -247.0,
+      "z": -66.0,
+      "room": 2,
+      "distance": 141.0
+     },
+     {
+      "class": "TOSwitchAttackSub",
+      "x": -400.0,
+      "z": -100.0,
+      "room": 2,
+      "distance": 7.1
+     }
+    ]
+   },
+   "9": {
+    "count": 1,
+    "classes": {
+     "TObjEnvSoundEx": 1
+    },
+    "objects": [
+     {
+      "class": "TObjEnvSoundEx",
+      "x": -396.4,
+      "z": 202.4,
+      "room": 9,
+      "distance": 51.3
+     }
+    ]
+   },
+   "7": {
+    "count": 11,
+    "classes": {
+     "TObjEnvSoundEx": 3,
+     "TORockCaveBL03": 8
+    },
+    "objects": [
+     {
+      "class": "TObjEnvSoundEx",
+      "x": -439.0,
+      "z": 697.0,
+      "room": 7,
+      "distance": 153.9
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": -253.1,
+      "z": 441.2,
+      "room": 7,
+      "distance": 69.5
+     },
+     {
+      "class": "TObjEnvSoundEx",
+      "x": -278.4,
+      "z": 850.1,
+      "room": 7,
+      "distance": 326.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -399.3,
+      "z": 406.0,
+      "room": 7,
+      "distance": 4.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -432.8,
+      "z": 406.3,
+      "room": 7,
+      "distance": 17.8
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -443.0,
+      "z": 374.7,
+      "room": 7,
+      "distance": 28.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -416.0,
+      "z": 353.7,
+      "room": 7,
+      "distance": 1.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -388.4,
+      "z": 374.1,
+      "room": 7,
+      "distance": 3.5
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -282.6,
+      "z": 158.1,
+      "room": 7,
+      "distance": 3.9
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -208.0,
+      "z": 129.3,
+      "room": 7,
+      "distance": 14.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -334.7,
+      "z": 26.4,
+      "room": 7,
+      "distance": 105.1
+     }
+    ]
+   },
+   "3": {
+    "count": 4,
+    "classes": {
+     "TOSwitchAttackSub": 1,
+     "class 1536": 3
+    },
+    "objects": [
+     {
+      "class": "TOSwitchAttackSub",
+      "x": -520.0,
+      "z": -500.0,
+      "room": 3,
+      "distance": 25.5
+     },
+     {
+      "class": "class 1536",
+      "x": -487.4,
+      "z": -917.7,
+      "room": 3,
+      "distance": 312.8
+     },
+     {
+      "class": "class 1536",
+      "x": -708.6,
+      "z": -999.2,
+      "room": 3,
+      "distance": 430.7
+     },
+     {
+      "class": "class 1536",
+      "x": -229.6,
+      "z": -646.4,
+      "room": 3,
+      "distance": 53.7
+     }
+    ]
+   }
+  },
+  "outside_rooms": 80,
+  "total_objects": 150
+ },
+ "2": {
+  "set": "map_forest02d.dat",
+  "rooms": {
+   "0": {
+    "count": 35,
+    "classes": {
+     "TOSensorAncient01": 12,
+     "TORockCaveBL03": 13,
+     "TOSymbolchatColli": 10
+    },
+    "objects": [
+     {
+      "class": "TOSensorAncient01",
+      "x": -53.6,
+      "z": -36.2,
+      "room": 0,
+      "distance": 28.2
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 102.1,
+      "z": 145.0,
+      "room": 0,
+      "distance": 87.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": -44.0,
+      "z": 141.3,
+      "room": 0,
+      "distance": 3.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 20.6,
+      "z": 156.2,
+      "room": 0,
+      "distance": 5.7
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 55.5,
+      "z": 311.0,
+      "room": 0,
+      "distance": 30.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 10.3,
+      "z": 941.8,
+      "room": 0,
+      "distance": 410.9
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": -84.7,
+      "z": 831.0,
+      "room": 0,
+      "distance": 271.5
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": -150.4,
+      "z": 649.7,
+      "room": 0,
+      "distance": 78.6
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": -110.0,
+      "z": 557.1,
+      "room": 0,
+      "distance": 13.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 17.2,
+      "z": 522.2,
+      "room": 0,
+      "distance": 35.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": -19.0,
+      "z": 475.1,
+      "room": 0,
+      "distance": 4.0
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": -89.7,
+      "z": 376.3,
+      "room": 0,
+      "distance": 4.9
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 27.1,
+      "z": 405.4,
+      "room": 0,
+      "distance": 43.5
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -235.4,
+      "z": 631.7,
+      "room": 0,
+      "distance": 73.3
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -134.7,
+      "z": 966.9,
+      "room": 0,
+      "distance": 394.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -85.2,
+      "z": 912.9,
+      "room": 0,
+      "distance": 349.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 155.0,
+      "z": -40.0,
+      "room": 0,
+      "distance": 15.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 175.0,
+      "z": -60.0,
+      "room": 0,
+      "distance": 5.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 195.0,
+      "z": -80.0,
+      "room": 0,
+      "distance": 11.2
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 215.0,
+      "z": -100.0,
+      "room": 0,
+      "distance": 20.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 135.0,
+      "z": -60.0,
+      "room": 0,
+      "distance": 5.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 115.0,
+      "z": -80.0,
+      "room": 0,
+      "distance": 5.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 95.0,
+      "z": -100.0,
+      "room": 0,
+      "distance": 18.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 240.0,
+      "z": -43.0,
+      "room": 0,
+      "distance": 63.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 240.0,
+      "z": -93.0,
+      "room": 0,
+      "distance": 46.6
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": -49.4,
+      "z": 428.0,
+      "room": 0,
+      "distance": 5.3
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 168.3,
+      "z": -77.1,
+      "room": 0,
+      "distance": 3.9
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 43.8,
+      "z": 214.2,
+      "room": 0,
+      "distance": 18.8
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 37.4,
+      "z": 445.5,
+      "room": 0,
+      "distance": 7.6
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": -8.9,
+      "z": 482.6,
+      "room": 0,
+      "distance": 4.6
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 48.2,
+      "z": 534.4,
+      "room": 0,
+      "distance": 59.5
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 15.6,
+      "z": 946.1,
+      "room": 0,
+      "distance": 417.2
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": -98.3,
+      "z": 326.8,
+      "room": 0,
+      "distance": 3.8
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 112.7,
+      "z": -97.1,
+      "room": 0,
+      "distance": 3.1
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 37.2,
+      "z": 153.4,
+      "room": 0,
+      "distance": 22.3
+     }
+    ]
+   },
+   "1": {
+    "count": 46,
+    "classes": {
+     "TOSensorAncient01": 19,
+     "TORockCaveBL03": 17,
+     "TOSymbolchatColli": 10
+    },
+    "objects": [
+     {
+      "class": "TOSensorAncient01",
+      "x": 232.1,
+      "z": -18.4,
+      "room": 1,
+      "distance": 67.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 414.8,
+      "z": 268.1,
+      "room": 1,
+      "distance": 73.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 270.9,
+      "z": 41.9,
+      "room": 1,
+      "distance": 19.2
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 629.5,
+      "z": 172.6,
+      "room": 1,
+      "distance": 44.6
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 805.4,
+      "z": 186.4,
+      "room": 1,
+      "distance": 212.7
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 624.0,
+      "z": 82.8,
+      "room": 1,
+      "distance": 19.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 622.9,
+      "z": -19.8,
+      "room": 1,
+      "distance": 69.5
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 883.9,
+      "z": 167.6,
+      "room": 1,
+      "distance": 283.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 1000.1,
+      "z": 166.7,
+      "room": 1,
+      "distance": 398.5
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 1020.9,
+      "z": 267.8,
+      "room": 1,
+      "distance": 443.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 1067.4,
+      "z": 295.4,
+      "room": 1,
+      "distance": 496.3
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 808.5,
+      "z": 326.8,
+      "room": 1,
+      "distance": 270.2
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 964.5,
+      "z": 74.9,
+      "room": 1,
+      "distance": 359.6
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 377.3,
+      "z": 283.0,
+      "room": 1,
+      "distance": 98.3
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 341.4,
+      "z": -3.2,
+      "room": 1,
+      "distance": 4.0
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 385.3,
+      "z": 13.4,
+      "room": 1,
+      "distance": 1.6
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 443.4,
+      "z": 7.3,
+      "room": 1,
+      "distance": 2.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 409.4,
+      "z": -38.9,
+      "room": 1,
+      "distance": 5.9
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 434.1,
+      "z": -107.0,
+      "room": 1,
+      "distance": 33.8
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 240.0,
+      "z": 157.0,
+      "room": 1,
+      "distance": 45.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 290.0,
+      "z": 157.0,
+      "room": 1,
+      "distance": 5.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 340.0,
+      "z": 157.0,
+      "room": 1,
+      "distance": 5.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 390.0,
+      "z": 157.0,
+      "room": 1,
+      "distance": 5.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 440.0,
+      "z": 157.0,
+      "room": 1,
+      "distance": 5.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 240.0,
+      "z": 107.0,
+      "room": 1,
+      "distance": 46.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 240.0,
+      "z": 57.0,
+      "room": 1,
+      "distance": 45.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 240.0,
+      "z": 7.0,
+      "room": 1,
+      "distance": 55.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 395.0,
+      "z": 304.0,
+      "room": 1,
+      "distance": 113.1
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 318.3,
+      "z": 53.6,
+      "room": 1,
+      "distance": 3.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 318.3,
+      "z": 53.6,
+      "room": 1,
+      "distance": 3.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 318.3,
+      "z": 53.6,
+      "room": 1,
+      "distance": 3.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 344.6,
+      "z": 80.1,
+      "room": 1,
+      "distance": 4.9
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 344.6,
+      "z": 80.1,
+      "room": 1,
+      "distance": 4.9
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 344.6,
+      "z": 80.1,
+      "room": 1,
+      "distance": 4.9
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 330.6,
+      "z": 54.9,
+      "room": 1,
+      "distance": 4.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 343.6,
+      "z": 67.7,
+      "room": 1,
+      "distance": 3.0
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 610.2,
+      "z": 148.8,
+      "room": 1,
+      "distance": 25.5
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 984.2,
+      "z": 129.3,
+      "room": 1,
+      "distance": 379.5
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 610.2,
+      "z": 148.8,
+      "room": 1,
+      "distance": 25.5
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 267.1,
+      "z": 14.7,
+      "room": 1,
+      "distance": 27.9
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 303.4,
+      "z": 46.9,
+      "room": 1,
+      "distance": 2.5
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 402.5,
+      "z": 246.3,
+      "room": 1,
+      "distance": 56.0
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 458.6,
+      "z": 267.1,
+      "room": 1,
+      "distance": 72.0
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 1029.5,
+      "z": 321.0,
+      "room": 1,
+      "distance": 467.9
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 801.3,
+      "z": 351.4,
+      "room": 1,
+      "distance": 279.1
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 402.6,
+      "z": -78.4,
+      "room": 1,
+      "distance": 23.5
+     }
+    ]
+   },
+   "4": {
+    "count": 54,
+    "classes": {
+     "TOSensorAncient01": 31,
+     "TORockCaveBL03": 10,
+     "TOSymbolchatColli": 13
+    },
+    "objects": [
+     {
+      "class": "TOSensorAncient01",
+      "x": 325.0,
+      "z": 266.6,
+      "room": 4,
+      "distance": 45.5
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 465.0,
+      "z": 365.2,
+      "room": 4,
+      "distance": 69.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 549.7,
+      "z": 436.9,
+      "room": 4,
+      "distance": 44.7
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 627.1,
+      "z": 401.6,
+      "room": 4,
+      "distance": 126.6
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 343.5,
+      "z": 742.1,
+      "room": 4,
+      "distance": 189.3
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 320.1,
+      "z": 823.4,
+      "room": 4,
+      "distance": 259.5
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 178.9,
+      "z": 825.5,
+      "room": 4,
+      "distance": 254.7
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 344.4,
+      "z": 1041.1,
+      "room": 4,
+      "distance": 476.6
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 292.7,
+      "z": 1052.8,
+      "room": 4,
+      "distance": 480.2
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 245.0,
+      "z": 921.8,
+      "room": 4,
+      "distance": 346.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 139.1,
+      "z": 983.6,
+      "room": 4,
+      "distance": 417.5
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 82.2,
+      "z": 982.0,
+      "room": 4,
+      "distance": 431.3
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 160.5,
+      "z": 523.1,
+      "room": 4,
+      "distance": 12.7
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 819.6,
+      "z": 399.7,
+      "room": 4,
+      "distance": 316.6
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 422.4,
+      "z": 476.6,
+      "room": 4,
+      "distance": 21.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 661.8,
+      "z": 447.5,
+      "room": 4,
+      "distance": 156.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 667.2,
+      "z": 362.3,
+      "room": 4,
+      "distance": 177.7
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 265.0,
+      "z": 780.2,
+      "room": 4,
+      "distance": 206.2
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 279.7,
+      "z": 875.9,
+      "room": 4,
+      "distance": 302.9
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 237.1,
+      "z": 634.9,
+      "room": 4,
+      "distance": 59.9
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 236.6,
+      "z": 567.7,
+      "room": 4,
+      "distance": 3.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 221.3,
+      "z": 435.9,
+      "room": 4,
+      "distance": 3.8
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 210.6,
+      "z": 360.5,
+      "room": 4,
+      "distance": 6.3
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 92.2,
+      "z": 439.3,
+      "room": 4,
+      "distance": 5.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 66.9,
+      "z": 490.9,
+      "room": 4,
+      "distance": 26.0
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 115.0,
+      "z": 481.4,
+      "room": 4,
+      "distance": 33.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 108.9,
+      "z": 543.5,
+      "room": 4,
+      "distance": 56.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 295.9,
+      "z": 396.5,
+      "room": 4,
+      "distance": 1.7
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 219.5,
+      "z": 501.7,
+      "room": 4,
+      "distance": 5.6
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 183.8,
+      "z": 654.7,
+      "room": 4,
+      "distance": 89.7
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 154.2,
+      "z": 394.1,
+      "room": 4,
+      "distance": 1.2
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 125.4,
+      "z": 346.0,
+      "room": 4,
+      "distance": 41.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 355.0,
+      "z": 344.0,
+      "room": 4,
+      "distance": 76.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 375.0,
+      "z": 364.0,
+      "room": 4,
+      "distance": 71.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 395.0,
+      "z": 384.0,
+      "room": 4,
+      "distance": 51.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 375.0,
+      "z": 324.0,
+      "room": 4,
+      "distance": 100.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 355.0,
+      "z": 450.0,
+      "room": 4,
+      "distance": 5.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 375.0,
+      "z": 470.0,
+      "room": 4,
+      "distance": 5.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 395.0,
+      "z": 490.0,
+      "room": 4,
+      "distance": 20.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 375.0,
+      "z": 430.0,
+      "room": 4,
+      "distance": 5.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 395.0,
+      "z": 410.0,
+      "room": 4,
+      "distance": 25.0
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 301.3,
+      "z": 715.6,
+      "room": 4,
+      "distance": 151.5
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 66.3,
+      "z": 638.9,
+      "room": 4,
+      "distance": 129.5
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 61.1,
+      "z": 974.9,
+      "room": 4,
+      "distance": 431.2
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 249.9,
+      "z": 205.2,
+      "room": 4,
+      "distance": 18.0
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 468.6,
+      "z": 470.0,
+      "room": 4,
+      "distance": 14.5
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 557.4,
+      "z": 425.5,
+      "room": 4,
+      "distance": 53.3
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 181.7,
+      "z": 258.8,
+      "room": 4,
+      "distance": 55.7
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 65.1,
+      "z": 416.3,
+      "room": 4,
+      "distance": 21.2
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 154.2,
+      "z": 985.7,
+      "room": 4,
+      "distance": 416.8
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 214.9,
+      "z": 986.8,
+      "room": 4,
+      "distance": 411.9
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 287.5,
+      "z": 490.6,
+      "room": 4,
+      "distance": 5.1
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 371.7,
+      "z": 739.6,
+      "room": 4,
+      "distance": 193.1
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 107.4,
+      "z": 516.6,
+      "room": 4,
+      "distance": 60.5
+     }
+    ]
+   },
+   "12": {
+    "count": 22,
+    "classes": {
+     "TOSensorAncient01": 13,
+     "TORockCaveBL03": 2,
+     "TOSymbolchatColli": 7
+    },
+    "objects": [
+     {
+      "class": "TOSensorAncient01",
+      "x": 421.4,
+      "z": 624.1,
+      "room": 12,
+      "distance": 72.7
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 417.2,
+      "z": 540.3,
+      "room": 12,
+      "distance": 18.4
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 1097.3,
+      "z": 599.9,
+      "room": 12,
+      "distance": 573.4
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 1032.4,
+      "z": 679.3,
+      "room": 12,
+      "distance": 520.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 879.0,
+      "z": 669.6,
+      "room": 12,
+      "distance": 369.1
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 781.0,
+      "z": 563.3,
+      "room": 12,
+      "distance": 256.0
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 511.0,
+      "z": 946.1,
+      "room": 12,
+      "distance": 371.4
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 596.9,
+      "z": 915.1,
+      "room": 12,
+      "distance": 355.0
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 824.1,
+      "z": 1038.4,
+      "room": 12,
+      "distance": 560.0
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 643.6,
+      "z": 847.0,
+      "room": 12,
+      "distance": 305.9
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 687.4,
+      "z": 791.3,
+      "room": 12,
+      "distance": 278.5
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 758.7,
+      "z": 696.1,
+      "room": 12,
+      "distance": 268.0
+     },
+     {
+      "class": "TOSensorAncient01",
+      "x": 967.7,
+      "z": 1058.6,
+      "room": 12,
+      "distance": 663.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 415.0,
+      "z": 510.0,
+      "room": 12,
+      "distance": 30.4
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": 435.0,
+      "z": 530.0,
+      "room": 12,
+      "distance": 5.0
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 835.3,
+      "z": 580.6,
+      "room": 12,
+      "distance": 310.7
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 727.9,
+      "z": 758.0,
+      "room": 12,
+      "distance": 280.0
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 476.1,
+      "z": 955.1,
+      "room": 12,
+      "distance": 380.1
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 455.6,
+      "z": 501.7,
+      "room": 12,
+      "distance": 3.4
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 509.5,
+      "z": 946.5,
+      "room": 12,
+      "distance": 371.8
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 619.5,
+      "z": 899.9,
+      "room": 12,
+      "distance": 347.9
+     },
+     {
+      "class": "TOSymbolchatColli",
+      "x": 967.9,
+      "z": 1036.3,
+      "room": 12,
+      "distance": 646.7
+     }
+    ]
+   },
+   "2": {
+    "count": 1,
+    "classes": {
+     "TOSensorAncient01": 1
+    },
+    "objects": [
+     {
+      "class": "TOSensorAncient01",
+      "x": 831.3,
+      "z": -98.5,
+      "room": 2,
+      "distance": 263.5
+     }
+    ]
+   },
+   "13": {
+    "count": 1,
+    "classes": {
+     "TOSensorAncient01": 1
+    },
+    "objects": [
+     {
+      "class": "TOSensorAncient01",
+      "x": 377.9,
+      "z": -95.5,
+      "room": 13,
+      "distance": 34.2
+     }
+    ]
+   },
+   "10": {
+    "count": 2,
+    "classes": {
+     "TORockCaveBL03": 2
+    },
+    "objects": [
+     {
+      "class": "TORockCaveBL03",
+      "x": -695.7,
+      "z": -66.9,
+      "room": 10,
+      "distance": 81.1
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -615.7,
+      "z": -18.8,
+      "room": 10,
+      "distance": 50.6
+     }
+    ]
+   },
+   "3": {
+    "count": 24,
+    "classes": {
+     "TORockCaveBL03": 17,
+     "TOSensorGeneral01": 7
+    },
+    "objects": [
+     {
+      "class": "TORockCaveBL03",
+      "x": -517.6,
+      "z": 965.9,
+      "room": 3,
+      "distance": 468.2
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -548.0,
+      "z": 994.1,
+      "room": 3,
+      "distance": 502.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -591.2,
+      "z": 992.6,
+      "room": 3,
+      "distance": 512.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -754.7,
+      "z": 880.4,
+      "room": 3,
+      "distance": 486.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -640.4,
+      "z": 517.3,
+      "room": 3,
+      "distance": 107.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -774.8,
+      "z": 372.9,
+      "room": 3,
+      "distance": 147.8
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -699.8,
+      "z": 262.3,
+      "room": 3,
+      "distance": 81.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -607.6,
+      "z": 333.6,
+      "room": 3,
+      "distance": 3.0
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -622.1,
+      "z": 219.1,
+      "room": 3,
+      "distance": 25.1
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -370.4,
+      "z": 362.8,
+      "room": 3,
+      "distance": 24.7
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -438.6,
+      "z": 392.2,
+      "room": 3,
+      "distance": 4.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -477.3,
+      "z": 415.1,
+      "room": 3,
+      "distance": 2.3
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -455.8,
+      "z": 474.7,
+      "room": 3,
+      "distance": 0.9
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -439.1,
+      "z": 560.3,
+      "room": 3,
+      "distance": 55.5
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -429.3,
+      "z": 614.7,
+      "room": 3,
+      "distance": 109.8
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -448.9,
+      "z": 593.6,
+      "room": 3,
+      "distance": 89.7
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -458.0,
+      "z": 416.5,
+      "room": 3,
+      "distance": 3.4
+     },
+     {
+      "class": "TOSensorGeneral01",
+      "x": -473.4,
+      "z": 381.2,
+      "room": 3,
+      "distance": 4.1
+     },
+     {
+      "class": "TOSensorGeneral01",
+      "x": -504.1,
+      "z": 466.3,
+      "room": 3,
+      "distance": 11.3
+     },
+     {
+      "class": "TOSensorGeneral01",
+      "x": -509.5,
+      "z": 575.9,
+      "room": 3,
+      "distance": 102.8
+     },
+     {
+      "class": "TOSensorGeneral01",
+      "x": -511.2,
+      "z": 695.5,
+      "room": 3,
+      "distance": 205.2
+     },
+     {
+      "class": "TOSensorGeneral01",
+      "x": -552.8,
+      "z": 835.3,
+      "room": 3,
+      "distance": 350.7
+     },
+     {
+      "class": "TOSensorGeneral01",
+      "x": -633.6,
+      "z": 980.3,
+      "room": 3,
+      "distance": 515.1
+     },
+     {
+      "class": "TOSensorGeneral01",
+      "x": -810.2,
+      "z": 984.0,
+      "room": 3,
+      "distance": 602.7
+     }
+    ]
+   },
+   "5": {
+    "count": 7,
+    "classes": {
+     "TORockCaveBL03": 7
+    },
+    "objects": [
+     {
+      "class": "TORockCaveBL03",
+      "x": -283.2,
+      "z": -70.3,
+      "room": 5,
+      "distance": 41.2
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -220.7,
+      "z": -38.0,
+      "room": 5,
+      "distance": 5.2
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -310.7,
+      "z": 306.4,
+      "room": 5,
+      "distance": 4.5
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -276.9,
+      "z": 16.5,
+      "room": 5,
+      "distance": 24.7
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -278.5,
+      "z": 250.5,
+      "room": 5,
+      "distance": 5.7
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -261.4,
+      "z": 117.1,
+      "room": 5,
+      "distance": 42.6
+     },
+     {
+      "class": "TORockCaveBL03",
+      "x": -333.8,
+      "z": 326.3,
+      "room": 5,
+      "distance": 8.9
+     }
+    ]
+   },
+   "7": {
+    "count": 2,
+    "classes": {
+     "class 1536": 2
+    },
+    "objects": [
+     {
+      "class": "class 1536",
+      "x": -764.8,
+      "z": -544.3,
+      "room": 7,
+      "distance": 149.8
+     },
+     {
+      "class": "class 1536",
+      "x": -791.5,
+      "z": -948.7,
+      "room": 7,
+      "distance": 392.4
+     }
+    ]
+   },
+   "6": {
+    "count": 1,
+    "classes": {
+     "class 1536": 1
+    },
+    "objects": [
+     {
+      "class": "class 1536",
+      "x": -201.1,
+      "z": -908.3,
+      "room": 6,
+      "distance": 321.3
+     }
+    ]
+   },
+   "9": {
+    "count": 1,
+    "classes": {
+     "class 1536": 1
+    },
+    "objects": [
+     {
+      "class": "class 1536",
+      "x": -463.3,
+      "z": -53.6,
+      "room": 9,
+      "distance": 20.2
+     }
+    ]
+   }
+  },
+  "outside_rooms": 88,
+  "total_objects": 196
+ }
+}
