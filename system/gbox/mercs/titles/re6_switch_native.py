@@ -552,9 +552,13 @@ class Controller:
         if kind == "flash":
             if self.call(0x18F29C0, unit, self.player, born, self.generation) != 1:
                 raise Unavailable("native explosion transition not confirmed")
-            if self.rd(unit + 0x28A0, 1) != b"\x01":
-                raise Uncertain("native flash effect did not publish its explosion flag")
-            return {"index": index, "projectile_generation": born, "pos": [round(x, 1), round(y, 1), round(z, 1)]}
+            # The call's 1 is the confirmation the single flash (flash_now) is live-verified by. The +0x28A0 flag is
+            # the RE5 effect's own and RE6 1.0.2 does not write it: live 2026-11-11 a ring aborted after its first
+            # flash had visibly detonated (the screen was filled with the bloom) because this read was 0. Keep it as
+            # evidence in the receipt, never as the blast's confirmation.
+            flagged = self.rd(unit + 0x28A0, 1) == b"\x01"
+            return {"index": index, "projectile_generation": born, "pos": [round(x, 1), round(y, 1), round(z, 1)],
+                    "explosion_flag": flagged}
         carried = self.q(unit)                       # the class this allocation actually carries, not a table's
         if self.call(CLASSES.DETONATE_CLASS[0], unit, self.player, born, self.generation, carried) != 1:
             raise Unavailable(f"native {kind} explosion transition not confirmed")

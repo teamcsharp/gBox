@@ -24,7 +24,7 @@ def _flash_resources(monkeypatch):
     yield
 
 
-def ring_controller(hp_after=1000, spawn_fail_at=None, position=(1000.0, 800.0, -2000.0)):
+def ring_controller(hp_after=1000, spawn_fail_at=None, position=(1000.0, 800.0, -2000.0), flag=True):
     """A fake RE6 controller whose spawn/detonate succeed, capturing every unit position write."""
     ctl = N.Controller.__new__(N.Controller)
     ctl.base = 0x100000000
@@ -75,7 +75,7 @@ def ring_controller(hp_after=1000, spawn_fail_at=None, position=(1000.0, 800.0, 
             ctl.spawns.append(unit)
             hp_box["v"] = hp_after                            # health reads back after the ring's blasts
             return unit
-        put(args[0] + 0x28A0, b"\x01")                        # the effect publishes its explosion flag
+        put(args[0] + 0x28A0, b"\x01" if flag else b"\x00")   # RE6 1.0.2 does not write it (live 2026-11-11)
         return 1                                              # detonate confirmed
     ctl.call = call
     return ctl
@@ -172,3 +172,14 @@ def test_a_first_grenade_refusal_is_a_failed_ring_with_no_spawn():
     assert result["state"] == "failed" and result["detonated"] == 0 and result["requested"] == 10
     assert "refused" in result["reason"]
     assert ctl.failed and ctl.recoverable
+
+
+def test_a_missing_explosion_flag_does_not_fail_a_flash_that_detonated():
+    """Live RE6 1.0.2 (2026-11-11): the detonate call returned 1 and the flash visibly bloomed on screen, but
+    +0x28A0 stayed 0 and the whole ring aborted after one grenade. The call's 1 is the verified confirmation (the
+    single flash uses the same test); the flag is evidence in the receipt, not the gate."""
+    ctl = ring_controller(flag=False)
+    result = ctl.grenade_ring("flash")
+    assert result["state"] == "confirmed" and result["verified"] is True
+    assert result["detonated"] == 10
+    assert all(g["explosion_flag"] is False for g in result["grenades"])
