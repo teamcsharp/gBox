@@ -82,3 +82,33 @@ def test_a_changed_table_is_reported_instead_of_trusted():
 def test_an_address_outside_the_image_is_an_error_not_a_crash():
     with pytest.raises(F.FloorError):
         F.derive(bytes(0x100))
+
+
+# ---- CP15 step 4: where the lobby sets live ----------------------------------------------------------------
+
+def test_the_offline_city_is_floor_zero_with_one_layout():
+    """The city loads `map_city00_00` and nothing else - measured from the floor table, not inferred."""
+    from gbox import pso_floor_map as F
+    assert F.area_for_floor(0) == "map_city00"
+    assert F.layouts_for_floor(0) == ("map_city00_00",)
+    assert not any("lobby" in name.lower() for name in F.layouts_for_floor(0))
+
+
+def test_the_fifteen_lobby_sets_are_floor_fifteen_not_city_rooms():
+    """The close document's "fifteen unread `map_lobby_*` sets" are the lobby **floor**, not rooms of the city.
+
+    Floor 15's layouts are exactly the ten lobbies, the three colour variants and the two soccer maps - 15 sets, the
+    same count the close document listed. No other floor claims a lobby, so walking to a lobby door from the offline
+    city's floor 0 cannot reach them: they are a different floor.
+    """
+    from gbox import pso_floor_map as F
+    assert F.area_for_floor(15) == "map_lobby_01"
+    layouts = F.layouts_for_floor(15)
+    assert len(layouts) == 15
+    lobbies = [n for n in layouts if n.startswith("map_lobby_") and n.rsplit("_", 1)[-1].isdigit()]
+    colours = [n for n in layouts if n.endswith("_be00")]
+    soccer = [n for n in layouts if n.startswith("map_soccer")]
+    assert len(lobbies) == 10 and len(colours) == 3 and len(soccer) == 2
+    claiming = [f for f in range(F.FLOOR_COUNT)
+                if any("lobby" in str(n).lower() for n in F.layouts_for_floor(f))]
+    assert claiming == [15]
