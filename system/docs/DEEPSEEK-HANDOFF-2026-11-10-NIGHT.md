@@ -131,3 +131,18 @@ Then send it the heavy analysis work.
   like live bot data): an autouse fixture points `re4_switch.SIGHT_LOG` / `WALK_LOG` and `re4_walk.CROSSING_LOG` at each
   test's own temp files, and `tests/test_mercs_test_isolation.py` is the rule (it also runs a synthetic round and checks
   the deployment's files are untouched).
+
+- 2026-11-10 18:52: merged `ds-grenade-re4-bss-20261110` @ `16b984bd` into main (`b2dec801`). It carries the RE4
+  native harness (E0(c) dispatcher at `main+0x655880`, E4's write rule, E5's controller with the single-vtable-store
+  trigger and the mailbox call surface), F's flash op (`flash_at` -> the game's blast `main+0x2E4E50` with a 4000 mm
+  floor, `place_flash`/`flash_now` on `core.flash_window.place`), G's ring/barrage offline (both automatic paths off),
+  the E3 read-only `.bss` watch riding the RE4 telemetry (five candidate pages, 16 bytes each, into
+  `stats["bss_watch"]` at every snapshot), and the E3/E4 static verifiers plus their tests.
+  **Gate:** the branch merged current `origin/main`; the targeted set (every touched module, 21 files: the RE4
+  harness/verifier tests, the RE4 switch/mod tests, the grenade ring/status/scatter/intervention tests) ran **383
+  passed, 1 skipped** on the branch @ `16b984bd` and again on main @ `b2dec801`; the full 3103-test MercMode/RE
+  subset was still running at merge time (its failures will be checked against this note).
+  **Risk:** none to gameplay - `RING`/`SCATTER` are `False` on RE4, the harness refuses to attach without the proven
+  private page (E3), and the watch is five 16-byte reads per snapshot. **Restart:** the native controller is a new
+  module and `interventions.native_controller` changed - both go live at the 05:00 restart; the `.bss` watch is a bot
+  module and hot-reloads at the next RE4 session.
