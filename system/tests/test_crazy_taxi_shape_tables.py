@@ -100,3 +100,14 @@ def test_driver_pose_callers():
     assert by[0x8004c96c]["variant"] == 22 and by[0x8004c96c]["r3_global"] == 0x801fefa0
     assert by[0x8004c9c4]["variant"] == 36 and by[0x8004c9c4]["r3_global"] == 0x801ff0c0
     assert by[0x8007684c]["variant"] == 21 and by[0x8007684c]["r3_global"] == 0x801ff0d8
+
+
+def test_dol_pose_fn_confirms_motion_group_kinds():
+    """The DOL pose fn 0x8005cd18 reads all 17 motDC groups and applies the position evaluator exactly to
+    ct.POSITION_GROUPS - an independent (code-side) proof of the motDC.bin group layout."""
+    import sys; sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    import gbox.crazy_taxi as ct
+    kinds = ct.driver_pose_group_kinds_from_dol(_dol())
+    assert sorted(kinds) == list(range(1, ct.MOTION_GROUPS + 1))
+    assert {g for g, k in kinds.items() if k == "pos"} == set(ct.POSITION_GROUPS)
+    assert {g for g, k in kinds.items() if k == "ang"} == set(range(1, 18)) - set(ct.POSITION_GROUPS)

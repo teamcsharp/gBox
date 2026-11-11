@@ -713,6 +713,31 @@ def driver_pose_callers_from_dol(dol: bytes, target: int = DRIVER_POSE_FN) -> li
     return out
 
 
+def driver_pose_group_kinds_from_dol(dol: bytes, fn: int = DRIVER_POSE_FN, size: int = 0x1100) -> dict[int, str]:
+    """Motion-header word index (1-based group) -> evaluator the DOL pose fn applies to it, from the DOL alone.
+    The fn keeps the motion block in r26; every `lwz r3,4*g(r26)` is followed by `bl 0x8005f4a4` (position: one
+    f32 vec3) or `bl 0x8005f4d0` (angle: s32 BAMS -> sin/cos). Independently confirms POSITION_GROUPS/MOTION_GROUPS."""
+    ev = {0x8005f4a4: "pos", 0x8005f4d0: "ang"}
+    o = dol_va_to_offset(dol, fn)
+    words = [struct.unpack_from(">I", dol, o + 4 * i)[0] for i in range(size // 4)]
+    out = {}
+    for i, x in enumerate(words):
+        if x >> 26 != 32 or (x >> 21) & 31 != 3 or (x >> 16) & 31 != 26 or x & 3:
+            continue
+        g = (x & 0xFFFF) // 4
+        if not 1 <= g <= MOTION_GROUPS:
+            continue
+        for y in words[i + 1:i + 14]:
+            if y >> 26 == 18 and y & 1 and not y & 2:
+                d = y & 0x3FFFFFC
+                d -= 0x4000000 if d & 0x2000000 else 0
+                t = (fn + 4 * (words.index(y, i + 1)) + d) & 0xFFFFFFFF
+                if t in ev:
+                    out[g] = ev[t]
+                break
+    return out
+
+
 @dataclass
 class Motion:
     offset: int                 # byte offset of the motion in motDC.bin
