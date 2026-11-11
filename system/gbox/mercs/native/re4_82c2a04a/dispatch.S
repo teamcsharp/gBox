@@ -51,3 +51,4 @@
     ldp     x21, x22, [sp, #0x20]
     ldp     x29, x30, [sp], #0x40
     br      x9
+    ret                                   // the self-test target: a call here proves the mailbox path

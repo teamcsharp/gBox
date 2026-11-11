@@ -55,7 +55,7 @@ def test_the_tail_call_lands_on_the_original_transform():
     md.detail = True
     insns = list(md.disasm(C.IMAGES["dispatch"], C.CAVE_AT))
     assert len(insns) * 4 == len(C.IMAGES["dispatch"])       # every word decodes
-    assert insns[-1].mnemonic == "br"
+    assert insns[-1].mnemonic == "ret" and insns[-2].mnemonic == "br"
     tail = None
     for index, ins in enumerate(insns):
         if ins.mnemonic == "adrp" and "x9" in ins.op_str:
@@ -169,3 +169,19 @@ def test_two_requests_run_in_sequence():
     enter(mu)
     words = mailbox_words(mu)
     assert words["result"] == 15 and words["state"] == C.STATE["done"] and words["ticks"] == 2
+
+
+def test_the_self_test_target_is_a_ret_inside_the_cave():
+    from capstone import Cs, CS_ARCH_ARM64, CS_MODE_ARM
+    assert C.SELFTEST_AT == C.CAVE_AT + 132
+    assert C.SELFTEST_AT + 4 <= C.CAVE_AT + C.DISPATCH[2]
+    words = list(Cs(CS_ARCH_ARM64, CS_MODE_ARM).disasm(C.IMAGES["dispatch"][132:136], C.SELFTEST_AT))
+    assert len(words) == 1 and words[0].mnemonic == "ret"
+
+
+def test_a_selftest_call_returns_zero_through_the_mailbox():
+    mu = machine()
+    publish(mu, C.SELFTEST_AT)                                  # the dispatcher's own ret, no game code
+    enter(mu)
+    words = mailbox_words(mu)
+    assert words["state"] == C.STATE["done"] and words["result"] == 0

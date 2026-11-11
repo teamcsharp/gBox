@@ -17,7 +17,8 @@ from contextlib import contextmanager
 KIND = "merc_interventions"
 MAX_PENDING, KEEP, TTL, FRESH = 64, 128, 10.0, 3.0
 TERMINAL = {"confirmed", "failed", "unavailable", "expired", "uncertain"}
-OPERATIONS = {"flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "grenade_scatter", "set_infinite_ammo"}
+OPERATIONS = {"flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "grenade_scatter",
+              "re4_harness_selftest", "set_infinite_ammo"}
 # The grenade-ring button's selectable types. "flash" is the default and the only one verified; the others
 # are refused by the native controller with a reason (never silently substituted). A longer TTL covers the
 # ten spawn/explode pairs the ring runs (each is the verified flash).
@@ -401,6 +402,8 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                 return {'epoch': epoch}
             choices = getattr(ctl, 'weapon_choices', None)
             caps = ["flash_now"] + (["equip_primary"] if choices else [])
+            if getattr(ctl, "selftest", None) is not None:
+                caps.append("re4_harness_selftest")
             if getattr(ctl, 'grenade_ring', None) is not None:
                 caps.append("grenade_ring")
             if getattr(ctl, 'grenade_scatter', None) is not None:
@@ -544,6 +547,8 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                                                         "kills": kills if isinstance(kills, int) else None}
                                         else:
                                             stats["scatter_failures"] = stats.get("scatter_failures", 0) + 1
+                                elif row['op'] == 're4_harness_selftest':
+                                    result = ctl.selftest()
                                 else:
                                     result = ctl.flash()
                                     if stats is not None:
