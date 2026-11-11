@@ -617,3 +617,68 @@ def test_the_code_patch_stays_refused_under_nce_even_when_turned_on(tmp_path, mo
     assert out["route"] == "in_hand" and not [a for a, _ in ad.writes if a - BASE < TEXT_END]
     ad.use_nce = False
     assert M._code_patch_refusal(ad) is None
+
+
+class _Ladders(_Walls):
+    """Every line walled, one ladder down 2 m away (approach at +x) and one 5 m away on the Ganados' side."""
+    def __init__(self):
+        super().__init__(None)
+        self.crossing_rows = {
+            4: {"kind": "ladder", "direction": "down", "approach": [2000.0, 0.0, 0.0], "landing": [2000.0, -4000.0, 0.0]},
+            5: {"kind": "ladder", "direction": "up", "approach": [500.0, 0.0, 0.0], "landing": [500.0, 4000.0, 0.0]},
+            6: {"kind": "ladder", "direction": "down", "approach": [0.0, 0.0, 1800.0], "landing": [0.0, -4000.0, 1800.0]},
+        }
+
+
+def test_walled_in_he_takes_the_ladder_down_he_reaches_before_the_ganados():
+    b = D.Bot(stats={}, director=False)
+    p = {"pos": (0.0, 0.0, 0.0), "rot": 0.0, "hp": 300, "hp_max": 1680, "ptr": 1}
+    live = b._live(p, [{"pos": (0.0, 0.0, 1500.0), "hp": 400, "ptr": 9}])
+    assert b._escape_goal(p, live, {"nav": _Ladders()}) == (2000.0, -4000.0, 0.0)   # not the up ladder, not the foe's
+    assert b.stats["escape_ladders"] == 1 and "escapes_walled_in" not in b.stats
+    far = D.Bot(stats={}, director=False)
+    onfloor = {"pos": (0.0, -5000.0, 0.0), "rot": 0.0, "hp": 300, "hp_max": 1680, "ptr": 1}
+    assert far._escape_goal(onfloor, far._live(onfloor, []), {"nav": _Ladders()}) is None   # another floor
+
+
+def test_every_recorded_down_ladder_is_an_escape_from_beside_its_approach():
+    """The committed stage data (re4_switch_nav r400/r403/r404): beside each down ladder's approach, walled in, the
+    landing is the escape goal. Castle (r402) has no ladder data: not determined, no goal."""
+    from gbox.mercs.titles import re4_nav
+    seen = {}
+    for room in ("r400", "r402", "r403", "r404"):
+        nav = re4_nav.load(room)
+        if nav is None:
+            continue
+        nav.clear_segment = lambda a, b: False
+        downs = [r for r in nav.crossing_rows.values() if r.get("kind") == "ladder" and r.get("direction") == "down"]
+        seen[room] = len(downs)
+        for r in downs:
+            ap = r["approach"]
+            b = D.Bot(stats={}, director=False)
+            p = {"pos": (ap[0] + 300.0, ap[1], ap[2]), "rot": 0.0, "hp": 300, "hp_max": 1680, "ptr": 1}
+            live = b._live(p, [{"pos": (ap[0] + 4000.0, ap[1], ap[2]), "hp": 400, "ptr": 9}])
+            goal = b._escape_goal(p, live, {"nav": nav})
+            assert goal is not None and goal[1] == float(r["landing"][1]) or any(
+                abs(goal[1] - float(o["landing"][1])) < 1 for o in downs if o is not r), (room, r["source"])
+    assert seen.get("r403") == 9 and seen.get("r404") == 8 and seen.get("r402", 0) == 0
+
+
+def test_fire_tables_are_retried_when_the_first_write_reads_nothing(ad, tmp_path, monkeypatch):
+    """Hermes #9560 (ported): maintain marked the boot's 20x tables done with 0 tables written, so the rate never
+    landed until a round's own give. The boot is marked only once a table reads back; retries are paced."""
+    monkeypatch.setattr(M, "SETTINGS_FILE", tmp_path / "re4-mods.json")
+    monkeypatch.setattr(M, "FIRE_RETRY_S", 0.0)
+    gap = D.FIRE_GAP_S
+    st = M._state(ad)
+    st["fire_rate"] = 20.0
+    try:
+        assert M.maintain(ad, _round("none", control=False, clock=False)).get("fire_tables", 0) == 0
+        assert st.get("rf_applied_boot") is None, "nothing read back: the boot is not marked done"
+        assert st["fire_tries"] == 1
+        _weapon_tables(ad)
+        out = M.maintain(ad, _round("none", control=False, clock=False))
+        assert out["fire_tables"] > 0 and st["rf_applied_boot"] is not None and st["fire_tries"] == 2
+        assert "fire_tables" not in M.maintain(ad, _round("none", control=False, clock=False)), "done for this boot"
+    finally:
+        D.FIRE_GAP_S = gap

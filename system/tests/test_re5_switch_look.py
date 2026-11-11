@@ -291,3 +291,31 @@ def test_a_health_loss_is_blamed_and_the_majini_are_observed_ten_times_a_second(
     clock[0] = 1.0
     b.tick(s)
     assert [c[1][4] for c in k_calls if c[0] == "damage"] == ["grab"]
+
+
+def test_pull_without_body_under_laser_counts_shots_without_target(k_calls):
+    b, _ = bot()
+    foe = at(490, 0)
+    b._aimctx = {'target': 10, 'dist': 490, 'origin': MUZZLE, 'dot': (150, 110, 1000), 'foot': foe, 'where': None}
+    b._pull_start(1.)
+    b._pull_end(1.1)
+    b._aimctx = {'target': 10, 'dist': 490, 'origin': MUZZLE, 'dot': chest(foe), 'foot': foe, 'where': 'body'}
+    b._pull_start(1.2)
+    b._pull_end(1.3)
+    assert b.stats['shots_without_target'] == 1
+    b._aimctx = {'target': 10, 'dist': 490, 'laserless': True}
+    b._pull_start(1.4)
+    assert b.stats['shots_without_target'] == 2
+
+
+def test_trigger_held_when_laser_meets_no_body_and_allowed_when_it_does(k_calls):
+    b, _ = bot()
+    foe = at(490, 0)
+    b._aimctx = {'target': 10, 'dist': 490, 'origin': MUZZLE, 'dot': (150, 110, 1000), 'foot': foe, 'where': None}
+    assert b._trigger(True, 1.0, ray_gate=True) == set() and not b.fire_down
+    assert b.stats['fire_held_no_body'] == 1 and b.stats['shots'] == 0
+    b._aimctx = {'target': 10, 'dist': 490, 'origin': MUZZLE, 'dot': chest(foe), 'foot': foe, 'where': 'body'}
+    assert b._trigger(True, 1.1, ray_gate=True) == {'zr'} and b.fire_down
+    b._trigger(False, 1.2)
+    b._aimctx = {'target': 10, 'dist': 490, 'laserless': True}
+    assert b._trigger(True, 1.3, ray_gate=True) == {'zr'}

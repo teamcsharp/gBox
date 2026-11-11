@@ -55,3 +55,45 @@ mostly one floor plane, not a playable-area outline. `s400` mesh also covers mor
 Offline only. Not checked against gameplay positions on the Switch (no live RAM sample), s401..s407 frame is assumed,
 the stage-to-archive names s401..s407 are the existing menu-order guess in `re5-enemy-cast.md`, and wall segments use
 the triangle's extreme points rather than merged edges. A PR is not runtime acceptance.
+
+## Agreement with learned nav grids
+
+Learned grids compared: the 8 schema-2 geometry-identity grids under
+`gbox-data/mercs/learned/010018100CD46000/nav_grids/verified/` (one per stage,
+stage name taken from each JSON). Learned cells are 1 m, keyed
+(kx,kz) -> center (kx*100 cm, kz*100 cm); costs: 0.5 walked, 4.0 near-wall,
+16.0 wall memory. Each learned cell center was looked up in the 250 mm Havok
+grid (floor `.` / wall `#` / no-floor sampled `_` / outside grid `O`).
+
+| stage | learned cells | walked on floor | walked on wall | walked on no-floor | wall-mem on floor | wall-mem on wall | walked-floor % |
+|---|---|---|---|---|---|---|---|
+| Public Assembly | 129 | 54 | 4 | 0 | 16 | 2 | 93.1 |
+| The Mines | 71 | 22 | 8 | 0 | 10 | 0 | 73.3 |
+| Village | 226 | 88 | 5 | 2 | 37 | 1 | 92.6 |
+| Ancient Ruins | 301 | 156 | 10 | 4 | 23 | 1 | 91.8 |
+| Experimental Facility | 102 | 5 | 0 | 40 | 0 | 1 | 11.1 |
+| Missile Area | 128 | 45 | 11 | 0 | 9 | 1 | 80.4 |
+| Ship Deck | 54 | 14 | 6 | 0 | 5 | 2 | 70.0 |
+| Prison | 257 | 118 | 17 | 0 | 26 | 3 | 87.4 |
+
+Findings:
+
+1. **Frame confirmed for all 8 stages from bot RAM walk positions.** 0 of 1438
+   learned cells fall outside their stage's Havok grid; every grid's span is
+   inside that stage's bounds. This is the strongest available check on the
+   s400..s407 naming, since the verified grids are keyed by measured geometry
+   identity, not by menu order.
+2. Bot walk trail lands on sampled floor in 70-93% of cells for 7 of 8 stages
+   (residual: 1 m learned cell vs 250 mm sample, cell-center lookup, and the
+   grid's own unknown-cell policy).
+3. Wall-memory cells often sit on floor cells (e.g. 16 of 18 for Public
+   Assembly): the bot marks the cell it was pushed in, and the wall may be
+   anywhere inside that 1 m cell. Expected noise, not a frame error.
+4. **Experimental Facility anomaly (unresolved):** 40 of 45 walked cells are on
+   no-floor sampled cells. Either thin platforms/stairs the 250 mm floor sample
+   missed, or the geometry-identity grid is from a different mesh. Needs a
+   dedicated look at that stage's floor samples.
+5. Old schema-1 stage-name files (`Public_Assembly.json` etc.) use a different
+   frame (x -100..43, z -227..187 m, nearly identical spans across all 8
+   stages) and were excluded - consistent with `re5_switch_nav.py`: old
+   stage-name files "cannot be migrated safely".
