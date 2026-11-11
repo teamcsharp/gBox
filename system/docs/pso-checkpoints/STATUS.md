@@ -307,3 +307,39 @@ current code, which is why it passes and why the branch touches nothing else.
   `cp08`, `cp09`, `cp10`, **`cp12` before `cp13`**, `cp15`, `cp16`, `cp17`, and `ds-pso-editor-views`;
 * **drop**: `cp00-clean-start`, `cp00-classes`, `cp01-local-model`, `cp11-editor-page` (its page and API are main's; its views test
   is the forward port above).
+
+## Round 118: the per-branch inventory - exactly what every remaining branch adds to main
+
+`git diff main <branch>` is the wrong measure for a merge: it counts main's newer files as deletions (200+ files, 44k deletions
+for a branch that touches four). The right measure is against the **merge base** - the branch's own changes - and then a per-file
+comparison says whether main already has each one (a script for it is in `docs/research` of this branch's round, kept small).
+
+**Every remaining branch's own changes are still to apply: 101 files across 16 branches, none of them in main.**
+
+| branch | own files | what it adds |
+|---|---|---|
+| `cp02-gold-set` | 4 | `CP02-gold-set.md`, `gbox/pso_llm.py`, `tests/test_pso_llm.py` |
+| `cp03-labelling` | 3 | `CP03-labelling.md`, `tools/export_functions.py`, `tools/label_functions.py` |
+| `cp06-evt-opcodes` | 10 | `CP06-evt.md`, three scanner scripts, `pso_evt.py` + tests (the container fix and the opcode negatives) |
+| `cp06-nrel` | 6 | `CP06-nrel.md`, `pso_nrel.py` + tests, three probe scripts |
+| `cp07-model-walk` | 4 | `CP07-model-walk.md`, `pso_swapfit.py` (the model-centre checks), the executable research file |
+| `cp07-object-loader` | 6 | `CP07-object-loader.md`, `CP00-classes.md`, the loader decompiles, its evidence |
+| `cp07-scene-loader` | 2 | `CP07-scene-loader.md`, the scene-loader decompiles |
+| `cp08-room-pieces` | 3 | `CP08-room-pieces.md`, `pso_rooms.py`, `tests/test_pso_rooms.py` |
+| `cp09-save-data` | 17 | `CP09-save-data.md`, `pso_save_cipher.py`, `pso_memcard.py` + tests, the card/cipher research |
+| `cp10-forest1` | 3 | `CP10-p6a-forest1.md`, two record-diff scripts |
+| `cp12-rigged-swap` | 12 | `CP12-rigged-swap.md`, the endianness-aware `pso_player.py`, the `pso_swapfit` subset rule, tests, the Blender smoke JSON |
+| `cp13-library-donors` | 19 | `CP13-library-donors.md`, the donor builds' evidence, `test_pso_gc_heads.py`, the driver scripts |
+| `cp15-room-inventory` | 2 | `CP15-room-inventory.md`, `tests/test_pso_floor_map.py` |
+| `cp16-stick` | 1 | `CP16-stick.md` |
+| `cp17-walk-graph` | 7 | `CP17-forest1-to-forest2.md`, `pso_walk.py`, `pso_steer.py`, `pso_walker.py` and their tests |
+| `ds-pso-editor-views` | 2 | `CP11-editor-views.md`, `tests/test_pso_editor_views.py` |
+
+**How to reproduce:** for a branch, `git merge-base origin/main origin/<branch>`, then `git diff --name-only <base> origin/<branch>`
+for its own files, and `git diff --quiet origin/main origin/<branch> -- <file>` per file to see whether main already matches.
+"in main: 0" for every branch above is the answer this round measured.
+
+**What this means for the review:** the 15 mergeable branches add **99 files** (the editor-views branch adds 2 more), all disjoint
+from main's current content except for the three files that made round 95's conflicts (`pso_swapfit.py` in cp07-model-walk and
+cp12; `test_pso_class_registry.py` in cp07-object-loader; `pso_player.py` in cp12/cp13), which the ordering and the rebase
+already handle.
