@@ -87,3 +87,26 @@ def test_a_menu_snapshot_is_not_a_stage_load(monkeypatch):
     bot.snapshot(mem)
     assert json.loads(bot.stats["bss_watch"])["stage"] is None
     assert "bss_watch_loads" not in bot.stats
+
+
+def test_each_round_start_on_the_same_stage_is_a_load(monkeypatch):
+    """RE4 Switch plays one stage per session (the MercMode pick rides the launch), so the three-load watch must
+    count round starts, not only stage-id changes, or the harness mailbox can never be proven - live 2026-11-11 a
+    session played nine rounds on stage 3 and the watch held one entry. The stage is re-loaded every round; a page
+    that stays zero across three round starts is the same evidence the lane's rule asks for."""
+    base = 0x100000000
+    pages = {base + off: (b"\0" * 16 if off == 0x1700000 else bytes([7]) * 16) for off in R.BSS_WATCH_PAGES}
+    mem = FakeMem(pages)
+    phase = {"v": "results"}
+    monkeypatch.setattr(R, "snapshot", lambda m: {"module_base": base, "game": {"stage": 3, "phase": phase["v"]}})
+    monkeypatch.setattr(R.re4_nav, "attach", lambda snap: snap)
+    bot = R.RE4Switch()
+    bot.stats = {}
+    for flow in (("intro", "playing", "results"), ("intro", "playing", "results"), ("intro", "playing")):
+        for p in flow:
+            phase["v"] = p
+            bot.snapshot(mem)
+    loads = json.loads(bot.stats["bss_watch_loads"])
+    assert [row["stage"] for row in loads] == [3, 3, 3]
+    from gbox.mercs.titles import re4_switch_native as N
+    assert N.choose_mailbox(loads) == 0x1700000

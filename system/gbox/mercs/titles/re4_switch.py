@@ -1363,20 +1363,29 @@ def watch_into(m, snap: dict, stats: dict | None) -> None:
     through the module-level snapshot. The playbook path was missing it, so a whole RE4 round's telemetry carried no
     `bss_watch`/`bss_watch_loads` and the harness mailbox could never be chosen from three stage loads (live
     2026-11-11: the E3 watch was empty on the round that ran after the 05:00 restart).
+
+    A load is also recorded at **every round start**, not only when the stage id changes: RE4 Switch's MercMode pick
+    rides the launch, so one session plays the same stage every round (live 2026-11-11: nine rounds, stage 3, one
+    watch entry), and the E3 acceptance - the page zero at three loads - could never be met inside a session.
     """
     if not isinstance(stats, dict) or not snap.get("module_base"):
         return
     try:
         watch = bss_watch(m, snap["module_base"])
-        watch["stage"] = (snap.get("game") or {}).get("stage")
+        game = snap.get("game") or {}
+        watch["stage"] = game.get("stage")
         # The telemetry publishes only scalar stats (gbox/tools.py body(): int/float/str/bool), so the watch goes out
         # as JSON strings; the accumulating list itself stays private (a list would be filtered).
         stats["bss_watch"] = json.dumps(watch, separators=(",", ":"))
         loads = stats.get("_bss_watch_loads")
         if not isinstance(loads, list):
             loads = stats["_bss_watch_loads"] = []
-        # one reading per stage load: the last three are the three-load watch even when nobody polls live
-        if watch["stage"] is not None and (not loads or loads[-1].get("stage") != watch["stage"]):
+        phase = game.get("phase")
+        last_phase = stats.get("_bss_watch_phase")
+        started = phase in ("intro", "playing") and last_phase not in ("intro", "playing")
+        stats["_bss_watch_phase"] = phase
+        # one reading per stage load or round start: the last three are the three-load watch even when nobody polls
+        if watch["stage"] is not None and (started or not loads or loads[-1].get("stage") != watch["stage"]):
             loads.append(watch)
             del loads[:-3]
             stats["bss_watch_loads"] = json.dumps(loads, separators=(",", ":"))
