@@ -123,7 +123,7 @@ def build(floor):
 
 def main():
     index = {}
-    for floor in (1, 2):
+    for floor in (1, 2, 3):
         built = build(floor)
         if not built:
             print(f"floor {floor}: no room graph")

@@ -122,7 +122,7 @@ def audit(floor):
 
 
 if __name__ == "__main__":
-    results = [audit(floor) for floor in (1, 2)]
+    results = [audit(floor) for floor in (1, 2, 3)]
     REPORT.write_text(json.dumps(results, indent=1), encoding="utf-8")
     for result in results:
         floor = result["floor"]
