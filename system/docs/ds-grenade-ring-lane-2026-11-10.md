@@ -1754,3 +1754,28 @@ grenades ... or even a ring of acid grendes"): filed **#9771**, first in the Her
 **Also live**: the RE6 remote mines kept running on the same block - 16 rings / 64 bombs / 5 flag detonations by
 13:44 (the operator's "massive quantities then detonate them remotely"); the RE4 bow 40x deployed; the QTE ask is
 #9769 (second in the queue now); #9720 (crowd/combo) and #9744 (aim/ordnance/aim) follow.
+
+## Round 93 (2026-11-11 13:58 CST) - E6 diagnosed: the dispatcher is NEVER invoked (mailbox ticks 0)
+
+The RE4 probe's new diagnostic receipt (session fefc7b3202a94d14-54baf56daf034400, 13:56) settles E6's failure:
+
+    re4_harness_selftest  state uncertain
+    ticks_before 0  ticks 0  mailbox_state 0  attached_after true  player_generation 0
+
+The clone IS on the player's vtable (`attached_after true`) and the request IS published (`mailbox_state` 0 after the
+retire), but the **dispatcher never runs**: `ticks` does not move at all. So the slot the clone redirects
+(CODE.SLOT_TRANSFORM) is not a slot the game calls on the player unit - the earlier theory that the 1 s wait was
+too short is wrong; nothing is ever invoked. Also `player_generation 0`: the id read off the unit at that snapshot was
+0, so the click likely landed on a menu/intro frame as well, but the zero ticks do not depend on that.
+
+NEXT (the E6 experiment): build a probe clone that points several candidate vtable slots at a tick counter, attach it
+on a live round and read which indices move - the player update may go through a different slot of the unit's own
+vtable (a move/update slot), or through another object entirely (the weapon/action manager). The mailbox itself
+(0x3ca9304000, the three-load zero page) is proven writable/stable; only the invocation is missing. Until a slot that
+the game calls every frame is found, the RE4 harness's flash/ring/hand receipts stay blocked, and the RE4 ring rule
+(hooked into the playbook this hour) keeps refusing honestly.
+
+**RE6 hand/incendiary**: the class spawn's 1 s budget was the live hand ring's timeout (1295 ms, 13:51); the derived
+spawn/detonate pair now gets CLASS_SPAWN_TIMEOUT_S = 3.0 and CLASS_WAIT_S = 2.0 (9983a9a5). The next RE6 block's hand
+ring is the test. The bow 40x is live on the current RE4 block (Krauser rounds 13:54-13:56: 0-6 kills, 0-10 shots -
+the gate still holds most of the round; the 40x cap/25 ms tick is not the whole story).
