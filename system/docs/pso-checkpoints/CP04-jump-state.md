@@ -737,3 +737,34 @@ ordinary input and only requires an **existing character** (which the card has: 
 Forest 1 mission**. Every route to "the computer opens Forest 1's doors and fights the first wave from a known state" passes through
 it, and every route to it passes through a live session. The campaign remains the one path that reaches Forest 1 without it, by
 playing the menus from the boot.
+
+## Round 130: the mission is missing its map artifact too - it cannot run on this plane for two independent reasons
+
+Round 129 found the mission's `initial_state` (a slot-1 Dolphin state at Forest 1's arrival) does not exist here. Its **map artifact
+is missing as well**:
+
+```
+GET /api/artifacts/0e7bc121a41e483e2c4d03bb031226461fecafb6c14ebfbeaab8ffe76ecfd2f5
+  -> HTTP 404   (route verified in server.py: /api/artifacts/{digest} -> store.read_artifact)
+```
+
+`autoplay.py` documents what that digest should be: *"spec: {rel_artifact: sha256 of a PSO c.rel, be: true, size: 10}; cached as
+JSON next to the runner"* - so the mission needs the **Forest 1 collision rel** as a plane artifact, and it is not in the store.
+The mission quotes `be: true` (a big-endian rel), consistent with a GameCube-era artifact, and its waypoints `(-95, 214)`,
+`(-140, 330)`, `(7, 362)`, `(90, 300)` are in that rel's coordinate space.
+
+**So `pso-gc-forest1-first-wave` is doubly non-runnable on this plane:**
+
+| precondition | state |
+|---|---|
+| `initial_state`: slot-1 Dolphin state, HUmar Lv1 at Forest 1 arrival | **absent** (`jumpstates/` has only Sonic/Mario/RE4) |
+| `map.rel_artifact`: the Forest 1 `c.rel` as a stored artifact | **absent** (`GET /api/artifacts/<sha>` -> 404) |
+
+Both are products of work this lane has not been able to finish: the state needs CP4's live session, and the rel is CP7.3's
+Dreamcast-side data (the GC image has no Forest 1 `r.rel`; a `be: true` rel therefore came from somewhere this lane has not
+reproduced). **The campaign avoids both** because it plays from the menus with `nav-explore.json` built during play, which is why it
+is the only path that can run cold.
+
+**What this changes for the handover:** the plane's Forest 1 mission should not be cited as the demo that "just needs a launch" -
+it needs a launch *plus* the CP4 state *plus* the rel artifact. The campaign needs only the launch. That distinction belongs in the
+next session's first paragraph.
