@@ -288,6 +288,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         # MercMode adoption require this exact role; SessionRuntime records it for the titles that have teamplay.
         stats.update(team_role="solo_p1", scoring_scope="solo")
     combo_step = None
+    hit_step = None
     try:
         from . import lessons as lesson_store
         from .notebook import Notebook
@@ -296,12 +297,16 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         config = getattr(getattr(m,"adapter",None),"config",None)
         if config is not None and callable(getattr(config,"token",None)):
             notebook.configure_knowledge(config.public_url or "http://127.0.0.1:8765",config.token())
-            # Every combo lost files one follow report (gbox.mercs.combo_reports), rate-capped per round.
-            from . import combo_reports
+            # Every combo lost and every hit taken files one follow report (gbox.mercs.combo_reports/hit_reports).
+            from . import combo_reports, hit_reports
             combo_reports.configure(config.public_url or "http://127.0.0.1:8765", config.token(),
                                     title=str(prof.get("map_id") or ""),
                                     session_id=str(stats.get("source_session_id") or ""))
             combo_step = combo_reports.observe
+            hit_reports.configure(config.public_url or "http://127.0.0.1:8765", config.token(),
+                                  title=str(prof.get("map_id") or ""),
+                                  session_id=str(stats.get("source_session_id") or ""))
+            hit_step = hit_reports.observe
     except Exception as exc:
         stats["round_notebook_error"] = str(exc)[:200]
     if prof.get("map_id") == "BLUS30491":
@@ -654,11 +659,17 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                         continue
             if stats.get("hits_taken", 0) > hits_seen:   # what hit him, for the lessons
                 hits_seen = stats["hits_taken"]
-                log("hit_taken", player_r=list((snap.get("player") or {}).get("r") or ()),
-                    attackers=[{"slot": t.slot, "kind": t.kind, "state": list(t.state) if t.state else None,
-                                "act": (t.state[1] if t.state and len(t.state) > 1 else None),
-                                "eta": round(t.eta, 2) if t.eta != float("inf") else None, "dist": round(t.dist),
-                                "in_value_s": round(now - t.since, 2)} for t in getattr(bot, "_threats", [])[:3]])
+                attackers = [{"slot": t.slot, "kind": t.kind, "state": list(t.state) if t.state else None,
+                              "act": (t.state[1] if t.state and len(t.state) > 1 else None),
+                              "eta": round(t.eta, 2) if t.eta != float("inf") else None, "dist": round(t.dist),
+                              "in_value_s": round(now - t.since, 2)} for t in getattr(bot, "_threats", [])[:3]]
+                log("hit_taken", player_r=list((snap.get("player") or {}).get("r") or ()), attackers=attackers)
+                if hit_step is not None:             # the operator: every hurt files a follow report
+                    try:
+                        hit_step(stats, snap, now, attackers=attackers, doing=getattr(bot, "doing", None),
+                                 why=getattr(bot, "why", None))
+                    except Exception as exc:         # noqa: BLE001 - a follow report never ends the round
+                        stats["hit_report_error"] = f"{type(exc).__name__}: {exc}"[:200]
             if "tap" in act:
                 hold(set())
                 sleep(0.15)
