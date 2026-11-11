@@ -382,3 +382,11 @@ Then send it the heavy analysis work.
   Ollama: the 1.86 GB installer downloaded, but its silent install needs elevation and hung in this non-interactive
   session (OllamaSetup killed, the 0.5.7 server restarted and answering) - the upgrade needs the operator's UAC or a
   5.0-era fallback; the planner fix (local model preferred) is in main either way.
+﻿
+- 2026-11-10 21:0x: PSO campaign restarted on the running session (it had stopped after the coop launch's card check: the
+  current session was not launched with `pso_coop` so the two-player campaign refuses it - `ValueError: Launch PSO
+  with pso_coop=true`; the single-player campaign runs instead). Tried the Spark's smaller vision models to dodge the
+  busy GPU: `gemma3:1b` is refused by preflight ("does not advertise vision capability"), so only `qwen2.5vl:7b`
+  qualifies there. The i9 planner fix therefore needs a newer Ollama, and the installer needs elevation this session
+  cannot answer - so a **portable** `ollama-windows-amd64.zip` is downloading (no admin: run it beside the current
+  install, same models dir, then `agent.vision_url` 127.0.0.1:11434 already points the campaign at it).
