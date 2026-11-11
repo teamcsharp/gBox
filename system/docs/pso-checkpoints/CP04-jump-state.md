@@ -545,3 +545,25 @@ pad when it has one, and the fallback INI only binds slot 0 when it has none - s
 outcomes of `_setup_vpad` without knowing in advance which happened.
 
 **Window this round:** none (operator idle 49 s, CPU 76 %). The driver is staged for the next one.
+
+## Round 106: the whole runbook in one command (`docs/research/pso-cp4-runbook.py`)
+
+The window is short, and every step that needs a human between commands risks losing it. The runbook is therefore one process
+that does all of it and stops at the first failure with the step named:
+
+| step | what it does |
+|---|---|
+| window | polls `/api/workers` until the i9's `idle_seconds >= 300` (up to an hour), then queues the launch itself |
+| session | waits for the session, then reads `mode`/`floor` to prove RAM is live |
+| input | probes one START through the **relay** and one through the **agent's pad**, keeps whichever changed `mode` |
+| walk | `pso_boot_walk.walk` to the lobby, pressing through the winning path |
+| save_state | runs `pso_boot.py save-state` and records the output |
+| seed | reads `[0x80585F6C]`, and `+0x118` when the descriptor is non-zero (CP9's runtime seed) |
+| stop | stops the session so the i9 is left clean, and writes a JSON report to `D:\gBox\pso-ds\live\` |
+
+It prints one timestamped line per step and writes the same steps into the report, so a run is auditable even if it is cut short
+by the operator returning. The seed it captures is exactly what `pso_save_cipher.decode(body, seed)` (round 94) needs, so a
+successful run would leave CP4 and CP9 one call apart.
+
+**Staged, not run:** this round had no window (operator idle 0 s, CPU 83 %). The script parses and compiles; its live paths are
+the ones already exercised in rounds 100-104 (launch admission, session, RAM reads, pad creation, relay).
