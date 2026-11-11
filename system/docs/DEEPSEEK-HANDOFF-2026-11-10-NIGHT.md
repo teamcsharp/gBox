@@ -598,3 +598,29 @@ Then send it the heavy analysis work.
     `walls_pressed 0`. The gun still goes down most often to flank, and fire-first keeps it only 7 times in that window.
     No new ticket: the aim/fire backlog (#9499, #9484, #9466, #9560) is open, and the doc's rule is to judge a block's
     numbers, not one minute - the report is now the instrument for that.
+
+- 2026-11-11 11:20 (DeepSeek PM): **the operator authorized the gateway restart; the grenade ring and the RE4 evidence are
+  live.**
+  - **Restart:** `gbox.service` restarted on lilspark at ~10:49 (worker `c63a6efd5f584229` -> `0569c82d21614288`,
+    health back immediately, `deploy-restart-pending` cleared after the restart because the 10:45 deploy had already
+    copied everything). It activated the pending runtime: the RE4 playbook's round Notebook (`f8931ce2`), the RE4 E3
+    watch (`78093822`), the RE4 harness `_CREATE_LOCK` (`20028ad6`), the RE6 ring flag fix (`be058678`) and the
+    intervention probe's `allow_unverified` (`59850e4e`).
+  - **RE4 round reports exist (verified live):** the scanner now has an `010099A00BC1E000` cursor and five reports
+    (10:57-11:03): kills 7-24, `round_gun_downs` 35-43, `round_unwall_tangents` 5-11, all `died`. The operator's
+    raise/lower and wall numbers are now in the loop - the fire-first regression is measurable per round, and the
+    report is the instrument #9526's acceptance will use.
+  - **RE4 harness:** the controller builds (no more AttributeError) and the status now names the real gate -
+    "no proven private storage ... pages now: ..."; `bss_watch`/`bss_watch_loads` are publishing (stage 3, four pages
+    nonzero, `0x1700000` all zero). The round-start load change (`cb956095`, deployed 11:15) makes the same stage count
+    a load per round; after three round starts `choose_mailbox` -> `MAILBOX_AT = 0x1700000` and the next RE4 session can
+    attach for the flash/hand receipts.
+  - **RE6 flash ring CONFIRMED live** (request `43927d54-9007-4688-b2fa-e0981fe4ed1b`, session
+    `0569c82d21614288-bc86d7aad571481a`): `confirmed`, 10 requested / 10 detonated, 600 cm ring, 703.9 ms, hp 900 -> 900,
+    self-damage 0, the after-frame full of the blue flash bloom. The full receipt and the open items are in the grenade
+    lane log round 84.
+  - **RE5:** the 10:51 session ended after 2.4 min; its controller said "no living player in an active Mercenaries round"
+    (the session had already ended). Its status now names hand/incendiary as built on the parameterised spawn
+    (uWp06/uWp07 DTI) with no live receipt yet - the next live RE5 round is the probe.
+  - **The crowd/combo ask:** #9526 (proactive on crowds) and #9268 (RE6 standing still) are first in the Hermes queue,
+    with the live evidence comment that the read-and-report rules do not apply; no Hermes run had picked it up at 11:20.
