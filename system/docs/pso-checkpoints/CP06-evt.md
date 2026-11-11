@@ -175,3 +175,19 @@ on this binary** - not as absolute pointers, not as either relative-offset form.
 **Net for CP6.1:** the container is byte-identical and tested (143/143 rebuilds); the opcode layer has now had three offline
 attempts with their negative results documented and a reusable scanner left behind. It should be treated as **live-dependent**
 until someone runs route 1.
+
+## Round 114: route 3 also dead by direct reference - the tables are addressed by computed offsets
+
+The third route from round 113 was "decompile the callers of the helper tables" (`0x804b023c`, `0x804b6660`, `0x804b72dc`).
+`docs/research/pso-cp6-table-refs.py` asks Ghidra for references to those three addresses: **0 references each**.
+
+That is consistent with the rest of this binary: like the class registry (`0x805D3138`) and the seed descriptor
+(`r13 - 0x4694`), the tables are reached through **computed offsets** (`lis`/`addi` against a base register), so a direct
+xref search finds nothing. A computed-offset scan would have to know the base register's value per function, which is a
+decompiler-level analysis, not a byte scan.
+
+**CP6.1's static work is therefore closed with a documented boundary:** three scans (absolute pointers: 983 runs / 41
+opcode-shaped; relative-offset tables: 0; direct table references: 0) and two helper-level facts (the debug helpers have no
+callers; their tables have no direct references). The opcode layer should be finished from a live session - a breakpoint on an
+event number's use, which the object field `+0x84` makes possible - and the container work (byte-identical rebuilds, 143/143) is
+already there to receive the names once they are known.
