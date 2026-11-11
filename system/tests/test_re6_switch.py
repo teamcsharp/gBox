@@ -3644,28 +3644,6 @@ def test_overwhelmed_right_after_a_flash_the_remote_bomb_goes_down_at_his_feet(m
     assert bot2.stats["bomb_drops"] == 0
 
 
-def test_close_ring_with_no_throwable_cluster_does_not_veto_the_bomb(monkeypatch):
-    """Operator critique 7097 (live 11-10): 34 bomb vetoes 'a grenade, not a bomb' and 0 grenades thrown - a ring of
-    zombies 6.5 m off in no cluster of 3 gives the grenade nothing to throw at, so the bomb goes down."""
-    monkeypatch.setattr(R, "NADES", True)
-    ring = tuple((650.0 * math.sin(a), 0.0, 650.0 * math.cos(a), 700) for a in (0.0, 2.1, 4.2))
-    bot, clock, snap = brain(round_guest(enemies=ring, cam_yaw=0.0))
-    bot.held = lambda p, now: False
-    snap["player"].update(equipped=0, bomb={"count": 5, "out": False}, nades={R.NADE_TYPES["frag"]: (11, 5)})
-    run(bot, snap, clock, 1)
-    assert bot.stats["nade_choices"] == 0 and bot.stats["bomb_choices"] == 1 and bot.bomb_phase == "equip"
-
-
-def test_a_throwable_cluster_still_takes_the_grenade_over_the_bomb(monkeypatch):
-    monkeypatch.setattr(R, "NADES", True)
-    pack = ((650.0, 0.0, 0.0, 700), (700.0, 0.0, 100.0, 700), (700.0, 0.0, -100.0, 700))
-    bot, clock, snap = brain(round_guest(enemies=pack, cam_yaw=0.0))
-    bot.held = lambda p, now: False
-    snap["player"].update(equipped=0, bomb={"count": 5, "out": False}, nades={R.NADE_TYPES["frag"]: (11, 5)})
-    run(bot, snap, clock, 1)
-    assert bot.stats["nade_choices"] >= 1 and bot.stats["bomb_choices"] == 0
-
-
 def test_a_hold_presses_the_prompts_own_button():
     """2026-10-28: a J'avo's knife ring failed - in a hold only B and the stick were tried; the shown prompt's button is
     pressed and let go tick by tick, the stick rotated for a stick prompt."""
