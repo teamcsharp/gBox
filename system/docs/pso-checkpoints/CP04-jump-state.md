@@ -442,3 +442,48 @@ CP12 do not need input at all once a character is in game.
 CP13, CP16, CP17-19) is downstream of "one character is in the game".
 
 Session state at the end of the round: no session, `/api/sessions` empty, the i9 clean.
+
+## Round 102: the root cause - this machine has no working pad, so every press is dropped before it reaches the game
+
+Round 100 ruled out every input theory (focus, key names, timing, background input). This round read the code that builds the
+session's pad configuration and found the answer **written in the codebase, dated today**:
+
+```
+adapters._want_vpad:  "Drive Player 1 through a ViGEm virtual XInput pad instead of the keyboard? Windows only, opt-in:
+                      on for PSO (gecko id GPO*, which loses the attract loop on the i9 because keyboard input needs focus)"
+adapters._setup_vpad: "ViGEm releases the previous session's pad asynchronously, so a launch right after a stop can fail to
+                      create one (the i9-NUC 2026-11-10: `_setup_vpad` returned None, the INI fell back to the keyboard, and
+                      every gBox press was silently dropped for the whole session)"
+adapters 3128-3132:   "A leftover virtual pad can hold slot 0 reporting all zeros forever, and then the game -- and the
+                      operator's own controller -- see nothing (i9-NUC 2026-11-10: slot 0 phantom, the real pad on slot 1,
+                      every press dropped)"
+```
+
+**The chain, measured on this machine today:**
+
+1. `vpad_win.available()` is **True** (ViGEm is installed), but three **stale "Xbox 360 Controller for Windows"** devices
+   (instance ids `USB\VID_045E&PID_028E\01/02/03`) are plugged from earlier sessions;
+2. `_setup_vpad` creates a pad only if it gets a **distinct slot**; with those leftovers it can fail after three tries, and the
+   launch falls back to the **keyboard INI**;
+3. the fallback calls `pad_bind.choose_slot(pad_bind.probe_pads())` - and **`probe_pads()` returns `{}`** on this machine right
+   now (measured this round: no pad reports any state at all), so nothing better is bound;
+4. `GCPad1` therefore stays on `XInput/0/Gamepad`, the **phantom slot that reports all zeros** - and the game, and a real
+   controller, see nothing.
+
+**That is why four injection methods failed against a visible PRESS START screen:** the emulator was not reading the keyboard
+at all in those sessions - it was reading a phantom pad. The scancode/VK/relay presses were never the problem; the *pad
+binding* was.
+
+**The unblock, in order of cleanliness:**
+
+1. **Free the stale virtual pads** and let a launch create a real ViGEm pad (`_setup_vpad` succeeds, `session.pad` is set, and
+   `send_input` goes to `vpad.apply(events)`, which is focus-independent by design). The pads belong to the worker process, so
+   this needs the plane restarted at a safe moment - the operator's call, not this lane's.
+2. **Plug a real XInput controller** (the operator's own): `probe_pads()` would report it and `pad_bind.choose_slot` would bind
+   that slot.
+3. **Make `_setup_vpad` robust against leftovers** (retry with a fresh slot after `close()`, or enumerate and reuse a stale
+   pad): a code change on main, outside this lane's branches.
+
+**What this changes in the handover:** CP4/CP16 are blocked by a **pad-binding environment fault**, not by a missing input API.
+The probe `pad_bind.probe_pads()` is the one-line test for it, and the launch job output says "virtual pad unavailable ... 
+keyboard input used" when it happens.
