@@ -1536,6 +1536,10 @@ MAP_GOAL_LOG_EVERY_S = 1.0
 # (after a plant), mine_preflashes (to open the way).
 MINE_FLASH, MINE_FLASH_OVERDUE_S, MINE_FLASH_GAP_S = True, 6.0, 8.0
 MINE_FOE_CLEAR_CM, MINE_SPACING_CM = 400.0, 450.0
+# Never idle among foes (operator #6810): SURROUND_N Majini within RAMPAGE_R (or one within CROWD_FIRE_CLOSE_R) and
+# nothing done for SURROUND_IDLE_S -> _surround_guard fires. SURROUND_OWNED: the controllers whose idle ticks are work.
+SURROUND_N, SURROUND_IDLE_S = 2, 1.0
+SURROUND_OWNED = frozenset({"mine", "heal", "flashbang", "escape", "quick_turn", "native_equip", "dead", "held", "prompt"})
 MINE_COUNTERS = ("mines_placed", "mine_attempts", "mine_unconfirmed", "mine_retreats_completed", "mine_equip_failures",
                  "mines_gone", "mine_clear_runs", "mine_blasts", "mine_kills", "mine_blast_hp_loss", "gun_backs")
 # Weapon mastery (operator 2026-11-09: "Any weapon that I choose to equip the bot with, I need the bot able to masterfully
@@ -6807,9 +6811,42 @@ class Bot:
                         self.target_at = now
         if self.mines is not None:
             self._mine_flash(snap, now)                      # a bomb just down, or one overdue behind a crowd
+        act = self._surround_guard(p, live, flat, act, now)
         if set(act.get("hold", ())) & {"rleft", "rright", "lup", "ldown"} and "zl" not in act.get("hold", ()):
             self.move_at = now
         return act
+
+    def _surround_guard(self, p, live, flat, act, now) -> dict:
+        """Never idle among foes (operator #6810: surrounded, he stopped shooting, stopped planting mines, stopped all).
+        With SURROUND_N or more Majini within RAMPAGE_R on his level (or one within CROWD_FIRE_CLOSE_R), a tick whose
+        action is no fight (no trigger, no throw/tap), no step and no controller's work (mine/heal/flash/escape/...)
+        for SURROUND_IDLE_S is replaced: the gun up on the nearest one, the trigger down. stats surround_idle_breaks."""
+        try:
+            py = p["pos"][1]
+            ring = [e for e in live if flat(e) <= RAMPAGE_R and abs(e["pos"][1] - py) <= LEVEL_DY]
+            hold = set(act.get("hold") or ())
+            busy = (self.doing in SURROUND_OWNED or act.get("tap") or self.fire_down or "zr" in hold
+                    or bool(hold & {"lup", "ldown", "lleft", "lright", "a", "x", "y"}))
+            gap = self.__dict__.get("_sur_t") is not None and now - self._sur_t > 1.0
+            self._sur_t = now
+            if not ring or busy or gap or not (len(ring) >= SURROUND_N or any(flat(e) <= CROWD_FIRE_CLOSE_R for e in ring)):
+                self._sur_idle = None
+                return act
+            if self.__dict__.get("_sur_idle") is None:
+                self._sur_idle = now
+            if now - self._sur_idle < SURROUND_IDLE_S:
+                return act
+            self._sur_idle = now
+            self.stats["surround_idle_breaks"] = self.stats.get("surround_idle_breaks", 0) + 1
+            tgt = min(ring, key=flat)
+            err = wrap(heading(tgt["pos"][0] - p["pos"][0], tgt["pos"][2] - p["pos"][2]) - p["rot"])
+            self._set_target(tgt.get("ptr", tgt.get("slot")), now)
+            self.doing, self.why = "surround_fire", f"idle among {len(ring)} Majini: the gun up on the nearest, the trigger down"
+            self._trigger(True, now)
+            return {"hold": ("zl", "zr") + self._turn(err, AIM_TOL)}
+        except Exception as exc:                             # noqa: BLE001
+            self.stats["surround_guard_error"] = f"{type(exc).__name__}: {exc}"[:120]
+            return act
 
     def _mine_route(self, p, act, now) -> dict:
         """The mine controller's run out (its retreat, its guard) picks a heading by the widest gap among the Majini;
