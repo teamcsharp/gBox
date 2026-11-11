@@ -377,7 +377,7 @@ def control(ad, prof, *, ring=None):
 # or a pack of min_pack within reach_cm is not thinning - at most every cooldown_s (the title's SCATTER_EVERY_S), never
 # its explosive kinds inside the learned reach (bomb_safe_cm goes to the controller). stats scatters_fired,
 # scatter_rounds, scatter_kills (inside kill_window_s after one), scatter_failures, scatter_decision.
-SCATTER_TITLES = frozenset({"01002A000CD48000", "010018100CD46000"})   # RE6 and RE5 Switch
+SCATTER_TITLES = frozenset({"01002A000CD48000", "010018100CD46000", "010099A00BC1E000"})   # RE6, RE5 and RE4 Switch
 SCATTER_DEFAULTS = {"enabled": True, "cooldown_s": 12.0, "count": 8, "near_cm": 500.0, "reach_cm": 1500.0,
                     "floor_dy_cm": 150.0, "hurt_s": 3.0, "min_pack": 3, "surround_n": 4, "surround_cm": 400.0,
                     "kill_window_s": 8.0, "toward_n": 6, "after_ring_s": 6.0,   # (no barrage right after a ring)

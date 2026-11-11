@@ -136,7 +136,8 @@ def test_a_title_without_a_native_controller_still_names_every_grenade_kind(monk
     rows = {r['kind']: r for r in body['options']['grenade_kinds']}
     assert set(rows) == {'flash', 'hand', 'incendiary'}
     assert all(r['available'] is False for r in rows.values())
-    assert 'not built for RE4 Switch' in rows['flash']['reason']
+    assert 'built on the RE4 Switch native harness' in rows['flash']['reason']
+    assert all('does not offer' in rows[k]['reason'] for k in ('hand', 'incendiary'))
 
 
 def test_the_worker_publishes_the_controller_rows_and_the_moment_s_reason(monkeypatch):

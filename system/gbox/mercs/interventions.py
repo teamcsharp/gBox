@@ -332,9 +332,10 @@ def install(app, store, auth):
 
 def native_controller(ad):
     """One serialized native controller per adapter, shared by UI and MCP."""
-    from .titles import re5_switch_native, re6_switch_native, re4_gc_native
+    from .titles import re5_switch_native, re6_switch_native, re4_gc_native, re4_switch_native
     reasons = []
-    for module, attribute in ((re4_gc_native, "_re4_native_controls"),
+    for module, attribute in ((re4_switch_native, "_re4_switch_harness"),
+                              (re4_gc_native, "_re4_native_controls"),
                               (re6_switch_native, "_re6_native_flash"),
                               (re5_switch_native, "_re5_native_flash")):
         try:

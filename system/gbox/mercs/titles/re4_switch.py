@@ -1337,6 +1337,25 @@ def warm_probe(m) -> dict:
 # ---------------------------------------------------------------------------
 # Driver + first-cut combat brain.
 # ---------------------------------------------------------------------------
+# The E3 watch (2026-11-10): the five `.bss` candidate pages read once per snapshot so the round's telemetry carries
+# their bytes at every stage load. A page that is all zero at three loads can hold the RE4 native harness's mailbox
+# (`re4_switch_native`); 16 bytes is the ask, `BSS_WATCH_BYTES` is what one read returns. Read-only: five 16-byte reads
+# per snapshot, no writes, nothing changes the game.
+BSS_WATCH_PAGES = (0x1CB9000, 0x1CBA000, 0x1CBB000, 0x1CBC000, 0x1700000)
+BSS_WATCH_BYTES = 16
+
+
+def bss_watch(m, base: int) -> dict:
+    """{stage, at, pages: {offset: hex16 or None}} for the candidate pages (a failed read is None, never a stop)."""
+    out: dict = {"at": round(time.monotonic(), 3), "pages": {}}
+    for off in BSS_WATCH_PAGES:
+        try:
+            out["pages"][f"{off:#x}"] = bytes(m.rd(base + off, BSS_WATCH_BYTES)).hex()
+        except (ValueError, OSError, TypeError, struct.error):
+            out["pages"][f"{off:#x}"] = None
+    return out
+
+
 class RE4Switch(Driver):
     map_id = MAP_ID
     solo_p1 = True                              # The Mercenaries on Switch is played solo on P1 here
@@ -1353,7 +1372,16 @@ class RE4Switch(Driver):
         self.stats: dict | None = None
 
     def snapshot(self, m) -> dict:
-        return re4_nav.attach(snapshot(m))             # snap["nav"]: the stage's floor mesh (the tactical map's too)
+        snap = re4_nav.attach(snapshot(m))             # snap["nav"]: the stage's floor mesh (the tactical map's too)
+        stats = getattr(self, "stats", None)
+        if isinstance(stats, dict) and snap.get("module_base"):
+            try:
+                watch = bss_watch(m, snap["module_base"])
+                watch["stage"] = (snap.get("game") or {}).get("stage")
+                stats["bss_watch"] = watch          # telemetry: the pages' bytes at this stage load (E3)
+            except (OSError, ValueError, TypeError, struct.error):
+                pass
+        return snap
 
     def screen(self, m, snap: dict | None) -> str:
         snap = self.snapshot(m) if snap is None else snap
@@ -1627,6 +1655,21 @@ CAM_COLLAPSE_X, CAM_COLLAPSE_S, CAM_SETTLE_S = 0.6, 0.15, 1.0
 # back). Each swap is a fresh grenade (no count to spend: infinite by construction); RE4 has no animation-speed mod to
 # reuse, so the throw plays at the game's speed. NOT seen live yet: whether the game throws a grenade put in the hand
 # this way - so off until a watched round turns it on (the sidebar's bot-logic knob THROWS, or here).
+# The grenade ring and the scatter barrage (checkpoints F/G): the native harness's own blasts (flash 4000 mm floor,
+# hand 7000, the barrage mixed). Both automatic paths are OFF until a live receipt per kind; the ops stay available
+# for clicks/probes. Distances here are millimetres; the shared rule works in cm and the controller converts at its
+# boundary (`re4_switch_native`), so the knobs keep the shared names.
+RING, RING_N, RING_EVERY_S, RING_KIND = False, 4, 20.0, "flash"
+SCATTER, SCATTER_EVERY_S, SCATTER_N = False, 12.0, 8
+SCATTER_FLASH_ONLY = False            # flash and hand are built: the flash cap narrows the draw, never refuses it
+
+
+def scatter_kinds() -> tuple:
+    """The kinds a random barrage can draw: the RE4 harness's built blasts (flash, hand; incendiary is G3)."""
+    from . import re4_switch_native as native
+    return tuple(native.SCATTER_KINDS)
+
+
 THROWS = False
 THROW_GAP_S, THROW_PACK_N, THROW_PACK_MM, THROW_FLASH_MM = 5.0, 3, 3000.0, 4000.0
 THROW_MIN_MM, THROW_MAX_MM = 6000.0, 12000.0

@@ -814,3 +814,241 @@ updated to the on-under-clock contract.
   `scatters_fired` / `scatter_rounds` / `scatter_kills` moving;
 - if the RE session judges the flash-only barrage not worth having before checkpoint C verifies another kind, say so
   in the lane log and revert D2 (the fallback the guide allows) rather than living with a cap-breaking barrage.
+
+## Round 58 (2026-11-10 16:45 CST) - E3's static half: a 3.4 MB unreferenced stretch of RE4's .bss, and the watch request
+
+E3 asks for private writable storage (mailbox, generation guard, call arguments, result word). The cave is executable
+code in the RX segment - an install target, never guest-writable - so the storage must be either RE4's own allocator
+(not identified) or a `.bss` range the game never touches. This round builds and runs the static half of that proof.
+
+**Tool.** `system/scripts/verify_re4_bss.py` (same shape as the cave verifier; no gbox runtime dependency beyond
+`gbox.nso_elf`). From the image's own NSO header it:
+
+1. collects every static reference into `.bss`: an `adrp` followed within four instructions by an `add`,
+   `ldr`/`str`/`ldp`/`stp` or other immediate use on the same register, every `adr`, and every 64-bit literal in
+   `.text`/`.rodata`/`.rwdata`;
+2. finds the 4 KiB-aligned windows of at least `--size` bytes with no reference in them (all of them, plus the
+   largest unreferenced stretch);
+3. vets one chosen range with `--at` (inside `.bss`, page-aligned, no reference) and exits 0/1.
+
+Tests: `tests/test_re4_bss.py` (10) - a clean image offers every aligned page; a planted `adrp`+`add`, `adrp`+`ldr`,
+an `adr` and a 64-bit literal each remove their page; a reference just past a window does not count; a range outside
+`.bss`, an unaligned one, a size over a page and truncated/foreign images are refused; the CLI's PASS/FAIL.
+
+**The operator's image** (`D:\gBox\cache\re4-base\main.bin`, layout `.text 0..0x655850`, `.rodata 0x656000..0xAE1BCC`,
+`.rwdata 0xAE2000..0xB2C738`, `.bss 0xB2C738..0x1CC0000` = 18.4 MB):
+
+- **10,285 static references into `.bss`** (mostly literals pointing at the bss base, plus the adrp-based data
+  accesses);
+- **4,381 free 4 KiB pages**;
+- the **largest unreferenced stretch is `0x1681000..0x19C0300`** (0x33F300 = 3.4 MB, bracketed by references at
+  `0x1680000` and `0x19C0300` - so it may be one large buffer, exactly the case the live watch exists for);
+- free tail pages near `0x1CB2000..0x1CBC000`, with references at `0x1CB6000` and `0x1CBF090`.
+
+**Statically vetted candidates** (each PASS: inside `.bss`, page-aligned, no static reference):
+`0x1700000` and `0x1681000` (inside the large stretch), `0x1CB2000` and `0x1CB9000` (the tail).
+
+**The caveat the request carries.** A register-indexed access (`base + xN`) or a pointer stored at run time is
+invisible to a static scan. The chosen page must also read **all zero across three stage loads** on a live RE4 round;
+only then may the controller use it. That watch is now the blocking piece of E3, and it is a read-only request:
+
+- read: `0x1CB9000`, `0x1CBA000`, `0x1CBB000`, `0x1CBC000`, `0x1700000` (a 16-byte read of each is enough; a full
+  4 KiB page is better);
+- when: three stage loads of one RE4 Mercenaries round - the round start, mid-round after a restart, and the next
+  stage;
+- pass: all zero on all three reads. Any nonzero byte rules that page out for good.
+
+Once one page passes, E4/E5 (the code rule and the offline tests) can build the controller's private storage on it
+without touching game state.
+
+## Round 59 (2026-11-10 17:00 CST) - the deploy landed: checkpoint 0's first live acceptance read (RE6)
+
+**The restart happened and it carried D.** The PM merged `ds-grenade-re5-scatter-cap-20261110` (`e317ff6d`, then
+`eae1bb86`), and the Spark's service restarted at ~16:54 under a new worker id (`8cf47f44...`, previously
+`78012a3f...`). So the one restart loaded checkpoint 0 **and** D; the old stuck RE6 session is gone.
+
+**Live read, RE6 No Mercy, session `8cf47f441c5041fa-20b2f78a64564e4d` (Jake, `up` 1794350098), 17:00:**
+
+    GET /api/sessions/8cf47f441c5041fa-20b2f78a64564e4d/interventions
+    available=True, reason=""
+    capabilities = flash_now, equip_primary, grenade_ring, grenade_scatter, magnum_quick4, set_infinite_ammo
+    flash       available=True   (the RE6 "no living player" stale-base bug is gone on the fresh controller)
+    hand        available=False  "a hand-grenade ring is not yet verified on this build (uWp1091 is known; the
+                                  compiled spawn image pins the flash's class)"
+    incendiary  available=False  "an incendiary-grenade ring is not yet verified on this build (uWp1093 is known; ...)"
+
+That is checkpoint 0's RE6 half: flash advertised, the two explosive kinds refused with their own no-receipt
+reasons (the wording is the merged RE6 class branch's; RE5's is the explicit "no live receipt yet"). The pre-restart
+baseline for comparison is in round 56 of the lane log (flash refused, capabilities empty).
+
+**Still open for checkpoint 0:** the RE5 status read and the one RE5 flash. The MercMode queue after the current RE6
+block is `re4 x5, re5 x5, ...`, so the RE5 window comes after the RE4 block - a read-only read from the i9 when it is
+up, and the flash needs the operator/RE session. **E3's zero watch** fits the same RE4 block (its five pages, three
+stage loads); both asks are in the PM doc on main.
+
+**D's live acceptance** is also the RE5 block: one barrage receipt (if fired as an intervention) or the telemetry's
+`scatters_fired`/`scatter_rounds`/`scatter_kills` plus the confirmed-flash times at least `FLASH_MIN_GAP_S` apart.
+
+## Round 60 (2026-11-10 17:20 CST) - E0(c) done: the RE4 dispatcher is assembled, pinned and runs under unicorn
+
+The only guest-side code the RE4 harness needs is the dispatcher behind the player object's cloned vtable slot.
+It is now a real, tested image. Keystone 0.9.2 turned out to be installed on the i9, so instead of hand-encoding
+words the source is a normal ARM64 assembly file, assembled at the cave address, checked by capstone and executed by
+unicorn; the runtime never imports keystone - the bytes are pinned in `code.py`.
+
+**New: `gbox/mercs/native/re4_82c2a04a/`**
+
+- `dispatch.S` - the dispatcher (132 bytes, sha256 `2a6e9911...`), assembled at `main+0x655880`. It saves the
+  callee-saved registers, reads the mailbox pointer from the clone (`ldr x20, [x19]; ldr x20, [x20, #0x100]`),
+  bumps the mailbox `ticks` every entry (E6's live proof the slot fires per frame), performs one request when
+  `state == 1` (`blank target = done`, 7 args from `+0x10`, result to `+0x48`, `state = 3`), and **tail-calls
+  `main+0x2B6420`** (the unit transform virtual) with the unit in `x0` every time - so the game is unaffected while
+  the harness is attached, and a missing mailbox is safe.
+- `code.py` - the pinned image plus the one contract for the rest of the harness: `CAVE_AT 0x655880`,
+  `CAVE_END 0x656000`, `ORIGINAL_TRANSFORM 0x2B6420`, `SLOT_TRANSFORM 0x20`, clone at `CLONE_AT = 0x655A00`
+  (32 copied vtable entries = 0x100 bytes + the mailbox pointer at +0x100 = `CLONE_SIZE 0x108`), mailbox layout
+  (`state +0x00`, `target +0x08`, `args +0x10..+0x40`, `result +0x48`, `generation +0x50`, `ticks +0x58`,
+  `MAILBOX_SIZE 0x80`), and the state codes.
+- `build_dispatch.py` - reproduces the image from `dispatch.S` with keystone, checks size/sha256/pinned bytes,
+  disassembles with capstone and asserts the tail call resolves to `main+0x2B6420`; exit 0/1. Run:
+  `python -m gbox.mercs.native.re4_82c2a04a.build_dispatch` -> **PASS** (132 bytes, tail 0x2b6420).
+- `tests/test_re4_dispatcher.py` (10) - the pinned image reproduces from source (keystone, skipped if absent); every
+  word decodes and the tail call lands on the original; the cave, clone alignment and fit are checked; and under
+  **unicorn** on a synthetic map: an idle entry ticks and runs the original with the unit, a request calls the target
+  with its seven arguments and stores the result (`7+8+9 = 24`), `state` goes requested -> done, a blank target
+  completes without a call, a NULL mailbox still runs the original, the callee-saved registers survive (x19-x22,
+  x28), and two requests run in sequence. All pass.
+
+**Next**, and the only thing E3 still blocks: the controller (E4's write rule: refuse any write into `.text`/
+`.rodata` except `install()` into the cave; E5's fake-emulator tests: install refuses nonzero bytes and a cave with a
+reference into it, attach writes only the vtable pointer, a publish is consumed once under the generation guard, a
+timeout is `Uncertain` and never replayed). It can be written now with a configurable mailbox; the default page must
+wait for E3's three-load zero watch (requested) so no live build ever points at storage the game may use.
+
+## Round 61 (2026-11-10 17:45 CST) - E4/E5 done: the RE4 harness controller, its write rule and offline tests
+
+`gbox/mercs/titles/re4_switch_native.py` now holds the controller on top of the E0(c) dispatcher:
+
+- **The trigger by data (E2):** `attach()` reads the player unit through `S_PLAYER`/`S_PLAYER_2`
+  (`re4_switch.player_unit`), refuses any class outside `PLAYER_VTABLE_RANGE`, checks the vtable's slot `+0x20` is
+  `main+0x2B6420`, copies 32 entries into a clone, points the clone's slot at the cave dispatcher, installs dispatcher
+  + clone into the vetted cave, and performs **one aligned 8-byte store** into `player+0`. `detach()` puts the
+  original pointer back. A re-attach is a no-op; a player change while attached is detected by its id.
+- **E4, the code rule in code:** `write()` refuses any guest write into `main`'s `.text`/`.rodata`
+  (`base .. base+0xAE1BCC`, the header's rodata end) - so the vtable store, the mailbox and every other write can
+  only touch heap/`.bss`; `install()` is the only route into code and refuses any target outside the vetted cave
+  (`0x655880..0x656000`). The base class's memfd install still refuses nonzero bytes.
+- **The mailbox:** `call(off, *args)` publishes target + seven arguments + a generation, then the state word last
+  (one 4-byte write), and waits for the dispatcher's `done`; the result is `x0`, a generation mismatch is `Uncertain`,
+  and a timeout is `Uncertain` **without a replay** (the next call refuses while the mailbox is not idle/done).
+  `ticks()` reads the dispatcher's entry counter - E6's proof that the cloned slot fires every frame.
+- **The private storage stays unproven until E3's watch:** `mailbox` is a constructor argument (default `None`), and
+  `attach()` refuses with "no proven private storage ... (E3's three-load watch is pending)". No live build can point
+  the harness at a page the game might use.
+
+**Tests** (`tests/test_re4_native.py`, 12) on a fake guest with the real layout (player of class `0xB0C0A0`, vtable
+slot `+0x20` = `main+0x2B6420`, zero cave, mailbox): the write rule refuses code/rodata; install refuses outside the
+cave; attach installs exactly the dispatcher and the clone and writes **only** the vtable pointer; re-attach no-op;
+attach refuses without a mailbox, over a nonzero cave, with a changed transform slot, and for a non-unit player
+class; a call publishes once and reads the result; a timeout is `Uncertain` and the request is never re-published;
+a changed generation is not trusted; an unattached call is refused. With the earlier files: **42 passed** across
+`test_re4_caves`, `test_re4_bss`, `test_re4_dispatcher`, `test_re4_native`.
+
+**What is left of checkpoint E:** E3's read-only three-load zero watch (the five candidate pages) to pick the mailbox
+page, then **E6**: the RE session runs a no-op call on a live RE4 round (magic word through the mailbox), three stage
+loads with the harness attached, frames, and the Citron log - and the cave's presence in the HostMemory mapping (the
+controller's `install` already refuses "ambiguous guest backing file", and that answer would be the result).
+
+## Round 62 (2026-11-10 18:10 CST) - checkpoint F's op and placement are built: `flash_at`, `flash_now`, and the status row
+
+**F2, the op.** `Controller.flash_at(x, y, z)` (RE4 millimetres) now runs the game's own flash blast on the game
+thread through the harness, route (i) of the guide: a zeroed fake object at `mailbox+0x100` with the point at `+0xA4`
+and `+0x3CC` left zero (not 0xD6, so the ground/type check does not skip the effects), then `main+0x2E4E50` through
+the mailbox. It refuses a point closer than 4000 mm to him ("never at his feet"). The receipt is
+`{state: "confirmed", verified: false, op: "flash_at", effect: "native_flash_blast", pos, from_player_cm}` -
+confirmed means the native call returned, `verified` stays false until F4's live receipt (Ganados in range stunned,
+his hp unchanged, the bloom on frames).
+
+**F3, where it goes off.** `place_flash(player, enemies)` is `core.flash_window.place` (merged on main) in RE4's
+millimetres: min 4000, max 9000, from 12000, level `re4_switch.LEVEL_MM`; `None` when nobody is near. The module op
+`flash_now(ad, point=None)` computes that point from a memory shim over the adapter's snapshot and refuses
+(`state: unavailable`) when nobody is within 12 m; `Controller.flash()` is the intervention worker's entry.
+
+**F4, the status row.** `grenade_status`'s RE4 Switch entry is no longer "not built": the **flash row is built** -
+`Kind(False, "a flash is built on the RE4 Switch native harness (main+0x2E4E50 via one vtable store) but has no live
+receipt yet")` - with `controller="re4_switch_native"` (added to `_CONTROLLERS`); the ring kinds stay "does not
+offer". `interventions.native_controller` now includes the RE4 Switch module (attribute `_re4_switch_harness`); the
+controller's `prepare()` refuses with the E3 reason until the private page is proven, so nothing is advertised before
+that. The status/interventions tests are updated to the new contract (the flash row built, hand/incendiary not
+offered).
+
+**Tests.** 8 new flash/placement tests in `tests/test_re4_native.py` (20 there): the fake object is written with the
+point and a zero type byte, the published target is the flash blast and the first argument the object, the receipt
+carries the point and the distance; the at-his-feet refusal writes nothing; `place_flash` pushes to the 4000 mm floor,
+keeps within 4000..9000, returns None past 12 m; `flash_now` with a point, on the crowd, and refusing when nobody is
+near. A unicorn engine-disposal fixture was added after a Windows atexit crash in the dispatcher tests (the tests
+passed; the interpreter exit did not). Broad run of the RE4 harness, the grenade rule/scatter, interventions/worker,
+bot logic and the mercs engine: **242 passed**.
+
+**F5 to the RE session:** the RE4 flash op exists on `ds-grenade-re4-bss` (`Controller.flash_at` / `flash_now`), but
+**do not wire the doctrine yet** - the harness has no proven mailbox page (E3's watch) and no live receipt. The one
+doctrine line is `re4_switch.py` around line 1890, `respond.Kit(fire=fire, flash=None, ...)`, and it is the RE
+session's to write after F4 flips the row to verified.
+
+## Round 63 (2026-11-10 18:35 CST) - G1/G2 offline: the flash ring and the hand-grenade ring on the RE4 harness
+
+Starting checkpoint G while the live RE4 block is up (it is still running: session `25385f8f4eb94342-6eb677c2f1194dea`,
+round 2/5 at stage 3 - the second stage load; the three-load watch ask is on main).
+
+**`Controller.grenade_ring(kind, count, radius_cm, inner_cm, ripple_ms, expand)`** on the RE4 harness, same contract
+shape as RE5/RE6 (the shared rule calls it with cm, the controller converts with `MM_PER_CM`):
+
+- **G1, the flash ring:** N `_blast_at` points on a circle round him, the inner ring at **4000 mm** or more (the
+  flash's own floor, enforced by `_blast_at` as well), radius default 9000 mm, count default 10 (max 16), a 40 ms
+  ripple; each point is one flash blast (`main+0x2E4E50`) through the mailbox, so the ring is N real effects.
+- **G2, the hand-grenade ring:** the same geometry with the hand grenade's blast (`main+0x2E48B0`, class 0x13, radius
+  6000 mm from the guide) and a **7000 mm** floor. The learned-blast-reach clamp stays the caller's (the rule's
+  radius/inner already carry it; the floor is enforced here too).
+- **G3, incendiary:** refused before any call - "the incendiary blast is not identified on this build yet".
+- The receipt: `detonated == requested`, `radius_cm/mm`, `inner_cm/mm`, per-point `from_player_cm`/`radius_mm`,
+  `hp_before/after` from the player's own life field (`module+PLAYER_LIFE`; `self_damage` 0 when unchanged),
+  `elapsed_ms`, `verified: false` until a live receipt. A failed blast aborts with a partial `uncertain` receipt and
+  is never replayed.
+
+**Tests:** 4 new in `tests/test_re4_native.py` (24 there): a 4-point flash ring places every blast at 4000-10000 mm
+and calls the flash blast four times, hp unchanged; a 2-point hand ring uses the hand blast at 7000 mm or more; the
+incendiary ring is refused before any write; a blast that times out leaves `uncertain` with the two that completed.
+With the other RE4 harness files and the status module: **73 passed**.
+
+**Still to do for G:** G4 (add the title to `SCATTER_TITLES` and the scatter knobs to `re4_switch.py`, cm/mm at the
+controller boundary, the barrage op) and the live receipts per kind - both need F's live receipt first, which needs
+E3's watch and the branch deploy.
+
+## Round 64 (2026-11-10 18:55 CST) - G4 offline: the RE4 barrage, its knobs, its PiP rows and the shared rule's step
+
+**The controller's barrage.** `Controller.grenade_scatter(kind="random", count, toward, ..., safe_cm, rng, kinds)` on
+the RE4 harness, same contract shape as RE5/RE6:
+
+- kinds **flash** (`main+0x2E4E50`) and **hand** (`main+0x2E48B0`); `"random"` draws both; `kinds=` narrows one
+  barrage (the shared flash cap); incendiary refused ("not identified yet", G3).
+- units at the boundary: `toward` are the title's own raw (x, z) **millimetres** (straight from its snapshot), while
+  `safe_cm` (the rule's learned reach) is converted with `MM_PER_CM`; each round keeps its own floor - flash
+  **4000 mm**, hand **7000 mm** - and the learned reach plus one cm. The cone's axis comes from the threats' centre
+  (else his facing), the far bound is the threats' reach + 2 m, points run near to far 100-200 ms apart.
+- receipt: `detonated == requested`, `kinds`, `rounds[].kind/dist_cm/from_player_cm`, `near_cm/far_cm/floor_cm/
+  floors_cm`, `hp_before/after` from his own life field, `self_damage`, `elapsed_ms`, `verified: false`; a partial
+  barrage is `uncertain` and never replayed.
+
+**The title and the rule (G4).** `re4_switch.py` carries `RING`/`RING_N`/`RING_EVERY_S`/`RING_KIND` and
+`SCATTER`/`SCATTER_EVERY_S`/`SCATTER_N`, both automatic paths **off** until a live receipt per kind (the ops stay
+available for clicks/probes), `SCATTER_FLASH_ONLY = False` (flash and hand are both built, so the cap narrows the draw
+rather than refusing it) and `scatter_kinds()` -> `("flash", "hand")`; `bot_logic.KNOBS["re4"]` gained the three
+SCATTER rows; `grenade_ring.SCATTER_TITLES` now includes `010099A00BC1E000`, so the shared rule offers RE4 its step
+and the policy reads the title's kinds.
+
+**Tests.** 6 new barrage tests in `test_re4_native.py` (30 there): a random barrage uses both blasts and both floors,
+an explicit hand barrage uses only the hand blast at 7000 mm or more, `safe_cm` becomes the 1000 cm floor, a narrowed
+draw uses one kind, the incendiary and an unknown draw are refused before any write, a failed round leaves the barrage
+`uncertain`; and `tests/test_re4_scatter_wiring.py` (4): the title is built-but-off with both kinds, the rule offers
+RE4 its step and not a PS3 title, the policy reads the knobs/kinds, and the PiP rows exist. With the earlier RE4
+harness and shared-rule files: the focused set is **53 passed**; the broad run is in the same round's log below.

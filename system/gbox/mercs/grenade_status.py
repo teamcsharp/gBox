@@ -71,7 +71,11 @@ TITLES = {
     ),
     "re4_switch": _title(
         "RE4 Switch", ("270a15eb98dab4d7", "010099A00BC1E000"),
-        reason=TITLE_NOT_BUILT.format(title="RE4 Switch"),
+        # Checkpoint F: the flash is built on the native harness (main+0x2E4E50 through the cloned vtable's one
+        # 8-byte store) but has no live receipt yet; the ring kinds are not offered on this title at all.
+        {"flash": Kind(False, "a flash is built on the RE4 Switch native harness (main+0x2E4E50 via one vtable "
+                              "store) but has no live receipt yet")},
+        controller="re4_switch_native",
     ),
     "re5_switch": _title(
         "RE5 Switch", ("52d15709be0fda1a", "010018100CD46000"),
@@ -114,7 +118,8 @@ TITLES = {
 }
 
 # The table key each native module owns, for a controller built without its session record.
-_CONTROLLERS = {"re4_gc_native": "re4_gc", "re5_switch_native": "re5_switch", "re6_switch_native": "re6_switch"}
+_CONTROLLERS = {"re4_gc_native": "re4_gc", "re4_switch_native": "re4_switch",
+                "re5_switch_native": "re5_switch", "re6_switch_native": "re6_switch"}
 
 
 def identify(game=None, controller=None) -> str | None:
