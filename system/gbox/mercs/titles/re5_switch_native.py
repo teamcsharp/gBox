@@ -307,13 +307,13 @@ class Controller(N.Controller):
             self.write(self.player, struct.pack("<Q", self.heap))
         self.validate_heap()
 
-    def call(self, off, *args):
+    def call(self, off, *args, timeout=1.0):
         self.validate_heap()
         if self.w(self.heap + 0x6A8) not in (0, 3):
             raise Unavailable("native call already pending")
         self.write(self.heap + 0x6C0, struct.pack("<9Q", self.base + off, *args, *([0] * (8 - len(args)))))
         self.publish_call(self.heap + 0x6A8)
-        self.wait(lambda: self.w(self.heap + 0x6A8) == 3)
+        self.wait(lambda: self.w(self.heap + 0x6A8) == 3, timeout)
         return self.q(self.heap + 0x6B8)
 
     def recover_completed_call(self):
