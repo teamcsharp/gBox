@@ -1556,7 +1556,10 @@ def _accept(store, out: SwitchModsOut, actor: str):
         # supersedes its build and is queued for the next round boundary (gbox.donor_swap.accept)
         from . import donor_swap
         donor_swap.record_redraw_rejects(r)
-        donor_swap.accept(store, r)
+        if donor_swap.accept(store, r) is None:
+            # not an operator swap: a fresh build the MercMode donor rotation asked for joins its title's pool
+            from . import donor_rotation
+            donor_rotation.accept_fresh(store, r)
         return
     sid = r.get("session_id")
     if r.get("op") != "apply_live" or not r.get("same_session") or not sid:

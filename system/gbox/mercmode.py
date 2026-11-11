@@ -49,8 +49,19 @@ DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title'
            # stage / object archives, gbox.re5_stage_greybox) while this is on, the plain build when off; the switch
            # happens at the next round boundary (round_boundary compares the running build with effective_mod)
            'blueprint_look': False,
+           # operator 2026-11-10 ("I want to continue seeing new and randomized characters from the database being used
+           # in games and swapped frequently"): each title block plays a build drawn at random from the title's verified
+           # donor pool (gbox.donor_rotation: audited, fit gate passed, on this PC), never the same build twice in a
+           # row; 'fresh' also writes new builds from the library when a pool runs out (RE5); 'off' = default_mods.
+           # A DJ queue entry's own `mod` still wins. donor_rounds: 0 = one build per title block; N = a relaunch of
+           # the same title into the next draw every N rounds (each one a cold boot); donor_pool: {title: [build, ...]}
+           # = only these builds (still fit-gated), {} = every audited build of the title
+           'donor_rotation': 'pool', 'donor_rounds': 0, 'donor_pool': {},
            'coop_ratio': 'off'}
 SKIN_SWAPS = ('off', 'random')
+DONOR_ROTATIONS = ('off', 'pool', 'fresh')       # gbox.donor_rotation.MODES
+DONOR_KEYS = ('donor_rotation', 'donor_rounds', 'donor_pool')
+DONOR_FEATURE = 'mercmode_donor_rotation'        # worker feature: its mercmode tool takes the donor rotation settings
 CAST_SWAPS = ('off', 'on')
 BLUEPRINT_FEATURE = 'mercmode_blueprint_look'   # worker feature: its mercmode tool takes blueprint_look
 # The companion's name. The brief wrote `<build>+blueprint`; `+` is outside switch_mods.NAME (the emulator's add-on
@@ -190,6 +201,17 @@ def normalize(patch, current=None):
         raise ValueError('MercMode skin_swap is off or random')
     if out.get('cast_swap') not in CAST_SWAPS:
         raise ValueError('MercMode cast_swap is off or on')
+    if out.get('donor_rotation') not in DONOR_ROTATIONS:
+        raise ValueError('MercMode donor_rotation is off, pool or fresh')
+    if type(out.get('donor_rounds')) is not int or not 0 <= out['donor_rounds'] <= 20:
+        raise ValueError('MercMode donor_rounds is 0 (one build per title block) or 1..20 rounds per build')
+    pools = out.get('donor_pool') or {}
+    if not isinstance(pools, dict) or set(pools) - set(TITLES) or any(
+            not isinstance(v, list) or len(v) > QUEUE_MAX or any(
+                not isinstance(b, str) or not re.fullmatch(r'(?=.*[A-Za-z0-9])[A-Za-z0-9_.-]{1,64}', b) for b in v)
+            for v in pools.values()):
+        raise ValueError(f'MercMode donor_pool maps a title to at most {QUEUE_MAX} build folder names')
+    out['donor_pool'] = {k: list(dict.fromkeys(v)) for k, v in pools.items() if v}
     if type(out['stalemate_cut']) is not bool or type(out['stalemate_cut_s']) is not int \
             or not CUT_MIN_S <= out['stalemate_cut_s'] <= CUT_MAX_S:
         raise ValueError(f'MercMode stalemate: stalemate_cut true/false and {CUT_MIN_S}..{CUT_MAX_S} seconds on the clock')
@@ -1115,17 +1137,25 @@ def same_build(cfg, head_mod, run_mod, run=None):
     return bool((run or {}).get('blueprint_fallback')) and run_mod == head_mod
 
 
-def default_mod(cfg, row, supersede=None):
+def default_mod(cfg, row, supersede=None, rotation=None):
     """The configured build for this round's title (a DJ queue `mod` for that round still wins), then the variant
     that superseded that build (`supersede`: gbox.donor_swap.resolve - the operator's donor swap replaced it for
-    good), then the build's blueprint companion when blueprint_look is on (effective_mod)."""
+    good), then the build's blueprint companion when blueprint_look is on (effective_mod).
+
+    `rotation` (gbox.donor_rotation.drawer: title, game_id -> a build or None): with no build named for the round,
+    the title's donor rotation draws one from its verified pool in place of default_mods (an empty pool keeps the
+    default_mods build); the row then says `_donor_drawn` so the scheduler knows the build came from the pool."""
     mod = (cfg.get('default_mods') or {}).get(row.get('title'))
     selection = dict(row.get('selection') or {})
+    drawn = rotation(row.get('title'), row.get('game_id')) if rotation and not selection.get('mod') else None
+    if drawn:
+        mod = drawn
     if mod:
         selection.setdefault('mod', mod)
     if selection.get('mod'):
         selection['mod'] = effective_mod(cfg, supersede(selection['mod']) if supersede else selection['mod'])
-    return row | {'selection': selection} if selection else row
+    out = row | {'selection': selection} if selection else row
+    return out | {'_donor_drawn': True} if drawn else out
 
 
 def build_resolver(store, game_id):
@@ -1135,24 +1165,32 @@ def build_resolver(store, game_id):
     return lambda mod: donor_swap.resolve(store, game_id, mod)
 
 
-def choose(store, worker, rng, cfg=None):
+def choose(store, worker, rng, cfg=None, builds=None):
+    """The next round's pick: the promise made ahead (NEXT), else the DJ queue's head, else the title picked longest
+    ago. `builds` (game id -> this PC's build index rows) lets the donor rotation (gbox.donor_rotation) draw the
+    block's build from what this PC holds; without it the rotation has no pool and default_mods plays."""
     cfg = cfg or settings(store, worker['name'])
     rows = inventory(store, worker, cfg)
+    from . import donor_rotation
+    rotation = donor_rotation.drawer(store, worker, cfg, rng, builds)
     ahead = store.get(NEXT, worker['name'])
     if ahead:                                    # picked (and preloaded) before the round ended: keep that promise
         store.delete(NEXT, worker['name'])
         row = next((r for r in rows if r['playable'] and r['title'] == ahead.get('title')), None)
         if row:
+            # a donor rotation's relaunch inside a block (gbox.screensaver.round_boundary) carries the block's rounds
+            carried = {k: v for k, v in (('_donor_drawn', bool(ahead.get('donor'))),
+                                         ('_block_played', ahead.get('block_played'))) if v}
             return _picked(store, worker, default_mod(cfg, row | ({'selection': ahead['selection']}
                                                                   if ahead.get('selection') else {})
                                                       | ({'_queue_pending': True} if ahead.get('_queue_pending') else {}),
-                                                      build_resolver(store, row['game_id'])))
+                                                      build_resolver(store, row['game_id']), rotation) | carried)
     head = (cfg.get('queue') or [None])[0]
     queued = next((r for r in rows if head and r['playable'] and r['title'] == head['title']), None)
     if queued:                                   # the DJ's next round comes first, even for an unchecked title
         return _picked(store, worker, default_mod(cfg, queued | {'selection': resolve_selection(head, rng, cfg),
                                                                  '_queue_pending': True},
-                                                  build_resolver(store, queued['game_id'])))
+                                                  build_resolver(store, queued['game_id']), rotation))
     pool = [r for r in rows if r['playable'] and r['title'] in cfg['titles']]
     history = store.get(HISTORY, worker['name']) or {}
     fresh = [r for r in pool if r['game_id'] != history.get('last_game_id')] or pool
@@ -1161,7 +1199,7 @@ def choose(store, worker, rng, cfg=None):
     picks = store.get(PICKS, worker['name']) or {}            # the rotation: the title picked longest ago (never = first)
     oldest = min(picks.get(r['title'], 0) for r in fresh)
     row = rng.choice([r for r in fresh if picks.get(r['title'], 0) == oldest])
-    return _picked(store, worker, default_mod(cfg, row, build_resolver(store, row['game_id'])))
+    return _picked(store, worker, default_mod(cfg, row, build_resolver(store, row['game_id']), rotation))
 
 
 def successor_autoplay(run, job, original):

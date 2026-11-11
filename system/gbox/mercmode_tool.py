@@ -26,6 +26,10 @@ class MercModeIn(BaseModel):
     cast_swap: Literal['off','on'] | None=None
     # per-title build every round of that title plays with, e.g. {"re6": "re6_smash_roster"} (gbox.mercmode.DEFAULT['default_mods'])
     default_mods: dict | None=None
+    # the donor rotation (gbox.donor_rotation; gbox.mercmode DONOR_FEATURE): each title block draws a verified donor build
+    donor_rotation: Literal['off','pool','fresh'] | None=None
+    donor_rounds: int | None=None         # 0 = one build per title block; N = relaunch into the next draw every N rounds
+    donor_pool: dict | None=None          # {title: [build, ...]}: only these builds (still fit-gated)
     # a dispatch from the app (gbox.mercmode DISPATCH_FEATURE): start / stop / switch this PC's MercMode, its PiP here
     command: Literal['start','stop','switch'] | None=None
     title: Literal['re4','re5','re6','re3','merc3d'] | None=None

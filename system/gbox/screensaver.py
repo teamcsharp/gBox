@@ -223,8 +223,12 @@ OFFLINE_TOOLS = frozenset({"ghidra_script", "ghidra_bridge", "analyze_binary", "
 
 
 def offline_job(job: dict) -> bool:
-    """A job that reads files only (an executable's analysis): it never needs the PC's game, display or pad."""
+    """A job that reads files only (an executable's analysis): it never needs the PC's game, display or pad. A donor
+    build writer (switch_mods op=donor_variant: the operator's donor swap, the donor rotation's fresh build) only
+    copies a build into a new folder and writes files there, so it never holds the next round either."""
     tool = str(job.get("tool") or "")
+    if tool == "switch_mods" and (job.get("input") or {}).get("op") == "donor_variant":
+        return True
     return tool in OFFLINE_TOOLS or tool.startswith("rea_")
 
 
@@ -524,7 +528,9 @@ class Screensaver:
         if _local_scheduler(w):
             return 'scheduled by this PC\'s local control plane'
         merc_cfg = mercmode.settings(self.store, w['name'])
-        merc_pick = mercmode.choose(self.store, w, self.rng, merc_cfg) if merc_cfg['enabled'] else None
+        merc_pick = mercmode.choose(self.store, w, self.rng, merc_cfg, builds=self.builds) if merc_cfg['enabled'] else None
+        if merc_pick and merc_pick.get('_donor_drawn'):
+            self._donor_fresh(w, merc_cfg, merc_pick, now)
         warm_ok = bool(merc_pick) and self._warm_capable(w, merc_cfg)
         if warm_ok:
             resumed = self._resume_warm(w, merc_pick, merc_cfg, now)
@@ -631,12 +637,20 @@ class Screensaver:
                           origin={"via": "autoplay screensaver", "game_id": g["game_id"]})
         jid = _jid(job)
         label = build and (build.get("display_name") or build.get("label") or build["name"])
+        # the donor rotation's draw (gbox.donor_rotation): the run says its build came from the pool (round_boundary may
+        # then relaunch it into the next draw), and a relaunch inside a title block keeps the block's rounds played
+        donor = {'donor': {'build': mercmode.plain_mod(build['name']), 'drawn': True}} \
+            if merc_pick and merc_pick.get('_donor_drawn') and build else {}
+        carried = merc_pick.get('_block_played') if merc_pick and donor else None
+        carried = {'mercmode_rounds': carried, 'mercmode_rounds_played': carried} \
+            if type(carried) is int and carried > 0 else {}
         self.store.put(STATE, w["name"], {"worker": w["name"], "worker_id": w["id"], "phase": "launching", "job": jid,
                                           "game_id": g["game_id"], "title": g["title"], "started": now,
+                                          **carried,
                                           **({'mercmode_predecessor':mercmode.rotation_predecessor(self.store,w,now),
                                               'mercmode': {'title': merc_pick['title'], 'map_id': merc_pick['map_id'],
                                                'rounds_per_title': merc_cfg['rounds_per_title'],
-                                               **coop,
+                                               **coop, **donor,
                                                **({'selection': merc_pick['selection']} if merc_pick.get('selection') else {})}}
                                               if merc_pick else {}),
                                           **({"mod": build["name"], "build": label} if build else {}),
@@ -1081,7 +1095,8 @@ class Screensaver:
                 # session when it arrives, preserving this replacement pick and the queue entry until a cold launch.
                 mercmode.keep_warm(self.store, w['name'], pick['title'], row | {'state': 'releasing'})
                 self.store.put(mercmode.NEXT, w['name'], {'title': pick['title'], 'selection': pick.get('selection'),
-                    'at': now, 'cold': True, '_queue_pending': bool(pick.get('_queue_pending'))})
+                    'at': now, 'cold': True, '_queue_pending': bool(pick.get('_queue_pending')),
+                    **({'donor': True} if pick.get('_donor_drawn') else {})})
                 return f"waiting for {pick['name']}'s stock preload to close before loading its replacement build"
             self._warm_stop(w, row, 'the next round must load its replacement build at boot')
             mercmode.take_warm(self.store, w['name'], pick['title'])
@@ -1174,7 +1189,7 @@ class Screensaver:
         m = run.get('mercmode') or {}
         if m.get('title'):
             self.store.put(mercmode.NEXT, w['name'], {'title': m['title'], 'selection': m.get('selection'), 'at': now,
-                                                      'cold': True})
+                                                      'cold': True, **({'donor': True} if m.get('donor') else {})})
         if run.get('session_id'):
             return self._stop(w, run, now, why)
         return self._finish(w, run, now, why)
@@ -1271,6 +1286,31 @@ class Screensaver:
             self.store.put(mercmode.WARM, w['name'], pool)
         return self._finish(w, run | {'mercmode_kept_warm': True}, now, why)
 
+    def _donor_fresh(self, w, cfg, pick, now):
+        """donor_rotation 'fresh': a title whose verified pool ran out gets a new build written from the character
+        library on this PC (gbox.donor_rotation.fresh_request: switch_mods op=donor_variant, off the scheduler
+        thread; it joins the pool when it lands). Nothing waits for it: this block plays a build of the pool."""
+        from .server import JobRequest
+        from . import donor_rotation
+        if cfg.get('donor_rotation') != 'fresh':
+            return None
+        try:
+            inp = donor_rotation.fresh_request(self.store, w['name'], cfg, pick['title'], pick['game_id'], rng=self.rng,
+                                               builds=self.builds, now=now)
+        except Exception as exc:                          # noqa: BLE001 - a fresh build is a bonus, never a stall
+            self.log(f"MercMode donor rotation: no fresh build ({type(exc).__name__}: {str(exc)[:160]})")
+            return None
+        if not inp:
+            return None
+        job = self.submit(JobRequest(tool='switch_mods', input=inp, agent_use=True, low_priority=True,
+                                     require_worker=w['id']), actor=ACTOR,
+                          origin={'via': 'MercMode donor rotation: a fresh build', 'game_id': pick['game_id'],
+                                  'build': inp['new_name']})
+        donor_rotation.fresh_submitted(self.store, w['name'], pick['title'], inp, _jid(job), now=now)
+        self.store.audit(ACTOR, 'mercmode.donor_rotation_request', w['name'],
+                         {'title': pick['title'], 'of': inp['build'], 'build': inp['new_name'], 'job': _jid(job)})
+        return _jid(job)
+
     @staticmethod
     def _mod_boot(pick, cfg):
         """Queued overlays and newly drawn swaps must pass through _start's build selection before booting."""
@@ -1289,7 +1329,7 @@ class Screensaver:
             return None
         history = self.store.get(mercmode.HISTORY, w['name']) or {}
         self.store.put(mercmode.HISTORY, w['name'], history | {'last_game_id': run['game_id']})   # never "next" = this one
-        pick = mercmode.choose(self.store, w, self.rng, cfg_merc)
+        pick = mercmode.choose(self.store, w, self.rng, cfg_merc, builds=self.builds)
         self.store.put(mercmode.HISTORY, w['name'], history)
         mark = lambda **kw: self.store.put(STATE, w['name'], run | {'mercmode_prelaunch': {'at': now, **kw}})
         if not pick or pick['title'] == run['mercmode']['title']:
@@ -1302,7 +1342,8 @@ class Screensaver:
             # attaches the requested build (or draws the next swap), otherwise a warm resume silently drops the mod.
             self.store.put(mercmode.NEXT, w['name'], {'title': pick['title'], 'selection': pick.get('selection'),
                                                       'at': now, 'cold': True,
-                                                      **({'queued': True} if pick.get('selection') else {})})
+                                                      **({'queued': True} if pick.get('selection') else {}),
+                                                      **({'donor': True} if pick.get('_donor_drawn') else {})})
             mark(title=pick['title'], cold=True, skipped='the next round loads a replacement build at boot')
             return f"{pick['name']} plays next (cold switch: loading its replacement build)"
         if self._switch_slot(pick['title'], cfg_merc) \
@@ -1313,11 +1354,13 @@ class Screensaver:
             # (_release_other_switch). Accepts the boot delay so RE5 actually rotates (operator: "where is RE5?").
             self.store.put(mercmode.NEXT, w['name'], {'title': pick['title'], 'selection': pick.get('selection'),
                                                       'at': now, 'cold': True,
-                                                      **({'queued': True} if pick.get('selection') else {})})
+                                                      **({'queued': True} if pick.get('selection') else {}),
+                                                      **({'donor': True} if pick.get('_donor_drawn') else {})})
             mark(title=pick['title'], cold=True, skipped='another Switch title is resident; switching cold')
             return f"{pick['name']} plays next (cold switch: the Switch emulator is in use)"
         self.store.put(mercmode.NEXT, w['name'], {'title': pick['title'], 'selection': pick.get('selection'), 'at': now,
-                                                  **({'queued': True} if pick.get('selection') else {})})
+                                                  **({'queued': True} if pick.get('selection') else {}),
+                                                  **({'donor': True} if pick.get('_donor_drawn') else {})})
         running = self.store.running_sessions()
         pool = self._warm(w, running, now)
         ready = pool.get(pick['title'])
@@ -1643,6 +1686,15 @@ class Screensaver:
             elif ahead and ahead.get('title') != run['mercmode']['title'] and playable(ahead.get('title')) \
                     and (ahead.get('queued') or ahead.get('cold')):
                 rotate = True                    # the DJ's round, picked (and preloaded) ahead: that title is next
+            # the donor rotation (gbox.donor_rotation): a run whose build was drawn from the title's verified pool
+            # relaunches into the next draw every donor_rounds rounds inside its block (opt-in, a cold boot each time;
+            # the block's rounds carry over) and, when this is the only title selected, at the end of each block. A
+            # title switch, a queued round of this title or a purpose round decided above wins.
+            donor_build = self._donor_next(run, cfg, here, played, done, alternatives, head, purpose, rotate,
+                                           run_mod, now) if worker else None
+            if donor_build:
+                rotate, mod_rotate, ahead = True, True, None
+                run = {k: v for k, v in run.items() if k != 'mercmode_prelaunch'}
             if run.get('mercmode_stay') and played - run.get('mercmode_stay_round', 0) >= mercmode.STAY_RETRY_ROUNDS:
                 # stayed long enough: the next title gets its attempts again (a fix may have landed meanwhile)
                 run = {k: v for k, v in run.items() if k not in ('mercmode_stay', 'mercmode_stay_round',
@@ -1688,6 +1740,35 @@ class Screensaver:
         if rotate:
             self.nudge('native round boundary: the next title is ready')      # park and swap now, not at the next tick
         return {'saved': True, 'rotate_requested': rotate}
+
+    def _donor_next(self, run, cfg, here, played, done, alternatives, head, purpose, rotate, run_mod, now):
+        """The build this round boundary relaunches the playing title into (gbox.donor_rotation), or None. Its pick is
+        promised as NEXT (cold, this title, `block_played` = the block's rounds so far, so a block stays
+        rounds_per_title matches); a pool of one build has nothing new to show and plays on without a relaunch."""
+        from . import donor_rotation, mercmode
+        if rotate or purpose or not cfg['enabled'] or run.get('mercmode_pinned') \
+                or cfg.get('donor_rotation', 'off') == 'off':
+            return None
+        donor = (run.get('mercmode') or {}).get('donor') or {}
+        if not donor.get('drawn') or (head and head.get('title') == here):
+            return None                      # a build the DJ queue named, or the queue's next round of this title
+        if played <= (run.get('mercmode_rounds_played') or 0):
+            return None                      # a quick death: a retry, not a round played
+        every = cfg.get('donor_rounds') or 0
+        mid = bool(every) and not done and played % every == 0
+        if not mid and not (done and not alternatives):
+            return None
+        current = mercmode.plain_mod(run_mod) or donor.get('build')
+        nxt = donor_rotation.draw(self.store, run['worker'], cfg, here, run['game_id'], self.rng, builds=self.builds,
+                                  now=now, avoid={current}, strict=True)
+        if not nxt or mercmode.build_resolver(self.store, run['game_id'])(nxt) == current:
+            return None
+        self.store.put(mercmode.NEXT, run['worker'], {'title': here, 'selection': {'mod': nxt}, 'at': now, 'cold': True,
+                                                      'donor': True, 'block_played': played if mid else 0})
+        self.store.audit(ACTOR, 'mercmode.donor_rotation', run['worker'],
+                         {'title': here, 'from': current, 'to': nxt, 'played': played,
+                          'why': f'every {every} rounds' if mid else 'a new block of the only title'})
+        return nxt
 
     def donor_swap(self, sid, *, enemy=None, request_id=None, actor='operator', note='', now=None):
         """The operator's "this character's model is broken: swap it" for the MercMode round of `sid`
@@ -1774,6 +1855,15 @@ class Screensaver:
             self._status_cache = (time.monotonic(), out)
             return out
 
+    def _donor_status(self, w, cfg):
+        from . import donor_rotation
+        if not cfg.get('enabled') or cfg.get('donor_rotation', 'off') == 'off':
+            return None
+        try:
+            return donor_rotation.status(self.store, w['name'], cfg, self.builds)
+        except Exception as exc:                          # noqa: BLE001 - the status view never fails on it
+            return {'mode': cfg.get('donor_rotation'), 'error': f'{type(exc).__name__}: {str(exc)[:200]}'}
+
     def _mercmode_status(self) -> dict:
         """One row per PC (its current registration, not every stale id a restart left behind) and one read of the
         session table for all of them (the desktop's 8 s request limit was exceeded: 4-11 s on lilspark)."""
@@ -1825,7 +1915,10 @@ class Screensaver:
                 'next':self.store.get(mercmode.NEXT,w['name']) or live.get('next'),
                 # the operator's donor swap: queued -> building -> ready (plays next round) -> playing, or failed
                 'donor_swap':donor_swap.status(self.store,w['name'],running_mod=(own_run or {}).get('mod'),
-                    running_title=((own_run or {}).get('mercmode') or {}).get('title')) or None})
+                    running_title=((own_run or {}).get('mercmode') or {}).get('title')) or None,
+                # the donor rotation (gbox.donor_rotation): each title's verified pool, what plays, what is left
+                'donor_rotation':self._donor_status(w,mercmode.settings(self.store,w['name']))
+                    if not _local_scheduler(w) else None})
         from .mercs.research_profiles import coverage, VERSION
         for h in hosts:
             sid = (h['current_run'] or {}).get('session_id')
@@ -1882,6 +1975,9 @@ class MercModeSettings(BaseModel):
     skin_swap: str | None = None                # off | random: each round plays a character with another's skin
     cast_swap: str | None = None                # off | on: the zombies wear cast models and the player wears majini clothes
     default_mods: dict | None = None            # per-title build every round plays with, e.g. {"re6": "re6_smash_roster"}
+    donor_rotation: str | None = None           # off | pool | fresh: each title block draws a verified donor build
+    donor_rounds: int | None = None             # 0 = one build per block; N = relaunch into the next draw every N rounds
+    donor_pool: dict | None = None              # {title: [build, ...]}: only these (still fit-gated); {} = every audited
     # gbox.re_switch: e.g. {"re5": {"platform": "switch", "mode": "no_mercy", "title_id": "010018100CD46000"}}; {} = the
     # native editions. Missing here, the field was dropped silently (the mercmode tool and MCP posted it) - 2026-10-26.
     preferred_editions: dict | None = None
@@ -2109,6 +2205,9 @@ def install(app, store, config, auth, submit, workers, archive):
             raise HTTPException(409,f'{host} needs an updated gBox to repeat its MercMode queue')
         if _local_scheduler(worker) and patch.get('blueprint_look') is True and mercmode.BLUEPRINT_FEATURE not in features:
             raise HTTPException(409,f'{host} needs an updated gBox for the blueprint look')
+        if _local_scheduler(worker) and any(k in patch for k in mercmode.DONOR_KEYS) \
+                and mercmode.DONOR_FEATURE not in features:
+            raise HTTPException(409,f'{host} needs an updated gBox for the donor rotation')
         try:
             desired=mercmode.configure(store,host,patch)
         except ValueError as exc:
@@ -2136,6 +2235,7 @@ def install(app, store, config, auth, submit, workers, archive):
                        and (k != 'skin_swap' or mercmode.SKIN_FEATURE in features)     # ... and these two
                        and (k != 'repeat_queue' or mercmode.REPEAT_QUEUE_FEATURE in features)
                        and (k != 'blueprint_look' or mercmode.BLUEPRINT_FEATURE in features)
+                       and (k not in mercmode.DONOR_KEYS or mercmode.DONOR_FEATURE in features)
                        and not (k=='preferred_editions' and not v)}      # unset: never sent to a worker that lacks it
                 if dispatched:
                     relay|={'command':command,'dispatch_id':dispatched['id'],

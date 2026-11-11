@@ -53,7 +53,7 @@ def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
     features = ['independent_heartbeat', 'durable_result_delivery', 'resource_telemetry', 'mercmode_warm_launch',
                 'mercmode_prepare', 'mercmode_stalemate_cut', 'mercmode_coop_ratio', 'mercmode_dispatch',
                 'mercmode_cast_swap', 'mercmode_skin_swap', 'mercmode_default_mods', 'mercmode_repeat_queue',
-                'mercmode_blueprint_look'] + (["idle_telemetry", "desktop_stream", "desktop_game_crop", "session_stills", "two_percent_audio"] if HOST_OS == "windows" else [])
+                'mercmode_blueprint_look', 'mercmode_donor_rotation'] + (["idle_telemetry", "desktop_stream", "desktop_game_crop", "session_stills", "two_percent_audio"] if HOST_OS == "windows" else [])
     info = WorkerInfo(name=name, os=HOST_OS, tools=ok, unavailable=bad, idle_seconds=user_idle_seconds(), features=features,
                       excluded_platforms=config.excluded_platforms_for(name))
     from .ollama_assist import inventory
