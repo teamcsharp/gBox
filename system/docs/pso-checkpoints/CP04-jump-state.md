@@ -592,3 +592,33 @@ else.
 
 **One guard worth stating:** the watcher filters on `agent_owned`, so if the operator launches their own game during its watch it
 will ignore that session and keep waiting - rule 6 (never touch an operator session) holds by construction.
+
+## Round 124: the plane has its own PSO autoplay - the campaign, not blind taps
+
+The operator asked for the machine to be seen playing PSO. Reading the installed tool surface found something better than the
+agent's pad taps: **`autoplay` is a first-class worker tool with a PSO campaign**,
+
+```
+tools.py:  @tool("autoplay", ...)  "Let gBox play the live game (take control): runs a scripted mission
+                                   (navigate / interact / fight) through the session's debugger. op=start | stop | status | ..."
+pso_campaign.py:  CAMPAIGN = "pso-episodes-1-2"        # gated to GPOE8P disc 0 revision 2 - this machine's disc
+                  COOP_CAMPAIGN = "pso-coop-episodes-1-2"
+                  GAME_IDS = {"436e0bb84d5337d1", ...}  # 436e0bb84d5337d1 is this PSO
+```
+
+and **`autoplay` is exempt from the background-admission gate** (`background_testing.requires_admission` returns False for
+`{'session_op', 'get_frame', 'state_transfer', 'read_memory', 'tasks', 'autoplay'}` - "autoplay drives a session that was already
+admitted"). So once a session exists the plane can play PSO itself:
+
+```
+POST /api/jobs {"tool": "autoplay", "input": {"session_id": <sid>, "op": "start", "campaign": "pso-episodes-1-2"}}
+POST /api/jobs {"tool": "autoplay", "input": {"session_id": <sid>, "op": "status"}}      # campaign_state, steps, mode
+```
+
+**What stands between that and the screen is only the launch.** The `launch_game` gate is the one thing `autoplay`'s exemption does
+not cover: while the operator is at the keyboard, an agent launch waits for `IDLE_MIN_S = 300` (round 102 measured the same gate
+through ViGEm and CPU). The armed launch `a43d86814ee34c36` fires in the first five-minute window; the operator's own **Play**
+button is the immediate path - and then the campaign runs without further input from anyone.
+
+The driver staged for it (`docs/research/pso-cp4-play.py`) waits for a session, starts the campaign, polls `op=status`, and saves a
+desktop frame every 20 s to `D:\gBox\pso-ds\demo\`, so the play is watchable and auditable even after the fact.
