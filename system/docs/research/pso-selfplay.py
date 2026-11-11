@@ -104,6 +104,7 @@ def main():
     rooms = room_graph()
     state = load_state()
     visited = set(state.get("visited", []))
+    skip = {}
     log(f"=== self-play on floor {floor_now()}, {len(rooms)} rooms in the graph, visited {sorted(visited)}")
     while True:
         if not pso_input.allowed():
@@ -122,6 +123,8 @@ def main():
                                                                              "x": round(point[0]), "z": round(point[1]),
                                                                              "floor": floor_now()})
         enemy = nearest_enemy(point)
+        if enemy and skip.get((enemy[1]["c"], round(enemy[1]["x"]), round(enemy[1]["z"])), 0) > time.time():
+            enemy = None
         if enemy:
             gap, entity = enemy
             log(f"enemy {entity['c']} at {gap:.0f} units - engaging")
@@ -135,18 +138,21 @@ def main():
                 if still is None:
                     break
                 gap, target = still
-                if gap > 8:
-                    RUN.run_to(player, (target["x"], target["z"]), tolerance=8.0, budget=5.0)
-                pso_input.tap("a", gap=0.28)
-            log("  target cleared or out of range", {"event": "fight", "class": entity["c"],
-                                                     "at": [round(entity["x"]), round(entity["z"])]})
+                if gap > 5:
+                    RUN.run_to(player, (target["x"], target["z"]), tolerance=4.0, budget=5.0)
+                pso_input.hold("a", 0.3)
+            if nearest_enemy(player(), limit=ENGAGE):
+                skip[(entity["c"], round(entity["x"]), round(entity["z"]))] = time.time() + 45
+                log("  target survived - skipping it for 45 s")
+            log("  target cleared or skipped", {"event": "fight", "class": entity["c"],
+                                                "at": [round(entity["x"]), round(entity["z"])]})
             continue
         loot = nearest_loot(point)
         if loot:
             gap, entity = loot
             log(f"{entity['c']} at {gap:.0f} units - opening", {"event": "loot", "class": entity["c"],
                                                                 "at": [round(entity["x"]), round(entity["z"])]})
-            RUN.run_to(player, (entity["x"], entity["z"]), tolerance=7.0, budget=5.0)
+            RUN.run_to(player, (entity["x"], entity["z"]), tolerance=4.0, budget=5.0)
             pso_input.tap("a", gap=0.35)
             time.sleep(0.4)
             continue
