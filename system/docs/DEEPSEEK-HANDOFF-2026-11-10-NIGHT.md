@@ -284,3 +284,61 @@ Then send it the heavy analysis work.
 - 2026-11-10 20:20: merged `ds-grenade-re4-bss-20261110` @ `3a6a2885` into main (`17766d37`) - `choose_mailbox()` turns
   E3's telemetry evidence into one page: it intersects the all-zero pages across every recorded stage load and returns
   the first in the vetted order, so the watch result becomes a one-line `MAILBOX_AT` commit. Targeted gate 83 passed.
+﻿
+- 2026-11-10 19:4x-19:5x: **the operator's PC plays while they work** (operator: "play PSO on the i9 despite me being on the
+  PC"). Added the per-PC `allow_while_active` background-testing policy (`background_testing.policy` +
+  `guarded_reason(allow_active=None)` resolves it; `POST /api/testing/workers/{wid}` stores it beside the budget;
+  tests in `test_background_testing.py`), set `i9-NUC` to `allow_while_active: true` and budget 90, and **restarted
+  the i9's gBox** (it ran since 08:21 with the old code; new pids 44900/51820, health back in 26 s, worker re-registered).
+  Then: two PSO `launch_game` jobs (this session's and the other agent's, both held by the idle rule) were admitted;
+  the duplicate was cancelled, one PSO session runs (`3998f537ab154a22-b13f235d1b2e42a1`), and the **PSO campaign
+  autoplay** (`pso-episodes-1-2`) started on it - a frame shows Dolphin past the title screen into the world.
+  `7a4952d8` verification: on `origin/main`; the Spark's `deploy`-actor bot-reload reports `ok: true, "no loaded
+  bot module changed: nothing to reload"` (its loaded modules already match), and `update-repo` cannot fast-forward
+  (`/home/ehm_eckx/gBox/system` is not a git checkout) - the G3 watch needs an RE4 round to record its loads, and
+  MercMode now alternates one round per title (RE4 -> RE6 Sherry/Rail Yard observed live), so the next RE4 block records
+  them. Left alone: the Hermes recorders `pso_padwatch.py` / `pso_demo_rec.py` (not input drivers).
+- 2026-11-10 21:10: merged `ds-grenade-re4-bss-20261110` @ `96954533` into main (`63ae6f93`) - **the reason the E3 watch never
+  appeared in telemetry**: `gbox/tools.py`'s autoplay telemetry `body()` publishes only scalar stats
+  (`{k: v for k, v in live.items() if isinstance(v, (int, float, str, bool))}`), so the watch dict/list were silently
+  dropped. The watch now goes out as JSON strings (`bss_watch`, `bss_watch_loads`), and `choose_mailbox()` parses the
+  published string form. Targeted gate 45 passed, 1 skipped. The operator's bot-reload said "no loaded bot module
+  changed" because the loaded module matched the share's (old) copy - after this merge the deploy copies the new file
+  and one more bot-reload (or the 05:00 restart) makes the watch visible on the next RE4 block.
+﻿
+- 2026-11-10 20:0x: **PSO is autoplaying through its menus on the i9** (the operator's ask: watch it play the game). The
+  single-player route is the known dead end: pressing START reaches the episode-1 intro narration and the game returns to
+  the title (`pso_boot_local.py --start-at press_start` pressed START, the frame showed the intro, six more START
+  presses returned to PRESS START). So the session was relaunched on the **two-controller branch** (`pso_coop: true`,
+  session `aa4ba9c970e14266-9ef9fc607d884e0f`) and the **coop campaign** (`pso-coop-episodes-1-2`) started on it:
+  frames show PRESS START -> the title main menu (ONLINE/OFFLINE/OPTIONS/WEBSITE) -> character select (a HUmar on the
+  selection platform). The single-player campaign's stop was its own error budget (`errors >= 5`, the vision planner on
+  the Spark's `qwen2.5vl:7b` times out while the Spark's GPU plays RE6); the coop route's scripted MULTI MODE walk does
+  the menus, so it does not depend on the planner. Note: the i9 now has two worker registrations (the service and the
+  desktop app's `desktop_local`), so launch jobs must resolve the current online worker id
+  (`GET /api/workers`), not the one from an earlier session.
+﻿
+- 2026-11-10 20:1x: the coop campaign carried PSO past the menus on the i9: the frames run PRESS START -> title main menu ->
+  OFFLINE/MULTI MODE -> **character creation** (a HUmar preview on the platform - the two-controller launch uses its own
+  isolated memory card, so the buddies are created) -> **Pioneer 2** (the station over Ragol). The earlier single-player
+  campaign had stopped on its own error budget; the coop route's scripted MULTI walk plus creation is what gets through.
+  Next for the campaign: the Pioneer 2 descent and Forest 1, where the native combat driver takes over.
+﻿
+- 2026-11-10 20:2x: **PSO is in gameplay on the i9.** The buddy card now holds the created character (24 of 251 blocks
+  used on `gbox-data/pso-buddies/i9-NUC/436e0bb84d5337d1/dolphin/A.USA.raw`), and the coop campaign is walking the
+  character through **Pioneer 2** (frame: the plaza and its portal, the HUD in the corner). The title/story loop is
+  behind it: title -> OFFLINE -> the saved buddy -> Pioneer 2. Next: the teleporter down to Forest 1, where the native
+  combat driver fights. (Note for the lane: the intro narration returns to the title if pressed through on a new card;
+  the created character is what turns the next pass into gameplay, so do not press A during the movie.)
+﻿
+- 2026-11-10 20:2x: PSO's campaign reached **Pioneer 2's Lab** on the i9: the frame shows the created FOmar at the Lab
+  counter with an NPC's message ("You may come back to the Lab before completing the field, if you want.") and the
+  HP/TP HUD - the teleporter burst before it was the city-to-Lab transition. The campaign is walking the hub and
+  talking to NPCs with the two controllers.
+  **Planner bottleneck identified and being fixed:** the PSO campaign's vision planner resolves to the Spark's Ollama
+  (`10.89.1.246:11434`, `qwen2.5vl:7b`) through `config.llm_endpoints`, and the Spark's GPU is busy playing
+  MercMode, so planner calls time out and the campaign walks into walls. The i9 has the 3090 and its own Ollama, but at
+  **0.5.7**, too old for `qwen2.5vl` ("requires a newer version of Ollama"). Downloading the current Windows
+  installer (1.86 GB; ~1.0 GB in at 20:2x) to upgrade it; added `[agent] vision_url = "http://127.0.0.1:11434"` (with
+  llm_url/model/searx_url) to the untracked `gbox.local-i9-nuc.toml` so `pso_campaign.vision_settings` uses the
+  local endpoint; this needs the i9's gBox restarted (do it when no PSO session is live, or let the live one end).
