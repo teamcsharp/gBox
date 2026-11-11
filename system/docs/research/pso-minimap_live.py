@@ -85,6 +85,9 @@ def read_state():
             "bosses": bosses, "warps": warps}
 
 
+_transform = {"min_x": 0.0, "min_z": 0.0, "scale": 1.0, "width": 900, "height": 640}
+
+
 def render(floor_data, state):
     rooms = floor_data.get("rooms") or []
     points = [(cell[0], cell[1]) for room in rooms for cell in (room.get("cell_list") or [])]
@@ -95,6 +98,8 @@ def render(floor_data, state):
     min_x, max_x, min_z, max_z = min(xs) - 30, max(xs) + 30, min(zs) - 30, max(zs) + 30
     width, height = 900, 640
     scale = min(width / max(1.0, max_x - min_x), height / max(1.0, max_z - min_z))
+
+    _transform.update(min_x=min_x, min_z=min_z, scale=scale, width=width, height=height)
 
     def screen(x, z):
         return ((x - min_x) * scale + 20, (z - min_z) * scale + 20)
@@ -150,6 +155,9 @@ def render_radar(state, span=120):
     scale = (width / 2 - 30) / max(1.0, span)
     px, _, pz = state["player"]
 
+    _transform.update(min_x=px - centre_x / scale, min_z=pz - centre_y / scale,
+                      scale=scale, width=width, height=height)
+
     def screen(x, z):
         return (centre_x + (x - px) * scale, centre_y + (z - pz) * scale)
 
@@ -200,6 +208,33 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:                              # noqa: BLE001
                 _cache.update(at=now, svg=f"<svg xmlns='http://www.w3.org/2000/svg' width='500' height='60'>"
                                           f"<text x='8' y='30' fill='#f85149'>{str(exc)[:70]}</text></svg>")
+        if self.path.startswith("/api/order"):
+            from urllib.parse import parse_qs, urlparse
+            query = parse_qs(urlparse(self.path).query)
+            order_path = Path(r"D:\gBox\pso-ds\goto-order.json")
+            if query:
+                order = {"x": float(query["x"][0]), "z": float(query["z"][0]), "t": round(time.time(), 2)}
+                order_path.write_text(json.dumps(order), encoding="utf-8")
+                body = json.dumps({"recorded": order}).encode()
+            else:
+                try:
+                    body = order_path.read_text(encoding="utf-8").encode()
+                except Exception:                                 # noqa: BLE001
+                    body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path.startswith("/api/transform"):
+            body = json.dumps(_transform).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.startswith("/minimap.svg"):
             body = _cache["svg"].encode()
             self.send_response(200)
@@ -210,15 +245,31 @@ class Handler(BaseHTTPRequestHandler):
             return
         page = ("<!doctype html><meta charset='utf-8'><title>PSO minimap</title>"
                 "<body style='margin:0;background:#0d1117;color:#c9d1d9;font-family:monospace'>"
-                "<div style='padding:6px 12px'>PSO live minimap - refreshing</div>"
-                "<img id='m' src='/minimap.svg' style='display:block'>"
-                "<script>setInterval(()=>{document.getElementById('m').src='/minimap.svg?'+Date.now()},1000)</script>")
+                "<div style='padding:6px 12px'>PSO live minimap - click the map to send the bot there</div>"
+                "<img id='m' src='/minimap.svg' style='display:block;cursor:crosshair'>"
+                "<div id='o' style='padding:6px 12px;color:#3fb950'></div>"
+                "<script>"
+                "const img=document.getElementById('m');"
+                "img.onclick=async e=>{"
+                "  const r=img.getBoundingClientRect();"
+                "  const t=await (await fetch('/api/transform')).json();"
+                "  const px=(e.clientX-r.left)*(t.width/r.width);"
+                "  const pz=(e.clientY-r.top)*(t.height/r.height);"
+                "  const wx=t.min_x+(px-20)/t.scale, wz=t.min_z+(pz-20)/t.scale;"
+                "  const res=await (await fetch(`/api/order?x=${wx.toFixed(1)}&z=${wz.toFixed(1)}`,{method:'POST'})).json();"
+                "  document.getElementById('o').textContent='order: '+wx.toFixed(0)+','+wz.toFixed(0);"
+                "};"
+                "setInterval(()=>{img.src='/minimap.svg?'+Date.now()},1000);"
+                "</script>")
         body = page.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self):                                            # noqa: N802
+        self.do_GET()
 
     def log_message(self, *args):
         return
