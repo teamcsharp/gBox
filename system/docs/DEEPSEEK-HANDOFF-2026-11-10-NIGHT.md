@@ -270,3 +270,9 @@ Then send it the heavy analysis work.
   the previous versions (the mods-panel hardening and the mission watchdog await the next autodeploy). The screensaver
   restarted autoplay itself (job `275ecddb83d2441a`, 21:07) after the failed mission, so the live session got a new
   mission; the run's `result` still carries the old error until a mission ends.
+
+- 2026-11-10 19:45: operational note - deploy_main.sh's deploy-restart-pending file (set when any non-bot runtime
+  file is in a merge) makes every later bot-only merge skip its in-place bot reload until the 05:00 restart. Our
+  grenade merge included interventions.py, so the RE4 .bss watch is copied but not loaded in the running bot; the
+  operator can force POST /api/workers/lilspark/bot-reload (operator actor; the API refuses gent with 403), else
+  it lands at 05:00. Plan time-sensitive bot changes as bot-only merges.
