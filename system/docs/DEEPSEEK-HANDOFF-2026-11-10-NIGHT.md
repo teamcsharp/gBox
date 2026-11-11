@@ -122,3 +122,7 @@ Then send it the heavy analysis work.
     written and reported in the round's own give (`weapon_rounds`, `fire_tables`).
   - tests: `test_re4_room_map.py` (+5), `test_re4_switch_mods.py` (+1), `test_mercs_combat_discipline.py` (+1), the
     swarm / heavy fight tests now fire-first with the rollback.
+  - the round report carries it: RE4's `round_counters` now include `gun_downs`, `gun_kept`, `gun_up_ticks`,
+    `gun_down_ticks`, `unwall_tangents`, `unwall_tangent_steps`, and `round_reports.METRICS` has the `control` group -
+    the next live round's report says whether the raise / lower is still there (analysis tickets included), and
+    `gun_down_last` in the round's row names what did it.
