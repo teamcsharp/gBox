@@ -518,3 +518,19 @@ def test_firing_into_a_screen_that_takes_no_input_taps_a():
     b2._hit_at[123] = 12.0                                 # a hit landed: a real fight
     b2.stats["shots"] = 12
     assert b2._frozen(p, 15.5) is None
+
+
+def test_the_walk_turn_does_not_flutter_when_the_error_sits_near_the_tolerance():
+    """Operator 2026-11-11: the walking twitched ("vibrating ... not walking forward in a linear fashion"). A step
+    error just past TURN_TOL must keep its direction when the error flips slightly; only a clear reversal turns back."""
+    b = bot()
+    p = {"pos": mm((0.0, 0.0, 0.0)), "rot": 0.0}
+
+    def goal(angle):
+        return mm((1000.0 * math.sin(angle), 0.0, 1000.0 * math.cos(angle)))
+
+    first = b._step_keys(p, {"goal": goal(0.13)})
+    assert "lup" in first and 0.13 > b.TURN_TOL
+    assert b._step_keys(p, {"goal": goal(0.13)}) == first
+    assert b._step_keys(p, {"goal": goal(-0.125)}) == first, "a small opposite error keeps the turn (no flutter)"
+    assert b._step_keys(p, {"goal": goal(-0.5)}) != first, "a clear reversal turns the other way"

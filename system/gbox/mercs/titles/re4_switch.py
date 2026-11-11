@@ -3387,14 +3387,28 @@ class Bot:
     def _step_keys(self, p, st) -> set:
         """The step's keys this tick: toward its open-floor goal (a turn on the spot while it lies more than
         STEP_TURN_RAD off his facing - never forward into what is in front), else the first version's fixed keys (the
-        step it takes with no mesh at all walks forward with the turn, never a turn alone)."""
+        step it takes with no mesh at all walks forward with the turn, never a turn alone).
+
+        The turn has a hysteresis (operator 2026-11-11: "the bot is vibrating ... whenever they're walking ... twitching
+        around and not walking forward in a linear fashion"): a small opposite error keeps the direction already under
+        way, so the left/right keys cannot flutter every tick; only a clear reversal (past 2 x TURN_TOL) turns back.
+        """
         goal = st.get("goal")
         if goal is None:
             return set(st.get("keys") or ())
         err = wrap(heading(goal[0] - p["pos"][0], goal[2] - p["pos"][2]) - (p.get("rot") or 0.0))
         if abs(err) > STEP_TURN_RAD:
+            self.__dict__.pop("_step_turn_sign", None)
             return self._turn(err)
-        return {"lup"} | (self._turn(err) if abs(err) > self.TURN_TOL else set())
+        if abs(err) > self.TURN_TOL:
+            last = self.__dict__.get("_step_turn_sign")
+            sign = 1 if err > 0 else -1
+            if last is not None and sign != last and abs(err) < self.TURN_TOL * 2:
+                sign = last
+            self.__dict__["_step_turn_sign"] = sign
+            return {"lup"} | self._turn(abs(err) * sign)
+        self.__dict__.pop("_step_turn_sign", None)
+        return {"lup"}
 
     # --- the universal core (UNIVERSAL_CORE: gbox.mercs.core.combat) ---
     def _uc(self, name: str):
