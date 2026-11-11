@@ -317,8 +317,21 @@ class Handler(BaseHTTPRequestHandler):
                                       capture_output=True, text=True, timeout=60)
         except Exception as exc:                                 # noqa: BLE001
             return {"ok": False, "why": f"set_edit failed: {type(exc).__name__}: {str(exc)[:120]}"}
-        return {"ok": finished.returncode == 0, "room": best["room"], "distance": round(best["d"], 1),
-                "set": set_name, "record": record, "output": (finished.stdout or "").strip()[-400:]}
+        # never report success without proving the edited file is structurally sound and keeps every original record
+        edited_path = Path(r"D:\gBox\pso-ds\rel\edited") / set_name
+        check_script = str(Path(r"C:\_tools\gBox\.tmp\set_check.py"))
+        try:
+            check = subprocess.run([sys.executable, check_script, str(edited_path),
+                                    str(Path(r"D:\gBox\pso-ds\rel") / set_name)],
+                                   capture_output=True, text=True, timeout=60)
+            verdict = (check.stdout or "").strip().splitlines()
+        except Exception as exc:                                 # noqa: BLE001
+            check, verdict = None, [f"set_check failed: {type(exc).__name__}"]
+        structure_ok = check is not None and check.returncode == 0
+        return {"ok": finished.returncode == 0 and structure_ok, "room": best["room"],
+                "distance": round(best["d"], 1), "set": set_name, "record": record,
+                "structure_ok": structure_ok, "structure": verdict[-2:] if verdict else [],
+                "output": (finished.stdout or "").strip()[-300:]}
 
     def _send(self, code, body, content_type="application/json"):
         data = body if isinstance(body, bytes) else body.encode("utf-8")
