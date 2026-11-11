@@ -98,3 +98,22 @@ def test_the_route_stores_the_designation_without_forgetting_the_budget(cfg):
     off = client.post("/api/testing/workers/i9-NUC", json={"allow_while_active": False})
     row = next(w for w in off.json()["workers"] if w["name"] == "i9-NUC")
     assert row["allow_while_active"] is False and row["budget_percent"] == 80
+
+def test_a_dedicated_pc_runs_file_work_while_the_operator_plays_but_never_input_jobs(monkeypatch):
+    """Operator 2026-11-10: "the PSO task uses gBox to handle modding and loading the game ... play it despite me being
+    on the PC". allow_while_active lets a PC's non-pad jobs through while they play; a launch/session job still waits."""
+    now = time.time()
+    s = FakeStore()
+    s.running_sessions = lambda: [{"session_id": "sid-1"}]
+    s.put("setting", background_testing.SETTING, {"policies": {"i9-NUC": {"allow_while_active": True}}})
+    from gbox import operator_guard, screensaver
+    monkeypatch.setattr(operator_guard, "operator_sessions", lambda *a, **k: [{"session_id": "sid-1"}])
+    monkeypatch.setattr(screensaver, "telemetry_get", lambda sid, now=None: {})
+    worker = _busy_worker(now)
+    assert background_testing.guarded_reason(s, worker, now=now, job={"tool": "file_mod"}) is None
+    assert "Human gameplay" in (background_testing.guarded_reason(s, worker, now=now, job={"tool": "launch_game"}) or "")
+    assert "Human gameplay" in (background_testing.guarded_reason(s, worker, now=now) or ""), \
+        "a caller with no job keeps ownership authoritative"
+    s.put("setting", background_testing.SETTING, {"policies": {}})
+    assert "Human gameplay" in (background_testing.guarded_reason(s, worker, now=now, job={"tool": "file_mod"}) or ""), \
+        "a PC not designated still waits"

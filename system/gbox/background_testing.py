@@ -84,19 +84,29 @@ def requires_gpu(job):
     return job.get('tool') not in {'smb1_sprite_build','photo_sprite_build'}
 
 
-def guarded_reason(store, worker, *, now=None, allow_active=None, require_gpu=True, running=None, setting=None):
-    """Controller play may not update input-idle time. Ownership is authoritative.
+PAD_TOOLS = frozenset({'launch_game', 'session_op', 'autoplay', 'poke', 'write_memory', 'freeze_memory', 'cheats',
+                       'mercmode', 'bot_reload', 'repo_update', 'session_swap', 'state_transfer'})
+# Jobs that take the pad or the session: for these, human gameplay stays authoritative even on a PC the operator marked
+# allow_while_active. Everything else (file work, builds, characters, analysis) may run there while they play - the
+# operator's own words (2026-11-10): "the PSO task uses gBox to handle modding and loading the game so its in the app
+# internally ... play it despite me being on the PC".
+
+
+def guarded_reason(store, worker, *, now=None, allow_active=None, require_gpu=True, running=None, setting=None,
+                   job=None):
+    """Controller play may not update input-idle time. Ownership is authoritative - except that a PC the operator marked
+    ``allow_while_active`` lets its **non-pad** jobs through while they play (job=None: ownership as before).
     `running` (store.running_sessions()) and `setting` (the SETTING document) may be passed by a caller that checks
     every PC at once (server.workers): the same answer from one read instead of three per worker.
     allow_active None: the PC's own policy decides (the operator's "allow while I'm using this PC")."""
     from .operator_guard import operator_sessions
+    pol = policy(store, worker['name'], setting=setting)
     owned = operator_sessions(store.running_sessions() if running is None else running, lambda sid: store.get('slabel', sid),
                               lambda jid: store.get('job', jid), [worker['id']])
     from .screensaver import telemetry_get
     owned = [s for s in owned if not telemetry_get(s['session_id'], now=now).get('running')]
-    if owned:
+    if owned and not (job is not None and pol['allow_while_active'] and job.get('tool') not in PAD_TOOLS):
         return 'Human gameplay is active on this PC; background compute is waiting.'
-    pol = policy(store, worker['name'], setting=setting)
     if allow_active is None:
         allow_active = pol['allow_while_active']
     return admission_reason(worker, excluded(store, setting=setting), pol['budget_percent'],
