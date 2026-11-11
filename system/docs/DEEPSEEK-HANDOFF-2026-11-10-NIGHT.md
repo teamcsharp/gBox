@@ -241,3 +241,16 @@ Then send it the heavy analysis work.
   operator-idle admission ("Waiting for five minutes without operator input"); it starts after 5 min with no input on that
   PC. Its run's `result` carries `unsupported operand type(s) for +: 'int' and 'dict'` from the previous mission - to
   trace next.
+﻿
+- 2026-11-10 20:5x: the RE4 bot "just standing there, not fighting" - root cause found and fixed. `re4_switch_mods.maintain`
+  published a per-round weapon **record** (`weapon_round = {round, name, id, fire_tables}`, added for the round
+  report in this session's first merge) and `re4switch_bot._maintain_mods` sums every value it returns into
+  `stats["mods_*"]`: on the first verified weapon give the playbook raised `unsupported operand type(s) for +: 'int'
+  and 'dict'` and the mission **ended**, leaving the game running with nobody pressing anything - which also explains a
+  round that never ends, so MercMode never rotates. Fix (`b5efa90f`): maintain returns counters only (the weapon's
+  name/round stay in `status()` / `st["weapon_rounds"]`, where the round report reads them), and the mods panel adds
+  counters while keeping a record as it is. Regression tests: every maintain value is a counter; the panel survives a
+  record. The live mission on the Spark was restarted (autoplay job `69a59edf7e384316`, started) so it fights now; the
+  Spark's autodeploy carries the file fix within its 15-minute cron, and the next session loads it. **Follow-up:** a
+  mission that ends `ok:false` while its round is live should be restarted (or the round cut) by the scheduler - today
+  it just stands there.
