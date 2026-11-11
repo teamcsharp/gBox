@@ -158,3 +158,13 @@ Then send it the heavy analysis work.
   the fixes - the baseline 45 less the 9 the two test branches fix, no new failure. Evidence:
   `system/docs/pso-checkpoints/CP00-clean-start.md`; the operator question is in `CP00-operator-question.md` (asked
   2026-11-10 night). Next: CP1 (the local coder model on the 3090).
+
+- 2026-11-10 19:0x: PSO CP1 measured (the local coder model on the 3090) by the DeepSeek session. Ollama 0.5.7 on
+  i9-NUC already had `qwen2.5-coder:14b` (9.0 GB) and `:32b` (19.9 GB); both run 100% GPU (nvidia-smi lists
+  `ollama_llama_server.exe` on `GPU-f3697ec1-...`). Measured: 14b 51.8 tok/s single-shot, 47.0-48.6 tok/s aggregate
+  flat from 4 to 16 concurrent (two slots, `OLLAMA_NUM_PARALLEL=2`); 32b 28.6 tok/s single-shot, 29.9-30.7 tok/s
+  aggregate. Two 16k-context tags created (`qwen2.5-coder:{14b,32b}-16k`, `num_ctx 16384`; the 14b-16k at 15 GB /
+  11,990 MiB, 39.2 tok/s). Evidence: `system/docs/pso-checkpoints/CP01-local-model.md`. The i9 node's measured capacity
+  is **2 lanes**; the 8-16 concurrency ask needs vLLM/llama.cpp continuous batching - the measurements, the
+  recommendation and the exact `[hermes.local.nodes.i9]` block are in `system/docs/i9-service-node.md` (not applied:
+  the shared gbox.toml must not carry it, and section 1's readiness gates it).
