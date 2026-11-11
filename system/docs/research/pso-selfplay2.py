@@ -235,6 +235,16 @@ def main():
                 locked_at = time.time()
                 log(f"locking target {locked['class']} at {locked['distance']:.0f} units "
                     f"(hp {locked['hp']})", {"event": "lock", "class": locked["class"], "hp": locked["hp"]})
+                try:
+                    import weapon_advisor as WA
+                    me_point = ME.read_pos()
+                    situation = enemies(me_point) if me_point else []
+                    wanted, reason = WA.choose(situation, (me_point[0], now_y() or 0.0, me_point[1])) if me_point else (None, "")
+                    if wanted:
+                        name = WA.equip_class(wanted)
+                        log(f"  weapon advice: {reason} -> equipped {name}")
+                except Exception as exc:                          # noqa: BLE001
+                    log(f"  weapon advice unavailable: {type(exc).__name__}: {str(exc)[:70]}")
 
         if locked is not None:
             locked["distance"] = math.dist(point, (locked["x"], locked["z"]))
