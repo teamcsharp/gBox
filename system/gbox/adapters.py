@@ -3387,10 +3387,37 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
             ini = ini.rstrip() + "\n\n" + pso_coop_setup.xinput_pad(pad_base, player, vp.slot)
         return ini
 
+    def _vpad_works(self) -> bool:
+        """Probe once whether the virtual pad's own presses reach the emulator.
+
+        A ViGEm target can stop reporting while the object still exists (the i9's churning ghost devices, 2026-11-10): every press is
+        acknowledged and dropped, so a campaign or mission runs to completion without touching the game. A pad that does not report
+        its own press is treated as absent and the caller uses the game's keyboard bindings instead.
+        """
+        cached = getattr(self, "_vpad_probe", None)
+        if cached is not None:
+            return cached
+        answer = False
+        try:
+            from . import pad_route, xinput
+            slot = getattr(self.vpad, "slot", None)
+            handle = xinput.load()
+            before = pad_route.slot_reading(xinput.read(handle, slot)) if slot is not None else {}
+            self.vpad.apply([{"key": "a", "down": True}])
+            after = pad_route.slot_reading(xinput.read(handle, slot)) if slot is not None else {}
+            self.vpad.apply([{"key": "a", "down": False}])
+            answer = pad_route.press_registered(before, after)
+            self.vpad_report = pad_route.report("vpad" if answer else "keyboard", slot, answer)
+        except Exception as exc:                                     # noqa: BLE001 - an unusable probe is not a working pad
+            self.vpad_report = {"input_path": "keyboard", "vpad_slot": getattr(self.vpad, "slot", None),
+                                "vpad_probe": False, "reason": f"probe failed: {type(exc).__name__}: {exc}"}
+        self._vpad_probe = answer
+        return answer
+
     def send_input(self, events: list[dict], polite: bool = False) -> dict:
         # Player 1 on the virtual pad: focus-independent, so no polite/focus gating (the operator's own keyboard is
         # never touched - the bot presses a controller, not keys).
-        if self.vpad is not None:
+        if self.vpad is not None and self._vpad_works():
             return self.vpad.apply(events)
         # win_send_keys already maps standard pad names to keyboard keys. Translating
         # them here as well makes A -> x -> s (Dolphin X), so menus ignore A.
