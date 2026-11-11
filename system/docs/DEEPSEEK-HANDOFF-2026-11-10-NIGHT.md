@@ -450,3 +450,8 @@ Then send it the heavy analysis work.
   bot dies) while the restart stays pending. Verified with a bash harness over the extracted function: pending+bot ->
   reload, pending+server -> restart, pending+nothing -> restart, nothing -> none. Pushed as `95e4ab18`; the Spark's
   next deploy run copies the script and the run after that uses it.
+
+- 2026-11-10 23:45: merged ds-grenade-re4-bss-20261110 @ e4df387e into main (9fda4e20) - **E3 status-path probe**: the
+  RE4 native controller'''s prepare() now includes the five candidate .bss pages in its refusal, so a single live
+  GET /api/sessions/{sid}/interventions on an RE4 round is itself the read-only watch (the bot-module telemetry path
+  stays the fallback; deploy-restart-pending still blocks its reload). Two tests; targeted gate 67 passed.
