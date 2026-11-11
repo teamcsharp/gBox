@@ -96,6 +96,7 @@ def build(floor):
             "centre": room["centre"],
             "bounds": room.get("bounds"),
             "cells": room.get("cells"),
+            "cell_list": cells,
             "height": {"min": round(ys[0], 1) if ys else None,
                        "max": round(ys[-1], 1) if ys else None,
                        "median": round(ys[len(ys) // 2], 1) if ys else None},
