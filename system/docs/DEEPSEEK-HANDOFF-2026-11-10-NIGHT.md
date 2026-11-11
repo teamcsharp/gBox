@@ -193,3 +193,13 @@ Then send it the heavy analysis work.
   (pytest-timeout could not interrupt it); gates are run as prefix groups instead. So far: RE5 Switch 10 failed / 713
   passed / 1 skipped = the known red list exactly; the targeted sets (201-383 tests) are green on the branch and on
   main after each merge.
+
+- 2026-11-10 19:3x: PSO branches merged by the DeepSeek session, with their evidence: `ds-pso-handover`, `ds-pso-reconcile`,
+  `ds-pso-cp16-stick` (docs), and `ds-pso-cp00-classes` (CP0 step 4: the pinned table, the 148 names and the families
+  folded into `pso_classes`, plus the DOL **section-table correction** - `sections`/`address_of`/`offset_of`; the
+  anchor-derived table is now cross-checked against `PINNED_ADDRESS 0x805D3138` / `PINNED_NAMES` in
+  `test_pso_classes.py`). The post-merge state is recorded in `CP00-classes.md`: both registry modules stay because
+  `pso_editor` calls `pso_class_registry` without a DOL, and `tests/test_pso_registries_agree.py` ties them;
+  `pso_classes` is the module going forward. Tests: the registry/editor/llm set 67 passed (CP0 baseline unchanged).
+  `ds-pso-classes-family` is superseded by this merge (same families/vtable work, earlier base). 22 more `ds-pso-*`
+  branches remain open for the next check-ins (CP4-17 and the swap/editor work).
