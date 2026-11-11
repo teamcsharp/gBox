@@ -262,7 +262,7 @@ class FakeRound:
                 "player": {"pos": (0.0, 0.0, 0.0), "rot": 0.0, "hp": 1000, "ptr": 1} if self.player else None}
 
 
-def _round(monkeypatch, timers, player=True, boundary=None, n=400):
+def _round(monkeypatch, timers, player=True, boundary=None, n=400, **provenance):
     monkeypatch.setattr(B.screens, "Reader", lambda: Reader(["playing"] * 200))
     monkeypatch.setattr(B.driver, "snapshot", FakeRound(timers, player))
     adapter = Adapter([b"frame"] * 200)
@@ -274,7 +274,7 @@ def _round(monkeypatch, timers, player=True, boundary=None, n=400):
 
     stats = {}
     out = B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: ticks["n"] > n, sleep=lambda s: None,
-                 stats=stats, clock=clock, m=object(), round_boundary=boundary)
+                 stats=stats, clock=clock, m=object(), round_boundary=boundary, **provenance)
     return adapter, stats, out
 
 
@@ -330,11 +330,67 @@ def test_a_round_outside_mercmode_says_why_it_posted_nothing(monkeypatch):
     assert "no round_boundary sink" in stats["mercmode_boundary_error"]
 
 
-def test_the_playbook_asks_for_the_boundary_sink_and_the_game():
-    """tools._start_playbook passes round_boundary and game only to a play() whose signature names them."""
+def test_the_playbook_asks_for_the_boundary_sink_the_game_the_session_and_the_job():
+    """tools._start_playbook passes round_boundary, game, session_id and source_job_id only to a play() whose signature
+    names them; the last two are the round Notebook's provenance."""
     import inspect
     params = inspect.signature(B.play).parameters
-    assert "round_boundary" in params and "game" in params and "stats" in params
+    assert {"round_boundary", "game", "stats", "session_id", "source_job_id"} <= set(params)
+
+
+def test_the_round_end_writes_the_curriculum_row_the_round_reports_read(monkeypatch, tmp_path):
+    """RE4 had no rounds.sqlite at all: the round reports (the operator's coaching loop) never saw an RE4 round. The
+    round's end now writes the Notebook row with the exact session/autoplay provenance and the solo role."""
+    import json
+    import sqlite3
+    from gbox.mercs import lessons
+    monkeypatch.setattr(lessons, "ROOT", tmp_path / "mercs" / "lessons")
+    posted = []
+    at_boundary = []
+    def boundary(body, st):
+        posted.append(body)
+        at_boundary.append(dict(st))
+        return True
+    _, stats, _ = _round(monkeypatch, RAN_OUT, boundary=boundary,
+                         session_id="60d56e74a744411a-abc", source_job_id="0123456789abcdef")
+    db = tmp_path / "mercs" / "curriculum" / B.MAP_ID / "rounds.sqlite"
+    assert db.is_file(), "the round's Notebook row is the round reports' only source"
+    with sqlite3.connect(db) as c:
+        row = c.execute("select id,stage,mode,character,outcome,data from rounds").fetchall()
+    assert len(row) == 1
+    rid, stage, mode, character, outcome, raw = row[0]
+    assert rid == posted[0]["round_id"], "the row is the boundary's round, not a second one"
+    assert (stage, mode, character, outcome) == ("Village", "mercenaries", "Leon", "completed")
+    data = json.loads(raw)
+    assert data["source_session_id"] == "60d56e74a744411a-abc"
+    assert data["source_autoplay_job_id"] == "0123456789abcdef"
+    assert data["team_role"] == "solo_p1" and data["scoring_scope"] == "solo"
+    assert data["shots"] == at_boundary[0]["shots"] >= 1, "the counters the report judges travel with the row"
+    assert data["round_shots"] >= 1, "the round's own amount, not the session's total"
+    assert "round_gun_downs" in data and "round_unwall_tangents" in data
+    assert stats["round_notebook"] == "recorded"
+
+
+def test_a_failed_notebook_write_never_stops_the_round_end(monkeypatch, tmp_path):
+    """The evidence write is best effort: a bad data dir must not swallow the boundary (or crash the fight loop)."""
+    from gbox.mercs import lessons
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    monkeypatch.setattr(lessons, "ROOT", blocker / "mercs" / "lessons")
+    posted = []
+    _, stats, _ = _round(monkeypatch, RAN_OUT, boundary=lambda body, st: posted.append(body) or True,
+                         session_id="60d56e74a744411a-abc", source_job_id="0123456789abcdef")
+    assert len(posted) == 1 and "round_notebook_error" in stats
+    assert stats.get("round_notebook") != "recorded"
+
+
+def test_a_round_without_an_exact_start_is_not_recorded(monkeypatch, tmp_path):
+    """No session/autoplay identity: no row (a report could never verify it), and no error either."""
+    from gbox.mercs import lessons
+    monkeypatch.setattr(lessons, "ROOT", tmp_path / "mercs" / "lessons")
+    _, stats, _ = _round(monkeypatch, RAN_OUT, boundary=lambda body, st: True)
+    assert stats["round_notebook"].startswith("skipped:")
+    assert not (tmp_path / "mercs" / "curriculum").exists()
 
 
 class Game:

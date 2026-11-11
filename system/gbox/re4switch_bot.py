@@ -13,7 +13,8 @@ What it does, and what it says it does:
   clock, crowd fire, locate by the map, never stand) and its keys go in as holds and taps;
 * in a round without the player in RAM: the blunt frame-only cadence (advance, sweep the aim, fire) - `stats["fight"]`
   says which one ran;
-* at the round's end it posts a MercMode round boundary (`round_boundary`, tools._start_playbook) with a RAM witness:
+* at the round's end it posts a MercMode round boundary (`round_boundary`, tools._start_playbook) with a RAM witness,
+  and writes the same round's curriculum row (`gbox.mercs.notebook`, the source the round reports read):
   the game's results sequence after the round was seen live, or the clock read 0 after it was seen counting (results),
   or the player's health read 0 (death). Nothing is claimed from
   the frame alone: without the clock the round ends by MercMode's no-progress cut, and `stats` says why.
@@ -232,10 +233,12 @@ def _boundary(rnd: Round, end: dict, snap: dict, stats: dict, at: float) -> dict
 
 def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, clock=time.time,
          max_seconds: float | None = None, still_s: float = 12.0, game=None, round_boundary=None, m=None,
-         tactical=None, **_) -> dict:
+         tactical=None, session_id: str = "", source_job_id: str = "", **_) -> dict:
     """Walk the menus to a round, start it, fight it, and keep going until `stopped()`.
 
-    Returns a dict of what it did. `stats` (when given) is filled live for the watch panel.
+    Returns a dict of what it did. `stats` (when given) is filled live for the watch panel. `session_id` and
+    `source_job_id` (the autoplay job, tools._start_playbook passes both) are the round Notebook's provenance: the round
+    reports only use a round that names its exact session and owning autoplay start (`round_reports.provenance`).
 
     `still_s` is how long the picture may stay on one named screen (with no cursor progress) before the back-out escape
     is pressed. A stray confirm lands in LOAD and the save list then holds the walk for as long as nothing acts on it
@@ -246,6 +249,10 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
     stats = stats if stats is not None else {}
     stats.update({"screen": None, "presses": 0, "rounds": 0, "started": clock(), "stage_seen": False,
                   "story_recoveries": 0, "stall_steps": 0, "fight": None, "boundaries_posted": 0})
+    if isinstance(session_id, str) and session_id:
+        stats["source_session_id"] = session_id
+    if _job_id(source_job_id):
+        stats["source_autoplay_job_id"] = _job_id(source_job_id)
     # the tactical map (tools._start_playbook passes the worker's sink): a frame a tick in a round with the player in
     # RAM - re4_walk.publish(pub, snap, bot, "playing") where the RAM fight ticks - else the screen once a second
     pub = re4_walk.publisher(tactical)
@@ -328,7 +335,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                 # round starts here, and no entry press is guessed - the Bot pages the intro while the game says so
                 if in_round:
                     round_ended()                            # a replay's intro (Continue: Yes) without a menu between
-                in_round, rnd = True, Round(clock())
+                in_round, rnd = True, _new_round(stats, clock())
                 round_started()
                 stats["rounds"] += 1
                 stats["stage_seen"] = True
@@ -474,7 +481,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             in_round = True
             stats["rounds"] += 1
             stats.setdefault("walk_s", round(clock() - started, 1))     # the boot's walk to its first round
-            rnd = Round(clock())
+            rnd = _new_round(stats, clock())
             round_started()
             if where != "playing":                           # the HUD is up: the clock already runs, no entry presses
                 for _ in range(ROUND_ENTRY_PRESSES):
@@ -635,14 +642,67 @@ def _report(rnd: Round, snap: dict, stats: dict, now: float, round_boundary, key
     _post(rnd, end, snap, stats, now, round_boundary, keys)
 
 
+def _job_id(value) -> str:
+    """A 16-hex autoplay job id, or '' (never a partial or foreign id in a round's provenance)."""
+    value = str(value or "")
+    return value if len(value) == 16 and all(c in "0123456789abcdef" for c in value) else ""
+
+
+# the driver's turn-long counters (Driver.round_counters): each round's amount is written as round_<key>, the shape the
+# engine's rounds use and round_reports.METRICS reads (round_gun_downs, round_unwall_tangents, round_shots, ...)
+ROUND_COUNTERS = tuple(getattr(getattr(driver, "DRIVER", None), "round_counters", ()) or ())
+
+
+def _new_round(stats: dict, at: float) -> Round:
+    """A round with the counters' starting values, so its end can record this round's own amounts."""
+    rnd = Round(at)
+    rnd.counter_base = {key: stats.get(key, 0) for key in ROUND_COUNTERS}
+    return rnd
+
+
+def _record_round(rnd: Round, end: dict, stats: dict) -> None:
+    """Write this round's curriculum row (`gbox.mercs.notebook`): the round reports' source, which RE4 had none of.
+
+    The row carries the provenance `round_reports.provenance` checks for a native solo round (the exact session id and
+    the autoplay job that started the run, seeded by `play`), this round's own counter amounts (round_<key>) and the
+    round's telemetry, so the next report shows the raise/lower, the tangents and the stand breaks the operator judges a
+    block by. Best effort: a failure is a stat, never the round's end.
+    """
+    sid, jid = stats.get("source_session_id"), _job_id(stats.get("source_autoplay_job_id"))
+    if not isinstance(sid, str) or not sid or not jid:
+        stats["round_notebook"] = "skipped: no exact session/autoplay start to attribute the round to"
+        return
+    try:
+        from .mercs import lessons as lesson_store
+        from .mercs.notebook import Notebook
+        pick = driver.SELECTION
+        observed = dict(stats)
+        base = getattr(rnd, "counter_base", None)
+        if isinstance(base, dict):
+            for key in ROUND_COUNTERS:
+                before, after = base.get(key), stats.get(key)
+                before = before if isinstance(before, (int, float)) and not isinstance(before, bool) else 0
+                after = after if isinstance(after, (int, float)) and not isinstance(after, bool) else 0
+                observed[f"round_{key}"] = max(0, after - before)
+        observed.update(team_role="solo_p1", scoring_scope="solo",
+                        source_session_id=sid, source_autoplay_job_id=jid)
+        Notebook(lesson_store.ROOT.parent, MAP_ID).finish(
+            driver.STAGES[pick.get("stage") or 0], "mercenaries", driver.CHARACTERS[pick.get("player") or 0],
+            "completed" if end.get("screen") == "results" else "died", observed, round_id=rnd.id)
+        stats["round_notebook"] = "recorded"
+    except Exception as exc:                                   # noqa: BLE001 - evidence never ends a round
+        stats["round_notebook_error"] = f"{type(exc).__name__}: {exc}"[:200]
+
+
 def _post(rnd: Round, end: dict, snap: dict, stats: dict, now: float, round_boundary, keys: Keys) -> None:
-    """Post this round's end once (its RAM / screen witness) to MercMode."""
+    """Post this round's end once (its RAM / screen witness) to MercMode, and record it for the round reports."""
     body = _boundary(rnd, end, snap, stats, now)
     rnd.posted = body
     stats["last_boundary"] = {k: body[k] for k in ("round_id", "stage", "character")} | {"screen": end["screen"]}
     if round_boundary is None:
         stats["mercmode_boundary_error"] = "no round_boundary sink: this run was not started by MercMode's autoplay"
-        return
-    keys.release()                                          # between rounds with released inputs (publish_boundary)
-    if round_boundary(body, stats):
-        stats["boundaries_posted"] += 1
+    else:
+        keys.release()                                      # between rounds with released inputs (publish_boundary)
+        if round_boundary(body, stats):
+            stats["boundaries_posted"] += 1
+    _record_round(rnd, end, stats)
