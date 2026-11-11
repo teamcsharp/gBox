@@ -53,6 +53,12 @@ def main():
         print("viewer not reachable:", type(exc).__name__, str(exc)[:100])
         return 2
 
+    # start from a clean scratch file so the test is idempotent: the placement must rebuild it from the shipped original
+    scratch = EDITED / "map_forest01d.dat"
+    if scratch.exists():
+        scratch.unlink()
+    check("scratch file cleared", not scratch.exists(), "placement will rebuild it from the original")
+
     rooms1 = get("/api/rooms?floor=1")
     rooms2 = get("/api/rooms?floor=2")
     check("Forest 1 rooms", len(rooms1.get("rooms") or []) == 11, f"{len(rooms1.get('rooms') or [])} rooms")
