@@ -993,3 +993,43 @@ was restored in round 132 and its route validated in round 134).
    stayed blocked. One reader per session is the rule.
 
 Screens: `D:\gBox\pso-ds\demo\194645-playing.png` (main menu), `194810-after2.png` (Ragol intro), `194845-step5.png` (Forest 1).
+
+## Round 142: why input stopped working on the i9 - four ghost XInput pads consume every slot
+
+This is the most expensive thing this lane learned tonight, and it is not in any checkpoint yet. After the live session at 19:44 the
+game stopped accepting **every** kind of input: the agent's own ViGEm pad (`slot=None`), the worker's relay (`{"queued": n}`, no
+effect), the GCPad1 keyboard fallback (SendKeys ENTER/X, no effect) **and the operator's physical Xbox controller**, which the
+operator plugged in to help and which the game ignored.
+
+**Cause: all four XInput slots are occupied by ghost devices.**
+
+```
+xinput slots: 0 connected, 1 connected, 2 connected, 3 connected   (all idle, none respond)
+Get-PnpDevice: USB\VID_045E&PID_028E\01, \02, \03, \04  "Xbox 360 Controller for Windows" (OK)
+               USB\VID_045E&PID_0B00                       "Xbox One Controller" (OK, the operator's)
+```
+
+The four `PID_028E` entries are **ViGEm virtual pads whose owning processes were killed** - the devices outlive the process, and XInput
+only has four slots. So the operator's real `PID_0B00` controller is connected but **cannot get a slot**, and Dolphin's
+`GCPad1 = XInput/0/Gamepad` reads a ghost that reports nothing. A slot-watch probe (12 s, buttons and sticks) showed **zero changes
+on any slot** while the operator pressed: none of the four connected devices was his controller.
+
+**Detecting it** (`docs/research/pso-input-diag.py`): read all four slots twice and compare; if every slot reads "connected" but no
+slot changes while the operator presses, the slots are ghosts. Also list `Get-PnpDevice` for `VID_045E&PID_028E` - four entries means
+four ghosts.
+
+**Clearing it** (needs an elevated shell - this lane's shells are not admin):
+
+```powershell
+foreach ($n in 1..4) { pnputil /remove-device "USB\VID_045E&PID_028E\0$n" }
+# then unplug/replug the physical controller; it takes XInput/0
+```
+
+Device Manager's "uninstall device" on the same four entries works too (View -> Show hidden devices), and a reboot clears them all.
+Disabling the `Nefarius Virtual Gamepad Emulation Bus` devices (`ROOT\SYSTEM\0003`, `ROOT\SYSTEM\0005`) also removes their children
+but costs the bots their pads.
+
+**What this means for the checkpoint programme:** every live accept line in CP4/CP5/CP10/CP13/CP17 ultimately depends on a free
+XInput slot on this machine. A bot that creates a pad and dies without releasing it **takes the machine's input away from the
+operator** (which is what happened tonight) - so any long-lived tool must release its pad in a `finally`, and a pre-flight should
+always report the four slots' state before claiming a session is drivable.
