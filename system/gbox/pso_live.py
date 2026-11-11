@@ -200,7 +200,21 @@ def gamecube(inp, ctx, ad):
         if inp.op=='modes':
             from .pso_gc_adventure import Adventure
             from .pso_controls import autoplay_speed_status
-            return {'permanent_scape':not inp.player_index and m.u32(VT_UPDATE)==CAVE and m.u32(SURVIVAL)==1,'randomized':pso_modes.status(inp.session_id,inp.player_index),
+            # Advance the randomizer on this poll when it is due: pso_modes.tick has no timer of its own anywhere in the plane, so
+            # a configured randomizer would otherwise never run (cycles stays 0). The poll that reads the status is the natural
+            # driver, and the tick is bounded by `due` so polling repeatedly does not cycle early.
+            tick_error = None
+            try:
+                state_key = pso_modes._key(inp.session_id, inp.player_index)
+                mode_state = pso_modes._states.get(state_key)
+                if mode_state and mode_state.get('on'):
+                    pso_modes.tick(m, mode_state, time.monotonic())
+            except Exception as exc:                             # noqa: BLE001 - a tick failure must not break the status read
+                tick_error = f'{type(exc).__name__}: {exc}'[:200]
+            status_block = pso_modes.status(inp.session_id, inp.player_index)
+            if tick_error:
+                status_block = dict(status_block, tick_error=tick_error)
+            return {'permanent_scape':not inp.player_index and m.u32(VT_UPDATE)==CAVE and m.u32(SURVIVAL)==1,'randomized':status_block,
                     'travel':Adventure(ad).travel_status(),
                     'autoplay_speed':autoplay_speed_status(ad, bool(getattr(ad,'_pso_coop_new_card',False) and
                         callable(getattr(ad,'set_autoplay_speed',None))))}
