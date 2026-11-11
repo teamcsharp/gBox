@@ -1361,3 +1361,44 @@ so it only changes with a **service restart** - the 05:00 restart. The F4 status
 **Consequence for the plan:** E6/F (which need `native_controller` to build our controller) and the status-path watch
 are gated on the 05:00 restart, not on a bot reload; the telemetry watch is gated on the operator's post-fix bot
 reload. Both are external. The evidence gathered this round is in the lane log; the code side is ready.
+
+## Lane state at 2026-11-11 01:00 CST (for the handover to the morning restart)
+
+**Merged and tested on main** (all through the targeted/prefix gates):
+
+| item | state | where |
+|---|---|---|
+| Checkpoint 0 (RE5/RE6 post-restart reads) | **accepted 2/2** - capabilities, flash on, hand/incendiary reasons | lane log round 73 |
+| E0(c) dispatcher | 136 B at `main+0x655880`, selftest `ret` at `cave+0x84`, tail-calls `0x2B6420` | `native/re4_82c2a04a/` |
+| E4 write rule | `write()` refuses `main` code/rodata; `install()` only into the vetted cave | `re4_switch_native.py` |
+| E5 controller | single vtable store, mailbox call surface, generation guard, timeouts retired and never replayed | same |
+| E6 selftest | `re4_harness_selftest` op (attach + a mailbox call to the dispatcher's `ret`, ticks proven) | same + `interventions.py` |
+| F flash | `flash_at` (blast `0x2E4E50`, 4000 mm floor), `place_flash`/`flash_now`, status row built/no-receipt | same + `grenade_status.py` |
+| G1/G2/G4 | flash ring (4000 mm), hand ring (`0x2E48B0`, 7000 mm), barrage (cm->mm, narrowed draws), title knobs + PiP rows | `re4_switch_native.py`, `re4_switch.py`, `bot_logic.py`, `grenade_ring.py` |
+| E3 verifiers | caves PASS, `.bss` scanner, candidates vetted | `scripts/verify_re4_caves.py`, `scripts/verify_re4_bss.py` |
+| E3 watch | telemetry JSON strings **and** the status-path probe; `choose_mailbox` | `re4_switch.py`, `re4_switch_native.py` |
+| A3 | RE6 random barrage draws only the character's loaded kinds | `re6_switch_native.py` |
+| G3 | item-class mapping (hand 0x13, incendiary 0x16, flash 0x17); probe path behind `allow_unverified` to `0x2E4BA0` | `re4_switch_native.py`, scanner |
+
+**The two live gates:**
+
+1. **05:00 service restart** - `gbox.mercs.interventions` is in `hot_reload.NOT_BOT`, so `native_controller`'s new module
+   list (and therefore the harness controller, E6/F, and the status-path watch) only appears after the restart. The bot
+   telemetry watch does not need it.
+2. **One operator bot-reload** after the JSON-string fix - `deploy-restart-pending` skips the automatic in-place reload,
+   so the running RE4 bot keeps the old `re4_switch` until then (or 05:00).
+
+**Exact next actions after either gate:**
+
+- RE4 round live: `GET /api/sessions/{sid}/interventions` -> the reason carries `pages now: 0x…=hex…` (five pages), or
+  read `stats["bss_watch_loads"]` from `/api/autoplay/telemetry/{sid}` at three stage loads.
+- `re4_switch_native.choose_mailbox(loads)` -> the page -> one-line `MAILBOX_AT` commit -> targeted tests -> merge via
+  `.work/merge-staging`.
+- After the restart: `POST /api/sessions/{sid}/interventions {"op": "re4_harness_selftest", "request_id": ...}` on a live
+  RE4 round (the selftest can also be clicked once the capability shows), then `{"op": "flash_now"}` for F's receipt
+  (the flash lands on the crowd, never within 4000 mm of him); record `state/verified/pos/from_player_cm`, the frames,
+  and the Ganados' stun ids.
+- RE5 block: `grenade_scatter` `kind=hand` then `kind=incendiary` (A/C probes), and one `flash_now` for CP0; D's
+  `scatters_fired`/`scatter_rounds`/`scatter_kills` and two flash times at least 60 s apart.
+
+Everything else the lane can build offline is built; the open items are live receipts.
