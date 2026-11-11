@@ -118,3 +118,21 @@ conflict left.)
 
 **Updated tips after the resolutions:** `ds-pso-cp12-rigged-swap-20261110` **`ecf64810`**,
 `ds-pso-cp07-object-loader-20261110` **`6ec7f441`**.
+
+## Round 99: CP16 added, and the live input finding folded into CP4's row
+
+| checkpoint | branch | tip | evidence | state |
+|---|---|---|---|---|
+| CP16 focus-free movement | `ds-pso-cp16-stick-20261110` | `8c7980d9` | `CP16-stick.md` | **measured negative, per the guide's if-blocked clause** - the three input routes (local SendInput after a focus attempt, unfocused SendInput, the worker relay for agent and autoplay) produced no reaction in round 96's session; the 2-second-hold test could not begin. Round 97 showed the round-96 test was run during the opening movie (`mode 0`), so a **discriminating retest** is staged (`docs/research/pso-cp4-retest.py`): wait for `mode 1`, then a focused press, then an unfocused one. Until it runs, the keyboard walker stays, live only under rule 7 |
+
+**CP4's updated tip and state:** `ds-pso-cp04-jump-state-20261110` @ **`fd166561`** - launch admission, session lifecycle and
+RAM reads are all proven live (round 96: session `83202f53e9cd4aa5-1b349dbb3ee94db4`, `mode 0` reads, the seed descriptor
+`0x0` at the title); the open question is only whether a press lands, and the retest above answers it in one run. Both input
+fixes are in the branch (`PAD_ALIASES`, the single-process driver) and the emulator already has `BackgroundInput=True`.
+
+**What a single successful retest unlocks, all in the same window:** CP4's boot walk and jump states, CP5 (floor warp), CP9's
+runtime seed and byte-flip accept test, CP10's entity confirmation, CP12's character-select frame, CP13's per-boot and hot
+donor picks, CP16's stick measurement, and then CP17-CP19.
+
+**The programme's open items are now exactly four:** (1) the retest in the next window; (2) the CP8 data decision; (3) the
+merge review of seventeen branches in the rehearsed order (conflict-free); (4) CP11's merge/restart decision.
