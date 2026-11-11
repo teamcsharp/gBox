@@ -515,3 +515,8 @@ Then send it the heavy analysis work.
   registrations, the old `aa4ba9c9` dead) and the eight orphaned delete jobs were re-pointed at the live worker id;
   MercMode is playing RE5 on the Spark. Both this and the broadcast desktop-view change are **server code**, so they
   apply at the Spark's next service restart (05:00); pushed as `a59da474`.
+- 2026-11-11 03:00: merged `ds-grenade-re4-bss-20261110` @ `24efa1e7` into main (`e2050fc5`) - **RE5 uncertain-state
+  diagnostics**: an uncertain operation now records its cause through one `_fail(exc, recoverable=...)` helper at all
+  five failure sites, and the recovery refusal reads `native controller awaits recovery after an uncertain operation
+  (TypeError: ...)`, turning the live "awaits recovery" status into an actionable line. The night saw that state twice
+  on live RE5 rounds (22:05 and earlier), with kills at 0, so the cause matters for the morning. 19 tests.
