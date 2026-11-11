@@ -14,9 +14,9 @@ import random
 TITLES = {"01002A000CD48000": "gbox.mercs.titles.re6_switch"}
 DEFAULTS = {
     "enabled": True,
-    "drop_every_s": 18.0,          # a ring this often while a round plays (operator 2026-11-11 17:58: "dropping even
-                                   # more remote mines as they're detonating them")
-    "drop_jitter_s": 8.0,          # +/- so the drops are not clockwork ("randomly in the middle of the match")
+    "drop_every_s": 7.5,           # a ring this often while a round plays (operator 2026-11-11 17:49: "mines are just
+                                   # dropping out from around them every five to ten seconds randomly")
+    "drop_jitter_s": 2.5,          # +/- so the drops land anywhere in the 5-10 s window ("randomly in the match")
     "count": 6,                    # six a ring: "dropping even more remote mines"
     "radius_cm": 200.0,
     "rings_before_detonate": 4,    # "massive quantities ... then detonate": 24 bombs by default
