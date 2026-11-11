@@ -474,3 +474,12 @@ Then send it the heavy analysis work.
   weapon drawn) - no manual A press needed. So the select-confirm fix plus the deploy-unblock did their job on RE5;
   the earlier 0-shot "lost" rounds were the character-select park. Next check: the round's report (shots > 0) when it
   ends.
+﻿
+- 2026-11-10 22:3x: **the operator's own app view no longer steers the broadcast program** (operator: "the activity of my
+  local gBox usage on the i9 should not change the stream or impact it ... the PSO task uses gBox to handle modding and
+  loading the game so its in the app internally"). `broadcast.choose` now ignores a watch whose `client` is the
+  desktop app (`desktop-webview`): it stays "still on air" instead of following the local PSO view, while a
+  browser/Pine viewer's watch still follows and On air (a program pin) still switches explicitly. Test:
+  `test_broadcast.py` 60 passed. Pushed as `9e25bae2` (rebased over the lane's 05:00 summary). The Spark's copy is
+  server code, so the change needs its next service restart (05:00) - until then the immediate lock is the On air pin
+  on the MercMode run or Pine following `/api/broadcast/pc/lilspark`.
