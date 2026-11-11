@@ -77,3 +77,41 @@ reach skip, the corner turn, and `describe`'s length), and together with `test_p
 **What the live walk needs next:** the one calibration number (`forward_at_zero`, from the first live read of the player's yaw
 and a step in a known direction), the player's position per frame, and a tap cadence (hold, read, re-plan). Those are live
 inputs; the planner itself is done and tested.
+
+## Round 110: the walker's control loop (`gbox/pso_walker.py`), tested against a simulated world
+
+The planner turns a direction into keys; the **walker** closes the loop: read the player's position, plan the next leg, hold
+the keys, repeat until the target is reached - or until something proves the walk wrong.
+
+The one input it needs that the game does not hand over directly is "which world direction is the stick's forward". Instead of
+digging that out of the actor struct, the walker **calibrates it from the game**: tap `up` briefly and take the displacement as
+forward:
+
+```
+walker = Walker(read_position=lambda: pso_ram.position(reader, actor),
+                press=lambda keys, seconds: pad.apply(taps(keys, seconds)),
+                read_floor=lambda: pso_ram.floor(reader))
+forward = walker.calibrate()                     # the world direction of one forward tap
+result  = walker.walk_to((x, z), stop_on_floor_change=True)
+```
+
+`walk_to` returns `{arrived, why, legs, position, floor}`, and stops with a named reason: `within reach`, `the floor changed
+(N -> M)`, `no stick direction for the target`, `gave up after N legs`, or `calibration failed` (the player did not move on a
+forward tap - the honest signal that the session is not taking input at all).
+
+**Tests: `tests/test_pso_walker.py` 6 passed** against a simulated world (a fake actor that moves along the stick's world
+direction, with an optional wall and an optional floor change):
+
+1. calibration reads forward from a tap (including a world where "up" means +x);
+2. a straight walk arrives using only `up`;
+3. an L-corner uses both `up` and `right` and still arrives;
+4. a floor change stops the walk and reports both floor ids;
+5. a player that moves once and then faces a wall yields `gave up`;
+6. a player that never moves yields `calibration failed`.
+
+With `test_pso_steer.py` and `test_pso_walk.py` that is **17 passed** for the walker's three layers: the collision graph, the
+tap planner and the control loop.
+
+**What is left for CP17's accept is now only the live part:** a session with a character in Forest 1 (CP5's state), the pad
+(round 104), `pso_ram.floor` watched for the change, and the target cell taken from `pso_walk.path` to the next floor's
+entrance. The three offline layers are done and tested.
