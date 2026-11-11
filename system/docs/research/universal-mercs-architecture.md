@@ -906,3 +906,15 @@ threat_answered_flash 3,792 against _fire 1,459; t_nade 331 s against t_fire 9.3
   after 0 flashes, 74 shots, t_nade 0 s.
 * Not done: a per-enemy weapon pick (magnum / shotgun for the armoured, the launcher at groups) beyond what RE6's own
   AUTO_SWITCH already does; the gate keeps the flash off them, the weapon choice is the title's as before.
+
+## 12. Death lessons: every death makes the bot stronger (request #9525, 2026-11-10)
+
+`gbox/mercs/core/death_lessons.py`, used through `combat.Threats` (so every title that builds `combat.Threats`: RE4 Switch and RE6 Switch today).
+
+- **Record.** `Threats.update` feeds `DeathLessons.observe` each tick (hp, crowd with class and distance, hit record). When hp first reaches 0 the last `WINDOW_S` = 10 s are distilled into one lesson (killer class, crowd, health curve, doing/why) appended to `learned/_universal/deaths.jsonl` and the title's own file. A write error is counted in `stats`, never raised.
+- **Learn.** Per class, only with `MIN_DEATHS` = 2 blamed deaths. Bounded (`CAPS`: weight ≤3, keep ≤+400 cm, mine/flash ×≥0.5, retreat ×≤1.5), decaying (half-life 7 days; other titles' lessons count half).
+- **Use (wired).** `candidates` lifts a "normal" class that killed him to "dangerous" and `_order` divides the TIERED distance by the lesson weight (priority); `Threats.reach_cm` adds `keep_cm` (distance kept).
+- **Available, not yet wired:** `answer` (magnum/shotgun/explosives) and `doctrine()` multipliers (mine_x/flash_x/retreat_x) are computed and tested but no title reads them yet.
+- **Not wired:** RE5 Switch uses `threat_memory` directly, not `combat.Threats`; it records no death lessons yet.
+- **Replay.** `replay()` runs recorded lessons in order with no look-ahead. Not determined: deaths per round before/after on real data — no `deaths.jsonl` exists yet and the existing run lessons (see `mercs-death-evidence-9525.md`) carry no killer class; per-round rates need rounds played between deaths. Settled by: collecting `deaths.jsonl` from live rounds, or joining `player_damage_run` logs.
+- **Tests.** `tests/test_mercs_death_lessons.py` (5) pass; `test_mercs_combat*.py` 65 pass, 1 fails (`test_re6_s_full_tick...`, ModuleNotFoundError `test_re6_switch`), same failure on baseline 7e97e882.
