@@ -323,3 +323,10 @@ Then send it the heavy analysis work.
   isolated memory card, so the buddies are created) -> **Pioneer 2** (the station over Ragol). The earlier single-player
   campaign had stopped on its own error budget; the coop route's scripted MULTI walk plus creation is what gets through.
   Next for the campaign: the Pioneer 2 descent and Forest 1, where the native combat driver takes over.
+﻿
+- 2026-11-10 20:2x: **PSO is in gameplay on the i9.** The buddy card now holds the created character (24 of 251 blocks
+  used on `gbox-data/pso-buddies/i9-NUC/436e0bb84d5337d1/dolphin/A.USA.raw`), and the coop campaign is walking the
+  character through **Pioneer 2** (frame: the plaza and its portal, the HUD in the corner). The title/story loop is
+  behind it: title -> OFFLINE -> the saved buddy -> Pioneer 2. Next: the teleporter down to Forest 1, where the native
+  combat driver fights. (Note for the lane: the intro narration returns to the title if pressed through on a new card;
+  the created character is what turns the next pass into gameplay, so do not press A during the movie.)
