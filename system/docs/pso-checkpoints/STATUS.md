@@ -233,3 +233,47 @@ merge-tree conflicts against main; the audit explains every one of them, and it 
 still uses), then CP1's branch is skipped (main's version is the accepted one), then the rest in the rehearsed order with
 CP12 before CP13. The three "already done" branches should be deleted rather than merged, which also removes three of the six
 conflicts.
+
+## Round 116: correcting round 115 - the two registries are complementary, and CP00-classes is superseded
+
+Round 115 said "main still has the old registry module; the CP00-classes consolidation is still needed". **That is wrong**, and
+checking it properly matters because it changes what the review should do with three branches.
+
+**What main actually carries** - both modules, each with a different job:
+
+| module | API | job |
+|---|---|---|
+| `pso_classes.py` | `table_offset`, `registry(dol, slots)`, `name_of(dol, kind)` | the **self-calibrating** reader: finds the table from the `TObjCityDoor_Shop` anchor instead of trusting an address |
+| `pso_class_registry.py` | `TABLE_ADDRESS = 0x805D3138`, `SLOTS = 240`, `name`, `label`, `family`, `class_index`, `index_of`, `derive`, `verify`, `vtable`, `instantiated` | the **pinned census** plus the family/label API the editor colours by |
+
+They are not duplicates: one derives, the other pins and labels, and main has `tests/test_pso_registries_agree.py` to prove the two
+agree. So the CP00 checkpoint's own goal ("one registry, cross-checked") is met on main by **two complementary facades and a test**,
+not by a single module.
+
+**Consequence: `ds-pso-cp00-classes-20261110` is superseded and should be dropped, not merged.** Its branch *deletes*
+`pso_class_registry.py` and moves its users onto `pso_classes.py`; on current main that would remove the `family`/`label`/
+`instantiate` API (`pso_editor`, `pso_editor_api` and three tests import it) for a consolidation main has already solved a
+different way. Round 115's "CP00-classes first" would have broken the editor for no gain. The same applies to
+`ds-pso-cp00-clean-start` and `ds-pso-cp01-local-model`: main's copies are the accepted ones.
+
+**So the review's list shrinks to the branches whose work is genuinely not in main:**
+
+| keep | why | order |
+|---|---|---|
+| `cp02-gold-set`, `cp03-labelling` | only on the branches | any |
+| `cp06-evt-opcodes`, `cp06-nrel` | opcode negatives + the n.rel decoder | any |
+| `cp07-model-walk`, `cp07-object-loader`, `cp07-scene-loader` | the RE findings; `object-loader` carries round 95's CP0 merge, so it must be rebased onto main | after a rebase |
+| `cp08-room-pieces` | the room footprint reader | any |
+| `cp09-save-data` | the cipher module + card tests | any |
+| `cp10-forest1` | the CP10 evidence | any |
+| `cp11-editor-page` | the page + its **views test** (main has neither `test_pso_editor_views.py` nor the page's `pso_editor_api.py`) | rebase onto main |
+| `cp12-rigged-swap` | the endianness-aware swap path (main's `pso_player`/`pso_swapfit` are the old ones) | **before cp13** |
+| `cp13-library-donors` | three donors end to end | after cp12 |
+| `cp15-room-inventory`, `cp16-stick`, `cp17-walk-graph` | CP15/CP16 evidence, CP17's three layers | any |
+
+**drop:** `cp00-clean-start`, `cp00-classes`, `cp01-local-model` (main's versions are the accepted ones, and the consolidation is
+superseded by the two-facade design).
+
+**Also confirmed on main:** `pso_editor._mark_for` is a **stub** - it returns nothing for non-door records and its docstring-free
+body stops after the door branch - while main has no `test_pso_editor_views.py`. That is exactly the gap `cp11-editor-page`
+fills (the two `_mark_for` bugs and the test), so CP11's branch is worth the rebase.
