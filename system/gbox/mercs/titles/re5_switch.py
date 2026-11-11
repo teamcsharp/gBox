@@ -568,6 +568,10 @@ RAY_STALE_S = 1.0                        # the ray unchanged this long with the 
 BACKOFF_S, BACKOFF_GAP_S = 0.5, 1.5      # one too close in front with the gun down: back off this long, then fight
 BACKOFF_CONE = math.radians(60)          # ... only from one in front (backing up walks into one behind)
 QUICK_ERR, QUICK_GAP_S, QUICK_SETTLE_S = math.radians(120), 1.5, 0.3   # him behind, the gun down: the quick turn
+# Flawed-handling critique (request #5670, coach 4d61b56a918045dc): behind_threat_s 172 s of 325 s rampage, one 0.3 m behind
+# while he aimed at another - the full QUICK_GAP_S held the turn back while a grab-range Majini stood on him. One inside
+# GRAB_THREAT_R may be turned to after QUICK_GAP_GRAB_S, and the rampage target changes to it without the retarget wait.
+QUICK_GAP_GRAB_S = 0.5
                                          # (left stick back, then B: 180 deg in 0.3 s, measured; the stick takes ~1.1 s)
 HIT_S = 0.4                              # a Majini's health falls within this of the shot that hit him
 GRAB_R, GRAB_S = 120.0, 0.6
@@ -3271,7 +3275,7 @@ class Bot:
             tgt, r["retarget_at"] = self._grudge_e, now
             self.stats["grudge_picks"] += 1
         elif cur is None or (flat(nearest) < GRAB_THREAT_R and flat(cur) >= GRAB_THREAT_R and nearest is not cur):
-            if cur is None or now - r["retarget_at"] >= RAMPAGE_RETARGET_S:
+            if cur is None or now - r["retarget_at"] >= RAMPAGE_RETARGET_S or flat(nearest) < GRAB_THREAT_R:
                 tgt = nearest
                 r["retarget_at"] = now
         elif crowd and near_front is not None and cur not in front and now - r["retarget_at"] >= RAMPAGE_RETARGET_S:
@@ -3285,7 +3289,7 @@ class Bot:
         gun, fam = self._rampage_gun(inv)
         self.stats["rampage_weapon"] = fam or (f"0x{held['item']:03x}" if held else "-")
         # attacked from behind: one decisive quick turn (the gun down for it), then up and blasting
-        if QUICK_TURN and dist <= BEHIND_R and abs(body_err) > RAMPAGE_BEHIND and now - self.quick_at > QUICK_GAP_S                 and (now - self.quick_at >= QUICK_BACK_S or dist <= GRAB_THREAT_R):
+        if QUICK_TURN and dist <= BEHIND_R and abs(body_err) > RAMPAGE_BEHIND and now - self.quick_at > (QUICK_GAP_GRAB_S if dist <= GRAB_THREAT_R else QUICK_GAP_S)                 and (now - self.quick_at >= QUICK_BACK_S or dist <= GRAB_THREAT_R):
             if self.aim_since is not None:
                 self._gun_down()
             self.stats["behind_turns"] += 1
@@ -3532,13 +3536,15 @@ class Bot:
     def _quick_behind(self, p, live, flat, now):
         """A Majini close behind him (the quick turn above): the turn's first step, or the trigger let go first."""
         if getattr(self, '_feedback_visible', None) is not None \
-                or not QUICK_TURN or now - self.quick_at <= QUICK_GAP_S:
+                or not QUICK_TURN or now - self.quick_at <= QUICK_GAP_GRAB_S:
             return None
         px, py, pz = p["pos"]
         bear = lambda e: abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
         behind = [e for e in live if flat(e) <= BEHIND_R and abs(e["pos"][1] - py) <= LEVEL_DY and bear(e) > QUICK_ERR]
         if not behind:
             return None
+        if now - self.quick_at <= QUICK_GAP_S and min(flat(e) for e in behind) > GRAB_THREAT_R:
+            return None                                  # the full gap, unless one is inside arm's reach
         e = min(behind, key=lambda x: (not self._winding(x), flat(x)))   # a wind-up first
         if any(flat(f) < flat(e) and bear(f) <= math.radians(60) and (self._winding(f) or not self._winding(e))
                for f in live):
