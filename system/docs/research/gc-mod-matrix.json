@@ -1,0 +1,102 @@
+{
+ "session": "e731ee594dde4a89-cae9dad929a34d17",
+ "rows": [
+  {
+   "op": "capabilities",
+   "classification": "ok",
+   "ms": 60,
+   "detail": "{'version': 'gc', 'label': 'GameCube Plus US revision 2', 'supported': True, 'reason': '', 'player_index': 0, 'players': [{'index': 0, 'label': 'Player 1', 'available': True, 'verified': True, 'entity_id': 0}, {'index': 1, 'label': 'Player 2', 'available': False, 'verified': False, 'reason': 'PSO pointer is outside MEM1'}], 'selection_note': 'Equipment targets the selected verified player. Shared "
+  },
+  {
+   "op": "status",
+   "classification": "ok",
+   "ms": 58,
+   "detail": "{'stats': {'atp': 1006, 'dfp': 23, 'mst': 34, 'ata': 200, 'evp': 50, 'lck': 10, 'hp': 48}, 'equip_any': True, 'elapsed_ms': 32.0, 'command_id': 'bb0a7fd4-0373-46d9-ad59-0569c8fe835f'}"
+  },
+  {
+   "op": "list",
+   "classification": "ok",
+   "ms": 67,
+   "detail": "{'inventory': [{'slot': 0, 'code': '000100', 'id': 65536, 'equipped': True, 'data': '0001000000000000000000000001000000000000', 'name': 'Saber'}, {'slot': 1, 'code': '010100', 'id': 65537, 'equipped': True, 'data': '0101000000000000000000000001000100000000', 'name': 'Frame'}, {'slot': 2, 'code': '020005', 'id': 65538, 'equipped': False, 'data': '02000500f4010000000000000001000228000009', 'name': '"
+  },
+  {
+   "op": "floor_list",
+   "classification": "ok",
+   "ms": 27,
+   "detail": "{'floor_items': [{'id': '0x60101d7', 'code': '040000'}, {'id': '0x6010d27', 'code': '010101'}, {'id': '0x6010d28', 'code': '000100'}, {'id': '0x6010d2f', 'code': '040000'}], 'elapsed_ms': 0.0, 'command_id': '9b8e81ab-85e0-4f41-9d91-277c366a919f'}"
+  },
+  {
+   "op": "mag",
+   "classification": "ok",
+   "ms": 169,
+   "detail": "{'mag': {'id': 15728839, 'form': 55, 'stage': 4, 'level': 5, 'def': 5.0, 'pow': 0.0, 'dex': 0.0, 'mind': 0.0, 'iq': 0, 'synchro': 40, 'color': 14}, 'verified': True, 'elapsed_ms': 125.0, 'command_id': 'df3370c3-de42-4f10-b33c-b042d995869e'}"
+  },
+  {
+   "op": "modes",
+   "classification": "ok",
+   "ms": 72,
+   "detail": "{'permanent_scape': True, 'randomized': {'on': True, 'interval': 300, 'categories': ['weapon', 'mag'], 'character_class': 'HUmar', 'player_index': 0, 'due': 117629.359, 'cycles': 64, 'message': 'Equipment randomized'}, 'travel': None, 'autoplay_speed': {'available': False, 'requested': 1.0, 'choices': [1, 2, 4, 8, 10], 'known': False, 'changing': False, 'paused': False, 'measurement_verified': Fal"
+  },
+  {
+   "op": "bosses",
+   "classification": "ok",
+   "ms": 31,
+   "detail": "{'episode': 1, 'default': 'dragon', 'bosses': [{'id': 'dragon', 'name': 'Dragon / Sil Dragon', 'floor': 11}, {'id': 'de_rol_le', 'name': 'De Rol Le / Dal Ra Lie', 'floor': 12}, {'id': 'vol_opt', 'name': 'Vol Opt', 'floor': 13}, {'id': 'dark_falz', 'name': 'Dark Falz', 'floor': 14}], 'verified': True, 'elapsed_ms': 16.0, 'command_id': '31bc3020-aa5a-43d0-8f44-b33d74ffd36b'}"
+  },
+  {
+   "op": "adventure_status",
+   "classification": "ok",
+   "ms": 24,
+   "detail": "{'enemy_drops': {'on': False, 'codes': [], 'generated': 0, 'verified': True}, 'walk_through': False, 'travel': None, 'verified': True, 'elapsed_ms': 0.0, 'command_id': '8fcf6a35-07ba-4865-991f-1fe4cb01dfe3'}"
+  },
+  {
+   "op": "crit",
+   "classification": "skipped",
+   "reason": "operator is playing"
+  },
+  {
+   "op": "pb",
+   "classification": "skipped",
+   "reason": "operator is playing"
+  },
+  {
+   "op": "survival",
+   "classification": "skipped",
+   "reason": "operator is playing"
+  },
+  {
+   "op": "walk_through",
+   "classification": "skipped",
+   "reason": "operator is playing"
+  },
+  {
+   "op": "always_hit",
+   "classification": "skipped",
+   "reason": "operator is playing"
+  },
+  {
+   "op": "equip_any",
+   "classification": "skipped",
+   "reason": "operator is playing"
+  },
+  {
+   "op": "autoplay_speed",
+   "classification": "skipped",
+   "reason": "operator is playing"
+  },
+  {
+   "op": "stat",
+   "classification": "skipped",
+   "reason": "operator is playing"
+  },
+  {
+   "op": "equip",
+   "classification": "skipped",
+   "reason": "operator is playing"
+  }
+ ],
+ "summary": {
+  "ok": 8,
+  "skipped": 9
+ }
+}
