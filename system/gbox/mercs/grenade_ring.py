@@ -269,6 +269,9 @@ def decide(snap: dict, stats: dict, now: float, policy_: dict | None = None, *, 
         return {**out, "reason": f"the round is not being played ({screen})"}
     if player is None:
         return {**out, "reason": "no player in this snapshot"}
+    hp = player.get("hp")
+    if isinstance(hp, (int, float)) and hp <= 0:
+        return {**out, "reason": "the player is not alive"}      # the live "player is not alive" ring error, pre-empted
     round_at = stats.get("ring_round_at")
     if isinstance(round_at, (int, float)) and now - round_at < RING_START_GUARD_S:
         return {**out, "reason": (f"the round is {now - round_at:.1f} s old: the ring waits "

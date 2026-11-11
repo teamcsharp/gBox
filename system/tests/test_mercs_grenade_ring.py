@@ -242,3 +242,18 @@ def test_no_ring_in_the_first_seconds_of_a_round():
     assert early["fire"] is False and "waits" in early["reason"]
     later = GR.decide(snap(crowd), live, 100.0 + GR.RING_START_GUARD_S + 0.1)
     assert later["fire"] is True
+
+
+def test_a_dead_player_gets_no_ring_and_no_error():
+    """Live 2026-11-11 (RE6 block): one ring attempt failed with "Unavailable: player is not alive" - a wasted call on a
+    snapshot where the player had already died. The rule now declines it before the controller."""
+
+    def dead(s):
+        s["player"]["hp"] = 0
+        return s
+
+    crowd = [enemy(100 + i * 50) for i in range(5)]
+    live = stats()
+    GR.observe(live, snap(crowd), 100.0, GR.policy())
+    d = GR.decide(dead(snap(crowd)), live, 100.0 + GR.RING_START_GUARD_S + 0.1)
+    assert d["fire"] is False and "not alive" in d["reason"]
