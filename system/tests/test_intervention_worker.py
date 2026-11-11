@@ -156,3 +156,33 @@ def test_the_worker_publishes_the_controller_rows_and_the_moment_s_reason(monkey
     assert children['hand']['available'] is False             # the title's own unverified reason survives
     assert children['incendiary']['reason'] == 'incendiary refused'
 
+
+def test_the_re4_selftest_op_runs_the_controllers_selftest(monkeypatch):
+    import json
+    import time
+    ad, results, calls = SimpleNamespace(), [], []
+    running = [True]
+
+    def selftest():
+        calls.append(1)
+        return {"state": "confirmed", "verified": True, "op": "re4_harness_selftest", "result": 0}
+
+    ctl = SimpleNamespace(pid=123, identity=(123, 99), ready=lambda: (456, 2), selftest=selftest)
+    monkeypatch.setattr(I, "native_controller", lambda _: ctl)
+
+    def handler(request):
+        body = json.loads(request.content)
+        if request.url.path.endswith("/claim"):
+            return httpx.Response(200, json={"requests": [{"id": "p", "claim": "c", "op": "re4_harness_selftest",
+                                                           "args": {}, "expires": time.time() + 30,
+                                                           "epoch": body["epoch"]}]})
+        results.extend(body["results"])
+        running[0] = False
+        return httpx.Response(200, json={})
+
+    original = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: original(**kw, transport=httpx.MockTransport(handler)))
+    I.worker_loop("sid", "http://fixture", {}, ad, lambda: {}, lambda: running[0])
+    assert calls == [1]
+    assert results and results[0]["result"]["op"] == "re4_harness_selftest"
+    assert results[0]["result"]["result"] == 0
