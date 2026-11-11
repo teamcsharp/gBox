@@ -181,6 +181,14 @@ class Controller(N.Controller):
             raise Unavailable("unsupported RE5 executable")
         self.heap = None
         self.failed = False
+        self.failed_reason = ""
+
+    def _fail(self, exc=None, *, recoverable=True):
+        """Mark the controller uncertain, remembering what failed so the status refusal names it."""
+        self.failed = True
+        self.recoverable = recoverable
+        if exc is not None:
+            self.failed_reason = f"{type(exc).__name__}: {exc}"[:200]
 
     def check_build(self):
         if process_identity(self.pid) != self.identity or self.ad._guest()[0] != self.pid:
@@ -237,7 +245,8 @@ class Controller(N.Controller):
         if getattr(self.ad, "paused", False):
             raise Unavailable("session is paused")
         if self.failed and not self.recover_completed_call():
-            raise Unavailable("native controller awaits recovery after an uncertain operation")
+            detail = f" ({self.failed_reason})" if self.failed_reason else ""
+            raise Unavailable(f"native controller awaits recovery after an uncertain operation{detail}")
         sp = self.q(self.base + R.S_PLAYER)
         if not R.ptr_ok(sp):
             raise Unavailable("player manager unavailable")
@@ -349,9 +358,8 @@ class Controller(N.Controller):
             self.original = self.q(player)
             try:
                 self.attach()
-            except Exception:
-                self.failed = True
-                self.recoverable = False
+            except Exception as exc:
+                self._fail(exc, recoverable=False)
                 raise
             finally:
                 self.detach_completed()
@@ -391,9 +399,8 @@ class Controller(N.Controller):
                             "spawn": round(1000 * (spawned_at - attached_at), 1),
                             "initialize": round(1000 * (initialized_at - spawned_at), 1),
                             "explode": round(1000 * (time.monotonic() - initialized_at), 1)}}
-            except Exception:
-                self.failed = True
-                self.recoverable = True
+            except Exception as exc:
+                self._fail(exc, recoverable=True)
                 raise
             finally:
                 self.detach_completed()
@@ -420,9 +427,8 @@ class Controller(N.Controller):
             try:
                 self.attach()
                 one = self._ring_one(float(x), float(y), float(z), 0)
-            except Exception:
-                self.failed = True
-                self.recoverable = True
+            except Exception as exc:
+                self._fail(exc, recoverable=True)
                 raise
             finally:
                 self.detach_completed()
@@ -530,9 +536,8 @@ class Controller(N.Controller):
                         break
                     if ripple_ms and i + 1 < count:
                         time.sleep(ripple_ms / 1000.0)
-            except Exception:
-                self.failed = True
-                self.recoverable = True
+            except Exception as exc:
+                self._fail(exc, recoverable=True)
                 raise
             finally:
                 self.detach_completed()
@@ -643,9 +648,8 @@ class Controller(N.Controller):
                     rounds.append({**row, "kind": this, "dist_cm": round(d, 1)})
                     if i + 1 < count:
                         time.sleep(rng.uniform(*gap) / 1000.0)
-            except Exception:
-                self.failed = True
-                self.recoverable = True
+            except Exception as exc:
+                self._fail(exc, recoverable=True)
                 raise
             finally:
                 self.detach_completed()
