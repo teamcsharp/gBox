@@ -1658,3 +1658,27 @@ the probe now waits for a session started after 12:14 for the real receipts.
 click's 1 s; the 12:00 deploy copied it and the 12:01 restart loaded it. The RE5 block at 12:02 never reached a round
 (stuck on the title screen, the session ended), so the automatic ring is still unverified on the new budget - the next
 live RE5 block is the test.
+
+## Round 89 (2026-11-11 12:18 CST) - **the RE6 flash scatter is confirmed live, eight of eight**
+
+The package-6 scatter barrage (the operator 2026-11-10: "spray a scatter shot of grenades from his position at threats
+at will ... sprayed like a scattershot whenever the going gets tough") took its first live receipt on RE6:
+
+    session ae2bda4751dc44b1-ac70fd2e6d0f4b59, RE6 No Mercy, 12:17
+    request 14cf6dd6-7814-43de-9fc3-2ef32117f74c  op grenade_scatter kind flash
+    state confirmed, verified true, effect native_flash_scatter
+    requested 8, detonated 8, kinds [flash], axis 10.9 deg, spread 30 deg
+    near/far 400/1500 cm, flash floor 400 cm (explosive 600)
+    positions 438.5, 556.4, 678.6, 901.4, 1012.3, 1151.8, 1273.3, 1422.1 cm out
+    hp 900 -> 900, self_damage 0, elapsed 1416.3 ms
+    before kills 0/score 0; after kills 1/score 300 (a kill in the barrage window)
+    explosion_flag false on all eight (the RE5-only flag, recorded as evidence)
+
+Frame: `.tmp/re6-scatter-after.jpg` - the whole screen in the cyan flash bloom with the grenade icons on the HUD.
+This is package 6's RE6 receipt, on the be058678 ring code (the same confirmation-by-call rule). The scatter is
+still one explicit kind (flash) because SCATTER_KINDS is the verified set; hand/incendiary remain refused.
+
+Also live this hour: RE6 flash ring 10/10 (round 84); RE5 flash ring verified (round 73); RE4 harness controller now
+builds and its status names the mailbox gate (round 87/88). Remaining: the RE4 flash/hand receipts (next RE4
+session, probe running), the RE5 automatic ring on the 2.5 s budget (next RE5 block), and the hand/incendiary spawn
+images for RE5/RE6 (parameterised spawn refused live on RE6, round 85).
