@@ -1,0 +1,29 @@
+[
+ {
+  "donor": "bayonetta_ssbu",
+  "name": "Bayonetta",
+  "model": "bayonetta_ssbu.glb",
+  "model_bytes": 13899924,
+  "triangles": 708,
+  "source_triangles": 30634,
+  "scale": 0.7535,
+  "safe": true,
+  "why": "same bones and materials, but 496 vertices against the host's 311: a copy renders with the donor's proportions on the host's skeleton (the deformed case, round 35)",
+  "subset": true,
+  "body_bytes": 49196,
+  "vertices": 742,
+  "degenerate": 0,
+  "bounds": [
+   [
+    -18.65,
+    -0.17,
+    -10.5
+   ],
+   [
+    18.64,
+    27.83,
+    3.19
+   ]
+  ]
+ }
+]

@@ -294,13 +294,17 @@ def nj_file(data: bytes, ptrs: list[int]) -> bytes:
     return b"NJCM" + struct.pack("<I", len(data)) + data + ninja.pof0(ptrs)
 
 
-def speck_nj() -> bytes:
-    """A one-node NJ with one zero-size triangle: a valid, invisible model (stands in for the class head)."""
+def speck_nj(e: str = "<") -> bytes:
+    """A one-node NJ with one zero-size triangle: a valid, invisible model (stands in for the class head).
+
+    `e` must match the body's container endianness: a GameCube swap is big-endian, and a little-endian placeholder written
+    over a head part is read as garbage by the game.
+    """
     import numpy as np
     vl, pl, c, r = ninja.cnk_model_lists(np.zeros((3, 3)), np.tile([0, 1.0, 0], (3, 1)), [((0, 1, 2), ((0, 0),) * 3)],
                                          0, b"")
-    nd = [{"flags": 0x17, "trs": struct.pack("<3f3i3f", 0, 0, 0, 0, 0, 0, 1, 1, 1), "child": None, "sibling": None}]
-    data, _root, ptrs = ninja.write_tree(nd, {0: (vl, pl, c, r)}, 0)
+    nd = [{"flags": 0x17, "trs": struct.pack(e + "3f3i3f", 0, 0, 0, 0, 0, 0, 1, 1, 1), "child": None, "sibling": None}]
+    data, _root, ptrs = ninja.write_tree(nd, {0: (vl, pl, c, r)}, 0, e)
     return nj_file(data, ptrs)
 
 
@@ -361,8 +365,20 @@ def rewrite_body(disc, cls: str = "A", platform: str = "gc") -> dict:
             "platform": platform}
 
 
+def gc_head_parts(names, cls: str) -> list[str]:
+    """The GameCube head/hair/cap parts of a class: `pl<C><hed|hai|cap><NN>.nj`, flat and lower-case.
+
+    The disc keeps no `PSO/` directory and names the parts `plChed00.nj` (class C has five heads and no hair - HUcast is an
+    android), so the Dreamcast-shaped loop in `build_swap` never matched them and a GameCube swap shipped the class's own
+    head. Sorted for a stable file order.
+    """
+    import re
+    pattern = re.compile(rf"pl{cls.upper()}(hed|hai|cap)\d+\.nj$", re.IGNORECASE)
+    return sorted(n for n in names if pattern.match(n))
+
+
 def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str = "C", blender: str | None = None,
-               progress=lambda p, m: None, scale: dict | None = None) -> dict:
+               progress=lambda p, m: None, scale: dict | None = None, replace_heads: bool = False) -> dict:
     """disc: a gbox.gdrom.GDRom. -> {files {disc path: bytes}, report, rigged, atlas}."""
     import numpy as np
     from . import ninja_swap as NS
@@ -424,7 +440,7 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
         # draws garbage. Every node keeps its vertex chunks, the character's vertices follow from cache slot vbase,
         # and only the strips change.
         models = {}
-        empty_pl = struct.pack("<HH", 0xFF, 0)
+        empty_pl = struct.pack(e + "HH", 0xFF, 0)          # the end-of-list marker follows the container endianness
         for j, nd in enumerate(nodes):
             keep = keep_vl(nd)
             if j in geo:
@@ -432,7 +448,7 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
                 models[j] = ninja.cnk_model_lists(P, N, T, 1, mat, tiny_fl, tex_fl, strip_fl, e=e, base=vbase, keep_vlist=keep)
             elif nd["model"]:
                 c_r = struct.unpack_from(e + "4f", data, nd["model"] + 8)
-                models[j] = (keep + struct.pack("<I", 0xFF) if keep else b"", empty_pl, list(c_r[:3]), c_r[3])
+                models[j] = (keep + struct.pack(e + "I", 0xFF) if keep else b"", empty_pl, list(c_r[:3]), c_r[3])
         nn = [dict(nd) for nd in nodes]
         for j in geo:
             nn[j]["flags"] &= ~0x8
@@ -440,7 +456,7 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
         f = nj_file(d2, ptrs)
         if len(f) > 64 * 2048:                               # patch_gdi moves it after the last file if it grew
             raise ValueError(f"{bpath}: {len(f)} bytes")
-        b2 = bml_build(bml, {f"pl{cls.lower()}bdy00.nj": f} | {n: speck_nj() for n in extras_bml}, e=e)
+        b2 = bml_build(bml, {f"pl{cls.lower()}bdy00.nj": f} | {n: speck_nj(e) for n in extras_bml}, e=e)
         if len(b2) > 64 * 2048:
             raise ValueError(f"{mpath}: {len(b2)} bytes")
         return f, b2
@@ -463,7 +479,10 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
     files = {bpath: body_nj, mpath: bml2, tpath: bytes(afs_data)}
     for hp in disc.files:
         if hp.startswith(f"PSO/PL{cls}") and hp[7:10] in ("HED", "HAI", "CAP") and hp.endswith(".NJ"):
-            files[hp] = speck_nj()
+            files[hp] = speck_nj(e)          # the Dreamcast naming
+    if replace_heads:                        # the GameCube naming (pl<C>hed00.nj ...), opt-in
+        for hp in gc_head_parts(list(disc.files), cls):
+            files[hp] = speck_nj(e)
     rep = r["report"] | {"body_bytes": len(body_nj), "bml_bytes": len(bml2), "atlas": list(r["atlas"].size),
                          "textures_replaced": done}
     return {"files": files, "report": rep, "rigged": r["rigged"], "atlas": r["atlas"]}
