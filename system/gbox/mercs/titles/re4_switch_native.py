@@ -70,6 +70,28 @@ SCATTER_SAFE_MM = 10.0                  # one cm past the learned reach, in mm
 MAILBOX_AT: int | None = None
 
 
+def choose_mailbox(loads) -> int | None:
+    """The candidate page that read all zero at every recorded stage load (E3's acceptance), else None.
+
+    `loads` is `stats["bss_watch_loads"]` from live telemetry (or any list of {stage, at, pages}). A page must be
+    present and all-zero in each load; a missing page or a single nonzero byte rules it out for good. The earlier
+    pages in `CODE`'s candidate order win (the tail of the free stretch first, as the E3 scanner vetted them).
+    """
+    if not isinstance(loads, list) or not loads:
+        return None
+    clean = None
+    for load in loads:
+        pages = (load or {}).get("pages") or {}
+        zero = {name for name, value in pages.items()
+                if isinstance(value, str) and value and set(value) == {"0"}}
+        clean = zero if clean is None else (clean & zero)
+    order = ("0x1cb9000", "0x1cba000", "0x1cbb000", "0x1cbc000", "0x1700000")
+    for name in order:
+        if clean and name in clean:
+            return int(name, 16)
+    return None
+
+
 def verify_dispatch() -> bytes:
     """The pinned dispatcher image, checked against its digest (the bytes the controller installs)."""
     data = CODE.IMAGES["dispatch"]
