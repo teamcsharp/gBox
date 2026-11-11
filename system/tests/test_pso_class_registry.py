@@ -89,3 +89,63 @@ def test_a_changed_table_is_reported_instead_of_trusted(monkeypatch):
 def test_an_address_outside_the_image_is_an_error_not_a_crash():
     with pytest.raises(R.RegistryError):
         R.derive(bytes(0x100))
+
+
+# ---- the vtable census: which classes this build actually instantiates -----------------------------------------------------
+
+def test_the_executable_instantiates_only_a_third_of_its_class_names():
+    assert len(R.instantiated()) == 38
+    assert R.VTABLES[6] == 0x804B4280 and R.VTABLES[8] == 0x804B4308
+    assert R.VTABLES[46] == 0x804B53D8 and R.VTABLES[197] == 0x804B9000
+
+
+def test_the_object_classes_are_not_cpp_objects_with_vtables():
+    # no vtable header anywhere points at these slots - the finding that redirected A7 to the event/AreaWarp path
+    for index in (0x5C, 0x5D, 0x5E, 0x48, 0x02, 0x10, 0xC9, 0xCA, 0xCB):
+        assert R.vtable(index) is None
+    assert "TObjCityMainWarp" == R.name(0x5C) and "TObjCityAreaWarp" == R.name(0x5D)
+
+
+def test_the_named_classes_are_not_the_vtable_ones():
+    named = {index for index in R.instantiated() if R.name(index)}
+    assert named == set()                      # every vtable slot is a slot this name table leaves empty
+    assert len(R.instantiated()) < sum(1 for name in R.CLASS_NAMES if name)
+
+
+def _dol_with_vtable_headers(slots):
+    """A DOL with one data section holding a vtable header for each slot."""
+    section_va, section_off, section_size = 0x804B0000, 0x200, 0x100
+    header = bytearray(0x100)
+    struct.pack_into(">I", header, 0x00, section_off)
+    struct.pack_into(">I", header, 0x48, section_va)
+    struct.pack_into(">I", header, 0x90, section_size)
+    body = bytearray(section_size)
+    for i, slot in enumerate(slots):
+        struct.pack_into(">I", body, i * 0x40, R.TABLE_ADDRESS + slot * 4)
+    return bytes(header) + bytes(section_off - len(header)) + bytes(body)
+
+
+def test_derive_vtables_reads_a_header_census():
+    image = _dol_with_vtable_headers([6, 8, 46])
+    found = R.derive_vtables(image)
+    assert sorted(found) == [6, 8, 46]
+    assert found[46] == [0x804B0080]
+
+
+def test_a_census_that_differs_from_the_pinned_one_is_reported():
+    image = _dol_with_vtable_headers([6])
+    report = R.verify_vtables(image)
+    assert report["ok"] is False
+    assert any(m.get("why") == "no vtable header in the image" for m in report["mismatches"])
+
+
+def test_the_real_disc_census_matches_the_pinned_one():
+    import pathlib
+    from gbox import gcdisc
+    disc = pathlib.Path(r"D:\gBox\cache\mods\436e0bb84d5337d1\pso_city_npc_moved"
+                        r"\Phantasy Star Online Episode I & II Plus (USA).iso")
+    if not disc.is_file():
+        pytest.skip("the disc is not on this machine")
+    dol = gcdisc.GCDisc(str(disc)).read("PsoV3.dol")
+    report = R.verify_vtables(dol)
+    assert report["ok"] is True, report["mismatches"][:3]
