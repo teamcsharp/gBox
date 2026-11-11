@@ -126,3 +126,30 @@ def test_the_rule_is_switch_re6_only_and_honours_a_held_input(monkeypatch):
     step = RM.control(None, {"map_id": TITLE})
     out = step(snap(), stats(), 100.0, lambda keys: False)
     assert out["fire"] is False and "keys did not release" in out["reason"]
+
+
+def test_a_flashbang_earns_the_fifteen_mine_ring_combo(monkeypatch):
+    """Operator 2026-11-11 18:02: a flashbang deployed -> a ring of up to 15 remote mines right away, then detonated."""
+    calls = []
+
+    def ring_now(ad, count=6, radius_cm=200.0):
+        calls.append(("ring", count, radius_cm))
+        return {"op": "bomb_ring", "state": "confirmed", "placed": count, "requested": count}
+
+    def detonate_now(ad, snap=None):
+        calls.append(("detonate",))
+        return {"op": "bomb_detonate", "verified": True, "count": 15}
+
+    monkeypatch.setattr(N, "bomb_ring_now", ring_now)
+    monkeypatch.setattr(N, "bomb_detonate_now", detonate_now)
+    step = RM.control(None, {"map_id": TITLE})
+    live = stats(remote_mines={"drop_jitter_s": 0}, ring_flash_at=100.0)
+    out = step(snap(), live, 100.3, lambda keys: True)
+    assert out["fired"] is True and calls[0] == ("ring", 15, 200.0)
+    assert live["mine_flash_combos"] == 1 and live["mine_rings_since_detonate"] == 1
+    # the same flash never drops a second combo ring
+    assert step(snap(), live, 100.5, lambda keys: True)["fire"] is False
+    # and a stale flash earns nothing
+    stale = stats(remote_mines={"drop_jitter_s": 0}, ring_flash_at=50.0)
+    assert step(snap(), stale, 100.3, lambda keys: True)["op"] != "bomb_ring" or "flash combo" not in str(
+        step(snap(), stale, 100.3, lambda keys: True))

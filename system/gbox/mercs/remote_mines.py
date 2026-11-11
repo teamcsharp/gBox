@@ -12,6 +12,10 @@ import math
 import random
 
 TITLES = {"01002A000CD48000": "gbox.mercs.titles.re6_switch"}
+#: Operator 2026-11-11 18:02: "Whenever the bot deploys a flashbang in Resident Evil Six, also have them send out a
+#: ring of remote mines in the area up to 15, and then have those be detonated ... to spread out the enemies and get
+#: rid of being surrounded." A flash stamped this recently (stats["ring_flash_at"]) earns the combo ring.
+FLASH_COMBO_S, FLASH_COMBO_MINES = 1.0, 15
 DEFAULTS = {
     "enabled": True,
     "drop_every_s": 7.5,           # a ring this often while a round plays (operator 2026-11-11 17:49: "mines are just
@@ -101,6 +105,37 @@ def control(ad, prof, bot_getter=None):
         if set_due and not clear:
             return {**out, "reason": (f"the player is {clear_cm:.0f} cm from the nearest lying ring: the flag waits "
                                       f"{safe_cm:.0f} cm")}
+        # The flashbang combo (operator 2026-11-11 18:02): the flash just went -> a 15-mine ring right away (the flash
+        # spreads the crowd, the ring clears the surround), then the standard distance-gated detonation.
+        flash_at = stats.get("ring_flash_at")
+        if (isinstance(flash_at, (int, float)) and now - flash_at <= FLASH_COMBO_S
+                and stats.get("mine_flash_combo_at") != flash_at):
+            if hold is not None and hold(set()) is False:
+                return {**out, "reason": "the bot's keys did not release before the flash combo ring"}
+            receipt = re6_switch_native.bomb_ring_now(ad, count=FLASH_COMBO_MINES,
+                                                      radius_cm=float(policy_["radius_cm"]))
+            stats["mine_flash_combo_at"] = flash_at
+            stats["mine_flash_combos"] = int(stats.get("mine_flash_combos", 0)) + 1
+            stats["mine_next_drop_at"] = now + float(policy_["drop_every_s"]) + \
+                random.uniform(-float(policy_["drop_jitter_s"]), float(policy_["drop_jitter_s"]))
+            if receipt.get("state") == "confirmed":
+                placed = int(receipt.get("placed") or 0)
+                stats["mine_rings_dropped"] = int(stats.get("mine_rings_dropped", 0)) + 1
+                stats["mine_ring_bombs"] = int(stats.get("mine_ring_bombs", 0)) + placed
+                stats["mine_rings_since_detonate"] = rings + 1
+                stats["mine_bombs_since_detonate"] = bombs + placed
+                try:
+                    stats.setdefault("mine_ring_centres", []).append(tuple(float(v) for v in player.get("pos")))
+                    del stats["mine_ring_centres"][:-16]
+                except (TypeError, ValueError):
+                    pass
+                stats.setdefault("mine_first_ring_at", now)
+                stats["mine_ring_last_at"] = now
+            else:
+                stats["mine_ring_failures"] = int(stats.get("mine_ring_failures", 0)) + 1
+                stats["mine_ring_reason"] = str(receipt.get("reason") or receipt.get("state") or "")[:200]
+            return {"fire": True, "op": "bomb_ring", "fired": True,
+                    "reason": f"the flash combo: a ring of {receipt.get('placed')} remote bombs", "receipt": receipt}
         next_drop = stats.get("mine_next_drop_at")
         if isinstance(next_drop, (int, float)) and now < next_drop:
             return {**out, "reason": f"{next_drop - now:.1f} s to the next ring"}
