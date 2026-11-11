@@ -1,0 +1,32 @@
+01:08:09 enemy hunt start
+01:08:15 chase TObjEneBeast 485 units, angle 166, hp=60/60
+01:08:26 chase TObjEneBeast 511 units, angle -161, hp=60/60
+01:08:37 chase TObjEneBeast 521 units, angle 175, hp=60/60
+01:08:48 chase TObjEneBeast 530 units, angle -156, hp=60/60
+01:08:59 chase TObjEneBeast 540 units, angle 166, hp=60/60
+01:09:11 chase TObjEneBeast 549 units, angle -164, hp=60/60
+01:09:23 chase TObjEneBeast 567 units, angle 179, hp=60/60
+01:09:34 chase TObjEneBeast 583 units, angle -164, hp=60/60
+01:09:46 chase TObjEneBeast 601 units, angle 178, hp=60/60
+01:09:59 chase TObjEneBeast 616 units, angle 177, hp=60/60
+01:10:10 chase TObjEneBeast 631 units, angle -155, hp=60/60
+01:10:22 chase TObjEneBeast 649 units, angle -176, hp=60/60
+01:10:27 chase TObjEneBeast 659 units, angle 171, hp=60/60
+01:10:32 chase TObjEneBeast 683 units, angle -157, hp=60/60
+01:10:46 chase TObjEneBeast 704 units, angle -122, hp=60/60
+01:11:01 chase TObjEneBeast 696 units, angle -124, hp=60/60
+01:11:06 chase TObjEneBeast 712 units, angle -111, hp=60/60
+01:11:18 strike TObjEneBeast at 25; hp=60/60 (4 alive)
+01:11:30 chase TObjEneBeast 715 units, angle -124, hp=60/60
+01:11:42 chase TObjEneBeast 146 units, angle 166, hp=85/85
+01:11:53 chase TObjEneBeast 55 units, angle 156, hp=85/85
+01:12:03 chase TObjEneBeast 78 units, angle 146, hp=85/85
+01:12:47 chase TObjEneBeast 53 units, angle -155, hp=85/85
+01:12:57 chase TObjEneBeast 55 units, angle 167, hp=85/85
+01:13:07 strike TObjEneBeast at 15; hp=60/60 (4 alive)
+01:15:10 hunt loop done
+01:15:12 panel captured
+01:17:43 melee hunt start (engage <= 8 units)
+01:21:43 melee hunt start (engage <= 8 units)
+01:28:46 hunt done
+01:28:47 panel captured
