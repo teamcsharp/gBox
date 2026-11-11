@@ -216,3 +216,15 @@ Then send it the heavy analysis work.
   unmerged: `classes-family`, `object-loader-findings`, `swap-gc` (their work is in cp00-classes / cp07 / cp12).
   Still conflicting for a focused pass: `body-swap`, `cp00-clean-start`, `cp11-editor-page`, `cp13-library-donors`,
   `editor-page2`, `swapfit-ui`.
+﻿
+- 2026-11-10 20:3x: the PSO wave continued by the DeepSeek session. **CP13-library-donors** merged (its endianness
+  fixes and the head/hair/cap stand-ins; the conflict was additive - kept main's platform body section *and* the
+  branch's `gc_head_parts`). **CP00-clean-start** merged (the lane's steps 1-2 evidence: the parked session stopped,
+  the stale launch cancelled, 24/24 merge-tree clean) with this session's merge record appended as an appendix.
+  **editor-page2** merged (P6b: `POST /api/pso/editor/build` + preview, the swap-fit gate on the page, the
+  `pso_editor.class_labeller` DOL-backed labels); conflicts resolved by keeping main's superset `pso_classes` and
+  the branch's editor/API/tests - and with it **no production module imports `pso_class_registry` any more**, so CP0
+  step 4 is effectively done (`pso_classes` is the one registry the editor uses; the old module is legacy + tested).
+  Tests: 55 passed (editor/editor-api/views/classes/registries/llm), 52 passed (editor/body set). Superseded and left
+  unmerged: `body-swap` and `swap-gc` (cp12 has the rigged swap), `cp11-editor-page` and `swapfit-ui` (older
+  variants of editor-page2), `classes-family` / `object-loader-findings`.
