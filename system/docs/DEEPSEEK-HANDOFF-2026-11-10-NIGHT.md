@@ -203,3 +203,16 @@ Then send it the heavy analysis work.
   `pso_classes` is the module going forward. Tests: the registry/editor/llm set 67 passed (CP0 baseline unchanged).
   `ds-pso-classes-family` is superseded by this merge (same families/vtable work, earlier base). 22 more `ds-pso-*`
   branches remain open for the next check-ins (CP4-17 and the swap/editor work).
+
+- 2026-11-10 20:0x: the PSO checkpoint wave merged by the DeepSeek session - **14 branches**: `cp06-evt-opcodes`,
+  `cp06-nrel`, `cp07-model-walk`, `cp07-object-loader`, `cp07-scene-loader`, `cp08-room-pieces`,
+  `cp09-save-data`, `cp04-jump-state`, `cp10-forest1`, `cp15-room-inventory`, `cp17-walk-graph`,
+  `cp12-rigged-swap`, `cp-status`, `editor-views`. All merged clean (no code conflict); tests after each batch:
+  65 / 71 / 52 passed (evt, nrel, swapfit, classes, rooms, save-cipher, memcard, walk, walker, steer, nj-snapshot,
+  floor-map, editor, editor-api, llm). Main now carries evidence for **CP0-CP17** (`system/docs/pso-checkpoints/`).
+  **Blockers now on record:** CP04 (jump state) is blocked because the i9's worker does not claim `launch_game`;
+  CP08 (room pieces) is blocked because the Dreamcast image on hand is a CHD v4, unreadable here; CP06's opcode layer is
+  live-dependent after three offline attempts; CP09's save checksum is not found (not proven absent). Superseded and left
+  unmerged: `classes-family`, `object-loader-findings`, `swap-gc` (their work is in cp00-classes / cp07 / cp12).
+  Still conflicting for a focused pass: `body-swap`, `cp00-clean-start`, `cp11-editor-page`, `cp13-library-donors`,
+  `editor-page2`, `swapfit-ui`.
