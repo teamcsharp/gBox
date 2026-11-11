@@ -357,3 +357,11 @@ Then send it the heavy analysis work.
   (no adrp, no pointers), so those descriptor slots are not the runtime dispatch table; the incendiary's class-0x16
   dispatch is still open. Live: the same RE6 session has held the queue for hours (no RE4/RE5 block), so the E3 watch
   and the CP0/D live receipts remain pending.
+﻿
+- 2026-11-10 20:4x: **PSO reached Forest 1 on the i9** - a frame shows the character (LYRA95, level 2, HP 22/40) in the
+  forest's stone ruins beside a teleport ring, dark enemies ahead and the action palette up: the campaign cleared the
+  Pioneer 2 hub and descended. Code: `pso_campaign.vision_settings` now prefers **this worker's own Ollama** when it
+  serves the model (a 2 s `/api/show` probe) before any configured remote endpoint, with an explicit
+  `agent.vision_url` still winning - the fix for the walk-into-walls planner timeouts (tests: local chosen, missing
+  local falls back, explicit URL respected; `test_pso_campaign.py` 30 passed). The i9 Ollama installer is at ~1.50 of
+  1.86 GB.
