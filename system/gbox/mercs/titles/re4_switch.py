@@ -1342,7 +1342,11 @@ class RE4Switch(Driver):
     solo_p1 = True                              # The Mercenaries on Switch is played solo on P1 here
     units_per_m = 1000.0                        # mm, measured (doctrine.view, the atlas): see MM_PER_CM below
     round_counters = ("shots", "hits", "turns", "backoffs", "holds", "dying", "escapes", "locates", "stand_breaks",
-                      "crowd_picks", "kills_seen") + respond.COUNTERS
+                      "crowd_picks", "kills_seen",
+                      # the gun's raise / lower (FIRE_FIRST's telemetry; the operator 2026-11-10 night: the camera
+                      # jerk of the weapon going up and down) and the wall tangents (ROOM_TANGENTS)
+                      "gun_downs", "gun_kept", "gun_up_ticks", "gun_down_ticks",
+                      "unwall_tangents", "unwall_tangent_steps") + respond.COUNTERS
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
