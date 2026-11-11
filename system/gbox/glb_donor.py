@@ -75,6 +75,9 @@ def skinned_soup(path: str):
     points = np.concatenate(positions)
     tris = np.concatenate(triangles)
     joint_ids = np.concatenate(joint_of_vertex)
+    # an inside-out export (FF7, Stranglehold, Smash Melee, SoulCalibur II) faces outward before it is written
+    from gbox import mesh_orientation
+    tris = mesh_orientation.orient(points, tris)[0]
 
     parents = [index_of.get(parent_of_node.get(node), -1) for node in joints]
     # world positions of the joints, from the node world matrices the loader already computed
