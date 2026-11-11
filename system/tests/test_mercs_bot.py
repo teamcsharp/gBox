@@ -324,3 +324,16 @@ def test_a_select_that_does_not_move_gets_a_direct_confirm():
     assert not MB.stall_confirm_due("select_player", 0.0, False, 100.0, 99.5), "one direct press at a time"
     assert not MB.stall_confirm_due("select_player", 0.0, False, 100.0, -10.0, input_ready=False), "not taking input"
     assert not MB.stall_confirm_due("select_player", 0.0, False, 100.0, -10.0, confirming=True), "a chain is open"
+
+
+def test_an_alternating_select_pair_is_a_stall_the_signature_hides():
+    """Live 2026-11-11 16:13: the RE5 block toggled select_player <-> select_stage for minutes; every change kept the
+    signature fresh so stall_confirm_due never fired. Four flips inside the window force the direct confirm."""
+    now = 100.0
+    hist = [(90.0, "select_player"), (92.0, "select_stage"), (94.0, "select_player"), (96.0, "select_stage"),
+            (98.0, "select_player")]
+    assert MB.select_oscillating(hist, now) is True
+    assert MB.select_oscillating([(90.0, "select_player"), (92.0, "select_player"), (94.0, "select_player")],
+                                 now) is False, "settling on one screen is not a stall"
+    old = [(50.0, "select_player"), (52.0, "select_stage"), (54.0, "select_player"), (56.0, "select_stage")]
+    assert MB.select_oscillating(old, now) is False, "flips older than the window do not count"

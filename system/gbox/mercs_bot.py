@@ -62,6 +62,17 @@ def stall_confirm_due(where, sig_at: float, confirmed: bool, now: float, last_pr
             and now - sig_at >= STALL_CONFIRM_S and not confirmed and now - last_press >= BOOT_PRESS_S)
 
 
+SELECT_OSCILLATION_N, SELECT_OSCILLATION_S = 4, 20.0
+
+
+def select_oscillating(history, now: float) -> bool:
+    """Whether the select screens are alternating rather than settling (RE5's select_player <-> select_stage, live
+    2026-11-11 16:13: the screen changed every few seconds, so no stall ever looked like one and the block never
+    confirmed into a round). Four flips inside SELECT_OSCILLATION_S count as the stall the signature hides."""
+    recent = [where for at, where in history if now - at <= SELECT_OSCILLATION_S]
+    return sum(1 for i in range(1, len(recent)) if recent[i] != recent[i - 1]) >= SELECT_OSCILLATION_N
+
+
 class Navigator:
     """Closed loop over a menus module's step(): one press, then wait until RAM shows it took (the screen, its step or
     the cursor changed) or RETRY_S passed. A screen is pressed on only once RAM has shown it for STABLE_S: a moment
@@ -302,8 +313,23 @@ class Boot:
         # A select screen that RAM names but that has not moved for STALL_CONFIRM_S while the Navigator's own press did
         # not take: press the title's confirm key directly. The cursor walk confirms with "a" itself; this is the case
         # where that press is not landing at all (a select takes it: live 2026-11-10, RE5's CHARACTER SELECT).
-        if stall_confirm_due(scr.get("where"), getattr(self.nav, "sig_at", now), 
-                             getattr(self.nav, "last_input_confirmed", False), now, self.boot_pressed,
+        # An alternating pair of selects (RE5 select_player <-> select_stage) hides that stall in fresh signatures, so
+        # the oscillation itself forces the direct confirm (live 2026-11-11 16:13, a block that never started).
+        where_now = scr.get("where")
+        hist = self.__dict__.setdefault("_select_hist", [])
+        if where_now in ("select_player", "select_stage"):
+            hist.append((now, where_now))
+            while hist and now - hist[0][0] > SELECT_OSCILLATION_S:
+                hist.pop(0)
+        else:
+            hist.clear()
+        flip_stall = where_now in ("select_player", "select_stage") and select_oscillating(hist, now)
+        if flip_stall:
+            self.stats["select_oscillation"] = self.stats.get("select_oscillation", 0) + 1
+        if stall_confirm_due(where_now,
+                             (now - STALL_CONFIRM_S) if flip_stall else getattr(self.nav, "sig_at", now),
+                             False if flip_stall else getattr(self.nav, "last_input_confirmed", False),
+                             now, self.boot_pressed,
                              input_ready=scr.get("input_ready"), confirming=self.nav.confirmation_started is not None):
             key = getattr(self.menus, "BOOT_KEY", None) or "a"
             self.nav.send([{"key": key, "down": True}])
