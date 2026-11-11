@@ -1319,3 +1319,22 @@ status line (`re4_status_probe.txt`) so the moment an RE4 block appears the page
 **Also this round:** the v2 live poll finished; it reproduced checkpoint 0's RE5 read (five rounds, flash True when
 playing) but caught no barrage stat - the RE5 rounds are short and the rule needs a tough moment inside one. D's
 positive receipt and CP0's one flash still wait on a round that fires (or the operator's click).
+
+## Round 76 (2026-11-10 24:00 CST) - G3's incendiary probe path is in (behind a flag), and the status-path pages still wait for the worker
+
+**G3 probe path.** `Controller.grenade_ring(kind="incendiary", allow_unverified=True)` now calls the **class-0x16
+persistent-fire candidate** `main+0x2E4BA0` with the same zeroed fake object the flash uses (position `+0xA4`, the
+ground/type byte left zero), one call per ring point, and marks the receipt `probe: true`. Without the flag the
+incendiary is refused exactly as before ("not identified on this build yet (checkpoint G3); pass allow_unverified for
+the probe"), and neither `grenade_status` nor the shared rule ever offers it - this is the RE session's live probe
+handle, not a PiP button. Two tests: the refusal writes nothing, and the probe calls `BASE + INCENDIARY_CANDIDATE`
+twice with the receipt's `probe` true and every point outside 4000 mm. Merged to main (`73e240f5`), targeted gate 62
+passed.
+
+**The status-path pages.** The 15-minute RE4 status poll recorded no RE4 session at all (the queue sat on RE6 through
+the whole window), so `prepare()`'s five-page refusal could not be exercised. It remains the second read channel if
+the worker's `re4_switch_native` module is fresh; the bot-module telemetry stays the first.
+
+**Live state of the lane:** CP0 accepted 2/2; A3's mechanism merged; F/G/E6 code merged and tested; the open live
+items are the three-load watch (E3), the harness selftest/flash receipt (E6/F), D's positive barrage/flash evidence
+and C/A's kind probes - all waiting on a live block of the right title and the 05:00 restart for the harness module.
