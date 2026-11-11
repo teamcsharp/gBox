@@ -582,14 +582,16 @@ ROUND_WEAPON_TRIES = 3                 # gives tried per round before it is repo
 # what a random weapon may replace in his hand: a gun with a max-level row, or a loadout's own equipped weapon
 # (Krauser's bow) - never a grenade the bot holds (THROWS) or the knife
 SWAPPABLE = frozenset(W.MAX_LEVELS) | frozenset(lo["equips"] for lo in W.MERC_LOADOUTS.values())
-# The magnums and shotguns come up every round (operator 2026-11-10: "the scatter works if they have a magnum and 20x
+# The magnums and shotguns come up often (operator 2026-11-10: "the scatter works if they have a magnum and 20x
 # firerate. Its boring with the pistol"; then: "I need the bot firing relentlessly with any weapon type magnum or
-# shotgun with rapid fire"): a random draw is a magnum or a shotgun only, a magnum MAGNUM_SHARE of the time (toward 1.0;
-# a shotgun otherwise). The rifle / TMP / handgun draws are off.
+# shotgun with rapid fire"), and the operator 2026-11-11: "randomize the weapon being used between rounds between all
+# of the weapons available in the campaign at random emphasizing magnums and shotguns": PRIMARY_SHARE of the rounds a
+# magnum or a shotgun (a magnum MAGNUM_SHARE of those), the rest any campaign weapon in HIGH_POWER at random.
 MAGNUMS = frozenset({0x29, 0x2A, 0x37})        # Broken Butterfly, Killer7, Handcannon
 SHOTGUNS = frozenset({0x2C, 0x2D, 0x94})       # Shotgun, Striker, Riot Gun
 PRIMARY = MAGNUMS | SHOTGUNS
 MAGNUM_SHARE = 0.8
+PRIMARY_SHARE = 0.8                            # magnum/shotgun emphasis over the rest of the campaign weapons
 
 
 def _code_patch_refusal(ad) -> str | None:
@@ -625,13 +627,16 @@ def _give_weapon(ad, base: int, st: dict, rng, fixed: int | None = None, exclude
         picks = [fixed] if fixed in rows and W.max_levels(fixed) is not None else []
     else:
         pool = [i for i in W.HIGH_POWER if i in rows and W.max_levels(i) is not None and i != held["id"]]
-        primary = [i for i in pool if i in PRIMARY]       # every round a magnum or a shotgun (PRIMARY)
-        pool = primary or pool                            # (a build without their rows: whatever it has)
-        picks = [i for i in pool if i not in exclude] or pool
+        primary = [i for i in pool if i in PRIMARY]       # the magnums/shotguns, emphasised (PRIMARY_SHARE)
+        if primary and rng.random() < PRIMARY_SHARE:
+            magnums = [i for i in primary if i in MAGNUMS]
+            picks = [rng.choice(magnums)] if (magnums and rng.random() < MAGNUM_SHARE) else primary
+        else:
+            picks = pool                                  # every campaign weapon at random
+        picks = [i for i in picks if i not in exclude] or picks
     if not picks:
         return {"verified": False, "was": held["name"], "reason": "no weapon row to give"}
-    magnums = [i for i in picks if i in MAGNUMS]
-    iid = rng.choice(magnums if fixed is None and magnums and rng.random() < MAGNUM_SHARE else picks)
+    iid = rng.choice(picks) if len(picks) > 1 else picks[0]
     row, lv = rows[iid], W.max_levels(iid)
     cap = row["capacity"][lv["capacity"]] or max(row["capacity"])
     loaded = 99 if cap in (0, W.CAP_INFINITE) else min(cap, 0x1FFF)

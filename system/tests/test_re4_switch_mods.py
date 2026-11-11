@@ -477,11 +477,12 @@ def test_the_playbook_mods_panel_never_sums_a_record(monkeypatch, ad):
     assert stats["mods_weapon_given"] == 2, "counters keep adding"
 
 
-def test_a_random_weapon_is_a_magnum_or_a_shotgun_with_its_20x_tables_every_round(ad):
-    """The operator 2026-11-10: "the bot firing relentlessly with any weapon type magnum or shotgun with rapid fire" -
-    every round a magnum or a shotgun (MAGNUM_SHARE toward 1.0, MAGNUMS + SHOTGUNS), and the fire_rate tables written
-    in that same round (per-round telemetry: the weapon and the tables). Four rounds a session were all that got one:
-    a results -> playing round is a new round too (only an intro used to count)."""
+def test_a_random_weapon_is_any_campaign_weapon_with_magnums_and_shotguns_emphasised(ad):
+    """The operator 2026-11-10: "the bot firing relentlessly with any weapon type magnum or shotgun with rapid fire";
+    2026-11-11: "randomize the weapon being used between rounds between all of the weapons available in the campaign
+    at random emphasizing magnums and shotguns". Every round a campaign weapon in his hand, PRIMARY_SHARE of the draws
+    a magnum or a shotgun (a magnum MAGNUM_SHARE of those), the rest the other campaign weapons; the fire_rate tables
+    written in the same round. A results -> playing round is a new round too (only an intro used to count)."""
     W = _weapon_tables(ad)
     _armoury(ad)                                        # (the real weapon rows back over the fire-rate test's)
     st = M._state(ad)
@@ -496,9 +497,13 @@ def test_a_random_weapon_is_a_magnum_or_a_shotgun_with_its_20x_tables_every_roun
             assert all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in out.values()), \
                 "every maintain value is a counter: the playbook sums them (int + dict killed a live RE4 mission)"
             it, held, _cls, _rel = _hand(ad, W)
-            assert it["id"] in M.PRIMARY and held == it["id"], "a magnum or a shotgun in his hand"
+            assert it["id"] in W.HIGH_POWER and held == it["id"], "a campaign weapon in his hand"
+            assert W.max_levels(it["id"]) is not None
             draws.append(it["id"])
-        assert set(draws) & set(M.MAGNUMS) and set(draws) & set(M.SHOTGUNS), "both families come up"
+        primary = [i for i in draws if i in M.PRIMARY]
+        assert set(primary) & set(M.MAGNUMS) and set(primary) & set(M.SHOTGUNS), "both families come up"
+        assert len(primary) >= 25, "magnums/shotguns emphasised (PRIMARY_SHARE 0.8 over 40 draws)"
+        assert set(draws) - set(M.PRIMARY), "and the rest of the campaign weapons come up too"
         assert len(draws) == 40 and st["weapon_rounds"][-1]["round"] == 40, "every round, not four a session"
         assert st["rf_tables_round"] == 2 and st["rf_applied_round"] == 40, "the tables with the last round's gun"
         assert st["fire_tables_total"] == 80
