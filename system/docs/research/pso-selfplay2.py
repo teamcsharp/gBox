@@ -73,6 +73,21 @@ def enemies(point, limit=ENGAGE):
     return out
 
 
+AUDIT = Path(r"D:\gBox\pso-ds\routes\map-audit.json")
+
+
+def unreachable_rooms(floor_number):
+    """Rooms the map audit proved unreachable on this floor, so they are never chosen as a destination."""
+    try:
+        entries = json.loads(AUDIT.read_text(encoding="utf-8"))
+    except Exception:                                            # noqa: BLE001
+        return set()
+    for entry in entries if isinstance(entries, list) else [entries]:
+        if int(entry.get("floor", -1)) == int(floor_number):
+            return set(entry.get("unreachable_rooms") or [])
+    return set()
+
+
 def rooms():
     """The room graph for the floor the player is on - Forest 1 or Forest 2."""
     try:
@@ -266,7 +281,9 @@ def main():
                 RUN.run_to(ME.read_pos, goal, tolerance=15.0, budget=25.0)
             continue
 
-        candidates = [r for r in room_list if r["room"] not in visited] or room_list
+        blocked = unreachable_rooms(graph_floor)
+        usable = [r for r in room_list if r["room"] not in blocked] or room_list
+        candidates = [r for r in usable if r["room"] not in visited] or usable
         if not candidates:
             time.sleep(0.5)
             continue
