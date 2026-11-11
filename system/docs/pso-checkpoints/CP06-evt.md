@@ -143,3 +143,35 @@ instructions are valid block starts.
 
 **What this round adds to CP6.1:** a reusable scanner (three passes, calibration case included), the ruling-out of the
 absolute-pointer signature for this interpreter, and a named next step that is still fully offline.
+
+## Round 113: the relative-offset scan finds nothing, and the helpers turn out to be table-called
+
+**Scan 2 (round 112's named next step): relative-offset jump tables.** `docs/research/pso-cp6-reljump-scan.py` collects runs of
+>= 16 small non-zero words (`|v| < 0x200000`) and tests both formulas the compiler can emit:
+
+```
+A: target_i = table_addr + 4 * i + offset_i      (offset relative to each entry)
+B: target_i = table_addr + offset_i              (offset relative to the table base)
+```
+
+keeping a run when at least 95 % of its targets land inside the text sections. **Zero candidates.** So the opcode dispatch is
+neither an array of absolute code pointers (round 112: 983 runs, 41 opcode-shaped, the best of which decompiled to a `.cpt`
+load/unload pair table) nor a relative-offset table of either formula.
+
+**The "EVT NO : %d" helpers are called through a table, which fits that picture:** Ghidra's call graph gives them **0 callers**,
+and their addresses appear as data at `0x804b023c`, `0x804b0388`, `0x804b04d4` (helper 1, three times), `0x804b6660` and
+`0x804b72dc` - i.e. inside `.data` tables in the same region as the "opcode-shaped" candidates (0x804b0xxx-0x804cxxxx). Those
+tables are per-area or per-type **debug-draw dispatch tables**, not the script interpreter.
+
+**What three rounds of structural scanning establish:** the `.evt` opcode layer is **not reachable by table-signature scanning
+on this binary** - not as absolute pointers, not as either relative-offset form. What remains is either
+
+1. **live**: break on an event number's use (the object field `+0x84`) while a door fires, which lands directly in the interpreter;
+2. **deeper static**: find the `.evt` *loader* first (its file name is composed at run time, so it must be traced from the set
+   archive reader rather than from a string) and follow the buffer's consumers;
+3. **the four debug helpers as the anchor**: they take the same object, so their `.data` tables can be decompiled in context to
+   find which update loop calls through them - that loop is where events are evaluated.
+
+**Net for CP6.1:** the container is byte-identical and tested (143/143 rebuilds); the opcode layer has now had three offline
+attempts with their negative results documented and a reusable scanner left behind. It should be treated as **live-dependent**
+until someone runs route 1.
