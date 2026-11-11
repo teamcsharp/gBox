@@ -303,3 +303,45 @@ with `BackgroundInput=True` that poll can see the keys even unfocused - which is
 
 The three probe scripts stay under `docs/research/pso-cp4-*` with this caveat appended to the evidence, so the next session
 runs the discriminating test rather than repeating a confounded one.
+
+## Round 97: a caveat on round 96's negative, and what the emulator's own configuration says
+
+Two facts found this round make the round-96 "input does not reach the game" result **less conclusive than it looked**, and
+they are recorded before the next window so nobody acts on a half-measurement.
+
+**1. The presses may have been too early.** Every round-96 attempt read `mode = 0`, which is the attract loop that plays the
+opening movie. PSO ignores START during that movie - and in the very first live contact of this lane (round 65) `mode` went
+0 -> 1 **on its own**, most plausibly when the movie ended, not because a press landed. A correct test waits for
+`mode == 1` (the title menu) *before* judging input. Round 96 pressed within seconds of boot, so "no reaction" is
+indistinguishable from "the movie was still playing".
+
+**2. The emulator is already configured for background input, and its pad is keyboard-bound:**
+
+```
+Dolphin.ini       [Core] SIDevice0 = 6                       (standard controller)
+GCPadNew.ini      Device = XInput/0/Gamepad | `DInput/0/Keyboard Mouse:X`
+                  Buttons/Start = `Start` | `DInput/0/Keyboard Mouse:RETURN`
+                  D-Pad/Down    = `Pad S` | `DInput/0/Keyboard Mouse:G`
+adapters.py:2771  Dolphin.General.HotkeysRequireFocus = False
+adapters.py:2774  Dolphin.Input.BackgroundInput = True
+```
+
+So the worker **already** sets `BackgroundInput=True` and `HotkeysRequireFocus=False` for its sessions, and the pad's keyboard
+fallbacks are exactly the scancodes the driver injects (`start` -> Enter 28, `ddown` -> the D-pad-down binding,
+`a` -> X). Windows delivers `SendInput` only to the foreground window, but Dolphin polls its configured DInput keyboard device;
+with `BackgroundInput=True` that poll can see the keys even unfocused - which is exactly why the "too early" caveat matters.
+
+**The retest, precisely (next window):**
+
+1. launch and wait for `mode == 1` (poll `pso_boot_walk.state` every 2 s, up to 60 s) - do **not** press while `mode == 0`;
+2. press `start` once with the local driver (focus attempt + SendInput), wait 2 s, read `mode`;
+3. if unchanged, press again **without** the focus attempt (the background-poll case), read `mode`;
+4. only if both fail is the round-96 negative confirmed - and then the unblock options (operator click, worker activate+inject
+   op, pad binding) apply.
+
+The three probe scripts stay under `docs/research/pso-cp4-*` with this caveat appended to the evidence, so the next session
+runs the discriminating test rather than repeating a confounded one.
+
+**Correction to round 96's conclusion, in one line:** the three input routes were tested while the game was still in its
+opening movie; the discriminating retest (wait for `mode == 1`, then press) is written above and has not been run yet.
+Round 96's evidence stands as "no reaction was observed", not as "input cannot reach the game".
