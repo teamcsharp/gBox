@@ -4025,3 +4025,10 @@ def test_crowd_front_shot_off_keeps_the_back_out(monkeypatch):
     bot, _ = _crowd_front_run(monkeypatch, False)
     assert bot.stats.get("crowd_front_shots", 0) == 0
     assert bot.stats.get("cc_backouts", 0) > 0
+def test_kill_time_takes_the_panels_multiplier_as_seconds(mods):
+    g = round_guest(timer=60.0)
+    ad = Adapter(g)
+    out = mods.run(ad, "kill_time", multiplier=7, on=True)      # RE5-style call (panel / game_prefs)
+    assert out["kill_time"] is True and out["seconds"] == 7.0
+    assert mods.run(ad, "kill_time", on=False)["kill_time"] is False
+    assert mods.run(ad, "kill_time", multiplier=5, on=False)["seconds"] == 7.0   # off keeps the set seconds

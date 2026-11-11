@@ -1506,7 +1506,11 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
         if op == "unlock_characters":
             return unlock_characters(g, bool(on))
         if op == "kill_time":
-            return kill_time(g, bool(on), _extra.get("seconds"), _extra.get("seconds_max"))
+            # the panel / bot_strategy / game_prefs send RE5's `multiplier` as the seconds a kill adds
+            sec = _extra.get("seconds")
+            if sec is None and multiplier is not None and on:
+                sec = multiplier
+            return kill_time(g, bool(on), sec, _extra.get("seconds_max"))
         if op == "add_time":
             return add_time(g, _extra.get("seconds", 60))
         if op == "set_time":
