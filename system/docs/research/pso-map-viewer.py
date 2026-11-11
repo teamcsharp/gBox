@@ -23,6 +23,7 @@ API = "http://127.0.0.1:18765"
 SID = "78a8746f5b514450-e9867839b8b74d3d"
 PORT = 8801
 ROOMS = Path(r"D:\gBox\pso-ds\routes\forest1-rooms.json")
+ROUTES = Path(r"D:\gBox\pso-ds\routes")
 GOTO = Path(r"D:\gBox\pso-ds\goto.json")
 DEMO = Path(r"D:\gBox\pso-ds\demo")
 TABLE, MAX_ENTRIES, HP = 0x8050D460, 256, 0x32C
@@ -49,15 +50,22 @@ def _cstring(address, limit=40):
     return raw.split(b"\x00")[0].decode("ascii", "replace") if raw else ""
 
 
-def rooms():
-    try:
-        mtime = ROOMS.stat().st_mtime
-        if _cache["rooms"] is None or mtime != _cache["rooms_mtime"]:
-            _cache["rooms"] = json.loads(ROOMS.read_text(encoding="utf-8"))
-            _cache["rooms_mtime"] = mtime
-        return _cache["rooms"]
-    except Exception:                                            # noqa: BLE001
-        return {"rooms": [], "doors": []}
+def rooms(floor=1):
+    """Rooms for a floor: the mesh segmentation when it exists, else the original Forest 1 graph."""
+    sources = [ROUTES / f"forest{floor}-rooms-mesh.json", ROUTES / f"forest{floor}-rooms.json"]
+    if floor == 1:
+        sources.append(ROOMS)
+    for path in sources:
+        try:
+            mtime = path.stat().st_mtime
+            cache_key = f"rooms{floor}"
+            if _cache.get(cache_key) is None or _cache.get(cache_key + "_mtime") != mtime:
+                _cache[cache_key] = json.loads(path.read_text(encoding="utf-8"))
+                _cache[cache_key + "_mtime"] = mtime
+            return _cache[cache_key]
+        except Exception:                                        # noqa: BLE001
+            continue
+    return {"rooms": [], "doors": []}
 
 
 def _u32(address):
@@ -130,7 +138,10 @@ h3{margin:6px 0;color:#58a6ff;font-size:13px}
  <div><canvas id="map" width="880" height="700"></canvas></div>
  <div id="side">
   <h3>PSO live map</h3>
-  <div><span class="k">floor</span> <b id="floor">-</b> &nbsp; <span class="k">hp</span> <b id="hp">-</b></div>
+  <div><span class="k">floor</span> <b id="floor">-</b> &nbsp; <span class="k">view</span>
+    <select id="viewfloor" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d">
+      <option value="1">Forest 1</option><option value="2">Forest 2</option>
+    </select> &nbsp; <span class="k">hp</span> <b id="hp">-</b></div>
   <div><span class="k">pos</span> <b id="pos">-</b></div>
   <div><span class="k">target</span> <b id="target">none</b></div>
   <div><span class="k">doors</span> <b id="doors">-</b> <span class="k">enemies</span> <b id="enemies">-</b></div>
@@ -187,9 +198,11 @@ function draw(){
   }
   requestAnimationFrame(()=>{});
 }
+let viewFloor = 1;
+document.getElementById('viewfloor').addEventListener('change', ev=>{ viewFloor = +ev.target.value; rooms = null; });
 async function tick(){
   try{
-    if(!rooms){ rooms = await (await fetch('/api/rooms')).json(); fit(); }
+    if(!rooms){ rooms = await (await fetch('/api/rooms?floor='+viewFloor)).json(); fit(); }
     st = await (await fetch('/api/state')).json();
     if(st.player){ document.getElementById('pos').textContent = st.player.x+', '+st.player.y+', '+st.player.z; }
     document.getElementById('floor').textContent = st.floor;
@@ -232,8 +245,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
             return self._send(200, PAGE, "text/html; charset=utf-8")
-        if self.path == "/api/rooms":
-            return self._send(200, json.dumps(rooms()))
+        if self.path == "/api/rooms" or self.path.startswith("/api/rooms?"):
+            floor = 1
+            if "?" in self.path:
+                for part in self.path.split("?", 1)[1].split("&"):
+                    if part.startswith("floor="):
+                        try:
+                            floor = int(part.split("=", 1)[1])
+                        except ValueError:
+                            floor = 1
+            return self._send(200, json.dumps(rooms(floor)))
         if self.path == "/api/state":
             try:
                 return self._send(200, json.dumps(state()))
