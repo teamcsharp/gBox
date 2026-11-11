@@ -277,3 +277,33 @@ superseded by the two-facade design).
 **Also confirmed on main:** `pso_editor._mark_for` is a **stub** - it returns nothing for non-door records and its docstring-free
 body stops after the door branch - while main has no `test_pso_editor_views.py`. That is exactly the gap `cp11-editor-page`
 fills (the two `_mark_for` bugs and the test), so CP11's branch is worth the rebase.
+
+## Round 117: CP11's page is already in main too - only its views test was missing, and it is now a merge-ready branch
+
+Checking main file by file (rather than trusting the branch's own README) shows that **CP11's substance is on main**:
+
+* `system/clients/web/pso-editor.html` - present;
+* `system/gbox/pso_editor_api.py` - present, with `svg_of`, `routes`, `rom_for`;
+* `system/gbox/pso_editor.py::_mark_for` - present and **correct by a different route**: it tests `class_index == 0` directly
+  instead of looking the name up, so the two bugs this lane fixed (bare `CLASS_NAMES`, then `.get` on the registry's tuple)
+  cannot occur there;
+* `system/tests/test_pso_editor.py` - present.
+
+What main did **not** have is a test for the two server-side views - the SVG preview and the ASCII map - which is exactly where
+those bugs surfaced. That gap is now a **small merge-ready branch**:
+**`ds-pso-editor-views-20261110` @ `13e53c2e`**, `tests/test_pso_editor_views.py` **4 passed against main's `e3774109`**:
+
+1. **603** editable sets, `map_ancient01_00_00o.dat` among them;
+2. `svg_of` renders one `<circle>` per record (234 records -> **234 circles**) inside valid `<svg>` tags;
+3. `ascii_map` renders **27 rows**, and the city set shows **`G` and `S`** - the Guild and Shop doors;
+4. `_mark_for`'s fallback returns `o`.
+
+It is a **forward port**, not a rebase of the stale CP11 history: the test was taken from the CP11 branch and run against main's
+current code, which is why it passes and why the branch touches nothing else.
+
+**Review list, updated (now 12 branches plus this one):**
+
+* **merge**: `cp02`, `cp03`, `cp06-evt-opcodes`, `cp06-nrel`, `cp07-model-walk`, `cp07-object-loader` (rebase), `cp07-scene-loader`,
+  `cp08`, `cp09`, `cp10`, **`cp12` before `cp13`**, `cp15`, `cp16`, `cp17`, and `ds-pso-editor-views`;
+* **drop**: `cp00-clean-start`, `cp00-classes`, `cp01-local-model`, `cp11-editor-page` (its page and API are main's; its views test
+  is the forward port above).
