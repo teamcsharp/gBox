@@ -1865,3 +1865,19 @@ magnum/shotgun (a magnum `MAGNUM_SHARE` of those); the bow's zero-length-press f
 gateway restarted so a fresh RE4 block holds the trigger through the draw. The RE6 hand ring's second live failure was
 the **action stage**, not the timeout (the placed action never reaches cWpAction_wp_act_throw inside CLASS_WAIT_S);
 that is #9771's first item.
+
+## Round 98 (2026-11-11 14:48 CST) - the hurt reports were reading the wrong counter; the combo reports are at 18 live requests
+
+- **The player-hurt follow reports** (operator 2026-11-11 14:30) were built (9e151053) and deployed at 14:45, but the
+  first live check found them silent: RE6's driver keeps the hurt count as **`player_damage_events`** (the damage
+  Observer, status delivered) and never sets `hits_taken`, so the engine's hit block and the report module both read 0
+  forever. Fixed (b307656c): the engine watches `player_damage_events` (falling back to `hits_taken` for a title with
+  only that), resets the baseline when the round's `player_damage_run` id changes, and `hit_reports._hit_count`
+  prefers the damage count. 27 tests. Deploys 15:00; the next RE5/RE6 engine run files one request per delivered
+  damage event (hp before/after, the tracked attackers' state/eta, doing/why).
+- **The combo-loss reports are confirmed live at scale**: 18 "Combo lost in 01002A000CD48000 ..." automated requests in
+  the control plane (the current RE6 block alone filed 10 across its rounds, under the 3-per-round cap), plus the
+  earlier verified pair.
+- **The 14:30 deploy** (e8fed852) carried the RE4 aim smoothing, the walk-turn hysteresis and the widened random
+  weapon, and 14:45 (9e151053) the hit reports; the next RE4 block is the aim/walk/bow/random-weapon live test. The
+  RE6 hand ring's action-stage diagnostic is deployed too - the next hand probe returns the unit class and action.
