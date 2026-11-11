@@ -196,3 +196,12 @@ def test_prepare_installs_once_without_a_projectile_and_restores_player(failure)
         ctl.attach = lambda: pytest.fail('Preparation must not repeat an installed bootstrap')
         ctl.prepare()
     assert ctl.q(ctl.player) == ctl.original
+
+
+def test_the_recovery_refusal_names_the_failed_operation(monkeypatch):
+    ctl = controller()
+    ctl.failed = True
+    ctl.failed_reason = "Uncertain: native completion uncertain at scatter"
+    ctl.recover_completed_call = lambda: False
+    with pytest.raises(N.Unavailable, match="awaits recovery after an uncertain operation .*Uncertain"):
+        ctl.ready()
