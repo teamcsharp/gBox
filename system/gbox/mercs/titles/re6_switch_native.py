@@ -874,8 +874,7 @@ class Controller:
         wanted = max(1, min(int(count or 4), 16))
         radius = max(0.0, min(float(radius_cm if radius_cm is not None else 200.0), 600.0))
         with self.lock:
-            self.ready()
-            player = self.player
+            player, _generation = self.ready()
             x, y, z = struct.unpack("<3f", self.rd(player + R.P_POS, 12))
             started = time.monotonic()
             units, failures = [], []
