@@ -276,3 +276,17 @@ def test_a_bot_from_before_the_hot_reload_takes_doors_and_remembers_them():
     clock[0] = 0.5
     b.tick(snap([], pos=(0.0, 0.0, 300.0)))
     assert b.stats["doors_taken"] == 1 and b.stats["doors_through"] == 1
+
+
+def test_a_majini_a_floor_away_with_no_way_known_and_walls_hit_explores_a_door_at_once():
+    """Request #5665 (RE5 Switch Village, operator PiP 'Flawed'): the only Majini on another floor, no mesh route, no
+    way known, wall_hits 11: the locate's straight line pushed into the wall; it explores a door at once now."""
+    remembered((1000, -700, 0, 41, KNOWN[4]))        # the only door he knows is on another floor than his
+    b, clock = bot()
+    up = majini(0, at(2100, 200, y=-930.0))
+    b.tick(snap([up], kills=390))
+    b.stats["wall_hits"] = 11
+    clock[0] = 0.5
+    act = b.tick(snap([up], kills=390, pos=(-300.0, 0.0, 200.0)))
+    assert b.stats.get("locate_explores") and b.stats["door_explores"] == 1 and "Majini on another floor" in b.why
+    assert act["hold"]
