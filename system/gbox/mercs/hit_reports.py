@@ -58,9 +58,19 @@ def body_for(stats, snap, hp_before, hp_after, attackers, doing=None, why=None) 
     return "\n".join(lines)
 
 
+def _hit_count(stats):
+    """The hurt counter the title keeps: the damage observer's player_damage_events (RE5/RE6) first, then the
+    driver's hits_taken (the RE4 playbook's own). None when neither is a number."""
+    for key in ("player_damage_events", "hits_taken"):
+        value = stats.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
 def observe(stats, snap, now, *, attackers=None, doing=None, why=None, round_id=None):
-    """One playing tick: file a report when the hit counter rises. Never raises."""
-    taken = stats.get("hits_taken")
+    """One playing tick: file a report when the hurt counter rises. Never raises."""
+    taken = _hit_count(stats)
     prev = stats.get("_hit_report_taken")
     stats["_hit_report_taken"] = taken
     player = (snap or {}).get("player") or {}

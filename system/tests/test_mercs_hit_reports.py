@@ -53,3 +53,16 @@ def test_the_reports_are_capped_per_round_and_a_failed_post_is_a_stat(monkeypatc
     assert HR.observe(live2, snap(800), 201.0) is None
     assert live2["hit_report_failures"] == 1 and "connection refused" in live2["hit_report_error"]
     assert "hit_reports" not in live2
+
+
+def test_the_damage_observers_count_is_the_primary_hurt_signal(monkeypatch):
+    """RE6's driver keeps the hurt counter as player_damage_events (the damage Observer), not hits_taken - the report
+    must follow the title's own counter."""
+    calls = []
+    monkeypatch.setattr(HR, "post", lambda url, token, payload: calls.append(payload) or {"id": "d1"})
+    live = {"round_evidence_id": "round-6", "player_damage_run": "run-1", "player_damage_events": 0}
+    HR.observe(live, snap(900), 100.0)
+    live["player_damage_events"] = 1
+    reply = HR.observe(live, snap(800), 101.0)
+    assert reply and len(calls) == 1 and "hp 900 -> 800" in calls[0]["body"]
+    assert live["hit_reports"] == 1

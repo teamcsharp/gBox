@@ -169,7 +169,9 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             stats["remote_mines_error"] = f"{type(exc).__name__}: {exc}"[:160]
     held: set = set()
     gone_since = lost_since = None
-    hits_seen = stats.get("hits_taken", 0)
+    damage_run = stats.get("player_damage_run")
+    hits_seen = (int(stats.get("player_damage_events") or 0) if damage_run is not None
+                 else int(stats.get("hits_taken") or 0))
     tick_errors = 0                                  # TICK_ERRORS_MAX: ticks in a row that raised
     progress = 0
     frame_fn = getattr(drv, "frame", None)
@@ -657,8 +659,13 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     if remote_out.get("fired"):
                         next_frame()
                         continue
-            if stats.get("hits_taken", 0) > hits_seen:   # what hit him, for the lessons
-                hits_seen = stats["hits_taken"]
+            run = stats.get("player_damage_run")
+            if run is not None and run != damage_run:    # a new round's damage run: its count starts at 0
+                damage_run, hits_seen = run, 0
+            taken_now = (int(stats.get("player_damage_events") or 0) if run is not None
+                         else int(stats.get("hits_taken") or 0))
+            if taken_now > hits_seen:                    # what hit him, for the lessons (the damage observer's count)
+                hits_seen = taken_now
                 attackers = [{"slot": t.slot, "kind": t.kind, "state": list(t.state) if t.state else None,
                               "act": (t.state[1] if t.state and len(t.state) > 1 else None),
                               "eta": round(t.eta, 2) if t.eta != float("inf") else None, "dist": round(t.dist),
