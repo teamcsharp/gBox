@@ -404,3 +404,41 @@ session input API and it goes through the same synthetic path).
 
 The session was stopped (`ended: true`), `/api/sessions` is empty, and the i9 is clean. The probes are kept as
 `docs/research/pso-cp4-{retest,press-start,window-state,vk}.py` plus the screenshot.
+
+## Round 101: the plane's own native controls - the live blocker is only the title screen
+
+Following round 100's conclusion ("the worker's native path is what would work"), the plane's actual op surface was read. It
+has more than the input relay:
+
+**`pso_controls` (`gbox/pso_live.py`) is a bounded, audited op set over the session channel, and it changes *game state*
+rather than pressing buttons:**
+
+```
+OPS = capabilities, rehook, status, list, floor_spawn, floor_rares, floor_clear, floor_list, give, equip_any,
+      always_hit, multi_equip, stat, survival, revive, mag, mag_set, mag_feed, randomized, modes, legendary,
+      enemy_drops, walk_through, bosses, boss_warp, adventure_status, equip, autoplay_speed
+READS = capabilities, status, list, floor_list, mag, modes, bosses, adventure_status
+```
+
+That matters for the checkpoints that need **travel**: `floor_spawn`, `boss_warp`, `walk_through` and `adventure_status` are
+native calls into the game's own travel warp - the same path the guide names for CP5's fallback ("`boss_warp` loads a boss arena
+by the same native path"). **They need no button press and no input injection.** CP5, CP10's confirmation and the field half of
+CP12 do not need input at all once a character is in game.
+
+**They cannot help at the title screen**, though: at "PRESS START" there is no character, no floor and no session state, so
+`floor_spawn`/`boss_warp` have nothing to act on. That is why round 100's four input methods were all aimed at the same wall.
+
+**The remaining options, now precisely ordered:**
+
+1. **A one-time menu advance, then native travel.** If *anything* can press START once (operator, a worker pad op, a virtual
+   XInput device), the plane's own `pso_controls` ops carry the rest of CP5/CP10/CP12 - no walking, no held keys.
+2. **A RAM-level menu advance.** The plane exposes `write_memory` as a **job** (the rpc endpoint is read-only and says
+   "edits go through the write_memory job"), plus `debug_*` ops (`debug_halt`/`debug_step`/`debug_resume`/breakpoints). A
+   halt-write-resume over the game's own pad/menu state is technically available; it needs the address, which is RE work
+   (the SI pad struct, or the mode word) and is recorded here as the fallback route rather than attempted blindly.
+3. **The operator pressing START**, after which everything above applies.
+
+**Nothing else in the programme needs the title screen:** every remaining checkpoint (CP5, CP9's seed, CP10, CP12's frame,
+CP13, CP16, CP17-19) is downstream of "one character is in the game".
+
+Session state at the end of the round: no session, `/api/sessions` empty, the i9 clean.
