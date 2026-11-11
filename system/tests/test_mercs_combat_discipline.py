@@ -232,6 +232,30 @@ def test_wall_press_remembers_the_wall_and_sends_him_along_it():
     assert not sparse.observe(2.0, here, 0.0, True), "two looks 2 s apart are no press held"
 
 
+# --- fire first (the operator 2026-11-10 night: the bot raised and lowered the weapon over and over) --------------------
+def test_a_threat_on_him_keeps_the_gun_up_and_the_count_says_what_lowered_it(monkeypatch):
+    """FIRE_FIRST: with a Ganado on him and a clear line, a step / flank that would lower the gun does not: the fight's
+    own action stands (gun_kept), and every lowering is counted with its reason (gun_downs / gun_down_last)."""
+    game = Tank([ganado(100, 0.3, 300.0), ganado(101, 0.9, 350.0), ganado(102, 1.4, 400.0)], mesh=Wall())
+    b = D.Bot(stats={}, director=False)
+    b.tick(game.snap(), now=0.0)
+    b.tick(game.snap(), now=0.05)                                     # the gun up at the first of them
+    assert D.AIM_BTN in b.tick(game.snap(), now=0.10)["hold"]
+    monkeypatch.setattr(b, "_never_stand", lambda p, act, snap, now: (setattr(b, "doing", "step"),
+                                                                     setattr(b, "why", "a step"), {"hold": set()})[-1])
+    act = b.tick(game.snap(), now=0.15)
+    assert D.AIM_BTN in act["hold"], "a step never lowers the gun at one on him"
+    assert b.stats.get("gun_kept", 0) >= 1 and b.stats.get("gun_downs", 0) == 0
+    monkeypatch.setattr(D, "FIRE_FIRST", False)
+    old = D.Bot(stats={}, director=False)
+    old.tick(game.snap(), now=0.0)
+    old.tick(game.snap(), now=0.05)
+    old._never_stand = lambda p, act, snap, now: (setattr(old, "doing", "step"), setattr(old, "why", "a step"),
+                                                 {"hold": set()})[-1]
+    old.tick(game.snap(), now=0.10)
+    assert old.stats.get("gun_downs", 0) >= 1 and "step" in (old.stats.get("gun_down_last") or "")
+
+
 # --- the shared pieces on their own ---------------------------------------------------------------------------------------
 def test_stand_engaged_is_the_fight_in_range_firing_or_turning():
     assert C.stand_engaged(True, False, 0.5, False, 1.5) and C.stand_engaged(True, False, 9.0, True, 1.5)

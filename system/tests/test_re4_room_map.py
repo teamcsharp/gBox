@@ -243,6 +243,87 @@ def test_the_routes_way_round_is_a_turn_and_a_crossing_is_left_to_the_walker():
     assert isinstance(b._room_ahead(p, act, {"room_map": rm}), str)
 
 
+# --- the wall's tangent (the operator 2026-11-10: the bot "is still turning back and forth and is stuck in the same
+# room"; a bot_trace of session 25385f8f4...: the unwall sent a pure sideways stick) -----------------------------------
+def test_the_refusing_wall_is_named_and_its_tangents_given():
+    rm = room([ACROSS])
+    why, wall = rm.walk_block_detail((0.0, 0.0, 0.0), (0.0, 0.0, 2000.0))
+    assert "a wall" in why and wall == ACROSS
+    assert rm.walk_block_detail((0.0, 0.0, 0.0), (0.0, 0.0, -800.0)) is None
+    assert rm.walk_block((0.0, 0.0, 0.0), (0.0, 0.0, 2000.0)) == why, "the reason alone, as before"
+    assert rm.span_mm() == pytest.approx(10000.0)
+    assert {round(math.degrees(h), 3) for h in rm.tangents(ACROSS)} == {90.0, -90.0}, "along the wall, both ways"
+
+
+def test_the_unwalls_probe_and_step_are_scaled_to_the_room():
+    small = room([ACROSS])                                            # a 10 m x 10 m room
+    big = R.RoomMap.from_mask("r400", (-5000.0, -5000.0), 250.0, [[1] * 160] * 160, [ACROSS])   # 40 m a side
+    b = D.Bot(stats={}, director=False)
+    assert b._room_reach(small, set()) == pytest.approx(800.0), "the small room: the floor's 800 mm"
+    assert b._room_reach(big, set()) == pytest.approx(1600.0), "the arena: 4 % of its side, not the floor's"
+    assert b._room_reach(big, {"lup", D.RUN_BTN}) == pytest.approx(1600.0)
+    assert b._unwall_reach(small) == pytest.approx(D.UNWALL_MM)
+    assert b._unwall_reach(big) == pytest.approx(D.ROOM_UNWALL_MAX_MM), "the step along the wall, capped"
+
+
+def test_the_unwall_turns_to_the_walls_tangent_and_pushes_forward_along_it():
+    """Not a pure sideways stick across the room: the way off the wall is the wall's own tangent - he turns to it, then
+    the stick goes forward along the wall (the walker's route no longer turns him back into it)."""
+    rm = room([ACROSS])
+    game = Walk(rm, [(0.0, 0.0, 3000.0)])
+    b = D.Bot(stats={}, director=False)
+    turn_only, run, forward, along_x, off_z = 0, 0, 0, 0.0, 0.0
+    for k in range(200):                                             # 10 s: round the wall and onto the shot
+        act = b.tick(game.snap(), now=k * 0.05)
+        if b.doing == "unwall":
+            hold = set(act.get("hold") or ())
+            if hold & {"lleft", "lright"} and "lup" not in hold:
+                run += 1
+                turn_only = max(turn_only, run)
+            else:
+                run = 0
+            forward += "lup" in hold
+            if (b.__dict__.get("_uc_unwall") or {}).get("mode") == "tangent":
+                along_x, off_z = max(along_x, game.pos[0]), max(off_z, abs(game.pos[2]))
+        game.apply(act, 0.05)
+    assert b.stats.get("unwall_tangents", 0) >= 1 and b.stats.get("unwall_tangent_steps", 0) >= 1
+    assert turn_only <= int(0.8 / 0.05), "a turn to the tangent, not a spell of turning on the spot"
+    assert forward >= 8, "then the stick forward along it"
+    assert along_x > 3000.0 and off_z < 900.0, "along the wall, past its end"
+    assert sum(game.pushed) == 0 and game.shots and all(game.shots), "never against it, every shot clear"
+
+
+def test_the_unwalls_side_is_held_not_flipped_within_the_hold():
+    rm = room([ACROSS])
+    b = D.Bot(stats={}, director=False)
+    b._uc_control_at = 0.0
+    b._wall_core({"pos": (0.0, 0.0, 300.0), "rot": 0.0}, {"hold": {"lup"}}, {"player": {"pos": (0.0, 0.0, 300.0),
+                                                                                    "rot": 0.0}, "room_map": rm}, 0.05)
+    side = b.__dict__["_uc_unwall_side"]
+    assert side and abs(abs(side["h"]) - math.pi / 2) < 1e-6, "a tangent of the wall"
+    # a look from a facing nearer the other hand, inside the hold: the same hand, not the other
+    tries = b._unwall_tries(0.2, -math.pi / 2 + 0.2, rm, ACROSS, True)
+    assert b.__dict__["_uc_unwall_side"]["h"] == side["h"]
+    assert tries is None or all(abs(math.radians(d) - (side["h"] - (-math.pi / 2 + 0.2))) > math.radians(10)
+                                for d in tries), "the other tangent is not tried first"
+    assert D.UNWALL_SIDE_HOLD_S == pytest.approx(0.8)
+
+
+def test_no_unwall_on_the_mesh_walkers_own_route_leg():
+    """ROOM_LEGS extended to the unwall: a route leg the mesh's floor reaches straight from him is left to the walker -
+    a wall ahead never starts a tangent detour on it."""
+    rm = room([ACROSS])
+    b = D.Bot(stats={}, director=False)
+    w = Steering(0.0, 2500.0)
+    w.leg = {"at": w.now, "open": True, "keys": ("lup",), "to": (0.0, 2500.0)}
+    b.walker = w
+    b._uc_control_at = 5.0
+    p = {"pos": (0.0, 0.0, 300.0), "rot": 0.0}
+    out = b._wall_core(p, {"hold": {"lup"}}, {"player": dict(p), "enemies": [], "room_map": rm}, 5.05)
+    assert out["hold"] == {"lup"} and b.stats["room_map_route_legs"] == 1
+    assert b.stats.get("room_map_steps_refused", 0) == 0 and b.doing != "unwall" and "_uc_unwall" not in b.__dict__
+
+
 def test_the_room_map_is_the_stages_own_or_none():
     mine = re4_nav.load("r403")
     assert R.room_of_snap({"nav": mine}) == "r403"
