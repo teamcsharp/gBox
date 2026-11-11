@@ -311,3 +311,16 @@ def test_prepare_stops_at_the_first_playing_screen_before_the_engine(monkeypatch
     assert stats["prepared"] is True and stats["screen"] == "playing" and stats["rounds"] == 0
     assert g.picks == ["THE MERCENARIES", "GAME START", "Leon", "Village"] and RM.screen(g)["where"] == "playing"
     assert not stats.get("hung")
+
+def test_a_select_that_does_not_move_gets_a_direct_confirm():
+    """Live 2026-11-10: RE5 sat on CHARACTER SELECT for minutes while the Navigator's own press never landed; an A
+    press through the API started the round at once, so the Boot now presses the confirm key itself when a select has
+    not moved and the Navigator's press did not take."""
+    assert MB.stall_confirm_due("select_player", 0.0, False, MB.STALL_CONFIRM_S + 1, -10.0)
+    assert MB.stall_confirm_due("select_stage", 0.0, False, MB.STALL_CONFIRM_S + 1, -10.0)
+    assert not MB.stall_confirm_due("select_player", 0.0, False, MB.STALL_CONFIRM_S - 1, -10.0), "settling"
+    assert not MB.stall_confirm_due("select_player", 0.0, True, 100.0, -10.0), "the Navigator's press took"
+    assert not MB.stall_confirm_due("playing", 0.0, False, 100.0, -10.0), "selects only"
+    assert not MB.stall_confirm_due("select_player", 0.0, False, 100.0, 99.5), "one direct press at a time"
+    assert not MB.stall_confirm_due("select_player", 0.0, False, 100.0, -10.0, input_ready=False), "not taking input"
+    assert not MB.stall_confirm_due("select_player", 0.0, False, 100.0, -10.0, confirming=True), "a chain is open"

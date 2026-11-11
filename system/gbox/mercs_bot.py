@@ -30,6 +30,9 @@ import time
 MENU_LOST_S = 30.0          # out of a round and RAM can't name the screen this long: end the run
 MENU_STUCK_S = 120.0        # out of a round and nothing in RAM moved this long: end the run
 BOOT_PRESS_S = 3.0          # a title's BOOT_KEY goes in this often while RAM can't name the screen (a cold boot's dialogs)
+STALL_CONFIRM_S = 15.0      # a select screen that has not moved this long while the Navigator's own press did not take:
+                            # press the title's confirm key directly (live 2026-11-10: RE5 sat on CHARACTER SELECT for
+                            # minutes until an A press through the API started its round - the bot's press never landed)
 BOOT_LOST_S = 600.0         # before the boot's first named screen: an emulator's first run builds its shader caches and
                             # a PS3 game installs its data (RPCS3 on JAYBUILTFINALE, 2026-10-22: "Precompiling shader
                             # interpreter variants" > 30 s, then "Installing RESIDENT EVIL 5 GOLD EDITION" for minutes)
@@ -47,6 +50,16 @@ BOOT_SCREENS = frozenset({"title", "press_any_button", "press_start", "title_loc
                             # BOOT_LOST_S - which is what lets a title name its PRESS ANY BUTTON and confirm it at once
 BOOT_RAM_READ_S = 120.0     # unmapped RPCS3 guest pages before the first successful menu read
 BOOT_RAM_TRANSIENT = frozenset({errno.EIO,errno.EFAULT,errno.EAGAIN,errno.EINTR})
+
+
+def stall_confirm_due(where, sig_at: float, confirmed: bool, now: float, last_press: float, *,
+                      input_ready=True, confirming: bool = False) -> bool:
+    """Whether the Boot should press a select screen's confirm key directly: RAM names a select, has not moved for
+    STALL_CONFIRM_S, the Navigator's own press did not take (``confirmed`` False), no known confirmation chain is open,
+    and the boot press clock is clear. Live 2026-11-10: RE5's CHARACTER SELECT sat for minutes while the Navigator's
+    press never landed; an A press through the API started the round at once."""
+    return (where in ("select_stage", "select_player") and input_ready is not False and not confirming
+            and now - sig_at >= STALL_CONFIRM_S and not confirmed and now - last_press >= BOOT_PRESS_S)
 
 
 class Navigator:
@@ -286,6 +299,20 @@ class Boot:
             self.lost_since = None
             if scr.get("where") not in BOOT_SCREENS:
                 self.named = True                           # past the boot's own screens: the 30 s rule from here
+        # A select screen that RAM names but that has not moved for STALL_CONFIRM_S while the Navigator's own press did
+        # not take: press the title's confirm key directly. The cursor walk confirms with "a" itself; this is the case
+        # where that press is not landing at all (a select takes it: live 2026-11-10, RE5's CHARACTER SELECT).
+        if stall_confirm_due(scr.get("where"), getattr(self.nav, "sig_at", now), 
+                             getattr(self.nav, "last_input_confirmed", False), now, self.boot_pressed,
+                             input_ready=scr.get("input_ready"), confirming=self.nav.confirmation_started is not None):
+            key = getattr(self.menus, "BOOT_KEY", None) or "a"
+            self.nav.send([{"key": key, "down": True}])
+            self.nav.sleep(Navigator.HOLD_S)
+            self.nav.send([{"key": key, "down": False}])
+            self.boot_pressed = self.clock()
+            self.stats["stall_confirm_presses"] = self.stats.get("stall_confirm_presses", 0) + 1
+            self.stats["stall_confirm_at"] = f"{scr.get('where')}: {key}"
+            self.nav.forget()                               # the direct press is not the Navigator's: let it re-read
         # A title that can move a whole menu segment in one burst (gbox.mercs.titles.re6_switch.fast_start) does the
         # next screen that way; the Navigator below presses only if the burst did not already change the screen.
         fast = getattr(self.menus, "fast_start", None)

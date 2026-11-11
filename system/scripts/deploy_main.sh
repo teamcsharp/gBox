@@ -70,13 +70,21 @@ flock -n 9 || { echo "$(date -u +%FT%TZ) another deploy is running"; exit 0; }
 log() { echo "$(date -u +%FT%TZ) $*"; }
 activation_for() {                                 # $@ = runtime files deployed now -> ACTIVATION none|reload|restart
   ACTIVATION=none
-  if [ -f "$PENDING" ]; then
-    ACTIVATION=restart                             # a deferred restart covers everything since
-    return 0
-  fi
+  local pending=0
+  [ -f "$PENDING" ] && pending=1
   if [ "$#" -gt 0 ]; then
     ACTIVATION="$(cd "$DST" && "$PY" -m gbox.hot_reload classify "$@" 2>/dev/null)" || ACTIVATION=restart
     case "$ACTIVATION" in reload|restart) ;; *) ACTIVATION=restart ;; esac
+  fi
+  if [ "$pending" = 1 ]; then
+    # A deferred service restart covers the runtime code that asked for it, but it must not hold bot modules hostage:
+    # they hot-reload in place (bot_reload, with its settle safety) and the restart stays pending for the rest. Live
+    # 2026-11-10: every bot-only merge waited hours for the 05:00 window because this marker forced "restart" even for
+    # a reloadable module. A change the classifier calls restart still restarts.
+    case "$ACTIVATION" in
+      reload) log "bot modules changed while a service restart is pending: they reload in place, the restart stays pending" ;;
+      *) ACTIVATION=restart ;;
+    esac
   fi
   if [ "$ACTIVATION" = none ] && [ -f "$RELOAD_PENDING" ]; then
     ACTIVATION=reload

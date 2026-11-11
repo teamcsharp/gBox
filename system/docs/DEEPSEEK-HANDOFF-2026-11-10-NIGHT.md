@@ -365,3 +365,88 @@ Then send it the heavy analysis work.
   `agent.vision_url` still winning - the fix for the walk-into-walls planner timeouts (tests: local chosen, missing
   local falls back, explicit URL respected; `test_pso_campaign.py` 30 passed). The i9 Ollama installer is at ~1.50 of
   1.86 GB.
+
+- 2026-11-10 23:05: merged ds-grenade-re4-bss-20261110 @ cbf7cfa0 into main (8b6c033c) - checkpoint A3'''s
+  mechanism: an RE6 random barrage now draws only the verified kinds **whose resources the character carries** (a
+  missing hand grenade no longer refuses a flash barrage; the checkpoint'''s caveat), while a narrowed draw still
+  refuses an unloaded kind with its own reason. Three tests; 157 passed across the RE6/grenade set. The live probes
+  (A2/C2: hand/incendiary grenade_scatter receipts) still wait on an RE6/RE5 block where the character carries the
+  kind.
+﻿
+- 2026-11-10 20:5x: **RE5 is playing on the Spark** (operator: "why do I never see RE5 come up"). The answer: the
+  rotation advances only at a verified round end and the queue was grouped re4 -> re5 -> re6, so RE5 was third; with
+  RE6's No Mercy round running ~50 minutes it never came up. Fixed live: the queue is reordered to its five `re5`
+  entries first (then re4/re6), `rounds_per_title` stays 1, and a `switch` dispatch put RE5 on now - frames show the
+  RE5 title and then a Mercenaries round (Sheva, 01'51" on the clock). Earlier RE5 session starts ended within ~1 min
+  each: those were the switch sequence restarting the game, not a crash (the current session is stable in-round).
+  Ollama: the 1.86 GB installer downloaded, but its silent install needs elevation and hung in this non-interactive
+  session (OllamaSetup killed, the 0.5.7 server restarted and answering) - the upgrade needs the operator's UAC or a
+  5.0-era fallback; the planner fix (local model preferred) is in main either way.
+﻿
+- 2026-11-10 21:0x: PSO campaign restarted on the running session (it had stopped after the coop launch's card check: the
+  current session was not launched with `pso_coop` so the two-player campaign refuses it - `ValueError: Launch PSO
+  with pso_coop=true`; the single-player campaign runs instead). Tried the Spark's smaller vision models to dodge the
+  busy GPU: `gemma3:1b` is refused by preflight ("does not advertise vision capability"), so only `qwen2.5vl:7b`
+  qualifies there. The i9 planner fix therefore needs a newer Ollama, and the installer needs elevation this session
+  cannot answer - so a **portable** `ollama-windows-amd64.zip` is downloading (no admin: run it beside the current
+  install, same models dir, then `agent.vision_url` 127.0.0.1:11434 already points the campaign at it).
+﻿
+- 2026-11-10 21:1x: the operator's split: **MercMode on the gBox stream, PSO played locally by them.** Stopped the PSO
+  autoplay (`{"mission": "playbook: pso_campaign", "stopped": true}`) so the bot does not fight their pad; the PSO
+  session stays up for them. Rebuilt MercMode's rotation queue: re5/re6 only offer **no_mercy** (a `mercenaries`
+  entry for them is a 422), so the queue is now `re4(merc) -> re5(no_mercy) -> re6(no_mercy)` repeated three times,
+  `rounds_per_title` 1, `repeat_queue` true, and a `start` dispatch with `pip: true` put RE4 on air (frame: Leon
+  firing, 7-in-a-row combo, 01'56" on the clock). Code: `pso_campaign` now retries a failing planner for ten minutes
+  (`PLANNER_GIVE_UP_S`) instead of ending the run after five failed calls, with `planner_failing_for_s` in the
+  telemetry (31 tests in `test_pso_campaign.py`).
+﻿
+- 2026-11-10 21:2x: **the rotation and the fire-first fight verified on the stream.** RE4 is on air and fighting: two
+  frames 8 s apart show the combo going **26 -> 28 in a row** with the score 7,800 -> 8,400 and the gun up and firing
+  (the recovery-re4-fit-v4 mod's swapped cast included). The session history shows the cycle working: six RE5 sessions
+  from ~17 min back (each ~2-3 min) then RE4, so the queue re4 -> re5 -> re6 is being played. The RE5 sessions are
+  short (~150-200 s each) - worth a check next round whether their No Mercy round ends early (death) or the title's
+  round reader sees an end early.
+﻿
+- 2026-11-10 21:1x: **RE5's rounds are not fights - the bot stalls at CHARACTER SELECT.** The round reports explain the
+  long-standing "RE5 dies in 2-3 minutes": six consecutive RE5 reports are `outcome: lost` with **0 or 1 shots**, and
+  two frames of the live RE5 session ~2 minutes apart are the same **CHARACTER SELECT** screen (Chris Redfield, BSAA,
+  A OK). The title screen and character select are reached (input works), but nothing confirms the character, so the
+  round never starts and the session ends as "lost". Next: the RE5 title's menu state machine (the known-red RE5 Switch
+  area) - it must press OK on character select and go through stage select; RE4/RE6 do not stall here. Also confirmed:
+  the round-report API is `GET /api/mercs/round-reports` (+ `/{id}`), with `report.metrics` and `outcome`, the
+  live verification source for MercMode bots.
+﻿
+- 2026-11-10 21:2x: **RE5's stall is the character select, and one A press starts the round.** Frames showed the RE5
+  session parked on CHARACTER SELECT for minutes; posting two A events through `POST /api/sessions/{sid}/input`
+  (agent actor, `{"queued": 2}`) moved it through NOW LOADING into a **No Mercy round** (frame: 01'45" on the clock, a
+  "Break free" grab, the HELP gauge). So the title and its round work; the bot's RE5 menu walk simply never confirms the
+  character (its STAGE/CHARACTER SELECT state machine reads the RAM cursors but the confirm press is not sent). Next:
+  wire the confirm press into the RE5 title's select phase (or the generic mercs_bot's menu phase) with a timeout, so
+  the operator never sees the parked screen - and the round reports stop being 0-shot "lost".
+﻿
+- 2026-11-10 21:4x: the RE5 select stall has a fix in code. `mercs_bot.Boot.tick` now presses the title's confirm key
+  (**direct**, outside the Navigator) when RAM names a select (`select_stage`/`select_player`), the screen has not
+  moved for `STALL_CONFIRM_S` (15 s), the Navigator's own press did not take, no confirmation chain is open and the
+  select takes input; rate-limited by `BOOT_PRESS_S`, logged as `stall_confirm_presses` / `stall_confirm_at`.
+  `stall_confirm_due` is the tested predicate (`test_mercs_bot.py` 16 passed). Deploys to the Spark via the
+  autodeploy and hot-reloads at the next session; until then RE5 can still park, and a manual A press through
+  `POST /api/sessions/{sid}/input` starts its round.
+﻿
+- 2026-11-10 21:5x: the Spark's deploy is **paused behind `deploy-restart-pending`**, not behind a local edit: the Spark's
+  `gbox/mercs_bot.py` hashes exactly to main's revision `8195b80c` (an older commit), and the round-26 select-confirm
+  fix is not in it. `deploy_main.sh`'s `activation_for` returns `restart` whenever that marker exists, so every
+  later merge - including bot-only ones - waits for the service restart (the 05:00 window, or an operator restart).
+  Confirmed against the worker's `build_sources` hashes for `mercs_bot.py` and `pso_campaign.py`. Until then the
+  RE5 character-select workaround is the operator's/agent's A press through `POST /api/sessions/{sid}/input`.
+  Also live: RE6's No Mercy round is long (the rotation has been on it ~30 min), the Pine Box program feed is pinned
+  to the PSO session by "following what you watch" while `/api/broadcast/pc/lilspark.jpg` shows the live RE6 feed.
+﻿
+- 2026-11-10 22:0x: **deploy: bot modules no longer wait for the pending service restart.** `deploy_main.sh`'s
+  `activation_for` returned `restart` whenever `deploy-restart-pending` existed, so every merge after that marker -
+  bot-only modules the classifier calls `reload` included - waited for the 05:00 window (this session's RE5
+  select-confirm fix sat undeployed for hours; the Spark's `mercs_bot.py` still hashes to main `8195b80c`). The
+  function now keeps the restart for runtime code and for the retry when nothing new arrived, but lets a
+  `reload`-classified change go in with `bot_reload` (its settle safety restores the old modules if the restarted
+  bot dies) while the restart stays pending. Verified with a bash harness over the extracted function: pending+bot ->
+  reload, pending+server -> restart, pending+nothing -> restart, nothing -> none. Pushed as `95e4ab18`; the Spark's
+  next deploy run copies the script and the run after that uses it.

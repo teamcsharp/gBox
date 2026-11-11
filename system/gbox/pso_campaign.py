@@ -28,6 +28,11 @@ from . import pso_coop_menu            # referenced as pso_coop_menu.MenuProgres
 
 CAMPAIGN = "pso-episodes-1-2"
 COOP_CAMPAIGN = "pso-coop-episodes-1-2"
+PLANNER_GIVE_UP_S = 600.0
+# The planner is the campaign's most contended dependency: a vision model that may live on another PC whose GPU is busy
+# playing MercMode. Five failed calls in a row (~3 minutes) used to end the run; give it ten minutes of retries instead,
+# during which the native combat and gate navigation branches keep playing without it (2026-11-10: the run ended while
+# the character could still fight).
 EPISODE = 0x805D6060
 TRAVELLING = 0x805D49B8
 FINAL_FLOORS = {1: 14, 2: 13}
@@ -338,6 +343,11 @@ class LocalDriver(Driver):
             self.send([{"key": k, "down": False} for k in keys])
 
 
+def planner_gave_up(dead_since, now=None) -> bool:
+    """Whether the planner has failed continuously for PLANNER_GIVE_UP_S (None: it has not failed yet)."""
+    return dead_since is not None and (time.monotonic() if now is None else now) - dead_since > PLANNER_GIVE_UP_S
+
+
 def _serves_model(base: str, model: str, timeout: float = 2.0) -> bool:
     """Whether the Ollama at `base` has `model` right now (a short probe: the planner must never wait on a dead model).
 
@@ -523,6 +533,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     evidence = Path(ad.config.runtime) / "autoplay" / "pso-campaign" / safe_sid
     evidence.mkdir(parents=True, exist_ok=True)
     errors, last_plan, last_plan_at, last_progress, last_signature = 0, [], 0.0, time.monotonic(), None
+    planner_dead_since = None
     gate_attempts = {}
     menu = pso_coop_menu.MenuProgress()
     stats.update(ledger.status(), note="Experimental campaign attempt; no full completion is claimed without receipts.")
@@ -636,6 +647,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     wait(0.15, stopped)
                 last_plan = (last_plan + [stats["thought"]])[-5:]
                 errors = 0
+                planner_dead_since = None
                 wait(0.25, stopped)
             except Unsupported:
                 raise
@@ -644,9 +656,11 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     break
             except (OSError, ValueError, KeyError, httpx.HTTPError) as exc:
                 errors += 1
-                stats.update(last_error=str(exc), consecutive_errors=errors, action="waiting_for_observation")
-                if errors >= 5:
-                    stats.update(ok=False, stopped_reason="Five consecutive native/vision observations failed; no inputs sent blindly")
+                planner_dead_since = planner_dead_since or time.monotonic()
+                stats.update(last_error=str(exc), consecutive_errors=errors, action="waiting_for_observation",
+                             planner_failing_for_s=round(time.monotonic() - planner_dead_since, 1))
+                if planner_gave_up(planner_dead_since):
+                    stats.update(ok=False, stopped_reason="The planner failed for ten minutes; no inputs sent blindly")
                     break
                 wait(min(5, errors), stopped)
     finally:
