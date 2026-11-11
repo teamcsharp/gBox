@@ -1524,3 +1524,28 @@ Switch build; both refused with their reasons), RE6 hand + incendiary (same, cla
 incendiary live receipts (blocked on the mailbox watch -> 05:00), and the `grenade_scatter` live probes on RE5/RE6
 (the op is built; the kind gate is the same). The 05:00 restart is the single event that opens the RE4 receipts and
 the RE6 ring re-run; the hand/incendiary classes are a native build task after that.
+
+## Round 83 (2026-11-11 10:40 CST) - the probe becomes reachable through the API the PM can actually use
+
+The first live receipts for hand and incendiary are the controllers' `allow_unverified` probe (checkpoint G3 /
+package 2), but the intervention queue only accepted `{kind}` and the worker called `ctl.grenade_ring(kind)` without
+the flag. The agent has no shell on lilspark, so the probe was unreachable by the only route available to it.
+
+Added (`59850e4e`): `grenade_ring` accepts an optional boolean `allow_unverified` in its args; the queue's per-kind
+availability gate is skipped only when it is literally `true`; the worker passes it to
+`ctl.grenade_ring(kind, allow_unverified=...)`. The PiP never sends the flag, a refused kind without it stays refused,
+and the title capability plus a live worker are still required. Gate: 55 passed (the gate-bypass, the queued probe
+and the non-boolean refusals). `gbox.mercs.interventions` is `NOT_BOT`, so it lands at the 05:00 restart with the
+other pending runtime fixes.
+
+**The completion sequence once the 05:00 restart is in (all through the API):**
+1. RE6: one `grenade_ring` flash receipt (`be058678` confirms on the detonate call, not the RE5 flag) -> ten
+   detonations in the receipt.
+2. RE4: a new round -> `interventions` shows the harness controller (lock fixed); read `bss_watch_loads` at three
+   stage loads -> `choose_mailbox` -> `MAILBOX_AT` commit -> `re4_harness_selftest`, `flash_now`, `grenade_ring`
+   flash/hand receipts (and the incendiary probe with `allow_unverified: true`).
+3. RE5/RE6: `grenade_ring` hand and incendiary with `allow_unverified: true`; a confirmed receipt each flips the
+   kind's row in `grenade_status` from refused to verified (the same table the PiP reads).
+4. `grenade_scatter` receipts on RE5/RE6 with the verified kind(s), with frames and the kill delta.
+Everything above still needs the service restart; nothing else is waiting on a build except the hand/incendiary
+native class/DTI for RE5/RE6 if their probes refuse.
