@@ -680,3 +680,21 @@ Then send it the heavy analysis work.
   - The RE5 ring budget (2.5 s) and the periodic ring are live; the RE5 blocks since the fix have not reached a round
     (the 13:03 title hang) - the next live RE5 round is the test.
   - #9720 and #9744 stay first/second in the Hermes queue; no run has picked either up yet.
+
+- 2026-11-11 13:50 (DeepSeek PM): **the combo-loss follow reports are in the build; the operator's QTE ask is ticket
+  #9769; the RE6 mines keep running (64 bombs, 5 flag detonations).**
+  - **Combo-loss follow reports** (`b813c90f`, deployed 13:45, engine reloaded): `gbox/mercs/combo_reports.py` posts one
+    Hermes request per combo lost (round/session/title, combo before/after, kills/score/clock, the threats within 6 m
+    and the bot's doing/why), deduped, capped at 3 per round, a failed post is a stat. The next engine run (the next
+    RE5/RE6 round) files them live; the round report keeps combo_breaks for the totals.
+  - **QTE flags + stick throttle** (`#9769`, first in the Hermes queue): the operator's 13:47 screenshot (a dog mauling
+    the player, the stick QTE icon up) with "flip the flags for QTE events instantly ... still fails to throttle the
+    stick". The ticket specifies the RAM state to find (the sActionButton singleton's answered/return-to-play fields),
+    the verified flag flip (only while a QTE shows, re-read, rate-capped) and the left-stick analog throttle/oscillation,
+    with the live acceptance (a dog maul escaped <= 250 ms, 0 false flips).
+  - **RE6 remote mines**: 16 rings / 64 bombs / 5 flag detonations by 13:44 on the same block - the operator's "massive
+    quantities then detonate them remotely" is running continuously (rings of four every ~22 s).
+  - **RE4 bow 40x** deployed at 13:15 (d4e00881); the next Krauser round measures shots/round at the 40x (the 20x rounds
+    already reached 5-8 kills and 11-31 shots).
+  - The RE4 harness E6 remains uncertain (the diagnostic receipt awaits the next RE4 probe); the RE5 2.5 s ring budget
+    awaits a live RE5 round (the last two RE5 blocks hung on the title screen).
