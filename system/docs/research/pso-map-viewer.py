@@ -145,6 +145,7 @@ h3{margin:6px 0;color:#58a6ff;font-size:13px}
     </select> &nbsp; <span class="k">hp</span> <b id="hp">-</b></div>
   <div><span class="k">pos</span> <b id="pos">-</b></div>
   <div><span class="k">target</span> <b id="target">none</b></div>
+  <div id="roominfo" style="margin-top:6px;color:#8b949e">-</div>
   <div><span class="k">doors</span> <b id="doors">-</b> <span class="k">enemies</span> <b id="enemies">-</b></div>
   <h3>live minimap</h3>
   <img id="mini" src="/api/minimap.png" alt="minimap">
@@ -153,6 +154,7 @@ h3{margin:6px 0;color:#58a6ff;font-size:13px}
 </div>
 <script>
 let rooms=null, st=null, scale=0.55, ox=0, oz=0;
+let objects=null, roomObjects={};
 function fit(){
   if(!rooms || !rooms.rooms.length) return;
   const cells=[]; rooms.rooms.forEach(r=>r.cell_list.forEach(c=>cells.push(c)));
@@ -179,6 +181,14 @@ function draw(){
       ctx.fillStyle = d.class.indexOf('Key')>=0 ? '#79c0ff' : (unlocked ? '#3fb950' : '#f85149');
       ctx.beginPath(); ctx.arc(X(d.x),Y(d.z),6,0,7); ctx.fill();
     });
+    if(objects && objects.objects){
+      objects.objects.forEach(o=>{
+        ctx.fillStyle = o.class.indexOf('Sensor')>=0 ? '#8b949e'
+                      : (o.class.indexOf('Rock')>=0 ? '#6e7681'
+                      : (o.class.indexOf('Symbolchat')>=0 ? '#d2a8ff' : '#58a6ff'));
+        ctx.fillRect(X(o.x)-2, Y(o.z)-2, 4, 4);
+      });
+    }
   }
   if(st){
     st.doors.forEach(d=>{
@@ -201,9 +211,23 @@ function draw(){
 }
 let viewFloor = 1;
 document.getElementById('viewfloor').addEventListener('change', ev=>{ viewFloor = +ev.target.value; rooms = null; });
+async function loadObjects(){
+  try{
+    objects = await (await fetch('/api/objects?floor='+viewFloor)).json();
+    roomObjects = {};
+    (objects.objects||[]).forEach(o=>{
+      let best={d:1e9, r:null};
+      rooms.rooms.forEach(r=>r.cell_list.forEach(c=>{
+        const d=Math.hypot(o.x-c[0], o.z-c[1]);
+        if(d<best.d) best={d:d, r:r.room};
+      }));
+      if(best.r!==null){ (roomObjects[best.r]=roomObjects[best.r]||[]).push(o.class); }
+    });
+  }catch(e){ objects=null; roomObjects={}; }
+}
 async function tick(){
   try{
-    if(!rooms){ rooms = await (await fetch('/api/rooms?floor='+viewFloor)).json(); fit(); }
+    if(!rooms){ rooms = await (await fetch('/api/rooms?floor='+viewFloor)).json(); fit(); await loadObjects(); }
     st = await (await fetch('/api/state')).json();
     if(st.player){ document.getElementById('pos').textContent = st.player.x+', '+st.player.y+', '+st.player.z; }
     document.getElementById('floor').textContent = st.floor;
@@ -219,6 +243,23 @@ document.getElementById('map').addEventListener('click', async ev=>{
   const px=ev.clientX-rect.left, py=ev.clientY-rect.top;
   const wx=(px-ox)/scale, wz=(py-oz)/scale;
   let target={x:Math.round(wx), z:Math.round(wz)};
+  if(rooms){
+    let bestRoom={d:1e9, r:null};
+    rooms.rooms.forEach(r=>r.cell_list.forEach(c=>{
+      const d=Math.hypot(wx-c[0], wz-c[1]);
+      if(d<bestRoom.d) bestRoom={d:d, r:r};
+    }));
+    const info=document.getElementById('roominfo');
+    if(info){
+      if(bestRoom.r && bestRoom.d<25){
+        const counts={};
+        (roomObjects[bestRoom.r.room]||[]).forEach(n=>counts[n]=(counts[n]||0)+1);
+        const text=Object.entries(counts).map(([n,c])=>n+' x'+c).join(', ') || 'no placed objects';
+        info.textContent = 'room '+bestRoom.r.room+' ('+bestRoom.r.cells+' cells, centre '
+          +bestRoom.r.centre[0]+','+bestRoom.r.centre[1]+'): '+text;
+      } else { info.textContent = '-'; }
+    }
+  }
   if(ev.shiftKey && st){
     let best=null;
     st.enemies.forEach(e=>{ const d=Math.hypot(X(e.x)-px,Y(e.z)-py); if(!best||d<best.d) best={d,e}; });
