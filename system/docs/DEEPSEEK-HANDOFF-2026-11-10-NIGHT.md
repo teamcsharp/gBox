@@ -349,3 +349,11 @@ Then send it the heavy analysis work.
   one round per title, so RE4's watch block comes after this one. Also fixed: `pso_boot_local.py` imported gbox from
   one lane's scratch clone (`C:\_tools\gBox\.tmp\main-repo\system`), which exists on no other machine; it now derives
   `system/` and `system/tools/` from `__file__`. The i9 Ollama installer download is at ~1.24 of 1.86 GB.
+- 2026-11-10 22:45: merged `ds-grenade-re4-bss-20261110` @ `b63f77c0` into main (`971a01d3`) - **E5 hardening**: a timed-out
+  harness call now **retires its mailbox request** (state back to idle, best effort) and refuses further calls until
+  detach/re-attach, so a paused game, a stage load or a late dispatcher tick can never execute a timed-out request
+  later. The `Uncertain` still means the effect may have started, but it is never repeated. Targeted gate 77 passed.
+  Also of note from the static G3 pass: the `0x67B2A0..0x67B640` blast page is referenced by no code and no data at all
+  (no adrp, no pointers), so those descriptor slots are not the runtime dispatch table; the incendiary's class-0x16
+  dispatch is still open. Live: the same RE6 session has held the queue for hours (no RE4/RE5 block), so the E3 watch
+  and the CP0/D live receipts remain pending.
