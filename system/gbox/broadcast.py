@@ -458,7 +458,13 @@ def choose(pin: dict, watch: dict | None, rows: list[dict], *, current: str | No
     rows = [r for r in rows if r.get("mercmode") != "warm"]
     running = {r["session_id"]: r for r in rows}
     watched = (watch or {}).get("session_id")
-    if watched and now - ((watch or {}).get("at") or 0) <= watch_ttl_s:
+    # The operator's own desktop app view is control, not a program request (operator 2026-11-10: "the activity of my
+    # local gBox usage on the i9 should not change the stream or impact it. I am having the PSO task use gBox to handle
+    # modding and loading the game so its in the app internally"): a watch from the desktop app never steers the
+    # program, so playing a game locally in the app leaves MercMode on air. A browser/Pine viewer still follows, and
+    # On air (a program pin) still switches explicitly.
+    local_view = str((watch or {}).get("client") or "").strip().lower().startswith("desktop")
+    if watched and not local_view and now - ((watch or {}).get("at") or 0) <= watch_ttl_s:
         if watched not in running:
             watched = successor(watched)
         if watched in running:

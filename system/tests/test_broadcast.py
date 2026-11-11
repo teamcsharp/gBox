@@ -1450,3 +1450,15 @@ def test_feed_list_pc_summary_tracks_the_turn_and_never_names_a_warm_game(app):
                                 "other": {"session_id": "spark-a", "state": "ready"}})
     summary = c.get("/api/broadcast/feeds", headers=main(app)).json()["pcs"][0]
     assert summary["session_id"] is None and summary["title"] is None
+
+def test_the_operators_own_app_view_never_steers_the_program():
+    """Operator 2026-11-10: "the activity of my local gBox usage on the i9 should not change the stream or impact it" -
+    the desktop app's watch is control, not a program request; a browser/Pine viewer still follows."""
+    rs = rows(("a", "lilspark", True, False, 1), ("b", "i9-NUC", True, True, 2))
+    pin = {"mode": "auto"}
+    assert B.choose(pin, {"session_id": "b", "at": 100, "client": "desktop-webview"}, rs, current="a", now=110,
+                    watch_ttl_s=60) == ("a", "still on air"), "the app's own view does not take the program"
+    assert B.choose(pin, {"session_id": "b", "at": 100, "client": "browser"}, rs, current="a", now=110,
+                    watch_ttl_s=60) == ("b", "following what you watch"), "a viewer's watch still does"
+    assert B.choose(pin, {"session_id": "b", "at": 100}, rs, current="a", now=110, watch_ttl_s=60) == \
+        ("b", "following what you watch"), "no client named: the old behaviour"
