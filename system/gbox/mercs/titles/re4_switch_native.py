@@ -212,6 +212,7 @@ class Controller(N.Controller):
         self.write(self.player, struct.pack("<Q", self.base + CLONE_AT))
         if not self.attached():
             raise Uncertain("the player's vtable did not take the clone")
+        self.failed = False
 
     def detach(self):
         """Put the original vtable pointer back (the clone in the cave is only ever read)."""
@@ -221,11 +222,14 @@ class Controller(N.Controller):
             self.write(self.player, struct.pack("<Q", self.original))
         if self.q(self.player) != self.original:
             raise Uncertain("the player's vtable was not restored")
+        self.failed = False
 
     # ---- the call surface ----------------------------------------------------------------------------------------------
 
     def call(self, off, *args, timeout=CALL_TIMEOUT_S):
         """One native call on the game thread: publish the request, wait for done, return x0. Never replays."""
+        if self.failed:
+            raise Unavailable("the harness is in an uncertain state after a timed-out call; detach and re-attach first")
         if not self.attached():
             raise Unavailable("the harness is not attached to the player")
         if self.mailbox is None:
@@ -241,8 +245,17 @@ class Controller(N.Controller):
         self.write(self.mailbox + MAILBOX["args"], struct.pack("<7Q", *args, *([0] * (7 - len(args)))))
         self.write(self.mailbox + MAILBOX["generation"], struct.pack("<Q", generation))
         self.write(self.mailbox + MAILBOX["state"], struct.pack("<I", STATE["requested"]))
-        self.wait(lambda: self.w(self.mailbox + MAILBOX["state"]) == STATE["done"], timeout)
+        try:
+            self.wait(lambda: self.w(self.mailbox + MAILBOX["state"]) == STATE["done"], timeout)
+        except Uncertain:
+            # A request left in the mailbox could run later (a paused game resuming, a stage load): retire it and
+            # refuse further calls until the harness is re-attached, so a timed-out call is never replayed.
+            self.failed = True
+            self._retire()
+            raise
         if self.q(self.mailbox + MAILBOX["generation"]) != generation:
+            self.failed = True
+            self._retire()
             raise Uncertain("the mailbox generation changed under the call; the result is not trusted")
         if self.q(self.player + 0) != self.base + CLONE_AT:
             raise Uncertain("the player's vtable changed during the call")
@@ -263,6 +276,13 @@ class Controller(N.Controller):
 
     def player_position(self) -> tuple:
         return struct.unpack("<3f", self.rd(self.player + R.U_POS, 12))
+
+    def _retire(self):
+        """Put the mailbox back to idle so a request nobody is waiting for cannot run later (best effort)."""
+        try:
+            self.write(self.mailbox + MAILBOX["state"], struct.pack("<I", STATE["idle"]))
+        except (OSError, ValueError, TypeError):
+            pass
 
     def player_life(self):
         """The player's own life field (module+`PLAYER_LIFE`, u16), or None when it reads outside `LIFE_SANE`."""

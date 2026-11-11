@@ -190,11 +190,14 @@ def test_a_timeout_is_uncertain_and_the_request_is_never_replayed(monkeypatch):
     ctl.attach()
     with pytest.raises(N.Uncertain):
         ctl.call(0x1000, 1)
-    published = [w for w in ctl.writes if w[0] == MAILBOX + CODE.MAILBOX["state"]]
-    assert len(published) == 1
-    with pytest.raises(N.Unavailable, match="incomplete"):
+    states = [struct.unpack("<I", d)[0] for at, d in ctl.writes if at == MAILBOX + CODE.MAILBOX["state"]]
+    assert states == [CODE.STATE["requested"], CODE.STATE["idle"]]       # published once, then retired
+    with pytest.raises(N.Unavailable, match="uncertain state"):
         ctl.call(0x1000, 1)
-    assert len([w for w in ctl.writes if w[0] == MAILBOX + CODE.MAILBOX["state"]]) == 1
+    assert len([w for w in ctl.writes if w[0] == MAILBOX + CODE.MAILBOX["state"]]) == 2
+    ctl.detach()
+    ctl.attach()                                                         # a fresh attach clears the refusal
+    assert ctl.failed is False
 
 
 def test_a_changed_generation_is_not_trusted(monkeypatch):
