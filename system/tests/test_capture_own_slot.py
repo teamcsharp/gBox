@@ -360,6 +360,24 @@ def test_a_report_on_a_bot_demo_says_it_is_a_live_demo_report(reports):
     assert "## Run kind\nBot demo (autoplay)" in body and "Ghidra" in body
 
 
+def test_a_report_on_an_agent_test_session_names_the_run_kind(reports):
+    """A report filed on an agent-owned session names the run kind so Hermes knows it is an agent test, not a bot demo."""
+    reports.start("dolphin")
+    plain = reports.store.get("request", file_issue(reports))["body"]
+    assert "## Run kind" not in plain
+    reports.store.put("slabel", SID, {"owner": "agent"})
+    body = reports.store.get("request", file_issue(reports))["body"]
+    assert "## Run kind\nAgent test session" in body and "agent test" in body
+
+
+def test_an_operators_claimed_session_is_not_an_agent_test(reports):
+    """A session the operator claimed (owner=you) is not treated as an agent test session."""
+    reports.start("dolphin")
+    reports.store.put("slabel", SID, {"owner": "you"})
+    body = reports.store.get("request", file_issue(reports))["body"]
+    assert "## Run kind" not in body
+
+
 def test_other_emulators_keep_their_own_save_state(reports):
     """No slot of gBox's own (DuckStation, mGBA, RPCS3...): today's session_op save_state, saying no false slot."""
     reports.start("dolphin")
