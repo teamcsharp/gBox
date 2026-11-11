@@ -170,8 +170,11 @@ def _recover(bot, action, player, now, config):
         # (a routed yield keeps his heading, so the probe nearest it would be forward: back off it instead)
         side_err = config.wrap(err + (math.pi / 2 if bot.stats.get("wall_hits", 0) % 2 else -math.pi / 2))
         side = min(probes, key=lambda item: abs(config.wrap(item[0] - side_err)))[1]
-        movement = (away,) if elapsed < config.WALL_BACK_S else (side,) \
-            if elapsed < 2 * config.WALL_BACK_S else tuple(bot._turn(err, config.TURN_TOL))
+        # Coach 8550: 19 of 27 recoveries failed in a Licker crowd - after the two probes he stood turning for 1.5 s
+        # of the 2 s window. Keep probing (back, side, the other side, back...) until displacement is observed.
+        other_err = config.wrap(err + (-math.pi / 2 if bot.stats.get("wall_hits", 0) % 2 else math.pi / 2))
+        other = min(probes, key=lambda item: abs(config.wrap(item[0] - other_err)))[1]
+        movement = (away, side, other, away)[int(elapsed / config.WALL_BACK_S) % 4:][:1]
         why = "a short step back off the route's wall, then the route again" if rec.get("route") else \
             "bounded back/side probe; waiting for observed movement"
     else:
