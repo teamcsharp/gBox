@@ -298,3 +298,10 @@ Then send it the heavy analysis work.
   (`/home/ehm_eckx/gBox/system` is not a git checkout) - the G3 watch needs an RE4 round to record its loads, and
   MercMode now alternates one round per title (RE4 -> RE6 Sherry/Rail Yard observed live), so the next RE4 block records
   them. Left alone: the Hermes recorders `pso_padwatch.py` / `pso_demo_rec.py` (not input drivers).
+- 2026-11-10 21:10: merged `ds-grenade-re4-bss-20261110` @ `96954533` into main (`63ae6f93`) - **the reason the E3 watch never
+  appeared in telemetry**: `gbox/tools.py`'s autoplay telemetry `body()` publishes only scalar stats
+  (`{k: v for k, v in live.items() if isinstance(v, (int, float, str, bool))}`), so the watch dict/list were silently
+  dropped. The watch now goes out as JSON strings (`bss_watch`, `bss_watch_loads`), and `choose_mailbox()` parses the
+  published string form. Targeted gate 45 passed, 1 skipped. The operator's bot-reload said "no loaded bot module
+  changed" because the loaded module matched the share's (old) copy - after this merge the deploy copies the new file
+  and one more bot-reload (or the 05:00 restart) makes the watch visible on the next RE4 block.
