@@ -3748,23 +3748,9 @@ class Bot:
             dying = self._dying(p, now)
             if dying is not None:
                 return dying
-        if held or now < self.break_until or (state is None and self.grabbed(p, near, now)) or self.held(p, now):
+        if held or (state is None and (now < self.break_until or self.grabbed(p, near, now) or self.held(p, now))):
             self.quick, self.qshot_release, self.periodic_qa_arm = 0, False, None
             self._periodic_qa_interrupt()
-            # Grab panic (damage cluster fc45a6229fe006d0): an enemy >GRAB_PANIC_ERR off facing means the
-            # WIGGLE stick round is pointing the wrong way; turn toward the grabber's bearing and break at
-            # once instead of waiting for the WIGGLE cycle to face him. Fires for all held-branch cases
-            # (held, grabbed, break_until, held(p,now)), not just RAM-confirmed holds.
-            cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
-            gbearing = lambda e: wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - cam_yaw)
-            held_behind = [e for e in live if flat(e) <= QT_BEHIND_R and abs(gbearing(e)) > GRAB_PANIC_ERR]
-            if held_behind and not self.down:
-                self.stats["grab_panics"] = self.stats.get("grab_panics", 0) + 1
-                if held and not self.in_hold:
-                    self.hold_pressed = True
-                self._gun_down()
-                return self._go("held", "grab_panic", {"hold": ("ldown", "b")},
-                                f"held (action {state}): one {flat(held_behind[0]):.0f} cm behind: panic turn + break")
             if held:                                         # RAM says a zombie holds him: shake him off
                 if not self.in_hold:
                     self.stats["holds"] += 1
@@ -3776,6 +3762,18 @@ class Bot:
                 if shown is not None:
                     self.hold_pressed = True
                     return shown
+                # Grab panic (damage cluster fc45a6229fe006d0): held with an enemy >GRAB_PANIC_ERR off facing
+                # means the WIGGLE stick round is pointing the wrong way; turn toward the grabber's bearing
+                # and break at once instead of waiting for the WIGGLE cycle to face him
+                cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
+                gbearing = lambda e: wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - cam_yaw)
+                held_behind = [e for e in live if flat(e) <= QT_BEHIND_R and abs(gbearing(e)) > GRAB_PANIC_ERR]
+                if held_behind:
+                    self.stats["grab_panics"] = self.stats.get("grab_panics", 0) + 1
+                    self.hold_pressed = True
+                    self._gun_down()
+                    return self._go("held", "grab_panic", {"hold": ("ldown", "b")},
+                                    f"held (action {state}): one {flat(held_behind[0]):.0f} cm behind: panic turn + break")
                 if snap.get("auto_qte") and now - self.hold_since < AUTO_QTE_WAIT_S:
                     self._gun_down()                         # the game's auto QTE: nothing pressed for a while
                     self.still = None
@@ -4564,7 +4562,7 @@ class Bot:
         # Grab panic: a held state with an enemy >GRAB_PANIC_ERR off facing overrides the standard quick_turn
         # gap and turns immediately (damage cluster fc45a6229fe006d0: the held branch keeps the bot still while
         # the one behind finishes the grab; the panic turn fires before the turn completes, breaking the hold)
-        held_state = p.get("state") in (8, 9, 25) or (p.get("state") is None and (now < self.break_until or self.held(p, now)))
+        held_state = p.get("state") in (8, 9, 25)   # RE6 held/grabbed RAM states
         if held_state and behind and not has_front and not self.down:
             self.stats["grab_panics"] = self.stats.get("grab_panics", 0) + 1
             self.stats["quick_turns"] += 1
