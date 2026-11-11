@@ -406,3 +406,12 @@ Then send it the heavy analysis work.
   from ~17 min back (each ~2-3 min) then RE4, so the queue re4 -> re5 -> re6 is being played. The RE5 sessions are
   short (~150-200 s each) - worth a check next round whether their No Mercy round ends early (death) or the title's
   round reader sees an end early.
+﻿
+- 2026-11-10 21:1x: **RE5's rounds are not fights - the bot stalls at CHARACTER SELECT.** The round reports explain the
+  long-standing "RE5 dies in 2-3 minutes": six consecutive RE5 reports are `outcome: lost` with **0 or 1 shots**, and
+  two frames of the live RE5 session ~2 minutes apart are the same **CHARACTER SELECT** screen (Chris Redfield, BSAA,
+  A OK). The title screen and character select are reached (input works), but nothing confirms the character, so the
+  round never starts and the session ends as "lost". Next: the RE5 title's menu state machine (the known-red RE5 Switch
+  area) - it must press OK on character select and go through stage select; RE4/RE6 do not stall here. Also confirmed:
+  the round-report API is `GET /api/mercs/round-reports` (+ `/{id}`), with `report.metrics` and `outcome`, the
+  live verification source for MercMode bots.
