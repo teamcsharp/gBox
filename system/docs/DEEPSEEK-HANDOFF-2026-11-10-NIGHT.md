@@ -284,3 +284,17 @@ Then send it the heavy analysis work.
 - 2026-11-10 20:20: merged `ds-grenade-re4-bss-20261110` @ `3a6a2885` into main (`17766d37`) - `choose_mailbox()` turns
   E3's telemetry evidence into one page: it intersects the all-zero pages across every recorded stage load and returns
   the first in the vetted order, so the watch result becomes a one-line `MAILBOX_AT` commit. Targeted gate 83 passed.
+﻿
+- 2026-11-10 19:4x-19:5x: **the operator's PC plays while they work** (operator: "play PSO on the i9 despite me being on the
+  PC"). Added the per-PC `allow_while_active` background-testing policy (`background_testing.policy` +
+  `guarded_reason(allow_active=None)` resolves it; `POST /api/testing/workers/{wid}` stores it beside the budget;
+  tests in `test_background_testing.py`), set `i9-NUC` to `allow_while_active: true` and budget 90, and **restarted
+  the i9's gBox** (it ran since 08:21 with the old code; new pids 44900/51820, health back in 26 s, worker re-registered).
+  Then: two PSO `launch_game` jobs (this session's and the other agent's, both held by the idle rule) were admitted;
+  the duplicate was cancelled, one PSO session runs (`3998f537ab154a22-b13f235d1b2e42a1`), and the **PSO campaign
+  autoplay** (`pso-episodes-1-2`) started on it - a frame shows Dolphin past the title screen into the world.
+  `7a4952d8` verification: on `origin/main`; the Spark's `deploy`-actor bot-reload reports `ok: true, "no loaded
+  bot module changed: nothing to reload"` (its loaded modules already match), and `update-repo` cannot fast-forward
+  (`/home/ehm_eckx/gBox/system` is not a git checkout) - the G3 watch needs an RE4 round to record its loads, and
+  MercMode now alternates one round per title (RE4 -> RE6 Sherry/Rail Yard observed live), so the next RE4 block records
+  them. Left alone: the Hermes recorders `pso_padwatch.py` / `pso_demo_rec.py` (not input drivers).
