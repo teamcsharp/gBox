@@ -48,6 +48,11 @@ _CREATE_LOCK = threading.Lock()
 # bomb (0x116) - all on uWpBomb's own throw / explosion code. What is missing for them is a spawn image not pinned to
 # the flash DTI (spawn.c links FLASH_DTI) and a live receipt.
 RING_VERIFIED_KINDS = ("flash",)
+#: The parameterised class spawn/detonate (classes.py) runs the item factory and loads the class's resources on its
+#: first call; the flash's 1 s wait is too tight for it (the first live hand ring timed out after 1295 ms, 2026-11-11
+#: 13:51, and left the controller uncertain), so the derived pair gets its own, wider budget.
+CLASS_SPAWN_TIMEOUT_S = 3.0
+CLASS_WAIT_S = 2.0
 # Implemented but not yet verified live (the handoff's "get a live receipt per kind, then advertise"): the
 # parameterised spawn/detonate pair in native/re6_061d2a06/classes.py takes the class, so the ring *can* fire them
 # (`allow_unverified` on the controller, never on the queue); grenade_kinds() keeps advertising only the verified
@@ -535,7 +540,7 @@ class Controller:
         if kind == "flash":
             unit = self.call(0x18F2880, self.player)
         else:
-            unit = self.call(CLASSES.SPAWN_CLASS[0], self.player, spec.dti)
+            unit = self.call(CLASSES.SPAWN_CLASS[0], self.player, spec.dti, timeout=CLASS_SPAWN_TIMEOUT_S)
         if not R.ptr_ok(unit):
             raise Unavailable(f"native {kind} allocation refused")
         born = self.w(unit + 0x1308)
@@ -546,7 +551,7 @@ class Controller:
                 raise AllocationLost(f"{kind} allocation changed before detonation: unit={unit:#x}, "
                     f"generation={born}->{current_born}, owner={owner:#x}, player={self.player:#x}")
             return R.unit_action(self, unit) == "cWpAction_wp_act_throw"
-        self.wait(initialized)
+        self.wait(initialized, timeout=CLASS_WAIT_S)
         # Relocate the live transform onto the ring before the blast. Keep y (the floor height the spawn copied).
         self.write(unit + RING_UNIT_POS, struct.pack("<3f", x, y, z))
         if kind == "flash":
@@ -560,7 +565,7 @@ class Controller:
             return {"index": index, "projectile_generation": born, "pos": [round(x, 1), round(y, 1), round(z, 1)],
                     "explosion_flag": flagged}
         carried = self.q(unit)                       # the class this allocation actually carries, not a table's
-        if self.call(CLASSES.DETONATE_CLASS[0], unit, self.player, born, self.generation, carried) != 1:
+        if self.call(CLASSES.DETONATE_CLASS[0], unit, self.player, born, self.generation, carried, timeout=CLASS_SPAWN_TIMEOUT_S) != 1:
             raise Unavailable(f"native {kind} explosion transition not confirmed")
         return {"index": index, "kind": kind, "projectile_generation": born,
                 "pos": [round(x, 1), round(y, 1), round(z, 1)], "class_vtable": hex(carried)}

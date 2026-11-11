@@ -63,7 +63,7 @@ def ring_controller(hp_after=1000, spawn_fail_at=None, position=(1000.0, 800.0, 
     put(ctl.base + R.S_GAMEMAN, struct.pack("<Q", 0x90000000))
     put(0x90000000 + R.GM_PHASE, struct.pack("<i", R.PHASE_PLAYING))
 
-    def call(off, *args):
+    def call(off, *args, **kw):
         if off == SPAWN:
             n = len(ctl.spawns)
             if spawn_fail_at is not None and n == spawn_fail_at:
@@ -183,3 +183,35 @@ def test_a_missing_explosion_flag_does_not_fail_a_flash_that_detonated():
     assert result["state"] == "confirmed" and result["verified"] is True
     assert result["detonated"] == 10
     assert all(g["explosion_flag"] is False for g in result["grenades"])
+
+
+def test_the_parameterised_hand_ring_gets_its_own_spawn_budget(monkeypatch):
+    """The first live hand ring timed out at 1295 ms on the flash's 1 s budget (2026-11-11 13:51); the class spawn
+    and detonate now carry CLASS_SPAWN_TIMEOUT_S and the initialized wait CLASS_WAIT_S."""
+    monkeypatch.setattr(R, "inventory_items", lambda m, p: {0x113, 0x114, 0x115})
+    ctl = ring_controller()
+    ctl.stopped = lambda fn: fn()                     # the fake has no /proc: the install runs straight through
+    ctl.install = lambda at, data: ctl.put(at, data)
+    seen = {}
+    real = ctl.call
+
+    def recording(off, *args, **kw):
+        if off == N.CLASSES.SPAWN_CLASS[0]:
+            seen["spawn"] = kw.get("timeout")
+            unit = 0x240000000
+            ctl.put(unit + 0x1308, struct.pack("<I", 5001))
+            ctl.put(unit + 0x1300, struct.pack("<Q", ctl.player))
+            ctl.put(unit, struct.pack("<Q", ctl.base + N.CLASSES.CLASSES["hand"].vtable))
+            ctl.spawns.append(unit)
+            return unit
+        if off == N.CLASSES.DETONATE_CLASS[0]:
+            seen["detonate"] = kw.get("timeout")
+            return 1
+        return real(off, *args)
+
+    ctl.call = recording
+    ctl.wait = lambda predicate, timeout=1.0: True          # the action transition is the live probe's job
+    result = ctl.grenade_ring("hand", count=1, radius_cm=600, inner_cm=600, allow_unverified=True)
+    assert result["state"] == "confirmed" and result["kind"] == "hand" and result["detonated"] == 1
+    assert seen["spawn"] == N.CLASS_SPAWN_TIMEOUT_S and seen["detonate"] == N.CLASS_SPAWN_TIMEOUT_S
+    assert N.CLASS_SPAWN_TIMEOUT_S > 1.0 and N.CLASS_WAIT_S > 1.0
