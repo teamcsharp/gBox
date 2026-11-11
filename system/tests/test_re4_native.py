@@ -528,3 +528,18 @@ def test_ready_returns_the_player_and_a_generation_for_the_worker_epoch(monkeypa
     player, generation = ctl.ready()
     assert (player, generation) == (PLAYER, 7)
     assert ctl.player == PLAYER and ctl.player_id == 7
+
+
+def test_the_re4_check_guards_the_player_without_the_re6_sp(monkeypatch):
+    """The base class's check() reads RE6's `self.sp` and generation offsets; the RE4 controller has neither, so the
+    first real selftest died on "'Controller' object has no attribute 'sp'" (live 2026-11-11 12:06, session
+    ae2bda4751dc44b1-b3962aa67f134135). The RE4 guard checks the process/build and the bound unit instead."""
+    ctl = fake_controller(monkeypatch)
+    ctl.player, ctl.player_class, ctl.player_id, ctl.original = PLAYER, 0xB0C0A0, 7, PLAYER_VT
+    monkeypatch.setattr(N.R, "read_unit",
+                        lambda m, addr: {"ptr": addr, "id": m.q(addr + 0x110) & 0xFFFFFFFF, "vtable": m.q(addr)})
+    del ctl.check                          # the fake shadows it with a no-op: exercise the class guard
+    ctl.check()                            # no AttributeError, no sp read
+    put(ctl.mem, PLAYER, struct.pack("<Q", BASE + 0x999))
+    with pytest.raises(N.Unavailable, match="vtable"):
+        ctl.check()

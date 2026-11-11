@@ -156,6 +156,26 @@ class Controller(N.Controller):
         if self.rd(self.base + R.SIG_OFF, len(R.SIGNATURE)) != R.SIGNATURE:
             raise Unavailable("RE4 executable changed")
 
+    def check(self):
+        """The identity guard every write passes (the base class's check reads RE6's `sp`/generation offsets, which
+        this module does not have: the first real selftest died on "'Controller' object has no attribute 'sp'").
+
+        The process and the executable must still be the recorded ones; once a player is bound, its unit id must not
+        change and its vtable must be the class it had or, while attached, the clone.
+        """
+        self.check_build()
+        if self.player is None:
+            return
+        unit = R.read_unit(self, self.player)
+        if unit is None or unit.get("id") != self.player_id:
+            raise Unavailable("the player unit changed")
+        vt = unit.get("vtable")
+        if self.attached():
+            if vt != self.base + CLONE_AT:
+                raise Unavailable("the harness clone is not on the player")
+        elif self.player_class is not None and vt != self.base + self.player_class:
+            raise Unavailable("the player's vtable changed while the harness is detached")
+
     def write(self, at, data):
         """A guest write. Refuses `main`'s `.text`/`.rodata`: only `install()` may touch the cave (and only there).
 
