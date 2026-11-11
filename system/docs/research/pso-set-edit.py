@@ -87,6 +87,49 @@ def main(argv):
         print(f"bytes changed: {changed} (expected 12) | objects changed: {len(moved)} (expected 1)")
         print(f"wrote {destination}")
         return 0 if changed == 12 and len(moved) == 1 else 3
+    if command == "add":
+        # clone an existing record's class into a new record at the end of the file. The format has no header and no count field
+        # (every set file is an exact multiple of 68 bytes), so the record count follows from the file size.
+        template = int(argv[3])
+        x, y, z = (float(argv[4]), float(argv[5]), float(argv[6]))
+        source_record = data[template * RECORD:(template + 1) * RECORD]
+        if len(source_record) != RECORD:
+            print(f"no record {template}")
+            return 2
+        added = bytearray(source_record)
+        added[POS[0]:POS[0] + 4] = struct.pack("<f", x)
+        added[POS[1]:POS[1] + 4] = struct.pack("<f", y)
+        added[POS[2]:POS[2] + 4] = struct.pack("<f", z)
+        edited = bytearray(data) + added
+        OUT.mkdir(parents=True, exist_ok=True)
+        destination = OUT / set_name
+        destination.write_bytes(bytes(edited))
+        after = decode(bytes(edited), table)
+        print(f"appended record {len(after) - 1} as a copy of record {template} ({after[template]['class']}) "
+              f"at ({x:.1f},{y:.1f},{z:.1f})")
+        print(f"records {len(data) // RECORD} -> {len(after)} | size {len(data)} -> {len(edited)} "
+              f"({len(edited) % RECORD} bytes remainder)")
+        print(f"wrote {destination}")
+        return 0 if len(edited) % RECORD == 0 and len(after) == len(data) // RECORD + 1 else 3
+    if command == "validate":
+        x, z = float(argv[3]), float(argv[4])
+        floor = str(int(set_name.split("forest")[1][:2])) if "forest" in set_name else "1"
+        graph_path = REL.parent / "routes" / f"forest{floor}-rooms-mesh.json"
+        if not graph_path.exists():
+            print("no room graph for floor", floor)
+            return 2
+        import math
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        best = {"d": 1e9, "room": None}
+        for room in graph["rooms"]:
+            for cell in room["cell_list"]:
+                distance = math.hypot(x - cell[0], z - cell[1])
+                if distance < best["d"]:
+                    best = {"d": distance, "room": room["room"]}
+        inside = best["d"] <= 7.5
+        print(f"({x:.0f},{z:.0f}) on floor {floor}: nearest room {best['room']} at {best['d']:.1f} units "
+              f"-> {'INSIDE a room' if inside else 'OUTSIDE the walkable rooms'}")
+        return 0 if inside else 3
     if command == "verify":
         original = (REL / argv[2]).read_bytes()
         other = (REL / argv[3]).read_bytes() if not Path(argv[3]).is_absolute() else Path(argv[3]).read_bytes()
