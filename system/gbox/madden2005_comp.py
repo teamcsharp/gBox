@@ -69,3 +69,29 @@ def registry_from_dol(dol: bytes) -> dict:
         o = terf.va_to_off(dol, va)
         out[slot] = bytes(dol[o:o + 4])
     return out
+
+
+def payload_base(buf) -> int:
+    """File offset the DIR1 member offsets are relative to: the 'DATA' block that
+    follows the COMP block (COMP at TERF data_base, size u32 at +4). DIR1 offsets
+    are relative to this, NOT to data_base (which only locates the COMP block)."""
+    from . import madden2005_terf as terf
+    idx = terf.parse_terf(buf)
+    if bytes(buf[idx.data_base:idx.data_base + 4]) != COMP:
+        return idx.data_base
+    return idx.data_base + struct.unpack_from(">I", buf, idx.data_base + 4)[0]
+
+
+def decode_member(buf, i: int) -> bytes:
+    """Return decoded bytes of TERF member i (stored members returned as-is)."""
+    from . import madden2005_terf as terf, madden2005_lzh1 as lzh1
+    idx = terf.parse_terf(buf)
+    entries, _ = parse_comp(buf, [m.size for m in idx.members])
+    m, e = idx.members[i], entries[i]
+    start = m.offset - idx.data_base + payload_base(buf)
+    raw = bytes(buf[start:start + m.size])
+    if e.codec == CODEC_STORED:
+        return raw
+    if e.codec != CODEC_PACKED:
+        raise ValueError(f"unsupported codec {e.codec}")
+    return lzh1.decode(raw, e.decoded_size)
