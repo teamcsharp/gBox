@@ -42,6 +42,30 @@ def kind_of(name: str) -> str | None:
     return None
 
 
+def sets_for_floor(found: list[dict], floor: int, *, episode2: bool = False) -> list[dict]:
+    """The editable sets that belong to a floor id, by the area's map name (`pso_floor_map`).
+
+    A floor resolves to its area name (`map_forest01`), and the area's sets are every `map_<area>...{o,d}.dat` file:
+    the area-level `map_forest01d.dat` and its layouts `map_forest01_00o.dat` .., whichever the disc carries. This is
+    the join a page or a CLI user wants - "edit Forest 1" instead of remembering file names - and it is a pure filter
+    over `sets()`, so it works on any disc.
+    """
+    from . import pso_floor_map as F
+    area = F.area_for_floor(floor, episode2)
+    if not area:
+        return []
+    stem = area
+    out = []
+    for row in found:
+        name = row["name"].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if not name.startswith(stem):
+            continue
+        rest = name[len(stem):]
+        if rest.startswith(("_", "o.", "d.", "e.", "ad.")) and name.endswith((".dat", ".evt")):
+            out.append(row)
+    return out
+
+
 class EditError(ValueError):
     """An edit the editor refuses to hand to the writer."""
 
