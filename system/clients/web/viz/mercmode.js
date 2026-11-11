@@ -83,6 +83,8 @@
     const live=run?.session_id&&['playing','starting'].includes(run.phase);
     const parts=[];
     if(run)parts.push(`<b>${escape(run.phase)}: ${escape(run.title||run.game_id||'a game')}</b>${run.mercmode?` · ${Number(run.mercmode_rounds)||0} verified rounds. ${host.settings?.enabled?'Next title follows the native round end.':'Autobot stays in this game; title rotation is off.'}`:''}`);
+    const demo=run&&(run.mercmode?.selection?.purpose||run.purpose||run.mod||run.mercmode?.selection?.mod);
+    if(demo)parts.push(`<small data-mm-demo>Demonstrating: ${escape(demo)}</small>`);
     else parts.push('<b>Nothing playing</b>');
     if(d?.command)parts.push(`<small>Dispatched: ${escape(d.command)}${d.title?' '+escape(TITLE_NAMES[d.title]||d.title):''}${d.pip?' · PiP on this PC':''}${d.applied===false?' · on its way to this PC':''}${d.lapsed?` · ${escape(d.lapsed)}`:''}</small>`);
     if(host.scheduler_note&&!(run&&run.phase==='playing'))parts.push(`<small>Scheduler: ${escape(host.scheduler_note)}</small>`);
@@ -213,7 +215,7 @@
   function describe(entry,catalog){
     const known=catalog?.[entry.title],stage=entry.stage==null?'random stage':(known?.stages?.[entry.stage]||`stage ${entry.stage}`);
     return [TITLE_NAMES[entry.title]||entry.title,entry.mode||(known&&Object.keys(known.modes).length>1?'random mode':null),
-      entry.character||'random character',stage].filter(Boolean).join(' · ');
+      entry.character||'random character',stage,entry.purpose||(entry.mod?`demonstrating: ${entry.mod}`:null)].filter(Boolean).join(' · ');
   }
   function formOptions(catalog,title,mode){
     const known=catalog?.[title]||{modes:{},stages:[]},modes=Object.keys(known.modes);

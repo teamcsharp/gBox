@@ -228,3 +228,16 @@ Then send it the heavy analysis work.
   Tests: 55 passed (editor/editor-api/views/classes/registries/llm), 52 passed (editor/body set). Superseded and left
   unmerged: `body-swap` and `swap-gc` (cp12 has the rigged swap), `cp11-editor-page` and `swapfit-ui` (older
   variants of editor-page2), `classes-family` / `object-loader-findings`.
+﻿
+- 2026-11-10 20:4x: MercMode visibility (the operator: "why isn't MercMode alternating between RE4/5/6 ... the window needs to
+  indicate that something is being demonstrated"). On the Spark's plane: titles re5/re6/re4 were set to **5 rounds per
+  title** with a title-grouped 20-round queue, so it looked stuck on RE4 between rotations. Changed live via
+  `POST /api/mercmode`: `rounds_per_title` 1 and the same 20 entries **interleaved** re4 → re5 → re6 → ... (every mod,
+  stage and character preserved), so each native round boundary switches version. The MercMode panel now also names the
+  demonstration: the run line shows `Demonstrating: <mod>` (`run.mod`) and each queued round shows its mod
+  (`system/clients/web/viz/mercmode.js`); the queue's runs are recovery tests
+  (`recovery-re4-fit-v4-20261110`, `recovery-series-01-20261110`, `recovery-re6-enemy-cast-01-20261110`).
+  Separately: the PSO **attract** launch `a43d86814ee34c36` has been queued ~32 min on i9-NUC, held only by the
+  operator-idle admission ("Waiting for five minutes without operator input"); it starts after 5 min with no input on that
+  PC. Its run's `result` carries `unsupported operand type(s) for +: 'int' and 'dict'` from the previous mission - to
+  trace next.
