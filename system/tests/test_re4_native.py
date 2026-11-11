@@ -543,3 +543,15 @@ def test_the_re4_check_guards_the_player_without_the_re6_sp(monkeypatch):
     put(ctl.mem, PLAYER, struct.pack("<Q", BASE + 0x999))
     with pytest.raises(N.Unavailable, match="vtable"):
         ctl.check()
+
+
+def test_the_selftest_reports_the_mailbox_counters_when_the_call_never_completes(monkeypatch):
+    """The E6 diagnosis: a call that never completes must return the ticks/state, so "the dispatcher is never invoked"
+    (ticks unchanged) and "it runs but the handshake is wrong" (ticks rose) can be told apart live."""
+    ctl = fake_controller(monkeypatch, complete=False)
+    ctl.attach()
+    before = ctl.ticks()
+    out = ctl.selftest()
+    assert out["state"] == "uncertain" and "native completion uncertain" in out["reason"]
+    assert out["ticks_before"] == before and out["ticks"] == before
+    assert out["mailbox_state"] is not None and out["attached_after"] is True

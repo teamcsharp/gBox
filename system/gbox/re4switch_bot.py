@@ -233,6 +233,20 @@ def _boundary(rnd: Round, end: dict, snap: dict, stats: dict, at: float) -> dict
             "mode": "mercenaries", "stage": stage, "character": character, "witness": witness}
 
 
+def _ring_step(ad, stats):
+    """The bot's own grenade ring for this title (gbox.mercs.grenade_ring): its per-tick step, or None.
+
+    The rule refuses on its own (the flash minute, the learned blast reach, no player); this hook only gives it the
+    playbook's tick and keys. Built once per run so its history and cooldown survive the round.
+    """
+    try:
+        from .mercs import grenade_ring
+        return grenade_ring.control(ad, {"map_id": MAP_ID, "menus": "gbox.mercs.titles.re4_switch"})
+    except Exception as exc:                             # noqa: BLE001 - a rule that cannot load never ends a run
+        stats["grenade_ring_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        return None
+
+
 def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, clock=time.time,
          max_seconds: float | None = None, still_s: float = 12.0, game=None, round_boundary=None, m=None,
          tactical=None, session_id: str = "", source_job_id: str = "", **_) -> dict:
@@ -273,6 +287,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
     stats["ram"] = m is not None
     keys = Keys(send)
     bot = driver.Bot(stats=stats, clock=clock) if m is not None else None
+    ring_step = _ring_step(ad, stats)                # the bot's own ring rule (gbox.mercs.grenade_ring)
     started = clock()
     last_step = 0.0
     ticks = 0
@@ -508,6 +523,16 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
         if bot is not None and p and p.get("pos") is not None:
             # --- the fight, from RAM
             stats["fight"] = "ram"
+            if ring_step is not None:                    # the ring takes its own tick: keys released first
+                try:
+                    ring_out = ring_step(snap, stats, clock(), lambda _keys: (keys.release() or True))
+                except Exception as exc:                 # noqa: BLE001 - a ring never ends the round
+                    stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:160]
+                else:
+                    if ring_out.get("fired"):
+                        re4_walk.publish(pub, snap, bot, "playing")
+                        sleep(BOW_FIGHT_TICK_S if (snap or {}).get("weapon_class") == BOW_CLASS else FIGHT_TICK_S)
+                        continue
             keys.apply(bot.tick(snap, now=clock()))
             re4_walk.publish(pub, snap, bot, "playing")
             sleep(BOW_FIGHT_TICK_S if (snap or {}).get("weapon_class") == BOW_CLASS else FIGHT_TICK_S)

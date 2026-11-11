@@ -571,3 +571,22 @@ def test_a_playbook_snapshot_publishes_the_bss_watch(monkeypatch):
     watch = json.loads(stats["bss_watch"])
     assert watch["stage"] == 3 and len(watch["pages"]) == 5
     assert [row["stage"] for row in json.loads(stats["bss_watch_loads"])] == [3]
+
+
+def test_the_playbook_builds_the_ring_rule_for_its_own_title(monkeypatch):
+    from gbox.mercs import grenade_ring
+    calls = []
+    monkeypatch.setattr(grenade_ring, "control",
+                        lambda ad, prof: calls.append(prof) or (lambda *a, **k: {"fire": False}))
+    stats = {}
+    step = B._ring_step(object(), stats)
+    assert calls == [{"map_id": B.MAP_ID, "menus": "gbox.mercs.titles.re4_switch"}]
+    assert callable(step) and "grenade_ring_error" not in stats
+
+
+def test_a_ring_rule_that_cannot_load_is_a_stat_not_a_crash(monkeypatch):
+    from gbox.mercs import grenade_ring
+    monkeypatch.setattr(grenade_ring, "control", lambda ad, prof: (_ for _ in ()).throw(RuntimeError("no rule")))
+    stats = {}
+    assert B._ring_step(object(), stats) is None
+    assert "no rule" in stats["grenade_ring_error"]

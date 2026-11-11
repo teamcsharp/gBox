@@ -526,11 +526,22 @@ class Controller(N.Controller):
 
         The dispatcher ticks on every entry, so a rising `ticks` counter plus a zero result proves the clone fires
         and the mailbox round trip works; that is the live proof checkpoint E6 asks for before any real op.
+
+        A call that never completes returns an uncertain receipt **carrying the mailbox counters** (ticks before/after
+        and the state word): the difference between "the dispatcher is not invoked at all" (ticks unchanged - the
+        clone's slot the game calls is not the one installed) and "it runs but the handshake is wrong" (ticks rose,
+        state stuck) is the live diagnosis E6 needs, and a bare reason cannot make it.
         """
         if not self.attached():
             self.attach()
         before = self.ticks()
-        result = self.call(CODE.SELFTEST_AT)
+        try:
+            result = self.call(CODE.SELFTEST_AT)
+        except Uncertain as exc:
+            return {"state": "uncertain", "reason": str(exc)[:300], "op": "re4_harness_selftest",
+                    "ticks_before": before, "ticks": self.ticks(),
+                    "mailbox_state": (self.w(self.mailbox + MAILBOX["state"]) if self.mailbox else None),
+                    "attached_after": self.attached(), "player_generation": self.player_id}
         return {"state": "confirmed", "verified": result == 0, "op": "re4_harness_selftest", "result": result,
                 "ticks_before": before, "ticks": self.ticks(), "player_generation": self.player_id}
 
