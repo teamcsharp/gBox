@@ -390,3 +390,12 @@ Then send it the heavy analysis work.
   qualifies there. The i9 planner fix therefore needs a newer Ollama, and the installer needs elevation this session
   cannot answer - so a **portable** `ollama-windows-amd64.zip` is downloading (no admin: run it beside the current
   install, same models dir, then `agent.vision_url` 127.0.0.1:11434 already points the campaign at it).
+﻿
+- 2026-11-10 21:1x: the operator's split: **MercMode on the gBox stream, PSO played locally by them.** Stopped the PSO
+  autoplay (`{"mission": "playbook: pso_campaign", "stopped": true}`) so the bot does not fight their pad; the PSO
+  session stays up for them. Rebuilt MercMode's rotation queue: re5/re6 only offer **no_mercy** (a `mercenaries`
+  entry for them is a 422), so the queue is now `re4(merc) -> re5(no_mercy) -> re6(no_mercy)` repeated three times,
+  `rounds_per_title` 1, `repeat_queue` true, and a `start` dispatch with `pip: true` put RE4 on air (frame: Leon
+  firing, 7-in-a-row combo, 01'56" on the clock). Code: `pso_campaign` now retries a failing planner for ten minutes
+  (`PLANNER_GIVE_UP_S`) instead of ending the run after five failed calls, with `planner_failing_for_s` in the
+  telemetry (31 tests in `test_pso_campaign.py`).
