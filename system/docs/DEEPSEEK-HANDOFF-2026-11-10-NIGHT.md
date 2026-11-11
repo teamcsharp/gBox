@@ -330,3 +330,15 @@ Then send it the heavy analysis work.
   behind it: title -> OFFLINE -> the saved buddy -> Pioneer 2. Next: the teleporter down to Forest 1, where the native
   combat driver fights. (Note for the lane: the intro narration returns to the title if pressed through on a new card;
   the created character is what turns the next pass into gameplay, so do not press A during the movie.)
+﻿
+- 2026-11-10 20:2x: PSO's campaign reached **Pioneer 2's Lab** on the i9: the frame shows the created FOmar at the Lab
+  counter with an NPC's message ("You may come back to the Lab before completing the field, if you want.") and the
+  HP/TP HUD - the teleporter burst before it was the city-to-Lab transition. The campaign is walking the hub and
+  talking to NPCs with the two controllers.
+  **Planner bottleneck identified and being fixed:** the PSO campaign's vision planner resolves to the Spark's Ollama
+  (`10.89.1.246:11434`, `qwen2.5vl:7b`) through `config.llm_endpoints`, and the Spark's GPU is busy playing
+  MercMode, so planner calls time out and the campaign walks into walls. The i9 has the 3090 and its own Ollama, but at
+  **0.5.7**, too old for `qwen2.5vl` ("requires a newer version of Ollama"). Downloading the current Windows
+  installer (1.86 GB; ~1.0 GB in at 20:2x) to upgrade it; added `[agent] vision_url = "http://127.0.0.1:11434"` (with
+  llm_url/model/searx_url) to the untracked `gbox.local-i9-nuc.toml` so `pso_campaign.vision_settings` uses the
+  local endpoint; this needs the i9's gBox restarted (do it when no PSO session is live, or let the live one end).
