@@ -50,3 +50,33 @@ Until then, the honest statement for P1 is: the *primitive* has no gate, the liv
 condition by design, and the city pad's condition (quest state, party state, or nothing at all) is still unlocated. That
 is why the lane's live work should keep using the dev warp for editor and survey evidence, and keep the quest route as
 P1's own acceptance problem.
+
+## The class vtables, and the pad that does not have one
+
+The lane found the class-name registry (`0x805D3138`, A3) but no way to reach a class's code. This pass found the
+convention and the answer for the city pad.
+
+**Convention.** A class's vtable carries its identity in its first word: a pointer at the **registry slot** of the class
+(`0x805D3138 + id*4`), followed by flags (`0x00010000`), two zero words, then the method pointers, then two data
+pointers. Two examples, read out of `.data`:
+
+```
+0x804b4280: 0x805d3150   -> name slot 6, then 0x00010000 0x00000000 0x00000000, 22 code pointers, 0x80442a38 ...
+0x804b4308: 0x805d3158   -> name slot 8, the same shape with its own methods
+```
+
+**Census.** Scanning the whole DOL for a word equal to a registry-slot address finds vtables for only **38 classes**
+(slots 6, 8, 10, 12, 14, 26, 28, 29, 30, 34, 46, 47, 86-90, 98-100, 104-107, 116, 118, 119, 128, 130, 140-142, 152,
+166, 192, 194, 196, 197), across `0x804B4200`-`0x804B9000`. The registry names **148** classes. So the executable
+instantiates fewer than a third of them as C++ objects - the rest are names only.
+
+**The city pad is not among them.** A direct search for a vtable header pointing at the `TObjCityMainWarp` (slot `0x5c`)
+or `TObjCityAreaWarp` (`0x5d`) name slots finds **nothing**, and neither do the ordinary object classes probed alongside
+them (`0x02` TOSensor, `0x10` TOSwitchAttack, `0x46` TObjCityDoor_Shop). The pad therefore is not an object of those
+classes in this build: the likely truth is that the city's warp triggers are **event-set** driven (`map_city00*.evt`),
+with the `TObjCity*Warp` names left over from another version, which is also the simplest explanation for "the
+teleporter does not answer" however it is approached.
+
+**Next step.** Read the city's event set and the `TObjMapWarp`/`TObjAreaWarp` family (whose entries *are* in the
+38-class vtable census) instead of the pad classes: the trigger, the destination and any quest condition should be in
+the event/`AreaWarp` path, not in a `TObjCity*Warp` update.
