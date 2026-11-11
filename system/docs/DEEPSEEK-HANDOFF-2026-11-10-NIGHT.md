@@ -342,3 +342,26 @@ Then send it the heavy analysis work.
   installer (1.86 GB; ~1.0 GB in at 20:2x) to upgrade it; added `[agent] vision_url = "http://127.0.0.1:11434"` (with
   llm_url/model/searx_url) to the untracked `gbox.local-i9-nuc.toml` so `pso_campaign.vision_settings` uses the
   local endpoint; this needs the i9's gBox restarted (do it when no PSO session is live, or let the live one end).
+﻿
+- 2026-11-10 20:3x: MercMode verified **fighting** on the Spark: a frame of the live RE6 No Mercy round (score 85,220,
+  97 kills, a 05'13" clock, a 002 combo, the blueprint-look enemy cast the recovery-re6-enemy-cast-01 mod installs,
+  a flamethrower heavy behind). The run has been on RE6 for ~45 min - a No Mercy round is long, and the queue rotates
+  one round per title, so RE4's watch block comes after this one. Also fixed: `pso_boot_local.py` imported gbox from
+  one lane's scratch clone (`C:\_tools\gBox\.tmp\main-repo\system`), which exists on no other machine; it now derives
+  `system/` and `system/tools/` from `__file__`. The i9 Ollama installer download is at ~1.24 of 1.86 GB.
+- 2026-11-10 22:45: merged `ds-grenade-re4-bss-20261110` @ `b63f77c0` into main (`971a01d3`) - **E5 hardening**: a timed-out
+  harness call now **retires its mailbox request** (state back to idle, best effort) and refuses further calls until
+  detach/re-attach, so a paused game, a stage load or a late dispatcher tick can never execute a timed-out request
+  later. The `Uncertain` still means the effect may have started, but it is never repeated. Targeted gate 77 passed.
+  Also of note from the static G3 pass: the `0x67B2A0..0x67B640` blast page is referenced by no code and no data at all
+  (no adrp, no pointers), so those descriptor slots are not the runtime dispatch table; the incendiary's class-0x16
+  dispatch is still open. Live: the same RE6 session has held the queue for hours (no RE4/RE5 block), so the E3 watch
+  and the CP0/D live receipts remain pending.
+﻿
+- 2026-11-10 20:4x: **PSO reached Forest 1 on the i9** - a frame shows the character (LYRA95, level 2, HP 22/40) in the
+  forest's stone ruins beside a teleport ring, dark enemies ahead and the action palette up: the campaign cleared the
+  Pioneer 2 hub and descended. Code: `pso_campaign.vision_settings` now prefers **this worker's own Ollama** when it
+  serves the model (a 2 s `/api/show` probe) before any configured remote endpoint, with an explicit
+  `agent.vision_url` still winning - the fix for the walk-into-walls planner timeouts (tests: local chosen, missing
+  local falls back, explicit URL respected; `test_pso_campaign.py` 30 passed). The i9 Ollama installer is at ~1.50 of
+  1.86 GB.
