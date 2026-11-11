@@ -69,12 +69,13 @@ def test_the_bows_weapon_routine_plays_x_the_fire_rate_and_goes_back_after():
     ad = world()
     st = {"fire_rate": 20.0}
     assert M._motion_rate(ad, snap(), st) == 2
-    assert f32(ad, PLAYER + W.P_MOTION_SPEED) == 20.0 and f32(ad, OBJ + W.OBJ_MOTION_SPEED) == 20.0
+    # the bow's floor is 40x (operator 2026-11-11), so a 20x setting still plays the bow at 40
+    assert f32(ad, PLAYER + W.P_MOTION_SPEED) == 40.0 and f32(ad, OBJ + W.OBJ_MOTION_SPEED) == 40.0
     assert st["motion_rate"]["kind"] == "bow"
     n = len(ad.writes)
     assert M._motion_rate(ad, snap(), st) == 0 and len(ad.writes) == n, "ours already: nothing written again"
     struct.pack_into("<f", ad.at[PLAYER], W.P_MOTION_SPEED, 1.0)       # the next shot's motion set it back
-    assert M._motion_rate(ad, snap(), st) == 1 and f32(ad, PLAYER + W.P_MOTION_SPEED) == 20.0
+    assert M._motion_rate(ad, snap(), st) == 1 and f32(ad, PLAYER + W.P_MOTION_SPEED) == 40.0
     set_routine(ad, (0, 1, 0, 0))                                      # the bow put away: walking
     M._motion_rate(ad, snap(), st)
     assert f32(ad, PLAYER + W.P_MOTION_SPEED) == 1.0 and f32(ad, OBJ + W.OBJ_MOTION_SPEED) == 1.0
@@ -82,10 +83,19 @@ def test_the_bows_weapon_routine_plays_x_the_fire_rate_and_goes_back_after():
 
 
 def test_a_gun_or_no_fire_rate_leaves_every_motion_alone():
-    for cls, mult in ((0x05, 20.0), (0x1C, 1.0)):
+    for cls, mult in ((0x05, 20.0), (0x13, 1.0)):     # a gun: its table paces it; a grenade with no fire_rate
         ad = world()
         M._motion_rate(ad, snap(cls), {"fire_rate": mult})
         assert not ad.writes, (cls, mult)
+
+
+def test_the_bow_plays_at_forty_even_with_no_fire_rate_setting():
+    """The operator 2026-11-11: the bow at 40 arrows a second whatever the fire-rate setting is (BOW_MOTION_X)."""
+    ad = world()
+    st = {"fire_rate": 1.0}
+    assert M._motion_rate(ad, snap(), st) == 2
+    assert f32(ad, PLAYER + W.P_MOTION_SPEED) == 40.0 and f32(ad, OBJ + W.OBJ_MOTION_SPEED) == 40.0
+    assert st["motion_rate"]["kind"] == "bow" and st["motion_rate"]["speed"] == 40.0
 
 
 def test_a_speed_the_game_set_since_is_never_overwritten_on_the_way_out():

@@ -433,6 +433,8 @@ def fire_rate(ad, multiplier, snap: dict | None = None) -> dict:
 # of the routine bytes and the speed (outside MOTION_SPEED_SANE: refused, nothing written) and read back. The state:
 # st["motion_rate"] = {"kind", "addrs": {address: the speed it read}, "speed"} while it is on.
 MOTION_RATE_MAX_X = 40.0
+#: The bow's own rate floor: the operator 2026-11-11 wants 40 arrows a second whatever the fire-rate setting is.
+BOW_MOTION_X = 40.0
 
 
 def _motion_rate(ad, snap: dict, st: dict) -> int:
@@ -445,9 +447,11 @@ def _motion_rate(ad, snap: dict, st: dict) -> int:
     n = 0
     try:
         kind = None
-        if mult > 1.0 and isinstance(ptr, int) and D.ptr_ok(ptr):
+        if isinstance(ptr, int) and D.ptr_ok(ptr):
             kind = W.motion_rate_kind(snap.get("weapon_class"), tuple(rd(ptr + W.P_ROUTINE, 4)))
-        if kind is None:
+        if kind == "bow":
+            mult = max(mult, BOW_MOTION_X)               # the operator: 40 arrows a second, whatever the fire rate
+        if kind is None or mult <= 1.0:
             if on:                                       # the routine is over: each speed back to what it was
                 for addr, was in list(on["addrs"].items()):
                     cur = struct.unpack("<f", rd(addr, 4))[0]
