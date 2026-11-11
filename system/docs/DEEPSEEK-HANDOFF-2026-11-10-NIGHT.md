@@ -146,3 +146,15 @@ Then send it the heavy analysis work.
   private page (E3), and the watch is five 16-byte reads per snapshot. **Restart:** the native controller is a new
   module and `interventions.native_controller` changed - both go live at the 05:00 restart; the `.bss` watch is a bot
   module and hot-reloads at the next RE4 session.
+
+- 2026-11-10 18:5x: PSO CP0 done (the clean start), by the DeepSeek session. All 16 open `ds-pso-*\\ branches merged
+  into main; each branch's own CP0 commit had moved its lane-log text to `system/docs/pso-checkpoints/lane/<topic>.md`,
+  so no branch was rewritten (`git merge-tree --write-tree` exited 0 for all 16). Four merges hit research-doc
+  conflicts (an older "floor resolver not mapped" text against main's decoded one; 5b and 5c both kept), resolved in
+  favour of the newer finding, UTF-8 clean. One registry, cross-checked: `pso_classes` (self-calibrating reader) and
+  `pso_class_registry` (pinned 0x805D3138, 240 slots, 148 names) agree in `tests/test_pso_registries_agree.py`; the
+  editor's `family` block was restored and its marker fixed (the vtable-census copy predated it). PSO suite (115
+  files): 41 failed / 1399 passed / 132 skipped right after the merges, then 36 failed on the 14 baseline files after
+  the fixes - the baseline 45 less the 9 the two test branches fix, no new failure. Evidence:
+  `system/docs/pso-checkpoints/CP00-clean-start.md`; the operator question is in `CP00-operator-question.md` (asked
+  2026-11-10 night). Next: CP1 (the local coder model on the 3090).
