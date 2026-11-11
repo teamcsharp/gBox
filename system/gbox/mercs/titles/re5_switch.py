@@ -1123,6 +1123,11 @@ APPROACH_CAP_S = 30.0
 # Live 16:59-17:04: 8 statues seen, none taken - he spawned on the roof (y 550) and walked at one 1.6 m below for a
 # minute: stuck BONUS_JUMP_TRY_S with the statue off his level, the context action (Y, the "Jump down" prompt) first.
 BONUS_JUMP_TRY_S = 0.8
+# Operator 2026-11-10 (coach 6822609e92274e5c, "Flawed handling"): a statue 18.5 m away, 1.1 m below him, was run for in a loop -
+# nav route, \"stuck, breaking free\", a detour, a relocate 0.0 m to the statue, the wall return - 5 wall recoveries failed, 0
+# bonuses taken, 17 majini on him. Each stuck wiggle during a statue run counts against it; BONUS_STUCK_MAX of them and the
+# statue is blocked for BONUS_STUCK_BLOCK_S (far longer than BONUS_BLOCK_S) so the fight, or another statue, takes over.
+BONUS_STUCK_MAX, BONUS_STUCK_BLOCK_S = 2, 60.0
 BONUS_COUNTERS = ("bonuses_seen", "bonuses_taken", "time_gained", "bonus_runs", "knife_swings", "bonus_detours",
                   "bonus_jumps")
 # The wall governor measures final pad output after shot-tail suppression. Observed forward pressure without
@@ -2984,6 +2989,19 @@ class Bot:
         if not now_keys and self._bonus_seen_round and t0 is not None and self.stats.get("_bonus_done_round") != t0:
             self.stats["_bonus_done_round"] = t0
             self.stats["bonus_time_s"] = round(now - t0, 1)
+
+    def _bonus_stuck(self, now) -> bool:
+        """A stuck wiggle while running for a statue: the second one gives that statue up for BONUS_STUCK_BLOCK_S."""
+        run = self._bonus
+        if run is None:
+            return False
+        run["stuck"] = run.get("stuck", 0) + 1
+        if run["stuck"] < BONUS_STUCK_MAX:
+            return False
+        self._bonus_block[run["ptr"]] = now + BONUS_STUCK_BLOCK_S
+        self._bonus = None
+        self.stats["bonus_stuck_blocks"] = self.stats.get("bonus_stuck_blocks", 0) + 1
+        return True
 
     def _go_bonus(self, p, live, flat, snap, now):
         """Phase 1 (operator 16:52: "running from Checkpoint to Checkpoint, grabbing the time bonuses ... the only way to
@@ -6649,6 +6667,7 @@ class Bot:
                     self.stats[kind] = self.stats.get(kind, 0) + 1
                 self.in_hold = True
             elif now >= self.break_until:
+                self._bonus_stuck(now)
                 self.stats["holds" if self.still and now - self.still[0] > STUCK_S else "wiggles"] += 1
                 self.break_until = now + BREAK_S
             self._gun_down()

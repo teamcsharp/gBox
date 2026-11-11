@@ -714,3 +714,15 @@ def test_rear_target_flip_guard_allows_flip_before_aim(monkeypatch):
     # (body_err < QUICK_ERR), preserving the original behavior.
     assert b.stats.get("rear_target_fixes", 0) == 0, \
         f"flip guard should NOT fire when front target is in front; stats={b.stats}"
+
+
+def test_statue_run_stuck_twice_blocks_that_statue_for_a_minute():
+    """Coach 6822609e92274e5c: the statue run looped nav route / stuck / detour; two stuck wiggles now give the statue up."""
+    b, clock = brain()
+    b._bonus = {"ptr": 77}
+    clock[0] = 100.0
+    assert b._bonus_stuck(100.0) is False and b._bonus is not None
+    assert b._bonus_stuck(105.0) is True and b._bonus is None
+    assert b._bonus_block[77] == 105.0 + R.BONUS_STUCK_BLOCK_S > 105.0 + R.BONUS_BLOCK_S
+    assert b.stats["bonus_stuck_blocks"] == 1
+    assert b._bonus_stuck(106.0) is False          # no run: nothing to count
