@@ -688,3 +688,19 @@ every 20 s.
 
 So the chain is wired end to end and needs exactly one thing that a policy deliberately reserves for the operator: **the
 five-minute absence, or one Play press.**
+
+## Round 128: the operator cancelled the queued launch twice - do not auto-arm it
+
+The job history settles a question this lane should not have needed to ask: **both launch jobs that sat in the admission queue were
+cancelled by the operator** (`a43d86814ee34c36` and `cea5594a4a71406c` *"cancelled by the operator"*). So the standing-launch
+pattern from round 114 is **not wanted**: an agent launch parked in the queue is something the operator removes, not something they
+wait for.
+
+**What replaces it:** nothing is auto-armed any more. The campaign waiter (`docs/research/pso-cp4-play.py`) stays up and does nothing
+until a session exists; when the operator presses Play - which is one click and instantaneous - the waiter starts
+`autoplay op=start campaign="pso-episodes-1-2"` within ten seconds and frames the screen every 20 s. The distinction matters:
+**the agent no longer queues launches; it reacts to the operator's launch.**
+
+The successful launches on record (`2db839b720154c70` at 18:14:25, `1b349dbb3ee94db4` at 18:05:27, `0091f40e47964868` at 16:33:03)
+were this lane's own earlier sessions, so the launch path itself works - what was missing was never the ability to launch, it was the
+**authorisation to launch while the operator is present**, which is working as designed.
