@@ -1106,3 +1106,38 @@ cannot stop the search for the title's own controller). The RE5 Switch group is 
 
 **Live:** the RE6 block is still running (round 4); the queue has `re4 x5` next, and that block is where the watch
 stat appears.
+
+## Round 67 (2026-11-10 19:45 CST) - the watch is deployed but not yet *loaded*: the restart-pending rule blocked the bot reload
+
+**What I found.** The merge is on the Spark (the interventions status shows our F4 row: "a flash is built on the RE4
+Switch native harness ... no live receipt yet"), so the files were copied - but the live RE4 bot's telemetry has no
+`stats["bss_watch"]`, i.e. the running bot still has the old `re4_switch` module. Cause: `deploy_main.sh`'s
+`activation_for()` returns **restart** whenever `gbox-data/deploy-restart-pending` exists, and our merge contained a
+runtime file (`interventions.py` plus the new native module), so the deploy classified it as restart-pending and
+skipped the in-place bot reload; the restart is deferred to 05:00. `grenade_status` shows the new code only because
+`interventions` imports it at call time. So the `.bss` watch waits for either the 05:00 restart or an explicit
+`POST /api/workers/lilspark/bot-reload`.
+
+**The bot reload is operator-only.** The endpoint refuses automation by design:
+`if automated(actor, origin): raise HTTPException(403, 'Only the operator or the deploy script reloads the bots.')`,
+and `_automated()` treats `x-gbox-actor: agent` as automation (my call returned **403**). The operator chose this path,
+so the exact call (on the Spark, or from their console with the host URL) is:
+
+    curl -s -X POST -H "Authorization: Bearer $(cat ~/gBox/system/gbox-data/api_token)" \
+      -H "Content-Type: application/json" -H "x-gbox-actor: operator" \
+      -d '{"wait_s": 230}' http://127.0.0.1:8765/api/workers/lilspark/bot-reload
+
+The verdict is `reloaded` / `busy` (retried) / `refused`; a reload keeps the games and the warm pool, each autobot
+restarts in its session within seconds. After it, the next RE4 round's `stats["bss_watch"]` carries the five pages at
+that stage load; the poll for three stages is armed (`C:\_tools\gBox\.tmp\re4_watch_readings.txt`).
+
+**Operational lesson for the lane:** while `deploy-restart-pending` exists, *every* bot-only merge is also blocked from
+hot-reloading. Bot-module changes should be merged in their own merge (no runtime file) if the watch/receipt is
+time-sensitive, or expected to wait for the 05:00 restart.
+
+**Gate evidence this round:** `test_mercmode*` **328 passed**; `test_mercs_*` 799 passed, 1 skipped, 2 failed -
+`test_mercs_combat_throws.test_re4_drops_a_blast_throw_with_one_at_arms_length_and_a_swap_that_did_not_take` and
+`test_mercs_damage_clusters.test_queue_priority_appends_batches_after_the_operators_list_and_drops_closed_ones` - both
+**reproduce on main** (one is a Windows `PermissionError` in `hermes_delivery`), so the branch adds no failure; the RE5
+Switch group is the known red exactly (10), and the RE4 targeted sets are green. The single 3103-test run remains
+wedged/impractical; prefix groups are the gate.
