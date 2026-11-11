@@ -5499,11 +5499,30 @@ class Bot:
         a = abs(err)
         return PULSE_N[0] if a > 2 * window else PULSE_N[1] if a > window else PULSE_N[2]
 
-    def _trigger(self, on: bool, now) -> set:
+    def _laser_misses_all(self, ctx) -> bool:
+        """True only when a measured laser ray exists and no body lies under it (endpoint or segment): a new pull
+        there would fire at nothing. Laserless / unmeasured / point-blank / named-body contexts never hold fire."""
+        try:
+            if not ctx or ctx.get('laserless') or ctx.get('where') or str(ctx.get('gate') or '').startswith('point blank'):
+                return False
+            origin, dot, foot = ctx.get('origin'), ctx.get('dot'), ctx.get('foot')
+            if not (origin and dot and foot and all(math.isfinite(v) for v in (*origin, *dot, *foot))):
+                return False
+            prof = body({"class": ctx.get("class")})
+            if dot_on(dot, foot, prof) or self._crowd_hit(origin, dot, foot, False, prof):
+                return False
+            return True
+        except Exception:                                    # noqa: BLE001 - a gate error never costs the shot
+            return False
+
+    def _trigger(self, on: bool, now, ray_gate: bool = False) -> set:
         """ZR held while on him: the game repeats a held trigger at the gun's pace (live: 2.7 shots/s held or tapped
         with the M92F, 25 with the fire-rate mod, which a tapped trigger cannot reach). A pull counts as a shot."""
         if on and getattr(self, '_defer_trigger', False):
             return {'zr'}                               # intent; final feedback records only an accepted pull
+        if on and ray_gate and not self.fire_down and self._laser_misses_all(self._aimctx):
+            self.stats["fire_held_no_body"] = self.stats.get("fire_held_no_body", 0) + 1
+            on = False                                       # never fire at nothing: aim, hold the trigger
         if not on:
             if self.fire_down:                               # the aim slid off him: the pull ends
                 self._pull_end(now, slipped=True)
@@ -8061,7 +8080,7 @@ class Bot:
         if (cam_up or cam_down) and on and where is None and not confirmed:
             on = False
             self.doing = "aim"
-        keys = {"zl"} | self._trigger(on, now)
+        keys = {"zl"} | self._trigger(on, now, ray_gate=True)
         if not on and not settling and math.dist(origin, dot) >= min(STEER_RAY_CM, 0.5 * math.dist(origin, chest)):
             keys |= self._yaw(yaw_err, windows[0]) | self._pitch_settled(pitch_err, windows[1], now)   # steer only off him: a raised fire rate paces the
                                                                   # aim with the shot (re5_switch_mods)
