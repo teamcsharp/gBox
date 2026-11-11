@@ -34,6 +34,9 @@ from .read_retry import NativeReadRetry
 READY = False
 ROUND_GONE_S, LOST_S = 1.0, 20.0
 TAP_DOWN_S, TAP_REST_S = 0.25, 0.4
+#: The ring's blast window to walk out of (operator 2026-11-11 17:44: "grenades are bad for you ... distance
+#: themselves from the explosives that they're throwing"): the grenades' fuse plus the frames the throw takes.
+RING_BLAST_HOLD_S = 2.5
 FRAME_WAIT_S, FRAME_POLL_S = 0.05, 0.002      # frame sync: wait for the game's next frame this long, polling this often
 MASH_DOWN_S, MASH_UP_S = 0.045, 0.035         # a mash (a grab's SHAKE OFF): each press down / up this long - two game
                                               # frames down, one up, so every press is a new one to the game
@@ -694,6 +697,10 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:200]
                 else:
                     if ring_out.get("fired"):
+                        # Operator 2026-11-11 17:44: "grenades are bad for you ... they should definitely distance
+                        # themselves from the explosives that they're throwing in order to survive." The ring's own
+                        # blast is walked out of, not stood in (the driver's own inputs: the left stick back).
+                        stats["ring_blast_until"] = now + RING_BLAST_HOLD_S
                         next_frame()
                         continue
             if remote_step is not None and where == "playing":   # the RE6 remote-mine rings and flag detonation
@@ -720,6 +727,9 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                                  why=getattr(bot, "why", None))
                     except Exception as exc:         # noqa: BLE001 - a follow report never ends the round
                         stats["hit_report_error"] = f"{type(exc).__name__}: {exc}"[:200]
+            if now < float(stats.get("ring_blast_until") or 0):   # the ring's fuses: back out of the blast
+                act = {"hold": {"ldown"}}
+                stats["ring_blast_backsteps"] = int(stats.get("ring_blast_backsteps", 0)) + 1
             if "tap" in act:
                 hold(set())
                 sleep(0.15)
