@@ -714,3 +714,25 @@ def test_rear_target_flip_guard_allows_flip_before_aim(monkeypatch):
     # (body_err < QUICK_ERR), preserving the original behavior.
     assert b.stats.get("rear_target_fixes", 0) == 0, \
         f"flip guard should NOT fire when front target is in front; stats={b.stats}"
+
+
+def test_hurt_in_a_crowd_with_a_dry_gun_runs_out_through_an_open_side(monkeypatch):
+    """Coaching note 8 (#5706): 24 % health, 6 Majini within 2.4 m all on one side (an open gap), 17 s without a shot."""
+    import math
+    foes = [{"pos": pos} for pos in ((513, -3261, -312), (692, -3261, -136), (513, -3261, -174),
+                                     (410, -3261, -314), (499, -3261, -76), (417, -3261, -164))]
+    p = {"pos": (634.0, -3261.0, -265.0), "rot": 2.499, "hp": 244, "hp_max": 1000}
+    flat = lambda e: math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+    b, _ = brain()
+    assert b._escape(p, foes, flat, 100.0) is None                 # the gun was just firing: fight on
+    act = b._escape(p, foes, flat, 105.0)                          # 5 s and no shot: out through the gap
+    assert act is not None and "b" in act["hold"] and b.stats["escapes"] == 1
+    b, _ = brain()
+    b.stats["shots"] = 1
+    b._escape(p, foes, flat, 100.0)
+    b.stats["shots"] = 2                                            # still shooting: no escape
+    assert b._escape(p, foes, flat, 105.0) is None
+    healthy = dict(p, hp=900)
+    b, _ = brain()
+    b._escape(healthy, foes, flat, 100.0)
+    assert b._escape(healthy, foes, flat, 105.0) is None            # healthy: the old rule
