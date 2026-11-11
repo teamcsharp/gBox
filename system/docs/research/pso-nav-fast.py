@@ -23,12 +23,21 @@ sys.path.insert(0, r"C:\_tools\gBox\.tmp")
 from gbox import pso_walk                                          # noqa: E402
 
 REL = Path(r"D:\gBox\pso-ds\rel\map_forest01c.rel")
+FLOOR_REL = {
+    1: Path(r"D:\gBox\pso-ds\rel\map_forest01c.rel"),
+    2: Path(r"D:\gBox\pso-ds\rel\map_forest02c.rel"),
+}
 SIZE = 10.0
 CLEARANCE = 0                                                      # only the cells the line passes through
 
 
-def cells():
-    floors, walls = pso_walk.cells(REL.read_bytes())
+def rel_for_floor(floor=None):
+    """The collision file for a floor: forest 1 and 2 are extracted, anything else falls back to forest 1."""
+    return FLOOR_REL.get(floor, REL)
+
+
+def cells(floor=None):
+    floors, walls = pso_walk.cells(rel_for_floor(floor).read_bytes())
     return set(floors - walls)          # CELL INDICES, not centres
 
 
