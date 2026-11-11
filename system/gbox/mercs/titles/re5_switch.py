@@ -1120,6 +1120,10 @@ KNIFE_CAP_S = 2.0
 # off-level or unreachable - take the next one. ~30 s is long enough for any legitimate approach to a distant
 # statue; longer means the bot is stuck in a loop and should give up.
 APPROACH_CAP_S = 30.0
+# Operator critique (request #5710, Ancient Ruins, Sheva): the run walked a "nav route" at a time bonus 18.5 m off through
+# "stuck, breaking free" three times in 10 s (wall_recovery_failures 5, bonuses_seen 17 / taken 0) - the 30 s approach cap
+# is far too long to keep ramming one wall. Two stuck-breaks on one run give that statue up for BONUS_STUCK_BLOCK_S.
+BONUS_STUCK_GIVEUP, BONUS_STUCK_BLOCK_S = 2, 45.0
 # Live 16:59-17:04: 8 statues seen, none taken - he spawned on the roof (y 550) and walked at one 1.6 m below for a
 # minute: stuck BONUS_JUMP_TRY_S with the statue off his level, the context action (Y, the "Jump down" prompt) first.
 BONUS_JUMP_TRY_S = 0.8
@@ -3016,6 +3020,12 @@ class Bot:
             self.stats["bonus_runs"] += 1
             run = self._bonus = {"ptr": b["ptr"], "since": now, "knife_since": None, "knife_total": 0.0,
                                  "retries": 0, "best": 1e9, "best_at": now, "side": 1, "detour_until": -1e9, "detours": 0}
+        if run.get("stucks", 0) >= BONUS_STUCK_GIVEUP:   # rammed a wall on the way twice: the next statue, not this one
+            self._bonus_block[b["ptr"]] = now + BONUS_STUCK_BLOCK_S
+            self._bonus = None
+            self.stats["bonus_stuck_giveups"] = self.stats.get("bonus_stuck_giveups", 0) + 1
+            self.doing, self.why = "walk", "time bonus: stuck on the way twice - the next one"
+            return {"hold": ("lup",)}
         if self.aim_since is not None:
             self._gun_down()
         bx, by, bz = b["pos"]
@@ -6651,6 +6661,8 @@ class Bot:
             elif now >= self.break_until:
                 self.stats["holds" if self.still and now - self.still[0] > STUCK_S else "wiggles"] += 1
                 self.break_until = now + BREAK_S
+                if stuck and self._bonus is not None:    # a stuck-break on the way to a statue (BONUS_STUCK_GIVEUP)
+                    self._bonus["stucks"] = self._bonus.get("stucks", 0) + 1
             self._gun_down()
             self.still = None
             self.wiggle += 1
