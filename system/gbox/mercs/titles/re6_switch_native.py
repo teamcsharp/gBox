@@ -334,7 +334,17 @@ class Controller:
             raise Unavailable("native call already pending")
         self.write(self.heap + 0xC0, struct.pack("<9Q", self.base + off, *args, *([0] * (8 - len(args)))))
         self.publish_call(self.heap + 0xA8)
-        self.wait(lambda: self.w(self.heap + 0xA8) == 3, timeout)
+        try:
+            self.wait(lambda: self.w(self.heap + 0xA8) == 3, timeout)
+        except Uncertain as exc:
+            # The class-spawn timeout needs the mailbox's own state (2026-11-11: the hand ring's spawn never
+            # completed; state 1 = the callback never ran, 2 = it ran and stalled) so the next experiment is data.
+            try:
+                state = self.w(self.heap + 0xA8)
+            except (OSError, ValueError, struct.error):
+                state = None
+            raise Uncertain(f"native completion uncertain; request will not be replayed "
+                            f"(heap state {state!r}, off {off:#x})") from exc
         return self.q(self.heap + 0xB8)
 
     def recover_completed_call(self):
