@@ -6002,8 +6002,7 @@ class Bot:
             if (hp <= HEAL_CRITICAL * hp_max and near
                     and (self.escape is None or now >= self.escape[1])
                     and now - self.escape_at >= ESCAPE_GAP_S):
-                nearest = min(live, key=lambda e: flat(e))
-                away = heading(p["pos"][0] - nearest["pos"][0], p["pos"][2] - nearest["pos"][2])
+                away = self._retreat_heading(p, live)
                 self._gun_down()
                 self.escape = (away, now + ESCAPE_S)
                 self.escape_at = now
@@ -6021,6 +6020,32 @@ class Bot:
         self.stats["heal_starts"] += 1
         self.stats["heal_status"] = f"healing at {hp / hp_max:.0%} ({near} near)"
         return {"hold": ()} if item["hand"] else {"tap": QUICK[item["grid"]]}
+
+    def _retreat_heading(self, p, live) -> float:
+        """The critical retreat's heading (operator 2026-11-10, coaching note 11, 'Flawed handling': 26% health, no heal,
+        a crowd round him at 0-4 m, the run was 'away from the nearest Majini' - straight into the next ones or a wall
+        already bumped). Of 16 headings the one with the least crowd ahead (each Majini within HEAL_SAFE_R weighs
+        1/(distance + 50), by the cosine of its bearing off the heading), never one into a remembered wall."""
+        px, pz, rot = p["pos"][0], p["pos"][2], p.get("rot", 0.0)
+        foes = []
+        for e in live:
+            dx, dz = e["pos"][0] - px, e["pos"][2] - pz
+            d = math.hypot(dx, dz)
+            if d < HEAL_SAFE_R:
+                foes.append((math.atan2(dx, dz), 1.0 / (d + 50.0)))
+        if not foes:
+            return rot
+        walls = [w for w in getattr(self, "_walls", ()) if math.hypot(w[0] - px, w[1] - pz) <= WALL_MEM_R]
+        best, best_score = None, math.inf
+        for k in range(16):
+            h = wrap(k * math.pi / 8)
+            score = sum(w * math.cos(wrap(b - h)) for b, w in foes)
+            if any(abs(wrap(h - wall[2])) <= math.radians(WALL_MEM_DEG) for wall in walls):
+                score += 10.0
+            score += 1e-4 * abs(wrap(h - rot))                  # (a tie: the smaller turn)
+            if score < best_score:
+                best, best_score = h, score
+        return best
 
     def _loaded_gun(self, row):
         rounds = row.get('rounds')
