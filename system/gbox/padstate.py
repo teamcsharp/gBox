@@ -213,30 +213,49 @@ def pad_lease(sid: str, keys: set) -> None:
         pass
 
 
+_LAST_SLOT: int | None = None
+
+
+def reset_slot_memory() -> None:
+    """Forget the remembered pad slot (tests, and a session restart where the pad may have moved)."""
+    global _LAST_SLOT
+    _LAST_SLOT = None
+
+
 def operator_slot(get_state, st, *, samples: int = 12, gap: float = 0.05, read=None) -> int:
-    """The XInput slot the operator's own pad is on: the first that reports a button or a moved stick.
+    """The XInput slot the operator's own pad is on.
 
     Slot 0 is not safe to assume. A leftover virtual pad from an earlier session holds slot 0 on this PC and
     sits at all zeros forever, so the operator's real controller enumerates on slot 1 and a watcher bound to
     slot 0 sees nothing at all (proven on the i9-NUC 2026-11-10: the operator's pad reported live packets and
-    analog values on slot 1 while slot 0 stayed exactly zero). Falls back to 0 when nothing moves.
+    analog values on slot 1 while slot 0 stayed exactly zero).
+
+    **The slot is remembered once found.** Detection needs movement, and the operator is idle most of the time, so a
+    detection that runs again on a quiet pad falls back to slot 0 -- the dead virtual pad -- and the mirror then watches
+    the wrong controller until the operator happens to move again. The worker log showed exactly that ("mirroring the
+    operator's pad on XInput slot 0" on a restart while the pad was still). So: if a slot was found before and it still
+    answers, it is used without waiting for movement.
 
     ``read`` is injected so this can be tested without a controller, and so the caller does not depend on how
     `gbox.xinput` happens to be bound -- the earlier version referenced a module name that only existed as a local
     inside `watch_xinput`, which raised `NameError` and killed the mirror thread on every start.
     """
+    global _LAST_SLOT
     if read is None:
         from . import xinput as _xinput
         read = _xinput.read
+    if _LAST_SLOT is not None and read(get_state, _LAST_SLOT, st) is not None:
+        return _LAST_SLOT
     for _ in range(max(1, samples)):
         for s in range(4):
             if read(get_state, s, st) is None:
                 continue
             g = st.gamepad
             if g.buttons or abs(g.lx) > 7849 or abs(g.ly) > 7849 or abs(g.rx) > 7849 or abs(g.ry) > 7849:
+                _LAST_SLOT = s
                 return s
         time.sleep(gap)
-    return 0
+    return _LAST_SLOT if _LAST_SLOT is not None else 0
 
 
 def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
