@@ -666,3 +666,25 @@ room 11 and defeat the first wave").
 **One measurement error to record honestly:** a PowerShell `@($null)` count made an empty session list look like one session for a
 moment; the API's answer was `[]`. The Python waiter counts correctly, and the lesson is the same as round 90's - trust the
 typed client, not the shell's JSON handling.
+
+## Round 127: the screensaver pool has no PSO, and the launch is re-armed
+
+Two measurements close this round:
+
+1. **The screensaver's candidate pool is a single game.** `GET /api/autoplay-screensaver` returns
+   `"games": [{"game_id": "0ed22ae742e1b56b", "title": "Resident Evil: The Mercenaries 3D (USA)", "pads": 961}]` - one entry, from
+   the recorded play on this PC. **No PSO title appears**, so no configuration of the screensaver can demo PSO here; the
+   `min_pads` threshold is not the only reason, the game simply has no runs at all.
+
+2. **The launch's `pad` option is not the pad this needs.** `adapters.py` describes it as
+   `"keyboard pad (bot input: send_input)" if self.keyboard_pad else "the operator's controller"` - i.e. it selects the **keyboard
+   pad**, which is the focus-gated send_input relay that failed four times in round 96, not a reporting controller. The useful pad
+   remains the agent's own ViGEm device on **XInput slot 0**, which the launch's INI fallback binds.
+
+**The launch is armed again:** `POST /api/games/436e0bb84d5337d1/launch?node=i9-NUC` -> job **`cea5594a4a71406c`**, `agent_use: true`,
+`state: queued`, waiting on `Waiting for five minutes without operator input`. The campaign waiter
+(`docs/research/pso-cp4-play.py`, running) starts `pso-episodes-1-2` within seconds of the session it creates and frames the screen
+every 20 s.
+
+So the chain is wired end to end and needs exactly one thing that a policy deliberately reserves for the operator: **the
+five-minute absence, or one Play press.**
