@@ -622,3 +622,26 @@ button is the immediate path - and then the campaign runs without further input 
 
 The driver staged for it (`docs/research/pso-cp4-play.py`) waits for a session, starts the campaign, polls `op=status`, and saves a
 desktop frame every 20 s to `D:\gBox\pso-ds\demo\`, so the play is watchable and auditable even after the fact.
+
+## Round 125: the plane names its PSO missions - including the first wave in Forest 1
+
+`autoplay op=list` on the live plane returns **four PSO missions**, each with an objective:
+
+| mission | game | objective |
+|---|---|---|
+| **`pso-gc-forest1-first-wave`** | **`436e0bb84d5337d1`** (this GC PSO) | **"From the Forest 1 arrival point: open two door panels, reach room 11 and defeat the first wave"** |
+| `pso-v2-dc-city-to-forest1` | `daba7a3b195dcf6b` (the DC CHD) | "Pioneer 2: walk to the main warp, go down to Forest 1" |
+| `pso-v2-dc-forest1-battle` | `daba7a3b195dcf6b` | "Forest 1: go to the first wave room, defeat the Boomas, then explore" |
+| `pso-v2-dc-office-to-forest1` | `daba7a3b195dcf6b` | "From Principal Tyrell's office to Forest 1 (dialog, office warp, city main warp)" |
+
+So the machine has a **named, scripted mission that opens doors, reaches room 11 and fights the first wave** on the very disc this
+lane has been working on - which is the operator's "fighting through the levels" made concrete. It starts "from the Forest 1 arrival
+point", i.e. it needs to be in Forest 1: that is CP5's warp, or the campaign's own boot (`pso-episodes-1-2` starts from the menus
+and walks the game).
+
+**And there is no PSO jump state** on this machine (`D:\gBox\runtime\jumpstates` holds only Sonic/Mario/RE4 entries), so the
+campaign has to boot through the title and menus itself - which its campaign code does.
+
+The staged player now logs the mission list at startup, starts `campaign="pso-episodes-1-2"` on the first session, polls
+`autoplay op=status` and frames the screen every 20 s. The only missing input remains the launch (armed job `a43d86814ee34c36`,
+or the operator's Play).

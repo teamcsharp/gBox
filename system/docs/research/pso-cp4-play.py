@@ -75,6 +75,11 @@ def main():
     reader = Reader(plane, sid)
     log(f"session {sid}; state={json.dumps(W.state(reader))}")
 
+    try:
+        missions = api(plane, "POST", "/api/jobs", {"tool": "autoplay", "input": {"op": "list"}})
+        log("missions: " + json.dumps(missions, default=str)[:600])
+    except Exception as exc:                    # noqa: BLE001
+        log(f"mission list failed: {type(exc).__name__}: {exc}")
     job = api(plane, "POST", "/api/jobs", {"tool": "autoplay", "input": {
         "session_id": sid, "op": "start", "campaign": CAMPAIGN}})
     log(f"autoplay start job {job.get('id')} state={job.get('state')}")
