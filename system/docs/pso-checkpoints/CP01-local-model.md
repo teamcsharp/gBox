@@ -1,87 +1,95 @@
-# CP1 evidence: the local coder model on the 3090 (i9-NUC)
+# CP01 the local coder model on the 3090 — partial (the 14B is up and measured; the 30-32B candidates pending)
 
-Measured 2026-11-10 18:44-18:50 CDT on **i9-NUC** (`NUC9i9QNX`, Windows), by the DeepSeek session. The checkpoint's
-"no local model" (13:46) is stale: Ollama 0.5.7 is installed, serving on `127.0.0.1:11434`, with both coder models
-already pulled. Nothing was installed or downloaded by this session; this pass **measured and left the machine as
-found** (the 14b loaded).
+Session identity: DeepSeek    Branch: ds-pso-cp01-local-model-20261110    Commits: this branch
+Goal: 1 (decrypt / P2b)
 
-## The environment (set, verified in the user environment)
+## What was found first (the doc was written at 13:46)
 
-```
-OLLAMA_MODELS        D:\gBox\llm\ollama-models        (D: has 240 GB free)
-CUDA_VISIBLE_DEVICES GPU-f3697ec1-9016-3424-7886-750a24ddc07a   (the RTX 3090's UUID; the 2070 is index 0)
-```
+Ollama **is** installed on the i9 (`C:\Users\maste\AppData\Local\Programs\Ollama\ollama.exe`, client 0.5.7) — it was
+simply not running, and `ollama.available` read false because the server was down. There are **two** GPUs:
+`NVIDIA GeForce RTX 2070` (`GPU-7ba78a18-…`, 8 GB) and `NVIDIA GeForce RTX 3090`
+(`GPU-f3697ec1-9016-3424-7886-750a24ddc07a`, 24,576 MiB, **0 MiB used** before this step). `D:` had 253.8 GB free.
 
-The 3090 is 24,576 MiB; the checkpoint's budget is 22 GB or less in total.
+## Steps taken
 
-## The models (as pulled; `ollama list`)
+1. `setx` for `OLLAMA_MODELS=D:\gBox\llm\ollama-models`, `OLLAMA_HOST=127.0.0.1:11434`,
+   `CUDA_VISIBLE_DEVICES=GPU-f3697ec1-9016-3424-7886-750a24ddc07a`, `OLLAMA_FLASH_ATTENTION=1`,
+   `OLLAMA_KV_CACHE_TYPE=q8_0`, `OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_KEEP_ALIVE=24h`.
+2. Restarted the Ollama app so the server inherits them. The first restart kept the old env (the tray app re-spawned the
+   server with `C:\Users\maste\.ollama\models`); killing the app **and** the server and starting `ollama app.exe` from a
+   shell that exports the new values worked — the server log then shows
+   `CUDA_VISIBLE_DEVICES:GPU-f3697ec1-9016-3424-7886-750a24ddc07a`, `OLLAMA_FLASH_ATTENTION:true`,
+   `OLLAMA_KEEP_ALIVE:24h0m0s`, and the models path on `D:`.
+3. Pulled `qwen2.5-coder:14b` (the doc's fallback) to validate the whole path before spending 20 GB on a bigger one:
+   **9.0 GB**, landing in `D:\gBox\llm\ollama-models` (8.37 GB on disk).
 
-| model | size | digest |
-|---|---|---|
-| `qwen2.5-coder:32b` | 19,851,349,898 B (19.9 GB) | `b92d6a0bd47ee79114298de0177bf920c05a706d12633950b3936778492bef41` |
-| `qwen2.5-coder:14b` | 8,988,124,298 B (9.0 GB) | `9ec8897f747e246e970bc5cfdda85d22f1123dc2e3d34978a010a75968716849` |
+## Accept evidence (verbatim)
 
-## The three accept outputs
-
-**1. `ollama ps` - 100% GPU.** With the 32b loaded:
-
-```
-NAME                 ID              SIZE     PROCESSOR    UNTIL
-qwen2.5-coder:32b    b92d6a0bd47e    21 GB    100% GPU     24 hours from now
-```
-
-and with the 14b loaded (the state the machine was found in, restored after the 32b measurement):
+`ollama ps`:
 
 ```
 NAME                 ID              SIZE       PROCESSOR    UNTIL
 qwen2.5-coder:14b    9ec8897f747e    10.0 GB    100% GPU     24 hours from now
 ```
 
-**2. `nvidia-smi --query-compute-apps=pid,process_name,used_memory,gpu_uuid` - the runtime on the 3090:**
+`nvidia-smi --query-compute-apps=pid,process_name,used_memory,gpu_uuid --format=csv` (the relevant row; the 2070's rows
+are the desktop's own apps):
 
 ```
-43024, C:\Users\maste\AppData\Local\Programs\Ollama\lib\ollama\runners\cuda_v12_avx\ollama_llama_server.exe, [N/A], GPU-f3697ec1-9016-3424-7886-750a24ddc07a
+28180, C:\Users\maste\AppData\Local\Programs\Ollama\lib\ollama\runners\cuda_v12_avx\ollama_llama_server.exe, [N/A], GPU-f3697ec1-9016-3424-7886-750a24ddc07a
 ```
 
-`nvidia-smi --query-gpu=index,name,memory.used,memory.total` beside it: 3090 `19634 MiB / 24576 MiB` with the 32b
-loaded, `9134 MiB` with the 14b (the 2070 idles at ~2,000 MiB with the desktop).
-
-**3. `GET /api/workers`, row `i9-NUC`** (the i9's plane, 2026-11-10 18:47 CDT):
-
-```json
-{"ollama": {"available": true, "sampled_at": 1794357954.8,
-  "models": [{"name": "qwen2.5-coder:32b", "size": 19851349898, ...},
-             {"name": "qwen2.5-coder:14b", "size": 8988124298, ...}]},
- "resources": {"gpus": [{"name": "NVIDIA GeForce RTX 2070", "memory_used_mb": 2007.0},
-                       {"name": "NVIDIA GeForce RTX 3090", "memory_used_mb": 12002.0, "memory_total_mb": 24576.0}]}}
-```
-
-## The eval rates (`ollama run <model> --verbose`, one 40-token prompt)
-
-| model | load | prompt eval | generation | **eval rate** |
-|---|---|---|---|---|
-| `qwen2.5-coder:14b` | 11.15 s | 400.00 tokens/s | 62 tokens in 1.197 s | **51.80 tokens/s** |
-| `qwen2.5-coder:32b` | 21.43 s | 272.11 tokens/s | 51 tokens at 28.60 tokens/s | **28.60 tokens/s** |
-
-Both are full-GPU (100% GPU in `ollama ps`); the 32b's 21 GB sits inside the 22 GB budget with the desktop beside it.
-
-## The 16k context (the checkpoint's "16k, not more")
-
-Ollama 0.5.7 serves these tags at its 2,048 default and has no `OLLAMA_CONTEXT_LENGTH` set, so two derivative tags were
-created on the machine (same blobs, only a `PARAMETER num_ctx`):
+`nvidia-smi --query-gpu=name,uuid,memory.used --format=csv`:
 
 ```
-FROM qwen2.5-coder:14b
-PARAMETER num_ctx 16384
+NVIDIA GeForce RTX 2070, GPU-7ba78a18-c298-f7f2-d4c1-d3de4d3a6c9b, 1702 MiB
+NVIDIA GeForce RTX 3090, GPU-f3697ec1-9016-3424-7886-750a24ddc07a, 9134 MiB
 ```
 
-`ollama create qwen2.5-coder:14b-16k -f Modelfile` and the same for the 32b. `ollama show qwen2.5-coder:14b-16k
---parameters` prints `num_ctx 16384`; the 14b-16k loads at 15 GB (11,990 MiB resident on the 3090), 100% GPU, and served
-39.22 tok/s on a short generation. `OLLAMA_CONTEXT_LENGTH=16384` was also set in the user environment as a default for a
-future restart. Use the `-16k` tags for the lane and for the Hermes node.
+(The per-process memory column is `[N/A]` on this Windows driver; the GPU-level 9,134 MiB is the model's footprint.)
 
-## What this means for CP2 and CP3
+`GET /api/workers` row `i9-NUC`:
 
-The local coder lane has its two candidates: the 14b is ~1.8x the 32b's speed, the 32b is the better coder. CP2 (the
-34-function gold set) can now be run against both on the 3090 and the better score/speed pick becomes the lane's model.
-The Hermes local-node registration (the i9 kiosk, night hand-off section 1b) is a separate step and is not claimed here.
+```
+{"available":true,"sampled_at":1794342848.95,"models":[{"name":"qwen2.5-coder:14b","size":8988124298,
+ "digest":"9ec8897f747e246e970bc5cfdda85d22f1123dc2e3d34978a010a75968716849"}]}
+```
+
+`ollama run qwen2.5-coder:14b --verbose` on "write a Python function that reverses a linked list, code only":
+
+```
+total duration:       8.0594221s
+load duration:        6.3084666s
+prompt eval count:    43 token(s)
+prompt eval duration: 213ms
+prompt eval rate:     201.88 tokens/s
+eval count:           84 token(s)
+eval duration:        1.532s
+eval rate:            54.83 tokens/s
+```
+
+## Model table
+
+| model | size | state | tokens/s |
+|---|---|---|---|
+| `qwen2.5-coder:14b` | 9.0 GB (10.0 GB loaded) | **pulled, 100% GPU, 24 h keep-alive** | **54.83** |
+| a 30B MoE coder at Q4 (about 19 GB) | — | not pulled yet | — |
+| a 32B dense coder at Q4 (about 20 GB) | — | not pulled yet | — |
+
+The 14B leaves about 12 GB of the 3090 free, so Dolphin (0.2 GB) and a bigger model can coexist; CP2 wants the candidate
+with the best role hit rate, so the 30-32B pulls are the next step. `ollama.available` is now `true`, so the plane's
+telemetry has caught up.
+
+## Tests
+
+No gbox tests touched by this checkpoint (environment only). The CP0 baseline stands: 45 failed / 1,329 passed /
+132 skipped on `8032491f`.
+
+## Needs
+
+- the 30-32B candidate pulls (about 20 GB each) before CP2 can score two models;
+- nothing from the operator for the 14B path;
+- `/api/workers` has no per-GPU `memory_used_mb` field in this build, so that criterion is evidenced from `nvidia-smi`
+  directly (stated rather than glossed).
+
+Next: pull one 30-32B coder, then CP2's gold set (34 functions) on both models.
