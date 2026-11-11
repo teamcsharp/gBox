@@ -72,3 +72,33 @@ def parse_frames(d: bytes) -> dict:
         frames.append(parts)
     return {"frame_count": n, "exact_tiling": exact, "max_sprite_idx": max_idx,
             "parts": sum(len(f) for f in frames), "frames": frames}
+
+
+# --- DOL file-table (verified on owned default.dol sha 455591ea...) ---------
+# Loader fn 0x801764c0(idx, dest, flag) does: path = *(u32*)(0x802214d0 + 4*idx),
+# then size/read helpers 0x801b0dbc / 0x801b0c78.  plNNpak.bin is idx 57+NN.
+DOL_FILE_TABLE_VADDR = 0x802214D0
+DOL_PLPAK_FIRST_IDX = 57
+
+
+def _dol_sections(dol: bytes):
+    import struct as _s
+    off = _s.unpack_from(">18I", dol, 0)
+    adr = _s.unpack_from(">18I", dol, 0x48)
+    ln = _s.unpack_from(">18I", dol, 0x90)
+    return [(off[i], adr[i], ln[i]) for i in range(18) if ln[i]]
+
+
+def dol_vaddr_to_off(dol: bytes, va: int):
+    for o, a, l in _dol_sections(dol):
+        if a <= va < a + l:
+            return o + va - a
+    return None
+
+
+def dol_file_table_path(dol: bytes, idx: int) -> str:
+    """Resolve loader file-table entry `idx` to its path string."""
+    import struct as _s
+    p = _s.unpack_from(">I", dol, dol_vaddr_to_off(dol, DOL_FILE_TABLE_VADDR + 4 * idx))[0]
+    o = dol_vaddr_to_off(dol, p)
+    return dol[o:o + 64].split(b"\0")[0].decode("ascii")

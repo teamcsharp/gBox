@@ -55,3 +55,16 @@ def test_frames_owned_pl00_pl01():
         i = names.index(nm)
         r = parse_frames(a[offs[i]:offs[i] + sizes[i]])
         assert r["frame_count"] == n and r["exact_tiling"] == n
+
+
+def test_dol_file_table_plpak_indices():
+    import os
+    import pytest
+    from gbox.cvs2eo_plpak_probe import dol_file_table_path, DOL_PLPAK_FIRST_IDX
+    p = os.path.expanduser("~/.hermes/cache/scratch/cvs2/default.dol")
+    if not os.path.exists(p):
+        pytest.skip("owned default.dol not extracted")
+    dol = open(p, "rb").read()
+    assert dol_file_table_path(dol, 0) == "ps2/font.pic"
+    for n in (0, 1, 0x2e, 0x2f):
+        assert dol_file_table_path(dol, DOL_PLPAK_FIRST_IDX + n) == "ps2/pl%02xpak.bin" % n
