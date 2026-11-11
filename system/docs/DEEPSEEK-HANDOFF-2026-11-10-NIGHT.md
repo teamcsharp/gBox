@@ -372,3 +372,13 @@ Then send it the heavy analysis work.
   refuses an unloaded kind with its own reason. Three tests; 157 passed across the RE6/grenade set. The live probes
   (A2/C2: hand/incendiary grenade_scatter receipts) still wait on an RE6/RE5 block where the character carries the
   kind.
+﻿
+- 2026-11-10 20:5x: **RE5 is playing on the Spark** (operator: "why do I never see RE5 come up"). The answer: the
+  rotation advances only at a verified round end and the queue was grouped re4 -> re5 -> re6, so RE5 was third; with
+  RE6's No Mercy round running ~50 minutes it never came up. Fixed live: the queue is reordered to its five `re5`
+  entries first (then re4/re6), `rounds_per_title` stays 1, and a `switch` dispatch put RE5 on now - frames show the
+  RE5 title and then a Mercenaries round (Sheva, 01'51" on the clock). Earlier RE5 session starts ended within ~1 min
+  each: those were the switch sequence restarting the game, not a crash (the current session is stable in-round).
+  Ollama: the 1.86 GB installer downloaded, but its silent install needs elevation and hung in this non-interactive
+  session (OllamaSetup killed, the 0.5.7 server restarted and answering) - the upgrade needs the operator's UAC or a
+  5.0-era fallback; the planner fix (local model preferred) is in main either way.
