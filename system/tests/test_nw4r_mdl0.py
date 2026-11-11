@@ -1,6 +1,7 @@
 import os
 import struct
 import pytest
+import gbox.formats.nw4r_mdl0 as nw
 from gbox.formats.nw4r_mdl0 import Mdl0Error, parse_mdl0
 
 
@@ -76,3 +77,37 @@ def test_real_samus_normal():
     assert m["name"] == "samus_normal" and m["num_vertices"] == 14104
     assert len(m["bones"]) == 28 and len(m["verts"]) == 31 and len(m["objects"]) == 31
     assert m["bones"][3]["name"] == "MOTsamuslhip" and m["bones"][3]["parent"] == "MOTsamuships"
+
+
+def test_parse_object_synthetic():
+    o = bytearray(0x300)
+    struct.pack_into(">8i", o, 0, 0x300, 0, -1, 0x4400, 2, 0x11, 0xE0, 0x80)
+    struct.pack_into(">6i", o, 0x20, 0x68, 0x100, 0x100, 0x13C, 0x2A00, 0)
+    struct.pack_into(">4i", o, 0x38, 0, 0, 8, 3)
+    struct.pack_into(">4H", o, 0x48, 0, 0, 0xFFFF, 0xFFFF)
+    struct.pack_into(">8H", o, 0x50, *[0xFFFF] * 8)
+    struct.pack_into(">2i", o, 0x60, -1, 0x68)
+    struct.pack_into(">I3H", o, 0x68, 3, 3, 7, 0xFFFF)
+    ob = nw.parse_object(bytes(o), 0, "obj0")
+    assert ob["face_count"] == 3 and ob["vertex_count"] == 8
+    assert ob["bone_index"] == -1 and ob["bone_table"] == [3, 7, 0xFFFF]
+    assert ob["vertex_group"] == 0 and ob["normal_group"] == 0
+    assert ob["color_groups"] == [None, None]
+    assert ob["decl_bytes"] == b"\x00" * 0xE0
+    assert len(ob["code_bytes"]) == 0x300 - (0x24 + 0x13C)
+
+
+def test_display_list_real_samus_normal():
+    p = os.environ.get("OM_SAMUS_BRES")
+    if not p or not os.path.exists(p):
+        pytest.skip("OM_SAMUS_BRES not set")
+    b = open(p, "rb").read()
+    m = nw.parse_mdl0(b, 0xF6E0)
+    dl = nw.decode_display_list(m)
+    assert len(dl["objects"]) == 31
+    assert dl["total_faces"] == 9980 == m["num_faces"]
+    assert dl["consistent"]
+    assert all(o["vertex_array"] is not None for o in dl["objects"])
+    for o in dl["objects"]:
+        if "bone_table" in o:
+            assert isinstance(o["bone_table"], list)
