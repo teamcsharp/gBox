@@ -1549,3 +1549,32 @@ other pending runtime fixes.
 4. `grenade_scatter` receipts on RE5/RE6 with the verified kind(s), with frames and the kill delta.
 Everything above still needs the service restart; nothing else is waiting on a build except the hand/incendiary
 native class/DTI for RE5/RE6 if their probes refuse.
+
+## Round 84 (2026-11-11 11:13 CST) - **the RE6 flash ring is confirmed live, ten of ten**
+
+The operator authorized the gateway restart ("Restart the gateway if you need to. I need that grenade ring
+feature completed."), gbox.service was restarted on lilspark at ~10:49, and the next RE6 session took the receipt:
+
+    session 0569c82d21614288-bc86d7aad571481a, RE6 No Mercy, 11:12
+    request 43927d54-9007-4688-b2fa-e0981fe4ed1b  kind flash
+    state confirmed, verified true, effect native_flash_ring
+    requested 10, detonated 10, radius 600 cm, inner 150 cm, expand true
+    hp 900 -> 900, self_damage 0, elapsed 703.9 ms
+    explosion_flag false on all ten (the RE5-only flag, recorded as evidence, not the gate)
+    before: kills 23, score 16220, combo 3, timer 241.51, max_within_4m 31
+    after:  the same (a flash stuns; the ten bloom positions are 600 cm out, none at his feet)
+
+Frame evidence: `.tmp/ring-re6-v2-after.jpg` - the screen bathed in the blue flash bloom, HUD visible through it.
+This closes A0 (the lane's owed live ring receipt) and proves the be058678 fix on the real build.
+
+**RE5:** the next block is due; its controller's `ready()` refused on the previous session ("no living player in an
+active Mercenaries round") while that session was already ended - to be retried on a fresh live round. The status
+table now says hand/incendiary are built on the parameterised spawn (uWp06/uWp07 DTI) and need their receipts.
+
+**RE4:** the gateway restart also activated `f8931ce2` (the playbook's round Notebook) - the scanner now has an
+`010099A00BC1E000` cursor and **five RE4 round reports exist** (10:57-11:03) with the control group live:
+round_gun_downs 35-43, round_unwall_tangents 5-11, kills 7-24, all `died`. The E3 watch is publishing
+(`bss_watch`/`bss_watch_loads`, stage 3, one load) and the harness controller builds; the lock fix (20028ad6) is
+live. The three-load mailbox choice needs the round-start load change (`cb956095`, deployed 11:15) so the same
+stage counts each round; after three round starts the page choice (`choose_mailbox`) can be committed as
+`MAILBOX_AT` and the next RE4 session can attach and take the flash/hand receipts.
