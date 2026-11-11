@@ -117,13 +117,22 @@ def test_native_segments_options_address_entries_keep_normals_and_turn_clockwise
     assert mt_model.parse_mod(kept).normals(0)[0]==pytest.approx((0.,.6,.8),abs=.008)
     assert (recomputed['normals'],carried['normals'])==('recomputed per stored vertex','source')
     assert carried['appearance']['options']=={'strict_samplers':'in_range'} and recomputed['appearance']['options']=={}
-    _,turned,_,reversed_=importer.build_archive(arc,source,**args,keep_source_normals=True,reverse_winding=True)
     from gbox import mtf_author
+    # normals that agree with the winding: a stale 'cw' survey flag must not turn it (that would draw it inside-out)
+    _,kept_order,_,not_turned=importer.build_archive(arc,source,**args,keep_source_normals=True,reverse_winding=True)
+    assert mtf_author.mesh_triangles(mt_model.parse_mod(kept_order),0)==[(0,1,2)]
+    assert not not_turned['winding_reversed'] and not_turned['winding_reversal_requested']
+    def clockwise(path,atlas_size,**options):
+        vertices,faces,atlas,report=original(path,atlas_size)
+        return [v|{'normal':(0.,-.6,-.8)} for v in vertices],faces,atlas,report|{'face_normal_fallback_corners':0}
+    monkeypatch.setattr(importer.mtf_materials,'source_mesh',clockwise)
+    _,turned,_,reversed_=importer.build_archive(arc,source,**args,keep_source_normals=True,reverse_winding=True)
     assert mtf_author.mesh_triangles(mt_model.parse_mod(kept),0)==[(0,1,2)]
     assert mtf_author.mesh_triangles(mt_model.parse_mod(turned),0)==[(0,2,1)] and reversed_['winding_reversed']
     with pytest.raises(ValueError,match='only the native_segments mode'):
         importer.build_archive(arc,source,**args,pose_mode='source_proportions',height=50.,keep_source_normals=True)
     monkeypatch.setattr(importer.mtf_materials,'source_mesh',lambda path,atlas_size:(
-        *original(path,atlas_size)[:3],{'face_normal_fallback_corners':3}))
+        [v|{'normal':(0.,0.,-1.)} for v in original(path,atlas_size)[0]],
+        *original(path,atlas_size)[1:3],{'face_normal_fallback_corners':3}))
     with pytest.raises(ValueError,match='clockwise donor needs its own normals'):
         importer.build_archive(arc,source,**args,reverse_winding=True)

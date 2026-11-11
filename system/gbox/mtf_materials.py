@@ -82,13 +82,12 @@ def _skin_source(gl, acc, world, node, attributes, positions, normals=None):
     if not np.isfinite(matrices).all() or not np.allclose(matrices[:, 3, :], [0, 0, 0, 1], atol=1e-6):
         raise MaterialError('source skin matrices are not finite affine transforms')
     posed = np.zeros_like(positions)
-    linear = np.zeros((len(positions), 3, 3)) if normals is not None else None
+    linear = np.zeros((len(positions), 3, 3))
     for column in range(joints.shape[1]):
         matrix = matrices[joints[:, column]]
         transformed = np.einsum('nij,nj->ni', matrix[:, :3, :3], positions) + matrix[:, :3, 3]
         posed += transformed * influence[:, column, None]
-        if linear is not None:
-            linear += matrix[:, :3, :3] * influence[:, column, None, None]
+        linear += matrix[:, :3, :3] * influence[:, column, None, None]
     owners = []
     for vertex_joints, vertex_weights in zip(joints, influence):
         merged = {}
@@ -98,7 +97,50 @@ def _skin_source(gl, acc, world, node, attributes, positions, normals=None):
                 merged[node_id] = merged.get(node_id, 0.0) + float(weight)
         ordered = sorted(merged.items())
         owners.append((tuple(j for j, _ in ordered), tuple(w for _, w in ordered)))
-    return posed, owners, _normal_pose(normals, linear)
+    # the determinant of each vertex's posed map: negative where a mirrored joint turns the surface inside out
+    return posed, owners, _normal_pose(normals, linear), np.linalg.det(linear)
+
+
+def _mirrored_faces(faces: np.ndarray, determinant) -> np.ndarray:
+    """Faces whose posed linear map mirrors them (glTF: a negative determinant turns the front face clockwise).
+
+    ``determinant`` is one value for a rigid node or one per vertex for a skinned one; a face is mirrored when
+    most of its corners are.
+    """
+    determinant = np.asarray(determinant, float)
+    if determinant.ndim == 0:
+        return np.full(len(faces), bool(determinant < 0))
+    return (determinant[faces] < 0).sum(axis=1) >= 2
+
+
+def _orient_chunks(chunks: list) -> tuple[list, dict]:
+    """Every chunk's faces turned outward and its stored normals agreeing with them (`mesh_orientation.orient`).
+
+    Decided once for the whole model, after each chunk's own mirrored faces were turned back.
+    """
+    from . import mesh_orientation
+
+    if not chunks:
+        return chunks, {'verdict': 'no geometry', 'winding_turned': False, 'normals_negated': False}
+    points, faces, normals, base = [], [], [], 0
+    for positions, _uv, chunk_faces, _mi, _owners, chunk_normals in chunks:
+        points.append(np.asarray(positions, float))
+        faces.append(np.asarray(chunk_faces, np.int64) + base)
+        normals.append(np.full((len(positions), 3), np.nan) if chunk_normals is None
+                       else np.asarray(chunk_normals, float))
+        base += len(positions)
+    oriented, flipped_normals, report = mesh_orientation.orient(np.concatenate(points), np.concatenate(faces),
+                                                                np.concatenate(normals))
+    out, face_start, vertex_start = [], 0, 0
+    for positions, uv, chunk_faces, mi, owners, chunk_normals in chunks:
+        count = len(chunk_faces)
+        chunk_oriented = oriented[face_start:face_start + count] - vertex_start
+        if chunk_normals is not None and report['normals_negated']:
+            chunk_normals = flipped_normals[vertex_start:vertex_start + len(positions)]
+        out.append((positions, uv, chunk_oriented, mi, owners, chunk_normals))
+        face_start += count
+        vertex_start += len(positions)
+    return out, report
 
 
 def build_atlas(materials: list[dict], uv_ranges: dict[int, tuple], *, size=(512, 512)):
@@ -186,7 +228,7 @@ def source_mesh(path: Path, *, atlas_size=(512, 512), strict_samplers: bool | st
         raise MaterialError('source model exceeds the 64 MiB input budget')
     gl, acc, image, world = characters._load(path)
     materials, material_map, ranges, chunks, bounded = [], {}, {}, [], set()
-    count = 0
+    count = mirrored_faces = 0
     alpha_modes = set()
     for ni, node in enumerate(gl.get('nodes', [])):
         if 'mesh' not in node:
@@ -204,12 +246,13 @@ def source_mesh(path: Path, *, atlas_size=(512, 512), strict_samplers: bool | st
             if normals is not None and normals.shape != positions.shape:
                 normals = None
             if 'skin' in node:
-                positions, owners, normals = _skin_source(gl, acc, world, node, attrs, positions, normals)
+                positions, owners, normals, determinant = _skin_source(gl, acc, world, node, attrs, positions, normals)
             else:
                 matrix = world[ni]
                 positions = positions @ matrix[:3, :3].T + matrix[:3, 3]
                 normals = _normal_pose(normals, matrix[:3, :3])
                 owners = [((ni,), (1.0,))] * len(positions)
+                determinant = np.linalg.det(np.asarray(matrix, float)[:3, :3])
             uv = np.asarray(acc(attrs['TEXCOORD_0']), float) if 'TEXCOORD_0' in attrs else np.zeros((len(positions), 2))
             if uv.shape != (len(positions), 2) or not np.isfinite(uv).all() or not np.isfinite(positions).all():
                 raise MaterialError('source UVs or transformed positions are invalid')
@@ -256,11 +299,21 @@ def source_mesh(path: Path, *, atlas_size=(512, 512), strict_samplers: bool | st
                 old = ranges[mi]
                 bounds = (min(old[0], bounds[0]), min(old[1], bounds[1]), max(old[2], bounds[2]), max(old[3], bounds[3]))
             ranges[mi] = bounds
-            chunks.append((positions, uv, indices.reshape(-1, 3), mi, owners, normals))
+            faces = indices.reshape(-1, 3).astype(np.int64)
+            mirrored = _mirrored_faces(faces, determinant)
+            if mirrored.any():
+                # the posed map mirrors these faces, so their stored order now faces inward: turn them back
+                faces[mirrored] = faces[mirrored][:, [0, 2, 1]]
+                mirrored_faces += int(mirrored.sum())
+            chunks.append((positions, uv, faces, mi, owners, normals))
     for index in sorted(bounded & set(ranges)):
         if min(ranges[index][:2]) < -1e-4 or max(ranges[index][2:]) > 1 + 1e-4:
             raise MaterialError('a clamped or mirrored sampler is used outside the 0..1 UV range; '
                                 'the atlas cannot reproduce it')
+    # Some exporters write a whole model inside-out (the winding, and often the normals with it; FF7, Stranglehold,
+    # Smash Melee, SoulCalibur II in the library): decide from the geometry, once for the model, so every writer gets
+    # outward faces and normals that agree with them (gbox.mesh_orientation).
+    chunks, orientation = _orient_chunks(chunks)
     atlas, regions, report = build_atlas(materials, ranges, size=atlas_size)
     vertices, triangles, lookup = [], [], {}
     skipped = 0
@@ -309,5 +362,8 @@ def source_mesh(path: Path, *, atlas_size=(512, 512), strict_samplers: bool | st
         'source_vertices': len(vertices), 'triangles': len(triangles), 'degenerate_triangles_skipped': skipped,
         'source_normal_corners': source_normal_corners, 'face_normal_fallback_corners': fallback_normal_corners,
         'uv_handedness_seams_preserved': True,
+        'orientation': orientation['verdict'], 'winding_turned': orientation['winding_turned'],
+        'normals_negated': orientation['normals_negated'], 'mirrored_faces_turned': mirrored_faces,
+        'orientation_measured': orientation.get('before'),
         'source_alpha_modes': sorted(alpha_modes), 'skin': 'source pose and influences retained; target weights not retargeted',
         'native_materials_bound': False, 'live_verified': False}

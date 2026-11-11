@@ -230,7 +230,7 @@ def _source_geometry(source: Path):
     player's textures live in `uPlTex####_*.arc`), so only geometry and UVs are needed here. Source joint indices are
     the glTF node indices, the same space `mtf_retarget.map_weights` walks with `parents`.
     """
-    from . import characters
+    from . import characters, mesh_orientation
 
     gltf, acc, _image, world = characters._load(Path(source))
     vertices, triangles = [], []
@@ -242,13 +242,20 @@ def _source_geometry(source: Path):
         # a rigid prop node (sword, tome) carries its own place in the model; a skinned node's POSITION is already
         # model-space in the collection GLBs
         transform = np.asarray(world[node_index], float) if skin is None else None
+        # glTF: a node whose transform mirrors (negative determinant) draws its triangles clockwise
+        flips = transform is not None and float(np.linalg.det(transform[:3, :3])) < 0
         for prim in gltf["meshes"][node["mesh"]].get("primitives", []):
             attributes = prim["attributes"]
             positions = acc(attributes["POSITION"]).astype(float)
             if transform is not None and len(positions):
                 positions = positions @ transform[:3, :3].T + transform[:3, 3]
-            normals = acc(attributes["NORMAL"]).astype(float) if "NORMAL" in attributes else np.tile([0, 1.0, 0],
-                                                                                                   (len(positions), 1))
+            # a missing NORMAL is NaN here and is made from the oriented winding below (never a constant +Y)
+            normals = acc(attributes["NORMAL"]).astype(float) if "NORMAL" in attributes else np.full(
+                (len(positions), 3), np.nan)
+            if transform is not None and "NORMAL" in attributes and len(normals):
+                linear = transform[:3, :3]
+                if abs(float(np.linalg.det(linear))) > 1e-12:
+                    normals = normals @ np.linalg.inv(linear)       # inverse transpose, row vectors
             uvs = acc(attributes["TEXCOORD_0"]).astype(float) if "TEXCOORD_0" in attributes else np.zeros((len(positions), 2))
             joints = acc(attributes["JOINTS_0"]).astype(int) if "JOINTS_0" in attributes else None
             weights = acc(attributes["WEIGHTS_0"]).astype(float) if "WEIGHTS_0" in attributes else None
@@ -267,7 +274,7 @@ def _source_geometry(source: Path):
                 normal = np.asarray(normals[index], float)
                 length = float(np.linalg.norm(normal))
                 if not np.all(np.isfinite(normal)) or length < 1e-8:
-                    normal = np.array([0.0, 1.0, 0.0])       # a degenerate donor normal must not abort the author
+                    normal = np.full(3, np.nan)              # filled from the winding below; never aborts the author
                 else:
                     normal = normal / length
                 position = np.asarray(positions[index], float)
@@ -284,10 +291,20 @@ def _source_geometry(source: Path):
             # a primitive without an index accessor draws its vertices three at a time (FF7's field models do)
             indices = acc(prim["indices"]).reshape(-1) if "indices" in prim else np.arange(len(positions))
             for triangle in indices[:len(indices) // 3 * 3].reshape(-1, 3):
-                triangles.append(tuple(int(i) + base for i in triangle))
+                corners = tuple(int(i) + base for i in triangle)
+                triangles.append((corners[0], corners[2], corners[1]) if flips else corners)
     if not vertices or not triangles:
         raise SwitchModelError(f"{source} has no body geometry")
-    return vertices, triangles
+    # one orientation for the whole model, from its geometry (the same rule `mtf_materials.source_mesh` applies):
+    # an inside-out export (FF7, Stranglehold, Smash Melee, SoulCalibur II) is turned and its normals made to agree
+    points = np.asarray([v["position"] for v in vertices], float)
+    stored = np.asarray([v["normal"] for v in vertices], float)
+    faces, stored, _report = mesh_orientation.orient(points, np.asarray(triangles, np.int64), stored)
+    missing = ~np.isfinite(stored).all(axis=1)
+    if missing.any():
+        stored[missing] = mesh_orientation.winding_normals(points, faces)[missing]
+    vertices = [v | {"normal": tuple(float(x) for x in n)} for v, n in zip(vertices, stored)]
+    return vertices, [tuple(int(i) for i in face) for face in faces]
 
 
 def pose_deviation(archive: bytes, source: Path, source_roles: dict[str, str]) -> dict:

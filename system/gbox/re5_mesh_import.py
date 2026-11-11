@@ -14,6 +14,19 @@ import hashlib
 from . import characters, mt_arc, mt_model, mtf_author, mtf_materials, mtf_mrl, mtf_retarget, mtf_tex
 
 
+def _wound_against_normals(vertices: list[dict], triangles) -> float:
+    """Share of triangle corners whose stored normal faces against the triangle's geometric normal (the survey rule)."""
+    import numpy as np
+
+    if not triangles:
+        return 0.
+    positions = np.asarray([v['position'] for v in vertices], float)
+    normals = np.asarray([v['normal'] for v in vertices], float)
+    faces = np.asarray(triangles, int)
+    geometric = np.cross(positions[faces[:, 1]] - positions[faces[:, 0]], positions[faces[:, 2]] - positions[faces[:, 0]])
+    return float((np.einsum('fcj,fj->fc', normals[faces], geometric) < 0).mean())
+
+
 def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles: dict[str, str],
                   target_roles: dict[str, int], segments: dict[str, str], scale: float,
                   material_index: int = 0, template_index: int = 0, continuous: bool = False,
@@ -90,10 +103,15 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
     surface = mtf_tex.parse(texture)
     vertices, triangles, atlas, appearance = mtf_materials.source_mesh(
         source, atlas_size=(surface.width,surface.height), **({'strict_samplers': 'in_range'} if samplers_in_range else {}))
-    if reverse_winding:
+    # `source_mesh` now hands over outward faces with normals that agree (gbox.mesh_orientation), so a donor a survey
+    # once measured 'cw' usually arrives turned already; turning it again would draw it inside-out. Turn only what is
+    # still wound against its own normals.
+    turned_here = False
+    if reverse_winding and _wound_against_normals(vertices, triangles) >= .9:
         if appearance.get('face_normal_fallback_corners'):
             raise ValueError('a clockwise donor needs its own normals; its face normals would point inward')
         triangles = [(a, c, b) for a, b, c in triangles]
+        turned_here = True
     gltf, _, _, world = characters._load(source)
     names = {}
     for index, node in enumerate(gltf['nodes']):
@@ -219,7 +237,7 @@ def build_archive(archive: bytes, source: Path, *, model_name: str, source_roles
                'pose_mode':pose_mode, 'bind_skeleton':bind, 'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),
                'normals':'recomputed per stored vertex' if pose_mode == 'native_segments' and not keep_source_normals
                          else 'source',
-               'winding_reversed':bool(reverse_winding), 'model_entry':model_index, 'mrl_entry':mrl_index,
+               'winding_reversed':turned_here, 'winding_reversal_requested':bool(reverse_winding), 'model_entry':model_index, 'mrl_entry':mrl_index,
                'tangent_frames':'UV derivatives with handedness; authored occlusion1',
                'position_roundtrip_max_error': error, 'envelope_count': checked.header()['weight_bound_count'],
                'mesh_id': checked.meshes()[0]['mesh_id'], 'changed_entry_indices': [model_index, texture_index],

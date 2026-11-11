@@ -186,7 +186,12 @@ def test_an_undecodable_mask_map_stays_native_and_is_named_in_the_receipt(donor)
         W._neutral(before, [((0, MODEL + 'a_BM'), (0,))], {}, [])            # a BC7 albedo is not silently kept
 
 
-def test_a_clockwise_donor_has_its_triangles_turned_on_the_way_in(donor, monkeypatch):
+def test_a_clockwise_survey_flag_reaches_the_import_but_never_turns_an_oriented_donor(donor, monkeypatch):
+    """The survey's 'cw' still goes to `re5_mesh_import`, which turns only what is still wound against its normals.
+
+    `mtf_materials.source_mesh` hands every donor over facing outward with agreeing normals (gbox.mesh_orientation),
+    so a stale 'cw' label - the 24 Melee / SoulCalibur II donors of the stored library survey - must not turn it a
+    second time; the receipt says what was done. (The turn itself: test_re5_mesh_import.)"""
     archive, target, mix = mixed_arc()
     seen = []
     real = W.re5_mesh_import.build_archive
@@ -198,7 +203,7 @@ def test_a_clockwise_donor_has_its_triangles_turned_on_the_way_in(donor, monkeyp
     riders = [(donor, dict(W.SOURCE_ROLES), W.NATIVE_HEIGHT, 'first', 'cw'),
               (donor, dict(W.SOURCE_ROLES), W.NATIVE_HEIGHT, 'second', 'ccw')]
     _, receipt = W.author_mix(archive, riders, target, mix)
-    assert seen == [True, False, True, False] and [c['winding_reversed'] for c in receipt['carriers']] == [True, False]
+    assert seen == [True, False, True, False] and [c['winding_reversed'] for c in receipt['carriers']] == [False, False]
     with pytest.raises(W.EnemyWriterError, match="'cw' or 'ccw'"):
         W.author_mix(archive, [riders[0], (donor, dict(W.SOURCE_ROLES), W.NATIVE_HEIGHT, 'second', 'flipped')], target,
                      mix)
@@ -206,7 +211,7 @@ def test_a_clockwise_donor_has_its_triangles_turned_on_the_way_in(donor, monkeyp
                     winding='cw')
     seen.clear()
     _, one = W.author(archive, donor, target, source_roles=whole.roles, fit=W.NATIVE_HEIGHT, reverse_winding=True)
-    assert seen == [True, True] and one['appearance']['winding_reversed'] is True
+    assert seen == [True, True] and one['appearance']['winding_reversed'] is False
 
 
 def test_role_map_takes_the_animation_ids_where_the_bind_pose_measurement_refuses_and_checks_geometry():

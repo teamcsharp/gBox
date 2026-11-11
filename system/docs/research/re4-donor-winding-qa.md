@@ -55,3 +55,34 @@ parts where present). Columns:
 Run the same table on the source donors (`library_donor(...)['faces']` vs normals) to separate donor-inherited inversion from fit-introduced inversion;
 trace `det` of each role transform in `fit`; add the head-seat numbers. Proposed code change (needs lifting the no-code rule): add `winding` and `head_seat`
 checks to `FIT_GATE`/`fit_report` with pass/fix/reject, flipping a part's triangle order when >50% inward.
+
+## Milestone 2 (2026-11-10 night): root cause measured, fixed in the shared loader
+
+Measured with `gbox.mesh_orientation.measure` on the posed `mtf_materials.source_mesh` output of all 650 usable donors
+of `scratch/re4-greybox-all/library-survey.json` (outward = area share of triangles facing away from their welded
+part's centre; volume = share of the parts' signed volume that is positive):
+
+| exporter (glTF `asset.generator`) | donors | outward area | outward volume | stored normals vs winding | verdict |
+|---|---|---|---|---|---|
+| `gbox ff7_models` (FF7 battle + field) | 7 | 0.02-0.18 | 0.00 | agree (face normals of the winding) | inside-out, normals too |
+| `gbox.stranglehold_models` | 39 | 0.10-0.34 | 0.00 | agree | inside-out, normals too |
+| `gbox melee_models` Smash fighters | 20 | 0.07-0.27 | 0.00-0.01 | against (normals outward) | winding inside-out (the RE5 survey's "cw") |
+| `gbox melee_models` Fighting Wire Frames (no NORMAL) | 2 | 0.22-0.23 | 0.00 | face-normal fallback | inside-out |
+| `gbox soulcalibur2` | 4 | 0.17-0.27 | 0.00-0.01 | against | winding inside-out ("cw") |
+| every other exporter (578 donors) | 578 | 0.61-1.00 | 0.99-1.00 | agree | outward |
+
+- Native RE6 body records: winding vs normals 0.99-1.0, outward 0.68-1.0 (one inner Leon record 0.02, legitimately inward). The RE4 / RE5 / RE6 writers keep the source's
+  orientation exactly (RE6 enemy-cast-01 donor records read back with the source numbers to 4 digits), so the inversion
+  is the donor's: no writer step mirrors, and the RE4 `fit` role transforms are proper rotations times positive scales.
+- pl0d slot 0 (milestone 1) is `ff7_earith` (FF7 Aerith, battle model): outward 0.046 as written, every part negative.
+- Only RE5 turned the "cw" donors (survey `rig.winding`); RE4 and RE6 turned none, and no title caught the
+  FF7 / Stranglehold / wire-frame donors, whose normals agree with their wrong winding.
+
+Fix: `gbox/mesh_orientation.py` decides one orientation per model from the geometry (inside-out when both shares are
+<= 0.4, outward when both >= 0.6, else left alone; a part is never turned alone, so a mouth or a lining stays), turns
+the winding and negates the stored normals when they point against it. `mtf_materials.source_mesh` (RE4, RE5, RE6
+textured and enemy-cast loads) and `re6_switch_models._source_geometry` apply it, and both turn back faces mirrored by
+a node or joint with a negative determinant (glTF rule). `re5_mesh_import` turns a "cw" donor only while it is still
+wound against its normals, so the stored survey's flags cannot turn an oriented donor twice. After the fix all 650
+donors load outward through both loaders (72 turned, 46 with their normals negated); offline, Aerith on RE4 pl0d reads
+back outward 0.954 (was 0.046) and on the RE6 Leon slot 0.937 (was 0.063). Tests: `tests/test_mesh_orientation.py`.

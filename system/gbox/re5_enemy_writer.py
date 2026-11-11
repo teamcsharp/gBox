@@ -1270,7 +1270,7 @@ def author(archive: bytes, source: Path, target: EnemySet, *, source_roles: dict
             'atlas_entry': target.albedo[0], 'atlas_texture': target.albedo[1],
             'atlas_size': [surface.width, surface.height], 'atlas_source': appearance,
             'material': one['material']['name'], 'mrl_entries_changed': False, 'secondary_maps': secondary,
-            'secondary_maps_kept_native': kept_native, 'winding_reversed': bool(reverse_winding),
+            'secondary_maps_kept_native': kept_native, 'winding_reversed': bool(imported['winding_reversed']),
             'normals': 'recomputed from the fitted triangles; flat wherever the donor splits its vertices per face',
             'shared_texture_note': 'the atlas, normal and mask entries are also sampled by other models of this '
                                    'archive that are not replaced; the part that wears this material there shows '
@@ -1889,6 +1889,8 @@ def author_mix(archive: bytes, riders: list[tuple[Path, dict, Fit, str]], target
                     or len(after.entries) != len(parsed.entries)
                     or zlib.decompress(after.entries[mrl_index].data) != mrl):
                 raise EnemyWriterError(f'the mesh import did not address the reviewed entries of {name!r}')
+            # what the import did, not what the survey asked for (an oriented source is never turned twice)
+            rider['winding_reversed'] = bool(imported['winding_reversed'])
             atlas = zlib.decompress(after.entries[carrier.albedo[0]].data)
             this_fit = {'name': rider['fit'].name, 'cross_section_scale': used, 'role_scales': role_scales,
                         'role_offsets': {role: list(offset) for role, offset in role_offsets.items()},
@@ -1957,7 +1959,7 @@ def author_mix(archive: bytes, riders: list[tuple[Path, dict, Fit, str]], target
             'albedo': carrier.albedo[1], 'atlas_size': rider['atlas_size'],
             'donor': {'name': rider['who'], 'model': rider['source'].name, 'sha256': rider['sha256']},
             'fit': fits[number], 'donor_rig': rider['rig'], 'atlas_source': rider['appearance'],
-            'winding_reversed': rider['winding'] == 'cw',
+            'winding_reversed': rider.get('winding_reversed', rider['winding'] == 'cw'),
             'source_vertices': len(rider['vertices']), 'source_triangles': rider['triangles'],
             'montages': shares['shares'][number],
             'share_if_montages_are_uniform': f'{len(shares["shares"][number])} of {drawn}'}
