@@ -1,11 +1,8 @@
-"""Play PSO: start gBox's own PSO campaign autoplay on a live session and report/frame its progress.
+"""Wait for a session, then hand it to gBox's own PSO campaign and frame the play.
 
-The plane ships a PSO campaign (`pso_campaign.CAMPAIGN = "pso-episodes-1-2"`, gated to the GPOE8P rev 2 disc, which is what this
-machine has). `autoplay` is exempt from the background-admission gate, so once a session exists the plane can play the game
-itself through its own controller - menus, field, fights, and onward.
-
-This driver waits for a session (the operator's Play is the fastest way), starts the campaign, then logs the campaign state and
-saves a frame every 20 s so the run is watchable. The agent's ViGEm pad is the fallback if the campaign refuses.
+Deliberately small: no pad, no taps, no launch. Everything that can be done without the operator is already done; the campaign
+(`autoplay op=start campaign=pso-episodes-1-2`) is exempt from the admission gate, so the moment a session exists this starts
+the plane's own play and captures frames.
 """
 import json
 import subprocess
@@ -18,12 +15,12 @@ sys.path.insert(0, r"C:\_tools\gBox\.tmp\main-repo\system")
 sys.path.insert(0, r"C:\_tools\gBox\.tmp\tools")
 
 from pso_boot import Plane, Reader, BASE                 # noqa: E402
-from gbox import pso_boot_walk as W, vpad_win            # noqa: E402
+from gbox import pso_boot_walk as W                     # noqa: E402
 
-LOG = Path(r"C:\_tools\gBox\.tmp\pso_play.log")
+LOG = Path(r"C:\_tools\gBox\.tmp\pso_campaign.log")
 FRAMES = Path(r"D:\gBox\pso-ds\demo")
 CAMPAIGN = "pso-episodes-1-2"
-WATCH = 25 * 60
+WATCH = 45 * 60
 
 
 def log(msg):
@@ -41,7 +38,7 @@ def api(plane, method, path, body=None, timeout=180):
         return json.loads(response.read() or b"{}")
 
 
-def frame(tag: str):
+def frame(tag):
     try:
         FRAMES.mkdir(parents=True, exist_ok=True)
         out = FRAMES / f"{time.strftime('%H%M%S')}-{tag}.png"
@@ -60,7 +57,7 @@ def frame(tag: str):
 
 def main():
     plane = Plane()
-    log(f"player up (native campaign {CAMPAIGN!r}); waiting for a session")
+    log(f"waiter up: campaign {CAMPAIGN!r} starts on the first session it sees")
     session = None
     start = time.time()
     while time.time() - start < WATCH:
@@ -74,43 +71,24 @@ def main():
     sid = session["session_id"]
     reader = Reader(plane, sid)
     log(f"session {sid}; state={json.dumps(W.state(reader))}")
-
-    try:
-        missions = api(plane, "POST", "/api/jobs", {"tool": "autoplay", "input": {"op": "list"}})
-        log("missions: " + json.dumps(missions, default=str)[:600])
-    except Exception as exc:                    # noqa: BLE001
-        log(f"mission list failed: {type(exc).__name__}: {exc}")
     job = api(plane, "POST", "/api/jobs", {"tool": "autoplay", "input": {
         "session_id": sid, "op": "start", "campaign": CAMPAIGN}})
-    log(f"autoplay start job {job.get('id')} state={job.get('state')}")
-    jid = job.get("id")
-    state = None
-    for _ in range(40):
-        time.sleep(3)
-        if jid:
-            state = api(plane, "GET", f"/api/jobs/{jid}")
-            if state.get("state") in ("succeeded", "failed", "cancelled"):
-                break
-    log(f"start job: {json.dumps({k: state.get(k) for k in ('state', 'error') if state}, default=str)[:300]}")
-    if state and state.get("output"):
-        log(f"output: {json.dumps(state['output'], default=str)[:400]}")
-
-    last_frame = 0.0
-    for step in range(150):
-        time.sleep(8)
-        status = {}
+    log(f"campaign start job {job.get('id')} state={job.get('state')}")
+    frames = 0
+    for step in range(240):
+        time.sleep(10)
         try:
             status = api(plane, "POST", "/api/jobs", {"tool": "autoplay", "input": {
                 "session_id": sid, "op": "status"}})
+            log(f"status: {json.dumps(status, default=str)[:400]}")
         except Exception as exc:                            # noqa: BLE001
             log(f"status failed: {type(exc).__name__}: {exc}")
-        if step % 3 == 0:
-            game = W.state(reader)
-            log(f"tick {step}: state={json.dumps(game)}")
-        if time.time() - last_frame > 20:
-            frame("playing")
-            last_frame = time.time()
-    log("watch finished; the session is left as the operator finds it")
+        game = W.state(reader)
+        log(f"state: {json.dumps(game)}")
+        if step % 2 == 0:
+            frame("campaign")
+            frames += 1
+    log(f"watch finished after {frames} frames; the session is left as the operator finds it")
     return 0
 
 

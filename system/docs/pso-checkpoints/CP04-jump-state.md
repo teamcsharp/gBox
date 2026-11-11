@@ -645,3 +645,24 @@ campaign has to boot through the title and menus itself - which its campaign cod
 The staged player now logs the mission list at startup, starts `campaign="pso-episodes-1-2"` on the first session, polls
 `autoplay op=status` and frames the screen every 20 s. The only missing input remains the launch (armed job `a43d86814ee34c36`,
 or the operator's Play).
+
+## Round 126: every session-free route to a running PSO was tried and measured - the click is the only one left
+
+The operator asked to see the machine playing PSO. Three routes were tried this round beyond the launch gate, and all three were
+implemented, measured and (where needed) reverted:
+
+| route | what was tried | result |
+|---|---|---|
+| **the plane's own autoplay** | `autoplay op=start campaign="pso-episodes-1-2"` (exempt from admission) | **works, but needs a session** - it drives an already-admitted one by design |
+| **the autoplay screensaver** | enabled it scoped to the i9 and this game, `idle_minutes: 1`, `roulette: false` | **cannot bootstrap an unplayed game**: `screensaver.games(cfg)` draws from `played_games(runs, min_pads=300)`, and PSO has **no recorded play** on this machine, so the explicit `games` list filters to an empty pool. Settings were **restored exactly** afterwards (`enabled: false, workers: ["*"], idle_minutes: 10, games: [], roulette: true`) |
+| **a jump state** | looked for `jumpstates/436e0bb84d5337d1-*.state` | **absent** - `D:\gBox\runtime\jumpstates` holds only Sonic/Mario/RE4 states, so even a demo would have to boot the menus |
+
+So the only remaining input is a **session**: either the operator's **Play**, or five minutes of idle for the armed-style launch
+(`launch_game` is the one gate `autoplay`'s exemption does not cover). Everything downstream is staged: the waiter
+(`docs/research/pso-cp4-play.py`) starts the campaign within seconds of a session and frames the screen every 20 s into
+`D:\gBox\pso-ds\demo\`, and the plane's own mission for this disc is `pso-gc-forest1-first-wave` ("open two door panels, reach
+room 11 and defeat the first wave").
+
+**One measurement error to record honestly:** a PowerShell `@($null)` count made an empty session list look like one session for a
+moment; the API's answer was `[]`. The Python waiter counts correctly, and the lesson is the same as round 90's - trust the
+typed client, not the shell's JSON handling.
