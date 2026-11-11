@@ -532,3 +532,42 @@ Then send it the heavy analysis work.
   see `DEEPSEEK-PM-HANDOFF-2026-11-11.md` section 5.4 for the merged / ported / reverted / skipped list and why. Gate:
   the MercMode/RE subset plus every touched test, no failure beyond main's 14 known red. Branches still in flight (wall
   reports, donor normals, donor rotation, research assimilation): that doc's section 9.
+
+- 2026-11-11 09:42 (DeepSeek PM): **post-restart verification, the donor rotation's pools made real, and a Spark restart
+  to know about.**
+  - **Deployment is the merged main.** At 09:15 the worker's `build_sources` hashes on lilspark equal main's files for
+    `gbox/donor_rotation.py`, `gbox/mercmode.py`, `gbox/screensaver.py`, `gbox/mesh_orientation.py`, `gbox/mtf_materials.py`,
+    `gbox/re5_mesh_import.py`, `gbox/re6_switch_models.py` (the normals fix and the donor rotation are both live; the
+    05:00 restart loaded them - `gbox-data/deployed-main.txt` 05:00:02).
+  - **The donor rotation had no RE4 or RE6 pool**: only builds present in `gbox-data/mercs/donor_rejects.json`'s
+    `audited_builds` can be drawn, and the two builds the rotation actually plays were never audited (the 11-10 audit
+    covered the pools/series, not `recovery-re4-fit-v4-20261110` or `recovery-re6-enemy-cast-01-20261110`), so RE4/RE6
+    fell back to `default_mods` and only RE5 could draw (3 builds).
+  - **Fix applied (data only, no restart):** audited the two builds' own fit receipts on the Spark
+    (`gBox_alt/scratch/re4-fit-v2/{out-v4/cast,out-v4/enemy}/receipt.json` and
+    `gBox_alt/scratch/re6-enemy-cast/out/recovery-re6-enemy-cast-01-20261110/receipt.json`) with
+    `python -m gbox.donor_fit_audit`, merged the index into a copy of the live file (operator rejects kept; **0 new
+    rejects**; 28 -> 30 audited builds), and replaced it atomically over SMB. Backup:
+    `gbox-data/mercs/donor_rejects.json.bak-20261111-091812`. Result, read from `GET /api/mercmode` at 09:40:
+    **re4 pool `[recovery-re4-fit-v4-20261110]` (19 donors), re5 `[series-01, series-02, series-04]`,
+    re6 `[recovery-re6-enemy-cast-01-20261110]` (13 donors)**; both new entries pass `donor_rotation.fit_gate`.** The
+    queue still names a build per block, so a draw only happens on a queue entry without `mod`; RE4/RE6 have one
+    verified build each, so their variety still needs new builds, not a settings change.
+  - **lilspark's gbox.service restarted at ~09:39:38** (worker id `60d56e74a744411a` -> `c63a6efd5f584229`); the control
+    plane was unresponsive on :8765 for ~2 minutes (health, sessions and workers all timed out; SMB and ping stayed up)
+    and the program went to a slate. It recovered on its own and MercMode resumed: session
+    `c63a6efd5f584229-bc8febabc7af4e29` (RE4, `recovery-re4-fit-v4-20261110`) started 09:40:34 and the program is
+    `live`, `pinned to lilspark (its MercMode turn)`. The cause is not proven from here (systemd journal is not on the
+    share); the restart followed a 171 s `GET /api/mercmode` and a read-only SQLite open of the 2.4 GB store over SMB.
+    **Operational rule for the next rounds: use the light endpoints (`/api/broadcast/feeds`, `/api/sessions`,
+    `/api/jobs`, `/api/workers`), one `/api/mercmode` at a time, and never open the live store over SMB while the service
+    is up** - the status route is the one the 2026-10-26 stall came from.
+  - **RE5's block 09:19-09:24 (first after the restart) is a red flag:** five rounds, all `died`, in 36-97 s, with
+    `shots 0 / hits 0`, 0-2 kills, `round_hurt_while_idle` 4 and `round_threat_answered_fire` 0 (one flash answered).
+    Either the fire path is not raising/firing on RE5 or the round report's shot counters are not wired for its Switch
+    reader - the RE5 report also has many nulls (`round_deaths`, `round_shots`). Needs a live trace on the next RE5 block
+    before a ticket; numbers and the report id are in this note.
+  - **Section 9's in-flight branches are missing:** `wt-wallreport-20261110` and `assim-hermes-research-20261110` are
+    neither local nor on origin in this clone (the normals and donor-rotation branches are merged). Priority 1
+    (wall-stuck auto-reports) and the research assimilation need those branches pushed, or the PM cannot gate them.
+  - No live settings were changed this round (queue, program pin and Pine lock untouched).
