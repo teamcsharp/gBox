@@ -31,6 +31,9 @@ SIZE = 10.0
 CLEARANCE = 0                                                      # only the cells the line passes through
 
 
+ROUTES = REL.parent.parent / "routes"
+
+
 def rel_for_floor(floor=None):
     """The collision file for a floor: the floor's own map when it exists, else the historical fallback."""
     if floor is None:
@@ -44,9 +47,35 @@ def rel_for_floor(floor=None):
     return FLOOR_REL.get(floor, REL)
 
 
+_DOOR_CACHE = {}
+
+
+def doorway_cells(floor=None):
+    """Cells the room mesh records as doorways, plus their neighbours. Empty when no mesh exists yet."""
+    if floor in _DOOR_CACHE:
+        return _DOOR_CACHE[floor]
+    cells = set()
+    try:
+        meshes = sorted(ROUTES.glob(f"forest{int(floor)}-rooms-mesh.json"))
+        if meshes:
+            graph = json.loads(meshes[0].read_text(encoding="utf-8"))
+            for door in graph.get("doors") or []:
+                x, z = door.get("x"), door.get("z")
+                if isinstance(x, (int, float)) and isinstance(z, (int, float)):
+                    cx, cz = int(x // 10.0), int(z // 10.0)
+                    for dx in (-1, 0, 1):
+                        for dz in (-1, 0, 1):
+                            cells.add((cx + dx, cz + dz))
+    except Exception:                                            # noqa: BLE001
+        cells = set()
+    _DOOR_CACHE[floor] = cells
+    return cells
+
+
 def cells(floor=None):
+    """Walkable cells for a floor: the collision's free space plus the doorways that open at runtime."""
     floors, walls = pso_walk.cells(rel_for_floor(floor).read_bytes())
-    return set(floors - walls)          # CELL INDICES, not centres
+    return set(floors - walls) | doorway_cells(floor)
 
 
 def cell_of(point):
