@@ -661,3 +661,22 @@ Then send it the heavy analysis work.
   - **The RE5 13:03 block** never reached a round (title) and ended; the 2.5 s ring budget remains unverified live.
   - The 13:00 deploy reloaded `grenade_ring` (the periodic 2-minute random-kind ring is live) and the deploy state is
     clean; the goal stays active.
+
+- 2026-11-11 13:40 (DeepSeek PM): **the RE6 remote-mine rings are live (28 bombs / 7 rings / 2 flag detonations) and the
+  bow 40x is deployed.**
+  - Live receipt: RE6 `fefc7b32...-944946...`, `mine_rings_dropped` 7, `mine_ring_bombs` 28,
+    `mine_flag_detonations` 2, kills 5 by 13:38 - the operator's "massive quantities ... then detonate them remotely"
+    working with no throw, no animation, no detonator in hand (`47e029c9`, `2e5cb097`).
+  - The `remote_mines` capability needed the claim allow-list (`9e1f7d56`): the worker's report was 422 "invalid worker
+    capability report" and the PiP had no operations until the restart loaded it.
+  - RE4 bow: `d4e00881` deployed at 13:15 (reloaded `re4_switch_mods`, `re4_switch_native`) - the bow plays at 40x by
+    default (BOW_MOTION_X), the trigger floor is 0.025 s and the playbook ticks at 0.025 s while the bow is up. The
+    pre-deploy Krauser rounds (13:10-13:14, 20x) already showed 5-8 kills and 11-31 shots in the good rounds; the next
+    Krauser round measures the 40x.
+  - The RE4 playbook now runs the bot's ring rule (the periodic two-minute random-kind ring across all three Switch
+    titles), and the harness selftest returns its mailbox counters on an incomplete call (`64597c05`).
+  - The RE4 harness E6 remains the blocker for the RE4 ring/flash receipts: the dispatcher is installed but never
+    invoked on the mailbox schedule; the diagnostic receipt is the next live probe's first read.
+  - The RE5 ring budget (2.5 s) and the periodic ring are live; the RE5 blocks since the fix have not reached a round
+    (the 13:03 title hang) - the next live RE5 round is the test.
+  - #9720 and #9744 stay first/second in the Hermes queue; no run has picked either up yet.

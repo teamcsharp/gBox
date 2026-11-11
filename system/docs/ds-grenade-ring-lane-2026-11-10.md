@@ -1703,3 +1703,31 @@ pre-fix* session (`dfb1f73f...-809651`), not the new worker - the `timeout` regr
 **The 13:03 restart** (worker `f3cb7fd025ca4ac2`) loaded main 97801b9d: the RE5 call timeout, the RE6 remote-mine
 native helpers (`drop_bomb_ring`, `bomb_ring_now`, `bomb_detonate_now`) and the `remote_mines` intervention op. The
 13:15 deploy carries the bow 40x (1dc41975); the bot modules hot-reload, so the next Krauser round gets 40 taps/s.
+
+## Round 91 (2026-11-11 13:40 CST) - **the RE6 remote-mine rings are live: 28 bombs in 7 rings, 2 flag detonations**
+
+Operator 2026-11-11: "drop remote bombs anytime that they want ... eject them out of their body in sets of four in a
+ring around them ... drop massive quantities of them and then be able to detonate them remotely."
+
+Live receipt on RE6 (`fefc7b3202a94d14-944946a960564407`, 13:35-13:38, the first RE6 block after the restart that
+loaded the native ring and the `remote_mines` capability):
+
+    mine_rings_dropped     7          (rings of four: 4, 4, 4, 4, 4, 4, 4)
+    mine_ring_bombs        28
+    mine_flag_detonations  2          (the detonator's own flag; no animation, no remote in hand)
+    mine_ring_failures     2          (the first two ticks: 'Controller' object has no attribute 'player' - fixed 2e5cb097)
+    round: playing, kills 5, score 2335
+
+Frame: `.tmp/re6-mines.jpg` - the crowd on the steel grating, a green remote mine lying at the bottom left (score
+2335, combo 006). The rule drops a ring of four every ~22 s +/- 8 s and flag-detonates the set after 3 rings or
+75 s; this block accumulated 7 rings and detonated twice. The `remote_mines` op (ring|detonate) is in the worker for
+the operator's own clicks; the claim validator now knows the op (`OPERATIONS` + `TIMED_OPS`, 9e1f7d56).
+
+Two live defects found and fixed on the way: the capability was refused as "invalid worker capability report" until
+`remote_mines` joined the allow-list (9e1f7d56, a restart loaded it); and the ring's player read was `self.player`
+(only set by `drop_bomb`) -> "Controller object has no attribute 'player'" on the first ticks (`2e5cb097`, the ring
+now uses `ready()`'s pair).
+
+Still open on the same feature: the hand/incendiary **rings**' spawn image (RE6 refuses the parameterised spawn; the
+random-kind ring on RE5/RE6 waits on their live receipts), and the RE4 harness E6 (the mailbox call still returns
+uncertain; the new diagnosis receipt carries the ticks/state to tell "never invoked" from "handshake wrong").
