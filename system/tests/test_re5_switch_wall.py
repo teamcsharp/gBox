@@ -332,3 +332,18 @@ def test_the_way_ahead_is_checked_on_the_nav_mesh_and_turned_before_a_wall():
     snap["player"]["rot"] = math.pi                     # facing away: open floor, untouched
     assert b._mesh_guard({"hold": ("lup",)}, snap) == {"hold": ("lup",)}
     assert b._mesh_guard({"hold": ("lup", "zl")}, {**snap, "player": {"pos": (0.0, 0.0, 200.0), "rot": 0.0}}) == {"hold": ("lup", "zl")}
+
+
+def test_cornered_recovery_keeps_probing_instead_of_standing_still(monkeypatch):
+    """Coach 8550 (wall_recovery_failures 19 of 27 in a Licker crowd): with no trail and no displacement the probes
+    must keep alternating over the whole window - never forward, never an idle turn-only tick."""
+    b, clock = bot()
+    monkeypatch.setattr(b, "_tick", lambda s, now: {"hold": ("lup",)})
+    seen = []
+    for k in range(40):
+        clock[0] = k * .08
+        act = b.tick(snap())
+        if b._wall_rec is not None and clock[0] > .6:
+            seen.append(tuple(x for x in act["hold"] if x in ("ldown", "lleft", "lright", "lup")))
+    assert seen and all(m and "lup" not in m for m in seen)
+    assert len({m for m in seen}) >= 2
