@@ -2199,7 +2199,7 @@ FLASH = False                            # the flash alone at FLASH_N within FLA
 # (creeping_move) - until gets_up 15 s later, at 1 health; he died 2 s after it with no tablet (the tablet rule wanted
 # more than 1 health). Down (DOWN_ACTIONS, held through DOWN_KEEP's while down): no tablet, no stick; the nearest within
 # DOWN_FIGHT_R locked and fired at (a kick for one within MELEE_R); nobody near: the stick up to rise. Up at 1 health:
-# a tablet at once. re6_switch_mods.down_fire triples the fire table while he is down. stats down_s, down_shots,
+# a tablet at once. re6_switch_mods.down_fire quintuples (x5, was x3) the fire table while he is down. stats down_s, down_shots,
 # down_kills, down_recoveries (gets_up after a down), dying_deaths (died at 1 health after dying, never above it since).
 DOWN_ACTIONS = frozenset("cPlAction_pl_act_" + n for n in (
     "dying_loop", "creeping_move", "stand_to_creeping", "lying_down_weapon_ready_loop", "lying_down_weapon_ready_move",
@@ -2209,6 +2209,10 @@ DOWN_KEEP = frozenset("cPlAction_pl_act_" + n for n in ("motion_ex", "weapon_fir
                                                         "weapon_comn_quick_shot"))
 GETUP_ACTIONS = frozenset("cPlAction_pl_act_" + n for n in ("gets_up", "damage_gets_up"))
 DOWN_FIGHT_R = 900.0
+# Operator 2026-11-10 (#6080): down, "turn 5x and shoot 5x faster ... blasting enemies when they are down". The fire table
+# runs at re6_switch_mods.DOWN_FIRE_X = 5; the aim's turn: the stick is digital, so the pulsed fine zones (FINE_YAW,
+# FINE_PITCH) shrink to 1/DOWN_TURN_X while down - the stick is held full until within a fifth of the usual window.
+DOWN_TURN_X = 5.0
 # Hazards (the same frame: "standing in boss smoke"): his health falling with nobody within HAZARD_CONTACT_R, not held,
 # not his own blast - smoke, gas, fire, acid - marks his spot (HAZARD_R, for HAZARD_S); inside a mark he moves out
 # toward open space while he keeps firing. stats hazard_marks, hazard_s.
@@ -2820,7 +2824,7 @@ class Bot:
     def _yaw(self, err: float) -> set:
         if abs(err) <= YAW_DEAD:
             return set()
-        if abs(err) < FINE_YAW:
+        if abs(err) < FINE_YAW / (DOWN_TURN_X if self.down else 1.0):
             self.yaw_pulse ^= 1
             if not self.yaw_pulse:
                 return set()
@@ -2829,7 +2833,7 @@ class Bot:
     def _pitch(self, err: float) -> set:
         if abs(err) <= PITCH_DEAD:
             return set()
-        if abs(err) < FINE_PITCH:
+        if abs(err) < FINE_PITCH / (DOWN_TURN_X if self.down else 1.0):
             self.pitch_pulse = (self.pitch_pulse + 1) % 3      # one tick in three: pitch moves fast
             if self.pitch_pulse:
                 return set()
