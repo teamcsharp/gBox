@@ -1141,3 +1141,22 @@ time-sensitive, or expected to wait for the 05:00 restart.
 **reproduce on main** (one is a Windows `PermissionError` in `hermes_delivery`), so the branch adds no failure; the RE5
 Switch group is the known red exactly (10), and the RE4 targeted sets are green. The single 3103-test run remains
 wedged/impractical; prefix groups are the gate.
+
+## Round 68 (2026-11-10 20:20 CST) - the watch is ready for one telemetry read; `choose_mailbox` closes the loop
+
+**The watch keeps its evidence itself.** `RE4Switch.snapshot` now appends a reading to `stats["bss_watch_loads"]`
+whenever the stage differs from the last one, keeping the **last three distinct stage loads** - so one telemetry read
+after an RE4 block yields the three-load evidence even if nobody polls live (the old field kept only the latest
+stage). Two tests: the last three distinct loads survive repeats, and a menu snapshot (no stage) is not a load. Merged
+to main (`d458a024`), with the RE4 hand-grenade ring now also a built/no-receipt status row beside the flash (the
+incendiary stays "does not offer").
+
+**`choose_mailbox()` closes the loop.** Given `bss_watch_loads`, it intersects the pages that read all-zero at every
+load and returns the first in the vetted order (`0x1CB9000`..`0x1700000`); a missing page or one dirty byte rules a
+page out. Three tests. On main as `17766d37` (targeted gate 83 passed). When the watch data arrives, the sequence is:
+`choose_mailbox(loads)` -> one-line `MAILBOX_AT` -> the harness can attach at the next restart.
+
+**Still blocked on the Spark's reload.** The running bot is the old module (the `deploy-restart-pending` file skips
+bot reloads until the 05:00 restart); the operator-only `POST /api/workers/lilspark/bot-reload` is the shortcut (my
+`agent` actor is refused 403 by design). The queue now alternates `re4, re5, re6, ...`, so the first RE4 block after a
+reload records the loads; the 30-minute poll found none.
