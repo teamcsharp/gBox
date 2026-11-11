@@ -463,3 +463,22 @@ def test_the_probe_reports_a_nonzero_page(monkeypatch):
     text = ctl.bss_watch_probe()
     assert f"{page:#x}=01" + "00" * (R.BSS_WATCH_BYTES - 1) in text
     assert len(text.split(";")) == len(R.BSS_WATCH_PAGES)
+
+
+# ---- G3's probe path: the incendiary candidate behind allow_unverified ------------------------------------------------
+
+def test_the_incendiary_ring_is_refused_without_the_probe_flag(monkeypatch):
+    ctl = _ring_controller(monkeypatch)
+    before = len(ctl.writes)
+    with pytest.raises(N.Unavailable, match="not identified"):
+        ctl.grenade_ring("incendiary")
+    assert len(ctl.writes) == before
+
+
+def test_the_incendiary_probe_calls_the_candidate_fire_and_marks_the_receipt(monkeypatch):
+    ctl = _ring_controller(monkeypatch)
+    result = ctl.grenade_ring("incendiary", count=2, radius_cm=900.0, inner_cm=400.0, allow_unverified=True)
+    assert result["state"] == "confirmed" and result["detonated"] == 2 and result["probe"] is True
+    targets = [struct.unpack("<Q", d)[0] for at, d in ctl.writes if at == MAILBOX + CODE.MAILBOX["target"]]
+    assert targets == [BASE + N.INCENDIARY_CANDIDATE] * 2
+    assert all(r["from_player_cm"] >= 400 for r in result["grenades"])

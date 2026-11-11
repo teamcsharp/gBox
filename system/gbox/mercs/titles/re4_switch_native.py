@@ -53,6 +53,9 @@ SCRATCH_OFF = 0x100                    # the fake object, in the same proven pag
 FLASH_MIN_MM, FLASH_MAX_MM, FLASH_FROM_MM = 4000.0, 9000.0, 12000.0
 #: The hand grenade's own blast (checkpoint G2): same fake-object route, class 0x13, radius 6000 mm, floor 7000 mm.
 HAND_BLAST = 0x2E48B0
+#: G3's candidate: the class-0x16 persistent fire (the item table says the incendiary is class 0x16, and no area-attack
+#: site uses that class; the descriptor pair 0x67B4C8/0x67B4E0 points here and it calls EFFECT 0x26 with no AREA_ATTACK).
+INCENDIARY_CANDIDATE = 0x2E4BA0
 HAND_MIN_MM = 7000.0
 #: The ring (checkpoint G1/G2): N blasts round him, the inner ring at the kind's floor.
 RING_COUNT_DEFAULT, RING_COUNT_MAX = 10, 16
@@ -334,21 +337,28 @@ class Controller(N.Controller):
         return {"state": "confirmed", "verified": False, "op": "flash_at", "effect": "native_flash_blast",
                 "player_generation": self.player_id, **row}
 
-    def grenade_ring(self, kind="flash", *, count=None, radius_cm=None, inner_cm=None, ripple_ms=None, expand=None):
+    def grenade_ring(self, kind="flash", *, count=None, radius_cm=None, inner_cm=None, ripple_ms=None,
+                     expand=None, allow_unverified=False):
         """N blasts in a ring round him (checkpoint G1/G2): flash 4000 mm or more, hand grenade 7000 mm or more.
 
         The points run outward from the inner ring to the outer radius on his floor; each is one native blast through
         the harness (the same route as `flash_at`). A failed blast aborts the ring with a partial receipt - it is
         never replayed. `state: confirmed` means every blast's call returned; a live receipt is still needed.
+        `allow_unverified` is the probe path for the incendiary (G3): it calls the candidate fire spawn - the class-0x16
+        persistent fire whose dispatch is not confirmed - and marks the receipt `probe: true`; the status and the rule
+        never offer it.
         """
         if not self.attached():
             raise Unavailable("the harness is not attached to the player")
         kind = (kind or "flash").lower()
-        if kind == "incendiary":
-            raise Unavailable("the incendiary blast is not identified on this build yet (checkpoint G3)")
-        if kind not in ("flash", "hand"):
+        if kind == "incendiary" and not allow_unverified:
+            raise Unavailable("the incendiary blast is not identified on this build yet (checkpoint G3); pass "
+                              "allow_unverified for the probe")
+        blasts = {"flash": (FLASH_BLAST, FLASH_MIN_MM), "hand": (HAND_BLAST, HAND_MIN_MM),
+                  "incendiary": (INCENDIARY_CANDIDATE, FLASH_MIN_MM)}
+        if kind not in blasts:
             raise Unavailable(f"unknown grenade kind {kind!r}")
-        blast, floor_mm = (FLASH_BLAST, FLASH_MIN_MM) if kind == "flash" else (HAND_BLAST, HAND_MIN_MM)
+        blast, floor_mm = blasts[kind]
         count = max(1, min(int(RING_COUNT_DEFAULT if count is None else count), RING_COUNT_MAX))
         radius_mm = max(floor_mm, float(RING_RADIUS_MM_DEFAULT if radius_cm is None else radius_cm * R.MM_PER_CM))
         inner_mm = max(floor_mm, float(RING_INNER_MM_DEFAULT if inner_cm is None else inner_cm * R.MM_PER_CM))
@@ -377,7 +387,8 @@ class Controller(N.Controller):
                    "expand": expand is not False, "hp_before": life_before, "hp_after": life_after,
                    "self_damage": (life_before - life_after) if isinstance(life_before, int) and
                    isinstance(life_after, int) else None,
-                   "grenades": rounds, "verified": False, "player_generation": self.player_id,
+                   "grenades": rounds, "verified": False, "probe": kind == "incendiary",
+                   "player_generation": self.player_id,
                    "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
         if len(rounds) == count and abort is None:
             return {"state": "confirmed", "effect": f"native_{kind}_ring", **receipt}
