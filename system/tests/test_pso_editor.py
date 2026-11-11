@@ -72,9 +72,9 @@ def test_placements_reports_index_kind_and_position():
     out = E.placements(Disc(), "map_forest01_00o.dat")
     assert out["count"] == 2
     first, second = out["records"]
-    assert first["index"] == 0 and first["kind"] == 2 and first["class"] == "object"
+    assert first["index"] == 0 and first["kind"] == 2 and first["class"] == "TOSensor" and first["family"] == "sensor"
     assert (first["x"], first["y"], first["z"]) == (10.0, 1.0, -3.0)
-    assert second["class"] == "door" and second["x"] == 20.0
+    assert second["class"] == "class_0x05" and second["family"] == "unknown" and second["x"] == 20.0
 
 
 @pytest.mark.skipif(not DISC.is_file(), reason="the disc is not on this machine")
