@@ -430,3 +430,27 @@ three of them already merged by the lane and one (`cp07-object-loader-findings`)
 **A note for whoever reads this last:** main is being merged continuously, so branch tips and this list age. The durable parts are
 (a) every branch's evidence file names its tip hash, (b) the inventory method in round 118 needs two git commands per branch,
 and (c) each branch's suite has been run green from its pushed tip at least once.
+
+## Round 122: CP14 was never covered - its documented fallback is now built and measured
+
+Re-reading the checkpoint list against this index showed **one section never worked: CP14 (P6c, one room added)**. Its steps are
+geometry duplication (Forest 1's room pieces are Dreamcast-side per CP7.3, and the DC image is an unreadable CHD v4 per CP8), but
+the guide names a fallback - *"first expand by adding records (objects and enemies), which the writer already does, and record it
+as 'expansion by placements only'"* - and that is offline work. It is now done, with a **measured** position instead of a guessed
+one:
+
+**`ds-pso-cp14-room-added-20261110` @ `1b8f5503`** (stacked on CP8, merge-cleaned against main):
+
+* reads `Scene/map_aancient01_00r.rel` with `pso_rooms.room_quad` - a **200 x 300** footprint at `(0, 0, 0)`;
+* reads `map_ancient01_00_00o.dat` (**234** records) and takes its first record's **kind `0x8`** and `y` as the template, so the
+  added record is constructible (CP7.2: the payload type picks the constructor);
+* places one record at the footprint's **centre** and validates it through **`pso_editor.preview`**
+  (`ok: true`, 1 edit, `expect: index 234, op add`) and `pso_map_write.add_placement_change`;
+* result: **234 -> 235 records**, the new record **inside the footprint**, and **every original record byte-identical**.
+
+Tests: `test_pso_cp14_expansion.py` **3 passed**; with CP8's room tests **9 passed**. The accept lines that remain - the area loads,
+the player stands on the new piece, the walker reaches it - need CP5's warp in a live session.
+
+**Checkpoint coverage is now complete for every section of the document:** CP0-CP3 done, CP4/CP5/CP6.1 live-dependent, CP6.2 done,
+CP7 done, CP8 done in GC form, CP9 offline done, CP10 offline done, CP11 in main + a views test, CP12 2/3, CP13 offline done,
+**CP14 offline done**, CP15 done, CP16 measured negative, CP17 offline done.
