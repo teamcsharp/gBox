@@ -1178,3 +1178,26 @@ sound 0x14, class 0x13, radius 6000). Three tests, one against the operator imag
 telemetry has no `bss_watch_loads`. The queue now alternates `re4, re5, re6, ...`; the first RE4 block after the
 reload (or after 05:00) records the three loads, `choose_mailbox` turns them into the page, and `MAILBOX_AT` goes in.
 The operator-only call is in the hand-off log and the lane log's round 67.
+
+## Round 70 (2026-11-10 21:20 CST) - the reason the watch never showed: the telemetry publishes only scalar stats
+
+**The bug, found by reading the publisher.** `gbox/tools.py`'s autoplay telemetry `body()` is
+
+    stats = {k: v for k, v in live.items() if isinstance(v, (int, float, str, bool))}
+
+so the watch - a dict in `stats["bss_watch"]` and a list in `stats["bss_watch_loads"]` - was **silently dropped every
+5 s**. The bot could be collecting the five pages perfectly and nothing could ever reach `/api/autoplay/telemetry`.
+That also explains the operator's bot-reload answer ("no loaded bot module changed"): the loaded module matched the
+share's copy, so there was nothing to swap, and even a good module's data was invisible.
+
+**Fixed on main (`63ae6f93`).** The watch is now published as **JSON strings** (`stats["bss_watch"]`,
+`stats["bss_watch_loads"]`); the accumulating list stays under a private `_bss_watch_loads` key that the filter drops,
+and `choose_mailbox()` parses the published string form (plus the old list/dict form for tests). Three tests updated,
+one added for the string form; targeted gate 45 passed, 1 skipped. The hand-off log carries the finding (`3c84bd61`).
+
+**Next step (operator).** After the deploy copies the new `re4_switch.py`, one more `bot-reload` (operator actor) makes
+the watch visible on the following RE4 block; the 05:00 restart does it otherwise. The queue is alternating titles, so
+the RE4 block comes quickly; the poll found none in this round's ten minutes (the block was RE6).
+
+**Nothing else on the lane is blocked by code:** E6's selftest, F's flash op and G's ring/barrage are all merged and
+tested; they wait only on the proven mailbox page (`MAILBOX_AT`) and the restart that loads the harness module.
