@@ -623,6 +623,7 @@ def _snapshot(m, stats: dict) -> dict | None:
     except Exception as exc:                                 # noqa: BLE001 - a reader's error costs the tick
         stats["snapshot_error"] = f"{type(exc).__name__}: {exc}"[:160]
         return None
+    driver.watch_into(m, snap, stats)                        # the E3 .bss watch (the harness's mailbox evidence)
     stats["timer"] = snap.get("timer")
     stats["clock_addr"] = hex(snap["clock_addr"]) if isinstance(snap.get("clock_addr"), int) else None
     stats["enemies_read"] = len(snap.get("enemies") or ())

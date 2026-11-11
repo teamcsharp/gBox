@@ -1356,6 +1356,34 @@ def bss_watch(m, base: int) -> dict:
     return out
 
 
+def watch_into(m, snap: dict, stats: dict | None) -> None:
+    """Publish this snapshot's five-page watch into `stats` (the JSON strings the telemetry carries).
+
+    Both RE4 paths call it: the driver's own `snapshot` (the engine) and the `re4switch_bot` playbook, which reads
+    through the module-level snapshot. The playbook path was missing it, so a whole RE4 round's telemetry carried no
+    `bss_watch`/`bss_watch_loads` and the harness mailbox could never be chosen from three stage loads (live
+    2026-11-11: the E3 watch was empty on the round that ran after the 05:00 restart).
+    """
+    if not isinstance(stats, dict) or not snap.get("module_base"):
+        return
+    try:
+        watch = bss_watch(m, snap["module_base"])
+        watch["stage"] = (snap.get("game") or {}).get("stage")
+        # The telemetry publishes only scalar stats (gbox/tools.py body(): int/float/str/bool), so the watch goes out
+        # as JSON strings; the accumulating list itself stays private (a list would be filtered).
+        stats["bss_watch"] = json.dumps(watch, separators=(",", ":"))
+        loads = stats.get("_bss_watch_loads")
+        if not isinstance(loads, list):
+            loads = stats["_bss_watch_loads"] = []
+        # one reading per stage load: the last three are the three-load watch even when nobody polls live
+        if watch["stage"] is not None and (not loads or loads[-1].get("stage") != watch["stage"]):
+            loads.append(watch)
+            del loads[:-3]
+            stats["bss_watch_loads"] = json.dumps(loads, separators=(",", ":"))
+    except (OSError, ValueError, TypeError, struct.error):
+        pass
+
+
 class RE4Switch(Driver):
     map_id = MAP_ID
     solo_p1 = True                              # The Mercenaries on Switch is played solo on P1 here
@@ -1373,24 +1401,7 @@ class RE4Switch(Driver):
 
     def snapshot(self, m) -> dict:
         snap = re4_nav.attach(snapshot(m))             # snap["nav"]: the stage's floor mesh (the tactical map's too)
-        stats = getattr(self, "stats", None)
-        if isinstance(stats, dict) and snap.get("module_base"):
-            try:
-                watch = bss_watch(m, snap["module_base"])
-                watch["stage"] = (snap.get("game") or {}).get("stage")
-                # The telemetry publishes only scalar stats (gbox/tools.py body(): int/float/str/bool), so the watch
-                # goes out as JSON strings; the accumulating list itself stays private (a list would be filtered).
-                stats["bss_watch"] = json.dumps(watch, separators=(",", ":"))
-                loads = stats.get("_bss_watch_loads")
-                if not isinstance(loads, list):
-                    loads = stats["_bss_watch_loads"] = []
-                # one reading per stage load: the last three are the three-load watch even when nobody polls live
-                if watch["stage"] is not None and (not loads or loads[-1].get("stage") != watch["stage"]):
-                    loads.append(watch)
-                    del loads[:-3]
-                    stats["bss_watch_loads"] = json.dumps(loads, separators=(",", ":"))
-            except (OSError, ValueError, TypeError, struct.error):
-                pass
+        watch_into(m, snap, getattr(self, "stats", None))
         return snap
 
     def screen(self, m, snap: dict | None) -> str:

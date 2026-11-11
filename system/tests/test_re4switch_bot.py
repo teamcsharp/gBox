@@ -551,3 +551,23 @@ def test_back_on_the_save_list_a_dark_screen_is_not_a_round(monkeypatch):
     B.play(adapter, lambda rows: adapter.sent.append(rows), lambda: ticks["n"] > 60, sleep=lambda s: None,
            stats=stats, clock=clock, m=object())
     assert stats["rounds"] == 0 and stats["stage_seen"] is False
+
+
+def test_a_playbook_snapshot_publishes_the_bss_watch(monkeypatch):
+    """The playbook reads through the module-level snapshot, which never ran the Driver's watch: _snapshot now calls
+    driver.watch_into, so the telemetry carries the E3 pages on the path RE4 actually plays (live 2026-11-11: a whole
+    RE4 round after the 05:00 restart had no bss_watch/bss_watch_loads, so the harness mailbox could not be chosen)."""
+    import json
+
+    class Mem:
+        def rd(self, at, n):
+            return b"\0" * n
+
+    monkeypatch.setattr(B.driver, "snapshot", lambda m: {"module_base": 0x100000000, "game": {"stage": 3},
+                                                         "clock_addr": None, "enemies": []})
+    stats = {}
+    snap = B._snapshot(Mem(), stats)
+    assert snap and isinstance(stats["bss_watch"], str)
+    watch = json.loads(stats["bss_watch"])
+    assert watch["stage"] == 3 and len(watch["pages"]) == 5
+    assert [row["stage"] for row in json.loads(stats["bss_watch_loads"])] == [3]
