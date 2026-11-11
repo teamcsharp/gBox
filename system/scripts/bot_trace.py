@@ -223,6 +223,37 @@ def draw(src: str, out: str, room: str | None = None) -> dict:
     return summary
 
 
+def metrics(src, reversal_rad: float = 0.12) -> dict:
+    """#9560 replay metrics of a recorded trace (a path or rows): metres walked per minute (the path length and the net
+    displacement), facing reversals per minute (the turn direction flipping, each way over reversal_rad), the share of
+    rows holding a pure sideways stick (left/right, no up), stand_breaks and unwalls from the telemetry."""
+    rows = src if isinstance(src, list) else [json.loads(line) for line in open(src, encoding="utf-8") if line.strip()]
+    rows = [r for r in rows if r.get("pos") and r.get("t") is not None]
+    if len(rows) < 2:
+        return {"rows": len(rows), "seconds": 0.0}
+    units = 0.01 if (rows[0].get("stage") or "").startswith("010018100CD46000") else 0.001   # RE5 cm, RE4 mm -> m
+    dur = rows[-1]["t"] - rows[0]["t"]
+    path = sum(math.hypot(b["pos"][0] - a["pos"][0], b["pos"][2] - a["pos"][2]) for a, b in zip(rows, rows[1:])) * units
+    net = math.hypot(rows[-1]["pos"][0] - rows[0]["pos"][0], rows[-1]["pos"][2] - rows[0]["pos"][2]) * units
+    rev, last = 0, 0
+    fr = [r for r in rows if r.get("facing") is not None]
+    for a, b in zip(fr, fr[1:]):
+        d = (b["facing"] - a["facing"] + math.pi) % (2 * math.pi) - math.pi
+        if abs(d) < reversal_rad:
+            continue
+        sgn = 1 if d > 0 else -1
+        if last and sgn != last:
+            rev += 1
+        last = sgn
+    side = sum(1 for r in rows if (lambda k: bool(k & {"lleft", "lright"}) and "lup" not in k)(_keys(r)[0]))
+    mins = max(dur, 1e-6) / 60.0
+    tel = rows[-1].get("tel") or {}
+    return {"rows": len(rows), "seconds": round(dur, 1), "path_m_per_min": round(path / mins, 2),
+            "net_m_per_min": round(net / mins, 2), "facing_reversals_per_min": round(rev / mins, 1),
+            "pure_sideways_share": round(side / len(rows), 3), "stand_breaks": tel.get("stand_breaks"),
+            "unwalls": tel.get("unwalls")}
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if len(argv) >= 4 and argv[0] == "record":
@@ -230,6 +261,9 @@ def main(argv=None) -> int:
         return 0
     if len(argv) >= 3 and argv[0] == "draw":
         draw(argv[1], argv[2], argv[3] if len(argv) > 3 else None)
+        return 0
+    if len(argv) >= 2 and argv[0] == "metrics":
+        print(json.dumps(metrics(argv[1]), indent=1))
         return 0
     print(__doc__)
     return 2
