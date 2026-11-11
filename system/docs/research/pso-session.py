@@ -8,12 +8,26 @@ import time
 import urllib.request
 
 TOKEN = open(r"C:\_tools\gBox\system\gbox-data\api_token").read().strip()
-API = "http://127.0.0.1:18765"   # the desktop service owns the emulator and relays session actions; 8765 is the worker mirror
+import os
+API = os.environ.get("GBOX_API") or "http://127.0.0.1:18765"
+FALLBACK_API = "http://127.0.0.1:8765"   # the worker mirror answers when the desktop service is stale   # the desktop service owns the emulator and relays session actions; 8765 is the worker mirror (set GBOX_API to use it when the desktop service is stale)
 PSO_TITLE = "phantasy star online"
 _cache = {"at": 0.0, "session": None}
 
 
-def _call(path, method="GET", body=None, timeout=40):
+def _call(path, method="GET", body=None, timeout=40, _retry=True):
+    global API
+    try:
+        return _call_once(API, path, method, body, timeout)
+    except Exception as exc:                                     # noqa: BLE001
+        code = getattr(exc, "code", 0)
+        if _retry and code == 504 and API != FALLBACK_API:
+            API = FALLBACK_API                                   # desktop service is stale: use the worker directly
+            return _call(path, method, body, timeout, _retry=False)
+        raise
+
+
+def _call_once(base, path, method="GET", body=None, timeout=40):
     data = json.dumps(body).encode() if body is not None else None
     request = urllib.request.Request(API + path, data=data, method=method,
                                      headers={"authorization": "Bearer " + TOKEN, "x-gbox-actor": "agent",
