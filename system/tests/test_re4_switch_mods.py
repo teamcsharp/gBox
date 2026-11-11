@@ -461,6 +461,43 @@ def test_the_random_weapon_goes_in_his_hand_once_the_round_is_live(ad):
     assert M.status(ad)["weapon_given"]["round"] == 2 and M.status(ad)["random_weapon_route"] == "in_hand"
 
 
+def test_a_random_weapon_is_a_magnum_or_a_shotgun_with_its_20x_tables_every_round(ad):
+    """The operator 2026-11-10: "the bot firing relentlessly with any weapon type magnum or shotgun with rapid fire" -
+    every round a magnum or a shotgun (MAGNUM_SHARE toward 1.0, MAGNUMS + SHOTGUNS), and the fire_rate tables written
+    in that same round (per-round telemetry: the weapon and the tables). Four rounds a session were all that got one:
+    a results -> playing round is a new round too (only an intro used to count)."""
+    W = _weapon_tables(ad)
+    _armoury(ad)                                        # (the real weapon rows back over the fire-rate test's)
+    st = M._state(ad)
+    st["random_weapon"], st["fire_rate"] = True, 20.0
+    gap = D.FIRE_GAP_S
+    try:
+        draws = []
+        for k in range(40):
+            assert "weapon_given" not in M.maintain(ad, _round("results", control=False, clock=False))
+            out = M.maintain(ad, _round())
+            assert out.get("weapon_given") == 1 and out["weapon_round"]["fire_tables"] == 2, "the tables with the gun"
+            assert out["fire_tables"] == 2
+            it, held, _cls, _rel = _hand(ad, W)
+            assert it["id"] in M.PRIMARY and held == it["id"], "a magnum or a shotgun in his hand"
+            draws.append(it["id"])
+        assert set(draws) & set(M.MAGNUMS) and set(draws) & set(M.SHOTGUNS), "both families come up"
+        assert len(draws) == 40 and st["weapon_rounds"][-1]["round"] == 40, "every round, not four a session"
+        assert st["rf_tables_round"] == 2 and st["rf_applied_round"] == 40, "the tables with the last round's gun"
+        assert st["fire_tables_total"] == 80
+        row = struct.unpack("<5f", ad.read_memory(BASE + W.FIRE_RATE_TBL + 2 * 20, 20))
+        assert row == (W.RAPID_FIRE_FLOOR,) * 5, "the 20x tables (14 frames / 20 is under the gate: the floor)"
+        assert st["weapon_rounds"][-1]["weapon"] == W.name(draws[-1])
+        s = M.status(ad)
+        assert s["fire_tables_round"] == 2 and s["magnum_share"] == 0.8
+        assert len(s["weapon_rounds"]) == 12, "the last rounds' telemetry"
+        assert set(s["weapon_primary"]) == {W.name(i) for i in M.PRIMARY}
+        assert D.FIRE_GAP_S == max(M.FIRE_GAP_MIN_S, gap / 20), "the trigger taps paced to the 20x"
+    finally:
+        D.FIRE_GAP_S = gap
+        M.run(ad, "fire_rate", 1, snap={"module_base": BASE})
+
+
 def test_the_chosen_weapon_every_round_with_its_exclusive_magazine(ad):
     W = _armoury(ad, held=0x3E, character=3, levels=0x2204)
     st = M._state(ad)

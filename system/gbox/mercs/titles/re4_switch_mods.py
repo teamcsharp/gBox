@@ -21,9 +21,11 @@ sidebar (gbox/merc_live_controls.py, through the re5_mods tool) sets these ops:
   kill_time on=true seconds=S +S on the clock for every new kill the census counts (a Ganado whose health fell to 0)
                               while a round is playing
   random_weapon on=true       every round, once the game says it is live (playing, in control, clock running): a
-                              random max-level high-powered campaign weapon (re4_weapons.HIGH_POWER) written into
-                              the gun in his hand - the item, the item manager's held id, the game state's class /
-                              variant / levels - every byte read back, his own weapon put back if one does not hold
+                              random max-level campaign weapon written into the gun in his hand - a magnum or a
+                              shotgun only (PRIMARY; MAGNUM_SHARE toward 1.0) - the item, the item manager's held id,
+                              the game state's class / variant / levels - every byte read back, his own weapon put
+                              back if one does not hold; the fire_rate tables are written again in the same round and
+                              both the weapon and the tables reported (weapon_rounds)
   loadout_weapon weapon=id    the same with this weapon every round (0 = off). Data writes only: the loadout code
                               patch is off (LOADOUT_CODE_PATCH; why: the block above _give_weapon)
 
@@ -550,10 +552,14 @@ ROUND_WEAPON_TRIES = 3                 # gives tried per round before it is repo
 # what a random weapon may replace in his hand: a gun with a max-level row, or a loadout's own equipped weapon
 # (Krauser's bow) - never a grenade the bot holds (THROWS) or the knife
 SWAPPABLE = frozenset(W.MAX_LEVELS) | frozenset(lo["equips"] for lo in W.MERC_LOADOUTS.values())
-# The magnums come up often (operator 2026-11-10: "the scatter works if they have a magnum and 20x firerate. Its boring
-# with the pistol"): a random draw is one of them MAGNUM_SHARE of the time (3 of the 15 HIGH_POWER otherwise: 1 in 5).
+# The magnums and shotguns come up every round (operator 2026-11-10: "the scatter works if they have a magnum and 20x
+# firerate. Its boring with the pistol"; then: "I need the bot firing relentlessly with any weapon type magnum or
+# shotgun with rapid fire"): a random draw is a magnum or a shotgun only, a magnum MAGNUM_SHARE of the time (toward 1.0;
+# a shotgun otherwise). The rifle / TMP / handgun draws are off.
 MAGNUMS = frozenset({0x29, 0x2A, 0x37})        # Broken Butterfly, Killer7, Handcannon
-MAGNUM_SHARE = 0.5
+SHOTGUNS = frozenset({0x2C, 0x2D, 0x94})       # Shotgun, Striker, Riot Gun
+PRIMARY = MAGNUMS | SHOTGUNS
+MAGNUM_SHARE = 0.8
 
 
 def _code_patch_refusal(ad) -> str | None:
@@ -589,6 +595,8 @@ def _give_weapon(ad, base: int, st: dict, rng, fixed: int | None = None, exclude
         picks = [fixed] if fixed in rows and W.max_levels(fixed) is not None else []
     else:
         pool = [i for i in W.HIGH_POWER if i in rows and W.max_levels(i) is not None and i != held["id"]]
+        primary = [i for i in pool if i in PRIMARY]       # every round a magnum or a shotgun (PRIMARY)
+        pool = primary or pool                            # (a build without their rows: whatever it has)
         picks = [i for i in pool if i not in exclude] or pool
     if not picks:
         return {"verified": False, "was": held["name"], "reason": "no weapon row to give"}
@@ -638,10 +646,14 @@ def _round_weapon(ad, snap: dict, st: dict) -> dict | None:
         return None                                     # no game state read: nothing is written
     phase, last = game.get("phase"), st.get("rw_phase")
     st["rw_phase"] = phase
-    if phase == "intro" and last != "intro":
+    # A round is the game's: he enters play from the load's intro, from the results screen's next round, from the death
+    # screen's Continue, or (no screen read) from nothing at all. Every such entry is a new round, so every round gets
+    # its weapon - a results -> playing restart used to keep the last round's epoch (the operator: "mods_weapon_given was
+    # 4 for a whole session"). A case / grab / hold screen in the same round is not an entry.
+    if phase == "playing" and last in (None, "intro", "results", "dead", "none", "paused"):
         st["rw_epoch"] = st.get("rw_epoch", 0) + 1
-    elif phase in D.ROUND_PHASES and phase != "intro" and "rw_epoch" not in st:
-        st["rw_epoch"] = 1                              # the bot came in on a round already under way
+    elif phase in D.ROUND_PHASES and phase != "playing" and "rw_epoch" not in st:
+        st["rw_epoch"] = 0                              # watching before the first round: nothing given yet
     epoch = st.get("rw_epoch")
     if epoch is None or st.get("rw_given_epoch") == epoch:
         return None
@@ -669,6 +681,18 @@ def _round_weapon(ad, snap: dict, st: dict) -> dict | None:
             st["weapon_given"] = {"verified": False, "round": epoch, "reason": "his hand could not be read"}
         return None
     given.update(round=epoch, character=W.CHARACTERS.get(ch, ch))
+    if given.get("verified") and float(st.get("fire_rate", 1.0) or 1.0) > 1.0:
+        # The 20x tables in the round's own give, every round (not only pre_round's boot): a stage load re-reads the
+        # module's data, and the round the weapon is drawn into must be built with them. Reported per round with the
+        # weapon (the operator: "there is no fire-table stat").
+        n = _apply_fire_rate(ad, base, st)
+        given["fire_tables"] = n
+        st["rf_applied_round"], st["rf_tables_round"] = epoch, n
+        st["fire_tables_total"] = st.get("fire_tables_total", 0) + n
+        rounds = st.setdefault("weapon_rounds", [])
+        rounds.append({"round": epoch, "weapon": given.get("name"), "id": given.get("id"), "fire_tables": n,
+                       "at": round(time.time(), 1)})
+        del rounds[:-12]
     st["weapon_given"] = given
     if given.get("verified") or tries >= ROUND_WEAPON_TRIES or ("reason" in given and "id" not in given):
         st["rw_given_epoch"] = epoch                    # given, tried enough, or nothing in his hand to swap
@@ -1119,6 +1143,9 @@ def maintain(ad, snap: dict | None = None) -> dict:
             given = _round_weapon(ad, snap, st)
             if given is not None and given.get("verified"):
                 out["weapon_given"] = 1
+                out["weapon_round"] = {k: given[k] for k in ("round", "name", "id", "fire_tables") if k in given}
+                if given.get("fire_tables"):
+                    out["fire_tables"] = given["fire_tables"]      # this round's 20x tables, with its weapon
         if st.get("aim_lock"):
             ram0, sway0 = st.get("aim_ram_writes", 0), st.get("aim_sway_zeroed", 0)
             n = _aim(ad, snap)
@@ -1155,6 +1182,9 @@ def status(ad, snap: dict | None = None) -> dict:
            "infinite_ammo": bool(st.get("infinite_ammo")), "fire_rate_x": st.get("fire_rate", 1.0),
            "random_weapon": bool(st.get("random_weapon")), "weapon_given": st.get("weapon_given"),
            "random_weapon_route": "in_hand" if _code_patch_refusal(ad) else "code_patch",
+           "weapon_primary": sorted(W.name(i) for i in PRIMARY), "magnum_share": MAGNUM_SHARE,
+           "weapon_rounds": st.get("weapon_rounds") or [], "fire_tables_round": st.get("rf_tables_round"),
+           "fire_tables_total": st.get("fire_tables_total", 0),
            "loadouts": st.get("loadouts"), "loadout_weapon": st.get("loadout_weapon"),
            "weapon_power_x": st.get("weapon_power", 1.0), "max_level": bool(st.get("max_level")),
            "aim_lock": bool(st.get("aim_lock")), "aim_writes": st.get("aim_writes", 0),
