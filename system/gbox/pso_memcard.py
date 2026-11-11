@@ -38,7 +38,11 @@ def entries(card: bytes) -> list:
             if len(raw) < ENTRY or not raw[0:4].isalpha() or not raw[0:4].isupper():
                 continue
             name = raw[0x08:0x28].split(b"\x00")[0].decode("latin-1", "replace")
-            first, count = struct.unpack_from(">HH", raw, 0x3A)
+            # The GC directory entry is: game code 4, company 2, banner 1, icon 1, name 32, time 4, then the
+            # 2-byte first block at 0x36 and the 2-byte block count at 0x38 (0x3A..0x3F are unused). Reading them at
+            # 0x3A was this module's bug: every entry came back first_block 0xFFFF, blocks 0, which is exactly what the
+            # lane reported ("every PSO entry at first block 0xFFFF, count 0") while BQF was loading from this card.
+            first, count = struct.unpack_from(">HH", raw, 0x36)
             out.append({"dir_off": off, "game": raw[0:4].decode("ascii"),
                         "company": raw[4:6].decode("latin-1", "replace"),
                         "name": name, "last_modified": struct.unpack_from(">I", raw, 0x28)[0],
@@ -70,7 +74,9 @@ def saves(card: bytes, game: str | None = None) -> list:
 
 
 def read(path) -> bytes:
+    """A card image. Any whole number of 8 KiB blocks is accepted: Dolphin's 16 MiB card is the one on this machine, a
+    real retail card is 1 MiB, and the gameplay demos carry 2 MiB images."""
     data = Path(path).read_bytes()
-    if len(data) != CARD_SIZE:
-        raise ValueError(f"{path}: {len(data)} bytes, not a 16 MiB GameCube card")
+    if len(data) % BLOCK or len(data) < 64 * BLOCK:
+        raise ValueError(f"{path}: {len(data)} bytes is not a whole number of 8 KiB blocks")
     return data

@@ -17,10 +17,9 @@ def _entry(game=b"GPOE", company=b"8P", name=b"PSO_CHARACTER", first=5, count=2,
     struct.pack_into(">I", raw, 0x2C, 0x40)
     struct.pack_into(">H", raw, 0x30, 2)
     struct.pack_into(">H", raw, 0x32, 3)
-    raw[0x34] = 0x1C
-    struct.pack_into(">H", raw, 0x36, 0x0E)
-    struct.pack_into(">H", raw, 0x38, 3)
-    struct.pack_into(">HH", raw, 0x3A, first, count)
+    struct.pack_into(">H", raw, 0x34, 0x1C)
+    struct.pack_into(">H", raw, 0x36, first)      # first block
+    struct.pack_into(">H", raw, 0x38, count)      # block count
     return bytes(raw)
 
 
@@ -64,12 +63,37 @@ def test_only_real_entries_are_listed():
     assert [e["name"] for e in found] == ["PSO_SYSTEM"]
 
 
-def test_the_lane_card_has_three_psos_saves_and_none_of_them_has_data():
-    import pathlib
-    path = pathlib.Path(r"D:\gBox\runtime\dolphin\Dolphin-x64\User\GC\MemoryCardA.USA.raw")
-    if not path.is_file():
-        pytest.skip("the card is not on this machine")
-    card = M.read(path)
-    found = M.saves(card, "GPOE")
-    assert sorted(e["name"] for e in found) == ["PSO_CHARACTER", "PSO_GUILDCARD", "PSO_SYSTEM"]
-    assert all(e["has_data"] is False and e["chain"] == [] for e in found)
+REAL_CARD = r"D:\gBox\runtime\dolphin\Dolphin-x64\User\GC\MemoryCardA.USA.raw"
+
+
+@pytest.mark.skipif(not __import__("pathlib").Path(REAL_CARD).is_file(), reason="the card is not on this machine")
+def test_the_real_card_lists_the_three_psos_saves_with_real_blocks():
+    """The card Dolphin actually wrote at 12:57 today: the PSO saves are there and they have data.
+
+    The lane's reader reported every PSO entry at first block 0xFFFF and count 0 because it read the block fields at
+    0x3A instead of 0x36/0x38. With the fields read correctly the entries chain contiguously (5+1, 6+4, 10+4, 14+3,
+    17+11, 28+10), which is also the proof that the directory at 0x2000 is the right one.
+    """
+    card = M.read(REAL_CARD)
+    saves = [e for e in M.saves(card) if e["game"] == "GPOE"]
+    by_name = {e["name"]: (e["first_block"], e["blocks"]) for e in saves}
+    assert by_name["PSO_SYSTEM"] == (14, 3)
+    assert by_name["PSO_CHARACTER"] == (17, 11)
+    assert by_name["PSO_GUILDCARD"] == (28, 10)
+    starts = sorted(by_name.values())
+    assert all(b[0] >= a[0] + a[1] for a, b in zip(starts, starts[1:])), starts   # contiguous allocation
+
+
+@pytest.mark.skipif(not __import__("pathlib").Path(REAL_CARD).is_file(), reason="the card is not on this machine")
+def test_the_character_save_begins_with_its_ascii_header():
+    card = M.read(REAL_CARD)
+    entry = next(e for e in M.saves(card) if e["name"] == "PSO_CHARACTER")
+    data = card[entry["first_block"] * M.BLOCK: entry["first_block"] * M.BLOCK + entry["bytes"]]
+    assert data[:0x20].startswith(b"PSO EPISODE I & II Plus")
+    assert data[0x20:0x40].startswith(b"CHARACTER_FILE")
+
+
+def test_a_two_megabyte_card_is_accepted(tmp_path):
+    path = tmp_path / "small.raw"
+    path.write_bytes(bytes(2 * 1024 * 1024))
+    assert len(M.read(path)) == 2 * 1024 * 1024
