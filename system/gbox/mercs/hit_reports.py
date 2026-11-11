@@ -41,14 +41,15 @@ def _attackers(rows):
     return out
 
 
-def body_for(stats, snap, hp_before, hp_after, attackers, doing=None, why=None) -> str:
+def body_for(stats, snap, hp_before, hp_after, attackers, doing=None, why=None, taken=None) -> str:
     player = (snap or {}).get("player") or {}
     pos = player.get("pos") or ()
     lines = [
         "PLAYER HURT - automated follow report (gBox MercMode).",
         f"Title: {_CFG.get('title') or '?'} | session: {_CFG.get('session_id') or '?'} | round: "
         f"{stats.get('round_evidence_id') or '?'}",
-        f"hp {hp_before} -> {hp_after} | hits_taken {stats.get('hits_taken')} | clock {stats.get('timer')}",
+        f"hp {hp_before} -> {hp_after} | hurt events {taken if taken is not None else stats.get('hits_taken')} | "
+        f"clock {stats.get('timer')}",
         f"Position: {[round(v) for v in pos] if pos else '?'}",
         "Attackers: " + ("; ".join(_attackers(attackers)) or "none tracked"),
         f"Doing: {doing or '?'} / {why or '?'}",
@@ -100,7 +101,7 @@ def observe(stats, snap, now, *, attackers=None, doing=None, why=None, round_id=
             return None
         stats["_hit_reports"] = int(stats.get("_hit_reports") or 0) + 1
         payload = {"title": f"Player hurt in {_CFG.get('title') or 'Mercs'} (round {rid})"[:140],
-                   "body": body_for(stats, snap, hp_before, hp, attackers, doing=doing, why=why),
+                   "body": body_for(stats, snap, hp_before, hp, attackers, doing=doing, why=why, taken=taken),
                    "source": "agent", "kind": "text", "author": "agent", "automated": True,
                    "context": {"session_id": _CFG.get("session_id"), "round_id": rid, "title": _CFG.get("title"),
                                "hp_before": hp_before, "hp_after": hp, "hits_taken": taken}}

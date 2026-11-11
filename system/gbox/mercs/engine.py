@@ -121,6 +121,44 @@ def _enemy_round(title, stats=None) -> dict:
         return {}
 
 
+def _attackers(bot, snap) -> list:
+    """The attackers to report with a hit: the bot's own threat tracks when it has them, else the snapshot's near
+    enemies (class, distance, state, eta) - a hit taken during a bomb/grenade action still names who was on him."""
+    rows = []
+    for t in getattr(bot, "_threats", []) or ():
+        try:
+            state = getattr(t, "state", None)
+            eta = getattr(t, "eta", None)
+            rows.append({"kind": getattr(t, "kind", None), "dist": round(getattr(t, "dist", 0) or 0),
+                         "state": list(state) if state else None,
+                         "act": (state[1] if state and len(state) > 1 else None),
+                         "eta": round(eta, 2) if isinstance(eta, (int, float)) and eta != float("inf") else None})
+        except Exception:                                # noqa: BLE001 - a bad track never costs the report
+            continue
+    if rows:
+        return rows[:3]
+    player = (snap or {}).get("player") or {}
+    pos = player.get("pos")
+    if not pos:
+        return rows
+    for e in (snap or {}).get("enemies") or ():
+        if not isinstance(e, dict) or not e.get("pos"):
+            continue
+        try:
+            d = ((e["pos"][0] - pos[0]) ** 2 + (e["pos"][2] - pos[2]) ** 2) ** 0.5
+        except (TypeError, IndexError, KeyError):
+            continue
+        if d > 500.0:
+            continue
+        state = e.get("state")
+        rows.append({"kind": e.get("class") or e.get("kind"), "dist": round(d),
+                     "state": list(state) if isinstance(state, (list, tuple)) else None,
+                     "act": (state[1] if isinstance(state, (list, tuple)) and len(state) > 1 else None),
+                     "eta": e.get("eta")})
+    rows.sort(key=lambda row: row.get("dist") or 1e9)
+    return rows[:3]
+
+
 def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sleep, clock=time.time,
                tick_s: float = 0.05, driver=None, brain=None, learn_dir=None, tactical=None, damage=None,
                session_runtime=None, observe_only=False) -> str:
@@ -634,6 +672,14 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                                why=getattr(bot, "why", None))
                 except Exception as exc:              # noqa: BLE001 - a follow report never ends the round
                     stats["combo_report_error"] = f"{type(exc).__name__}: {exc}"[:200]
+            if hit_step is not None and where == "playing":
+                # Every playing tick (the module keeps the hp baseline and its own counter; the reports fire on the
+                # rise), with the attackers the bot is tracking or, while it is busy elsewhere, the snapshot's near ones.
+                try:
+                    hit_step(stats, snap, now, attackers=_attackers(bot, snap),
+                             doing=getattr(bot, "doing", None), why=getattr(bot, "why", None))
+                except Exception as exc:              # noqa: BLE001 - a follow report never ends the round
+                    stats["hit_report_error"] = f"{type(exc).__name__}: {exc}"[:200]
             if director is not None and where == "playing":
                 try:
                     director.observe(doctrine.view(snap, drv, title_mod), act, now)
@@ -666,10 +712,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                          else int(stats.get("hits_taken") or 0))
             if taken_now > hits_seen:                    # what hit him, for the lessons (the damage observer's count)
                 hits_seen = taken_now
-                attackers = [{"slot": t.slot, "kind": t.kind, "state": list(t.state) if t.state else None,
-                              "act": (t.state[1] if t.state and len(t.state) > 1 else None),
-                              "eta": round(t.eta, 2) if t.eta != float("inf") else None, "dist": round(t.dist),
-                              "in_value_s": round(now - t.since, 2)} for t in getattr(bot, "_threats", [])[:3]]
+                attackers = _attackers(bot, snap)
                 log("hit_taken", player_r=list((snap.get("player") or {}).get("r") or ()), attackers=attackers)
                 if hit_step is not None:             # the operator: every hurt files a follow report
                     try:
