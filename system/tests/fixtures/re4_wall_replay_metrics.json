@@ -1,0 +1,58 @@
+{
+ "request": "#9560",
+ "case": "RE4 first-room wall, the documented 40 s session (138 samples, 37 wall-ahead, pure sideways stick, stand_breaks 62)",
+ "derived_from": "synthetic traces line-by-line from the documented session evidence (no recorded snapshot of that session survives in the workspace)",
+ "baseline": {
+  "rows": 138,
+  "seconds": 39.7,
+  "path_m_per_min": 6.23,
+  "net_m_per_min": 0.22,
+  "facing_reversals_per_min": 66.4,
+  "pure_sideways_share": 0.717,
+  "stand_breaks": 62,
+  "unwalls": null,
+  "wall_ahead_samples": 37,
+  "los_fire_keeps": 0,
+  "per_round": {
+   "weapon": "magnum",
+   "heavy_weapon_drawn": true,
+   "fire_table": {
+    "shots": 6,
+    "hits": 2,
+    "kills": 0,
+    "deaths": 0,
+    "round_seconds": 40
+   }
+  }
+ },
+ "patched": {
+  "rows": 138,
+  "seconds": 39.7,
+  "path_m_per_min": 6.32,
+  "net_m_per_min": 5.42,
+  "facing_reversals_per_min": 0.0,
+  "pure_sideways_share": 0.0,
+  "stand_breaks": 6,
+  "unwalls": null,
+  "wall_ahead_samples": 6,
+  "los_fire_keeps": 107,
+  "per_round": {
+   "weapon": "magnum",
+   "heavy_weapon_drawn": true,
+   "fire_table": {
+    "shots": 12,
+    "hits": 10,
+    "kills": 1,
+    "deaths": 0,
+    "round_seconds": 40,
+    "ganado_down_s": 8.7
+   }
+  }
+ },
+ "tests": [
+  "tests/test_re4_replay_wall.py",
+  "tests/test_re4_los_fire_first.py",
+  "tests/test_re4_unwall_arc.py",
+  "tests/test_bot_trace.py"
+ ]
+}

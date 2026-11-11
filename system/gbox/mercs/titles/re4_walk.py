@@ -438,7 +438,12 @@ class Walker:
         if abs(go) <= ARC_TOL:
             return (FORWARD, self.turn_pos) if go > TURN_TOL else (FORWARD, self.turn_neg) if go < -TURN_TOL \
                 else (FORWARD,)
-        return (BACK, RUN) if abs(go) >= QUICK_TURN_ERR else ((self.turn_pos,) if go > 0 else (self.turn_neg,))
+        if abs(go) >= QUICK_TURN_ERR:
+            return (BACK, RUN)
+        # never stand and turn on the spot (#9560, operator 2026-11-10 on the RE4 first-room wall: the never-stand
+        # step "also rotates"): every stand break walks while it turns, so the pulse always moves him along open
+        # floor instead of spinning in place at the wall, one rotation per break
+        return (FORWARD, self.turn_pos) if go > 0 else (FORWARD, self.turn_neg)
 
     def _foe_in_way(self, pos) -> bool:
         """A living Ganado within STALL_FOE_MM of him or of the route's point steering him (live 2026-11-10, Castle:
