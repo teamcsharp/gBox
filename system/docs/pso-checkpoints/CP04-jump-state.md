@@ -345,3 +345,19 @@ runs the discriminating test rather than repeating a confounded one.
 **Correction to round 96's conclusion, in one line:** the three input routes were tested while the game was still in its
 opening movie; the discriminating retest (wait for `mode == 1`, then press) is written above and has not been run yet.
 Round 96's evidence stands as "no reaction was observed", not as "input cannot reach the game".
+
+## Round 98: the discriminating retest is written and staged (`docs/research/pso-cp4-retest.py`)
+
+The script implements the round-97 plan and logs every step with a timestamp, so its own transcript is the evidence:
+
+| phase | what it does | what the result means |
+|---|---|---|
+| 1 | launches nothing; waits up to **180 s** for `mode` to leave 0 | if it reaches `mode 1` on its own, round 65's "the press worked" reading was really the opening movie ending - and the attract loop takes that long |
+| 2 | at `mode 1`, `win_bring_to_front` then one `start` press | a change here means a **focused** press lands (the ordinary path) |
+| 3 | the same press with **no** focus attempt | a change here means Dolphin's `BackgroundInput=True` poll sees the injected keys, i.e. the focus-free lane works and the operator never needs to click |
+
+Only if **both** phase 2 and phase 3 leave the state unchanged is round 96's negative confirmed; then the unblock options
+(operator clicks the game once, a worker activate+inject op, or a launch with a pad binding) apply.
+
+The script is staged in the repo as `docs/research/pso-cp4-retest.py` and needs nothing but a session - the next window runs it
+as its first action, before any walk attempt.
