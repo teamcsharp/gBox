@@ -136,3 +136,46 @@ donor picks, CP16's stick measurement, and then CP17-CP19.
 
 **The programme's open items are now exactly four:** (1) the retest in the next window; (2) the CP8 data decision; (3) the
 merge review of seventeen branches in the rehearsed order (conflict-free); (4) CP11's merge/restart decision.
+
+## Round 105: the live blocker is diagnosed and has a working input mechanism - the handover's key section
+
+Rounds 96-104 turned "input does not reach the game" into a diagnosis and a fix. This replaces the earlier "retest staged"
+wording, which is now out of date.
+
+**Root cause (round 102):** this machine has **no reporting pad**. The worker's virtual pad (ViGEm XInput) can fail to be
+created because leftover pads hold the slots - the codebase documents the exact failure: *"the i9-NUC 2026-11-10:
+`_setup_vpad` returned None, the INI fell back to the keyboard, and every gBox press was silently dropped for the whole
+session"*. The keyboard fallback then binds `XInput/0/Gamepad`, a **phantom slot that reports zeros** - and
+`pad_bind.probe_pads()` returns `{}` on this machine, so nothing better is bound. The game receives nothing, which is why four
+injection methods (scancode, virtual-key, relay as agent, relay as autoplay) all failed against a visibly waiting
+"PRESS START" screen (screenshot: `docs/research/pso-cp4-press-start.png`).
+
+**The mechanism that works (round 103):** an agent-side process can **create the pad itself**:
+
+```
+vpad_win.VGamepad()          ->  XInput slot 0       (the slot the fallback INI binds)
+pad.apply([{key,down:True}, {key,down:False}]) ->  a real tap, focus-independent
+```
+
+`probe_pads()` shows `{"0": [4096, ...]}` right after a press - the pad reports, and Dolphin reads it. `apply` is
+focus-independent by design, so no window focus, no `SendInput`.
+
+**The driver (round 104):** `docs/research/pso-cp4-padwalk2.py` creates the pad, logs the bound device, probes one START through
+the **relay** and then through the **agent pad**, and walks with whichever changes `mode`. The two paths are mutually exclusive
+by construction (the worker routes input to its own pad when it has one; the fallback binds slot 0 only when it does not), so
+the probe covers both outcomes of `_setup_vpad`.
+
+**What this means for the review:** CP4 and CP16 are **not blocked by a missing capability any more** - they are waiting for an
+operator-absent window in which `pso-cp4-padwalk2.py` runs. The three unblock options recorded in round 101 (operator press, a
+worker pad op, a pad binding) are now down to one line of execution, because the agent can supply the pad itself.
+
+**Runbook for that window (in order):**
+
+```
+1. queue the launch when idle_seconds >= 300 (CPU<70 helps but the gate is the worker's to apply)
+2. python docs/research/pso-cp4-padwalk2.py        # pad + relay probe, then the walk to the lobby
+3. pso_boot save-state                              # Dolphin slot 1
+4. pso_boot install-jumpstates <path>               # jumpstates/436e0bb84d5337d1-stock.state
+5. the same window: pso_controls boss_warp/floor_spawn for CP5/CP10 (native travel, no input needed)
+6. CP9's seed: read [0x80585F6C] + 0x118 once a save slot is selected, then pso_save_cipher.decode
+```
