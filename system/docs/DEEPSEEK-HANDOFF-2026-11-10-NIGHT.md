@@ -462,3 +462,7 @@ Then send it the heavy analysis work.
   MATCH/BONUS FEATURES with PLAY GAME in the side column), not on PLAY GAME -> the RE5 menu walk drifts as well as
   failing to confirm: its cursor target/read is not reliable on this title. RE5's round start needs both fixed (the
   confirm press is wired; the navigation target is not). The rotation stays on RE5 until its next boundary.
+- 2026-11-11 00:00: merged `ds-grenade-re4-bss-20261110` @ `dc67a25a` into main (`73e240f5`) - **G3's incendiary probe
+  path**: `grenade_ring(kind="incendiary", allow_unverified=True)` calls the class-0x16 persistent-fire candidate
+  `main+0x2E4BA0` through the same fake object, receipt `probe: true`; the status and the rule still refuse it. This is
+  the handle for the RE session's live G3 probe, not a PiP button. Two tests, targeted gate 62 passed.
