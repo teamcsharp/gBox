@@ -180,8 +180,10 @@ def body_roles(body_file: bytes, cls: str) -> dict[str, int]:
     if cls not in CLASS_ROLES:
         raise ValueError(f"unknown PSO class letter {cls!r} (A..I)")
     data = body_file[8:8 + struct.unpack_from("<I", body_file, 4)[0]]
-    nodes = ninja.tree_nodes(data, 0)
-    nj = ninja.NJ(body_file)
+    # NJCM bodies are big-endian in their node/vertex payload (only the container header stays little-endian).
+    e = ">" if body_file[:4] == b"NJCM" else "<"
+    nodes = ninja.tree_nodes(data, 0, e)
+    nj = ninja.NJ(body_file, be=(e == ">"))
     world = [[b["m"][k][3] for k in range(3)] for b in nj.bones]
     bad = check_roles([nd["parent"] for nd in nodes], world, CLASS_ROLES[cls], vertex_owners(nj))
     if bad:
@@ -370,24 +372,29 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
     bpath, mpath, tpath = f"PSO/PL{cls}BDY00.NJ", f"PSO/PL{cls}NJ.BML", f"PSO/PL{cls}TEX.AFS"
     body_file = pso_gc_paths.read_part(disc, bpath)
     data = body_file[8:8 + struct.unpack_from("<I", body_file, 4)[0]]
-    nodes = ninja.tree_nodes(data, 0)
-    nj = ninja.NJ(body_file)
+    # NJCM payloads are big-endian ("Little-endian = Dreamcast; big-endian = GameCube"); only the outer container
+    # header above stays little-endian. Reading a NJCM body with "<" made every child offset garbage
+    # (CP12 round 79: struct.error at offset 1209008128 on a 24,592-byte buffer).
+    e = ">" if body_file[:4] == b"NJCM" else "<"
+    be = e == ">"
+    nodes = ninja.tree_nodes(data, 0, e)
+    nj = ninja.NJ(body_file, be=be)
     class_roles = body_roles(body_file, cls)
     tgt = NS.target_from_nj(nj, class_roles, set(range(class_roles["head"], len(nodes))))
     mat, tiny_fl, tex_fl, strip_fl = b"", 0x34, 0x4000, 0x12
     for nd in nodes:                                         # the body's own render state (first material + texture)
-        if nd["model"] and struct.unpack_from("<I", data, nd["model"] + 4)[0]:
-            o = struct.unpack_from("<I", data, nd["model"] + 4)[0]
+        if nd["model"] and struct.unpack_from(e + "I", data, nd["model"] + 4)[0]:
+            o = struct.unpack_from(e + "I", data, nd["model"] + 4)[0]
             for _ in range(64):
-                h = struct.unpack_from("<H", data, o)[0]
+                h = struct.unpack_from(e + "H", data, o)[0]
                 t = h & 0xFF
                 if t == 0xFF:
                     break
                 if 0x10 <= t <= 0x3A:
-                    mat = mat or data[o:o + 4 + struct.unpack_from("<H", data, o + 2)[0] * 2]
-                    o += 4 + struct.unpack_from("<H", data, o + 2)[0] * 2
+                    mat = mat or data[o:o + 4 + struct.unpack_from(e + "H", data, o + 2)[0] * 2]
+                    o += 4 + struct.unpack_from(e + "H", data, o + 2)[0] * 2
                 elif t in (8, 9):
-                    tiny_fl, tex_fl = h >> 8, struct.unpack_from("<H", data, o + 2)[0] & 0xE000
+                    tiny_fl, tex_fl = h >> 8, struct.unpack_from(e + "H", data, o + 2)[0] & 0xE000
                     o += 4
                 elif 0x40 <= t <= 0x4B:
                     strip_fl = (h >> 8) | 0x10
@@ -397,18 +404,20 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
             if mat:
                 break
     bml = pso_gc_paths.read_part(disc, mpath)
-    extras_bml = [n for n in (e["name"].split(b"\0")[0].decode("latin-1").lower() for e in bml_files(bml))
+    extras_bml = [n for n in (e["name"].split(b"\0")[0].decode("latin-1").lower() for e in bml_files(bml, e))
                   if n[3:6] in ("hed", "hai", "cap")]
-    bml_sec = (disc.files[mpath][1] + 2047) // 2048
-    nj_sec = (disc.files[bpath][1] + 2047) // 2048
+    # A GCDisc has no GDRom-style files[path] -> (offset, size) table; the part sizes are authoritative either way,
+    # and the sector counts only decide the GC layout.
+    bml_sec = (len(bml) + 2047) // 2048
+    nj_sec = (len(body_file) + 2047) // 2048
 
     vbase = (max(nj.vbuf) + 1 + 15) & ~15 if nj.vbuf else 0
 
     def keep_vl(nd):                                         # the node's original vertex chunks, end chunk dropped
         if not nd["model"]:
             return b""
-        vl = struct.unpack_from("<I", data, nd["model"])[0]
-        return data[vl:vl + ninja.chunk_list_len(data, vl, "v") - 4] if vl else b""
+        vl = struct.unpack_from(e + "I", data, nd["model"])[0]
+        return data[vl:vl + ninja.chunk_list_len(data, vl, "v", e) - 4] if vl else b""
 
     def encode(geo):
         # Like SA2 (gbox.sa2_chars), the game needs the body's original (weighted) vertex chunks: without them it
@@ -420,18 +429,18 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
             keep = keep_vl(nd)
             if j in geo:
                 P, N, T = geo[j]
-                models[j] = ninja.cnk_model_lists(P, N, T, 1, mat, tiny_fl, tex_fl, strip_fl, base=vbase, keep_vlist=keep)
+                models[j] = ninja.cnk_model_lists(P, N, T, 1, mat, tiny_fl, tex_fl, strip_fl, e=e, base=vbase, keep_vlist=keep)
             elif nd["model"]:
-                c_r = struct.unpack_from("<4f", data, nd["model"] + 8)
+                c_r = struct.unpack_from(e + "4f", data, nd["model"] + 8)
                 models[j] = (keep + struct.pack("<I", 0xFF) if keep else b"", empty_pl, list(c_r[:3]), c_r[3])
         nn = [dict(nd) for nd in nodes]
         for j in geo:
             nn[j]["flags"] &= ~0x8
-        d2, _root, ptrs = ninja.write_tree(nn, models, 0)
+        d2, _root, ptrs = ninja.write_tree(nn, models, 0, e=e)
         f = nj_file(d2, ptrs)
         if len(f) > 64 * 2048:                               # patch_gdi moves it after the last file if it grew
             raise ValueError(f"{bpath}: {len(f)} bytes")
-        b2 = bml_build(bml, {f"pl{cls.lower()}bdy00.nj": f} | {n: speck_nj() for n in extras_bml})
+        b2 = bml_build(bml, {f"pl{cls.lower()}bdy00.nj": f} | {n: speck_nj() for n in extras_bml}, e=e)
         if len(b2) > 64 * 2048:
             raise ValueError(f"{mpath}: {len(b2)} bytes")
         return f, b2

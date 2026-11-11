@@ -1,0 +1,31 @@
+{
+ "engine": "CYCLES",
+ "device": "OPTIX",
+ "devices": [
+  [
+   "NVIDIA GeForce RTX 3090",
+   "CUDA"
+  ],
+  [
+   "NVIDIA GeForce RTX 2070",
+   "CUDA"
+  ],
+  [
+   "Intel Core i9-9980HK CPU @ 2.40GHz",
+   "CPU"
+  ],
+  [
+   "NVIDIA GeForce RTX 3090",
+   "OPTIX"
+  ],
+  [
+   "NVIDIA GeForce RTX 2070",
+   "OPTIX"
+  ]
+ ],
+ "enabled": [
+  "NVIDIA GeForce RTX 3090",
+  "NVIDIA GeForce RTX 2070"
+ ],
+ "filepath": "D:\\gBox\\pso-ds\\renders\\blender-smoke.png"
+}

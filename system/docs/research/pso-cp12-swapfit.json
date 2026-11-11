@@ -1,0 +1,44 @@
+{
+ "host": {
+  "bones": 64,
+  "buckets": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "vertices": 311
+ },
+ "donor": {
+  "bones": 64,
+  "buckets": [
+   1
+  ],
+  "vertices": 666
+ },
+ "fit": {
+  "safe": true,
+  "why": "same bones and materials, but 666 vertices against the host's 311: a copy renders with the donor's proportions on the host's skeleton (the deformed case, round 35)",
+  "host": {
+   "bones": 64,
+   "buckets": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "vertices": 311
+  },
+  "donor": {
+   "bones": 64,
+   "buckets": [
+    1
+   ],
+   "vertices": 666
+  },
+  "deforms": true,
+  "subset": true
+ }
+}
