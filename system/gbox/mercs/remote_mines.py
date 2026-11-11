@@ -14,11 +14,12 @@ import random
 TITLES = {"01002A000CD48000": "gbox.mercs.titles.re6_switch"}
 DEFAULTS = {
     "enabled": True,
-    "drop_every_s": 22.0,          # a ring this often while a round plays
+    "drop_every_s": 18.0,          # a ring this often while a round plays (operator 2026-11-11 17:58: "dropping even
+                                   # more remote mines as they're detonating them")
     "drop_jitter_s": 8.0,          # +/- so the drops are not clockwork ("randomly in the middle of the match")
-    "count": 4,                    # "sets of four in a ring around them"
+    "count": 6,                    # six a ring: "dropping even more remote mines"
     "radius_cm": 200.0,
-    "rings_before_detonate": 3,    # "massive quantities ... then detonate": 12 bombs by default
+    "rings_before_detonate": 4,    # "massive quantities ... then detonate": 24 bombs by default
     "detonate_after_s": 75.0,      # or a forced detonation this long after the first ring of the set
     # Operator 2026-11-11 17:50: "detonating them as they get distance away from them" - the flag never goes while he
     # is inside a lying ring's blast; once he is detonate_safe_cm clear of every centre the set goes.

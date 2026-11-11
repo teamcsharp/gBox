@@ -91,19 +91,19 @@ def test_the_rule_drops_a_ring_then_detonates_the_set_through_the_flag(monkeypat
     monkeypatch.setattr(N, "bomb_ring_now", ring_now)
     monkeypatch.setattr(N, "bomb_detonate_now", detonate_now)
     step = RM.control(None, {"map_id": TITLE})
-    live = stats(remote_mines={"drop_jitter_s": 0, "rings_before_detonate": 3})
+    live = stats(remote_mines={"drop_jitter_s": 0, "rings_before_detonate": 4})
     first = step(snap(), live, 100.0, lambda keys: True)
-    assert first["fired"] is True and calls[0] == ("ring", 4, 200.0)
+    assert first["fired"] is True and calls[0] == ("ring", 6, 200.0)
     assert live["mine_rings_dropped"] == 1 and live["mine_rings_since_detonate"] == 1
-    # the next two rings are forced by moving the clock past the stored next-drop
-    for at in (130.0, 160.0):
+    # the next rings are forced by moving the clock past the stored next-drop (inside the 75 s time window)
+    for at in (120.0, 140.0, 160.0):
         live["mine_next_drop_at"] = at - 1
         assert step(snap(), live, at, lambda keys: True)["fire"] is True
-    assert live["mine_rings_since_detonate"] == 3 and live["mine_bombs_since_detonate"] == 12
+    assert live["mine_rings_since_detonate"] == 4 and live["mine_bombs_since_detonate"] == 24
     # the player is still on the centre: the flag waits for the distance (operator 2026-11-11 17:50)
     held = step(snap(), live, 160.5, lambda keys: True)
     assert held["fire"] is False and "nearest lying ring" in held["reason"]
-    # 400 cm clear of the ring: the third ring makes the set due and the next tick detonates by the flag
+    # 400 cm clear of the ring: the fourth ring makes the set due and the next tick detonates by the flag
     done = step(snap((0.0, 0.0, 400.0)), live, 161.0, lambda keys: True)
     assert done["op"] == "bomb_detonate" and done["fired"] is True
     assert calls[-1] == ("detonate",)
