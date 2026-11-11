@@ -507,3 +507,12 @@ def test_the_interventions_builder_can_build_the_harness_under_its_create_lock(m
     ctl = interventions.native_controller(adapter)
     assert isinstance(ctl, FakeController) and built == [adapter]
     assert adapter._re4_switch_harness is ctl
+
+
+def test_the_committed_mailbox_is_the_three_load_page_in_main_s_known_base():
+    """E3's choice, pinned: 0x1700000 was the page all-zero at the three live round-start loads (2026-11-11 11:26,
+    session 0569c82d21614288-c655ae564d744afc), and the harness takes the absolute guest address main's known base
+    (0x3ca7c04000) plus that page. A no-op change here would leave the harness unable to attach or, worse, pointing
+    the dispatcher at a page the game writes."""
+    assert N.MAILBOX_AT == N.R.KNOWN_BASES[0] + 0x1700000
+    assert N.MAILBOX_AT % 8 == 0

@@ -80,7 +80,11 @@ SCATTER_MIN_MM, SCATTER_MAX_MM = 4000.0, 15000.0
 SCATTER_GAP_MS = (100.0, 200.0)
 SCATTER_SAFE_MM = 10.0                  # one cm past the learned reach, in mm
 #: The proven private page (set after E3's three-load watch passes; None means the harness cannot attach).
-MAILBOX_AT: int | None = None
+#: `choose_mailbox` returns the page OFFSET; the guest address is main's known base (0x3ca7c04000, `KNOWN_BASES`) plus
+#: it. Chosen 2026-11-11 11:26 from the live three-load watch of session 0569c82d21614288-c655ae564d744afc (RE4
+#: Village, three round starts): 0x1700000 read all zero in every load while the other four candidates carried data in
+#: every one (0x1cb9000/0x1cba000/0x1cbb000 non-zero, 0x1cbc000 floats). 0x1700000 + 0x3ca7c04000 = 0x3ca9304000.
+MAILBOX_AT: int | None = 0x3CA9304000
 
 
 def choose_mailbox(loads) -> int | None:
