@@ -1201,3 +1201,29 @@ the RE4 block comes quickly; the poll found none in this round's ten minutes (th
 
 **Nothing else on the lane is blocked by code:** E6's selftest, F's flash op and G's ring/barrage are all merged and
 tested; they wait only on the proven mailbox page (`MAILBOX_AT`) and the restart that loads the harness module.
+
+## Round 71 (2026-11-10 21:40 CST) - G3: the item table names the incendiary's class, and it is not an instant area attack
+
+**The item table gives the missing discriminator.** `re4_weapons.WEAPON_TBL` (`0xA07CC6`, 43 x 22 B) rows 28-30 are the
+grenades:
+
+    row 28: id=0x0001 (hand grenade)      class=0x13  variant=0  caps=[1]
+    row 29: id=0x0002 (incendiary grenade) class=0x16  variant=0  caps=[1]
+    row 30: id=0x000E (flash grenade)      class=0x17  variant=0  caps=[1]
+
+The item class is exactly the **area-attack class** the known blasts pass: hand `0x2E48B0` calls AREA_ATTACK with
+`w3 = 0x13`, flash `0x2E4E50` with `w3 = 0x17`. So the incendiary's would be class `0x16` - and a scan of all 98
+`bl 0x33B770` sites finds **no site with an immediate class 0x16**. The incendiary is therefore not an instant area
+attack shaped like the other two: it is a **persistent fire object** (likely class 0x16 dispatched through the item's
+class at runtime), which matches the unclaimed descriptor pair `0x67B4C8 -> 0x2E4BA0` / `0x67B4E0 -> 0x2E4DF0`:
+`0x2E4BA0` reads the object's position `+0xA4`, checks `+0x3CC == 0xD6`, `+0x3D0` and the sign bit of `+0x3D4`, and
+calls EFFECT with `w5 = 0x26` - no AREA_ATTACK, exactly what a burning fire field looks like.
+
+**The descriptor table's shape** (for the next pass): entries of 0x18 bytes `{fn, 0xB05xxx vtable pointer, 0x0403}`
+from `0x67B2A0`; hand at `0x67B3F0`, flash at `0x67B5A0`, the candidates at `0x67B4C8/0x67B4E0`, and the common
+`0x2E4860` entries. The next step is to find where the item class `0x16` is dispatched (a class table or the throw
+routine) or to test `0x2E4BA0` live as the incendiary's spawn; either way the op shape would be the same fake-object
+call as the flash.
+
+**Live:** no watch strings yet - the block is RE6, and the RE4 bot module still needs the post-fix deploy + one
+operator reload (or the 05:00 restart). The lane's code is otherwise ready.
