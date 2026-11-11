@@ -276,3 +276,8 @@ Then send it the heavy analysis work.
   grenade merge included interventions.py, so the RE4 .bss watch is copied but not loaded in the running bot; the
   operator can force POST /api/workers/lilspark/bot-reload (operator actor; the API refuses gent with 403), else
   it lands at 05:00. Plan time-sensitive bot changes as bot-only merges.
+- 2026-11-10 20:10: merged `ds-grenade-re4-bss-20261110` @ `b6434d77` into main (`d458a024`) - the `.bss` watch now keeps
+  the last THREE distinct stage loads in `stats["bss_watch_loads"]` (a single telemetry read after an RE4 block gives
+  the three-load evidence even with nobody polling), and the RE4 hand-grenade ring joins the status as a built /
+  no-receipt row beside the flash (incendiary still not identified). Targeted gate 163 passed. Still waiting on the
+  operator bot-reload (or the 05:00 restart) for the bot modules to load.
