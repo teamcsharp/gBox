@@ -83,6 +83,121 @@ def registry(dol: bytes, slots: int = 0x100) -> dict[int, str | None]:
     return out
 
 
+#: name prefix -> family, most specific first. The editor groups and colours a placement's marker by this.
+FAMILIES = (
+    ("TObjCityDoor", "door"),
+    ("TObjCityMainWarp", "warp"),
+    ("TObjCityAreaWarp", "warp"),
+    ("TObjCityMapWarp", "warp"),
+    ("TObjMapWarp", "warp"),
+    ("TObjGoalWarp", "warp"),
+    ("TObjAreaWarp", "warp"),
+    ("TObjMapForceWarp", "warp"),
+    ("TObjWarp", "warp"),
+    ("TOSwitch", "switch"),
+    ("TOTrap", "trap"),
+    ("TOSensor", "sensor"),
+    ("TOSign", "sign"),
+    ("TORock", "prop"),
+    ("TOWreck", "prop"),
+    ("TOVS2", "prop"),
+    ("TObjCityAirCar", "prop"),
+    ("TObjCity_Season", "decor"),
+    ("TButterfly", "decor"),
+    ("TObjCamera", "effects"),
+    ("TObjBgmCol", "effects"),
+    ("TObjCollision", "collision"),
+    ("TObj", "object"),
+    ("TO", "object"),
+)
+
+
+def family_of_name(name: str | None) -> str:
+    """The family of a class name: door, warp, switch, trap, sensor, sign, prop, decor, effects, collision, object.
+
+    "unknown" for a slot this build leaves empty. The grouping is what the editor page colours markers by; it is derived
+    from the name only, so a class this lane has never seen still lands somewhere sensible.
+    """
+    if not name:
+        return "unknown"
+    for prefix, group in FAMILIES:
+        if name.startswith(prefix):
+            return group
+    return "object"
+
+
+def label(dol: bytes, kind: int, *, unnamed: str = "class_{id:#04x}") -> str:
+    """A placement's class name, or ``class_0xNN`` for a slot this build leaves empty (never an invented name)."""
+    found = name_of(dol, kind)
+    return found if found else unnamed.format(id=int(kind) & 0xFF)
+
+
+def family(dol: bytes, kind: int) -> str:
+    """The family of a placement's class (see :func:`family_of_name`)."""
+    return family_of_name(name_of(dol, kind))
+
+
+def sections(dol: bytes) -> list[tuple[int, int, int]]:
+    """The DOL's real ``(file offset, address, size)`` triples (the 18 entries at 0x00 / 0x48 / 0x90).
+
+    ``pso_dol`` documents a **flat** offset/address mapping (file 0x100 = image base, contiguous). That holds for the
+    first two sections only: this executable's triples jump from file 0x2620 (address 0x8000F740) to file 0x426E00
+    (address 0x8000E520), so past 0x8000F740 the flat map is off by hundreds of kilobytes. The table here is the
+    authoritative mapping and it is what puts the class registry at address **0x805D3138** rather than 0x804FEB58.
+    """
+    offs, addrs, sizes = (struct.unpack_from(">18I", dol, o) for o in (0x00, 0x48, 0x90))
+    return [(offs[i], addrs[i], sizes[i]) for i in range(18) if sizes[i]]
+
+
+def address_of(dol: bytes, offset: int) -> int:
+    """The address the game sees the file byte at ``offset`` at, via the section table."""
+    for file_off, addr, size in sections(dol):
+        if file_off <= offset < file_off + size:
+            return addr + (offset - file_off)
+    raise ClassError(f"file offset {offset:#x} is not in any section")
+
+
+def offset_of(dol: bytes, address: int) -> int | None:
+    """The file offset of an address, via the section table (None when the address is not in this image)."""
+    for file_off, addr, size in sections(dol):
+        if addr <= address < addr + size:
+            return file_off + (address - addr)
+    return None
+
+
+def vtable_census(dol: bytes, slots: int = 0x100) -> dict[int, list[int]]:
+    """``{class id: [file offsets of the words that hold that slot's address]}``.
+
+    A class's vtable begins with a pointer to its **registry slot** (the array entry itself), then ``0x00010000``, two
+    zero words, its methods and two data pointers. So a word anywhere in the image that equals slot *i*'s address is a
+    vtable header for class *i*. Measured on `PsoV3.dol`: only **38 of the 148 named classes** have one, and not one of
+    the named ``TObj*`` placement classes does (the city pad included) - the executable's C++ objects are engine classes,
+    and placements are dispatched by id somewhere else, which is what `docs/research/pso-gc-traversal.md` records.
+    """
+    table = table_offset(dol)
+    wanted = {}
+    for i in range(slots):
+        off = table + i * ENTRY_SIZE
+        if off + ENTRY_SIZE > len(dol):
+            break
+        wanted[address_of(dol, off)] = i
+    found: dict[int, list[int]] = {}
+    limit = len(dol) - 4
+    for off in range(0x100, limit, 4):        # the DOL header is not code or data
+        value = struct.unpack_from(">I", dol, off)[0]
+        slot = wanted.get(value)
+        if slot is not None:
+            # the registry array itself holds those addresses in its slots; a vtable header does not sit in the table
+            if not (table <= off < table + slots * ENTRY_SIZE):
+                found.setdefault(slot, []).append(off)
+    return {slot: sorted(offs) for slot, offs in sorted(found.items())}
+
+
+def instantiated(dol: bytes, slots: int = 0x100) -> list[int]:
+    """The class ids this build actually instantiates as C++ objects (those with a vtable header)."""
+    return sorted(vtable_census(dol, slots))
+
+
 def name_of(dol: bytes, kind: int) -> str | None:
     """The class name a placement record's ``kind`` word refers to, or None when the slot is empty.
 

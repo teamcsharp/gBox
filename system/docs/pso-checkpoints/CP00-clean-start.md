@@ -1,87 +1,105 @@
-# CP0 evidence: the clean start (2026-11-10 night, the DeepSeek session)
+# CP00 clean start — done (steps 1-5)
 
-What CP0 asked for (`DEEPSEEK-PSO-CHECKPOINTS-2026-11-10.md`): every open `ds-pso-*` branch merging clean, one
-registry, no stale queued launch and no parked agent session, the operator question written down, and the PSO test
-baseline not worse.
+Session identity: DeepSeek    Branch: ds-pso-cp00-clean-start-20261110    Commits: `6a44d458` + this evidence update
 
-## 1. The branches: all 16 are on `main`
+Goal: all four (unblocks everything else)
 
-Each branch carried its own CP0 commit (its lane-log text moved to `system/docs/pso-checkpoints/lane/<topic>.md`), so no
-branch needed rewriting and none was force-pushed. They were merged into `main` with plain `--no-ff` merge commits
-(local `main`, 2026-11-10 18:20-18:40 CDT):
+## Steps 1-2: the i9 plane (done, measured)
 
-| branch | tip | merge commit |
-|---|---|---|
-| `ds-pso-steering-tests-20261110` | `596cb9a6` | `453ad9b8` |
-| `ds-pso-steer-tests2-20261110` | `29ab722a` | `e6799e85` |
-| `ds-pso-floor-map-20261110` | `c6ddeb1b` | `ef225c97` |
-| `ds-pso-floor-editor-20261110` | `404dd9b0` | `66198719` |
-| `ds-pso-class-registry-20261110` | `c68e3487` | `cfaaaa54` |
-| `ds-pso-editor-page-20261110` | `7aa11623` | `34f064f3` |
-| `ds-pso-travel-gate-20261110` | `21b0c1bf` | `a84d69ee` |
-| `ds-pso-vtables-20261110` | `2171b625` | `c0b6edaf` |
-| `ds-pso-vtable-census-20261110` | `9ef79647` | `6182d740` |
-| `ds-pso-sda-20261110` | `4f9ec3e7` | `bdd6851c` |
-| `ds-pso-memcard-20261110` | `3b563b23` | `0219216c` |
-| `ds-pso-floor-warp-20261110` | `0442a9fe` | `2be18b5e` |
-| `ds-pso-actor-dump-20261110` | `3eca417a` | `998024f3` |
-| `ds-pso-gvr-write-20261110` | `1a652cf2` | `7e3be8e4` |
-| `ds-pso-tree-endian-20261110` | `793e74b1` | `8852d9eb` |
-| `ds-pso-body-platform-20261110` | `71cecb67` | `97f590fb` |
+- One running session at claim time: `83202f53e9cd4aa5-54da9e9d8a764de8` (`pso_guilddoor_moved`, `agent_owned: true`,
+  up since 12:55 — the one CP0 names).
+- Stop: `POST /api/jobs` `session_op`/`stop_game` → job `1e745d692ac14a30`, `state: succeeded`, `output.ended: true`,
+  teardown 0.469 s. `/api/sessions?include_ended=false` is now **empty**.
+- Stale queued job `4b176dbab90240cb` (`launch_game`, `require_os: linux`, from 04:50): cancelled →
+  `state: failed`, error "cancelled by the operator". `/api/jobs` shows no queued Linux job.
+- Every call carried `x-gbox-actor: agent` and the token from `system/gbox-data/api_token` (never printed).
 
-`git merge-tree --write-tree main <branch>` exited 0 for all 16 before the merges (checked with git 2.38.1).
+## Step 3: every open `ds-pso-*` branch merges clean (done, measured)
 
-### The conflicts that did appear, and how they were resolved
+23 branches rebased onto `origin/main` (`8032491f`), each branch's lane-log text moved to
+`system/docs/pso-checkpoints/lane/<topic>.md`, its edit to `system/docs/ds-pso-lane-2026-11-10.md` dropped, and the
+branch force-pushed with `--force-with-lease` (**none was merged**, checked with `git branch -r --merged origin/main`
+first).
 
-Four merges hit textual conflicts; all were in the shared research docs, plus one duplicated module and its test:
+`git merge-tree --write-tree origin/main origin/<branch>` exits **0 for 24/24** (the 23 open branches plus this
+checkpoint's own branch):
 
-- `docs/research/pso-gc-executable.md` (4 times): the branches were written at different times, so some carried the
-  older "the floor resolver is not mapped yet" text while `main` already had it decoded. Rule: **keep the newer decoded
-  text**; where two different new sections landed at the same anchor (5b the small-data areas, 5c the vtable census)
-  keep **both**. All rewrites are UTF-8 clean (checked: no mojibake).
-- `docs/research/pso-travel-and-gate.md` (add/add): `main` had the travel-gate text, the vtables branch added a new
-  section; both kept.
-- `gbox/pso_class_registry.py` and `tests/test_pso_class_registry.py` (add/add): the later branch's copy is the earlier
-  one plus the vtable census (verified by diff: 202 -> 223 lines, and the test file adds 60 lines); took the superset,
-  then restored the editor's `FAMILIES`/`family` block that the vtable-census copy predated (`pso_editor.placements`
-  needs it) and fixed `pso_editor._mark_for`'s stale `CLASS_NAMES.get` (the merged registry exposes `name()`).
+| branch | tip after the rewrite |
+|---|---|
+| `ds-pso-actor-dump-20261110` | `3eca417a` |
+| `ds-pso-body-platform-20261110` | `71cecb67` |
+| `ds-pso-body-swap-20261110` | `c7374eea` |
+| `ds-pso-class-registry-20261110` | `c68e3487` |
+| `ds-pso-classes-family-20261110` | `9fa927cf` |
+| `ds-pso-cp00-clean-start-20261110` | `6a44d458` |
+| `ds-pso-editor-page-20261110` | `7aa11623` |
+| `ds-pso-editor-page2-20261110` | `814a229f` |
+| `ds-pso-floor-editor-20261110` | `404dd9b0` |
+| `ds-pso-floor-map-20261110` | `c6ddeb1b` |
+| `ds-pso-floor-warp-20261110` | `0442a9fe` |
+| `ds-pso-gvr-write-20261110` | `1a652cf2` |
+| `ds-pso-handover-20261110` | `e09df930` |
+| `ds-pso-memcard-20261110` | `3b563b23` |
+| `ds-pso-reconcile-20261110` | `5f8f0e12` |
+| `ds-pso-sda-20261110` | `4f9ec3e7` |
+| `ds-pso-steering-tests-20261110` | `596cb9a6` |
+| `ds-pso-steer-tests2-20261110` | `29ab722a` |
+| `ds-pso-swapfit-ui-20261110` | `740c6041` |
+| `ds-pso-swap-gc-20261110` | `de29ab4e` |
+| `ds-pso-travel-gate-20261110` | `21b0c1bf` |
+| `ds-pso-tree-endian-20261110` | `793e74b1` |
+| `ds-pso-vtable-census-20261110` | `9ef79647` |
+| `ds-pso-vtables-20261110` | `2171b625` |
 
-## 2. One registry, cross-checked
+One branch needed a **code** conflict resolved rather than being left: `ds-pso-floor-editor-20261110` conflicted on
+`system/tests/test_pso_editor.py` because main had added three `ascii_map` tests at the same place the branch added its
+floor tests. Both sides are kept (29 lines from main, 21 from the branch); the rebased branch runs
+`test_pso_editor.py` + `test_pso_floor_map.py` green (**25 passed**). Everything else rebased with only lane-log replays,
+resolved by taking main's version of that file.
 
-`gbox/pso_classes.py` stays the module: the self-calibrating reader (it finds the table from the `TObjCityDoor_Shop`
-anchor). `gbox/pso_class_registry.py` stays the pinned table (address `0x805D3138`, 240 slots, 148 named, the vtable
-census, the family grouping). CP0's cross-check is `tests/test_pso_registries_agree.py`: both sides agree on the anchor
-name and slot (`0x46`), the pinned list is the measured 240/148, and both mask a placement kind to the same class.
+## Step 5: the operator question (done)
 
-## 3. The plane: no stale queued launch, no parked agent session
+`system/docs/pso-checkpoints/CP00-operator-question.md`, and the RE session has been told it is waiting.
 
-- The stale `launch_game` `4b176dbab90240cb` the checkpoint named is **failed**, not queued (`GET /api/jobs/4b176dbab90240cb`
-  on the i9 plane, 2026-11-10 18:22 CDT: `state: failed`, `worker_id: null`). Nothing to cancel.
-- The agent-owned PSO session (`83202f53e9cd4aa5-2db839b720154c70`) was **playing** (started 18:14 CDT) when the
-  check-in ran, and the local model was gated on the operator playing, so it was left alone: stopping a live session is
-  not CP0's to do.
+## Step 4: the duplicate registry (done)
 
-## 4. Tests
+`ds-pso-cp00-classes-20261110` @ `a1053cac`, evidence `CP00-classes.md`: `pso_classes.py` stays the module (anchor-derived
+lookup, plus `family`, `label`, the vtable census and the real section-table mapping) and now carries the branch's
+`PINNED_ADDRESS = 0x805D3138` / `PINNED_NAMES` (240 slots, **148 named**) as cross-check data; the derived table equals
+the pinned list on every one of the 240 slots. `pso_class_registry.py` is not added (it never was on main) and nothing
+imports it. Both test sets live on: `test_pso_classes.py` 12 and the ported `test_pso_class_registry.py` 6 — **18
+passed**, 47 with the editor/setdata/offset suites.
 
-The CP0 command: every `system/tests/test_pso*.py` plus `test_pad_bind.py`, on Python 3.11 (this checkout), 2026-11-10
-18:40-18:55 CDT, 115 files.
+## Baseline (measured, so every checkpoint can be compared)
 
-| tree | failed | passed | skipped |
-|---|---|---|---|
-| baseline `8032491f` (13:35) | 45 | 1,333 | 133 |
-| `main` with all 16 branches merged | 41 | 1,399 | 132 |
-| the 14 files above, after the two merge fixes (56 s) | **36** | 157 | 9 |
+Every `system/tests/test_pso*.py` on `8032491f`, Windows i9, Python 3.11:
+**45 failed, 1,329 passed, 132 skipped** (389.8 s). The guide's baseline at the same commit is 45 / 1,333 / 133 on
+JAYBUILTFINAL (Python 3.12) — the same 45 failures, the difference is the environment (4 passes, 1 skip), recorded
+rather than hidden.
 
-The 41 were the baseline's own files (margin_controller 13, combat_routing 4, field_margin 3, lifecycle 3,
-reload_admission 3, coop_setup 2, equipment_hooks 2, runtime_repair 2, combat_range 1, enemy 1, planner_transport 1,
-recorded_evidence 1 - 36) **plus** 5 merge regressions the fixes above remove (test_pso_editor 4, test_pso_offset 1).
-Re-running those 14 files after the fixes gives **36 failed / 157 passed / 9 skipped**: exactly the baseline's 36 (the
-45 less the 9 the two test branches fix), no new failure. `test_pso_steer.py` (5) and `test_pso_steering_evidence.py`
-(4) are green now, which is the two test branches doing what their commits said.
+## Needs
 
-## 5. What is still open in CP0
+- the RE session's review/merge of the 23 cleaned branches;
+- the operator's answer recorded above.
 
-- **The operator question** is written in `CP00-operator-question.md` and asked in the session (2026-11-10 night). P1's
-  lobby route waits on it.
-- CP1 (the local coder model on the 3090) is still unstarted: `ollama.available = false`, and the 3090 has only Dolphin
-  on it. That is the next checkpoint.
+Next: CP1 (the local coder model on the 3090) once a live window is allowed.
+﻿
+## Appendix: the merge record (the PM session, 2026-11-10 night)
+
+The lane's step 3 rebased 23 branches; this session then **merged 16 of them into main** (plain `--no-ff` commits):
+steering-tests, steer-tests2, floor-map, floor-editor, class-registry, editor-page, travel-gate, vtables,
+vtable-census, sda, memcard, floor-warp, actor-dump, gvr-write, tree-endian, body-platform. Four merges hit research-doc
+conflicts (branches written before main's decoded floor-resolver text; sections 5b/5c both kept), resolved in favour of
+the newer finding, UTF-8 clean. Later waves added CP1-3, the CP4-17 checkpoint branches and the remaining evidence
+(`CP00-classes`, `handover`, `reconcile`, `cp16-stick`, `cp-status`, `editor-views`).
+
+**Correction to step 4 above:** `pso_class_registry.py` *is* on main - it arrived with
+`ds-pso-class-registry-20261110` in this session's first merge wave, before `ds-pso-cp00-classes` was based. Both
+modules now exist, `tests/test_pso_registries_agree.py` ties them (anchor name/slot, the pinned 240/148 list, the kind
+mask), and `pso_editor` imports the registry for its DOL-free `label`/`family` calls. `pso_classes` is the module
+going forward.
+
+**Tests** (Windows i9, Python 3.11, every `test_pso*.py` + `test_pad_bind.py`, 115 files): after the 16 merges
+**41 failed / 1,399 passed / 132 skipped**; after fixing the two merge regressions (`test_pso_editor` 4,
+`test_pso_offset` 1) the 14 baseline files give **36 failed / 157 passed / 9 skipped** - the baseline's 45 less the 9
+the two test branches fix, no new failure. The CP4+ wave then merged with 65 / 71 / 52 passed on the touched suites.

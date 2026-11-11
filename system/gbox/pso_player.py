@@ -180,8 +180,10 @@ def body_roles(body_file: bytes, cls: str) -> dict[str, int]:
     if cls not in CLASS_ROLES:
         raise ValueError(f"unknown PSO class letter {cls!r} (A..I)")
     data = body_file[8:8 + struct.unpack_from("<I", body_file, 4)[0]]
-    nodes = ninja.tree_nodes(data, 0)
-    nj = ninja.NJ(body_file)
+    # NJCM bodies are big-endian in their node/vertex payload (only the container header stays little-endian).
+    e = ">" if body_file[:4] == b"NJCM" else "<"
+    nodes = ninja.tree_nodes(data, 0, e)
+    nj = ninja.NJ(body_file, be=(e == ">"))
     world = [[b["m"][k][3] for k in range(3)] for b in nj.bones]
     bad = check_roles([nd["parent"] for nd in nodes], world, CLASS_ROLES[cls], vertex_owners(nj))
     if bad:
@@ -292,13 +294,17 @@ def nj_file(data: bytes, ptrs: list[int]) -> bytes:
     return b"NJCM" + struct.pack("<I", len(data)) + data + ninja.pof0(ptrs)
 
 
-def speck_nj() -> bytes:
-    """A one-node NJ with one zero-size triangle: a valid, invisible model (stands in for the class head)."""
+def speck_nj(e: str = "<") -> bytes:
+    """A one-node NJ with one zero-size triangle: a valid, invisible model (stands in for the class head).
+
+    `e` must match the body's container endianness: a GameCube swap is big-endian, and a little-endian placeholder written
+    over a head part is read as garbage by the game.
+    """
     import numpy as np
     vl, pl, c, r = ninja.cnk_model_lists(np.zeros((3, 3)), np.tile([0, 1.0, 0], (3, 1)), [((0, 1, 2), ((0, 0),) * 3)],
                                          0, b"")
-    nd = [{"flags": 0x17, "trs": struct.pack("<3f3i3f", 0, 0, 0, 0, 0, 0, 1, 1, 1), "child": None, "sibling": None}]
-    data, _root, ptrs = ninja.write_tree(nd, {0: (vl, pl, c, r)}, 0)
+    nd = [{"flags": 0x17, "trs": struct.pack(e + "3f3i3f", 0, 0, 0, 0, 0, 0, 1, 1, 1), "child": None, "sibling": None}]
+    data, _root, ptrs = ninja.write_tree(nd, {0: (vl, pl, c, r)}, 0, e)
     return nj_file(data, ptrs)
 
 
@@ -359,8 +365,20 @@ def rewrite_body(disc, cls: str = "A", platform: str = "gc") -> dict:
             "platform": platform}
 
 
+def gc_head_parts(names, cls: str) -> list[str]:
+    """The GameCube head/hair/cap parts of a class: `pl<C><hed|hai|cap><NN>.nj`, flat and lower-case.
+
+    The disc keeps no `PSO/` directory and names the parts `plChed00.nj` (class C has five heads and no hair - HUcast is an
+    android), so the Dreamcast-shaped loop in `build_swap` never matched them and a GameCube swap shipped the class's own
+    head. Sorted for a stable file order.
+    """
+    import re
+    pattern = re.compile(rf"pl{cls.upper()}(hed|hai|cap)\d+\.nj$", re.IGNORECASE)
+    return sorted(n for n in names if pattern.match(n))
+
+
 def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str = "C", blender: str | None = None,
-               progress=lambda p, m: None, scale: dict | None = None) -> dict:
+               progress=lambda p, m: None, scale: dict | None = None, replace_heads: bool = False) -> dict:
     """disc: a gbox.gdrom.GDRom. -> {files {disc path: bytes}, report, rigged, atlas}."""
     import numpy as np
     from . import ninja_swap as NS
@@ -370,24 +388,29 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
     bpath, mpath, tpath = f"PSO/PL{cls}BDY00.NJ", f"PSO/PL{cls}NJ.BML", f"PSO/PL{cls}TEX.AFS"
     body_file = pso_gc_paths.read_part(disc, bpath)
     data = body_file[8:8 + struct.unpack_from("<I", body_file, 4)[0]]
-    nodes = ninja.tree_nodes(data, 0)
-    nj = ninja.NJ(body_file)
+    # NJCM payloads are big-endian ("Little-endian = Dreamcast; big-endian = GameCube"); only the outer container
+    # header above stays little-endian. Reading a NJCM body with "<" made every child offset garbage
+    # (CP12 round 79: struct.error at offset 1209008128 on a 24,592-byte buffer).
+    e = ">" if body_file[:4] == b"NJCM" else "<"
+    be = e == ">"
+    nodes = ninja.tree_nodes(data, 0, e)
+    nj = ninja.NJ(body_file, be=be)
     class_roles = body_roles(body_file, cls)
     tgt = NS.target_from_nj(nj, class_roles, set(range(class_roles["head"], len(nodes))))
     mat, tiny_fl, tex_fl, strip_fl = b"", 0x34, 0x4000, 0x12
     for nd in nodes:                                         # the body's own render state (first material + texture)
-        if nd["model"] and struct.unpack_from("<I", data, nd["model"] + 4)[0]:
-            o = struct.unpack_from("<I", data, nd["model"] + 4)[0]
+        if nd["model"] and struct.unpack_from(e + "I", data, nd["model"] + 4)[0]:
+            o = struct.unpack_from(e + "I", data, nd["model"] + 4)[0]
             for _ in range(64):
-                h = struct.unpack_from("<H", data, o)[0]
+                h = struct.unpack_from(e + "H", data, o)[0]
                 t = h & 0xFF
                 if t == 0xFF:
                     break
                 if 0x10 <= t <= 0x3A:
-                    mat = mat or data[o:o + 4 + struct.unpack_from("<H", data, o + 2)[0] * 2]
-                    o += 4 + struct.unpack_from("<H", data, o + 2)[0] * 2
+                    mat = mat or data[o:o + 4 + struct.unpack_from(e + "H", data, o + 2)[0] * 2]
+                    o += 4 + struct.unpack_from(e + "H", data, o + 2)[0] * 2
                 elif t in (8, 9):
-                    tiny_fl, tex_fl = h >> 8, struct.unpack_from("<H", data, o + 2)[0] & 0xE000
+                    tiny_fl, tex_fl = h >> 8, struct.unpack_from(e + "H", data, o + 2)[0] & 0xE000
                     o += 4
                 elif 0x40 <= t <= 0x4B:
                     strip_fl = (h >> 8) | 0x10
@@ -397,41 +420,43 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
             if mat:
                 break
     bml = pso_gc_paths.read_part(disc, mpath)
-    extras_bml = [n for n in (e["name"].split(b"\0")[0].decode("latin-1").lower() for e in bml_files(bml))
+    extras_bml = [n for n in (e["name"].split(b"\0")[0].decode("latin-1").lower() for e in bml_files(bml, e))
                   if n[3:6] in ("hed", "hai", "cap")]
-    bml_sec = (disc.files[mpath][1] + 2047) // 2048
-    nj_sec = (disc.files[bpath][1] + 2047) // 2048
+    # A GCDisc has no GDRom-style files[path] -> (offset, size) table; the part sizes are authoritative either way,
+    # and the sector counts only decide the GC layout.
+    bml_sec = (len(bml) + 2047) // 2048
+    nj_sec = (len(body_file) + 2047) // 2048
 
     vbase = (max(nj.vbuf) + 1 + 15) & ~15 if nj.vbuf else 0
 
     def keep_vl(nd):                                         # the node's original vertex chunks, end chunk dropped
         if not nd["model"]:
             return b""
-        vl = struct.unpack_from("<I", data, nd["model"])[0]
-        return data[vl:vl + ninja.chunk_list_len(data, vl, "v") - 4] if vl else b""
+        vl = struct.unpack_from(e + "I", data, nd["model"])[0]
+        return data[vl:vl + ninja.chunk_list_len(data, vl, "v", e) - 4] if vl else b""
 
     def encode(geo):
         # Like SA2 (gbox.sa2_chars), the game needs the body's original (weighted) vertex chunks: without them it
         # draws garbage. Every node keeps its vertex chunks, the character's vertices follow from cache slot vbase,
         # and only the strips change.
         models = {}
-        empty_pl = struct.pack("<HH", 0xFF, 0)
+        empty_pl = struct.pack(e + "HH", 0xFF, 0)          # the end-of-list marker follows the container endianness
         for j, nd in enumerate(nodes):
             keep = keep_vl(nd)
             if j in geo:
                 P, N, T = geo[j]
-                models[j] = ninja.cnk_model_lists(P, N, T, 1, mat, tiny_fl, tex_fl, strip_fl, base=vbase, keep_vlist=keep)
+                models[j] = ninja.cnk_model_lists(P, N, T, 1, mat, tiny_fl, tex_fl, strip_fl, e=e, base=vbase, keep_vlist=keep)
             elif nd["model"]:
-                c_r = struct.unpack_from("<4f", data, nd["model"] + 8)
-                models[j] = (keep + struct.pack("<I", 0xFF) if keep else b"", empty_pl, list(c_r[:3]), c_r[3])
+                c_r = struct.unpack_from(e + "4f", data, nd["model"] + 8)
+                models[j] = (keep + struct.pack(e + "I", 0xFF) if keep else b"", empty_pl, list(c_r[:3]), c_r[3])
         nn = [dict(nd) for nd in nodes]
         for j in geo:
             nn[j]["flags"] &= ~0x8
-        d2, _root, ptrs = ninja.write_tree(nn, models, 0)
+        d2, _root, ptrs = ninja.write_tree(nn, models, 0, e=e)
         f = nj_file(d2, ptrs)
         if len(f) > 64 * 2048:                               # patch_gdi moves it after the last file if it grew
             raise ValueError(f"{bpath}: {len(f)} bytes")
-        b2 = bml_build(bml, {f"pl{cls.lower()}bdy00.nj": f} | {n: speck_nj() for n in extras_bml})
+        b2 = bml_build(bml, {f"pl{cls.lower()}bdy00.nj": f} | {n: speck_nj(e) for n in extras_bml}, e=e)
         if len(b2) > 64 * 2048:
             raise ValueError(f"{mpath}: {len(b2)} bytes")
         return f, b2
@@ -454,7 +479,10 @@ def build_swap(disc, model: Path, roles: dict, work: Path, name: str, cls: str =
     files = {bpath: body_nj, mpath: bml2, tpath: bytes(afs_data)}
     for hp in disc.files:
         if hp.startswith(f"PSO/PL{cls}") and hp[7:10] in ("HED", "HAI", "CAP") and hp.endswith(".NJ"):
-            files[hp] = speck_nj()
+            files[hp] = speck_nj(e)          # the Dreamcast naming
+    if replace_heads:                        # the GameCube naming (pl<C>hed00.nj ...), opt-in
+        for hp in gc_head_parts(list(disc.files), cls):
+            files[hp] = speck_nj(e)
     rep = r["report"] | {"body_bytes": len(body_nj), "bml_bytes": len(bml2), "atlas": list(r["atlas"].size),
                          "textures_replaced": done}
     return {"files": files, "report": rep, "rigged": r["rigged"], "atlas": r["atlas"]}

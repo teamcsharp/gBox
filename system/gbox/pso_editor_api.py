@@ -5,7 +5,7 @@ the web layer the page needs:
 
 * `GET /pso/editor` - the page itself (`clients/web/pso-editor.html`);
 * `GET /api/pso/editor/sets` - every editable set;
-* `GET /api/pso/editor/set/{name}` - one set's placements, each labelled by `pso_class_registry` with a family and,
+* `GET /api/pso/editor/set/{name}` - one set's placements, each labelled by `pso_classes` with a family and,
   where the room-local -> world offset has been measured, the world position too;
 * `GET /api/pso/editor/set/{name}/svg` - a **server-rendered** top-down preview (no browser needed to test it);
 * `POST /api/pso/editor/preview` - normalise + preview an edit set without building an image.
@@ -24,8 +24,7 @@ from fastapi import Depends, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
-from . import pso_editor, pso_gc
-from . import pso_class_registry as REG
+from . import pso_classes as CLS, pso_editor, pso_gc
 
 WEB = Path(__file__).resolve().parent.parent / "clients" / "web" / "pso-editor.html"
 

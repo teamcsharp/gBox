@@ -1142,8 +1142,10 @@ def maintain(ad, snap: dict | None = None) -> dict:
         if st.get("random_weapon") or st.get("loadout_weapon"):
             given = _round_weapon(ad, snap, st)
             if given is not None and given.get("verified"):
+                # every value in this dict is summed by the playbook's mods panel (re4switch_bot._maintain_mods): numbers
+                # only, or the mission dies with "int + dict". The weapon's name/round live in status()'s
+                # weapon_given / weapon_rounds (st["weapon_rounds"]), which is where the round report reads them.
                 out["weapon_given"] = 1
-                out["weapon_round"] = {k: given[k] for k in ("round", "name", "id", "fire_tables") if k in given}
                 if given.get("fire_tables"):
                     out["fire_tables"] = given["fire_tables"]      # this round's 20x tables, with its weapon
         if st.get("aim_lock"):

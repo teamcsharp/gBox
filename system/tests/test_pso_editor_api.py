@@ -5,7 +5,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from gbox import pso_class_registry as REG
 from gbox import pso_editor_api as API
 
 REAL_EDIT_ERROR = API.pso_editor.EditError

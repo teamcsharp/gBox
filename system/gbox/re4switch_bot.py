@@ -535,7 +535,11 @@ def _maintain_mods(ad, snap: dict, stats: dict) -> None:
         stats["mods_error"] = f"{type(exc).__name__}: {exc}"[:160]
         return
     for k, v in (done or {}).items():
-        stats["mods_" + k] = stats.get("mods_" + k, 0) + v
+        key = "mods_" + k
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            stats[key] = v                                   # a record (a round's weapon): shown, never summed
+            continue
+        stats[key] = stats.get(key, 0) + v
 
 
 def _game(m, stats: dict) -> dict | None:

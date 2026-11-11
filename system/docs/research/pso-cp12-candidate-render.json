@@ -1,0 +1,23 @@
+{
+ "model": "D:\\gBox\\pso-ds\\cp12-work\\rigged.gltf",
+ "out": "D:\\gBox\\pso-ds\\renders\\cp12-chrom-hucast.png",
+ "meshes": 2,
+ "triangles": 18952,
+ "bounds": [
+  [
+   -7.921108245849609,
+   -11.71403980255127,
+   -1.0
+  ],
+  [
+   9.019306182861328,
+   6.0374250411987305,
+   22.619327545166016
+  ]
+ ],
+ "devices_enabled": [
+  "NVIDIA GeForce RTX 3090"
+ ],
+ "engine": "CYCLES",
+ "samples": 64
+}

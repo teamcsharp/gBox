@@ -461,6 +461,22 @@ def test_the_random_weapon_goes_in_his_hand_once_the_round_is_live(ad):
     assert M.status(ad)["weapon_given"]["round"] == 2 and M.status(ad)["random_weapon_route"] == "in_hand"
 
 
+def test_the_playbook_mods_panel_never_sums_a_record(monkeypatch, ad):
+    """Live 2026-11-10: the RE4 bot stood there not fighting; the playbook's mission had died with
+    ``unsupported operand type(s) for +: 'int' and 'dict'`` because maintain() published a per-round weapon record and
+    ``re4switch_bot._maintain_mods`` summed every value. Counters add; records are shown."""
+    from gbox import re4switch_bot as B
+    from gbox.mercs.titles import re4_switch_mods as M
+    monkeypatch.setattr(M, "maintain", lambda a, s: {"weapon_given": 1, "fire_tables": 2,
+                                                     "weapon_round": {"round": 3, "name": "Killer7"}})
+    stats = {}
+    B._maintain_mods(ad, {}, stats)
+    assert stats["mods_weapon_given"] == 1 and stats["mods_fire_tables"] == 2
+    assert stats["mods_weapon_round"] == {"round": 3, "name": "Killer7"}, "a record is kept as it is, never summed"
+    B._maintain_mods(ad, {}, stats)
+    assert stats["mods_weapon_given"] == 2, "counters keep adding"
+
+
 def test_a_random_weapon_is_a_magnum_or_a_shotgun_with_its_20x_tables_every_round(ad):
     """The operator 2026-11-10: "the bot firing relentlessly with any weapon type magnum or shotgun with rapid fire" -
     every round a magnum or a shotgun (MAGNUM_SHARE toward 1.0, MAGNUMS + SHOTGUNS), and the fire_rate tables written
@@ -476,8 +492,9 @@ def test_a_random_weapon_is_a_magnum_or_a_shotgun_with_its_20x_tables_every_roun
         for k in range(40):
             assert "weapon_given" not in M.maintain(ad, _round("results", control=False, clock=False))
             out = M.maintain(ad, _round())
-            assert out.get("weapon_given") == 1 and out["weapon_round"]["fire_tables"] == 2, "the tables with the gun"
-            assert out["fire_tables"] == 2
+            assert out.get("weapon_given") == 1 and out["fire_tables"] == 2, "the tables with the gun"
+            assert all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in out.values()), \
+                "every maintain value is a counter: the playbook sums them (int + dict killed a live RE4 mission)"
             it, held, _cls, _rel = _hand(ad, W)
             assert it["id"] in M.PRIMARY and held == it["id"], "a magnum or a shotgun in his hand"
             draws.append(it["id"])
