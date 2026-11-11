@@ -467,3 +467,19 @@ def test_owned_elf_probe_matches_documented_loaders():
     assert f["name_hash"]["head"].startswith("00008690")             # lbu a2, 0(a0): first byte of the name
     with pytest.raises(inv.FormatError):
         inv.elf_probe(elf[:100])
+
+
+@pytest.mark.skipif(_owned() is None, reason="the owned MGS2 disc is not reachable")
+def test_owned_archive_table_names_disc_containers():
+    d = inv.Disc(_owned())
+    elf = d.read("SLUS_205.54")
+    rows = inv.archive_table(elf)
+    names = [r["name"] for r in rows]
+    assert names == ["stage.dat", "codec.dat", "face.dat", "movie.dat", "vox.dat", "demo.dat", "movievr.dat",
+                     "stage2.dat", "vox2.dat", "demo2.dat"]
+    assert rows[0]["entry_va"] == 0x180B08 and rows[0]["name_va"] == 0x1B2458 and rows[0]["flags"] == 0x70100
+    for n in ("stage.dat", "stage2.dat"):          # the two character containers exist on the disc
+        assert d.size("MGS2/" + n.upper()) > 0
+    d.close()
+    with pytest.raises(inv.FormatError):
+        inv.archive_table(elf[:16])

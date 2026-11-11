@@ -536,6 +536,42 @@ def elf_probe(elf: bytes) -> dict:
             "mgs2_path_fmt": elf.find(b"cdrom0:\\MGS2\\%s;1\0") >= 0}
 
 
+ARCHIVE_TABLE_VA = 0x180B08   # {name_ptr, 0, flags} x 12 B in SLUS_205.54 v1.00 (found by data-pointer scan; Ghidra
+ARCHIVE_TABLE_STRIDE = 12     # MIPS:LE:32 cannot decode EE MMI code, so the code xrefs are not auto-recovered)
+
+
+def archive_table(elf: bytes) -> list[dict]:
+    """Read the executable's CD archive table (stage.dat, codec.dat, face.dat, movie.dat, vox.dat, demo.dat, movievr.dat,
+    stage2.dat, vox2.dat, demo2.dat) from the first PT_LOAD segment; the names are the disc files the loaders open."""
+    if elf[:4] != b"\x7fELF" or len(elf) < 0x80:
+        raise FormatError("not an ELF")
+    phoff, = struct.unpack_from("<I", elf, 28)
+    phnum, = struct.unpack_from("<H", elf, 44)
+    for i in range(phnum):
+        t, off, va, _pa, fs, _ms, _fl, _al = struct.unpack_from("<8I", elf, phoff + i * 32)
+        if t == 1:
+            break
+    else:
+        raise FormatError("no PT_LOAD segment")
+
+    def u32(v):
+        if not va <= v <= va + fs - 4:
+            raise FormatError(f"vaddr 0x{v:x} outside segment")
+        return struct.unpack_from("<I", elf, off + v - va)[0]
+    rows, v = [], ARCHIVE_TABLE_VA
+    while True:
+        ptr = u32(v)
+        if not va <= ptr < va + fs:
+            break
+        end = elf.index(b"\0", off + ptr - va)
+        name = elf[off + ptr - va:end].decode("ascii")
+        if not name.endswith(".dat"):
+            break
+        rows.append({"entry_va": v, "name": name, "name_va": ptr, "flags": u32(v + 8)})
+        v += ARCHIVE_TABLE_STRIDE
+    return rows
+
+
 def inventory(path, stages=None) -> dict:
     disc = Disc(path)
     ident = identify(disc)
