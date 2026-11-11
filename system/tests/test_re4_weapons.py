@@ -166,3 +166,9 @@ def test_only_slots_with_a_level_block_and_no_attachment_are_patched():
         for s in slots:
             roles = [r for _, r, _ in s["code"]]
             assert roles.count("give") == 1 and roles.count("find") >= 1 and roles.count("levels") == 1
+
+
+def test_random_pool_has_no_sniper_rifles():
+    from gbox.mercs.titles import re4_weapons as W
+    assert not set(W.HIGH_POWER) & W.SNIPER_ITEMS
+    assert {0x29, 0x2A, 0x37, 0x2C, 0x2D, 0x94} <= set(W.HIGH_POWER)   # magnums + shotguns stay
