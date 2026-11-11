@@ -1818,3 +1818,25 @@ not reach it).
 This is also the lesson for the operator's "input vs effect" complaints: the bot's `shots` counter counts issued
 taps, not arrows - the round report's hits/accuracy are the real evidence, and the new aim acceptance (#9744) should
 read them.
+
+## Round 96 (2026-11-11 14:20 CST) - the bow's zero-length press, the random weapon widened, the hand ring's second live failure
+
+- **RE4 bow**: the zero-length tap was the cause (`c8517b6f`): the trigger is now held `BOW_TAP_HOLD_S = 0.05 s`
+  through the draw while class 0x1C is in hand. Deployed at 14:15 (b8dce5aa) and a restart at 14:17 loaded it; the next
+  RE4 block's Krauser rounds are the live test (the arrow count/lands, not the bot's `shots`).
+- **Random weapon** (`bd67ff17`, deploys 14:30): the between-rounds draw is now any campaign weapon in
+  `re4_weapons.HIGH_POWER` at random, with `PRIMARY_SHARE = 0.8` of the rounds a magnum/shotgun (a magnum
+  `MAGNUM_SHARE` of those) - the operator's "all of the weapons available in the campaign ... emphasizing magnums and
+  shotguns". The in-hand swap, the max-level rows and the 20x tables are unchanged; the test draws 40 rounds and checks
+  every draw, both families, the emphasis and the rest of the pool.
+- **RE4 movement/aim naturalness** (operator 14:13: the aim jerking/motion sickness with the bow, the walking
+  vibration, walls/doorways, standing/twitch-shooting): filed **#9789**, first in the Hermes queue, with the live
+  evidence (mods_aim_ram_writes 934, aim_ram_holds 313, the Krauser rounds) and the acceptance (a bounded per-tick aim
+  delta, a stable walking heading, a doorway crossed, time bonuses taken).
+- **RE6 hand ring, second live failure** (14:05, session fefc7b32...-2b10a502...): `native completion uncertain` after
+  1890.6 ms with the 3 s spawn budget - so the spawn is NOT the timeout now; the unit's placed action never reaches
+  `cWpAction_wp_act_throw` inside `CLASS_WAIT_S` (2 s). The next diagnosis is the spawned unit's actual action/class for
+  the hand DTI (the parameterised factory may be building the wrong action/item). #9771 keeps this as its first item.
+- **RE5**: the combined probe's scatter request expired (the worker did not claim it in time) and its ring post got a
+  409 (the controller busy/uncertain); the auto-ring watcher saw a playing round with no ring attempt. The next RE5
+  block needs a fresh probe; the 2.5 s budget is still unverified live.
