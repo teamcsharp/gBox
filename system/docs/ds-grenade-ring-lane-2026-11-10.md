@@ -1491,3 +1491,36 @@ until then); the incendiary needs the `allow_unverified` probe (`main+0x2E4BA0`)
 The next RE4 session is the sequence from the lane-state section: read `bss_watch_loads` from the telemetry at three
 stage loads -> `choose_mailbox` -> a `MAILBOX_AT` commit -> `re4_harness_selftest`, `flash_now`, `grenade_ring(kind=
 "hand")`, `grenade_ring(kind="incendiary", allow_unverified=True)` receipts with frames and hp.
+
+## Round 82 (2026-11-11 10:35 CST) - A0 taken live: the RE6 flash ring aborted after its first (visibly detonated) flash
+
+First live `grenade_ring` receipt on RE6 (session `c63a6efd5f584229-81cef54dd3c04d1c`, RE6 No Mercy, 2026-11-11
+10:32:30, request `7fe7012b-1eab-4d71-897b-4010f4edfff0`):
+
+    state failed, requested 10, detonated 0, elapsed_ms 27.3, radius 600 cm, inner 150 cm
+    hp_before 900 -> hp_after 900, self_damage 0
+    reason "native flash effect did not publish its explosion flag"
+
+The after-frame (`.tmp/ring-re6-after.jpg`) shows the screen filled with the flash bloom, the HUD at 027 combo /
+192,210 score, and the round carried on (later telemetry: kills 168, combo 16). **The first grenade did detonate** -
+the detonate call returned 1 - and the ring aborted only because `_ring_one` required `unit+0x28A0 == 1`, a flag the
+RE5 effect writes and RE6 1.0.2 does not. The single flash (`flash_now`) is live-verified by the same call's 1 and
+never reads that flag.
+
+Fixed on main (`be058678`): `_ring_one` uses the call's 1 as the confirmation, records `explosion_flag` per grenade
+as evidence, and a missing flag no longer fails a flash that detonated. One new test (missing flag -> confirmed 10),
+56 passed across the RE6 ring/scatter and shared grenade suites. `re6_switch_native` is in `hot_reload.NOT_BOT` and
+the controller is built per session, so this takes the 05:00 restart; the next RE6 session can take the ten-grenade
+receipt.
+
+**RE4 status from the same hour:** the harness `_CREATE_LOCK` fix (`20028ad6`) hot-reloaded on the Spark at the
+10:30 deploy ("reloaded re4_switch_native"), so an RE4 session now builds the controller instead of dying with
+AttributeError; the PiP rows will show the real gate (the `.bss` mailbox page). The playbook's E3 watch fix
+(`78093822`, `re4_switch.watch_into`) waits for the same 05:00 restart, because `re4switch_bot.py` is runtime code.
+Until then no RE4 round can publish the three stage loads the mailbox choice needs, so the flash/hand receipts wait.
+
+**Still open for "100 % across the titles":** RE5 hand + incendiary (the native item class/DTI is not known on the
+Switch build; both refused with their reasons), RE6 hand + incendiary (same, class/DTI), the RE4 flash/hand/
+incendiary live receipts (blocked on the mailbox watch -> 05:00), and the `grenade_scatter` live probes on RE5/RE6
+(the op is built; the kind gate is the same). The 05:00 restart is the single event that opens the RE4 receipts and
+the RE6 ring re-run; the hand/incendiary classes are a native build task after that.
