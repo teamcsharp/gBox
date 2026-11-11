@@ -179,3 +179,22 @@ worker pad op, a pad binding) are now down to one line of execution, because the
 5. the same window: pso_controls boss_warp/floor_spawn for CP5/CP10 (native travel, no input needed)
 6. CP9's seed: read [0x80585F6C] + 0x118 once a save slot is selected, then pso_save_cipher.decode
 ```
+
+## Round 111: CP17's walker added to the index
+
+| checkpoint | branch | tip | evidence | state |
+|---|---|---|---|---|
+| CP17-19 mastery | `ds-pso-cp17-walk-graph-20261110` | `4b2b63a7` | `CP17-forest1-to-forest2.md` | **offline complete, live pending** - the three layers are done and tested: `pso_walk` (a routable collision graph over a real `c.rel`: floor/wall cells from `psomap.walkable_cells`, only floors walkable, bounded snap, shortest 4-connected path - 4 tests), `pso_steer` (world direction to stick taps with an explicit `forward_at_zero` convention, a corner turns rather than cutting diagonally - 7 tests) and `pso_walker` (the control loop: calibrate forward from one tap, walk to a world target, stop with a named reason - floor changed, gave up, calibration failed - 6 tests). **17 passed** across the three. The live half needs CP5's state, the pad, `pso_ram.floor` and a target cell toward the next floor's entrance |
+
+**Two bugs the CP17 tests caught before commit:** the screen-right vector was rotated the wrong way (mirroring every diagonal),
+and the route planner took each waypoint's direction from the start instead of the previous waypoint (so a corner came out as a
+diagonal). Both are exactly the kind of mistake that would have looked like "the walker is broken" in a live run.
+
+**The live runbook is armed** (`pso-cp4-runbook.py`, started round 107, polling `/api/workers` for `idle_seconds >= 300` with
+its agent pad already created on slot 0). If the window opens before its hour expires it will launch, walk, save the state, read
+CP9's seed, write a JSON report and stop the session. If it expires first, it writes the missed run to the same report path so
+the next attempt starts from a recorded state rather than from scratch.
+
+**Branch count: nineteen.** All test-verified from their pushed tips, and the merge rehearsal's order (round 95) still applies;
+CP17's branch adds only new files (`pso_walk.py`, `pso_steer.py`, `pso_walker.py`, their tests and one evidence file), so it
+needs no conflict work.
