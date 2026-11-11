@@ -590,6 +590,18 @@ def _maintain_mods(ad, snap: dict, stats: dict) -> None:
             stats[key] = v                                   # a record (a round's weapon): shown, never summed
             continue
         stats[key] = stats.get(key, 0) + v
+    # The live states the mods keep (not numeric: shown, never summed): the bow's class/routine and the aim lock's
+    # counters, so the watch panel can say whether the 40x / the steady aim is actually on (live 2026-11-11: the
+    # Krauser rounds' shots/hits needed exactly this to be readable).
+    try:
+        st = re4_switch_mods._state(ad)
+    except Exception:                                        # noqa: BLE001 - a read never costs the fight
+        return
+    if (snap or {}).get("weapon_class") is not None:
+        stats["weapon_class"] = (snap or {}).get("weapon_class")
+    for key in ("motion_rate_kind", "motion_rate_class", "motion_rate_routine", "aim_ram_writes", "aim_sway_zeroed"):
+        if st.get(key) is not None:
+            stats[key] = st[key]
 
 
 def _game(m, stats: dict) -> dict | None:
