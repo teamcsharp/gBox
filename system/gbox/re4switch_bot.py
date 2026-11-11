@@ -73,6 +73,8 @@ STATE_LOG = driver.WALK_LOG.with_name("re4-state-disagreements.jsonl")
 STATE_LOG_EVERY_S = 5.0                 # one row per (RAM phase, frame screen) pair at most this often
 ROUND_END_TICKS = 3                     # the game's state reads no round this many ticks in a row: the round is over
 FIGHT_TICK_S = 0.05                     # the RAM fight's loop
+BOW_CLASS = 0x1C                        # Krauser's bow (re4_weapons.MOTION_RATE_CLASSES)
+BOW_FIGHT_TICK_S = 0.025                # the bow's loop: 40 taps a second ("rapid firing arrows at 40 times a second")
 FRAME_EVERY = 5                         # ... which classifies a frame every this many ticks (the menus coming back)
 TALLY_S = 1.0                           # the clock at 0 this long: the round is over (its results are up)
 RESULTS_MIN_CLOCK_S = 60.0              # ... and only a clock seen this high first is the round's (it opens at 120.0)
@@ -508,7 +510,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
             stats["fight"] = "ram"
             keys.apply(bot.tick(snap, now=clock()))
             re4_walk.publish(pub, snap, bot, "playing")
-            sleep(FIGHT_TICK_S)
+            sleep(BOW_FIGHT_TICK_S if (snap or {}).get("weapon_class") == BOW_CLASS else FIGHT_TICK_S)
             continue
 
         # --- no player in RAM: advance, sweep the aim, fire. Screen-only, so this is deliberately blunt.

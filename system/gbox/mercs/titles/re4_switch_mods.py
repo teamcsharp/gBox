@@ -62,8 +62,8 @@ FIREPOWER_ROWS = {"punisher": (0xAF0EA8, 0.9), "handgun": (0xAF0EC4, 1.0), "red9
                   "riot_gun": (0xAF1228, 5.0)}
 ROW_N, POWER_MAX_X = 7, 20.0
 AIM_FRESH_S = 0.35                     # an aim request (re4_switch.AIM_REQUEST) older than this is not written
-FIRE_RATE_MAX_X = 20.0
-FIRE_GAP_MIN_S = 0.05                  # the fight's trigger taps never closer than this (re4_switch.FIRE_GAP_S)
+FIRE_RATE_MAX_X = 40.0
+FIRE_GAP_MIN_S = 0.025                 # the fight's trigger taps never closer than this (re4_switch.FIRE_GAP_S): 40 Hz
 RIFLE_TIMER_FLOOR = 1.0                # the scoped rifles' shot timer (frames) never under one frame
 
 ORIG: dict = {}                         # id(adapter) -> this boot's settings
@@ -426,12 +426,13 @@ def fire_rate(ad, multiplier, snap: dict | None = None) -> dict:
 
 
 # The bow / throwables' rate (re4_weapons.MOTION_RATE_CLASSES; the operator 2026-11-10 #9508: "fire the bow 20x
-# faster"): while the class in hand is one of them and the player is in its weapon routine, his motion speed (unit +
+# faster"; 2026-11-11: "the character with the bow rapid firing arrows at 40 times a second"): while the class in hand
+# is one of them and the player is in its weapon routine, his motion speed (unit +
 # P_MOTION_SPEED) and his weapon object's (+ OBJ_MOTION_SPEED) are the fire_rate multiplier (at most MOTION_RATE_MAX_X);
 # the routine ends, each one put back to what it read before the first write. Every write is preceded by a fresh read
 # of the routine bytes and the speed (outside MOTION_SPEED_SANE: refused, nothing written) and read back. The state:
 # st["motion_rate"] = {"kind", "addrs": {address: the speed it read}, "speed"} while it is on.
-MOTION_RATE_MAX_X = 20.0
+MOTION_RATE_MAX_X = 40.0
 
 
 def _motion_rate(ad, snap: dict, st: dict) -> int:

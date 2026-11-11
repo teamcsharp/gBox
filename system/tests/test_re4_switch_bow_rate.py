@@ -154,3 +154,13 @@ def test_the_arrows_are_kept_at_the_most_each_stack_held():
     assert M._keep_arrows(ad, BASE, st) == 1
     assert struct.unpack_from("<H", ad.at[ITEMS], W.ITEM_SZ + 2)[0] == 20
     assert struct.unpack_from("<H", ad.at[ITEMS], 2 * W.ITEM_SZ + 2)[0] == 10
+
+
+def test_the_bow_can_play_at_forty_times_the_rate():
+    """Operator 2026-11-11: "the character with the bow rapid firing arrows at 40 times a second" - the bow's motion
+    rate cap is 40x and the trigger gap floor 0.025 s (the playbook's bow tick is BOW_FIGHT_TICK_S = 0.025)."""
+    assert M.MOTION_RATE_MAX_X == 40.0 and M.FIRE_RATE_MAX_X == 40.0 and M.FIRE_GAP_MIN_S == 0.025
+    ad = world()
+    st = {"fire_rate": 40.0}
+    assert M._motion_rate(ad, snap(), st) == 2
+    assert f32(ad, PLAYER + W.P_MOTION_SPEED) == 40.0 and f32(ad, OBJ + W.OBJ_MOTION_SPEED) == 40.0
