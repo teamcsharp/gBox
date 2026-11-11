@@ -71,6 +71,23 @@ def test_the_one_closing_in_is_taken_before_a_nearer_one_standing():
     assert b._choose(p(), live, clock[0])["ptr"] == 11
 
 
+def test_a_majini_behind_within_3_m_wins_over_one_ahead_while_aiming():
+    """Cluster cab6e7da9493d95e: the threat pick kept the aim ahead while one stood close behind. A Majini within
+    BEHIND_R behind the player must win over the current target ahead — he cannot see behind while aiming."""
+    b, clock = bot()
+    ahead = at(350, 0)          # 3.5 m ahead, the current target
+    behind = at(250, 180)       # 2.5 m directly behind
+    live = foes(ahead, behind)
+    b._set_target(10, 0.0)
+    assert b._choose(p(), live, 1.0)["ptr"] == 11   # the behind one takes the aim at once
+    assert b.stats["threat_switches"] == 1
+    # and when the current one is behind too, it is kept (no flip-flop between behind targets)
+    b2, clock2 = bot()
+    b2._set_target(11, 0.0)
+    assert b2._choose(p(), live, 1.0)["ptr"] == 11
+    assert b2.stats["threat_switches"] == 0
+
+
 def test_the_current_one_is_kept_within_threat_keep_and_a_grab_wins():
     b, clock = bot()
     live = foes(at(350, 0), at(330, 20))
