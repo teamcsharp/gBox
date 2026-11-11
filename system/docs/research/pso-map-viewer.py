@@ -1,0 +1,258 @@
+"""Live PSO map viewer: a top-down view of the level, the bot and the enemies, with click-to-command.
+
+Serves a small page on http://127.0.0.1:8801/ :
+  * rooms from the collision graph (forest1-rooms.json) drawn as the level floor,
+  * doors coloured by their RAM state (green = unlocked/cleared, red = locked, blue = key door),
+  * enemies as red triangles, the player as a yellow arrow,
+  * the live minimap crop as an inset (refreshed from the newest capture),
+  * click anywhere to give the bot a waypoint, click an enemy to make it the target.
+
+Commands go to D:\\gBox\\pso-ds\\goto.json, which map_bot.py follows. Everything is read-only on the game except the bot's own input,
+which is gated by pso_operator so it never fights the operator.
+"""
+import json
+import struct
+import threading
+import time
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+TOKEN = open(r"C:\_tools\gBox\system\gbox-data\api_token").read().strip()
+API = "http://127.0.0.1:8765"
+SID = "e731ee594dde4a89-cae9dad929a34d17"
+PORT = 8801
+ROOMS = Path(r"D:\gBox\pso-ds\routes\forest1-rooms.json")
+GOTO = Path(r"D:\gBox\pso-ds\goto.json")
+DEMO = Path(r"D:\gBox\pso-ds\demo")
+TABLE, MAX_ENTRIES, HP = 0x8050D460, 256, 0x32C
+FLOOR = 0x805D5FC0
+
+_cache = {"rooms": None, "rooms_mtime": 0.0}
+
+
+def _read(address, length):
+    body = json.dumps({"op": "read_memory", "args": {"address": address, "length": length}}).encode()
+    for _ in range(2):
+        try:
+            req = urllib.request.Request(f"{API}/api/sessions/{SID}/rpc", data=body, method="POST",
+                                         headers={"authorization": "Bearer " + TOKEN, "x-gbox-actor": "agent",
+                                                  "content-type": "application/json"})
+            return bytes.fromhex(json.loads(urllib.request.urlopen(req, timeout=8).read() or b'""'))
+        except Exception:                                        # noqa: BLE001
+            time.sleep(0.1)
+    return b""
+
+
+def _cstring(address, limit=40):
+    raw = _read(address, limit)
+    return raw.split(b"\x00")[0].decode("ascii", "replace") if raw else ""
+
+
+def rooms():
+    try:
+        mtime = ROOMS.stat().st_mtime
+        if _cache["rooms"] is None or mtime != _cache["rooms_mtime"]:
+            _cache["rooms"] = json.loads(ROOMS.read_text(encoding="utf-8"))
+            _cache["rooms_mtime"] = mtime
+        return _cache["rooms"]
+    except Exception:                                            # noqa: BLE001
+        return {"rooms": [], "doors": []}
+
+
+def state():
+    payload = {"t": time.time(), "floor": int.from_bytes(_read(FLOOR, 4), "big"),
+               "player": None, "hp": None, "doors": [], "enemies": []}
+    actor = int.from_bytes(_read(0x8050EA10, 4), "big")
+    if actor:
+        blob = _read(actor + 0x38, 12)
+        if len(blob) == 12:
+            x, y, z = struct.unpack(">fff", blob)
+            payload["player"] = {"x": round(x, 1), "y": round(y, 1), "z": round(z, 1)}
+        payload["hp"] = int.from_bytes(_read(actor + HP, 2), "big")
+    raw = _read(TABLE, MAX_ENTRIES * 4)
+    for index in range(MAX_ENTRIES):
+        pointer = int.from_bytes(raw[index * 4:index * 4 + 4], "big")
+        if not (0x80000000 <= pointer < 0x81800000):
+            continue
+        name_pointer = int.from_bytes(_read(pointer, 4), "big")
+        if not (0x80000000 <= name_pointer < 0x81800000):
+            continue
+        name = _cstring(name_pointer)
+        if name.startswith("TObjDoor"):
+            blob = _read(pointer, 0x190)
+            if len(blob) >= 0x190:
+                x, _y, z = struct.unpack(">fff", blob[0x38:0x44])
+                payload["doors"].append({"i": index, "class": name, "x": round(x, 1), "z": round(z, 1),
+                                         "state": struct.unpack(">i", blob[0x18C:0x190])[0]})
+        elif name.startswith("TObjEne"):
+            blob = _read(pointer + 0x38, 12)
+            if len(blob) == 12:
+                x, y, z = struct.unpack(">fff", blob)
+                payload["enemies"].append({"class": name, "x": round(x, 1), "z": round(z, 1),
+                                           "hp": int.from_bytes(_read(pointer + HP, 2), "big")})
+    return payload
+
+
+PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>PSO live map</title>
+<style>
+body{margin:0;background:#0d1117;color:#c9d1d9;font:13px/1.4 Consolas,monospace}
+#wrap{display:flex;gap:10px;padding:8px}
+canvas{background:#161b22;border:1px solid #30363d;border-radius:6px}
+#side{width:300px}
+#side img{width:100%;border:1px solid #30363d;border-radius:6px}
+h3{margin:6px 0;color:#58a6ff;font-size:13px}
+.k{color:#8b949e}
+</style></head><body>
+<div id="wrap">
+ <div><canvas id="map" width="880" height="700"></canvas></div>
+ <div id="side">
+  <h3>PSO live map</h3>
+  <div><span class="k">floor</span> <b id="floor">-</b> &nbsp; <span class="k">hp</span> <b id="hp">-</b></div>
+  <div><span class="k">pos</span> <b id="pos">-</b></div>
+  <div><span class="k">target</span> <b id="target">none</b></div>
+  <div><span class="k">doors</span> <b id="doors">-</b> <span class="k">enemies</span> <b id="enemies">-</b></div>
+  <h3>live minimap</h3>
+  <img id="mini" src="/api/minimap.png" alt="minimap">
+  <p class="k">Click the map to send the bot there. Shift+click an enemy to target it.</p>
+ </div>
+</div>
+<script>
+let rooms=null, st=null, scale=0.55, ox=0, oz=0;
+function fit(){
+  if(!rooms || !rooms.rooms.length) return;
+  const cells=[]; rooms.rooms.forEach(r=>r.cell_list.forEach(c=>cells.push(c)));
+  const xs=cells.map(c=>c[0]), zs=cells.map(c=>c[1]);
+  const minx=Math.min(...xs), maxx=Math.max(...xs), minz=Math.min(...zs), maxz=Math.max(...zs);
+  const cw=document.getElementById('map').width, ch=document.getElementById('map').height, pad=20;
+  scale=Math.min((cw-2*pad)/(maxx-minx||1),(ch-2*pad)/(maxz-minz||1));
+  ox=pad-minx*scale; oz=pad-minz*scale;
+  document.getElementById('map').dataset.minx=minx;
+}
+function X(x){return ox+x*scale;} function Y(z){return oz+z*scale;}
+function draw(){
+  const cv=document.getElementById('map'), ctx=cv.getContext('2d');
+  ctx.clearRect(0,0,cv.width,cv.height);
+  if(rooms){
+    const shades=['#1f6feb','#2ea043','#8957e5','#d29922','#db6d28','#39c5cf','#f85149','#a5d6ff'];
+    rooms.rooms.forEach((r,i)=>{
+      ctx.fillStyle=shades[i%shades.length]; ctx.globalAlpha=0.18;
+      r.cell_list.forEach(c=>ctx.fillRect(X(c[0])-scale*5,Y(c[1])-scale*5,scale*10,scale*10));
+    });
+    ctx.globalAlpha=1;
+    rooms.doors.forEach(d=>{
+      const unlocked=(d.state===2||d.state===240);
+      ctx.fillStyle = d.class.indexOf('Key')>=0 ? '#79c0ff' : (unlocked ? '#3fb950' : '#f85149');
+      ctx.beginPath(); ctx.arc(X(d.x),Y(d.z),6,0,7); ctx.fill();
+    });
+  }
+  if(st){
+    st.doors.forEach(d=>{
+      const unlocked=(d.state===2||d.state===240);
+      ctx.strokeStyle = d.class.indexOf('Key')>=0 ? '#79c0ff' : (unlocked ? '#3fb950' : '#f85149');
+      ctx.lineWidth=2; ctx.beginPath(); ctx.arc(X(d.x),Y(d.z),9,0,7); ctx.stroke();
+    });
+    st.enemies.forEach(e=>{
+      ctx.fillStyle='#ff7b72'; ctx.beginPath();
+      ctx.moveTo(X(e.x),Y(e.z)-7); ctx.lineTo(X(e.x)-6,Y(e.z)+5); ctx.lineTo(X(e.x)+6,Y(e.z)+5); ctx.closePath(); ctx.fill();
+      ctx.fillStyle='#8b949e'; ctx.fillText(e.hp, X(e.x)-4, Y(e.z)-10);
+    });
+    if(st.player){
+      ctx.fillStyle='#f2cc60'; ctx.beginPath();
+      ctx.arc(X(st.player.x),Y(st.player.z),7,0,7); ctx.fill();
+      ctx.strokeStyle='#f2cc60'; ctx.beginPath(); ctx.arc(X(st.player.x),Y(st.player.z),12,0,7); ctx.stroke();
+    }
+  }
+  requestAnimationFrame(()=>{});
+}
+async function tick(){
+  try{
+    if(!rooms){ rooms = await (await fetch('/api/rooms')).json(); fit(); }
+    st = await (await fetch('/api/state')).json();
+    if(st.player){ document.getElementById('pos').textContent = st.player.x+', '+st.player.y+', '+st.player.z; }
+    document.getElementById('floor').textContent = st.floor;
+    document.getElementById('hp').textContent = st.hp;
+    document.getElementById('doors').textContent = st.doors.length;
+    document.getElementById('enemies').textContent = st.enemies.length;
+    draw();
+  }catch(e){}
+  setTimeout(tick, 700);
+}
+document.getElementById('map').addEventListener('click', async ev=>{
+  const rect=ev.target.getBoundingClientRect();
+  const px=ev.clientX-rect.left, py=ev.clientY-rect.top;
+  const wx=(px-ox)/scale, wz=(py-oz)/scale;
+  let target={x:Math.round(wx), z:Math.round(wz)};
+  if(ev.shiftKey && st){
+    let best=null;
+    st.enemies.forEach(e=>{ const d=Math.hypot(X(e.x)-px,Y(e.z)-py); if(!best||d<best.d) best={d,e}; });
+    if(best && best.d<25){ target={enemy:best.e.class, x:best.e.x, z:best.e.z}; }
+  }
+  await fetch('/api/goto',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(target)});
+  document.getElementById('target').textContent = JSON.stringify(target);
+});
+tick();
+</script></body></html>"""
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_args):
+        pass
+
+    def _send(self, code, body, content_type="application/json"):
+        data = body if isinstance(body, bytes) else body.encode("utf-8")
+        self.send_response(code)
+        self.send_header("content-type", content_type)
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path == "/":
+            return self._send(200, PAGE, "text/html; charset=utf-8")
+        if self.path == "/api/rooms":
+            return self._send(200, json.dumps(rooms()))
+        if self.path == "/api/state":
+            return self._send(200, json.dumps(state()))
+        if self.path == "/api/minimap.png":
+            try:
+                import io
+
+                from PIL import Image
+                newest = sorted(DEMO.glob("*gbox-docked.png"), key=lambda p: p.stat().st_mtime)[-1]
+                image = Image.open(newest).convert("RGB").crop((660, 80, 900, 275))
+                buffer = io.BytesIO()
+                image.resize((480, 390), Image.NEAREST).save(buffer, "PNG")
+                return self._send(200, buffer.getvalue(), "image/png")
+            except Exception:                                    # noqa: BLE001
+                return self._send(404, b"", "image/png")
+        return self._send(404, "{}")
+
+    def do_POST(self):
+        length = int(self.headers.get("content-length") or 0)
+        body = self.rfile.read(length) if length else b"{}"
+        if self.path == "/api/goto":
+            try:
+                payload = json.loads(body)
+            except Exception:                                    # noqa: BLE001
+                payload = {}
+            payload["t"] = time.time()
+            GOTO.write_text(json.dumps(payload), encoding="utf-8")
+            return self._send(200, json.dumps({"ok": True}))
+        return self._send(404, "{}")
+
+
+def main():
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    print(f"map viewer on http://127.0.0.1:{PORT}/", flush=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        while True:
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        server.shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
