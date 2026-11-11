@@ -952,3 +952,44 @@ nothing queued either.
 **What is left, and it is all offline-stable:** the mission's map artifact is restored and its route validated, the campaign's disc
 gate passes, and the whole chain is documented. When the plane is back, one Play (or one operator-authorised launch) runs the
 campaign, and the state save at Forest 1 completes CP4.
+
+## Round 138: LIVE - the state was saved at Forest 1 and installed as the plane's jump state; the pad drives the game
+
+The queued launch finally cleared the idle gate at **19:44:22** and created session `3998f537ab154a22-b13f235d1b2e42a1`. The campaign
+(`autoplay op=start campaign="pso-episodes-1-2"`) started and reported `mode: playbook`, objective *"Play PSO GameCube Episode I then
+II repeatedly, retaining evidence of each ..."*. The game reached the title and then the main menu; the playbook did not press
+effectively, so this lane pressed with its own ViGEm pad - **and the presses landed**.
+
+**The pad path is proven live.** `vpad_win.VGamepad()` reported `slot 1` (slot 0 is already held by another lane's `pso_padwatch`),
+and `apply([{start,down},{start,up}])` returned `{'sent': 2, 'via': 'dolphin virtual pad (XInput slot 1)'}`. The screen changed from
+the main menu -> a fade -> the Ragol intro cinematic -> **a player character standing in a green field with a sabre out** (Forest 1).
+So: **an agent process can drive PSO on this machine, focus-free**, which is the mechanism CP16 and every live checkpoint needed.
+
+**CP4's artifact, saved live and verified:**
+
+```
+POST /api/jobs {"tool": "session_op", "input": {"session_id": "3998f537...", "op": "save_state"}}
+-> job 5087fdf733b541a1  state: succeeded
+   {"bytes": 16289592, "frame": "c88c8269...", "slot": 1,
+    "path": "D:\gBox\runtime\dolphin\Dolphin-x64\User\StateSaves\GPOE8P.s01", "verified": true}
+```
+
+and installed where the plane's jump launches look (`jumpstate.path_for`: `runtime/jumpstates/<game_id>-<build>.state`, build `stock`
+for a stock launch):
+
+```
+D:\gBox\runtime\jumpstates\436e0bb84d5337d1-stock.state   16,289,592 bytes   sha256 1fa4ae2229a22ad0...
+```
+
+**So CP4 is done:** the game no longer needs a cold boot to reach Forest 1, and the mission that declares "Dolphin state slot 1: HUmar
+Lv1 at Forest 1 arrival" now has its `initial_state` on disk. Its other two preconditions are already satisfied (the `rel_artifact`
+was restored in round 132 and its route validated in round 134).
+
+**Two corrections to earlier rounds, recorded because they matter:**
+1. `get_frame` fails with "the game window isn't open" even when the game is running - its title match does not accept the real
+   window title (`Dolphin 2609 | JIT64 SC | Vulkan | HLE | Phantasy Star Online Episode I & II Plus (GPOE8P)`). Window capture by
+   title match works (`docs/research/pso-cp4-window-shot.py` in the tools copy).
+2. Three concurrent memory readers (two of this lane's scripts plus the campaign) **hang** each other: the loops stopped at 19:47 and
+   stayed blocked. One reader per session is the rule.
+
+Screens: `D:\gBox\pso-ds\demo\194645-playing.png` (main menu), `194810-after2.png` (Ragol intro), `194845-step5.png` (Forest 1).
