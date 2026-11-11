@@ -1465,6 +1465,18 @@ def test_down_fire_triples_the_table_while_he_is_down_and_puts_it_back(mods):
         mods.run(ad, "down_fire", multiplier=50)
 
 
+def test_down_defaults_to_five_times_fire_and_turn(mods):
+    assert mods.DOWN_FIRE_X == 5.0 and R.DOWN_TURN_X == 5.0
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 500.0, 700),))
+    err = R.FINE_YAW / 2                      # inside the usual pulsed window, outside the down one
+    bot.down = False
+    bot.yaw_pulse = 0
+    up = [bool(bot._yaw(err)) for _ in range(4)]
+    assert up == [True, False, True, False]   # up: pulsed
+    bot.down = True
+    assert all(bot._yaw(err) == {"rleft"} for _ in range(4))   # down: the stick held full
+
+
 def test_the_lock_sweeps_target_after_target_a_few_shots_each():
     three = ((0.0, 0.0, 600.0, 700), (300.0, 0.0, 800.0, 700), (-300.0, 0.0, 1000.0, 700))
     bot, clock, snap, writes = lock_brain(three)
