@@ -254,3 +254,11 @@ Then send it the heavy analysis work.
   Spark's autodeploy carries the file fix within its 15-minute cron, and the next session loads it. **Follow-up:** a
   mission that ends `ok:false` while its round is live should be restarted (or the round cut) by the scheduler - today
   it just stands there.
+﻿
+- 2026-11-10 21:0x: the mission watchdog (`tools._mission_restartable` / `_restart_mission`, wired into `_ended`):
+  a playbook that ends with its own exception on a session nobody stopped, took over or declared a bad end is
+  **restarted on the same session** after 5 s, at most twice - so a code fault costs seconds instead of leaving the game
+  standing for the round (the RE4 `int + dict` death this session found). A frozen/black game stays `_bad_end`'s,
+  and a mission the operator stopped or took over is never restarted; a session another run owns is left alone.
+  Regression tests: tests/test_autoplay_mission_restart.py (5) plus the autoplay recovery/handoff/resume suites (42
+  passed).

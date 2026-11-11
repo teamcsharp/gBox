@@ -3216,6 +3216,45 @@ def _telemetry(run, ctx, title: str = "", game=None) -> None:
                                run.get("thread") is not None and run["thread"].is_alive(), game)).start()
 
 
+MISSION_RESTART_MAX, MISSION_RESTART_WAIT_S = 2, 5.0
+# A playbook that dies inside itself (an exception, not a frozen or black game) leaves its session up with nobody
+# pressing anything: the game sits there and the bot "just stands" (live 2026-11-10, RE4: maintain() published a record
+# and the playbook's mods panel summed it -> "int + dict" -> the mission ended, the round never did). Restart the same
+# playbook on the same session, a few seconds later, at most MISSION_RESTART_MAX times; a frozen/black game stays
+# _bad_end's job, and a mission the operator stopped or took over is never restarted.
+
+
+def _mission_restartable(run) -> bool:
+    """Whether this ended run is one to restart: a playbook mission that ended with its own exception, on a session
+    nobody stopped, handed over or declared a bad end."""
+    res = run.get("result") or {}
+    return bool(run.get("mode") == "playbook" and res.get("ok") is False and not run.get("bad_end")
+                and not run.get("took_over") and not run.get("stopped")
+                and not getattr(run.get("driver"), "stopped", False)
+                and int(run.get("mission_attempts") or 0) < MISSION_RESTART_MAX)
+
+
+def _restart_mission(run) -> None:
+    """Restart the same playbook on the same session (the game is still up; the mission is what died)."""
+    if not _mission_restartable(run):
+        return
+    sid, attempts = run.get("sid"), int(run.get("mission_attempts") or 0) + 1
+
+    def again():
+        time.sleep(MISSION_RESTART_WAIT_S)
+        current = AUTOPLAY.get(sid)
+        if current is not None and current is not run:
+            return                                     # something else owns the session now
+        try:
+            import importlib
+            pb = importlib.import_module(run["playbook_module"])
+            _start_playbook(pb, run["inp"], run.get("driver"), run.get("ad"), time.time(), run.get("ctx"),
+                            run.get("g"), run.get("game_id"), attempts=attempts)
+        except Exception:                              # noqa: BLE001 - a restart that fails is not a crash
+            pass
+    threading.Thread(target=again, daemon=True, name=f"autoplay-restart-{sid}").start()
+
+
 def _ended(run):
     """An autoplay run finished (stopped, failed or done): note when, and tell the screensaver what happened. A run that
     ended because the game froze or showed only black (run["bad_end"]) then gets the game back (_bad_end)."""
@@ -3230,6 +3269,8 @@ def _ended(run):
         **({"error": str(res["error"])[:300]} if res.get("error") else {})}})
     if run.get("bad_end") and not run.get("took_over"):
         threading.Thread(target=_bad_end, args=(run,), daemon=True, name=f"autoplay-recover-{run.get('sid', '')}").start()
+    elif _mission_restartable(run):
+        _restart_mission(run)                          # the game is up, the mission died: play on, don't stand there
 
 
 BLACK_LUMA, BLACK_FOR = 6.0, 45.0      # mean grey (0..255) of a black frame; how long only black means the game is gone
@@ -3437,11 +3478,14 @@ def _playbook(ad, g):
     return None
 
 
-def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> dict:
+def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None, attempts: int = 0) -> dict:
+    """Start a playbook mission. `attempts` is how many times this mission has already been restarted after an internal
+    exception (_restart_mission), so a playbook that keeps failing costs at most MISSION_RESTART_MAX tries."""
     sid = inp.session_id
     name = pb.__name__.rsplit(".", 1)[-1]
     run = AUTOPLAY[sid] = {"driver": d, "sid": sid, "since": since, "mode": "playbook", "mission": f"playbook: {name}",
-                           "playbook_module": pb.__name__, "ctx": ctx, "inp": inp, "live": {}}
+                           "playbook_module": pb.__name__, "ctx": ctx, "inp": inp, "live": {},
+                           "ad": ad, "g": dict(g or {}), "game_id": game_id, "mission_attempts": attempts}
 
     def go():
         try:
@@ -3524,6 +3568,7 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
             run["result"] = {"ok": True, "playbook": name, **stats, **({"setup_failed": len(failed)} if failed else {})}
         except Exception as e:
             run["result"] = {"ok": False, "error": str(e)}
+            run["mission_failed"] = f"{type(e).__name__}: {e}"[:200]
             if isinstance(e, OSError) and getattr(inp, 'continuous', False) and not d.stopped \
                     and run.get('live', {}).get('native_read_status') == 'timeout':
                 run['bad_end'] = 'hung'
