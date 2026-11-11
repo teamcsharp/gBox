@@ -93,3 +93,24 @@ No gbox tests touched by this checkpoint (environment only). The CP0 baseline st
   directly (stated rather than glossed).
 
 Next: pull one 30-32B coder, then CP2's gold set (34 functions) on both models.
+
+## The second candidate, the concurrency, and the 16k context (2026-11-10 18:45-19:05, the night session)
+
+This supersedes the "not pulled yet" rows above: both candidates are now on the machine and measured.
+
+| model | size | loaded | single-shot | aggregate at 4 / 8 / 16 concurrent |
+|---|---|---|---|---|
+| `qwen2.5-coder:14b` | 9.0 GB | 100% GPU | 51.8 tok/s | 47.0 / 47.8 / 48.6 tok/s |
+| `qwen2.5-coder:32b` | 19.9 GB | 100% GPU | 28.6 tok/s | 29.9 / 30.7 / (not run) tok/s |
+
+With `OLLAMA_NUM_PARALLEL=2` the card is compute-saturated: aggregate throughput is flat from 4 to 16 concurrent
+requests and everything beyond the two slots queues, so the honest node capacity is **2 lanes** (the operator's 8-16
+lanes need a continuous-batching server - see `system/docs/i9-service-node.md`).
+
+The context is also fixed: Ollama 0.5.7 serves these tags at 2,048 by default, so two derivative tags were created with
+the checkpoint's 16k - `qwen2.5-coder:14b-16k` and `qwen2.5-coder:32b-16k` (`PARAMETER num_ctx 16384`; the 14b-16k loads
+at 15 GB / 11,990 MiB, 100% GPU, 39.2 tok/s). `OLLAMA_CONTEXT_LENGTH=16384` is set in the user environment as a
+future-restart default.
+
+`GET /api/workers` does carry the per-GPU memory in this build - `resources.gpus[]` with `memory_used_mb` (3090:
+12,002 MiB with the 14b-16k loaded) - so that accept criterion is read from the plane now, not only from `nvidia-smi`.
