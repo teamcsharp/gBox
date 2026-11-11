@@ -1638,3 +1638,23 @@ the game is idle). The hardening direction is a ring-specific call budget (>= 2 
 the first seconds of a round; it needs the RE5 native module (NOT_BOT, a restart lands it) and a fresh live RE5
 round to confirm. Until then the automatic ring can break a block, so the operator's PiP ring is the reliable path
 on RE5.
+
+## Round 88 (2026-11-11 12:18 CST) - the first harness-capable RE4 session: the probe's receipts and the check() bug
+
+The post-mailbox RE4 probe found a capable session (`ae2bda4751dc44b1-b3962aa67f134135`, 12:06, the PiP
+capabilities included `re4_harness_selftest` and `grenade_ring`) and clicked the full sequence. Every result:
+
+    re4_harness_selftest                     failed  "'Controller' object has no attribute 'sp'"
+    flash_now                                failed  "the harness is not attached to the player"
+    grenade_ring flash / hand / incendiary   failed  "the harness is not attached to the player"
+
+The selftest reached the controller (a real improvement: the mailbox and ready() fixes got it there) and died inside
+`write()` -> `check()`, which is inherited from the RE6 base and reads RE6's `self.sp`/generation offsets the RE4
+module never sets. Fixed (`7ea436fa`): the RE4 controller has its own `check()` - `check_build`, the bound unit's id,
+and its vtable (the class while detached, the clone while attached). Gate 43 passed. Deployed 12:15 and hot-reloaded;
+the probe now waits for a session started after 12:14 for the real receipts.
+
+**RE5 ring budget** (`79173f23`): each ring native call gets 2.5 s (RING_CALL_TIMEOUT_S) instead of the single
+click's 1 s; the 12:00 deploy copied it and the 12:01 restart loaded it. The RE5 block at 12:02 never reached a round
+(stuck on the title screen, the session ended), so the automatic ring is still unverified on the new budget - the next
+live RE5 block is the test.

@@ -624,3 +624,21 @@ Then send it the heavy analysis work.
     (uWp06/uWp07 DTI) with no live receipt yet - the next live RE5 round is the probe.
   - **The crowd/combo ask:** #9526 (proactive on crowds) and #9268 (RE6 standing still) are first in the Hermes queue,
     with the live evidence comment that the read-and-report rules do not apply; no Hermes run had picked it up at 11:20.
+
+- 2026-11-11 12:18 (DeepSeek PM): **the RE4 harness chain is fixed end to end (mailbox -> ready pair -> check guard); the
+  operator's crowd ticket gets a clean code home.**
+  - A second authorized gateway restart at 12:01 (worker `ae2bda4751dc44b1`) activated the RE5 ring call budget
+    (`79173f23`, 2.5 s per ring call); the RE5 block at 12:02 never reached a round and ended, so the automatic ring
+    is still unverified on the new budget.
+  - The post-mailbox RE4 probe found the first harness-capable session and clicked the whole sequence: the selftest
+    reached the controller but failed on "'Controller' object has no attribute 'sp'" - `write()` -> the inherited RE6
+    `check()` reads RE6's `sp`/generation offsets. Fixed (`7ea436fa`): the RE4 controller has its own `check()` (build,
+    bound unit id, vtable class/clone). Deployed 12:15; a fresh probe waits for a session started after 12:14 to take
+    the selftest/flash/ring receipts.
+  - **#9526's Hermes run published docs only** (75054446, a read-only survey) despite the message that the read-only
+    rules are void: the ticket body's stale research RULES still steer the run. Filed **#9720**
+    ("CODE-CHANGE: Mercs bots - dispatch the crowd before it closes", id `35563acd0ac44bcc`) with the explicit
+    code-change marker, the operator's words, the live RE6 and RE4 baselines and the numeric acceptance; replied on
+    #9526 that 75054446 does not close it and #9720 is the code work; **#9720 is first in the Hermes queue**.
+  - The RE4 round reports keep flowing through the new pipeline (21-85 gun downs/round, 12-19 kills), so the crowd/
+    fire-first work has a live measurement on both titles.
