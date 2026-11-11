@@ -104,3 +104,34 @@ owned by the bot so that presses are focus-free.
 
 **So the answer to the operator's question is yes, with one setting.** PSO through gBox: controller -> route 1; mods -> `mod=` on the
 launch; multiple titles -> already true (two PSO sessions ran side by side tonight, each with its own `session.detail.pid`).
+
+## Round 147: gBox was restarted with the virtual pad off (the operator asked for it)
+
+The operator's instruction was literally *"restart gBox with the vpad off"*, so this lane did exactly that and nothing more:
+
+1. `GBOX_DOLPHIN_VPAD=off` set at the **user** level (so every new process inherits it);
+2. the API/worker pair (pid 44900 `serve` -> pid 51820 `--worker`, started at 19:43 by another agent's shell) was stopped;
+3. `python -m gbox --config C:\_tools\gBox\system\gbox.toml serve` was started **from a shell carrying the variable** (new
+   serve pid 3456 -> worker pid 16892), so the Dolphin adapter it spawns sees the setting;
+4. the API came back on 8765 within 10 s, reporting 2 `i9-NUC` workers;
+5. the stale PSO session (`aa4ba9c9...`, belonging to the pre-restart server) was stopped, leaving **no sessions and no Dolphin
+   processes** - a clean machine for the first operator launch.
+
+**What that changes:** `_want_vpad` now returns False for PSO (the `GPO*` rule is bypassed by the flag), so `_argv` takes its fallback
+branch, calls `pad_bind.probe_pads()`/`choose_slot()` - measured on this machine as `{1: (0, -74, -348, 278, -1046, 0, 0)}` ->
+slot **1** - and writes:
+
+```
+# gBox: Player 1 bound to XInput slot 1 (the pad that reports input; slot 0 was idle/dead)
+[GCPad1]
+Device = XInput/1/Gamepad
+```
+
+That is **the operator's controller as Player 1, through gBox**, on the next launch. The verification to run after their Play:
+`GCPadNew.ini`'s `Device` line, the session's own `detail.pid`, and an xinput read while they press.
+
+**Nothing is launched by this lane:** `launch_game` is admission-gated for an agent while the operator is active, and the operator's
+own Play is the intended path - it is not gated, and it is what exercises the new binding.
+
+**Also recorded for the operator's three requests:** the mod is a launch option (`mod` = `ds_cp14_room_added`, built and verified
+tonight), and multiple titles are already supported (two PSO sessions ran side by side earlier, each with its own `detail.pid`).
