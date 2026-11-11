@@ -504,3 +504,14 @@ Then send it the heavy analysis work.
   (epoch echo included), closing the last untested link between the click and the harness no-op. 14 worker tests, 77
   targeted passed. Live: no `.bss` watch capture yet (no RE4 round published the strings); the 05:00 restart remains
   the next deployment event.
+﻿
+- 2026-11-10 22:5x: **dedicated-PC policy extends to ownership** (operator: "the PSO task uses gBox to handle modding and
+  loading the game ... play it despite me being on the PC"). `guarded_reason`'s ownership check was absolute, so the
+  operator's eight queued `file_mod` (delete_build) jobs waited on "Human gameplay is active on this PC" even with
+  `allow_while_active` set. Now a designated PC lets its **non-pad** tools through while the operator plays (file
+  work, builds, characters, analysis); `PAD_TOOLS` (launch_game, session_op, autoplay, poke, write/freeze_memory,
+  cheats, mercmode, bot_reload, repo_update, session_swap, state_transfer) still wait, and callers with no job keep
+  ownership authoritative. Tests: test_background_testing.py 5 passed. Also: the i9 worker is back (two live
+  registrations, the old `aa4ba9c9` dead) and the eight orphaned delete jobs were re-pointed at the live worker id;
+  MercMode is playing RE5 on the Spark. Both this and the broadcast desktop-view change are **server code**, so they
+  apply at the Spark's next service restart (05:00); pushed as `a59da474`.
