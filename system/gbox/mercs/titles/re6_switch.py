@@ -6871,6 +6871,7 @@ class Bot:
             return None
         nades = p.get("nades") or {}
         if (not self.bomb_drop and not due and NADES and min((flat(e) for e in live), default=1e9) < BOMB_NADE_R
+                and self._clusters(live, flat) >= 1             # a grenade only if one can be thrown (a 3-cluster 5-10 m off)
                 and any((nades.get(NADE_TYPES[k]) or (0, 0))[1] > 0 for k in ("frag", "fire"))):
             self.stats["nade_choices"] += 1                      # they are already close: a grenade, not a bomb
             self.frag_last = -1e9
