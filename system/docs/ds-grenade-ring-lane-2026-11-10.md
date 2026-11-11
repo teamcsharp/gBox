@@ -1731,3 +1731,26 @@ now uses `ready()`'s pair).
 Still open on the same feature: the hand/incendiary **rings**' spawn image (RE6 refuses the parameterised spawn; the
 random-kind ring on RE5/RE6 waits on their live receipts), and the RE4 harness E6 (the mailbox call still returns
 uncertain; the new diagnosis receipt carries the ticks/state to tell "never invoked" from "handshake wrong").
+
+## Round 92 (2026-11-11 13:55 CST) - the combo-loss reports are LIVE; the full ring-kind ask (ice/fire/acid) is #9771; the RE6 hand probe fails live
+
+**Combo-loss follow reports live**: the restarted engine (b813c90f) filed 2 requests on its first block
+(`combo_reports=2` in the live stats) - the operator's "follow report every time the combo is lost" is running with
+the round/session/title, combo before/after, kills/score/clock, the threats within 6 m and the bot's doing/why.
+
+**The full ring-kind ask** (operator 13:51-13:53: a PiP screenshot shows Flash available, Hand/Incendiary unavailable;
+"deploy grenade / grenade launcher rings in full across merc mode ... ice grenades or flash grenades or fire
+grenades ... or even a ring of acid grendes"): filed **#9771**, first in the Hermes queue. The live state behind it:
+- flash ring verified on RE5/RE6 (10/10);
+- the **RE6 hand ring probe failed live** (13:51, session fefc7b32...): `state failed`, "native completion uncertain;
+  request will not be replayed", 1294.6 ms, 0 detonated, hp 900->900 - the parameterised spawn/detonate pair
+  (classes.py, the two-instruction patches at main+0x18F2BC0/0x18F2CC0) does not complete; the controller then awaits
+  recovery for that block;
+- RE5's hand/incendiary are built (uWp06/uWp07 DTI) with no live receipt;
+- the launcher rounds (acid/fire/ice = uWp1302/1303/1304, items 0x133-0x135) are pinned but deliberately unwired: the
+  detonate wrapper's action-class checks reject a shell (it carries the launcher's action, not the bomb's) - the
+  launcher's own fire/explode path is needed (#9771 says so with the tables/DTIs).
+
+**Also live**: the RE6 remote mines kept running on the same block - 16 rings / 64 bombs / 5 flag detonations by
+13:44 (the operator's "massive quantities then detonate them remotely"); the RE4 bow 40x deployed; the QTE ask is
+#9769 (second in the queue now); #9720 (crowd/combo) and #9744 (aim/ordnance/aim) follow.
