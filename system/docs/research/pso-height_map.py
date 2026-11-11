@@ -62,7 +62,7 @@ def heights(collision, floor=1):
 
 def main(floor=1):
     collision = pso_walk.cells
-    rel = REL / f"map_forest0{floor}c.rel"
+    rel = REL / f"map_forest{int(floor):02d}c.rel"
     if not rel.exists():
         print("missing", rel)
         return 2
