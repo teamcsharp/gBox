@@ -862,6 +862,37 @@ class Controller:
                 if attached:
                     self.detach_completed()
 
+    def drop_bomb_ring(self, count=4, radius_cm=200.0, *, wait_s=0.5):
+        """`count` remote bombs ejected from his body in a ring around him, each already lying placed and armed -
+        no throw, no remote in his hand, no animation (spawn_bomb.c through `drop_bomb`).
+
+        The operator 2026-11-11: "eject them out of their body in sets of four in a ring around them ... drop massive
+        quantities of them and then detonate them remotely". The ring is on his floor at `radius_cm` (the native
+        spawn takes a point; nothing is thrown). A partial ring is `uncertain` (some units are placed; never replayed
+        as a whole). -> {state, op: bomb_ring, requested, placed, radius_cm, units, failures, elapsed_ms}.
+        """
+        wanted = max(1, min(int(count or 4), 16))
+        radius = max(0.0, min(float(radius_cm if radius_cm is not None else 200.0), 600.0))
+        with self.lock:
+            self.ready()
+            player = self.player
+            x, y, z = struct.unpack("<3f", self.rd(player + R.P_POS, 12))
+            started = time.monotonic()
+            units, failures = [], []
+            for i in range(wanted):
+                angle = 2 * math.pi * (i / wanted) + (math.pi / 4 if wanted == 4 else 0.0)
+                at = (x + radius * math.cos(angle), y, z + radius * math.sin(angle))
+                try:
+                    receipt = self.drop_bomb(at, wait_s=wait_s)
+                except Exception as exc:                     # noqa: BLE001 - a refused bomb reports the ring partial
+                    failures.append(f"{type(exc).__name__}: {exc}"[:200])
+                    break
+                units.append({"unit": receipt.get("unit"), "pos": receipt.get("pos")})
+            state = "confirmed" if len(units) == wanted else ("uncertain" if units else "failed")
+            return {"state": state, "op": "bomb_ring", "requested": wanted, "placed": len(units),
+                    "radius_cm": radius, "units": units, "failures": failures,
+                    "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+
 
 def grenade_scatter_now(ad, kind="random", **kw) -> dict:
     """The scatter barrage on the session's one native controller (the bot's rule, the PiP's grenade_scatter). Never
@@ -906,6 +937,42 @@ def bomb_drop_now(ad, at=None) -> dict:
         state, reason = "failed", exc
     return {"op": "bomb_drop", "state": state, "verified": False, "reason": (str(reason) or type(reason).__name__)[:300],
             "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+
+
+def bomb_ring_now(ad, count=4, radius_cm=200.0, *, wait_s=0.5) -> dict:
+    """The bot's / the PiP's ring of instant remote bombs on the session's one native controller (drop_bomb_ring).
+    Never raises: a refusal is a receipt with its reason (state unavailable / uncertain / failed)."""
+    started = time.monotonic()
+    try:
+        with _CREATE_LOCK:
+            ctl = getattr(ad, "_re6_native_flash", None)
+            if ctl is None:
+                ctl = Controller(ad)
+                ad._re6_native_flash = ctl
+        if not ctl.recover_completed_call() and ctl.failed:
+            raise Unavailable("native controller awaits recovery after an uncertain operation")
+        return ctl.drop_bomb_ring(count, radius_cm, wait_s=wait_s)
+    except Uncertain as exc:
+        state, reason = "uncertain", exc
+    except (Unavailable, ValueError, TypeError, OSError) as exc:
+        state, reason = "unavailable", exc
+    except Exception as exc:                                  # noqa: BLE001 - the bot never dies on a native receipt
+        state, reason = "failed", exc
+    return {"op": "bomb_ring", "state": state, "verified": False, "requested": count, "placed": 0,
+            "reason": (str(reason) or type(reason).__name__)[:300],
+            "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+
+
+def bomb_detonate_now(ad, snap=None) -> dict:
+    """Every remote bomb of his lying placed set off through the detonator's own flag (re6_switch_mods.detonate):
+    no animation, no remote in his hand, no pad. Never raises: a refusal is a receipt with its reason."""
+    from . import re6_switch_mods
+    try:
+        receipt = re6_switch_mods.detonate(ad, snap=snap)
+    except Exception as exc:                                  # noqa: BLE001 - the bot never dies on a native receipt
+        return {"op": "bomb_detonate", "verified": False, "count": 0,
+                "reason": f"{type(exc).__name__}: {exc}"[:300]}
+    return receipt if isinstance(receipt, dict) else {"op": "bomb_detonate", "verified": False, "count": 0}
 
 
 def flash_now(ad):

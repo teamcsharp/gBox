@@ -158,6 +158,15 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 ring_step = grenade_ring.control(ring_ad, prof)
         except Exception as exc:                     # noqa: BLE001
             stats["grenade_ring_error"] = f"{type(exc).__name__}: {exc}"[:160]
+    remote_step = None
+    if not observe_only:
+        try:
+            remote_ad = getattr(m, "adapter", None)
+            if remote_ad is not None:
+                from . import remote_mines
+                remote_step = remote_mines.control(remote_ad, prof, bot_getter=lambda: bot)
+        except Exception as exc:                     # noqa: BLE001
+            stats["remote_mines_error"] = f"{type(exc).__name__}: {exc}"[:160]
     held: set = set()
     gone_since = lost_since = None
     hits_seen = stats.get("hits_taken", 0)
@@ -619,6 +628,15 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:200]
                 else:
                     if ring_out.get("fired"):
+                        next_frame()
+                        continue
+            if remote_step is not None and where == "playing":   # the RE6 remote-mine rings and flag detonation
+                try:
+                    remote_out = remote_step(snap, stats, now, hold)
+                except Exception as exc:             # noqa: BLE001 - a mine rule never ends the round
+                    stats["remote_mines_error"] = f"{type(exc).__name__}: {exc}"[:200]
+                else:
+                    if remote_out.get("fired"):
                         next_frame()
                         continue
             if stats.get("hits_taken", 0) > hits_seen:   # what hit him, for the lessons

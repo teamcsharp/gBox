@@ -416,6 +416,9 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                 caps.append("grenade_ring")
             if getattr(ctl, 'grenade_scatter', None) is not None:
                 caps.append("grenade_scatter")
+            if getattr(ctl, 'drop_bomb', None) is not None:
+                # remote mines: a ring of four ejected from his body, and the detonator's own flag (no animation)
+                caps.append("remote_mines")
             if Q.available(ctl) and not stats.get('operator_control'):
                 caps.append(Q.OP)
             current = getattr(ctl, 'current_weapon', None)
@@ -558,6 +561,21 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                             stats["scatter_failures"] = stats.get("scatter_failures", 0) + 1
                                 elif row['op'] == 're4_harness_selftest':
                                     result = ctl.selftest()
+                                elif row['op'] == 'remote_mines':
+                                    args = row.get('args') or {}
+                                    from .titles import re6_switch_native
+                                    if str(args.get('action') or 'ring').lower() == 'detonate':
+                                        result = re6_switch_native.bomb_detonate_now(ad, snap=None)
+                                    else:
+                                        result = re6_switch_native.bomb_ring_now(ad, count=args.get('count') or 4,
+                                                                                 radius_cm=args.get('radius_cm') or 200.0)
+                                    if stats is not None:
+                                        if result.get('state') == 'confirmed':
+                                            stats["mine_rings_dropped"] = stats.get("mine_rings_dropped", 0) + 1
+                                            stats["mine_ring_bombs"] = stats.get("mine_ring_bombs", 0) + int(
+                                                result.get("placed") or 0)
+                                        elif result.get('op') == 'bomb_detonate' and result.get('verified'):
+                                            stats["mine_flag_detonations"] = stats.get("mine_flag_detonations", 0) + 1
                                 else:
                                     result = ctl.flash()
                                     if stats is not None:
