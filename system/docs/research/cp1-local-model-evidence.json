@@ -1,0 +1,52 @@
+{
+ "api": "http://127.0.0.1:11434",
+ "measured_at": 1794428224.8,
+ "models": [
+  {
+   "name": "deepseek-r1:14b",
+   "size_gb": 8.4
+  },
+  {
+   "name": "deepseek-r1:8b",
+   "size_gb": 4.6
+  }
+ ],
+ "gpu_before": [
+  {
+   "index": 0,
+   "name": "NVIDIA GeForce RTX 2070",
+   "used_mb": 2465,
+   "total_mb": 8192,
+   "util": 35
+  },
+  {
+   "index": 1,
+   "name": "NVIDIA GeForce RTX 3090",
+   "used_mb": 2432,
+   "total_mb": 24576,
+   "util": 24
+  }
+ ],
+ "gpu_during": [
+  {
+   "index": 0,
+   "name": "NVIDIA GeForce RTX 2070",
+   "used_mb": 2467,
+   "total_mb": 8192,
+   "util": 39
+  },
+  {
+   "index": 1,
+   "name": "NVIDIA GeForce RTX 3090",
+   "used_mb": 13103,
+   "total_mb": 24576,
+   "util": 53
+  }
+ ],
+ "answer": "<think>\nOkay, so I'm trying to figure out what the Python function `f` returns. The function is defined as:\n\ndef f(xs):\n    return [x for x in xs if x % 2 == 0]\n\nAlright, let's break this down step by step. First, I know that this",
+ "elapsed_s": 22.8,
+ "eval_count": 64,
+ "eval_duration_ms": 3831.0,
+ "busiest_gpu": "NVIDIA GeForce RTX 3090",
+ "result": "local model answers"
+}
