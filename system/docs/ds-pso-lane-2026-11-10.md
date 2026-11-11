@@ -2998,18 +2998,64 @@ Every remaining P1 item is now either a tool call or a walk:
 
 Tests at this revision: **143 green** (138 + the 5 added here). `main` clean and pushed.
 
+## Round 62 (2026-11-10, later) — the i9's worker was down, and the cause was my own bug
+
+The background job that runs this machine's gBox (`python -m gbox --config gbox.toml serve --worker`) finished with **exit
+1**, and the server was no longer answering on `127.0.0.1:8765`. That is the one process every live thing in this lane talks
+to, so this round was repairing it.
+
+### What the log said
+
+A repeating traceback from `watch_xinput`, once per thread:
+
+```
+File "gbox\padstate.py", line 226, in operator_slot
+    if xinput.read(get_state, s, st) is None:
+NameError: name 'xinput' is not defined
+```
+
+### The bug
+
+`operator_slot()` was added so the pad mirror could find the operator's real controller -- slot 0 is not safe to assume,
+because a leftover virtual pad holds it at all zeros. It called `xinput.read(...)`, but `xinput` is imported **inside**
+`watch_xinput` (`from . import xinput` at the top of that function), so it only exists as a *local* there. Every call to
+`operator_slot` raised, every mirror thread died on start, and the worker process accumulated the traceback storm until it
+went down.
+
+This also explains something this lane kept failing to demonstrate: **the Select+L1/R1 chord never fired in any live test**,
+because the thread that evaluates chords was never alive long enough to see one. The chord code was written and reviewed; the
+path that reaches it was dead the whole time.
+
+### The fix
+
+`operator_slot(get_state, st, *, samples=12, gap=0.05, read=None)` now takes the read function as a parameter, defaulting to
+`from . import xinput` **inside the function** -- so the dependency is explicit, the call site cannot be scoped out, and the
+function is testable without a controller.
+
+`tests/test_padstate_operator_slot.py` (+5) covers: the first slot reporting input wins; a moved stick counts as input (that
+is how the real pad was found); no pad falls back to slot 0; an empty slot is skipped; and -- the regression itself -- calling
+it with no injected `read` must not raise `NameError`.
+
+### The repair
+
+The server was restarted on this machine (the i9's own, per the standing rule). Verified: `GET /api/health` returns **200**,
+the worker `i9-NUC` registers again, and the new log is clean -- no traceback storm, which is the fix confirming itself.
+
+### What this says about the lane's discipline
+
+The test suite was green when this bug shipped, because nothing tested the function. A worker crashing spammed a console that
+nobody read until the job ended six hours later. Both are fixed by the same thing: the regression is now a test, and the
+symptom ("the chord never fired") now has a cause on record instead of another failed attempt.
+
 ## 7. Next
 
-Every remaining P1 item is now a tool call or a walk:
+1. **Re-test the Select+L1/R1 chord now that the mirror thread lives.** It has never fired in a live test, and round 62
+   found why: `operator_slot` raised `NameError` on every call, so the thread that evaluates chords died at start. With
+   the fix in place a live check is worth a round -- it is the operator's own feature request.
+2. **Open the fifteen lobby sets and solve their offsets per room** with `pso_offset.solve` (it rediscovers city00's
+   (+228,+291) blind, so it is trustworthy before use on an unknown room).
+3. **Find the GUILD room** (`GUILD.adx`, "HUNTER GUILD" at 0x8044c10f, areas `map_lobby_01..10`).
+4. **P6b's page**, **P7a's rigging**, then P3-P5.
 
-1. enter a lobby room, read the entity table (the party must be in it);
-2. `pso_offset.solve(<that room's set>, <entities>)` -> the room's local->world offset (it rediscovers city00's
-   (+228,+291) blind, so it can be trusted before it is used on an unknown room);
-3. `pso_editor.placements` / `python -m gbox.pso_editor <disc> map <set>` -> that room's `TObjDoorKey` doors in world
-   coordinates;
-4. walk to whichever door is not already a known place. The GUILD room the executable names (`GUILD.adx`,
-   "HUNTER GUILD", areas `map_lobby_01..10`) has never been entered.
-
-Then: **P6b's page** (pure UI over the CLI) and **P7a's rigging** (GC `build_swap`, gated by `pso_swapfit.compare`), and
-P3-P5 behind P1. At close: 143 tests green, `main` clean and pushed; P1's field leg, P3-P5, P6b's page, P7a's rigging and
-the `.evt` opcode semantics are **not** proven and not claimed.
+Standing rules: the i9's own gBox only (`10.89.1.43:8765`, `x-gbox-actor: agent`), never lilspark; and if a background
+worker job ends, read its output -- round 62's whole outage was visible in a log nobody had read for six hours.

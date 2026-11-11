@@ -213,17 +213,24 @@ def pad_lease(sid: str, keys: set) -> None:
         pass
 
 
-def operator_slot(get_state, st, *, samples: int = 12, gap: float = 0.05) -> int:
+def operator_slot(get_state, st, *, samples: int = 12, gap: float = 0.05, read=None) -> int:
     """The XInput slot the operator's own pad is on: the first that reports a button or a moved stick.
 
     Slot 0 is not safe to assume. A leftover virtual pad from an earlier session holds slot 0 on this PC and
     sits at all zeros forever, so the operator's real controller enumerates on slot 1 and a watcher bound to
     slot 0 sees nothing at all (proven on the i9-NUC 2026-11-10: the operator's pad reported live packets and
     analog values on slot 1 while slot 0 stayed exactly zero). Falls back to 0 when nothing moves.
+
+    ``read`` is injected so this can be tested without a controller, and so the caller does not depend on how
+    `gbox.xinput` happens to be bound -- the earlier version referenced a module name that only existed as a local
+    inside `watch_xinput`, which raised `NameError` and killed the mirror thread on every start.
     """
+    if read is None:
+        from . import xinput as _xinput
+        read = _xinput.read
     for _ in range(max(1, samples)):
         for s in range(4):
-            if xinput.read(get_state, s, st) is None:
+            if read(get_state, s, st) is None:
                 continue
             g = st.gamepad
             if g.buttons or abs(g.lx) > 7849 or abs(g.ly) > 7849 or abs(g.rx) > 7849 or abs(g.ry) > 7849:
