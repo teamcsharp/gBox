@@ -590,3 +590,17 @@ def test_a_ring_rule_that_cannot_load_is_a_stat_not_a_crash(monkeypatch):
     stats = {}
     assert B._ring_step(object(), stats) is None
     assert "no rule" in stats["grenade_ring_error"]
+
+
+def test_the_bow_tap_holds_the_trigger_through_the_draw():
+    """The operator 2026-11-11: "why does the bot never fire the arrows in RE4?" - the bow's tap was a down+up in one
+    batch, a zero-length press; the game needs the trigger down through the draw. A gun keeps the press edge."""
+    sent, sleeps = [], []
+    keys = B.Keys(lambda rows: sent.append(rows), sleep=sleeps.append)
+    keys.apply({"tap": "zr"}, tap_hold=B.BOW_TAP_HOLD_S)
+    assert sent[0][-1] == {"key": "zr", "down": True}
+    assert sleeps == [B.BOW_TAP_HOLD_S] and sent[1] == [{"key": "zr", "down": False}]
+    sent.clear()
+    sleeps.clear()
+    keys.apply({"tap": "zr"})
+    assert sent[0] == [{"key": "zr", "down": True}, {"key": "zr", "down": False}] and not sleeps

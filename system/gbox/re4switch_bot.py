@@ -75,6 +75,10 @@ ROUND_END_TICKS = 3                     # the game's state reads no round this m
 FIGHT_TICK_S = 0.05                     # the RAM fight's loop
 BOW_CLASS = 0x1C                        # Krauser's bow (re4_weapons.MOTION_RATE_CLASSES)
 BOW_FIGHT_TICK_S = 0.025                # the bow's loop: 40 taps a second ("rapid firing arrows at 40 times a second")
+BOW_TAP_HOLD_S = 0.05                   # the bow's trigger is held through its draw: a down+up in one batch is a
+                                        # zero-length press the game never fires (the operator 2026-11-11: "the bot
+                                        # never fires the arrows in RE4") - the guns fire on the press edge, the bow
+                                        # needs the hold
 FRAME_EVERY = 5                         # ... which classifies a frame every this many ticks (the menus coming back)
 TALLY_S = 1.0                           # the clock at 0 this long: the round is over (its results are up)
 RESULTS_MIN_CLOCK_S = 60.0              # ... and only a clock seen this high first is the round's (it opens at 120.0)
@@ -114,21 +118,31 @@ def _press(send, key: str, hold_s: float = 0.08, sleep=time.sleep) -> None:
 
 class Keys:
     """A bot's {"hold": keys, "tap": key} as pad events: a held key goes down once and up when the bot lets it go, a
-    tap is down + up before the holds (the trigger is never held: re4_switch.Bot)."""
+    tap is down + up before the holds (the trigger is never held: re4_switch.Bot).
 
-    def __init__(self, send):
-        self.send, self.down = send, set()
+    A tap with `tap_hold` > 0 keeps the trigger down that long before the up (the bow's draw: a zero-length press
+    never fires an arrow - live 2026-11-11 "the bot never fires the arrows in RE4"); a gun's tap stays the batch of
+    down + up the game treats as a press edge.
+    """
 
-    def apply(self, act: dict) -> None:
+    def __init__(self, send, sleep=time.sleep):
+        self.send, self.sleep, self.down = send, sleep, set()
+
+    def apply(self, act: dict, tap_hold: float = 0.0) -> None:
         want = set((act or {}).get("hold") or ())
         rows = [{"key": k, "down": False} for k in sorted(self.down - want)]
         rows += [{"key": k, "down": True} for k in sorted(want - self.down)]
         tap = (act or {}).get("tap")
-        if tap:                                              # after the holds: the aim is down before the trigger
+        if tap and tap_hold > 0:
+            rows.append({"key": tap, "down": True})       # after the holds: the aim is down before the trigger
+        elif tap:
             rows += [{"key": tap, "down": True}, {"key": tap, "down": False}]
         if rows:
             self.send(rows)
         self.down = want
+        if tap and tap_hold > 0:
+            self.sleep(tap_hold)
+            self.send([{"key": tap, "down": False}])
 
     def release(self) -> None:
         if self.down:
@@ -285,7 +299,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
         stats["queued_selection_error"] = str(exc)[:160]
     m = m if m is not None else _memory(ad)
     stats["ram"] = m is not None
-    keys = Keys(send)
+    keys = Keys(send, sleep=sleep)
     bot = driver.Bot(stats=stats, clock=clock) if m is not None else None
     ring_step = _ring_step(ad, stats)                # the bot's own ring rule (gbox.mercs.grenade_ring)
     started = clock()
@@ -371,7 +385,8 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                     _report(rnd, snap, stats, clock(), round_boundary, keys)
             if bot is not None and snap is not None:
                 stats["fight"] = "ram"
-                keys.apply(bot.tick(snap, now=clock()))
+                keys.apply(bot.tick(snap, now=clock()),
+                           tap_hold=BOW_TAP_HOLD_S if (snap or {}).get("weapon_class") == BOW_CLASS else 0.0)
                 re4_walk.publish(pub, snap, bot, stats["screen"])
             else:
                 keys.release()
@@ -533,7 +548,8 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                         re4_walk.publish(pub, snap, bot, "playing")
                         sleep(BOW_FIGHT_TICK_S if (snap or {}).get("weapon_class") == BOW_CLASS else FIGHT_TICK_S)
                         continue
-            keys.apply(bot.tick(snap, now=clock()))
+            keys.apply(bot.tick(snap, now=clock()),
+                       tap_hold=BOW_TAP_HOLD_S if (snap or {}).get("weapon_class") == BOW_CLASS else 0.0)
             re4_walk.publish(pub, snap, bot, "playing")
             sleep(BOW_FIGHT_TICK_S if (snap or {}).get("weapon_class") == BOW_CLASS else FIGHT_TICK_S)
             continue
