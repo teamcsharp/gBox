@@ -1779,3 +1779,23 @@ the game calls every frame is found, the RE4 harness's flash/ring/hand receipts 
 spawn/detonate pair now gets CLASS_SPAWN_TIMEOUT_S = 3.0 and CLASS_WAIT_S = 2.0 (9983a9a5). The next RE6 block's hand
 ring is the test. The bow 40x is live on the current RE4 block (Krauser rounds 13:54-13:56: 0-6 kills, 0-10 shots -
 the gate still holds most of the round; the 40x cap/25 ms tick is not the whole story).
+
+## Round 94 (2026-11-11 14:02 CST) - E6 re-tested on a stable round: the transform slot is still never invoked
+
+A second selftest, this time only after the screen had read `playing` for 3 consecutive polls (9 s) with a valid unit
+(the receipt's `player_generation` 231, not 0): `ticks_before 0`, `ticks 0`, `mailbox_state 0`, `attached_after
+true` - **the dispatcher is never called on the player unit's vtable slot +0x20 (the transform virtual)**. The
+"clicked during a load" theory is dead, and so is the 1 s-budget theory. The clone is on the vtable, the mailbox is
+writable, and nothing invokes the slot the game's own update path uses for this unit (the decomp's direct transform
+call at main+0x2B6420 is likely a direct `bl` from cPlayer::move, not a virtual dispatch).
+
+NEXT for E6: either a **direct-call hook** (patch the cPlayer::move call site to the cave dispatcher, which then
+tail-calls the original - the current `write` refuses `.text`, so this needs an explicit, vetted install path) or a
+**slot probe**: a clone whose candidate slots each point at a per-slot stub (tick + tail-call that slot's original) to
+find a virtual the game does call every frame. `scripts/build_dispatch.py` (keystone/capstone) is the tooling; the
+mailbox and clone machinery stay as they are. Until then the RE4 flash/ring/hand receipts are blocked (the RE4 ring
+rule hooked into the playbook refuses honestly every time it tries).
+
+Also this round: the class-spawn budget (`9983a9a5`: CLASS_SPAWN_TIMEOUT_S 3.0 / CLASS_WAIT_S 2.0, tested) is
+deployed for the next RE6 block, and two live probes are waiting: the RE6 hand/incendiary ring probe and the RE5
+combined probe (flash scatter, flash ring, then hand/incendiary), both only on a stable playing round.
