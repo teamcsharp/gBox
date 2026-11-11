@@ -91,3 +91,30 @@ themselves.
 
 **That leaves exactly three things for the programme:** the window (CP4, CP5, CP9-seed, CP10 confirmation, CP12's frame, CP13,
 CP16, CP17-19), the CP8 data decision, and the merge review (CP12 before CP13; sixteen branches total with CP10 now).
+
+## Round 95: the merge rehearsal - **16/16 branches now merge cleanly, in this order**
+
+The review's hardest part is the merge itself, so it was rehearsed: a throwaway local branch from `origin/main`, every
+checkpoint branch merged in order with `--no-ff` (no push, branch deleted afterwards). The first two passes found **three
+conflicts**, and both were fixed *here* rather than left for the review:
+
+| conflict | why | resolution |
+|---|---|---|
+| `ds-pso-cp07-model-walk` vs `ds-pso-cp12-rigged-swap` on `pso_swapfit.py` + its test | CP7.1 created the module's model-centre checks; CP12 changed `compare`'s bucket rule - the same function | **CP7.1 is merged into CP12** (`ecf64810`): `compare` keeps CP12's subset rule *and* CP7.1's two checks, and the test file keeps both blocks - **49 passed** across the swap suites |
+| `ds-pso-cp00-classes` vs `ds-pso-cp07-object-loader` on `test_pso_classes.py` | both added a test block to the shared class-test file | **CP0-classes is merged into CP7.2** (`6ec7f441`): the file keeps both blocks - **19 passed** |
+| (CP13, same files as CP12) | CP13 is stacked on CP12 | disappears once CP12 is merged |
+
+**Recommended merge order (rehearsed, conflict-free):**
+
+```
+cp00-clean-start  cp00-classes  cp01-local-model  cp02-gold-set  cp03-labelling
+cp06-evt-opcodes  cp06-nrel     cp07-model-walk  cp07-object-loader  cp07-scene-loader
+cp08-room-pieces  cp09-save-data  cp10-forest1   cp12-rigged-swap  cp13-library-donors  cp04-jump-state
+```
+
+(`ds-pso-cp07-model-walk`'s content now also rides inside `cp12-rigged-swap`'s branch, and `cp00-classes`' inside
+`cp07-object-loader`'s, so merging those two first is equivalent to merging the merged pair - either way there is no manual
+conflict left.)
+
+**Updated tips after the resolutions:** `ds-pso-cp12-rigged-swap-20261110` **`ecf64810`**,
+`ds-pso-cp07-object-loader-20261110` **`6ec7f441`**.
