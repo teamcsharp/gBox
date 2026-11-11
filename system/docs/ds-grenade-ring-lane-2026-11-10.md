@@ -1247,3 +1247,34 @@ the current run is not advancing; that is the operator's side (the queue/session
 **State of the lane's code:** everything is merged and tested (harness dispatcher/controller/F/G offline, E6 selftest,
 the `.bss` watch with JSON-string telemetry, `choose_mailbox`); the open items are all live receipts waiting on a
 working RE4/RE5 block and the 05:00 restart.
+
+## Round 73 (2026-11-10 23:10 CST) - checkpoint 0's second read is in: RE5's capabilities and flash are live
+
+The queue started moving again (short alternating blocks), and the read-only poll caught three live RE5 rounds:
+
+    20:42:29  caps=flash_now,equip_primary,grenade_ring,grenade_scatter,set_infinite_ammo
+              flash:True | hand: built on the parameterised spawn (uWp06, DTI main+0x1D714C8), no live receipt yet
+              | incendiary: uWp07, no live receipt yet | weapon=4 | round 2d2a8bb4...
+    20:57:48  caps=flash_now,equip_primary,grenade_ring,grenade_scatter,set_infinite_ammo
+              flash:True | hand/incendiary: the same built/no-receipt reasons | weapon=22
+    21:00:45  flash:False: no living player in an active Mercenaries round (between rounds)
+
+**Checkpoint 0 is now accepted 2/2:** the post-restart RE6 read (flash on, six capabilities, hand/incendiary
+no-receipt reasons) and this RE5 read (five capabilities, **flash available**, and the exact built/no-receipt reasons
+for hand and incendiary). The RE5 controller is alive and honest end to end.
+
+**A fourth capture is the D story's first live trace:** `20:55:25` showed
+`flash:False: native controller awaits recovery after an uncertain operation` - an RE5 native operation hit an
+uncertain state in that round (the controller correctly refused everything until recovery); with kills=1 in that
+round, it is the first live trace of the D flow's uncertain path. What is still missing for D's acceptance is the
+positive side: `scatters_fired`/`scatter_rounds`/`scatter_kills` with a barrage receipt and two confirmed flash
+times at least `FLASH_MIN_GAP_S` apart - the v2 poll now re-captures the stats mid-round so a barrage cannot slip
+past it.
+
+**The E3 watch is still pending:** the RE4 blocks that came up (e.g. session `...3d204e21`) ended within a round or
+two and their telemetry carried no `bss_watch` - the running RE4 bot still needs the post-fix deploy + reload (or the
+05:00 restart). The poll keeps watching for the strings.
+
+**One merge this round:** checkpoint A3's mechanism on main (`8b6c033c`): an RE6 random barrage draws only the
+verified kinds whose resources the character carries, while a narrowed draw still refuses an unloaded kind with its
+own reason (3 tests; 157 passed across the RE6/grenade set).
