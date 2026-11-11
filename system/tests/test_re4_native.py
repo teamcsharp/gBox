@@ -90,11 +90,12 @@ def fake_controller(monkeypatch, *, mailbox=MAILBOX, complete=True, fail_at=None
             raise N.Uncertain("native completion uncertain; request will not be replayed")
         if state == CODE.STATE["requested"]:
             requests["n"] += 1
+            put(mem, MAILBOX + CODE.MAILBOX["ticks"], struct.pack("<Q", requests["n"]))   # the dispatcher ticks
             if fail_at is not None and requests["n"] == fail_at:
                 raise N.Uncertain(f"native request {fail_at} timed out; not replayed")
             target = ctl.q(MAILBOX + CODE.MAILBOX["target"])
             args = struct.unpack("<7Q", get(mem, MAILBOX + CODE.MAILBOX["args"], 56))
-            result = target + sum(args)
+            result = 0 if target == BASE + CODE.SELFTEST_AT else target + sum(args)
             put(mem, MAILBOX + CODE.MAILBOX["result"], struct.pack("<Q", result))
             put(mem, MAILBOX + CODE.MAILBOX["state"], struct.pack("<I", CODE.STATE["done"]))
         return predicate()
@@ -398,3 +399,13 @@ def test_a_partial_barrage_is_uncertain_never_confirmed(monkeypatch):
     ctl = _scatter_controller(monkeypatch, fail_at=2)
     result = ctl.grenade_scatter("random", count=4, toward=[(5000.0, 0.0)], kinds=("flash",))
     assert result["state"] == "uncertain" and result["detonated"] == 1 and result["reason"]
+
+
+def test_the_selftest_call_returns_zero_and_proves_the_path(monkeypatch):
+    ctl = fake_controller(monkeypatch)
+    ctl.attach()
+    out = ctl.selftest()
+    assert out["state"] == "confirmed" and out["verified"] is True and out["result"] == 0
+    assert out["ticks"] >= 1
+    targets = [struct.unpack("<Q", d)[0] for at, d in ctl.writes if at == MAILBOX + CODE.MAILBOX["target"]]
+    assert targets[-1] == BASE + CODE.SELFTEST_AT

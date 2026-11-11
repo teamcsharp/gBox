@@ -1052,3 +1052,31 @@ draw uses one kind, the incendiary and an unknown draw are refused before any wr
 `uncertain`; and `tests/test_re4_scatter_wiring.py` (4): the title is built-but-off with both kinds, the rule offers
 RE4 its step and not a PS3 title, the policy reads the knobs/kinds, and the PiP rows exist. With the earlier RE4
 harness and shared-rule files: the focused set is **53 passed**; the broad run is in the same round's log below.
+
+## Round 65 (2026-11-10 18:55 CST) - merged to main: the harness, F, G offline and the E3 watch now ride the RE4 telemetry
+
+**The merge.** `ds-grenade-re4-bss-20261110` @ `16b984bd` is on main as `b2dec801` (the hand-off gave the lane merge
+rights; the Spark autodeploys main within 15 minutes). It carries everything from rounds 52-64: the E3/E4 static
+verifiers, the E0(c) dispatcher, E4's code-write rule, E5's controller (the single-vtable-store trigger and the
+mailbox call surface), F2/F3's flash op and placement, G1/G2/G4's ring and barrage (both automatic paths off), and the
+new E3 watch.
+
+**The E3 watch now rides the round.** `re4_switch.bss_watch()` reads the five candidate pages (16 bytes each) once per
+snapshot and stamps `stats["bss_watch"]` = `{stage, at, pages}` - the telemetry already publishes `stats`, so the next
+RE4 block records the page bytes at every stage load with no extra tooling and no writes. A page all zero across three
+stages becomes the harness's mailbox; the four tests cover the read, a failed page (`None`), the stage stamp, and that
+nothing is read before a round's stats exist. This is a bot-module change, so the Spark hot-reloads it at the next
+RE4 session - earlier than the harness itself, which needs the 05:00 restart for the new controller module.
+
+**Gate.** The branch merged current `origin/main` twice (through `0219216c`); the targeted set - every touched module,
+21 files, 382 then **383 passed, 1 skipped** - ran on the branch @ `16b984bd` and on main @ `b2dec801`, both exit 0.
+The full 3103-test MercMode/RE subset was started on the branch (the two parallel 176-file runs I first launched were
+killing each other on ports; one run alone, with a 120 s per-test timeout, is the honest one) and was still running at
+merge time; its failures will be checked against main's known red (10 RE5 Switch + the mcp roundtrip) and any new one
+fixed forward.
+
+**Live.** The blocks are churning: the RE4 block ended (round 5), an RE5 block came up and its three sessions ended at
+the title screen without a round (screen=title, running=False), and the queue moved to an RE6 block (round 3, playing).
+CP0's second read could not be taken on the RE5 block for that reason; the first read (pre-round) showed the RE5
+controller alive with hand/incendiary "built, no live receipt yet" and flash masked by "no living player" - the
+post-round read is still owed. The RE4 watch will be automatic on the next RE4 block.

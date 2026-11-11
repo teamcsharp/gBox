@@ -409,6 +409,19 @@ class Controller(N.Controller):
         """The intervention's `flash_now` op: the crowd point through this controller's own adapter."""
         return flash_now(self.ad, mailbox=self.mailbox)
 
+    def selftest(self):
+        """E6's no-op: attach, then one mailbox call to the dispatcher's own `ret` - no game code runs.
+
+        The dispatcher ticks on every entry, so a rising `ticks` counter plus a zero result proves the clone fires
+        and the mailbox round trip works; that is the live proof checkpoint E6 asks for before any real op.
+        """
+        if not self.attached():
+            self.attach()
+        before = self.ticks()
+        result = self.call(CODE.SELFTEST_AT)
+        return {"state": "confirmed", "verified": result == 0, "op": "re4_harness_selftest", "result": result,
+                "ticks_before": before, "ticks": self.ticks(), "player_generation": self.player_id}
+
 
 def place_flash(player, enemies, level_mm: float | None = None):
     """The flash point on the crowd (checkpoint F3): `core.flash_window.place` in RE4's millimetres, or None.
