@@ -611,7 +611,8 @@ MAGNUMS = frozenset({0x29, 0x2A, 0x37})        # Broken Butterfly, Killer7, Hand
 SHOTGUNS = frozenset({0x2C, 0x2D, 0x94})       # Shotgun, Striker, Riot Gun
 PRIMARY = MAGNUMS | SHOTGUNS
 MAGNUM_SHARE = 0.8
-PRIMARY_SHARE = 0.8                            # magnum/shotgun emphasis over the rest of the campaign weapons
+PRIMARY_SHARE = 1.0                            # operator 2026-11-11 15:59: no pistols in the draw - always a
+                                               # magnum or a shotgun, both max level (the pistols upset the stream)
 
 
 def _code_patch_refusal(ad) -> str | None:
