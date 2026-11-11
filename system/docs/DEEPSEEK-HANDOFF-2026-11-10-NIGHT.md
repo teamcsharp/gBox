@@ -466,3 +466,11 @@ Then send it the heavy analysis work.
   path**: `grenade_ring(kind="incendiary", allow_unverified=True)` calls the class-0x16 persistent-fire candidate
   `main+0x2E4BA0` through the same fake object, receipt `probe: true`; the status and the rule still refuse it. This is
   the handle for the RE session's live G3 probe, not a PiP button. Two tests, targeted gate 62 passed.
+﻿
+- 2026-11-10 22:2x: **correction to the round-29b note: EXTRA CONTENT was not drift - it is a step on the documented
+  path** ("PRESS ANY BUTTON, Load successful, PLAY GAME, EXTRA CONTENT, THE MERCENARIES UNITED, START, NO MERCY, stage,
+  character", docs/research/re5-switch-ram.md). The forced RE5 switch then walked the whole path on its own and the
+  frame shows a **No Mercy round in progress** (Sheva, 01'35" on the clock, an Executioner and a Majini in front, the
+  weapon drawn) - no manual A press needed. So the select-confirm fix plus the deploy-unblock did their job on RE5;
+  the earlier 0-shot "lost" rounds were the character-select park. Next check: the round's report (shots > 0) when it
+  ends.
