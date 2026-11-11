@@ -338,23 +338,46 @@ class LocalDriver(Driver):
             self.send([{"key": k, "down": False} for k in keys])
 
 
+def _serves_model(base: str, model: str, timeout: float = 2.0) -> bool:
+    """Whether the Ollama at `base` has `model` right now (a short probe: the planner must never wait on a dead model).
+
+    Live 2026-11-10: the campaign's planner resolved to the Spark's Ollama through `config.llm_endpoints` while the
+    Spark's GPU played MercMode, so every planner call timed out and the character walked into walls - although the
+    worker's own 3090 served a vision model of its own. A reachable local model now wins over a configured remote one.
+    """
+    try:
+        with httpx.Client(base_url=base, timeout=timeout) as client:
+            return client.post("/api/show", json={"model": model}).status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
 def vision_settings(driver, config):
-    """Use the configured vision endpoint; resolve the default on a remote worker."""
+    """Use the configured vision endpoint; resolve the default on a remote worker.
+
+    Order: an explicit `agent.vision_url`, then **this worker's own Ollama when it serves the model** (a 2 s probe),
+    then a configured remote endpoint, then the API host's Ollama as the last resort.
+    """
     agent = getattr(config, "agent", {}) or {}
     model = getattr(driver, 'pso_vision_model', '') or agent.get("vision_model") or "qwen2.5vl:7b"
-    configured = agent.get("vision_url") or agent.get("llm_url")
-    if configured and (agent.get("vision_url") or urlparse(configured).hostname not in ("localhost", "127.0.0.1", "::1")):
+    explicit = agent.get("vision_url")
+    if explicit:
+        return explicit.rstrip("/"), model
+    configured = agent.get("llm_url")
+    if configured and urlparse(configured).hostname not in ("localhost", "127.0.0.1", "::1"):
         return configured.rstrip("/"), model
+    host = urlparse(str(driver.api.base_url)).hostname
+    authority = "127.0.0.1" if host in (None, "localhost", "127.0.0.1") else host
+    if ":" in authority:
+        authority = "[" + authority + "]"
+    if _serves_model(f"http://{authority}:11434", model):
+        return f"http://{authority}:11434/v1", model
     # Workers often share the server's default localhost agent settings. Prefer
     # their explicit remote endpoint instead of assuming a model runs locally.
     for endpoint in getattr(config, "llm_endpoints", []) or []:
         url = endpoint.get("url") if isinstance(endpoint, dict) else endpoint.url
         if urlparse(url).hostname not in ("localhost", "127.0.0.1", "::1"):
             return url.rstrip("/"), model
-    host = urlparse(str(driver.api.base_url)).hostname
-    authority = "127.0.0.1" if host in (None, "localhost", "127.0.0.1") else host
-    if ":" in authority:
-        authority = "[" + authority + "]"
     return f"http://{authority}:11434/v1", model
 
 

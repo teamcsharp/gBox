@@ -200,12 +200,25 @@ def test_autoplay_input_keeps_campaign_for_resume():
     assert AutoplayIn.model_validate(request.model_dump()).campaign == P.CAMPAIGN
 
 
-def test_vision_endpoint_uses_configured_remote_worker_service():
+def test_vision_endpoint_uses_configured_remote_worker_service(monkeypatch):
+    monkeypatch.setattr(P, "_serves_model", lambda *a, **k: False)      # no local model: the remote endpoint is used
     driver = SimpleNamespace(api=SimpleNamespace(base_url="http://federated-authority:8787"))
     config = SimpleNamespace(agent={"llm_url": "http://127.0.0.1:11434/v1", "vision_model": "vision-test"},
                              llm_endpoints=[SimpleNamespace(url="http://spark:11434/v1")])
     assert P.vision_settings(driver, config) == ("http://spark:11434/v1", "vision-test")
     config.agent["vision_url"] = "http://localhost:2345/v1"
+    assert P.vision_settings(driver, config) == ("http://localhost:2345/v1", "vision-test")
+
+
+def test_vision_endpoint_prefers_a_local_model_the_worker_itself_serves(monkeypatch):
+    """Live 2026-11-10: the planner picked the Spark's busy Ollama although the worker's own 3090 served a model; a
+    local model that answers `/api/show` wins over the configured remote endpoint."""
+    driver = SimpleNamespace(api=SimpleNamespace(base_url="http://127.0.0.1:8765"))
+    config = SimpleNamespace(agent={"llm_url": "http://127.0.0.1:11434/v1", "vision_model": "vision-test"},
+                             llm_endpoints=[SimpleNamespace(url="http://spark:11434/v1")])
+    monkeypatch.setattr(P, "_serves_model", lambda base, model, timeout=2.0: base == "http://127.0.0.1:11434")
+    assert P.vision_settings(driver, config) == ("http://127.0.0.1:11434/v1", "vision-test")
+    config.agent["vision_url"] = "http://localhost:2345/v1"             # an explicit choice is never overridden
     assert P.vision_settings(driver, config) == ("http://localhost:2345/v1", "vision-test")
 
 
