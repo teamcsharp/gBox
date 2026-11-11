@@ -51,3 +51,40 @@ which is why the plane's own `pso_loadout op=drop` (expiry computed before its m
 
 30 Hz pad timeline -> `imitate.learn`: **1,549 input changes -> 173 bursts**, menu keys `start, x, a`, written to
 `D:\\gBox\\pso-ds\\learned-missions\\pso-learned-20261110-210547.json`.
+
+## Correction: the cycler equips into the inventory, it does not drop on the floor
+
+The operator's correction: *"when it comes to replacing the weapon, I wanted you to replace the weapon that's in my inventory that I
+currently have equipped. not place them on the ground."*
+
+The right operation is `pso_controls op=equip`, which in `pso_live.py` is a **give-and-equip in one verified step**:
+
+```python
+if inp.op == 'equip':
+    gear = Extras(ad, player_index=inp.player_index, pin_player=True); gear.check()
+    code = inp.code.strip().lower()
+    if code not in by_code or not code.startswith(('00', '02', '0101', '0102')):
+        raise ValueError('Select one equippable item from this disc catalog')
+    made = gear.give(code)                      # into the inventory
+    item_id = made['ids'][0]
+    verified = gear.equip_id(item_id)           # replaces what is equipped
+```
+
+verified live on the operator's character:
+
+```
+equip 000f02 (weapon) -> {"verified": true, "item_id": 15728648, "message": "Equipment applied to player 1", "elapsed_ms": 359}
+equip 024000 (mag)    -> {"verified": true, "item_id": 15728649, "message": "Equipment applied to player 1", "elapsed_ms": 343}
+```
+
+and the cycler now logs one entry per five-minute cycle with both items verified:
+
+```
+{"at": "21:28:23", "codes": ["009b00", "023a00"], "state": "ok",
+ "items": [{"state": "ok", "verified": true, "item_id": 15728650, "ms": 328},
+           {"state": "ok", "verified": true, "item_id": 15728651, "ms": 407}]}
+```
+
+Mag codes (`02*`) are accepted by the same op, so one path replaces both the equipped weapon and the equipped mag. The earlier
+`floor_spawn` approach (and the `pso_loadout op=drop` route built on it) put items on the ground; both are superseded for this
+feature.
