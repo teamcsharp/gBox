@@ -1,0 +1,25 @@
+{
+ "samples": 2913,
+ "cell_size": 8.0,
+ "cells": 10,
+ "edges": 9,
+ "components": [
+  10
+ ],
+ "largest_component": 10,
+ "length_units": 64.0,
+ "bounds": {
+  "x": [
+   -178.2,
+   -133.8
+  ],
+  "z": [
+   99.0,
+   141.4
+  ]
+ },
+ "floors": [
+  1
+ ],
+ "turnarounds": 0
+}
