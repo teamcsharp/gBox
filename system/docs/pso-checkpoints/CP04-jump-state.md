@@ -768,3 +768,40 @@ is the only path that can run cold.
 **What this changes for the handover:** the plane's Forest 1 mission should not be cited as the demo that "just needs a launch" -
 it needs a launch *plus* the CP4 state *plus* the rel artifact. The campaign needs only the launch. That distinction belongs in the
 next session's first paragraph.
+
+## Round 131: the mission's map artifact is on the disc - and the launch gate has no sanctioned agent bypass
+
+**Good news first: the artifact that was 404 is reproducible from the disc.** The mission's `rel_artifact`
+`0e7bc121a41e483e2c4d03bb031226461fecafb6c14ebfbeaab8ffe76ecfd2f5` is **exactly** `Scene/map_forest01c.rel`:
+
+```
+Scene/map_forest01c.rel      72096 bytes  sha256 0e7bc121a41e483e...  == the mission artifact
+Scene/map_forest01r.rel      12896 bytes  sha256 0a5604d68520a202    (the matching visual rel)
+Scene/map_aforest01r.rel     12896 bytes  sha256 0a5604d68520a202    (a duplicate of the above)
+```
+
+So the "map" precondition is satisfiable offline - the plane is missing a stored artifact, not the data. (The waypoints
+`(-95,214)`, `(-140,330)`, `(7,362)`, `(90,300)` are **world** coordinates; the rel's own footprint `(54,80,137)` sits at
+`(-587,35,-222)` in *local* space, so validating them needs the piece's placement from `map_forest01c.dat` - CP8's entity-to-room
+join - not the raw quad. That is the next check, not a contradiction.)
+
+**And the hard part: there is no sanctioned agent bypass of the launch gate.** Reading the code settles it:
+
+```python
+# background_testing.requires_admission
+return bool(job.get('agent_use') or job.get('low_priority')) and job.get('tool') not in controls
+# bot_control: agent_use=operator_guard.is_agent(actor)     # derived from the ACTOR, not from any input field
+```
+
+So a launch is gated **because it comes from an agent actor**; no launch input can change that. The only two `allow_active=True`
+paths in the plane are:
+
+1. `mercmode.presentation_launch` - only for a host's exact MercMode scheduler launch, with `presentation_priority`, a MercMode
+   title, and the screensaver's own actor; PSO is not a MercMode title;
+2. `game_analysis` with `allow_during_gameplay` - that requires an **existing session** to analyse (it targets
+   `run['target']['session_id']`), so it cannot create one.
+
+`IDLE_MIN_S = 300` is a module constant, not a setting. The honest options are therefore: the operator's **Play** (their actor is
+not an agent, so it is admitted immediately and the campaign takes over within seconds), or an explicit, operator-authorised change
+to `background_testing.py` plus a gBox restart - which the operator has forbidden ("stop restarting gbox"). This lane will not
+impersonate the operator's actor or patch a safety gate on its own initiative.
