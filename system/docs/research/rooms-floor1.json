@@ -1,0 +1,309 @@
+{
+ "floor": 1,
+ "signature": "20f1802b46de",
+ "rooms": [
+  {
+   "room": 0,
+   "centre": [
+    237.5,
+    -287.1
+   ],
+   "bounds": [
+    -145,
+    595,
+    -605,
+    95
+   ],
+   "cells": 1625,
+   "height": {
+    "min": -5.7,
+    "max": 20.0,
+    "median": 2.3
+   },
+   "objects": {
+    "TOSensorAncient01": 2,
+    "TObjEnvSoundGlobal": 2
+   },
+   "object_count": 4,
+   "connects_to": [
+    1,
+    3,
+    4
+   ]
+  },
+  {
+   "room": 1,
+   "centre": [
+    232.3,
+    294.1
+   ],
+   "bounds": [
+    -5,
+    405,
+    105,
+    495
+   ],
+   "cells": 853,
+   "height": {
+    "min": 10.1,
+    "max": 27.3,
+    "median": 22.6
+   },
+   "objects": {
+    "TOSensorAncient01": 2,
+    "TObjEnvSoundEx": 1,
+    "TORockCaveBL03": 4
+   },
+   "object_count": 7,
+   "connects_to": [
+    0,
+    6,
+    8
+   ]
+  },
+  {
+   "room": 2,
+   "centre": [
+    -508.2,
+    -93.4
+   ],
+   "bounds": [
+    -605,
+    -365,
+    -345,
+    175
+   ],
+   "cells": 702,
+   "height": {
+    "min": 5.5,
+    "max": 19.6,
+    "median": 13.4
+   },
+   "objects": {
+    "TORockCaveBL03": 4,
+    "TOSwitchAttackSub": 1
+   },
+   "object_count": 5,
+   "connects_to": [
+    3,
+    10
+   ]
+  },
+  {
+   "room": 3,
+   "centre": [
+    -329.0,
+    -475.1
+   ],
+   "bounds": [
+    -575,
+    -155,
+    -605,
+    -345
+   ],
+   "cells": 699,
+   "height": {
+    "min": 1.9,
+    "max": 20.3,
+    "median": 14.0
+   },
+   "objects": {},
+   "object_count": 0,
+   "connects_to": [
+    0,
+    2
+   ]
+  },
+  {
+   "room": 4,
+   "centre": [
+    533.2,
+    -107.7
+   ],
+   "bounds": [
+    445,
+    615,
+    -345,
+    65
+   ],
+   "cells": 472,
+   "height": {
+    "min": 19.9,
+    "max": 42.9,
+    "median": 33.9
+   },
+   "objects": {},
+   "object_count": 0,
+   "connects_to": [
+    0
+   ]
+  },
+  {
+   "room": 5,
+   "centre": [
+    -57.3,
+    84.8
+   ],
+   "bounds": [
+    -185,
+    55,
+    -55,
+    235
+   ],
+   "cells": 427,
+   "height": {
+    "min": 19.5,
+    "max": 37.5,
+    "median": 26.0
+   },
+   "objects": {
+    "TOSensorAncient01": 3,
+    "TORockCaveBL03": 5,
+    "class 1536": 1
+   },
+   "object_count": 9,
+   "connects_to": [
+    7,
+    8
+   ]
+  },
+  {
+   "room": 6,
+   "centre": [
+    475.8,
+    503.1
+   ],
+   "bounds": [
+    215,
+    605,
+    385,
+    605
+   ],
+   "cells": 438,
+   "height": {
+    "min": 1.9,
+    "max": 26.3,
+    "median": 9.9
+   },
+   "objects": {
+    "TOSensorAncient01": 2,
+    "TObjEnvSoundEx": 2,
+    "TORockCaveBL03": 2
+   },
+   "object_count": 6,
+   "connects_to": [
+    1
+   ]
+  },
+  {
+   "room": 7,
+   "centre": [
+    -341.0,
+    321.2
+   ],
+   "bounds": [
+    -465,
+    -195,
+    85,
+    545
+   ],
+   "cells": 258,
+   "height": {
+    "min": -0.0,
+    "max": 25.8,
+    "median": 0.4
+   },
+   "objects": {
+    "TORockCaveBL03": 4
+   },
+   "object_count": 4,
+   "connects_to": [
+    5,
+    9
+   ]
+  },
+  {
+   "room": 8,
+   "centre": [
+    -81.0,
+    375.5
+   ],
+   "bounds": [
+    -145,
+    15,
+    245,
+    465
+   ],
+   "cells": 136,
+   "height": {
+    "min": 3.4,
+    "max": 29.9,
+    "median": 8.8
+   },
+   "objects": {},
+   "object_count": 0,
+   "connects_to": [
+    1,
+    5
+   ]
+  },
+  {
+   "room": 9,
+   "centre": [
+    -438.1,
+    273.8
+   ],
+   "bounds": [
+    -485,
+    -405,
+    245,
+    315
+   ],
+   "cells": 49,
+   "height": {
+    "min": 0.4,
+    "max": 2.3,
+    "median": 1.0
+   },
+   "objects": {},
+   "object_count": 0,
+   "connects_to": [
+    7,
+    10
+   ]
+  },
+  {
+   "room": 10,
+   "centre": [
+    -528.6,
+    218.8
+   ],
+   "bounds": [
+    -575,
+    -485,
+    185,
+    255
+   ],
+   "cells": 39,
+   "height": {
+    "min": 2.1,
+    "max": 9.5,
+    "median": 3.5
+   },
+   "objects": {},
+   "object_count": 0,
+   "connects_to": [
+    2,
+    9
+   ]
+  }
+ ],
+ "doorway_cells": 61,
+ "visited_by_bot": [
+  0,
+  1,
+  6,
+  8
+ ],
+ "source": "forest1-rooms-mesh.json"
+}

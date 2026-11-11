@@ -1,0 +1,381 @@
+{
+ "floor": 2,
+ "signature": "e3f69c1b1008",
+ "rooms": [
+  {
+   "room": 0,
+   "centre": [
+    -66.3,
+    256.1
+   ],
+   "bounds": [
+    -385,
+    195,
+    -285,
+    575
+   ],
+   "cells": 1082,
+   "height": {
+    "min": 8.5,
+    "max": 96.5,
+    "median": 18.2
+   },
+   "objects": {
+    "TOSensorAncient01": 3,
+    "TORockCaveBL03": 3,
+    "TOSymbolchatColli": 5
+   },
+   "object_count": 11,
+   "connects_to": [
+    3,
+    4,
+    5,
+    6,
+    8
+   ]
+  },
+  {
+   "room": 1,
+   "centre": [
+    443.1,
+    62.9
+   ],
+   "bounds": [
+    285,
+    605,
+    -125,
+    205
+   ],
+   "cells": 766,
+   "height": {
+    "min": 50.8,
+    "max": 59.7,
+    "median": 54.8
+   },
+   "objects": {
+    "TOSensorAncient01": 4,
+    "TORockCaveBL03": 12,
+    "TOSymbolchatColli": 1
+   },
+   "object_count": 17,
+   "connects_to": [
+    2
+   ]
+  },
+  {
+   "room": 2,
+   "centre": [
+    364.4,
+    -426.2
+   ],
+   "bounds": [
+    125,
+    605,
+    -585,
+    -135
+   ],
+   "cells": 676,
+   "height": {
+    "min": 50.4,
+    "max": 172.1,
+    "median": 54.1
+   },
+   "objects": {},
+   "object_count": 0,
+   "connects_to": [
+    1
+   ]
+  },
+  {
+   "room": 3,
+   "centre": [
+    -504.5,
+    305.5
+   ],
+   "bounds": [
+    -635,
+    -385,
+    65,
+    505
+   ],
+   "cells": 598,
+   "height": {
+    "min": 19.5,
+    "max": 34.6,
+    "median": 24.3
+   },
+   "objects": {
+    "TORockCaveBL03": 5,
+    "TOSensorGeneral01": 1
+   },
+   "object_count": 6,
+   "connects_to": [
+    0,
+    11
+   ]
+  },
+  {
+   "room": 4,
+   "centre": [
+    258.3,
+    436.7
+   ],
+   "bounds": [
+    65,
+    505,
+    195,
+    575
+   ],
+   "cells": 559,
+   "height": {
+    "min": 10.4,
+    "max": 25.4,
+    "median": 19.9
+   },
+   "objects": {
+    "TOSensorAncient01": 7,
+    "TORockCaveBL03": 3,
+    "TOSymbolchatColli": 1
+   },
+   "object_count": 11,
+   "connects_to": [
+    0,
+    12
+   ]
+  },
+  {
+   "room": 5,
+   "centre": [
+    -226.2,
+    146.7
+   ],
+   "bounds": [
+    -335,
+    -145,
+    -85,
+    365
+   ],
+   "cells": 471,
+   "height": {
+    "min": 18.6,
+    "max": 30.2,
+    "median": 22.7
+   },
+   "objects": {
+    "TORockCaveBL03": 3
+   },
+   "object_count": 3,
+   "connects_to": [
+    0
+   ]
+  },
+  {
+   "room": 6,
+   "centre": [
+    -143.6,
+    -365.8
+   ],
+   "bounds": [
+    -275,
+    -35,
+    -605,
+    -215
+   ],
+   "cells": 485,
+   "height": {
+    "min": 21.0,
+    "max": 48.0,
+    "median": 29.1
+   },
+   "objects": {},
+   "object_count": 0,
+   "connects_to": [
+    0,
+    7,
+    9
+   ]
+  },
+  {
+   "room": 7,
+   "centre": [
+    -462.0,
+    -487.9
+   ],
+   "bounds": [
+    -615,
+    -275,
+    -615,
+    -305
+   ],
+   "cells": 464,
+   "height": {
+    "min": 43.5,
+    "max": 77.7,
+    "median": 68.6
+   },
+   "objects": {},
+   "object_count": 0,
+   "connects_to": [
+    6,
+    9
+   ]
+  },
+  {
+   "room": 8,
+   "centre": [
+    214.4,
+    -347.2
+   ],
+   "bounds": [
+    55,
+    335,
+    -425,
+    -285
+   ],
+   "cells": 308,
+   "height": {
+    "min": 4.7,
+    "max": 16.8,
+    "median": 9.7
+   },
+   "objects": {},
+   "object_count": 0,
+   "connects_to": [
+    0
+   ]
+  },
+  {
+   "room": 9,
+   "centre": [
+    -376.6,
+    -165.0
+   ],
+   "bounds": [
+    -455,
+    -275,
+    -295,
+    -15
+   ],
+   "cells": 306,
+   "height": {
+    "min": 32.4,
+    "max": 44.1,
+    "median": 36.6
+   },
+   "objects": {},
+   "object_count": 0,
+   "connects_to": [
+    6,
+    7,
+    11
+   ]
+  },
+  {
+   "room": 10,
+   "centre": [
+    -570.6,
+    -126.8
+   ],
+   "bounds": [
+    -615,
+    -515,
+    -225,
+    -25
+   ],
+   "cells": 137,
+   "height": {
+    "min": 37.2,
+    "max": 48.4,
+    "median": 43.4
+   },
+   "objects": {},
+   "object_count": 0,
+   "connects_to": [
+    11
+   ]
+  },
+  {
+   "room": 11,
+   "centre": [
+    -427.0,
+    30.8
+   ],
+   "bounds": [
+    -515,
+    -335,
+    -25,
+    115
+   ],
+   "cells": 104,
+   "height": {
+    "min": 27.0,
+    "max": 36.9,
+    "median": 31.6
+   },
+   "objects": {},
+   "object_count": 0,
+   "connects_to": [
+    3,
+    9,
+    10
+   ]
+  },
+  {
+   "room": 12,
+   "centre": [
+    479.9,
+    534.1
+   ],
+   "bounds": [
+    435,
+    525,
+    485,
+    575
+   ],
+   "cells": 67,
+   "height": {
+    "min": 18.6,
+    "max": 20.5,
+    "median": 19.7
+   },
+   "objects": {
+    "TORockCaveBL03": 1,
+    "TOSymbolchatColli": 1
+   },
+   "object_count": 2,
+   "connects_to": [
+    4
+   ]
+  },
+  {
+   "room": 13,
+   "centre": [
+    328.0,
+    -139.6
+   ],
+   "bounds": [
+    295,
+    365,
+    -185,
+    -95
+   ],
+   "cells": 50,
+   "height": {
+    "min": 3.9,
+    "max": 5.1,
+    "median": 4.3
+   },
+   "objects": {},
+   "object_count": 0,
+   "connects_to": []
+  }
+ ],
+ "doorway_cells": 76,
+ "visited_by_bot": [
+  0,
+  1,
+  6,
+  8
+ ],
+ "source": "forest2-rooms-mesh.json"
+}
