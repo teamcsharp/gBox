@@ -361,3 +361,46 @@ Only if **both** phase 2 and phase 3 leave the state unchanged is round 96's neg
 
 The script is staged in the repo as `docs/research/pso-cp4-retest.py` and needs nothing but a session - the next window runs it
 as its first action, before any walk attempt.
+
+## Round 100: the definitive input result - four injection methods, the game visibly at "PRESS START", none land
+
+The window opened again (idle 309 s), the launch was admitted (`job 2db839b720154c70`), and this time the question was
+settled with a **screenshot** rather than inference.
+
+**The game is running and waiting for input.** `docs/research/pso-cp4-press-start.png` (a scaled copy of the i9's desktop
+captured this round) shows the Dolphin window at the "PHANTASY STAR ONLINE Episode I & II Plus - **PRESS START**" title
+screen, with the HUD of the operator's own other session beside it.
+
+**Four independent injection methods were tried against that screen with the game window foreground (`iconic=False`,
+`GetForegroundWindow() == hwnd` verified on every attempt):**
+
+| method | attempts | result |
+|---|---|---|
+| scancode `SendInput` (agent process, single-thread driver) | 4 | `mode` stayed 0 |
+| **virtual-key** `SendInput` (VK_RETURN, no scancode) | 3 | `mode` stayed 0 |
+| worker relay `POST /api/sessions/<sid>/input` (agent) | 3 | `{"queued": 1}`, no change |
+| worker relay, actor `autoplay` | 3 | `{"queued": 1}`, no change |
+
+Also measured this round: **the attract loop never ends on its own** - `mode` was still 0 after a 180-second wait. That settles
+round 65's ambiguity the other way: its 0 -> 1 transition really was a press landing (in that session), so injected input
+*has* worked on this plane at least once, and something about the current session/configuration drops it.
+
+**What is ruled out, and what is left:**
+
+* the "wrong endianness of key names" theory (the scancode table maps `start` -> Enter 28, matching the pad config);
+* the "window not focused" theory (foreground was verified True on the attempts that had a window);
+* the "too early in the movie" theory (the game is at the title screen, asking for START);
+* the "no background input configured" theory (the worker sets `Dolphin.Input.BackgroundInput=True`).
+
+**What remains as the real difference:** the emulator here reads its keyboard through a path that ignores synthetic events
+(Dolphin's Qt/RawInput handling), while the **worker's own controller path** - the one `gbox.pso_coop` uses internally - is a
+different mechanism that injects at the emulator's pad level and is **not exposed to agents** (`send_input` is the only
+session input API and it goes through the same synthetic path).
+
+**So the live unblock is no longer "click the window":** it is one of
+1. a worker op that sets the pad state natively (the `pso_coop` controller path, exposed for agents),
+2. a launch that binds the pad to a device the worker can drive (an XInput virtual pad, not the keyboard),
+3. an operator pressing the buttons.
+
+The session was stopped (`ended: true`), `/api/sessions` is empty, and the i9 is clean. The probes are kept as
+`docs/research/pso-cp4-{retest,press-start,window-state,vk}.py` plus the screenshot.
