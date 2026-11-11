@@ -1578,3 +1578,19 @@ round_gun_downs 35-43, round_unwall_tangents 5-11, kills 7-24, all `died`. The E
 live. The three-load mailbox choice needs the round-start load change (`cb956095`, deployed 11:15) so the same
 stage counts each round; after three round starts the page choice (`choose_mailbox`) can be committed as
 `MAILBOX_AT` and the next RE4 session can attach and take the flash/hand receipts.
+
+## Round 85 (2026-11-11 11:20 CST) - the RE6 hand probe refuses: the parameterised spawn is not enough on 1.0.2
+
+First live `allow_unverified` hand-ring probe on RE6 (session `0569c82d21614288-bc86d7aad571481a`, request
+`199cbcba-ab05-4bca-a27f-3be209de7da9`, kind hand): `state failed`, requested 10, detonated 0, elapsed 1097.3 ms,
+hp 900 -> 900, self_damage 0, reason "native completion uncertain; request will not be replayed". The after-frame is
+the ordinary round (no explosion), kills/score/combo unchanged - a clean refusal, nothing crashed or was replayed.
+
+This matches the status line that has been there since the restart: on RE6 the compiled spawn image pins the flash's
+class, so handing the class DTI/vtable to the parameterised pair does not make the item factory build a hand (or
+incendiary) unit. The probe path cannot take those kinds on this build; they need the native spawn image work
+(the lane's package 2/4 item), not a ring-code change. Flash is confirmed (round 84) and stays the only advertised
+RE6 kind.
+
+Next live probes: RE5 hand/incendiary on its next live round (uWp06/uWp07 documented in its status), and the RE4
+harness receipts once the mailbox page is chosen (the next RE4 block's three round-start loads).
