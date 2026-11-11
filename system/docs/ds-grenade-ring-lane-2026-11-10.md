@@ -1881,3 +1881,21 @@ that is #9771's first item.
 - **The 14:30 deploy** (e8fed852) carried the RE4 aim smoothing, the walk-turn hysteresis and the widened random
   weapon, and 14:45 (9e151053) the hit reports; the next RE4 block is the aim/walk/bow/random-weapon live test. The
   RE6 hand ring's action-stage diagnostic is deployed too - the next hand probe returns the unit class and action.
+
+## Round 99 (2026-11-11 15:51 CST) - the hand ring fails in the SPAWN call (3 s, no unit); the mines recover
+
+The live hand probe on the RE6 block (request de85187f, kind hand, allow_unverified, 3 s class budget) failed at
+**3065.3 ms** with `detonated 0`, `grenades []`, hp 735->736 and the generic "native completion uncertain" - not the
+action-wait diagnostic, which proves the **parameterised spawn call itself never reaches done** (the derived image at
+main+0x18F2BC0 runs no unit into existence; the initialized/action wait is never reached). The game kept playing and the
+remote-mine rule recovered on its next tick (rings 8 / detonations 2 after the failed probe), so the failure is
+contained to the ring controller.
+
+#9771 now carries the ordered next experiments: dump the mailbox state/ticks after the timeout; try the spawn with the
+item/register the game's own throw path sets (the factory may read the equipped item, not x1); if the factory cannot be
+parameterised, use the game's own throw for the first grenade (equip -> throw -> relocate) as the non-flash fallback.
+The flash ring stays the only verified kind; the others stay refused in the PiP until a receipt.
+
+The hurt reports are live with real data (12 requests): e.g. `hp 750 -> 455 | hurt events 6 | attackers uEm4701 at 3 cm,
+uEm4720 at 15 cm, uEm1400 at 114 cm | Doing: walk / uEm1400 cEm1000ActWalkGunR: an attack that hurt him through his
+shots (learned): out of its reach` - the report names the attacker classes/distances and the bot's own learned reason.
