@@ -343,3 +343,32 @@ for its own files, and `git diff --quiet origin/main origin/<branch> -- <file>` 
 from main's current content except for the three files that made round 95's conflicts (`pso_swapfit.py` in cp07-model-walk and
 cp12; `test_pso_class_registry.py` in cp07-object-loader; `pso_player.py` in cp12/cp13), which the ordering and the rebase
 already handle.
+
+## Round 119: the review list settles at 15 branches, with the conflicts designed out
+
+Two more branches this round remove the last of the avoidable conflict work:
+
+**`ds-pso-object-loader-findings-20261110` @ `ce5acde3`** - the CP07.2 findings forward-ported onto current main. Its original
+branch also carried the CP0 consolidation (`pso_classes.py` replacing `pso_class_registry.py` plus its tests), which main has
+solved differently (two complementary modules and `test_pso_registries_agree.py`). The forward port carries **only**
+`CP07-object-loader.md` (with a note recording the five constructors at `0x8049eee8`, the payload-first-byte dispatch and the
+class-id-gates-creation fact) and `docs/research/pso-object-loader-decompiles.txt` - merge-tree clean against main.
+
+**And `ds-pso-cp07-model-walk` is subsumed:** round 95's conflict fix merged CP7.1 *into* CP12's branch, so CP12 (which already
+carries the model-centre checks and their tests) delivers CP7.1's content. Merging cp07-model-walk separately would recreate the
+`pso_swapfit.py` conflict for no gain, so it joins the drop list.
+
+| state | branches |
+|---|---|
+| **merge (15)** | `cp02-gold-set`, `cp03-labelling`, `cp06-evt-opcodes`, `cp06-nrel`, `cp07-scene-loader`, `cp08-room-pieces`, `cp09-save-data`, `cp10-forest1`, **`cp12-rigged-swap`**, **`cp13-library-donors`** (after cp12), `cp15-room-inventory`, `cp16-stick`, `cp17-walk-graph`, `ds-pso-editor-views`, `ds-pso-object-loader-findings` |
+| **drop (5)** | `cp00-clean-start`, `cp00-classes`, `cp01-local-model`, `cp11-editor-page`, `cp07-model-walk` (inside cp12) |
+
+**What the merge will still meet, and where it is handled:**
+
+* `pso_player.py` between CP12 and CP13 - they are **stacked** (CP13 contains CP12), so merging CP12 then CP13 applies cleanly in
+  order; that is the one ordering constraint left.
+* nothing else: the `test_pso_class_registry.py` and `pso_swapfit.py` conflicts belonged to branches that are now dropped or
+  subsumed.
+
+**So the review is: 15 branches, one ordering constraint (CP12 before CP13), zero known file conflicts.** Everything else the
+programme needs is the live window, the CP8 data decision, and the reviewer's own run.
