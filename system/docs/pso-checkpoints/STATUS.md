@@ -401,3 +401,32 @@ fixes and CP13's own additions), so merging CP12 then CP13 applies in order.
 
 **Main is a moving target by design now** - the lane merges branches as it reviews them, so this document's lists age within
 minutes. The durable parts are the branch tips, the per-branch inventory method, and the test evidence.
+
+## Round 121: every remaining branch merges cleanly - CP13 rebased onto main, zero conflicts
+
+The lane's merges moved main to **`a30eae1d` → `dc8a1a30`** during this round (CP12's merge, then CP15 and CP17). Against that main,
+**all eleven remaining checkpoint branches are now merge-tree clean**:
+
+```
+ds-pso-cp06-evt-opcodes    rc=0    ds-pso-cp10-forest1        rc=0
+ds-pso-cp06-nrel           rc=0    ds-pso-cp12-rigged-swap    rc=0
+ds-pso-cp07-scene-loader   rc=0    ds-pso-cp13-library-donors rc=0   <- rebased this round
+ds-pso-cp08-room-pieces    rc=0    ds-pso-cp15-room-inventory rc=0
+ds-pso-cp09-save-data      rc=0    ds-pso-cp17-walk-graph     rc=0
+ds-pso-editor-views        rc=0
+```
+
+**What the last conflict was, and why it is gone:** CP13 conflicted on `pso_player.py` because main had gained a
+**`body_endian`/`read_body_payload`/`body_models` block** (from the earlier body-platform work) that CP12's branch never saw, while
+CP13 was stacked on CP12. `ds-pso-cp13-library-donors` is now **rebased onto main** (`7694df4d`) with that resolved by keeping
+**both**: main's platform-aware block and CP13's `gc_head_parts`, plus the `replace_heads` opt-in that CP13 adds to `build_swap`.
+Verified after the rebase: `test_pso_gc_heads` + `test_pso_swapfit` + `test_pso_gc_swap` + `test_pso_player_textures` = **32 passed**.
+
+**The review is now mechanical:** eleven branches, no order constraint (CP13 carries its own base), no conflicts. The five drops
+from round 119 still hold (`cp00-clean-start`, `cp00-classes`, `cp01-local-model`, `cp11-editor-page`, `cp07-model-walk`), with
+three of them already merged by the lane and one (`cp07-object-loader-findings`) also superseded - main now has
+`CP07-object-loader.md` and its decompiles.
+
+**A note for whoever reads this last:** main is being merged continuously, so branch tips and this list age. The durable parts are
+(a) every branch's evidence file names its tip hash, (b) the inventory method in round 118 needs two git commands per branch,
+and (c) each branch's suite has been run green from its pushed tip at least once.
