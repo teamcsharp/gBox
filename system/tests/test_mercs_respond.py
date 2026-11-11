@@ -386,10 +386,10 @@ def test_a_standing_crowd_within_6m_is_answered_before_any_closes():
 def test_a_ring_counts_one_surround_event_and_a_front_group_does_not():
     r, k = respond.Responder({}), Kit(flash=False, mine=False)
     run(r, k, _crowd_ticks([(0, 650), (650, 0), (-650, 0), (0, -650)], n=5))
-    assert r.stats["surround_events"] == 1
+    assert r.stats["ring_events"] == 1
     r2 = respond.Responder({})
     run(r2, k, _crowd_ticks([(0, 650), (100, 650), (-100, 650)], n=5))
-    assert r2.stats["surround_events"] == 0
+    assert r2.stats["ring_events"] == 0
 
 
 def test_a_crowd_past_the_blast_reach_asks_a_mine_and_the_one_flash_gap_holds():

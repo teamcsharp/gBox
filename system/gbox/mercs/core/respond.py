@@ -51,7 +51,7 @@ ANSWERS = ("flash", "mine", "fire")
 COUNTERS = ("threat_ticks", "threat_answered_flash", "threat_answered_mine", "threat_answered_fire",
             "threat_unanswered", "hurt_while_idle", "threat_forced_fire", "threat_learned_ticks", "threat_hits",
             "hurt_while_busy", "threat_busy", "threat_flash_asks", "threat_mine_asks", "threat_lacks_flash",
-            "threat_lacks_mine", "threat_flash_refused", "threat_mine_refused", "surround_events",
+            "threat_lacks_mine", "threat_flash_refused", "threat_mine_refused", "ring_events",
             "crowd_ticks")
 ENFORCE = True                    # False: measured only (the stats above), the title's own action always stands
 
@@ -292,12 +292,12 @@ class Responder:
         hurt = now - self.hurt_at <= r.hurt_s
         crowd_now, ring_now = self._crowd(rows, me, prof)
         if ring_now and not self._ringed:
-            self._count("surround_events")
+            self._count("ring_events")      # (RE6 keeps its own surround_events: 3 within 4 m)
         self._ringed = ring_now
         if crowd_now or ring_now:                          # proactive: a crowd / ring is a threat before it closes
             self._count("crowd_ticks")
             for x in rows:
-                if x["d"] <= (r.ring_r_cm if ring_now else r.crowd_r_cm):
+                if prof.grab_r_cm < x["d"] <= (r.ring_r_cm if ring_now else r.crowd_r_cm):   # (arm's length: the title's own escape / flash)
                     x["threat"] = True
         hot = [x for x in rows if x["threat"]]
         if hurt and rows and not hot:
