@@ -487,3 +487,39 @@ binding* was.
 **What this changes in the handover:** CP4/CP16 are blocked by a **pad-binding environment fault**, not by a missing input API.
 The probe `pad_bind.probe_pads()` is the one-line test for it, and the launch job output says "virtual pad unavailable ... 
 keyboard input used" when it happens.
+
+## Round 103: the agent can hold the controller itself - a ViGEm pad on XInput slot 0, no focus involved
+
+Round 102's root cause was "no working pad". This round tested whether **this process can be the missing pad**, and the answer
+is yes:
+
+```
+vpad_win.VGamepad()                 ->  created a pad on XInput slot 0      (the slot the launch's fallback INI binds:
+                                                                             Device = XInput/0/Gamepad)
+pad_bind.probe_pads() while idle    ->  {"0": [0, 0, 0, 0, 0, 0, 0]}        (the "phantom slot reporting zeros")
+pad.apply([{"key": "a", ...}])      ->  {"sent": 1, "via": "dolphin virtual pad (XInput slot 0)", "held": ["a"]}
+pad_bind.probe_pads() after press   ->  {"0": [4096, 0, 0, 0, 0, 0, 0]}     <- the pad reports the press
+pad.close()                         ->  {"0": ...} disappears
+```
+
+So a process that holds such a pad **is** Player 1's controller on this machine, and `apply` is focus-independent by design
+("Player 1 on the virtual pad: focus-independent, so no polite/focus gating"). No key injection, no foreground window, no
+`SendInput` - the exact input path the emulator reads.
+
+**Press semantics matter:** `apply` **holds** a key unless the same batch releases it. A tap must therefore be a down+up pair:
+
+```
+pad.apply([{"key": "start", "down": True}, {"key": "start", "down": False}])   ->  {"sent": 2, "held": []}
+```
+
+(With only `{"frames": 3}` the key stayed held - `held: ["start"]` - which in a menu would repeat or skip.)
+
+**New driver, ready for the next window: `docs/research/pso-cp4-padwalk.py`.** It creates the pad, waits for a session, and runs
+`pso_boot_walk.walk` with **presses fed through the pad** and checkpoints read from RAM through the plane. If the launch's
+fallback binds `XInput/0/Gamepad` - which it does when `_setup_vpad` fails - the walk's START press is the first thing this
+machine can actually deliver to the game.
+
+**The one caveat to verify live:** the launch may instead bind a different slot (when `_setup_vpad` succeeds, the worker creates
+its *own* pad and the INI names that slot), in which case the agent's pad must be created **first** or the walk must use the
+worker's slot. The driver logs the pad's slot and the walk log will show whether the press landed; `pso_boot_walk`'s first
+checkpoint (`mode` leaves 0) answers it immediately.
