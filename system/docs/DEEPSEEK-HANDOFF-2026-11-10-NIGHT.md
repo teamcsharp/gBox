@@ -698,3 +698,16 @@ Then send it the heavy analysis work.
     already reached 5-8 kills and 11-31 shots).
   - The RE4 harness E6 remains uncertain (the diagnostic receipt awaits the next RE4 probe); the RE5 2.5 s ring budget
     awaits a live RE5 round (the last two RE5 blocks hung on the title screen).
+
+- 2026-11-11 14:05 (DeepSeek PM): **the combo-loss reports are confirmed as real requests in the control plane** (not just
+  the bot's stat): `ace27535ade04a0e` and `4b32505b92664287`, "Combo lost in 01002A000CD48000 (round
+  b8f3035fcf2444459a269c17cb210643)", automated, open, created 13:46:14 and 13:47:31 - the operator's "follow report
+  every time the combo is lost" is end-to-end live. The same round filed two (its two losses), under the 3-per-round cap.
+  - **E6 (RE4 harness) re-tested on a stable playing round with a valid unit (player_generation 231)**: the mailbox
+    dispatcher is still never invoked (`ticks 0`), so the clone's transform slot (+0x20) is not a slot the game calls
+    for the player - the next step is a direct-call hook or a per-slot probe (the native build tooling exists:
+    scripts/build_dispatch.py). The RE4 flash/ring receipts stay blocked; the RE5/RE6 ones are unaffected.
+  - The class-spawn budget for the RE6 hand/incendiary ring (3 s / 2 s) is deployed; two live probes wait for the next
+    RE6 and RE5 playing rounds (the RE6 hand/incendiary ring; the RE5 flash scatter + flash ring + hand/incendiary).
+  - The bow 40x is live on the current Krauser RE4 block; the Krauser rounds still spend most of their shots on the
+    fire gate (0-10 shots/round), which #9744's aim acceptance targets.
