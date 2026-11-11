@@ -237,3 +237,50 @@ def test_real_villager_bfres_header():
     assert h["name"] == "output" and h["fmdl_offset"] == 0xF0 and h["rlt_offset"] == 0x2E1000
     assert h["magic_counts"]["FMDL"] == 1 and h["magic_counts"]["FSHP"] == 3 and h["magic_counts"]["FMAT"] == 3
     assert h["bntx_offset"] == 0x33000
+
+
+def _real_ant_bfres():
+    import shutil, subprocess
+    if not shutil.which("zstd"):
+        pytest.skip("zstd CLI missing")
+    keys = nsw.load_keys(KEYS)
+    info = nsw.list_xci(REAL)
+    e = next(x for x in info.hfs0["secure"] if x.name == "bd68bf29c8500e9c88ca844e1a6f77e8.nca")
+    with open(REAL, "rb") as fh:
+        def rd(o, n):
+            fh.seek(o)
+            return fh.read(n)
+        r = nsw.list_romfs(rd, e.offset, keys)
+        ent = next(f for f in r["files"] if f["path"] == "/Model/NpcNmlAnt00.Nin_NX_NVN.zs")
+        blob = nsw.read_romfs_file(rd, e.offset, keys, ent)
+    sarc = subprocess.run(["zstd", "-dc"], input=blob, capture_output=True, check=True).stdout
+    m = nsw.sarc_members(sarc)[0]
+    return sarc[m["offset"]:m["offset"] + m["size"]]
+
+
+@pytest.mark.skipif(not (os.path.exists(REAL) and os.path.exists(KEYS)), reason="owned XCI/prod.keys not present")
+def test_real_villager_bfres_model():
+    bf = _real_ant_bfres()
+    assert hashlib.sha256(bf).hexdigest() == "beaacdb751a044e70e1869eca2f7043430a1d192b83a69d59b944a6e9be9f1ae"
+    m = nsw.parse_bfres_model(bf)
+    assert m["name"] == "NpcNmlAnt00" and m["pool_base"] == 0x12000
+    assert len(m["bones"]) == 44 and m["bones"][0]["name"] == "Root" and m["bones"][0]["parent"] == -1
+    assert m["bones"][43]["name"] == "Z_Tail" and m["bones"][43]["parent"] == 42
+    assert all(b["parent"] < b["index"] for b in m["bones"])
+    assert [s["name"] for s in m["shapes"]] == ["Body__mBody", "Body__mCapVis", "Body__mEye"]
+    for s in m["shapes"]:
+        fv = m["fvtx"][s["fvtx"]]
+        idx = nsw.bfres_read_indices(bf, m, s)
+        assert len(idx) % 3 == 0 and max(idx) == fv["vertex_count"] - 1
+        assert max(s["skin_bones"]) < len(m["bones"])
+        pos = nsw.bfres_read_positions(bf, m, s)
+        assert len(pos) == fv["vertex_count"]
+        assert all(abs(c) < 50 for p in pos for c in p)
+    body = m["shapes"][0]
+    assert body["lod0"]["index_count"] == 11160 and m["fvtx"][0]["vertex_count"] == 2284
+    assert [a["name"] for a in m["fvtx"][0]["attrs"]] == ["_p0", "_n0", "_t0", "_c0", "_u0", "_i0", "_w0"]
+
+
+def test_parse_bfres_model_rejects_garbage():
+    with pytest.raises(ValueError):
+        nsw.parse_bfres_model(b"FRES" + b"\0" * 0x200)

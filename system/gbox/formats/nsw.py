@@ -477,3 +477,138 @@ def parse_bfres_header(data: bytes) -> dict:
     return {"version": ver, "align_shift": align_shift, "addr_size": addr_sz, "name": data[name_off:name_off + nlen].decode("ascii", "replace"),
             "rlt_offset": rlt_off, "file_size": fsize, "fmdl_offset": fmdl_off, "magic_counts": counts,
             "bntx_offset": data.find(b"BNTX")}
+
+
+def _bf_str(data: bytes, off: int) -> str:
+    if not (2 <= off < len(data) - 2):
+        raise ValueError("BFRES string offset out of range")
+    n = struct.unpack_from("<H", data, off)[0]
+    if off + 2 + n > len(data):
+        raise ValueError("BFRES string overruns file")
+    return data[off + 2:off + 2 + n].decode("ascii", "replace")
+
+
+def _bf_ptr(data: bytes, off: int) -> int:
+    v = struct.unpack_from("<Q", data, off)[0]
+    if v >= len(data):
+        raise ValueError("BFRES pointer 0x%X out of range at 0x%X" % (v, off))
+    return v
+
+
+def bfres_rlt_sections(data: bytes) -> List[dict]:
+    """Relocation-table sections (_RLT): 0=header/structs, 1=index buffers (= buffer pool base), 2=vertex buffers, 3=memory pool, 4=embedded BNTX."""
+    h = parse_bfres_header(data)
+    o = h["rlt_offset"]
+    n = struct.unpack_from("<I", data, o + 8)[0]
+    if n > 64 or o + 0x10 + n * 0x18 > len(data):
+        raise ValueError("bad RLT section count")
+    out = []
+    for i in range(n):
+        _ptr, pos, size, idx, cnt = struct.unpack_from("<QIIII", data, o + 0x10 + i * 0x18)
+        if pos + size > len(data):
+            raise ValueError("RLT section %d out of file" % i)
+        out.append({"pos": pos, "size": size, "entry_index": idx, "entry_count": cnt})
+    return out
+
+
+def parse_bfres_model(data: bytes) -> dict:
+    """Parse the first FMDL of a Switch BFRES v9 file: skeleton bones, FVTX attribute layouts, FSHP shapes + LOD0 index info.
+
+    Layouts empirically verified on AC:NH NpcNmlAnt00 (Body__mBody 2284 verts / 11160 u16 indices; 44 bones).
+    All pointers are bounds-checked; buffer data base is RLT section 1 (the pool base); face/vertex offsets are pool-relative.
+    """
+    h = parse_bfres_header(data)
+    f = h["fmdl_offset"]
+    if len(data) < f + 0x78:
+        raise ValueError("FMDL truncated")
+    skl, vtx, shp, mat = (_bf_ptr(data, f + k) for k in (0x18, 0x20, 0x28, 0x38))
+    nvtx, nshp, nmat = struct.unpack_from("<HHH", data, f + 0x68)
+    if not (0 < nshp <= 256 and 0 < nvtx <= 256 and nmat <= 256):
+        raise ValueError("implausible FMDL counts")
+    secs = bfres_rlt_sections(data)
+    if len(secs) < 3:
+        raise ValueError("RLT lacks buffer sections")
+    pool = secs[1]["pos"]
+    # skeleton
+    if data[skl:skl + 4] != b"FSKL":
+        raise ValueError("FSKL magic missing")
+    bone_arr = _bf_ptr(data, skl + 0x10)
+    nbones = struct.unpack_from("<H", data, skl + 0x38)[0]
+    if bone_arr + nbones * 0x60 > len(data):
+        raise ValueError("bone array out of range")
+    bones = []
+    for i in range(nbones):
+        o = bone_arr + i * 0x60
+        idx, parent = struct.unpack_from("<Hh", data, o + 0x28)
+        floats = struct.unpack_from("<3f4f3f", data, o + 0x38)
+        bones.append({"name": _bf_str(data, _bf_ptr(data, o)), "index": idx, "parent": parent,
+                      "scale": floats[0:3], "rot": floats[3:7], "pos": floats[7:10]})
+    # vertex buffers
+    fvtx = []
+    for i in range(nvtx):
+        o = vtx + i * 0x58
+        if data[o:o + 4] != b"FVTX":
+            raise ValueError("FVTX %d magic missing" % i)
+        attr_arr, binfo, bstride = _bf_ptr(data, o + 8), _bf_ptr(data, o + 0x30), _bf_ptr(data, o + 0x38)
+        buf_off = struct.unpack_from("<I", data, o + 0x48)[0]
+        nattr, nbuf = data[o + 0x4C], data[o + 0x4D]
+        vcount = struct.unpack_from("<I", data, o + 0x50)[0]
+        attrs = []
+        for j in range(nattr):
+            a = attr_arr + j * 0x10
+            fmt = struct.unpack_from(">H", data, a + 8)[0]
+            aoff, abuf = struct.unpack_from("<HH", data, a + 0xC)
+            attrs.append({"name": _bf_str(data, _bf_ptr(data, a)), "format": fmt, "offset": aoff, "buffer": abuf})
+        bufs = []
+        pos = buf_off
+        for j in range(nbuf):
+            size = struct.unpack_from("<I", data, binfo + j * 0x10)[0]
+            stride = struct.unpack_from("<I", data, bstride + j * 0x10)[0]
+            bufs.append({"size": size, "stride": stride, "pool_offset": pos})
+            pos += (size + 7) & ~7  # 8-byte packed (verified: 0x6B10 then 0x23B0 buffers)
+        fvtx.append({"vertex_count": vcount, "attrs": attrs, "buffers": bufs})
+    # shapes
+    shapes = []
+    for i in range(nshp):
+        o = shp + i * 0x60
+        if data[o:o + 4] != b"FSHP":
+            raise ValueError("FSHP %d magic missing" % i)
+        mesh = _bf_ptr(data, o + 0x18)
+        skin_list = _bf_ptr(data, o + 0x20)
+        sidx, midx, bidx, vidx, nskin = struct.unpack_from("<5H", data, o + 0x50)
+        # 0x50 shape index, 0x52 material index, 0x54 bone index, 0x56 FVTX index, 0x58 skin-bone count
+        vskin, nlod = data[o + 0x5A], data[o + 0x5B]
+        if skin_list + nskin * 2 > len(data) or vidx >= len(fvtx) or nlod < 1:
+            raise ValueError("FSHP %d fields out of range" % i)
+        face_off, prim, ifmt, icount, first_v = struct.unpack_from("<5I", data, mesh + 0x20)
+        if ifmt not in (0, 1, 2):
+            raise ValueError("unknown index format %d" % ifmt)
+        shapes.append({"name": _bf_str(data, _bf_ptr(data, o + 8)), "index": sidx, "material": midx, "bone": bidx, "fvtx": vidx,
+                       "skin_bones": list(struct.unpack_from("<%dH" % nskin, data, skin_list)), "vertex_skin_count": vskin, "lod_count": nlod,
+                       "lod0": {"face_pool_offset": face_off, "primitive": prim, "index_format": ifmt, "index_count": icount, "first_vertex": first_v}})
+    return {"name": _bf_str(data, _bf_ptr(data, f + 8)), "pool_base": pool, "bones": bones, "fvtx": fvtx, "shapes": shapes,
+            "material_count": nmat}
+
+
+def bfres_read_indices(data: bytes, model: dict, shape: dict) -> List[int]:
+    lod = shape["lod0"]
+    width = {0: 1, 1: 2, 2: 4}[lod["index_format"]]
+    start = model["pool_base"] + lod["face_pool_offset"]
+    n = lod["index_count"]
+    if start + n * width > len(data):
+        raise ValueError("index buffer out of range")
+    return list(struct.unpack_from("<%d%s" % (n, {1: "B", 2: "H", 4: "I"}[width]), data, start))
+
+
+def bfres_read_positions(data: bytes, model: dict, shape: dict) -> List[tuple]:
+    """Decode the _p0 (float32x3, format 0x0518) attribute of a shape's FVTX."""
+    fv = model["fvtx"][shape["fvtx"]]
+    a = next((x for x in fv["attrs"] if x["name"] == "_p0"), None)
+    if a is None or a["format"] != 0x0518:
+        raise ValueError("_p0 is not float32x3")
+    b = fv["buffers"][a["buffer"]]
+    start = model["pool_base"] + b["pool_offset"] + a["offset"]
+    n = fv["vertex_count"]
+    if start + (n - 1) * b["stride"] + 12 > len(data):
+        raise ValueError("position buffer out of range")
+    return [struct.unpack_from("<3f", data, start + i * b["stride"]) for i in range(n)]
