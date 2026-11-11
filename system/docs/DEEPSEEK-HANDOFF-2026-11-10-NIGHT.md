@@ -423,3 +423,11 @@ Then send it the heavy analysis work.
   character (its STAGE/CHARACTER SELECT state machine reads the RAM cursors but the confirm press is not sent). Next:
   wire the confirm press into the RE5 title's select phase (or the generic mercs_bot's menu phase) with a timeout, so
   the operator never sees the parked screen - and the round reports stop being 0-shot "lost".
+﻿
+- 2026-11-10 21:4x: the RE5 select stall has a fix in code. `mercs_bot.Boot.tick` now presses the title's confirm key
+  (**direct**, outside the Navigator) when RAM names a select (`select_stage`/`select_player`), the screen has not
+  moved for `STALL_CONFIRM_S` (15 s), the Navigator's own press did not take, no confirmation chain is open and the
+  select takes input; rate-limited by `BOOT_PRESS_S`, logged as `stall_confirm_presses` / `stall_confirm_at`.
+  `stall_confirm_due` is the tested predicate (`test_mercs_bot.py` 16 passed). Deploys to the Spark via the
+  autodeploy and hot-reloads at the next session; until then RE5 can still park, and a manual A press through
+  `POST /api/sessions/{sid}/input` starts its round.
