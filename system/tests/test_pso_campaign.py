@@ -200,6 +200,14 @@ def test_autoplay_input_keeps_campaign_for_resume():
     assert AutoplayIn.model_validate(request.model_dump()).campaign == P.CAMPAIGN
 
 
+def test_the_planner_gets_ten_minutes_of_retries_not_five_calls():
+    """Live 2026-11-10: five consecutive planner failures (~3 min) ended the campaign while the character could still
+    fight; the planner is the most contended dependency (a vision model on another PC's busy GPU)."""
+    assert not P.planner_gave_up(None), "no failure yet"
+    assert not P.planner_gave_up(100.0, now=100.0 + P.PLANNER_GIVE_UP_S - 1)
+    assert P.planner_gave_up(100.0, now=100.0 + P.PLANNER_GIVE_UP_S + 1)
+
+
 def test_vision_endpoint_uses_configured_remote_worker_service(monkeypatch):
     monkeypatch.setattr(P, "_serves_model", lambda *a, **k: False)      # no local model: the remote endpoint is used
     driver = SimpleNamespace(api=SimpleNamespace(base_url="http://federated-authority:8787"))
