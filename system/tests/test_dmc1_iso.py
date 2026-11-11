@@ -219,3 +219,25 @@ def test_child6_mesh_section_real():
     b = next(b for b in m0["blocks"] if b["off"] == 0xA4)
     assert b["k"] == 13 and b["bounds"][:4] == [9, 14, 19, 24] and b["bounds"][-1] == 61
     assert sum(mesh_section_conforms(m) for m in ms.values()) >= 49
+
+
+@pytest.mark.skipif(not RAW.exists(), reason="raw image not extracted")
+def test_child6_preamble_and_k2_records_real():
+    from gbox.dmc1_iso import (parse_child6_table, parse_child6_mesh_section,
+                               parse_child6_preamble, split_block_records)
+    with open(RAW, "rb") as f:
+        n, ch = parse_pld_children(f, 1043291, 1547616)
+        f.seek((1043291 * 2048) + ch[6][0])
+        blob = f.read(ch[6][1])
+    recs = parse_child6_table(blob)
+    allo = sorted({r["off"] for r in recs} | {len(blob)})
+    nxt = dict(zip(allo, allo[1:]))
+    sec = blob[0x6C0:nxt[0x6C0]]
+    pre = parse_child6_preamble(sec)
+    assert len(pre) == 32 and pre[0] == (0, True) and sum(fl for _, fl in pre) == 5
+    # block 0x162c: three fixed-size k==2 records, 6 floats each (bound 61 == n-1)
+    rr = split_block_records(sec, 0x162C, 0x168C)
+    assert len(rr) == 3 and all(r["k"] == 2 and r["bounds"] == [61] for r in rr)
+    # block 0xa4 starts k=13 and is followed by k=2 then k=11 records
+    ks = [struct.unpack_from("<I", sec, o)[0] for o in (0xA4, 0x15C, 0x17C)]
+    assert ks == [13, 2, 11]

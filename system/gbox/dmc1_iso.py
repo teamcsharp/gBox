@@ -309,6 +309,35 @@ def parse_child6_mesh_section(sec: bytes) -> dict:
     return {"n": n, "flags": flags, "blocks": blocks, "end": end}
 
 
+def parse_child6_preamble(sec: bytes) -> list[tuple[int, bool]]:
+    """32-byte preamble at +4 of a prim==4 section: (index, hi-bit flag).
+
+    Observed on the owned ISO: 5-6 entries per section carry bit 7; the
+    first entry is always 0x80 (index 0, flagged). Semantics unresolved.
+    """
+    return [(b & 0x7F, bool(b & 0x80)) for b in sec[4:0x24]]
+
+
+def split_block_records(sec: bytes, off: int, end: int) -> list[dict]:
+    """Split one block into records: u32 k, ceil((k-1)/2) words of u16
+    bounds, then floats up to the next record header.  Only the k==2 form
+    (header 2 words + 6 floats == 0x20 bytes) is fixed-size and verified;
+    larger records are returned with `end=None` for the trailing float
+    span (not split further).  Block 0x6c0+0xa4 holds k=13 @0xa4, k=2 @0x15c, k=11 @0x17c."""
+    out, p = [], off
+    while p + 8 <= end:
+        k = struct.unpack_from("<I", sec, p)[0]
+        if k == 2 and p + 0x20 <= end:
+            bound = struct.unpack_from("<H", sec, p + 4)[0]
+            fl = struct.unpack_from("<6f", sec, p + 8)
+            out.append({"off": p, "k": 2, "bounds": [bound], "floats": fl})
+            p += 0x20
+        else:
+            out.append({"off": p, "k": k, "bounds": None, "floats": None})
+            break
+    return out
+
+
 def mesh_section_conforms(m: dict) -> bool:
     """True when every block partitions the n vertices (last bound == n-1)."""
     return bool(m["blocks"]) and all(
