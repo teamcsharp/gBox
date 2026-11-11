@@ -746,3 +746,19 @@ def test_hurt_in_a_crowd_with_a_dry_gun_runs_out_through_an_open_side(monkeypatc
     b, _ = brain()
     b._escape(healthy, foes, flat, 100.0)
     assert b._escape(healthy, foes, flat, 105.0) is None            # healthy: the old rule
+def test_quick_turn_gap_shortens_for_grab_range_behind(monkeypatch):
+    """Coach 4d61b56a918045dc (request #5670): a Majini 0.3 m behind while aiming at another went unanswered for the
+    full QUICK_GAP_S; inside GRAB_THREAT_R the turn is allowed after QUICK_GAP_GRAB_S, farther ones still wait."""
+    monkeypatch.setattr(R, "QUICK_TURN", True)
+    assert R.QUICK_GAP_GRAB_S < R.QUICK_GAP_S
+    for dist, expect in ((30.0, True), (280.0, False)):
+        b, clock = brain()
+        b.tick(bot_snap((0.0, 0.0, -dist)))
+        clock[0] = 0.4
+        b.quick_at, b.quick = clock[0] - (R.QUICK_GAP_GRAB_S + 0.1), 0
+        snap = bot_snap((0.0, 0.0, -dist))
+        p = snap["player"]
+        live = [e for e in snap["enemies"] if (e.get("hp") or 0) > 0]
+        flat = lambda e: math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+        got = b._quick_behind(p, live, flat, clock[0])
+        assert (got is not None) == expect, (dist, got)
