@@ -305,3 +305,15 @@ Then send it the heavy analysis work.
   published string form. Targeted gate 45 passed, 1 skipped. The operator's bot-reload said "no loaded bot module
   changed" because the loaded module matched the share's (old) copy - after this merge the deploy copies the new file
   and one more bot-reload (or the 05:00 restart) makes the watch visible on the next RE4 block.
+﻿
+- 2026-11-10 20:0x: **PSO is autoplaying through its menus on the i9** (the operator's ask: watch it play the game). The
+  single-player route is the known dead end: pressing START reaches the episode-1 intro narration and the game returns to
+  the title (`pso_boot_local.py --start-at press_start` pressed START, the frame showed the intro, six more START
+  presses returned to PRESS START). So the session was relaunched on the **two-controller branch** (`pso_coop: true`,
+  session `aa4ba9c970e14266-9ef9fc607d884e0f`) and the **coop campaign** (`pso-coop-episodes-1-2`) started on it:
+  frames show PRESS START -> the title main menu (ONLINE/OFFLINE/OPTIONS/WEBSITE) -> character select (a HUmar on the
+  selection platform). The single-player campaign's stop was its own error budget (`errors >= 5`, the vision planner on
+  the Spark's `qwen2.5vl:7b` times out while the Spark's GPU plays RE6); the coop route's scripted MULTI MODE walk does
+  the menus, so it does not depend on the planner. Note: the i9 now has two worker registrations (the service and the
+  desktop app's `desktop_local`), so launch jobs must resolve the current online worker id
+  (`GET /api/workers`), not the one from an earlier session.
