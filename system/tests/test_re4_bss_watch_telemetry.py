@@ -55,3 +55,31 @@ def test_the_snapshot_does_not_read_before_a_round_has_a_stats_dict(monkeypatch)
     bot.snapshot(mem)
     assert mem.reads == []
     assert bot.stats is None
+
+
+def test_each_stage_load_is_kept_and_only_the_last_three(monkeypatch):
+    base = 0x100000000
+    mem = FakeMem({base + off: b"\0" * 16 for off in R.BSS_WATCH_PAGES})
+    stage = {"n": 1}
+    monkeypatch.setattr(R, "snapshot", lambda m: {"module_base": base, "game": {"stage": stage["n"]}})
+    monkeypatch.setattr(R.re4_nav, "attach", lambda snap: snap)
+    bot = R.RE4Switch()
+    bot.stats = {}
+    for n in (1, 1, 2, 3, 4):
+        stage["n"] = n
+        bot.snapshot(mem)
+    loads = bot.stats["bss_watch_loads"]
+    assert [row["stage"] for row in loads] == [2, 3, 4]     # the last three distinct stage loads
+    assert bot.stats["bss_watch"]["stage"] == 4
+
+
+def test_a_menu_snapshot_is_not_a_stage_load(monkeypatch):
+    base = 0x100000000
+    mem = FakeMem({base + off: b"\0" * 16 for off in R.BSS_WATCH_PAGES})
+    monkeypatch.setattr(R, "snapshot", lambda m: {"module_base": base, "game": {}})
+    monkeypatch.setattr(R.re4_nav, "attach", lambda snap: snap)
+    bot = R.RE4Switch()
+    bot.stats = {}
+    bot.snapshot(mem)
+    assert bot.stats["bss_watch"]["stage"] is None
+    assert bot.stats["bss_watch_loads"] == []

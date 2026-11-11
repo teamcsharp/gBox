@@ -250,7 +250,8 @@ def test_status_names_the_grenade_kinds_before_a_worker_has_claimed(tmp_path):
     assert set(rows)=={'flash','hand','incendiary'}
     assert all(r['available'] is False for r in rows.values())
     assert 'built on the RE4 Switch native harness' in rows['flash']['reason']
-    assert all('does not offer' in rows[k]['reason'] for k in ('hand', 'incendiary'))
+    assert 'hand-grenade ring is built' in rows['hand']['reason']
+    assert 'does not offer' in rows['incendiary']['reason']
     assert out['available'] is False
     store.db.close()
 

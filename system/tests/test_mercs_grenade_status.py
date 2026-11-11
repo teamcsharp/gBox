@@ -44,13 +44,13 @@ def test_an_unknown_session_gets_no_rows():
     assert G.identify(None, None) is None
 
 
-def test_re4_switch_flash_is_built_but_not_yet_verified():
+def test_re4_switch_flash_and_hand_are_built_but_not_yet_verified():
     rows = rows_by_kind({"game_id": "270a15eb98dab4d7"})
     assert rows["flash"]["available"] is False and rows["flash"]["source"] == "title"
     assert "built on the RE4 Switch native harness" in rows["flash"]["reason"]
     assert "no live receipt" in rows["flash"]["reason"]
-    for kind in ("hand", "incendiary"):                       # the ring is not built on this title
-        assert rows[kind]["available"] is False and "does not offer" in rows[kind]["reason"]
+    assert rows["hand"]["available"] is False and "hand-grenade ring is built" in rows["hand"]["reason"]
+    assert rows["incendiary"]["available"] is False and "does not offer" in rows["incendiary"]["reason"]
 
 
 def test_re4_gc_uses_the_controllers_own_gate_and_names_the_missing_kind():
