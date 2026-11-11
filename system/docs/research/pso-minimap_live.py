@@ -76,9 +76,9 @@ def read_state():
             continue
         if name.startswith(("TObjEne", "TEne")):
             if entity_hp > 0:
-                enemies.append({"x": x, "z": z, "hp": entity_hp, "class": name})
+                enemies.append({"x": x, "z": z, "hp": entity_hp, "class": name, "pointer": p})
         elif name.startswith("TBoss1") and "Colli" not in name:
-            bosses.append({"x": x, "z": z, "hp": entity_hp, "class": name})
+            bosses.append({"x": x, "z": z, "hp": entity_hp, "class": name, "pointer": p})
         elif "Warp" in name:
             warps.append({"x": x, "z": z, "class": name})
     return {"floor": floor, "player": (px, py, pz), "hp": hp, "enemies": enemies,
@@ -227,6 +227,39 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if self.path.startswith("/api/state"):
+            try:
+                live = read_state()
+                payload = {"floor": live["floor"], "player": list(live["player"]), "hp": live["hp"],
+                           "enemies": live["enemies"], "bosses": live["bosses"],
+                           "warps": live["warps"], "transform": _transform}
+                body = json.dumps(payload).encode()
+            except Exception as exc:                              # noqa: BLE001
+                body = json.dumps({"error": str(exc)[:80]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path.startswith("/api/target"):
+            from urllib.parse import parse_qs, urlparse
+            query = parse_qs(urlparse(self.path).query)
+            order_path = Path(r"D:\gBox\pso-ds\target-order.json")
+            if "pointer" in query:
+                order = {"pointer": int(query["pointer"][0]),
+                         "class": (query.get("class") or [""])[0],
+                         "t": round(time.time(), 2)}
+                order_path.write_text(json.dumps(order), encoding="utf-8")
+                body = json.dumps({"target": order}).encode()
+            else:
+                body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.startswith("/api/transform"):
             body = json.dumps(_transform).encode()
             self.send_response(200)
@@ -256,8 +289,18 @@ class Handler(BaseHTTPRequestHandler):
                 "  const px=(e.clientX-r.left)*(t.width/r.width);"
                 "  const pz=(e.clientY-r.top)*(t.height/r.height);"
                 "  const wx=t.min_x+(px-20)/t.scale, wz=t.min_z+(pz-20)/t.scale;"
-                "  const res=await (await fetch(`/api/order?x=${wx.toFixed(1)}&z=${wz.toFixed(1)}`,{method:'POST'})).json();"
-                "  document.getElementById('o').textContent='order: '+wx.toFixed(0)+','+wz.toFixed(0);"
+                "  const st=await (await fetch('/api/state')).json();"
+                "  let best=null,bd=1e9;"
+                "  for (const e of (st.enemies||[]).concat(st.bosses||[])) {"
+                "    const sx=20+(e.x-t.min_x)*t.scale, sz=20+(e.z-t.min_z)*t.scale;"
+                "    const d=Math.hypot(sx-px,sz-pz); if(d<bd){bd=d;best=e;} }"
+                "  if(best && bd<14){"
+                "    await fetch(`/api/target?pointer=${best.pointer}&class=${encodeURIComponent(best.class)}`,{method:'POST'});"
+                "    document.getElementById('o').textContent='target: '+best.class+' hp '+best.hp;"
+                "  } else {"
+                "    await fetch(`/api/order?x=${wx.toFixed(1)}&z=${wz.toFixed(1)}`,{method:'POST'});"
+                "    document.getElementById('o').textContent='move to: '+wx.toFixed(0)+','+wz.toFixed(0);"
+                "  }"
                 "};"
                 "setInterval(()=>{img.src='/minimap.svg?'+Date.now()},1000);"
                 "</script>")

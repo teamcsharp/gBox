@@ -83,10 +83,7 @@ def rooms():
     try:
         return json.loads(path.read_text(encoding="utf-8")).get("rooms") or []
     except Exception:                                            # noqa: BLE001
-        try:
-            return json.loads(ROOMS.read_text(encoding="utf-8")).get("rooms") or []
-        except Exception:                                        # noqa: BLE001
-            return []
+        return []
 
 
 def room_of(point, room_list):
@@ -240,6 +237,29 @@ def main():
                             break
                 else:
                     RUN.run_to(ME.read_pos, (order["x"], order["z"]), tolerance=10.0, budget=30.0)
+            continue
+
+        if not room_list:
+            # no map for this floor: explore rather than invent destinations
+            import random
+            here = ME.read_pos()
+            if here is None:
+                time.sleep(0.4)
+                continue
+            bearing = random.uniform(0, 6.283)
+            reach = random.uniform(90.0, 220.0)
+            goal = (here[0] + math.cos(bearing) * reach, here[1] + math.sin(bearing) * reach)
+            log(f"no map for floor {floor()} - wandering toward ({goal[0]:.0f},{goal[1]:.0f})",
+                {"event": "wander", "goal": [round(goal[0]), round(goal[1])]})
+            import nav3
+            route, raw_cells, legs = nav3.plan_h(here, goal, start_height=now_y())
+            if route:
+                for waypoint in route[1:4]:
+                    RUN.run_to(ME.read_pos, (waypoint[0], waypoint[1]), tolerance=10.0, budget=20.0)
+                    if not pso_input.allowed():
+                        break
+            else:
+                RUN.run_to(ME.read_pos, goal, tolerance=15.0, budget=25.0)
             continue
 
         candidates = [r for r in room_list if r["room"] not in visited] or room_list
