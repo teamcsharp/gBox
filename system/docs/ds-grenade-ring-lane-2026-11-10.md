@@ -1799,3 +1799,22 @@ rule hooked into the playbook refuses honestly every time it tries).
 Also this round: the class-spawn budget (`9983a9a5`: CLASS_SPAWN_TIMEOUT_S 3.0 / CLASS_WAIT_S 2.0, tested) is
 deployed for the next RE6 block, and two live probes are waiting: the RE6 hand/incendiary ring probe and the RE5
 combined probe (flash scatter, flash ring, then hand/incendiary), both only on a stable playing round.
+
+## Round 95 (2026-11-11 14:03 CST) - **why the arrows never fired: the tap was a zero-length press**
+
+The operator, watching the Krauser RE4 block: "why does the bot never fire the arrows in RE4? look at him." The live
+stats agreed with him and lied at once: the bot counted 43 shots, but 43 taps had been sent as **down + up in one
+batch** (re4switch_bot.Keys.apply). The guns fire on that press edge - Ada/Leon rounds land hits - but Krauser's bow
+reads the trigger **through its draw**: a zero-length press is a press the game never sees, so not one arrow left the
+bow. That is also why the 40x motion cap, the 40 Hz tick and the aim book changed nothing visible: there was never a
+trigger down for the bow's routine to consume.
+
+Fix (c8517b6f): `Keys.apply(act, tap_hold)` keeps the trigger down for `BOW_TAP_HOLD_S = 0.05 s` (~2 frames at
+30 fps) before the up while `snap.weapon_class == 0x1C`; a gun's tap keeps the exact one-batch press edge. Both fight
+loops pass the hold. Test: the held bow tap and the unchanged gun batch. Deploys 14:15; a restart after it gives the
+current watching session a fresh block (a running play() keeps its old Keys instance, so the hot reload alone would
+not reach it).
+
+This is also the lesson for the operator's "input vs effect" complaints: the bot's `shots` counter counts issued
+taps, not arrows - the round report's hits/accuracy are the real evidence, and the new aim acceptance (#9744) should
+read them.

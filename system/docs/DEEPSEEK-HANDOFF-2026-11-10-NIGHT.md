@@ -711,3 +711,13 @@ Then send it the heavy analysis work.
     RE6 and RE5 playing rounds (the RE6 hand/incendiary ring; the RE5 flash scatter + flash ring + hand/incendiary).
   - The bow 40x is live on the current Krauser RE4 block; the Krauser rounds still spend most of their shots on the
     fire gate (0-10 shots/round), which #9744's aim acceptance targets.
+
+- 2026-11-11 14:04 (DeepSeek PM): **the RE4 bow's arrows never fired because the bot's "tap" was a zero-length press**
+  (down + up in one batch; the guns fire on the edge, the bow needs the trigger through the draw). Fixed (c8517b6f):
+  a 50 ms tap_hold while the bow (class 0x1C) is in hand; deploys 14:15 and a restart after it gives the live RE4 block
+  the fix. This also explains why the 40x cap / 40 Hz tick / aim book changed nothing on Krauser - the game never saw
+  the trigger. The `shots` stat counts issued taps, not arrows; the round report's hits/accuracy are the real evidence.
+  - The RE6 hand/incendiary kind probe and the RE5 combined probe are waiting for the next RE6/RE5 playing rounds; the
+    class-spawn 3 s budget is deployed. The combo-loss reports are live (verified requests).
+  - E6 stands diagnosed (the transform slot is never invoked on the player unit); the next step is a direct-call hook or
+    a per-slot probe.
