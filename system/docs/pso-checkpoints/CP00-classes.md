@@ -19,10 +19,16 @@ Two modules read the same table in `PsoV3.dol`:
   and the real section-table mapping (`sections`/`address_of`/`offset_of`);
 - folds the branch's **pinned data** in as cross-check data: `PINNED_ADDRESS = 0x805D3138` and `PINNED_NAMES`
   (240 slots, **148 named**);
-- deletes nothing that exists: `pso_class_registry.py` was never on `main`, so "delete rather than alias" means it is
-  simply not added - `grep -r pso_class_registry system/gbox system/tests` finds no import;
-- keeps **both test sets**: `test_pso_classes.py` (12 tests, now including the two cross-checks) and
-  `test_pso_class_registry.py` (6 tests, ported onto `pso_classes`, one per assertion the branch used to make).
+- deletes nothing that exists. **Correction after the merge (2026-11-10 night):** `pso_class_registry.py` *is* on
+  `main` (it came in with `ds-pso-class-registry-20261110` before this branch's base), so it is not "simply not added" -
+  both modules now exist and `tests/test_pso_registries_agree.py` ties them together (anchor name/slot, the pinned
+  240/148 list, the kind mask). The registry stays because `pso_editor` calls `REG.label(cls)`/`REG.family(cls)` **without
+  a DOL** (its pinned table is the only source at that point); a full collapse into `pso_classes` needs that call path to
+  carry a DOL, which is CP8/CP15's editor work, not this step's. `pso_classes` is the module going forward: everything the
+  branch ported (families, label, the vtable census, the real section table, the pinned data as cross-checks) lives there;
+- keeps **both test sets**: `test_pso_classes.py` (now including the two cross-checks and the ported families/labels/
+  sections/vtable tests) and `test_pso_class_registry.py` (the registry module's own assertions), plus
+  `tests/test_pso_registries_agree.py` for the agreement.
 
 ## Measured
 
