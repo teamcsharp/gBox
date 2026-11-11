@@ -1378,14 +1378,17 @@ class RE4Switch(Driver):
             try:
                 watch = bss_watch(m, snap["module_base"])
                 watch["stage"] = (snap.get("game") or {}).get("stage")
-                stats["bss_watch"] = watch          # telemetry: the pages' bytes at this stage load (E3)
-                loads = stats.get("bss_watch_loads")
+                # The telemetry publishes only scalar stats (gbox/tools.py body(): int/float/str/bool), so the watch
+                # goes out as JSON strings; the accumulating list itself stays private (a list would be filtered).
+                stats["bss_watch"] = json.dumps(watch, separators=(",", ":"))
+                loads = stats.get("_bss_watch_loads")
                 if not isinstance(loads, list):
-                    loads = stats["bss_watch_loads"] = []
+                    loads = stats["_bss_watch_loads"] = []
                 # one reading per stage load: the last three are the three-load watch even when nobody polls live
                 if watch["stage"] is not None and (not loads or loads[-1].get("stage") != watch["stage"]):
                     loads.append(watch)
                     del loads[:-3]
+                    stats["bss_watch_loads"] = json.dumps(loads, separators=(",", ":"))
             except (OSError, ValueError, TypeError, struct.error):
                 pass
         return snap
