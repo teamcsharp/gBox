@@ -126,3 +126,8 @@ Then send it the heavy analysis work.
     `gun_down_ticks`, `unwall_tangents`, `unwall_tangent_steps`, and `round_reports.METRICS` has the `control` group -
     the next live round's report says whether the raise / lower is still there (analysis tickets included), and
     `gun_down_last` in the round's row names what did it.
+- 2026-11-10 19:1x: the test suite no longer writes the operator's mercs telemetry (the checkout's
+  `gbox-data/mercs/re4-sight-blocks.jsonl`, `re4-walk-presses.jsonl`, `re4-crossings.jsonl` had test lines that looked
+  like live bot data): an autouse fixture points `re4_switch.SIGHT_LOG` / `WALK_LOG` and `re4_walk.CROSSING_LOG` at each
+  test's own temp files, and `tests/test_mercs_test_isolation.py` is the rule (it also runs a synthetic round and checks
+  the deployment's files are untouched).
