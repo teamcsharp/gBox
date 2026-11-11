@@ -1227,3 +1227,23 @@ call as the flash.
 
 **Live:** no watch strings yet - the block is RE6, and the RE4 bot module still needs the post-fix deploy + one
 operator reload (or the 05:00 restart). The lane's code is otherwise ready.
+
+## Round 72 (2026-11-10 22:15 CST) - G3: the descriptor table is unreferenced from code (negative result), and the queue sits on RE6
+
+**G3 negative result.** The descriptor region `0x67B2A0..0x67B640` (the 0x18-byte entries `{fn, 0xB05xxx pointer,
+0x0403}` that hold the hand/flash blast functions at `0x67B3F0`/`0x67B5A0`) is **not referenced from the text at
+all**: no `adrp` reaches any page in `0x67A000..0x67C000`, no `adrp`+`add`/`ldr` pair resolves into it, and no qword in
+rodata or `.data` points into it. So those "vtable slots" are not the runtime dispatch table - the item-class
+(`0x13`/`0x16`/`0x17`) selection happens elsewhere (a GOT-loaded class table built at boot, or the throw routine). The
+item-table class mapping from round 71 stands, and the incendiary remains a persistent-fire lead (`0x2E4BA0`, effect
+`0x26`) rather than an instant area attack; finding the dispatch is the next static step (scan for the class `0x16`
+compare in the throw/explosion path, or test `0x2E4BA0` live).
+
+**Live: no RE4/RE5 block in two polling windows.** The same RE6 No Mercy session
+(`25385f8f4eb94342-134c87fb0bd84100`) has been the current run for hours (kills climbing, screen playing), so neither
+the E3 watch (needs RE4) nor CP0's post-round RE5 read could be taken. The alternating queue is in the settings, but
+the current run is not advancing; that is the operator's side (the queue/session control), not the lane's.
+
+**State of the lane's code:** everything is merged and tested (harness dispatcher/controller/F/G offline, E6 selftest,
+the `.bss` watch with JSON-string telemetry, `choose_mailbox`); the open items are all live receipts waiting on a
+working RE4/RE5 block and the 05:00 restart.
