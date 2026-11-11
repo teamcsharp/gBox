@@ -110,3 +110,36 @@ whose event is known, e.g. the city's Warp door), or trace the `.evt` file being
 both are recorded in `CP07-*.md` as the reason the interpreter is live-dependent.
 
 Tests: none changed.
+
+## Round 112: a structural scan for the dispatch table - and why the obvious signature misses it
+
+The round-75 dead ends were "no string to follow" and "+0x84 is too common". This round tried a third, purely offline route: an
+opcode interpreter dispatches through a table, and a table of **code addresses** is a structural signature no decompiler is
+needed for.
+
+`docs/research/pso-cp6-dispatch-scan.py` (three passes):
+
+1. **All runs of words that point into the text sections** (>= 6 long): **983** runs. Too many to be meaningful - vtable hunks and
+   pointer arrays qualify. The biggest are 591, 555 and 474 entries, each containing the repeated target `0x801a1fd8` (a common
+   stub), i.e. vtables.
+2. **Opcode-table shape**: length 16..96, at least 60 % of targets inside the event-code region (`0x80140000..0x801a0000`, where
+   the "EVT NO" debug helpers live) and at least 60 % distinct targets: **41** candidates.
+3. **The strongest candidate decompiled**: `0x80498f28`, **84 entries, 80 in the event region, all distinct**, in near-identical
+   pairs (`0x80149128`/`0x801490f4`, `0x80149c7c`/`0x80149c64`, ...). Its first two targets are **not** opcode handlers:
+
+```c
+void FUN_80149128(void) {  u32 v = FUN_800f9990("PlyMotionNpcTown.cpt"); [state-0x4ec8] = v; }
+void FUN_801490f4(void) {  if ([state-0x4ec8]) { FUN_800f957c(); [state-0x4ec8] = 0; } }
+```
+
+a **resource load/unload pair** for a `.cpt` file - the pairs-of-near-identical-addresses shape is exactly what a load/unload
+table looks like, which is why it scored highest.
+
+**The reason the scan cannot find the opcode table, and the next step:** the PowerPC compiler emits a `switch` over many cases as
+a table of **relative offsets** (or a `bctr`-style offset table), not as absolute function pointers - so a table of *code
+addresses* is the wrong signature for a dispatch written as one big switch. The next scan is the mirror image: look for arrays of
+4-byte values where `table_base + value` lands inside the text sections, and test each candidate by checking that the target
+instructions are valid block starts.
+
+**What this round adds to CP6.1:** a reusable scanner (three passes, calibration case included), the ruling-out of the
+absolute-pointer signature for this interpreter, and a named next step that is still fully offline.
