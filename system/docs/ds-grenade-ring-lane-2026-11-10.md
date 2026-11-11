@@ -1080,3 +1080,29 @@ the title screen without a round (screen=title, running=False), and the queue mo
 CP0's second read could not be taken on the RE5 block for that reason; the first read (pre-round) showed the RE5
 controller alive with hand/incendiary "built, no live receipt yet" and flash masked by "no living player" - the
 post-round read is still owed. The RE4 watch will be automatic on the next RE4 block.
+
+## Round 66 (2026-11-10 19:20 CST) - E6's no-op selftest is in, and the second merge is on main
+
+**E6's no-op.** The dispatcher now ends with its own `ret` at `cave+0x84` (after the tail `br`), and
+`Controller.selftest()` attaches the harness and performs one mailbox call to it: the result must be 0 and the
+dispatcher's entry counter must rise - the cloned vtable firing and the publish/consume round trip proven with **no
+game code run**. The intervention worker exposes it as `re4_harness_selftest` (capability offered only when the
+controller has `selftest`; with no proven mailbox the controller's `prepare()` still refuses, so no button appears
+live yet). The dispatcher pin is now **136 bytes, sha256 `3e3b937d...`**; the build script reproduces it, and the new
+tests cover the pinned ret (capstone), a unicorn selftest call returning 0/`done`, and the controller's
+`selftest()` (confirmed, verified, ticks advanced, target at `SELFTEST_AT`).
+
+**A real fix found by the gate.** Running the RE5 Switch group surfaced an 11th failure that was ours:
+`test_re5_switch_native.test_shared_controller_detects_re5_and_reuses_the_mods_instance` replaces
+`re6_switch_native.Controller` with a function, and our `native_controller` imported the RE4 module at function entry
+(outside the try) - the class definition then subclassed the patched function and raised. `native_controller` now
+imports **each title module inside its own try** (a module for another platform, or a test double's replaced base,
+cannot stop the search for the title's own controller). The RE5 Switch group is back to its known red exactly:
+**10 failed, 713 passed, 1 skipped** (bonus 1, giveup 5, smooth 2, threat 2 - the hand-off's list).
+
+**Merged again:** branch @ `8991e881` -> main `9e99f9a3` (hand-off log entry in `0ef9b45f`), with the targeted gate
+**201 passed, 1 skipped** on the branch and post-merge on main. The harness module still needs the 05:00 restart; the
+`.bss` watch is a bot module and will hot-reload at the next RE4 session.
+
+**Live:** the RE6 block is still running (round 4); the queue has `re4 x5` next, and that block is where the watch
+stat appears.
