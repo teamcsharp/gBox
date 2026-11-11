@@ -1445,3 +1445,19 @@ at the 21:19 round (all with flash available when playing). The 05:00 restart is
 the deployment state; the operator bot-reload remains the shortcut for the telemetry watch. Nothing on the code side
 is left to build for E3/E6/F/G; the open work is the live evidence listed in the lane-state section (round 78's
 summary).
+
+## Round 80 (2026-11-11 03:00 CST) - the live "awaits recovery" status now names its cause
+
+The night's polls caught the RE5 controller in the uncertain state **twice** (22:05 on session `…29fe45b9`, and an
+earlier round), both with kills at 0 - so the state was already set early in a round, before any barrage could have
+been counted. The old refusal said only "native controller awaits recovery after an uncertain operation", which says
+nothing about what failed. Now:
+
+- every failure site (the five in `re5_switch_native`: `prepare`'s attach, the flash op, one ring point, the ring, the
+  barrage) goes through one `_fail(exc, recoverable=...)` helper that stores `failed_reason =
+  "Type: message"[:200]`;
+- `ready()`'s refusal appends it: `native controller awaits recovery after an uncertain operation (Uncertain: ...)`,
+  so the status (and the PiP) names the operation and the error the next time it happens.
+
+19 tests in `test_re5_switch_native.py`, including a new one for the message. Merged to main (`e2050fc5`). This lands
+at the 05:00 restart (`re5_switch_native` is NOT_BOT), exactly when the next live RE5 block can be diagnosed.
