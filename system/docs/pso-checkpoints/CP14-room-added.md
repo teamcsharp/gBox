@@ -43,3 +43,36 @@ preview accepts the same op; the copied kind is a real placement's), and togethe
 
 **Branch note:** this branch is **stacked on `ds-pso-cp08-room-pieces-20261110`** because it uses `pso_rooms.room_quad`; review
 CP8 first.
+
+## Round 123: the build half - a real mod image, built and verified
+
+CP14 step 3 says "**Build**, and load it with CP5's warp". The build is offline, and it is done:
+
+```
+python system/docs/research/pso-cp14-add-placement.py     # the edit, validated (round 122)
+pso_map_write.build(cfg, "436e0bb84d5337d1", <base iso>, "ds_cp14_room_added", [op])
+```
+
+**Build record:**
+
+```
+{"mod": "ds_cp14_room_added", "files": ["gsl_set_object.gsl"], "edits": 1,
+ "edits_detail": [{"set": "map_ancient01_00_00o.dat", "index": 234, "x": 0.0, "y": 0.0, "z": 0.0, "op": "add"}]}
+verification: {"verified": true, "failures": [], "edits_checked": 1,
+               "records_per_set": {"map_ancient01_00_00o.dat": 235}}
+```
+
+**And re-opening the built image independently confirms it:**
+
+```
+modded image set: 235 records; last at (0.00, 0.00); inside footprint: True
+```
+
+**The image is staged where a live session can load it:**
+`D:\gBox\cache\mods\436e0bb84d5337d1\ds_cp14_room_added\` (1,459,978,240 bytes plus its `.gbox-mod.json`, which records the one
+replaced file `gsl_set_object.gsl`). That is the same place CP10's Forest 1 mods live, so the CP5 warp + this image is exactly
+the "load it with CP5's warp" step.
+
+**So CP14 now stands as:** the placements-only expansion built, verified, and staged; the three accept lines (the area loads, the
+player stands on the new piece with a stable `y`, the walker can reach it) are the live half, and they are what the armed watcher
+plus `pso_controls`' native travel can do in the window.
