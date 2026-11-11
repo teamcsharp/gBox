@@ -69,21 +69,29 @@ def _hit_count(stats):
 
 
 def observe(stats, snap, now, *, attackers=None, doing=None, why=None, round_id=None):
-    """One playing tick: file a report when the hurt counter rises. Never raises."""
+    """One playing tick: file a report when the hurt counter rises. Never raises.
+
+    The counter and its baseline are per round (`round_evidence_id`): a new round's count starts over, so its first
+    hit is a hit (the earlier version kept the old round's baseline and silently skipped the new round's early
+    hits).
+    """
     taken = _hit_count(stats)
-    prev = stats.get("_hit_report_taken")
-    stats["_hit_report_taken"] = taken
     player = (snap or {}).get("player") or {}
     hp = player.get("hp")
     hp_before = stats.get("_hit_report_hp")
     stats["_hit_report_hp"] = hp
-    if not isinstance(taken, int) or not isinstance(prev, int) or taken <= prev:
-        return None
     rid = str(round_id or stats.get("round_evidence_id") or _CFG.get("session_id") or "")
     with _LOCK:
         if stats.get("_hit_report_round") != rid:
             stats["_hit_report_round"] = rid
             stats["_hit_reports"] = 0
+            stats["_hit_report_taken"] = None         # the new round's first hit is a hit, not a baseline
+        prev = stats.get("_hit_report_taken")
+        stats["_hit_report_taken"] = taken
+        if not isinstance(taken, int) or taken <= 0:
+            return None
+        if isinstance(prev, int) and taken <= prev:   # no new hit on this tick
+            return None
         if int(stats.get("_hit_reports") or 0) >= MAX_PER_ROUND:
             stats["hit_reports_suppressed"] = int(stats.get("hit_reports_suppressed", 0)) + 1
             return None

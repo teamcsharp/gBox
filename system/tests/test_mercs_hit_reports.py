@@ -66,3 +66,18 @@ def test_the_damage_observers_count_is_the_primary_hurt_signal(monkeypatch):
     reply = HR.observe(live, snap(800), 101.0)
     assert reply and len(calls) == 1 and "hp 900 -> 800" in calls[0]["body"]
     assert live["hit_reports"] == 1
+
+
+def test_a_new_rounds_first_hit_still_files(monkeypatch):
+    """A new round's damage count starts over: its first hit must file, not be swallowed by the old round's baseline."""
+    calls = []
+    monkeypatch.setattr(HR, "post", lambda url, token, payload: calls.append(payload) or {"id": f"r-{len(calls)}"})
+    live = {"round_evidence_id": "r1", "player_damage_events": 0}
+    HR.observe(live, snap(900), 100.0)
+    live["player_damage_events"] = 1
+    HR.observe(live, snap(800), 101.0)
+    assert len(calls) == 1 and live["hit_reports"] == 1
+    live["round_evidence_id"] = "r2"
+    live["player_damage_events"] = 1
+    HR.observe(live, snap(700), 200.0)
+    assert len(calls) == 2 and "r2" in calls[1]["title"] and "hp 800 -> 700" in calls[1]["body"]
