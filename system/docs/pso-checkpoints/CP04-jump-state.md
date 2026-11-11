@@ -805,3 +805,33 @@ paths in the plane are:
 not an agent, so it is admitted immediately and the campaign takes over within seconds), or an explicit, operator-authorised change
 to `background_testing.py` plus a gBox restart - which the operator has forbidden ("stop restarting gbox"). This lane will not
 impersonate the operator's actor or patch a safety gate on its own initiative.
+
+## Round 132: the missing map artifact is restored into the plane - one of the mission's two preconditions is now met
+
+`POST /api/artifacts` is the plane's content-addressed upload ("Provenance always records the uploader"), and the Forest 1 `c.rel` was
+uploaded through it from the disc:
+
+```
+POST /api/artifacts?name=map_forest01c.rel&media_type=application/octet-stream
+     provenance={"source":"disc:436e0bb84d5337d1","path":"Scene/map_forest01c.rel",
+                 "why":"the Forest 1 c.rel the mission pso-gc-forest1-first-wave names as rel_artifact"}
+-> {"sha256":"0e7bc121a41e483e2c4d03bb031226461fecafb6c14ebfbeaab8ffe76ecfd2f5",
+    "name":"map_forest01c.rel","size":72096,...}
+
+GET /api/artifacts/0e7bc121...   -> 72096 bytes, sha256 matches
+```
+
+**So the mission's `rel_artifact` now resolves.** Its precondition table is down to one row:
+
+| precondition | state |
+|---|---|
+| `map.rel_artifact` (Forest 1 `c.rel`) | **restored this round**, upload verified by read-back |
+| `initial_state` (slot-1 Dolphin state, HUmar Lv1 at Forest 1 arrival) | still **absent** - needs CP4's live session |
+
+**One honest caveat about the coordinates**, found while checking the data: the rel's own opening footprint is small - `(54.4, 79.9,
+137.4)` at local `(-587.6, 35.7, -222.1)` - while the mission's waypoints are world-space numbers like `(-95, 214)`. The waypoints
+therefore still need the piece's *placement* (from `map_forest01c.dat`) or the area's merged navmap to be validated; uploading the
+artifact does not by itself prove the route. That check belongs with CP8's entity-to-room join, not with the artifact store.
+
+**Net:** the mission is no longer doubly blocked. It needs the CP4 state (a live session), and its route is worth validating against
+the placements when the state exists.
