@@ -455,3 +455,10 @@ Then send it the heavy analysis work.
   RE4 native controller'''s prepare() now includes the five candidate .bss pages in its refusal, so a single live
   GET /api/sessions/{sid}/interventions on an RE4 round is itself the read-only watch (the bot-module telemetry path
   stays the fallback; deploy-restart-pending still blocks its reload). Two tests; targeted gate 67 passed.
+﻿
+- 2026-11-10 22:1x: after the deploy fix, the Spark's `gbox/mercs_bot.py` **is deployed** (worker `build_sources` hash
+  equals local) and its bot-reload reports nothing left to reload - so the select-confirm fix is in the worker's code.
+  But a forced RE5 switch then landed on the main menu's **EXTRA CONTENT** page (frame: EPISODES/EXTRA CONTENT/FRIEND
+  MATCH/BONUS FEATURES with PLAY GAME in the side column), not on PLAY GAME -> the RE5 menu walk drifts as well as
+  failing to confirm: its cursor target/read is not reliable on this title. RE5's round start needs both fixed (the
+  confirm press is wired; the navigation target is not). The rotation stays on RE5 until its next boundary.
