@@ -392,3 +392,20 @@ test now asserts that the seed reaches the ring, which is the property that matt
 **What this buys the live step:** CP9's remaining step is "read the seed, decode `PSO_CHARACTER`, byte-flip accept test". The
 seed read yields an integer, and `pso_save_cipher.decode(body, seed)` is now a reviewed, tested call - the live work is a
 single read plus that call, not a script archaeology exercise.
+
+## Round 107: the cipher round-trips the real card's 90 KB character body
+
+The round-94 tests used synthetic buffers. This round ran the same pipeline on the actual save: the card's PSO_CHARACTER
+payload is **90,048 bytes** (90,112 minus the 0x40 header), and for seeds 0, 1, 0x12345678, 0xDEADBEEF and 0xFFFFFFFF,
+
+`
+decode(encode(body, seed), seed) == body          (and encode(body, seed) != body)
+`
+
+i.e. the transcribed ring, permutation and word cipher are **invertible on real data**, not just on synthetic bytes, and two
+different seeds really produce different encodings. 	ests/test_pso_save_cipher_card.py **7 passed** (the size check, five
+seeds, and the seed-difference check); with 	est_pso_save_cipher.py the pair is **18 passed**, skipped cleanly when the card
+or the save is absent.
+
+**What is still missing is only the live seed.** pso_save_cipher.decode(character_body, seed) is now a call with a tested
+90 KB real input; the runbook (pso-cp4-runbook.py) reads the descriptor and +0x118 and would hand that seed straight to it.
