@@ -52,3 +52,28 @@ component, and a failed route is not a broken graph.
    movement is driven for both.
 
 Tests: 4 new, all green. No other suite touched.
+
+## Round 109: waypoints to stick taps (`gbox/pso_steer.py`)
+
+The second half of the walker: given a world route, the player's position and a yaw, which stick keys to hold. The yaw
+convention is an explicit argument (`forward_at_zero`), so the live calibration is one number and the rest is testable:
+
+```
+direction_taps((0, -1), 0.0)              -> ("up",)                 # forward at yaw 0
+direction_taps((1, 0), 90.0)              -> ("up",)                 # the camera turned to +x
+direction_taps((1, -1), 0.0)              -> ("up", "right")         # a diagonal is two keys
+route_taps(route, position, yaw, reach=6) -> [{"to", "direction", "keys"}, ...]
+```
+
+Two bugs were found by the tests and fixed before committing:
+
+* the screen-right vector was rotated the wrong way (`(f.z, -f.x)` instead of `(-f.z, f.x)`), which mirrored every diagonal;
+* `route_taps` took each waypoint's direction from the **start** position rather than the **previous waypoint**, so a corner
+  came out as a diagonal instead of a turn - the corner test caught it.
+
+**Tests:** `tests/test_pso_steer.py` **7 passed** (the four cardinals at yaw 0, a yaw-90 turn, a diagonal, a zero direction, the
+reach skip, the corner turn, and `describe`'s length), and together with `test_pso_walk.py` **11 passed**.
+
+**What the live walk needs next:** the one calibration number (`forward_at_zero`, from the first live read of the player's yaw
+and a step in a known direction), the player's position per frame, and a tap cadence (hold, read, re-plan). Those are live
+inputs; the planner itself is done and tested.
