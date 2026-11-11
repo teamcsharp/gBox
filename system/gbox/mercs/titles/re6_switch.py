@@ -1810,6 +1810,7 @@ CC_FLANK_CONE = math.radians(130)          # damage cluster fc45a6229fe006d0: fl
 CC_QSHOT_GAP_S, CC_KICK_GAP_S, CC_ATTACK_CONE = 0.3, 0.22, math.radians(60)
 QA_FAST, CC_FAST_GAP_S = True, 0.12     # with quick_attack on (re6_switch_mods: his quick attacks x10) they go out back to
                                         # back: this often, the gauge kept full by infinite_stamina
+CROWD_FRONT_SHOT, CROWD_FRONT_CONE = True, math.radians(35)   # #5487: a crowd none of it within CC_R: the one in front with the ray on him is shot, not backed away from
 CC_BACK_N, CC_BACK_R = 3, 400.0         # this many within this: he steps back while he fires (the earlier back-off)
 # Dying (RE6's 1-health state: he crawls; every death in the 2026-10-27 runs came through it, at 1 health for 3 s and
 # more): R pressed for a tablet every DYING_GAP_S while the case holds one; stats tablet_dying_presses / _taken (the
@@ -5457,6 +5458,14 @@ class Bot:
                 # the crowd_4_in_2m signature: four or more within 2 m but none in front or flanking within CC_R
                 # -- the gun-down branch's cone can't catch them, so he still drops the gun and backs out instead of
                 # raising into a flanking cluster (damage_clusters crowd_4_in_2m, the RE6 cluster's cause)
+                # operator #5487 "shoot these nearby enemies": the hold's back-out walked away from a crowd standing in
+                # the line of fire (cc_backouts 566 against 11 shots); one in front with the ray on him is shot
+                if CROWD_FRONT_SHOT and (getattr(self, "_p", None) or {}).get("ammo") != 0 and any(
+                        abs(bearing(z)) <= CROWD_FRONT_CONE and flat(z) <= CC_CROWD_R and self._measured_contact(z, now)
+                        for z in live):
+                    self.crowd_hold_until = now
+                    self.stats["crowd_front_shots"] = self.stats.get("crowd_front_shots", 0) + 1
+                    return None
                 self.crowd_hold_until = now + 2.0   # keep the gun down for 2 s (the cluster's typical duration)
                 e = min(live, key=flat)
                 d, err = flat(e), bearing(e)

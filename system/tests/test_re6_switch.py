@@ -3878,3 +3878,35 @@ def test_ranged_break_in_decide_turns_to_fight_ranged_enemy():
         f"expected doing='turn' (ranged_break), got {bot.doing}: out={out}"
     assert bot.why.startswith("just took ranged damage"), \
         f"expected ranged_break reason, got: {bot.why}"
+
+
+# --- #5487 "shoot these nearby enemies": a crowd within 2 m, none within CC_R, one in front with the ray on him ------
+
+
+def _crowd_front_enemies():
+    r = 230.0
+    out = [(0.0, 0.0, r, 700)]
+    for d in (-100.0, 110.0, 160.0):
+        out.append((r * math.sin(math.radians(d)), 0.0, r * math.cos(math.radians(d)), 700))
+    return tuple(out)
+
+
+def _crowd_front_run(monkeypatch, on):
+    monkeypatch.setattr(R, "CROWD_FRONT_SHOT", on)
+    laser = ((0.0, R.CHEST_H, 230.0), (0.0, 145.0, 30.0), 0.86)
+    bot, clock, snap = brain(round_guest(enemies=_crowd_front_enemies(), cam_yaw=0.0, laser=laser))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 12)
+    return bot, acts
+
+
+def test_a_crowd_with_one_in_front_on_the_ray_is_shot_not_backed_away_from(monkeypatch):
+    bot, _ = _crowd_front_run(monkeypatch, True)
+    assert bot.stats.get("crowd_front_shots", 0) > 0
+    assert bot.stats.get("cc_backouts", 0) == 0
+
+
+def test_crowd_front_shot_off_keeps_the_back_out(monkeypatch):
+    bot, _ = _crowd_front_run(monkeypatch, False)
+    assert bot.stats.get("crowd_front_shots", 0) == 0
+    assert bot.stats.get("cc_backouts", 0) > 0
