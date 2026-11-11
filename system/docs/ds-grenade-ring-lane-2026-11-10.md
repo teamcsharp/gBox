@@ -1840,3 +1840,28 @@ read them.
 - **RE5**: the combined probe's scatter request expired (the worker did not claim it in time) and its ring post got a
   409 (the controller busy/uncertain); the auto-ring watcher saw a playing round with no ring attempt. The next RE5
   block needs a fresh probe; the 2.5 s budget is still unverified live.
+
+## Round 97 (2026-11-11 14:21 CST) - the RE4 twitch/jerk fixes: a smoothed aim write and a walk-turn hysteresis
+
+The operator, watching: "the bot is jerking around with the aim unnaturally with the bow ... causes motion sickness" and
+"the bot is vibrating in Resident Evil 4 whenever they're walking ... twitching around and not walking forward in a
+linear fashion". Two concrete causes were in the code:
+
+- **The aim** (`be7c3098`): `_aim` wrote the request's yaw onto the player's facing **every snapshot, absolute** - every
+  micro-change (a moving target's bearing, the pattern offset, the aim stick) was a camera jerk. It now reads the
+  facing, leaves a correction under `AIM_WRITE_DEADBAND` (0.5 deg) alone and moves at most `AIM_WRITE_MAX_STEP` (3 deg)
+  toward the request per snapshot; the convergence test turns 71 deg in ~24 snapshots, the deadband test writes
+  nothing for a 0.25 deg request. The aim still lands on the target, it just turns like a camera instead of a teleport.
+- **The walk** (`63b3206f`): `_step_keys` picked the turn direction from the error's sign every tick; with the error
+  hovering at `TURN_TOL` (0.12 rad) the stick flipped left/right every tick - the visible vibration. The step now keeps
+  the turn already under way while an opposite error stays under 2 x TURN_TOL, and only a clear reversal turns back; a
+  turn on the spot (past `STEP_TURN_RAD`) clears the memory. A hysteresis test pins it.
+
+Both deploy at 14:30 (bot modules, hot reload); the next RE4 block is the live test. The rest of the operator's report
+(walls, doorways, standing, time bonuses) stays #9789 with the same acceptance.
+
+Also this hour: the **random weapon** (`bd67ff17`) - any campaign weapon between rounds, `PRIMARY_SHARE` 0.8 of them a
+magnum/shotgun (a magnum `MAGNUM_SHARE` of those); the bow's zero-length-press fix (`c8517b6f`) is deployed and the
+gateway restarted so a fresh RE4 block holds the trigger through the draw. The RE6 hand ring's second live failure was
+the **action stage**, not the timeout (the placed action never reaches cWpAction_wp_act_throw inside CLASS_WAIT_S);
+that is #9771's first item.
