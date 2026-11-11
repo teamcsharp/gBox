@@ -448,7 +448,10 @@ def _motion_rate(ad, snap: dict, st: dict) -> int:
     try:
         kind = None
         if isinstance(ptr, int) and D.ptr_ok(ptr):
-            kind = W.motion_rate_kind(snap.get("weapon_class"), tuple(rd(ptr + W.P_ROUTINE, 4)))
+            routine = tuple(rd(ptr + W.P_ROUTINE, 4))
+            st["motion_rate_class"] = snap.get("weapon_class")
+            st["motion_rate_routine"] = list(routine)    # why the rate is or is not on: the live class + routine
+            kind = W.motion_rate_kind(snap.get("weapon_class"), routine)
         if kind == "bow":
             mult = max(mult, BOW_MOTION_X)               # the operator: 40 arrows a second, whatever the fire rate
         if kind is None or mult <= 1.0:

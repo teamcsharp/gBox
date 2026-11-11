@@ -174,3 +174,15 @@ def test_the_bow_can_play_at_forty_times_the_rate():
     st = {"fire_rate": 40.0}
     assert M._motion_rate(ad, snap(), st) == 2
     assert f32(ad, PLAYER + W.P_MOTION_SPEED) == 40.0 and f32(ad, OBJ + W.OBJ_MOTION_SPEED) == 40.0
+
+def test_the_rate_reports_the_live_class_and_routine_it_saw():
+    """The bow's 40x only engages on class 0x1C + the weapon routine; the live telemetry needs to say which of the two
+    was not the expected one (operator 2026-11-11: the bow at 40 a second)."""
+    ad = world()
+    st = {"fire_rate": 20.0}
+    M._motion_rate(ad, snap(), st)
+    assert st["motion_rate_class"] == 0x1C and st["motion_rate_routine"] == [0, 6, 2, 1]
+    ad2 = world()
+    st2 = {"fire_rate": 20.0}
+    M._motion_rate(ad2, snap(0x05), st2)
+    assert st2["motion_rate_class"] == 0x05 and st2["motion_rate_routine"] == [0, 6, 2, 1] and st2.get("motion_rate") is None
