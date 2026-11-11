@@ -571,3 +571,30 @@ Then send it the heavy analysis work.
     neither local nor on origin in this clone (the normals and donor-rotation branches are merged). Priority 1
     (wall-stuck auto-reports) and the research assimilation need those branches pushed, or the PM cannot gate them.
   - No live settings were changed this round (queue, program pin and Pine lock untouched).
+
+- 2026-11-11 09:54 (DeepSeek PM): **RE4's rounds were invisible to the round reports - fixed (`f8931ce2`).**
+  - **Found:** the Spark's `mercs/curriculum/` holds `010018100CD46000` (RE5), `01002A000CD48000` (RE6), `BLUS30491` and
+    `G4BE08` and **no `010099A00BC1E000`**. `re4switch_bot.py` (the playbook MercMode runs for RE4) never writes a Notebook
+    row, so the round-report scanner has no RE4 cursor and has created no RE4 report (the newest 30 were RE5/RE6 only) -
+    the title the operator critiques most is the one with no block metrics, no coaching-loop evidence and no damage/
+    death-lesson linkage. The bot already computed `gun_downs`, `gun_kept`, `unwall_tangents`, `stand_breaks`, and they
+    went nowhere (`RE4Switch.round_counters`, which only the engine records).
+  - **Fix:** `play()` declares `session_id` / `source_job_id` (declared in its signature so `tools._start_playbook` passes
+    them) and the round end (`_post`) writes `gbox.mercs.notebook.Notebook.finish` with `round_id` = the boundary's
+    round, outcome `results` = completed / `dead` = died, `team_role solo_p1`, `scoring_scope solo`, the exact session id
+    and the 16-hex autoplay job, plus this round's own `round_<counter>` amounts from a snapshot taken when the round
+    started. Best effort: a notebook failure is a stat, never the round's end.
+  - **Gate:** `test_re4switch_bot.py` (4 new) + `test_mercs_round_reports.py` + `test_re4_switch_fight.py` +
+    `test_re4_switch_mods.py` + `test_re4_switch_game_state.py` = **156 passed**.
+  - **Deploy: runtime code, not a bot module (`gbox.re4switch_bot` is not in `hot_reload.BOT_MODULES`), so this waits for
+    the 05:00 service restart.** The next autodeploy copies it and sets `deploy-restart-pending`; until then the Spark's
+    playbook is the old one and writes nothing. After the restart the scanner seeds the first RE4 terminal round within
+    the hour - `GET /api/mercs/round-reports` should then carry title `010099A00BC1E000` with the control group's
+    `round_gun_downs` / `round_unwall_tangents`. An operator restart makes that happen sooner; no bot hot-reload is
+    needed.
+  - **The number the first report will judge** (60 s trace of RE4 session `c63a6efd5f584229-bc8febabc7af4e29`, 09:46, 240
+    rows): phases aim 106 / flank 66 / fire 38 (zr) / unwall 21; notes "the line is not on a Ganado yet" 49, "no clear
+    shot: round it by the mesh walker" 17; telemetry `gun_downs 46` (flank 27, fire 1) vs `gun_kept 7`, `stand_breaks 26`,
+    `walls_pressed 0`. The gun still goes down most often to flank, and fire-first keeps it only 7 times in that window.
+    No new ticket: the aim/fire backlog (#9499, #9484, #9466, #9560) is open, and the doc's rule is to judge a block's
+    numbers, not one minute - the report is now the instrument for that.
