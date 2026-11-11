@@ -1,0 +1,13 @@
+start (-57.0, 197.5) exit (133.0, -48.1)
+free cells 5701, raw waypoints 124, legs 10
+  leg  1: (  -55.0,  195.0) -> ( -125.0,  205.0)     70.7 units  clear
+  leg  2: ( -125.0,  205.0) -> ( -125.0,  295.0)     90.0 units  clear
+  leg  3: ( -125.0,  295.0) -> (  -85.0,  415.0)    126.5 units  clear
+  leg  4: (  -85.0,  415.0) -> (  -15.0,  405.0)     70.7 units  clear
+  leg  5: (  -15.0,  405.0) -> (   25.0,  305.0)    107.7 units  clear
+  leg  6: (   25.0,  305.0) -> (  245.0,  175.0)    255.5 units  clear
+  leg  7: (  245.0,  175.0) -> (  245.0,   65.0)    110.0 units  clear
+  leg  8: (  245.0,   65.0) -> (  235.0,   15.0)     51.0 units  clear
+  leg  9: (  235.0,   15.0) -> (  135.0,  -45.0)    116.6 units  clear
+total 999 units, 9 legs, 0 blocked legs, final waypoint 3.7 units from the exit, expected 37 s at 27 units/s
+CERTIFICATE PASS
