@@ -347,3 +347,20 @@ def test_cornered_recovery_keeps_probing_instead_of_standing_still(monkeypatch):
             seen.append(tuple(x for x in act["hold"] if x in ("ldown", "lleft", "lright", "lup")))
     assert seen and all(m and "lup" not in m for m in seen)
     assert len({m for m in seen}) >= 2
+def test_the_operators_wall_button_heads_for_the_nearest_door_not_the_second(tmp_path, monkeypatch):
+    """#5671: eight wall reports, wall_recovery_failures 26 on a roof full of traverse prompts - the button picked the
+    nearest door in _wall_start, then picked again (the tried one skipped) and overwrote it with the next-nearest."""
+    monkeypatch.setattr(R, "DOOR_FILE", tmp_path / "door_spots.json")
+    b = R.Bot(stats={}, clock=lambda: 0.0)
+    b._remember_door(-3504.0, 1100.0, -13089.0, 7)            # the nearest ledge, 2.8 m off
+    b._remember_door(-3694.0, 1100.0, -12000.0, 8)            # a farther one
+    b._remember_door(-4241.0, 1100.0, -12894.0, 9)            # a farther one
+    p = {"ptr": 1, "pos": (-3415.0, 1100.0, -12822.0), "rot": 0.0, "hp": 720, "hp_max": 1000, "motion": 0}
+    b._wall_start(p, 5.0, True)
+    first = b._door_goal[0][:3]
+    assert first == [-3504.0, 1100.0, -13089.0]
+    b.stats["door_goals"] = 1
+    # what the command does after _wall_start: nothing more may re-pick
+    import inspect
+    src = inspect.getsource(R.Bot._operator_command)
+    assert src.count("_pick_door") == 0 and src.count("_wall_start") == 1

@@ -7364,9 +7364,9 @@ class Bot:
             # goal dropped; door / ledge / ladder prompts on the way are taken (#1488)
             px, _py, pz = p["pos"]
             self.wall_memory(px, pz, p.get("rot") or 0.0)
-            self._wall_start(p, now, True)
+            self._wall_start(p, now, True)               # (it picks the door: a second pick overwrote the nearest
+                                                         # goal with the next-nearest, the tried one being skipped)
             self._bonus = None
-            self._pick_door(p, now)
             self.stats["wall_reports"] = self.stats.get("wall_reports", 0) + 1
             self.stats["directive_status"] = "the operator's wall: remembered, backing off along his trail, another way"
         elif cmd == "rush" and fresh:
