@@ -510,6 +510,27 @@ class InputDeferred(OSError):
     """The adapter withheld or only partly delivered an input; do not infer motion."""
 
 
+class _Telemetry(dict):
+    """The run's stats for the duration of one tick (see Controller.tick).
+
+    A real dict seeded from the live sink, so every reader and writer in the tick behaves exactly as before, with
+    one difference: a write that the sink's own type would refuse is dropped here instead of aborting the tick.
+    The tick merges the keys back into the live sink afterwards, best-effort.
+    """
+
+    def __init__(self, base):
+        try:
+            super().__init__(base)
+        except Exception:                       # noqa: BLE001 - an unreadable sink starts the tick empty
+            super().__init__()
+
+    def __setitem__(self, key, value):
+        try:
+            super().__setitem__(key, value)
+        except Exception:                       # noqa: BLE001 - a refused telemetry key never costs a decision
+            pass
+
+
 class SpeedChanging(InputDeferred):
     """Input timing is unsettled while Dolphin consumes the speed hotkeys."""
 
@@ -3161,6 +3182,28 @@ class Controller:
             stats['forced_adj_door_gkey'] = self._adj_last.get('gkey')
 
     def tick(self, state):
+        """One decision tick, with telemetry fenced off from gameplay.
+
+        Every write this tick makes to the run's stats goes to a plain dict for the duration of the tick and is
+        merged back afterwards, best-effort. A telemetry sink that raises on a write (the operator's live stats can
+        be replaced by a view that refuses one) must never change the command, the delivery or the tick's result:
+        the contract is the same as the steering evidence's - a broken recorder loses a number, never a decision.
+        """
+        sink = getattr(self.inputs, "stats", None)
+        if isinstance(sink, dict) and not isinstance(sink, _Telemetry):
+            view = _Telemetry(sink)
+            self.inputs.stats = view
+            try:
+                return self._tick(state)
+            finally:
+                self.inputs.stats = sink
+                try:
+                    dict.update(sink, view)          # a base that refuses a key is written past, never into
+                except Exception:                    # noqa: BLE001 - telemetry is never load-bearing
+                    pass
+        return self._tick(state)
+
+    def _tick(self, state):
         if not state.get("verified") or len(state.get("players", {})) != 2:
             return False
         # NEVER-DIE first, every tick, for BOTH players (operator: P2 must never stay

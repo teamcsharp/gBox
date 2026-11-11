@@ -30,6 +30,11 @@ SOLID, BLOCKER, WALKED = 0, 1, 2         # a wall's flag (RoomMap)
 GAP_MARGIN_X = 0.4
 
 
+def _wrap(a: float) -> float:
+    """An angle in -pi .. pi."""
+    return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+
 def _ok(p) -> bool:
     try:
         return len(p) >= 3 and all(isinstance(v, (int, float)) and math.isfinite(v) for v in p[:3])
@@ -207,23 +212,26 @@ class RoomMap:
                 return w
         return None
 
-    def walk_block(self, a, b, *, end_r: float = BODY_R_MM, body_r: float = BRUSH_R_MM) -> str | None:
-        """Why the walk from a to b (his feet at a) is refused, or None (see the module docstring); body_r: his body's
-        half width - a wall the walk brings him nearer than this (and nearer than he is now: walking along a wall
-        he already stands beside is no closer) is refused too, a corner as much as a face."""
+    def walk_block_detail(self, a, b, *, end_r: float = BODY_R_MM,
+                          body_r: float = BRUSH_R_MM):
+        """(why the walk from a to b (his feet at a) is refused, the wall that refuses it or None) - see the module
+        docstring; body_r: his body's half width - a wall the walk brings him nearer than this (and nearer than he is
+        now: walking along a wall he already stands beside is no closer) is refused too, a corner as much as a face.
+        The wall is None when there is no wall behind the refusal (off the floor, not a position)."""
         if not (_ok(a) and _ok(b)):
-            return "not a position"
+            return "not a position", None
         L = math.hypot(b[0] - a[0], b[2] - a[2])
         n = max(1, int(math.ceil(L / SAMPLE_MM)))
         start = self.cell_of(a[0], a[2])
         for i in range(1, n + 1):
             x, z = a[0] + (b[0] - a[0]) * i / n, a[2] + (b[2] - a[2]) * i / n
             if self.cell_of(x, z) != start and not self.floor_at(x, z):
-                return f"off the floor at {x:.0f},{z:.0f}"
+                return f"off the floor at {x:.0f},{z:.0f}", None
         hit = self.wall_crossed(a, b)
         if hit is not None:
             w, t = hit
-            return f"a wall {w[0]:.0f},{w[1]:.0f}-{w[2]:.0f},{w[3]:.0f} (y {w[4]:.0f}..{w[5]:.0f}) {t * L:.0f} mm on"
+            return (f"a wall {w[0]:.0f},{w[1]:.0f}-{w[2]:.0f},{w[3]:.0f} (y {w[4]:.0f}..{w[5]:.0f}) "
+                    f"{t * L:.0f} mm on"), w
         m = max(body_r, end_r)
         if m <= 0.0:
             return None
@@ -242,14 +250,33 @@ class RoomMap:
             for d, _side, w, _s in rows:
                 if d < br and d < _dist_seg(a[0], a[2], *w[:4]) - 1.0:
                     return (f"brushes a wall {w[0]:.0f},{w[1]:.0f}-{w[2]:.0f},{w[3]:.0f} ({d:.0f} mm, margin "
-                            f"{br:.0f})")
+                            f"{br:.0f})"), w
         if end_r > 0.0:
             ends = [(_dist_seg(b[0], b[2], *w[:4]), _point_side(a, b, w), w, L) for _d, _s, w, _t in rows]
             er = min(end_r, GAP_MARGIN_X * _gap(ends))
             for d, _side, w, _s in ends:
                 if d < er:
-                    return f"ends {d:.0f} mm from a wall {w[0]:.0f},{w[1]:.0f}-{w[2]:.0f},{w[3]:.0f} (margin {er:.0f})"
+                    return (f"ends {d:.0f} mm from a wall {w[0]:.0f},{w[1]:.0f}-{w[2]:.0f},{w[3]:.0f} "
+                            f"(margin {er:.0f})"), w
         return None
+
+    def walk_block(self, a, b, *, end_r: float = BODY_R_MM, body_r: float = BRUSH_R_MM) -> str | None:
+        """Why the walk from a to b (his feet at a) is refused, or None (see the module docstring); body_r: his body's
+        half width - a wall the walk brings him nearer than this (and nearer than he is now: walking along a wall
+        he already stands beside is no closer) is refused too, a corner as much as a face."""
+        got = self.walk_block_detail(a, b, end_r=end_r, body_r=body_r)
+        return got[0] if got is not None else None
+
+    def span_mm(self) -> float:
+        """The room's smaller side (mm): a probe, or a step along a wall, is scaled to it (a corridor is not probed
+        like an arena)."""
+        return min(self.cols, self.rows) * self.cell
+
+    @staticmethod
+    def tangents(w) -> tuple:
+        """The two headings (radians, heading atan2(dx, dz)) along wall w: its own direction and its reverse."""
+        h = math.atan2(w[2] - w[0], w[3] - w[1])
+        return h, _wrap(h + math.pi)
 
     def walk_clear(self, a, b, **kw) -> bool:
         return self.walk_block(a, b, **kw) is None

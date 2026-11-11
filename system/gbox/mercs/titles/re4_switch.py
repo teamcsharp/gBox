@@ -1361,7 +1361,11 @@ class RE4Switch(Driver):
     solo_p1 = True                              # The Mercenaries on Switch is played solo on P1 here
     units_per_m = 1000.0                        # mm, measured (doctrine.view, the atlas): see MM_PER_CM below
     round_counters = ("shots", "hits", "turns", "backoffs", "holds", "dying", "escapes", "locates", "stand_breaks",
-                      "crowd_picks", "kills_seen") + respond.COUNTERS
+                      "crowd_picks", "kills_seen",
+                      # the gun's raise / lower (FIRE_FIRST's telemetry; the operator 2026-11-10 night: the camera
+                      # jerk of the weapon going up and down) and the wall tangents (ROOM_TANGENTS)
+                      "gun_downs", "gun_kept", "gun_up_ticks", "gun_down_ticks",
+                      "unwall_tangents", "unwall_tangent_steps") + respond.COUNTERS
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
@@ -1557,6 +1561,15 @@ IDLE_AIM_S = 2.0
 #   * a step goes STAND_STEP_MM along open floor (combat.open_step on the stage mesh's clear_segment, not ending within
 #     ESCAPE_CLEAR_MM of a Ganado); walled in on every line, no step (steps_walled_in).
 AIM_KEEP_RAD, AIM_STICK_N, STAND_TURN_RAD, STAND_STEP_MM, STEP_TURN_RAD = 1.0, 10, 0.05, 2000.0, 0.8
+# FIRE_FIRST (the operator 2026-11-10, a live round: "the bot is raising their weapon over and over and getting
+# defeated ... it needs to fire and deal with threats before lowering his weapon and fleeing or throwing grenades"):
+#   * a living Ganado on him (FIRE_FIRST_MM) with a clear shot line from where he stands is answered with the gun: the
+#     heavy's keep-away, the swarm's escape and the grenade swap stand down, and the never-stand step / the wall's
+#     tangent do not lower the gun for them (the low-life run stays the doctrine's own answer, RESPOND);
+#   * a target switch while that close keeps the gun up to AIM_KEEP_CLOSE_RAD, turned with the aim stick;
+#   * the gun's lowering is counted with what did it (gun_downs / gun_down_last / gun_down_<doing>) so a live round
+#     says why he raised and lowered (the operator's camera complaint).
+FIRE_FIRST, FIRE_FIRST_MM, AIM_KEEP_CLOSE_RAD = True, 4500.0, 2.6
 ENGAGED_DOINGS = frozenset({"turn", "aim", "fire", "hold"})
 # Pressed against a wall (combat.WallPress; live 2026-11-10, Krauser / Base on the greybox build, the camera inside a
 # wall and the bot not fighting - the operator: "the issue is more like this"). Every action that walks him (the left
@@ -1596,6 +1609,24 @@ ROOM_MAP = True
 ROOM_PROBE_MM, ROOM_PROBE_RUN_MM = 800.0, 1300.0
 ROOM_BRUSH_MM = 200.0     # the probe's own body half width: closer than this to a wall it is refused (his collision
                           # radius is not measured; the lines he picks keep re4_room_map.BRUSH_R_MM, 300 mm, of margin)
+# The probe is scaled to the room (the operator 2026-11-10: "a probe scaled to the room"): ROOM_PROBE_SHARE of the
+# room's smaller side, never under ROOM_PROBE_MM nor over ROOM_PROBE_MAX_MM (running: at least ROOM_PROBE_RUN_MM). A
+# corridor is not probed like an arena. The way along a wall he is turned onto is scaled the same way
+# (ROOM_UNWALL_SHARE, up to ROOM_UNWALL_MAX_MM) so a step reaches the wall's end or an opening, not a body's length on.
+ROOM_PROBE_SHARE, ROOM_PROBE_MAX_MM = 0.04, 2000.0
+ROOM_UNWALL_SHARE, ROOM_UNWALL_MAX_MM = 0.15, 6000.0
+# The wall's tangent (the operator 2026-11-10: the bot "is still turning back and forth and is stuck in the same room";
+# a bot_trace of session 25385f8f4eb94342-6eb677c2f1194dea: the room map's unwall, "a wall ahead, along it instead",
+# sent a pure sideways stick - a 90 deg turn on the spot in a tank-controlled game - and the walker turned him back into
+# the wall). ROOM_TANGENTS: the room map's refusal names the wall (core.room_map.RoomMap.walk_block_detail); the way
+# off it is that wall's own tangent (RoomMap.tangents), not a heading across the room: he turns to the tangent, then
+# pushes forward along the wall, which is a way the route and the walker do not undo. The side is kept per wall for at
+# least UNWALL_SIDE_HOLD_S (a new look never flips it sooner; WALL_KEEP_S while that wall is his), so a wall he walks
+# along stays on one hand instead of being crossed back over. Stats unwall_tangents, unwall_side_switches.
+ROOM_TANGENTS, UNWALL_SIDE_HOLD_S = True, 0.8
+ROOM_TANGENT_MAX_RAD = 2.2                # a tangent further off his facing than the quick turn's own: not this way
+UNWALL_TANGENT_S = 4.0                    # a tangent detour's own cap (UNWALL_S for the step off a pressed wall): it
+                                          # ends at the shot opening, not at the step's end
 # The mesh's own route legs pass (live 2026-11-10, Castle r402, the operator: "why does the bot meander and move at
 # walls so weird?": the route went through the arena's west doorway, 1.38 m wide, and the probe refused the step at its
 # jamb - "brushes a wall 16061,-28649-16103,-27186 (94 mm)" - so he slid up and down the wall beside the opening for
@@ -1829,6 +1860,33 @@ class Bot:
             err = wrap(heading(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) - rot)
             out.append((d, err, e))
         return out
+
+    def _close_threats(self, p, snap) -> list:
+        """[(distance, bearing error, enemy)] of the living Ganados within FIRE_FIRST_MM: the ones on him now."""
+        try:
+            return [t for t in self._live(p, snap.get("enemies") or ()) if t[0] <= FIRE_FIRST_MM]
+        except Exception:                                # noqa: BLE001 - a read error never costs the tick
+            return []
+
+    def _shootable(self, p, snap, near=None) -> bool:
+        """A Ganado on him now (within FIRE_FIRST_MM) with a clear shot line from where he stands: the fight can answer
+        it without walking (FIRE_FIRST)."""
+        near = self._close_threats(p, snap) if near is None else near
+        try:
+            return any(t[0] <= ENGAGE_RANGE_CM and self._line_of_sight_ok(p, t[2], snap) for t in near)
+        except Exception:                                # noqa: BLE001 - no geometry: the range limit does the gating
+            return False
+
+    def _fire_first(self, p, snap, now=None) -> bool:
+        """FIRE_FIRST: a Ganado on him now with a clear line the fight can answer from where he stands - the gun, not a
+        walk (the heavy's keep-away, the swarm's escape, a grenade swap and the wall's tangent). One look a tick."""
+        been = self.__dict__.get("_ff")
+        if now is not None and isinstance(been, tuple) and been[0] == now:
+            return been[1]
+        got = bool(FIRE_FIRST and self._shootable(p, snap))
+        if now is not None:
+            self.__dict__["_ff"] = (now, got)
+        return got
 
     @staticmethod
     def _nearest(p, enemies):
@@ -2304,13 +2362,18 @@ class Bot:
         if frozen is not None:
             self.stats["doing"], self.stats["why"] = self.doing, self.why
             return frozen
-        act = self._fight(p, snap, now)
-        act = self._respond(p, snap, act, now)          # under threat: fire at it (no flash, no mines here) - never nothing
+        fight = self._fight(p, snap, now)
+        fight_up = AIM_BTN in set(fight.get("hold") or ())
+        act = self._respond(p, snap, fight, now)        # under threat: fire at it (no flash, no mines here) - never nothing
         act = self._never_stand(p, act, snap, now)
         if UNIVERSAL_CORE:
             act = self._idle_core(p, act, snap, now)   # the gun up at one in range without a shot: round him
             act = self._wall_core(p, act, snap, now)   # never walking into a wall (pressed: away to open floor)
+        if FIRE_FIRST and fight_up and AIM_BTN not in set(act.get("hold") or ()) and self._fire_first(p, snap, now):
+            self.stats["gun_kept"] = self.stats.get("gun_kept", 0) + 1
+            act = fight                                 # fire first: not lowered for a step, a flank or a wall
         up = AIM_BTN in set(act.get("hold") or ())
+        self._gun_down_telemetry(up, now)
         self._aim_since = (self._aim_since if self._aim_since is not None else now) if up else None
         if self.director is not None:
             try:
@@ -2361,25 +2424,26 @@ class Bot:
             near = min(live, key=lambda t: t[0]) if live else None
             return {"hold": {"lup", TURN["right" if near and near[1] > 0 else "left"]}}
         if UNIVERSAL_CORE:
-            act = self._throw_core(p, live, snap, now)       # a grenade at the pack (THROWS), his escape run or not
-            if act is not None:
+            act = self._throw_core(p, live, snap, now) if not self._fire_first(p, snap, now) else None
+            if act is not None:                              # a grenade at the pack (THROWS): never with one on him
                 return act
         doctrine = self.__dict__.get("_doctrine_fire") is not None   # core.respond: he fires at the threat, no run-off
-        low = None if doctrine else self._low_life(p, live, now, snap)
+        fire_first = self._fire_first(p, snap, now)
+        low = None if doctrine else self._low_life(p, live, now, snap)   # (the doctrine's own answer is the live one)
         if low is not None:
             return low
-        heavy = None if doctrine else self._heavy_keep(live, now, p, snap)
+        heavy = None if (doctrine or fire_first) else self._heavy_keep(live, now, p, snap)
         if heavy is not None:
             return heavy
         if UNIVERSAL_CORE:
             act = self._lethal_out(p, live, snap, now)    # a learned attack his shots do not stop: out of its reach
             if act is not None:
                 return act
-        act = None if doctrine else self._escaping(p, snap, now, "swarm")
+        act = None if (doctrine or fire_first) else self._escaping(p, snap, now, "swarm")
         if act is not None:
             return act
         swarm = [t for t in live if t[0] <= SWARM_CM]
-        if len(swarm) >= SWARM_N and not doctrine:
+        if len(swarm) >= SWARM_N and not doctrine and not fire_first:
             act = self._escape(p, live, snap, now, "swarm", LOW_LIFE_RUN_S)
             if act is not None:
                 self.stats["escapes"] += 1
@@ -2415,7 +2479,8 @@ class Bot:
                     return act                           # (None: the shot is open from here - the gun up, below)
             cone = RAISE_TOL
             if UNIVERSAL_CORE and self._aim_since is not None and self._aim_stick().usable():
-                cone = max(RAISE_TOL, AIM_KEEP_RAD)      # the gun up: the aim stick turns him, the gun stays up
+                keep = AIM_KEEP_CLOSE_RAD if (FIRE_FIRST and fire_first) else AIM_KEEP_RAD
+                cone = max(RAISE_TOL, keep)              # the gun up: the aim stick turns him, the gun stays up
             if abs(err) > cone:
                 self.stats["turns"] += 1
                 self._learn_turn(self.target, err, now)
@@ -2830,6 +2895,20 @@ class Bot:
         self.doing, self.why = "sweep", "no Ganado on the map: exploring"
         return {"hold": {"lup", TURN["right" if self._sweep_dir > 0 else "left"]}}
 
+    def _gun_down_telemetry(self, up: bool, now: float) -> None:
+        """The raise / lower count the operator sees (2026-11-10: the bot "raising their weapon over and over", jarring
+        on the camera): every tick the gun went from up to down, what did it (gun_down_last) and a count by reason
+        (gun_down_<doing>), with the ticks the gun was up / down."""
+        was = self.__dict__.get("_gun_up")
+        if was and not up:
+            self.stats["gun_downs"] = self.stats.get("gun_downs", 0) + 1
+            self.stats["gun_down_last"] = f"{self.doing}: {self.why}"[:120]
+            key = "gun_down_" + str(self.doing or "none")[:16]
+            self.stats[key] = self.stats.get(key, 0) + 1
+        self.stats["gun_up_ticks" if up else "gun_down_ticks"] = \
+            self.stats.get("gun_up_ticks" if up else "gun_down_ticks", 0) + 1
+        self.__dict__["_gun_up"] = up
+
     def _pose_tick(self, p, now) -> None:
         """His position or facing changed since the last tick (FROZEN_MM / FROZEN_RAD): he is in control."""
         pos, rot = tuple(p["pos"]), p.get("rot")
@@ -2908,9 +2987,13 @@ class Bot:
 
     def _room_ahead(self, p, act, snap):
         """ROOM_MAP's probe on a walking tick: None (the way ahead is open, or a crossing the walker is taking), the
-        reason the step is refused (a wall or the floor's edge within ROOM_PROBE_MM of his facing), or - when the mesh
-        walker's route steers this tick and the line to its point is clear - that route's action: a turn on the spot
-        toward its point while it lies past re4_walk.FOLLOW_TOL (room_map_route_turns), else None (the route goes on)."""
+        reason the step is refused (a wall or the floor's edge within the probe of his facing - scaled to the room,
+        _room_reach), or - when the mesh walker's route steers this tick and the line to its point is clear - that
+        route's action: a turn on the spot toward its point while it lies past re4_walk.FOLLOW_TOL
+        (room_map_route_turns), else None (the route goes on). A refusal by a wall keeps (why, wall) for the caller in
+        self._room_hit: the wall's tangent is the way off it (ROOM_TANGENTS)."""
+        d = self.__dict__
+        d.pop("_room_hit", None)
         rm, rot, pos = self._room_map(snap), p.get("rot"), p.get("pos")
         if rm is None or not isinstance(rot, (int, float)) or not pos:
             return None
@@ -2922,11 +3005,14 @@ class Bot:
         if steered and getattr(w, "at_link", False):
             return None                                      # a jump-over / a ladder: through it is the way
         hold = set(act.get("hold") or ())
-        reach = ROOM_PROBE_RUN_MM if RUN_BTN in hold else ROOM_PROBE_MM
+        reach = self._room_reach(rm, hold)
         end = (pos[0] + reach * math.sin(rot), pos[1], pos[2] + reach * math.cos(rot))
-        why = rm.walk_block(tuple(pos), end, end_r=0.0, body_r=ROOM_BRUSH_MM)
-        if why is None:
+        hit = rm.walk_block_detail(tuple(pos), end, end_r=0.0, body_r=ROOM_BRUSH_MM)
+        if hit is None:
             return None
+        why, wall = hit
+        if wall is not None:
+            d["_room_hit"] = (why, wall)
         if steered:
             wp = (w.wp[0], pos[1], w.wp[1])
             if rm.walk_block(tuple(pos), wp, end_r=0.0, body_r=0.0) is None:   # (the route keeps its own clearance)
@@ -2937,6 +3023,115 @@ class Bot:
                 self.doing, self.why = "turn", "the room map: a wall ahead, turning to the route's way round"
                 return dict(act, hold=(hold - {"lup", RUN_BTN, TURN["left"], TURN["right"]}) | self._turn(err))
         return why
+
+    def _room_reach(self, rm, hold) -> float:
+        """The probe's length (mm): ROOM_PROBE_MM of the room's own scale (ROOM_PROBE_SHARE of its smaller side, within
+        ROOM_PROBE_MM .. ROOM_PROBE_MAX_MM), and a run's longer look."""
+        try:
+            span = rm.span_mm()
+        except Exception:                                    # noqa: BLE001 - a map without a span: the fixed probe
+            span = 0.0
+        reach = max(ROOM_PROBE_MM, min(span * ROOM_PROBE_SHARE, ROOM_PROBE_MAX_MM))
+        return max(reach, ROOM_PROBE_RUN_MM) if RUN_BTN in hold else reach
+
+    def _unwall_reach(self, rm) -> float:
+        """The step along a wall (mm), scaled to the room like the probe (ROOM_UNWALL_SHARE of its smaller side, within
+        UNWALL_MM .. ROOM_UNWALL_MAX_MM): far enough to reach its end or an opening."""
+        try:
+            span = rm.span_mm() if rm is not None else 0.0
+        except Exception:                                    # noqa: BLE001
+            span = 0.0
+        return max(UNWALL_MM, min(span * ROOM_UNWALL_SHARE, ROOM_UNWALL_MAX_MM))
+
+    @staticmethod
+    def _same_heading(a: float, b: float) -> bool:
+        return abs(wrap(a - b)) < 1e-6
+
+    def _unwall_tries(self, now, rot, rm, wall, pressed):
+        """The headings off his facing (degrees) `combat.WallPress.away` tries, this wall's tangents first (ROOM_TANGENTS:
+        he turns to the tangent and walks along the wall), then the default order. The side he was turned onto for this
+        wall is kept: a new side is not chosen before UNWALL_SIDE_HOLD_S, and the same wall keeps its hand WALL_KEEP_S.
+        None: the default order (the wall is not known)."""
+        base = list(combat.WallPress.TRIES_DEG if pressed else SLIDE_TRIES_DEG)
+        if not ROOM_TANGENTS or rm is None or wall is None:
+            return None if pressed else base
+        try:
+            sides = list(rm.tangents(wall))
+        except Exception:                                    # noqa: BLE001 - no tangent: the default order
+            return None if pressed else base
+        if not sides:
+            return None if pressed else base
+        key = tuple(round(v) for v in wall[:4])
+        last = self.__dict__.get("_uc_unwall_side")
+        remembered = last.get("h") if isinstance(last, dict) and last.get("wall") == key \
+            and now - last.get("at", -1e9) <= WALL_KEEP_S else None
+        sides.sort(key=lambda h: (0 if remembered is not None and self._same_heading(h, remembered) else 1,
+                                  abs(wrap(h - rot))))
+        if remembered is not None and now - last.get("at", -1e9) < UNWALL_SIDE_HOLD_S:
+            sides = [h for h in sides if self._same_heading(h, remembered)]   # no flip before the hold is over
+        degs: list = []
+        chosen = None
+        for h in sides:
+            err = wrap(h - rot)
+            if abs(err) > ROOM_TANGENT_MAX_RAD:
+                continue                                     # (behind him: the quick turn's, not this)
+            deg = math.degrees(err)
+            if all(abs(wrap(math.radians(deg - d))) > math.radians(10) for d in degs):
+                degs.append(deg)
+                if chosen is None:
+                    chosen = h
+        if not degs or chosen is None:
+            return None if pressed else base
+        if remembered is None:
+            self.stats["unwall_tangents"] = self.stats.get("unwall_tangents", 0) + 1
+            self.__dict__["_uc_unwall_side"] = {"wall": key, "h": chosen, "at": now}
+        elif not self._same_heading(chosen, remembered) and now - last.get("at", -1e9) >= UNWALL_SIDE_HOLD_S:
+            self.stats["unwall_side_switches"] = self.stats.get("unwall_side_switches", 0) + 1
+            self.__dict__["_uc_unwall_side"] = {"wall": key, "h": chosen, "at": now}
+        for deg in base:
+            if all(abs(wrap(math.radians(deg - g))) > math.radians(10) for g in degs):
+                degs.append(float(deg))
+        return degs
+
+    def _room_wall_beside(self, rm, pos):
+        """The wall within his body's height beside him (pressed against it), or None: the room map's own walls."""
+        try:
+            return rm.wall_near(tuple(pos), WALL_R_MM)
+        except Exception:                                    # noqa: BLE001 - the map never costs a tick
+            return None
+
+    @staticmethod
+    def _on_tangent(p, goal, h) -> bool:
+        """The goal `walls.away` chose lies along heading h from where he stands (2 deg): the tangent's own step."""
+        return abs(wrap(heading(goal[0] - p["pos"][0], goal[2] - p["pos"][2]) - h)) < math.radians(2.0)
+
+    def _shot_open(self, p, snap) -> bool:
+        """A living Ganado in fire range with a clear shot line from where he stands: the fight's own hunt works again,
+        so a tangent detour is over (it exists only to open that line)."""
+        try:
+            for d, _err, e in self._live(p, snap.get("enemies") or ()):
+                if d <= ENGAGE_RANGE_CM and self._line_of_sight_ok(p, e, snap):
+                    return True
+        except Exception:                                    # noqa: BLE001 - a geometry error: the detour goes on
+            return False
+        return False
+
+    def _tangent_still(self, p, rm, un) -> bool:
+        """One more step of the same tangent (the room's own scaled step), when it is walkable: un["goal"] moved on.
+        False: the tangent is walled - the unwall is over."""
+        if rm is None or not isinstance(un.get("h"), (int, float)):
+            return False
+        pos, h = tuple(p["pos"]), un["h"]
+        dist = self._unwall_reach(rm)
+        end = (pos[0] + dist * math.sin(h), pos[1], pos[2] + dist * math.cos(h))
+        try:
+            if rm.walk_block(pos, end, end_r=0.0, body_r=ROOM_BRUSH_MM) is not None:
+                return False
+        except Exception:                                    # noqa: BLE001 - a map error: the unwall is over
+            return False
+        un["goal"] = end
+        self.stats["unwall_tangent_steps"] = self.stats.get("unwall_tangent_steps", 0) + 1
+        return True
 
     def _wall_core(self, p, act, snap, now) -> dict:
         """WALL_* above: the action's walk checked against the walls he has pressed, and pressing a new one; with
@@ -2962,21 +3157,38 @@ class Bot:
             prof, k = self._profile(), MM_PER_CM
             pos_cm, rot = prof.pos_cm(p["pos"]), p.get("rot")
             un = d.get("_uc_unwall")
-            if un is not None and (now >= un["until"] or self._flat(p["pos"], un["goal"]) <= ESCAPE_ARRIVED_MM):
-                un = d["_uc_unwall"] = None
+            rm = self._room_map(snap)
+            fight_first = FIRE_FIRST and self._fire_first(p, snap, now)
+            if un is not None:
+                if now >= un["until"]:
+                    un = d["_uc_unwall"] = None
+                elif un.get("mode") == "tangent" and (fight_first or self._shot_open(p, snap)
+                                                      or self._route_leg(act, p)):
+                    un = d["_uc_unwall"] = None              # the shot / the fight is there: no detour, gun up
+                elif self._flat(p["pos"], un["goal"]) <= ESCAPE_ARRIVED_MM:
+                    if un.get("mode") == "tangent" and self._tangent_still(p, rm, un):
+                        pass                                 # that step walked: on along the same tangent
+                    else:
+                        un = d["_uc_unwall"] = None
             out = {"hold": self._unwall_keys(p, un["goal"])} if un is not None else act
             hold = set(out.get("hold") or ())
             pushing = "lup" in hold
             in_control = now - (d.get("_uc_control_at") or -1e9) <= CONTROL_S
-            pressed = walls.observe(now, pos_cm, rot, pushing, in_control)
+            # ROOM_LEGS, extended to the unwall (the operator 2026-11-10: the walker turned him back into the wall):
+            # while this tick is the mesh walker's own route leg - its steer toward a waypoint the mesh's floor reaches
+            # straight from him - no press is learned and no unwall made; the mesh's route is not second-guessed.
+            leg = self._route_leg(out, p)
+            if leg:
+                self.stats["room_map_route_legs"] = self.stats.get("room_map_route_legs", 0) + 1
+            pressed = walls.observe(now, pos_cm, rot, pushing, in_control and not leg)
             if CAMERA_COLLAPSE and self._camera_collapsed(snap, now, pushing and in_control) and not pressed:
                 walls.remember(now, pos_cm, rot or 0.0)      # the camera pulled into a wall: a press (CAMERA_COLLAPSE)
                 self.stats["walls_pressed"] = self.stats.get("walls_pressed", 0) + 1
                 pressed = True
             refused = (not pressed and un is None and pushing and walls.blocked(now, pos_cm, rot)
-                       and not self._route_leg(out, p))      # (ROOM_LEGS: a press near a doorway never shuts it)
+                       and not leg)                          # (ROOM_LEGS: a press near a doorway never shuts it)
             ahead = None
-            if not (pressed or refused) and un is None and pushing and ROOM_MAP:
+            if not (pressed or refused) and un is None and pushing and ROOM_MAP and not leg:
                 ahead = self._room_ahead(p, out, snap)        # a wall / the floor's edge on the room map ahead
                 if isinstance(ahead, dict):
                     return ahead                             # the route's own way: a turn toward its point
@@ -2986,23 +3198,36 @@ class Bot:
                 return out
             seg = self._walk_test(snap)                      # the shot line's walls, and the room map's (ROOM_MAP)
             clear = (lambda a, b: bool(seg(tuple(v * k for v in a), tuple(v * k for v in b)))) if seg else None
-            goal_cm = walls.away(now, pos_cm, rot or 0.0, clear, UNWALL_MM / MM_PER_CM,
-                                 None if pressed else SLIDE_TRIES_DEG)
+            hit = d.get("_room_hit") if ahead else None
+            wall = hit[1] if isinstance(hit, tuple) and len(hit) > 1 else None
+            if wall is None and pressed and rm is not None:
+                wall = self._room_wall_beside(rm, p["pos"])   # pressed: the wall beside him is the one to leave
+            tries = self._unwall_tries(now, rot or 0.0, rm, wall, pressed)
+            goal_cm = walls.away(now, pos_cm, rot or 0.0, clear, self._unwall_reach(rm) / k, tries)
+            goal = tuple(v * k for v in goal_cm) if goal_cm is not None else None
+            side = d.get("_uc_unwall_side")
+            key = tuple(round(v) for v in wall[:4]) if wall is not None else None
+            tangent_h = side.get("h") if isinstance(side, dict) and side.get("wall") == key else None
+            mode = ("tangent" if (not fight_first and tangent_h is not None and goal is not None
+                                  and self._on_tangent(p, goal, tangent_h)) else "step")
+            tangent = tries is not None
+            why = ("pressed against a wall: along its tangent, then forward" if (tangent and pressed) else
+                   "the room map: a wall ahead, along its tangent instead" if tangent else
+                   "pressed against a wall: turning away onto open floor" if pressed else
+                   "a wall he pressed before lies that way: along it instead" if refused else
+                   "the room map: a wall ahead, along it instead")
             if ahead:
                 self.stats["room_map_steps_refused"] = self.stats.get("room_map_steps_refused", 0) + 1
                 self.stats["room_map_refused_last"] = ahead[:120]
             else:
                 self.stats["walls_refused" if refused else "unwalls"] += 1
-            if goal_cm is None:
+            if goal is None:
                 self.stats["room_map_boxed_in" if ahead else "walls_boxed_in"] = \
                     self.stats.get("room_map_boxed_in" if ahead else "walls_boxed_in", 0) + 1
                 self.doing, self.why = "unwall", "walled in on every side: not walking into it"
                 return dict(out, hold=hold - {"lup", RUN_BTN})
-            goal = tuple(v * k for v in goal_cm)
-            why = ("pressed against a wall: turning away onto open floor" if pressed else
-                   "a wall he pressed before lies that way: along it instead" if refused else
-                   "the room map: a wall ahead, along it instead")
-            d["_uc_unwall"] = {"until": now + UNWALL_S, "goal": goal, "why": why}
+            d["_uc_unwall"] = {"until": now + (UNWALL_TANGENT_S if mode == "tangent" else UNWALL_S),
+                               "goal": goal, "why": why, "mode": mode, "h": tangent_h, "wall": key}
             d.setdefault("_fz", {"pos": None, "rot": None, "tap": -1e9, "on": False})["stepped"] = now
             self.doing, self.why = "unwall", why
             return {"hold": self._unwall_keys(p, goal)}
@@ -3099,7 +3324,8 @@ class Bot:
 
     def _step_keys(self, p, st) -> set:
         """The step's keys this tick: toward its open-floor goal (a turn on the spot while it lies more than
-        STEP_TURN_RAD off his facing - never forward into what is in front), else the first version's fixed keys."""
+        STEP_TURN_RAD off his facing - never forward into what is in front), else the first version's fixed keys (the
+        step it takes with no mesh at all walks forward with the turn, never a turn alone)."""
         goal = st.get("goal")
         if goal is None:
             return set(st.get("keys") or ())

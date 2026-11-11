@@ -85,6 +85,10 @@ METRICS = {
                  'round_threat_answered_fire', 'round_threat_unanswered', 'round_hurt_while_idle',
                  'round_threat_forced_fire', 'round_threat_learned_ticks', 'round_threat_hits',
                  'round_threat_lacks_flash', 'round_threat_lacks_mine'),
+    # the gun's raise / lower and the wall tangent work (RE4 FIRE_FIRST / ROOM_TANGENTS): the operator's camera complaint
+    # ("raising their weapon over and over") as a per-round number, so the next report says whether it is still there
+    'control': ('round_gun_downs', 'round_gun_kept', 'round_gun_up_ticks', 'round_gun_down_ticks',
+                'round_unwall_tangents', 'round_unwall_tangent_steps'),
 }
 ENEMY_SUMMARY_MAX = 600
 # The operator's report policy: an RE round is investigated only when the player was killed, hurt, or fired a

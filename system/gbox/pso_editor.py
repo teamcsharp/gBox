@@ -14,13 +14,13 @@ edits it cannot verify.
 """
 from __future__ import annotations
 
+import pathlib
+
+from . import pso_class_registry as REG
 from . import pso_map_write as W
 from . import pso_setdata as P
 
 KINDS = ("object", "enemy", "event")
-CLASS_NAMES = {
-    0: "player", 1: "npc", 2: "object", 3: "enemy", 4: "item", 5: "door", 6: "warp", 7: "light", 8: "camera",
-}
 
 
 def kind_of(name: str) -> str | None:
@@ -40,6 +40,30 @@ def kind_of(name: str) -> str | None:
     if low.endswith("o.dat") or low.endswith("d.dat"):
         return "object"
     return None
+
+
+def sets_for_floor(found: list[dict], floor: int, *, episode2: bool = False) -> list[dict]:
+    """The editable sets that belong to a floor id, by the area's map name (`pso_floor_map`).
+
+    A floor resolves to its area name (`map_forest01`), and the area's sets are every `map_<area>...{o,d}.dat` file:
+    the area-level `map_forest01d.dat` and its layouts `map_forest01_00o.dat` .., whichever the disc carries. This is
+    the join a page or a CLI user wants - "edit Forest 1" instead of remembering file names - and it is a pure filter
+    over `sets()`, so it works on any disc.
+    """
+    from . import pso_floor_map as F
+    area = F.area_for_floor(floor, episode2)
+    if not area:
+        return []
+    stem = area
+    out = []
+    for row in found:
+        name = row["name"].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if not name.startswith(stem):
+            continue
+        rest = name[len(stem):]
+        if rest.startswith(("_", "o.", "d.", "e.", "ad.")) and name.endswith((".dat", ".evt")):
+            out.append(row)
+    return out
 
 
 class EditError(ValueError):
@@ -64,14 +88,18 @@ def sets(disc) -> list[dict]:
 
 
 def placements(disc, set_name: str) -> dict:
-    """The set's placements, in editor form: ``{set, count, records: [{index, kind, class, x, y, z}]}``."""
+    """The set's placements, in editor form: ``{set, count, records: [{index, kind, class, family, x, y, z}]}``.
+
+    The class name and family come from the executable's own registry (`pso_class_registry`), so a marker reads
+    "door"/"warp"/"switch" or a real class name instead of a number.
+    """
     data, where = W.read_set(disc, set_name)
     recs = P.records(data)
     rows = []
     for rec in recs:
         cls = P.kind_class(rec["kind"])
         rows.append({"index": int(rec["index"]), "kind": int(rec["kind"]), "class_index": cls,
-                     "class": CLASS_NAMES.get(cls, f"class{cls}"),
+                     "class": REG.label(cls), "family": REG.family(cls),
                      "x": round(float(rec["x"]), 3), "y": round(float(rec["y"]), 3), "z": round(float(rec["z"]), 3),
                      "angle": round(float(rec["angle"]), 3)})
     return {"set": set_name, "where": where, "count": len(rows), "records": rows}

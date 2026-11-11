@@ -11,7 +11,7 @@ from .registry import Unsupported
 OPS = frozenset(('capabilities', 'rehook', 'status', 'list', 'floor_spawn', 'floor_rares', 'floor_clear',
                  'floor_list', 'give', 'equip_any', 'always_hit', 'multi_equip', 'stat',
                  'survival','revive','mag','mag_set','mag_feed','randomized','modes','legendary',
-                 'enemy_drops','walk_through','bosses','boss_warp','adventure_status','equip','autoplay_speed'))
+                 'enemy_drops','walk_through','bosses','boss_warp','floor_warp','adventure_status','equip','autoplay_speed'))
 READS = frozenset(('capabilities', 'status', 'list', 'floor_list','mag','modes','bosses','adventure_status'))
 _receipts = {}
 _guard = threading.Lock()
@@ -151,6 +151,20 @@ def catalog(ctx, version):
 
 def gamecube(inp, ctx, ad):
     import random
+    if inp.op == 'floor_warp':
+        # The dev floor warp (the PM's plan, DEEPSEEK-PSO-PROGRESS-2026-11-10 section 4.3): the native
+        # SET_TARGET/BEGIN_TRAVEL/WARP path pso_fence.warp_to_floor already uses, exposed as a mods op so the editor,
+        # the swap tests and the area survey can reach a floor without the quest route. Labelled "reached by warp (dev)"
+        # in any evidence it produces - it never counts for P1/P3/P5 acceptance.
+        from .pso_fence import warp_to_floor
+        target = str(inp.target or '').strip()
+        if not target.isdigit():
+            raise ValueError('floor_warp needs target=<floor number>, e.g. target=1 for Forest 1')
+        floor = int(target)
+        if floor < 0:
+            raise ValueError('floor_warp needs a floor >= 0 (0 is the city)')
+        deadline(ctx)
+        return warp_to_floor(ad, floor)
     from .pso_gc_live import GC, EQUIP_PATCH
     from .psoitems import CLASSES, rare_pool
     m = GC(ad,player_index=inp.player_index,pin_player=True)

@@ -106,3 +106,28 @@ Then send it the heavy analysis work.
 ## Log (append your merges here)
 
 - 2026-11-10 18:25: hand-off written by the Claude session; main 76708784.
+- 2026-11-10 19:0x: RE4 (#9560) first slice, branch `ds-re4-fire-first-20261110`:
+  - **movement**: the room map's unwall now leaves a wall along its own tangent (`RoomMap.walk_block_detail` /
+    `RoomMap.tangents`), the probe and the step along it scaled to the room (`ROOM_PROBE_SHARE` / `ROOM_UNWALL_SHARE`),
+    the side kept per wall (0.8 s at least, `WALL_KEEP_S` while that wall is his) and `ROOM_LEGS` extended to the unwall
+    (never a detour on the mesh walker's own route leg). Stats `unwall_tangents`, `unwall_tangent_steps`,
+    `unwall_side_switches`. A 10 s synthetic wall round: 1.9 m -> 5.3 m net, never a push, 2 clear shots.
+  - **fire first** (the operator's live round, 2026-11-10 night: "the bot is raising their weapon over and over and
+    getting defeated ... needs to fire and deal with threats before lowering his weapon and fleeing or throwing
+    grenades"): `FIRE_FIRST` - a Ganado within 4.5 m with a clear line is answered with the gun (no heavy keep-away, no
+    swarm escape, no grenade swap, no step / wall tangent that lowers it), the gun-up turn to a close target out to
+    2.6 rad, and `gun_downs` / `gun_down_last` / `gun_down_<doing>` in the telemetry.
+  - **weapons**: every round a magnum or a shotgun only (`MAGNUMS | SHOTGUNS`, `MAGNUM_SHARE` 0.8); a
+    results -> playing round is a new round too (the "4 a session" bug: only an intro counted); the `fire_rate` tables
+    written and reported in the round's own give (`weapon_rounds`, `fire_tables`).
+  - tests: `test_re4_room_map.py` (+5), `test_re4_switch_mods.py` (+1), `test_mercs_combat_discipline.py` (+1), the
+    swarm / heavy fight tests now fire-first with the rollback.
+  - the round report carries it: RE4's `round_counters` now include `gun_downs`, `gun_kept`, `gun_up_ticks`,
+    `gun_down_ticks`, `unwall_tangents`, `unwall_tangent_steps`, and `round_reports.METRICS` has the `control` group -
+    the next live round's report says whether the raise / lower is still there (analysis tickets included), and
+    `gun_down_last` in the round's row names what did it.
+- 2026-11-10 19:1x: the test suite no longer writes the operator's mercs telemetry (the checkout's
+  `gbox-data/mercs/re4-sight-blocks.jsonl`, `re4-walk-presses.jsonl`, `re4-crossings.jsonl` had test lines that looked
+  like live bot data): an autouse fixture points `re4_switch.SIGHT_LOG` / `WALK_LOG` and `re4_walk.CROSSING_LOG` at each
+  test's own temp files, and `tests/test_mercs_test_isolation.py` is the rule (it also runs a synthetic round and checks
+  the deployment's files are untouched).

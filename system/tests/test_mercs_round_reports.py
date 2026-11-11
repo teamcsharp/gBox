@@ -50,6 +50,18 @@ def evidence(tmp_path, monkeypatch):
     atlas.close(); store.db.close()
 
 
+def test_the_round_report_counts_the_guns_raise_lower_and_the_wall_tangents(evidence):
+    """The operator's camera complaint (2026-11-10 night: the bot "raising their weapon over and over") as numbers: the
+    round's gun_downs / gun_kept / up-down ticks and the wall-tangent steps land in the report's control group."""
+    e = evidence
+    row = e.record(extra={'round_gun_downs': 7, 'round_gun_kept': 4, 'round_gun_up_ticks': 120,
+                          'round_gun_down_ticks': 61, 'round_unwall_tangents': 2, 'round_unwall_tangent_steps': 5})
+    doc = e.runner.ingest(TITLE, row)
+    control = e.runner.materialize(doc)['report']['metrics']['control']
+    assert control == {'round_gun_downs': 7, 'round_gun_kept': 4, 'round_gun_up_ticks': 120,
+                       'round_gun_down_ticks': 61, 'round_unwall_tangents': 2, 'round_unwall_tangent_steps': 5}
+
+
 def test_exact_round_deduplicates_report_and_request_atomically(evidence):
     e=evidence;row=e.record()
     doc=e.runner.ingest(TITLE,row)

@@ -72,9 +72,9 @@ def test_placements_reports_index_kind_and_position():
     out = E.placements(Disc(), "map_forest01_00o.dat")
     assert out["count"] == 2
     first, second = out["records"]
-    assert first["index"] == 0 and first["kind"] == 2 and first["class"] == "object"
+    assert first["index"] == 0 and first["kind"] == 2 and first["class"] == "TOSensor" and first["family"] == "sensor"
     assert (first["x"], first["y"], first["z"]) == (10.0, 1.0, -3.0)
-    assert second["class"] == "door" and second["x"] == 20.0
+    assert second["class"] == "class_0x05" and second["family"] == "unknown" and second["x"] == 20.0
 
 
 @pytest.mark.skipif(not DISC.is_file(), reason="the disc is not on this machine")
@@ -159,3 +159,26 @@ def test_every_door_renders_as_its_own_mark_not_a_fallback():
         text = E.ascii_map([rec], "map_city00_00o.dat", cols=4, rows=2)
         assert marks[name] in text, f"{name} did not render as {marks[name]}: {text!r}"
         assert "D" not in text
+
+
+# ---- a floor id resolves to its area's sets ---------------------------------------------------------------------------------
+
+def test_a_floor_resolves_to_the_sets_of_its_area():
+    found = [{"name": n, "kind": "object", "where": "loose"} for n in (
+        "map_city00d.dat", "map_city00_00o.dat", "map_forest01_00o.dat", "map_forest01d.dat",
+        "map_forest02_01o.dat", "map_cave01_00o.dat", "map_lobby_01d.dat")]
+    assert [r["name"] for r in E.sets_for_floor(found, 0)] == ["map_city00d.dat", "map_city00_00o.dat"]
+    assert [r["name"] for r in E.sets_for_floor(found, 1)] == ["map_forest01_00o.dat", "map_forest01d.dat"]
+    assert [r["name"] for r in E.sets_for_floor(found, 3)] == ["map_cave01_00o.dat"]
+    assert E.sets_for_floor(found, 99) == []                     # outside the 36-floor table
+    # episode 2's first floors are the a-prefixed areas
+    found2 = [{"name": "map_aforest01_00o.dat", "kind": "object", "where": "loose"}]
+    assert [r["name"] for r in E.sets_for_floor(found2, 1, episode2=True)] == ["map_aforest01_00o.dat"]
+    assert E.sets_for_floor(found2, 1) == []
+
+
+def test_a_floor_filter_does_not_match_a_longer_area_name():
+    # floor 1 is forest01; forest010 and forest011 are not its sets
+    found = [{"name": n, "kind": "object", "where": "loose"} for n in
+             ("map_forest01_00o.dat", "map_forest010x.dat")]
+    assert [r["name"] for r in E.sets_for_floor(found, 1)] == ["map_forest01_00o.dat"]

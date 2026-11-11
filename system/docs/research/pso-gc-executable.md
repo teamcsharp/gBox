@@ -166,6 +166,43 @@ Also present: `gsl_set_object.gsl` / `gsl_set_enemy.gsl` / `gsl_set_event.gsl` (
 It does **not** name any individual `*o.dat` / `*e.dat`; those names are assembled at run time, which is why a
 string search for `map_forest01_00o.dat` in the DOL finds nothing while the archive is referenced directly.
 
+## 5b. The small-data areas (why so much static state has no direct reference)
+
+The CRT sets the two bases before `main`, in the DOL's init section at `0x8000C180` (`r2` at `+0x180`, `r13` at
+`+0x188`):
+
+| register | value | what it is |
+|---|---|---|
+| `r2` | **`0x805CFD00`** | `_SDA2_BASE_`: the small read-only float pool (`unaff_r2 - 0x36f0` in decompiled code) |
+| `r13` | **`0x805CA600`** | `_SDA_BASE_`: the small data area (`unaff_r13 - 0x5260` everywhere) |
+
+That is why a string search for `lis`/`ori` so often finds nothing: any global inside `0x805CA600 ± 32 KiB` is reached
+with a D-form displacement (`lwz r3, -0x5260(r13)`), and **anything above `0x805D25FF` cannot be reached that way at
+all** - which is exactly the case for the class-name table at `0x805D3138`, and why its readers must resolve it through
+a pointer variable. `gbox/pso_sda.py` turns this into a tool: `globals_used(dol)` decodes every `r13`-based D-form
+access and returns `{address: [instruction addresses]}` - **4,803 distinct globals** on the owned disc - so the lane can
+name the globals it already knows (`pso_ram`) and find the ones it does not. Its tests pin the two base values, the
+window behaviour and a synthetic DOL.
+
+## 5c. The class-vtable census (and why the placement classes are not C++ objects)
+
+A class's vtable, where one exists, begins with a pointer to its **registry slot** (`0x805D3138 + index*4`), then
+`0x00010000`, two zero words, its method pointers and two data pointers - e.g. `0x804B4280` for class 6, `0x804B4308`
+for class 8. A whole-DOL scan for such headers finds **38 classes** (`gbox/pso_class_registry.VTABLES`, verified against
+the disc), and they are all in `0x804B4200`-`0x804B9000`.
+
+**The load-bearing detail:** every one of those 38 slots is a slot the 148-name table leaves **empty**. So the
+executable's C++ objects are *engine* classes whose names are not in the placement-class table, and **none of the named
+`TObj*` placement classes is a C++ object with a vtable** - not the doors, not the sensors, not the switches, not the
+whole `TObj*Warp*` family. PSO's placements are plain structs dispatched by class id through a table that is still not
+located; a vtable hunt is the wrong tree for every one of them. (Checked and rejected on the way: the two big
+code-pointer arrays at `0x804C4010` and `0x804FC8F8` are *not* per-class method tables - their entries land inside an
+event-message `switch` dispatcher and a text/glyph routine.)
+
+The next step for the placement-class loader is therefore by *behaviour*: find the code that reads a placement's `kind`
+and see what it installs, and check `pso_ram`'s actor layout for a code-pointer field (a live actor dump settles which
+field).
+
 ## 6. Encrypted or checksummed
 
 - **On the disc:** the only cipher is PSO's own v2 stream cipher over a PRS stream, used by `.pr2` / `.pr3` (the text
@@ -183,12 +220,42 @@ string search for `map_forest01_00o.dat` in the DOL finds nothing while the arch
 1. **The menu walk (P1 needs it).** The phase byte is known (`0x804FE120`, 10 → 3 → 9 through a boot) but the cursor
    and selection bytes for PRESS START, the offline/online choice, character select and the Hunter's Guild are not
    named. `gbox/pso_menu_observer.py` has behaviour for some of them; the addresses are not yet in `pso_ram.py`.
-2. **The floor → map index/variant resolver.** `FUN_80207E88` (104 bytes) and `FUN_802077CC` (64 bytes) are the
-   functions that turn a floor id into a map name and layout; decompiling them would explain why Forest 2 resolves to
-   both `forest02` and `aforest02` and would let the area catalogue bind every floor to its file without a live load.
-3. **The object-class registry ordering.** 315 names exist; the table that maps a class index (the low byte of a
-   placement's `kind`) to one of them is not located. That is the single highest-value decompile left for the editor,
-   because it turns a marker's number into "door", "warp", "switch" or "Booma".
+2. **The floor → map index/variant resolver.** **Decoded 2026-11-10 (branch `ds-pso-floor-map-20261110`).**
+   - `FUN_80207E88(floor)` returns a `{char **names, u32 count}` entry for `floor < 0x24` from one of two 36-entry
+     tables: `0x804C8FC0` (Episode 1) or `0x804C9270` (Episode 2), chosen by `FUN_8030A6A8` (it reads
+     `+current_episode == 3` and two helpers).
+   - The entry names `count` area/layout pairs: `names[2i]` is the area's map name and `names[2i+1]` the layout's.
+     Floor 0 = (`map_city00`, `map_city00_00`); floor 3 = Cave 1 with six layouts `map_cave01_00` .. `_05`;
+     floor 15 = the lobby's fifteen rooms; floor 16 = `map_vs01` with three; floors 30-33 = `map_boss05` .. `08`.
+   - The Episode 2 table is the same table with the `a`-prefixed areas for floors 0-14 and identical floors 15+
+     (which is why Forest 2 resolves to `forest02` or `aforest02`: it is floor 2 in either table).
+   - `FUN_802077CC(0..0x11, out)` copies three words per row from an 18 x 12-byte **.bss** table at `0x80513920`,
+     and `FUN_80207798(floor, a, b, c)` **writes** the same row. It is **not** map data: `FUN_802078A4` walks the
+     rows, and for each live row (`word0 >= 0`) recomputes words 1 and 2 as
+     `(table[word0].param * k * (rng() - bias))` through `FUN_8039C880` - a per-floor randomised **environment
+     parameter** block (seeded once by `FUN_80207C60`, which copies index/param pairs from `0x8044B894` and defaults
+     `word0` to `-1`), not the floor -> map binding. The floor -> map/layout names are `FUN_80207E88`'s tables
+     (`0x804C8FC0` / `0x804C9270`), which are decoded and pinned in `gbox/pso_floor_map.py`.
+   - `gbox/pso_floor_map.py` pins both map-name tables, exposes `floor_names` / `area_for_floor` /
+     `layouts_for_floor` / `layout_name` / `area_id`, and `derive()` re-reads the table from a `PsoV3.dol`
+     (`tools/verify_pso_floors.py`). It verifies against the owned disc (both tables, 36 floors each), and floors
+     0-11 match `pso_areas.EPISODE1` in order.
+3. **The object-class registry ordering.** **Located 2026-11-10 (branch `ds-pso-class-registry-20261110`).**
+   - It is a flat table of class-name pointers in `.data` at **`0x805D3138`**, 4 bytes per slot, 240 slots, 148 named
+     in this build (the rest zero, plus one `0xFFFFFFFF` sentinel). `class_name(index)` is a plain
+     `cstr(table[index])`, indexed by the low byte of a placement's `kind`.
+   - Found from the live measurement: the four room-10 doors are kinds `0x46` Shop, `0x47` Guild, `0x48` Warp, `0x49`
+     Med. A search over the .data name-pointer sections for the alignment where those four indices land on exactly
+     those names matches at this base and stride **4/4**, and no other alignment exceeds 1/4 - a very strong pin.
+   - Coverage on the owned disc: it labels **44 of the 60 class indices** the 141 object-set files use, i.e. **15,975
+     of 18,927 placements (84.4%)** (`TORockCaveBL03` 7,438, `TOSensorAncient01` 4,436, `TOSymbolchatColli` 1,408,
+     `TObjAreaWarpForest` 308, ...).
+   - 16 ids are real holes in this build's table (`0x05`, `0x06`, `0x08`, `0x0a`, `0x0c`, `0x0e`, `0x13`, `0x1e`,
+     `0x22`, `0x4b`, `0x61`, `0x67`, `0x74`, `0xc4`, `0xc5`, `0xc8`; `0x06` alone is 2,032 placements in the Ruins
+     sets). The classes exist - the sets spawn them - but their name slot is zero, so the editor should show
+     `class_0xNN` and not invent a name.
+   - `gbox/pso_class_registry.py` pins the table (`name`, `label`, `class_index`, `index_of`, `derive`, `verify`) and
+     `tools/verify_pso_classes.py <dol>` re-reads it from an image (PASS on the owned disc).
 4. **Boss part counters.** `pso_boss_strategy` drives them from live RAM; the structures are not decompiled.
 5. **Save-data layout** (§6).
 

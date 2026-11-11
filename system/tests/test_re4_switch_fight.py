@@ -94,10 +94,17 @@ def test_a_mob_takes_the_ganado_on_the_guns_line_not_the_nearest():
     assert b.target in (101, 102, 103, 104)
 
 
-def test_a_swarm_at_arms_length_is_escaped_with_the_quick_turn():
+def test_a_swarm_at_arms_length_is_fired_at_first_the_escape_is_the_rollback(monkeypatch):
+    """The operator 2026-11-10 night: "fire and deal with threats before lowering his weapon and fleeing". FIRE_FIRST:
+    three on him with clear lines meet the gun (no gun-down run); FIRE_FIRST off is the old quick turn out."""
     b = bot()
-    act = b.tick(snap([((100.0 * math.sin(a), 0.0, 100.0 * math.cos(a)), 400) for a in (0.0, 2.0, 4.0)]), now=1.0)
-    assert b.stats["escapes"] == 1 and b.doing == "escape"
+    s = snap([((100.0 * math.sin(a), 0.0, 100.0 * math.cos(a)), 400) for a in (0.0, 2.0, 4.0)])
+    act = b.tick(s, now=1.0)
+    assert b.stats["escapes"] == 0 and D.AIM_BTN in act["hold"], "the gun up at the swarm, not a run"
+    monkeypatch.setattr(D, "FIRE_FIRST", False)
+    old = bot()
+    act = old.tick(s, now=1.0)
+    assert old.stats["escapes"] == 1 and old.doing == "escape"
     assert act["hold"] == set(D.QUICK_TURN) or {"lup", D.RUN_BTN} <= act["hold"], "the quick turn, or the run out"
 
 
@@ -472,13 +479,19 @@ def test_the_kill_count_candidate_is_retracted():
 
 
 
-def test_a_heavy_at_arms_length_is_run_from_not_fought():
-    """Live 2026-11-10 23:21: Unlimited life undid 26 hits, then one blow took him from 1560 to 0 - a heavy's."""
+def test_a_heavy_at_arms_length_is_shot_first_the_run_is_the_rollback(monkeypatch):
+    """Live 2026-11-10 23:21: Unlimited life undid 26 hits, then one blow took him from 1560 to 0 - a heavy's. The
+    operator's next round: "fire and deal with threats before lowering his weapon and fleeing" - FIRE_FIRST: a heavy on
+    him with a clear line meets the gun; the run from it is the rollback (FIRE_FIRST off)."""
     b = bot()
     s = snap([((0.0, 0.0, 200.0), 3500)])
     s["enemies"][0]["hp_max"] = 3500
     act = b.tick(s, now=1.0)
-    assert act["hold"] == set(D.QUICK_TURN) and b.doing == "evade" and b.stats["heavy_escapes"] == 1
+    assert D.AIM_BTN in act["hold"] and b.doing in ("turn", "aim", "fire") and b.stats.get("heavy_escapes", 0) == 0
+    monkeypatch.setattr(D, "FIRE_FIRST", False)
+    old = bot()
+    act = old.tick(s, now=1.0)
+    assert act["hold"] == set(D.QUICK_TURN) and old.doing == "evade" and old.stats["heavy_escapes"] == 1
     far = snap([((0.0, 0.0, 800.0), 3500)])
     far["enemies"][0]["hp_max"] = 3500
     b2 = bot()
