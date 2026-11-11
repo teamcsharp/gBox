@@ -431,3 +431,12 @@ Then send it the heavy analysis work.
   `stall_confirm_due` is the tested predicate (`test_mercs_bot.py` 16 passed). Deploys to the Spark via the
   autodeploy and hot-reloads at the next session; until then RE5 can still park, and a manual A press through
   `POST /api/sessions/{sid}/input` starts its round.
+﻿
+- 2026-11-10 21:5x: the Spark's deploy is **paused behind `deploy-restart-pending`**, not behind a local edit: the Spark's
+  `gbox/mercs_bot.py` hashes exactly to main's revision `8195b80c` (an older commit), and the round-26 select-confirm
+  fix is not in it. `deploy_main.sh`'s `activation_for` returns `restart` whenever that marker exists, so every
+  later merge - including bot-only ones - waits for the service restart (the 05:00 window, or an operator restart).
+  Confirmed against the worker's `build_sources` hashes for `mercs_bot.py` and `pso_campaign.py`. Until then the
+  RE5 character-select workaround is the operator's/agent's A press through `POST /api/sessions/{sid}/input`.
+  Also live: RE6's No Mercy round is long (the rotation has been on it ~30 min), the Pine Box program feed is pinned
+  to the PSO session by "following what you watch" while `/api/broadcast/pc/lilspark.jpg` shows the live RE6 feed.
