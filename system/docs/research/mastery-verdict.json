@@ -1,0 +1,52 @@
+{
+ "cp17": true,
+ "criterion": "the Dragon's HP starts at full, falls across several values, the entity vanishes and the player survives",
+ "floor_changes": [
+  {
+   "from": 2,
+   "to": 11,
+   "at": [
+    147.2,
+    60.8,
+    -508.5
+   ],
+   "elapsed": 253.7
+  },
+  {
+   "from": 11,
+   "to": 0,
+   "at": [
+    -228.8,
+    0.1,
+    -46.3
+   ],
+   "elapsed": 469.7
+  },
+  {
+   "from": 0,
+   "to": 3,
+   "at": [
+    355.4,
+    1.0,
+    31.0
+   ],
+   "elapsed": 514.0
+  }
+ ],
+ "count": 3,
+ "cp18": true,
+ "hp_max": 1191,
+ "hp_final_seen": 0,
+ "distinct_values": [
+  814,
+  727,
+  652,
+  468,
+  390,
+  202,
+  0
+ ],
+ "entity_vanished": true,
+ "player_alive_at_end": true,
+ "samples": 24
+}
