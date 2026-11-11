@@ -415,3 +415,11 @@ Then send it the heavy analysis work.
   area) - it must press OK on character select and go through stage select; RE4/RE6 do not stall here. Also confirmed:
   the round-report API is `GET /api/mercs/round-reports` (+ `/{id}`), with `report.metrics` and `outcome`, the
   live verification source for MercMode bots.
+﻿
+- 2026-11-10 21:2x: **RE5's stall is the character select, and one A press starts the round.** Frames showed the RE5
+  session parked on CHARACTER SELECT for minutes; posting two A events through `POST /api/sessions/{sid}/input`
+  (agent actor, `{"queued": 2}`) moved it through NOW LOADING into a **No Mercy round** (frame: 01'45" on the clock, a
+  "Break free" grab, the HELP gauge). So the title and its round work; the bot's RE5 menu walk simply never confirms the
+  character (its STAGE/CHARACTER SELECT state machine reads the RAM cursors but the confirm press is not sent). Next:
+  wire the confirm press into the RE5 title's select phase (or the generic mercs_bot's menu phase) with a timeout, so
+  the operator never sees the parked screen - and the round reports stop being 0-shot "lost".
