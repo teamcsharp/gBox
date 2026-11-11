@@ -167,6 +167,17 @@ def main(seconds=3600.0):
                 visiting = None
             else:
                 RUN.run_to(ME.read_pos, visiting, tolerance=20.0, budget=25.0)
+                continue
+        # nothing alive, nothing left to visit: look for the way out of the area
+        try:
+            import exit_seek
+            found = exit_seek.warps()
+            if found:
+                log(f"  area exit present: {found[0]['class']} at "
+                    f"{found[0]['distance']:.0f} units - taking it")
+                exit_seek.seek(60.0)
+        except Exception as exc:                                  # noqa: BLE001
+            log(f"  exit seek unavailable: {type(exc).__name__}: {str(exc)[:60]}")
         time.sleep(0.15)
 
 
