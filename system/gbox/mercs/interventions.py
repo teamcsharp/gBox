@@ -109,8 +109,10 @@ class Queue:
         elif op == 'grenade_ring':
             args = dict(args)
             kind = args.setdefault('kind', 'flash')
-            if set(args) != {'kind'} or kind not in GRENADE_RING_KINDS:
+            if set(args) - {'kind', 'allow_unverified'} or kind not in GRENADE_RING_KINDS:
                 raise ValueError('invalid grenade ring arguments')
+            if 'allow_unverified' in args and type(args['allow_unverified']) is not bool:
+                raise ValueError('allow_unverified must be a boolean')
         elif op == 'grenade_scatter':
             args = dict(args)
             kind = args.setdefault('kind', 'random')
@@ -143,8 +145,11 @@ class Queue:
             if op == 'set_infinite_ammo' and d.get('options', {}).get('infinite_ammo', {}).get('available') is not True:
                 raise ValueError('infinite ammo is unavailable for this session')
             kinds = d.get('options', {}).get('grenade_kinds')
-            if op == 'grenade_ring' and kinds is not None and not any(
-                    k['kind'] == args['kind'] and k['available'] is True for k in kinds):
+            # allow_unverified is the research probe's path (a kind whose first live receipt is being taken): it is
+            # never sent by the PiP, and without it a refused kind stays refused. The queue still needs the title's
+            # capability and a live worker.
+            if op == 'grenade_ring' and kinds is not None and args.get('allow_unverified') is not True \
+                    and not any(k['kind'] == args['kind'] and k['available'] is True for k in kinds):
                 raise ValueError('this grenade kind is unavailable for this session')
             if sum(r["state"] in ("queued", "claimed") for r in d["rows"]) >= MAX_PENDING:
                 raise ValueError("intervention queue is full")
@@ -521,7 +526,8 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event, game=None):
                                     result = ctl.set_infinite_ammo(row['args']['enabled'], expected=expected, allowed=allowed_ammo)
                                     catalogue.clear()  # next published status must be read after this write
                                 elif row['op'] == 'grenade_ring':
-                                    result = ctl.grenade_ring(row['args'].get('kind', 'flash'))
+                                    result = ctl.grenade_ring(row['args'].get('kind', 'flash'),
+                                                              allow_unverified=row['args'].get('allow_unverified') is True)
                                     if stats is not None and result.get('state') == 'confirmed':
                                         # The same counters the bot's own rule keeps (gbox.mercs.grenade_ring):
                                         # a ring fired by a click is deployed like any other, and its kills are

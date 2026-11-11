@@ -265,3 +265,23 @@ def test_status_never_invents_a_kind_for_a_title_with_a_ring_but_no_worker(tmp_p
     assert rows['flash']['available'] is False
     assert 'controller is not available' in rows['flash']['reason']
     store.db.close()
+
+
+def test_a_research_probe_may_ask_for_an_unverified_grenade_kind(queue):
+    """The first live receipt of a hand/incendiary ring is a research probe (the controller's allow_unverified path):
+    it must be reachable through the authenticated API, because the agent has no shell on lilspark. The PiP never
+    sends the flag, and without it a refused kind still stays refused."""
+    q, _ = queue
+    options = {'grenade_kinds': [{'kind': 'flash', 'available': True},
+                                 {'kind': 'hand', 'available': False, 'reason': 'no live receipt yet'}]}
+    q.claim('sid', 'life-1', ['grenade_ring'], options=options)
+    with pytest.raises(ValueError, match='unavailable'):
+        q.post('sid', 'grenade_ring', str(uuid.uuid4()), 'viewer', {'kind': 'hand'})
+    row = q.post('sid', 'grenade_ring', str(uuid.uuid4()), 'agent',
+                 {'kind': 'hand', 'allow_unverified': True})
+    assert row['state'] == 'queued'
+    assert row['args'] == {'kind': 'hand', 'allow_unverified': True}
+    for bad in (1, 'true', None):
+        with pytest.raises(ValueError, match='boolean'):
+            q.post('sid', 'grenade_ring', str(uuid.uuid4()), 'agent',
+                   {'kind': 'hand', 'allow_unverified': bad})
