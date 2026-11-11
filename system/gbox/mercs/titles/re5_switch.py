@@ -1227,6 +1227,11 @@ RING_R, RING_N, RING_GAP = 300.0, 3, math.radians(150)
 TIGHT = ((4, 250.0),)
 HURT = 0.6
 ESCAPE_S, ESCAPE_GAP_S, ESCAPES_MAX = 1.2, 4.0, 4
+# Operator critique #5706 (coaching note 8, 2026-11-10): at 24 % health with 6 Majini within 2.4 m the gun cycled
+# raise / reraise / turn for 17 s without a shot, and the open side (a gap over RING_GAP) kept the ring check at "fight
+# on". Hurt under HEAL_CRITICAL, 3+ within DRY_ESCAPE_R and no shot for DRY_ESCAPE_S: run out through the widest gap
+# even when it is open.
+DRY_ESCAPE_S, DRY_ESCAPE_R, DRY_ESCAPE_N = 4.0, 250.0, 3
 RUN = ("b", "lup")
 HUNT_R = 1200.0                          # the "hunt" directive: closer than this the fight takes over, farther he walks
 # The "rush" directive (the PiP's flashbang button, operator 2026-10-29): a mine dropped at once, then for its 10 s he closes
@@ -2716,6 +2721,7 @@ class Bot:
         self.healing, self.heal_at = None, -1e9   # a heal under way / when the last one ended
         self.escape, self.escape_at = None, -1e9  # (the bearing out, until) / when the last escape began
         self.round_escapes = 0                    # escapes this round (ESCAPES_MAX)
+        self.dry_shots, self.dry_since = -1, 0.0  # the shots counter at the last change / when (DRY_ESCAPE_S)
         self.trigger_since = None                 # the burst's first pull since the gun came up (kept across the
                                                   # targets it drops; the gun going down ends the burst)
         for k in AIM_COUNTERS + MEASURE_COUNTERS + tuple("t_" + d for d in DOINGS):
@@ -6232,6 +6238,12 @@ class Bot:
             return None
         px, _, pz = p["pos"]
         hurt = (p.get("hp") or 0) < HURT * (p.get("hp_max") or 0)
+        shots = self.stats.get("shots", 0)
+        if shots != self.dry_shots:
+            self.dry_shots, self.dry_since = shots, now
+        dry = (hurt and (p.get("hp") or 0) <= HEAL_CRITICAL * (p.get("hp_max") or 0)
+               and now - self.dry_since >= DRY_ESCAPE_S
+               and sum(1 for e in live if flat(e) < DRY_ESCAPE_R) >= DRY_ESCAPE_N)
         limits = (TIGHT if hurt or HEALTHY_ESCAPES else ()) + (((RING_N, RING_R),) if hurt else ())
         ring = None
         for n, r in limits:
@@ -6243,8 +6255,8 @@ class Bot:
             return None
         gaps = [((ring[(i + 1) % len(ring)] - a) % (2 * math.pi) or 2 * math.pi, a) for i, a in enumerate(ring)]
         gap, start = max(gaps)
-        if gap >= RING_GAP:
-            return None                                     # an open side: fight on
+        if gap >= RING_GAP and not dry:
+            return None                                     # an open side: fight on (unless the gun has been dry)
         out = wrap(start + gap / 2)
         self._gun_down()
         self.escape, self.escape_at = (out, now + ESCAPE_S), now

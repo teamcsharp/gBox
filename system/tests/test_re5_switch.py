@@ -726,3 +726,23 @@ def test_statue_run_stuck_twice_blocks_that_statue_for_a_minute():
     assert b._bonus_block[77] == 105.0 + R.BONUS_STUCK_BLOCK_S > 105.0 + R.BONUS_BLOCK_S
     assert b.stats["bonus_stuck_blocks"] == 1
     assert b._bonus_stuck(106.0) is False          # no run: nothing to count
+def test_hurt_in_a_crowd_with_a_dry_gun_runs_out_through_an_open_side(monkeypatch):
+    """Coaching note 8 (#5706): 24 % health, 6 Majini within 2.4 m all on one side (an open gap), 17 s without a shot."""
+    import math
+    foes = [{"pos": pos} for pos in ((513, -3261, -312), (692, -3261, -136), (513, -3261, -174),
+                                     (410, -3261, -314), (499, -3261, -76), (417, -3261, -164))]
+    p = {"pos": (634.0, -3261.0, -265.0), "rot": 2.499, "hp": 244, "hp_max": 1000}
+    flat = lambda e: math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+    b, _ = brain()
+    assert b._escape(p, foes, flat, 100.0) is None                 # the gun was just firing: fight on
+    act = b._escape(p, foes, flat, 105.0)                          # 5 s and no shot: out through the gap
+    assert act is not None and "b" in act["hold"] and b.stats["escapes"] == 1
+    b, _ = brain()
+    b.stats["shots"] = 1
+    b._escape(p, foes, flat, 100.0)
+    b.stats["shots"] = 2                                            # still shooting: no escape
+    assert b._escape(p, foes, flat, 105.0) is None
+    healthy = dict(p, hp=900)
+    b, _ = brain()
+    b._escape(healthy, foes, flat, 100.0)
+    assert b._escape(healthy, foes, flat, 105.0) is None            # healthy: the old rule
