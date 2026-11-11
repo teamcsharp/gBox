@@ -151,28 +151,36 @@ def test_a_refused_ring_is_a_stat_and_still_sets_the_cooldown():
     assert live["ring_last_at"] == 100.0 and "allocation refused" in live["ring_error"]
 
 
-def test_the_engine_hook_fires_once_and_reports_the_receipt():
+def test_the_engine_hook_fires_once_and_reports_the_receipt(monkeypatch):
+    monkeypatch.setattr(GR, "SCATTER_TITLES", frozenset())   # the scatter's own rule has its tests; keep this the ring's
     ring = FakeRing()
     crowd = [enemy(100 + i * 50) for i in range(5)]
     live = stats()
-    step = GR.control(None, {"menus": "gbox.mercs.titles.re6_switch", "map_id": "01002A000CD48000"}, ring=ring)
+    step = GR.control(None, {"menus": "gbox.mercs.titles.re5_switch", "map_id": "010018100CD46000"}, ring=ring)
     held = []
     out = step(snap(crowd), live, 100.0, lambda keys: held.append(set(keys)) or True)
+    assert out["fire"] is False and "waits" in out["reason"]        # the round-start guard
+    out = step(snap(crowd), live, 100.0 + GR.RING_START_GUARD_S + 0.1, lambda keys: held.append(set(keys)) or True)
     assert out["fired"] is True and ring.calls and held == [set()]
     assert live["rings_deployed"] == 1 and live["ring_last_reason"].startswith("surrounded")
     # the cooldown stops the next tick from firing again
-    again = step(snap(crowd), live, 101.0, lambda keys: True)
+    again = step(snap(crowd), live, 100.0 + GR.RING_START_GUARD_S + 1.1, lambda keys: True)
     assert again["fire"] is False and "cooldown" in live["ring_decision"]
     # a held input that cannot be released blocks the ring instead of firing over it
     live2 = stats()
-    blocked = GR.control(None, {"map_id": "01002A000CD48000"}, ring=ring).__call__(snap(crowd), live2, 100.0, lambda keys: False)
+    step2 = GR.control(None, {"map_id": "010018100CD46000"}, ring=ring)
+    step2(snap(crowd), live2, 100.0, lambda keys: True)             # the guard tick
+    blocked = step2(snap(crowd), live2, 100.0 + GR.RING_START_GUARD_S + 0.1, lambda keys: False)
     assert blocked["fire"] is False and "keys did not release" in blocked["reason"]
 
 
-def test_the_hook_is_quiet_when_nothing_is_happening():
+def test_the_hook_is_quiet_when_nothing_is_happening(monkeypatch):
+    monkeypatch.setattr(GR, "SCATTER_TITLES", frozenset())
     live = stats()
     step = GR.control(None, {"map_id": "010018100CD46000"}, ring=FakeRing())
     out = step(snap([]), live, 100.0, lambda keys: True)
+    assert out["fire"] is False and "waits" in out["reason"]        # the round-start guard first
+    out = step(snap([]), live, 100.0 + GR.RING_START_GUARD_S + 0.1, lambda keys: True)
     assert out["fire"] is False and "nothing worth a ring" in live["ring_decision"]
 
 
@@ -222,3 +230,15 @@ def test_fire_random_never_uses_a_flash_the_gate_closed():
     receipt = GR.fire(None, {"kind": "random", "flash_ok": False}, stats(), 100.0, ring=ring)
     assert receipt["state"] == "refused" and ring.calls == []
     assert "no grenade kind is available" in receipt["reason"]
+
+
+def test_no_ring_in_the_first_seconds_of_a_round():
+    """Live 2026-11-11: the RE5 auto-ring's first attempt at the round's start froze the session twice (15:52, 16:35);
+    the crowd triggers wait RING_START_GUARD_S while the round settles."""
+    crowd = [enemy(100 + i * 50) for i in range(5)]
+    live = stats()
+    GR.observe(live, snap(crowd), 100.0, GR.policy())
+    early = GR.decide(snap(crowd), live, 101.0)
+    assert early["fire"] is False and "waits" in early["reason"]
+    later = GR.decide(snap(crowd), live, 100.0 + GR.RING_START_GUARD_S + 0.1)
+    assert later["fire"] is True

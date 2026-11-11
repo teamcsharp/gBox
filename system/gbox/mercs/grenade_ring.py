@@ -50,6 +50,10 @@ DEFAULTS = {
     "kill_window_s": 12.0,         # kills inside this window after a ring are attributed to it
 }
 HISTORY_MAX_S = 20.0
+#: No ring in the first seconds of a round (operator's titles live 2026-11-11: the RE5 auto-ring's first attempt at
+#: the round's start froze the session on a loading screen twice, 15:52 and 16:35 - the bot's own ring during the
+#: spawn/load window). The ring's crowd/pressure triggers wait this long; the flash minute and the blast rules stand.
+RING_START_GUARD_S = 6.0
 HISTORY_ROUNDS = 32
 # Switch only (operator 2026-11-10: "we should only be focusing on switch versions"): the rule runs on the three
 # Switch Mercenaries titles. A PS3/GameCube/Wii session keeps whatever its own bot already did.
@@ -220,6 +224,9 @@ def observe(stats: dict, snap: dict, now: float, policy_: dict | None = None) ->
     """Per-tick bookkeeping: the crowd history and the kills attributed to the last ring."""
     policy_ = policy_ or policy(stats=stats)
     round_id = stats.get("round_evidence_id") or ""
+    if stats.get("ring_round_id") != round_id:
+        stats["ring_round_id"] = round_id
+        stats["ring_round_at"] = now
     player, pos = _player(snap)
     near = len(enemies_near(snap, float(policy_["near_cm"]))) if pos else 0
     rows = _history(round_id, now)
@@ -262,6 +269,10 @@ def decide(snap: dict, stats: dict, now: float, policy_: dict | None = None, *, 
         return {**out, "reason": f"the round is not being played ({screen})"}
     if player is None:
         return {**out, "reason": "no player in this snapshot"}
+    round_at = stats.get("ring_round_at")
+    if isinstance(round_at, (int, float)) and now - round_at < RING_START_GUARD_S:
+        return {**out, "reason": (f"the round is {now - round_at:.1f} s old: the ring waits "
+                                  f"{RING_START_GUARD_S:.0f} s after the start")}
     if radius > float(policy_["max_radius_cm"]):
         return {**out, "reason": (f"the learned blast reach ({safe_cm:.0f} cm) is wider than the ring can place "
                                   f"grenades ({float(policy_['max_radius_cm']):.0f} cm)")}
