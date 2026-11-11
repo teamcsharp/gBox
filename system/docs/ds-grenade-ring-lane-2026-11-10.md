@@ -1432,3 +1432,16 @@ still refuse it until a live receipt (G's fallback: each kind that does not pass
 
 Merged to main (`88f51e83`), tests 43 passed. The remaining G3 step is the live probe on an RE4 block (after the
 05:00 restart, through `grenade_ring(kind="incendiary", allow_unverified=True)`).
+
+## Round 79 (2026-11-11 02:00 CST) - E6's op path is proven end to end in the worker, not just in the controller
+
+New worker test: a claim carrying `op: "re4_harness_selftest"` makes the real `_worker_loop` call
+`ctl.selftest()` and post its receipt (`op`, `result` 0, `verified`), with the claim's epoch echoed as the server does.
+That closes the last untested link between the PiP/API click and the harness's no-op: controller, worker dispatch and
+receipt are each covered (14 worker tests, 77 targeted passed). Merged to main (`645fe433`).
+
+**Live:** the long poll ended with no new captures - no `bss_watch` from any RE4 round, and the RE5 captures stopped
+at the 21:19 round (all with flash available when playing). The 05:00 restart is now the next event that can change
+the deployment state; the operator bot-reload remains the shortcut for the telemetry watch. Nothing on the code side
+is left to build for E3/E6/F/G; the open work is the live evidence listed in the lane-state section (round 78's
+summary).
