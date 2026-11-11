@@ -1297,3 +1297,25 @@ and the running module still predates the JSON-string fix). The poll keeps watch
 reload lands, the next RE4 round records it.
 
 No code changed this round; the lane's merged state stands (main `96a4cd16`).
+
+## Round 75 (2026-11-10 23:45 CST) - E3 gets a second read channel: the status refusal now carries the five pages
+
+**Why.** The `.bss` watch rides the RE4 bot module, which the running worker still has not reloaded (the
+`deploy-restart-pending` skip), so the telemetry strings never appear. But `interventions.status()` calls the native
+controller's `prepare()` on every full status read, and that call runs in the same worker that can read the adapter's
+memory. `prepare()` now includes the five candidate pages in its refusal:
+
+    no proven private storage for the RE4 harness (E3's three-load watch is pending); pages now:
+    0x1cb9000=<32 hex>;0x1cba000=<32 hex>;0x1cbb000=<32 hex>;0x1cbc000=<32 hex>;0x1700000=<32 hex>
+
+so one `GET /api/sessions/{sid}/interventions` on a live RE4 round is itself the read-only watch - no bot reload, no
+new endpoint, no writes (`Controller.bss_watch_probe()`, two tests). If the worker's copy of `re4_switch_native` is
+fresh (it is imported lazily at controller construction), the very next RE4 status read yields the three-load data;
+if the worker still holds the pre-deploy module, nothing changes and the telemetry path remains the fallback.
+
+**Merged** to main (`9fda4e20`), targeted gate 67 passed. A 15-minute poll is running that records every live RE4
+status line (`re4_status_probe.txt`) so the moment an RE4 block appears the pages are captured.
+
+**Also this round:** the v2 live poll finished; it reproduced checkpoint 0's RE5 read (five rounds, flash True when
+playing) but caught no barrage stat - the RE5 rounds are short and the rule needs a tough moment inside one. D's
+positive receipt and CP0's one flash still wait on a round that fires (or the operator's click).
