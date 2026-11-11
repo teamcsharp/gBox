@@ -709,6 +709,16 @@ class Controller:
             self.generation = self.w(self.player + 0x1308)
             self.manager = self.player + 0x13A8
             self.check()
+            if kind == "random" and kinds is None:
+                # checkpoint A3: a random barrage draws only the verified kinds whose resources are loaded for this
+                # character - a missing hand grenade must not refuse a flash barrage (and vice versa)
+                loaded = tuple(k for k in SCATTER_KINDS
+                               if CLASSES.class_for(k).item in R.inventory_items(self, self.player))
+                if not loaded:
+                    raise Unavailable(f"none of this build's barrage kinds ({', '.join(SCATTER_KINDS)}) has its "
+                                      f"resources loaded for this character")
+                draw = loaded
+                floor_cm = min(flash_floor if k == "flash" else explosive_floor for k in draw)
             kinds_used = draw if kind == "random" else (kind,)
             for used in kinds_used:
                 if CLASSES.class_for(used).item not in R.inventory_items(self, self.player):

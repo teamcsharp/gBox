@@ -193,3 +193,42 @@ def test_grenade_scatter_now_never_raises():
             raise OSError("no emulator")
     out = N.grenade_scatter_now(Ad())
     assert out["state"] in ("unavailable", "failed") and not out["verified"]
+
+
+# --- checkpoint A3: the random draw follows the character's loaded resources -----------------------------------------
+
+def test_a_random_barrage_draws_only_the_loaded_kinds(monkeypatch):
+    from tests.test_re6_class_images import class_controller
+    monkeypatch.setattr(N, "SCATTER_KINDS", ("flash", "hand"))
+    monkeypatch.setattr(N.time, "sleep", lambda s: None)
+    flash_item = N.CLASSES.class_for("flash").item
+    hand_item = N.CLASSES.class_for("hand").item
+    monkeypatch.setattr(N.R, "inventory_items", lambda m, p: {flash_item})
+    ctl = class_controller()
+    out = ctl.grenade_scatter("random", count=4, toward=[(1000.0, 0.0)])
+    assert out["state"] == "confirmed" and out["kinds"] == ["flash"]      # the hand he does not carry is left out
+    monkeypatch.setattr(N.R, "inventory_items", lambda m, p: set())
+    with pytest.raises(N.Unavailable, match="none of this build's barrage kinds"):
+        ctl.grenade_scatter("random", count=2)
+
+
+def test_a_random_barrage_with_both_loaded_can_draw_either(monkeypatch):
+    from tests.test_re6_class_images import class_controller
+    monkeypatch.setattr(N, "SCATTER_KINDS", ("flash", "hand"))
+    monkeypatch.setattr(N.time, "sleep", lambda s: None)
+    both = {N.CLASSES.class_for("flash").item, N.CLASSES.class_for("hand").item}
+    monkeypatch.setattr(N.R, "inventory_items", lambda m, p: both)
+    ctl = class_controller()
+    out = ctl.grenade_scatter("random", count=8, toward=[(1000.0, 0.0)], rng=random.Random(2))
+    assert out["state"] == "confirmed" and set(out["kinds"]) <= {"flash", "hand"}
+
+
+def test_a_narrowed_draw_still_refuses_a_kind_he_cannot_carry(monkeypatch):
+    from tests.test_re6_class_images import class_controller
+    monkeypatch.setattr(N, "SCATTER_KINDS", ("flash", "hand"))
+    monkeypatch.setattr(N.time, "sleep", lambda s: None)
+    flash_item = N.CLASSES.class_for("flash").item
+    monkeypatch.setattr(N.R, "inventory_items", lambda m, p: {flash_item})
+    ctl = class_controller()
+    with pytest.raises(N.Unavailable, match="hand resources are not loaded"):
+        ctl.grenade_scatter("random", count=2, kinds=("hand",))
