@@ -181,6 +181,22 @@ def _private_re4_re6_threats(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _private_re4_walk_logs(tmp_path_factory, monkeypatch):
+    """Tests never write the operator's mercs telemetry (re4_switch.SIGHT_LOG / WALK_LOG, re4_walk.CROSSING_LOG): a
+    synthetic round's blocked shots, walk presses and doorway crossings landed in the checkout's gbox-data/mercs files
+    (2026-11-10: the live-looking re4-sight-blocks / walk-presses / crossings lines were the test suite's). Each test
+    gets its own files; a test that asserts lines reads the constant it patched (or this one)."""
+    try:
+        from gbox.mercs.titles import re4_switch, re4_walk
+    except Exception:                                        # noqa: BLE001 - a checkout without them
+        return
+    root = tmp_path_factory.mktemp("re4_walk_logs")
+    monkeypatch.setattr(re4_switch, "SIGHT_LOG", root / "re4-sight-blocks.jsonl")
+    monkeypatch.setattr(re4_switch, "WALK_LOG", root / "re4-walk-presses.jsonl")
+    monkeypatch.setattr(re4_walk, "CROSSING_LOG", root / "re4-crossings.jsonl")
+
+
+@pytest.fixture(autouse=True)
 def _no_system_drive_rule(monkeypatch):
     """A worker refuses game data on a Windows system drive (gbox/storage_policy.py); tests keep their temporary
     folders wherever pytest puts them (C: on a Windows box), so the rule only applies where a test asks for it
