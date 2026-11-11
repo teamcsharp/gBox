@@ -551,7 +551,20 @@ class Controller:
                 raise AllocationLost(f"{kind} allocation changed before detonation: unit={unit:#x}, "
                     f"generation={born}->{current_born}, owner={owner:#x}, player={self.player:#x}")
             return R.unit_action(self, unit) == "cWpAction_wp_act_throw"
-        self.wait(initialized, timeout=CLASS_WAIT_S)
+        try:
+            self.wait(initialized, timeout=CLASS_WAIT_S)
+        except Uncertain as exc:
+            # The hand ring's second live failure (2026-11-11 14:05) was this wait, not the spawn's budget: the
+            # receipt must say what the parameterised factory actually built (unit class, its action) so the next
+            # step is data, not another guess. The state is uncertain either way and is never replayed.
+            if kind == "flash":
+                raise
+            try:
+                action, vtable = R.unit_action(self, unit), self.q(unit)
+            except Exception:                              # noqa: BLE001 - the diagnosis never masks the failure
+                action, vtable = "unreadable", 0
+            raise Uncertain(f"native {kind} spawn did not reach its placed action within {CLASS_WAIT_S:g} s "
+                            f"(unit={unit:#x}, action={action!r}, class={vtable:#x})") from exc
         # Relocate the live transform onto the ring before the blast. Keep y (the floor height the spawn copied).
         self.write(unit + RING_UNIT_POS, struct.pack("<3f", x, y, z))
         if kind == "flash":

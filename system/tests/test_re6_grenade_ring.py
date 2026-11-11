@@ -215,3 +215,32 @@ def test_the_parameterised_hand_ring_gets_its_own_spawn_budget(monkeypatch):
     assert result["state"] == "confirmed" and result["kind"] == "hand" and result["detonated"] == 1
     assert seen["spawn"] == N.CLASS_SPAWN_TIMEOUT_S and seen["detonate"] == N.CLASS_SPAWN_TIMEOUT_S
     assert N.CLASS_SPAWN_TIMEOUT_S > 1.0 and N.CLASS_WAIT_S > 1.0
+
+
+def test_a_hand_spawn_that_never_reaches_its_throw_action_says_what_it_built(monkeypatch):
+    """The hand ring's live failure (2026-11-11 14:05) was the action wait, not the spawn budget: the receipt must
+    carry the unit class and the action the parameterised factory actually built."""
+    monkeypatch.setattr(R, "inventory_items", lambda m, p: {0x113})
+    ctl = ring_controller()
+    ctl.stopped = lambda fn: fn()
+    ctl.install = lambda at, data: ctl.put(at, data)
+
+    def call(off, *args, **kw):
+        if off == N.CLASSES.SPAWN_CLASS[0]:
+            unit = 0x240000000
+            ctl.put(unit + 0x1308, struct.pack("<I", 5001))
+            ctl.put(unit + 0x1300, struct.pack("<Q", ctl.player))
+            ctl.put(unit, struct.pack("<Q", ctl.base + N.CLASSES.CLASSES["hand"].vtable))
+            ctl.spawns.append(unit)
+            return unit
+        return 1
+
+    ctl.call = call
+
+    def never(predicate, timeout=1.0):
+        raise N.Uncertain("native completion uncertain; request will not be replayed")
+
+    ctl.wait = never
+    result = ctl.grenade_ring("hand", count=1, radius_cm=600, inner_cm=600, allow_unverified=True)
+    assert result["state"] in ("failed", "uncertain")
+    assert "did not reach its placed action" in result["reason"] and "class=0x" in result["reason"]
