@@ -1461,3 +1461,33 @@ nothing about what failed. Now:
 
 19 tests in `test_re5_switch_native.py`, including a new one for the message. Merged to main (`e2050fc5`). This lands
 at the 05:00 restart (`re5_switch_native` is NOT_BOT), exactly when the next live RE5 block can be diagnosed.
+
+## Round 81 (2026-11-11 10:20 CST) - the RE4 PiP grey-out was a missing module lock, not "no receipt"
+
+The operator's screenshot (Flash / Hand / Incendiary all "(unavailable)") was taken on an RE4 Switch round. Its live
+status was not the honest "no live receipt yet" row - the controller never built:
+
+    GET /api/sessions/c63a6efd5f584229-bc8febabc7af4e29/interventions
+    available: false
+    reason: re4_switch_native: module 'gbox.mercs.titles.re4_switch_native' has no attribute '_CREATE_LOCK';
+            re4_gc_native: RE4 mods need game-memory access, which this session's emulator does not give gBox ...
+    grenade_kinds: flash  unavailable "a flash is built on the RE4 Switch native harness ... but has no live receipt yet"
+                   hand   unavailable "a hand-grenade ring is built ... but has no live receipt yet"
+                   incendiary unavailable "this title does not offer incendiary grenades"
+
+`interventions.native_controller` holds each native title module's `_CREATE_LOCK` while it builds the one Controller
+per adapter. `re4_switch_native` is the only native module without that module-level lock (`re4_gc_native`,
+`re5_switch_native`, `re6_switch_native` all define it), so the builder caught AttributeError, skipped the module,
+then skipped the other titles, and published "no controller" - every kind greyed.
+
+Fixed on main (`20028ad6`): `_CREATE_LOCK = threading.Lock()` at the module level plus a test that goes through
+`interventions.native_controller` with a fake adapter (64 passed, `test_re4_native.py` + `test_merc_interventions.py`).
+The module is a bot-package module and not in `hot_reload.NOT_BOT`, so the next autodeploy reloads it in place; the
+next RE4 session should build the harness and its status should then name the real gate (the `.bss` mailbox page /
+`prepare`), not the AttributeError.
+
+**What this does and does not finish.** Flash and hand still need their live receipts (the status table stays honest
+until then); the incendiary needs the `allow_unverified` probe (`main+0x2E4BA0`) and, if it passes, its own row.
+The next RE4 session is the sequence from the lane-state section: read `bss_watch_loads` from the telemetry at three
+stage loads -> `choose_mailbox` -> a `MAILBOX_AT` commit -> `re4_harness_selftest`, `flash_now`, `grenade_ring(kind=
+"hand")`, `grenade_ring(kind="incendiary", allow_unverified=True)` receipts with frames and hp.
