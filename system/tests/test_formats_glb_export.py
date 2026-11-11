@@ -60,3 +60,38 @@ def test_real_materials_and_glb_structure():
             jv = j["bufferViews"][ja["bufferView"]]
             jj = np.frombuffer(blob, "<u2", ja["count"] * 4, jv["byteOffset"])
             assert jj.max() < 118
+
+
+PAIR_D = [os.path.join(D, "pl0010_pl0010." + e) for e in ("wmb", "wtp", "wta")]
+HAVE_D = all(os.path.exists(x) for x in PAIR_D)
+
+
+@pytest.mark.skipif(not HAVE_D, reason="real Bayonetta 2 pl0010 donor wmb/wtp/wta not available")
+def test_real_pl0010_donor_glb_structure():
+    """Donor export: pl0010 (second character) through the same pipeline."""
+    wmb, wtp, wta = [open(x, "rb").read() for x in PAIR_D]
+    ta = G.parse_wta(wta)
+    assert ta["count"] == 37
+    mats = W.parse_materials(wmb, ta["ids"])
+    assert len(mats) == 15 and all(m.texture_ids for m in mats)
+    for m in W.parse_meshes(wmb):
+        for b in m.batches:
+            assert 0 <= b.material < len(mats)
+    j, blob = parse_glb(G.build_glb(wmb, wtp, wta, max_tex_dim=1024))
+    assert len(j["skins"][0]["joints"]) == 120
+    assert len(j["meshes"]) == 19
+    assert len(j["materials"]) == 15 and j["images"]
+    for a in j["accessors"]:
+        v = j["bufferViews"][a["bufferView"]]
+        assert v["byteOffset"] + v["byteLength"] <= len(blob)
+    for me in j["meshes"]:
+        for pr in me["primitives"]:
+            n = j["accessors"][pr["attributes"]["POSITION"]]["count"]
+            ia = j["accessors"][pr["indices"]]
+            v = j["bufferViews"][ia["bufferView"]]
+            ix = np.frombuffer(blob, "<u4", ia["count"], v["byteOffset"])
+            assert ix.max() < n
+            ja = j["accessors"][pr["attributes"]["JOINTS_0"]]
+            jv = j["bufferViews"][ja["bufferView"]]
+            jj = np.frombuffer(blob, "<u2", ja["count"] * 4, jv["byteOffset"])
+            assert jj.max() < 120
