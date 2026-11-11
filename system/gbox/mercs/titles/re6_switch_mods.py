@@ -136,7 +136,7 @@ THROW_RECORDS = frozenset({0x13, 0x14, 0x15})            # the hand, incendiary 
 # rise again"): while he is down (re6_switch.DOWN_ACTIONS - dying, lying, crawling - held through DOWN_KEEP's) the
 # weapon table at DOWN_FIRE_X times fire_rate's multipliers (its magnum's too), back to them the moment he is up; only
 # once fire_rate has set the table this boot. The down_fire op sets the factor (1 = off).
-DOWN_FIRE_X, DOWN_FIRE_MAX = 3.0, 10.0
+DOWN_FIRE_X, DOWN_FIRE_MAX = 5.0, 10.0   # x5 since 2026-11-10 (#6080; x3 before)
 # magnum_speed (operator 17:24: "blasting the Magnum in rapid succession with the recoil animation reduced"): while his
 # action is the gun's fire (cPlAction_pl_act_weapon_fire: the shot and its recoil) with a magnum in hand (weapon records
 # MAGNUM_RECORDS), his mDeltaTime (cUnit +0x30, as quick_attack) at MAGNUM_SPEED_X, 1.0 back after; fire_rate's table
@@ -1506,7 +1506,11 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
         if op == "unlock_characters":
             return unlock_characters(g, bool(on))
         if op == "kill_time":
-            return kill_time(g, bool(on), _extra.get("seconds"), _extra.get("seconds_max"))
+            # the panel / bot_strategy / game_prefs send RE5's `multiplier` as the seconds a kill adds
+            sec = _extra.get("seconds")
+            if sec is None and multiplier is not None and on:
+                sec = multiplier
+            return kill_time(g, bool(on), sec, _extra.get("seconds_max"))
         if op == "add_time":
             return add_time(g, _extra.get("seconds", 60))
         if op == "set_time":

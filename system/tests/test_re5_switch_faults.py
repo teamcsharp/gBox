@@ -133,3 +133,21 @@ def test_a_far_majini_fired_on_and_then_dead_is_a_long_shot_kill():
     clock[0] = 0.6
     b.tick(snap([far], hp=[0], motion=26))
     assert b.stats["long_shot_kills"] == 1
+
+
+def test_a_confirmed_shot_ahead_does_not_ignore_one_close_behind():
+    """#5666 moment: behind_threat_s 172 - the gun held on a far Majini (confirmed) while one 2.5 m behind closed in."""
+    b, clock = bot()
+    flat = lambda e: math.hypot(e["pos"][0], e["pos"][2])
+    live = [{"ptr": 10, "pos": at(900, 0), "hp": 800}, {"ptr": 11, "pos": at(250, 170), "hp": 800}]
+    b.target, b.aim_since = 10, 0.0
+    dot = chest(live[0]["pos"])
+    assert b._aim_away(p(), live, flat, MUZZLE, dot, True, 1.0) is None          # the grace (BEHIND_FIX_S)
+    fix = b._aim_away(p(), live, flat, MUZZLE, dot, True, 1.0 + R.BEHIND_FIX_S + 0.1)
+    assert fix is not None and b.target == 11 and b.doing == "unaim"
+    # ahead, not behind: a confirmed shot still stands
+    b2, _ = bot()
+    near = [{"ptr": 10, "pos": at(900, 0), "hp": 800}, {"ptr": 11, "pos": at(250, 20), "hp": 800}]
+    b2.target = 10
+    assert b2._aim_away(p(), near, flat, MUZZLE, dot, True, 1.0) is None
+    assert b2._aim_away(p(), near, flat, MUZZLE, dot, True, 3.0) is None

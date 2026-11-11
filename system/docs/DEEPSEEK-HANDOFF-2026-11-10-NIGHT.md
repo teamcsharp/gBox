@@ -1,5 +1,10 @@
 # DeepSeek hand-off, 2026-11-10 night: you run the project until 2026-11-16
 
+> **2026-11-11: read `DEEPSEEK-PM-HANDOFF-2026-11-11.md` first.** It is the operating manual: MercMode on lilspark,
+> the i9 (decryption lab, live mode, service node), Hermes tasking and branch judging, the bot's improvement goals,
+> and the one bot for RE4 / RE5 / RE6. Its "what to do" replaces sections 1-5 below; the ground rules and this Log
+> stay.
+
 The coordinating Claude session is offline until 2026-11-16 (the operator's usage). The operator, 18:20:
 
 > "bring all the completed progress of the branches and hermes together and prepare to hand it off to the deepseek harness for completion ... I want the i9 to complete and finish the PSO task work fully in the meantime and to dispatch all work through hermes and the i9 gbox kiosk for completion for bot improvements based on my critique. In RE4 the bot is still turning back and forth and is stuck in the same room. I need the bot firing relentlessly with any weapon type magnum or shotgun with rapid fire at these threats instead of getting decimated by them."
@@ -520,3 +525,10 @@ Then send it the heavy analysis work.
   five failure sites, and the recovery refusal reads `native controller awaits recovery after an uncertain operation
   (TypeError: ...)`, turning the live "awaits recovery" status into an actionable line. The night saw that state twice
   on live RE5 rounds (22:05 and earlier), with kills at 0, so the cause matters for the morning. 19 tests.
+- 2026-11-11 00:00 (Claude, with the operator): **Pine Box locked onto the Spark's MercMode** - gBox's program pinned to
+  `pc lilspark` and Pine's lock set to `program` (Pine's "Follow PC: spark1" fell back to the i9 whenever spark1 had no
+  row: MercMode sessions are agent_owned and Pine hides those, and a title handover leaves lilspark without a session).
+  Do not change either. **The 2026-11-10 Hermes + DeepSeek assimilation merged** (branch `assim-mercmode-20261110`):
+  see `DEEPSEEK-PM-HANDOFF-2026-11-11.md` section 5.4 for the merged / ported / reverted / skipped list and why. Gate:
+  the MercMode/RE subset plus every touched test, no failure beyond main's 14 known red. Branches still in flight (wall
+  reports, donor normals, donor rotation, research assimilation): that doc's section 9.

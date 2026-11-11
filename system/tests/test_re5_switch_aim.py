@@ -293,3 +293,23 @@ def test_a_downed_majini_in_crowd_fire_gets_the_ground_aim(monkeypatch):
     act = b.tick(snap_d)
     # the aim context should carry the downed target's low aim height
     assert b._aimctx["foot"][1] + R.DOWNED_AIM_H <= 25.0 + 1e-6
+
+
+def _graze(item, dot_y, cam_pitch):
+    """Moment e868adee806d44ce: one Majini 2.8 m ahead, the ray crossing his legs, the dot on the wall behind."""
+    from tests.test_re5_switch_weapon_mastery import _feedback_bot
+    bot, snap = _feedback_bot(item, at(280, 0), (0.0, dot_y, 730.0))
+    snap["aim_cam"]["pitch"] = cam_pitch
+    return bot, snap
+
+
+def test_a_grazing_close_segment_with_a_large_pitch_error_holds_fire():
+    bot, snap = _graze(0x1A, 20.0, 0.25)                # camera ~21 deg off the chest, ray grazing his legs
+    out = A.apply(bot, snap, {"hold": ("zl", "zr")}, 1.0)
+    assert "zr" not in out["hold"] and bot.stats["target_feedback_pitch_holds"] == 1
+
+
+def test_a_close_segment_with_the_pitch_near_still_fires():
+    bot, snap = _graze(0x1A, 120.0, -0.25)              # ~7 deg off: inside SEGMENT_PITCH_MAX
+    assert "zr" in A.apply(bot, snap, {"hold": ("zl", "zr")}, 1.0)["hold"]
+    assert bot.stats.get("target_feedback_pitch_holds", 0) == 0

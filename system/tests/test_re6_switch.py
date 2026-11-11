@@ -1465,6 +1465,18 @@ def test_down_fire_triples_the_table_while_he_is_down_and_puts_it_back(mods):
         mods.run(ad, "down_fire", multiplier=50)
 
 
+def test_down_defaults_to_five_times_fire_and_turn(mods):
+    assert mods.DOWN_FIRE_X == 5.0 and R.DOWN_TURN_X == 5.0
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 500.0, 700),))
+    err = R.FINE_YAW / 2                      # inside the usual pulsed window, outside the down one
+    bot.down = False
+    bot.yaw_pulse = 0
+    up = [bool(bot._yaw(err)) for _ in range(4)]
+    assert up == [True, False, True, False]   # up: pulsed
+    bot.down = True
+    assert all(bot._yaw(err) == {"rleft"} for _ in range(4))   # down: the stick held full
+
+
 def test_the_lock_sweeps_target_after_target_a_few_shots_each():
     three = ((0.0, 0.0, 600.0, 700), (300.0, 0.0, 800.0, 700), (-300.0, 0.0, 1000.0, 700))
     bot, clock, snap, writes = lock_brain(three)
@@ -3974,3 +3986,49 @@ def test_ranged_break_in_decide_turns_to_fight_ranged_enemy():
         f"expected doing='turn' (ranged_break), got {bot.doing}: out={out}"
     assert bot.why.startswith("just took ranged damage"), \
         f"expected ranged_break reason, got: {bot.why}"
+
+
+def test_geometry_pull_counts_shots_without_target_but_laser_confirmed_pull_does_not():
+    on_close = ((0.0, 0.0, 300.0, 700),)                                     # no laser: the pull is geometry only
+    bot, clock, snap = brain(round_guest(enemies=on_close, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    run(bot, snap, clock, int(R.LASER_WAIT_S / 0.05) + 8)
+    assert bot.stats["shots_without_target"] >= 1
+    assert bot.stats["shots_without_target"] <= bot.stats["confirmed_shots"]
+# --- #5487 "shoot these nearby enemies": a crowd within 2 m, none within CC_R, one in front with the ray on him ------
+
+
+def _crowd_front_enemies():
+    r = 230.0
+    out = [(0.0, 0.0, r, 700)]
+    for d in (-100.0, 110.0, 160.0):
+        out.append((r * math.sin(math.radians(d)), 0.0, r * math.cos(math.radians(d)), 700))
+    return tuple(out)
+
+
+def _crowd_front_run(monkeypatch, on):
+    monkeypatch.setattr(R, "CROWD_FRONT_SHOT", on)
+    laser = ((0.0, R.CHEST_H, 230.0), (0.0, 145.0, 30.0), 0.86)
+    bot, clock, snap = brain(round_guest(enemies=_crowd_front_enemies(), cam_yaw=0.0, laser=laser))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 12)
+    return bot, acts
+
+
+def test_a_crowd_with_one_in_front_on_the_ray_is_shot_not_backed_away_from(monkeypatch):
+    bot, _ = _crowd_front_run(monkeypatch, True)
+    assert bot.stats.get("crowd_front_shots", 0) > 0
+    assert bot.stats.get("cc_backouts", 0) == 0
+
+
+def test_crowd_front_shot_off_keeps_the_back_out(monkeypatch):
+    bot, _ = _crowd_front_run(monkeypatch, False)
+    assert bot.stats.get("crowd_front_shots", 0) == 0
+    assert bot.stats.get("cc_backouts", 0) > 0
+def test_kill_time_takes_the_panels_multiplier_as_seconds(mods):
+    g = round_guest(timer=60.0)
+    ad = Adapter(g)
+    out = mods.run(ad, "kill_time", multiplier=7, on=True)      # RE5-style call (panel / game_prefs)
+    assert out["kill_time"] is True and out["seconds"] == 7.0
+    assert mods.run(ad, "kill_time", on=False)["kill_time"] is False
+    assert mods.run(ad, "kill_time", multiplier=5, on=False)["seconds"] == 7.0   # off keeps the set seconds

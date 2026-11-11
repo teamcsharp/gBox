@@ -1913,6 +1913,7 @@ CC_FLANK_CONE = math.radians(130)          # damage cluster fc45a6229fe006d0: fl
 CC_QSHOT_GAP_S, CC_KICK_GAP_S, CC_ATTACK_CONE = 0.3, 0.22, math.radians(60)
 QA_FAST, CC_FAST_GAP_S = True, 0.12     # with quick_attack on (re6_switch_mods: his quick attacks x10) they go out back to
                                         # back: this often, the gauge kept full by infinite_stamina
+CROWD_FRONT_SHOT, CROWD_FRONT_CONE = True, math.radians(35)   # #5487: a crowd none of it within CC_R: the one in front with the ray on him is shot, not backed away from
 CC_BACK_N, CC_BACK_R = 3, 400.0         # this many within this: he steps back while he fires (the earlier back-off)
 # Dying (RE6's 1-health state: he crawls; every death in the 2026-10-27 runs came through it, at 1 health for 3 s and
 # more): R pressed for a tablet every DYING_GAP_S while the case holds one; stats tablet_dying_presses / _taken (the
@@ -2402,7 +2403,7 @@ FLASH = False                            # the flash alone at FLASH_N within FLA
 # (creeping_move) - until gets_up 15 s later, at 1 health; he died 2 s after it with no tablet (the tablet rule wanted
 # more than 1 health). Down (DOWN_ACTIONS, held through DOWN_KEEP's while down): no tablet, no stick; the nearest within
 # DOWN_FIGHT_R locked and fired at (a kick for one within MELEE_R); nobody near: the stick up to rise. Up at 1 health:
-# a tablet at once. re6_switch_mods.down_fire triples the fire table while he is down. stats down_s, down_shots,
+# a tablet at once. re6_switch_mods.down_fire quintuples (x5, was x3) the fire table while he is down. stats down_s, down_shots,
 # down_kills, down_recoveries (gets_up after a down), dying_deaths (died at 1 health after dying, never above it since).
 DOWN_ACTIONS = frozenset("cPlAction_pl_act_" + n for n in (
     "dying_loop", "creeping_move", "stand_to_creeping", "lying_down_weapon_ready_loop", "lying_down_weapon_ready_move",
@@ -2412,6 +2413,10 @@ DOWN_KEEP = frozenset("cPlAction_pl_act_" + n for n in ("motion_ex", "weapon_fir
                                                         "weapon_comn_quick_shot"))
 GETUP_ACTIONS = frozenset("cPlAction_pl_act_" + n for n in ("gets_up", "damage_gets_up"))
 DOWN_FIGHT_R = 900.0
+# Operator 2026-11-10 (#6080): down, "turn 5x and shoot 5x faster ... blasting enemies when they are down". The fire table
+# runs at re6_switch_mods.DOWN_FIRE_X = 5; the aim's turn: the stick is digital, so the pulsed fine zones (FINE_YAW,
+# FINE_PITCH) shrink to 1/DOWN_TURN_X while down - the stick is held full until within a fifth of the usual window.
+DOWN_TURN_X = 5.0
 # Hazards (the same frame: "standing in boss smoke"): his health falling with nobody within HAZARD_CONTACT_R, not held,
 # not his own blast - smoke, gas, fire, acid - marks his spot (HAZARD_R, for HAZARD_S); inside a mark he moves out
 # toward open space while he keeps firing. stats hazard_marks, hazard_s.
@@ -3161,7 +3166,7 @@ class Bot:
     def _yaw(self, err: float) -> set:
         if abs(err) <= YAW_DEAD:
             return set()
-        if abs(err) < FINE_YAW:
+        if abs(err) < FINE_YAW / (DOWN_TURN_X if self.down else 1.0):
             self.yaw_pulse ^= 1
             if not self.yaw_pulse:
                 return set()
@@ -3170,7 +3175,7 @@ class Bot:
     def _pitch(self, err: float) -> set:
         if abs(err) <= PITCH_DEAD:
             return set()
-        if abs(err) < FINE_PITCH:
+        if abs(err) < FINE_PITCH / (DOWN_TURN_X if self.down else 1.0):
             self.pitch_pulse = (self.pitch_pulse + 1) % 3      # one tick in three: pitch moves fast
             if self.pitch_pulse:
                 return set()
@@ -4779,6 +4784,8 @@ class Bot:
         if trig:
             if source in ("laser", "geometry"):
                 self.stats["confirmed_shots"] += 1               # verified trigger request; actual damage is tracked separately
+            if source == "geometry":                             # no laser body under the ray: counted, target 0
+                self.stats["shots_without_target"] = self.stats.get("shots_without_target", 0) + 1
             if set(back) & {"lup", "ldown", "lleft", "lright"}:
                 self.stats["moving_shots"] += 1
             if on_e is not None and dist > LONG_KILL_R:
@@ -6381,6 +6388,14 @@ class Bot:
                 # the crowd_4_in_2m signature: four or more within 2 m but none in front or flanking within CC_R
                 # -- the gun-down branch's cone can't catch them, so he still drops the gun and backs out instead of
                 # raising into a flanking cluster (damage_clusters crowd_4_in_2m, the RE6 cluster's cause)
+                # operator #5487 "shoot these nearby enemies": the hold's back-out walked away from a crowd standing in
+                # the line of fire (cc_backouts 566 against 11 shots); one in front with the ray on him is shot
+                if CROWD_FRONT_SHOT and (getattr(self, "_p", None) or {}).get("ammo") != 0 and any(
+                        abs(bearing(z)) <= CROWD_FRONT_CONE and flat(z) <= CC_CROWD_R and self._measured_contact(z, now)
+                        for z in live):
+                    self.crowd_hold_until = now
+                    self.stats["crowd_front_shots"] = self.stats.get("crowd_front_shots", 0) + 1
+                    return None
                 self.crowd_hold_until = now + 2.0   # keep the gun down for 2 s (the cluster's typical duration)
                 e = min(live, key=flat)
                 d, err = flat(e), bearing(e)

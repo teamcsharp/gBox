@@ -568,6 +568,10 @@ RAY_STALE_S = 1.0                        # the ray unchanged this long with the 
 BACKOFF_S, BACKOFF_GAP_S = 0.5, 1.5      # one too close in front with the gun down: back off this long, then fight
 BACKOFF_CONE = math.radians(60)          # ... only from one in front (backing up walks into one behind)
 QUICK_ERR, QUICK_GAP_S, QUICK_SETTLE_S = math.radians(120), 1.5, 0.3   # him behind, the gun down: the quick turn
+# Flawed-handling critique (request #5670, coach 4d61b56a918045dc): behind_threat_s 172 s of 325 s rampage, one 0.3 m behind
+# while he aimed at another - the full QUICK_GAP_S held the turn back while a grab-range Majini stood on him. One inside
+# GRAB_THREAT_R may be turned to after QUICK_GAP_GRAB_S, and the rampage target changes to it without the retarget wait.
+QUICK_GAP_GRAB_S = 0.5
                                          # (left stick back, then B: 180 deg in 0.3 s, measured; the stick takes ~1.1 s)
 HIT_S = 0.4                              # a Majini's health falls within this of the shot that hit him
 GRAB_R, GRAB_S = 120.0, 0.6
@@ -697,6 +701,7 @@ WALL_SLACK, WALL_DROP_S, WALL_BLOCK_S, FROZEN_TICKS = 10.0, 0.3, 3.0, 3   # (ope
                                          # a gun at a wall, I cry": dropped after 0.3 s for 3 s; wall_aim_s the seconds
                                          # the gun's ray ended on geometry short of the target, target 0)
 BEHIND_R, AWAY_ERR, AWAY_S, EXAMPLES = 300.0, math.radians(45), 0.3, 3
+BEHIND_FIX_S = 0.8                           # a confirmed shot ahead is given this long while one stands close behind
 FAULT_KINDS = ("wall_shot", "wall_block", "frozen_dot", "behind_threat", "aim_away", "sky", "target_giveup")
 # The close-range pitch (the 15:26 turn's pitch_up_last: targets 0.8-2.2 m wanting -23 to -38 deg with the laser at
 # +21 to +28 deg - "ray 50.0 m", the laser's limit: the sky - and the aim +56 / +57 deg just before raises, the guard's
@@ -1093,6 +1098,7 @@ BONUS, BONUS_VT, BONUS_SCAN_S, BONUS_FIGHT_R, BONUS_WALK_R, BONUS_BLOCK_S, BONUS
 # proximity produces. Rounds measured bonuses_seen 8-11 with bonuses_taken 0-1, knife_swings 0 and detours 11-27 - the bot circled.
 # Bounded so a statue it genuinely cannot reach still falls through to the detour/give-up path.
 BONUS_PRESS_IN_S = 4.0
+BONUS_OFFLEVEL_DY, BONUS_OFFLEVEL_BLOCK_S = 300.0, 30.0   # a statue this far off his floor with no route: not a straight-line walk
 # The enemies and the combo come before the statues (operator 2026-11-09, the map showing him headed for a time
 # bonus with six Majini alive elsewhere: "The bot needs to go to that enemy and dispatch them"; live that round 36
 # bonus runs for 1 statue taken, 91 detours, 0 pursuits). With a Majini alive anywhere a statue is run for only when
@@ -1120,9 +1126,18 @@ KNIFE_CAP_S = 2.0
 # off-level or unreachable - take the next one. ~30 s is long enough for any legitimate approach to a distant
 # statue; longer means the bot is stuck in a loop and should give up.
 APPROACH_CAP_S = 30.0
+# Operator critique (request #5710, Ancient Ruins, Sheva): the run walked a "nav route" at a time bonus 18.5 m off through
+# "stuck, breaking free" three times in 10 s (wall_recovery_failures 5, bonuses_seen 17 / taken 0) - the 30 s approach cap
+# is far too long to keep ramming one wall. Two stuck-breaks on one run give that statue up for BONUS_STUCK_BLOCK_S.
+BONUS_STUCK_GIVEUP, BONUS_STUCK_BLOCK_S = 2, 45.0
 # Live 16:59-17:04: 8 statues seen, none taken - he spawned on the roof (y 550) and walked at one 1.6 m below for a
 # minute: stuck BONUS_JUMP_TRY_S with the statue off his level, the context action (Y, the "Jump down" prompt) first.
 BONUS_JUMP_TRY_S = 0.8
+# Operator 2026-11-10 (coach 6822609e92274e5c, "Flawed handling"): a statue 18.5 m away, 1.1 m below him, was run for in a loop -
+# nav route, \"stuck, breaking free\", a detour, a relocate 0.0 m to the statue, the wall return - 5 wall recoveries failed, 0
+# bonuses taken, 17 majini on him. Each stuck wiggle during a statue run counts against it; BONUS_STUCK_MAX of them and the
+# statue is blocked for BONUS_STUCK_BLOCK_S (far longer than BONUS_BLOCK_S) so the fight, or another statue, takes over.
+BONUS_STUCK_MAX, BONUS_STUCK_BLOCK_S = 2, 60.0
 BONUS_COUNTERS = ("bonuses_seen", "bonuses_taken", "time_gained", "bonus_runs", "knife_swings", "bonus_detours",
                   "bonus_jumps")
 # The wall governor measures final pad output after shot-tail suppression. Observed forward pressure without
@@ -1216,6 +1231,11 @@ RING_R, RING_N, RING_GAP = 300.0, 3, math.radians(150)
 TIGHT = ((4, 250.0),)
 HURT = 0.6
 ESCAPE_S, ESCAPE_GAP_S, ESCAPES_MAX = 1.2, 4.0, 4
+# Operator critique #5706 (coaching note 8, 2026-11-10): at 24 % health with 6 Majini within 2.4 m the gun cycled
+# raise / reraise / turn for 17 s without a shot, and the open side (a gap over RING_GAP) kept the ring check at "fight
+# on". Hurt under HEAL_CRITICAL, 3+ within DRY_ESCAPE_R and no shot for DRY_ESCAPE_S: run out through the widest gap
+# even when it is open.
+DRY_ESCAPE_S, DRY_ESCAPE_R, DRY_ESCAPE_N = 4.0, 250.0, 3
 RUN = ("b", "lup")
 HUNT_R = 1200.0                          # the "hunt" directive: closer than this the fight takes over, farther he walks
 # The "rush" directive (the PiP's flashbang button, operator 2026-10-29): a mine dropped at once, then for its 10 s he closes
@@ -1554,7 +1574,7 @@ WM_STATS = ("shots", "hits", "kills", "hand_s", "range_s", "range_shots", "trigg
 PS3_BRAIN = False
 BRAIN_COUNTERS = ("misses", "headshots", "miss_short", "miss_past", "miss_beside", "miss_moved", "threat_blasts",
                   "laser_rejected", "front_first", "blocked_switches")
-AIM_COUNTERS = ("pulls_hit", "pulls_dot_miss", "pulls_ray_miss", "pulls_blind", "pulls_short", "pulls_slipped",
+AIM_COUNTERS = ("pulls_hit", "pulls_dot_miss", "pulls_ray_miss", "pulls_blind", "shots_without_target", "pulls_short", "pulls_slipped",
                 "drops_mid_burst", "first_pull_n", "first_pull_s", "t_turn_foe_front")
 # Aim measured (the coordinator 19:06: "Measure aim: aim_err_deg at each shot (mean/p90), first-shot latency after
 # acquiring, hit rate by band. Before/after per turn"): each pull's aim error (the yaw from the aim to his chest as it
@@ -2701,6 +2721,7 @@ class Bot:
         self.healing, self.heal_at = None, -1e9   # a heal under way / when the last one ended
         self.escape, self.escape_at = None, -1e9  # (the bearing out, until) / when the last escape began
         self.round_escapes = 0                    # escapes this round (ESCAPES_MAX)
+        self.dry_shots, self.dry_since = -1, 0.0  # the shots counter at the last change / when (DRY_ESCAPE_S)
         self.trigger_since = None                 # the burst's first pull since the gun came up (kept across the
                                                   # targets it drops; the gun going down ends the burst)
         for k in AIM_COUNTERS + MEASURE_COUNTERS + tuple("t_" + d for d in DOINGS):
@@ -2985,6 +3006,19 @@ class Bot:
             self.stats["_bonus_done_round"] = t0
             self.stats["bonus_time_s"] = round(now - t0, 1)
 
+    def _bonus_stuck(self, now) -> bool:
+        """A stuck wiggle while running for a statue: the second one gives that statue up for BONUS_STUCK_BLOCK_S."""
+        run = self._bonus
+        if run is None:
+            return False
+        run["stuck"] = run.get("stuck", 0) + 1
+        if run["stuck"] < BONUS_STUCK_MAX:
+            return False
+        self._bonus_block[run["ptr"]] = now + BONUS_STUCK_BLOCK_S
+        self._bonus = None
+        self.stats["bonus_stuck_blocks"] = self.stats.get("bonus_stuck_blocks", 0) + 1
+        return True
+
     def _go_bonus(self, p, live, flat, snap, now):
         """Phase 1 (operator 16:52: "running from Checkpoint to Checkpoint, grabbing the time bonuses ... the only way to
         grab a time bonus is to walk up to it and melee it"): the next statue - run to it, face it, the knife (L + ZR)
@@ -3016,6 +3050,12 @@ class Bot:
             self.stats["bonus_runs"] += 1
             run = self._bonus = {"ptr": b["ptr"], "since": now, "knife_since": None, "knife_total": 0.0,
                                  "retries": 0, "best": 1e9, "best_at": now, "side": 1, "detour_until": -1e9, "detours": 0}
+        if run.get("stucks", 0) >= BONUS_STUCK_GIVEUP:   # rammed a wall on the way twice: the next statue, not this one
+            self._bonus_block[b["ptr"]] = now + BONUS_STUCK_BLOCK_S
+            self._bonus = None
+            self.stats["bonus_stuck_giveups"] = self.stats.get("bonus_stuck_giveups", 0) + 1
+            self.doing, self.why = "walk", "time bonus: stuck on the way twice - the next one"
+            return {"hold": ("lup",)}
         if self.aim_since is not None:
             self._gun_down()
         bx, by, bz = b["pos"]
@@ -3124,6 +3164,14 @@ class Bot:
                 self.why = (f"time bonus {b.get('secs')} s at {d / 100:.1f} m (dy {by - py:+.0f}), "
                             f"{len(open_)} left - nav route")
                 return {"hold": ((("lup", "b") if d > BONUS_WALK_R else ("lup",))) + self._turn(err, TURN_TOL)}
+        if abs(by - py) > BONUS_OFFLEVEL_DY and d > BONUS_WALK_R:
+            # coaching #5667 (Missile Area, flawed-handling button): no mesh or learned route to a statue 5 m below
+            # him, so the straight line ran him into the wall again and again ("stuck, breaking free" / "wall:
+            # returning along...", 30.8 m, dy -503). No route to another floor: leave this statue for a while.
+            self._bonus_block[b["ptr"]] = now + BONUS_OFFLEVEL_BLOCK_S
+            self._bonus = None
+            self.stats["bonus_offlevel_skips"] = self.stats.get("bonus_offlevel_skips", 0) + 1
+            return None
         err = wrap(heading(bx - px, bz - pz) + off - p["rot"])
         self.doing = "walk"
         self.why = (f"time bonus {b.get('secs')} s at {d / 100:.1f} m (dy {by - py:+.0f}), "
@@ -3271,7 +3319,7 @@ class Bot:
             tgt, r["retarget_at"] = self._grudge_e, now
             self.stats["grudge_picks"] += 1
         elif cur is None or (flat(nearest) < GRAB_THREAT_R and flat(cur) >= GRAB_THREAT_R and nearest is not cur):
-            if cur is None or now - r["retarget_at"] >= RAMPAGE_RETARGET_S:
+            if cur is None or now - r["retarget_at"] >= RAMPAGE_RETARGET_S or flat(nearest) < GRAB_THREAT_R:
                 tgt = nearest
                 r["retarget_at"] = now
         elif crowd and near_front is not None and cur not in front and now - r["retarget_at"] >= RAMPAGE_RETARGET_S:
@@ -3285,7 +3333,7 @@ class Bot:
         gun, fam = self._rampage_gun(inv)
         self.stats["rampage_weapon"] = fam or (f"0x{held['item']:03x}" if held else "-")
         # attacked from behind: one decisive quick turn (the gun down for it), then up and blasting
-        if QUICK_TURN and dist <= BEHIND_R and abs(body_err) > RAMPAGE_BEHIND and now - self.quick_at > QUICK_GAP_S                 and (now - self.quick_at >= QUICK_BACK_S or dist <= GRAB_THREAT_R):
+        if QUICK_TURN and dist <= BEHIND_R and abs(body_err) > RAMPAGE_BEHIND and now - self.quick_at > (QUICK_GAP_GRAB_S if dist <= GRAB_THREAT_R else QUICK_GAP_S)                 and (now - self.quick_at >= QUICK_BACK_S or dist <= GRAB_THREAT_R):
             if self.aim_since is not None:
                 self._gun_down()
             self.stats["behind_turns"] += 1
@@ -3532,13 +3580,15 @@ class Bot:
     def _quick_behind(self, p, live, flat, now):
         """A Majini close behind him (the quick turn above): the turn's first step, or the trigger let go first."""
         if getattr(self, '_feedback_visible', None) is not None \
-                or not QUICK_TURN or now - self.quick_at <= QUICK_GAP_S:
+                or not QUICK_TURN or now - self.quick_at <= QUICK_GAP_GRAB_S:
             return None
         px, py, pz = p["pos"]
         bear = lambda e: abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
         behind = [e for e in live if flat(e) <= BEHIND_R and abs(e["pos"][1] - py) <= LEVEL_DY and bear(e) > QUICK_ERR]
         if not behind:
             return None
+        if now - self.quick_at <= QUICK_GAP_S and min(flat(e) for e in behind) > GRAB_THREAT_R:
+            return None                                  # the full gap, unless one is inside arm's reach
         e = min(behind, key=lambda x: (not self._winding(x), flat(x)))   # a wind-up first
         if any(flat(f) < flat(e) and bear(f) <= math.radians(60) and (self._winding(f) or not self._winding(e))
                for f in live):
@@ -3795,13 +3845,17 @@ class Bot:
         e = min(near, key=flat)
         aim = heading(dot[0] - origin[0], dot[2] - origin[2])
         off = abs(wrap(heading(e["pos"][0] - origin[0], e["pos"][2] - origin[2]) - aim))
-        if off <= AWAY_ERR or confirmed:
+        # (operator critique #5666, "Flawed": behind_threat_s 172 s - a confirmed shot at a far Majini kept the gun
+        # there for the round while one 1-3 m BEHIND him closed in unanswered; a confirmed shot no longer excuses a
+        # grab-range Majini behind him past BEHIND_FIX_S)
+        rear = flat(e) <= BEHIND_R and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) > math.pi / 2
+        if off <= AWAY_ERR or (confirmed and not rear):
             self._away_since = None
             return None
         dt = min(now - self._away_since, LOOK_STEP_MAX_S) if self._away_since is not None else 0.0
         self.stats["aim_away_s"] = round(self.stats["aim_away_s"] + dt, 2)
         self._away_since = self._away_since or now
-        if now - self._away_since < AWAY_S:
+        if now - self._away_since < (BEHIND_FIX_S if confirmed else AWAY_S):
             self._away_t = now
             return None
         self.stats["aim_away_fixes"] += 1
@@ -4933,7 +4987,7 @@ class Bot:
         return {"hold": ("lup",) + self._turn(err, 0.2)}
 
     # --- exploring by the doors he knows (DOOR_EXPLORE above) -------------------------------------------------------
-    def _explore(self, p, flat, snap, now) -> dict | None:
+    def _explore(self, p, flat, snap, now, early=False) -> dict | None:
         """DOOR_EXPLORE above: with nobody to fight, the doors / windows / ledges seen on this stage, one after another.
         None when there is somebody to fight (or not yet known), no door left to go to, or the operator's mark is in
         force: his play as before."""
@@ -4946,7 +5000,9 @@ class Bot:
         k = snap.get("kills")
         if type(k) is int and k != kw["kills"]:
             kw["kills"], kw["at"] = k, now
-        if census:
+        if census and early:                             # (the locate's: the only census is off his floor, no way known)
+            reason = f"the {len(census)} Majini on another floor, no way up or down known: a door / ledge, not the wall"
+        elif census:
             if now - kw["at"] < DOOR_EXPLORE_S \
                     or any(flat(e) <= DOOR_FIGHT_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in census):
                 self._explore_st = None
@@ -5499,11 +5555,30 @@ class Bot:
         a = abs(err)
         return PULSE_N[0] if a > 2 * window else PULSE_N[1] if a > window else PULSE_N[2]
 
-    def _trigger(self, on: bool, now) -> set:
+    def _laser_misses_all(self, ctx) -> bool:
+        """True only when a measured laser ray exists and no body lies under it (endpoint or segment): a new pull
+        there would fire at nothing. Laserless / unmeasured / point-blank / named-body contexts never hold fire."""
+        try:
+            if not ctx or ctx.get('laserless') or ctx.get('where') or str(ctx.get('gate') or '').startswith('point blank'):
+                return False
+            origin, dot, foot = ctx.get('origin'), ctx.get('dot'), ctx.get('foot')
+            if not (origin and dot and foot and all(math.isfinite(v) for v in (*origin, *dot, *foot))):
+                return False
+            prof = body({"class": ctx.get("class")})
+            if dot_on(dot, foot, prof) or self._crowd_hit(origin, dot, foot, False, prof):
+                return False
+            return True
+        except Exception:                                    # noqa: BLE001 - a gate error never costs the shot
+            return False
+
+    def _trigger(self, on: bool, now, ray_gate: bool = False) -> set:
         """ZR held while on him: the game repeats a held trigger at the gun's pace (live: 2.7 shots/s held or tapped
         with the M92F, 25 with the fire-rate mod, which a tapped trigger cannot reach). A pull counts as a shot."""
         if on and getattr(self, '_defer_trigger', False):
             return {'zr'}                               # intent; final feedback records only an accepted pull
+        if on and ray_gate and not self.fire_down and self._laser_misses_all(self._aimctx):
+            self.stats["fire_held_no_body"] = self.stats.get("fire_held_no_body", 0) + 1
+            on = False                                       # never fire at nothing: aim, hold the trigger
         if not on:
             if self.fire_down:                               # the aim slid off him: the pull ends
                 self._pull_end(now, slipped=True)
@@ -6002,8 +6077,7 @@ class Bot:
             if (hp <= HEAL_CRITICAL * hp_max and near
                     and (self.escape is None or now >= self.escape[1])
                     and now - self.escape_at >= ESCAPE_GAP_S):
-                nearest = min(live, key=lambda e: flat(e))
-                away = heading(p["pos"][0] - nearest["pos"][0], p["pos"][2] - nearest["pos"][2])
+                away = self._retreat_heading(p, live)
                 self._gun_down()
                 self.escape = (away, now + ESCAPE_S)
                 self.escape_at = now
@@ -6021,6 +6095,32 @@ class Bot:
         self.stats["heal_starts"] += 1
         self.stats["heal_status"] = f"healing at {hp / hp_max:.0%} ({near} near)"
         return {"hold": ()} if item["hand"] else {"tap": QUICK[item["grid"]]}
+
+    def _retreat_heading(self, p, live) -> float:
+        """The critical retreat's heading (operator 2026-11-10, coaching note 11, 'Flawed handling': 26% health, no heal,
+        a crowd round him at 0-4 m, the run was 'away from the nearest Majini' - straight into the next ones or a wall
+        already bumped). Of 16 headings the one with the least crowd ahead (each Majini within HEAL_SAFE_R weighs
+        1/(distance + 50), by the cosine of its bearing off the heading), never one into a remembered wall."""
+        px, pz, rot = p["pos"][0], p["pos"][2], p.get("rot", 0.0)
+        foes = []
+        for e in live:
+            dx, dz = e["pos"][0] - px, e["pos"][2] - pz
+            d = math.hypot(dx, dz)
+            if d < HEAL_SAFE_R:
+                foes.append((math.atan2(dx, dz), 1.0 / (d + 50.0)))
+        if not foes:
+            return rot
+        walls = [w for w in getattr(self, "_walls", ()) if math.hypot(w[0] - px, w[1] - pz) <= WALL_MEM_R]
+        best, best_score = None, math.inf
+        for k in range(16):
+            h = wrap(k * math.pi / 8)
+            score = sum(w * math.cos(wrap(b - h)) for b, w in foes)
+            if any(abs(wrap(h - wall[2])) <= math.radians(WALL_MEM_DEG) for wall in walls):
+                score += 10.0
+            score += 1e-4 * abs(wrap(h - rot))                  # (a tie: the smaller turn)
+            if score < best_score:
+                best, best_score = h, score
+        return best
 
     def _loaded_gun(self, row):
         rounds = row.get('rounds')
@@ -6140,6 +6240,12 @@ class Bot:
             return None
         px, _, pz = p["pos"]
         hurt = (p.get("hp") or 0) < HURT * (p.get("hp_max") or 0)
+        shots = self.stats.get("shots", 0)
+        if shots != self.dry_shots:
+            self.dry_shots, self.dry_since = shots, now
+        dry = (hurt and (p.get("hp") or 0) <= HEAL_CRITICAL * (p.get("hp_max") or 0)
+               and now - self.dry_since >= DRY_ESCAPE_S
+               and sum(1 for e in live if flat(e) < DRY_ESCAPE_R) >= DRY_ESCAPE_N)
         limits = (TIGHT if hurt or HEALTHY_ESCAPES else ()) + (((RING_N, RING_R),) if hurt else ())
         ring = None
         for n, r in limits:
@@ -6151,8 +6257,8 @@ class Bot:
             return None
         gaps = [((ring[(i + 1) % len(ring)] - a) % (2 * math.pi) or 2 * math.pi, a) for i, a in enumerate(ring)]
         gap, start = max(gaps)
-        if gap >= RING_GAP:
-            return None                                     # an open side: fight on
+        if gap >= RING_GAP and not dry:
+            return None                                     # an open side: fight on (unless the gun has been dry)
         out = wrap(start + gap / 2)
         self._gun_down()
         self.escape, self.escape_at = (out, now + ESCAPE_S), now
@@ -6649,8 +6755,11 @@ class Bot:
                     self.stats[kind] = self.stats.get(kind, 0) + 1
                 self.in_hold = True
             elif now >= self.break_until:
+                self._bonus_stuck(now)
                 self.stats["holds" if self.still and now - self.still[0] > STUCK_S else "wiggles"] += 1
                 self.break_until = now + BREAK_S
+                if stuck and self._bonus is not None:    # a stuck-break on the way to a statue (BONUS_STUCK_GIVEUP)
+                    self._bonus["stucks"] = self._bonus.get("stucks", 0) + 1
             self._gun_down()
             self.still = None
             self.wiggle += 1
@@ -7175,6 +7284,14 @@ class Bot:
             if spots:
                 best = min(spots, key=lambda q: flat(q) + math.hypot(q[0] - tx, q[2] - tz))
                 goal, how = (best[0], best[1], best[2]), f"by the {(best[3] if len(best) > 3 else None) or 'way'} he knows here"
+            elif not (self.__dict__.get("_mroute") or {}).get("pts") and self.stats.get("wall_hits", 0):
+                # no route, no known way, and the straight line to a Majini a floor away runs into the stage's walls
+                # (request #5665: wall_hits 11, 3 failed recoveries, 280 of 300 s idle): the doors' exploration now
+                # instead of waiting DOOR_EXPLORE_S for it
+                act = self._door_safe(self._explore, p, flat, snap, now, True)
+                if act is not None:
+                    self.stats["locate_explores"] = self.stats.get("locate_explores", 0) + 1
+                    return act
         self._goal_dy = dy
         self.doing = "walk"
         self.why = (f"locating: the nearest Majini {d / 100:.0f} m off"
@@ -7216,9 +7333,9 @@ class Bot:
             # goal dropped; door / ledge / ladder prompts on the way are taken (#1488)
             px, _py, pz = p["pos"]
             self.wall_memory(px, pz, p.get("rot") or 0.0)
-            self._wall_start(p, now, True)
+            self._wall_start(p, now, True)               # (it picks the door: a second pick overwrote the nearest
+                                                         # goal with the next-nearest, the tried one being skipped)
             self._bonus = None
-            self._pick_door(p, now)
             self.stats["wall_reports"] = self.stats.get("wall_reports", 0) + 1
             self.stats["directive_status"] = "the operator's wall: remembered, backing off along his trail, another way"
         elif cmd == "rush" and fresh:
@@ -8061,7 +8178,7 @@ class Bot:
         if (cam_up or cam_down) and on and where is None and not confirmed:
             on = False
             self.doing = "aim"
-        keys = {"zl"} | self._trigger(on, now)
+        keys = {"zl"} | self._trigger(on, now, ray_gate=True)
         if not on and not settling and math.dist(origin, dot) >= min(STEER_RAY_CM, 0.5 * math.dist(origin, chest)):
             keys |= self._yaw(yaw_err, windows[0]) | self._pitch_settled(pitch_err, windows[1], now)   # steer only off him: a raised fire rate paces the
                                                                   # aim with the shot (re5_switch_mods)
@@ -8266,6 +8383,8 @@ class Bot:
         hit_body = bool(valid_ray and self._crowd_hit(origin, dot, foot, False, prof))
         endpoint = ('target' if valid_ray and dot_on(dot, foot, prof) else self._behind(ctx)) if valid_ray else 'off'
         contact = ctx.get('contact_kind') or ('body endpoint' if endpoint == 'target' else 'body segment' if hit_body else 'unverified')
+        if not (endpoint == 'target' or hit_body):          # a pull with no body under the laser: counted, target 0
+            self.stats["shots_without_target"] += 1
         entry = self.look.record_shot(ctx.get("weapon"), ctx.get("gate"), target,
                                       aim_err_deg=-math.degrees(ctx.get("yaw_err") or 0.0),
                                       dot_on='target' if hit_body else endpoint or 'off')

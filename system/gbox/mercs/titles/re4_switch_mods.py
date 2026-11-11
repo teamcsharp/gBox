@@ -388,6 +388,28 @@ def _apply_fire_rate(ad, base: int, st: dict) -> int:
         n += _write_table(ad, base, W.RIFLE_FIRE_TBL, "f", want)
     gap0 = st.setdefault("fire_gap_orig", D.FIRE_GAP_S)
     D.FIRE_GAP_S = max(FIRE_GAP_MIN_S, gap0 / mult)
+    st["fire_tables_last"] = n                          # tables that read back (0: unreadable - retried, see below)
+    return n
+
+
+FIRE_RETRY_S = 3.0
+
+
+def _fire_tables_due(st: dict, boot) -> bool:
+    """Whether this boot's 20x tables still have to be written (Hermes #9560): pre_round / maintain marked the boot done
+    even when the module was unreadable (0 tables), so no 20x rate was written until the round's own give. A boot is
+    only marked done once a table read back; retries are paced FIRE_RETRY_S."""
+    if st.get("fire_rate", 1.0) == 1.0 or st.get("rf_applied_boot") == boot:
+        return False
+    return time.monotonic() - st.get("fire_try_at", -1e9) >= FIRE_RETRY_S
+
+
+def _apply_fire_rate_boot(ad, base: int, st: dict, boot) -> int:
+    st["fire_try_at"] = time.monotonic()
+    st["fire_tries"] = st.get("fire_tries", 0) + 1
+    n = _apply_fire_rate(ad, base, st)
+    if n > 0:
+        st["rf_applied_boot"] = boot
     return n
 
 
@@ -1040,8 +1062,7 @@ def pre_round(ad, m=None) -> dict:
             out["power_rows"] = _apply_power(ad, base, st)
             st["fp_applied_boot"] = boot
         if st.get("fire_rate", 1.0) != 1.0:
-            out["fire_tables"] = _apply_fire_rate(ad, base, st)
-        st["rf_applied_boot"] = boot
+            out["fire_tables"] = _apply_fire_rate_boot(ad, base, st, boot)
         refused = _code_patch_refusal(ad) if st.get("random_weapon") or st.get("loadout_weapon") else None
         if refused:
             st["loadouts"] = {}                         # nobody's loadout is code: _round_weapon gives in hand
@@ -1121,9 +1142,8 @@ def maintain(ad, snap: dict | None = None) -> dict:
         if (st.get("weapon_power", 1.0) != 1.0 or st.get("max_level")) and st.get("fp_applied_boot") != boot:
             out["power_rows"] = _apply_power(ad, snap["module_base"], st)   # once a boot (the table is static data)
             st["fp_applied_boot"] = boot
-        if st.get("fire_rate", 1.0) != 1.0 and st.get("rf_applied_boot") != boot:
-            out["fire_tables"] = _apply_fire_rate(ad, snap["module_base"], st)
-            st["rf_applied_boot"] = boot
+        if _fire_tables_due(st, boot):
+            out["fire_tables"] = _apply_fire_rate_boot(ad, snap["module_base"], st, boot)
         if st.get("infinite_ammo"):
             n = _keep_mag(ad, snap["module_base"], st)
             st["mag_refills"] = st.get("mag_refills", 0) + n

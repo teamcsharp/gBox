@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Callable
 
 from .. import threat_memory
+from . import death_lessons                # every death teaches the bot (request #9525)
 from . import fire_pattern                 # (i): the PS3 magnum's rapid repeat and scatter (imports nothing from here)
 
 try:                                     # per title and enemy class a name and a tier (branch enemy-identity); until
@@ -209,6 +210,7 @@ def _motion_key(e):
 TIERS = ("boss", "dangerous", "normal")
 TIER_ORDER = {"boss": 0, "dangerous": 1, "normal": 2}
 IDENTITY = True
+LESSONS = True                           # death_lessons: a class that killed him twice is a dangerous one
 
 
 def hp_tier(boss_hp=None, dangerous_hp=None) -> Callable:
@@ -497,6 +499,8 @@ class Threats:
         self._hp = None
         self._hit_at = -1e9
         self._bo = None
+        self.lessons = death_lessons.DeathLessons(prof.title_id or prof.title, stats=self.stats) if LESSONS else None
+        self._rec = None
         for k in THREAT_COUNTERS:
             self.stats.setdefault(k, 0)
 
@@ -508,6 +512,8 @@ class Threats:
     def new_round(self) -> None:
         self.tm.new_round()
         self._hp, self._bo = None, None
+        if self.lessons is not None:
+            self.lessons.new_round()
 
     def save(self) -> None:
         self.tm.save(force=True)
@@ -535,6 +541,14 @@ class Threats:
                     self.stats["tm_last_hit"] = {k: rec.get(k) for k in ("class", "motions", "dist_cm", "through")}
                     self.stats["threats"] = self.tm.summary()
             self._hit_at = now
+        if self.lessons is not None:
+            try:
+                self.lessons.observe(now, {"hp": hp, "pos": ppos}, [{**e, "pos": self.prof.pos_cm(e["pos"]),
+                                     "class": self.prof.class_key(e)} for e in enemies or ()
+                                    if isinstance(e, dict) and e.get("pos")],
+                                     hit=({"class": rec.get("class"), "damage": last[1] - hp} if rec else None))
+            except Exception:                                # noqa: BLE001 - a lesson error never costs the fight
+                pass
         return rec
 
     # --- what the bot asks ---
@@ -546,7 +560,12 @@ class Threats:
         return bool(w is not None and w(e)) or self.learned(e)
 
     def reach_cm(self, e) -> float:
-        return self.tm.reach(self.prof.class_key(e), self.prof.windup_r_cm)
+        r = self.tm.reach(self.prof.class_key(e), self.prof.windup_r_cm)
+        return r + self.lessons.keep_cm(self.prof.class_key(e)) if self.lessons is not None else r
+
+    def lesson_weight(self, e) -> float:
+        """>1 for a class that has killed him MIN_DEATHS times or more (death_lessons): he takes it seriously."""
+        return self.lessons.weight(self.prof.class_key(e)) if self.lessons is not None else 1.0
 
     def grudge(self, e) -> int:
         return self.tm.grudge(self.row(e))
@@ -638,7 +657,10 @@ def candidates(prof: TitleProfile, player, enemies, facing=None, threats: Threat
                 t = prof.tier(e) or "normal"
             except Exception:                                # noqa: BLE001 - an identity error: an ordinary one
                 t = "normal"
-        out.append({"e": e, "key": e.get("ptr", e.get("slot")), "d": math.hypot(dx, dz),
+        lw = threats.lesson_weight(e) if threats is not None else 1.0
+        if lw > 1.0 and t == "normal":
+            t = "dangerous"                                  # it has killed him: not an ordinary one any more
+        out.append({"e": e, "key": e.get("ptr", e.get("slot")), "d": math.hypot(dx, dz), "lesson_w": lw,
                     "err": wrap(heading(dx, dz) - face), "dy": q[1] - ppos[1],
                     "windup": threats.winding(e) if threats is not None else bool(prof.windup and prof.windup(e)),
                     "grudge": threats.grudge(e) if threats is not None else 0,
@@ -669,7 +691,7 @@ def band(prof: TitleProfile, c: dict) -> int:
 
 def _order(prof: TitleProfile, b: int, c: dict) -> float:
     if b == TIERED:
-        return c["d"] * float(prof.tier_w.get(c.get("tier"), 1.0))
+        return c["d"] * float(prof.tier_w.get(c.get("tier"), 1.0)) / max(float(c.get("lesson_w", 1.0)), 1.0)
     return c["d"] if b < REST else cost(prof, c)
 
 

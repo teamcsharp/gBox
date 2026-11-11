@@ -714,3 +714,51 @@ def test_rear_target_flip_guard_allows_flip_before_aim(monkeypatch):
     # (body_err < QUICK_ERR), preserving the original behavior.
     assert b.stats.get("rear_target_fixes", 0) == 0, \
         f"flip guard should NOT fire when front target is in front; stats={b.stats}"
+
+
+def test_statue_run_stuck_twice_blocks_that_statue_for_a_minute():
+    """Coach 6822609e92274e5c: the statue run looped nav route / stuck / detour; two stuck wiggles now give the statue up."""
+    b, clock = brain()
+    b._bonus = {"ptr": 77}
+    clock[0] = 100.0
+    assert b._bonus_stuck(100.0) is False and b._bonus is not None
+    assert b._bonus_stuck(105.0) is True and b._bonus is None
+    assert b._bonus_block[77] == 105.0 + R.BONUS_STUCK_BLOCK_S > 105.0 + R.BONUS_BLOCK_S
+    assert b.stats["bonus_stuck_blocks"] == 1
+    assert b._bonus_stuck(106.0) is False          # no run: nothing to count
+def test_hurt_in_a_crowd_with_a_dry_gun_runs_out_through_an_open_side(monkeypatch):
+    """Coaching note 8 (#5706): 24 % health, 6 Majini within 2.4 m all on one side (an open gap), 17 s without a shot."""
+    import math
+    foes = [{"pos": pos} for pos in ((513, -3261, -312), (692, -3261, -136), (513, -3261, -174),
+                                     (410, -3261, -314), (499, -3261, -76), (417, -3261, -164))]
+    p = {"pos": (634.0, -3261.0, -265.0), "rot": 2.499, "hp": 244, "hp_max": 1000}
+    flat = lambda e: math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+    b, _ = brain()
+    assert b._escape(p, foes, flat, 100.0) is None                 # the gun was just firing: fight on
+    act = b._escape(p, foes, flat, 105.0)                          # 5 s and no shot: out through the gap
+    assert act is not None and "b" in act["hold"] and b.stats["escapes"] == 1
+    b, _ = brain()
+    b.stats["shots"] = 1
+    b._escape(p, foes, flat, 100.0)
+    b.stats["shots"] = 2                                            # still shooting: no escape
+    assert b._escape(p, foes, flat, 105.0) is None
+    healthy = dict(p, hp=900)
+    b, _ = brain()
+    b._escape(healthy, foes, flat, 100.0)
+    assert b._escape(healthy, foes, flat, 105.0) is None            # healthy: the old rule
+def test_quick_turn_gap_shortens_for_grab_range_behind(monkeypatch):
+    """Coach 4d61b56a918045dc (request #5670): a Majini 0.3 m behind while aiming at another went unanswered for the
+    full QUICK_GAP_S; inside GRAB_THREAT_R the turn is allowed after QUICK_GAP_GRAB_S, farther ones still wait."""
+    monkeypatch.setattr(R, "QUICK_TURN", True)
+    assert R.QUICK_GAP_GRAB_S < R.QUICK_GAP_S
+    for dist, expect in ((30.0, True), (280.0, False)):
+        b, clock = brain()
+        b.tick(bot_snap((0.0, 0.0, -dist)))
+        clock[0] = 0.4
+        b.quick_at, b.quick = clock[0] - (R.QUICK_GAP_GRAB_S + 0.1), 0
+        snap = bot_snap((0.0, 0.0, -dist))
+        p = snap["player"]
+        live = [e for e in snap["enemies"] if (e.get("hp") or 0) > 0]
+        flat = lambda e: math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+        got = b._quick_behind(p, live, flat, clock[0])
+        assert (got is not None) == expect, (dist, got)

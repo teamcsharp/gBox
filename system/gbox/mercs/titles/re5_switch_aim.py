@@ -127,6 +127,7 @@ def aim_writer(m):
 STICKS = frozenset({'rleft', 'rright', 'rup', 'rdown'})
 YAW_RATE, PITCH_RATE = math.radians(140), math.radians(90)
 MAX_DT = 0.05
+SEGMENT_PITCH_DIST_CM, SEGMENT_PITCH_MAX = 300., math.radians(9)   # a grazing close segment needs the pitch near
 GUN_FAMILIES = frozenset({'handgun', 'magnum', 'shotgun', 'automatic', 'rifle'})
 # Weapon mastery: a shotgun point blank into the crowd, an automatic held through its burst (apply() below)
 SHOTGUN_POINT_BLANK_CM, POINT_BLANK_YAW, POINT_BLANK_PITCH = 250., math.radians(15), math.radians(20)
@@ -370,6 +371,14 @@ def apply(bot, snap, act, now):
     if body_contact and callable(gate) and not R.dot_on(dot, foot, R.body(target))             and gate(target, origin, dot) is False:
         body_contact = False
         bot.stats['aimbook_gate_edge_holds'] = bot.stats.get('aimbook_gate_edge_holds', 0) + 1
+    # Operator critique 2026-11-10 (moment e868adee806d44ce): up close the ray can graze a body segment (hip/legs) while
+    # the camera is still 13-18 deg off the chest and the dot lands on the wall behind him - ~15 magnum pulls in 3 s,
+    # no damage, while the crowd closed in. A grazing segment (the dot not on him) within SEGMENT_PITCH_DIST_CM with
+    # the pitch error beyond SEGMENT_PITCH_MAX is not contact: hold fire and keep correcting instead of wasting pulls.
+    if (body_contact and valid_ray and spec.family != 'shotgun' and dist <= SEGMENT_PITCH_DIST_CM
+            and abs(pitch_error) > SEGMENT_PITCH_MAX and not R.dot_on(dot, foot, R.body(target))):
+        body_contact = False
+        bot.stats['target_feedback_pitch_holds'] = bot.stats.get('target_feedback_pitch_holds', 0) + 1
     spread_contact = bool(valid_ray and not body_contact and spec.family == 'shotgun'
                           and bot._crowd_hit(origin, dot, foot, True))
     # Weapon mastery (operator 2026-11-09): a shotgun point blank into the crowd - within SHOTGUN_POINT_BLANK_CM, the
