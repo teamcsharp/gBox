@@ -836,7 +836,7 @@ def pso_mods(inp: ModsIn, ctx):
     """Offline PSO native controls; check capabilities for revision/platform support.
 
     GameCube Plus 3OE2 adds enemy_drops on=true/false codes=[catalog codes] max_grind=true;
-    walk_through on=true/false; bosses; boss_warp target=<boss id>; adventure_status.
+    walk_through on=true/false; bosses; boss_warp target=<boss id>; floor_warp target=<floor number> (debug/dev: the native travel path, never for P1 acceptance); adventure_status.
     See pso_live.gamecube for the GameCube inventory/equipment/stat/survival/MAG operations.
 
     Dreamcast US Ver.2 operations: op=meseta_max (999999 meseta) | meseta value=N |
