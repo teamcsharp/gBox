@@ -372,3 +372,32 @@ carries the model-centre checks and their tests) delivers CP7.1's content. Mergi
 
 **So the review is: 15 branches, one ordering constraint (CP12 before CP13), zero known file conflicts.** Everything else the
 programme needs is the live window, the CP8 data decision, and the reviewer's own run.
+
+## Round 120: main moved again - the lane is merging the branches, and the merged state is verified green
+
+`origin/main` advanced to **`85f88453`** while this round was rehearsing. The lane has merged, in order:
+
+| merge | what |
+|---|---|
+| `6544c97d` | **`ds-pso-cp00-classes`** - CP0 step 4 ("one registry module, the pinned table and its 148 names folded into `pso_classes` as cross-checks") and the DOL section-table correction |
+| `dd2edc34` | **`ds-pso-cp16-stick`** - its checkpoint evidence |
+| `9d513775` / `498716c5` | `ds-pso-reconcile` and `ds-pso-handover` evidence |
+| earlier | **CP2 and CP3 with their evidence** (`64d3b245`) |
+
+So the review list from round 119 is already partly done: **CP0-classes, CP2, CP3 and CP16 are in main**. Note that CP00-classes went in *as-is* -
+the lane's post-merge note (`3f00c23a`) says "both registry modules stay; the cross-check ties them; `pso_classes` is the module going
+forward", which is a different resolution from the branch's own deletion of `pso_class_registry.py`; the lane kept both and moved
+the API forward, which is closer to main's earlier two-facade design.
+
+**The merged state is healthy.** On a clean worktree at `85f88453`, the checkpoint test set -
+`test_pso_boot_walk`, `test_pso_classes`, `test_pso_editor`, `test_pso_editor_api`, `test_pso_evt`, `test_pso_llm`,
+`test_pso_memcard`, `test_pso_registries_agree`, `test_pso_swapfit` - is **85 passed, 0 failed**. That is the useful review service
+this round could give: not another merge list, but evidence that what has been merged so far is green.
+
+**What is still on the branches (and not in main):** the CP6.x, CP7.2/7.3, CP8, CP9, CP10, CP12, CP13, CP15, CP17 work and the
+editor-views test - i.e. everything after the CP3/CP16 merges. The conflict that remains in a full rehearsal is `pso_player.py`
+between CP12 and CP13, and CP13 is now **rebased onto CP12's tip `e0e0b975`** (`15 passed` there, carrying both CP12's endianness
+fixes and CP13's own additions), so merging CP12 then CP13 applies in order.
+
+**Main is a moving target by design now** - the lane merges branches as it reviews them, so this document's lists age within
+minutes. The durable parts are the branch tips, the per-branch inventory method, and the test evidence.
