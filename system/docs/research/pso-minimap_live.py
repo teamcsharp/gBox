@@ -213,7 +213,12 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(urlparse(self.path).query)
             order_path = Path(r"D:\gBox\pso-ds\goto-order.json")
             if query:
-                order = {"x": float(query["x"][0]), "z": float(query["z"][0]), "t": round(time.time(), 2)}
+                try:
+                    order_floor = int(query.get("floor", ["0"])[0])
+                except Exception:                                 # noqa: BLE001
+                    order_floor = 0
+                order = {"x": float(query["x"][0]), "z": float(query["z"][0]),
+                         "floor": order_floor, "t": round(time.time(), 2)}
                 order_path.write_text(json.dumps(order), encoding="utf-8")
                 body = json.dumps({"recorded": order}).encode()
             else:
@@ -298,7 +303,7 @@ class Handler(BaseHTTPRequestHandler):
                 "    await fetch(`/api/target?pointer=${best.pointer}&class=${encodeURIComponent(best.class)}`,{method:'POST'});"
                 "    document.getElementById('o').textContent='target: '+best.class+' hp '+best.hp;"
                 "  } else {"
-                "    await fetch(`/api/order?x=${wx.toFixed(1)}&z=${wz.toFixed(1)}`,{method:'POST'});"
+                "    await fetch(`/api/order?x=${wx.toFixed(1)}&z=${wz.toFixed(1)}&floor=${st.floor}`,{method:'POST'});"
                 "    document.getElementById('o').textContent='move to: '+wx.toFixed(0)+','+wz.toFixed(0);"
                 "  }"
                 "};"

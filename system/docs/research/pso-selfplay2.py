@@ -167,6 +167,10 @@ def take_order():
     if payload.get("t", 0) <= _last_order[0]:
         return None
     _last_order[0] = payload.get("t", 0)
+    order_floor = payload.get("floor")
+    if order_floor is not None and int(order_floor) != floor():
+        log(f"ignoring an order for floor {order_floor} while on floor {floor()}")
+        return None
     return {"x": payload["x"], "z": payload["z"]}
 
 
