@@ -106,9 +106,10 @@ def test_the_steady_aim_zeroes_the_sway_and_the_waist_and_puts_the_pitch_on_the_
     assert struct.unpack("<f", m.rd(PLAYER + D.PL_WAIST_YAW, 4))[0] == 0.0
     assert struct.unpack("<f", m.rd(WEP + D.WEP_CENTER_Y, 4))[0] == 0.0
     assert struct.unpack("<f", m.rd(WEP + D.WEP_PITCH, 4))[0] == pytest.approx(-0.12)
-    assert struct.unpack("<f", m.rd(PLAYER + D.U_YAW, 4))[0] == pytest.approx(0.5)
+    # the facing turns toward the request in a smoothed step (operator 2026-11-11: no per-tick jerk), not 0.5 at once
+    assert struct.unpack("<f", m.rd(PLAYER + D.U_YAW, 4))[0] == pytest.approx(M.AIM_WRITE_MAX_STEP, abs=1e-6)
     n = len(m.writes)
-    M.maintain(m, snap_of(m))                         # nothing left to change: only the facing is written again
+    M.maintain(m, snap_of(m))                         # another step of the facing (the gun's parts are already set)
     assert len(m.writes) - n == 1
 
 
@@ -223,3 +224,15 @@ def test_a_hit_from_the_census_resolves_the_shot_and_the_book_learns_it():
     core = b._aim_core()
     assert core.book.cells, "the book learned the resolved shot"
     assert next(iter(core.book.cells)).startswith("magnum|"), "the family from the class byte (0x05 Broken Butterfly)"
+
+
+def test_a_close_sight_stall_hands_the_shot_back_sooner():
+    """Operator 2026-11-11: "the bot just sits there instead of firing on the enemies ... watching him just watch them
+    come up." A Ganado already inside 3 m must get the old body-angle gate after AIM_SIGHT_STALL_CLOSE_S, not 1.5 s."""
+    b = ram_bot()
+    b.tick(fight_snap(ganado_z=2500.0), now=10.0)
+    t, taps = 10.3, []
+    while t < 10.3 + D.AIM_SIGHT_STALL_CLOSE_S + 0.9:
+        taps.append(b.tick(fight_snap(sight=None, ganado_z=2500.0), now=t).get("tap"))
+        t += 0.05
+    assert b.stats["aim_ram_sight_fallbacks"] >= 1 and D.FIRE_BTN in taps

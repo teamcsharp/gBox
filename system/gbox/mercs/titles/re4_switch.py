@@ -1775,6 +1775,11 @@ AIM_LEAD_PRIOR_S = 0.10                  # snapshot -> the lock's write on the n
 # without a sight AIM_SIGHT_STALL_S: the old body-angle gate fires (aim_ram_sight_fallbacks), so a sight that never
 # reads cannot hold the fire forever. GUN_H_MM: the gun's height while the line is not read yet (the open-loop pitch).
 AIM_PITCH_GAIN, AIM_SIGHT_STALL_S, GUN_H_MM, AIM_LOCK_LIVE_S = 0.8, 1.5, 1450.0, 1.0
+#: A close threat gets the old body-angle gate much sooner (operator 2026-11-11: "the bot just sits there instead of
+#: firing on the enemies ... I'm watching him just watch them come up"): the steady aim's sight stall is 1.5 s at
+#: range, 0.4 s inside AIM_SIGHT_CLOSE_MM, so a Ganado already on him is shot by his own gate before it reaches him.
+AIM_SIGHT_STALL_CLOSE_S = 0.4
+AIM_SIGHT_CLOSE_MM = 3000.0
 AIM_FAMILY = {0x01: "handgun", 0x02: "handgun", 0x03: "handgun", 0x04: "handgun", 0x11: "handgun",
               0x05: "magnum", 0x06: "magnum", 0x0F: "magnum", 0x07: "shotgun", 0x08: "shotgun", 0x21: "shotgun",
               0x09: "rifle", 0x0A: "rifle", 0x0B: "automatic", 0x0C: "automatic"}
@@ -2251,7 +2256,8 @@ class Bot:
                 if since is None:
                     since = self._ram_since = now
                 self.stats["aim_ram_holds"] = self.stats.get("aim_ram_holds", 0) + 1
-                if now - since >= AIM_SIGHT_STALL_S:
+                if now - since >= (AIM_SIGHT_STALL_CLOSE_S if dist <= AIM_SIGHT_CLOSE_MM
+                                   else AIM_SIGHT_STALL_S):
                     self.stats["aim_ram_sight_fallbacks"] = self.stats.get("aim_ram_sight_fallbacks", 0) + 1
                     return None                          # the old gate fires: a sight that never reads holds nothing
                 self.doing, self.why = "aim", "the steady aim: the line is not on a Ganado yet"
