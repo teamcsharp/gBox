@@ -73,6 +73,11 @@ RING_INNER_DEFAULT_CM, RING_SELF_CLEAR_CM = 150.0, 250.0
 # 150 cm default inner ring are inside a grenade's blast, and the first receipt would have been a self-damage one.
 RING_EXPLOSIVE_CLEAR_CM = 600.0
 RING_RIPPLE_MS_DEFAULT, RING_RIPPLE_MS_MAX = 40.0, 400.0
+#: Each native call of a ring gets this long before it is uncertain (the base call/wait default is 1.0 s). A
+#: ten-grenade ring is ten sequential spawn/explode round trips on the game thread while the bot's own tick and the
+#: emulator's render run; live 2026-11-11 11:25 and 11:39 the automatic ring timed out a call at the round's start
+#: and left the controller awaiting recovery. A click's 1 s stays for single ops.
+RING_CALL_TIMEOUT_S = 2.5
 # The spawned flash unit's world transform: spawn.c copies the player's +0x60 position to the unit's live
 # transform (+0x60, x/y/z floats) and its home copy (+0x2680). Relocating both before the explode places
 # the blast on the ring. This RAM relocation is the one step NOT exercised by the live-verified flash.
@@ -222,23 +227,23 @@ class Controller(N.Controller):
         if kind != "flash" and self.pair() == "pre_class":
             raise Unavailable(PRE_CLASS_REASON)
 
-    def _spawn(self, kind):
+    def _spawn(self, kind, *, timeout=RING_CALL_TIMEOUT_S):
         """Spawn one native grenade unit of `kind` through the pair this emulator holds -> (unit, born)."""
         if self.pair() == "pre_class":
-            unit = self.call(0x118E820, self.player, self.generation)
+            unit = self.call(0x118E820, self.player, self.generation, timeout=timeout)
         else:
-            unit = self.call(0x118E820, self.player, self.generation, CLASSES.CLASSES[kind].dti)
+            unit = self.call(0x118E820, self.player, self.generation, CLASSES.CLASSES[kind].dti, timeout=timeout)
         if not R.ptr_ok(unit):
             raise Unavailable(f"native {kind} allocation refused")
         return unit, self.q(unit + 0x1A00)
 
-    def _detonate(self, unit, born, kind, carried):
+    def _detonate(self, unit, born, kind, carried, *, timeout=RING_CALL_TIMEOUT_S):
         """The explosion transition: the old four arguments, or the class pair's vtable/item/update."""
         if self.pair() == "pre_class":
-            return self.call(0x118E9D0, unit, born, self.player, self.generation)
+            return self.call(0x118E9D0, unit, born, self.player, self.generation, timeout=timeout)
         spec = CLASSES.CLASSES[kind]
         update = self.base + (CLASSES.FLASH_UPDATE_OFF if kind == "flash" else CLASSES.BOMB_UPDATE_OFF)
-        return self.call(0x118E9D0, unit, born, self.player, self.generation, carried, spec.item, update)
+        return self.call(0x118E9D0, unit, born, self.player, self.generation, carried, spec.item, update, timeout=timeout)
 
     def ready(self):
         self.check_build()
@@ -464,7 +469,7 @@ class Controller(N.Controller):
         def initialized():
             self.projectile(unit, born)
             return self.w(unit + 0x1B28) == 29 and self.rd(unit + 0x1B88, 1) == b"\x01"
-        self.wait(initialized)
+        self.wait(initialized, timeout=RING_CALL_TIMEOUT_S)
         self.projectile(unit, born)
         carried = self.q(unit)                      # the class this allocation actually carries
         if kind == "flash" and carried != self.base + CLASSES.FLASH_VT:

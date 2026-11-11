@@ -54,8 +54,8 @@ def ring_controller(hp_after=1000, spawn_fail_at=None):
     put(ctl.player, struct.pack("<Q", ctl.base + 0x1C290C8))   # original vtable (Jill), read into self.original
     put(ctl.player + R.P_POS, struct.pack("<3f", 1000.0, 800.0, -2000.0))
 
-    def call(off, *args):
-        ctl.calls.append((off, args))
+    def call(off, *args, **kw):
+        ctl.calls.append((off, args, kw))
         if off == SPAWN:
             n = len(ctl.spawns)
             if spawn_fail_at is not None and n == spawn_fail_at:
@@ -214,3 +214,13 @@ def test_live_controls_validate_grenade_ring():
         LC.validate_request({"session_id": "s", "op": "grenade_ring", "request_id": str(uuid.uuid4()), "kind": "nuke"})
     with pytest.raises(ValueError):   # a stray field
         LC.validate_request({"session_id": "s", "op": "grenade_ring", "request_id": str(uuid.uuid4()), "item": 2})
+
+
+def test_each_ring_native_call_gets_the_wider_ring_budget():
+    """The automatic ring timed out a call at the round's start twice (live 2026-11-11 11:25 / 11:39) because every
+    spawn/explode round trip waited the single click's 1 s. The ring's calls use RING_CALL_TIMEOUT_S instead."""
+    ctl = ring_controller()
+    ctl.grenade_ring("flash")
+    budgets = {kw.get("timeout") for _off, _args, kw in ctl.calls}
+    assert budgets == {N.RING_CALL_TIMEOUT_S}
+    assert N.RING_CALL_TIMEOUT_S >= 2.0

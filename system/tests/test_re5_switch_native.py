@@ -132,7 +132,7 @@ def test_flash_requires_native_effect_flag_and_always_restores_class_table(explo
     ctl.put(unit + 0x1B88, b'\1')
     ctl.put(unit + 0x28A0, bytes([exploded]))
     calls = []
-    def call(off, *args):
+    def call(off, *args, **kw):
         calls.append((off, args))
         return unit if off == 0x118E820 else 1
     ctl.call = call
