@@ -1,84 +1,124 @@
-"""Read boss HP straight from RAM through the semantic profile's entity table (CP18's accept signal).
+"""CP18 observation: record a boss's HP from RAM until it reaches zero.
 
-Profile pso-gc-plus-us: entity table 0x8050D460 (256 pointers, null-terminated, struct 0x340); class name is a pointer-string at
-+0x0; enemy/boss kinds match TBoss/TObjBoss/TObjEne with hp u16 @0x32C and hp_max u16 @0x2B8. This walks the table and prints every
-boss/enemy entity with its HP, position and class, so "the boss's HP reaches 0" can be measured instead of inferred.
+The accept test for CP18 is "the boss's HP reaches 0 from RAM, with both players alive". The player actor keeps HP at +0x32C and its maximum
+at +0x2B8, and enemies share the same base actor class, so this reads those fields for the boss entity the whole fight and writes the series
+to a file. A row is appended every second, plus a row whenever the value changes, so the moment it hits zero is timestamped.
+
+If the actor layout differs for the boss, `--scan` lists candidate offsets whose u16 decreases while the fight is under way, which locates
+the real field without guessing.
+
+Usage:
+  python boss_hp.py TBoss1Dragon 180        watch for up to 180 s
+  python boss_hp.py TBoss1Dragon --scan     list u16 offsets that are falling
 """
 import json
 import struct
 import sys
 import time
-import urllib.request
 
-sys.path.insert(0, r"C:\_tools\gBox\system")
+sys.path.insert(0, r"C:\_tools\gBox\.tmp")
 
-TOKEN = open(r"C:\_tools\gBox\system\gbox-data\api_token").read().strip()
-API = "http://127.0.0.1:8765"
-SID = "75cf966f35164149-4ec5d512e3484b02"
-TABLE = 0x8050D460
-MAX_ENTRIES = 256
+import learn_live as L                                             # noqa: E402
+import session as S                                                # noqa: E402
+
+TABLE, MAX_ENTRIES, POS = 0x8050D460, 256, 0x38
 HP, HP_MAX = 0x32C, 0x2B8
-PREFIXES = ("TBoss", "TObjBoss", "TObjEne")
+OUT = r"D:\gBox\pso-ds\boss-hp.jsonl"
+LOG = r"D:\gBox\pso-ds\boss_hp.log"
 
 
-def read(address, length):
-    body = json.dumps({"op": "read_memory", "args": {"address": address, "length": length}}).encode()
-    req = urllib.request.Request(f"{API}/api/sessions/{SID}/rpc", data=body, method="POST",
-                                 headers={"authorization": "Bearer " + TOKEN, "x-gbox-actor": "agent",
-                                          "content-type": "application/json"})
-    return bytes.fromhex(json.loads(urllib.request.urlopen(req, timeout=15).read() or b'""'))
+def log(line):
+    text = f"{time.strftime('%H:%M:%S')} {line}"
+    print(text, flush=True)
+    with open(LOG, "a", encoding="utf-8") as handle:
+        handle.write(text + "\n")
 
 
-def cstring(address, limit=48):
-    raw = read(address, limit)
-    return raw.split(b"\x00")[0].decode("ascii", "replace") if raw else ""
-
-
-def entities():
-    raw = read(TABLE, MAX_ENTRIES * 4)
-    out = []
+def boss(fragment):
+    raw = S.read_memory(TABLE, MAX_ENTRIES * 4)
     for index in range(MAX_ENTRIES):
         pointer = int.from_bytes(raw[index * 4:index * 4 + 4], "big")
-        if pointer == 0:
-            continue
         if not (0x80000000 <= pointer < 0x81800000):
             continue
-        name_pointer = int.from_bytes(read(pointer, 4), "big")
-        if not (0x80000000 <= name_pointer < 0x81800000):
+        try:
+            name_pointer = int.from_bytes(S.read_memory(pointer, 4), "big")
+            if not (0x80000000 <= name_pointer < 0x81800000):
+                continue
+            name = S.read_memory(name_pointer, 28).split(b"\x00")[0].decode("ascii", "replace")
+        except Exception:                                        # noqa: BLE001
             continue
-        name = cstring(name_pointer)
-        if not name:
-            continue
-        out.append({"index": index, "pointer": pointer, "class": name})
-    return out
+        if fragment in name:
+            blob = S.read_memory(pointer, 0x340)
+            if len(blob) < 0x340:
+                continue
+            return {"index": index, "class": name, "pointer": pointer, "blob": blob,
+                    "x": round(struct.unpack(">f", blob[POS:POS + 4])[0], 1),
+                    "z": round(struct.unpack(">f", blob[POS + 8:POS + 12])[0], 1)}
+    return None
 
 
-def entity_fields(pointer):
-    hp = int.from_bytes(read(pointer + HP, 2), "big")
-    hp_max = int.from_bytes(read(pointer + HP_MAX, 2), "big")
-    x, y, z = struct.unpack(">fff", read(pointer + 0x38, 12))
-    return {"hp": hp, "hp_max": hp_max, "x": round(x, 1), "y": round(y, 1), "z": round(z, 1)}
-
-
-def boss_rows():
-    rows = []
-    for ent in entities():
-        if any(ent["class"].startswith(prefix) for prefix in PREFIXES):
-            rows.append({**ent, **entity_fields(ent["pointer"])})
-    return rows
-
-
-def main():
-    for sample in range(6):
-        rows = boss_rows()
-        print(f"--- sample {sample} {time.strftime('%H:%M:%S')}: {len(rows)} boss/enemy entities")
-        for row in rows[:12]:
-            frac = f"{row['hp'] / row['hp_max']:.2f}" if row["hp_max"] else "-"
-            print(f"   [{row['index']:>3}] {row['class'][:28]:<28} hp={row['hp']:>6}/{row['hp_max']:<6} ({frac}) "
-                  f"pos=({row['x']:.1f},{row['y']:.1f},{row['z']:.1f})")
-        time.sleep(6)
+def scan(fragment, seconds=6.0):
+    first = boss(fragment)
+    if first is None:
+        log(f"no entity matching {fragment}")
+        return 2
+    log(f"boss {first['class']} at {hex(first['pointer'])} ({first['x']},{first['z']})")
+    time.sleep(seconds)
+    second = boss(fragment)
+    if second is None or second["pointer"] != first["pointer"]:
+        log("boss went away before the second sample")
+        return 2
+    falling = []
+    for offset in range(0, 0x340 - 1, 2):
+        a = struct.unpack(">H", first["blob"][offset:offset + 2])[0]
+        b = struct.unpack(">H", second["blob"][offset:offset + 2])[0]
+        if 0 < b < a <= 20000:
+            falling.append({"offset": hex(offset), "before": a, "after": b})
+    log(f"u16 offsets that fell in {seconds:.0f}s: {json.dumps(falling)[:400]}")
+    if not falling:
+        log("nothing fell - the boss may not have been damaged in that window")
     return 0
 
 
+def watch(fragment, seconds=180.0):
+    path_out = open(OUT, "a", encoding="utf-8")                       # noqa: SIM115
+    log(f"=== watching {fragment} for {seconds:.0f}s into {OUT}")
+    started = time.time()
+    previous = None
+    while time.time() - started < seconds:
+        current = boss(fragment)
+        if current is None:
+            if previous is not None:
+                log("boss entity is gone")
+                path_out.write(json.dumps({"t": round(time.time(), 3), "gone": True}) + "\n")
+                path_out.flush()
+                path_out.close()
+                return 0
+            time.sleep(1.0)
+            continue
+        hp = struct.unpack(">H", current["blob"][HP:HP + 2])[0]
+        hpmax = struct.unpack(">H", current["blob"][HP_MAX:HP_MAX + 2])[0]
+        row = {"t": round(time.time(), 3), "class": current["class"], "hp": hp, "hpmax": hpmax,
+               "x": current["x"], "z": current["z"]}
+        if previous is None or hp != previous:
+            log(f"  {current['class']} hp {hp}/{hpmax}")
+            previous = hp
+        path_out.write(json.dumps(row) + "\n")
+        path_out.flush()
+        if hp == 0 and hpmax:
+            log(f"BOSS HP REACHED 0 ({current['class']}) - CP18 accept condition")
+            player = L.player()
+            log(f"  player alive check: hp {None if player is None else player['hp']}")
+            path_out.close()
+            return 0
+        time.sleep(1.0)
+    path_out.close()
+    log("watch window ended without reaching 0")
+    return 2
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    fragment = sys.argv[1] if len(sys.argv) > 1 else "TBoss"
+    if "--scan" in sys.argv:
+        raise SystemExit(scan(fragment))
+    raise SystemExit(watch(fragment, float(sys.argv[2]) if len(sys.argv) > 2 else 180.0))
