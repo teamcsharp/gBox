@@ -1526,6 +1526,11 @@ SIGHT_HOLD_S, FLANK_S = 0.6, 1.5
 # route to the target from which the shot is clear (FLANK_SAMPLE_MM samples, FLANK_LOOK_MM at most, the route's first
 # crossing at most), stops there and fires. Stats flank_los_opens, flank_los_goals. Off: the whole route to him.
 FLANK_LOS = True
+# LOS_FIRE_FIRST (Hermes #9560, operator 2026-11-10 18:20: "firing relentlessly ... flank only when there is no line of
+# sight at all"): the idle guard (the gun up IDLE_AIM_S without a shot) no longer starts a flank while the Ganado he aims
+# at is in fire range with a clear shot line from where he stands - the gun stays up and the trigger keeps tapping; a
+# flank is for no line only. Stat los_fire_keeps. Off: the idle guard flanks any Ganado it cannot get a shot at.
+LOS_FIRE_FIRST = True
 FLANK_SAMPLE_MM, FLANK_LOOK_MM, FLANK_ARRIVE_MM, FLANK_GOAL_S = 300.0, 12000.0, 400.0, 1.0
 # No turning off a pack he is winning against (the same trace: a grudge pick, "he hurt him this round (2 hits), 4.5 m
 # off", turned him from the Ganados at the doorway). PACK_KEEP: the scorer's grudge or the combo's quickest kill takes
@@ -3539,6 +3544,14 @@ class Bot:
             d["_uc_throw"] = None
         return None
 
+    def _los_fire_open(self, p, e, snap) -> bool:
+        """LOS_FIRE_FIRST: e is inside ENGAGE_RANGE_CM with a clear shot line (the room map / mesh) - fire, do not flank."""
+        try:
+            return (self._flat(p["pos"], e["pos"]) <= ENGAGE_RANGE_CM
+                    and bool(self._line_of_sight_ok(p, e, snap)))
+        except Exception:                                # noqa: BLE001 - never a flank-or-fire crash
+            return False
+
     def _idle_core(self, p, act, snap, now) -> dict:
         """combat.IdleGuard on this tick's action: the gun up IDLE_AIM_S at the Ganado in range without a shot ->
         FLANK_S of the walk round to him (the flank), the gun down."""
@@ -3556,6 +3569,9 @@ class Bot:
         e = next((x for x in snap.get("enemies") or () if x.get("ptr") == self.target and x.get("pos")), None)
         if e is None:
             return act
+        if LOS_FIRE_FIRST and self._los_fire_open(p, e, snap):
+            self.stats["los_fire_keeps"] = self.stats.get("los_fire_keeps", 0) + 1
+            return act                                   # a clear line: he keeps firing, no flank
         err = wrap(heading(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) - (p.get("rot") or 0.0))
         self._flank = {"key": self.target, "until": now + FLANK_S}
         self.stats["flanks"] = self.stats.get("flanks", 0) + 1

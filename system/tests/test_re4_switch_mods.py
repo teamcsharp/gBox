@@ -662,3 +662,23 @@ def test_every_recorded_down_ladder_is_an_escape_from_beside_its_approach():
             assert goal is not None and goal[1] == float(r["landing"][1]) or any(
                 abs(goal[1] - float(o["landing"][1])) < 1 for o in downs if o is not r), (room, r["source"])
     assert seen.get("r403") == 9 and seen.get("r404") == 8 and seen.get("r402", 0) == 0
+
+
+def test_fire_tables_are_retried_when_the_first_write_reads_nothing(ad, tmp_path, monkeypatch):
+    """Hermes #9560 (ported): maintain marked the boot's 20x tables done with 0 tables written, so the rate never
+    landed until a round's own give. The boot is marked only once a table reads back; retries are paced."""
+    monkeypatch.setattr(M, "SETTINGS_FILE", tmp_path / "re4-mods.json")
+    monkeypatch.setattr(M, "FIRE_RETRY_S", 0.0)
+    gap = D.FIRE_GAP_S
+    st = M._state(ad)
+    st["fire_rate"] = 20.0
+    try:
+        assert M.maintain(ad, _round("none", control=False, clock=False)).get("fire_tables", 0) == 0
+        assert st.get("rf_applied_boot") is None, "nothing read back: the boot is not marked done"
+        assert st["fire_tries"] == 1
+        _weapon_tables(ad)
+        out = M.maintain(ad, _round("none", control=False, clock=False))
+        assert out["fire_tables"] > 0 and st["rf_applied_boot"] is not None and st["fire_tries"] == 2
+        assert "fire_tables" not in M.maintain(ad, _round("none", control=False, clock=False)), "done for this boot"
+    finally:
+        D.FIRE_GAP_S = gap
