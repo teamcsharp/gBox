@@ -198,3 +198,38 @@ the next attempt starts from a recorded state rather than from scratch.
 **Branch count: nineteen.** All test-verified from their pushed tips, and the merge rehearsal's order (round 95) still applies;
 CP17's branch adds only new files (`pso_walk.py`, `pso_steer.py`, `pso_walker.py`, their tests and one evidence file), so it
 needs no conflict work.
+
+## Round 115: main has moved - an audit of what it already carries, and what only the branches do
+
+`origin/main` is now at **`e3774109`** and has absorbed work while this lane was building. Six checkpoint branches now report
+merge-tree conflicts against main; the audit explains every one of them, and it changes the review's framing.
+
+**What main already has (do not re-merge these):**
+
+| main commit | what it is |
+|---|---|
+| `16207501`, `eb3be01a` | CP0's hand-off log and evidence - "all 16 branches merged" there means the **rebase** work of CP0 step 1, not a merge into main; the files that landed are the `lane/*.md` logs and `CP00-clean-start.md` / `CP00-operator-question.md` |
+| `affb0f87` | CP0's registry cross-check write-up |
+| `e3774109` | **CP1's work**: the local coder model measured on the 3090 (a different write-up of the same checkpoint) |
+| earlier | `pso_player.py`, `pso_swapfit.py`, `pso_evt.py`, `pso_memcard.py`, `pso_boot_walk.py` (their pre-checkpoint versions) |
+
+**What only the branches carry (still to merge):** the CP00-classes **consolidation** (`pso_classes.py` replacing
+`pso_class_registry.py` - main still has the old module), and everything CP2 onwards: `pso_nrel.py`, `pso_rooms.py`,
+`pso_save_cipher.py`, `pso_walk.py`, `pso_steer.py`, `pso_walker.py`, the CP12 endianness fixes to `pso_player.py`, the
+`pso_swapfit` subset rule, the CP11 editor page, and all their evidence docs.
+
+**The six conflicts, explained - none is a surprise and three are "already done":**
+
+| branch | conflict | verdict |
+|---|---|---|
+| `cp00-clean-start` | `CP00-clean-start.md`, `CP00-operator-question.md` (add/add) | **already in main** - main's copies are the accepted ones; do not re-merge |
+| `cp01-local-model` | `CP01-local-model.md` (add/add) | **already in main** as a different write-up (`e3774109`); do not re-merge |
+| `cp00-classes` | `test_pso_class_registry.py` (add/add) | **still needed**: main has the old registry module and its test; this branch replaces both |
+| `cp07-object-loader` | `test_pso_class_registry.py` (add/add) | the branch includes CP0-classes' merge (round 95), so it conflicts for the same reason; merge **after** CP00-classes |
+| `cp11-editor-page` | `pso-editor.html`, `pso_class_registry.py`, `pso_editor.py`, `pso-gc-executable.md` | main gained its own `pso_editor.py`/`pso_class_registry.py` copies; the page branch must be rebased onto the CP00-classes consolidation first |
+| `cp13-library-donors` | `pso_player.py` (content) | expected: it is stacked on CP12, whose endianness changes main does not have yet - merge CP12 first |
+
+**Net: the review order needs one change from round 95's rehearsal.** CP00-classes moves to the front (it replaces a module main
+still uses), then CP1's branch is skipped (main's version is the accepted one), then the rest in the rehearsed order with
+CP12 before CP13. The three "already done" branches should be deleted rather than merged, which also removes three of the six
+conflicts.
