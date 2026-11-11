@@ -440,3 +440,26 @@ def test_choose_mailbox_accepts_the_published_json_string():
     payload = json.dumps([{"stage": 1, "pages": {"0x1cbb000": "00" * 16}},
                           {"stage": 2, "pages": {"0x1cbb000": "00" * 16}}])
     assert N.choose_mailbox(payload) == 0x1CBB000
+
+
+# ---- E3: the status path can carry the five pages ----------------------------------------------------------------
+
+def test_the_prepare_refusal_carries_the_five_pages(monkeypatch):
+    ctl = fake_controller(monkeypatch, mailbox=None)
+    ctl.base = BASE
+    with pytest.raises(N.Unavailable) as raised:
+        ctl.prepare()
+    text = str(raised.value)
+    assert "E3" in text and "pages now" in text
+    for off in R.BSS_WATCH_PAGES:
+        assert f"{off:#x}=" + "00" * R.BSS_WATCH_BYTES in text
+
+
+def test_the_probe_reports_a_nonzero_page(monkeypatch):
+    ctl = fake_controller(monkeypatch, mailbox=None)
+    ctl.base = BASE
+    page = R.BSS_WATCH_PAGES[2]
+    put(ctl.mem, BASE + page, b"\x01" + b"\0" * (R.BSS_WATCH_BYTES - 1))
+    text = ctl.bss_watch_probe()
+    assert f"{page:#x}=01" + "00" * (R.BSS_WATCH_BYTES - 1) in text
+    assert len(text.split(";")) == len(R.BSS_WATCH_PAGES)

@@ -159,10 +159,21 @@ class Controller(N.Controller):
 
     # ---- the player and the trigger ------------------------------------------------------------------------------------
 
+    def bss_watch_probe(self) -> str:
+        """The five E3 candidate pages as `off=hex16` (read-only): the status reason carries them to the PiP/API."""
+        parts = []
+        for off in R.BSS_WATCH_PAGES:
+            try:
+                parts.append(f"{off:#x}=" + bytes(self.rd(self.base + off, R.BSS_WATCH_BYTES)).hex())
+            except (OSError, ValueError, TypeError):
+                parts.append(f"{off:#x}=?")
+        return ";".join(parts)
+
     def prepare(self):
         """The status path: no capability is advertised before the private page is proven (E3)."""
         if self.mailbox is None:
-            raise Unavailable("no proven private storage for the RE4 harness (E3's three-load watch is pending)")
+            raise Unavailable("no proven private storage for the RE4 harness (E3's three-load watch is pending); "
+                              f"pages now: {self.bss_watch_probe()}")
 
     def ready(self):
         self.check_build()
