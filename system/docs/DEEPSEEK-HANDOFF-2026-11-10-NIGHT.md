@@ -365,3 +365,10 @@ Then send it the heavy analysis work.
   `agent.vision_url` still winning - the fix for the walk-into-walls planner timeouts (tests: local chosen, missing
   local falls back, explicit URL respected; `test_pso_campaign.py` 30 passed). The i9 Ollama installer is at ~1.50 of
   1.86 GB.
+
+- 2026-11-10 23:05: merged ds-grenade-re4-bss-20261110 @ cbf7cfa0 into main (8b6c033c) - checkpoint A3'''s
+  mechanism: an RE6 random barrage now draws only the verified kinds **whose resources the character carries** (a
+  missing hand grenade no longer refuses a flash barrage; the checkpoint'''s caveat), while a narrowed draw still
+  refuses an unloaded kind with its own reason. Three tests; 157 passed across the RE6/grenade set. The live probes
+  (A2/C2: hand/incendiary grenade_scatter receipts) still wait on an RE6/RE5 block where the character carries the
+  kind.
