@@ -499,3 +499,8 @@ Then send it the heavy analysis work.
   policy that covers ownership too. Broadcast: the program was `no game is running` a moment ago (RE5 round ended,
   i9 feed gone) with the app still watching a PSO session; `/api/broadcast/program` refuses agents by design, so the
   On air pin is the operator's switch until the server restart applies the desktop-view fix.
+- 2026-11-11 02:00: merged `ds-grenade-re4-bss-20261110` @ `0ee688df` into main (`645fe433`) - the **E6 plumbing
+  test**: a worker claim carrying `re4_harness_selftest` calls the controller's `selftest()` and posts its receipt
+  (epoch echo included), closing the last untested link between the click and the harness no-op. 14 worker tests, 77
+  targeted passed. Live: no `.bss` watch capture yet (no RE4 round published the strings); the 05:00 restart remains
+  the next deployment event.
