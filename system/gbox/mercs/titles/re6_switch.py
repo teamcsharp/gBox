@@ -4779,6 +4779,8 @@ class Bot:
         if trig:
             if source in ("laser", "geometry"):
                 self.stats["confirmed_shots"] += 1               # verified trigger request; actual damage is tracked separately
+            if source == "geometry":                             # no laser body under the ray: counted, target 0
+                self.stats["shots_without_target"] = self.stats.get("shots_without_target", 0) + 1
             if set(back) & {"lup", "ldown", "lleft", "lright"}:
                 self.stats["moving_shots"] += 1
             if on_e is not None and dist > LONG_KILL_R:

@@ -3974,3 +3974,12 @@ def test_ranged_break_in_decide_turns_to_fight_ranged_enemy():
         f"expected doing='turn' (ranged_break), got {bot.doing}: out={out}"
     assert bot.why.startswith("just took ranged damage"), \
         f"expected ranged_break reason, got: {bot.why}"
+
+
+def test_geometry_pull_counts_shots_without_target_but_laser_confirmed_pull_does_not():
+    on_close = ((0.0, 0.0, 300.0, 700),)                                     # no laser: the pull is geometry only
+    bot, clock, snap = brain(round_guest(enemies=on_close, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    run(bot, snap, clock, int(R.LASER_WAIT_S / 0.05) + 8)
+    assert bot.stats["shots_without_target"] >= 1
+    assert bot.stats["shots_without_target"] <= bot.stats["confirmed_shots"]
