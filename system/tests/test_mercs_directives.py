@@ -22,6 +22,8 @@ from tests.test_re4_merc_bot import FakeNav, facing, world
     ("drop a mine and flee", "mine"), ("plant a mine", "mine"),
     ("drop landmines while fleeing an area", "mine_trail"), ("keep planting mines", "mine_trail"), ("mine trail", "mine_trail"),
     ("lay mines as you retreat", "mine_trail"), ("drop mines while leaving", "mine_trail"),
+    ("leave this area", "next_area"), ("get out of here", "next_area"), ("leave the room", "next_area"),
+    ("kill the nearest threat", "fight"), ("deal with the closest enemy", "fight"), ("fight these people", "fight"),
     ("you are missing", "missing"), ("your aim is off", "missing"),
 ])
 def test_typed_words_match_their_command(text, command):

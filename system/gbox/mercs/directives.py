@@ -44,11 +44,13 @@ PATTERNS = (
                   r'|\bdetonate a flash\b|\bflash grenade (at|on) me\b'),
     ('missing', r'\b(you are |you\'re |keep |keeps )?(missing|miss(es)? (him|them|every|mostly))\b|\b(aim|shooting) (is )?(off|wrong|left|right)\b'),
     ('next_area', r'\b(next|another) (area|time bonus|bonus|hourglass|room|objective|checkpoint)\b|\bgo (to )?(the )?next\b|\bmove on\b'
-                  r'|\b(go|walk|head|move|run) through (the |that |every |each |a )?(door|gate)s?\b|\b(complete|finish|clear) the (level|area|stage|floor)\b'),
+                  r'|\b(go|walk|head|move|run) through (the |that |every |each |a )?(door|gate)s?\b|\b(complete|finish|clear) the (level|area|stage|floor)\b'
+                  r'|\b(leave|get out of|get away from|exit|abandon) (this|the|that) (area|room|spot|place|zone)\b|\b(leave|get out of) here\b'),
     ('score', r'\b(score|combo)\b.*\b(up|increas\w*|more|build|higher)\b|\b(increas\w*|raise|build|get) (the |your )?(score|combo)\b'),
     ('hunt', r'\b(go after|hunt|seek|find|chase) (the |those |these )?(enemies|enemy|foes|zombies|majini|ganados|them)\b'),
     ('explore', r'\b(explore|navigate (more|the level|the map)|map (the )?(level|world)|see more of the level)\b'),
     ('fight', r'^\W*(fight( them| these| him)?|attack|shoot( them| him)?|stop standing( there)?|engage)\W*$'
+              r'|\b(kill|shoot|dispatch|take out|deal with|fight) (the |that )?(nearest|closest) (threat|enemy|foe|majini|zombie|one)s?\b'
               r'|\b(fight (them|these|him|the)|stop standing|get away from the (line|wall)|dispatch (them|him))\b'),
 )
 

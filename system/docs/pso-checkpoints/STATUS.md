@@ -401,3 +401,95 @@ fixes and CP13's own additions), so merging CP12 then CP13 applies in order.
 
 **Main is a moving target by design now** - the lane merges branches as it reviews them, so this document's lists age within
 minutes. The durable parts are the branch tips, the per-branch inventory method, and the test evidence.
+
+## Round 121: every remaining branch merges cleanly - CP13 rebased onto main, zero conflicts
+
+The lane's merges moved main to **`a30eae1d` → `dc8a1a30`** during this round (CP12's merge, then CP15 and CP17). Against that main,
+**all eleven remaining checkpoint branches are now merge-tree clean**:
+
+```
+ds-pso-cp06-evt-opcodes    rc=0    ds-pso-cp10-forest1        rc=0
+ds-pso-cp06-nrel           rc=0    ds-pso-cp12-rigged-swap    rc=0
+ds-pso-cp07-scene-loader   rc=0    ds-pso-cp13-library-donors rc=0   <- rebased this round
+ds-pso-cp08-room-pieces    rc=0    ds-pso-cp15-room-inventory rc=0
+ds-pso-cp09-save-data      rc=0    ds-pso-cp17-walk-graph     rc=0
+ds-pso-editor-views        rc=0
+```
+
+**What the last conflict was, and why it is gone:** CP13 conflicted on `pso_player.py` because main had gained a
+**`body_endian`/`read_body_payload`/`body_models` block** (from the earlier body-platform work) that CP12's branch never saw, while
+CP13 was stacked on CP12. `ds-pso-cp13-library-donors` is now **rebased onto main** (`7694df4d`) with that resolved by keeping
+**both**: main's platform-aware block and CP13's `gc_head_parts`, plus the `replace_heads` opt-in that CP13 adds to `build_swap`.
+Verified after the rebase: `test_pso_gc_heads` + `test_pso_swapfit` + `test_pso_gc_swap` + `test_pso_player_textures` = **32 passed**.
+
+**The review is now mechanical:** eleven branches, no order constraint (CP13 carries its own base), no conflicts. The five drops
+from round 119 still hold (`cp00-clean-start`, `cp00-classes`, `cp01-local-model`, `cp11-editor-page`, `cp07-model-walk`), with
+three of them already merged by the lane and one (`cp07-object-loader-findings`) also superseded - main now has
+`CP07-object-loader.md` and its decompiles.
+
+**A note for whoever reads this last:** main is being merged continuously, so branch tips and this list age. The durable parts are
+(a) every branch's evidence file names its tip hash, (b) the inventory method in round 118 needs two git commands per branch,
+and (c) each branch's suite has been run green from its pushed tip at least once.
+
+## Round 122: CP14 was never covered - its documented fallback is now built and measured
+
+Re-reading the checkpoint list against this index showed **one section never worked: CP14 (P6c, one room added)**. Its steps are
+geometry duplication (Forest 1's room pieces are Dreamcast-side per CP7.3, and the DC image is an unreadable CHD v4 per CP8), but
+the guide names a fallback - *"first expand by adding records (objects and enemies), which the writer already does, and record it
+as 'expansion by placements only'"* - and that is offline work. It is now done, with a **measured** position instead of a guessed
+one:
+
+**`ds-pso-cp14-room-added-20261110` @ `1b8f5503`** (stacked on CP8, merge-cleaned against main):
+
+* reads `Scene/map_aancient01_00r.rel` with `pso_rooms.room_quad` - a **200 x 300** footprint at `(0, 0, 0)`;
+* reads `map_ancient01_00_00o.dat` (**234** records) and takes its first record's **kind `0x8`** and `y` as the template, so the
+  added record is constructible (CP7.2: the payload type picks the constructor);
+* places one record at the footprint's **centre** and validates it through **`pso_editor.preview`**
+  (`ok: true`, 1 edit, `expect: index 234, op add`) and `pso_map_write.add_placement_change`;
+* result: **234 -> 235 records**, the new record **inside the footprint**, and **every original record byte-identical**.
+
+Tests: `test_pso_cp14_expansion.py` **3 passed**; with CP8's room tests **9 passed**. The accept lines that remain - the area loads,
+the player stands on the new piece, the walker reaches it - need CP5's warp in a live session.
+
+**Checkpoint coverage is now complete for every section of the document:** CP0-CP3 done, CP4/CP5/CP6.1 live-dependent, CP6.2 done,
+CP7 done, CP8 done in GC form, CP9 offline done, CP10 offline done, CP11 in main + a views test, CP12 2/3, CP13 offline done,
+**CP14 offline done**, CP15 done, CP16 measured negative, CP17 offline done.
+
+## Round 144: the live blocker on the i9 is the controller slots - read this before trying to drive PSO
+
+**Nothing in the checkpoint code is blocking the live work. The machine's XInput slots are.**
+
+```
+XInput 0..3: all "connected", none responds to presses (12 s watch, buttons and sticks: 0 changes)
+Get-PnpDevice: USB\VID_045E&PID_028E\01..04  "Xbox 360 Controller for Windows"  (4 OK ghosts, one spare \05 Unknown)
+               USB\VID_045E&PID_0B00          "Xbox One Controller"              (the operator's, connected, no slot)
+```
+
+Four ViGEm virtual pads outlived the processes that created them; XInput has exactly four slots, so the operator's physical
+controller cannot get one and Dolphin's `GCPad1 = XInput/0/Gamepad` reads a ghost. This is why, from ~19:50 on, **every** input path
+did nothing: this lane's `vpad_win` pads (`slot=None`), the worker relay (`{{"queued": n}}`), the GCPad1 keyboard fallback
+(`SendKeys` ENTER/X with the window verified foreground), and the operator's own controller.
+
+**Fix (elevated - the lane's shells are not admin):**
+
+```powershell
+foreach ($n in 1..4) {{ pnputil /remove-device "USB\VID_045E&PID_028E\0$n" }}
+```
+
+or Device Manager -> Show hidden devices -> uninstall those four (leave `PID_0B00`), or a reboot. A ready-to-run script is at
+`D:\gBox\pso-ds\fix-controllers.ps1`; run it from an elevated PowerShell and replug the controller. The plane's
+`python -m gbox.gamepads --watch` (PID 2468) manages virtual pads and can add a new ghost until the stale ones are cleared, so do the
+removal with that in mind.
+
+**Where the live work stands (verified this evening, before input broke):**
+
+| item | evidence |
+|---|---|
+| a real session ran PSO | session `3998f537...-b13f235d...`, launched 19:44:22 after the idle window, campaign `pso-episodes-1-2` started (`mode: playbook`) |
+| the agent pad **did** drive the game once | `{{'sent': 2, 'via': 'dolphin virtual pad (XInput slot 1)'}}` took the title menu -> OFFLINE -> intro -> a character in Forest 1 (`194845-step5.png`) |
+| **CP4's state exists and loads** | `session_op save_state` -> slot 1, 16,289,592 bytes, `verified: true`; installed as `runtime/jumpstates/436e0bb84d5337d1-stock.state`; loading it into the live session produced the Forest 1 character screen (`live-f1.png`) |
+| the mission's map and route | `rel_artifact` restored from the disc (round 132); all four waypoints are floor cells of the navmap the runner builds, route connected (round 134) |
+| two Dolphin windows confound hotkeys | the live session's PID comes from `session.detail.pid` (`52376`); a stale second instance was closed in round 141 - always target that PID |
+
+**So the first thing the next session should do is clear the ghost pads, not debug PSO.** After that, one F1 on the live session is in
+Forest 1, and the mission `pso-gc-forest1-first-wave` has all three of its preconditions met.
