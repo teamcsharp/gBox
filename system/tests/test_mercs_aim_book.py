@@ -262,3 +262,20 @@ def test_a_shot_whose_pitch_was_not_read_teaches_the_yaw_only():
     assert c["bias"][0] > math.radians(2.5) and c["bias"][1] == 0.0
     row = A.shot_row({"err": (0.01, None), "outcome": "miss"}, "x")
     assert row["err_deg"][1] is None
+
+
+def test_a_bias_pinned_at_the_cap_with_no_hit_probes_back():
+    """RE4's close cell live 2026-11-11: 12 misses, 0 hits, the yaw bias pinned at -10 deg (BIAS_MAX) and still
+    missing - a saturated bias is not learning, so it resets to neutral and lets the other terms take over."""
+    c = A.new_cell()
+    c["bias"] = [A.BIAS_MAX, 0.0]
+    c["recent"] = "M" * A.BIAS_WINDOW
+    changes = A.learn_cell(c, {"outcome": "miss", "resid": (A.BIAS_MAX, 0.0)}, 1000.0)
+    assert c.get("bias_probes") == 1 and c["bias"] == [0.0, 0.0]
+    assert any("bias probe" in ch for ch in changes)
+    # a hit inside the recent window: the bias is allowed to keep its value (it is being confirmed)
+    c2 = A.new_cell()
+    c2["bias"] = [A.BIAS_MAX, 0.0]
+    c2["recent"] = "M" * (A.BIAS_WINDOW - 6) + "H" + "M" * 5
+    A.learn_cell(c2, {"outcome": "miss", "resid": (A.BIAS_MAX, 0.0)}, 1000.0)
+    assert not c2.get("bias_probes")

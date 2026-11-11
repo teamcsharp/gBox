@@ -236,6 +236,7 @@ def learn_cell(c: dict, shot: dict, now: float) -> list:
     num = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)   # noqa: E731
     if res is not None and len(res) == 2 and num(res[0]):
         win = c.setdefault("res", [])
+        pinned = any(abs(c["bias"][i]) >= BIAS_MAX - 1e-6 for i in (0, 1))
         for _ in range(1 if hit else MISS_WEIGHT):     # an unread pitch (RE4's facing alone) is kept as None
             win.append([round(float(res[0]), 5), round(float(res[1]), 5) if num(res[1]) else None])
         del win[:-BIAS_WINDOW]
@@ -251,6 +252,14 @@ def learn_cell(c: dict, shot: dict, now: float) -> list:
             if abs(new - old) >= math.radians(0.05):
                 changes.append(("yaw" if axis == 0 else "pitch") + f" bias {math.degrees(old):+.2f} -> "
                                f"{math.degrees(new):+.2f} deg ({'stands out' if sig else 'decays'})")
+        # A bias pinned at its cap with a miss-only window is not learning (RE4's close cell live 2026-11-11: 12
+        # misses, 0 hits, the yaw at -10 deg): probe it back to neutral so the point/tol/lead terms can take the
+        # correction instead of one saturated term no hit ever confirms.
+        recent = c.get("recent") or ""
+        if recent and "H" not in recent[-BIAS_WINDOW:] and pinned:
+            c["bias"] = [0.0, 0.0]
+            c["bias_probes"] = int(c.get("bias_probes", 0)) + 1
+            changes.append("bias probe: pinned at the cap with no hit in the window, reset to neutral")
     uv = shot.get("uv")
     if uv is not None and shot.get("contact") and all(isinstance(x, (int, float)) and math.isfinite(x) for x in uv):
         pu, pv = c["pt"]
