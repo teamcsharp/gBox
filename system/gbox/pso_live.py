@@ -11,7 +11,7 @@ from .registry import Unsupported
 OPS = frozenset(('capabilities', 'rehook', 'status', 'list', 'floor_spawn', 'floor_rares', 'floor_clear',
                  'floor_list', 'give', 'equip_any', 'always_hit', 'multi_equip', 'stat',
                  'survival','revive','mag','mag_set','mag_feed','randomized','modes','legendary',
-                 'enemy_drops','walk_through','bosses','boss_warp','floor_warp','adventure_status','equip','autoplay_speed'))
+                 'enemy_drops','walk_through','bosses','boss_warp','floor_warp','adventure_status','equip','autoplay_speed','crit','pb','discard'))
 READS = frozenset(('capabilities', 'status', 'list', 'floor_list','mag','modes','bosses','adventure_status'))
 _receipts = {}
 _guard = threading.Lock()
@@ -230,6 +230,34 @@ def gamecube(inp, ctx, ad):
         verified=gear.equip_id(item_id)
         return {'verified':verified,'item_id':item_id,'player_index':inp.player_index,
                 'message':'Equipment applied to player '+str(inp.player_index+1) if verified else 'The game refused this equipment; the item was retained'}
+    if inp.op == 'discard':
+        # Remove one gBox-generated item (id >= 0x00F00000). The gear randomizer needs a free slot to start and the plane's own
+        # Extras.remove_generated is the only verified removal path; this exposes it without the item menu.
+        from .pso_gc_extras import Extras
+        if inp.item_id is None:
+            raise ValueError('discard needs item_id (an id from the item list)')
+        m = Extras(ad, player_index=inp.player_index, pin_player=True)
+        m.check()
+        before = [r['id'] for r in m.inventory()]
+        m.remove_generated(inp.item_id)
+        after = [r['id'] for r in m.inventory()]
+        return {'discarded': inp.item_id, 'removed': inp.item_id not in after,
+                'slots_before': len(before), 'slots_after': len(after), 'verified': inp.item_id not in after}
+    if inp.op == 'crit':
+        # pso_crit: every melee hit by a local player is a critical (x1.5). The module owns the cave write, the site patch and
+        # the guest instruction-cache flush, so it must run here rather than through a plain memory write.
+        from .pso_crit import GameCube as Crit
+        return Crit(ad).set_enabled(inp.on) if inp.on is not None else Crit(ad).status()
+    if inp.op == 'pb':
+        # "Photon Blast at max": the PB a MAG grants scales with the MAG, and the equipped MAG's stats/sync/IQ are the only PB
+        # inputs this disc exposes in its 16-byte property block (there is no PB gauge field in it: a timeout/charge meter, if
+        # one exists, is elsewhere in the actor and is not yet located). This therefore maxes the MAG that feeds the blast.
+        from .pso_gc_extras import Extras
+        gear = Extras(ad, player_index=inp.player_index, pin_player=True)
+        gear.check()
+        before = gear.mag()
+        after = gear.mag_set(None, {'def': 200, 'pow': 200, 'dex': 200, 'mind': 200, 'iq': 200, 'synchro': 120})
+        return {'before': before, 'applied': after, 'verified': bool(after.get('verified'))}
     if inp.op == 'equip_any':
         result=m.equip_any(inp.on);ad._pso_preferences_dirty=True
         return result
