@@ -178,3 +178,13 @@ Then send it the heavy analysis work.
   on the branch and post-merge on main; the RE5 Switch group is back to its known red exactly (10 failed, 713 passed:
   bonus 1, giveup 5, smooth 2, threat 2). E6/F still wait for the proven private page (the `.bss` watch rides the RE4
   telemetry) and the 05:00 restart for the new module; nothing is enabled gameplay-side.
+
+- 2026-11-10 19:1x: PSO CP1 completed and CP2/CP3 merged, by the DeepSeek session. CP1's own evidence was on
+  `ds-pso-cp01-local-model-20261110` (the 14B installed; 54.83 tok/s); this session appended the second candidate and
+  the concurrency: 32B pulled (19.9 GB, 100% GPU, 28.6 tok/s single-shot, 29.9-30.7 tok/s aggregate), 14B 47-48.6
+  tok/s aggregate at 4/8/16 concurrent (two slots: the node capacity is 2), and the `-16k` tags
+  (`num_ctx 16384`). CP2 and CP3 are merged with their evidence: both models score **0.04 role rate** (1/25 each, 0
+  exact names), so neither is used to name anything - the 14B is chosen on speed (2.73 s vs 23.50 s a function) for
+  summaries and candidate lists, and CP3's labels are leads, never evidence (82 rows, 1,621 functions/hour). Tests:
+  `test_pso_llm.py` 7 passed. 26 newer `ds-pso-*` branches (CP4-17 and the swap/editor work) are open for the next
+  check-ins.

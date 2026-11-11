@@ -85,3 +85,16 @@ Re-running those 14 files after the fixes gives **36 failed / 157 passed / 9 ski
   lobby route waits on it.
 - CP1 (the local coder model on the 3090) is still unstarted: `ollama.available = false`, and the 3090 has only Dolphin
   on it. That is the next checkpoint.
+
+## CP4+ branches (added after this evidence was written)
+
+The lane kept publishing `ds-pso-*` branches after the 16 above. CP1-3's were merged the same night (see the hand-off
+log): `ds-pso-cp01-local-model-20261110`, `ds-pso-cp02-gold-set-20261110`, `ds-pso-cp03-labelling-20261110` - all
+three merged clean, and with them `system/docs/pso-checkpoints/CP01-local-model.md`, `CP02-gold-set.md`,
+`CP03-labelling.md`, `gbox/pso_llm.py` (+ `tests/test_pso_llm.py`, 7 passed) and the export/label tools.
+
+At the 2026-11-10 19:15 check, **26 more `ds-pso-*` branches were open** (cp04 jump state, cp06 evt/nrel, cp07
+model/object/scene loaders, cp08 room pieces, cp09 save data, cp10 Forest 1, cp11 editor page, cp12 rigged swap, cp13
+library donors, cp15 room inventory, cp16 stick, cp17 walk graph, body-swap, classes-family, swap-gc, swapfit-ui,
+editor-page2, cp-status, handover, reconcile, cp00-classes/clean-start). They are the lane's CP4+ work and are reviewed
+and merged as each checkpoint's evidence lands; none was force-pushed.
