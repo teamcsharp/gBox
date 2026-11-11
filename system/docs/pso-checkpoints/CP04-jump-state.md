@@ -928,3 +928,27 @@ than assumed:
 
 The only link that cannot be measured offline is the launch itself, and it is gated on the operator's actor (`agent_use` is derived
 from the actor), not on any data. **One Play press, and this chain runs.**
+
+## Round 136: the plane went down mid-watch - and another lane has PSO processes running
+
+While watching the re-armed launch, the gBox API stopped answering (`WinError 10061`, connection refused) and the campaign waiter
+died with it. The machine's state, read without touching anything:
+
+| what | finding |
+|---|---|
+| gBox API (8765) | **not listening** - `Get-NetTCPConnection` shows no listener, nothing in 8000-9000 that belongs to gBox |
+| gBox processes | two `desktop_supervisor.py` processes alive (02:20), **no `run.py`/worker server**, no Dolphin |
+| my jobs | all finished or reaped; the waiter exited 1 when the API vanished |
+| **other PSO processes** | `pso_padwatch.py` and `pso_demo_rec.py`, both started **06:00 / 06:13**, running under a *different* environment (`C:\\Users\\maste\\AppData\\Local\\hermes\\hermes-agent\\venv`) |
+
+The last row matters: **another lane is already running PSO pad-watch and demo-recorder processes on this machine**. Combined with the
+PM's message ("PSO: no session, the attract launch is queued, and the i9 keeps reading idle 0 s"), it is likely that the PSO demo is
+being driven from that side, not from this session.
+
+**Nothing was restarted.** The operator's standing instruction is "stop restarting gbox or touching the spark service", and a dead
+API is not something this lane may fix on its own initiative. The armed launch (`b13f235d1b2e42a1`) died with the server, so there is
+nothing queued either.
+
+**What is left, and it is all offline-stable:** the mission's map artifact is restored and its route validated, the campaign's disc
+gate passes, and the whole chain is documented. When the plane is back, one Play (or one operator-authorised launch) runs the
+campaign, and the state save at Forest 1 completes CP4.
