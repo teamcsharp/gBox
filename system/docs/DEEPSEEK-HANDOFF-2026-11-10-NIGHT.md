@@ -440,3 +440,13 @@ Then send it the heavy analysis work.
   RE5 character-select workaround is the operator's/agent's A press through `POST /api/sessions/{sid}/input`.
   Also live: RE6's No Mercy round is long (the rotation has been on it ~30 min), the Pine Box program feed is pinned
   to the PSO session by "following what you watch" while `/api/broadcast/pc/lilspark.jpg` shows the live RE6 feed.
+﻿
+- 2026-11-10 22:0x: **deploy: bot modules no longer wait for the pending service restart.** `deploy_main.sh`'s
+  `activation_for` returned `restart` whenever `deploy-restart-pending` existed, so every merge after that marker -
+  bot-only modules the classifier calls `reload` included - waited for the 05:00 window (this session's RE5
+  select-confirm fix sat undeployed for hours; the Spark's `mercs_bot.py` still hashes to main `8195b80c`). The
+  function now keeps the restart for runtime code and for the retry when nothing new arrived, but lets a
+  `reload`-classified change go in with `bot_reload` (its settle safety restores the old modules if the restarted
+  bot dies) while the restart stays pending. Verified with a bash harness over the extracted function: pending+bot ->
+  reload, pending+server -> restart, pending+nothing -> restart, nothing -> none. Pushed as `95e4ab18`; the Spark's
+  next deploy run copies the script and the run after that uses it.
