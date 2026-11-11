@@ -399,3 +399,10 @@ Then send it the heavy analysis work.
   firing, 7-in-a-row combo, 01'56" on the clock). Code: `pso_campaign` now retries a failing planner for ten minutes
   (`PLANNER_GIVE_UP_S`) instead of ending the run after five failed calls, with `planner_failing_for_s` in the
   telemetry (31 tests in `test_pso_campaign.py`).
+﻿
+- 2026-11-10 21:2x: **the rotation and the fire-first fight verified on the stream.** RE4 is on air and fighting: two
+  frames 8 s apart show the combo going **26 -> 28 in a row** with the score 7,800 -> 8,400 and the gun up and firing
+  (the recovery-re4-fit-v4 mod's swapped cast included). The session history shows the cycle working: six RE5 sessions
+  from ~17 min back (each ~2-3 min) then RE4, so the queue re4 -> re5 -> re6 is being played. The RE5 sessions are
+  short (~150-200 s each) - worth a check next round whether their No Mercy round ends early (death) or the title's
+  round reader sees an end early.
