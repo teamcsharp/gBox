@@ -704,3 +704,36 @@ until a session exists; when the operator presses Play - which is one click and 
 The successful launches on record (`2db839b720154c70` at 18:14:25, `1b349dbb3ee94db4` at 18:05:27, `0091f40e47964868` at 16:33:03)
 were this lane's own earlier sessions, so the launch path itself works - what was missing was never the ability to launch, it was the
 **authorisation to launch while the operator is present**, which is working as designed.
+
+## Round 129: the mission that plays Forest 1 declares CP4 as its precondition - and the campaign is the cold-boot path
+
+Reading the plane's own mission file (`system/profiles/missions/pso-gc-forest1-first-wave.json`) settles what CP4 is *for*:
+
+```json
+{"name": "pso-gc-forest1-first-wave",
+ "objective": "From the Forest 1 arrival point: open two door panels, reach room 11 and defeat the first wave",
+ "initial_state": "Dolphin state slot 1: GBOX HUmar Lv1 at Forest 1 arrival",
+ "policy": "autoplay-v3-inputfix",
+ "map": {"rel_artifact": "0e7bc121a41e483e2c4d03bb031226461fecafb6c14ebfbeaab8ffe76ecfd2f5", "be": true, "size": 10},
+ "steps": [{"op": "interact", "at": [-95, 214]},
+           {"op": "navigate", "to": [-140, 330]},
+           {"op": "interact", "at": [7, 362]},
+           {"op": "navigate", "to": [90, 300]},
+           {"op": "fight", "radius": 350, "timeout": 150, "wave_wait": 0,
+            "heal_key": "b", "heal_below": 0.5, "heals": 4}]}
+```
+
+**`initial_state` is exactly the artifact CP4 was supposed to produce** - a Dolphin save state in slot 1 with a character at the
+Forest 1 arrival point - and it does not exist on this machine (`D:\gBox\runtime\jumpstates` has only Sonic/Mario/RE4 entries).
+So the plane's own Forest 1 mission **cannot run until CP4's jump state exists**: the mission's first step opens a door panel at
+`(-95, 214)`, which is a Forest 1 coordinate, not the lobby.
+
+**The campaign is a different entry point, and it is the one that can run cold.** `pso_campaign.py` states in its own header:
+*"No warp, save-state restore, progress flag, HP freeze or memory write is used"* - it walks the title and the episode select with
+ordinary input and only requires an **existing character** (which the card has: CP9's `PSO_CHARACTER 17/11`). That is why
+`campaign="pso-episodes-1-2"` is the operator's demo path, and why the *named mission* is the CP4-dependent one.
+
+**What this means for the checkpoint's priority:** CP4 is not an optimisation - it is the **declared precondition of the plane's only
+Forest 1 mission**. Every route to "the computer opens Forest 1's doors and fights the first wave from a known state" passes through
+it, and every route to it passes through a live session. The campaign remains the one path that reaches Forest 1 without it, by
+playing the menus from the boot.
