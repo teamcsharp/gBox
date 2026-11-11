@@ -1,3 +1,5 @@
+import subprocess
+import math
 """Tests for gbox.formats.nsw: synthetic HEAD-variant and classic XCI0 fixtures, plus the owned real card if present."""
 import hashlib
 import os
@@ -5,6 +7,8 @@ import struct
 
 import pytest
 
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from gbox.formats import nsw
 
 
@@ -284,3 +288,67 @@ def test_real_villager_bfres_model():
 def test_parse_bfres_model_rejects_garbage():
     with pytest.raises(ValueError):
         nsw.parse_bfres_model(b"FRES" + b"\0" * 0x200)
+
+
+
+def test_n0_10bit_normal_decode_real_card():
+    """_n0 vertex normals on the owned card are 3x signed-10-bit, x in low bits.
+
+    Machine-verified: bit order (0,10,20) must score mean dot >0.85 vs
+    area-weighted geometric normals and beat the next best permutation
+    by >=0.3.
+    """
+    import struct as st
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _card = os.path.join(os.path.dirname(_here), "animal_crossing_xci.xci")
+    _keys = "/home/ehm_eckx/gBox_alt/switch/prod.keys"
+    if not os.path.exists(_card):
+        pytest.skip("owned card not present")
+    if not os.path.exists(_keys):
+        pytest.skip("prod.keys not present")
+    keys = nsw.load_keys(_keys)
+    info = nsw.list_xci(_card)
+    e = next(x for x in info.hfs0["secure"] if x.name == "bd68bf29c8500e9c88ca844e1a6f77e8.nca")
+    fh = open(_card, "rb")
+    def rd(o, n):
+        fh.seek(o); return fh.read(n)
+    r = nsw.list_romfs(rd, e.offset, keys)
+    ent = next(f for f in r["files"] if f["path"] == "/Model/NpcNmlAnt00.Nin_NX_NVN.zs")
+    blob = nsw.read_romfs_file(rd, e.offset, keys, ent)
+    fh.close()
+    sarc = subprocess.run(["zstd", "-dc"], input=blob, capture_output=True, check=True).stdout
+    m = nsw.sarc_members(sarc)[0]
+    bf = sarc[m["offset"]:m["offset"] + m["size"]]
+    model = nsw.parse_bfres_model(bf)
+    fv = model["fvtx"][0]
+    attrs = {a["name"]: a for a in fv["attrs"]}
+    N = fv["vertex_count"]
+    def poff(nm):
+        a = attrs[nm]; b = fv["buffers"][a["buffer"]]
+        return model["pool_base"] + b["pool_offset"] + a["offset"]
+    pos = [st.unpack("<3f", bf[poff("_p0") + i * 12:poff("_p0") + i * 12 + 12]) for i in range(N)]
+    idx = nsw.bfres_read_indices(bf, model, model["shapes"][0])
+    accs = [(0.0, 0.0, 0.0)] * N
+    for t in range(0, len(idx), 3):
+        i0, i1, i2 = idx[t], idx[t + 1], idx[t + 2]
+        p0, p1, p2 = pos[i0], pos[i1], pos[i2]
+        e1 = (p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2])
+        e2 = (p2[0]-p0[0], p2[1]-p0[1], p2[2]-p0[2])
+        c = (e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0])
+        for i in (i0, i1, i2):
+            a = accs[i]; accs[i] = (a[0]+c[0], a[1]+c[1], a[2]+c[2])
+    gns = [tuple(x / (math.sqrt(sum(v * v for v in c)) or 1.0) for x in c) for c in accs]
+    raw = bf[poff("_n0"):poff("_n0") + 4 * N]
+    scores = {}
+    for perm in [(0,10,20),(0,20,10),(10,0,20),(10,20,0),(20,0,10),(20,10,0)]:
+        tot = 0.0
+        for i, v in enumerate(nsw.bfres_decode_10vec(raw, perm)):
+            L = math.sqrt(sum(x * x for x in v))
+            if L > 1e-6:
+                tot += sum(a * b for a, b in zip(v, gns[i])) / L
+        scores[perm] = tot / N
+    best = max(scores, key=scores.get)
+    others = sorted(scores.values())[:-1]
+    assert scores[best] > 0.85, scores
+    assert best == (0, 10, 20), scores
+    assert scores[best] - others[-1] >= 0.3, scores
