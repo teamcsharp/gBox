@@ -192,9 +192,8 @@ def _mark_for(record: dict) -> str:
     door = door_name(record["kind"])
     if door:
         return MARK[door]          # every name door_name returns has a mark
-    cls = CLASS_NAMES.get(record.get("class_index", -1))
-    if cls == "player":
-        return "*"
+    if record.get("class_index") == 0:
+        return "*"                 # the editor's own player marker (the registry leaves slot 0 empty)
     if record.get("class_index") == 87:          # the lobby's teleporter pedestal
         return "T"
     return "o"

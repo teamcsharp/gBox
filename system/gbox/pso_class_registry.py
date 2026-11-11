@@ -221,3 +221,41 @@ def verify(dol: bytes) -> dict:
                   for i, (want, got) in enumerate(zip(CLASS_NAMES, derived)) if want != got]
     return {"ok": not mismatches, "mismatches": mismatches}
 
+#: name prefix -> family, longest/most specific first. The editor groups and colours markers by this.
+FAMILIES = (
+    ("TObjCityDoor", "door"),
+    ("TObjCityMainWarp", "warp"),
+    ("TObjCityAreaWarp", "warp"),
+    ("TObjMapWarp", "warp"),
+    ("TObjGoalWarp", "warp"),
+    ("TObjAreaWarp", "warp"),
+    ("TObjMapForceWarp", "warp"),
+    ("TObjWarpString", "warp"),
+    ("TOSwitch", "switch"),
+    ("TOTrap", "trap"),
+    ("TOSensor", "sensor"),
+    ("TOSign", "sign"),
+    ("TORock", "prop"),
+    ("TOWreck", "prop"),
+    ("TOVS2", "prop"),
+    ("TObjCityAirCar", "prop"),
+    ("TObjCity_Season", "decor"),
+    ("TButterfly", "decor"),
+    ("TObjCamera", "effects"),
+    ("TObjBgmCol", "effects"),
+    ("TObjCollision", "collision"),
+    ("TObj", "object"),
+    ("TO", "object"),
+)
+
+
+def family(kind_or_index: int) -> str:
+    """The class family of a placement -- "door", "warp", "switch", "trap", "sensor", "sign", "prop", "decor",
+    "effects", "collision", "object" -- or "unknown" for a slot this build leaves unnamed."""
+    found = name(class_index(kind_or_index))
+    if not found:
+        return "unknown"
+    for prefix, group in FAMILIES:
+        if found.startswith(prefix):
+            return group
+    return "object"
