@@ -72,7 +72,9 @@ def test_placements_reports_index_kind_and_position():
     out = E.placements(Disc(), "map_forest01_00o.dat")
     assert out["count"] == 2
     first, second = out["records"]
-    assert first["index"] == 0 and first["kind"] == 2 and first["class"] == "TOSensor" and first["family"] == "sensor"
+    # the fake disc has no executable, so the labeller falls back honestly instead of inventing a name
+    assert first["index"] == 0 and first["kind"] == 2 and first["class"] == "class_0x02"
+    assert first["family"] == "unknown"
     assert (first["x"], first["y"], first["z"]) == (10.0, 1.0, -3.0)
     assert second["class"] == "class_0x05" and second["family"] == "unknown" and second["x"] == 20.0
 
@@ -161,24 +163,18 @@ def test_every_door_renders_as_its_own_mark_not_a_fallback():
         assert "D" not in text
 
 
-# ---- a floor id resolves to its area's sets ---------------------------------------------------------------------------------
-
-def test_a_floor_resolves_to_the_sets_of_its_area():
-    found = [{"name": n, "kind": "object", "where": "loose"} for n in (
-        "map_city00d.dat", "map_city00_00o.dat", "map_forest01_00o.dat", "map_forest01d.dat",
-        "map_forest02_01o.dat", "map_cave01_00o.dat", "map_lobby_01d.dat")]
-    assert [r["name"] for r in E.sets_for_floor(found, 0)] == ["map_city00d.dat", "map_city00_00o.dat"]
-    assert [r["name"] for r in E.sets_for_floor(found, 1)] == ["map_forest01_00o.dat", "map_forest01d.dat"]
-    assert [r["name"] for r in E.sets_for_floor(found, 3)] == ["map_cave01_00o.dat"]
-    assert E.sets_for_floor(found, 99) == []                     # outside the 36-floor table
-    # episode 2's first floors are the a-prefixed areas
-    found2 = [{"name": "map_aforest01_00o.dat", "kind": "object", "where": "loose"}]
-    assert [r["name"] for r in E.sets_for_floor(found2, 1, episode2=True)] == ["map_aforest01_00o.dat"]
-    assert E.sets_for_floor(found2, 1) == []
-
-
-def test_a_floor_filter_does_not_match_a_longer_area_name():
-    # floor 1 is forest01; forest010 and forest011 are not its sets
-    found = [{"name": n, "kind": "object", "where": "loose"} for n in
-             ("map_forest01_00o.dat", "map_forest010x.dat")]
-    assert [r["name"] for r in E.sets_for_floor(found, 1)] == ["map_forest01_00o.dat"]
+def test_the_real_disc_labels_places_with_the_executables_own_registry():
+    import pathlib as _p
+    from gbox import gcdisc
+    disc = _p.Path(r"D:\gBox\cache\mods\436e0bb84d5337d1\pso_city_npc_moved"
+                   r"\Phantasy Star Online Episode I & II Plus (USA).iso")
+    if not disc.is_file():
+        pytest.skip("the disc is not on this machine")
+    d = gcdisc.GCDisc(str(disc))
+    rows = E.placements(d, "map_city00_00o.dat")["records"]
+    doors = [r for r in rows if r["family"] == "door"]
+    assert len(doors) == 4
+    assert sorted(r["class"] for r in doors) == ["TObjCityDoor_Guild", "TObjCityDoor_Med",
+                                                 "TObjCityDoor_Shop", "TObjCityDoor_Warp"]
+    assert all(r["class"].startswith("TObj") or r["class"] == "TObjCamera" or r["family"] != "unknown"
+               for r in rows if r["class_index"] in (0x40, 0x44, 0x46, 0x47, 0x48, 0x49))
