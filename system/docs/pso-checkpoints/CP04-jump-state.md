@@ -898,3 +898,33 @@ needs one live session - the same session the operator's Play would create.
 **Correction recorded on purpose:** round 133's "unverified/another frame" conclusion came from measuring against the wrong file
 family. The lesson is the same one this lane keeps relearning: reproduce the tool's own pipeline before declaring a mismatch.
 Script: `docs/research/pso-cp4-navmap-check.py`.
+
+## Round 135: the campaign's own disc gate passes - the pre-flight chain is verified end to end offline
+
+`pso_campaign.setup` refuses anything but one exact disc:
+
+```python
+if ad.read_memory(0x80000000, 8) != b"GPOE8P\0\x02":
+    raise Unsupported("PSO campaign native support requires GPOE8P disc 0 revision 2 (Episode I & II Plus)")
+```
+
+That signature is the disc header, so it can be checked **offline**, and this machine's image matches it exactly:
+
+```
+first 16 bytes: b'GPOE8P\x00\x02\x01\x00\x00\x00\x00\x00\x00\x00'
+matches the campaign gate (GPOE8P + version 2): True
+```
+
+**So the campaign will not refuse after the launch.** The whole pre-flight chain is now verified offline, each link measured rather
+than assumed:
+
+| link | evidence |
+|---|---|
+| disc accepted by the campaign | header `GPOE8P\0\x02` - **exact match** (this round) |
+| a character exists to select | the card holds six `GPOE` directory signatures (two PSO saves: system/character/guild), CP9 measured `PSO_CHARACTER 17/11` with a 90,112-byte body |
+| no state/warp needed | `pso_campaign.py`'s header: "No warp, save-state restore, progress flag, HP freeze or memory write is used" |
+| routing works from a cold boot | `load_navmap` falls back to `nav-explore.json` learned during play, and the Forest 1 artifact + route are already validated (rounds 132/134) |
+| autoplay is admitted | `background_testing.requires_admission` exempts `autoplay` by tool name |
+
+The only link that cannot be measured offline is the launch itself, and it is gated on the operator's actor (`agent_use` is derived
+from the actor), not on any data. **One Play press, and this chain runs.**
