@@ -1278,3 +1278,22 @@ two and their telemetry carried no `bss_watch` - the running RE4 bot still needs
 **One merge this round:** checkpoint A3's mechanism on main (`8b6c033c`): an RE6 random barrage draws only the
 verified kinds whose resources the character carries, while a narrowed draw still refuses an unloaded kind with its
 own reason (3 tests; 157 passed across the RE6/grenade set).
+
+## Round 74 (2026-11-10 23:25 CST) - CP0's RE5 read repeats live; D's positive receipt still needs a firing barrage
+
+The read-only poll ran two generations and caught **five live RE5 rounds**, every one of them with the full capability
+set and `flash: True` when the round was playing (weapons 4, 22, 23; round ids recorded), and the built/no-receipt
+reasons for hand and incendiary unchanged. That is checkpoint 0's RE5 read reproduced independently, not a one-off.
+
+**What D still lacks is the positive side.** No capture carried `scatters_fired`/`scatter_rounds`/`scatter_kills`;
+the queue's RE5 rounds are short (they start, play a few minutes and end; the round-start captures show kills 0-1), and
+the barrage rule fires only on a tough moment inside a round. The v2 poll re-captures whenever those stats change, so
+a barrage cannot be missed while it is listening; the ended sessions' telemetry expires (TTL), so a capture must
+happen live. The other D fact is already in: one round showed the controller's uncertain state and its recovery
+refusal (`native controller awaits recovery after an uncertain operation`).
+
+**E3 watch:** no RE4 playing session has yet published `bss_watch` (the RE4 blocks' sessions end within a round or two,
+and the running module still predates the JSON-string fix). The poll keeps watching; if the operator's post-fix
+reload lands, the next RE4 round records it.
+
+No code changed this round; the lane's merged state stands (main `96a4cd16`).
