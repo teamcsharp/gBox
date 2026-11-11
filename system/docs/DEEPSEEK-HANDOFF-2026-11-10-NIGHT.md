@@ -483,3 +483,10 @@ Then send it the heavy analysis work.
   `test_broadcast.py` 60 passed. Pushed as `9e25bae2` (rebased over the lane's 05:00 summary). The Spark's copy is
   server code, so the change needs its next service restart (05:00) - until then the immediate lock is the On air pin
   on the MercMode run or Pine following `/api/broadcast/pc/lilspark`.
+- 2026-11-11 01:30: merged `ds-grenade-re4-bss-20261110` @ `155dd102` into main (`88f51e83`) - **G3 identified
+  statically**: the `.data` class behaviour table (stride 0x58, spawn at +0x28) lists the grenades in item order -
+  hand `0xB05B00` -> `0x2E48B0`, **incendiary `0xB05B58` -> `0x2E4BA0`** (secondary `0x2E4DF0`), flash `0xB05BB0` ->
+  `0x2E4E50`. The incendiary's spawn is the persistent fire (EFFECT 0x26, no AREA_ATTACK; no class-0x16 area site
+  exists), which is why it never matched the other two. `scripts/re4_blast_scan.py` now reports the class entries, a
+  test pins the three, and `INCENDIARY_CANDIDATE` carries the evidence; the probe path (allow_unverified) already
+  calls it. Live probe still owed; tests 43 passed.
