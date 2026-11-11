@@ -865,3 +865,36 @@ means restoring the artifact does not make the mission safe to run. The state is
 question that only a live run or a placed-navmap check can settle.
 
 Script: `docs/research/pso-cp4-route-check.py`.
+
+## Round 134: the mission's route is valid - and round 133's negative was measuring the wrong space
+
+Round 133 compared the mission's waypoints with the *placement records* and concluded "another coordinate frame". That was wrong, and
+the plane's own code shows why:
+
+```python
+# autoplay.Driver.load_navmap
+fl, wl = psomap.walkable_cells(psomap.collision(data, spec.get("be", True)), spec.get("size", 10))
+m = NavMap.from_geometry(path, fl, wl, spec.get("size", 10))
+```
+
+The mission's coordinates live in the **collision rel's** space, not the placement space. Reproducing exactly that pipeline offline on
+`Scene/map_forest01c.rel` (the artifact whose sha256 is `0e7bc121...`):
+
+```
+cells: floor 6463, wall 2599
+  interact 1  ( -95.0, 214.0) -> cell (-10, 21)  floor
+  navigate 1  (-140.0, 330.0) -> cell (-14, 33)  floor
+  interact 2  (   7.0, 362.0) -> cell (  0, 36)  floor
+  fight       (  90.0, 300.0) -> cell (  9, 30)  floor
+```
+
+**all four waypoints are on walkable floor**, and a breadth-first search over the floor cells from `(-10,21)` to `(9,30)` finds the
+goal (`True`, 857 cells explored). So the mission's route is **geometrically sane and connected** - the plan is not the problem.
+
+**What that means for the mission's precondition list:** the route is validated; the map artifact is restored; **the only missing
+piece is the `initial_state`** (a slot-1 Dolphin state with a HUmar Lv1 at Forest 1's arrival). That is CP4's own artifact, and CP4
+needs one live session - the same session the operator's Play would create.
+
+**Correction recorded on purpose:** round 133's "unverified/another frame" conclusion came from measuring against the wrong file
+family. The lesson is the same one this lane keeps relearning: reproduce the tool's own pipeline before declaring a mismatch.
+Script: `docs/research/pso-cp4-navmap-check.py`.
