@@ -1617,3 +1617,24 @@ loads (11:25-11:26, stage 0, session `0569c82d21614288-c655ae564d744afc`); `0x17
 (the other four carried data), so `choose_mailbox` = 0x1700000 and `MAILBOX_AT = 0x3ca7c04000 + 0x1700000 =
 0x3ca9304000`. The next RE4 session's controller builds with the page, the harness can attach, and the selftest /
 `flash_now` / `grenade_ring` flash + hand receipts are the next clicks.
+
+## Round 87 (2026-11-11 11:50 CST) - the mailbox exposed the next RE4 bug (`ready()` returned an int); the RE5 automatic ring failed again
+
+**RE4, first session with the mailbox** (`0569c82d21614288-3c2b58fb55314015`, 11:42): the status read
+`cannot unpack non-iterable int object` and the harness capability never appeared. Root cause: `Controller.ready()` in
+`re4_switch_native` returned the bare player, while `interventions`'s worker (and its epoch) unpacks
+`p, generation = ctl.ready()` - the RE6/RE5 controllers return the pair. The mailbox made `prepare()` stop refusing,
+so the status path reached `ready()` for the first time and hit it. Fixed (`4ab21464`): `ready()` returns
+`(self.player, self.player_id)`; the other caller (`attach`) ignores the return. Gate: 42 passed (one new test
+unpacks the pair). The next RE4 session's controller is the first that can attach and take the selftest/flash
+receipts; the current one was built with the old method.
+
+**RE5, the automatic ring failed a second time** (`0569c82d21614288-0f2aaba5e4174b9e`, 11:39): the round reached
+`playing` and then the controller went `native controller awaits recovery after an uncertain operation`, capabilities
+empty, the round stuck on `loading` and the session ended. Same shape as round 86 - the doctrine's own ring, not a
+click. The per-call `wait` is 1.0 s (`re6_switch_native.Controller.wait`); a ten-grenade ring issues ten sequential
+native calls under the bot's own tick and one timed out. The manual flash ring is still verified (1.05 s for ten when
+the game is idle). The hardening direction is a ring-specific call budget (>= 2 s per call) and/or a policy guard for
+the first seconds of a round; it needs the RE5 native module (NOT_BOT, a restart lands it) and a fresh live RE5
+round to confirm. Until then the automatic ring can break a block, so the operator's PiP ring is the reliable path
+on RE5.
