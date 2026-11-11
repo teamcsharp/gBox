@@ -71,10 +71,13 @@ TITLES = {
     ),
     "re4_switch": _title(
         "RE4 Switch", ("270a15eb98dab4d7", "010099A00BC1E000"),
-        # Checkpoint F: the flash is built on the native harness (main+0x2E4E50 through the cloned vtable's one
-        # 8-byte store) but has no live receipt yet; the ring kinds are not offered on this title at all.
+        # Checkpoint F/G: the flash and the hand-grenade ring are built on the native harness (the game's own blasts
+        # through the cloned vtable's one 8-byte store) but have no live receipt yet; the incendiary blast is not
+        # identified on this build (G3).
         {"flash": Kind(False, "a flash is built on the RE4 Switch native harness (main+0x2E4E50 via one vtable "
-                              "store) but has no live receipt yet")},
+                              "store) but has no live receipt yet"),
+         "hand": Kind(False, "a hand-grenade ring is built on the RE4 Switch native harness (main+0x2E48B0, 7000 mm "
+                             "floor) but has no live receipt yet")},
         controller="re4_switch_native",
     ),
     "re5_switch": _title(

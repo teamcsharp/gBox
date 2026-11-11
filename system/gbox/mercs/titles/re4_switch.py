@@ -1379,6 +1379,13 @@ class RE4Switch(Driver):
                 watch = bss_watch(m, snap["module_base"])
                 watch["stage"] = (snap.get("game") or {}).get("stage")
                 stats["bss_watch"] = watch          # telemetry: the pages' bytes at this stage load (E3)
+                loads = stats.get("bss_watch_loads")
+                if not isinstance(loads, list):
+                    loads = stats["bss_watch_loads"] = []
+                # one reading per stage load: the last three are the three-load watch even when nobody polls live
+                if watch["stage"] is not None and (not loads or loads[-1].get("stage") != watch["stage"]):
+                    loads.append(watch)
+                    del loads[:-3]
             except (OSError, ValueError, TypeError, struct.error):
                 pass
         return snap
