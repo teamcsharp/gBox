@@ -567,3 +567,28 @@ successful run would leave CP4 and CP9 one call apart.
 
 **Staged, not run:** this round had no window (operator idle 0 s, CPU 83 %). The script parses and compiles; its live paths are
 the ones already exercised in rounds 100-104 (launch admission, session, RAM reads, pad creation, relay).
+
+## Round 114: the runbook caught the window - and the job is now a standing launch with a standing watcher
+
+The background runbook (round 106) did its job: at **18:46:45** it saw `idle_seconds = 302` and queued the launch
+(`job a43d86814ee34c36`). At 18:50:46 it reported `no session appeared` and exited - because the **job stayed queued**: the
+operator had come back (idle back to 0), so the worker's own admission kept it waiting with
+`admission = {"worker": "i9-NUC", "reason": "Waiting for five minutes without operator input."}`.
+
+Two consequences, both handled:
+
+1. **The queued job is a standing launch.** It fires by itself in the first five-minute window with CPU under 70 - no poller
+   needs to queue it again.
+2. **Nothing was watching for the session it would create.** `docs/research/pso-cp4-watch.py` is now running in the background
+   (started 18:51:29, its agent pad on slot 0, three-hour horizon): it waits for a session whose `agent_owned` is true (it never
+   touches the operator's own session), then probes the relay and the pad with one START each, walks to the lobby with whichever
+   lands, runs `pso_boot.py save-state`, reads the CP9 seed descriptor (`[0x80585F6C]` + `0x118`), writes a JSON report to
+   `D:\gBox\pso-ds\live\` and stops the session.
+
+So the live phase is now fully automatic end to end: **operator leaves for five minutes -> the queued launch is admitted ->
+the watcher sees the session and does the whole sequence -> the report and the state file land.** No command from a human or from
+me is needed in between, which is the only way this works given how often the window has opened while I was doing something
+else.
+
+**One guard worth stating:** the watcher filters on `agent_owned`, so if the operator launches their own game during its watch it
+will ignore that session and keep waiting - rule 6 (never touch an operator session) holds by construction.
