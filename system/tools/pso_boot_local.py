@@ -14,12 +14,17 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import pathlib
 import sys
 import time
 from ctypes import wintypes
 
-sys.path.insert(0, r"C:\_tools\gBox\.tmp\main-repo\system")
-sys.path.insert(0, r"C:\_tools\gBox\.tmp\main-repo\system\tools")
+# This file's own checkout: system/tools/pso_boot_local.py -> system (the gbox package) and system/tools (pso_boot).
+# It used to point at one lane's scratch clone (C:\_tools\gBox\.tmp\main-repo\system), which does not exist on the
+# Spark or in a fresh checkout, so the driver could not import gbox at all there (2026-11-10).
+_SYSTEM = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_SYSTEM))
+sys.path.insert(0, str(_SYSTEM / "tools"))
 
 from gbox import pso_boot_walk as W                     # noqa: E402
 from gbox.adapters import _SCAN, PAD_KEYS, _pid_window, win_bring_to_front  # noqa: E402
