@@ -1749,6 +1749,8 @@ BODY_CLASSES: dict = {}
 # pistol"; and "the bot aims terribly, their laser goes awry weirdly"): handguns keep every shot on the body (no
 # family), the magnums / shotguns / rifles keep their pattern; an unread class has none.
 FIRE_PATTERN = True
+FIRE_CLOSE_MM = 3000.0                   # no deliberate scatter on a body inside 3 m (operator 2026-11-11: the close
+                                         # misses - the magnum's scatter off a body at arm's length was most of them)
 FIRE_CAP_HZ = 10.0                       # static: FR 3.0 frames at 30 Hz (the shot gate's floor), not counted live
 FIRE_DEFAULT_FAMILY = None
 CLASS_FAMILY = {0x01: None, 0x02: None, 0x03: None, 0x04: None, 0x11: None,   # handguns: no scatter
@@ -2125,6 +2127,8 @@ class Bot:
                     dist, err, e = t
                     self.why = f"fire pattern: the hop to the next one on the gun's line ({dist / 1000:.1f} m)"
             steer, off = drv.aim(prof, fam, e, dist, err, now)
+            if dist <= FIRE_CLOSE_MM:
+                off = 0.0                                    # the scatter stays off a body inside 3 m
             return dist, err, e, off
         except Exception as exc:                         # noqa: BLE001 - the pattern never costs the shot
             self.stats["fire_pattern_error"] = f"{type(exc).__name__}: {exc}"[:160]
