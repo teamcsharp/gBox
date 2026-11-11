@@ -203,9 +203,22 @@ string search for `map_forest01_00o.dat` in the DOL finds nothing while the arch
      `layouts_for_floor` / `layout_name` / `area_id`, and `derive()` re-reads the table from a `PsoV3.dol`
      (`tools/verify_pso_floors.py`). It verifies against the owned disc (both tables, 36 floors each), and floors
      0-11 match `pso_areas.EPISODE1` in order.
-3. **The object-class registry ordering.** 315 names exist; the table that maps a class index (the low byte of a
-   placement's `kind`) to one of them is not located. That is the single highest-value decompile left for the editor,
-   because it turns a marker's number into "door", "warp", "switch" or "Booma".
+3. **The object-class registry ordering.** **Located 2026-11-10 (branch `ds-pso-class-registry-20261110`).**
+   - It is a flat table of class-name pointers in `.data` at **`0x805D3138`**, 4 bytes per slot, 240 slots, 148 named
+     in this build (the rest zero, plus one `0xFFFFFFFF` sentinel). `class_name(index)` is a plain
+     `cstr(table[index])`, indexed by the low byte of a placement's `kind`.
+   - Found from the live measurement: the four room-10 doors are kinds `0x46` Shop, `0x47` Guild, `0x48` Warp, `0x49`
+     Med. A search over the .data name-pointer sections for the alignment where those four indices land on exactly
+     those names matches at this base and stride **4/4**, and no other alignment exceeds 1/4 - a very strong pin.
+   - Coverage on the owned disc: it labels **44 of the 60 class indices** the 141 object-set files use, i.e. **15,975
+     of 18,927 placements (84.4%)** (`TORockCaveBL03` 7,438, `TOSensorAncient01` 4,436, `TOSymbolchatColli` 1,408,
+     `TObjAreaWarpForest` 308, ...).
+   - 16 ids are real holes in this build's table (`0x05`, `0x06`, `0x08`, `0x0a`, `0x0c`, `0x0e`, `0x13`, `0x1e`,
+     `0x22`, `0x4b`, `0x61`, `0x67`, `0x74`, `0xc4`, `0xc5`, `0xc8`; `0x06` alone is 2,032 placements in the Ruins
+     sets). The classes exist - the sets spawn them - but their name slot is zero, so the editor should show
+     `class_0xNN` and not invent a name.
+   - `gbox/pso_class_registry.py` pins the table (`name`, `label`, `class_index`, `index_of`, `derive`, `verify`) and
+     `tools/verify_pso_classes.py <dol>` re-reads it from an image (PASS on the owned disc).
 4. **Boss part counters.** `pso_boss_strategy` drives them from live RAM; the structures are not decompiled.
 5. **Save-data layout** (§6).
 
