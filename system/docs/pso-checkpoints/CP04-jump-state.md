@@ -835,3 +835,33 @@ artifact does not by itself prove the route. That check belongs with CP8's entit
 
 **Net:** the mission is no longer doubly blocked. It needs the CP4 state (a live session), and its route is worth validating against
 the placements when the state exists.
+
+## Round 133: the mission's waypoints do not line up with Forest 1's placement records - a negative worth recording
+
+The cheapest way to validate the mission's route is to see whether its interact points sit on real objects. They do not:
+
+```
+map_forest01_00o.dat (109 records, 22 kinds):
+  interact 1 (-95,214):  nearest 80.8 away  kind 0x000e   at (-108.52, 13.94, 134.39)
+  interact 2 (  7,362):  nearest 61.4 away  kind 0x008e   at (  61.06, 25.72, 332.89)
+  fight      ( 90,300):  nearest 43.8 away  kind 0x008e   at (  61.06, 25.72, 332.89)
+
+map_forest01d.dat (150 records, 7 kinds):
+  interact 1: nearest 69.0    interact 2: nearest 96.7    fight: nearest 74.2
+```
+
+and the nearby kinds are not doors either - from the pinned registry: `0x84 -> TObjEnvSound`, `0x85 -> TObjEnvSoundEx`,
+`0x88 -> TObjEvtCollision`, `0x8e`/`0x80`/`0x000e` unnamed. The most interesting is `0x88` (**event collision**) and the
+`0x2000088` variant near interact 1, which is `0x88` with the top flag bit set - a reminder that the record's kind field carries
+flags, not just the class.
+
+**So the mission's coordinates are in some other frame** than the GC Forest 1 placement space (`map_forest01_00o.dat` /
+`map_forest01d.dat`): nearest object 61-91 units away from a point that says "interact here" is not a door. Either the plan was
+authored against a merged/placed navmap, against the Dreamcast Forest 1, or as approach points in a cell grid - and none of those can
+be assumed. **The mission's route should be treated as unverified** until it is validated against the navmap it will actually use.
+
+**What this changes:** nothing about the artifact (still restored and correct - the digest matches the file byte for byte), but it
+means restoring the artifact does not make the mission safe to run. The state is the second precondition; the *route* is a third
+question that only a live run or a placed-navmap check can settle.
+
+Script: `docs/research/pso-cp4-route-check.py`.
