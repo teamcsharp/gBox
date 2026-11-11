@@ -53,8 +53,11 @@ SCRATCH_OFF = 0x100                    # the fake object, in the same proven pag
 FLASH_MIN_MM, FLASH_MAX_MM, FLASH_FROM_MM = 4000.0, 9000.0, 12000.0
 #: The hand grenade's own blast (checkpoint G2): same fake-object route, class 0x13, radius 6000 mm, floor 7000 mm.
 HAND_BLAST = 0x2E48B0
-#: G3's candidate: the class-0x16 persistent fire (the item table says the incendiary is class 0x16, and no area-attack
-#: site uses that class; the descriptor pair 0x67B4C8/0x67B4E0 points here and it calls EFFECT 0x26 with no AREA_ATTACK).
+#: G3's incendiary: the item table gives the grenades their classes (hand 0x13, incendiary 0x16, flash 0x17) and the
+#: class behaviour table in `.data` lists them in item order - `0xB05B00` (spawn `0x2E48B0`, the hand), `0xB05B58`
+#: (spawn `0x2E4BA0`, the incendiary, secondary `0x2E4DF0`) and `0xB05BB0` (spawn `0x2E4E50`, the flash), stride 0x58,
+#: spawn at +0x28. The incendiary's spawn is the persistent fire: it calls EFFECT 0x26 and no AREA_ATTACK (no 0x16 area
+#: class exists in the image), so its damage is the burning field, not an instant blast.
 INCENDIARY_CANDIDATE = 0x2E4BA0
 HAND_MIN_MM = 7000.0
 #: The ring (checkpoint G1/G2): N blasts round him, the inner ring at the kind's floor.

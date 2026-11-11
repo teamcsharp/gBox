@@ -53,3 +53,13 @@ def test_the_operator_image_has_the_three_known_blasts():
     text = "\n".join(lines)
     assert "known blasts: 0x2e48b0 (hand), 0x2e4aa0 (simple), 0x2e4e50 (flash)" in text
     assert "area-attack sites:" in text
+
+
+@pytest.mark.skipif(not IMAGE.is_file(), reason="the extracted RE4 main is not on this machine")
+def test_the_class_entries_list_the_three_grenade_spawns_in_item_order():
+    scan = load()
+    data = scan.scan(IMAGE.read_bytes())
+    entries = {entry["at"]: entry["spawn"] for entry in data["classes"]}
+    assert entries[0xB05B00] == 0x2E48B0          # hand grenade
+    assert entries[0xB05B58] == 0x2E4BA0          # incendiary grenade (G3's candidate)
+    assert entries[0xB05BB0] == 0x2E4E50          # flash grenade

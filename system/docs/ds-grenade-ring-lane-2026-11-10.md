@@ -1402,3 +1402,33 @@ reload. Both are external. The evidence gathered this round is in the lane log; 
   `scatters_fired`/`scatter_rounds`/`scatter_kills` and two flash times at least 60 s apart.
 
 Everything else the lane can build offline is built; the open items are live receipts.
+
+## Round 78 (2026-11-11 01:30 CST) - G3 identified statically: the class behaviour table lists the incendiary's spawn
+
+The static chain is complete:
+
+1. **The item table** (`re4_weapons.WEAPON_TBL`, rows 28-30) gives the grenades their classes: hand `0x01` -> `0x13`,
+   incendiary `0x02` -> `0x16`, flash `0x0E` -> `0x17`.
+2. **The class behaviour table** lives in `.data` as 0x58-byte entries: `{+0x00 common 0x2E4860, +0x08, +0x10 the unit
+   transform 0x2B6420, +0x18, +0x20, +0x28 spawn, +0x30 secondary, ...}`. It lists the grenades **in item order**:
+
+       0xB05B00: spawn 0x2E48B0 (hand)      secondary 0x2E4AA0
+       0xB05B58: spawn 0x2E4BA0 (incendiary) secondary 0x2E4DF0
+       0xB05BB0: spawn 0x2E4E50 (flash)      secondary 0x2E4FF0
+       0xB05C08: spawn 0x2E5050              secondary 0x2E51E0      (a further explosive entry, not a grenade item)
+
+   So the incendiary's spawn is **`main+0x2E4BA0`** - exactly the candidate the round-71 analysis predicted from the
+   item class and the effect-0x26 body. Its secondary (`0x2E4DF0`) is the companion entry.
+3. **Why it does not look like the other two:** the hand and flash spawns each call `AREA_ATTACK` with their item
+   class as the attack class (`0x13`, `0x17`); the incendiary's spawn calls `EFFECT` with `0x26` and **no**
+   `AREA_ATTACK`, and no area-attack site in the image uses class `0x16` - its damage is the burning field, not an
+   instant area blast.
+
+**Evidence in the repo:** `scripts/re4_blast_scan.py` now reports the class entries (it finds them by the invariant
+`+0x00 == 0x2E4860` and `+0x10 == 0x2B6420`, spawn at `+0x28` in the blast region), and a test pins the three
+grenade entries and their spawns. `re4_switch_native.INCENDIARY_CANDIDATE` carries the evidence in its comment. The
+probe path from round 76 calls that spawn behind `allow_unverified`, receipt `probe: true`; the status and the rule
+still refuse it until a live receipt (G's fallback: each kind that does not pass stays refused).
+
+Merged to main (`88f51e83`), tests 43 passed. The remaining G3 step is the live probe on an RE4 block (after the
+05:00 restart, through `grenade_ring(kind="incendiary", allow_unverified=True)`).

@@ -19,6 +19,8 @@ RODATA_START, RODATA_END = 0x656000, 0xAE1BCC
 AREA_ATTACK, EFFECT, SOUND = 0x33B770, 0x1F7DC0, 0x261C20
 BLAST_LO, BLAST_HI = 0x2E4000, 0x2E6000
 KNOWN = {0x2E48B0: "hand", 0x2E4AA0: "simple", 0x2E4E50: "flash"}
+DATA_START, DATA_END = 0xAE2000, 0xB2C738
+CLASS_STRIDE = 0x58                     # the class behaviour entries: +0x28 spawn, +0x30 secondary
 
 
 def bl_target(text: bytes, addr: int) -> int | None:
@@ -75,7 +77,16 @@ def scan(image: bytes) -> dict:
         name = KNOWN.get(entry["fn"])
         if name:
             blasts[entry["fn"]] = name
-    return {"sites": sites, "slots": slots, "blasts": blasts}
+    classes = []
+    if len(image) >= DATA_END:
+        for off in range(DATA_START, DATA_END - CLASS_STRIDE, 8):
+            spawn = struct.unpack_from("<Q", image, off + 0x28 + 0x100)[0]
+            second = struct.unpack_from("<Q", image, off + 0x30 + 0x100)[0]
+            head = struct.unpack_from("<Q", image, off + 0x100)[0]
+            tenth = struct.unpack_from("<Q", image, off + 0x10 + 0x100)[0]
+            if BLAST_LO <= spawn < BLAST_HI and head == 0x2E4860 and tenth == 0x2B6420:
+                classes.append({"at": off, "spawn": spawn, "secondary": second})
+    return {"sites": sites, "slots": slots, "blasts": blasts, "classes": classes}
 
 
 def report(image: bytes) -> list[str]:
@@ -85,6 +96,9 @@ def report(image: bytes) -> list[str]:
     for entry in data["slots"]:
         if entry["fn"] not in KNOWN:
             lines.append(f"  unclaimed slot {entry['slot']:#x} -> {entry['fn']:#x}")
+    for entry in data["classes"]:
+        lines.append(f"class entry {entry['at']:#x}: spawn {entry['spawn']:#x}"
+                     f" ({KNOWN.get(entry['spawn'], '?')}), secondary {entry['secondary']:#x}")
     return lines
 
 
