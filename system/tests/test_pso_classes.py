@@ -93,6 +93,54 @@ def test_the_kind_word_of_a_real_record_names_its_class():
     assert recs[13]["kind"] & 0xFF == 0x41 and recs[27]["kind"] & 0xFF == 0x57
 
 
+# ---- CP7.2: the placement coverage, measured against every set on the disc --------------------------------
+
+def test_the_named_coverage_of_every_placement_on_the_disc():
+    """Coverage is bounded by the registry: an id this build leaves empty cannot be labelled, and the holes are named.
+
+    The object-create path (CP7.2) does not dispatch by class id at all - `FUN_8010542c` picks one of five
+    constructors from the *payload type* at record+0x10 (table `0x8049eee8`) and the class id only gates creation and
+    registers the object (`FUN_80102424`). So there is no per-class constructor table to mine for the remaining ids:
+    the named fraction is exactly the registry's.
+    """
+    import pathlib as _p
+    from gbox import gcdisc, pso_classes as C, pso_map_write as W, pso_setdata as P
+
+    disc = _p.Path(r"D:\\gBox\\cache\\mods\\436e0bb84d5337d1\\pso_city_npc_moved"
+                   r"\\Phantasy Star Online Episode I & II Plus (USA).iso")
+    if not disc.is_file():
+        pytest.skip("the disc is not on this machine")
+    d = gcdisc.GCDisc(str(disc))
+    dol = d.read("PsoV3.dol")
+    registry = C.registry(dol, slots=0x100)
+
+    sets = dict(W.set_archive_files(d, "object"))
+    for name in d.files:
+        if name.lower().endswith("o.dat") and name.lower().split("/")[-1].startswith("map_"):
+            sets.setdefault(name, (name, 0, d.files[name][1]))
+    counts = {}
+    total = 0
+    for name in sets:
+        try:
+            data, _where = W.read_set(d, name)
+            recs = P.records(data)
+        except Exception:                                  # noqa: BLE001 - not every .dat is a placement set
+            continue
+        for rec in recs:
+            index = P.kind_class(rec["kind"])
+            name_of = registry.get(index)
+            counts[name_of or f"id_{index:#04x}"] = counts.get(name_of or f"id_{index:#04x}", 0) + 1
+            total += 1
+    assert total > 20000, total                            # every placement set on the disc
+    named = sum(n for k, n in counts.items() if not k.startswith("id_"))
+    coverage = named / total
+    # Measured, disc-wide: 11,963 of 23,371 placements are labelled (0.512). The lane's earlier 84.4 % was a narrower
+    # scope; this test pins the whole-disc figure so a change in the registry or the sets shows up as a diff.
+    assert 0.50 <= coverage <= 0.52, (round(coverage, 4), total, named)
+    for key in counts:
+        if key.startswith("id_"):
+            index = int(key[3:], 0)
+            assert registry.get(index) is None, (key, registry.get(index))
 # ---- families, labels and the vtable census ---------------------------------------------------------------------------------
 
 def test_family_groups_the_classes_the_editor_colours_by():
