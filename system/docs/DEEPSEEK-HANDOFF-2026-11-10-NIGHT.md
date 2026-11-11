@@ -168,3 +168,13 @@ Then send it the heavy analysis work.
   is **2 lanes**; the 8-16 concurrency ask needs vLLM/llama.cpp continuous batching - the measurements, the
   recommendation and the exact `[hermes.local.nodes.i9]` block are in `system/docs/i9-service-node.md` (not applied:
   the shared gbox.toml must not carry it, and section 1's readiness gates it).
+- 2026-11-10 19:12: merged `ds-grenade-re4-bss-20261110` @ `8991e881` into main (`9e99f9a3`) - the **E6 harness selftest**
+  (the dispatcher now carries its own `ret` at `cave+0x84`, called through the mailbox: a zero result plus the entry
+  ticks prove the cloned vtable and the publish/consume round trip with no game code; a `re4_harness_selftest`
+  intervention op, capability offered only when the controller has `selftest`; the dispatcher pin is now 136 bytes,
+  sha256 `3e3b937d3e32c01dfbeabd1dbca1560e009929a3e8e24cedfc2b4d233448ce55`), and `native_controller` now imports each
+  title module inside its try, so a test double that replaces a base class cannot stop the search for the title's own
+  controller (the RE5 shared-controller test had caught the old import order). **Gate:** targeted 201 passed, 1 skipped
+  on the branch and post-merge on main; the RE5 Switch group is back to its known red exactly (10 failed, 713 passed:
+  bonus 1, giveup 5, smooth 2, threat 2). E6/F still wait for the proven private page (the `.bss` watch rides the RE4
+  telemetry) and the 05:00 restart for the new module; nothing is enabled gameplay-side.
