@@ -364,9 +364,28 @@ def test_the_aim_lock_writes_the_bots_aim_onto_the_facing(ad):
     s = snap(ad)
     s["player"] = {"ptr": ptr, "pos": (0, 0, 0), "rot": 0.0}
     assert M.maintain(ad, s).get("aim_writes") == 1
-    assert abs(struct.unpack("<f", ad.read_memory(ptr + D.U_YAW, 4))[0] - 1.25) < 1e-6
+    first = struct.unpack("<f", ad.read_memory(ptr + D.U_YAW, 4))[0]
+    assert first == pytest.approx(M.AIM_WRITE_MAX_STEP, abs=1e-6), "a smooth step, not a 1.25 rad teleport"
+    for _ in range(60):
+        M.maintain(ad, s)
+    assert abs(struct.unpack("<f", ad.read_memory(ptr + D.U_YAW, 4))[0] - 1.25) < 1e-3, "it converges"
     D.AIM_REQUEST.update(at=_t.monotonic() - 5)
     assert "aim_writes" not in M.maintain(ad, s), "a stale request is not written"
+
+
+def test_the_aim_lock_ignores_a_micro_correction(ad):
+    """The operator 2026-11-11: the aim jerked every tick - a request inside the deadband leaves the facing alone."""
+    import time as _t
+    ptr = 0x5D50100000
+    raw = bytearray(D.UNIT_SIZE)
+    struct.pack_into("<f", raw, D.U_YAW, 0.5)
+    ad.put(ptr, raw)
+    M.run(ad, "aim_lock", on=True)
+    D.AIM_REQUEST.update(ptr=ptr, yaw=0.5 + M.AIM_WRITE_DEADBAND / 2, at=_t.monotonic())
+    s = snap(ad)
+    s["player"] = {"ptr": ptr, "pos": (0, 0, 0), "rot": 0.0}
+    assert "aim_writes" not in M.maintain(ad, s), "under the deadband: no write"
+    assert struct.unpack("<f", ad.read_memory(ptr + D.U_YAW, 4))[0] == 0.5
 
 
 

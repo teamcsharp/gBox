@@ -276,20 +276,36 @@ def aim_lock(ad, on: bool) -> dict:
 
 def _aim(ad, snap: dict) -> int:
     """The bot's aim request (re4_switch.AIM_REQUEST) written to the player's facing (unit + U_YAW), read back. A
-    request with steady (the gun up: re4_switch.AIM_RAM) also holds the gun itself (_steady)."""
+    request with steady (the gun up: re4_switch.AIM_RAM) also holds the gun itself (_steady).
+
+    The write is smoothed (operator 2026-11-11: "jerking around with the aim unnaturally ... causes motion sickness"):
+    a request under AIM_WRITE_DEADBAND from the facing is not written, and a write moves the facing at most
+    AIM_WRITE_MAX_STEP toward the request - a turn the game's own camera can follow, never a teleport.
+    """
     req = D.AIM_REQUEST
     p = (snap or {}).get("player") or {}
     if not req or req.get("ptr") != p.get("ptr") or time.monotonic() - req.get("at", -1e9) > AIM_FRESH_S:
         return 0
+    want = req.get("yaw")
+    if not isinstance(want, (int, float)) or not math.isfinite(want):
+        return 0
     addr = p["ptr"] + D.U_YAW
     try:
-        ad.write_memory(addr, struct.pack("<f", req["yaw"]))
+        current = struct.unpack("<f", bytes(ad.read_memory(addr, 4)))[0]
+    except (ValueError, OSError, RuntimeError, struct.error):
+        return 0
+    delta = D.wrap(float(want) - current)
+    if abs(delta) <= AIM_WRITE_DEADBAND:
+        return 0
+    target = current + max(-AIM_WRITE_MAX_STEP, min(AIM_WRITE_MAX_STEP, delta))
+    try:
+        ad.write_memory(addr, struct.pack("<f", target))
         back = struct.unpack("<f", bytes(ad.read_memory(addr, 4)))[0]
     except (ValueError, OSError, RuntimeError, struct.error):
         return 0
     if req.get("steady") and getattr(D, "AIM_RAM", False):
         _steady(ad, snap, req)
-    return 1 if abs(back - req["yaw"]) < 1e-3 else 0
+    return 1 if abs(back - target) < 1e-3 else 0
 
 
 # The steady aim (re4_switch AIM_RAM; the operator 2026-11-10: "I want the aim impeccable"): data writes only, each one
@@ -304,6 +320,10 @@ def _aim(ad, snap: dict) -> int:
 # counts go to the state (aim_ram_writes / aim_sway_zeroed / aim_ram_refused) and out through maintain().
 STEADY_PITCH_MAX = 1.45
 STEADY_EPS = 1e-4
+#: The aim write's smoothing (the operator 2026-11-11: the aim jerked with the bow and made motion sickness): a
+#: correction under this much is left alone, and one write turns the facing at most this far toward the request.
+AIM_WRITE_DEADBAND = math.radians(0.5)
+AIM_WRITE_MAX_STEP = math.radians(3.0)
 
 
 def _steady(ad, snap: dict, req: dict) -> int:
