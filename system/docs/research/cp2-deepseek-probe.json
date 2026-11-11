@@ -1,0 +1,46 @@
+{
+ "model": "deepseek-r1:14b",
+ "answers": [
+  {
+   "address": "8000c040",
+   "gold": "the DOL entry point (Ghidra names it)",
+   "answer": {
+    "name": "INITIALIZE_GAME_STATE",
+    "role": "Initializes and manages game state transitions based on global variables.",
+    "confidence": 0.85,
+    "evidence": "Calls multiple setup functions (callee_1-3), checks global variables (_DAT_800000f4, _DAT_800030e8), handles different states (iVar3 != 2 or 3), and processes game context."
+   }
+  },
+  {
+   "address": "8000f998",
+   "gold": "BEGIN_TRAVEL",
+   "answer": {
+    "name": "SET_FLAG",
+    "role": "Sets a specific flag in memory to 1.",
+    "confidence": 0.8,
+    "evidence": "The function writes the value 1 to a memory location calculated by subtracting 0x5c48 from an undefined integer variable."
+   }
+  },
+  {
+   "address": "8001e5c8",
+   "gold": "the primitive pso_coop_native.py:17 / pso_gc_adven",
+   "answer": {
+    "name": "GET_FUNCTION_VALUE",
+    "role": "Retrieves a value from memory based on an offset.",
+    "confidence": 0.85,
+    "evidence": "The function dereferences a pointer calculated by adding -0x45a0 to unaff_r13, suggesting it accesses a specific memory location."
+   }
+  },
+  {
+   "address": "800791bc",
+   "gold": "the native floor-height query (964 bytes, the same",
+   "answer": {
+    "name": "",
+    "role": "",
+    "confidence": 0,
+    "evidence": "no json"
+   }
+  }
+ ],
+ "seconds_per_function": 23.9
+}
