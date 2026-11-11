@@ -482,3 +482,28 @@ def test_the_incendiary_probe_calls_the_candidate_fire_and_marks_the_receipt(mon
     targets = [struct.unpack("<Q", d)[0] for at, d in ctl.writes if at == MAILBOX + CODE.MAILBOX["target"]]
     assert targets == [BASE + N.INCENDIARY_CANDIDATE] * 2
     assert all(r["from_player_cm"] >= 400 for r in result["grenades"])
+
+
+# ---- the builder every native title's controller goes through -------------------------------------------------------
+
+def test_the_interventions_builder_can_build_the_harness_under_its_create_lock(monkeypatch):
+    """interventions.native_controller holds module._CREATE_LOCK while it builds each title's one Controller.
+
+    The harness had no such lock, so the builder skipped it with "module ... has no attribute '_CREATE_LOCK'"
+    (live 2026-11-11: an RE4 round's interventions status was unavailable for that reason and the PiP greyed every
+    grenade kind). The fake adapter proves the RE4 module is the one the builder takes, under that lock.
+    """
+    from gbox.mercs import interventions
+    built = []
+
+    class FakeController:
+        def __init__(self, ad, **kwargs):
+            built.append(ad)
+
+    monkeypatch.setattr(N, "Controller", FakeController)
+    adapter = types.SimpleNamespace()
+    with N._CREATE_LOCK:
+        pass                                   # the builder's own protocol: the lock exists and is reentrant-safe here
+    ctl = interventions.native_controller(adapter)
+    assert isinstance(ctl, FakeController) and built == [adapter]
+    assert adapter._re4_switch_harness is ctl

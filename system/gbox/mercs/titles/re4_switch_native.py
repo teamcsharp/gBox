@@ -40,6 +40,12 @@ DISPATCH = CODE.DISPATCH
 #: End of the read-only image (`main` .text + .rodata; the header's own rodata end). Writes below this are refused.
 CODE_END = 0xAE1BCC
 CALL_TIMEOUT_S = 1.0
+#: Serializes controller creation across the UI / MCP callers: ``interventions.native_controller`` holds each native
+#: module's ``_CREATE_LOCK`` while it builds the one Controller per adapter, the lock every other native title module
+#: already exposed. The harness was missing it, so the builder skipped this module with an AttributeError and the PiP
+#: greyed every grenade on an RE4 Switch round (live 2026-11-11: "re4_switch_native: module ... has no attribute
+#: '_CREATE_LOCK'").
+_CREATE_LOCK = threading.Lock()
 
 #: The flash blast (checkpoint F2 route (i)): `fn(obj)` reads the object's position at +0xA4 and starts the flash's
 #: effects/sound/area attack. A zeroed fake object with that position is enough; +0x3CC must not read 0xD6 (the
