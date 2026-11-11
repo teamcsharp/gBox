@@ -95,6 +95,24 @@ pulled silently — it is a global work-queue setting and the favorites are the 
 6. The pre-existing test-collection gaps (`test_re4_menus`, `test_re6_switch` fixtures missing) — unrelated to this
    session's changes, worth a cleanup pass.
 
+## The MercMode rotation (operator 2026-11-11 17:35: "RE4 / 5 / 6 all seamlessly going from game to game")
+
+The rotation's real state lives in the **`autoplay_screensaver_run/<worker>`** store doc (the screensaver's run:
+`mercmode` payload, `mercmode_rounds`, `mercmode_quick_deaths`, `mercmode_rotate_requested`), not in the `session` or
+`screensaver` docs (both read empty and misled a first diagnosis). The `screensaver.round_boundary` gate is:
+`run.get('mercmode')` present, `cfg['enabled']` true, not pinned, `alternatives` (the worker inventory's other titles)
+non-empty, and `played >= cfg['rounds_per_title']`.
+
+Live at 17:45: the lilspark block is RE6 (Ada/stage 6, the recovery blueprint), `mercmode_rounds 2` of `5`;
+`cfg` normalizes to `enabled: true, titles: [re4, re5, re6], rounds_per_title: 5` with the operator's Switch No Mercy
+editions. The 5 rounds per title is the operator's own 2026-11-10 instruction ("i want to see at least 5 matches per
+title") - not a bug. The lilspark `setting/lilspark` doc was empty (so the default `enabled: false` applied); it now
+carries the enabled rotation and the PC app re-pushed its 5-round cadence.
+
+The earlier "no RE5" was the RE5 *turns* dying in the boot (FEATURES screen, select loop, first-second ring hang - all
+fixed and deployed) plus the 5-round block cadence. Watch the block reach `mercmode_rounds 5` and the title switch as
+the live proof.
+
 ## PM notes
 
 - Verify a deploy by **both** `deployed-main.txt` and the deployed file's content; "reloaded …" names the modules.
