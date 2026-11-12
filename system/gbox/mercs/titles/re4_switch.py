@@ -2663,11 +2663,19 @@ class Bot:
             if UNIVERSAL_CORE and self._aim_since is not None and self._aim_stick().usable():
                 keep = AIM_KEEP_CLOSE_RAD if (FIRE_FIRST and fire_first) else AIM_KEEP_RAD
                 cone = max(RAISE_TOL, keep)              # the gun up: the aim stick turns him, the gun stays up
-            # The turn kept the gun up to 57 deg but the shot only needs FIRE_TOL_MIN (2.9 deg): live 2026-11-12 the
-            # bot converged (282 converge / 194 diverge) down to aim_err 3.33 deg - 0.43 deg outside tolerance - and then
-            # FIRED from there, 101 shots and 0 hits across 28 rounds. The turn now runs to the fire tolerance itself, so
-            # the extra tick that closes the last half degree happens before the trigger instead of never.
-            if abs(err) > min(cone, FIRE_TOL_MIN):
+            # The shot's tolerance is the angle the body covers at THIS distance (atan2(half, dist)) - 16.7 deg for a
+            # Ganado at 1 m, 2.9 deg at 6 m. The turn gate used the flat 2.9 deg minimum at every range, so at
+            # point-blank it demanded precision the shot does not need and turned instead of firing: live 2026-11-12
+            # the operator's own frame showed the bot pressed into a Ganado at 01'56" with 0 kills and doing=turn.
+            # Both gates now share the one distance-aware tolerance, so a body at arm's length is shot at once.
+            half = FIRE_HALF_WIDTH_MM
+            if UNIVERSAL_CORE:                           # the body profile: his class's own half width (mm)
+                try:
+                    half = self._profile().body_units(e).r
+                except Exception as exc:                 # noqa: BLE001 - the core never costs the shot
+                    self._core_error(exc)
+            tol = max(FIRE_TOL_MIN, min(self.TURN_TOL, math.atan2(half, max(dist, 1.0))))
+            if abs(err) > min(cone, tol):
                 self.stats["turns"] += 1
                 self._learn_turn(self.target, err, now)
                 self.doing = "turn"
@@ -2684,14 +2692,7 @@ class Bot:
                 act = self._ram_aim(p, live, e, dist, err, fp_off, snap, now)
                 if act is not None:
                     return act
-            half = FIRE_HALF_WIDTH_MM
-            if UNIVERSAL_CORE:                           # the body profile: his class's own half width (mm)
-                try:
-                    half = self._profile().body_units(e).r
-                except Exception as exc:                 # noqa: BLE001 - the core never costs the shot
-                    self._core_error(exc)
-            tol = max(FIRE_TOL_MIN, min(self.TURN_TOL, math.atan2(half, max(dist, 1.0))))
-            if abs(err) > tol:
+            if abs(err) > tol:                               # (tol: the body's angle at this distance, above)
                 self.stats["raises"] += 1
                 self.doing = "aim"
                 aim_err = err + fp_off                       # toward this shot's point on him (0 offset: his bearing)
