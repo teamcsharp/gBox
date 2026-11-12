@@ -313,3 +313,24 @@ def test_a_close_segment_with_the_pitch_near_still_fires():
     bot, snap = _graze(0x1A, 120.0, -0.25)              # ~7 deg off: inside SEGMENT_PITCH_MAX
     assert "zr" in A.apply(bot, snap, {"hold": ("zl", "zr")}, 1.0)["hold"]
     assert bot.stats.get("target_feedback_pitch_holds", 0) == 0
+
+
+def test_the_grazing_pitch_hold_is_bounded_and_then_fires():
+    """It stops wasting pulls at a wall while the pitch corrects, but it must not withhold the trigger for a whole round.
+
+    Live 2026-11-12: doing=aim, act=['rleft','zl'], blk=ray=False up=False d=1.5m yaw=+8.0 pitch=-14.5 - a Majini at
+    1.5 m, on target in bearing, no shot, and RE5 reports at 0-1 kills where it once ran 13.8-19.6.
+    """
+    bot, snap = _graze(0x1A, 20.0, 0.25)
+    assert "zr" not in A.apply(bot, snap, {"hold": ("zl", "zr")}, 1.0)["hold"]      # the correction window opens
+    late = A.apply(bot, snap, {"hold": ("zl", "zr")}, 1.0 + A.SEGMENT_PITCH_HOLD_S + 0.05)
+    assert "zr" in late["hold"]                                                     # ... and then he fires anyway
+    assert bot.stats["target_feedback_pitch_hold_lapses"] == 1
+
+
+def test_a_clear_shot_reopens_the_pitch_hold_window():
+    bot, snap = _graze(0x1A, 20.0, 0.25)
+    A.apply(bot, snap, {"hold": ("zl", "zr")}, 1.0)            # holding
+    _, clear = _graze(0x1A, 120.0, -0.25)                     # the same bot, a shot the pitch allows
+    A.apply(bot, clear, {"hold": ("zl", "zr")}, 1.1)
+    assert bot.__dict__.get("_pitch_hold_since") is None       # window closed: a later graze gets its own window

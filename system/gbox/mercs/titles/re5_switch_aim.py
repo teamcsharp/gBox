@@ -128,6 +128,9 @@ STICKS = frozenset({'rleft', 'rright', 'rup', 'rdown'})
 YAW_RATE, PITCH_RATE = math.radians(140), math.radians(90)
 MAX_DT = 0.05
 SEGMENT_PITCH_DIST_CM, SEGMENT_PITCH_MAX = 300., math.radians(9)   # a grazing close segment needs the pitch near
+# How long that grazing-pitch hold may keep the trigger off (see apply()). It is a correction window, not a state:
+# live 2026-11-12 a pitch error that never converged held fire for a whole round at 1.5 m.
+SEGMENT_PITCH_HOLD_S = 0.35
 GUN_FAMILIES = frozenset({'handgun', 'magnum', 'shotgun', 'automatic', 'rifle'})
 # Weapon mastery: a shotgun point blank into the crowd, an automatic held through its burst (apply() below)
 SHOTGUN_POINT_BLANK_CM, POINT_BLANK_YAW, POINT_BLANK_PITCH = 250., math.radians(15), math.radians(20)
@@ -377,8 +380,22 @@ def apply(bot, snap, act, now):
     # the pitch error beyond SEGMENT_PITCH_MAX is not contact: hold fire and keep correcting instead of wasting pulls.
     if (body_contact and valid_ray and spec.family != 'shotgun' and dist <= SEGMENT_PITCH_DIST_CM
             and abs(pitch_error) > SEGMENT_PITCH_MAX and not R.dot_on(dot, foot, R.body(target))):
-        body_contact = False
-        bot.stats['target_feedback_pitch_holds'] = bot.stats.get('target_feedback_pitch_holds', 0) + 1
+        # BOUNDED. The hold was added for a good reason (operator, 2026-11-10: ~15 magnum pulls in 3 s at a wall while
+        # the camera was 13-18 deg off the chest), but it had no time limit, so when the pitch does not converge the
+        # trigger is withheld for the whole round. Measured live 2026-11-12: doing=aim, act=['rleft','zl'],
+        # blk=ray=False up=False d=1.5m yaw=+8.0 pitch=-14.5 - a Majini at 1.5 m, on target in bearing, and no shot for
+        # the round (RE5 reports 0-1 kills where it once ran 13.8-19.6). Correct for a moment, then fire anyway.
+        hold_at = bot.__dict__.get('_pitch_hold_since')
+        if hold_at is None:
+            hold_at = bot._pitch_hold_since = now
+        if now - hold_at < SEGMENT_PITCH_HOLD_S:
+            body_contact = False
+            bot.stats['target_feedback_pitch_holds'] = bot.stats.get('target_feedback_pitch_holds', 0) + 1
+        else:
+            bot.stats['target_feedback_pitch_hold_lapses'] = \
+                bot.stats.get('target_feedback_pitch_hold_lapses', 0) + 1
+    else:
+        bot.__dict__['_pitch_hold_since'] = None
     spread_contact = bool(valid_ray and not body_contact and spec.family == 'shotgun'
                           and bot._crowd_hit(origin, dot, foot, True))
     # Weapon mastery (operator 2026-11-09): a shotgun point blank into the crowd - within SHOTGUN_POINT_BLANK_CM, the
