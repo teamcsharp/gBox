@@ -3387,10 +3387,37 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
             ini = ini.rstrip() + "\n\n" + pso_coop_setup.xinput_pad(pad_base, player, vp.slot)
         return ini
 
+    def _vpad_works(self) -> bool:
+        """Probe once whether the virtual pad's own presses reach the emulator.
+
+        A ViGEm target can stop reporting while the object still exists (the i9's churning ghost devices, 2026-11-10): every press is
+        acknowledged and dropped, so a campaign or mission runs to completion without touching the game. A pad that does not report
+        its own press is treated as absent and the caller uses the game's keyboard bindings instead.
+        """
+        cached = getattr(self, "_vpad_probe", None)
+        if cached is not None:
+            return cached
+        answer = False
+        try:
+            from . import pad_route, xinput
+            slot = getattr(self.vpad, "slot", None)
+            handle = xinput.load()
+            before = pad_route.slot_reading(xinput.read(handle, slot)) if slot is not None else {}
+            self.vpad.apply([{"key": "a", "down": True}])
+            after = pad_route.slot_reading(xinput.read(handle, slot)) if slot is not None else {}
+            self.vpad.apply([{"key": "a", "down": False}])
+            answer = pad_route.press_registered(before, after)
+            self.vpad_report = pad_route.report("vpad" if answer else "keyboard", slot, answer)
+        except Exception as exc:                                     # noqa: BLE001 - an unusable probe is not a working pad
+            self.vpad_report = {"input_path": "keyboard", "vpad_slot": getattr(self.vpad, "slot", None),
+                                "vpad_probe": False, "reason": f"probe failed: {type(exc).__name__}: {exc}"}
+        self._vpad_probe = answer
+        return answer
+
     def send_input(self, events: list[dict], polite: bool = False) -> dict:
         # Player 1 on the virtual pad: focus-independent, so no polite/focus gating (the operator's own keyboard is
         # never touched - the bot presses a controller, not keys).
-        if self.vpad is not None:
+        if self.vpad is not None and self._vpad_works():
             return self.vpad.apply(events)
         # win_send_keys already maps standard pad names to keyboard keys. Translating
         # them here as well makes A -> x -> s (Dolphin X), so menus ignore A.
@@ -4962,7 +4989,12 @@ CITRON_TITLE_SETTINGS = {
 CITRON_LOG = ("log", "citron_log.txt")
 # Titles a Linux node starts in Citron when it is configured (switch_linux_emulator = auto): multi-core there, where
 # Eden v0.2.1 loses a thread that moves itself between cores (EDEN_TITLE_SETTINGS) and runs them single-core.
-SWITCH_CITRON_TITLES = frozenset({"010099A00BC1E000"})  # RE4 only: RE5/RE6 run on Eden (verified 2026-11-03); RE4 needs Citron because it does not run on Eden
+SWITCH_CITRON_TITLES = frozenset({"010099A00BC1E000", "01002A000CD48000"})
+# RE4 + RE6 on Citron, RE5 on Eden: the two emulators are separate processes with separate data dirs, so an
+# RE4/RE6 (Citron) title can be warm or playing beside an RE5 (Eden) title - the operator's multiple-instances
+# seamless rotation (2026-11-11 19:36). Before this pair the whole rotation was one Eden slot. RE5/RE6 were verified
+# on Eden (2026-11-03); the Citron settings for both are already in CITRON_TITLE_SETTINGS, and the RE6's Citron boot
+# is the live experiment that turns the RE5<->RE6 boundary from a cold switch into a cross-emulator handoff.
 # A boot that never draws (live 2026-10-26: 1 of 7 Eden single-core boots of RE5 stayed black at 0 FPS after
 # "SetPollingMode") is started again once: these titles animate from the first second (logos, intro, title fog).
 BOOT_WATCH_TITLES = frozenset({"010018100CD46000", "01002A000CD48000", "010099A00BC1E000"})
