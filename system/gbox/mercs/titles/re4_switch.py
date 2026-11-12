@@ -945,6 +945,11 @@ def snapshot(m, now: float | None = None, search: bool = True) -> dict:
                 # pattern's family and the aim book get nothing. CLASS_OF maps the equipped item to its class.
                 if snap.get("weapon_class") is None and snap.get("equipped_id") in _w.CLASS_OF:
                     snap["weapon_class"] = _w.CLASS_OF[snap["equipped_id"]]
+                # An id neither table knows cannot be aimed at or modelled: live 2026-11-12 a round read weapon=33 with
+                # CLASS_OF[0x33] a KeyError, fired 19 shots and landed none. Name it in the stats instead of letting it
+                # look like an aim failure.
+                if snap.get("weapon_class") is not None and int(snap["weapon_class"]) not in CLASS_FAMILY:
+                    stats["weapon_unmapped"] = int(snap["weapon_class"])
             except (ValueError, OSError, TypeError, IndexError, AttributeError):
                 pass
         if 0 <= game["kills"] <= MERC_KILLS_MAX:
