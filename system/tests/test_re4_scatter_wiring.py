@@ -8,7 +8,7 @@ def test_the_re4_barrage_is_built_but_off_until_live_receipts():
     assert R4.SCATTER is False and R4.SCATTER_EVERY_S == 12.0 and R4.SCATTER_N == 8
     assert R4.SCATTER_FLASH_ONLY is False                 # flash and hand are both built: the cap narrows, not refuses
     assert R4.scatter_kinds() == ("flash", "hand")
-    assert R4.RING is False and R4.RING_KIND == "flash"    # the ring waits for its own receipt too
+    assert R4.RING is True and R4.RING_KIND == "launcher"   # the 360 launcher ring is live (operator 2026-11-11)
 
 
 def test_the_shared_rule_offers_re4_its_step():

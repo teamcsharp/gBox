@@ -508,7 +508,12 @@ SCATTER_TITLES = frozenset({"01002A000CD48000", "010018100CD46000", "010099A00BC
 SCATTER_DEFAULTS = {"enabled": True, "cooldown_s": 12.0, "count": 8, "near_cm": 500.0, "reach_cm": 1500.0,
                     "floor_dy_cm": 150.0, "hurt_s": 3.0, "min_pack": 3, "surround_n": 4, "surround_cm": 400.0,
                     "kill_window_s": 8.0, "toward_n": 6, "after_ring_s": 6.0,   # (no barrage right after a ring)
-                    "kinds": ("flash",)}         # what "random" draws; a title's scatter_kinds() overrides it
+                    # The launcher's rounds first, Nitrogen (shell1304) ahead of the rest: the operator's "the same
+                    # everything across titles - the same 360 grenade launcher blasts". While this read ("flash",) the
+                    # barrage that fires when the ring does not was a flash throw (live 2026-11-11 23:48: RE6 ring
+                    # deployed with kind=flash although every title declares RING_KIND 'launcher'). A title's
+                    # scatter_kinds() still overrides this set.
+                    "kinds": ("shell1304", "shell1303", "shell1302", "hand", "incendiary", "flash")}
 
 
 def scatter_policy(title_module=None, stats=None) -> dict:
