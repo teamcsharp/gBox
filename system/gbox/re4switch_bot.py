@@ -785,9 +785,20 @@ def _maintain_mods(ad, snap: dict, stats: dict) -> None:
     # transition the counter never saw - an instant kill, not a slow loss. hp/hp_max make that checkable live.
     pl = (snap or {}).get("player") or {}
     if isinstance(pl.get("hp"), int):
+        prev = stats.get("hp")
         stats["hp"] = pl["hp"]
         if isinstance(pl.get("hp_max"), int):
             stats["hp_max"] = pl["hp_max"]
+        # How big each blow was, not just that one happened. A death otherwise reads "dmg=1" whether a single hit took
+        # him from full to zero or three did, and those need opposite fixes (avoidance versus more healing). Last hit as
+        # "before->after", its size, the largest of the round, and how many landed (live 2026-11-12: a 68-kill round died
+        # and nothing could say whether it was a one-shot).
+        if isinstance(prev, int) and pl["hp"] < prev:
+            took = prev - pl["hp"]
+            stats["last_hit"] = f"{prev}->{pl['hp']}"
+            stats["last_hit_dmg"] = took
+            stats["max_hit_dmg"] = max(int(stats.get("max_hit_dmg") or 0), took)
+            stats["hit_events"] = int(stats.get("hit_events") or 0) + 1
     elif "life_raw" in pl:
         # The read refused: these are the three u16s at PLAYER_LIFE - 2 (life in the middle). Without them a blank hp
         # is indistinguishable from a missing player or a bad base, and both damage tracking and the heal need hp.

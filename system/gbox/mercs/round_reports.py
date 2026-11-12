@@ -57,7 +57,11 @@ METRICS = {
               'stuck_events', 'stuck_reason', 'learned_walls', 'learned_floor_cells', 'wall_detours',
               'detours', 'backoffs', 'vaults', 'replans', 'blocked_skips'),
     'checkpoints': ('bonuses_taken', 'bonus_s', 'time_bonuses_remaining', 'bonus_actor_removals'),
-    'damage': ('player_damage_events', 'hits_taken', 'round_used_health_protection'),
+    'damage': ('player_damage_events', 'hits_taken', 'round_used_health_protection',
+               # The size of the blows, which decides the fix: a single hit from full to zero is avoidance, three hits
+               # are healing throughput. last_hit reads "1860->0" (live 2026-11-12: a 68-kill round died and the report
+               # could not say which it was).
+               'last_hit', 'last_hit_dmg', 'max_hit_dmg', 'hit_events'),
     'mines': ('mines_placed', 'mine_attempts', 'mine_detonations_observed', 'mine_retreats_completed',
               'mine_pickups_avoided'),
     'engagement': ('kills', 'attacks_seen', 'attacks_prevented', 'attacks_avoided', 'attacks_landed', 'evades',
