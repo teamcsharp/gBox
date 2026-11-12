@@ -1152,6 +1152,12 @@ def _screen_impl(m, merc=None, now: float | None = None) -> dict:
     snap = snapshot(m)
     p, phase = snap.get("player"), snap.get("mercenaries_phase")
     if "uIdGameover00" in ui:
+        # A game-over prompt IS a death: it is raised when the player's health ran out. Returning straight into the
+        # continue prompt left where='dead' unset, so _record_death never ran and the round reported round_deaths 0 with
+        # death_hp/death_nearest_m null on a round the harness witnessed as `died` - live 2026-11-12, RE6 at 90 kills,
+        # outcome died, every survival counter null. The bot read its health fine; it just never wrote the death down.
+        if isinstance(p, dict) and isinstance(p.get("hp"), (int, float)) and p["hp"] <= 0:
+            return out | continue_prompt(m, ui["uIdGameover00"]) | {"where": "dead"}
         return out | continue_prompt(m, ui["uIdGameover00"])
     if "uIdResult30" in ui:
         return out | {"where": "results"}
