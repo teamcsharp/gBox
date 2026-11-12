@@ -76,10 +76,17 @@ if __name__ == "__main__":
         last_position = (x, z)
 
         if stuck_count >= 3:
-            print(f"stuck at ({x:.1f},{z:.1f}) - START to close any menu, then turn", flush=True)
+            # A character wedged in a corner cannot be freed by turning alone - `up` just presses it into the wall. Back
+            # off first, then turn, so there is room to rotate. START is also pressed because a pause menu looks
+            # identical from the position alone (measured: the character stood still in a corner with no menu open).
+            print(f"stuck at ({x:.1f},{z:.1f}) - backing off, pressing START, then turning", flush=True)
             tap(pad, "start")
-            time.sleep(0.8)
+            time.sleep(0.7)
+            hold(pad, "down", 0.7)
+            time.sleep(0.2)
             hold(pad, "right", 0.6)
+            time.sleep(0.2)
+            hold(pad, "up", 0.6)
             stuck_count = 0
             continue
 
