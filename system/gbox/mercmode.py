@@ -158,7 +158,14 @@ TITLES = {
                 # the Switch No Mercy edition, chosen per host through preferred_editions (gbox.re_switch.preferred_spec)
                 'switch': {'game_id': '115f9cdbba115432', 'title_id': '01002A000CD48000', 'update': 'v131072',
                            'adapter': 'citron', 'verified': True, 'mode': 'no_mercy',
-                           'driver': 'gbox.mercs.titles.re6_switch', 'selected_by': 'preferred_editions'},
+                           'driver': 'gbox.mercs.titles.re6_switch', 'selected_by': 'preferred_editions',
+                           # The operator's 360 launcher ring (2026-11-11 20:18 "i need that 360 grenade launcher
+                           # ring"): the spread table puts the grenade launcher (uWp1080/item 0x112) in every
+                           # character's loadout, which is the ring's shell-branch precondition (the Nitrogen round
+                           # shell1304 is the preferred shell). Without this round_ops entry the spread only ran
+                           # from the app's mod op, so no round carried a launcher and every ring fell back to the
+                           # flash (live 19:27-20:08: rings deployed with fallback=1 and kind=flash).
+                           'round_ops': [('re6_switch_mods', {'op': 'merc_loadout', 'on': True, 'spread': True})]},
             },
             'reason': 'RE6 PS3 (BLUS30855) has a verified native RPCS3 launch but no verified Mercenaries combat driver, menu cursor, timer or terminal-round reader.'},
     # the catalog's '(USA)' 7z holds the EUR image (CTR-P-ABMP, title 0004000000038B00): the map and boundaries name its TID
