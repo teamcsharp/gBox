@@ -3021,6 +3021,17 @@ class Bot:
         if isinstance(hp, int) and isinstance(last, int) and hp < last:
             self.__dict__["_hurt_at"] = now
         at = self.__dict__.get("_hurt_at")
+        # A blow the HEAL absorbed is the one that matters. The heal restores within a tick, so the hp sample above never
+        # sees a big hit - only SMALL blows (which leave health above the heal's line) were ever noticed, which is the
+        # exact inversion of "back off after the first heavy hit lands" (live 2026-11-12: blow "825 of 1860" absorbed
+        # with the health sampled at full every time). The mods record the last restore; treat it as the hit.
+        try:
+            from .re4_switch_mods import LAST_HEAL
+            heal_at = float(LAST_HEAL.get("at") or 0.0)
+        except Exception:                                # noqa: BLE001 - a missing tracker never costs the backoff
+            heal_at = 0.0
+        if heal_at and time.time() - heal_at <= HIT_BACKOFF_S:
+            self.__dict__["_hurt_at"] = at = now         # (the mods' wall clock, converted to the bot's own)
         if at is None or now - at > HIT_BACKOFF_S or now < self.__dict__.get("_backoff_block_until", -1e9):
             return None                                  # (no chaining: see HIT_BACKOFF_GAP_S)
         if p is None:

@@ -110,6 +110,11 @@ def _save(st: dict) -> None:
 
 
 _FILES: dict = {}                        # id(ad) -> SETTINGS_FILE's mtime_ns when the state last took the file
+# The last blow the heal absorbed, read by the bot's own hit backoff. The heal restores within a tick, so a blow big
+# enough to matter is never seen by a per-tick health sample - which meant the backoff only ever fired for SMALL blows,
+# the exact inversion of the operator's rule ("back off after the first heavy hit lands"). {"at": time.time(), "from",
+# "top"} on every restore.
+LAST_HEAL: dict = {}
 
 
 def _state(ad) -> dict:
@@ -228,6 +233,7 @@ def _keep_life(ad, snap) -> int:
         # tick after tick and read as a meaningless total (live: max_deficit 7680 against a 1860 bar). A string is
         # passed through unchanged, which is what a measurement needs.
         st["last_blow"] = f"{top - now} of {top}"
+        LAST_HEAL.update(at=time.time(), frm=now, top=top)
         ad.write_memory(addr, struct.pack("<H", top))
         return 1 if struct.unpack("<H", bytes(ad.read_memory(addr, 2)))[0] == top else 0
     except (ValueError, OSError, RuntimeError, struct.error):
