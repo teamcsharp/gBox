@@ -98,17 +98,20 @@ def app_window():
 
 
 def raise_window(hwnd=None, tries=6):
+    """Ask the window manager to bring a window forward WITHOUT pinning it on top.
+
+    Deliberately no HWND_TOPMOST here: that is what left gBox covering the whole desktop when the matching NOTOPMOST call was lost.
+    """
     hwnd = hwnd or app_window()
     if not hwnd:
         return False
     root = user32.GetAncestor(hwnd, 2)
     for _ in range(tries):
-        user32.ShowWindow(hwnd, 9)
-        user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)
-        user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0001 | 0x0002)
-        user32.SetForegroundWindow(hwnd)
+        user32.ShowWindow(hwnd, 9)                       # SW_RESTORE
         user32.BringWindowToTop(hwnd)
-        me, them = ctypes.windll.kernel32.GetCurrentThreadId(), user32.GetWindowThreadProcessId(hwnd, None)
+        user32.SetForegroundWindow(hwnd)
+        me = ctypes.windll.kernel32.GetCurrentThreadId()
+        them = user32.GetWindowThreadProcessId(hwnd, None)
         user32.AttachThreadInput(me, them, True)
         user32.SetFocus(hwnd)
         user32.AttachThreadInput(me, them, False)
@@ -116,6 +119,26 @@ def raise_window(hwnd=None, tries=6):
         if adapters._win_input_in_front(user32, root, False):
             return True
     return False
+
+
+def clear_topmost(hwnd=None):
+    """Release an always-on-top window. Safe to call whether or not it is pinned."""
+    hwnd = hwnd or app_window()
+    if not hwnd:
+        return False
+    GWL_EXSTYLE, WS_EX_TOPMOST, HWND_NOTOPMOST = -20, 0x00000008, -2
+    released = False
+    for target in (hwnd, user32.GetAncestor(hwnd, 2)):
+        if not target:
+            continue
+        style = user32.GetWindowLongW(target, GWL_EXSTYLE)
+        if style & WS_EX_TOPMOST:
+            user32.SetWindowLongW(target, GWL_EXSTYLE, style & ~WS_EX_TOPMOST)
+        user32.SetWindowPos(target, HWND_NOTOPMOST, 0, 0, 0, 0,
+                            0x0001 | 0x0002 | 0x0010 | 0x0020)   # NOSIZE|NOMOVE|NOACTIVATE|FRAMECHANGED
+        if not (user32.GetWindowLongW(target, GWL_EXSTYLE) & WS_EX_TOPMOST):
+            released = True
+    return released
 
 
 def _pid():
