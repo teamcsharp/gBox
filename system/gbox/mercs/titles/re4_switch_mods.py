@@ -1161,6 +1161,32 @@ def _retry_pre_round(ad, mem, limit_s: float = 60.0) -> None:
     threading.Thread(target=run, name="re4-pre-round", daemon=True).start()
 
 
+def _unstick(ad, snap) -> int:
+    """Clear the CATCHED status bit while it is set, so a grab (a QTE) can no longer hold him.
+
+    ``Status_flg`` is u32[4] at player + PG_STATUS (0x5090) and a Ganado's hold is word 1 & 0x8000 (re4_switch
+    STA_PL_CATCHED); the game's own mash frees him through the same flag, so clearing it ends the hold immediately -
+    the operator, 2026-11-12: "the bot is still failing QTE events ... make sure that they always succeed and that the
+    bot is fully reactive to QTE events no matter what, and they never fail". Tapping A at a fixed rate was the whole
+    of the old answer (NOT_IN_CONTROL_KEYS), which cannot win a stick-wiggle QTE at all. -> writes made.
+    """
+    p = (snap or {}).get("player") or {}
+    ptr = p.get("ptr")
+    if not isinstance(ptr, int) or not D.ptr_ok(ptr):
+        return 0
+    word_i, mask = D.STA_PL_CATCHED
+    addr = ptr + D.PG_STATUS + 4 * word_i
+    try:
+        word = struct.unpack("<I", bytes(ad.read_memory(addr, 4)))[0]
+        if not word & mask:
+            return 0
+        want = word & ~mask
+        ad.write_memory(addr, struct.pack("<I", want))
+        return int(struct.unpack("<I", bytes(ad.read_memory(addr, 4)))[0] == want)
+    except (ValueError, OSError, RuntimeError, struct.error):
+        return 0
+
+
 def maintain(ad, snap: dict | None = None) -> dict:
     """Every RAM snapshot of a round: the health caps, the time per kill, the clock write's confirmation."""
     if not snap or snap.get("module_base") is None:
@@ -1181,6 +1207,11 @@ def maintain(ad, snap: dict | None = None) -> dict:
         n = _hand(ad, snap)                              # the bot's grenade in hand / the gun back (re4_switch.THROWS)
         if n:
             out["hand_writes"] = n
+        # a hold is a QTE: clear its status bit rather than hoping a mash wins it
+        n = _unstick(ad, snap)
+        if n:
+            st["qte_unstuck"] = st.get("qte_unstuck", 0) + n
+            out["qte_unstuck"] = n
         frac = 0.0 if st.get("one_hit") else st.get("enemy_health")
         if frac is not None and frac < 1.0:
             n = _cap_health(ad, snap.get("enemies"), frac)
