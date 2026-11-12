@@ -337,8 +337,15 @@ class Director:
             # in his way: brutal fire until the way is clear; on sight further off: fire, but the combo and the level
             # may outweigh it
             "engage": 1.0 if impeding else 0.5 if in_sight else 0.0,
-            # the operator's window: nothing owed before COMBO_MIN_S, everything by COMBO_MAX_S
-            "combo": _ramp(since_kill, COMBO_MIN_S, COMBO_MAX_S) if in_sight else 0.0,
+            # the operator's window: nothing owed before COMBO_MIN_S, everything by COMBO_MAX_S.
+            # The `if in_sight else 0.0` this used to have zeroed the urgency exactly when a kill was hardest to
+            # find - nothing visible - which is the one case where the combo is lost without a fight. The operator,
+            # 2026-11-12: "maintaining the combo at all times ... it is imperative that the bot knows to maintain the
+            # combo and it goes forward and keeps that combo going no matter what the entire round without letting it
+            # fail." With nothing in sight it ramps at 0.75: above explore's 0.7 weight so the search is driven by the
+            # deadline, below a visible target so a kill in reach still wins. The `score` command degrades to the
+            # search on its own when there is no target to pick.
+            "combo": _ramp(since_kill, COMBO_MIN_S, COMBO_MAX_S) * (1.0 if in_sight else 0.75),
             # posturing: the longer about one spot the stronger; with enemies in his way they come first
             "explore": _ramp(anchor_s, ANCHOR_MIN_S, ANCHOR_MAX_S) * (0.4 if impeding else 1.0),
             "explosives": min(1.0, 0.55 + 0.1 * (crowd - CROWD_N)) if mob else 0.0,
