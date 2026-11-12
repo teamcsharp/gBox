@@ -434,6 +434,7 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
     stats["ram"] = m is not None
     keys = Keys(send, sleep=sleep)
     bot = driver.Bot(stats=stats, clock=clock) if m is not None else None
+    driver.WEAPON_ASK.clear()                        # a weapon request never survives from the run before this one
     ring_step = _ring_step(ad, stats)                # the bot's own ring rule (gbox.mercs.grenade_ring)
     started = clock()
     last_step = 0.0

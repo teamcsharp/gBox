@@ -2406,6 +2406,14 @@ class Bot:
         return gate is None
 
     # --- the choice ---
+    def _mine_ring_done(self, now, reason: str) -> None:
+        """A ring ends: its clock starts again, the reason is kept, and a weapon request it made is withdrawn."""
+        self.__dict__.pop("_mine_ring", None)
+        self.stats["mine_ring_last_at"] = now
+        self.stats["mine_ring_decision"] = reason
+        if WEAPON_ASK.get("why") == "mine ring":
+            WEAPON_ASK.clear()
+
     def _mine_ring_step(self, p, snap, now):
         """The mine-thrower ring (operator 2026-11-12): ten darts at 36 deg round him, every 1.5 min or to stop a boss.
 
@@ -2442,25 +2450,19 @@ class Bot:
             WEAPON_ASK.update(item=MINE_RING_ITEM, at=time.monotonic(),
                               until=time.monotonic() + MINE_RING_ARM_S + 2.0, why="mine ring")
         if now - float(st.get("at") or 0) > MINE_RING_WINDOW_S:
-            d.pop("_mine_ring", None)
-            self.stats["mine_ring_last_at"] = now
-            self.stats["mine_ring_decision"] = f"the sweep ran out of budget at dart {int(st.get('i') or 0) + 1}"
+            self._mine_ring_done(now, f"the sweep ran out of budget at dart {int(st.get('i') or 0) + 1}")
             return None
         if MINE_RING_ITEM is not None and snap.get("equipped_id") != MINE_RING_ITEM:
             if now - float(st.get("armed_at") or 0) > MINE_RING_ARM_S:
-                d.pop("_mine_ring", None)
-                self.stats["mine_ring_last_at"] = now
-                self.stats["mine_ring_decision"] = (f"the mine thrower was not in his hand "
-                                                    f"(equipped {snap.get('equipped_id')})")
+                self._mine_ring_done(now, f"the mine thrower was not in his hand "
+                                          f"(equipped {snap.get('equipped_id')})")
             else:
                 self.doing, self.why = "mine_ring", "waiting for the mine thrower in his hand"
                 return {"hold": set()}
         count = int(MINE_RING_N)
         if int(st.get("i") or 0) >= count:
-            d.pop("_mine_ring", None)
-            self.stats["mine_ring_last_at"] = now
             self.stats["mine_ring_shots"] = int(self.stats.get("mine_ring_shots", 0)) + int(st.get("shots") or 0)
-            self.stats["mine_ring_decision"] = f"ring complete: {int(st.get('shots') or 0)} darts"
+            self._mine_ring_done(now, f"ring complete: {int(st.get('shots') or 0)} darts")
             return None
         heading = float(st.get("base") or 0.0) + 2.0 * math.pi * int(st["i"]) / count
         err = wrap(heading - (p.get("rot") or 0.0))

@@ -6,8 +6,17 @@ rule then evaded the boss instead of finishing it. Every test is on synthetic sn
 """
 import math
 
+import pytest
+
 from gbox.mercs import grenade_ring as G
 from gbox.mercs.titles import re4_switch as D
+
+
+@pytest.fixture(autouse=True)
+def _no_weapon_ask_leak():
+    """The mine ring's weapon request is a module-level ask: never let one test's ring arm the next test's hand."""
+    yield
+    D.WEAPON_ASK.clear()
 
 
 def mm(p):

@@ -1372,9 +1372,11 @@ def maintain(ad, snap: dict | None = None) -> dict:
                 out["motion_rate_writes"] = n
         # The random (or chosen) weapon: in his hand by data writes once the round is live, every round
         # (_round_weapon). The loadout code patch is off (LOADOUT_CODE_PATCH: it hung every stage load).
+        given_round_weapon = False
         if st.get("random_weapon") or st.get("loadout_weapon"):
             given = _round_weapon(ad, snap, st)
             if given is not None and given.get("verified"):
+                given_round_weapon = True
                 # every value in this dict is summed by the playbook's mods panel (re4switch_bot._maintain_mods): numbers
                 # only, or the mission dies with "int + dict". The weapon's name/round live in status()'s
                 # weapon_given / weapon_rounds (st["weapon_rounds"]), which is where the round report reads them.
@@ -1388,10 +1390,15 @@ def maintain(ad, snap: dict | None = None) -> dict:
             out["boss_weapon_swapped"] = 1
         # The bot's mine-thrower ring asks for the thrower in his hand (re4_switch.WEAPON_ASK): the same verified in-hand
         # swap as the round's weapon. A request the game refuses is recorded (mine_ring_arm_error) and cleared: a ring
-        # never retries the same hand forever.
+        # never retries the same hand forever. A round's own weapon give cancels any stale ask first (a request left over
+        # from the previous round must never replace the new round's random weapon).
         ask = getattr(D, "WEAPON_ASK", None)
-        if isinstance(ask, dict) and ask.get("item"):
-            if time.monotonic() < float(ask.get("until") or 0):
+        live_round = isinstance(snap.get("game"), dict) and snap["game"].get("phase") == "playing" \
+            and isinstance((snap.get("player") or {}).get("ptr"), int)
+        if isinstance(ask, dict) and ask.get("item") and live_round:
+            if given_round_weapon:
+                ask.clear()
+            elif time.monotonic() < float(ask.get("until") or 0):
                 import random as _random
                 given = _give_weapon(ad, snap["module_base"], st, _random.Random(), fixed=int(ask["item"]))
                 if isinstance(given, dict) and given.get("verified"):
