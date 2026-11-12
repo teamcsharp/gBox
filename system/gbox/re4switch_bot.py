@@ -547,6 +547,11 @@ def play(ad, send, stopped, sleep=time.sleep, stats: dict | None = None, *, cloc
                 except Exception as exc:                 # noqa: BLE001 - a ring never ends the round
                     stats["ring_error"] = f"{type(exc).__name__}: {exc}"[:160]
                 else:
+                    # The engine publishes these for the Switch titles; this driver is RE4's own loop, so without them
+                    # the operator's panel and the round reads showed no ring at all (live 2026-11-11: RE4 rounds 9-17
+                    # with empty ring_armed / ring_decision while the ring step was wired and running).
+                    stats["ring_armed"] = True
+                    stats["ring_decision"] = str(ring_out.get("reason") or "")[:200]
                     if ring_out.get("fired"):
                         re4_walk.publish(pub, snap, bot, "playing")
                         sleep(BOW_FIGHT_TICK_S if (snap or {}).get("weapon_class") == BOW_CLASS else FIGHT_TICK_S)
