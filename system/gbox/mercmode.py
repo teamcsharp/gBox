@@ -187,6 +187,12 @@ def normalize(patch, current=None):
         out['keep_warm'] = int(out['keep_warm'])
     if type(out.get('keep_warm')) is not int or not 0 <= out['keep_warm'] <= WARM_MAX:
         raise ValueError(f'MercMode keep_warm is how many titles wait ready: 0..{WARM_MAX}')
+    # Operator 2026-11-11 18:33: "the goal is to have Resident Evil loading in the background so that by the time
+    # that the previous match is done ... the second instance is already ready and loaded. But I don't like to see the
+    # stream go down without any game being played." A client that still sends 0 (the desktop app's stale default) is
+    # raised to one warm title: the rotation preloads the next title instead of dropping to a slate between blocks.
+    if out.get('enabled') and out.get('keep_warm') == 0:
+        out['keep_warm'] = 1
     if type(out['enabled']) is not bool or type(out['presentation_priority']) is not bool or type(out['rounds_per_title']) is not int \
             or not 1 <= out['rounds_per_title'] <= 20:
         raise ValueError('MercMode needs enabled true/false and 1..20 rounds per title')

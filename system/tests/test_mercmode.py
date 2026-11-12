@@ -1240,8 +1240,18 @@ def test_low_memory_skips_the_preload_and_this_title_plays_on_instead_of_a_cold_
     assert store.get(S.STATE,w['name'])['mercmode_warm_attempts']==2
 
 
-@pytest.mark.parametrize('cfg,features',[({'keep_warm':0},[M.WARM_FEATURE]),({},[])])
-def test_keep_warm_zero_or_an_older_worker_keeps_the_cold_switch(cfg,features):
+def test_a_stale_keep_warm_zero_is_floored_to_one_warm_title():
+    """Operator 2026-11-11 18:33: the seamless rotation needs the next title warm - a client that still sends
+    keep_warm 0 (the desktop app's stale default) is raised to one warm title by normalize; a disabled rotation
+    keeps 0."""
+    assert M.normalize({'enabled': True, 'keep_warm': 0})['keep_warm'] == 1
+    assert M.normalize({'enabled': True, 'keep_warm': 1})['keep_warm'] == 1
+    assert M.normalize({'enabled': True, 'keep_warm': 2})['keep_warm'] == 2
+    assert M.normalize({'enabled': False, 'keep_warm': 0})['keep_warm'] == 0
+
+
+@pytest.mark.parametrize('cfg,features',[({},[])])
+def test_an_older_worker_without_the_warm_feature_keeps_the_cold_switch(cfg,features):
     store,w,saver,calls,now,tick,run,job=warm_playing(features=features,**cfg)
     launches=len([c for c in calls if c['tool']=='launch_game'])
     clock(run,now,25);tick(1)
