@@ -1498,7 +1498,11 @@ FIRE_GAP_S = 0.25                        # between trigger taps (a tap is down +
 # The shot's tolerance is the angle a Ganado's body covers at his distance (live 2026-11-10 22:07: 11 hits from 166
 # shots with a flat 7-degree tolerance - 1.5 m off at 12 m): atan(FIRE_HALF_WIDTH_MM / distance), never under
 # FIRE_TOL_MIN; inside AIM_NUDGE of it the right stick is tapped (a frame of turn) rather than held.
-FIRE_HALF_WIDTH_MM, FIRE_TOL_MIN, AIM_NUDGE = 300.0, 0.02, 0.2
+FIRE_HALF_WIDTH_MM, FIRE_TOL_MIN, AIM_NUDGE = 300.0, 0.05, 0.2
+# FIRE_TOL_MIN 0.05 rad (~2.9 deg): the operator 2026-11-11 19:53 ("the bot is just holding up the weapon without
+# firing it") - at 1.1 deg the aim's pad error almost never came inside the tolerance, so the raise/aim ticks repeated
+# forever and the trigger never tapped. A hit needs the body's half width (0.3 m) inside 0.05 rad to ~6 m; past that the
+# atan2 term is the tighter bound and the floor only forgives what an enemy's body still covers.
 # The melee follow-up (docs/research/mercenaries-character-specials.md 2.1 / 6.1): RE4's Mercenaries is played shot ->
 # stun -> the action button at the prompt (Leon's roundhouse / suplex, Krauser's double kick, HUNK's neckbreaker,
 # Wesker's thrust punch, Ada's fan kick): a melee is a near-certain kill, hits the crowd round it and costs no ammo.
