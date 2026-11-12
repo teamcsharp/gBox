@@ -485,6 +485,12 @@ def fire(ad, decision: dict, stats: dict, now: float, *, ring=None) -> dict:
         # DEFEND: the freezing round where the title has one (RE6's uWp1304 Nitrogen), else the flash - RE4/RE5 carry
         # no Nitrogen round and the flash's stun is their own "frozen" state. Recorded as what actually fired.
         kind, available = defend_kind(target)
+        if not available:
+            # A freeze round the controller cannot verify would stall the native shell spawn (RE6's state 2 on
+            # 2026-11-12) and lock every later ring for the round: the flash is the verified freeze-substitute and
+            # protects him NOW. The freeze round returns by itself the day its path reports available (a live receipt).
+            stats["ring_defend_shell_refused"] = str(kind)
+            kind, available = "flash", True
         allow_unverified = not available
         stats["ring_defend_kind"] = kind
         stats["ring_kind_fired"] = kind

@@ -64,7 +64,11 @@ MAX_ENEMIES = 512
 GET_DTI_SLOT, DTI_NAME = 5, 0x8
 # The grenade ring's auto-deploy rule (gbox.mercs.grenade_ring): settable from the PiP's bot-logic sidebar. RING off
 # never fires it; RING_N is the crowd inside a few metres that counts as surrounded; RING_EVERY_S is the cooldown.
-RING, RING_N, RING_EVERY_S, RING_KIND = True, 4, 90.0, "launcher"
+# The automatic ring's kind is FLASH on this build (live 2026-11-12): the launcher's shell spawn is built but stalls in
+# the native class-spawn call (state 2, off 0x18f2bc0) so the launcher ring never completes, while the flash ring is
+# live-verified (a PiP click detonated 10/10). The launcher and its three shells stay selectable in the PiP as probes
+# (and the defensive Nitrous decision still asks for the shell first when the title offers it).
+RING, RING_N, RING_EVERY_S, RING_KIND = True, 4, 90.0, "flash"
 # the operator's 360 launcher ring (2026-11-11 20:34): every minute and a half (grenade_ring.periodic_s 90.0).
 # The scatter barrage's rule (gbox.mercs.grenade_ring.decide_scatter, operator 2026-11-10 ~07:00: "spray a scatter shot
 # of grenades from his postion at threats at will ... whenever the going gets tough"): a barrage at most every
