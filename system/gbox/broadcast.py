@@ -467,14 +467,27 @@ def choose(pin: dict, watch: dict | None, rows: list[dict], *, current: str | No
     if watched and not local_view and now - ((watch or {}).get("at") or 0) <= watch_ttl_s:
         if watched not in running:
             watched = successor(watched)
-        if watched in running:
+        # Viewing a session is private; it does not move the SERVICE stream off MercMode. The operator, 2026-11-12: "stop
+        # broadcasting PSO. I am trying to broadcast Merc mode. If I set the broadcast to be Merc mode, don't switch it
+        # just because the game session is different in G Box. I am using G Box to control other instances of G Box
+        # across the network." A view now follows only when it is itself agent-owned (the rotation) or when no
+        # agent-owned session is live at all - otherwise MercMode stays on air while the operator drives whatever they
+        # like on the local clients.
+        agents_live = any(r.get("agent_owned") and r.get("fresh") for r in running.values())
+        watched_agent = watched in running and running[watched].get("agent_owned")
+        if watched in running and (watched_agent or not agents_live):
             return watched, why or "following what you watch"
     pool = [r for r in rows if auto_agents or not r.get("agent_owned")]
     if current in running and (running[current].get("fresh") or not any(r.get("fresh") for r in pool)):
         return current, why or "still on air"          # stays while it has a picture, or while nothing else does
     if not pool:
         return None, why or "no game is running"
-    best = max(pool, key=lambda r: (bool(r.get("fresh")), not r.get("agent_owned"),
+    # MercMode outranks everything (the operator, 2026-11-12: "merc mode must always run 24/7 broadcasting from the gbox
+    # service while I work on parallel operations on the local clients" and "merc mode is of the highest priority").
+    # This key used to be `not r.get("agent_owned")`, which PREFERRED an operator-owned session over an agent one - the
+    # reason PSO kept taking the stream from a live MercMode round. Fresh still comes first, then the agent-owned
+    # session, then a mercmode run, then the newest.
+    best = max(pool, key=lambda r: (bool(r.get("fresh")), bool(r.get("agent_owned")),
                                     r.get("mercmode") == "run", r.get("started") or 0))
     return best["session_id"], why or ("newest game with a picture" if best.get("fresh") else "newest game")
 

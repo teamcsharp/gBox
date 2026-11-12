@@ -189,8 +189,8 @@ def test_choose_follows_what_the_operator_watches_then_sticks():
         ("b", "following what you watch")
     assert B.choose(pin, {"session_id": "b", "at": 0}, rs, current="a", now=110, watch_ttl_s=60) == ("a", "still on air")
     assert B.choose(pin, {"session_id": None, "at": 100}, rs, current="a", now=110, watch_ttl_s=60)[0] == "a"
-    assert B.choose(pin, None, rs, current=None, now=0, watch_ttl_s=60) == ("a", "newest game with a picture"), \
-        "an operator game before an agent's"
+    assert B.choose(pin, None, rs, current=None, now=0, watch_ttl_s=60) == ("b", "newest game with a picture"), \
+        "an agent's MercMode stream before an operator game's: merc mode is the highest priority"
     assert B.choose(pin, None, rs, current=None, now=0, watch_ttl_s=60, auto_agents=False)[0] == "a"
     assert B.choose(pin, None, rows(("b", "x", True, True, 1)), current=None, now=0, watch_ttl_s=60,
                     auto_agents=False) == (None, "no game is running")
@@ -203,7 +203,7 @@ def test_choose_follows_what_the_operator_watches_then_sticks():
     assert B.choose(pin, None, dark, current="c", now=0, watch_ttl_s=60) == ("c", "still on air"), \
         "...but never hops between games that all lack a picture"
     assert B.choose(pin, {"session_id": "a", "at": 0}, stale, current="c", now=1, watch_ttl_s=60) == \
-        ("a", "following what you watch"), "what the operator watches goes on air, picture or not"
+        ("c", "still on air"), "viewing a non-agent game does not take the stream off MercMode"
 
 
 def test_choose_pins_and_follows_a_relaunch():
