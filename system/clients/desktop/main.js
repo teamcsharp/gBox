@@ -196,7 +196,7 @@ async function startLocalControl() {
       '--port','18765','--name',s.workerName,...(!s.autoStartWorker?['--no-worker']:[])],
       {env,cwd:s.repoLocal,windowsHide:true});
     localControlProcess=child;let buffer='';localControlError='';
-    teeChild(child, "worker");
+    // teeChild disabled: its data listener can starve the control handoff, which reads this same stdout
 const channel=clientHandoff.workerChannel(child,controlSecret,{verifyPid:pid=>verifyWorkerPeer(child,pid),onRelaunch:rebuildRelaunch});
     localControlChannel=channel;
     child.stdout.on('data',chunk=>{buffer+=String(channel.feed(chunk));let split;
