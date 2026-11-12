@@ -227,6 +227,20 @@ def normalize(patch, current=None):
             for v in pools.values()):
         raise ValueError(f'MercMode donor_pool maps a title to at most {QUEUE_MAX} build folder names')
     out['donor_pool'] = {k: list(dict.fromkeys(v)) for k, v in pools.items() if v}
+    # How often a FRANCHISE's characters come up, per title: {title: {franchise: weight}}. The operator, 2026-11-12:
+    # "I want sliders that allows me to choose which characters pop up more often ... Sonic the Hedgehog characters, I
+    # want to see them more often ... Mario characters". Franchise is the axis the donor deal already rotates ("franchises
+    # in turn", re5_donor_pool.deal), and donor.game carries it, so a weight here biases that turn toward the franchises
+    # he wants to see. 0 keeps a franchise out; 1 is the plain even share; the builder normalises by the sum.
+    weights = out.get('cast_weights') or {}
+    if not isinstance(weights, dict) or set(weights) - set(TITLES) or any(
+            not isinstance(v, dict) or len(v) > 200 or any(
+                not isinstance(k, str) or not k.strip() or len(k) > 40
+                or type(w) not in (int, float) or not 0 <= w <= 20 for k, w in v.items())
+            for v in weights.values()):
+        raise ValueError('MercMode cast_weights maps a title to {franchise: 0..20}')
+    out['cast_weights'] = {k: {f.strip(): float(w) for f, w in v.items() if float(w) != 1.0}
+                           for k, v in weights.items() if v}
     if type(out['stalemate_cut']) is not bool or type(out['stalemate_cut_s']) is not int \
             or not CUT_MIN_S <= out['stalemate_cut_s'] <= CUT_MAX_S:
         raise ValueError(f'MercMode stalemate: stalemate_cut true/false and {CUT_MIN_S}..{CUT_MAX_S} seconds on the clock')
