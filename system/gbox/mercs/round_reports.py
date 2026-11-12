@@ -75,7 +75,12 @@ METRICS = {
     # Switch drivers: grabs, crowd escapes, heals, dying and deaths in this round; timer = seconds left at the end
     'survival': ('round_holds', 'round_escapes', 'round_burst_backoffs', 'round_heals', 'round_heal_starts',
                  'round_heal_failures', 'round_dying', 'round_deaths', 'round_tablets', 'round_tablet_presses',
-                 'round_tablet_misses', 'timer'),
+                 'round_tablet_misses', 'timer',
+                 # His health AT the death, and how far the last thing near him was. A round that dies with
+                 # round_threat_hits 0 means health never fell at all - the heal cannot touch that, and without these
+                 # the report cannot say whether it was a fall, a scripted kill or a grab (live 2026-11-12:
+                 # "Leon/Village died kills=11 dmg=0 heals=0", Village being the stage where walls_boxed_in hit 878).
+                 'death_hp', 'death_hp_max', 'death_nearest_m'),
     # the enemy knowledge database (gbox.mercs.enemy_db): the shots / hits taken this round fed it, and what it knows
     # for the title (classes, the samples behind them, classes learned with confidence >= 0.5); the report's
     # enemy_knowledge line names the top classes' learned aim, range, shots to kill and danger
