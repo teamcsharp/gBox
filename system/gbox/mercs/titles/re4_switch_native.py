@@ -377,6 +377,25 @@ class Controller(N.Controller):
         return {"state": "confirmed", "verified": False, "op": "flash_at", "effect": "native_flash_blast",
                 "player_generation": self.player_id, **row}
 
+    def grenade_kinds(self):
+        """The ring's kinds as THIS build can honestly fire them (gbox.mercs.grenade_status reads this).
+
+        RE4 had no such method at all, so every kind in the panel read "(unavailable)" and the ring could not be
+        chosen on RE4 even though `grenade_ring` below fires it fine - the operator's own frame (2026-11-12) shows
+        Flash with Hand (unavailable) / Incendiary (unavailable). flash and hand are both real spawn calls
+        (FLASH_BLAST 0x2E4E50, HAND_BLAST 0x2E48B0); the incendiary is only the class-0x16 candidate that
+        `grenade_ring` refuses without allow_unverified, so it stays advertised-but-unavailable rather than hidden.
+        """
+        if not self.attached():
+            why = "the harness is not attached to the player"
+            return [{"kind": k, "available": False, "reason": why} for k in ("flash", "hand", "incendiary")]
+        return [
+            {"kind": "flash", "available": True, "reason": ""},
+            {"kind": "hand", "available": True, "reason": ""},
+            {"kind": "incendiary", "available": False,
+             "reason": "the incendiary blast is not identified on this build yet (checkpoint G3): probe only"},
+        ]
+
     def grenade_ring(self, kind="flash", *, count=None, radius_cm=None, inner_cm=None, ripple_ms=None,
                      expand=None, allow_unverified=False):
         """N blasts in a ring round him (checkpoint G1/G2): flash 4000 mm or more, hand grenade 7000 mm or more.
