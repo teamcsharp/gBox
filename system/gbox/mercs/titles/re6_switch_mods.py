@@ -222,8 +222,10 @@ MAGNUM_TYPES = frozenset({0x107, 0x108})
 # The spread (operator 18:00: "change what weapon is being used by the bot actively ... instantly use that weapon"): a
 # gun's model loads only for the round's loadout, so the empty weapon slots of every loadout get these at round set-up
 # (merc_loadout spread=): the magnums and the shotguns, ready for the live switch and the grab swap.
-SPREAD = ((0x108, 5), (0x107, 7), (0x112, 6), (0x104, 8), (0x105, 7), (0x106, 3))   # magnums, the grenade launcher, shotguns
-# (0x112 the grenade launcher, item 18: spread into every loadout so the arsenal swap always has it loaded to equip)
+SPREAD = ((0x108, 5), (0x112, 6), (0x107, 7), (0x104, 8), (0x105, 7), (0x106, 3))   # magnums, the launcher
+# (0x112 the grenade launcher, item 18: spread into every loadout so the arsenal swap always has it loaded to equip,
+#  second in the fill order because the operator's 360 launcher ring reads the launcher's presence - live 2026-11-11
+#  18:40 a launcher-less character refused every shell ring)
 ASKED: set = set()                                       # the (type, magazine) pairs live_weapon put in the loadouts
 # No pistols (operator 2026-10-27 ~20:00: "for the characters in no mercy, replace the pistol with any random shotgun or
 # magnum"; "i want the characters using random weapons from the game and campaign in mercenaries"): with the spread,
@@ -763,12 +765,14 @@ def _loadout_ok(entry: int, raw: bytes) -> bool:
 
 
 def merc_loadout(g: RE6Switch, on: bool = True, rocket: bool = True, thrown: int = THROWN_MAX, seed=None,
-                 magnum: bool = False, spread: bool = False) -> dict:
+                 magnum: bool = False, spread: bool = True) -> dict:
     """Every Mercenaries starting loadout (the table the game copies at a round's set-up, so the game itself creates the
     weapons and items): no rocket launcher - a random magnum or shotgun in its place - and the remote bomb, the hand,
-    incendiary and flash grenades at `thrown` each where the start list has room. Only the changed (type, count) pairs
-    are written, each read back; off writes the build's pairs back. A round already set up keeps its inventory: the
-    profile runs it from round_ops, at every character select."""
+    incendiary and flash grenades at `thrown` each where the start list has room. `spread` (the operator's ask, now on by
+    default: the 360 launcher ring needs the launcher in every loadout, and no pistols) puts the campaign magnums, the
+    grenade launcher and the shotguns into the empty slots - an explicit spread=False keeps the stock table. Only the
+    changed (type, count) pairs are written, each read back; off writes the build's pairs back. A round already set up
+    keeps its inventory: the profile runs it from round_ops, at every character select."""
     import random
     try:
         thrown = int(thrown)
