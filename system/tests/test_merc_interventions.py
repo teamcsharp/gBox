@@ -247,11 +247,15 @@ def test_status_names_the_grenade_kinds_before_a_worker_has_claimed(tmp_path):
     with TestClient(app) as client:
         out=client.get('/api/sessions/sid/interventions').json()
     rows={r['kind']:r for r in out['options']['grenade_kinds']}
-    assert set(rows)=={'flash','hand','incendiary'}
+    # every kind the ring can be asked for, cross-title (the operator 2026-11-12: any sort of launcher shell or
+    # grenade); RE4 builds no launcher/shell ring and its mine thrower ring is a probe, so all of them say why
+    assert set(rows)=={'flash','hand','incendiary','launcher','shell1302','shell1303','shell1304','mine'}
     assert all(r['available'] is False for r in rows.values())
     assert 'built on the RE4 Switch native harness' in rows['flash']['reason']
     assert 'hand-grenade ring is built' in rows['hand']['reason']
     assert 'does not offer' in rows['incendiary']['reason']
+    assert 'no grenade launcher' in rows['launcher']['reason']
+    assert 'probe' in rows['mine']['reason']
     assert out['available'] is False
     store.db.close()
 
