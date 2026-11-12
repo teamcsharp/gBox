@@ -168,28 +168,36 @@ def _owner_pid(hwnd):
 
 
 def send(events, attempts=2):
-    """Deliver input through the plane's send_input, which uses the virtual XInput pad when one exists.
+    """Deliver input as a session_op job: the RPC endpoint refuses send_input.
 
-    The keyboard branch (`win_send_keys`) is only reached by the plane when no working pad exists, and that is the branch whose presses are silently
-    dropped on this machine. Going through the RPC means the bot uses whichever branch the plane has working, and needs no focus either way.
+    Returns True only when the job succeeded, so a rejected press is visible to the caller instead of being swallowed.
     """
     import session as S
+    import time as _time
     rows = [{"key": str(event.get("key")), "down": bool(event.get("down"))} for event in events
             if event.get("key")]
     if not rows:
         return False
-    for attempt in range(attempts):
+    sid = S.session_id()
+    worker = sid.split("-")[0]
+    payload = {"tool": "session_op",
+               "input": {"session_id": sid, "op": "send_input", "args": {"events": rows}},
+               "require_worker": worker, "agent_use": False}
+    try:
+        job = S._call("/api/jobs", "POST", payload)
+    except Exception:                                             # noqa: BLE001
+        return False
+    job_id = job.get("id")
+    for _ in range(40):
         try:
-            S.rpc("send_input", {"events": rows}, timeout=30)
+            state = S._call(f"/api/jobs/{job_id}")
+        except Exception:                                         # noqa: BLE001
+            return False
+        if state.get("state") == "succeeded":
             return True
-        except Exception as exc:                                  # noqa: BLE001
-            message = str(exc)
-            if "must be active" in message or "isn't open" in message:
-                time.sleep(0.15)
-                continue
-            if attempt == attempts - 1:
-                raise
-            time.sleep(0.15)
+        if state.get("state") == "failed":
+            return False
+        _time.sleep(0.1)
     return False
 
 

@@ -208,7 +208,7 @@ def ensure_focus():
 
 
 SWITCH_WORDS = ("Door", "Swtch", "Switch", "Key")
-SWITCH_RANGE = 120.0
+SWITCH_RANGE = 40.0
 
 
 def switches():
@@ -237,6 +237,8 @@ def switches():
         except Exception:                                        # noqa: BLE001
             continue
         distance = math.dist((me[0], me[2]), (x, z))
+        if state not in (0, 2, 224, 240):
+            continue                                   # not a door state: a despawned or unrelated door entity
         if distance <= SWITCH_RANGE:
             out.append({"class": name, "x": x, "y": y, "z": z, "state": state, "distance": distance})
     return sorted(out, key=lambda row: row["distance"])
