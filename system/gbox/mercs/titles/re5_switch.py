@@ -7550,6 +7550,10 @@ class Bot:
                 return {"hold": self._turn(body_err)}
             ok, why = W.mastery_gate(item, aligned=True, loaded=True, in_band=True)
             self._aimctx = dict(ctx, gate=f"{fam}: {why}")
+            # Name the gate on every evaluation, not only when a shot is recorded: RE5 rounds measured 0-1 shots with the
+            # gun up (live 2026-11-12, shots=0 while t_aim climbed 1.21 -> 3.1 s), and without this the reason a trigger
+            # was held is invisible - exactly the read that turned RE4 around (fire_gate).
+            self.stats["aim_gate"] = self._aimctx["gate"]
             st["phase"] ^= 1
             keys = {"l"}
             if st["phase"]:
@@ -7636,6 +7640,7 @@ class Bot:
         ok, why = W.mastery_gate(item, aligned=aligned, loaded=loaded, in_band=adist <= spec.max_cm, blast=blast)
         fire = ready and ok
         self._aimctx = dict(ctx, gate=f"{fam}: {why}")
+        self.stats["aim_gate"] = self._aimctx["gate"]     # (see the note at the contact branch: the held-trigger reason)
         if spec.pattern == "hold":
             keys |= self._trigger(fire, now)
         elif fire:                                           # tap: a fresh ZR edge every second tick
