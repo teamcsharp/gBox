@@ -1769,6 +1769,9 @@ ENGAGED_DOINGS = frozenset({"turn", "aim", "fire", "hold"})
 # position is. Stats walls_pressed, unwalls, walls_refused, walls_boxed_in.
 WALL_PRESS_S, WALL_PRESS_MM, WALL_KEEP_S, WALL_R_MM, WALL_CONE = 0.6, 150.0, 60.0, 1500.0, 0.7
 UNWALL_MM, UNWALL_S, CONTROL_S = 2500.0, 1.6, 5.0
+# How many consecutive "walled in on every side" ticks before he backs out instead of standing (see that branch): the
+# map can be wrong, and standing there costs the rest of the round.
+BOXED_STAND_MAX = 10
 SLIDE_TRIES_DEG = (45, -45, 90, -90, 135, -135, 180)             # a refused walk: along the wall, nearest first
 # The room's real map (#9342, docs/research/re4-switch-mercs-collision.md, checked against the RomFS and live RAM
 # positions: gbox.re4_switch_room_map; the operator's top RE4 complaint, 2026-11-10: he walks into walls and pins the
@@ -3771,6 +3774,19 @@ class Bot:
             if goal is None:
                 self.stats["room_map_boxed_in" if ahead else "walls_boxed_in"] = \
                     self.stats.get("room_map_boxed_in" if ahead else "walls_boxed_in", 0) + 1
+                # Standing still is the worst answer when the map insists every way is a wall: the map can be wrong by a
+                # doorway's width, and the round's kills go with it (live Base 2026-11-12: walls_boxed_in 330,
+                # t_unwall 506 as the DOMINANT state, kills frozen at 30 with 79 s on the clock, why "walled in on every
+                # side: not walking into it"). After BOXED_STAND_MAX of these in a row, back out instead - a quick turn
+                # and a step - so the position changes and the map gets a chance to disagree with itself. This comment's
+                # own history records the same thing happening for "seconds at a time" on Leon / Base and never being
+                # fixed.
+                self.__dict__["_boxed_n"] = self.__dict__.get("_boxed_n", 0) + 1
+                if self.__dict__["_boxed_n"] > BOXED_STAND_MAX:
+                    self.__dict__["_boxed_n"] = 0
+                    self.stats["boxed_backouts"] = self.stats.get("boxed_backouts", 0) + 1
+                    self.doing, self.why = "unwall", "walled in on every side: backing out instead of standing"
+                    return {"hold": set(QUICK_TURN) | {"lup"}}
                 self.doing, self.why = "unwall", "walled in on every side: not walking into it"
                 return dict(out, hold=hold - {"lup", RUN_BTN})
             d["_uc_unwall"] = {"until": now + (UNWALL_TANGENT_S if mode == "tangent" else UNWALL_S),
