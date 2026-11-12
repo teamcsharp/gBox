@@ -111,7 +111,12 @@ EXCLUSIVE_CAPACITY = {0x03: 100, 0x2D: 100, 0x34: CAP_INFINITE, 0x53: CAP_INFINI
 # No sniper rifles (operator 2026-11: "do not have people using sniper rifles at all ... replace them with random rapid
 # fire magnums or shotguns"): the scoped Rifle (0x2E) and Rifle semi-auto (0x2F) are never drawn at random.
 SNIPER_ITEMS = frozenset({0x2E, 0x2F, 0x51, 0x6B, 0x6C, 0x99})
-HIGH_POWER = tuple(i for i in (0x29, 0x2A, 0x37, 0x2D, 0x94, 0x2C, 0x34, 0x25, 0x27, 0x30, 0x03, 0x35, 0x6D)
+HIGH_POWER = tuple(i for i in (0x29, 0x2A, 0x37, 0x2D, 0x94, 0x2C, 0x34, 0x25, 0x27, 0x30, 0x03, 0x35, 0x6D,
+                               # 0x36 the MINE THROWER: the operator wants it used ("I want the mine launcher to be
+                               # used"), and a mine-dart is a weapon-path projectile (class 0x0E) with no spawn helper
+                               # to aim at a coordinate, so drawing it as the round's weapon is the only way to have
+                               # it in play - the native ring can spawn only grenade-class blasts (0x13/0x16/0x17).
+                               0x36)
                    if i not in SNIPER_ITEMS)
 NAMES = {
     0x01: "Hand Grenade", 0x02: "Incendiary Grenade", 0x03: "Matilda", 0x04: "Handgun Ammo", 0x05: "First Aid Spray",

@@ -1603,7 +1603,10 @@ SIGHT_MEMORY_N, SIGHT_MEMORY_S = 24, 45.0
 # pulls a second: a machine gun, and still long enough for the engine to see each press as an edge (a tap is down+up,
 # and a zero-length press is ignored). Recoil is already gone: the aim lock zeroes the weapon object's sway bounds
 # (+0x3E0..+0x3EC), so the 20th shot lands where the 1st did.
-FIRE_GAP_S = 0.05
+# 0.03 (was 0.05): the operator, 2026-11-12: "I need the bot firing like yosemite Sam because it's funny." Thirty
+# trigger pulls a second instead of twenty; the game's own weapon rate is the real ceiling (the mods' fire tables raise
+# it), and this keeps the pad from being the bottleneck. A tap is down+up, so the press still has to register as an edge.
+FIRE_GAP_S = 0.03
 BOW_FIRE_GAP_S = 0.0025                  # the bow's fast trigger gap: the operator's 20x (0.05 / 20). It was 0.02 -
                                          # 50 a second, which is the rifle's class of gap, not a rain of arrows.
 # (the operator 2026-11-11 21:33: "If the bot isn't rapid firing on these threats, then they will be destroyed.")
