@@ -168,37 +168,28 @@ def _owner_pid(hwnd):
 
 
 def send(events, attempts=2):
-    """Deliver input as a session_op job: the RPC endpoint refuses send_input.
+    """Submit the press as a session_op job and return without waiting for it.
 
-    Returns True only when the job succeeded, so a rejected press is visible to the caller instead of being swallowed.
+    The queue preserves order, so a press only needs delivering. Waiting was actively harmful: jobs take longer than a frame, and treating a slow job as
+    a failed press stopped the character from moving while the presses were being applied anyway.
     """
     import session as S
-    import time as _time
     rows = [{"key": str(event.get("key")), "down": bool(event.get("down"))} for event in events
             if event.get("key")]
     if not rows:
         return False
-    sid = S.session_id()
-    worker = sid.split("-")[0]
-    payload = {"tool": "session_op",
-               "input": {"session_id": sid, "op": "send_input", "args": {"events": rows}},
-               "require_worker": worker, "agent_use": False}
     try:
-        job = S._call("/api/jobs", "POST", payload)
+        sid = S.session_id()
     except Exception:                                             # noqa: BLE001
         return False
-    job_id = job.get("id")
-    for _ in range(40):
-        try:
-            state = S._call(f"/api/jobs/{job_id}")
-        except Exception:                                         # noqa: BLE001
-            return False
-        if state.get("state") == "succeeded":
-            return True
-        if state.get("state") == "failed":
-            return False
-        _time.sleep(0.1)
-    return False
+    payload = {"tool": "session_op",
+               "input": {"session_id": sid, "op": "send_input", "args": {"events": rows}},
+               "require_worker": sid.split("-")[0], "agent_use": False}
+    try:
+        S._call("/api/jobs", "POST", payload)
+        return True
+    except Exception:                                             # noqa: BLE001
+        return False
 
 
 def win_send_keys(pid, events, polite=False):

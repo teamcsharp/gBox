@@ -207,8 +207,8 @@ def ensure_focus():
     return False
 
 
-SWITCH_WORDS = ("Door", "Swtch", "Switch", "Key")
-SWITCH_RANGE = 40.0
+SWITCH_WORDS = ("Door", "Swtch", "Switch", "Key", "Capsule")
+SWITCH_RANGE = 150.0
 
 
 def switches():
@@ -234,14 +234,74 @@ def switches():
                 continue
             x, y, z = struct.unpack(">fff", blob[POS:POS + 12])
             state = struct.unpack(">i", blob[0x18C:0x18C + 4])[0]
+            hp = struct.unpack(">H", blob[HP:HP + 2])[0]
         except Exception:                                        # noqa: BLE001
             continue
         distance = math.dist((me[0], me[2]), (x, z))
-        if state not in (0, 2, 224, 240):
-            continue                                   # not a door state: a despawned or unrelated door entity
+        if "Door" in name and hp <= 0:
+            continue                                   # no hit points: a despawned or unrelated door (the live dump shows 0 vs 32987)
+        if "Door" in name and state not in (0, 2, 224, 240, 880, 176, 48, 1):
+            continue                                   # a state no door has ever shown in this session
         if distance <= SWITCH_RANGE:
-            out.append({"class": name, "x": x, "y": y, "z": z, "state": state, "distance": distance})
+            out.append({"class": name, "x": x, "y": y, "z": z, "state": state, "hp": hp, "distance": distance})
     return sorted(out, key=lambda row: row["distance"])
+
+
+def press_in_reach():
+    """Press any door or switch within 10 units, whatever its state. Returns True when it pressed."""
+    me = player()
+    if me is None:
+        return False
+    raw = S.read_memory(TABLE, MAX_ENTRIES * 4)
+    nearest = None
+    for index in range(MAX_ENTRIES):
+        pointer = int.from_bytes(raw[index * 4:index * 4 + 4], "big")
+        if not (0x80000000 <= pointer < 0x81800000):
+            continue
+        try:
+            name_pointer = int.from_bytes(S.read_memory(pointer, 4), "big")
+            name = S.read_memory(name_pointer, 32).split(b"\x00")[0].decode("ascii", "replace")
+            if not any(word in name for word in ("Door", "Swtch", "Switch", "Capsule", "Key")):
+                continue
+            blob = S.read_memory(pointer, 0x340)
+            x, y, z = struct.unpack(">fff", blob[POS:POS + 12])
+            state = struct.unpack(">i", blob[0x18C:0x18C + 4])[0]
+            hp = struct.unpack(">H", blob[HP:HP + 2])[0]
+        except Exception:                                        # noqa: BLE001
+            continue
+        distance = math.dist((me[0], me[2]), (x, z))
+        if distance <= 10.0 and (nearest is None or distance < nearest[0]):
+            nearest = (distance, name, state, hp, x, z)
+    if nearest is None:
+        return False
+    distance, name, state, hp, x, z = nearest
+    log(f"  in reach: {name} state {state} hp {hp} at {distance:.1f} units - pressing")
+    for attempt in range(4):
+        pso_input.hold("a", 0.3)
+        time.sleep(0.5)
+        again = None
+        raw2 = S.read_memory(TABLE, MAX_ENTRIES * 4)
+        for index in range(MAX_ENTRIES):
+            pointer = int.from_bytes(raw2[index * 4:index * 4 + 4], "big")
+            if not (0x80000000 <= pointer < 0x81800000):
+                continue
+            try:
+                name_pointer = int.from_bytes(S.read_memory(pointer, 4), "big")
+                other = S.read_memory(name_pointer, 32).split(b"\x00")[0].decode("ascii", "replace")
+                if other != name:
+                    continue
+                block2 = S.read_memory(pointer, 0x340)
+                ox, _oy, oz = struct.unpack(">fff", block2[POS:POS + 12])
+                if math.dist((ox, oz), (x, z)) < 8:
+                    again = struct.unpack(">i", block2[0x18C:0x18C + 4])[0]
+                    break
+            except Exception:                                    # noqa: BLE001
+                continue
+        log(f"    press x{attempt + 1}: state {again}")
+        if again != state:
+            log("    state changed - it did something")
+            return True
+    return True
 
 
 def press_switches():
@@ -253,12 +313,17 @@ def press_switches():
     log(f"  switch {target['class']} state {target['state']} at {target['distance']:.0f} units")
     if target["distance"] > 7:
         route, raw_cells, legs = nav3.plan_h((player()[0], player()[2]), (target["x"], target["z"]),
-                                             start_height=player()[1], goal_height=target["y"])
+                                             start_height=player()[1])
         if route:
-            for waypoint in route[1:4]:
-                RUN.run_to(ME_point(), (waypoint[0], waypoint[1]), tolerance=5.0, budget=12.0)
+            for waypoint in route[1:]:
+                RUN.run_to(ME_point(), (waypoint[0], waypoint[1]), tolerance=5.0, budget=15.0)
                 if OP.operator_active():
                     return True
+                now_here = player()
+                if now_here is not None:
+                    left = math.dist((now_here[0], now_here[2]), (target["x"], target["z"]))
+                    if left <= 8.0:
+                        break
     for attempt in range(8):
         me = player()
         if me is None:
@@ -307,6 +372,17 @@ def main(seconds=3600.0):
                 state["visited"] = {}
                 target_room = None
                 log(f"floor {here}")
+            foes_now, doors_now = entities()
+            if foes_now and foes_now[0]["distance"] < 15:
+                log(f"  {foes_now[0]['class']} at {foes_now[0]['distance']:.0f} units is on us - fighting")
+                fight(foes_now[0])
+                continue
+            if doors_now and doors_now[0]["distance"] < 40:
+                pso_input.hold("a", 0.3)
+                log(f"  pressed A near {doors_now[0]['class']} (state {doors_now[0]['state']}, {doors_now[0]['distance']:.0f} units)")
+                time.sleep(0.4)
+            if press_in_reach():
+                continue
             if press_switches():
                 continue
             foes, doors = entities()
