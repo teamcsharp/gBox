@@ -2786,7 +2786,7 @@ class Bot:
         low = None if doctrine else self._low_life(p, live, now, snap)   # (the doctrine's own answer is the live one)
         if low is not None:
             return low
-        heavy = None if (doctrine or fire_first) else self._heavy_keep(live, now, p, snap)
+        heavy = None if fire_first else self._heavy_keep(live, now, p, snap)
         if heavy is not None:
             return heavy
         if UNIVERSAL_CORE:
