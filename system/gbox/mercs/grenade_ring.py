@@ -441,6 +441,11 @@ def control(ad, prof, *, ring=None):
         observe(stats, snap, now, policy_)
         decision = decide(snap, stats, now, policy_, title=title)
         stats["ring_decision"] = (decision["reason"] if not decision["fire"] else "fire: " + decision["reason"])[:200]
+        # The kind is recorded with the ATTEMPT, not only with the receipt: a session that rotates or ends mid-fire used
+        # to leave ring_kind_fired empty while rings_attempted had counted the attempt, so the operator's 360 ring
+        # looked like it never chose a kind (live 2026-11-11 22:47 RE5 1/ and 23:07 RE6 1/ both lost their outcome).
+        if decision.get("fire"):
+            stats["ring_kind_fired"] = str(decision.get("kind") or "")
         if not decision["fire"]:
             if title in SCATTER_TITLES:                      # no ring this tick: the scatter barrage's own rule
                 return scatter_step(snap, stats, now, hold)
