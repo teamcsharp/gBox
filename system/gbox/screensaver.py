@@ -1141,6 +1141,12 @@ class Screensaver:
         ahead = self.store.get(mercmode.NEXT, w['name']) or {}
         title = ahead.get('title')
         if not title:
+            # No NEXT promise yet (the rotation's boundary has not run in this block): pick the next title the usual way.
+            # The pick's own path (mercmode.choose) best-effort consumes the promise, but _start's choose reads the same
+            # NEXT doc before deleting it, so the preloaded title is still the resume at its turn.
+            pick = mercmode.choose(self.store, w, self.rng, merc_cfg, builds=self.builds) or {}
+            title, ahead = pick.get('title'), {'title': pick.get('title'), 'selection': pick.get('selection')}
+        if not title:
             return None
         playing = (run.get('mercmode') or {}).get('title')
         kind = self._switch_slot(title, merc_cfg)
