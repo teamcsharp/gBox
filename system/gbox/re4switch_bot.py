@@ -639,6 +639,16 @@ def _maintain_mods(ad, snap: dict, stats: dict) -> None:
     for key in ("motion_rate_kind", "motion_rate_class", "motion_rate_routine", "aim_ram_writes", "aim_sway_zeroed"):
         if st.get(key) is not None:
             stats[key] = st[key]
+    # Whether the bow's 40x motion write is ON, and why it was refused: the state keeps it under st["motion_rate"]
+    # ({"kind", "speed", "addrs"}), which nothing published - so every round read motion=8/ with the speed blank and the
+    # operator's "the bow isn't 20x" could not be checked from telemetry at all.
+    mr = st.get("motion_rate")
+    if isinstance(mr, dict):
+        stats["motion_rate_speed"] = mr.get("speed")
+        stats["motion_rate_kind"] = stats.get("motion_rate_kind") or mr.get("kind")
+    for key in ("motion_rate_restores", "motion_rate_refused", "motion_rate_refused_last"):
+        if st.get(key) is not None:
+            stats[key] = st[key]
 
 
 def _game(m, stats: dict) -> dict | None:
