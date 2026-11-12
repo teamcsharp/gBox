@@ -1594,7 +1594,11 @@ FROZEN = True
 # aiming at a wall while they came): once the sight gate has held the shot SIGHT_HOLD_S he flanks - FLANK_S of the
 # walk to the target by the mesh, the gun down - and tries again. Every block is logged (SIGHT_LOG, the wall, where
 # the shot met it) so the gate can be judged on real positions.
-SIGHT_HOLD_S, FLANK_S = 0.6, 1.5
+# 0.3 / 0.5 (was 0.6 / 1.5): the operator's "they need to be stopping threats that are advancing on them" - a 1.5 s
+# flank with the gun down is 1.5 s of not shooting, and live 2026-11-12 the bot spent whole rounds in
+# "no clear shot: to the spot 0.9 m on where it opens" (74 shots, 24 hits, 0 kills, round after round). It now gives the
+# sight half the time and the flank a third of it before firing at whatever is closest.
+SIGHT_HOLD_S, FLANK_S = 0.3, 0.5
 # The flank's end (live 2026-11-10, Castle r402: 22.6 s of 60 flanking, "no clear shot: round it by the mesh walker"
 # the commonest reason - the whole route walked to a Ganado in the doorway when one step showed him). FLANK_LOS: a
 # flank ends the tick the shot is open from where he stands; until then it walks to the nearest point along the mesh's
